@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 class TimescaleWriter:
     """Minimal TimescaleDB writer，专注连接和批量写入。"""
 
-    def __init__(self, settings: Optional[DBSettings] = None):
-        self.settings = settings or load_db_settings()
+    def __init__(self, settings: DBSettings):
+        self.settings = settings
         self._conn = None
 
     @contextmanager
@@ -64,15 +64,15 @@ class TimescaleWriter:
             cur.execute(ddl)
         logger.info("Timescale schema ensured")
 
-    def write_ticks(self, rows: Iterable[Tuple[str, float, float, str]]) -> None:
+    def write_ticks(self, rows: Iterable[Tuple[str, float, float, str]], page_size: int = 1000) -> None:
         # rows: (symbol, price, volume, iso_time)
-        self._batch(INSERT_TICKS_SQL, rows, page_size=self.settings.tick_page_size)
+        self._batch(INSERT_TICKS_SQL, rows, page_size=page_size)
 
-    def write_quotes(self, rows: Iterable[Tuple[str, float, float, float, float, str]]) -> None:
+    def write_quotes(self, rows: Iterable[Tuple[str, float, float, float, float, str]], page_size: int = 1000) -> None:
         # rows: (symbol, bid, ask, last, volume, iso_time)
-        self._batch(INSERT_QUOTES_SQL, rows, page_size=self.settings.tick_page_size)
+        self._batch(INSERT_QUOTES_SQL, rows, page_size=page_size)
 
-    def write_ohlc(self, rows: Iterable[Tuple], upsert: bool = False) -> None:
+    def write_ohlc(self, rows: Iterable[Tuple], upsert: bool = False, page_size: int = 1000) -> None:
         """
         rows: (symbol, timeframe, open, high, low, close, volume, iso_time[, indicators])
         支持末尾可选 indicators json。
@@ -83,15 +83,15 @@ class TimescaleWriter:
         if len(rows_list[0]) == 8:
             rows_list = [(*row, None) for row in rows_list]
         sql = UPSERT_OHLC_SQL if upsert else INSERT_OHLC_SQL
-        self._batch(sql, rows_list, page_size=self.settings.ohlc_page_size)
+        self._batch(sql, rows_list, page_size=page_size)
 
-    def write_ohlc_intrabar(self, rows: Iterable[Tuple[str, str, float, float, float, float, float, str, str]]) -> None:
+    def write_ohlc_intrabar(self, rows: Iterable[Tuple[str, str, float, float, float, float, float, str, str]], page_size: int = 1000) -> None:
         # rows: (symbol, timeframe, open, high, low, close, volume, bar_time, recorded_at)
-        self._batch(INSERT_INTRABAR_SQL, rows, page_size=self.settings.ohlc_page_size)
+        self._batch(INSERT_INTRABAR_SQL, rows, page_size=page_size)
 
-    def write_indicators(self, rows: Iterable[Tuple[str, str, str, float, str, str]]) -> None:
+    def write_indicators(self, rows: Iterable[Tuple[str, str, str, float, str, str]], page_size: int = 1000) -> None:
         # rows: (symbol, timeframe, indicator, value, bar_time_iso, computed_at_iso)
-        self._batch(UPSERT_INDICATORS_SQL, rows, page_size=self.settings.ohlc_page_size)
+        self._batch(UPSERT_INDICATORS_SQL, rows, page_size=page_size)
 
     def last_ohlc_time(self, symbol: str, timeframe: str) -> Optional[datetime]:
         sql = "SELECT max(time) FROM ohlc WHERE symbol=%s AND timeframe=%s"

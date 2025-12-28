@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Callable, Dict, Iterable, List, Optional
 
-from src.config import StorageSettings, load_storage_settings
+from src.config import StorageSettings
 from src.config.utils import load_ini_config, resolve_config_path
 from src.persistence.db import TimescaleWriter
 
@@ -22,12 +22,14 @@ class StorageWriter:
 
     def __init__(
         self,
-        db_writer: Optional[TimescaleWriter] = None,
+        db_writer: TimescaleWriter,
         config_path: Optional[str] = None,
-        storage_settings: Optional[StorageSettings] = None,
+        storage_settings: StorageSettings = None,
     ):
-        self.settings = storage_settings or load_storage_settings()
-        self.db = db_writer or TimescaleWriter()
+        if storage_settings is None:
+            raise ValueError("storage_settings is required")
+        self.settings = storage_settings
+        self.db = db_writer
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.config_path = resolve_config_path(config_path or "storage.ini")
@@ -87,7 +89,10 @@ class StorageWriter:
     def _drain_queue(self, q: queue.Queue, pending: deque, batch_size: int) -> None:
         if pending.maxlen is not None and len(pending) >= pending.maxlen:
             return
+        # 获取当前还有多少空间
         space = pending.maxlen - len(pending) if pending.maxlen else batch_size
+        # 这里的作用是尽可能多地取出队列中的数据，直到达到空间或队列空为止 如果空间不足 那么就消费剩下空间size数据
+        # 如果充足 那么就取batch_size数据
         take = min(batch_size, space)
         for _ in range(take):
             try:
@@ -184,12 +189,13 @@ class StorageWriter:
             maxsize = parser.getint(section, "maxsize", fallback=None)
             flush_interval = parser.getfloat(section, "flush_interval", fallback=None)
             batch_size = parser.getint(section, "batch_size", fallback=None)
+            page_size = parser.getint(section, "page_size", fallback=None)
             enabled_val = parser.get(section, "enabled", fallback=None)
-            if maxsize is None or flush_interval is None or batch_size is None:
+            if maxsize is None or flush_interval is None or batch_size is None or page_size is None:
                 logger.warning("Channel %s missing required params, skipping", section)
                 continue
 
-            write_fn = self._resolve_write_fn(ch_type)
+            write_fn = self._resolve_write_fn(ch_type, page_size)
             enabled_fn = self._resolve_enabled_fn(ch_type, enabled_val)
             if write_fn is None:
                 logger.warning("Unknown channel type %s in %s, skipping", ch_type, section)
@@ -212,13 +218,17 @@ class StorageWriter:
         return registered
 
     # 当有新的通道类型时，在此添加映射
-    def _resolve_write_fn(self, ch_type: str):
+    def _resolve_write_fn(self, ch_type: str, page_size: Optional[int]):
+        if page_size is None:
+            return None
         mapping = {
-            "ticks": self.db.write_ticks,
-            "quotes": self.db.write_quotes,
-            "intrabar": self.db.write_ohlc_intrabar,
-            "ohlc": lambda rows: self.db.write_ohlc(rows, upsert=self.settings.ohlc_upsert_open_bar),
-            "indicators": self.db.write_indicators,
+            "ticks": lambda rows: self.db.write_ticks(rows, page_size=page_size),
+            "quotes": lambda rows: self.db.write_quotes(rows, page_size=page_size),
+            "intrabar": lambda rows: self.db.write_ohlc_intrabar(rows, page_size=page_size),
+            "ohlc": lambda rows: self.db.write_ohlc(
+                rows, upsert=self.settings.ohlc_upsert_open_bar, page_size=page_size
+            ),
+            "indicators": lambda rows: self.db.write_indicators(rows, page_size=page_size),
         }
         return mapping.get(ch_type)
 

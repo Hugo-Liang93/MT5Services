@@ -75,6 +75,7 @@ class BackgroundIngestor:
                     logger.exception("Unexpected ingest error for %s: %s", symbol, exc)
             # 保持采集节奏，扣除本轮耗时。
             elapsed = time.time() - start_loop
+            # 根据设置tick_interval以及实际耗时计算睡眠时间，避免过快循环。
             sleep_for = max(0, tick_interval - elapsed)
             self._stop.wait(sleep_for)
 
