@@ -9,7 +9,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import Deque, Dict, List, Optional
 
-from src.config import MarketSettings, load_market_settings, IngestSettings, load_ingest_settings
+from src.config import MarketSettings, load_market_settings
 from src.clients.mt5_market import MT5MarketClient, Quote, Tick, OHLC, SymbolInfo
 
 
@@ -25,10 +25,8 @@ class MarketDataService:
         self,
         client: MT5MarketClient,
         market_settings: Optional[MarketSettings] = None,
-        ingest_settings: Optional[IngestSettings] = None,
     ):
         self.market_settings = market_settings or load_market_settings()
-        self.ingest_settings = ingest_settings or load_ingest_settings()
         self.client = client
         self._tick_cache: Dict[str, Deque[Tick]] = {}
         self._quote_cache: Dict[str, Quote] = {}
@@ -105,7 +103,7 @@ class MarketDataService:
         self._quote_cache[symbol] = quote
 
     def extend_ticks(self, symbol: str, ticks: List[Tick]) -> None:
-        cache = self._tick_cache.setdefault(symbol, deque(maxlen=self.ingest_settings.tick_cache_size))
+        cache = self._tick_cache.setdefault(symbol, deque(maxlen=self.market_settings.tick_cache_size))
         cache.extend(ticks)
 
     def set_ohlc(self, symbol: str, timeframe: str, bars: List[OHLC]) -> None:
@@ -115,7 +113,7 @@ class MarketDataService:
         for bar in bars:
             merged[bar.time] = bar
         sorted_bars = sorted(merged.values(), key=lambda b: b.time)
-        keep_limit = max(self.market_settings.ohlc_limit, self.ingest_settings.ohlc_backfill_limit)
+        keep_limit = max(self.market_settings.ohlc_limit, self.market_settings.ohlc_cache_limit)
         self._ohlc_cache[key] = sorted_bars[-keep_limit:]
 
     def _ohlc_key(self, symbol: str, timeframe: str) -> str:

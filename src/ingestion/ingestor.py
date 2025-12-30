@@ -110,7 +110,6 @@ class BackgroundIngestor:
                 self.storage.enqueue("ticks", item)
 
     def _ingest_ohlc(self, symbol: str, next_ohlc_at: Dict[str, float]) -> None:
-        # 按时间框架定期拉取最新 2 根K线（当前未收盘+ 上一根）
         now = time.time()
         for tf in self.settings.ingest_ohlc_timeframes:
             key = f"{symbol}-{tf}"
@@ -133,7 +132,12 @@ class BackgroundIngestor:
                         limit=self.settings.ohlc_backfill_limit,
                     )
                 else:
-                    bars = self.client.get_ohlc(symbol, tf, self.settings.ohlc_backfill_limit)
+                    # 初次拉取仅用于填充内存缓存，按缓存/默认窗口大小即可。
+                    warmup_limit = max(
+                        self.service.market_settings.ohlc_limit,
+                        self.service.market_settings.ohlc_cache_limit,
+                    )
+                    bars = self.client.get_ohlc(symbol, tf, warmup_limit)
             except MT5MarketError as exc:
                 logger.warning("Fetch OHLC failed for %s %s: %s", symbol, tf, exc)
                 next_ohlc_at[key] = now + tf_interval

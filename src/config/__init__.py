@@ -49,6 +49,8 @@ class MarketSettings(BaseModel):
     ohlc_limit: int = 100
     quote_stale_seconds: float = 1.0
     stream_interval_seconds: float = 1.0
+    tick_cache_size: int = 5000
+    ohlc_cache_limit: int = 500
 
 
 class StorageSettings(BaseModel):
@@ -101,8 +103,9 @@ def load_db_settings() -> DBSettings:
 @lru_cache
 def load_ingest_settings() -> IngestSettings:
     sec = _load_ini_section("ingest.ini", "ingest")
+    cache_sec = _load_ini_section("cache.ini", "cache")
     return IngestSettings(
-        tick_cache_size=_cfg_int(sec, "tick_cache_size", 5000),
+        tick_cache_size=_cfg_int(cache_sec, "tick_cache_size", 5000),
         tick_initial_lookback_seconds=_cfg_int(sec, "tick_initial_lookback_seconds", 20),
         ingest_symbols=_cfg_list(sec, "ingest_symbols", ["EURUSD"]),
         ingest_tick_interval=_cfg_float(sec, "ingest_tick_interval", 0.5),
@@ -142,12 +145,15 @@ def load_storage_settings() -> StorageSettings:
 @lru_cache
 def load_market_settings() -> MarketSettings:
     sec = _load_ini_section("market.ini", "market")
+    cache_sec = _load_ini_section("cache.ini", "cache")
     return MarketSettings(
         default_symbol=_cfg_str(sec, "default_symbol", "EURUSD"),
         tick_limit=_cfg_int(sec, "tick_limit", 100),
         ohlc_limit=_cfg_int(sec, "ohlc_limit", 100),
         quote_stale_seconds=_cfg_float(sec, "quote_stale_seconds", 1.0),
         stream_interval_seconds=_cfg_float(sec, "stream_interval_seconds", 1.0),
+        tick_cache_size=_cfg_int(cache_sec, "tick_cache_size", 5000),
+        ohlc_cache_limit=_cfg_int(cache_sec, "ohlc_cache_limit", 500),
     )
 
 
