@@ -1,6 +1,7 @@
 """Indicator helpers aggregation and worker entrypoint."""
 
-from .worker import IndicatorTask, IndicatorSnapshot, IndicatorWorker
+from .types import IndicatorTask
+from .worker import IndicatorSnapshot, IndicatorWorker
 
 # Indicator categories
 from .mean import ema, sma, wma

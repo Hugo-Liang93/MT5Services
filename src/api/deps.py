@@ -18,6 +18,7 @@ from src.config import (
     load_ingest_settings,
     load_storage_settings,
     load_market_settings,
+    load_indicator_settings,
 )
 
 mt5_settings = load_mt5_settings()
@@ -25,6 +26,7 @@ db_settings = load_db_settings()
 ingest_settings = load_ingest_settings()
 storage_settings = load_storage_settings()
 market_settings = load_market_settings()
+indicator_settings = load_indicator_settings()
 
 mt5_client = MT5MarketClient(mt5_settings)
 service = MarketDataService(client=mt5_client, market_settings=market_settings)
@@ -35,6 +37,7 @@ indicator_worker = IndicatorWorker(
     symbols=ingest_settings.ingest_symbols,
     timeframes=ingest_settings.ingest_ohlc_timeframes,
     tasks=[],  # 由 config/indicators.ini 热加载
+    indicator_settings=indicator_settings,
     storage=storage_writer,
 )
 account_service = AccountService()

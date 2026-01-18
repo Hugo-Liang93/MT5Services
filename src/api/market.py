@@ -44,6 +44,8 @@ def quote(
     settings = load_market_settings()
     try:
         data = service.get_quote(symbol or settings.default_symbol)
+        if data is None:
+            raise HTTPException(status_code=503, detail="Quote cache empty")
         return ApiResponse(success=True, data=QuoteModel(**data.__dict__, time=data.time.isoformat()))
     except MT5MarketError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -71,11 +73,22 @@ def ohlc(
     service: MarketDataService = Depends(get_market_service),
 ) -> ApiResponse[List[OHLCModel]]:
     try:
-        data = service.get_ohlc(symbol, timeframe, limit)
+        data = service.get_ohlc_closed(symbol, timeframe, limit)
         items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
         return ApiResponse(success=True, data=items)
     except MT5MarketError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/ohlc/intrabar/series", response_model=ApiResponse[List[OHLCModel]])
+def ohlc_intrabar_series(
+    symbol: Optional[str] = Query(default=None, description="交易品种，可为空则使用默认"),
+    timeframe: str = Query(default="M1", description="MT5 时间框架，如 M1/M5/H1/D1"),
+    service: MarketDataService = Depends(get_market_service),
+) -> ApiResponse[List[OHLCModel]]:
+    data = service.get_intrabar_series(symbol, timeframe)
+    items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
+    return ApiResponse(success=True, data=items)
 
 
 @router.get("/stream")
@@ -91,8 +104,11 @@ async def stream(
         while True:
             try:
                 data = service.get_quote(symbol)
-                payload = QuoteModel(**data.__dict__, time=data.time.isoformat()).model_dump()
-                yield f"data: {json.dumps(payload)}\n\n"
+                if data is None:
+                    yield f"data: {json.dumps({'error': 'quote cache empty'})}\n\n"
+                else:
+                    payload = QuoteModel(**data.__dict__, time=data.time.isoformat()).model_dump()
+                    yield f"data: {json.dumps(payload)}\n\n"
             except MT5MarketError as exc:
                 yield f"data: {json.dumps({'error': str(exc)})}\n\n"
             await asyncio.sleep(poll)

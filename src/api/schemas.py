@@ -4,7 +4,7 @@ Pydantic 模型：用于 API 输入/输出的统一定义。
 
 from __future__ import annotations
 
-from typing import Optional, TypeVar, Generic, List, Dict, Any
+from typing import Optional, TypeVar, Generic, List, Dict
 
 from pydantic.generics import GenericModel
 
@@ -36,6 +36,7 @@ class OHLCModel(BaseModel):
     low: float
     close: float
     volume: float
+    indicators: Optional[Dict[str, float]] = None
 
 
 class AccountInfoModel(BaseModel):

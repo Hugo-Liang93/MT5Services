@@ -10,11 +10,11 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 
-from src.config import IngestSettings, load_ingest_settings
+from src.config import IngestSettings
 from src.clients.mt5_market import MT5MarketClient, MT5MarketError
 from src.core.market_service import MarketDataService
-from src.persistence.db import TimescaleWriter
 from src.persistence.storage_writer import StorageWriter
+from src.utils.common import ohlc_key, timeframe_seconds, timeframe_interval
 
 logger = logging.getLogger(__name__)
 
@@ -25,30 +25,35 @@ class BackgroundIngestor:
     def __init__(
         self,
         service: MarketDataService,
-        storage: Optional[StorageWriter] = None,
-        ingest_settings: Optional[IngestSettings] = None,
+        storage: StorageWriter,
+        ingest_settings: IngestSettings,
     ):
-        self.settings = ingest_settings or load_ingest_settings()
+        self.settings = ingest_settings
         self.service = service
-        self.storage = storage or StorageWriter(TimescaleWriter())
+        self.storage = storage
         self.client: MT5MarketClient = service.client
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_tick_time: Dict[str, datetime] = {}
         self._last_ohlc_time: Dict[str, datetime] = {}
         self._last_intrabar_snapshot: Dict[str, tuple] = {}
-        self._ohlc_lock = threading.Lock()  # 保护 _last_ohlc_time 的并发读写，避免回补/实时线程竞争
+        self._ohlc_lock = threading.Lock()  # 保护 _last_ohlc_time 的并发读写
+        self._backfill_progress: Dict[str, datetime] = {}
+        self._backfill_cutoff: Dict[str, datetime] = {}
         self._backfill_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        self._init_backfill_progress()
+        if self._backfill_progress:
+            self._backfill_thread = threading.Thread(
+                target=self._backfill_async, name="mt5-backfill", daemon=True
+            )
+            self._backfill_thread.start()
         self._thread = threading.Thread(target=self._run, name="mt5-ingestor", daemon=True)
         self._thread.start()
-        # Backfill 放在后台线程执行，避免阻塞实时采集。
-        self._backfill_thread = threading.Thread(target=self._backfill_async, name="mt5-backfill", daemon=True)
-        self._backfill_thread.start()
         logger.info("Background ingestor started")
 
     def stop(self) -> None:
@@ -112,8 +117,12 @@ class BackgroundIngestor:
     def _ingest_ohlc(self, symbol: str, next_ohlc_at: Dict[str, float]) -> None:
         now = time.time()
         for tf in self.settings.ingest_ohlc_timeframes:
-            key = f"{symbol}-{tf}"
-            tf_interval = self._get_tf_interval(tf)
+            key = ohlc_key(symbol, tf)
+            # 计算当前周期间隔，决定下次采集时间。
+            tf_interval = timeframe_interval(
+                tf, self.settings.ingest_ohlc_interval, self.settings.ingest_ohlc_intervals
+            )
+            # 计算下次采集时间。
             due_at = next_ohlc_at.get(key, 0)
             # 当 time >= next_at 时才拉取数据；首轮 next_at 不 0 会拉取。
             if now < due_at:
@@ -124,7 +133,7 @@ class BackgroundIngestor:
             try:
                 if last_ts:
                     # 若长时间未采集，持 last_ts 之后补齐（含当前未收盘）
-                    start_time = last_ts + timedelta(seconds=self._timeframe_seconds(tf))
+                    start_time = last_ts + timedelta(seconds=timeframe_seconds(tf))
                     bars = self.client.get_ohlc_from(
                         symbol=symbol,
                         timeframe=tf,
@@ -137,6 +146,7 @@ class BackgroundIngestor:
                         self.service.market_settings.ohlc_limit,
                         self.service.market_settings.ohlc_cache_limit,
                     )
+                    # 首次拉取从当前位置开始的 K 线数据
                     bars = self.client.get_ohlc(symbol, tf, warmup_limit)
             except MT5MarketError as exc:
                 logger.warning("Fetch OHLC failed for %s %s: %s", symbol, tf, exc)
@@ -147,21 +157,26 @@ class BackgroundIngestor:
                 next_ohlc_at[key] = now + tf_interval
                 continue
 
-            # 缓存写入，内部会按配置保留窗口。
-            self.service.set_ohlc(symbol, tf, bars)
             # 默认仅写已收盘的 bar；盘中变更仅在内容变化时写入 intrabar 队列。
             to_write_closed: List[tuple] = []
-            tf_seconds = self._timeframe_seconds(tf)
+            tf_seconds = timeframe_seconds(tf)
             # cutoff 基于 UTC，无 tzinfo，避免 naive/aware 比较错误。
             closed_cutoff = datetime.utcnow() - timedelta(seconds=tf_seconds)
 
             # 确保按时间排序，便于补齐缺口。
             bars = sorted(bars, key=lambda b: b.time)
 
+            closed_bars: List = []
+            new_events: List = []
+            write_closed = last_ts is not None
             for bar in bars:
                 is_closed = bar.time.replace(tzinfo=None) <= closed_cutoff
                 if is_closed:
+                    closed_bars.append(bar)
                     if last_ts is None or bar.time > last_ts:
+                        new_events.append(bar)
+                    # 用于写入数据库，write_closed 为 False（例如 warmup 阶段）时，不应该写 DB，但仍需要发事件。
+                    if write_closed and (last_ts is None or bar.time > last_ts):
                         to_write_closed.append(
                             (
                                 bar.symbol,
@@ -173,17 +188,19 @@ class BackgroundIngestor:
                                 bar.volume,
                                 bar.time.isoformat(),
                             )
-                        )
+                    )
                     continue
 
                 # 盘中未收盘 bar：仅当变更时记录到 intrabar 队列。
-                if not self.settings.intrabar_enabled:
-                    continue
-                snap_key = f"{symbol}:{tf}"
-                current = (bar.open, bar.high, bar.low, bar.close, bar.volume)
+                snap_key = ohlc_key(symbol, tf)
+                current = (bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
                 snapshot = self._last_intrabar_snapshot.get(snap_key)
                 if snapshot is None or snapshot != current:
                     self._last_intrabar_snapshot[snap_key] = current
+                    # 盘中快照用于 API 读取，不影响指标计算。
+                    self.service.set_intrabar(symbol, tf, bar)
+                    if not self.settings.intrabar_enabled:
+                        continue
                     recorded_at = datetime.utcnow().isoformat()
                     self.storage.enqueue(
                         "intrabar",
@@ -200,33 +217,19 @@ class BackgroundIngestor:
                         ),
                     )
 
+            if closed_bars:
+                # 缓存写入只保留已收盘 K 线。
+                self.service.set_ohlc_closed(symbol, tf, closed_bars)
+                for bar in new_events:
+                    self.service.enqueue_ohlc_closed_event(symbol, tf, bar.time)
+                newest_closed = closed_bars[-1].time
+                self._set_last_ohlc_time_if_newer(key, newest_closed)
+
             if to_write_closed:
-                newest = max([bar.time for bar in bars])
-                self._set_last_ohlc_time_if_newer(key, newest)
                 for row in to_write_closed:
                     self.storage.enqueue("ohlc", row)
 
             next_ohlc_at[key] = now + tf_interval
-
-    # --- utils ---
-    def _timeframe_seconds(self, tf: str) -> int:
-        tf_upper = tf.upper()
-        mapping = {
-            "M1": 60,
-            "M5": 300,
-            "M15": 900,
-            "M30": 1800,
-            "H1": 3600,
-            "H4": 14400,
-            "D1": 86400,
-        }
-        return mapping.get(tf_upper, 60)
-
-    def _get_tf_interval(self, tf: str) -> float:
-        tf_upper = tf.upper()
-        if tf_upper in self.settings.ingest_ohlc_intervals:
-            return float(self.settings.ingest_ohlc_intervals[tf_upper])
-        return self.settings.ingest_ohlc_interval
 
     # --- monitoring ---
     def queue_stats(self) -> dict:
@@ -235,6 +238,25 @@ class BackgroundIngestor:
         stats["threads"]["ingest_alive"] = self._thread.is_alive() if self._thread else False
         stats["threads"]["backfill_alive"] = self._backfill_thread.is_alive() if self._backfill_thread else False
         return stats
+
+    def _init_backfill_progress(self) -> None:
+        """启动时从数据库初始化回补起点与截止时间。"""
+        try:
+            writer = self.storage.db
+        except Exception:
+            return
+        now = datetime.utcnow()
+        for symbol in self.settings.ingest_symbols:
+            for tf in self.settings.ingest_ohlc_timeframes:
+                try:
+                    last_ts = writer.last_ohlc_time(symbol, tf)
+                except Exception:
+                    continue
+                if last_ts:
+                    key = ohlc_key(symbol, tf)
+                    self._backfill_progress[key] = last_ts
+                    tf_seconds = timeframe_seconds(tf)
+                    self._backfill_cutoff[key] = now - timedelta(seconds=tf_seconds)
 
     def _get_last_ohlc_time(self, key: str) -> Optional[datetime]:
         # 统一从锁内读取，防止回补线程与实时线程竞争。
@@ -248,62 +270,68 @@ class BackgroundIngestor:
             if current is None or ts > current:
                 self._last_ohlc_time[key] = ts
 
-    def _backfill_ohlc(self, writer: Optional[TimescaleWriter] = None, client: Optional[MT5MarketClient] = None) -> None:
-        """基于数据库最新时间戳补充已收盘K线，避免启动断档。"""
-        writer = writer or self.storage.db
-        client = client or self.client
+    def _backfill_ohlc(self) -> None:
+        writer = self.storage.db
+        client = self.client
         for symbol in self.settings.ingest_symbols:
             for tf in self.settings.ingest_ohlc_timeframes:
-                last_ts = writer.last_ohlc_time(symbol, tf)
-                tf_seconds = self._timeframe_seconds(tf)
-                lookback = tf_seconds * self.settings.ohlc_backfill_limit
-                now_dt = datetime.utcnow()
-                # 回补窗口覆盖最近 lookback 区间，确保补齐中间遗漏的收盘 bar。
-                start_time = (last_ts - timedelta(seconds=lookback)) if last_ts else (now_dt - timedelta(seconds=lookback))
-                try:
-                    bars = client.get_ohlc_from(
-                        symbol=symbol,
-                        timeframe=tf,
-                        start=start_time,
-                        limit=self.settings.ohlc_backfill_limit,
-                    )
-                except MT5MarketError as exc:
-                    logger.warning("Backfill OHLC failed for %s %s: %s", symbol, tf, exc)
+                key = ohlc_key(symbol, tf)
+                last_ts = self._backfill_progress.get(key)
+                if last_ts is None:
                     continue
-
-                # 只写已收盘的 bars，并按时间排序。统一基于 UTC，无 tzinfo。
-                cutoff = datetime.utcnow() - timedelta(seconds=tf_seconds)
-                bars = [b for b in bars if b.time.replace(tzinfo=None) <= cutoff]
-                if not bars:
+                tf_seconds = timeframe_seconds(tf)
+                cutoff = self._backfill_cutoff.get(key)
+                if cutoff is None:
+                    logger.warning("Backfill cutoff missing for %s, skipping", key)
                     continue
-                bars = sorted(bars, key=lambda b: b.time)
-                writer.write_ohlc(
-                    [
-                        (
-                            bar.symbol,
-                            bar.timeframe,
-                            bar.open,
-                            bar.high,
-                            bar.low,
-                            bar.close,
-                            bar.volume,
-                            bar.time.isoformat(),
+                while not self._stop.is_set():
+                    if last_ts >= cutoff:
+                        break
+                    start_time = last_ts + timedelta(seconds=tf_seconds)
+                    try:
+                        # 获取limit条数据，避免一次拉取过多。
+                        bars = client.get_ohlc_from(
+                            symbol=symbol,
+                            timeframe=tf,
+                            start=start_time,
+                            limit=self.settings.ohlc_backfill_limit,
                         )
-                        for bar in bars
-                    ],
-                    upsert=True,
-                )
-                key = f"{symbol}-{tf}"
-                self._set_last_ohlc_time_if_newer(key, bars[-1].time)
-                logger.info("Backfilled %s bars for %s %s (up to %s)", len(bars), symbol, tf, bars[-1].time.isoformat())
+                    except MT5MarketError as exc:
+                        logger.warning("Backfill OHLC failed for %s %s: %s", symbol, tf, exc)
+                        break
+
+                    if not bars:
+                        break
+                    bars = sorted(bars, key=lambda b: b.time)
+                    # 只写入截止时间之前的 K 线，避免覆盖实时采集进度。
+                    closed = [b for b in bars if b.time.replace(tzinfo=None) <= cutoff]
+                    if not closed:
+                        break
+                    writer.write_ohlc(
+                        [
+                            (
+                                bar.symbol,
+                                bar.timeframe,
+                                bar.open,
+                                bar.high,
+                                bar.low,
+                                bar.close,
+                                bar.volume,
+                                bar.time.isoformat(),
+                            )
+                            for bar in closed
+                        ],
+                        upsert=True,
+                    )
+                    new_last = closed[-1].time
+                    if new_last <= last_ts:
+                        break
+                    last_ts = new_last
+                    # 更新回补进度
+                    self._backfill_progress[key] = last_ts
 
     def _backfill_async(self) -> None:
-        """使用独立连接在后台执行 backfill，避免阻塞实时采集。"""
         try:
-            local_writer = TimescaleWriter(self.settings)
-            local_client = MT5MarketClient(self.settings)
-            local_writer.init_schema()
-            # 共享同一时区配置。
-            self._backfill_ohlc(writer=local_writer, client=local_client)
+            self._backfill_ohlc()
         except Exception as exc:  # pragma: no cover - 防御
             logger.warning("Backfill thread failed: %s", exc)

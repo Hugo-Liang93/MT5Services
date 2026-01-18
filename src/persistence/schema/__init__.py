@@ -10,14 +10,12 @@ from .ohlc import (
     UPSERT_SQL as UPSERT_OHLC_SQL,
 )
 from .intrabar import DDL as INTRABAR_DDL, INSERT_SQL as INSERT_INTRABAR_SQL
-from .indicators import DDL as INDICATORS_DDL, UPSERT_SQL as UPSERT_INDICATORS_SQL
 
 DDL_STATEMENTS = [
     TICKS_DDL,
     QUOTES_DDL,
     OHLC_DDL,
     INTRABAR_DDL,
-    INDICATORS_DDL,
 ]
 
 __all__ = [
@@ -27,5 +25,4 @@ __all__ = [
     "INSERT_OHLC_SQL",
     "UPSERT_OHLC_SQL",
     "INSERT_INTRABAR_SQL",
-    "UPSERT_INDICATORS_SQL",
 ]

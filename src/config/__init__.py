@@ -1,6 +1,6 @@
 """
 按模块拆分的配置加载：仅从 config/*.ini 读取，不依赖环境变量。
-提供 MT5、DB、Ingest、Storage 四类配置的模型与加载函数。
+提供 MT5、DB、Ingest、Storage、Indicator 五类配置的模型与加载函数。
 """
 
 from __future__ import annotations
@@ -8,11 +8,13 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional, List
 import configparser
+import json
 import os
 
 from pydantic import BaseModel, Field
 
 from src.config.utils import resolve_config_path
+from src.indicators.types import IndicatorTask
 
 
 class MT5Settings(BaseModel):
@@ -51,6 +53,8 @@ class MarketSettings(BaseModel):
     stream_interval_seconds: float = 1.0
     tick_cache_size: int = 5000
     ohlc_cache_limit: int = 500
+    intrabar_max_points: int = 500
+    ohlc_event_queue_size: int = 1000
 
 
 class StorageSettings(BaseModel):
@@ -73,6 +77,14 @@ class StorageSettings(BaseModel):
     intrabar_flush_interval: float = 5.0
     intrabar_flush_batch_size: int = 200
     intrabar_queue_maxsize: int = 10000
+
+
+class IndicatorSettings(BaseModel):
+    poll_seconds: float = 5.0
+    reload_interval: float = 60.0
+    config_path: Optional[str] = None
+    backfill_enabled: bool = True
+    backfill_batch_size: int = 1000
 
 
 @lru_cache
@@ -154,7 +166,55 @@ def load_market_settings() -> MarketSettings:
         stream_interval_seconds=_cfg_float(sec, "stream_interval_seconds", 1.0),
         tick_cache_size=_cfg_int(cache_sec, "tick_cache_size", 5000),
         ohlc_cache_limit=_cfg_int(cache_sec, "ohlc_cache_limit", 500),
+        intrabar_max_points=_cfg_int(cache_sec, "intrabar_max_points", 500),
+        ohlc_event_queue_size=_cfg_int(cache_sec, "ohlc_event_queue_size", 1000),
     )
+
+
+@lru_cache
+def load_indicator_settings() -> IndicatorSettings:
+    path = resolve_config_path("indicators.ini")
+    parser = configparser.ConfigParser()
+    if path:
+        parser.read(path, encoding="utf-8")
+    sec = parser["worker"] if parser.has_section("worker") else None
+    return IndicatorSettings(
+        poll_seconds=_cfg_float(sec, "poll_seconds", 5.0),
+        reload_interval=_cfg_float(sec, "reload_interval", 60.0),
+        config_path=path,
+        backfill_enabled=_cfg_bool(sec, "backfill_enabled", True),
+        backfill_batch_size=_cfg_int(sec, "backfill_batch_size", 1000),
+    )
+
+
+def load_indicator_tasks(config_path: Optional[str] = None) -> List[IndicatorTask]:
+    path = resolve_config_path(config_path or "indicators.ini")
+    if not path or not os.path.exists(path):
+        return []
+    parser = configparser.ConfigParser()
+    parser.read(path, encoding="utf-8")
+    tasks: List[IndicatorTask] = []
+    for section in parser.sections():
+        if section.strip().lower() == "worker":
+            continue
+        func_path = parser.get(section, "func", fallback=None)
+        if not func_path:
+            continue
+        params_raw = parser.get(section, "params", fallback="{}")
+        try:
+            params = json.loads(params_raw)
+            if not isinstance(params, dict):
+                params = {}
+        except Exception:
+            params = {}
+        tasks.append(
+            IndicatorTask(
+                name=section,
+                func_path=func_path,
+                params=params,
+            )
+        )
+    return tasks
 
 
 def _load_ini_section(filename: str, section: str) -> Optional[configparser.SectionProxy]:

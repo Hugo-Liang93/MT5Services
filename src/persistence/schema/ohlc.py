@@ -30,5 +30,5 @@ ON CONFLICT (time, symbol, timeframe) DO UPDATE SET
     low = EXCLUDED.low,
     close = EXCLUDED.close,
     volume = EXCLUDED.volume,
-    indicators = EXCLUDED.indicators
+    indicators = COALESCE(ohlc.indicators, '{}'::jsonb) || COALESCE(EXCLUDED.indicators, '{}'::jsonb)
 """

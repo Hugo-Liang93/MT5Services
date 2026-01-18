@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from src.clients.base import MT5BaseClient, MT5BaseError, mt5
 
@@ -39,6 +39,7 @@ class OHLC:
     low: float
     close: float
     volume: float
+    indicators: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -143,6 +144,7 @@ class MT5MarketClient(MT5BaseClient):
     def get_ohlc(self, symbol: str, timeframe: str, limit: int) -> List[OHLC]:
         self.connect()
         tf = self._timeframe_to_mt5(timeframe)
+        # 获取从当前位置开始的 K 线数据
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, limit)
         if rates is None:
             raise MT5MarketError(f"Failed to get OHLC for {symbol}: {mt5.last_error()}")

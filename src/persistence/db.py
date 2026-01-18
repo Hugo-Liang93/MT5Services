@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Iterable, Tuple, Optional
+from typing import Iterable, Tuple, Optional, List
 
 import psycopg2
 from psycopg2.extras import execute_batch
@@ -21,7 +21,6 @@ from src.persistence.schema import (
     INSERT_OHLC_SQL,
     UPSERT_OHLC_SQL,
     INSERT_INTRABAR_SQL,
-    UPSERT_INDICATORS_SQL,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,8 +79,14 @@ class TimescaleWriter:
         rows_list = list(rows)
         if not rows_list:
             return
-        if len(rows_list[0]) == 8:
-            rows_list = [(*row, None) for row in rows_list]
+        normalized = []
+        for row in rows_list:
+            if len(row) == 8:
+                normalized.append((*row, {}))
+            else:
+                indicators = row[8] if row[8] is not None else {}
+                normalized.append((*row[:8], indicators))
+        rows_list = normalized
         sql = UPSERT_OHLC_SQL if upsert else INSERT_OHLC_SQL
         self._batch(sql, rows_list, page_size=page_size)
 
@@ -89,16 +94,33 @@ class TimescaleWriter:
         # rows: (symbol, timeframe, open, high, low, close, volume, bar_time, recorded_at)
         self._batch(INSERT_INTRABAR_SQL, rows, page_size=page_size)
 
-    def write_indicators(self, rows: Iterable[Tuple[str, str, str, float, str, str]], page_size: int = 1000) -> None:
-        # rows: (symbol, timeframe, indicator, value, bar_time_iso, computed_at_iso)
-        self._batch(UPSERT_INDICATORS_SQL, rows, page_size=page_size)
-
     def last_ohlc_time(self, symbol: str, timeframe: str) -> Optional[datetime]:
         sql = "SELECT max(time) FROM ohlc WHERE symbol=%s AND timeframe=%s"
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, (symbol, timeframe))
             row = cur.fetchone()
             return row[0] if row and row[0] else None
+
+    def fetch_ohlc(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: Optional[datetime],
+        limit: int,
+    ) -> List[Tuple]:
+        sql = (
+            "SELECT symbol, timeframe, open, high, low, close, volume, time, indicators "
+            "FROM ohlc WHERE symbol=%s AND timeframe=%s"
+        )
+        params: List = [symbol, timeframe]
+        if start_time:
+            sql += " AND time > %s"
+            params.append(start_time)
+        sql += " ORDER BY time ASC LIMIT %s"
+        params.append(limit)
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
 
     def _batch(self, sql: str, rows: Iterable[tuple], page_size: int = 1000) -> None:
         batch = list(rows)

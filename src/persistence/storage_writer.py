@@ -228,7 +228,7 @@ class StorageWriter:
             "ohlc": lambda rows: self.db.write_ohlc(
                 rows, upsert=self.settings.ohlc_upsert_open_bar, page_size=page_size
             ),
-            "indicators": lambda rows: self.db.write_indicators(rows, page_size=page_size),
+            "ohlc_indicators": lambda rows: self.db.write_ohlc(rows, upsert=True, page_size=page_size),
         }
         return mapping.get(ch_type)
 
