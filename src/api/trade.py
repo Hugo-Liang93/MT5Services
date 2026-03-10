@@ -1,112 +1,394 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Optional
 
-from src.api.deps import get_trading_service
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from src.api.deps import get_trade_service
 from src.api.schemas import (
     ApiResponse,
-    CancelOrdersRequest,
-    CloseAllRequest,
+    TradeRequest,
     CloseRequest,
+    CloseAllRequest,
+    CancelOrdersRequest,
     EstimateMarginRequest,
     ModifyOrdersRequest,
     ModifyPositionsRequest,
-    TradeRequest,
+    PositionModel,
+    OrderModel,
 )
-from src.core.trading_service import TradingService
+from src.api.error_codes import AIErrorCode, AIErrorAction, get_trade_error_details
+from src.clients.mt5_trade import MT5TradeError
+from src.core.trade_service import TradeService
 
 router = APIRouter(tags=["trade"])
 
 
-@router.post("/trade/open", response_model=ApiResponse[dict])
-def trade_open(req: TradeRequest, svc: TradingService = Depends(get_trading_service)) -> ApiResponse[dict]:
+@router.post("/trade", response_model=ApiResponse[dict])
+def trade(
+    request: TradeRequest,
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[dict]:
     try:
-        ticket = svc.open(
-            symbol=req.symbol,
-            volume=req.volume,
-            side=req.side,
-            price=req.price,
-            sl=req.sl,
-            tp=req.tp,
-            deviation=req.deviation,
-            comment=req.comment,
-            magic=req.magic,
+        result = service.execute_trade(
+            symbol=request.symbol,
+            volume=request.volume,
+            side=request.side,
+            price=request.price,
+            sl=request.sl,
+            tp=request.tp,
+            deviation=request.deviation,
+            comment=request.comment,
+            magic=request.magic,
         )
-        return ApiResponse(success=True, data={"ticket": ticket})
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@router.post("/trade/close", response_model=ApiResponse[dict])
-def trade_close(req: CloseRequest, svc: TradingService = Depends(get_trading_service)) -> ApiResponse[dict]:
-    try:
-        ok = svc.close(ticket=req.ticket, deviation=req.deviation, comment=req.comment)
-        return ApiResponse(success=True, data={"success": ok})
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@router.post("/trade/close-all", response_model=ApiResponse[dict])
-def trade_close_all(req: CloseAllRequest, svc: TradingService = Depends(get_trading_service)) -> ApiResponse[dict]:
-    """
-    一键平仓（可按品种/魔术号/方向筛选）。
-    """
-    try:
-        result = svc.close_all(
-            symbol=req.symbol,
-            magic=req.magic,
-            side=req.side,
-            deviation=req.deviation,
-            comment=req.comment,
+        
+        if result is None:
+            return ApiResponse.error_response(
+                error_code=AIErrorCode.TRADE_EXECUTION_FAILED,
+                error_message="交易执行失败",
+                suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
+                details=get_trade_error_details(
+                    symbol=request.symbol,
+                    volume=request.volume,
+                    side=request.side,
+                    price=request.price
+                )
+            )
+        
+        return ApiResponse.success_response(
+            data=result,
+            metadata={
+                "operation": "trade_execution",
+                "symbol": request.symbol,
+                "side": request.side,
+                "volume": request.volume,
+                "price": result.get("price") if result else None,
+                "ticket": result.get("ticket") if result else None
+            }
         )
-        return ApiResponse(success=True, data=result)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except MT5TradeError as exc:
+        error_msg = str(exc)
+        
+        # 根据错误消息判断错误类型
+        if "insufficient margin" in error_msg.lower():
+            error_code = AIErrorCode.INSUFFICIENT_MARGIN
+            suggested_action = AIErrorAction.REDUCE_VOLUME
+        elif "invalid volume" in error_msg.lower():
+            error_code = AIErrorCode.INVALID_VOLUME
+            suggested_action = AIErrorAction.ADJUST_PRICE
+        elif "market closed" in error_msg.lower():
+            error_code = AIErrorCode.MARKET_CLOSED
+            suggested_action = AIErrorAction.WAIT_FOR_MARKET_OPEN
+        elif "price" in error_msg.lower():
+            error_code = AIErrorCode.INVALID_PRICE
+            suggested_action = AIErrorAction.USE_MARKET_ORDER
+        else:
+            error_code = AIErrorCode.TRADE_EXECUTION_FAILED
+            suggested_action = AIErrorAction.RETRY_AFTER_DELAY
+        
+        return ApiResponse.error_response(
+            error_code=error_code,
+            error_message=f"交易错误: {error_msg}",
+            suggested_action=suggested_action,
+            details={
+                "exception_type": type(exc).__name__,
+                **get_trade_error_details(
+                    symbol=request.symbol,
+                    volume=request.volume,
+                    side=request.side,
+                    price=request.price
+                )
+            }
+        )
 
 
-@router.post("/trade/cancel-orders", response_model=ApiResponse[dict])
-def trade_cancel_orders(req: CancelOrdersRequest, svc: TradingService = Depends(get_trading_service)) -> ApiResponse[dict]:
-    """
-    批量撤销挂单（可按品种/魔术号过滤）。
-    """
+@router.post("/close", response_model=ApiResponse[dict])
+def close(
+    request: CloseRequest,
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[dict]:
     try:
-        result = svc.cancel_orders(symbol=req.symbol, magic=req.magic)
-        return ApiResponse(success=True, data=result)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        result = service.close_position(
+            ticket=request.ticket,
+            deviation=request.deviation,
+            comment=request.comment,
+        )
+        
+        if result is None:
+            return ApiResponse.error_response(
+                error_code=AIErrorCode.TRADE_CLOSE_FAILED,
+                error_message="平仓失败",
+                suggested_action=AIErrorAction.CLOSE_POSITION,
+                details={"ticket": request.ticket}
+            )
+        
+        return ApiResponse.success_response(
+            data=result,
+            metadata={
+                "operation": "position_close",
+                "ticket": request.ticket,
+                "profit": result.get("profit") if result else None,
+                "price": result.get("price") if result else None
+            }
+        )
+    except MT5TradeError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.TRADE_CLOSE_FAILED,
+            error_message=f"平仓错误: {str(exc)}",
+            suggested_action=AIErrorAction.CLOSE_POSITION,
+            details={
+                "exception_type": type(exc).__name__,
+                "ticket": request.ticket
+            }
+        )
 
 
-@router.post("/trade/estimate-margin", response_model=ApiResponse[dict])
-def trade_estimate_margin(req: EstimateMarginRequest, svc: TradingService = Depends(get_trading_service)) -> ApiResponse[dict]:
-    """
-    预估开仓所需保证金。
-    """
+@router.post("/close_all", response_model=ApiResponse[dict])
+def close_all(
+    request: CloseAllRequest,
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[dict]:
     try:
-        margin = svc.estimate_margin(symbol=req.symbol, volume=req.volume, side=req.side, price=req.price)
-        return ApiResponse(success=True, data={"margin": margin})
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        result = service.close_all_positions(
+            symbol=request.symbol,
+            magic=request.magic,
+            side=request.side,
+            deviation=request.deviation,
+            comment=request.comment,
+        )
+        
+        return ApiResponse.success_response(
+            data=result,
+            metadata={
+                "operation": "close_all_positions",
+                "symbol": request.symbol,
+                "magic": request.magic,
+                "side": request.side,
+                "closed_count": len(result.get("closed", [])),
+                "failed_count": len(result.get("failed", []))
+            }
+        )
+    except MT5TradeError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.TRADE_CLOSE_FAILED,
+            error_message=f"批量平仓错误: {str(exc)}",
+            suggested_action=AIErrorAction.CLOSE_POSITION,
+            details={
+                "exception_type": type(exc).__name__,
+                "symbol": request.symbol,
+                "magic": request.magic
+            }
+        )
 
 
-@router.post("/trade/modify-orders", response_model=ApiResponse[dict])
-def trade_modify_orders(req: ModifyOrdersRequest, svc: TradingService = Depends(get_trading_service)) -> ApiResponse[dict]:
-    """
-    批量修改挂单止盈止损。
-    """
+@router.post("/cancel_orders", response_model=ApiResponse[dict])
+def cancel_orders(
+    request: CancelOrdersRequest,
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[dict]:
     try:
-        result = svc.modify_orders(symbol=req.symbol, magic=req.magic, sl=req.sl, tp=req.tp)
-        return ApiResponse(success=True, data=result)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        result = service.cancel_orders(
+            symbol=request.symbol,
+            magic=request.magic,
+        )
+        
+        return ApiResponse.success_response(
+            data=result,
+            metadata={
+                "operation": "cancel_orders",
+                "symbol": request.symbol,
+                "magic": request.magic,
+                "cancelled_count": len(result.get("cancelled", [])),
+                "failed_count": len(result.get("failed", []))
+            }
+        )
+    except MT5TradeError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.TRADE_CANCEL_FAILED,
+            error_message=f"取消订单错误: {str(exc)}",
+            suggested_action=AIErrorAction.CANCEL_ORDER,
+            details={
+                "exception_type": type(exc).__name__,
+                "symbol": request.symbol,
+                "magic": request.magic
+            }
+        )
 
 
-@router.post("/trade/modify-positions", response_model=ApiResponse[dict])
-def trade_modify_positions(req: ModifyPositionsRequest, svc: TradingService = Depends(get_trading_service)) -> ApiResponse[dict]:
-    """
-    批量修改持仓止盈止损。
-    """
+@router.post("/estimate_margin", response_model=ApiResponse[dict])
+def estimate_margin(
+    request: EstimateMarginRequest,
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[dict]:
     try:
-        result = svc.modify_positions(symbol=req.symbol, magic=req.magic, sl=req.sl, tp=req.tp)
-        return ApiResponse(success=True, data=result)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        margin = service.estimate_margin(
+            symbol=request.symbol,
+            volume=request.volume,
+            side=request.side,
+            price=request.price,
+        )
+        
+        return ApiResponse.success_response(
+            data={"margin": margin},
+            metadata={
+                "operation": "estimate_margin",
+                "symbol": request.symbol,
+                "volume": request.volume,
+                "side": request.side,
+                "price": request.price
+            }
+        )
+    except MT5TradeError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.INSUFFICIENT_MARGIN,
+            error_message=f"保证金估算错误: {str(exc)}",
+            suggested_action=AIErrorAction.REDUCE_VOLUME,
+            details={
+                "exception_type": type(exc).__name__,
+                **get_trade_error_details(
+                    symbol=request.symbol,
+                    volume=request.volume,
+                    side=request.side,
+                    price=request.price
+                )
+            }
+        )
+
+
+@router.put("/modify_orders", response_model=ApiResponse[dict])
+def modify_orders(
+    request: ModifyOrdersRequest,
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[dict]:
+    try:
+        result = service.modify_orders(
+            symbol=request.symbol,
+            magic=request.magic,
+            sl=request.sl,
+            tp=request.tp,
+        )
+        
+        return ApiResponse.success_response(
+            data=result,
+            metadata={
+                "operation": "modify_orders",
+                "symbol": request.symbol,
+                "magic": request.magic,
+                "modified_count": len(result.get("modified", [])),
+                "failed_count": len(result.get("failed", []))
+            }
+        )
+    except MT5TradeError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.TRADE_MODIFICATION_FAILED,
+            error_message=f"修改订单错误: {str(exc)}",
+            suggested_action=AIErrorAction.MODIFY_POSITION,
+            details={
+                "exception_type": type(exc).__name__,
+                "symbol": request.symbol,
+                "magic": request.magic
+            }
+        )
+
+
+@router.put("/modify_positions", response_model=ApiResponse[dict])
+def modify_positions(
+    request: ModifyPositionsRequest,
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[dict]:
+    try:
+        result = service.modify_positions(
+            symbol=request.symbol,
+            magic=request.magic,
+            sl=request.sl,
+            tp=request.tp,
+        )
+        
+        return ApiResponse.success_response(
+            data=result,
+            metadata={
+                "operation": "modify_positions",
+                "symbol": request.symbol,
+                "magic": request.magic,
+                "modified_count": len(result.get("modified", [])),
+                "failed_count": len(result.get("failed", []))
+            }
+        )
+    except MT5TradeError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.TRADE_MODIFICATION_FAILED,
+            error_message=f"修改持仓错误: {str(exc)}",
+            suggested_action=AIErrorAction.MODIFY_POSITION,
+            details={
+                "exception_type": type(exc).__name__,
+                "symbol": request.symbol,
+                "magic": request.magic
+            }
+        )
+
+
+@router.get("/positions", response_model=ApiResponse[List[PositionModel]])
+def positions(
+    symbol: Optional[str] = Query(default=None, description="交易品种"),
+    magic: Optional[int] = Query(default=None, description="魔术码"),
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[List[PositionModel]]:
+    try:
+        positions = service.get_positions(symbol, magic)
+        items = [PositionModel(**p.__dict__, time=p.time.isoformat()) for p in positions]
+        
+        return ApiResponse.success_response(
+            data=items,
+            metadata={
+                "operation": "get_positions",
+                "symbol": symbol,
+                "magic": magic,
+                "count": len(items),
+                "total_volume": sum(p.volume for p in positions),
+                "total_profit": sum(p.profit for p in positions) if hasattr(positions[0], 'profit') else None
+            }
+        )
+    except MT5TradeError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.POSITION_NOT_FOUND,
+            error_message=f"获取持仓错误: {str(exc)}",
+            suggested_action=AIErrorAction.CHECK_ACCOUNT_STATUS,
+            details={
+                "exception_type": type(exc).__name__,
+                "symbol": symbol,
+                "magic": magic
+            }
+        )
+
+
+@router.get("/orders", response_model=ApiResponse[List[OrderModel]])
+def orders(
+    symbol: Optional[str] = Query(default=None, description="交易品种"),
+    magic: Optional[int] = Query(default=None, description="魔术码"),
+    service: TradeService = Depends(get_trade_service),
+) -> ApiResponse[List[OrderModel]]:
+    try:
+        orders = service.get_orders(symbol, magic)
+        items = [OrderModel(**o.__dict__, time=o.time.isoformat()) for o in orders]
+        
+        return ApiResponse.success_response(
+            data=items,
+            metadata={
+                "operation": "get_orders",
+                "symbol": symbol,
+                "magic": magic,
+                "count": len(items),
+                "total_volume": sum(o.volume for o in orders)
+            }
+        )
+    except MT5TradeError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.ORDER_NOT_FOUND,
+            error_message=f"获取订单错误: {str(exc)}",
+            suggested_action=AIErrorAction.CHECK_ACCOUNT_STATUS,
+            details={
+                "exception_type": type(exc).__name__,
+                "symbol": symbol,
+                "magic": magic
+            }
+        )
