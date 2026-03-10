@@ -1,0 +1,464 @@
+"""
+基于SQLite的本地事件存储，确保OHLC事件不丢失。
+用于替代内存队列，提高事件驱动的可靠性。
+"""
+
+import sqlite3
+import json
+import threading
+from datetime import datetime, timedelta
+from typing import Optional, Tuple, List, Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class LocalEventStore:
+    """基于SQLite的本地事件存储，确保事件不丢失"""
+    
+    def __init__(self, db_path: str = "events.db"):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_db()
+    
+    def _init_db(self):
+        """初始化数据库表结构"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 创建OHLC事件表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ohlc_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    bar_time TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    processed INTEGER DEFAULT 0,
+                    processed_at TEXT,
+                    retry_count INTEGER DEFAULT 0,
+                    error_message TEXT
+                )
+            """)
+            
+            # 创建索引
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_unprocessed 
+                ON ohlc_events(processed, symbol, timeframe)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_time 
+                ON ohlc_events(bar_time)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_retry 
+                ON ohlc_events(retry_count, processed)
+            """)
+            
+            # 创建事件统计表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS event_stats (
+                    date TEXT PRIMARY KEY,
+                    total_events INTEGER DEFAULT 0,
+                    processed_events INTEGER DEFAULT 0,
+                    failed_events INTEGER DEFAULT 0,
+                    avg_processing_time_ms REAL DEFAULT 0
+                )
+            """)
+            
+            conn.commit()
+            conn.close()
+        
+        logger.info(f"LocalEventStore initialized with database: {self.db_path}")
+    
+    def publish_event(self, symbol: str, timeframe: str, bar_time: datetime) -> int:
+        """
+        发布OHLC事件
+        
+        Args:
+            symbol: 交易品种
+            timeframe: 时间框架
+            bar_time: K线时间
+            
+        Returns:
+            事件ID
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 检查是否已存在相同事件（避免重复）
+            cursor.execute("""
+                SELECT id FROM ohlc_events 
+                WHERE symbol = ? AND timeframe = ? AND bar_time = ?
+            """, (symbol, timeframe, bar_time.isoformat()))
+            
+            existing = cursor.fetchone()
+            if existing:
+                conn.close()
+                return existing[0]
+            
+            # 插入新事件
+            cursor.execute("""
+                INSERT INTO ohlc_events (symbol, timeframe, bar_time, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (
+                symbol, 
+                timeframe, 
+                bar_time.isoformat(), 
+                datetime.utcnow().isoformat()
+            ))
+            
+            event_id = cursor.lastrowid
+            
+            # 更新统计
+            today = datetime.utcnow().date().isoformat()
+            cursor.execute("""
+                INSERT OR IGNORE INTO event_stats (date) VALUES (?)
+            """, (today,))
+            cursor.execute("""
+                UPDATE event_stats 
+                SET total_events = total_events + 1 
+                WHERE date = ?
+            """, (today,))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.debug(f"Published event: {symbol}/{timeframe} at {bar_time}, id={event_id}")
+            return event_id
+    
+    def get_next_event(self) -> Optional[Tuple[str, str, datetime]]:
+        """
+        获取下一个未处理事件
+        
+        Returns:
+            (symbol, timeframe, bar_time) 或 None
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 获取下一个未处理事件（优先处理重试次数少的）
+            cursor.execute("""
+                SELECT id, symbol, timeframe, bar_time 
+                FROM ohlc_events 
+                WHERE processed = 0 
+                ORDER BY retry_count ASC, bar_time ASC 
+                LIMIT 1
+            """)
+            
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return None
+            
+            event_id, symbol, timeframe, bar_time_str = row
+            try:
+                bar_time = datetime.fromisoformat(bar_time_str)
+            except ValueError:
+                # 处理旧格式的时间字符串
+                bar_time = datetime.strptime(bar_time_str, "%Y-%m-%d %H:%M:%S")
+            
+            # 标记为处理中（但不标记为已处理，等处理完成后再标记）
+            cursor.execute("""
+                UPDATE ohlc_events 
+                SET processed = 1, processed_at = ?
+                WHERE id = ?
+            """, (datetime.utcnow().isoformat(), event_id))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.debug(f"Retrieved event: {symbol}/{timeframe} at {bar_time}, id={event_id}")
+            return (symbol, timeframe, bar_time)
+    
+    def mark_event_completed(self, symbol: str, timeframe: str, bar_time: datetime) -> bool:
+        """
+        标记事件为已完成
+        
+        Args:
+            symbol: 交易品种
+            timeframe: 时间框架
+            bar_time: K线时间
+            
+        Returns:
+            是否成功标记
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE ohlc_events 
+                SET processed = 2, processed_at = ?
+                WHERE symbol = ? AND timeframe = ? AND bar_time = ? AND processed = 1
+            """, (
+                datetime.utcnow().isoformat(),
+                symbol,
+                timeframe,
+                bar_time.isoformat()
+            ))
+            
+            updated = cursor.rowcount > 0
+            
+            if updated:
+                # 更新统计
+                today = datetime.utcnow().date().isoformat()
+                cursor.execute("""
+                    UPDATE event_stats 
+                    SET processed_events = processed_events + 1 
+                    WHERE date = ?
+                """, (today,))
+            
+            conn.commit()
+            conn.close()
+            
+            if updated:
+                logger.debug(f"Marked event as completed: {symbol}/{timeframe} at {bar_time}")
+            else:
+                logger.warning(f"Failed to mark event as completed: {symbol}/{timeframe} at {bar_time}")
+            
+            return updated
+    
+    def mark_event_failed(self, symbol: str, timeframe: str, bar_time: datetime, error_msg: str = "") -> bool:
+        """
+        标记事件为失败（将重试）
+        
+        Args:
+            symbol: 交易品种
+            timeframe: 时间框架
+            bar_time: K线时间
+            error_msg: 错误信息
+            
+        Returns:
+            是否成功标记
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 增加重试计数，重置处理状态
+            cursor.execute("""
+                UPDATE ohlc_events 
+                SET processed = 0, 
+                    retry_count = retry_count + 1,
+                    error_message = ?
+                WHERE symbol = ? AND timeframe = ? AND bar_time = ?
+            """, (
+                error_msg[:500],  # 限制错误信息长度
+                symbol,
+                timeframe,
+                bar_time.isoformat()
+            ))
+            
+            updated = cursor.rowcount > 0
+            
+            if updated:
+                # 更新统计
+                today = datetime.utcnow().date().isoformat()
+                cursor.execute("""
+                    UPDATE event_stats 
+                    SET failed_events = failed_events + 1 
+                    WHERE date = ?
+                """, (today,))
+                
+                # 检查是否超过最大重试次数
+                cursor.execute("""
+                    SELECT retry_count FROM ohlc_events 
+                    WHERE symbol = ? AND timeframe = ? AND bar_time = ?
+                """, (symbol, timeframe, bar_time.isoformat()))
+                
+                retry_count = cursor.fetchone()[0]
+                if retry_count >= 3:  # 最大重试3次
+                    cursor.execute("""
+                        UPDATE ohlc_events 
+                        SET processed = 3  # 永久失败
+                        WHERE symbol = ? AND timeframe = ? AND bar_time = ?
+                    """, (symbol, timeframe, bar_time.isoformat()))
+                    logger.error(f"Event permanently failed after {retry_count} retries: {symbol}/{timeframe} at {bar_time}")
+            
+            conn.commit()
+            conn.close()
+            
+            if updated:
+                logger.warning(f"Marked event as failed (will retry): {symbol}/{timeframe} at {bar_time}")
+            
+            return updated
+    
+    def cleanup_old_events(self, days_to_keep: int = 7):
+        """
+        清理旧事件
+        
+        Args:
+            days_to_keep: 保留天数
+        """
+        cutoff = datetime.utcnow() - timedelta(days=days_to_keep)
+        
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 删除旧事件
+            cursor.execute("""
+                DELETE FROM ohlc_events 
+                WHERE bar_time < ?
+            """, (cutoff.isoformat(),))
+            
+            deleted_count = cursor.rowcount
+            
+            # 清理旧统计
+            cutoff_date = cutoff.date().isoformat()
+            cursor.execute("""
+                DELETE FROM event_stats 
+                WHERE date < ?
+            """, (cutoff_date,))
+            
+            conn.commit()
+            conn.close()
+        
+        if deleted_count > 0:
+            logger.info(f"Cleaned up {deleted_count} old events (older than {days_to_keep} days)")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        获取事件统计信息
+        
+        Returns:
+            统计信息字典
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 总体统计
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN processed = 0 THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN processed = 1 THEN 1 ELSE 0 END) as processing,
+                    SUM(CASE WHEN processed = 2 THEN 1 ELSE 0 END) as completed,
+                    SUM(CASE WHEN processed = 3 THEN 1 ELSE 0 END) as failed,
+                    SUM(retry_count) as total_retries
+                FROM ohlc_events
+            """)
+            
+            row = cursor.fetchone()
+            stats = {
+                "total": row[0] or 0,
+                "pending": row[1] or 0,
+                "processing": row[2] or 0,
+                "completed": row[3] or 0,
+                "failed": row[4] or 0,
+                "total_retries": row[5] or 0,
+                "by_symbol": {},
+                "by_timeframe": {},
+                "recent_errors": []
+            }
+            
+            # 按品种统计
+            cursor.execute("""
+                SELECT 
+                    symbol,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN processed = 2 THEN 1 ELSE 0 END) as completed
+                FROM ohlc_events
+                GROUP BY symbol
+            """)
+            
+            for symbol, total, completed in cursor.fetchall():
+                stats["by_symbol"][symbol] = {
+                    "total": total,
+                    "completed": completed,
+                    "completion_rate": completed / total if total > 0 else 0
+                }
+            
+            # 按时间框架统计
+            cursor.execute("""
+                SELECT 
+                    timeframe,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN processed = 2 THEN 1 ELSE 0 END) as completed
+                FROM ohlc_events
+                GROUP BY timeframe
+            """)
+            
+            for timeframe, total, completed in cursor.fetchall():
+                stats["by_timeframe"][timeframe] = {
+                    "total": total,
+                    "completed": completed,
+                    "completion_rate": completed / total if total > 0 else 0
+                }
+            
+            # 最近错误
+            cursor.execute("""
+                SELECT symbol, timeframe, bar_time, error_message, retry_count
+                FROM ohlc_events
+                WHERE error_message IS NOT NULL AND error_message != ''
+                ORDER BY id DESC
+                LIMIT 10
+            """)
+            
+            for symbol, timeframe, bar_time, error_msg, retry_count in cursor.fetchall():
+                stats["recent_errors"].append({
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "bar_time": bar_time,
+                    "error_message": error_msg,
+                    "retry_count": retry_count
+                })
+            
+            conn.close()
+            
+            return stats
+    
+    def reset_failed_events(self, max_retries: int = 3) -> int:
+        """
+        重置失败事件（用于手动恢复）
+        
+        Args:
+            max_retries: 最大重试次数
+            
+        Returns:
+            重置的事件数量
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 重置未超过最大重试次数的失败事件
+            cursor.execute("""
+                UPDATE ohlc_events 
+                SET processed = 0, error_message = NULL
+                WHERE processed = 3 AND retry_count < ?
+            """, (max_retries,))
+            
+            reset_count = cursor.rowcount
+            
+            conn.commit()
+            conn.close()
+        
+        if reset_count > 0:
+            logger.info(f"Reset {reset_count} failed events for retry")
+        
+        return reset_count
+
+
+# 单例实例
+_event_store_instance = None
+
+def get_event_store(db_path: str = "events.db") -> LocalEventStore:
+    """
+    获取事件存储单例
+    
+    Args:
+        db_path: 数据库路径
+        
+    Returns:
+        LocalEventStore实例
+    """
+    global _event_store_instance
+    if _event_store_instance is None:
+        _event_store_instance = LocalEventStore(db_path)
+    return _event_store_instance

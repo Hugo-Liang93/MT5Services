@@ -1,4 +1,4 @@
-﻿"""
+"""
 指标计算后台线程（配置驱动）
 - 任务列表来自配置文件（ini/JSON），支持定时热加载
 - 统一约定：指标函数签名为 fn(bars, params) -> dict 或标量
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import threading
 import time
@@ -66,6 +67,9 @@ class IndicatorWorker:
         self.config_path = self.settings.config_path
         self.reload_interval = self.settings.reload_interval
         self.storage = storage
+        
+        # 日志记录器
+        self.logger = logging.getLogger(__name__)
 
         # 线程控制
         self._stop = threading.Event()
@@ -126,8 +130,9 @@ class IndicatorWorker:
         else:
             try:
                 self.update_tasks(load_indicator_tasks(self.config_path))
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.error(f"加载指标任务失败: {e}", exc_info=True)
+                # 继续使用默认任务
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="indicator-worker", daemon=True)
         self._thread.start()
@@ -174,7 +179,10 @@ class IndicatorWorker:
                         continue
                 try:
                     self._compute(symbol, tf)
-                except Exception:
+                except Exception as e:
+                    # 记录计算失败但不停止其他计算
+                    if hasattr(self, 'logger'):
+                        self.logger.error(f"指标计算失败 symbol={symbol}, timeframe={tf}: {e}", exc_info=True)
                     continue
 
     def _compute(self, symbol: str, timeframe: str):
@@ -223,7 +231,10 @@ class IndicatorWorker:
                     else:
                         for k, v in res.items():
                             data[k] = v
-                except Exception:
+                except Exception as e:
+                    # 记录指标函数执行失败但不停止其他指标
+                    if hasattr(self, 'logger'):
+                        self.logger.error(f"指标函数 {task.name} 执行失败: {e}", exc_info=True)
                     continue
 
             if not data:
@@ -248,8 +259,9 @@ class IndicatorWorker:
                         dict(data),
                     )
                     self.storage.enqueue("ohlc_indicators", row)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.error(f"指标数据存储失败: {e}", exc_info=True)
+                    # 继续处理，不停止指标计算
             latest_ts = bar.time
 
         if latest_ts is not None:
@@ -295,7 +307,8 @@ class IndicatorWorker:
             # 配置仅支持 ini，按节加载任务
             tasks = load_indicator_tasks(self.config_path)
             self.update_tasks(tasks)
-        except Exception:
+        except Exception as e:
+            self.logger.error(f"配置热加载失败: {e}", exc_info=True)
             return
 
     def _get_func(self, func_path: str) -> Optional[Callable]:
@@ -309,7 +322,8 @@ class IndicatorWorker:
             if fn:
                 self._func_cache[func_path] = fn
             return fn
-        except Exception:
+        except Exception as e:
+            self.logger.error(f"动态导入指标函数失败 {func_path}: {e}", exc_info=True)
             return None
 
     # 更新本地缓存并返回当前可用的闭合K线列表
@@ -359,7 +373,8 @@ class IndicatorWorker:
         for _ in range(3):
             try:
                 history = self.service.client.get_ohlc(symbol, timeframe, fetch_limit)
-            except Exception:
+            except Exception as e:
+                self.logger.error(f"获取历史OHLC数据失败 symbol={symbol}, timeframe={timeframe}: {e}", exc_info=True)
                 return prefix
             if not history:
                 return prefix
@@ -451,7 +466,8 @@ class IndicatorWorker:
                 else:
                     for k, v in res.items():
                         data[k] = v
-            except Exception:
+            except Exception as e:
+                self.logger.error(f"指标函数 {task.name} 执行失败: {e}", exc_info=True)
                 continue
         return data
 
