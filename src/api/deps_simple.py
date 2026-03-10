@@ -1,11 +1,10 @@
-"""
-简化的依赖与单例 - 不依赖pydantic
-用于在没有pydantic的情况下运行系统
+﻿"""
+Simplified dependency container used by app_simple.
 """
 
 from contextlib import asynccontextmanager
 import logging
-from typing import Dict, Any
+from typing import Any, Dict
 
 from src.core.market_service import MarketDataService
 from src.core.account_service import AccountService
@@ -25,184 +24,200 @@ from src.config.simple_config import (
 
 logger = logging.getLogger(__name__)
 
-# 加载简化配置
-mt5_settings = get_cached_mt5_settings()
-market_settings = get_cached_market_settings()
-ingest_settings = get_cached_ingest_settings()
-indicator_settings = get_cached_indicator_settings()
 
-# 创建MT5客户端
-_mt5_client: MT5MarketClient = None
+class _Obj:
+    """Small helper to expose dict keys as attributes."""
+
+    def __init__(self, data: Dict[str, Any]):
+        for key, value in data.items():
+            setattr(self, key, value)
+
+
+def _build_mt5_settings() -> _Obj:
+    raw = get_cached_mt5_settings().copy()
+    return _Obj(
+        {
+            "mt5_login": raw.get("mt5_login"),
+            "mt5_password": raw.get("mt5_password"),
+            "mt5_server": raw.get("mt5_server"),
+            "mt5_path": raw.get("mt5_path"),
+            "timezone": raw.get("timezone", "UTC"),
+        }
+    )
+
+
+def _build_market_settings() -> _Obj:
+    raw = get_cached_market_settings().copy()
+    return _Obj(raw)
+
+
+def _build_indicator_settings() -> _Obj:
+    raw = get_cached_indicator_settings().copy()
+    return _Obj(raw)
+
+
+def _build_ingest_settings() -> _Obj:
+    raw = get_cached_ingest_settings().copy()
+    return _Obj(
+        {
+            "tick_cache_size": int(raw.get("tick_cache_size", 5000)),
+            "tick_initial_lookback_seconds": int(raw.get("tick_initial_lookback_seconds", 20)),
+            "ingest_symbols": raw.get("ingest_symbols", ["XAUUSD"]),
+            "ingest_tick_interval": float(raw.get("tick_interval_seconds", 0.5)),
+            "ingest_ohlc_timeframes": raw.get("ingest_timeframes", ["M1", "H1"]),
+            "ingest_ohlc_interval": float(raw.get("ohlc_interval_seconds", 30.0)),
+            "ingest_ohlc_intervals": raw.get("ingest_ohlc_intervals", {}),
+            "ohlc_backfill_limit": int(raw.get("ohlc_backfill_limit", 500)),
+            "intrabar_enabled": bool(raw.get("intrabar_enabled", True)),
+        }
+    )
+
+
+def _build_db_settings() -> _Obj:
+    return _Obj(
+        {
+            "pg_host": "localhost",
+            "pg_port": 5432,
+            "pg_user": "postgres",
+            "pg_password": "postgres",
+            "pg_database": "mt5",
+            "pg_schema": "public",
+        }
+    )
+
+
+def _build_storage_settings() -> _Obj:
+    return _Obj(
+        {
+            "flush_retry_attempts": 3,
+            "flush_retry_backoff": 1.0,
+            "ohlc_upsert_open_bar": False,
+            "quote_flush_enabled": False,
+            "intrabar_enabled": True,
+        }
+    )
+
+
+mt5_settings = _build_mt5_settings()
+market_settings = _build_market_settings()
+ingest_settings = _build_ingest_settings()
+indicator_settings = _build_indicator_settings()
+db_settings = _build_db_settings()
+storage_settings = _build_storage_settings()
+
+_mt5_client: MT5MarketClient | None = None
+_market_service: MarketDataService | None = None
+_account_service: AccountService | None = None
+_trading_service: TradingService | None = None
+_timescale_writer: TimescaleWriter | None = None
+_storage_writer: StorageWriter | None = None
+_ingestor: BackgroundIngestor | None = None
+_enhanced_indicator_worker: EnhancedIndicatorWorker | None = None
+_health_monitor = None
+_monitoring_manager = None
+
 
 def get_mt5_client() -> MT5MarketClient:
-    """获取MT5客户端单例"""
     global _mt5_client
     if _mt5_client is None:
-        _mt5_client = MT5MarketClient(
-            login=mt5_settings.get("mt5_login"),
-            password=mt5_settings.get("mt5_password"),
-            server=mt5_settings.get("mt5_server"),
-            path=mt5_settings.get("mt5_path"),
-            timeout_seconds=10.0,
-        )
+        _mt5_client = MT5MarketClient(settings=mt5_settings)
     return _mt5_client
 
-# 创建市场数据服务
-_market_service: MarketDataService = None
 
 def get_market_service() -> MarketDataService:
-    """获取市场数据服务单例"""
     global _market_service
     if _market_service is None:
-        # 创建自定义的MarketSettings对象
-        class SimpleMarketSettings:
-            def __init__(self, settings_dict: Dict[str, Any]):
-                for key, value in settings_dict.items():
-                    setattr(self, key, value)
-        
-        simple_settings = SimpleMarketSettings(market_settings)
-        _market_service = MarketDataService(
-            client=get_mt5_client(),
-            market_settings=simple_settings,
-        )
+        _market_service = MarketDataService(client=get_mt5_client(), market_settings=market_settings)
     return _market_service
 
-# 创建账户服务
-_account_service: AccountService = None
 
 def get_account_service() -> AccountService:
-    """获取账户服务单例"""
     global _account_service
     if _account_service is None:
-        _account_service = AccountService(client=get_mt5_client())
+        _account_service = AccountService()
     return _account_service
 
-# 创建交易服务
-_trading_service: TradingService = None
 
 def get_trading_service() -> TradingService:
-    """获取交易服务单例"""
     global _trading_service
     if _trading_service is None:
-        _trading_service = TradingService(client=get_mt5_client())
+        _trading_service = TradingService()
     return _trading_service
 
-# 创建Timescale写入器
-_timescale_writer: TimescaleWriter = None
 
 def get_timescale_writer() -> TimescaleWriter:
-    """获取Timescale写入器单例"""
     global _timescale_writer
     if _timescale_writer is None:
-        # 简化数据库配置
-        db_config = {
-            "host": "localhost",
-            "port": 5432,
-            "database": "mt5",
-            "user": "postgres",
-            "password": "postgres",
-            "pool_size": 5,
-            "max_overflow": 10,
-        }
-        _timescale_writer = TimescaleWriter(**db_config)
+        _timescale_writer = TimescaleWriter(settings=db_settings)
     return _timescale_writer
 
-# 创建存储写入器
-_storage_writer: StorageWriter = None
 
 def get_storage_writer() -> StorageWriter:
-    """获取存储写入器单例"""
     global _storage_writer
     if _storage_writer is None:
         _storage_writer = StorageWriter(
-            timescale_writer=get_timescale_writer(),
-            queue_size=1000,
+            db_writer=get_timescale_writer(),
+            storage_settings=storage_settings,
         )
     return _storage_writer
 
-# 创建数据采集器
-_ingestor: BackgroundIngestor = None
 
 def get_ingestor() -> BackgroundIngestor:
-    """获取数据采集器单例"""
     global _ingestor
     if _ingestor is None:
-        # 创建自定义的IngestSettings对象
-        class SimpleIngestSettings:
-            def __init__(self, settings_dict: Dict[str, Any]):
-                for key, value in settings_dict.items():
-                    setattr(self, key, value)
-        
-        simple_settings = SimpleIngestSettings(ingest_settings)
         _ingestor = BackgroundIngestor(
-            client=get_mt5_client(),
             service=get_market_service(),
-            settings=simple_settings,
+            storage=get_storage_writer(),
+            ingest_settings=ingest_settings,
         )
     return _ingestor
 
-# 创建增强指标工作器
-_enhanced_indicator_worker: EnhancedIndicatorWorker = None
 
 def get_enhanced_indicator_worker() -> EnhancedIndicatorWorker:
-    """获取增强指标工作器单例"""
     global _enhanced_indicator_worker
     if _enhanced_indicator_worker is None:
-        # 创建自定义的IndicatorSettings对象
-        class SimpleIndicatorSettings:
-            def __init__(self, settings_dict: Dict[str, Any]):
-                for key, value in settings_dict.items():
-                    setattr(self, key, value)
-        
-        simple_settings = SimpleIndicatorSettings(indicator_settings)
         _enhanced_indicator_worker = EnhancedIndicatorWorker(
             service=get_market_service(),
-            symbols=ingest_settings.get("ingest_symbols", ["XAUUSD"]),
-            timeframes=ingest_settings.get("ingest_timeframes", ["M1", "H1"]),
-            tasks=[],  # 从配置文件加载
-            indicator_settings=simple_settings,
+            symbols=ingest_settings.ingest_symbols,
+            timeframes=ingest_settings.ingest_ohlc_timeframes,
+            tasks=[],
+            indicator_settings=indicator_settings,
             storage=get_storage_writer(),
+            event_store_db_path="events_simple.db",
         )
     return _enhanced_indicator_worker
 
-# 创建健康监控器
-_health_monitor = None
 
 def get_health_monitor_simple():
-    """获取健康监控器单例"""
     global _health_monitor
     if _health_monitor is None:
-        _health_monitor = get_health_monitor(":memory:")  # 使用内存数据库
+        _health_monitor = get_health_monitor("health_monitor_simple.db")
     return _health_monitor
 
-# 创建监控管理器
-_monitoring_manager = None
 
 def get_monitoring_manager_simple():
-    """获取监控管理器单例"""
     global _monitoring_manager
     if _monitoring_manager is None:
-        _monitoring_manager = get_monitoring_manager()
+        _monitoring_manager = get_monitoring_manager(get_health_monitor_simple())
     return _monitoring_manager
+
 
 @asynccontextmanager
 async def lifespan(app):
-    """应用生命周期管理"""
-    logger.info("启动MT5Services简化版...")
-    
-    # 启动服务
-    get_ingestor().start()
-    get_enhanced_indicator_worker().start()
-    
-    # 启动监控
-    health_monitor = get_health_monitor_simple()
-    health_monitor.start_monitoring()
-    
-    yield
-    
-    # 关闭服务
-    logger.info("关闭MT5Services简化版...")
-    get_ingestor().stop()
-    get_enhanced_indicator_worker().stop()
-    if health_monitor:
-        health_monitor.stop_monitoring()
+    logger.info("Starting MT5Services simple mode...")
+
+    storage = get_storage_writer()
+    ingestor = get_ingestor()
+    worker = get_enhanced_indicator_worker()
+    get_health_monitor_simple()
+
+    try:
+        storage.start()
+        ingestor.start()
+        worker.start()
+        yield
+    finally:
+        worker.stop()
+        ingestor.stop()
+        storage.stop()
+        logger.info("Stopped MT5Services simple mode")

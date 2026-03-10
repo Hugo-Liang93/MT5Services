@@ -1,1 +1,10 @@
 .env
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/

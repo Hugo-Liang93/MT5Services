@@ -56,6 +56,10 @@ def get_trading_service() -> TradingService:
     return trading_service
 
 
+def get_ingestor() -> BackgroundIngestor:
+    return ingestor
+
+
 @asynccontextmanager
 async def lifespan(_app):
     try:

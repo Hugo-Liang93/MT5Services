@@ -8,11 +8,12 @@ import math
 from datetime import datetime
 from typing import Optional
 
-from src.clients.base import MT5BaseClient, MT5BaseError, mt5
+from src.clients.base import MT5BaseClient, mt5
 from src.clients.mt5_account import Position
+from src.clients.mt5_trade import MT5TradeError
 
 
-class MT5TradingClientError(MT5BaseError):
+class MT5TradingClientError(MT5TradeError):
     pass
 
 

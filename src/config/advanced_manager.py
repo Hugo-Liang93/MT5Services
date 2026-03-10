@@ -247,7 +247,7 @@ class AdvancedConfigManager:
         
         try:
             config = configparser.ConfigParser()
-            config.read(config_path)
+            config.read(config_path, encoding="utf-8")
             
             with self._lock:
                 self.configs[filename] = config

@@ -33,7 +33,7 @@ def health(
     except MT5MarketError as exc:
         market_status = {"connected": False, "error": str(exc)}
     trading_status = trading.client.health() if hasattr(trading, "client") else {}
-    queues = deps.ingestor.queue_stats()
+    queues = deps.get_ingestor().queue_stats()
     return ApiResponse(
         success=True,
         data={"market": market_status, "trading": trading_status, "ingestor": {"queues": queues}},

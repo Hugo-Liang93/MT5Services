@@ -1,25 +1,27 @@
 """
-集中式配置管理系统 - 实现单一信号源配置
+Centralized configuration manager.
+
+This module provides a single source of truth across trading, ingest, and API layers
+while keeping backward-compatible loader functions for existing callers.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List
+
 from pydantic import BaseModel, Field
 
-from src.config.utils import load_config_with_base, get_merged_config, ConfigValidator
+from src.config.utils import ConfigValidator, get_merged_config
 
 
 class TradingConfig(BaseModel):
-    """交易核心配置 - 单一信号源"""
     symbols: List[str] = Field(default_factory=lambda: ["XAUUSD"])
     timeframes: List[str] = Field(default_factory=lambda: ["M1", "H1"])
     default_symbol: str = "XAUUSD"
 
 
 class IntervalConfig(BaseModel):
-    """间隔配置"""
     tick_interval: float = 0.5
     ohlc_interval: float = 30.0
     stream_interval: float = 1.0
@@ -27,7 +29,6 @@ class IntervalConfig(BaseModel):
 
 
 class LimitConfig(BaseModel):
-    """限制配置"""
     tick_limit: int = 200
     ohlc_limit: int = 200
     tick_cache_size: int = 5000
@@ -36,14 +37,12 @@ class LimitConfig(BaseModel):
 
 
 class SystemConfig(BaseModel):
-    """系统配置"""
     timezone: str = "UTC"
     log_level: str = "INFO"
     modules_enabled: List[str] = Field(default_factory=lambda: ["ingest", "api", "indicators", "storage"])
 
 
 class APIConfig(BaseModel):
-    """API特有配置"""
     host: str = "0.0.0.0"
     port: int = 8808
     enable_cors: bool = True
@@ -56,7 +55,6 @@ class APIConfig(BaseModel):
 
 
 class IngestConfig(BaseModel):
-    """数据采集特有配置"""
     tick_initial_lookback_seconds: int = 20
     ohlc_backfill_limit: int = 500
     retry_attempts: int = 3
@@ -68,25 +66,26 @@ class IngestConfig(BaseModel):
     max_allowed_delay: float = 60.0
 
 
+def _split_csv(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
 class CentralizedConfig:
-    """集中式配置管理器"""
-    
     def __init__(self):
         self._config_cache: Dict[str, Any] = {}
         self._validated = False
-    
+
     def load_all(self) -> Dict[str, Any]:
-        """加载所有配置"""
         if not self._config_cache:
             self._load_and_validate()
         return self._config_cache
-    
+
     def _load_and_validate(self):
-        """加载并验证所有配置"""
-        # 加载主配置
         main_config = get_merged_config("app.ini")
-        
-        # 加载并合并其他配置
         configs = {
             "main": main_config,
             "api": get_merged_config("market.ini"),
@@ -97,45 +96,37 @@ class CentralizedConfig:
             "cache": get_merged_config("cache.ini"),
             "indicators": get_merged_config("indicators.ini"),
         }
-        
-        # 提取共享配置
+
         shared_config = self._extract_shared_config(main_config)
-        
-        # 验证配置一致性
         self._validate_configs(shared_config, configs)
-        
-        # 构建最终配置
         self._build_final_config(shared_config, configs)
-        
         self._validated = True
-    
+
     def _extract_shared_config(self, main_config: Dict[str, Any]) -> Dict[str, Any]:
-        """从主配置提取共享配置"""
+        trading_raw = dict(main_config.get("trading", {}))
+        system_raw = dict(main_config.get("system", {}))
+
+        if "symbols" in trading_raw:
+            trading_raw["symbols"] = _split_csv(trading_raw.get("symbols"))
+        if "timeframes" in trading_raw:
+            trading_raw["timeframes"] = _split_csv(trading_raw.get("timeframes"))
+        if "modules_enabled" in system_raw:
+            system_raw["modules_enabled"] = _split_csv(system_raw.get("modules_enabled"))
+
         return {
-            "trading": TradingConfig(**main_config.get("trading", {})).dict(),
-            "intervals": IntervalConfig(**main_config.get("intervals", {})).dict(),
-            "limits": LimitConfig(**main_config.get("limits", {})).dict(),
-            "system": SystemConfig(**main_config.get("system", {})).dict(),
+            "trading": TradingConfig(**trading_raw).model_dump(),
+            "intervals": IntervalConfig(**main_config.get("intervals", {})).model_dump(),
+            "limits": LimitConfig(**main_config.get("limits", {})).model_dump(),
+            "system": SystemConfig(**system_raw).model_dump(),
         }
-    
+
     def _validate_configs(self, shared_config: Dict[str, Any], configs: Dict[str, Dict[str, Any]]):
-        """验证所有配置的一致性"""
-        # 验证交易配置
         ConfigValidator.validate_trading_config(shared_config)
         ConfigValidator.validate_interval_config(shared_config)
-        
-        # 检查配置继承关系
         self._check_config_inheritance(shared_config, configs)
-    
+
     def _check_config_inheritance(self, shared_config: Dict[str, Any], configs: Dict[str, Dict[str, Any]]):
-        """检查配置继承关系"""
         trading_symbols = shared_config["trading"]["symbols"]
-        
-        # 检查ingest配置是否使用正确的品种
-        ingest_config = configs["ingest"]
-        # ingest应该从主配置继承品种，不应该有自己的品种配置
-        
-        # 检查API默认品种是否在交易品种中
         api_config = configs["api"]
         if "default_symbol" in api_config.get("api", {}):
             api_default = api_config["api"]["default_symbol"]
@@ -143,111 +134,82 @@ class CentralizedConfig:
                 raise ValueError(
                     f"API default symbol '{api_default}' not in trading symbols: {trading_symbols}"
                 )
-    
+
     def _build_final_config(self, shared_config: Dict[str, Any], configs: Dict[str, Dict[str, Any]]):
-        """构建最终配置结构"""
         self._config_cache = {
-            # 共享配置
             **shared_config,
-            
-            # 模块特有配置
-            "api": APIConfig(**configs["api"].get("api", {})).dict(),
-            "ingest": IngestConfig(**configs["ingest"].get("ingest", {})).dict(),
-            
-            # 原始配置（保持兼容）
+            "api": APIConfig(**configs["api"].get("api", {})).model_dump(),
+            "ingest": IngestConfig(**configs["ingest"].get("ingest", {})).model_dump(),
             "raw": {
                 "mt5": configs["mt5"],
                 "db": configs["db"],
                 "storage": configs["storage"],
                 "cache": configs["cache"],
                 "indicators": configs["indicators"],
-            }
+            },
         }
-    
+
     def get_trading_config(self) -> TradingConfig:
-        """获取交易配置"""
-        config = self.load_all()
-        return TradingConfig(**config["trading"])
-    
+        return TradingConfig(**self.load_all()["trading"])
+
     def get_interval_config(self) -> IntervalConfig:
-        """获取间隔配置"""
-        config = self.load_all()
-        return IntervalConfig(**config["intervals"])
-    
+        return IntervalConfig(**self.load_all()["intervals"])
+
     def get_limit_config(self) -> LimitConfig:
-        """获取限制配置"""
-        config = self.load_all()
-        return LimitConfig(**config["limits"])
-    
+        return LimitConfig(**self.load_all()["limits"])
+
     def get_api_config(self) -> APIConfig:
-        """获取API配置"""
-        config = self.load_all()
-        return APIConfig(**config["api"])
-    
+        return APIConfig(**self.load_all()["api"])
+
     def get_ingest_config(self) -> IngestConfig:
-        """获取采集配置"""
-        config = self.load_all()
-        return IngestConfig(**config["ingest"])
-    
+        return IngestConfig(**self.load_all()["ingest"])
+
     def get_system_config(self) -> SystemConfig:
-        """获取系统配置"""
-        config = self.load_all()
-        return SystemConfig(**config["system"])
-    
+        return SystemConfig(**self.load_all()["system"])
+
     def get_raw_config(self, module: str) -> Dict[str, Any]:
-        """获取原始模块配置（兼容性）"""
-        config = self.load_all()
-        return config["raw"].get(module, {})
-    
+        return self.load_all()["raw"].get(module, {})
+
     def reload(self):
-        """重新加载配置"""
         self._config_cache.clear()
         self._validated = False
         self.load_all()
 
 
-# 全局配置实例
 _config_manager = CentralizedConfig()
 
 
 @lru_cache
 def get_trading_config() -> TradingConfig:
-    """获取交易配置（缓存）"""
     return _config_manager.get_trading_config()
 
 
 @lru_cache
 def get_interval_config() -> IntervalConfig:
-    """获取间隔配置（缓存）"""
     return _config_manager.get_interval_config()
 
 
 @lru_cache
 def get_limit_config() -> LimitConfig:
-    """获取限制配置（缓存）"""
     return _config_manager.get_limit_config()
 
 
 @lru_cache
 def get_api_config() -> APIConfig:
-    """获取API配置（缓存）"""
     return _config_manager.get_api_config()
 
 
 @lru_cache
 def get_ingest_config() -> IngestConfig:
-    """获取采集配置（缓存）"""
     return _config_manager.get_ingest_config()
 
 
 @lru_cache
 def get_system_config() -> SystemConfig:
-    """获取系统配置（缓存）"""
     return _config_manager.get_system_config()
 
 
 def reload_configs():
-    """重新加载所有配置"""
     get_trading_config.cache_clear()
     get_interval_config.cache_clear()
     get_limit_config.cache_clear()
@@ -257,26 +219,21 @@ def reload_configs():
     _config_manager.reload()
 
 
-# 兼容性函数（逐步迁移）
 def get_shared_symbols() -> List[str]:
-    """获取共享的交易品种列表"""
     return get_trading_config().symbols
 
 
 def get_shared_timeframes() -> List[str]:
-    """获取共享的时间框架列表"""
     return get_trading_config().timeframes
 
 
 def get_shared_default_symbol() -> str:
-    """获取共享的默认品种"""
     return get_trading_config().default_symbol
 
 
 def validate_config_consistency():
-    """验证配置一致性（供外部调用）"""
     try:
         _config_manager.load_all()
-        return True, "配置验证通过"
+        return True, "config validation passed"
     except Exception as e:
-        return False, f"配置验证失败: {e}"
+        return False, f"config validation failed: {e}"

@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from src.clients.base import MT5BaseClient, MT5BaseError, mt5
+from src.clients.base import MT5BaseClient, mt5
+from src.clients.mt5_trade import MT5TradeError
 
 
 @dataclass
@@ -51,7 +52,7 @@ class Order:
     comment: str
 
 
-class MT5AccountClientError(MT5BaseError):
+class MT5AccountClientError(MT5TradeError):
     pass
 
 

@@ -8,9 +8,11 @@ import logging
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.api import account, market, trade, monitoring
 from src.api import deps_enhanced
+from src.api.error_codes import AIErrorAction, AIErrorCode
 from src.api.schemas import ApiResponse
 from src.clients.mt5_market import MT5MarketError
 from src.core.market_service import MarketDataService
@@ -47,10 +49,11 @@ async def root():
         "description": "增强版的MT5市场数据服务",
         "endpoints": {
             "health": "/health",
-            "monitoring": "/monitoring",
-            "market": "/market",
-            "account": "/account",
-            "trade": "/trade"
+            "market_symbols": "/symbols",
+            "market_quote": "/quote",
+            "account_info": "/account/info",
+            "trade_open": "/trade",
+            "monitoring_health": "/monitoring/health"
         }
     }
 
@@ -106,11 +109,13 @@ async def mt5_market_error_handler(request, exc):
     MT5市场错误处理
     """
     logger.error(f"MT5MarketError: {exc}")
-    return ApiResponse(
-        success=False,
-        error_code="MT5_CONNECTION_ERROR",
-        message=str(exc)
-    ).to_response()
+    payload = ApiResponse.error_response(
+        error_code=AIErrorCode.MT5_CONNECTION_FAILED,
+        error_message=str(exc),
+        suggested_action=AIErrorAction.CHECK_CONNECTION,
+        details={"exception_type": type(exc).__name__},
+    )
+    return JSONResponse(status_code=503, content=payload.dict())
 
 
 @app.exception_handler(Exception)
@@ -119,11 +124,13 @@ async def general_exception_handler(request, exc):
     通用异常处理
     """
     logger.exception(f"Unhandled exception: {exc}")
-    return ApiResponse(
-        success=False,
-        error_code="INTERNAL_SERVER_ERROR",
-        message="Internal server error"
-    ).to_response()
+    payload = ApiResponse.error_response(
+        error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
+        error_message="Internal server error",
+        suggested_action=AIErrorAction.CONTACT_SUPPORT,
+        details={"exception_type": type(exc).__name__},
+    )
+    return JSONResponse(status_code=500, content=payload.dict())
 
 
 __all__ = ["app"]

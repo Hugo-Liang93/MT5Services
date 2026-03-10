@@ -1,29 +1,29 @@
-"""
-AI友好的错误代码定义
-每个错误代码都包含AI可理解的信息和建议动作
+﻿"""
+AI鍙嬪ソ鐨勯敊璇唬鐮佸畾涔?
+姣忎釜閿欒浠ｇ爜閮藉寘鍚獳I鍙悊瑙ｇ殑淇℃伅鍜屽缓璁姩浣?
 """
 
 from enum import Enum
 
 
 class AIErrorCode(str, Enum):
-    """AI可识别的错误代码"""
+    """AI鍙瘑鍒殑閿欒浠ｇ爜"""
     
-    # MT5连接相关错误
+    # MT5杩炴帴鐩稿叧閿欒
     MT5_CONNECTION_FAILED = "MT5_CONNECTION_FAILED"
     MT5_SYMBOL_NOT_FOUND = "MT5_SYMBOL_NOT_FOUND"
     MT5_TIMEOUT = "MT5_TIMEOUT"
     MT5_NOT_INITIALIZED = "MT5_NOT_INITIALIZED"
     MT5_LOGIN_FAILED = "MT5_LOGIN_FAILED"
     
-    # 数据相关错误
+    # 鏁版嵁鐩稿叧閿欒
     DATA_NOT_AVAILABLE = "DATA_NOT_AVAILABLE"
     DATA_STALE = "DATA_STALE"
     DATA_CACHE_EMPTY = "DATA_CACHE_EMPTY"
     INVALID_TIMEFRAME = "INVALID_TIMEFRAME"
     INVALID_SYMBOL = "INVALID_SYMBOL"
     
-    # 交易相关错误
+    # 浜ゆ槗鐩稿叧閿欒
     INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
     INVALID_VOLUME = "INVALID_VOLUME"
     ORDER_REJECTED = "ORDER_REJECTED"
@@ -41,8 +41,10 @@ class AIErrorCode(str, Enum):
     MARKET_CLOSED = "MARKET_CLOSED"
     TRADE_DISABLED = "TRADE_DISABLED"
     TRADE_LIMIT_EXCEEDED = "TRADE_LIMIT_EXCEEDED"
+
+    ACCOUNT_INFO_FAILED = "ACCOUNT_INFO_FAILED"
     
-    # 账户相关错误
+    # 璐︽埛鐩稿叧閿欒
     ACCOUNT_NOT_FOUND = "ACCOUNT_NOT_FOUND"
     ACCOUNT_DISABLED = "ACCOUNT_DISABLED"
     INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
@@ -51,24 +53,25 @@ class AIErrorCode(str, Enum):
     ACCOUNT_SUSPENDED = "ACCOUNT_SUSPENDED"
     ACCOUNT_NO_PERMISSION = "ACCOUNT_NO_PERMISSION"
     
-    # 指标计算相关错误
+    # 鎸囨爣璁＄畻鐩稿叧閿欒
     INDICATOR_CALCULATION_FAILED = "INDICATOR_CALCULATION_FAILED"
     INSUFFICIENT_HISTORY_DATA = "INSUFFICIENT_HISTORY_DATA"
     INVALID_INDICATOR_PARAMS = "INVALID_INDICATOR_PARAMS"
     
-    # 系统错误
+    # 绯荤粺閿欒
+    UNKNOWN_ERROR = "UNKNOWN_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
     INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
     DATABASE_ERROR = "DATABASE_ERROR"
     CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
     
-    # 网络错误
+    # 缃戠粶閿欒
     NETWORK_ERROR = "NETWORK_ERROR"
     TIMEOUT_ERROR = "TIMEOUT_ERROR"
     CONNECTION_REFUSED = "CONNECTION_REFUSED"
     
-    # 验证错误
+    # 楠岃瘉閿欒
     VALIDATION_ERROR = "VALIDATION_ERROR"
     MISSING_REQUIRED_FIELD = "MISSING_REQUIRED_FIELD"
     INVALID_PARAMETER_VALUE = "INVALID_PARAMETER_VALUE"
@@ -76,22 +79,23 @@ class AIErrorCode(str, Enum):
 
 
 class AIErrorAction(str, Enum):
-    """AI可执行的动作建议"""
+    """AI鍙墽琛岀殑鍔ㄤ綔寤鸿"""
     
-    # 重试相关
+    # 閲嶈瘯鐩稿叧
     RETRY_AFTER_DELAY = "retry_after_delay"
     RETRY_IMMEDIATELY = "retry_immediately"
     RETRY_WITH_BACKOFF = "retry_with_backoff"
     
-    # 检查相关
+    # 妫€鏌ョ浉鍏?
     CHECK_CONNECTION = "check_connection"
+    CHECK_CREDENTIALS = "check_credentials"
     CHECK_CONFIGURATION = "check_configuration"
     CHECK_PERMISSIONS = "check_permissions"
     CHECK_RESOURCES = "check_resources"
     CHECK_ACCOUNT_STATUS = "check_account_status"
     CHECK_MARKET_STATUS = "check_market_status"
     
-    # 调整参数
+    # 璋冩暣鍙傛暟
     REDUCE_VOLUME = "reduce_volume"
     ADJUST_PRICE = "adjust_price"
     MODIFY_STOP_LEVELS = "modify_stop_levels"
@@ -99,24 +103,24 @@ class AIErrorAction(str, Enum):
     USE_MARKET_ORDER = "use_market_order"
     USE_LIMIT_ORDER = "use_limit_order"
     
-    # 等待相关
+    # 绛夊緟鐩稿叧
     WAIT_FOR_DATA = "wait_for_data"
     WAIT_FOR_CONNECTION = "wait_for_connection"
     WAIT_FOR_MARKET_OPEN = "wait_for_market_open"
     WAIT_FOR_ACCOUNT_UPDATE = "wait_for_account_update"
     
-    # 数据相关
+    # 鏁版嵁鐩稿叧
     USE_FALLBACK_DATA = "use_fallback_data"
     USE_CACHED_DATA = "use_cached_data"
     USE_HISTORICAL_DATA = "use_historical_data"
     
-    # 系统相关
+    # 绯荤粺鐩稿叧
     RESTART_SERVICE = "restart_service"
     RELOAD_CONFIGURATION = "reload_configuration"
     CONTACT_SUPPORT = "contact_support"
     ESCALATE_TO_HUMAN = "escalate_to_human"
     
-    # 交易相关
+    # 浜ゆ槗鐩稿叧
     CANCEL_ORDER = "cancel_order"
     CLOSE_POSITION = "close_position"
     HEDGE_POSITION = "hedge_position"
@@ -124,32 +128,32 @@ class AIErrorAction(str, Enum):
     MODIFY_POSITION = "modify_position"
     PARTIAL_CLOSE = "partial_close"
     
-    # 账户相关
+    # 璐︽埛鐩稿叧
     DEPOSIT_FUNDS = "deposit_funds"
     REDUCE_LEVERAGE = "reduce_leverage"
     CLOSE_SOME_POSITIONS = "close_some_positions"
     SWITCH_ACCOUNT = "switch_account"
     
-    # 验证相关
+    # 楠岃瘉鐩稿叧
     VALIDATE_PARAMETERS = "validate_parameters"
     CHECK_AUTHORIZATION = "check_authorization"
     UPDATE_CREDENTIALS = "update_credentials"
 
 
-# 错误代码到建议动作的映射
+# 閿欒浠ｇ爜鍒板缓璁姩浣滅殑鏄犲皠
 ERROR_ACTION_MAPPING = {
-    # MT5连接相关
+    # MT5杩炴帴鐩稿叧
     AIErrorCode.MT5_CONNECTION_FAILED: AIErrorAction.CHECK_CONNECTION,
     AIErrorCode.MT5_TIMEOUT: AIErrorAction.RETRY_AFTER_DELAY,
     AIErrorCode.MT5_NOT_INITIALIZED: AIErrorAction.RESTART_SERVICE,
     AIErrorCode.MT5_LOGIN_FAILED: AIErrorAction.CHECK_CREDENTIALS,
     
-    # 数据相关
+    # 鏁版嵁鐩稿叧
     AIErrorCode.DATA_NOT_AVAILABLE: AIErrorAction.USE_FALLBACK_DATA,
     AIErrorCode.DATA_STALE: AIErrorAction.WAIT_FOR_DATA,
     AIErrorCode.DATA_CACHE_EMPTY: AIErrorAction.WAIT_FOR_DATA,
     
-    # 交易相关
+    # 浜ゆ槗鐩稿叧
     AIErrorCode.INSUFFICIENT_MARGIN: AIErrorAction.REDUCE_VOLUME,
     AIErrorCode.INVALID_VOLUME: AIErrorAction.ADJUST_PRICE,
     AIErrorCode.ORDER_REJECTED: AIErrorAction.ADJUST_PRICE,
@@ -168,7 +172,7 @@ ERROR_ACTION_MAPPING = {
     AIErrorCode.TRADE_DISABLED: AIErrorAction.CHECK_PERMISSIONS,
     AIErrorCode.TRADE_LIMIT_EXCEEDED: AIErrorAction.CLOSE_SOME_POSITIONS,
     
-    # 账户相关
+    # 璐︽埛鐩稿叧
     AIErrorCode.ACCOUNT_NOT_FOUND: AIErrorAction.CHECK_ACCOUNT_STATUS,
     AIErrorCode.ACCOUNT_DISABLED: AIErrorAction.SWITCH_ACCOUNT,
     AIErrorCode.INSUFFICIENT_FUNDS: AIErrorAction.DEPOSIT_FUNDS,
@@ -177,19 +181,19 @@ ERROR_ACTION_MAPPING = {
     AIErrorCode.ACCOUNT_SUSPENDED: AIErrorAction.CONTACT_SUPPORT,
     AIErrorCode.ACCOUNT_NO_PERMISSION: AIErrorAction.CHECK_AUTHORIZATION,
     
-    # 系统错误
+    # 绯荤粺閿欒
     AIErrorCode.SERVICE_UNAVAILABLE: AIErrorAction.RETRY_AFTER_DELAY,
     AIErrorCode.RATE_LIMIT_EXCEEDED: AIErrorAction.WAIT_FOR_DATA,
     AIErrorCode.INTERNAL_SERVER_ERROR: AIErrorAction.CONTACT_SUPPORT,
     AIErrorCode.DATABASE_ERROR: AIErrorAction.RESTART_SERVICE,
     AIErrorCode.CONFIGURATION_ERROR: AIErrorAction.RELOAD_CONFIGURATION,
     
-    # 网络错误
+    # 缃戠粶閿欒
     AIErrorCode.NETWORK_ERROR: AIErrorAction.CHECK_CONNECTION,
     AIErrorCode.TIMEOUT_ERROR: AIErrorAction.RETRY_AFTER_DELAY,
     AIErrorCode.CONNECTION_REFUSED: AIErrorAction.CHECK_CONNECTION,
     
-    # 验证错误
+    # 楠岃瘉閿欒
     AIErrorCode.VALIDATION_ERROR: AIErrorAction.VALIDATE_PARAMETERS,
     AIErrorCode.MISSING_REQUIRED_FIELD: AIErrorAction.VALIDATE_PARAMETERS,
     AIErrorCode.INVALID_PARAMETER_VALUE: AIErrorAction.VALIDATE_PARAMETERS,
@@ -198,13 +202,13 @@ ERROR_ACTION_MAPPING = {
 
 
 def get_suggested_action(error_code: AIErrorCode) -> str:
-    """根据错误代码获取建议动作"""
+    """鏍规嵁閿欒浠ｇ爜鑾峰彇寤鸿鍔ㄤ綔"""
     return ERROR_ACTION_MAPPING.get(error_code, AIErrorAction.CONTACT_SUPPORT)
 
 
-# 交易相关辅助函数
+# 浜ゆ槗鐩稿叧杈呭姪鍑芥暟
 def get_trade_error_details(symbol: str, volume: float, side: str, price: float = None) -> dict:
-    """获取交易错误详情"""
+    """鑾峰彇浜ゆ槗閿欒璇︽儏"""
     details = {
         "symbol": symbol,
         "volume": volume,
@@ -214,10 +218,12 @@ def get_trade_error_details(symbol: str, volume: float, side: str, price: float 
     return {k: v for k, v in details.items() if v is not None}
 
 
-def get_account_error_details(account_id: int = None, operation: str = None) -> dict:
-    """获取账户错误详情"""
+def get_account_error_details(account_id: int = None, operation: str = None, symbol: str = None) -> dict:
+    """鑾峰彇璐︽埛閿欒璇︽儏"""
     details = {
         "account_id": account_id,
-        "operation": operation
+        "operation": operation,
+        "symbol": symbol
     }
     return {k: v for k, v in details.items() if v is not None}
+

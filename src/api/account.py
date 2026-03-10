@@ -22,15 +22,13 @@ def account_info(svc: AccountService = Depends(get_account_service)) -> ApiRespo
             data=AccountInfoModel(**info.__dict__),
             metadata={
                 "operation": "account_info",
-                "account_number": info.account_number,
+                "login": info.login,
                 "balance": info.balance,
                 "equity": info.equity,
                 "margin": info.margin,
-                "free_margin": info.free_margin,
-                "margin_level": info.margin_level,
+                "free_margin": info.margin_free,
                 "currency": info.currency,
                 "leverage": info.leverage,
-                "profit": info.profit,
                 "status": "active" if info.balance > 0 else "inactive"
             }
         )
@@ -67,9 +65,9 @@ def account_positions(
         
         # 计算统计信息
         total_volume = sum(p.volume for p in positions)
-        total_profit = sum(p.profit for p in positions) if positions and hasattr(positions[0], 'profit') else 0
-        buy_positions = [p for p in positions if p.side == "buy"]
-        sell_positions = [p for p in positions if p.side == "sell"]
+        total_profit = sum(p.profit for p in positions) if positions and hasattr(positions[0], "profit") else 0
+        buy_positions = [p for p in positions if p.type == 0]
+        sell_positions = [p for p in positions if p.type == 1]
         
         return ApiResponse.success_response(
             data=items,
@@ -119,8 +117,8 @@ def account_orders(
         
         # 计算统计信息
         total_volume = sum(o.volume for o in orders)
-        buy_orders = [o for o in orders if o.side == "buy"]
-        sell_orders = [o for o in orders if o.side == "sell"]
+        buy_orders = [o for o in orders if o.type == 0]
+        sell_orders = [o for o in orders if o.type == 1]
         
         return ApiResponse.success_response(
             data=items,
