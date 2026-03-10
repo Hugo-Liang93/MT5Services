@@ -77,28 +77,48 @@ class StorageWriter:
         return False
 
     def _enqueue(self, name: str, item: tuple) -> None:
+        """将数据加入队列，添加队列监控"""
         ch = self._channels.get(name)
         if not ch:
             logger.warning("Channel %s not registered, dropping data", name)
             return
+        
+        q = ch["queue"]
+        
+        # 监控队列使用率
+        if q.maxsize:
+            queue_usage = q.qsize() / q.maxsize
+            if queue_usage > 0.8:  # 80% 使用率告警
+                logger.warning("Queue %s usage high: %.1f%%", name, queue_usage * 100)
+        
         try:
-            ch["queue"].put_nowait(item)
+            q.put_nowait(item)
         except queue.Full:
-            logger.warning("%s queue full, dropping data", name)
+            logger.error("Queue %s full, data lost: %s", name, item)
+            # 这里可以添加更复杂的处理逻辑，如写入临时文件
 
     def _drain_queue(self, q: queue.Queue, pending: deque, batch_size: int) -> None:
-        if pending.maxlen is not None and len(pending) >= pending.maxlen:
-            return
-        # 获取当前还有多少空间
-        space = pending.maxlen - len(pending) if pending.maxlen else batch_size
-        # 这里的作用是尽可能多地取出队列中的数据，直到达到空间或队列空为止 如果空间不足 那么就消费剩下空间size数据
-        # 如果充足 那么就取batch_size数据
-        take = min(batch_size, space)
+        """从队列中取出数据到 pending 缓冲区"""
+        # 计算可用空间
+        if pending.maxlen:
+            available = pending.maxlen - len(pending)
+            if available <= 0:
+                return
+            take = min(batch_size, available)
+        else:
+            take = batch_size
+        
+        # 批量获取数据
+        drained = []
         for _ in range(take):
             try:
-                pending.append(q.get_nowait())
+                drained.append(q.get_nowait())
             except queue.Empty:
                 break
+        
+        # 批量添加到 pending
+        if drained:
+            pending.extend(drained)
 
     def _maybe_flush(self, name: str, ch: Dict[str, object], force: bool = False) -> None:
         pending: deque = ch["pending"]  # type: ignore
