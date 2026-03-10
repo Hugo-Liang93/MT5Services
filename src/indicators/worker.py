@@ -20,7 +20,48 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.core.market_service import MarketDataService
 from src.utils.common import ohlc_key, timeframe_seconds
-from src.config import IndicatorSettings, load_indicator_settings, load_indicator_tasks, load_db_settings
+
+# 尝试导入config模块，如果失败则使用回退
+try:
+    from src.config import IndicatorSettings, load_indicator_settings, load_indicator_tasks, load_db_settings
+    CONFIG_AVAILABLE = True
+except ImportError:
+    # 使用回退配置模块
+    try:
+        from src.config_fallback import IndicatorSettings, load_indicator_settings, load_indicator_tasks, load_db_settings
+        CONFIG_AVAILABLE = True
+        print("警告: 使用回退配置模块，pydantic可能未安装")
+    except ImportError:
+        # 创建最简单的回退
+        CONFIG_AVAILABLE = False
+        print("严重警告: 无法加载配置模块，使用硬编码默认值")
+        
+        # 定义最简单的回退类
+        class IndicatorSettings:
+            def __init__(self):
+                self.poll_seconds = 5
+                self.reload_interval = 60
+                self.backfill_enabled = True
+                self.backfill_batch_size = 1000
+                self.config_path = "config/indicators.ini"
+        
+        def load_indicator_settings():
+            return IndicatorSettings()
+        
+        def load_indicator_tasks(config_path):
+            return []  # 返回空任务列表
+        
+        def load_db_settings():
+            class DBSettings:
+                def __init__(self):
+                    self.pg_host = "localhost"
+                    self.pg_port = 5432
+                    self.pg_user = "postgres"
+                    self.pg_password = "postgres"
+                    self.pg_database = "mt5"
+                    self.pg_schema = "public"
+            return DBSettings()
+
 from src.indicators.types import IndicatorTask
 from src.clients.mt5_market import OHLC
 from src.persistence.db import TimescaleWriter
