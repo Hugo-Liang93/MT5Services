@@ -1,4 +1,4 @@
-# MT5Services 依赖文档
+﻿# MT5Services 依赖文档
 
 ## Python依赖总览
 
@@ -242,7 +242,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 运行应用
-CMD ["python", "run_enhanced.py"]
+CMD ["python", "app.py"]
 ```
 
 ## 依赖检查脚本
@@ -412,3 +412,4 @@ pip install fastapi uvicorn pydantic psycopg2-binary psutil watchdog
 **最后更新**: 2026-03-10  
 **维护建议**: 定期检查依赖更新，特别是安全更新  
 **测试建议**: 更新依赖后运行`test_enhancements.py`验证功能
+

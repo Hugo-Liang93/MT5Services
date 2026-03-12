@@ -190,7 +190,7 @@ def main():
     print("=" * 60)
     
     print("\n下一步:")
-    print("1. 启动增强版服务: python run_enhanced.py")
+    print("1. 启动服务: python app.py")
     print("2. 访问监控API: http://localhost:8810/monitoring/health")
     print("3. 查看系统状态: http://localhost:8810/monitoring/system/status")
     print("4. 检查性能指标: http://localhost:8810/monitoring/performance")

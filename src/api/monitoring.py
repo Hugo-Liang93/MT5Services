@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List
 import logging
 
-from src.api.deps_enhanced import (
+from src.api.deps import (
     get_health_monitor_instance,
     get_indicator_worker,
     get_ingestor,

@@ -1,14 +1,12 @@
-# MT5Services 文件映射文档
+﻿# MT5Services 文件映射文档
 
 ## 文件分类索引
 
 ### A. 应用入口和启动文件
 | 文件路径 | 用途 | 重要性 | 最后修改 |
 |----------|------|--------|----------|
-| `app.py` | 原始应用启动脚本 | 高 | 2026-03-10 |
-| `run_enhanced.py` | 增强版服务启动脚本 | 中 | 2026-03-10 |
-| `src/api/app.py` | 原始FastAPI应用入口 | 高 | 2026-03-10 |
-| `src/api/app_enhanced.py` | 增强版FastAPI应用入口 | 高 | 2026-03-10 |
+| `app.py` | 统一应用启动脚本 | 高 | 2026-03-10 |
+| `src/api/__init__.py` | 统一FastAPI应用入口 | 高 | 2026-03-10 |
 
 ### B. 配置文件
 | 文件路径 | 用途 | 重要性 | 最后修改 |
@@ -29,7 +27,7 @@
 | `src/api/trade.py` | 交易API路由 | 中 | 2026-03-10 |
 | `src/api/monitoring.py` | 监控API路由（新增） | 中 | 2026-03-10 |
 | `src/api/deps.py` | 原始依赖注入 | 高 | 2026-03-10 |
-| `src/api/deps_enhanced.py` | 增强版依赖注入 | 高 | 2026-03-10 |
+| `src/api/deps.py` | 增强版依赖注入 | 高 | 2026-03-10 |
 | `src/api/schemas.py` | API数据模型定义 | 高 | 2026-03-10 |
 | `src/api/error_codes.py` | 错误代码定义 | 中 | 2026-03-10 |
 
@@ -134,7 +132,7 @@
 ### 核心依赖
 ```
 app.py
-├── src.api.app
+├── src.api
 │   ├── src.api.deps
 │   │   ├── src.core.market_service
 │   │   ├── src.ingestion.ingestor
@@ -151,9 +149,9 @@ app.py
 
 ### 优化模块依赖
 ```
-app_enhanced.py
-├── src.api.app_enhanced
-│   ├── src.api.deps_enhanced
+__init__.py
+├── src.api
+│   ├── src.api.deps
 │   │   ├── src.config.advanced_manager
 │   │   ├── src.utils.memory_manager
 │   │   ├── src.monitoring.health_check
@@ -161,7 +159,7 @@ app_enhanced.py
 │   │   │   └── src.indicators.engine.pipeline_engine
 │   │   └── src.utils.event_store
 │   └── src.api.monitoring
-└── run_enhanced.py
+└── app.py
 ```
 
 ## 关键文件说明
@@ -179,17 +177,17 @@ app_enhanced.py
 ### 3. `src/config/advanced_manager.py`
 **作用**: 高级配置管理，提供热加载和类型安全
 **依赖**: 无外部依赖（仅标准库）
-**被依赖**: `src.api.deps_enhanced`
+**被依赖**: `src.api.deps`
 
 ### 4. `src/utils/event_store.py`
 **作用**: SQLite事件存储，确保事件不丢失
 **依赖**: SQLite3（Python内置）
-**被依赖**: `src.api.deps_enhanced`
+**被依赖**: `src.api.deps`
 
 ### 5. `src/monitoring/health_check.py`
 **作用**: 系统健康监控和告警
 **依赖**: SQLite3（Python内置）
-**被依赖**: `src.api.deps_enhanced`, `src.api.monitoring`
+**被依赖**: `src.api.deps`, `src.api.monitoring`
 
 ## 新增文件说明（中期优化）
 
@@ -210,9 +208,9 @@ app_enhanced.py
 - `src/api/monitoring.py`: 监控API端点
 
 ### 应用入口优化
-- `src/api/app_enhanced.py`: 增强版应用入口
-- `src/api/deps_enhanced.py`: 增强版依赖注入
-- `run_enhanced.py`: 增强版启动脚本
+- `src/api/__init__.py`: 增强版应用入口
+- `src/api/deps.py`: 增强版依赖注入
+- `app.py`: 增强版启动脚本
 
 ### 文档和测试
 - `ENHANCEMENTS_README.md`: 优化功能说明
@@ -264,3 +262,4 @@ python scripts/validate_config.py
 **文件总数**: 54个Python文件 + 配置文件 + 文档文件  
 **总代码行数**: 约9000行  
 **维护建议**: 每次重大修改后更新此文档
+

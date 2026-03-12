@@ -1,4 +1,4 @@
-# MT5Services 项目索引
+﻿# MT5Services 项目索引
 
 ## 项目基本信息
 - **项目名称**: MT5Services
@@ -23,13 +23,13 @@ MT5Services/
 │   ├── api/                        # API层
 │   │   ├── __init__.py
 │   │   ├── app.py                  # 原始应用入口
-│   │   ├── app_enhanced.py         # 增强版应用入口
+│   │   ├── __init__.py         # 增强版应用入口
 │   │   ├── market.py               # 市场数据API
 │   │   ├── account.py              # 账户API
 │   │   ├── trade.py                # 交易API
 │   │   ├── monitoring.py           # 监控API（新增）
 │   │   ├── deps.py                 # 依赖注入（原始）
-│   │   ├── deps_enhanced.py        # 依赖注入（增强版）
+│   │   ├── deps.py        # 依赖注入（增强版）
 │   │   ├── schemas.py              # API数据模型
 │   │   └── error_codes.py          # 错误代码定义
 │   │
@@ -100,7 +100,7 @@ MT5Services/
 ├── tests/                         # 测试目录
 │   └── integration/               # 集成测试
 │
-├── run_enhanced.py                # 增强版服务启动脚本（新增）
+├── app.py                # 增强版服务启动脚本（新增）
 ├── test_enhancements.py           # 优化功能测试脚本（新增）
 ├── ENHANCEMENTS_README.md         # 优化功能说明文档（新增）
 ├── app.py                         # 原始应用启动脚本
@@ -111,8 +111,8 @@ MT5Services/
 
 ### 1. 应用入口文件
 - **`app.py`**: 原始FastAPI应用入口
-- **`app_enhanced.py`**: 增强版应用入口（包含监控和优化功能）
-- **`run_enhanced.py`**: 增强版服务启动脚本
+- **`__init__.py`**: 增强版应用入口（包含监控和优化功能）
+- **`app.py`**: 增强版服务启动脚本
 
 ### 2. 配置文件
 - **`config/app.ini`**: 主配置文件，单一信号源
@@ -139,8 +139,8 @@ MT5Services/
 
 ### 核心依赖链
 ```
-app.py/app_enhanced.py
-    ├── src.api.deps/deps_enhanced.py
+app.py/__init__.py
+    ├── src.api.deps
     │   ├── src.core.market_service
     │   ├── src.ingestion.ingestor
     │   └── src.indicators.worker/worker_enhanced
@@ -153,7 +153,7 @@ app.py/app_enhanced.py
 ### 优化模块依赖
 ```
 优化模块依赖关系:
-app_enhanced.py
+__init__.py
     ├── src.config.advanced_manager
     ├── src.utils.memory_manager
     ├── src.monitoring.health_check
@@ -170,16 +170,16 @@ app_enhanced.py
 python app.py
 
 # 方式2: 使用uvicorn
-python -m uvicorn src.api.app:app --host 0.0.0.0 --port 8810
+python -m uvicorn src.api:app --host 0.0.0.0 --port 8810
 ```
 
 ### 增强版本启动
 ```bash
 # 使用增强版启动脚本
-python run_enhanced.py
+python app.py
 
 # 或者直接运行增强版应用
-python -m uvicorn src.api.app_enhanced:app --host 0.0.0.0 --port 8810
+python -m uvicorn src.api:app --host 0.0.0.0 --port 8810
 ```
 
 ## 配置加载流程
@@ -249,7 +249,7 @@ MT5终端 → BackgroundIngestor → MarketDataService → IndicatorPipelineEngi
 ### 添加新API端点
 1. 在`src/api/`相应模块中添加路由
 2. 在`src/api/schemas.py`中添加数据模型
-3. 在`src/api/deps.py`或`deps_enhanced.py`中添加依赖
+3. 在`src/api/deps.py`或`deps.py`中添加依赖
 
 ### 使用优化功能
 1. 导入相应的优化模块
@@ -275,3 +275,4 @@ MT5终端 → BackgroundIngestor → MarketDataService → IndicatorPipelineEngi
 **最后更新**: 2026-03-10  
 **维护者**: Hugo  
 **项目状态**: 生产就绪（含中期优化）
+

@@ -1,4 +1,4 @@
-# MT5Services 系统架构文档
+﻿# MT5Services 系统架构文档
 
 ## 版本历史
 - **v1.0** (2026-03-10): 初始架构 - 基础数据采集和指标计算
@@ -113,7 +113,7 @@ MT5Services 是一个个人单服务器量化交易系统，提供：
   - `monitoring.py`: 系统监控API
 - **应用入口**:
   - `app.py`: 原始应用入口
-  - `app_enhanced.py`: 增强版应用入口
+  - `__init__.py`: 增强版应用入口
 
 ### 9. 存储层 (Storage Layer)
 **位置**: `src/persistence/`
@@ -266,10 +266,10 @@ extends = app.ini
 ### 进程管理
 ```bash
 # 启动增强版服务
-python run_enhanced.py
+python app.py
 
 # 或者使用原始服务
-python -m uvicorn src.api.app:app --host 0.0.0.0 --port 8810
+python -m uvicorn src.api:app --host 0.0.0.0 --port 8810
 ```
 
 ## 故障排除指南
@@ -308,3 +308,4 @@ python -m uvicorn src.api.app:app --host 0.0.0.0 --port 8810
 **文档维护**: 每次架构变更后必须更新此文档
 **最后更新**: 2026-03-10
 **版本**: v2.0 (中期优化版本)
+

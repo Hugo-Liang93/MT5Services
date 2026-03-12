@@ -1,4 +1,4 @@
-# MT5服务增强功能说明
+﻿# MT5服务增强功能说明
 
 ## 概述
 
@@ -21,10 +21,10 @@ MT5Services/
 │   ├── indicators/optimized/
 │   │   └── worker_enhanced.py      # 增强的指标计算工作器
 │   └── api/
-│       ├── deps_enhanced.py        # 增强的依赖注入
-│       ├── app_enhanced.py         # 增强的API入口
+│       ├── deps.py        # 增强的依赖注入
+│       ├── __init__.py         # 增强的API入口
 │       └── monitoring.py           # 监控API
-├── run_enhanced.py                 # 增强版启动脚本
+├── app.py                 # 增强版启动脚本
 ├── test_enhancements.py            # 测试脚本
 └── ENHANCEMENTS_README.md          # 本文档
 ```
@@ -92,10 +92,10 @@ MT5Services/
 
 ```bash
 # 启动增强版服务（端口8810）
-python run_enhanced.py
+python app.py
 
 # 或者使用uvicorn直接启动
-uvicorn src.api.app_enhanced:app --host 0.0.0.0 --port 8810
+uvicorn src.api:app --host 0.0.0.0 --port 8810
 ```
 
 ### 2. 测试增强功能
@@ -229,7 +229,7 @@ self.alerts = {
 
 4. **启动增强版服务**
    ```bash
-   python run_enhanced.py
+   python app.py
    ```
 
 5. **验证功能**
@@ -283,3 +283,4 @@ self.alerts = {
 ---
 *增强功能版本: 1.0.0*
 *最后更新: 2026-03-10*
+
