@@ -2,9 +2,53 @@
 
 Python FastAPI 服务，基于 MetaTrader5 终端实时获取行情、tick 与 K 线数据，并提供 REST/SSE 接口。
 
+## 快速开始
+
+### 1. 环境设置
+```bash
+# 克隆仓库
+git clone https://github.com/Hugo-Liang93/MT5Services.git
+cd MT5Services
+
+# 创建虚拟环境（推荐）
+python -m venv venv
+
+# 激活虚拟环境
+# Linux/macOS:
+source venv/bin/activate
+# Windows:
+venv\Scripts\activate
+```
+
+### 2. 安装依赖
+```bash
+# 安装基础依赖
+pip install -r requirements.txt
+
+# 安装开发环境依赖（可选）
+pip install -r requirements.txt[dev]
+```
+
+### 3. 配置环境
+```bash
+# 复制环境变量模板
+cp .env.example .env
+
+# 编辑 .env 文件，填入你的配置
+# 需要配置 MT5 登录信息、数据库连接等
+```
+
+### 4. 启动服务
+```bash
+python app.py
+# 访问 http://localhost:8808/docs 查看接口文档
+```
+
+## 详细安装指南
+更多安装选项和配置说明，请参考 [INSTALLATION.md](INSTALLATION.md)。
+
 ## 运行前准备
 - 本机已安装并登录 MT5 终端（确保终端保持运行）。
-- 安装依赖：`pip install -r requirements.txt`
 - 配置环境变量（可放入 `.env`）：
   ```
   MT5_LOGIN=12345678
