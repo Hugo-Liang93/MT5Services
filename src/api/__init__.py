@@ -8,7 +8,7 @@ import logging
 
 from fastapi import Depends, FastAPI
 
-from src.api import account, market, monitoring, trade
+from src.api import account, market, monitoring, trade, indicators
 from src.api import deps
 from src.api.schemas import ApiResponse
 from src.clients.mt5_market import MT5MarketError
@@ -47,6 +47,7 @@ app.include_router(market.router)
 app.include_router(account.router)
 app.include_router(trade.router)
 app.include_router(monitoring.router)
+app.include_router(indicators.router)
 
 
 __all__ = ["app"]

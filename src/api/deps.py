@@ -21,6 +21,7 @@ from src.persistence.storage_writer import StorageWriter
 from src.ingestion.ingestor import BackgroundIngestor
 from src.clients.mt5_market import MT5MarketClient
 from src.indicators.optimized.worker_enhanced import EnhancedIndicatorWorker
+from src.indicators_v2.service import OptimizedIndicatorService, get_global_optimized_service
 from src.monitoring.health_check import get_health_monitor, get_monitoring_manager
 from src.config import (
     load_mt5_settings,
@@ -38,6 +39,7 @@ _service: Optional[MarketDataService] = None
 _storage_writer: Optional[StorageWriter] = None
 _ingestor: Optional[BackgroundIngestor] = None
 _indicator_worker: Optional[EnhancedIndicatorWorker] = None
+_optimized_indicator_service: Optional[OptimizedIndicatorService] = None
 _account_service: Optional[AccountService] = None
 _trading_service: Optional[TradingService] = None
 _health_monitor = None
@@ -49,6 +51,7 @@ def _ensure_initialized() -> None:
     global _storage_writer
     global _ingestor
     global _indicator_worker
+    global _optimized_indicator_service
     global _account_service
     global _trading_service
     global _health_monitor
@@ -76,6 +79,19 @@ def _ensure_initialized() -> None:
         indicator_settings=indicator_settings,
         storage=_storage_writer,
         event_store_db_path="events.db",
+    )
+    
+    # 初始化优化指标服务
+    # 首先加载指标任务
+    from src.config import load_indicator_tasks
+    indicator_tasks = load_indicator_tasks()
+    
+    _optimized_indicator_service = get_global_optimized_service(
+        service=_service,
+        symbols=ingest_settings.ingest_symbols,
+        timeframes=ingest_settings.ingest_ohlc_timeframes,
+        tasks=indicator_tasks,
+        config=None  # 使用默认配置
     )
     _account_service = AccountService()
     _trading_service = TradingService()
@@ -116,6 +132,11 @@ def get_indicator_worker() -> EnhancedIndicatorWorker:
     return _indicator_worker  # type: ignore[return-value]
 
 
+def get_optimized_indicator_service() -> OptimizedIndicatorService:
+    _ensure_initialized()
+    return _optimized_indicator_service  # type: ignore[return-value]
+
+
 def get_health_monitor_instance():
     _ensure_initialized()
     return _health_monitor
@@ -134,6 +155,7 @@ async def lifespan(_app):
         _storage_writer.start()  # type: ignore[union-attr]
         _ingestor.start()  # type: ignore[union-attr]
         _indicator_worker.start()  # type: ignore[union-attr]
+        _optimized_indicator_service.start()  # type: ignore[union-attr]
 
         _monitoring_manager.register_component(  # type: ignore[union-attr]
             "data_ingestion",
@@ -144,6 +166,11 @@ async def lifespan(_app):
             "indicator_calculation",
             _indicator_worker,
             ["indicator_freshness", "cache_stats", "performance_stats"],
+        )
+        _monitoring_manager.register_component(  # type: ignore[union-attr]
+            "optimized_indicator_calculation",
+            _optimized_indicator_service,
+            ["performance_stats", "snapshot_freshness"],
         )
         _monitoring_manager.register_component(  # type: ignore[union-attr]
             "market_data",
@@ -165,6 +192,7 @@ async def lifespan(_app):
         yield
     finally:
         _monitoring_manager.stop()  # type: ignore[union-attr]
+        _optimized_indicator_service.stop()  # type: ignore[union-attr]
         _indicator_worker.stop()  # type: ignore[union-attr]
         _ingestor.stop()  # type: ignore[union-attr]
         _storage_writer.stop()  # type: ignore[union-attr]
