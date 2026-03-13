@@ -20,6 +20,9 @@ if TYPE_CHECKING:
         MetricsCollector, IndicatorMetrics, AggregatedMetrics,
         get_global_collector, record_indicator_computation, get_performance_report
     )
+    from .engine.dependency_manager import DependencyManager, get_global_dependency_manager
+    from .engine.parallel_executor import ParallelExecutor, TaskResult, TaskStatus, get_global_executor
+    from .engine.pipeline_v2 import OptimizedPipeline, PipelineConfig, get_global_pipeline
 
 __all__ = [
     # 基础类
@@ -39,6 +42,21 @@ __all__ = [
     "get_global_collector",
     "record_indicator_computation",
     "get_performance_report",
+    
+    # 依赖关系管理
+    "DependencyManager",
+    "get_global_dependency_manager",
+    
+    # 并行计算
+    "ParallelExecutor",
+    "TaskResult",
+    "TaskStatus",
+    "get_global_executor",
+    
+    # 优化流水线
+    "OptimizedPipeline",
+    "PipelineConfig",
+    "get_global_pipeline",
     
     # 向后兼容
     "get_legacy_indicator",
