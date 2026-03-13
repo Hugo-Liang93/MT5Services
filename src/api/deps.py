@@ -20,8 +20,7 @@ from src.persistence.db import TimescaleWriter
 from src.persistence.storage_writer import StorageWriter
 from src.ingestion.ingestor import BackgroundIngestor
 from src.clients.mt5_market import MT5MarketClient
-from src.indicators.optimized.worker_enhanced import EnhancedIndicatorWorker
-from src.indicators_v2.manager import UnifiedIndicatorManager, get_global_unified_manager
+from src.indicators_unified.manager import UnifiedIndicatorManager, get_global_unified_manager
 from src.monitoring.health_check import get_health_monitor, get_monitoring_manager
 from src.config import (
     load_mt5_settings,
@@ -84,7 +83,7 @@ def _ensure_initialized() -> None:
     # 初始化统一指标管理器
     _unified_indicator_manager = get_global_unified_manager(
         market_service=_service,
-        config_file="config/indicators_v2.json"
+        config_file="config/indicators.json"
     )
     _account_service = AccountService()
     _trading_service = TradingService()
