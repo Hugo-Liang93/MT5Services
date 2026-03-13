@@ -1,0 +1,103 @@
+{
+  "indicators": [
+    {
+      "name": "sma20",
+      "func_path": "src.indicators.mean.sma",
+      "params": {
+        "period": 20,
+        "min_bars": 20
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "20周期简单移动平均线",
+      "tags": ["trend", "mean"]
+    },
+    {
+      "name": "ema50",
+      "func_path": "src.indicators.mean.ema",
+      "params": {
+        "period": 50,
+        "min_bars": 50
+      },
+      "dependencies": [],
+      "compute_mode": "incremental",
+      "enabled": true,
+      "description": "50周期指数移动平均线",
+      "tags": ["trend", "mean"]
+    },
+    {
+      "name": "rsi14",
+      "func_path": "src.indicators.momentum.rsi",
+      "params": {
+        "period": 14,
+        "min_bars": 15
+      },
+      "dependencies": ["sma20"],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "14周期相对强弱指数",
+      "tags": ["momentum", "oscillator"]
+    },
+    {
+      "name": "macd",
+      "func_path": "src.indicators.momentum.macd",
+      "params": {
+        "fast": 12,
+        "slow": 26,
+        "signal": 9,
+        "min_bars": 26
+      },
+      "dependencies": ["ema50", "rsi14"],
+      "compute_mode": "parallel",
+      "enabled": true,
+      "description": "移动平均收敛发散指标",
+      "tags": ["momentum", "trend"]
+    },
+    {
+      "name": "boll20",
+      "func_path": "src.indicators.volatility.bollinger",
+      "params": {
+        "period": 20,
+        "mult": 2,
+        "min_bars": 20
+      },
+      "dependencies": ["sma20"],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "20周期布林带",
+      "tags": ["volatility", "channel"]
+    },
+    {
+      "name": "atr14",
+      "func_path": "src.indicators.volatility.atr",
+      "params": {
+        "period": 14,
+        "min_bars": 15
+      },
+      "dependencies": [],
+      "compute_mode": "incremental",
+      "enabled": true,
+      "description": "14周期平均真实波幅",
+      "tags": ["volatility"]
+    }
+  ],
+  "pipeline": {
+    "enable_parallel": true,
+    "max_workers": 4,
+    "enable_cache": true,
+    "cache_strategy": "lru_ttl",
+    "cache_ttl": 300.0,
+    "cache_maxsize": 1000,
+    "enable_incremental": true,
+    "max_retries": 2,
+    "retry_delay": 0.1,
+    "enable_monitoring": true,
+    "poll_interval": 5.0
+  },
+  "symbols": ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"],
+  "timeframes": ["M1", "M5", "M15", "H1", "H4"],
+  "auto_start": true,
+  "hot_reload": true,
+  "reload_interval": 60.0
+}

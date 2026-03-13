@@ -23,7 +23,11 @@ if TYPE_CHECKING:
     from .engine.dependency_manager import DependencyManager, get_global_dependency_manager
     from .engine.parallel_executor import ParallelExecutor, TaskResult, TaskStatus, get_global_executor
     from .engine.pipeline_v2 import OptimizedPipeline, PipelineConfig, get_global_pipeline
-    from .service import OptimizedIndicatorService, get_global_optimized_service
+    from .config import (
+        UnifiedIndicatorConfig, IndicatorConfig, PipelineConfig as PipelineConfigType,
+        ComputeMode, CacheStrategy, get_global_config_manager, get_config
+    )
+    from .manager import UnifiedIndicatorManager, get_global_unified_manager
 
 __all__ = [
     # 基础类
@@ -59,9 +63,18 @@ __all__ = [
     "PipelineConfig",
     "get_global_pipeline",
     
-    # 优化指标服务
-    "OptimizedIndicatorService",
-    "get_global_optimized_service",
+    # 统一配置系统
+    "UnifiedIndicatorConfig",
+    "IndicatorConfig",
+    "PipelineConfigType",
+    "ComputeMode",
+    "CacheStrategy",
+    "get_global_config_manager",
+    "get_config",
+    
+    # 统一指标管理器
+    "UnifiedIndicatorManager",
+    "get_global_unified_manager",
     
     # 向后兼容
     "get_legacy_indicator",

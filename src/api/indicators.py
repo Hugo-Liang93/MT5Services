@@ -13,11 +13,11 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from src.api.deps import get_optimized_indicator_service, get_market_service
+from src.api.deps import get_unified_indicator_manager, get_market_service
 from src.api.schemas import ApiResponse
 from src.api.error_codes import AIErrorCode, AIErrorAction
 from src.core.market_service import MarketDataService
-from src.indicators_v2.service import OptimizedIndicatorService
+from src.indicators_v2.manager import UnifiedIndicatorManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/indicators", tags=["indicators"])
@@ -52,7 +52,7 @@ class IndicatorResponse(BaseModel):
 
 @router.get("/list", response_model=ApiResponse[List[str]])
 async def list_available_indicators(
-    service: OptimizedIndicatorService = Depends(get_optimized_indicator_service)
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[List[str]]:
     """
     获取可用的指标列表
@@ -61,9 +61,9 @@ async def list_available_indicators(
         可用的指标名称列表
     """
     try:
-        # 从服务获取任务列表（需要扩展服务接口）
-        # 暂时返回示例列表
-        indicators = ["sma20", "ema50", "rsi14", "macd", "boll20", "atr14"]
+        # 从管理器获取指标列表
+        indicators_info = manager.list_indicators()
+        indicators = [info["name"] for info in indicators_info]
         
         return ApiResponse.success_response(
             data=indicators,
@@ -86,7 +86,7 @@ async def list_available_indicators(
 async def get_indicators(
     symbol: str,
     timeframe: str,
-    service: OptimizedIndicatorService = Depends(get_optimized_indicator_service)
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[Dict[str, Dict[str, Any]]]:
     """
     获取指定品种和时间框架的所有指标
@@ -99,7 +99,7 @@ async def get_indicators(
         指标名称到值的映射
     """
     try:
-        indicators = service.get_all_indicators(symbol, timeframe)
+        indicators = manager.get_all_indicators(symbol, timeframe)
         
         if not indicators:
             return ApiResponse.error_response(
@@ -137,7 +137,7 @@ async def get_indicator(
     symbol: str,
     timeframe: str,
     indicator_name: str,
-    service: OptimizedIndicatorService = Depends(get_optimized_indicator_service)
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[Dict[str, Any]]:
     """
     获取单个指标值
@@ -151,7 +151,7 @@ async def get_indicator(
         指标值字典
     """
     try:
-        indicator_value = service.get_indicator(symbol, timeframe, indicator_name)
+        indicator_value = manager.get_indicator(symbol, timeframe, indicator_name)
         
         if indicator_value is None:
             return ApiResponse.error_response(
@@ -192,7 +192,7 @@ async def get_indicator(
 @router.post("/compute", response_model=ApiResponse[Dict[str, Dict[str, Any]]])
 async def compute_indicators(
     request: IndicatorRequest,
-    service: OptimizedIndicatorService = Depends(get_optimized_indicator_service),
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager),
     market_service: MarketDataService = Depends(get_market_service)
 ) -> ApiResponse[Dict[str, Dict[str, Any]]]:
     """
@@ -216,7 +216,7 @@ async def compute_indicators(
             )
         
         # 按需计算指标
-        results = service.compute_on_demand(
+        results = manager.compute(
             symbol=request.symbol,
             timeframe=request.timeframe,
             indicator_names=request.indicators
@@ -261,7 +261,7 @@ async def compute_indicators(
 
 @router.get("/performance/stats", response_model=ApiResponse[Dict[str, Any]])
 async def get_performance_stats(
-    service: OptimizedIndicatorService = Depends(get_optimized_indicator_service)
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[Dict[str, Any]]:
     """
     获取优化指标服务的性能统计
@@ -270,7 +270,7 @@ async def get_performance_stats(
         性能统计信息
     """
     try:
-        stats = service.get_performance_stats()
+        stats = manager.get_performance_stats()
         
         return ApiResponse.success_response(
             data=stats,
@@ -291,7 +291,7 @@ async def get_performance_stats(
 
 @router.post("/cache/clear", response_model=ApiResponse[Dict[str, int]])
 async def clear_cache(
-    service: OptimizedIndicatorService = Depends(get_optimized_indicator_service)
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[Dict[str, int]]:
     """
     清空指标缓存
@@ -300,7 +300,7 @@ async def clear_cache(
         清除的缓存项数量
     """
     try:
-        cache_count = service.clear_cache()
+        cache_count = manager.clear_cache()
         
         return ApiResponse.success_response(
             data={"cleared_entries": cache_count},
@@ -322,7 +322,7 @@ async def clear_cache(
 @router.get("/dependency/graph", response_model=ApiResponse[Dict[str, str]])
 async def get_dependency_graph(
     format: str = Query("mermaid", description="图形格式: mermaid 或 dot"),
-    service: OptimizedIndicatorService = Depends(get_optimized_indicator_service)
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[Dict[str, str]]:
     """
     获取指标依赖关系图
@@ -334,15 +334,8 @@ async def get_dependency_graph(
         依赖关系图
     """
     try:
-        # 需要从依赖管理器获取图
-        from src.indicators_v2.engine.dependency_manager import get_global_dependency_manager
-        
-        dependency_manager = get_global_dependency_manager()
-        
-        if format.lower() == "dot":
-            graph = dependency_manager.visualize("dot")
-        else:
-            graph = dependency_manager.visualize("mermaid")
+        # 从统一管理器获取依赖关系图
+        graph = manager.get_dependency_graph(format)
         
         return ApiResponse.success_response(
             data={"graph": graph, "format": format},
