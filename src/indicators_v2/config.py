@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Union
 from enum import Enum
@@ -289,7 +290,6 @@ class ConfigManager:
         Returns:
             是否成功重新加载
         """
-        import threading
         import os
         
         with self._lock:
