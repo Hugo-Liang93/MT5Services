@@ -187,7 +187,7 @@ class IncrementalIndicator(ABC):
             
             # 记录性能指标（通过监控模块）
             try:
-                from .metrics_collector import record_indicator_computation
+                from ..monitoring.metrics_collector import record_indicator_computation
                 record_indicator_computation(
                     name=self.name,
                     compute_time=compute_time,
@@ -218,7 +218,7 @@ class IncrementalIndicator(ABC):
             
             # 记录错误指标
             try:
-                from .metrics_collector import record_indicator_computation
+                from ..monitoring.metrics_collector import record_indicator_computation
                 record_indicator_computation(
                     name=self.name,
                     compute_time=compute_time,

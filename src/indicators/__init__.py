@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from .core.momentum import cci, macd, roc, rsi
     from .core.volatility import atr, bollinger, donchian, keltner
     from .core.volume import obv, vwap
+    from .core.types import IndicatorTask
     from .cache.smart_cache import SmartCache, get_global_cache, get_global_cache_stats
     from .monitoring.metrics_collector import (
         MetricsCollector, IndicatorMetrics, AggregatedMetrics,
@@ -28,11 +29,11 @@ if TYPE_CHECKING:
     from .engine.dependency_manager import DependencyManager, get_global_dependency_manager
     from .engine.parallel_executor import ParallelExecutor, TaskResult, TaskStatus, get_global_executor
     from .engine.pipeline_v2 import OptimizedPipeline, PipelineConfig, get_global_pipeline
-    from .config.config import (
+    from src.config.indicator_config import (
         UnifiedIndicatorConfig, IndicatorConfig, PipelineConfig as PipelineConfigType,
         ComputeMode, CacheStrategy, get_global_config_manager, get_config
     )
-    from .manager import UnifiedIndicatorManager, get_global_unified_manager
+    from .manager import IndicatorSnapshot, UnifiedIndicatorManager, get_global_unified_manager
 
 __all__ = [
     # 基础指标函数
@@ -77,8 +78,10 @@ __all__ = [
     "CacheStrategy",
     "get_global_config_manager",
     "get_config",
-    
+    "IndicatorTask",
+     
     # 统一指标管理器
+    "IndicatorSnapshot",
     "UnifiedIndicatorManager",
     "get_global_unified_manager",
 ]
@@ -104,7 +107,44 @@ def __getattr__(name: str):
     if name in {"obv", "vwap"}:
         from .core import volume
         return {"obv": volume.obv, "vwap": volume.vwap}[name]
-    
+    if name == "IndicatorTask":
+        from .core.types import IndicatorTask
+        return IndicatorTask
+    if name in {
+        "UnifiedIndicatorConfig",
+        "IndicatorConfig",
+        "PipelineConfigType",
+        "ComputeMode",
+        "CacheStrategy",
+        "get_global_config_manager",
+        "get_config",
+    }:
+        from src.config import (
+            UnifiedIndicatorConfig,
+            IndicatorConfig,
+            IndicatorPipelineConfig,
+            ComputeMode,
+            CacheStrategy,
+            get_indicator_config_manager,
+            get_indicator_config,
+        )
+        return {
+            "UnifiedIndicatorConfig": UnifiedIndicatorConfig,
+            "IndicatorConfig": IndicatorConfig,
+            "PipelineConfigType": IndicatorPipelineConfig,
+            "ComputeMode": ComputeMode,
+            "CacheStrategy": CacheStrategy,
+            "get_global_config_manager": get_indicator_config_manager,
+            "get_config": get_indicator_config,
+        }[name]
+    if name in {"IndicatorSnapshot", "UnifiedIndicatorManager", "get_global_unified_manager"}:
+        from .manager import IndicatorSnapshot, UnifiedIndicatorManager, get_global_unified_manager
+        return {
+            "IndicatorSnapshot": IndicatorSnapshot,
+            "UnifiedIndicatorManager": UnifiedIndicatorManager,
+            "get_global_unified_manager": get_global_unified_manager,
+        }[name]
+     
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

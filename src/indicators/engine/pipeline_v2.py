@@ -17,11 +17,11 @@ import logging
 from dataclasses import dataclass
 
 # 使用绝对导入避免相对导入问题
-from src.indicators_unified.engine.dependency_manager import DependencyManager, get_global_dependency_manager
-from src.indicators_unified.engine.parallel_executor import ParallelExecutor, get_global_executor
-from src.indicators_unified.cache.smart_cache import SmartCache, get_global_cache
-from src.indicators_unified.cache.incremental import IncrementalIndicator, IndicatorState
-from src.indicators_unified.monitoring.metrics_collector import record_indicator_computation
+from ..cache.incremental import IncrementalIndicator, IndicatorState
+from ..cache.smart_cache import SmartCache, get_global_cache
+from ..monitoring.metrics_collector import record_indicator_computation
+from .dependency_manager import DependencyManager, get_global_dependency_manager
+from .parallel_executor import ParallelExecutor, get_global_executor
 
 logger = logging.getLogger(__name__)
 
@@ -215,16 +215,8 @@ class OptimizedPipeline:
                         self.computation_stats["incremental_computations"] += 1
                         
                     else:
-                        # 使用普通计算
-                        # 准备依赖结果
-                        deps = context.dependencies.get(indicator, set())
-                        dep_results = {}
-                        for dep in deps:
-                            if dep in context.results:
-                                dep_results[dep] = context.results[dep]
-                        
-                        # 计算指标
-                        result = func(context.bars, **dep_results)
+                        params = self.dependency_manager.indicator_params.get(indicator, {})
+                        result = func(context.bars, params)
                     
                     # 缓存结果
                     if self.config.enable_cache and result is not None:
@@ -322,6 +314,7 @@ class OptimizedPipeline:
         # 执行并行任务
         parallel_results = self.executor.execute_parallel(
             tasks,
+            task_ids=list(task_indicator_map.keys()),
             use_cache=self.config.enable_cache
         )
         

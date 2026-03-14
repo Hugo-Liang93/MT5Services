@@ -114,7 +114,7 @@ class SmartCache:
                 return True
             return False
     
-    def clear(self) -> None:
+    def clear(self) -> int:
         """清空缓存"""
         with self.lock:
             cache_size = len(self.cache)
@@ -127,6 +127,7 @@ class SmartCache:
             self.expirations = 0
             
             logger.info(f"Cache cleared: {cache_size} items removed")
+            return cache_size
     
     def get_stats(self) -> Dict[str, Any]:
         """

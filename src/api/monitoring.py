@@ -8,7 +8,7 @@ import logging
 
 from src.api.deps import (
     get_health_monitor_instance,
-    get_indicator_worker,
+    get_indicator_manager,
     get_ingestor,
     get_monitoring_manager_instance
 )
@@ -46,8 +46,8 @@ async def get_performance_stats() -> Dict[str, Any]:
         性能指标数据
     """
     try:
-        indicator_worker = get_indicator_worker()
-        stats = indicator_worker.get_performance_stats()
+        indicator_manager = get_indicator_manager()
+        stats = indicator_manager.get_performance_stats()
         return stats
     except Exception as e:
         logger.error(f"Failed to get performance stats: {e}")
@@ -63,8 +63,8 @@ async def get_event_stats() -> Dict[str, Any]:
         事件统计信息
     """
     try:
-        indicator_worker = get_indicator_worker()
-        event_store = indicator_worker.event_store
+        indicator_manager = get_indicator_manager()
+        event_store = indicator_manager.event_store
         stats = event_store.get_stats()
         return stats
     except Exception as e:
@@ -124,8 +124,8 @@ async def trigger_consistency_check() -> Dict[str, Any]:
         操作结果
     """
     try:
-        indicator_worker = get_indicator_worker()
-        indicator_worker.trigger_consistency_check()
+        indicator_manager = get_indicator_manager()
+        indicator_manager.trigger_consistency_check()
         return {"status": "success", "message": "Consistency check triggered"}
     except Exception as e:
         logger.error(f"Failed to trigger consistency check: {e}")
@@ -141,8 +141,8 @@ async def reset_failed_events() -> Dict[str, Any]:
         操作结果
     """
     try:
-        indicator_worker = get_indicator_worker()
-        reset_count = indicator_worker.reset_failed_events()
+        indicator_manager = get_indicator_manager()
+        reset_count = indicator_manager.reset_failed_events()
         return {
             "status": "success", 
             "message": f"Reset {reset_count} failed events",
@@ -165,8 +165,8 @@ async def cleanup_old_events(days_to_keep: int = 7) -> Dict[str, Any]:
         操作结果
     """
     try:
-        indicator_worker = get_indicator_worker()
-        indicator_worker.cleanup_old_events(days_to_keep)
+        indicator_manager = get_indicator_manager()
+        indicator_manager.cleanup_old_events(days_to_keep)
         return {
             "status": "success", 
             "message": f"Cleaned up events older than {days_to_keep} days"

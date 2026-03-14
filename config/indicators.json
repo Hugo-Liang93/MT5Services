@@ -2,7 +2,7 @@
   "indicators": [
     {
       "name": "sma20",
-      "func_path": "src.indicators_unified.core.mean.sma",
+      "func_path": "src.indicators.core.mean.sma",
       "params": {
         "period": 20,
         "min_bars": 20
@@ -15,7 +15,7 @@
     },
     {
       "name": "ema50",
-      "func_path": "src.indicators_unified.core.mean.ema",
+      "func_path": "src.indicators.core.mean.ema",
       "params": {
         "period": 50,
         "min_bars": 50
@@ -28,7 +28,7 @@
     },
     {
       "name": "rsi14",
-      "func_path": "src.indicators_unified.core.momentum.rsi",
+      "func_path": "src.indicators.core.momentum.rsi",
       "params": {
         "period": 14,
         "min_bars": 15
@@ -41,7 +41,7 @@
     },
     {
       "name": "macd",
-      "func_path": "src.indicators_unified.core.momentum.macd",
+      "func_path": "src.indicators.core.momentum.macd",
       "params": {
         "fast": 12,
         "slow": 26,
@@ -56,7 +56,7 @@
     },
     {
       "name": "boll20",
-      "func_path": "src.indicators_unified.core.volatility.bollinger",
+      "func_path": "src.indicators.core.volatility.bollinger",
       "params": {
         "period": 20,
         "mult": 2,
@@ -70,7 +70,7 @@
     },
     {
       "name": "atr14",
-      "func_path": "src.indicators_unified.core.volatility.atr",
+      "func_path": "src.indicators.core.volatility.atr",
       "params": {
         "period": 14,
         "min_bars": 15

@@ -17,7 +17,7 @@ from src.api.deps import get_unified_indicator_manager, get_market_service
 from src.api.schemas import ApiResponse
 from src.api.error_codes import AIErrorCode, AIErrorAction
 from src.core.market_service import MarketDataService
-from src.indicators_unified.manager import UnifiedIndicatorManager
+from src.indicators.manager import UnifiedIndicatorManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/indicators", tags=["indicators"])

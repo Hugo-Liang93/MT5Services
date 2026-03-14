@@ -25,6 +25,19 @@ from src.config.compat import (
     load_indicator_tasks,
 )
 
+from src.config.indicator_config import (
+    CacheStrategy,
+    ComputeMode,
+    ConfigLoader as IndicatorConfigLoader,
+    ConfigManager as IndicatorConfigManager,
+    IndicatorConfig,
+    PipelineConfig as IndicatorPipelineConfig,
+    UnifiedIndicatorConfig,
+    get_config as get_indicator_config,
+    get_global_config_manager as get_indicator_config_manager,
+    normalize_indicator_func_path,
+)
+
 # 导出集中式配置系统
 from src.config.centralized import (
     # 配置类
@@ -75,6 +88,16 @@ __all__ = [
     "load_market_settings",
     "load_indicator_settings",
     "load_indicator_tasks",
+    "CacheStrategy",
+    "ComputeMode",
+    "IndicatorConfigLoader",
+    "IndicatorConfigManager",
+    "IndicatorConfig",
+    "IndicatorPipelineConfig",
+    "UnifiedIndicatorConfig",
+    "get_indicator_config",
+    "get_indicator_config_manager",
+    "normalize_indicator_func_path",
     
     # 集中式配置
     "TradingConfig",

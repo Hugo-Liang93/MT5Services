@@ -21,6 +21,21 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def normalize_indicator_func_path(func_path: str) -> str:
+    """Map legacy indicator function paths to the canonical package layout."""
+    normalized = func_path.replace("src.indicators_unified.", "src.indicators.")
+    legacy_prefixes = {
+        "src.indicators.mean.": "src.indicators.core.mean.",
+        "src.indicators.momentum.": "src.indicators.core.momentum.",
+        "src.indicators.volatility.": "src.indicators.core.volatility.",
+        "src.indicators.volume.": "src.indicators.core.volume.",
+    }
+    for legacy_prefix, canonical_prefix in legacy_prefixes.items():
+        if normalized.startswith(legacy_prefix):
+            return normalized.replace(legacy_prefix, canonical_prefix, 1)
+    return normalized
+
+
 class ComputeMode(str, Enum):
     """计算模式"""
     STANDARD = "standard"      # 标准计算
@@ -79,7 +94,7 @@ class UnifiedIndicatorConfig:
     
     # 系统配置
     auto_start: bool = True           # 是否自动启动
-    config_file: str = "config/indicators_v2.json"  # 配置文件路径
+    config_file: str = "config/indicators.json"  # 配置文件路径
     hot_reload: bool = True           # 是否支持热重载
     reload_interval: float = 60.0     # 热重载间隔（秒）
 
@@ -121,7 +136,7 @@ class ConfigLoader:
             if 'func' in config[section]:
                 indicator_config = IndicatorConfig(
                     name=section,
-                    func_path=config[section]['func'],
+                    func_path=normalize_indicator_func_path(config[section]['func']),
                     params=json.loads(config[section].get('params', '{}')),
                     dependencies=[]  # INI格式不支持依赖配置
                 )
@@ -149,7 +164,7 @@ class ConfigLoader:
         for indicator_data in data.get('indicators', []):
             indicator_config = IndicatorConfig(
                 name=indicator_data['name'],
-                func_path=indicator_data['func_path'],
+                func_path=normalize_indicator_func_path(indicator_data['func_path']),
                 params=indicator_data.get('params', {}),
                 dependencies=indicator_data.get('dependencies', []),
                 compute_mode=ComputeMode(indicator_data.get('compute_mode', 'standard')),
@@ -242,9 +257,9 @@ class ConfigLoader:
         if config_file is None:
             # 自动检测配置文件
             possible_paths = [
-                "config/indicators_v2.json",
-                "config/indicators_v2.yaml",
-                "config/indicators_v2.yml",
+                "config/indicators.json",
+                "config/indicators.yaml",
+                "config/indicators.yml",
                 "config/indicators.ini"
             ]
             
