@@ -19,6 +19,7 @@ from src.config.centralized import (
     get_shared_symbols, get_shared_timeframes, get_shared_default_symbol
 )
 from src.indicators.types import IndicatorTask
+from src.config.indicator_config import normalize_indicator_func_path
 
 
 class MT5Settings(BaseModel):
@@ -86,6 +87,8 @@ class StorageSettings(BaseModel):
     intrabar_flush_interval: float = 5.0
     intrabar_flush_batch_size: int = 200
     intrabar_queue_maxsize: int = 10000
+    queue_full_policy: str = "auto"
+    queue_put_timeout: float = 0.25
 
 
 class IndicatorSettings(BaseModel):
@@ -172,6 +175,8 @@ def load_storage_settings() -> StorageSettings:
         intrabar_flush_interval=_cfg_float(sec, "intrabar_flush_interval", 5.0),
         intrabar_flush_batch_size=_cfg_int(sec, "intrabar_flush_batch_size", 200),
         intrabar_queue_maxsize=_cfg_int(sec, "intrabar_queue_maxsize", 10000),
+        queue_full_policy=_cfg_str(sec, "queue_full_policy", "auto"),
+        queue_put_timeout=_cfg_float(sec, "queue_put_timeout", 0.25),
     )
 
 
@@ -240,7 +245,7 @@ def load_indicator_tasks(config_path: Optional[str] = None) -> List[IndicatorTas
         tasks.append(
             IndicatorTask(
                 name=section,
-                func_path=func_path,
+                func_path=normalize_indicator_func_path(func_path),
                 params=params,
             )
         )

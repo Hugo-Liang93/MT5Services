@@ -37,6 +37,7 @@ class StorageWriter:
         # 动态管理的通道：name -> {queue, pending(deque), flush_interval, batch_size, write_fn, enabled_fn}
         self._channels: Dict[str, Dict[str, object]] = {}
         self._last_flush: Dict[str, float] = {}
+        self._channel_stats: Dict[str, Dict[str, int]] = {}
         if not self._register_channels_from_config():
             raise RuntimeError("No storage channels configured; please provide config/storage.ini")
 
@@ -94,7 +95,7 @@ class StorageWriter:
         try:
             q.put_nowait(item)
         except queue.Full:
-            logger.error("Queue %s full, data lost: %s", name, item)
+            self._handle_queue_full(name, ch, item)
             # 这里可以添加更复杂的处理逻辑，如写入临时文件
 
     def _drain_queue(self, q: queue.Queue, pending: deque, batch_size: int) -> None:
@@ -149,23 +150,33 @@ class StorageWriter:
     def register_channel(
         self,
         name: str,
+        channel_type: str,
         maxsize: int,
         flush_interval: float,
         batch_size: int,
         write_fn: Callable[[Iterable[tuple]], None],
         enabled: Optional[Callable[[], bool]] = None,
         pending_maxsize: Optional[int] = None,
+        full_policy: Optional[str] = None,
     ) -> None:
         enabled_fn = enabled or (lambda: True)
         self._channels[name] = {
+            "type": channel_type,
             "queue": queue.Queue(maxsize=maxsize),
             "pending": deque(maxlen=pending_maxsize or maxsize * 2),
             "flush_interval": flush_interval,
             "batch_size": batch_size,
             "write_fn": write_fn,
             "enabled_fn": enabled_fn,
+            "full_policy": (full_policy or self.settings.queue_full_policy or "auto").strip().lower(),
         }
         self._last_flush[name] = time.time()
+        self._channel_stats[name] = {
+            "dropped_oldest": 0,
+            "dropped_newest": 0,
+            "blocked_puts": 0,
+            "full_errors": 0,
+        }
 
     # --- 监控 ---
     def stats(self) -> dict:
@@ -175,6 +186,11 @@ class StorageWriter:
                 "size": ch["queue"].qsize(),
                 "max": ch["queue"].maxsize,
                 "pending": len(ch["pending"]),
+                "full_policy": ch["full_policy"],
+                "drops_oldest": self._channel_stats[name]["dropped_oldest"],
+                "drops_newest": self._channel_stats[name]["dropped_newest"],
+                "blocked_puts": self._channel_stats[name]["blocked_puts"],
+                "full_errors": self._channel_stats[name]["full_errors"],
             }
         return {
             "queues": queues,
@@ -205,6 +221,8 @@ class StorageWriter:
 
         registered = False
         for section in parser.sections():
+            if section.strip().lower() == "storage":
+                continue
             ch_type = parser.get(section, "type", fallback=section).strip().lower()
             maxsize = parser.getint(section, "maxsize", fallback=None)
             flush_interval = parser.getfloat(section, "flush_interval", fallback=None)
@@ -223,11 +241,13 @@ class StorageWriter:
 
             self.register_channel(
                 name=section,
+                channel_type=ch_type,
                 maxsize=maxsize,
                 flush_interval=flush_interval,
                 batch_size=batch_size,
                 write_fn=write_fn,
                 enabled=enabled_fn,
+                full_policy=parser.get(section, "full_policy", fallback=None),
             )
             registered = True
 
@@ -260,3 +280,47 @@ class StorageWriter:
         }
         base_fn = defaults.get(ch_type, lambda: True)
         return lambda: flag and base_fn()
+
+    def _handle_queue_full(self, name: str, ch: Dict[str, object], item: tuple) -> None:
+        q: queue.Queue = ch["queue"]  # type: ignore[assignment]
+        policy = self._resolve_full_policy(ch)
+        if policy == "block":
+            try:
+                q.put(item, timeout=max(0.0, self.settings.queue_put_timeout))
+                self._channel_stats[name]["blocked_puts"] += 1
+                return
+            except queue.Full:
+                self._channel_stats[name]["full_errors"] += 1
+                logger.error(
+                    "Queue %s remained full after blocking for %.2fs",
+                    name,
+                    self.settings.queue_put_timeout,
+                )
+                return
+
+        if policy == "drop_oldest":
+            try:
+                dropped = q.get_nowait()
+                q.put_nowait(item)
+                self._channel_stats[name]["dropped_oldest"] += 1
+                logger.warning(
+                    "Queue %s full, dropped oldest item to keep newest data: %s",
+                    name,
+                    dropped,
+                )
+                return
+            except (queue.Empty, queue.Full):
+                pass
+
+        self._channel_stats[name]["dropped_newest"] += 1
+        self._channel_stats[name]["full_errors"] += 1
+        logger.error("Queue %s full, dropped newest item: %s", name, item)
+
+    def _resolve_full_policy(self, ch: Dict[str, object]) -> str:
+        policy = str(ch.get("full_policy", "auto")).strip().lower()
+        if policy != "auto":
+            return policy
+        channel_type = str(ch.get("type", "")).strip().lower()
+        if channel_type in {"ohlc", "ohlc_indicators"}:
+            return "block"
+        return "drop_oldest"

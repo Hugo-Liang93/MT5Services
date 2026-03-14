@@ -9,9 +9,11 @@ import sqlite3
 import json
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional, Tuple
 import logging
+
+from src.config import load_ingest_settings
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,16 @@ class HealthMonitor:
             conn.close()
         
         logger.debug(f"Recorded metric: {component}.{metric_name} = {value}, alert={alert_level}")
+
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
     
     def _check_alert_level(self, component: str, metric_name: str, value: float) -> Optional[str]:
         """检查指标值是否触发告警"""
@@ -313,7 +325,7 @@ class HealthMonitor:
         
         return True
     
-    def check_data_latency(self, service, symbol: str, timeframe: str) -> float:
+    def check_data_latency(self, component: str, service, symbol: str, timeframe: str) -> float:
         """
         检查数据延迟
         
@@ -330,11 +342,11 @@ class HealthMonitor:
             if not latest_bar:
                 latency = float('inf')
             else:
-                latency = (datetime.utcnow() - latest_bar.time).total_seconds()
+                latency = (self._utc_now() - self._as_utc(latest_bar.time)).total_seconds()
             
             self.record_metric(
+                component,
                 "data_latency",
-                f"{symbol}.{timeframe}",
                 latency,
                 {"symbol": symbol, "timeframe": timeframe}
             )
@@ -345,7 +357,7 @@ class HealthMonitor:
             logger.error(f"Failed to check data latency for {symbol}/{timeframe}: {e}")
             return float('inf')
     
-    def check_indicator_freshness(self, worker, symbol: str, timeframe: str) -> float:
+    def check_indicator_freshness(self, component: str, worker, symbol: str, timeframe: str) -> float:
         """
         检查指标新鲜度
         
@@ -368,13 +380,13 @@ class HealthMonitor:
                 elif hasattr(snapshot, 'bar_time'):
                     snapshot_time = snapshot.bar_time
                 else:
-                    snapshot_time = datetime.utcnow() - timedelta(days=1)
+                    snapshot_time = self._utc_now() - timedelta(days=1)
                 
-                freshness = (datetime.utcnow() - snapshot_time).total_seconds()
+                freshness = (self._utc_now() - self._as_utc(snapshot_time)).total_seconds()
             
             self.record_metric(
+                component,
                 "indicator_freshness",
-                f"{symbol}.{timeframe}",
                 freshness,
                 {"symbol": symbol, "timeframe": timeframe}
             )
@@ -385,7 +397,7 @@ class HealthMonitor:
             logger.error(f"Failed to check indicator freshness for {symbol}/{timeframe}: {e}")
             return float('inf')
     
-    def check_queue_stats(self, ingestor) -> Dict[str, Any]:
+    def check_queue_stats(self, component: str, ingestor) -> Dict[str, Any]:
         """
         检查队列统计
         
@@ -400,10 +412,10 @@ class HealthMonitor:
             
             # 记录各个队列的深度
             for queue_name, queue_info in stats.get("queues", {}).items():
-                depth = queue_info.get("depth", 0)
+                depth = queue_info.get("size", 0) + queue_info.get("pending", 0)
                 self.record_metric(
+                    component,
                     "queue_depth",
-                    queue_name,
                     depth,
                     {"queue_name": queue_name, "stats": queue_info}
                 )
@@ -414,7 +426,7 @@ class HealthMonitor:
             logger.error(f"Failed to check queue stats: {e}")
             return {}
     
-    def check_cache_stats(self, worker) -> Dict[str, Any]:
+    def check_cache_stats(self, component: str, worker) -> Dict[str, Any]:
         """
         检查缓存统计
         
@@ -435,8 +447,8 @@ class HealthMonitor:
             if total > 0:
                 hit_rate = cache_hits / total
                 self.record_metric(
-                    "cache_performance",
-                    "hit_rate",
+                    component,
+                    "cache_hit_rate",
                     hit_rate,
                     {"hits": cache_hits, "misses": cache_misses, "total": total}
                 )
@@ -742,7 +754,21 @@ class MonitoringManager:
         if self._thread:
             self._thread.join(timeout=5)
         logger.info("MonitoringManager stopped")
-    
+
+    @staticmethod
+    def _resolve_monitor_targets(component_obj) -> Tuple[List[str], List[str]]:
+        config = getattr(component_obj, "config", None)
+        if config is not None:
+            symbols = list(getattr(config, "symbols", []) or [])
+            timeframes = list(getattr(config, "timeframes", []) or [])
+            if symbols and timeframes:
+                return symbols, timeframes
+
+        ingest = load_ingest_settings()
+        symbols = list(getattr(ingest, "ingest_symbols", []) or [])
+        timeframes = list(getattr(ingest, "ingest_ohlc_timeframes", []) or [])
+        return symbols or ["XAUUSD"], timeframes or ["M1"]
+
     def _monitoring_loop(self):
         """监控循环"""
         logger.info("Monitoring loop started")
@@ -766,11 +792,11 @@ class MonitoringManager:
                             
                             elif method == "queue_stats" and hasattr(component_obj, "queue_stats"):
                                 # 检查队列统计
-                                self.health_monitor.check_queue_stats(component_obj)
+                                self.health_monitor.check_queue_stats(name, component_obj)
                             
                             elif method == "cache_stats" and hasattr(component_obj, "stats"):
                                 # 检查缓存统计
-                                self.health_monitor.check_cache_stats(component_obj)
+                                self.health_monitor.check_cache_stats(name, component_obj)
                             
                             elif method == "performance_stats" and hasattr(component_obj, "get_performance_stats"):
                                 # 检查性能统计
@@ -807,13 +833,12 @@ class MonitoringManager:
         """检查数据延迟（针对多个品种和时间框架）"""
         # 这里需要根据实际情况获取品种和时间框架列表
         # 暂时使用示例数据
-        symbols = ["XAUUSD"]
-        timeframes = ["M1", "H1"]
+        symbols, timeframes = self._resolve_monitor_targets(service)
         
         for symbol in symbols:
             for timeframe in timeframes:
                 try:
-                    latency = self.health_monitor.check_data_latency(service, symbol, timeframe)
+                    latency = self.health_monitor.check_data_latency(component_name, service, symbol, timeframe)
                     logger.debug(f"Data latency for {symbol}/{timeframe}: {latency:.1f}s")
                 except Exception as e:
                     logger.error(f"Failed to check data latency for {symbol}/{timeframe}: {e}")
@@ -822,13 +847,12 @@ class MonitoringManager:
         """检查指标新鲜度（针对多个品种和时间框架）"""
         # 这里需要根据实际情况获取品种和时间框架列表
         # 暂时使用示例数据
-        symbols = ["XAUUSD"]
-        timeframes = ["M1", "H1"]
+        symbols, timeframes = self._resolve_monitor_targets(worker)
         
         for symbol in symbols:
             for timeframe in timeframes:
                 try:
-                    freshness = self.health_monitor.check_indicator_freshness(worker, symbol, timeframe)
+                    freshness = self.health_monitor.check_indicator_freshness(component_name, worker, symbol, timeframe)
                     logger.debug(f"Indicator freshness for {symbol}/{timeframe}: {freshness:.1f}s")
                 except Exception as e:
                     logger.error(f"Failed to check indicator freshness for {symbol}/{timeframe}: {e}")

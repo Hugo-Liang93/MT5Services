@@ -3,7 +3,7 @@ Unified dependency container.
 
 Single runtime mode with all major capabilities enabled:
 - ingestion + storage
-- enhanced indicator worker
+- unified indicator manager
 - monitoring manager
 """
 
@@ -13,23 +13,22 @@ from contextlib import asynccontextmanager
 import logging
 from typing import Optional
 
-from src.core.market_service import MarketDataService
-from src.core.account_service import AccountService
-from src.core.trading_service import TradingService
-from src.persistence.db import TimescaleWriter
-from src.persistence.storage_writer import StorageWriter
-from src.ingestion.ingestor import BackgroundIngestor
 from src.clients.mt5_market import MT5MarketClient
-from src.indicators_unified.manager import UnifiedIndicatorManager, get_global_unified_manager
-from src.monitoring.health_check import get_health_monitor, get_monitoring_manager
 from src.config import (
-    load_mt5_settings,
     load_db_settings,
     load_ingest_settings,
-    load_storage_settings,
     load_market_settings,
-    load_indicator_settings,
+    load_mt5_settings,
+    load_storage_settings,
 )
+from src.core.account_service import AccountService
+from src.core.market_service import MarketDataService
+from src.core.trading_service import TradingService
+from src.indicators.manager import UnifiedIndicatorManager, get_global_unified_manager
+from src.ingestion.ingestor import BackgroundIngestor
+from src.monitoring.health_check import get_health_monitor, get_monitoring_manager
+from src.persistence.db import TimescaleWriter
+from src.persistence.storage_writer import StorageWriter
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +36,7 @@ logger = logging.getLogger(__name__)
 _service: Optional[MarketDataService] = None
 _storage_writer: Optional[StorageWriter] = None
 _ingestor: Optional[BackgroundIngestor] = None
-_indicator_worker: Optional[EnhancedIndicatorWorker] = None
-_unified_indicator_manager: Optional[UnifiedIndicatorManager] = None
+_indicator_manager: Optional[UnifiedIndicatorManager] = None
 _account_service: Optional[AccountService] = None
 _trading_service: Optional[TradingService] = None
 _health_monitor = None
@@ -49,8 +47,7 @@ def _ensure_initialized() -> None:
     global _service
     global _storage_writer
     global _ingestor
-    global _indicator_worker
-    global _unified_indicator_manager
+    global _indicator_manager
     global _account_service
     global _trading_service
     global _health_monitor
@@ -64,26 +61,21 @@ def _ensure_initialized() -> None:
     ingest_settings = load_ingest_settings()
     storage_settings = load_storage_settings()
     market_settings = load_market_settings()
-    indicator_settings = load_indicator_settings()
 
     mt5_client = MT5MarketClient(mt5_settings)
     _service = MarketDataService(client=mt5_client, market_settings=market_settings)
     _storage_writer = StorageWriter(TimescaleWriter(db_settings), storage_settings=storage_settings)
-    _ingestor = BackgroundIngestor(service=_service, storage=_storage_writer, ingest_settings=ingest_settings)
-    _indicator_worker = EnhancedIndicatorWorker(
+    _service.attach_storage(_storage_writer)
+    _ingestor = BackgroundIngestor(
         service=_service,
-        symbols=ingest_settings.ingest_symbols,
-        timeframes=ingest_settings.ingest_ohlc_timeframes,
-        tasks=[],
-        indicator_settings=indicator_settings,
         storage=_storage_writer,
-        event_store_db_path="events.db",
+        ingest_settings=ingest_settings,
     )
-    
-    # 初始化统一指标管理器
-    _unified_indicator_manager = get_global_unified_manager(
+    _indicator_manager = get_global_unified_manager(
         market_service=_service,
-        config_file="config/indicators.json"
+        storage_writer=_storage_writer,
+        config_file="config/indicators.json",
+        start_immediately=False,
     )
     _account_service = AccountService()
     _trading_service = TradingService()
@@ -119,14 +111,18 @@ def get_ingestor() -> BackgroundIngestor:
     return _ingestor  # type: ignore[return-value]
 
 
-def get_indicator_worker() -> EnhancedIndicatorWorker:
+def get_indicator_manager() -> UnifiedIndicatorManager:
     _ensure_initialized()
-    return _indicator_worker  # type: ignore[return-value]
+    return _indicator_manager  # type: ignore[return-value]
+
+
+def get_indicator_worker() -> UnifiedIndicatorManager:
+    """Backward-compatible alias for older monitoring code."""
+    return get_indicator_manager()
 
 
 def get_unified_indicator_manager() -> UnifiedIndicatorManager:
-    _ensure_initialized()
-    return _unified_indicator_manager  # type: ignore[return-value]
+    return get_indicator_manager()
 
 
 def get_health_monitor_instance():
@@ -146,8 +142,7 @@ async def lifespan(_app):
     try:
         _storage_writer.start()  # type: ignore[union-attr]
         _ingestor.start()  # type: ignore[union-attr]
-        _indicator_worker.start()  # type: ignore[union-attr]
-        # 统一指标管理器会自动启动（根据配置的auto_start）
+        _indicator_manager.start()  # type: ignore[union-attr]
 
         _monitoring_manager.register_component(  # type: ignore[union-attr]
             "data_ingestion",
@@ -156,13 +151,8 @@ async def lifespan(_app):
         )
         _monitoring_manager.register_component(  # type: ignore[union-attr]
             "indicator_calculation",
-            _indicator_worker,
+            _indicator_manager,
             ["indicator_freshness", "cache_stats", "performance_stats"],
-        )
-        _monitoring_manager.register_component(  # type: ignore[union-attr]
-            "unified_indicator_manager",
-            _unified_indicator_manager,
-            ["performance_stats", "config_stats"],
         )
         _monitoring_manager.register_component(  # type: ignore[union-attr]
             "market_data",
@@ -184,9 +174,8 @@ async def lifespan(_app):
         yield
     finally:
         _monitoring_manager.stop()  # type: ignore[union-attr]
-        if _unified_indicator_manager:
-            _unified_indicator_manager.shutdown()
-        _indicator_worker.stop()  # type: ignore[union-attr]
+        if _indicator_manager:
+            _indicator_manager.shutdown()
         _ingestor.stop()  # type: ignore[union-attr]
         _storage_writer.stop()  # type: ignore[union-attr]
         _health_monitor.record_metric(  # type: ignore[union-attr]

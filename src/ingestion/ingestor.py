@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List
 
 from src.config import IngestSettings
@@ -88,9 +88,10 @@ class BackgroundIngestor:
         # 最新报价：用于 API 快速读取，缓存更新；写入缓存区，低频批量落库。
         quote = self.client.get_quote(symbol)
         self.service.set_quote(symbol, quote)
-        self.storage.enqueue(
-            "quotes", (quote.symbol, quote.bid, quote.ask, quote.last, quote.volume, quote.time.isoformat())
-        )
+        if self.storage.settings.quote_flush_enabled:
+            self.storage.enqueue(
+                "quotes", (quote.symbol, quote.bid, quote.ask, quote.last, quote.volume, quote.time.isoformat())
+            )
 
     def _ingest_ticks(self, symbol: str) -> None:
         # 增量拉取 tick：记录上次时间戳，避免重复写入。
@@ -161,22 +162,26 @@ class BackgroundIngestor:
             to_write_closed: List[tuple] = []
             tf_seconds = timeframe_seconds(tf)
             # cutoff 基于 UTC，无 tzinfo，避免 naive/aware 比较错误。
-            closed_cutoff = datetime.utcnow() - timedelta(seconds=tf_seconds)
+            closed_cutoff = datetime.now(timezone.utc) - timedelta(seconds=tf_seconds)
 
             # 确保按时间排序，便于补齐缺口。
             bars = sorted(bars, key=lambda b: b.time)
 
             closed_bars: List = []
             new_events: List = []
-            write_closed = last_ts is not None
             for bar in bars:
-                is_closed = bar.time.replace(tzinfo=None) <= closed_cutoff
+                bar_time_utc = (
+                    bar.time.replace(tzinfo=timezone.utc)
+                    if bar.time.tzinfo is None
+                    else bar.time.astimezone(timezone.utc)
+                )
+                is_closed = bar_time_utc <= closed_cutoff
                 if is_closed:
                     closed_bars.append(bar)
                     if last_ts is None or bar.time > last_ts:
                         new_events.append(bar)
                     # 用于写入数据库，write_closed 为 False（例如 warmup 阶段）时，不应该写 DB，但仍需要发事件。
-                    if write_closed and (last_ts is None or bar.time > last_ts):
+                    if last_ts is None or bar.time > last_ts:
                         to_write_closed.append(
                             (
                                 bar.symbol,
@@ -245,7 +250,14 @@ class BackgroundIngestor:
             writer = self.storage.db
         except Exception:
             return
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        for symbol in self.settings.ingest_symbols:
+            try:
+                last_tick = writer.last_tick_time(symbol)
+            except Exception:
+                last_tick = None
+            if last_tick:
+                self._last_tick_time[symbol] = last_tick
         for symbol in self.settings.ingest_symbols:
             for tf in self.settings.ingest_ohlc_timeframes:
                 try:
@@ -254,6 +266,7 @@ class BackgroundIngestor:
                     continue
                 if last_ts:
                     key = ohlc_key(symbol, tf)
+                    self._set_last_ohlc_time_if_newer(key, last_ts)
                     self._backfill_progress[key] = last_ts
                     tf_seconds = timeframe_seconds(tf)
                     self._backfill_cutoff[key] = now - timedelta(seconds=tf_seconds)
@@ -304,7 +317,16 @@ class BackgroundIngestor:
                         break
                     bars = sorted(bars, key=lambda b: b.time)
                     # 只写入截止时间之前的 K 线，避免覆盖实时采集进度。
-                    closed = [b for b in bars if b.time.replace(tzinfo=None) <= cutoff]
+                    closed = [
+                        b
+                        for b in bars
+                        if (
+                            b.time.replace(tzinfo=timezone.utc)
+                            if b.time.tzinfo is None
+                            else b.time.astimezone(timezone.utc)
+                        )
+                        <= cutoff
+                    ]
                     if not closed:
                         break
                     writer.write_ohlc(

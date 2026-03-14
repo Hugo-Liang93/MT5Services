@@ -410,9 +410,29 @@ class LocalEventStore:
                 })
             
             conn.close()
-            
+             
             return stats
-    
+
+    def reset_processing_events(self) -> int:
+        """Move in-flight events back to pending on process restart."""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE ohlc_events
+                SET processed = 0,
+                    processed_at = NULL
+                WHERE processed = 1
+                """
+            )
+            reset_count = cursor.rowcount
+            conn.commit()
+            conn.close()
+        if reset_count > 0:
+            logger.warning("Reset %s in-flight OHLC events after restart", reset_count)
+        return reset_count
+
     def reset_failed_events(self, max_retries: int = 3) -> int:
         """
         重置失败事件（用于手动恢复）

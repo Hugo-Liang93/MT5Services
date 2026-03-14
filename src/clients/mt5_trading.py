@@ -21,6 +21,17 @@ class MT5TradingClient(MT5BaseClient):
     def __init__(self):
         super().__init__()
 
+    @staticmethod
+    def _pending_order_types() -> set[int]:
+        return {
+            getattr(mt5, "ORDER_TYPE_BUY_LIMIT", -1),
+            getattr(mt5, "ORDER_TYPE_SELL_LIMIT", -1),
+            getattr(mt5, "ORDER_TYPE_BUY_STOP", -1),
+            getattr(mt5, "ORDER_TYPE_SELL_STOP", -1),
+            getattr(mt5, "ORDER_TYPE_BUY_STOP_LIMIT", -1),
+            getattr(mt5, "ORDER_TYPE_SELL_STOP_LIMIT", -1),
+        }
+
     def open_trade(
         self,
         symbol: str,
@@ -37,20 +48,31 @@ class MT5TradingClient(MT5BaseClient):
         下单：order_type 可用 mt5.ORDER_TYPE_BUY/SELL/BUY_LIMIT 等。
         返回 ticket。
         """
-        self._validate_volume(symbol, volume)
         self.connect()
+        self._validate_volume(symbol, volume)
+        is_pending = order_type in self._pending_order_types()
+        if is_pending and price is None:
+            raise MT5TradingClientError("Pending orders require an explicit price")
+        tick = mt5.symbol_info_tick(symbol)
+        request_price = price
+        if request_price is None:
+            request_price = (
+                tick.ask
+                if order_type
+                in (
+                    mt5.ORDER_TYPE_BUY,
+                    getattr(mt5, "ORDER_TYPE_BUY_LIMIT", mt5.ORDER_TYPE_BUY),
+                    getattr(mt5, "ORDER_TYPE_BUY_STOP", mt5.ORDER_TYPE_BUY),
+                    getattr(mt5, "ORDER_TYPE_BUY_STOP_LIMIT", mt5.ORDER_TYPE_BUY),
+                )
+                else tick.bid
+            )
         request = {
-            "action": mt5.TRADE_ACTION_DEAL if price is None else mt5.TRADE_ACTION_PENDING,
+            "action": mt5.TRADE_ACTION_PENDING if is_pending else mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
             "volume": volume,
             "type": order_type,
-            "price": price
-            if price
-            else (
-                mt5.symbol_info_tick(symbol).ask
-                if order_type in (mt5.ORDER_TYPE_BUY, mt5.ORDER_TYPE_BUY_LIMIT)
-                else mt5.symbol_info_tick(symbol).bid
-            ),
+            "price": request_price,
             "sl": sl or 0.0,
             "tp": tp or 0.0,
             "deviation": deviation,
@@ -59,7 +81,10 @@ class MT5TradingClient(MT5BaseClient):
             "type_filling": mt5.ORDER_FILLING_FOK,
         }
         result = mt5.order_send(request)
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        success_codes = {mt5.TRADE_RETCODE_DONE}
+        if is_pending:
+            success_codes.add(getattr(mt5, "TRADE_RETCODE_PLACED", mt5.TRADE_RETCODE_DONE))
+        if result is None or result.retcode not in success_codes:
             raise MT5TradingClientError(f"Order send failed: {result and result.comment}")
         return result.order
 
@@ -91,8 +116,8 @@ class MT5TradingClient(MT5BaseClient):
         """
         预估开仓所需保证金，便于上层风控。
         """
-        self._validate_volume(symbol, volume)
         self.connect()
+        self._validate_volume(symbol, volume)
         order_type = self._side_to_order_type(side)
         tick = mt5.symbol_info_tick(symbol)
         price = price or (tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid)

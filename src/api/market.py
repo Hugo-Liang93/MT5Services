@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,6 +16,14 @@ from src.config import load_ingest_settings, load_market_settings
 from src.core.market_service import MarketDataService
 
 router = APIRouter(tags=["market"])
+
+
+def _normalize_query_time(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 @router.get("/symbols")
@@ -127,6 +136,94 @@ def ticks(
         )
 
 
+@router.get("/quotes/history", response_model=ApiResponse[List[QuoteModel]])
+def quote_history(
+    symbol: Optional[str] = Query(default=None, description="symbol"),
+    start_time: Optional[datetime] = Query(default=None, description="inclusive start time"),
+    end_time: Optional[datetime] = Query(default=None, description="inclusive end time"),
+    limit: int = Query(default=1000, ge=1, le=50000),
+    strict: bool = Query(default=False, description="require persisted history"),
+    service: MarketDataService = Depends(get_market_service),
+) -> ApiResponse[List[QuoteModel]]:
+    settings = load_market_settings()
+    resolved_symbol = symbol or settings.default_symbol
+    start_time = _normalize_query_time(start_time)
+    end_time = _normalize_query_time(end_time)
+    try:
+        data, source = service.get_quote_history_result(
+            resolved_symbol,
+            start_time,
+            end_time,
+            limit,
+            strict=strict,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    items = [QuoteModel(**quote.__dict__, time=quote.time.isoformat()) for quote in data]
+    return ApiResponse.success_response(
+        data=items,
+        metadata={
+            "symbol": resolved_symbol,
+            "data_type": "quote_history",
+            "count": len(items),
+            "time_range": {
+                "start": start_time.isoformat() if start_time else None,
+                "end": end_time.isoformat() if end_time else None,
+                "first": items[0].time if items else None,
+                "last": items[-1].time if items else None,
+            },
+            "source": source,
+            "data_source": source,
+            "data_freshness": "historical",
+            "strict": strict,
+        },
+    )
+
+
+@router.get("/ticks/history", response_model=ApiResponse[List[TickModel]])
+def tick_history(
+    symbol: Optional[str] = Query(default=None, description="symbol"),
+    start_time: Optional[datetime] = Query(default=None, description="inclusive start time"),
+    end_time: Optional[datetime] = Query(default=None, description="inclusive end time"),
+    limit: int = Query(default=5000, ge=1, le=100000),
+    strict: bool = Query(default=False, description="require persisted history"),
+    service: MarketDataService = Depends(get_market_service),
+) -> ApiResponse[List[TickModel]]:
+    settings = load_market_settings()
+    resolved_symbol = symbol or settings.default_symbol
+    start_time = _normalize_query_time(start_time)
+    end_time = _normalize_query_time(end_time)
+    try:
+        data, source = service.get_ticks_history_result(
+            resolved_symbol,
+            start_time,
+            end_time,
+            limit,
+            strict=strict,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    items = [TickModel(**tick.__dict__, time=tick.time.isoformat()) for tick in data]
+    return ApiResponse.success_response(
+        data=items,
+        metadata={
+            "symbol": resolved_symbol,
+            "data_type": "tick_history",
+            "count": len(items),
+            "time_range": {
+                "start": start_time.isoformat() if start_time else None,
+                "end": end_time.isoformat() if end_time else None,
+                "first": items[0].time if items else None,
+                "last": items[-1].time if items else None,
+            },
+            "source": source,
+            "data_source": source,
+            "data_freshness": "historical",
+            "strict": strict,
+        },
+    )
+
+
 @router.get("/ohlc", response_model=ApiResponse[List[OHLCModel]])
 def ohlc(
     symbol: Optional[str] = Query(default=None, description="交易品种，可为空则使用默认"),
@@ -165,6 +262,54 @@ def ohlc(
             suggested_action=AIErrorAction.CHECK_CONNECTION,
             details={"exception_type": type(exc).__name__, "symbol": symbol, "timeframe": timeframe}
         )
+
+
+@router.get("/ohlc/history", response_model=ApiResponse[List[OHLCModel]])
+def ohlc_history(
+    symbol: Optional[str] = Query(default=None, description="symbol"),
+    timeframe: str = Query(default="M1", description="timeframe"),
+    start_time: Optional[datetime] = Query(default=None, description="inclusive start time"),
+    end_time: Optional[datetime] = Query(default=None, description="inclusive end time"),
+    limit: int = Query(default=5000, ge=1, le=50000),
+    strict: bool = Query(default=False, description="require persisted history"),
+    service: MarketDataService = Depends(get_market_service),
+) -> ApiResponse[List[OHLCModel]]:
+    settings = load_market_settings()
+    resolved_symbol = symbol or settings.default_symbol
+    start_time = _normalize_query_time(start_time)
+    end_time = _normalize_query_time(end_time)
+    try:
+        data, source = service.get_ohlc_history_result(
+            resolved_symbol,
+            timeframe,
+            start_time,
+            end_time,
+            limit,
+            strict=strict,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
+    return ApiResponse.success_response(
+        data=items,
+        metadata={
+            "symbol": resolved_symbol,
+            "timeframe": timeframe,
+            "data_type": "ohlc_history",
+            "count": len(items),
+            "time_range": {
+                "start": start_time.isoformat() if start_time else None,
+                "end": end_time.isoformat() if end_time else None,
+                "first": items[0].time if items else None,
+                "last": items[-1].time if items else None,
+            },
+            "source": source,
+            "data_source": source,
+            "data_freshness": "historical",
+            "strict": strict,
+            "includes_indicators": any(item.indicators for item in items),
+        },
+    )
 
 
 @router.get("/ohlc/intrabar/series", response_model=ApiResponse[List[OHLCModel]])

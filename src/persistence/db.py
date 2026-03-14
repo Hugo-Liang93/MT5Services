@@ -262,6 +262,20 @@ class TimescaleWriter:
             row = cur.fetchone()
             return row[0] if row and row[0] else None
 
+    def last_tick_time(self, symbol: str) -> Optional[datetime]:
+        sql = "SELECT max(time) FROM ticks WHERE symbol=%s"
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (symbol,))
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
+    def last_quote_time(self, symbol: str) -> Optional[datetime]:
+        sql = "SELECT max(time) FROM quotes WHERE symbol=%s"
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (symbol,))
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
     def fetch_ohlc(
         self,
         symbol: str,
@@ -277,6 +291,110 @@ class TimescaleWriter:
         if start_time:
             sql += " AND time > %s"
             params.append(start_time)
+        sql += " ORDER BY time ASC LIMIT %s"
+        params.append(limit)
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+
+    def fetch_recent_ohlc(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+    ) -> List[Tuple]:
+        sql = (
+            "SELECT symbol, timeframe, open, high, low, close, volume, time, indicators "
+            "FROM ("
+            "    SELECT symbol, timeframe, open, high, low, close, volume, time, indicators "
+            "    FROM ohlc WHERE symbol=%s AND timeframe=%s "
+            "    ORDER BY time DESC LIMIT %s"
+            ") recent "
+            "ORDER BY time ASC"
+        )
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (symbol, timeframe, limit))
+            return cur.fetchall()
+
+    def fetch_recent_ticks(
+        self,
+        symbol: str,
+        limit: int,
+    ) -> List[Tuple[str, float, float, datetime]]:
+        sql = (
+            "SELECT symbol, price, volume, time "
+            "FROM ("
+            "    SELECT symbol, price, volume, time "
+            "    FROM ticks WHERE symbol=%s "
+            "    ORDER BY time DESC LIMIT %s"
+            ") recent "
+            "ORDER BY time ASC"
+        )
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (symbol, limit))
+            return cur.fetchall()
+
+    def fetch_ticks(
+        self,
+        symbol: str,
+        start_time: Optional[datetime],
+        end_time: Optional[datetime],
+        limit: int,
+    ) -> List[Tuple[str, float, float, datetime]]:
+        sql = "SELECT symbol, price, volume, time FROM ticks WHERE symbol=%s"
+        params: List = [symbol]
+        if start_time is not None:
+            sql += " AND time >= %s"
+            params.append(start_time)
+        if end_time is not None:
+            sql += " AND time <= %s"
+            params.append(end_time)
+        sql += " ORDER BY time ASC LIMIT %s"
+        params.append(limit)
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+
+    def fetch_quotes(
+        self,
+        symbol: str,
+        start_time: Optional[datetime],
+        end_time: Optional[datetime],
+        limit: int,
+    ) -> List[Tuple[str, float, float, float, float, datetime]]:
+        sql = "SELECT symbol, bid, ask, last, volume, time FROM quotes WHERE symbol=%s"
+        params: List = [symbol]
+        if start_time is not None:
+            sql += " AND time >= %s"
+            params.append(start_time)
+        if end_time is not None:
+            sql += " AND time <= %s"
+            params.append(end_time)
+        sql += " ORDER BY time ASC LIMIT %s"
+        params.append(limit)
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+
+    def fetch_ohlc_range(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: Optional[datetime],
+        end_time: Optional[datetime],
+        limit: int,
+    ) -> List[Tuple]:
+        sql = (
+            "SELECT symbol, timeframe, open, high, low, close, volume, time, indicators "
+            "FROM ohlc WHERE symbol=%s AND timeframe=%s"
+        )
+        params: List = [symbol, timeframe]
+        if start_time is not None:
+            sql += " AND time >= %s"
+            params.append(start_time)
+        if end_time is not None:
+            sql += " AND time <= %s"
+            params.append(end_time)
         sql += " ORDER BY time ASC LIMIT %s"
         params.append(limit)
         with self.connection() as conn, conn.cursor() as cur:
