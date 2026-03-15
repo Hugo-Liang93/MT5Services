@@ -10,7 +10,7 @@ from typing import Optional, TypeVar, Generic, List, Dict, Any
 
 from pydantic.generics import GenericModel
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class QuoteModel(BaseModel):
@@ -90,6 +90,22 @@ class TradeRequest(BaseModel):
     magic: int = 0
 
 
+class TradePrecheckModel(BaseModel):
+    enabled: bool
+    mode: str
+    event_blocked: bool = False
+    calendar_health_degraded: bool = False
+    blocked: bool
+    action: str
+    reason: Optional[str] = None
+    symbol: str
+    active_windows: List[EconomicCalendarMergedRiskWindowModel] = Field(default_factory=list)
+    upcoming_windows: List[EconomicCalendarMergedRiskWindowModel] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    calendar_health_mode: str = "warn_only"
+    calendar_health: Dict[str, Any] = Field(default_factory=dict)
+
+
 class CloseRequest(BaseModel):
     ticket: int
     deviation: int = 20
@@ -141,6 +157,158 @@ class SymbolInfoModel(BaseModel):
     margin_maintenance: float
     tick_value: float
     tick_size: float
+
+
+class EconomicCalendarEventModel(BaseModel):
+    scheduled_at: str
+    scheduled_at_local: Optional[str] = None
+    local_timezone: Optional[str] = None
+    scheduled_at_release: Optional[str] = None
+    release_timezone: Optional[str] = None
+    event_uid: str
+    source: str
+    provider_event_id: str
+    event_name: str
+    country: Optional[str] = None
+    category: Optional[str] = None
+    currency: Optional[str] = None
+    reference: Optional[str] = None
+    actual: Optional[str] = None
+    previous: Optional[str] = None
+    forecast: Optional[str] = None
+    revised: Optional[str] = None
+    importance: Optional[int] = None
+    unit: Optional[str] = None
+    release_id: Optional[str] = None
+    source_url: Optional[str] = None
+    all_day: bool = False
+    session_bucket: str = "off_hours"
+    is_asia_session: bool = False
+    is_europe_session: bool = False
+    is_us_session: bool = False
+    status: str = "scheduled"
+    first_seen_at: str
+    last_seen_at: str
+    released_at: Optional[str] = None
+    last_value_check_at: Optional[str] = None
+    ingested_at: str
+    last_updated: str
+
+
+class EconomicCalendarRefreshModel(BaseModel):
+    job_type: Optional[str] = None
+    status: str
+    fetched: int
+    written: int
+    snapshots_written: int = 0
+    deleted: int = 0
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    duration_ms: Optional[str] = None
+    provider_counts: Optional[str] = None
+    provider_errors: Optional[str] = None
+
+
+class EconomicCalendarStatusModel(BaseModel):
+    enabled: str
+    running: str
+    local_timezone: Optional[str] = None
+    refresh_interval_seconds: Optional[str] = None
+    last_refresh_at: Optional[str] = None
+    last_refresh_started_at: Optional[str] = None
+    last_refresh_completed_at: Optional[str] = None
+    last_refresh_error: Optional[str] = None
+    last_refresh_status: Optional[str] = None
+    refresh_in_progress: Optional[str] = None
+    last_refresh_duration_ms: Optional[str] = None
+    consecutive_failures: Optional[str] = None
+    stale: Optional[str] = None
+    default_countries: Optional[str] = None
+    provider_status: Optional[Dict[str, Any]] = None
+    calendar_sync_interval_seconds: Optional[str] = None
+    near_term_refresh_interval_seconds: Optional[str] = None
+    release_watch_interval_seconds: Optional[str] = None
+    near_term_window_hours: Optional[str] = None
+    release_watch_lookback_minutes: Optional[str] = None
+    release_watch_lookahead_minutes: Optional[str] = None
+    job_status: Optional[Dict[str, Any]] = None
+
+
+class EconomicCalendarRiskWindowModel(BaseModel):
+    event_uid: str
+    event_name: str
+    source: str
+    country: Optional[str] = None
+    currency: Optional[str] = None
+    importance: Optional[int] = None
+    session_bucket: str
+    window_start: str
+    window_end: str
+    scheduled_at: str
+    scheduled_at_local: Optional[str] = None
+    scheduled_at_release: Optional[str] = None
+
+
+class EconomicCalendarMergedRiskWindowModel(BaseModel):
+    window_start: str
+    window_end: str
+    event_count: int
+    event_uids: List[str]
+    event_names: List[str]
+    sources: List[str]
+    countries: List[str]
+    currencies: List[str]
+    sessions: List[str]
+    max_importance: Optional[int] = None
+
+
+class EconomicCalendarTradeGuardModel(BaseModel):
+    symbol: str
+    evaluation_time: str
+    blocked: bool
+    currencies: List[str]
+    countries: List[str]
+    active_windows: List[EconomicCalendarMergedRiskWindowModel]
+    upcoming_windows: List[EconomicCalendarMergedRiskWindowModel]
+    importance_min: int
+
+
+class EconomicCalendarUpdateModel(BaseModel):
+    recorded_at: str
+    event_uid: str
+    scheduled_at: str
+    source: str
+    provider_event_id: str
+    event_name: str
+    country: Optional[str] = None
+    currency: Optional[str] = None
+    status: str
+    snapshot_reason: str
+    job_type: str
+    actual: Optional[str] = None
+    previous: Optional[str] = None
+    forecast: Optional[str] = None
+    revised: Optional[str] = None
+    importance: Optional[int] = None
+    raw_payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeTaskStatusModel(BaseModel):
+    component: str
+    task_name: str
+    updated_at: str
+    state: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    next_run_at: Optional[str] = None
+    duration_ms: Optional[int] = None
+    success_count: int = 0
+    failure_count: int = 0
+    consecutive_failures: int = 0
+    last_error: Optional[str] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
 
 
 T = TypeVar("T")

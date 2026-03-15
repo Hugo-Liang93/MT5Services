@@ -22,6 +22,7 @@ from ..cache.smart_cache import SmartCache, get_global_cache
 from ..monitoring.metrics_collector import record_indicator_computation
 from .dependency_manager import DependencyManager, get_global_dependency_manager
 from .parallel_executor import ParallelExecutor, get_global_executor
+from .parallel_executor import shutdown_global_executor
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,9 @@ class PipelineConfig:
     enable_parallel: bool = True
     max_workers: int = 4
     enable_cache: bool = True
+    cache_strategy: str = "lru_ttl"
     cache_ttl: float = 300.0
+    cache_maxsize: int = 1000
     enable_incremental: bool = True
     max_retries: int = 2
     retry_delay: float = 0.1
@@ -74,7 +77,10 @@ class OptimizedPipeline:
         
         # 初始化组件
         self.dependency_manager = get_global_dependency_manager()
-        self.cache = get_global_cache(maxsize=1000, ttl=self.config.cache_ttl)
+        self.cache = get_global_cache(
+            maxsize=getattr(self.config, "cache_maxsize", 1000),
+            ttl=self.config.cache_ttl,
+        )
         
         # 并行执行器（按需创建）
         self._executor: Optional[ParallelExecutor] = None
@@ -90,8 +96,32 @@ class OptimizedPipeline:
             "incremental_computations": 0,
             "failed_computations": 0
         }
+        self._apply_runtime_config(initial=True)
         
         logger.info(f"OptimizedPipeline initialized with config: {self.config}")
+
+    def _apply_runtime_config(self, initial: bool = False) -> None:
+        cache_strategy = str(getattr(self.config, "cache_strategy", "lru_ttl")).lower()
+        if cache_strategy == "none":
+            self.config.enable_cache = False
+        elif cache_strategy not in {"simple", "lru_ttl"}:
+            logger.warning("Unsupported cache strategy '%s', falling back to lru_ttl", cache_strategy)
+            self.config.cache_strategy = "lru_ttl"
+
+        self.cache = get_global_cache(
+            maxsize=getattr(self.config, "cache_maxsize", 1000),
+            ttl=self.config.cache_ttl,
+        )
+        self.cache.resize(int(getattr(self.config, "cache_maxsize", 1000)))
+        self.cache.ttl = float(self.config.cache_ttl)
+
+        if not initial and self._executor is not None:
+            shutdown_global_executor(wait=True)
+            self._executor = None
+
+    def update_config(self, config: PipelineConfig) -> None:
+        self.config = config
+        self._apply_runtime_config()
     
     @property
     def executor(self) -> ParallelExecutor:
@@ -546,6 +576,8 @@ def get_global_pipeline(config: Optional[PipelineConfig] = None) -> OptimizedPip
     global _global_pipeline
     if _global_pipeline is None:
         _global_pipeline = OptimizedPipeline(config)
+    elif config is not None:
+        _global_pipeline.update_config(config)
     return _global_pipeline
 
 

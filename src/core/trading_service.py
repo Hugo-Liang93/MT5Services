@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
 from src.clients.mt5_account import MT5AccountClient
+from src.core.pretrade_risk_service import PreTradeRiskService
 
 
 class TradingService:
@@ -15,9 +16,11 @@ class TradingService:
         self,
         client: Optional[MT5TradingClient] = None,
         account_client: Optional[MT5AccountClient] = None,
+        pre_trade_risk_service: Optional[PreTradeRiskService] = None,
     ):
         self.client = client or MT5TradingClient()
         self.account_client = account_client or MT5AccountClient()
+        self.pre_trade_risk_service = pre_trade_risk_service
 
     def open(
         self,
@@ -110,6 +113,9 @@ class TradingService:
         comment: str = "",
         magic: int = 0,
     ) -> dict:
+        risk_assessment: Optional[Dict[str, Any]] = None
+        if self.pre_trade_risk_service is not None:
+            risk_assessment = self.pre_trade_risk_service.enforce_trade_allowed(symbol=symbol)
         ticket = self.open(
             symbol=symbol,
             volume=volume,
@@ -127,7 +133,22 @@ class TradingService:
             "volume": volume,
             "side": side,
             "price": price,
+            "pre_trade_risk": risk_assessment,
         }
+
+    def precheck_trade(self, symbol: str) -> Dict[str, Any]:
+        if self.pre_trade_risk_service is None:
+            return {
+                "enabled": False,
+                "mode": "off",
+                "blocked": False,
+                "action": "allow",
+                "reason": None,
+                "symbol": symbol,
+                "active_windows": [],
+                "upcoming_windows": [],
+            }
+        return self.pre_trade_risk_service.assess_trade(symbol=symbol)
 
     def close_position(self, ticket: int, deviation: int = 20, comment: str = "") -> dict:
         success = self.close(ticket=ticket, deviation=deviation, comment=comment)

@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional, Tuple
 import logging
 
-from src.config import load_ingest_settings
+from src.config import get_shared_symbols, get_shared_timeframes
+from src.utils.common import timeframe_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,17 @@ class HealthMonitor:
         self.active_alerts: Dict[str, Dict] = {}
         
         logger.info(f"HealthMonitor initialized with database: {db_path}")
+
+    def configure_alerts(
+        self,
+        *,
+        data_latency_warning: Optional[float] = None,
+        data_latency_critical: Optional[float] = None,
+    ) -> None:
+        if data_latency_warning is not None:
+            self.alerts["data_latency"]["warning"] = float(data_latency_warning)
+        if data_latency_critical is not None:
+            self.alerts["data_latency"]["critical"] = float(data_latency_critical)
     
     def _init_db(self):
         """初始化数据库表结构"""
@@ -130,7 +142,7 @@ class HealthMonitor:
             details: 详细信息
             check_alert: 是否检查告警
         """
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = self._utc_now().isoformat()
         
         # 确定告警级别
         alert_level = self._check_alert_level(component, metric_name, value) if check_alert else None
@@ -201,7 +213,7 @@ class HealthMonitor:
         thresholds = self.alerts[metric_name]
         
         # 对于延迟类指标，值越大越差
-        if metric_name in ["data_latency", "indicator_freshness"]:
+        if metric_name in ["data_latency", "indicator_freshness", "economic_calendar_staleness", "economic_provider_failures"]:
             if value >= thresholds["critical"]:
                 return "critical"
             elif value >= thresholds["warning"]:
@@ -310,7 +322,7 @@ class HealthMonitor:
                 SET resolved_at = ?, resolved_by = ?
                 WHERE component = ? AND metric_name = ? AND resolved_at IS NULL
             """, (
-                datetime.utcnow().isoformat(),
+                self._utc_now().isoformat(),
                 resolved_by,
                 component,
                 metric_name
@@ -342,13 +354,22 @@ class HealthMonitor:
             if not latest_bar:
                 latency = float('inf')
             else:
-                latency = (self._utc_now() - self._as_utc(latest_bar.time)).total_seconds()
+                bar_open_time = self._as_utc(latest_bar.time)
+                interval_seconds = max(1, timeframe_seconds(timeframe))
+                next_expected_close = bar_open_time + timedelta(seconds=interval_seconds * 2)
+                latency = max(0.0, (self._utc_now() - next_expected_close).total_seconds())
             
             self.record_metric(
                 component,
                 "data_latency",
                 latency,
-                {"symbol": symbol, "timeframe": timeframe}
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "latest_bar_time": latest_bar.time.isoformat() if latest_bar else None,
+                    "interval_seconds": interval_seconds if latest_bar else None,
+                    "next_expected_close": next_expected_close.isoformat() if latest_bar else None,
+                }
             )
             
             return latency
@@ -458,6 +479,41 @@ class HealthMonitor:
         except Exception as e:
             logger.error(f"Failed to check cache stats: {e}")
             return {}
+
+    def check_economic_calendar(self, component: str, service) -> Dict[str, Any]:
+        try:
+            stats = service.stats()
+            last_refresh_at = stats.get("last_refresh_at")
+            if last_refresh_at:
+                refresh_time = self._as_utc(datetime.fromisoformat(last_refresh_at))
+                stale_seconds = (self._utc_now() - refresh_time).total_seconds()
+            else:
+                stale_seconds = float("inf")
+
+            provider_status = stats.get("provider_status") or {}
+            if isinstance(provider_status, dict):
+                provider_failures = float(
+                    sum(int((provider_status.get(name) or {}).get("consecutive_failures", 0)) for name in provider_status)
+                )
+            else:
+                provider_failures = 0.0
+
+            self.record_metric(
+                component,
+                "economic_calendar_staleness",
+                stale_seconds,
+                {"stats": stats},
+            )
+            self.record_metric(
+                component,
+                "economic_provider_failures",
+                provider_failures,
+                {"provider_status": provider_status},
+            )
+            return stats
+        except Exception as e:
+            logger.error(f"Failed to check economic calendar health: {e}")
+            return {}
     
     def generate_report(self, hours: int = 24) -> Dict[str, Any]:
         """
@@ -469,7 +525,7 @@ class HealthMonitor:
         Returns:
             健康报告字典
         """
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = self._utc_now() - timedelta(hours=hours)
         
         with self._lock:
             conn = sqlite3.connect(self.db_path)
@@ -492,7 +548,7 @@ class HealthMonitor:
             """, (cutoff.isoformat(),))
             
             report = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utc_now().isoformat(),
                 "time_range_hours": hours,
                 "overall_status": "healthy",
                 "components": {},
@@ -566,7 +622,7 @@ class HealthMonitor:
                 (timestamp, overall_status, components_status, metrics_summary)
                 VALUES (?, ?, ?, ?)
             """, (
-                datetime.utcnow().isoformat(),
+                self._utc_now().isoformat(),
                 report["overall_status"],
                 json.dumps(report["components"]),
                 json.dumps(report["summary"])
@@ -629,7 +685,7 @@ class HealthMonitor:
         Args:
             days_to_keep: 保留天数
         """
-        cutoff = datetime.utcnow() - timedelta(days=days_to_keep)
+        cutoff = self._utc_now() - timedelta(days=days_to_keep)
         
         with self._lock:
             conn = sqlite3.connect(self.db_path)
@@ -697,7 +753,7 @@ class HealthMonitor:
                 }
             else:
                 return {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": self._utc_now().isoformat(),
                     "overall_status": "unknown",
                     "components_status": {},
                     "metrics_summary": {},
@@ -764,9 +820,8 @@ class MonitoringManager:
             if symbols and timeframes:
                 return symbols, timeframes
 
-        ingest = load_ingest_settings()
-        symbols = list(getattr(ingest, "ingest_symbols", []) or [])
-        timeframes = list(getattr(ingest, "ingest_ohlc_timeframes", []) or [])
+        symbols = list(get_shared_symbols() or [])
+        timeframes = list(get_shared_timeframes() or [])
         return symbols or ["XAUUSD"], timeframes or ["M1"]
 
     def _monitoring_loop(self):
@@ -809,6 +864,9 @@ class MonitoringManager:
                                         stats
                                     )
                             
+                            elif method == "economic_calendar" and hasattr(component_obj, "stats"):
+                                self.health_monitor.check_economic_calendar(name, component_obj)
+
                         except Exception as e:
                             logger.error(f"Failed to execute monitoring method {method} for {name}: {e}")
                 

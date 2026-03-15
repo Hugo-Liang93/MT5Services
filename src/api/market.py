@@ -12,10 +12,21 @@ from src.api.deps import get_market_service
 from src.api.schemas import ApiResponse, OHLCModel, QuoteModel, TickModel, SymbolInfoModel
 from src.api.error_codes import AIErrorCode, AIErrorAction, get_suggested_action
 from src.clients.mt5_market import MT5MarketError
-from src.config import load_ingest_settings, load_market_settings
+from src.config import get_interval_config, get_limit_config, get_shared_default_symbol
 from src.core.market_service import MarketDataService
 
 router = APIRouter(tags=["market"])
+
+
+def _runtime_market_defaults() -> dict:
+    limits = get_limit_config()
+    intervals = get_interval_config()
+    return {
+        "default_symbol": get_shared_default_symbol(),
+        "tick_limit": limits.tick_limit,
+        "ohlc_limit": limits.ohlc_limit,
+        "stream_interval_seconds": intervals.stream_interval,
+    }
 
 
 def _normalize_query_time(value: Optional[datetime]) -> Optional[datetime]:
@@ -67,21 +78,22 @@ def quote(
     symbol: Optional[str] = Query(default=None, description="交易品种，可为空则使用默认"),
     service: MarketDataService = Depends(get_market_service),
 ) -> ApiResponse[QuoteModel]:
-    settings = load_market_settings()
+    defaults = _runtime_market_defaults()
+    resolved_symbol = symbol or defaults["default_symbol"]
     try:
-        data = service.get_quote(symbol or settings.default_symbol)
+        data = service.get_quote(resolved_symbol)
         if data is None:
             return ApiResponse.error_response(
                 error_code=AIErrorCode.DATA_NOT_AVAILABLE,
                 error_message="报价数据暂时不可用",
                 suggested_action=AIErrorAction.USE_FALLBACK_DATA,
-                details={"symbol": symbol or settings.default_symbol}
+                details={"symbol": resolved_symbol}
             )
         
         return ApiResponse.success_response(
             data=QuoteModel(**data.__dict__, time=data.time.isoformat()),
             metadata={
-                "symbol": symbol or settings.default_symbol,
+                "symbol": resolved_symbol,
                 "data_type": "quote",
                 "bid": data.bid,
                 "ask": data.ask,
@@ -93,7 +105,7 @@ def quote(
             error_code=AIErrorCode.MT5_CONNECTION_FAILED,
             error_message=f"MT5连接错误: {str(exc)}",
             suggested_action=AIErrorAction.CHECK_CONNECTION,
-            details={"exception_type": type(exc).__name__, "symbol": symbol or settings.default_symbol}
+            details={"exception_type": type(exc).__name__, "symbol": resolved_symbol}
         )
 
 
@@ -103,22 +115,23 @@ def ticks(
     limit: Optional[int] = Query(default=None, ge=1, le=10000),
     service: MarketDataService = Depends(get_market_service),
 ) -> ApiResponse[List[TickModel]]:
-    settings = load_market_settings()
+    defaults = _runtime_market_defaults()
+    resolved_symbol = symbol or defaults["default_symbol"]
     try:
-        data = service.get_ticks(symbol or settings.default_symbol, limit)
+        data = service.get_ticks(resolved_symbol, limit)
         if not data:
             return ApiResponse.error_response(
                 error_code=AIErrorCode.DATA_NOT_AVAILABLE,
                 error_message="Tick数据暂时不可用",
                 suggested_action=AIErrorAction.WAIT_FOR_DATA,
-                details={"symbol": symbol or settings.default_symbol, "limit": limit}
+                details={"symbol": resolved_symbol, "limit": limit}
             )
         
         items = [TickModel(**t.__dict__, time=t.time.isoformat()) for t in data]
         return ApiResponse.success_response(
             data=items,
             metadata={
-                "symbol": symbol or settings.default_symbol,
+                "symbol": resolved_symbol,
                 "data_type": "ticks",
                 "count": len(items),
                 "time_range": {
@@ -132,7 +145,7 @@ def ticks(
             error_code=AIErrorCode.MT5_CONNECTION_FAILED,
             error_message=f"MT5连接错误: {str(exc)}",
             suggested_action=AIErrorAction.CHECK_CONNECTION,
-            details={"exception_type": type(exc).__name__, "symbol": symbol or settings.default_symbol}
+            details={"exception_type": type(exc).__name__, "symbol": resolved_symbol}
         )
 
 
@@ -145,8 +158,7 @@ def quote_history(
     strict: bool = Query(default=False, description="require persisted history"),
     service: MarketDataService = Depends(get_market_service),
 ) -> ApiResponse[List[QuoteModel]]:
-    settings = load_market_settings()
-    resolved_symbol = symbol or settings.default_symbol
+    resolved_symbol = symbol or _runtime_market_defaults()["default_symbol"]
     start_time = _normalize_query_time(start_time)
     end_time = _normalize_query_time(end_time)
     try:
@@ -189,8 +201,7 @@ def tick_history(
     strict: bool = Query(default=False, description="require persisted history"),
     service: MarketDataService = Depends(get_market_service),
 ) -> ApiResponse[List[TickModel]]:
-    settings = load_market_settings()
-    resolved_symbol = symbol or settings.default_symbol
+    resolved_symbol = symbol or _runtime_market_defaults()["default_symbol"]
     start_time = _normalize_query_time(start_time)
     end_time = _normalize_query_time(end_time)
     try:
@@ -231,21 +242,24 @@ def ohlc(
     limit: Optional[int] = Query(default=None, ge=1, le=5000),
     service: MarketDataService = Depends(get_market_service),
 ) -> ApiResponse[List[OHLCModel]]:
+    defaults = _runtime_market_defaults()
+    resolved_symbol = symbol or defaults["default_symbol"]
+    resolved_limit = limit or defaults["ohlc_limit"]
     try:
-        data = service.get_ohlc_closed(symbol, timeframe, limit)
+        data = service.get_ohlc_closed(resolved_symbol, timeframe, resolved_limit)
         if not data:
             return ApiResponse.error_response(
                 error_code=AIErrorCode.DATA_NOT_AVAILABLE,
                 error_message="OHLC数据暂时不可用",
                 suggested_action=AIErrorAction.WAIT_FOR_DATA,
-                details={"symbol": symbol, "timeframe": timeframe, "limit": limit}
+                details={"symbol": resolved_symbol, "timeframe": timeframe, "limit": resolved_limit}
             )
         
         items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
         return ApiResponse.success_response(
             data=items,
             metadata={
-                "symbol": symbol,
+                "symbol": resolved_symbol,
                 "timeframe": timeframe,
                 "data_type": "ohlc_closed",
                 "count": len(items),
@@ -260,7 +274,7 @@ def ohlc(
             error_code=AIErrorCode.MT5_CONNECTION_FAILED,
             error_message=f"MT5连接错误: {str(exc)}",
             suggested_action=AIErrorAction.CHECK_CONNECTION,
-            details={"exception_type": type(exc).__name__, "symbol": symbol, "timeframe": timeframe}
+            details={"exception_type": type(exc).__name__, "symbol": resolved_symbol, "timeframe": timeframe}
         )
 
 
@@ -274,8 +288,7 @@ def ohlc_history(
     strict: bool = Query(default=False, description="require persisted history"),
     service: MarketDataService = Depends(get_market_service),
 ) -> ApiResponse[List[OHLCModel]]:
-    settings = load_market_settings()
-    resolved_symbol = symbol or settings.default_symbol
+    resolved_symbol = symbol or _runtime_market_defaults()["default_symbol"]
     start_time = _normalize_query_time(start_time)
     end_time = _normalize_query_time(end_time)
     try:
@@ -318,12 +331,13 @@ def ohlc_intrabar_series(
     timeframe: str = Query(default="M1", description="MT5 时间框架，可选 M1/M5/H1/D1"),
     service: MarketDataService = Depends(get_market_service),
 ) -> ApiResponse[List[OHLCModel]]:
-    data = service.get_intrabar_series(symbol, timeframe)
+    resolved_symbol = symbol or _runtime_market_defaults()["default_symbol"]
+    data = service.get_intrabar_series(resolved_symbol, timeframe)
     items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
     return ApiResponse.success_response(
         data=items,
         metadata={
-            "symbol": symbol,
+            "symbol": resolved_symbol,
             "timeframe": timeframe,
             "data_type": "ohlc_intrabar",
             "count": len(items)
@@ -337,13 +351,14 @@ async def stream(
     interval: Optional[float] = Query(default=None, gt=0.0, description="SSE 推送间隔（秒）"),
     service: MarketDataService = Depends(get_market_service),
 ):
-    settings = load_market_settings()
-    poll = interval or settings.stream_interval_seconds
+    defaults = _runtime_market_defaults()
+    resolved_symbol = symbol or defaults["default_symbol"]
+    poll = interval or defaults["stream_interval_seconds"]
 
     async def event_generator():
         while True:
             try:
-                data = service.get_quote(symbol)
+                data = service.get_quote(resolved_symbol)
                 if data is None:
                     yield f"data: {json.dumps({'error': 'quote cache empty'})}\n\n"
                 else:

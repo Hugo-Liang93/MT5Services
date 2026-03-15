@@ -21,6 +21,45 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _as_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _normalize_scope(value: Any, fallback: List[str]) -> List[str]:
+    if isinstance(value, list):
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        return normalized or list(fallback)
+    if isinstance(value, str):
+        normalized = [item.strip() for item in value.split(",") if item.strip()]
+        return normalized or list(fallback)
+    return list(fallback)
+
+
+def _shared_indicator_defaults() -> tuple[List[str], List[str], float]:
+    from src.config.centralized import (
+        get_interval_config,
+        get_shared_symbols,
+        get_shared_timeframes,
+    )
+
+    interval_config = get_interval_config()
+    return (
+        get_shared_symbols(),
+        get_shared_timeframes(),
+        float(interval_config.indicator_reload_interval),
+    )
+
+
 def normalize_indicator_func_path(func_path: str) -> str:
     """Map legacy indicator function paths to the canonical package layout."""
     normalized = func_path.replace("src.indicators_unified.", "src.indicators.")
@@ -89,14 +128,24 @@ class UnifiedIndicatorConfig:
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     
     # 符号和时间框架配置
-    symbols: List[str] = field(default_factory=lambda: ["EURUSD", "GBPUSD", "USDJPY"])
-    timeframes: List[str] = field(default_factory=lambda: ["M1", "M5", "M15", "H1"])
+    symbols: List[str] = field(default_factory=list)
+    timeframes: List[str] = field(default_factory=list)
+    inherit_symbols: bool = True
+    inherit_timeframes: bool = True
     
     # 系统配置
     auto_start: bool = True           # 是否自动启动
     config_file: str = "config/indicators.json"  # 配置文件路径
     hot_reload: bool = True           # 是否支持热重载
     reload_interval: float = 60.0     # 热重载间隔（秒）
+    def __post_init__(self) -> None:
+        shared_symbols, shared_timeframes, shared_reload_interval = _shared_indicator_defaults()
+        if not self.symbols:
+            self.symbols = list(shared_symbols)
+        if not self.timeframes:
+            self.timeframes = list(shared_timeframes)
+        if self.reload_interval <= 0:
+            self.reload_interval = shared_reload_interval
 
 
 class ConfigLoader:
@@ -118,7 +167,12 @@ class ConfigLoader:
         config = configparser.ConfigParser()
         config.read(filepath, encoding='utf-8')
         
-        unified_config = UnifiedIndicatorConfig()
+        shared_symbols, shared_timeframes, shared_reload_interval = _shared_indicator_defaults()
+        unified_config = UnifiedIndicatorConfig(
+            symbols=shared_symbols,
+            timeframes=shared_timeframes,
+            reload_interval=shared_reload_interval,
+        )
         
         # 加载流水线配置
         if 'worker' in config:
@@ -158,6 +212,7 @@ class ConfigLoader:
         """
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
+        shared_symbols, shared_timeframes, shared_reload_interval = _shared_indicator_defaults()
         
         # 解析指标配置
         indicators = []
@@ -189,17 +244,45 @@ class ConfigLoader:
             enable_monitoring=pipeline_data.get('enable_monitoring', True),
             poll_interval=float(pipeline_data.get('poll_interval', 5.0))
         )
+
+        inherit_symbols = _as_bool(data.get('inherit_symbols'), 'symbols' not in data)
+        inherit_timeframes = _as_bool(data.get('inherit_timeframes'), 'timeframes' not in data)
+        symbols = (
+            list(shared_symbols)
+            if inherit_symbols
+            else _normalize_scope(data.get('symbols'), shared_symbols)
+        )
+        timeframes = (
+            list(shared_timeframes)
+            if inherit_timeframes
+            else _normalize_scope(data.get('timeframes'), shared_timeframes)
+        )
+
+        extra_symbols = sorted(set(symbols) - set(shared_symbols))
+        extra_timeframes = sorted(set(timeframes) - set(shared_timeframes))
+        if extra_symbols:
+            logger.warning(
+                "Indicator config expands symbol scope beyond shared config: %s",
+                extra_symbols,
+            )
+        if extra_timeframes:
+            logger.warning(
+                "Indicator config expands timeframe scope beyond shared config: %s",
+                extra_timeframes,
+            )
         
         # 解析其他配置
         unified_config = UnifiedIndicatorConfig(
             indicators=indicators,
             pipeline=pipeline_config,
-            symbols=data.get('symbols', ["EURUSD", "GBPUSD", "USDJPY"]),
-            timeframes=data.get('timeframes', ["M1", "M5", "M15", "H1"]),
+            symbols=symbols,
+            timeframes=timeframes,
+            inherit_symbols=inherit_symbols,
+            inherit_timeframes=inherit_timeframes,
             auto_start=data.get('auto_start', True),
             config_file=filepath,
             hot_reload=data.get('hot_reload', True),
-            reload_interval=float(data.get('reload_interval', 60.0))
+            reload_interval=float(data.get('reload_interval', shared_reload_interval))
         )
         
         return unified_config
@@ -260,7 +343,6 @@ class ConfigLoader:
                 "config/indicators.json",
                 "config/indicators.yaml",
                 "config/indicators.yml",
-                "config/indicators.ini"
             ]
             
             for path in possible_paths:
@@ -271,7 +353,12 @@ class ConfigLoader:
             if config_file is None:
                 # 使用默认配置
                 logger.warning("No config file found, using default configuration")
-                return UnifiedIndicatorConfig()
+                shared_symbols, shared_timeframes, shared_reload_interval = _shared_indicator_defaults()
+                return UnifiedIndicatorConfig(
+                    symbols=shared_symbols,
+                    timeframes=shared_timeframes,
+                    reload_interval=shared_reload_interval,
+                )
         
         # 根据文件扩展名选择加载器
         config_file = str(config_file)
@@ -372,6 +459,8 @@ class ConfigManager:
                     },
                     "symbols": config.symbols,
                     "timeframes": config.timeframes,
+                    "inherit_symbols": config.inherit_symbols,
+                    "inherit_timeframes": config.inherit_timeframes,
                     "auto_start": config.auto_start,
                     "hot_reload": config.hot_reload,
                     "reload_interval": config.reload_interval

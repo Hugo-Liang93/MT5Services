@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from src.config.indicator_config import (
@@ -93,13 +93,15 @@ class UnifiedIndicatorManager:
         self.market_service.set_ohlc_event_sink(self._publish_closed_bar_event)
 
         logger.info(
-            "UnifiedIndicatorManager initialized with %s indicators",
+            "UnifiedIndicatorManager initialized with %s indicators across %s symbols x %s timeframes",
             len(self.config.indicators),
+            len(self.config.symbols),
+            len(self.config.timeframes),
         )
 
     def _init_components(self) -> None:
         self.pipeline: OptimizedPipeline = get_global_pipeline(self.config.pipeline)
-        self.pipeline.config = self.config.pipeline
+        self.pipeline.update_config(self.config.pipeline)
         self.dependency_manager = get_global_dependency_manager()
         self.dependency_manager.clear()
         self.metrics_collector = get_global_collector()
@@ -173,8 +175,9 @@ class UnifiedIndicatorManager:
 
             now = time.monotonic()
             if now >= next_reconcile_at:
-                self._reconcile_all()
-                self._last_reconcile_at = datetime.utcnow()
+                if self._has_reconcile_ready_targets():
+                    self._reconcile_all()
+                    self._last_reconcile_at = datetime.now(timezone.utc)
                 next_reconcile_at = time.monotonic() + reconcile_interval
                 continue
 
@@ -285,7 +288,7 @@ class UnifiedIndicatorManager:
         results: Dict[str, Dict[str, Any]],
         compute_time_ms: float,
     ) -> None:
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
         with self._results_lock:
             for name, value in results.items():
                 if value is None:
@@ -387,6 +390,8 @@ class UnifiedIndicatorManager:
     def _reconcile_all(self) -> None:
         for symbol in self.config.symbols:
             for timeframe in self.config.timeframes:
+                if not self._is_reconcile_target_ready(symbol, timeframe):
+                    continue
                 try:
                     self._reconcile_symbol_timeframe(symbol, timeframe)
                 except Exception:
@@ -418,6 +423,23 @@ class UnifiedIndicatorManager:
                 int(params.get("atr_period", 0)),
             )
         return max(max_lookback, 100)
+
+    def _reconcile_min_bars(self) -> int:
+        return min(max(self._get_max_lookback(), 2), 100)
+
+    def _is_reconcile_target_ready(self, symbol: str, timeframe: str) -> bool:
+        return self.market_service.has_cached_ohlc(
+            symbol,
+            timeframe,
+            minimum_bars=self._reconcile_min_bars(),
+        )
+
+    def _has_reconcile_ready_targets(self) -> bool:
+        for symbol in self.config.symbols:
+            for timeframe in self.config.timeframes:
+                if self._is_reconcile_target_ready(symbol, timeframe):
+                    return True
+        return False
 
     def get_indicator(
         self,
@@ -574,7 +596,7 @@ class UnifiedIndicatorManager:
             "pipeline": pipeline_stats,
             "results": result_stats,
             "config": config_stats,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
     def clear_cache(self) -> int:
@@ -600,7 +622,7 @@ class UnifiedIndicatorManager:
                 symbol=symbol,
                 timeframe=timeframe,
                 data={name: {name: value} for name, value in persisted.items()},
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 bar_time=latest_time,
                 compute_time_ms=0.0,
             )

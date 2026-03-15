@@ -5,18 +5,19 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 import configparser
-import json
 import os
+
+# Thin compatibility layer. New runtime code should prefer src.config getters
+# and runtime settings factories instead of importing from this module.
 
 from pydantic import BaseModel, Field
 
-from src.config.utils import resolve_config_path, load_ini_config
+from src.config.utils import resolve_config_path
 from src.config.centralized import (
     get_trading_config, get_interval_config, get_limit_config,
-    get_ingest_config, get_api_config, get_system_config,
-    get_shared_symbols, get_shared_timeframes, get_shared_default_symbol
+    get_ingest_config,
 )
 from src.indicators.types import IndicatorTask
 from src.config.indicator_config import normalize_indicator_func_path
@@ -51,6 +52,13 @@ class CompatIngestSettings(BaseModel):
     ingest_ohlc_interval: float = 30.0
     ingest_ohlc_intervals: dict = Field(default_factory=dict)
     ohlc_backfill_limit: int = 500
+    retry_attempts: int = 3
+    retry_backoff: float = 1.0
+    connection_timeout: float = 10.0
+    max_concurrent_symbols: int = 5
+    queue_monitor_interval: float = 5.0
+    health_check_interval: float = 30.0
+    max_allowed_delay: float = 60.0
 
 
 class CompatMarketSettings(BaseModel):
@@ -148,6 +156,13 @@ def load_ingest_settings() -> CompatIngestSettings:
         ingest_ohlc_interval=intervals.ohlc_interval,  # 使用共享配置
         ingest_ohlc_intervals={},  # 空字典，使用共享配置
         ohlc_backfill_limit=ingest.ohlc_backfill_limit,
+        retry_attempts=ingest.retry_attempts,
+        retry_backoff=ingest.retry_backoff,
+        connection_timeout=ingest.connection_timeout,
+        max_concurrent_symbols=ingest.max_concurrent_symbols,
+        queue_monitor_interval=ingest.queue_monitor_interval,
+        health_check_interval=ingest.health_check_interval,
+        max_allowed_delay=ingest.max_allowed_delay,
     )
 
 
@@ -187,7 +202,6 @@ def load_market_settings() -> CompatMarketSettings:
     trading = get_trading_config()
     intervals = get_interval_config()
     limits = get_limit_config()
-    api = get_api_config()
     
     # 加载缓存配置（保持兼容）
     cache_sec = _load_ini_section("cache.ini", "cache")
@@ -208,48 +222,35 @@ def load_market_settings() -> CompatMarketSettings:
 # 指标配置（保持原样）
 @lru_cache
 def load_indicator_settings() -> IndicatorSettings:
-    path = resolve_config_path("indicators.ini")
-    parser = configparser.ConfigParser()
-    if path:
-        parser.read(path, encoding="utf-8")
-    sec = parser["worker"] if parser.has_section("worker") else None
+    from src.config.indicator_config import ConfigLoader
+
+    path = resolve_config_path("indicators.json")
+    config = ConfigLoader.load(path) if path else ConfigLoader.load("config/indicators.json")
     return IndicatorSettings(
-        poll_seconds=_cfg_float(sec, "poll_seconds", 5.0),
-        reload_interval=_cfg_float(sec, "reload_interval", 60.0),
-        config_path=path,
-        backfill_enabled=_cfg_bool(sec, "backfill_enabled", True),
-        backfill_batch_size=_cfg_int(sec, "backfill_batch_size", 1000),
+        poll_seconds=float(config.pipeline.poll_interval),
+        reload_interval=float(config.reload_interval),
+        config_path=path or "config/indicators.json",
+        backfill_enabled=True,
+        backfill_batch_size=1000,
     )
 
 
 def load_indicator_tasks(config_path: Optional[str] = None) -> List[IndicatorTask]:
-    path = resolve_config_path(config_path or "indicators.ini")
+    from src.config.indicator_config import ConfigLoader
+
+    path = resolve_config_path(config_path or "indicators.json")
     if not path or not os.path.exists(path):
         return []
-    parser = configparser.ConfigParser()
-    parser.read(path, encoding="utf-8")
-    tasks: List[IndicatorTask] = []
-    for section in parser.sections():
-        if section.strip().lower() == "worker":
-            continue
-        func_path = parser.get(section, "func", fallback=None)
-        if not func_path:
-            continue
-        params_raw = parser.get(section, "params", fallback="{}")
-        try:
-            params = json.loads(params_raw)
-            if not isinstance(params, dict):
-                params = {}
-        except Exception:
-            params = {}
-        tasks.append(
-            IndicatorTask(
-                name=section,
-                func_path=normalize_indicator_func_path(func_path),
-                params=params,
-            )
+    config = ConfigLoader.load(path)
+    return [
+        IndicatorTask(
+            name=item.name,
+            func_path=normalize_indicator_func_path(item.func_path),
+            params=dict(item.params),
         )
-    return tasks
+        for item in config.indicators
+        if item.enabled
+    ]
 
 
 # 工具函数（保持原样）
@@ -293,29 +294,3 @@ def _cfg_bool(sec, key: str, default: bool):
     return val.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _cfg_list(sec, key: str, default):
-    if sec is None:
-        return default
-    raw = sec.get(key, fallback=None)
-    if raw is None:
-        return default
-    return [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
-
-
-def _cfg_map(sec, key: str, default: dict):
-    if sec is None:
-        return default
-    raw = sec.get(key, fallback=None)
-    if raw is None or not raw.strip():
-        return default
-    result = {}
-    for item in raw.split(","):
-        if ":" not in item:
-            continue
-        tf, val = item.split(":", 1)
-        tf = tf.strip().upper()
-        try:
-            result[tf] = float(val)
-        except ValueError:
-            continue
-    return result if result else default

@@ -7,11 +7,15 @@ from typing import Dict, Any, List
 import logging
 
 from src.api.deps import (
+    get_economic_calendar_service,
     get_health_monitor_instance,
     get_indicator_manager,
     get_ingestor,
-    get_monitoring_manager_instance
+    get_monitoring_manager_instance,
+    get_runtime_task_status,
+    get_startup_status,
 )
+from src.config import get_effective_config_snapshot
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
@@ -242,9 +246,81 @@ async def get_monitored_components() -> Dict[str, Any]:
         # 这里需要添加获取组件列表的方法
         return {
             "status": "success",
-            "components": ["data_ingestion", "indicator_calculation", "market_data"],
+            "components": ["data_ingestion", "indicator_calculation", "market_data", "economic_calendar"],
             "check_interval": monitoring_manager.check_interval
         }
     except Exception as e:
         logger.error(f"Failed to get monitored components: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/config/effective", summary="Get effective runtime config")
+async def get_effective_runtime_config() -> Dict[str, Any]:
+    try:
+        indicator_manager = get_indicator_manager()
+        snapshot = get_effective_config_snapshot()
+        snapshot["indicator_scope"] = {
+            "symbols": list(indicator_manager.config.symbols),
+            "timeframes": list(indicator_manager.config.timeframes),
+            "inherit_symbols": indicator_manager.config.inherit_symbols,
+            "inherit_timeframes": indicator_manager.config.inherit_timeframes,
+            "indicator_reload_interval": indicator_manager.config.reload_interval,
+            "indicator_poll_interval": indicator_manager.config.pipeline.poll_interval,
+            "indicator_cache_maxsize": indicator_manager.config.pipeline.cache_maxsize,
+            "indicator_cache_strategy": indicator_manager.config.pipeline.cache_strategy.value,
+        }
+        return snapshot
+    except Exception as e:
+        logger.error(f"Failed to get effective runtime config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/economic-calendar", summary="Get economic calendar monitoring summary")
+async def get_economic_calendar_monitoring() -> Dict[str, Any]:
+    try:
+        health_monitor = get_health_monitor_instance()
+        service = get_economic_calendar_service()
+        return {
+            "service": service.stats(),
+            "metrics": {
+                "staleness": health_monitor.get_recent_metrics("economic_calendar", "economic_calendar_staleness", 50),
+                "provider_failures": health_monitor.get_recent_metrics("economic_calendar", "economic_provider_failures", 50),
+            },
+        }
+    except Exception as e:
+        logger.error(f"Failed to get economic calendar monitoring summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/startup", summary="Get startup phase and timing summary")
+async def get_startup_monitoring() -> Dict[str, Any]:
+    try:
+        status = get_startup_status()
+        status["runtime"] = {
+            "monitoring_registered": True,
+            "components": {
+                "data_ingestion": get_ingestor().queue_stats()["threads"].get("ingest_alive", False),
+                "indicator_calculation": get_indicator_manager().get_performance_stats().get("event_loop_running", False),
+                "economic_calendar": get_economic_calendar_service().stats().get("running"),
+                "monitoring": bool(get_monitoring_manager_instance()),
+            },
+        }
+        return status
+    except Exception as e:
+        logger.error(f"Failed to get startup monitoring summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/runtime-tasks", summary="Get persisted runtime task status")
+async def get_runtime_tasks(component: str | None = None, task_name: str | None = None) -> Dict[str, Any]:
+    try:
+        return {
+            "items": get_runtime_task_status(component=component, task_name=task_name),
+            "filters": {
+                "component": component,
+                "task_name": task_name,
+            },
+        }
+    except Exception as e:
+        logger.error(f"Failed to get runtime task status: {e}")
         raise HTTPException(status_code=500, detail=str(e))

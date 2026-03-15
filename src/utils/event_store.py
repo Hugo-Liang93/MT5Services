@@ -6,11 +6,15 @@
 import sqlite3
 import json
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, List, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class LocalEventStore:
@@ -107,13 +111,13 @@ class LocalEventStore:
                 symbol, 
                 timeframe, 
                 bar_time.isoformat(), 
-                datetime.utcnow().isoformat()
+                _utc_now().isoformat()
             ))
             
             event_id = cursor.lastrowid
             
             # 更新统计
-            today = datetime.utcnow().date().isoformat()
+            today = _utc_now().date().isoformat()
             cursor.execute("""
                 INSERT OR IGNORE INTO event_stats (date) VALUES (?)
             """, (today,))
@@ -166,7 +170,7 @@ class LocalEventStore:
                 UPDATE ohlc_events 
                 SET processed = 1, processed_at = ?
                 WHERE id = ?
-            """, (datetime.utcnow().isoformat(), event_id))
+            """, (_utc_now().isoformat(), event_id))
             
             conn.commit()
             conn.close()
@@ -195,7 +199,7 @@ class LocalEventStore:
                 SET processed = 2, processed_at = ?
                 WHERE symbol = ? AND timeframe = ? AND bar_time = ? AND processed = 1
             """, (
-                datetime.utcnow().isoformat(),
+                _utc_now().isoformat(),
                 symbol,
                 timeframe,
                 bar_time.isoformat()
@@ -205,7 +209,7 @@ class LocalEventStore:
             
             if updated:
                 # 更新统计
-                today = datetime.utcnow().date().isoformat()
+                today = _utc_now().date().isoformat()
                 cursor.execute("""
                     UPDATE event_stats 
                     SET processed_events = processed_events + 1 
@@ -257,7 +261,7 @@ class LocalEventStore:
             
             if updated:
                 # 更新统计
-                today = datetime.utcnow().date().isoformat()
+                today = _utc_now().date().isoformat()
                 cursor.execute("""
                     UPDATE event_stats 
                     SET failed_events = failed_events + 1 
@@ -294,7 +298,7 @@ class LocalEventStore:
         Args:
             days_to_keep: 保留天数
         """
-        cutoff = datetime.utcnow() - timedelta(days=days_to_keep)
+        cutoff = _utc_now() - timedelta(days=days_to_keep)
         
         with self._lock:
             conn = sqlite3.connect(self.db_path)

@@ -7,7 +7,7 @@
 import sqlite3
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +30,7 @@ def test_event_store():
         event_store = LocalEventStore(test_db)
         
         # 测试发布事件
-        test_time = datetime.utcnow()
+        test_time = datetime.now(timezone.utc)
         event_id = event_store.publish_event("XAUUSD", "M1", test_time)
         print(f"✓ 发布事件成功，ID: {event_id}")
         

@@ -95,8 +95,10 @@
     "enable_monitoring": true,
     "poll_interval": 5.0
   },
-  "symbols": ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"],
-  "timeframes": ["M1", "M5", "M15", "H1", "H4"],
+  "inherit_symbols": true,
+  "inherit_timeframes": true,
+  "symbols": [],
+  "timeframes": [],
   "auto_start": true,
   "hot_reload": true,
   "reload_interval": 60.0

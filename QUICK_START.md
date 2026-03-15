@@ -1,247 +1,196 @@
-# 配置驱动指标管理器 - 快速入门
+# 快速开始
 
-## 🎯 一句话总结
-**不再需要理解多个模块，只需编辑配置文件，系统自动处理一切。**
+这份文档只保留最短闭环：配置、启动、检查服务是否真的跑起来。
 
-## 📋 核心文件
+## 1. 安装
 
-| 文件 | 用途 | 重要性 |
-|------|------|--------|
-| `config/indicators_v2.json` | **主配置文件**，管理所有指标 | ⭐⭐⭐⭐⭐ |
-| `src/indicators_v2/manager.py` | **统一管理器**，唯一入口点 | ⭐⭐⭐⭐⭐ |
-| `src/api/indicators.py` | **API端点**，提供HTTP访问 | ⭐⭐⭐⭐ |
-
-## 🚀 5分钟上手
-
-### 第一步：查看当前配置
 ```bash
-# 查看配置文件
-cat config/indicators_v2.json
-
-# 或使用API查看
-curl http://localhost:8808/indicators/list
+python -m venv .venv
 ```
 
-### 第二步：添加新指标
-编辑 `config/indicators_v2.json`，在 `indicators` 数组中添加：
-```json
-{
-  "name": "my_sma",
-  "func_path": "src.indicators.mean.sma",
-  "params": {"period": 30},
-  "dependencies": [],
-  "compute_mode": "standard",
-  "enabled": true,
-  "description": "我的30周期SMA"
-}
-```
-
-### 第三步：使用指标
-```python
-# 代码中使用
-from src.indicators_v2.manager import get_global_unified_manager
-
-manager = get_global_unified_manager(market_service)
-indicators = manager.get_all_indicators("EURUSD", "M1")
-print(indicators["my_sma"])
-
-# 或通过API
-# GET http://localhost:8808/indicators/EURUSD/M1/my_sma
-```
-
-## 🔧 常用操作
-
-### 1. 修改指标参数
-```json
-// 修改 config/indicators_v2.json
-"params": {"period": 25}  // 从30改为25
-```
-**系统自动**：60秒内检测变化，重新计算，更新缓存。
-
-### 2. 临时禁用指标
-```json
-"enabled": false  // 从true改为false
-```
-**系统自动**：停止计算，清理缓存，其他指标不受影响。
-
-### 3. 添加指标依赖
-```json
-"dependencies": ["sma20", "ema50"]  // 依赖其他指标
-```
-**系统自动**：更新依赖图，确保计算顺序正确。
-
-## 📊 API快速参考
-
-### 获取数据
 ```bash
-# 获取所有指标
-GET /indicators/{symbol}/{timeframe}
+# Linux/macOS
+source .venv/bin/activate
 
-# 获取单个指标
-GET /indicators/{symbol}/{timeframe}/{indicator_name}
-
-# 实时计算
-POST /indicators/compute
-{
-  "symbol": "EURUSD",
-  "timeframe": "M1",
-  "indicators": ["sma20", "rsi14"]
-}
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
 ```
 
-### 系统管理
 ```bash
-# 查看性能统计
-GET /indicators/performance/stats
-
-# 清空缓存
-POST /indicators/cache/clear
-
-# 查看依赖关系
-GET /indicators/dependency/graph?format=mermaid
+pip install -U pip
+pip install -e .
 ```
 
-## 💡 最佳实践
+如果你还要开发或测试：
 
-### 1. 配置文件管理
-```json
-{
-  "indicators": [
-    // 按类别分组，方便管理
-    // 趋势指标
-    {"name": "sma20", "tags": ["trend"], ...},
-    {"name": "ema50", "tags": ["trend"], ...},
-    
-    // 动量指标
-    {"name": "rsi14", "tags": ["momentum"], ...},
-    {"name": "macd", "tags": ["momentum"], ...},
-    
-    // 波动率指标
-    {"name": "boll20", "tags": ["volatility"], ...},
-    {"name": "atr14", "tags": ["volatility"], ...}
-  ]
-}
+```bash
+pip install -e ".[dev]"
+pip install -e ".[test]"
 ```
 
-### 2. 计算模式选择
-```json
-{
-  "compute_mode": "standard",      // 标准计算（大多数指标）
-  "compute_mode": "incremental",   // 增量计算（EMA、ATR等）
-  "compute_mode": "parallel"       // 并行计算（复杂指标）
-}
+## 2. 最少要检查的配置
+
+首次启动至少改这 4 个文件：
+
+- `config/mt5.ini`
+- `config/db.ini`
+- `config/app.ini`
+- `config/market.ini`
+
+如果你需要经济日历风控，再改：
+
+- `config/economic.ini`
+
+如果你需要指标计算，再看：
+
+- `config/indicators.json`
+
+## 3. 推荐最小配置
+
+### `config/app.ini`
+
+```ini
+[trading]
+symbols = XAUUSD,EURUSD
+timeframes = M1,H1
+default_symbol = XAUUSD
+
+[intervals]
+tick_interval = 0.5
+ohlc_interval = 30.0
+stream_interval = 1.0
+indicator_reload_interval = 60
+
+[limits]
+tick_limit = 200
+ohlc_limit = 200
+tick_cache_size = 5000
+ohlc_cache_limit = 500
+quote_stale_seconds = 1.0
+
+[system]
+timezone = Asia/Shanghai
+log_level = INFO
+api_host = 0.0.0.0
+api_port = 8808
 ```
 
-### 3. 缓存策略
-```json
-{
-  "cache_strategy": "lru_ttl",     // 推荐：LRU+TTL双重策略
-  "cache_ttl": 300.0,              // 缓存5分钟
-  "cache_maxsize": 1000            // 最多缓存1000项
-}
+### `config/mt5.ini`
+
+```ini
+[mt5]
+login = 12345678
+password = your_password
+server = YourBroker-Server
+path = C:/Program Files/MetaTrader 5/terminal64.exe
+timezone = Asia/Shanghai
 ```
 
-## 🔄 与传统方式对比
+### `config/db.ini`
 
-### 传统方式（复杂）
-```python
-# 需要导入多个模块
-from src.indicators.worker import IndicatorWorker
-from src.indicators.engine.integration import IndicatorIntegration
-
-# 手动初始化
-worker = IndicatorWorker(...)
-integration = IndicatorIntegration(...)
-
-# 手动处理交互
-worker.start()
-integration.register_indicators()
+```ini
+[db]
+host = localhost
+port = 5432
+user = postgres
+password = postgres
+database = mt5
+schema = public
 ```
 
-### 新方式（简单）
-```python
-# 只需一个导入
-from src.indicators_v2.manager import get_global_unified_manager
+### `config/market.ini`
 
-# 自动从配置文件初始化
-manager = get_global_unified_manager(market_service)
+```ini
+[api]
+host = 0.0.0.0
+port = 8808
+docs_enabled = true
+redoc_enabled = true
 
-# 简单使用
-indicators = manager.get_all_indicators("EURUSD", "M1")
+[security]
+auth_enabled = false
+api_key_header = X-API-Key
+api_key =
 ```
 
-## 🚨 常见问题
+## 4. 启动
 
-### Q1: 修改配置后多久生效？
-**A**: 默认60秒内自动检测并生效（可配置 `reload_interval`）。
-
-### Q2: 如何添加自定义指标函数？
-**A**: 
-1. 在 `src/indicators/` 下创建函数
-2. 在配置文件中引用函数路径
-3. 系统自动加载并开始计算
-
-### Q3: 指标计算失败怎么办？
-**A**: 
-1. 检查 `GET /indicators/performance/stats` 查看错误率
-2. 检查日志中的详细错误信息
-3. 确保数据足够（满足 `min_bars` 要求）
-
-### Q4: 如何监控系统状态？
-**A**: 
-- `GET /indicators/performance/stats` - 性能统计
-- `GET /monitoring/health` - 系统健康状态
-- 查看日志文件中的详细记录
-
-## 📈 性能优化建议
-
-### 1. 调整并行度
-```json
-{
-  "pipeline": {
-    "max_workers": 4,  // 根据CPU核心数调整
-    "enable_parallel": true
-  }
-}
+```bash
+python app.py
 ```
 
-### 2. 优化缓存
-```json
-{
-  "pipeline": {
-    "cache_ttl": 60.0,     // 高频交易可缩短TTL
-    "cache_maxsize": 5000  // 内存充足可增加缓存大小
-  }
-}
+## 5. 启动后先做 5 个检查
+
+### 基础检查
+
+```bash
+curl http://localhost:8808/health
+curl http://localhost:8808/monitoring/startup
+curl http://localhost:8808/monitoring/config/effective
 ```
 
-### 3. 选择计算模式
-- **增量计算**：适合EMA、ATR等可增量更新的指标
-- **并行计算**：适合MACD等复杂计算
-- **标准计算**：适合简单指标
+确认：
 
-## 🎯 总结
+- `mode` 是 `unified`
+- `market.connected` 为 `true`
+- `startup.steps` 里的 `storage`、`ingestion`、`economic_calendar`、`indicators`、`monitoring` 都是 `ready`
 
-### 你只需要记住：
-1. **编辑配置文件** (`config/indicators_v2.json`)
-2. **使用统一管理器** (`UnifiedIndicatorManager`)
-3. **通过API访问** (`/indicators/*` 端点)
+### 市场数据检查
 
-### 系统自动处理：
-- ✅ 依赖关系管理
-- ✅ 并行计算调度
-- ✅ 智能缓存管理
-- ✅ 性能监控统计
-- ✅ 配置热重载
-- ✅ 错误处理和重试
-
-### 开始使用：
-```python
-# 最简单的使用方式
-from src.indicators_v2.manager import get_global_unified_manager
-
-manager = get_global_unified_manager()
-indicators = manager.get_all_indicators("EURUSD", "M1")
+```bash
+curl "http://localhost:8808/symbols"
+curl "http://localhost:8808/quote?symbol=XAUUSD"
+curl "http://localhost:8808/ohlc?symbol=XAUUSD&timeframe=M1&limit=20"
 ```
 
-**现在就去编辑配置文件，享受配置驱动的便利吧！**
+### 指标检查
+
+```bash
+curl "http://localhost:8808/indicators/list"
+curl "http://localhost:8808/indicators/XAUUSD/M1"
+```
+
+### 经济日历检查
+
+```bash
+curl "http://localhost:8808/economic/calendar/status"
+curl "http://localhost:8808/economic/calendar/upcoming?hours=24"
+```
+
+### 监控检查
+
+```bash
+curl "http://localhost:8808/monitoring/queues"
+curl "http://localhost:8808/monitoring/economic-calendar"
+```
+
+## 6. 常见问题
+
+### `/health` 里 MT5 未连接
+
+优先检查：
+
+- MT5 终端是否已登录
+- `config/mt5.ini` 的 `login`、`server`、`path`
+- 当前运行用户是否能访问 MT5 终端
+
+### 指标没有结果
+
+优先检查：
+
+- `config/indicators.json` 是否启用了指标
+- 目标品种和时间框架是否在共享配置范围内
+- 是否已经有足够的 bars 满足 `min_bars`
+
+### 交易前检查拦截了下单
+
+优先检查：
+
+- `POST /trade/precheck`
+- `GET /economic/calendar/trade-guard`
+- `config/economic.ini` 中的 `trade_guard_*`
+
+## 7. 下一步
+
+- 需要完整配置说明：看 [CONFIG_GUIDE.md](CONFIG_GUIDE.md)
+- 需要整体架构和目录说明：看 [README.md](README.md)

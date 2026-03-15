@@ -12,7 +12,7 @@ import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Deque, Dict, List, Optional, Tuple
 
-from src.config import MarketSettings, load_market_settings
+from src.config import MarketSettings, get_runtime_market_settings
 from src.clients.mt5_market import MT5MarketClient, OHLC, Quote, SymbolInfo, Tick
 from src.utils.common import ohlc_key
 
@@ -36,7 +36,7 @@ class MarketDataService:
         client: MT5MarketClient,
         market_settings: Optional[MarketSettings] = None,
     ):
-        self.market_settings = market_settings or load_market_settings()
+        self.market_settings = market_settings or get_runtime_market_settings()
         self.client = client
         self._lock = threading.RLock()
         self._tick_cache: Dict[str, Deque[Tick]] = {}
@@ -190,7 +190,7 @@ class MarketDataService:
         status = self.client.health()
         with self._lock:
             status["cached_quotes"] = len(self._quote_cache)
-        status["timestamp"] = datetime.utcnow().isoformat() + "Z"
+        status["timestamp"] = datetime.now(timezone.utc).isoformat()
         return status
 
     # --- ingestion hooks ---
@@ -253,6 +253,12 @@ class MarketDataService:
     def get_latest_ohlc(self, symbol: Optional[str], timeframe: str) -> Optional[OHLC]:
         bars = self.get_ohlc_closed(symbol, timeframe, limit=1)
         return bars[-1] if bars else None
+
+    def has_cached_ohlc(self, symbol: Optional[str], timeframe: str, minimum_bars: int = 1) -> bool:
+        symbol = symbol or self.market_settings.default_symbol
+        key = ohlc_key(symbol, timeframe)
+        with self._lock:
+            return len(self._ohlc_closed_cache.get(key, [])) >= max(1, minimum_bars)
 
     def get_ohlc_history(
         self,

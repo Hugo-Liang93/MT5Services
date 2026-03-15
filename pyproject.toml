@@ -173,5 +173,3 @@ exclude_lines = [
     "@(abc\\.)?abstractmethod",
 ]
 
-[project.entry-points."console_scripts"]
-mt5services-cli = "src.cli:main"

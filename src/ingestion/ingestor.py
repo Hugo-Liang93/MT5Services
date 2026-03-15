@@ -41,6 +41,7 @@ class BackgroundIngestor:
         self._backfill_progress: Dict[str, datetime] = {}
         self._backfill_cutoff: Dict[str, datetime] = {}
         self._backfill_thread: Optional[threading.Thread] = None
+        self._symbol_cursor = 0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -54,6 +55,12 @@ class BackgroundIngestor:
             self._backfill_thread.start()
         self._thread = threading.Thread(target=self._run, name="mt5-ingestor", daemon=True)
         self._thread.start()
+        if 0 < self.settings.max_concurrent_symbols < len(self.settings.ingest_symbols):
+            logger.info(
+                "Background ingestor started with symbol window %s/%s per cycle",
+                self.settings.max_concurrent_symbols,
+                len(self.settings.ingest_symbols),
+            )
         logger.info("Background ingestor started")
 
     def stop(self) -> None:
@@ -69,7 +76,7 @@ class BackgroundIngestor:
         next_ohlc_at: Dict[str, float] = {}
         while not self._stop.is_set():
             start_loop = time.time()
-            for symbol in self.settings.ingest_symbols:
+            for symbol in self._symbols_for_cycle():
                 try:
                     self._ingest_quote(symbol)
                     self._ingest_ticks(symbol)
@@ -83,6 +90,20 @@ class BackgroundIngestor:
             # 根据设置tick_interval以及实际耗时计算睡眠时间，避免过快循环。
             sleep_for = max(0, tick_interval - elapsed)
             self._stop.wait(sleep_for)
+
+    def _symbols_for_cycle(self) -> List[str]:
+        symbols = list(self.settings.ingest_symbols)
+        if not symbols:
+            return []
+
+        window = max(1, int(self.settings.max_concurrent_symbols))
+        if window >= len(symbols):
+            return symbols
+
+        start = self._symbol_cursor % len(symbols)
+        selected = [symbols[(start + offset) % len(symbols)] for offset in range(window)]
+        self._symbol_cursor = (start + window) % len(symbols)
+        return selected
 
     def _ingest_quote(self, symbol: str) -> None:
         # 最新报价：用于 API 快速读取，缓存更新；写入缓存区，低频批量落库。
@@ -206,7 +227,7 @@ class BackgroundIngestor:
                     self.service.set_intrabar(symbol, tf, bar)
                     if not self.settings.intrabar_enabled:
                         continue
-                    recorded_at = datetime.utcnow().isoformat()
+                    recorded_at = datetime.now(timezone.utc).isoformat()
                     self.storage.enqueue(
                         "intrabar",
                         (

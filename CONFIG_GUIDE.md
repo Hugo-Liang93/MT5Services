@@ -1,266 +1,417 @@
-# 配置中心化系统使用指南
+# 配置指南
 
-## 🎯 概述
+当前项目采用“共享主配置 + 模块专属配置”的结构。`config/app.ini` 负责共享运行范围，其余文件负责各模块专属行为。
 
-配置中心化系统实现了**单一信号源（Single Source of Truth）**的设计目标。所有核心配置集中在 `config/app.ini` 中，模块配置文件自动继承主配置。
+## 配置文件总览
 
-## 📁 新的配置文件结构
+| 文件 | 用途 |
+| --- | --- |
+| `config/app.ini` | 共享交易范围、频率、限制、系统参数 |
+| `config/market.ini` | API Host/Port、认证、日志 |
+| `config/ingest.ini` | 采集器性能、重试、健康阈值 |
+| `config/storage.ini` | 存储通道与批量写入策略 |
+| `config/economic.ini` | 经济日历、Provider、交易风控 |
+| `config/mt5.ini` | MT5 连接参数 |
+| `config/db.ini` | 数据库连接参数 |
+| `config/cache.ini` | 缓存兼容项 |
+| `config/indicators.json` | 当前统一指标系统配置 |
 
-```
-config/
-├── app.ini              # 🎯 主配置（单一信号源）
-├── market.ini           # API特有配置（继承主配置）
-├── ingest.ini           # 采集特有配置（继承主配置）
-├── mt5.ini              # MT5连接配置
-├── db.ini               # 数据库配置
-├── cache.ini            # 缓存配置
-├── storage.ini          # 存储配置
-└── indicators.ini       # 指标配置
-```
+## 继承关系
 
-## 🔧 如何使用
+你可以把配置理解成三层：
 
-### 1. 修改核心配置
-只需编辑 `config/app.ini`：
+1. `app.ini` 定义共享默认值
+2. 模块专属 ini 在需要时覆盖本模块字段
+3. 部分敏感项和运行项可由环境变量覆盖
+
+典型例子：
+
+- API Host/Port：优先取 `market.ini[api]`，否则回退到 `app.ini[system]`
+- 交易品种与时间框架：由 `app.ini[trading]` 统一提供
+- 经济日历本地时区：默认继承系统时区
+- 指标作用域：默认继承共享交易品种和时间框架
+
+## 1. `config/app.ini`
+
+这是共享配置中心。
+
+### `trading`
+
+- `symbols`
+- `timeframes`
+- `default_symbol`
+
+### `intervals`
+
+- `tick_interval`
+- `ohlc_interval`
+- `stream_interval`
+- `indicator_reload_interval`
+
+### `limits`
+
+- `tick_limit`
+- `ohlc_limit`
+- `tick_cache_size`
+- `ohlc_cache_limit`
+- `quote_stale_seconds`
+
+### `system`
+
+- `timezone`
+- `log_level`
+- `modules_enabled`
+- `api_host`
+- `api_port`
+
+示例：
 
 ```ini
 [trading]
-symbols = XAUUSD          # 修改交易品种
-timeframes = M1,H1,D1     # 添加更多时间框架
-default_symbol = XAUUSD   # 设置默认品种
+symbols = XAUUSD,EURUSD,USDJPY
+timeframes = M1,M5,H1
+default_symbol = XAUUSD
 
 [intervals]
-tick_interval = 1.0       # 调整Tick采集频率
-ohlc_interval = 60.0      # 调整OHLC采集频率
-
-[limits]
-tick_limit = 500          # 调整API返回限制
-ohlc_limit = 500
+tick_interval = 0.5
+ohlc_interval = 30.0
+stream_interval = 1.0
+indicator_reload_interval = 60
 ```
 
-### 2. 模块特有配置
-各模块的特有配置仍在各自的文件中：
+## 2. `config/market.ini`
 
-- `market.ini` - API服务特有配置（端口、CORS等）
-- `ingest.ini` - 数据采集特有配置（重试策略、超时等）
-- `mt5.ini` - MT5连接配置
-- `db.ini` - 数据库连接配置
+管理 API 服务行为。
 
-### 3. 代码访问方式
+### `api`
 
-#### 新方式（推荐）
-```python
-from src.config import get_trading_config, get_interval_config
+- `host`
+- `port`
+- `enable_cors`
+- `docs_enabled`
+- `redoc_enabled`
 
-# 获取交易配置
-trading = get_trading_config()
-print(trading.symbols)      # ['XAUUSD']
-print(trading.timeframes)   # ['M1', 'H1']
-print(trading.default_symbol)  # 'XAUUSD'
+### `security`
 
-# 获取间隔配置
-intervals = get_interval_config()
-print(intervals.tick_interval)  # 0.5
-print(intervals.ohlc_interval)  # 30.0
+- `auth_enabled`
+- `api_key_header`
+- `api_key`
+
+### `logging`
+
+- `access_log_enabled`
+- `log_format`
+
+示例：
+
+```ini
+[api]
+host = 0.0.0.0
+port = 8808
+docs_enabled = true
+redoc_enabled = true
+
+[security]
+auth_enabled = true
+api_key_header = X-API-Key
+api_key =
 ```
 
-#### 旧方式（完全兼容）
-```python
-from src.config import load_ingest_settings, load_market_settings
+如果启用了 `auth_enabled`，但没有可用密钥，接口会直接拒绝请求。
 
-# 这些函数自动从主配置获取共享值
-ingest = load_ingest_settings()
-print(ingest.ingest_symbols)      # 从 app.ini 获取
-print(ingest.ingest_tick_interval) # 从 app.ini 获取
+## 3. `config/ingest.ini`
 
-market = load_market_settings()
-print(market.default_symbol)      # 从 app.ini 获取
-print(market.tick_limit)          # 从 app.ini 获取
+管理后台采集器。
+
+典型职责：
+
+- 初始回看时间
+- OHLC 回补上限
+- 重试次数与退避
+- 最大并发符号数
+- 队列监控频率
+- 健康检查周期
+- 可接受最大延迟
+
+它直接影响：
+
+- `BackgroundIngestor`
+- 监控告警阈值
+- 数据延迟判断
+
+## 4. `config/storage.ini`
+
+当前存储层是通道化设计。
+
+### 全局 section
+
+`[storage]` 常见字段：
+
+- `queue_full_policy`
+- `queue_put_timeout`
+- `quote_flush_enabled`
+
+### 通道 section
+
+每个通道可配置：
+
+- `type`
+- `maxsize`
+- `flush_interval`
+- `batch_size`
+- `page_size`
+- `enabled`
+
+当前代码里的主要通道包括：
+
+- `ticks`
+- `quotes`
+- `intrabar`
+- `ohlc`
+- `ohlc_indicators`
+- `economic_calendar`
+- `economic_calendar_updates`
+
+示例：
+
+```ini
+[ticks]
+type = ticks
+maxsize = 20000
+flush_interval = 1.0
+batch_size = 1000
+
+[economic_calendar]
+type = economic_calendar
+maxsize = 1000
+flush_interval = 2.0
+batch_size = 100
 ```
 
-## ✅ 配置验证
+## 5. `config/economic.ini`
 
-### 自动验证
-系统自动验证配置一致性：
-- 默认品种必须在交易品种列表中
-- 采集间隔必须合理
-- 配置格式必须正确
+负责经济日历抓取与交易前风控。
 
-### 手动验证
-运行验证脚本：
+### `economic`
+
+重点字段：
+
+- `enabled`
+- `lookback_days`
+- `lookahead_days`
+- `refresh_interval_seconds`
+- `calendar_sync_interval_seconds`
+- `near_term_refresh_interval_seconds`
+- `release_watch_interval_seconds`
+- `stale_after_seconds`
+- `high_importance_threshold`
+- `pre_event_buffer_minutes`
+- `post_event_buffer_minutes`
+- `curated_*`
+- `trade_guard_*`
+
+### `fred`
+
+- `enabled`
+- `api_key`
+
+### `tradingeconomics`
+
+- `enabled`
+- `api_key`
+
+重点理解：
+
+- `trade_guard_enabled`：是否启用交易前风控
+- `trade_guard_mode`：事件命中时是警告还是阻断
+- `trade_guard_calendar_health_mode`：Provider 异常时如何处理
+- `trade_guard_provider_failure_threshold`：Provider 失败阈值
+- `pre_event_buffer_minutes` / `post_event_buffer_minutes`：风险窗口缓冲
+
+示例：
+
+```ini
+[economic]
+enabled = true
+refresh_interval_seconds = 900
+high_importance_threshold = 3
+pre_event_buffer_minutes = 30
+post_event_buffer_minutes = 30
+trade_guard_enabled = true
+trade_guard_mode = warn_only
+trade_guard_lookahead_minutes = 180
+```
+
+## 6. `config/mt5.ini`
+
+负责 MT5 终端连接：
+
+- `login`
+- `password`
+- `server`
+- `path`
+- `timezone`
+
+这部分错误通常会直接导致 `/health` 中市场连接失败。
+
+## 7. `config/db.ini`
+
+负责 PostgreSQL/TimescaleDB：
+
+- `host`
+- `port`
+- `user`
+- `password`
+- `database`
+- `schema`
+
+## 8. `config/indicators.json`
+
+这是当前统一指标系统的主配置。
+
+顶层常见字段：
+
+- `indicators`
+- `pipeline`
+- `inherit_symbols`
+- `inherit_timeframes`
+- `symbols`
+- `timeframes`
+- `auto_start`
+- `hot_reload`
+- `reload_interval`
+
+单个指标字段：
+
+- `name`
+- `func_path`
+- `params`
+- `dependencies`
+- `compute_mode`
+- `enabled`
+- `description`
+- `tags`
+
+示例：
+
+```json
+{
+  "indicators": [
+    {
+      "name": "sma20",
+      "func_path": "src.indicators.core.mean.sma",
+      "params": {
+        "period": 20,
+        "min_bars": 20
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "20 周期简单移动平均",
+      "tags": ["trend", "mean"]
+    }
+  ],
+  "inherit_symbols": true,
+  "inherit_timeframes": true,
+  "auto_start": true,
+  "hot_reload": true,
+  "reload_interval": 60.0
+}
+```
+
+`compute_mode` 可选：
+
+- `standard`
+- `incremental`
+- `parallel`
+
+## 环境变量覆盖
+
+当前代码里明确支持的覆盖项主要有：
+
+- `MT5_API_HOST`
+- `MT5_API_PORT`
+- `MT5_API_KEY`
+- `TRADINGECONOMICS_API_KEY`
+- `FRED_API_KEY`
+
+推荐原则：
+
+- 普通配置进 ini/json
+- 密钥进环境变量
+- 临时端口覆盖用环境变量
+
+## 运行时验证
+
+最直接的配置验证接口：
+
 ```bash
-python3 validate_config.py
+curl http://localhost:8808/monitoring/config/effective
 ```
 
-### 验证配置一致性
-```python
-from src.config import validate_config_consistency
+这个接口适合排查：
 
-valid, message = validate_config_consistency()
-if valid:
-    print("配置验证通过")
-else:
-    print(f"配置验证失败: {message}")
-```
+- 共享配置是否已正确继承
+- 指标作用域是否正确
+- 热重载参数是否已生效
+- API 运行时 Host/Port 和限流参数是否符合预期
 
-## 🔄 配置热重载
+## 常见修改场景
 
-### 重新加载配置
-```python
-from src.config import reload_configs
+### 修改交易品种
 
-# 修改配置文件后调用
-reload_configs()
-```
+改 `config/app.ini`：
 
-### 获取原始配置（兼容性）
-```python
-from src.config import get_raw_config
-
-# 获取原始模块配置
-mt5_config = get_raw_config("mt5")
-db_config = get_raw_config("db")
-```
-
-## 🎯 针对单一品种交易的优化
-
-### 当前配置（XAUUSD）
 ```ini
 [trading]
-symbols = XAUUSD          # 单一品种
-timeframes = M1,H1        # 常用时间框架
-default_symbol = XAUUSD   # 默认品种
-
-[intervals]
-tick_interval = 0.5       # 黄金波动大，较高频率
-ohlc_interval = 30.0      # 适中频率
-
-[limits]
-tick_limit = 200          # 较大限制
-ohlc_limit = 200
-```
-
-### 扩展为多品种
-```ini
-[trading]
-symbols = XAUUSD,EURUSD,USDJPY,GBPUSD
-timeframes = M1,M5,M15,H1,H4,D1
+symbols = XAUUSD,EURUSD
 default_symbol = XAUUSD
 ```
 
-## 🚀 快速开始
+### 修改 API 端口
 
-### 1. 首次使用
-```bash
-# 验证配置系统
-python3 validate_config.py
+优先改 `config/market.ini`：
 
-# 查看配置摘要
-python3 validate_config.py
-```
-
-### 2. 修改配置
-1. 编辑 `config/app.ini`
-2. 运行验证脚本确认无误
-3. 重启应用或调用 `reload_configs()`
-
-### 3. 添加新模块
-1. 在 `config/` 目录创建模块配置文件
-2. 使用 `load_config_with_base()` 加载配置
-3. 确保共享配置从 `app.ini` 继承
-
-## 📊 配置继承示例
-
-### 主配置 (app.ini)
 ```ini
-[trading]
-symbols = XAUUSD
-timeframes = M1,H1
-default_symbol = XAUUSD
+[api]
+port = 8810
 ```
 
-### 模块配置 (ingest.ini)
-```ini
-[ingest]
-# 从 app.ini 继承 symbols, timeframes
-tick_initial_lookback_seconds = 20
-ohlc_backfill_limit = 500
-```
+或者临时覆盖：
 
-### 实际效果
-```python
-# ingest 配置包含：
-# - symbols: XAUUSD (从 app.ini 继承)
-# - timeframes: M1,H1 (从 app.ini 继承)
-# - tick_initial_lookback_seconds: 20 (特有)
-# - ohlc_backfill_limit: 500 (特有)
-```
-
-## ⚠️ 注意事项
-
-### 1. 配置格式
-- 使用 `%%` 转义 `%` 符号（如日志格式）
-- 列表使用逗号分隔：`symbols = XAUUSD,EURUSD`
-- 布尔值使用：`true/false`, `yes/no`, `1/0`
-
-### 2. 向后兼容性
-- 现有代码无需修改
-- 所有旧API接口保持原样
-- 逐步迁移到新接口
-
-### 3. 性能考虑
-- 配置使用缓存，首次加载后快速访问
-- 热重载会清除缓存，重新加载所有配置
-
-## 🔍 故障排除
-
-### 常见问题
-
-#### Q: 修改配置后没有生效？
-A: 调用 `reload_configs()` 或重启应用
-
-#### Q: 验证脚本报错？
-A: 检查配置格式，确保没有语法错误
-
-#### Q: 模块配置没有继承主配置？
-A: 确保使用 `load_config_with_base()` 或兼容层函数
-
-#### Q: % 符号导致错误？
-A: 使用 `%%` 转义，或使用 `interpolation=None`
-
-### 调试工具
-```python
-# 查看合并后的配置
-from src.config.utils import get_merged_config
-config = get_merged_config("market.ini")
-print(config)
-```
-
-## 📈 高级功能
-
-### 环境特定配置
 ```bash
-# 开发环境
-cp config/app.ini config/app-dev.ini
-
-# 生产环境  
-cp config/app.ini config/app-prod.ini
+set MT5_API_PORT=8810
 ```
 
-### 配置版本控制
-```python
-import hashlib
+### 调整经济风险窗口
 
-def get_config_hash():
-    """获取配置哈希，用于版本控制"""
-    with open("config/app.ini", "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
+改 `config/economic.ini`：
+
+```ini
+[economic]
+pre_event_buffer_minutes = 45
+post_event_buffer_minutes = 45
+trade_guard_lookahead_minutes = 240
 ```
 
-## 📞 支持
+### 调整写库吞吐
 
-如有问题，请：
-1. 运行 `python3 validate_config.py` 验证配置
-2. 检查配置文件格式
-3. 查看此文档的故障排除部分
-4. 联系开发团队
+改 `config/storage.ini`：
+
+```ini
+[ticks]
+maxsize = 50000
+batch_size = 2000
+flush_interval = 0.5
+```
+
+## 排查建议
+
+常用检查顺序：
+
+1. `GET /health`
+2. `GET /monitoring/startup`
+3. `GET /monitoring/config/effective`
+4. `GET /monitoring/queues`
+5. `GET /economic/calendar/status`
+6. `GET /indicators/performance/stats`

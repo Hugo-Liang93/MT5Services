@@ -1,248 +1,111 @@
-# ============================================
-# Python 特定文件
-# ============================================
-
-# 虚拟环境
-venv/
-env/
-.venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Python 字节码和缓存
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Build artifacts
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
+site/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
 *.egg
+*.egg-info/
+pip-wheel-metadata/
 MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
+# Tool caches
 .pytest_cache/
-cover/
-
-# mypy
 .mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.nox/
+.tox/
+.hypothesis/
+.cache/
+cython_debug/
 .dmypy.json
 dmypy.json
 
-# Pyre type checker
-.pyre/
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+nosetests.xml
+*.cover
+*.py,cover
 
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# ============================================
-# 环境变量和敏感数据
-# ============================================
-
-# 环境变量文件
+# Environments and secrets
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# 密钥文件
+.env.*
+!.env.example
 *.key
 *.pem
 *.crt
 *.cert
-
-# 配置文件（生产环境）
-config/production.ini
 config/secrets.ini
+config/production.ini
 
-# ============================================
-# 编辑器/IDE 文件
-# ============================================
-
-# VS Code
+# Editors and OS files
 .vscode/
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-*.code-workspace
-
-# PyCharm
 .idea/
 *.iml
 *.ipr
 *.iws
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Vim
+*.code-workspace
+.ipynb_checkpoints/
 *.swp
 *.swo
 *~
-
-# Sublime Text
-*.sublime-*
-
-# ============================================
-# 操作系统文件
-# ============================================
-
-# macOS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Linux
-*~
-
-# Windows
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# ============================================
-# 日志文件
-# ============================================
-
-# 应用日志
+# Logs and profiling
 logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
+*.prof
+*.line_profiler
 
-# 数据库相关
+# Local databases and runtime state
 *.sqlite
 *.sqlite3
 *.db
+events.db
+health_monitor.db
 
-# ============================================
-# 项目特定文件
-# ============================================
-
-# 数据文件（避免提交大文件）
+# Project-local generated data
 data/
-*.csv
-*.parquet
-*.feather
-*.h5
-*.hdf5
-
-# 模型文件
 models/
-*.pkl
-*.joblib
-*.model
-
-# 临时文件
 tmp/
 temp/
 *.tmp
 *.temp
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+*.model
 
-# 构建产物
-build/
-dist/
-*.whl
-*.tar.gz
-
-# 文档生成
-docs/_build/
-site/
-
-# ============================================
-# MT5 相关文件
-# ============================================
-
-# MT5 终端文件
+# MT5 artifacts
 *.ex5
 *.mq5
 *.mqh
 
-# MT5 日志
-*.log
-
-# ============================================
-# 其他
-# ============================================
-
-# 缓存目录
-.cache/
-
-# 依赖锁定文件（可选，根据项目决定是否忽略）
-# Pipfile.lock
-# poetry.lock
-# requirements/*.txt
-
-# 预提交钩子缓存
-.pre-commit-config.yaml
-
-# 覆盖率报告
-.coverage
-htmlcov/
-
-# 性能分析文件
-*.prof
-*.line_profiler
-
-# ============================================
-# 例外规则（不忽略的文件）
-# ============================================
-
-# 保留空的目录
+# Keep placeholders
 !.gitkeep
-
-# 示例配置文件
-!config/example.ini
-!config/sample.ini
-
-# 文档文件
-!docs/
-docs/_build/
-
-# 测试数据（小文件）
-!tests/data/sample.csv
-!tests/data/sample.json

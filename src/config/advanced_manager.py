@@ -16,6 +16,9 @@ from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, asdict
 import logging
 
+# Legacy watcher utility retained for smoke tests and low-dependency fallback
+# scenarios. It is not the primary runtime configuration path.
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,10 +46,17 @@ class ConfigWatcher:
         
         # 初始化文件修改时间
         self._init_file_mtimes()
+
+    def _iter_config_files(self):
+        """Yield config files watched by the legacy compatibility manager."""
+        yield from self.config_dir.glob("*.ini")
+        indicators_json = self.config_dir / "indicators.json"
+        if indicators_json.exists():
+            yield indicators_json
     
     def _init_file_mtimes(self):
         """初始化文件修改时间记录"""
-        for config_file in self.config_dir.glob("*.ini"):
+        for config_file in self._iter_config_files():
             try:
                 self.file_mtimes[str(config_file)] = config_file.stat().st_mtime
             except Exception:
@@ -92,7 +102,7 @@ class ConfigWatcher:
     
     def _check_for_changes(self):
         """检查配置变更"""
-        for config_file in self.config_dir.glob("*.ini"):
+        for config_file in self._iter_config_files():
             file_path = str(config_file)
             
             try:
@@ -197,8 +207,8 @@ class AdvancedConfigManager:
                 "description": "日志级别"
             }
         },
-        "indicators.ini": {
-            "worker.poll_seconds": {
+        "indicators.json": {
+            "pipeline.poll_interval": {
                 "type": "int",
                 "default": 5,
                 "env_var": "INDICATOR_POLL_SECONDS",
@@ -206,7 +216,7 @@ class AdvancedConfigManager:
                 "max": 60,
                 "description": "指标计算轮询间隔（秒）"
             },
-            "worker.reload_interval": {
+            "root.reload_interval": {
                 "type": "int",
                 "default": 60,
                 "env_var": "INDICATOR_RELOAD_INTERVAL",
@@ -219,9 +229,9 @@ class AdvancedConfigManager:
     
     def __init__(self, config_dir: str = "config"):
         self.config_dir = Path(config_dir)
-        self.configs: Dict[str, configparser.ConfigParser] = {}
+        self.configs: Dict[str, Any] = {}
         self.watcher = ConfigWatcher(config_dir)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         
         # 加载所有配置
         self._load_all_configs()
@@ -234,7 +244,7 @@ class AdvancedConfigManager:
     
     def _load_all_configs(self):
         """加载所有配置文件"""
-        for config_file in self.config_dir.glob("*.ini"):
+        for config_file in self.watcher._iter_config_files():
             self._load_config(config_file.name)
     
     def _load_config(self, filename: str):
@@ -246,8 +256,12 @@ class AdvancedConfigManager:
             return
         
         try:
-            config = configparser.ConfigParser()
-            config.read(config_path, encoding="utf-8")
+            if config_path.suffix.lower() == ".json":
+                with open(config_path, "r", encoding="utf-8") as fh:
+                    config = json.load(fh)
+            else:
+                config = configparser.ConfigParser()
+                config.read(config_path, encoding="utf-8")
             
             with self._lock:
                 self.configs[filename] = config
@@ -271,7 +285,7 @@ class AdvancedConfigManager:
             配置值（已进行类型转换）
         """
         # 检查schema定义
-        schema_key = f"{section}.{key}"
+        schema_key = f"{section}.{key}" if section else key
         schema = self.CONFIG_SCHEMA.get(filename, {}).get(schema_key)
         
         # 首先检查环境变量
@@ -287,7 +301,14 @@ class AdvancedConfigManager:
             # 从配置文件获取
             with self._lock:
                 config = self.configs.get(filename)
-                if config and config.has_option(section, key):
+                if filename.endswith(".json"):
+                    value = self._get_json_value(config, section, key)
+                    if value is not None:
+                        source = "file"
+                    else:
+                        value = None
+                        source = None
+                elif config and config.has_option(section, key):
                     value = config.get(section, key)
                     source = "file"
                 else:
@@ -359,13 +380,22 @@ class AdvancedConfigManager:
         """获取整个配置节"""
         with self._lock:
             config = self.configs.get(filename)
-            if not config or not config.has_section(section):
+            if not config:
                 return {}
-            
+
+            if filename.endswith(".json"):
+                current = self._get_json_node(config, section)
+                if not isinstance(current, dict):
+                    return {}
+                return {key: self.get(filename, section, key) for key in current.keys()}
+
+            if not config.has_section(section):
+                return {}
+
             result = {}
             for key in config.options(section):
                 result[key] = self.get(filename, section, key)
-            
+
             return result
     
     def set(self, filename: str, section: str, key: str, value: Any):
@@ -375,6 +405,15 @@ class AdvancedConfigManager:
         注意：这只会修改内存中的配置，不会写入文件
         """
         with self._lock:
+            if filename.endswith(".json"):
+                logger.warning(
+                    "AdvancedConfigManager does not mutate JSON config in memory; ignoring set(%s, %s, %s)",
+                    filename,
+                    section,
+                    key,
+                )
+                return
+
             if filename not in self.configs:
                 self.configs[filename] = configparser.ConfigParser()
             
@@ -400,6 +439,29 @@ class AdvancedConfigManager:
         """通知配置变更（简化实现）"""
         # 这里可以集成到事件系统
         logger.info(f"Notifying components about config change: {filename}")
+
+    def _get_json_node(self, config: Any, section: str) -> Any:
+        """Resolve a dotted section path within a JSON config payload."""
+        if not isinstance(config, dict):
+            return None
+        if not section or section == "root":
+            return config
+
+        current: Any = config
+        for part in section.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+            if current is None:
+                return None
+        return current
+
+    def _get_json_value(self, config: Any, section: str, key: str) -> Any:
+        """Read a value from JSON config using dotted section semantics."""
+        node = self._get_json_node(config, section)
+        if isinstance(node, dict):
+            return node.get(key)
+        return None
     
     def validate_all(self) -> Dict[str, List[str]]:
         """验证所有配置"""

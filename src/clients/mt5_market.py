@@ -126,7 +126,7 @@ class MT5MarketClient(MT5BaseClient):
     def get_ticks(self, symbol: str, limit: int, start: Optional[datetime] = None) -> List[Tick]:
         """支持从指定时间开始拉取，便于增量采集。"""
         self.connect()
-        start = start or (datetime.utcnow() - timedelta(seconds=self.settings.tick_initial_lookback_seconds))
+        start = start or (datetime.now(timezone.utc) - timedelta(seconds=self.settings.tick_initial_lookback_seconds))
         ticks = mt5.copy_ticks_from(symbol, start, limit, mt5.COPY_TICKS_ALL)
         if ticks is None:
             raise MT5MarketError(f"Failed to get ticks for {symbol}: {mt5.last_error()}")

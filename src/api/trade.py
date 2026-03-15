@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, Query
 from src.api.deps import get_trading_service
 from src.api.schemas import (
     ApiResponse,
-    TradeRequest,
     CloseRequest,
     CloseAllRequest,
     CancelOrdersRequest,
@@ -16,12 +15,32 @@ from src.api.schemas import (
     ModifyPositionsRequest,
     PositionModel,
     OrderModel,
+    TradePrecheckModel,
+    TradeRequest,
 )
 from src.api.error_codes import AIErrorCode, AIErrorAction, get_trade_error_details
 from src.clients.mt5_trade import MT5TradeError
+from src.core.pretrade_risk_service import PreTradeRiskBlockedError
 from src.core.trading_service import TradingService
 
 router = APIRouter(tags=["trade"])
+
+
+@router.post("/trade/precheck", response_model=ApiResponse[TradePrecheckModel])
+def trade_precheck(
+    request: TradeRequest,
+    service: TradingService = Depends(get_trading_service),
+) -> ApiResponse[TradePrecheckModel]:
+    result = service.precheck_trade(symbol=request.symbol)
+    return ApiResponse.success_response(
+        data=TradePrecheckModel(**result),
+        metadata={
+            "operation": "trade_precheck",
+            "symbol": request.symbol,
+            "side": request.side,
+            "volume": request.volume,
+        },
+    )
 
 
 @router.post("/trade", response_model=ApiResponse[dict])
@@ -65,6 +84,21 @@ def trade(
                 "price": result.get("price") if result else None,
                 "ticket": result.get("ticket") if result else None
             }
+        )
+    except PreTradeRiskBlockedError as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.TRADE_BLOCKED_BY_RISK,
+            error_message=str(exc),
+            suggested_action=AIErrorAction.WAIT_FOR_RISK_WINDOW,
+            details={
+                **get_trade_error_details(
+                    symbol=request.symbol,
+                    volume=request.volume,
+                    side=request.side,
+                    price=request.price,
+                ),
+                "risk_assessment": exc.assessment,
+            },
         )
     except MT5TradeError as exc:
         error_msg = str(exc)

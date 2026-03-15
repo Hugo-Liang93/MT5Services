@@ -2,10 +2,15 @@
 配置回退模块 - 当pydantic不可用时提供基本功能
 """
 
+import json
 import os
 import configparser
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
+
+# This module exists only as a lightweight fallback path. It still follows the
+# same single-source rule as the main runtime and reads indicator settings only
+# from config/indicators.json.
 
 # 基本数据类，替代pydantic BaseModel
 @dataclass
@@ -15,7 +20,7 @@ class IndicatorSettings:
     reload_interval: int = 60
     backfill_enabled: bool = True
     backfill_batch_size: int = 1000
-    config_path: str = "config/indicators.ini"
+    config_path: str = "config/indicators.json"
 
 @dataclass  
 class DBSettings:
@@ -83,34 +88,42 @@ def _convert_value(value: str) -> Any:
     return value
 
 def load_indicator_settings() -> IndicatorSettings:
+    # Fallback path still reads the unified indicator config file.
     """加载指标设置"""
-    config = load_ini_config_file("config/indicators.ini")
-    worker_section = config.get("worker", {})
+    config_path = "config/indicators.json"
+    worker_section = {}
+    config = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as fh:
+                config = json.load(fh)
+            worker_section = config.get("pipeline", {})
+        except Exception:
+            worker_section = {}
     
     return IndicatorSettings(
-        poll_seconds=worker_section.get("poll_seconds", 5),
-        reload_interval=worker_section.get("reload_interval", 60),
-        backfill_enabled=worker_section.get("backfill_enabled", True),
-        backfill_batch_size=worker_section.get("backfill_batch_size", 1000),
-        config_path=worker_section.get("config_path", "config/indicators.ini"),
+        poll_seconds=worker_section.get("poll_interval", 5),
+        reload_interval=config.get("reload_interval", 60),
+        backfill_enabled=True,
+        backfill_batch_size=1000,
+        config_path=config_path,
     )
 
-def load_indicator_tasks(config_path: str = "config/indicators.ini") -> List[IndicatorTask]:
+def load_indicator_tasks(config_path: str = "config/indicators.json") -> List[IndicatorTask]:
+    # Fallback path still reads the unified indicator config file.
     """加载指标任务"""
-    config = load_ini_config_file(config_path)
+    if not os.path.exists(config_path):
+        return []
+    with open(config_path, "r", encoding="utf-8") as fh:
+        config = json.load(fh)
     tasks = []
     
-    # 跳过worker节
-    for section_name, section_data in config.items():
-        if section_name == "worker":
-            continue
-        
-        # 创建任务
+    for indicator in config.get("indicators", []):
         task = IndicatorTask(
-            name=section_name,
-            func_path=section_data.get("func", ""),
-            params={k: v for k, v in section_data.items() if k != "func"},
-            min_bars=int(section_data.get("min_bars", 0)),
+            name=indicator.get("name"),
+            func_path=indicator.get("func_path", ""),
+            params=indicator.get("params", {}) or {},
+            min_bars=int((indicator.get("params", {}) or {}).get("min_bars", 0)),
         )
         tasks.append(task)
     

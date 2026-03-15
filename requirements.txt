@@ -1,54 +1,27 @@
-# 核心框架
+# Runtime dependencies only.
+# For editable install and dev/test/prod extras, use pyproject.toml:
+#   pip install -e .
+#   pip install -e ".[dev]"
+#   pip install -e ".[test]"
+#   pip install -e ".[prod]"
+
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 pydantic>=2.6.0
 python-dotenv>=1.0.1
-
-# MT5 连接
 MetaTrader5>=5.0.45
-
-# 数据库
 psycopg2-binary>=2.9.9
 sqlalchemy>=2.0.0
-
-# 数据处理
 pandas>=2.0.0
 numpy>=1.24.0
 ta-lib>=0.4.28
-
-# 缓存
 redis>=5.0.0
-
-# 监控
 prometheus-client>=0.19.0
-
-# 异步支持
-asyncio>=3.4.3
-
-# 配置管理
 pyyaml>=6.0.0
-
-# 测试
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-
-# 开发工具
-black>=23.11.0
-isort>=5.12.0
-
-# 日志
 structlog>=23.2.0
-
-# 安全
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
-
-# 时间处理
 pytz>=2023.3
 python-dateutil>=2.8.2
-
-# 网络
 requests>=2.31.0
-
-# 性能
 orjson>=3.9.0

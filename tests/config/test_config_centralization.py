@@ -3,10 +3,6 @@
 测试配置中心化系统
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from src.config import (
     # 集中式配置
     get_trading_config,
@@ -24,6 +20,7 @@ from src.config import (
     load_ingest_settings,
     load_market_settings,
 )
+from src.config.advanced_manager import AdvancedConfigManager
 
 
 def test_centralized_config():
@@ -115,7 +112,7 @@ def test_centralized_config():
     print("\n✅ 集中式配置系统测试通过！\n")
 
 
-def test_backward_compatibility():
+def test_compatibility_shims():
     """测试向后兼容性"""
     print("=== 测试向后兼容性 ===\n")
     
@@ -209,13 +206,26 @@ def test_config_inheritance():
     print("\n✅ 配置继承测试完成！\n")
 
 
+def test_advanced_manager_reads_indicators_json():
+    """兼容配置管理器应读取当前唯一指标配置文件。"""
+    manager = AdvancedConfigManager("config")
+    try:
+        poll_interval = manager.get("indicators.json", "pipeline", "poll_interval")
+        reload_interval = manager.get("indicators.json", "root", "reload_interval")
+
+        assert poll_interval == 5
+        assert reload_interval == 60
+    finally:
+        manager.stop()
+
+
 def main():
     """主测试函数"""
     print("开始测试配置中心化系统...\n")
     
     try:
         test_centralized_config()
-        test_backward_compatibility()
+        test_compatibility_shims()
         test_config_inheritance()
         
         print("=" * 50)

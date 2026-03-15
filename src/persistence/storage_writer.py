@@ -63,6 +63,28 @@ class StorageWriter:
         """通用入队接口，便于外部自定义通道使用。"""
         self._enqueue(channel, item)
 
+    def write_now(self, channel: str, items: Iterable[tuple]) -> int:
+        """Write a batch directly through the registered channel writer."""
+        ch = self._channels.get(channel)
+        if not ch:
+            logger.warning("Channel %s not registered, skipping direct write", channel)
+            return 0
+        enabled_fn = ch["enabled_fn"]  # type: ignore[assignment]
+        if not enabled_fn():
+            return 0
+        batch = list(items)
+        if not batch:
+            return 0
+        ch["write_fn"](batch)  # type: ignore[index]
+        self._last_flush[channel] = time.time()
+        return len(batch)
+
+    def get_channel_batch_size(self, channel: str) -> Optional[int]:
+        ch = self._channels.get(channel)
+        if not ch:
+            return None
+        return int(ch["batch_size"])
+
     # --- 内部线程 ---
     def _run(self) -> None:
         while not self._stop.is_set() or self._has_pending():
@@ -269,6 +291,10 @@ class StorageWriter:
                 rows, upsert=self.settings.ohlc_upsert_open_bar, page_size=page_size
             ),
             "ohlc_indicators": lambda rows: self.db.write_ohlc(rows, upsert=True, page_size=page_size),
+            "economic_calendar": lambda rows: self.db.write_economic_calendar(rows, page_size=page_size),
+            "economic_calendar_updates": lambda rows: self.db.write_economic_calendar_updates(
+                rows, page_size=page_size
+            ),
         }
         return mapping.get(ch_type)
 
@@ -321,6 +347,6 @@ class StorageWriter:
         if policy != "auto":
             return policy
         channel_type = str(ch.get("type", "")).strip().lower()
-        if channel_type in {"ohlc", "ohlc_indicators"}:
+        if channel_type in {"ohlc", "ohlc_indicators", "economic_calendar", "economic_calendar_updates"}:
             return "block"
         return "drop_oldest"

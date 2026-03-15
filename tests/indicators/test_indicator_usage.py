@@ -3,10 +3,7 @@
 测试指标计算的使用情况和问题
 """
 
-import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from datetime import datetime, timedelta
 import time
 
@@ -31,9 +28,9 @@ def test_indicator_flow():
     
     # 1. 检查配置文件
     print("\n1. 配置文件检查:")
-    config_path = "config/indicators.ini"
+    config_path = "config/indicators.json"
     if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
+        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
             print(f"✅ 配置文件存在: {config_path}")
             
@@ -96,7 +93,7 @@ def test_indicator_flow():
     # 检查worker.py中的关键方法
     worker_file = "src/indicators/worker.py"
     if os.path.exists(worker_file):
-        with open(worker_file, 'r') as f:
+        with open(worker_file, "r", encoding="utf-8", errors="replace") as f:
             worker_content = f.read()
             
             # 检查关键方法
@@ -121,7 +118,7 @@ def test_indicator_flow():
     # 检查OHLCModel是否包含indicators字段
     schemas_file = "src/api/schemas.py"
     if os.path.exists(schemas_file):
-        with open(schemas_file, 'r') as f:
+        with open(schemas_file, "r", encoding="utf-8", errors="replace") as f:
             schemas_content = f.read()
             if "indicators: Optional[Dict[str, float]]" in schemas_content:
                 print("✅ OHLCModel 包含 indicators 字段")
@@ -178,7 +175,7 @@ def test_indicator_flow():
     
     print("""
 当前指标计算系统的主要特点：
-1. 配置驱动：从 indicators.ini 加载指标任务
+1. 配置驱动：从 indicators.json 加载指标任务
 2. 事件驱动：基于新K线触发指标计算
 3. 缓存集成：指标数据存储在 MarketDataService 缓存
 4. API 可用：通过 OHLCModel 的 indicators 字段返回

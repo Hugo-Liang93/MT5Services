@@ -1,127 +1,303 @@
-# MT5 Market Data Service
+# MT5Services
 
-Python FastAPI 服务，基于 MetaTrader5 终端实时获取行情、tick 与 K 线数据，并提供 REST/SSE 接口。
+Config rules:
+- Runtime code should read config through `src.config`.
+- `config/indicators.json` is the only indicator config entrypoint.
+- `load_*`, `compat`, `fallback`, and watcher utilities are compatibility layers, not the primary runtime path.
 
-## 快速开始
+MT5Services 是一个基于 FastAPI 的统一运行服务，围绕 MetaTrader 5 提供行情采集、历史落库、指标计算、账户与交易接口、经济日历风控和系统监控。
 
-### 1. 环境设置
-```bash
-# 克隆仓库
-git clone https://github.com/Hugo-Liang93/MT5Services.git
-cd MT5Services
+当前仓库已经收敛为单一运行模式，默认入口是 `python app.py`，不再区分多套启动方式。
 
-# 创建虚拟环境（推荐）
-python -m venv venv
+## 功能概览
 
-# 激活虚拟环境
-# Linux/macOS:
-source venv/bin/activate
-# Windows:
-venv\Scripts\activate
+- 市场数据：`quote`、`ticks`、`ohlc`、盘中 OHLC 序列、SSE 流订阅
+- 持久化：Ticks、Quotes、OHLC、指标结果、经济日历事件、运行任务状态
+- 指标系统：`config/indicators.json` + `src/indicators/manager.py`
+- 交易能力：账户查询、持仓/挂单查询、下单、平仓、改单、保证金预估
+- 宏观风控：经济日历抓取、事件筛选、风险时间窗、交易前检查
+- 系统监控：健康检查、队列状态、性能指标、启动阶段、有效配置快照
+
+## 运行架构
+
+统一启动链路如下：
+
+1. `app.py` 解析 Host/Port 并启动 `uvicorn src.api:app`
+2. `src/api/__init__.py` 创建 FastAPI 应用并注册全部路由
+3. `src/api/deps.py` 在 `lifespan` 中初始化并启动核心组件
+
+默认启动的核心组件：
+
+- `MarketDataService`
+- `StorageWriter`
+- `BackgroundIngestor`
+- `EconomicCalendarService`
+- `PreTradeRiskService`
+- `TradingService`
+- `UnifiedIndicatorManager`
+- `HealthMonitor`
+- `MonitoringManager`
+
+启动顺序：
+
+1. `storage`
+2. `ingestion`
+3. `economic_calendar`
+4. `indicators`
+5. `monitoring`
+
+运行时可通过 `GET /monitoring/startup` 和 `GET /monitoring/runtime-tasks` 查看阶段状态。
+
+## 目录结构
+
+```text
+MT5Services/
+├─ app.py
+├─ config/
+│  ├─ app.ini
+│  ├─ market.ini
+│  ├─ ingest.ini
+│  ├─ storage.ini
+│  ├─ economic.ini
+│  ├─ mt5.ini
+│  ├─ db.ini
+│  ├─ cache.ini
+│  └─ indicators.json
+├─ src/
+│  ├─ api/
+│  ├─ clients/
+│  ├─ config/
+│  ├─ core/
+│  ├─ indicators/
+│  ├─ ingestion/
+│  ├─ monitoring/
+│  ├─ persistence/
+│  └─ utils/
+├─ tests/
+│  ├─ api/
+│  ├─ config/
+│  ├─ core/
+│  ├─ data/
+│  ├─ indicators/
+│  ├─ integration/
+│  └─ smoke/
+└─ examples/
 ```
 
-### 2. 安装依赖
+## 安装
+
+环境要求：
+
+- Python 3.9+
+- 已安装并可登录的 MetaTrader 5 终端
+- PostgreSQL/TimescaleDB
+
+推荐安装方式：
+
 ```bash
-# 安装基础依赖
+python -m venv .venv
+```
+
+```bash
+# Linux/macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+```bash
+pip install -U pip
+pip install -e .
+```
+
+开发依赖：
+
+```bash
+pip install -e ".[dev]"
+```
+
+测试依赖：
+
+```bash
+pip install -e ".[test]"
+```
+
+如果只使用 requirements：
+
+```bash
 pip install -r requirements.txt
-
-# 安装开发环境依赖（可选）
-pip install -r requirements.txt[dev]
 ```
 
-### 3. 配置环境
-```bash
-# 复制环境变量模板
-cp .env.example .env
+## 最低配置要求
 
-# 编辑 .env 文件，填入你的配置
-# 需要配置 MT5 登录信息、数据库连接等
-```
+首次启动至少需要检查这些文件：
 
-### 4. 启动服务
-```bash
-python app.py
-# 访问 http://localhost:8808/docs 查看接口文档
-```
+- `config/mt5.ini`
+- `config/db.ini`
+- `config/app.ini`
+- `config/market.ini`
 
-## 详细安装指南
-更多安装选项和配置说明，请参考 [INSTALLATION.md](INSTALLATION.md)。
+按需再配置：
 
-## 运行前准备
-- 本机已安装并登录 MT5 终端（确保终端保持运行）。
-- 配置环境变量（可放入 `.env`）：
-  ```
-  MT5_LOGIN=12345678
-  MT5_PASSWORD=your_password
-  MT5_SERVER=YourBroker-Server
-  MT5_PATH="C:/Program Files/MetaTrader 5/terminal64.exe"  # 如需指定
-  DEFAULT_SYMBOL=EURUSD
-  TIMEZONE=UTC
-  STREAM_INTERVAL_SECONDS=1.0
-  TICK_LIMIT=200
-  OHLC_LIMIT=200
-  TICK_CACHE_SIZE=5000
+- `config/economic.ini`
+- `config/storage.ini`
+- `config/indicators.json`
 
-  # 持续采集配置
-  INGEST_SYMBOLS=EURUSD,XAUUSD
-  INGEST_TICK_INTERVAL=0.5
-  INGEST_OHLC_TIMEFRAMES=M1,H1
-  INGEST_OHLC_INTERVAL=30
-  # 批量落库控制
-  TICK_FLUSH_INTERVAL=1.0
-  TICK_FLUSH_BATCH_SIZE=500
-  TICK_QUEUE_MAXSIZE=20000
-  QUOTE_FLUSH_ENABLED=false
-  QUOTE_FLUSH_INTERVAL=1.0
-  QUOTE_FLUSH_BATCH_SIZE=200
-  QUOTE_QUEUE_MAXSIZE=5000
-  OHLC_FLUSH_INTERVAL=1.0
-  OHLC_FLUSH_BATCH_SIZE=200
-  OHLC_QUEUE_MAXSIZE=5000
-  INTRABAR_ENABLED=true
-  INTRABAR_FLUSH_INTERVAL=5.0
-  INTRABAR_FLUSH_BATCH_SIZE=200
-  INTRABAR_QUEUE_MAXSIZE=10000
-  FLUSH_RETRY_ATTEMPTS=3
-  FLUSH_RETRY_BACKOFF=1.0
-  OHLC_UPSERT_OPEN_BAR=false
-  OHLC_BACKFILL_LIMIT=500
+敏感信息建议通过环境变量注入，不要把真实密钥直接写入仓库配置：
 
-  # TimescaleDB 连接
-  PG_HOST=localhost
-  PG_PORT=5432
-  PG_USER=postgres
-  PG_PASSWORD=postgres
-  PG_DATABASE=mt5
-  PG_SCHEMA=public
-  ```
+- `MT5_API_HOST`
+- `MT5_API_PORT`
+- `MT5_API_KEY`
+- `TRADINGECONOMICS_API_KEY`
+- `FRED_API_KEY`
 
 ## 启动
+
 ```bash
 python app.py
-# 访问 http://localhost:8000/docs 查看接口文档
 ```
 
-启动后会自动：
-- 初始化 TimescaleDB schema（ticks/quotes/ohlc hypertable）。
-- 背景线程按 `INGEST_SYMBOLS` 持续从 MT5 拉取 quote/tick/ohlc，更新内存缓存；tick/quote/ohlc 走缓冲+批量落库（quote 入库可通过 `QUOTE_FLUSH_ENABLED` 开关）。
-- OHLC 默认只写已收盘 bar；如需盘中持续更新未收盘 bar，开启 `OHLC_UPSERT_OPEN_BAR=true`。
-- 启动时按数据库最新时间补全 OHLC（最多 `OHLC_BACKFILL_LIMIT` 条），避免断档。
+或：
 
-## 可用接口
-- `GET /health` 检查连接状态
-- `GET /symbols` 获取可用合约列表
-- `GET /quote?symbol=EURUSD` 最新报价
-- `GET /ticks?symbol=EURUSD&limit=200` 近期 ticks
-- `GET /ohlc?symbol=EURUSD&timeframe=M1&limit=200` K 线数据
-- `GET /stream?symbol=EURUSD` SSE 流式报价（默认 1s 轮询，可用 `interval` 调整）
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 8808
+```
 
-## 结构
-- `src/config/` 配置加载（.env 支持）
-- `src/clients/mt5_market.py` MT5 行情封装（初始化、重连、行情/tick/K 线拉取）
-- `src/core/market_service.py` 行情缓存与业务层
-- `src/ingestion/ingestor.py` 后台采集线程（写缓存+TimescaleDB）
-- `src/persistence/db.py` TimescaleDB schema/写入封装
-- `src/api/__init__.py` FastAPI 路由与采集生命周期（market/account/trade 模块化）
-- `app.py` 启动入口
-- `src/indicators/` 指标模块（`ta.py` 基础指标及装饰器包装的标准化指标；`worker.py` 配置驱动后台计算，指标函数签名统一 `fn(bars, params) -> dict`，配置示例见 `config/indicators.ini`）
+默认可访问：
+
+- [Swagger](http://localhost:8808/docs)
+- [ReDoc](http://localhost:8808/redoc)
+- [Health](http://localhost:8808/health)
+
+## 核心接口
+
+### 基础状态
+
+- `GET /health`
+- `GET /monitoring/health`
+- `GET /monitoring/startup`
+- `GET /monitoring/runtime-tasks`
+- `GET /monitoring/config/effective`
+
+### 市场数据
+
+- `GET /symbols`
+- `GET /symbol/info`
+- `GET /quote`
+- `GET /ticks`
+- `GET /quotes/history`
+- `GET /ohlc`
+- `GET /ohlc/history`
+- `GET /ohlc/intrabar/series`
+- `GET /stream`
+
+### 账户与交易
+
+- `GET /account/info`
+- `GET /account/positions`
+- `GET /account/orders`
+- `POST /trade/precheck`
+- `POST /trade`
+- `POST /close`
+- `POST /close_all`
+- `POST /cancel_orders`
+- `POST /estimate_margin`
+- `PUT /modify_orders`
+- `PUT /modify_positions`
+- `GET /positions`
+- `GET /orders`
+
+### 经济日历
+
+- `POST /economic/calendar/refresh`
+- `GET /economic/calendar`
+- `GET /economic/calendar/upcoming`
+- `GET /economic/calendar/high-impact`
+- `GET /economic/calendar/curated`
+- `GET /economic/calendar/risk-windows`
+- `GET /economic/calendar/risk-windows/merged`
+- `GET /economic/calendar/status`
+- `GET /economic/calendar/trade-guard`
+- `GET /economic/calendar/updates`
+
+### 指标系统
+
+- `GET /indicators/list`
+- `GET /indicators/{symbol}/{timeframe}`
+- `GET /indicators/{symbol}/{timeframe}/{indicator_name}`
+- `POST /indicators/compute`
+- `GET /indicators/performance/stats`
+- `POST /indicators/cache/clear`
+- `GET /indicators/dependency/graph`
+
+## 配置文件职责
+
+| 文件 | 作用 |
+| --- | --- |
+| `config/app.ini` | 共享交易范围、频率、限制、系统参数 |
+| `config/market.ini` | API Host/Port、认证、日志 |
+| `config/ingest.ini` | 采集节奏、性能、健康阈值 |
+| `config/storage.ini` | 存储通道队列与 flush 策略 |
+| `config/economic.ini` | 日历抓取、事件筛选、交易风控 |
+| `config/mt5.ini` | MT5 连接参数 |
+| `config/db.ini` | 数据库连接 |
+| `config/cache.ini` | 缓存兼容参数 |
+| `config/indicators.json` | 当前统一指标配置 |
+
+更细的说明见 [CONFIG_GUIDE.md](CONFIG_GUIDE.md)。
+
+## 测试与质量工具
+
+当前 `tests/` 已按目录拆分：
+
+- `tests/api`
+- `tests/config`
+- `tests/core`
+- `tests/data`
+- `tests/indicators`
+- `tests/integration`
+- `tests/smoke`
+
+常用命令：
+
+```bash
+pytest
+```
+
+```bash
+black src tests
+isort src tests
+mypy src
+flake8 src tests
+```
+
+## API Key 认证
+
+在 `config/market.ini` 中启用：
+
+```ini
+[security]
+auth_enabled = true
+api_key_header = X-API-Key
+api_key =
+```
+
+更推荐通过环境变量提供：
+
+```bash
+set MT5_API_KEY=replace-with-your-key
+```
+
+调用示例：
+
+```bash
+curl -H "X-API-Key: replace-with-your-key" http://localhost:8808/health
+```
+
+## 推荐阅读
+
+- [QUICK_START.md](QUICK_START.md)
+- [CONFIG_GUIDE.md](CONFIG_GUIDE.md)
+
+如果文档与当前源码实现不一致，以 `app.py`、`src/api/`、`src/config/`、`src/indicators/manager.py` 为准。

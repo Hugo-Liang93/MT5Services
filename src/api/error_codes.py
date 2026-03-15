@@ -41,6 +41,7 @@ class AIErrorCode(str, Enum):
     MARKET_CLOSED = "MARKET_CLOSED"
     TRADE_DISABLED = "TRADE_DISABLED"
     TRADE_LIMIT_EXCEEDED = "TRADE_LIMIT_EXCEEDED"
+    TRADE_BLOCKED_BY_RISK = "TRADE_BLOCKED_BY_RISK"
 
     ACCOUNT_INFO_FAILED = "ACCOUNT_INFO_FAILED"
     
@@ -108,6 +109,7 @@ class AIErrorAction(str, Enum):
     WAIT_FOR_CONNECTION = "wait_for_connection"
     WAIT_FOR_MARKET_OPEN = "wait_for_market_open"
     WAIT_FOR_ACCOUNT_UPDATE = "wait_for_account_update"
+    WAIT_FOR_RISK_WINDOW = "wait_for_risk_window"
     
     # 鏁版嵁鐩稿叧
     USE_FALLBACK_DATA = "use_fallback_data"
@@ -171,6 +173,7 @@ ERROR_ACTION_MAPPING = {
     AIErrorCode.MARKET_CLOSED: AIErrorAction.WAIT_FOR_MARKET_OPEN,
     AIErrorCode.TRADE_DISABLED: AIErrorAction.CHECK_PERMISSIONS,
     AIErrorCode.TRADE_LIMIT_EXCEEDED: AIErrorAction.CLOSE_SOME_POSITIONS,
+    AIErrorCode.TRADE_BLOCKED_BY_RISK: AIErrorAction.WAIT_FOR_RISK_WINDOW,
     
     # 璐︽埛鐩稿叧
     AIErrorCode.ACCOUNT_NOT_FOUND: AIErrorAction.CHECK_ACCOUNT_STATUS,
