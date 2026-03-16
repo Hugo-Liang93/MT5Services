@@ -152,6 +152,10 @@ pip install -r requirements.txt
 - `TRADINGECONOMICS_API_KEY`
 - `FRED_API_KEY`
 
+也可以使用本地私有覆盖文件（不会进 Git）：
+
+- `config/*.local.ini`（例如 `config/market.local.ini`）
+
 ## 启动
 
 ```bash

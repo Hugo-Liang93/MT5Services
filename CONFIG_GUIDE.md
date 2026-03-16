@@ -24,6 +24,27 @@
 2. 模块专属 ini 在需要时覆盖本模块字段
 3. 部分敏感项和运行项可由环境变量覆盖
 
+## `.env` 与 `config/*.ini` 的职责划分
+
+推荐遵循下面的边界，避免把密钥提交到仓库：
+
+- `config/*.ini`：可审计、可共享、非敏感配置（默认值、功能开关、采集频率、限流参数）
+- `.env`：敏感信息和临时覆盖（API Key、临时 Host/Port）
+- `config/*.local.ini`：机器/环境私有覆盖（同样用于敏感信息），由 `.gitignore` 忽略
+
+优先级（高 → 低）：
+
+1. 环境变量（如 `MT5_API_KEY`、`MT5_API_HOST`、`MT5_API_PORT`）
+2. `config/*.local.ini`（例如 `config/market.local.ini`）
+3. 模块配置（例如 `config/market.ini`）
+4. 共享配置（`config/app.ini`）
+
+这样可以做到：
+
+- 团队共享稳定默认值
+- 本地/生产环境注入密钥不入库
+- 出问题时仍可在 `monitoring/config/effective` 里看到来源
+
 典型例子：
 
 - API Host/Port：优先取 `market.ini[api]`，否则回退到 `app.ini[system]`
@@ -96,6 +117,9 @@ indicator_reload_interval = 60
 - `auth_enabled`
 - `api_key_header`
 - `api_key`
+
+> 建议：`api_key` 不要写在 `config/market.ini`。优先使用环境变量 `MT5_API_KEY`，
+> 或放到本地私有文件 `config/market.local.ini`。
 
 ### `logging`
 
@@ -340,6 +364,16 @@ trade_guard_lookahead_minutes = 180
 - 普通配置进 ini/json
 - 密钥进环境变量
 - 临时端口覆盖用环境变量
+
+## 本地私有覆盖（避免提交密钥）
+
+项目支持 `*.local.ini` 覆盖层，且已默认忽略 Git。
+
+例如：
+
+1. 复制模板：`cp config/market.local.ini.example config/market.local.ini`
+2. 在 `config/market.local.ini` 中写入 `api_key`
+3. 启动服务，运行时会自动覆盖 `config/market.ini` 同名字段
 
 ## 运行时验证
 

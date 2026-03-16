@@ -27,15 +27,32 @@ def load_ini_config(
 
 
 def load_config_with_base(
-    config_name: str, base_config: str = "app.ini"
+    config_name: str, base_config: str = "app.ini", base_dir: Optional[str] = None
 ) -> Tuple[Optional[str], Optional[configparser.ConfigParser]]:
-    """Load target config and merge it on top of base config."""
-    base_path, base_parser = load_ini_config(base_config)
-    if not base_parser:
-        return load_ini_config(config_name)
+    """Load target config with layered overrides.
 
-    target_path, target_parser = load_ini_config(config_name)
-    if not target_parser:
+    Merge order (later overrides earlier):
+    1) base config, e.g. app.ini
+    2) base local override, e.g. app.local.ini
+    3) target config, e.g. market.ini
+    4) target local override, e.g. market.local.ini
+    """
+    base_path, base_parser = load_ini_config(base_config, base_dir=base_dir)
+    if not base_parser:
+        return load_ini_config(config_name, base_dir=base_dir)
+
+    base_local_name = (
+        base_config[:-4] + ".local.ini" if base_config.endswith(".ini") else base_config + ".local"
+    )
+    _, base_local_parser = load_ini_config(base_local_name, base_dir=base_dir)
+
+    target_path, target_parser = load_ini_config(config_name, base_dir=base_dir)
+    target_local_name = (
+        config_name[:-4] + ".local.ini" if config_name.endswith(".ini") else config_name + ".local"
+    )
+    _, target_local_parser = load_ini_config(target_local_name, base_dir=base_dir)
+
+    if not target_parser and not target_local_parser and not base_local_parser:
         return base_path, base_parser
 
     merged_parser = configparser.ConfigParser(interpolation=None)
@@ -46,11 +63,26 @@ def load_config_with_base(
         for key, value in base_parser.items(section):
             merged_parser.set(section, key, value)
 
-    for section in target_parser.sections():
-        if not merged_parser.has_section(section):
-            merged_parser.add_section(section)
-        for key, value in target_parser.items(section):
-            merged_parser.set(section, key, value)
+    if base_local_parser:
+        for section in base_local_parser.sections():
+            if not merged_parser.has_section(section):
+                merged_parser.add_section(section)
+            for key, value in base_local_parser.items(section):
+                merged_parser.set(section, key, value)
+
+    if target_parser:
+        for section in target_parser.sections():
+            if not merged_parser.has_section(section):
+                merged_parser.add_section(section)
+            for key, value in target_parser.items(section):
+                merged_parser.set(section, key, value)
+
+    if target_local_parser:
+        for section in target_local_parser.sections():
+            if not merged_parser.has_section(section):
+                merged_parser.add_section(section)
+            for key, value in target_local_parser.items(section):
+                merged_parser.set(section, key, value)
 
     return target_path, merged_parser
 
