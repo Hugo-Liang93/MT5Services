@@ -638,6 +638,8 @@ class EconomicCalendarService:
 
     def _run_scheduler(self) -> None:
         while True:
+            if self._stop_event.is_set():
+                break
             now = _utc_now()
             due_jobs = [
                 job_type

@@ -383,6 +383,35 @@ async def lifespan(_app):
         _startup_status["ready"] = False
         _startup_status["last_error"] = str(exc)
         logger.exception("Failed to start unified services: %s", exc)
+
+        # Startup failed before entering runtime context: explicitly cleanup
+        # partially started background workers to avoid leaked threads.
+        try:
+            if _monitoring_manager:
+                _monitoring_manager.stop()
+        except Exception:
+            logger.debug("Failed to stop monitoring manager after startup failure", exc_info=True)
+        try:
+            if _indicator_manager:
+                _indicator_manager.shutdown()
+        except Exception:
+            logger.debug("Failed to stop indicator manager after startup failure", exc_info=True)
+        try:
+            if _economic_calendar_service:
+                _economic_calendar_service.stop()
+        except Exception:
+            logger.debug("Failed to stop economic calendar service after startup failure", exc_info=True)
+        try:
+            if _ingestor:
+                _ingestor.stop()
+        except Exception:
+            logger.debug("Failed to stop ingestor after startup failure", exc_info=True)
+        try:
+            if _storage_writer:
+                _storage_writer.stop()
+        except Exception:
+            logger.debug("Failed to stop storage writer after startup failure", exc_info=True)
+
         raise
 
     try:

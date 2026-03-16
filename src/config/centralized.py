@@ -147,6 +147,24 @@ def _resolve_secret(raw_value: Any, env_var: str) -> str | None:
     return text or None
 
 
+def _resolve_env_str(env_var: str) -> str | None:
+    value = os.getenv(env_var, "")
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _resolve_env_int(env_var: str) -> int | None:
+    value = _resolve_env_str(env_var)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 class CentralizedConfig:
     def __init__(self):
         self._config_cache: Dict[str, Any] = {}
@@ -252,6 +270,15 @@ class CentralizedConfig:
         )
         if "log_format" in api_config:
             api_config["log_format"] = _normalize_log_format(api_config["log_format"])
+        env_api_host = _resolve_env_str("MT5_API_HOST")
+        if env_api_host:
+            api_config["host"] = env_api_host
+        env_api_port = _resolve_env_int("MT5_API_PORT")
+        if env_api_port is not None:
+            api_config["port"] = env_api_port
+        env_api_key = _resolve_env_str("MT5_API_KEY")
+        if env_api_key:
+            api_config["api_key"] = env_api_key
         if not str(api_config.get("api_key", "")).strip():
             api_config["api_key"] = None
         ingest_config = _merge_sections(
@@ -298,7 +325,9 @@ class CentralizedConfig:
         self._set_provenance(
             "api",
             "host",
-            self._option_source(
+            "env:MT5_API_HOST"
+            if env_api_host
+            else self._option_source(
                 config_name="market.ini",
                 section="api",
                 key="host",
@@ -308,7 +337,9 @@ class CentralizedConfig:
         self._set_provenance(
             "api",
             "port",
-            self._option_source(
+            "env:MT5_API_PORT"
+            if env_api_port is not None
+            else self._option_source(
                 config_name="market.ini",
                 section="api",
                 key="port",
@@ -324,7 +355,7 @@ class CentralizedConfig:
                 source = self._option_source(config_name="market.ini", section="logging", key=field)
             else:
                 source = self._option_source(config_name="market.ini", section="api", key=field)
-            if field == "api_key" and os.getenv("MT5_API_KEY", "").strip():
+            if field == "api_key" and env_api_key:
                 source = "env:MT5_API_KEY"
             self._set_provenance("api", field, source)
         for field in IngestConfig.model_fields:

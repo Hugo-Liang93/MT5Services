@@ -57,6 +57,7 @@ nosetests.xml
 *.cert
 config/secrets.ini
 config/production.ini
+config/*.local.ini
 
 # Editors and OS files
 .vscode/

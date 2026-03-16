@@ -1,0 +1,6 @@
+# 本地私有覆盖配置（不会被 Git 跟踪）
+# 使用方式：复制为 config/market.local.ini 后填写真实值
+
+[security]
+# 仅本地或部署环境填写
+api_key = replace_with_real_secret
