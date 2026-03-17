@@ -130,6 +130,12 @@ class RiskConfig(BaseModel):
     require_tp_or_sl_for_market_orders: bool = False
 
 
+class TradingOpsConfig(BaseModel):
+    dispatch_strict_mode: bool = True
+    dispatch_timeout_ms: int = 5000
+    daily_summary_recent_limit: int = 1000
+
+
 def _split_csv(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(v).strip() for v in value if str(v).strip()]
@@ -392,6 +398,7 @@ class CentralizedConfig:
             "ingest": IngestConfig(**ingest_config).model_dump(),
             "economic": EconomicConfig(**economic_config).model_dump(),
             "risk": RiskConfig(**risk_config).model_dump(),
+            "trading_ops": TradingOpsConfig(**dict(configs["main"].get("trading_ops", {}))).model_dump(),
             "raw": {
                 "mt5": configs["mt5"],
                 "db": configs["db"],
@@ -427,6 +434,9 @@ class CentralizedConfig:
     def get_risk_config(self) -> RiskConfig:
         return RiskConfig(**self.load_all()["risk"])
 
+    def get_trading_ops_config(self) -> TradingOpsConfig:
+        return TradingOpsConfig(**self.load_all()["trading_ops"])
+
     def get_raw_config(self, module: str) -> Dict[str, Any]:
         return self.load_all()["raw"].get(module, {})
 
@@ -454,6 +464,7 @@ class CentralizedConfig:
             "ingest": dict(config["ingest"]),
             "economic": economic_snapshot,
             "risk": dict(config["risk"]),
+            "trading_ops": dict(config["trading_ops"]),
             "storage": dict(config["raw"].get("storage", {})),
             "provenance": self.get_config_provenance_snapshot(),
         }
@@ -506,6 +517,11 @@ def get_risk_config() -> RiskConfig:
     return _config_manager.get_risk_config()
 
 
+@lru_cache
+def get_trading_ops_config() -> TradingOpsConfig:
+    return _config_manager.get_trading_ops_config()
+
+
 def reload_configs():
     get_trading_config.cache_clear()
     get_interval_config.cache_clear()
@@ -515,6 +531,7 @@ def reload_configs():
     get_system_config.cache_clear()
     get_economic_config.cache_clear()
     get_risk_config.cache_clear()
+    get_trading_ops_config.cache_clear()
     # Compatibility loaders keep their own lru_cache; clear them so reload has
     # consistent semantics across both primary and legacy call paths.
     from src.config.compat import (

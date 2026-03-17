@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from src.api.monitoring import _build_runtime_health_summary, _build_storage_runtime_summary
+from src.api.monitoring import (
+    _build_runtime_health_summary,
+    _build_runtime_trading_summary,
+    _build_storage_runtime_summary,
+)
 
 
 def test_build_runtime_health_summary_includes_event_outcomes() -> None:
@@ -75,3 +79,19 @@ def test_build_storage_runtime_summary_marks_warning_for_high_queue() -> None:
     assert summary["status"] == "warning"
     assert summary["worst_queue"]["name"] == "ohlc"
     assert summary["worst_queue"]["status"] == "high"
+
+
+def test_build_runtime_trading_summary_includes_risk_and_coordination_issues() -> None:
+    summary = _build_runtime_trading_summary(
+        {
+            "active_account_alias": "live",
+            "accounts": [{"alias": "live"}],
+            "summary": [{"status": "failed", "count": 2}],
+            "recent": [],
+            "daily": {"failed": 2, "success": 0, "risk": {"blocked": 1, "warn": 0, "allow": 3}},
+        }
+    )
+
+    assert summary["status"] == "warning"
+    assert summary["risk"]["blocked"] == 1
+    assert any("风控拦截" in msg for msg in summary["coordination_issues"])

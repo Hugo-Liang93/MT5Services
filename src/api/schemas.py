@@ -143,6 +143,11 @@ class BatchCloseRequest(BaseModel):
 class BatchCancelOrdersRequest(BaseModel):
     tickets: List[int] = Field(default_factory=list)
 
+
+class TradeDispatchRequest(BaseModel):
+    operation: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
 class EstimateMarginRequest(BaseModel):
     symbol: str
     volume: float

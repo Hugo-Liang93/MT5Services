@@ -134,10 +134,22 @@ def _build_runtime_trading_summary(trading_stats: Dict[str, Any]) -> Dict[str, A
         status = "warning"
     else:
         status = "healthy"
+    daily = dict(trading_stats.get("daily", {}) or {})
+    risk_summary = dict(daily.get("risk", {}) or {})
+    coordination_issues = []
+    if daily.get("failed", 0) and daily.get("success", 0) == 0:
+        coordination_issues.append("当日交易全部失败，建议检查风控与交易连接模块")
+    if failed > 0:
+        coordination_issues.append("检测到交易失败记录，建议检查交易调度与账户状态同步")
+    if int(risk_summary.get("blocked", 0)) > 0:
+        coordination_issues.append("存在风控拦截交易，建议复核风控阈值、经济事件窗口与仓位限制")
     return {
         "status": status,
         "active_account_alias": active_account_alias,
         "accounts": accounts,
+        "daily": daily,
+        "risk": risk_summary,
+        "coordination_issues": coordination_issues,
         "summary": summary_rows,
         "recent": recent,
     }

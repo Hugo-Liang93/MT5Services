@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import defaultdict
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
+from datetime import date, datetime, timezone
+from threading import RLock
 from typing import Any, Dict, Optional
 
 from src.persistence.db import TimescaleWriter
+from src.config import get_trading_config, get_trading_ops_config
+from src.core.pretrade_risk_service import PreTradeRiskBlockedError
 
 from .models import TradeOperationRecord
 from .registry import TradingAccountRegistry
@@ -26,6 +30,16 @@ class TradingModule:
         self.active_account_alias = self.registry.resolve_alias(
             active_account_alias or self.registry.default_account_alias()
         )
+        self._daily_stats_lock = RLock()
+        self._daily_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {
+            "total": 0,
+            "success": 0,
+            "failed": 0,
+            "symbols": {},
+            "operations": {},
+            "risk": {"blocked": 0, "warn": 0, "allow": 0},
+            "last_trade_at": None,
+        })
 
     def _active_account(self) -> str:
         return self.active_account_alias
@@ -90,6 +104,70 @@ class TradingModule:
         except Exception:
             logger.exception("Failed to persist trade operation audit for %s", record.operation_type)
 
+    def _update_daily_stats(self, record: TradeOperationRecord) -> None:
+        if record.operation_type not in {
+            "execute_trade",
+            "precheck_trade",
+            "close_position",
+            "close_all_positions",
+            "cancel_orders",
+            "modify_orders",
+            "modify_positions",
+        }:
+            return
+        day = (record.recorded_at or datetime.now(timezone.utc)).date().isoformat()
+        with self._daily_stats_lock:
+            bucket = self._daily_stats[day]
+            bucket["total"] += 1
+            if record.status == "success":
+                bucket["success"] += 1
+            else:
+                bucket["failed"] += 1
+            symbol = record.symbol or "unknown"
+            symbol_stats = bucket["symbols"].setdefault(symbol, {"total": 0, "success": 0, "failed": 0})
+            symbol_stats["total"] += 1
+            if record.status == "success":
+                symbol_stats["success"] += 1
+            else:
+                symbol_stats["failed"] += 1
+            op_stats = bucket["operations"].setdefault(record.operation_type, {"total": 0, "success": 0, "failed": 0})
+            op_stats["total"] += 1
+            if record.status == "success":
+                op_stats["success"] += 1
+            else:
+                op_stats["failed"] += 1
+            if record.operation_type == "precheck_trade" and isinstance(record.response_payload, dict):
+                action = str(record.response_payload.get("action") or "allow").lower()
+                if action not in {"allow", "warn", "block"}:
+                    action = "allow"
+                bucket["risk"]["blocked" if action == "block" else action] += 1
+            bucket["last_trade_at"] = (record.recorded_at or datetime.now(timezone.utc)).isoformat()
+
+    def _run_trade_with_dispatch_controls(self, payload: Dict[str, Any]) -> dict:
+        config = get_trading_ops_config()
+        required = ("symbol", "volume", "side")
+        missing = [key for key in required if payload.get(key) in (None, "")]
+        if missing:
+            raise ValueError(f"trade payload missing required fields: {', '.join(missing)}")
+        try:
+            volume = float(payload.get("volume"))
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("trade payload volume must be numeric") from exc
+        if volume <= 0:
+            raise ValueError("trade payload volume must be > 0")
+
+        precheck = self.precheck_trade(**payload)
+        action = str(precheck.get("action") or "allow").lower()
+        if config.dispatch_strict_mode and action == "block":
+            raise PreTradeRiskBlockedError(
+                precheck.get("reason") or "trade blocked by risk control",
+                assessment=precheck,
+            )
+        result = self.execute_trade(**payload)
+        if isinstance(result, dict):
+            result.setdefault("dispatch_precheck", precheck)
+        return result
+
     def _execute(self, operation_type: str, account_alias: Optional[str], payload: Dict[str, Any], fn):
         started = time.monotonic()
         resolved_alias = self.registry.resolve_alias(account_alias)
@@ -108,6 +186,21 @@ class TradingModule:
                     ticket=payload.get("ticket"),
                     magic=payload.get("magic"),
                     duration_ms=duration_ms,
+                    request_payload=payload,
+                    response_payload=result if isinstance(result, dict) else {"result": result},
+                )
+            )
+            self._update_daily_stats(
+                TradeOperationRecord(
+                    account_alias=resolved_alias,
+                    operation_type=operation_type,
+                    status="success",
+                    symbol=payload.get("symbol"),
+                    side=payload.get("side"),
+                    order_kind=payload.get("order_kind"),
+                    volume=payload.get("volume"),
+                    ticket=payload.get("ticket"),
+                    magic=payload.get("magic"),
                     request_payload=payload,
                     response_payload=result if isinstance(result, dict) else {"result": result},
                 )
@@ -132,7 +225,116 @@ class TradingModule:
                     response_payload={},
                 )
             )
+            self._update_daily_stats(
+                TradeOperationRecord(
+                    account_alias=resolved_alias,
+                    operation_type=operation_type,
+                    status="failed",
+                    symbol=payload.get("symbol"),
+                    side=payload.get("side"),
+                    order_kind=payload.get("order_kind"),
+                    volume=payload.get("volume"),
+                    ticket=payload.get("ticket"),
+                    magic=payload.get("magic"),
+                    error_message=str(exc),
+                    request_payload=payload,
+                    response_payload={},
+                )
+            )
             raise
+
+    def dispatch_operation(self, operation: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+        payload = payload or {}
+        handlers = {
+            "trade": lambda: self._run_trade_with_dispatch_controls(payload),
+            "trade_precheck": lambda: self.precheck_trade(**payload),
+            "close": lambda: self.close_position(**payload),
+            "close_all": lambda: self.close_all_positions(**payload),
+            "cancel_orders": lambda: self.cancel_orders(**payload),
+            "positions": lambda: self.positions(payload.get("symbol")),
+            "orders": lambda: self.orders(payload.get("symbol")),
+            "daily_summary": lambda: self.daily_trade_summary(),
+            "entry_status": lambda: self.entry_to_order_status(**payload),
+        }
+        if operation not in handlers:
+            raise ValueError(f"unsupported trading operation: {operation}")
+        return handlers[operation]()
+
+    def daily_trade_summary(self, summary_date: Optional[date] = None) -> dict[str, Any]:
+        day_key = (summary_date or datetime.now(timezone.utc).date()).isoformat()
+        with self._daily_stats_lock:
+            snapshot = dict(self._daily_stats.get(day_key, {}))
+        if not snapshot:
+            snapshot = {
+                "total": 0,
+                "success": 0,
+                "failed": 0,
+                "symbols": {},
+                "operations": {},
+                "risk": {"blocked": 0, "warn": 0, "allow": 0},
+                "last_trade_at": None,
+            }
+        total = int(snapshot.get("total", 0))
+        success = int(snapshot.get("success", 0))
+        return {
+            "date": day_key,
+            "account_alias": self.active_account_alias,
+            **snapshot,
+            "success_rate": round((success / total) * 100, 2) if total else 0.0,
+        }
+
+    def entry_to_order_status(
+        self,
+        symbol: Optional[str] = None,
+        volume: float = 0.1,
+        side: str = "buy",
+        order_kind: str = "market",
+    ) -> dict[str, Any]:
+        account_alias = self.active_account_alias
+        health = self.health()
+        account_ready = False
+        risk_action = "allow"
+        risk_reason = None
+        try:
+            account = self.account_info()
+            account_ready = account is not None
+        except Exception as exc:  # noqa: BLE001
+            account_ready = False
+            risk_reason = f"account info unavailable: {exc}"
+
+        target_symbol = symbol or get_trading_config().default_symbol
+        try:
+            precheck = self.precheck_trade(
+                symbol=target_symbol,
+                volume=volume,
+                side=side,
+                order_kind=order_kind,
+            )
+            risk_action = str(precheck.get("action") or "allow")
+            if precheck.get("reason"):
+                risk_reason = precheck.get("reason")
+        except Exception as exc:  # noqa: BLE001
+            precheck = {"action": "warn", "reason": str(exc)}
+            risk_action = "warn"
+            risk_reason = str(exc)
+
+        stage_status = {
+            "entry": "ready",
+            "connection": "ready" if health.get("connected", False) else "failed",
+            "account": "ready" if account_ready else "failed",
+            "risk": "ready" if risk_action != "block" else "blocked",
+            "order": "ready" if health.get("connected", False) and account_ready and risk_action != "block" else "blocked",
+        }
+        return {
+            "account_alias": account_alias,
+            "symbol": target_symbol,
+            "health": health,
+            "precheck": precheck,
+            "risk_action": risk_action,
+            "risk_reason": risk_reason,
+            "stages": stage_status,
+            "ready_for_order": stage_status["order"] == "ready",
+        }
 
     def list_accounts(self) -> list[dict]:
         return [self._active_account_profile()]
@@ -403,6 +605,7 @@ class TradingModule:
         return {
             "active_account_alias": self.active_account_alias,
             "accounts": self.list_accounts(),
+            "daily": self.daily_trade_summary(),
             "summary": [
                 {
                     "account_alias": row[0],
