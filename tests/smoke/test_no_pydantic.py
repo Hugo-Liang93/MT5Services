@@ -101,7 +101,7 @@ def test_without_pydantic():
     print("总结:")
     print("=" * 60)
     
-    print("Primary runtime config path: src.config. advanced_manager/config_fallback are compatibility-only helpers.")
+    print("Primary runtime config path: src.config. advanced_manager is compatibility-only.")
     print("""
 优化模块不依赖pydantic，可以独立运行。
 原始系统的config模块依赖pydantic，需要安装。

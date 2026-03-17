@@ -131,7 +131,13 @@ class BackgroundIngestor:
             self.service.extend_ticks(symbol, new_ticks)
             logger.info("Fetched %s ticks for %s", len(new_ticks), symbol)
             for item in [
-                (tick.symbol, tick.price, tick.volume, tick.time.isoformat())
+                (
+                    tick.symbol,
+                    tick.price,
+                    tick.volume,
+                    tick.time.isoformat(),
+                    tick.time_msc,
+                )
                 for tick in new_ticks
             ]:
                 self.storage.enqueue("ticks", item)
@@ -366,6 +372,10 @@ class BackgroundIngestor:
                         ],
                         upsert=True,
                     )
+                    self.service.set_ohlc_closed(symbol, tf, closed)
+                    for bar in closed:
+                        self.service.enqueue_ohlc_closed_event(symbol, tf, bar.time)
+                    self._set_last_ohlc_time_if_newer(key, closed[-1].time)
                     new_last = closed[-1].time
                     if new_last <= last_ts:
                         break

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import logging
-import os
 
-from src.config import get_api_config
+from src.config import get_api_config, get_system_config
 
 logger = logging.getLogger("mt5services.launcher")
 
@@ -12,20 +11,10 @@ DEFAULT_PORT = 8808
 
 
 def _resolve_host() -> str:
-    env_host = os.getenv("MT5_API_HOST")
-    if env_host:
-        return env_host.strip()
     return get_api_config().host.strip()
 
 
 def _resolve_port() -> int:
-    env_port = os.getenv("MT5_API_PORT")
-    if env_port:
-        try:
-            return int(env_port)
-        except ValueError:
-            logger.warning("Invalid MT5_API_PORT '%s', fallback to config/default port", env_port)
-
     try:
         return int(get_api_config().port)
     except (TypeError, ValueError):
@@ -44,8 +33,9 @@ def launch() -> None:
     import uvicorn
 
     api_config = get_api_config()
+    system_config = get_system_config()
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, str(system_config.log_level).upper(), logging.INFO),
         format=api_config.log_format,
     )
     app_target, host, port = resolve_runtime_target()

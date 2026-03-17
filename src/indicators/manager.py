@@ -23,13 +23,14 @@ from src.core.market_service import MarketDataService
 from src.utils.event_store import get_event_store
 
 from .engine.dependency_manager import get_global_dependency_manager
-from .engine.pipeline_v2 import OptimizedPipeline, get_global_pipeline
+from .engine.pipeline import OptimizedPipeline, get_global_pipeline
 from .monitoring.metrics_collector import get_global_collector
 
 if TYPE_CHECKING:
     from src.persistence.storage_writer import StorageWriter
 
 logger = logging.getLogger(__name__)
+EVENT_BATCH_SIZE = 32
 
 
 @dataclass
@@ -168,9 +169,9 @@ class UnifiedIndicatorManager:
         next_reconcile_at = time.monotonic()
 
         while not self._stop.is_set():
-            durable_event = self.event_store.get_next_event()
-            if durable_event is not None:
-                self._process_closed_bar_event(*durable_event, durable_event=True)
+            durable_events = self.event_store.get_next_events(limit=EVENT_BATCH_SIZE)
+            if durable_events:
+                self._process_closed_bar_events_batch(durable_events, durable_event=True)
                 continue
 
             now = time.monotonic()
@@ -185,6 +186,139 @@ class UnifiedIndicatorManager:
             legacy_event = self.market_service.get_ohlc_event(timeout=timeout)
             if legacy_event is not None:
                 self._process_closed_bar_event(*legacy_event, durable_event=False)
+
+    def _process_closed_bar_events_batch(
+        self,
+        events: List[Tuple[str, str, datetime]],
+        durable_event: bool,
+    ) -> None:
+        grouped: Dict[Tuple[str, str], List[datetime]] = {}
+        for symbol, timeframe, bar_time in events:
+            grouped.setdefault((symbol, timeframe), []).append(bar_time)
+
+        for (symbol, timeframe), bar_times in grouped.items():
+            ordered = sorted(bar_times)
+            try:
+                self._process_symbol_timeframe_batch(
+                    symbol,
+                    timeframe,
+                    ordered,
+                    durable_event=durable_event,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to process closed-bar batch for %s/%s (%s events)",
+                    symbol,
+                    timeframe,
+                    len(ordered),
+                )
+                if durable_event:
+                    for bar_time in ordered:
+                        self.event_store.mark_event_failed(
+                            symbol,
+                            timeframe,
+                            bar_time,
+                            "batch_processing_failed",
+                        )
+
+    def _process_symbol_timeframe_batch(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_times: List[datetime],
+        durable_event: bool,
+    ) -> None:
+        if not bar_times:
+            return
+
+        latest_bar_time = bar_times[-1]
+        lookback = self._get_max_lookback()
+        bars = self.market_service.get_ohlc_window(
+            symbol,
+            timeframe,
+            end_time=latest_bar_time,
+            limit=lookback + len(bar_times),
+        )
+        bar_index = {bar.time: idx for idx, bar in enumerate(bars)}
+        computed = 0
+        skipped_bar_missing = 0
+        skipped_insufficient_history = 0
+        failed = 0
+
+        for bar_time in bar_times:
+            try:
+                end_idx = bar_index.get(bar_time)
+                if end_idx is None:
+                    prefix = self._load_bars(symbol, timeframe, bar_time=bar_time)
+                    if not prefix or prefix[-1].time != bar_time:
+                        logger.debug(
+                            "Skipping closed-bar event for %s/%s at %s because the target OHLC bar is unavailable",
+                            symbol,
+                            timeframe,
+                            bar_time,
+                        )
+                        skipped_bar_missing += 1
+                        if durable_event:
+                            self._mark_event_skipped(symbol, timeframe, bar_time, "bar_missing")
+                        continue
+                else:
+                    prefix = bars[: end_idx + 1]
+                    prefix = prefix[-lookback:]
+                selected_names = self._select_indicator_names_for_history(len(prefix))
+                if not selected_names:
+                    logger.debug(
+                        "Skipping indicator computation for %s/%s at %s due to insufficient history (%s bars)",
+                        symbol,
+                        timeframe,
+                        bar_time,
+                        len(prefix),
+                    )
+                    skipped_insufficient_history += 1
+                    if durable_event:
+                        self._mark_event_skipped(symbol, timeframe, bar_time, "insufficient_history")
+                    continue
+
+                started_at = time.time()
+                results = self.pipeline.compute(
+                    symbol,
+                    timeframe,
+                    prefix,
+                    selected_names,
+                )
+                compute_time_ms = (time.time() - started_at) * 1000
+                self._write_back_results(
+                    symbol,
+                    timeframe,
+                    prefix,
+                    results,
+                    compute_time_ms,
+                    bar_time=bar_time,
+                )
+                computed += 1
+                if durable_event:
+                    self.event_store.mark_event_completed(symbol, timeframe, bar_time)
+            except Exception as exc:
+                failed += 1
+                logger.exception(
+                    "Failed to process closed-bar event for %s/%s at %s in batch",
+                    symbol,
+                    timeframe,
+                    bar_time,
+                )
+                if durable_event:
+                    self.event_store.mark_event_failed(symbol, timeframe, bar_time, str(exc))
+
+        logger.info(
+            "Processed closed-bar batch for %s/%s: events=%s computed=%s skipped_history=%s skipped_bar_missing=%s failed=%s durable=%s",
+            symbol,
+            timeframe,
+            len(bar_times),
+            computed,
+            skipped_insufficient_history,
+            skipped_bar_missing,
+            failed,
+            durable_event,
+        )
 
     def _reload_loop(self) -> None:
         reload_interval = max(float(self.config.reload_interval), 1.0)
@@ -210,17 +344,23 @@ class UnifiedIndicatorManager:
         timeframe: str,
         bar_time: Optional[datetime] = None,
     ) -> List[Any]:
-        bars = self.market_service.get_ohlc(
+        lookback = self._get_max_lookback()
+        if bar_time is None:
+            return self.market_service.get_ohlc(
+                symbol,
+                timeframe,
+                count=lookback,
+            )
+
+        bars = self.market_service.get_ohlc_window(
             symbol,
             timeframe,
-            count=self._get_max_lookback(),
+            end_time=bar_time,
+            limit=lookback,
         )
-        if bar_time is None:
-            return bars
-        selected = [bar for bar in bars if bar.time <= bar_time]
-        if not selected or selected[-1].time != bar_time:
+        if not bars or bars[-1].time != bar_time:
             return []
-        return selected
+        return bars
 
     def _resolve_indicator_names(
         self,
@@ -229,6 +369,64 @@ class UnifiedIndicatorManager:
         if indicator_names is not None:
             return indicator_names
         return [config.name for config in self.config.indicators if config.enabled]
+
+    @staticmethod
+    def _indicator_history_requirement(config: IndicatorConfig) -> int:
+        params = getattr(config, "params", {}) or {}
+        return max(
+            *(int(params.get(key, 0) or 0) for key in (
+                "min_bars",
+                "period",
+                "slow",
+                "signal",
+                "fast",
+                "atr_period",
+                "k_period",
+                "d_period",
+                "lookback",
+            )),
+            2,
+        )
+
+    def _indicator_requirements(
+        self,
+        indicator_names: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        selected_names = set(self._resolve_indicator_names(indicator_names))
+        config_items = getattr(getattr(self, "config", None), "indicators", None)
+        if config_items is None:
+            return {name: 2 for name in selected_names}
+        requirements: Dict[str, int] = {}
+        for config in config_items:
+            if not config.enabled or config.name not in selected_names:
+                continue
+            requirements[config.name] = self._indicator_history_requirement(config)
+        return requirements
+
+    def _select_indicator_names_for_history(
+        self,
+        available_bars: int,
+        indicator_names: Optional[List[str]] = None,
+    ) -> List[str]:
+        requirements = self._indicator_requirements(indicator_names)
+        return [
+            name
+            for name in self._resolve_indicator_names(indicator_names)
+            if requirements.get(name, 2) <= available_bars
+        ]
+
+    def _mark_event_skipped(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+        reason: str,
+    ) -> None:
+        mark_skipped = getattr(self.event_store, "mark_event_skipped", None)
+        if callable(mark_skipped):
+            mark_skipped(symbol, timeframe, bar_time, reason)
+            return
+        self.event_store.mark_event_completed(symbol, timeframe, bar_time)
 
     def _run_pipeline(
         self,
@@ -241,44 +439,86 @@ class UnifiedIndicatorManager:
         if len(bars) < 2:
             return [], {}, 0.0
 
-        selected_names = self._resolve_indicator_names(indicator_names)
+        selected_names = self._select_indicator_names_for_history(len(bars), indicator_names)
+        if not selected_names:
+            return bars, {}, 0.0
         started_at = time.time()
         results = self.pipeline.compute(symbol, timeframe, bars, selected_names)
         compute_time_ms = (time.time() - started_at) * 1000
         return bars, results, compute_time_ms
 
-    @staticmethod
-    def _normalize_metric_name(
-        indicator_name: str,
-        metric_name: str,
-        metric_count: int,
-    ) -> str:
-        if metric_count == 1:
-            return indicator_name
-        if metric_name == indicator_name:
-            return indicator_name
-        return f"{indicator_name}_{metric_name}"
-
-    def _flatten_indicator_values(
+    def _group_indicator_values(
         self,
         results: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, float]:
-        flattened: Dict[str, float] = {}
+    ) -> Dict[str, Dict[str, float]]:
+        grouped: Dict[str, Dict[str, float]] = {}
         for indicator_name, payload in results.items():
             if not isinstance(payload, dict) or not payload:
                 continue
-            metric_count = len(payload)
+            normalized_payload: Dict[str, float] = {}
             for metric_name, raw_value in payload.items():
                 if not isinstance(raw_value, (int, float)):
                     continue
-                flattened[
-                    self._normalize_metric_name(
-                        indicator_name,
-                        metric_name,
-                        metric_count,
-                    )
-                ] = float(raw_value)
-        return flattened
+                normalized_payload[metric_name] = float(raw_value)
+            if normalized_payload:
+                grouped[indicator_name] = normalized_payload
+        return grouped
+
+    def _normalize_persisted_indicator_snapshot(
+        self,
+        persisted: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        normalized: Dict[str, Dict[str, Any]] = {}
+        consumed_keys: set[str] = set()
+
+        for indicator_name, payload in persisted.items():
+            if not isinstance(payload, dict):
+                continue
+            numeric_payload = {
+                metric_name: float(raw_value)
+                for metric_name, raw_value in payload.items()
+                if isinstance(raw_value, (int, float))
+            }
+            if not numeric_payload:
+                continue
+            normalized[indicator_name] = numeric_payload
+            consumed_keys.add(indicator_name)
+
+        legacy_scalars = {
+            key: float(value)
+            for key, value in persisted.items()
+            if isinstance(value, (int, float))
+        }
+        configured_names = [config.name for config in self.config.indicators if config.enabled]
+
+        for indicator_name in configured_names:
+            direct_value = legacy_scalars.get(indicator_name)
+            prefixed_values = {
+                metric_name[len(indicator_name) + 1 :]: value
+                for metric_name, value in legacy_scalars.items()
+                if metric_name.startswith(f"{indicator_name}_")
+            }
+            if direct_value is None and not prefixed_values:
+                continue
+
+            payload = dict(normalized.get(indicator_name, {}))
+            if direct_value is not None:
+                payload[indicator_name] = direct_value
+                consumed_keys.add(indicator_name)
+            payload.update(prefixed_values)
+            consumed_keys.update(
+                metric_name
+                for metric_name in legacy_scalars
+                if metric_name == indicator_name or metric_name.startswith(f"{indicator_name}_")
+            )
+            normalized[indicator_name] = payload
+
+        for key, value in legacy_scalars.items():
+            if key in consumed_keys:
+                continue
+            normalized[key] = {key: value}
+
+        return normalized
 
     def _store_results(
         self,
@@ -315,15 +555,15 @@ class UnifiedIndicatorManager:
         results: Dict[str, Dict[str, Any]],
         compute_time_ms: float,
         bar_time: Optional[datetime] = None,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Dict[str, float]]:
         effective_bar_time = bar_time or (bars[-1].time if bars else None)
         self._store_results(symbol, timeframe, effective_bar_time, results, compute_time_ms)
 
         if not bars or effective_bar_time is None:
             return {}
 
-        flattened = self._flatten_indicator_values(results)
-        if not flattened:
+        grouped = self._group_indicator_values(results)
+        if not grouped:
             return {}
 
         latest_bar = bars[-1]
@@ -331,7 +571,7 @@ class UnifiedIndicatorManager:
             symbol,
             timeframe,
             effective_bar_time,
-            flattened,
+            grouped,
         )
 
         if self.storage_writer is not None:
@@ -348,7 +588,7 @@ class UnifiedIndicatorManager:
             )
             self.storage_writer.enqueue("ohlc_indicators", row)
 
-        return flattened
+        return grouped
 
     def _process_closed_bar_event(
         self,
@@ -364,9 +604,13 @@ class UnifiedIndicatorManager:
                 bar_time=bar_time,
             )
             if not bars:
-                raise ValueError(
-                    f"OHLC cache is missing the closed bar for {symbol}/{timeframe} at {bar_time}"
-                )
+                if durable_event:
+                    self._mark_event_skipped(symbol, timeframe, bar_time, "bar_missing")
+                return
+            if not results:
+                if durable_event:
+                    self._mark_event_skipped(symbol, timeframe, bar_time, "insufficient_history")
+                return
             self._write_back_results(
                 symbol,
                 timeframe,
@@ -408,21 +652,10 @@ class UnifiedIndicatorManager:
         self._write_back_results(symbol, timeframe, bars, results, compute_time_ms)
 
     def _get_max_lookback(self) -> int:
-        max_lookback = 0
-        for config in self.config.indicators:
-            if not config.enabled:
-                continue
-            params = config.params
-            max_lookback = max(
-                max_lookback,
-                int(params.get("min_bars", 0)),
-                int(params.get("period", 0)),
-                int(params.get("slow", 0)),
-                int(params.get("signal", 0)),
-                int(params.get("fast", 0)),
-                int(params.get("atr_period", 0)),
-            )
-        return max(max_lookback, 100)
+        return max(self._indicator_requirements().values(), default=2)
+
+    def _get_min_required_history(self) -> int:
+        return max(min(self._indicator_requirements().values(), default=2), 2)
 
     def _reconcile_min_bars(self) -> int:
         return min(max(self._get_max_lookback(), 2), 100)
@@ -452,10 +685,10 @@ class UnifiedIndicatorManager:
             result = self._results.get(result_key)
         if result:
             return result.value
-        persisted = self.market_service.latest_indicators(symbol, timeframe)
-        if indicator_name in persisted:
-            return {indicator_name: persisted[indicator_name]}
-        return None
+        normalized = self._normalize_persisted_indicator_snapshot(
+            self.market_service.latest_indicators(symbol, timeframe)
+        )
+        return normalized.get(indicator_name)
 
     def get_all_indicators(
         self,
@@ -470,8 +703,9 @@ class UnifiedIndicatorManager:
                     results[key[len(prefix) :]] = result.value
         if results:
             return results
-        persisted = self.market_service.latest_indicators(symbol, timeframe)
-        return {name: {name: value} for name, value in persisted.items()}
+        return self._normalize_persisted_indicator_snapshot(
+            self.market_service.latest_indicators(symbol, timeframe)
+        )
 
     def compute(
         self,
@@ -613,7 +847,9 @@ class UnifiedIndicatorManager:
         with self._results_lock:
             matches = [result for key, result in self._results.items() if key.startswith(prefix)]
         if not matches:
-            persisted = self.market_service.latest_indicators(symbol, timeframe)
+            persisted = self._normalize_persisted_indicator_snapshot(
+                self.market_service.latest_indicators(symbol, timeframe)
+            )
             if not persisted:
                 return None
             latest_bar = self.market_service.get_ohlc(symbol, timeframe, count=1)
@@ -621,7 +857,7 @@ class UnifiedIndicatorManager:
             return IndicatorSnapshot(
                 symbol=symbol,
                 timeframe=timeframe,
-                data={name: {name: value} for name, value in persisted.items()},
+                data=persisted,
                 timestamp=datetime.now(timezone.utc),
                 bar_time=latest_time,
                 compute_time_ms=0.0,

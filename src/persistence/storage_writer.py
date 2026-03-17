@@ -38,6 +38,7 @@ class StorageWriter:
         self._channels: Dict[str, Dict[str, object]] = {}
         self._last_flush: Dict[str, float] = {}
         self._channel_stats: Dict[str, Dict[str, int]] = {}
+        self._queue_log_state: Dict[str, Dict[str, float]] = {}
         if not self._register_channels_from_config():
             raise RuntimeError("No storage channels configured; please provide config/storage.ini")
 
@@ -109,10 +110,7 @@ class StorageWriter:
         q = ch["queue"]
         
         # 监控队列使用率
-        if q.maxsize:
-            queue_usage = q.qsize() / q.maxsize
-            if queue_usage > 0.8:  # 80% 使用率告警
-                logger.warning("Queue %s usage high: %.1f%%", name, queue_usage * 100)
+        self._log_queue_pressure(name, q)
         
         try:
             q.put_nowait(item)
@@ -199,25 +197,87 @@ class StorageWriter:
             "blocked_puts": 0,
             "full_errors": 0,
         }
+        self._queue_log_state[name] = {
+            "usage_level": 0.0,
+            "last_full_warning_at": 0.0,
+        }
 
     # --- 监控 ---
     def stats(self) -> dict:
         queues = {}
+        summary = {"total": 0, "high": 0, "critical": 0, "full": 0}
         for name, ch in self._channels.items():
+            q: queue.Queue = ch["queue"]  # type: ignore[assignment]
+            maxsize = q.maxsize
+            size = q.qsize()
+            utilization = (size / maxsize) if maxsize else 0.0
+            status = self._queue_status(utilization, size, maxsize)
             queues[name] = {
-                "size": ch["queue"].qsize(),
-                "max": ch["queue"].maxsize,
+                "size": size,
+                "max": maxsize,
                 "pending": len(ch["pending"]),
                 "full_policy": ch["full_policy"],
+                "utilization_pct": round(utilization * 100, 1),
+                "status": status,
                 "drops_oldest": self._channel_stats[name]["dropped_oldest"],
                 "drops_newest": self._channel_stats[name]["dropped_newest"],
                 "blocked_puts": self._channel_stats[name]["blocked_puts"],
                 "full_errors": self._channel_stats[name]["full_errors"],
             }
+            summary["total"] += 1
+            if status == "full":
+                summary["full"] += 1
+            elif status == "critical":
+                summary["critical"] += 1
+            elif status == "high":
+                summary["high"] += 1
         return {
             "queues": queues,
+            "summary": summary,
             "threads": {"writer_alive": self._thread.is_alive() if self._thread else False},
         }
+
+    def _queue_status(self, utilization: float, size: int, maxsize: int) -> str:
+        if maxsize and size >= maxsize:
+            return "full"
+        if utilization >= 0.95:
+            return "critical"
+        if utilization >= 0.8:
+            return "high"
+        return "normal"
+
+    def _log_queue_pressure(self, name: str, q: queue.Queue) -> None:
+        if not q.maxsize:
+            return
+
+        if not hasattr(self, "_queue_log_state"):
+            self._queue_log_state = {}
+        utilization = q.qsize() / q.maxsize
+        state = self._queue_log_state.setdefault(
+            name,
+            {"usage_level": 0.0, "last_full_warning_at": 0.0},
+        )
+        previous_level = int(state.get("usage_level", 0))
+
+        if utilization >= 0.95:
+            current_level = 2
+        elif utilization >= 0.8:
+            current_level = 1
+        elif utilization < 0.7:
+            current_level = 0
+        else:
+            current_level = previous_level
+
+        state["usage_level"] = float(current_level)
+        if current_level == previous_level:
+            return
+
+        if current_level == 2:
+            logger.warning("Queue %s usage critical: %.1f%%", name, utilization * 100)
+        elif current_level == 1:
+            logger.warning("Queue %s usage high: %.1f%%", name, utilization * 100)
+        elif previous_level > 0:
+            logger.info("Queue %s usage recovered: %.1f%%", name, utilization * 100)
 
     # --- config helpers ---
     def _bool(self, value: str, default: bool) -> bool:
@@ -310,19 +370,48 @@ class StorageWriter:
     def _handle_queue_full(self, name: str, ch: Dict[str, object], item: tuple) -> None:
         q: queue.Queue = ch["queue"]  # type: ignore[assignment]
         policy = self._resolve_full_policy(ch)
+        if not hasattr(self, "_queue_log_state"):
+            self._queue_log_state = {}
+        log_state = self._queue_log_state.setdefault(
+            name,
+            {"usage_level": 0.0, "last_full_warning_at": 0.0},
+        )
         if policy == "block":
-            try:
-                q.put(item, timeout=max(0.0, self.settings.queue_put_timeout))
-                self._channel_stats[name]["blocked_puts"] += 1
-                return
-            except queue.Full:
+            if self._thread is None or not self._thread.is_alive():
+                self._channel_stats[name]["dropped_newest"] += 1
                 self._channel_stats[name]["full_errors"] += 1
                 logger.error(
-                    "Queue %s remained full after blocking for %.2fs",
+                    "Queue %s is full and storage writer is not running, dropped newest item: %s",
                     name,
-                    self.settings.queue_put_timeout,
+                    item,
                 )
                 return
+
+            timeout = max(0.1, self.settings.queue_put_timeout)
+            warned = False
+            while not self._stop.is_set():
+                try:
+                    q.put(item, timeout=timeout)
+                    self._channel_stats[name]["blocked_puts"] += 1
+                    log_state["last_full_warning_at"] = 0.0
+                    if warned:
+                        logger.warning("Queue %s recovered after blocking producer writes", name)
+                    return
+                except queue.Full:
+                    now = time.monotonic()
+                    if now - log_state.get("last_full_warning_at", 0.0) >= 5.0:
+                        warned = True
+                        log_state["last_full_warning_at"] = now
+                        logger.warning(
+                            "Queue %s remains full after %.2fs; blocking producer to avoid data loss",
+                            name,
+                            timeout,
+                        )
+
+            self._channel_stats[name]["dropped_newest"] += 1
+            self._channel_stats[name]["full_errors"] += 1
+            logger.error("Queue %s stopped while blocking, dropped newest item: %s", name, item)
+            return
 
         if policy == "drop_oldest":
             try:

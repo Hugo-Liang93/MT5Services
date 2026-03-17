@@ -8,8 +8,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional, TypeVar, Generic, List, Dict, Any
 
-from pydantic.generics import GenericModel
-
 from pydantic import BaseModel, Field
 
 
@@ -27,6 +25,7 @@ class TickModel(BaseModel):
     price: float
     volume: float
     time: str
+    time_msc: Optional[int] = None
 
 
 class OHLCModel(BaseModel):
@@ -38,7 +37,7 @@ class OHLCModel(BaseModel):
     low: float
     close: float
     volume: float
-    indicators: Optional[Dict[str, float]] = None
+    indicators: Optional[Dict[str, Any]] = None
 
 
 class AccountInfoModel(BaseModel):
@@ -82,6 +81,7 @@ class TradeRequest(BaseModel):
     symbol: str
     volume: float
     side: str
+    order_kind: str = "market"
     price: Optional[float] = None
     sl: Optional[float] = None
     tp: Optional[float] = None
@@ -104,10 +104,15 @@ class TradePrecheckModel(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     calendar_health_mode: str = "warn_only"
     calendar_health: Dict[str, Any] = Field(default_factory=dict)
+    checks: List[Dict[str, Any]] = Field(default_factory=list)
+    estimated_margin: Optional[float] = None
+    margin_error: Optional[str] = None
+    intent: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CloseRequest(BaseModel):
     ticket: int
+    volume: Optional[float] = None
     deviation: int = 20
     comment: str = ""
 
@@ -122,6 +127,21 @@ class CloseAllRequest(BaseModel):
 class CancelOrdersRequest(BaseModel):
     symbol: Optional[str] = None
     magic: Optional[int] = None
+
+
+class BatchTradeRequest(BaseModel):
+    trades: List[TradeRequest] = Field(default_factory=list)
+    stop_on_error: bool = False
+
+
+class BatchCloseRequest(BaseModel):
+    tickets: List[int] = Field(default_factory=list)
+    deviation: int = 20
+    comment: str = ""
+
+
+class BatchCancelOrdersRequest(BaseModel):
+    tickets: List[int] = Field(default_factory=list)
 
 class EstimateMarginRequest(BaseModel):
     symbol: str
@@ -157,6 +177,17 @@ class SymbolInfoModel(BaseModel):
     margin_maintenance: float
     tick_value: float
     tick_size: float
+
+
+class TradingAccountModel(BaseModel):
+    alias: str
+    label: str
+    login: Optional[int] = None
+    server: Optional[str] = None
+    timezone: str
+    enabled: bool = True
+    default: bool = False
+    active: bool = False
 
 
 class EconomicCalendarEventModel(BaseModel):
@@ -314,7 +345,7 @@ class RuntimeTaskStatusModel(BaseModel):
 T = TypeVar("T")
 
 
-class ApiResponse(GenericModel, Generic[T]):
+class ApiResponse(BaseModel, Generic[T]):
     """AI友好的API响应格式
     
     扩展原有ApiResponse，添加错误信息和元数据字段

@@ -406,7 +406,8 @@ class ParallelExecutor:
             
             # 检查超时
             if timeout is not None and time.time() - start_time > timeout:
-                logger.warning(f"Timeout waiting for task {task_id}")
+                if timeout > 0:
+                    logger.warning(f"Timeout waiting for task {task_id}")
                 return None
             
             # 短暂等待
@@ -439,10 +440,15 @@ class ParallelExecutor:
             completed_tasks = set()
             
             for task_id in remaining_tasks:
-                result = self.get_task_result(task_id, timeout=0)
-                if result is not None:
-                    results[task_id] = result
-                    completed_tasks.add(task_id)
+                with self.task_lock:
+                    result = self.tasks.get(task_id)
+                    if result and result.status in [
+                        TaskStatus.COMPLETED,
+                        TaskStatus.FAILED,
+                        TaskStatus.CANCELLED,
+                    ]:
+                        results[task_id] = result
+                        completed_tasks.add(task_id)
             
             remaining_tasks -= completed_tasks
             

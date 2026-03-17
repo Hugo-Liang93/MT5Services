@@ -329,15 +329,25 @@ class _BaseHttpClient:
     def __init__(self, settings: EconomicConfig):
         self.settings = settings
 
+    @staticmethod
+    def _request_headers() -> Dict[str, str]:
+        return {
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "Connection": "close",
+            "User-Agent": "MT5Services/1.0",
+        }
+
     def _request_json(self, base_url: str, params: Dict[str, Any]) -> Dict[str, Any] | List[Any]:
         filtered = {key: value for key, value in params.items() if value not in (None, "", [])}
         url = f"{base_url}?{urlencode(filtered, doseq=True)}"
         attempts = max(1, int(self.settings.request_retries))
+        timeout_seconds = max(1.0, float(self.settings.request_timeout_seconds))
         last_error: Optional[Exception] = None
         for attempt in range(1, attempts + 1):
-            request = Request(url, headers={"Accept": "application/json"})
+            request = Request(url, headers=self._request_headers())
             try:
-                with urlopen(request, timeout=self.settings.request_timeout_seconds) as response:
+                with urlopen(request, timeout=timeout_seconds) as response:
                     payload = response.read().decode("utf-8")
                 return json.loads(payload)
             except json.JSONDecodeError as exc:

@@ -103,9 +103,15 @@ class DataValidator:
                 return False, f"Future time detected: {dt} > {now}"
             
             # 3. 验证价格关系
-            if bid <= 0 or ask <= 0 or last <= 0:
+            if bid <= 0 or ask <= 0:
                 return False, f"Invalid prices: bid={bid}, ask={ask}, last={last}"
-            
+
+            if last > 0:
+                if last > DataValidator.MAX_PRICE:
+                    return False, f"Last too high: {last} > {DataValidator.MAX_PRICE}"
+                if last < DataValidator.MIN_PRICE:
+                    return False, f"Last too low: {last} < {DataValidator.MIN_PRICE}"
+
             if bid > ask:
                 return False, f"Bid > Ask: {bid} > {ask}"
             
@@ -260,11 +266,14 @@ class DataValidator:
             return False, f"Invalid time format: {e}"
     
     @staticmethod
-    def filter_valid_ticks(rows: List[Tuple[str, float, float, str]]) -> List[Tuple[str, float, float, str]]:
+    def filter_valid_ticks(rows: List[Tuple]) -> List[Tuple]:
         """过滤有效的 tick 数据"""
         valid_rows = []
         for row in rows:
-            symbol, price, volume, time_str = row
+            if len(row) < 4:
+                logger.warning("Invalid tick row length: %s", len(row))
+                continue
+            symbol, price, volume, time_str = row[:4]
             valid, msg = DataValidator.validate_tick(symbol, price, volume, time_str)
             if valid:
                 valid_rows.append(row)

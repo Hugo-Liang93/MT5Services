@@ -22,6 +22,7 @@ from src.config.compat import (
     
     # 加载函数
     load_mt5_settings,
+    load_mt5_accounts,
     load_db_settings,
     load_ingest_settings,
     load_storage_settings,
@@ -53,6 +54,7 @@ from src.config.centralized import (
     APIConfig,
     IngestConfig,
     EconomicConfig,
+    RiskConfig,
     
     # 加载函数
     get_trading_config,
@@ -62,6 +64,7 @@ from src.config.centralized import (
     get_api_config,
     get_ingest_config,
     get_economic_config,
+    get_risk_config,
     
     # 工具函数
     get_shared_symbols,
@@ -78,13 +81,14 @@ from src.config.utils import (
     resolve_config_path,
     load_ini_config,
     load_config_with_base,
+    get_merged_option_source,
     get_merged_config,
     ConfigValidator,
 )
 
 
 def _get_cache_section() -> configparser.SectionProxy | None:
-    _, parser = load_ini_config("cache.ini")
+    _, parser = load_config_with_base("cache.ini")
     if not parser or not parser.has_section("cache"):
         return None
     return parser["cache"]
@@ -152,6 +156,7 @@ __all__ = [
     "StorageSettings",
     "IndicatorSettings",
     "load_mt5_settings",
+    "load_mt5_accounts",
     "load_db_settings",
     "load_ingest_settings",
     "load_storage_settings",
@@ -177,6 +182,7 @@ __all__ = [
     "APIConfig",
     "IngestConfig",
     "EconomicConfig",
+    "RiskConfig",
     "get_trading_config",
     "get_interval_config",
     "get_limit_config",
@@ -184,6 +190,7 @@ __all__ = [
     "get_api_config",
     "get_ingest_config",
     "get_economic_config",
+    "get_risk_config",
     "get_runtime_ingest_settings",
     "get_runtime_market_settings",
     "get_shared_symbols",
@@ -198,6 +205,7 @@ __all__ = [
     "resolve_config_path",
     "load_ini_config",
     "load_config_with_base",
+    "get_merged_option_source",
     "get_merged_config",
     "ConfigValidator",
 ]

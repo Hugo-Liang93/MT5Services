@@ -144,17 +144,10 @@ pip install -r requirements.txt
 - `config/storage.ini`
 - `config/indicators.json`
 
-敏感信息建议通过环境变量注入，不要把真实密钥直接写入仓库配置：
-
-- `MT5_API_HOST`
-- `MT5_API_PORT`
-- `MT5_API_KEY`
-- `TRADINGECONOMICS_API_KEY`
-- `FRED_API_KEY`
-
-也可以使用本地私有覆盖文件（不会进 Git）：
+敏感信息建议放到本地私有覆盖文件，不要把真实密钥直接写入仓库配置：
 
 - `config/*.local.ini`（例如 `config/market.local.ini`）
+- `config/economic.local.ini`
 
 ## 启动
 
@@ -287,10 +280,11 @@ api_key_header = X-API-Key
 api_key =
 ```
 
-更推荐通过环境变量提供：
+更推荐通过本地私有覆盖文件提供：
 
-```bash
-set MT5_API_KEY=replace-with-your-key
+```ini
+[security]
+api_key = replace-with-your-key
 ```
 
 调用示例：

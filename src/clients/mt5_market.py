@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.clients.base import MT5BaseClient, MT5BaseError, mt5
 
@@ -27,6 +27,7 @@ class Tick:
     price: float
     volume: float
     time: datetime
+    time_msc: Optional[int] = None
 
 
 @dataclass
@@ -39,7 +40,7 @@ class OHLC:
     low: float
     close: float
     volume: float
-    indicators: Optional[Dict[str, float]] = None
+    indicators: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -104,8 +105,8 @@ class MT5MarketClient(MT5BaseClient):
             margin_initial=float(self._get_field(info, "margin_initial", 0.0) or 0.0),
             margin_maintenance=float(self._get_field(info, "margin_maintenance", 0.0) or 0.0),
             tick_value=float(self._get_field(info, "trade_tick_value", 0.0) or 0.0),
-                tick_size=float(self._get_field(info, "trade_tick_size", 0.0) or 0.0),
-            )
+            tick_size=float(self._get_field(info, "trade_tick_size", 0.0) or 0.0),
+        )
 
     @MT5BaseClient.measured("get_quote")
     def get_quote(self, symbol: str) -> Quote:
@@ -113,20 +114,28 @@ class MT5MarketClient(MT5BaseClient):
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
             raise MT5MarketError(f"Symbol {symbol} not found or no tick data")
+        bid = float(self._get_field(tick, "bid", 0.0) or 0.0)
+        ask = float(self._get_field(tick, "ask", 0.0) or 0.0)
+        last = float(self._get_field(tick, "last", 0.0) or 0.0)
         return Quote(
             symbol=symbol,
-            bid=tick.bid,
-            ask=tick.ask,
-            last=tick.last,
-                volume=tick.volume,
-                time=self._to_tz(datetime.fromtimestamp(tick.time, tz=timezone.utc)),
-            )
+            bid=bid,
+            ask=ask,
+            last=self._normalize_last_price(bid, ask, last),
+            volume=float(self._get_field(tick, "volume", 0.0) or 0.0),
+            time=self._market_time_from_seconds(tick.time),
+        )
 
     @MT5BaseClient.measured("get_ticks")
     def get_ticks(self, symbol: str, limit: int, start: Optional[datetime] = None) -> List[Tick]:
         """支持从指定时间开始拉取，便于增量采集。"""
         self.connect()
-        start = start or (datetime.now(timezone.utc) - timedelta(seconds=self.settings.tick_initial_lookback_seconds))
+        try:
+            configured_lookback = self.settings.tick_initial_lookback_seconds
+        except AttributeError:
+            configured_lookback = 20
+        lookback_seconds = int(configured_lookback or 20)
+        start = start or (datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds))
         ticks = mt5.copy_ticks_from(symbol, start, limit, mt5.COPY_TICKS_ALL)
         if ticks is None:
             raise MT5MarketError(f"Failed to get ticks for {symbol}: {mt5.last_error()}")
@@ -135,7 +144,8 @@ class MT5MarketClient(MT5BaseClient):
                 symbol=symbol,
                 price=self._extract_price(tick),
                 volume=self._extract_volume(tick),
-                time=self._to_tz(datetime.fromtimestamp(self._get_field(tick, "time"), tz=timezone.utc)),
+                time=self._tick_timestamp(tick),
+                time_msc=self._tick_time_msc(tick),
             )
                 for tick in ticks
             ]
@@ -152,7 +162,7 @@ class MT5MarketClient(MT5BaseClient):
             OHLC(
                 symbol=symbol,
                 timeframe=timeframe,
-                time=self._to_tz(datetime.fromtimestamp(self._get_field(rate, "time"), tz=timezone.utc)),
+                time=self._market_time_from_seconds(self._get_field(rate, "time")),
                 open=self._get_field(rate, "open"),
                 high=self._get_field(rate, "high"),
                 low=self._get_field(rate, "low"),
@@ -167,14 +177,15 @@ class MT5MarketClient(MT5BaseClient):
         """从指定时间开始获取最多 limit 条 K 线，便于补全历史。"""
         self.connect()
         tf = self._timeframe_to_mt5(timeframe)
-        rates = mt5.copy_rates_from(symbol, tf, start, limit)
+        request_start = self._market_time_to_request(start)
+        rates = mt5.copy_rates_from(symbol, tf, request_start, limit)
         if rates is None:
             raise MT5MarketError(f"Failed to get OHLC from {start} for {symbol}: {mt5.last_error()}")
         return [
             OHLC(
                 symbol=symbol,
                 timeframe=timeframe,
-                time=self._to_tz(datetime.fromtimestamp(self._get_field(rate, "time"), tz=timezone.utc)),
+                time=self._market_time_from_seconds(self._get_field(rate, "time")),
                 open=self._get_field(rate, "open"),
                 high=self._get_field(rate, "high"),
                 low=self._get_field(rate, "low"),
@@ -203,3 +214,30 @@ class MT5MarketClient(MT5BaseClient):
         if vol is None or vol == 0:
             vol = self._get_field(tick, "volume", 0.0)
         return float(vol)
+
+    @staticmethod
+    def _normalize_last_price(bid: float, ask: float, last: float) -> float:
+        if last and last > 0:
+            return float(last)
+        if bid > 0 and ask > 0:
+            return float((bid + ask) / 2.0)
+        if bid > 0:
+            return float(bid)
+        if ask > 0:
+            return float(ask)
+        return float(last)
+
+    def _tick_timestamp(self, tick) -> datetime:
+        time_msc = self._get_field(tick, "time_msc")
+        if time_msc is not None:
+            return self._market_time_from_milliseconds(int(time_msc))
+        return self._market_time_from_seconds(self._get_field(tick, "time"))
+
+    def _tick_time_msc(self, tick) -> Optional[int]:
+        time_msc = self._get_field(tick, "time_msc")
+        if time_msc is not None:
+            return int(time_msc)
+        time_seconds = self._get_field(tick, "time")
+        if time_seconds is None:
+            return None
+        return int(time_seconds) * 1000

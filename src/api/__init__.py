@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +17,7 @@ from src.api.schemas import ApiResponse
 from src.clients.mt5_market import MT5MarketError
 from src.config import get_api_config
 from src.core.market_service import MarketDataService
-from src.core.trading_service import TradingService
+from src.trading.service import TradingModule
 
 logger = logging.getLogger(__name__)
 api_config = get_api_config()
@@ -32,9 +31,6 @@ AUTH_EXEMPT_PATHS = {
 
 
 def _resolve_expected_api_key() -> str | None:
-    env_key = os.getenv("MT5_API_KEY", "").strip()
-    if env_key:
-        return env_key
     configured_key = (api_config.api_key or "").strip() if api_config.api_key else ""
     return configured_key or None
 
@@ -98,13 +94,13 @@ async def api_key_authentication(request: Request, call_next):
 @app.get("/health", response_model=ApiResponse[dict])
 def health(
     service: MarketDataService = Depends(deps.get_market_service),
-    trading: TradingService = Depends(deps.get_trading_service),
+    trading: TradingModule = Depends(deps.get_trading_service),
 ) -> ApiResponse[dict]:
     try:
         market_status = service.health()
     except MT5MarketError as exc:
         market_status = {"connected": False, "error": str(exc)}
-    trading_status = trading.client.health() if hasattr(trading, "client") else {}
+    trading_status = trading.health()
     queues = deps.get_ingestor().queue_stats()
 
     return ApiResponse(

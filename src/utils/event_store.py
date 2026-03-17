@@ -42,7 +42,8 @@ class LocalEventStore:
                     processed INTEGER DEFAULT 0,
                     processed_at TEXT,
                     retry_count INTEGER DEFAULT 0,
-                    error_message TEXT
+                    error_message TEXT,
+                    outcome TEXT
                 )
             """)
             
@@ -66,15 +67,26 @@ class LocalEventStore:
                     date TEXT PRIMARY KEY,
                     total_events INTEGER DEFAULT 0,
                     processed_events INTEGER DEFAULT 0,
+                    skipped_events INTEGER DEFAULT 0,
                     failed_events INTEGER DEFAULT 0,
                     avg_processing_time_ms REAL DEFAULT 0
                 )
             """)
+
+            self._ensure_column(cursor, "ohlc_events", "outcome", "TEXT")
+            self._ensure_column(cursor, "event_stats", "skipped_events", "INTEGER DEFAULT 0")
             
             conn.commit()
             conn.close()
         
         logger.info(f"LocalEventStore initialized with database: {self.db_path}")
+
+    @staticmethod
+    def _ensure_column(cursor, table: str, column: str, definition: str) -> None:
+        cursor.execute(f"PRAGMA table_info({table})")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        if column not in existing_columns:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     
     def publish_event(self, symbol: str, timeframe: str, bar_time: datetime) -> int:
         """
@@ -177,8 +189,25 @@ class LocalEventStore:
             
             logger.debug(f"Retrieved event: {symbol}/{timeframe} at {bar_time}, id={event_id}")
             return (symbol, timeframe, bar_time)
+
+    def get_next_events(self, limit: int = 1) -> List[Tuple[str, str, datetime]]:
+        events: List[Tuple[str, str, datetime]] = []
+        limit = max(1, int(limit))
+        while len(events) < limit:
+            event = self.get_next_event()
+            if event is None:
+                break
+            events.append(event)
+        return events
     
-    def mark_event_completed(self, symbol: str, timeframe: str, bar_time: datetime) -> bool:
+    def mark_event_completed(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+        outcome: str = "completed",
+        detail: str = "",
+    ) -> bool:
         """
         标记事件为已完成
         
@@ -196,25 +225,29 @@ class LocalEventStore:
             
             cursor.execute("""
                 UPDATE ohlc_events 
-                SET processed = 2, processed_at = ?
+                SET processed = 2, processed_at = ?, outcome = ?, error_message = ?
                 WHERE symbol = ? AND timeframe = ? AND bar_time = ? AND processed = 1
             """, (
                 _utc_now().isoformat(),
+                outcome,
+                detail[:500] if detail else None,
                 symbol,
                 timeframe,
                 bar_time.isoformat()
             ))
             
             updated = cursor.rowcount > 0
+            retry_count = 0
             
             if updated:
                 # 更新统计
                 today = _utc_now().date().isoformat()
                 cursor.execute("""
                     UPDATE event_stats 
-                    SET processed_events = processed_events + 1 
+                    SET processed_events = processed_events + 1,
+                        skipped_events = skipped_events + ?
                     WHERE date = ?
-                """, (today,))
+                """, (1 if outcome.startswith("skipped_") else 0, today))
             
             conn.commit()
             conn.close()
@@ -225,6 +258,15 @@ class LocalEventStore:
                 logger.warning(f"Failed to mark event as completed: {symbol}/{timeframe} at {bar_time}")
             
             return updated
+
+    def mark_event_skipped(self, symbol: str, timeframe: str, bar_time: datetime, reason: str) -> bool:
+        return self.mark_event_completed(
+            symbol,
+            timeframe,
+            bar_time,
+            outcome=f"skipped_{reason}",
+            detail=reason,
+        )
     
     def mark_event_failed(self, symbol: str, timeframe: str, bar_time: datetime, error_msg: str = "") -> bool:
         """
@@ -248,7 +290,8 @@ class LocalEventStore:
                 UPDATE ohlc_events 
                 SET processed = 0, 
                     retry_count = retry_count + 1,
-                    error_message = ?
+                    error_message = ?,
+                    outcome = 'failed_transient'
                 WHERE symbol = ? AND timeframe = ? AND bar_time = ?
             """, (
                 error_msg[:500],  # 限制错误信息长度
@@ -278,7 +321,8 @@ class LocalEventStore:
                 if retry_count >= 3:  # 最大重试3次
                     cursor.execute("""
                         UPDATE ohlc_events 
-                        SET processed = 3  # 永久失败
+                        SET processed = 3,
+                            outcome = 'failed_permanent'
                         WHERE symbol = ? AND timeframe = ? AND bar_time = ?
                     """, (symbol, timeframe, bar_time.isoformat()))
                     logger.error(f"Event permanently failed after {retry_count} retries: {symbol}/{timeframe} at {bar_time}")
@@ -287,7 +331,21 @@ class LocalEventStore:
             conn.close()
             
             if updated:
-                logger.warning(f"Marked event as failed (will retry): {symbol}/{timeframe} at {bar_time}")
+                if retry_count == 1:
+                    logger.warning(
+                        "Marked event as failed and queued for retry: %s/%s at %s",
+                        symbol,
+                        timeframe,
+                        bar_time,
+                    )
+                elif retry_count < 3:
+                    logger.debug(
+                        "Retryable event failure persisted: %s/%s at %s (retry_count=%s)",
+                        symbol,
+                        timeframe,
+                        bar_time,
+                        retry_count,
+                    )
             
             return updated
     
@@ -343,6 +401,7 @@ class LocalEventStore:
                     SUM(CASE WHEN processed = 0 THEN 1 ELSE 0 END) as pending,
                     SUM(CASE WHEN processed = 1 THEN 1 ELSE 0 END) as processing,
                     SUM(CASE WHEN processed = 2 THEN 1 ELSE 0 END) as completed,
+                    SUM(CASE WHEN outcome LIKE 'skipped_%' THEN 1 ELSE 0 END) as skipped,
                     SUM(CASE WHEN processed = 3 THEN 1 ELSE 0 END) as failed,
                     SUM(retry_count) as total_retries
                 FROM ohlc_events
@@ -353,29 +412,45 @@ class LocalEventStore:
                 "total": row[0] or 0,
                 "pending": row[1] or 0,
                 "processing": row[2] or 0,
-                "completed": row[3] or 0,
-                "failed": row[4] or 0,
-                "total_retries": row[5] or 0,
+                "completed": (row[3] or 0) - (row[4] or 0),
+                "skipped": row[4] or 0,
+                "failed": row[5] or 0,
+                "retrying": 0,
+                "total_retries": row[6] or 0,
+                "outcome_counts": {},
                 "by_symbol": {},
                 "by_timeframe": {},
-                "recent_errors": []
+                "recent_errors": [],
+                "recent_retryable_errors": [],
+                "recent_skips": [],
             }
+
+            cursor.execute("""
+                SELECT COALESCE(outcome, 'completed') AS outcome, COUNT(*)
+                FROM ohlc_events
+                GROUP BY COALESCE(outcome, 'completed')
+            """)
+            for outcome, count in cursor.fetchall():
+                stats["outcome_counts"][outcome] = count
             
             # 按品种统计
             cursor.execute("""
                 SELECT 
                     symbol,
                     COUNT(*) as total,
-                    SUM(CASE WHEN processed = 2 THEN 1 ELSE 0 END) as completed
+                    SUM(CASE WHEN processed = 2 THEN 1 ELSE 0 END) as completed,
+                    SUM(CASE WHEN outcome LIKE 'skipped_%' THEN 1 ELSE 0 END) as skipped
                 FROM ohlc_events
                 GROUP BY symbol
             """)
             
-            for symbol, total, completed in cursor.fetchall():
+            for symbol, total, completed, skipped in cursor.fetchall():
+                computed = completed - skipped
                 stats["by_symbol"][symbol] = {
                     "total": total,
-                    "completed": completed,
-                    "completion_rate": completed / total if total > 0 else 0
+                    "completed": computed,
+                    "skipped": skipped,
+                    "completion_rate": computed / total if total > 0 else 0
                 }
             
             # 按时间框架统计
@@ -383,23 +458,35 @@ class LocalEventStore:
                 SELECT 
                     timeframe,
                     COUNT(*) as total,
-                    SUM(CASE WHEN processed = 2 THEN 1 ELSE 0 END) as completed
+                    SUM(CASE WHEN processed = 2 THEN 1 ELSE 0 END) as completed,
+                    SUM(CASE WHEN outcome LIKE 'skipped_%' THEN 1 ELSE 0 END) as skipped
                 FROM ohlc_events
                 GROUP BY timeframe
             """)
             
-            for timeframe, total, completed in cursor.fetchall():
+            for timeframe, total, completed, skipped in cursor.fetchall():
+                computed = completed - skipped
                 stats["by_timeframe"][timeframe] = {
                     "total": total,
-                    "completed": completed,
-                    "completion_rate": completed / total if total > 0 else 0
+                    "completed": computed,
+                    "skipped": skipped,
+                    "completion_rate": computed / total if total > 0 else 0
                 }
+
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM ohlc_events
+                WHERE processed = 0 AND retry_count > 0
+            """)
+            stats["retrying"] = cursor.fetchone()[0] or 0
             
             # 最近错误
             cursor.execute("""
                 SELECT symbol, timeframe, bar_time, error_message, retry_count
                 FROM ohlc_events
-                WHERE error_message IS NOT NULL AND error_message != ''
+                WHERE processed = 3
+                  AND error_message IS NOT NULL
+                  AND error_message != ''
                 ORDER BY id DESC
                 LIMIT 10
             """)
@@ -411,6 +498,43 @@ class LocalEventStore:
                     "bar_time": bar_time,
                     "error_message": error_msg,
                     "retry_count": retry_count
+                })
+
+            cursor.execute("""
+                SELECT symbol, timeframe, bar_time, error_message, retry_count
+                FROM ohlc_events
+                WHERE processed = 0
+                  AND retry_count > 0
+                  AND error_message IS NOT NULL
+                  AND error_message != ''
+                ORDER BY id DESC
+                LIMIT 10
+            """)
+
+            for symbol, timeframe, bar_time, error_msg, retry_count in cursor.fetchall():
+                stats["recent_retryable_errors"].append({
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "bar_time": bar_time,
+                    "error_message": error_msg,
+                    "retry_count": retry_count
+                })
+
+            cursor.execute("""
+                SELECT symbol, timeframe, bar_time, outcome, error_message
+                FROM ohlc_events
+                WHERE outcome LIKE 'skipped_%'
+                ORDER BY id DESC
+                LIMIT 10
+            """)
+
+            for symbol, timeframe, bar_time, outcome, detail in cursor.fetchall():
+                stats["recent_skips"].append({
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "bar_time": bar_time,
+                    "outcome": outcome,
+                    "detail": detail,
                 })
             
             conn.close()

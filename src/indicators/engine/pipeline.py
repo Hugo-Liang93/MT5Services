@@ -1,13 +1,4 @@
-"""
-优化计算流水线 v2
-
-集成：
-1. 依赖关系管理
-2. 并行计算
-3. 智能缓存
-4. 增量计算
-5. 性能监控
-"""
+"""Optimized indicator pipeline."""
 
 from __future__ import annotations
 
@@ -25,6 +16,10 @@ from .parallel_executor import ParallelExecutor, get_global_executor
 from .parallel_executor import shutdown_global_executor
 
 logger = logging.getLogger(__name__)
+
+
+def _enum_or_raw(value: Any) -> Any:
+    return getattr(value, "value", value)
 
 
 @dataclass
@@ -96,17 +91,20 @@ class OptimizedPipeline:
             "incremental_computations": 0,
             "failed_computations": 0
         }
+        self._compute_log_counter = 0
         self._apply_runtime_config(initial=True)
         
         logger.info(f"OptimizedPipeline initialized with config: {self.config}")
 
     def _apply_runtime_config(self, initial: bool = False) -> None:
-        cache_strategy = str(getattr(self.config, "cache_strategy", "lru_ttl")).lower()
+        cache_strategy = str(_enum_or_raw(getattr(self.config, "cache_strategy", "lru_ttl"))).lower()
         if cache_strategy == "none":
             self.config.enable_cache = False
         elif cache_strategy not in {"simple", "lru_ttl"}:
             logger.warning("Unsupported cache strategy '%s', falling back to lru_ttl", cache_strategy)
-            self.config.cache_strategy = "lru_ttl"
+            cache_strategy = "lru_ttl"
+
+        self.config.cache_strategy = cache_strategy
 
         self.cache = get_global_cache(
             maxsize=getattr(self.config, "cache_maxsize", 1000),
@@ -206,6 +204,7 @@ class OptimizedPipeline:
         incremental = False
         success = True
         error_msg = None
+        result = None
         
         try:
             # 生成缓存键
@@ -253,6 +252,28 @@ class OptimizedPipeline:
                         self.cache.set(cache_key, result)
             
             # 更新统计
+            if result is None:
+                func = self.dependency_manager.indicator_funcs.get(indicator)
+                if func is None:
+                    raise ValueError(f"Indicator function not found: {indicator}")
+
+                if self.config.enable_incremental and indicator in self.incremental_indicators:
+                    incremental_indicator = self.incremental_indicators[indicator]
+                    result = incremental_indicator.compute(
+                        context.bars,
+                        context.symbol,
+                        context.timeframe,
+                        use_incremental=True
+                    )
+                    incremental = True
+                    self.computation_stats["incremental_computations"] += 1
+                else:
+                    params = self.dependency_manager.indicator_params.get(indicator, {})
+                    result = func(context.bars, params)
+
+                if self.config.enable_cache and result is not None:
+                    self.cache.set(cache_key, result)
+
             compute_time = time.time() - start_time
             
             if cache_hit:
@@ -415,12 +436,17 @@ class OptimizedPipeline:
             # 计算总耗时
             total_time = time.time() - start_time
             
-            logger.info(
+            self._compute_log_counter += 1
+            message = (
                 f"Pipeline computation completed: "
                 f"{len(indicators)} indicators, "
                 f"{len(execution_groups)} levels, "
                 f"{total_time*1000:.2f}ms"
             )
+            if total_time >= 0.5 or self._compute_log_counter % 100 == 0:
+                logger.info(message)
+            else:
+                logger.debug(message)
             
             return context.results
             

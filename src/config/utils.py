@@ -87,6 +87,51 @@ def load_config_with_base(
     return target_path, merged_parser
 
 
+def get_merged_option_source(
+    config_name: str,
+    section: str,
+    key: str,
+    base_config: str = "app.ini",
+    base_dir: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve which layered INI file contributed the final value for a key."""
+    if not section or not key:
+        return None
+
+    def _local_name(filename: str) -> str:
+        return filename[:-4] + ".local.ini" if filename.endswith(".ini") else filename + ".local"
+
+    _, base_parser = load_ini_config(base_config, base_dir=base_dir)
+    base_local_name = _local_name(base_config)
+    _, base_local_parser = load_ini_config(base_local_name, base_dir=base_dir)
+    _, target_parser = load_ini_config(config_name, base_dir=base_dir)
+    target_local_name = _local_name(config_name)
+    _, target_local_parser = load_ini_config(target_local_name, base_dir=base_dir)
+
+    candidates = []
+    if config_name == base_config:
+        candidates.extend(
+            [
+                (base_local_name, base_local_parser),
+                (base_config, base_parser),
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                (target_local_name, target_local_parser),
+                (config_name, target_parser),
+                (base_local_name, base_local_parser),
+                (base_config, base_parser),
+            ]
+        )
+
+    for filename, parser in candidates:
+        if parser and parser.has_section(section) and parser.has_option(section, key):
+            return f"{filename}[{section}].{key}"
+    return None
+
+
 def get_merged_config(config_name: str) -> Dict[str, Any]:
     """Return merged config as nested dict."""
     _, parser = load_config_with_base(config_name)

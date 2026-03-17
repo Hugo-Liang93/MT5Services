@@ -79,3 +79,59 @@ def donchian(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     lower = min(bar.low for bar in window)
     mid = (upper + lower) / 2
     return {"donchian_upper": upper, "donchian_lower": lower, "donchian_mid": mid}
+
+
+def adx(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
+    period = get_int(params, "period", default=14, aliases=("window",))
+    window = tail_bars(bars, period * 3)
+    if len(window) < (period * 2) + 1:
+        return {}
+
+    trs: List[float] = []
+    plus_dm: List[float] = []
+    minus_dm: List[float] = []
+    for prev, curr in zip(window[:-1], window[1:]):
+        up_move = curr.high - prev.high
+        down_move = prev.low - curr.low
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+        trs.append(
+            max(
+                curr.high - curr.low,
+                abs(curr.high - prev.close),
+                abs(curr.low - prev.close),
+            )
+        )
+
+    if len(trs) < period * 2:
+        return {}
+
+    atr = sum(trs[:period])
+    smooth_plus_dm = sum(plus_dm[:period])
+    smooth_minus_dm = sum(minus_dm[:period])
+    dx_values: List[float] = []
+    plus_di = 0.0
+    minus_di = 0.0
+
+    for idx in range(period, len(trs)):
+        atr = atr - (atr / period) + trs[idx]
+        smooth_plus_dm = smooth_plus_dm - (smooth_plus_dm / period) + plus_dm[idx]
+        smooth_minus_dm = smooth_minus_dm - (smooth_minus_dm / period) + minus_dm[idx]
+        if atr <= 0:
+            continue
+        plus_di = 100.0 * (smooth_plus_dm / atr)
+        minus_di = 100.0 * (smooth_minus_dm / atr)
+        di_sum = plus_di + minus_di
+        if di_sum == 0:
+            dx_values.append(0.0)
+        else:
+            dx_values.append(abs(plus_di - minus_di) / di_sum * 100.0)
+
+    if len(dx_values) < period:
+        return {}
+    adx_value = sum(dx_values[-period:]) / period
+    return {
+        "adx": adx_value,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+    }

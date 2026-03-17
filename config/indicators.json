@@ -80,6 +80,152 @@
       "enabled": true,
       "description": "14周期平均真实波幅",
       "tags": ["volatility"]
+    },
+    {
+      "name": "stoch14",
+      "func_path": "src.indicators.core.momentum.stochastic",
+      "params": {
+        "k_period": 14,
+        "d_period": 3,
+        "min_bars": 16
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "14周期随机指标",
+      "tags": ["momentum", "oscillator"]
+    },
+    {
+      "name": "williamsr14",
+      "func_path": "src.indicators.core.momentum.williams_r",
+      "params": {
+        "period": 14,
+        "min_bars": 14
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "14周期威廉指标",
+      "tags": ["momentum", "oscillator"]
+    },
+    {
+      "name": "adx14",
+      "func_path": "src.indicators.core.volatility.adx",
+      "params": {
+        "period": 14,
+        "min_bars": 29
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "14周期趋势强度指标",
+      "tags": ["trend", "volatility"]
+    },
+    {
+      "name": "mfi14",
+      "func_path": "src.indicators.core.volume.mfi",
+      "params": {
+        "period": 14,
+        "min_bars": 15
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "14周期资金流量指标",
+      "tags": ["volume", "momentum"]
+    },
+    {
+      "name": "donchian20",
+      "func_path": "src.indicators.core.volatility.donchian",
+      "params": {
+        "period": 20,
+        "min_bars": 20
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "20周期唐奇安通道",
+      "tags": ["trend", "channel"]
+    },
+    {
+      "name": "obv30",
+      "func_path": "src.indicators.core.volume.obv",
+      "params": {
+        "period": 30,
+        "min_bars": 31
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "30周期能量潮指标",
+      "tags": ["volume", "trend"]
+    },
+    {
+      "name": "roc12",
+      "func_path": "src.indicators.core.momentum.roc",
+      "params": {
+        "period": 12,
+        "min_bars": 13
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "12周期变动率指标",
+      "tags": ["momentum", "trend"]
+    },
+    {
+      "name": "cci20",
+      "func_path": "src.indicators.core.momentum.cci",
+      "params": {
+        "period": 20,
+        "min_bars": 20
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "20周期顺势指标",
+      "tags": ["momentum", "oscillator"]
+    },
+    {
+      "name": "keltner20",
+      "func_path": "src.indicators.core.volatility.keltner",
+      "params": {
+        "period": 20,
+        "atr_period": 14,
+        "mult": 2,
+        "min_bars": 21
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "20周期肯特纳通道",
+      "tags": ["volatility", "channel"]
+    },
+    {
+      "name": "vwap30",
+      "func_path": "src.indicators.core.volume.vwap",
+      "params": {
+        "period": 30,
+        "min_bars": 30
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "30周期成交量加权均价",
+      "tags": ["volume", "mean"]
+    },
+    {
+      "name": "wma20",
+      "func_path": "src.indicators.core.mean.wma",
+      "params": {
+        "period": 20,
+        "min_bars": 20
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "20周期加权移动平均线",
+      "tags": ["trend", "mean"]
     }
   ],
   "pipeline": {

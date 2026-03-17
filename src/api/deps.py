@@ -20,17 +20,17 @@ from src.clients.mt5_market import MT5MarketClient
 from src.config import (
     get_effective_config_snapshot,
     get_economic_config,
+    get_risk_config,
     get_runtime_ingest_settings,
     get_runtime_market_settings,
     load_db_settings,
     load_mt5_settings,
     load_storage_settings,
 )
-from src.core.account_service import AccountService
 from src.core.economic_calendar_service import EconomicCalendarService
 from src.core.market_service import MarketDataService
 from src.core.pretrade_risk_service import PreTradeRiskService
-from src.core.trading_service import TradingService
+from src.trading import TradingAccountRegistry, TradingModule
 from src.indicators.manager import UnifiedIndicatorManager, get_global_unified_manager
 from src.ingestion.ingestor import BackgroundIngestor
 from src.monitoring.health_check import get_health_monitor, get_monitoring_manager
@@ -44,9 +44,8 @@ _service: Optional[MarketDataService] = None
 _storage_writer: Optional[StorageWriter] = None
 _ingestor: Optional[BackgroundIngestor] = None
 _indicator_manager: Optional[UnifiedIndicatorManager] = None
-_account_service: Optional[AccountService] = None
-_trading_service: Optional[TradingService] = None
-_pre_trade_risk_service: Optional[PreTradeRiskService] = None
+_trade_registry: Optional[TradingAccountRegistry] = None
+_trade_module: Optional[TradingModule] = None
 _economic_calendar_service: Optional[EconomicCalendarService] = None
 _health_monitor = None
 _monitoring_manager = None
@@ -59,6 +58,10 @@ _startup_status = {
     "last_error": None,
     "steps": {},
 }
+
+
+def _enum_or_raw(value) -> str:
+    return getattr(value, "value", value)
 
 
 def _reset_startup_status() -> None:
@@ -149,9 +152,8 @@ def _ensure_initialized() -> None:
     global _storage_writer
     global _ingestor
     global _indicator_manager
-    global _account_service
-    global _trading_service
-    global _pre_trade_risk_service
+    global _trade_registry
+    global _trade_module
     global _economic_calendar_service
     global _health_monitor
     global _monitoring_manager
@@ -180,17 +182,18 @@ def _ensure_initialized() -> None:
         config_file="config/indicators.json",
         start_immediately=False,
     )
-    _account_service = AccountService()
     _economic_calendar_service = EconomicCalendarService(
         db_writer=_storage_writer.db,
         settings=get_economic_config(),
         storage_writer=_storage_writer,
     )
-    _pre_trade_risk_service = PreTradeRiskService(
-        economic_calendar_service=_economic_calendar_service,
-        settings=get_economic_config(),
+    _trade_registry = TradingAccountRegistry(economic_calendar_service=_economic_calendar_service)
+    default_alias = _trade_registry.default_account_alias()
+    _trade_module = TradingModule(
+        registry=_trade_registry,
+        db_writer=_storage_writer.db,
+        active_account_alias=default_alias,
     )
-    _trading_service = TradingService(pre_trade_risk_service=_pre_trade_risk_service)
     _health_monitor = get_health_monitor("health_monitor.db")
     _health_monitor.configure_alerts(
         data_latency_warning=max(1.0, ingest_settings.max_allowed_delay / 2.0),
@@ -213,11 +216,16 @@ def _ensure_initialized() -> None:
         _health_monitor,
         check_interval=monitoring_interval,
     )
+    _health_monitor.cleanup_old_data(days_to_keep=30)
+    _indicator_manager.cleanup_old_events(days_to_keep=7)
     logger.info(
         "Effective runtime config: %s",
         json.dumps(
             {
                 **get_effective_config_snapshot(),
+                "risk": get_risk_config().model_dump(),
+                "active_trading_account": default_alias,
+                "trading_account": _trade_module.list_accounts()[0] if _trade_module else None,
                 "indicator_scope": {
                     "symbols": list(_indicator_manager.config.symbols),
                     "timeframes": list(_indicator_manager.config.timeframes),
@@ -226,7 +234,9 @@ def _ensure_initialized() -> None:
                     "indicator_reload_interval": _indicator_manager.config.reload_interval,
                     "indicator_poll_interval": _indicator_manager.config.pipeline.poll_interval,
                     "indicator_cache_maxsize": _indicator_manager.config.pipeline.cache_maxsize,
-                    "indicator_cache_strategy": _indicator_manager.config.pipeline.cache_strategy.value,
+                    "indicator_cache_strategy": _enum_or_raw(
+                        _indicator_manager.config.pipeline.cache_strategy
+                    ),
                 },
             },
             ensure_ascii=False,
@@ -248,19 +258,20 @@ def get_market_service() -> MarketDataService:
     return _service  # type: ignore[return-value]
 
 
-def get_account_service() -> AccountService:
+def get_account_service() -> TradingModule:
     _ensure_initialized()
-    return _account_service  # type: ignore[return-value]
+    return _trade_module  # type: ignore[return-value]
 
 
-def get_trading_service() -> TradingService:
+def get_trading_service() -> TradingModule:
     _ensure_initialized()
-    return _trading_service  # type: ignore[return-value]
+    return _trade_module  # type: ignore[return-value]
 
 
 def get_pre_trade_risk_service() -> PreTradeRiskService:
     _ensure_initialized()
-    return _pre_trade_risk_service  # type: ignore[return-value]
+    trading_service = _trade_registry.get_trading_service(_trade_module.active_account_alias)  # type: ignore[union-attr]
+    return trading_service.pre_trade_risk_service  # type: ignore[return-value]
 
 
 def get_economic_calendar_service() -> EconomicCalendarService:

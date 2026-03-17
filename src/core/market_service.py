@@ -10,7 +10,7 @@ import logging
 import queue
 import threading
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Deque, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from src.config import MarketSettings, get_runtime_market_settings
 from src.clients.mt5_market import MT5MarketClient, OHLC, Quote, SymbolInfo, Tick
@@ -250,6 +250,53 @@ class MarketDataService:
         """Compatibility wrapper for indicator services expecting get_ohlc()."""
         return self.get_ohlc_closed(symbol, timeframe, limit=count)
 
+    def get_ohlc_window(
+        self,
+        symbol: Optional[str],
+        timeframe: str,
+        end_time: datetime,
+        limit: int,
+        strict: bool = False,
+    ) -> List[OHLC]:
+        symbol = symbol or self.market_settings.default_symbol
+        end_time = self._coerce_query_time(end_time)
+        key = ohlc_key(symbol, timeframe)
+        with self._lock:
+            cached = list(self._ohlc_closed_cache.get(key, []))
+
+        cached_window = [bar for bar in cached if bar.time <= end_time]
+        if cached_window and cached_window[-1].time == end_time and len(cached_window) >= limit:
+            return cached_window[-limit:]
+
+        storage = self._storage()
+        if storage is None:
+            if strict:
+                raise RuntimeError(f"Historical OHLC storage is unavailable for {symbol}/{timeframe}")
+            return cached_window[-limit:] if cached_window and cached_window[-1].time == end_time else []
+
+        try:
+            persisted = [
+                self._row_to_ohlc(row)
+                for row in storage.db.fetch_ohlc_before(symbol, timeframe, end_time, limit)
+            ]
+        except Exception:
+            logger.exception(
+                "Failed to load OHLC window from storage for %s/%s ending at %s",
+                symbol,
+                timeframe,
+                end_time,
+            )
+            if strict:
+                raise RuntimeError(f"Failed to load OHLC window from storage for {symbol}/{timeframe}")
+            return cached_window[-limit:] if cached_window and cached_window[-1].time == end_time else []
+
+        if persisted:
+            self.set_ohlc_closed(symbol, timeframe, persisted)
+            if persisted[-1].time == end_time:
+                return persisted[-limit:]
+
+        return cached_window[-limit:] if cached_window and cached_window[-1].time == end_time else []
+
     def get_latest_ohlc(self, symbol: Optional[str], timeframe: str) -> Optional[OHLC]:
         bars = self.get_ohlc_closed(symbol, timeframe, limit=1)
         return bars[-1] if bars else None
@@ -388,7 +435,7 @@ class MarketDataService:
         symbol: str,
         timeframe: str,
         bar_time: datetime,
-        indicators: Dict[str, float],
+        indicators: Dict[str, Any],
     ) -> None:
         key = ohlc_key(symbol, timeframe)
         with self._lock:
@@ -400,12 +447,18 @@ class MarketDataService:
                     continue
                 existing = getattr(bar, "indicators", None) or {}
                 if indicators:
-                    bar.indicators = {**existing, **indicators}
+                    merged = dict(existing)
+                    for name, payload in indicators.items():
+                        if isinstance(payload, dict) and isinstance(merged.get(name), dict):
+                            merged[name] = {**merged[name], **payload}
+                        else:
+                            merged[name] = payload
+                    bar.indicators = merged
                 elif bar.indicators is None:
                     bar.indicators = {}
                 return
 
-    def latest_indicators(self, symbol: str, timeframe: str) -> Dict[str, float]:
+    def latest_indicators(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         bars = self.get_ohlc_closed(symbol, timeframe, limit=1)
         if not bars:
             return {}
@@ -437,21 +490,32 @@ class MarketDataService:
         return value.astimezone(timezone.utc)
 
     def _row_to_tick(self, row: tuple) -> Tick:
-        symbol, price, volume, time = row
+        if len(row) >= 5:
+            symbol, price, volume, time, time_msc = row[:5]
+        else:
+            symbol, price, volume, time = row
+            time_msc = None
         return Tick(
             symbol=symbol,
             price=float(price),
             volume=float(volume or 0.0),
             time=self._normalize_time(time),
+            time_msc=int(time_msc) if time_msc is not None else None,
         )
 
     def _row_to_quote(self, row: tuple) -> Quote:
         symbol, bid, ask, last, volume, time = row
+        bid_value = float(bid)
+        ask_value = float(ask)
         return Quote(
             symbol=symbol,
-            bid=float(bid),
-            ask=float(ask),
-            last=float(last),
+            bid=bid_value,
+            ask=ask_value,
+            last=MT5MarketClient._normalize_last_price(
+                bid_value,
+                ask_value,
+                float(last or 0.0),
+            ),
             volume=float(volume or 0.0),
             time=self._normalize_time(time),
         )
@@ -472,10 +536,19 @@ class MarketDataService:
 
     @staticmethod
     def _merge_ticks(base: List[Tick], overlay: List[Tick]) -> List[Tick]:
-        merged = {tick.time: tick for tick in base}
+        merged = {
+            (tick.time, tick.time_msc, tick.price, tick.volume): tick
+            for tick in base
+        }
         for tick in overlay:
-            merged[tick.time] = tick
-        return sorted(merged.values(), key=lambda item: item.time)
+            merged[(tick.time, tick.time_msc, tick.price, tick.volume)] = tick
+        return sorted(
+            merged.values(),
+            key=lambda item: (
+                item.time_msc if item.time_msc is not None else int(item.time.timestamp() * 1000),
+                item.time,
+            ),
+        )
 
     @staticmethod
     def _merge_bars(base: List[OHLC], overlay: List[OHLC]) -> List[OHLC]:

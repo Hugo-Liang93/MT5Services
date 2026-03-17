@@ -25,12 +25,14 @@ from src.persistence.schema import (
     UPSERT_OHLC_SQL,
     INSERT_INTRABAR_SQL,
     INSERT_ECONOMIC_CALENDAR_UPDATE_SQL,
+    INSERT_TRADE_OPERATIONS_SQL,
     UPSERT_RUNTIME_TASK_STATUS_SQL,
     UPSERT_ECONOMIC_CALENDAR_SQL,
 )
 from src.persistence.validator import DataValidator
 
 logger = logging.getLogger(__name__)
+TICK_ORDER_SQL = "COALESCE(time_msc, FLOOR(EXTRACT(EPOCH FROM time) * 1000)::bigint)"
 
 
 class TimescaleWriter:
@@ -144,12 +146,12 @@ class TimescaleWriter:
             cur.execute(ddl)
         logger.info("Timescale schema ensured")
 
-    def write_ticks(self, rows: Iterable[Tuple[str, float, float, str]], page_size: int = 1000) -> None:
+    def write_ticks(self, rows: Iterable[Tuple], page_size: int = 1000) -> None:
         """
         写入 tick 数据，自动验证数据有效性
         
         Args:
-            rows: (symbol, price, volume, iso_time)
+            rows: (symbol, price, volume, iso_time[, time_msc])
             page_size: 批量写入大小
         """
         rows_list = list(rows)
@@ -168,7 +170,16 @@ class TimescaleWriter:
         if invalid_count > 0:
             logger.warning(f"Dropped {invalid_count} invalid tick rows")
         
-        self._batch(INSERT_TICKS_SQL, valid_rows, page_size=page_size)
+        normalized = []
+        for row in valid_rows:
+            if len(row) >= 5:
+                normalized.append((row[0], row[1], row[2], row[3], row[4]))
+                continue
+
+            time_value = datetime.fromisoformat(str(row[3]).replace("Z", "+00:00"))
+            normalized.append((row[0], row[1], row[2], row[3], int(time_value.timestamp() * 1000)))
+
+        self._batch(INSERT_TICKS_SQL, normalized, page_size=page_size)
 
     def write_quotes(self, rows: Iterable[Tuple[str, float, float, float, float, str]], page_size: int = 1000) -> None:
         """
@@ -225,10 +236,10 @@ class TimescaleWriter:
         normalized = []
         for row in valid_rows:
             if len(row) == 8:
-                normalized.append((*row, {}))
+                normalized.append((*row, Json({})))
             else:
                 indicators = row[8] if row[8] is not None else {}
-                normalized.append((*row[:8], indicators))
+                normalized.append((*row[:8], Json(indicators)))
         
         sql = UPSERT_OHLC_SQL if upsert else INSERT_OHLC_SQL
         self._batch(sql, normalized, page_size=page_size)
@@ -267,7 +278,10 @@ class TimescaleWriter:
             return row[0] if row and row[0] else None
 
     def last_tick_time(self, symbol: str) -> Optional[datetime]:
-        sql = "SELECT max(time) FROM ticks WHERE symbol=%s"
+        sql = (
+            "SELECT time FROM ticks WHERE symbol=%s "
+            f"ORDER BY {TICK_ORDER_SQL} DESC, time DESC LIMIT 1"
+        )
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, (symbol,))
             row = cur.fetchone()
@@ -320,19 +334,39 @@ class TimescaleWriter:
             cur.execute(sql, (symbol, timeframe, limit))
             return cur.fetchall()
 
+    def fetch_ohlc_before(
+        self,
+        symbol: str,
+        timeframe: str,
+        end_time: datetime,
+        limit: int,
+    ) -> List[Tuple]:
+        sql = (
+            "SELECT symbol, timeframe, open, high, low, close, volume, time, indicators "
+            "FROM ("
+            "    SELECT symbol, timeframe, open, high, low, close, volume, time, indicators "
+            "    FROM ohlc WHERE symbol=%s AND timeframe=%s AND time <= %s "
+            "    ORDER BY time DESC LIMIT %s"
+            ") recent "
+            "ORDER BY time ASC"
+        )
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (symbol, timeframe, end_time, limit))
+            return cur.fetchall()
+
     def fetch_recent_ticks(
         self,
         symbol: str,
         limit: int,
-    ) -> List[Tuple[str, float, float, datetime]]:
+    ) -> List[Tuple[str, float, float, datetime, Optional[int]]]:
         sql = (
-            "SELECT symbol, price, volume, time "
+            "SELECT symbol, price, volume, time, time_msc "
             "FROM ("
-            "    SELECT symbol, price, volume, time "
+            "    SELECT symbol, price, volume, time, time_msc "
             "    FROM ticks WHERE symbol=%s "
-            "    ORDER BY time DESC LIMIT %s"
+            f"    ORDER BY {TICK_ORDER_SQL} DESC, time DESC LIMIT %s"
             ") recent "
-            "ORDER BY time ASC"
+            f"ORDER BY {TICK_ORDER_SQL} ASC, time ASC"
         )
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, (symbol, limit))
@@ -344,8 +378,8 @@ class TimescaleWriter:
         start_time: Optional[datetime],
         end_time: Optional[datetime],
         limit: int,
-    ) -> List[Tuple[str, float, float, datetime]]:
-        sql = "SELECT symbol, price, volume, time FROM ticks WHERE symbol=%s"
+    ) -> List[Tuple[str, float, float, datetime, Optional[int]]]:
+        sql = "SELECT symbol, price, volume, time, time_msc FROM ticks WHERE symbol=%s"
         params: List = [symbol]
         if start_time is not None:
             sql += " AND time >= %s"
@@ -353,7 +387,7 @@ class TimescaleWriter:
         if end_time is not None:
             sql += " AND time <= %s"
             params.append(end_time)
-        sql += " ORDER BY time ASC LIMIT %s"
+        sql += f" ORDER BY {TICK_ORDER_SQL} ASC, time ASC LIMIT %s"
         params.append(limit)
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
@@ -578,6 +612,67 @@ class TimescaleWriter:
             sql += " AND task_name = %s"
             params.append(task_name)
         sql += " ORDER BY component ASC, task_name ASC"
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+
+    def write_trade_operations(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+        batch = []
+        for row in rows:
+            request_payload = row[15] if row[15] is not None else {}
+            response_payload = row[16] if row[16] is not None else {}
+            batch.append((*row[:15], Json(request_payload), Json(response_payload)))
+        if not batch:
+            return
+        self._batch(INSERT_TRADE_OPERATIONS_SQL, batch, page_size=page_size)
+
+    def fetch_trade_operations(
+        self,
+        *,
+        account_alias: Optional[str] = None,
+        operation_type: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Tuple]:
+        sql = (
+            "SELECT recorded_at, operation_id, account_alias, operation_type, status, "
+            "symbol, side, order_kind, volume, ticket, order_id, deal_id, magic, "
+            "duration_ms, error_message, request_payload, response_payload "
+            "FROM trade_operations WHERE 1=1"
+        )
+        params: List = []
+        if account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        if operation_type is not None:
+            sql += " AND operation_type = %s"
+            params.append(operation_type)
+        if status is not None:
+            sql += " AND status = %s"
+            params.append(status)
+        sql += " ORDER BY recorded_at DESC LIMIT %s"
+        params.append(limit)
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+
+    def summarize_trade_operations(
+        self,
+        *,
+        hours: int = 24,
+        account_alias: Optional[str] = None,
+    ) -> List[Tuple]:
+        sql = (
+            "SELECT account_alias, operation_type, status, COUNT(*) AS count, "
+            "AVG(duration_ms)::double precision AS avg_duration_ms, MAX(recorded_at) AS last_seen_at "
+            "FROM trade_operations "
+            "WHERE recorded_at >= NOW() - (%s * INTERVAL '1 hour')"
+        )
+        params: List = [max(1, int(hours))]
+        if account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        sql += " GROUP BY account_alias, operation_type, status ORDER BY account_alias, operation_type, status"
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()

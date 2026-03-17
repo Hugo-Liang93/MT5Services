@@ -1,6 +1,6 @@
 from typing import Any, Dict, Iterable, List
 
-from .base import get_closes, get_int
+from .base import get_closes, get_int, tail_bars
 from .mean import _ema_sequence
 
 
@@ -81,3 +81,41 @@ def cci(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     last_tp = typicals[-1]
     cci_val = (last_tp - mean_tp) / (0.015 * mean_dev)
     return {"cci": cci_val}
+
+
+def stochastic(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
+    k_period = get_int(params, "k_period", default=14, aliases=("period",))
+    d_period = get_int(params, "d_period", default=3)
+    window = tail_bars(bars, k_period + d_period - 1)
+    if len(window) < k_period:
+        return {}
+
+    k_values: List[float] = []
+    for end_idx in range(k_period, len(window) + 1):
+        sample = window[:end_idx][-k_period:]
+        highest_high = max(bar.high for bar in sample)
+        lowest_low = min(bar.low for bar in sample)
+        if highest_high == lowest_low:
+            k_values.append(50.0)
+            continue
+        k_values.append((sample[-1].close - lowest_low) / (highest_high - lowest_low) * 100.0)
+
+    if not k_values:
+        return {}
+    k_value = k_values[-1]
+    d_window = k_values[-d_period:] if len(k_values) >= d_period else k_values
+    d_value = sum(d_window) / len(d_window)
+    return {"stoch_k": k_value, "stoch_d": d_value}
+
+
+def williams_r(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
+    period = get_int(params, "period", default=14, aliases=("lookback",))
+    window = tail_bars(bars, period)
+    if len(window) < period:
+        return {}
+    highest_high = max(bar.high for bar in window)
+    lowest_low = min(bar.low for bar in window)
+    if highest_high == lowest_low:
+        return {"williams_r": 0.0}
+    value = (highest_high - window[-1].close) / (highest_high - lowest_low) * -100.0
+    return {"williams_r": value}

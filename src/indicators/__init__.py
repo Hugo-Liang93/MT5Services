@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     )
     from .engine.dependency_manager import DependencyManager, get_global_dependency_manager
     from .engine.parallel_executor import ParallelExecutor, TaskResult, TaskStatus, get_global_executor
-    from .engine.pipeline_v2 import OptimizedPipeline, PipelineConfig, get_global_pipeline
+    from .engine.pipeline import OptimizedPipeline, PipelineConfig, get_global_pipeline
     from src.config.indicator_config import (
         UnifiedIndicatorConfig, IndicatorConfig, PipelineConfig as PipelineConfigType,
         ComputeMode, CacheStrategy, get_global_config_manager, get_config

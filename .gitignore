@@ -58,6 +58,9 @@ nosetests.xml
 config/secrets.ini
 config/production.ini
 config/*.local.ini
+config/*.local.json
+config/*.local.yaml
+config/*.local.yml
 
 # Editors and OS files
 .vscode/
@@ -80,11 +83,14 @@ logs/
 *.log
 *.prof
 *.line_profiler
+.codex-run/
 
 # Local databases and runtime state
 *.sqlite
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
 events.db
 health_monitor.db
 

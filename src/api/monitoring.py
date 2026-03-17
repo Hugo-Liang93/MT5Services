@@ -14,11 +14,133 @@ from src.api.deps import (
     get_monitoring_manager_instance,
     get_runtime_task_status,
     get_startup_status,
+    get_trading_service,
 )
 from src.config import get_effective_config_snapshot
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
+
+
+def _enum_or_raw(value) -> str:
+    return getattr(value, "value", value)
+
+
+def _runtime_indicator_status(
+    event_loop_running: bool,
+    failed_computations: int,
+    event_stats: Dict[str, Any],
+) -> str:
+    if not event_loop_running:
+        return "critical"
+    if event_stats.get("failed", 0) > 0:
+        return "critical"
+    if failed_computations > 0 or event_stats.get("retrying", 0) > 0:
+        return "warning"
+    return "healthy"
+
+
+def _build_storage_runtime_summary(queue_stats: Dict[str, Any]) -> Dict[str, Any]:
+    summary = dict(queue_stats.get("summary", {}) or {})
+    queues = dict(queue_stats.get("queues", {}) or {})
+    threads = dict(queue_stats.get("threads", {}) or {})
+    worst_queue = None
+
+    for name, queue in queues.items():
+        queue_status = str(queue.get("status", "normal"))
+        queue_score = {"normal": 0, "high": 1, "critical": 2, "full": 3}.get(queue_status, 0)
+        if worst_queue is None or queue_score > worst_queue["score"]:
+            worst_queue = {
+                "name": name,
+                "score": queue_score,
+                "status": queue_status,
+                "utilization_pct": queue.get("utilization_pct", 0.0),
+                "pending": queue.get("pending", 0),
+            }
+
+    if not threads.get("writer_alive", False):
+        status = "critical"
+    elif summary.get("full", 0) > 0:
+        status = "critical"
+    elif summary.get("critical", 0) > 0 or summary.get("high", 0) > 0:
+        status = "warning"
+    else:
+        status = "healthy"
+
+    return {
+        "status": status,
+        "threads": threads,
+        "summary": summary,
+        "worst_queue": worst_queue,
+    }
+
+
+def _build_runtime_health_summary(indicator_stats: Dict[str, Any]) -> Dict[str, Any]:
+    event_stats = dict(indicator_stats.get("event_store", {}) or {})
+    pipeline_stats = dict(indicator_stats.get("pipeline", {}) or {})
+    event_loop_running = indicator_stats.get("event_loop_running", False)
+    failed_computations = indicator_stats.get("failed_computations", 0)
+
+    return {
+        "status": _runtime_indicator_status(
+            event_loop_running,
+            failed_computations,
+            event_stats,
+        ),
+        "mode": indicator_stats.get("mode"),
+        "event_loop_running": event_loop_running,
+        "last_reconcile_at": indicator_stats.get("last_reconcile_at"),
+        "computations": {
+            "total": indicator_stats.get("total_computations", 0),
+            "failed": failed_computations,
+            "success_rate": indicator_stats.get("success_rate", 0),
+            "cached": indicator_stats.get("cached_computations", 0),
+            "incremental": indicator_stats.get("incremental_computations", 0),
+            "parallel": indicator_stats.get("parallel_computations", 0),
+        },
+        "events": {
+            "pending": event_stats.get("pending", 0),
+            "processing": event_stats.get("processing", 0),
+            "completed": event_stats.get("completed", 0),
+            "skipped": event_stats.get("skipped", 0),
+            "failed": event_stats.get("failed", 0),
+            "retrying": event_stats.get("retrying", 0),
+            "total_retries": event_stats.get("total_retries", 0),
+            "outcome_counts": dict(event_stats.get("outcome_counts", {}) or {}),
+            "recent_skips": list(event_stats.get("recent_skips", []) or []),
+            "recent_retryable_errors": list(
+                event_stats.get("recent_retryable_errors", []) or []
+            ),
+            "recent_errors": list(event_stats.get("recent_errors", []) or []),
+        },
+        "cache": {
+            "hits": indicator_stats.get("cache_hits", 0),
+            "misses": indicator_stats.get("cache_misses", 0),
+            "snapshot": dict(pipeline_stats.get("cache", {}) or {}),
+        },
+        "results": dict(indicator_stats.get("results", {}) or {}),
+        "config": dict(indicator_stats.get("config", {}) or {}),
+        "timestamp": indicator_stats.get("timestamp"),
+    }
+
+
+def _build_runtime_trading_summary(trading_stats: Dict[str, Any]) -> Dict[str, Any]:
+    summary_rows = list(trading_stats.get("summary", []) or [])
+    accounts = list(trading_stats.get("accounts", []) or [])
+    recent = list(trading_stats.get("recent", []) or [])
+    active_account_alias = trading_stats.get("active_account_alias")
+    failed = sum(int(row.get("count", 0)) for row in summary_rows if row.get("status") == "failed")
+    if failed > 0:
+        status = "warning"
+    else:
+        status = "healthy"
+    return {
+        "status": status,
+        "active_account_alias": active_account_alias,
+        "accounts": accounts,
+        "summary": summary_rows,
+        "recent": recent,
+    }
 
 
 @router.get("/health", summary="获取系统健康状态")
@@ -35,6 +157,17 @@ async def get_health_status(hours: int = 24) -> Dict[str, Any]:
     try:
         health_monitor = get_health_monitor_instance()
         report = health_monitor.generate_report(hours)
+        indicator_manager = get_indicator_manager()
+        queue_stats = get_ingestor().queue_stats()
+        report["runtime"] = {
+            "storage": _build_storage_runtime_summary(queue_stats),
+            "indicators": _build_runtime_health_summary(
+                indicator_manager.get_performance_stats()
+            ),
+            "trading": _build_runtime_trading_summary(
+                get_trading_service().monitoring_summary(hours=hours)
+            ),
+        }
         return report
     except Exception as e:
         logger.error(f"Failed to generate health report: {e}")
@@ -267,7 +400,9 @@ async def get_effective_runtime_config() -> Dict[str, Any]:
             "indicator_reload_interval": indicator_manager.config.reload_interval,
             "indicator_poll_interval": indicator_manager.config.pipeline.poll_interval,
             "indicator_cache_maxsize": indicator_manager.config.pipeline.cache_maxsize,
-            "indicator_cache_strategy": indicator_manager.config.pipeline.cache_strategy.value,
+            "indicator_cache_strategy": _enum_or_raw(
+                indicator_manager.config.pipeline.cache_strategy
+            ),
         }
         return snapshot
     except Exception as e:
@@ -289,6 +424,16 @@ async def get_economic_calendar_monitoring() -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to get economic calendar monitoring summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/trading", summary="Get trading monitoring summary")
+async def get_trading_monitoring(hours: int = 24) -> Dict[str, Any]:
+    try:
+        service = get_trading_service()
+        return service.monitoring_summary(hours=hours)
+    except Exception as e:
+        logger.error(f"Failed to get trading monitoring summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

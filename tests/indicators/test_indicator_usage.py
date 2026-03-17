@@ -120,7 +120,7 @@ def test_indicator_flow():
     if os.path.exists(schemas_file):
         with open(schemas_file, "r", encoding="utf-8", errors="replace") as f:
             schemas_content = f.read()
-            if "indicators: Optional[Dict[str, float]]" in schemas_content:
+            if "indicators: Optional[Dict[str, Any]]" in schemas_content:
                 print("✅ OHLCModel 包含 indicators 字段")
             else:
                 print("❌ OHLCModel 不包含 indicators 字段")

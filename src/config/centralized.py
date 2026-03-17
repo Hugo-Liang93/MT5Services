@@ -8,13 +8,16 @@ to this module instead of introducing alternate config paths.
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
-from src.config.utils import ConfigValidator, get_merged_config, load_ini_config
+from src.config.utils import (
+    ConfigValidator,
+    get_merged_config,
+    get_merged_option_source,
+)
 
 
 class TradingConfig(BaseModel):
@@ -116,6 +119,17 @@ class EconomicConfig(BaseModel):
     fred_api_key: str | None = None
 
 
+class RiskConfig(BaseModel):
+    enabled: bool = True
+    max_positions_per_symbol: int | None = None
+    max_open_positions_total: int | None = None
+    max_pending_orders_per_symbol: int | None = None
+    max_volume_per_order: float | None = None
+    max_volume_per_symbol: float | None = None
+    require_sl_for_market_orders: bool = False
+    require_tp_or_sl_for_market_orders: bool = False
+
+
 def _split_csv(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(v).strip() for v in value if str(v).strip()]
@@ -139,30 +153,9 @@ def _normalize_log_format(value: Any) -> str:
     return normalized.replace("%%", "%")
 
 
-def _resolve_secret(raw_value: Any, env_var: str) -> str | None:
-    env_value = os.getenv(env_var, "").strip()
-    if env_value:
-        return env_value
+def _normalize_optional_secret(raw_value: Any) -> str | None:
     text = str(raw_value).strip() if raw_value is not None else ""
     return text or None
-
-
-def _resolve_env_str(env_var: str) -> str | None:
-    value = os.getenv(env_var, "")
-    if value is None:
-        return None
-    text = value.strip()
-    return text or None
-
-
-def _resolve_env_int(env_var: str) -> int | None:
-    value = _resolve_env_str(env_var)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
 
 
 class CentralizedConfig:
@@ -184,6 +177,7 @@ class CentralizedConfig:
             "api": get_merged_config("market.ini"),
             "ingest": get_merged_config("ingest.ini"),
             "economic": get_merged_config("economic.ini"),
+            "risk": get_merged_config("risk.ini"),
             "mt5": get_merged_config("mt5.ini"),
             "db": get_merged_config("db.ini"),
             "storage": get_merged_config("storage.ini"),
@@ -196,11 +190,6 @@ class CentralizedConfig:
         self._build_final_config(shared_config, configs)
         self._validated = True
 
-    @staticmethod
-    def _has_option(config_name: str, section: str, key: str) -> bool:
-        _, parser = load_ini_config(config_name)
-        return bool(parser and parser.has_section(section) and parser.has_option(section, key))
-
     def _option_source(
         self,
         *,
@@ -209,9 +198,7 @@ class CentralizedConfig:
         key: str,
         fallback: str = "default",
     ) -> str:
-        if self._has_option(config_name, section, key):
-            return f"{config_name}[{section}].{key}"
-        return fallback
+        return get_merged_option_source(config_name, section, key) or fallback
 
     def _set_provenance(self, section: str, field: str, source: str) -> None:
         self._provenance_cache.setdefault(section, {})[field] = source
@@ -270,15 +257,6 @@ class CentralizedConfig:
         )
         if "log_format" in api_config:
             api_config["log_format"] = _normalize_log_format(api_config["log_format"])
-        env_api_host = _resolve_env_str("MT5_API_HOST")
-        if env_api_host:
-            api_config["host"] = env_api_host
-        env_api_port = _resolve_env_int("MT5_API_PORT")
-        if env_api_port is not None:
-            api_config["port"] = env_api_port
-        env_api_key = _resolve_env_str("MT5_API_KEY")
-        if env_api_key:
-            api_config["api_key"] = env_api_key
         if not str(api_config.get("api_key", "")).strip():
             api_config["api_key"] = None
         ingest_config = _merge_sections(
@@ -314,36 +292,49 @@ class CentralizedConfig:
                 economic_config[optional_int_key] = None
         if "near_term_refresh_interval_seconds" not in economic_config and "refresh_interval_seconds" in economic_config:
             economic_config["near_term_refresh_interval_seconds"] = economic_config["refresh_interval_seconds"]
-        economic_config["tradingeconomics_api_key"] = _resolve_secret(
-            economic_config.get("tradingeconomics_api_key"),
-            "TRADINGECONOMICS_API_KEY",
+        economic_config["tradingeconomics_api_key"] = _normalize_optional_secret(
+            economic_config.get("tradingeconomics_api_key")
         )
-        economic_config["fred_api_key"] = _resolve_secret(
-            economic_config.get("fred_api_key"),
-            "FRED_API_KEY",
+        economic_config["fred_api_key"] = _normalize_optional_secret(
+            economic_config.get("fred_api_key")
         )
+        risk_config = dict(configs["risk"].get("risk", {}))
+        for optional_int_key in (
+            "max_positions_per_symbol",
+            "max_open_positions_total",
+            "max_pending_orders_per_symbol",
+        ):
+            if str(risk_config.get(optional_int_key, "")).strip() == "":
+                risk_config[optional_int_key] = None
+        for optional_float_key in ("max_volume_per_order", "max_volume_per_symbol"):
+            if str(risk_config.get(optional_float_key, "")).strip() == "":
+                risk_config[optional_float_key] = None
         self._set_provenance(
             "api",
             "host",
-            "env:MT5_API_HOST"
-            if env_api_host
-            else self._option_source(
+            self._option_source(
                 config_name="market.ini",
                 section="api",
                 key="host",
-                fallback="app.ini[system].api_host" if self._has_option("app.ini", "system", "api_host") else "default",
+                fallback=self._option_source(
+                    config_name="app.ini",
+                    section="system",
+                    key="api_host",
+                ),
             ),
         )
         self._set_provenance(
             "api",
             "port",
-            "env:MT5_API_PORT"
-            if env_api_port is not None
-            else self._option_source(
+            self._option_source(
                 config_name="market.ini",
                 section="api",
                 key="port",
-                fallback="app.ini[system].api_port" if self._has_option("app.ini", "system", "api_port") else "default",
+                fallback=self._option_source(
+                    config_name="app.ini",
+                    section="system",
+                    key="api_port",
+                ),
             ),
         )
         for field in APIConfig.model_fields:
@@ -355,8 +346,6 @@ class CentralizedConfig:
                 source = self._option_source(config_name="market.ini", section="logging", key=field)
             else:
                 source = self._option_source(config_name="market.ini", section="api", key=field)
-            if field == "api_key" and env_api_key:
-                source = "env:MT5_API_KEY"
             self._set_provenance("api", field, source)
         for field in IngestConfig.model_fields:
             if field in configs["ingest"].get("ingest", {}):
@@ -374,32 +363,35 @@ class CentralizedConfig:
                     config_name="economic.ini",
                     section="economic",
                     key="local_timezone",
-                    fallback="app.ini[system].timezone" if self._has_option("app.ini", "system", "timezone") else "default",
+                    fallback=self._option_source(
+                        config_name="app.ini",
+                        section="system",
+                        key="timezone",
+                    ),
                 )
             elif field == "tradingeconomics_enabled":
                 source = self._option_source(config_name="economic.ini", section="tradingeconomics", key="enabled")
             elif field == "fred_enabled":
                 source = self._option_source(config_name="economic.ini", section="fred", key="enabled")
             elif field == "tradingeconomics_api_key":
-                source = (
-                    "env:TRADINGECONOMICS_API_KEY"
-                    if os.getenv("TRADINGECONOMICS_API_KEY", "").strip()
-                    else self._option_source(config_name="economic.ini", section="tradingeconomics", key="api_key")
-                )
+                source = self._option_source(config_name="economic.ini", section="tradingeconomics", key="api_key")
             elif field == "fred_api_key":
-                source = (
-                    "env:FRED_API_KEY"
-                    if os.getenv("FRED_API_KEY", "").strip()
-                    else self._option_source(config_name="economic.ini", section="fred", key="api_key")
-                )
+                source = self._option_source(config_name="economic.ini", section="fred", key="api_key")
             else:
                 source = self._option_source(config_name="economic.ini", section="economic", key=field)
             self._set_provenance("economic", field, source)
+        for field in RiskConfig.model_fields:
+            self._set_provenance(
+                "risk",
+                field,
+                self._option_source(config_name="risk.ini", section="risk", key=field),
+            )
         self._config_cache = {
             **shared_config,
             "api": APIConfig(**api_config).model_dump(),
             "ingest": IngestConfig(**ingest_config).model_dump(),
             "economic": EconomicConfig(**economic_config).model_dump(),
+            "risk": RiskConfig(**risk_config).model_dump(),
             "raw": {
                 "mt5": configs["mt5"],
                 "db": configs["db"],
@@ -407,6 +399,7 @@ class CentralizedConfig:
                 "cache": configs["cache"],
                 "indicators": configs["indicators"],
                 "economic": configs["economic"],
+                "risk": configs["risk"],
             },
         }
 
@@ -430,6 +423,9 @@ class CentralizedConfig:
 
     def get_economic_config(self) -> EconomicConfig:
         return EconomicConfig(**self.load_all()["economic"])
+
+    def get_risk_config(self) -> RiskConfig:
+        return RiskConfig(**self.load_all()["risk"])
 
     def get_raw_config(self, module: str) -> Dict[str, Any]:
         return self.load_all()["raw"].get(module, {})
@@ -457,6 +453,7 @@ class CentralizedConfig:
             "api": api_snapshot,
             "ingest": dict(config["ingest"]),
             "economic": economic_snapshot,
+            "risk": dict(config["risk"]),
             "storage": dict(config["raw"].get("storage", {})),
             "provenance": self.get_config_provenance_snapshot(),
         }
@@ -504,6 +501,11 @@ def get_economic_config() -> EconomicConfig:
     return _config_manager.get_economic_config()
 
 
+@lru_cache
+def get_risk_config() -> RiskConfig:
+    return _config_manager.get_risk_config()
+
+
 def reload_configs():
     get_trading_config.cache_clear()
     get_interval_config.cache_clear()
@@ -512,6 +514,24 @@ def reload_configs():
     get_ingest_config.cache_clear()
     get_system_config.cache_clear()
     get_economic_config.cache_clear()
+    get_risk_config.cache_clear()
+    # Compatibility loaders keep their own lru_cache; clear them so reload has
+    # consistent semantics across both primary and legacy call paths.
+    from src.config.compat import (
+        load_db_settings,
+        load_indicator_settings,
+        load_ingest_settings,
+        load_market_settings,
+        load_mt5_settings,
+        load_storage_settings,
+    )
+
+    load_mt5_settings.cache_clear()
+    load_db_settings.cache_clear()
+    load_ingest_settings.cache_clear()
+    load_storage_settings.cache_clear()
+    load_market_settings.cache_clear()
+    load_indicator_settings.cache_clear()
     _config_manager.reload()
 
 

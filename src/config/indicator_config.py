@@ -21,6 +21,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _enum_or_raw(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
 def _as_bool(value: Any, default: bool) -> bool:
     if value is None:
         return default
@@ -448,7 +452,7 @@ class ConfigManager:
                         "enable_parallel": config.pipeline.enable_parallel,
                         "max_workers": config.pipeline.max_workers,
                         "enable_cache": config.pipeline.enable_cache,
-                        "cache_strategy": config.pipeline.cache_strategy.value,
+                        "cache_strategy": _enum_or_raw(config.pipeline.cache_strategy),
                         "cache_ttl": config.pipeline.cache_ttl,
                         "cache_maxsize": config.pipeline.cache_maxsize,
                         "enable_incremental": config.pipeline.enable_incremental,

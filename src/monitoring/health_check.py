@@ -9,6 +9,7 @@ import sqlite3
 import json
 import time
 import threading
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional, Tuple
 import logging
@@ -17,6 +18,25 @@ from src.config import get_shared_symbols, get_shared_timeframes
 from src.utils.common import timeframe_seconds
 
 logger = logging.getLogger(__name__)
+
+
+def _is_finite_metric_value(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _metric_overall_impact(metric_name: str) -> str:
+    if metric_name in {
+        "data_latency",
+        "indicator_freshness",
+        "queue_depth",
+        "economic_calendar_staleness",
+        "economic_provider_failures",
+    }:
+        return "blocking"
+    return "advisory"
 
 
 class HealthMonitor:
@@ -143,9 +163,13 @@ class HealthMonitor:
             check_alert: 是否检查告警
         """
         timestamp = self._utc_now().isoformat()
+        if not _is_finite_metric_value(value):
+            logger.debug("Skipping non-finite metric: %s.%s=%r", component, metric_name, value)
+            return
+        metric_value = float(value)
         
         # 确定告警级别
-        alert_level = self._check_alert_level(component, metric_name, value) if check_alert else None
+        alert_level = self._check_alert_level(component, metric_name, metric_value) if check_alert else None
         
         # 内存中保存最近数据
         key = f"{component}.{metric_name}"
@@ -154,7 +178,7 @@ class HealthMonitor:
         
         metric_data = {
             "timestamp": timestamp,
-            "value": value,
+            "value": metric_value,
             "details": details,
             "alert_level": alert_level
         }
@@ -178,7 +202,7 @@ class HealthMonitor:
                 timestamp,
                 component,
                 metric_name,
-                value,
+                metric_value,
                 json.dumps(details) if details else None,
                 alert_level
             ))
@@ -187,13 +211,13 @@ class HealthMonitor:
             if alert_level and alert_level in ["warning", "critical"]:
                 self._record_alert(
                     cursor, timestamp, component, metric_name, 
-                    alert_level, value, details
+                    alert_level, metric_value, details
                 )
             
             conn.commit()
             conn.close()
         
-        logger.debug(f"Recorded metric: {component}.{metric_name} = {value}, alert={alert_level}")
+        logger.debug(f"Recorded metric: {component}.{metric_name} = {metric_value}, alert={alert_level}")
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -515,7 +539,7 @@ class HealthMonitor:
             logger.error(f"Failed to check economic calendar health: {e}")
             return {}
     
-    def generate_report(self, hours: int = 24) -> Dict[str, Any]:
+    def _generate_report_legacy(self, hours: int = 24) -> Dict[str, Any]:
         """
         生成健康报告
         
@@ -533,18 +557,10 @@ class HealthMonitor:
             
             # 获取各组件最新状态
             cursor.execute("""
-                SELECT 
-                    component,
-                    metric_name,
-                    AVG(metric_value) as avg_value,
-                    MIN(metric_value) as min_value,
-                    MAX(metric_value) as max_value,
-                    COUNT(*) as sample_count,
-                    MAX(timestamp) as last_updated
+                SELECT component, metric_name, metric_value, timestamp
                 FROM health_metrics
                 WHERE timestamp > ?
-                GROUP BY component, metric_name
-                ORDER BY component, metric_name
+                ORDER BY component, metric_name, timestamp
             """, (cutoff.isoformat(),))
             
             report = {
@@ -556,7 +572,9 @@ class HealthMonitor:
                 "summary": {
                     "total_metrics": 0,
                     "warning_count": 0,
-                    "critical_count": 0
+                    "critical_count": 0,
+                    "advisory_warning_count": 0,
+                    "advisory_critical_count": 0
                 }
             }
             
@@ -633,6 +651,147 @@ class HealthMonitor:
         
         return report
     
+    def generate_report(self, hours: int = 24) -> Dict[str, Any]:
+        """Generate a health report using the latest valid samples per metric."""
+        cutoff = self._utc_now() - timedelta(hours=hours)
+
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT component, metric_name, metric_value, timestamp
+                FROM health_metrics
+                WHERE timestamp > ?
+                ORDER BY component, metric_name, timestamp
+                """,
+                (cutoff.isoformat(),),
+            )
+
+            report = {
+                "timestamp": self._utc_now().isoformat(),
+                "time_range_hours": hours,
+                "overall_status": "healthy",
+                "components": {},
+                "active_alerts": list(self.active_alerts.values()),
+                "summary": {
+                    "total_metrics": 0,
+                    "warning_count": 0,
+                    "critical_count": 0,
+                    "advisory_warning_count": 0,
+                    "advisory_critical_count": 0,
+                },
+            }
+
+            grouped_metrics: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            for component, metric_name, metric_value, timestamp in cursor.fetchall():
+                if not _is_finite_metric_value(metric_value):
+                    continue
+                key = (component, metric_name)
+                bucket = grouped_metrics.setdefault(
+                    key,
+                    {"values": [], "latest": float(metric_value), "last_updated": timestamp},
+                )
+                bucket["values"].append(float(metric_value))
+                bucket["latest"] = float(metric_value)
+                bucket["last_updated"] = timestamp
+
+            for (component, metric_name), metric_data in grouped_metrics.items():
+                values = metric_data["values"]
+                latest_value = metric_data["latest"]
+                avg_value = sum(values) / len(values)
+                min_value = min(values)
+                max_value = max(values)
+                sample_count = len(values)
+                last_updated = metric_data["last_updated"]
+
+                if component not in report["components"]:
+                    report["components"][component] = {}
+
+                alert_level = self._check_alert_level(component, metric_name, latest_value)
+                status = "healthy"
+                impact = _metric_overall_impact(metric_name)
+                if alert_level == "warning":
+                    status = "warning"
+                    if impact == "blocking":
+                        report["summary"]["warning_count"] += 1
+                    else:
+                        report["summary"]["advisory_warning_count"] += 1
+                elif alert_level == "critical":
+                    status = "critical"
+                    if impact == "blocking":
+                        report["summary"]["critical_count"] += 1
+                    else:
+                        report["summary"]["advisory_critical_count"] += 1
+
+                report["components"][component][metric_name] = {
+                    "latest": latest_value,
+                    "average": avg_value,
+                    "min": min_value,
+                    "max": max_value,
+                    "samples": sample_count,
+                    "last_updated": last_updated,
+                    "status": status,
+                    "alert_level": alert_level,
+                    "overall_impact": impact,
+                }
+                report["summary"]["total_metrics"] += 1
+
+            if report["summary"]["critical_count"] > 0:
+                report["overall_status"] = "critical"
+            elif report["summary"]["warning_count"] > 0:
+                report["overall_status"] = "warning"
+            elif (
+                report["summary"]["advisory_critical_count"] > 0
+                or report["summary"]["advisory_warning_count"] > 0
+            ):
+                report["overall_status"] = "warning"
+
+            cursor.execute(
+                """
+                SELECT timestamp, component, metric_name, alert_level, metric_value, threshold, message
+                FROM alert_history
+                WHERE timestamp > ?
+                ORDER BY timestamp DESC
+                LIMIT 20
+                """,
+                (cutoff.isoformat(),),
+            )
+
+            report["recent_alerts"] = []
+            for row in cursor.fetchall():
+                timestamp, component, metric_name, alert_level, metric_value, threshold, message = row
+                report["recent_alerts"].append(
+                    {
+                        "timestamp": timestamp,
+                        "component": component,
+                        "metric_name": metric_name,
+                        "alert_level": alert_level,
+                        "metric_value": metric_value,
+                        "threshold": threshold,
+                        "message": message,
+                    }
+                )
+
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO system_status
+                (timestamp, overall_status, components_status, metrics_summary)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    self._utc_now().isoformat(),
+                    report["overall_status"],
+                    json.dumps(report["components"]),
+                    json.dumps(report["summary"]),
+                ),
+            )
+
+            conn.commit()
+            conn.close()
+
+        return report
+
     def get_recent_metrics(self, component: str, metric_name: str, limit: int = 100) -> List[Dict]:
         """
         获取最近的指标数据
@@ -771,6 +930,10 @@ class MonitoringManager:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._monitored_components = {}
+        self._last_retention_at = 0.0
+        self.retention_interval_seconds = 6 * 3600
+        self.health_retention_days = 30
+        self.event_retention_days = 7
         
         logger.info(f"MonitoringManager initialized with check interval: {check_interval}s")
     
@@ -879,6 +1042,7 @@ class MonitoringManager:
                     0.5 if report["overall_status"] == "warning" else 0.0,
                     report
                 )
+                self._run_retention_if_due()
                 
                 # 等待下一次检查
                 self._stop.wait(self.check_interval)
@@ -887,6 +1051,25 @@ class MonitoringManager:
                 logger.exception(f"Error in monitoring loop: {e}")
                 time.sleep(self.check_interval)  # 出错后等待一个周期
     
+    def _run_retention_if_due(self) -> None:
+        now = time.time()
+        if now - self._last_retention_at < self.retention_interval_seconds:
+            return
+        self._last_retention_at = now
+
+        try:
+            self.health_monitor.cleanup_old_data(self.health_retention_days)
+        except Exception as exc:
+            logger.error("Failed to cleanup health monitor data: %s", exc)
+
+        indicator_component = self._monitored_components.get("indicator_calculation", {})
+        indicator_obj = indicator_component.get("obj")
+        if indicator_obj is not None and hasattr(indicator_obj, "cleanup_old_events"):
+            try:
+                indicator_obj.cleanup_old_events(self.event_retention_days)
+            except Exception as exc:
+                logger.error("Failed to cleanup old indicator events: %s", exc)
+
     def _check_data_latency(self, service, component_name: str):
         """检查数据延迟（针对多个品种和时间框架）"""
         # 这里需要根据实际情况获取品种和时间框架列表

@@ -84,3 +84,47 @@ def test_base_local_ini_can_override_app_defaults(tmp_path: Path):
     _, parser = utils.load_config_with_base("app.ini", base_dir=str(tmp_path))
     assert parser is not None
     assert parser.get("system", "api_port") == "8899"
+
+
+def test_get_merged_option_source_prefers_local_layers(tmp_path: Path):
+    utils = _load_utils_module()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    _write(
+        config_dir / "app.ini",
+        """
+        [system]
+        api_port = 8808
+        """,
+    )
+    _write(
+        config_dir / "app.local.ini",
+        """
+        [system]
+        api_port = 8899
+        """,
+    )
+    _write(
+        config_dir / "market.ini",
+        """
+        [api]
+        host = 0.0.0.0
+        """,
+    )
+    _write(
+        config_dir / "market.local.ini",
+        """
+        [api]
+        host = 127.0.0.1
+        """,
+    )
+
+    assert (
+        utils.get_merged_option_source("app.ini", "system", "api_port", base_dir=str(tmp_path))
+        == "app.local.ini[system].api_port"
+    )
+    assert (
+        utils.get_merged_option_source("market.ini", "api", "host", base_dir=str(tmp_path))
+        == "market.local.ini[api].host"
+    )
