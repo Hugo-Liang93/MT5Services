@@ -55,6 +55,7 @@ from src.config.centralized import (
     IngestConfig,
     EconomicConfig,
     RiskConfig,
+    TradingOpsConfig,
     
     # 加载函数
     get_trading_config,
@@ -65,6 +66,7 @@ from src.config.centralized import (
     get_ingest_config,
     get_economic_config,
     get_risk_config,
+    get_trading_ops_config,
     
     # 工具函数
     get_shared_symbols,
@@ -183,6 +185,7 @@ __all__ = [
     "IngestConfig",
     "EconomicConfig",
     "RiskConfig",
+    "TradingOpsConfig",
     "get_trading_config",
     "get_interval_config",
     "get_limit_config",
@@ -191,6 +194,7 @@ __all__ = [
     "get_ingest_config",
     "get_economic_config",
     "get_risk_config",
+    "get_trading_ops_config",
     "get_runtime_ingest_settings",
     "get_runtime_market_settings",
     "get_shared_symbols",

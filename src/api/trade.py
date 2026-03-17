@@ -5,6 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 
 from src.api.deps import get_trading_service
+from src.api.trade_dispatcher import TradeAPIDispatcher
 from src.api.error_codes import AIErrorAction, AIErrorCode, get_trade_error_details
 from src.api.schemas import (
     ApiResponse,
@@ -21,6 +22,7 @@ from src.api.schemas import (
     PositionModel,
     TradePrecheckModel,
     TradeRequest,
+    TradeDispatchRequest,
     TradingAccountModel,
 )
 from src.clients.mt5_trade import MT5TradeError
@@ -36,6 +38,50 @@ def _trade_request_details(request: TradeRequest) -> dict:
         volume=request.volume,
         side=request.side,
         price=request.price,
+    )
+
+
+@router.post("/trade/dispatch", response_model=ApiResponse[dict])
+def trade_dispatch(
+    request: TradeDispatchRequest,
+    service: TradingModule = Depends(get_trading_service),
+) -> ApiResponse[dict]:
+    dispatcher = TradeAPIDispatcher(service)
+    return dispatcher.dispatch(request.operation, request.payload)
+
+
+@router.get("/trade/daily_summary", response_model=ApiResponse[dict])
+def trade_daily_summary(
+    service: TradingModule = Depends(get_trading_service),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=service.daily_trade_summary(),
+        metadata={
+            "operation": "daily_summary",
+            "account_alias": service.active_account_alias,
+        },
+    )
+
+
+@router.get("/trade/entry_status", response_model=ApiResponse[dict])
+def trade_entry_status(
+    symbol: Optional[str] = Query(default=None),
+    volume: float = Query(default=0.1, gt=0),
+    side: str = Query(default="buy"),
+    order_kind: str = Query(default="market"),
+    service: TradingModule = Depends(get_trading_service),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=service.entry_to_order_status(
+            symbol=symbol,
+            volume=volume,
+            side=side,
+            order_kind=order_kind,
+        ),
+        metadata={
+            "operation": "entry_status",
+            "account_alias": service.active_account_alias,
+        },
     )
 
 

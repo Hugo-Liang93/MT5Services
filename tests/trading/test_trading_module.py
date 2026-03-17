@@ -29,6 +29,8 @@ class DummyTradingService:
         return {"ticket": 123, "symbol": kwargs["symbol"], "order_kind": kwargs.get("order_kind", "market")}
 
     def precheck_trade(self, **kwargs):
+        if kwargs.get("symbol") == "BLOCKED":
+            return {"action": "block", "symbol": kwargs["symbol"], "checks": [], "warnings": [], "blocked": True, "reason": "blocked"}
         return {"action": "allow", "symbol": kwargs["symbol"], "checks": [], "warnings": [], "blocked": False}
 
     def execute_trade_batch(self, trades, stop_on_error=False):
@@ -192,3 +194,52 @@ def test_trading_module_health_uses_active_account_client():
     assert health["account_alias"] == "live"
     assert health["connected"] is True
     assert health["login"] == 1001
+
+
+def test_trading_module_generates_daily_summary_after_trade():
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    module.execute_trade(symbol="XAUUSD", volume=0.1, side="buy")
+    summary = module.daily_trade_summary()
+
+    assert summary["total"] == 1
+    assert summary["success"] == 1
+    assert summary["failed"] == 0
+    assert summary["symbols"]["XAUUSD"]["total"] == 1
+
+
+def test_trading_module_dispatch_operation_routes_to_handler():
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    result = module.dispatch_operation("trade", {"symbol": "XAUUSD", "volume": 0.2, "side": "buy"})
+
+    assert result["ticket"] == 123
+
+
+def test_trading_module_dispatch_operation_rejects_unknown():
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    try:
+        module.dispatch_operation("unknown_op", {})
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "unsupported trading operation" in str(exc)
+
+
+def test_trading_module_entry_to_order_status_ready():
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    status = module.entry_to_order_status(symbol="XAUUSD", volume=0.1, side="buy")
+
+    assert status["ready_for_order"] is True
+    assert status["stages"]["order"] == "ready"
+
+
+def test_trading_module_dispatch_trade_respects_risk_block():
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    try:
+        module.dispatch_operation("trade", {"symbol": "BLOCKED", "volume": 0.1, "side": "buy"})
+        assert False, "expected risk block"
+    except Exception as exc:
+        assert "blocked" in str(exc)
