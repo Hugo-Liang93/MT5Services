@@ -27,6 +27,7 @@ from src.persistence.schema import (
     INSERT_ECONOMIC_CALENDAR_UPDATE_SQL,
     INSERT_TRADE_OPERATIONS_SQL,
     INSERT_SIGNAL_EVENTS_SQL,
+    INSERT_SIGNAL_PREVIEW_EVENTS_SQL,
     UPSERT_RUNTIME_TASK_STATUS_SQL,
     UPSERT_ECONOMIC_CALENDAR_SQL,
 )
@@ -681,6 +682,12 @@ class TimescaleWriter:
 
 
     def write_signal_events(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+        self._write_signal_rows(INSERT_SIGNAL_EVENTS_SQL, rows, page_size=page_size)
+
+    def write_signal_preview_events(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+        self._write_signal_rows(INSERT_SIGNAL_PREVIEW_EVENTS_SQL, rows, page_size=page_size)
+
+    def _write_signal_rows(self, sql: str, rows: Iterable[Tuple], page_size: int = 200) -> None:
         batch = []
         for row in rows:
             used_indicators = row[8] if row[8] is not None else []
@@ -689,7 +696,7 @@ class TimescaleWriter:
             batch.append((*row[:8], Json(used_indicators), Json(indicators_snapshot), Json(metadata)))
         if not batch:
             return
-        self._batch(INSERT_SIGNAL_EVENTS_SQL, batch, page_size=page_size)
+        self._batch(sql, batch, page_size=page_size)
 
     def fetch_signal_events(
         self,
@@ -700,10 +707,47 @@ class TimescaleWriter:
         action: Optional[str] = None,
         limit: int = 200,
     ) -> List[Tuple]:
+        return self._fetch_signal_rows(
+            table_name="signal_events",
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy=strategy,
+            action=action,
+            limit=limit,
+        )
+
+    def fetch_signal_preview_events(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Tuple]:
+        return self._fetch_signal_rows(
+            table_name="signal_preview_events",
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy=strategy,
+            action=action,
+            limit=limit,
+        )
+
+    def _fetch_signal_rows(
+        self,
+        *,
+        table_name: str,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Tuple]:
         sql = (
             "SELECT generated_at, signal_id, symbol, timeframe, strategy, action, confidence, reason, "
             "used_indicators, indicators_snapshot, metadata "
-            "FROM signal_events WHERE 1=1"
+            f"FROM {table_name} WHERE 1=1"
         )
         params: List = []
         if symbol is not None:
@@ -725,10 +769,16 @@ class TimescaleWriter:
             return cur.fetchall()
 
     def summarize_signal_events(self, *, hours: int = 24) -> List[Tuple]:
+        return self._summarize_signal_rows(table_name="signal_events", hours=hours)
+
+    def summarize_signal_preview_events(self, *, hours: int = 24) -> List[Tuple]:
+        return self._summarize_signal_rows(table_name="signal_preview_events", hours=hours)
+
+    def _summarize_signal_rows(self, *, table_name: str, hours: int = 24) -> List[Tuple]:
         sql = (
             "SELECT symbol, timeframe, strategy, action, COUNT(*)::bigint AS count, "
             "AVG(confidence)::double precision AS avg_confidence, MAX(generated_at) AS last_seen_at "
-            "FROM signal_events "
+            f"FROM {table_name} "
             "WHERE generated_at >= NOW() - (%s * INTERVAL '1 hour') "
             "GROUP BY symbol, timeframe, strategy, action "
             "ORDER BY symbol, timeframe, strategy, action"

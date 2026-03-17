@@ -7,6 +7,29 @@ from uuid import uuid4
 
 
 @dataclass(frozen=True)
+class SignalEvent:
+    """Published by SignalRuntime whenever a signal state transition is emitted.
+
+    Any module can subscribe via SignalRuntime.add_signal_listener().
+    The signal module itself has no knowledge of subscribers.
+    """
+
+    symbol: str
+    timeframe: str
+    strategy: str
+    action: str         # buy / sell / hold
+    confidence: float
+    signal_state: str   # confirmed_buy, confirmed_sell, confirmed_cancelled,
+                        # armed_buy, armed_sell, preview_buy, preview_sell, cancelled
+    scope: str          # confirmed / preview
+    indicators: Dict[str, Dict[str, float]]
+    metadata: Dict[str, Any]
+    generated_at: datetime
+    signal_id: str = ""     # populated after persist; empty for non-persisted events
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class SignalContext:
     symbol: str
     timeframe: str

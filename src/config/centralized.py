@@ -72,6 +72,11 @@ class IngestConfig(BaseModel):
     queue_monitor_interval: float = 5.0
     health_check_interval: float = 30.0
     max_allowed_delay: float = 60.0
+    # Intrabar sampling: independent of OHLC polling schedule.
+    # Fetches only the current in-progress bar at a higher frequency.
+    # Auto-computed as max(5, tf_seconds * 0.05) when not overridden.
+    intrabar_interval: float = 15.0           # global default (seconds)
+    intrabar_intervals: Dict[str, float] = Field(default_factory=dict)  # per-tf: {"M1": 5.0, "H1": 60.0}
 
 
 class EconomicConfig(BaseModel):
@@ -532,6 +537,7 @@ def reload_configs():
     get_economic_config.cache_clear()
     get_risk_config.cache_clear()
     get_trading_ops_config.cache_clear()
+    get_signal_config.cache_clear()
     # Compatibility loaders keep their own lru_cache; clear them so reload has
     # consistent semantics across both primary and legacy call paths.
     from src.config.compat import (
@@ -578,3 +584,40 @@ def get_effective_config_snapshot() -> Dict[str, Any]:
 
 def get_config_provenance_snapshot() -> Dict[str, Dict[str, str]]:
     return _config_manager.get_config_provenance_snapshot()
+
+
+class SignalConfig(BaseModel):
+    """Signal module configuration loaded from config/signal.ini."""
+
+    auto_trade_enabled: bool = False
+    auto_trade_min_confidence: float = 0.7
+    auto_trade_require_armed: bool = True
+    sl_atr_multiplier: float = 1.5
+    tp_atr_multiplier: float = 3.0
+    risk_percent_per_trade: float = 1.0
+    min_volume: float = 0.01
+    max_volume: float = 1.0
+    max_spread_points: float = 50.0
+    allowed_sessions: str = "london,newyork"
+    economic_filter_enabled: bool = True
+    economic_lookahead_minutes: int = 30
+    economic_lookback_minutes: int = 15
+    economic_importance_min: int = 3
+    min_preview_confidence: float = 0.55
+    min_preview_bar_progress: float = 0.2
+    preview_stable_seconds: float = 15.0
+    preview_cooldown_seconds: float = 30.0
+    snapshot_dedupe_window_seconds: float = 1.0
+    trailing_atr_multiplier: float = 1.0
+    breakeven_atr_threshold: float = 1.0
+    position_reconcile_interval: float = 10.0  # seconds between MT5 position sync
+
+
+@lru_cache
+def get_signal_config() -> SignalConfig:
+    merged = get_merged_config("signal.ini")
+    signal_section = dict(merged.get("signal", {}))
+    preview_section = dict(merged.get("preview", {}))
+    position_section = dict(merged.get("position_management", {}))
+    combined = {**signal_section, **{f"min_preview_confidence" if k == "min_confidence" else k: v for k, v in preview_section.items()}, **position_section}
+    return ConfigValidator.validate_model(SignalConfig, combined)

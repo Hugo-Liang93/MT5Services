@@ -1,25 +1,62 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Dict, Iterable, Optional, Protocol
 
 from .models import SignalContext, SignalDecision
 
 
 class SignalStrategy(Protocol):
     name: str
+    required_indicators: tuple[str, ...]
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         ...
+
+
+def _resolve_indicator_value(
+    indicators: Dict[str, Dict[str, Any]],
+    candidates: Iterable[tuple[str, str]],
+) -> tuple[float | None, str | None]:
+    for indicator_name, field_name in candidates:
+        payload = indicators.get(indicator_name)
+        if not isinstance(payload, dict):
+            continue
+        value = payload.get(field_name)
+        if value is None:
+            continue
+        try:
+            return float(value), indicator_name
+        except (TypeError, ValueError):
+            continue
+    return None, None
 
 
 class SmaTrendStrategy:
     """Simple trend signal based on fast/slow SMA relation."""
 
     name = "sma_trend"
+    required_indicators = ("sma20", "ema50")
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
-        fast = context.indicators.get("sma_fast", {}).get("value")
-        slow = context.indicators.get("sma_slow", {}).get("value")
+        fast, fast_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("sma_fast", "value"),
+                ("sma_fast", "sma"),
+                ("sma20", "sma"),
+                ("sma20", "value"),
+            ),
+        )
+        slow, slow_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("sma_slow", "value"),
+                ("sma_slow", "sma"),
+                ("ema50", "ema"),
+                ("ema50", "value"),
+            ),
+        )
+        used_indicators = [name for name in (fast_name, slow_name) if name]
         if fast is None or slow is None:
             return SignalDecision(
                 strategy=self.name,
@@ -28,10 +65,10 @@ class SmaTrendStrategy:
                 action="hold",
                 confidence=0.0,
                 reason="missing_required_indicators",
-                used_indicators=["sma_fast", "sma_slow"],
+                used_indicators=used_indicators or ["sma20", "ema50"],
             )
 
-        spread = float(fast) - float(slow)
+        spread = fast - slow
         if spread > 0:
             action = "buy"
         elif spread < 0:
@@ -39,16 +76,22 @@ class SmaTrendStrategy:
         else:
             action = "hold"
 
-        confidence = min(abs(spread), 1.0)
+        relative_spread = spread / slow if slow else 0.0
+        confidence = min(abs(relative_spread) * 100, 1.0)
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
             timeframe=context.timeframe,
             action=action,
             confidence=confidence,
-            reason=f"sma_spread={spread:.6f}",
-            used_indicators=["sma_fast", "sma_slow"],
-            metadata={"spread": spread},
+            reason=f"sma_spread={spread:.6f},relative={relative_spread:.6f}",
+            used_indicators=used_indicators or ["sma20", "ema50"],
+            metadata={
+                "spread": spread,
+                "relative_spread": relative_spread,
+                "fast_indicator": fast_name or "sma20",
+                "slow_indicator": slow_name or "ema50",
+            },
         )
 
 
@@ -56,9 +99,18 @@ class RsiReversionStrategy:
     """Mean reversion signal based on RSI overbought/oversold zones."""
 
     name = "rsi_reversion"
+    required_indicators = ("rsi14",)
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
-        rsi_value = context.indicators.get("rsi", {}).get("value")
+        rsi_value, rsi_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("rsi", "value"),
+                ("rsi", "rsi"),
+                ("rsi14", "rsi"),
+                ("rsi14", "value"),
+            ),
+        )
         if rsi_value is None:
             return SignalDecision(
                 strategy=self.name,
@@ -67,10 +119,10 @@ class RsiReversionStrategy:
                 action="hold",
                 confidence=0.0,
                 reason="missing_required_indicator:rsi",
-                used_indicators=["rsi"],
+                used_indicators=[rsi_name] if rsi_name else ["rsi14"],
             )
 
-        rsi = float(rsi_value)
+        rsi = rsi_value
         if rsi <= 30:
             action = "buy"
             confidence = min((30 - rsi) / 30 + 0.4, 1.0)
@@ -88,6 +140,214 @@ class RsiReversionStrategy:
             action=action,
             confidence=confidence,
             reason=f"rsi={rsi:.2f}",
-            used_indicators=["rsi"],
-            metadata={"rsi": rsi},
+            used_indicators=[rsi_name] if rsi_name else ["rsi14"],
+            metadata={"rsi": rsi, "rsi_indicator": rsi_name or "rsi14"},
         )
+
+
+class BollingerBreakoutStrategy:
+    """Mean reversion signal based on Bollinger Band breakout.
+
+    Price touching lower band -> buy (expect reversion to mean).
+    Price touching upper band -> sell (expect reversion to mean).
+    Band width (squeeze) is used to boost confidence on breakouts after compression.
+    """
+
+    name = "bollinger_breakout"
+    required_indicators = ("bollinger20",)
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        upper, upper_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("bollinger20", "bb_upper"),
+                ("bollinger", "bb_upper"),
+            ),
+        )
+        lower, lower_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("bollinger20", "bb_lower"),
+                ("bollinger", "bb_lower"),
+            ),
+        )
+        mid, _ = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("bollinger20", "bb_mid"),
+                ("bollinger", "bb_mid"),
+            ),
+        )
+        close_value = self._get_close(context)
+
+        used = [n for n in (upper_name, lower_name) if n]
+        if upper is None or lower is None or mid is None or close_value is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicators",
+                used_indicators=used or ["bollinger20"],
+            )
+
+        band_width = (upper - lower) / mid if mid else 0.0
+        squeeze_bonus = max(0.0, 0.3 - band_width * 10) if band_width < 0.03 else 0.0
+
+        if close_value <= lower:
+            action = "buy"
+            penetration = (lower - close_value) / (upper - lower) if (upper - lower) else 0
+            confidence = min(0.5 + penetration + squeeze_bonus, 1.0)
+        elif close_value >= upper:
+            action = "sell"
+            penetration = (close_value - upper) / (upper - lower) if (upper - lower) else 0
+            confidence = min(0.5 + penetration + squeeze_bonus, 1.0)
+        else:
+            action = "hold"
+            confidence = 0.1
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=confidence,
+            reason=f"bb_close={close_value:.2f},upper={upper:.2f},lower={lower:.2f}",
+            used_indicators=used or ["bollinger20"],
+            metadata={
+                "close": close_value,
+                "bb_upper": upper,
+                "bb_lower": lower,
+                "bb_mid": mid,
+                "band_width": band_width,
+                "squeeze_bonus": squeeze_bonus,
+            },
+        )
+
+    @staticmethod
+    def _get_close(context: SignalContext) -> Optional[float]:
+        """Try to extract close price from indicators metadata."""
+        for indicator_name in ("bollinger20", "bollinger", "close", "price"):
+            payload = context.indicators.get(indicator_name)
+            if isinstance(payload, dict):
+                for field in ("close", "value", "last"):
+                    val = payload.get(field)
+                    if val is not None:
+                        try:
+                            return float(val)
+                        except (TypeError, ValueError):
+                            continue
+        close_val = context.metadata.get("close") or context.metadata.get("last_close")
+        if close_val is not None:
+            try:
+                return float(close_val)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+
+class MultiTimeframeConfirmStrategy:
+    """Confirms signals when direction aligns across timeframes.
+
+    Uses existing indicator snapshots to check if the same directional signal
+    exists on a higher timeframe. Only produces signals when lower TF and
+    higher TF agree on direction.
+    """
+
+    name = "mtf_confirm"
+    required_indicators = ("sma20", "ema50")
+
+    def __init__(
+        self,
+        *,
+        state_reader: Optional[Any] = None,
+    ):
+        self._state_reader = state_reader
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        fast, fast_name = _resolve_indicator_value(
+            context.indicators,
+            (("sma_fast", "value"), ("sma_fast", "sma"), ("sma20", "sma"), ("sma20", "value")),
+        )
+        slow, slow_name = _resolve_indicator_value(
+            context.indicators,
+            (("sma_slow", "value"), ("sma_slow", "sma"), ("ema50", "ema"), ("ema50", "value")),
+        )
+        used = [n for n in (fast_name, slow_name) if n]
+        if fast is None or slow is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicators",
+                used_indicators=used or ["sma20", "ema50"],
+            )
+
+        local_direction = "buy" if fast > slow else ("sell" if fast < slow else "hold")
+        htf_direction = self._get_htf_direction(context)
+
+        if local_direction == "hold" or htf_direction is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.1,
+                reason=f"local={local_direction},htf={htf_direction or 'unknown'}",
+                used_indicators=used or ["sma20", "ema50"],
+                metadata={"local_direction": local_direction, "htf_direction": htf_direction},
+            )
+
+        if local_direction == htf_direction:
+            relative_spread = (fast - slow) / slow if slow else 0
+            confidence = min(abs(relative_spread) * 150, 1.0)
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action=local_direction,
+                confidence=max(confidence, 0.6),
+                reason=f"mtf_aligned:{local_direction},htf={htf_direction}",
+                used_indicators=used or ["sma20", "ema50"],
+                metadata={
+                    "local_direction": local_direction,
+                    "htf_direction": htf_direction,
+                    "relative_spread": relative_spread,
+                },
+            )
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action="hold",
+            confidence=0.15,
+            reason=f"mtf_conflict:local={local_direction},htf={htf_direction}",
+            used_indicators=used or ["sma20", "ema50"],
+            metadata={"local_direction": local_direction, "htf_direction": htf_direction},
+        )
+
+    def _get_htf_direction(self, context: SignalContext) -> Optional[str]:
+        """Read higher timeframe direction from state reader or metadata."""
+        htf = context.metadata.get("htf_direction")
+        if htf in ("buy", "sell", "hold"):
+            return htf
+        if self._state_reader is None:
+            return None
+        try:
+            states = self._state_reader
+            htf_key = context.metadata.get("htf_key")
+            if htf_key and isinstance(states, dict):
+                state = states.get(htf_key)
+                if state:
+                    confirmed = getattr(state, "confirmed_state", "idle")
+                    if "buy" in confirmed:
+                        return "buy"
+                    if "sell" in confirmed:
+                        return "sell"
+        except Exception:
+            pass
+        return None

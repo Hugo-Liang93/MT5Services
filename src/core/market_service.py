@@ -14,24 +14,12 @@ from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tu
 
 from src.config import MarketSettings, get_runtime_market_settings
 from src.clients.mt5_market import MT5MarketClient, OHLC, Quote, SymbolInfo, Tick
-from src.utils.common import ohlc_key
+from src.utils.common import ohlc_key, same_listener_reference
 
 if TYPE_CHECKING:
     from src.persistence.storage_writer import StorageWriter
 
 logger = logging.getLogger(__name__)
-
-
-def _same_listener_reference(left: Callable[..., Any], right: Callable[..., Any]) -> bool:
-    """Return True when two listener callables refer to the same target."""
-    if left is right:
-        return True
-
-    left_func = getattr(left, "__func__", None)
-    right_func = getattr(right, "__func__", None)
-    left_self = getattr(left, "__self__", None)
-    right_self = getattr(right, "__self__", None)
-    return left_func is not None and left_func is right_func and left_self is right_self
 
 
 class MarketDataService:
@@ -70,7 +58,7 @@ class MarketDataService:
     def get_symbol_info(self, symbol: str) -> SymbolInfo:
         return self.client.get_symbol_info(symbol)
 
-    def get_quote(self, symbol: Optional[str]) -> Optional[Quote]:
+    def get_quote(self, symbol: Optional[str] = None) -> Optional[Quote]:
         symbol = symbol or self.market_settings.default_symbol
         with self._lock:
             cached = self._quote_cache.get(symbol)
@@ -79,6 +67,13 @@ class MarketDataService:
                 if age <= self.market_settings.quote_stale_seconds:
                     return cached
         return None
+
+    def get_current_spread(self, symbol: Optional[str] = None) -> float:
+        """Return current bid-ask spread in points. Returns 0.0 if no quote available."""
+        quote = self.get_quote(symbol)
+        if quote is None:
+            return 0.0
+        return abs(quote.ask - quote.bid)
 
     def get_quote_history(
         self,
@@ -401,10 +396,10 @@ class MarketDataService:
             existing = self._intrabar_cache.get(key)
             if not existing or existing[-1].time != bar.time:
                 self._intrabar_cache[key] = [bar]
-                return
-            existing.append(bar)
-            if len(existing) > self._intrabar_max_points:
-                del existing[:-self._intrabar_max_points]
+            else:
+                existing.append(bar)
+                if len(existing) > self._intrabar_max_points:
+                    del existing[:-self._intrabar_max_points]
         for listener in list(self._intrabar_listeners):
             try:
                 listener(symbol, timeframe, bar)
@@ -424,7 +419,7 @@ class MarketDataService:
             self._ohlc_close_listeners = [
                 item
                 for item in self._ohlc_close_listeners
-                if not _same_listener_reference(item, listener)
+                if not same_listener_reference(item, listener)
             ]
 
     def add_intrabar_listener(self, listener: Callable[[str, str, OHLC], None]) -> None:
@@ -436,7 +431,7 @@ class MarketDataService:
             self._intrabar_listeners = [
                 item
                 for item in self._intrabar_listeners
-                if not _same_listener_reference(item, listener)
+                if not same_listener_reference(item, listener)
             ]
 
     def set_ohlc_event_sink(

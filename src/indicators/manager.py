@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 EVENT_BATCH_SIZE = 32
 
 
+from src.utils.common import ohlc_key, same_listener_reference, timeframe_seconds
+
+
 @dataclass
 class IndicatorResult:
     name: str
@@ -88,6 +91,16 @@ class UnifiedIndicatorManager:
         self._event_thread: Optional[threading.Thread] = None
         self._reload_thread: Optional[threading.Thread] = None
         self._last_reconcile_at: Optional[datetime] = None
+        self._snapshot_listeners: list[
+            Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None]
+        ] = []
+        self._last_preview_snapshot: Dict[str, Tuple[datetime, Dict[str, Dict[str, float]]]] = {}
+        self._priority_indicator_groups: tuple[tuple[str, ...], ...] = ()
+        # Throttle guard: minimum wall-clock gap between intrabar computations
+        # per (symbol, timeframe).  The ingestor already controls frequency via
+        # its own next_intrabar_at schedule; this is a defense-in-depth guard
+        # that prevents duplicate runs caused by race conditions or config drift.
+        self._last_intrabar_compute: Dict[str, float] = {}
 
         self._init_components()
         self._register_indicators()
@@ -136,6 +149,7 @@ class UnifiedIndicatorManager:
         self._stop.clear()
         self.event_store.reset_processing_events()
         self.market_service.set_ohlc_event_sink(self._publish_closed_bar_event)
+        self.market_service.add_intrabar_listener(self._on_intrabar)
         self._event_thread = threading.Thread(
             target=self._event_loop,
             name="IndicatorEventLoop",
@@ -162,6 +176,7 @@ class UnifiedIndicatorManager:
         if self._reload_thread:
             self._reload_thread.join(timeout=2.0)
         self.market_service.set_ohlc_event_sink(None)
+        self.market_service.remove_intrabar_listener(self._on_intrabar)
         logger.info("UnifiedIndicatorManager stopped")
 
     def _event_loop(self) -> None:
@@ -278,14 +293,17 @@ class UnifiedIndicatorManager:
                         self._mark_event_skipped(symbol, timeframe, bar_time, "insufficient_history")
                     continue
 
-                started_at = time.time()
-                results = self.pipeline.compute(
+                results, compute_time_ms = self._compute_confirmed_results_for_bars(
                     symbol,
                     timeframe,
                     prefix,
-                    selected_names,
+                    bar_time=bar_time,
                 )
-                compute_time_ms = (time.time() - started_at) * 1000
+                if not results:
+                    skipped_insufficient_history += 1
+                    if durable_event:
+                        self._mark_event_skipped(symbol, timeframe, bar_time, "insufficient_history")
+                    continue
                 self._write_back_results(
                     symbol,
                     timeframe,
@@ -319,6 +337,25 @@ class UnifiedIndicatorManager:
             failed,
             durable_event,
         )
+
+    def _on_intrabar(self, symbol: str, timeframe: str, bar: Any) -> None:
+        key = ohlc_key(symbol, timeframe)
+        now = time.monotonic()
+        # Throttle guard: skip if this (symbol, tf) was computed too recently.
+        # Uses 2% of bar duration (min 1 s) as the minimum gap.
+        min_gap = max(1.0, timeframe_seconds(timeframe) * 0.02)
+        if now - self._last_intrabar_compute.get(key, 0.0) < min_gap:
+            return
+        self._last_intrabar_compute[key] = now
+        try:
+            self._process_intrabar_event(symbol, timeframe, bar)
+        except Exception:
+            logger.exception(
+                "Failed to process intrabar preview for %s/%s at %s",
+                symbol,
+                timeframe,
+                getattr(bar, "time", None),
+            )
 
     def _reload_loop(self) -> None:
         reload_interval = max(float(self.config.reload_interval), 1.0)
@@ -447,6 +484,69 @@ class UnifiedIndicatorManager:
         compute_time_ms = (time.time() - started_at) * 1000
         return bars, results, compute_time_ms
 
+    def _compute_with_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: List[Any],
+        indicator_names: Optional[List[str]] = None,
+    ) -> Tuple[Dict[str, Dict[str, Any]], float, List[str]]:
+        if len(bars) < 2:
+            return {}, 0.0, []
+
+        selected_names = self._select_indicator_names_for_history(len(bars), indicator_names)
+        if not selected_names:
+            return {}, 0.0, []
+
+        started_at = time.time()
+        results = self.pipeline.compute(symbol, timeframe, bars, selected_names)
+        compute_time_ms = (time.time() - started_at) * 1000
+        return results, compute_time_ms, selected_names
+
+    def _run_intrabar_pipeline(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar: Any,
+        indicator_names: Optional[List[str]] = None,
+    ) -> Tuple[List[Any], Dict[str, Dict[str, Any]], float]:
+        bars = self._load_intrabar_bars(symbol, timeframe, bar)
+        if len(bars) < 2:
+            return [], {}, 0.0
+
+        selected_names = self._select_indicator_names_for_history(len(bars), indicator_names)
+        if not selected_names:
+            return bars, {}, 0.0
+
+        started_at = time.time()
+        results = self.pipeline.compute(symbol, timeframe, bars, selected_names)
+        compute_time_ms = (time.time() - started_at) * 1000
+        return bars, results, compute_time_ms
+
+    @staticmethod
+    def _normalize_indicator_group(indicator_names: List[str]) -> tuple[str, ...]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for indicator_name in indicator_names:
+            if indicator_name in seen:
+                continue
+            seen.add(indicator_name)
+            ordered.append(indicator_name)
+        return tuple(ordered)
+
+    def _load_intrabar_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar: Any,
+    ) -> List[Any]:
+        lookback = self._get_max_lookback()
+        closed_limit = max(lookback - 1, 1)
+        closed_bars = self.market_service.get_ohlc(symbol, timeframe, count=closed_limit)
+        preview_bars = [item for item in closed_bars if item.time != bar.time]
+        preview_bars.append(bar)
+        return preview_bars[-lookback:]
+
     def _group_indicator_values(
         self,
         results: Dict[str, Dict[str, Any]],
@@ -547,6 +647,24 @@ class UnifiedIndicatorManager:
                     success=True,
                 )
 
+    def _store_preview_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+        indicators: Dict[str, Dict[str, float]],
+    ) -> bool:
+        cache_key = f"{symbol}_{timeframe}"
+        normalized = {
+            name: dict(payload)
+            for name, payload in indicators.items()
+        }
+        current = self._last_preview_snapshot.get(cache_key)
+        if current is not None and current[0] == bar_time and current[1] == normalized:
+            return False
+        self._last_preview_snapshot[cache_key] = (bar_time, normalized)
+        return True
+
     def _write_back_results(
         self,
         symbol: str,
@@ -588,7 +706,205 @@ class UnifiedIndicatorManager:
             )
             self.storage_writer.enqueue("ohlc_indicators", row)
 
+        self._publish_snapshot(
+            symbol,
+            timeframe,
+            effective_bar_time,
+            grouped,
+            scope="confirmed",
+        )
+
         return grouped
+
+    def _publish_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+        indicators: Dict[str, Dict[str, float]],
+        *,
+        scope: str,
+    ) -> None:
+        listeners = list(getattr(self, "_snapshot_listeners", []))
+        for listener in listeners:
+            try:
+                listener(symbol, timeframe, bar_time, indicators, scope)
+            except Exception:
+                logger.exception(
+                    "Failed to publish indicator snapshot for %s/%s at %s",
+                    symbol,
+                    timeframe,
+                    bar_time,
+                )
+
+    def _publish_intrabar_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+        indicators: Dict[str, Dict[str, float]],
+    ) -> Dict[str, Dict[str, float]]:
+        if not indicators:
+            return {}
+        if not self._store_preview_snapshot(symbol, timeframe, bar_time, indicators):
+            return indicators
+        self._publish_snapshot(
+            symbol,
+            timeframe,
+            bar_time,
+            indicators,
+            scope="intrabar",
+        )
+        return indicators
+
+    def _compute_results_with_priority_groups(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: List[Any],
+        *,
+        bar_time: datetime,
+        scope: str,
+    ) -> Tuple[Dict[str, Dict[str, Any]], float]:
+        if len(bars) < 2:
+            return {}, 0.0
+
+        selected_names = self._select_indicator_names_for_history(len(bars))
+        if not selected_names:
+            return {}, 0.0
+
+        selected_set = set(selected_names)
+        priority_groups = [
+            indicator_group
+            for indicator_group in getattr(self, "_priority_indicator_groups", ())
+            if indicator_group and all(indicator_name in selected_set for indicator_name in indicator_group)
+        ]
+        published_groups: set[tuple[str, ...]] = set()
+
+        def on_level_complete(_level_results: Dict[str, Dict[str, Any]], accumulated_results: Dict[str, Dict[str, Any]]) -> None:
+            for indicator_group in priority_groups:
+                if indicator_group in published_groups:
+                    continue
+                if any(indicator_name not in accumulated_results for indicator_name in indicator_group):
+                    continue
+                group_results = {
+                    indicator_name: accumulated_results[indicator_name]
+                    for indicator_name in indicator_group
+                }
+                grouped = self._group_indicator_values(group_results)
+                if not grouped or any(indicator_name not in grouped for indicator_name in indicator_group):
+                    continue
+                published_groups.add(indicator_group)
+                if scope == "confirmed":
+                    self._publish_snapshot(
+                        symbol,
+                        timeframe,
+                        bar_time,
+                        grouped,
+                        scope="confirmed",
+                    )
+                else:
+                    self._publish_intrabar_snapshot(symbol, timeframe, bar_time, grouped)
+
+        started_at = time.time()
+        results = self.pipeline.compute_staged(
+            symbol,
+            timeframe,
+            bars,
+            indicators=selected_names,
+            on_level_complete=on_level_complete if priority_groups else None,
+        )
+        compute_time_ms = (time.time() - started_at) * 1000
+        return results, compute_time_ms
+
+    def _compute_priority_results(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: List[Any],
+        *,
+        bar_time: datetime,
+        scope: str,
+        selected_names: Optional[List[str]] = None,
+    ) -> Tuple[Dict[str, Dict[str, Any]], float, set[str]]:
+        if len(bars) < 2:
+            return {}, 0.0, set()
+
+        selected = selected_names or self._select_indicator_names_for_history(len(bars))
+        if not selected:
+            return {}, 0.0, set()
+
+        selected_set = set(selected)
+        priority_groups = [
+            indicator_group
+            for indicator_group in getattr(self, "_priority_indicator_groups", ())
+            if indicator_group and all(indicator_name in selected_set for indicator_name in indicator_group)
+        ]
+        if not priority_groups:
+            return {}, 0.0, set()
+
+        merged_results: Dict[str, Dict[str, Any]] = {}
+        covered_names: set[str] = set()
+        total_compute_time_ms = 0.0
+        for indicator_group in priority_groups:
+            group_results, compute_time_ms, _group_selected = self._compute_with_bars(
+                symbol,
+                timeframe,
+                bars,
+                indicator_names=list(indicator_group),
+            )
+            total_compute_time_ms += compute_time_ms
+            if not group_results:
+                continue
+            grouped = self._group_indicator_values(group_results)
+            if not grouped or any(indicator_name not in grouped for indicator_name in indicator_group):
+                continue
+            merged_results.update(group_results)
+            covered_names.update(indicator_group)
+            if scope == "confirmed":
+                self._publish_snapshot(
+                    symbol,
+                    timeframe,
+                    bar_time,
+                    grouped,
+                    scope="confirmed",
+                )
+            else:
+                self._publish_intrabar_snapshot(symbol, timeframe, bar_time, grouped)
+
+        return merged_results, total_compute_time_ms, covered_names
+
+    def _compute_confirmed_results_for_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: List[Any],
+        *,
+        bar_time: datetime,
+    ) -> Tuple[Dict[str, Dict[str, Any]], float]:
+        return self._compute_results_with_priority_groups(
+            symbol,
+            timeframe,
+            bars,
+            bar_time=bar_time,
+            scope="confirmed",
+        )
+
+    def _compute_intrabar_results_for_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: List[Any],
+        *,
+        bar_time: datetime,
+    ) -> Tuple[Dict[str, Dict[str, Any]], float]:
+        return self._compute_results_with_priority_groups(
+            symbol,
+            timeframe,
+            bars,
+            bar_time=bar_time,
+            scope="intrabar",
+        )
 
     def _process_closed_bar_event(
         self,
@@ -598,15 +914,17 @@ class UnifiedIndicatorManager:
         durable_event: bool,
     ) -> None:
         try:
-            bars, results, compute_time_ms = self._run_pipeline(
-                symbol,
-                timeframe,
-                bar_time=bar_time,
-            )
+            bars = self._load_bars(symbol, timeframe, bar_time=bar_time)
             if not bars:
                 if durable_event:
                     self._mark_event_skipped(symbol, timeframe, bar_time, "bar_missing")
                 return
+            results, compute_time_ms = self._compute_confirmed_results_for_bars(
+                symbol,
+                timeframe,
+                bars,
+                bar_time=bar_time,
+            )
             if not results:
                 if durable_event:
                     self._mark_event_skipped(symbol, timeframe, bar_time, "insufficient_history")
@@ -631,6 +949,40 @@ class UnifiedIndicatorManager:
             if durable_event:
                 self.event_store.mark_event_failed(symbol, timeframe, bar_time, str(exc))
 
+    def _get_intrabar_eligible_names(self) -> frozenset:
+        """Return the set of indicator names that should appear in intrabar snapshots."""
+        return frozenset(
+            cfg.name
+            for cfg in self.config.indicators
+            if cfg.enabled and getattr(cfg, "intrabar_eligible", True)
+        )
+
+    def _process_intrabar_event(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar: Any,
+    ) -> Dict[str, Dict[str, float]]:
+        bars = self._load_intrabar_bars(symbol, timeframe, bar)
+        if not bars:
+            return {}
+        results, _compute_time_ms = self._compute_intrabar_results_for_bars(
+            symbol,
+            timeframe,
+            bars,
+            bar_time=bar.time,
+        )
+        if not bars or not results:
+            return {}
+        # Apply intrabar_eligible filter: exclude indicators not suitable for
+        # partial-bar computation (e.g. volume-derived or session-sensitive).
+        eligible = self._get_intrabar_eligible_names()
+        filtered_results = {k: v for k, v in results.items() if k in eligible}
+        grouped = self._group_indicator_values(filtered_results)
+        if not grouped:
+            return {}
+        return self._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
+
     def _reconcile_all(self) -> None:
         for symbol in self.config.symbols:
             for timeframe in self.config.timeframes:
@@ -646,9 +998,15 @@ class UnifiedIndicatorManager:
                     )
 
     def _reconcile_symbol_timeframe(self, symbol: str, timeframe: str) -> None:
-        bars, results, compute_time_ms = self._run_pipeline(symbol, timeframe)
+        bars = self._load_bars(symbol, timeframe)
         if not bars:
             return
+        results, compute_time_ms = self._compute_confirmed_results_for_bars(
+            symbol,
+            timeframe,
+            bars,
+            bar_time=bars[-1].time,
+        )
         self._write_back_results(symbol, timeframe, bars, results, compute_time_ms)
 
     def _get_max_lookback(self) -> int:
@@ -746,6 +1104,39 @@ class UnifiedIndicatorManager:
             for config in self.config.indicators
             if (info := self.get_indicator_info(config.name)) is not None
         ]
+
+    def add_snapshot_listener(
+        self,
+        listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
+    ) -> None:
+        if not hasattr(self, "_snapshot_listeners"):
+            self._snapshot_listeners = []
+        self._snapshot_listeners.append(listener)
+
+    def remove_snapshot_listener(
+        self,
+        listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
+    ) -> None:
+        if not hasattr(self, "_snapshot_listeners"):
+            return
+        self._snapshot_listeners = [
+            item for item in self._snapshot_listeners if not same_listener_reference(item, listener)
+        ]
+
+    def set_priority_indicator_names(self, indicator_names: List[str]) -> None:
+        group = self._normalize_indicator_group(indicator_names)
+        self._priority_indicator_groups = (group,) if group else ()
+
+    def set_priority_indicator_groups(self, indicator_groups: List[List[str] | tuple[str, ...]]) -> None:
+        ordered: list[tuple[str, ...]] = []
+        seen: set[tuple[str, ...]] = set()
+        for indicator_group in indicator_groups:
+            group = self._normalize_indicator_group(list(indicator_group))
+            if not group or group in seen:
+                continue
+            seen.add(group)
+            ordered.append(group)
+        self._priority_indicator_groups = tuple(ordered)
 
     def add_indicator(self, config: IndicatorConfig) -> bool:
         try:

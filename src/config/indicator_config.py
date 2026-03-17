@@ -104,6 +104,10 @@ class IndicatorConfig:
     enabled: bool = True      # 是否启用
     description: str = ""     # 指标描述
     tags: List[str] = field(default_factory=list)  # 标签，如 ["trend", "momentum"]
+    # Whether this indicator should be included in intrabar (live) snapshots.
+    # Set to False for volume-derived or session-sensitive indicators that are
+    # noisy on partial bars. Defaults to True (included in all snapshots).
+    intrabar_eligible: bool = True
 
 
 @dataclass
@@ -229,7 +233,8 @@ class ConfigLoader:
                 compute_mode=ComputeMode(indicator_data.get('compute_mode', 'standard')),
                 enabled=indicator_data.get('enabled', True),
                 description=indicator_data.get('description', ''),
-                tags=indicator_data.get('tags', [])
+                tags=indicator_data.get('tags', []),
+                intrabar_eligible=indicator_data.get('intrabar_eligible', True),
             )
             indicators.append(indicator_config)
         

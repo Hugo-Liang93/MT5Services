@@ -63,6 +63,9 @@ class CompatIngestSettings(BaseModel):
     health_check_interval: float = 30.0
     max_allowed_delay: float = 60.0
     intrabar_enabled: bool = True
+    # Independent intrabar sampling schedule (separate from OHLC poll).
+    ingest_intrabar_interval: float = 15.0
+    ingest_intrabar_intervals: dict = Field(default_factory=dict)
 
 
 class CompatMarketSettings(BaseModel):
@@ -232,6 +235,8 @@ def load_ingest_settings() -> CompatIngestSettings:
         health_check_interval=ingest.health_check_interval,
         max_allowed_delay=ingest.max_allowed_delay,
         intrabar_enabled=load_storage_settings().intrabar_enabled,
+        ingest_intrabar_interval=ingest.intrabar_interval,
+        ingest_intrabar_intervals=dict(ingest.intrabar_intervals),
     )
 
 

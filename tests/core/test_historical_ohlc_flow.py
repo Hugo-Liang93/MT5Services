@@ -232,6 +232,173 @@ def test_write_back_results_persists_grouped_indicator_payload() -> None:
     assert stored_rows[0][1][8] == {"macd": {"macd": 1.1, "signal": 0.8}}
 
 
+def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persisting_ohlc() -> None:
+    preview_events = []
+    intrabar_bar = OHLC(
+        symbol="XAUUSD",
+        timeframe="M1",
+        time=datetime(2026, 1, 1, 0, 4, tzinfo=timezone.utc),
+        open=104.0,
+        high=105.0,
+        low=103.0,
+        close=104.5,
+        volume=15.0,
+        indicators={},
+    )
+
+    class ServiceStub:
+        def get_ohlc(self, symbol, timeframe, count=None):
+            return [_bar(2), _bar(3)]
+
+    manager = object.__new__(UnifiedIndicatorManager)
+    manager.market_service = ServiceStub()
+    manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 55.0}})
+    manager._get_max_lookback = lambda: 5
+    manager._select_indicator_names_for_history = lambda available_bars, indicator_names=None: ["rsi14"]
+    manager._snapshot_listeners = [
+        lambda symbol, timeframe, bar_time, indicators, scope: preview_events.append(
+            (symbol, timeframe, bar_time, indicators, scope)
+        )
+    ]
+    manager._last_preview_snapshot = {}
+
+    grouped = manager._process_intrabar_event("XAUUSD", "M1", intrabar_bar)
+
+    assert grouped == {"rsi14": {"rsi": 55.0}}
+    assert preview_events == [
+        (
+            "XAUUSD",
+            "M1",
+            intrabar_bar.time,
+            {"rsi14": {"rsi": 55.0}},
+            "intrabar",
+        )
+    ]
+
+
+def test_indicator_manager_priority_indicator_names_are_deduplicated() -> None:
+    manager = object.__new__(UnifiedIndicatorManager)
+
+    manager.set_priority_indicator_names(["rsi14", "sma20", "rsi14"])
+
+    assert manager._priority_indicator_groups == (("rsi14", "sma20"),)
+
+
+def test_indicator_manager_priority_indicator_groups_are_deduplicated_and_ordered() -> None:
+    manager = object.__new__(UnifiedIndicatorManager)
+
+    manager.set_priority_indicator_groups(
+        [
+            ["rsi14"],
+            ["sma20", "ema50"],
+            ["rsi14"],
+            ["ema50", "sma20", "ema50"],
+        ]
+    )
+
+    assert manager._priority_indicator_groups == (
+        ("rsi14",),
+        ("sma20", "ema50"),
+        ("ema50", "sma20"),
+    )
+
+
+def test_indicator_manager_publishes_priority_confirmed_snapshots_per_group() -> None:
+    published = []
+    bar_time = _bar(4).time
+    bars = [_bar(3), _bar(4)]
+
+    def compute_staged(symbol, timeframe, current_bars, indicators=None, on_level_complete=None):
+        assert current_bars == bars
+        assert indicators == ["rsi14", "sma20", "ema50"]
+        if on_level_complete is not None:
+            on_level_complete({"rsi14": {"rsi": 52.0}}, {"rsi14": {"rsi": 52.0}})
+            on_level_complete(
+                {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+                {
+                    "rsi14": {"rsi": 52.0},
+                    "sma20": {"sma": 201.0},
+                    "ema50": {"ema": 200.0},
+                },
+            )
+        return {
+            "rsi14": {"rsi": 52.0},
+            "sma20": {"sma": 201.0},
+            "ema50": {"ema": 200.0},
+        }
+
+    manager = object.__new__(UnifiedIndicatorManager)
+    manager.pipeline = SimpleNamespace(compute_staged=compute_staged)
+    manager._priority_indicator_groups = (("rsi14",), ("sma20", "ema50"))
+    manager._select_indicator_names_for_history = (
+        lambda available_bars, indicator_names=None: list(indicator_names) if indicator_names else ["rsi14", "sma20", "ema50"]
+    )
+    manager._group_indicator_values = lambda results: results
+    manager._publish_snapshot = lambda symbol, timeframe, bar_time, indicators, scope: published.append(
+        (symbol, timeframe, bar_time, indicators, scope)
+    )
+
+    results, compute_time_ms = manager._compute_results_with_priority_groups(
+        "XAUUSD",
+        "M1",
+        bars,
+        bar_time=bar_time,
+        scope="confirmed",
+    )
+
+    assert results == {
+        "rsi14": {"rsi": 52.0},
+        "sma20": {"sma": 201.0},
+        "ema50": {"ema": 200.0},
+    }
+    assert compute_time_ms >= 0.0
+    assert published == [
+        ("XAUUSD", "M1", bar_time, {"rsi14": {"rsi": 52.0}}, "confirmed"),
+        (
+            "XAUUSD",
+            "M1",
+            bar_time,
+            {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+            "confirmed",
+        ),
+    ]
+
+
+def test_indicator_manager_avoids_recomputing_priority_indicators_in_full_confirmed_batch() -> None:
+    compute_calls = []
+    bar_time = _bar(4).time
+
+    def compute_staged(symbol, timeframe, bars, indicators=None, on_level_complete=None):
+        compute_calls.append(tuple(indicators or ()))
+        payload = {}
+        for indicator_name in indicators or ():
+            if indicator_name == "rsi14":
+                payload[indicator_name] = {"rsi": 52.0}
+            elif indicator_name == "ema50":
+                payload[indicator_name] = {"ema": 200.0}
+            else:
+                payload[indicator_name] = {"value": 1.0}
+        if on_level_complete is not None:
+            on_level_complete({"rsi14": {"rsi": 52.0}}, {"rsi14": {"rsi": 52.0}})
+            on_level_complete({"ema50": {"ema": 200.0}}, payload)
+        return payload
+
+    manager = object.__new__(UnifiedIndicatorManager)
+    manager.pipeline = SimpleNamespace(compute_staged=compute_staged)
+    manager._priority_indicator_groups = (("rsi14",),)
+    manager._load_bars = lambda symbol, timeframe, bar_time=None: [_bar(3), _bar(4)]
+    manager._select_indicator_names_for_history = (
+        lambda available_bars, indicator_names=None: list(indicator_names) if indicator_names else ["rsi14", "ema50"]
+    )
+    manager._group_indicator_values = lambda results: results
+    manager._write_back_results = lambda *args, **kwargs: None
+    manager._publish_snapshot = lambda *args, **kwargs: None
+
+    manager._process_closed_bar_event("XAUUSD", "M1", bar_time, durable_event=False)
+
+    assert compute_calls == [("rsi14", "ema50")]
+
+
 def test_indicator_manager_batches_same_scope_events_into_single_window_load() -> None:
     completed = []
     window_calls = []

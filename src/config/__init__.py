@@ -56,7 +56,8 @@ from src.config.centralized import (
     EconomicConfig,
     RiskConfig,
     TradingOpsConfig,
-    
+    SignalConfig,
+
     # 加载函数
     get_trading_config,
     get_interval_config,
@@ -67,7 +68,8 @@ from src.config.centralized import (
     get_economic_config,
     get_risk_config,
     get_trading_ops_config,
-    
+    get_signal_config,
+
     # 工具函数
     get_shared_symbols,
     get_shared_timeframes,
@@ -128,6 +130,8 @@ def get_runtime_ingest_settings() -> IngestSettings:
         queue_monitor_interval=ingest.queue_monitor_interval,
         health_check_interval=ingest.health_check_interval,
         max_allowed_delay=ingest.max_allowed_delay,
+        ingest_intrabar_interval=ingest.intrabar_interval,
+        ingest_intrabar_intervals=dict(ingest.intrabar_intervals),
     )
 
 
@@ -186,6 +190,7 @@ __all__ = [
     "EconomicConfig",
     "RiskConfig",
     "TradingOpsConfig",
+    "SignalConfig",
     "get_trading_config",
     "get_interval_config",
     "get_limit_config",
@@ -195,6 +200,7 @@ __all__ = [
     "get_economic_config",
     "get_risk_config",
     "get_trading_ops_config",
+    "get_signal_config",
     "get_runtime_ingest_settings",
     "get_runtime_market_settings",
     "get_shared_symbols",

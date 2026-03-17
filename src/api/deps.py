@@ -23,6 +23,7 @@ from src.config import (
     get_risk_config,
     get_runtime_ingest_settings,
     get_runtime_market_settings,
+    get_signal_config,
     load_db_settings,
     load_mt5_settings,
     load_storage_settings,
@@ -37,27 +38,43 @@ from src.monitoring.health_check import get_health_monitor, get_monitoring_manag
 from src.persistence.db import TimescaleWriter
 from src.persistence.storage_writer import StorageWriter
 from src.signals import (
+    EconomicEventFilter,
+    SessionFilter,
+    SignalFilterChain,
     SignalModule,
+    SignalPolicy,
     SignalRuntime,
     SignalTarget,
+    SpreadFilter,
     TimescaleSignalRepository,
     UnifiedIndicatorSourceAdapter,
 )
+from src.trading.signal_executor import ExecutorConfig, TradeExecutor
+from src.signals.position_manager import PositionManager
 
 logger = logging.getLogger(__name__)
 
-# Lazily initialized singletons
-_service: Optional[MarketDataService] = None
-_storage_writer: Optional[StorageWriter] = None
-_ingestor: Optional[BackgroundIngestor] = None
-_indicator_manager: Optional[UnifiedIndicatorManager] = None
-_trade_registry: Optional[TradingAccountRegistry] = None
-_trade_module: Optional[TradingModule] = None
-_economic_calendar_service: Optional[EconomicCalendarService] = None
-_signal_module: Optional[SignalModule] = None
-_signal_runtime: Optional[SignalRuntime] = None
-_health_monitor = None
-_monitoring_manager = None
+
+class _Container:
+    """Lazily initialized singleton container for all runtime dependencies."""
+
+    service: Optional[MarketDataService] = None
+    storage_writer: Optional[StorageWriter] = None
+    ingestor: Optional[BackgroundIngestor] = None
+    indicator_manager: Optional[UnifiedIndicatorManager] = None
+    trade_registry: Optional[TradingAccountRegistry] = None
+    trade_module: Optional[TradingModule] = None
+    economic_calendar_service: Optional[EconomicCalendarService] = None
+    signal_module: Optional[SignalModule] = None
+    signal_runtime: Optional[SignalRuntime] = None
+    trade_executor: Optional[TradeExecutor] = None
+    position_manager: Optional[PositionManager] = None
+    health_monitor: Optional[object] = None
+    monitoring_manager: Optional[object] = None
+
+
+_c = _Container()
+
 _startup_status = {
     "phase": "not_started",
     "started_at": None,
@@ -83,6 +100,25 @@ def _reset_startup_status() -> None:
     _startup_status["steps"] = {}
 
 
+def _shutdown_components() -> None:
+    """Gracefully stop all background components in reverse startup order."""
+    for label, component, method in [
+        ("monitoring_manager", _c.monitoring_manager, "stop"),
+        ("position_manager", _c.position_manager, "stop"),
+        ("signal_runtime", _c.signal_runtime, "stop"),
+        ("indicator_manager", _c.indicator_manager, "shutdown"),
+        ("economic_calendar_service", _c.economic_calendar_service, "stop"),
+        ("ingestor", _c.ingestor, "stop"),
+        ("storage_writer", _c.storage_writer, "stop"),
+    ]:
+        if component is None:
+            continue
+        try:
+            getattr(component, method)()
+        except Exception:
+            logger.debug("Failed to stop %s during shutdown", label, exc_info=True)
+
+
 def _mark_startup_step(name: str, state: str, started_at: float, error: Optional[str] = None) -> None:
     duration_ms = int((time.monotonic() - started_at) * 1000)
     _startup_status["steps"][name] = {
@@ -106,7 +142,8 @@ def get_startup_status() -> dict:
 
 def get_runtime_task_status(component: Optional[str] = None, task_name: Optional[str] = None) -> list[dict]:
     _ensure_initialized()
-    rows = _storage_writer.db.fetch_runtime_task_status(component=component, task_name=task_name)  # type: ignore[union-attr]
+    assert _c.storage_writer is not None
+    rows = _c.storage_writer.db.fetch_runtime_task_status(component=component, task_name=task_name)
     return [
         {
             "component": row[0],
@@ -128,12 +165,12 @@ def get_runtime_task_status(component: Optional[str] = None, task_name: Optional
 
 
 def _record_runtime_task_status(component: str, task_name: str, state: str, duration_ms: int, error: Optional[str] = None) -> None:
-    if _storage_writer is None:
+    if _c.storage_writer is None:
         return
     success_count = 1 if state == "ready" else 0
     failure_count = 1 if state == "failed" else 0
     try:
-        _storage_writer.db.write_runtime_task_status(
+        _c.storage_writer.db.write_runtime_task_status(
             [
                 (
                     component,
@@ -157,19 +194,7 @@ def _record_runtime_task_status(component: str, task_name: str, state: str, dura
 
 
 def _ensure_initialized() -> None:
-    global _service
-    global _storage_writer
-    global _ingestor
-    global _indicator_manager
-    global _trade_registry
-    global _trade_module
-    global _economic_calendar_service
-    global _signal_module
-    global _signal_runtime
-    global _health_monitor
-    global _monitoring_manager
-
-    if _service is not None:
+    if _c.service is not None:
         return
 
     mt5_settings = load_mt5_settings()
@@ -179,60 +204,108 @@ def _ensure_initialized() -> None:
     market_settings = get_runtime_market_settings()
 
     mt5_client = MT5MarketClient(mt5_settings)
-    _service = MarketDataService(client=mt5_client, market_settings=market_settings)
-    _storage_writer = StorageWriter(TimescaleWriter(db_settings), storage_settings=storage_settings)
-    _service.attach_storage(_storage_writer)
-    _ingestor = BackgroundIngestor(
-        service=_service,
-        storage=_storage_writer,
+    _c.service = MarketDataService(client=mt5_client, market_settings=market_settings)
+    _c.storage_writer = StorageWriter(TimescaleWriter(db_settings), storage_settings=storage_settings)
+    _c.service.attach_storage(_c.storage_writer)
+    _c.ingestor = BackgroundIngestor(
+        service=_c.service,
+        storage=_c.storage_writer,
         ingest_settings=ingest_settings,
     )
-    _indicator_manager = get_global_unified_manager(
-        market_service=_service,
-        storage_writer=_storage_writer,
+    _c.indicator_manager = get_global_unified_manager(
+        market_service=_c.service,
+        storage_writer=_c.storage_writer,
         config_file="config/indicators.json",
         start_immediately=False,
     )
-    _economic_calendar_service = EconomicCalendarService(
-        db_writer=_storage_writer.db,
+    _c.economic_calendar_service = EconomicCalendarService(
+        db_writer=_c.storage_writer.db,
         settings=get_economic_config(),
-        storage_writer=_storage_writer,
+        storage_writer=_c.storage_writer,
     )
-    _trade_registry = TradingAccountRegistry(economic_calendar_service=_economic_calendar_service)
-    default_alias = _trade_registry.default_account_alias()
-    _trade_module = TradingModule(
-        registry=_trade_registry,
-        db_writer=_storage_writer.db,
+    _c.trade_registry = TradingAccountRegistry(economic_calendar_service=_c.economic_calendar_service)
+    default_alias = _c.trade_registry.default_account_alias()
+    _c.trade_module = TradingModule(
+        registry=_c.trade_registry,
+        db_writer=_c.storage_writer.db,
         active_account_alias=default_alias,
     )
-    _signal_module = SignalModule(
-        indicator_source=UnifiedIndicatorSourceAdapter(_indicator_manager),
-        repository=TimescaleSignalRepository(_storage_writer.db),
+    _c.signal_module = SignalModule(
+        indicator_source=UnifiedIndicatorSourceAdapter(_c.indicator_manager),
+        repository=TimescaleSignalRepository(_c.storage_writer.db),
     )
+    _c.indicator_manager.set_priority_indicator_groups(_c.signal_module.required_indicator_groups())
     runtime_targets = [
         SignalTarget(symbol=symbol, timeframe=timeframe, strategy=strategy)
-        for symbol in _indicator_manager.config.symbols
-        for timeframe in _indicator_manager.config.timeframes
-        for strategy in _signal_module.list_strategies()
+        for symbol in _c.indicator_manager.config.symbols
+        for timeframe in _c.indicator_manager.config.timeframes
+        for strategy in _c.signal_module.list_strategies()
     ]
-    _signal_runtime = SignalRuntime(
-        service=_signal_module,
-        market_service=_service,
-        targets=runtime_targets,
-        enable_close_bar=True,
-        enable_intrabar=True,
+    sig_cfg = get_signal_config()
+    allowed_sessions = tuple(s.strip() for s in sig_cfg.allowed_sessions.split(",") if s.strip())
+    signal_policy = SignalPolicy(
+        min_preview_confidence=sig_cfg.min_preview_confidence,
+        min_preview_bar_progress=sig_cfg.min_preview_bar_progress,
+        min_preview_stable_seconds=sig_cfg.preview_stable_seconds,
+        preview_cooldown_seconds=sig_cfg.preview_cooldown_seconds,
+        snapshot_dedupe_window_seconds=sig_cfg.snapshot_dedupe_window_seconds,
+        max_spread_points=sig_cfg.max_spread_points,
+        allowed_sessions=allowed_sessions,
+        auto_trade_enabled=sig_cfg.auto_trade_enabled,
+        auto_trade_min_confidence=sig_cfg.auto_trade_min_confidence,
+        auto_trade_require_armed=sig_cfg.auto_trade_require_armed,
     )
-    _health_monitor = get_health_monitor("health_monitor.db")
-    _health_monitor.configure_alerts(
+    filter_chain = SignalFilterChain(
+        session_filter=SessionFilter(allowed_sessions=allowed_sessions),
+        spread_filter=SpreadFilter(max_spread_points=sig_cfg.max_spread_points),
+        economic_filter=EconomicEventFilter(
+            provider=_c.economic_calendar_service if sig_cfg.economic_filter_enabled else None,
+            lookahead_minutes=sig_cfg.economic_lookahead_minutes,
+            lookback_minutes=sig_cfg.economic_lookback_minutes,
+            importance_min=sig_cfg.economic_importance_min,
+        ),
+    )
+    _c.signal_runtime = SignalRuntime(
+        service=_c.signal_module,
+        snapshot_source=_c.indicator_manager,
+        targets=runtime_targets,
+        enable_confirmed_snapshot=True,
+        enable_intrabar=True,
+        policy=signal_policy,
+        filter_chain=filter_chain,
+    )
+    executor_config = ExecutorConfig(
+        enabled=sig_cfg.auto_trade_enabled,
+        min_confidence=sig_cfg.auto_trade_min_confidence,
+        require_armed=sig_cfg.auto_trade_require_armed,
+        risk_percent=sig_cfg.risk_percent_per_trade,
+        sl_atr_multiplier=sig_cfg.sl_atr_multiplier,
+        tp_atr_multiplier=sig_cfg.tp_atr_multiplier,
+        min_volume=sig_cfg.min_volume,
+        max_volume=sig_cfg.max_volume,
+    )
+    _c.position_manager = PositionManager(
+        trading_module=_c.trade_module,
+        trailing_atr_multiplier=sig_cfg.trailing_atr_multiplier,
+        breakeven_atr_threshold=sig_cfg.breakeven_atr_threshold,
+    )
+    _c.trade_executor = TradeExecutor(
+        trading_module=_c.trade_module,
+        config=executor_config,
+        position_manager=_c.position_manager,
+    )
+    _c.signal_runtime.add_signal_listener(_c.trade_executor.on_signal_event)
+    _c.health_monitor = get_health_monitor("health_monitor.db")
+    _c.health_monitor.configure_alerts(
         data_latency_warning=max(1.0, ingest_settings.max_allowed_delay / 2.0),
         data_latency_critical=max(1.0, ingest_settings.max_allowed_delay),
     )
     economic_settings = get_economic_config()
-    _health_monitor.alerts["economic_calendar_staleness"] = {
+    _c.health_monitor.alerts["economic_calendar_staleness"] = {
         "warning": max(1.0, economic_settings.stale_after_seconds / 2.0),
         "critical": max(1.0, economic_settings.stale_after_seconds),
     }
-    _health_monitor.alerts["economic_provider_failures"] = {
+    _c.health_monitor.alerts["economic_provider_failures"] = {
         "warning": 1.0,
         "critical": float(max(2, economic_settings.request_retries)),
     }
@@ -240,12 +313,12 @@ def _ensure_initialized() -> None:
         1,
         int(min(ingest_settings.health_check_interval, ingest_settings.queue_monitor_interval)),
     )
-    _monitoring_manager = get_monitoring_manager(
-        _health_monitor,
+    _c.monitoring_manager = get_monitoring_manager(
+        _c.health_monitor,
         check_interval=monitoring_interval,
     )
-    _health_monitor.cleanup_old_data(days_to_keep=30)
-    _indicator_manager.cleanup_old_events(days_to_keep=7)
+    _c.health_monitor.cleanup_old_data(days_to_keep=30)
+    _c.indicator_manager.cleanup_old_events(days_to_keep=7)
     logger.info(
         "Effective runtime config: %s",
         json.dumps(
@@ -253,17 +326,17 @@ def _ensure_initialized() -> None:
                 **get_effective_config_snapshot(),
                 "risk": get_risk_config().model_dump(),
                 "active_trading_account": default_alias,
-                "trading_account": _trade_module.list_accounts()[0] if _trade_module else None,
+                "trading_account": _c.trade_module.list_accounts()[0] if _c.trade_module else None,
                 "indicator_scope": {
-                    "symbols": list(_indicator_manager.config.symbols),
-                    "timeframes": list(_indicator_manager.config.timeframes),
-                    "inherit_symbols": _indicator_manager.config.inherit_symbols,
-                    "inherit_timeframes": _indicator_manager.config.inherit_timeframes,
-                    "indicator_reload_interval": _indicator_manager.config.reload_interval,
-                    "indicator_poll_interval": _indicator_manager.config.pipeline.poll_interval,
-                    "indicator_cache_maxsize": _indicator_manager.config.pipeline.cache_maxsize,
+                    "symbols": list(_c.indicator_manager.config.symbols),
+                    "timeframes": list(_c.indicator_manager.config.timeframes),
+                    "inherit_symbols": _c.indicator_manager.config.inherit_symbols,
+                    "inherit_timeframes": _c.indicator_manager.config.inherit_timeframes,
+                    "indicator_reload_interval": _c.indicator_manager.config.reload_interval,
+                    "indicator_poll_interval": _c.indicator_manager.config.pipeline.poll_interval,
+                    "indicator_cache_maxsize": _c.indicator_manager.config.pipeline.cache_maxsize,
                     "indicator_cache_strategy": _enum_or_raw(
-                        _indicator_manager.config.pipeline.cache_strategy
+                        _c.indicator_manager.config.pipeline.cache_strategy
                     ),
                 },
             },
@@ -283,38 +356,45 @@ def is_monitoring_enabled() -> bool:
 
 def get_market_service() -> MarketDataService:
     _ensure_initialized()
-    return _service  # type: ignore[return-value]
+    assert _c.service is not None
+    return _c.service
 
 
 def get_account_service() -> TradingModule:
     _ensure_initialized()
-    return _trade_module  # type: ignore[return-value]
+    assert _c.trade_module is not None
+    return _c.trade_module
 
 
 def get_trading_service() -> TradingModule:
     _ensure_initialized()
-    return _trade_module  # type: ignore[return-value]
+    assert _c.trade_module is not None
+    return _c.trade_module
 
 
 def get_pre_trade_risk_service() -> PreTradeRiskService:
     _ensure_initialized()
-    trading_service = _trade_registry.get_trading_service(_trade_module.active_account_alias)  # type: ignore[union-attr]
-    return trading_service.pre_trade_risk_service  # type: ignore[return-value]
+    assert _c.trade_registry is not None and _c.trade_module is not None
+    trading_service = _c.trade_registry.get_trading_service(_c.trade_module.active_account_alias)
+    return trading_service.pre_trade_risk_service
 
 
 def get_economic_calendar_service() -> EconomicCalendarService:
     _ensure_initialized()
-    return _economic_calendar_service  # type: ignore[return-value]
+    assert _c.economic_calendar_service is not None
+    return _c.economic_calendar_service
 
 
 def get_ingestor() -> BackgroundIngestor:
     _ensure_initialized()
-    return _ingestor  # type: ignore[return-value]
+    assert _c.ingestor is not None
+    return _c.ingestor
 
 
 def get_indicator_manager() -> UnifiedIndicatorManager:
     _ensure_initialized()
-    return _indicator_manager  # type: ignore[return-value]
+    assert _c.indicator_manager is not None
+    return _c.indicator_manager
 
 
 def get_indicator_worker() -> UnifiedIndicatorManager:
@@ -328,22 +408,36 @@ def get_unified_indicator_manager() -> UnifiedIndicatorManager:
 
 def get_signal_service() -> SignalModule:
     _ensure_initialized()
-    return _signal_module  # type: ignore[return-value]
+    assert _c.signal_module is not None
+    return _c.signal_module
 
 
 def get_signal_runtime() -> SignalRuntime:
     _ensure_initialized()
-    return _signal_runtime  # type: ignore[return-value]
+    assert _c.signal_runtime is not None
+    return _c.signal_runtime
+
+
+def get_trade_executor() -> TradeExecutor:
+    _ensure_initialized()
+    assert _c.trade_executor is not None
+    return _c.trade_executor
+
+
+def get_position_manager() -> PositionManager:
+    _ensure_initialized()
+    assert _c.position_manager is not None
+    return _c.position_manager
 
 
 def get_health_monitor_instance():
     _ensure_initialized()
-    return _health_monitor
+    return _c.health_monitor
 
 
 def get_monitoring_manager_instance():
     _ensure_initialized()
-    return _monitoring_manager
+    return _c.monitoring_manager
 
 
 @asynccontextmanager
@@ -357,65 +451,70 @@ async def lifespan(_app):
     try:
         current_step = "storage"
         current_started = time.monotonic()
-        _storage_writer.start()  # type: ignore[union-attr]
+        _c.storage_writer.start()
         _mark_startup_step("storage", "ready", current_started)
         _record_runtime_task_status("startup", "storage", "ready", _startup_status["steps"]["storage"]["duration_ms"])
 
         current_step = "ingestion"
         current_started = time.monotonic()
-        _ingestor.start()  # type: ignore[union-attr]
+        _c.ingestor.start()
         _mark_startup_step("ingestion", "ready", current_started)
         _record_runtime_task_status("startup", "ingestion", "ready", _startup_status["steps"]["ingestion"]["duration_ms"])
 
         current_step = "economic_calendar"
         current_started = time.monotonic()
-        _economic_calendar_service.start()  # type: ignore[union-attr]
+        _c.economic_calendar_service.start()
         _mark_startup_step("economic_calendar", "ready", current_started)
         _record_runtime_task_status("startup", "economic_calendar", "ready", _startup_status["steps"]["economic_calendar"]["duration_ms"])
 
         current_step = "indicators"
         current_started = time.monotonic()
-        _indicator_manager.start()  # type: ignore[union-attr]
+        _c.indicator_manager.start()
         _mark_startup_step("indicators", "ready", current_started)
         _record_runtime_task_status("startup", "indicators", "ready", _startup_status["steps"]["indicators"]["duration_ms"])
 
         current_step = "signals"
         current_started = time.monotonic()
-        _signal_runtime.start()  # type: ignore[union-attr]
+        _c.signal_runtime.start()
         _mark_startup_step("signals", "ready", current_started)
         _record_runtime_task_status("startup", "signals", "ready", _startup_status["steps"]["signals"]["duration_ms"])
 
+        current_step = "position_manager"
+        current_started = time.monotonic()
+        _c.position_manager.start(reconcile_interval=get_signal_config().position_reconcile_interval)
+        _mark_startup_step("position_manager", "ready", current_started)
+
         current_step = "monitoring"
         current_started = time.monotonic()
-        _monitoring_manager.register_component(  # type: ignore[union-attr]
+        _c.monitoring_manager.register_component(
             "data_ingestion",
-            _ingestor,
+            _c.ingestor,
             ["queue_stats"],
         )
-        _monitoring_manager.register_component(  # type: ignore[union-attr]
+        _c.monitoring_manager.register_component(
             "indicator_calculation",
-            _indicator_manager,
+            _c.indicator_manager,
             ["indicator_freshness", "cache_stats", "performance_stats"],
         )
-        _monitoring_manager.register_component(  # type: ignore[union-attr]
+        _c.monitoring_manager.register_component(
             "market_data",
-            _service,
+            _c.service,
             ["data_latency"],
         )
-        _monitoring_manager.register_component(  # type: ignore[union-attr]
+        _c.monitoring_manager.register_component(
             "economic_calendar",
-            _economic_calendar_service,
+            _c.economic_calendar_service,
             ["economic_calendar"],
         )
-        _monitoring_manager.register_component(  # type: ignore[union-attr]
+        _c.monitoring_manager.register_component(
             "signals",
-            _signal_runtime,
+            _c.signal_runtime,
             ["status"],
         )
-        _monitoring_manager.start()  # type: ignore[union-attr]
+        _c.monitoring_manager.start()
         _mark_startup_step("monitoring", "ready", current_started)
         _record_runtime_task_status("startup", "monitoring", "ready", _startup_status["steps"]["monitoring"]["duration_ms"])
-        _health_monitor.record_metric(  # type: ignore[union-attr]
+        _c.health_monitor.record_metric(
             "system",
             "startup",
             1.0,
@@ -444,59 +543,20 @@ async def lifespan(_app):
         _startup_status["last_error"] = str(exc)
         logger.exception("Failed to start unified services: %s", exc)
 
-        # Startup failed before entering runtime context: explicitly cleanup
-        # partially started background workers to avoid leaked threads.
-        try:
-            if _monitoring_manager:
-                _monitoring_manager.stop()
-        except Exception:
-            logger.debug("Failed to stop monitoring manager after startup failure", exc_info=True)
-        try:
-            if _signal_runtime:
-                _signal_runtime.stop()
-        except Exception:
-            logger.debug("Failed to stop signal runtime after startup failure", exc_info=True)
-        try:
-            if _indicator_manager:
-                _indicator_manager.shutdown()
-        except Exception:
-            logger.debug("Failed to stop indicator manager after startup failure", exc_info=True)
-        try:
-            if _economic_calendar_service:
-                _economic_calendar_service.stop()
-        except Exception:
-            logger.debug("Failed to stop economic calendar service after startup failure", exc_info=True)
-        try:
-            if _ingestor:
-                _ingestor.stop()
-        except Exception:
-            logger.debug("Failed to stop ingestor after startup failure", exc_info=True)
-        try:
-            if _storage_writer:
-                _storage_writer.stop()
-        except Exception:
-            logger.debug("Failed to stop storage writer after startup failure", exc_info=True)
-
+        _shutdown_components()
         raise
 
     try:
         yield
     finally:
         _startup_status["phase"] = "stopping"
-        _monitoring_manager.stop()  # type: ignore[union-attr]
-        if _signal_runtime:
-            _signal_runtime.stop()
-        if _indicator_manager:
-            _indicator_manager.shutdown()
-        if _economic_calendar_service:
-            _economic_calendar_service.stop()
-        _ingestor.stop()  # type: ignore[union-attr]
-        _storage_writer.stop()  # type: ignore[union-attr]
-        _health_monitor.record_metric(  # type: ignore[union-attr]
-            "system",
-            "shutdown",
-            1.0,
-            {"timestamp": "now"},
-        )
+        _shutdown_components()
+        if _c.health_monitor:
+            _c.health_monitor.record_metric(
+                "system",
+                "shutdown",
+                1.0,
+                {"timestamp": "now"},
+            )
         _startup_status["phase"] = "stopped"
         _startup_status["ready"] = False

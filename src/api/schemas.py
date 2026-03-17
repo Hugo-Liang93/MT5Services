@@ -449,6 +449,7 @@ class SignalEventModel(BaseModel):
     action: str
     confidence: float
     reason: str
+    scope: str = "confirmed"
     used_indicators: List[str] = Field(default_factory=list)
     indicators_snapshot: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -460,5 +461,18 @@ class SignalSummaryModel(BaseModel):
     strategy: str
     action: str
     count: int
+    scope: str = "confirmed"
     avg_confidence: Optional[float] = None
     last_seen_at: Optional[str] = None
+
+
+class SignalExecuteTradeRequest(BaseModel):
+    """AI agent dispatch: execute a trade derived from a confirmed signal.
+
+    The system looks up the signal by signal_id, computes ATR-based SL/TP
+    from the stored indicator snapshot, then submits the order via TradingModule.
+    """
+
+    signal_id: str
+    account_alias: Optional[str] = None
+    volume_override: Optional[float] = Field(default=None, gt=0, le=100.0)

@@ -74,6 +74,7 @@ class BackgroundIngestor:
     def _run(self) -> None:
         tick_interval = self.settings.ingest_tick_interval
         next_ohlc_at: Dict[str, float] = {}
+        next_intrabar_at: Dict[str, float] = {}
         while not self._stop.is_set():
             start_loop = time.time()
             for symbol in self._symbols_for_cycle():
@@ -81,6 +82,7 @@ class BackgroundIngestor:
                     self._ingest_quote(symbol)
                     self._ingest_ticks(symbol)
                     self._ingest_ohlc(symbol, next_ohlc_at)
+                    self._ingest_intrabar(symbol, next_intrabar_at)
                 except MT5MarketError as exc:
                     logger.warning("Ingest error for %s: %s", symbol, exc)
                 except Exception as exc:  # pragma: no cover - 防御
@@ -223,31 +225,7 @@ class BackgroundIngestor:
                     )
                     continue
 
-                # 盘中未收盘 bar：仅当变更时记录到 intrabar 队列。
-                snap_key = ohlc_key(symbol, tf)
-                current = (bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
-                snapshot = self._last_intrabar_snapshot.get(snap_key)
-                if snapshot is None or snapshot != current:
-                    self._last_intrabar_snapshot[snap_key] = current
-                    # 盘中快照用于 API 读取，不影响指标计算。
-                    self.service.set_intrabar(symbol, tf, bar)
-                    if not self.settings.intrabar_enabled:
-                        continue
-                    recorded_at = datetime.now(timezone.utc).isoformat()
-                    self.storage.enqueue(
-                        "intrabar",
-                        (
-                            bar.symbol,
-                            bar.timeframe,
-                            bar.open,
-                            bar.high,
-                            bar.low,
-                            bar.close,
-                            bar.volume,
-                            bar.time.isoformat(),
-                            recorded_at,
-                        ),
-                    )
+                # 未收盘 bar 由 _ingest_intrabar 以独立频率处理，此处跳过。
 
             if closed_bars:
                 # 缓存写入只保留已收盘 K 线。
@@ -262,6 +240,116 @@ class BackgroundIngestor:
                     self.storage.enqueue("ohlc", row)
 
             next_ohlc_at[key] = now + tf_interval
+
+    # --- intrabar independent sampling ---
+
+    def _get_intrabar_interval(self, tf: str) -> float:
+        """Return the sampling interval (seconds) for the given timeframe.
+
+        Priority: per-tf config > global intrabar_interval > auto (5% of bar, min 5s).
+        """
+        per_tf = self.settings.ingest_intrabar_intervals.get(tf)
+        if per_tf:
+            return max(1.0, float(per_tf))
+        global_cfg = getattr(self.settings, "ingest_intrabar_interval", 0.0)
+        if global_cfg and global_cfg > 0:
+            return max(1.0, float(global_cfg))
+        return max(5.0, timeframe_seconds(tf) * 0.05)
+
+    def _ingest_intrabar(self, symbol: str, next_intrabar_at: Dict[str, float]) -> None:
+        """Fetch the current in-progress bar for each timeframe on its own schedule.
+
+        Responsibilities:
+        - Publish set_intrabar() so IndicatorManager computes live indicators.
+        - Enqueue intrabar row to DB when storage is enabled.
+        - Never touch closed bars (those belong to _ingest_ohlc).
+
+        Error handling:
+        - MT5MarketError: warn + apply retry backoff, don't raise.
+        - No OHLC history yet (warmup): skip silently.
+
+        Startup stagger:
+        - First fire for each (symbol, tf) is offset by hash-based jitter so all
+          pairs don't fire simultaneously on the first loop iteration.
+        """
+        now = time.time()
+        tf_seconds_cache: Dict[str, int] = {}
+
+        for tf in self.settings.ingest_ohlc_timeframes:
+            key = ohlc_key(symbol, tf)
+            interval = self._get_intrabar_interval(tf)
+
+            # Stagger first fire: spread (symbol, tf) pairs across [0, interval) seconds.
+            if key not in next_intrabar_at:
+                jitter = (abs(hash(key)) % max(1, int(interval))) * (interval / max(1, int(interval)))
+                next_intrabar_at[key] = now + jitter
+                continue
+
+            if now < next_intrabar_at[key]:
+                continue
+
+            # Skip if OHLC not yet warmed up — indicator history would be empty.
+            if self._get_last_ohlc_time(key) is None:
+                next_intrabar_at[key] = now + interval
+                continue
+
+            try:
+                bars = self.client.get_ohlc(symbol, tf, 1)
+            except MT5MarketError as exc:
+                # Back off on MT5 errors to avoid hammering a broken connection.
+                logger.warning("Intrabar fetch failed for %s %s: %s", symbol, tf, exc)
+                next_intrabar_at[key] = now + interval * 2
+                continue
+
+            if not bars:
+                next_intrabar_at[key] = now + interval
+                continue
+
+            bar = bars[-1]
+            tf_sec = tf_seconds_cache.setdefault(tf, timeframe_seconds(tf))
+            closed_cutoff = datetime.now(timezone.utc) - timedelta(seconds=tf_sec)
+            bar_time_utc = (
+                bar.time.replace(tzinfo=timezone.utc)
+                if bar.time.tzinfo is None
+                else bar.time.astimezone(timezone.utc)
+            )
+
+            if bar_time_utc <= closed_cutoff:
+                # Bar already closed — _ingest_ohlc owns it; nothing for us to do.
+                next_intrabar_at[key] = now + interval
+                continue
+
+            # Dedup: only act when the bar content actually changed.
+            current = (bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
+            if self._last_intrabar_snapshot.get(key) == current:
+                next_intrabar_at[key] = now + interval
+                continue
+
+            self._last_intrabar_snapshot[key] = current
+            self.service.set_intrabar(symbol, tf, bar)
+
+            if self.settings.intrabar_enabled:
+                recorded_at = datetime.now(timezone.utc).isoformat()
+                self.storage.enqueue(
+                    "intrabar",
+                    (
+                        bar.symbol,
+                        bar.timeframe,
+                        bar.open,
+                        bar.high,
+                        bar.low,
+                        bar.close,
+                        bar.volume,
+                        bar.time.isoformat(),
+                        recorded_at,
+                    ),
+                )
+
+            logger.debug(
+                "Intrabar updated %s %s: close=%.5f high=%.5f low=%.5f",
+                symbol, tf, bar.close, bar.high, bar.low,
+            )
+            next_intrabar_at[key] = now + interval
 
     # --- monitoring ---
     def queue_stats(self) -> dict:
