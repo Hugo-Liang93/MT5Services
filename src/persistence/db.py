@@ -26,6 +26,7 @@ from src.persistence.schema import (
     INSERT_INTRABAR_SQL,
     INSERT_ECONOMIC_CALENDAR_UPDATE_SQL,
     INSERT_TRADE_OPERATIONS_SQL,
+    INSERT_SIGNAL_EVENTS_SQL,
     UPSERT_RUNTIME_TASK_STATUS_SQL,
     UPSERT_ECONOMIC_CALENDAR_SQL,
 )
@@ -677,6 +678,65 @@ class TimescaleWriter:
             cur.execute(sql, params)
             return cur.fetchall()
     
+
+
+    def write_signal_events(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+        batch = []
+        for row in rows:
+            used_indicators = row[8] if row[8] is not None else []
+            indicators_snapshot = row[9] if row[9] is not None else {}
+            metadata = row[10] if row[10] is not None else {}
+            batch.append((*row[:8], Json(used_indicators), Json(indicators_snapshot), Json(metadata)))
+        if not batch:
+            return
+        self._batch(INSERT_SIGNAL_EVENTS_SQL, batch, page_size=page_size)
+
+    def fetch_signal_events(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Tuple]:
+        sql = (
+            "SELECT generated_at, signal_id, symbol, timeframe, strategy, action, confidence, reason, "
+            "used_indicators, indicators_snapshot, metadata "
+            "FROM signal_events WHERE 1=1"
+        )
+        params: List = []
+        if symbol is not None:
+            sql += " AND symbol = %s"
+            params.append(symbol)
+        if timeframe is not None:
+            sql += " AND timeframe = %s"
+            params.append(timeframe)
+        if strategy is not None:
+            sql += " AND strategy = %s"
+            params.append(strategy)
+        if action is not None:
+            sql += " AND action = %s"
+            params.append(action)
+        sql += " ORDER BY generated_at DESC LIMIT %s"
+        params.append(max(1, int(limit)))
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+
+    def summarize_signal_events(self, *, hours: int = 24) -> List[Tuple]:
+        sql = (
+            "SELECT symbol, timeframe, strategy, action, COUNT(*)::bigint AS count, "
+            "AVG(confidence)::double precision AS avg_confidence, MAX(generated_at) AS last_seen_at "
+            "FROM signal_events "
+            "WHERE generated_at >= NOW() - (%s * INTERVAL '1 hour') "
+            "GROUP BY symbol, timeframe, strategy, action "
+            "ORDER BY symbol, timeframe, strategy, action"
+        )
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, [max(1, int(hours))])
+            return cur.fetchall()
+
     def get_pool_stats(self) -> dict:
         """获取连接池统计信息"""
         if not self._pool:

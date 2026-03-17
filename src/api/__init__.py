@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api import account, economic, indicators, market, monitoring, trade
+from src.api import account, economic, indicators, market, monitoring, signal, trade
 from src.api import deps
 from src.api.schemas import ApiResponse
 from src.clients.mt5_market import MT5MarketError
@@ -123,6 +123,7 @@ app.include_router(account.router)
 app.include_router(trade.router)
 app.include_router(monitoring.router)
 app.include_router(indicators.router)
+app.include_router(signal.router)
 
 
 __all__ = ["app"]

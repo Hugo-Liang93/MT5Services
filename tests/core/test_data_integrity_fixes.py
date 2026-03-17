@@ -388,3 +388,32 @@ def test_load_ingest_settings_exposes_intrabar_enabled() -> None:
     settings = load_ingest_settings()
 
     assert hasattr(settings, "intrabar_enabled")
+
+
+def test_market_service_removes_bound_method_listeners_by_callable_identity() -> None:
+    service = MarketDataService(client=SimpleNamespace())
+
+    class ListenerOwner:
+        def __init__(self) -> None:
+            self.closed_calls = 0
+            self.intrabar_calls = 0
+
+        def on_close(self, _symbol: str, _timeframe: str, _bar_time: datetime) -> None:
+            self.closed_calls += 1
+
+        def on_intrabar(self, _symbol: str, _timeframe: str, _bar: Tick) -> None:
+            self.intrabar_calls += 1
+
+    owner = ListenerOwner()
+
+    service.add_ohlc_close_listener(owner.on_close)
+    service.add_intrabar_listener(owner.on_intrabar)
+
+    service.remove_ohlc_close_listener(owner.on_close)
+    service.remove_intrabar_listener(owner.on_intrabar)
+
+    service.enqueue_ohlc_closed_event("XAUUSD", "M1", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    service.set_intrabar("XAUUSD", "M1", SimpleNamespace(time=datetime(2026, 1, 1, tzinfo=timezone.utc)))
+
+    assert owner.closed_calls == 0
+    assert owner.intrabar_calls == 0
