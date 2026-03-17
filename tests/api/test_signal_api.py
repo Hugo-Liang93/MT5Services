@@ -26,6 +26,7 @@ class DummySignalService:
         return _Decision()
 
     def recent_signals(self, **kwargs):
+        scope = kwargs.get("scope", "confirmed")
         return [
             {
                 "generated_at": "2026-01-01T00:00:00+00:00",
@@ -36,6 +37,7 @@ class DummySignalService:
                 "action": "buy",
                 "confidence": 0.9,
                 "reason": "test",
+                "scope": scope,
                 "used_indicators": ["rsi"],
                 "indicators_snapshot": {"rsi": {"value": 20}},
                 "metadata": {},
@@ -43,6 +45,7 @@ class DummySignalService:
         ]
 
     def summary(self, **kwargs):
+        scope = kwargs.get("scope", "confirmed")
         return [
             {
                 "symbol": "XAUUSD",
@@ -50,6 +53,7 @@ class DummySignalService:
                 "strategy": "rsi_reversion",
                 "action": "buy",
                 "count": 3,
+                "scope": scope,
                 "avg_confidence": 0.82,
                 "last_seen_at": "2026-01-01T00:10:00+00:00",
             }
@@ -75,14 +79,16 @@ def test_signal_evaluate_endpoint() -> None:
 
 
 def test_signal_recent_endpoint() -> None:
-    response = recent_signals(service=DummySignalService())
+    response = recent_signals(scope="preview", service=DummySignalService())
 
     assert response.success is True
     assert response.data[0].signal_id == "abc"
+    assert response.data[0].scope == "preview"
 
 
 def test_signal_summary_endpoint() -> None:
-    response = signal_summary(service=DummySignalService())
+    response = signal_summary(scope="preview", service=DummySignalService())
 
     assert response.success is True
     assert response.data[0].count == 3
+    assert response.data[0].scope == "preview"

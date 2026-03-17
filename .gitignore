@@ -116,3 +116,4 @@ temp/
 
 # Keep placeholders
 !.gitkeep
+.claude/

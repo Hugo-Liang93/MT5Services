@@ -174,73 +174,42 @@ class TradingModule:
         try:
             result = fn()
             duration_ms = int((time.monotonic() - started) * 1000)
-            self._record_operation(
-                TradeOperationRecord(
-                    account_alias=resolved_alias,
-                    operation_type=operation_type,
-                    status="success",
-                    symbol=payload.get("symbol"),
-                    side=payload.get("side"),
-                    order_kind=payload.get("order_kind"),
-                    volume=payload.get("volume"),
-                    ticket=payload.get("ticket"),
-                    magic=payload.get("magic"),
-                    duration_ms=duration_ms,
-                    request_payload=payload,
-                    response_payload=result if isinstance(result, dict) else {"result": result},
-                )
+            record = TradeOperationRecord(
+                account_alias=resolved_alias,
+                operation_type=operation_type,
+                status="success",
+                symbol=payload.get("symbol"),
+                side=payload.get("side"),
+                order_kind=payload.get("order_kind"),
+                volume=payload.get("volume"),
+                ticket=payload.get("ticket"),
+                magic=payload.get("magic"),
+                duration_ms=duration_ms,
+                request_payload=payload,
+                response_payload=result if isinstance(result, dict) else {"result": result},
             )
-            self._update_daily_stats(
-                TradeOperationRecord(
-                    account_alias=resolved_alias,
-                    operation_type=operation_type,
-                    status="success",
-                    symbol=payload.get("symbol"),
-                    side=payload.get("side"),
-                    order_kind=payload.get("order_kind"),
-                    volume=payload.get("volume"),
-                    ticket=payload.get("ticket"),
-                    magic=payload.get("magic"),
-                    request_payload=payload,
-                    response_payload=result if isinstance(result, dict) else {"result": result},
-                )
-            )
+            self._record_operation(record)
+            self._update_daily_stats(record)
             return result
         except Exception as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
-            self._record_operation(
-                TradeOperationRecord(
-                    account_alias=resolved_alias,
-                    operation_type=operation_type,
-                    status="failed",
-                    symbol=payload.get("symbol"),
-                    side=payload.get("side"),
-                    order_kind=payload.get("order_kind"),
-                    volume=payload.get("volume"),
-                    ticket=payload.get("ticket"),
-                    magic=payload.get("magic"),
-                    duration_ms=duration_ms,
-                    error_message=str(exc),
-                    request_payload=payload,
-                    response_payload={},
-                )
+            record = TradeOperationRecord(
+                account_alias=resolved_alias,
+                operation_type=operation_type,
+                status="failed",
+                symbol=payload.get("symbol"),
+                side=payload.get("side"),
+                order_kind=payload.get("order_kind"),
+                volume=payload.get("volume"),
+                ticket=payload.get("ticket"),
+                magic=payload.get("magic"),
+                duration_ms=duration_ms,
+                error_message=str(exc),
+                request_payload=payload,
+                response_payload={},
             )
-            self._update_daily_stats(
-                TradeOperationRecord(
-                    account_alias=resolved_alias,
-                    operation_type=operation_type,
-                    status="failed",
-                    symbol=payload.get("symbol"),
-                    side=payload.get("side"),
-                    order_kind=payload.get("order_kind"),
-                    volume=payload.get("volume"),
-                    ticket=payload.get("ticket"),
-                    magic=payload.get("magic"),
-                    error_message=str(exc),
-                    request_payload=payload,
-                    response_payload={},
-                )
-            )
+            self._record_operation(record)
+            self._update_daily_stats(record)
             raise
 
     def dispatch_operation(self, operation: str, payload: Optional[Dict[str, Any]] = None) -> Any:

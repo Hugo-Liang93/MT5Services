@@ -380,7 +380,52 @@ class OptimizedPipeline:
         self.computation_stats["parallel_computations"] += len(indicators)
         
         return results
-    
+
+    def _compute_internal(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: List[Any],
+        indicators: Optional[List[str]] = None,
+        on_level_complete: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        return self._compute_internal(symbol, timeframe, bars, indicators=indicators)
+        try:
+            if indicators is None:
+                indicators = list(self.dependency_manager.indicator_funcs.keys())
+            execution_groups = self.dependency_manager.get_parallelizable_groups(indicators)
+            context = ComputationContext(
+                symbol=symbol,
+                timeframe=timeframe,
+                bars=bars,
+                config=self.config,
+                results={},
+                dependencies={ind: self.dependency_manager.get_dependencies(ind) for ind in indicators},
+                start_time=start_time,
+            )
+            for level_indicators in execution_groups:
+                level_results = self._compute_parallel_group(level_indicators, context)
+                context.results.update(level_results)
+                self.computation_stats["total_computations"] += len(level_indicators)
+                if on_level_complete is not None:
+                    on_level_complete(dict(level_results), dict(context.results))
+            total_time = time.time() - start_time
+            self._compute_log_counter += 1
+            message = (
+                f"Pipeline computation completed: "
+                f"{len(indicators)} indicators, "
+                f"{len(execution_groups)} levels, "
+                f"{total_time*1000:.2f}ms"
+            )
+            if total_time >= 0.5 or self._compute_log_counter % 100 == 0:
+                logger.info(message)
+            else:
+                logger.debug(message)
+            return context.results
+        except Exception as e:
+            logger.error(f"Pipeline computation failed: {e}")
+            return {}
+
     def compute(
         self,
         symbol: str,
@@ -456,6 +501,22 @@ class OptimizedPipeline:
             # 返回空结果
             return {}
     
+    def compute_staged(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: List[Any],
+        indicators: Optional[List[str]] = None,
+        on_level_complete: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        return self._compute_internal(
+            symbol,
+            timeframe,
+            bars,
+            indicators=indicators,
+            on_level_complete=on_level_complete,
+        )
+
     def compute_single(
         self,
         indicator: str,

@@ -6,9 +6,9 @@ from src.signals.service import SignalModule
 class DummyIndicatorSource:
     def __init__(self):
         self.payload = {
-            "sma_fast": {"value": 201.0},
-            "sma_slow": {"value": 200.0},
-            "rsi": {"value": 75.0},
+            "sma20": {"sma": 201.0},
+            "ema50": {"ema": 200.0},
+            "rsi14": {"rsi": 75.0},
         }
 
     def get_indicator(self, symbol: str, timeframe: str, indicator_name: str):
@@ -23,56 +23,48 @@ class DummyIndicatorSource:
 
 class DummySignalRepository:
     def __init__(self):
-        self.rows = []
+        self.confirmed_rows = []
+        self.preview_rows = []
 
     def append(self, record):
-        self.rows.append(record.to_row())
+        metadata = record.metadata or {}
+        target = self.preview_rows if metadata.get("scope") in {"intrabar", "preview"} else self.confirmed_rows
+        target.append(record.to_row())
 
     def recent(self, **kwargs):
+        scope = kwargs.get("scope", "confirmed")
+        rows = self.preview_rows if scope == "preview" else self.confirmed_rows
         return [
             {
-                "generated_at": self.rows[-1][0].isoformat() if self.rows[-1][0] else None,
-                "signal_id": self.rows[-1][1],
-                "symbol": self.rows[-1][2],
-                "timeframe": self.rows[-1][3],
-                "strategy": self.rows[-1][4],
-                "action": self.rows[-1][5],
-                "confidence": self.rows[-1][6],
-                "reason": self.rows[-1][7],
-                "used_indicators": self.rows[-1][8],
-                "indicators_snapshot": self.rows[-1][9],
-                "metadata": self.rows[-1][10],
+                "generated_at": rows[-1][0].isoformat() if rows[-1][0] else None,
+                "signal_id": rows[-1][1],
+                "symbol": rows[-1][2],
+                "timeframe": rows[-1][3],
+                "strategy": rows[-1][4],
+                "action": rows[-1][5],
+                "confidence": rows[-1][6],
+                "reason": rows[-1][7],
+                "used_indicators": rows[-1][8],
+                "indicators_snapshot": rows[-1][9],
+                "metadata": rows[-1][10],
+                "scope": scope,
             }
-        ] if self.rows else []
-
-    def fetch_signal_events(self, **kwargs):
-        return [
-            (
-                self.rows[-1][0],
-                self.rows[-1][1],
-                self.rows[-1][2],
-                self.rows[-1][3],
-                self.rows[-1][4],
-                self.rows[-1][5],
-                self.rows[-1][6],
-                self.rows[-1][7],
-                self.rows[-1][8],
-                self.rows[-1][9],
-                self.rows[-1][10],
-            )
-        ] if self.rows else []
+        ] if rows else []
 
     def summary(self, **kwargs):
-        if not self.rows:
+        scope = kwargs.get("scope", "confirmed")
+        rows = self.preview_rows if scope == "preview" else self.confirmed_rows
+        if not rows:
             return []
         return [{
-            "symbol": self.rows[-1][2],
-            "timeframe": self.rows[-1][3],
-            "strategy": self.rows[-1][4],
-            "action": self.rows[-1][5],
+            "symbol": rows[-1][2],
+            "timeframe": rows[-1][3],
+            "strategy": rows[-1][4],
+            "action": rows[-1][5],
             "count": 1,
-            "avg_confidence": self.rows[-1][6],
-            "last_seen_at": self.rows[-1][0].isoformat() if self.rows[-1][0] else None,
+            "avg_confidence": rows[-1][6],
+            "last_seen_at": rows[-1][0].isoformat() if rows[-1][0] else None,
+            "scope": scope,
         }]
 
 
@@ -83,7 +75,7 @@ def test_signal_module_uses_indicator_source_for_default_payload() -> None:
 
     assert decision.action == "buy"
     assert decision.strategy == "sma_trend"
-    assert "sma_fast" in decision.used_indicators
+    assert "sma20" in decision.used_indicators
 
 
 def test_signal_module_persists_and_can_query_recent() -> None:
@@ -93,9 +85,10 @@ def test_signal_module_persists_and_can_query_recent() -> None:
     module.evaluate(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
     recent = module.recent_signals(limit=10)
 
-    assert len(db.rows) == 1
+    assert len(db.confirmed_rows) == 1
     assert recent[0]["strategy"] == "rsi_reversion"
     assert recent[0]["action"] == "sell"
+    assert recent[0]["scope"] == "confirmed"
 
 
 def test_signal_module_dispatch_lists_available_indicators() -> None:
@@ -103,7 +96,24 @@ def test_signal_module_dispatch_lists_available_indicators() -> None:
 
     indicators = module.dispatch_operation("available_indicators")
 
-    assert indicators == ["sma_fast", "sma_slow", "rsi"]
+    assert indicators == ["sma20", "ema50", "rsi14"]
+
+
+def test_signal_module_exposes_strategy_requirements() -> None:
+    module = SignalModule(indicator_source=DummyIndicatorSource())
+
+    requirements = module.dispatch_operation("strategy_requirements")
+
+    assert requirements["sma_trend"] == ["sma20", "ema50"]
+    assert requirements["rsi_reversion"] == ["rsi14"]
+
+
+def test_signal_module_exposes_required_indicator_groups() -> None:
+    module = SignalModule(indicator_source=DummyIndicatorSource())
+
+    groups = module.dispatch_operation("required_indicator_groups")
+
+    assert groups == [["bollinger20"], ["rsi14"], ["sma20", "ema50"]]
 
 
 def test_signal_module_summary_returns_aggregates() -> None:
@@ -115,6 +125,7 @@ def test_signal_module_summary_returns_aggregates() -> None:
 
     assert summary[0]["count"] == 1
     assert summary[0]["strategy"] == "sma_trend"
+    assert summary[0]["scope"] == "confirmed"
 
 
 def test_signal_module_rejects_unknown_strategy() -> None:
