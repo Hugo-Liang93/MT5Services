@@ -49,6 +49,8 @@ class MarketDataService:
             maxsize=self.market_settings.ohlc_event_queue_size
         )
         self._ohlc_event_sink: Optional[Callable[[str, str, datetime], None]] = None
+        self._ohlc_close_listeners: list[Callable[[str, str, datetime], None]] = []
+        self._intrabar_listeners: list[Callable[[str, str, OHLC], None]] = []
 
     def list_symbols(self) -> List[str]:
         return self.client.list_symbols()
@@ -391,9 +393,31 @@ class MarketDataService:
             existing.append(bar)
             if len(existing) > self._intrabar_max_points:
                 del existing[:-self._intrabar_max_points]
+        for listener in list(self._intrabar_listeners):
+            try:
+                listener(symbol, timeframe, bar)
+            except Exception:
+                logger.exception("Failed to publish intrabar event for %s/%s at %s", symbol, timeframe, bar.time)
 
     def attach_storage(self, storage_writer: Optional["StorageWriter"]) -> None:
         self._storage_writer = storage_writer
+
+
+    def add_ohlc_close_listener(self, listener: Callable[[str, str, datetime], None]) -> None:
+        with self._lock:
+            self._ohlc_close_listeners.append(listener)
+
+    def remove_ohlc_close_listener(self, listener: Callable[[str, str, datetime], None]) -> None:
+        with self._lock:
+            self._ohlc_close_listeners = [item for item in self._ohlc_close_listeners if item is not listener]
+
+    def add_intrabar_listener(self, listener: Callable[[str, str, OHLC], None]) -> None:
+        with self._lock:
+            self._intrabar_listeners.append(listener)
+
+    def remove_intrabar_listener(self, listener: Callable[[str, str, OHLC], None]) -> None:
+        with self._lock:
+            self._intrabar_listeners = [item for item in self._intrabar_listeners if item is not listener]
 
     def set_ohlc_event_sink(
         self,
@@ -403,6 +427,11 @@ class MarketDataService:
         self._ohlc_event_sink = sink
 
     def enqueue_ohlc_closed_event(self, symbol: str, timeframe: str, bar_time: datetime) -> None:
+        for listener in list(self._ohlc_close_listeners):
+            try:
+                listener(symbol, timeframe, bar_time)
+            except Exception:
+                logger.exception("Failed to notify OHLC close listener for %s/%s at %s", symbol, timeframe, bar_time)
         if self._ohlc_event_sink is not None:
             try:
                 self._ohlc_event_sink(symbol, timeframe, bar_time)

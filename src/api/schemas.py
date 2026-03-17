@@ -418,3 +418,47 @@ class ApiResponse(BaseModel, Generic[T]):
                 "data_source": "error"
             }
         )
+
+
+class SignalEvaluateRequest(BaseModel):
+    symbol: str
+    timeframe: str
+    strategy: str
+    indicators: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SignalDecisionModel(BaseModel):
+    strategy: str
+    symbol: str
+    timeframe: str
+    action: str
+    confidence: float
+    reason: str
+    used_indicators: List[str] = Field(default_factory=list)
+    timestamp: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SignalEventModel(BaseModel):
+    generated_at: Optional[str] = None
+    signal_id: str
+    symbol: str
+    timeframe: str
+    strategy: str
+    action: str
+    confidence: float
+    reason: str
+    used_indicators: List[str] = Field(default_factory=list)
+    indicators_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SignalSummaryModel(BaseModel):
+    symbol: str
+    timeframe: str
+    strategy: str
+    action: str
+    count: int
+    avg_confidence: Optional[float] = None
+    last_seen_at: Optional[str] = None

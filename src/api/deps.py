@@ -36,6 +36,13 @@ from src.ingestion.ingestor import BackgroundIngestor
 from src.monitoring.health_check import get_health_monitor, get_monitoring_manager
 from src.persistence.db import TimescaleWriter
 from src.persistence.storage_writer import StorageWriter
+from src.signals import (
+    SignalModule,
+    SignalRuntime,
+    SignalTarget,
+    TimescaleSignalRepository,
+    UnifiedIndicatorSourceAdapter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +54,8 @@ _indicator_manager: Optional[UnifiedIndicatorManager] = None
 _trade_registry: Optional[TradingAccountRegistry] = None
 _trade_module: Optional[TradingModule] = None
 _economic_calendar_service: Optional[EconomicCalendarService] = None
+_signal_module: Optional[SignalModule] = None
+_signal_runtime: Optional[SignalRuntime] = None
 _health_monitor = None
 _monitoring_manager = None
 _startup_status = {
@@ -155,6 +164,8 @@ def _ensure_initialized() -> None:
     global _trade_registry
     global _trade_module
     global _economic_calendar_service
+    global _signal_module
+    global _signal_runtime
     global _health_monitor
     global _monitoring_manager
 
@@ -193,6 +204,23 @@ def _ensure_initialized() -> None:
         registry=_trade_registry,
         db_writer=_storage_writer.db,
         active_account_alias=default_alias,
+    )
+    _signal_module = SignalModule(
+        indicator_source=UnifiedIndicatorSourceAdapter(_indicator_manager),
+        repository=TimescaleSignalRepository(_storage_writer.db),
+    )
+    runtime_targets = [
+        SignalTarget(symbol=symbol, timeframe=timeframe, strategy=strategy)
+        for symbol in _indicator_manager.config.symbols
+        for timeframe in _indicator_manager.config.timeframes
+        for strategy in _signal_module.list_strategies()
+    ]
+    _signal_runtime = SignalRuntime(
+        service=_signal_module,
+        market_service=_service,
+        targets=runtime_targets,
+        enable_close_bar=True,
+        enable_intrabar=True,
     )
     _health_monitor = get_health_monitor("health_monitor.db")
     _health_monitor.configure_alerts(
@@ -298,6 +326,16 @@ def get_unified_indicator_manager() -> UnifiedIndicatorManager:
     return get_indicator_manager()
 
 
+def get_signal_service() -> SignalModule:
+    _ensure_initialized()
+    return _signal_module  # type: ignore[return-value]
+
+
+def get_signal_runtime() -> SignalRuntime:
+    _ensure_initialized()
+    return _signal_runtime  # type: ignore[return-value]
+
+
 def get_health_monitor_instance():
     _ensure_initialized()
     return _health_monitor
@@ -341,6 +379,12 @@ async def lifespan(_app):
         _mark_startup_step("indicators", "ready", current_started)
         _record_runtime_task_status("startup", "indicators", "ready", _startup_status["steps"]["indicators"]["duration_ms"])
 
+        current_step = "signals"
+        current_started = time.monotonic()
+        _signal_runtime.start()  # type: ignore[union-attr]
+        _mark_startup_step("signals", "ready", current_started)
+        _record_runtime_task_status("startup", "signals", "ready", _startup_status["steps"]["signals"]["duration_ms"])
+
         current_step = "monitoring"
         current_started = time.monotonic()
         _monitoring_manager.register_component(  # type: ignore[union-attr]
@@ -362,6 +406,11 @@ async def lifespan(_app):
             "economic_calendar",
             _economic_calendar_service,
             ["economic_calendar"],
+        )
+        _monitoring_manager.register_component(  # type: ignore[union-attr]
+            "signals",
+            _signal_runtime,
+            ["status"],
         )
         _monitoring_manager.start()  # type: ignore[union-attr]
         _mark_startup_step("monitoring", "ready", current_started)
@@ -403,6 +452,11 @@ async def lifespan(_app):
         except Exception:
             logger.debug("Failed to stop monitoring manager after startup failure", exc_info=True)
         try:
+            if _signal_runtime:
+                _signal_runtime.stop()
+        except Exception:
+            logger.debug("Failed to stop signal runtime after startup failure", exc_info=True)
+        try:
             if _indicator_manager:
                 _indicator_manager.shutdown()
         except Exception:
@@ -430,6 +484,8 @@ async def lifespan(_app):
     finally:
         _startup_status["phase"] = "stopping"
         _monitoring_manager.stop()  # type: ignore[union-attr]
+        if _signal_runtime:
+            _signal_runtime.stop()
         if _indicator_manager:
             _indicator_manager.shutdown()
         if _economic_calendar_service:
