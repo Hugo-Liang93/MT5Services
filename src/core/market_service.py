@@ -22,6 +22,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _same_listener_reference(left: Callable[..., Any], right: Callable[..., Any]) -> bool:
+    """Return True when two listener callables refer to the same target."""
+    if left is right:
+        return True
+
+    left_func = getattr(left, "__func__", None)
+    right_func = getattr(right, "__func__", None)
+    left_self = getattr(left, "__self__", None)
+    right_self = getattr(right, "__self__", None)
+    return left_func is not None and left_func is right_func and left_self is right_self
+
+
 class MarketDataService:
     """
     In-memory market data service.
@@ -409,7 +421,11 @@ class MarketDataService:
 
     def remove_ohlc_close_listener(self, listener: Callable[[str, str, datetime], None]) -> None:
         with self._lock:
-            self._ohlc_close_listeners = [item for item in self._ohlc_close_listeners if item is not listener]
+            self._ohlc_close_listeners = [
+                item
+                for item in self._ohlc_close_listeners
+                if not _same_listener_reference(item, listener)
+            ]
 
     def add_intrabar_listener(self, listener: Callable[[str, str, OHLC], None]) -> None:
         with self._lock:
@@ -417,7 +433,11 @@ class MarketDataService:
 
     def remove_intrabar_listener(self, listener: Callable[[str, str, OHLC], None]) -> None:
         with self._lock:
-            self._intrabar_listeners = [item for item in self._intrabar_listeners if item is not listener]
+            self._intrabar_listeners = [
+                item
+                for item in self._intrabar_listeners
+                if not _same_listener_reference(item, listener)
+            ]
 
     def set_ohlc_event_sink(
         self,
