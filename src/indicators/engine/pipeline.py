@@ -221,12 +221,19 @@ class OptimizedPipeline:
             # mutable field that gets populated by _write_back_results; any mutation
             # changes the hash and causes a permanent cache miss for subsequent calls
             # with the same price data.
+            #
+            # Bug修复：原哈希仅含 close，intrabar 场景下 high/low 可能在 close 不变
+            # 时发生变化（例如新 tick 创新低但收盘价不变），导致 ATR/Donchian/Stoch/
+            # ADX/Keltner/CCI/WilliamsR/Supertrend 等依赖 H/L 的指标返回陈旧缓存。
             if context.bars:
+                last = context.bars[-1]
                 bars_hash = hash((
                     len(context.bars),
                     context.bars[0].time,
-                    context.bars[-1].time,
-                    context.bars[-1].close,
+                    last.time,
+                    last.high,
+                    last.low,
+                    last.close,
                 ))
             else:
                 bars_hash = 0
@@ -382,12 +389,16 @@ class OptimizedPipeline:
             
             # Use same stable hash as _compute_indicator so that the parallel
             # executor's task cache aligns with the SmartCache.
+            # 同样包含 high/low，与 _compute_indicator 保持完全一致。
             if context.bars:
+                last = context.bars[-1]
                 bars_hash = hash((
                     len(context.bars),
                     context.bars[0].time,
-                    context.bars[-1].time,
-                    context.bars[-1].close,
+                    last.time,
+                    last.high,
+                    last.low,
+                    last.close,
                 ))
             else:
                 bars_hash = 0
