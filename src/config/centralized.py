@@ -619,5 +619,24 @@ def get_signal_config() -> SignalConfig:
     signal_section = dict(merged.get("signal", {}))
     preview_section = dict(merged.get("preview", {}))
     position_section = dict(merged.get("position_management", {}))
-    combined = {**signal_section, **{f"min_preview_confidence" if k == "min_confidence" else k: v for k, v in preview_section.items()}, **position_section}
-    return ConfigValidator.validate_model(SignalConfig, combined)
+    # [preview] 节中 min_confidence → min_preview_confidence，其余键原样合并
+    renamed_preview = {
+        ("min_preview_confidence" if k == "min_confidence" else k): v
+        for k, v in preview_section.items()
+    }
+    # 同理映射 [preview] 中 stable_seconds / cooldown_seconds / min_bar_progress
+    # 使其与 SignalConfig 字段名对应
+    field_renames = {
+        "stable_seconds": "preview_stable_seconds",
+        "cooldown_seconds": "preview_cooldown_seconds",
+        "min_bar_progress": "min_preview_bar_progress",
+    }
+    renamed_preview = {field_renames.get(k, k): v for k, v in renamed_preview.items()}
+    # [position_management] reconcile_interval → position_reconcile_interval
+    renamed_position = {
+        ("position_reconcile_interval" if k == "reconcile_interval" else k): v
+        for k, v in position_section.items()
+    }
+    combined = {**signal_section, **renamed_preview, **renamed_position}
+    # Bug修复: ConfigValidator.validate_model() 不存在，使用 Pydantic v2 标准 API
+    return SignalConfig.model_validate(combined)

@@ -98,9 +98,13 @@ class SignalRuntime:
         self._run_count = 0
         self._processed_events = 0
         self._dropped_events = 0
+        # 保护 _state_by_target 的锁：background loop 写入，status()/API线程读取，
+        # 必须避免并发迭代导致 "dictionary changed size during iteration"
+        self._state_lock = threading.Lock()
         self._dropped_confirmed = 0
         self._dropped_intrabar = 0
         self._last_drop_log_at: float = 0.0
+        self._dropped_at_last_log: int = 0  # 上次日志时的总丢弃数，用于计算 delta
         self._state_by_target: dict[tuple[str, str, str], RuntimeSignalState] = {}
 
     def start(self) -> None:
@@ -160,19 +164,32 @@ class SignalRuntime:
             now = time.monotonic()
             # Rate-limit error logs to at most once per 60 s to avoid log spam.
             if now - self._last_drop_log_at >= 60.0:
+                delta = self._dropped_events - self._dropped_at_last_log
                 self._last_drop_log_at = now
+                self._dropped_at_last_log = self._dropped_events
                 symbol, timeframe = item[1], item[2]
                 logger.error(
                     "Signal runtime %s queue is full — indicator snapshot dropped "
-                    "(total_dropped=%d, scope=%s, symbol=%s, timeframe=%s, maxsize=%d). "
+                    "(dropped_since_last_log=%d, total_dropped=%d, "
+                    "scope=%s, symbol=%s, timeframe=%s, maxsize=%d). "
                     "Consider increasing queue capacity or reducing event frequency.",
                     scope,
+                    delta,
                     self._dropped_events,
                     scope,
                     symbol,
                     timeframe,
                     target_queue.maxsize,
                 )
+
+    def _count_active_states(self) -> dict:
+        """持锁快照 _state_by_target，统计活跃的 preview/confirmed 状态数。"""
+        with self._state_lock:
+            snapshot = list(self._state_by_target.values())
+        return {
+            "active_preview_states": sum(1 for s in snapshot if s.preview_state != "idle"),
+            "active_confirmed_states": sum(1 for s in snapshot if s.confirmed_state != "idle"),
+        }
 
     def status(self) -> dict:
         return {
@@ -200,12 +217,8 @@ class SignalRuntime:
             "queue_capacity": self._confirmed_events.maxsize + self._intrabar_events.maxsize,
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
-            "active_preview_states": sum(
-                1 for state in self._state_by_target.values() if state.preview_state != "idle"
-            ),
-            "active_confirmed_states": sum(
-                1 for state in self._state_by_target.values() if state.confirmed_state != "idle"
-            ),
+            # 持锁做快照再迭代，避免 background loop 同时写入导致 RuntimeError
+            **self._count_active_states(),
         }
 
     def add_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
@@ -613,10 +626,11 @@ class SignalRuntime:
                 }
             else:
                 scoped_indicators = indicators
-            state = self._state_by_target.setdefault(
-                (symbol, timeframe, strategy),
-                RuntimeSignalState(),
-            )
+            with self._state_lock:
+                state = self._state_by_target.setdefault(
+                    (symbol, timeframe, strategy),
+                    RuntimeSignalState(),
+                )
             if not self._should_evaluate_snapshot(
                 state,
                 scope=scope,
