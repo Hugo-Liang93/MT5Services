@@ -113,7 +113,10 @@ def test_signal_module_exposes_required_indicator_groups() -> None:
 
     groups = module.dispatch_operation("required_indicator_groups")
 
-    assert groups == [["bollinger20"], ["rsi14"], ["sma20", "ema50"]]
+    # Strategy order is alphabetical: bollinger_breakout, mtf_confirm, rsi_reversion, sma_trend.
+    # mtf_confirm introduces ("sma20","ema50") before rsi_reversion introduces ("rsi14"),
+    # so the group order is [boll20], [sma20,ema50], [rsi14].  sma_trend is deduplicated.
+    assert groups == [["boll20"], ["sma20", "ema50"], ["rsi14"]]
 
 
 def test_signal_module_summary_returns_aggregates() -> None:
@@ -126,6 +129,37 @@ def test_signal_module_summary_returns_aggregates() -> None:
     assert summary[0]["count"] == 1
     assert summary[0]["strategy"] == "sma_trend"
     assert summary[0]["scope"] == "confirmed"
+
+
+def test_bollinger_breakout_strategy_uses_boll20_indicator() -> None:
+    """BollingerBreakoutStrategy must look up boll20 (not bollinger20) in the snapshot."""
+    # Price below lower band → expect buy signal
+    indicators_buy = {
+        "boll20": {"bb_upper": 1900.0, "bb_mid": 1890.0, "bb_lower": 1880.0, "close": 1875.0},
+    }
+    module = SignalModule(indicator_source=DummyIndicatorSource())
+    decision = module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="bollinger_breakout",
+        indicators=indicators_buy,
+        persist=False,
+    )
+    assert decision.action == "buy", f"expected buy, got {decision.action}: {decision.reason}"
+    assert "boll20" in decision.used_indicators
+
+    # Price above upper band → expect sell signal
+    indicators_sell = {
+        "boll20": {"bb_upper": 1900.0, "bb_mid": 1890.0, "bb_lower": 1880.0, "close": 1910.0},
+    }
+    decision_sell = module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="bollinger_breakout",
+        indicators=indicators_sell,
+        persist=False,
+    )
+    assert decision_sell.action == "sell", f"expected sell, got {decision_sell.action}"
 
 
 def test_signal_module_rejects_unknown_strategy() -> None:

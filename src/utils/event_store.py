@@ -145,60 +145,57 @@ class LocalEventStore:
             logger.debug(f"Published event: {symbol}/{timeframe} at {bar_time}, id={event_id}")
             return event_id
     
-    def get_next_event(self) -> Optional[Tuple[str, str, datetime]]:
+    def get_next_events(self, limit: int = 1) -> List[Tuple[str, str, datetime]]:
+        """Fetch up to *limit* pending events in a single SQLite transaction.
+
+        All selected rows are atomically marked as in-progress (processed=1)
+        before returning, so the caller owns them for subsequent
+        mark_event_completed / mark_event_failed calls.
         """
-        获取下一个未处理事件
-        
-        Returns:
-            (symbol, timeframe, bar_time) 或 None
-        """
+        limit = max(1, int(limit))
         with self._lock:
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # 获取下一个未处理事件（优先处理重试次数少的）
-            cursor.execute("""
-                SELECT id, symbol, timeframe, bar_time 
-                FROM ohlc_events 
-                WHERE processed = 0 
-                ORDER BY retry_count ASC, bar_time ASC 
-                LIMIT 1
-            """)
-            
-            row = cursor.fetchone()
-            if not row:
-                conn.close()
-                return None
-            
-            event_id, symbol, timeframe, bar_time_str = row
             try:
-                bar_time = datetime.fromisoformat(bar_time_str)
-            except ValueError:
-                # 处理旧格式的时间字符串
-                bar_time = datetime.strptime(bar_time_str, "%Y-%m-%d %H:%M:%S")
-            
-            # 标记为处理中（但不标记为已处理，等处理完成后再标记）
-            cursor.execute("""
-                UPDATE ohlc_events 
-                SET processed = 1, processed_at = ?
-                WHERE id = ?
-            """, (_utc_now().isoformat(), event_id))
-            
-            conn.commit()
-            conn.close()
-            
-            logger.debug(f"Retrieved event: {symbol}/{timeframe} at {bar_time}, id={event_id}")
-            return (symbol, timeframe, bar_time)
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT id, symbol, timeframe, bar_time
+                    FROM ohlc_events
+                    WHERE processed = 0
+                    ORDER BY retry_count ASC, bar_time ASC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    return []
 
-    def get_next_events(self, limit: int = 1) -> List[Tuple[str, str, datetime]]:
-        events: List[Tuple[str, str, datetime]] = []
-        limit = max(1, int(limit))
-        while len(events) < limit:
-            event = self.get_next_event()
-            if event is None:
-                break
-            events.append(event)
-        return events
+                results: List[Tuple[str, str, datetime]] = []
+                ids: List[int] = []
+                for event_id, symbol, timeframe, bar_time_str in rows:
+                    try:
+                        bar_time = datetime.fromisoformat(bar_time_str)
+                    except ValueError:
+                        bar_time = datetime.strptime(bar_time_str, "%Y-%m-%d %H:%M:%S")
+                    results.append((symbol, timeframe, bar_time))
+                    ids.append(event_id)
+
+                now_str = _utc_now().isoformat()
+                cursor.executemany(
+                    "UPDATE ohlc_events SET processed = 1, processed_at = ? WHERE id = ?",
+                    [(now_str, eid) for eid in ids],
+                )
+                conn.commit()
+                logger.debug("Retrieved %s event(s) from store", len(results))
+                return results
+            finally:
+                conn.close()
+
+    def get_next_event(self) -> Optional[Tuple[str, str, datetime]]:
+        """Fetch a single pending event (convenience wrapper over get_next_events)."""
+        events = self.get_next_events(limit=1)
+        return events[0] if events else None
     
     def mark_event_completed(
         self,

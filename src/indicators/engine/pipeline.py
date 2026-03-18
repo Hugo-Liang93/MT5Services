@@ -47,6 +47,7 @@ class ComputationContext:
     results: Dict[str, Any]
     dependencies: Dict[str, Set[str]]
     start_time: float
+    scope: str = "confirmed"
 
 
 class OptimizedPipeline:
@@ -155,11 +156,19 @@ class OptimizedPipeline:
         # 注册到依赖管理器
         self.dependency_manager.add_indicator(name, func, params, dependencies)
         
-        # 如果支持增量计算，创建增量计算实例
+        # 如果支持增量计算，创建增量计算实例（热重载时保留已积累的 state）
         if incremental_class is not None and issubclass(incremental_class, IncrementalIndicator):
-            incremental_instance = incremental_class(name, params)
-            self.incremental_indicators[name] = incremental_instance
-            logger.debug(f"Incremental indicator registered: {name}")
+            existing = self.incremental_indicators.get(name)
+            if existing is not None and type(existing) is incremental_class:
+                # 同一个类重新注册（热重载场景）：复用实例保留 state_store
+                logger.debug(f"Incremental indicator re-registered (state preserved): {name}")
+            else:
+                incremental_instance = incremental_class(name, params)
+                if existing is not None:
+                    # 类变了但有旧 state：迁移 state_store，下次算时会重新 seed
+                    incremental_instance.state_store = existing.state_store
+                self.incremental_indicators[name] = incremental_instance
+                logger.debug(f"Incremental indicator registered: {name}")
         
         logger.info(f"Indicator registered: {name} with {len(dependencies or [])} dependencies")
     
@@ -229,28 +238,29 @@ class OptimizedPipeline:
                         raise ValueError(f"Indicator function not found: {indicator}")
                     
                     # 检查是否支持增量计算
-                    if (self.config.enable_incremental and 
+                    if (self.config.enable_incremental and
                         indicator in self.incremental_indicators):
-                        
+
                         # 使用增量计算
                         incremental_indicator = self.incremental_indicators[indicator]
                         result = incremental_indicator.compute(
                             context.bars,
                             context.symbol,
                             context.timeframe,
-                            use_incremental=True
+                            use_incremental=True,
+                            scope=context.scope,
                         )
                         incremental = True
                         self.computation_stats["incremental_computations"] += 1
-                        
+
                     else:
                         params = self.dependency_manager.indicator_params.get(indicator, {})
                         result = func(context.bars, params)
-                    
+
                     # 缓存结果
                     if self.config.enable_cache and result is not None:
                         self.cache.set(cache_key, result)
-            
+
             # 更新统计
             if result is None:
                 func = self.dependency_manager.indicator_funcs.get(indicator)
@@ -263,7 +273,8 @@ class OptimizedPipeline:
                         context.bars,
                         context.symbol,
                         context.timeframe,
-                        use_incremental=True
+                        use_incremental=True,
+                        scope=context.scope,
                     )
                     incremental = True
                     self.computation_stats["incremental_computations"] += 1
@@ -388,8 +399,9 @@ class OptimizedPipeline:
         bars: List[Any],
         indicators: Optional[List[str]] = None,
         on_level_complete: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
+        scope: str = "confirmed",
     ) -> Dict[str, Any]:
-        return self._compute_internal(symbol, timeframe, bars, indicators=indicators)
+        start_time = time.time()
         try:
             if indicators is None:
                 indicators = list(self.dependency_manager.indicator_funcs.keys())
@@ -402,6 +414,7 @@ class OptimizedPipeline:
                 results={},
                 dependencies={ind: self.dependency_manager.get_dependencies(ind) for ind in indicators},
                 start_time=start_time,
+                scope=scope,
             )
             for level_indicators in execution_groups:
                 level_results = self._compute_parallel_group(level_indicators, context)
@@ -431,7 +444,8 @@ class OptimizedPipeline:
         symbol: str,
         timeframe: str,
         bars: List[Any],
-        indicators: Optional[List[str]] = None
+        indicators: Optional[List[str]] = None,
+        scope: str = "confirmed",
     ) -> Dict[str, Any]:
         """
         计算指标
@@ -462,11 +476,12 @@ class OptimizedPipeline:
                 bars=bars,
                 config=self.config,
                 results={},
-                dependencies={ind: self.dependency_manager.get_dependencies(ind) 
+                dependencies={ind: self.dependency_manager.get_dependencies(ind)
                             for ind in indicators},
-                start_time=start_time
+                start_time=start_time,
+                scope=scope,
             )
-            
+
             # 按层级计算
             for level_indicators in execution_groups:
                 # 计算当前层级
@@ -508,6 +523,7 @@ class OptimizedPipeline:
         bars: List[Any],
         indicators: Optional[List[str]] = None,
         on_level_complete: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
+        scope: str = "confirmed",
     ) -> Dict[str, Any]:
         return self._compute_internal(
             symbol,
@@ -515,6 +531,7 @@ class OptimizedPipeline:
             bars,
             indicators=indicators,
             on_level_complete=on_level_complete,
+            scope=scope,
         )
 
     def compute_single(

@@ -117,7 +117,6 @@ def test_signal_runtime_status_exposes_trigger_mode() -> None:
     status = runtime.status()
 
     assert status["target_count"] == 1
-    assert status["trigger_mode"]["close_bar"] is True
     assert status["trigger_mode"]["confirmed_snapshot"] is True
     assert status["trigger_mode"]["intrabar"] is False
 

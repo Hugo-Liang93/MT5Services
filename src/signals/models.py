@@ -21,7 +21,7 @@ class SignalEvent:
     confidence: float
     signal_state: str   # confirmed_buy, confirmed_sell, confirmed_cancelled,
                         # armed_buy, armed_sell, preview_buy, preview_sell, cancelled
-    scope: str          # confirmed / preview
+    scope: str          # "confirmed" (bar closed) / "intrabar" (in-progress bar)
     indicators: Dict[str, Dict[str, float]]
     metadata: Dict[str, Any]
     generated_at: datetime

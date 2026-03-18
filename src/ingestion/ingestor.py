@@ -55,13 +55,12 @@ class BackgroundIngestor:
             self._backfill_thread.start()
         self._thread = threading.Thread(target=self._run, name="mt5-ingestor", daemon=True)
         self._thread.start()
-        if 0 < self.settings.max_concurrent_symbols < len(self.settings.ingest_symbols):
-            logger.info(
-                "Background ingestor started with symbol window %s/%s per cycle",
-                self.settings.max_concurrent_symbols,
-                len(self.settings.ingest_symbols),
-            )
-        logger.info("Background ingestor started")
+        windowed = 0 < self.settings.max_concurrent_symbols < len(self.settings.ingest_symbols)
+        logger.info(
+            "Background ingestor started%s",
+            f" (symbol window {self.settings.max_concurrent_symbols}/{len(self.settings.ingest_symbols)} per cycle)"
+            if windowed else "",
+        )
 
     def stop(self) -> None:
         self._stop.set()
@@ -131,7 +130,7 @@ class BackgroundIngestor:
         if new_ticks:
             self._last_tick_time[symbol] = new_ticks[-1].time
             self.service.extend_ticks(symbol, new_ticks)
-            logger.info("Fetched %s ticks for %s", len(new_ticks), symbol)
+            logger.debug("Fetched %s ticks for %s", len(new_ticks), symbol)
             for item in [
                 (
                     tick.symbol,
@@ -209,8 +208,6 @@ class BackgroundIngestor:
                     closed_bars.append(bar)
                     if last_ts is None or bar.time > last_ts:
                         new_events.append(bar)
-                    # 用于写入数据库，write_closed 为 False（例如 warmup 阶段）时，不应该写 DB，但仍需要发事件。
-                    if last_ts is None or bar.time > last_ts:
                         to_write_closed.append(
                             (
                                 bar.symbol,
@@ -222,7 +219,7 @@ class BackgroundIngestor:
                                 bar.volume,
                                 bar.time.isoformat(),
                             )
-                    )
+                        )
                     continue
 
                 # 未收盘 bar 由 _ingest_intrabar 以独立频率处理，此处跳过。
@@ -251,7 +248,7 @@ class BackgroundIngestor:
         per_tf = self.settings.ingest_intrabar_intervals.get(tf)
         if per_tf:
             return max(1.0, float(per_tf))
-        global_cfg = getattr(self.settings, "ingest_intrabar_interval", 0.0)
+        global_cfg = self.settings.ingest_intrabar_interval
         if global_cfg and global_cfg > 0:
             return max(1.0, float(global_cfg))
         return max(5.0, timeframe_seconds(tf) * 0.05)

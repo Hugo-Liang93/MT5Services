@@ -82,6 +82,51 @@ async def list_available_indicators(
         )
 
 
+@router.get("/{symbol}/{timeframe}/live", response_model=ApiResponse[Dict[str, Any]])
+async def get_intrabar_indicators(
+    symbol: str,
+    timeframe: str,
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager),
+) -> ApiResponse[Dict[str, Any]]:
+    """
+    获取当前活跃K线（未收盘）的实时指标快照
+
+    只返回标记为 ``intrabar_eligible: true`` 的指标——成交量衍生和盘中
+    敏感类指标（mfi14、obv30、vwap30 等）在 K 线收盘前语义不稳定，
+    已通过配置排除。
+
+    Returns:
+        ``bar_time`` + ``indicators`` 字典，若尚无快照则返回 404。
+    """
+    try:
+        snapshot = manager.get_intrabar_snapshot(symbol, timeframe)
+        if snapshot is None:
+            return ApiResponse.error_response(
+                error_code=AIErrorCode.DATA_NOT_AVAILABLE,
+                error_message=f"没有找到 {symbol}/{timeframe} 的实时指标快照（intrabar 未启用或尚未收到数据）",
+                suggested_action=AIErrorAction.USE_FALLBACK_DATA,
+                details={"symbol": symbol, "timeframe": timeframe},
+            )
+        bar_time, indicators = snapshot
+        return ApiResponse.success_response(
+            data={"bar_time": bar_time.isoformat(), "indicators": indicators},
+            metadata={
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "count": len(indicators),
+                "source": "intrabar_preview_snapshot",
+            },
+        )
+    except Exception as e:
+        logger.error("Failed to get intrabar indicators for %s/%s: %s", symbol, timeframe, e)
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_message=f"获取实时指标数据失败: {str(e)}",
+            suggested_action=AIErrorAction.RETRY_LATER,
+            details={"exception_type": type(e).__name__, "symbol": symbol, "timeframe": timeframe},
+        )
+
+
 @router.get("/{symbol}/{timeframe}", response_model=ApiResponse[Dict[str, Dict[str, Any]]])
 async def get_indicators(
     symbol: str,

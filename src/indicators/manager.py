@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import queue
 import threading
 import time
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from src.config.indicator_config import (
 from src.core.market_service import MarketDataService
 from src.utils.event_store import get_event_store
 
+from .cache.incremental import IncrementalIndicator
 from .engine.dependency_manager import get_global_dependency_manager
 from .engine.pipeline import OptimizedPipeline, get_global_pipeline
 from .monitoring.metrics_collector import get_global_collector
@@ -101,6 +103,20 @@ class UnifiedIndicatorManager:
         # its own next_intrabar_at schedule; this is a defense-in-depth guard
         # that prevents duplicate runs caused by race conditions or config drift.
         self._last_intrabar_compute: Dict[str, float] = {}
+        # Intrabar events are dispatched here from the ingestor thread so that
+        # indicator computation never blocks data acquisition.  The dedicated
+        # _intrabar_thread drains this queue independently.
+        self._intrabar_queue: queue.Queue = queue.Queue(maxsize=200)
+        self._intrabar_thread: Optional[threading.Thread] = None
+        # Cached set of indicator names eligible for intrabar snapshots.
+        # Built once in _register_indicators() and invalidated on _reinitialize().
+        self._intrabar_eligible_cache: Optional[frozenset] = None
+        # Bar-close events are published into this queue from the ingestor thread
+        # (via _publish_closed_bar_event) without any I/O.  The dedicated
+        # _writer_thread flushes them to SQLite in small batches so that data
+        # acquisition is never stalled by a synchronous database write.
+        self._event_write_queue: queue.Queue = queue.Queue(maxsize=2048)
+        self._writer_thread: Optional[threading.Thread] = None
 
         self._init_components()
         self._register_indicators()
@@ -122,17 +138,26 @@ class UnifiedIndicatorManager:
 
     def _register_indicators(self) -> None:
         self._indicator_funcs.clear()
+        self._intrabar_eligible_cache = None  # invalidate on re-registration
         for indicator_config in self.config.indicators:
             if not indicator_config.enabled:
                 continue
             func = self._load_indicator_func(indicator_config)
-            self.dependency_manager.add_indicator(
+            incremental_class = self._load_incremental_class(indicator_config)
+            self.pipeline.register_indicator(
                 name=indicator_config.name,
                 func=func,
                 params=indicator_config.params,
-                dependencies=indicator_config.dependencies,
+                dependencies=indicator_config.dependencies or None,
+                incremental_class=incremental_class,
             )
             self._indicator_funcs[indicator_config.name] = func
+        # Build intrabar eligibility cache after all indicators are registered.
+        self._intrabar_eligible_cache = frozenset(
+            cfg.name
+            for cfg in self.config.indicators
+            if cfg.enabled and cfg.intrabar_eligible
+        )
 
     def _load_indicator_func(self, config: IndicatorConfig) -> Callable:
         cached = self._indicator_funcs.get(config.name)
@@ -142,6 +167,40 @@ class UnifiedIndicatorManager:
         module = importlib.import_module(module_path)
         return getattr(module, func_name)
 
+    def _load_incremental_class(self, config: IndicatorConfig) -> Optional[type]:
+        """Return an IncrementalIndicator subclass for *config* when available.
+
+        Convention: if ``compute_mode == "incremental"`` and the indicator's
+        module exports a class named ``<FuncName>Incremental`` (e.g. ``ema``
+        → ``EmaIncremental``), that class is returned.  If not found, or if
+        ``compute_mode`` is not ``"incremental"``, returns ``None`` and the
+        pipeline falls back to the standard full-recompute path.
+        """
+        from src.config.indicator_config import ComputeMode
+
+        if config.compute_mode != ComputeMode.INCREMENTAL:
+            return None
+        module_path, func_name = config.func_path.rsplit(".", 1)
+        class_name = func_name.capitalize() + "Incremental"
+        try:
+            module = importlib.import_module(module_path)
+            cls = getattr(module, class_name, None)
+            if cls is None or not issubclass(cls, IncrementalIndicator):
+                logger.warning(
+                    "No IncrementalIndicator subclass '%s' in %s for '%s'; "
+                    "falling back to standard full-recompute",
+                    class_name,
+                    module_path,
+                    config.name,
+                )
+                return None
+            return cls
+        except Exception as exc:
+            logger.warning(
+                "Failed to load incremental class for '%s': %s", config.name, exc
+            )
+            return None
+
     def start(self) -> None:
         if self._event_thread and self._event_thread.is_alive():
             return
@@ -150,12 +209,25 @@ class UnifiedIndicatorManager:
         self.event_store.reset_processing_events()
         self.market_service.set_ohlc_event_sink(self._publish_closed_bar_event)
         self.market_service.add_intrabar_listener(self._on_intrabar)
+        self._writer_thread = threading.Thread(
+            target=self._event_writer_loop,
+            name="IndicatorEventWriter",
+            daemon=True,
+        )
+        self._writer_thread.start()
         self._event_thread = threading.Thread(
             target=self._event_loop,
             name="IndicatorEventLoop",
             daemon=True,
         )
         self._event_thread.start()
+
+        self._intrabar_thread = threading.Thread(
+            target=self._intrabar_loop,
+            name="IndicatorIntrabar",
+            daemon=True,
+        )
+        self._intrabar_thread.start()
 
         if self.config.hot_reload and not (
             self._reload_thread and self._reload_thread.is_alive()
@@ -171,8 +243,12 @@ class UnifiedIndicatorManager:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._writer_thread:
+            self._writer_thread.join(timeout=3.0)
         if self._event_thread:
             self._event_thread.join(timeout=5.0)
+        if self._intrabar_thread:
+            self._intrabar_thread.join(timeout=2.0)
         if self._reload_thread:
             self._reload_thread.join(timeout=2.0)
         self.market_service.set_ohlc_event_sink(None)
@@ -197,10 +273,8 @@ class UnifiedIndicatorManager:
                 next_reconcile_at = time.monotonic() + reconcile_interval
                 continue
 
-            timeout = min(0.5, max(0.0, next_reconcile_at - now))
-            legacy_event = self.market_service.get_ohlc_event(timeout=timeout)
-            if legacy_event is not None:
-                self._process_closed_bar_event(*legacy_event, durable_event=False)
+            sleep_for = min(0.1, max(0.0, next_reconcile_at - time.monotonic()))
+            self._stop.wait(sleep_for)
 
     def _process_closed_bar_events_batch(
         self,
@@ -339,23 +413,50 @@ class UnifiedIndicatorManager:
         )
 
     def _on_intrabar(self, symbol: str, timeframe: str, bar: Any) -> None:
-        key = ohlc_key(symbol, timeframe)
-        now = time.monotonic()
-        # Throttle guard: skip if this (symbol, tf) was computed too recently.
-        # Uses 2% of bar duration (min 1 s) as the minimum gap.
-        min_gap = max(1.0, timeframe_seconds(timeframe) * 0.02)
-        if now - self._last_intrabar_compute.get(key, 0.0) < min_gap:
-            return
-        self._last_intrabar_compute[key] = now
+        """Called from the ingestor thread — must return instantly.
+
+        Just enqueue the event; the dedicated _intrabar_thread does the heavy
+        lifting so that data acquisition is never stalled by indicator computation.
+        Overflow is silently dropped: intrabar snapshots are best-effort.
+        """
         try:
-            self._process_intrabar_event(symbol, timeframe, bar)
-        except Exception:
-            logger.exception(
-                "Failed to process intrabar preview for %s/%s at %s",
-                symbol,
-                timeframe,
-                getattr(bar, "time", None),
-            )
+            self._intrabar_queue.put_nowait((symbol, timeframe, bar))
+        except queue.Full:
+            pass  # best-effort; the intrabar loop will catch up next cycle
+
+    def _intrabar_loop(self) -> None:
+        """Dedicated thread: drains _intrabar_queue and computes live indicators.
+
+        The throttle guard here (not in _on_intrabar) keeps computation at the
+        right cadence even when the queue has burst items for the same key.
+        """
+        while not self._stop.is_set():
+            try:
+                item = self._intrabar_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            # Skip computation entirely when there are no snapshot listeners —
+            # nobody would consume the intrabar results, so the CPU cost is pure waste.
+            if not self._snapshot_listeners:
+                continue
+            symbol, timeframe, bar = item
+            key = ohlc_key(symbol, timeframe)
+            now = time.monotonic()
+            # Throttle guard: skip if this (symbol, tf) was computed too recently.
+            # Uses 2% of bar duration (min 1 s) as the minimum gap.
+            min_gap = max(1.0, timeframe_seconds(timeframe) * 0.02)
+            if now - self._last_intrabar_compute.get(key, 0.0) < min_gap:
+                continue
+            self._last_intrabar_compute[key] = now
+            try:
+                self._process_intrabar_event(symbol, timeframe, bar)
+            except Exception:
+                logger.exception(
+                    "Failed to process intrabar preview for %s/%s at %s",
+                    symbol,
+                    timeframe,
+                    getattr(bar, "time", None),
+                )
 
     def _reload_loop(self) -> None:
         reload_interval = max(float(self.config.reload_interval), 1.0)
@@ -372,8 +473,58 @@ class UnifiedIndicatorManager:
         self._init_components()
         self._register_indicators()
 
+    def _event_writer_loop(self) -> None:
+        """Drain _event_write_queue → SQLite in small batches.
+
+        Runs in a dedicated thread so that bar-close notifications from the
+        ingestor thread never block on disk I/O.  Items are flushed in batches
+        of up to 64 to amortise SQLite round-trip cost.  Remaining items are
+        flushed synchronously on shutdown before the thread exits.
+        """
+        while not self._stop.is_set():
+            batch: list = []
+            try:
+                item = self._event_write_queue.get(timeout=0.1)
+                batch.append(item)
+                for _ in range(63):
+                    try:
+                        batch.append(self._event_write_queue.get_nowait())
+                    except queue.Empty:
+                        break
+            except queue.Empty:
+                continue
+            for symbol, timeframe, bar_time in batch:
+                try:
+                    self.event_store.publish_event(symbol, timeframe, bar_time)
+                except Exception:
+                    logger.exception(
+                        "Failed to persist bar close event for %s/%s at %s",
+                        symbol, timeframe, bar_time,
+                    )
+        # Drain any remaining items before the thread exits.
+        while True:
+            try:
+                symbol, timeframe, bar_time = self._event_write_queue.get_nowait()
+                try:
+                    self.event_store.publish_event(symbol, timeframe, bar_time)
+                except Exception:
+                    logger.exception(
+                        "Failed to persist bar close event during shutdown for %s/%s at %s",
+                        symbol, timeframe, bar_time,
+                    )
+            except queue.Empty:
+                break
+
     def _publish_closed_bar_event(self, symbol: str, timeframe: str, bar_time: datetime) -> None:
-        self.event_store.publish_event(symbol, timeframe, bar_time)
+        """Non-blocking: enqueue for async SQLite write by _event_writer_loop."""
+        try:
+            self._event_write_queue.put_nowait((symbol, timeframe, bar_time))
+        except queue.Full:
+            logger.warning(
+                "Event write queue full — bar close event dropped for %s/%s at %s; "
+                "reconcile will recover it.",
+                symbol, timeframe, bar_time,
+            )
 
     def _load_bars(
         self,
@@ -765,11 +916,12 @@ class UnifiedIndicatorManager:
         *,
         bar_time: datetime,
         scope: str,
+        indicator_names: Optional[List[str]] = None,
     ) -> Tuple[Dict[str, Dict[str, Any]], float]:
         if len(bars) < 2:
             return {}, 0.0
 
-        selected_names = self._select_indicator_names_for_history(len(bars))
+        selected_names = self._select_indicator_names_for_history(len(bars), indicator_names)
         if not selected_names:
             return {}, 0.0
 
@@ -813,6 +965,7 @@ class UnifiedIndicatorManager:
             bars,
             indicators=selected_names,
             on_level_complete=on_level_complete if priority_groups else None,
+            scope=scope,
         )
         compute_time_ms = (time.time() - started_at) * 1000
         return results, compute_time_ms
@@ -897,6 +1050,7 @@ class UnifiedIndicatorManager:
         bars: List[Any],
         *,
         bar_time: datetime,
+        indicator_names: Optional[List[str]] = None,
     ) -> Tuple[Dict[str, Dict[str, Any]], float]:
         return self._compute_results_with_priority_groups(
             symbol,
@@ -904,6 +1058,7 @@ class UnifiedIndicatorManager:
             bars,
             bar_time=bar_time,
             scope="intrabar",
+            indicator_names=indicator_names,
         )
 
     def _process_closed_bar_event(
@@ -950,12 +1105,19 @@ class UnifiedIndicatorManager:
                 self.event_store.mark_event_failed(symbol, timeframe, bar_time, str(exc))
 
     def _get_intrabar_eligible_names(self) -> frozenset:
-        """Return the set of indicator names that should appear in intrabar snapshots."""
-        return frozenset(
-            cfg.name
-            for cfg in self.config.indicators
-            if cfg.enabled and getattr(cfg, "intrabar_eligible", True)
-        )
+        """Return the set of indicator names that should appear in intrabar snapshots.
+
+        The result is cached at registration time and invalidated on config reload,
+        so this is safe to call on every intrabar event without CPU overhead.
+        """
+        if self._intrabar_eligible_cache is None:
+            # Fallback if called before _register_indicators (should not happen).
+            self._intrabar_eligible_cache = frozenset(
+                cfg.name
+                for cfg in self.config.indicators
+                if cfg.enabled and cfg.intrabar_eligible
+            )
+        return self._intrabar_eligible_cache
 
     def _process_intrabar_event(
         self,
@@ -963,6 +1125,10 @@ class UnifiedIndicatorManager:
         timeframe: str,
         bar: Any,
     ) -> Dict[str, Dict[str, float]]:
+        # Filter indicator set upfront so the pipeline never runs volume-derived
+        # or session-sensitive indicators on partial bars (avoids wasted CPU and
+        # semantically misleading intrabar values for mfi14, obv30, vwap30, etc.).
+        eligible = list(self._get_intrabar_eligible_names())
         bars = self._load_intrabar_bars(symbol, timeframe, bar)
         if not bars:
             return {}
@@ -971,14 +1137,11 @@ class UnifiedIndicatorManager:
             timeframe,
             bars,
             bar_time=bar.time,
+            indicator_names=eligible,
         )
         if not bars or not results:
             return {}
-        # Apply intrabar_eligible filter: exclude indicators not suitable for
-        # partial-bar computation (e.g. volume-derived or session-sensitive).
-        eligible = self._get_intrabar_eligible_names()
-        filtered_results = {k: v for k, v in results.items() if k in eligible}
-        grouped = self._group_indicator_values(filtered_results)
+        grouped = self._group_indicator_values(results)
         if not grouped:
             return {}
         return self._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
@@ -1065,6 +1228,24 @@ class UnifiedIndicatorManager:
             self.market_service.latest_indicators(symbol, timeframe)
         )
 
+    def get_intrabar_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+    ) -> Optional[Tuple[datetime, Dict[str, Dict[str, float]]]]:
+        """Return the most recent intrabar (live/partial-bar) indicator snapshot.
+
+        Returns ``(bar_time, indicators)`` if a preview snapshot is available for
+        the given symbol/timeframe, or ``None`` if no intrabar computation has
+        run yet (e.g. intrabar ingestion disabled or no bar received).
+
+        The returned dict only contains indicators marked as ``intrabar_eligible``
+        in the configuration — volume-derived and session-sensitive indicators are
+        excluded because their mid-bar values are semantically unreliable.
+        """
+        cache_key = f"{symbol}_{timeframe}"
+        return self._last_preview_snapshot.get(cache_key)
+
     def compute(
         self,
         symbol: str,
@@ -1094,6 +1275,7 @@ class UnifiedIndicatorManager:
             "dependents": list(self.dependency_manager.get_dependents(name)),
             "compute_mode": config.compute_mode.value,
             "enabled": config.enabled,
+            "intrabar_eligible": config.intrabar_eligible,
             "description": config.description,
             "tags": config.tags,
         }

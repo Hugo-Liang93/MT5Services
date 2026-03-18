@@ -3,6 +3,7 @@ import math
 
 from .base import get_closes, get_float, get_int, tail_bars
 from .mean import _ema_sequence
+from ..cache.incremental import IndicatorState, IncrementalIndicator
 
 
 def atr(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
@@ -24,6 +25,54 @@ def atr(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
 
     atr_val = sum(trs[-period:]) / period
     return {"atr": atr_val}
+
+
+class AtrIncremental(IncrementalIndicator):
+    """Incremental ATR using Wilder's smoothing: O(1) update per bar.
+
+    Full computation seeds the state with a simple-average ATR over
+    ``period`` bars.  Once seeded, each bar close only needs:
+
+        new_tr  = max(H-L, |H-prev_close|, |L-prev_close|)
+        new_atr = (prev_atr * (period - 1) + new_tr) / period
+
+    ``prev_close`` is stored in ``state.intermediate_results`` so the
+    next TR can be computed without any historical look-back.
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        # ATR needs period + 1 bars to compute the first TR sequence
+        self.min_data_points = get_int(params, "period", default=14, aliases=("window",)) + 1
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return atr(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        return (
+            state.intermediate_results is not None
+            and "prev_close" in state.intermediate_results
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        period = get_int(self.params, "period", default=14, aliases=("window",))
+        bar = bars[-1]
+        prev_close = float(state.intermediate_results["prev_close"])  # type: ignore[index]
+        tr = max(
+            bar.high - bar.low,
+            abs(bar.high - prev_close),
+            abs(bar.low - prev_close),
+        )
+        prev_atr = float(state.value)
+        return {"atr": (prev_atr * (period - 1) + tr) / period}
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        if bars:
+            state.intermediate_results = {"prev_close": bars[-1].close}
+        return state
 
 
 def bollinger(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
