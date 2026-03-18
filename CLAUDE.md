@@ -4,6 +4,12 @@ This file is the primary reference for AI assistants working on MT5Services. It 
 
 ---
 
+## Language Preference
+
+**请始终使用中文回复。** All responses, explanations, code comments suggestions, and conversations must be in Chinese (Simplified). Code itself (variable names, function names, string literals in source files) follows the existing conventions of each file.
+
+---
+
 ## Project Overview
 
 **MT5Services** is a production-ready FastAPI trading platform that connects to MetaTrader 5 (MT5) terminals. It provides real-time market data, technical indicators, signal generation, risk management, and trade execution via REST API, backed by TimescaleDB (PostgreSQL with time-series hypertables).
@@ -20,37 +26,36 @@ This file is the primary reference for AI assistants working on MT5Services. It 
 
 ```
 MT5Services/
-├── app.py                    # Main launcher (resolves host/port, starts uvicorn)
-├── validate_config.py        # Config consistency validator (run before startup)
-├── pyproject.toml            # Project metadata, dependencies, tool config
-├── requirements.txt          # Runtime dependencies only
-├── config/                   # All configuration files
-│   ├── app.ini               # SINGLE SOURCE OF TRUTH: symbols, timeframes, intervals
-│   ├── market.ini            # API server config (host, port, auth, CORS)
-│   ├── mt5.ini               # MT5 terminal connection & account profiles
-│   ├── db.ini                # TimescaleDB connection
-│   ├── ingest.ini            # Background data ingestion settings
-│   ├── storage.ini           # Multi-channel queue persistence settings
-│   ├── economic.ini          # Economic calendar & trade guard windows
-│   ├── risk.ini              # Risk limits (position counts, SL/TP requirements)
-│   ├── cache.ini             # Cache compatibility settings
-│   ├── signal.ini            # Signal module settings
-│   └── indicators.json       # Indicator definitions & computation pipeline
+├── app.py                    # 主启动器（解析 host/port，启动 uvicorn）
+├── pyproject.toml            # 项目元数据、依赖、工具配置
+├── requirements.txt          # 运行时依赖
+├── config/                   # 所有配置文件
+│   ├── app.ini               # 单一信号源：品种、时间框架、采集间隔、缓存限制
+│   ├── market.ini            # API 服务配置（host、port、认证、CORS）
+│   ├── mt5.ini               # MT5 终端连接与账户配置
+│   ├── db.ini                # TimescaleDB 连接配置
+│   ├── ingest.ini            # 后台数据采集配置
+│   ├── storage.ini           # 多通道队列持久化配置
+│   ├── economic.ini          # 经济日历与 Trade Guard 配置
+│   ├── risk.ini              # 风险限制（仓位数量、SL/TP 要求）
+│   ├── cache.ini             # 运行时内存缓存大小（覆盖 app.ini [limits]）
+│   ├── signal.ini            # 信号模块配置
+│   └── indicators.json       # 指标定义与计算流水线
 ├── src/
-│   ├── api/                  # FastAPI routes, middleware, schemas, DI container
-│   ├── clients/              # MT5 client wrappers (market, trading, account)
-│   ├── config/               # Config loading, merging, Pydantic models
-│   ├── core/                 # Core services (market cache, economic calendar, account)
-│   ├── indicators/           # Unified indicator system (manager, engine, cache)
-│   ├── ingestion/            # Background tick/OHLC/intrabar data collection
-│   ├── persistence/          # TimescaleDB writer, queue-based storage writer
-│   ├── risk/                 # Risk rules, models, service
-│   ├── signals/              # Signal generation strategies, runtime, filters
-│   ├── trading/              # TradingModule, account registry, signal executor
-│   ├── monitoring/           # Health checks
-│   └── utils/                # Shared utilities, event store, memory manager
-├── tests/                    # Test suite mirroring src/ structure
-└── docs/                     # Code review notes, internal docs
+│   ├── api/                  # FastAPI 路由、中间件、Schema、DI 容器
+│   ├── clients/              # MT5 客户端封装（行情、交易、账户）
+│   ├── config/               # 配置加载、合并、Pydantic 模型
+│   ├── core/                 # 核心服务（行情缓存、经济日历、账户）
+│   ├── indicators/           # 统一指标系统（管理器、引擎、缓存）
+│   ├── ingestion/            # 后台 Tick/OHLC/Intrabar 数据采集
+│   ├── persistence/          # TimescaleDB 写入器、队列持久化
+│   ├── risk/                 # 风险规则、模型、服务
+│   ├── signals/              # 信号生成策略、运行时、过滤器
+│   ├── trading/              # TradingModule、账户注册、信号执行器
+│   ├── monitoring/           # 健康检查
+│   └── utils/                # 通用工具、事件存储、内存管理器
+├── tests/                    # 测试套件（镜像 src/ 结构）
+└── docs/                     # 代码评审记录、内部文档
 ```
 
 ---
@@ -59,50 +64,48 @@ MT5Services/
 
 ### Critical Rule: `config/app.ini` is the Single Source of Truth
 
-All trading symbols, timeframes, and global intervals are defined **only** in `config/app.ini`. Other `.ini` files reference or inherit from it. Never duplicate these settings elsewhere.
+所有交易品种、时间框架和全局采集间隔**仅**在 `config/app.ini` 中定义。其他 `.ini` 文件从此继承。禁止在其他配置文件中重复定义这些参数。
 
 ### Resolution Order (highest to lowest priority)
 
 ```
-config/*.local.ini  (gitignored, for secrets & machine-specific overrides)
+config/*.local.ini  （已被 .gitignore，用于密钥和机器特定覆盖）
     ↓
-config/*.ini        (checked-in base configuration)
+config/*.ini        （已提交的基础配置）
     ↓
-code defaults       (Pydantic model field defaults in src/config/centralized.py)
+code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默认值）
 ```
 
 ### Creating Local Overrides
 
-Copy the example and edit:
 ```bash
 cp config/market.local.ini.example config/market.local.ini
-# Edit config/market.local.ini with your secrets/local values
+# 编辑 config/market.local.ini，填入密钥和本地覆盖值
 ```
 
 ### No `.env` Files
 
-`.env` files are **deprecated**. All configuration lives in `.ini` files. `python-dotenv` remains as a dependency only for legacy compatibility.
+`.env` 文件已**废弃**。所有配置均在 `.ini` 文件中。`python-dotenv` 仅作为遗留兼容依赖保留。
 
 ### Key Config Files
 
-| File | Purpose |
-|------|---------|
-| `config/app.ini` | Trading symbols, timeframes, intervals, cache limits, modules enabled |
-| `config/market.ini` | API host/port, auth (API key), CORS |
-| `config/mt5.ini` | MT5 terminal path, account profiles (login/password/server) |
-| `config/db.ini` | PostgreSQL/TimescaleDB host, port, credentials |
-| `config/ingest.ini` | Ingestion intervals, backfill limits, retry settings |
-| `config/storage.ini` | Queue channel sizes, flush intervals, batch sizes |
-| `config/economic.ini` | Calendar providers (FRED, TradingEconomics), risk windows |
-| `config/risk.ini` | Max positions, SL/TP requirements |
-| `config/indicators.json` | Indicator definitions, params, dependencies, pipeline config |
+| 文件 | 用途 |
+|------|------|
+| `config/app.ini` | 交易品种、时间框架、采集间隔、缓存限制 |
+| `config/market.ini` | API host/port、认证（API key）、CORS |
+| `config/mt5.ini` | MT5 终端路径、账户配置（login/password/server） |
+| `config/db.ini` | PostgreSQL/TimescaleDB 连接参数 |
+| `config/ingest.ini` | 采集间隔、回填限制、重试配置 |
+| `config/storage.ini` | 队列通道大小、刷写间隔、批处理大小、溢出策略 |
+| `config/economic.ini` | 日历数据源（FRED、TradingEconomics）、Trade Guard 窗口 |
+| `config/risk.ini` | 最大仓位数、SL/TP 要求 |
+| `config/cache.ini` | 运行时内存缓存大小（覆盖 app.ini [limits]，优先级更高） |
+| `config/signal.ini` | 自动交易、仓位大小、过滤条件、状态机参数 |
+| `config/indicators.json` | 指标定义、参数、依赖关系、流水线配置 |
 
 ### Config Validation
 
-Always run before startup when changing config:
-```bash
-python validate_config.py
-```
+配置验证在服务**启动时自动执行**（`src/config/utils.py` → `ConfigValidator`），无需手动运行验证脚本。
 
 ---
 
@@ -110,108 +113,116 @@ python validate_config.py
 
 ### Startup Sequence
 
-Components initialize in this order (see `src/api/deps.py` lifespan):
+组件按以下顺序初始化（见 `src/api/deps.py` lifespan）：
 
-1. **Storage** — TimescaleDB writer + queue channels
-2. **Ingestion** — Background market data collection thread
-3. **Economic Calendar Service** — Fetches & caches calendar events
-4. **Indicators** — Unified indicator manager
-5. **Monitoring** — Health checks
-6. **Trading Module** — Account registry, risk checks
+1. **Storage** — TimescaleDB 写入器 + 队列通道
+2. **Ingestion** — 后台行情数据采集线程
+3. **Economic Calendar Service** — 拉取并缓存经济日历事件
+4. **Indicators** — 统一指标管理器
+5. **Monitoring** — 健康检查
+6. **Trading Module** — 账户注册、风险检查
 
-Shutdown is reverse order. All components are singletons accessed via FastAPI's `Depends()`.
+关闭顺序相反。所有组件作为单例通过 FastAPI 的 `Depends()` 访问。
 
 ### Data Flow
 
 ```
 MT5 Terminal
-    ↓ (Background thread)
+    ↓ （后台线程）
 BackgroundIngestor (src/ingestion/ingestor.py)
-    ↓                    ↓
-MarketDataService    StorageWriter (queued channels)
-(in-memory cache)        ↓
-    ↓               TimescaleDB
-API routes read
-from cache
+    ↓                       ↓
+MarketDataService       StorageWriter（多通道队列）
+（内存缓存）                  ↓
+    ↓                   TimescaleDB
+API 路由从缓存读取
     ↓
-OHLC close events → IndicatorManager → compute → persist
-                  → SignalRuntime → strategies → execute trades
+OHLC 收盘事件 → IndicatorManager → 计算 → 持久化
+              → SignalRuntime → 策略评估 → 执行交易
 ```
 
 ### In-Memory Cache Architecture
 
-`MarketDataService` (`src/core/market_service.py`) is the **runtime source of truth**:
-- Owns all tick, quote, OHLC, and intrabar state
-- Thread-safe via `RLock`
-- Single writer: `BackgroundIngestor`
-- Multiple readers: API routes, indicator manager, signal runtime
-- TimescaleDB is the **durable backup**, not the primary read path
+`MarketDataService` (`src/core/market_service.py`) 是**运行时数据的唯一权威**：
+- 持有所有 Tick、报价、OHLC、Intrabar 状态
+- 通过 `RLock` 保证线程安全
+- 单一写入者：`BackgroundIngestor`
+- 多个读取者：API 路由、指标管理器、信号运行时
+- TimescaleDB 是**持久化备份**，不是主读路径
 
 ### Multi-Channel Persistence
 
-`StorageWriter` (`src/persistence/storage_writer.py`) uses separate async queues per data type:
+`StorageWriter` (`src/persistence/storage_writer.py`) 每类数据使用独立的异步队列：
 
-| Channel | Queue Size | Flush Interval | Batch Size |
-|---------|-----------|----------------|------------|
-| ticks | 20,000 | 1s | 1,000 |
-| quotes | 5,000 | 1s | 200 |
-| intrabar | 10,000 | 5s | — |
-| ohlc | 5,000 | 1s | — |
-| ohlc_indicators | — | configurable | — |
-| economic_calendar | — | configurable | — |
+| 通道 | 队列大小 | 刷写间隔 | 批处理大小 | 满溢策略 |
+|------|---------|---------|-----------|---------|
+| ticks | 20,000 | 1s | 1,000 | drop_oldest |
+| quotes | 5,000 | 1s | 200 | auto |
+| intrabar | 10,000 | 5s | 200 | drop_newest |
+| ohlc | 5,000 | 1s | 200 | block |
+| ohlc_indicators | 5,000 | 1s | 200 | block |
+| economic_calendar | 1,000 | 2s | 100 | auto |
 
-Queue-full policy is configurable: `auto` (block/drop), `block`, or `drop`.
+### Signal Runtime Queue Architecture
+
+`SignalRuntime` 使用**两个独立队列**按 scope 分离，防止高频 intrabar 事件挤占 confirmed（K 线收盘）事件：
+
+| 队列 | 大小 | 可丢弃 | 说明 |
+|------|------|--------|------|
+| `_confirmed_events` | 512 | 否 | K 线收盘信号，不可丢失；优先消费 |
+| `_intrabar_events` | 4,096 | 是 | 实时预览信号；仅在 confirmed 队列为空时处理 |
+
+`process_next_event()` 总是先 `get_nowait()` 从 confirmed 队列取，空才 blocking wait intrabar 队列。
 
 ### Event-Driven Indicators & Signals
 
-- OHLC bar closes → `IndicatorManager` computes all indicators for that symbol/timeframe
-- Intrabar events → `SignalRuntime` evaluates strategies
-- Indicator computation supports: `standard`, `incremental`, and `parallel` modes (configured per indicator in `indicators.json`)
+- OHLC bar 收盘 → `IndicatorManager` 计算该品种/时间框架的所有指标
+- Intrabar 事件 → `SignalRuntime` 评估策略
+- 指标计算支持三种模式：`standard`、`incremental`、`parallel`（在 `indicators.json` 中按指标配置）
 
 ---
 
 ## Key Source Files
 
-| File | Role |
+| 文件 | 职责 |
 |------|------|
-| `src/api/deps.py` | DI container, startup/shutdown lifecycle, component singletons |
-| `src/api/__init__.py` | FastAPI app, CORS middleware, API key auth, router registration |
-| `src/config/centralized.py` | Pydantic config models (all config sections) |
-| `src/config/advanced_manager.py` | Config loader: merges base + local .ini → Pydantic models |
-| `src/core/market_service.py` | In-memory market data cache (thread-safe) |
-| `src/ingestion/ingestor.py` | Background data collection (ticks, OHLC, intrabar) |
-| `src/indicators/manager.py` | Unified indicator orchestrator (1200+ LOC) |
-| `src/persistence/db.py` | TimescaleDB write operations, schema init, hypertables |
-| `src/persistence/storage_writer.py` | Queue-based multi-channel persistence |
-| `src/trading/service.py` | TradingModule: account, positions, orders, trade lifecycle |
-| `src/signals/runtime.py` | Event-driven signal evaluation and trade execution |
-| `src/core/economic_calendar_service.py` | Calendar sync, risk window computation, trade guard |
+| `src/api/deps.py` | DI 容器、启动/关闭生命周期、组件单例 |
+| `src/api/__init__.py` | FastAPI app、CORS 中间件、API key 认证、路由注册 |
+| `src/config/centralized.py` | Pydantic 配置模型（所有配置节） |
+| `src/config/advanced_manager.py` | 配置加载器：合并 base + local .ini → Pydantic 模型 |
+| `src/core/market_service.py` | 线程安全的内存行情缓存 |
+| `src/ingestion/ingestor.py` | 后台数据采集（Tick、OHLC、Intrabar） |
+| `src/indicators/manager.py` | 统一指标编排器 |
+| `src/persistence/db.py` | TimescaleDB 写入操作、schema 初始化、hypertable |
+| `src/persistence/storage_writer.py` | 基于队列的多通道持久化 |
+| `src/trading/service.py` | TradingModule：账户、持仓、订单、交易生命周期 |
+| `src/signals/runtime.py` | 事件驱动的信号评估与交易执行（双队列架构） |
+| `src/core/economic_calendar_service.py` | 日历同步、风险窗口计算、Trade Guard |
 
 ---
 
 ## API Endpoints
 
-Base URL: `http://<host>:8808` (default)
+Base URL: `http://<host>:8808`（默认）
 
-Authentication: `X-API-Key` header (configured in `config/market.ini`)
+Authentication: `X-API-Key` 请求头（在 `config/market.ini` 中配置）
 
-| Router | Prefix | Key Endpoints |
-|--------|--------|---------------|
-| market | `/` | `/symbols`, `/quote`, `/ticks`, `/ohlc`, `/stream` (SSE) |
+| Router | Prefix | 主要端点 |
+|--------|--------|---------|
+| market | `/` | `/symbols`, `/quote`, `/ticks`, `/ohlc`, `/stream`（SSE） |
 | trade | `/` | `/trade`, `/close`, `/close_all`, `/trade/precheck`, `/estimate_margin` |
 | account | `/account` | `/account/info`, `/account/positions`, `/account/orders` |
 | economic | `/economic` | `/economic/calendar`, `/economic/calendar/risk-windows`, `/economic/calendar/trade-guard` |
 | indicators | `/indicators` | `/indicators/list`, `/indicators/{symbol}/{timeframe}`, `/indicators/compute` |
 | monitoring | `/monitoring` | `/monitoring/health`, `/monitoring/startup`, `/monitoring/queues`, `/monitoring/config/effective` |
-| signal | `/signal` | signal endpoints |
+| signal | `/signal` | signal 端点 |
 
-All responses use the generic wrapper:
+所有响应使用通用包装器：
 ```python
 ApiResponse[T]:
     success: bool
     data: T | None
-    error: str | None          # human-readable
-    error_code: str | None     # AIErrorCode enum value
+    error: str | None          # 人类可读的错误信息
+    error_code: str | None     # AIErrorCode 枚举值
     metadata: dict | None
 ```
 
@@ -219,27 +230,28 @@ ApiResponse[T]:
 
 ## Risk Management Layers
 
-Trades pass through multiple checks (inner to outer):
+交易请求从内到外经过多层校验：
 
-1. **Signal filters** (`src/signals/filters.py`): economic event filter, spread filter, session filter
-2. **Pre-trade risk service** (`src/core/pretrade_risk_service.py`): account-level checks
-3. **Risk rules** (`src/risk/rules.py`): position limits, max volume, SL/TP requirements
-4. **Trade guard** (`src/core/economic_calendar_service.py`): blocks trades in economic event windows
+1. **Signal filters** (`src/signals/filters.py`)：经济事件过滤、价差过滤、交易时段过滤
+2. **Pre-trade risk service** (`src/core/pretrade_risk_service.py`)：账户级别检查
+3. **Risk rules** (`src/risk/rules.py`)：仓位限制、最大手数、SL/TP 要求
+4. **Trade guard** (`src/core/economic_calendar_service.py`)：在经济事件窗口内阻止交易
 
 ---
 
 ## Account Model
 
-- **One MT5 account per service instance** (selected in `config/mt5.ini`)
-- Multiple account profiles supported (`[account.demo]`, `[account.live]`) for easy instance switching
-- `default_account` key in `[mt5]` section selects the active profile
-- Account credentials live in `config/mt5.local.ini` (gitignored)
+- **每个服务实例绑定一个 MT5 账户**（在 `config/mt5.ini` 中选择）
+- 支持多账户配置（`[account.demo]`、`[account.live]`），用于多实例部署
+- `[mt5]` 节中的 `default_account` 选择启动时激活的账户
+- 账户凭据存放在 `config/mt5.local.ini`（已被 .gitignore）
+- ⚠️ 账户在运行时**不可**通过 API 切换，需重启服务
 
 ---
 
 ## Indicator System
 
-Indicators are configured in `config/indicators.json`:
+指标在 `config/indicators.json` 中配置：
 
 ```json
 {
@@ -253,12 +265,12 @@ Indicators are configured in `config/indicators.json`:
 }
 ```
 
-Available compute modes:
-- `standard` — full recompute on each bar close
-- `incremental` — append-only update (faster for streaming)
-- `parallel` — computed in parallel with other indicators
+可用的计算模式：
+- `standard` — 每次 bar 收盘时全量重计算
+- `incremental` — 仅追加更新（流式场景更快）
+- `parallel` — 与其他指标并行计算
 
-The pipeline (`src/indicators/engine/pipeline.py`) respects dependency order and uses a dependency graph for correct execution ordering.
+流水线（`src/indicators/engine/pipeline.py`）遵循依赖顺序，使用依赖图保证正确执行顺序。
 
 ---
 
@@ -273,61 +285,58 @@ pip install -e ".[dev,test]"
 ### Running the Service
 
 ```bash
-# Start service
+# 启动服务
 python app.py
 
-# Or with uvicorn directly
+# 或直接用 uvicorn
 uvicorn src.api:app --host 0.0.0.0 --port 8808 --reload
-
-# Validate config first
-python validate_config.py
 ```
 
 ### Running Tests
 
 ```bash
-# All tests
+# 全部测试
 pytest
 
-# Unit tests only
+# 仅单元测试
 pytest -m unit
 
-# Integration tests only
+# 仅集成测试
 pytest -m integration
 
-# Skip slow tests
+# 跳过慢速测试
 pytest -m "not slow"
 
-# With coverage
+# 带覆盖率
 pytest --cov=src --cov-report=html
 
-# Specific module
+# 指定模块
 pytest tests/indicators/
 ```
 
 ### Code Quality
 
 ```bash
-# Format code
+# 格式化代码
 black src/ tests/
 
-# Sort imports
+# 整理导入
 isort src/ tests/
 
-# Type check
+# 类型检查
 mypy src/
 
-# Lint
+# 代码检查
 flake8 src/ tests/
 ```
 
 ### Code Style (enforced by tools)
 
-| Tool | Config | Line Length |
-|------|--------|-------------|
+| 工具 | 配置 | 行长度 |
+|------|------|--------|
 | black | `[tool.black]` in pyproject.toml | 88 |
 | isort | profile = "black" | 88 |
-| mypy | strict mode (see pyproject.toml) | — |
+| mypy | strict mode（见 pyproject.toml） | — |
 | flake8 | `[tool.flake8]` | 88 |
 
 ---
@@ -336,61 +345,60 @@ flake8 src/ tests/
 
 ### Type Safety
 
-- **mypy strict mode** is enforced. All functions must have type annotations.
-- Do not use `Any` without explicit justification.
-- Pydantic models for all data boundaries (API request/response, config).
+- **mypy strict mode** 强制执行，所有函数必须有类型注解。
+- 不得在无充分理由的情况下使用 `Any`。
+- 所有数据边界（API 请求/响应、配置）使用 Pydantic 模型。
 
-Mypy overrides (ignoring missing stubs for):
+Mypy 豁免（忽略缺失存根）：
 - `pandas.*`, `numpy.*`, `sqlalchemy.*`
 
 ### Pydantic Version
 
-Uses **Pydantic v2** (`>=2.6.0`). Use v2 APIs:
-- `model_validate()` not `parse_obj()`
-- `model_dump()` not `dict()`
-- `model_config = ConfigDict(...)` not `class Config:`
+使用 **Pydantic v2**（`>=2.6.0`），请用 v2 API：
+- `model_validate()` 而非 `parse_obj()`
+- `model_dump()` 而非 `dict()`
+- `model_config = ConfigDict(...)` 而非 `class Config:`
 
 ### Error Handling
 
-- Use typed error codes (`AIErrorCode` enum in `src/api/error_codes.py`)
-- Always return `ApiResponse[T]` wrapper from route handlers
-- Include `suggested_action` in error responses where helpful
-- Log with `structlog` (structured logging), not plain `logging`
+- 使用类型化错误码（`src/api/error_codes.py` 中的 `AIErrorCode` 枚举）
+- 路由处理器始终返回 `ApiResponse[T]` 包装器
+- 在错误响应中包含 `suggested_action`（需要时）
+- 使用 `structlog` 结构化日志，不使用 `logging`
 
 ### Thread Safety
 
-- `MarketDataService` uses `RLock` — always acquire the lock for reads and writes
-- `StorageWriter` queues are thread-safe — put items, don't access internals
-- Do not share mutable state across threads without locks
+- `MarketDataService` 使用 `RLock`——读写均须持锁
+- `StorageWriter` 队列线程安全——只 put 数据，不访问内部结构
+- 不得在无锁的情况下跨线程共享可变状态
 
 ### Configuration Access
 
-Access config via `src/config/advanced_manager.py` public methods:
+通过 `src/config/advanced_manager.py` 公开方法访问配置：
 ```python
 from src.config import get_trading_config, get_api_config, get_db_config
-# Not by direct .ini parsing
+# 不要直接解析 .ini 文件
 ```
 
 ### Dependency Injection
 
-Add new service components to `src/api/deps.py`:
-- Register in the `AppDeps` container
-- Add startup/shutdown in the lifespan context manager
-- Expose via `FastAPI.Depends()` in route handlers
+向 `src/api/deps.py` 添加新服务组件：
+- 在 `AppDeps` 容器中注册
+- 在 lifespan context manager 中添加启动/关闭逻辑
+- 通过 `FastAPI.Depends()` 在路由处理器中暴露
 
 ### Adding New Indicators
 
-1. Implement the function in `src/indicators/core/` (following existing patterns in `mean.py`, `momentum.py`, etc.)
-2. Add the entry to `config/indicators.json` with appropriate `func_path`, `params`, and `dependencies`
-3. Add tests in `tests/indicators/`
-4. Run `python validate_config.py` to verify
+1. 在 `src/indicators/core/` 中实现函数（参考 `mean.py`、`momentum.py` 等现有模式）
+2. 在 `config/indicators.json` 中添加条目，填写 `func_path`、`params`、`dependencies`
+3. 在 `tests/indicators/` 中添加测试
 
 ### Adding New API Routes
 
-1. Create route file in `src/api/`
-2. Add Pydantic request/response schemas to `src/api/schemas.py`
-3. Register the router in `src/api/__init__.py`
-4. Add appropriate error codes to `src/api/error_codes.py`
+1. 在 `src/api/` 中创建路由文件
+2. 在 `src/api/schemas.py` 中添加 Pydantic 请求/响应 Schema
+3. 在 `src/api/__init__.py` 中注册路由
+4. 在 `src/api/error_codes.py` 中添加错误码
 
 ---
 
@@ -398,7 +406,7 @@ Add new service components to `src/api/deps.py`:
 
 ### Test Structure
 
-Tests mirror the `src/` structure:
+测试目录镜像 `src/` 结构：
 ```
 tests/api/          → src/api/
 tests/config/       → src/config/
@@ -406,13 +414,12 @@ tests/core/         → src/core/
 tests/indicators/   → src/indicators/
 tests/signals/      → src/signals/
 tests/trading/      → src/trading/
-tests/integration/  → end-to-end flows
-tests/smoke/        → basic sanity checks
+tests/integration/  → 端到端流程
+tests/smoke/        → 基础冒烟测试
 ```
 
 ### Test Markers
 
-Use markers to categorize:
 ```python
 @pytest.mark.unit
 @pytest.mark.integration
@@ -421,7 +428,6 @@ Use markers to categorize:
 
 ### Async Tests
 
-Use `pytest-asyncio` for async test functions:
 ```python
 import pytest
 
@@ -432,49 +438,48 @@ async def test_something():
 
 ### Fixtures and Factories
 
-- Use `factory-boy` for model factories
-- Use `faker` for realistic test data
-- Use `httpx.AsyncClient` for API integration tests
+- 使用 `factory-boy` 创建模型工厂
+- 使用 `faker` 生成真实测试数据
+- 使用 `httpx.AsyncClient` 进行 API 集成测试
 
 ---
 
 ## Production Dependencies (Optional)
 
-Install for production deployment:
 ```bash
 pip install -e ".[prod]"
 ```
 
-Adds: `gunicorn`, `uvloop`, `sentry-sdk`
+新增：`gunicorn`, `uvloop`, `sentry-sdk`
 
 ---
 
 ## Known Issues & Notes
 
-- **CORS**: Wildcard origin (`*`) cannot be combined with `allow_credentials=True` (fixed in `src/api/__init__.py`). If auth + CORS is needed, configure specific allowed origins.
-- **MT5 Python binding**: Only available on Windows. Tests that require MT5 must be run on Windows or mocked.
-- **TimescaleDB**: Must be set up with the TimescaleDB extension enabled before running the service. Schema is auto-initialized on first startup.
-- **Config snapshot at import time**: `src/api/__init__.py` reads API config once at import. Changing `market.ini` requires a service restart.
-- **Health endpoint**: `/health` couples liveness to all services. For Kubernetes deployments, consider separating liveness (`/health/live`) from readiness (`/health/ready`).
+- **CORS**：通配符 origin（`*`）与 `allow_credentials=True` 不兼容（已在 `src/api/__init__.py` 修复）。若需认证 + 跨域，请在 `market.local.ini` 中配置具体的 allowed_origins。
+- **MT5 Python 绑定**：仅支持 Windows。需要 MT5 的测试必须在 Windows 上运行或使用 Mock。
+- **TimescaleDB**：首次启动前需确保 PostgreSQL 已安装 TimescaleDB 扩展，schema 在首次启动时自动初始化。
+- **Config snapshot at import time**：`src/api/__init__.py` 在导入时一次性读取 API 配置，修改 `market.ini` 后需重启服务。
+- **Health endpoint**：`/health` 将存活状态与所有服务耦合。Kubernetes 部署时建议分离 liveness（`/health/live`）和 readiness（`/health/ready`）。
+- **`get_signal_config()` 已知 bug**：`src/config/centralized.py` 中调用了不存在的 `ConfigValidator.validate_model()`，直接调用此函数会抛出 `AttributeError`。信号配置目前通过兼容层加载，暂不受影响。
 
 ---
 
 ## File Naming Conventions
 
-| Pattern | Convention |
-|---------|-----------|
-| Source modules | `snake_case.py` |
-| Config files | `module_name.ini` |
-| Local overrides | `module_name.local.ini` (gitignored) |
-| Test files | `test_<module>.py` |
-| Schema files | Named after the database table they represent |
+| 模式 | 规范 |
+|------|------|
+| 源码模块 | `snake_case.py` |
+| 配置文件 | `module_name.ini` |
+| 本地覆盖 | `module_name.local.ini`（已被 .gitignore） |
+| 测试文件 | `test_<module>.py` |
+| Schema 文件 | 以对应的数据库表名命名 |
 
 ---
 
 ## Git Workflow
 
-- Default branch: `main`
-- Development branches: `claude/<feature>-<id>` or descriptive feature branches
-- Never push secrets — credentials go in `*.local.ini` (gitignored)
-- Run `python validate_config.py` before committing config changes
-- Run `black`, `isort`, `mypy`, `flake8` before committing code changes
+- 默认分支：`main`
+- 开发分支：`claude/<feature>-<id>` 或描述性功能分支
+- 禁止提交密钥——凭据存放在 `*.local.ini`（已被 .gitignore）
+- 提交代码变更前运行 `black`、`isort`、`mypy`、`flake8`

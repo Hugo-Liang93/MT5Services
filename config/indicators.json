@@ -33,7 +33,7 @@
         "period": 14,
         "min_bars": 15
       },
-      "dependencies": ["sma20"],
+      "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
       "description": "14周期相对强弱指数",
@@ -48,7 +48,7 @@
         "signal": 9,
         "min_bars": 26
       },
-      "dependencies": ["ema50", "rsi14"],
+      "dependencies": [],
       "compute_mode": "parallel",
       "enabled": true,
       "description": "移动平均收敛发散指标",

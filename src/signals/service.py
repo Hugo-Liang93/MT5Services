@@ -49,6 +49,19 @@ class SignalModule:
         requirements = getattr(strategy_impl, "required_indicators", ())
         return tuple(str(item) for item in requirements)
 
+    def strategy_scopes(self, strategy: str) -> tuple[str, ...]:
+        """Return the snapshot scopes this strategy wants to receive.
+
+        Reads ``preferred_scopes`` from the strategy class.  Falls back to
+        ``("intrabar", "confirmed")`` for strategies that pre-date this field
+        so that existing behaviour is preserved by default.
+        """
+        strategy_impl = self._strategies.get(strategy)
+        if strategy_impl is None:
+            raise ValueError(f"unsupported signal strategy: {strategy}")
+        scopes = getattr(strategy_impl, "preferred_scopes", ("intrabar", "confirmed"))
+        return tuple(str(s) for s in scopes)
+
     def all_required_indicators(self) -> list[str]:
         ordered: list[str] = []
         seen: set[str] = set()

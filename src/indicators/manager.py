@@ -96,6 +96,7 @@ class UnifiedIndicatorManager:
         self._snapshot_listeners: list[
             Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None]
         ] = []
+        self._snapshot_listeners_lock = threading.Lock()
         self._last_preview_snapshot: Dict[str, Tuple[datetime, Dict[str, Dict[str, float]]]] = {}
         self._priority_indicator_groups: tuple[tuple[str, ...], ...] = ()
         # Throttle guard: minimum wall-clock gap between intrabar computations
@@ -158,6 +159,25 @@ class UnifiedIndicatorManager:
             for cfg in self.config.indicators
             if cfg.enabled and cfg.intrabar_eligible
         )
+
+        # Validate that every dependency of every enabled indicator is itself
+        # enabled.  A disabled dependency causes a silent ValueError at runtime
+        # (caught inside _compute_indicator) which surfaces as a missing result.
+        # Surface the problem early as a warning so operators can fix the config.
+        enabled_names = set(self._indicator_funcs)
+        for cfg in self.config.indicators:
+            if not cfg.enabled:
+                continue
+            for dep in cfg.dependencies or []:
+                if dep not in enabled_names:
+                    logger.warning(
+                        "Indicator '%s' declares dependency '%s' which is not enabled. "
+                        "Computation of '%s' will fail at runtime until '%s' is enabled.",
+                        cfg.name,
+                        dep,
+                        cfg.name,
+                        dep,
+                    )
 
     def _load_indicator_func(self, config: IndicatorConfig) -> Callable:
         cached = self._indicator_funcs.get(config.name)
@@ -470,6 +490,10 @@ class UnifiedIndicatorManager:
 
     def _reinitialize(self) -> None:
         logger.info("Reinitializing indicator manager after config reload")
+        # Clear stale cached values so that disabled or re-parameterised
+        # indicators do not continue to appear in snapshots / API results.
+        self._last_preview_snapshot.clear()
+        self.clear_cache()
         self._init_components()
         self._register_indicators()
 
@@ -876,7 +900,8 @@ class UnifiedIndicatorManager:
         *,
         scope: str,
     ) -> None:
-        listeners = list(getattr(self, "_snapshot_listeners", []))
+        with self._snapshot_listeners_lock:
+            listeners = list(getattr(self, "_snapshot_listeners", []))
         for listener in listeners:
             try:
                 listener(symbol, timeframe, bar_time, indicators, scope)
@@ -1291,19 +1316,21 @@ class UnifiedIndicatorManager:
         self,
         listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
     ) -> None:
-        if not hasattr(self, "_snapshot_listeners"):
-            self._snapshot_listeners = []
-        self._snapshot_listeners.append(listener)
+        with self._snapshot_listeners_lock:
+            if not hasattr(self, "_snapshot_listeners"):
+                self._snapshot_listeners = []
+            self._snapshot_listeners.append(listener)
 
     def remove_snapshot_listener(
         self,
         listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
     ) -> None:
-        if not hasattr(self, "_snapshot_listeners"):
-            return
-        self._snapshot_listeners = [
-            item for item in self._snapshot_listeners if not same_listener_reference(item, listener)
-        ]
+        with self._snapshot_listeners_lock:
+            if not hasattr(self, "_snapshot_listeners"):
+                return
+            self._snapshot_listeners = [
+                item for item in self._snapshot_listeners if not same_listener_reference(item, listener)
+            ]
 
     def set_priority_indicator_names(self, indicator_names: List[str]) -> None:
         group = self._normalize_indicator_group(indicator_names)
