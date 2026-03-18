@@ -55,7 +55,7 @@ from src.signals.position_manager import PositionManager
 from src.signals.htf_cache import HTFStateCache
 from src.signals.outcome_tracker import OutcomeTracker
 from src.signals.calibrator import ConfidenceCalibrator
-from src.signals.strategy_registry import register_composite_strategies, register_late_strategies
+from src.signals.strategy_registry import register_all_strategies
 
 logger = logging.getLogger(__name__)
 
@@ -253,9 +253,13 @@ def _ensure_initialized() -> None:
         repository=TimescaleSignalRepository(_c.storage_writer.db),
         calibrator=_c.calibrator,
     )
-    # ── 复合策略注册（Phase 1）──────────────────────────────────────────────
-    # 所有复合策略配置集中在 src/signals/strategy_registry.py 管理。
-    register_composite_strategies(_c.signal_module)
+    # ── HTFStateCache + 全量策略注册（必须在 runtime_targets 构建前完成）──────
+    # HTFStateCache 自身无外部依赖，可在此时提前创建。
+    # register_all_strategies 将复合策略与 MultiTimeframeConfirmStrategy 一并注册，
+    # 确保后续 runtime_targets 列表和 SignalRuntime._target_index 包含所有策略名。
+    # 若在 SignalRuntime 构建后才注册，MTF 策略将永远不会收到快照事件（已知 bug 的根因）。
+    _c.htf_cache = HTFStateCache()
+    register_all_strategies(_c.signal_module, _c.htf_cache)
     _c.indicator_manager.set_priority_indicator_groups(_c.signal_module.required_indicator_groups())
     runtime_targets = [
         SignalTarget(symbol=symbol, timeframe=timeframe, strategy=strategy)
@@ -317,11 +321,8 @@ def _ensure_initialized() -> None:
         position_manager=_c.position_manager,
     )
     _c.signal_runtime.add_signal_listener(_c.trade_executor.on_signal_event)
-    # HTFStateCache：监听 consensus 信号，缓存高时间框架方向
-    _c.htf_cache = HTFStateCache()
+    # HTFStateCache 注册为 signal_runtime 的监听器（必须在 signal_runtime 构建后）
     _c.htf_cache.attach(_c.signal_runtime)
-    # Phase 2：注册依赖 HTFStateCache 的策略（MTF 等），避免在缓存就绪前触发
-    register_late_strategies(_c.signal_module, _c.htf_cache)
     # 配置热加载：signal.ini 变更后自动更新 SignalRuntime.policy
     def _on_signal_config_change(filename: str) -> None:
         if filename != "signal.ini":

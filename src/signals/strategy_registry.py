@@ -126,19 +126,40 @@ def build_composite_strategies() -> List[CompositeSignalStrategy]:
 
 
 def register_composite_strategies(module: SignalModule) -> None:
-    """Phase 1：注册所有不依赖外部组件的复合策略。
+    """注册所有不依赖外部组件的复合策略。
 
-    在 SignalRuntime 构建之前调用，使 SignalRuntime 的 targets
-    列表中包含复合策略名称。
+    必须在 SignalRuntime 构建之前调用，以确保 runtime_targets 包含这些策略名。
     """
     for strategy in build_composite_strategies():
         module.register_strategy(strategy)
 
 
 def register_late_strategies(module: SignalModule, htf_cache: HTFStateCache) -> None:
-    """Phase 2：注册依赖 HTFStateCache 的策略。
+    """注册依赖 HTFStateCache 的策略（MultiTimeframeConfirmStrategy 等）。
 
-    HTFStateCache 在 SignalRuntime 和 TradeExecutor 构建完成后才可用，
-    因此此函数须在 htf_cache.attach(signal_runtime) 之后调用。
+    HTFStateCache 构建后即可调用，无需等待 SignalRuntime 完成初始化。
+    同样必须在 SignalRuntime 构建之前调用（与 register_composite_strategies 相同要求），
+    确保 runtime_targets 包含 MTF 策略名称，否则 SignalRuntime._target_index 不会收录该策略，
+    导致快照事件无法路由给 MultiTimeframeConfirmStrategy。
     """
     module.register_strategy(MultiTimeframeConfirmStrategy(htf_cache=htf_cache))
+
+
+def register_all_strategies(module: SignalModule, htf_cache: HTFStateCache) -> None:
+    """一次性注册所有策略（复合策略 + HTF 确认策略）。
+
+    调用时机
+    --------
+    必须在 ``SignalRuntime.__init__`` 之前完成，即在 runtime_targets 列表构建前调用。
+    ``HTFStateCache`` 只需在本函数之前创建即可，无需等待 ``SignalRuntime``。
+
+    典型用法（deps.py）::
+
+        _c.htf_cache = HTFStateCache()
+        register_all_strategies(_c.signal_module, _c.htf_cache)
+        runtime_targets = [...]           # 现在包含所有策略
+        _c.signal_runtime = SignalRuntime(targets=runtime_targets, ...)
+        _c.htf_cache.attach(_c.signal_runtime)   # 注册为信号监听器
+    """
+    register_composite_strategies(module)
+    register_late_strategies(module, htf_cache)

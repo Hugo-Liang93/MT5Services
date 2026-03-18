@@ -10,6 +10,7 @@ from .runtime import SignalRuntime, SignalTarget
 from .service import SignalModule
 from .strategy_registry import (
     build_composite_strategies,
+    register_all_strategies,
     register_composite_strategies,
     register_late_strategies,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "TimescaleSignalRepository",
     "UnifiedIndicatorSourceAdapter",
     "build_composite_strategies",
+    "register_all_strategies",
     "register_composite_strategies",
     "register_late_strategies",
 ]
