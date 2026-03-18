@@ -212,6 +212,7 @@ class SignalRuntime:
             try:
                 listener(event)
             except Exception as exc:
+                self._last_error = f"Signal listener error: {exc}"
                 logger.warning("Signal listener error (%s): %s", listener, exc)
 
     @staticmethod
@@ -251,6 +252,10 @@ class SignalRuntime:
         now = datetime.now(timezone.utc)
         restored_confirmed: set[tuple[str, str, str]] = set()
         restored_preview: set[tuple[str, str, str]] = set()
+        # Track the timestamp of each restored confirmed state so that
+        # preview rows for the same key that pre-date the confirmed event
+        # are not mistakenly restored on top of it.
+        restored_confirmed_at: dict[tuple[str, str, str], datetime] = {}
         for row in rows:
             key = (row.get("symbol"), row.get("timeframe"), row.get("strategy"))
             if key[0] is None or key[1] is None or key[2] is None:
@@ -268,10 +273,16 @@ class SignalRuntime:
 
             if scope == "confirmed" and key not in restored_confirmed:
                 restored_confirmed.add(key)
+                restored_confirmed_at[key] = generated_at
                 self._restore_confirmed_state(state, signal_state, generated_at, bar_time)
                 continue
 
             if scope in {"preview", "intrabar"} and key not in restored_preview:
+                # Don't restore a preview state that pre-dates an already-
+                # restored confirmed event: the confirmed state supersedes it.
+                confirmed_at = restored_confirmed_at.get(key)
+                if confirmed_at is not None and generated_at <= confirmed_at:
+                    continue
                 restored_preview.add(key)
                 self._restore_preview_state(key[1], state, signal_state, generated_at, bar_time, now)
 

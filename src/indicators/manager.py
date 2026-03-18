@@ -96,6 +96,7 @@ class UnifiedIndicatorManager:
         self._snapshot_listeners: list[
             Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None]
         ] = []
+        self._snapshot_listeners_lock = threading.Lock()
         self._last_preview_snapshot: Dict[str, Tuple[datetime, Dict[str, Dict[str, float]]]] = {}
         self._priority_indicator_groups: tuple[tuple[str, ...], ...] = ()
         # Throttle guard: minimum wall-clock gap between intrabar computations
@@ -470,6 +471,10 @@ class UnifiedIndicatorManager:
 
     def _reinitialize(self) -> None:
         logger.info("Reinitializing indicator manager after config reload")
+        # Clear stale cached values so that disabled or re-parameterised
+        # indicators do not continue to appear in snapshots / API results.
+        self._last_preview_snapshot.clear()
+        self.clear_cache()
         self._init_components()
         self._register_indicators()
 
@@ -876,7 +881,8 @@ class UnifiedIndicatorManager:
         *,
         scope: str,
     ) -> None:
-        listeners = list(getattr(self, "_snapshot_listeners", []))
+        with self._snapshot_listeners_lock:
+            listeners = list(getattr(self, "_snapshot_listeners", []))
         for listener in listeners:
             try:
                 listener(symbol, timeframe, bar_time, indicators, scope)
@@ -1291,19 +1297,21 @@ class UnifiedIndicatorManager:
         self,
         listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
     ) -> None:
-        if not hasattr(self, "_snapshot_listeners"):
-            self._snapshot_listeners = []
-        self._snapshot_listeners.append(listener)
+        with self._snapshot_listeners_lock:
+            if not hasattr(self, "_snapshot_listeners"):
+                self._snapshot_listeners = []
+            self._snapshot_listeners.append(listener)
 
     def remove_snapshot_listener(
         self,
         listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
     ) -> None:
-        if not hasattr(self, "_snapshot_listeners"):
-            return
-        self._snapshot_listeners = [
-            item for item in self._snapshot_listeners if not same_listener_reference(item, listener)
-        ]
+        with self._snapshot_listeners_lock:
+            if not hasattr(self, "_snapshot_listeners"):
+                return
+            self._snapshot_listeners = [
+                item for item in self._snapshot_listeners if not same_listener_reference(item, listener)
+            ]
 
     def set_priority_indicator_names(self, indicator_names: List[str]) -> None:
         group = self._normalize_indicator_group(indicator_names)
