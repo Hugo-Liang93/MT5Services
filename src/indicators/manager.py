@@ -107,6 +107,12 @@ class UnifiedIndicatorManager:
         # _intrabar_thread drains this queue independently.
         self._intrabar_queue: queue.Queue = queue.Queue(maxsize=200)
         self._intrabar_thread: Optional[threading.Thread] = None
+        # Bar-close events are published into this queue from the ingestor thread
+        # (via _publish_closed_bar_event) without any I/O.  The dedicated
+        # _writer_thread flushes them to SQLite in small batches so that data
+        # acquisition is never stalled by a synchronous database write.
+        self._event_write_queue: queue.Queue = queue.Queue(maxsize=2048)
+        self._writer_thread: Optional[threading.Thread] = None
 
         self._init_components()
         self._register_indicators()
@@ -156,6 +162,12 @@ class UnifiedIndicatorManager:
         self.event_store.reset_processing_events()
         self.market_service.set_ohlc_event_sink(self._publish_closed_bar_event)
         self.market_service.add_intrabar_listener(self._on_intrabar)
+        self._writer_thread = threading.Thread(
+            target=self._event_writer_loop,
+            name="IndicatorEventWriter",
+            daemon=True,
+        )
+        self._writer_thread.start()
         self._event_thread = threading.Thread(
             target=self._event_loop,
             name="IndicatorEventLoop",
@@ -184,6 +196,8 @@ class UnifiedIndicatorManager:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._writer_thread:
+            self._writer_thread.join(timeout=3.0)
         if self._event_thread:
             self._event_thread.join(timeout=5.0)
         if self._intrabar_thread:
@@ -212,10 +226,8 @@ class UnifiedIndicatorManager:
                 next_reconcile_at = time.monotonic() + reconcile_interval
                 continue
 
-            timeout = min(0.5, max(0.0, next_reconcile_at - now))
-            legacy_event = self.market_service.get_ohlc_event(timeout=timeout)
-            if legacy_event is not None:
-                self._process_closed_bar_event(*legacy_event, durable_event=False)
+            sleep_for = min(0.1, max(0.0, next_reconcile_at - time.monotonic()))
+            self._stop.wait(sleep_for)
 
     def _process_closed_bar_events_batch(
         self,
@@ -410,8 +422,58 @@ class UnifiedIndicatorManager:
         self._init_components()
         self._register_indicators()
 
+    def _event_writer_loop(self) -> None:
+        """Drain _event_write_queue → SQLite in small batches.
+
+        Runs in a dedicated thread so that bar-close notifications from the
+        ingestor thread never block on disk I/O.  Items are flushed in batches
+        of up to 64 to amortise SQLite round-trip cost.  Remaining items are
+        flushed synchronously on shutdown before the thread exits.
+        """
+        while not self._stop.is_set():
+            batch: list = []
+            try:
+                item = self._event_write_queue.get(timeout=0.1)
+                batch.append(item)
+                for _ in range(63):
+                    try:
+                        batch.append(self._event_write_queue.get_nowait())
+                    except queue.Empty:
+                        break
+            except queue.Empty:
+                continue
+            for symbol, timeframe, bar_time in batch:
+                try:
+                    self.event_store.publish_event(symbol, timeframe, bar_time)
+                except Exception:
+                    logger.exception(
+                        "Failed to persist bar close event for %s/%s at %s",
+                        symbol, timeframe, bar_time,
+                    )
+        # Drain any remaining items before the thread exits.
+        while True:
+            try:
+                symbol, timeframe, bar_time = self._event_write_queue.get_nowait()
+                try:
+                    self.event_store.publish_event(symbol, timeframe, bar_time)
+                except Exception:
+                    logger.exception(
+                        "Failed to persist bar close event during shutdown for %s/%s at %s",
+                        symbol, timeframe, bar_time,
+                    )
+            except queue.Empty:
+                break
+
     def _publish_closed_bar_event(self, symbol: str, timeframe: str, bar_time: datetime) -> None:
-        self.event_store.publish_event(symbol, timeframe, bar_time)
+        """Non-blocking: enqueue for async SQLite write by _event_writer_loop."""
+        try:
+            self._event_write_queue.put_nowait((symbol, timeframe, bar_time))
+        except queue.Full:
+            logger.warning(
+                "Event write queue full — bar close event dropped for %s/%s at %s; "
+                "reconcile will recover it.",
+                symbol, timeframe, bar_time,
+            )
 
     def _load_bars(
         self,
