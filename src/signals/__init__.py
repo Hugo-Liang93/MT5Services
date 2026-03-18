@@ -8,6 +8,11 @@ from .regime import MarketRegimeDetector, RegimeTracker, RegimeType
 from .repository import SignalRepository, TimescaleSignalRepository
 from .runtime import SignalRuntime, SignalTarget
 from .service import SignalModule
+from .strategy_registry import (
+    build_composite_strategies,
+    register_composite_strategies,
+    register_late_strategies,
+)
 
 __all__ = [
     "ConfidenceCalibrator",
@@ -32,4 +37,7 @@ __all__ = [
     "SpreadFilter",
     "TimescaleSignalRepository",
     "UnifiedIndicatorSourceAdapter",
+    "build_composite_strategies",
+    "register_composite_strategies",
+    "register_late_strategies",
 ]

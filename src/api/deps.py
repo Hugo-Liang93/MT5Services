@@ -54,21 +54,8 @@ from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 from src.signals.position_manager import PositionManager
 from src.signals.htf_cache import HTFStateCache
 from src.signals.outcome_tracker import OutcomeTracker
-from src.signals.strategies import (
-    BollingerBreakoutStrategy,
-    DonchianBreakoutStrategy,
-    EmaRibbonStrategy,
-    KeltnerBollingerSqueezeStrategy,
-    MacdMomentumStrategy,
-    MultiTimeframeConfirmStrategy,
-    RsiReversionStrategy,
-    SmaTrendStrategy,
-    StochRsiStrategy,
-    SupertrendStrategy,
-)
-from src.signals.composite import CompositeSignalStrategy
 from src.signals.calibrator import ConfidenceCalibrator
-from src.signals.regime import RegimeType
+from src.signals.strategy_registry import register_composite_strategies, register_late_strategies
 
 logger = logging.getLogger(__name__)
 
@@ -266,63 +253,9 @@ def _ensure_initialized() -> None:
         repository=TimescaleSignalRepository(_c.storage_writer.db),
         calibrator=_c.calibrator,
     )
-    # ── 内置复合策略注册 ────────────────────────────────────────────────
-    # 复合策略使用**独立实例**，不与 SignalModule 中的单策略共享实例，
-    # 避免 VotingEngine 中同一策略被重复计票。
-    _composite_strategies = [
-        # 趋势三重确认：Supertrend + MACD + SMA 同向时入场
-        CompositeSignalStrategy(
-            name="trend_triple_confirm",
-            sub_strategies=[
-                SupertrendStrategy(),
-                MacdMomentumStrategy(),
-                SmaTrendStrategy(),
-            ],
-            combine_mode="majority",
-            regime_affinity={
-                RegimeType.TRENDING:  1.00,
-                RegimeType.RANGING:   0.10,
-                RegimeType.BREAKOUT:  0.55,
-                RegimeType.UNCERTAIN: 0.40,
-            },
-            preferred_scopes=("confirmed",),
-        ),
-        # 突破双重确认：Bollinger + Donchian 同时突破，滤掉假突破
-        CompositeSignalStrategy(
-            name="breakout_double_confirm",
-            sub_strategies=[
-                BollingerBreakoutStrategy(),
-                DonchianBreakoutStrategy(),
-                KeltnerBollingerSqueezeStrategy(),
-            ],
-            combine_mode="all_agree",
-            regime_affinity={
-                RegimeType.TRENDING:  0.45,
-                RegimeType.RANGING:   0.20,
-                RegimeType.BREAKOUT:  1.00,
-                RegimeType.UNCERTAIN: 0.55,
-            },
-            preferred_scopes=("confirmed",),
-        ),
-        # 震荡双重确认：RSI + StochRSI 同时超买/超卖时的均值回归
-        CompositeSignalStrategy(
-            name="reversion_double_confirm",
-            sub_strategies=[
-                RsiReversionStrategy(),
-                StochRsiStrategy(),
-            ],
-            combine_mode="all_agree",
-            regime_affinity={
-                RegimeType.TRENDING:  0.15,
-                RegimeType.RANGING:   1.00,
-                RegimeType.BREAKOUT:  0.25,
-                RegimeType.UNCERTAIN: 0.55,
-            },
-            preferred_scopes=("confirmed", "intrabar"),
-        ),
-    ]
-    for combo in _composite_strategies:
-        _c.signal_module.register_strategy(combo)
+    # ── 复合策略注册（Phase 1）──────────────────────────────────────────────
+    # 所有复合策略配置集中在 src/signals/strategy_registry.py 管理。
+    register_composite_strategies(_c.signal_module)
     _c.indicator_manager.set_priority_indicator_groups(_c.signal_module.required_indicator_groups())
     runtime_targets = [
         SignalTarget(symbol=symbol, timeframe=timeframe, strategy=strategy)
@@ -387,10 +320,8 @@ def _ensure_initialized() -> None:
     # HTFStateCache：监听 consensus 信号，缓存高时间框架方向
     _c.htf_cache = HTFStateCache()
     _c.htf_cache.attach(_c.signal_runtime)
-    # 将 MTF 策略注入 htf_cache 后再注册，避免在缓存就绪前就有信号触发
-    _c.signal_module.register_strategy(
-        MultiTimeframeConfirmStrategy(htf_cache=_c.htf_cache)
-    )
+    # Phase 2：注册依赖 HTFStateCache 的策略（MTF 等），避免在缓存就绪前触发
+    register_late_strategies(_c.signal_module, _c.htf_cache)
     # 配置热加载：signal.ini 变更后自动更新 SignalRuntime.policy
     def _on_signal_config_change(filename: str) -> None:
         if filename != "signal.ini":
