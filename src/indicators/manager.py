@@ -23,6 +23,7 @@ from src.config.indicator_config import (
 from src.core.market_service import MarketDataService
 from src.utils.event_store import get_event_store
 
+from .cache.incremental import IncrementalIndicator
 from .engine.dependency_manager import get_global_dependency_manager
 from .engine.pipeline import OptimizedPipeline, get_global_pipeline
 from .monitoring.metrics_collector import get_global_collector
@@ -142,11 +143,13 @@ class UnifiedIndicatorManager:
             if not indicator_config.enabled:
                 continue
             func = self._load_indicator_func(indicator_config)
-            self.dependency_manager.add_indicator(
+            incremental_class = self._load_incremental_class(indicator_config)
+            self.pipeline.register_indicator(
                 name=indicator_config.name,
                 func=func,
                 params=indicator_config.params,
-                dependencies=indicator_config.dependencies,
+                dependencies=indicator_config.dependencies or None,
+                incremental_class=incremental_class,
             )
             self._indicator_funcs[indicator_config.name] = func
         # Build intrabar eligibility cache after all indicators are registered.
@@ -163,6 +166,40 @@ class UnifiedIndicatorManager:
         module_path, func_name = config.func_path.rsplit(".", 1)
         module = importlib.import_module(module_path)
         return getattr(module, func_name)
+
+    def _load_incremental_class(self, config: IndicatorConfig) -> Optional[type]:
+        """Return an IncrementalIndicator subclass for *config* when available.
+
+        Convention: if ``compute_mode == "incremental"`` and the indicator's
+        module exports a class named ``<FuncName>Incremental`` (e.g. ``ema``
+        → ``EmaIncremental``), that class is returned.  If not found, or if
+        ``compute_mode`` is not ``"incremental"``, returns ``None`` and the
+        pipeline falls back to the standard full-recompute path.
+        """
+        from src.config.indicator_config import ComputeMode
+
+        if config.compute_mode != ComputeMode.INCREMENTAL:
+            return None
+        module_path, func_name = config.func_path.rsplit(".", 1)
+        class_name = func_name.capitalize() + "Incremental"
+        try:
+            module = importlib.import_module(module_path)
+            cls = getattr(module, class_name, None)
+            if cls is None or not issubclass(cls, IncrementalIndicator):
+                logger.warning(
+                    "No IncrementalIndicator subclass '%s' in %s for '%s'; "
+                    "falling back to standard full-recompute",
+                    class_name,
+                    module_path,
+                    config.name,
+                )
+                return None
+            return cls
+        except Exception as exc:
+            logger.warning(
+                "Failed to load incremental class for '%s': %s", config.name, exc
+            )
+            return None
 
     def start(self) -> None:
         if self._event_thread and self._event_thread.is_alive():
