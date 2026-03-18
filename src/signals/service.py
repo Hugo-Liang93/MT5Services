@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any, Dict, Iterable, Optional
 
 from .adapters import IndicatorSource
 from .models import SignalContext, SignalDecision, SignalRecord
+from .regime import MarketRegimeDetector, RegimeType
 from .repository import SignalRepository
 from .strategies import (
+    REGIME_AFFINITY,
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
     EmaRibbonStrategy,
@@ -29,9 +32,13 @@ class SignalModule:
         indicator_source: IndicatorSource,
         strategies: Optional[Iterable[SignalStrategy]] = None,
         repository: Optional[SignalRepository] = None,
+        regime_detector: Optional[MarketRegimeDetector] = None,
     ):
         self.indicator_source = indicator_source
         self.repository = repository
+        self._regime_detector: MarketRegimeDetector = (
+            regime_detector or MarketRegimeDetector()
+        )
         self._strategies: dict[str, SignalStrategy] = {}
         default_strategies: Iterable[SignalStrategy] = strategies or (
             SmaTrendStrategy(),
@@ -121,6 +128,24 @@ class SignalModule:
             metadata=metadata or {},
         )
         decision = strategy_impl.evaluate(context)
+
+        # ── Regime 亲和度修正 ────────────────────────────────────────────
+        # 根据当前市场状态对策略置信度施加乘数，压制在当前 Regime 下不可靠的策略。
+        # 置信度降低后若低于 min_preview_confidence（默认 0.55），
+        # SignalRuntime 状态机会自然忽略该信号，无需在此处做额外的硬截断。
+        regime = self._regime_detector.detect(indicator_payload)
+        affinity = REGIME_AFFINITY.get(strategy, {}).get(regime, 0.5)
+        adjusted_confidence = decision.confidence * affinity
+        decision = dataclasses.replace(
+            decision,
+            confidence=adjusted_confidence,
+            metadata={
+                **decision.metadata,
+                "regime": regime.value,
+                "regime_affinity": affinity,
+            },
+        )
+
         if persist:
             self._persist_signal(decision, indicator_payload, metadata)
         return decision

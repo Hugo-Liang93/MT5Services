@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, Optional, Protocol
 
 from .models import SignalContext, SignalDecision
+from .regime import RegimeType
 
 
 class SignalStrategy(Protocol):
@@ -938,3 +939,89 @@ class EmaRibbonStrategy:
                 "total_span_pct": total_span * 100,
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# Regime Affinity Table
+# ---------------------------------------------------------------------------
+#
+# 每个策略对四种市场状态（TRENDING / RANGING / BREAKOUT / UNCERTAIN）的
+# 置信度乘数（affinity weight），取值范围 [0.0, 1.0]。
+#
+# 乘数含义：
+#   1.0 = 该 Regime 下策略信号不衰减，完全采信
+#   0.5 = 置信度减半（原 0.7 → 0.35，大概率低于 min_preview_confidence 阈值，静默）
+#   0.1 = 该 Regime 下策略严重不可信，几乎完全压制
+#
+# 设计原则：
+#   - 趋势类（SMA Cross、EMA Ribbon、Donchian、Supertrend、MACD）：
+#       在 TRENDING 时权重最高；RANGING 时权重极低以避免震荡市反复打脸
+#   - 均值回归类（RSI、StochRSI）：
+#       在 RANGING 时权重最高；TRENDING 时大幅压制
+#   - 波动率/突破类（Bollinger Breakout、Keltner-Squeeze、Donchian Breakout）：
+#       在 BREAKOUT 时权重最高；搭配 RANGING 次高（反弹类）
+#   - UNCERTAIN（ADX 20-25 过渡区）：
+#       大多数策略使用 0.5 作为中间值，不过强不过弱
+#
+# 注意：此表不影响策略自身的逻辑，只在 SignalModule.evaluate() 中
+# 对返回的 confidence 做最终的乘法修正。
+#
+REGIME_AFFINITY: Dict[str, Dict[RegimeType, float]] = {
+    # ── 趋势跟踪类 ──────────────────────────────────────────────────────
+    "sma_trend": {
+        RegimeType.TRENDING:  1.00,  # MA 金叉/死叉在趋势中最可靠
+        RegimeType.RANGING:   0.20,  # 震荡市 MA 频繁交叉，大量虚假信号
+        RegimeType.BREAKOUT:  0.50,  # 突破开始时 MA 尚未跟上，信号滞后
+        RegimeType.UNCERTAIN: 0.50,
+    },
+    "ema_ribbon": {
+        RegimeType.TRENDING:  1.00,  # 三线对齐是趋势行情的黄金信号
+        RegimeType.RANGING:   0.10,  # 震荡市三线互相缠绕，毫无方向
+        RegimeType.BREAKOUT:  0.40,  # 突破初期 EMA50 还未偏转
+        RegimeType.UNCERTAIN: 0.40,
+    },
+    "supertrend": {
+        RegimeType.TRENDING:  1.00,  # Supertrend 专为趋势行情设计
+        RegimeType.RANGING:   0.30,  # 价格反复穿越超趋势线，频繁翻转
+        RegimeType.BREAKOUT:  0.60,  # 突破时 Supertrend 可以确认方向
+        RegimeType.UNCERTAIN: 0.55,
+    },
+    "macd_momentum": {
+        RegimeType.TRENDING:  1.00,  # MACD 柱量反映趋势动量，最准确
+        RegimeType.RANGING:   0.30,  # 震荡市 MACD 持续来回交叉
+        RegimeType.BREAKOUT:  0.70,  # 突破初期 MACD 经常领先确认方向
+        RegimeType.UNCERTAIN: 0.55,
+    },
+    "donchian_breakout": {
+        RegimeType.TRENDING:  0.90,  # 趋势延续期创新高/低是高概率信号
+        RegimeType.RANGING:   0.15,  # 震荡市创"新高"随即反转，假突破极多
+        RegimeType.BREAKOUT:  1.00,  # 通道突破就是为这个 Regime 而生
+        RegimeType.UNCERTAIN: 0.45,
+    },
+    # ── 均值回归类 ──────────────────────────────────────────────────────
+    "rsi_reversion": {
+        RegimeType.TRENDING:  0.25,  # 强趋势可让 RSI 长期维持超买/超卖区
+        RegimeType.RANGING:   1.00,  # 振荡市均值回归是最经典的场景
+        RegimeType.BREAKOUT:  0.35,  # 突破行情初期 RSI 极值可能持续
+        RegimeType.UNCERTAIN: 0.60,
+    },
+    "stoch_rsi": {
+        RegimeType.TRENDING:  0.25,  # 趋势中随机指标长时间嵌顶/嵌底
+        RegimeType.RANGING:   1.00,  # 振荡市 K/D 交叉的核心使用场景
+        RegimeType.BREAKOUT:  0.30,  # 突破前 StochRSI 往往已超买/超卖
+        RegimeType.UNCERTAIN: 0.60,
+    },
+    # ── 波动率/突破类 ──────────────────────────────────────────────────
+    "bollinger_breakout": {
+        RegimeType.TRENDING:  0.30,  # 趋势中价格走布林带上轨，触及上轨不是反转
+        RegimeType.RANGING:   0.85,  # 震荡市触及上下轨是典型均值回归机会
+        RegimeType.BREAKOUT:  1.00,  # 价格突破布林带 = 波动率扩张主要信号
+        RegimeType.UNCERTAIN: 0.60,
+    },
+    "keltner_bb_squeeze": {
+        RegimeType.TRENDING:  0.35,  # 趋势中 Squeeze 出现频率低
+        RegimeType.RANGING:   0.55,  # 震荡区间末期常出现 Squeeze，可提前布局
+        RegimeType.BREAKOUT:  1.00,  # Squeeze 释放正是这个策略的核心场景
+        RegimeType.UNCERTAIN: 0.65,
+    },
+}
