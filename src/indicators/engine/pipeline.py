@@ -159,12 +159,24 @@ class OptimizedPipeline:
         # 如果支持增量计算，创建增量计算实例（热重载时保留已积累的 state）
         if incremental_class is not None and issubclass(incremental_class, IncrementalIndicator):
             existing = self.incremental_indicators.get(name)
-            if existing is not None and type(existing) is incremental_class:
-                # 同一个类重新注册（热重载场景）：复用实例保留 state_store
+            same_class = existing is not None and type(existing) is incremental_class
+            same_params = same_class and existing.params == params  # type: ignore[union-attr]
+
+            if same_class and same_params:
+                # 同一个类、相同参数重新注册（热重载但配置未变）：复用实例保留 state_store
                 logger.debug(f"Incremental indicator re-registered (state preserved): {name}")
             else:
                 incremental_instance = incremental_class(name, params)
-                if existing is not None:
+                if same_class and not same_params:
+                    # 同类但参数已变（热重载改了 period 等）：不迁移旧 state，
+                    # 旧 state 是按旧参数算出的，继续用会产生错误的增量结果。
+                    # 新实例会在第一次调用时触发 full computation 重新种子化。
+                    logger.info(
+                        "Incremental indicator params changed on hot-reload "
+                        "(state discarded): %s  old=%s  new=%s",
+                        name, existing.params, params,  # type: ignore[union-attr]
+                    )
+                elif existing is not None:
                     # 类变了但有旧 state：迁移 state_store，下次算时会重新 seed
                     incremental_instance.state_store = existing.state_store
                 self.incremental_indicators[name] = incremental_instance
