@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Protocol
@@ -81,6 +82,8 @@ class SignalRuntime:
         self._last_error: Optional[str] = None
         self._run_count = 0
         self._processed_events = 0
+        self._dropped_events = 0
+        self._last_drop_log_at: float = 0.0
         self._state_by_target: dict[tuple[str, str, str], RuntimeSignalState] = {}
 
     def start(self) -> None:
@@ -130,7 +133,21 @@ class SignalRuntime:
         try:
             self._events.put_nowait(item)
         except queue.Full:
-            logger.warning("Signal runtime queue is full, dropping event: %s", item)
+            self._dropped_events += 1
+            now = time.monotonic()
+            # Rate-limit error logs to at most once per 60 s to avoid log spam.
+            if now - self._last_drop_log_at >= 60.0:
+                self._last_drop_log_at = now
+                scope, symbol, timeframe = item[0], item[1], item[2]
+                logger.error(
+                    "Signal runtime queue is full — indicator snapshot dropped "
+                    "(total_dropped=%d, scope=%s, symbol=%s, timeframe=%s). "
+                    "Consider increasing maxsize=4096 or reducing intrabar frequency.",
+                    self._dropped_events,
+                    scope,
+                    symbol,
+                    timeframe,
+                )
 
     def status(self) -> dict:
         return {
@@ -143,7 +160,9 @@ class SignalRuntime:
             },
             "run_count": self._run_count,
             "processed_events": self._processed_events,
+            "dropped_events": self._dropped_events,
             "queue_size": self._events.qsize(),
+            "queue_capacity": self._events.maxsize,
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
             "active_preview_states": sum(

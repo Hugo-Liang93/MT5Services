@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import queue
 import threading
 import time
 from dataclasses import dataclass
@@ -101,6 +102,11 @@ class UnifiedIndicatorManager:
         # its own next_intrabar_at schedule; this is a defense-in-depth guard
         # that prevents duplicate runs caused by race conditions or config drift.
         self._last_intrabar_compute: Dict[str, float] = {}
+        # Intrabar events are dispatched here from the ingestor thread so that
+        # indicator computation never blocks data acquisition.  The dedicated
+        # _intrabar_thread drains this queue independently.
+        self._intrabar_queue: queue.Queue = queue.Queue(maxsize=200)
+        self._intrabar_thread: Optional[threading.Thread] = None
 
         self._init_components()
         self._register_indicators()
@@ -157,6 +163,13 @@ class UnifiedIndicatorManager:
         )
         self._event_thread.start()
 
+        self._intrabar_thread = threading.Thread(
+            target=self._intrabar_loop,
+            name="IndicatorIntrabar",
+            daemon=True,
+        )
+        self._intrabar_thread.start()
+
         if self.config.hot_reload and not (
             self._reload_thread and self._reload_thread.is_alive()
         ):
@@ -173,6 +186,8 @@ class UnifiedIndicatorManager:
         self._stop.set()
         if self._event_thread:
             self._event_thread.join(timeout=5.0)
+        if self._intrabar_thread:
+            self._intrabar_thread.join(timeout=2.0)
         if self._reload_thread:
             self._reload_thread.join(timeout=2.0)
         self.market_service.set_ohlc_event_sink(None)
@@ -339,23 +354,46 @@ class UnifiedIndicatorManager:
         )
 
     def _on_intrabar(self, symbol: str, timeframe: str, bar: Any) -> None:
-        key = ohlc_key(symbol, timeframe)
-        now = time.monotonic()
-        # Throttle guard: skip if this (symbol, tf) was computed too recently.
-        # Uses 2% of bar duration (min 1 s) as the minimum gap.
-        min_gap = max(1.0, timeframe_seconds(timeframe) * 0.02)
-        if now - self._last_intrabar_compute.get(key, 0.0) < min_gap:
-            return
-        self._last_intrabar_compute[key] = now
+        """Called from the ingestor thread — must return instantly.
+
+        Just enqueue the event; the dedicated _intrabar_thread does the heavy
+        lifting so that data acquisition is never stalled by indicator computation.
+        Overflow is silently dropped: intrabar snapshots are best-effort.
+        """
         try:
-            self._process_intrabar_event(symbol, timeframe, bar)
-        except Exception:
-            logger.exception(
-                "Failed to process intrabar preview for %s/%s at %s",
-                symbol,
-                timeframe,
-                getattr(bar, "time", None),
-            )
+            self._intrabar_queue.put_nowait((symbol, timeframe, bar))
+        except queue.Full:
+            pass  # best-effort; the intrabar loop will catch up next cycle
+
+    def _intrabar_loop(self) -> None:
+        """Dedicated thread: drains _intrabar_queue and computes live indicators.
+
+        The throttle guard here (not in _on_intrabar) keeps computation at the
+        right cadence even when the queue has burst items for the same key.
+        """
+        while not self._stop.is_set():
+            try:
+                item = self._intrabar_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            symbol, timeframe, bar = item
+            key = ohlc_key(symbol, timeframe)
+            now = time.monotonic()
+            # Throttle guard: skip if this (symbol, tf) was computed too recently.
+            # Uses 2% of bar duration (min 1 s) as the minimum gap.
+            min_gap = max(1.0, timeframe_seconds(timeframe) * 0.02)
+            if now - self._last_intrabar_compute.get(key, 0.0) < min_gap:
+                continue
+            self._last_intrabar_compute[key] = now
+            try:
+                self._process_intrabar_event(symbol, timeframe, bar)
+            except Exception:
+                logger.exception(
+                    "Failed to process intrabar preview for %s/%s at %s",
+                    symbol,
+                    timeframe,
+                    getattr(bar, "time", None),
+                )
 
     def _reload_loop(self) -> None:
         reload_interval = max(float(self.config.reload_interval), 1.0)
