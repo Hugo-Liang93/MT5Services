@@ -11,6 +11,9 @@ class SignalPolicy:
     min_preview_bar_progress: float = 0.2
     min_preview_stable_seconds: float = 15.0
     preview_cooldown_seconds: float = 30.0
+    # Minimum wall-clock gap to skip duplicate intrabar snapshots with identical
+    # indicator signatures.  Has no effect on confirmed (bar-close) snapshots,
+    # which are always deduplicated by (bar_time, signature) regardless of this value.
     snapshot_dedupe_window_seconds: float = 1.0
     max_spread_points: float = 50.0
     allowed_sessions: tuple[str, ...] = ("london", "newyork")

@@ -154,7 +154,6 @@ class SignalRuntime:
             "running": bool(self._thread and self._thread.is_alive()),
             "target_count": len(self._targets),
             "trigger_mode": {
-                "close_bar": self.enable_confirmed_snapshot,
                 "confirmed_snapshot": self.enable_confirmed_snapshot,
                 "intrabar": self.enable_intrabar,
             },
@@ -272,7 +271,7 @@ class SignalRuntime:
                 self._restore_confirmed_state(state, signal_state, generated_at, bar_time)
                 continue
 
-            if scope == "preview" and key not in restored_preview:
+            if scope in {"preview", "intrabar"} and key not in restored_preview:
                 restored_preview.add(key)
                 self._restore_preview_state(key[1], state, signal_state, generated_at, bar_time, now)
 
