@@ -86,7 +86,9 @@ def bollinger(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     std = math.sqrt(var)
     upper = mean + mult * std
     lower = mean - mult * std
-    return {"bb_mid": mean, "bb_upper": upper, "bb_lower": lower}
+    # close 字段：策略比较 close vs 带宽时需要当前收盘价，
+    # 由指标本身携带，避免策略层多级回退猜测
+    return {"bb_mid": mean, "bb_upper": upper, "bb_lower": lower, "close": closes[-1]}
 
 
 def keltner(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
@@ -127,7 +129,8 @@ def donchian(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     upper = max(bar.high for bar in window)
     lower = min(bar.low for bar in window)
     mid = (upper + lower) / 2
-    return {"donchian_upper": upper, "donchian_lower": lower, "donchian_mid": mid}
+    # close 字段：DonchianBreakoutStrategy 比较 close vs 通道边界时使用
+    return {"donchian_upper": upper, "donchian_lower": lower, "donchian_mid": mid, "close": window[-1].close}
 
 
 def adx(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:

@@ -5,7 +5,7 @@ Config rules:
 - `config/indicators.json` is the only indicator config entrypoint.
 - `load_*`, `compat`, `fallback`, and watcher utilities are compatibility layers, not the primary runtime path.
 
-MT5Services 是一个基于 FastAPI 的统一运行服务，围绕 MetaTrader 5 提供行情采集、历史落库、指标计算、账户与交易接口、经济日历风控和系统监控。
+MT5Services 是一个基于 FastAPI 的统一运行服务，围绕 MetaTrader 5 提供行情采集、历史落库、指标计算、信号生成、账户与交易接口、经济日历风控和系统监控。
 
 当前仓库已经收敛为单一运行模式，默认入口是 `python app.py`，不再区分多套启动方式。
 
@@ -13,8 +13,9 @@ MT5Services 是一个基于 FastAPI 的统一运行服务，围绕 MetaTrader 5 
 
 - 市场数据：`quote`、`ticks`、`ohlc`、盘中 OHLC 序列、SSE 流订阅
 - 持久化：Ticks、Quotes、OHLC、指标结果、经济日历事件、运行任务状态
-- 指标系统：`config/indicators.json` + `src/indicators/manager.py`
-- 交易能力：账户查询、持仓/挂单查询、下单、平仓、改单、保证金预估
+- 指标系统：`config/indicators.json` + `src/indicators/manager.py`，事件驱动、依赖图调度
+- 信号系统：多策略评估、Regime 检测、多策略投票引擎、置信度校准、历史绩效追踪
+- 交易能力：账户查询、持仓/挂单查询、下单、平仓、改单、保证金预估、自动信号执行
 - 宏观风控：经济日历抓取、事件筛选、风险时间窗、交易前检查
 - 系统监控：健康检查、队列状态、性能指标、启动阶段、有效配置快照
 
@@ -32,11 +33,11 @@ MT5Services 是一个基于 FastAPI 的统一运行服务，围绕 MetaTrader 5 
 - `StorageWriter`
 - `BackgroundIngestor`
 - `EconomicCalendarService`
-- `PreTradeRiskService`
-- `TradingService`
 - `UnifiedIndicatorManager`
-- `HealthMonitor`
-- `MonitoringManager`
+- `SignalRuntime`
+- `TradeExecutor` / `PositionManager`
+- `TradingModule`
+- `HealthMonitor` / `MonitoringManager`
 
 启动顺序：
 
@@ -44,9 +45,32 @@ MT5Services 是一个基于 FastAPI 的统一运行服务，围绕 MetaTrader 5 
 2. `ingestion`
 3. `economic_calendar`
 4. `indicators`
-5. `monitoring`
+5. `signal_runtime`
+6. `position_manager`
+7. `monitoring`
 
 运行时可通过 `GET /monitoring/startup` 和 `GET /monitoring/runtime-tasks` 查看阶段状态。
+
+### 数据流概览
+
+```
+MT5 Terminal
+    ↓ （后台线程）
+BackgroundIngestor
+    ├─ MarketDataService（内存缓存，RLock 保护）
+    └─ StorageWriter（多通道队列）→ TimescaleDB
+
+OHLC 收盘事件
+    → UnifiedIndicatorManager（依赖图计算）
+        → confirmed/intrabar 快照
+            → SignalRuntime（双队列事件处理）
+                ├─ Regime 检测
+                ├─ 策略评估 × Regime 亲和度修正
+                ├─ ConfidenceCalibrator（历史胜率校准）
+                ├─ VotingEngine（跨策略投票）
+                ├─ OutcomeTracker（N bar 后绩效回填）
+                └─ TradeExecutor（confirmed 信号自动执行）
+```
 
 ## 目录结构
 
@@ -54,31 +78,37 @@ MT5Services 是一个基于 FastAPI 的统一运行服务，围绕 MetaTrader 5 
 MT5Services/
 ├─ app.py
 ├─ config/
-│  ├─ app.ini
-│  ├─ market.ini
-│  ├─ ingest.ini
-│  ├─ storage.ini
-│  ├─ economic.ini
-│  ├─ mt5.ini
-│  ├─ db.ini
-│  ├─ cache.ini
-│  └─ indicators.json
+│  ├─ app.ini           # 交易品种、时间框架、采集间隔
+│  ├─ market.ini        # API host/port、认证、CORS
+│  ├─ ingest.ini        # 采集节奏、性能、健康阈值
+│  ├─ storage.ini       # 存储通道队列与 flush 策略
+│  ├─ economic.ini      # 日历抓取、事件筛选、交易风控
+│  ├─ mt5.ini           # MT5 连接参数与账户配置
+│  ├─ db.ini            # 数据库连接
+│  ├─ risk.ini          # 风险限制（仓位数量、SL/TP 要求）
+│  ├─ cache.ini         # 缓存兼容参数
+│  ├─ signal.ini        # 信号状态机、自动交易、仓位大小
+│  └─ indicators.json   # 指标定义与计算流水线
 ├─ src/
-│  ├─ api/
-│  ├─ clients/
-│  ├─ config/
-│  ├─ core/
-│  ├─ indicators/
-│  ├─ ingestion/
-│  ├─ monitoring/
-│  ├─ persistence/
-│  └─ utils/
+│  ├─ api/              # FastAPI 路由、中间件、Schema、DI 容器
+│  ├─ clients/          # MT5 客户端封装（行情、交易、账户）
+│  ├─ config/           # 配置加载、合并、Pydantic 模型
+│  ├─ core/             # 核心服务（行情缓存、经济日历、账户）
+│  ├─ indicators/       # 统一指标系统（管理器、引擎、缓存）
+│  ├─ ingestion/        # 后台 Tick/OHLC/Intrabar 数据采集
+│  ├─ monitoring/       # 健康检查
+│  ├─ persistence/      # TimescaleDB 写入器、队列持久化
+│  ├─ risk/             # 风险规则、模型、服务
+│  ├─ signals/          # 信号生成策略、运行时、过滤器
+│  ├─ trading/          # TradingModule、账户注册、信号执行器
+│  └─ utils/            # 通用工具、事件存储、内存管理器
 ├─ tests/
 │  ├─ api/
 │  ├─ config/
 │  ├─ core/
 │  ├─ data/
 │  ├─ indicators/
+│  ├─ signals/
 │  ├─ integration/
 │  └─ smoke/
 └─ examples/
@@ -142,6 +172,7 @@ pip install -r requirements.txt
 
 - `config/economic.ini`
 - `config/storage.ini`
+- `config/signal.ini`
 - `config/indicators.json`
 
 敏感信息建议放到本地私有覆盖文件，不要把真实密钥直接写入仓库配置：
@@ -166,6 +197,140 @@ uvicorn src.api:app --host 0.0.0.0 --port 8808
 - [Swagger](http://localhost:8808/docs)
 - [ReDoc](http://localhost:8808/redoc)
 - [Health](http://localhost:8808/health)
+
+## 指标系统
+
+指标在 `config/indicators.json` 中声明式配置，`UnifiedIndicatorManager` 负责编排：
+
+```json
+{
+  "name": "sma_20",
+  "func_path": "src.indicators.core.mean.sma",
+  "params": {"period": 20, "min_bars": 20},
+  "dependencies": [],
+  "compute_mode": "standard",
+  "enabled": true,
+  "tags": ["trend", "moving_average"]
+}
+```
+
+计算模式：
+
+| 模式 | 说明 |
+|------|------|
+| `standard` | 每次 bar 收盘时全量重计算 |
+| `incremental` | 仅追加更新，流式场景更快 |
+| `parallel` | 与其他指标并行计算 |
+
+指标结果以快照形式通知订阅者，scope 分为 `confirmed`（K 线收盘）和 `intrabar`（盘中实时）。
+
+新增指标步骤：
+
+1. 在 `src/indicators/core/` 中实现函数
+2. 在 `config/indicators.json` 中添加条目（填写 `func_path`、`params`、`dependencies`）
+3. 在 `tests/indicators/` 中添加测试
+
+## 信号系统
+
+信号系统由以下组件协作完成从指标快照到交易决策的全链路处理。
+
+### 内置策略
+
+| 策略名 | 类 | 所需指标 | Scope | 适合 Regime |
+|--------|-----|---------|-------|------------|
+| `sma_trend` | SmaTrendStrategy | sma20, ema50 | confirmed | 趋势 |
+| `rsi_reversion` | RsiReversionStrategy | rsi14 | intrabar, confirmed | 震荡 |
+| `bollinger_breakout` | BollingerBreakoutStrategy | boll20 | intrabar, confirmed | 突破 |
+| `supertrend` | SupertrendStrategy | supertrend14, adx14 | confirmed | 趋势 |
+| `stoch_rsi` | StochRsiStrategy | stoch_rsi14 | intrabar, confirmed | 震荡 |
+| `macd_momentum` | MacdMomentumStrategy | macd | confirmed | 趋势/突破 |
+| `keltner_bb_squeeze` | KeltnerBollingerSqueezeStrategy | boll20, keltner20 | intrabar, confirmed | 突破 |
+| `donchian_breakout` | DonchianBreakoutStrategy | donchian20, adx14 | confirmed | 突破/趋势 |
+| `mtf_confirm` | MultiTimeframeConfirmStrategy | sma20, ema50 | confirmed | 趋势 |
+
+复合策略（`src/signals/composite.py`）可在此基础上组合多指标本地确认逻辑，通过 `strategy_registry.py` 注册。
+
+### Regime 检测
+
+`src/signals/regime.py` 对每根 K 线收盘计算行情状态（优先级从高到低）：
+
+1. Keltner-Bollinger Squeeze（BB 完全在 KC 内）→ `BREAKOUT`
+2. ADX ≥ 25 → `TRENDING`
+3. ADX < 20 且 BB 宽度 < 0.5% → `BREAKOUT`（盘整蓄力）
+4. ADX < 20 → `RANGING`
+5. 20 ≤ ADX < 25 → `UNCERTAIN`
+6. 无指标数据 → `UNCERTAIN`（兜底）
+
+Regime 结果以**亲和度乘数**修正策略置信度：`adjusted_confidence = raw_confidence × affinity`。
+当 `adjusted_confidence < min_preview_confidence`（默认 0.55）时信号被静默，无需在策略内手动判断 Regime。
+
+### 信号状态机
+
+SignalRuntime 使用**双队列**防止高频 intrabar 事件挤占 confirmed 事件：
+
+| 队列 | 大小 | 优先级 |
+|------|------|--------|
+| `_confirmed_events` | 512 | 高（优先消费） |
+| `_intrabar_events` | 4096 | 低（confirmed 为空时消费） |
+
+状态机转移：
+
+- **intrabar scope**：`idle` → `preview_buy/sell` → `armed_buy/sell` → `cancelled`
+- **confirmed scope**：`idle` → `confirmed_buy/sell` → `idle`
+
+`confirmed_buy/sell` 信号触发 TradeExecutor 自动开仓（若 `auto_trade_enabled = true`）。
+
+### 置信度校准
+
+`ConfidenceCalibrator`（`src/signals/calibrator.py`）根据历史胜率动态调整策略置信度：
+
+- `OutcomeTracker` 在信号产生后 N 根 bar 回填胜负记录
+- 校准器以 EWA 平均胜率乘以原始置信度
+- 历史绩效存储在 `DB:signal_outcomes`
+
+### 多策略投票引擎
+
+`VotingEngine`（`src/signals/voting.py`）汇总同一快照内多个策略的输出：
+
+- 加权 buy/sell 得分 > threshold 且满足 quorum → 产生 `strategy="consensus"` 信号
+- 方向分歧越大，共识置信度折扣越多
+- 投票统计可通过 `GET /signal/voting/stats` 查询
+
+### 新增策略 SOP
+
+1. 在 `src/signals/strategies.py` 中实现策略类，声明四个必填属性：
+
+   ```python
+   class MyStrategy:
+       name = "my_strategy"
+       required_indicators = ("adx14", "sma20")
+       preferred_scopes = ("confirmed",)
+       regime_affinity = {
+           RegimeType.TRENDING:  1.00,
+           RegimeType.RANGING:   0.20,
+           RegimeType.BREAKOUT:  0.50,
+           RegimeType.UNCERTAIN: 0.50,
+       }
+
+       def evaluate(self, indicators, metadata) -> SignalDecision: ...
+   ```
+
+2. 在 `src/signals/service.py` 的默认策略列表中注册实例
+3. 在 `tests/signals/` 中添加单元测试，覆盖四种 Regime 下的输出
+4. （可选）在 `config/signal.ini` 中调整 `min_preview_confidence` / `cooldown_seconds`
+
+## 风险管理
+
+交易请求从内到外经过多层校验：
+
+| 层次 | 模块 | 拦截条件 |
+|------|------|---------|
+| 信号过滤 | `src/signals/filters.py` | 非交易时段、点差过大、高影响经济事件窗口 |
+| Regime 亲和度 | `src/signals/regime.py` | 策略在当前 Regime 的适配度不足 |
+| 置信度阈值 | `src/signals/runtime.py` | adjusted_confidence < min_preview_confidence |
+| 交易前风险 | `src/core/pretrade_risk_service.py` | 仓位总数超限、账户余额不足 |
+| 风险规则 | `src/risk/rules.py` | 手数超限、SL/TP 未设或距离不足 |
+| Trade Guard | `src/core/economic_calendar_service.py` | 经济事件窗口内阻止下单 |
 
 ## 核心接口
 
@@ -205,6 +370,34 @@ uvicorn src.api:app --host 0.0.0.0 --port 8808
 - `GET /positions`
 - `GET /orders`
 
+### 指标系统
+
+- `GET /indicators/list`
+- `GET /indicators/{symbol}/{timeframe}`
+- `GET /indicators/{symbol}/{timeframe}/{indicator_name}`
+- `POST /indicators/compute`
+- `GET /indicators/performance/stats`
+- `POST /indicators/cache/clear`
+- `GET /indicators/dependency/graph`
+
+### 信号系统
+
+- `GET /signal/strategies` — 已注册的策略列表
+- `POST /signal/evaluate` — 手动触发策略评估
+- `GET /signal/recent` — 最近 N 个信号事件
+- `GET /signal/summary` — 按策略/品种/时间框架汇总统计
+- `GET /signal/runtime/status` — SignalRuntime 状态快照
+- `GET /signal/positions` — 信号驱动的持仓列表
+- `POST /signal/execute-trade` — 手动触发信号执行交易
+- `GET /signal/regime/{symbol}/{timeframe}` — 当前 Regime 状态
+- `GET /signal/consensus/recent` — 最近的 consensus 共识信号
+- `GET /signal/voting/stats` — 投票引擎统计
+- `GET /signal/outcomes/winrate` — 策略历史胜率
+- `GET /signal/htf/cache` — 高时间框架方向缓存状态
+- `GET /signal/calibrator/status` — 置信度校准器状态
+- `POST /signal/calibrator/refresh` — 手动刷新校准数据
+- `GET /signal/strategies/composite` — 复合策略列表
+
 ### 经济日历
 
 - `POST /economic/calendar/refresh`
@@ -218,16 +411,6 @@ uvicorn src.api:app --host 0.0.0.0 --port 8808
 - `GET /economic/calendar/trade-guard`
 - `GET /economic/calendar/updates`
 
-### 指标系统
-
-- `GET /indicators/list`
-- `GET /indicators/{symbol}/{timeframe}`
-- `GET /indicators/{symbol}/{timeframe}/{indicator_name}`
-- `POST /indicators/compute`
-- `GET /indicators/performance/stats`
-- `POST /indicators/cache/clear`
-- `GET /indicators/dependency/graph`
-
 ## 配置文件职责
 
 | 文件 | 作用 |
@@ -239,7 +422,9 @@ uvicorn src.api:app --host 0.0.0.0 --port 8808
 | `config/economic.ini` | 日历抓取、事件筛选、交易风控 |
 | `config/mt5.ini` | MT5 连接参数 |
 | `config/db.ini` | 数据库连接 |
+| `config/risk.ini` | 仓位数量限制、SL/TP 最小要求 |
 | `config/cache.ini` | 缓存兼容参数 |
+| `config/signal.ini` | 信号状态机、自动交易开关、仓位大小、置信度阈值 |
 | `config/indicators.json` | 当前统一指标配置 |
 
 更细的说明见 [CONFIG_GUIDE.md](CONFIG_GUIDE.md)。
@@ -253,6 +438,7 @@ uvicorn src.api:app --host 0.0.0.0 --port 8808
 - `tests/core`
 - `tests/data`
 - `tests/indicators`
+- `tests/signals`
 - `tests/integration`
 - `tests/smoke`
 
@@ -298,4 +484,4 @@ curl -H "X-API-Key: replace-with-your-key" http://localhost:8808/health
 - [QUICK_START.md](QUICK_START.md)
 - [CONFIG_GUIDE.md](CONFIG_GUIDE.md)
 
-如果文档与当前源码实现不一致，以 `app.py`、`src/api/`、`src/config/`、`src/indicators/manager.py` 为准。
+如果文档与当前源码实现不一致，以 `app.py`、`src/api/`、`src/config/`、`src/indicators/manager.py`、`src/signals/runtime.py` 为准。

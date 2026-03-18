@@ -17,6 +17,7 @@ from src.api.deps import (
     get_trading_service,
 )
 from src.config import get_effective_config_snapshot
+from src.config.advanced_manager import get_config_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
@@ -466,6 +467,23 @@ async def get_startup_monitoring() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to get startup monitoring summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/config/reload", summary="手动触发配置热加载")
+async def trigger_config_reload(filename: str = "signal.ini") -> Dict[str, Any]:
+    """触发指定配置文件的热加载，无需重启服务。
+
+    ``filename`` 参数应为 config/ 目录下的文件名，例如 ``signal.ini``。
+    该文件将被重新读取，并通过 ``_notify_config_change`` 通知所有已注册组件。
+    """
+    try:
+        mgr = get_config_manager()
+        mgr._load_config(filename)
+        mgr._notify_config_change(filename)
+        return {"success": True, "reloaded": filename}
+    except Exception as exc:
+        logger.error("Config reload failed for %s: %s", filename, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/runtime-tasks", summary="Get persisted runtime task status")

@@ -28,6 +28,8 @@ from src.persistence.schema import (
     INSERT_TRADE_OPERATIONS_SQL,
     INSERT_SIGNAL_EVENTS_SQL,
     INSERT_SIGNAL_PREVIEW_EVENTS_SQL,
+    INSERT_SIGNAL_OUTCOMES_SQL,
+    SIGNAL_OUTCOMES_WINRATE_SQL,
     UPSERT_RUNTIME_TASK_STATUS_SQL,
     UPSERT_ECONOMIC_CALENDAR_SQL,
 )
@@ -785,6 +787,35 @@ class TimescaleWriter:
         )
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, [max(1, int(hours))])
+            return cur.fetchall()
+
+    def write_outcome_events(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+        """批量写入信号结果记录（胜负标记）。
+
+        行格式：(recorded_at, signal_id, symbol, timeframe, strategy, action,
+                  confidence, entry_price, exit_price, price_change, won, bars_held,
+                  regime, metadata_dict)
+        """
+        batch = []
+        for row in rows:
+            metadata = row[13] if len(row) > 13 and row[13] is not None else {}
+            batch.append((*row[:13], Json(metadata)))
+        if not batch:
+            return
+        self._batch(INSERT_SIGNAL_OUTCOMES_SQL, batch, page_size=page_size)
+
+    def fetch_winrates(
+        self,
+        *,
+        hours: int = 168,
+        symbol: Optional[str] = None,
+    ) -> List[Tuple]:
+        """查询各策略胜率汇总。
+
+        返回列：(strategy, action, total, wins, win_rate, avg_confidence, avg_move)
+        """
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(SIGNAL_OUTCOMES_WINRATE_SQL, [max(1, hours), symbol, symbol])
             return cur.fetchall()
 
     def get_pool_stats(self) -> dict:

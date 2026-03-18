@@ -393,6 +393,69 @@ from src.config import get_trading_config, get_api_config, get_db_config
 2. 在 `config/indicators.json` 中添加条目，填写 `func_path`、`params`、`dependencies`
 3. 在 `tests/indicators/` 中添加测试
 
+### Adding New Signal Strategies（SOP）
+
+每个信号策略都是一个独立的「自描述单元」，必须完整声明四类属性才算合格。
+
+#### 策略类必填属性清单
+
+```python
+class MyNewStrategy:
+    # 1. 唯一名称（用于注册、日志、API）
+    name = "my_new_strategy"
+
+    # 2. 所需指标（对应 config/indicators.json 中的 name 字段）
+    required_indicators = ("adx14", "boll20")
+
+    # 3. 接收快照的 scope
+    #    "confirmed" = 仅 bar 收盘（指标完整，适合趋势/突破策略）
+    #    "intrabar"  = 盘中实时（适合均值回归类，需要捕捉极值的策略）
+    preferred_scopes = ("confirmed",)
+
+    # 4. ⚠️ Regime 亲和度（必填，不可省略）
+    #    决定该策略在各种行情状态下的置信度乘数（0.0–1.0）
+    #    乘数语义：
+    #      1.00 = 该行情下完全可信，信号不衰减
+    #      0.50 = 置信度减半（原 0.70 → 0.35，低于默认阈值 0.55，将被静默）
+    #      0.10 = 几乎完全压制，仅极高置信度信号才能通过
+    regime_affinity = {
+        RegimeType.TRENDING:  0.XX,  # 趋势行情（ADX≥25）时的适配度，附说明
+        RegimeType.RANGING:   0.XX,  # 震荡行情（ADX<20）时的适配度，附说明
+        RegimeType.BREAKOUT:  0.XX,  # 突破/Squeeze 释放时的适配度，附说明
+        RegimeType.UNCERTAIN: 0.XX,  # 过渡区（ADX 20-25）时的适配度
+    }
+```
+
+#### Regime 亲和度设计指南
+
+| 策略类型 | TRENDING | RANGING | BREAKOUT | UNCERTAIN |
+|---------|---------|---------|---------|---------|
+| 趋势跟踪（MA Cross、Supertrend、EMA Ribbon）| 1.00 | 0.1–0.3 | 0.4–0.6 | 0.5 |
+| 均值回归（RSI、StochRSI）| 0.2–0.3 | 1.00 | 0.3–0.4 | 0.6 |
+| 突破/波动率（Donchian、BB Squeeze、Keltner）| 0.3–0.9 | 0.15–0.55 | 1.00 | 0.45–0.65 |
+
+**核心原则**：亲和度 × 原始 confidence < `min_preview_confidence`（默认 0.55）时，
+SignalRuntime 状态机自然忽略该信号，无需在策略逻辑内做 Regime 判断。
+
+#### 完整新增步骤
+
+1. 在 `src/signals/strategies.py` 中实现策略类（包含上述四个属性 + `evaluate()` 方法）
+2. 在 `src/signals/service.py` 的默认策略列表中注册实例
+3. 在 `tests/signals/` 中添加单元测试，覆盖四种 Regime 下的输出
+4. （可选）在 `config/signal.ini` 中调整 `min_preview_confidence` / `cooldown_seconds`
+
+#### Regime 分类逻辑参考（`src/signals/regime.py`）
+
+```
+优先级：
+  1. Keltner-Bollinger Squeeze（BB完全在KC内）→ BREAKOUT
+  2. ADX ≥ 25 → TRENDING
+  3. ADX < 20 且 BB宽度 < 0.5% → BREAKOUT（蓄力盘整）
+  4. ADX < 20 → RANGING
+  5. 20 ≤ ADX < 25 → UNCERTAIN
+  6. 无指标数据 → UNCERTAIN（兜底）
+```
+
 ### Adding New API Routes
 
 1. 在 `src/api/` 中创建路由文件

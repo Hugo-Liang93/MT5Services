@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any, Dict, Iterable, Optional
 
 from .adapters import IndicatorSource
+from .calibrator import ConfidenceCalibrator
 from .models import SignalContext, SignalDecision, SignalRecord
+from .regime import MarketRegimeDetector, RegimeType
 from .repository import SignalRepository
 from .strategies import (
     BollingerBreakoutStrategy,
+    DonchianBreakoutStrategy,
+    EmaRibbonStrategy,
+    KeltnerBollingerSqueezeStrategy,
+    MacdMomentumStrategy,
     MultiTimeframeConfirmStrategy,
     RsiReversionStrategy,
     SignalStrategy,
     SmaTrendStrategy,
+    StochRsiStrategy,
+    SupertrendStrategy,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,15 +32,32 @@ class SignalModule:
         indicator_source: IndicatorSource,
         strategies: Optional[Iterable[SignalStrategy]] = None,
         repository: Optional[SignalRepository] = None,
+        regime_detector: Optional[MarketRegimeDetector] = None,
+        calibrator: Optional[ConfidenceCalibrator] = None,
     ):
         self.indicator_source = indicator_source
         self.repository = repository
+        self._regime_detector: MarketRegimeDetector = (
+            regime_detector or MarketRegimeDetector()
+        )
+        # 置信度校准器：基于历史胜率对原始 confidence 进行混合校准。
+        # None = 不校准（新部署或没有足够历史数据时的默认状态）。
+        self._calibrator: Optional[ConfidenceCalibrator] = calibrator
         self._strategies: dict[str, SignalStrategy] = {}
         default_strategies: Iterable[SignalStrategy] = strategies or (
             SmaTrendStrategy(),
             RsiReversionStrategy(),
             BollingerBreakoutStrategy(),
-            MultiTimeframeConfirmStrategy(),
+            # MultiTimeframeConfirmStrategy 需要外部注入 state_reader 和 htf_key
+            # 才能发挥作用；在默认配置下 htf_key 永不填充，策略始终输出 hold。
+            # 如需使用，请手动构造并传入 strategies 参数：
+            #   MultiTimeframeConfirmStrategy(state_reader=runtime._state_by_target)
+            SupertrendStrategy(),
+            StochRsiStrategy(),
+            MacdMomentumStrategy(),
+            KeltnerBollingerSqueezeStrategy(),
+            DonchianBreakoutStrategy(),
+            EmaRibbonStrategy(),
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)
@@ -48,6 +74,14 @@ class SignalModule:
             raise ValueError(f"unsupported signal strategy: {strategy}")
         requirements = getattr(strategy_impl, "required_indicators", ())
         return tuple(str(item) for item in requirements)
+
+    def strategy_affinity_map(self, strategy: str) -> Dict[RegimeType, float]:
+        """返回策略的 regime_affinity 字典（不存在时返回空字典）。
+
+        运行时在启动时缓存此结果，避免每次 process_next_event 重复 getattr。
+        """
+        impl = self._strategies.get(strategy)
+        return getattr(impl, "regime_affinity", {}) if impl else {}
 
     def strategy_scopes(self, strategy: str) -> tuple[str, ...]:
         """Return the snapshot scopes this strategy wants to receive.
@@ -106,6 +140,55 @@ class SignalModule:
             metadata=metadata or {},
         )
         decision = strategy_impl.evaluate(context)
+
+        # ── Regime 亲和度修正 ────────────────────────────────────────────
+        # 从策略类属性 regime_affinity 读取当前 Regime 对应的乘数，
+        # 压制在当前行情类型下不可靠的策略。
+        # 置信度降低后若低于 min_preview_confidence（默认 0.55），
+        # SignalRuntime 状态机会自然忽略该信号，无需在此处做额外的硬截断。
+        #
+        # 性能优化：runtime 在 process_next_event 循环开始前会检测一次 Regime，
+        # 并将结果写入 metadata["_regime"]。若存在则直接复用，跳过重复检测。
+        pre_computed = (metadata or {}).get("_regime")
+        if pre_computed:
+            try:
+                regime = RegimeType(pre_computed)
+            except ValueError:
+                regime = self._regime_detector.detect(indicator_payload)
+        else:
+            regime = self._regime_detector.detect(indicator_payload)
+        # 优先读策略类上的 regime_affinity 属性；缺失时回退到中性值 0.5
+        affinity_map: Dict[RegimeType, float] = getattr(strategy_impl, "regime_affinity", {})
+        affinity = affinity_map.get(regime, 0.5)
+        adjusted_confidence = decision.confidence * affinity
+        # ── 置信度校准（历史胜率反馈层）────────────────────────────────
+        # 在 Regime 亲和度修正之后，再根据该策略 (action, regime) 的历史胜率
+        # 做混合校准，使置信度逐步收敛到与实际盈亏挂钩的值。
+        # calibrator=None（默认）时此步跳过，对现有行为零影响。
+        raw_post_affinity = adjusted_confidence
+        if self._calibrator is not None and decision.action in ("buy", "sell"):
+            calibrated = self._calibrator.calibrate(
+                strategy=decision.strategy,
+                action=decision.action,
+                raw_confidence=raw_post_affinity,
+                regime=regime,
+            )
+        else:
+            calibrated = raw_post_affinity
+
+        decision = dataclasses.replace(
+            decision,
+            confidence=calibrated,
+            metadata={
+                **decision.metadata,
+                "regime": regime.value,
+                "regime_affinity": affinity,
+                "raw_confidence": decision.confidence,       # 原始规则输出
+                "post_affinity_confidence": raw_post_affinity,
+                "calibrated": self._calibrator is not None and decision.action in ("buy", "sell"),
+            },
+        )
+
         if persist:
             self._persist_signal(decision, indicator_payload, metadata)
         return decision

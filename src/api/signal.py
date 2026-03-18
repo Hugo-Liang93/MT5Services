@@ -4,8 +4,21 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.api.deps import get_position_manager, get_signal_runtime, get_signal_service, get_trading_service
+from src.api.deps import (
+    get_calibrator,
+    get_htf_cache,
+    get_outcome_tracker,
+    get_position_manager,
+    get_signal_runtime,
+    get_signal_service,
+    get_trading_service,
+)
+from src.signals.calibrator import ConfidenceCalibrator
+from src.signals.composite import CompositeSignalStrategy
+from src.signals.htf_cache import HTFStateCache
+from src.signals.outcome_tracker import OutcomeTracker
 from src.signals.position_manager import PositionManager
+from src.signals.regime import MarketRegimeDetector
 from src.api.schemas import (
     ApiResponse,
     SignalDecisionModel,
@@ -202,3 +215,156 @@ def execute_trade_from_signal(
         },
     )
 
+
+# ── 监控端点 ─────────────────────────────────────────────────────────────────
+
+@router.get("/regime/{symbol}/{timeframe}", response_model=ApiResponse[Dict[str, Any]])
+def get_regime(
+    symbol: str,
+    timeframe: str,
+    service: SignalModule = Depends(get_signal_service),
+    runtime: SignalRuntime = Depends(get_signal_runtime),
+) -> ApiResponse[Dict[str, Any]]:
+    """返回指定品种/时间框架的当前 Regime 及稳定性信息。"""
+    indicators = service.indicator_source.get_all_indicators(symbol, timeframe)
+    detector = MarketRegimeDetector()
+    detail = detector.detect_with_detail(indicators)
+    # 从 runtime 读取 RegimeTracker 稳定性
+    tracker = runtime._regime_trackers.get((symbol, timeframe))
+    stability = tracker.describe() if tracker else None
+    return ApiResponse.success_response(
+        data={
+            **detail,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "stability": stability,
+        }
+    )
+
+
+@router.get("/consensus/recent", response_model=ApiResponse[list[SignalEventModel]])
+def recent_consensus_signals(
+    symbol: Optional[str] = Query(default=None),
+    timeframe: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[list[SignalEventModel]]:
+    """返回最近的 consensus 综合信号记录。"""
+    rows = service.recent_signals(
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy="consensus",
+        scope="confirmed",
+        limit=limit,
+    )
+    return ApiResponse.success_response(
+        data=[SignalEventModel(**row) for row in rows],
+        metadata={"count": len(rows)},
+    )
+
+
+@router.get("/voting/stats", response_model=ApiResponse[Dict[str, Any]])
+def voting_stats(
+    runtime: SignalRuntime = Depends(get_signal_runtime),
+) -> ApiResponse[Dict[str, Any]]:
+    """返回表决引擎配置及各交易对 Regime 稳定性状态。"""
+    voting_engine = runtime._voting_engine
+    regime_stability = {
+        f"{sym}/{tf}": tracker.describe()
+        for (sym, tf), tracker in runtime._regime_trackers.items()
+    }
+    return ApiResponse.success_response(
+        data={
+            "voting_enabled": voting_engine is not None,
+            "voting_config": voting_engine.describe() if voting_engine else None,
+            "regime_stability": regime_stability,
+        }
+    )
+
+
+@router.get("/outcomes/winrate", response_model=ApiResponse[list[Dict[str, Any]]])
+def signal_outcomes_winrate(
+    hours: int = Query(default=168, ge=1, le=24 * 90),
+    symbol: Optional[str] = Query(default=None),
+    outcome_tracker: OutcomeTracker = Depends(get_outcome_tracker),
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[list[Dict[str, Any]]]:
+    """从数据库查询各策略历史胜率，并附带内存实时统计。"""
+    rows: list[Dict[str, Any]] = []
+    try:
+        repo = service.repository
+        if repo is not None and hasattr(repo, "_db"):
+            db_rows = repo._db.fetch_winrates(hours=hours, symbol=symbol)
+            rows = [
+                {
+                    "strategy": r[0],
+                    "action": r[1],
+                    "total": r[2],
+                    "wins": r[3],
+                    "win_rate": float(r[4]) if r[4] is not None else None,
+                    "avg_confidence": float(r[5]) if r[5] is not None else None,
+                    "avg_move": float(r[6]) if r[6] is not None else None,
+                }
+                for r in db_rows
+            ]
+    except Exception:
+        pass
+    return ApiResponse.success_response(
+        data=rows,
+        metadata={
+            "hours": hours,
+            "symbol": symbol,
+            "count": len(rows),
+            "live_stats": outcome_tracker.winrate_summary(),
+        },
+    )
+
+
+@router.get("/htf/cache", response_model=ApiResponse[Dict[str, Any]])
+def htf_cache_status(
+    htf_cache: HTFStateCache = Depends(get_htf_cache),
+) -> ApiResponse[Dict[str, Any]]:
+    """返回高时间框架方向缓存内容（用于 MTF 策略调试）。"""
+    return ApiResponse.success_response(data=htf_cache.describe())
+
+
+@router.get("/calibrator/status", response_model=ApiResponse[Dict[str, Any]])
+def calibrator_status(
+    calibrator: ConfidenceCalibrator = Depends(get_calibrator),
+) -> ApiResponse[Dict[str, Any]]:
+    """返回置信度校准器的当前状态（缓存大小、校准次数、胜率来源等）。"""
+    return ApiResponse.success_response(data=calibrator.describe())
+
+
+@router.post("/calibrator/refresh", response_model=ApiResponse[Dict[str, Any]])
+def calibrator_refresh(
+    hours: int = Query(default=168, ge=24, le=24 * 90),
+    calibrator: ConfidenceCalibrator = Depends(get_calibrator),
+) -> ApiResponse[Dict[str, Any]]:
+    """立即刷新置信度校准器的历史胜率缓存。
+
+    正常情况下校准器每小时自动刷新一次；此端点可手动强制更新，
+    例如在导入历史回测数据后立即让新数据生效。
+    """
+    calibrator._refresh_hours = hours
+    count = calibrator.refresh()
+    return ApiResponse.success_response(
+        data={**calibrator.describe(), "rows_loaded": count},
+        metadata={"hours": hours},
+    )
+
+
+@router.get("/strategies/composite", response_model=ApiResponse[list[Dict[str, Any]]])
+def list_composite_strategies(
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[list[Dict[str, Any]]]:
+    """返回所有复合策略的描述信息（子策略列表、组合模式、Regime 亲和度）。"""
+    result = []
+    for name in service.list_strategies():
+        impl = service._strategies.get(name)
+        if isinstance(impl, CompositeSignalStrategy):
+            result.append(impl.describe())
+    return ApiResponse.success_response(
+        data=result,
+        metadata={"count": len(result)},
+    )

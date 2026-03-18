@@ -184,10 +184,22 @@ class AdvancedConfigManager:
         self.configs: Dict[str, Any] = {}
         self.watcher = ConfigWatcher(config_dir)
         self._lock = threading.RLock()
+        # 组件注册的配置变更回调：callback(filename: str) → None
+        self._change_callbacks: List[Callable[[str], None]] = []
         self._load_all_configs()
         self.watcher.register_callback(self._on_config_change)
         self.watcher.start()
         logger.info("AdvancedConfigManager initialized with config dir: %s", config_dir)
+
+    def register_change_callback(self, callback: Callable[[str], None]) -> None:
+        """注册配置文件变更时的通知回调。
+
+        每当某个 .ini 文件被修改并重新加载后，
+        ``callback(filename)`` 会被调用（filename 为如 "signal.ini" 的文件名）。
+        线程：回调在 ConfigWatcher 后台线程中执行，需注意线程安全。
+        """
+        if callback not in self._change_callbacks:
+            self._change_callbacks.append(callback)
 
     def _load_all_configs(self):
         for config_file in self.watcher._iter_config_files():
@@ -323,8 +335,13 @@ class AdvancedConfigManager:
         self._load_config(Path(event.config_file).name)
         self._notify_config_change(Path(event.config_file).name)
 
-    def _notify_config_change(self, filename: str):
+    def _notify_config_change(self, filename: str) -> None:
         logger.info("Notifying components about config change: %s", filename)
+        for cb in list(self._change_callbacks):
+            try:
+                cb(filename)
+            except Exception:
+                logger.exception("Config change callback failed for %s: %s", filename, cb)
 
     def _get_json_node(self, config: Any, section: str) -> Any:
         if not isinstance(config, dict):

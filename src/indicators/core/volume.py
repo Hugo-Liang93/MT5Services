@@ -10,10 +10,11 @@ def obv(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
         return {}
     value = 0.0
     for prev, curr in zip(window[:-1], window[1:]):
+        vol = float(curr.volume or 0.0)  # 修复：MT5某些品种volume可能为None
         if curr.close > prev.close:
-            value += curr.volume
+            value += vol
         elif curr.close < prev.close:
-            value -= curr.volume
+            value -= vol
     return {"obv": value}
 
 
@@ -22,10 +23,10 @@ def vwap(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     window = tail_bars(bars, period)
     if not window:
         return {}
-    total_volume = sum(bar.volume for bar in window)
+    total_volume = sum(float(bar.volume or 0.0) for bar in window)  # 修复：volume可能为None
     if total_volume == 0:
         return {}
-    sum_pv = sum(((bar.high + bar.low + bar.close) / 3) * bar.volume for bar in window)
+    sum_pv = sum(((bar.high + bar.low + bar.close) / 3) * float(bar.volume or 0.0) for bar in window)
     return {"vwap": sum_pv / total_volume}
 
 
