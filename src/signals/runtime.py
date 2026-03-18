@@ -89,12 +89,17 @@ class SignalRuntime:
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._events: queue.Queue = queue.Queue(maxsize=4096)
+        # Separate queues by scope so that intrabar bursts cannot starve
+        # confirmed (bar-close) events, which must never be dropped.
+        self._confirmed_events: queue.Queue = queue.Queue(maxsize=512)
+        self._intrabar_events: queue.Queue = queue.Queue(maxsize=4096)
         self._last_run_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
         self._run_count = 0
         self._processed_events = 0
         self._dropped_events = 0
+        self._dropped_confirmed = 0
+        self._dropped_intrabar = 0
         self._last_drop_log_at: float = 0.0
         self._state_by_target: dict[tuple[str, str, str], RuntimeSignalState] = {}
 
@@ -142,23 +147,31 @@ class SignalRuntime:
         self,
         item: tuple[str, str, str, Dict[str, Dict[str, float]], Dict[str, Any]],
     ) -> None:
+        scope = item[0]
+        target_queue = self._confirmed_events if scope == "confirmed" else self._intrabar_events
         try:
-            self._events.put_nowait(item)
+            target_queue.put_nowait(item)
         except queue.Full:
             self._dropped_events += 1
+            if scope == "confirmed":
+                self._dropped_confirmed += 1
+            else:
+                self._dropped_intrabar += 1
             now = time.monotonic()
             # Rate-limit error logs to at most once per 60 s to avoid log spam.
             if now - self._last_drop_log_at >= 60.0:
                 self._last_drop_log_at = now
-                scope, symbol, timeframe = item[0], item[1], item[2]
+                symbol, timeframe = item[1], item[2]
                 logger.error(
-                    "Signal runtime queue is full — indicator snapshot dropped "
-                    "(total_dropped=%d, scope=%s, symbol=%s, timeframe=%s). "
-                    "Consider increasing maxsize=4096 or reducing intrabar frequency.",
+                    "Signal runtime %s queue is full — indicator snapshot dropped "
+                    "(total_dropped=%d, scope=%s, symbol=%s, timeframe=%s, maxsize=%d). "
+                    "Consider increasing queue capacity or reducing event frequency.",
+                    scope,
                     self._dropped_events,
                     scope,
                     symbol,
                     timeframe,
+                    target_queue.maxsize,
                 )
 
     def status(self) -> dict:
@@ -176,8 +189,15 @@ class SignalRuntime:
             "run_count": self._run_count,
             "processed_events": self._processed_events,
             "dropped_events": self._dropped_events,
-            "queue_size": self._events.qsize(),
-            "queue_capacity": self._events.maxsize,
+            "dropped_confirmed": self._dropped_confirmed,
+            "dropped_intrabar": self._dropped_intrabar,
+            "confirmed_queue_size": self._confirmed_events.qsize(),
+            "confirmed_queue_capacity": self._confirmed_events.maxsize,
+            "intrabar_queue_size": self._intrabar_events.qsize(),
+            "intrabar_queue_capacity": self._intrabar_events.maxsize,
+            # Aggregate fields kept for backward compatibility.
+            "queue_size": self._confirmed_events.qsize() + self._intrabar_events.qsize(),
+            "queue_capacity": self._confirmed_events.maxsize + self._intrabar_events.maxsize,
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
             "active_preview_states": sum(
@@ -552,10 +572,15 @@ class SignalRuntime:
         return enriched
 
     def process_next_event(self, timeout: float = 0.5) -> bool:
+        # Always drain confirmed (bar-close) events first to guarantee they are
+        # never starved by a burst of intrabar updates.
         try:
-            event = self._events.get(timeout=timeout)
+            event = self._confirmed_events.get_nowait()
         except queue.Empty:
-            return False
+            try:
+                event = self._intrabar_events.get(timeout=timeout)
+            except queue.Empty:
+                return False
         scope, symbol, timeframe, indicators, metadata = event
         event_time = self._parse_event_time(metadata.get("snapshot_time", datetime.now(timezone.utc)))
         bar_time = self._parse_event_time(metadata.get("bar_time", event_time))

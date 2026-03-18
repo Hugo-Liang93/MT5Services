@@ -364,3 +364,87 @@ def test_signal_runtime_deduplicates_same_required_indicator_snapshot_for_same_b
 
     assert len(service.evaluate_calls) == 1
     assert len(service.persist_calls) == 1
+
+
+def test_signal_runtime_confirmed_queue_is_drained_before_intrabar() -> None:
+    """Confirmed events must be processed before intrabar events even when both are queued."""
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=True,
+        policy=SignalPolicy(
+            min_preview_confidence=0.5,
+            min_preview_bar_progress=0.0,
+            min_preview_stable_seconds=0.0,
+            preview_cooldown_seconds=0.0,
+        ),
+    )
+
+    # Enqueue intrabar first, then confirmed.
+    bar_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+    runtime._enqueue(
+        (
+            "intrabar",
+            "XAUUSD",
+            "M5",
+            {"rsi14": {"rsi": 24.0}},
+            {
+                "scope": "intrabar",
+                "bar_time": bar_time.isoformat(),
+                "snapshot_time": datetime.now(timezone.utc).isoformat(),
+                "trigger_source": "intrabar_snapshot",
+                "bar_progress": 0.5,
+            },
+        )
+    )
+    runtime._enqueue(
+        (
+            "confirmed",
+            "XAUUSD",
+            "M5",
+            {"rsi14": {"rsi": 24.0}},
+            {
+                "scope": "confirmed",
+                "bar_time": bar_time.isoformat(),
+                "snapshot_time": datetime.now(timezone.utc).isoformat(),
+                "trigger_source": "confirmed_snapshot",
+            },
+        )
+    )
+
+    # First call must process the confirmed event despite it being enqueued second.
+    runtime.process_next_event(timeout=0.01)
+    assert len(service.evaluate_calls) == 1
+    assert service.evaluate_calls[0]["metadata"]["scope"] == "confirmed"
+
+    # Second call processes the intrabar event.
+    runtime.process_next_event(timeout=0.01)
+    assert len(service.evaluate_calls) == 2
+    assert service.evaluate_calls[1]["metadata"]["scope"] == "intrabar"
+
+
+def test_signal_runtime_status_exposes_split_queues() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=True,
+    )
+
+    status = runtime.status()
+
+    assert "confirmed_queue_size" in status
+    assert "confirmed_queue_capacity" in status
+    assert "intrabar_queue_size" in status
+    assert "intrabar_queue_capacity" in status
+    assert status["confirmed_queue_capacity"] == 512
+    assert status["intrabar_queue_capacity"] == 4096
+    assert "dropped_confirmed" in status
+    assert "dropped_intrabar" in status
