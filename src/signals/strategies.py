@@ -154,12 +154,13 @@ class BollingerBreakoutStrategy:
     """
 
     name = "bollinger_breakout"
-    required_indicators = ("bollinger20",)
+    required_indicators = ("boll20",)
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         upper, upper_name = _resolve_indicator_value(
             context.indicators,
             (
+                ("boll20", "bb_upper"),
                 ("bollinger20", "bb_upper"),
                 ("bollinger", "bb_upper"),
             ),
@@ -167,6 +168,7 @@ class BollingerBreakoutStrategy:
         lower, lower_name = _resolve_indicator_value(
             context.indicators,
             (
+                ("boll20", "bb_lower"),
                 ("bollinger20", "bb_lower"),
                 ("bollinger", "bb_lower"),
             ),
@@ -174,6 +176,7 @@ class BollingerBreakoutStrategy:
         mid, _ = _resolve_indicator_value(
             context.indicators,
             (
+                ("boll20", "bb_mid"),
                 ("bollinger20", "bb_mid"),
                 ("bollinger", "bb_mid"),
             ),
@@ -189,7 +192,7 @@ class BollingerBreakoutStrategy:
                 action="hold",
                 confidence=0.0,
                 reason="missing_required_indicators",
-                used_indicators=used or ["bollinger20"],
+                used_indicators=used or ["boll20"],
             )
 
         band_width = (upper - lower) / mid if mid else 0.0
@@ -214,7 +217,7 @@ class BollingerBreakoutStrategy:
             action=action,
             confidence=confidence,
             reason=f"bb_close={close_value:.2f},upper={upper:.2f},lower={lower:.2f}",
-            used_indicators=used or ["bollinger20"],
+            used_indicators=used or ["boll20"],
             metadata={
                 "close": close_value,
                 "bb_upper": upper,
@@ -228,7 +231,7 @@ class BollingerBreakoutStrategy:
     @staticmethod
     def _get_close(context: SignalContext) -> Optional[float]:
         """Try to extract close price from indicators metadata."""
-        for indicator_name in ("bollinger20", "bollinger", "close", "price"):
+        for indicator_name in ("boll20", "bollinger20", "bollinger", "close", "price"):
             payload = context.indicators.get(indicator_name)
             if isinstance(payload, dict):
                 for field in ("close", "value", "last"):

@@ -389,7 +389,7 @@ class OptimizedPipeline:
         indicators: Optional[List[str]] = None,
         on_level_complete: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        return self._compute_internal(symbol, timeframe, bars, indicators=indicators)
+        start_time = time.time()
         try:
             if indicators is None:
                 indicators = list(self.dependency_manager.indicator_funcs.keys())

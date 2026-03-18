@@ -879,11 +879,12 @@ class UnifiedIndicatorManager:
         *,
         bar_time: datetime,
         scope: str,
+        indicator_names: Optional[List[str]] = None,
     ) -> Tuple[Dict[str, Dict[str, Any]], float]:
         if len(bars) < 2:
             return {}, 0.0
 
-        selected_names = self._select_indicator_names_for_history(len(bars))
+        selected_names = self._select_indicator_names_for_history(len(bars), indicator_names)
         if not selected_names:
             return {}, 0.0
 
@@ -1011,6 +1012,7 @@ class UnifiedIndicatorManager:
         bars: List[Any],
         *,
         bar_time: datetime,
+        indicator_names: Optional[List[str]] = None,
     ) -> Tuple[Dict[str, Dict[str, Any]], float]:
         return self._compute_results_with_priority_groups(
             symbol,
@@ -1018,6 +1020,7 @@ class UnifiedIndicatorManager:
             bars,
             bar_time=bar_time,
             scope="intrabar",
+            indicator_names=indicator_names,
         )
 
     def _process_closed_bar_event(
@@ -1084,6 +1087,10 @@ class UnifiedIndicatorManager:
         timeframe: str,
         bar: Any,
     ) -> Dict[str, Dict[str, float]]:
+        # Filter indicator set upfront so the pipeline never runs volume-derived
+        # or session-sensitive indicators on partial bars (avoids wasted CPU and
+        # semantically misleading intrabar values for mfi14, obv30, vwap30, etc.).
+        eligible = list(self._get_intrabar_eligible_names())
         bars = self._load_intrabar_bars(symbol, timeframe, bar)
         if not bars:
             return {}
@@ -1092,14 +1099,11 @@ class UnifiedIndicatorManager:
             timeframe,
             bars,
             bar_time=bar.time,
+            indicator_names=eligible,
         )
         if not bars or not results:
             return {}
-        # Apply intrabar_eligible filter: exclude indicators not suitable for
-        # partial-bar computation (e.g. volume-derived or session-sensitive).
-        eligible = self._get_intrabar_eligible_names()
-        filtered_results = {k: v for k, v in results.items() if k in eligible}
-        grouped = self._group_indicator_values(filtered_results)
+        grouped = self._group_indicator_values(results)
         if not grouped:
             return {}
         return self._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
@@ -1233,6 +1237,7 @@ class UnifiedIndicatorManager:
             "dependents": list(self.dependency_manager.get_dependents(name)),
             "compute_mode": config.compute_mode.value,
             "enabled": config.enabled,
+            "intrabar_eligible": config.intrabar_eligible,
             "description": config.description,
             "tags": config.tags,
         }
