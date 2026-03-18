@@ -49,9 +49,9 @@
         "min_bars": 26
       },
       "dependencies": [],
-      "compute_mode": "parallel",
+      "compute_mode": "standard",
       "enabled": true,
-      "description": "移动平均收敛发散指标",
+      "description": "移动平均收敛发散指标（修复：parallel模式对顺序依赖计算无效）",
       "tags": ["momentum", "trend"]
     },
     {
@@ -229,6 +229,62 @@
       "enabled": true,
       "description": "20周期加权移动平均线",
       "tags": ["trend", "mean"]
+    },
+    {
+      "name": "supertrend14",
+      "func_path": "src.indicators.core.momentum.supertrend",
+      "params": {
+        "period": 14,
+        "multiplier": 3.0,
+        "min_bars": 30
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "14周期Supertrend趋势跟踪指标（黄金日内交易核心指标）",
+      "tags": ["trend", "volatility"]
+    },
+    {
+      "name": "stoch_rsi14",
+      "func_path": "src.indicators.core.momentum.stoch_rsi",
+      "params": {
+        "rsi_period": 14,
+        "stoch_period": 14,
+        "smooth_k": 3,
+        "smooth_d": 3,
+        "min_bars": 50
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "14周期Stochastic RSI，比RSI更敏感的超买超卖指标",
+      "tags": ["momentum", "oscillator"]
+    },
+    {
+      "name": "hma20",
+      "func_path": "src.indicators.core.mean.hma",
+      "params": {
+        "period": 20,
+        "min_bars": 30
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "20周期Hull移动平均线（低滞后，适合黄金日内趋势判断）",
+      "tags": ["trend", "mean"]
+    },
+    {
+      "name": "ema9",
+      "func_path": "src.indicators.core.mean.ema",
+      "params": {
+        "period": 9,
+        "min_bars": 9
+      },
+      "dependencies": [],
+      "compute_mode": "incremental",
+      "enabled": true,
+      "description": "9周期快速EMA，用于短期动量捕捉",
+      "tags": ["trend", "mean"]
     }
   ],
   "pipeline": {
@@ -236,7 +292,7 @@
     "max_workers": 4,
     "enable_cache": true,
     "cache_strategy": "lru_ttl",
-    "cache_ttl": 300.0,
+    "cache_ttl": 60.0,
     "cache_maxsize": 1000,
     "enable_incremental": true,
     "max_retries": 2,

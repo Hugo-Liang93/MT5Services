@@ -8,10 +8,13 @@ from .models import SignalContext, SignalDecision, SignalRecord
 from .repository import SignalRepository
 from .strategies import (
     BollingerBreakoutStrategy,
+    MacdMomentumStrategy,
     MultiTimeframeConfirmStrategy,
     RsiReversionStrategy,
     SignalStrategy,
     SmaTrendStrategy,
+    StochRsiStrategy,
+    SupertrendStrategy,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,9 @@ class SignalModule:
             RsiReversionStrategy(),
             BollingerBreakoutStrategy(),
             MultiTimeframeConfirmStrategy(),
+            SupertrendStrategy(),
+            StochRsiStrategy(),
+            MacdMomentumStrategy(),
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)

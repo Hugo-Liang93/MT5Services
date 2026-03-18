@@ -385,3 +385,257 @@ class MultiTimeframeConfirmStrategy:
         except Exception:
             pass
         return None
+
+
+class SupertrendStrategy:
+    """基于 Supertrend 的趋势跟踪策略。
+
+    Supertrend 是黄金日内交易最有效的趋势指标之一：
+    - 当价格从 Supertrend 下方突破至上方（direction -1→1）→ BUY
+    - 当价格从 Supertrend 上方跌破至下方（direction 1→-1）→ SELL
+    - 结合 ADX 过滤，只在趋势明确时（ADX > adx_threshold）发出信号
+
+    仅在 bar 收盘时评估（confirmed scope），Supertrend 方向在 bar 中间频繁
+    翻转会产生大量假信号。
+    """
+
+    name = "supertrend"
+    required_indicators = ("supertrend14", "adx14")
+    preferred_scopes = ("confirmed",)
+
+    def __init__(self, *, adx_threshold: float = 20.0) -> None:
+        self._adx_threshold = adx_threshold
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        st_direction, st_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("supertrend14", "direction"),
+                ("supertrend", "direction"),
+            ),
+        )
+        st_value, _ = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("supertrend14", "supertrend"),
+                ("supertrend", "supertrend"),
+            ),
+        )
+        adx_value, adx_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("adx14", "adx"),
+                ("adx", "adx"),
+            ),
+        )
+        used = [n for n in (st_name, adx_name) if n]
+
+        if st_direction is None or st_value is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicator:supertrend",
+                used_indicators=used or ["supertrend14"],
+            )
+
+        # ADX 过滤：趋势强度不足时不交易（减少震荡行情假信号）
+        adx = adx_value if adx_value is not None else 0.0
+        if adx < self._adx_threshold:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.1,
+                reason=f"adx_too_low:{adx:.1f}<{self._adx_threshold}",
+                used_indicators=used or ["supertrend14", "adx14"],
+                metadata={"adx": adx, "st_direction": st_direction},
+            )
+
+        # direction: 1.0 = 多头, -1.0 = 空头
+        if st_direction > 0:
+            action = "buy"
+        elif st_direction < 0:
+            action = "sell"
+        else:
+            action = "hold"
+
+        # 置信度：ADX 越强信号越可靠，上限 1.0
+        adx_confidence = min((adx - self._adx_threshold) / 30.0 + 0.6, 1.0)
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=adx_confidence,
+            reason=f"supertrend_direction={st_direction:.0f},adx={adx:.1f}",
+            used_indicators=used or ["supertrend14", "adx14"],
+            metadata={
+                "supertrend": st_value,
+                "direction": st_direction,
+                "adx": adx,
+            },
+        )
+
+
+class StochRsiStrategy:
+    """基于 Stochastic RSI 的超买超卖策略。
+
+    Stochastic RSI 比普通 RSI 更敏感，能提前捕捉黄金动量耗尽：
+    - StochRSI_K < 20 且 K > D（死叉结束，动量向上）→ BUY
+    - StochRSI_K > 80 且 K < D（金叉结束，动量向下）→ SELL
+    - 过滤掉震荡信号：只有 K 线与 D 线有明确交叉方向时才发信号
+
+    支持 intrabar 快照——Stochastic RSI 的极值常发生在 bar 中间。
+    """
+
+    name = "stoch_rsi"
+    required_indicators = ("stoch_rsi14",)
+    preferred_scopes = ("intrabar", "confirmed")
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        k_value, k_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("stoch_rsi14", "stoch_rsi_k"),
+                ("stoch_rsi", "stoch_rsi_k"),
+            ),
+        )
+        d_value, _ = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("stoch_rsi14", "stoch_rsi_d"),
+                ("stoch_rsi", "stoch_rsi_d"),
+            ),
+        )
+        used = [k_name] if k_name else ["stoch_rsi14"]
+
+        if k_value is None or d_value is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicator:stoch_rsi",
+                used_indicators=used,
+            )
+
+        k = k_value
+        d = d_value
+
+        if k < 20 and k > d:
+            # 超卖区域，K 线上穿 D 线：动量由空转多
+            action = "buy"
+            depth = (20.0 - k) / 20.0          # 越深越强
+            cross_strength = min((k - d) / 5.0, 1.0)
+            confidence = min(0.5 + depth * 0.3 + cross_strength * 0.2, 1.0)
+        elif k > 80 and k < d:
+            # 超买区域，K 线下穿 D 线：动量由多转空
+            action = "sell"
+            depth = (k - 80.0) / 20.0
+            cross_strength = min((d - k) / 5.0, 1.0)
+            confidence = min(0.5 + depth * 0.3 + cross_strength * 0.2, 1.0)
+        else:
+            action = "hold"
+            confidence = 0.15
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=confidence,
+            reason=f"stoch_rsi_k={k:.2f},d={d:.2f}",
+            used_indicators=used,
+            metadata={"stoch_rsi_k": k, "stoch_rsi_d": d},
+        )
+
+
+class MacdMomentumStrategy:
+    """基于 MACD 柱状图动量的趋势策略。
+
+    黄金趋势行情中 MACD 柱状图的方向翻转是重要的动量确认信号：
+    - hist 由负转正（从负值区域向上穿越零轴）→ BUY
+    - hist 由正转负（从正值区域向下穿越零轴）→ SELL
+    - hist 绝对值越大，动量越强，置信度越高
+    - 附加过滤：macd 线与 signal 线方向一致时才发信号
+
+    仅在 bar 收盘时评估（confirmed scope）。
+    """
+
+    name = "macd_momentum"
+    required_indicators = ("macd",)
+    preferred_scopes = ("confirmed",)
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        macd_val, macd_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("macd", "macd"),
+                ("macd12_26_9", "macd"),
+            ),
+        )
+        signal_val, _ = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("macd", "signal"),
+                ("macd12_26_9", "signal"),
+            ),
+        )
+        hist_val, _ = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("macd", "hist"),
+                ("macd12_26_9", "hist"),
+            ),
+        )
+        used = [macd_name] if macd_name else ["macd"]
+
+        if macd_val is None or signal_val is None or hist_val is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicator:macd",
+                used_indicators=used,
+            )
+
+        hist = hist_val
+        macd_line = macd_val
+        signal_line = signal_val
+
+        # MACD 线在 signal 线上方 = 多头动量，反之空头
+        if hist > 0 and macd_line > signal_line:
+            action = "buy"
+            # 柱状图强度（归一化：用柱状图值除以较大的 MACD 值幅度）
+            magnitude = abs(hist) / (abs(macd_line) + 1e-10)
+            confidence = min(0.45 + min(magnitude * 2.0, 0.45), 0.9)
+        elif hist < 0 and macd_line < signal_line:
+            action = "sell"
+            magnitude = abs(hist) / (abs(macd_line) + 1e-10)
+            confidence = min(0.45 + min(magnitude * 2.0, 0.45), 0.9)
+        else:
+            action = "hold"
+            confidence = 0.1
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=confidence,
+            reason=f"macd={macd_val:.4f},signal={signal_val:.4f},hist={hist_val:.4f}",
+            used_indicators=used,
+            metadata={
+                "macd": macd_val,
+                "signal": signal_val,
+                "hist": hist_val,
+            },
+        )
