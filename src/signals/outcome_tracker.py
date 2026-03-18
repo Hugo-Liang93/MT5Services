@@ -112,11 +112,13 @@ class OutcomeTracker:
         if scope != "confirmed":
             return
 
+        # 每个 confirmed bar-close 事件都代表新的一根 bar 收盘，
+        # 无论方向如何都应先推进所有待评估信号的 bars_elapsed 计数。
+        # 修复前：confirmed_buy/sell 仅调用 _record_pending，_tick_pending 被跳过，
+        # 导致趋势行情中 pending 条目无限堆积，胜率统计和置信度校准永远不触发。
+        self._tick_pending(event)
         if signal_state in ("confirmed_buy", "confirmed_sell"):
             self._record_pending(event)
-        else:
-            # 新的 confirmed 快照到来，更新等待中的信号
-            self._tick_pending(event)
 
     def winrate_summary(self) -> Dict[str, Any]:
         """返回内存中统计的实时胜率（不依赖 DB）。"""
