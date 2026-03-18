@@ -255,23 +255,22 @@ class BollingerBreakoutStrategy:
 
     @staticmethod
     def _get_close(context: SignalContext) -> Optional[float]:
-        """Try to extract close price from indicators metadata."""
-        for indicator_name in ("boll20", "bollinger20", "bollinger", "close", "price"):
+        """Extract close price from the boll20 indicator payload.
+
+        bollinger() now returns {"bb_mid", "bb_upper", "bb_lower", "close"}.
+        The "close" field is closes[-1] computed inside the indicator, which is
+        the same price used to determine band position — guaranteed to be
+        consistent with bb_upper/bb_lower.
+        """
+        for indicator_name in ("boll20", "bollinger20", "bollinger"):
             payload = context.indicators.get(indicator_name)
             if isinstance(payload, dict):
-                for field in ("close", "value", "last"):
-                    val = payload.get(field)
-                    if val is not None:
-                        try:
-                            return float(val)
-                        except (TypeError, ValueError):
-                            continue
-        close_val = context.metadata.get("close") or context.metadata.get("last_close")
-        if close_val is not None:
-            try:
-                return float(close_val)
-            except (TypeError, ValueError):
-                pass
+                val = payload.get("close")
+                if val is not None:
+                    try:
+                        return float(val)
+                    except (TypeError, ValueError):
+                        continue
         return None
 
 
@@ -637,5 +636,305 @@ class MacdMomentumStrategy:
                 "macd": macd_val,
                 "signal": signal_val,
                 "hist": hist_val,
+            },
+        )
+
+
+class KeltnerBollingerSqueezeStrategy:
+    """Keltner-Bollinger 挤压突破策略（John Carter Squeeze 变体）。
+
+    核心逻辑：
+    - 挤压（Squeeze）= 布林带完全在肯特纳通道内部（波动率极度压缩）
+    - 突破（Breakout）= close 突破布林带上/下轨
+    - 挤压后的突破具有更高的爆发动能，置信度加成
+
+    适合黄金的原因：
+    XAUUSD 在经济数据发布前或亚洲时段末尾经常进入 Squeeze 状态，
+    欧洲开盘或数据落地时形成方向性突破，捕捉这类行情收益较高。
+
+    支持 intrabar：带宽是历史 close 计算的，实时稳定，
+    close 突破带宽是实时事件，intrabar 可以比 bar 收盘提前发现。
+    """
+
+    name = "keltner_bb_squeeze"
+    required_indicators = ("boll20", "keltner20")
+    preferred_scopes = ("intrabar", "confirmed")
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        bb_upper, bb_name = _resolve_indicator_value(
+            context.indicators, (("boll20", "bb_upper"),)
+        )
+        bb_lower, _ = _resolve_indicator_value(
+            context.indicators, (("boll20", "bb_lower"),)
+        )
+        bb_mid, _ = _resolve_indicator_value(
+            context.indicators, (("boll20", "bb_mid"),)
+        )
+        bb_close, _ = _resolve_indicator_value(
+            context.indicators, (("boll20", "close"),)
+        )
+        kc_upper, kc_name = _resolve_indicator_value(
+            context.indicators, (("keltner20", "kc_upper"),)
+        )
+        kc_lower, _ = _resolve_indicator_value(
+            context.indicators, (("keltner20", "kc_lower"),)
+        )
+        used = [n for n in (bb_name, kc_name) if n]
+
+        if any(v is None for v in (bb_upper, bb_lower, bb_mid, bb_close, kc_upper, kc_lower)):
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicators",
+                used_indicators=used or ["boll20", "keltner20"],
+            )
+
+        close = bb_close
+        band_range = bb_upper - bb_lower  # type: ignore[operator]
+        # 挤压：布林带完全在肯特纳通道内（BB 更窄，波动率压缩）
+        is_squeeze = bb_upper < kc_upper and bb_lower > kc_lower  # type: ignore[operator]
+        squeeze_bonus = 0.2 if is_squeeze else 0.0
+
+        if close >= bb_upper:  # type: ignore[operator]
+            action = "buy"
+            excess = (close - bb_upper) / band_range if band_range > 0 else 0.0  # type: ignore[operator]
+            confidence = min(0.50 + min(excess, 0.30) + squeeze_bonus, 1.0)
+        elif close <= bb_lower:  # type: ignore[operator]
+            action = "sell"
+            excess = (bb_lower - close) / band_range if band_range > 0 else 0.0  # type: ignore[operator]
+            confidence = min(0.50 + min(excess, 0.30) + squeeze_bonus, 1.0)
+        else:
+            action = "hold"
+            confidence = 0.15 if is_squeeze else 0.1
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=confidence,
+            reason=(
+                f"close={close:.2f},bb_upper={bb_upper:.2f},bb_lower={bb_lower:.2f},"
+                f"squeeze={is_squeeze}"
+            ),
+            used_indicators=used or ["boll20", "keltner20"],
+            metadata={
+                "close": close,
+                "bb_upper": bb_upper,
+                "bb_lower": bb_lower,
+                "kc_upper": kc_upper,
+                "kc_lower": kc_lower,
+                "is_squeeze": is_squeeze,
+                "squeeze_bonus": squeeze_bonus,
+            },
+        )
+
+
+class DonchianBreakoutStrategy:
+    """唐奇安通道突破策略（海龟交易法则变体）。
+
+    核心逻辑：
+    - close 突破 N 周期最高价 → 买入（趋势延续）
+    - close 跌破 N 周期最低价 → 卖出
+    - ADX 过滤：ADX < adx_min 时不交易（避免震荡市虚假突破）
+
+    适合黄金的原因：
+    XAUUSD 在日线级别和 H1/H4 上有明显的趋势延续特性，
+    价格创新高往往意味着机构资金推动的趋势行情。
+    ATR 倍数可通过 ADX 值动态映射置信度。
+
+    仅在 bar 收盘时评估：价格在 bar 内触及前高/前低不算有效突破，
+    需要 bar 收盘价确认。
+    """
+
+    name = "donchian_breakout"
+    required_indicators = ("donchian20", "adx14")
+    preferred_scopes = ("confirmed",)
+
+    def __init__(self, *, adx_min: float = 20.0) -> None:
+        self._adx_min = adx_min
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        d_upper, d_name = _resolve_indicator_value(
+            context.indicators, (("donchian20", "donchian_upper"),)
+        )
+        d_lower, _ = _resolve_indicator_value(
+            context.indicators, (("donchian20", "donchian_lower"),)
+        )
+        d_close, _ = _resolve_indicator_value(
+            context.indicators, (("donchian20", "close"),)
+        )
+        adx_val, adx_name = _resolve_indicator_value(
+            context.indicators, (("adx14", "adx"), ("adx", "adx"))
+        )
+        plus_di, _ = _resolve_indicator_value(
+            context.indicators, (("adx14", "plus_di"),)
+        )
+        minus_di, _ = _resolve_indicator_value(
+            context.indicators, (("adx14", "minus_di"),)
+        )
+        used = [n for n in (d_name, adx_name) if n]
+
+        if d_upper is None or d_lower is None or d_close is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicator:donchian20",
+                used_indicators=used or ["donchian20"],
+            )
+
+        adx = adx_val if adx_val is not None else 0.0
+
+        # ADX 过滤：趋势强度不足时跳过
+        if adx < self._adx_min:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.1,
+                reason=f"adx_too_low:{adx:.1f}<{self._adx_min}",
+                used_indicators=used or ["donchian20", "adx14"],
+                metadata={"adx": adx, "donchian_upper": d_upper, "donchian_lower": d_lower},
+            )
+
+        channel_width = d_upper - d_lower
+
+        if d_close >= d_upper:
+            action = "buy"
+            # DI 方向加成：+DI > -DI 表示多头占优
+            di_bonus = 0.1 if (plus_di is not None and minus_di is not None and plus_di > minus_di) else 0.0
+            adx_conf = min((adx - self._adx_min) / 30.0 + 0.55, 0.85)
+            confidence = min(adx_conf + di_bonus, 1.0)
+        elif d_close <= d_lower:
+            action = "sell"
+            di_bonus = 0.1 if (plus_di is not None and minus_di is not None and minus_di > plus_di) else 0.0
+            adx_conf = min((adx - self._adx_min) / 30.0 + 0.55, 0.85)
+            confidence = min(adx_conf + di_bonus, 1.0)
+        else:
+            action = "hold"
+            confidence = 0.1
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=confidence,
+            reason=(
+                f"close={d_close:.2f},d_upper={d_upper:.2f},d_lower={d_lower:.2f},"
+                f"adx={adx:.1f}"
+            ),
+            used_indicators=used or ["donchian20", "adx14"],
+            metadata={
+                "close": d_close,
+                "donchian_upper": d_upper,
+                "donchian_lower": d_lower,
+                "channel_width": channel_width,
+                "adx": adx,
+                "plus_di": plus_di,
+                "minus_di": minus_di,
+            },
+        )
+
+
+class EmaRibbonStrategy:
+    """EMA 带状对齐趋势策略。
+
+    核心逻辑：
+    - 三条均线（EMA9 快线、HMA20 中线、EMA50 慢线）全部同向排列时产生信号
+    - 多头排列：EMA9 > HMA20 > EMA50（快 > 中 > 慢）
+    - 空头排列：EMA9 < HMA20 < EMA50
+    - 置信度由三条线之间的相对间距决定（间距越大趋势越强）
+
+    适合黄金的原因：
+    XAUUSD 趋势行情持续性较好，三线对齐能过滤掉震荡噪音，
+    HMA 响应比 EMA 快约一半，比 WMA 平滑，是 EMA9/EMA50 之间的
+    良好中间层，三者共同形成"动量梯队"信号。
+
+    仅在 bar 收盘时评估：intrabar MA 值持续波动，噪声大。
+    """
+
+    name = "ema_ribbon"
+    required_indicators = ("ema9", "hma20", "ema50")
+    preferred_scopes = ("confirmed",)
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        ema9_val, e9_name = _resolve_indicator_value(
+            context.indicators, (("ema9", "ema"), ("ema9", "value"))
+        )
+        hma_val, hma_name = _resolve_indicator_value(
+            context.indicators, (("hma20", "hma"), ("hma20", "value"))
+        )
+        ema50_val, e50_name = _resolve_indicator_value(
+            context.indicators, (("ema50", "ema"), ("ema50", "value"))
+        )
+        used = [n for n in (e9_name, hma_name, e50_name) if n]
+
+        if ema9_val is None or hma_val is None or ema50_val is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicators",
+                used_indicators=used or ["ema9", "hma20", "ema50"],
+            )
+
+        # 三线间距（归一化到慢线价格）
+        slow = ema50_val
+        if slow == 0:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="ema50_is_zero",
+                used_indicators=used,
+            )
+
+        fast_mid_gap = abs(ema9_val - hma_val) / slow      # EMA9 vs HMA20 间距
+        mid_slow_gap = abs(hma_val - ema50_val) / slow     # HMA20 vs EMA50 间距
+        total_span = abs(ema9_val - ema50_val) / slow      # 快慢总间距
+
+        if ema9_val > hma_val > ema50_val:
+            # 多头完整排列
+            action = "buy"
+            # 间距越大 → 趋势越强；上限 0.9 留出安全边际
+            confidence = min(0.5 + total_span * 80, 0.9)
+        elif ema9_val < hma_val < ema50_val:
+            # 空头完整排列
+            action = "sell"
+            confidence = min(0.5 + total_span * 80, 0.9)
+        else:
+            # 排列混乱，趋势不明确
+            action = "hold"
+            confidence = 0.1
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=confidence,
+            reason=(
+                f"ema9={ema9_val:.2f},hma20={hma_val:.2f},ema50={ema50_val:.2f}"
+            ),
+            used_indicators=used or ["ema9", "hma20", "ema50"],
+            metadata={
+                "ema9": ema9_val,
+                "hma20": hma_val,
+                "ema50": ema50_val,
+                "fast_mid_gap_pct": fast_mid_gap * 100,
+                "mid_slow_gap_pct": mid_slow_gap * 100,
+                "total_span_pct": total_span * 100,
             },
         )

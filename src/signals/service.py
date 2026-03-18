@@ -8,6 +8,9 @@ from .models import SignalContext, SignalDecision, SignalRecord
 from .repository import SignalRepository
 from .strategies import (
     BollingerBreakoutStrategy,
+    DonchianBreakoutStrategy,
+    EmaRibbonStrategy,
+    KeltnerBollingerSqueezeStrategy,
     MacdMomentumStrategy,
     MultiTimeframeConfirmStrategy,
     RsiReversionStrategy,
@@ -34,10 +37,16 @@ class SignalModule:
             SmaTrendStrategy(),
             RsiReversionStrategy(),
             BollingerBreakoutStrategy(),
-            MultiTimeframeConfirmStrategy(),
+            # MultiTimeframeConfirmStrategy 需要外部注入 state_reader 和 htf_key
+            # 才能发挥作用；在默认配置下 htf_key 永不填充，策略始终输出 hold。
+            # 如需使用，请手动构造并传入 strategies 参数：
+            #   MultiTimeframeConfirmStrategy(state_reader=runtime._state_by_target)
             SupertrendStrategy(),
             StochRsiStrategy(),
             MacdMomentumStrategy(),
+            KeltnerBollingerSqueezeStrategy(),
+            DonchianBreakoutStrategy(),
+            EmaRibbonStrategy(),
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)
