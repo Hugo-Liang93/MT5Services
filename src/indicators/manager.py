@@ -107,6 +107,9 @@ class UnifiedIndicatorManager:
         # _intrabar_thread drains this queue independently.
         self._intrabar_queue: queue.Queue = queue.Queue(maxsize=200)
         self._intrabar_thread: Optional[threading.Thread] = None
+        # Cached set of indicator names eligible for intrabar snapshots.
+        # Built once in _register_indicators() and invalidated on _reinitialize().
+        self._intrabar_eligible_cache: Optional[frozenset] = None
         # Bar-close events are published into this queue from the ingestor thread
         # (via _publish_closed_bar_event) without any I/O.  The dedicated
         # _writer_thread flushes them to SQLite in small batches so that data
@@ -134,6 +137,7 @@ class UnifiedIndicatorManager:
 
     def _register_indicators(self) -> None:
         self._indicator_funcs.clear()
+        self._intrabar_eligible_cache = None  # invalidate on re-registration
         for indicator_config in self.config.indicators:
             if not indicator_config.enabled:
                 continue
@@ -145,6 +149,12 @@ class UnifiedIndicatorManager:
                 dependencies=indicator_config.dependencies,
             )
             self._indicator_funcs[indicator_config.name] = func
+        # Build intrabar eligibility cache after all indicators are registered.
+        self._intrabar_eligible_cache = frozenset(
+            cfg.name
+            for cfg in self.config.indicators
+            if cfg.enabled and cfg.intrabar_eligible
+        )
 
     def _load_indicator_func(self, config: IndicatorConfig) -> Callable:
         cached = self._indicator_funcs.get(config.name)
@@ -387,6 +397,10 @@ class UnifiedIndicatorManager:
             try:
                 item = self._intrabar_queue.get(timeout=0.5)
             except queue.Empty:
+                continue
+            # Skip computation entirely when there are no snapshot listeners —
+            # nobody would consume the intrabar results, so the CPU cost is pure waste.
+            if not self._snapshot_listeners:
                 continue
             symbol, timeframe, bar = item
             key = ohlc_key(symbol, timeframe)
@@ -1050,12 +1064,19 @@ class UnifiedIndicatorManager:
                 self.event_store.mark_event_failed(symbol, timeframe, bar_time, str(exc))
 
     def _get_intrabar_eligible_names(self) -> frozenset:
-        """Return the set of indicator names that should appear in intrabar snapshots."""
-        return frozenset(
-            cfg.name
-            for cfg in self.config.indicators
-            if cfg.enabled and getattr(cfg, "intrabar_eligible", True)
-        )
+        """Return the set of indicator names that should appear in intrabar snapshots.
+
+        The result is cached at registration time and invalidated on config reload,
+        so this is safe to call on every intrabar event without CPU overhead.
+        """
+        if self._intrabar_eligible_cache is None:
+            # Fallback if called before _register_indicators (should not happen).
+            self._intrabar_eligible_cache = frozenset(
+                cfg.name
+                for cfg in self.config.indicators
+                if cfg.enabled and cfg.intrabar_eligible
+            )
+        return self._intrabar_eligible_cache
 
     def _process_intrabar_event(
         self,
@@ -1164,6 +1185,24 @@ class UnifiedIndicatorManager:
         return self._normalize_persisted_indicator_snapshot(
             self.market_service.latest_indicators(symbol, timeframe)
         )
+
+    def get_intrabar_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+    ) -> Optional[Tuple[datetime, Dict[str, Dict[str, float]]]]:
+        """Return the most recent intrabar (live/partial-bar) indicator snapshot.
+
+        Returns ``(bar_time, indicators)`` if a preview snapshot is available for
+        the given symbol/timeframe, or ``None`` if no intrabar computation has
+        run yet (e.g. intrabar ingestion disabled or no bar received).
+
+        The returned dict only contains indicators marked as ``intrabar_eligible``
+        in the configuration — volume-derived and session-sensitive indicators are
+        excluded because their mid-bar values are semantically unreliable.
+        """
+        cache_key = f"{symbol}_{timeframe}"
+        return self._last_preview_snapshot.get(cache_key)
 
     def compute(
         self,
