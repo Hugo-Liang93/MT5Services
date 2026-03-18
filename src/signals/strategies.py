@@ -7,13 +7,35 @@ from .regime import RegimeType
 
 
 class SignalStrategy(Protocol):
+    """所有信号策略必须实现的协议。
+
+    类属性说明
+    ----------
+    name:
+        唯一字符串标识，用于注册、日志、API 路由。
+    required_indicators:
+        策略评估所需的指标名称元组，与 config/indicators.json 中的 name 对应。
+    preferred_scopes:
+        接收快照的 scope 范围。
+        "confirmed" = 仅 bar 收盘快照（指标完整）；
+        "intrabar"  = 实时盘中快照（仅 intrabar_eligible 指标）。
+        默认两者都接收。
+    regime_affinity:
+        该策略在不同市场状态（Regime）下的置信度乘数（0.0–1.0）。
+        此值由 SignalModule.evaluate() 在策略返回决策后自动施加：
+          adjusted_confidence = decision.confidence × affinity[regime]
+        乘数语义：
+          1.0 → 完全采信，不衰减
+          0.5 → 信号减半，高于默认阈值(0.55)的信号可能恰好被压制
+          0.1 → 几乎完全压制，仅极高置信度信号才能通过
+        缺少某个 Regime 键时默认使用 0.5（中性）。
+        ⚠️ 新增策略时**必须**填写此属性，参见 CLAUDE.md §Adding New Signal Strategies。
+    """
+
     name: str
     required_indicators: tuple[str, ...]
-    # Scopes this strategy wants to receive snapshots for.
-    # "confirmed" = bar-close snapshots only (all indicators available).
-    # "intrabar"  = live partial-bar snapshots (intrabar_eligible indicators only).
-    # Defaults to both if not declared on a concrete class.
     preferred_scopes: tuple[str, ...]
+    regime_affinity: Dict[RegimeType, float]
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         ...
@@ -48,6 +70,12 @@ class SmaTrendStrategy:
     name = "sma_trend"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING:  1.00,  # MA 金叉/死叉在趋势中最可靠
+        RegimeType.RANGING:   0.20,  # 震荡市 MA 频繁交叉，产生大量虚假信号
+        RegimeType.BREAKOUT:  0.50,  # 突破初期 MA 尚未跟上，信号滞后
+        RegimeType.UNCERTAIN: 0.50,
+    }
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         fast, fast_name = _resolve_indicator_value(
@@ -119,6 +147,12 @@ class RsiReversionStrategy:
     name = "rsi_reversion"
     required_indicators = ("rsi14",)
     preferred_scopes = ("intrabar", "confirmed")
+    regime_affinity = {
+        RegimeType.TRENDING:  0.25,  # 强趋势中 RSI 可长时间维持极值，逆势信号危险
+        RegimeType.RANGING:   1.00,  # 震荡区间均值回归是 RSI 的核心应用场景
+        RegimeType.BREAKOUT:  0.35,  # 突破初期 RSI 极值往往持续，不宜逆势
+        RegimeType.UNCERTAIN: 0.60,
+    }
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         rsi_value, rsi_name = _resolve_indicator_value(
@@ -181,6 +215,12 @@ class BollingerBreakoutStrategy:
     name = "bollinger_breakout"
     required_indicators = ("boll20",)
     preferred_scopes = ("intrabar", "confirmed")
+    regime_affinity = {
+        RegimeType.TRENDING:  0.30,  # 趋势中价格走布林带边缘属正常，触带≠反转
+        RegimeType.RANGING:   0.85,  # 震荡市触及上下轨是典型均值回归机会
+        RegimeType.BREAKOUT:  1.00,  # 价格突破布林带 = 波动率扩张主要信号
+        RegimeType.UNCERTAIN: 0.60,
+    }
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         upper, upper_name = _resolve_indicator_value(
@@ -291,6 +331,14 @@ class MultiTimeframeConfirmStrategy:
     name = "mtf_confirm"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
+    # MultiTimeframeConfirmStrategy 在 htf_key 未注入时始终返回 hold，
+    # Regime 亲和度对其没有实质意义，但为符合 Protocol 仍声明为中性值。
+    regime_affinity = {
+        RegimeType.TRENDING:  0.50,
+        RegimeType.RANGING:   0.50,
+        RegimeType.BREAKOUT:  0.50,
+        RegimeType.UNCERTAIN: 0.50,
+    }
 
     def __init__(
         self,
@@ -402,6 +450,12 @@ class SupertrendStrategy:
     name = "supertrend"
     required_indicators = ("supertrend14", "adx14")
     preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING:  1.00,  # Supertrend 专为趋势行情设计
+        RegimeType.RANGING:   0.30,  # 震荡市 Supertrend 方向频繁翻转，假信号多
+        RegimeType.BREAKOUT:  0.60,  # 突破时可以确认方向，但信号有一定滞后
+        RegimeType.UNCERTAIN: 0.55,
+    }
 
     def __init__(self, *, adx_threshold: float = 20.0) -> None:
         self._adx_threshold = adx_threshold
@@ -496,6 +550,12 @@ class StochRsiStrategy:
     name = "stoch_rsi"
     required_indicators = ("stoch_rsi14",)
     preferred_scopes = ("intrabar", "confirmed")
+    regime_affinity = {
+        RegimeType.TRENDING:  0.25,  # 趋势中随机指标长时间嵌顶/嵌底，逆势陷阱
+        RegimeType.RANGING:   1.00,  # 振荡市 K/D 交叉的核心使用场景
+        RegimeType.BREAKOUT:  0.30,  # 突破前 StochRSI 往往已超买/超卖，不可逆势
+        RegimeType.UNCERTAIN: 0.60,
+    }
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         k_value, k_name = _resolve_indicator_value(
@@ -571,6 +631,12 @@ class MacdMomentumStrategy:
     name = "macd_momentum"
     required_indicators = ("macd",)
     preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING:  1.00,  # MACD 柱状图反映趋势动量，趋势中最准确
+        RegimeType.RANGING:   0.30,  # 震荡市 MACD 来回交叉，产生频繁假信号
+        RegimeType.BREAKOUT:  0.70,  # 突破初期 MACD 柱常领先确认方向
+        RegimeType.UNCERTAIN: 0.55,
+    }
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         macd_val, macd_name = _resolve_indicator_value(
@@ -660,6 +726,12 @@ class KeltnerBollingerSqueezeStrategy:
     name = "keltner_bb_squeeze"
     required_indicators = ("boll20", "keltner20")
     preferred_scopes = ("intrabar", "confirmed")
+    regime_affinity = {
+        RegimeType.TRENDING:  0.35,  # 趋势中 Squeeze 出现频率低，信号意义有限
+        RegimeType.RANGING:   0.55,  # 震荡末期常出现 Squeeze，可提前布局
+        RegimeType.BREAKOUT:  1.00,  # Squeeze 释放正是这个策略的核心场景
+        RegimeType.UNCERTAIN: 0.65,
+    }
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         bb_upper, bb_name = _resolve_indicator_value(
@@ -754,6 +826,12 @@ class DonchianBreakoutStrategy:
     name = "donchian_breakout"
     required_indicators = ("donchian20", "adx14")
     preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING:  0.90,  # 趋势延续期创新高/低是高概率信号
+        RegimeType.RANGING:   0.15,  # 震荡市假突破极多，即便有 ADX 过滤也危险
+        RegimeType.BREAKOUT:  1.00,  # 通道突破就是为这个 Regime 而生
+        RegimeType.UNCERTAIN: 0.45,
+    }
 
     def __init__(self, *, adx_min: float = 20.0) -> None:
         self._adx_min = adx_min
@@ -865,6 +943,12 @@ class EmaRibbonStrategy:
     name = "ema_ribbon"
     required_indicators = ("ema9", "hma20", "ema50")
     preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING:  1.00,  # 三线对齐是趋势行情的黄金信号
+        RegimeType.RANGING:   0.10,  # 震荡市三线互相缠绕交叉，完全无效
+        RegimeType.BREAKOUT:  0.40,  # 突破初期 EMA50 还未偏转，排列不完整
+        RegimeType.UNCERTAIN: 0.40,
+    }
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         ema9_val, e9_name = _resolve_indicator_value(
@@ -939,89 +1023,3 @@ class EmaRibbonStrategy:
                 "total_span_pct": total_span * 100,
             },
         )
-
-
-# ---------------------------------------------------------------------------
-# Regime Affinity Table
-# ---------------------------------------------------------------------------
-#
-# 每个策略对四种市场状态（TRENDING / RANGING / BREAKOUT / UNCERTAIN）的
-# 置信度乘数（affinity weight），取值范围 [0.0, 1.0]。
-#
-# 乘数含义：
-#   1.0 = 该 Regime 下策略信号不衰减，完全采信
-#   0.5 = 置信度减半（原 0.7 → 0.35，大概率低于 min_preview_confidence 阈值，静默）
-#   0.1 = 该 Regime 下策略严重不可信，几乎完全压制
-#
-# 设计原则：
-#   - 趋势类（SMA Cross、EMA Ribbon、Donchian、Supertrend、MACD）：
-#       在 TRENDING 时权重最高；RANGING 时权重极低以避免震荡市反复打脸
-#   - 均值回归类（RSI、StochRSI）：
-#       在 RANGING 时权重最高；TRENDING 时大幅压制
-#   - 波动率/突破类（Bollinger Breakout、Keltner-Squeeze、Donchian Breakout）：
-#       在 BREAKOUT 时权重最高；搭配 RANGING 次高（反弹类）
-#   - UNCERTAIN（ADX 20-25 过渡区）：
-#       大多数策略使用 0.5 作为中间值，不过强不过弱
-#
-# 注意：此表不影响策略自身的逻辑，只在 SignalModule.evaluate() 中
-# 对返回的 confidence 做最终的乘法修正。
-#
-REGIME_AFFINITY: Dict[str, Dict[RegimeType, float]] = {
-    # ── 趋势跟踪类 ──────────────────────────────────────────────────────
-    "sma_trend": {
-        RegimeType.TRENDING:  1.00,  # MA 金叉/死叉在趋势中最可靠
-        RegimeType.RANGING:   0.20,  # 震荡市 MA 频繁交叉，大量虚假信号
-        RegimeType.BREAKOUT:  0.50,  # 突破开始时 MA 尚未跟上，信号滞后
-        RegimeType.UNCERTAIN: 0.50,
-    },
-    "ema_ribbon": {
-        RegimeType.TRENDING:  1.00,  # 三线对齐是趋势行情的黄金信号
-        RegimeType.RANGING:   0.10,  # 震荡市三线互相缠绕，毫无方向
-        RegimeType.BREAKOUT:  0.40,  # 突破初期 EMA50 还未偏转
-        RegimeType.UNCERTAIN: 0.40,
-    },
-    "supertrend": {
-        RegimeType.TRENDING:  1.00,  # Supertrend 专为趋势行情设计
-        RegimeType.RANGING:   0.30,  # 价格反复穿越超趋势线，频繁翻转
-        RegimeType.BREAKOUT:  0.60,  # 突破时 Supertrend 可以确认方向
-        RegimeType.UNCERTAIN: 0.55,
-    },
-    "macd_momentum": {
-        RegimeType.TRENDING:  1.00,  # MACD 柱量反映趋势动量，最准确
-        RegimeType.RANGING:   0.30,  # 震荡市 MACD 持续来回交叉
-        RegimeType.BREAKOUT:  0.70,  # 突破初期 MACD 经常领先确认方向
-        RegimeType.UNCERTAIN: 0.55,
-    },
-    "donchian_breakout": {
-        RegimeType.TRENDING:  0.90,  # 趋势延续期创新高/低是高概率信号
-        RegimeType.RANGING:   0.15,  # 震荡市创"新高"随即反转，假突破极多
-        RegimeType.BREAKOUT:  1.00,  # 通道突破就是为这个 Regime 而生
-        RegimeType.UNCERTAIN: 0.45,
-    },
-    # ── 均值回归类 ──────────────────────────────────────────────────────
-    "rsi_reversion": {
-        RegimeType.TRENDING:  0.25,  # 强趋势可让 RSI 长期维持超买/超卖区
-        RegimeType.RANGING:   1.00,  # 振荡市均值回归是最经典的场景
-        RegimeType.BREAKOUT:  0.35,  # 突破行情初期 RSI 极值可能持续
-        RegimeType.UNCERTAIN: 0.60,
-    },
-    "stoch_rsi": {
-        RegimeType.TRENDING:  0.25,  # 趋势中随机指标长时间嵌顶/嵌底
-        RegimeType.RANGING:   1.00,  # 振荡市 K/D 交叉的核心使用场景
-        RegimeType.BREAKOUT:  0.30,  # 突破前 StochRSI 往往已超买/超卖
-        RegimeType.UNCERTAIN: 0.60,
-    },
-    # ── 波动率/突破类 ──────────────────────────────────────────────────
-    "bollinger_breakout": {
-        RegimeType.TRENDING:  0.30,  # 趋势中价格走布林带上轨，触及上轨不是反转
-        RegimeType.RANGING:   0.85,  # 震荡市触及上下轨是典型均值回归机会
-        RegimeType.BREAKOUT:  1.00,  # 价格突破布林带 = 波动率扩张主要信号
-        RegimeType.UNCERTAIN: 0.60,
-    },
-    "keltner_bb_squeeze": {
-        RegimeType.TRENDING:  0.35,  # 趋势中 Squeeze 出现频率低
-        RegimeType.RANGING:   0.55,  # 震荡区间末期常出现 Squeeze，可提前布局
-        RegimeType.BREAKOUT:  1.00,  # Squeeze 释放正是这个策略的核心场景
-        RegimeType.UNCERTAIN: 0.65,
-    },
-}

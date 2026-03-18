@@ -9,7 +9,6 @@ from .models import SignalContext, SignalDecision, SignalRecord
 from .regime import MarketRegimeDetector, RegimeType
 from .repository import SignalRepository
 from .strategies import (
-    REGIME_AFFINITY,
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
     EmaRibbonStrategy,
@@ -130,11 +129,14 @@ class SignalModule:
         decision = strategy_impl.evaluate(context)
 
         # ── Regime 亲和度修正 ────────────────────────────────────────────
-        # 根据当前市场状态对策略置信度施加乘数，压制在当前 Regime 下不可靠的策略。
+        # 从策略类属性 regime_affinity 读取当前 Regime 对应的乘数，
+        # 压制在当前行情类型下不可靠的策略。
         # 置信度降低后若低于 min_preview_confidence（默认 0.55），
         # SignalRuntime 状态机会自然忽略该信号，无需在此处做额外的硬截断。
         regime = self._regime_detector.detect(indicator_payload)
-        affinity = REGIME_AFFINITY.get(strategy, {}).get(regime, 0.5)
+        # 优先读策略类上的 regime_affinity 属性；缺失时回退到中性值 0.5
+        affinity_map: Dict[RegimeType, float] = getattr(strategy_impl, "regime_affinity", {})
+        affinity = affinity_map.get(regime, 0.5)
         adjusted_confidence = decision.confidence * affinity
         decision = dataclasses.replace(
             decision,
