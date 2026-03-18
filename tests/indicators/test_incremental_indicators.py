@@ -91,6 +91,40 @@ class TestEmaIncremental:
         assert new_state is not None
         assert new_state.value != prev_state.value
 
+    def test_intrabar_and_confirmed_use_separate_states(self) -> None:
+        """intrabar and confirmed must not share last_bar_time.
+
+        Previously both scopes wrote the same state key, so an intrabar call
+        on bar T would stamp last_bar_time=T, causing the subsequent confirmed
+        call for the same bar T to fall back to full recompute (time not
+        advanced).  With scope-isolated keys each path evolves independently.
+        """
+        bars = _bars(list(range(1, 12)))   # 11 bars; bar #11 is "in progress"
+        history = bars[:10]                # 10 closed bars
+        intrabar_bar = bars[10]            # bar #11 currently in progress
+
+        ind = EmaIncremental("ema", self.PARAMS)
+
+        # Seed confirmed state on the first 10 bars
+        ind.compute(history, "SYM", "H1", scope="confirmed")
+        confirmed_state_before = ind.get_state("SYM", "H1", scope="confirmed")
+        assert confirmed_state_before is not None
+
+        # Simulate intrabar firing for bar #11 (same bar, different scope)
+        extended = history + [intrabar_bar]
+        ind.compute(extended, "SYM", "H1", scope="intrabar")
+
+        # The confirmed state's last_bar_time must be unchanged (bar #10)
+        confirmed_state_after = ind.get_state("SYM", "H1", scope="confirmed")
+        assert confirmed_state_after is not None
+        assert confirmed_state_after.last_bar_time == confirmed_state_before.last_bar_time
+
+        # Now fire confirmed for bar #11 — last_bar_time advanced, so incremental fires
+        ind.compute(extended, "SYM", "H1", scope="confirmed")
+        confirmed_state_final = ind.get_state("SYM", "H1", scope="confirmed")
+        assert confirmed_state_final is not None
+        assert confirmed_state_final.last_bar_time > confirmed_state_before.last_bar_time
+
 
 # ---------------------------------------------------------------------------
 # AtrIncremental

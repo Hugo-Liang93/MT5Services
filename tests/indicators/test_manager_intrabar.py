@@ -146,12 +146,12 @@ def test_process_intrabar_only_runs_eligible_indicators():
 
     original_pipeline_compute = mgr.pipeline.compute_staged
 
-    def spy_compute(symbol, timeframe, bar_data, indicators=None, on_level_complete=None):
+    def spy_compute(symbol, timeframe, bar_data, indicators=None, on_level_complete=None, scope="confirmed"):
         if indicators is not None:
             computed_names.append(list(indicators))
         return original_pipeline_compute(
             symbol, timeframe, bar_data,
-            indicators=indicators, on_level_complete=on_level_complete,
+            indicators=indicators, on_level_complete=on_level_complete, scope=scope,
         )
 
     mgr.pipeline.compute_staged = spy_compute  # type: ignore[method-assign]

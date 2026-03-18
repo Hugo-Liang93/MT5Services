@@ -103,28 +103,25 @@ class IncrementalIndicator(ABC):
         
         logger.debug(f"IncrementalIndicator initialized: {name}, params={params}")
     
-    def get_state_key(self, symbol: str, timeframe: str) -> str:
+    def get_state_key(self, symbol: str, timeframe: str, scope: str = "confirmed") -> str:
         """
         生成状态键
-        
-        Args:
-            symbol: 交易品种
-            timeframe: 时间框架
-            
-        Returns:
-            状态键
+
+        scope 区分 confirmed（bar 收盘）与 intrabar（盘中轮询），使两条路径
+        各自维护独立的 last_bar_time，避免 intrabar 提前更新时间戳导致
+        confirmed 路径永远无法命中增量分支。
         """
-        # 使用参数哈希确保不同参数对应不同状态
         params_hash = hash(str(sorted(self.params.items())))
-        return f"{symbol}_{timeframe}_{self.name}_{params_hash}"
-    
+        return f"{symbol}_{timeframe}_{self.name}_{params_hash}_{scope}"
+
     def compute(
         self,
         bars: List[OHLC],
         symbol: str,
         timeframe: str,
         use_incremental: bool = True,
-        force_full: bool = False
+        force_full: bool = False,
+        scope: str = "confirmed",
     ) -> Dict[str, float]:
         """
         计算指标
@@ -151,7 +148,7 @@ class IncrementalIndicator(ABC):
                 return {}
             
             # 获取当前状态
-            state_key = self.get_state_key(symbol, timeframe)
+            state_key = self.get_state_key(symbol, timeframe, scope)
             current_state = self.state_store.get(state_key)
             
             # 决定计算模式
@@ -331,30 +328,32 @@ class IncrementalIndicator(ABC):
             last_bar_time=latest_time
         )
     
-    def get_state(self, symbol: str, timeframe: str) -> Optional[IndicatorState]:
+    def get_state(self, symbol: str, timeframe: str, scope: str = "confirmed") -> Optional[IndicatorState]:
         """
         获取计算状态
-        
+
         Args:
             symbol: 交易品种
             timeframe: 时间框架
-            
+            scope: "confirmed" 或 "intrabar"
+
         Returns:
             状态对象，如果不存在则返回None
         """
-        state_key = self.get_state_key(symbol, timeframe)
+        state_key = self.get_state_key(symbol, timeframe, scope)
         return self.state_store.get(state_key)
-    
-    def update_state(self, symbol: str, timeframe: str, state: IndicatorState) -> None:
+
+    def update_state(self, symbol: str, timeframe: str, state: IndicatorState, scope: str = "confirmed") -> None:
         """
         更新计算状态
-        
+
         Args:
             symbol: 交易品种
             timeframe: 时间框架
             state: 新的状态对象
+            scope: "confirmed" 或 "intrabar"
         """
-        state_key = self.get_state_key(symbol, timeframe)
+        state_key = self.get_state_key(symbol, timeframe, scope)
         self.state_store[state_key] = state
         logger.debug(f"State updated: {self.name} for {symbol}/{timeframe}")
     

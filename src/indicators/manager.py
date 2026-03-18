@@ -965,6 +965,7 @@ class UnifiedIndicatorManager:
             bars,
             indicators=selected_names,
             on_level_complete=on_level_complete if priority_groups else None,
+            scope=scope,
         )
         compute_time_ms = (time.time() - started_at) * 1000
         return results, compute_time_ms
