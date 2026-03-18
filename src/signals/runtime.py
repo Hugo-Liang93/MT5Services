@@ -65,15 +65,27 @@ class SignalRuntime:
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
         self._strategy_requirements: dict[str, tuple[str, ...]] = {}
+        # Maps strategy name → frozenset of scopes it wants to receive.
+        # Populated from strategy_impl.preferred_scopes; falls back to both
+        # scopes for strategies that do not declare a preference.
+        self._strategy_scopes: dict[str, frozenset[str]] = {}
         requirements_getter = getattr(self.service, "strategy_requirements", None)
+        scopes_getter = getattr(self.service, "strategy_scopes", None)
         for target in self._targets:
             self._target_index.setdefault((target.symbol, target.timeframe), []).append(target.strategy)
-            if target.strategy in self._strategy_requirements:
-                continue
-            if callable(requirements_getter):
-                self._strategy_requirements[target.strategy] = tuple(requirements_getter(target.strategy))
-            else:
-                self._strategy_requirements[target.strategy] = ()
+            if target.strategy not in self._strategy_requirements:
+                if callable(requirements_getter):
+                    self._strategy_requirements[target.strategy] = tuple(requirements_getter(target.strategy))
+                else:
+                    self._strategy_requirements[target.strategy] = ()
+            if target.strategy not in self._strategy_scopes:
+                if callable(scopes_getter):
+                    try:
+                        self._strategy_scopes[target.strategy] = frozenset(scopes_getter(target.strategy))
+                    except Exception:
+                        self._strategy_scopes[target.strategy] = frozenset(("intrabar", "confirmed"))
+                else:
+                    self._strategy_scopes[target.strategy] = frozenset(("intrabar", "confirmed"))
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -156,6 +168,10 @@ class SignalRuntime:
             "trigger_mode": {
                 "confirmed_snapshot": self.enable_confirmed_snapshot,
                 "intrabar": self.enable_intrabar,
+            },
+            "strategy_scopes": {
+                name: sorted(scopes)
+                for name, scopes in self._strategy_scopes.items()
             },
             "run_count": self._run_count,
             "processed_events": self._processed_events,
@@ -558,6 +574,10 @@ class SignalRuntime:
 
         strategies = self._target_index.get((symbol, timeframe), [])
         for strategy in strategies:
+            # Skip strategies that do not want this scope.
+            allowed_scopes = self._strategy_scopes.get(strategy, frozenset(("intrabar", "confirmed")))
+            if scope not in allowed_scopes:
+                continue
             required_indicators = self._strategy_requirements.get(strategy, ())
             if required_indicators:
                 if any(indicator_name not in indicators for indicator_name in required_indicators):

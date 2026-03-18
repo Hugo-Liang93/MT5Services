@@ -8,6 +8,11 @@ from .models import SignalContext, SignalDecision
 class SignalStrategy(Protocol):
     name: str
     required_indicators: tuple[str, ...]
+    # Scopes this strategy wants to receive snapshots for.
+    # "confirmed" = bar-close snapshots only (all indicators available).
+    # "intrabar"  = live partial-bar snapshots (intrabar_eligible indicators only).
+    # Defaults to both if not declared on a concrete class.
+    preferred_scopes: tuple[str, ...]
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         ...
@@ -32,10 +37,16 @@ def _resolve_indicator_value(
 
 
 class SmaTrendStrategy:
-    """Simple trend signal based on fast/slow SMA relation."""
+    """Simple trend signal based on fast/slow SMA relation.
+
+    Uses bar-close snapshots only.  SMA/EMA crossovers are meaningful only
+    when a bar has *closed* — intrabar MA values oscillate continuously as
+    the live price moves, generating excessive false crossover noise.
+    """
 
     name = "sma_trend"
     required_indicators = ("sma20", "ema50")
+    preferred_scopes = ("confirmed",)
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         fast, fast_name = _resolve_indicator_value(
@@ -96,10 +107,17 @@ class SmaTrendStrategy:
 
 
 class RsiReversionStrategy:
-    """Mean reversion signal based on RSI overbought/oversold zones."""
+    """Mean reversion signal based on RSI overbought/oversold zones.
+
+    Receives both intrabar and confirmed snapshots.  RSI extreme readings
+    (≤30 oversold, ≥70 overbought) are meaningful in real time — the deepest
+    extreme often occurs mid-bar before price reverts.  Bar-close confirmation
+    verifies the reading was sustained through candle close.
+    """
 
     name = "rsi_reversion"
     required_indicators = ("rsi14",)
+    preferred_scopes = ("intrabar", "confirmed")
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         rsi_value, rsi_name = _resolve_indicator_value(
@@ -151,10 +169,17 @@ class BollingerBreakoutStrategy:
     Price touching lower band -> buy (expect reversion to mean).
     Price touching upper band -> sell (expect reversion to mean).
     Band width (squeeze) is used to boost confidence on breakouts after compression.
+
+    Receives both intrabar and confirmed snapshots.  Bollinger Bands are
+    computed from historical closes so the band levels are stable intrabar;
+    only the live close price varies.  Price touching the bands is a real-time
+    event — waiting for bar close often means the price has already recovered
+    to the middle band, losing the entry edge.
     """
 
     name = "bollinger_breakout"
     required_indicators = ("boll20",)
+    preferred_scopes = ("intrabar", "confirmed")
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         upper, upper_name = _resolve_indicator_value(
@@ -256,10 +281,16 @@ class MultiTimeframeConfirmStrategy:
     Uses existing indicator snapshots to check if the same directional signal
     exists on a higher timeframe. Only produces signals when lower TF and
     higher TF agree on direction.
+
+    Uses bar-close snapshots only.  The higher-timeframe direction is read from
+    confirmed signal state (RuntimeSignalState.confirmed_state), which is only
+    updated after a higher-TF bar closes.  Evaluating on intrabar snapshots
+    yields htf_direction=None almost always, producing only wasteful hold decisions.
     """
 
     name = "mtf_confirm"
     required_indicators = ("sma20", "ema50")
+    preferred_scopes = ("confirmed",)
 
     def __init__(
         self,
