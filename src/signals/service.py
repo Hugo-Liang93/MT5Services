@@ -6,7 +6,13 @@ from typing import Any, Dict, Iterable, Optional
 from .adapters import IndicatorSource
 from .models import SignalContext, SignalDecision, SignalRecord
 from .repository import SignalRepository
-from .strategies import BollingerBreakoutStrategy, RsiReversionStrategy, SignalStrategy, SmaTrendStrategy
+from .strategies import (
+    BollingerBreakoutStrategy,
+    MultiTimeframeConfirmStrategy,
+    RsiReversionStrategy,
+    SignalStrategy,
+    SmaTrendStrategy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +31,7 @@ class SignalModule:
             SmaTrendStrategy(),
             RsiReversionStrategy(),
             BollingerBreakoutStrategy(),
+            MultiTimeframeConfirmStrategy(),
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)

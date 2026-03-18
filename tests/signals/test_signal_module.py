@@ -113,8 +113,10 @@ def test_signal_module_exposes_required_indicator_groups() -> None:
 
     groups = module.dispatch_operation("required_indicator_groups")
 
-    # bollinger_breakout now uses boll20 (the actual indicator name in indicators.json)
-    assert groups == [["boll20"], ["rsi14"], ["sma20", "ema50"]]
+    # Strategy order is alphabetical: bollinger_breakout, mtf_confirm, rsi_reversion, sma_trend.
+    # mtf_confirm introduces ("sma20","ema50") before rsi_reversion introduces ("rsi14"),
+    # so the group order is [boll20], [sma20,ema50], [rsi14].  sma_trend is deduplicated.
+    assert groups == [["boll20"], ["sma20", "ema50"], ["rsi14"]]
 
 
 def test_signal_module_summary_returns_aggregates() -> None:
