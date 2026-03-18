@@ -216,8 +216,20 @@ class OptimizedPipeline:
         result = None
         
         try:
-            # 生成缓存键
-            bars_hash = hash(str(context.bars))
+            # Generate a stable cache key from immutable price-identity fields only.
+            # Using str(context.bars) is unreliable because OHLC.indicators is a
+            # mutable field that gets populated by _write_back_results; any mutation
+            # changes the hash and causes a permanent cache miss for subsequent calls
+            # with the same price data.
+            if context.bars:
+                bars_hash = hash((
+                    len(context.bars),
+                    context.bars[0].time,
+                    context.bars[-1].time,
+                    context.bars[-1].close,
+                ))
+            else:
+                bars_hash = 0
             cache_key = self._generate_cache_key(
                 indicator, context.symbol, context.timeframe, bars_hash
             )
@@ -261,8 +273,11 @@ class OptimizedPipeline:
                     if self.config.enable_cache and result is not None:
                         self.cache.set(cache_key, result)
 
-            # 更新统计
-            if result is None:
+            # Fallback compute path: only runs when caching is disabled entirely.
+            # When cache IS enabled, the block above already computed the result
+            # (even if it came back None due to insufficient bars); re-running the
+            # same computation here would be wasteful and confusing.
+            elif not self.config.enable_cache:
                 func = self.dependency_manager.indicator_funcs.get(indicator)
                 if func is None:
                     raise ValueError(f"Indicator function not found: {indicator}")
@@ -281,9 +296,6 @@ class OptimizedPipeline:
                 else:
                     params = self.dependency_manager.indicator_params.get(indicator, {})
                     result = func(context.bars, params)
-
-                if self.config.enable_cache and result is not None:
-                    self.cache.set(cache_key, result)
 
             compute_time = time.time() - start_time
             
@@ -368,8 +380,17 @@ class OptimizedPipeline:
             )
             tasks.append(task)
             
-            # 生成任务ID
-            bars_hash = hash(str(context.bars))
+            # Use same stable hash as _compute_indicator so that the parallel
+            # executor's task cache aligns with the SmartCache.
+            if context.bars:
+                bars_hash = hash((
+                    len(context.bars),
+                    context.bars[0].time,
+                    context.bars[-1].time,
+                    context.bars[-1].close,
+                ))
+            else:
+                bars_hash = 0
             task_id = f"{indicator}_{context.symbol}_{context.timeframe}_{bars_hash}"
             task_indicator_map[task_id] = indicator
         

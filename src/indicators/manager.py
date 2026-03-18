@@ -160,6 +160,25 @@ class UnifiedIndicatorManager:
             if cfg.enabled and cfg.intrabar_eligible
         )
 
+        # Validate that every dependency of every enabled indicator is itself
+        # enabled.  A disabled dependency causes a silent ValueError at runtime
+        # (caught inside _compute_indicator) which surfaces as a missing result.
+        # Surface the problem early as a warning so operators can fix the config.
+        enabled_names = set(self._indicator_funcs)
+        for cfg in self.config.indicators:
+            if not cfg.enabled:
+                continue
+            for dep in cfg.dependencies or []:
+                if dep not in enabled_names:
+                    logger.warning(
+                        "Indicator '%s' declares dependency '%s' which is not enabled. "
+                        "Computation of '%s' will fail at runtime until '%s' is enabled.",
+                        cfg.name,
+                        dep,
+                        cfg.name,
+                        dep,
+                    )
+
     def _load_indicator_func(self, config: IndicatorConfig) -> Callable:
         cached = self._indicator_funcs.get(config.name)
         if cached is not None:
