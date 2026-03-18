@@ -70,6 +70,14 @@ class SignalModule:
         requirements = getattr(strategy_impl, "required_indicators", ())
         return tuple(str(item) for item in requirements)
 
+    def strategy_affinity_map(self, strategy: str) -> Dict[RegimeType, float]:
+        """返回策略的 regime_affinity 字典（不存在时返回空字典）。
+
+        运行时在启动时缓存此结果，避免每次 process_next_event 重复 getattr。
+        """
+        impl = self._strategies.get(strategy)
+        return getattr(impl, "regime_affinity", {}) if impl else {}
+
     def strategy_scopes(self, strategy: str) -> tuple[str, ...]:
         """Return the snapshot scopes this strategy wants to receive.
 
@@ -133,7 +141,17 @@ class SignalModule:
         # 压制在当前行情类型下不可靠的策略。
         # 置信度降低后若低于 min_preview_confidence（默认 0.55），
         # SignalRuntime 状态机会自然忽略该信号，无需在此处做额外的硬截断。
-        regime = self._regime_detector.detect(indicator_payload)
+        #
+        # 性能优化：runtime 在 process_next_event 循环开始前会检测一次 Regime，
+        # 并将结果写入 metadata["_regime"]。若存在则直接复用，跳过重复检测。
+        pre_computed = (metadata or {}).get("_regime")
+        if pre_computed:
+            try:
+                regime = RegimeType(pre_computed)
+            except ValueError:
+                regime = self._regime_detector.detect(indicator_payload)
+        else:
+            regime = self._regime_detector.detect(indicator_payload)
         # 优先读策略类上的 regime_affinity 属性；缺失时回退到中性值 0.5
         affinity_map: Dict[RegimeType, float] = getattr(strategy_impl, "regime_affinity", {})
         affinity = affinity_map.get(regime, 0.5)

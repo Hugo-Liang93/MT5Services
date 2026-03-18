@@ -13,7 +13,9 @@ from src.utils.common import timeframe_seconds
 from .filters import SignalFilterChain
 from .models import SignalEvent
 from .policy import RuntimeSignalState, SignalPolicy
+from .regime import MarketRegimeDetector, RegimeType
 from .service import SignalModule
+from .voting import StrategyVotingEngine
 
 if TYPE_CHECKING:
     from src.indicators.manager import UnifiedIndicatorManager
@@ -54,6 +56,7 @@ class SignalRuntime:
         enable_intrabar: bool = False,
         policy: Optional[SignalPolicy] = None,
         filter_chain: Optional[SignalFilterChain] = None,
+        regime_detector: Optional[MarketRegimeDetector] = None,
     ):
         self.service = service
         self.snapshot_source = snapshot_source
@@ -61,6 +64,22 @@ class SignalRuntime:
         self.enable_intrabar = bool(enable_intrabar)
         self.policy = policy or SignalPolicy()
         self.filter_chain = filter_chain
+        # Regime 检测器：在 process_next_event 循环开始前仅检测一次，
+        # 结果通过 metadata["_regime"] 传递给 service.evaluate()，
+        # 避免每个策略重复调用 detect()（N 策略 → 1次检测）。
+        self._regime_detector: MarketRegimeDetector = (
+            regime_detector or service._regime_detector
+        )
+        # 表决引擎：由 policy 配置决定是否启用
+        self._voting_engine: Optional[StrategyVotingEngine] = (
+            StrategyVotingEngine(
+                consensus_threshold=self.policy.voting_consensus_threshold,
+                min_quorum=self.policy.voting_min_quorum,
+                disagreement_penalty=self.policy.voting_disagreement_penalty,
+            )
+            if self.policy.voting_enabled
+            else None
+        )
         self._signal_listeners: List[Callable[[SignalEvent], None]] = []
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
@@ -69,8 +88,11 @@ class SignalRuntime:
         # Populated from strategy_impl.preferred_scopes; falls back to both
         # scopes for strategies that do not declare a preference.
         self._strategy_scopes: dict[str, frozenset[str]] = {}
+        # 启动时缓存每个策略的 regime_affinity，避免 process_next_event 热路径中的 getattr。
+        self._strategy_affinity: dict[str, dict[RegimeType, float]] = {}
         requirements_getter = getattr(self.service, "strategy_requirements", None)
         scopes_getter = getattr(self.service, "strategy_scopes", None)
+        affinity_getter = getattr(self.service, "strategy_affinity_map", None)
         for target in self._targets:
             self._target_index.setdefault((target.symbol, target.timeframe), []).append(target.strategy)
             if target.strategy not in self._strategy_requirements:
@@ -86,6 +108,14 @@ class SignalRuntime:
                         self._strategy_scopes[target.strategy] = frozenset(("intrabar", "confirmed"))
                 else:
                     self._strategy_scopes[target.strategy] = frozenset(("intrabar", "confirmed"))
+            if target.strategy not in self._strategy_affinity:
+                if callable(affinity_getter):
+                    try:
+                        self._strategy_affinity[target.strategy] = affinity_getter(target.strategy)
+                    except Exception:
+                        self._strategy_affinity[target.strategy] = {}
+                else:
+                    self._strategy_affinity[target.strategy] = {}
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -610,6 +640,18 @@ class SignalRuntime:
                 self._last_run_at = datetime.now(timezone.utc)
                 return True
 
+        # ── Regime 检测：每次 snapshot 仅检测一次，结果共享给所有策略 ──────
+        # 通过 metadata["_regime"] 传递给 service.evaluate()，
+        # 避免每个策略各自重新运行 MarketRegimeDetector.detect()（N→1 次）。
+        regime = self._regime_detector.detect(indicators)
+        regime_metadata = dict(metadata)
+        regime_metadata["_regime"] = regime.value
+
+        min_affinity_skip = self.policy.min_affinity_skip
+
+        # 收集本次 snapshot 所有策略的决策，供 VotingEngine 聚合
+        snapshot_decisions: List = []
+
         strategies = self._target_index.get((symbol, timeframe), [])
         for strategy in strategies:
             # Skip strategies that do not want this scope.
@@ -626,6 +668,17 @@ class SignalRuntime:
                 }
             else:
                 scoped_indicators = indicators
+
+            # ── Pre-flight Affinity Gate ──────────────────────────────────
+            # 在调用 service.evaluate()（有 CPU 开销）之前，先做廉价的 dict 查找。
+            # 若当前 Regime 下该策略的亲和度低于 min_affinity_skip，直接跳过。
+            # 效果：TRENDING 时跳过 rsi/stoch（affinity=0.25）；
+            #        RANGING 时跳过 ema_ribbon（0.10）/donchian（0.15）等。
+            if min_affinity_skip > 0.0:
+                affinity = self._strategy_affinity.get(strategy, {}).get(regime, 0.5)
+                if affinity < min_affinity_skip:
+                    continue
+
             with self._state_lock:
                 state = self._state_by_target.setdefault(
                     (symbol, timeframe, strategy),
@@ -644,13 +697,14 @@ class SignalRuntime:
                 timeframe=timeframe,
                 strategy=strategy,
                 indicators=scoped_indicators,
-                metadata=metadata,
+                metadata=regime_metadata,   # 携带预计算 regime，避免重复检测
                 persist=False,
             )
+            snapshot_decisions.append(decision)
             transition_metadata = (
-                self._transition_confirmed(state, decision.action, event_time, bar_time, metadata)
+                self._transition_confirmed(state, decision.action, event_time, bar_time, regime_metadata)
                 if scope == "confirmed"
-                else self._transition_preview(state, decision.action, decision.confidence, event_time, bar_time, metadata)
+                else self._transition_preview(state, decision.action, decision.confidence, event_time, bar_time, regime_metadata)
             )
             if transition_metadata is None:
                 continue
@@ -661,6 +715,41 @@ class SignalRuntime:
             )
             signal_id = record.signal_id if record is not None else ""
             self._publish_signal_event(decision, signal_id, scope, scoped_indicators, transition_metadata)
+
+        # ── Strategy Voting Engine：跨策略多数表决 ───────────────────────
+        # 对本次 snapshot 收集到的所有策略决策进行加权表决，
+        # 若形成共识则以 strategy="consensus" 发出一个额外信号。
+        # consensus 信号经历与普通策略相同的状态机流程，
+        # 可独立用于触发自动交易（更高可信度）。
+        if self._voting_engine is not None and snapshot_decisions:
+            consensus = self._voting_engine.vote(
+                snapshot_decisions, regime=regime, scope=scope
+            )
+            if consensus is not None:
+                consensus_key = (symbol, timeframe, self._voting_engine.CONSENSUS_STRATEGY_NAME)
+                with self._state_lock:
+                    consensus_state = self._state_by_target.setdefault(
+                        consensus_key, RuntimeSignalState()
+                    )
+                transition_metadata = (
+                    self._transition_confirmed(
+                        consensus_state, consensus.action, event_time, bar_time, regime_metadata
+                    )
+                    if scope == "confirmed"
+                    else self._transition_preview(
+                        consensus_state, consensus.action, consensus.confidence,
+                        event_time, bar_time, regime_metadata,
+                    )
+                )
+                if transition_metadata is not None:
+                    record = self.service.persist_decision(
+                        consensus, indicators=indicators, metadata=transition_metadata
+                    )
+                    signal_id = record.signal_id if record is not None else ""
+                    self._publish_signal_event(
+                        consensus, signal_id, scope, indicators, transition_metadata
+                    )
+
         self._processed_events += 1
         self._run_count += 1
         self._last_run_at = datetime.now(timezone.utc)

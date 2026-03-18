@@ -20,6 +20,16 @@ class SignalPolicy:
     auto_trade_enabled: bool = False
     auto_trade_min_confidence: float = 0.7
     auto_trade_require_armed: bool = True
+    # Pre-flight affinity gate: strategies with regime_affinity < this value
+    # for the current Regime are skipped before calling service.evaluate().
+    # Avoids wasting CPU on strategies that are clearly unreliable in the
+    # current market type.  Set to 0.0 to disable.
+    min_affinity_skip: float = 0.15
+    # Strategy voting engine settings
+    voting_enabled: bool = True
+    voting_consensus_threshold: float = 0.40
+    voting_min_quorum: int = 2
+    voting_disagreement_penalty: float = 0.50
 
 
 @dataclass
