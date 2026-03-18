@@ -68,7 +68,9 @@ class SignalRuntime:
         # 结果通过 metadata["_regime"] 传递给 service.evaluate()，
         # 避免每个策略重复调用 detect()（N 策略 → 1次检测）。
         self._regime_detector: MarketRegimeDetector = (
-            regime_detector or service._regime_detector
+            regime_detector
+            or getattr(service, "_regime_detector", None)
+            or MarketRegimeDetector()
         )
         # 表决引擎：由 policy 配置决定是否启用
         self._voting_engine: Optional[StrategyVotingEngine] = (

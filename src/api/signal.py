@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.deps import (
+    get_calibrator,
     get_htf_cache,
     get_outcome_tracker,
     get_position_manager,
@@ -12,9 +13,11 @@ from src.api.deps import (
     get_signal_service,
     get_trading_service,
 )
-from src.signals.position_manager import PositionManager
+from src.signals.calibrator import ConfidenceCalibrator
+from src.signals.composite import CompositeSignalStrategy
 from src.signals.htf_cache import HTFStateCache
 from src.signals.outcome_tracker import OutcomeTracker
+from src.signals.position_manager import PositionManager
 from src.signals.regime import MarketRegimeDetector
 from src.api.schemas import (
     ApiResponse,
@@ -323,3 +326,45 @@ def htf_cache_status(
 ) -> ApiResponse[Dict[str, Any]]:
     """返回高时间框架方向缓存内容（用于 MTF 策略调试）。"""
     return ApiResponse.success_response(data=htf_cache.describe())
+
+
+@router.get("/calibrator/status", response_model=ApiResponse[Dict[str, Any]])
+def calibrator_status(
+    calibrator: ConfidenceCalibrator = Depends(get_calibrator),
+) -> ApiResponse[Dict[str, Any]]:
+    """返回置信度校准器的当前状态（缓存大小、校准次数、胜率来源等）。"""
+    return ApiResponse.success_response(data=calibrator.describe())
+
+
+@router.post("/calibrator/refresh", response_model=ApiResponse[Dict[str, Any]])
+def calibrator_refresh(
+    hours: int = Query(default=168, ge=24, le=24 * 90),
+    calibrator: ConfidenceCalibrator = Depends(get_calibrator),
+) -> ApiResponse[Dict[str, Any]]:
+    """立即刷新置信度校准器的历史胜率缓存。
+
+    正常情况下校准器每小时自动刷新一次；此端点可手动强制更新，
+    例如在导入历史回测数据后立即让新数据生效。
+    """
+    calibrator._refresh_hours = hours
+    count = calibrator.refresh()
+    return ApiResponse.success_response(
+        data={**calibrator.describe(), "rows_loaded": count},
+        metadata={"hours": hours},
+    )
+
+
+@router.get("/strategies/composite", response_model=ApiResponse[list[Dict[str, Any]]])
+def list_composite_strategies(
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[list[Dict[str, Any]]]:
+    """返回所有复合策略的描述信息（子策略列表、组合模式、Regime 亲和度）。"""
+    result = []
+    for name in service.list_strategies():
+        impl = service._strategies.get(name)
+        if isinstance(impl, CompositeSignalStrategy):
+            result.append(impl.describe())
+    return ApiResponse.success_response(
+        data=result,
+        metadata={"count": len(result)},
+    )

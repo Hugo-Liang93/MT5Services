@@ -5,6 +5,7 @@ import logging
 from typing import Any, Dict, Iterable, Optional
 
 from .adapters import IndicatorSource
+from .calibrator import ConfidenceCalibrator
 from .models import SignalContext, SignalDecision, SignalRecord
 from .regime import MarketRegimeDetector, RegimeType
 from .repository import SignalRepository
@@ -32,12 +33,16 @@ class SignalModule:
         strategies: Optional[Iterable[SignalStrategy]] = None,
         repository: Optional[SignalRepository] = None,
         regime_detector: Optional[MarketRegimeDetector] = None,
+        calibrator: Optional[ConfidenceCalibrator] = None,
     ):
         self.indicator_source = indicator_source
         self.repository = repository
         self._regime_detector: MarketRegimeDetector = (
             regime_detector or MarketRegimeDetector()
         )
+        # 置信度校准器：基于历史胜率对原始 confidence 进行混合校准。
+        # None = 不校准（新部署或没有足够历史数据时的默认状态）。
+        self._calibrator: Optional[ConfidenceCalibrator] = calibrator
         self._strategies: dict[str, SignalStrategy] = {}
         default_strategies: Iterable[SignalStrategy] = strategies or (
             SmaTrendStrategy(),
@@ -156,13 +161,31 @@ class SignalModule:
         affinity_map: Dict[RegimeType, float] = getattr(strategy_impl, "regime_affinity", {})
         affinity = affinity_map.get(regime, 0.5)
         adjusted_confidence = decision.confidence * affinity
+        # ── 置信度校准（历史胜率反馈层）────────────────────────────────
+        # 在 Regime 亲和度修正之后，再根据该策略 (action, regime) 的历史胜率
+        # 做混合校准，使置信度逐步收敛到与实际盈亏挂钩的值。
+        # calibrator=None（默认）时此步跳过，对现有行为零影响。
+        raw_post_affinity = adjusted_confidence
+        if self._calibrator is not None and decision.action in ("buy", "sell"):
+            calibrated = self._calibrator.calibrate(
+                strategy=decision.strategy,
+                action=decision.action,
+                raw_confidence=raw_post_affinity,
+                regime=regime,
+            )
+        else:
+            calibrated = raw_post_affinity
+
         decision = dataclasses.replace(
             decision,
-            confidence=adjusted_confidence,
+            confidence=calibrated,
             metadata={
                 **decision.metadata,
                 "regime": regime.value,
                 "regime_affinity": affinity,
+                "raw_confidence": decision.confidence,       # 原始规则输出
+                "post_affinity_confidence": raw_post_affinity,
+                "calibrated": self._calibrator is not None and decision.action in ("buy", "sell"),
             },
         )
 

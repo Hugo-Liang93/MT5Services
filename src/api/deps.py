@@ -54,7 +54,21 @@ from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 from src.signals.position_manager import PositionManager
 from src.signals.htf_cache import HTFStateCache
 from src.signals.outcome_tracker import OutcomeTracker
-from src.signals.strategies import MultiTimeframeConfirmStrategy
+from src.signals.strategies import (
+    BollingerBreakoutStrategy,
+    DonchianBreakoutStrategy,
+    EmaRibbonStrategy,
+    KeltnerBollingerSqueezeStrategy,
+    MacdMomentumStrategy,
+    MultiTimeframeConfirmStrategy,
+    RsiReversionStrategy,
+    SmaTrendStrategy,
+    StochRsiStrategy,
+    SupertrendStrategy,
+)
+from src.signals.composite import CompositeSignalStrategy
+from src.signals.calibrator import ConfidenceCalibrator
+from src.signals.regime import RegimeType
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +87,7 @@ class _Container:
     signal_runtime: Optional[SignalRuntime] = None
     htf_cache: Optional[HTFStateCache] = None
     outcome_tracker: Optional[OutcomeTracker] = None
+    calibrator: Optional[ConfidenceCalibrator] = None
     trade_executor: Optional[TradeExecutor] = None
     position_manager: Optional[PositionManager] = None
     health_monitor: Optional[object] = None
@@ -236,10 +251,78 @@ def _ensure_initialized() -> None:
         db_writer=_c.storage_writer.db,
         active_account_alias=default_alias,
     )
+    # ConfidenceCalibrator：alpha=0.3（历史胜率占30%权重），启动时不强制刷新，
+    # 首次调用 calibrate() 时自动从 DB 加载（auto_refresh 机制）。
+    _c.calibrator = ConfidenceCalibrator(
+        fetch_winrates_fn=_c.storage_writer.db.fetch_winrates,
+        alpha=0.30,
+        baseline_win_rate=0.50,
+        max_boost=1.30,
+        min_samples=20,
+        refresh_interval_seconds=3600,
+    )
     _c.signal_module = SignalModule(
         indicator_source=UnifiedIndicatorSourceAdapter(_c.indicator_manager),
         repository=TimescaleSignalRepository(_c.storage_writer.db),
+        calibrator=_c.calibrator,
     )
+    # ── 内置复合策略注册 ────────────────────────────────────────────────
+    # 复合策略使用**独立实例**，不与 SignalModule 中的单策略共享实例，
+    # 避免 VotingEngine 中同一策略被重复计票。
+    _composite_strategies = [
+        # 趋势三重确认：Supertrend + MACD + SMA 同向时入场
+        CompositeSignalStrategy(
+            name="trend_triple_confirm",
+            sub_strategies=[
+                SupertrendStrategy(),
+                MacdMomentumStrategy(),
+                SmaTrendStrategy(),
+            ],
+            combine_mode="majority",
+            regime_affinity={
+                RegimeType.TRENDING:  1.00,
+                RegimeType.RANGING:   0.10,
+                RegimeType.BREAKOUT:  0.55,
+                RegimeType.UNCERTAIN: 0.40,
+            },
+            preferred_scopes=("confirmed",),
+        ),
+        # 突破双重确认：Bollinger + Donchian 同时突破，滤掉假突破
+        CompositeSignalStrategy(
+            name="breakout_double_confirm",
+            sub_strategies=[
+                BollingerBreakoutStrategy(),
+                DonchianBreakoutStrategy(),
+                KeltnerBollingerSqueezeStrategy(),
+            ],
+            combine_mode="all_agree",
+            regime_affinity={
+                RegimeType.TRENDING:  0.45,
+                RegimeType.RANGING:   0.20,
+                RegimeType.BREAKOUT:  1.00,
+                RegimeType.UNCERTAIN: 0.55,
+            },
+            preferred_scopes=("confirmed",),
+        ),
+        # 震荡双重确认：RSI + StochRSI 同时超买/超卖时的均值回归
+        CompositeSignalStrategy(
+            name="reversion_double_confirm",
+            sub_strategies=[
+                RsiReversionStrategy(),
+                StochRsiStrategy(),
+            ],
+            combine_mode="all_agree",
+            regime_affinity={
+                RegimeType.TRENDING:  0.15,
+                RegimeType.RANGING:   1.00,
+                RegimeType.BREAKOUT:  0.25,
+                RegimeType.UNCERTAIN: 0.55,
+            },
+            preferred_scopes=("confirmed", "intrabar"),
+        ),
+    ]
+    for combo in _composite_strategies:
+        _c.signal_module.register_strategy(combo)
     _c.indicator_manager.set_priority_indicator_groups(_c.signal_module.required_indicator_groups())
     runtime_targets = [
         SignalTarget(symbol=symbol, timeframe=timeframe, strategy=strategy)
@@ -472,6 +555,12 @@ def get_position_manager() -> PositionManager:
     _ensure_initialized()
     assert _c.position_manager is not None
     return _c.position_manager
+
+
+def get_calibrator() -> ConfidenceCalibrator:
+    _ensure_initialized()
+    assert _c.calibrator is not None
+    return _c.calibrator
 
 
 def get_htf_cache() -> HTFStateCache:
