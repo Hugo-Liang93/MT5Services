@@ -6,6 +6,8 @@
 3. confirmed_cancelled 仍然推进计数
 4. 多策略 key 隔离
 5. max_pending 上限淘汰机制
+6. close_price 提取路径：metadata 注入（runtime 路径）优先于 indicators 扫描
+7. RSI/MACD/Supertrend 等无 close 字段的策略通过 metadata 获得 close_price
 """
 from __future__ import annotations
 
@@ -34,7 +36,33 @@ def _make_event(
     close: float = 1.1000,
     signal_id: str = "sig-001",
     regime: str = "trending",
+    use_metadata_close: bool = False,  # simulate runtime-injected close_price
+    indicators_override: Optional[dict] = None,
 ) -> SimpleNamespace:
+    """构建模拟 SignalEvent。
+
+    Parameters
+    ----------
+    use_metadata_close:
+        True → close 放在 metadata["close_price"]（模拟 runtime 注入路径）；
+        False → close 放在 indicators["sma20"]["close"]（旧路径兜底）。
+    indicators_override:
+        完全替换 indicators dict（用于模拟只有 rsi/macd payload 的场景）。
+    """
+    meta: dict = {
+        "signal_state": signal_state,
+        "scope": scope,
+        "bar_time": datetime.now(timezone.utc).isoformat(),
+        "regime": regime,
+    }
+    if use_metadata_close:
+        meta["close_price"] = close
+        indicators: dict = indicators_override if indicators_override is not None else {}
+    else:
+        indicators = indicators_override if indicators_override is not None else {
+            "sma20": {"close": close},
+        }
+
     return SimpleNamespace(
         symbol=symbol,
         timeframe=timeframe,
@@ -43,15 +71,8 @@ def _make_event(
         confidence=confidence,
         signal_id=signal_id,
         generated_at=datetime.now(timezone.utc),
-        metadata={
-            "signal_state": signal_state,
-            "scope": scope,
-            "bar_time": datetime.now(timezone.utc).isoformat(),
-            "regime": regime,
-        },
-        indicators={
-            "sma20": {"close": close},
-        },
+        metadata=meta,
+        indicators=indicators,
     )
 
 
@@ -258,3 +279,145 @@ class TestOutcomeTrackerWinrateStats:
         assert summary["total_evaluated"] >= 1
         assert summary["win_rate"] is not None
         assert summary["win_rate"] == 1.0  # 所有 buy 信号都赢了
+
+
+class TestOutcomeTrackerClosePriceExtraction:
+    """close_price 提取路径的鲁棒性测试。
+
+    根本问题：SignalEvent.indicators 是策略域收窄后的副本，
+    RSI/MACD/Supertrend 等策略的 payload 不含 close 字段，
+    原来的硬编码名称列表（boll20/sma20/ema50/ema200/atr14）导致
+    大多数策略的 entry_price/exit_price = None → won = NULL → 被 fetch_winrates 过滤。
+    修复：runtime 在策略循环前从全量 snapshot 提取 close 并注入 metadata["close_price"]。
+    """
+
+    def test_metadata_close_price_used_for_rsi_style_strategy(self):
+        """RSI 策略：indicators 只有 rsi/atr payload，无 close 字段。
+        必须通过 metadata["close_price"] 获取价格（runtime 注入路径）。
+        """
+        rows_written: List[Tuple] = []
+        tracker = OutcomeTracker(
+            write_fn=lambda rows: rows_written.extend(rows),
+            bars_to_evaluate=1,
+        )
+
+        rsi_only_indicators = {
+            "rsi14": {"rsi": 72.5},
+            "atr14": {"atr": 0.0012},
+        }
+
+        entry_event = _make_event(
+            close=1.1000,
+            signal_id="rsi-entry",
+            use_metadata_close=True,
+            indicators_override=rsi_only_indicators,
+        )
+        exit_event = _make_event(
+            close=1.1015,
+            signal_id="rsi-exit",
+            use_metadata_close=True,
+            indicators_override=rsi_only_indicators,
+        )
+
+        tracker.on_signal_event(entry_event)
+        tracker.on_signal_event(exit_event)
+
+        assert len(rows_written) == 1, (
+            "RSI strategy outcome should be evaluated via metadata close_price"
+        )
+        row = rows_written[0]
+        entry_price = row[7]
+        exit_price = row[8]
+        won = row[10]
+        assert entry_price == pytest.approx(1.1000), "entry_price must not be None"
+        assert exit_price == pytest.approx(1.1015), "exit_price must not be None"
+        assert won is True
+
+    def test_metadata_close_takes_priority_over_indicators_close(self):
+        """metadata["close_price"] 优先级高于 indicators payload 中的 close。"""
+        rows_written: List[Tuple] = []
+        tracker = OutcomeTracker(
+            write_fn=lambda rows: rows_written.extend(rows),
+            bars_to_evaluate=1,
+        )
+
+        # metadata 中有 1.2000，indicators payload 中有 1.1000
+        # 应使用 metadata 的值
+        event_entry = SimpleNamespace(
+            symbol="EURUSD", timeframe="H1", strategy="test",
+            action="buy", confidence=0.8, signal_id="e1",
+            generated_at=datetime.now(timezone.utc),
+            metadata={
+                "signal_state": "confirmed_buy", "scope": "confirmed",
+                "bar_time": datetime.now(timezone.utc).isoformat(),
+                "regime": "trending",
+                "close_price": 1.2000,  # runtime-injected
+            },
+            indicators={"boll20": {"close": 1.1000, "bb_mid": 1.0990}},
+        )
+        event_exit = SimpleNamespace(
+            symbol="EURUSD", timeframe="H1", strategy="test",
+            action="buy", confidence=0.8, signal_id="e2",
+            generated_at=datetime.now(timezone.utc),
+            metadata={
+                "signal_state": "confirmed_buy", "scope": "confirmed",
+                "bar_time": datetime.now(timezone.utc).isoformat(),
+                "regime": "trending",
+                "close_price": 1.2050,
+            },
+            indicators={"boll20": {"close": 1.1010, "bb_mid": 1.1000}},
+        )
+
+        tracker.on_signal_event(event_entry)
+        tracker.on_signal_event(event_exit)
+
+        assert len(rows_written) == 1
+        assert rows_written[0][7] == pytest.approx(1.2000)  # entry from metadata
+        assert rows_written[0][8] == pytest.approx(1.2050)  # exit from metadata
+
+    def test_indicators_close_fallback_when_no_metadata(self):
+        """当 metadata 不含 close_price 时，回退到 indicators payload 扫描。"""
+        rows_written: List[Tuple] = []
+        tracker = OutcomeTracker(
+            write_fn=lambda rows: rows_written.extend(rows),
+            bars_to_evaluate=1,
+        )
+
+        # 旧路径：close 来自 boll20 payload
+        entry = _make_event(close=1.1000, signal_id="b-entry", use_metadata_close=False,
+                            indicators_override={"boll20": {"close": 1.1000, "bb_mid": 1.0990}})
+        exit_ = _make_event(close=1.1010, signal_id="b-exit", use_metadata_close=False,
+                            indicators_override={"boll20": {"close": 1.1010, "bb_mid": 1.1000}})
+
+        tracker.on_signal_event(entry)
+        tracker.on_signal_event(exit_)
+
+        assert len(rows_written) == 1
+        assert rows_written[0][7] == pytest.approx(1.1000)
+        assert rows_written[0][8] == pytest.approx(1.1010)
+
+    def test_no_close_anywhere_skips_evaluation(self):
+        """无法从任何来源获取 exit_price 时，_tick_pending 提前返回，
+        pending 条目不被评估（无 exit 价格则无法判断输赢）。
+        """
+        rows_written: List[Tuple] = []
+        tracker = OutcomeTracker(
+            write_fn=lambda rows: rows_written.extend(rows),
+            bars_to_evaluate=1,
+        )
+
+        no_close_indicators = {"rsi14": {"rsi": 68.0}}
+        entry = _make_event(close=1.0, signal_id="nc-entry",
+                            indicators_override=no_close_indicators)
+        exit_ = _make_event(close=1.0, signal_id="nc-exit",
+                            indicators_override=no_close_indicators)
+        # 两个事件的 metadata 均不含 close_price
+
+        tracker.on_signal_event(entry)
+        tracker.on_signal_event(exit_)
+
+        # exit_price=None 时 _tick_pending 提前返回，没有写入任何行
+        assert len(rows_written) == 0
+        # pending 条目仍存在（未被评估，由 max_pending 兜底淘汰）
+        total_pending = sum(len(v) for v in tracker._pending.values())
+        assert total_pending >= 1

@@ -143,16 +143,32 @@ class OutcomeTracker:
     # ------------------------------------------------------------------
 
     def _get_close_price(self, event: Any) -> Optional[float]:
-        """从 SignalEvent.indicators 中提取收盘价。"""
-        for ind_name in ("boll20", "sma20", "ema50", "ema200", "atr14"):
-            payload = event.indicators.get(ind_name)
-            if isinstance(payload, dict):
-                close = payload.get("close")
-                if close is not None:
-                    try:
-                        return float(close)
-                    except (TypeError, ValueError):
-                        pass
+        """从 SignalEvent 中提取收盘价。
+
+        优先级：
+        1. ``event.metadata["close_price"]``：由 SignalRuntime 在策略域收窄前，
+           从完整指标快照中提取并注入，对所有策略均有效（RSI/MACD/Supertrend 等）。
+        2. 扫描 ``event.indicators`` 所有 payload 的 ``close`` 字段（兜底）。
+        """
+        # Priority 1: runtime-injected close (strategy-agnostic, always from full snapshot)
+        raw = event.metadata.get("close_price")
+        if raw is not None:
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                pass
+
+        # Priority 2: scan all scoped indicator payloads for a close field
+        for payload in event.indicators.values():
+            if not isinstance(payload, dict):
+                continue
+            close = payload.get("close")
+            if close is not None:
+                try:
+                    return float(close)
+                except (TypeError, ValueError):
+                    pass
+
         return None
 
     def _record_pending(self, event: Any) -> None:

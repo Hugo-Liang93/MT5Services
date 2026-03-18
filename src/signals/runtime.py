@@ -23,6 +23,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _extract_close_price(indicators: Dict[str, Dict[str, float]]) -> Optional[float]:
+    """从完整指标快照中提取收盘价。
+
+    扫描顺序（精确度由高到低）：
+    1. 任意 payload 含 ``close`` 字段（boll20、donchian 均直接附带原始 close）
+    2. 任意 payload 含 ``bb_mid``（Bollinger 中轨 = SMA(close, 20)，误差可接受）
+
+    不使用 sma/ema 值，它们是滞后移动均线，不适合作为当根 bar 的价格代理。
+    """
+    bb_mid: Optional[float] = None
+    for payload in indicators.values():
+        if not isinstance(payload, dict):
+            continue
+        close = payload.get("close")
+        if close is not None:
+            try:
+                return float(close)
+            except (TypeError, ValueError):
+                pass
+        if bb_mid is None:
+            mid = payload.get("bb_mid")
+            if mid is not None:
+                try:
+                    bb_mid = float(mid)
+                except (TypeError, ValueError):
+                    pass
+    return bb_mid
+
+
 class SnapshotSource(Protocol):
     def add_snapshot_listener(
         self,
@@ -650,6 +679,12 @@ class SignalRuntime:
         regime = self._regime_detector.detect(indicators)
         regime_metadata = dict(metadata)
         regime_metadata["_regime"] = regime.value
+        # close_price 注入：从完整快照中提取，注入 metadata 供下游（OutcomeTracker 等）使用。
+        # 策略域 scoped_indicators 只含 required_indicators 声明的指标，
+        # 多数策略（RSI/MACD/Supertrend 等）的 payload 不含 close 字段，
+        # 因此必须在收窄前从全量 indicators 中提取一次，所有策略的事件均可受益。
+        if "close_price" not in regime_metadata:
+            regime_metadata["close_price"] = _extract_close_price(indicators)
 
         # ── Regime 稳定性追踪 ──────────────────────────────────────────────
         # 只在 confirmed scope 更新计数（K 线收盘才算真正的新 bar），
