@@ -32,6 +32,7 @@
 """
 from __future__ import annotations
 
+import threading
 from enum import Enum
 from typing import Any, Dict, Optional
 
@@ -225,3 +226,75 @@ class MarketRegimeDetector:
                 if upper is not None and lower is not None:
                     return upper, lower
         return None, None
+
+
+class RegimeTracker:
+    """跟踪连续相同 Regime 的持续性，提供稳定性加成乘数。
+
+    当市场连续多根 bar 停留在同一 Regime 时，说明行情类型确立，
+    当前行情下擅长的策略所发出的信号更可靠，故给予置信度加成。
+
+    乘数从 1.0 线性增长至 max_multiplier，
+    经过 min_bars_for_full_stability 根 bar 后达到最大值。
+
+    ## 用法
+
+    每根 bar 收盘（或每次 snapshot 传入新 Regime）时调用 ``update()``，
+    然后将返回的乘数应用于 consensus 置信度：
+        multiplier = tracker.update(regime)
+        consensus.confidence = min(1.0, consensus.confidence * multiplier)
+
+    ## 线程安全
+
+    内部使用 Lock，可安全地在 SignalRuntime 后台线程中调用。
+    """
+
+    def __init__(
+        self,
+        *,
+        min_bars_for_full_stability: int = 3,
+        max_multiplier: float = 1.20,
+    ) -> None:
+        if min_bars_for_full_stability < 1:
+            raise ValueError("min_bars_for_full_stability must be >= 1")
+        if not (1.0 <= max_multiplier <= 2.0):
+            raise ValueError("max_multiplier must be in [1.0, 2.0]")
+        self._min_bars = min_bars_for_full_stability
+        self._max_multiplier = max_multiplier
+        self._current_regime: Optional[RegimeType] = None
+        self._consecutive_bars: int = 0
+        self._lock = threading.Lock()
+
+    def update(self, regime: RegimeType) -> float:
+        """更新 Regime 状态并返回当前稳定性乘数（≥ 1.0）。
+
+        连续 bars 数量越多、乘数越高（最大不超过 max_multiplier）。
+        Regime 切换时重置计数，乘数回到 1.0。
+        """
+        with self._lock:
+            if regime == self._current_regime:
+                self._consecutive_bars += 1
+            else:
+                self._current_regime = regime
+                self._consecutive_bars = 1
+            return self._compute_multiplier(self._consecutive_bars)
+
+    def stability_multiplier(self) -> float:
+        """返回当前稳定性乘数（不更新状态）。"""
+        with self._lock:
+            return self._compute_multiplier(self._consecutive_bars)
+
+    def _compute_multiplier(self, bars: int) -> float:
+        ratio = min(1.0, bars / self._min_bars)
+        return 1.0 + (self._max_multiplier - 1.0) * ratio
+
+    def describe(self) -> Dict[str, Any]:
+        """返回当前跟踪状态，用于监控端点。"""
+        with self._lock:
+            return {
+                "current_regime": self._current_regime.value if self._current_regime else None,
+                "consecutive_bars": self._consecutive_bars,
+                "stability_multiplier": self._compute_multiplier(self._consecutive_bars),
+                "min_bars_for_full_stability": self._min_bars,
+                "max_multiplier": self._max_multiplier,
+            }

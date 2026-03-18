@@ -13,7 +13,7 @@ from src.utils.common import timeframe_seconds
 from .filters import SignalFilterChain
 from .models import SignalEvent
 from .policy import RuntimeSignalState, SignalPolicy
-from .regime import MarketRegimeDetector, RegimeType
+from .regime import MarketRegimeDetector, RegimeTracker, RegimeType
 from .service import SignalModule
 from .voting import StrategyVotingEngine
 
@@ -80,6 +80,8 @@ class SignalRuntime:
             if self.policy.voting_enabled
             else None
         )
+        # Regime 稳定性跟踪：key=(symbol, timeframe)，每个交易对独立计数
+        self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._signal_listeners: List[Callable[[SignalEvent], None]] = []
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
@@ -647,6 +649,14 @@ class SignalRuntime:
         regime_metadata = dict(metadata)
         regime_metadata["_regime"] = regime.value
 
+        # ── Regime 稳定性追踪 ──────────────────────────────────────────────
+        # 只在 confirmed scope 更新计数（K 线收盘才算真正的新 bar），
+        # intrabar 快照频繁到来会导致计数虚高。
+        tracker = self._regime_trackers.setdefault(
+            (symbol, timeframe), RegimeTracker()
+        )
+        regime_stability = tracker.update(regime) if scope == "confirmed" else tracker.stability_multiplier()
+
         min_affinity_skip = self.policy.min_affinity_skip
 
         # 收集本次 snapshot 所有策略的决策，供 VotingEngine 聚合
@@ -726,6 +736,17 @@ class SignalRuntime:
                 snapshot_decisions, regime=regime, scope=scope
             )
             if consensus is not None:
+                import dataclasses as _dc
+                # 稳定性加成：Regime 连续确立时，共识置信度适当提升（上限 1.0）
+                adjusted_conf = min(1.0, consensus.confidence * regime_stability)
+                consensus = _dc.replace(
+                    consensus,
+                    confidence=adjusted_conf,
+                    metadata={
+                        **consensus.metadata,
+                        "regime_stability_multiplier": round(regime_stability, 4),
+                    },
+                )
                 consensus_key = (symbol, timeframe, self._voting_engine.CONSENSUS_STRATEGY_NAME)
                 with self._state_lock:
                     consensus_state = self._state_by_target.setdefault(

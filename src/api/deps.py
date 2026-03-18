@@ -28,6 +28,7 @@ from src.config import (
     load_mt5_settings,
     load_storage_settings,
 )
+from src.config.advanced_manager import get_config_manager
 from src.core.economic_calendar_service import EconomicCalendarService
 from src.core.market_service import MarketDataService
 from src.core.pretrade_risk_service import PreTradeRiskService
@@ -51,6 +52,9 @@ from src.signals import (
 )
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 from src.signals.position_manager import PositionManager
+from src.signals.htf_cache import HTFStateCache
+from src.signals.outcome_tracker import OutcomeTracker
+from src.signals.strategies import MultiTimeframeConfirmStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,8 @@ class _Container:
     economic_calendar_service: Optional[EconomicCalendarService] = None
     signal_module: Optional[SignalModule] = None
     signal_runtime: Optional[SignalRuntime] = None
+    htf_cache: Optional[HTFStateCache] = None
+    outcome_tracker: Optional[OutcomeTracker] = None
     trade_executor: Optional[TradeExecutor] = None
     position_manager: Optional[PositionManager] = None
     health_monitor: Optional[object] = None
@@ -295,6 +301,44 @@ def _ensure_initialized() -> None:
         position_manager=_c.position_manager,
     )
     _c.signal_runtime.add_signal_listener(_c.trade_executor.on_signal_event)
+    # HTFStateCache：监听 consensus 信号，缓存高时间框架方向
+    _c.htf_cache = HTFStateCache()
+    _c.htf_cache.attach(_c.signal_runtime)
+    # 将 MTF 策略注入 htf_cache 后再注册，避免在缓存就绪前就有信号触发
+    _c.signal_module.register_strategy(
+        MultiTimeframeConfirmStrategy(htf_cache=_c.htf_cache)
+    )
+    # 配置热加载：signal.ini 变更后自动更新 SignalRuntime.policy
+    def _on_signal_config_change(filename: str) -> None:
+        if filename != "signal.ini":
+            return
+        try:
+            new_sig_cfg = get_signal_config()
+            new_sessions = tuple(s.strip() for s in new_sig_cfg.allowed_sessions.split(",") if s.strip())
+            new_policy = SignalPolicy(
+                min_preview_confidence=new_sig_cfg.min_preview_confidence,
+                min_preview_bar_progress=new_sig_cfg.min_preview_bar_progress,
+                min_preview_stable_seconds=new_sig_cfg.preview_stable_seconds,
+                preview_cooldown_seconds=new_sig_cfg.preview_cooldown_seconds,
+                snapshot_dedupe_window_seconds=new_sig_cfg.snapshot_dedupe_window_seconds,
+                max_spread_points=new_sig_cfg.max_spread_points,
+                allowed_sessions=new_sessions,
+                auto_trade_enabled=new_sig_cfg.auto_trade_enabled,
+                auto_trade_min_confidence=new_sig_cfg.auto_trade_min_confidence,
+                auto_trade_require_armed=new_sig_cfg.auto_trade_require_armed,
+            )
+            if _c.signal_runtime is not None:
+                _c.signal_runtime.policy = new_policy
+            logger.info("signal.ini hot-reloaded: policy updated")
+        except Exception:
+            logger.exception("Failed to hot-reload signal.ini")
+
+    get_config_manager().register_change_callback(_on_signal_config_change)
+    # OutcomeTracker：N 根 bar 后回填信号绩效
+    _c.outcome_tracker = OutcomeTracker(
+        write_fn=_c.storage_writer.db.write_outcome_events,
+    )
+    _c.outcome_tracker.attach(_c.signal_runtime)
     _c.health_monitor = get_health_monitor("health_monitor.db")
     _c.health_monitor.configure_alerts(
         data_latency_warning=max(1.0, ingest_settings.max_allowed_delay / 2.0),
@@ -428,6 +472,18 @@ def get_position_manager() -> PositionManager:
     _ensure_initialized()
     assert _c.position_manager is not None
     return _c.position_manager
+
+
+def get_htf_cache() -> HTFStateCache:
+    _ensure_initialized()
+    assert _c.htf_cache is not None
+    return _c.htf_cache
+
+
+def get_outcome_tracker() -> OutcomeTracker:
+    _ensure_initialized()
+    assert _c.outcome_tracker is not None
+    return _c.outcome_tracker
 
 
 def get_health_monitor_instance():

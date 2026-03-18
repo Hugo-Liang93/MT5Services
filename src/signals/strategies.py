@@ -323,20 +323,23 @@ class MultiTimeframeConfirmStrategy:
     higher TF agree on direction.
 
     Uses bar-close snapshots only.  The higher-timeframe direction is read from
-    confirmed signal state (RuntimeSignalState.confirmed_state), which is only
-    updated after a higher-TF bar closes.  Evaluating on intrabar snapshots
-    yields htf_direction=None almost always, producing only wasteful hold decisions.
+    HTFStateCache, which is populated by consensus signals from the higher TF.
+
+    ## 注入方式
+
+    HTFStateCache 通过构造参数注入：
+        strategy = MultiTimeframeConfirmStrategy(htf_cache=htf_cache)
+    HTFStateCache.attach(runtime) 后会自动监听 consensus 信号并填充缓存。
     """
 
     name = "mtf_confirm"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
-    # MultiTimeframeConfirmStrategy 在 htf_key 未注入时始终返回 hold，
-    # Regime 亲和度对其没有实质意义，但为符合 Protocol 仍声明为中性值。
+    # MTF 对齐在趋势市效果最佳（双重确认）；震荡市 HTF 方向不稳定
     regime_affinity = {
-        RegimeType.TRENDING:  0.50,
-        RegimeType.RANGING:   0.50,
-        RegimeType.BREAKOUT:  0.50,
+        RegimeType.TRENDING:  1.00,  # 趋势市 LTF+HTF 双向一致，最可靠
+        RegimeType.RANGING:   0.30,  # 震荡市 HTF 方向频繁反转，信号不稳
+        RegimeType.BREAKOUT:  0.70,  # 突破初期 HTF 确认方向有价值
         RegimeType.UNCERTAIN: 0.50,
     }
 
@@ -344,8 +347,10 @@ class MultiTimeframeConfirmStrategy:
         self,
         *,
         state_reader: Optional[Any] = None,
+        htf_cache: Optional[Any] = None,
     ):
         self._state_reader = state_reader
+        self._htf_cache = htf_cache
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         fast, fast_name = _resolve_indicator_value(
@@ -413,10 +418,22 @@ class MultiTimeframeConfirmStrategy:
         )
 
     def _get_htf_direction(self, context: SignalContext) -> Optional[str]:
-        """Read higher timeframe direction from state reader or metadata."""
+        """Read higher timeframe direction from HTFStateCache, metadata, or state_reader."""
+        # 优先从 metadata 直接读取（测试/手动注入场景）
         htf = context.metadata.get("htf_direction")
         if htf in ("buy", "sell", "hold"):
             return htf
+        # 从 HTFStateCache 读取（生产路径）
+        if self._htf_cache is not None:
+            try:
+                direction = self._htf_cache.get_htf_direction(
+                    context.symbol, context.timeframe
+                )
+                if direction is not None:
+                    return direction
+            except Exception:
+                pass
+        # 兼容旧的 state_reader 注入方式
         if self._state_reader is None:
             return None
         try:
