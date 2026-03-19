@@ -106,8 +106,87 @@ def signal_summary(
     )
 
 
+@router.get(
+    "/diagnostics/strategy-conflicts", response_model=ApiResponse[Dict[str, Any]]
+)
+def strategy_conflict_diagnostics(
+    symbol: Optional[str] = Query(default=None),
+    timeframe: Optional[str] = Query(default=None),
+    scope: str = Query(default="confirmed", pattern="^(confirmed|preview|all)$"),
+    limit: int = Query(default=2000, ge=100, le=5000),
+    conflict_warn_threshold: float = Query(default=0.35, ge=0.0, le=1.0),
+    hold_warn_threshold: float = Query(default=0.75, ge=0.0, le=1.0),
+    confidence_warn_threshold: float = Query(default=0.45, ge=0.0, le=1.0),
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[Dict[str, Any]]:
+    """诊断策略冲突、持仓倾向和指标缺失问题。"""
+    report = service.strategy_diagnostics(
+        symbol=symbol,
+        timeframe=timeframe,
+        scope=scope,
+        limit=limit,
+        conflict_warn_threshold=conflict_warn_threshold,
+        hold_warn_threshold=hold_warn_threshold,
+        confidence_warn_threshold=confidence_warn_threshold,
+    )
+    return ApiResponse.success_response(data=report)
+
+
+@router.get("/diagnostics/daily-report", response_model=ApiResponse[Dict[str, Any]])
+def signal_daily_quality_report(
+    symbol: Optional[str] = Query(default=None),
+    timeframe: Optional[str] = Query(default=None),
+    scope: str = Query(default="confirmed", pattern="^(confirmed|preview|all)$"),
+    limit: int = Query(default=5000, ge=100, le=10000),
+    conflict_warn_threshold: float = Query(default=0.35, ge=0.0, le=1.0),
+    hold_warn_threshold: float = Query(default=0.75, ge=0.0, le=1.0),
+    confidence_warn_threshold: float = Query(default=0.45, ge=0.0, le=1.0),
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[Dict[str, Any]]:
+    report = service.daily_quality_report(
+        symbol=symbol,
+        timeframe=timeframe,
+        scope=scope,
+        limit=limit,
+        conflict_warn_threshold=conflict_warn_threshold,
+        hold_warn_threshold=hold_warn_threshold,
+        confidence_warn_threshold=confidence_warn_threshold,
+    )
+    return ApiResponse.success_response(data=report)
+
+
+@router.get(
+    "/diagnostics/aggregate-summary", response_model=ApiResponse[Dict[str, Any]]
+)
+def signal_diagnostics_aggregate_summary(
+    hours: int = Query(default=24, ge=1, le=24 * 30),
+    scope: str = Query(default="confirmed", pattern="^(confirmed|preview|all)$"),
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[Dict[str, Any]]:
+    report = service.diagnostics_aggregate_summary(hours=hours, scope=scope)
+    return ApiResponse.success_response(data=report)
+
+
+@router.get(
+    "/diagnostics/trace/{trace_id}", response_model=ApiResponse[list[SignalEventModel]]
+)
+def signal_trace_events(
+    trace_id: str,
+    scope: str = Query(default="all", pattern="^(confirmed|preview|all)$"),
+    limit: int = Query(default=2000, ge=1, le=5000),
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[list[SignalEventModel]]:
+    rows = service.recent_by_trace_id(trace_id=trace_id, scope=scope, limit=limit)
+    return ApiResponse.success_response(
+        data=[SignalEventModel(**row) for row in rows],
+        metadata={"trace_id": trace_id, "count": len(rows)},
+    )
+
+
 @router.get("/runtime/status", response_model=ApiResponse[dict])
-def signal_runtime_status(service: SignalRuntime = Depends(get_signal_runtime)) -> ApiResponse[dict]:
+def signal_runtime_status(
+    service: SignalRuntime = Depends(get_signal_runtime),
+) -> ApiResponse[dict]:
     return ApiResponse.success_response(data=service.status())
 
 
@@ -139,9 +218,13 @@ def execute_trade_from_signal(
     - API-dispatched (manual/AI agent): call this endpoint with a signal_id
     """
     rows = signal_service.recent_signals(scope="confirmed", limit=500)
-    signal_row = next((r for r in rows if r.get("signal_id") == request.signal_id), None)
+    signal_row = next(
+        (r for r in rows if r.get("signal_id") == request.signal_id), None
+    )
     if signal_row is None:
-        raise HTTPException(status_code=404, detail=f"Signal not found: {request.signal_id}")
+        raise HTTPException(
+            status_code=404, detail=f"Signal not found: {request.signal_id}"
+        )
 
     action = signal_row.get("action", "")
     if action not in ("buy", "sell"):
@@ -153,7 +236,10 @@ def execute_trade_from_signal(
     indicators: Dict[str, Any] = signal_row.get("indicators_snapshot") or {}
     atr = extract_atr_from_indicators(indicators)
     if atr is None or atr <= 0:
-        raise HTTPException(status_code=422, detail="Cannot compute trade params: ATR not found in signal snapshot")
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot compute trade params: ATR not found in signal snapshot",
+        )
 
     try:
         balance = float(
@@ -164,7 +250,10 @@ def execute_trade_from_signal(
     except Exception:
         balance = 0.0
     if balance <= 0:
-        raise HTTPException(status_code=422, detail="Cannot compute position size: account balance unavailable")
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot compute position size: account balance unavailable",
+        )
 
     # Estimate entry price from indicator snapshot
     entry_price: Optional[float] = None
@@ -183,7 +272,9 @@ def execute_trade_from_signal(
             break
 
     if entry_price is None or entry_price <= 0:
-        raise HTTPException(status_code=422, detail="Cannot estimate entry price from signal snapshot")
+        raise HTTPException(
+            status_code=422, detail="Cannot estimate entry price from signal snapshot"
+        )
 
     params = compute_trade_params(
         action=action,
@@ -191,7 +282,11 @@ def execute_trade_from_signal(
         atr_value=atr,
         account_balance=balance,
     )
-    volume = request.volume_override if request.volume_override is not None else params.position_size
+    volume = (
+        request.volume_override
+        if request.volume_override is not None
+        else params.position_size
+    )
 
     trade_payload: Dict[str, Any] = {
         "symbol": signal_row.get("symbol"),
@@ -218,6 +313,7 @@ def execute_trade_from_signal(
 
 # ── 监控端点 ─────────────────────────────────────────────────────────────────
 
+
 @router.get("/regime/{symbol}/{timeframe}", response_model=ApiResponse[Dict[str, Any]])
 def get_regime(
     symbol: str,
@@ -229,9 +325,7 @@ def get_regime(
     indicators = service.indicator_source.get_all_indicators(symbol, timeframe)
     detector = MarketRegimeDetector()
     detail = detector.detect_with_detail(indicators)
-    # 从 runtime 读取 RegimeTracker 稳定性
-    tracker = runtime._regime_trackers.get((symbol, timeframe))
-    stability = tracker.describe() if tracker else None
+    stability = runtime.get_regime_stability(symbol, timeframe)
     return ApiResponse.success_response(
         data={
             **detail,
@@ -268,15 +362,12 @@ def voting_stats(
     runtime: SignalRuntime = Depends(get_signal_runtime),
 ) -> ApiResponse[Dict[str, Any]]:
     """返回表决引擎配置及各交易对 Regime 稳定性状态。"""
-    voting_engine = runtime._voting_engine
-    regime_stability = {
-        f"{sym}/{tf}": tracker.describe()
-        for (sym, tf), tracker in runtime._regime_trackers.items()
-    }
+    voting_info = runtime.get_voting_info()
+    regime_stability = runtime.get_regime_stability_map()
     return ApiResponse.success_response(
         data={
-            "voting_enabled": voting_engine is not None,
-            "voting_config": voting_engine.describe() if voting_engine else None,
+            "voting_enabled": voting_info.get("voting_enabled", False),
+            "voting_config": voting_info.get("voting_config"),
             "regime_stability": regime_stability,
         }
     )

@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
 from .adapters import IndicatorSource
+from .analytics import (
+    DiagnosticThresholds,
+    DiagnosticsEngine,
+    SignalDiagnosticsAnalyzer,
+)
 from .calibrator import ConfidenceCalibrator
 from .models import SignalContext, SignalDecision, SignalRecord
 from .regime import MarketRegimeDetector, RegimeType
@@ -34,6 +40,7 @@ class SignalModule:
         repository: Optional[SignalRepository] = None,
         regime_detector: Optional[MarketRegimeDetector] = None,
         calibrator: Optional[ConfidenceCalibrator] = None,
+        diagnostics_engine: Optional[DiagnosticsEngine] = None,
     ):
         self.indicator_source = indicator_source
         self.repository = repository
@@ -43,6 +50,9 @@ class SignalModule:
         # 置信度校准器：基于历史胜率对原始 confidence 进行混合校准。
         # None = 不校准（新部署或没有足够历史数据时的默认状态）。
         self._calibrator: Optional[ConfidenceCalibrator] = calibrator
+        self._diagnostics_analyzer: DiagnosticsEngine = (
+            diagnostics_engine or SignalDiagnosticsAnalyzer()
+        )
         self._strategies: dict[str, SignalStrategy] = {}
         default_strategies: Iterable[SignalStrategy] = strategies or (
             SmaTrendStrategy(),
@@ -131,7 +141,9 @@ class SignalModule:
         if strategy_impl is None:
             raise ValueError(f"unsupported signal strategy: {strategy}")
 
-        indicator_payload = indicators or self.indicator_source.get_all_indicators(symbol, timeframe)
+        indicator_payload = indicators or self.indicator_source.get_all_indicators(
+            symbol, timeframe
+        )
         context = SignalContext(
             symbol=symbol,
             timeframe=timeframe,
@@ -158,7 +170,9 @@ class SignalModule:
         else:
             regime = self._regime_detector.detect(indicator_payload)
         # 优先读策略类上的 regime_affinity 属性；缺失时回退到中性值 0.5
-        affinity_map: Dict[RegimeType, float] = getattr(strategy_impl, "regime_affinity", {})
+        affinity_map: Dict[RegimeType, float] = getattr(
+            strategy_impl, "regime_affinity", {}
+        )
         affinity = affinity_map.get(regime, 0.5)
         adjusted_confidence = decision.confidence * affinity
         # ── 置信度校准（历史胜率反馈层）────────────────────────────────
@@ -183,9 +197,10 @@ class SignalModule:
                 **decision.metadata,
                 "regime": regime.value,
                 "regime_affinity": affinity,
-                "raw_confidence": decision.confidence,       # 原始规则输出
+                "raw_confidence": decision.confidence,  # 原始规则输出
                 "post_affinity_confidence": raw_post_affinity,
-                "calibrated": self._calibrator is not None and decision.action in ("buy", "sell"),
+                "calibrated": self._calibrator is not None
+                and decision.action in ("buy", "sell"),
             },
         )
 
@@ -213,7 +228,11 @@ class SignalModule:
             self.repository.append(record)
             return record
         except Exception:
-            logger.exception("Failed to persist signal event for %s/%s", decision.symbol, decision.strategy)
+            logger.exception(
+                "Failed to persist signal event for %s/%s",
+                decision.symbol,
+                decision.strategy,
+            )
             return None
 
     def persist_decision(
@@ -245,12 +264,131 @@ class SignalModule:
             limit=limit,
         )
 
-    def summary(self, *, hours: int = 24, scope: str = "confirmed") -> list[dict[str, Any]]:
+    def summary(
+        self, *, hours: int = 24, scope: str = "confirmed"
+    ) -> list[dict[str, Any]]:
         if self.repository is None:
             return []
         return self.repository.summary(hours=hours, scope=scope)
 
-    def dispatch_operation(self, operation: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+    def strategy_diagnostics(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        scope: str = "confirmed",
+        limit: int = 2000,
+        conflict_warn_threshold: float = 0.35,
+        hold_warn_threshold: float = 0.75,
+        confidence_warn_threshold: float = 0.45,
+    ) -> dict[str, Any]:
+        """聚合最近信号，输出策略冲突与质量诊断。
+
+        该诊断用于排查「策略之间互相打架」及「指标缺失导致频繁 hold」问题，
+        为后续工程化治理（下线策略、调参、补指标）提供量化依据。
+        """
+        rows = self.recent_signals(
+            symbol=symbol,
+            timeframe=timeframe,
+            scope=scope,
+            limit=limit,
+        )
+        thresholds = DiagnosticThresholds(
+            conflict_warn_threshold=conflict_warn_threshold,
+            hold_warn_threshold=hold_warn_threshold,
+            confidence_warn_threshold=confidence_warn_threshold,
+        )
+        return self._diagnostics_analyzer.build_report(
+            rows,
+            symbol=symbol,
+            timeframe=timeframe,
+            scope=scope,
+            thresholds=thresholds,
+        )
+
+    def daily_quality_report(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        scope: str = "confirmed",
+        limit: int = 5000,
+        conflict_warn_threshold: float = 0.35,
+        hold_warn_threshold: float = 0.75,
+        confidence_warn_threshold: float = 0.45,
+        now: Optional[datetime] = None,
+    ) -> dict[str, Any]:
+        rows = self.recent_signals(
+            symbol=symbol,
+            timeframe=timeframe,
+            scope=scope,
+            limit=limit,
+        )
+        thresholds = DiagnosticThresholds(
+            conflict_warn_threshold=conflict_warn_threshold,
+            hold_warn_threshold=hold_warn_threshold,
+            confidence_warn_threshold=confidence_warn_threshold,
+        )
+        return self._diagnostics_analyzer.build_daily_quality_report(
+            rows,
+            symbol=symbol,
+            timeframe=timeframe,
+            scope=scope,
+            thresholds=thresholds,
+            now=now,
+        )
+
+    def diagnostics_aggregate_summary(
+        self,
+        *,
+        hours: int = 24,
+        scope: str = "confirmed",
+    ) -> dict[str, Any]:
+        rows = self.summary(hours=hours, scope=scope)
+        action_totals: dict[str, int] = {}
+        strategy_totals: dict[str, int] = {}
+        for row in rows:
+            action = str(row.get("action") or "unknown")
+            strategy = str(row.get("strategy") or "unknown")
+            count = int(row.get("count") or 0)
+            action_totals[action] = action_totals.get(action, 0) + count
+            strategy_totals[strategy] = strategy_totals.get(strategy, 0) + count
+        top_strategies = sorted(
+            (
+                {"strategy": strategy, "count": count}
+                for strategy, count in strategy_totals.items()
+            ),
+            key=lambda item: item["count"],
+            reverse=True,
+        )[:10]
+        return {
+            "hours": hours,
+            "scope": scope,
+            "rows_analyzed": len(rows),
+            "action_totals": action_totals,
+            "strategy_totals": strategy_totals,
+            "top_strategies": top_strategies,
+            "source": "repository.summary",
+        }
+
+    def recent_by_trace_id(
+        self,
+        *,
+        trace_id: str,
+        scope: str = "all",
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        rows = self.recent_signals(scope=scope, limit=limit)
+        return [
+            row
+            for row in rows
+            if str((row.get("metadata") or {}).get("signal_trace_id", "")).strip()
+            == trace_id
+        ]
+
+    def dispatch_operation(
+        self, operation: str, payload: Optional[Dict[str, Any]] = None
+    ) -> Any:
         payload = payload or {}
         handlers = {
             "evaluate": lambda: self.evaluate(
@@ -269,7 +407,9 @@ class SignalModule:
             "required_indicator_groups": lambda: [
                 list(group) for group in self.required_indicator_groups()
             ],
-            "available_indicators": lambda: [item.get("name") for item in self.indicator_source.list_indicators()],
+            "available_indicators": lambda: [
+                item.get("name") for item in self.indicator_source.list_indicators()
+            ],
             "recent": lambda: self.recent_signals(
                 symbol=payload.get("symbol"),
                 timeframe=payload.get("timeframe"),
@@ -278,7 +418,40 @@ class SignalModule:
                 scope=payload.get("scope", "confirmed"),
                 limit=payload.get("limit", 200),
             ),
-            "summary": lambda: self.summary(hours=payload.get("hours", 24), scope=payload.get("scope", "confirmed")),
+            "summary": lambda: self.summary(
+                hours=payload.get("hours", 24), scope=payload.get("scope", "confirmed")
+            ),
+            "strategy_diagnostics": lambda: self.strategy_diagnostics(
+                symbol=payload.get("symbol"),
+                timeframe=payload.get("timeframe"),
+                scope=payload.get("scope", "confirmed"),
+                limit=payload.get("limit", 2000),
+                conflict_warn_threshold=payload.get("conflict_warn_threshold", 0.35),
+                hold_warn_threshold=payload.get("hold_warn_threshold", 0.75),
+                confidence_warn_threshold=payload.get(
+                    "confidence_warn_threshold", 0.45
+                ),
+            ),
+            "daily_quality_report": lambda: self.daily_quality_report(
+                symbol=payload.get("symbol"),
+                timeframe=payload.get("timeframe"),
+                scope=payload.get("scope", "confirmed"),
+                limit=payload.get("limit", 5000),
+                conflict_warn_threshold=payload.get("conflict_warn_threshold", 0.35),
+                hold_warn_threshold=payload.get("hold_warn_threshold", 0.75),
+                confidence_warn_threshold=payload.get(
+                    "confidence_warn_threshold", 0.45
+                ),
+            ),
+            "diagnostics_aggregate_summary": lambda: self.diagnostics_aggregate_summary(
+                hours=payload.get("hours", 24),
+                scope=payload.get("scope", "confirmed"),
+            ),
+            "recent_by_trace_id": lambda: self.recent_by_trace_id(
+                trace_id=payload["trace_id"],
+                scope=payload.get("scope", "all"),
+                limit=payload.get("limit", 2000),
+            ),
         }
         if operation not in handlers:
             raise ValueError(f"unsupported signal operation: {operation}")

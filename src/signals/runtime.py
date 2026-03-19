@@ -6,7 +6,17 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Protocol
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+)
+from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
 
@@ -55,15 +65,17 @@ def _extract_close_price(indicators: Dict[str, Dict[str, float]]) -> Optional[fl
 class SnapshotSource(Protocol):
     def add_snapshot_listener(
         self,
-        listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
-    ) -> None:
-        ...
+        listener: Callable[
+            [str, str, datetime, Dict[str, Dict[str, float]], str], None
+        ],
+    ) -> None: ...
 
     def remove_snapshot_listener(
         self,
-        listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
-    ) -> None:
-        ...
+        listener: Callable[
+            [str, str, datetime, Dict[str, Dict[str, float]], str], None
+        ],
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -123,32 +135,22 @@ class SignalRuntime:
         self._strategy_scopes: dict[str, frozenset[str]] = {}
         # 启动时缓存每个策略的 regime_affinity，避免 process_next_event 热路径中的 getattr。
         self._strategy_affinity: dict[str, dict[RegimeType, float]] = {}
-        requirements_getter = getattr(self.service, "strategy_requirements", None)
-        scopes_getter = getattr(self.service, "strategy_scopes", None)
-        affinity_getter = getattr(self.service, "strategy_affinity_map", None)
         for target in self._targets:
-            self._target_index.setdefault((target.symbol, target.timeframe), []).append(target.strategy)
+            self._target_index.setdefault((target.symbol, target.timeframe), []).append(
+                target.strategy
+            )
             if target.strategy not in self._strategy_requirements:
-                if callable(requirements_getter):
-                    self._strategy_requirements[target.strategy] = tuple(requirements_getter(target.strategy))
-                else:
-                    self._strategy_requirements[target.strategy] = ()
+                self._strategy_requirements[target.strategy] = tuple(
+                    self.service.strategy_requirements(target.strategy)
+                )
             if target.strategy not in self._strategy_scopes:
-                if callable(scopes_getter):
-                    try:
-                        self._strategy_scopes[target.strategy] = frozenset(scopes_getter(target.strategy))
-                    except Exception:
-                        self._strategy_scopes[target.strategy] = frozenset(("intrabar", "confirmed"))
-                else:
-                    self._strategy_scopes[target.strategy] = frozenset(("intrabar", "confirmed"))
+                self._strategy_scopes[target.strategy] = frozenset(
+                    self.service.strategy_scopes(target.strategy)
+                )
             if target.strategy not in self._strategy_affinity:
-                if callable(affinity_getter):
-                    try:
-                        self._strategy_affinity[target.strategy] = affinity_getter(target.strategy)
-                    except Exception:
-                        self._strategy_affinity[target.strategy] = {}
-                else:
-                    self._strategy_affinity[target.strategy] = {}
+                self._strategy_affinity[target.strategy] = (
+                    self.service.strategy_affinity_map(target.strategy)
+                )
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -166,6 +168,8 @@ class SignalRuntime:
         self._state_lock = threading.Lock()
         self._dropped_confirmed = 0
         self._dropped_intrabar = 0
+        self._confirmed_backpressure_waits = 0
+        self._confirmed_backpressure_failures = 0
         self._last_drop_log_at: float = 0.0
         self._dropped_at_last_log: int = 0  # 上次日志时的总丢弃数，用于计算 delta
         self._state_by_target: dict[tuple[str, str, str], RuntimeSignalState] = {}
@@ -176,7 +180,9 @@ class SignalRuntime:
         self._stop.clear()
         self._restore_state()
         self.snapshot_source.add_snapshot_listener(self._on_snapshot)
-        self._thread = threading.Thread(target=self._loop, name="signal-runtime", daemon=True)
+        self._thread = threading.Thread(
+            target=self._loop, name="signal-runtime", daemon=True
+        )
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -202,12 +208,17 @@ class SignalRuntime:
             "bar_time": bar_time.isoformat(),
             "snapshot_time": datetime.now(timezone.utc).isoformat(),
             "trigger_source": f"{scope}_snapshot",
+            "signal_trace_id": uuid4().hex,
         }
         if scope == "intrabar":
             if bar_time.tzinfo is None:
                 bar_time = bar_time.replace(tzinfo=timezone.utc)
-            elapsed = (datetime.now(timezone.utc) - bar_time.astimezone(timezone.utc)).total_seconds()
-            metadata["bar_progress"] = max(0.0, min(elapsed / max(timeframe_seconds(timeframe), 1), 1.0))
+            elapsed = (
+                datetime.now(timezone.utc) - bar_time.astimezone(timezone.utc)
+            ).total_seconds()
+            metadata["bar_progress"] = max(
+                0.0, min(elapsed / max(timeframe_seconds(timeframe), 1), 1.0)
+            )
         self._enqueue((scope, symbol, timeframe, indicators, metadata))
 
     def _enqueue(
@@ -215,10 +226,27 @@ class SignalRuntime:
         item: tuple[str, str, str, Dict[str, Dict[str, float]], Dict[str, Any]],
     ) -> None:
         scope = item[0]
-        target_queue = self._confirmed_events if scope == "confirmed" else self._intrabar_events
+        target_queue = (
+            self._confirmed_events if scope == "confirmed" else self._intrabar_events
+        )
         try:
             target_queue.put_nowait(item)
         except queue.Full:
+            if scope == "confirmed":
+                try:
+                    # confirmed 事件优先保证可靠性：短暂阻塞等待消费者腾挪队列。
+                    self._confirmed_backpressure_waits += 1
+                    target_queue.put(
+                        item,
+                        timeout=max(
+                            self.policy.confirmed_queue_backpressure_timeout_seconds,
+                            0.0,
+                        ),
+                    )
+                    return
+                except queue.Full:
+                    self._confirmed_backpressure_failures += 1
+                    pass
             self._dropped_events += 1
             if scope == "confirmed":
                 self._dropped_confirmed += 1
@@ -250,8 +278,12 @@ class SignalRuntime:
         with self._state_lock:
             snapshot = list(self._state_by_target.values())
         return {
-            "active_preview_states": sum(1 for s in snapshot if s.preview_state != "idle"),
-            "active_confirmed_states": sum(1 for s in snapshot if s.confirmed_state != "idle"),
+            "active_preview_states": sum(
+                1 for s in snapshot if s.preview_state != "idle"
+            ),
+            "active_confirmed_states": sum(
+                1 for s in snapshot if s.confirmed_state != "idle"
+            ),
         }
 
     def status(self) -> dict:
@@ -263,25 +295,47 @@ class SignalRuntime:
                 "intrabar": self.enable_intrabar,
             },
             "strategy_scopes": {
-                name: sorted(scopes)
-                for name, scopes in self._strategy_scopes.items()
+                name: sorted(scopes) for name, scopes in self._strategy_scopes.items()
             },
             "run_count": self._run_count,
             "processed_events": self._processed_events,
             "dropped_events": self._dropped_events,
             "dropped_confirmed": self._dropped_confirmed,
             "dropped_intrabar": self._dropped_intrabar,
+            "confirmed_backpressure_waits": self._confirmed_backpressure_waits,
+            "confirmed_backpressure_failures": self._confirmed_backpressure_failures,
             "confirmed_queue_size": self._confirmed_events.qsize(),
             "confirmed_queue_capacity": self._confirmed_events.maxsize,
             "intrabar_queue_size": self._intrabar_events.qsize(),
             "intrabar_queue_capacity": self._intrabar_events.maxsize,
             # Aggregate fields kept for backward compatibility.
-            "queue_size": self._confirmed_events.qsize() + self._intrabar_events.qsize(),
-            "queue_capacity": self._confirmed_events.maxsize + self._intrabar_events.maxsize,
+            "queue_size": self._confirmed_events.qsize()
+            + self._intrabar_events.qsize(),
+            "queue_capacity": self._confirmed_events.maxsize
+            + self._intrabar_events.maxsize,
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
             # 持锁做快照再迭代，避免 background loop 同时写入导致 RuntimeError
             **self._count_active_states(),
+        }
+
+    def get_regime_stability(
+        self, symbol: str, timeframe: str
+    ) -> Optional[dict[str, Any]]:
+        tracker = self._regime_trackers.get((symbol, timeframe))
+        return tracker.describe() if tracker else None
+
+    def get_regime_stability_map(self) -> dict[str, dict[str, Any]]:
+        return {
+            f"{sym}/{tf}": tracker.describe()
+            for (sym, tf), tracker in self._regime_trackers.items()
+        }
+
+    def get_voting_info(self) -> dict[str, Any]:
+        voting_engine = self._voting_engine
+        return {
+            "voting_enabled": voting_engine is not None,
+            "voting_config": voting_engine.describe() if voting_engine else None,
         }
 
     def add_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
@@ -330,10 +384,16 @@ class SignalRuntime:
     @staticmethod
     def _parse_event_time(value: Any) -> datetime:
         if isinstance(value, datetime):
-            return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+            return (
+                value
+                if value.tzinfo is not None
+                else value.replace(tzinfo=timezone.utc)
+            )
         text = str(value)
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        return (
+            parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        )
 
     def _build_transition_metadata(
         self,
@@ -374,7 +434,11 @@ class SignalRuntime:
                 continue
             metadata = row.get("metadata") or {}
             signal_state = str(metadata.get("signal_state", "")).strip().lower()
-            scope = str(row.get("scope") or metadata.get("scope") or "confirmed").strip().lower()
+            scope = (
+                str(row.get("scope") or metadata.get("scope") or "confirmed")
+                .strip()
+                .lower()
+            )
             generated_at_raw = row.get("generated_at") or metadata.get("snapshot_time")
             bar_time_raw = metadata.get("bar_time") or row.get("generated_at")
             if generated_at_raw is None or bar_time_raw is None:
@@ -386,7 +450,9 @@ class SignalRuntime:
             if scope == "confirmed" and key not in restored_confirmed:
                 restored_confirmed.add(key)
                 restored_confirmed_at[key] = generated_at
-                self._restore_confirmed_state(state, signal_state, generated_at, bar_time)
+                self._restore_confirmed_state(
+                    state, signal_state, generated_at, bar_time
+                )
                 continue
 
             if scope in {"preview", "intrabar"} and key not in restored_preview:
@@ -396,7 +462,9 @@ class SignalRuntime:
                 if confirmed_at is not None and generated_at <= confirmed_at:
                     continue
                 restored_preview.add(key)
-                self._restore_preview_state(key[1], state, signal_state, generated_at, bar_time, now)
+                self._restore_preview_state(
+                    key[1], state, signal_state, generated_at, bar_time, now
+                )
 
     def _restore_confirmed_state(
         self,
@@ -429,7 +497,12 @@ class SignalRuntime:
         bar_time: datetime,
         now: datetime,
     ) -> None:
-        if signal_state not in {"preview_buy", "preview_sell", "armed_buy", "armed_sell"}:
+        if signal_state not in {
+            "preview_buy",
+            "preview_sell",
+            "armed_buy",
+            "armed_sell",
+        }:
             return
         if now >= bar_time + timedelta(seconds=max(timeframe_seconds(timeframe), 1)):
             return
@@ -492,7 +565,11 @@ class SignalRuntime:
         indicators: Dict[str, Dict[str, float]],
     ) -> bool:
         signature = self._snapshot_signature(indicators)
-        if state.last_snapshot_scope == scope and state.last_snapshot_bar_time == bar_time and state.last_snapshot_signature == signature:
+        if (
+            state.last_snapshot_scope == scope
+            and state.last_snapshot_bar_time == bar_time
+            and state.last_snapshot_signature == signature
+        ):
             previous_snapshot_time = state.last_snapshot_time
             if scope == "confirmed":
                 return False
@@ -539,7 +616,9 @@ class SignalRuntime:
         signal_state = f"confirmed_{decision_action}"
         state.confirmed_state = signal_state
         state.confirmed_bar_time = bar_time
-        if not self._should_emit(state, signal_state, event_time, bar_time, cooldown_seconds=0.0):
+        if not self._should_emit(
+            state, signal_state, event_time, bar_time, cooldown_seconds=0.0
+        ):
             return None
         self._mark_emitted(state, signal_state, event_time, bar_time)
         return self._build_transition_metadata(
@@ -658,16 +737,22 @@ class SignalRuntime:
             except queue.Empty:
                 return False
         scope, symbol, timeframe, indicators, metadata = event
-        event_time = self._parse_event_time(metadata.get("snapshot_time", datetime.now(timezone.utc)))
+        event_time = self._parse_event_time(
+            metadata.get("snapshot_time", datetime.now(timezone.utc))
+        )
         bar_time = self._parse_event_time(metadata.get("bar_time", event_time))
 
         if self.filter_chain is not None:
             spread_points = float(metadata.get("spread_points", 0.0))
             allowed, reason = self.filter_chain.should_evaluate(
-                symbol, spread_points=spread_points, utc_now=event_time,
+                symbol,
+                spread_points=spread_points,
+                utc_now=event_time,
             )
             if not allowed:
-                logger.debug("Signal evaluation skipped for %s/%s: %s", symbol, timeframe, reason)
+                logger.debug(
+                    "Signal evaluation skipped for %s/%s: %s", symbol, timeframe, reason
+                )
                 self._processed_events += 1
                 self._run_count += 1
                 self._last_run_at = datetime.now(timezone.utc)
@@ -689,10 +774,12 @@ class SignalRuntime:
         # ── Regime 稳定性追踪 ──────────────────────────────────────────────
         # 只在 confirmed scope 更新计数（K 线收盘才算真正的新 bar），
         # intrabar 快照频繁到来会导致计数虚高。
-        tracker = self._regime_trackers.setdefault(
-            (symbol, timeframe), RegimeTracker()
+        tracker = self._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
+        regime_stability = (
+            tracker.update(regime)
+            if scope == "confirmed"
+            else tracker.stability_multiplier()
         )
-        regime_stability = tracker.update(regime) if scope == "confirmed" else tracker.stability_multiplier()
 
         min_affinity_skip = self.policy.min_affinity_skip
 
@@ -702,12 +789,17 @@ class SignalRuntime:
         strategies = self._target_index.get((symbol, timeframe), [])
         for strategy in strategies:
             # Skip strategies that do not want this scope.
-            allowed_scopes = self._strategy_scopes.get(strategy, frozenset(("intrabar", "confirmed")))
+            allowed_scopes = self._strategy_scopes.get(
+                strategy, frozenset(("intrabar", "confirmed"))
+            )
             if scope not in allowed_scopes:
                 continue
             required_indicators = self._strategy_requirements.get(strategy, ())
             if required_indicators:
-                if any(indicator_name not in indicators for indicator_name in required_indicators):
+                if any(
+                    indicator_name not in indicators
+                    for indicator_name in required_indicators
+                ):
                     continue
                 scoped_indicators = {
                     indicator_name: indicators[indicator_name]
@@ -744,14 +836,23 @@ class SignalRuntime:
                 timeframe=timeframe,
                 strategy=strategy,
                 indicators=scoped_indicators,
-                metadata=regime_metadata,   # 携带预计算 regime，避免重复检测
+                metadata=regime_metadata,  # 携带预计算 regime，避免重复检测
                 persist=False,
             )
             snapshot_decisions.append(decision)
             transition_metadata = (
-                self._transition_confirmed(state, decision.action, event_time, bar_time, regime_metadata)
+                self._transition_confirmed(
+                    state, decision.action, event_time, bar_time, regime_metadata
+                )
                 if scope == "confirmed"
-                else self._transition_preview(state, decision.action, decision.confidence, event_time, bar_time, regime_metadata)
+                else self._transition_preview(
+                    state,
+                    decision.action,
+                    decision.confidence,
+                    event_time,
+                    bar_time,
+                    regime_metadata,
+                )
             )
             if transition_metadata is None:
                 continue
@@ -761,7 +862,9 @@ class SignalRuntime:
                 metadata=transition_metadata,
             )
             signal_id = record.signal_id if record is not None else ""
-            self._publish_signal_event(decision, signal_id, scope, scoped_indicators, transition_metadata)
+            self._publish_signal_event(
+                decision, signal_id, scope, scoped_indicators, transition_metadata
+            )
 
         # ── Strategy Voting Engine：跨策略多数表决 ───────────────────────
         # 对本次 snapshot 收集到的所有策略决策进行加权表决，
@@ -774,6 +877,7 @@ class SignalRuntime:
             )
             if consensus is not None:
                 import dataclasses as _dc
+
                 # 稳定性加成：Regime 连续确立时，共识置信度适当提升（上限 1.0）
                 adjusted_conf = min(1.0, consensus.confidence * regime_stability)
                 consensus = _dc.replace(
@@ -784,19 +888,31 @@ class SignalRuntime:
                         "regime_stability_multiplier": round(regime_stability, 4),
                     },
                 )
-                consensus_key = (symbol, timeframe, self._voting_engine.CONSENSUS_STRATEGY_NAME)
+                consensus_key = (
+                    symbol,
+                    timeframe,
+                    self._voting_engine.CONSENSUS_STRATEGY_NAME,
+                )
                 with self._state_lock:
                     consensus_state = self._state_by_target.setdefault(
                         consensus_key, RuntimeSignalState()
                     )
                 transition_metadata = (
                     self._transition_confirmed(
-                        consensus_state, consensus.action, event_time, bar_time, regime_metadata
+                        consensus_state,
+                        consensus.action,
+                        event_time,
+                        bar_time,
+                        regime_metadata,
                     )
                     if scope == "confirmed"
                     else self._transition_preview(
-                        consensus_state, consensus.action, consensus.confidence,
-                        event_time, bar_time, regime_metadata,
+                        consensus_state,
+                        consensus.action,
+                        consensus.confidence,
+                        event_time,
+                        bar_time,
+                        regime_metadata,
                     )
                 )
                 if transition_metadata is not None:

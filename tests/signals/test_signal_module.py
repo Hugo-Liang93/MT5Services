@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from src.signals.service import SignalModule
 
 
@@ -28,50 +30,82 @@ class DummySignalRepository:
 
     def append(self, record):
         metadata = record.metadata or {}
-        target = self.preview_rows if metadata.get("scope") in {"intrabar", "preview"} else self.confirmed_rows
+        target = (
+            self.preview_rows
+            if metadata.get("scope") in {"intrabar", "preview"}
+            else self.confirmed_rows
+        )
         target.append(record.to_row())
 
     def recent(self, **kwargs):
         scope = kwargs.get("scope", "confirmed")
         rows = self.preview_rows if scope == "preview" else self.confirmed_rows
-        return [
-            {
-                "generated_at": rows[-1][0].isoformat() if rows[-1][0] else None,
-                "signal_id": rows[-1][1],
-                "symbol": rows[-1][2],
-                "timeframe": rows[-1][3],
-                "strategy": rows[-1][4],
-                "action": rows[-1][5],
-                "confidence": rows[-1][6],
-                "reason": rows[-1][7],
-                "used_indicators": rows[-1][8],
-                "indicators_snapshot": rows[-1][9],
-                "metadata": rows[-1][10],
-                "scope": scope,
-            }
-        ] if rows else []
+        return (
+            [
+                {
+                    "generated_at": rows[-1][0].isoformat() if rows[-1][0] else None,
+                    "signal_id": rows[-1][1],
+                    "symbol": rows[-1][2],
+                    "timeframe": rows[-1][3],
+                    "strategy": rows[-1][4],
+                    "action": rows[-1][5],
+                    "confidence": rows[-1][6],
+                    "reason": rows[-1][7],
+                    "used_indicators": rows[-1][8],
+                    "indicators_snapshot": rows[-1][9],
+                    "metadata": rows[-1][10],
+                    "scope": scope,
+                }
+            ]
+            if rows
+            else []
+        )
 
     def summary(self, **kwargs):
         scope = kwargs.get("scope", "confirmed")
         rows = self.preview_rows if scope == "preview" else self.confirmed_rows
         if not rows:
             return []
-        return [{
-            "symbol": rows[-1][2],
-            "timeframe": rows[-1][3],
-            "strategy": rows[-1][4],
-            "action": rows[-1][5],
-            "count": 1,
-            "avg_confidence": rows[-1][6],
-            "last_seen_at": rows[-1][0].isoformat() if rows[-1][0] else None,
+        return [
+            {
+                "symbol": rows[-1][2],
+                "timeframe": rows[-1][3],
+                "strategy": rows[-1][4],
+                "action": rows[-1][5],
+                "count": 1,
+                "avg_confidence": rows[-1][6],
+                "last_seen_at": rows[-1][0].isoformat() if rows[-1][0] else None,
+                "scope": scope,
+            }
+        ]
+
+
+class DummyDiagnosticsEngine:
+    def build_report(self, rows, *, symbol, timeframe, scope, thresholds):
+        return {
+            "rows_analyzed": len(rows),
+            "symbol": symbol,
+            "timeframe": timeframe,
             "scope": scope,
-        }]
+            "engine": "dummy",
+        }
+
+    def build_daily_quality_report(
+        self, rows, *, symbol, timeframe, scope, thresholds, now=None
+    ):
+        return {
+            "rows_analyzed": len(rows),
+            "scope": scope,
+            "engine": "dummy_daily",
+        }
 
 
 def test_signal_module_uses_indicator_source_for_default_payload() -> None:
     module = SignalModule(indicator_source=DummyIndicatorSource())
 
-    decision = module.evaluate(symbol="XAUUSD", timeframe="M5", strategy="sma_trend", persist=False)
+    decision = module.evaluate(
+        symbol="XAUUSD", timeframe="M5", strategy="sma_trend", persist=False
+    )
 
     assert decision.action == "buy"
     assert decision.strategy == "sma_trend"
@@ -118,9 +152,9 @@ def test_signal_module_exposes_required_indicator_groups() -> None:
     assert isinstance(groups, list)
     assert len(groups) > 0
     flat = {ind for group in groups for ind in group}
-    assert "boll20" in flat     # BollingerBreakoutStrategy
-    assert "rsi14" in flat      # RsiReversionStrategy
-    assert "sma20" in flat      # SmaTrendStrategy / MultiTimeframeConfirmStrategy
+    assert "boll20" in flat  # BollingerBreakoutStrategy
+    assert "rsi14" in flat  # RsiReversionStrategy
+    assert "sma20" in flat  # SmaTrendStrategy / MultiTimeframeConfirmStrategy
 
 
 def test_signal_module_summary_returns_aggregates() -> None:
@@ -139,7 +173,12 @@ def test_bollinger_breakout_strategy_uses_boll20_indicator() -> None:
     """BollingerBreakoutStrategy must look up boll20 (not bollinger20) in the snapshot."""
     # Price below lower band → expect buy signal
     indicators_buy = {
-        "boll20": {"bb_upper": 1900.0, "bb_mid": 1890.0, "bb_lower": 1880.0, "close": 1875.0},
+        "boll20": {
+            "bb_upper": 1900.0,
+            "bb_mid": 1890.0,
+            "bb_lower": 1880.0,
+            "close": 1875.0,
+        },
     }
     module = SignalModule(indicator_source=DummyIndicatorSource())
     decision = module.evaluate(
@@ -149,12 +188,19 @@ def test_bollinger_breakout_strategy_uses_boll20_indicator() -> None:
         indicators=indicators_buy,
         persist=False,
     )
-    assert decision.action == "buy", f"expected buy, got {decision.action}: {decision.reason}"
+    assert (
+        decision.action == "buy"
+    ), f"expected buy, got {decision.action}: {decision.reason}"
     assert "boll20" in decision.used_indicators
 
     # Price above upper band → expect sell signal
     indicators_sell = {
-        "boll20": {"bb_upper": 1900.0, "bb_mid": 1890.0, "bb_lower": 1880.0, "close": 1910.0},
+        "boll20": {
+            "bb_upper": 1900.0,
+            "bb_mid": 1890.0,
+            "bb_lower": 1880.0,
+            "close": 1910.0,
+        },
     }
     decision_sell = module.evaluate(
         symbol="XAUUSD",
@@ -174,3 +220,220 @@ def test_signal_module_rejects_unknown_strategy() -> None:
         assert False, "expected strategy validation"
     except ValueError as exc:
         assert "unsupported signal strategy" in str(exc)
+
+
+class DummyDiagnosticRepository:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def append(self, record):
+        return None
+
+    def recent(self, **kwargs):
+        scope = kwargs.get("scope", "confirmed")
+        if scope == "all":
+            return list(self.rows)
+        return [r for r in self.rows if r.get("scope") == scope]
+
+    def summary(self, **kwargs):
+        return []
+
+
+def test_strategy_diagnostics_reports_conflicts_and_missing_indicators() -> None:
+    rows = [
+        {
+            "generated_at": "2026-03-19T10:00:00+00:00",
+            "signal_id": "1",
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "action": "buy",
+            "confidence": 0.8,
+            "reason": "trend_up",
+            "used_indicators": ["sma20", "ema50"],
+            "indicators_snapshot": {},
+            "metadata": {"bar_time": "2026-03-19T10:00:00+00:00", "regime": "trending"},
+            "scope": "confirmed",
+        },
+        {
+            "generated_at": "2026-03-19T10:00:00+00:00",
+            "signal_id": "2",
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "rsi_reversion",
+            "action": "sell",
+            "confidence": 0.7,
+            "reason": "rsi=76.0",
+            "used_indicators": ["rsi14"],
+            "indicators_snapshot": {},
+            "metadata": {"bar_time": "2026-03-19T10:00:00+00:00", "regime": "trending"},
+            "scope": "confirmed",
+        },
+        {
+            "generated_at": "2026-03-19T10:05:00+00:00",
+            "signal_id": "3",
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "rsi_reversion",
+            "action": "hold",
+            "confidence": 0.0,
+            "reason": "missing_required_indicator:rsi",
+            "used_indicators": ["rsi14"],
+            "indicators_snapshot": {},
+            "metadata": {"bar_time": "2026-03-19T10:05:00+00:00", "regime": "ranging"},
+            "scope": "confirmed",
+        },
+    ]
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        repository=DummyDiagnosticRepository(rows),
+    )
+
+    report = module.strategy_diagnostics(
+        symbol="XAUUSD", timeframe="M5", scope="confirmed", limit=100
+    )
+
+    assert report["rows_analyzed"] == 3
+    assert report["conflict"]["bars_with_buy_sell_conflict"] == 1
+    assert report["conflict"]["bars_with_executable_signals"] == 1
+    assert report["dominant_regime"] == "trending"
+    assert report["session_distribution"]["london"] == 3
+    assert report["thresholds"]["conflict_warn_threshold"] == 0.35
+    assert len(report["recommendations"]) >= 1
+    rsi_row = next(
+        item
+        for item in report["strategy_breakdown"]
+        if item["strategy"] == "rsi_reversion"
+    )
+    assert rsi_row["missing_required_count"] == 1
+    rsi_health = next(
+        item
+        for item in report["strategy_health"]
+        if item["strategy"] == "rsi_reversion"
+    )
+    assert rsi_health["status"] == "warn"
+    assert "missing_required_indicator" in rsi_health["warnings"]
+
+
+def test_signal_module_daily_quality_report() -> None:
+    rows = [
+        {
+            "generated_at": "2026-03-19T10:00:00+00:00",
+            "signal_id": "1",
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "action": "buy",
+            "confidence": 0.8,
+            "reason": "trend_up",
+            "used_indicators": ["sma20", "ema50"],
+            "indicators_snapshot": {},
+            "metadata": {"bar_time": "2026-03-19T10:00:00+00:00", "regime": "trending"},
+            "scope": "confirmed",
+        }
+    ]
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        repository=DummyDiagnosticRepository(rows),
+    )
+
+    report = module.daily_quality_report(
+        symbol="XAUUSD",
+        timeframe="M5",
+        scope="confirmed",
+        limit=100,
+        now=datetime(2026, 3, 19, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["rows_analyzed"] == 1
+    assert "window" in report
+    assert report["session_distribution"]["london"] == 1
+
+
+def test_signal_module_allows_custom_diagnostics_engine_injection() -> None:
+    rows = [
+        {
+            "generated_at": "2026-03-19T10:00:00+00:00",
+            "signal_id": "1",
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "action": "buy",
+            "confidence": 0.8,
+            "reason": "trend_up",
+            "used_indicators": ["sma20", "ema50"],
+            "indicators_snapshot": {},
+            "metadata": {"bar_time": "2026-03-19T10:00:00+00:00", "regime": "trending"},
+            "scope": "confirmed",
+        }
+    ]
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        repository=DummyDiagnosticRepository(rows),
+        diagnostics_engine=DummyDiagnosticsEngine(),
+    )
+
+    report = module.strategy_diagnostics(
+        symbol="XAUUSD", timeframe="M5", scope="confirmed"
+    )
+    daily = module.daily_quality_report(
+        symbol="XAUUSD", timeframe="M5", scope="confirmed"
+    )
+
+    assert report["engine"] == "dummy"
+    assert daily["engine"] == "dummy_daily"
+
+
+def test_signal_module_diagnostics_aggregate_summary_uses_repository_summary() -> None:
+    db = DummySignalRepository()
+    module = SignalModule(indicator_source=DummyIndicatorSource(), repository=db)
+    module.evaluate(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")
+    report = module.diagnostics_aggregate_summary(hours=24, scope="confirmed")
+
+    assert report["source"] == "repository.summary"
+    assert report["rows_analyzed"] >= 1
+    assert report["action_totals"]["buy"] >= 1
+
+
+def test_signal_module_recent_by_trace_id_filters_rows() -> None:
+    rows = [
+        {
+            "generated_at": "2026-03-19T10:00:00+00:00",
+            "signal_id": "1",
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "action": "buy",
+            "confidence": 0.8,
+            "reason": "trend_up",
+            "used_indicators": ["sma20", "ema50"],
+            "indicators_snapshot": {},
+            "metadata": {"signal_trace_id": "trace_1"},
+            "scope": "confirmed",
+        },
+        {
+            "generated_at": "2026-03-19T10:01:00+00:00",
+            "signal_id": "2",
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "rsi_reversion",
+            "action": "sell",
+            "confidence": 0.7,
+            "reason": "rsi=72",
+            "used_indicators": ["rsi14"],
+            "indicators_snapshot": {},
+            "metadata": {"signal_trace_id": "trace_2"},
+            "scope": "confirmed",
+        },
+    ]
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        repository=DummyDiagnosticRepository(rows),
+    )
+
+    matched = module.recent_by_trace_id(
+        trace_id="trace_1", scope="confirmed", limit=100
+    )
+
+    assert len(matched) == 1
+    assert matched[0]["signal_id"] == "1"
