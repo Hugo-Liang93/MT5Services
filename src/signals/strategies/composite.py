@@ -64,8 +64,8 @@ import dataclasses
 import logging
 from typing import Dict, Iterable, List, Literal, Optional
 
-from .models import SignalContext, SignalDecision
-from .regime import RegimeType
+from ..models import SignalContext, SignalDecision
+from ..evaluation.regime import RegimeType
 
 logger = logging.getLogger(__name__)
 

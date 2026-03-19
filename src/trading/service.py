@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from src.persistence.db import TimescaleWriter
 from src.config import get_trading_config, get_trading_ops_config
-from src.core.pretrade_risk_service import PreTradeRiskBlockedError
+from src.risk.service import PreTradeRiskBlockedError
 
 from .models import TradeOperationRecord
 from .registry import TradingAccountRegistry

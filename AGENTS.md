@@ -100,15 +100,31 @@
 
 - `src/signals/`
   - 基于指标和行情生成交易信号
+  - `strategies/` — 策略实现层（`base.py` Protocol、`trend.py`、`mean_reversion.py`、`breakout.py`、`composite.py`、`registry.py`）
+  - `evaluation/` — Regime 分类（`regime.py`）、置信度校准（`calibrator.py`）、投票引擎（`voting.py`）
+  - `execution/` — 信号过滤器（`filters.py`）、仓位策略（`policy.py`）、仓位大小计算（`sizing.py`）
+  - `tracking/` — 持仓管理（`position_manager.py`）、结果追踪（`outcome_tracker.py`）、信号仓储（`repository.py`）
+  - `contracts/` — 接口定义（Protocol / ABC）
+  - `analytics/` — 信号分析工具
+  - `runtime.py` — 事件驱动主循环（双队列架构）
+  - `service.py` — 信号模块单例与策略编排
 
 - `src/risk/`
   - 风控校验逻辑
+  - `service.py` — PreTradeRiskService（前置风控，含经济日历 Trade Guard）
+  - `rules.py` — 仓位限制、手数、SL/TP 规则
 
 - `src/trading/`
   - 下单、仓位、执行、交易管理
+  - `service.py` — TradingModule（账户、持仓、订单生命周期）
+  - `trading_service.py` — TradingService（底层下单、平仓、保证金计算）
+  - `registry.py` — TradingAccountRegistry（多账户注册与服务工厂）
+  - `signal_executor.py` — 信号触发的交易执行器
 
 - `src/monitoring/`
   - 健康检查、运行状态、监控指标
+  - `health_monitor.py` — HealthMonitor（SQLite 指标存储、告警、健康报告）
+  - `manager.py` — MonitoringManager（定时巡检、组件协调）
 
 - `tests/`
   - 单元测试、集成测试、冒烟测试

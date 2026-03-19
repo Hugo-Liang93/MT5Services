@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
-from .models import SignalRecord
+from ..models import SignalRecord
 
 if TYPE_CHECKING:
     from src.persistence.db import TimescaleWriter

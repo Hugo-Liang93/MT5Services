@@ -30,20 +30,16 @@ logger = logging.getLogger(__name__)
 
 from .composite import CompositeSignalStrategy, CombineMode
 from .htf_cache import HTFStateCache
-from .regime import RegimeType
-from .service import SignalModule
-from .strategies import (
+from ..evaluation.regime import RegimeType
+from ..service import SignalModule
+from .breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
-    EmaRibbonStrategy,
     KeltnerBollingerSqueezeStrategy,
-    MacdMomentumStrategy,
     MultiTimeframeConfirmStrategy,
-    RsiReversionStrategy,
-    SmaTrendStrategy,
-    StochRsiStrategy,
-    SupertrendStrategy,
 )
+from .mean_reversion import RsiReversionStrategy, StochRsiStrategy
+from .trend import EmaRibbonStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
 
 
 @dataclass(frozen=True)

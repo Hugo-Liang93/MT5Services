@@ -5,7 +5,7 @@ under current market context (session, spread, economic window).
 They are NOT account/portfolio risk controls and must not be treated as
 final trade safety gates.
 
-Final trade risk control is enforced by `src.risk` / `src.core.pretrade_risk_service`
+Final trade risk control is enforced by `src.risk.service`
 before order dispatch.
 """
 
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timezone
 from typing import Any, Dict, List, Optional, Protocol
 
-from .contracts import (
+from ..contracts import (
     SESSION_ASIA,
     SESSION_LONDON,
     SESSION_NEW_YORK,

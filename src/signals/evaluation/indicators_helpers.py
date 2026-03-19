@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from .models import SignalDecision
+from ..models import SignalDecision
 
 
 def get_close(indicators: Dict[str, Dict[str, Any]]) -> Optional[float]:

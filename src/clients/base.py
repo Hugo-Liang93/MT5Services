@@ -45,6 +45,10 @@ class MT5BaseError(RuntimeError):
     """基础 MT5 异常类型。"""
 
 
+class MT5TradeError(MT5BaseError):
+    """统一的交易/账户 API 错误基类。"""
+
+
 class MT5BaseClient:
     _session_lock = threading.RLock()
 

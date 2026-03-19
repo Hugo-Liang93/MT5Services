@@ -51,8 +51,14 @@ MT5Services/
 │   ├── persistence/          # TimescaleDB 写入器、队列持久化
 │   ├── risk/                 # 风险规则、模型、服务
 │   ├── signals/              # 信号生成策略、运行时、过滤器
-│   ├── trading/              # TradingModule、账户注册、信号执行器
-│   ├── monitoring/           # 健康检查
+│   │   ├── strategies/       # 策略实现（base/trend/mean_reversion/breakout/composite）
+│   │   ├── evaluation/       # Regime 分类、置信度校准、投票引擎
+│   │   ├── execution/        # 过滤器、仓位策略、仓位大小计算
+│   │   ├── tracking/         # 持仓管理、结果追踪、信号仓储
+│   │   ├── contracts/        # 接口定义（Protocol/ABC）
+│   │   └── analytics/        # 信号分析工具
+│   ├── trading/              # TradingModule、账户注册、信号执行器、交易服务
+│   ├── monitoring/           # 健康检查（health_monitor + manager）
 │   └── utils/                # 通用工具、事件存储、内存管理器
 ├── tests/                    # 测试套件（镜像 src/ 结构）
 └── docs/                     # 代码评审记录、内部文档
@@ -195,7 +201,12 @@ OHLC 收盘事件 → IndicatorManager → 计算 → 持久化
 | `src/persistence/db.py` | TimescaleDB 写入操作、schema 初始化、hypertable |
 | `src/persistence/storage_writer.py` | 基于队列的多通道持久化 |
 | `src/trading/service.py` | TradingModule：账户、持仓、订单、交易生命周期 |
+| `src/trading/trading_service.py` | TradingService：底层下单、平仓、保证金计算 |
+| `src/trading/registry.py` | TradingAccountRegistry：多账户注册与服务工厂 |
 | `src/signals/runtime.py` | 事件驱动的信号评估与交易执行（双队列架构） |
+| `src/signals/evaluation/regime.py` | 行情 Regime 分类（MarketRegimeDetector） |
+| `src/monitoring/health_monitor.py` | SQLite 指标存储、告警、健康报告（HealthMonitor） |
+| `src/monitoring/manager.py` | 定时巡检、组件协调（MonitoringManager） |
 | `src/core/economic_calendar_service.py` | 日历同步、风险窗口计算、Trade Guard |
 
 ---
@@ -232,8 +243,8 @@ ApiResponse[T]:
 
 交易请求从内到外经过多层校验：
 
-1. **Signal filters** (`src/signals/filters.py`)：经济事件过滤、价差过滤、交易时段过滤
-2. **Pre-trade risk service** (`src/core/pretrade_risk_service.py`)：账户级别检查
+1. **Signal filters** (`src/signals/execution/filters.py`)：经济事件过滤、价差过滤、交易时段过滤
+2. **Pre-trade risk service** (`src/risk/service.py` → `PreTradeRiskService`)：账户级别检查
 3. **Risk rules** (`src/risk/rules.py`)：仓位限制、最大手数、SL/TP 要求
 4. **Trade guard** (`src/core/economic_calendar_service.py`)：在经济事件窗口内阻止交易
 
@@ -439,12 +450,20 @@ SignalRuntime 状态机自然忽略该信号，无需在策略逻辑内做 Regim
 
 #### 完整新增步骤
 
-1. 在 `src/signals/strategies.py` 中实现策略类（包含上述四个属性 + `evaluate()` 方法）
-2. 在 `src/signals/service.py` 的默认策略列表中注册实例
-3. 在 `tests/signals/` 中添加单元测试，覆盖四种 Regime 下的输出
-4. （可选）在 `config/signal.ini` 中调整 `min_preview_confidence` / `cooldown_seconds`
+1. 按策略类型在对应文件中实现策略类（包含上述四个属性 + `evaluate()` 方法）：
+   - 趋势跟踪策略 → `src/signals/strategies/trend.py`
+   - 均值回归策略 → `src/signals/strategies/mean_reversion.py`
+   - 突破/波动率策略 → `src/signals/strategies/breakout.py`
+   - 组合策略 → `src/signals/strategies/composite.py`
+2. 在 `src/signals/strategies/__init__.py` 中添加导出
+3. 在 `src/signals/service.py` 的默认策略列表中注册实例
+4. 在 `tests/signals/` 中添加单元测试，覆盖四种 Regime 下的输出
+5. （可选）在 `config/signal.ini` 中调整 `min_preview_confidence` / `cooldown_seconds`
 
-#### Regime 分类逻辑参考（`src/signals/regime.py`）
+> **注意**：`SignalStrategy` Protocol 定义在 `src/signals/strategies/base.py`，所有策略均须实现该接口。
+> `src/signals/strategies/registry.py` 含有策略注册表，**不**通过 `strategies/__init__.py` 自动导出（会引起循环导入），须直接从 `src.signals.strategies.registry` 引入。
+
+#### Regime 分类逻辑参考（`src/signals/evaluation/regime.py`）
 
 ```
 优先级：

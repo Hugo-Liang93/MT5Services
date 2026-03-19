@@ -32,11 +32,11 @@ from src.config import (
 from src.config.advanced_manager import get_config_manager
 from src.core.economic_calendar_service import EconomicCalendarService
 from src.core.market_service import MarketDataService
-from src.core.pretrade_risk_service import PreTradeRiskService
+from src.risk.service import PreTradeRiskService
 from src.trading import TradingAccountRegistry, TradingModule
 from src.indicators.manager import UnifiedIndicatorManager, get_global_unified_manager
 from src.ingestion.ingestor import BackgroundIngestor
-from src.monitoring.health_check import get_health_monitor, get_monitoring_manager
+from src.monitoring import get_health_monitor, get_monitoring_manager
 from src.persistence.db import TimescaleWriter
 from src.persistence.storage_writer import StorageWriter
 from src.signals import (
@@ -52,11 +52,11 @@ from src.signals import (
     UnifiedIndicatorSourceAdapter,
 )
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
-from src.signals.position_manager import PositionManager
-from src.signals.htf_cache import HTFStateCache
-from src.signals.outcome_tracker import OutcomeTracker
-from src.signals.calibrator import ConfidenceCalibrator
-from src.signals.strategy_registry import register_all_strategies
+from src.signals.tracking.position_manager import PositionManager
+from src.signals.strategies.htf_cache import HTFStateCache
+from src.signals.tracking.outcome_tracker import OutcomeTracker
+from src.signals.evaluation.calibrator import ConfidenceCalibrator
+from src.signals.strategies.registry import register_all_strategies
 from src.signals.contracts import normalize_session_name
 
 logger = logging.getLogger(__name__)

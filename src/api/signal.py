@@ -12,12 +12,12 @@ from src.api.deps import (
     get_signal_runtime,
     get_signal_service,
 )
-from src.signals.calibrator import ConfidenceCalibrator
-from src.signals.composite import CompositeSignalStrategy
-from src.signals.htf_cache import HTFStateCache
-from src.signals.outcome_tracker import OutcomeTracker
-from src.signals.position_manager import PositionManager
-from src.signals.regime import MarketRegimeDetector
+from src.signals.evaluation.calibrator import ConfidenceCalibrator
+from src.signals.evaluation.regime import MarketRegimeDetector
+from src.signals.strategies.composite import CompositeSignalStrategy
+from src.signals.strategies.htf_cache import HTFStateCache
+from src.signals.tracking.outcome_tracker import OutcomeTracker
+from src.signals.tracking.position_manager import PositionManager
 from src.api.schemas import (
     ApiResponse,
     SignalDecisionModel,
