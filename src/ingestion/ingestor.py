@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, List
+from typing import Any, Callable, Dict, List, Optional, TypeVar
+
+_T = TypeVar("_T")
 
 from src.config import IngestSettings
 from src.clients.mt5_market import MT5MarketClient, MT5MarketError
@@ -42,6 +45,14 @@ class BackgroundIngestor:
         self._backfill_cutoff: Dict[str, datetime] = {}
         self._backfill_thread: Optional[threading.Thread] = None
         self._symbol_cursor = 0
+        # MT5 调用可能因连接冻结而无限期阻塞；用单线程 executor 提交并设置超时，
+        # 超时后主循环继续，abandoned future 的底层线程最终自行结束。
+        self._fetch_timeout: float = float(
+            getattr(ingest_settings, "connection_timeout", 10.0) or 10.0
+        )
+        self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
+        )
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -68,7 +79,23 @@ class BackgroundIngestor:
             self._thread.join(timeout=5)
         if self._backfill_thread:
             self._backfill_thread.join(timeout=10)
+        self._fetch_executor.shutdown(wait=False)
         logger.info("Background ingestor stopped")
+
+    def _fetch_ohlc_with_timeout(self, fn: Callable[[], Any]) -> Any:
+        """在独立线程中执行 MT5 OHLC 调用，超时则抛出 MT5MarketError。
+
+        MT5 底层 IPC 调用在连接冻结时可能无限阻塞；通过 Future + timeout
+        让主循环在 _fetch_timeout 秒后继续处理其他品种，避免全局挂死。
+        超时后 abandoned future 的后台线程会在 MT5 API 自行返回后结束。
+        """
+        future = self._fetch_executor.submit(fn)
+        try:
+            return future.result(timeout=self._fetch_timeout)
+        except concurrent.futures.TimeoutError:
+            raise MT5MarketError(
+                f"MT5 OHLC fetch timed out after {self._fetch_timeout}s"
+            )
 
     def _run(self) -> None:
         tick_interval = self.settings.ingest_tick_interval
@@ -163,11 +190,13 @@ class BackgroundIngestor:
                 if last_ts:
                     # 若长时间未采集，持 last_ts 之后补齐（含当前未收盘）
                     start_time = last_ts + timedelta(seconds=timeframe_seconds(tf))
-                    bars = self.client.get_ohlc_from(
-                        symbol=symbol,
-                        timeframe=tf,
-                        start=start_time,
-                        limit=self.settings.ohlc_backfill_limit,
+                    bars = self._fetch_ohlc_with_timeout(
+                        lambda s=symbol, t=tf, st=start_time: self.client.get_ohlc_from(
+                            symbol=s,
+                            timeframe=t,
+                            start=st,
+                            limit=self.settings.ohlc_backfill_limit,
+                        )
                     )
                 else:
                     # 初次拉取仅用于填充内存缓存，按缓存/默认窗口大小即可。
@@ -176,7 +205,9 @@ class BackgroundIngestor:
                         self.service.market_settings.ohlc_cache_limit,
                     )
                     # 首次拉取从当前位置开始的 K 线数据
-                    bars = self.client.get_ohlc(symbol, tf, warmup_limit)
+                    bars = self._fetch_ohlc_with_timeout(
+                        lambda s=symbol, t=tf, lim=warmup_limit: self.client.get_ohlc(s, t, lim)
+                    )
             except MT5MarketError as exc:
                 logger.warning("Fetch OHLC failed for %s %s: %s", symbol, tf, exc)
                 next_ohlc_at[key] = now + tf_interval
