@@ -41,6 +41,9 @@ class MarketDataService:
         self._lock = threading.RLock()
         self._tick_cache: Dict[str, Deque[Tick]] = {}
         self._quote_cache: Dict[str, Quote] = {}
+        # 超过此阈值时在写入 set_quote() 时顺带剪枝过期条目，防止动态品种场景下无限增长。
+        self._quote_cache_prune_threshold = 200
+        self._quote_prune_counter = 0
         self._ohlc_closed_cache: Dict[str, List[OHLC]] = {}
         self._intrabar_cache: Dict[str, List[OHLC]] = {}
         self._intrabar_max_points = self.market_settings.intrabar_max_points
@@ -206,6 +209,27 @@ class MarketDataService:
     def set_quote(self, symbol: str, quote: Quote) -> None:
         with self._lock:
             self._quote_cache[symbol] = quote
+            self._quote_prune_counter += 1
+            # 每 1000 次写入检查一次；只有在缓存异常膨胀时才逐出过期条目。
+            if (
+                self._quote_prune_counter % 1000 == 0
+                and len(self._quote_cache) > self._quote_cache_prune_threshold
+            ):
+                self._prune_quote_cache_locked()
+
+    def _prune_quote_cache_locked(self) -> None:
+        """在持锁状态下移除超过 10× stale 阈值的报价条目（仅用于内部清理）。"""
+        grace = self.market_settings.quote_stale_seconds * 10
+        now = self._utc_now()
+        stale_keys = [
+            sym
+            for sym, q in self._quote_cache.items()
+            if (now - self._as_utc(q.time)).total_seconds() > grace
+        ]
+        for sym in stale_keys:
+            del self._quote_cache[sym]
+        if stale_keys:
+            logger.info("Pruned %d stale quote cache entries", len(stale_keys))
 
     def extend_ticks(self, symbol: str, ticks: List[Tick]) -> None:
         with self._lock:

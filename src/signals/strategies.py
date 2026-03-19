@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Iterable, Optional, Protocol
 
 from .models import SignalContext, SignalDecision
 from .regime import RegimeType
+
+logger = logging.getLogger(__name__)
 
 
 class SignalStrategy(Protocol):
@@ -351,6 +354,12 @@ class MultiTimeframeConfirmStrategy:
     ):
         self._state_reader = state_reader
         self._htf_cache = htf_cache
+        if htf_cache is None and state_reader is None:
+            logger.warning(
+                "MultiTimeframeConfirmStrategy: 未传入 htf_cache 或 state_reader，"
+                "_get_htf_direction() 将始终返回 None，策略将固定输出 hold(0.1)。"
+                "生产环境请通过 htf_cache= 参数注入 HTFStateCache 实例。"
+            )
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         fast, fast_name = _resolve_indicator_value(

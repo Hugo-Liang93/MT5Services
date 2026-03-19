@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from src.api.deps import get_market_service
@@ -170,7 +170,10 @@ def quote_history(
             strict=strict,
         )
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return ApiResponse.error_response(
+            error=str(exc),
+            error_code=AIErrorCode.SERVICE_UNAVAILABLE,
+        )
     items = [QuoteModel(**quote.__dict__, time=quote.time.isoformat()) for quote in data]
     return ApiResponse.success_response(
         data=items,
@@ -213,7 +216,10 @@ def tick_history(
             strict=strict,
         )
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return ApiResponse.error_response(
+            error=str(exc),
+            error_code=AIErrorCode.SERVICE_UNAVAILABLE,
+        )
     items = [TickModel(**tick.__dict__, time=tick.time.isoformat()) for tick in data]
     return ApiResponse.success_response(
         data=items,
@@ -301,7 +307,10 @@ def ohlc_history(
             strict=strict,
         )
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return ApiResponse.error_response(
+            error=str(exc),
+            error_code=AIErrorCode.SERVICE_UNAVAILABLE,
+        )
     items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
     return ApiResponse.success_response(
         data=items,

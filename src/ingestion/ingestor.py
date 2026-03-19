@@ -53,6 +53,14 @@ class BackgroundIngestor:
         self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
         )
+        # 连续失败退避：品种连续采集失败 _SYMBOL_ERROR_THRESHOLD 次后，
+        # 进入降频冷却期（_SYMBOL_COOLDOWN_SECONDS），期间跳过该品种。
+        _SYMBOL_ERROR_THRESHOLD = 5
+        _SYMBOL_COOLDOWN_SECONDS = 60.0
+        self._symbol_error_threshold = _SYMBOL_ERROR_THRESHOLD
+        self._symbol_cooldown_seconds = _SYMBOL_COOLDOWN_SECONDS
+        self._symbol_error_counts: Dict[str, int] = {}
+        self._symbol_skip_until: Dict[str, float] = {}
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -103,14 +111,32 @@ class BackgroundIngestor:
         next_intrabar_at: Dict[str, float] = {}
         while not self._stop.is_set():
             start_loop = time.time()
+            now = time.time()
             for symbol in self._symbols_for_cycle():
+                # 冷却期内跳过连续多次失败的品种，避免 CPU 空转。
+                if now < self._symbol_skip_until.get(symbol, 0.0):
+                    continue
                 try:
                     self._ingest_quote(symbol)
                     self._ingest_ticks(symbol)
                     self._ingest_ohlc(symbol, next_ohlc_at)
                     self._ingest_intrabar(symbol, next_intrabar_at)
+                    # 本轮成功，重置错误计数。
+                    self._symbol_error_counts.pop(symbol, None)
                 except MT5MarketError as exc:
-                    logger.warning("Ingest error for %s: %s", symbol, exc)
+                    count = self._symbol_error_counts.get(symbol, 0) + 1
+                    self._symbol_error_counts[symbol] = count
+                    logger.warning("Ingest error for %s (consecutive=%d): %s", symbol, count, exc)
+                    if count >= self._symbol_error_threshold:
+                        self._symbol_skip_until[symbol] = now + self._symbol_cooldown_seconds
+                        self._symbol_error_counts.pop(symbol, None)
+                        logger.error(
+                            "Symbol %s hit %d consecutive errors; "
+                            "suppressing for %.0fs before retry.",
+                            symbol,
+                            self._symbol_error_threshold,
+                            self._symbol_cooldown_seconds,
+                        )
                 except Exception as exc:  # pragma: no cover - 防御
                     logger.exception("Unexpected ingest error for %s: %s", symbol, exc)
             # 保持采集节奏，扣除本轮耗时。

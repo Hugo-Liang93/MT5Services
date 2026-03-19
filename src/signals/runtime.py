@@ -126,6 +126,7 @@ class SignalRuntime:
         # Regime 稳定性跟踪：key=(symbol, timeframe)，每个交易对独立计数
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._signal_listeners: List[Callable[[SignalEvent], None]] = []
+        self._signal_listeners_lock = threading.Lock()
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
         self._strategy_requirements: dict[str, tuple[str, ...]] = {}
@@ -178,6 +179,10 @@ class SignalRuntime:
         self._last_drop_log_at: float = 0.0
         self._dropped_at_last_log: int = 0  # 上次日志时的总丢弃数，用于计算 delta
         self._state_by_target: dict[tuple[str, str, str], RuntimeSignalState] = {}
+        # 连续异常计数：超过阈值时发出 ERROR 级 DEGRADED 告警，
+        # 提醒运维信号运行时已停滞，不依赖指数退避掩盖故障。
+        self._consecutive_loop_errors = 0
+        self._loop_error_alert_threshold = 5
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -345,14 +350,16 @@ class SignalRuntime:
 
     def add_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
         """Register a callback to receive SignalEvent on every state transition."""
-        if listener not in self._signal_listeners:
-            self._signal_listeners.append(listener)
+        with self._signal_listeners_lock:
+            if listener not in self._signal_listeners:
+                self._signal_listeners.append(listener)
 
     def remove_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
-        try:
-            self._signal_listeners.remove(listener)
-        except ValueError:
-            pass
+        with self._signal_listeners_lock:
+            try:
+                self._signal_listeners.remove(listener)
+            except ValueError:
+                pass
 
     def _publish_signal_event(
         self,
@@ -362,7 +369,9 @@ class SignalRuntime:
         indicators: Dict[str, Dict[str, float]],
         transition_metadata: Dict[str, Any],
     ) -> None:
-        if not self._signal_listeners:
+        with self._signal_listeners_lock:
+            listeners = list(self._signal_listeners)
+        if not listeners:
             return
         signal_state = transition_metadata.get("signal_state", "")
         event = SignalEvent(
@@ -379,7 +388,7 @@ class SignalRuntime:
             signal_id=signal_id,
             reason=decision.reason,
         )
-        for listener in list(self._signal_listeners):
+        for listener in listeners:
             try:
                 listener(event)
             except Exception as exc:
@@ -1006,8 +1015,19 @@ class SignalRuntime:
             try:
                 self.process_next_event(timeout=0.5)
                 backoff = 0.0  # 成功后重置退避
+                self._consecutive_loop_errors = 0
             except Exception as exc:
                 self._last_error = str(exc)
+                self._consecutive_loop_errors += 1
                 logger.exception("Signal runtime event processing failed: %s", exc)
+                if self._consecutive_loop_errors >= self._loop_error_alert_threshold:
+                    logger.error(
+                        "SIGNAL RUNTIME DEGRADED: %d consecutive failures "
+                        "(backoff=%.1fs). Signal processing may be stalled. "
+                        "Last error: %s",
+                        self._consecutive_loop_errors,
+                        backoff,
+                        exc,
+                    )
                 backoff = 1.0 if backoff == 0.0 else min(backoff * 2.0, 30.0)
                 self._stop.wait(timeout=backoff)
