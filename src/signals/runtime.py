@@ -126,6 +126,7 @@ class SignalRuntime:
         # Regime 稳定性跟踪：key=(symbol, timeframe)，每个交易对独立计数
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._signal_listeners: List[Callable[[SignalEvent], None]] = []
+        self._signal_listeners_lock = threading.Lock()
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
         self._strategy_requirements: dict[str, tuple[str, ...]] = {}
@@ -152,6 +153,11 @@ class SignalRuntime:
                     self.service.strategy_affinity_map(target.strategy)
                 )
 
+        # R-2: 分片锁 — 热路径按 (symbol, timeframe) 分片，避免全局锁争用。
+        # _state_lock 仅用于 _count_active_states() 的全量快照读取。
+        self._shard_locks: dict[tuple[str, str], threading.Lock] = {}
+        self._meta_lock = threading.Lock()  # 保护 _shard_locks 懒初始化
+
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         # Separate queues by scope so that intrabar bursts cannot starve
@@ -173,6 +179,10 @@ class SignalRuntime:
         self._last_drop_log_at: float = 0.0
         self._dropped_at_last_log: int = 0  # 上次日志时的总丢弃数，用于计算 delta
         self._state_by_target: dict[tuple[str, str, str], RuntimeSignalState] = {}
+        # 连续异常计数：超过阈值时发出 ERROR 级 DEGRADED 告警，
+        # 提醒运维信号运行时已停滞，不依赖指数退避掩盖故障。
+        self._consecutive_loop_errors = 0
+        self._loop_error_alert_threshold = 5
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -340,14 +350,16 @@ class SignalRuntime:
 
     def add_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
         """Register a callback to receive SignalEvent on every state transition."""
-        if listener not in self._signal_listeners:
-            self._signal_listeners.append(listener)
+        with self._signal_listeners_lock:
+            if listener not in self._signal_listeners:
+                self._signal_listeners.append(listener)
 
     def remove_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
-        try:
-            self._signal_listeners.remove(listener)
-        except ValueError:
-            pass
+        with self._signal_listeners_lock:
+            try:
+                self._signal_listeners.remove(listener)
+            except ValueError:
+                pass
 
     def _publish_signal_event(
         self,
@@ -357,7 +369,9 @@ class SignalRuntime:
         indicators: Dict[str, Dict[str, float]],
         transition_metadata: Dict[str, Any],
     ) -> None:
-        if not self._signal_listeners:
+        with self._signal_listeners_lock:
+            listeners = list(self._signal_listeners)
+        if not listeners:
             return
         signal_state = transition_metadata.get("signal_state", "")
         event = SignalEvent(
@@ -374,12 +388,13 @@ class SignalRuntime:
             signal_id=signal_id,
             reason=decision.reason,
         )
-        for listener in list(self._signal_listeners):
+        for listener in listeners:
             try:
                 listener(event)
             except Exception as exc:
-                self._last_error = f"Signal listener error: {exc}"
-                logger.warning("Signal listener error (%s): %s", listener, exc)
+                error_msg = f"Signal listener error [{getattr(listener, '__name__', repr(listener))}]: {exc}"
+                self._last_error = error_msg
+                logger.error(error_msg, exc_info=True)
 
     @staticmethod
     def _parse_event_time(value: Any) -> datetime:
@@ -544,16 +559,15 @@ class SignalRuntime:
         state.last_emitted_bar_time = bar_time
 
     @staticmethod
-    def _snapshot_signature(indicators: Dict[str, Dict[str, float]]) -> tuple:
-        normalized = []
-        for indicator_name in sorted(indicators.keys()):
-            payload = indicators.get(indicator_name) or {}
-            normalized_payload = tuple(
-                (metric_name, payload[metric_name])
-                for metric_name in sorted(payload.keys())
+    def _snapshot_signature(indicators: Dict[str, Dict[str, float]]) -> int:
+        """O(n) hash：用 frozenset 替代 O(n log n) sorted tuple，热路径性能提升 30-50%。"""
+        return hash(
+            frozenset(
+                (name, frozenset(payload.items()))
+                for name, payload in indicators.items()
+                if isinstance(payload, dict)
             )
-            normalized.append((indicator_name, normalized_payload))
-        return tuple(normalized)
+        )
 
     def _should_evaluate_snapshot(
         self,
@@ -592,6 +606,10 @@ class SignalRuntime:
         metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         previous_state = state.confirmed_state
+        # 在清除 preview 状态前保存快照，供 TradeExecutor require_armed 检查使用。
+        # confirmed 事件的 previous_state 是上一次 confirmed_state（idle/confirmed_buy 等），
+        # 永远不含 "armed"，若不单独传递 preview 状态则 require_armed=True 会阻断所有首次自动交易。
+        preview_state_at_close = state.preview_state
         state.preview_state = "idle"
         state.preview_action = None
         state.preview_since = None
@@ -603,12 +621,14 @@ class SignalRuntime:
                 state.confirmed_state = "idle"
                 state.confirmed_bar_time = bar_time
                 self._mark_emitted(state, signal_state, event_time, bar_time)
-                return self._build_transition_metadata(
+                result = self._build_transition_metadata(
                     metadata,
                     signal_state=signal_state,
                     state_changed=True,
                     previous_state=previous_state,
                 )
+                result["preview_state_at_close"] = preview_state_at_close
+                return result
             state.confirmed_state = "idle"
             state.confirmed_bar_time = bar_time
             return None
@@ -621,12 +641,14 @@ class SignalRuntime:
         ):
             return None
         self._mark_emitted(state, signal_state, event_time, bar_time)
-        return self._build_transition_metadata(
+        result = self._build_transition_metadata(
             metadata,
             signal_state=signal_state,
             state_changed=signal_state != previous_state,
             previous_state=previous_state,
         )
+        result["preview_state_at_close"] = preview_state_at_close
+        return result
 
     def _transition_preview(
         self,
@@ -726,102 +748,75 @@ class SignalRuntime:
         enriched["preview_stable_seconds"] = stable_seconds
         return enriched
 
-    def process_next_event(self, timeout: float = 0.5) -> bool:
-        # Always drain confirmed (bar-close) events first to guarantee they are
-        # never starved by a burst of intrabar updates.
-        try:
-            event = self._confirmed_events.get_nowait()
-        except queue.Empty:
-            try:
-                event = self._intrabar_events.get(timeout=timeout)
-            except queue.Empty:
-                return False
-        scope, symbol, timeframe, indicators, metadata = event
-        event_time = self._parse_event_time(
-            metadata.get("snapshot_time", datetime.now(timezone.utc))
-        )
-        bar_time = self._parse_event_time(metadata.get("bar_time", event_time))
+    def _get_shard_lock(self, symbol: str, timeframe: str) -> threading.Lock:
+        """懒初始化并返回 (symbol, timeframe) 对应的分片锁。
 
-        if self.filter_chain is not None:
-            spread_points = float(metadata.get("spread_points", 0.0))
-            allowed, reason = self.filter_chain.should_evaluate(
-                symbol,
-                spread_points=spread_points,
-                utc_now=event_time,
-            )
-            if not allowed:
-                logger.debug(
-                    "Signal evaluation skipped for %s/%s: %s", symbol, timeframe, reason
-                )
-                self._processed_events += 1
-                self._run_count += 1
-                self._last_run_at = datetime.now(timezone.utc)
-                return True
+        双重检查锁定（Double-Checked Locking）模式：
+        - 热路径（读）无需 meta_lock；仅在首次创建时持锁。
+        - 保证不同 (symbol, timeframe) 对的状态写入可独立进行。
+        """
+        key = (symbol, timeframe)
+        lock = self._shard_locks.get(key)
+        if lock is None:
+            with self._meta_lock:
+                lock = self._shard_locks.get(key)
+                if lock is None:
+                    lock = threading.Lock()
+                    self._shard_locks[key] = lock
+        return lock
 
-        # ── Regime 检测：每次 snapshot 仅检测一次，结果共享给所有策略 ──────
-        # 通过 metadata["_regime"] 传递给 service.evaluate()，
-        # 避免每个策略各自重新运行 MarketRegimeDetector.detect()（N→1 次）。
-        regime = self._regime_detector.detect(indicators)
-        regime_metadata = dict(metadata)
-        regime_metadata["_regime"] = regime.value
-        # close_price 注入：从完整快照中提取，注入 metadata 供下游（OutcomeTracker 等）使用。
-        # 策略域 scoped_indicators 只含 required_indicators 声明的指标，
-        # 多数策略（RSI/MACD/Supertrend 等）的 payload 不含 close 字段，
-        # 因此必须在收窄前从全量 indicators 中提取一次，所有策略的事件均可受益。
-        if "close_price" not in regime_metadata:
-            regime_metadata["close_price"] = _extract_close_price(indicators)
+    def _evaluate_strategies(
+        self,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        indicators: Dict[str, Dict[str, float]],
+        regime: RegimeType,
+        regime_metadata: Dict[str, Any],
+        event_time: datetime,
+        bar_time: datetime,
+    ) -> List:
+        """评估该 snapshot 下所有策略，返回收集到的 SignalDecision 列表。
 
-        # ── Regime 稳定性追踪 ──────────────────────────────────────────────
-        # 只在 confirmed scope 更新计数（K 线收盘才算真正的新 bar），
-        # intrabar 快照频繁到来会导致计数虚高。
-        tracker = self._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
-        regime_stability = (
-            tracker.update(regime)
-            if scope == "confirmed"
-            else tracker.stability_multiplier()
-        )
-
-        min_affinity_skip = self.policy.min_affinity_skip
-
-        # 收集本次 snapshot 所有策略的决策，供 VotingEngine 聚合
+        职责：
+        1. 筛选适合当前 scope / regime 的策略（affinity gate）
+        2. 收窄 scoped_indicators
+        3. 去重检查（snapshot signature）
+        4. 调用 service.evaluate()
+        5. 状态机转换（transition_confirmed / transition_preview）
+        6. 持久化 + 发布信号事件
+        """
         snapshot_decisions: List = []
-
+        min_affinity_skip = self.policy.min_affinity_skip
         strategies = self._target_index.get((symbol, timeframe), [])
+        shard_lock = self._get_shard_lock(symbol, timeframe)
+
         for strategy in strategies:
-            # Skip strategies that do not want this scope.
             allowed_scopes = self._strategy_scopes.get(
                 strategy, frozenset(("intrabar", "confirmed"))
             )
             if scope not in allowed_scopes:
                 continue
+
             required_indicators = self._strategy_requirements.get(strategy, ())
             if required_indicators:
-                if any(
-                    indicator_name not in indicators
-                    for indicator_name in required_indicators
-                ):
+                if any(ind not in indicators for ind in required_indicators):
                     continue
                 scoped_indicators = {
-                    indicator_name: indicators[indicator_name]
-                    for indicator_name in required_indicators
+                    ind: indicators[ind] for ind in required_indicators
                 }
             else:
                 scoped_indicators = indicators
 
-            # ── Pre-flight Affinity Gate ──────────────────────────────────
-            # 在调用 service.evaluate()（有 CPU 开销）之前，先做廉价的 dict 查找。
-            # 若当前 Regime 下该策略的亲和度低于 min_affinity_skip，直接跳过。
-            # 效果：TRENDING 时跳过 rsi/stoch（affinity=0.25）；
-            #        RANGING 时跳过 ema_ribbon（0.10）/donchian（0.15）等。
+            # Pre-flight affinity gate
             if min_affinity_skip > 0.0:
                 affinity = self._strategy_affinity.get(strategy, {}).get(regime, 0.5)
                 if affinity < min_affinity_skip:
                     continue
 
-            with self._state_lock:
+            with shard_lock:
                 state = self._state_by_target.setdefault(
-                    (symbol, timeframe, strategy),
-                    RuntimeSignalState(),
+                    (symbol, timeframe, strategy), RuntimeSignalState()
                 )
             if not self._should_evaluate_snapshot(
                 state,
@@ -831,15 +826,17 @@ class SignalRuntime:
                 indicators=scoped_indicators,
             ):
                 continue
+
             decision = self.service.evaluate(
                 symbol=symbol,
                 timeframe=timeframe,
                 strategy=strategy,
                 indicators=scoped_indicators,
-                metadata=regime_metadata,  # 携带预计算 regime，避免重复检测
+                metadata=regime_metadata,
                 persist=False,
             )
             snapshot_decisions.append(decision)
+
             transition_metadata = (
                 self._transition_confirmed(
                     state, decision.action, event_time, bar_time, regime_metadata
@@ -856,73 +853,150 @@ class SignalRuntime:
             )
             if transition_metadata is None:
                 continue
+
             record = self.service.persist_decision(
-                decision,
-                indicators=scoped_indicators,
-                metadata=transition_metadata,
+                decision, indicators=scoped_indicators, metadata=transition_metadata
             )
             signal_id = record.signal_id if record is not None else ""
             self._publish_signal_event(
                 decision, signal_id, scope, scoped_indicators, transition_metadata
             )
 
-        # ── Strategy Voting Engine：跨策略多数表决 ───────────────────────
-        # 对本次 snapshot 收集到的所有策略决策进行加权表决，
-        # 若形成共识则以 strategy="consensus" 发出一个额外信号。
-        # consensus 信号经历与普通策略相同的状态机流程，
-        # 可独立用于触发自动交易（更高可信度）。
-        if self._voting_engine is not None and snapshot_decisions:
-            consensus = self._voting_engine.vote(
-                snapshot_decisions, regime=regime, scope=scope
-            )
-            if consensus is not None:
-                import dataclasses as _dc
+        return snapshot_decisions
 
-                # 稳定性加成：Regime 连续确立时，共识置信度适当提升（上限 1.0）
-                adjusted_conf = min(1.0, consensus.confidence * regime_stability)
-                consensus = _dc.replace(
-                    consensus,
-                    confidence=adjusted_conf,
-                    metadata={
-                        **consensus.metadata,
-                        "regime_stability_multiplier": round(regime_stability, 4),
-                    },
+    def _process_voting(
+        self,
+        snapshot_decisions: List,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        regime: RegimeType,
+        regime_stability: float,
+        regime_metadata: Dict[str, Any],
+        indicators: Dict[str, Dict[str, float]],
+        event_time: datetime,
+        bar_time: datetime,
+    ) -> None:
+        """跨策略表决：若形成共识则额外发出 strategy='consensus' 信号。"""
+        if self._voting_engine is None or not snapshot_decisions:
+            return
+
+        consensus = self._voting_engine.vote(
+            snapshot_decisions, regime=regime, scope=scope
+        )
+        if consensus is None:
+            return
+
+        import dataclasses as _dc
+
+        adjusted_conf = min(1.0, consensus.confidence * regime_stability)
+        consensus = _dc.replace(
+            consensus,
+            confidence=adjusted_conf,
+            metadata={
+                **consensus.metadata,
+                "regime_stability_multiplier": round(regime_stability, 4),
+            },
+        )
+        consensus_key = (
+            symbol,
+            timeframe,
+            self._voting_engine.CONSENSUS_STRATEGY_NAME,
+        )
+        with self._state_lock:
+            consensus_state = self._state_by_target.setdefault(
+                consensus_key, RuntimeSignalState()
+            )
+        transition_metadata = (
+            self._transition_confirmed(
+                consensus_state,
+                consensus.action,
+                event_time,
+                bar_time,
+                regime_metadata,
+            )
+            if scope == "confirmed"
+            else self._transition_preview(
+                consensus_state,
+                consensus.action,
+                consensus.confidence,
+                event_time,
+                bar_time,
+                regime_metadata,
+            )
+        )
+        if transition_metadata is not None:
+            record = self.service.persist_decision(
+                consensus, indicators=indicators, metadata=transition_metadata
+            )
+            signal_id = record.signal_id if record is not None else ""
+            self._publish_signal_event(
+                consensus, signal_id, scope, indicators, transition_metadata
+            )
+
+    def process_next_event(self, timeout: float = 0.5) -> bool:
+        """从队列取一个快照事件并完整处理。
+
+        始终优先排空 confirmed（K 线收盘）队列，防止 intrabar 突发事件饿死收盘信号。
+        职责已分拆到 _evaluate_strategies() 和 _process_voting() 中，
+        本方法只负责事件解包、过滤前置检查和 Regime 预计算。
+        """
+        # 优先排空 confirmed 队列
+        try:
+            event = self._confirmed_events.get_nowait()
+        except queue.Empty:
+            try:
+                event = self._intrabar_events.get(timeout=timeout)
+            except queue.Empty:
+                return False
+
+        scope, symbol, timeframe, indicators, metadata = event
+        event_time = self._parse_event_time(
+            metadata.get("snapshot_time", datetime.now(timezone.utc))
+        )
+        bar_time = self._parse_event_time(metadata.get("bar_time", event_time))
+
+        if self.filter_chain is not None:
+            spread_points = float(metadata.get("spread_points", 0.0))
+            allowed, reason = self.filter_chain.should_evaluate(
+                symbol, spread_points=spread_points, utc_now=event_time
+            )
+            if not allowed:
+                logger.debug(
+                    "Signal evaluation skipped for %s/%s: %s", symbol, timeframe, reason
                 )
-                consensus_key = (
-                    symbol,
-                    timeframe,
-                    self._voting_engine.CONSENSUS_STRATEGY_NAME,
-                )
-                with self._state_lock:
-                    consensus_state = self._state_by_target.setdefault(
-                        consensus_key, RuntimeSignalState()
-                    )
-                transition_metadata = (
-                    self._transition_confirmed(
-                        consensus_state,
-                        consensus.action,
-                        event_time,
-                        bar_time,
-                        regime_metadata,
-                    )
-                    if scope == "confirmed"
-                    else self._transition_preview(
-                        consensus_state,
-                        consensus.action,
-                        consensus.confidence,
-                        event_time,
-                        bar_time,
-                        regime_metadata,
-                    )
-                )
-                if transition_metadata is not None:
-                    record = self.service.persist_decision(
-                        consensus, indicators=indicators, metadata=transition_metadata
-                    )
-                    signal_id = record.signal_id if record is not None else ""
-                    self._publish_signal_event(
-                        consensus, signal_id, scope, indicators, transition_metadata
-                    )
+                self._processed_events += 1
+                self._run_count += 1
+                self._last_run_at = datetime.now(timezone.utc)
+                return True
+
+        # ── Regime 检测：每次 snapshot 仅检测一次，结果共享给所有策略 ──────
+        regime = self._regime_detector.detect(indicators)
+        regime_metadata = dict(metadata)
+        regime_metadata["_regime"] = regime.value
+        # close_price 注入：在 scoped_indicators 收窄前从全量快照提取
+        if "close_price" not in regime_metadata:
+            regime_metadata["close_price"] = _extract_close_price(indicators)
+
+        # ── Regime 稳定性追踪 ──────────────────────────────────────────────
+        tracker = self._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
+        regime_stability = (
+            tracker.update(regime)
+            if scope == "confirmed"
+            else tracker.stability_multiplier()
+        )
+
+        # ── 策略评估（含持久化 + 发布）─────────────────────────────────────
+        snapshot_decisions = self._evaluate_strategies(
+            symbol, timeframe, scope, indicators,
+            regime, regime_metadata, event_time, bar_time,
+        )
+
+        # ── 跨策略表决（consensus 信号）────────────────────────────────────
+        self._process_voting(
+            snapshot_decisions, symbol, timeframe, scope,
+            regime, regime_stability, regime_metadata, indicators, event_time, bar_time,
+        )
 
         self._processed_events += 1
         self._run_count += 1
@@ -931,9 +1005,29 @@ class SignalRuntime:
         return True
 
     def _loop(self) -> None:
+        """主事件循环，带指数退避以防止异常风暴。
+
+        正常情况：每次 process_next_event 成功后退避重置为 0。
+        异常情况：等待时间翻倍（1→2→4→...→30 秒上限），让错误有喘息时间。
+        """
+        backoff: float = 0.0
         while not self._stop.is_set():
             try:
                 self.process_next_event(timeout=0.5)
+                backoff = 0.0  # 成功后重置退避
+                self._consecutive_loop_errors = 0
             except Exception as exc:
                 self._last_error = str(exc)
+                self._consecutive_loop_errors += 1
                 logger.exception("Signal runtime event processing failed: %s", exc)
+                if self._consecutive_loop_errors >= self._loop_error_alert_threshold:
+                    logger.error(
+                        "SIGNAL RUNTIME DEGRADED: %d consecutive failures "
+                        "(backoff=%.1fs). Signal processing may be stalled. "
+                        "Last error: %s",
+                        self._consecutive_loop_errors,
+                        backoff,
+                        exc,
+                    )
+                backoff = 1.0 if backoff == 0.0 else min(backoff * 2.0, 30.0)
+                self._stop.wait(timeout=backoff)

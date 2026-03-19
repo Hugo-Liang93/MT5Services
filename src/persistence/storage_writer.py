@@ -39,6 +39,12 @@ class StorageWriter:
         self._last_flush: Dict[str, float] = {}
         self._channel_stats: Dict[str, Dict[str, int]] = {}
         self._queue_log_state: Dict[str, Dict[str, float]] = {}
+        # DLQ 替代方案：跟踪每通道累计丢弃数，当短期内丢弃速率超过阈值时
+        # 发出 ERROR 级别告警，便于监控系统检测数据丢失事件。
+        self._drop_alert_last_total: Dict[str, int] = {}
+        self._drop_alert_last_at: Dict[str, float] = {}
+        # 60 秒内丢弃超过此数则触发 ERROR 告警
+        self._drop_alert_rate_threshold = 50
         if not self._register_channels_from_config():
             raise RuntimeError("No storage channels configured; please provide config/storage.ini")
 
@@ -430,6 +436,35 @@ class StorageWriter:
         self._channel_stats[name]["dropped_newest"] += 1
         self._channel_stats[name]["full_errors"] += 1
         logger.error("Queue %s full, dropped newest item: %s", name, item)
+        self._check_drop_rate_alert(name)
+
+    def _check_drop_rate_alert(self, name: str) -> None:
+        """若 60s 内单通道丢弃数超过阈值，发出 ERROR 级聚合告警（DLQ 替代机制）。
+
+        对比两次告警窗口间的累计丢弃量，超过 _drop_alert_rate_threshold 则
+        记录带统计数据的 ERROR 日志，便于监控系统（日志聚合/告警规则）捕获。
+        """
+        stats = self._channel_stats.get(name, {})
+        total_drops = stats.get("dropped_oldest", 0) + stats.get("dropped_newest", 0)
+        now = time.time()
+        last_at = self._drop_alert_last_at.get(name, 0.0)
+        last_total = self._drop_alert_last_total.get(name, 0)
+        window = 60.0
+        if now - last_at >= window:
+            delta = total_drops - last_total
+            if delta >= self._drop_alert_rate_threshold:
+                logger.error(
+                    "DLQ ALERT: channel '%s' dropped %d items in the last %.0fs "
+                    "(total_drops=%d, full_errors=%d). "
+                    "Consider increasing queue size or reducing ingestion rate.",
+                    name,
+                    delta,
+                    window,
+                    total_drops,
+                    stats.get("full_errors", 0),
+                )
+            self._drop_alert_last_at[name] = now
+            self._drop_alert_last_total[name] = total_drops
 
     def _resolve_full_policy(self, ch: Dict[str, object]) -> str:
         policy = str(ch.get("full_policy", "auto")).strip().lower()

@@ -6,6 +6,7 @@ DDL 和具体 SQL 语句在 src/persistence/schema 中集中管理。
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -30,6 +31,7 @@ from src.persistence.schema import (
     INSERT_SIGNAL_PREVIEW_EVENTS_SQL,
     INSERT_SIGNAL_OUTCOMES_SQL,
     SIGNAL_OUTCOMES_WINRATE_SQL,
+    INSERT_AUTO_EXECUTIONS_SQL,
     UPSERT_RUNTIME_TASK_STATUS_SQL,
     UPSERT_ECONOMIC_CALENDAR_SQL,
 )
@@ -49,6 +51,7 @@ class TimescaleWriter:
         self._max_conn = max_conn
         self._last_health_check = 0
         self._health_check_interval = 60  # seconds
+        self._reconnect_lock = threading.Lock()
         self._init_pool()
 
     def _init_pool(self):
@@ -98,15 +101,26 @@ class TimescaleWriter:
             self._reconnect()
 
     def _reconnect(self):
-        """重新连接数据库"""
-        logger.warning("Attempting to reconnect to database...")
+        """重新连接数据库（带锁防止并发重连）"""
+        if not self._reconnect_lock.acquire(blocking=False):
+            # 已有其他线程在重连，等待其完成
+            with self._reconnect_lock:
+                return
         try:
-            if self._pool:
-                self._pool.closeall()
+            logger.warning("Attempting to reconnect to database...")
+            old_pool = self._pool
+            self._pool = None  # 先置 None，防止其他线程从已损坏的池获取连接
+            if old_pool:
+                try:
+                    old_pool.closeall()
+                except Exception:
+                    pass
             self._init_pool()
             logger.info("Database reconnection successful")
         except Exception as e:
             logger.error(f"Database reconnection failed: {e}")
+        finally:
+            self._reconnect_lock.release()
 
     @contextmanager
     def connection(self):
@@ -117,31 +131,36 @@ class TimescaleWriter:
             raise RuntimeError("Connection pool not initialized")
         
         conn = None
+        broken = False
         try:
             conn = self._pool.getconn()
             conn.autocommit = True
-            
+
             # 确保 schema 存在并设置 search_path
             with conn.cursor() as cur:
                 cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.settings.pg_schema}"')
                 cur.execute(f"SET search_path TO {self.settings.pg_schema}, public")
-            
+
             yield conn
         except psycopg2.OperationalError as e:
             logger.error(f"Database connection error: {e}")
-            if conn:
-                try:
-                    conn.close()
-                except:
-                    pass
+            broken = True
             self._reconnect()
             raise
         except Exception as e:
             logger.error(f"Unexpected error in connection context: {e}")
             raise
         finally:
-            if conn and not conn.closed:
-                self._pool.putconn(conn)
+            if conn is not None:
+                pool = self._pool
+                if broken or conn.closed:
+                    # 连接已损坏，直接关闭，不放回池
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                elif pool is not None:
+                    pool.putconn(conn)
 
     def init_schema(self) -> None:
         # 幂等创建 hypertable，未安装 timescaledb 扩展会失败需手动安装。
@@ -803,6 +822,57 @@ class TimescaleWriter:
         if not batch:
             return
         self._batch(INSERT_SIGNAL_OUTCOMES_SQL, batch, page_size=page_size)
+
+    def write_auto_executions(self, rows: Iterable[dict], page_size: int = 200) -> None:
+        """T-4: 批量写入自动交易执行记录。
+
+        ``rows`` 为 ``TradeExecutor._execute`` / ``_handle_confirmed`` 构造的
+        log_entry dict 列表，包含以下字段（缺失字段用 None 填充）：
+
+        .. code-block:: python
+
+            {
+                "at": "2024-01-01T00:00:00+00:00",
+                "signal_id": "...",
+                "symbol": "XAUUSD",
+                "action": "buy",
+                "strategy": "sma_trend",
+                "confidence": 0.75,
+                "params": {"volume": 0.01, "sl": 1900.0, "tp": 1950.0, "rr": 2.0},
+                "success": True,
+                "error": None,
+            }
+        """
+        from datetime import datetime as _dt, timezone as _tz
+
+        batch = []
+        for entry in rows:
+            params = entry.get("params") or {}
+            try:
+                executed_at = _dt.fromisoformat(str(entry.get("at") or "")).replace(
+                    tzinfo=_tz.utc
+                )
+            except (ValueError, TypeError):
+                executed_at = _dt.now(_tz.utc)
+            batch.append((
+                executed_at,
+                entry.get("signal_id") or "",
+                entry.get("symbol") or "",
+                entry.get("action") or "",
+                entry.get("strategy") or "",
+                entry.get("confidence"),
+                params.get("volume"),
+                params.get("entry_price"),
+                params.get("sl"),
+                params.get("tp"),
+                params.get("rr"),
+                bool(entry.get("success")),
+                entry.get("error"),
+                Json({}),
+            ))
+        if not batch:
+            return
+        self._batch(INSERT_AUTO_EXECUTIONS_SQL, batch, page_size=page_size)
 
     def fetch_winrates(
         self,

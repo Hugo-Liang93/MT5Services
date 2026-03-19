@@ -20,8 +20,13 @@ deps.py 在构建 SignalModule 后分两个阶段调用：
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from .composite import CompositeSignalStrategy, CombineMode
 from .htf_cache import HTFStateCache
@@ -103,15 +108,94 @@ _COMPOSITE_STRATEGY_SPECS: List[CompositeSpec] = [
 ]
 
 
-def build_composite_strategies() -> List[CompositeSignalStrategy]:
+def _load_specs_from_json(path: str) -> Optional[List[CompositeSpec]]:
+    """V-3: 从 composites.json 加载复合策略配置，返回 CompositeSpec 列表。
+
+    JSON 中使用策略类名字符串（如 "SupertrendStrategy"），此函数将其解析为工厂函数。
+    解析失败时返回 None，调用方应回退到硬编码默认值。
+    """
+    _CLASS_MAP: Dict[str, Any] = {
+        "BollingerBreakoutStrategy": BollingerBreakoutStrategy,
+        "DonchianBreakoutStrategy": DonchianBreakoutStrategy,
+        "EmaRibbonStrategy": EmaRibbonStrategy,
+        "KeltnerBollingerSqueezeStrategy": KeltnerBollingerSqueezeStrategy,
+        "MacdMomentumStrategy": MacdMomentumStrategy,
+        "RsiReversionStrategy": RsiReversionStrategy,
+        "SmaTrendStrategy": SmaTrendStrategy,
+        "StochRsiStrategy": StochRsiStrategy,
+        "SupertrendStrategy": SupertrendStrategy,
+    }
+    _REGIME_MAP: Dict[str, "RegimeType"] = {
+        "TRENDING": RegimeType.TRENDING,
+        "RANGING": RegimeType.RANGING,
+        "BREAKOUT": RegimeType.BREAKOUT,
+        "UNCERTAIN": RegimeType.UNCERTAIN,
+    }
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as fp:
+            raw_list = json.load(fp)
+        specs: List[CompositeSpec] = []
+        for item in raw_list:
+            factories = tuple(
+                _CLASS_MAP[cls_name]
+                for cls_name in item["sub_strategies"]
+                if cls_name in _CLASS_MAP
+            )
+            if not factories:
+                logger.warning(
+                    "strategy_registry: skip composite '%s' — no valid sub_strategies",
+                    item.get("name"),
+                )
+                continue
+            affinity = {
+                _REGIME_MAP[k]: float(v)
+                for k, v in item.get("regime_affinity", {}).items()
+                if k in _REGIME_MAP
+            }
+            specs.append(
+                CompositeSpec(
+                    name=item["name"],
+                    sub_strategy_factories=factories,
+                    combine_mode=item.get("combine_mode", "majority"),
+                    regime_affinity=affinity,
+                    preferred_scopes=tuple(item.get("preferred_scopes", ["confirmed"])),
+                )
+            )
+        logger.info(
+            "strategy_registry: loaded %d composite specs from %s", len(specs), path
+        )
+        return specs
+    except Exception:
+        logger.warning(
+            "strategy_registry: failed to load composites from %s, using defaults",
+            path,
+            exc_info=True,
+        )
+        return None
+
+
+def build_composite_strategies(
+    *, config_path: Optional[str] = None
+) -> List[CompositeSignalStrategy]:
     """根据配置表构建复合策略实例列表。
+
+    V-3: 优先从 ``config_path``（默认 config/composites.json）加载策略规格，
+    加载失败时回退到硬编码的 ``_COMPOSITE_STRATEGY_SPECS``。
 
     每次调用都会创建全新的子策略实例，保证各复合策略之间
     以及与 SignalModule 内单策略之间完全独立，
     防止同一实例在 VotingEngine 中被重复计票。
     """
+    if config_path is None:
+        # 自动定位：从本文件向上两级找到项目根目录
+        _here = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(_here, "..", "..", "config", "composites.json")
+
+    specs = _load_specs_from_json(config_path) or _COMPOSITE_STRATEGY_SPECS
     strategies = []
-    for spec in _COMPOSITE_STRATEGY_SPECS:
+    for spec in specs:
         sub_instances = [factory() for factory in spec.sub_strategy_factories]
         strategies.append(
             CompositeSignalStrategy(

@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .sizing import TradeParameters
 
@@ -57,6 +57,8 @@ class PositionManager:
         self.breakeven_atr_threshold = breakeven_atr_threshold
         self._positions: Dict[int, TrackedPosition] = {}
         self._lock = threading.Lock()
+        # O-1: 关仓回调列表，reconcile 检测到仓位关闭时通知下游（如 OutcomeTracker）
+        self._close_callbacks: List[Callable[[TrackedPosition, Optional[float]], None]] = []
 
         self._reconcile_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -141,6 +143,16 @@ class PositionManager:
 
         self._check_breakeven(pos, current_price)
         self._check_trailing_stop(pos, current_price)
+
+    def add_close_callback(
+        self, fn: Callable[["TrackedPosition", Optional[float]], None]
+    ) -> None:
+        """O-1: 注册关仓回调，仓位从 MT5 消失时会以 (pos, close_price) 调用。
+
+        ``close_price`` 为 MT5 报告的当前价格（None 表示无法获取）。
+        """
+        if fn not in self._close_callbacks:
+            self._close_callbacks.append(fn)
 
     def remove_position(self, ticket: int) -> None:
         with self._lock:
@@ -230,11 +242,26 @@ class PositionManager:
             mt5_pos = mt5_positions.get(ticket)
             if mt5_pos is None:
                 # Position closed in MT5 — remove from tracking
+                close_price = getattr(mt5_pos, "price_current", None) if mt5_pos else None
+                if close_price is not None:
+                    try:
+                        close_price = float(close_price)
+                    except (TypeError, ValueError):
+                        close_price = None
                 logger.info(
                     "PositionManager: ticket=%d (%s %s) no longer open in MT5, removing",
                     ticket, pos.action, pos.symbol,
                 )
                 self.remove_position(ticket)
+                # O-1: 通知关仓回调（在锁外调用，避免死锁）
+                for cb in list(self._close_callbacks):
+                    try:
+                        cb(pos, close_price)
+                    except Exception as cb_exc:
+                        logger.warning(
+                            "PositionManager: close callback error for ticket=%d: %s",
+                            ticket, cb_exc,
+                        )
                 continue
 
             current_price = getattr(mt5_pos, "price_current", None)

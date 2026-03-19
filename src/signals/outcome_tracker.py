@@ -120,6 +120,100 @@ class OutcomeTracker:
         if signal_state in ("confirmed_buy", "confirmed_sell"):
             self._record_pending(event)
 
+    def on_position_closed(
+        self,
+        pos: Any,
+        close_price: Optional[float],
+    ) -> None:
+        """O-1: PositionManager 关仓回调 — 立即评估该仓位对应的 pending outcomes。
+
+        无需等待 N 根 bar，仓位一旦关闭即用实际成交价计算盈亏。
+
+        参数
+        ----
+        pos:
+            ``TrackedPosition`` 实例（含 signal_id、symbol、timeframe、strategy、action）。
+        close_price:
+            仓位关闭时的实际价格；None 表示无法获取（此时跳过评估）。
+        """
+        if close_price is None:
+            return
+        try:
+            close_price_f = float(close_price)
+        except (TypeError, ValueError):
+            return
+
+        signal_id: str = getattr(pos, "signal_id", "") or ""
+        symbol: str = getattr(pos, "symbol", "")
+        timeframe: str = getattr(pos, "timeframe", "")
+        strategy: str = getattr(pos, "strategy", "")
+        action: str = getattr(pos, "action", "")
+        if not all([signal_id, symbol, strategy]):
+            return
+
+        key = (symbol, timeframe, strategy)
+        to_evaluate: List[_PendingOutcome] = []
+        with self._lock:
+            lst = self._pending.get(key, [])
+            remaining: List[_PendingOutcome] = []
+            for p in lst:
+                if p.signal_id == signal_id:
+                    to_evaluate.append(p)
+                else:
+                    remaining.append(p)
+            if to_evaluate:
+                self._pending[key] = remaining
+
+        if not to_evaluate:
+            return
+
+        rows: List[Tuple] = []
+        now = datetime.now(timezone.utc)
+        for p in to_evaluate:
+            if p.entry_price is not None:
+                price_change = close_price_f - p.entry_price
+                if p.action == "buy":
+                    won = price_change > 0
+                elif p.action == "sell":
+                    won = price_change < 0
+                else:
+                    won = None
+            else:
+                price_change = None
+                won = None
+
+            with self._lock:
+                if won is not None:
+                    self._total_evaluated += 1
+                    if won:
+                        self._total_wins += 1
+
+            rows.append((
+                now,
+                p.signal_id,
+                p.symbol,
+                p.timeframe,
+                p.strategy,
+                p.action,
+                p.confidence,
+                p.entry_price,
+                close_price_f,
+                price_change,
+                won,
+                p.bars_elapsed,
+                p.regime,
+                {"entry_bar_time": p.bar_time.isoformat(), "close_source": "position_closed"},
+            ))
+
+        if not rows:
+            return
+        try:
+            self._write_fn(rows)
+        except Exception:
+            logger.exception(
+                "OutcomeTracker.on_position_closed: failed to write %d rows", len(rows)
+            )
+
     def winrate_summary(self) -> Dict[str, Any]:
         """返回内存中统计的实时胜率（不依赖 DB）。"""
         with self._lock:

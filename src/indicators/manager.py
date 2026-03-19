@@ -11,6 +11,7 @@ import logging
 import queue
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -97,7 +98,12 @@ class UnifiedIndicatorManager:
             Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None]
         ] = []
         self._snapshot_listeners_lock = threading.Lock()
-        self._last_preview_snapshot: Dict[str, Tuple[datetime, Dict[str, Dict[str, float]]]] = {}
+        # 使用 OrderedDict 实现 LRU 淘汰，防止长期运行后内存无限增长。
+        # 上限按 symbols × timeframes 的 10 倍估算，远超正常部署规模。
+        self._last_preview_snapshot: OrderedDict[
+            str, Tuple[datetime, Dict[str, Dict[str, float]]]
+        ] = OrderedDict()
+        self._preview_snapshot_max_entries = 500
         self._priority_indicator_groups: tuple[tuple[str, ...], ...] = ()
         # Throttle guard: minimum wall-clock gap between intrabar computations
         # per (symbol, timeframe).  The ingestor already controls frequency via
@@ -837,7 +843,12 @@ class UnifiedIndicatorManager:
         current = self._last_preview_snapshot.get(cache_key)
         if current is not None and current[0] == bar_time and current[1] == normalized:
             return False
+        # 若已存在则先删除，以便将其移到末尾（MRU 位置）。
+        self._last_preview_snapshot.pop(cache_key, None)
         self._last_preview_snapshot[cache_key] = (bar_time, normalized)
+        # 超出上限时淘汰最久未使用的条目（头部）。
+        while len(self._last_preview_snapshot) > self._preview_snapshot_max_entries:
+            self._last_preview_snapshot.popitem(last=False)
         return True
 
     def _write_back_results(
