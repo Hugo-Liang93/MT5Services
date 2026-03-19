@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Tuple
 
+from .contracts import SESSION_LONDON, SESSION_NEW_YORK
+
 
 @dataclass
 class SignalPolicy:
@@ -16,7 +18,7 @@ class SignalPolicy:
     # which are always deduplicated by (bar_time, signature) regardless of this value.
     snapshot_dedupe_window_seconds: float = 1.0
     max_spread_points: float = 50.0
-    allowed_sessions: tuple[str, ...] = ("london", "newyork")
+    allowed_sessions: tuple[str, ...] = (SESSION_LONDON, SESSION_NEW_YORK)
     auto_trade_enabled: bool = False
     auto_trade_min_confidence: float = 0.7
     auto_trade_require_armed: bool = True
@@ -30,6 +32,8 @@ class SignalPolicy:
     voting_consensus_threshold: float = 0.40
     voting_min_quorum: int = 2
     voting_disagreement_penalty: float = 0.50
+    # 当 confirmed 队列满时，允许短时阻塞等待消费者腾挪队列。
+    confirmed_queue_backpressure_timeout_seconds: float = 0.2
 
 
 @dataclass

@@ -15,9 +15,18 @@ class DummySnapshotSource:
         self.snapshot_listeners.append(listener)
 
     def remove_snapshot_listener(self, listener):
-        self.snapshot_listeners = [item for item in self.snapshot_listeners if item is not listener]
+        self.snapshot_listeners = [
+            item for item in self.snapshot_listeners if item is not listener
+        ]
 
-    def publish(self, symbol: str, timeframe: str, bar_time: datetime, indicators: dict, scope: str = "confirmed"):
+    def publish(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+        indicators: dict,
+        scope: str = "confirmed",
+    ):
         for listener in list(self.snapshot_listeners):
             listener(symbol, timeframe, bar_time, indicators, scope)
 
@@ -35,12 +44,22 @@ class DummySignalService:
         }
         return mapping.get(strategy, ())
 
+    def strategy_scopes(self, strategy: str):
+        return ("confirmed", "intrabar")
+
+    def strategy_affinity_map(self, strategy: str):
+        return {}
+
     def evaluate(self, **kwargs):
         self.evaluate_calls.append(kwargs)
         indicators = kwargs["indicators"]
         strategy = kwargs["strategy"]
         if strategy == "sma_trend":
-            action = "buy" if indicators["sma20"]["sma"] > indicators["ema50"]["ema"] else "sell"
+            action = (
+                "buy"
+                if indicators["sma20"]["sma"] > indicators["ema50"]["ema"]
+                else "sell"
+            )
             confidence = 0.8
         else:
             rsi = indicators["rsi14"]["rsi"]
@@ -119,6 +138,8 @@ def test_signal_runtime_status_exposes_trigger_mode() -> None:
     assert status["target_count"] == 1
     assert status["trigger_mode"]["confirmed_snapshot"] is True
     assert status["trigger_mode"]["intrabar"] is False
+    assert "confirmed_backpressure_waits" in status
+    assert "confirmed_backpressure_failures" in status
 
 
 def test_signal_runtime_processes_intrabar_snapshot_when_enabled() -> None:
@@ -127,7 +148,9 @@ def test_signal_runtime_processes_intrabar_snapshot_when_enabled() -> None:
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
-        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
         enable_confirmed_snapshot=True,
         enable_intrabar=True,
         policy=SignalPolicy(
@@ -150,6 +173,7 @@ def test_signal_runtime_processes_intrabar_snapshot_when_enabled() -> None:
     assert processed is True
     assert service.evaluate_calls[0]["strategy"] == "rsi_reversion"
     assert service.evaluate_calls[0]["metadata"]["scope"] == "intrabar"
+    assert "signal_trace_id" in service.evaluate_calls[0]["metadata"]
     assert "bar_progress" in service.evaluate_calls[0]["metadata"]
     assert service.persist_calls[0]["metadata"]["signal_state"] == "preview_buy"
 
@@ -160,7 +184,9 @@ def test_signal_runtime_promotes_preview_signal_to_armed_after_stable_window() -
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
-        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
         enable_confirmed_snapshot=True,
         enable_intrabar=True,
         policy=SignalPolicy(
@@ -181,7 +207,9 @@ def test_signal_runtime_promotes_preview_signal_to_armed_after_stable_window() -
             {
                 "scope": "intrabar",
                 "bar_time": bar_time.isoformat(),
-                "snapshot_time": (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat(),
+                "snapshot_time": (
+                    datetime.now(timezone.utc) - timedelta(seconds=10)
+                ).isoformat(),
                 "trigger_source": "intrabar_snapshot",
                 "bar_progress": 0.5,
             },
@@ -216,7 +244,9 @@ def test_signal_runtime_emits_confirmed_cancelled_when_bias_returns_to_idle() ->
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
-        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
         enable_confirmed_snapshot=True,
         enable_intrabar=False,
     )
@@ -229,8 +259,12 @@ def test_signal_runtime_emits_confirmed_cancelled_when_bias_returns_to_idle() ->
             {"rsi14": {"rsi": 20.0}},
             {
                 "scope": "confirmed",
-                "bar_time": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
-                "snapshot_time": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+                "bar_time": (
+                    datetime.now(timezone.utc) - timedelta(minutes=5)
+                ).isoformat(),
+                "snapshot_time": (
+                    datetime.now(timezone.utc) - timedelta(minutes=5)
+                ).isoformat(),
                 "trigger_source": "confirmed_snapshot",
             },
         )
@@ -283,7 +317,9 @@ def test_signal_runtime_restores_recent_confirmed_state() -> None:
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
-        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
         enable_confirmed_snapshot=True,
         enable_intrabar=False,
     )
@@ -327,13 +363,17 @@ def test_signal_runtime_skips_strategies_when_required_indicators_missing() -> N
     assert service.evaluate_calls[0]["strategy"] == "rsi_reversion"
 
 
-def test_signal_runtime_deduplicates_same_required_indicator_snapshot_for_same_bar() -> None:
+def test_signal_runtime_deduplicates_same_required_indicator_snapshot_for_same_bar() -> (
+    None
+):
     source = DummySnapshotSource()
     service = DummySignalService()
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
-        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
         enable_confirmed_snapshot=True,
         enable_intrabar=True,
         policy=SignalPolicy(
@@ -373,7 +413,9 @@ def test_signal_runtime_confirmed_queue_is_drained_before_intrabar() -> None:
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
-        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
         enable_confirmed_snapshot=True,
         enable_intrabar=True,
         policy=SignalPolicy(
@@ -433,7 +475,9 @@ def test_signal_runtime_status_exposes_split_queues() -> None:
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
-        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
         enable_confirmed_snapshot=True,
         enable_intrabar=True,
     )

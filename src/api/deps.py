@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -56,8 +57,10 @@ from src.signals.htf_cache import HTFStateCache
 from src.signals.outcome_tracker import OutcomeTracker
 from src.signals.calibrator import ConfidenceCalibrator
 from src.signals.strategy_registry import register_all_strategies
+from src.signals.contracts import normalize_session_name
 
 logger = logging.getLogger(__name__)
+_init_lock = threading.Lock()
 
 
 class _Container:
@@ -127,7 +130,9 @@ def _shutdown_components() -> None:
             logger.debug("Failed to stop %s during shutdown", label, exc_info=True)
 
 
-def _mark_startup_step(name: str, state: str, started_at: float, error: Optional[str] = None) -> None:
+def _mark_startup_step(
+    name: str, state: str, started_at: float, error: Optional[str] = None
+) -> None:
     duration_ms = int((time.monotonic() - started_at) * 1000)
     _startup_status["steps"][name] = {
         "state": state,
@@ -148,10 +153,14 @@ def get_startup_status() -> dict:
     }
 
 
-def get_runtime_task_status(component: Optional[str] = None, task_name: Optional[str] = None) -> list[dict]:
+def get_runtime_task_status(
+    component: Optional[str] = None, task_name: Optional[str] = None
+) -> list[dict]:
     _ensure_initialized()
     assert _c.storage_writer is not None
-    rows = _c.storage_writer.db.fetch_runtime_task_status(component=component, task_name=task_name)
+    rows = _c.storage_writer.db.fetch_runtime_task_status(
+        component=component, task_name=task_name
+    )
     return [
         {
             "component": row[0],
@@ -172,7 +181,13 @@ def get_runtime_task_status(component: Optional[str] = None, task_name: Optional
     ]
 
 
-def _record_runtime_task_status(component: str, task_name: str, state: str, duration_ms: int, error: Optional[str] = None) -> None:
+def _record_runtime_task_status(
+    component: str,
+    task_name: str,
+    state: str,
+    duration_ms: int,
+    error: Optional[str] = None,
+) -> None:
     if _c.storage_writer is None:
         return
     success_count = 1 if state == "ready" else 0
@@ -198,138 +213,167 @@ def _record_runtime_task_status(component: str, task_name: str, state: str, dura
             ]
         )
     except Exception:
-        logger.debug("Failed to persist startup runtime task status for %s.%s", component, task_name, exc_info=True)
+        logger.debug(
+            "Failed to persist startup runtime task status for %s.%s",
+            component,
+            task_name,
+            exc_info=True,
+        )
 
 
 def _ensure_initialized() -> None:
     if _c.service is not None:
         return
+    with _init_lock:
+        if _c.service is not None:
+            return
 
-    mt5_settings = load_mt5_settings()
-    db_settings = load_db_settings()
-    ingest_settings = get_runtime_ingest_settings()
-    storage_settings = load_storage_settings()
-    market_settings = get_runtime_market_settings()
+        mt5_settings = load_mt5_settings()
+        db_settings = load_db_settings()
+        ingest_settings = get_runtime_ingest_settings()
+        storage_settings = load_storage_settings()
+        market_settings = get_runtime_market_settings()
 
-    mt5_client = MT5MarketClient(mt5_settings)
-    _c.service = MarketDataService(client=mt5_client, market_settings=market_settings)
-    _c.storage_writer = StorageWriter(TimescaleWriter(db_settings), storage_settings=storage_settings)
-    _c.service.attach_storage(_c.storage_writer)
-    _c.ingestor = BackgroundIngestor(
-        service=_c.service,
-        storage=_c.storage_writer,
-        ingest_settings=ingest_settings,
-    )
-    _c.indicator_manager = get_global_unified_manager(
-        market_service=_c.service,
-        storage_writer=_c.storage_writer,
-        config_file="config/indicators.json",
-        start_immediately=False,
-    )
-    _c.economic_calendar_service = EconomicCalendarService(
-        db_writer=_c.storage_writer.db,
-        settings=get_economic_config(),
-        storage_writer=_c.storage_writer,
-    )
-    _c.trade_registry = TradingAccountRegistry(economic_calendar_service=_c.economic_calendar_service)
-    default_alias = _c.trade_registry.default_account_alias()
-    _c.trade_module = TradingModule(
-        registry=_c.trade_registry,
-        db_writer=_c.storage_writer.db,
-        active_account_alias=default_alias,
-    )
-    # ConfidenceCalibrator：alpha=0.3（历史胜率占30%权重），启动时不强制刷新，
-    # 首次调用 calibrate() 时自动从 DB 加载（auto_refresh 机制）。
-    _c.calibrator = ConfidenceCalibrator(
-        fetch_winrates_fn=_c.storage_writer.db.fetch_winrates,
-        alpha=0.30,
-        baseline_win_rate=0.50,
-        max_boost=1.30,
-        min_samples=20,
-        refresh_interval_seconds=3600,
-    )
-    _c.signal_module = SignalModule(
-        indicator_source=UnifiedIndicatorSourceAdapter(_c.indicator_manager),
-        repository=TimescaleSignalRepository(_c.storage_writer.db),
-        calibrator=_c.calibrator,
-    )
-    # ── HTFStateCache + 全量策略注册（必须在 runtime_targets 构建前完成）──────
-    # HTFStateCache 自身无外部依赖，可在此时提前创建。
-    # register_all_strategies 将复合策略与 MultiTimeframeConfirmStrategy 一并注册，
-    # 确保后续 runtime_targets 列表和 SignalRuntime._target_index 包含所有策略名。
-    # 若在 SignalRuntime 构建后才注册，MTF 策略将永远不会收到快照事件（已知 bug 的根因）。
-    _c.htf_cache = HTFStateCache()
-    register_all_strategies(_c.signal_module, _c.htf_cache)
-    _c.indicator_manager.set_priority_indicator_groups(_c.signal_module.required_indicator_groups())
-    runtime_targets = [
-        SignalTarget(symbol=symbol, timeframe=timeframe, strategy=strategy)
-        for symbol in _c.indicator_manager.config.symbols
-        for timeframe in _c.indicator_manager.config.timeframes
-        for strategy in _c.signal_module.list_strategies()
-    ]
-    sig_cfg = get_signal_config()
-    allowed_sessions = tuple(s.strip() for s in sig_cfg.allowed_sessions.split(",") if s.strip())
-    signal_policy = SignalPolicy(
-        min_preview_confidence=sig_cfg.min_preview_confidence,
-        min_preview_bar_progress=sig_cfg.min_preview_bar_progress,
-        min_preview_stable_seconds=sig_cfg.preview_stable_seconds,
-        preview_cooldown_seconds=sig_cfg.preview_cooldown_seconds,
-        snapshot_dedupe_window_seconds=sig_cfg.snapshot_dedupe_window_seconds,
-        max_spread_points=sig_cfg.max_spread_points,
-        allowed_sessions=allowed_sessions,
-        auto_trade_enabled=sig_cfg.auto_trade_enabled,
-        auto_trade_min_confidence=sig_cfg.auto_trade_min_confidence,
-        auto_trade_require_armed=sig_cfg.auto_trade_require_armed,
-    )
-    filter_chain = SignalFilterChain(
-        session_filter=SessionFilter(allowed_sessions=allowed_sessions),
-        spread_filter=SpreadFilter(max_spread_points=sig_cfg.max_spread_points),
-        economic_filter=EconomicEventFilter(
-            provider=_c.economic_calendar_service if sig_cfg.economic_filter_enabled else None,
-            lookahead_minutes=sig_cfg.economic_lookahead_minutes,
-            lookback_minutes=sig_cfg.economic_lookback_minutes,
-            importance_min=sig_cfg.economic_importance_min,
-        ),
-    )
-    _c.signal_runtime = SignalRuntime(
-        service=_c.signal_module,
-        snapshot_source=_c.indicator_manager,
-        targets=runtime_targets,
-        enable_confirmed_snapshot=True,
-        enable_intrabar=True,
-        policy=signal_policy,
-        filter_chain=filter_chain,
-    )
-    executor_config = ExecutorConfig(
-        enabled=sig_cfg.auto_trade_enabled,
-        min_confidence=sig_cfg.auto_trade_min_confidence,
-        require_armed=sig_cfg.auto_trade_require_armed,
-        risk_percent=sig_cfg.risk_percent_per_trade,
-        sl_atr_multiplier=sig_cfg.sl_atr_multiplier,
-        tp_atr_multiplier=sig_cfg.tp_atr_multiplier,
-        min_volume=sig_cfg.min_volume,
-        max_volume=sig_cfg.max_volume,
-    )
-    _c.position_manager = PositionManager(
-        trading_module=_c.trade_module,
-        trailing_atr_multiplier=sig_cfg.trailing_atr_multiplier,
-        breakeven_atr_threshold=sig_cfg.breakeven_atr_threshold,
-    )
-    _c.trade_executor = TradeExecutor(
-        trading_module=_c.trade_module,
-        config=executor_config,
-        position_manager=_c.position_manager,
-    )
+        mt5_client = MT5MarketClient(mt5_settings)
+        _c.service = MarketDataService(
+            client=mt5_client, market_settings=market_settings
+        )
+        _c.storage_writer = StorageWriter(
+            TimescaleWriter(db_settings), storage_settings=storage_settings
+        )
+        _c.service.attach_storage(_c.storage_writer)
+        _c.ingestor = BackgroundIngestor(
+            service=_c.service,
+            storage=_c.storage_writer,
+            ingest_settings=ingest_settings,
+        )
+        _c.indicator_manager = get_global_unified_manager(
+            market_service=_c.service,
+            storage_writer=_c.storage_writer,
+            config_file="config/indicators.json",
+            start_immediately=False,
+        )
+        _c.economic_calendar_service = EconomicCalendarService(
+            db_writer=_c.storage_writer.db,
+            settings=get_economic_config(),
+            storage_writer=_c.storage_writer,
+        )
+        _c.trade_registry = TradingAccountRegistry(
+            economic_calendar_service=_c.economic_calendar_service
+        )
+        default_alias = _c.trade_registry.default_account_alias()
+        _c.trade_module = TradingModule(
+            registry=_c.trade_registry,
+            db_writer=_c.storage_writer.db,
+            active_account_alias=default_alias,
+        )
+        # ConfidenceCalibrator：alpha=0.3（历史胜率占30%权重），启动时不强制刷新，
+        # 首次调用 calibrate() 时自动从 DB 加载（auto_refresh 机制）。
+        _c.calibrator = ConfidenceCalibrator(
+            fetch_winrates_fn=_c.storage_writer.db.fetch_winrates,
+            alpha=0.30,
+            baseline_win_rate=0.50,
+            max_boost=1.30,
+            min_samples=20,
+            refresh_interval_seconds=3600,
+        )
+        _c.signal_module = SignalModule(
+            indicator_source=UnifiedIndicatorSourceAdapter(_c.indicator_manager),
+            repository=TimescaleSignalRepository(_c.storage_writer.db),
+            calibrator=_c.calibrator,
+        )
+        # ── HTFStateCache + 全量策略注册（必须在 runtime_targets 构建前完成）──────
+        # HTFStateCache 自身无外部依赖，可在此时提前创建。
+        # register_all_strategies 将复合策略与 MultiTimeframeConfirmStrategy 一并注册，
+        # 确保后续 runtime_targets 列表和 SignalRuntime._target_index 包含所有策略名。
+        # 若在 SignalRuntime 构建后才注册，MTF 策略将永远不会收到快照事件（已知 bug 的根因）。
+        _c.htf_cache = HTFStateCache()
+        register_all_strategies(_c.signal_module, _c.htf_cache)
+        _c.indicator_manager.set_priority_indicator_groups(
+            _c.signal_module.required_indicator_groups()
+        )
+        runtime_targets = [
+            SignalTarget(symbol=symbol, timeframe=timeframe, strategy=strategy)
+            for symbol in _c.indicator_manager.config.symbols
+            for timeframe in _c.indicator_manager.config.timeframes
+            for strategy in _c.signal_module.list_strategies()
+        ]
+        sig_cfg = get_signal_config()
+        allowed_sessions = tuple(
+            normalize_session_name(s)
+            for s in sig_cfg.allowed_sessions.split(",")
+            if s.strip()
+        )
+        signal_policy = SignalPolicy(
+            min_preview_confidence=sig_cfg.min_preview_confidence,
+            min_preview_bar_progress=sig_cfg.min_preview_bar_progress,
+            min_preview_stable_seconds=sig_cfg.preview_stable_seconds,
+            preview_cooldown_seconds=sig_cfg.preview_cooldown_seconds,
+            snapshot_dedupe_window_seconds=sig_cfg.snapshot_dedupe_window_seconds,
+            max_spread_points=sig_cfg.max_spread_points,
+            allowed_sessions=allowed_sessions,
+            auto_trade_enabled=sig_cfg.auto_trade_enabled,
+            auto_trade_min_confidence=sig_cfg.auto_trade_min_confidence,
+            auto_trade_require_armed=sig_cfg.auto_trade_require_armed,
+        )
+        filter_chain = SignalFilterChain(
+            session_filter=SessionFilter(allowed_sessions=allowed_sessions),
+            spread_filter=SpreadFilter(max_spread_points=sig_cfg.max_spread_points),
+            economic_filter=EconomicEventFilter(
+                provider=(
+                    _c.economic_calendar_service
+                    if sig_cfg.economic_filter_enabled
+                    else None
+                ),
+                lookahead_minutes=sig_cfg.economic_lookahead_minutes,
+                lookback_minutes=sig_cfg.economic_lookback_minutes,
+                importance_min=sig_cfg.economic_importance_min,
+            ),
+        )
+        _c.signal_runtime = SignalRuntime(
+            service=_c.signal_module,
+            snapshot_source=_c.indicator_manager,
+            targets=runtime_targets,
+            enable_confirmed_snapshot=True,
+            enable_intrabar=True,
+            policy=signal_policy,
+            filter_chain=filter_chain,
+        )
+        executor_config = ExecutorConfig(
+            enabled=sig_cfg.auto_trade_enabled,
+            min_confidence=sig_cfg.auto_trade_min_confidence,
+            require_armed=sig_cfg.auto_trade_require_armed,
+            risk_percent=sig_cfg.risk_percent_per_trade,
+            sl_atr_multiplier=sig_cfg.sl_atr_multiplier,
+            tp_atr_multiplier=sig_cfg.tp_atr_multiplier,
+            min_volume=sig_cfg.min_volume,
+            max_volume=sig_cfg.max_volume,
+        )
+        _c.position_manager = PositionManager(
+            trading_module=_c.trade_module,
+            trailing_atr_multiplier=sig_cfg.trailing_atr_multiplier,
+            breakeven_atr_threshold=sig_cfg.breakeven_atr_threshold,
+        )
+        _c.trade_executor = TradeExecutor(
+            trading_module=_c.trade_module,
+            config=executor_config,
+            position_manager=_c.position_manager,
+        )
     _c.signal_runtime.add_signal_listener(_c.trade_executor.on_signal_event)
     # HTFStateCache 注册为 signal_runtime 的监听器（必须在 signal_runtime 构建后）
     _c.htf_cache.attach(_c.signal_runtime)
+
     # 配置热加载：signal.ini 变更后自动更新 SignalRuntime.policy
     def _on_signal_config_change(filename: str) -> None:
         if filename != "signal.ini":
             return
         try:
             new_sig_cfg = get_signal_config()
-            new_sessions = tuple(s.strip() for s in new_sig_cfg.allowed_sessions.split(",") if s.strip())
+            new_sessions = tuple(
+                normalize_session_name(s)
+                for s in new_sig_cfg.allowed_sessions.split(",")
+                if s.strip()
+            )
             new_policy = SignalPolicy(
                 min_preview_confidence=new_sig_cfg.min_preview_confidence,
                 min_preview_bar_progress=new_sig_cfg.min_preview_bar_progress,
@@ -370,7 +414,12 @@ def _ensure_initialized() -> None:
     }
     monitoring_interval = max(
         1,
-        int(min(ingest_settings.health_check_interval, ingest_settings.queue_monitor_interval)),
+        int(
+            min(
+                ingest_settings.health_check_interval,
+                ingest_settings.queue_monitor_interval,
+            )
+        ),
     )
     _c.monitoring_manager = get_monitoring_manager(
         _c.health_monitor,
@@ -385,7 +434,9 @@ def _ensure_initialized() -> None:
                 **get_effective_config_snapshot(),
                 "risk": get_risk_config().model_dump(),
                 "active_trading_account": default_alias,
-                "trading_account": _c.trade_module.list_accounts()[0] if _c.trade_module else None,
+                "trading_account": (
+                    _c.trade_module.list_accounts()[0] if _c.trade_module else None
+                ),
                 "indicator_scope": {
                     "symbols": list(_c.indicator_manager.config.symbols),
                     "timeframes": list(_c.indicator_manager.config.timeframes),
@@ -434,7 +485,9 @@ def get_trading_service() -> TradingModule:
 def get_pre_trade_risk_service() -> PreTradeRiskService:
     _ensure_initialized()
     assert _c.trade_registry is not None and _c.trade_module is not None
-    trading_service = _c.trade_registry.get_trading_service(_c.trade_module.active_account_alias)
+    trading_service = _c.trade_registry.get_trading_service(
+        _c.trade_module.active_account_alias
+    )
     return trading_service.pre_trade_risk_service
 
 
@@ -530,35 +583,62 @@ async def lifespan(_app):
         current_started = time.monotonic()
         _c.storage_writer.start()
         _mark_startup_step("storage", "ready", current_started)
-        _record_runtime_task_status("startup", "storage", "ready", _startup_status["steps"]["storage"]["duration_ms"])
+        _record_runtime_task_status(
+            "startup",
+            "storage",
+            "ready",
+            _startup_status["steps"]["storage"]["duration_ms"],
+        )
 
         current_step = "ingestion"
         current_started = time.monotonic()
         _c.ingestor.start()
         _mark_startup_step("ingestion", "ready", current_started)
-        _record_runtime_task_status("startup", "ingestion", "ready", _startup_status["steps"]["ingestion"]["duration_ms"])
+        _record_runtime_task_status(
+            "startup",
+            "ingestion",
+            "ready",
+            _startup_status["steps"]["ingestion"]["duration_ms"],
+        )
 
         current_step = "economic_calendar"
         current_started = time.monotonic()
         _c.economic_calendar_service.start()
         _mark_startup_step("economic_calendar", "ready", current_started)
-        _record_runtime_task_status("startup", "economic_calendar", "ready", _startup_status["steps"]["economic_calendar"]["duration_ms"])
+        _record_runtime_task_status(
+            "startup",
+            "economic_calendar",
+            "ready",
+            _startup_status["steps"]["economic_calendar"]["duration_ms"],
+        )
 
         current_step = "indicators"
         current_started = time.monotonic()
         _c.indicator_manager.start()
         _mark_startup_step("indicators", "ready", current_started)
-        _record_runtime_task_status("startup", "indicators", "ready", _startup_status["steps"]["indicators"]["duration_ms"])
+        _record_runtime_task_status(
+            "startup",
+            "indicators",
+            "ready",
+            _startup_status["steps"]["indicators"]["duration_ms"],
+        )
 
         current_step = "signals"
         current_started = time.monotonic()
         _c.signal_runtime.start()
         _mark_startup_step("signals", "ready", current_started)
-        _record_runtime_task_status("startup", "signals", "ready", _startup_status["steps"]["signals"]["duration_ms"])
+        _record_runtime_task_status(
+            "startup",
+            "signals",
+            "ready",
+            _startup_status["steps"]["signals"]["duration_ms"],
+        )
 
         current_step = "position_manager"
         current_started = time.monotonic()
-        _c.position_manager.start(reconcile_interval=get_signal_config().position_reconcile_interval)
+        _c.position_manager.start(
+            reconcile_interval=get_signal_config().position_reconcile_interval
+        )
         _mark_startup_step("position_manager", "ready", current_started)
 
         current_step = "monitoring"
@@ -590,7 +670,12 @@ async def lifespan(_app):
         )
         _c.monitoring_manager.start()
         _mark_startup_step("monitoring", "ready", current_started)
-        _record_runtime_task_status("startup", "monitoring", "ready", _startup_status["steps"]["monitoring"]["duration_ms"])
+        _record_runtime_task_status(
+            "startup",
+            "monitoring",
+            "ready",
+            _startup_status["steps"]["monitoring"]["duration_ms"],
+        )
         _c.health_monitor.record_metric(
             "system",
             "startup",
@@ -599,7 +684,9 @@ async def lifespan(_app):
         )
         _startup_status["phase"] = "running"
         _startup_status["ready"] = True
-        _startup_status["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _startup_status["completed_at"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+        )
         startup_started = _startup_status["started_at"]
         if startup_started:
             # Use monotonic aggregate from measured steps when available.

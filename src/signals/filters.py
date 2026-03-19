@@ -1,7 +1,12 @@
-"""Pre-evaluation filters for the signal runtime.
+"""Signal-domain pre-evaluation filters for SignalRuntime.
 
-Filters run *before* strategy evaluation to suppress signals in
-unfavorable market conditions (wrong session, wide spread, economic events).
+These filters only decide whether a *signal* should be evaluated/emitted
+under current market context (session, spread, economic window).
+They are NOT account/portfolio risk controls and must not be treated as
+final trade safety gates.
+
+Final trade risk control is enforced by `src.risk` / `src.core.pretrade_risk_service`
+before order dispatch.
 """
 
 from __future__ import annotations
@@ -10,10 +15,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timezone
 from typing import Any, Dict, List, Optional, Protocol
 
+from .contracts import (
+    SESSION_ASIA,
+    SESSION_LONDON,
+    SESSION_NEW_YORK,
+    SESSION_OFF_HOURS,
+    normalize_session_name,
+)
+
 
 class TradeGuardProvider(Protocol):
-    def get_trade_guard(self, **kwargs: Any) -> Dict[str, Any]:
-        ...
+    def get_trade_guard(self, **kwargs: Any) -> Dict[str, Any]: ...
 
 
 @dataclass
@@ -27,18 +39,30 @@ class SessionFilter:
     asia_open: time = time(0, 0)
     asia_close: time = time(8, 0)
 
-    allowed_sessions: tuple[str, ...] = ("london", "newyork")
+    allowed_sessions: tuple[str, ...] = (SESSION_LONDON, SESSION_NEW_YORK)
+
+    def __post_init__(self) -> None:
+        normalized = tuple(
+            normalize_session_name(name)
+            for name in self.allowed_sessions
+            if str(name).strip()
+        )
+        valid = {SESSION_ASIA, SESSION_LONDON, SESSION_NEW_YORK, SESSION_OFF_HOURS}
+        invalid = [name for name in normalized if name not in valid]
+        if invalid:
+            raise ValueError(f"unsupported session names: {invalid}")
+        self.allowed_sessions = normalized
 
     def current_sessions(self, utc_now: Optional[datetime] = None) -> List[str]:
         t = (utc_now or datetime.now(timezone.utc)).time()
         sessions: List[str] = []
         if self.asia_open <= t < self.asia_close:
-            sessions.append("asia")
+            sessions.append(SESSION_ASIA)
         if self.london_open <= t < self.london_close:
-            sessions.append("london")
+            sessions.append(SESSION_LONDON)
         if self.ny_open <= t < self.ny_close:
-            sessions.append("newyork")
-        return sessions or ["off_hours"]
+            sessions.append(SESSION_NEW_YORK)
+        return sessions or [SESSION_OFF_HOURS]
 
     def is_active_session(self, utc_now: Optional[datetime] = None) -> bool:
         if not self.allowed_sessions:
@@ -105,10 +129,17 @@ class SignalFilterChain:
             sessions = self.session_filter.current_sessions(utc_now)
             return False, f"outside_allowed_sessions:{','.join(sessions)}"
 
-        if self.spread_filter and not self.spread_filter.is_spread_acceptable(spread_points):
-            return False, f"spread_too_wide:{spread_points:.1f}>{self.spread_filter.max_spread_points}"
+        if self.spread_filter and not self.spread_filter.is_spread_acceptable(
+            spread_points
+        ):
+            return (
+                False,
+                f"spread_too_wide:{spread_points:.1f}>{self.spread_filter.max_spread_points}",
+            )
 
-        if self.economic_filter and not self.economic_filter.is_safe_to_trade(symbol, utc_now):
+        if self.economic_filter and not self.economic_filter.is_safe_to_trade(
+            symbol, utc_now
+        ):
             return False, "economic_event_window"
 
         return True, ""

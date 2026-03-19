@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+"""Account/portfolio-level pre-trade risk service.
+
+`src.risk` is the final trade safety gate before order execution.
+It validates intent against account state, protection rules and
+economic calendar guard policies.
+
+This layer is intentionally different from `src.signals.filters`:
+- signals.filters: signal-domain gating (whether to evaluate/emit signal)
+- risk.service: order-domain gating (whether a trade is allowed)
+"""
+
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol
 
