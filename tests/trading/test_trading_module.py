@@ -147,6 +147,8 @@ def test_trading_module_records_account_aware_trade_operations():
     result = module.execute_trade(symbol="XAUUSD", volume=0.2, side="buy", order_kind="limit")
 
     assert result["ticket"] == 123
+    assert result["trace_id"]
+    assert result["operation_id"]
     assert module.db_writer.rows[-1][2] == "live"
     assert module.db_writer.rows[-1][3] == "execute_trade"
 

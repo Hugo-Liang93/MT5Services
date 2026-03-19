@@ -951,6 +951,19 @@ class MonitoringManager:
             "methods": check_methods
         }
         logger.info(f"Registered component for monitoring: {name}")
+
+    def list_registered_components(self) -> List[Dict[str, Any]]:
+        """返回已注册组件快照，供监控 API 展示。"""
+        rows: List[Dict[str, Any]] = []
+        for name, component_info in self._monitored_components.items():
+            rows.append(
+                {
+                    "name": name,
+                    "methods": list(component_info.get("methods", [])),
+                    "enabled": True,
+                }
+            )
+        return sorted(rows, key=lambda item: item["name"])
     
     def start(self):
         """启动监控管理器"""

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from src.api.trade import trade_daily_summary, trade_dispatch, trade_precheck
-from src.api.schemas import TradeDispatchRequest, TradeRequest
+from src.api.trade import trade, trade_daily_summary, trade_dispatch, trade_from_signal, trade_precheck
+from src.api.schemas import SignalExecuteTradeRequest, TradeDispatchRequest, TradeRequest
 from src.clients.mt5_trade import MT5TradeError
 from src.core.pretrade_risk_service import PreTradeRiskBlockedError
 
@@ -25,6 +25,35 @@ class _DispatchService:
 
     def daily_trade_summary(self):
         return {"date": "2026-01-01", "total": 0, "success": 0, "failed": 0}
+
+    def execute_trade(self, **kwargs):
+        return {
+            "ticket": 1,
+            "symbol": kwargs["symbol"],
+            "request_id": kwargs.get("request_id") or "req_1",
+            "trace_id": "trace_1",
+            "operation_id": "op_1",
+        }
+
+    def account_info(self):
+        return {"equity": 10000.0}
+
+
+class _SignalService:
+    @staticmethod
+    def recent_signals(scope="confirmed", limit=500):
+        return [
+            {
+                "signal_id": "sig_1",
+                "symbol": "XAUUSD",
+                "strategy": "consensus",
+                "action": "buy",
+                "indicators_snapshot": {
+                    "atr14": {"value": 5.0},
+                    "close": {"close": 2350.0},
+                },
+            }
+        ]
 
 
 def test_trade_precheck_wraps_mt5_errors() -> None:
@@ -64,3 +93,27 @@ def test_trade_dispatch_returns_risk_block_error() -> None:
 
     assert response.success is False
     assert response.error["code"] == "trade_blocked_by_risk"
+
+
+def test_trade_endpoint_exposes_standardized_observability_metadata() -> None:
+    response = trade(
+        TradeRequest(symbol="XAUUSD", volume=0.1, side="buy", dry_run=True, request_id="req_x"),
+        service=_DispatchService(),
+    )
+
+    assert response.success is True
+    assert response.metadata["request_id"] == "req_x"
+    assert response.metadata["trace_id"] == "trace_1"
+    assert response.metadata["operation_id"] == "op_1"
+
+
+def test_trade_from_signal_is_executed_by_trade_module_api() -> None:
+    response = trade_from_signal(
+        SignalExecuteTradeRequest(signal_id="sig_1"),
+        signal_service=_SignalService(),
+        service=_DispatchService(),
+    )
+
+    assert response.success is True
+    assert response.metadata["operation"] == "trade_from_signal"
+    assert response.data["ticket"] == 1

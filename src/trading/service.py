@@ -171,8 +171,16 @@ class TradingModule:
     def _execute(self, operation_type: str, account_alias: Optional[str], payload: Dict[str, Any], fn):
         started = time.monotonic()
         resolved_alias = self.registry.resolve_alias(account_alias)
+        trace_id = str(payload.get("request_id") or payload.get("trace_id") or "")
         try:
             result = fn()
+            if isinstance(result, dict):
+                if not trace_id:
+                    trace_id = str(result.get("request_id") or "")
+                if not trace_id:
+                    trace_id = f"{operation_type}_{int(started * 1000)}"
+                result.setdefault("trace_id", trace_id)
+                result.setdefault("account_alias", resolved_alias)
             duration_ms = int((time.monotonic() - started) * 1000)
             record = TradeOperationRecord(
                 account_alias=resolved_alias,
@@ -188,6 +196,8 @@ class TradingModule:
                 request_payload=payload,
                 response_payload=result if isinstance(result, dict) else {"result": result},
             )
+            if isinstance(result, dict):
+                result.setdefault("operation_id", record.operation_id)
             self._record_operation(record)
             self._update_daily_stats(record)
             return result
@@ -205,7 +215,7 @@ class TradingModule:
                 magic=payload.get("magic"),
                 duration_ms=duration_ms,
                 error_message=str(exc),
-                request_payload=payload,
+                request_payload={**payload, "trace_id": trace_id or None},
                 response_payload={},
             )
             self._record_operation(record)
