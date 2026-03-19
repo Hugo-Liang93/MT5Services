@@ -9,6 +9,7 @@ class DummyTradingClient:
         self.margin_calls = []
         self.close_batch_calls = []
         self.cancel_batch_calls = []
+        self.fail_open_times = 0
 
     def connect(self):
         return None
@@ -23,6 +24,9 @@ class DummyTradingClient:
         return mapping[(side, order_kind)]
 
     def open_trade_details(self, **kwargs):
+        if self.fail_open_times > 0:
+            self.fail_open_times -= 1
+            raise RuntimeError("transient execution error")
         self.open_trade_details_calls.append(kwargs)
         return {"ticket": 12345, "price": kwargs.get("price") or 2345.6}
 
@@ -131,6 +135,53 @@ def test_execute_trade_supports_limit_order_kind():
 
     assert result["order_kind"] == "limit"
     assert client.open_trade_details_calls[0]["order_type"] == 2
+
+
+def test_execute_trade_dry_run_returns_precheck_without_sending_order():
+    client = DummyTradingClient()
+    risk_service = DummyRiskService()
+    service = TradingService(client=client, pre_trade_risk_service=risk_service)
+
+    result = service.execute_trade(
+        symbol="XAUUSD",
+        volume=0.2,
+        side="buy",
+        dry_run=True,
+    )
+
+    assert result["dry_run"] is True
+    assert result["execution_attempts"] == 0
+    assert client.open_trade_details_calls == []
+    assert result["precheck"]["action"] == "allow"
+
+
+def test_execute_trade_retries_on_transient_failure():
+    client = DummyTradingClient()
+    client.fail_open_times = 1
+    risk_service = DummyRiskService()
+    service = TradingService(client=client, pre_trade_risk_service=risk_service)
+
+    result = service.execute_trade(
+        symbol="XAUUSD",
+        volume=0.2,
+        side="buy",
+        retry_attempts=2,
+        retry_backoff_ms=0,
+    )
+
+    assert result["ticket"] == 12345
+    assert result["execution_attempts"] == 2
+
+
+def test_precheck_trade_blocks_non_positive_volume():
+    client = DummyTradingClient()
+    service = TradingService(client=client, pre_trade_risk_service=DummyRiskService())
+
+    result = service.precheck_trade(symbol="XAUUSD", volume=0, side="buy")
+
+    assert result["action"] == "block"
+    assert result["executable"] is False
+    assert result["suggested_adjustment"] == {"volume": 0.01}
 
 
 def test_execute_trade_batch_collects_success_and_failures():

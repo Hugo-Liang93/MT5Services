@@ -22,6 +22,39 @@ from src.config.advanced_manager import get_config_manager
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
 
+TRADE_TRIGGER_METHODS = [
+    {
+        "id": "trade_api_direct",
+        "type": "api",
+        "path": "/trade",
+        "description": "直接交易下单入口",
+    },
+    {
+        "id": "trade_api_dispatch",
+        "type": "api",
+        "path": "/trade/dispatch",
+        "description": "统一调度入口（operation=trade）",
+    },
+    {
+        "id": "trade_api_batch",
+        "type": "api",
+        "path": "/trade/batch",
+        "description": "批量交易入口",
+    },
+    {
+        "id": "signal_api_execute_trade",
+        "type": "api",
+        "path": "/trade/from-signal",
+        "description": "按 signal_id 从交易模块触发交易",
+    },
+    {
+        "id": "signal_runtime_auto_trade",
+        "type": "event",
+        "path": "SignalRuntime -> TradeExecutor -> dispatch_operation('trade')",
+        "description": "信号确认后的自动交易链路",
+    },
+]
+
 
 def _enum_or_raw(value) -> str:
     return getattr(value, "value", value)
@@ -389,15 +422,31 @@ async def get_monitored_components() -> Dict[str, Any]:
     """
     try:
         monitoring_manager = get_monitoring_manager_instance()
-        # 这里需要添加获取组件列表的方法
+        rows = []
+        if monitoring_manager and hasattr(monitoring_manager, "list_registered_components"):
+            rows = monitoring_manager.list_registered_components()
+        legacy_names = [item.get("name") for item in rows]
+        if "trading" not in legacy_names:
+            rows.append({"name": "trading", "methods": ["monitoring_summary"], "enabled": True, "source": "api"})
         return {
             "status": "success",
-            "components": ["data_ingestion", "indicator_calculation", "market_data", "economic_calendar"],
-            "check_interval": monitoring_manager.check_interval
+            "components": rows,
+            "count": len(rows),
+            "check_interval": getattr(monitoring_manager, "check_interval", None),
         }
     except Exception as e:
         logger.error(f"Failed to get monitored components: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/trading/trigger-methods", summary="Get trade trigger methods")
+async def get_trading_trigger_methods() -> Dict[str, Any]:
+    """返回当前系统触发交易的全部入口，便于排查信号到交易链路。"""
+    return {
+        "status": "success",
+        "count": len(TRADE_TRIGGER_METHODS),
+        "methods": TRADE_TRIGGER_METHODS,
+    }
 
 
 @router.get("/config/effective", summary="Get effective runtime config")

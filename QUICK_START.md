@@ -162,6 +162,9 @@ curl "http://localhost:8808/economic/calendar/upcoming?hours=24"
 ```bash
 curl "http://localhost:8808/monitoring/queues"
 curl "http://localhost:8808/monitoring/economic-calendar"
+curl "http://localhost:8808/monitoring/trading"
+curl "http://localhost:8808/monitoring/components"
+curl "http://localhost:8808/monitoring/trading/trigger-methods"
 ```
 
 ## 6. 常见问题

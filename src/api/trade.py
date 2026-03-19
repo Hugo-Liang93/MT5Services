@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.api.deps import get_trading_service
+from src.api.deps import get_signal_service, get_trading_service
 from src.api.trade_dispatcher import TradeAPIDispatcher
 from src.api.error_codes import AIErrorAction, AIErrorCode, get_trade_error_details
 from src.api.schemas import (
@@ -23,10 +23,13 @@ from src.api.schemas import (
     TradePrecheckModel,
     TradeRequest,
     TradeDispatchRequest,
+    SignalExecuteTradeRequest,
     TradingAccountModel,
 )
 from src.clients.mt5_trade import MT5TradeError
 from src.core.pretrade_risk_service import PreTradeRiskBlockedError
+from src.signals.service import SignalModule
+from src.signals.sizing import compute_trade_params, extract_atr_from_indicators
 from src.trading.service import TradingModule
 
 router = APIRouter(tags=["trade"])
@@ -104,6 +107,7 @@ def trade_precheck(
             comment=request.comment,
             magic=request.magic,
         )
+        request_id = result.get("request_id") if isinstance(result, dict) else None
         return ApiResponse.success_response(
             data=TradePrecheckModel(**result),
             metadata={
@@ -112,6 +116,7 @@ def trade_precheck(
                 "symbol": request.symbol,
                 "side": request.side,
                 "volume": request.volume,
+                "request_id": request_id,
             },
         )
     except MT5TradeError as exc:
@@ -156,6 +161,8 @@ def trade(
             deviation=request.deviation,
             comment=request.comment,
             magic=request.magic,
+            dry_run=request.dry_run,
+            request_id=request.request_id,
         )
         if result is None:
             return ApiResponse.error_response(
@@ -175,6 +182,10 @@ def trade(
                 "volume": request.volume,
                 "price": result.get("price") if result else None,
                 "ticket": result.get("ticket") if result else None,
+                "dry_run": request.dry_run,
+                "request_id": result.get("request_id") if result else request.request_id,
+                "trace_id": result.get("trace_id") if result else None,
+                "operation_id": result.get("operation_id") if result else None,
             },
         )
     except PreTradeRiskBlockedError as exc:
@@ -215,6 +226,86 @@ def trade(
                 **_trade_request_details(request),
             },
         )
+
+
+@router.post("/trade/from-signal", response_model=ApiResponse[dict])
+def trade_from_signal(
+    request: SignalExecuteTradeRequest,
+    signal_service: SignalModule = Depends(get_signal_service),
+    service: TradingModule = Depends(get_trading_service),
+) -> ApiResponse[dict]:
+    """从 confirmed 信号触发交易（职责归属交易模块）。"""
+    rows = signal_service.recent_signals(scope="confirmed", limit=500)
+    signal_row = next((row for row in rows if row.get("signal_id") == request.signal_id), None)
+    if signal_row is None:
+        raise HTTPException(status_code=404, detail=f"Signal not found: {request.signal_id}")
+
+    action = signal_row.get("action", "")
+    if action not in {"buy", "sell"}:
+        raise HTTPException(status_code=422, detail=f"Signal action '{action}' is not executable (buy/sell required)")
+
+    indicators = signal_row.get("indicators_snapshot") or {}
+    atr = extract_atr_from_indicators(indicators)
+    if atr is None or atr <= 0:
+        raise HTTPException(status_code=422, detail="Cannot compute trade params: ATR not found in signal snapshot")
+
+    try:
+        account = service.account_info() or {}
+        equity = account.get("equity") if isinstance(account, dict) else getattr(account, "equity", None)
+        balance_value = account.get("balance") if isinstance(account, dict) else getattr(account, "balance", None)
+        balance = float(equity or balance_value or 0)
+    except Exception:
+        balance = 0.0
+    if balance <= 0:
+        raise HTTPException(status_code=422, detail="Cannot compute position size: account balance unavailable")
+
+    entry_price: Optional[float] = None
+    for ind_name in ("bollinger20", "sma20", "close", "price"):
+        payload = indicators.get(ind_name)
+        if isinstance(payload, dict):
+            for field in ("close", "value", "last", "bb_mid", "sma"):
+                val = payload.get(field)
+                if val is not None:
+                    try:
+                        entry_price = float(val)
+                        break
+                    except (TypeError, ValueError):
+                        continue
+        if entry_price:
+            break
+    if entry_price is None or entry_price <= 0:
+        raise HTTPException(status_code=422, detail="Cannot estimate entry price from signal snapshot")
+
+    params = compute_trade_params(
+        action=action,
+        current_price=entry_price,
+        atr_value=atr,
+        account_balance=balance,
+    )
+    volume = request.volume_override if request.volume_override is not None else params.position_size
+    payload = {
+        "symbol": signal_row.get("symbol"),
+        "volume": volume,
+        "side": action,
+        "order_kind": "market",
+        "sl": params.stop_loss,
+        "tp": params.take_profit,
+        "comment": f"agent:{signal_row.get('strategy')}:{action}:{request.signal_id[:8]}",
+    }
+    result = service.dispatch_operation("trade", payload)
+    return ApiResponse.success_response(
+        data=result if isinstance(result, dict) else {"result": result},
+        metadata={
+            "operation": "trade_from_signal",
+            "signal_id": request.signal_id,
+            "action": action,
+            "volume": volume,
+            "sl": params.stop_loss,
+            "tp": params.take_profit,
+            "risk_reward_ratio": params.risk_reward_ratio,
+            "account_alias": service.active_account_alias,
+        },
+    )
 
 
 @router.post("/close", response_model=ApiResponse[dict])

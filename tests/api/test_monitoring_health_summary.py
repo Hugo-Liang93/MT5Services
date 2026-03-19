@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.api.monitoring import (
+    TRADE_TRIGGER_METHODS,
     _build_runtime_health_summary,
     _build_runtime_trading_summary,
     _build_storage_runtime_summary,
@@ -95,3 +96,15 @@ def test_build_runtime_trading_summary_includes_risk_and_coordination_issues() -
     assert summary["status"] == "warning"
     assert summary["risk"]["blocked"] == 1
     assert any("风控拦截" in msg for msg in summary["coordination_issues"])
+
+
+def test_trade_trigger_methods_include_signal_and_trade_paths() -> None:
+    method_ids = {item["id"] for item in TRADE_TRIGGER_METHODS}
+    signal_method = next(item for item in TRADE_TRIGGER_METHODS if item["id"] == "signal_api_execute_trade")
+
+    assert "trade_api_direct" in method_ids
+    assert "trade_api_dispatch" in method_ids
+    assert "trade_api_batch" in method_ids
+    assert "signal_api_execute_trade" in method_ids
+    assert "signal_runtime_auto_trade" in method_ids
+    assert signal_method["path"] == "/trade/from-signal"

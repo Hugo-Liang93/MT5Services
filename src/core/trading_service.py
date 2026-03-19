@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import time
+from uuid import uuid4
 from typing import Any, Dict, Optional
 
 from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
@@ -124,7 +126,12 @@ class TradingService:
         deviation: int = 20,
         comment: str = "",
         magic: int = 0,
+        dry_run: bool = False,
+        retry_attempts: int = 2,
+        retry_backoff_ms: int = 120,
+        request_id: Optional[str] = None,
     ) -> dict:
+        request_id = request_id or uuid4().hex
         risk_assessment: Optional[Dict[str, Any]] = None
         if self.pre_trade_risk_service is not None:
             risk_assessment = self.pre_trade_risk_service.enforce_trade_allowed(
@@ -145,18 +152,60 @@ class TradingService:
         except Exception:
             margin_estimate = None
 
+        precheck_snapshot = self.precheck_trade(
+            symbol=symbol,
+            volume=volume,
+            side=side,
+            order_kind=order_kind,
+            price=price,
+            sl=sl,
+            tp=tp,
+            deviation=deviation,
+            comment=comment,
+            magic=magic,
+        )
+        if dry_run:
+            return {
+                "request_id": request_id,
+                "dry_run": True,
+                "symbol": symbol,
+                "volume": volume,
+                "side": side,
+                "order_kind": order_kind,
+                "requested_price": price,
+                "estimated_margin": margin_estimate,
+                "pre_trade_risk": risk_assessment,
+                "precheck": precheck_snapshot,
+                "execution_attempts": 0,
+                "execution_state": "skipped",
+            }
+
         if hasattr(self.client, "open_trade_details"):
-            result = self.client.open_trade_details(
-                symbol=symbol,
-                volume=volume,
-                order_type=self._side_to_order_type(side, order_kind=order_kind),
-                price=price,
-                sl=sl,
-                tp=tp,
-                deviation=deviation,
-                comment=comment,
-                magic=magic,
-            )
+            last_error: Optional[Exception] = None
+            max_attempts = max(int(retry_attempts), 1)
+            result: Dict[str, Any] | None = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = self.client.open_trade_details(
+                        symbol=symbol,
+                        volume=volume,
+                        order_type=self._side_to_order_type(side, order_kind=order_kind),
+                        price=price,
+                        sl=sl,
+                        tp=tp,
+                        deviation=deviation,
+                        comment=comment,
+                        magic=magic,
+                    )
+                    result["execution_attempts"] = attempt
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt >= max_attempts:
+                        raise
+                    time.sleep(max(float(retry_backoff_ms), 0.0) / 1000.0)
+            if result is None and last_error is not None:
+                raise last_error
         else:
             ticket = self.open(
                 symbol=symbol,
@@ -170,10 +219,25 @@ class TradingService:
                 comment=comment,
                 magic=magic,
             )
-            result = {"ticket": ticket, "price": price}
+            result = {"ticket": ticket, "price": price, "execution_attempts": 1}
+
+        try:
+            positions_count = len(self.get_positions(symbol=symbol))
+        except Exception:
+            positions_count = None
+        try:
+            orders_count = len(self.get_orders(symbol=symbol))
+        except Exception:
+            orders_count = None
+        state_consistency = {
+            "positions_count": positions_count,
+            "orders_count": orders_count,
+        }
 
         result.update(
             {
+                "request_id": request_id,
+                "dry_run": False,
                 "symbol": symbol,
                 "volume": volume,
                 "side": side,
@@ -181,6 +245,8 @@ class TradingService:
                 "requested_price": price,
                 "estimated_margin": margin_estimate,
                 "pre_trade_risk": risk_assessment,
+                "precheck": precheck_snapshot,
+                "state_consistency": state_consistency,
             }
         )
         return result
@@ -198,6 +264,28 @@ class TradingService:
         comment: str = "",
         magic: int = 0,
     ) -> Dict[str, Any]:
+        request_id = uuid4().hex
+        checks: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        if volume is not None and volume <= 0:
+            checks.append({"name": "volume_positive", "passed": False, "message": "volume must be > 0"})
+            return {
+                "enabled": True,
+                "mode": "strict",
+                "blocked": True,
+                "action": "block",
+                "reason": "volume must be > 0",
+                "symbol": symbol,
+                "active_windows": [],
+                "upcoming_windows": [],
+                "checks": checks,
+                "warnings": warnings,
+                "estimated_margin": None,
+                "margin_error": None,
+                "request_id": request_id,
+                "executable": False,
+                "suggested_adjustment": {"volume": 0.01},
+            }
         if self.pre_trade_risk_service is None:
             return {
                 "enabled": False,
@@ -209,6 +297,10 @@ class TradingService:
                 "active_windows": [],
                 "upcoming_windows": [],
                 "checks": [],
+                "warnings": [],
+                "request_id": request_id,
+                "executable": True,
+                "suggested_adjustment": None,
             }
         assessment = self.pre_trade_risk_service.assess_trade(
             symbol=symbol,
@@ -223,6 +315,8 @@ class TradingService:
             magic=magic,
         )
         assessment["estimated_margin"] = None
+        assessment.setdefault("warnings", [])
+        assessment.setdefault("checks", [])
         if volume is not None and side:
             try:
                 assessment["estimated_margin"] = self.estimate_margin(
@@ -234,6 +328,14 @@ class TradingService:
             except Exception as exc:
                 assessment.setdefault("warnings", []).append(f"Margin estimate unavailable: {exc}")
                 assessment["margin_error"] = str(exc)
+        assessment["request_id"] = request_id
+        assessment["executable"] = str(assessment.get("action") or "allow").lower() != "block"
+        if not assessment["executable"]:
+            assessment["suggested_adjustment"] = {"action": "review_risk_windows"}
+        elif assessment.get("margin_error"):
+            assessment["suggested_adjustment"] = {"action": "retry_margin_estimate"}
+        else:
+            assessment["suggested_adjustment"] = None
         return assessment
 
     def close_position(

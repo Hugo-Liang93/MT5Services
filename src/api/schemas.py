@@ -88,6 +88,8 @@ class TradeRequest(BaseModel):
     deviation: int = 20
     comment: str = ""
     magic: int = 0
+    dry_run: bool = False
+    request_id: Optional[str] = None
 
 
 class TradePrecheckModel(BaseModel):
