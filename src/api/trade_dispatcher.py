@@ -4,7 +4,7 @@ from typing import Any
 
 from src.api.error_codes import AIErrorAction, AIErrorCode
 from src.api.schemas import ApiResponse
-from src.core.pretrade_risk_service import PreTradeRiskBlockedError
+from src.risk.service import PreTradeRiskBlockedError
 from src.trading.service import TradingModule
 
 

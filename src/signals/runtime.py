@@ -20,12 +20,12 @@ from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
 
-from .filters import SignalFilterChain
+from .evaluation.regime import MarketRegimeDetector, RegimeTracker, RegimeType
+from .evaluation.voting import StrategyVotingEngine
+from .execution.filters import SignalFilterChain
+from .execution.policy import RuntimeSignalState, SignalPolicy
 from .models import SignalEvent
-from .policy import RuntimeSignalState, SignalPolicy
-from .regime import MarketRegimeDetector, RegimeTracker, RegimeType
 from .service import SignalModule
-from .voting import StrategyVotingEngine
 
 if TYPE_CHECKING:
     from src.indicators.manager import UnifiedIndicatorManager

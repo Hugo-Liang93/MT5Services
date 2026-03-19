@@ -26,10 +26,10 @@ from src.api.schemas import (
     SignalExecuteTradeRequest,
     TradingAccountModel,
 )
-from src.clients.mt5_trade import MT5TradeError
-from src.core.pretrade_risk_service import PreTradeRiskBlockedError
+from src.clients.base import MT5TradeError
+from src.risk.service import PreTradeRiskBlockedError
 from src.signals.service import SignalModule
-from src.signals.sizing import compute_trade_params, extract_atr_from_indicators
+from src.signals.execution.sizing import compute_trade_params, extract_atr_from_indicators
 from src.trading.service import TradingModule
 
 router = APIRouter(tags=["trade"])

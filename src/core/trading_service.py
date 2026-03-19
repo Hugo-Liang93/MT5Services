@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
 from src.clients.mt5_account import MT5AccountClient
-from src.core.pretrade_risk_service import PreTradeRiskService
+from src.risk.service import PreTradeRiskService
 
 
 class TradingService:

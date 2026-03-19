@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from src.clients.base import MT5BaseClient, mt5
-from src.clients.mt5_trade import MT5TradeError
+from src.clients.base import MT5TradeError
 
 
 @dataclass

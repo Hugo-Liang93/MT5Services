@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from .contracts import SESSION_LONDON, SESSION_NEW_YORK
+from ..contracts import SESSION_LONDON, SESSION_NEW_YORK
 
 
 @dataclass

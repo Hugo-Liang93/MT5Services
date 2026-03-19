@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from src.signals.htf_cache import HTFStateCache
+from src.signals.execution.sizing import TradeParameters, compute_trade_params, extract_atr_from_indicators
 from src.signals.models import SignalEvent
-from src.signals.position_manager import PositionManager
-from src.signals.sizing import TradeParameters, compute_trade_params, extract_atr_from_indicators
+from src.signals.strategies.htf_cache import HTFStateCache
+from src.signals.tracking.position_manager import PositionManager
 
 logger = logging.getLogger(__name__)
 

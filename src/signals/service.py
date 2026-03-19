@@ -5,17 +5,16 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
-from .adapters import IndicatorSource
 from .analytics import (
     DiagnosticThresholds,
     DiagnosticsEngine,
     SignalDiagnosticsAnalyzer,
 )
-from .calibrator import ConfidenceCalibrator
+from .evaluation.calibrator import ConfidenceCalibrator
+from .evaluation.regime import MarketRegimeDetector, RegimeType
 from .models import SignalContext, SignalDecision, SignalRecord
-from .regime import MarketRegimeDetector, RegimeType
-from .repository import SignalRepository
-from .strategies import (
+from .strategies.adapters import IndicatorSource
+from .strategies.library import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
     EmaRibbonStrategy,
@@ -28,6 +27,7 @@ from .strategies import (
     StochRsiStrategy,
     SupertrendStrategy,
 )
+from .tracking.repository import SignalRepository
 
 logger = logging.getLogger(__name__)
 

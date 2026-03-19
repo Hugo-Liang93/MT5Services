@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 from .composite import CompositeSignalStrategy, CombineMode
 from .htf_cache import HTFStateCache
-from .regime import RegimeType
-from .service import SignalModule
-from .strategies import (
+from ..evaluation.regime import RegimeType
+from ..service import SignalModule
+from .library import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
     EmaRibbonStrategy,

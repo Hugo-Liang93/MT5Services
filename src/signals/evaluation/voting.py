@@ -48,7 +48,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from .models import SignalDecision
+from ..models import SignalDecision
 from .regime import RegimeType
 
 

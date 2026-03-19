@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, Optional, Protocol
 
-from .models import SignalContext, SignalDecision
-from .regime import RegimeType
+from ..models import SignalContext, SignalDecision
+from ..evaluation.regime import RegimeType
 
 logger = logging.getLogger(__name__)
 

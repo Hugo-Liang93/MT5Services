@@ -13,7 +13,7 @@ from src.api.schemas import (
     PositionModel,
     TradingAccountModel,
 )
-from src.clients.mt5_trade import MT5TradeError
+from src.clients.base import MT5TradeError
 from src.trading.service import TradingModule
 
 router = APIRouter(tags=["account"])
