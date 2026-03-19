@@ -9,7 +9,7 @@ from src.clients.mt5_trading import MT5TradingClient
 from src.config import MT5Settings, get_economic_config, get_risk_config, load_mt5_accounts
 from src.core.account_service import AccountService
 from src.risk.service import PreTradeRiskService
-from src.core.trading_service import TradingService
+from src.trading.trading_service import TradingService
 
 
 class TradingAccountRegistry:

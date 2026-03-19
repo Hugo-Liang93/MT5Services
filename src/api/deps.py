@@ -36,7 +36,7 @@ from src.risk.service import PreTradeRiskService
 from src.trading import TradingAccountRegistry, TradingModule
 from src.indicators.manager import UnifiedIndicatorManager, get_global_unified_manager
 from src.ingestion.ingestor import BackgroundIngestor
-from src.monitoring.health_check import get_health_monitor, get_monitoring_manager
+from src.monitoring import get_health_monitor, get_monitoring_manager
 from src.persistence.db import TimescaleWriter
 from src.persistence.storage_writer import StorageWriter
 from src.signals import (

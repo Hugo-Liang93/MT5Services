@@ -14,19 +14,15 @@ from .evaluation.calibrator import ConfidenceCalibrator
 from .evaluation.regime import MarketRegimeDetector, RegimeType
 from .models import SignalContext, SignalDecision, SignalRecord
 from .strategies.adapters import IndicatorSource
-from .strategies.library import (
+from .strategies.base import SignalStrategy
+from .strategies.breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
-    EmaRibbonStrategy,
     KeltnerBollingerSqueezeStrategy,
-    MacdMomentumStrategy,
     MultiTimeframeConfirmStrategy,
-    RsiReversionStrategy,
-    SignalStrategy,
-    SmaTrendStrategy,
-    StochRsiStrategy,
-    SupertrendStrategy,
 )
+from .strategies.mean_reversion import RsiReversionStrategy, StochRsiStrategy
+from .strategies.trend import EmaRibbonStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
 from .tracking.repository import SignalRepository
 
 logger = logging.getLogger(__name__)
