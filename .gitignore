@@ -116,4 +116,5 @@ temp/
 
 # Keep placeholders
 !.gitkeep
-.claude/
+.claude/*
+!.claude/settings.json
