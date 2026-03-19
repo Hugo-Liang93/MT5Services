@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional
 
 from .contracts import SESSION_LONDON, SESSION_NEW_YORK
 
@@ -49,5 +49,5 @@ class RuntimeSignalState:
     last_emitted_bar_time: Optional[datetime] = None
     last_snapshot_scope: Optional[str] = None
     last_snapshot_bar_time: Optional[datetime] = None
-    last_snapshot_signature: Optional[Tuple] = None
+    last_snapshot_signature: Optional[int] = None
     last_snapshot_time: Optional[datetime] = None

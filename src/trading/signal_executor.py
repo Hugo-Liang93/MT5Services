@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Optional
 
 from src.signals.htf_cache import HTFStateCache
 from src.signals.models import SignalEvent
@@ -34,10 +34,15 @@ class ExecutorConfig:
     tp_atr_multiplier: float = 3.0
     min_volume: float = 0.01
     max_volume: float = 1.0
-    contract_size: float = 100.0
+    # T-2: 按品种配置合约大小，替代全局固定值（XAUUSD=100, BTCUSD=1, 等）
+    contract_size_map: Dict[str, float] = field(
+        default_factory=lambda: {"XAUUSD": 100.0, "default": 100.0}
+    )
     default_volume: float = 0.01
     # 熔断器：连续失败超过此阈值后自动暂停自动交易
     max_consecutive_failures: int = 3
+    # T-3: 自动半开恢复：熔断后等待 N 分钟再自动尝试
+    circuit_auto_reset_minutes: int = 30
     # HTF 方向过滤：若启用，当 HTF 方向与信号方向相反时跳过交易
     htf_filter_enabled: bool = True
 
@@ -52,12 +57,15 @@ class TradeExecutor:
         account_balance_getter: Optional[Any] = None,
         position_manager: Optional[PositionManager] = None,
         htf_cache: Optional[HTFStateCache] = None,
+        persist_execution_fn: Optional[Callable[[List], None]] = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
         self._account_balance_getter = account_balance_getter
         self._position_manager = position_manager
         self._htf_cache = htf_cache
+        # T-4: 执行记录持久化回调（可选，用于写入 auto_executions 表）
+        self._persist_execution_fn = persist_execution_fn
         self._execution_count = 0
         self._last_execution_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
@@ -65,6 +73,8 @@ class TradeExecutor:
         # 熔断器状态
         self._consecutive_failures: int = 0
         self._circuit_open: bool = False
+        # T-3: 记录熔断开路时间，用于自动恢复检查
+        self._circuit_open_at: Optional[datetime] = None
 
     # ------------------------------------------------------------------
     # Public listener interface
@@ -89,20 +99,42 @@ class TradeExecutor:
         """手动重置熔断器，恢复自动交易。"""
         self._circuit_open = False
         self._consecutive_failures = 0
+        self._circuit_open_at = None
         logger.info("TradeExecutor: circuit breaker manually reset")
+
+    def _get_contract_size(self, symbol: str) -> float:
+        """T-2: 按品种返回合约大小，优先精确匹配，fallback 到 'default'。"""
+        size_map = self.config.contract_size_map
+        return size_map.get(symbol, size_map.get("default", 100.0))
 
     def _handle_confirmed(self, event: SignalEvent) -> Optional[Dict[str, Any]]:
         if not self.config.enabled:
             return None
 
-        # ── 熔断器检查 ────────────────────────────────────────────────
+        # ── 熔断器检查（含 T-3 自动半开恢复）────────────────────────────
         if self._circuit_open:
-            logger.warning(
-                "TradeExecutor: circuit open (consecutive_failures=%d), "
-                "skipping %s/%s. Call reset_circuit() to resume.",
-                self._consecutive_failures, event.symbol, event.strategy,
-            )
-            return None
+            # T-3: 若距熔断开路已超过 circuit_auto_reset_minutes，自动尝试半开
+            if (
+                self.config.circuit_auto_reset_minutes > 0
+                and self._circuit_open_at is not None
+            ):
+                elapsed = (
+                    datetime.now(timezone.utc) - self._circuit_open_at
+                ).total_seconds() / 60.0
+                if elapsed >= self.config.circuit_auto_reset_minutes:
+                    logger.info(
+                        "TradeExecutor: circuit auto-reset after %.1f minutes, "
+                        "attempting half-open",
+                        elapsed,
+                    )
+                    self.reset_circuit()
+            if self._circuit_open:
+                logger.warning(
+                    "TradeExecutor: circuit open (consecutive_failures=%d), "
+                    "skipping %s/%s. Call reset_circuit() to resume.",
+                    self._consecutive_failures, event.symbol, event.strategy,
+                )
+                return None
 
         if event.action not in ("buy", "sell"):
             return None
@@ -160,9 +192,22 @@ class TradeExecutor:
         if balance is None or balance <= 0:
             return None
 
-        close_price = self._estimate_price(event.indicators)
+        # T-1: 优先使用 runtime 注入的 close_price（策略域收窄前提取，所有策略均有效）
+        close_price: Optional[float] = None
+        raw_close = event.metadata.get("close_price")
+        if raw_close is not None:
+            try:
+                close_price = float(raw_close)
+            except (TypeError, ValueError):
+                close_price = None
+        # fallback：扫描指标 payload（旧路径）
+        if close_price is None or close_price <= 0:
+            close_price = self._estimate_price(event.indicators)
         if close_price is None or close_price <= 0:
             return None
+
+        # T-2: 按品种读取合约大小
+        contract_size = self._get_contract_size(event.symbol)
 
         return compute_trade_params(
             action=event.action,
@@ -174,7 +219,7 @@ class TradeExecutor:
             tp_atr_multiplier=self.config.tp_atr_multiplier,
             min_volume=self.config.min_volume,
             max_volume=self.config.max_volume,
-            contract_size=self.config.contract_size,
+            contract_size=contract_size,
         )
 
     def _get_account_balance(self) -> Optional[float]:
@@ -247,6 +292,12 @@ class TradeExecutor:
                 params.position_size, params.stop_loss, params.take_profit,
                 params.risk_reward_ratio, event.signal_id,
             )
+            # T-4: 持久化执行记录
+            if self._persist_execution_fn is not None:
+                try:
+                    self._persist_execution_fn([log_entry])
+                except Exception as pe:
+                    logger.warning("TradeExecutor: persist execution failed: %s", pe)
             if self._position_manager is not None and isinstance(result, dict):
                 ticket = result.get("ticket") or result.get("order")
                 if ticket:
@@ -287,11 +338,28 @@ class TradeExecutor:
                 and self._consecutive_failures >= self.config.max_consecutive_failures
             ):
                 self._circuit_open = True
+                self._circuit_open_at = datetime.now(timezone.utc)
                 logger.error(
                     "TradeExecutor: circuit breaker OPENED after %d consecutive failures. "
-                    "Auto-trading suspended. Call reset_circuit() to resume.",
+                    "Auto-trading suspended. Will auto-reset in %d minutes or call reset_circuit().",
                     self._consecutive_failures,
+                    self.config.circuit_auto_reset_minutes,
                 )
+            # T-4: 持久化失败记录
+            fail_entry = {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "signal_id": event.signal_id,
+                "symbol": event.symbol,
+                "action": event.action,
+                "strategy": event.strategy,
+                "success": False,
+                "error": str(exc),
+            }
+            if self._persist_execution_fn is not None:
+                try:
+                    self._persist_execution_fn([fail_entry])
+                except Exception as pe:
+                    logger.warning("TradeExecutor: persist fail-entry failed: %s", pe)
             return None
 
     def status(self) -> Dict[str, Any]:
@@ -304,6 +372,8 @@ class TradeExecutor:
                 "open": self._circuit_open,
                 "consecutive_failures": self._consecutive_failures,
                 "max_consecutive_failures": self.config.max_consecutive_failures,
+                "circuit_open_at": self._circuit_open_at.isoformat() if self._circuit_open_at else None,
+                "auto_reset_minutes": self.config.circuit_auto_reset_minutes,
             },
             "config": {
                 "min_confidence": self.config.min_confidence,

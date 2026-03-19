@@ -122,9 +122,42 @@ class ConfidenceCalibrator:
         self._total_boosted: int = 0
         self._total_suppressed: int = 0
 
+        # C-1/C-2: 后台刷新线程
+        self._bg_thread: Optional[threading.Thread] = None
+        self._bg_stop: threading.Event = threading.Event()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def start_background_refresh(self, *, symbol: Optional[str] = None) -> None:
+        """启动后台刷新线程，定期更新胜率缓存（非阻塞）。
+
+        调用后 calibrate() 读取缓存时不再需要等待 DB 查询。
+        若已有后台线程在运行，此调用无操作。
+        """
+        if self._bg_thread is not None and self._bg_thread.is_alive():
+            return
+        self._bg_stop.clear()
+        self._bg_thread = threading.Thread(
+            target=self._bg_loop,
+            args=(symbol,),
+            name="calibrator-refresh",
+            daemon=True,
+        )
+        self._bg_thread.start()
+        logger.info(
+            "ConfidenceCalibrator: background refresh started (interval=%ds)",
+            self._refresh_interval,
+        )
+
+    def stop_background_refresh(self) -> None:
+        """停止后台刷新线程（最多等待 5 秒）。"""
+        self._bg_stop.set()
+        if self._bg_thread is not None:
+            self._bg_thread.join(timeout=5.0)
+            self._bg_thread = None
+        logger.info("ConfidenceCalibrator: background refresh stopped")
 
     def calibrate(
         self,
@@ -140,7 +173,10 @@ class ConfidenceCalibrator:
         if self._alpha < 1e-6:
             return raw_confidence  # alpha=0：完全不校准
 
-        self._auto_refresh()
+        # C-1: 热路径中不再调用 _auto_refresh()（已由后台线程接管）。
+        # 若未启动后台线程，则保留原有兜底逻辑（首次调用时单次刷新）。
+        if self._bg_thread is None or not self._bg_thread.is_alive():
+            self._auto_refresh()
         factor = self._get_calibration_factor(strategy, action, regime)
         if factor is None:
             return raw_confidence  # 无数据或样本不足 → 不干预
@@ -233,6 +269,72 @@ class ConfidenceCalibrator:
             },
         }
 
+    def dump(self, path: str) -> None:
+        """C-3: 将当前胜率缓存持久化到 JSON 文件，重启后可快速恢复而无需等待 DB。
+
+        格式：``{"timestamp": ..., "cache": {"strat|act|regime": {"win_rate": 0.6, "total": 50}, ...}}``
+        """
+        import json
+
+        with self._cache_lock:
+            data = {
+                "timestamp": time.time(),
+                "cache": {
+                    f"{k[0]}|{k[1]}|{k[2]}": {"win_rate": v[0], "total": v[1]}
+                    for k, v in self._cache.items()
+                },
+            }
+        try:
+            with open(path, "w", encoding="utf-8") as fp:
+                json.dump(data, fp, indent=2)
+            logger.info(
+                "ConfidenceCalibrator: dumped %d cache entries to %s",
+                len(data["cache"]), path,
+            )
+        except Exception:
+            logger.warning(
+                "ConfidenceCalibrator: failed to dump cache to %s", path, exc_info=True
+            )
+
+    def load(self, path: str) -> int:
+        """C-3: 从 JSON 文件加载胜率缓存，合并到现有缓存（不替换）。
+
+        返回成功加载的条目数。文件不存在或格式错误时安全退出（返回 0）。
+        """
+        import json
+        import os
+
+        if not os.path.exists(path):
+            return 0
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            new_entries: Dict[_WinRateKey, Tuple[float, int]] = {}
+            for key_str, entry in data.get("cache", {}).items():
+                parts = key_str.split("|", 2)
+                if len(parts) == 3:
+                    try:
+                        new_entries[(parts[0], parts[1], parts[2])] = (
+                            float(entry["win_rate"]),
+                            int(entry["total"]),
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        pass
+            with self._cache_lock:
+                # 合并：保留 DB 刷新的数据，仅补充文件中的缺失条目
+                for k, v in new_entries.items():
+                    self._cache.setdefault(k, v)
+            logger.info(
+                "ConfidenceCalibrator: loaded %d cache entries from %s",
+                len(new_entries), path,
+            )
+            return len(new_entries)
+        except Exception:
+            logger.warning(
+                "ConfidenceCalibrator: failed to load cache from %s", path, exc_info=True
+            )
+            return 0
+
     # ------------------------------------------------------------------
     # Protected helpers（ML 阶段可子类化覆盖此方法）
     # ------------------------------------------------------------------
@@ -288,8 +390,14 @@ class ConfidenceCalibrator:
     # Private
     # ------------------------------------------------------------------
 
+    def _bg_loop(self, symbol: Optional[str]) -> None:
+        """C-1/C-2: 后台刷新循环 — 立即执行首次刷新，之后每隔 refresh_interval 再刷新。"""
+        while not self._bg_stop.is_set():
+            self.refresh(symbol=symbol)
+            self._bg_stop.wait(timeout=self._refresh_interval)
+
     def _auto_refresh(self) -> None:
-        """若缓存已过期则在调用线程中自动刷新（非阻塞检查）。"""
+        """若缓存已过期则在调用线程中自动刷新（兜底，后台线程启动后不再调用）。"""
         now = time.monotonic()
         if now - self._last_refresh >= self._refresh_interval:
             self.refresh()

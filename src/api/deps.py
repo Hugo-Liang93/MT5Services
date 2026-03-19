@@ -354,11 +354,18 @@ def _ensure_initialized() -> None:
             trailing_atr_multiplier=sig_cfg.trailing_atr_multiplier,
             breakeven_atr_threshold=sig_cfg.breakeven_atr_threshold,
         )
+        # T-4: 若 DB 可用，传入持久化回调写入 auto_executions 表
+        _persist_exec_fn = None
+        if _c.storage_writer is not None and hasattr(_c.storage_writer, "db"):
+            db = _c.storage_writer.db
+            if hasattr(db, "write_auto_executions"):
+                _persist_exec_fn = db.write_auto_executions
         _c.trade_executor = TradeExecutor(
             trading_module=_c.trade_module,
             config=executor_config,
             position_manager=_c.position_manager,
             htf_cache=_c.htf_cache,
+            persist_execution_fn=_persist_exec_fn,
         )
     _c.signal_runtime.add_signal_listener(_c.trade_executor.on_signal_event)
     # HTFStateCache 注册为 signal_runtime 的监听器（必须在 signal_runtime 构建后）

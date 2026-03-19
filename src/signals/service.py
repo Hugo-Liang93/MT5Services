@@ -72,7 +72,40 @@ class SignalModule:
         for strategy in default_strategies:
             self.register_strategy(strategy)
 
+    @staticmethod
+    def _validate_strategy_attrs(strategy: SignalStrategy) -> None:
+        """S-1: 注册时校验策略必须具备的四个类属性，提供清晰错误信息。
+
+        缺少任一属性时抛出 ``AttributeError``，避免在运行时热路径中静默失效。
+        """
+        name = getattr(strategy, "name", None)
+        if not name or not isinstance(name, str):
+            raise AttributeError(
+                f"Strategy {type(strategy).__name__} must define a non-empty string "
+                f"class attribute 'name'."
+            )
+        required_indicators = getattr(strategy, "required_indicators", None)
+        if required_indicators is None:
+            raise AttributeError(
+                f"Strategy '{name}' must define 'required_indicators' "
+                f"(tuple of indicator names, or empty tuple)."
+            )
+        preferred_scopes = getattr(strategy, "preferred_scopes", None)
+        if preferred_scopes is None:
+            raise AttributeError(
+                f"Strategy '{name}' must define 'preferred_scopes' "
+                f"(e.g. (\"confirmed\",) or (\"intrabar\", \"confirmed\"))."
+            )
+        regime_affinity = getattr(strategy, "regime_affinity", None)
+        if regime_affinity is None:
+            raise AttributeError(
+                f"Strategy '{name}' must define 'regime_affinity' "
+                f"(Dict[RegimeType, float] covering TRENDING/RANGING/BREAKOUT/UNCERTAIN). "
+                f"See CLAUDE.md for the Regime affinity design guide."
+            )
+
     def register_strategy(self, strategy: SignalStrategy) -> None:
+        self._validate_strategy_attrs(strategy)
         self._strategies[strategy.name] = strategy
 
     def list_strategies(self) -> list[str]:

@@ -1,0 +1,42 @@
+[
+  {
+    "name": "trend_triple_confirm",
+    "sub_strategies": ["SupertrendStrategy", "MacdMomentumStrategy", "SmaTrendStrategy"],
+    "combine_mode": "majority",
+    "regime_affinity": {
+      "TRENDING":  1.00,
+      "RANGING":   0.10,
+      "BREAKOUT":  0.55,
+      "UNCERTAIN": 0.40
+    },
+    "preferred_scopes": ["confirmed"]
+  },
+  {
+    "name": "breakout_double_confirm",
+    "sub_strategies": [
+      "BollingerBreakoutStrategy",
+      "DonchianBreakoutStrategy",
+      "KeltnerBollingerSqueezeStrategy"
+    ],
+    "combine_mode": "all_agree",
+    "regime_affinity": {
+      "TRENDING":  0.45,
+      "RANGING":   0.20,
+      "BREAKOUT":  1.00,
+      "UNCERTAIN": 0.55
+    },
+    "preferred_scopes": ["confirmed"]
+  },
+  {
+    "name": "reversion_double_confirm",
+    "sub_strategies": ["RsiReversionStrategy", "StochRsiStrategy"],
+    "combine_mode": "all_agree",
+    "regime_affinity": {
+      "TRENDING":  0.15,
+      "RANGING":   1.00,
+      "BREAKOUT":  0.25,
+      "UNCERTAIN": 0.55
+    },
+    "preferred_scopes": ["confirmed", "intrabar"]
+  }
+]

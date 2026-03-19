@@ -30,6 +30,7 @@ from src.persistence.schema import (
     INSERT_SIGNAL_PREVIEW_EVENTS_SQL,
     INSERT_SIGNAL_OUTCOMES_SQL,
     SIGNAL_OUTCOMES_WINRATE_SQL,
+    INSERT_AUTO_EXECUTIONS_SQL,
     UPSERT_RUNTIME_TASK_STATUS_SQL,
     UPSERT_ECONOMIC_CALENDAR_SQL,
 )
@@ -803,6 +804,57 @@ class TimescaleWriter:
         if not batch:
             return
         self._batch(INSERT_SIGNAL_OUTCOMES_SQL, batch, page_size=page_size)
+
+    def write_auto_executions(self, rows: Iterable[dict], page_size: int = 200) -> None:
+        """T-4: 批量写入自动交易执行记录。
+
+        ``rows`` 为 ``TradeExecutor._execute`` / ``_handle_confirmed`` 构造的
+        log_entry dict 列表，包含以下字段（缺失字段用 None 填充）：
+
+        .. code-block:: python
+
+            {
+                "at": "2024-01-01T00:00:00+00:00",
+                "signal_id": "...",
+                "symbol": "XAUUSD",
+                "action": "buy",
+                "strategy": "sma_trend",
+                "confidence": 0.75,
+                "params": {"volume": 0.01, "sl": 1900.0, "tp": 1950.0, "rr": 2.0},
+                "success": True,
+                "error": None,
+            }
+        """
+        from datetime import datetime as _dt, timezone as _tz
+
+        batch = []
+        for entry in rows:
+            params = entry.get("params") or {}
+            try:
+                executed_at = _dt.fromisoformat(str(entry.get("at") or "")).replace(
+                    tzinfo=_tz.utc
+                )
+            except (ValueError, TypeError):
+                executed_at = _dt.now(_tz.utc)
+            batch.append((
+                executed_at,
+                entry.get("signal_id") or "",
+                entry.get("symbol") or "",
+                entry.get("action") or "",
+                entry.get("strategy") or "",
+                entry.get("confidence"),
+                params.get("volume"),
+                params.get("entry_price"),
+                params.get("sl"),
+                params.get("tp"),
+                params.get("rr"),
+                bool(entry.get("success")),
+                entry.get("error"),
+                Json({}),
+            ))
+        if not batch:
+            return
+        self._batch(INSERT_AUTO_EXECUTIONS_SQL, batch, page_size=page_size)
 
     def fetch_winrates(
         self,
