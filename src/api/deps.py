@@ -370,7 +370,9 @@ def _ensure_initialized() -> None:
         try:
             new_sig_cfg = get_signal_config()
             new_sessions = tuple(
-                s.strip() for s in new_sig_cfg.allowed_sessions.split(",") if s.strip()
+                normalize_session_name(s)
+                for s in new_sig_cfg.allowed_sessions.split(",")
+                if s.strip()
             )
             new_policy = SignalPolicy(
                 min_preview_confidence=new_sig_cfg.min_preview_confidence,

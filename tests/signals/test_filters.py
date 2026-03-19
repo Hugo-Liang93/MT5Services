@@ -6,11 +6,8 @@ from src.signals.filters import SessionFilter
 
 
 def test_session_filter_normalizes_newyork_alias() -> None:
-    try:
-        SessionFilter(allowed_sessions=("london", "newyork"))
-        assert False, "expected unsupported session names error"
-    except ValueError as exc:
-        assert "unsupported session names" in str(exc)
+    session_filter = SessionFilter(allowed_sessions=("london", "newyork"))
+    assert session_filter.allowed_sessions == ("london", "new_york")
 
 
 def test_session_filter_emits_new_york_session_name() -> None:
