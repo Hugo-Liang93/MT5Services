@@ -378,8 +378,9 @@ class SignalRuntime:
             try:
                 listener(event)
             except Exception as exc:
-                self._last_error = f"Signal listener error: {exc}"
-                logger.warning("Signal listener error (%s): %s", listener, exc)
+                error_msg = f"Signal listener error [{getattr(listener, '__name__', repr(listener))}]: {exc}"
+                self._last_error = error_msg
+                logger.error(error_msg, exc_info=True)
 
     @staticmethod
     def _parse_event_time(value: Any) -> datetime:
@@ -592,6 +593,10 @@ class SignalRuntime:
         metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         previous_state = state.confirmed_state
+        # 在清除 preview 状态前保存快照，供 TradeExecutor require_armed 检查使用。
+        # confirmed 事件的 previous_state 是上一次 confirmed_state（idle/confirmed_buy 等），
+        # 永远不含 "armed"，若不单独传递 preview 状态则 require_armed=True 会阻断所有首次自动交易。
+        preview_state_at_close = state.preview_state
         state.preview_state = "idle"
         state.preview_action = None
         state.preview_since = None
@@ -603,12 +608,14 @@ class SignalRuntime:
                 state.confirmed_state = "idle"
                 state.confirmed_bar_time = bar_time
                 self._mark_emitted(state, signal_state, event_time, bar_time)
-                return self._build_transition_metadata(
+                result = self._build_transition_metadata(
                     metadata,
                     signal_state=signal_state,
                     state_changed=True,
                     previous_state=previous_state,
                 )
+                result["preview_state_at_close"] = preview_state_at_close
+                return result
             state.confirmed_state = "idle"
             state.confirmed_bar_time = bar_time
             return None
@@ -621,12 +628,14 @@ class SignalRuntime:
         ):
             return None
         self._mark_emitted(state, signal_state, event_time, bar_time)
-        return self._build_transition_metadata(
+        result = self._build_transition_metadata(
             metadata,
             signal_state=signal_state,
             state_changed=signal_state != previous_state,
             previous_state=previous_state,
         )
+        result["preview_state_at_close"] = preview_state_at_close
+        return result
 
     def _transition_preview(
         self,

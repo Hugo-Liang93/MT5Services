@@ -94,6 +94,7 @@ class ConfidenceCalibrator:
         max_boost: float = 1.30,
         min_samples: int = 20,
         refresh_interval_seconds: int = 3600,
+        recency_hours: int = 48,
     ) -> None:
         if not (0.0 <= alpha <= 1.0):
             raise ValueError(f"alpha must be in [0.0, 1.0], got {alpha}")
@@ -103,9 +104,15 @@ class ConfidenceCalibrator:
         self._max_boost = max_boost
         self._min_samples = min_samples
         self._refresh_interval = refresh_interval_seconds
+        # 近期窗口（小时）：刷新时额外拉取短窗口胜率，用于防止正反馈。
+        # 若近期（recency_hours 内）胜率低于 baseline，则禁止放大置信度（factor 上限=1.0）。
+        # 短窗口样本不足时自动退化为不校准（不影响历史窗口的压制效果）。
+        self._recency_hours: int = max(1, recency_hours)
 
         # { (strategy, action, regime_value): (win_rate, sample_count) }
         self._cache: Dict[_WinRateKey, Tuple[float, int]] = {}
+        # 近期窗口缓存，结构与 _cache 相同
+        self._recent_cache: Dict[_WinRateKey, Tuple[float, int]] = {}
         self._cache_lock = threading.Lock()
         self._last_refresh: float = 0.0
         self._refresh_hours: int = 168   # 查询最近 7 天的历史
@@ -152,7 +159,7 @@ class ConfidenceCalibrator:
         return result
 
     def refresh(self, *, symbol: Optional[str] = None) -> int:
-        """立即刷新胜率缓存，返回加载的记录数。"""
+        """立即刷新胜率缓存（历史窗口 + 近期窗口），返回加载的记录数。"""
         try:
             rows = self._fetch_fn(hours=self._refresh_hours, symbol=symbol)
         except Exception:
@@ -173,24 +180,50 @@ class ConfidenceCalibrator:
                 new_cache[(strat, act, regime_val)] = (win_rate, total)
                 count += 1
 
+        # ── 近期窗口：用于防止正反馈 ─────────────────────────────────
+        # 若近期（recency_hours 内）胜率低于 baseline，
+        # _get_calibration_factor 会将 boost 上限夹到 1.0，
+        # 避免在行情转折点还继续放大置信度。
+        new_recent_cache: Dict[_WinRateKey, Tuple[float, int]] = {}
+        try:
+            recent_rows = self._fetch_fn(hours=self._recency_hours, symbol=symbol)
+            for row in recent_rows:
+                strat = str(row[0])
+                act = str(row[1])
+                total = int(row[2]) if row[2] is not None else 0
+                win_rate = float(row[4]) if row[4] is not None else 0.0
+                regime_val = str(row[7]) if len(row) > 7 and row[7] is not None else "_all"
+                # 近期窗口样本量要求减半（宽松），优先保证覆盖率
+                if total >= max(1, self._min_samples // 2):
+                    new_recent_cache[(strat, act, regime_val)] = (win_rate, total)
+        except Exception:
+            logger.warning("ConfidenceCalibrator: failed to fetch recent win rates", exc_info=True)
+
         with self._cache_lock:
             self._cache = new_cache
+            self._recent_cache = new_recent_cache
             self._last_refresh = time.monotonic()
 
-        logger.info("ConfidenceCalibrator: refreshed %d win-rate entries", count)
+        logger.info(
+            "ConfidenceCalibrator: refreshed %d win-rate entries (%d recent)",
+            count, len(new_recent_cache),
+        )
         return count
 
     def describe(self) -> Dict[str, Any]:
         """返回当前状态，用于监控端点。"""
         with self._cache_lock:
             cache_size = len(self._cache)
+            recent_cache_size = len(self._recent_cache)
             age_seconds = time.monotonic() - self._last_refresh if self._last_refresh else None
         return {
             "alpha": self._alpha,
             "baseline_win_rate": self._baseline,
             "max_boost": self._max_boost,
             "min_samples": self._min_samples,
+            "recency_hours": self._recency_hours,
             "cache_entries": cache_size,
+            "recent_cache_entries": recent_cache_size,
             "cache_age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
             "refresh_interval_seconds": self._refresh_interval,
             "stats": {
@@ -212,8 +245,13 @@ class ConfidenceCalibrator:
     ) -> Optional[float]:
         """返回置信度校准因子，None 表示样本不足不干预。
 
-        当前实现：基于历史胜率。
+        当前实现：基于历史胜率，并通过近期窗口防止正反馈。
         ML 阶段：子类可覆盖此方法，调用模型推理。
+
+        正反馈保护：
+            若 factor > 1.0（准备放大置信度），同时检查近期（recency_hours）胜率。
+            若近期胜率低于 baseline（策略近期表现下滑），将 factor 夹到 1.0，
+            仅允许压制，不允许放大，避免在行情转折点过度乐观。
         """
         regime_val = regime.value
         with self._cache_lock:
@@ -222,6 +260,11 @@ class ConfidenceCalibrator:
             if entry is None:
                 # 回退到全局聚合（没有 regime 分类的旧数据）
                 entry = self._cache.get((strategy, action, "_all"))
+            # 读取近期缓存（与 cache 同一把锁）
+            recent_entry = self._recent_cache.get((strategy, action, regime_val))
+            if recent_entry is None:
+                recent_entry = self._recent_cache.get((strategy, action, "_all"))
+
         if entry is None:
             return None
 
@@ -230,6 +273,15 @@ class ConfidenceCalibrator:
         factor = win_rate / max(self._baseline, 1e-6)
         # 限制最大提升倍数，防止极端值
         factor = min(factor, self._max_boost)
+
+        # ── 正反馈保护：近期胜率下滑时禁止 boost ────────────────────
+        # 即使历史 7 天整体胜率不错，若近期 recency_hours 内胜率已低于基准，
+        # 说明策略处于下行周期，不应再放大置信度（仅保留压制能力）。
+        if factor > 1.0 and recent_entry is not None:
+            recent_win_rate, _recent_samples = recent_entry
+            if recent_win_rate < self._baseline:
+                factor = 1.0  # 近期不达标：禁止 boost，不压制
+
         return factor
 
     # ------------------------------------------------------------------

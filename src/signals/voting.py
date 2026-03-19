@@ -93,6 +93,7 @@ class StrategyVotingEngine:
         *,
         regime: RegimeType,
         scope: str,
+        exclude_composite: bool = True,
     ) -> Optional[SignalDecision]:
         """对决策列表进行加权表决，返回共识 SignalDecision 或 None。
 
@@ -103,7 +104,25 @@ class StrategyVotingEngine:
 
         返回值的 strategy 字段始终为 "consensus"，
         confidence 已包含 disagreement_penalty 修正。
+
+        参数
+        ----
+        exclude_composite:
+            若为 True（默认），过滤掉 metadata["composite"]=True 的复合策略决策。
+            复合策略在内部已聚合了多个子策略，若再参与全局投票，
+            相同指标的信号会被重复计入，造成置信度虚高。
+            过滤后 consensus 仅基于独立单策略的决策，语义更清晰。
         """
+        if not decisions:
+            return None
+
+        # ── 过滤复合策略，防止双重计票 ────────────────────────────────
+        # CompositeSignalStrategy 在其 evaluate() 返回值的 metadata 中标记
+        # "composite": True（见 composite.py）。这些策略内部已聚合了 2-4 个子策略，
+        # 若同时让其参与 VotingEngine，对应指标的信号权重会被计入两次：
+        # 一次来自子策略独立运行，一次来自复合策略的汇总输出。
+        if exclude_composite:
+            decisions = [d for d in decisions if not d.metadata.get("composite")]
         if not decisions:
             return None
 

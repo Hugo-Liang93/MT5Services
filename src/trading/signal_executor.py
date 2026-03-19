@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from src.signals.htf_cache import HTFStateCache
 from src.signals.models import SignalEvent
 from src.signals.position_manager import PositionManager
 from src.signals.sizing import TradeParameters, compute_trade_params, extract_atr_from_indicators
@@ -35,6 +36,10 @@ class ExecutorConfig:
     max_volume: float = 1.0
     contract_size: float = 100.0
     default_volume: float = 0.01
+    # 熔断器：连续失败超过此阈值后自动暂停自动交易
+    max_consecutive_failures: int = 3
+    # HTF 方向过滤：若启用，当 HTF 方向与信号方向相反时跳过交易
+    htf_filter_enabled: bool = True
 
 
 class TradeExecutor:
@@ -46,15 +51,20 @@ class TradeExecutor:
         config: Optional[ExecutorConfig] = None,
         account_balance_getter: Optional[Any] = None,
         position_manager: Optional[PositionManager] = None,
+        htf_cache: Optional[HTFStateCache] = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
         self._account_balance_getter = account_balance_getter
         self._position_manager = position_manager
+        self._htf_cache = htf_cache
         self._execution_count = 0
         self._last_execution_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
         self._execution_log: list[dict] = []
+        # 熔断器状态
+        self._consecutive_failures: int = 0
+        self._circuit_open: bool = False
 
     # ------------------------------------------------------------------
     # Public listener interface
@@ -75,8 +85,23 @@ class TradeExecutor:
     # Internal execution logic
     # ------------------------------------------------------------------
 
+    def reset_circuit(self) -> None:
+        """手动重置熔断器，恢复自动交易。"""
+        self._circuit_open = False
+        self._consecutive_failures = 0
+        logger.info("TradeExecutor: circuit breaker manually reset")
+
     def _handle_confirmed(self, event: SignalEvent) -> Optional[Dict[str, Any]]:
         if not self.config.enabled:
+            return None
+
+        # ── 熔断器检查 ────────────────────────────────────────────────
+        if self._circuit_open:
+            logger.warning(
+                "TradeExecutor: circuit open (consecutive_failures=%d), "
+                "skipping %s/%s. Call reset_circuit() to resume.",
+                self._consecutive_failures, event.symbol, event.strategy,
+            )
             return None
 
         if event.action not in ("buy", "sell"):
@@ -90,12 +115,29 @@ class TradeExecutor:
             )
             return None
 
+        # ── require_armed 检查 ────────────────────────────────────────
+        # confirmed 事件的 previous_state 是上一个 confirmed_state（idle/confirmed_buy），
+        # 永远不含 "armed"。因此同时检查 preview_state_at_close（bar 收盘时的盘中状态），
+        # 该字段由 runtime._transition_confirmed 在清除 preview 状态前注入。
         if self.config.require_armed:
             previous_state = event.metadata.get("previous_state", "")
-            if "armed" not in previous_state:
+            preview_at_close = event.metadata.get("preview_state_at_close", "")
+            if "armed" not in previous_state and "armed" not in preview_at_close:
                 logger.debug(
-                    "TradeExecutor: skipping %s - require_armed but previous_state=%s",
-                    event.symbol, previous_state,
+                    "TradeExecutor: skipping %s - require_armed but "
+                    "previous_state=%s, preview_state_at_close=%s",
+                    event.symbol, previous_state, preview_at_close,
+                )
+                return None
+
+        # ── HTF 方向过滤 ──────────────────────────────────────────────
+        # 若 HTF 方向与当前信号方向相反，跳过交易（避免逆大势）。
+        if self.config.htf_filter_enabled and self._htf_cache is not None:
+            htf_direction = self._htf_cache.get_htf_direction(event.symbol, event.timeframe)
+            if htf_direction is not None and htf_direction != event.action:
+                logger.debug(
+                    "TradeExecutor: skipping %s/%s %s - HTF direction=%s conflicts",
+                    event.symbol, event.timeframe, event.action, htf_direction,
                 )
                 return None
 
@@ -179,6 +221,8 @@ class TradeExecutor:
             self._execution_count += 1
             self._last_execution_at = datetime.now(timezone.utc)
             self._last_error = None
+            # 成功执行：重置熔断器失败计数
+            self._consecutive_failures = 0
             log_entry = {
                 "at": self._last_execution_at.isoformat(),
                 "signal_id": event.signal_id,
@@ -222,6 +266,7 @@ class TradeExecutor:
             return result
         except Exception as exc:
             self._last_error = str(exc)
+            self._consecutive_failures += 1
             self._execution_log.append({
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
@@ -236,6 +281,17 @@ class TradeExecutor:
             logger.exception(
                 "TradeExecutor: failed to execute %s %s: %s", event.action, event.symbol, exc,
             )
+            # 熔断器：连续失败达到阈值后开路，防止持续错误下的无效重试
+            if (
+                not self._circuit_open
+                and self._consecutive_failures >= self.config.max_consecutive_failures
+            ):
+                self._circuit_open = True
+                logger.error(
+                    "TradeExecutor: circuit breaker OPENED after %d consecutive failures. "
+                    "Auto-trading suspended. Call reset_circuit() to resume.",
+                    self._consecutive_failures,
+                )
             return None
 
     def status(self) -> Dict[str, Any]:
@@ -244,9 +300,15 @@ class TradeExecutor:
             "execution_count": self._execution_count,
             "last_execution_at": self._last_execution_at.isoformat() if self._last_execution_at else None,
             "last_error": self._last_error,
+            "circuit_breaker": {
+                "open": self._circuit_open,
+                "consecutive_failures": self._consecutive_failures,
+                "max_consecutive_failures": self.config.max_consecutive_failures,
+            },
             "config": {
                 "min_confidence": self.config.min_confidence,
                 "require_armed": self.config.require_armed,
+                "htf_filter_enabled": self.config.htf_filter_enabled,
                 "risk_percent": self.config.risk_percent,
                 "sl_atr_multiplier": self.config.sl_atr_multiplier,
                 "tp_atr_multiplier": self.config.tp_atr_multiplier,

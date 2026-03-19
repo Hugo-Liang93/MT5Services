@@ -358,6 +358,7 @@ def _ensure_initialized() -> None:
             trading_module=_c.trade_module,
             config=executor_config,
             position_manager=_c.position_manager,
+            htf_cache=_c.htf_cache,
         )
     _c.signal_runtime.add_signal_listener(_c.trade_executor.on_signal_event)
     # HTFStateCache 注册为 signal_runtime 的监听器（必须在 signal_runtime 构建后）
