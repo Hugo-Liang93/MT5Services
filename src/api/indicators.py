@@ -75,9 +75,9 @@ async def list_available_indicators(
     except Exception as e:
         logger.error(f"Failed to list indicators: {e}")
         return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
             error_message=f"获取指标列表失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_LATER,
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__}
         )
 
@@ -120,9 +120,9 @@ async def get_intrabar_indicators(
     except Exception as e:
         logger.error("Failed to get intrabar indicators for %s/%s: %s", symbol, timeframe, e)
         return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
             error_message=f"获取实时指标数据失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_LATER,
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__, "symbol": symbol, "timeframe": timeframe},
         )
 
@@ -166,9 +166,9 @@ async def get_indicators(
     except Exception as e:
         logger.error(f"Failed to get indicators for {symbol}/{timeframe}: {e}")
         return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
             error_message=f"获取指标数据失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_LATER,
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={
                 "exception_type": type(e).__name__,
                 "symbol": symbol,
@@ -222,9 +222,9 @@ async def get_indicator(
     except Exception as e:
         logger.error(f"Failed to get indicator {indicator_name} for {symbol}/{timeframe}: {e}")
         return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
             error_message=f"获取指标数据失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_LATER,
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={
                 "exception_type": type(e).__name__,
                 "symbol": symbol,
@@ -292,9 +292,9 @@ async def compute_indicators(
     except Exception as e:
         logger.error(f"Failed to compute indicators: {e}")
         return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
             error_message=f"计算指标失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_LATER,
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={
                 "exception_type": type(e).__name__,
                 "symbol": request.symbol,
@@ -327,9 +327,9 @@ async def get_performance_stats(
     except Exception as e:
         logger.error(f"Failed to get performance stats: {e}")
         return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
             error_message=f"获取性能统计失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_LATER,
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__}
         )
 
@@ -357,9 +357,9 @@ async def clear_cache(
     except Exception as e:
         logger.error(f"Failed to clear cache: {e}")
         return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
             error_message=f"清空缓存失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_LATER,
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__}
         )
 
@@ -393,8 +393,8 @@ async def get_dependency_graph(
     except Exception as e:
         logger.error(f"Failed to get dependency graph: {e}")
         return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_ERROR,
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
             error_message=f"获取依赖关系图失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_LATER,
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__, "format": format}
         )

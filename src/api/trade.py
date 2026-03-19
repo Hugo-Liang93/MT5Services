@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
 from src.api.deps import get_signal_service, get_trading_service
 from src.api.trade_dispatcher import TradeAPIDispatcher
@@ -238,16 +238,31 @@ def trade_from_signal(
     rows = signal_service.recent_signals(scope="confirmed", limit=500)
     signal_row = next((row for row in rows if row.get("signal_id") == request.signal_id), None)
     if signal_row is None:
-        raise HTTPException(status_code=404, detail=f"Signal not found: {request.signal_id}")
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.DATA_NOT_AVAILABLE,
+            error_message=f"Signal not found: {request.signal_id}",
+            suggested_action=AIErrorAction.USE_FALLBACK_DATA,
+            details={"signal_id": request.signal_id},
+        )
 
     action = signal_row.get("action", "")
     if action not in {"buy", "sell"}:
-        raise HTTPException(status_code=422, detail=f"Signal action '{action}' is not executable (buy/sell required)")
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.VALIDATION_ERROR,
+            error_message=f"Signal action '{action}' is not executable (buy/sell required)",
+            suggested_action=AIErrorAction.VALIDATE_PARAMETERS,
+            details={"signal_id": request.signal_id, "action": action},
+        )
 
     indicators = signal_row.get("indicators_snapshot") or {}
     atr = extract_atr_from_indicators(indicators)
     if atr is None or atr <= 0:
-        raise HTTPException(status_code=422, detail="Cannot compute trade params: ATR not found in signal snapshot")
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.INSUFFICIENT_HISTORY_DATA,
+            error_message="Cannot compute trade params: ATR not found in signal snapshot",
+            suggested_action=AIErrorAction.WAIT_FOR_DATA,
+            details={"signal_id": request.signal_id},
+        )
 
     try:
         account = service.account_info() or {}
@@ -257,7 +272,12 @@ def trade_from_signal(
     except Exception:
         balance = 0.0
     if balance <= 0:
-        raise HTTPException(status_code=422, detail="Cannot compute position size: account balance unavailable")
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.ACCOUNT_INFO_FAILED,
+            error_message="Cannot compute position size: account balance unavailable",
+            suggested_action=AIErrorAction.CHECK_ACCOUNT_STATUS,
+            details={"signal_id": request.signal_id},
+        )
 
     entry_price: Optional[float] = None
     for ind_name in ("bollinger20", "sma20", "close", "price"):
@@ -274,7 +294,12 @@ def trade_from_signal(
         if entry_price:
             break
     if entry_price is None or entry_price <= 0:
-        raise HTTPException(status_code=422, detail="Cannot estimate entry price from signal snapshot")
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.DATA_NOT_AVAILABLE,
+            error_message="Cannot estimate entry price from signal snapshot",
+            suggested_action=AIErrorAction.WAIT_FOR_DATA,
+            details={"signal_id": request.signal_id},
+        )
 
     params = compute_trade_params(
         action=action,
