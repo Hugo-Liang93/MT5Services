@@ -246,3 +246,72 @@ class CompositeSignalStrategy:
             "preferred_scopes": list(self.preferred_scopes),
             "regime_affinity": {k.value: v for k, v in self.regime_affinity.items()},
         }
+
+
+# ---------------------------------------------------------------------------
+# 预置复合策略实例（可直接导入并注册到 SignalModule）
+# ---------------------------------------------------------------------------
+
+def build_trend_triple_confirm() -> "CompositeSignalStrategy":
+    """趋势三重确认：Supertrend + EmaRibbon + MacdMomentum 全部同向才出信号。
+
+    三个趋势指标同时指向同一方向，虚假信号极少，适合作为自动下单的高置信度专用通道。
+    代价是信号频率很低（一天可能只有 1-3 次），但胜率更高。
+    """
+    from .trend import EmaRibbonStrategy, MacdMomentumStrategy, SupertrendStrategy
+
+    return CompositeSignalStrategy(
+        name="trend_triple_confirm",
+        sub_strategies=[
+            SupertrendStrategy(adx_threshold=25.0),
+            EmaRibbonStrategy(),
+            MacdMomentumStrategy(),
+        ],
+        combine_mode="all_agree",
+        regime_affinity={
+            RegimeType.TRENDING:  1.00,  # 三线同向是趋势行情最强烈的入场信号
+            RegimeType.RANGING:   0.10,  # 震荡市三指标几乎不可能同向
+            RegimeType.BREAKOUT:  0.50,  # 突破初期 EMA50 还未偏转，成功率约一半
+            RegimeType.UNCERTAIN: 0.40,
+        },
+        preferred_scopes=("confirmed",),
+    )
+
+
+def build_breakout_double_confirm() -> "CompositeSignalStrategy":
+    """突破双重确认：BollingerBreakout + DonchianBreakout 同向才出信号。
+
+    布林带触边 + 唐奇安通道突破同时满足，大幅减少单一布林带的虚假突破信号。
+    两个通道突破策略的假信号通常不会同时发生，因此双确认精度显著提升。
+    """
+    from .breakout import BollingerBreakoutStrategy, DonchianBreakoutStrategy
+
+    return CompositeSignalStrategy(
+        name="breakout_double_confirm",
+        sub_strategies=[
+            BollingerBreakoutStrategy(),
+            DonchianBreakoutStrategy(adx_min=25.0),
+        ],
+        combine_mode="all_agree",
+        regime_affinity={
+            RegimeType.TRENDING:  0.40,  # 趋势中触带/通道突破属正常，不等于反转
+            RegimeType.RANGING:   0.30,  # 震荡市中两个假突破仍会同时发生
+            RegimeType.BREAKOUT:  1.00,  # 双通道同时突破是波动率扩张最强确认
+            RegimeType.UNCERTAIN: 0.50,
+        },
+        preferred_scopes=("intrabar", "confirmed"),
+    )
+
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+
+    def describe(self) -> Dict:
+        return {
+            "name": self.name,
+            "combine_mode": self._combine_mode,
+            "sub_strategies": [getattr(s, "name", str(s)) for s in self._sub_strategies],
+            "required_indicators": list(self.required_indicators),
+            "preferred_scopes": list(self.preferred_scopes),
+            "regime_affinity": {k.value: v for k, v in self.regime_affinity.items()},
+        }

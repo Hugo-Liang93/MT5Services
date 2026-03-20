@@ -96,7 +96,8 @@ health_monitor.db
 
 # Project-local generated data
 data/
-models/
+# ML model artifacts (不含源码目录 src/**/models/)
+/models/
 tmp/
 temp/
 *.tmp
@@ -118,3 +119,6 @@ temp/
 !.gitkeep
 .claude/*
 !.claude/settings.json
+
+# ai md
+.ai/

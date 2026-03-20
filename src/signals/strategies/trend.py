@@ -15,6 +15,11 @@ from .base import _resolve_indicator_value
 logger = logging.getLogger(__name__)
 
 
+def _market_structure(context: SignalContext) -> dict[str, Any]:
+    payload = context.metadata.get("market_structure")
+    return payload if isinstance(payload, dict) else {}
+
+
 class SmaTrendStrategy:
     """Simple trend signal based on fast/slow SMA relation.
 
@@ -74,19 +79,76 @@ class SmaTrendStrategy:
 
         relative_spread = spread / slow if slow else 0.0
         confidence = min(abs(relative_spread) * 100, 1.0)
+        structure = _market_structure(context)
+        structure_bias = str(structure.get("structure_bias") or "neutral")
+        reclaim_state = str(structure.get("reclaim_state") or "none")
+        sweep_confirmation_state = str(
+            structure.get("sweep_confirmation_state") or "none"
+        )
+        first_pullback_state = str(structure.get("first_pullback_state") or "none")
+        structure_note = structure_bias
+        if action == "buy":
+            if structure_bias in {
+                "bullish_breakout",
+                "bullish_reclaim",
+                "bullish_sweep_confirmed",
+                "bullish_pullback",
+                "expansion",
+            }:
+                confidence = min(confidence + 0.10, 1.0)
+            if sweep_confirmation_state.startswith("bullish_"):
+                confidence = min(confidence + 0.14, 1.0)
+                structure_note = sweep_confirmation_state
+            if first_pullback_state.startswith("bullish_"):
+                confidence = min(confidence + 0.12, 1.0)
+                structure_note = first_pullback_state
+            if reclaim_state.startswith("bearish_"):
+                confidence = max(confidence - 0.15, 0.0)
+                structure_note = reclaim_state
+            if sweep_confirmation_state.startswith("bearish_"):
+                confidence = max(confidence - 0.22, 0.0)
+                structure_note = sweep_confirmation_state
+        elif action == "sell":
+            if structure_bias in {
+                "bearish_breakout",
+                "bearish_reclaim",
+                "bearish_sweep_confirmed",
+                "bearish_pullback",
+                "expansion",
+            }:
+                confidence = min(confidence + 0.10, 1.0)
+            if sweep_confirmation_state.startswith("bearish_"):
+                confidence = min(confidence + 0.14, 1.0)
+                structure_note = sweep_confirmation_state
+            if first_pullback_state.startswith("bearish_"):
+                confidence = min(confidence + 0.12, 1.0)
+                structure_note = first_pullback_state
+            if reclaim_state.startswith("bullish_"):
+                confidence = max(confidence - 0.15, 0.0)
+                structure_note = reclaim_state
+            if sweep_confirmation_state.startswith("bullish_"):
+                confidence = max(confidence - 0.22, 0.0)
+                structure_note = sweep_confirmation_state
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
             timeframe=context.timeframe,
             action=action,
             confidence=confidence,
-            reason=f"sma_spread={spread:.6f},relative={relative_spread:.6f}",
+            reason=(
+                f"sma_spread={spread:.6f},relative={relative_spread:.6f},"
+                f"structure={structure_note}"
+            ),
             used_indicators=used_indicators or ["sma20", "ema50"],
             metadata={
                 "spread": spread,
                 "relative_spread": relative_spread,
                 "fast_indicator": fast_name or "sma20",
                 "slow_indicator": slow_name or "ema50",
+                "structure_bias": structure_bias,
+                "reclaim_state": reclaim_state,
+                "sweep_confirmation_state": sweep_confirmation_state,
+                "first_pullback_state": first_pullback_state,
             },
         )
 
@@ -367,4 +429,166 @@ class EmaRibbonStrategy:
                 "mid_slow_gap_pct": mid_slow_gap * 100,
                 "total_span_pct": total_span * 100,
             },
+        )
+
+
+class HmaCrossStrategy:
+    """基于 HMA/EMA 交叉的低滞后趋势策略。
+
+    HMA（Hull MA）的最大优势是极低滞后——比同周期 EMA 快约半个周期响应。
+    HMA(20) 穿越 EMA(50) 比 SMA(20)/EMA(50) 提前 1-3 根 bar 发出信号，
+    适合 M1 等快节奏时间框架捕捉趋势初期机会。
+
+    信号逻辑：
+    - HMA20 > EMA50 且间距扩大（动量向上）→ buy
+    - HMA20 < EMA50 且间距扩大（动量向下）→ sell
+    - 置信度由两线间距（相对 EMA50 的百分比）决定
+
+    仅在 bar 收盘时评估：均线交叉需要收盘确认避免假突破。
+    """
+
+    name = "hma_cross"
+    required_indicators = ("hma20", "ema50")
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING:  0.90,  # HMA 低滞后趋势跟踪，趋势市表现最优
+        RegimeType.RANGING:   0.15,  # 震荡市两线频繁交叉，产生过多假信号
+        RegimeType.BREAKOUT:  0.60,  # 突破时 HMA 快速响应，可捕捉趋势启动
+        RegimeType.UNCERTAIN: 0.45,
+    }
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        hma_val, hma_name = _resolve_indicator_value(
+            context.indicators,
+            (("hma20", "hma"), ("hma20", "value")),
+        )
+        ema50_val, e50_name = _resolve_indicator_value(
+            context.indicators,
+            (("ema50", "ema"), ("ema50", "value")),
+        )
+        used = [n for n in (hma_name, e50_name) if n]
+
+        if hma_val is None or ema50_val is None or ema50_val == 0:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicator:hma_cross",
+                used_indicators=used or ["hma20", "ema50"],
+            )
+
+        gap_pct = (hma_val - ema50_val) / ema50_val  # 正=多头，负=空头
+
+        if gap_pct > 0:
+            action = "buy"
+            confidence = min(0.45 + min(gap_pct * 200, 0.45), 0.90)
+        elif gap_pct < 0:
+            action = "sell"
+            confidence = min(0.45 + min(abs(gap_pct) * 200, 0.45), 0.90)
+        else:
+            action = "hold"
+            confidence = 0.10
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=confidence,
+            reason=f"hma20={hma_val:.2f},ema50={ema50_val:.2f},gap={gap_pct*100:.3f}%",
+            used_indicators=used or ["hma20", "ema50"],
+            metadata={"hma20": hma_val, "ema50": ema50_val, "gap_pct": gap_pct * 100},
+        )
+
+
+class RocMomentumStrategy:
+    """基于 ROC 动量加速度的趋势确认策略。
+
+    ROC（Rate of Change）衡量价格的变动速率，代表动量的加速度而非方向本身。
+    在趋势行情中，ROC 绝对值扩大表示动量加速，是趋势持续的有力确认。
+
+    信号逻辑：
+    - ROC > 阈值 且 ADX > adx_min（趋势中动量向上加速）→ buy
+    - ROC < -阈值 且 ADX > adx_min（趋势中动量向下加速）→ sell
+    - ADX < adx_min 时（震荡市）不发信号
+
+    仅在 bar 收盘时评估，ROC 使用收盘价计算。
+    """
+
+    name = "roc_momentum"
+    required_indicators = ("roc12", "adx14")
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING:  0.85,  # 趋势中动量加速是强烈的持续信号
+        RegimeType.RANGING:   0.20,  # 震荡市 ROC 噪声大，方向无意义
+        RegimeType.BREAKOUT:  0.70,  # 突破时 ROC 急剧变化，可作为方向确认
+        RegimeType.UNCERTAIN: 0.40,
+    }
+
+    def __init__(self, *, adx_min: float = 20.0, roc_threshold: float = 0.1) -> None:
+        self._adx_min = adx_min
+        self._roc_threshold = roc_threshold  # ROC 触发阈值（%），默认 0.1%
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        roc_value, roc_name = _resolve_indicator_value(
+            context.indicators,
+            (("roc12", "roc"), ("roc12", "value"), ("roc", "roc")),
+        )
+        adx_value, adx_name = _resolve_indicator_value(
+            context.indicators,
+            (("adx14", "adx"), ("adx", "adx")),
+        )
+        used = [n for n in (roc_name, adx_name) if n]
+
+        if roc_value is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicator:roc",
+                used_indicators=used or ["roc12"],
+            )
+
+        adx = adx_value if adx_value is not None else 0.0
+        if adx < self._adx_min:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.10,
+                reason=f"adx_too_low:{adx:.1f}<{self._adx_min}",
+                used_indicators=used or ["roc12", "adx14"],
+                metadata={"roc": roc_value, "adx": adx},
+            )
+
+        roc = roc_value
+        if roc > self._roc_threshold:
+            action = "buy"
+            # ADX 越强、ROC 越大，置信度越高
+            adx_conf = min((adx - self._adx_min) / 30.0 * 0.3, 0.30)
+            roc_conf = min(abs(roc) / 1.0 * 0.35, 0.35)
+            confidence = min(0.40 + adx_conf + roc_conf, 0.90)
+        elif roc < -self._roc_threshold:
+            action = "sell"
+            adx_conf = min((adx - self._adx_min) / 30.0 * 0.3, 0.30)
+            roc_conf = min(abs(roc) / 1.0 * 0.35, 0.35)
+            confidence = min(0.40 + adx_conf + roc_conf, 0.90)
+        else:
+            action = "hold"
+            confidence = 0.10
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=confidence,
+            reason=f"roc={roc:.3f}%,adx={adx:.1f}",
+            used_indicators=used or ["roc12", "adx14"],
+            metadata={"roc": roc, "adx": adx},
         )

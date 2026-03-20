@@ -16,10 +16,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from src.signals.execution.sizing import TradeParameters, compute_trade_params, extract_atr_from_indicators
+from src.trading.sizing import (
+    TradeParameters,
+    compute_trade_params,
+    extract_atr_from_indicators,
+)
 from src.signals.models import SignalEvent
 from src.signals.strategies.htf_cache import HTFStateCache
-from src.signals.tracking.position_manager import PositionManager
+from src.trading.position_manager import PositionManager
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +47,20 @@ class ExecutorConfig:
     max_consecutive_failures: int = 3
     # T-3: 自动半开恢复：熔断后等待 N 分钟再自动尝试
     circuit_auto_reset_minutes: int = 30
+    max_spread_to_stop_ratio: float = 0.33
     # HTF 方向过滤：若启用，当 HTF 方向与信号方向相反时跳过交易
     htf_filter_enabled: bool = True
+    # 交易触发白名单：仅允许列表内的策略触发实际下单。
+    # 空元组 = 不限制，所有策略均可触发（默认兼容行为）。
+    # 非空时，白名单外的策略信号仍正常产生（用于监控/投票），但不执行交易。
+    # 推荐配置：["consensus"] 或 ["consensus", "trend_triple_confirm"]
+    trade_trigger_strategies: tuple[str, ...] = field(default_factory=tuple)
+    # 分组保护：属于某个 voting group 的策略集合（union of all groups）。
+    # 非空时，这些策略不允许单独触发交易——只能通过其 vote group 结果触发。
+    # 空 frozenset = 不启用分组保护（兼容旧行为）。
+    voting_group_strategies: frozenset[str] = field(default_factory=frozenset)
+    # standalone_override：即使属于某个 voting group，仍允许单独触发交易的策略白名单。
+    standalone_override: frozenset[str] = field(default_factory=frozenset)
 
 
 class TradeExecutor:
@@ -139,10 +155,39 @@ class TradeExecutor:
         if event.action not in ("buy", "sell"):
             return None
 
-        if event.confidence < self.config.min_confidence:
+        # ── Voting Group 分组保护 ─────────────────────────────────────
+        # 若策略属于某个 voting group，则默认不允许单独触发交易；
+        # 只有该 group 的 vote 结果信号（strategy = group_name）才能触发。
+        # standalone_override 白名单中的策略可豁免此限制。
+        if (
+            self.config.voting_group_strategies
+            and event.strategy in self.config.voting_group_strategies
+            and event.strategy not in self.config.standalone_override
+        ):
             logger.debug(
-                "TradeExecutor: skipping %s/%s - confidence %.2f < %.2f",
-                event.symbol, event.strategy,
+                "TradeExecutor: skipping %s/%s %s - strategy %r is in a voting group "
+                "and not in standalone_override (use vote result signal to trigger)",
+                event.symbol, event.timeframe, event.action, event.strategy,
+            )
+            return None
+
+        # ── 交易触发白名单过滤 ────────────────────────────────────────
+        # trade_trigger_strategies 非空时，仅允许白名单内的策略触发下单。
+        # 白名单外的策略信号仍正常产生（持久化、监控、投票均不受影响），
+        # 只是不在此处执行实际交易，避免多策略同向重复开仓。
+        allowed = self.config.trade_trigger_strategies
+        if allowed and event.strategy not in allowed:
+            logger.debug(
+                "TradeExecutor: skipping %s/%s %s - strategy %r not in "
+                "trade_trigger_strategies whitelist",
+                event.symbol, event.timeframe, event.action, event.strategy,
+            )
+            return None
+
+        if event.confidence < self.config.min_confidence:
+            logger.info(
+                "TradeExecutor: skipping %s/%s %s - confidence %.3f < min=%.2f",
+                event.symbol, event.strategy, event.action,
                 event.confidence, self.config.min_confidence,
             )
             return None
@@ -155,10 +200,11 @@ class TradeExecutor:
             previous_state = event.metadata.get("previous_state", "")
             preview_at_close = event.metadata.get("preview_state_at_close", "")
             if "armed" not in previous_state and "armed" not in preview_at_close:
-                logger.debug(
-                    "TradeExecutor: skipping %s - require_armed but "
-                    "previous_state=%s, preview_state_at_close=%s",
-                    event.symbol, previous_state, preview_at_close,
+                logger.info(
+                    "TradeExecutor: skipping %s/%s %s - require_armed=True but "
+                    "previous_state=%r, preview_state_at_close=%r",
+                    event.symbol, event.strategy, event.action,
+                    previous_state, preview_at_close,
                 )
                 return None
 
@@ -167,7 +213,7 @@ class TradeExecutor:
         if self.config.htf_filter_enabled and self._htf_cache is not None:
             htf_direction = self._htf_cache.get_htf_direction(event.symbol, event.timeframe)
             if htf_direction is not None and htf_direction != event.action:
-                logger.debug(
+                logger.info(
                     "TradeExecutor: skipping %s/%s %s - HTF direction=%s conflicts",
                     event.symbol, event.timeframe, event.action, htf_direction,
                 )
@@ -175,13 +221,49 @@ class TradeExecutor:
 
         trade_params = self._compute_params(event)
         if trade_params is None:
+            atr = extract_atr_from_indicators(event.indicators)
+            balance = self._get_account_balance()
+            close_price = event.metadata.get("close_price") or self._estimate_price(event.indicators)
             logger.warning(
-                "TradeExecutor: cannot compute trade params for %s (missing ATR?)",
-                event.symbol,
+                "TradeExecutor: cannot compute trade params for %s/%s %s "
+                "(atr=%s, balance=%s, close_price=%s, indicators_keys=%s)",
+                event.symbol, event.strategy, event.action,
+                atr, balance, close_price,
+                list(event.indicators.keys()),
             )
             return None
+        cost_metrics = self._estimate_cost_metrics(event, trade_params)
+        spread_to_stop_ratio = cost_metrics.get("spread_to_stop_ratio")
+        if (
+            spread_to_stop_ratio is not None
+            and spread_to_stop_ratio > self.config.max_spread_to_stop_ratio
+        ):
+            logger.info(
+                "TradeExecutor: skipping %s/%s %s - spread_to_stop_ratio %.3f > max=%.3f",
+                event.symbol,
+                event.strategy,
+                event.action,
+                spread_to_stop_ratio,
+                self.config.max_spread_to_stop_ratio,
+            )
+            self._execution_log.append(
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "signal_id": event.signal_id,
+                    "symbol": event.symbol,
+                    "action": event.action,
+                    "strategy": event.strategy,
+                    "success": False,
+                    "skipped": True,
+                    "reason": "spread_to_stop_ratio_too_high",
+                    "cost": cost_metrics,
+                }
+            )
+            if len(self._execution_log) > 100:
+                self._execution_log = self._execution_log[-50:]
+            return None
 
-        return self._execute(event, trade_params)
+        return self._execute(event, trade_params, cost_metrics=cost_metrics)
 
     def _compute_params(self, event: SignalEvent) -> Optional[TradeParameters]:
         atr = extract_atr_from_indicators(event.indicators)
@@ -250,7 +332,127 @@ class TradeExecutor:
                             continue
         return None
 
-    def _execute(self, event: SignalEvent, params: TradeParameters) -> Optional[Dict[str, Any]]:
+    def _estimate_cost_metrics(
+        self,
+        event: SignalEvent,
+        params: TradeParameters,
+    ) -> Dict[str, Optional[float]]:
+        raw_spread = event.metadata.get("spread_points")
+        try:
+            spread_points = float(raw_spread) if raw_spread is not None else None
+        except (TypeError, ValueError):
+            spread_points = None
+
+        raw_symbol_point = event.metadata.get("symbol_point")
+        try:
+            symbol_point = (
+                float(raw_symbol_point) if raw_symbol_point is not None else None
+            )
+        except (TypeError, ValueError):
+            symbol_point = None
+        if symbol_point is not None and symbol_point <= 0:
+            symbol_point = None
+
+        raw_spread_price = event.metadata.get("spread_price")
+        try:
+            spread_price = (
+                float(raw_spread_price) if raw_spread_price is not None else None
+            )
+        except (TypeError, ValueError):
+            spread_price = None
+        if spread_price is None and spread_points is not None and symbol_point is not None:
+            spread_price = spread_points * symbol_point
+        if spread_points is None and spread_price is not None and symbol_point is not None:
+            spread_points = spread_price / symbol_point
+
+        raw_close = event.metadata.get("close_price")
+        try:
+            close_price = float(raw_close) if raw_close is not None else None
+        except (TypeError, ValueError):
+            close_price = None
+        if close_price is None or close_price <= 0:
+            close_price = self._estimate_price(event.indicators)
+
+        stop_distance = None
+        reward_distance = None
+        if close_price is not None and close_price > 0:
+            stop_distance = abs(close_price - params.stop_loss)
+            reward_distance = abs(params.take_profit - close_price)
+
+        stop_distance_points = None
+        reward_distance_points = None
+        if symbol_point is not None and symbol_point > 0:
+            if stop_distance is not None:
+                stop_distance_points = stop_distance / symbol_point
+            if reward_distance is not None:
+                reward_distance_points = reward_distance / symbol_point
+
+        spread_to_stop_ratio = None
+        if spread_points is not None:
+            if stop_distance_points is not None and stop_distance_points > 0:
+                spread_to_stop_ratio = round(spread_points / stop_distance_points, 4)
+            elif spread_price is not None and stop_distance and stop_distance > 0:
+                spread_to_stop_ratio = round(spread_price / stop_distance, 4)
+
+        reward_to_cost_ratio = None
+        if spread_points is not None and spread_points > 0:
+            if reward_distance_points is not None:
+                reward_to_cost_ratio = round(
+                    reward_distance_points / spread_points, 4
+                )
+            elif spread_price is not None and spread_price > 0 and reward_distance is not None:
+                reward_to_cost_ratio = round(reward_distance / spread_price, 4)
+
+        return {
+            "estimated_cost_points": spread_points,
+            "estimated_cost_price": (
+                round(spread_price, 6) if spread_price is not None else None
+            ),
+            "symbol_point": symbol_point,
+            "stop_distance": round(stop_distance, 4) if stop_distance is not None else None,
+            "stop_distance_points": (
+                round(stop_distance_points, 2)
+                if stop_distance_points is not None
+                else None
+            ),
+            "reward_distance": round(reward_distance, 4) if reward_distance is not None else None,
+            "reward_distance_points": (
+                round(reward_distance_points, 2)
+                if reward_distance_points is not None
+                else None
+            ),
+            "spread_to_stop_ratio": spread_to_stop_ratio,
+            "reward_to_cost_ratio": reward_to_cost_ratio,
+        }
+
+    @staticmethod
+    def _build_trade_metadata(event: SignalEvent) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {
+            "signal": {
+                "signal_id": event.signal_id,
+                "strategy": event.strategy,
+                "timeframe": event.timeframe,
+                "signal_state": event.signal_state,
+                "confidence": round(float(event.confidence), 4),
+            }
+        }
+        raw_structure = event.metadata.get("market_structure")
+        if isinstance(raw_structure, dict):
+            metadata["market_structure"] = dict(raw_structure)
+        elif hasattr(raw_structure, "to_dict"):
+            try:
+                metadata["market_structure"] = raw_structure.to_dict()
+            except Exception:
+                pass
+        return metadata
+
+    def _execute(
+        self,
+        event: SignalEvent,
+        params: TradeParameters,
+        *,
+        cost_metrics: Optional[Dict[str, Optional[float]]] = None,
+    ) -> Optional[Dict[str, Any]]:
         payload = {
             "symbol": event.symbol,
             "volume": params.position_size,
@@ -259,6 +461,7 @@ class TradeExecutor:
             "sl": params.stop_loss,
             "tp": params.take_profit,
             "comment": f"auto:{event.strategy}:{event.action}",
+            "metadata": self._build_trade_metadata(event),
         }
 
         try:
@@ -281,6 +484,7 @@ class TradeExecutor:
                     "tp": params.take_profit,
                     "rr": params.risk_reward_ratio,
                 },
+                "cost": dict(cost_metrics or {}),
                 "success": True,
             }
             self._execution_log.append(log_entry)
@@ -379,6 +583,7 @@ class TradeExecutor:
                 "min_confidence": self.config.min_confidence,
                 "require_armed": self.config.require_armed,
                 "htf_filter_enabled": self.config.htf_filter_enabled,
+                "max_spread_to_stop_ratio": self.config.max_spread_to_stop_ratio,
                 "risk_percent": self.config.risk_percent,
                 "sl_atr_multiplier": self.config.sl_atr_multiplier,
                 "tp_atr_multiplier": self.config.tp_atr_multiplier,
