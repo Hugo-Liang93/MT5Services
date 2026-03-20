@@ -18,6 +18,21 @@ from .registry import TradingAccountRegistry
 logger = logging.getLogger(__name__)
 
 
+PRECHECK_TRADE_FIELDS = {
+    "symbol",
+    "volume",
+    "side",
+    "order_kind",
+    "price",
+    "sl",
+    "tp",
+    "deviation",
+    "comment",
+    "magic",
+    "metadata",
+}
+
+
 class TradingModule:
     def __init__(
         self,
@@ -156,7 +171,8 @@ class TradingModule:
         if volume <= 0:
             raise ValueError("trade payload volume must be > 0")
 
-        precheck = self.precheck_trade(**payload)
+        precheck_payload = {key: value for key, value in payload.items() if key in PRECHECK_TRADE_FIELDS}
+        precheck = self.precheck_trade(**precheck_payload)
         action = str(precheck.get("action") or "allow").lower()
         if config.dispatch_strict_mode and action == "block":
             raise PreTradeRiskBlockedError(

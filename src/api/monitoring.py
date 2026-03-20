@@ -17,7 +17,7 @@ from src.api.deps import (
     get_trading_service,
 )
 from src.config import get_effective_config_snapshot
-from src.config.advanced_manager import get_config_manager
+from src.config.file_manager import get_file_config_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
@@ -218,6 +218,77 @@ async def get_health_status(hours: int = 24) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to generate health report: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/health/live", summary="存活探针（Liveness Probe）")
+async def health_live() -> Dict[str, Any]:
+    """轻量级存活检查：只要进程能响应 HTTP 请求即返回 200。
+
+    适用于 Kubernetes/Docker liveness probe。
+    不检查 MT5 连接或数据库，避免因外部依赖临时故障导致进程被误重启。
+    """
+    return {"status": "alive", "timestamp": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime())}
+
+
+@router.get("/health/ready", summary="就绪探针（Readiness Probe）")
+async def health_ready() -> Dict[str, Any]:
+    """就绪检查：验证系统已完成启动且核心组件正常运行。
+
+    适用于 Kubernetes/Docker readiness probe。
+    任何关键组件未就绪时返回 503，让负载均衡器暂停向本实例转发流量。
+
+    检查项：
+    - 启动流程已完成（startup_status.ready == True）
+    - StorageWriter 写入线程存活
+    - 指标引擎事件循环运行中
+    """
+    try:
+        startup = get_startup_status()
+        if not startup.get("ready"):
+            phase = startup.get("phase", "unknown")
+            raise HTTPException(
+                status_code=503,
+                detail={"status": "not_ready", "phase": phase, "error": startup.get("last_error")},
+            )
+
+        checks: Dict[str, str] = {}
+
+        # 检查 StorageWriter
+        try:
+            ingestor = get_ingestor()
+            queue_stats = ingestor.queue_stats()
+            writer_alive = queue_stats.get("threads", {}).get("writer_alive", False)
+            checks["storage_writer"] = "ok" if writer_alive else "degraded"
+        except Exception:
+            checks["storage_writer"] = "error"
+
+        # 检查指标引擎
+        try:
+            indicator_manager = get_indicator_manager()
+            perf = indicator_manager.get_performance_stats()
+            checks["indicator_engine"] = "ok" if perf.get("event_loop_running") else "degraded"
+        except Exception:
+            checks["indicator_engine"] = "error"
+
+        # 若有任何 error 状态则返回 503
+        failed = [k for k, v in checks.items() if v == "error"]
+        if failed:
+            raise HTTPException(
+                status_code=503,
+                detail={"status": "not_ready", "failed_checks": failed, "checks": checks},
+            )
+
+        overall = "degraded" if any(v == "degraded" for v in checks.values()) else "ready"
+        return {
+            "status": overall,
+            "checks": checks,
+            "startup_phase": startup.get("phase"),
+            "timestamp": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"status": "error", "error": str(exc)}) from exc
 
 
 @router.get("/performance", summary="获取性能指标")
@@ -526,7 +597,7 @@ async def trigger_config_reload(filename: str = "signal.ini") -> Dict[str, Any]:
     该文件将被重新读取，并通过 ``_notify_config_change`` 通知所有已注册组件。
     """
     try:
-        mgr = get_config_manager()
+        mgr = get_file_config_manager()
         mgr._load_config(filename)
         mgr._notify_config_change(filename)
         return {"success": True, "reloaded": filename}

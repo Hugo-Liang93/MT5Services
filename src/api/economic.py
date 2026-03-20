@@ -17,7 +17,7 @@ from src.api.schemas import (
     EconomicCalendarUpdateModel,
 )
 from src.clients.economic_calendar import EconomicCalendarError, EconomicCalendarEvent
-from src.core.economic_calendar_service import EconomicCalendarService
+from src.calendar import EconomicCalendarService
 
 router = APIRouter(prefix="/economic", tags=["economic"])
 

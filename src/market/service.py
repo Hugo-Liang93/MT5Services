@@ -41,6 +41,7 @@ class MarketDataService:
         self._lock = threading.RLock()
         self._tick_cache: Dict[str, Deque[Tick]] = {}
         self._quote_cache: Dict[str, Quote] = {}
+        self._symbol_point_cache: Dict[str, float] = {}
         # 超过此阈值时在写入 set_quote() 时顺带剪枝过期条目，防止动态品种场景下无限增长。
         self._quote_cache_prune_threshold = 200
         self._quote_prune_counter = 0
@@ -59,24 +60,61 @@ class MarketDataService:
         return self.client.list_symbols()
 
     def get_symbol_info(self, symbol: str) -> SymbolInfo:
-        return self.client.get_symbol_info(symbol)
+        info = self.client.get_symbol_info(symbol)
+        try:
+            raw_point = info.get("point", 0.0) if isinstance(info, dict) else getattr(info, "point", 0.0)
+            point = float(raw_point or 0.0)
+        except (TypeError, ValueError):
+            point = 0.0
+        if point > 0:
+            with self._lock:
+                self._symbol_point_cache[symbol] = point
+        return info
+
+    def get_symbol_point(self, symbol: Optional[str] = None) -> Optional[float]:
+        symbol = symbol or self.market_settings.default_symbol
+        with self._lock:
+            point = self._symbol_point_cache.get(symbol)
+        if point is not None and point > 0:
+            return point
+        try:
+            info = self.get_symbol_info(symbol)
+        except Exception:
+            logger.debug("Failed to resolve symbol point for %s", symbol, exc_info=True)
+            return None
+        try:
+            raw_point = info.get("point", 0.0) if isinstance(info, dict) else getattr(info, "point", 0.0)
+            point = float(raw_point or 0.0)
+        except (TypeError, ValueError):
+            point = 0.0
+        return point if point > 0 else None
 
     def get_quote(self, symbol: Optional[str] = None) -> Optional[Quote]:
         symbol = symbol or self.market_settings.default_symbol
+        cached: Optional[Quote] = None
         with self._lock:
             cached = self._quote_cache.get(symbol)
             if cached:
                 age = (self._utc_now() - self._as_utc(cached.time)).total_seconds()
                 if age <= self.market_settings.quote_stale_seconds:
                     return cached
-        return None
+        try:
+            live_quote = self.client.get_quote(symbol)
+        except Exception:
+            logger.debug("Failed to refresh quote from MT5 for %s", symbol, exc_info=True)
+            return cached
+        self.set_quote(symbol, live_quote)
+        return live_quote
 
     def get_current_spread(self, symbol: Optional[str] = None) -> float:
         """Return current bid-ask spread in points. Returns 0.0 if no quote available."""
         quote = self.get_quote(symbol)
         if quote is None:
             return 0.0
-        return abs(quote.ask - quote.bid)
+        point = self.get_symbol_point(symbol)
+        if point is None or point <= 0:
+            return 0.0
+        return abs(quote.ask - quote.bid) / point
 
     def get_quote_history(
         self,

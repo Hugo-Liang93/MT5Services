@@ -13,7 +13,7 @@ from src.api.schemas import ApiResponse, OHLCModel, QuoteModel, TickModel, Symbo
 from src.api.error_codes import AIErrorCode, AIErrorAction, get_suggested_action
 from src.clients.mt5_market import MT5MarketError
 from src.config import get_interval_config, get_limit_config, get_shared_default_symbol
-from src.core.market_service import MarketDataService
+from src.market import MarketDataService
 
 router = APIRouter(tags=["market"])
 
@@ -35,6 +35,13 @@ def _normalize_query_time(value: Optional[datetime]) -> Optional[datetime]:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
+
+
+def _model_payload(item) -> dict:
+    payload = dict(getattr(item, "__dict__", {}) or {})
+    if getattr(item, "time", None) is not None:
+        payload["time"] = item.time.isoformat()
+    return payload
 
 
 @router.get("/symbols")
@@ -91,7 +98,7 @@ def quote(
             )
         
         return ApiResponse.success_response(
-            data=QuoteModel(**data.__dict__, time=data.time.isoformat()),
+            data=QuoteModel(**_model_payload(data)),
             metadata={
                 "symbol": resolved_symbol,
                 "data_type": "quote",
@@ -127,7 +134,7 @@ def ticks(
                 details={"symbol": resolved_symbol, "limit": limit}
             )
         
-        items = [TickModel(**t.__dict__, time=t.time.isoformat()) for t in data]
+        items = [TickModel(**_model_payload(t)) for t in data]
         return ApiResponse.success_response(
             data=items,
             metadata={
@@ -174,7 +181,7 @@ def quote_history(
             error=str(exc),
             error_code=AIErrorCode.SERVICE_UNAVAILABLE,
         )
-    items = [QuoteModel(**quote.__dict__, time=quote.time.isoformat()) for quote in data]
+    items = [QuoteModel(**_model_payload(quote)) for quote in data]
     return ApiResponse.success_response(
         data=items,
         metadata={
@@ -220,7 +227,7 @@ def tick_history(
             error=str(exc),
             error_code=AIErrorCode.SERVICE_UNAVAILABLE,
         )
-    items = [TickModel(**tick.__dict__, time=tick.time.isoformat()) for tick in data]
+    items = [TickModel(**_model_payload(tick)) for tick in data]
     return ApiResponse.success_response(
         data=items,
         metadata={
@@ -261,7 +268,7 @@ def ohlc(
                 details={"symbol": resolved_symbol, "timeframe": timeframe, "limit": resolved_limit}
             )
         
-        items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
+        items = [OHLCModel(**_model_payload(bar)) for bar in data]
         return ApiResponse.success_response(
             data=items,
             metadata={
@@ -311,7 +318,7 @@ def ohlc_history(
             error=str(exc),
             error_code=AIErrorCode.SERVICE_UNAVAILABLE,
         )
-    items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
+    items = [OHLCModel(**_model_payload(bar)) for bar in data]
     return ApiResponse.success_response(
         data=items,
         metadata={
@@ -342,7 +349,7 @@ def ohlc_intrabar_series(
 ) -> ApiResponse[List[OHLCModel]]:
     resolved_symbol = symbol or _runtime_market_defaults()["default_symbol"]
     data = service.get_intrabar_series(resolved_symbol, timeframe)
-    items = [OHLCModel(**bar.__dict__, time=bar.time.isoformat()) for bar in data]
+    items = [OHLCModel(**_model_payload(bar)) for bar in data]
     return ApiResponse.success_response(
         data=items,
         metadata={

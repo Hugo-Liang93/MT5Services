@@ -12,7 +12,7 @@ before order dispatch.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Protocol
 
 from ..contracts import (
@@ -21,6 +21,7 @@ from ..contracts import (
     SESSION_NEW_YORK,
     SESSION_OFF_HOURS,
     normalize_session_name,
+    resolve_session_by_hour,
 )
 
 
@@ -31,13 +32,6 @@ class TradeGuardProvider(Protocol):
 @dataclass
 class SessionFilter:
     """Identify active trading sessions and filter by allowed sessions."""
-
-    london_open: time = time(8, 0)
-    london_close: time = time(16, 0)
-    ny_open: time = time(13, 0)
-    ny_close: time = time(21, 0)
-    asia_open: time = time(0, 0)
-    asia_close: time = time(8, 0)
 
     allowed_sessions: tuple[str, ...] = (SESSION_LONDON, SESSION_NEW_YORK)
 
@@ -54,15 +48,20 @@ class SessionFilter:
         self.allowed_sessions = normalized
 
     def current_sessions(self, utc_now: Optional[datetime] = None) -> List[str]:
-        t = (utc_now or datetime.now(timezone.utc)).time()
-        sessions: List[str] = []
-        if self.asia_open <= t < self.asia_close:
-            sessions.append(SESSION_ASIA)
-        if self.london_open <= t < self.london_close:
-            sessions.append(SESSION_LONDON)
-        if self.ny_open <= t < self.ny_close:
-            sessions.append(SESSION_NEW_YORK)
-        return sessions or [SESSION_OFF_HOURS]
+        current = utc_now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        else:
+            current = current.astimezone(timezone.utc)
+        session_name = resolve_session_by_hour(current.hour)
+        if session_name in {
+            SESSION_ASIA,
+            SESSION_LONDON,
+            SESSION_NEW_YORK,
+            SESSION_OFF_HOURS,
+        }:
+            return [session_name]
+        return [SESSION_OFF_HOURS]
 
     def is_active_session(self, utc_now: Optional[datetime] = None) -> bool:
         if not self.allowed_sessions:
@@ -76,11 +75,30 @@ class SpreadFilter:
     """Reject signals when the bid-ask spread is too wide."""
 
     max_spread_points: float = 50.0
+    session_max_spread_points: dict[str, float] = field(default_factory=dict)
 
-    def is_spread_acceptable(self, spread_points: float) -> bool:
-        if self.max_spread_points <= 0:
+    def __post_init__(self) -> None:
+        normalized: dict[str, float] = {}
+        for session_name, max_points in self.session_max_spread_points.items():
+            normalized[normalize_session_name(session_name)] = float(max_points)
+        self.session_max_spread_points = normalized
+
+    def threshold_for_sessions(self, sessions: List[str] | None = None) -> float:
+        threshold = float(self.max_spread_points)
+        for session_name in sessions or []:
+            if session_name in self.session_max_spread_points:
+                threshold = min(threshold, self.session_max_spread_points[session_name])
+        return threshold
+
+    def is_spread_acceptable(
+        self,
+        spread_points: float,
+        sessions: List[str] | None = None,
+    ) -> bool:
+        threshold = self.threshold_for_sessions(sessions)
+        if threshold <= 0:
             return True
-        return spread_points <= self.max_spread_points
+        return spread_points <= threshold
 
 
 @dataclass
@@ -123,18 +141,26 @@ class SignalFilterChain:
         *,
         spread_points: float = 0.0,
         utc_now: Optional[datetime] = None,
+        active_sessions: Optional[List[str]] = None,
     ) -> tuple[bool, str]:
         """Return (allowed, reason). reason is empty when allowed."""
-        if self.session_filter and not self.session_filter.is_active_session(utc_now):
+        sessions = active_sessions
+        if sessions is None and self.session_filter:
             sessions = self.session_filter.current_sessions(utc_now)
+
+        if self.session_filter and not self.session_filter.is_active_session(utc_now):
+            sessions = sessions or self.session_filter.current_sessions(utc_now)
             return False, f"outside_allowed_sessions:{','.join(sessions)}"
 
         if self.spread_filter and not self.spread_filter.is_spread_acceptable(
-            spread_points
+            spread_points,
+            sessions=sessions,
         ):
+            threshold = self.spread_filter.threshold_for_sessions(sessions)
+            session_label = ",".join(sessions or []) or "unknown"
             return (
                 False,
-                f"spread_too_wide:{spread_points:.1f}>{self.spread_filter.max_spread_points}",
+                f"spread_too_wide:{spread_points:.1f}>{threshold:.1f}[{session_label}]",
             )
 
         if self.economic_filter and not self.economic_filter.is_safe_to_trade(

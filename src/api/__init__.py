@@ -16,7 +16,7 @@ from src.api import deps
 from src.api.schemas import ApiResponse
 from src.clients.mt5_market import MT5MarketError
 from src.config import get_api_config
-from src.core.market_service import MarketDataService
+from src.market import MarketDataService
 from src.trading.service import TradingModule
 
 logger = logging.getLogger(__name__)

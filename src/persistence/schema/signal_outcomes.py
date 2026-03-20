@@ -72,3 +72,44 @@ WHERE recorded_at >= NOW() - make_interval(hours => %s)
 GROUP BY strategy, action
 ORDER BY win_rate DESC, total DESC
 """
+
+EXPECTANCY_SQL = """
+SELECT
+    strategy,
+    action,
+    COUNT(*)                                              AS total,
+    SUM(CASE WHEN won THEN 1 ELSE 0 END)                  AS wins,
+    SUM(CASE WHEN won = FALSE THEN 1 ELSE 0 END)          AS losses,
+    ROUND(
+        AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END)::numeric, 4
+    )                                                     AS win_rate,
+    ROUND(
+        AVG(CASE WHEN won THEN ABS(price_change) END)::numeric, 6
+    )                                                     AS avg_win_move,
+    ROUND(
+        AVG(CASE WHEN won = FALSE THEN ABS(price_change) END)::numeric, 6
+    )                                                     AS avg_loss_move,
+    ROUND(
+        (
+            COALESCE(AVG(CASE WHEN won THEN ABS(price_change) END), 0.0)
+            * AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END)
+        ) - (
+            COALESCE(AVG(CASE WHEN won = FALSE THEN ABS(price_change) END), 0.0)
+            * (1.0 - AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END))
+        )::numeric,
+        6
+    )                                                     AS expectancy,
+    ROUND(
+        (
+            COALESCE(AVG(CASE WHEN won THEN ABS(price_change) END), 0.0)
+            / NULLIF(AVG(CASE WHEN won = FALSE THEN ABS(price_change) END), 0.0)
+        )::numeric,
+        4
+    )                                                     AS payoff_ratio
+FROM signal_outcomes
+WHERE recorded_at >= NOW() - make_interval(hours => %s)
+  AND won IS NOT NULL
+  AND (%s IS NULL OR symbol = %s)
+GROUP BY strategy, action
+ORDER BY expectancy DESC, total DESC
+"""

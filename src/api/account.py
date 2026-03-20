@@ -19,6 +19,18 @@ from src.trading.service import TradingModule
 router = APIRouter(tags=["account"])
 
 
+def _position_model_from_dataclass(position) -> PositionModel:
+    payload = dict(position.__dict__)
+    payload["time"] = position.time.isoformat()
+    return PositionModel(**payload)
+
+
+def _order_model_from_dataclass(order) -> OrderModel:
+    payload = dict(order.__dict__)
+    payload["time"] = order.time.isoformat()
+    return OrderModel(**payload)
+
+
 @router.get("/account/info", response_model=ApiResponse[AccountInfoModel])
 def account_info(svc: TradingModule = Depends(get_account_service)) -> ApiResponse[AccountInfoModel]:
     active_alias = svc.active_account_alias
@@ -69,7 +81,7 @@ def account_positions(
     active_alias = svc.active_account_alias
     try:
         positions = svc.positions(symbol)
-        items = [PositionModel(**p.__dict__, time=p.time.isoformat()) for p in positions]
+        items = [_position_model_from_dataclass(p) for p in positions]
         total_volume = sum(p.volume for p in positions)
         total_profit = sum(p.profit for p in positions) if positions and hasattr(positions[0], "profit") else 0
         buy_positions = [p for p in positions if p.type == 0]
@@ -120,7 +132,7 @@ def account_orders(
     active_alias = svc.active_account_alias
     try:
         orders = svc.orders(symbol)
-        items = [OrderModel(**o.__dict__, time=o.time.isoformat()) for o in orders]
+        items = [_order_model_from_dataclass(o) for o in orders]
         total_volume = sum(o.volume for o in orders)
         buy_orders = [o for o in orders if o.type == 0]
         sell_orders = [o for o in orders if o.type == 1]

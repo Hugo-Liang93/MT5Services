@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
 
 from src.config import EconomicConfig, RiskConfig
+from src.signals.execution.filters import SessionFilter
+from src.signals.contracts import normalize_session_name
 
 from .models import RiskCheckResult, TradeIntent
 
@@ -180,6 +183,176 @@ class ProtectionRule(RiskRule):
         return checks
 
 
+class SessionWindowRule(RiskRule):
+    name = "allowed_sessions"
+
+    def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
+        if not context.risk_settings.enabled:
+            return []
+        raw_allowed = str(context.risk_settings.allowed_sessions or "").strip()
+        if not raw_allowed:
+            return []
+
+        allowed_sessions = {
+            normalize_session_name(item)
+            for item in raw_allowed.split(",")
+            if str(item).strip()
+        }
+        current_time = context.intent.at_time or datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        else:
+            current_time = current_time.astimezone(timezone.utc)
+        current_sessions = SessionFilter().current_sessions(current_time)
+        if any(session_name in allowed_sessions for session_name in current_sessions):
+            return []
+
+        return [
+            RiskCheckResult(
+                name=self.name,
+                action="block",
+                reason=f"outside_allowed_sessions:{','.join(current_sessions)}",
+                details={
+                    "current_sessions": current_sessions,
+                    "allowed_sessions": sorted(allowed_sessions),
+                },
+            )
+        ]
+
+
+def _market_structure(context: RuleContext) -> Dict[str, Any]:
+    payload = context.intent.metadata.get("market_structure")
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _normalized_side(side: str) -> str:
+    side_value = str(side or "").strip().lower()
+    if side_value in {"buy", "long"}:
+        return "buy"
+    if side_value in {"sell", "short"}:
+        return "sell"
+    return side_value
+
+
+def _has_directional_structure(structure: Dict[str, Any], direction: str) -> bool:
+    prefix = f"{direction}_"
+    for key in (
+        "structure_bias",
+        "reclaim_state",
+        "first_pullback_state",
+        "sweep_confirmation_state",
+    ):
+        if str(structure.get(key) or "").strip().lower().startswith(prefix):
+            return True
+
+    breakout_state = str(structure.get("breakout_state") or "").strip().lower()
+    if direction == "bullish":
+        return breakout_state in {
+            "above_previous_day_high",
+            "above_asia_range_high",
+            "above_london_open_high",
+            "above_new_york_open_high",
+        }
+    if direction == "bearish":
+        return breakout_state in {
+            "below_previous_day_low",
+            "below_asia_range_low",
+            "below_london_open_low",
+            "below_new_york_open_low",
+        }
+    return False
+
+
+class MarketStructureRule(RiskRule):
+    name = "market_structure"
+
+    def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
+        if not context.risk_settings.enabled:
+            return []
+
+        structure = _market_structure(context)
+        if not structure:
+            return []
+
+        checks: List[RiskCheckResult] = []
+        side = _normalized_side(context.intent.side)
+        sweep_confirmation_state = str(
+            structure.get("sweep_confirmation_state") or "none"
+        ).strip().lower()
+        confirmation_reference = structure.get("confirmation_reference")
+
+        if side == "buy" and sweep_confirmation_state.startswith("bearish_"):
+            checks.append(
+                RiskCheckResult(
+                    name=self.name,
+                    action="block",
+                    reason="buy_conflicts_with_bearish_sweep_confirmation",
+                    details={
+                        "side": side,
+                        "sweep_confirmation_state": sweep_confirmation_state,
+                        "confirmation_reference": confirmation_reference,
+                        "structure_bias": structure.get("structure_bias"),
+                    },
+                )
+            )
+        elif side == "sell" and sweep_confirmation_state.startswith("bullish_"):
+            checks.append(
+                RiskCheckResult(
+                    name=self.name,
+                    action="block",
+                    reason="sell_conflicts_with_bullish_sweep_confirmation",
+                    details={
+                        "side": side,
+                        "sweep_confirmation_state": sweep_confirmation_state,
+                        "confirmation_reference": confirmation_reference,
+                        "structure_bias": structure.get("structure_bias"),
+                    },
+                )
+            )
+
+        current_session = normalize_session_name(structure.get("current_session") or "")
+        breakout_state = str(structure.get("breakout_state") or "none").strip().lower()
+        if current_session == "new_york":
+            if (
+                side == "buy"
+                and breakout_state == "below_new_york_open_low"
+                and not _has_directional_structure(structure, "bullish")
+            ):
+                checks.append(
+                    RiskCheckResult(
+                        name=f"{self.name}_new_york_open",
+                        action="warn",
+                        reason="buy_against_new_york_open_downside_expansion",
+                        details={
+                            "side": side,
+                            "current_session": current_session,
+                            "breakout_state": breakout_state,
+                            "new_york_open_low": structure.get("new_york_open_low"),
+                        },
+                    )
+                )
+            elif (
+                side == "sell"
+                and breakout_state == "above_new_york_open_high"
+                and not _has_directional_structure(structure, "bearish")
+            ):
+                checks.append(
+                    RiskCheckResult(
+                        name=f"{self.name}_new_york_open",
+                        action="warn",
+                        reason="sell_against_new_york_open_upside_expansion",
+                        details={
+                            "side": side,
+                            "current_session": current_session,
+                            "breakout_state": breakout_state,
+                            "new_york_open_high": structure.get("new_york_open_high"),
+                        },
+                    )
+                )
+
+        return checks
+
+
 class EconomicEventRule(RiskRule):
     name = "economic_event"
 
@@ -270,4 +443,3 @@ class CalendarHealthRule(RiskRule):
                 },
             )
         ]
-

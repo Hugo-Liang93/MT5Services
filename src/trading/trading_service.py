@@ -21,8 +21,40 @@ class TradingService:
         pre_trade_risk_service: Optional[PreTradeRiskService] = None,
     ):
         self.client = client or MT5TradingClient()
-        self.account_client = account_client or MT5AccountClient()
+        self.account_client = (
+            account_client
+            if account_client is not None
+            else (MT5AccountClient() if client is None else None)
+        )
         self.pre_trade_risk_service = pre_trade_risk_service
+
+    @staticmethod
+    def _blocked_precheck_response(
+        *,
+        symbol: str,
+        request_id: str,
+        reason: str,
+        checks: list[dict[str, Any]],
+        warnings: Optional[list[str]] = None,
+        suggested_adjustment: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "enabled": True,
+            "mode": "strict",
+            "blocked": True,
+            "action": "block",
+            "reason": reason,
+            "symbol": symbol,
+            "active_windows": [],
+            "upcoming_windows": [],
+            "checks": checks,
+            "warnings": warnings or [],
+            "estimated_margin": None,
+            "margin_error": None,
+            "request_id": request_id,
+            "executable": False,
+            "suggested_adjustment": suggested_adjustment,
+        }
 
     def open(
         self,
@@ -130,6 +162,7 @@ class TradingService:
         retry_attempts: int = 2,
         retry_backoff_ms: int = 120,
         request_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> dict:
         request_id = request_id or uuid4().hex
         risk_assessment: Optional[Dict[str, Any]] = None
@@ -145,6 +178,7 @@ class TradingService:
                 deviation=deviation,
                 comment=comment,
                 magic=magic,
+                metadata=metadata,
             )
         margin_estimate: Optional[float] = None
         try:
@@ -163,6 +197,7 @@ class TradingService:
             deviation=deviation,
             comment=comment,
             magic=magic,
+            metadata=metadata,
         )
         if dry_run:
             return {
@@ -179,6 +214,8 @@ class TradingService:
                 "execution_attempts": 0,
                 "execution_state": "skipped",
             }
+        if not bool(precheck_snapshot.get("executable", True)):
+            raise MT5TradingClientError(str(precheck_snapshot.get("reason") or "Trade precheck failed"))
 
         if hasattr(self.client, "open_trade_details"):
             last_error: Optional[Exception] = None
@@ -221,6 +258,7 @@ class TradingService:
             )
             result = {"ticket": ticket, "price": price, "execution_attempts": 1}
 
+        self._invalidate_account_cache()
         try:
             positions_count = len(self.get_positions(symbol=symbol))
         except Exception:
@@ -263,29 +301,42 @@ class TradingService:
         deviation: int = 20,
         comment: str = "",
         magic: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         request_id = uuid4().hex
         checks: list[dict[str, Any]] = []
         warnings: list[str] = []
         if volume is not None and volume <= 0:
             checks.append({"name": "volume_positive", "passed": False, "message": "volume must be > 0"})
-            return {
-                "enabled": True,
-                "mode": "strict",
-                "blocked": True,
-                "action": "block",
-                "reason": "volume must be > 0",
-                "symbol": symbol,
-                "active_windows": [],
-                "upcoming_windows": [],
-                "checks": checks,
-                "warnings": warnings,
-                "estimated_margin": None,
-                "margin_error": None,
-                "request_id": request_id,
-                "executable": False,
-                "suggested_adjustment": {"volume": 0.01},
-            }
+            return self._blocked_precheck_response(
+                symbol=symbol,
+                request_id=request_id,
+                reason="volume must be > 0",
+                checks=checks,
+                warnings=warnings,
+                suggested_adjustment={"volume": 0.01},
+            )
+        if volume is not None and side and hasattr(self.client, "validate_trade_request"):
+            try:
+                self.client.validate_trade_request(
+                    symbol=symbol,
+                    volume=volume,
+                    side=side,
+                    order_kind=order_kind,
+                    price=price,
+                    sl=sl,
+                    tp=tp,
+                )
+            except Exception as exc:
+                checks.append({"name": "trade_parameters", "passed": False, "message": str(exc)})
+                return self._blocked_precheck_response(
+                    symbol=symbol,
+                    request_id=request_id,
+                    reason=str(exc),
+                    checks=checks,
+                    warnings=warnings,
+                    suggested_adjustment={"action": "review_trade_parameters"},
+                )
         if self.pre_trade_risk_service is None:
             return {
                 "enabled": False,
@@ -313,6 +364,7 @@ class TradingService:
             deviation=deviation,
             comment=comment,
             magic=magic,
+            metadata=metadata,
         )
         assessment["estimated_margin"] = None
         assessment.setdefault("warnings", [])
@@ -346,6 +398,7 @@ class TradingService:
         volume: Optional[float] = None,
     ) -> dict:
         success = self.close(ticket=ticket, deviation=deviation, comment=comment, volume=volume)
+        self._invalidate_account_cache()
         return {"ticket": ticket, "success": success, "volume": volume}
 
     def close_all_positions(
@@ -364,13 +417,22 @@ class TradingService:
             comment=comment,
         )
 
+    def _invalidate_account_cache(self) -> None:
+        """下单/平仓后使账户/持仓短 TTL 缓存失效。"""
+        if self.account_client is not None and hasattr(self.account_client, "invalidate_cache"):
+            self.account_client.invalidate_cache()
+
     def get_positions(self, symbol: Optional[str] = None, magic: Optional[int] = None):
+        if self.account_client is None:
+            return []
         positions = self.account_client.positions(symbol=symbol)
         if magic is not None:
             positions = [p for p in positions if p.magic == magic]
         return positions
 
     def get_orders(self, symbol: Optional[str] = None, magic: Optional[int] = None):
+        if self.account_client is None:
+            return []
         orders = self.account_client.orders(symbol=symbol)
         if magic is not None:
             orders = [o for o in orders if o.magic == magic]

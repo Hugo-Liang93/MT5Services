@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 import pytest
 
 from src.signals.models import SignalDecision
-from src.signals.regime import RegimeType
-from src.signals.voting import StrategyVotingEngine
+from src.signals.evaluation.regime import RegimeType
+from src.signals.orchestration import StrategyVotingEngine
 
 
 # ── 辅助工厂 ─────────────────────────────────────────────────────────────────

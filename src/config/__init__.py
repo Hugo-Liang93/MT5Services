@@ -1,36 +1,39 @@
 """
-配置系统 - 支持集中式配置管理（单一信号源）
-提供向后兼容的配置加载接口。
+Configuration package public entrypoint.
 """
 
 from __future__ import annotations
 
-import configparser
-
-# Primary runtime imports should come from this module. The compatibility
-# loaders re-exported below are kept only for older call sites.
-
-# 导出兼容层接口（保持现有代码不变）
-from src.config.compat import (
-    # 配置类
-    MT5Settings,
-    DBSettings,
-    CompatIngestSettings as IngestSettings,
-    CompatMarketSettings as MarketSettings,
-    StorageSettings,
-    IndicatorSettings,
-    
-    # 加载函数
-    load_mt5_settings,
-    load_mt5_accounts,
-    load_db_settings,
-    load_ingest_settings,
-    load_storage_settings,
-    load_market_settings,
-    load_indicator_settings,
-    load_indicator_tasks,
+from src.config.centralized import (
+    APIConfig,
+    EconomicConfig,
+    IngestConfig,
+    IntervalConfig,
+    LimitConfig,
+    RiskConfig,
+    SignalConfig,
+    SystemConfig,
+    TradingConfig,
+    TradingOpsConfig,
+    get_api_config,
+    get_config_provenance_snapshot,
+    get_economic_config,
+    get_effective_config_snapshot,
+    get_ingest_config,
+    get_interval_config,
+    get_limit_config,
+    get_risk_config,
+    get_shared_default_symbol,
+    get_shared_symbols,
+    get_shared_timeframes,
+    get_signal_config,
+    get_system_config,
+    get_trading_config,
+    get_trading_ops_config,
+    reload_configs,
+    validate_config_consistency,
 )
-
+from src.config.database import DBSettings, load_db_settings
 from src.config.indicator_config import (
     CacheStrategy,
     ComputeMode,
@@ -43,179 +46,84 @@ from src.config.indicator_config import (
     get_global_config_manager as get_indicator_config_manager,
     normalize_indicator_func_path,
 )
-
-# 导出集中式配置系统
-from src.config.centralized import (
-    # 配置类
-    TradingConfig,
-    IntervalConfig,
-    LimitConfig,
-    SystemConfig,
-    APIConfig,
-    IngestConfig,
-    EconomicConfig,
-    RiskConfig,
-    TradingOpsConfig,
-    SignalConfig,
-
-    # 加载函数
-    get_trading_config,
-    get_interval_config,
-    get_limit_config,
-    get_system_config,
-    get_api_config,
-    get_ingest_config,
-    get_economic_config,
-    get_risk_config,
-    get_trading_ops_config,
-    get_signal_config,
-
-    # 工具函数
-    get_shared_symbols,
-    get_shared_timeframes,
-    get_shared_default_symbol,
-    get_effective_config_snapshot,
-    get_config_provenance_snapshot,
-    validate_config_consistency,
-    reload_configs,
+from src.config.indicator_runtime import (
+    IndicatorSettings,
+    load_indicator_settings,
+    load_indicator_tasks,
 )
-
-# 导出工具函数
+from src.config.mt5 import MT5Settings, load_mt5_accounts, load_mt5_settings
+from src.config.runtime import (
+    IngestSettings,
+    MarketSettings,
+    get_runtime_ingest_settings,
+    get_runtime_market_settings,
+)
+from src.config.storage import StorageSettings, load_storage_settings
 from src.config.utils import (
-    resolve_config_path,
-    load_ini_config,
-    load_config_with_base,
-    get_merged_option_source,
-    get_merged_config,
     ConfigValidator,
+    get_merged_config,
+    get_merged_option_source,
+    load_config_with_base,
+    load_ini_config,
+    resolve_config_path,
 )
-
-
-def _get_cache_section() -> configparser.SectionProxy | None:
-    _, parser = load_config_with_base("cache.ini")
-    if not parser or not parser.has_section("cache"):
-        return None
-    return parser["cache"]
-
-
-def _cache_int(section: configparser.SectionProxy | None, key: str, default: int) -> int:
-    if section is None:
-        return default
-    try:
-        return section.getint(key, fallback=default)
-    except Exception:
-        return default
-
-
-def get_runtime_ingest_settings() -> IngestSettings:
-    trading = get_trading_config()
-    intervals = get_interval_config()
-    limits = get_limit_config()
-    ingest = get_ingest_config()
-    cache = _get_cache_section()
-
-    return IngestSettings(
-        tick_cache_size=_cache_int(cache, "tick_cache_size", limits.tick_cache_size),
-        tick_initial_lookback_seconds=ingest.tick_initial_lookback_seconds,
-        ingest_symbols=trading.symbols,
-        ingest_tick_interval=intervals.tick_interval,
-        ingest_ohlc_timeframes=trading.timeframes,
-        ingest_ohlc_interval=intervals.ohlc_interval,
-        ingest_ohlc_intervals={},
-        ohlc_backfill_limit=ingest.ohlc_backfill_limit,
-        retry_attempts=ingest.retry_attempts,
-        retry_backoff=ingest.retry_backoff,
-        connection_timeout=ingest.connection_timeout,
-        max_concurrent_symbols=ingest.max_concurrent_symbols,
-        queue_monitor_interval=ingest.queue_monitor_interval,
-        health_check_interval=ingest.health_check_interval,
-        max_allowed_delay=ingest.max_allowed_delay,
-        ingest_intrabar_interval=ingest.intrabar_interval,
-        ingest_intrabar_intervals=dict(ingest.intrabar_intervals),
-    )
-
-
-def get_runtime_market_settings() -> MarketSettings:
-    trading = get_trading_config()
-    intervals = get_interval_config()
-    limits = get_limit_config()
-    cache = _get_cache_section()
-
-    return MarketSettings(
-        default_symbol=trading.default_symbol,
-        tick_limit=limits.tick_limit,
-        ohlc_limit=limits.ohlc_limit,
-        quote_stale_seconds=limits.quote_stale_seconds,
-        stream_interval_seconds=intervals.stream_interval,
-        tick_cache_size=_cache_int(cache, "tick_cache_size", limits.tick_cache_size),
-        ohlc_cache_limit=_cache_int(cache, "ohlc_cache_limit", limits.ohlc_cache_limit),
-        intrabar_max_points=_cache_int(cache, "intrabar_max_points", 500),
-        ohlc_event_queue_size=_cache_int(cache, "ohlc_event_queue_size", 1000),
-    )
 
 __all__ = [
-    # 兼容层
-    "MT5Settings",
-    "DBSettings",
-    "IngestSettings",
-    "MarketSettings",
-    "StorageSettings",
-    "IndicatorSettings",
-    "load_mt5_settings",
-    "load_mt5_accounts",
-    "load_db_settings",
-    "load_ingest_settings",
-    "load_storage_settings",
-    "load_market_settings",
-    "load_indicator_settings",
-    "load_indicator_tasks",
+    "APIConfig",
     "CacheStrategy",
     "ComputeMode",
+    "ConfigValidator",
+    "DBSettings",
+    "EconomicConfig",
+    "IndicatorConfig",
     "IndicatorConfigLoader",
     "IndicatorConfigManager",
-    "IndicatorConfig",
     "IndicatorPipelineConfig",
-    "UnifiedIndicatorConfig",
-    "get_indicator_config",
-    "get_indicator_config_manager",
-    "normalize_indicator_func_path",
-    
-    # 集中式配置
-    "TradingConfig",
+    "IndicatorSettings",
+    "IngestConfig",
+    "IngestSettings",
     "IntervalConfig",
     "LimitConfig",
-    "SystemConfig",
-    "APIConfig",
-    "IngestConfig",
-    "EconomicConfig",
+    "MT5Settings",
+    "MarketSettings",
     "RiskConfig",
-    "TradingOpsConfig",
     "SignalConfig",
-    "get_trading_config",
+    "StorageSettings",
+    "SystemConfig",
+    "TradingConfig",
+    "TradingOpsConfig",
+    "UnifiedIndicatorConfig",
+    "get_api_config",
+    "get_config_provenance_snapshot",
+    "get_economic_config",
+    "get_effective_config_snapshot",
+    "get_indicator_config",
+    "get_indicator_config_manager",
+    "get_ingest_config",
     "get_interval_config",
     "get_limit_config",
-    "get_system_config",
-    "get_api_config",
-    "get_ingest_config",
-    "get_economic_config",
+    "get_merged_config",
+    "get_merged_option_source",
     "get_risk_config",
-    "get_trading_ops_config",
-    "get_signal_config",
     "get_runtime_ingest_settings",
     "get_runtime_market_settings",
+    "get_shared_default_symbol",
     "get_shared_symbols",
     "get_shared_timeframes",
-    "get_shared_default_symbol",
-    "get_effective_config_snapshot",
-    "get_config_provenance_snapshot",
-    "validate_config_consistency",
-    "reload_configs",
-    
-    # 工具函数
-    "resolve_config_path",
-    "load_ini_config",
+    "get_signal_config",
+    "get_system_config",
+    "get_trading_config",
+    "get_trading_ops_config",
     "load_config_with_base",
-    "get_merged_option_source",
-    "get_merged_config",
-    "ConfigValidator",
+    "load_db_settings",
+    "load_indicator_settings",
+    "load_indicator_tasks",
+    "load_ini_config",
+    "load_mt5_accounts",
+    "load_mt5_settings",
+    "load_storage_settings",
+    "normalize_indicator_func_path",
+    "reload_configs",
+    "resolve_config_path",
+    "validate_config_consistency",
 ]

@@ -21,8 +21,22 @@ from .strategies.breakout import (
     KeltnerBollingerSqueezeStrategy,
     MultiTimeframeConfirmStrategy,
 )
-from .strategies.mean_reversion import RsiReversionStrategy, StochRsiStrategy
-from .strategies.trend import EmaRibbonStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
+from .strategies.composite import CompositeSignalStrategy
+from .strategies.composite import build_breakout_double_confirm, build_trend_triple_confirm
+from .strategies.mean_reversion import (
+    CciReversionStrategy,
+    RsiReversionStrategy,
+    StochRsiStrategy,
+    WilliamsRStrategy,
+)
+from .strategies.trend import (
+    EmaRibbonStrategy,
+    HmaCrossStrategy,
+    MacdMomentumStrategy,
+    RocMomentumStrategy,
+    SmaTrendStrategy,
+    SupertrendStrategy,
+)
 from .tracking.repository import SignalRepository
 
 logger = logging.getLogger(__name__)
@@ -51,19 +65,26 @@ class SignalModule:
         )
         self._strategies: dict[str, SignalStrategy] = {}
         default_strategies: Iterable[SignalStrategy] = strategies or (
+            # ── 趋势跟踪策略（仅在 H1 运行，见 signal.ini [strategy_timeframes]）──
             SmaTrendStrategy(),
-            RsiReversionStrategy(),
-            BollingerBreakoutStrategy(),
-            # MultiTimeframeConfirmStrategy 需要外部注入 state_reader 和 htf_key
-            # 才能发挥作用；在默认配置下 htf_key 永不填充，策略始终输出 hold。
-            # 如需使用，请手动构造并传入 strategies 参数：
-            #   MultiTimeframeConfirmStrategy(state_reader=runtime._state_by_target)
-            SupertrendStrategy(),
-            StochRsiStrategy(),
             MacdMomentumStrategy(),
-            KeltnerBollingerSqueezeStrategy(),
-            DonchianBreakoutStrategy(),
+            # ── 趋势跟踪策略（M1 + H1）──────────────────────────────────────────
+            SupertrendStrategy(adx_threshold=25.0),
             EmaRibbonStrategy(),
+            HmaCrossStrategy(),
+            RocMomentumStrategy(),
+            # ── 均值回归策略（asia + london + newyork）──────────────────────────
+            RsiReversionStrategy(),
+            StochRsiStrategy(),
+            WilliamsRStrategy(),
+            CciReversionStrategy(),
+            # ── 突破/波动率策略 ──────────────────────────────────────────────────
+            BollingerBreakoutStrategy(),
+            KeltnerBollingerSqueezeStrategy(),
+            DonchianBreakoutStrategy(adx_min=25.0),
+            # ── 复合策略（多重确认，高精度低频率）────────────────────────────────
+            build_trend_triple_confirm(),
+            build_breakout_double_confirm(),
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)
@@ -327,13 +348,14 @@ class SignalModule:
             hold_warn_threshold=hold_warn_threshold,
             confidence_warn_threshold=confidence_warn_threshold,
         )
-        return self._diagnostics_analyzer.build_report(
+        report = self._diagnostics_analyzer.build_report(
             rows,
             symbol=symbol,
             timeframe=timeframe,
             scope=scope,
             thresholds=thresholds,
         )
+        return self._attach_expectancy_profile(report, symbol=symbol)
 
     def daily_quality_report(
         self,
@@ -358,7 +380,7 @@ class SignalModule:
             hold_warn_threshold=hold_warn_threshold,
             confidence_warn_threshold=confidence_warn_threshold,
         )
-        return self._diagnostics_analyzer.build_daily_quality_report(
+        report = self._diagnostics_analyzer.build_daily_quality_report(
             rows,
             symbol=symbol,
             timeframe=timeframe,
@@ -366,6 +388,7 @@ class SignalModule:
             thresholds=thresholds,
             now=now,
         )
+        return self._attach_expectancy_profile(report, symbol=symbol)
 
     def diagnostics_aggregate_summary(
         self,
@@ -399,6 +422,112 @@ class SignalModule:
             "top_strategies": top_strategies,
             "source": "repository.summary",
         }
+
+    def regime_report(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        runtime: Optional[Any] = None,
+    ) -> dict[str, Any]:
+        indicators = self.indicator_source.get_all_indicators(symbol, timeframe)
+        detail = self._regime_detector.detect_with_detail(indicators)
+        stability = None
+        if runtime is not None and hasattr(runtime, "get_regime_stability"):
+            stability = runtime.get_regime_stability(symbol, timeframe)
+        return {
+            **detail,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "stability": stability,
+        }
+
+    def recent_consensus_signals(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        return self.recent_signals(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy="consensus",
+            scope="confirmed",
+            limit=limit,
+        )
+
+    def strategy_winrates(
+        self,
+        *,
+        hours: int = 168,
+        symbol: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if self.repository is None or not hasattr(self.repository, "fetch_winrates"):
+            return []
+        return self.repository.fetch_winrates(hours=hours, symbol=symbol)
+
+    def strategy_expectancy(
+        self,
+        *,
+        hours: int = 168,
+        symbol: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if self.repository is None or not hasattr(self.repository, "fetch_expectancy_stats"):
+            return []
+        return self.repository.fetch_expectancy_stats(hours=hours, symbol=symbol)
+
+    def _attach_expectancy_profile(
+        self,
+        report: dict[str, Any],
+        *,
+        symbol: Optional[str],
+    ) -> dict[str, Any]:
+        expectancy_rows = self.strategy_expectancy(symbol=symbol)
+        if not expectancy_rows:
+            report.setdefault("performance_profile", [])
+            return report
+
+        expectancy_by_strategy: dict[str, list[dict[str, Any]]] = {}
+        for row in expectancy_rows:
+            expectancy_by_strategy.setdefault(str(row.get("strategy") or "unknown"), []).append(row)
+
+        strategy_breakdown = report.get("strategy_breakdown")
+        if isinstance(strategy_breakdown, list):
+            for item in strategy_breakdown:
+                strategy_name = str(item.get("strategy") or "unknown")
+                candidates = expectancy_by_strategy.get(strategy_name, [])
+                if not candidates:
+                    item["expectancy"] = None
+                    item["payoff_ratio"] = None
+                    continue
+                best = max(
+                    candidates,
+                    key=lambda row: abs(float(row.get("expectancy") or 0.0)),
+                )
+                item["expectancy"] = best.get("expectancy")
+                item["payoff_ratio"] = best.get("payoff_ratio")
+
+        negative_rows = [
+            row
+            for row in expectancy_rows
+            if float(row.get("expectancy") or 0.0) < 0.0
+        ]
+        recommendations = report.setdefault("recommendations", [])
+        if negative_rows:
+            recommendations.append(
+                "negative_expectancy_detected: cut or retune strategies with negative net expectancy before expanding auto-trade"
+            )
+        report["performance_profile"] = expectancy_rows
+        return report
+
+    def list_composite_strategies(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for name in self.list_strategies():
+            impl = self._strategies.get(name)
+            if isinstance(impl, CompositeSignalStrategy):
+                rows.append(impl.describe())
+        return rows
 
     def recent_by_trace_id(
         self,
@@ -476,6 +605,25 @@ class SignalModule:
                 hours=payload.get("hours", 24),
                 scope=payload.get("scope", "confirmed"),
             ),
+            "regime_report": lambda: self.regime_report(
+                symbol=payload["symbol"],
+                timeframe=payload["timeframe"],
+                runtime=payload.get("runtime"),
+            ),
+            "recent_consensus": lambda: self.recent_consensus_signals(
+                symbol=payload.get("symbol"),
+                timeframe=payload.get("timeframe"),
+                limit=payload.get("limit", 50),
+            ),
+            "strategy_winrates": lambda: self.strategy_winrates(
+                hours=payload.get("hours", 168),
+                symbol=payload.get("symbol"),
+            ),
+            "strategy_expectancy": lambda: self.strategy_expectancy(
+                hours=payload.get("hours", 168),
+                symbol=payload.get("symbol"),
+            ),
+            "composite_strategies": self.list_composite_strategies,
             "recent_by_trace_id": lambda: self.recent_by_trace_id(
                 trace_id=payload["trace_id"],
                 scope=payload.get("scope", "all"),

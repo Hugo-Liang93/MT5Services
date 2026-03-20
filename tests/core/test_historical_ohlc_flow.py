@@ -8,11 +8,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.clients.mt5_market import OHLC
-from src.core.market_service import MarketDataService
+from src.market import MarketDataService
 from src.indicators.manager import UnifiedIndicatorManager
 from src.indicators.engine.parallel_executor import ParallelExecutor
 from src.indicators.engine.pipeline import OptimizedPipeline
 from src.config.indicator_config import CacheStrategy, PipelineConfig as IndicatorPipelineConfig
+from src.utils.event_store import ClaimedEvent
 
 
 class DummyClient:
@@ -412,8 +413,8 @@ def test_indicator_manager_batches_same_scope_events_into_single_window_load() -
     manager = object.__new__(UnifiedIndicatorManager)
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
-        mark_event_completed=lambda symbol, timeframe, bar_time: completed.append((symbol, timeframe, bar_time)),
-        mark_event_failed=lambda *args, **kwargs: None,
+        mark_event_completed_by_id=lambda event_id: completed.append(event_id),
+        mark_event_failed_by_id=lambda *args, **kwargs: None,
     )
     manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
     manager._get_max_lookback = lambda: 5
@@ -422,17 +423,41 @@ def test_indicator_manager_batches_same_scope_events_into_single_window_load() -
 
     manager._process_closed_bar_events_batch(
         [
-            ("XAUUSD", "M1", bars[1].time),
-            ("XAUUSD", "M1", bars[2].time),
+            ClaimedEvent(event_id=11, symbol="XAUUSD", timeframe="M1", bar_time=bars[1].time),
+            ClaimedEvent(event_id=12, symbol="XAUUSD", timeframe="M1", bar_time=bars[2].time),
         ],
         durable_event=True,
     )
 
     assert len(window_calls) == 1
-    assert completed == [
-        ("XAUUSD", "M1", bars[1].time),
-        ("XAUUSD", "M1", bars[2].time),
-    ]
+    assert completed == [11, 12]
+
+
+def test_indicator_manager_prefers_event_id_completion_for_claimed_events() -> None:
+    completed_ids = []
+    bars = [_bar(1), _bar(2)]
+
+    class ServiceStub:
+        def get_ohlc_window(self, symbol, timeframe, end_time, limit):
+            return bars
+
+    manager = object.__new__(UnifiedIndicatorManager)
+    manager.market_service = ServiceStub()
+    manager.event_store = SimpleNamespace(
+        mark_event_completed_by_id=lambda event_id: completed_ids.append(event_id),
+        mark_event_failed_by_id=lambda *args, **kwargs: None,
+    )
+    manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
+    manager._get_max_lookback = lambda: 5
+    manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
+    manager._write_back_results = lambda *args, **kwargs: None
+
+    manager._process_closed_bar_events_batch(
+        [ClaimedEvent(event_id=99, symbol="XAUUSD", timeframe="M1", bar_time=bars[1].time)],
+        durable_event=True,
+    )
+
+    assert completed_ids == [99]
 
 
 def test_indicator_manager_completes_early_history_event_without_retry() -> None:
@@ -447,8 +472,9 @@ def test_indicator_manager_completes_early_history_event_without_retry() -> None
     manager = object.__new__(UnifiedIndicatorManager)
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
-        mark_event_completed=lambda symbol, timeframe, bar_time: completed.append((symbol, timeframe, bar_time)),
-        mark_event_failed=lambda symbol, timeframe, bar_time, error: failed.append((symbol, timeframe, bar_time, error)),
+        mark_event_completed_by_id=lambda event_id: completed.append(event_id),
+        mark_event_failed_by_id=lambda event_id, error: failed.append((event_id, error)),
+        mark_event_skipped_by_id=lambda event_id, reason: completed.append(("skipped", event_id, reason)),
     )
     manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
     manager._get_max_lookback = lambda: 5
@@ -456,11 +482,11 @@ def test_indicator_manager_completes_early_history_event_without_retry() -> None
     manager._write_back_results = lambda *args, **kwargs: None
 
     manager._process_closed_bar_events_batch(
-        [("XAUUSD", "M1", early_bar.time)],
+        [ClaimedEvent(event_id=21, symbol="XAUUSD", timeframe="M1", bar_time=early_bar.time)],
         durable_event=True,
     )
 
-    assert completed == [("XAUUSD", "M1", early_bar.time)]
+    assert completed == [("skipped", 21, "insufficient_history")]
     assert failed == []
 
 
@@ -483,8 +509,8 @@ def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_miss
     manager = object.__new__(UnifiedIndicatorManager)
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
-        mark_event_completed=lambda symbol, timeframe, bar_time: completed.append((symbol, timeframe, bar_time)),
-        mark_event_failed=lambda symbol, timeframe, bar_time, error: failed.append((symbol, timeframe, bar_time, error)),
+        mark_event_completed_by_id=lambda event_id: completed.append(event_id),
+        mark_event_failed_by_id=lambda event_id, error: failed.append((event_id, error)),
     )
     manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
     manager._get_max_lookback = lambda: 3
@@ -492,14 +518,14 @@ def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_miss
     manager._write_back_results = lambda *args, **kwargs: None
 
     manager._process_closed_bar_events_batch(
-        [("XAUUSD", "M1", missing_from_batch.time), ("XAUUSD", "M1", newer_bars[-1].time)],
+        [
+            ClaimedEvent(event_id=31, symbol="XAUUSD", timeframe="M1", bar_time=missing_from_batch.time),
+            ClaimedEvent(event_id=32, symbol="XAUUSD", timeframe="M1", bar_time=newer_bars[-1].time),
+        ],
         durable_event=True,
     )
 
-    assert completed == [
-        ("XAUUSD", "M1", missing_from_batch.time),
-        ("XAUUSD", "M1", newer_bars[-1].time),
-    ]
+    assert completed == [31, 32]
     assert failed == []
     assert fallback_calls[0][2] == newer_bars[-1].time
     assert fallback_calls[1][2] == missing_from_batch.time

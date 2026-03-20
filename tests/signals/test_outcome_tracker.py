@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from typing import List, Tuple, Optional
 from unittest.mock import MagicMock
 
-from src.signals.outcome_tracker import OutcomeTracker
+from src.trading.outcome_tracker import OutcomeTracker
 
 
 # ---------------------------------------------------------------------------

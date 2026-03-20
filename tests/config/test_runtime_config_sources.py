@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import configparser
 
-import src.config as runtime_config
 import src.config.centralized as centralized
-import src.config.compat as compat
+import src.config.mt5 as mt5_config
+import src.config.runtime as runtime_views
 
 
 def _parser_with_section(section: str, values: dict[str, object]) -> configparser.ConfigParser:
@@ -15,7 +15,7 @@ def _parser_with_section(section: str, values: dict[str, object]) -> configparse
     return parser
 
 
-def test_compat_loaders_and_runtime_cache_use_merged_ini(monkeypatch):
+def test_runtime_loaders_use_merged_ini(monkeypatch):
     parsers = {
         "mt5.ini": _parser_with_section(
             "mt5",
@@ -40,42 +40,53 @@ def test_compat_loaders_and_runtime_cache_use_merged_ini(monkeypatch):
     def fake_load_config_with_base(config_name: str, base_config: str = "app.ini", base_dir=None):
         return config_name, parsers.get(config_name)
 
-    monkeypatch.setattr(compat, "load_config_with_base", fake_load_config_with_base)
-    monkeypatch.setattr(runtime_config, "load_config_with_base", fake_load_config_with_base)
+    monkeypatch.setattr(mt5_config, "load_config_with_base", fake_load_config_with_base)
+    monkeypatch.setattr(runtime_views, "load_config_with_base", fake_load_config_with_base)
 
-    compat.load_mt5_settings.cache_clear()
+    mt5_config.load_mt5_settings.cache_clear()
+    runtime_views.get_runtime_market_settings.cache_clear()
     try:
-        mt5_settings = compat.load_mt5_settings()
-        market_settings = runtime_config.get_runtime_market_settings()
+        mt5_settings = mt5_config.load_mt5_settings()
+        market_settings = runtime_views.get_runtime_market_settings()
 
         assert mt5_settings.mt5_login == 123456
         assert mt5_settings.mt5_server == "demo"
         assert market_settings.tick_cache_size == 777
         assert market_settings.ohlc_event_queue_size == 444
     finally:
-        compat.load_mt5_settings.cache_clear()
+        mt5_config.load_mt5_settings.cache_clear()
+        runtime_views.get_runtime_market_settings.cache_clear()
 
 
-def test_reload_configs_clears_compat_loader_caches(monkeypatch):
-    state = {"login": 1001}
+def test_reload_configs_clears_runtime_loader_caches(monkeypatch):
+    state = {"login": 1001, "tick_cache_size": 111}
 
     def fake_load_config_with_base(config_name: str, base_config: str = "app.ini", base_dir=None):
         if config_name == "mt5.ini":
             return config_name, _parser_with_section("mt5", {"login": state["login"]})
+        if config_name == "cache.ini":
+            return config_name, _parser_with_section("cache", {"tick_cache_size": state["tick_cache_size"]})
         return config_name, None
 
-    monkeypatch.setattr(compat, "load_config_with_base", fake_load_config_with_base)
+    monkeypatch.setattr(mt5_config, "load_config_with_base", fake_load_config_with_base)
+    monkeypatch.setattr(runtime_views, "load_config_with_base", fake_load_config_with_base)
 
-    compat.load_mt5_settings.cache_clear()
+    mt5_config.load_mt5_settings.cache_clear()
+    runtime_views.get_runtime_market_settings.cache_clear()
     try:
-        assert compat.load_mt5_settings().mt5_login == 1001
+        assert mt5_config.load_mt5_settings().mt5_login == 1001
+        assert runtime_views.get_runtime_market_settings().tick_cache_size == 111
+
         state["login"] = 2002
+        state["tick_cache_size"] = 222
 
         centralized.reload_configs()
 
-        assert compat.load_mt5_settings().mt5_login == 2002
+        assert mt5_config.load_mt5_settings().mt5_login == 2002
+        assert runtime_views.get_runtime_market_settings().tick_cache_size == 222
     finally:
-        compat.load_mt5_settings.cache_clear()
+        mt5_config.load_mt5_settings.cache_clear()
+        runtime_views.get_runtime_market_settings.cache_clear()
 
 
 def test_mt5_loader_strips_wrapping_quotes_from_ini_values(monkeypatch):
@@ -90,21 +101,21 @@ def test_mt5_loader_strips_wrapping_quotes_from_ini_values(monkeypatch):
     )
 
     monkeypatch.setattr(
-        compat,
+        mt5_config,
         "load_config_with_base",
         lambda config_name, base_config="app.ini", base_dir=None: (config_name, parser)
         if config_name == "mt5.ini"
         else (config_name, None),
     )
 
-    compat.load_mt5_settings.cache_clear()
+    mt5_config.load_mt5_settings.cache_clear()
     try:
-        settings = compat.load_mt5_settings()
+        settings = mt5_config.load_mt5_settings()
         assert settings.mt5_password == "secret"
         assert settings.mt5_server == "demo-server"
         assert settings.mt5_path == "C:/Program Files/MT5/terminal64.exe"
     finally:
-        compat.load_mt5_settings.cache_clear()
+        mt5_config.load_mt5_settings.cache_clear()
 
 
 def test_provenance_reports_local_ini_sources(monkeypatch):

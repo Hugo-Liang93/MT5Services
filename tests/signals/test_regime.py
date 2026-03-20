@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.signals.regime import MarketRegimeDetector, RegimeType
+from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 
 
 # ── 测试数据工厂 ─────────────────────────────────────────────────────────────

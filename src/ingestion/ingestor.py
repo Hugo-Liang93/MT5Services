@@ -15,7 +15,7 @@ _T = TypeVar("_T")
 
 from src.config import IngestSettings
 from src.clients.mt5_market import MT5MarketClient, MT5MarketError
-from src.core.market_service import MarketDataService
+from src.market import MarketDataService
 from src.persistence.storage_writer import StorageWriter
 from src.utils.common import ohlc_key, timeframe_seconds, timeframe_interval
 
@@ -54,13 +54,17 @@ class BackgroundIngestor:
             max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
         )
         # 连续失败退避：品种连续采集失败 _SYMBOL_ERROR_THRESHOLD 次后，
-        # 进入降频冷却期（_SYMBOL_COOLDOWN_SECONDS），期间跳过该品种。
+        # 进入指数退避冷却期，防止 MT5 网络抖动时日志被刷爆。
+        # 退避公式：cooldown = base × 2^(retry_count - 1)，上限 _SYMBOL_MAX_COOLDOWN
         _SYMBOL_ERROR_THRESHOLD = 5
         _SYMBOL_COOLDOWN_SECONDS = 60.0
+        _SYMBOL_MAX_COOLDOWN_SECONDS = 300.0   # 最长冷却 5 分钟
         self._symbol_error_threshold = _SYMBOL_ERROR_THRESHOLD
         self._symbol_cooldown_seconds = _SYMBOL_COOLDOWN_SECONDS
+        self._symbol_max_cooldown_seconds = _SYMBOL_MAX_COOLDOWN_SECONDS
         self._symbol_error_counts: Dict[str, int] = {}
         self._symbol_skip_until: Dict[str, float] = {}
+        self._symbol_backoff_count: Dict[str, int] = {}  # 累计退避轮次
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -121,21 +125,29 @@ class BackgroundIngestor:
                     self._ingest_ticks(symbol)
                     self._ingest_ohlc(symbol, next_ohlc_at)
                     self._ingest_intrabar(symbol, next_intrabar_at)
-                    # 本轮成功，重置错误计数。
+                    # 本轮成功，重置错误计数和退避轮次。
                     self._symbol_error_counts.pop(symbol, None)
+                    self._symbol_backoff_count.pop(symbol, None)
                 except MT5MarketError as exc:
                     count = self._symbol_error_counts.get(symbol, 0) + 1
                     self._symbol_error_counts[symbol] = count
                     logger.warning("Ingest error for %s (consecutive=%d): %s", symbol, count, exc)
                     if count >= self._symbol_error_threshold:
-                        self._symbol_skip_until[symbol] = now + self._symbol_cooldown_seconds
+                        backoff_round = self._symbol_backoff_count.get(symbol, 0)
+                        cooldown = min(
+                            self._symbol_cooldown_seconds * (2 ** backoff_round),
+                            self._symbol_max_cooldown_seconds,
+                        )
+                        self._symbol_skip_until[symbol] = now + cooldown
                         self._symbol_error_counts.pop(symbol, None)
+                        self._symbol_backoff_count[symbol] = backoff_round + 1
                         logger.error(
                             "Symbol %s hit %d consecutive errors; "
-                            "suppressing for %.0fs before retry.",
+                            "exponential backoff cooldown=%.0fs (round=%d).",
                             symbol,
                             self._symbol_error_threshold,
-                            self._symbol_cooldown_seconds,
+                            cooldown,
+                            backoff_round + 1,
                         )
                 except Exception as exc:  # pragma: no cover - 防御
                     logger.exception("Unexpected ingest error for %s: %s", symbol, exc)

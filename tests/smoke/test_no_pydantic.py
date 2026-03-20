@@ -13,11 +13,11 @@ def test_without_pydantic():
     # 1. 测试我们的优化模块
     print("\n1. 测试优化模块:")
     try:
-        from src.config.advanced_manager import get_config_manager
+        from src.config.file_manager import get_file_config_manager
         print("   ✅ 高级配置管理器可用")
         
         # 测试基本功能
-        manager = get_config_manager()
+        manager = get_file_config_manager()
         print(f"   ✅ 配置管理器创建成功: {manager}")
     except ImportError as e:
         print(f"   ❌ 高级配置管理器导入失败: {e}")
@@ -101,15 +101,15 @@ def test_without_pydantic():
     print("总结:")
     print("=" * 60)
     
-    print("Primary runtime config path: src.config. advanced_manager is compatibility-only.")
+    print("Primary runtime config path: src.config. file_manager is file-backed only.")
     print("""
 优化模块不依赖pydantic，可以独立运行。
 原始系统的config模块依赖pydantic，需要安装。
 
 建议解决方案:
 1. 立即安装pydantic: pip install pydantic
-2. 或者修改config/compat.py，移除pydantic依赖
-3. 使用我们的高级配置管理器替代原始配置系统
+2. 或者继续收缩对 pydantic 的直接依赖面
+3. 使用文件配置管理器处理需要热重载通知的纯文件路径
 """)
 
 if __name__ == "__main__":

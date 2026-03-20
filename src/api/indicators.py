@@ -16,11 +16,15 @@ from pydantic import BaseModel, Field
 from src.api.deps import get_unified_indicator_manager, get_market_service
 from src.api.schemas import ApiResponse
 from src.api.error_codes import AIErrorCode, AIErrorAction
-from src.core.market_service import MarketDataService
+from src.market import MarketDataService
 from src.indicators.manager import UnifiedIndicatorManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/indicators", tags=["indicators"])
+
+
+def _available_indicator_names(manager: UnifiedIndicatorManager) -> set[str]:
+    return {str(info["name"]) for info in manager.list_indicators()}
 
 
 # 请求/响应模型
@@ -79,6 +83,101 @@ async def list_available_indicators(
             error_message=f"获取指标列表失败: {str(e)}",
             suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__}
+        )
+
+
+@router.get("/performance/stats", response_model=ApiResponse[Dict[str, Any]])
+async def get_performance_stats(
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
+) -> ApiResponse[Dict[str, Any]]:
+    """
+    鑾峰彇浼樺寲鎸囨爣鏈嶅姟鐨勬€ц兘缁熻
+    
+    Returns:
+        鎬ц兘缁熻淇℃伅
+    """
+    try:
+        stats = manager.get_performance_stats()
+        
+        return ApiResponse.success_response(
+            data=stats,
+            metadata={
+                "source": "optimized_indicator_service",
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to get performance stats: {e}")
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
+            error_message=f"鑾峰彇鎬ц兘缁熻澶辫触: {str(e)}",
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
+            details={"exception_type": type(e).__name__}
+        )
+
+
+@router.post("/cache/clear", response_model=ApiResponse[Dict[str, int]])
+async def clear_cache(
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
+) -> ApiResponse[Dict[str, int]]:
+    """
+    娓呯┖鎸囨爣缂撳瓨
+    
+    Returns:
+        娓呴櫎鐨勭紦瀛橀」鏁伴噺
+    """
+    try:
+        cache_count = manager.clear_cache()
+        
+        return ApiResponse.success_response(
+            data={"cleared_entries": cache_count},
+            metadata={
+                "action": "cache_clear",
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to clear cache: {e}")
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
+            error_message=f"娓呯┖缂撳瓨澶辫触: {str(e)}",
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
+            details={"exception_type": type(e).__name__}
+        )
+
+
+@router.get("/dependency/graph", response_model=ApiResponse[Dict[str, str]])
+async def get_dependency_graph(
+    format: str = Query("mermaid", description="鍥惧舰鏍煎紡: mermaid 鎴?dot"),
+    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
+) -> ApiResponse[Dict[str, str]]:
+    """
+    鑾峰彇鎸囨爣渚濊禆鍏崇郴鍥?
+    
+    Args:
+        format: 鍥惧舰鏍煎紡锛坢ermaid 鎴?dot锛?
+        
+    Returns:
+        渚濊禆鍏崇郴鍥?
+    """
+    try:
+        graph = manager.get_dependency_graph(format)
+        
+        return ApiResponse.success_response(
+            data={"graph": graph, "format": format},
+            metadata={
+                "source": "dependency_manager",
+                "format": format,
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to get dependency graph: {e}")
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
+            error_message=f"鑾峰彇渚濊禆鍏崇郴鍥惧け璐? {str(e)}",
+            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
+            details={"exception_type": type(e).__name__, "format": format}
         )
 
 
@@ -259,6 +358,22 @@ async def compute_indicators(
                 suggested_action=AIErrorAction.USE_DIFFERENT_SYMBOL,
                 details={"symbol": request.symbol, "available_symbols": symbols}
             )
+
+        available_indicators = _available_indicator_names(manager)
+        invalid_indicators = [
+            indicator_name for indicator_name in request.indicators if indicator_name not in available_indicators
+        ]
+        if invalid_indicators:
+            return ApiResponse.error_response(
+                error_code=AIErrorCode.INVALID_INDICATOR_PARAMS,
+                error_message=f"Unsupported indicators requested: {', '.join(invalid_indicators)}",
+                suggested_action=AIErrorAction.VALIDATE_PARAMETERS,
+                details={
+                    "symbol": request.symbol,
+                    "timeframe": request.timeframe,
+                    "invalid_indicators": invalid_indicators,
+                },
+            )
         
         # 按需计算指标
         results = manager.compute(
@@ -266,8 +381,13 @@ async def compute_indicators(
             timeframe=request.timeframe,
             indicator_names=request.indicators
         )
+        sanitized_results = {
+            name: value
+            for name, value in (results or {}).items()
+            if isinstance(value, dict) and value
+        }
         
-        if not results:
+        if not sanitized_results:
             return ApiResponse.error_response(
                 error_code=AIErrorCode.DATA_NOT_AVAILABLE,
                 error_message=f"无法计算 {request.symbol}/{request.timeframe} 的指标",
@@ -275,17 +395,18 @@ async def compute_indicators(
                 details={
                     "symbol": request.symbol,
                     "timeframe": request.timeframe,
-                    "indicators": request.indicators
+                    "indicators": request.indicators,
+                    "empty_or_invalid_results": sorted((results or {}).keys()),
                 }
             )
         
         return ApiResponse.success_response(
-            data=results,
+            data=sanitized_results,
             metadata={
                 "symbol": request.symbol,
                 "timeframe": request.timeframe,
                 "indicators_requested": len(request.indicators),
-                "indicators_computed": len(results),
+                "indicators_computed": len(sanitized_results),
                 "source": "optimized_indicator_service_on_demand"
             }
         )
@@ -304,97 +425,3 @@ async def compute_indicators(
         )
 
 
-@router.get("/performance/stats", response_model=ApiResponse[Dict[str, Any]])
-async def get_performance_stats(
-    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
-) -> ApiResponse[Dict[str, Any]]:
-    """
-    获取优化指标服务的性能统计
-    
-    Returns:
-        性能统计信息
-    """
-    try:
-        stats = manager.get_performance_stats()
-        
-        return ApiResponse.success_response(
-            data=stats,
-            metadata={
-                "source": "optimized_indicator_service",
-                "timestamp": datetime.now().isoformat()
-            }
-        )
-    except Exception as e:
-        logger.error(f"Failed to get performance stats: {e}")
-        return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
-            error_message=f"获取性能统计失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
-            details={"exception_type": type(e).__name__}
-        )
-
-
-@router.post("/cache/clear", response_model=ApiResponse[Dict[str, int]])
-async def clear_cache(
-    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
-) -> ApiResponse[Dict[str, int]]:
-    """
-    清空指标缓存
-    
-    Returns:
-        清除的缓存项数量
-    """
-    try:
-        cache_count = manager.clear_cache()
-        
-        return ApiResponse.success_response(
-            data={"cleared_entries": cache_count},
-            metadata={
-                "action": "cache_clear",
-                "timestamp": datetime.now().isoformat()
-            }
-        )
-    except Exception as e:
-        logger.error(f"Failed to clear cache: {e}")
-        return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
-            error_message=f"清空缓存失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
-            details={"exception_type": type(e).__name__}
-        )
-
-
-@router.get("/dependency/graph", response_model=ApiResponse[Dict[str, str]])
-async def get_dependency_graph(
-    format: str = Query("mermaid", description="图形格式: mermaid 或 dot"),
-    manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
-) -> ApiResponse[Dict[str, str]]:
-    """
-    获取指标依赖关系图
-    
-    Args:
-        format: 图形格式（mermaid 或 dot）
-        
-    Returns:
-        依赖关系图
-    """
-    try:
-        # 从统一管理器获取依赖关系图
-        graph = manager.get_dependency_graph(format)
-        
-        return ApiResponse.success_response(
-            data={"graph": graph, "format": format},
-            metadata={
-                "source": "dependency_manager",
-                "format": format,
-                "timestamp": datetime.now().isoformat()
-            }
-        )
-    except Exception as e:
-        logger.error(f"Failed to get dependency graph: {e}")
-        return ApiResponse.error_response(
-            error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
-            error_message=f"获取依赖关系图失败: {str(e)}",
-            suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
-            details={"exception_type": type(e).__name__, "format": format}
-        )

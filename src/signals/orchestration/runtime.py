@@ -20,12 +20,12 @@ from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
 
-from .evaluation.regime import MarketRegimeDetector, RegimeTracker, RegimeType
-from .evaluation.voting import StrategyVotingEngine
-from .execution.filters import SignalFilterChain
-from .execution.policy import RuntimeSignalState, SignalPolicy
-from .models import SignalEvent
-from .service import SignalModule
+from ..evaluation.regime import MarketRegimeDetector, RegimeTracker, RegimeType
+from ..execution.filters import SignalFilterChain
+from ..models import SignalEvent
+from ..service import SignalModule
+from .policy import RuntimeSignalState, SignalPolicy
+from .voting import StrategyVotingEngine
 
 if TYPE_CHECKING:
     from src.indicators.manager import UnifiedIndicatorManager
@@ -98,6 +98,7 @@ class SignalRuntime:
         policy: Optional[SignalPolicy] = None,
         filter_chain: Optional[SignalFilterChain] = None,
         regime_detector: Optional[MarketRegimeDetector] = None,
+        market_structure_analyzer: Optional[Any] = None,
     ):
         self.service = service
         self.snapshot_source = snapshot_source
@@ -113,16 +114,23 @@ class SignalRuntime:
             or getattr(service, "_regime_detector", None)
             or MarketRegimeDetector()
         )
-        # 表决引擎：由 policy 配置决定是否启用
+        self._market_structure_analyzer = market_structure_analyzer
+        # 表决引擎：由 policy 配置决定是否启用。
+        # voting_groups 非空时使用多组模式（全局 consensus 自动禁用）。
+        # voting_groups 为空且 voting_enabled=True 时退回旧的单 consensus 行为。
         self._voting_engine: Optional[StrategyVotingEngine] = (
             StrategyVotingEngine(
                 consensus_threshold=self.policy.voting_consensus_threshold,
                 min_quorum=self.policy.voting_min_quorum,
                 disagreement_penalty=self.policy.voting_disagreement_penalty,
             )
-            if self.policy.voting_enabled
+            if self.policy.voting_enabled and not self.policy.voting_groups
             else None
         )
+        # 多组 voting 引擎列表：每个 (group_config, engine) 对应一个命名 voting group。
+        self._voting_group_engines: list[
+            tuple[Any, StrategyVotingEngine]
+        ] = self._build_group_engines(self.policy)
         # Regime 稳定性跟踪：key=(symbol, timeframe)，每个交易对独立计数
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._signal_listeners: List[Callable[[SignalEvent], None]] = []
@@ -184,6 +192,37 @@ class SignalRuntime:
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
 
+    @staticmethod
+    def _build_group_engines(
+        policy: SignalPolicy,
+    ) -> "list[tuple[Any, StrategyVotingEngine]]":
+        """根据 policy.voting_groups 构建每组独立的 StrategyVotingEngine。"""
+        return [
+            (
+                group,
+                StrategyVotingEngine(
+                    group_name=group.name,
+                    consensus_threshold=group.consensus_threshold,
+                    min_quorum=group.min_quorum,
+                    disagreement_penalty=group.disagreement_penalty,
+                ),
+            )
+            for group in policy.voting_groups
+        ]
+
+    def update_policy(self, policy: SignalPolicy) -> None:
+        self.policy = policy
+        self._voting_engine = (
+            StrategyVotingEngine(
+                consensus_threshold=self.policy.voting_consensus_threshold,
+                min_quorum=self.policy.voting_min_quorum,
+                disagreement_penalty=self.policy.voting_disagreement_penalty,
+            )
+            if self.policy.voting_enabled and not self.policy.voting_groups
+            else None
+        )
+        self._voting_group_engines = self._build_group_engines(policy)
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -220,6 +259,23 @@ class SignalRuntime:
             "trigger_source": f"{scope}_snapshot",
             "signal_trace_id": uuid4().hex,
         }
+        spread_getter = getattr(self.snapshot_source, "get_current_spread", None)
+        market_service = getattr(self.snapshot_source, "market_service", None)
+        if not callable(spread_getter) and market_service is not None:
+            spread_getter = getattr(market_service, "get_current_spread", None)
+        point_getter = getattr(self.snapshot_source, "get_symbol_point", None)
+        if not callable(point_getter) and market_service is not None:
+            point_getter = getattr(market_service, "get_symbol_point", None)
+        if callable(spread_getter):
+            try:
+                spread_points = float(spread_getter(symbol))
+                metadata["spread_points"] = spread_points
+                if callable(point_getter):
+                    point_size = float(point_getter(symbol))
+                    metadata["symbol_point"] = point_size
+                    metadata["spread_price"] = spread_points * point_size
+            except Exception:
+                pass
         if scope == "intrabar":
             if bar_time.tzinfo is None:
                 bar_time = bar_time.replace(tzinfo=timezone.utc)
@@ -297,6 +353,15 @@ class SignalRuntime:
         }
 
     def status(self) -> dict:
+        market_structure_enabled = False
+        if self._market_structure_analyzer is not None:
+            market_structure_enabled = bool(
+                getattr(
+                    getattr(self._market_structure_analyzer, "config", None),
+                    "enabled",
+                    True,
+                )
+            )
         return {
             "running": bool(self._thread and self._thread.is_alive()),
             "target_count": len(self._targets),
@@ -304,6 +369,11 @@ class SignalRuntime:
                 "confirmed_snapshot": self.enable_confirmed_snapshot,
                 "intrabar": self.enable_intrabar,
             },
+            "strategy_sessions": {
+                name: list(sessions)
+                for name, sessions in self.policy.strategy_sessions.items()
+            },
+            "market_structure_enabled": market_structure_enabled,
             "strategy_scopes": {
                 name: sorted(scopes) for name, scopes in self._strategy_scopes.items()
             },
@@ -775,6 +845,7 @@ class SignalRuntime:
         regime_metadata: Dict[str, Any],
         event_time: datetime,
         bar_time: datetime,
+        active_sessions: List[str],
     ) -> List:
         """评估该 snapshot 下所有策略，返回收集到的 SignalDecision 列表。
 
@@ -792,6 +863,16 @@ class SignalRuntime:
         shard_lock = self._get_shard_lock(symbol, timeframe)
 
         for strategy in strategies:
+            allowed_sessions = self.policy.strategy_sessions.get(strategy, ())
+            if allowed_sessions and not any(
+                session_name in allowed_sessions for session_name in active_sessions
+            ):
+                continue
+
+            allowed_timeframes = self.policy.strategy_timeframes.get(strategy, ())
+            if allowed_timeframes and timeframe not in allowed_timeframes:
+                continue
+
             allowed_scopes = self._strategy_scopes.get(
                 strategy, frozenset(("intrabar", "confirmed"))
             )
@@ -858,11 +939,66 @@ class SignalRuntime:
                 decision, indicators=scoped_indicators, metadata=transition_metadata
             )
             signal_id = record.signal_id if record is not None else ""
+            # 发布事件时携带全量 indicators（而非 scoped），
+            # 使 TradeExecutor 等监听器能访问 ATR 等非策略核心但下单必需的指标。
             self._publish_signal_event(
-                decision, signal_id, scope, scoped_indicators, transition_metadata
+                decision, signal_id, scope, indicators, transition_metadata
             )
 
         return snapshot_decisions
+
+    def _emit_vote_signal(
+        self,
+        vote_result: Any,
+        group_name: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        regime_stability: float,
+        regime_metadata: Dict[str, Any],
+        indicators: Dict[str, Dict[str, float]],
+        event_time: datetime,
+        bar_time: datetime,
+    ) -> None:
+        """对单个 vote 结果信号执行状态机转换、持久化和事件发布。"""
+        import dataclasses as _dc
+
+        adjusted_conf = min(1.0, vote_result.confidence * regime_stability)
+        vote_result = _dc.replace(
+            vote_result,
+            confidence=adjusted_conf,
+            metadata={
+                **vote_result.metadata,
+                "regime_stability_multiplier": round(regime_stability, 4),
+            },
+        )
+        group_key = (symbol, timeframe, group_name)
+        with self._state_lock:
+            group_state = self._state_by_target.setdefault(
+                group_key, RuntimeSignalState()
+            )
+        transition_metadata = (
+            self._transition_confirmed(
+                group_state, vote_result.action, event_time, bar_time, regime_metadata
+            )
+            if scope == "confirmed"
+            else self._transition_preview(
+                group_state,
+                vote_result.action,
+                vote_result.confidence,
+                event_time,
+                bar_time,
+                regime_metadata,
+            )
+        )
+        if transition_metadata is not None:
+            record = self.service.persist_decision(
+                vote_result, indicators=indicators, metadata=transition_metadata
+            )
+            signal_id = record.signal_id if record is not None else ""
+            self._publish_signal_event(
+                vote_result, signal_id, scope, indicators, transition_metadata
+            )
 
     def _process_voting(
         self,
@@ -877,62 +1013,59 @@ class SignalRuntime:
         event_time: datetime,
         bar_time: datetime,
     ) -> None:
-        """跨策略表决：若形成共识则额外发出 strategy='consensus' 信号。"""
-        if self._voting_engine is None or not snapshot_decisions:
+        """跨策略表决：根据配置模式发出命名 voting group 信号或全局 consensus 信号。
+
+        多组模式（voting_groups 非空）：
+            每个 group 仅对其成员策略的决策投票，产生以 group.name 命名的信号。
+            全局 consensus 在此模式下自动禁用。
+
+        单 consensus 模式（backward compatible）：
+            所有独立策略参与投票，产生 strategy="consensus" 信号。
+        """
+        if not snapshot_decisions:
             return
 
+        # ── 多组模式 ──────────────────────────────────────────────────
+        if self._voting_group_engines:
+            for group_config, group_engine in self._voting_group_engines:
+                # 只取属于本 group 的成员策略决策
+                group_decisions = [
+                    d
+                    for d in snapshot_decisions
+                    if d.strategy in group_config.strategies
+                ]
+                if not group_decisions:
+                    continue
+                vote_result = group_engine.vote(
+                    group_decisions,
+                    regime=regime,
+                    scope=scope,
+                    exclude_composite=False,  # 分组明确指定成员，不需要自动排除复合策略
+                )
+                if vote_result is None:
+                    continue
+                self._emit_vote_signal(
+                    vote_result, group_config.name,
+                    symbol, timeframe, scope,
+                    regime_stability, regime_metadata, indicators,
+                    event_time, bar_time,
+                )
+            return
+
+        # ── 单 consensus 模式（backward compatible）───────────────────
+        if self._voting_engine is None:
+            return
         consensus = self._voting_engine.vote(
             snapshot_decisions, regime=regime, scope=scope
         )
         if consensus is None:
             return
-
-        import dataclasses as _dc
-
-        adjusted_conf = min(1.0, consensus.confidence * regime_stability)
-        consensus = _dc.replace(
-            consensus,
-            confidence=adjusted_conf,
-            metadata={
-                **consensus.metadata,
-                "regime_stability_multiplier": round(regime_stability, 4),
-            },
+        self._emit_vote_signal(
+            consensus, self._voting_engine.CONSENSUS_STRATEGY_NAME,
+            symbol, timeframe, scope,
+            regime_stability, regime_metadata, indicators,
+            event_time, bar_time,
         )
-        consensus_key = (
-            symbol,
-            timeframe,
-            self._voting_engine.CONSENSUS_STRATEGY_NAME,
-        )
-        with self._state_lock:
-            consensus_state = self._state_by_target.setdefault(
-                consensus_key, RuntimeSignalState()
-            )
-        transition_metadata = (
-            self._transition_confirmed(
-                consensus_state,
-                consensus.action,
-                event_time,
-                bar_time,
-                regime_metadata,
-            )
-            if scope == "confirmed"
-            else self._transition_preview(
-                consensus_state,
-                consensus.action,
-                consensus.confidence,
-                event_time,
-                bar_time,
-                regime_metadata,
-            )
-        )
-        if transition_metadata is not None:
-            record = self.service.persist_decision(
-                consensus, indicators=indicators, metadata=transition_metadata
-            )
-            signal_id = record.signal_id if record is not None else ""
-            self._publish_signal_event(
-                consensus, signal_id, scope, indicators, transition_metadata
-            )
 
     def process_next_event(self, timeout: float = 0.5) -> bool:
         """从队列取一个快照事件并完整处理。
@@ -955,11 +1088,18 @@ class SignalRuntime:
             metadata.get("snapshot_time", datetime.now(timezone.utc))
         )
         bar_time = self._parse_event_time(metadata.get("bar_time", event_time))
+        if self.filter_chain is not None and self.filter_chain.session_filter is not None:
+            active_sessions = self.filter_chain.session_filter.current_sessions(event_time)
+        else:
+            active_sessions = []
 
         if self.filter_chain is not None:
             spread_points = float(metadata.get("spread_points", 0.0))
             allowed, reason = self.filter_chain.should_evaluate(
-                symbol, spread_points=spread_points, utc_now=event_time
+                symbol,
+                spread_points=spread_points,
+                utc_now=event_time,
+                active_sessions=active_sessions,
             )
             if not allowed:
                 logger.debug(
@@ -974,9 +1114,28 @@ class SignalRuntime:
         regime = self._regime_detector.detect(indicators)
         regime_metadata = dict(metadata)
         regime_metadata["_regime"] = regime.value
+        regime_metadata["session_buckets"] = list(active_sessions)
         # close_price 注入：在 scoped_indicators 收窄前从全量快照提取
         if "close_price" not in regime_metadata:
             regime_metadata["close_price"] = _extract_close_price(indicators)
+        if self._market_structure_analyzer is not None:
+            try:
+                structure_context = self._market_structure_analyzer.analyze(
+                    symbol,
+                    timeframe,
+                    event_time=event_time,
+                    latest_close=regime_metadata.get("close_price"),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to build market structure context for %s/%s",
+                    symbol,
+                    timeframe,
+                    exc_info=True,
+                )
+                structure_context = {}
+            if structure_context:
+                regime_metadata["market_structure"] = structure_context
 
         # ── Regime 稳定性追踪 ──────────────────────────────────────────────
         tracker = self._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
@@ -989,7 +1148,7 @@ class SignalRuntime:
         # ── 策略评估（含持久化 + 发布）─────────────────────────────────────
         snapshot_decisions = self._evaluate_strategies(
             symbol, timeframe, scope, indicators,
-            regime, regime_metadata, event_time, bar_time,
+            regime, regime_metadata, event_time, bar_time, active_sessions,
         )
 
         # ── 跨策略表决（consensus 信号）────────────────────────────────────

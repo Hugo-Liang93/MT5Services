@@ -18,6 +18,7 @@ class TradeIntent:
     comment: str = ""
     magic: int = 0
     at_time: Optional[datetime] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -34,6 +35,8 @@ class TradeIntent:
         }
         if self.at_time is not None:
             payload["at_time"] = self.at_time.isoformat()
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
         return payload
 
 

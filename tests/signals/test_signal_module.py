@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from src.signals.service import SignalModule
+from src.signals.strategies.composite import CompositeSignalStrategy
+from src.signals.strategies.trend import SmaTrendStrategy, SupertrendStrategy
 
 
 class DummyIndicatorSource:
@@ -76,6 +78,35 @@ class DummySignalRepository:
                 "avg_confidence": rows[-1][6],
                 "last_seen_at": rows[-1][0].isoformat() if rows[-1][0] else None,
                 "scope": scope,
+            }
+        ]
+
+    def fetch_winrates(self, **kwargs):
+        return [
+            {
+                "strategy": "sma_trend",
+                "action": "buy",
+                "total": 4,
+                "wins": 3,
+                "win_rate": 0.75,
+                "avg_confidence": 0.82,
+                "avg_move": 12.5,
+            }
+        ]
+
+    def fetch_expectancy_stats(self, **kwargs):
+        return [
+            {
+                "strategy": "sma_trend",
+                "action": "buy",
+                "total": 4,
+                "wins": 3,
+                "losses": 1,
+                "win_rate": 0.75,
+                "avg_win_move": 18.0,
+                "avg_loss_move": 7.5,
+                "expectancy": 12.25,
+                "payoff_ratio": 2.4,
             }
         ]
 
@@ -238,6 +269,34 @@ class DummyDiagnosticRepository:
     def summary(self, **kwargs):
         return []
 
+    def fetch_expectancy_stats(self, **kwargs):
+        return [
+            {
+                "strategy": "sma_trend",
+                "action": "buy",
+                "total": 5,
+                "wins": 3,
+                "losses": 2,
+                "win_rate": 0.6,
+                "avg_win_move": 12.0,
+                "avg_loss_move": 14.0,
+                "expectancy": -1.2,
+                "payoff_ratio": 0.86,
+            },
+            {
+                "strategy": "rsi_reversion",
+                "action": "sell",
+                "total": 4,
+                "wins": 2,
+                "losses": 2,
+                "win_rate": 0.5,
+                "avg_win_move": 8.0,
+                "avg_loss_move": 10.0,
+                "expectancy": -1.0,
+                "payoff_ratio": 0.8,
+            },
+        ]
+
 
 def test_strategy_diagnostics_reports_conflicts_and_missing_indicators() -> None:
     rows = [
@@ -300,12 +359,14 @@ def test_strategy_diagnostics_reports_conflicts_and_missing_indicators() -> None
     assert report["session_distribution"]["london"] == 3
     assert report["thresholds"]["conflict_warn_threshold"] == 0.35
     assert len(report["recommendations"]) >= 1
+    assert report["performance_profile"]
     rsi_row = next(
         item
         for item in report["strategy_breakdown"]
         if item["strategy"] == "rsi_reversion"
     )
     assert rsi_row["missing_required_count"] == 1
+    assert rsi_row["expectancy"] == -1.0
     rsi_health = next(
         item
         for item in report["strategy_health"]
@@ -348,6 +409,7 @@ def test_signal_module_daily_quality_report() -> None:
     assert report["rows_analyzed"] == 1
     assert "window" in report
     assert report["session_distribution"]["london"] == 1
+    assert report["performance_profile"]
 
 
 def test_signal_module_allows_custom_diagnostics_engine_injection() -> None:
@@ -437,3 +499,95 @@ def test_signal_module_recent_by_trace_id_filters_rows() -> None:
 
     assert len(matched) == 1
     assert matched[0]["signal_id"] == "1"
+
+
+class DummyRuntime:
+    def get_regime_stability(self, symbol: str, timeframe: str) -> dict:
+        return {"symbol": symbol, "timeframe": timeframe, "stable_bars": 3}
+
+
+def test_signal_module_regime_report_includes_runtime_stability() -> None:
+    module = SignalModule(indicator_source=DummyIndicatorSource())
+
+    report = module.regime_report(
+        symbol="XAUUSD",
+        timeframe="M5",
+        runtime=DummyRuntime(),
+    )
+
+    assert report["symbol"] == "XAUUSD"
+    assert report["timeframe"] == "M5"
+    assert report["stability"]["stable_bars"] == 3
+
+
+def test_signal_module_strategy_winrates_uses_repository() -> None:
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        repository=DummySignalRepository(),
+    )
+
+    rows = module.strategy_winrates(hours=24, symbol="XAUUSD")
+
+    assert len(rows) == 1
+    assert rows[0]["strategy"] == "sma_trend"
+    assert rows[0]["win_rate"] == 0.75
+
+
+def test_signal_module_strategy_expectancy_uses_repository() -> None:
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        repository=DummySignalRepository(),
+    )
+
+    rows = module.strategy_expectancy(hours=24, symbol="XAUUSD")
+
+    assert len(rows) == 1
+    assert rows[0]["strategy"] == "sma_trend"
+    assert rows[0]["expectancy"] == 12.25
+
+
+def test_signal_module_recent_consensus_signals_filters_consensus_strategy() -> None:
+    class ConsensusRepository(DummyDiagnosticRepository):
+        def recent(self, **kwargs):
+            return [
+                {
+                    "generated_at": "2026-03-19T10:00:00+00:00",
+                    "signal_id": "1",
+                    "symbol": "XAUUSD",
+                    "timeframe": "M5",
+                    "strategy": kwargs.get("strategy"),
+                    "action": "buy",
+                    "confidence": 0.8,
+                    "reason": "consensus",
+                    "used_indicators": ["sma20"],
+                    "indicators_snapshot": {},
+                    "metadata": {},
+                    "scope": kwargs.get("scope", "confirmed"),
+                }
+            ]
+
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        repository=ConsensusRepository([]),
+    )
+
+    rows = module.recent_consensus_signals(symbol="XAUUSD", timeframe="M5", limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["strategy"] == "consensus"
+
+
+def test_signal_module_list_composite_strategies_returns_descriptions() -> None:
+    module = SignalModule(indicator_source=DummyIndicatorSource())
+    module.register_strategy(
+        CompositeSignalStrategy(
+            name="trend_combo",
+            sub_strategies=[SmaTrendStrategy(), SupertrendStrategy()],
+        )
+    )
+
+    rows = module.list_composite_strategies()
+
+    assert rows
+    names = [r["name"] for r in rows]
+    assert "trend_combo" in names

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from ..execution.sizing import TradeParameters
+from .sizing import TradeParameters
 
 logger = logging.getLogger(__name__)
 

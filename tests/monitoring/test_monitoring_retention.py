@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.monitoring.health_check import MonitoringManager
+from src.monitoring.manager import MonitoringManager
 
 
 def test_monitoring_manager_runs_retention_for_health_and_events() -> None:

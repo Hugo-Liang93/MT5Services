@@ -49,7 +49,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from ..models import SignalDecision
-from .regime import RegimeType
+from ..evaluation.regime import RegimeType
 
 
 class StrategyVotingEngine:
@@ -78,10 +78,14 @@ class StrategyVotingEngine:
         consensus_threshold: float = 0.40,
         min_quorum: int = 2,
         disagreement_penalty: float = 0.50,
+        group_name: str = "consensus",
     ) -> None:
         self._threshold = consensus_threshold
         self._min_quorum = min_quorum
         self._disagree_penalty = disagreement_penalty
+        # group_name 决定投票结果信号的 strategy 字段值。
+        # 默认 "consensus"（向后兼容）；命名 voting group 传入各自的 group name。
+        self._group_name = group_name
 
     # ------------------------------------------------------------------
     # Public API
@@ -196,7 +200,7 @@ class StrategyVotingEngine:
         )
 
         return SignalDecision(
-            strategy=self.CONSENSUS_STRATEGY_NAME,
+            strategy=self._group_name,
             symbol=symbol,
             timeframe=timeframe,
             action=action,
@@ -223,6 +227,7 @@ class StrategyVotingEngine:
     def describe(self) -> Dict[str, object]:
         """返回当前配置的可读描述，用于监控端点。"""
         return {
+            "group_name": self._group_name,
             "consensus_threshold": self._threshold,
             "min_quorum": self._min_quorum,
             "disagreement_penalty": self._disagree_penalty,
