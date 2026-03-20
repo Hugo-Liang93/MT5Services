@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import configparser
 
-from src.config.compat import load_mt5_accounts, load_mt5_settings
+from src.config.mt5 import load_mt5_accounts, load_mt5_settings
 
 
 def test_load_mt5_accounts_parses_default_and_named_profiles(monkeypatch):
@@ -33,7 +33,7 @@ def test_load_mt5_accounts_parses_default_and_named_profiles(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "src.config.compat.load_config_with_base",
+        "src.config.mt5.load_config_with_base",
         lambda filename: ("config/mt5.ini", parser),
     )
     load_mt5_settings.cache_clear()

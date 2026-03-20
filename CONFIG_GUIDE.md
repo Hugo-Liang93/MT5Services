@@ -34,10 +34,11 @@ This is intentional because the MT5 Python binding uses a global terminal sessio
 - `config/ingest.ini`: ingestion, backfill, retry, health thresholds
 - `config/storage.ini`: persistence queues and flush strategy
 - `config/economic.ini`: calendar and pre-trade economic risk settings
-- `config/risk.ini`: risk limits
+- `config/risk.ini`: risk limits and final execution session guard
 - `config/mt5.ini`: MT5 startup account selection and terminal connection
 - `config/db.ini`: PostgreSQL/TimescaleDB connection
 - `config/cache.ini`: cache compatibility settings
+- `config/signal.ini`: signal runtime, voting, circuit breaker, session spread limits, market structure
 - `config/indicators.json`: indicator pipeline configuration
 
 ## MT5 Example
@@ -72,6 +73,20 @@ Put secrets and machine-specific values in:
 - `config/market.local.ini`
 - `config/economic.local.ini`
 - `config/risk.local.ini`
+
+## XAUUSD Intraday Tuning
+
+The runtime now supports a more opinionated XAUUSD intraday profile:
+
+- `config/signal.ini`
+  - `session_spread_limits`: dynamic spread caps by session
+  - `strategy_sessions`: route breakout/trend strategies to London/New York and mean-reversion to Asia/London
+  - `circuit_breaker`: auto-trade execution breaker
+  - `contract_sizes`: per-symbol sizing inputs
+  - `market_structure`: previous-day high/low, Asia range, London open range, compression/expansion context
+  - `execution_costs`: block auto-trade when spread consumes too much of the planned stop distance
+- `config/risk.ini`
+  - `allowed_sessions`: final trade execution session guard
 
 ## Verification
 

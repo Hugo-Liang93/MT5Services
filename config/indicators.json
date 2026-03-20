@@ -212,9 +212,9 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
+      "enabled": false,
       "intrabar_eligible": false,
-      "description": "30周期成交量加权均价",
+      "description": "30周期成交量加权均价（demo账号成交量为0，禁用避免无意义计算）",
       "tags": ["volume", "mean"]
     },
     {

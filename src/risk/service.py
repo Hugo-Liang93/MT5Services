@@ -21,13 +21,14 @@ from .rules import (
     AccountSnapshotRule,
     CalendarHealthRule,
     EconomicEventRule,
+    MarketStructureRule,
     ProtectionRule,
     RuleContext,
+    SessionWindowRule,
 )
 
 if TYPE_CHECKING:
-    from src.core.account_service import AccountService
-    from src.core.economic_calendar_service import EconomicCalendarService
+    from src.calendar.service import EconomicCalendarService
 
 
 class EconomicCalendarProvider(Protocol):
@@ -59,7 +60,7 @@ class PreTradeRiskService:
     def __init__(
         self,
         economic_calendar_service: Optional["EconomicCalendarService | EconomicCalendarProvider"] = None,
-        account_service: Optional["AccountService"] = None,
+        account_service: Optional[AccountStateProvider] = None,
         settings: Optional[EconomicConfig] = None,
         risk_settings: Optional[RiskConfig] = None,
     ) -> None:
@@ -70,6 +71,8 @@ class PreTradeRiskService:
         self.rules = (
             AccountSnapshotRule(),
             ProtectionRule(),
+            SessionWindowRule(),
+            MarketStructureRule(),
             EconomicEventRule(),
             CalendarHealthRule(),
         )
@@ -147,6 +150,7 @@ class PreTradeRiskService:
         comment: str = "",
         magic: int = 0,
         at_time: Optional[datetime] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> TradeIntent:
         if intent is not None:
             return intent
@@ -164,6 +168,7 @@ class PreTradeRiskService:
             comment=comment,
             magic=magic,
             at_time=at_time,
+            metadata=dict(metadata or {}),
         )
 
     def assess_trade(
@@ -181,6 +186,7 @@ class PreTradeRiskService:
         magic: int = 0,
         intent: Optional[TradeIntent] = None,
         at_time: Optional[datetime] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         lookahead_minutes: Optional[int] = None,
         lookback_minutes: Optional[int] = None,
         importance_min: Optional[int] = None,
@@ -198,6 +204,7 @@ class PreTradeRiskService:
             comment=comment,
             magic=magic,
             at_time=at_time,
+            metadata=metadata,
         )
         mode = self._effective_mode()
         if not self.is_enabled() or mode == "off":

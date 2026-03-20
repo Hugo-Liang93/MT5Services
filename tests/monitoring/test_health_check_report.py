@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.monitoring.health_check import HealthMonitor, MonitoringManager
+from src.monitoring.health_monitor import HealthMonitor
+from src.monitoring.manager import MonitoringManager
 
 
 def test_health_report_skips_non_finite_metrics(tmp_path: Path) -> None:
@@ -16,9 +17,12 @@ def test_health_report_skips_non_finite_metrics(tmp_path: Path) -> None:
 
 
 def test_health_report_treats_cache_hit_rate_as_advisory(tmp_path: Path) -> None:
+    # cache_hit_rate 告警为 advisory（非阻塞），critical 阈值 < 0.001。
+    # LRU 缓存命中率在正常运行下天然偏低（每根 K 线均产生唯一 key），
+    # 仅在完全失效（接近 0）时才应触发告警。
     monitor = HealthMonitor(str(tmp_path / "health.db"))
 
-    monitor.record_metric("indicator_calculation", "cache_hit_rate", 0.2)
+    monitor.record_metric("indicator_calculation", "cache_hit_rate", 0.0)
     report = monitor.generate_report(hours=1)
 
     metric = report["components"]["indicator_calculation"]["cache_hit_rate"]

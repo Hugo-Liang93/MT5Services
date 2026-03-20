@@ -4,9 +4,10 @@ MT5 账户/持仓/订单只读封装。
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
 from src.clients.base import MT5BaseClient, mt5
 from src.clients.base import MT5TradeError
@@ -57,12 +58,30 @@ class MT5AccountClientError(MT5TradeError):
 
 
 class MT5AccountClient(MT5BaseClient):
+    # 对只读账户/持仓查询进行短 TTL 缓存，减少高并发下的 MT5 API 序列化压力。
+    # 缓存仅用于读路径；写操作（下单/平仓）会主动使缓存失效。
+    _ACCOUNT_INFO_TTL = 3.0   # seconds
+    _POSITIONS_TTL = 3.0      # seconds
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._account_info_cache: Optional[Tuple[float, AccountInfo]] = None
+        self._positions_cache: dict[Optional[str], Tuple[float, List[Position]]] = {}
+
+    def invalidate_cache(self) -> None:
+        """下单/平仓后调用，使持仓和账户缓存失效。"""
+        self._account_info_cache = None
+        self._positions_cache.clear()
+
     def account_info(self) -> AccountInfo:
+        cached = self._account_info_cache
+        if cached is not None and (time.monotonic() - cached[0]) < self._ACCOUNT_INFO_TTL:
+            return cached[1]
         self.connect()
         info = mt5.account_info()
         if info is None:
             raise MT5AccountClientError(f"Failed to get account info: {mt5.last_error()}")
-        return AccountInfo(
+        result = AccountInfo(
             login=info.login,
             balance=info.balance,
             equity=info.equity,
@@ -71,13 +90,18 @@ class MT5AccountClient(MT5BaseClient):
             leverage=info.leverage,
             currency=info.currency,
         )
+        self._account_info_cache = (time.monotonic(), result)
+        return result
 
     def positions(self, symbol: Optional[str] = None) -> List[Position]:
+        cached = self._positions_cache.get(symbol)
+        if cached is not None and (time.monotonic() - cached[0]) < self._POSITIONS_TTL:
+            return cached[1]
         self.connect()
         sel = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
         if sel is None:
             raise MT5AccountClientError(f"Failed to get positions: {mt5.last_error()}")
-        return [
+        result = [
             Position(
                 ticket=p.ticket,
                 symbol=p.symbol,
@@ -92,6 +116,8 @@ class MT5AccountClient(MT5BaseClient):
             )
             for p in sel
         ]
+        self._positions_cache[symbol] = (time.monotonic(), result)
+        return result
 
     def orders(self, symbol: Optional[str] = None) -> List[Order]:
         self.connect()

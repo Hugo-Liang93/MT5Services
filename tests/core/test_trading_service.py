@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.core.trading_service import TradingService
+from src.trading.trading_service import TradingService
 
 
 class DummyTradingClient:
@@ -37,6 +37,17 @@ class DummyTradingClient:
         self.margin_calls.append(kwargs)
         return 512.5
 
+    def validate_trade_request(self, **kwargs):
+        if kwargs.get("sl") == -1:
+            raise RuntimeError("Stop loss must be below entry price for buy orders")
+        if kwargs.get("tp") == -2:
+            raise RuntimeError("Take profit must be above entry price for buy orders")
+        return {
+            "order_type": self.side_and_kind_to_order_type(kwargs["side"], kwargs.get("order_kind", "market")),
+            "request_price": kwargs.get("price") or 2345.6,
+            "pending": False,
+        }
+
     def close_position(self, ticket: int, deviation: int = 20, comment: str = "", volume=None):
         return True
 
@@ -66,7 +77,11 @@ class DummyRiskService:
             "upcoming_windows": [],
             "warnings": [],
             "checks": [],
-            "intent": {"symbol": kwargs["symbol"], "volume": kwargs.get("volume")},
+            "intent": {
+                "symbol": kwargs["symbol"],
+                "volume": kwargs.get("volume"),
+                "metadata": kwargs.get("metadata") or {},
+            },
         }
 
     def enforce_trade_allowed(self, **kwargs):
@@ -86,6 +101,11 @@ def test_precheck_trade_uses_full_trade_context():
         price=2350.0,
         sl=2340.0,
         tp=2365.0,
+        metadata={
+            "market_structure": {
+                "sweep_confirmation_state": "bullish_sweep_confirmed_previous_day_low",
+            }
+        },
     )
 
     assert result["estimated_margin"] == 512.5
@@ -96,6 +116,9 @@ def test_precheck_trade_uses_full_trade_context():
     assert call_payload["order_kind"] == "market"
     assert call_payload["sl"] == 2340.0
     assert call_payload["tp"] == 2365.0
+    assert call_payload["metadata"]["market_structure"]["sweep_confirmation_state"] == (
+        "bullish_sweep_confirmed_previous_day_low"
+    )
 
 
 def test_execute_trade_returns_structured_execution_details():
@@ -110,12 +133,31 @@ def test_execute_trade_returns_structured_execution_details():
         price=2350.0,
         sl=2340.0,
         tp=2365.0,
+        metadata={
+            "market_structure": {
+                "structure_bias": "bullish_pullback",
+            }
+        },
     )
 
     assert result["ticket"] == 12345
     assert result["estimated_margin"] == 512.5
     assert result["pre_trade_risk"]["action"] == "allow"
+    assert result["pre_trade_risk"]["intent"]["metadata"]["market_structure"]["structure_bias"] == (
+        "bullish_pullback"
+    )
     assert client.open_trade_details_calls[0]["sl"] == 2340.0
+    assert result["state_consistency"]["positions_count"] == 0
+    assert result["state_consistency"]["orders_count"] == 0
+
+
+def test_injected_trading_client_does_not_create_real_account_client():
+    client = DummyTradingClient()
+    service = TradingService(client=client)
+
+    assert service.account_client is None
+    assert service.get_positions(symbol="XAUUSD") == []
+    assert service.get_orders(symbol="XAUUSD") == []
 
 
 def test_execute_trade_supports_limit_order_kind():
@@ -182,6 +224,47 @@ def test_precheck_trade_blocks_non_positive_volume():
     assert result["action"] == "block"
     assert result["executable"] is False
     assert result["suggested_adjustment"] == {"volume": 0.01}
+
+
+def test_precheck_trade_blocks_invalid_trade_parameters_before_execution():
+    client = DummyTradingClient()
+    service = TradingService(client=client, pre_trade_risk_service=DummyRiskService())
+
+    result = service.precheck_trade(
+        symbol="XAUUSD",
+        volume=0.1,
+        side="buy",
+        price=2350.0,
+        sl=-1,
+        tp=2365.0,
+    )
+
+    assert result["action"] == "block"
+    assert result["executable"] is False
+    assert result["reason"] == "Stop loss must be below entry price for buy orders"
+    assert result["checks"][0]["name"] == "trade_parameters"
+    assert result["suggested_adjustment"] == {"action": "review_trade_parameters"}
+
+
+def test_execute_trade_stops_when_precheck_is_not_executable():
+    client = DummyTradingClient()
+    service = TradingService(client=client, pre_trade_risk_service=DummyRiskService())
+
+    try:
+        service.execute_trade(
+            symbol="XAUUSD",
+            volume=0.1,
+            side="buy",
+            price=2350.0,
+            sl=2340.0,
+            tp=-2,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "Take profit must be above entry price for buy orders"
+    else:
+        raise AssertionError("expected execute_trade to stop on failed precheck")
+
+    assert client.open_trade_details_calls == []
 
 
 def test_execute_trade_batch_collects_success_and_failures():

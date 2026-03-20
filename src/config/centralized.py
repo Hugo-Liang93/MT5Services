@@ -1,9 +1,8 @@
 """
 Centralized configuration manager.
 
-This module is the primary runtime source of truth across trading, ingest, API,
-economic calendar, and monitoring layers. Compatibility loaders should map back
-to this module instead of introducing alternate config paths.
+This module remains the runtime aggregation entrypoint while config models and
+signal-specific loading live in smaller submodules.
 """
 
 from __future__ import annotations
@@ -11,134 +10,24 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, Field
-
+from src.config.models import (
+    APIConfig,
+    EconomicConfig,
+    IngestConfig,
+    IntervalConfig,
+    LimitConfig,
+    RiskConfig,
+    SignalConfig,
+    SystemConfig,
+    TradingConfig,
+    TradingOpsConfig,
+)
+from src.config.signal import get_signal_config
 from src.config.utils import (
     ConfigValidator,
     get_merged_config,
     get_merged_option_source,
 )
-
-
-class TradingConfig(BaseModel):
-    symbols: List[str] = Field(default_factory=lambda: ["XAUUSD"])
-    timeframes: List[str] = Field(default_factory=lambda: ["M1", "H1"])
-    default_symbol: str = "XAUUSD"
-
-
-class IntervalConfig(BaseModel):
-    tick_interval: float = 0.5
-    ohlc_interval: float = 30.0
-    stream_interval: float = 1.0
-    indicator_reload_interval: float = 60.0
-
-
-class LimitConfig(BaseModel):
-    tick_limit: int = 200
-    ohlc_limit: int = 200
-    tick_cache_size: int = 5000
-    ohlc_cache_limit: int = 500
-    quote_stale_seconds: float = 1.0
-
-
-class SystemConfig(BaseModel):
-    timezone: str = "UTC"
-    log_level: str = "INFO"
-    api_host: str = "0.0.0.0"
-    api_port: int = 8808
-    modules_enabled: List[str] = Field(default_factory=lambda: ["ingest", "api", "indicators", "storage"])
-
-
-class APIConfig(BaseModel):
-    host: str = "0.0.0.0"
-    port: int = 8808
-    enable_cors: bool = True
-    docs_enabled: bool = True
-    redoc_enabled: bool = True
-    auth_enabled: bool = False
-    api_key_header: str = "X-API-Key"
-    api_key: str | None = None
-    access_log_enabled: bool = True
-    log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-
-class IngestConfig(BaseModel):
-    tick_initial_lookback_seconds: int = 20
-    ohlc_backfill_limit: int = 500
-    retry_attempts: int = 3
-    retry_backoff: float = 1.0
-    connection_timeout: float = 10.0
-    max_concurrent_symbols: int = 5
-    queue_monitor_interval: float = 5.0
-    health_check_interval: float = 30.0
-    max_allowed_delay: float = 60.0
-    # Intrabar sampling: independent of OHLC polling schedule.
-    # Fetches only the current in-progress bar at a higher frequency.
-    # Auto-computed as max(5, tf_seconds * 0.05) when not overridden.
-    intrabar_interval: float = 15.0           # global default (seconds)
-    intrabar_intervals: Dict[str, float] = Field(default_factory=dict)  # per-tf: {"M1": 5.0, "H1": 60.0}
-
-
-class EconomicConfig(BaseModel):
-    enabled: bool = True
-    lookback_days: int = 7
-    lookahead_days: int = 14
-    request_timeout_seconds: float = 10.0
-    local_timezone: str = "UTC"
-    refresh_interval_seconds: float = 900.0
-    calendar_sync_interval_seconds: float = 21600.0
-    near_term_refresh_interval_seconds: float = 900.0
-    release_watch_interval_seconds: float = 60.0
-    startup_calendar_sync_delay_seconds: float = 180.0
-    refresh_jitter_seconds: float = 5.0
-    startup_refresh: bool = True
-    request_retries: int = 3
-    retry_backoff_seconds: float = 1.0
-    stale_after_seconds: float = 1800.0
-    high_importance_threshold: int = 3
-    pre_event_buffer_minutes: int = 30
-    post_event_buffer_minutes: int = 30
-    near_term_window_hours: int = 72
-    release_watch_lookback_minutes: int = 15
-    release_watch_lookahead_minutes: int = 120
-    default_countries: List[str] = Field(default_factory=list)
-    fred_release_whitelist_ids: List[str] = Field(default_factory=list)
-    fred_release_whitelist_keywords: List[str] = Field(default_factory=list)
-    fred_release_blacklist_keywords: List[str] = Field(default_factory=list)
-    curated_sources: List[str] = Field(default_factory=lambda: ["tradingeconomics"])
-    curated_countries: List[str] = Field(default_factory=list)
-    curated_currencies: List[str] = Field(default_factory=list)
-    curated_statuses: List[str] = Field(default_factory=lambda: ["scheduled", "imminent", "pending_release", "released"])
-    curated_importance_min: int | None = 2
-    curated_include_all_day: bool = False
-    trade_guard_enabled: bool = True
-    trade_guard_mode: str = "warn_only"
-    trade_guard_calendar_health_mode: str = "warn_only"
-    trade_guard_lookahead_minutes: int = 180
-    trade_guard_lookback_minutes: int = 0
-    trade_guard_importance_min: int | None = None
-    trade_guard_provider_failure_threshold: int = 3
-    tradingeconomics_enabled: bool = True
-    tradingeconomics_api_key: str | None = None
-    fred_enabled: bool = True
-    fred_api_key: str | None = None
-
-
-class RiskConfig(BaseModel):
-    enabled: bool = True
-    max_positions_per_symbol: int | None = None
-    max_open_positions_total: int | None = None
-    max_pending_orders_per_symbol: int | None = None
-    max_volume_per_order: float | None = None
-    max_volume_per_symbol: float | None = None
-    require_sl_for_market_orders: bool = False
-    require_tp_or_sl_for_market_orders: bool = False
-
-
-class TradingOpsConfig(BaseModel):
-    dispatch_strict_mode: bool = True
-    dispatch_timeout_ms: int = 5000
-    daily_summary_recent_limit: int = 1000
 
 
 def _split_csv(value: Any) -> List[str]:
@@ -180,7 +69,7 @@ class CentralizedConfig:
             self._load_and_validate()
         return self._config_cache
 
-    def _load_and_validate(self):
+    def _load_and_validate(self) -> None:
         self._provenance_cache = {}
         main_config = get_merged_config("app.ini")
         configs = {
@@ -232,21 +121,45 @@ class CentralizedConfig:
             "system": SystemConfig(**system_raw).model_dump(),
         }
         for field in shared["trading"]:
-            self._set_provenance("trading", field, self._option_source(config_name="app.ini", section="trading", key=field))
+            self._set_provenance(
+                "trading",
+                field,
+                self._option_source(config_name="app.ini", section="trading", key=field),
+            )
         for field in shared["intervals"]:
-            self._set_provenance("intervals", field, self._option_source(config_name="app.ini", section="intervals", key=field))
+            self._set_provenance(
+                "intervals",
+                field,
+                self._option_source(config_name="app.ini", section="intervals", key=field),
+            )
         for field in shared["limits"]:
-            self._set_provenance("limits", field, self._option_source(config_name="app.ini", section="limits", key=field))
+            self._set_provenance(
+                "limits",
+                field,
+                self._option_source(config_name="app.ini", section="limits", key=field),
+            )
         for field in shared["system"]:
-            self._set_provenance("system", field, self._option_source(config_name="app.ini", section="system", key=field))
+            self._set_provenance(
+                "system",
+                field,
+                self._option_source(config_name="app.ini", section="system", key=field),
+            )
         return shared
 
-    def _validate_configs(self, shared_config: Dict[str, Any], configs: Dict[str, Dict[str, Any]]):
+    def _validate_configs(
+        self,
+        shared_config: Dict[str, Any],
+        configs: Dict[str, Dict[str, Any]],
+    ) -> None:
         ConfigValidator.validate_trading_config(shared_config)
         ConfigValidator.validate_interval_config(shared_config)
         self._check_config_inheritance(shared_config, configs)
 
-    def _check_config_inheritance(self, shared_config: Dict[str, Any], configs: Dict[str, Dict[str, Any]]):
+    def _check_config_inheritance(
+        self,
+        shared_config: Dict[str, Any],
+        configs: Dict[str, Dict[str, Any]],
+    ) -> None:
         trading_symbols = shared_config["trading"]["symbols"]
         api_config = configs["api"]
         if "default_symbol" in api_config.get("api", {}):
@@ -256,7 +169,11 @@ class CentralizedConfig:
                     f"API default symbol '{api_default}' not in trading symbols: {trading_symbols}"
                 )
 
-    def _build_final_config(self, shared_config: Dict[str, Any], configs: Dict[str, Dict[str, Any]]):
+    def _build_final_config(
+        self,
+        shared_config: Dict[str, Any],
+        configs: Dict[str, Dict[str, Any]],
+    ) -> None:
         api_config = _merge_sections(
             {
                 "host": shared_config["system"].get("api_host", "0.0.0.0"),
@@ -270,6 +187,7 @@ class CentralizedConfig:
             api_config["log_format"] = _normalize_log_format(api_config["log_format"])
         if not str(api_config.get("api_key", "")).strip():
             api_config["api_key"] = None
+
         ingest_config = _merge_sections(
             configs["ingest"].get("ingest", {}),
             configs["ingest"].get("performance", {}),
@@ -279,14 +197,20 @@ class CentralizedConfig:
             {"local_timezone": shared_config["system"].get("timezone", "UTC")},
             configs["economic"].get("economic", {}),
             {
-                "tradingeconomics_enabled": configs["economic"].get("tradingeconomics", {}).get("enabled"),
-                "tradingeconomics_api_key": configs["economic"].get("tradingeconomics", {}).get("api_key"),
+                "tradingeconomics_enabled": configs["economic"]
+                .get("tradingeconomics", {})
+                .get("enabled"),
+                "tradingeconomics_api_key": configs["economic"]
+                .get("tradingeconomics", {})
+                .get("api_key"),
                 "fred_enabled": configs["economic"].get("fred", {}).get("enabled"),
                 "fred_api_key": configs["economic"].get("fred", {}).get("api_key"),
             },
         )
         if "default_countries" in economic_config:
-            economic_config["default_countries"] = _split_csv(economic_config["default_countries"])
+            economic_config["default_countries"] = _split_csv(
+                economic_config["default_countries"]
+            )
         for list_key in (
             "fred_release_whitelist_ids",
             "fred_release_whitelist_keywords",
@@ -301,14 +225,20 @@ class CentralizedConfig:
         for optional_int_key in ("curated_importance_min", "trade_guard_importance_min"):
             if str(economic_config.get(optional_int_key, "")).strip() == "":
                 economic_config[optional_int_key] = None
-        if "near_term_refresh_interval_seconds" not in economic_config and "refresh_interval_seconds" in economic_config:
-            economic_config["near_term_refresh_interval_seconds"] = economic_config["refresh_interval_seconds"]
+        if (
+            "near_term_refresh_interval_seconds" not in economic_config
+            and "refresh_interval_seconds" in economic_config
+        ):
+            economic_config["near_term_refresh_interval_seconds"] = economic_config[
+                "refresh_interval_seconds"
+            ]
         economic_config["tradingeconomics_api_key"] = _normalize_optional_secret(
             economic_config.get("tradingeconomics_api_key")
         )
         economic_config["fred_api_key"] = _normalize_optional_secret(
             economic_config.get("fred_api_key")
         )
+
         risk_config = dict(configs["risk"].get("risk", {}))
         for optional_int_key in (
             "max_positions_per_symbol",
@@ -320,6 +250,7 @@ class CentralizedConfig:
         for optional_float_key in ("max_volume_per_order", "max_volume_per_symbol"):
             if str(risk_config.get(optional_float_key, "")).strip() == "":
                 risk_config[optional_float_key] = None
+
         self._set_provenance(
             "api",
             "host",
@@ -352,12 +283,25 @@ class CentralizedConfig:
             if field in {"host", "port"}:
                 continue
             if field in {"auth_enabled", "api_key_header", "api_key"}:
-                source = self._option_source(config_name="market.ini", section="security", key=field)
+                source = self._option_source(
+                    config_name="market.ini",
+                    section="security",
+                    key=field,
+                )
             elif field in {"access_log_enabled", "log_format"}:
-                source = self._option_source(config_name="market.ini", section="logging", key=field)
+                source = self._option_source(
+                    config_name="market.ini",
+                    section="logging",
+                    key=field,
+                )
             else:
-                source = self._option_source(config_name="market.ini", section="api", key=field)
+                source = self._option_source(
+                    config_name="market.ini",
+                    section="api",
+                    key=field,
+                )
             self._set_provenance("api", field, source)
+
         for field in IngestConfig.model_fields:
             if field in configs["ingest"].get("ingest", {}):
                 source = "ingest.ini[ingest]." + field
@@ -368,6 +312,7 @@ class CentralizedConfig:
             else:
                 source = "default"
             self._set_provenance("ingest", field, source)
+
         for field in EconomicConfig.model_fields:
             if field == "local_timezone":
                 source = self._option_source(
@@ -381,29 +326,53 @@ class CentralizedConfig:
                     ),
                 )
             elif field == "tradingeconomics_enabled":
-                source = self._option_source(config_name="economic.ini", section="tradingeconomics", key="enabled")
+                source = self._option_source(
+                    config_name="economic.ini",
+                    section="tradingeconomics",
+                    key="enabled",
+                )
             elif field == "fred_enabled":
-                source = self._option_source(config_name="economic.ini", section="fred", key="enabled")
+                source = self._option_source(
+                    config_name="economic.ini",
+                    section="fred",
+                    key="enabled",
+                )
             elif field == "tradingeconomics_api_key":
-                source = self._option_source(config_name="economic.ini", section="tradingeconomics", key="api_key")
+                source = self._option_source(
+                    config_name="economic.ini",
+                    section="tradingeconomics",
+                    key="api_key",
+                )
             elif field == "fred_api_key":
-                source = self._option_source(config_name="economic.ini", section="fred", key="api_key")
+                source = self._option_source(
+                    config_name="economic.ini",
+                    section="fred",
+                    key="api_key",
+                )
             else:
-                source = self._option_source(config_name="economic.ini", section="economic", key=field)
+                source = self._option_source(
+                    config_name="economic.ini",
+                    section="economic",
+                    key=field,
+                )
             self._set_provenance("economic", field, source)
+
         for field in RiskConfig.model_fields:
             self._set_provenance(
                 "risk",
                 field,
                 self._option_source(config_name="risk.ini", section="risk", key=field),
             )
+
         self._config_cache = {
             **shared_config,
             "api": APIConfig(**api_config).model_dump(),
             "ingest": IngestConfig(**ingest_config).model_dump(),
             "economic": EconomicConfig(**economic_config).model_dump(),
             "risk": RiskConfig(**risk_config).model_dump(),
-            "trading_ops": TradingOpsConfig(**dict(configs["main"].get("trading_ops", {}))).model_dump(),
+            "trading_ops": TradingOpsConfig(
+                **dict(configs["main"].get("trading_ops", {}))
+            ).model_dump(),
             "raw": {
                 "mt5": configs["mt5"],
                 "db": configs["db"],
@@ -445,7 +414,7 @@ class CentralizedConfig:
     def get_raw_config(self, module: str) -> Dict[str, Any]:
         return self.load_all()["raw"].get(module, {})
 
-    def reload(self):
+    def reload(self) -> None:
         self._config_cache.clear()
         self._validated = False
         self.load_all()
@@ -476,7 +445,10 @@ class CentralizedConfig:
 
     def get_config_provenance_snapshot(self) -> Dict[str, Dict[str, str]]:
         self.load_all()
-        return {section: dict(entries) for section, entries in self._provenance_cache.items()}
+        return {
+            section: dict(entries)
+            for section, entries in self._provenance_cache.items()
+        }
 
 
 _config_manager = CentralizedConfig()
@@ -527,7 +499,7 @@ def get_trading_ops_config() -> TradingOpsConfig:
     return _config_manager.get_trading_ops_config()
 
 
-def reload_configs():
+def reload_configs() -> None:
     get_trading_config.cache_clear()
     get_interval_config.cache_clear()
     get_limit_config.cache_clear()
@@ -538,22 +510,20 @@ def reload_configs():
     get_risk_config.cache_clear()
     get_trading_ops_config.cache_clear()
     get_signal_config.cache_clear()
-    # Compatibility loaders keep their own lru_cache; clear them so reload has
-    # consistent semantics across both primary and legacy call paths.
-    from src.config.compat import (
-        load_db_settings,
-        load_indicator_settings,
-        load_ingest_settings,
-        load_market_settings,
-        load_mt5_settings,
-        load_storage_settings,
+    from src.config.runtime import (
+        get_runtime_ingest_settings,
+        get_runtime_market_settings,
     )
+    from src.config.database import load_db_settings
+    from src.config.indicator_runtime import load_indicator_settings
+    from src.config.mt5 import load_mt5_settings
+    from src.config.storage import load_storage_settings
 
+    get_runtime_ingest_settings.cache_clear()
+    get_runtime_market_settings.cache_clear()
     load_mt5_settings.cache_clear()
     load_db_settings.cache_clear()
-    load_ingest_settings.cache_clear()
     load_storage_settings.cache_clear()
-    load_market_settings.cache_clear()
     load_indicator_settings.cache_clear()
     _config_manager.reload()
 
@@ -574,8 +544,8 @@ def validate_config_consistency():
     try:
         _config_manager.load_all()
         return True, "config validation passed"
-    except Exception as e:
-        return False, f"config validation failed: {e}"
+    except Exception as exc:
+        return False, f"config validation failed: {exc}"
 
 
 def get_effective_config_snapshot() -> Dict[str, Any]:
@@ -584,59 +554,3 @@ def get_effective_config_snapshot() -> Dict[str, Any]:
 
 def get_config_provenance_snapshot() -> Dict[str, Dict[str, str]]:
     return _config_manager.get_config_provenance_snapshot()
-
-
-class SignalConfig(BaseModel):
-    """Signal module configuration loaded from config/signal.ini."""
-
-    auto_trade_enabled: bool = False
-    auto_trade_min_confidence: float = 0.7
-    auto_trade_require_armed: bool = True
-    sl_atr_multiplier: float = 1.5
-    tp_atr_multiplier: float = 3.0
-    risk_percent_per_trade: float = 1.0
-    min_volume: float = 0.01
-    max_volume: float = 1.0
-    max_spread_points: float = 50.0
-    allowed_sessions: str = "london,newyork"
-    economic_filter_enabled: bool = True
-    economic_lookahead_minutes: int = 30
-    economic_lookback_minutes: int = 15
-    economic_importance_min: int = 3
-    min_preview_confidence: float = 0.55
-    min_preview_bar_progress: float = 0.2
-    preview_stable_seconds: float = 15.0
-    preview_cooldown_seconds: float = 30.0
-    snapshot_dedupe_window_seconds: float = 1.0
-    trailing_atr_multiplier: float = 1.0
-    breakeven_atr_threshold: float = 1.0
-    position_reconcile_interval: float = 10.0  # seconds between MT5 position sync
-
-
-@lru_cache
-def get_signal_config() -> SignalConfig:
-    merged = get_merged_config("signal.ini")
-    signal_section = dict(merged.get("signal", {}))
-    preview_section = dict(merged.get("preview", {}))
-    position_section = dict(merged.get("position_management", {}))
-    # [preview] 节中 min_confidence → min_preview_confidence，其余键原样合并
-    renamed_preview = {
-        ("min_preview_confidence" if k == "min_confidence" else k): v
-        for k, v in preview_section.items()
-    }
-    # 同理映射 [preview] 中 stable_seconds / cooldown_seconds / min_bar_progress
-    # 使其与 SignalConfig 字段名对应
-    field_renames = {
-        "stable_seconds": "preview_stable_seconds",
-        "cooldown_seconds": "preview_cooldown_seconds",
-        "min_bar_progress": "min_preview_bar_progress",
-    }
-    renamed_preview = {field_renames.get(k, k): v for k, v in renamed_preview.items()}
-    # [position_management] reconcile_interval → position_reconcile_interval
-    renamed_position = {
-        ("position_reconcile_interval" if k == "reconcile_interval" else k): v
-        for k, v in position_section.items()
-    }
-    combined = {**signal_section, **renamed_preview, **renamed_position}
-    # Bug修复: ConfigValidator.validate_model() 不存在，使用 Pydantic v2 标准 API
-    return SignalConfig.model_validate(combined)

@@ -5,8 +5,10 @@ MT5 交易封装：下单/平仓等写操作。
 from __future__ import annotations
 
 import math
+import re
+import time
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from src.clients.base import MT5BaseClient, mt5
 from src.config import MT5Settings
@@ -21,6 +23,15 @@ class MT5TradingClientError(MT5TradeError):
 class MT5TradingClient(MT5BaseClient):
     def __init__(self, settings: Optional[MT5Settings] = None):
         super().__init__(settings=settings)
+
+    @staticmethod
+    def _normalize_comment(comment: str, default: str) -> str:
+        raw = str(comment or "").strip()
+        if not raw:
+            raw = default
+        normalized = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw)
+        normalized = normalized.strip() or default
+        return normalized[:27]
 
     @staticmethod
     def _pending_order_types() -> set[int]:
@@ -78,6 +89,48 @@ class MT5TradingClient(MT5BaseClient):
             return getattr(mt5, "ORDER_TYPE_BUY_STOP_LIMIT", mt5.ORDER_TYPE_BUY) if is_buy else getattr(mt5, "ORDER_TYPE_SELL_STOP_LIMIT", mt5.ORDER_TYPE_SELL)
         raise MT5TradingClientError(f"Unsupported order kind: {order_kind}")
 
+    @staticmethod
+    def _is_unsupported_filling_response(result: Any) -> bool:
+        comment = str(getattr(result, "comment", "") or "").strip().lower()
+        return "unsupported filling mode" in comment
+
+    def _candidate_filling_modes(self, symbol: str, preferred: Optional[int] = None) -> list[int]:
+        candidates: list[int] = []
+        if preferred is not None:
+            candidates.append(preferred)
+
+        info = mt5.symbol_info(symbol)
+        symbol_mode = getattr(info, "filling_mode", None) if info is not None else None
+        if symbol_mode is not None:
+            candidates.append(int(symbol_mode))
+
+        for mode_name in ("ORDER_FILLING_RETURN", "ORDER_FILLING_IOC", "ORDER_FILLING_FOK"):
+            mode = getattr(mt5, mode_name, None)
+            if mode is not None:
+                candidates.append(int(mode))
+
+        unique: list[int] = []
+        seen = set()
+        for mode in candidates:
+            if mode in seen:
+                continue
+            seen.add(mode)
+            unique.append(mode)
+        return unique
+
+    def _send_order_with_supported_fillings(self, request: dict[str, Any]) -> Any:
+        symbol = str(request.get("symbol") or "")
+        preferred = request.get("type_filling")
+        last_result = None
+        for fill_mode in self._candidate_filling_modes(symbol, preferred):
+            req = dict(request)
+            req["type_filling"] = fill_mode
+            result = mt5.order_send(req)
+            last_result = result
+            if result is not None and not self._is_unsupported_filling_response(result):
+                return result
+        return last_result
+
     def open_trade_details(
         self,
         symbol: str,
@@ -117,10 +170,10 @@ class MT5TradingClient(MT5BaseClient):
             "tp": tp or 0.0,
             "deviation": deviation,
             "magic": magic,
-            "comment": comment,
-            "type_filling": mt5.ORDER_FILLING_FOK,
+            "comment": self._normalize_comment(comment, "trade"),
+            "type_filling": getattr(mt5, "ORDER_FILLING_RETURN", getattr(mt5, "ORDER_FILLING_IOC", getattr(mt5, "ORDER_FILLING_FOK", 0))),
         }
-        result = mt5.order_send(request)
+        result = self._send_order_with_supported_fillings(request)
         success_codes = {mt5.TRADE_RETCODE_DONE}
         if is_pending:
             success_codes.add(getattr(mt5, "TRADE_RETCODE_PLACED", mt5.TRADE_RETCODE_DONE))
@@ -226,13 +279,48 @@ class MT5TradingClient(MT5BaseClient):
         """
         self.connect()
         self._validate_volume(symbol, volume)
-        order_type = self._side_to_order_type(side)
+        order_type = self.side_and_kind_to_order_type(side, "market")
         tick = mt5.symbol_info_tick(symbol)
         price = price or (tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid)
         margin = mt5.order_calc_margin(order_type, symbol, volume, price)
         if margin is None:
             raise MT5TradingClientError(f"Failed to calc margin: {mt5.last_error()}")
         return margin
+
+    def validate_trade_request(
+        self,
+        *,
+        symbol: str,
+        volume: float,
+        side: str,
+        order_kind: str = "market",
+        price: Optional[float] = None,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+    ) -> dict:
+        self.connect()
+        self._validate_volume(symbol, volume)
+        order_type = self.side_and_kind_to_order_type(side, order_kind)
+        is_pending = order_type in self._pending_order_types()
+        request_price = price
+        if request_price is None:
+            if is_pending:
+                raise MT5TradingClientError("Pending orders require an explicit price")
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                raise MT5TradingClientError(f"Failed to get tick for {symbol}: {mt5.last_error()}")
+            request_price = tick.ask if order_type in self._buy_order_types() else tick.bid
+        self._validate_protection_levels(
+            order_type=order_type,
+            request_price=request_price,
+            sl=sl,
+            tp=tp,
+        )
+        return {
+            "order_type": order_type,
+            "request_price": request_price,
+            "pending": is_pending,
+        }
 
     def close_position(
         self,
@@ -242,30 +330,53 @@ class MT5TradingClient(MT5BaseClient):
         volume: Optional[float] = None,
     ) -> bool:
         self.connect()
-        position = mt5.positions_get(ticket=ticket)
-        if not position:
+        pos = None
+        for _attempt in range(3):
+            position = mt5.positions_get(ticket=ticket)
+            if position:
+                pos = position[0]
+                break
+            time.sleep(0.1)
+        if pos is None:
             raise MT5TradingClientError(f"Position {ticket} not found")
-        pos = position[0]
         close_volume = float(volume if volume is not None else pos.volume)
         if close_volume <= 0 or close_volume > pos.volume:
             raise MT5TradingClientError(f"Close volume {close_volume} invalid for position {ticket}")
-        tick = mt5.symbol_info_tick(pos.symbol)
-        price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": pos.symbol,
-            "volume": close_volume,
-            "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
-            "position": pos.ticket,
-            "price": price,
-            "deviation": deviation,
-            "magic": pos.magic,
-            "comment": comment or "close",
-        }
-        result = mt5.order_send(request)
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            raise MT5TradingClientError(f"Close failed: {result and result.comment}")
-        return True
+
+        last_error: Any = None
+        for _attempt in range(3):
+            tick = mt5.symbol_info_tick(pos.symbol)
+            if tick is None:
+                last_error = mt5.last_error()
+                time.sleep(0.1)
+                continue
+            price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": pos.symbol,
+                "volume": close_volume,
+                "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+                "position": pos.ticket,
+                "price": price,
+                "deviation": deviation,
+                "magic": pos.magic,
+                "comment": self._normalize_comment(comment, "close"),
+                "type_filling": getattr(mt5, "ORDER_FILLING_RETURN", getattr(mt5, "ORDER_FILLING_IOC", getattr(mt5, "ORDER_FILLING_FOK", 0))),
+            }
+            result = self._send_order_with_supported_fillings(request)
+            if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                return True
+            if result is not None:
+                error_comment = getattr(result, "comment", None)
+                raise MT5TradingClientError(f"Close failed: {error_comment}")
+            # order_send returned None — position may have been closed by SL/TP
+            # between the positions_get check and the order_send call.
+            pos_recheck = mt5.positions_get(ticket=ticket)
+            if not pos_recheck:
+                return True
+            last_error = mt5.last_error()
+            time.sleep(0.1)
+        raise MT5TradingClientError(f"Close failed: {last_error}")
 
     def close_positions_by_tickets(
         self,
@@ -325,9 +436,10 @@ class MT5TradingClient(MT5BaseClient):
                     "price": price,
                     "deviation": deviation,
                     "magic": pos.magic,
-                    "comment": comment,
+                    "comment": self._normalize_comment(comment, "close_all"),
+                    "type_filling": getattr(mt5, "ORDER_FILLING_RETURN", getattr(mt5, "ORDER_FILLING_IOC", getattr(mt5, "ORDER_FILLING_FOK", 0))),
                 }
-                result = mt5.order_send(request)
+                result = self._send_order_with_supported_fillings(request)
                 if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                     raise MT5TradingClientError(f"Close failed: {result and result.comment}")
                 closed.append(pos.ticket)

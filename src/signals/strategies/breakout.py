@@ -15,6 +15,11 @@ from .base import _resolve_indicator_value
 logger = logging.getLogger(__name__)
 
 
+def _market_structure(context: SignalContext) -> dict[str, Any]:
+    payload = context.metadata.get("market_structure")
+    return payload if isinstance(payload, dict) else {}
+
+
 class BollingerBreakoutStrategy:
     """Mean reversion signal based on Bollinger Band breakout.
 
@@ -93,13 +98,44 @@ class BollingerBreakoutStrategy:
             action = "hold"
             confidence = 0.1
 
+        structure = _market_structure(context)
+        reclaim_state = str(structure.get("reclaim_state") or "none")
+        sweep_confirmation_state = str(
+            structure.get("sweep_confirmation_state") or "none"
+        )
+        structure_bias = str(structure.get("structure_bias") or "neutral")
+        structure_note = "none"
+        if action == "buy":
+            if sweep_confirmation_state.startswith("bullish_"):
+                confidence = min(confidence + 0.22, 1.0)
+                structure_note = sweep_confirmation_state
+            elif reclaim_state.startswith("bullish_"):
+                confidence = min(confidence + 0.15, 1.0)
+                structure_note = reclaim_state
+            elif structure_bias in {"bearish_breakout", "bearish_sweep_confirmed"}:
+                confidence = max(confidence - 0.20, 0.0)
+                structure_note = structure_bias
+        elif action == "sell":
+            if sweep_confirmation_state.startswith("bearish_"):
+                confidence = min(confidence + 0.22, 1.0)
+                structure_note = sweep_confirmation_state
+            elif reclaim_state.startswith("bearish_"):
+                confidence = min(confidence + 0.15, 1.0)
+                structure_note = reclaim_state
+            elif structure_bias in {"bullish_breakout", "bullish_sweep_confirmed"}:
+                confidence = max(confidence - 0.20, 0.0)
+                structure_note = structure_bias
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
             timeframe=context.timeframe,
             action=action,
             confidence=confidence,
-            reason=f"bb_close={close_value:.2f},upper={upper:.2f},lower={lower:.2f}",
+            reason=(
+                f"bb_close={close_value:.2f},upper={upper:.2f},lower={lower:.2f},"
+                f"structure={structure_note}"
+            ),
             used_indicators=used or ["boll20"],
             metadata={
                 "close": close_value,
@@ -108,6 +144,9 @@ class BollingerBreakoutStrategy:
                 "bb_mid": mid,
                 "band_width": band_width,
                 "squeeze_bonus": squeeze_bonus,
+                "structure_bias": structure_bias,
+                "reclaim_state": reclaim_state,
+                "sweep_confirmation_state": sweep_confirmation_state,
             },
         )
 
@@ -306,6 +345,97 @@ class DonchianBreakoutStrategy:
             action = "hold"
             confidence = 0.1
 
+        structure = _market_structure(context)
+        breakout_state = str(structure.get("breakout_state") or "none")
+        reclaim_state = str(structure.get("reclaim_state") or "none")
+        sweep_confirmation_state = str(
+            structure.get("sweep_confirmation_state") or "none"
+        )
+        first_pullback_state = str(structure.get("first_pullback_state") or "none")
+        structure_note = breakout_state if breakout_state != "none" else reclaim_state
+        if structure_note == "none":
+            structure_note = sweep_confirmation_state
+        if structure_note == "none":
+            structure_note = first_pullback_state
+        if action == "buy":
+            if reclaim_state.startswith("bearish_") or sweep_confirmation_state.startswith(
+                "bearish_"
+            ):
+                failed_state = (
+                    sweep_confirmation_state
+                    if sweep_confirmation_state.startswith("bearish_")
+                    else reclaim_state
+                )
+                return SignalDecision(
+                    strategy=self.name,
+                    symbol=context.symbol,
+                    timeframe=context.timeframe,
+                    action="hold",
+                    confidence=0.15,
+                    reason=f"failed_structure_breakout:{failed_state}",
+                    used_indicators=used or ["donchian20", "adx14"],
+                    metadata={
+                        "close": d_close,
+                        "donchian_upper": d_upper,
+                        "donchian_lower": d_lower,
+                        "channel_width": channel_width,
+                        "adx": adx,
+                        "plus_di": plus_di,
+                        "minus_di": minus_di,
+                        "breakout_state": breakout_state,
+                        "reclaim_state": reclaim_state,
+                        "sweep_confirmation_state": sweep_confirmation_state,
+                        "first_pullback_state": first_pullback_state,
+                    },
+                )
+            if breakout_state.startswith("above_"):
+                confidence = min(confidence + 0.12, 1.0)
+            if sweep_confirmation_state.startswith("bullish_"):
+                confidence = min(confidence + 0.10, 1.0)
+                structure_note = sweep_confirmation_state
+            if first_pullback_state.startswith("bullish_"):
+                confidence = min(confidence + 0.08, 1.0)
+                structure_note = first_pullback_state
+        elif action == "sell":
+            if reclaim_state.startswith("bullish_") or sweep_confirmation_state.startswith(
+                "bullish_"
+            ):
+                failed_state = (
+                    sweep_confirmation_state
+                    if sweep_confirmation_state.startswith("bullish_")
+                    else reclaim_state
+                )
+                return SignalDecision(
+                    strategy=self.name,
+                    symbol=context.symbol,
+                    timeframe=context.timeframe,
+                    action="hold",
+                    confidence=0.15,
+                    reason=f"failed_structure_breakout:{failed_state}",
+                    used_indicators=used or ["donchian20", "adx14"],
+                    metadata={
+                        "close": d_close,
+                        "donchian_upper": d_upper,
+                        "donchian_lower": d_lower,
+                        "channel_width": channel_width,
+                        "adx": adx,
+                        "plus_di": plus_di,
+                        "minus_di": minus_di,
+                        "breakout_state": breakout_state,
+                        "reclaim_state": reclaim_state,
+                        "sweep_confirmation_state": sweep_confirmation_state,
+                        "first_pullback_state": first_pullback_state,
+                    },
+                )
+            if breakout_state.startswith("below_"):
+                confidence = min(confidence + 0.12, 1.0)
+            if sweep_confirmation_state.startswith("bearish_"):
+                confidence = min(confidence + 0.10, 1.0)
+                structure_note = sweep_confirmation_state
+            if first_pullback_state.startswith("bearish_"):
+                confidence = min(confidence + 0.08, 1.0)
+                structure_note = first_pullback_state
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -314,7 +444,7 @@ class DonchianBreakoutStrategy:
             confidence=confidence,
             reason=(
                 f"close={d_close:.2f},d_upper={d_upper:.2f},d_lower={d_lower:.2f},"
-                f"adx={adx:.1f}"
+                f"adx={adx:.1f},structure={structure_note}"
             ),
             used_indicators=used or ["donchian20", "adx14"],
             metadata={
@@ -325,6 +455,10 @@ class DonchianBreakoutStrategy:
                 "adx": adx,
                 "plus_di": plus_di,
                 "minus_di": minus_di,
+                "breakout_state": breakout_state,
+                "reclaim_state": reclaim_state,
+                "sweep_confirmation_state": sweep_confirmation_state,
+                "first_pullback_state": first_pullback_state,
             },
         )
 

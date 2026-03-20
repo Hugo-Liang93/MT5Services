@@ -29,7 +29,7 @@ from src.api.schemas import (
 from src.clients.base import MT5TradeError
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.service import SignalModule
-from src.signals.execution.sizing import compute_trade_params, extract_atr_from_indicators
+from src.trading.sizing import compute_trade_params, extract_atr_from_indicators
 from src.trading.service import TradingModule
 
 router = APIRouter(tags=["trade"])
@@ -42,6 +42,18 @@ def _trade_request_details(request: TradeRequest) -> dict:
         side=request.side,
         price=request.price,
     )
+
+
+def _position_model_from_dataclass(position) -> PositionModel:
+    payload = dict(position.__dict__)
+    payload["time"] = position.time.isoformat()
+    return PositionModel(**payload)
+
+
+def _order_model_from_dataclass(order) -> OrderModel:
+    payload = dict(order.__dict__)
+    payload["time"] = order.time.isoformat()
+    return OrderModel(**payload)
 
 
 @router.post("/trade/dispatch", response_model=ApiResponse[dict])
@@ -669,7 +681,7 @@ def positions(
     active_alias = service.active_account_alias
     try:
         positions = service.get_positions(symbol, magic)
-        items = [PositionModel(**p.__dict__, time=p.time.isoformat()) for p in positions]
+        items = [_position_model_from_dataclass(p) for p in positions]
         return ApiResponse.success_response(
             data=items,
             metadata={
@@ -707,7 +719,7 @@ def orders(
     active_alias = service.active_account_alias
     try:
         orders = service.get_orders(symbol, magic)
-        items = [OrderModel(**o.__dict__, time=o.time.isoformat()) for o in orders]
+        items = [_order_model_from_dataclass(o) for o in orders]
         return ApiResponse.success_response(
             data=items,
             metadata={

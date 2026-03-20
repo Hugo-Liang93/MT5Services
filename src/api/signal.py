@@ -1,23 +1,27 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
 from src.api.deps import (
     get_calibrator,
     get_htf_cache,
+    get_market_service,
+    get_market_structure_analyzer,
     get_outcome_tracker,
     get_position_manager,
     get_signal_runtime,
     get_signal_service,
 )
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
-from src.signals.evaluation.regime import MarketRegimeDetector
-from src.signals.strategies.composite import CompositeSignalStrategy
+from src.market import MarketDataService
+from src.market_structure import MarketStructureAnalyzer
 from src.signals.strategies.htf_cache import HTFStateCache
-from src.signals.tracking.outcome_tracker import OutcomeTracker
-from src.signals.tracking.position_manager import PositionManager
+from src.signals.orchestration import SignalRuntime
+from src.trading.outcome_tracker import OutcomeTracker
+from src.trading.position_manager import PositionManager
 from src.api.schemas import (
     ApiResponse,
     SignalDecisionModel,
@@ -25,7 +29,6 @@ from src.api.schemas import (
     SignalEventModel,
     SignalSummaryModel,
 )
-from src.signals.runtime import SignalRuntime
 from src.signals.service import SignalModule
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -209,17 +212,64 @@ def get_regime(
     runtime: SignalRuntime = Depends(get_signal_runtime),
 ) -> ApiResponse[Dict[str, Any]]:
     """返回指定品种/时间框架的当前 Regime 及稳定性信息。"""
-    indicators = service.indicator_source.get_all_indicators(symbol, timeframe)
-    detector = MarketRegimeDetector()
-    detail = detector.detect_with_detail(indicators)
-    stability = runtime.get_regime_stability(symbol, timeframe)
     return ApiResponse.success_response(
-        data={
-            **detail,
+        data=service.regime_report(
+            symbol=symbol,
+            timeframe=timeframe,
+            runtime=runtime,
+        )
+    )
+
+
+@router.get(
+    "/market-structure/{symbol}/{timeframe}",
+    response_model=ApiResponse[Dict[str, Any]],
+)
+def get_market_structure(
+    symbol: str,
+    timeframe: str,
+    analyzer: MarketStructureAnalyzer = Depends(get_market_structure_analyzer),
+    market_service: MarketDataService = Depends(get_market_service),
+) -> ApiResponse[Dict[str, Any]]:
+    event_time = datetime.now(timezone.utc)
+    latest_close: float | None = None
+    price_source = "latest_closed_bar"
+    try:
+        quote = market_service.get_quote(symbol)
+    except Exception:
+        quote = None
+    if quote is not None:
+        raw_last = getattr(quote, "last", None)
+        try:
+            latest_close = float(raw_last) if raw_last is not None else None
+        except (TypeError, ValueError):
+            latest_close = None
+        if latest_close is not None and latest_close > 0:
+            price_source = "live_quote_last"
+        else:
+            try:
+                bid = float(getattr(quote, "bid", 0.0) or 0.0)
+                ask = float(getattr(quote, "ask", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                bid = 0.0
+                ask = 0.0
+            if bid > 0 and ask > 0:
+                latest_close = (bid + ask) / 2.0
+                price_source = "live_quote_mid"
+    return ApiResponse.success_response(
+        data=analyzer.analyze(
+            symbol,
+            timeframe,
+            event_time=event_time,
+            latest_close=latest_close,
+        ),
+        metadata={
             "symbol": symbol,
             "timeframe": timeframe,
-            "stability": stability,
-        }
+            "analysis_mode": "live_quote" if latest_close is not None else "closed_bar_fallback",
+            "price_source": price_source,
+            "event_time": event_time.isoformat(),
+        },
     )
 
 
@@ -231,11 +281,9 @@ def recent_consensus_signals(
     service: SignalModule = Depends(get_signal_service),
 ) -> ApiResponse[list[SignalEventModel]]:
     """返回最近的 consensus 综合信号记录。"""
-    rows = service.recent_signals(
+    rows = service.recent_consensus_signals(
         symbol=symbol,
         timeframe=timeframe,
-        strategy="consensus",
-        scope="confirmed",
         limit=limit,
     )
     return ApiResponse.success_response(
@@ -268,25 +316,7 @@ def signal_outcomes_winrate(
     service: SignalModule = Depends(get_signal_service),
 ) -> ApiResponse[list[Dict[str, Any]]]:
     """从数据库查询各策略历史胜率，并附带内存实时统计。"""
-    rows: list[Dict[str, Any]] = []
-    try:
-        repo = service.repository
-        if repo is not None and hasattr(repo, "_db"):
-            db_rows = repo._db.fetch_winrates(hours=hours, symbol=symbol)
-            rows = [
-                {
-                    "strategy": r[0],
-                    "action": r[1],
-                    "total": r[2],
-                    "wins": r[3],
-                    "win_rate": float(r[4]) if r[4] is not None else None,
-                    "avg_confidence": float(r[5]) if r[5] is not None else None,
-                    "avg_move": float(r[6]) if r[6] is not None else None,
-                }
-                for r in db_rows
-            ]
-    except Exception:
-        pass
+    rows = service.strategy_winrates(hours=hours, symbol=symbol)
     return ApiResponse.success_response(
         data=rows,
         metadata={
@@ -337,11 +367,7 @@ def list_composite_strategies(
     service: SignalModule = Depends(get_signal_service),
 ) -> ApiResponse[list[Dict[str, Any]]]:
     """返回所有复合策略的描述信息（子策略列表、组合模式、Regime 亲和度）。"""
-    result = []
-    for name in service.list_strategies():
-        impl = service._strategies.get(name)
-        if isinstance(impl, CompositeSignalStrategy):
-            result.append(impl.describe())
+    result = service.list_composite_strategies()
     return ApiResponse.success_response(
         data=result,
         metadata={"count": len(result)},

@@ -1,9 +1,8 @@
 """
-Legacy compatibility config manager.
+File-backed configuration manager for INI/JSON sources.
 
-This module is retained for tests and low-dependency compatibility paths.
-It is intentionally INI/JSON-only and does not read runtime values from
-environment variables.
+This module provides lightweight file watching and direct file access for the
+small set of runtime paths that need explicit hot-reload notifications.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ class ConfigChangeEvent:
 
 
 class ConfigWatcher:
-    """Simple polling watcher used by the legacy compatibility manager."""
+    """Simple polling watcher for config files."""
 
     def __init__(self, config_dir: str, check_interval: int = 5):
         self.config_dir = Path(config_dir)
@@ -120,8 +119,8 @@ class ConfigWatcher:
                     logger.error("Error in config change callback: %s", exc)
 
 
-class AdvancedConfigManager:
-    """Compatibility config accessor backed only by INI/JSON files."""
+class FileConfigManager:
+    """File-backed config accessor with schema-aware conversion."""
 
     CONFIG_SCHEMA = {
         "app.ini": {
@@ -184,20 +183,13 @@ class AdvancedConfigManager:
         self.configs: Dict[str, Any] = {}
         self.watcher = ConfigWatcher(config_dir)
         self._lock = threading.RLock()
-        # 组件注册的配置变更回调：callback(filename: str) → None
         self._change_callbacks: List[Callable[[str], None]] = []
         self._load_all_configs()
         self.watcher.register_callback(self._on_config_change)
         self.watcher.start()
-        logger.info("AdvancedConfigManager initialized with config dir: %s", config_dir)
+        logger.info("FileConfigManager initialized with config dir: %s", config_dir)
 
     def register_change_callback(self, callback: Callable[[str], None]) -> None:
-        """注册配置文件变更时的通知回调。
-
-        每当某个 .ini 文件被修改并重新加载后，
-        ``callback(filename)`` 会被调用（filename 为如 "signal.ini" 的文件名）。
-        线程：回调在 ConfigWatcher 后台线程中执行，需注意线程安全。
-        """
         if callback not in self._change_callbacks:
             self._change_callbacks.append(callback)
 
@@ -309,11 +301,11 @@ class AdvancedConfigManager:
             return {key: self.get(filename, section, key) for key in config.options(section)}
 
     def set(self, filename: str, section: str, key: str, value: Any):
-        """Mutate the in-memory compatibility snapshot only."""
+        """Mutate the in-memory config snapshot only."""
         with self._lock:
             if filename.endswith(".json"):
                 logger.warning(
-                    "AdvancedConfigManager does not mutate JSON config in memory; ignoring set(%s, %s, %s)",
+                    "FileConfigManager does not mutate JSON config in memory; ignoring set(%s, %s, %s)",
                     filename,
                     section,
                     key,
@@ -415,14 +407,14 @@ class AdvancedConfigManager:
 
     def stop(self):
         self.watcher.stop()
-        logger.info("AdvancedConfigManager stopped")
+        logger.info("FileConfigManager stopped")
 
 
-_config_manager_instance: Optional[AdvancedConfigManager] = None
+_config_manager_instance: Optional[FileConfigManager] = None
 
 
-def get_config_manager(config_dir: str = "config") -> AdvancedConfigManager:
+def get_file_config_manager(config_dir: str = "config") -> FileConfigManager:
     global _config_manager_instance
     if _config_manager_instance is None:
-        _config_manager_instance = AdvancedConfigManager(config_dir)
+        _config_manager_instance = FileConfigManager(config_dir)
     return _config_manager_instance

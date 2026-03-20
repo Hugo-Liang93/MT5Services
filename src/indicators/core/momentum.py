@@ -1,6 +1,6 @@
 from typing import Any, Dict, Iterable, List
 
-from .base import get_closes, get_int, tail_bars
+from .base import get_closes, get_float, get_int, tail_bars
 from .mean import _ema_sequence
 
 

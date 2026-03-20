@@ -7,7 +7,6 @@ from typing import Dict, Optional
 from src.clients.mt5_account import MT5AccountClient
 from src.clients.mt5_trading import MT5TradingClient
 from src.config import MT5Settings, get_economic_config, get_risk_config, load_mt5_accounts
-from src.core.account_service import AccountService
 from src.risk.service import PreTradeRiskService
 from src.trading.trading_service import TradingService
 
@@ -17,7 +16,7 @@ class TradingAccountRegistry:
         self._accounts = accounts or load_mt5_accounts()
         self._economic_calendar_service = economic_calendar_service
         self._lock = threading.RLock()
-        self._account_services: Dict[str, AccountService] = {}
+        self._account_clients: Dict[str, MT5AccountClient] = {}
         self._trading_services: Dict[str, TradingService] = {}
 
     def list_accounts(self) -> list[dict]:
@@ -47,27 +46,27 @@ class TradingAccountRegistry:
     def get_settings(self, account_alias: Optional[str] = None) -> MT5Settings:
         return self._accounts[self.resolve_alias(account_alias)]
 
-    def get_account_service(self, account_alias: Optional[str] = None) -> AccountService:
+    def get_account_service(self, account_alias: Optional[str] = None) -> MT5AccountClient:
         alias = self.resolve_alias(account_alias)
         with self._lock:
-            service = self._account_services.get(alias)
-            if service is None:
-                service = AccountService(client=MT5AccountClient(self.get_settings(alias)))
-                self._account_services[alias] = service
-            return service
+            client = self._account_clients.get(alias)
+            if client is None:
+                client = MT5AccountClient(self.get_settings(alias))
+                self._account_clients[alias] = client
+            return client
 
     def get_trading_service(self, account_alias: Optional[str] = None) -> TradingService:
         alias = self.resolve_alias(account_alias)
         with self._lock:
             service = self._trading_services.get(alias)
             if service is None:
-                account_service = self.get_account_service(alias)
+                account_client = self.get_account_service(alias)
                 service = TradingService(
                     client=MT5TradingClient(self.get_settings(alias)),
-                    account_client=account_service.client,
+                    account_client=account_client,
                     pre_trade_risk_service=PreTradeRiskService(
                         economic_calendar_service=self._economic_calendar_service,
-                        account_service=account_service,
+                        account_service=account_client,
                         settings=get_economic_config(),
                         risk_settings=get_risk_config(),
                     ),

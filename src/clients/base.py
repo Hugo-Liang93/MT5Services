@@ -52,6 +52,11 @@ class MT5TradeError(MT5BaseError):
 class MT5BaseClient:
     _session_lock = threading.RLock()
 
+    # 全局"上次成功验证会话"时间戳，避免高并发下每次 connect() 都持锁调用 terminal_info()。
+    # 5 秒内已验证的连接直接走快速路径，无需争用锁。
+    _last_session_check: float = 0.0
+    _SESSION_CHECK_TTL: float = 5.0  # seconds
+
     def __init__(self, settings: Optional[MT5Settings] = None):
         self.settings = settings or load_mt5_settings()
         self.tz = ZoneInfo(self.settings.timezone)
@@ -63,28 +68,70 @@ class MT5BaseClient:
         )
         self._market_time_offset_seconds: Optional[int] = self._configured_market_time_offset_seconds
 
+    def _matches_requested_account(self) -> bool:
+        account_info = mt5.account_info()
+        if account_info is None:
+            return not bool(self.settings.mt5_login)
+
+        current_login = getattr(account_info, "login", None)
+        current_server = getattr(account_info, "server", None)
+        if self.settings.mt5_login and current_login != self.settings.mt5_login:
+            return False
+        if self.settings.mt5_server and current_server != self.settings.mt5_server:
+            return False
+        return True
+
+    def _session_ready(self) -> bool:
+        try:
+            terminal_info = mt5.terminal_info()
+        except Exception:
+            return False
+        if terminal_info is None:
+            return False
+        return self._matches_requested_account()
+
+    def _initialize_session(self) -> None:
+        initialize_kwargs = {}
+        if self.settings.mt5_path:
+            initialize_kwargs["path"] = self.settings.mt5_path
+        if self.settings.mt5_login is not None:
+            initialize_kwargs["login"] = self.settings.mt5_login
+        if self.settings.mt5_password:
+            initialize_kwargs["password"] = self.settings.mt5_password
+        if self.settings.mt5_server:
+            initialize_kwargs["server"] = self.settings.mt5_server
+
+        if not mt5.initialize(**initialize_kwargs):
+            raise MT5BaseError(f"Failed to initialize MT5: {mt5.last_error()}")
+
     def connect(self):
         if mt5 is None:
             raise MT5BaseError("MetaTrader5 package is not installed")
+        # 快速路径：已连接且近期（5s 内）已验证过会话，直接返回，无需争用类级锁。
+        now = time.monotonic()
+        if self._connected and (now - MT5BaseClient._last_session_check) < MT5BaseClient._SESSION_CHECK_TTL:
+            return
         with self._session_lock:
             self._market_time_offset_seconds = self._configured_market_time_offset_seconds
-            if not mt5.initialize(path=self.settings.mt5_path or None):
-                raise MT5BaseError(f"Failed to initialize MT5: {mt5.last_error()}")
+            if self._connected and self._session_ready():
+                MT5BaseClient._last_session_check = time.monotonic()
+                return
 
-            if self.settings.mt5_login:
-                account_info = mt5.account_info()
-                current_login = getattr(account_info, "login", None) if account_info is not None else None
-                current_server = getattr(account_info, "server", None) if account_info is not None else None
-                if current_login != self.settings.mt5_login or (
-                    self.settings.mt5_server and current_server != self.settings.mt5_server
-                ):
-                    authorized = mt5.login(
-                        login=self.settings.mt5_login,
-                        password=self.settings.mt5_password or "",
-                        server=self.settings.mt5_server or "",
-                    )
-                    if not authorized:
-                        raise MT5BaseError(f"Failed to login to MT5: {mt5.last_error()}")
+            if self._session_ready():
+                self._connected = True
+                return
+
+            self._initialize_session()
+
+            if self.settings.mt5_login and not self._matches_requested_account():
+                login_kwargs = {"login": self.settings.mt5_login}
+                if self.settings.mt5_password:
+                    login_kwargs["password"] = self.settings.mt5_password
+                if self.settings.mt5_server:
+                    login_kwargs["server"] = self.settings.mt5_server
+                authorized = mt5.login(**login_kwargs)
+                if not authorized:
+                    raise MT5BaseError(f"Failed to login to MT5: {mt5.last_error()}")
             self._connected = True
 
     def shutdown(self):

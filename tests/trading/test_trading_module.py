@@ -218,6 +218,23 @@ def test_trading_module_dispatch_operation_routes_to_handler():
     assert result["ticket"] == 123
 
 
+def test_trading_module_dispatch_trade_filters_execute_only_fields_from_precheck():
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    result = module.dispatch_operation(
+        "trade",
+        {
+            "symbol": "XAUUSD",
+            "volume": 0.2,
+            "side": "buy",
+            "dry_run": False,
+            "request_id": "req_dispatch",
+        },
+    )
+
+    assert result["ticket"] == 123
+
+
 def test_trading_module_dispatch_operation_rejects_unknown():
     module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
 

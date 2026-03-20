@@ -6,14 +6,12 @@
 from .calibrator import ConfidenceCalibrator
 from .indicators_helpers import get_atr, get_close, hold_decision
 from .regime import MarketRegimeDetector, RegimeTracker, RegimeType
-from .voting import StrategyVotingEngine
 
 __all__ = [
     "ConfidenceCalibrator",
     "MarketRegimeDetector",
     "RegimeTracker",
     "RegimeType",
-    "StrategyVotingEngine",
     "get_atr",
     "get_close",
     "hold_decision",

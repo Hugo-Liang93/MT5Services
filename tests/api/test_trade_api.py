@@ -1,9 +1,20 @@
 from __future__ import annotations
 
-from src.api.trade import trade, trade_daily_summary, trade_dispatch, trade_from_signal, trade_precheck
+from datetime import datetime, timezone
+
+from src.api.trade import (
+    orders,
+    positions,
+    trade,
+    trade_daily_summary,
+    trade_dispatch,
+    trade_from_signal,
+    trade_precheck,
+)
 from src.api.schemas import SignalExecuteTradeRequest, TradeDispatchRequest, TradeRequest
-from src.clients.mt5_trade import MT5TradeError
-from src.core.pretrade_risk_service import PreTradeRiskBlockedError
+from src.clients.mt5_account import Order, Position
+from src.clients.base import MT5TradeError
+from src.risk.service import PreTradeRiskBlockedError
 
 
 class _FailingTradeService:
@@ -37,6 +48,39 @@ class _DispatchService:
 
     def account_info(self):
         return {"equity": 10000.0}
+
+    def get_positions(self, symbol=None, magic=None):
+        return [
+            Position(
+                ticket=1,
+                symbol=symbol or "XAUUSD",
+                volume=0.01,
+                price_open=3000.0,
+                sl=2990.0,
+                tp=3020.0,
+                time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                type=0,
+                magic=magic or 7,
+                comment="probe",
+            )
+        ]
+
+    def get_orders(self, symbol=None, magic=None):
+        return [
+            Order(
+                ticket=2,
+                symbol=symbol or "XAUUSD",
+                volume=0.01,
+                price_open=3001.0,
+                price_current=3002.0,
+                sl=2991.0,
+                tp=3021.0,
+                time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                type=0,
+                magic=magic or 7,
+                comment="probe",
+            )
+        ]
 
 
 class _SignalService:
@@ -117,3 +161,17 @@ def test_trade_from_signal_is_executed_by_trade_module_api() -> None:
     assert response.success is True
     assert response.metadata["operation"] == "trade_from_signal"
     assert response.data["ticket"] == 1
+
+
+def test_positions_endpoint_serializes_dataclass_time_without_duplicate_keyword() -> None:
+    response = positions(symbol="XAUUSD", magic=7, service=_DispatchService())
+
+    assert response.success is True
+    assert response.data[0].time == "2026-01-01T00:00:00+00:00"
+
+
+def test_orders_endpoint_serializes_dataclass_time_without_duplicate_keyword() -> None:
+    response = orders(symbol="XAUUSD", magic=7, service=_DispatchService())
+
+    assert response.success is True
+    assert response.data[0].time == "2026-01-01T00:00:00+00:00"

@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from src.api.signal import evaluate_signal, list_signal_strategies, recent_signals, signal_summary
+from src.api.signal import (
+    evaluate_signal,
+    get_market_structure,
+    list_signal_strategies,
+    recent_signals,
+    signal_summary,
+)
 from src.api.schemas import SignalEvaluateRequest
 
 
@@ -92,3 +98,75 @@ def test_signal_summary_endpoint() -> None:
     assert response.success is True
     assert response.data[0].count == 3
     assert response.data[0].scope == "preview"
+
+
+def test_signal_market_structure_endpoint() -> None:
+    class DummyAnalyzer:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def analyze(self, symbol, timeframe, *, event_time=None, latest_close=None):
+            self.calls.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "event_time": event_time,
+                    "latest_close": latest_close,
+                }
+            )
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "structure_bias": "bullish_breakout",
+            }
+
+    analyzer = DummyAnalyzer()
+    response = get_market_structure(
+        "XAUUSD",
+        "M5",
+        analyzer=analyzer,
+        market_service=type(
+            "MarketServiceStub",
+            (),
+            {
+                "get_quote": lambda _self, symbol=None: type(
+                    "QuoteStub",
+                    (),
+                    {"last": 3000.25, "bid": 3000.20, "ask": 3000.30},
+                )()
+            },
+        )(),
+    )
+
+    assert response.success is True
+    assert response.data["structure_bias"] == "bullish_breakout"
+    assert analyzer.calls[0]["latest_close"] == 3000.25
+    assert response.metadata["analysis_mode"] == "live_quote"
+    assert response.metadata["price_source"] == "live_quote_last"
+
+
+def test_signal_market_structure_endpoint_falls_back_without_quote() -> None:
+    class DummyAnalyzer:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def analyze(self, symbol, timeframe, *, event_time=None, latest_close=None):
+            self.calls.append({"event_time": event_time, "latest_close": latest_close})
+            return {"symbol": symbol, "timeframe": timeframe, "structure_bias": "neutral"}
+
+    analyzer = DummyAnalyzer()
+    response = get_market_structure(
+        "XAUUSD",
+        "M5",
+        analyzer=analyzer,
+        market_service=type(
+            "MarketServiceStub",
+            (),
+            {"get_quote": lambda _self, symbol=None: None},
+        )(),
+    )
+
+    assert response.success is True
+    assert analyzer.calls[0]["latest_close"] is None
+    assert response.metadata["analysis_mode"] == "closed_bar_fallback"
+    assert response.metadata["price_source"] == "latest_closed_bar"

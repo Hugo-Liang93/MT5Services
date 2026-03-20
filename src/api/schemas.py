@@ -406,13 +406,15 @@ class ApiResponse(BaseModel, Generic[T]):
         Returns:
             ApiResponse实例
         """
+        normalized_error_code = str(getattr(error_code, "value", error_code)).lower()
+        normalized_action = getattr(suggested_action, "value", suggested_action)
         return cls(
             success=False,
             data=None,
             error={
-                "code": error_code,
+                "code": normalized_error_code,
                 "message": error_message,
-                "suggested_action": suggested_action,
+                "suggested_action": normalized_action,
                 "details": details or {}
             },
             metadata={

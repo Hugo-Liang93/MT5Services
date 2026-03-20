@@ -1,5 +1,19 @@
 # AGENTS.md
 
+## 0.1 No Compatibility Rule
+
+- During the current development phase, do not preserve legacy or compatibility paths when fixing bugs or refactoring code.
+- Fix the problem directly at the source module instead of adding `compat`, fallback, adapter, dual-path, or transitional wrappers.
+- Prefer one clear implementation path over backward-compatible branching.
+- If a change requires structural cleanup, do the cleanup now rather than layering compatibility on top of a known-bad design.
+
+## 0. 当前架构修正
+
+- `src/core/` 不再作为新增业务能力的默认落点
+- 新增领域能力优先放入 `market / calendar / market_structure / indicators / signals / risk / trading / monitoring / api / config`
+- 不再引入新的 `compat` / `fallback` 主路径概念
+- 黄金日内相关的新特征优先建设为独立上下文层，再接入策略和风控
+
 ## 1. 项目核心目标
 协助基于 Python 与 MT5 构建量化交易系统，并逐步沉淀为可供 AI agent 或其他系统调用的 API 服务。
 
@@ -213,6 +227,12 @@
   - API 是否受影响
   - MT5 是否受影响
   - 监控是否受影响
+
+### 9.1 编码约束
+- 仓库内所有文本文件统一使用 UTF-8 编码
+- 通过命令行写入或追加文本文件时，必须显式指定 UTF-8 编码
+- 优先使用补丁方式修改文本文件，避免使用未指定编码的 shell 重定向直接写文件
+- 如果出现乱码，先区分“文件实际编码错误”和“终端显示编码错误”，不要在未确认前盲目重写文件
 
 涉及以下内容时必须同步更新文档：
 - 新配置项
