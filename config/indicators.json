@@ -27,6 +27,32 @@
       "tags": ["trend", "mean"]
     },
     {
+      "name": "ema21",
+      "func_path": "src.indicators.core.mean.ema",
+      "params": {
+        "period": 21,
+        "min_bars": 21
+      },
+      "dependencies": [],
+      "compute_mode": "incremental",
+      "enabled": true,
+      "description": "21周期指数移动平均线",
+      "tags": ["trend", "mean"]
+    },
+    {
+      "name": "ema55",
+      "func_path": "src.indicators.core.mean.ema",
+      "params": {
+        "period": 55,
+        "min_bars": 55
+      },
+      "dependencies": [],
+      "compute_mode": "incremental",
+      "enabled": true,
+      "description": "55周期指数移动平均线",
+      "tags": ["trend", "mean"]
+    },
+    {
       "name": "rsi14",
       "func_path": "src.indicators.core.momentum.rsi",
       "params": {
@@ -36,7 +62,21 @@
       "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
+      "delta_bars": [3, 5],
       "description": "14周期相对强弱指数",
+      "tags": ["momentum", "oscillator"]
+    },
+    {
+      "name": "rsi5",
+      "func_path": "src.indicators.core.momentum.rsi",
+      "params": {
+        "period": 5,
+        "min_bars": 6
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "5周期相对强弱指数",
       "tags": ["momentum", "oscillator"]
     },
     {
@@ -51,7 +91,23 @@
       "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
-      "description": "移动平均收敛发散指标（修复：parallel模式对顺序依赖计算无效）",
+      "delta_bars": [3, 5],
+      "description": "标准MACD",
+      "tags": ["momentum", "trend"]
+    },
+    {
+      "name": "macd_fast",
+      "func_path": "src.indicators.core.momentum.macd",
+      "params": {
+        "fast": 5,
+        "slow": 13,
+        "signal": 5,
+        "min_bars": 13
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "5-13-5 快速MACD，用于M1短周期动量确认",
       "tags": ["momentum", "trend"]
     },
     {
@@ -62,10 +118,10 @@
         "mult": 2,
         "min_bars": 20
       },
-      "dependencies": ["sma20"],
+      "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
-      "description": "20周期布林带",
+      "description": "20周期布林带（函数内部自行计算SMA，无需依赖sma20）",
       "tags": ["volatility", "channel"]
     },
     {
@@ -118,6 +174,7 @@
       "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
+      "delta_bars": [3, 5],
       "description": "14周期趋势强度指标",
       "tags": ["trend", "volatility"]
     },
@@ -130,9 +187,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
-      "intrabar_eligible": false,
-      "description": "14周期资金流量指标",
+      "enabled": false,
+      "description": "14周期资金流量指标（demo账户缺少真实成交量，开发阶段直接停用）",
       "tags": ["volume", "momentum"]
     },
     {
@@ -157,9 +213,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
-      "intrabar_eligible": false,
-      "description": "30周期能量潮指标",
+      "enabled": false,
+      "description": "30周期能量潮指标（demo账户缺少真实成交量，开发阶段直接停用）",
       "tags": ["volume", "trend"]
     },
     {
@@ -185,6 +240,7 @@
       "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
+      "delta_bars": [3, 5],
       "description": "20周期顺势指标",
       "tags": ["momentum", "oscillator"]
     },
@@ -200,7 +256,7 @@
       "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
-      "description": "20周期肯特纳通道",
+      "description": "20周期肯特纳通道（函数内部自行计算ATR，无需依赖atr14）",
       "tags": ["volatility", "channel"]
     },
     {
@@ -213,7 +269,6 @@
       "dependencies": [],
       "compute_mode": "standard",
       "enabled": false,
-      "intrabar_eligible": false,
       "description": "30周期成交量加权均价（demo账号成交量为0，禁用避免无意义计算）",
       "tags": ["volume", "mean"]
     },
@@ -226,8 +281,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
-      "description": "20周期加权移动平均线",
+      "enabled": false,
+      "description": "20周期加权移动平均线（当前无策略依赖，开发阶段直接停用）",
       "tags": ["trend", "mean"]
     },
     {
@@ -257,6 +312,7 @@
       "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
+      "delta_bars": [3, 5],
       "description": "14周期Stochastic RSI，比RSI更敏感的超买超卖指标",
       "tags": ["momentum", "oscillator"]
     },

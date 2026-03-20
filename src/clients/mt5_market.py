@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from src.clients.base import MT5BaseClient, MT5BaseError, mt5
+from src.utils.common import timeframe_seconds
 
 
 @dataclass
@@ -177,22 +178,29 @@ class MT5MarketClient(MT5BaseClient):
         """从指定时间开始获取最多 limit 条 K 线，便于补全历史。"""
         self.connect()
         tf = self._timeframe_to_mt5(timeframe)
-        request_start = self._market_time_to_request(start)
-        rates = mt5.copy_rates_from(symbol, tf, request_start, limit)
+        request_start = (
+            start.replace(tzinfo=timezone.utc)
+            if start.tzinfo is None
+            else start.astimezone(timezone.utc)
+        )
+        request_end = request_start + timedelta(
+            seconds=timeframe_seconds(timeframe) * max(limit, 1)
+        )
+        rates = mt5.copy_rates_range(symbol, tf, request_start, request_end)
         if rates is None:
             raise MT5MarketError(f"Failed to get OHLC from {start} for {symbol}: {mt5.last_error()}")
         return [
             OHLC(
                 symbol=symbol,
                 timeframe=timeframe,
-                time=self._market_time_from_seconds(self._get_field(rate, "time")),
+                time=datetime.fromtimestamp(float(self._get_field(rate, "time")), tz=timezone.utc),
                 open=self._get_field(rate, "open"),
                 high=self._get_field(rate, "high"),
                 low=self._get_field(rate, "low"),
                 close=self._get_field(rate, "close"),
                 volume=self._get_field(rate, "real_volume", 0.0),
             )
-            for rate in rates
+            for rate in list(rates)[:limit]
         ]
 
     def _timeframe_to_mt5(self, timeframe: str) -> int:

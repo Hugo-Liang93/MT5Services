@@ -20,6 +20,7 @@ from .models import RiskAssessment, RiskCheckResult, TradeIntent
 from .rules import (
     AccountSnapshotRule,
     CalendarHealthRule,
+    DailyLossLimitRule,
     EconomicEventRule,
     MarketStructureRule,
     ProtectionRule,
@@ -70,6 +71,7 @@ class PreTradeRiskService:
         self.risk_settings = risk_settings or get_risk_config()
         self.rules = (
             AccountSnapshotRule(),
+            DailyLossLimitRule(),
             ProtectionRule(),
             SessionWindowRule(),
             MarketStructureRule(),

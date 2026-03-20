@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+import dataclasses as _dc
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -33,6 +34,7 @@ class ExecutorConfig:
     enabled: bool = False
     min_confidence: float = 0.7
     require_armed: bool = True
+    max_concurrent_positions_per_symbol: int | None = 3
     risk_percent: float = 1.0
     sl_atr_multiplier: float = 1.5
     tp_atr_multiplier: float = 3.0
@@ -48,8 +50,10 @@ class ExecutorConfig:
     # T-3: 自动半开恢复：熔断后等待 N 分钟再自动尝试
     circuit_auto_reset_minutes: int = 30
     max_spread_to_stop_ratio: float = 0.33
-    # HTF 方向过滤：若启用，当 HTF 方向与信号方向相反时跳过交易
+    # HTF 对齐修正：若启用，冲突时软惩罚，一致时轻微加成。
     htf_filter_enabled: bool = True
+    htf_conflict_penalty: float = 0.70
+    htf_alignment_boost: float = 1.10
     # 交易触发白名单：仅允许列表内的策略触发实际下单。
     # 空元组 = 不限制，所有策略均可触发（默认兼容行为）。
     # 非空时，白名单外的策略信号仍正常产生（用于监控/投票），但不执行交易。
@@ -184,14 +188,6 @@ class TradeExecutor:
             )
             return None
 
-        if event.confidence < self.config.min_confidence:
-            logger.info(
-                "TradeExecutor: skipping %s/%s %s - confidence %.3f < min=%.2f",
-                event.symbol, event.strategy, event.action,
-                event.confidence, self.config.min_confidence,
-            )
-            return None
-
         # ── require_armed 检查 ────────────────────────────────────────
         # confirmed 事件的 previous_state 是上一个 confirmed_state（idle/confirmed_buy），
         # 永远不含 "armed"。因此同时检查 preview_state_at_close（bar 收盘时的盘中状态），
@@ -208,16 +204,61 @@ class TradeExecutor:
                 )
                 return None
 
-        # ── HTF 方向过滤 ──────────────────────────────────────────────
-        # 若 HTF 方向与当前信号方向相反，跳过交易（避免逆大势）。
+        # ── HTF 方向软惩罚 ────────────────────────────────────────────
         if self.config.htf_filter_enabled and self._htf_cache is not None:
             htf_direction = self._htf_cache.get_htf_direction(event.symbol, event.timeframe)
-            if htf_direction is not None and htf_direction != event.action:
-                logger.info(
-                    "TradeExecutor: skipping %s/%s %s - HTF direction=%s conflicts",
-                    event.symbol, event.timeframe, event.action, htf_direction,
+            if htf_direction is not None:
+                multiplier = (
+                    self.config.htf_alignment_boost
+                    if htf_direction == event.action
+                    else self.config.htf_conflict_penalty
                 )
-                return None
+                event = _dc.replace(
+                    event,
+                    confidence=min(1.0, event.confidence * multiplier),
+                    metadata={
+                        **event.metadata,
+                        "htf_direction": htf_direction,
+                        "htf_alignment": (
+                            "aligned" if htf_direction == event.action else "conflict"
+                        ),
+                        "htf_confidence_multiplier": multiplier,
+                    },
+                )
+
+        if event.confidence < self.config.min_confidence:
+            logger.info(
+                "TradeExecutor: skipping %s/%s %s - confidence %.3f < min=%.2f",
+                event.symbol,
+                event.strategy,
+                event.action,
+                event.confidence,
+                self.config.min_confidence,
+            )
+            return None
+
+        if self._reached_position_limit(event.symbol):
+            logger.info(
+                "TradeExecutor: skipping %s/%s %s - max_concurrent_positions_per_symbol reached",
+                event.symbol,
+                event.strategy,
+                event.action,
+            )
+            self._execution_log.append(
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "signal_id": event.signal_id,
+                    "symbol": event.symbol,
+                    "action": event.action,
+                    "strategy": event.strategy,
+                    "success": False,
+                    "skipped": True,
+                    "reason": "max_concurrent_positions_per_symbol",
+                }
+            )
+            if len(self._execution_log) > 100:
+                self._execution_log = self._execution_log[-50:]
+            return None
 
         trade_params = self._compute_params(event)
         if trade_params is None:
@@ -296,6 +337,7 @@ class TradeExecutor:
             current_price=close_price,
             atr_value=atr,
             account_balance=balance,
+            timeframe=event.timeframe,
             risk_percent=self.config.risk_percent,
             sl_atr_multiplier=self.config.sl_atr_multiplier,
             tp_atr_multiplier=self.config.tp_atr_multiplier,
@@ -331,6 +373,41 @@ class TradeExecutor:
                         except (TypeError, ValueError):
                             continue
         return None
+
+    def _reached_position_limit(self, symbol: str) -> bool:
+        limit = self.config.max_concurrent_positions_per_symbol
+        if limit is None or limit <= 0:
+            return False
+        open_positions = self._open_positions_for_symbol(symbol)
+        return open_positions >= limit
+
+    def _open_positions_for_symbol(self, symbol: str) -> int:
+        if self._position_manager is not None:
+            try:
+                tracked = [
+                    row
+                    for row in self._position_manager.active_positions()
+                    if row.get("symbol") == symbol
+                ]
+                return len(tracked)
+            except Exception:
+                pass
+
+        for attr_name in ("get_positions", "positions"):
+            getter = getattr(self._trading, attr_name, None)
+            if not callable(getter):
+                continue
+            try:
+                rows = getter(symbol=symbol)
+            except TypeError:
+                rows = getter(symbol)
+            except Exception:
+                continue
+            try:
+                return len(list(rows or []))
+            except Exception:
+                continue
+        return 0
 
     def _estimate_cost_metrics(
         self,
@@ -582,7 +659,10 @@ class TradeExecutor:
             "config": {
                 "min_confidence": self.config.min_confidence,
                 "require_armed": self.config.require_armed,
+                "max_concurrent_positions_per_symbol": self.config.max_concurrent_positions_per_symbol,
                 "htf_filter_enabled": self.config.htf_filter_enabled,
+                "htf_conflict_penalty": self.config.htf_conflict_penalty,
+                "htf_alignment_boost": self.config.htf_alignment_boost,
                 "max_spread_to_stop_ratio": self.config.max_spread_to_stop_ratio,
                 "risk_percent": self.config.risk_percent,
                 "sl_atr_multiplier": self.config.sl_atr_multiplier,

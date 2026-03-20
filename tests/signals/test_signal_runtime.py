@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from src.signals.execution.filters import SessionFilter, SignalFilterChain
 from src.signals.models import SignalDecision
 from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 
@@ -108,9 +109,31 @@ class DummySignalService:
 
 class DummyStructureAnalyzer:
     def __init__(self, enabled: bool = True):
-        self.config = SimpleNamespace(enabled=enabled)
+        self.config = SimpleNamespace(
+            enabled=enabled,
+            lookback_bars=400,
+            m1_lookback_bars=120,
+        )
+        self.calls = []
 
-    def analyze(self, symbol, timeframe, *, event_time=None, latest_close=None):
+    def analyze(
+        self,
+        symbol,
+        timeframe,
+        *,
+        event_time=None,
+        latest_close=None,
+        lookback_bars_override=None,
+    ):
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "event_time": event_time,
+                "latest_close": latest_close,
+                "lookback_bars_override": lookback_bars_override,
+            }
+        )
         return {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -433,6 +456,82 @@ def test_signal_runtime_deduplicates_same_required_indicator_snapshot_for_same_b
     assert len(service.persist_calls) == 1
 
 
+def test_signal_runtime_fuses_intrabar_and_confirmed_votes_per_strategy() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=True,
+    )
+
+    intrabar_decision = SignalDecision(
+        strategy="rsi_reversion",
+        symbol="XAUUSD",
+        timeframe="M5",
+        action="buy",
+        confidence=0.6,
+        reason="intrabar",
+    )
+    confirmed_decision = SignalDecision(
+        strategy="rsi_reversion",
+        symbol="XAUUSD",
+        timeframe="M5",
+        action="buy",
+        confidence=0.9,
+        reason="confirmed",
+    )
+    bar_time = datetime.now(timezone.utc)
+
+    first = runtime._fuse_vote_decisions(
+        "XAUUSD", "M5", bar_time, "intrabar", [intrabar_decision]
+    )
+    second = runtime._fuse_vote_decisions(
+        "XAUUSD", "M5", bar_time, "confirmed", [confirmed_decision]
+    )
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert second[0].reason == "confirmed"
+
+
+def test_signal_runtime_injects_soft_regime_metadata_when_enabled() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    service.soft_regime_enabled = True
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+    )
+
+    runtime._on_snapshot(
+        "XAUUSD",
+        "M5",
+        datetime.now(timezone.utc),
+        {
+            "adx14": {"adx": 20.5},
+            "sma20": {"sma": 201.0},
+            "ema50": {"ema": 200.0},
+        },
+        "confirmed",
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    metadata = service.evaluate_calls[0]["metadata"]
+    assert "_soft_regime" in metadata
+    assert set(metadata["regime_probabilities"]) == {
+        "trending",
+        "ranging",
+        "breakout",
+        "uncertain",
+    }
+
+
 def test_signal_runtime_confirmed_queue_is_drained_before_intrabar() -> None:
     """Confirmed events must be processed before intrabar events even when both are queued."""
     source = DummySnapshotSource()
@@ -515,7 +614,7 @@ def test_signal_runtime_status_exposes_split_queues() -> None:
     assert "confirmed_queue_capacity" in status
     assert "intrabar_queue_size" in status
     assert "intrabar_queue_capacity" in status
-    assert status["confirmed_queue_capacity"] == 512
+    assert status["confirmed_queue_capacity"] == 2048
     assert status["intrabar_queue_capacity"] == 4096
     assert "dropped_confirmed" in status
     assert "dropped_intrabar" in status
@@ -597,13 +696,14 @@ def test_signal_runtime_skips_strategy_outside_strategy_sessions() -> None:
 def test_signal_runtime_injects_market_structure_context() -> None:
     source = DummySnapshotSource()
     service = DummySignalService()
+    analyzer = DummyStructureAnalyzer()
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
         enable_intrabar=False,
-        market_structure_analyzer=DummyStructureAnalyzer(),
+        market_structure_analyzer=analyzer,
     )
 
     runtime._on_snapshot(
@@ -618,3 +718,121 @@ def test_signal_runtime_injects_market_structure_context() -> None:
     structure = service.evaluate_calls[0]["metadata"]["market_structure"]
     assert structure["structure_bias"] == "bullish_breakout"
     assert structure["breakout_state"] == "above_previous_day_high"
+    assert analyzer.calls[0]["event_time"].isoformat() == service.evaluate_calls[0]["metadata"]["bar_time"]
+
+
+def test_signal_runtime_uses_bar_time_for_confirmed_session_context() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    analyzer = DummyStructureAnalyzer()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+        policy=SignalPolicy(strategy_sessions={"rsi_reversion": ("asia",)}),
+        filter_chain=SignalFilterChain(session_filter=SessionFilter(("asia", "london", "new_york"))),
+        market_structure_analyzer=analyzer,
+    )
+
+    runtime._enqueue(
+        (
+            "confirmed",
+            "XAUUSD",
+            "M5",
+            {"rsi14": {"rsi": 24.0}},
+            {
+                "scope": "confirmed",
+                "bar_time": "2026-03-19T01:00:00+00:00",
+                "snapshot_time": "2026-03-19T10:00:00+00:00",
+                "trigger_source": "confirmed_snapshot",
+            },
+        )
+    )
+
+    runtime.process_next_event(timeout=0.01)
+
+    assert len(service.evaluate_calls) == 1
+    assert service.evaluate_calls[0]["metadata"]["session_buckets"] == ["asia"]
+    assert analyzer.calls[0]["event_time"] == datetime(2026, 3, 19, 1, 0, tzinfo=timezone.utc)
+
+
+def test_signal_runtime_reuses_cached_market_structure_for_intrabar() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    analyzer = DummyStructureAnalyzer()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=True,
+        market_structure_analyzer=analyzer,
+    )
+    bar_time = datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc)
+
+    runtime._enqueue(
+        (
+            "confirmed",
+            "XAUUSD",
+            "M5",
+            {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+            {
+                "scope": "confirmed",
+                "bar_time": bar_time.isoformat(),
+                "snapshot_time": bar_time.isoformat(),
+                "trigger_source": "confirmed_snapshot",
+            },
+        )
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    runtime._enqueue(
+        (
+            "intrabar",
+            "XAUUSD",
+            "M5",
+            {"sma20": {"sma": 202.0}, "ema50": {"ema": 200.0}},
+            {
+                "scope": "intrabar",
+                "bar_time": bar_time.isoformat(),
+                "snapshot_time": datetime(2026, 3, 19, 10, 1, tzinfo=timezone.utc).isoformat(),
+                "trigger_source": "intrabar_snapshot",
+                "bar_progress": 0.2,
+            },
+        )
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    assert len(analyzer.calls) == 1
+    assert runtime.status()["market_structure_cache_entries"] == 1
+    assert (
+        service.evaluate_calls[1]["metadata"]["market_structure"]["structure_bias"]
+        == "bullish_breakout"
+    )
+
+
+def test_signal_runtime_uses_shorter_m1_market_structure_lookback() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    analyzer = DummyStructureAnalyzer()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M1", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+        market_structure_analyzer=analyzer,
+    )
+
+    runtime._on_snapshot(
+        "XAUUSD",
+        "M1",
+        datetime.now(timezone.utc),
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        "confirmed",
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    assert analyzer.calls[0]["lookback_bars_override"] == 120

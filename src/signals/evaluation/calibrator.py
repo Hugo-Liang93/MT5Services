@@ -72,7 +72,7 @@ class ConfidenceCalibrator:
         的回调（对应 ``TimescaleWriter.fetch_winrates``）。
     alpha:
         历史数据权重（0.0 = 不校准，1.0 = 完全由历史决定）。
-        推荐从保守值（0.3）开始，观察效果后调整。
+        推荐从更轻的混合值（0.15）开始，减少历史样本对快速日内行情的滞后影响。
     baseline_win_rate:
         校准基准线（factor=1.0 时对应的胜率）。
         默认 0.50（随机基准）；若策略设计本就偏保守，可设为 0.55。
@@ -89,12 +89,14 @@ class ConfidenceCalibrator:
         self,
         fetch_winrates_fn: Callable[..., Any],
         *,
-        alpha: float = 0.30,
+        alpha: float = 0.15,
         baseline_win_rate: float = 0.50,
         max_boost: float = 1.30,
-        min_samples: int = 20,
+        min_samples: int = 50,
         refresh_interval_seconds: int = 3600,
-        recency_hours: int = 48,
+        recency_hours: int = 8,
+        warmup_alpha: float = 0.10,
+        full_alpha_min_samples: int = 100,
     ) -> None:
         if not (0.0 <= alpha <= 1.0):
             raise ValueError(f"alpha must be in [0.0, 1.0], got {alpha}")
@@ -103,6 +105,8 @@ class ConfidenceCalibrator:
         self._baseline = baseline_win_rate
         self._max_boost = max_boost
         self._min_samples = min_samples
+        self._warmup_alpha = max(0.0, min(alpha, warmup_alpha))
+        self._full_alpha_min_samples = max(min_samples, full_alpha_min_samples)
         self._refresh_interval = refresh_interval_seconds
         # 近期窗口（小时）：刷新时额外拉取短窗口胜率，用于防止正反馈。
         # 若近期（recency_hours 内）胜率低于 baseline，则禁止放大置信度（factor 上限=1.0）。
@@ -177,12 +181,18 @@ class ConfidenceCalibrator:
         # 若未启动后台线程，则保留原有兜底逻辑（首次调用时单次刷新）。
         if self._bg_thread is None or not self._bg_thread.is_alive():
             self._auto_refresh()
-        factor = self._get_calibration_factor(strategy, action, regime)
+        factor, sample_count = self._get_calibration_factor(strategy, action, regime)
         if factor is None:
             return raw_confidence  # 无数据或样本不足 → 不干预
+        effective_alpha = self._resolve_alpha(sample_count)
+        if effective_alpha < 1e-6:
+            return raw_confidence
 
         # 混合校准：加权平均原始置信度和历史校准值
-        calibrated = raw_confidence * (1.0 - self._alpha) + raw_confidence * factor * self._alpha
+        calibrated = (
+            raw_confidence * (1.0 - effective_alpha)
+            + raw_confidence * factor * effective_alpha
+        )
         result = max(0.0, min(1.0, calibrated))
 
         # 统计
@@ -254,6 +264,8 @@ class ConfidenceCalibrator:
             age_seconds = time.monotonic() - self._last_refresh if self._last_refresh else None
         return {
             "alpha": self._alpha,
+            "warmup_alpha": self._warmup_alpha,
+            "full_alpha_min_samples": self._full_alpha_min_samples,
             "baseline_win_rate": self._baseline,
             "max_boost": self._max_boost,
             "min_samples": self._min_samples,
@@ -344,8 +356,8 @@ class ConfidenceCalibrator:
         strategy: str,
         action: str,
         regime: RegimeType,
-    ) -> Optional[float]:
-        """返回置信度校准因子，None 表示样本不足不干预。
+    ) -> tuple[Optional[float], int]:
+        """返回 (校准因子, 样本量)，None 表示样本不足不干预。
 
         当前实现：基于历史胜率，并通过近期窗口防止正反馈。
         ML 阶段：子类可覆盖此方法，调用模型推理。
@@ -368,9 +380,9 @@ class ConfidenceCalibrator:
                 recent_entry = self._recent_cache.get((strategy, action, "_all"))
 
         if entry is None:
-            return None
+            return None, 0
 
-        win_rate, _samples = entry
+        win_rate, samples = entry
         # factor = win_rate / baseline（factor>1 提升，factor<1 压制）
         factor = win_rate / max(self._baseline, 1e-6)
         # 限制最大提升倍数，防止极端值
@@ -384,7 +396,7 @@ class ConfidenceCalibrator:
             if recent_win_rate < self._baseline:
                 factor = 1.0  # 近期不达标：禁止 boost，不压制
 
-        return factor
+        return factor, samples
 
     # ------------------------------------------------------------------
     # Private
@@ -401,3 +413,10 @@ class ConfidenceCalibrator:
         now = time.monotonic()
         if now - self._last_refresh >= self._refresh_interval:
             self.refresh()
+
+    def _resolve_alpha(self, sample_count: int) -> float:
+        if sample_count < self._min_samples:
+            return 0.0
+        if sample_count < self._full_alpha_min_samples:
+            return self._warmup_alpha
+        return self._alpha

@@ -233,6 +233,58 @@ def test_write_back_results_persists_grouped_indicator_payload() -> None:
     assert stored_rows[0][1][8] == {"macd": {"macd": 1.1, "signal": 0.8}}
 
 
+def test_write_back_results_publishes_confirmed_snapshot_for_m15() -> None:
+    latest_bar = OHLC(
+        symbol="XAUUSD",
+        timeframe="M15",
+        time=datetime(2026, 1, 1, 1, 15, tzinfo=timezone.utc),
+        open=100.0,
+        high=102.0,
+        low=99.0,
+        close=101.0,
+        volume=42.0,
+        indicators={},
+    )
+    published = []
+
+    class ServiceStub:
+        def update_ohlc_indicators(self, symbol, timeframe, bar_time, indicators):
+            if latest_bar.time == bar_time and timeframe == "M15":
+                latest_bar.indicators = indicators
+
+    manager = object.__new__(UnifiedIndicatorManager)
+    manager.market_service = ServiceStub()
+    manager.storage_writer = None
+    manager._store_results = lambda *args, **kwargs: None
+    manager._group_indicator_values = lambda results: results
+    manager._publish_snapshot = (
+        lambda symbol, timeframe, bar_time, indicators, scope: published.append(
+            (symbol, timeframe, bar_time, indicators, scope)
+        )
+    )
+
+    grouped = manager._write_back_results(
+        "XAUUSD",
+        "M15",
+        [latest_bar],
+        {
+            "ema21": {"ema": 100.8},
+            "macd_fast": {"macd": 0.6, "signal": 0.4, "hist": 0.2},
+        },
+        compute_time_ms=1.0,
+        bar_time=latest_bar.time,
+    )
+
+    assert grouped == {
+        "ema21": {"ema": 100.8},
+        "macd_fast": {"macd": 0.6, "signal": 0.4, "hist": 0.2},
+    }
+    assert latest_bar.indicators == grouped
+    assert published == [
+        ("XAUUSD", "M15", latest_bar.time, grouped, "confirmed"),
+    ]
+
+
 def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persisting_ohlc() -> None:
     preview_events = []
     intrabar_bar = OHLC(

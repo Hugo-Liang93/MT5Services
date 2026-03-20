@@ -20,6 +20,7 @@ from .models import MarketStructureContext
 class MarketStructureConfig:
     enabled: bool = True
     lookback_bars: int = 400
+    m1_lookback_bars: int = 120
     open_range_minutes: int = 60
     compression_window_bars: int = 6
     compression_reference_bars: int = 24
@@ -37,19 +38,21 @@ class MarketStructureAnalyzer:
         *,
         event_time: datetime | None = None,
         latest_close: float | None = None,
+        lookback_bars_override: int | None = None,
     ) -> dict[str, object]:
         if not self.config.enabled:
             return {}
 
+        lookback_bars = max(
+            int(lookback_bars_override or self.config.lookback_bars),
+            self.config.compression_window_bars
+            + self.config.compression_reference_bars
+            + 2,
+        )
         bars = self.market_service.get_ohlc_closed(
             symbol,
             timeframe,
-            limit=max(
-                self.config.lookback_bars,
-                self.config.compression_window_bars
-                + self.config.compression_reference_bars
-                + 2,
-            ),
+            limit=lookback_bars,
         )
         if not bars:
             return {}

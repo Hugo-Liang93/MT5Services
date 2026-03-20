@@ -32,12 +32,22 @@ class _DispatchService:
             return {"ticket": 1, "payload": payload}
         if operation == "blocked_trade":
             raise PreTradeRiskBlockedError("blocked by risk", assessment={"action": "block"})
+        if operation == "blocked_daily_loss_trade":
+            raise PreTradeRiskBlockedError(
+                "blocked by risk",
+                assessment={"action": "block", "checks": [{"name": "daily_loss_limit"}]},
+            )
         raise ValueError("unsupported trading operation")
 
     def daily_trade_summary(self):
         return {"date": "2026-01-01", "total": 0, "success": 0, "failed": 0}
 
     def execute_trade(self, **kwargs):
+        if kwargs.get("symbol") == "XAUUSD_DAILY_LOSS":
+            raise PreTradeRiskBlockedError(
+                "blocked by risk",
+                assessment={"action": "block", "checks": [{"name": "daily_loss_limit"}]},
+            )
         return {
             "ticket": 1,
             "symbol": kwargs["symbol"],
@@ -139,6 +149,16 @@ def test_trade_dispatch_returns_risk_block_error() -> None:
     assert response.error["code"] == "trade_blocked_by_risk"
 
 
+def test_trade_dispatch_returns_daily_loss_limit_error() -> None:
+    response = trade_dispatch(
+        TradeDispatchRequest(operation="blocked_daily_loss_trade", payload={}),
+        service=_DispatchService(),
+    )
+
+    assert response.success is False
+    assert response.error["code"] == "daily_loss_limit"
+
+
 def test_trade_endpoint_exposes_standardized_observability_metadata() -> None:
     response = trade(
         TradeRequest(symbol="XAUUSD", volume=0.1, side="buy", dry_run=True, request_id="req_x"),
@@ -149,6 +169,16 @@ def test_trade_endpoint_exposes_standardized_observability_metadata() -> None:
     assert response.metadata["request_id"] == "req_x"
     assert response.metadata["trace_id"] == "trace_1"
     assert response.metadata["operation_id"] == "op_1"
+
+
+def test_trade_endpoint_maps_daily_loss_limit_error_code() -> None:
+    response = trade(
+        TradeRequest(symbol="XAUUSD_DAILY_LOSS", volume=0.1, side="buy"),
+        service=_DispatchService(),
+    )
+
+    assert response.success is False
+    assert response.error["code"] == "daily_loss_limit"
 
 
 def test_trade_from_signal_is_executed_by_trade_module_api() -> None:

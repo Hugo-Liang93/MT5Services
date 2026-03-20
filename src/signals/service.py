@@ -11,15 +11,17 @@ from .analytics import (
     SignalDiagnosticsAnalyzer,
 )
 from .evaluation.calibrator import ConfidenceCalibrator
-from .evaluation.regime import MarketRegimeDetector, RegimeType
+from .evaluation.regime import MarketRegimeDetector, RegimeType, SoftRegimeResult
 from .models import SignalContext, SignalDecision, SignalRecord
 from .strategies.adapters import IndicatorSource
 from .strategies.base import SignalStrategy
 from .strategies.breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
+    FakeBreakoutDetector,
     KeltnerBollingerSqueezeStrategy,
     MultiTimeframeConfirmStrategy,
+    SqueezeReleaseFollow,
 )
 from .strategies.composite import CompositeSignalStrategy
 from .strategies.composite import build_breakout_double_confirm, build_trend_triple_confirm
@@ -29,6 +31,8 @@ from .strategies.mean_reversion import (
     StochRsiStrategy,
     WilliamsRStrategy,
 )
+from .strategies.price_action import PriceActionReversal
+from .strategies.session import SessionMomentumBias
 from .strategies.trend import (
     EmaRibbonStrategy,
     HmaCrossStrategy,
@@ -51,6 +55,7 @@ class SignalModule:
         regime_detector: Optional[MarketRegimeDetector] = None,
         calibrator: Optional[ConfidenceCalibrator] = None,
         diagnostics_engine: Optional[DiagnosticsEngine] = None,
+        soft_regime_enabled: bool = False,
     ):
         self.indicator_source = indicator_source
         self.repository = repository
@@ -60,6 +65,7 @@ class SignalModule:
         # 置信度校准器：基于历史胜率对原始 confidence 进行混合校准。
         # None = 不校准（新部署或没有足够历史数据时的默认状态）。
         self._calibrator: Optional[ConfidenceCalibrator] = calibrator
+        self._soft_regime_enabled = bool(soft_regime_enabled)
         self._diagnostics_analyzer: DiagnosticsEngine = (
             diagnostics_engine or SignalDiagnosticsAnalyzer()
         )
@@ -69,19 +75,23 @@ class SignalModule:
             SmaTrendStrategy(),
             MacdMomentumStrategy(),
             # ── 趋势跟踪策略（M1 + H1）──────────────────────────────────────────
-            SupertrendStrategy(adx_threshold=25.0),
+            SupertrendStrategy(adx_threshold=20.0),
             EmaRibbonStrategy(),
             HmaCrossStrategy(),
             RocMomentumStrategy(),
+            SessionMomentumBias(),
             # ── 均值回归策略（asia + london + newyork）──────────────────────────
             RsiReversionStrategy(),
             StochRsiStrategy(),
             WilliamsRStrategy(),
             CciReversionStrategy(),
+            PriceActionReversal(),
             # ── 突破/波动率策略 ──────────────────────────────────────────────────
             BollingerBreakoutStrategy(),
             KeltnerBollingerSqueezeStrategy(),
             DonchianBreakoutStrategy(adx_min=25.0),
+            FakeBreakoutDetector(),
+            SqueezeReleaseFollow(),
             # ── 复合策略（多重确认，高精度低频率）────────────────────────────────
             build_trend_triple_confirm(),
             build_breakout_double_confirm(),
@@ -125,6 +135,25 @@ class SignalModule:
         self._validate_strategy_attrs(strategy)
         self._strategies[strategy.name] = strategy
 
+    def intrabar_required_indicators(self) -> frozenset:
+        """从策略的 preferred_scopes 自动推导哪些指标需要 intrabar 计算。
+
+        遍历所有已注册策略，收集 preferred_scopes 包含 "intrabar" 的策略的
+        required_indicators 并集。这是 intrabar eligible 集合的 **唯一来源**，
+        indicators.json 不再需要手工维护 intrabar_eligible 字段。
+
+        返回值在工厂函数中注入到 UnifiedIndicatorManager，后者据此决定
+        intrabar pipeline 计算哪些指标。
+        """
+        result: set[str] = set()
+        for strategy in self._strategies.values():
+            scopes = getattr(strategy, "preferred_scopes", ("intrabar", "confirmed"))
+            if "intrabar" not in scopes:
+                continue
+            for ind in getattr(strategy, "required_indicators", ()):
+                result.add(str(ind))
+        return frozenset(result)
+
     def list_strategies(self) -> list[str]:
         return sorted(self._strategies.keys())
 
@@ -142,6 +171,20 @@ class SignalModule:
         """
         impl = self._strategies.get(strategy)
         return getattr(impl, "regime_affinity", {}) if impl else {}
+
+    @property
+    def soft_regime_enabled(self) -> bool:
+        return self._soft_regime_enabled
+
+    def effective_regime_affinity(
+        self,
+        strategy: str,
+        *,
+        regime: Optional[RegimeType] = None,
+        soft_regime: Optional[SoftRegimeResult | Dict[str, Any]] = None,
+    ) -> float:
+        affinity_map = self.strategy_affinity_map(strategy)
+        return self._effective_affinity(affinity_map, regime, soft_regime)
 
     def strategy_scopes(self, strategy: str) -> tuple[str, ...]:
         """Return the snapshot scopes this strategy wants to receive.
@@ -194,12 +237,13 @@ class SignalModule:
         indicator_payload = indicators or self.indicator_source.get_all_indicators(
             symbol, timeframe
         )
+        context_metadata = self._build_context_metadata(symbol, timeframe, metadata)
         context = SignalContext(
             symbol=symbol,
             timeframe=timeframe,
             strategy=strategy,
             indicators=indicator_payload,
-            metadata=metadata or {},
+            metadata=context_metadata,
         )
         decision = strategy_impl.evaluate(context)
 
@@ -211,19 +255,23 @@ class SignalModule:
         #
         # 性能优化：runtime 在 process_next_event 循环开始前会检测一次 Regime，
         # 并将结果写入 metadata["_regime"]。若存在则直接复用，跳过重复检测。
-        pre_computed = (metadata or {}).get("_regime")
-        if pre_computed:
-            try:
-                regime = RegimeType(pre_computed)
-            except ValueError:
-                regime = self._regime_detector.detect(indicator_payload)
+        soft_regime = self._resolve_soft_regime(indicator_payload, context_metadata)
+        if soft_regime is not None:
+            regime = soft_regime.dominant_regime
         else:
-            regime = self._regime_detector.detect(indicator_payload)
+            pre_computed = context_metadata.get("_regime")
+            if pre_computed:
+                try:
+                    regime = RegimeType(pre_computed)
+                except ValueError:
+                    regime = self._regime_detector.detect(indicator_payload)
+            else:
+                regime = self._regime_detector.detect(indicator_payload)
         # 优先读策略类上的 regime_affinity 属性；缺失时回退到中性值 0.5
         affinity_map: Dict[RegimeType, float] = getattr(
             strategy_impl, "regime_affinity", {}
         )
-        affinity = affinity_map.get(regime, 0.5)
+        affinity = self._effective_affinity(affinity_map, regime, soft_regime)
         adjusted_confidence = decision.confidence * affinity
         # ── 置信度校准（历史胜率反馈层）────────────────────────────────
         # 在 Regime 亲和度修正之后，再根据该策略 (action, regime) 的历史胜率
@@ -247,6 +295,18 @@ class SignalModule:
                 **decision.metadata,
                 "regime": regime.value,
                 "regime_affinity": affinity,
+                "regime_source": "soft" if soft_regime is not None else "hard",
+                "regime_probabilities": (
+                    {
+                        item.value: soft_regime.probability(item)
+                        for item in RegimeType
+                    }
+                    if soft_regime is not None
+                    else {regime.value: 1.0}
+                ),
+                "dominant_regime_probability": (
+                    soft_regime.probability(regime) if soft_regime is not None else 1.0
+                ),
                 "raw_confidence": decision.confidence,  # 原始规则输出
                 "post_affinity_confidence": raw_post_affinity,
                 "calibrated": self._calibrator is not None
@@ -255,8 +315,90 @@ class SignalModule:
         )
 
         if persist:
-            self._persist_signal(decision, indicator_payload, metadata)
+            self._persist_signal(decision, indicator_payload, context_metadata)
         return decision
+
+    def _build_context_metadata(
+        self,
+        symbol: str,
+        timeframe: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        context_metadata = dict(metadata or {})
+        if "recent_bars" in context_metadata:
+            return context_metadata
+
+        getter = getattr(self.indicator_source, "get_recent_bars", None)
+        if not callable(getter):
+            return context_metadata
+
+        end_time = self._parse_optional_datetime(context_metadata.get("bar_time"))
+        try:
+            recent_bars = getter(symbol, timeframe, end_time=end_time, limit=5)
+        except Exception:
+            logger.debug(
+                "Failed to load recent bars for %s/%s",
+                symbol,
+                timeframe,
+                exc_info=True,
+            )
+            return context_metadata
+
+        if recent_bars:
+            context_metadata["recent_bars"] = [
+                dataclasses.asdict(b) if dataclasses.is_dataclass(b) else b
+                for b in recent_bars
+            ]
+        return context_metadata
+
+    def _resolve_soft_regime(
+        self,
+        indicators: Dict[str, Dict[str, Any]],
+        metadata: Dict[str, Any],
+    ) -> Optional[SoftRegimeResult]:
+        precomputed = metadata.get("_soft_regime")
+        if isinstance(precomputed, SoftRegimeResult):
+            return precomputed
+        if isinstance(precomputed, dict):
+            try:
+                return SoftRegimeResult.from_dict(precomputed)
+            except Exception:
+                logger.debug("Invalid precomputed soft regime payload", exc_info=True)
+        if not self._soft_regime_enabled:
+            return None
+        return self._regime_detector.detect_soft(indicators)
+
+    @staticmethod
+    def _effective_affinity(
+        affinity_map: Dict[RegimeType, float],
+        regime: Optional[RegimeType],
+        soft_regime: Optional[SoftRegimeResult | Dict[str, Any]],
+    ) -> float:
+        if isinstance(soft_regime, dict):
+            try:
+                soft_regime = SoftRegimeResult.from_dict(soft_regime)
+            except Exception:
+                soft_regime = None
+        if isinstance(soft_regime, SoftRegimeResult):
+            weighted = sum(
+                soft_regime.probability(item) * affinity_map.get(item, 0.5)
+                for item in RegimeType
+            )
+            return weighted
+        if regime is None:
+            return 0.5
+        return affinity_map.get(regime, 0.5)
+
+    @staticmethod
+    def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return None
+        return None
 
     def _persist_signal(
         self,

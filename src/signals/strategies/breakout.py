@@ -20,6 +20,23 @@ def _market_structure(context: SignalContext) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _recent_bars(context: SignalContext) -> list[Any]:
+    payload = context.metadata.get("recent_bars")
+    return list(payload) if isinstance(payload, list) else []
+
+
+def _bar_price(bar: Any, field: str) -> Optional[float]:
+    value = getattr(bar, field, None)
+    if value is None and isinstance(bar, dict):
+        value = bar.get(field)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class BollingerBreakoutStrategy:
     """Mean reversion signal based on Bollinger Band breakout.
 
@@ -463,6 +480,321 @@ class DonchianBreakoutStrategy:
         )
 
 
+class FakeBreakoutDetector:
+    """Detect failed Donchian breakouts that reject back into the channel."""
+
+    name = "fake_breakout"
+    required_indicators = ("donchian20", "atr14")
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 0.20,
+        RegimeType.RANGING: 1.00,
+        RegimeType.BREAKOUT: 0.70,
+        RegimeType.UNCERTAIN: 0.80,
+    }
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        upper, d_name = _resolve_indicator_value(
+            context.indicators, (("donchian20", "donchian_upper"),)
+        )
+        lower, _ = _resolve_indicator_value(
+            context.indicators, (("donchian20", "donchian_lower"),)
+        )
+        atr, atr_name = _resolve_indicator_value(
+            context.indicators, (("atr14", "atr"), ("atr", "atr"))
+        )
+        bars = _recent_bars(context)
+        current = bars[-1] if bars else None
+        used = [name for name in (d_name, atr_name) if name]
+
+        if current is None or upper is None or lower is None or atr is None or atr <= 0:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_breakout_context",
+                used_indicators=used or ["donchian20", "atr14"],
+            )
+
+        open_price = _bar_price(current, "open")
+        high = _bar_price(current, "high")
+        low = _bar_price(current, "low")
+        close = _bar_price(current, "close")
+        if None in {open_price, high, low, close}:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_bar_ohlc",
+                used_indicators=used or ["donchian20", "atr14"],
+            )
+
+        body_top = max(open_price, close)
+        body_bottom = min(open_price, close)
+        upper_wick = max(high - body_top, 0.0)
+        lower_wick = max(body_bottom - low, 0.0)
+        structure = _market_structure(context)
+        reclaim_state = str(structure.get("reclaim_state") or "none")
+        sweep_confirmation_state = str(
+            structure.get("sweep_confirmation_state") or "none"
+        )
+
+        bearish_fake = (
+            high > upper
+            and close < upper
+            and close <= open_price
+            and upper_wick >= atr * 0.5
+        )
+        bullish_fake = (
+            low < lower
+            and close > lower
+            and close >= open_price
+            and lower_wick >= atr * 0.5
+        )
+
+        if bearish_fake:
+            wick_factor = min(upper_wick / atr, 2.0)
+            rejection_factor = min((upper - close) / atr, 1.5)
+            confidence = min(
+                0.45 + wick_factor * 0.18 + rejection_factor * 0.12,
+                0.95,
+            )
+            if reclaim_state.startswith("bearish_") or sweep_confirmation_state.startswith(
+                "bearish_"
+            ):
+                confidence = min(confidence + 0.10, 1.0)
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="sell",
+                confidence=confidence,
+                reason=(
+                    f"failed_upper_breakout:high={high:.2f},close={close:.2f},"
+                    f"upper={upper:.2f}"
+                ),
+                used_indicators=used or ["donchian20", "atr14"],
+                metadata={
+                    "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "donchian_upper": upper,
+                    "donchian_lower": lower,
+                    "atr": atr,
+                    "upper_wick": upper_wick,
+                    "reclaim_state": reclaim_state,
+                    "sweep_confirmation_state": sweep_confirmation_state,
+                },
+            )
+
+        if bullish_fake:
+            wick_factor = min(lower_wick / atr, 2.0)
+            rejection_factor = min((close - lower) / atr, 1.5)
+            confidence = min(
+                0.45 + wick_factor * 0.18 + rejection_factor * 0.12,
+                0.95,
+            )
+            if reclaim_state.startswith("bullish_") or sweep_confirmation_state.startswith(
+                "bullish_"
+            ):
+                confidence = min(confidence + 0.10, 1.0)
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="buy",
+                confidence=confidence,
+                reason=(
+                    f"failed_lower_breakout:low={low:.2f},close={close:.2f},"
+                    f"lower={lower:.2f}"
+                ),
+                used_indicators=used or ["donchian20", "atr14"],
+                metadata={
+                    "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "donchian_upper": upper,
+                    "donchian_lower": lower,
+                    "atr": atr,
+                    "lower_wick": lower_wick,
+                    "reclaim_state": reclaim_state,
+                    "sweep_confirmation_state": sweep_confirmation_state,
+                },
+            )
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action="hold",
+            confidence=0.1,
+            reason="no_fake_breakout",
+            used_indicators=used or ["donchian20", "atr14"],
+            metadata={
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "donchian_upper": upper,
+                "donchian_lower": lower,
+                "atr": atr,
+            },
+        )
+
+
+class SqueezeReleaseFollow:
+    """Follow directional release when Bollinger exits the Keltner envelope."""
+
+    name = "squeeze_release"
+    required_indicators = ("boll20", "keltner20", "macd")
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 0.60,
+        RegimeType.RANGING: 0.15,
+        RegimeType.BREAKOUT: 1.00,
+        RegimeType.UNCERTAIN: 0.50,
+    }
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        bb_upper, bb_name = _resolve_indicator_value(
+            context.indicators, (("boll20", "bb_upper"),)
+        )
+        bb_lower, _ = _resolve_indicator_value(
+            context.indicators, (("boll20", "bb_lower"),)
+        )
+        bb_mid, _ = _resolve_indicator_value(
+            context.indicators, (("boll20", "bb_mid"),)
+        )
+        kc_upper, kc_name = _resolve_indicator_value(
+            context.indicators, (("keltner20", "kc_upper"),)
+        )
+        kc_lower, _ = _resolve_indicator_value(
+            context.indicators, (("keltner20", "kc_lower"),)
+        )
+        hist, macd_name = _resolve_indicator_value(
+            context.indicators, (("macd", "hist"),)
+        )
+        used = [name for name in (bb_name, kc_name, macd_name) if name]
+
+        if any(
+            value is None
+            for value in (bb_upper, bb_lower, bb_mid, kc_upper, kc_lower, hist)
+        ):
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicators",
+                used_indicators=used or ["boll20", "keltner20", "macd"],
+            )
+
+        structure = _market_structure(context)
+        compression_state = str(structure.get("compression_state") or "unknown")
+        structure_bias = str(structure.get("structure_bias") or "neutral")
+        band_width = max(bb_upper - bb_lower, 1e-9)
+        upside_release = bb_upper > kc_upper and hist > 0
+        downside_release = bb_lower < kc_lower and hist < 0
+        release_strength = 0.0
+        if upside_release:
+            release_strength = max((bb_upper - kc_upper) / band_width, 0.0)
+        elif downside_release:
+            release_strength = max((kc_lower - bb_lower) / band_width, 0.0)
+
+        compression_bonus = (
+            0.12
+            if compression_state == "contracted"
+            else 0.06 if compression_state == "normal" else 0.0
+        )
+        expansion_bonus = (
+            0.08 if structure_bias in {"compression", "expansion"} else 0.0
+        )
+
+        if upside_release:
+            confidence = min(
+                0.52
+                + min(release_strength, 0.25)
+                + compression_bonus
+                + expansion_bonus,
+                0.95,
+            )
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="buy",
+                confidence=confidence,
+                reason=(
+                    f"bullish_squeeze_release:bb_upper={bb_upper:.2f}>"
+                    f"kc_upper={kc_upper:.2f},hist={hist:.3f}"
+                ),
+                used_indicators=used or ["boll20", "keltner20", "macd"],
+                metadata={
+                    "bb_upper": bb_upper,
+                    "bb_lower": bb_lower,
+                    "bb_mid": bb_mid,
+                    "kc_upper": kc_upper,
+                    "kc_lower": kc_lower,
+                    "macd_hist": hist,
+                    "compression_state": compression_state,
+                    "structure_bias": structure_bias,
+                },
+            )
+
+        if downside_release:
+            confidence = min(
+                0.52
+                + min(release_strength, 0.25)
+                + compression_bonus
+                + expansion_bonus,
+                0.95,
+            )
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="sell",
+                confidence=confidence,
+                reason=(
+                    f"bearish_squeeze_release:bb_lower={bb_lower:.2f}<"
+                    f"kc_lower={kc_lower:.2f},hist={hist:.3f}"
+                ),
+                used_indicators=used or ["boll20", "keltner20", "macd"],
+                metadata={
+                    "bb_upper": bb_upper,
+                    "bb_lower": bb_lower,
+                    "bb_mid": bb_mid,
+                    "kc_upper": kc_upper,
+                    "kc_lower": kc_lower,
+                    "macd_hist": hist,
+                    "compression_state": compression_state,
+                    "structure_bias": structure_bias,
+                },
+            )
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action="hold",
+            confidence=0.1,
+            reason="no_squeeze_release",
+            used_indicators=used or ["boll20", "keltner20", "macd"],
+            metadata={
+                "compression_state": compression_state,
+                "structure_bias": structure_bias,
+                "macd_hist": hist,
+            },
+        )
+
+
 class MultiTimeframeConfirmStrategy:
     """Confirms signals when direction aligns across timeframes.
 
@@ -474,7 +806,7 @@ class MultiTimeframeConfirmStrategy:
     HTFStateCache, which is populated by consensus signals from the higher TF.
     """
 
-    name = "mtf_confirm"
+    name = "multi_timeframe_confirm"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
     regime_affinity = {

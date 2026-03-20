@@ -20,7 +20,12 @@ from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
 
-from ..evaluation.regime import MarketRegimeDetector, RegimeTracker, RegimeType
+from ..evaluation.regime import (
+    MarketRegimeDetector,
+    RegimeTracker,
+    RegimeType,
+    SoftRegimeResult,
+)
 from ..execution.filters import SignalFilterChain
 from ..models import SignalEvent
 from ..service import SignalModule
@@ -114,6 +119,9 @@ class SignalRuntime:
             or getattr(service, "_regime_detector", None)
             or MarketRegimeDetector()
         )
+        self._soft_regime_enabled = bool(
+            getattr(service, "soft_regime_enabled", False)
+        )
         self._market_structure_analyzer = market_structure_analyzer
         # 表决引擎：由 policy 配置决定是否启用。
         # voting_groups 非空时使用多组模式（全局 consensus 自动禁用）。
@@ -170,7 +178,10 @@ class SignalRuntime:
         self._thread: Optional[threading.Thread] = None
         # Separate queues by scope so that intrabar bursts cannot starve
         # confirmed (bar-close) events, which must never be dropped.
-        self._confirmed_events: queue.Queue = queue.Queue(maxsize=512)
+        # Confirmed snapshots can briefly burst during startup catch-up after
+        # ingestion backfills closed bars. Keep enough headroom to buffer that
+        # replay without dropping durable bar-close signals.
+        self._confirmed_events: queue.Queue = queue.Queue(maxsize=2048)
         self._intrabar_events: queue.Queue = queue.Queue(maxsize=4096)
         self._last_run_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
@@ -191,6 +202,10 @@ class SignalRuntime:
         # 提醒运维信号运行时已停滞，不依赖指数退避掩盖故障。
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
+        self._vote_fusion_cache: dict[
+            tuple[str, str, datetime], dict[str, tuple[str, Any]]
+        ] = {}
+        self._market_structure_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
     @staticmethod
     def _build_group_engines(
@@ -374,6 +389,7 @@ class SignalRuntime:
                 for name, sessions in self.policy.strategy_sessions.items()
             },
             "market_structure_enabled": market_structure_enabled,
+            "market_structure_cache_entries": len(self._market_structure_cache),
             "strategy_scopes": {
                 name: sorted(scopes) for name, scopes in self._strategy_scopes.items()
             },
@@ -891,7 +907,9 @@ class SignalRuntime:
 
             # Pre-flight affinity gate
             if min_affinity_skip > 0.0:
-                affinity = self._strategy_affinity.get(strategy, {}).get(regime, 0.5)
+                affinity = self._effective_affinity(
+                    strategy, regime, regime_metadata.get("_soft_regime")
+                )
                 if affinity < min_affinity_skip:
                     continue
 
@@ -946,6 +964,53 @@ class SignalRuntime:
             )
 
         return snapshot_decisions
+
+    def _market_structure_lookback_bars(self, timeframe: str) -> Optional[int]:
+        analyzer = self._market_structure_analyzer
+        if analyzer is None:
+            return None
+        analyzer_config = getattr(analyzer, "config", None)
+        default_lookback = int(getattr(analyzer_config, "lookback_bars", 400))
+        if str(timeframe).strip().upper() == "M1":
+            return max(
+                2,
+                int(getattr(analyzer_config, "m1_lookback_bars", 120) or 120),
+            )
+        return default_lookback
+
+    def _resolve_market_structure_context(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        event_time: datetime,
+        bar_time: datetime,
+        latest_close: Optional[float],
+    ) -> dict[str, Any]:
+        analyzer = self._market_structure_analyzer
+        if analyzer is None:
+            return {}
+
+        cache_key = (symbol, timeframe)
+        cached = self._market_structure_cache.get(cache_key)
+        if scope == "intrabar" and cached is not None:
+            return dict(cached.get("context") or {})
+
+        context = analyzer.analyze(
+            symbol,
+            timeframe,
+            event_time=event_time,
+            latest_close=latest_close,
+            lookback_bars_override=self._market_structure_lookback_bars(timeframe),
+        )
+        if scope == "confirmed" and context:
+            self._market_structure_cache[cache_key] = {
+                "bar_time": bar_time,
+                "event_time": event_time,
+                "context": dict(context),
+            }
+        return context
 
     def _emit_vote_signal(
         self,
@@ -1024,6 +1089,15 @@ class SignalRuntime:
         """
         if not snapshot_decisions:
             return
+        snapshot_decisions = self._fuse_vote_decisions(
+            symbol,
+            timeframe,
+            bar_time,
+            scope,
+            snapshot_decisions,
+        )
+        if not snapshot_decisions:
+            return
 
         # ── 多组模式 ──────────────────────────────────────────────────
         if self._voting_group_engines:
@@ -1084,10 +1158,11 @@ class SignalRuntime:
                 return False
 
         scope, symbol, timeframe, indicators, metadata = event
-        event_time = self._parse_event_time(
+        snapshot_time = self._parse_event_time(
             metadata.get("snapshot_time", datetime.now(timezone.utc))
         )
-        bar_time = self._parse_event_time(metadata.get("bar_time", event_time))
+        bar_time = self._parse_event_time(metadata.get("bar_time", snapshot_time))
+        event_time = bar_time if scope == "confirmed" else snapshot_time
         if self.filter_chain is not None and self.filter_chain.session_filter is not None:
             active_sessions = self.filter_chain.session_filter.current_sessions(event_time)
         else:
@@ -1111,19 +1186,32 @@ class SignalRuntime:
                 return True
 
         # ── Regime 检测：每次 snapshot 仅检测一次，结果共享给所有策略 ──────
-        regime = self._regime_detector.detect(indicators)
+        soft_regime: Optional[SoftRegimeResult] = None
+        if self._soft_regime_enabled:
+            soft_regime = self._regime_detector.detect_soft(indicators)
+            regime = soft_regime.dominant_regime
+        else:
+            regime = self._regime_detector.detect(indicators)
         regime_metadata = dict(metadata)
         regime_metadata["_regime"] = regime.value
+        if soft_regime is not None:
+            regime_metadata["_soft_regime"] = soft_regime.to_dict()
+            regime_metadata["regime_probabilities"] = {
+                item.value: soft_regime.probability(item)
+                for item in RegimeType
+            }
         regime_metadata["session_buckets"] = list(active_sessions)
         # close_price 注入：在 scoped_indicators 收窄前从全量快照提取
         if "close_price" not in regime_metadata:
             regime_metadata["close_price"] = _extract_close_price(indicators)
         if self._market_structure_analyzer is not None:
             try:
-                structure_context = self._market_structure_analyzer.analyze(
-                    symbol,
-                    timeframe,
+                structure_context = self._resolve_market_structure_context(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    scope=scope,
                     event_time=event_time,
+                    bar_time=bar_time,
                     latest_close=regime_metadata.get("close_price"),
                 )
             except Exception:
@@ -1162,6 +1250,74 @@ class SignalRuntime:
         self._last_run_at = datetime.now(timezone.utc)
         self._last_error = None
         return True
+
+    def _effective_affinity(
+        self,
+        strategy: str,
+        regime: RegimeType,
+        soft_regime: Optional[Dict[str, Any]],
+    ) -> float:
+        affinity_map = self._strategy_affinity.get(strategy, {})
+        if self._soft_regime_enabled and soft_regime:
+            try:
+                parsed = SoftRegimeResult.from_dict(soft_regime)
+                return sum(
+                    parsed.probability(item) * affinity_map.get(item, 0.5)
+                    for item in RegimeType
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to parse soft regime for affinity gate: %s",
+                    strategy,
+                    exc_info=True,
+                )
+        return affinity_map.get(regime, 0.5)
+
+    def _fuse_vote_decisions(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+        scope: str,
+        decisions: List,
+    ) -> List:
+        cache_key = (symbol, timeframe, bar_time)
+        bucket = self._vote_fusion_cache.setdefault(cache_key, {})
+        for decision in decisions:
+            existing = bucket.get(decision.strategy)
+            if existing is None:
+                bucket[decision.strategy] = (scope, decision)
+                continue
+            existing_scope, existing_decision = existing
+            if existing_scope == "intrabar" and scope == "confirmed":
+                bucket[decision.strategy] = (scope, decision)
+                continue
+            if existing_scope == scope:
+                bucket[decision.strategy] = (scope, decision)
+                continue
+            if getattr(decision, "confidence", 0.0) >= getattr(
+                existing_decision, "confidence", 0.0
+            ):
+                bucket[decision.strategy] = (scope, decision)
+        self._prune_vote_fusion_cache(symbol, timeframe, bar_time)
+        return [item[1] for item in bucket.values()]
+
+    def _prune_vote_fusion_cache(
+        self,
+        symbol: str,
+        timeframe: str,
+        current_bar_time: datetime,
+    ) -> None:
+        keep_after = current_bar_time - timedelta(
+            seconds=max(timeframe_seconds(timeframe) * 2, 1)
+        )
+        stale_keys = [
+            key
+            for key in self._vote_fusion_cache
+            if key[0] == symbol and key[1] == timeframe and key[2] < keep_after
+        ]
+        for key in stale_keys:
+            self._vote_fusion_cache.pop(key, None)
 
     def _loop(self) -> None:
         """主事件循环，带指数退避以防止异常风暴。

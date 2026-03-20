@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
+from src.signals.evaluation.regime import RegimeType
+from src.signals.models import SignalContext, SignalDecision
 from src.signals.service import SignalModule
 from src.signals.strategies.composite import CompositeSignalStrategy
 from src.signals.strategies.trend import SmaTrendStrategy, SupertrendStrategy
@@ -131,6 +135,28 @@ class DummyDiagnosticsEngine:
         }
 
 
+class AffinityProbeStrategy:
+    name = "affinity_probe"
+    required_indicators = ()
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 1.0,
+        RegimeType.RANGING: 0.2,
+        RegimeType.BREAKOUT: 0.5,
+        RegimeType.UNCERTAIN: 0.7,
+    }
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action="buy",
+            confidence=0.8,
+            reason="probe",
+        )
+
+
 def test_signal_module_uses_indicator_source_for_default_payload() -> None:
     module = SignalModule(indicator_source=DummyIndicatorSource())
 
@@ -251,6 +277,38 @@ def test_signal_module_rejects_unknown_strategy() -> None:
         assert False, "expected strategy validation"
     except ValueError as exc:
         assert "unsupported signal strategy" in str(exc)
+
+
+def test_signal_module_uses_weighted_soft_regime_affinity() -> None:
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        strategies=[AffinityProbeStrategy()],
+        soft_regime_enabled=True,
+    )
+
+    decision = module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="affinity_probe",
+        indicators={},
+        metadata={
+            "_soft_regime": {
+                "dominant_regime": "uncertain",
+                "probabilities": {
+                    "trending": 0.4,
+                    "ranging": 0.1,
+                    "breakout": 0.2,
+                    "uncertain": 0.3,
+                },
+            }
+        },
+        persist=False,
+    )
+
+    expected_affinity = 0.4 * 1.0 + 0.1 * 0.2 + 0.2 * 0.5 + 0.3 * 0.7
+    assert decision.confidence == pytest.approx(0.8 * expected_affinity)
+    assert decision.metadata["regime_source"] == "soft"
+    assert decision.metadata["regime"] == "uncertain"
 
 
 class DummyDiagnosticRepository:
@@ -575,6 +633,22 @@ def test_signal_module_recent_consensus_signals_filters_consensus_strategy() -> 
 
     assert len(rows) == 1
     assert rows[0]["strategy"] == "consensus"
+
+
+def test_intrabar_required_indicators_derives_from_strategy_scopes() -> None:
+    """intrabar_required_indicators() 自动推导：仅收集 intrabar 策略的指标。"""
+    from src.signals.strategies.mean_reversion import RsiReversionStrategy
+
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        strategies=[RsiReversionStrategy(), SmaTrendStrategy()],
+    )
+    result = module.intrabar_required_indicators()
+    # rsi_reversion (intrabar+confirmed) → rsi14 在集合中
+    assert "rsi14" in result
+    # sma_trend (confirmed-only) → sma20/ema50 不在集合中
+    assert "sma20" not in result
+    assert "ema50" not in result
 
 
 def test_signal_module_list_composite_strategies_returns_descriptions() -> None:

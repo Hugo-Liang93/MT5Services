@@ -56,6 +56,15 @@ def _order_model_from_dataclass(order) -> OrderModel:
     return OrderModel(**payload)
 
 
+def _risk_error_code_from_assessment(assessment: dict | None) -> AIErrorCode:
+    checks = list((assessment or {}).get("checks") or [])
+    if any(str(item.get("name")) == "daily_loss_limit" for item in checks):
+        return AIErrorCode.DAILY_LOSS_LIMIT
+    if str((assessment or {}).get("reason") or "").strip().lower() == "daily_loss_limit_reached":
+        return AIErrorCode.DAILY_LOSS_LIMIT
+    return AIErrorCode.TRADE_BLOCKED_BY_RISK
+
+
 @router.post("/trade/dispatch", response_model=ApiResponse[dict])
 def trade_dispatch(
     request: TradeDispatchRequest,
@@ -202,7 +211,7 @@ def trade(
         )
     except PreTradeRiskBlockedError as exc:
         return ApiResponse.error_response(
-            error_code=AIErrorCode.TRADE_BLOCKED_BY_RISK,
+            error_code=_risk_error_code_from_assessment(exc.assessment),
             error_message=str(exc),
             suggested_action=AIErrorAction.WAIT_FOR_RISK_WINDOW,
             details={
@@ -320,7 +329,7 @@ def trade_from_signal(
         account_balance=balance,
     )
     volume = request.volume_override if request.volume_override is not None else params.position_size
-    payload = {
+    computed_params = {
         "symbol": signal_row.get("symbol"),
         "volume": volume,
         "side": action,
@@ -329,19 +338,23 @@ def trade_from_signal(
         "tp": params.take_profit,
         "comment": f"agent:{signal_row.get('strategy')}:{action}:{request.signal_id[:8]}",
     }
-    result = service.dispatch_operation("trade", payload)
+    meta = {
+        "operation": "trade_from_signal",
+        "signal_id": request.signal_id,
+        "action": action,
+        "volume": volume,
+        "sl": params.stop_loss,
+        "tp": params.take_profit,
+        "risk_reward_ratio": params.risk_reward_ratio,
+        "account_alias": service.active_account_alias,
+        "dry_run": request.dry_run,
+    }
+    if request.dry_run:
+        return ApiResponse.success_response(data={"dry_run": True, **computed_params}, metadata=meta)
+    result = service.dispatch_operation("trade", computed_params)
     return ApiResponse.success_response(
         data=result if isinstance(result, dict) else {"result": result},
-        metadata={
-            "operation": "trade_from_signal",
-            "signal_id": request.signal_id,
-            "action": action,
-            "volume": volume,
-            "sl": params.stop_loss,
-            "tp": params.take_profit,
-            "risk_reward_ratio": params.risk_reward_ratio,
-            "account_alias": service.active_account_alias,
-        },
+        metadata=meta,
     )
 
 

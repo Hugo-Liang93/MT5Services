@@ -5,6 +5,7 @@ from src.api.signal import (
     get_market_structure,
     list_signal_strategies,
     recent_signals,
+    signal_monitoring_quality,
     signal_summary,
 )
 from src.api.schemas import SignalEvaluateRequest
@@ -64,6 +65,22 @@ class DummySignalService:
                 "last_seen_at": "2026-01-01T00:10:00+00:00",
             }
         ]
+
+    def regime_report(self, **kwargs):
+        return {
+            "symbol": kwargs["symbol"],
+            "timeframe": kwargs["timeframe"],
+            "dominant_regime": "trending",
+            "probabilities": {"trending": 0.7, "ranging": 0.2, "breakout": 0.05, "uncertain": 0.05},
+        }
+
+    def daily_quality_report(self, **kwargs):
+        return {
+            "symbol": kwargs["symbol"],
+            "timeframe": kwargs["timeframe"],
+            "total_signals": 12,
+            "scope": kwargs.get("scope", "confirmed"),
+        }
 
 
 def test_signal_strategies_endpoint() -> None:
@@ -170,3 +187,18 @@ def test_signal_market_structure_endpoint_falls_back_without_quote() -> None:
     assert analyzer.calls[0]["latest_close"] is None
     assert response.metadata["analysis_mode"] == "closed_bar_fallback"
     assert response.metadata["price_source"] == "latest_closed_bar"
+
+
+def test_signal_monitoring_quality_endpoint() -> None:
+    runtime = type("RuntimeStub", (), {"status": lambda self: {"running": True}})()
+
+    response = signal_monitoring_quality(
+        "XAUUSD",
+        "M5",
+        service=DummySignalService(),
+        runtime=runtime,
+    )
+
+    assert response.success is True
+    assert response.data["regime"]["dominant_regime"] == "trending"
+    assert response.data["quality"]["total_signals"] == 12

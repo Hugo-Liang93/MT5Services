@@ -15,6 +15,7 @@ from src.config import (
     validate_config_consistency,
 )
 from src.config.file_manager import FileConfigManager
+from src.config.indicator_config import ConfigLoader
 from src.config.utils import ConfigValidator
 
 
@@ -50,7 +51,7 @@ def test_centralized_config():
     assert "api" in system.modules_enabled
 
     assert get_shared_symbols() == ["XAUUSD"]
-    assert get_shared_timeframes() == ["M1", "H1"]
+    assert get_shared_timeframes() == ["M1", "M5", "M15", "H1"]
     assert get_shared_default_symbol() == "XAUUSD"
 
 
@@ -112,3 +113,20 @@ def test_file_manager_reads_indicators_json():
         assert reload_interval == 60
     finally:
         manager.stop()
+
+
+def test_indicator_config_reflects_phase1_intraday_changes():
+    config = ConfigLoader.load("config/indicators.json")
+    indicators = {indicator.name: indicator for indicator in config.indicators}
+
+    assert {"rsi5", "macd_fast", "ema21", "ema55"} <= set(indicators)
+    assert indicators["rsi5"].enabled is True
+    assert indicators["macd_fast"].enabled is True
+    assert indicators["ema21"].enabled is True
+    assert indicators["ema55"].enabled is True
+    assert indicators["mfi14"].enabled is False
+    assert indicators["obv30"].enabled is False
+    assert indicators["wma20"].enabled is False
+    assert indicators["rsi14"].delta_bars == [3, 5]
+    assert indicators["macd"].delta_bars == [3, 5]
+    assert indicators["cci20"].delta_bars == [3, 5]

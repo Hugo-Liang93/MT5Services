@@ -51,10 +51,16 @@ class PositionManager:
         *,
         trailing_atr_multiplier: float = 1.0,
         breakeven_atr_threshold: float = 1.0,
+        end_of_day_close_enabled: bool = False,
+        end_of_day_close_hour_utc: int = 21,
+        end_of_day_close_minute_utc: int = 0,
     ):
         self._trading = trading_module
         self.trailing_atr_multiplier = trailing_atr_multiplier
         self.breakeven_atr_threshold = breakeven_atr_threshold
+        self.end_of_day_close_enabled = bool(end_of_day_close_enabled)
+        self.end_of_day_close_hour_utc = int(end_of_day_close_hour_utc)
+        self.end_of_day_close_minute_utc = int(end_of_day_close_minute_utc)
         self._positions: Dict[int, TrackedPosition] = {}
         self._lock = threading.Lock()
         # O-1: 关仓回调列表，reconcile 检测到仓位关闭时通知下游（如 OutcomeTracker）
@@ -66,6 +72,7 @@ class PositionManager:
         self._reconcile_count: int = 0
         self._last_reconcile_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
+        self._last_end_of_day_close_date: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -193,7 +200,11 @@ class PositionManager:
             "config": {
                 "trailing_atr_multiplier": self.trailing_atr_multiplier,
                 "breakeven_atr_threshold": self.breakeven_atr_threshold,
+                "end_of_day_close_enabled": self.end_of_day_close_enabled,
+                "end_of_day_close_hour_utc": self.end_of_day_close_hour_utc,
+                "end_of_day_close_minute_utc": self.end_of_day_close_minute_utc,
             },
+            "last_end_of_day_close_date": self._last_end_of_day_close_date,
         }
 
     # ------------------------------------------------------------------
@@ -203,6 +214,7 @@ class PositionManager:
     def _reconcile_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
+                self._run_end_of_day_closeout()
                 self._reconcile_with_mt5()
                 self._reconcile_count += 1
                 self._last_reconcile_at = datetime.now(timezone.utc)
@@ -211,6 +223,58 @@ class PositionManager:
                 self._last_error = str(exc)
                 logger.warning("PositionManager reconcile error: %s", exc)
             self._stop_event.wait(timeout=self._reconcile_interval)
+
+    def _run_end_of_day_closeout(self, now: Optional[datetime] = None) -> Optional[dict]:
+        if not self.end_of_day_close_enabled:
+            return None
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        else:
+            current = current.astimezone(timezone.utc)
+
+        closeout_time = current.replace(
+            hour=self.end_of_day_close_hour_utc,
+            minute=self.end_of_day_close_minute_utc,
+            second=0,
+            microsecond=0,
+        )
+        if current < closeout_time:
+            return None
+
+        day_key = current.date().isoformat()
+        if self._last_end_of_day_close_date == day_key:
+            return None
+
+        positions_getter = getattr(self._trading, "get_positions", None)
+        if callable(positions_getter):
+            try:
+                open_positions = list(positions_getter())
+            except Exception:
+                open_positions = []
+        else:
+            open_positions = []
+        if not open_positions:
+            self._last_end_of_day_close_date = day_key
+            return {"closed": [], "failed": []}
+
+        close_all = getattr(self._trading, "close_all_positions", None)
+        if not callable(close_all):
+            return None
+
+        result = close_all(comment="end_of_day_closeout")
+        if not isinstance(result, dict):
+            result = {"result": result}
+        failed = list(result.get("failed", []) or [])
+        if not failed:
+            self._last_end_of_day_close_date = day_key
+        logger.info(
+            "PositionManager: end-of-day closeout executed at %s (closed=%s, failed=%s)",
+            current.isoformat(),
+            len(result.get("closed", []) or []),
+            len(failed),
+        )
+        return result
 
     def _reconcile_with_mt5(self) -> None:
         """Sync tracked positions with MT5 open positions.

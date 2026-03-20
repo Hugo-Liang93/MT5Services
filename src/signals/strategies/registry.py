@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -35,11 +35,20 @@ from ..service import SignalModule
 from .breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
+    FakeBreakoutDetector,
     KeltnerBollingerSqueezeStrategy,
     MultiTimeframeConfirmStrategy,
+    SqueezeReleaseFollow,
 )
+from .price_action import PriceActionReversal
 from .mean_reversion import RsiReversionStrategy, StochRsiStrategy
-from .trend import EmaRibbonStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
+from .session import SessionMomentumBias
+from .trend import (
+    EmaRibbonStrategy,
+    MacdMomentumStrategy,
+    SmaTrendStrategy,
+    SupertrendStrategy,
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +110,32 @@ _COMPOSITE_STRATEGY_SPECS: List[CompositeSpec] = [
         },
         preferred_scopes=("confirmed", "intrabar"),
     ),
+    # 突破释放确认：Donchian 趋势突破 + Squeeze 释放方向一致时追随
+    CompositeSpec(
+        name="breakout_release_confirm",
+        sub_strategy_factories=(DonchianBreakoutStrategy, SqueezeReleaseFollow),
+        combine_mode="all_agree",
+        regime_affinity={
+            RegimeType.TRENDING: 0.35,
+            RegimeType.RANGING: 0.15,
+            RegimeType.BREAKOUT: 1.00,
+            RegimeType.UNCERTAIN: 0.50,
+        },
+        preferred_scopes=("confirmed",),
+    ),
+    # 假突破反转确认：通道假突破 + K 线反转形态同向时才参与均值回归
+    CompositeSpec(
+        name="reversal_rejection_confirm",
+        sub_strategy_factories=(FakeBreakoutDetector, PriceActionReversal),
+        combine_mode="all_agree",
+        regime_affinity={
+            RegimeType.TRENDING: 0.10,
+            RegimeType.RANGING: 1.00,
+            RegimeType.BREAKOUT: 0.45,
+            RegimeType.UNCERTAIN: 0.60,
+        },
+        preferred_scopes=("confirmed",),
+    ),
 ]
 
 
@@ -114,11 +149,15 @@ def _load_specs_from_json(path: str) -> Optional[List[CompositeSpec]]:
         "BollingerBreakoutStrategy": BollingerBreakoutStrategy,
         "DonchianBreakoutStrategy": DonchianBreakoutStrategy,
         "EmaRibbonStrategy": EmaRibbonStrategy,
+        "FakeBreakoutDetector": FakeBreakoutDetector,
         "KeltnerBollingerSqueezeStrategy": KeltnerBollingerSqueezeStrategy,
         "MacdMomentumStrategy": MacdMomentumStrategy,
+        "PriceActionReversal": PriceActionReversal,
         "RsiReversionStrategy": RsiReversionStrategy,
+        "SessionMomentumBias": SessionMomentumBias,
         "SmaTrendStrategy": SmaTrendStrategy,
         "StochRsiStrategy": StochRsiStrategy,
+        "SqueezeReleaseFollow": SqueezeReleaseFollow,
         "SupertrendStrategy": SupertrendStrategy,
     }
     _REGIME_MAP: Dict[str, "RegimeType"] = {

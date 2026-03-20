@@ -427,27 +427,30 @@ class UnifiedIndicatorManager:
                         break
             except queue.Empty:
                 continue
-            for symbol, timeframe, bar_time in batch:
-                try:
-                    self.event_store.publish_event(symbol, timeframe, bar_time)
-                except Exception:
-                    logger.exception(
-                        "Failed to persist bar close event for %s/%s at %s",
-                        symbol, timeframe, bar_time,
-                    )
+            try:
+                self.event_store.publish_events_batch(batch)
+            except Exception:
+                logger.exception(
+                    "Failed to persist %s queued bar close events in batch",
+                    len(batch),
+                )
         # Drain any remaining items before the thread exits.
         while True:
             try:
-                symbol, timeframe, bar_time = self._event_write_queue.get_nowait()
-                try:
-                    self.event_store.publish_event(symbol, timeframe, bar_time)
-                except Exception:
-                    logger.exception(
-                        "Failed to persist bar close event during shutdown for %s/%s at %s",
-                        symbol, timeframe, bar_time,
-                    )
+                batch = [self._event_write_queue.get_nowait()]
+                for _ in range(63):
+                    try:
+                        batch.append(self._event_write_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                self.event_store.publish_events_batch(batch)
             except queue.Empty:
                 break
+            except Exception:
+                logger.exception(
+                    "Failed to persist %s queued bar close events during shutdown",
+                    len(batch),
+                )
 
     def _publish_closed_bar_event(self, symbol: str, timeframe: str, bar_time: datetime) -> None:
         """Non-blocking: enqueue for async SQLite write by _event_writer_loop."""
@@ -632,6 +635,119 @@ class UnifiedIndicatorManager:
     ) -> Dict[str, Dict[str, float]]:
         return group_indicator_values(self, results)
 
+    def _indicator_delta_config(self) -> Dict[str, tuple[int, ...]]:
+        config_items = getattr(getattr(self, "config", None), "indicators", None) or []
+        mapping: Dict[str, tuple[int, ...]] = {}
+        for config in config_items:
+            if not config.enabled or not getattr(config, "delta_bars", None):
+                continue
+            mapping[config.name] = tuple(
+                sorted({int(item) for item in config.delta_bars if int(item) > 0})
+            )
+        return mapping
+
+    def _apply_delta_metrics(
+        self,
+        symbol: str,
+        timeframe: str,
+        indicators: Dict[str, Dict[str, float]],
+        *,
+        bar_time: Optional[datetime] = None,
+    ) -> Dict[str, Dict[str, float]]:
+        delta_config = self._indicator_delta_config()
+        if not delta_config or not indicators:
+            return indicators
+
+        max_delta = max((max(values) for values in delta_config.values()), default=0)
+        if max_delta <= 0:
+            return indicators
+
+        try:
+            if bar_time is not None and hasattr(self.market_service, "get_ohlc_window"):
+                history = list(
+                    self.market_service.get_ohlc_window(
+                        symbol,
+                        timeframe,
+                        end_time=bar_time,
+                        limit=max_delta + 1,
+                    )
+                )
+            else:
+                history = list(
+                    self.market_service.get_ohlc(
+                        symbol,
+                        timeframe,
+                        count=max_delta + 1,
+                    )
+                )
+        except Exception:
+            logger.debug(
+                "Failed to load historical bars for delta metrics: %s/%s",
+                symbol,
+                timeframe,
+                exc_info=True,
+            )
+            return indicators
+
+        if not history:
+            return indicators
+
+        current_in_history = bool(bar_time is not None and history[-1].time == bar_time)
+        offset = 1 if current_in_history else 0
+
+        for indicator_name, payload in indicators.items():
+            delta_bars = delta_config.get(indicator_name)
+            if not delta_bars or not isinstance(payload, dict):
+                continue
+            for delta in delta_bars:
+                ref_index = -(delta + offset)
+                if len(history) < delta + offset:
+                    continue
+                try:
+                    reference_bar = history[ref_index]
+                except IndexError:
+                    continue
+                reference_payload = getattr(reference_bar, "indicators", None) or {}
+                reference_indicator = reference_payload.get(indicator_name)
+                if not isinstance(reference_indicator, dict):
+                    continue
+                for metric_name, current_value in list(payload.items()):
+                    if not isinstance(current_value, (int, float)):
+                        continue
+                    previous_value = reference_indicator.get(metric_name)
+                    if not isinstance(previous_value, (int, float)):
+                        continue
+                    payload[f"{metric_name}_d{delta}"] = round(
+                        float(current_value) - float(previous_value),
+                        6,
+                    )
+        return indicators
+
+    def _merge_snapshot_metrics_into_results(
+        self,
+        symbol: str,
+        timeframe: str,
+        indicators: Dict[str, Dict[str, float]],
+    ) -> None:
+        prefix = f"{symbol}_{timeframe}_"
+        results = getattr(self, "_results", None)
+        if not isinstance(results, dict) or not results:
+            return
+
+        def merge_into_results() -> None:
+            for indicator_name, payload in indicators.items():
+                result = results.get(f"{prefix}{indicator_name}")
+                if result is None or not isinstance(result.value, dict):
+                    continue
+                result.value.update(payload)
+
+        results_lock = getattr(self, "_results_lock", None)
+        if results_lock is None:
+            merge_into_results()
+            return
+        with results_lock:
+            merge_into_results()
+
     def _normalize_persisted_indicator_snapshot(
         self,
         persisted: Dict[str, Any],
@@ -697,6 +813,13 @@ class UnifiedIndicatorManager:
         grouped = self._group_indicator_values(results)
         if not grouped:
             return {}
+        grouped = self._apply_delta_metrics(
+            symbol,
+            timeframe,
+            grouped,
+            bar_time=effective_bar_time,
+        )
+        self._merge_snapshot_metrics_into_results(symbol, timeframe, grouped)
 
         latest_bar = bars[-1]
         self.market_service.update_ohlc_indicators(
@@ -748,7 +871,16 @@ class UnifiedIndicatorManager:
         bar_time: datetime,
         indicators: Dict[str, Dict[str, float]],
     ) -> Dict[str, Dict[str, float]]:
-        return publish_intrabar_snapshot(self, symbol, timeframe, bar_time, indicators)
+        enriched = self._apply_delta_metrics(
+            symbol,
+            timeframe,
+            {
+                name: dict(payload)
+                for name, payload in indicators.items()
+            },
+            bar_time=bar_time,
+        )
+        return publish_intrabar_snapshot(self, symbol, timeframe, bar_time, enriched)
 
     def _compute_results_with_priority_groups(
         self,
@@ -833,15 +965,36 @@ class UnifiedIndicatorManager:
     ) -> None:
         process_closed_bar_event(self, symbol, timeframe, bar_time, durable_event)
 
+    def set_intrabar_eligible_override(self, names: frozenset) -> None:
+        """用策略推导的集合覆盖 intrabar eligible 缓存。
+
+        在 factory 初始化完成后由 SignalModule.intrabar_required_indicators()
+        推导出需要 intrabar 计算的指标集合，注入到这里。此后 _get_intrabar_eligible_names()
+        直接返回此集合，indicators.json 中的 intrabar_eligible 字段不再起作用。
+
+        单一来源：策略的 preferred_scopes + required_indicators → 自动推导。
+        """
+        # 只保留 enabled 的指标（disabled 的不应参与任何计算）
+        enabled = frozenset(
+            cfg.name for cfg in self.config.indicators if cfg.enabled
+        )
+        self._intrabar_eligible_cache = names & enabled
+        logger.info(
+            "Intrabar eligible indicators (auto-derived from strategy scopes): %s",
+            sorted(self._intrabar_eligible_cache),
+        )
+
     def _get_intrabar_eligible_names(self) -> frozenset:
         """Return the set of indicator names that should appear in intrabar snapshots.
 
-        The result is cached at registration time and invalidated on config reload,
-        so this is safe to call on every intrabar event without CPU overhead.
+        When set_intrabar_eligible_override() has been called (normal startup path),
+        returns the strategy-derived set.  Otherwise falls back to the JSON config
+        (backward compatibility for standalone indicator manager usage without
+        a signal module).
         """
         cache = getattr(self, "_intrabar_eligible_cache", None)
         if cache is None:
-            # Fallback if called before _register_indicators (should not happen).
+            # Fallback: derive from JSON config (pre-override or standalone usage).
             config_items = getattr(getattr(self, "config", None), "indicators", None)
             if config_items is None:
                 cache = frozenset()
