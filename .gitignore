@@ -38,12 +38,15 @@ cython_debug/
 .dmypy.json
 dmypy.json
 
-# Coverage
+# Coverage and test output
 .coverage
 .coverage.*
 htmlcov/
 coverage.xml
+coverage.json
 nosetests.xml
+junit*.xml
+test-results/
 *.cover
 *.py,cover
 
@@ -72,6 +75,8 @@ config/*.local.yml
 .ipynb_checkpoints/
 *.swp
 *.swo
+*.bak
+*.orig
 *~
 .DS_Store
 Thumbs.db
@@ -91,6 +96,7 @@ logs/
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
 events.db
 health_monitor.db
 
