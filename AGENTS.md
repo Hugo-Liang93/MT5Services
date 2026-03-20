@@ -1,5 +1,52 @@
 # AGENTS.md
 
+## Quick Architecture Reference（当前正确模块路径）
+
+> 以下路径在最近重构后已变更，使用旧路径会导致 ImportError。
+
+| Class | Correct Import |
+|-------|---------------|
+| `MarketDataService` | `from src.market import MarketDataService` |
+| `EconomicCalendarService` | `from src.calendar import EconomicCalendarService` |
+| `SignalRuntime` | `from src.signals.orchestration import SignalRuntime` |
+| `StrategyVotingEngine` | `from src.signals.orchestration.voting import StrategyVotingEngine` |
+| `SignalPolicy`, `VotingGroupConfig` | `from src.signals.orchestration.policy import SignalPolicy, VotingGroupConfig` |
+| `SignalModule` | `from src.signals.service import SignalModule` |
+| `SignalRepository` | `from src.signals.tracking.repository import SignalRepository` |
+| `SignalFilterChain` | `from src.signals.execution.filters import SignalFilterChain` |
+| `MarketStructureAnalyzer` | `from src.market_structure import MarketStructureAnalyzer` |
+| `TradeExecutor` | `from src.trading.signal_executor import TradeExecutor` |
+| `PositionManager` | `from src.trading.position_manager import PositionManager` |
+| `OutcomeTracker` | `from src.trading.outcome_tracker import OutcomeTracker` |
+| `SoftRegimeResult` | `from src.signals.evaluation.regime import SoftRegimeResult` |
+| `TimeframeScaler` | `from src.signals.strategies.base import TimeframeScaler` |
+| `SessionTransitionFilter` | `from src.signals.execution.filters import SessionTransitionFilter` |
+| `DailyLossLimitRule` | `from src.risk.rules import DailyLossLimitRule` |
+
+### DI 容器（`src/api/deps.py`）
+
+所有单例通过 `_Container`（`_c`）访问，不再是 `AppDeps`：
+
+```python
+_c.service                    # MarketDataService
+_c.storage_writer             # StorageWriter
+_c.ingestor                   # BackgroundIngestor
+_c.indicator_manager          # UnifiedIndicatorManager
+_c.economic_calendar_service  # EconomicCalendarService
+_c.market_structure_analyzer  # MarketStructureAnalyzer
+_c.signal_module              # SignalModule
+_c.signal_runtime             # SignalRuntime
+_c.trade_executor             # TradeExecutor
+_c.position_manager           # PositionManager
+_c.outcome_tracker            # OutcomeTracker
+_c.calibrator                 # ConfidenceCalibrator
+_c.htf_cache                  # HTFStateCache
+```
+
+新增组件步骤：`_Container` 字段 → `src/api/factories/` 工厂函数 → `src/api/lifespan.py` 关闭逻辑。
+
+---
+
 ## 0.1 No Compatibility Rule
 
 - During the current development phase, do not preserve legacy or compatibility paths when fixing bugs or refactoring code.
@@ -9,7 +56,7 @@
 
 ## 0. 当前架构修正
 
-- `src/core/` 不再作为新增业务能力的默认落点
+- `src/core/` 不再作为新增业务能力的默认落点（`MarketDataService` 在 `src/market/`，`EconomicCalendarService` 在 `src/calendar/`）
 - 新增领域能力优先放入 `market / calendar / market_structure / indicators / signals / risk / trading / monitoring / api / config`
 - 不再引入新的 `compat` / `fallback` 主路径概念
 - 黄金日内相关的新特征优先建设为独立上下文层，再接入策略和风控
@@ -26,7 +73,7 @@
 ---
 
 ## 2. Agent 在本仓库中的工作职责
-当你在本仓库中执行任务时，你的职责不是单纯“写代码”，而是协助推进以下能力建设：
+当你在本仓库中执行任务时，你的职责不是单纯"写代码"，而是协助推进以下能力建设：
 
 - MT5 连接与运行时稳定性
 - 市场数据获取与缓存
@@ -88,60 +135,57 @@
 
 ---
 
-## 5. 关键目录认知
-- `app.py`
-  - 服务启动入口
+## 5. 关键目录认知（当前最新结构）
 
-- `src/api/`
-  - FastAPI 应用、路由、中间件、依赖注入
-  - 对外 API 暴露层
+- `app.py` — 服务启动入口
 
-- `src/config/`
-  - 集中式配置读取、合并、校验
-  - 所有运行参数的入口
+- `src/api/` — FastAPI 应用、路由、中间件、依赖注入
+  - `deps.py` — `_Container` DI 单例容器
+  - `factories/` — 各组件工厂函数
+  - `lifespan.py` — 启动/关闭生命周期
 
-- `src/clients/`
-  - MT5 及其他外部依赖客户端封装
+- `src/config/` — 集中式配置读取、合并、校验（`centralized.py` + `models/`）
 
-- `src/core/`
-  - 核心服务逻辑，例如市场数据服务、运行时核心能力
+- `src/clients/` — MT5 及其他外部依赖客户端封装
 
-- `src/ingestion/`
-  - 后台采集、补数、数据摄取逻辑
+- `src/market/` — `MarketDataService`（线程安全内存行情缓存）
 
-- `src/indicators/`
-  - 指标计算逻辑
+- `src/market_structure/` — `MarketStructureAnalyzer`（市场结构分析）
 
-- `src/signals/`
-  - 基于指标和行情生成交易信号
-  - `strategies/` — 策略实现层（`base.py` Protocol、`trend.py`、`mean_reversion.py`、`breakout.py`、`composite.py`、`registry.py`）
-  - `evaluation/` — Regime 分类（`regime.py`）、置信度校准（`calibrator.py`）、投票引擎（`voting.py`）
-  - `execution/` — 信号过滤器（`filters.py`）、仓位策略（`policy.py`）、仓位大小计算（`sizing.py`）
-  - `tracking/` — 持仓管理（`position_manager.py`）、结果追踪（`outcome_tracker.py`）、信号仓储（`repository.py`）
-  - `contracts/` — 接口定义（Protocol / ABC）
-  - `analytics/` — 信号分析工具
-  - `runtime.py` — 事件驱动主循环（双队列架构）
+- `src/calendar/` — `EconomicCalendarService` + `trade_guard`（经济日历）
+
+- `src/ingestion/` — 后台采集、补数、数据摄取逻辑（`BackgroundIngestor`）
+
+- `src/indicators/` — 指标计算逻辑（`UnifiedIndicatorManager` + 引擎 + 缓存）
+
+- `src/signals/` — 基于指标和行情生成交易信号
+  - `orchestration/` — `SignalRuntime`（主循环）、`SignalPolicy`、`StrategyVotingEngine`
+  - `strategies/` — 策略实现层（`base.py` Protocol + TimeframeScaler、`trend.py`、`mean_reversion.py`、`breakout.py`（含 fake_breakout/squeeze_release）、`session.py`、`price_action.py`、`composite.py`、`registry.py`）
+  - `evaluation/` — Regime 分类（`regime.py`，含 `SoftRegimeResult`）、置信度校准（`calibrator.py`，分阶段 alpha）
+  - `execution/` — 信号过滤器（`filters.py`，含 `SessionTransitionFilter` 时段切换冷却）
+  - `tracking/` — 信号持久化（`repository.py`）
+  - `contracts/` — 常量定义（`sessions.py`）
+  - `analytics/` — 信号诊断分析工具
   - `service.py` — 信号模块单例与策略编排
 
-- `src/risk/`
-  - 风控校验逻辑
-  - `service.py` — PreTradeRiskService（前置风控，含经济日历 Trade Guard）
-  - `rules.py` — 仓位限制、手数、SL/TP 规则
+- `src/risk/` — 风控校验逻辑
+  - `service.py` — `PreTradeRiskService`
+  - `rules.py` — 仓位限制、手数、SL/TP 规则、`DailyLossLimitRule`（日损失限制）
 
-- `src/trading/`
-  - 下单、仓位、执行、交易管理
-  - `service.py` — TradingModule（账户、持仓、订单生命周期）
-  - `trading_service.py` — TradingService（底层下单、平仓、保证金计算）
-  - `registry.py` — TradingAccountRegistry（多账户注册与服务工厂）
-  - `signal_executor.py` — 信号触发的交易执行器
+- `src/trading/` — 下单、仓位、执行、交易管理
+  - `service.py` — `TradingModule`（账户、持仓、订单生命周期）
+  - `trading_service.py` — `TradingService`（底层下单、平仓、保证金计算）
+  - `registry.py` — `TradingAccountRegistry`（多账户注册与服务工厂）
+  - `signal_executor.py` — `TradeExecutor`（信号触发的交易执行器、日内头寸限制、HTF 软惩罚）
+  - `position_manager.py` — `PositionManager`（持仓监控、止损跟踪、日终自动平仓）
+  - `outcome_tracker.py` — `OutcomeTracker`（交易结果跟踪与胜率统计）
+  - `sizing.py` — 仓位大小计算、时间框架差异化 SL/TP（M1/M5/M15/H1 各有不同 ATR 倍数）
 
-- `src/monitoring/`
-  - 健康检查、运行状态、监控指标
-  - `health_monitor.py` — HealthMonitor（SQLite 指标存储、告警、健康报告）
-  - `manager.py` — MonitoringManager（定时巡检、组件协调）
+- `src/monitoring/` — 健康检查、运行状态、监控指标
+  - `health_monitor.py` — `HealthMonitor`（SQLite 指标存储、告警、健康报告）
+  - `manager.py` — `MonitoringManager`（定时巡检、组件协调）
 
-- `tests/`
-  - 单元测试、集成测试、冒烟测试
+- `tests/` — 单元测试、集成测试、冒烟测试
 
 ---
 
@@ -150,7 +194,7 @@
 - 保持改动最小化
 - 优先修复根因，不堆补丁
 - 保持现有项目结构一致
-- 不为了“更优雅”而大规模重构
+- 不为了"更优雅"而大规模重构
 - 不破坏已有 API，除非任务明确要求
 
 ### 6.2 禁止事项
@@ -188,7 +232,7 @@
 - 风控应优先于信号触发
 - 风控应优先于执行优化
 - 风控规则要尽量独立、可测试、可解释
-- 不允许为了“提高下单成功率”而弱化核心风控
+- 不允许为了"提高下单成功率"而弱化核心风控
 
 ---
 
@@ -215,24 +259,20 @@
 - 返回结构标准化
 - 失败原因可解释
 - 尽量支持 dry-run / precheck / preview
-- 对交易类动作优先区分“校验”和“执行”
+- 对交易类动作优先区分"校验"和"执行"
 
 ---
 
 ## 9. 配置系统约束
-- 所有运行时配置必须优先通过项目现有配置系统读取
+- 所有运行时配置必须优先通过项目现有配置系统读取（`from src.config import get_*_config`）
 - 不新增零散的 ad-hoc 配置读取
-- 修改配置行为时，必须评估：
-  - 启动是否受影响
-  - API 是否受影响
-  - MT5 是否受影响
-  - 监控是否受影响
+- `config/app.ini` 是品种/时间框架的唯一来源，禁止在其他配置文件中重复定义
+- 修改配置行为时，必须评估：启动、API、MT5、监控是否受影响
 
 ### 9.1 编码约束
 - 仓库内所有文本文件统一使用 UTF-8 编码
 - 通过命令行写入或追加文本文件时，必须显式指定 UTF-8 编码
 - 优先使用补丁方式修改文本文件，避免使用未指定编码的 shell 重定向直接写文件
-- 如果出现乱码，先区分“文件实际编码错误”和“终端显示编码错误”，不要在未确认前盲目重写文件
 
 涉及以下内容时必须同步更新文档：
 - 新配置项
@@ -248,7 +288,7 @@
 - 修 bug：优先补回归测试
 - 新功能：至少补单元测试或集成测试
 - 非 trivial 改动：必须说明验证方式
-- 不允许只凭“本地看起来能跑”作为结论
+- 不允许只凭"本地看起来能跑"作为结论
 
 ### 10.2 测试优先级
 1. 单元测试
@@ -271,11 +311,6 @@
 - 认证与 CORS 行为
 - 监控与健康检查语义
 - 指标、信号、交易、风控的重要行为
-
-优先同步：
-- `README.md`
-- `QUICK_START.md`
-- `CONFIG_GUIDE.md`
 
 ---
 

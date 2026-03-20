@@ -77,6 +77,12 @@ class LocalEventStore:
             )
             cursor.execute(
                 """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_event_identity
+                ON ohlc_events(symbol, timeframe, bar_time)
+                """
+            )
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS event_stats (
                     date TEXT PRIMARY KEY,
                     total_events INTEGER DEFAULT 0,
@@ -103,41 +109,106 @@ class LocalEventStore:
     def publish_event(self, symbol: str, timeframe: str, bar_time: datetime) -> int:
         with self._lock:
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT id FROM ohlc_events
-                WHERE symbol = ? AND timeframe = ? AND bar_time = ?
-                """,
-                (symbol, timeframe, bar_time.isoformat()),
-            )
-            existing = cursor.fetchone()
-            if existing:
+            try:
+                cursor = conn.cursor()
+                now = _utc_now()
+                before_changes = conn.total_changes
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO ohlc_events (symbol, timeframe, bar_time, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (symbol, timeframe, bar_time.isoformat(), now.isoformat()),
+                )
+                inserted = conn.total_changes - before_changes
+                if inserted:
+                    today = now.date().isoformat()
+                    cursor.execute("INSERT OR IGNORE INTO event_stats (date) VALUES (?)", (today,))
+                    cursor.execute(
+                        """
+                        UPDATE event_stats
+                        SET total_events = total_events + 1
+                        WHERE date = ?
+                        """,
+                        (today,),
+                    )
+                    event_id = int(cursor.lastrowid)
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id FROM ohlc_events
+                        WHERE symbol = ? AND timeframe = ? AND bar_time = ?
+                        """,
+                        (symbol, timeframe, bar_time.isoformat()),
+                    )
+                    row = cursor.fetchone()
+                    event_id = int(row[0])
+                conn.commit()
+                logger.debug(
+                    "Published event: %s/%s at %s, id=%s",
+                    symbol,
+                    timeframe,
+                    bar_time,
+                    event_id,
+                )
+                return event_id
+            finally:
                 conn.close()
-                return int(existing[0])
 
-            cursor.execute(
-                """
-                INSERT INTO ohlc_events (symbol, timeframe, bar_time, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (symbol, timeframe, bar_time.isoformat(), _utc_now().isoformat()),
+    def publish_events_batch(
+        self,
+        events: List[tuple[str, str, datetime]],
+    ) -> int:
+        if not events:
+            return 0
+
+        unique_events: list[tuple[str, str, datetime]] = list(
+            dict.fromkeys(
+                (symbol, timeframe, bar_time)
+                for symbol, timeframe, bar_time in events
             )
-            event_id = int(cursor.lastrowid)
-            today = _utc_now().date().isoformat()
-            cursor.execute("INSERT OR IGNORE INTO event_stats (date) VALUES (?)", (today,))
-            cursor.execute(
-                """
-                UPDATE event_stats
-                SET total_events = total_events + 1
-                WHERE date = ?
-                """,
-                (today,),
-            )
-            conn.commit()
-            conn.close()
-            logger.debug("Published event: %s/%s at %s, id=%s", symbol, timeframe, bar_time, event_id)
-            return event_id
+        )
+
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                now = _utc_now()
+                before_changes = conn.total_changes
+                cursor.executemany(
+                    """
+                    INSERT OR IGNORE INTO ohlc_events (symbol, timeframe, bar_time, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    [
+                        (symbol, timeframe, bar_time.isoformat(), now.isoformat())
+                        for symbol, timeframe, bar_time in unique_events
+                    ],
+                )
+                inserted = conn.total_changes - before_changes
+                if inserted:
+                    today = now.date().isoformat()
+                    cursor.execute("INSERT OR IGNORE INTO event_stats (date) VALUES (?)", (today,))
+                    cursor.execute(
+                        """
+                        UPDATE event_stats
+                        SET total_events = total_events + ?
+                        WHERE date = ?
+                        """,
+                        (inserted, today),
+                    )
+                conn.commit()
+                if inserted:
+                    logger.debug(
+                        "Published %s/%s OHLC events in batch (%s unique, %s inserted)",
+                        len(events),
+                        len(unique_events),
+                        len(unique_events),
+                        inserted,
+                    )
+                return inserted
+            finally:
+                conn.close()
 
     def claim_next_events(self, limit: int = 1) -> List[ClaimedEvent]:
         limit = max(1, int(limit))

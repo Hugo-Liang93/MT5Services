@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 
+TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
+    "M1": {"sl_atr_mult": 1.0, "tp_atr_mult": 2.0},
+    "M5": {"sl_atr_mult": 1.2, "tp_atr_mult": 2.5},
+    "M15": {"sl_atr_mult": 1.3, "tp_atr_mult": 2.8},
+    "H1": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0},
+}
+
+
 @dataclass(frozen=True)
 class TradeParameters:
     """Computed trade parameters based on ATR and risk management."""
@@ -26,6 +34,7 @@ def compute_trade_params(
     atr_value: float,
     account_balance: float,
     *,
+    timeframe: Optional[str] = None,
     risk_percent: float = 1.0,
     sl_atr_multiplier: float = 1.5,
     tp_atr_multiplier: float = 3.0,
@@ -55,8 +64,13 @@ def compute_trade_params(
     if account_balance <= 0:
         raise ValueError("Account balance must be positive")
 
-    sl_distance = atr_value * sl_atr_multiplier
-    tp_distance = atr_value * tp_atr_multiplier
+    resolved_sl_multiplier, resolved_tp_multiplier = resolve_timeframe_sl_tp(
+        timeframe,
+        default_sl=sl_atr_multiplier,
+        default_tp=tp_atr_multiplier,
+    )
+    sl_distance = atr_value * resolved_sl_multiplier
+    tp_distance = atr_value * resolved_tp_multiplier
 
     if action == "buy":
         stop_loss = current_price - sl_distance
@@ -105,3 +119,20 @@ def extract_atr_from_indicators(
                 except (TypeError, ValueError):
                     continue
     return None
+
+
+def resolve_timeframe_sl_tp(
+    timeframe: Optional[str],
+    *,
+    default_sl: float = 1.5,
+    default_tp: float = 3.0,
+) -> tuple[float, float]:
+    if not timeframe:
+        return default_sl, default_tp
+    profile = TIMEFRAME_SL_TP.get(str(timeframe).strip().upper())
+    if not profile:
+        return default_sl, default_tp
+    return (
+        float(profile.get("sl_atr_mult", default_sl)),
+        float(profile.get("tp_atr_mult", default_tp)),
+    )

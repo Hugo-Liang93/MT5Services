@@ -8,6 +8,15 @@ from src.risk.service import PreTradeRiskBlockedError
 from src.trading.service import TradingModule
 
 
+def _risk_error_code(assessment: dict[str, Any] | None) -> AIErrorCode:
+    checks = list((assessment or {}).get("checks") or [])
+    if any(str(item.get("name")) == "daily_loss_limit" for item in checks):
+        return AIErrorCode.DAILY_LOSS_LIMIT
+    if str((assessment or {}).get("reason") or "").strip().lower() == "daily_loss_limit_reached":
+        return AIErrorCode.DAILY_LOSS_LIMIT
+    return AIErrorCode.TRADE_BLOCKED_BY_RISK
+
+
 class TradeAPIDispatcher:
     """统一交易 API 调度入口，减少路由层重复逻辑。"""
 
@@ -33,7 +42,7 @@ class TradeAPIDispatcher:
             )
         except PreTradeRiskBlockedError as exc:
             return ApiResponse.error_response(
-                error_code=AIErrorCode.TRADE_BLOCKED_BY_RISK,
+                error_code=_risk_error_code(exc.assessment),
                 error_message=str(exc),
                 suggested_action=AIErrorAction.WAIT_FOR_RISK_WINDOW,
                 details={

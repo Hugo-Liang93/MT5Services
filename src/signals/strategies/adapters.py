@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Protocol
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 
 if TYPE_CHECKING:
     from src.indicators.manager import UnifiedIndicatorManager
@@ -14,6 +15,16 @@ class IndicatorSource(Protocol):
         ...
 
     def list_indicators(self) -> List[Dict[str, Any]]:
+        ...
+
+    def get_recent_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        end_time: Optional[datetime] = None,
+        limit: int = 5,
+    ) -> List[Any]:
         ...
 
 
@@ -31,3 +42,27 @@ class UnifiedIndicatorSourceAdapter:
 
     def list_indicators(self) -> List[Dict[str, Any]]:
         return self._manager.list_indicators()
+
+    def get_recent_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        end_time: Optional[datetime] = None,
+        limit: int = 5,
+    ) -> List[Any]:
+        market_service = getattr(self._manager, "market_service", None)
+        if market_service is None:
+            return []
+        if end_time is not None and hasattr(market_service, "get_ohlc_window"):
+            return list(
+                market_service.get_ohlc_window(
+                    symbol,
+                    timeframe,
+                    end_time=end_time,
+                    limit=limit,
+                )
+            )
+        if hasattr(market_service, "get_ohlc"):
+            return list(market_service.get_ohlc(symbol, timeframe, count=limit))
+        return []

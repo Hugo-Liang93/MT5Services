@@ -91,11 +91,13 @@ SELECT
     )                                                     AS avg_loss_move,
     ROUND(
         (
-            COALESCE(AVG(CASE WHEN won THEN ABS(price_change) END), 0.0)
-            * AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END)
-        ) - (
-            COALESCE(AVG(CASE WHEN won = FALSE THEN ABS(price_change) END), 0.0)
-            * (1.0 - AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END))
+            (
+                COALESCE(AVG(CASE WHEN won THEN ABS(price_change) END), 0.0)
+                * AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END)
+            ) - (
+                COALESCE(AVG(CASE WHEN won = FALSE THEN ABS(price_change) END), 0.0)
+                * (1.0 - AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END))
+            )
         )::numeric,
         6
     )                                                     AS expectancy,

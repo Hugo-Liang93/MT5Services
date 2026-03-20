@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Optional, Protocol
 
 from ..evaluation.regime import RegimeType
@@ -39,6 +40,42 @@ class SignalStrategy(Protocol):
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         ...
+
+
+@dataclass(frozen=True)
+class TimeframeScaler:
+    """按时间框架缩放周期和阈值，减少 M1/M5 与 H1 参数失配。"""
+
+    timeframe: str
+    scale_map: Dict[str, float] = field(
+        default_factory=lambda: {
+            "M1": 0.60,
+            "M5": 0.75,
+            "M15": 0.85,
+            "H1": 1.00,
+            "H4": 1.15,
+            "D1": 1.30,
+        }
+    )
+
+    @property
+    def factor(self) -> float:
+        return float(self.scale_map.get(str(self.timeframe).upper(), 1.0))
+
+    def scale_period(self, period: int, *, minimum: int = 2) -> int:
+        return max(minimum, int(round(period * self.factor)))
+
+    def scale_threshold(self, threshold: float) -> float:
+        return float(threshold) * self.factor
+
+    def scale_value(
+        self,
+        value: float,
+        *,
+        inverse: bool = False,
+    ) -> float:
+        factor = self.factor if not inverse else 1.0 / max(self.factor, 1e-9)
+        return float(value) * factor
 
 
 def _resolve_indicator_value(

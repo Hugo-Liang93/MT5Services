@@ -82,6 +82,32 @@ def test_event_store_supports_claim_and_completion_by_event_id(tmp_path: Path) -
     assert outcome == "completed"
 
 
+def test_event_store_batch_publish_deduplicates_and_tracks_stats(tmp_path: Path) -> None:
+    db_path = tmp_path / "events.db"
+    event_store = LocalEventStore(str(db_path))
+    first_bar_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    second_bar_time = datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc)
+
+    inserted = event_store.publish_events_batch(
+        [
+            ("XAUUSD", "M1", first_bar_time),
+            ("XAUUSD", "M1", first_bar_time),
+            ("XAUUSD", "M1", second_bar_time),
+        ]
+    )
+
+    assert inserted == 2
+    stats = event_store.get_stats()
+    assert stats["total"] == 2
+    assert stats["pending"] == 2
+
+    duplicate_id = event_store.publish_event("XAUUSD", "M1", first_bar_time)
+    claimed = event_store.claim_next_events(limit=2)
+
+    assert duplicate_id == claimed[0].event_id
+    assert {event.bar_time for event in claimed} == {first_bar_time, second_bar_time}
+
+
 def test_event_store_cleanup_keeps_claimed_inflight_events(tmp_path: Path) -> None:
     db_path = tmp_path / "events.db"
     event_store = LocalEventStore(str(db_path))
@@ -186,7 +212,7 @@ def test_market_data_service_refreshes_quote_from_mt5_when_cache_is_stale() -> N
     assert service.get_quote("XAUUSD") is fresh_quote
 
 
-def test_mt5_market_client_converts_ohlc_request_start_to_market_time() -> None:
+def test_mt5_market_client_fetches_forward_ohlc_window_in_utc() -> None:
     client = object.__new__(MT5MarketClient)
     client.settings = SimpleNamespace(server_time_offset_hours=3)
     client._market_time_offset_seconds = 3 * 3600
@@ -195,19 +221,40 @@ def test_mt5_market_client_converts_ohlc_request_start_to_market_time() -> None:
     client._timeframe_to_mt5 = lambda timeframe: timeframe
 
     captured = {}
-    with patch("src.clients.mt5_market.mt5.copy_rates_from", autospec=True) as copy_rates_from:
-        copy_rates_from.side_effect = lambda symbol, tf, start, limit: captured.update(
-            {"symbol": symbol, "tf": tf, "start": start, "limit": limit}
-        ) or []
+    raw_rates = [
+        {
+            "time": datetime(2026, 3, 16, 12, 45, tzinfo=timezone.utc).timestamp(),
+            "open": 3000.0,
+            "high": 3001.0,
+            "low": 2999.0,
+            "close": 3000.5,
+            "real_volume": 1.0,
+        },
+        {
+            "time": datetime(2026, 3, 16, 12, 46, tzinfo=timezone.utc).timestamp(),
+            "open": 3000.5,
+            "high": 3001.5,
+            "low": 3000.0,
+            "close": 3001.0,
+            "real_volume": 2.0,
+        },
+    ]
+    with patch("src.clients.mt5_market.mt5.copy_rates_range", autospec=True) as copy_rates_range:
+        copy_rates_range.side_effect = lambda symbol, tf, start, end: captured.update(
+            {"symbol": symbol, "tf": tf, "start": start, "end": end}
+        ) or raw_rates
 
-        client.get_ohlc_from(
+        bars = client.get_ohlc_from(
             "XAUUSD",
             "M1",
             datetime(2026, 3, 16, 12, 45, tzinfo=timezone.utc),
-            10,
+            1,
         )
 
-    assert captured["start"] == datetime(2026, 3, 16, 15, 45, tzinfo=timezone.utc)
+    assert captured["start"] == datetime(2026, 3, 16, 12, 45, tzinfo=timezone.utc)
+    assert captured["end"] == datetime(2026, 3, 16, 12, 46, tzinfo=timezone.utc)
+    assert len(bars) == 1
+    assert bars[0].time == datetime(2026, 3, 16, 12, 45, tzinfo=timezone.utc)
 
 
 def test_mt5_base_client_shutdown_resets_inferred_market_time_offset() -> None:

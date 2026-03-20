@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.signals.execution.filters import SessionFilter, SignalFilterChain, SpreadFilter
+from src.signals.execution.filters import (
+    SessionFilter,
+    SessionTransitionFilter,
+    SignalFilterChain,
+    SpreadFilter,
+)
 
 
 def test_session_filter_normalizes_newyork_alias() -> None:
@@ -47,3 +52,17 @@ def test_spread_filter_uses_session_specific_limit() -> None:
 
     assert allowed is False
     assert reason == "spread_too_wide:35.0>30.0[asia]"
+
+
+def test_session_transition_filter_blocks_london_to_new_york_handoff() -> None:
+    chain = SignalFilterChain(
+        session_transition_filter=SessionTransitionFilter(cooldown_minutes=15),
+    )
+
+    allowed, reason = chain.should_evaluate(
+        "XAUUSD",
+        utc_now=datetime(2026, 3, 19, 13, 0, tzinfo=timezone.utc),
+    )
+
+    assert allowed is False
+    assert reason == "session_transition_cooldown:london_to_new_york"

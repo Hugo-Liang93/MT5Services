@@ -67,9 +67,13 @@ class DummyOrder:
 
 
 class DummyAccountService:
-    def __init__(self, positions=None, orders=None) -> None:
+    def __init__(self, positions=None, orders=None, account_info=None) -> None:
         self._positions = positions or []
         self._orders = orders or []
+        self._account_info = account_info or {"balance": 10000.0, "equity": 10000.0}
+
+    def account_info(self):
+        return self._account_info
 
     def positions(self, symbol=None):
         if symbol is None:
@@ -272,3 +276,22 @@ def test_warns_when_buying_against_new_york_open_downside_expansion():
     assert result["action"] == "warn"
     assert result["blocked"] is False
     assert "buy_against_new_york_open_downside_expansion" in result["warnings"]
+
+
+def test_blocks_when_daily_loss_limit_is_reached() -> None:
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        account_service=DummyAccountService(
+            account_info={"balance": 10000.0, "equity": 9600.0}
+        ),
+        settings=_settings(),
+        risk_settings=RiskConfig(daily_loss_limit_pct=3.0),
+    )
+
+    result = service.assess_trade(symbol="XAUUSD", volume=0.2, side="buy")
+
+    assert result["action"] == "block"
+    assert result["blocked"] is True
+    check = next(item for item in result["checks"] if item["name"] == "daily_loss_limit")
+    assert check["reason"] == "daily_loss_limit_reached"
+    assert check["details"]["source"] == "equity_balance_drawdown_proxy"

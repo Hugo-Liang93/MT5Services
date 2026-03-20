@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from src.signals.models import SignalEvent
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 
@@ -16,6 +18,22 @@ class DummyTradingModule:
 
     def account_info(self):
         return {"equity": 10000.0}
+
+
+class DummyPositionManager:
+    def __init__(self, positions):
+        self._positions = positions
+
+    def active_positions(self):
+        return list(self._positions)
+
+
+class DummyHTFCache:
+    def __init__(self, direction: str | None):
+        self.direction = direction
+
+    def get_htf_direction(self, symbol, timeframe):
+        return self.direction
 
 
 def _build_event(
@@ -131,3 +149,102 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
     assert payload["metadata"]["market_structure"]["sweep_confirmation_state"] == (
         "bullish_sweep_confirmed_previous_day_low"
     )
+
+
+def test_trade_executor_soft_penalizes_htf_conflict_before_threshold_check() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            require_armed=True,
+            min_confidence=0.6,
+            sl_atr_multiplier=2.0,
+            tp_atr_multiplier=4.0,
+            htf_filter_enabled=True,
+            htf_conflict_penalty=0.7,
+        ),
+        htf_cache=DummyHTFCache("sell"),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = SignalEvent(**{**event.__dict__, "confidence": 0.8})
+
+    executor.on_signal_event(event)
+
+    assert module.calls == []
+
+
+def test_trade_executor_boosts_htf_alignment_confidence() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            require_armed=True,
+            min_confidence=0.9,
+            sl_atr_multiplier=2.0,
+            tp_atr_multiplier=4.0,
+            htf_filter_enabled=True,
+            htf_alignment_boost=1.1,
+        ),
+        htf_cache=DummyHTFCache("buy"),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = SignalEvent(**{**event.__dict__, "confidence": 0.85})
+
+    executor.on_signal_event(event)
+
+    assert module.calls
+    assert executor.status()["recent_executions"][-1]["confidence"] == pytest.approx(
+        0.935
+    )
+
+
+def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=DummyPositionManager(
+            [{"symbol": "XAUUSD"}, {"symbol": "XAUUSD"}, {"symbol": "EURUSD"}]
+        ),
+        config=ExecutorConfig(
+            enabled=True,
+            require_armed=True,
+            min_confidence=0.5,
+            max_concurrent_positions_per_symbol=2,
+        ),
+    )
+
+    result = executor.on_signal_event(
+        _build_event(spread_points=20.0, close_price=3000.0)
+    )
+
+    assert result is None
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        "max_concurrent_positions_per_symbol"
+    )
+
+
+def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            require_armed=True,
+            min_confidence=0.5,
+            sl_atr_multiplier=1.5,
+            tp_atr_multiplier=3.0,
+            max_spread_to_stop_ratio=0.5,
+        ),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = SignalEvent(**{**event.__dict__, "timeframe": "M1"})
+
+    executor.on_signal_event(event)
+
+    assert module.calls
+    payload = module.calls[0][1]
+    assert payload["sl"] == pytest.approx(2998.0)
+    assert payload["tp"] == pytest.approx(3004.0)

@@ -108,6 +108,7 @@ class IndicatorConfig:
     # Set to False for volume-derived or session-sensitive indicators that are
     # noisy on partial bars. Defaults to True (included in all snapshots).
     intrabar_eligible: bool = True
+    delta_bars: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -235,6 +236,11 @@ class ConfigLoader:
                 description=indicator_data.get('description', ''),
                 tags=indicator_data.get('tags', []),
                 intrabar_eligible=indicator_data.get('intrabar_eligible', True),
+                delta_bars=[
+                    int(item)
+                    for item in indicator_data.get('delta_bars', [])
+                    if int(item) > 0
+                ],
             )
             indicators.append(indicator_config)
         
@@ -485,7 +491,9 @@ class ConfigManager:
                         "compute_mode": indicator.compute_mode.value,
                         "enabled": indicator.enabled,
                         "description": indicator.description,
-                        "tags": indicator.tags
+                        "tags": indicator.tags,
+                        "intrabar_eligible": indicator.intrabar_eligible,
+                        "delta_bars": list(indicator.delta_bars),
                     }
                     data["indicators"].append(indicator_data)
                 

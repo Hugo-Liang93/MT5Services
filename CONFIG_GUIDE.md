@@ -78,15 +78,43 @@ Put secrets and machine-specific values in:
 
 The runtime now supports a more opinionated XAUUSD intraday profile:
 
+- `config/app.ini`
+  - shared timeframes now default to `M1,M5,M15,H1`
 - `config/signal.ini`
   - `session_spread_limits`: dynamic spread caps by session
   - `strategy_sessions`: route breakout/trend strategies to London/New York and mean-reversion to Asia/London
+  - `strategy_timeframes`: constrain fast strategies to `M1/M5` and breakout/confirmation strategies to `M5/M15/H1`
   - `circuit_breaker`: auto-trade execution breaker
   - `contract_sizes`: per-symbol sizing inputs
   - `market_structure`: previous-day high/low, Asia range, London open range, compression/expansion context
   - `execution_costs`: block auto-trade when spread consumes too much of the planned stop distance
+- `config/indicators.json`
+  - added fast intraday indicators: `rsi5`, `macd_fast`, `ema21`, `ema55`
+  - disabled demo-volume indicators: `mfi14`, `obv30`
+  - `delta_bars` now emits short-horizon change-rate fields such as `rsi_d3`, `rsi_d5`, `macd_d3`
+- signal defaults
+  - regime thresholds tuned to `ADX 23/18` with `BB 0.8%`
+  - calibrator defaults tuned to `alpha=0.15`, `min_samples=50`, `recency_hours=8`
+  - `soft_regime_enabled = true` enables probability-weighted regime affinity
+  - staged calibration is active: `<50 -> 0.0`, `50-99 -> 0.10`, `100+ -> 0.15`
+  - HTF auto-trade filter is soft: conflict `0.70x`, alignment `1.10x`
 - `config/risk.ini`
   - `allowed_sessions`: final trade execution session guard
+  - `daily_loss_limit_pct`: stop new trades after the configured daily loss threshold
+
+## Phase 4 Runtime Safety
+
+- `config/signal.ini`
+  - `max_concurrent_positions_per_symbol`: signal-driven concurrent position cap per symbol
+  - `session_transition_cooldown_minutes`: session handoff cooldown around `13:00 UTC`
+  - `end_of_day_close_enabled`, `end_of_day_close_hour_utc`, `end_of_day_close_minute_utc`: UTC end-of-day closeout handled by `PositionManager`
+  - `market_structure_m1_lookback_bars`: shorter lookback for M1 market-structure analysis
+- `config/risk.ini`
+  - `daily_loss_limit_pct`: final pre-trade risk stop, surfaced through trade APIs as `daily_loss_limit`
+- sizing
+  - `src/trading/sizing.py` applies timeframe-specific ATR stop/target defaults for `M1`, `M5`, `M15`, and `H1`
+- monitoring
+  - `GET /signals/monitoring/quality/{symbol}/{timeframe}` exposes regime diagnostics and confirmed-signal quality metrics for one symbol/timeframe pair
 
 ## Verification
 
@@ -94,6 +122,7 @@ The runtime now supports a more opinionated XAUUSD intraday profile:
 curl http://localhost:8808/monitoring/config/effective
 curl http://localhost:8808/monitoring/health
 curl http://localhost:8808/trade/accounts
+curl http://localhost:8808/signals/monitoring/quality/XAUUSD/M5
 ```
 
 `/trade/accounts` returns the current active account profile for this instance, not all configured accounts.

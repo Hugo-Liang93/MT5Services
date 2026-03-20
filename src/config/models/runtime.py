@@ -118,6 +118,7 @@ class RiskConfig(BaseModel):
     max_pending_orders_per_symbol: int | None = None
     max_volume_per_order: float | None = None
     max_volume_per_symbol: float | None = None
+    daily_loss_limit_pct: float | None = None
     require_sl_for_market_orders: bool = False
     require_tp_or_sl_for_market_orders: bool = False
 

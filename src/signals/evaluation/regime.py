@@ -15,24 +15,25 @@
 
 ## Regime 分类
 
-  TRENDING  — ADX ≥ 25，方向明确，均线对齐
-  RANGING   — ADX < 20，价格在通道内震荡，没有方向
+  TRENDING  — ADX ≥ 23，方向明确，均线对齐
+  RANGING   — ADX < 18，价格在通道内震荡，没有方向
   BREAKOUT  — 布林带挤压（BB 在 KC 内），或 ADX 突然放量，波动率释放
-  UNCERTAIN — 介于 TRENDING 与 RANGING 之间的过渡状态（20 ≤ ADX < 25）
+  UNCERTAIN — 介于 TRENDING 与 RANGING 之间的过渡状态（18 ≤ ADX < 23）
 
 ## 检测逻辑（优先级从高到低）
 
   1. Keltner-Bollinger Squeeze（bb_upper < kc_upper AND bb_lower > kc_lower）→ BREAKOUT
-  2. ADX ≥ 25 → TRENDING
-  3. ADX < 20：
-       a. BB 宽度 < bb_tight_pct（默认 0.5%）→ BREAKOUT（价格盘整蓄力）
+  2. ADX ≥ 23 → TRENDING
+  3. ADX < 18：
+       a. BB 宽度 < bb_tight_pct（默认 0.8%）→ BREAKOUT（价格盘整蓄力）
        b. 否则 → RANGING
-  4. 20 ≤ ADX < 25 → UNCERTAIN
+  4. 18 ≤ ADX < 23 → UNCERTAIN
   5. 无 ADX 数据 → UNCERTAIN（兜底）
 """
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
 
@@ -48,6 +49,57 @@ class RegimeType(str, Enum):
     RANGING = "ranging"
     BREAKOUT = "breakout"
     UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True)
+class SoftRegimeResult:
+    dominant_regime: RegimeType
+    probabilities: Dict[RegimeType, float]
+    adx: Optional[float] = None
+    bb_width_pct: Optional[float] = None
+    is_kc_bb_squeeze: Optional[bool] = None
+    adx_trending_threshold: float = 23.0
+    adx_ranging_threshold: float = 18.0
+    bb_tight_pct: float = 0.008
+
+    def probability(self, regime: RegimeType) -> float:
+        return float(self.probabilities.get(regime, 0.0))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "dominant_regime": self.dominant_regime.value,
+            "probabilities": {
+                regime.value: float(probability)
+                for regime, probability in self.probabilities.items()
+            },
+            "adx": self.adx,
+            "bb_width_pct": self.bb_width_pct,
+            "is_kc_bb_squeeze": self.is_kc_bb_squeeze,
+            "adx_trending_threshold": self.adx_trending_threshold,
+            "adx_ranging_threshold": self.adx_ranging_threshold,
+            "bb_tight_pct": self.bb_tight_pct,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "SoftRegimeResult":
+        probabilities = payload.get("probabilities", {})
+        normalized = {
+            regime: float(probabilities.get(regime.value, 0.0))
+            for regime in RegimeType
+        }
+        dominant = payload.get("dominant_regime", RegimeType.UNCERTAIN.value)
+        return cls(
+            dominant_regime=RegimeType(str(dominant)),
+            probabilities=normalized,
+            adx=_safe_float(payload.get("adx")),
+            bb_width_pct=_safe_float(payload.get("bb_width_pct")),
+            is_kc_bb_squeeze=payload.get("is_kc_bb_squeeze"),
+            adx_trending_threshold=float(
+                payload.get("adx_trending_threshold", 23.0)
+            ),
+            adx_ranging_threshold=float(payload.get("adx_ranging_threshold", 18.0)),
+            bb_tight_pct=float(payload.get("bb_tight_pct", 0.008)),
+        )
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -68,21 +120,21 @@ class MarketRegimeDetector:
     参数
     ----
     adx_trending_threshold:
-        ADX 超过此值判定为趋势行情（默认 25.0）。
+        ADX 超过此值判定为趋势行情（默认 23.0）。
     adx_ranging_threshold:
-        ADX 低于此值判定为震荡行情（默认 20.0）。
+        ADX 低于此值判定为震荡行情（默认 18.0）。
     bb_tight_pct:
         布林带宽度（(upper-lower)/mid）低于此百分比时，
         即使 ADX 未进入 Squeeze 也视为 BREAKOUT（预突破蓄力）。
-        默认 0.005（0.5%），对黄金 H1 大约对应 ±$10 的极窄通道。
+        默认 0.008（0.8%），更适配黄金日内较高波动。
     """
 
     def __init__(
         self,
         *,
-        adx_trending_threshold: float = 25.0,
-        adx_ranging_threshold: float = 20.0,
-        bb_tight_pct: float = 0.005,
+        adx_trending_threshold: float = 23.0,
+        adx_ranging_threshold: float = 18.0,
+        bb_tight_pct: float = 0.008,
     ) -> None:
         self._adx_trending = adx_trending_threshold
         self._adx_ranging = adx_ranging_threshold
@@ -135,7 +187,7 @@ class MarketRegimeDetector:
                     return RegimeType.BREAKOUT
                 return RegimeType.RANGING
 
-            # 20 ≤ ADX < 25：趋势与震荡之间的过渡区
+            # 18 ≤ ADX < 23：趋势与震荡之间的过渡区
             return RegimeType.UNCERTAIN
 
         # ── 步骤 3：没有 ADX 数据，根据 BB 宽度粗判 ──────────────────
@@ -151,6 +203,89 @@ class MarketRegimeDetector:
 
         return RegimeType.UNCERTAIN
 
+    def detect_soft(self, indicators: Dict[str, Dict[str, Any]]) -> SoftRegimeResult:
+        """返回概率化 Regime 结果，避免阈值边界处的硬跳变。"""
+        bb_upper, bb_lower, bb_mid = self._extract_bb(indicators)
+        kc_upper, kc_lower = self._extract_kc(indicators)
+        adx = self._extract_adx(indicators)
+
+        bb_width_pct: Optional[float] = None
+        if bb_upper is not None and bb_lower is not None and bb_mid and bb_mid > 0:
+            bb_width_pct = (bb_upper - bb_lower) / bb_mid
+
+        is_squeeze: Optional[bool] = None
+        if (
+            bb_upper is not None
+            and bb_lower is not None
+            and kc_upper is not None
+            and kc_lower is not None
+        ):
+            is_squeeze = bb_upper < kc_upper and bb_lower > kc_lower
+
+        scores: Dict[RegimeType, float] = {
+            RegimeType.TRENDING: 0.05,
+            RegimeType.RANGING: 0.05,
+            RegimeType.BREAKOUT: 0.05,
+            RegimeType.UNCERTAIN: 0.05,
+        }
+
+        if adx is None:
+            scores[RegimeType.UNCERTAIN] += 0.75
+        else:
+            span = max(self._adx_trending - self._adx_ranging, 1e-6)
+            midpoint = (self._adx_trending + self._adx_ranging) / 2.0
+            half_span = max(span / 2.0, 1e-6)
+            trend_transition = self._clamp((adx - self._adx_ranging) / span)
+            range_transition = self._clamp((self._adx_trending - adx) / span)
+            uncertain_transition = self._clamp(
+                1.0 - abs(adx - midpoint) / half_span
+            )
+            trend_excess = max(adx - self._adx_trending, 0.0) / max(
+                self._adx_trending, 1.0
+            )
+            range_excess = max(self._adx_ranging - adx, 0.0) / max(
+                self._adx_ranging, 1.0
+            )
+
+            scores[RegimeType.TRENDING] += (
+                0.15 + trend_transition * 0.90 + min(trend_excess * 1.50, 0.50)
+            )
+            scores[RegimeType.RANGING] += (
+                0.15 + range_transition * 0.85 + min(range_excess * 1.20, 0.40)
+            )
+            scores[RegimeType.UNCERTAIN] += 0.10 + uncertain_transition * 1.10
+
+        tightness = 0.0
+        if bb_width_pct is not None and self._bb_tight_pct > 0:
+            tightness = self._clamp((self._bb_tight_pct - bb_width_pct) / self._bb_tight_pct)
+        scores[RegimeType.BREAKOUT] += 0.10 + tightness * 1.00
+
+        if is_squeeze:
+            scores[RegimeType.BREAKOUT] += 2.00
+        elif adx is not None:
+            if adx < self._adx_ranging:
+                scores[RegimeType.BREAKOUT] += tightness * 0.80
+            elif adx < self._adx_trending:
+                scores[RegimeType.BREAKOUT] += 0.20 + tightness * 0.40
+            else:
+                scores[RegimeType.BREAKOUT] += 0.10
+
+        total = sum(scores.values()) or 1.0
+        probabilities = {
+            regime: score / total for regime, score in scores.items()
+        }
+        dominant_regime = max(probabilities, key=probabilities.get)
+        return SoftRegimeResult(
+            dominant_regime=dominant_regime,
+            probabilities=probabilities,
+            adx=adx,
+            bb_width_pct=bb_width_pct,
+            is_kc_bb_squeeze=is_squeeze,
+            adx_trending_threshold=self._adx_trending,
+            adx_ranging_threshold=self._adx_ranging,
+            bb_tight_pct=self._bb_tight_pct,
+        )
+
     def detect_with_detail(
         self, indicators: Dict[str, Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -160,6 +295,7 @@ class MarketRegimeDetector:
         adx = self._extract_adx(indicators)
 
         regime = self.detect(indicators)
+        soft = self.detect_soft(indicators)
 
         bb_width_pct: Optional[float] = None
         if bb_upper is not None and bb_lower is not None and bb_mid and bb_mid > 0:
@@ -176,6 +312,10 @@ class MarketRegimeDetector:
 
         return {
             "regime": regime.value,
+            "soft_regime": soft.dominant_regime.value,
+            "regime_probabilities": {
+                item.value: soft.probability(item) for item in RegimeType
+            },
             "adx": adx,
             "bb_width_pct": bb_width_pct,
             "is_kc_bb_squeeze": is_squeeze,
@@ -226,6 +366,10 @@ class MarketRegimeDetector:
                 if upper is not None and lower is not None:
                     return upper, lower
         return None, None
+
+    @staticmethod
+    def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+        return max(low, min(high, value))
 
 
 class RegimeTracker:

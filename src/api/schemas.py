@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional, TypeVar, Generic, List, Dict, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class QuoteModel(BaseModel):
@@ -80,7 +80,8 @@ class OrderModel(BaseModel):
 class TradeRequest(BaseModel):
     symbol: str
     volume: float
-    side: str
+    side: Optional[str] = None
+    direction: Optional[str] = None  # alias for side
     order_kind: str = "market"
     price: Optional[float] = None
     sl: Optional[float] = None
@@ -90,6 +91,14 @@ class TradeRequest(BaseModel):
     magic: int = 0
     dry_run: bool = False
     request_id: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_side(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            if not values.get("side") and values.get("direction"):
+                values["side"] = values["direction"]
+        return values
 
 
 class TradePrecheckModel(BaseModel):
@@ -153,8 +162,17 @@ class TradeDispatchRequest(BaseModel):
 class EstimateMarginRequest(BaseModel):
     symbol: str
     volume: float
-    side: str
+    side: Optional[str] = None
+    direction: Optional[str] = None  # alias for side
     price: Optional[float] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_side(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            if not values.get("side") and values.get("direction"):
+                values["side"] = values["direction"]
+        return values
 
 
 class ModifyOrdersRequest(BaseModel):
@@ -427,7 +445,7 @@ class ApiResponse(BaseModel, Generic[T]):
 class SignalEvaluateRequest(BaseModel):
     symbol: str
     timeframe: str
-    strategy: str
+    strategy: Optional[str] = None  # 为空时评估所有策略并返回最优结果
     indicators: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -475,8 +493,11 @@ class SignalExecuteTradeRequest(BaseModel):
 
     The system looks up the signal by signal_id, computes ATR-based SL/TP
     from the stored indicator snapshot, then submits the order via TradingModule.
+
+    dry_run=True 时仅返回计算出的交易参数而不实际下单，方便测试和调试。
     """
 
     signal_id: str
     account_alias: Optional[str] = None
     volume_override: Optional[float] = Field(default=None, gt=0, le=100.0)
+    dry_run: bool = False

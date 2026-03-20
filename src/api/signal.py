@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
@@ -45,24 +45,59 @@ def list_signal_strategies(
     )
 
 
-@router.post("/evaluate", response_model=ApiResponse[SignalDecisionModel])
+@router.post("/evaluate", response_model=ApiResponse[Any])
 def evaluate_signal(
     request: SignalEvaluateRequest,
     service: SignalModule = Depends(get_signal_service),
-) -> ApiResponse[SignalDecisionModel]:
-    decision = service.evaluate(
-        symbol=request.symbol,
-        timeframe=request.timeframe,
-        strategy=request.strategy,
-        indicators=request.indicators or None,
-        metadata=request.metadata,
+) -> ApiResponse[Any]:
+    indicators = request.indicators or None
+    if request.strategy:
+        decision = service.evaluate(
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            strategy=request.strategy,
+            indicators=indicators,
+            metadata=request.metadata,
+        )
+        return ApiResponse.success_response(
+            data=SignalDecisionModel(**decision.to_dict()),
+            metadata={
+                "symbol": request.symbol,
+                "timeframe": request.timeframe,
+                "strategy": request.strategy,
+                "persisted": True,
+            },
+        )
+
+    # strategy 未指定：评估所有策略，按置信度排序返回
+    all_strategies = service.list_strategies()
+    decisions: List[SignalDecisionModel] = []
+    for strategy_name in all_strategies:
+        try:
+            d = service.evaluate(
+                symbol=request.symbol,
+                timeframe=request.timeframe,
+                strategy=strategy_name,
+                indicators=indicators,
+                metadata=request.metadata,
+            )
+            decisions.append(SignalDecisionModel(**d.to_dict()))
+        except Exception:
+            continue
+
+    # 优先返回非 hold 且置信度最高的；全 hold 时返回置信度最高的 hold
+    actionable = [d for d in decisions if d.action in ("buy", "sell")]
+    best = sorted(actionable, key=lambda x: x.confidence, reverse=True) or sorted(
+        decisions, key=lambda x: x.confidence, reverse=True
     )
     return ApiResponse.success_response(
-        data=SignalDecisionModel(**decision.to_dict()),
+        data=best,
         metadata={
             "symbol": request.symbol,
             "timeframe": request.timeframe,
-            "strategy": request.strategy,
+            "strategy": "all",
+            "total": len(decisions),
+            "actionable": len(actionable),
             "persisted": True,
         },
     )
@@ -102,6 +137,59 @@ def signal_summary(
     return ApiResponse.success_response(
         data=[SignalSummaryModel(**row) for row in rows],
         metadata={"hours": hours, "count": len(rows), "scope": scope},
+    )
+
+
+@router.get("/best", response_model=ApiResponse[List[Dict[str, Any]]])
+def best_signals_per_timeframe(
+    symbol: Optional[str] = Query(default=None),
+    hours: int = Query(default=4, ge=1, le=24 * 7),
+    min_confidence: float = Query(default=0.3, ge=0.0, le=1.0),
+    service: SignalModule = Depends(get_signal_service),
+) -> ApiResponse[List[Dict[str, Any]]]:
+    """返回每个 (symbol, timeframe) 组合中置信度最高的可执行信号（buy/sell）。
+
+    适用场景：快速概览当前哪个时间框架有明确方向性信号，避免遍历全量 summary。
+    """
+    rows = service.recent_signals(
+        symbol=symbol,
+        action=None,
+        scope="confirmed",
+        limit=2000,
+    )
+    from datetime import timedelta
+
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        action = row.get("action", "")
+        if action not in ("buy", "sell"):
+            continue
+        confidence = row.get("confidence", 0.0) or 0.0
+        if confidence < min_confidence:
+            continue
+        ts_raw = row.get("timestamp") or row.get("created_at") or ""
+        try:
+            ts = datetime.fromisoformat(str(ts_raw))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts < cutoff:
+                continue
+        except (ValueError, TypeError):
+            continue
+        key = f"{row.get('symbol')}/{row.get('timeframe')}"
+        existing = buckets.get(key)
+        if existing is None or confidence > (existing.get("confidence") or 0.0):
+            buckets[key] = row
+    result = sorted(buckets.values(), key=lambda x: x.get("confidence", 0.0), reverse=True)
+    return ApiResponse.success_response(
+        data=result,
+        metadata={
+            "symbol": symbol,
+            "hours": hours,
+            "min_confidence": min_confidence,
+            "count": len(result),
+        },
     )
 
 
@@ -164,6 +252,37 @@ def signal_diagnostics_aggregate_summary(
 ) -> ApiResponse[Dict[str, Any]]:
     report = service.diagnostics_aggregate_summary(hours=hours, scope=scope)
     return ApiResponse.success_response(data=report)
+
+
+@router.get(
+    "/monitoring/quality/{symbol}/{timeframe}",
+    response_model=ApiResponse[Dict[str, Any]],
+)
+def signal_monitoring_quality(
+    symbol: str,
+    timeframe: str,
+    limit: int = Query(default=1000, ge=100, le=5000),
+    service: SignalModule = Depends(get_signal_service),
+    runtime: SignalRuntime = Depends(get_signal_runtime),
+) -> ApiResponse[Dict[str, Any]]:
+    return ApiResponse.success_response(
+        data={
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "regime": service.regime_report(
+                symbol=symbol,
+                timeframe=timeframe,
+                runtime=runtime,
+            ),
+            "quality": service.daily_quality_report(
+                symbol=symbol,
+                timeframe=timeframe,
+                scope="confirmed",
+                limit=limit,
+            ),
+        },
+        metadata={"symbol": symbol, "timeframe": timeframe, "limit": limit},
+    )
 
 
 @router.get(

@@ -7,7 +7,9 @@
   base.py          — SignalStrategy 协议 + 工具函数
   trend.py         — 趋势跟踪策略（SMA、EMA Ribbon、MACD、Supertrend）
   mean_reversion.py— 均值回归策略（RSI、StochRSI）
-  breakout.py      — 突破策略（Bollinger、Keltner-BB Squeeze、Donchian、MTF）
+  breakout.py      — 突破策略（Bollinger、Keltner-BB Squeeze、Donchian、假突破、MTF）
+  session.py       — 时段偏置趋势策略
+  price_action.py  — K线形态反转策略
 """
 
 from .adapters import IndicatorSource, UnifiedIndicatorSourceAdapter
@@ -15,12 +17,16 @@ from .base import SignalStrategy, _resolve_indicator_value
 from .breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
+    FakeBreakoutDetector,
     KeltnerBollingerSqueezeStrategy,
     MultiTimeframeConfirmStrategy,
+    SqueezeReleaseFollow,
 )
 from .composite import CombineMode, CompositeSignalStrategy
 from .htf_cache import HTFStateCache
 from .mean_reversion import RsiReversionStrategy, StochRsiStrategy
+from .price_action import PriceActionReversal
+from .session import SessionMomentumBias
 from .trend import EmaRibbonStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
 
 __all__ = [
@@ -29,15 +35,19 @@ __all__ = [
     "CompositeSignalStrategy",
     "DonchianBreakoutStrategy",
     "EmaRibbonStrategy",
+    "FakeBreakoutDetector",
     "HTFStateCache",
     "IndicatorSource",
     "KeltnerBollingerSqueezeStrategy",
     "MacdMomentumStrategy",
     "MultiTimeframeConfirmStrategy",
+    "PriceActionReversal",
     "RsiReversionStrategy",
+    "SessionMomentumBias",
     "SignalStrategy",
     "SmaTrendStrategy",
     "StochRsiStrategy",
+    "SqueezeReleaseFollow",
     "SupertrendStrategy",
     "UnifiedIndicatorSourceAdapter",
 ]

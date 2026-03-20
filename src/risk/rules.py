@@ -23,6 +23,9 @@ class EconomicCalendarRuleProvider(Protocol):
 
 
 class AccountStateProvider(Protocol):
+    def account_info(self):
+        ...
+
     def positions(self, symbol: Optional[str] = None):
         ...
 
@@ -181,6 +184,128 @@ class ProtectionRule(RiskRule):
                 )
             )
         return checks
+
+
+class DailyLossLimitRule(RiskRule):
+    name = "daily_loss_limit"
+
+    def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
+        if not context.risk_settings.enabled or context.account_provider is None:
+            return []
+        limit_pct = context.risk_settings.daily_loss_limit_pct
+        if limit_pct is None or float(limit_pct) <= 0:
+            return []
+
+        try:
+            account_info = context.account_provider.account_info()
+        except Exception as exc:
+            return [
+                RiskCheckResult(
+                    name=self.name,
+                    action="warn",
+                    reason="Daily loss limit unavailable because account info could not be loaded",
+                    details={"error": str(exc)},
+                )
+            ]
+
+        details = self._resolve_loss_details(context, account_info)
+        loss_pct = details.get("loss_pct")
+        if loss_pct is None or float(loss_pct) < float(limit_pct):
+            return []
+
+        return [
+            RiskCheckResult(
+                name=self.name,
+                action="block",
+                reason="daily_loss_limit_reached",
+                details={
+                    **details,
+                    "limit_pct": float(limit_pct),
+                },
+            )
+        ]
+
+    @staticmethod
+    def _numeric(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _resolve_loss_details(
+        self,
+        context: RuleContext,
+        account_info: Any,
+    ) -> Dict[str, Any]:
+        metadata = dict(context.intent.metadata or {})
+        explicit_loss_pct = self._numeric(metadata.get("daily_loss_pct"))
+        if explicit_loss_pct is not None:
+            return {
+                "loss_pct": max(explicit_loss_pct, 0.0),
+                "source": "intent_metadata.daily_loss_pct",
+            }
+
+        if isinstance(account_info, dict):
+            balance = self._numeric(account_info.get("balance"))
+            equity = self._numeric(account_info.get("equity"))
+            start_balance = self._numeric(
+                account_info.get("day_start_balance") or metadata.get("day_start_balance")
+            )
+            daily_pnl = self._numeric(
+                account_info.get("daily_realized_pnl")
+                or account_info.get("daily_pnl")
+                or metadata.get("daily_realized_pnl")
+                or metadata.get("daily_pnl")
+            )
+        else:
+            balance = self._numeric(getattr(account_info, "balance", None))
+            equity = self._numeric(getattr(account_info, "equity", None))
+            start_balance = self._numeric(
+                getattr(account_info, "day_start_balance", None)
+                or metadata.get("day_start_balance")
+            )
+            daily_pnl = self._numeric(
+                getattr(account_info, "daily_realized_pnl", None)
+                or getattr(account_info, "daily_pnl", None)
+                or metadata.get("daily_realized_pnl")
+                or metadata.get("daily_pnl")
+            )
+
+        if start_balance and daily_pnl is not None and start_balance > 0:
+            loss_pct = max(0.0, (-daily_pnl / start_balance) * 100.0)
+            return {
+                "loss_pct": round(loss_pct, 4),
+                "source": "daily_pnl_vs_day_start_balance",
+                "day_start_balance": start_balance,
+                "daily_pnl": daily_pnl,
+            }
+
+        if start_balance and equity is not None and start_balance > 0:
+            loss_pct = max(0.0, ((start_balance - equity) / start_balance) * 100.0)
+            return {
+                "loss_pct": round(loss_pct, 4),
+                "source": "equity_vs_day_start_balance",
+                "day_start_balance": start_balance,
+                "equity": equity,
+            }
+
+        if balance is not None and equity is not None and balance > 0:
+            # Conservative fallback: treat current floating drawdown vs balance
+            # as the daily-loss proxy when no day-start balance is available.
+            loss_pct = max(0.0, ((balance - equity) / balance) * 100.0)
+            return {
+                "loss_pct": round(loss_pct, 4),
+                "source": "equity_balance_drawdown_proxy",
+                "balance": balance,
+                "equity": equity,
+            }
+
+        return {
+            "loss_pct": None,
+            "source": "unavailable",
+        }
 
 
 class SessionWindowRule(RiskRule):

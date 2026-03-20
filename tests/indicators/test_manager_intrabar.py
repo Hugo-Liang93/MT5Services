@@ -101,11 +101,24 @@ def test_intrabar_eligible_cache_excludes_volume_indicators():
     assert "obv30" not in eligible, "obv30 should be intrabar-ineligible"
     assert "vwap30" not in eligible, "vwap30 should be intrabar-ineligible"
 
-    # Price-based indicators must be included
+    # 默认 fallback（无 override 时）：indicators.json 无 intrabar_eligible 字段，
+    # 配置模型默认 True → 所有 enabled 指标都在 eligible 中。
+    # 这是 standalone 场景的 backward-compatible 行为。
     assert "sma20" in eligible
     assert "ema50" in eligible
     assert "rsi14" in eligible
-    assert "macd" in eligible
+
+
+def test_intrabar_eligible_cache_uses_strategy_override():
+    """set_intrabar_eligible_override() 注入策略推导集合后，只有该集合里的指标 eligible。"""
+    mgr, _ = _make_manager(_make_bars())
+    # 模拟 factory 注入策略推导结果：只有 rsi14 和 boll20 需要 intrabar
+    mgr.set_intrabar_eligible_override(frozenset(["rsi14", "boll20"]))
+    eligible = mgr._get_intrabar_eligible_names()
+    assert eligible == frozenset(["rsi14", "boll20"])
+    assert "sma20" not in eligible
+    assert "ema50" not in eligible
+    assert "macd" not in eligible
 
 
 def test_intrabar_eligible_cache_is_frozenset():
@@ -164,7 +177,10 @@ def test_process_intrabar_only_runs_eligible_indicators():
         assert "mfi14" not in name_list, "mfi14 must not be computed during intrabar"
         assert "obv30" not in name_list, "obv30 must not be computed during intrabar"
         assert "vwap30" not in name_list, "vwap30 must not be computed during intrabar"
-        assert "sma20" in name_list or "ema50" in name_list, "price indicators must be included"
+        # 默认 fallback（无 override）下所有 enabled 指标都 eligible，
+        # 因此 sma20/ema50 应该出现
+        assert "sma20" in name_list or "ema50" in name_list, \
+            "default fallback: all enabled indicators should be eligible"
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +190,11 @@ def test_process_intrabar_only_runs_eligible_indicators():
 def test_get_indicator_info_exposes_intrabar_eligible():
     mgr, _ = _make_manager(_make_bars())
 
+    # indicators.json 中不再声明 intrabar_eligible → 配置模型默认 True。
+    # 实际运行时由 set_intrabar_eligible_override() 控制，此处仅测试配置层面的默认值。
     info_mfi = mgr.get_indicator_info("mfi14")
     assert info_mfi is not None
-    assert info_mfi["intrabar_eligible"] is False
+    assert info_mfi["intrabar_eligible"] is True  # 配置默认 True（但 enabled=false，运行时不参与）
 
     info_sma = mgr.get_indicator_info("sma20")
     assert info_sma is not None
@@ -189,8 +207,40 @@ def test_list_indicators_includes_intrabar_eligible():
     infos = mgr.list_indicators()
     names_with_field = {info["name"]: info.get("intrabar_eligible") for info in infos}
 
-    assert names_with_field.get("vwap30") is False
+    # indicators.json 不再声明 intrabar_eligible → 配置模型全部默认 True。
+    # 运行时实际控制在 set_intrabar_eligible_override()，此处仅测试 list 输出的配置默认值。
+    assert names_with_field.get("vwap30") is True   # 配置默认 True（enabled=false 另行处理）
     assert names_with_field.get("ema50") is True
+    assert names_with_field.get("rsi14") is True
+
+
+def test_apply_delta_metrics_uses_historical_indicator_values():
+    bars = _make_bars(8)
+    bars[-4].indicators = {"rsi14": {"rsi": 40.0}}
+    mgr, _ = _make_manager(bars)
+
+    enriched = mgr._apply_delta_metrics(
+        "XAUUSD",
+        "M5",
+        {"rsi14": {"rsi": 55.0}},
+        bar_time=bars[-1].time,
+    )
+
+    assert enriched["rsi14"]["rsi_d3"] == 15.0
+
+
+def test_apply_delta_metrics_skips_missing_history_gracefully():
+    bars = _make_bars(2)
+    mgr, _ = _make_manager(bars)
+
+    enriched = mgr._apply_delta_metrics(
+        "XAUUSD",
+        "M5",
+        {"rsi14": {"rsi": 55.0}},
+        bar_time=bars[-1].time,
+    )
+
+    assert "rsi_d3" not in enriched["rsi14"]
 
 
 # ---------------------------------------------------------------------------

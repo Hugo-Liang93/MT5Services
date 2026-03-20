@@ -3,8 +3,10 @@
 """
 
 from fastapi import APIRouter, HTTPException
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 import logging
+
+from src.api.schemas import ApiResponse
 
 from src.api.deps import (
     get_economic_calendar_service,
@@ -327,17 +329,12 @@ async def get_event_stats() -> Dict[str, Any]:
 
 
 @router.get("/queues", summary="获取队列状态")
-async def get_queue_stats() -> Dict[str, Any]:
-    """
-    获取队列状态
-    
-    Returns:
-        队列状态信息
-    """
+async def get_queue_stats() -> ApiResponse[Dict[str, Any]]:
+    """获取队列状态"""
     try:
         ingestor = get_ingestor()
         stats = ingestor.queue_stats()
-        return stats
+        return ApiResponse.success_response(data=stats or {})
     except Exception as e:
         logger.error(f"Failed to get queue stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -521,7 +518,7 @@ async def get_trading_trigger_methods() -> Dict[str, Any]:
 
 
 @router.get("/config/effective", summary="Get effective runtime config")
-async def get_effective_runtime_config() -> Dict[str, Any]:
+async def get_effective_runtime_config() -> ApiResponse[Dict[str, Any]]:
     try:
         indicator_manager = get_indicator_manager()
         snapshot = get_effective_config_snapshot()
@@ -537,7 +534,7 @@ async def get_effective_runtime_config() -> Dict[str, Any]:
                 indicator_manager.config.pipeline.cache_strategy
             ),
         }
-        return snapshot
+        return ApiResponse.success_response(data=snapshot)
     except Exception as e:
         logger.error(f"Failed to get effective runtime config: {e}")
         raise HTTPException(status_code=500, detail=str(e))

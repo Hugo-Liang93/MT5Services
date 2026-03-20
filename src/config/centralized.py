@@ -247,7 +247,11 @@ class CentralizedConfig:
         ):
             if str(risk_config.get(optional_int_key, "")).strip() == "":
                 risk_config[optional_int_key] = None
-        for optional_float_key in ("max_volume_per_order", "max_volume_per_symbol"):
+        for optional_float_key in (
+            "max_volume_per_order",
+            "max_volume_per_symbol",
+            "daily_loss_limit_pct",
+        ):
             if str(risk_config.get(optional_float_key, "")).strip() == "":
                 risk_config[optional_float_key] = None
 

@@ -52,6 +52,7 @@ def get_signal_config() -> SignalConfig:
     strategy_timeframes_section = dict(merged.get("strategy_timeframes", {}))
     execution_costs_section = dict(merged.get("execution_costs", {}))
     market_structure_section = dict(merged.get("market_structure", {}))
+    safety_section = dict(merged.get("safety", {}))
     trade_triggers_section = dict(merged.get("trade_triggers", {}))
     voting_groups_section = dict(merged.get("voting_groups", {}))
     standalone_override_section = dict(merged.get("standalone_override", {}))
@@ -131,6 +132,7 @@ def get_signal_config() -> SignalConfig:
         **circuit_breaker_section,
         **execution_costs_section,
         **market_structure_section,
+        **safety_section,
         "contract_size_map": _normalize_float_map(
             contract_sizes_section,
             key_transform=lambda value: value.upper(),

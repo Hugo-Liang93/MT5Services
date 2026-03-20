@@ -8,6 +8,7 @@ from src.signals.contracts import normalize_session_name
 from src.signals.execution.filters import (
     EconomicEventFilter,
     SessionFilter,
+    SessionTransitionFilter,
     SignalFilterChain,
     SpreadFilter,
 )
@@ -45,6 +46,9 @@ def build_signal_filter_chain(signal_config, economic_calendar_service) -> Signa
                 if session.strip()
             )
         ),
+        session_transition_filter=SessionTransitionFilter(
+            cooldown_minutes=signal_config.session_transition_cooldown_minutes,
+        ),
         spread_filter=SpreadFilter(
             max_spread_points=signal_config.max_spread_points,
             session_max_spread_points=dict(signal_config.session_spread_limits),
@@ -71,6 +75,7 @@ def build_executor_config(signal_config) -> ExecutorConfig:
         enabled=signal_config.auto_trade_enabled,
         min_confidence=signal_config.auto_trade_min_confidence,
         require_armed=signal_config.auto_trade_require_armed,
+        max_concurrent_positions_per_symbol=signal_config.max_concurrent_positions_per_symbol,
         risk_percent=signal_config.risk_percent_per_trade,
         sl_atr_multiplier=signal_config.sl_atr_multiplier,
         tp_atr_multiplier=signal_config.tp_atr_multiplier,
@@ -152,6 +157,7 @@ def build_signal_components(
         config=MarketStructureConfig(
             enabled=signal_config.market_structure_enabled,
             lookback_bars=signal_config.market_structure_lookback_bars,
+            m1_lookback_bars=signal_config.market_structure_m1_lookback_bars,
             open_range_minutes=signal_config.market_structure_open_range_minutes,
             compression_window_bars=signal_config.market_structure_compression_window_bars,
             compression_reference_bars=signal_config.market_structure_reference_window_bars,
@@ -159,16 +165,18 @@ def build_signal_components(
     )
     calibrator = ConfidenceCalibrator(
         fetch_winrates_fn=storage_writer.db.fetch_winrates,
-        alpha=0.30,
+        alpha=0.15,
         baseline_win_rate=0.50,
         max_boost=1.30,
-        min_samples=10,
+        min_samples=50,
         refresh_interval_seconds=900,
+        recency_hours=8,
     )
     signal_module = SignalModule(
         indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
         repository=TimescaleSignalRepository(storage_writer.db),
         calibrator=calibrator,
+        soft_regime_enabled=signal_config.soft_regime_enabled,
     )
 
     # 根据当前实际配置的时间框架决定 LTF→HTF 映射。
@@ -184,6 +192,12 @@ def build_signal_components(
     htf_map = {"M1": m1_htf} if m1_htf else {}
     htf_cache = HTFStateCache(htf_map=htf_map if htf_map else None)
     register_all_strategies(signal_module, htf_cache)
+    # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar eligible 集合，
+    # 注入到 indicator_manager。这是 intrabar 指标集合的唯一来源，
+    # indicators.json 中不再需要 intrabar_eligible 字段。
+    indicator_manager.set_intrabar_eligible_override(
+        signal_module.intrabar_required_indicators()
+    )
     indicator_manager.set_priority_indicator_groups(
         signal_module.required_indicator_groups()
     )
@@ -211,6 +225,9 @@ def build_signal_components(
         trading_module=trade_module,
         trailing_atr_multiplier=signal_config.trailing_atr_multiplier,
         breakeven_atr_threshold=signal_config.breakeven_atr_threshold,
+        end_of_day_close_enabled=signal_config.end_of_day_close_enabled,
+        end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
+        end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
     )
     persist_execution_fn = getattr(storage_writer.db, "write_auto_executions", None)
     trade_executor = TradeExecutor(
@@ -261,6 +278,7 @@ def register_signal_hot_reload(
             market_structure_analyzer.config = MarketStructureConfig(
                 enabled=signal_config.market_structure_enabled,
                 lookback_bars=signal_config.market_structure_lookback_bars,
+                m1_lookback_bars=signal_config.market_structure_m1_lookback_bars,
                 open_range_minutes=signal_config.market_structure_open_range_minutes,
                 compression_window_bars=signal_config.market_structure_compression_window_bars,
                 compression_reference_bars=signal_config.market_structure_reference_window_bars,

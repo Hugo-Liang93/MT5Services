@@ -128,10 +128,44 @@ class EconomicEventFilter:
 
 
 @dataclass
+class SessionTransitionFilter:
+    """Suppress signal evaluation around major session handoff windows."""
+
+    cooldown_minutes: int = 15
+    transition_schedule_utc: dict[str, int] = field(
+        default_factory=lambda: {"london_to_new_york": 13 * 60}
+    )
+
+    def active_transition(self, utc_now: Optional[datetime] = None) -> Optional[str]:
+        if self.cooldown_minutes <= 0:
+            return None
+        current = utc_now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        else:
+            current = current.astimezone(timezone.utc)
+        current_minute = (
+            current.hour * 60
+            + current.minute
+            + (current.second / 60.0)
+        )
+        for name, center_minute in self.transition_schedule_utc.items():
+            if abs(current_minute - float(center_minute)) <= float(
+                self.cooldown_minutes
+            ):
+                return name
+        return None
+
+    def is_safe(self, utc_now: Optional[datetime] = None) -> bool:
+        return self.active_transition(utc_now) is None
+
+
+@dataclass
 class SignalFilterChain:
     """Composite filter that runs all pre-evaluation checks."""
 
     session_filter: Optional[SessionFilter] = None
+    session_transition_filter: Optional[SessionTransitionFilter] = None
     spread_filter: Optional[SpreadFilter] = None
     economic_filter: Optional[EconomicEventFilter] = None
 
@@ -151,6 +185,13 @@ class SignalFilterChain:
         if self.session_filter and not self.session_filter.is_active_session(utc_now):
             sessions = sessions or self.session_filter.current_sessions(utc_now)
             return False, f"outside_allowed_sessions:{','.join(sessions)}"
+
+        if (
+            self.session_transition_filter
+            and not self.session_transition_filter.is_safe(utc_now)
+        ):
+            transition_name = self.session_transition_filter.active_transition(utc_now)
+            return False, f"session_transition_cooldown:{transition_name}"
 
         if self.spread_filter and not self.spread_filter.is_spread_acceptable(
             spread_points,
