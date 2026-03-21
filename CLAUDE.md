@@ -736,7 +736,9 @@ raw_confidence（策略规则输出）
 **日内策略绩效追踪**（`StrategyPerformanceTracker`，`src/signals/evaluation/performance.py`）：
 - 纯内存的日内实时反馈层，接收 OutcomeTracker / PositionManager 的结果回调
 - 维护 per-strategy 滚动统计（wins, losses, streak, PnL）
-- 提供 `get_multiplier(strategy) → [min_multiplier, max_multiplier]`
+- 维护 per-(strategy, regime) 维度统计，支持按当前 regime 查询乘数
+- 提供 `get_multiplier(strategy, regime=None) → [min_multiplier, max_multiplier]`
+- regime 维度样本充足时：regime 0.7 + 全局 0.3 混合；不足时按比例平滑过渡
 - Session 边界自动重置
 - 乘数基于三因素加权：session_win_rate vs baseline、streak 连胜/连败、profit_factor（avg_win / avg_loss）
 - 当单策略样本不足（< `category_fallback_min_samples`）时，回退到同类策略的聚合绩效（Category 聚合）

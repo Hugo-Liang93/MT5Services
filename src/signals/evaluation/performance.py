@@ -11,7 +11,8 @@ ConfidenceCalibrator 需要 DB + 50 个历史样本才能生效，
 StrategyPerformanceTracker 是纯内存的日内实时反馈层：
   - 接收 OutcomeTracker / PositionManager 的结果回调
   - 维护 per-strategy 滚动统计（wins, losses, streak, PnL）
-  - 提供 get_multiplier(strategy) → [min_multiplier, max_multiplier]
+  - 维护 per-(strategy, regime) 维度统计，支持按当前 regime 查询乘数
+  - 提供 get_multiplier(strategy, regime=None) → [min_multiplier, max_multiplier]
   - Session 边界自动重置
 
 ## 与 ConfidenceCalibrator 的关系
@@ -185,6 +186,8 @@ class StrategyPerformanceTracker:
         self._lock = threading.RLock()
         # per-strategy stats
         self._stats: Dict[str, _StrategyStats] = {}
+        # per-(strategy, regime) stats — regime 维度的细分统计
+        self._regime_stats: Dict[Tuple[str, str], _StrategyStats] = {}
         # per-category aggregate stats
         self._category_stats: Dict[str, _StrategyStats] = {}
         self._session_start_at: float = time.monotonic()
@@ -222,7 +225,7 @@ class StrategyPerformanceTracker:
         won: 是否盈利
         pnl: 盈亏金额（可选，用于 profit_factor 计算）
         action: buy/sell（预留，当前未使用）
-        regime: 当前市场 regime（预留，当前未使用）
+        regime: 信号发出时的市场 regime（用于 per-regime 维度统计）
         """
         if not self._config.enabled:
             return
@@ -231,6 +234,14 @@ class StrategyPerformanceTracker:
             # 按策略记录
             stats = self._stats.setdefault(strategy, _StrategyStats())
             stats.record(won, pnl)
+
+            # 按 (strategy, regime) 记录
+            if regime:
+                regime_key = (strategy, regime)
+                regime_stats = self._regime_stats.setdefault(
+                    regime_key, _StrategyStats()
+                )
+                regime_stats.record(won, pnl)
 
             # 按分类聚合
             category = self._strategy_categories.get(strategy, "unknown")
@@ -243,29 +254,79 @@ class StrategyPerformanceTracker:
     # Multiplier calculation
     # ------------------------------------------------------------------
 
-    def get_multiplier(self, strategy: str) -> float:
+    def get_multiplier(
+        self, strategy: str, *, regime: Optional[str] = None
+    ) -> float:
         """返回该策略的日内绩效乘数 [min_multiplier, max_multiplier]。
 
         未启用或无数据时返回 1.0（无影响）。
+
+        当传入 regime 时，优先使用 per-(strategy, regime) 维度的统计数据。
+        若 regime 维度样本不足，与全局策略统计混合，避免稀疏数据下的过拟合。
         """
         if not self._config.enabled:
             return 1.0
 
         with self._lock:
+            # 优先尝试 regime 维度统计
+            regime_mult = self._regime_aware_multiplier(strategy, regime)
+            if regime_mult is not None:
+                return regime_mult
+
+            # 回退到全局策略统计
             stats = self._stats.get(strategy)
             if stats is None or stats.total == 0:
-                # 尝试 category fallback
                 return self._category_fallback_multiplier(strategy)
 
             if stats.total < self._config.category_fallback_min_samples:
-                # 样本不足：混合个体和分类数据
                 individual = self._compute_multiplier(stats)
                 cat_mult = self._category_fallback_multiplier(strategy)
-                # 平方根权重（比线性更平滑，避免从 threshold-1 到 threshold 的跳变）
                 weight = (stats.total / self._config.category_fallback_min_samples) ** 0.5
                 return individual * weight + cat_mult * (1.0 - weight)
 
             return self._compute_multiplier(stats)
+
+    def _regime_aware_multiplier(
+        self, strategy: str, regime: Optional[str]
+    ) -> Optional[float]:
+        """尝试使用 regime 维度统计计算乘数。
+
+        返回 None 表示 regime 维度无可用数据，调用者应回退到全局统计。
+
+        混合策略：当 regime 维度样本 >= category_fallback_min_samples 时，
+        以 regime 维度为主（权重 0.7）与全局统计（权重 0.3）混合，
+        既利用 regime 细分信息，又保留全局统计的稳定性。
+        样本不足时按比例降低 regime 维度的权重。
+        """
+        if not regime:
+            return None
+
+        regime_key = (strategy, regime)
+        regime_stats = self._regime_stats.get(regime_key)
+        if regime_stats is None or regime_stats.total == 0:
+            return None
+
+        global_stats = self._stats.get(strategy)
+        regime_mult = self._compute_multiplier(regime_stats)
+
+        min_samples = self._config.category_fallback_min_samples
+        if regime_stats.total >= min_samples:
+            # regime 维度样本充足：regime 0.7 + global 0.3
+            if global_stats is not None and global_stats.total > 0:
+                global_mult = self._compute_multiplier(global_stats)
+                return regime_mult * 0.7 + global_mult * 0.3
+            return regime_mult
+
+        # regime 维度样本不足：按比例混合
+        # weight 从 0 渐进到 0.7（达到 min_samples 时为 0.7）
+        weight = (regime_stats.total / min_samples) ** 0.5 * 0.7
+        if global_stats is not None and global_stats.total > 0:
+            global_mult = self._compute_multiplier(global_stats)
+            return regime_mult * weight + global_mult * (1.0 - weight)
+
+        # 无全局统计，尝试 category fallback
+        cat_mult = self._category_fallback_multiplier(strategy)
+        return regime_mult * weight + cat_mult * (1.0 - weight)
 
     def _category_fallback_multiplier(self, strategy: str) -> float:
         """使用同类策略的聚合绩效计算乘数（冷启动回退）。"""
@@ -328,6 +389,7 @@ class StrategyPerformanceTracker:
         with self._lock:
             summary = self._build_summary_unlocked()
             self._stats.clear()
+            self._regime_stats.clear()
             self._category_stats.clear()
             self._total_recorded = 0
             self._session_start_at = time.monotonic()
@@ -353,13 +415,22 @@ class StrategyPerformanceTracker:
     # ------------------------------------------------------------------
 
     def get_strategy_stats(self, strategy: str) -> Optional[Dict[str, Any]]:
-        """返回单个策略的日内统计快照。"""
+        """返回单个策略的日内统计快照（含 regime 维度细分）。"""
         with self._lock:
             stats = self._stats.get(strategy)
             if stats is None:
                 return None
             result = stats.to_dict()
             result["multiplier"] = self.get_multiplier(strategy)
+            # regime 维度细分
+            regime_breakdown: Dict[str, Dict[str, Any]] = {}
+            for (strat, regime_val), r_stats in self._regime_stats.items():
+                if strat == strategy and r_stats.total > 0:
+                    entry = r_stats.to_dict()
+                    entry["multiplier"] = self._compute_multiplier(r_stats)
+                    regime_breakdown[regime_val] = entry
+            if regime_breakdown:
+                result["regime_breakdown"] = regime_breakdown
             return result
 
     def describe(self) -> Dict[str, Any]:
@@ -374,6 +445,15 @@ class StrategyPerformanceTracker:
             entry = stats.to_dict()
             entry["category"] = self._strategy_categories.get(name, "unknown")
             entry["multiplier"] = self._compute_multiplier(stats)
+            # regime 维度细分
+            regime_breakdown: Dict[str, Dict[str, Any]] = {}
+            for (strat, regime_val), r_stats in self._regime_stats.items():
+                if strat == name and r_stats.total > 0:
+                    r_entry = r_stats.to_dict()
+                    r_entry["multiplier"] = self._compute_multiplier(r_stats)
+                    regime_breakdown[regime_val] = r_entry
+            if regime_breakdown:
+                entry["regime_breakdown"] = regime_breakdown
             strategy_summaries[name] = entry
 
         category_summaries: Dict[str, Dict[str, Any]] = {}
@@ -408,6 +488,15 @@ class StrategyPerformanceTracker:
                 entry["strategy"] = name
                 entry["category"] = self._strategy_categories.get(name, "unknown")
                 entry["multiplier"] = self._compute_multiplier(stats)
+                # regime 维度细分
+                regime_breakdown: Dict[str, Dict[str, Any]] = {}
+                for (strat, regime_val), r_stats in self._regime_stats.items():
+                    if strat == name and r_stats.total > 0:
+                        r_entry = r_stats.to_dict()
+                        r_entry["multiplier"] = self._compute_multiplier(r_stats)
+                        regime_breakdown[regime_val] = r_entry
+                if regime_breakdown:
+                    entry["regime_breakdown"] = regime_breakdown
                 rows.append(entry)
         rows.sort(key=lambda r: r.get("multiplier", 1.0), reverse=True)
         return rows

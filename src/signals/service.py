@@ -285,7 +285,9 @@ class SignalModule:
         # performance_tracker=None（默认）时此步跳过。
         perf_multiplier = 1.0
         if self._performance_tracker is not None and decision.action in ("buy", "sell"):
-            perf_multiplier = self._performance_tracker.get_multiplier(decision.strategy)
+            perf_multiplier = self._performance_tracker.get_multiplier(
+                decision.strategy, regime=regime.value,
+            )
             adjusted_confidence *= perf_multiplier
         # ── 置信度校准（历史胜率反馈层）────────────────────────────────
         # 在 Regime 亲和度修正之后，再根据该策略 (action, regime) 的历史胜率
