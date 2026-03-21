@@ -63,6 +63,12 @@ class SignalConfig(BaseModel):
     perf_tracker_category_fallback_min_samples: int = 3
     perf_tracker_session_reset_interval_hours: int = 0
 
+    # ── HTF Cache ──
+    htf_cache_max_age_seconds: int = 14400
+    # ── Signal Quality Tracker ──
+    signal_quality_bars_to_evaluate: int = 5
+    signal_quality_max_pending: int = 500
+
     market_structure_enabled: bool = True
     market_structure_lookback_bars: int = 400
     market_structure_m1_lookback_bars: int = 120

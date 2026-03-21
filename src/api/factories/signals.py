@@ -215,7 +215,10 @@ def build_signal_components(
         None,
     )
     htf_map = {"M1": m1_htf} if m1_htf else {}
-    htf_cache = HTFStateCache(htf_map=htf_map if htf_map else None)
+    htf_cache = HTFStateCache(
+        htf_map=htf_map if htf_map else None,
+        max_age_seconds=signal_config.htf_cache_max_age_seconds,
+    )
     register_all_strategies(signal_module, htf_cache)
     # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar 指标集合，
     # 注入到 indicator_manager。
@@ -277,7 +280,8 @@ def build_signal_components(
     # 信号质量追踪器：N bars 后评估信号预测质量（供 Calibrator 长期统计校准）
     signal_quality_tracker = SignalQualityTracker(
         write_fn=storage_writer.db.write_outcome_events,
-        bars_to_evaluate=5,
+        bars_to_evaluate=signal_config.signal_quality_bars_to_evaluate,
+        max_pending=signal_config.signal_quality_max_pending,
         on_quality_fn=performance_tracker.record_outcome,
     )
     signal_quality_tracker.attach(signal_runtime)

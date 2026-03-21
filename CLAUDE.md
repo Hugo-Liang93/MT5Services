@@ -39,7 +39,7 @@ MT5Services/
 │   ├── economic.ini          # 经济日历与 Trade Guard 配置
 │   ├── risk.ini              # 风险限制（仓位数量、SL/TP 要求）
 │   ├── cache.ini             # 运行时内存缓存大小（覆盖 app.ini [limits]）
-│   ├── signal.ini            # 信号模块配置
+│   ├── signal.ini            # 信号模块配置（含 HTF 缓存、信号质量追踪器参数）
 │   ├── indicators.json       # 指标定义与计算流水线
 │   └── composites.json       # 复合策略组合定义
 ├── src/
@@ -154,7 +154,7 @@ code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默
 | `config/economic.ini` | 日历数据源（FRED、TradingEconomics）、Trade Guard 窗口 |
 | `config/risk.ini` | 最大仓位数、SL/TP 要求 |
 | `config/cache.ini` | 运行时内存缓存大小（覆盖 app.ini [limits]，优先级更高） |
-| `config/signal.ini` | 自动交易、仓位大小、过滤条件、状态机参数 |
+| `config/signal.ini` | 自动交易、仓位大小、过滤条件、状态机参数、HTF 缓存 TTL、信号质量追踪器 |
 | `config/indicators.json` | 指标定义、参数、依赖关系、流水线配置 |
 | `config/composites.json` | 复合策略组合定义 |
 
@@ -1058,9 +1058,10 @@ flake8 src/ tests/
 - **CORS**：通配符 origin（`*`）与 `allow_credentials=True` 不兼容（已在 `src/api/__init__.py` 修复）
 - **MT5 Python 绑定**：仅支持 Windows。需要 MT5 的测试必须在 Windows 上运行或使用 Mock
 - **TimescaleDB**：首次启动前需确保 PostgreSQL 已安装 TimescaleDB 扩展
-- **`get_signal_config()` 已知 bug**：`src/config/centralized.py` 中调用了不存在的 `ConfigValidator.validate_model()`，直接调用会抛出 `AttributeError`。信号配置通过兼容层加载，暂不受影响
+- **`get_signal_config()` 已知 bug**：~~`src/config/centralized.py` 中调用了不存在的 `ConfigValidator.validate_model()`~~（已修复：信号配置通过 `src/config/signal.py` 的 `SignalConfig.model_validate()` 正确加载，不再依赖 `ConfigValidator`）
 - **Config snapshot at import time**：`src/api/__init__.py` 在导入时一次性读取 API 配置，修改 `market.ini` 后需重启
-- **HTF cache TTL 不可配置**：当前固定 4 小时，应从 `signal.ini` 读取
+- **HTF cache TTL**：~~当前固定 4 小时~~（已修复：通过 `signal.ini` 的 `[htf_cache] max_age_seconds` 配置，默认 14400 秒）
+- **SignalQualityTracker 参数**：~~bars_to_evaluate / max_pending 硬编码~~（已修复：通过 `signal.ini` 的 `[signal_quality]` section 配置）
 - **Soft Regime feature flag**：`soft_regime_enabled` 默认关闭，启用前建议在 paper trading 验证
 - **模块位置注意**：
   - `SignalRuntime` → `src/signals/orchestration/runtime.py`（不在 `src/signals/runtime.py`）

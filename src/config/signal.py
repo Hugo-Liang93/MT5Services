@@ -57,6 +57,8 @@ def get_signal_config() -> SignalConfig:
     voting_groups_section = dict(merged.get("voting_groups", {}))
     standalone_override_section = dict(merged.get("standalone_override", {}))
     perf_tracker_section = dict(merged.get("performance_tracker", {}))
+    htf_cache_section = dict(merged.get("htf_cache", {}))
+    signal_quality_section = dict(merged.get("signal_quality", {}))
 
     renamed_preview = {
         ("min_preview_confidence" if key == "min_confidence" else key): value
@@ -151,6 +153,14 @@ def get_signal_config() -> SignalConfig:
         **{
             f"perf_tracker_{key}": value
             for key, value in perf_tracker_section.items()
+        },
+        **{
+            f"htf_cache_{key}": value
+            for key, value in htf_cache_section.items()
+        },
+        **{
+            f"signal_quality_{key}": value
+            for key, value in signal_quality_section.items()
         },
     }
     return SignalConfig.model_validate(combined)
