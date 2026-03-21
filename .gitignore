@@ -126,5 +126,4 @@ temp/
 .claude/*
 !.claude/settings.json
 
-# ai md
-.ai/
+# .ai/ 目录保留在版本控制中（项目决策记录、优化计划、审查报告）
