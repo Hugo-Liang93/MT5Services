@@ -26,6 +26,13 @@ from unittest.mock import MagicMock
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
+# 全局递增计数器，确保每个 _make_event 调用产生唯一的 bar_time。
+# Windows 上 datetime.now() 快速连续调用可能返回相同值（~15ms 分辨率），
+# 而 SignalQualityTracker._advance_pending 依赖 bar_time 去重，
+# 相同 bar_time 的事件只推进一次 bars_elapsed。测试中每个事件代表不同 bar，
+# 因此必须保证 bar_time 唯一。
+_event_counter: int = 0
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,11 +53,18 @@ def _make_event(
     use_metadata_close: bool = False,
     indicators_override: Optional[dict] = None,
 ) -> SimpleNamespace:
-    """构建模拟 SignalEvent。"""
+    """构建模拟 SignalEvent。每次调用产生不同 bar_time（模拟不同 bar 收盘）。"""
+    global _event_counter
+    _event_counter += 1
+    # 递增秒数，保证每个事件有不同的 bar_time
+    from datetime import timedelta
+    unique_bar_time = (
+        datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=_event_counter)
+    )
     meta: dict = {
         "signal_state": signal_state,
         "scope": scope,
-        "bar_time": datetime.now(timezone.utc).isoformat(),
+        "bar_time": unique_bar_time.isoformat(),
         "regime": regime,
     }
     if use_metadata_close:
@@ -287,13 +301,16 @@ class TestSignalQualityTrackerClosePriceExtraction:
             bars_to_evaluate=1,
         )
 
+        from datetime import timedelta
+        bar_t1 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        bar_t2 = bar_t1 + timedelta(hours=1)
         event_entry = SimpleNamespace(
             symbol="EURUSD", timeframe="H1", strategy="test",
             action="buy", confidence=0.8, signal_id="e1",
             generated_at=datetime.now(timezone.utc),
             metadata={
                 "signal_state": "confirmed_buy", "scope": "confirmed",
-                "bar_time": datetime.now(timezone.utc).isoformat(),
+                "bar_time": bar_t1.isoformat(),
                 "regime": "trending", "close_price": 1.2000,
             },
             indicators={"boll20": {"close": 1.1000, "bb_mid": 1.0990}},
@@ -304,7 +321,7 @@ class TestSignalQualityTrackerClosePriceExtraction:
             generated_at=datetime.now(timezone.utc),
             metadata={
                 "signal_state": "confirmed_buy", "scope": "confirmed",
-                "bar_time": datetime.now(timezone.utc).isoformat(),
+                "bar_time": bar_t2.isoformat(),
                 "regime": "trending", "close_price": 1.2050,
             },
             indicators={"boll20": {"close": 1.1010, "bb_mid": 1.1000}},
@@ -432,8 +449,8 @@ class TestTradeOutcomeTrackerEdgeCases:
 
         assert len(rows_written) == 0
 
-    def test_close_with_none_price_is_skipped(self):
-        """close_price=None → 跳过评估。"""
+    def test_close_with_none_price_records_unresolved(self):
+        """close_price=None → 记录 unresolved 终态（写入 DB，从 active 移除）。"""
         rows_written: List[Tuple] = []
         tracker = TradeOutcomeTracker(
             write_fn=lambda rows: rows_written.extend(rows),
@@ -447,15 +464,48 @@ class TestTradeOutcomeTrackerEdgeCases:
         pos = SimpleNamespace(signal_id="t-003", symbol="XAUUSD", action="buy")
         tracker.on_position_closed(pos, close_price=None)
 
-        assert len(rows_written) == 0
-        # trade 仍在 active 中（未被消费）
-        assert "t-003" in tracker._active
+        # 写入 DB（unresolved 记录，便于事后审计）
+        assert len(rows_written) == 1
+        row = rows_written[0]
+        assert row[8] is None  # close_price
+        assert row[10] is None  # won
+        assert row[12]["close_source"] == "mt5_missing"
+        # 交易已从 active 移除
+        assert "t-003" not in tracker._active
+        # unresolved 计数增加
+        assert tracker.summary()["unresolved_closes"] == 1
 
     def test_no_signal_id_on_pos_is_skipped(self):
         """仓位没有 signal_id → 跳过。"""
         tracker = TradeOutcomeTracker()
         pos = SimpleNamespace(symbol="XAUUSD", action="buy")  # no signal_id
         tracker.on_position_closed(pos, close_price=2000.0)  # no error
+
+    def test_restore_tracked_position_rehydrates_active_trade(self):
+        tracker = TradeOutcomeTracker()
+
+        tracker.restore_tracked_position(
+            SimpleNamespace(
+                signal_id="restored-1",
+                symbol="XAUUSD",
+                timeframe="M5",
+                strategy="sma_trend",
+                action="buy",
+                entry_price=2001.5,
+                confidence=0.82,
+                regime="trend",
+                opened_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        tracker.on_position_closed(
+            SimpleNamespace(signal_id="restored-1", symbol="XAUUSD", action="buy"),
+            close_price=2005.0,
+        )
+
+        summary = tracker.summary()
+        assert summary["total_evaluated"] == 1
+        assert summary["total_wins"] == 1
+        assert summary["active_trades"] == 0
 
 
 class TestTradeOutcomeTrackerCallback:

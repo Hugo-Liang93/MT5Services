@@ -75,6 +75,7 @@ class TradeOutcomeTracker:
         self._lock = threading.Lock()
         self._total_evaluated: int = 0
         self._total_wins: int = 0
+        self._total_unresolved: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -90,6 +91,8 @@ class TradeOutcomeTracker:
         fill_price: float,
         confidence: float,
         regime: Optional[str] = None,
+        *,
+        opened_at: Optional[datetime] = None,
     ) -> None:
         """TradeExecutor 下单成功后调用，登记活跃交易。"""
         trade = _ActiveTrade(
@@ -101,7 +104,7 @@ class TradeOutcomeTracker:
             confidence=confidence,
             fill_price=fill_price,
             regime=regime,
-            opened_at=datetime.now(timezone.utc),
+            opened_at=opened_at or datetime.now(timezone.utc),
         )
         with self._lock:
             self._active[signal_id] = trade
@@ -116,6 +119,22 @@ class TradeOutcomeTracker:
             signal_id, action, symbol, fill_price,
         )
 
+    def restore_tracked_position(self, pos: Any) -> None:
+        signal_id = str(getattr(pos, "signal_id", "") or "").strip()
+        if not signal_id:
+            return
+        self.on_trade_opened(
+            signal_id=signal_id,
+            symbol=str(getattr(pos, "symbol", "") or ""),
+            timeframe=str(getattr(pos, "timeframe", "") or ""),
+            strategy=str(getattr(pos, "strategy", "") or ""),
+            action=str(getattr(pos, "action", "") or ""),
+            fill_price=float(getattr(pos, "entry_price", 0.0) or 0.0),
+            confidence=float(getattr(pos, "confidence", 0.0) or 0.0),
+            regime=getattr(pos, "regime", None),
+            opened_at=getattr(pos, "opened_at", None),
+        )
+
     def on_position_closed(
         self,
         pos: Any,
@@ -127,19 +146,22 @@ class TradeOutcomeTracker:
         ----
         pos:
             TrackedPosition 实例（含 signal_id, symbol, action）。
+            若 ``pos._close_source`` 存在，作为关仓来源标签。
         close_price:
-            仓位关闭时的实际价格；None 表示无法获取（跳过评估）。
+            仓位关闭时的实际价格；None 表示无法获取（记录为 unresolved）。
         """
-        if close_price is None:
-            return
-        try:
-            close_price_f = float(close_price)
-        except (TypeError, ValueError):
-            return
-
+        close_source: str = getattr(pos, "_close_source", "position_closed") or "position_closed"
         signal_id: str = getattr(pos, "signal_id", "") or ""
         if not signal_id:
             return
+
+        # 解析 close_price
+        close_price_f: Optional[float] = None
+        if close_price is not None:
+            try:
+                close_price_f = float(close_price)
+            except (TypeError, ValueError):
+                close_price_f = None
 
         trade: Optional[_ActiveTrade] = None
         with self._lock:
@@ -148,23 +170,26 @@ class TradeOutcomeTracker:
         if trade is None:
             return
 
-        # 计算盈亏
-        price_change = close_price_f - trade.fill_price
-        if trade.action == "buy":
-            won = price_change > 0
-        elif trade.action == "sell":
-            won = price_change < 0
-        else:
-            won = None
+        # 计算盈亏（close_price 缺失时标记 unresolved）
+        won: Optional[bool] = None
+        price_change: Optional[float] = None
+        if close_price_f is not None:
+            price_change = close_price_f - trade.fill_price
+            if trade.action == "buy":
+                won = price_change > 0
+            elif trade.action == "sell":
+                won = price_change < 0
 
         with self._lock:
-            if won is not None:
+            if close_price_f is None:
+                self._total_unresolved += 1
+            elif won is not None:
                 self._total_evaluated += 1
                 if won:
                     self._total_wins += 1
 
-        # 实时绩效回调
-        if won is not None and self._on_outcome_fn is not None:
+        # 实时绩效回调（仅已解析的交易）
+        if won is not None and price_change is not None and self._on_outcome_fn is not None:
             try:
                 self._on_outcome_fn(
                     trade.strategy, won, price_change,
@@ -177,7 +202,14 @@ class TradeOutcomeTracker:
                     trade.strategy, exc_info=True,
                 )
 
-        # DB 持久化
+        if close_price_f is None:
+            logger.warning(
+                "TradeOutcomeTracker: unresolved close for signal_id=%s %s %s "
+                "(close_price unavailable, source=%s)",
+                signal_id, trade.action, trade.symbol, close_source,
+            )
+
+        # DB 持久化（包括 unresolved，便于事后审计）
         if self._write_fn is not None:
             now = datetime.now(timezone.utc)
             rows: List[Tuple] = [(
@@ -195,7 +227,7 @@ class TradeOutcomeTracker:
                 trade.regime,
                 {
                     "opened_at": trade.opened_at.isoformat(),
-                    "close_source": "position_closed",
+                    "close_source": close_source if close_price_f is not None else "mt5_missing",
                 },
             )]
             try:
@@ -218,4 +250,5 @@ class TradeOutcomeTracker:
                     else None
                 ),
                 "active_trades": len(self._active),
+                "unresolved_closes": self._total_unresolved,
             }
