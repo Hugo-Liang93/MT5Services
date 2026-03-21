@@ -26,6 +26,15 @@ class SessionMomentumBias:
         RegimeType.UNCERTAIN: 0.60,
     }
 
+    def __init__(
+        self,
+        *,
+        london_min_atr_pct: float = 0.00045,
+        other_min_atr_pct: float = 0.00035,
+    ) -> None:
+        self._london_min_atr_pct = london_min_atr_pct
+        self._other_min_atr_pct = other_min_atr_pct
+
     def evaluate(self, context: SignalContext) -> SignalDecision:
         atr, atr_name = _resolve_indicator_value(
             context.indicators, (("atr14", "atr"), ("atr", "atr"))
@@ -114,7 +123,7 @@ class SessionMomentumBias:
                 used_indicators=used or ["atr14", "supertrend14"],
             )
 
-        min_atr_pct = 0.00045 if session == "london" else 0.00035
+        min_atr_pct = self._london_min_atr_pct if session == "london" else self._other_min_atr_pct
         if atr_pct < min_atr_pct:
             return SignalDecision(
                 strategy=self.name,
