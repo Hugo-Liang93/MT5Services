@@ -24,13 +24,14 @@ class VotingGroupConfig:
     strategies: frozenset[str]
     consensus_threshold: float = 0.40
     min_quorum: int = 2
+    min_quorum_ratio: float = 0.0  # > 0 时取 max(min_quorum, ceil(total × ratio))
     disagreement_penalty: float = 0.50
 
 
 @dataclass
 class SignalPolicy:
     min_preview_confidence: float = 0.55
-    min_preview_bar_progress: float = 0.2
+    min_preview_bar_progress: float = 0.15
     min_preview_stable_seconds: float = 15.0
     preview_cooldown_seconds: float = 30.0
     # Minimum wall-clock gap to skip duplicate intrabar snapshots with identical

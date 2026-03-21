@@ -77,11 +77,13 @@ class StrategyVotingEngine:
         *,
         consensus_threshold: float = 0.40,
         min_quorum: int = 2,
+        min_quorum_ratio: float = 0.0,
         disagreement_penalty: float = 0.50,
         group_name: str = "consensus",
     ) -> None:
         self._threshold = consensus_threshold
         self._min_quorum = min_quorum
+        self._min_quorum_ratio = min_quorum_ratio
         self._disagree_penalty = disagreement_penalty
         # group_name 决定投票结果信号的 strategy 字段值。
         # 默认 "consensus"（向后兼容）；命名 voting group 传入各自的 group name。
@@ -153,19 +155,27 @@ class StrategyVotingEngine:
 
         # ── Quorum 检查：非 hold 策略数量 ──────────────────────────────
         non_hold_count = len(buy_strategies) + len(sell_strategies)
-        if non_hold_count < self._min_quorum:
+        effective_quorum = self._min_quorum
+        if self._min_quorum_ratio > 0:
+            import math
+            ratio_quorum = math.ceil(len(decisions) * self._min_quorum_ratio)
+            effective_quorum = max(effective_quorum, ratio_quorum)
+        if non_hold_count < effective_quorum:
             return None
 
         # ── 计算方向比例 ──────────────────────────────────────────────
         buy_score = buy_weight / total_weight
         sell_score = sell_weight / total_weight
 
-        # ── 分歧惩罚 ──────────────────────────────────────────────────
+        # ── 分歧惩罚（平方衰减）───────────────────────────────────────
         # 买卖双方都有权重时，用较小方的比例衡量分歧程度。
         # 分歧因子 ∈ [0, 1]：0 = 纯单方向（无分歧），1 = 完全对等（最大分歧）
         min_side = min(buy_score, sell_score)
         # min_side 最大为 0.5（买卖各半），归一化到 [0,1]
-        disagreement_factor = (min_side / 0.5) * self._disagree_penalty
+        # 使用平方衰减：轻度分歧（0.55 vs 0.45）惩罚较轻，
+        # 重度分歧（0.50 vs 0.50）仍然严厉惩罚
+        raw_disagreement = min_side / 0.5
+        disagreement_factor = (raw_disagreement ** 2) * self._disagree_penalty
 
         # ── 共识判断 ─────────────────────────────────────────────────
         if buy_score >= self._threshold and buy_score > sell_score:

@@ -58,6 +58,7 @@ class SignalModule:
         performance_tracker: Optional[StrategyPerformanceTracker] = None,
         diagnostics_engine: Optional[DiagnosticsEngine] = None,
         soft_regime_enabled: bool = False,
+        confidence_floor: float = 0.10,
     ):
         self.indicator_source = indicator_source
         self.repository = repository
@@ -71,6 +72,7 @@ class SignalModule:
         # None = 不追踪（新部署或未配置时的默认状态）。
         self._performance_tracker: Optional[StrategyPerformanceTracker] = performance_tracker
         self._soft_regime_enabled = bool(soft_regime_enabled)
+        self._confidence_floor = max(0.0, float(confidence_floor))
         self._diagnostics_analyzer: DiagnosticsEngine = (
             diagnostics_engine or SignalDiagnosticsAnalyzer()
         )
@@ -80,7 +82,7 @@ class SignalModule:
             SmaTrendStrategy(),
             MacdMomentumStrategy(),
             # ── 趋势跟踪策略（M1 + H1）──────────────────────────────────────────
-            SupertrendStrategy(adx_threshold=20.0),
+            SupertrendStrategy(),
             EmaRibbonStrategy(),
             HmaCrossStrategy(),
             RocMomentumStrategy(),
@@ -94,7 +96,7 @@ class SignalModule:
             # ── 突破/波动率策略 ──────────────────────────────────────────────────
             BollingerBreakoutStrategy(),
             KeltnerBollingerSqueezeStrategy(),
-            DonchianBreakoutStrategy(adx_min=25.0),
+            DonchianBreakoutStrategy(),
             FakeBreakoutDetector(),
             SqueezeReleaseFollow(),
             # ── 复合策略（多重确认，高精度低频率）────────────────────────────────
@@ -272,12 +274,16 @@ class SignalModule:
                     regime = self._regime_detector.detect(indicator_payload)
             else:
                 regime = self._regime_detector.detect(indicator_payload)
-        # 优先读策略类上的 regime_affinity 属性；缺失时回退到中性值 0.5
-        affinity_map: Dict[RegimeType, float] = getattr(
-            strategy_impl, "regime_affinity", {}
-        )
-        affinity = self._effective_affinity(affinity_map, regime, soft_regime)
-        adjusted_confidence = decision.confidence * affinity
+        # 复用 runtime 预计算的 affinity（避免重复计算）；无预计算则自行计算。
+        pre_computed_affinity = context_metadata.get("_pre_computed_affinity")
+        if pre_computed_affinity is not None:
+            affinity = float(pre_computed_affinity)
+        else:
+            affinity_map: Dict[RegimeType, float] = getattr(
+                strategy_impl, "regime_affinity", {}
+            )
+            affinity = self._effective_affinity(affinity_map, regime, soft_regime)
+        post_affinity = decision.confidence * affinity
         # ── 日内绩效乘数（实时反馈层）────────────────────────────────
         # 在 Regime 亲和度之后、长期校准器之前施加日内绩效乘数。
         # 基于当前 session 的策略表现（win_rate、streak、profit_factor），
@@ -288,30 +294,28 @@ class SignalModule:
             perf_multiplier = self._performance_tracker.get_multiplier(
                 decision.strategy, regime=regime.value,
             )
-            adjusted_confidence *= perf_multiplier
+        post_performance = post_affinity * perf_multiplier
         # ── 置信度校准（历史胜率反馈层）────────────────────────────────
         # 在 Regime 亲和度修正之后，再根据该策略 (action, regime) 的历史胜率
         # 做混合校准，使置信度逐步收敛到与实际盈亏挂钩的值。
         # calibrator=None（默认）时此步跳过，对现有行为零影响。
-        raw_post_affinity = adjusted_confidence
         if self._calibrator is not None and decision.action in ("buy", "sell"):
             calibrated = self._calibrator.calibrate(
                 strategy=decision.strategy,
                 action=decision.action,
-                raw_confidence=raw_post_affinity,
+                raw_confidence=post_performance,
                 regime=regime,
             )
         else:
-            calibrated = raw_post_affinity
+            calibrated = post_performance
 
         # ── 多层压制底线保护 ─────────────────────────────────────────────
         # regime_affinity × session_performance × calibrator 的乘法链可能导致
         # 置信度被过度压制（如 0.80 × 0.70 × 0.60 × 0.90 = 0.30）。
         # 设置底线，确保原始置信度较高的信号不会被完全淹没。
         # 底线仅在原始 confidence > 0 时生效（hold 信号不受影响）。
-        _MIN_CALIBRATED_FLOOR = 0.10
-        if decision.confidence > 0 and calibrated < _MIN_CALIBRATED_FLOOR:
-            calibrated = _MIN_CALIBRATED_FLOOR
+        if decision.confidence > 0 and calibrated < self._confidence_floor:
+            calibrated = self._confidence_floor
 
         decision = dataclasses.replace(
             decision,
@@ -333,7 +337,8 @@ class SignalModule:
                     soft_regime.probability(regime) if soft_regime is not None else 1.0
                 ),
                 "raw_confidence": decision.confidence,  # 原始规则输出
-                "post_affinity_confidence": raw_post_affinity,
+                "post_affinity_confidence": post_affinity,  # 仅 affinity
+                "post_performance_confidence": post_performance,  # affinity + perf
                 "session_performance_multiplier": perf_multiplier,
                 "calibrated": self._calibrator is not None
                 and decision.action in ("buy", "sell"),

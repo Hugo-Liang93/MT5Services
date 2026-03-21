@@ -126,6 +126,37 @@ def get_signal_config() -> SignalConfig:
         if s.strip()
     ]
 
+    # ── Regime 检测阈值 ──────────────────────────────────────────────────
+    regime_detector_section = dict(merged.get("regime_detector", {}))
+
+    # ── 策略级可调参数 [strategy_params] ─────────────────────────────────
+    strategy_params_section = dict(merged.get("strategy_params", {}))
+    strategy_params: dict[str, float] = {}
+    for raw_key, raw_value in strategy_params_section.items():
+        key = str(raw_key).strip()
+        if key:
+            try:
+                strategy_params[key] = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+
+    # ── Regime 亲和度覆盖 [regime_affinity.*] ────────────────────────────
+    regime_affinity_overrides: dict[str, dict[str, float]] = {}
+    for section_name, section_data in merged.items():
+        if not section_name.startswith("regime_affinity."):
+            continue
+        strategy_name = section_name[len("regime_affinity."):]
+        if not strategy_name:
+            continue
+        affinity_map: dict[str, float] = {}
+        for key, value in dict(section_data).items():
+            try:
+                affinity_map[str(key).strip()] = float(value)
+            except (TypeError, ValueError):
+                continue
+        if affinity_map:
+            regime_affinity_overrides[strategy_name] = affinity_map
+
     combined = {
         **signal_section,
         **renamed_preview,
@@ -136,6 +167,12 @@ def get_signal_config() -> SignalConfig:
         **execution_costs_section,
         **market_structure_section,
         **safety_section,
+        **{
+            f"regime_{key}": value
+            for key, value in regime_detector_section.items()
+        },
+        "strategy_params": strategy_params,
+        "regime_affinity_overrides": regime_affinity_overrides,
         "contract_size_map": _normalize_float_map(
             contract_sizes_section,
             key_transform=lambda value: value.upper(),
