@@ -1,7 +1,7 @@
 """指标辅助函数（Indicators Helpers）。
 
 集中处理跨模块共享的指标数据提取逻辑，避免相同代码散落在
-signal_executor.py、outcome_tracker.py、strategies.py 等多处。
+signal_executor.py、signal_quality_tracker.py、strategies.py 等多处。
 
 函数均为无副作用纯函数，可安全并发调用。
 """

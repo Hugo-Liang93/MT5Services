@@ -10,7 +10,8 @@ from src.api.deps import (
     get_htf_cache,
     get_market_service,
     get_market_structure_analyzer,
-    get_outcome_tracker,
+    get_signal_quality_tracker,
+    get_trade_outcome_tracker,
     get_position_manager,
     get_signal_runtime,
     get_signal_service,
@@ -20,7 +21,8 @@ from src.market import MarketDataService
 from src.market_structure import MarketStructureAnalyzer
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.orchestration import SignalRuntime
-from src.trading.outcome_tracker import OutcomeTracker
+from src.trading.signal_quality_tracker import SignalQualityTracker
+from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
 from src.api.schemas import (
     ApiResponse,
@@ -431,7 +433,8 @@ def voting_stats(
 def signal_outcomes_winrate(
     hours: int = Query(default=168, ge=1, le=24 * 90),
     symbol: Optional[str] = Query(default=None),
-    outcome_tracker: OutcomeTracker = Depends(get_outcome_tracker),
+    quality_tracker: SignalQualityTracker = Depends(get_signal_quality_tracker),
+    trade_tracker: TradeOutcomeTracker = Depends(get_trade_outcome_tracker),
     service: SignalModule = Depends(get_signal_service),
 ) -> ApiResponse[list[Dict[str, Any]]]:
     """从数据库查询各策略历史胜率，并附带内存实时统计。"""
@@ -442,7 +445,8 @@ def signal_outcomes_winrate(
             "hours": hours,
             "symbol": symbol,
             "count": len(rows),
-            "live_stats": outcome_tracker.winrate_summary(),
+            "signal_quality_stats": quality_tracker.winrate_summary(),
+            "trade_outcome_stats": trade_tracker.summary(),
         },
     )
 

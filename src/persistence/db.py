@@ -332,6 +332,9 @@ class TimescaleWriter:
     def fetch_winrates(self, **kwargs):
         return self.signal_repo.fetch_winrates(**kwargs)
 
+    def write_trade_outcomes(self, rows, page_size: int = 200) -> None:
+        self.signal_repo.write_trade_outcomes(rows, page_size=page_size)
+
     def fetch_expectancy_stats(self, **kwargs):
         return self.signal_repo.fetch_expectancy_stats(**kwargs)
 

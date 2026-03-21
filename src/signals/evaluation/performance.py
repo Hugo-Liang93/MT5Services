@@ -9,7 +9,7 @@ ConfidenceCalibrator 需要 DB + 50 个历史样本才能生效，
 ## 解决方案
 
 StrategyPerformanceTracker 是纯内存的日内实时反馈层：
-  - 接收 OutcomeTracker / PositionManager 的结果回调
+  - 接收 SignalQualityTracker / TradeOutcomeTracker 的结果回调
   - 维护 per-strategy 滚动统计（wins, losses, streak, PnL）
   - 维护 per-(strategy, regime) 维度统计，支持按当前 regime 查询乘数
   - 提供 get_multiplier(strategy, regime=None) → [min_multiplier, max_multiplier]
@@ -190,6 +190,8 @@ class StrategyPerformanceTracker:
         self._regime_stats: Dict[Tuple[str, str], _StrategyStats] = {}
         # per-category aggregate stats
         self._category_stats: Dict[str, _StrategyStats] = {}
+        # per-strategy trade-only stats（仅来自 source="trade" 的实际交易数据）
+        self._trade_stats: Dict[str, _StrategyStats] = {}
         self._session_start_at: float = time.monotonic()
         self._total_recorded: int = 0
 
@@ -214,10 +216,12 @@ class StrategyPerformanceTracker:
         *,
         action: Optional[str] = None,
         regime: Optional[str] = None,
+        source: str = "signal",
     ) -> None:
         """记录一次策略评估结果。
 
-        由 OutcomeTracker 回调或 PositionManager 关仓时调用。
+        由 SignalQualityTracker（source="signal"）或
+        TradeOutcomeTracker（source="trade"）回调。
 
         参数
         ----
@@ -226,12 +230,13 @@ class StrategyPerformanceTracker:
         pnl: 盈亏金额（可选，用于 profit_factor 计算）
         action: buy/sell（预留，当前未使用）
         regime: 信号发出时的市场 regime（用于 per-regime 维度统计）
+        source: 数据来源 "signal"（信号质量）| "trade"（实际交易）
         """
         if not self._config.enabled:
             return
 
         with self._lock:
-            # 按策略记录
+            # 按策略记录（合并所有 source）
             stats = self._stats.setdefault(strategy, _StrategyStats())
             stats.record(won, pnl)
 
@@ -247,6 +252,11 @@ class StrategyPerformanceTracker:
             category = self._strategy_categories.get(strategy, "unknown")
             cat_stats = self._category_stats.setdefault(category, _StrategyStats())
             cat_stats.record(won, pnl)
+
+            # trade source 单独记录（实际交易数据优先级更高）
+            if source == "trade":
+                trade_stats = self._trade_stats.setdefault(strategy, _StrategyStats())
+                trade_stats.record(won, pnl)
 
             self._total_recorded += 1
 
@@ -391,6 +401,7 @@ class StrategyPerformanceTracker:
             self._stats.clear()
             self._regime_stats.clear()
             self._category_stats.clear()
+            self._trade_stats.clear()
             self._total_recorded = 0
             self._session_start_at = time.monotonic()
         logger.info(
@@ -454,6 +465,10 @@ class StrategyPerformanceTracker:
                     regime_breakdown[regime_val] = r_entry
             if regime_breakdown:
                 entry["regime_breakdown"] = regime_breakdown
+            # 附加 trade source 的独立统计（如有）
+            t_stats = self._trade_stats.get(name)
+            if t_stats is not None and t_stats.total > 0:
+                entry["trade_stats"] = t_stats.to_dict()
             strategy_summaries[name] = entry
 
         category_summaries: Dict[str, Dict[str, Any]] = {}

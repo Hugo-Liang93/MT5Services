@@ -63,7 +63,7 @@ class PositionManager:
         self.end_of_day_close_minute_utc = int(end_of_day_close_minute_utc)
         self._positions: Dict[int, TrackedPosition] = {}
         self._lock = threading.Lock()
-        # O-1: 关仓回调列表，reconcile 检测到仓位关闭时通知下游（如 OutcomeTracker）
+        # O-1: 关仓回调列表，reconcile 检测到仓位关闭时通知下游（如 TradeOutcomeTracker）
         self._close_callbacks: List[Callable[[TrackedPosition, Optional[float]], None]] = []
 
         self._reconcile_thread: Optional[threading.Thread] = None

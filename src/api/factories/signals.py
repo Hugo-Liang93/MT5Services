@@ -25,7 +25,8 @@ from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.strategies.registry import register_all_strategies
 from src.signals.tracking.repository import TimescaleSignalRepository
-from src.trading.outcome_tracker import OutcomeTracker
+from src.trading.signal_quality_tracker import SignalQualityTracker
+from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 
@@ -50,7 +51,8 @@ class SignalComponents:
     signal_module: SignalModule
     signal_runtime: SignalRuntime
     htf_cache: HTFStateCache
-    outcome_tracker: OutcomeTracker
+    signal_quality_tracker: SignalQualityTracker
+    trade_outcome_tracker: TradeOutcomeTracker
     position_manager: PositionManager
     trade_executor: TradeExecutor
     performance_tracker: StrategyPerformanceTracker
@@ -251,6 +253,12 @@ def build_signal_components(
         end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
         end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
     )
+    # 交易结果追踪器：追踪实际执行的交易盈亏（由 TradeExecutor 登记，PositionManager 关仓评估）
+    trade_outcome_tracker = TradeOutcomeTracker(
+        write_fn=storage_writer.db.write_trade_outcomes,
+        on_outcome_fn=performance_tracker.record_outcome,
+    )
+
     persist_execution_fn = getattr(storage_writer.db, "write_auto_executions", None)
     trade_executor = TradeExecutor(
         trading_module=trade_module,
@@ -258,16 +266,21 @@ def build_signal_components(
         position_manager=position_manager,
         htf_cache=htf_cache,
         persist_execution_fn=persist_execution_fn,
+        trade_outcome_tracker=trade_outcome_tracker,
     )
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)
     htf_cache.attach(signal_runtime)
 
-    outcome_tracker = OutcomeTracker(
+    # 接线：PositionManager 关仓时通知 TradeOutcomeTracker
+    position_manager.add_close_callback(trade_outcome_tracker.on_position_closed)
+
+    # 信号质量追踪器：N bars 后评估信号预测质量（供 Calibrator 长期统计校准）
+    signal_quality_tracker = SignalQualityTracker(
         write_fn=storage_writer.db.write_outcome_events,
         bars_to_evaluate=5,
-        on_outcome_fn=performance_tracker.record_outcome,
+        on_quality_fn=performance_tracker.record_outcome,
     )
-    outcome_tracker.attach(signal_runtime)
+    signal_quality_tracker.attach(signal_runtime)
 
     return SignalComponents(
         calibrator=calibrator,
@@ -275,7 +288,8 @@ def build_signal_components(
         signal_module=signal_module,
         signal_runtime=signal_runtime,
         htf_cache=htf_cache,
-        outcome_tracker=outcome_tracker,
+        signal_quality_tracker=signal_quality_tracker,
+        trade_outcome_tracker=trade_outcome_tracker,
         position_manager=position_manager,
         trade_executor=trade_executor,
         performance_tracker=performance_tracker,

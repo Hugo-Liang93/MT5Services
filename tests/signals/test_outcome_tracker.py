@@ -1,6 +1,6 @@
-"""OutcomeTracker 单元测试。
+"""SignalQualityTracker + TradeOutcomeTracker 单元测试。
 
-重点覆盖以下场景：
+## SignalQualityTracker 重点覆盖场景
 1. 趋势行情：连续 confirmed_buy/sell → bars_elapsed 正确推进，不堆积
 2. 普通场景：confirmed_buy 后 N 根非 buy 事件触发评估
 3. confirmed_cancelled 仍然推进计数
@@ -8,6 +8,12 @@
 5. max_pending 上限淘汰机制
 6. close_price 提取路径：metadata 注入（runtime 路径）优先于 indicators 扫描
 7. RSI/MACD/Supertrend 等无 close 字段的策略通过 metadata 获得 close_price
+
+## TradeOutcomeTracker 重点覆盖场景
+8. on_trade_opened 登记 + on_position_closed 评估
+9. 无 signal_id 的仓位被跳过
+10. 未登记的仓位关闭不报错
+11. on_outcome_fn 回调正确触发（含 source="trade"）
 """
 from __future__ import annotations
 
@@ -17,7 +23,8 @@ from types import SimpleNamespace
 from typing import List, Tuple, Optional
 from unittest.mock import MagicMock
 
-from src.trading.outcome_tracker import OutcomeTracker
+from src.trading.signal_quality_tracker import SignalQualityTracker
+from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
 
 # ---------------------------------------------------------------------------
@@ -36,19 +43,10 @@ def _make_event(
     close: float = 1.1000,
     signal_id: str = "sig-001",
     regime: str = "trending",
-    use_metadata_close: bool = False,  # simulate runtime-injected close_price
+    use_metadata_close: bool = False,
     indicators_override: Optional[dict] = None,
 ) -> SimpleNamespace:
-    """构建模拟 SignalEvent。
-
-    Parameters
-    ----------
-    use_metadata_close:
-        True → close 放在 metadata["close_price"]（模拟 runtime 注入路径）；
-        False → close 放在 indicators["sma20"]["close"]（旧路径兜底）。
-    indicators_override:
-        完全替换 indicators dict（用于模拟只有 rsi/macd payload 的场景）。
-    """
+    """构建模拟 SignalEvent。"""
     meta: dict = {
         "signal_state": signal_state,
         "scope": scope,
@@ -77,16 +75,16 @@ def _make_event(
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# SignalQualityTracker Tests
 # ---------------------------------------------------------------------------
 
-class TestOutcomeTrackerTrendScenario:
+class TestSignalQualityTrackerTrendScenario:
     """趋势行情：连续 confirmed_buy 信号，bars_elapsed 必须正确推进。"""
 
     def test_repeated_confirmed_buy_ticks_pending(self):
         """bug 复现：三根 confirmed_buy bar 后，第一笔 pending 必须被评估。"""
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=3,
         )
@@ -101,42 +99,29 @@ class TestOutcomeTrackerTrendScenario:
             )
             tracker.on_signal_event(event)
 
-        # 4 次事件：
-        #   i=0: tick (no-op) + record sig-000 (bars_elapsed=0)
-        #   i=1: tick sig-000 → elapsed=1; record sig-001
-        #   i=2: tick sig-000 → elapsed=2, sig-001 → elapsed=1; record sig-002
-        #   i=3: tick sig-000 → elapsed=3 → evaluate; sig-001 → 2; sig-002 → 1; record sig-003
-        assert len(rows_written) == 1, (
-            f"Expected 1 evaluated outcome, got {len(rows_written)}. "
-            "Bug: _advance_pending was not called on confirmed_buy events."
-        )
+        assert len(rows_written) == 1
         row = rows_written[0]
-        signal_id_col = row[1]
-        bars_col = row[11]
-        assert signal_id_col == "sig-000"
-        assert bars_col == 3
+        assert row[1] == "sig-000"
+        assert row[11] == 3
 
     def test_win_correctly_detected_on_trend_buy(self):
         """价格上涨时 buy 信号的 won 应为 True。"""
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=2,
         )
-        # 记录进场
         tracker.on_signal_event(_make_event(close=1.1000, signal_id="sig-a"))
-        # 推进两根 bar（价格上涨）
         tracker.on_signal_event(_make_event(close=1.1010, signal_id="sig-b"))
         tracker.on_signal_event(_make_event(close=1.1020, signal_id="sig-c"))
 
         assert len(rows_written) >= 1
-        won = rows_written[0][10]  # won 列
-        assert won is True
+        assert rows_written[0][10] is True
 
     def test_loss_detected_on_trend_sell(self):
         """卖出信号，价格上涨时 won 应为 False。"""
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=2,
         )
@@ -151,13 +136,12 @@ class TestOutcomeTrackerTrendScenario:
         )
 
         assert len(rows_written) >= 1
-        won = rows_written[0][10]
-        assert won is False  # 卖出但价格上涨 → 亏损
+        assert rows_written[0][10] is False
 
     def test_no_infinite_accumulation(self):
-        """N 根 confirmed_buy 后 pending 不应无限堆积（bars_to_evaluate=3）。"""
+        """N 根 confirmed_buy 后 pending 不应无限堆积。"""
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=3,
         )
@@ -165,30 +149,24 @@ class TestOutcomeTrackerTrendScenario:
         for i in range(n):
             tracker.on_signal_event(_make_event(close=1.1000 + i * 0.001, signal_id=f"s{i}"))
 
-        # 10 根 bar：最多有 bars_to_evaluate 个 pending 未到期，其余都已评估
         total_pending = sum(len(v) for v in tracker._pending.values())
-        assert total_pending < n, (
-            f"Pending should not accumulate indefinitely; got {total_pending} pending after {n} bars"
-        )
-        assert len(rows_written) > 0, "At least some outcomes should have been evaluated"
+        assert total_pending < n
+        assert len(rows_written) > 0
 
 
-class TestOutcomeTrackerCancelledAdvancesPending:
+class TestSignalQualityTrackerCancelledAdvancesPending:
     """confirmed_cancelled 事件也应推进 bars_elapsed。"""
 
     def test_cancelled_ticks_pending(self):
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=2,
         )
-        # 记录 buy
         tracker.on_signal_event(_make_event(close=1.1000, signal_id="orig"))
-        # 第一根 bar：cancelled（推进 elapsed=1）
         tracker.on_signal_event(
             _make_event(close=1.1010, signal_state="confirmed_cancelled", action="hold", signal_id="c1")
         )
-        # 第二根 bar：cancelled（推进 elapsed=2 → 触发评估）
         tracker.on_signal_event(
             _make_event(close=1.1020, signal_state="confirmed_cancelled", action="hold", signal_id="c2")
         )
@@ -197,58 +175,58 @@ class TestOutcomeTrackerCancelledAdvancesPending:
         assert rows_written[0][1] == "orig"
 
 
-class TestOutcomeTrackerIntrabarIgnored:
+class TestSignalQualityTrackerIntrabarIgnored:
     """scope != confirmed 的事件应被忽略。"""
 
     def test_intrabar_events_do_not_tick(self):
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=1,
         )
         tracker.on_signal_event(_make_event(close=1.1000, signal_id="pending"))
-        # 若干 intrabar 事件
         for _ in range(5):
             tracker.on_signal_event(
                 _make_event(close=1.1010, scope="intrabar", signal_state="preview_buy")
             )
-        # pending 仍在等待（intrabar 不推进计数）
         assert len(rows_written) == 0
         total_pending = sum(len(v) for v in tracker._pending.values())
         assert total_pending == 1
 
 
-class TestOutcomeTrackerMultiStrategy:
-    """不同策略的 pending 互相隔离。"""
+class TestSignalQualityTrackerMultiStrategy:
+    """不同品种的 pending 互相隔离。
 
-    def test_strategies_are_isolated(self):
+    注意：同一 (symbol, timeframe) 下的不同策略共享 bar 计数，
+    因为 bar close 是共享物理事件。真正的隔离在 symbol/timeframe 维度。
+    """
+
+    def test_different_symbols_are_isolated(self):
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=2,
         )
-        # 两个策略各自记录一笔 pending
-        tracker.on_signal_event(_make_event(strategy="strat_a", close=1.1000, signal_id="a0"))
-        tracker.on_signal_event(_make_event(strategy="strat_b", close=1.1000, signal_id="b0"))
+        tracker.on_signal_event(_make_event(symbol="EURUSD", close=1.1000, signal_id="a0"))
+        tracker.on_signal_event(_make_event(symbol="XAUUSD", close=2000.0, signal_id="b0"))
 
-        # 只推进 strat_a 两次
-        tracker.on_signal_event(_make_event(strategy="strat_a", close=1.1010, signal_id="a1"))
-        tracker.on_signal_event(_make_event(strategy="strat_a", close=1.1020, signal_id="a2"))
+        # 只推进 EURUSD 两次
+        tracker.on_signal_event(_make_event(symbol="EURUSD", close=1.1010, signal_id="a1"))
+        tracker.on_signal_event(_make_event(symbol="EURUSD", close=1.1020, signal_id="a2"))
 
-        # strat_a 的第一笔应已评估，strat_b 的 pending 仍在
         evaluated_signals = [r[1] for r in rows_written]
         assert "a0" in evaluated_signals
         assert "b0" not in evaluated_signals
 
 
-class TestOutcomeTrackerMaxPending:
+class TestSignalQualityTrackerMaxPending:
     """超出 max_pending 时丢弃最旧的条目。"""
 
     def test_max_pending_evicts_oldest(self):
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
-            bars_to_evaluate=100,   # 设置很大，确保不会正常评估
+            bars_to_evaluate=100,
             max_pending=3,
         )
         for i in range(5):
@@ -257,92 +235,58 @@ class TestOutcomeTrackerMaxPending:
         key = ("EURUSD", "H1", "test_strategy")
         with tracker._lock:
             lst = tracker._pending.get(key, [])
-        # 最多保留 max_pending 个
         assert len(lst) <= 3
 
 
-class TestOutcomeTrackerWinrateStats:
+class TestSignalQualityTrackerWinrateStats:
     """winrate_summary 统计正确。"""
 
     def test_winrate_summary_after_evaluation(self):
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=1,
         )
-        # 两笔 buy，价格上涨（两笔都赢）
         tracker.on_signal_event(_make_event(close=1.1000, signal_id="w1"))
         tracker.on_signal_event(_make_event(close=1.1010, signal_id="w2"))
         tracker.on_signal_event(_make_event(close=1.1020, signal_id="w3"))
 
         summary = tracker.winrate_summary()
         assert summary["total_evaluated"] >= 1
-        assert summary["win_rate"] is not None
-        assert summary["win_rate"] == 1.0  # 所有 buy 信号都赢了
+        assert summary["win_rate"] == 1.0
 
 
-class TestOutcomeTrackerClosePriceExtraction:
-    """close_price 提取路径的鲁棒性测试。
-
-    根本问题：SignalEvent.indicators 是策略域收窄后的副本，
-    RSI/MACD/Supertrend 等策略的 payload 不含 close 字段，
-    原来的硬编码名称列表（boll20/sma20/ema50/ema200/atr14）导致
-    大多数策略的 entry_price/exit_price = None → won = NULL → 被 fetch_winrates 过滤。
-    修复：runtime 在策略循环前从全量 snapshot 提取 close 并注入 metadata["close_price"]。
-    """
+class TestSignalQualityTrackerClosePriceExtraction:
+    """close_price 提取路径的鲁棒性测试。"""
 
     def test_metadata_close_price_used_for_rsi_style_strategy(self):
-        """RSI 策略：indicators 只有 rsi/atr payload，无 close 字段。
-        必须通过 metadata["close_price"] 获取价格（runtime 注入路径）。
-        """
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=1,
         )
 
-        rsi_only_indicators = {
-            "rsi14": {"rsi": 72.5},
-            "atr14": {"atr": 0.0012},
-        }
+        rsi_only_indicators = {"rsi14": {"rsi": 72.5}, "atr14": {"atr": 0.0012}}
+        entry = _make_event(close=1.1000, signal_id="rsi-entry",
+                            use_metadata_close=True, indicators_override=rsi_only_indicators)
+        exit_ = _make_event(close=1.1015, signal_id="rsi-exit",
+                            use_metadata_close=True, indicators_override=rsi_only_indicators)
 
-        entry_event = _make_event(
-            close=1.1000,
-            signal_id="rsi-entry",
-            use_metadata_close=True,
-            indicators_override=rsi_only_indicators,
-        )
-        exit_event = _make_event(
-            close=1.1015,
-            signal_id="rsi-exit",
-            use_metadata_close=True,
-            indicators_override=rsi_only_indicators,
-        )
+        tracker.on_signal_event(entry)
+        tracker.on_signal_event(exit_)
 
-        tracker.on_signal_event(entry_event)
-        tracker.on_signal_event(exit_event)
-
-        assert len(rows_written) == 1, (
-            "RSI strategy outcome should be evaluated via metadata close_price"
-        )
-        row = rows_written[0]
-        entry_price = row[7]
-        exit_price = row[8]
-        won = row[10]
-        assert entry_price == pytest.approx(1.1000), "entry_price must not be None"
-        assert exit_price == pytest.approx(1.1015), "exit_price must not be None"
-        assert won is True
+        assert len(rows_written) == 1
+        assert rows_written[0][7] == pytest.approx(1.1000)
+        assert rows_written[0][8] == pytest.approx(1.1015)
+        assert rows_written[0][10] is True
 
     def test_metadata_close_takes_priority_over_indicators_close(self):
-        """metadata["close_price"] 优先级高于 indicators payload 中的 close。"""
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=1,
         )
 
-        # metadata 中有 1.2000，indicators payload 中有 1.1000
-        # 应使用 metadata 的值
         event_entry = SimpleNamespace(
             symbol="EURUSD", timeframe="H1", strategy="test",
             action="buy", confidence=0.8, signal_id="e1",
@@ -350,8 +294,7 @@ class TestOutcomeTrackerClosePriceExtraction:
             metadata={
                 "signal_state": "confirmed_buy", "scope": "confirmed",
                 "bar_time": datetime.now(timezone.utc).isoformat(),
-                "regime": "trending",
-                "close_price": 1.2000,  # runtime-injected
+                "regime": "trending", "close_price": 1.2000,
             },
             indicators={"boll20": {"close": 1.1000, "bb_mid": 1.0990}},
         )
@@ -362,8 +305,7 @@ class TestOutcomeTrackerClosePriceExtraction:
             metadata={
                 "signal_state": "confirmed_buy", "scope": "confirmed",
                 "bar_time": datetime.now(timezone.utc).isoformat(),
-                "regime": "trending",
-                "close_price": 1.2050,
+                "regime": "trending", "close_price": 1.2050,
             },
             indicators={"boll20": {"close": 1.1010, "bb_mid": 1.1000}},
         )
@@ -372,18 +314,16 @@ class TestOutcomeTrackerClosePriceExtraction:
         tracker.on_signal_event(event_exit)
 
         assert len(rows_written) == 1
-        assert rows_written[0][7] == pytest.approx(1.2000)  # entry from metadata
-        assert rows_written[0][8] == pytest.approx(1.2050)  # exit from metadata
+        assert rows_written[0][7] == pytest.approx(1.2000)
+        assert rows_written[0][8] == pytest.approx(1.2050)
 
     def test_indicators_close_fallback_when_no_metadata(self):
-        """当 metadata 不含 close_price 时，回退到 indicators payload 扫描。"""
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=1,
         )
 
-        # 旧路径：close 来自 boll20 payload
         entry = _make_event(close=1.1000, signal_id="b-entry", use_metadata_close=False,
                             indicators_override={"boll20": {"close": 1.1000, "bb_mid": 1.0990}})
         exit_ = _make_event(close=1.1010, signal_id="b-exit", use_metadata_close=False,
@@ -397,11 +337,8 @@ class TestOutcomeTrackerClosePriceExtraction:
         assert rows_written[0][8] == pytest.approx(1.1010)
 
     def test_no_close_anywhere_skips_evaluation(self):
-        """无法从任何来源获取 exit_price 时，_advance_pending 提前返回，
-        pending 条目不被评估（无 exit 价格则无法判断输赢）。
-        """
         rows_written: List[Tuple] = []
-        tracker = OutcomeTracker(
+        tracker = SignalQualityTracker(
             write_fn=lambda rows: rows_written.extend(rows),
             bars_to_evaluate=1,
         )
@@ -411,13 +348,182 @@ class TestOutcomeTrackerClosePriceExtraction:
                             indicators_override=no_close_indicators)
         exit_ = _make_event(close=1.0, signal_id="nc-exit",
                             indicators_override=no_close_indicators)
-        # 两个事件的 metadata 均不含 close_price
 
         tracker.on_signal_event(entry)
         tracker.on_signal_event(exit_)
 
-        # exit_price=None 时 _tick_pending 提前返回，没有写入任何行
         assert len(rows_written) == 0
-        # pending 条目仍存在（未被评估，由 max_pending 兜底淘汰）
         total_pending = sum(len(v) for v in tracker._pending.values())
         assert total_pending >= 1
+
+
+# ---------------------------------------------------------------------------
+# TradeOutcomeTracker Tests
+# ---------------------------------------------------------------------------
+
+class TestTradeOutcomeTrackerBasic:
+    """基本开仓 → 关仓评估流程。"""
+
+    def test_buy_win(self):
+        """买入后价格上涨 → won=True"""
+        rows_written: List[Tuple] = []
+        tracker = TradeOutcomeTracker(
+            write_fn=lambda rows: rows_written.extend(rows),
+        )
+
+        tracker.on_trade_opened(
+            signal_id="t-001",
+            symbol="XAUUSD",
+            timeframe="M1",
+            strategy="sma_trend",
+            action="buy",
+            fill_price=2000.0,
+            confidence=0.85,
+            regime="trending",
+        )
+
+        pos = SimpleNamespace(signal_id="t-001", symbol="XAUUSD", action="buy")
+        tracker.on_position_closed(pos, close_price=2010.0)
+
+        assert len(rows_written) == 1
+        row = rows_written[0]
+        assert row[1] == "t-001"         # signal_id
+        assert row[7] == 2000.0          # fill_price
+        assert row[8] == 2010.0          # close_price
+        assert row[9] == pytest.approx(10.0)  # price_change
+        assert row[10] is True           # won
+
+    def test_sell_loss(self):
+        """卖出后价格上涨 → won=False"""
+        rows_written: List[Tuple] = []
+        tracker = TradeOutcomeTracker(
+            write_fn=lambda rows: rows_written.extend(rows),
+        )
+
+        tracker.on_trade_opened(
+            signal_id="t-002",
+            symbol="XAUUSD",
+            timeframe="M1",
+            strategy="rsi_reversion",
+            action="sell",
+            fill_price=2000.0,
+            confidence=0.75,
+        )
+
+        pos = SimpleNamespace(signal_id="t-002", symbol="XAUUSD", action="sell")
+        tracker.on_position_closed(pos, close_price=2005.0)
+
+        assert len(rows_written) == 1
+        assert rows_written[0][10] is False
+
+
+class TestTradeOutcomeTrackerEdgeCases:
+    """边界场景。"""
+
+    def test_close_without_open_is_noop(self):
+        """未登记的仓位关闭 → 无异常，不写入。"""
+        rows_written: List[Tuple] = []
+        tracker = TradeOutcomeTracker(
+            write_fn=lambda rows: rows_written.extend(rows),
+        )
+
+        pos = SimpleNamespace(signal_id="unknown-id", symbol="XAUUSD", action="buy")
+        tracker.on_position_closed(pos, close_price=2000.0)
+
+        assert len(rows_written) == 0
+
+    def test_close_with_none_price_is_skipped(self):
+        """close_price=None → 跳过评估。"""
+        rows_written: List[Tuple] = []
+        tracker = TradeOutcomeTracker(
+            write_fn=lambda rows: rows_written.extend(rows),
+        )
+
+        tracker.on_trade_opened(
+            signal_id="t-003", symbol="XAUUSD", timeframe="M1",
+            strategy="test", action="buy", fill_price=2000.0, confidence=0.8,
+        )
+
+        pos = SimpleNamespace(signal_id="t-003", symbol="XAUUSD", action="buy")
+        tracker.on_position_closed(pos, close_price=None)
+
+        assert len(rows_written) == 0
+        # trade 仍在 active 中（未被消费）
+        assert "t-003" in tracker._active
+
+    def test_no_signal_id_on_pos_is_skipped(self):
+        """仓位没有 signal_id → 跳过。"""
+        tracker = TradeOutcomeTracker()
+        pos = SimpleNamespace(symbol="XAUUSD", action="buy")  # no signal_id
+        tracker.on_position_closed(pos, close_price=2000.0)  # no error
+
+
+class TestTradeOutcomeTrackerCallback:
+    """on_outcome_fn 回调验证。"""
+
+    def test_callback_receives_source_trade(self):
+        """确认 on_outcome_fn 收到 source='trade'。"""
+        callback_calls: List[dict] = []
+
+        def mock_callback(strategy, won, pnl, *, regime=None, source="signal"):
+            callback_calls.append({
+                "strategy": strategy,
+                "won": won,
+                "pnl": pnl,
+                "regime": regime,
+                "source": source,
+            })
+
+        tracker = TradeOutcomeTracker(on_outcome_fn=mock_callback)
+
+        tracker.on_trade_opened(
+            signal_id="t-cb",
+            symbol="XAUUSD",
+            timeframe="M1",
+            strategy="ema_ribbon",
+            action="buy",
+            fill_price=2000.0,
+            confidence=0.9,
+            regime="trending",
+        )
+
+        pos = SimpleNamespace(signal_id="t-cb", symbol="XAUUSD", action="buy")
+        tracker.on_position_closed(pos, close_price=2020.0)
+
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["strategy"] == "ema_ribbon"
+        assert callback_calls[0]["won"] is True
+        assert callback_calls[0]["pnl"] == pytest.approx(20.0)
+        assert callback_calls[0]["regime"] == "trending"
+        assert callback_calls[0]["source"] == "trade"
+
+
+class TestTradeOutcomeTrackerSummary:
+    """summary() 统计。"""
+
+    def test_summary_tracks_wins_and_losses(self):
+        tracker = TradeOutcomeTracker()
+
+        # 一笔赢
+        tracker.on_trade_opened(
+            signal_id="w1", symbol="XAUUSD", timeframe="M1",
+            strategy="test", action="buy", fill_price=2000.0, confidence=0.8,
+        )
+        tracker.on_position_closed(
+            SimpleNamespace(signal_id="w1"), close_price=2010.0,
+        )
+
+        # 一笔亏
+        tracker.on_trade_opened(
+            signal_id="l1", symbol="XAUUSD", timeframe="M1",
+            strategy="test", action="buy", fill_price=2000.0, confidence=0.8,
+        )
+        tracker.on_position_closed(
+            SimpleNamespace(signal_id="l1"), close_price=1990.0,
+        )
+
+        summary = tracker.summary()
+        assert summary["total_evaluated"] == 2
+        assert summary["total_wins"] == 1
+        assert summary["win_rate"] == 0.5
+        assert summary["active_trades"] == 0

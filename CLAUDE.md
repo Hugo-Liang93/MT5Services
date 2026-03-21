@@ -116,7 +116,7 @@ MT5Services/
 │   │   ├── strategies/       # 策略实现（trend/mean_reversion/breakout/composite）
 │   │   │   └── adapters.py   # UnifiedIndicatorSourceAdapter（解耦信号与指标）
 │   │   └── tracking/         # SignalRepository（信号持久化与查询）
-│   ├── trading/              # TradingModule、TradeExecutor、PositionManager、OutcomeTracker
+│   ├── trading/              # TradingModule、TradeExecutor、PositionManager、SignalQualityTracker、TradeOutcomeTracker
 │   │   └── models.py         # TradeOperationRecord 数据类
 │   └── utils/                # 通用工具、内存管理器
 ├── tests/                    # 测试套件（镜像 src/ 结构）
@@ -304,7 +304,8 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/trading/signal_executor.py` | TradeExecutor：信号自动下单执行、日内头寸限制、HTF 软惩罚 |
 | `src/trading/position_manager.py` | PositionManager：持仓监控、止损跟踪、日终自动平仓 |
 | `src/trading/sizing.py` | 仓位计算、时间框架差异化 SL/TP（`TimeframeSLTP`） |
-| `src/trading/outcome_tracker.py` | OutcomeTracker：交易结果跟踪与胜率统计 |
+| `src/trading/signal_quality_tracker.py` | SignalQualityTracker：信号预测质量追踪（N bars 后评估，供 Calibrator） |
+| `src/trading/trade_outcome_tracker.py` | TradeOutcomeTracker：实际交易盈亏追踪（由 PositionManager 关仓触发） |
 | `src/trading/registry.py` | TradingAccountRegistry：多账户注册与服务工厂 |
 | `src/trading/models.py` | TradeOperationRecord 数据类 |
 | `src/risk/models.py` | TradeIntent / RiskCheckResult / RiskAssessment 数据类 |
@@ -730,12 +731,11 @@ SignalRuntime._publish_signal_event(event: SignalEvent)
     │     检查 min_confidence、require_armed、日内头寸限制、HTF 对齐
     │     通过后调用 TradingModule 下单
     │
-    ├─→ OutcomeTracker.on_signal_event()     ← 信号绩效追踪
+    ├─→ SignalQualityTracker.on_signal_event()  ← 信号质量追踪
     │     仅处理 scope="confirmed" 的事件
     │     ① _advance_pending：推进同 (symbol, tf) 下所有策略的 pending 计数
     │     ② _record_pending：confirmed_buy/sell 时登记新 pending
-    │     bars_elapsed 到期 → 写入 signal_outcomes 表 + 回调 PerformanceTracker
-    │     另有 on_position_closed 快速路径（仓位关闭时立即评估）
+    │     bars_elapsed 到期 → 写入 signal_outcomes 表 + 回调 PerformanceTracker(source="signal")
     │
     └─→ HTFStateCache.on_signal_event()      ← 高时间框架方向缓存
           仅处理 confirmed_buy / confirmed_sell / confirmed_cancelled
@@ -755,24 +755,48 @@ SignalRuntime._publish_signal_event(event: SignalEvent)
 > **注意**：`idle→idle`（策略持续 hold 且之前也是 idle）不产生 SignalEvent——
 > `_transition_confirmed()` 在 `previous_state == "idle"` 且 action 非 buy/sell 时返回 `None`。
 
-### OutcomeTracker 的两条评估路径
+### 信号质量 vs 交易结果：两个独立追踪器
 
-1. **自然到期**：每收到一个 scope="confirmed" 的 SignalEvent → `_advance_pending` 推进同 (symbol, tf) 下**所有策略**的 `bars_elapsed` → 达到 `bars_to_evaluate`（默认 3）后用最新收盘价评估
-2. **仓位关闭**：`PositionManager` 关仓 → `on_position_closed(pos, close_price)` → 用实际成交价立即评估，不等 bar 计数
+| 维度 | SignalQualityTracker | TradeOutcomeTracker |
+|------|---------------------|---------------------|
+| **衡量什么** | 信号预测质量（N bars 后方向对不对） | 实际交易盈亏 |
+| **entry_price** | 信号 bar 的 close（理论入场） | 实际成交价（含滑点） |
+| **exit_price** | N bars 后的 close（理论退出） | 实际平仓价 |
+| **评估对象** | 所有 confirmed 信号（含未执行的） | 仅实际执行的交易 |
+| **触发方式** | SignalRuntime 信号监听 | TradeExecutor 登记 + PositionManager 关仓回调 |
+| **写入表** | `signal_outcomes` | `trade_outcomes` |
+| **主要消费者** | ConfidenceCalibrator（长期统计校准） | StrategyPerformanceTracker（日内实时反馈） |
+
+### SignalQualityTracker 评估路径
+
+每收到一个 scope="confirmed" 的 SignalEvent → `_advance_pending` 推进同 (symbol, tf) 下**所有策略**的 `bars_elapsed` → 达到 `bars_to_evaluate`（默认 5）后用最新收盘价评估。
+
+### TradeOutcomeTracker 评估路径
+
+1. `TradeExecutor` 下单成功 → `on_trade_opened(signal_id, fill_price, ...)` 登记活跃交易
+2. `PositionManager` 检测仓位关闭 → `on_position_closed(pos, close_price)` 触发评估
+3. 用实际成交价计算盈亏 → 回调 PerformanceTracker(source="trade") + 写入 trade_outcomes 表
 
 ### 绩效反馈的两条独立链路
 
 ```
-OutcomeTracker 评估完成
+SignalQualityTracker（信号质量评估完成）
     │
-    ├─→ _on_outcome_fn(strategy, won, pnl, regime=)
-    │     → StrategyPerformanceTracker（纯内存日内实时反馈，session 边界重置）
+    ├─→ on_quality_fn(strategy, won, pnl, regime=)
+    │     → StrategyPerformanceTracker(source="signal")
     │
-    └─→ _write_fn(rows)
-          → signal_outcomes 表（DB 持久化）
+    └─→ write_fn(rows) → signal_outcomes 表（DB 持久化）
           → ConfidenceCalibrator 后台线程每小时查询 DB
             按 (strategy, action, regime) 聚合最近 7 天胜率
             分阶段校准（<50笔不校准，50-100轻微，100+正常）
+
+TradeOutcomeTracker（实际交易评估完成）
+    │
+    ├─→ on_outcome_fn(strategy, won, pnl, regime=, source="trade")
+    │     → StrategyPerformanceTracker(source="trade")
+    │       _trade_stats 单独记录，用于实际交易维度分析
+    │
+    └─→ write_fn(rows) → trade_outcomes 表（DB 持久化）
 ```
 
 ---
@@ -795,7 +819,7 @@ raw_confidence（策略规则输出）
 - Soft Regime 模式：`Σ(prob[r] × affinity[r])` — 加权平均，消除阈值边界跳变
 
 **日内策略绩效追踪**（`StrategyPerformanceTracker`，`src/signals/evaluation/performance.py`）：
-- 纯内存的日内实时反馈层，接收 OutcomeTracker / PositionManager 的结果回调
+- 纯内存的日内实时反馈层，接收 SignalQualityTracker(source="signal") 和 TradeOutcomeTracker(source="trade") 的结果回调
 - 维护 per-strategy 滚动统计（wins, losses, streak, PnL）
 - 维护 per-(strategy, regime) 维度统计，支持按当前 regime 查询乘数
 - 提供 `get_multiplier(strategy, regime=None) → [min_multiplier, max_multiplier]`

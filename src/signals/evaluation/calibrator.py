@@ -10,7 +10,7 @@
 
 ## 解决方案：胜率校准
 
-利用 ``OutcomeTracker`` 积累的 ``signal_outcomes`` 数据，
+利用 ``SignalQualityTracker`` 积累的 ``signal_outcomes`` 数据，
 计算每个 ``(strategy, action, regime)`` 的历史胜率，
 对原始置信度进行**混合校准**：
 

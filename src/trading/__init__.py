@@ -1,5 +1,6 @@
 from .models import TradeOperationRecord
-from .outcome_tracker import OutcomeTracker
+from .signal_quality_tracker import SignalQualityTracker
+from .trade_outcome_tracker import TradeOutcomeTracker
 from .position_manager import PositionManager, TrackedPosition
 from .registry import TradingAccountRegistry
 from .service import TradingModule
@@ -8,10 +9,11 @@ from .sizing import TradeParameters, compute_trade_params, extract_atr_from_indi
 __all__ = [
     "compute_trade_params",
     "extract_atr_from_indicators",
-    "OutcomeTracker",
     "PositionManager",
+    "SignalQualityTracker",
     "TrackedPosition",
     "TradeOperationRecord",
+    "TradeOutcomeTracker",
     "TradeParameters",
     "TradingAccountRegistry",
     "TradingModule",
