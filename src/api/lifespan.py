@@ -93,6 +93,14 @@ def create_lifespan(
             container.position_manager.start(
                 reconcile_interval=signal_config_loader().position_reconcile_interval
             )
+            try:
+                recovery_result = container.position_manager.sync_open_positions()
+                logger.info("PositionManager startup sync: %s", recovery_result)
+            except Exception:
+                logger.warning(
+                    "PositionManager startup sync failed",
+                    exc_info=True,
+                )
             mark_startup_step("position_manager", "ready", current_started)
 
             current_step = "monitoring"

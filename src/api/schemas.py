@@ -135,6 +135,17 @@ class CloseAllRequest(BaseModel):
     deviation: int = 20
     comment: str = "close_all"
 
+
+class TradeControlRequest(BaseModel):
+    auto_entry_enabled: Optional[bool] = None
+    close_only_mode: Optional[bool] = None
+    reason: str = ""
+    reset_circuit: bool = False
+
+
+class TradeReconcileRequest(BaseModel):
+    sync_open_positions: bool = True
+
 class CancelOrdersRequest(BaseModel):
     symbol: Optional[str] = None
     magic: Optional[int] = None

@@ -24,6 +24,7 @@ from src.trading.sizing import (
 )
 from src.signals.models import SignalEvent
 from src.signals.strategies.htf_cache import HTFStateCache
+from src.risk.service import PreTradeRiskBlockedError
 from src.trading.position_manager import PositionManager
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
@@ -80,6 +81,7 @@ class TradeExecutor:
         htf_cache: Optional[HTFStateCache] = None,
         persist_execution_fn: Optional[Callable[[List], None]] = None,
         trade_outcome_tracker: Optional[TradeOutcomeTracker] = None,
+        on_execution_skip: Optional[Callable[[str, str], None]] = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
@@ -89,10 +91,19 @@ class TradeExecutor:
         # T-4: 执行记录持久化回调（可选，用于写入 auto_executions 表）
         self._persist_execution_fn = persist_execution_fn
         self._trade_outcome_tracker = trade_outcome_tracker
+        # 信号被拒绝时的回调：(signal_id, reason) → 通知 SignalQualityTracker 等
+        self._on_execution_skip = on_execution_skip
         self._execution_count = 0
         self._last_execution_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
         self._execution_log: list[dict] = []
+        self._execution_quality = {
+            "recovered_from_state": 0,
+            "risk_blocks": 0,
+            "slippage_samples": 0,
+            "slippage_total_price": 0.0,
+            "slippage_total_points": 0.0,
+        }
         # 熔断器状态
         self._consecutive_failures: int = 0
         self._circuit_open: bool = False
@@ -117,6 +128,14 @@ class TradeExecutor:
     # ------------------------------------------------------------------
     # Internal execution logic
     # ------------------------------------------------------------------
+
+    def _notify_skip(self, signal_id: str, reason: str) -> None:
+        """通知下游组件该信号被跳过（未执行交易）。"""
+        if self._on_execution_skip is not None and signal_id:
+            try:
+                self._on_execution_skip(signal_id, reason)
+            except Exception:
+                logger.debug("on_execution_skip callback failed", exc_info=True)
 
     def reset_circuit(self) -> None:
         """手动重置熔断器，恢复自动交易。"""
@@ -205,6 +224,7 @@ class TradeExecutor:
                     event.symbol, event.strategy, event.action,
                     previous_state, preview_at_close,
                 )
+                self._notify_skip(event.signal_id, "require_armed")
                 return None
 
         # ── HTF 方向软惩罚 ────────────────────────────────────────────
@@ -238,6 +258,7 @@ class TradeExecutor:
                 event.confidence,
                 self.config.min_confidence,
             )
+            self._notify_skip(event.signal_id, "min_confidence")
             return None
 
         if self._reached_position_limit(event.symbol):
@@ -261,6 +282,7 @@ class TradeExecutor:
             )
             if len(self._execution_log) > 100:
                 self._execution_log = self._execution_log[-50:]
+            self._notify_skip(event.signal_id, "position_limit")
             return None
 
         trade_params = self._compute_params(event)
@@ -275,6 +297,7 @@ class TradeExecutor:
                 atr, balance, close_price,
                 list(event.indicators.keys()),
             )
+            self._notify_skip(event.signal_id, "trade_params_unavailable")
             return None
         cost_metrics = self._estimate_cost_metrics(event, trade_params)
         spread_to_stop_ratio = cost_metrics.get("spread_to_stop_ratio")
@@ -305,6 +328,7 @@ class TradeExecutor:
             )
             if len(self._execution_log) > 100:
                 self._execution_log = self._execution_log[-50:]
+            self._notify_skip(event.signal_id, "spread_to_stop_ratio_too_high")
             return None
 
         return self._execute(event, trade_params, cost_metrics=cost_metrics)
@@ -385,6 +409,7 @@ class TradeExecutor:
         return open_positions >= limit
 
     def _open_positions_for_symbol(self, symbol: str) -> int:
+        tracked_count: Optional[int] = None
         if self._position_manager is not None:
             try:
                 tracked = [
@@ -392,9 +417,9 @@ class TradeExecutor:
                     for row in self._position_manager.active_positions()
                     if row.get("symbol") == symbol
                 ]
-                return len(tracked)
+                tracked_count = len(tracked)
             except Exception:
-                pass
+                tracked_count = None
 
         for attr_name in ("get_positions", "positions"):
             getter = getattr(self._trading, attr_name, None)
@@ -407,10 +432,13 @@ class TradeExecutor:
             except Exception:
                 continue
             try:
-                return len(list(rows or []))
+                live_count = len(list(rows or []))
+                if tracked_count is None:
+                    return live_count
+                return max(tracked_count, live_count)
             except Exception:
                 continue
-        return 0
+        return tracked_count or 0
 
     def _estimate_cost_metrics(
         self,
@@ -508,6 +536,7 @@ class TradeExecutor:
     @staticmethod
     def _build_trade_metadata(event: SignalEvent) -> Dict[str, Any]:
         metadata: Dict[str, Any] = {
+            "entry_origin": "auto",
             "signal": {
                 "signal_id": event.signal_id,
                 "strategy": event.strategy,
@@ -516,6 +545,9 @@ class TradeExecutor:
                 "confidence": round(float(event.confidence), 4),
             }
         }
+        regime = event.metadata.get("regime")
+        if regime is not None:
+            metadata["regime"] = regime
         raw_structure = event.metadata.get("market_structure")
         if isinstance(raw_structure, dict):
             metadata["market_structure"] = dict(raw_structure)
@@ -525,6 +557,44 @@ class TradeExecutor:
             except Exception:
                 pass
         return metadata
+
+    def _record_slippage(
+        self,
+        *,
+        requested_price: Optional[float],
+        fill_price: Optional[float],
+        symbol_point: Optional[float],
+    ) -> Dict[str, Optional[float]]:
+        try:
+            requested = float(requested_price) if requested_price is not None else None
+        except (TypeError, ValueError):
+            requested = None
+        try:
+            filled = float(fill_price) if fill_price is not None else None
+        except (TypeError, ValueError):
+            filled = None
+        if requested is None or filled is None:
+            return {
+                "requested_price": requested,
+                "fill_price": filled,
+                "slippage_price": None,
+                "slippage_points": None,
+            }
+
+        slippage_price = round(filled - requested, 6)
+        slippage_points = None
+        if symbol_point is not None and symbol_point > 0:
+            slippage_points = round(slippage_price / symbol_point, 2)
+        self._execution_quality["slippage_samples"] += 1
+        self._execution_quality["slippage_total_price"] += slippage_price
+        if slippage_points is not None:
+            self._execution_quality["slippage_total_points"] += slippage_points
+        return {
+            "requested_price": requested,
+            "fill_price": filled,
+            "slippage_price": slippage_price,
+            "slippage_points": slippage_points,
+        }
 
     def _execute(
         self,
@@ -541,6 +611,7 @@ class TradeExecutor:
             "sl": params.stop_loss,
             "tp": params.take_profit,
             "comment": f"auto:{event.strategy}:{event.action}",
+            "request_id": event.signal_id,
             "metadata": self._build_trade_metadata(event),
         }
 
@@ -551,6 +622,23 @@ class TradeExecutor:
             self._last_error = None
             # 成功执行：重置熔断器失败计数
             self._consecutive_failures = 0
+            requested_price = None
+            fill_price = None
+            symbol_point = None
+            if isinstance(result, dict):
+                requested_price = result.get("requested_price") or result.get("price")
+                fill_price = result.get("fill_price") or result.get("price")
+                try:
+                    symbol_point = float(cost_metrics.get("symbol_point")) if cost_metrics else None
+                except (TypeError, ValueError):
+                    symbol_point = None
+                if result.get("recovered_from_state"):
+                    self._execution_quality["recovered_from_state"] += 1
+            execution_quality = self._record_slippage(
+                requested_price=requested_price,
+                fill_price=fill_price,
+                symbol_point=symbol_point,
+            )
             log_entry = {
                 "at": self._last_execution_at.isoformat(),
                 "signal_id": event.signal_id,
@@ -560,11 +648,13 @@ class TradeExecutor:
                 "confidence": event.confidence,
                 "params": {
                     "volume": params.position_size,
+                    "entry_price": fill_price if fill_price is not None else params.entry_price,
                     "sl": params.stop_loss,
                     "tp": params.take_profit,
                     "rr": params.risk_reward_ratio,
                 },
                 "cost": dict(cost_metrics or {}),
+                "execution_quality": execution_quality,
                 "success": True,
             }
             self._execution_log.append(log_entry)
@@ -592,6 +682,16 @@ class TradeExecutor:
                             symbol=event.symbol,
                             action=event.action,
                             params=params,
+                            timeframe=event.timeframe,
+                            strategy=event.strategy,
+                            confidence=event.confidence,
+                            regime=event.metadata.get("regime"),
+                            comment=str(result.get("comment") or payload["comment"]),
+                            fill_price=(
+                                float(result.get("fill_price"))
+                                if result.get("fill_price") is not None
+                                else None
+                            ),
                         )
                     except Exception as pm_exc:
                         logger.warning(
@@ -607,7 +707,11 @@ class TradeExecutor:
                         timeframe=event.timeframe,
                         strategy=event.strategy,
                         action=event.action,
-                        fill_price=params.entry_price,
+                        fill_price=(
+                            float(result.get("fill_price"))
+                            if isinstance(result, dict) and result.get("fill_price") is not None
+                            else params.entry_price
+                        ),
                         confidence=event.confidence,
                         regime=event.metadata.get("regime"),
                     )
@@ -616,7 +720,43 @@ class TradeExecutor:
                         "TradeExecutor: failed to notify trade_outcome_tracker: %s",
                         ot_exc,
                     )
+            if isinstance(result, dict):
+                result.setdefault("execution_quality", execution_quality)
             return result
+        except PreTradeRiskBlockedError as exc:
+            self._last_error = str(exc)
+            self._execution_quality["risk_blocks"] += 1
+            assessment = dict(exc.assessment or {})
+            reason = str(assessment.get("reason") or exc)
+            self._execution_log.append({
+                "at": datetime.now(timezone.utc).isoformat(),
+                "signal_id": event.signal_id,
+                "symbol": event.symbol,
+                "action": event.action,
+                "strategy": event.strategy,
+                "success": False,
+                "skipped": True,
+                "reason": reason,
+                "assessment": assessment,
+            })
+            if len(self._execution_log) > 100:
+                self._execution_log = self._execution_log[-50:]
+            self._notify_skip(event.signal_id, reason)
+            if self._persist_execution_fn is not None:
+                try:
+                    self._persist_execution_fn([{
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "signal_id": event.signal_id,
+                        "symbol": event.symbol,
+                        "action": event.action,
+                        "strategy": event.strategy,
+                        "success": False,
+                        "error": reason,
+                        "metadata": {"blocked_by_risk": assessment},
+                    }])
+                except Exception as pe:
+                    logger.warning("TradeExecutor: persist blocked-entry failed: %s", pe)
+            return None
         except Exception as exc:
             self._last_error = str(exc)
             self._consecutive_failures += 1
@@ -665,6 +805,7 @@ class TradeExecutor:
             return None
 
     def status(self) -> Dict[str, Any]:
+        slippage_samples = int(self._execution_quality["slippage_samples"] or 0)
         return {
             "enabled": self.config.enabled,
             "execution_count": self._execution_count,
@@ -688,6 +829,21 @@ class TradeExecutor:
                 "risk_percent": self.config.risk_percent,
                 "sl_atr_multiplier": self.config.sl_atr_multiplier,
                 "tp_atr_multiplier": self.config.tp_atr_multiplier,
+            },
+            "execution_quality": {
+                "recovered_from_state": int(self._execution_quality["recovered_from_state"] or 0),
+                "risk_blocks": int(self._execution_quality["risk_blocks"] or 0),
+                "slippage_samples": slippage_samples,
+                "avg_slippage_price": round(
+                    float(self._execution_quality["slippage_total_price"] or 0.0)
+                    / slippage_samples,
+                    6,
+                ) if slippage_samples else None,
+                "avg_slippage_points": round(
+                    float(self._execution_quality["slippage_total_points"] or 0.0)
+                    / slippage_samples,
+                    4,
+                ) if slippage_samples else None,
             },
             "recent_executions": self._execution_log[-10:],
         }

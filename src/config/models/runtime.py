@@ -98,7 +98,7 @@ class EconomicConfig(BaseModel):
     curated_importance_min: int | None = 2
     curated_include_all_day: bool = False
     trade_guard_enabled: bool = True
-    trade_guard_mode: str = "warn_only"
+    trade_guard_mode: str = "block"
     trade_guard_calendar_health_mode: str = "warn_only"
     trade_guard_lookahead_minutes: int = 180
     trade_guard_lookback_minutes: int = 0
@@ -119,7 +119,7 @@ class RiskConfig(BaseModel):
     max_volume_per_order: float | None = None
     max_volume_per_symbol: float | None = None
     daily_loss_limit_pct: float | None = None
-    require_sl_for_market_orders: bool = False
+    require_sl_for_market_orders: bool = True
     require_tp_or_sl_for_market_orders: bool = False
 
 

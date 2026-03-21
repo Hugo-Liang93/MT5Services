@@ -32,6 +32,8 @@ PRECHECK_TRADE_FIELDS = {
     "metadata",
 }
 
+_IDEMPOTENT_LOOKBACK_LIMIT = 200
+
 
 class TradingModule:
     def __init__(
@@ -55,6 +57,15 @@ class TradingModule:
             "risk": {"blocked": 0, "warn": 0, "allow": 0},
             "last_trade_at": None,
         })
+        self._trade_control_lock = RLock()
+        self._trade_control_state: dict[str, Any] = {
+            "auto_entry_enabled": True,
+            "close_only_mode": False,
+            "updated_at": None,
+            "reason": None,
+        }
+        self._idempotency_lock = RLock()
+        self._idempotent_success_cache: dict[str, dict[str, Any]] = {}
 
     def _active_account(self) -> str:
         return self.active_account_alias
@@ -119,6 +130,131 @@ class TradingModule:
         except Exception:
             logger.exception("Failed to persist trade operation audit for %s", record.operation_type)
 
+    def _cache_successful_trade_result(
+        self,
+        request_id: Optional[str],
+        result: Any,
+    ) -> None:
+        if not request_id or not isinstance(result, dict):
+            return
+        with self._idempotency_lock:
+            self._idempotent_success_cache[str(request_id)] = dict(result)
+            if len(self._idempotent_success_cache) > 500:
+                keys = list(self._idempotent_success_cache.keys())
+                for key in keys[:-250]:
+                    self._idempotent_success_cache.pop(key, None)
+
+    def _find_idempotent_trade_result(self, request_id: str) -> Optional[dict[str, Any]]:
+        normalized = str(request_id or "").strip()
+        if not normalized:
+            return None
+        with self._idempotency_lock:
+            cached = self._idempotent_success_cache.get(normalized)
+        if cached is not None:
+            replayed = dict(cached)
+            replayed["idempotent_replay"] = True
+            replayed["idempotent_source"] = "memory"
+            return replayed
+        if self.db_writer is None:
+            return None
+        rows = self.db_writer.fetch_trade_operations(
+            account_alias=self.active_account_alias,
+            operation_type="execute_trade",
+            status="success",
+            limit=_IDEMPOTENT_LOOKBACK_LIMIT,
+        )
+        for row in rows:
+            request_payload = row[15] or {}
+            response_payload = row[16] or {}
+            if str(request_payload.get("request_id") or "").strip() != normalized:
+                continue
+            if not isinstance(response_payload, dict):
+                continue
+            replayed = dict(response_payload)
+            replayed.setdefault("operation_id", row[1])
+            replayed["idempotent_replay"] = True
+            replayed["idempotent_source"] = "audit"
+            self._cache_successful_trade_result(normalized, replayed)
+            return replayed
+        return None
+
+    def trade_control_status(self) -> dict[str, Any]:
+        with self._trade_control_lock:
+            return dict(self._trade_control_state)
+
+    def update_trade_control(
+        self,
+        *,
+        auto_entry_enabled: Optional[bool] = None,
+        close_only_mode: Optional[bool] = None,
+        reason: Optional[str] = None,
+    ) -> dict[str, Any]:
+        with self._trade_control_lock:
+            if auto_entry_enabled is not None:
+                self._trade_control_state["auto_entry_enabled"] = bool(auto_entry_enabled)
+            if close_only_mode is not None:
+                self._trade_control_state["close_only_mode"] = bool(close_only_mode)
+            self._trade_control_state["reason"] = str(reason).strip() or None
+            self._trade_control_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return dict(self._trade_control_state)
+
+    @staticmethod
+    def _entry_origin(payload: Dict[str, Any]) -> str:
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        if isinstance(metadata, dict):
+            return str(metadata.get("entry_origin") or "manual").strip().lower()
+        return "manual"
+
+    def _build_control_assessment(
+        self,
+        *,
+        reason: str,
+        payload: Dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "enabled": True,
+            "mode": "strict",
+            "blocked": True,
+            "action": "block",
+            "reason": reason,
+            "symbol": payload.get("symbol"),
+            "active_windows": [],
+            "upcoming_windows": [],
+            "warnings": [],
+            "checks": [
+                {
+                    "name": "trade_control",
+                    "action": "block",
+                    "reason": reason,
+                    "details": {
+                        "control_state": self.trade_control_status(),
+                        "entry_origin": self._entry_origin(payload),
+                    },
+                }
+            ],
+            "intent": {k: v for k, v in payload.items() if k in PRECHECK_TRADE_FIELDS},
+        }
+
+    def _enforce_trade_control(self, payload: Dict[str, Any]) -> None:
+        state = self.trade_control_status()
+        entry_origin = self._entry_origin(payload)
+        if state.get("close_only_mode"):
+            raise PreTradeRiskBlockedError(
+                "trade entry disabled: close_only_mode_enabled",
+                assessment=self._build_control_assessment(
+                    reason="close_only_mode_enabled",
+                    payload=payload,
+                ),
+            )
+        if entry_origin == "auto" and not bool(state.get("auto_entry_enabled", True)):
+            raise PreTradeRiskBlockedError(
+                "trade entry disabled: auto_entry_paused",
+                assessment=self._build_control_assessment(
+                    reason="auto_entry_paused",
+                    payload=payload,
+                ),
+            )
+
     def _update_daily_stats(self, record: TradeOperationRecord) -> None:
         if record.operation_type not in {
             "execute_trade",
@@ -160,6 +296,7 @@ class TradingModule:
 
     def _run_trade_with_dispatch_controls(self, payload: Dict[str, Any]) -> dict:
         config = get_trading_ops_config()
+        self._enforce_trade_control(payload)
         required = ("symbol", "volume", "side")
         missing = [key for key in required if payload.get(key) in (None, "")]
         if missing:
@@ -197,6 +334,11 @@ class TradingModule:
                     trace_id = f"{operation_type}_{int(started * 1000)}"
                 result.setdefault("trace_id", trace_id)
                 result.setdefault("account_alias", resolved_alias)
+                if operation_type == "execute_trade":
+                    self._cache_successful_trade_result(
+                        str(payload.get("request_id") or result.get("request_id") or ""),
+                        result,
+                    )
             duration_ms = int((time.monotonic() - started) * 1000)
             record = TradeOperationRecord(
                 account_alias=resolved_alias,
@@ -391,6 +533,12 @@ class TradingModule:
             )
 
     def execute_trade(self, **kwargs: Any):
+        request_id = str(kwargs.get("request_id") or "").strip()
+        if request_id:
+            replayed = self._find_idempotent_trade_result(request_id)
+            if replayed is not None:
+                return replayed
+        self._enforce_trade_control(kwargs)
         with self._active_scope() as (
             alias,
             trading_service,
@@ -547,6 +695,72 @@ class TradingModule:
             payload = {"account_alias": alias, "symbol": symbol, "magic": magic}
             return self._execute("get_orders", alias, payload, lambda: trading_service.get_orders(symbol, magic))
 
+    def get_position_close_details(
+        self,
+        ticket: int,
+        *,
+        symbol: Optional[str] = None,
+        lookback_days: int = 7,
+    ) -> Optional[dict[str, Any]]:
+        with self._active_scope() as (
+            alias,
+            trading_service,
+            _account_service,
+        ):
+            payload = {
+                "account_alias": alias,
+                "ticket": ticket,
+                "symbol": symbol,
+                "lookback_days": lookback_days,
+            }
+            return self._execute(
+                "get_position_close_details",
+                alias,
+                payload,
+                lambda: trading_service.get_position_close_details(
+                    ticket=ticket,
+                    symbol=symbol,
+                    lookback_days=lookback_days,
+                ),
+            )
+
+    def resolve_position_context(
+        self,
+        *,
+        ticket: int,
+        comment: Optional[str] = None,
+        limit: int = 500,
+    ) -> Optional[dict[str, Any]]:
+        for row in self.recent_operations(
+            operation_type="execute_trade",
+            status="success",
+            limit=limit,
+        ):
+            response_payload = row.get("response_payload") or {}
+            request_payload = row.get("request_payload") or {}
+            payload_comment = str(request_payload.get("comment") or "").strip()
+            response_ticket = int(response_payload.get("ticket") or 0)
+            if response_ticket != int(ticket) and (not comment or payload_comment != str(comment).strip()):
+                continue
+            metadata = request_payload.get("metadata") or {}
+            signal_meta = metadata.get("signal") or {}
+            request_id = str(request_payload.get("request_id") or "").strip()
+            if not request_id:
+                request_id = str(signal_meta.get("signal_id") or f"restored:{ticket}")
+            return {
+                "signal_id": request_id,
+                "timeframe": str(signal_meta.get("timeframe") or ""),
+                "strategy": str(signal_meta.get("strategy") or ""),
+                "confidence": signal_meta.get("confidence"),
+                "regime": metadata.get("regime"),
+                "fill_price": response_payload.get("fill_price") or response_payload.get("price"),
+                "comment": payload_comment or comment,
+                "source": "restored_signal_trade" if signal_meta else "restored_trade",
+                "entry_origin": self._entry_origin(request_payload),
+                "request_id": request_id,
+            }
+        return None
+
     def recent_operations(
         self,
         *,
@@ -590,6 +804,7 @@ class TradingModule:
             return {
                 "active_account_alias": self.active_account_alias,
                 "accounts": self.list_accounts(),
+                "trade_control": self.trade_control_status(),
                 "summary": [],
                 "recent": [],
             }
@@ -600,6 +815,7 @@ class TradingModule:
         return {
             "active_account_alias": self.active_account_alias,
             "accounts": self.list_accounts(),
+            "trade_control": self.trade_control_status(),
             "daily": self.daily_trade_summary(),
             "summary": [
                 {
