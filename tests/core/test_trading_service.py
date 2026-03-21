@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
+from src.risk.service import PreTradeRiskBlockedError
 from src.trading.trading_service import TradingService
 
 
@@ -87,6 +92,30 @@ class DummyRiskService:
     def enforce_trade_allowed(self, **kwargs):
         self.calls.append(("enforce", kwargs))
         return self.assess_trade(**kwargs)
+
+
+class TradeGuardBlockingRiskService(DummyRiskService):
+    def assess_trade(self, **kwargs):
+        assessment = super().assess_trade(**kwargs)
+        assessment["event_blocked"] = True
+        assessment["warnings"] = ["calendar_window_active"]
+        return assessment
+
+
+class DummyAccountClient:
+    def __init__(self, *, positions=None, orders=None) -> None:
+        self._positions = list(positions or [])
+        self._orders = list(orders or [])
+
+    def positions(self, symbol=None):
+        if symbol is None:
+            return list(self._positions)
+        return [row for row in self._positions if getattr(row, "symbol", None) == symbol]
+
+    def orders(self, symbol=None):
+        if symbol is None:
+            return list(self._orders)
+        return [row for row in self._orders if getattr(row, "symbol", None) == symbol]
 
 
 def test_precheck_trade_uses_full_trade_context():
@@ -213,6 +242,78 @@ def test_execute_trade_retries_on_transient_failure():
 
     assert result["ticket"] == 12345
     assert result["execution_attempts"] == 2
+
+
+def test_execute_trade_tags_comment_with_request_id() -> None:
+    client = DummyTradingClient()
+    service = TradingService(client=client, pre_trade_risk_service=DummyRiskService())
+
+    result = service.execute_trade(
+        symbol="XAUUSD",
+        volume=0.2,
+        side="buy",
+        comment="auto:sma:buy",
+        request_id="REQ-ABC12345-TAIL",
+    )
+
+    assert client.open_trade_details_calls[0]["comment"] == "auto:sma:buy_rreqabc12"
+    assert result["comment"] == "auto:sma:buy_rreqabc12"
+
+
+def test_execute_trade_recovers_from_existing_position_state() -> None:
+    client = DummyTradingClient()
+    client.fail_open_times = 1
+    account_client = DummyAccountClient(
+        positions=[
+            SimpleNamespace(
+                ticket=9876,
+                symbol="XAUUSD",
+                volume=0.2,
+                price_open=2351.5,
+                comment="auto:sma:buy_rrecover1",
+            )
+        ]
+    )
+    service = TradingService(
+        client=client,
+        account_client=account_client,
+        pre_trade_risk_service=DummyRiskService(),
+    )
+
+    result = service.execute_trade(
+        symbol="XAUUSD",
+        volume=0.2,
+        side="buy",
+        comment="auto:sma:buy",
+        request_id="recover-1",
+        retry_attempts=2,
+        retry_backoff_ms=0,
+    )
+
+    assert result["ticket"] == 9876
+    assert result["recovered_from_state"] is True
+    assert result["state_source"] == "positions"
+    assert result["execution_attempts"] == 1
+    assert client.open_trade_details_calls == []
+
+
+def test_execute_trade_blocks_xauusd_when_trade_guard_detects_active_window() -> None:
+    client = DummyTradingClient()
+    service = TradingService(
+        client=client,
+        pre_trade_risk_service=TradeGuardBlockingRiskService(),
+    )
+
+    with pytest.raises(PreTradeRiskBlockedError) as exc_info:
+        service.execute_trade(
+            symbol="XAUUSD",
+            volume=0.2,
+            side="buy",
+        )
+
+    assert exc_info.value.assessment["reason"] == "xauusd_trade_guard_blocked"
+    assert exc_info.value.assessment["blocked"] is True
+    assert client.open_trade_details_calls == []
 
 
 def test_precheck_trade_blocks_non_positive_volume():

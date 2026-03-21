@@ -128,5 +128,7 @@ def test_indicator_config_reflects_phase1_intraday_changes():
     assert indicators["obv30"].enabled is False
     assert indicators["wma20"].enabled is False
     assert indicators["rsi14"].delta_bars == [3, 5]
-    assert indicators["macd"].delta_bars == [3, 5]
+    assert indicators["macd"].delta_bars == []
+    assert indicators["adx14"].delta_bars == []
     assert indicators["cci20"].delta_bars == [3, 5]
+    assert indicators["stoch_rsi14"].delta_bars == [3, 5]

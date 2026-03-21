@@ -142,13 +142,14 @@ class TestConfidenceCalculation:
         )
         # buy=0.8, sell=0.2 → total=1.0
         # buy_score=0.8, sell_score=0.2
-        # min_side=0.2, disagreement_factor = (0.2/0.5) * 0.5 = 0.2
-        # confidence = 0.8 * (1 - 0.2) = 0.64
+        # min_side=0.2, raw_disagreement=0.2/0.5=0.4
+        # disagreement_factor = (0.4^2) * 0.5 = 0.08 (平方衰减，轻分歧惩罚更轻)
+        # confidence = 0.8 * (1 - 0.08) = 0.736
         decisions = [_decision("buy", 0.8, "s1"), _decision("sell", 0.2, "s2")]
         result = engine.vote(decisions, regime=DEFAULT_REGIME, scope=DEFAULT_SCOPE)
         assert result is not None
         assert result.action == "buy"
-        assert result.confidence == pytest.approx(0.64)
+        assert result.confidence == pytest.approx(0.736)
 
     def test_hold_weight_reduces_direction_scores(self):
         """hold 权重加入总权重后，方向得分下降。"""

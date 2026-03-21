@@ -102,7 +102,7 @@ def test_warns_when_calendar_health_is_degraded():
     service = PreTradeRiskService(
         economic_calendar_service=DummyCalendar(stale=True, provider_failures=3),
         settings=_settings(trade_guard_mode="warn_only", trade_guard_calendar_health_mode="warn_only"),
-        risk_settings=RiskConfig(),
+        risk_settings=RiskConfig(require_sl_for_market_orders=False),
     )
 
     result = service.assess_trade(symbol="XAUUSD")
@@ -142,7 +142,7 @@ def test_allows_healthy_calendar_without_database_driver():
     service = PreTradeRiskService(
         economic_calendar_service=DummyCalendar(),
         settings=_settings(),
-        risk_settings=RiskConfig(),
+        risk_settings=RiskConfig(require_sl_for_market_orders=False),
     )
 
     result = service.assess_trade(symbol="XAUUSD")
@@ -252,7 +252,7 @@ def test_warns_when_buying_against_new_york_open_downside_expansion():
         economic_calendar_service=DummyCalendar(),
         account_service=DummyAccountService(),
         settings=_settings(),
-        risk_settings=RiskConfig(),
+        risk_settings=RiskConfig(require_sl_for_market_orders=False),
     )
 
     result = service.assess_trade(
