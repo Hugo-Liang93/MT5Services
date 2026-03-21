@@ -438,6 +438,9 @@ Before voting, runtime now fuses duplicate strategy outputs within the same `(sy
 ### 信号触发交易（交易模块职责）
 
 - `POST /trade/from-signal` — 依据 `signal_id` 在交易模块中执行下单
+- `GET /trade/control` — 查看自动开仓/close-only 控制状态与执行器断路器状态
+- `POST /trade/control` — 暂停自动开仓、切换只平不开，并可重置执行断路器
+- `POST /trade/reconcile` — 手动同步当前 MT5 持仓到 `PositionManager`
 
 ## 配置文件职责
 
@@ -516,11 +519,17 @@ curl -H "X-API-Key: replace-with-your-key" http://localhost:8808/health
 
 - `config/risk.ini`
   - `daily_loss_limit_pct = 3.0` blocks new trades once the account reaches the configured daily-loss threshold.
+  - `require_sl_for_market_orders = true` requires an SL on market orders by default.
+- `config/economic.ini`
+  - `trade_guard_mode = block` blocks new XAUUSD entries during active high-impact economic risk windows by default.
 - `config/signal.ini`
   - `max_concurrent_positions_per_symbol = 3` limits concurrent signal-driven positions per symbol.
   - `session_transition_cooldown_minutes = 15` suppresses signal evaluation around the London -> New York handoff.
   - `end_of_day_close_enabled = true` with `end_of_day_close_hour_utc = 21` and `end_of_day_close_minute_utc = 0` enables end-of-day closeout in `PositionManager`.
   - `market_structure_m1_lookback_bars = 120` keeps M1 market-structure analysis focused on intraday context.
+- runtime recovery
+  - startup automatically runs `PositionManager.sync_open_positions()` to rehydrate tracked XAUUSD positions after restart.
+  - trade execution carries `request_id` into MT5 comments, allowing retry-time state recovery and duplicate-order protection.
 - `TradeExecutor` now applies timeframe-specific ATR sizing profiles:
   - `M1 = 1.0 / 2.0`
   - `M5 = 1.2 / 2.5`
