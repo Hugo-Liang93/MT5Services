@@ -37,6 +37,7 @@ class PriceActionReversal:
     """Detect simple price-action reversal patterns normalized by ATR."""
 
     name = "price_action_reversal"
+    category = "price_action"
     required_indicators = ("atr14",)
     preferred_scopes = ("confirmed",)
     regime_affinity = {

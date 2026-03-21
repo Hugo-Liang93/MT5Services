@@ -25,6 +25,7 @@ from src.trading.sizing import (
 from src.signals.models import SignalEvent
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.trading.position_manager import PositionManager
+from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class TradeExecutor:
         position_manager: Optional[PositionManager] = None,
         htf_cache: Optional[HTFStateCache] = None,
         persist_execution_fn: Optional[Callable[[List], None]] = None,
+        trade_outcome_tracker: Optional[TradeOutcomeTracker] = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
@@ -86,6 +88,7 @@ class TradeExecutor:
         self._htf_cache = htf_cache
         # T-4: 执行记录持久化回调（可选，用于写入 auto_executions 表）
         self._persist_execution_fn = persist_execution_fn
+        self._trade_outcome_tracker = trade_outcome_tracker
         self._execution_count = 0
         self._last_execution_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
@@ -595,6 +598,24 @@ class TradeExecutor:
                             "TradeExecutor: failed to register position ticket=%s: %s",
                             ticket, pm_exc,
                         )
+            # 通知 TradeOutcomeTracker 登记活跃交易
+            if self._trade_outcome_tracker is not None:
+                try:
+                    self._trade_outcome_tracker.on_trade_opened(
+                        signal_id=event.signal_id,
+                        symbol=event.symbol,
+                        timeframe=event.timeframe,
+                        strategy=event.strategy,
+                        action=event.action,
+                        fill_price=params.entry_price,
+                        confidence=event.confidence,
+                        regime=event.metadata.get("regime"),
+                    )
+                except Exception as ot_exc:
+                    logger.warning(
+                        "TradeExecutor: failed to notify trade_outcome_tracker: %s",
+                        ot_exc,
+                    )
             return result
         except Exception as exc:
             self._last_error = str(exc)

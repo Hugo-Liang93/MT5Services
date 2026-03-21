@@ -10,7 +10,7 @@
 
 ## 解决方案：胜率校准
 
-利用 ``OutcomeTracker`` 积累的 ``signal_outcomes`` 数据，
+利用 ``SignalQualityTracker`` 积累的 ``signal_outcomes`` 数据，
 计算每个 ``(strategy, action, regime)`` 的历史胜率，
 对原始置信度进行**混合校准**：
 
@@ -48,7 +48,9 @@ alpha（混合系数）控制历史数据对当前信号的影响程度：
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -188,19 +190,17 @@ class ConfidenceCalibrator:
         if effective_alpha < 1e-6:
             return raw_confidence
 
-        # 混合校准：加权平均原始置信度和历史校准值
-        calibrated = (
-            raw_confidence * (1.0 - effective_alpha)
-            + raw_confidence * factor * effective_alpha
-        )
+        # 简化校准公式：raw * (1 + (factor - 1) * alpha)
+        calibrated = raw_confidence * (1.0 + (factor - 1.0) * effective_alpha)
         result = max(0.0, min(1.0, calibrated))
 
-        # 统计
-        self._total_calibrated += 1
-        if result > raw_confidence + 1e-4:
-            self._total_boosted += 1
-        elif result < raw_confidence - 1e-4:
-            self._total_suppressed += 1
+        # 统计（加锁保护，避免多线程 lost updates）
+        with self._cache_lock:
+            self._total_calibrated += 1
+            if result > raw_confidence + 1e-4:
+                self._total_boosted += 1
+            elif result < raw_confidence - 1e-4:
+                self._total_suppressed += 1
 
         return result
 
@@ -215,12 +215,12 @@ class ConfidenceCalibrator:
         new_cache: Dict[_WinRateKey, Tuple[float, int]] = {}
         count = 0
         for row in rows:
-            # row: (strategy, action, total, wins, win_rate, avg_conf, avg_move)
+            # row: (strategy, action, total, wins, win_rate, avg_conf, avg_move, regime)
             strat = str(row[0])
             act = str(row[1])
             total = int(row[2]) if row[2] is not None else 0
             win_rate = float(row[4]) if row[4] is not None else 0.0
-            # regime 为 None 表示全局（不分 Regime 的聚合行）
+            # regime 列（第 8 列，index=7）：SQL 现在按 regime 分组
             regime_val = str(row[7]) if len(row) > 7 and row[7] is not None else "_all"
             if total >= self._min_samples:
                 new_cache[(strat, act, regime_val)] = (win_rate, total)
@@ -244,6 +244,14 @@ class ConfidenceCalibrator:
                     new_recent_cache[(strat, act, regime_val)] = (win_rate, total)
         except Exception:
             logger.warning("ConfidenceCalibrator: failed to fetch recent win rates", exc_info=True)
+
+        if not new_recent_cache:
+            logger.debug(
+                "ConfidenceCalibrator: recent window (%dh) returned no qualifying entries "
+                "(min_samples/2=%d); positive feedback protection inactive",
+                self._recency_hours,
+                max(1, self._min_samples // 2),
+            )
 
         with self._cache_lock:
             self._cache = new_cache
@@ -286,8 +294,6 @@ class ConfidenceCalibrator:
 
         格式：``{"timestamp": ..., "cache": {"strat|act|regime": {"win_rate": 0.6, "total": 50}, ...}}``
         """
-        import json
-
         with self._cache_lock:
             data = {
                 "timestamp": time.time(),
@@ -313,9 +319,6 @@ class ConfidenceCalibrator:
 
         返回成功加载的条目数。文件不存在或格式错误时安全退出（返回 0）。
         """
-        import json
-        import os
-
         if not os.path.exists(path):
             return 0
         try:
@@ -405,7 +408,12 @@ class ConfidenceCalibrator:
     def _bg_loop(self, symbol: Optional[str]) -> None:
         """C-1/C-2: 后台刷新循环 — 立即执行首次刷新，之后每隔 refresh_interval 再刷新。"""
         while not self._bg_stop.is_set():
-            self.refresh(symbol=symbol)
+            try:
+                self.refresh(symbol=symbol)
+            except Exception:
+                logger.exception(
+                    "ConfidenceCalibrator: background refresh iteration failed"
+                )
             self._bg_stop.wait(timeout=self._refresh_interval)
 
     def _auto_refresh(self) -> None:

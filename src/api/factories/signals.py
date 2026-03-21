@@ -13,6 +13,11 @@ from src.signals.execution.filters import (
     SpreadFilter,
 )
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
+from src.signals.evaluation.performance import (
+    PerformanceTrackerConfig,
+    StrategyPerformanceTracker,
+)
+
 from src.signals.service import SignalModule
 from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 from src.signals.orchestration.policy import VotingGroupConfig
@@ -20,9 +25,23 @@ from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.strategies.registry import register_all_strategies
 from src.signals.tracking.repository import TimescaleSignalRepository
-from src.trading.outcome_tracker import OutcomeTracker
+from src.trading.signal_quality_tracker import SignalQualityTracker
+from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
+
+
+def build_performance_tracker_config(signal_config) -> PerformanceTrackerConfig:
+    return PerformanceTrackerConfig(
+        enabled=signal_config.perf_tracker_enabled,
+        baseline_win_rate=signal_config.perf_tracker_baseline_win_rate,
+        min_multiplier=signal_config.perf_tracker_min_multiplier,
+        max_multiplier=signal_config.perf_tracker_max_multiplier,
+        streak_penalty_threshold=signal_config.perf_tracker_streak_penalty_threshold,
+        streak_penalty_factor=signal_config.perf_tracker_streak_penalty_factor,
+        category_fallback_min_samples=signal_config.perf_tracker_category_fallback_min_samples,
+        session_reset_interval_hours=signal_config.perf_tracker_session_reset_interval_hours,
+    )
 
 
 @dataclass(frozen=True)
@@ -32,9 +51,11 @@ class SignalComponents:
     signal_module: SignalModule
     signal_runtime: SignalRuntime
     htf_cache: HTFStateCache
-    outcome_tracker: OutcomeTracker
+    signal_quality_tracker: SignalQualityTracker
+    trade_outcome_tracker: TradeOutcomeTracker
     position_manager: PositionManager
     trade_executor: TradeExecutor
+    performance_tracker: StrategyPerformanceTracker
 
 
 def build_signal_filter_chain(signal_config, economic_calendar_service) -> SignalFilterChain:
@@ -172,10 +193,14 @@ def build_signal_components(
         refresh_interval_seconds=900,
         recency_hours=8,
     )
+    performance_tracker = StrategyPerformanceTracker(
+        config=build_performance_tracker_config(signal_config),
+    )
     signal_module = SignalModule(
         indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
         repository=TimescaleSignalRepository(storage_writer.db),
         calibrator=calibrator,
+        performance_tracker=performance_tracker,
         soft_regime_enabled=signal_config.soft_regime_enabled,
     )
 
@@ -190,11 +215,13 @@ def build_signal_components(
         None,
     )
     htf_map = {"M1": m1_htf} if m1_htf else {}
-    htf_cache = HTFStateCache(htf_map=htf_map if htf_map else None)
+    htf_cache = HTFStateCache(
+        htf_map=htf_map if htf_map else None,
+        max_age_seconds=signal_config.htf_cache_max_age_seconds,
+    )
     register_all_strategies(signal_module, htf_cache)
-    # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar eligible 集合，
-    # 注入到 indicator_manager。这是 intrabar 指标集合的唯一来源，
-    # indicators.json 中不再需要 intrabar_eligible 字段。
+    # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar 指标集合，
+    # 注入到 indicator_manager。
     indicator_manager.set_intrabar_eligible_override(
         signal_module.intrabar_required_indicators()
     )
@@ -229,6 +256,12 @@ def build_signal_components(
         end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
         end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
     )
+    # 交易结果追踪器：追踪实际执行的交易盈亏（由 TradeExecutor 登记，PositionManager 关仓评估）
+    trade_outcome_tracker = TradeOutcomeTracker(
+        write_fn=storage_writer.db.write_trade_outcomes,
+        on_outcome_fn=performance_tracker.record_outcome,
+    )
+
     persist_execution_fn = getattr(storage_writer.db, "write_auto_executions", None)
     trade_executor = TradeExecutor(
         trading_module=trade_module,
@@ -236,12 +269,22 @@ def build_signal_components(
         position_manager=position_manager,
         htf_cache=htf_cache,
         persist_execution_fn=persist_execution_fn,
+        trade_outcome_tracker=trade_outcome_tracker,
     )
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)
     htf_cache.attach(signal_runtime)
 
-    outcome_tracker = OutcomeTracker(write_fn=storage_writer.db.write_outcome_events, bars_to_evaluate=5)
-    outcome_tracker.attach(signal_runtime)
+    # 接线：PositionManager 关仓时通知 TradeOutcomeTracker
+    position_manager.add_close_callback(trade_outcome_tracker.on_position_closed)
+
+    # 信号质量追踪器：N bars 后评估信号预测质量（供 Calibrator 长期统计校准）
+    signal_quality_tracker = SignalQualityTracker(
+        write_fn=storage_writer.db.write_outcome_events,
+        bars_to_evaluate=signal_config.signal_quality_bars_to_evaluate,
+        max_pending=signal_config.signal_quality_max_pending,
+        on_quality_fn=performance_tracker.record_outcome,
+    )
+    signal_quality_tracker.attach(signal_runtime)
 
     return SignalComponents(
         calibrator=calibrator,
@@ -249,9 +292,11 @@ def build_signal_components(
         signal_module=signal_module,
         signal_runtime=signal_runtime,
         htf_cache=htf_cache,
-        outcome_tracker=outcome_tracker,
+        signal_quality_tracker=signal_quality_tracker,
+        trade_outcome_tracker=trade_outcome_tracker,
         position_manager=position_manager,
         trade_executor=trade_executor,
+        performance_tracker=performance_tracker,
     )
 
 
@@ -262,6 +307,7 @@ def register_signal_hot_reload(
     trade_executor=None,
     economic_calendar_service=None,
     market_structure_analyzer=None,
+    performance_tracker=None,
 ) -> None:
     def _on_signal_config_change(filename: str) -> None:
         if filename != "signal.ini":
@@ -274,6 +320,8 @@ def register_signal_hot_reload(
         )
         if trade_executor is not None:
             trade_executor.config = build_executor_config(signal_config)
+        if performance_tracker is not None:
+            performance_tracker._config = build_performance_tracker_config(signal_config)
         if market_structure_analyzer is not None:
             market_structure_analyzer.config = MarketStructureConfig(
                 enabled=signal_config.market_structure_enabled,

@@ -89,30 +89,19 @@ def _make_manager(bars, storage_writer=None):
 
 
 # ---------------------------------------------------------------------------
-# Test: intrabar_eligible cache is built at init and reflects config
+# Test: intrabar eligible 由策略推导注入
 # ---------------------------------------------------------------------------
 
-def test_intrabar_eligible_cache_excludes_volume_indicators():
+def test_intrabar_eligible_empty_without_override():
+    """未注入 override 时（standalone 模式），intrabar eligible 为空集。"""
     mgr, _ = _make_manager(_make_bars())
     eligible = mgr._get_intrabar_eligible_names()
-
-    # Volume-derived indicators must be excluded
-    assert "mfi14" not in eligible, "mfi14 should be intrabar-ineligible"
-    assert "obv30" not in eligible, "obv30 should be intrabar-ineligible"
-    assert "vwap30" not in eligible, "vwap30 should be intrabar-ineligible"
-
-    # 默认 fallback（无 override 时）：indicators.json 无 intrabar_eligible 字段，
-    # 配置模型默认 True → 所有 enabled 指标都在 eligible 中。
-    # 这是 standalone 场景的 backward-compatible 行为。
-    assert "sma20" in eligible
-    assert "ema50" in eligible
-    assert "rsi14" in eligible
+    assert eligible == frozenset()
 
 
-def test_intrabar_eligible_cache_uses_strategy_override():
+def test_intrabar_eligible_uses_strategy_override():
     """set_intrabar_eligible_override() 注入策略推导集合后，只有该集合里的指标 eligible。"""
     mgr, _ = _make_manager(_make_bars())
-    # 模拟 factory 注入策略推导结果：只有 rsi14 和 boll20 需要 intrabar
     mgr.set_intrabar_eligible_override(frozenset(["rsi14", "boll20"]))
     eligible = mgr._get_intrabar_eligible_names()
     assert eligible == frozenset(["rsi14", "boll20"])
@@ -121,26 +110,10 @@ def test_intrabar_eligible_cache_uses_strategy_override():
     assert "macd" not in eligible
 
 
-def test_intrabar_eligible_cache_is_frozenset():
+def test_intrabar_eligible_is_frozenset():
     mgr, _ = _make_manager(_make_bars())
     eligible = mgr._get_intrabar_eligible_names()
     assert isinstance(eligible, frozenset)
-
-
-def test_intrabar_eligible_cache_is_reused():
-    mgr, _ = _make_manager(_make_bars())
-    first = mgr._get_intrabar_eligible_names()
-    second = mgr._get_intrabar_eligible_names()
-    assert first is second, "_get_intrabar_eligible_names() should return cached object"
-
-
-def test_intrabar_eligible_cache_is_invalidated_on_reinitialize():
-    mgr, _ = _make_manager(_make_bars())
-    original = mgr._get_intrabar_eligible_names()
-    mgr._intrabar_eligible_cache = None  # simulate hot-reload clearing the cache
-    rebuilt = mgr._get_intrabar_eligible_names()
-    # Content must be equal even if rebuilt
-    assert original == rebuilt
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +121,11 @@ def test_intrabar_eligible_cache_is_invalidated_on_reinitialize():
 # ---------------------------------------------------------------------------
 
 def test_process_intrabar_only_runs_eligible_indicators():
-    """
-    The pipeline must only be invoked with intrabar-eligible indicator names.
-    Volume indicators (mfi14, obv30, vwap30) must not appear in the pipeline call.
-    """
+    """Pipeline 仅计算 override 注入的 intrabar eligible 指标。"""
     bars = _make_bars(60)
     mgr, svc = _make_manager(bars)
+    # 模拟策略推导：只有 rsi14 和 boll20 需要 intrabar
+    mgr.set_intrabar_eligible_override(frozenset(["rsi14", "boll20"]))
 
     computed_names: list[list[str]] = []
 
@@ -174,44 +146,9 @@ def test_process_intrabar_only_runs_eligible_indicators():
 
     assert computed_names, "pipeline.compute_staged was never called"
     for name_list in computed_names:
-        assert "mfi14" not in name_list, "mfi14 must not be computed during intrabar"
-        assert "obv30" not in name_list, "obv30 must not be computed during intrabar"
-        assert "vwap30" not in name_list, "vwap30 must not be computed during intrabar"
-        # 默认 fallback（无 override）下所有 enabled 指标都 eligible，
-        # 因此 sma20/ema50 应该出现
-        assert "sma20" in name_list or "ema50" in name_list, \
-            "default fallback: all enabled indicators should be eligible"
-
-
-# ---------------------------------------------------------------------------
-# Test: get_indicator_info includes intrabar_eligible
-# ---------------------------------------------------------------------------
-
-def test_get_indicator_info_exposes_intrabar_eligible():
-    mgr, _ = _make_manager(_make_bars())
-
-    # indicators.json 中不再声明 intrabar_eligible → 配置模型默认 True。
-    # 实际运行时由 set_intrabar_eligible_override() 控制，此处仅测试配置层面的默认值。
-    info_mfi = mgr.get_indicator_info("mfi14")
-    assert info_mfi is not None
-    assert info_mfi["intrabar_eligible"] is True  # 配置默认 True（但 enabled=false，运行时不参与）
-
-    info_sma = mgr.get_indicator_info("sma20")
-    assert info_sma is not None
-    assert info_sma["intrabar_eligible"] is True
-
-
-def test_list_indicators_includes_intrabar_eligible():
-    mgr, _ = _make_manager(_make_bars())
-
-    infos = mgr.list_indicators()
-    names_with_field = {info["name"]: info.get("intrabar_eligible") for info in infos}
-
-    # indicators.json 不再声明 intrabar_eligible → 配置模型全部默认 True。
-    # 运行时实际控制在 set_intrabar_eligible_override()，此处仅测试 list 输出的配置默认值。
-    assert names_with_field.get("vwap30") is True   # 配置默认 True（enabled=false 另行处理）
-    assert names_with_field.get("ema50") is True
-    assert names_with_field.get("rsi14") is True
+        allowed = {"rsi14", "boll20"}
+        assert set(name_list) <= allowed, \
+            f"Only {allowed} should be computed, got {name_list}"
 
 
 def test_apply_delta_metrics_uses_historical_indicator_values():

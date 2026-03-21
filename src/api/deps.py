@@ -39,11 +39,13 @@ from src.monitoring import get_health_monitor, get_monitoring_manager
 from src.persistence.storage_writer import StorageWriter
 from src.risk.service import PreTradeRiskService
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
+from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.trading import TradingAccountRegistry, TradingModule
-from src.trading.outcome_tracker import OutcomeTracker
+from src.trading.signal_quality_tracker import SignalQualityTracker
+from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import TradeExecutor
 
@@ -63,9 +65,11 @@ class _Container:
     signal_module: Optional[SignalModule] = None
     signal_runtime: Optional[SignalRuntime] = None
     htf_cache: Optional[HTFStateCache] = None
-    outcome_tracker: Optional[OutcomeTracker] = None
+    signal_quality_tracker: Optional[SignalQualityTracker] = None
+    trade_outcome_tracker: Optional[TradeOutcomeTracker] = None
     calibrator: Optional[ConfidenceCalibrator] = None
     trade_executor: Optional[TradeExecutor] = None
+    performance_tracker: Optional[StrategyPerformanceTracker] = None
     position_manager: Optional[PositionManager] = None
     health_monitor: Optional[object] = None
     monitoring_manager: Optional[object] = None
@@ -233,15 +237,18 @@ def _ensure_initialized() -> None:
         _c.signal_module = signal_components.signal_module
         _c.signal_runtime = signal_components.signal_runtime
         _c.htf_cache = signal_components.htf_cache
-        _c.outcome_tracker = signal_components.outcome_tracker
+        _c.signal_quality_tracker = signal_components.signal_quality_tracker
+        _c.trade_outcome_tracker = signal_components.trade_outcome_tracker
         _c.position_manager = signal_components.position_manager
         _c.trade_executor = signal_components.trade_executor
+        _c.performance_tracker = signal_components.performance_tracker
         register_signal_hot_reload(
             _c.signal_runtime,
             get_signal_config,
             trade_executor=_c.trade_executor,
             economic_calendar_service=_c.economic_calendar_service,
             market_structure_analyzer=_c.market_structure_analyzer,
+            performance_tracker=_c.performance_tracker,
         )
 
         _c.health_monitor = get_health_monitor("health_monitor.db")
@@ -408,10 +415,16 @@ def get_htf_cache() -> HTFStateCache:
     return _c.htf_cache
 
 
-def get_outcome_tracker() -> OutcomeTracker:
+def get_signal_quality_tracker() -> SignalQualityTracker:
     _ensure_initialized()
-    assert _c.outcome_tracker is not None
-    return _c.outcome_tracker
+    assert _c.signal_quality_tracker is not None
+    return _c.signal_quality_tracker
+
+
+def get_trade_outcome_tracker() -> TradeOutcomeTracker:
+    _ensure_initialized()
+    assert _c.trade_outcome_tracker is not None
+    return _c.trade_outcome_tracker
 
 
 def get_health_monitor_instance():

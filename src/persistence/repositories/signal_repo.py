@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
 from src.persistence.schema import (
     INSERT_AUTO_EXECUTIONS_SQL,
     INSERT_SIGNAL_EVENTS_SQL,
+    INSERT_TRADE_OUTCOMES_SQL,
     SIGNAL_OUTCOMES_EXPECTANCY_SQL,
     INSERT_SIGNAL_OUTCOMES_SQL,
     INSERT_SIGNAL_PREVIEW_EVENTS_SQL,
@@ -181,6 +182,15 @@ class SignalEventRepository:
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(SIGNAL_OUTCOMES_WINRATE_SQL, [max(1, hours), symbol, symbol])
             return cur.fetchall()
+
+    def write_trade_outcomes(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+        batch = []
+        for row in rows:
+            metadata = row[12] if len(row) > 12 and row[12] is not None else {}
+            batch.append((*row[:12], self._writer._json(metadata)))
+        if not batch:
+            return
+        self._writer._batch(INSERT_TRADE_OUTCOMES_SQL, batch, page_size=page_size)
 
     def fetch_expectancy_stats(
         self,

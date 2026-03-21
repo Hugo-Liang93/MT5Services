@@ -64,12 +64,13 @@ SELECT
         AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END)::numeric, 4
     )                                           AS win_rate,
     ROUND(AVG(confidence)::numeric, 4)          AS avg_confidence,
-    ROUND(AVG(ABS(price_change))::numeric, 6)   AS avg_move
+    ROUND(AVG(ABS(price_change))::numeric, 6)   AS avg_move,
+    regime
 FROM signal_outcomes
 WHERE recorded_at >= NOW() - make_interval(hours => %s)
   AND won IS NOT NULL
   AND (%s IS NULL OR symbol = %s)
-GROUP BY strategy, action
+GROUP BY strategy, action, regime
 ORDER BY win_rate DESC, total DESC
 """
 

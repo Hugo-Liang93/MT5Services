@@ -139,12 +139,12 @@ class FileConfigManager:
                 "default": "XAUUSD",
                 "description": "Default trading symbol",
             },
-            "intervals.tick_interval": {
+            "intervals.poll_interval": {
                 "type": "float",
                 "default": 0.5,
                 "min": 0.1,
                 "max": 10.0,
-                "description": "Tick collection interval in seconds",
+                "description": "Main polling loop interval in seconds",
             },
             "intervals.ohlc_interval": {
                 "type": "float",

@@ -174,9 +174,9 @@ class ConfigValidator:
     @staticmethod
     def validate_interval_config(config: Dict[str, Any]) -> bool:
         intervals = config.get("intervals", {})
-        tick_interval = float(intervals.get("tick_interval", 0.5))
-        if tick_interval < 0.1:
-            raise ValueError(f"Tick interval too small: {tick_interval}")
+        poll_interval = float(intervals.get("poll_interval", 0.5))
+        if poll_interval < 0.1:
+            raise ValueError(f"Poll interval too small: {poll_interval}")
 
         ohlc_interval = float(intervals.get("ohlc_interval", 30.0))
         if ohlc_interval < 1.0:

@@ -16,6 +16,7 @@ class SessionMomentumBias:
     """Bias momentum entries by active trading session."""
 
     name = "session_momentum"
+    category = "session"
     required_indicators = ("atr14", "supertrend14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {

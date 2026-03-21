@@ -11,6 +11,7 @@ from .analytics import (
     SignalDiagnosticsAnalyzer,
 )
 from .evaluation.calibrator import ConfidenceCalibrator
+from .evaluation.performance import StrategyPerformanceTracker
 from .evaluation.regime import MarketRegimeDetector, RegimeType, SoftRegimeResult
 from .models import SignalContext, SignalDecision, SignalRecord
 from .strategies.adapters import IndicatorSource
@@ -54,6 +55,7 @@ class SignalModule:
         repository: Optional[SignalRepository] = None,
         regime_detector: Optional[MarketRegimeDetector] = None,
         calibrator: Optional[ConfidenceCalibrator] = None,
+        performance_tracker: Optional[StrategyPerformanceTracker] = None,
         diagnostics_engine: Optional[DiagnosticsEngine] = None,
         soft_regime_enabled: bool = False,
     ):
@@ -65,6 +67,9 @@ class SignalModule:
         # 置信度校准器：基于历史胜率对原始 confidence 进行混合校准。
         # None = 不校准（新部署或没有足够历史数据时的默认状态）。
         self._calibrator: Optional[ConfidenceCalibrator] = calibrator
+        # 日内绩效追踪器：实时反馈层，基于当前 session 的策略表现动态调整置信度。
+        # None = 不追踪（新部署或未配置时的默认状态）。
+        self._performance_tracker: Optional[StrategyPerformanceTracker] = performance_tracker
         self._soft_regime_enabled = bool(soft_regime_enabled)
         self._diagnostics_analyzer: DiagnosticsEngine = (
             diagnostics_engine or SignalDiagnosticsAnalyzer()
@@ -134,16 +139,16 @@ class SignalModule:
     def register_strategy(self, strategy: SignalStrategy) -> None:
         self._validate_strategy_attrs(strategy)
         self._strategies[strategy.name] = strategy
+        if self._performance_tracker is not None:
+            category = getattr(strategy, "category", "unknown")
+            self._performance_tracker.register_strategy(strategy.name, category)
 
     def intrabar_required_indicators(self) -> frozenset:
         """从策略的 preferred_scopes 自动推导哪些指标需要 intrabar 计算。
 
         遍历所有已注册策略，收集 preferred_scopes 包含 "intrabar" 的策略的
-        required_indicators 并集。这是 intrabar eligible 集合的 **唯一来源**，
-        indicators.json 不再需要手工维护 intrabar_eligible 字段。
-
-        返回值在工厂函数中注入到 UnifiedIndicatorManager，后者据此决定
-        intrabar pipeline 计算哪些指标。
+        required_indicators 并集。返回值注入到 UnifiedIndicatorManager，
+        后者据此决定 intrabar pipeline 计算哪些指标。
         """
         result: set[str] = set()
         for strategy in self._strategies.values():
@@ -273,6 +278,17 @@ class SignalModule:
         )
         affinity = self._effective_affinity(affinity_map, regime, soft_regime)
         adjusted_confidence = decision.confidence * affinity
+        # ── 日内绩效乘数（实时反馈层）────────────────────────────────
+        # 在 Regime 亲和度之后、长期校准器之前施加日内绩效乘数。
+        # 基于当前 session 的策略表现（win_rate、streak、profit_factor），
+        # 对表现差的策略压制置信度，对表现好的微幅提升。
+        # performance_tracker=None（默认）时此步跳过。
+        perf_multiplier = 1.0
+        if self._performance_tracker is not None and decision.action in ("buy", "sell"):
+            perf_multiplier = self._performance_tracker.get_multiplier(
+                decision.strategy, regime=regime.value,
+            )
+            adjusted_confidence *= perf_multiplier
         # ── 置信度校准（历史胜率反馈层）────────────────────────────────
         # 在 Regime 亲和度修正之后，再根据该策略 (action, regime) 的历史胜率
         # 做混合校准，使置信度逐步收敛到与实际盈亏挂钩的值。
@@ -287,6 +303,15 @@ class SignalModule:
             )
         else:
             calibrated = raw_post_affinity
+
+        # ── 多层压制底线保护 ─────────────────────────────────────────────
+        # regime_affinity × session_performance × calibrator 的乘法链可能导致
+        # 置信度被过度压制（如 0.80 × 0.70 × 0.60 × 0.90 = 0.30）。
+        # 设置底线，确保原始置信度较高的信号不会被完全淹没。
+        # 底线仅在原始 confidence > 0 时生效（hold 信号不受影响）。
+        _MIN_CALIBRATED_FLOOR = 0.10
+        if decision.confidence > 0 and calibrated < _MIN_CALIBRATED_FLOOR:
+            calibrated = _MIN_CALIBRATED_FLOOR
 
         decision = dataclasses.replace(
             decision,
@@ -309,6 +334,7 @@ class SignalModule:
                 ),
                 "raw_confidence": decision.confidence,  # 原始规则输出
                 "post_affinity_confidence": raw_post_affinity,
+                "session_performance_multiplier": perf_multiplier,
                 "calibrated": self._calibrator is not None
                 and decision.action in ("buy", "sell"),
             },
@@ -366,7 +392,11 @@ class SignalModule:
                 logger.debug("Invalid precomputed soft regime payload", exc_info=True)
         if not self._soft_regime_enabled:
             return None
-        return self._regime_detector.detect_soft(indicators)
+        try:
+            return self._regime_detector.detect_soft(indicators)
+        except Exception:
+            logger.debug("Failed to compute soft regime, falling back to hard detect", exc_info=True)
+            return None
 
     @staticmethod
     def _effective_affinity(
@@ -663,6 +693,18 @@ class SignalModule:
         report["performance_profile"] = expectancy_rows
         return report
 
+    def session_performance(self) -> dict[str, Any]:
+        """返回日内策略绩效追踪器的状态快照。"""
+        if self._performance_tracker is None:
+            return {"enabled": False}
+        return self._performance_tracker.describe()
+
+    def session_performance_ranking(self) -> list[dict[str, Any]]:
+        """返回按绩效乘数排序的策略排名。"""
+        if self._performance_tracker is None:
+            return []
+        return self._performance_tracker.strategy_ranking()
+
     def list_composite_strategies(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for name in self.list_strategies():
@@ -766,6 +808,8 @@ class SignalModule:
                 symbol=payload.get("symbol"),
             ),
             "composite_strategies": self.list_composite_strategies,
+            "session_performance": self.session_performance,
+            "session_performance_ranking": self.session_performance_ranking,
             "recent_by_trace_id": lambda: self.recent_by_trace_id(
                 trace_id=payload["trace_id"],
                 scope=payload.get("scope", "all"),

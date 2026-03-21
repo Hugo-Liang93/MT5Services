@@ -270,11 +270,19 @@ class MarketRegimeDetector:
             else:
                 scores[RegimeType.BREAKOUT] += 0.10
 
-        total = sum(scores.values()) or 1.0
-        probabilities = {
-            regime: score / total for regime, score in scores.items()
-        }
-        dominant_regime = max(probabilities, key=probabilities.get)
+        total = sum(scores.values())
+        if total < 1e-6:
+            # 所有分数极小时回退到均匀分布
+            probabilities = {regime: 0.25 for regime in RegimeType}
+        else:
+            probabilities = {
+                regime: score / total for regime, score in scores.items()
+            }
+            # 确保浮点归一化
+            p_sum = sum(probabilities.values())
+            if abs(p_sum - 1.0) > 1e-6 and p_sum > 0:
+                probabilities = {r: p / p_sum for r, p in probabilities.items()}
+        dominant_regime = max(probabilities, key=probabilities.get)  # type: ignore[arg-type]
         return SoftRegimeResult(
             dominant_regime=dominant_regime,
             probabilities=probabilities,
@@ -430,7 +438,15 @@ class RegimeTracker:
 
     def _compute_multiplier(self, bars: int) -> float:
         ratio = min(1.0, bars / self._min_bars)
-        return 1.0 + (self._max_multiplier - 1.0) * ratio
+        base = 1.0 + (self._max_multiplier - 1.0) * ratio
+        # 超长连续后轻微衰减：超过 min_bars × 10 后乘数开始回落
+        # 防止长期盘整/趋势中稳定性加成永远保持最大值
+        decay_start = self._min_bars * 10
+        if bars > decay_start:
+            excess = bars - decay_start
+            decay_factor = max(0.5, 1.0 - excess * 0.01)
+            return 1.0 + (base - 1.0) * decay_factor
+        return base
 
     def describe(self) -> Dict[str, Any]:
         """返回当前跟踪状态，用于监控端点。"""

@@ -491,75 +491,12 @@ class OptimizedPipeline:
         indicators: Optional[List[str]] = None,
         scope: str = "confirmed",
     ) -> Dict[str, Any]:
-        """
-        计算指标
-        
-        Args:
-            symbol: 交易品种
-            timeframe: 时间框架
-            bars: K线数据
-            indicators: 需要计算的指标列表，如果为None则计算所有
-            
-        Returns:
-            计算结果字典
-        """
-        start_time = time.time()
-        
-        try:
-            # 确定要计算的指标
-            if indicators is None:
-                indicators = list(self.dependency_manager.indicator_funcs.keys())
-            
-            # 获取执行顺序（按依赖层级分组）
-            execution_groups = self.dependency_manager.get_parallelizable_groups(indicators)
-            
-            # 创建计算上下文
-            context = ComputationContext(
-                symbol=symbol,
-                timeframe=timeframe,
-                bars=bars,
-                config=self.config,
-                results={},
-                dependencies={ind: self.dependency_manager.get_dependencies(ind)
-                            for ind in indicators},
-                start_time=start_time,
-                scope=scope,
-            )
+        """计算指标（不含 on_level_complete 回调的简化入口）。"""
+        return self._compute_internal(
+            symbol, timeframe, bars,
+            indicators=indicators, scope=scope,
+        )
 
-            # 按层级计算
-            for level_indicators in execution_groups:
-                # 计算当前层级
-                level_results = self._compute_parallel_group(level_indicators, context)
-                
-                # 更新结果
-                context.results.update(level_results)
-                
-                # 更新统计
-                self.computation_stats["total_computations"] += len(level_indicators)
-            
-            # 计算总耗时
-            total_time = time.time() - start_time
-            
-            self._compute_log_counter += 1
-            message = (
-                f"Pipeline computation completed: "
-                f"{len(indicators)} indicators, "
-                f"{len(execution_groups)} levels, "
-                f"{total_time*1000:.2f}ms"
-            )
-            if total_time >= 0.5 or self._compute_log_counter % 100 == 0:
-                logger.info(message)
-            else:
-                logger.debug(message)
-            
-            return context.results
-            
-        except Exception as e:
-            logger.error(f"Pipeline computation failed: {e}")
-            
-            # 返回空结果
-            return {}
-    
     def compute_staged(
         self,
         symbol: str,

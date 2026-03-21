@@ -24,6 +24,7 @@ class RsiReversionStrategy:
     """
 
     name = "rsi_reversion"
+    category = "reversion"
     required_indicators = ("rsi14",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
@@ -91,6 +92,7 @@ class WilliamsRStrategy:
     """
 
     name = "williams_r"
+    category = "reversion"
     required_indicators = ("williamsr14",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
@@ -164,6 +166,7 @@ class CciReversionStrategy:
     """
 
     name = "cci_reversion"
+    category = "reversion"
     required_indicators = ("cci20",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
@@ -233,6 +236,7 @@ class StochRsiStrategy:
     """
 
     name = "stoch_rsi"
+    category = "reversion"
     required_indicators = ("stoch_rsi14",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
