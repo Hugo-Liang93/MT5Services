@@ -302,6 +302,15 @@ class SignalModule:
         else:
             calibrated = raw_post_affinity
 
+        # ── 多层压制底线保护 ─────────────────────────────────────────────
+        # regime_affinity × session_performance × calibrator 的乘法链可能导致
+        # 置信度被过度压制（如 0.80 × 0.70 × 0.60 × 0.90 = 0.30）。
+        # 设置底线，确保原始置信度较高的信号不会被完全淹没。
+        # 底线仅在原始 confidence > 0 时生效（hold 信号不受影响）。
+        _MIN_CALIBRATED_FLOOR = 0.10
+        if decision.confidence > 0 and calibrated < _MIN_CALIBRATED_FLOOR:
+            calibrated = _MIN_CALIBRATED_FLOOR
+
         decision = dataclasses.replace(
             decision,
             confidence=calibrated,
@@ -381,7 +390,11 @@ class SignalModule:
                 logger.debug("Invalid precomputed soft regime payload", exc_info=True)
         if not self._soft_regime_enabled:
             return None
-        return self._regime_detector.detect_soft(indicators)
+        try:
+            return self._regime_detector.detect_soft(indicators)
+        except Exception:
+            logger.debug("Failed to compute soft regime, falling back to hard detect", exc_info=True)
+            return None
 
     @staticmethod
     def _effective_affinity(

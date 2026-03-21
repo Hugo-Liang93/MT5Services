@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
 
+from ..evaluation.indicators_helpers import get_close
 from ..evaluation.regime import (
     MarketRegimeDetector,
     RegimeTracker,
@@ -39,32 +40,8 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_close_price(indicators: Dict[str, Dict[str, float]]) -> Optional[float]:
-    """从完整指标快照中提取收盘价。
-
-    扫描顺序（精确度由高到低）：
-    1. 任意 payload 含 ``close`` 字段（boll20、donchian 均直接附带原始 close）
-    2. 任意 payload 含 ``bb_mid``（Bollinger 中轨 = SMA(close, 20)，误差可接受）
-
-    不使用 sma/ema 值，它们是滞后移动均线，不适合作为当根 bar 的价格代理。
-    """
-    bb_mid: Optional[float] = None
-    for payload in indicators.values():
-        if not isinstance(payload, dict):
-            continue
-        close = payload.get("close")
-        if close is not None:
-            try:
-                return float(close)
-            except (TypeError, ValueError):
-                pass
-        if bb_mid is None:
-            mid = payload.get("bb_mid")
-            if mid is not None:
-                try:
-                    bb_mid = float(mid)
-                except (TypeError, ValueError):
-                    pass
-    return bb_mid
+    """从完整指标快照中提取收盘价（委托给 indicators_helpers.get_close）。"""
+    return get_close(indicators)
 
 
 class SnapshotSource(Protocol):
@@ -897,7 +874,20 @@ class SignalRuntime:
 
             required_indicators = self._strategy_requirements.get(strategy, ())
             if required_indicators:
-                if any(ind not in indicators for ind in required_indicators):
+                missing = [ind for ind in required_indicators if ind not in indicators]
+                if missing:
+                    # 低频日志：每个 (symbol, tf, strategy) 组合每 100 次缺失只记录一次
+                    miss_key = (symbol, timeframe, strategy)
+                    miss_count = getattr(self, "_indicator_miss_counts", {})
+                    if not hasattr(self, "_indicator_miss_counts"):
+                        self._indicator_miss_counts: dict[tuple[str, str, str], int] = {}
+                        miss_count = self._indicator_miss_counts
+                    miss_count[miss_key] = miss_count.get(miss_key, 0) + 1
+                    if miss_count[miss_key] <= 1 or miss_count[miss_key] % 100 == 0:
+                        logger.warning(
+                            "Strategy %s/%s/%s skipped: missing indicators %s (count=%d)",
+                            symbol, timeframe, strategy, missing, miss_count[miss_key],
+                        )
                     continue
                 scoped_indicators = {
                     ind: indicators[ind] for ind in required_indicators
@@ -995,7 +985,12 @@ class SignalRuntime:
         cache_key = (symbol, timeframe)
         cached = self._market_structure_cache.get(cache_key)
         if scope == "intrabar" and cached is not None:
-            return dict(cached.get("context") or {})
+            # TTL 检查：缓存超过 5 分钟则视为过时，重新计算
+            cached_event_time = cached.get("event_time")
+            _STRUCTURE_CACHE_TTL = timedelta(seconds=300)
+            if cached_event_time is not None and (event_time - cached_event_time) < _STRUCTURE_CACHE_TTL:
+                return dict(cached.get("context") or {})
+            # 缓存过时，继续往下重新计算
 
         context = analyzer.analyze(
             symbol,
@@ -1318,6 +1313,13 @@ class SignalRuntime:
         ]
         for key in stale_keys:
             self._vote_fusion_cache.pop(key, None)
+        # 全局容量上限：防止高时间框架缓存无限积累导致内存泄漏
+        _MAX_FUSION_CACHE = 5000
+        if len(self._vote_fusion_cache) > _MAX_FUSION_CACHE:
+            sorted_keys = sorted(self._vote_fusion_cache.keys(), key=lambda k: k[2])
+            to_remove = sorted_keys[: len(sorted_keys) - _MAX_FUSION_CACHE]
+            for key in to_remove:
+                self._vote_fusion_cache.pop(key, None)
 
     def _loop(self) -> None:
         """主事件循环，带指数退避以防止异常风暴。
@@ -1326,11 +1328,19 @@ class SignalRuntime:
         异常情况：等待时间翻倍（1→2→4→...→30 秒上限），让错误有喘息时间。
         """
         backoff: float = 0.0
+        _session_check_counter = 0
         while not self._stop.is_set():
             try:
                 self.process_next_event(timeout=0.5)
                 backoff = 0.0  # 成功后重置退避
                 self._consecutive_loop_errors = 0
+                # 每 200 次事件检查一次 PerformanceTracker session 重置
+                _session_check_counter += 1
+                if _session_check_counter >= 200:
+                    _session_check_counter = 0
+                    perf_tracker = getattr(self.service, "_performance_tracker", None)
+                    if perf_tracker is not None:
+                        perf_tracker.check_session_reset()
             except Exception as exc:
                 self._last_error = str(exc)
                 self._consecutive_loop_errors += 1

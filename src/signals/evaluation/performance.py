@@ -47,6 +47,7 @@ StrategyPerformanceTracker 是纯内存的日内实时反馈层：
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -100,6 +101,9 @@ class _StrategyStats:
         return abs(self.total_win_pnl / self.total_loss_pnl)
 
     def record(self, won: bool, pnl: float) -> None:
+        # NaN/Inf 防守：防止污染统计数据
+        if not math.isfinite(pnl):
+            pnl = 0.0
         if won:
             self.wins += 1
             self.total_win_pnl += pnl
@@ -192,7 +196,8 @@ class StrategyPerformanceTracker:
 
     def register_strategy(self, strategy_name: str, category: str) -> None:
         """注册策略与其分类的映射关系。启动时由 SignalModule 调用。"""
-        self._strategy_categories[strategy_name] = category
+        with self._lock:
+            self._strategy_categories[strategy_name] = category
 
     # ------------------------------------------------------------------
     # Data input
@@ -256,8 +261,8 @@ class StrategyPerformanceTracker:
                 # 样本不足：混合个体和分类数据
                 individual = self._compute_multiplier(stats)
                 cat_mult = self._category_fallback_multiplier(strategy)
-                # 随样本增加，个体权重从 0 线性增长到 1
-                weight = stats.total / self._config.category_fallback_min_samples
+                # 平方根权重（比线性更平滑，避免从 threshold-1 到 threshold 的跳变）
+                weight = (stats.total / self._config.category_fallback_min_samples) ** 0.5
                 return individual * weight + cat_mult * (1.0 - weight)
 
             return self._compute_multiplier(stats)
@@ -307,6 +312,9 @@ class StrategyPerformanceTracker:
             elif pf > 2.0:
                 # 高 profit factor → 微幅提升
                 multiplier *= 1.05
+        elif pf is None and stats.losses > 0 and stats.total_win_pnl == 0 and stats.total >= 2:
+            # 纯亏损情况（有 losses 但 win pnl 全为 0），PF 无法计算但仍应压制
+            multiplier *= 0.90
 
         # Clamp to bounds
         return max(cfg.min_multiplier, min(cfg.max_multiplier, multiplier))

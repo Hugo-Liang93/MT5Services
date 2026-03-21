@@ -437,9 +437,10 @@ def test_phase2_strategies_apply_expected_regime_affinity(
 
     assert raw.action == expected_action
     assert decision.action == expected_action
-    assert decision.confidence == pytest.approx(
-        raw.confidence * strategy.regime_affinity[regime]
-    )
+    expected_conf = raw.confidence * strategy.regime_affinity[regime]
+    # 多层压制底线保护：service.py 中 _MIN_CALIBRATED_FLOOR = 0.10
+    expected_conf = max(expected_conf, 0.10) if raw.confidence > 0 else expected_conf
+    assert decision.confidence == pytest.approx(expected_conf)
 
 
 class Phase2IndicatorSource:
