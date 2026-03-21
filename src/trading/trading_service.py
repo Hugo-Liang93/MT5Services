@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
 from src.clients.mt5_account import MT5AccountClient
-from src.risk.service import PreTradeRiskService
+from src.risk.service import PreTradeRiskBlockedError, PreTradeRiskService
 
 
 class TradingService:
@@ -27,6 +27,95 @@ class TradingService:
             else (MT5AccountClient() if client is None else None)
         )
         self.pre_trade_risk_service = pre_trade_risk_service
+
+    @staticmethod
+    def _is_gold_symbol(symbol: str) -> bool:
+        normalized = str(symbol or "").strip().upper()
+        return normalized.startswith("XAUUSD")
+
+    @staticmethod
+    def _request_tag(request_id: str) -> str:
+        normalized = "".join(ch for ch in str(request_id or "") if ch.isalnum())
+        return normalized[:8].lower()
+
+    def _tagged_comment(self, comment: str, request_id: str) -> str:
+        tag = self._request_tag(request_id)
+        base = str(comment or "").strip() or "trade"
+        if not tag:
+            return base
+        suffix = f"_r{tag}"
+        if base.endswith(suffix):
+            return base
+        trimmed = base[: max(0, 27 - len(suffix))]
+        return f"{trimmed}{suffix}"
+
+    def _recover_trade_from_state(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        tagged_comment: str,
+        request_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        target_comment = str(tagged_comment or "").strip()
+        if not target_comment or self.account_client is None:
+            return None
+
+        side_value = str(side or "").strip().lower()
+        for position in self.get_positions(symbol=symbol):
+            if str(getattr(position, "comment", "") or "").strip() != target_comment:
+                continue
+            return {
+                "ticket": int(getattr(position, "ticket", 0) or 0),
+                "order": 0,
+                "deal": 0,
+                "fill_price": float(getattr(position, "price_open", 0.0) or 0.0),
+                "price": float(getattr(position, "price_open", 0.0) or 0.0),
+                "requested_price": None,
+                "symbol": symbol,
+                "volume": float(getattr(position, "volume", 0.0) or 0.0),
+                "side": side_value,
+                "comment": target_comment,
+                "request_id": request_id,
+                "recovered_from_state": True,
+                "state_source": "positions",
+            }
+        for order in self.get_orders(symbol=symbol):
+            if str(getattr(order, "comment", "") or "").strip() != target_comment:
+                continue
+            return {
+                "ticket": int(getattr(order, "ticket", 0) or 0),
+                "order": int(getattr(order, "ticket", 0) or 0),
+                "deal": 0,
+                "fill_price": float(getattr(order, "price_open", 0.0) or 0.0),
+                "price": float(getattr(order, "price_open", 0.0) or 0.0),
+                "requested_price": float(getattr(order, "price_open", 0.0) or 0.0),
+                "symbol": symbol,
+                "volume": float(getattr(order, "volume", 0.0) or 0.0),
+                "side": side_value,
+                "comment": target_comment,
+                "request_id": request_id,
+                "recovered_from_state": True,
+                "state_source": "orders",
+                "pending": True,
+            }
+        return None
+
+    @staticmethod
+    def _coerce_trade_guard_block(
+        assessment: Dict[str, Any],
+        *,
+        reason: str,
+    ) -> Dict[str, Any]:
+        updated = dict(assessment or {})
+        updated["action"] = "block"
+        updated["blocked"] = True
+        updated["reason"] = reason
+        warnings = list(updated.get("warnings") or [])
+        if reason not in warnings:
+            warnings.append(reason)
+        updated["warnings"] = warnings
+        return updated
 
     @staticmethod
     def _blocked_precheck_response(
@@ -124,12 +213,13 @@ class TradingService:
 
     def modify_positions(
         self,
+        ticket: Optional[int] = None,
         symbol: Optional[str] = None,
         magic: Optional[int] = None,
         sl: Optional[float] = None,
         tp: Optional[float] = None,
     ) -> dict:
-        return self.client.modify_positions(symbol=symbol, magic=magic, sl=sl, tp=tp)
+        return self.client.modify_positions(ticket=ticket, symbol=symbol, magic=magic, sl=sl, tp=tp)
 
     def _side_to_order_type(self, side: str, order_kind: str = "market") -> int:
         if hasattr(self.client, "side_and_kind_to_order_type"):
@@ -166,6 +256,7 @@ class TradingService:
     ) -> dict:
         request_id = request_id or uuid4().hex
         risk_assessment: Optional[Dict[str, Any]] = None
+        tagged_comment = self._tagged_comment(comment, request_id)
         if self.pre_trade_risk_service is not None:
             risk_assessment = self.pre_trade_risk_service.enforce_trade_allowed(
                 symbol=symbol,
@@ -176,7 +267,7 @@ class TradingService:
                 sl=sl,
                 tp=tp,
                 deviation=deviation,
-                comment=comment,
+                comment=tagged_comment,
                 magic=magic,
                 metadata=metadata,
             )
@@ -195,10 +286,19 @@ class TradingService:
             sl=sl,
             tp=tp,
             deviation=deviation,
-            comment=comment,
+            comment=tagged_comment,
             magic=magic,
             metadata=metadata,
         )
+        if self._is_gold_symbol(symbol) and bool(precheck_snapshot.get("event_blocked")):
+            blocked_snapshot = self._coerce_trade_guard_block(
+                precheck_snapshot,
+                reason="xauusd_trade_guard_blocked",
+            )
+            raise PreTradeRiskBlockedError(
+                blocked_snapshot["reason"],
+                assessment=blocked_snapshot,
+            )
         if dry_run:
             return {
                 "request_id": request_id,
@@ -208,6 +308,7 @@ class TradingService:
                 "side": side,
                 "order_kind": order_kind,
                 "requested_price": price,
+                "comment": tagged_comment,
                 "estimated_margin": margin_estimate,
                 "pre_trade_risk": risk_assessment,
                 "precheck": precheck_snapshot,
@@ -231,12 +332,22 @@ class TradingService:
                         sl=sl,
                         tp=tp,
                         deviation=deviation,
-                        comment=comment,
+                        comment=tagged_comment,
                         magic=magic,
                     )
                     result["execution_attempts"] = attempt
                     break
                 except Exception as exc:
+                    recovered = self._recover_trade_from_state(
+                        symbol=symbol,
+                        side=side,
+                        tagged_comment=tagged_comment,
+                        request_id=request_id,
+                    )
+                    if recovered is not None:
+                        recovered["execution_attempts"] = attempt
+                        result = recovered
+                        break
                     last_error = exc
                     if attempt >= max_attempts:
                         raise
@@ -253,10 +364,17 @@ class TradingService:
                 sl=sl,
                 tp=tp,
                 deviation=deviation,
-                comment=comment,
+                comment=tagged_comment,
                 magic=magic,
             )
-            result = {"ticket": ticket, "price": price, "execution_attempts": 1}
+            result = {
+                "ticket": ticket,
+                "price": price,
+                "requested_price": price,
+                "fill_price": price,
+                "execution_attempts": 1,
+                "comment": tagged_comment,
+            }
 
         self._invalidate_account_cache()
         try:
@@ -281,6 +399,7 @@ class TradingService:
                 "side": side,
                 "order_kind": order_kind,
                 "requested_price": price,
+                "comment": tagged_comment,
                 "estimated_margin": margin_estimate,
                 "pre_trade_risk": risk_assessment,
                 "precheck": precheck_snapshot,
@@ -316,6 +435,34 @@ class TradingService:
                 warnings=warnings,
                 suggested_adjustment={"volume": 0.01},
             )
+        # ── Broker 约束检查（独立于 validate_trade_request，提供结构化结果）──
+        if side and hasattr(self.client, "check_broker_constraints"):
+            try:
+                broker_checks = self.client.check_broker_constraints(
+                    symbol=symbol,
+                    side=side,
+                    request_price=price,
+                    sl=sl,
+                    tp=tp,
+                )
+                checks.extend(broker_checks)
+                broker_failures = [c for c in broker_checks if not c["passed"]]
+                if broker_failures:
+                    reason = "; ".join(c["message"] for c in broker_failures)
+                    return self._blocked_precheck_response(
+                        symbol=symbol,
+                        request_id=request_id,
+                        reason=reason,
+                        checks=checks,
+                        warnings=warnings,
+                        suggested_adjustment={"action": "adjust_sl_tp_or_wait"},
+                    )
+                # freeze_level 提示作为 warning
+                for c in broker_checks:
+                    if c["name"] == "freeze_level":
+                        warnings.append(c["message"])
+            except Exception as exc:
+                warnings.append(f"Broker constraint check unavailable: {exc}")
         if volume is not None and side and hasattr(self.client, "validate_trade_request"):
             try:
                 self.client.validate_trade_request(
@@ -369,6 +516,11 @@ class TradingService:
         assessment["estimated_margin"] = None
         assessment.setdefault("warnings", [])
         assessment.setdefault("checks", [])
+        # 合并前面收集的 broker 约束检查结果和 warnings
+        if checks:
+            assessment["checks"] = checks + assessment["checks"]
+        if warnings:
+            assessment["warnings"] = warnings + assessment["warnings"]
         if volume is not None and side:
             try:
                 assessment["estimated_margin"] = self.estimate_margin(
@@ -389,6 +541,21 @@ class TradingService:
         else:
             assessment["suggested_adjustment"] = None
         return assessment
+
+    def get_position_close_details(
+        self,
+        ticket: int,
+        *,
+        symbol: Optional[str] = None,
+        lookback_days: int = 7,
+    ) -> Optional[Dict[str, Any]]:
+        if not hasattr(self.client, "get_position_close_details"):
+            return None
+        return self.client.get_position_close_details(
+            ticket=ticket,
+            symbol=symbol,
+            lookback_days=lookback_days,
+        )
 
     def close_position(
         self,

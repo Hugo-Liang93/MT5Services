@@ -58,6 +58,12 @@ class SymbolInfo:
     margin_maintenance: float
     tick_value: float
     tick_size: float
+    # Broker 约束：SL/TP 最小距离（以 points 为单位，0 表示使用当前 spread）
+    stops_level: int = 0
+    # Broker 约束：冻结距离（价格在此范围内时不可修改 SL/TP/挂单）
+    freeze_level: int = 0
+    # Broker 约束：交易模式（0=DISABLED, 1=LONGONLY, 2=SHORTONLY, 3=CLOSEONLY, 4=FULL）
+    trade_mode: int = 4
 
 
 TIMEFRAME_MAP = {
@@ -107,6 +113,9 @@ class MT5MarketClient(MT5BaseClient):
             margin_maintenance=float(self._get_field(info, "margin_maintenance", 0.0) or 0.0),
             tick_value=float(self._get_field(info, "trade_tick_value", 0.0) or 0.0),
             tick_size=float(self._get_field(info, "trade_tick_size", 0.0) or 0.0),
+            stops_level=self._int_field(info, "trade_stops_level", 0),
+            freeze_level=self._int_field(info, "trade_freeze_level", 0),
+            trade_mode=self._int_field(info, "trade_mode", 4),
         )
 
     @MT5BaseClient.measured("get_quote")

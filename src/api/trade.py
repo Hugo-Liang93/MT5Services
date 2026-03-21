@@ -4,7 +4,12 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from src.api.deps import get_signal_service, get_trading_service
+from src.api.deps import (
+    get_position_manager,
+    get_signal_service,
+    get_trade_executor,
+    get_trading_service,
+)
 from src.api.trade_dispatcher import TradeAPIDispatcher
 from src.api.error_codes import AIErrorAction, AIErrorCode, get_trade_error_details
 from src.api.schemas import (
@@ -23,6 +28,8 @@ from src.api.schemas import (
     TradePrecheckModel,
     TradeRequest,
     TradeDispatchRequest,
+    TradeControlRequest,
+    TradeReconcileRequest,
     SignalExecuteTradeRequest,
     TradingAccountModel,
 )
@@ -30,6 +37,8 @@ from src.clients.base import MT5TradeError
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.service import SignalModule
 from src.trading.sizing import compute_trade_params, extract_atr_from_indicators
+from src.trading.position_manager import PositionManager
+from src.trading.signal_executor import TradeExecutor
 from src.trading.service import TradingModule
 
 router = APIRouter(tags=["trade"])
@@ -84,6 +93,63 @@ def trade_daily_summary(
             "operation": "daily_summary",
             "account_alias": service.active_account_alias,
         },
+    )
+
+
+@router.get("/trade/control", response_model=ApiResponse[dict])
+def trade_control_status(
+    service: TradingModule = Depends(get_trading_service),
+    executor: TradeExecutor = Depends(get_trade_executor),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data={
+            "trade_control": service.trade_control_status(),
+            "executor": executor.status(),
+        },
+        metadata={"operation": "trade_control_status"},
+    )
+
+
+@router.post("/trade/control", response_model=ApiResponse[dict])
+def trade_control_update(
+    request: TradeControlRequest,
+    service: TradingModule = Depends(get_trading_service),
+    executor: TradeExecutor = Depends(get_trade_executor),
+) -> ApiResponse[dict]:
+    control = service.update_trade_control(
+        auto_entry_enabled=request.auto_entry_enabled,
+        close_only_mode=request.close_only_mode,
+        reason=request.reason,
+    )
+    if request.reset_circuit:
+        executor.reset_circuit()
+    return ApiResponse.success_response(
+        data={
+            "trade_control": control,
+            "executor": executor.status(),
+        },
+        metadata={
+            "operation": "trade_control_update",
+            "reset_circuit": request.reset_circuit,
+        },
+    )
+
+
+@router.post("/trade/reconcile", response_model=ApiResponse[dict])
+def trade_reconcile(
+    request: TradeReconcileRequest,
+    manager: PositionManager = Depends(get_position_manager),
+) -> ApiResponse[dict]:
+    reconcile_result = (
+        manager.sync_open_positions() if request.sync_open_positions else {"skipped": True}
+    )
+    return ApiResponse.success_response(
+        data={
+            "reconcile": reconcile_result,
+            "position_manager": manager.status(),
+            "tracked_positions": manager.active_positions(),
+        },
+        metadata={"operation": "trade_reconcile"},
     )
 
 
@@ -337,6 +403,18 @@ def trade_from_signal(
         "sl": params.stop_loss,
         "tp": params.take_profit,
         "comment": f"agent:{signal_row.get('strategy')}:{action}:{request.signal_id[:8]}",
+        "request_id": request.signal_id,
+        "metadata": {
+            "entry_origin": "auto",
+            "regime": signal_row.get("metadata", {}).get("regime") if isinstance(signal_row.get("metadata"), dict) else None,
+            "signal": {
+                "signal_id": request.signal_id,
+                "strategy": signal_row.get("strategy"),
+                "timeframe": signal_row.get("timeframe"),
+                "confidence": signal_row.get("confidence"),
+                "action": action,
+            },
+        },
     }
     meta = {
         "operation": "trade_from_signal",

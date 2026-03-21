@@ -196,6 +196,7 @@ class SignalRuntime:
                     group_name=group.name,
                     consensus_threshold=group.consensus_threshold,
                     min_quorum=group.min_quorum,
+                    min_quorum_ratio=group.min_quorum_ratio,
                     disagreement_penalty=group.disagreement_penalty,
                 ),
             )
@@ -895,13 +896,16 @@ class SignalRuntime:
             else:
                 scoped_indicators = indicators
 
-            # Pre-flight affinity gate
+            # Pre-flight affinity gate — 计算结果传递给 evaluate() 复用
             if min_affinity_skip > 0.0:
                 affinity = self._effective_affinity(
                     strategy, regime, regime_metadata.get("_soft_regime")
                 )
                 if affinity < min_affinity_skip:
                     continue
+                regime_metadata["_pre_computed_affinity"] = affinity
+            else:
+                regime_metadata.pop("_pre_computed_affinity", None)
 
             with shard_lock:
                 state = self._state_by_target.setdefault(
@@ -1033,7 +1037,8 @@ class SignalRuntime:
             },
         )
         group_key = (symbol, timeframe, group_name)
-        with self._state_lock:
+        shard_lock = self._get_shard_lock(symbol, timeframe)
+        with shard_lock:
             group_state = self._state_by_target.setdefault(
                 group_key, RuntimeSignalState()
             )

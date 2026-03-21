@@ -18,6 +18,7 @@ from src.signals.evaluation.performance import (
     StrategyPerformanceTracker,
 )
 
+from src.signals.evaluation.regime import MarketRegimeDetector
 from src.signals.service import SignalModule
 from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 from src.signals.orchestration.policy import VotingGroupConfig
@@ -29,6 +30,60 @@ from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
+
+
+import logging as _logging
+
+_factory_logger = _logging.getLogger(__name__)
+
+
+def _apply_strategy_config_overrides(module: SignalModule, signal_config) -> None:
+    """从 signal_config 应用 strategy_params 和 regime_affinity_overrides 到已注册策略。
+
+    strategy_params 格式：``{"supertrend__adx_threshold": 23.0, "rsi_reversion__oversold": 30}``
+    → 设置 strategy._adx_threshold = 23.0，strategy 由名称 "supertrend" 查找。
+
+    regime_affinity_overrides 格式：``{"supertrend": {"trending": 1.0, "ranging": 0.15}}``
+    → 覆盖 strategy.regime_affinity 中对应的 RegimeType 键。
+    """
+    from src.signals.evaluation.regime import RegimeType
+
+    strategies = module._strategies  # name → strategy instance
+
+    # ── strategy_params 覆盖 ──────────────────────────────────────────
+    for compound_key, value in signal_config.strategy_params.items():
+        parts = compound_key.split("__", 1)
+        if len(parts) != 2:
+            continue
+        strategy_name, param_name = parts
+        strategy = strategies.get(strategy_name)
+        if strategy is None:
+            continue
+        attr_name = f"_{param_name}"
+        if hasattr(strategy, attr_name):
+            setattr(strategy, attr_name, value)
+            _factory_logger.debug(
+                "strategy_params: %s.%s = %s", strategy_name, attr_name, value
+            )
+
+    # ── regime_affinity_overrides 覆盖 ────────────────────────────────
+    _regime_map = {
+        "trending": RegimeType.TRENDING,
+        "ranging": RegimeType.RANGING,
+        "breakout": RegimeType.BREAKOUT,
+        "uncertain": RegimeType.UNCERTAIN,
+    }
+    for strategy_name, affinity_dict in signal_config.regime_affinity_overrides.items():
+        strategy = strategies.get(strategy_name)
+        if strategy is None:
+            continue
+        for regime_key, weight in affinity_dict.items():
+            regime_type = _regime_map.get(regime_key.lower())
+            if regime_type is not None and hasattr(strategy, "regime_affinity"):
+                strategy.regime_affinity[regime_type] = weight
+        _factory_logger.debug(
+            "regime_affinity override: %s → %s", strategy_name, strategy.regime_affinity
+        )
 
 
 def build_performance_tracker_config(signal_config) -> PerformanceTrackerConfig:
@@ -137,6 +192,7 @@ def build_signal_policy(signal_config) -> SignalPolicy:
             strategies=frozenset(cfg["strategies"]),
             consensus_threshold=cfg.get("consensus_threshold", 0.40),
             min_quorum=cfg.get("min_quorum", 2),
+            min_quorum_ratio=cfg.get("min_quorum_ratio", 0.0),
             disagreement_penalty=cfg.get("disagreement_penalty", 0.50),
         )
         for cfg in signal_config.voting_group_configs
@@ -184,6 +240,12 @@ def build_signal_components(
             compression_reference_bars=signal_config.market_structure_reference_window_bars,
         ),
     )
+    # ── Regime 检测器（使用配置化阈值）─────────────────────────────────
+    regime_detector = MarketRegimeDetector(
+        adx_trending_threshold=signal_config.regime_adx_trending_threshold,
+        adx_ranging_threshold=signal_config.regime_adx_ranging_threshold,
+        bb_tight_pct=signal_config.regime_bb_tight_pct,
+    )
     calibrator = ConfidenceCalibrator(
         fetch_winrates_fn=storage_writer.db.fetch_winrates,
         alpha=0.15,
@@ -202,6 +264,8 @@ def build_signal_components(
         calibrator=calibrator,
         performance_tracker=performance_tracker,
         soft_regime_enabled=signal_config.soft_regime_enabled,
+        confidence_floor=signal_config.confidence_floor,
+        regime_detector=regime_detector,
     )
 
     # 根据当前实际配置的时间框架决定 LTF→HTF 映射。
@@ -215,11 +279,27 @@ def build_signal_components(
         None,
     )
     htf_map = {"M1": m1_htf} if m1_htf else {}
+    # 多组投票模式下，HTFStateCache 需监听 voting group 信号而非 consensus。
+    # 自动推导 source_strategies：有 voting_groups 时用 group name，否则用 "consensus"。
+    htf_source_strategies: frozenset[str] | None = None
+    if signal_config.voting_group_configs:
+        group_names = frozenset(
+            cfg["name"]
+            for cfg in signal_config.voting_group_configs
+            if cfg.get("name")
+        )
+        if group_names:
+            htf_source_strategies = group_names
     htf_cache = HTFStateCache(
         htf_map=htf_map if htf_map else None,
         max_age_seconds=signal_config.htf_cache_max_age_seconds,
+        source_strategies=htf_source_strategies,
     )
     register_all_strategies(signal_module, htf_cache)
+
+    # ── 应用配置化参数覆盖 ────────────────────────────────────────────
+    _apply_strategy_config_overrides(signal_module, signal_config)
+
     # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar 指标集合，
     # 注入到 indicator_manager。
     indicator_manager.set_intrabar_eligible_override(
@@ -246,6 +326,7 @@ def build_signal_components(
         policy=signal_policy,
         filter_chain=filter_chain,
         market_structure_analyzer=market_structure_analyzer,
+        regime_detector=regime_detector,
     )
 
     position_manager = PositionManager(
@@ -263,6 +344,9 @@ def build_signal_components(
     )
 
     persist_execution_fn = getattr(storage_writer.db, "write_auto_executions", None)
+    # signal_quality_tracker 在 trade_executor 之后创建，
+    # 使用延迟绑定 lambda 确保引用正确。
+    _skip_callback_holder: list = []
     trade_executor = TradeExecutor(
         trading_module=trade_module,
         config=build_executor_config(signal_config),
@@ -270,12 +354,22 @@ def build_signal_components(
         htf_cache=htf_cache,
         persist_execution_fn=persist_execution_fn,
         trade_outcome_tracker=trade_outcome_tracker,
+        on_execution_skip=lambda sid, reason: (
+            _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
+        ),
     )
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)
     htf_cache.attach(signal_runtime)
 
     # 接线：PositionManager 关仓时通知 TradeOutcomeTracker
     position_manager.add_close_callback(trade_outcome_tracker.on_position_closed)
+    position_manager.set_recovery_hooks(
+        position_context_resolver=lambda ticket, comment: trade_module.resolve_position_context(
+            ticket=ticket,
+            comment=comment,
+        ),
+        recovered_position_callback=trade_outcome_tracker.restore_tracked_position,
+    )
 
     # 信号质量追踪器：N bars 后评估信号预测质量（供 Calibrator 长期统计校准）
     signal_quality_tracker = SignalQualityTracker(
@@ -285,6 +379,8 @@ def build_signal_components(
         on_quality_fn=performance_tracker.record_outcome,
     )
     signal_quality_tracker.attach(signal_runtime)
+    # 绑定延迟引用：TradeExecutor skip → SignalQualityTracker.on_execution_skip
+    _skip_callback_holder.append(signal_quality_tracker.on_execution_skip)
 
     return SignalComponents(
         calibrator=calibrator,

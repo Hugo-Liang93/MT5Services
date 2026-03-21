@@ -166,7 +166,13 @@ class SignalEventRepository:
                     params.get("rr"),
                     bool(entry.get("success")),
                     entry.get("error"),
-                    self._writer._json({}),
+                    self._writer._json(
+                        {
+                            "cost": entry.get("cost") or {},
+                            "execution_quality": entry.get("execution_quality") or {},
+                            **(entry.get("metadata") or {}),
+                        }
+                    ),
                 )
             )
         if not batch:

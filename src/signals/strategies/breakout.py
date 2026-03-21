@@ -300,7 +300,7 @@ class DonchianBreakoutStrategy:
         RegimeType.UNCERTAIN: 0.45,
     }
 
-    def __init__(self, *, adx_min: float = 20.0) -> None:
+    def __init__(self, *, adx_min: float = 23.0) -> None:
         self._adx_min = adx_min
 
     def evaluate(self, context: SignalContext) -> SignalDecision:

@@ -220,6 +220,11 @@ class MT5BaseClient:
                 return val
         return val
 
+    def _int_field(self, obj, name: str, default: int = 0) -> int:
+        """读取整数字段，0 值安全（不会被 ``or`` 误吞）。"""
+        val = self._get_field(obj, name)
+        return int(val) if val is not None else default
+
     @contextmanager
     def _measure(self, name: str):
         """记录单次调用耗时/错误的上下文管理器。"""

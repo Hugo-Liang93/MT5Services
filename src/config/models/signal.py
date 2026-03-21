@@ -21,7 +21,7 @@ class SignalConfig(BaseModel):
     economic_lookback_minutes: int = 15
     economic_importance_min: int = 3
     min_preview_confidence: float = 0.55
-    min_preview_bar_progress: float = 0.2
+    min_preview_bar_progress: float = 0.15
     preview_stable_seconds: float = 15.0
     preview_cooldown_seconds: float = 30.0
     snapshot_dedupe_window_seconds: float = 1.0
@@ -63,6 +63,8 @@ class SignalConfig(BaseModel):
     perf_tracker_category_fallback_min_samples: int = 3
     perf_tracker_session_reset_interval_hours: int = 0
 
+    # ── 置信度底线 ──
+    confidence_floor: float = 0.10
     # ── HTF Cache ──
     htf_cache_max_age_seconds: int = 14400
     # ── Signal Quality Tracker ──
@@ -75,3 +77,22 @@ class SignalConfig(BaseModel):
     market_structure_open_range_minutes: int = 60
     market_structure_compression_window_bars: int = 6
     market_structure_reference_window_bars: int = 24
+
+    # ═══════════════════════════════════════════════════════════════
+    # Regime 检测阈值
+    # ═══════════════════════════════════════════════════════════════
+    regime_adx_trending_threshold: float = 23.0
+    regime_adx_ranging_threshold: float = 18.0
+    regime_bb_tight_pct: float = 0.008
+
+    # ═══════════════════════════════════════════════════════════════
+    # 策略级可调参数 — [strategy_params] section
+    # 键格式: <strategy_name>__<param_name>（双下划线分隔）
+    # ═══════════════════════════════════════════════════════════════
+    strategy_params: dict[str, float] = Field(default_factory=dict)
+
+    # ═══════════════════════════════════════════════════════════════
+    # Regime 亲和度覆盖 — [regime_affinity.<strategy>] section
+    # 键格式: <strategy_name> → {trending, ranging, breakout, uncertain}
+    # ═══════════════════════════════════════════════════════════════
+    regime_affinity_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)

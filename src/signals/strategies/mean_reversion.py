@@ -7,11 +7,66 @@ from __future__ import annotations
 
 import logging
 
+from typing import Dict, Optional, Tuple
+
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
 from .base import _resolve_indicator_value
 
 logger = logging.getLogger(__name__)
+
+
+def _get_delta(
+    indicators: Dict[str, Dict[str, object]],
+    indicator_name: str,
+    metric: str,
+    delta_bars: int = 3,
+) -> Optional[float]:
+    """从指标 payload 中提取 delta 值（如 rsi_d3）。"""
+    payload = indicators.get(indicator_name)
+    if not isinstance(payload, dict):
+        return None
+    val = payload.get(f"{metric}_d{delta_bars}")
+    return float(val) if isinstance(val, (int, float)) else None
+
+
+def _delta_momentum_bonus(
+    d3: Optional[float],
+    d5: Optional[float],
+    action: str,
+) -> Tuple[float, str]:
+    """根据 delta 指标计算均值回归策略的置信度修正。
+
+    核心逻辑：
+    - 买入信号 + 短期 delta > 0（指标已开始回升）→ 反转确认，加分
+    - 卖出信号 + 短期 delta < 0（指标已开始回落）→ 反转确认，加分
+    - 中期 delta 幅度大（|d5| 大）→ 深度超买超卖后反弹概率高，微加分
+
+    返回 (bonus, reason_suffix)。
+    """
+    bonus = 0.0
+    parts: list[str] = []
+
+    if d3 is not None:
+        # 短期反转确认：delta 方向与预期回归方向一致
+        if action == "buy" and d3 > 0:
+            bonus += min(d3 / 10.0, 0.05)  # 上限 +0.05
+            parts.append(f"d3_bounce={d3:+.1f}")
+        elif action == "sell" and d3 < 0:
+            bonus += min(abs(d3) / 10.0, 0.05)
+            parts.append(f"d3_bounce={d3:+.1f}")
+
+    if d5 is not None:
+        # 深度动量耗竭：大幅偏离暗示更强的均值回归概率
+        if action == "buy" and d5 < -8:
+            bonus += 0.03
+            parts.append(f"d5_exhaust={d5:+.1f}")
+        elif action == "sell" and d5 > 8:
+            bonus += 0.03
+            parts.append(f"d5_exhaust={d5:+.1f}")
+
+    suffix = ",".join(parts) if parts else ""
+    return bonus, suffix
 
 
 class RsiReversionStrategy:
@@ -28,11 +83,15 @@ class RsiReversionStrategy:
     required_indicators = ("rsi14",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
-        RegimeType.TRENDING:  0.25,  # 强趋势中 RSI 可长时间维持极值，逆势信号危险
-        RegimeType.RANGING:   1.00,  # 震荡区间均值回归是 RSI 的核心应用场景
-        RegimeType.BREAKOUT:  0.35,  # 突破初期 RSI 极值往往持续，不宜逆势
+        RegimeType.TRENDING:  0.25,
+        RegimeType.RANGING:   1.00,
+        RegimeType.BREAKOUT:  0.35,
         RegimeType.UNCERTAIN: 0.60,
     }
+
+    def __init__(self, *, overbought: float = 70, oversold: float = 30) -> None:
+        self._overbought = overbought
+        self._oversold = oversold
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         rsi_value, rsi_name = _resolve_indicator_value(
@@ -56,15 +115,26 @@ class RsiReversionStrategy:
             )
 
         rsi = rsi_value
-        if rsi <= 30:
+        if rsi <= self._oversold:
             action = "buy"
-            confidence = min((30 - rsi) / 30 + 0.4, 1.0)
-        elif rsi >= 70:
+            confidence = min((self._oversold - rsi) / 30 + 0.4, 1.0)
+        elif rsi >= self._overbought:
             action = "sell"
-            confidence = min((rsi - 70) / 30 + 0.4, 1.0)
+            confidence = min((rsi - self._overbought) / 30 + 0.4, 1.0)
         else:
             action = "hold"
             confidence = 0.2
+
+        delta_suffix = ""
+        if action in ("buy", "sell"):
+            d3 = _get_delta(context.indicators, "rsi14", "rsi", 3)
+            d5 = _get_delta(context.indicators, "rsi14", "rsi", 5)
+            bonus, delta_suffix = _delta_momentum_bonus(d3, d5, action)
+            confidence = min(confidence + bonus, 1.0)
+
+        reason = f"rsi={rsi:.2f}"
+        if delta_suffix:
+            reason += f",{delta_suffix}"
 
         return SignalDecision(
             strategy=self.name,
@@ -72,7 +142,7 @@ class RsiReversionStrategy:
             timeframe=context.timeframe,
             action=action,
             confidence=confidence,
-            reason=f"rsi={rsi:.2f}",
+            reason=reason,
             used_indicators=[rsi_name] if rsi_name else ["rsi14"],
             metadata={"rsi": rsi, "rsi_indicator": rsi_name or "rsi14"},
         )
@@ -96,11 +166,15 @@ class WilliamsRStrategy:
     required_indicators = ("williamsr14",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
-        RegimeType.TRENDING:  0.20,  # 强趋势中 %R 会长时间停留极值区，逆势陷阱
-        RegimeType.RANGING:   1.00,  # 震荡市超买超卖是核心反转场景
-        RegimeType.BREAKOUT:  0.30,  # 突破前 %R 极值往往持续，不宜逆势
+        RegimeType.TRENDING:  0.20,
+        RegimeType.RANGING:   1.00,
+        RegimeType.BREAKOUT:  0.30,
         RegimeType.UNCERTAIN: 0.55,
     }
+
+    def __init__(self, *, overbought: float = -20, oversold: float = -80) -> None:
+        self._overbought = overbought
+        self._oversold = oversold
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         wr_value, wr_name = _resolve_indicator_value(
@@ -125,15 +199,13 @@ class WilliamsRStrategy:
             )
 
         wr = wr_value  # 范围 -100 ~ 0
-        if wr <= -80:
+        if wr <= self._oversold:
             action = "buy"
-            # 越接近 -100 置信度越高
-            depth = (-80 - wr) / 20.0  # 0~1
+            depth = (self._oversold - wr) / 20.0  # 0~1
             confidence = min(0.45 + depth * 0.45, 0.90)
-        elif wr >= -20:
+        elif wr >= self._overbought:
             action = "sell"
-            # 越接近 0 置信度越高
-            depth = (wr - (-20)) / 20.0  # 0~1
+            depth = (wr - self._overbought) / 20.0  # 0~1
             confidence = min(0.45 + depth * 0.45, 0.90)
         else:
             action = "hold"
@@ -170,11 +242,17 @@ class CciReversionStrategy:
     required_indicators = ("cci20",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
-        RegimeType.TRENDING:  0.30,  # 趋势中 CCI 可长期处于极值区，逆势危险
-        RegimeType.RANGING:   0.95,  # 震荡市均值回归是 CCI 的核心应用场景
-        RegimeType.BREAKOUT:  0.50,  # CCI 突破 ±100 也可作为突破方向确认
+        RegimeType.TRENDING:  0.30,
+        RegimeType.RANGING:   0.95,
+        RegimeType.BREAKOUT:  0.50,
         RegimeType.UNCERTAIN: 0.60,
     }
+
+    def __init__(
+        self, *, upper_threshold: float = 100, lower_threshold: float = -100,
+    ) -> None:
+        self._upper_threshold = upper_threshold
+        self._lower_threshold = lower_threshold
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         cci_value, cci_name = _resolve_indicator_value(
@@ -199,18 +277,45 @@ class CciReversionStrategy:
             )
 
         cci = cci_value
-        if cci <= -100:
+        if cci <= self._lower_threshold:
             action = "buy"
-            # 超过 -100 基础 0.45，每超出 100 点加 0.15，上限 0.90
-            excess = min(abs(cci) - 100, 200) / 200.0
+            excess = min(abs(cci) - abs(self._lower_threshold), 200) / 200.0
             confidence = min(0.45 + excess * 0.45, 0.90)
-        elif cci >= 100:
+        elif cci >= self._upper_threshold:
             action = "sell"
-            excess = min(cci - 100, 200) / 200.0
+            excess = min(cci - self._upper_threshold, 200) / 200.0
             confidence = min(0.45 + excess * 0.45, 0.90)
         else:
             action = "hold"
             confidence = 0.10
+
+        delta_suffix = ""
+        if action in ("buy", "sell"):
+            d3 = _get_delta(context.indicators, "cci20", "cci", 3)
+            d5 = _get_delta(context.indicators, "cci20", "cci", 5)
+            # CCI 的量纲比 RSI 大约 3-5 倍，调整阈值
+            bonus = 0.0
+            parts: list[str] = []
+            if d3 is not None:
+                if action == "buy" and d3 > 0:
+                    bonus += min(d3 / 30.0, 0.05)
+                    parts.append(f"d3_bounce={d3:+.1f}")
+                elif action == "sell" and d3 < 0:
+                    bonus += min(abs(d3) / 30.0, 0.05)
+                    parts.append(f"d3_bounce={d3:+.1f}")
+            if d5 is not None:
+                if action == "buy" and d5 < -25:
+                    bonus += 0.03
+                    parts.append(f"d5_exhaust={d5:+.1f}")
+                elif action == "sell" and d5 > 25:
+                    bonus += 0.03
+                    parts.append(f"d5_exhaust={d5:+.1f}")
+            confidence = min(confidence + bonus, 0.95)
+            delta_suffix = ",".join(parts)
+
+        reason = f"cci={cci:.2f}"
+        if delta_suffix:
+            reason += f",{delta_suffix}"
 
         return SignalDecision(
             strategy=self.name,
@@ -218,7 +323,7 @@ class CciReversionStrategy:
             timeframe=context.timeframe,
             action=action,
             confidence=confidence,
-            reason=f"cci={cci:.2f}",
+            reason=reason,
             used_indicators=used,
             metadata={"cci": cci},
         )
@@ -240,11 +345,15 @@ class StochRsiStrategy:
     required_indicators = ("stoch_rsi14",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
-        RegimeType.TRENDING:  0.25,  # 趋势中随机指标长时间嵌顶/嵌底，逆势陷阱
-        RegimeType.RANGING:   1.00,  # 振荡市 K/D 交叉的核心使用场景
-        RegimeType.BREAKOUT:  0.30,  # 突破前 StochRSI 往往已超买/超卖，不可逆势
+        RegimeType.TRENDING:  0.25,
+        RegimeType.RANGING:   1.00,
+        RegimeType.BREAKOUT:  0.30,
         RegimeType.UNCERTAIN: 0.60,
     }
+
+    def __init__(self, *, overbought: float = 80, oversold: float = 20) -> None:
+        self._overbought = overbought
+        self._oversold = oversold
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         k_value, k_name = _resolve_indicator_value(
@@ -277,19 +386,30 @@ class StochRsiStrategy:
         k = k_value
         d = d_value
 
-        if k < 20 and k > d:
+        if k < self._oversold and k > d:
             action = "buy"
-            depth = (20.0 - k) / 20.0
+            depth = (self._oversold - k) / 20.0
             cross_strength = min((k - d) / 5.0, 1.0)
             confidence = min(0.5 + depth * 0.3 + cross_strength * 0.2, 1.0)
-        elif k > 80 and k < d:
+        elif k > self._overbought and k < d:
             action = "sell"
-            depth = (k - 80.0) / 20.0
+            depth = (k - self._overbought) / 20.0
             cross_strength = min((d - k) / 5.0, 1.0)
             confidence = min(0.5 + depth * 0.3 + cross_strength * 0.2, 1.0)
         else:
             action = "hold"
             confidence = 0.15
+
+        delta_suffix = ""
+        if action in ("buy", "sell"):
+            k_d3 = _get_delta(context.indicators, "stoch_rsi14", "stoch_rsi_k", 3)
+            k_d5 = _get_delta(context.indicators, "stoch_rsi14", "stoch_rsi_k", 5)
+            bonus, delta_suffix = _delta_momentum_bonus(k_d3, k_d5, action)
+            confidence = min(confidence + bonus, 1.0)
+
+        reason = f"stoch_rsi_k={k:.2f},d={d:.2f}"
+        if delta_suffix:
+            reason += f",{delta_suffix}"
 
         return SignalDecision(
             strategy=self.name,
@@ -297,7 +417,7 @@ class StochRsiStrategy:
             timeframe=context.timeframe,
             action=action,
             confidence=confidence,
-            reason=f"stoch_rsi_k={k:.2f},d={d:.2f}",
+            reason=reason,
             used_indicators=used,
             metadata={"stoch_rsi_k": k, "stoch_rsi_d": d},
         )

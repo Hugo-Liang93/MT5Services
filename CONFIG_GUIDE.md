@@ -101,6 +101,9 @@ The runtime now supports a more opinionated XAUUSD intraday profile:
 - `config/risk.ini`
   - `allowed_sessions`: final trade execution session guard
   - `daily_loss_limit_pct`: stop new trades after the configured daily loss threshold
+  - `require_sl_for_market_orders = true`: market orders now require an SL by default for XAUUSD intraday safety
+- `config/economic.ini`
+  - `trade_guard_mode = block`: high-impact economic windows now block XAUUSD entries by default instead of warn-only
 
 ## Phase 4 Runtime Safety
 
@@ -109,10 +112,15 @@ The runtime now supports a more opinionated XAUUSD intraday profile:
   - `session_transition_cooldown_minutes`: session handoff cooldown around `13:00 UTC`
   - `end_of_day_close_enabled`, `end_of_day_close_hour_utc`, `end_of_day_close_minute_utc`: UTC end-of-day closeout handled by `PositionManager`
   - `market_structure_m1_lookback_bars`: shorter lookback for M1 market-structure analysis
+  - startup now runs a `PositionManager.sync_open_positions()` reconcile so existing XAUUSD positions are rehydrated after restart
 - `config/risk.ini`
   - `daily_loss_limit_pct`: final pre-trade risk stop, surfaced through trade APIs as `daily_loss_limit`
 - sizing
   - `src/trading/sizing.py` applies timeframe-specific ATR stop/target defaults for `M1`, `M5`, `M15`, and `H1`
+- trade API
+  - `GET /trade/control`: inspect manual trade-control state and executor circuit status
+  - `POST /trade/control`: pause auto-entry, switch to close-only mode, and optionally reset the execution circuit
+  - `POST /trade/reconcile`: manually resync tracked open positions with MT5 state
 - monitoring
   - `GET /signals/monitoring/quality/{symbol}/{timeframe}` exposes regime diagnostics and confirmed-signal quality metrics for one symbol/timeframe pair
 

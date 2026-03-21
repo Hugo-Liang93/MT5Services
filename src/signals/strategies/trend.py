@@ -177,7 +177,7 @@ class SupertrendStrategy:
         RegimeType.UNCERTAIN: 0.55,
     }
 
-    def __init__(self, *, adx_threshold: float = 20.0) -> None:
+    def __init__(self, *, adx_threshold: float = 23.0) -> None:
         self._adx_threshold = adx_threshold
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
@@ -533,7 +533,7 @@ class RocMomentumStrategy:
         RegimeType.UNCERTAIN: 0.40,
     }
 
-    def __init__(self, *, adx_min: float = 20.0, roc_threshold: float = 0.1) -> None:
+    def __init__(self, *, adx_min: float = 23.0, roc_threshold: float = 0.1) -> None:
         self._adx_min = adx_min
         self._roc_threshold = roc_threshold  # ROC 触发阈值（%），默认 0.1%
 

@@ -103,6 +103,9 @@ class SignalQualityTracker:
         self._lock = threading.Lock()
         self._total_evaluated: int = 0
         self._total_wins: int = 0
+        # 去重：同一 (symbol, timeframe) 同一 bar_time 只推进一次，
+        # 防止同一根 bar 的多个策略事件重复推进 bars_elapsed。
+        self._last_advance_bar: Dict[Tuple[str, str], Any] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -137,6 +140,22 @@ class SignalQualityTracker:
                 ),
                 "pending_count": sum(len(v) for v in self._pending.values()),
             }
+
+    def on_execution_skip(self, signal_id: str, reason: str) -> None:
+        """TradeExecutor 通知信号被跳过（未执行交易）。
+
+        将对应的 pending 信号标记为 skipped，后续评估时不计入胜率统计，
+        避免未执行信号的理论结果污染 PerformanceTracker 的信号质量反馈。
+        """
+        if not signal_id:
+            return
+        with self._lock:
+            for pending_list in self._pending.values():
+                for p in pending_list:
+                    if p.signal_id == signal_id:
+                        # 标记为 skipped，_evaluate_pending 会据此跳过
+                        p.action = f"skipped:{reason}"
+                        return
 
     def attach(self, runtime: Any) -> None:
         """将 SignalQualityTracker 注册到 SignalRuntime。"""
@@ -208,15 +227,26 @@ class SignalQualityTracker:
                 lst.pop(0)
 
     def _advance_pending(self, event: Any) -> None:
-        """收到新的 confirmed 快照，推进同一 (symbol, timeframe) 下所有策略的待评估计数。"""
+        """收到新的 confirmed 快照，推进同一 (symbol, timeframe) 下所有策略的待评估计数。
+
+        去重机制：同一根 bar 收盘后，N 个策略各自产生 SignalEvent 并触发此方法，
+        但 bars_elapsed 只应推进 1 次（代表"又过了一根 bar"）。
+        使用 (symbol, timeframe) → bar_time 映射去重。
+        """
         exit_price = self._get_close_price(event)
         if exit_price is None:
             return
 
+        bar_time_raw = event.metadata.get("bar_time")
         symbol_tf = (event.symbol, event.timeframe)
         to_evaluate: List[_PendingSignal] = []
 
         with self._lock:
+            # 同一 (symbol, timeframe) 同一 bar_time 只推进一次
+            if self._last_advance_bar.get(symbol_tf) == bar_time_raw:
+                return
+            self._last_advance_bar[symbol_tf] = bar_time_raw
+
             keys_to_scan = [
                 k for k in self._pending if k[0] == symbol_tf[0] and k[1] == symbol_tf[1]
             ]

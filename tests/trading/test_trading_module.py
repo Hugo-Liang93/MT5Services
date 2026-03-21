@@ -3,6 +3,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+import pytest
+
+from src.risk.service import PreTradeRiskBlockedError
 from src.trading.service import TradingModule
 
 
@@ -25,8 +28,18 @@ class DummyTradingService:
 
     client = Client()
 
+    def __init__(self):
+        self.execute_calls = []
+        self.modify_calls = []
+
     def execute_trade(self, **kwargs):
-        return {"ticket": 123, "symbol": kwargs["symbol"], "order_kind": kwargs.get("order_kind", "market")}
+        self.execute_calls.append(dict(kwargs))
+        return {
+            "ticket": 123,
+            "symbol": kwargs["symbol"],
+            "order_kind": kwargs.get("order_kind", "market"),
+            "request_id": kwargs.get("request_id"),
+        }
 
     def precheck_trade(self, **kwargs):
         if kwargs.get("symbol") == "BLOCKED":
@@ -63,6 +76,7 @@ class DummyTradingService:
         return {"modified": [7], "failed": []}
 
     def modify_positions(self, **kwargs):
+        self.modify_calls.append(dict(kwargs))
         return {"modified": [8], "failed": []}
 
     def get_positions(self, symbol=None, magic=None):
@@ -115,6 +129,8 @@ class DummyDBWriter:
         self.rows.extend(list(rows))
 
     def fetch_trade_operations(self, **kwargs):
+        if not self.rows:
+            return []
         return [
             (
                 self.rows[-1][0],
@@ -262,3 +278,65 @@ def test_trading_module_dispatch_trade_respects_risk_block():
         assert False, "expected risk block"
     except Exception as exc:
         assert "blocked" in str(exc)
+
+
+def test_trading_module_can_pause_auto_entries_without_blocking_manual_trade() -> None:
+    registry = DummyRegistry()
+    module = TradingModule(registry=registry, db_writer=DummyDBWriter())
+    module.update_trade_control(auto_entry_enabled=False, reason="manual_review")
+
+    with pytest.raises(PreTradeRiskBlockedError) as exc_info:
+        module.dispatch_operation(
+            "trade",
+            {
+                "symbol": "XAUUSD",
+                "volume": 0.1,
+                "side": "buy",
+                "metadata": {"entry_origin": "auto"},
+            },
+        )
+
+    assert exc_info.value.assessment["reason"] == "auto_entry_paused"
+
+    manual = module.execute_trade(symbol="XAUUSD", volume=0.1, side="buy")
+
+    assert manual["ticket"] == 123
+    assert len(registry.trading_service.execute_calls) == 1
+
+
+def test_trading_module_replays_successful_trade_when_request_id_reused() -> None:
+    registry = DummyRegistry()
+    module = TradingModule(registry=registry, db_writer=DummyDBWriter())
+
+    first = module.execute_trade(
+        symbol="XAUUSD",
+        volume=0.1,
+        side="buy",
+        request_id="req-repeat",
+    )
+    second = module.execute_trade(
+        symbol="XAUUSD",
+        volume=0.1,
+        side="buy",
+        request_id="req-repeat",
+    )
+
+    assert first["request_id"] == "req-repeat"
+    assert second["ticket"] == 123
+    assert second["idempotent_replay"] is True
+    assert second["idempotent_source"] == "memory"
+    assert len(registry.trading_service.execute_calls) == 1
+
+
+def test_trading_module_modify_positions_preserves_ticket_scope() -> None:
+    registry = DummyRegistry()
+    module = TradingModule(registry=registry, db_writer=DummyDBWriter())
+
+    result = module.modify_positions(ticket=88, symbol="XAUUSD", sl=3010.0)
+
+    assert result["modified"] == [8]
+    assert registry.trading_service.modify_calls[-1] == {
+        "ticket": 88,
+        "symbol": "XAUUSD",
+        "sl": 3010.0,
+    }
