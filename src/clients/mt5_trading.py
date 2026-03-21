@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from src.clients.base import MT5BaseClient, mt5
@@ -180,6 +180,11 @@ class MT5TradingClient(MT5BaseClient):
         if result is None or result.retcode not in success_codes:
             raise MT5TradingClientError(f"Order send failed: {result and result.comment}")
         ticket = int(getattr(result, "order", 0) or getattr(result, "deal", 0) or 0)
+        raw_fill_price = getattr(result, "price", None)
+        try:
+            fill_price = float(raw_fill_price) if raw_fill_price is not None else float(request_price)
+        except (TypeError, ValueError):
+            fill_price = float(request_price)
         return {
             "ticket": ticket,
             "order": int(getattr(result, "order", 0) or 0),
@@ -189,6 +194,8 @@ class MT5TradingClient(MT5BaseClient):
             "symbol": symbol,
             "volume": volume,
             "price": request_price,
+            "requested_price": request_price,
+            "fill_price": fill_price,
             "sl": sl,
             "tp": tp,
             "deviation": deviation,
@@ -287,6 +294,127 @@ class MT5TradingClient(MT5BaseClient):
             raise MT5TradingClientError(f"Failed to calc margin: {mt5.last_error()}")
         return margin
 
+    def check_broker_constraints(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        request_price: Optional[float] = None,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+    ) -> list[dict[str, Any]]:
+        """检查 broker 层面的交易约束，返回结构化检查结果列表。
+
+        每个结果为 ``{"name": str, "passed": bool, "message": str}``。
+        不抛出异常——由调用方决定如何处理 ``passed=False`` 的条目。
+        """
+        self.connect()
+        checks: list[dict[str, Any]] = []
+
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            checks.append({
+                "name": "symbol_available",
+                "passed": False,
+                "message": f"Symbol {symbol} not found or not available",
+            })
+            return checks
+
+        # ── trade_mode 检查 ─────────────────────────────────────────────
+        raw_mode = getattr(info, "trade_mode", None)
+        trade_mode = int(raw_mode) if raw_mode is not None else 4
+        is_buy = str(side).lower() in ("buy", "long")
+        # 0=DISABLED, 1=LONGONLY, 2=SHORTONLY, 3=CLOSEONLY, 4=FULL
+        if trade_mode == 0:
+            checks.append({
+                "name": "trade_mode",
+                "passed": False,
+                "message": f"Trading disabled for {symbol} (trade_mode=DISABLED)",
+            })
+        elif trade_mode == 3:
+            checks.append({
+                "name": "trade_mode",
+                "passed": False,
+                "message": f"Only close operations allowed for {symbol} (trade_mode=CLOSEONLY)",
+            })
+        elif trade_mode == 1 and not is_buy:
+            checks.append({
+                "name": "trade_mode",
+                "passed": False,
+                "message": f"Only buy operations allowed for {symbol} (trade_mode=LONGONLY)",
+            })
+        elif trade_mode == 2 and is_buy:
+            checks.append({
+                "name": "trade_mode",
+                "passed": False,
+                "message": f"Only sell operations allowed for {symbol} (trade_mode=SHORTONLY)",
+            })
+        else:
+            checks.append({"name": "trade_mode", "passed": True, "message": "ok"})
+
+        # ── stops_level 检查：SL/TP 最小距离 ─────────────────────────────
+        raw_stops = getattr(info, "trade_stops_level", None)
+        stops_level = int(raw_stops) if raw_stops is not None else 0
+        raw_point = getattr(info, "point", None)
+        point = float(raw_point) if raw_point is not None else 0.0
+
+        # 确定参考价格
+        ref_price = request_price
+        if ref_price is None:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is not None:
+                ref_price = tick.ask if is_buy else tick.bid
+
+        if stops_level > 0 and point > 0 and ref_price is not None and ref_price > 0:
+            min_distance = stops_level * point
+
+            if sl is not None:
+                sl_distance = abs(ref_price - sl)
+                if sl_distance < min_distance - point * 0.5:
+                    checks.append({
+                        "name": "stops_level_sl",
+                        "passed": False,
+                        "message": (
+                            f"SL too close: distance {sl_distance:.{info.digits}f} "
+                            f"< minimum {min_distance:.{info.digits}f} "
+                            f"({stops_level} points)"
+                        ),
+                    })
+                else:
+                    checks.append({"name": "stops_level_sl", "passed": True, "message": "ok"})
+
+            if tp is not None:
+                tp_distance = abs(ref_price - tp)
+                if tp_distance < min_distance - point * 0.5:
+                    checks.append({
+                        "name": "stops_level_tp",
+                        "passed": False,
+                        "message": (
+                            f"TP too close: distance {tp_distance:.{info.digits}f} "
+                            f"< minimum {min_distance:.{info.digits}f} "
+                            f"({stops_level} points)"
+                        ),
+                    })
+                else:
+                    checks.append({"name": "stops_level_tp", "passed": True, "message": "ok"})
+
+        # ── freeze_level 提示（仅 warning，不阻断）──────────────────────
+        raw_freeze = getattr(info, "trade_freeze_level", None)
+        freeze_level = int(raw_freeze) if raw_freeze is not None else 0
+        if freeze_level > 0 and point > 0:
+            freeze_distance = freeze_level * point
+            checks.append({
+                "name": "freeze_level",
+                "passed": True,
+                "message": (
+                    f"Freeze level = {freeze_level} points "
+                    f"({freeze_distance:.{info.digits}f}) — "
+                    f"orders within this distance of SL/TP cannot be modified"
+                ),
+            })
+
+        return checks
+
     def validate_trade_request(
         self,
         *,
@@ -316,10 +444,24 @@ class MT5TradingClient(MT5BaseClient):
             sl=sl,
             tp=tp,
         )
+        # Broker 约束检查：stops_level / trade_mode 等
+        broker_checks = self.check_broker_constraints(
+            symbol=symbol,
+            side=side,
+            request_price=request_price,
+            sl=sl,
+            tp=tp,
+        )
+        failed = [c for c in broker_checks if not c["passed"]]
+        if failed:
+            reasons = "; ".join(c["message"] for c in failed)
+            raise MT5TradingClientError(f"Broker constraint violated: {reasons}")
+
         return {
             "order_type": order_type,
             "request_price": request_price,
             "pending": is_pending,
+            "broker_checks": broker_checks,
         }
 
     def close_position(
@@ -483,6 +625,7 @@ class MT5TradingClient(MT5BaseClient):
 
     def modify_positions(
         self,
+        ticket: Optional[int] = None,
         symbol: Optional[str] = None,
         magic: Optional[int] = None,
         sl: Optional[float] = None,
@@ -492,11 +635,25 @@ class MT5TradingClient(MT5BaseClient):
         批量修改持仓的止盈/止损。
         """
         self.connect()
-        positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+        if ticket is not None:
+            positions = mt5.positions_get(ticket=int(ticket))
+        else:
+            positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
         if positions is None:
             raise MT5TradingClientError(f"Failed to get positions: {mt5.last_error()}")
-        targets = [p for p in positions if (magic is None or p.magic == magic)]
+        targets = [
+            p
+            for p in positions
+            if (ticket is None or int(getattr(p, "ticket", 0) or 0) == int(ticket))
+            and (magic is None or p.magic == magic)
+            and (symbol is None or p.symbol == symbol)
+        ]
         modified, failed = [], []
+        if ticket is not None and not targets:
+            return {
+                "modified": [],
+                "failed": [{"ticket": int(ticket), "symbol": symbol, "error": "position_not_found"}],
+            }
         for p in targets:
             req = {
                 "action": mt5.TRADE_ACTION_SLTP,
@@ -511,6 +668,70 @@ class MT5TradingClient(MT5BaseClient):
             else:
                 modified.append(p.ticket)
         return {"modified": modified, "failed": failed}
+
+    def get_position_close_details(
+        self,
+        ticket: int,
+        *,
+        symbol: Optional[str] = None,
+        lookback_days: int = 7,
+    ) -> Optional[dict[str, Any]]:
+        self.connect()
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(days=max(1, int(lookback_days)))
+        deals = mt5.history_deals_get(start_time, end_time)
+        if deals is None:
+            return None
+
+        exit_entries = {
+            getattr(mt5, "DEAL_ENTRY_OUT", None),
+            getattr(mt5, "DEAL_ENTRY_OUT_BY", None),
+        }
+        matched: list[Any] = []
+        for deal in deals:
+            position_id = getattr(deal, "position_id", None)
+            if position_id is None:
+                position_id = getattr(deal, "position", None)
+            if int(position_id or 0) != int(ticket):
+                continue
+            deal_symbol = str(getattr(deal, "symbol", "") or "")
+            if symbol and deal_symbol and deal_symbol != symbol:
+                continue
+            entry = getattr(deal, "entry", None)
+            if exit_entries and entry not in exit_entries and entry is not None:
+                continue
+            matched.append(deal)
+
+        if not matched:
+            return None
+
+        matched.sort(
+            key=lambda deal: (
+                int(getattr(deal, "time_msc", 0) or 0),
+                int(getattr(deal, "time", 0) or 0),
+                int(getattr(deal, "ticket", 0) or 0),
+            )
+        )
+        deal = matched[-1]
+        close_time_msc = getattr(deal, "time_msc", None)
+        close_time = (
+            self._market_time_from_milliseconds(int(close_time_msc))
+            if close_time_msc
+            else self._market_time_from_seconds(float(getattr(deal, "time", 0) or 0))
+        )
+        return {
+            "ticket": int(ticket),
+            "deal_id": int(getattr(deal, "ticket", 0) or 0),
+            "symbol": str(getattr(deal, "symbol", "") or symbol or ""),
+            "close_price": float(getattr(deal, "price", 0.0) or 0.0),
+            "closed_at": close_time.isoformat(),
+            "profit": float(getattr(deal, "profit", 0.0) or 0.0),
+            "commission": float(getattr(deal, "commission", 0.0) or 0.0),
+            "swap": float(getattr(deal, "swap", 0.0) or 0.0),
+            "fee": float(getattr(deal, "fee", 0.0) or 0.0),
+            "volume": float(getattr(deal, "volume", 0.0) or 0.0),
+            "entry": getattr(deal, "entry", None),
+        }
 
     def _validate_volume(self, symbol: str, volume: float) -> None:
         """
