@@ -15,13 +15,13 @@ OutcomeTracker 作为 SignalRuntime 的信号监听器注册：
     outcome_tracker.attach(runtime)  →  runtime.add_signal_listener(on_signal_event)
 
 每次 scope="confirmed" 的 SignalEvent 到来时：
-    1. _tick_pending：推进同一 (symbol, timeframe) 下所有策略的 pending 计数
+    1. _advance_pending：推进同一 (symbol, timeframe) 下所有策略的 pending 计数
     2. _record_pending：若为 confirmed_buy/sell，登记新的待评估信号（entry_price 从快照 close 读取）
     3. 当 bars_elapsed >= bars_to_evaluate（默认 3），用最新 close 作为 exit_price 计算胜负，写入 DB
 
 ## 两条评估路径
 
-1. **自然到期**：_tick_pending 中 bars_elapsed 达标后用收盘价评估
+1. **自然到期**：_advance_pending 中 bars_elapsed 达标后用收盘价评估
 2. **仓位关闭**：on_position_closed 由 PositionManager 回调，用实际成交价立即评估
 
 ## 注意
@@ -129,9 +129,7 @@ class OutcomeTracker:
 
         # 每个 confirmed bar-close 事件都代表新的一根 bar 收盘，
         # 无论方向如何都应先推进所有待评估信号的 bars_elapsed 计数。
-        # 修复前：confirmed_buy/sell 仅调用 _record_pending，_tick_pending 被跳过，
-        # 导致趋势行情中 pending 条目无限堆积，胜率统计和置信度校准永远不触发。
-        self._tick_pending(event)
+        self._advance_pending(event)
         if signal_state in ("confirmed_buy", "confirmed_sell"):
             self._record_pending(event)
 
@@ -329,14 +327,11 @@ class OutcomeTracker:
             if len(lst) > self._max_pending:
                 lst.pop(0)
 
-    def _tick_pending(self, event: Any) -> None:
+    def _advance_pending(self, event: Any) -> None:
         """收到新的 confirmed 快照，推进同一 (symbol, timeframe) 下所有策略的待评估计数。
 
-        修复：之前用 (symbol, timeframe, strategy) 作为 key，导致策略 A 的
-        confirmed 事件只推进 A 的 pending，而 B 如果持续 hold（idle→idle 不发布事件），
-        B 的 pending 记录会永远卡在 bars_elapsed < bars_to_evaluate。
-
-        一根 bar 的收盘对所有策略是同一个物理事件，应推进所有策略的计数。
+        每一根 bar 的收盘对所有策略是同一个物理事件，因此推进所有策略的 bars_elapsed。
+        当 bars_elapsed >= bars_to_evaluate 时，用当前 bar 的 close 作为 exit_price 评估胜负。
         """
         exit_price = self._get_close_price(event)
         if exit_price is None:

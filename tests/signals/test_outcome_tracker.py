@@ -108,7 +108,7 @@ class TestOutcomeTrackerTrendScenario:
         #   i=3: tick sig-000 → elapsed=3 → evaluate; sig-001 → 2; sig-002 → 1; record sig-003
         assert len(rows_written) == 1, (
             f"Expected 1 evaluated outcome, got {len(rows_written)}. "
-            "Bug: _tick_pending was not called on confirmed_buy events."
+            "Bug: _advance_pending was not called on confirmed_buy events."
         )
         row = rows_written[0]
         signal_id_col = row[1]
@@ -397,7 +397,7 @@ class TestOutcomeTrackerClosePriceExtraction:
         assert rows_written[0][8] == pytest.approx(1.1010)
 
     def test_no_close_anywhere_skips_evaluation(self):
-        """无法从任何来源获取 exit_price 时，_tick_pending 提前返回，
+        """无法从任何来源获取 exit_price 时，_advance_pending 提前返回，
         pending 条目不被评估（无 exit 价格则无法判断输赢）。
         """
         rows_written: List[Tuple] = []

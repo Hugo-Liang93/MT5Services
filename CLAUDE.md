@@ -732,7 +732,7 @@ SignalRuntime._publish_signal_event(event: SignalEvent)
     │
     ├─→ OutcomeTracker.on_signal_event()     ← 信号绩效追踪
     │     仅处理 scope="confirmed" 的事件
-    │     ① _tick_pending：推进同 (symbol, tf) 下所有策略的 pending 计数
+    │     ① _advance_pending：推进同 (symbol, tf) 下所有策略的 pending 计数
     │     ② _record_pending：confirmed_buy/sell 时登记新 pending
     │     bars_elapsed 到期 → 写入 signal_outcomes 表 + 回调 PerformanceTracker
     │     另有 on_position_closed 快速路径（仓位关闭时立即评估）
@@ -757,7 +757,7 @@ SignalRuntime._publish_signal_event(event: SignalEvent)
 
 ### OutcomeTracker 的两条评估路径
 
-1. **自然到期**：每收到一个 scope="confirmed" 的 SignalEvent → `_tick_pending` 推进同 (symbol, tf) 下**所有策略**的 `bars_elapsed` → 达到 `bars_to_evaluate`（默认 3）后用最新收盘价评估
+1. **自然到期**：每收到一个 scope="confirmed" 的 SignalEvent → `_advance_pending` 推进同 (symbol, tf) 下**所有策略**的 `bars_elapsed` → 达到 `bars_to_evaluate`（默认 3）后用最新收盘价评估
 2. **仓位关闭**：`PositionManager` 关仓 → `on_position_closed(pos, close_price)` → 用实际成交价立即评估，不等 bar 计数
 
 ### 绩效反馈的两条独立链路
