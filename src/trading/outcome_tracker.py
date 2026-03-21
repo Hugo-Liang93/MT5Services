@@ -2,25 +2,36 @@
 
 ## 设计思路
 
-每当 SignalRuntime 发出 confirmed_buy / confirmed_sell 信号后，
-OutcomeTracker 将其记录在内存中，等待 N 根 bar 后的收盘价到来，
+OutcomeTracker 作为 SignalRuntime 的 signal_listener 注册，
+消费的是 **SignalEvent**（不是 bar close 事件）。
+
+每当 SignalRuntime 发出 confirmed_buy / confirmed_sell 的 SignalEvent 后，
+OutcomeTracker 将其记录在内存中（_record_pending），等待 N 根 bar 后的收盘价到来，
 然后判断信号方向是否正确（"赢了"），并将结果写入 signal_outcomes 表。
 
 ## 集成方式
 
 OutcomeTracker 作为 SignalRuntime 的信号监听器注册：
-    outcome_tracker.attach(runtime)
+    outcome_tracker.attach(runtime)  →  runtime.add_signal_listener(on_signal_event)
 
-每次 confirmed 信号到来时：
-    1. 记录 entry_price（从 indicators 快照中读取 close）
-    2. 在 bars_to_evaluate（默认 3）根 bar 后，读取 exit_price
-    3. 计算 price_change，判断 won，写入 DB
+每次 scope="confirmed" 的 SignalEvent 到来时：
+    1. _tick_pending：推进同一 (symbol, timeframe) 下所有策略的 pending 计数
+    2. _record_pending：若为 confirmed_buy/sell，登记新的待评估信号（entry_price 从快照 close 读取）
+    3. 当 bars_elapsed >= bars_to_evaluate（默认 3），用最新 close 作为 exit_price 计算胜负，写入 DB
+
+## 两条评估路径
+
+1. **自然到期**：_tick_pending 中 bars_elapsed 达标后用收盘价评估
+2. **仓位关闭**：on_position_closed 由 PositionManager 回调，用实际成交价立即评估
 
 ## 注意
 
-由于 OutcomeTracker 依赖"N 根 bar 后的价格"，
-它监听后续的 confirmed snapshot 事件（而非直接使用 runtime 内部状态），
+OutcomeTracker 依赖"N 根 bar 后的价格"，
+它监听后续的 confirmed SignalEvent（而非直接使用 runtime 内部状态），
 因此对系统延迟的容忍度较高，不影响实时信号路径。
+
+结果会通过 _on_outcome_fn 回调通知 StrategyPerformanceTracker（日内实时反馈），
+同时写入 signal_outcomes 表供 ConfidenceCalibrator 定期查询（长期统计校准）。
 """
 from __future__ import annotations
 
@@ -319,24 +330,36 @@ class OutcomeTracker:
                 lst.pop(0)
 
     def _tick_pending(self, event: Any) -> None:
-        """收到新的 confirmed 快照，推进所有待评估信号的计数。"""
+        """收到新的 confirmed 快照，推进同一 (symbol, timeframe) 下所有策略的待评估计数。
+
+        修复：之前用 (symbol, timeframe, strategy) 作为 key，导致策略 A 的
+        confirmed 事件只推进 A 的 pending，而 B 如果持续 hold（idle→idle 不发布事件），
+        B 的 pending 记录会永远卡在 bars_elapsed < bars_to_evaluate。
+
+        一根 bar 的收盘对所有策略是同一个物理事件，应推进所有策略的计数。
+        """
         exit_price = self._get_close_price(event)
         if exit_price is None:
             return
 
-        key = (event.symbol, event.timeframe, event.strategy)
+        symbol_tf = (event.symbol, event.timeframe)
         to_evaluate: List[_PendingOutcome] = []
 
         with self._lock:
-            lst = self._pending.get(key, [])
-            remaining: List[_PendingOutcome] = []
-            for p in lst:
-                p.bars_elapsed += 1
-                if p.bars_elapsed >= self._bars_to_evaluate:
-                    to_evaluate.append(p)
-                else:
-                    remaining.append(p)
-            self._pending[key] = remaining
+            # 遍历所有 (symbol, timeframe, *) 的 pending 记录
+            keys_to_scan = [
+                k for k in self._pending if k[0] == symbol_tf[0] and k[1] == symbol_tf[1]
+            ]
+            for key in keys_to_scan:
+                lst = self._pending.get(key, [])
+                remaining: List[_PendingOutcome] = []
+                for p in lst:
+                    p.bars_elapsed += 1
+                    if p.bars_elapsed >= self._bars_to_evaluate:
+                        to_evaluate.append(p)
+                    else:
+                        remaining.append(p)
+                self._pending[key] = remaining
 
         if not to_evaluate:
             return

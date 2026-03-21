@@ -716,6 +716,67 @@ SoftRegimeResult:
 
 ---
 
+## Signal Listener 架构
+
+`SignalRuntime._publish_signal_event()` 将 `SignalEvent` 广播给所有已注册的 listener。
+注册方式：`runtime.add_signal_listener(callback)`。当前有三个 listener：
+
+```
+SignalRuntime._publish_signal_event(event: SignalEvent)
+    │  每次策略评估产生状态转换时触发（idle→idle 不发布）
+    │
+    ├─→ TradeExecutor.on_signal_event()      ← 自动下单
+    │     仅处理 confirmed_buy / confirmed_sell
+    │     检查 min_confidence、require_armed、日内头寸限制、HTF 对齐
+    │     通过后调用 TradingModule 下单
+    │
+    ├─→ OutcomeTracker.on_signal_event()     ← 信号绩效追踪
+    │     仅处理 scope="confirmed" 的事件
+    │     ① _tick_pending：推进同 (symbol, tf) 下所有策略的 pending 计数
+    │     ② _record_pending：confirmed_buy/sell 时登记新 pending
+    │     bars_elapsed 到期 → 写入 signal_outcomes 表 + 回调 PerformanceTracker
+    │     另有 on_position_closed 快速路径（仓位关闭时立即评估）
+    │
+    └─→ HTFStateCache.on_signal_event()      ← 高时间框架方向缓存
+          仅处理 confirmed_buy / confirmed_sell / confirmed_cancelled
+          缓存方向 + 时间戳，供 TradeExecutor 做 HTF 软惩罚/对齐
+```
+
+### SignalEvent 的类型（signal_state）
+
+| signal_state | 触发时机 | 语义 |
+|---|---|---|
+| `confirmed_buy` | confirmed scope 下策略输出 buy | K 线收盘确认做多 |
+| `confirmed_sell` | confirmed scope 下策略输出 sell | K 线收盘确认做空 |
+| `confirmed_cancelled` | 上根有信号，本根转 hold | 信号取消 |
+| `preview_buy` / `preview_sell` | intrabar scope 下方向初次出现 | 盘中预览 |
+| `armed_buy` / `armed_sell` | preview 方向稳定 ≥ min_preview_stable_seconds | 已蓄力 |
+
+> **注意**：`idle→idle`（策略持续 hold 且之前也是 idle）不产生 SignalEvent——
+> `_transition_confirmed()` 在 `previous_state == "idle"` 且 action 非 buy/sell 时返回 `None`。
+
+### OutcomeTracker 的两条评估路径
+
+1. **自然到期**：每收到一个 scope="confirmed" 的 SignalEvent → `_tick_pending` 推进同 (symbol, tf) 下**所有策略**的 `bars_elapsed` → 达到 `bars_to_evaluate`（默认 3）后用最新收盘价评估
+2. **仓位关闭**：`PositionManager` 关仓 → `on_position_closed(pos, close_price)` → 用实际成交价立即评估，不等 bar 计数
+
+### 绩效反馈的两条独立链路
+
+```
+OutcomeTracker 评估完成
+    │
+    ├─→ _on_outcome_fn(strategy, won, pnl, regime=)
+    │     → StrategyPerformanceTracker（纯内存日内实时反馈，session 边界重置）
+    │
+    └─→ _write_fn(rows)
+          → signal_outcomes 表（DB 持久化）
+          → ConfidenceCalibrator 后台线程每小时查询 DB
+            按 (strategy, action, regime) 聚合最近 7 天胜率
+            分阶段校准（<50笔不校准，50-100轻微，100+正常）
+```
+
+---
+
 ## Confidence Pipeline
 
 每个策略的置信度经过以下修正流程：
