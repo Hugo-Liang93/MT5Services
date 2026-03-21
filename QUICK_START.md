@@ -56,7 +56,7 @@ timeframes = M1,H1
 default_symbol = XAUUSD
 
 [intervals]
-tick_interval = 0.5
+poll_interval = 0.5
 ohlc_interval = 30.0
 stream_interval = 1.0
 indicator_reload_interval = 60

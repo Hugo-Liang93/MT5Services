@@ -38,7 +38,6 @@ from .pipeline_runner import (
     compute_priority_results,
     compute_results_with_priority_groups,
     compute_with_bars,
-    run_intrabar_pipeline,
     run_pipeline,
 )
 from .result_store import (
@@ -183,12 +182,9 @@ class UnifiedIndicatorManager:
                 incremental_class=incremental_class,
             )
             self._indicator_funcs[indicator_config.name] = func
-        # Build intrabar eligibility cache after all indicators are registered.
-        self._intrabar_eligible_cache = frozenset(
-            cfg.name
-            for cfg in self.config.indicators
-            if cfg.enabled and cfg.intrabar_eligible
-        )
+        # Intrabar eligible 集合在 set_intrabar_eligible_override() 注入前为空；
+        # 正常启动路径下由策略的 preferred_scopes + required_indicators 自动推导。
+        self._intrabar_eligible_cache = frozenset()
 
         # Validate that every dependency of every enabled indicator is itself
         # enabled.  A disabled dependency causes a silent ValueError at runtime
@@ -590,21 +586,6 @@ class UnifiedIndicatorManager:
             indicator_names=indicator_names,
         )
 
-    def _run_intrabar_pipeline(
-        self,
-        symbol: str,
-        timeframe: str,
-        bar: Any,
-        indicator_names: Optional[List[str]] = None,
-    ) -> Tuple[List[Any], Dict[str, Dict[str, Any]], float]:
-        return run_intrabar_pipeline(
-            self,
-            symbol,
-            timeframe,
-            bar,
-            indicator_names=indicator_names,
-        )
-
     @staticmethod
     def _normalize_indicator_group(indicator_names: List[str]) -> tuple[str, ...]:
         ordered: list[str] = []
@@ -966,15 +947,11 @@ class UnifiedIndicatorManager:
         process_closed_bar_event(self, symbol, timeframe, bar_time, durable_event)
 
     def set_intrabar_eligible_override(self, names: frozenset) -> None:
-        """用策略推导的集合覆盖 intrabar eligible 缓存。
+        """设置 intrabar 计算的指标集合。
 
-        在 factory 初始化完成后由 SignalModule.intrabar_required_indicators()
-        推导出需要 intrabar 计算的指标集合，注入到这里。此后 _get_intrabar_eligible_names()
-        直接返回此集合，indicators.json 中的 intrabar_eligible 字段不再起作用。
-
-        单一来源：策略的 preferred_scopes + required_indicators → 自动推导。
+        由 SignalModule.intrabar_required_indicators() 在启动时自动推导
+        （策略的 preferred_scopes + required_indicators 的并集），注入到这里。
         """
-        # 只保留 enabled 的指标（disabled 的不应参与任何计算）
         enabled = frozenset(
             cfg.name for cfg in self.config.indicators if cfg.enabled
         )
@@ -985,27 +962,12 @@ class UnifiedIndicatorManager:
         )
 
     def _get_intrabar_eligible_names(self) -> frozenset:
-        """Return the set of indicator names that should appear in intrabar snapshots.
+        """Return the set of indicator names eligible for intrabar computation.
 
-        When set_intrabar_eligible_override() has been called (normal startup path),
-        returns the strategy-derived set.  Otherwise falls back to the JSON config
-        (backward compatibility for standalone indicator manager usage without
-        a signal module).
+        Populated by set_intrabar_eligible_override() at startup.
+        Returns empty frozenset if no override has been injected (standalone mode).
         """
-        cache = getattr(self, "_intrabar_eligible_cache", None)
-        if cache is None:
-            # Fallback: derive from JSON config (pre-override or standalone usage).
-            config_items = getattr(getattr(self, "config", None), "indicators", None)
-            if config_items is None:
-                cache = frozenset()
-            else:
-                cache = frozenset(
-                    cfg.name
-                    for cfg in config_items
-                    if cfg.enabled and getattr(cfg, "intrabar_eligible", True)
-                )
-            self._intrabar_eligible_cache = cache
-        return cache
+        return getattr(self, "_intrabar_eligible_cache", None) or frozenset()
 
     def _process_intrabar_event(
         self,
@@ -1108,9 +1070,8 @@ class UnifiedIndicatorManager:
         the given symbol/timeframe, or ``None`` if no intrabar computation has
         run yet (e.g. intrabar ingestion disabled or no bar received).
 
-        The returned dict only contains indicators marked as ``intrabar_eligible``
-        in the configuration — volume-derived and session-sensitive indicators are
-        excluded because their mid-bar values are semantically unreliable.
+        The returned dict only contains indicators that are eligible for intrabar
+        computation (auto-derived from strategy scopes at startup).
         """
         cache_key = f"{symbol}_{timeframe}"
         return self._last_preview_snapshot.get(cache_key)
@@ -1144,7 +1105,6 @@ class UnifiedIndicatorManager:
             "dependents": list(self.dependency_manager.get_dependents(name)),
             "compute_mode": config.compute_mode.value,
             "enabled": config.enabled,
-            "intrabar_eligible": config.intrabar_eligible,
             "description": config.description,
             "tags": config.tags,
         }

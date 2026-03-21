@@ -12,7 +12,7 @@ class TradingConfig(BaseModel):
 
 
 class IntervalConfig(BaseModel):
-    tick_interval: float = 0.5
+    poll_interval: float = 0.5
     ohlc_interval: float = 30.0
     stream_interval: float = 1.0
     indicator_reload_interval: float = 60.0

@@ -30,7 +30,7 @@ def test_centralized_config():
     assert "H1" in trading.timeframes
 
     intervals = get_interval_config()
-    assert intervals.tick_interval == 0.5
+    assert intervals.poll_interval == 0.5
     assert intervals.ohlc_interval == 30.0
 
     limits = get_limit_config()
@@ -60,7 +60,7 @@ def test_runtime_views_align_with_centralized_config():
     market_settings = get_runtime_market_settings()
 
     assert ingest_settings.ingest_symbols == ["XAUUSD"]
-    assert ingest_settings.ingest_tick_interval == 0.5
+    assert ingest_settings.ingest_poll_interval == 0.5
     assert "M1" in ingest_settings.ingest_ohlc_timeframes
     assert hasattr(ingest_settings, "intrabar_enabled")
 
@@ -79,7 +79,7 @@ def test_config_validation_helpers():
             "timeframes": "M1,H1",
         },
         "intervals": {
-            "tick_interval": "1.0",
+            "poll_interval": "1.0",
             "ohlc_interval": "60.0",
         },
     }

@@ -44,27 +44,6 @@ def compute_with_bars(
     return results, compute_time_ms, selected_names
 
 
-def run_intrabar_pipeline(
-    manager,
-    symbol: str,
-    timeframe: str,
-    bar: Any,
-    indicator_names: Optional[List[str]] = None,
-) -> Tuple[List[Any], Dict[str, Dict[str, Any]], float]:
-    bars = manager._load_intrabar_bars(symbol, timeframe, bar)
-    if len(bars) < 2:
-        return [], {}, 0.0
-
-    selected_names = manager._select_indicator_names_for_history(len(bars), indicator_names)
-    if not selected_names:
-        return bars, {}, 0.0
-
-    started_at = time.time()
-    results = manager.pipeline.compute(symbol, timeframe, bars, selected_names)
-    compute_time_ms = (time.time() - started_at) * 1000
-    return bars, results, compute_time_ms
-
-
 def compute_results_with_priority_groups(
     manager,
     symbol: str,

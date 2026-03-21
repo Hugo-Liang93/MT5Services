@@ -52,6 +52,7 @@ class BollingerBreakoutStrategy:
     """
 
     name = "bollinger_breakout"
+    category = "breakout"
     required_indicators = ("boll20",)
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
@@ -194,6 +195,7 @@ class KeltnerBollingerSqueezeStrategy:
     """
 
     name = "keltner_bb_squeeze"
+    category = "breakout"
     required_indicators = ("boll20", "keltner20")
     preferred_scopes = ("intrabar", "confirmed")
     regime_affinity = {
@@ -288,6 +290,7 @@ class DonchianBreakoutStrategy:
     """
 
     name = "donchian_breakout"
+    category = "breakout"
     required_indicators = ("donchian20", "adx14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -484,6 +487,7 @@ class FakeBreakoutDetector:
     """Detect failed Donchian breakouts that reject back into the channel."""
 
     name = "fake_breakout"
+    category = "breakout"
     required_indicators = ("donchian20", "atr14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -652,6 +656,7 @@ class SqueezeReleaseFollow:
     """Follow directional release when Bollinger exits the Keltner envelope."""
 
     name = "squeeze_release"
+    category = "breakout"
     required_indicators = ("boll20", "keltner20", "macd")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -807,6 +812,7 @@ class MultiTimeframeConfirmStrategy:
     """
 
     name = "multi_timeframe_confirm"
+    category = "multi_tf"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
     regime_affinity = {

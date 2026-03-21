@@ -110,7 +110,7 @@ class BackgroundIngestor:
             )
 
     def _run(self) -> None:
-        tick_interval = self.settings.ingest_tick_interval
+        poll_interval = self.settings.ingest_poll_interval
         next_ohlc_at: Dict[str, float] = {}
         next_intrabar_at: Dict[str, float] = {}
         while not self._stop.is_set():
@@ -153,8 +153,8 @@ class BackgroundIngestor:
                     logger.exception("Unexpected ingest error for %s: %s", symbol, exc)
             # 保持采集节奏，扣除本轮耗时。
             elapsed = time.time() - start_loop
-            # 根据设置tick_interval以及实际耗时计算睡眠时间，避免过快循环。
-            sleep_for = max(0, tick_interval - elapsed)
+            # 根据 poll_interval 以及实际耗时计算睡眠时间，避免过快循环。
+            sleep_for = max(0, poll_interval - elapsed)
             self._stop.wait(sleep_for)
 
     def _symbols_for_cycle(self) -> List[str]:

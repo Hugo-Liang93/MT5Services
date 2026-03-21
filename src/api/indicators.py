@@ -190,9 +190,8 @@ async def get_intrabar_indicators(
     """
     获取当前活跃K线（未收盘）的实时指标快照
 
-    只返回标记为 ``intrabar_eligible: true`` 的指标——成交量衍生和盘中
-    敏感类指标（mfi14、obv30、vwap30 等）在 K 线收盘前语义不稳定，
-    已通过配置排除。
+    只返回策略声明需要的 intrabar 指标（启动时由 preferred_scopes +
+    required_indicators 自动推导）。
 
     Returns:
         ``bar_time`` + ``indicators`` 字典，若尚无快照则返回 404。

@@ -29,6 +29,7 @@ class SmaTrendStrategy:
     """
 
     name = "sma_trend"
+    category = "trend"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -166,6 +167,7 @@ class SupertrendStrategy:
     """
 
     name = "supertrend"
+    category = "trend"
     required_indicators = ("supertrend14", "adx14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -264,6 +266,7 @@ class MacdMomentumStrategy:
     """
 
     name = "macd_momentum"
+    category = "trend"
     required_indicators = ("macd",)
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -353,6 +356,7 @@ class EmaRibbonStrategy:
     """
 
     name = "ema_ribbon"
+    category = "trend"
     required_indicators = ("ema9", "hma20", "ema50")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -448,6 +452,7 @@ class HmaCrossStrategy:
     """
 
     name = "hma_cross"
+    category = "trend"
     required_indicators = ("hma20", "ema50")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -518,6 +523,7 @@ class RocMomentumStrategy:
     """
 
     name = "roc_momentum"
+    category = "trend"
     required_indicators = ("roc12", "adx14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {

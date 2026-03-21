@@ -105,6 +105,7 @@ class CompositeSignalStrategy:
         preferred_scopes: tuple[str, ...] = ("confirmed",),
     ) -> None:
         self.name = name
+        self.category = "composite"
         self._sub_strategies: List = list(sub_strategies)
         self._combine_mode: CombineMode = combine_mode
         self.preferred_scopes = preferred_scopes

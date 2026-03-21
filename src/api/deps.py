@@ -39,6 +39,7 @@ from src.monitoring import get_health_monitor, get_monitoring_manager
 from src.persistence.storage_writer import StorageWriter
 from src.risk.service import PreTradeRiskService
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
+from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
@@ -66,6 +67,7 @@ class _Container:
     outcome_tracker: Optional[OutcomeTracker] = None
     calibrator: Optional[ConfidenceCalibrator] = None
     trade_executor: Optional[TradeExecutor] = None
+    performance_tracker: Optional[StrategyPerformanceTracker] = None
     position_manager: Optional[PositionManager] = None
     health_monitor: Optional[object] = None
     monitoring_manager: Optional[object] = None
@@ -236,12 +238,14 @@ def _ensure_initialized() -> None:
         _c.outcome_tracker = signal_components.outcome_tracker
         _c.position_manager = signal_components.position_manager
         _c.trade_executor = signal_components.trade_executor
+        _c.performance_tracker = signal_components.performance_tracker
         register_signal_hot_reload(
             _c.signal_runtime,
             get_signal_config,
             trade_executor=_c.trade_executor,
             economic_calendar_service=_c.economic_calendar_service,
             market_structure_analyzer=_c.market_structure_analyzer,
+            performance_tracker=_c.performance_tracker,
         )
 
         _c.health_monitor = get_health_monitor("health_monitor.db")

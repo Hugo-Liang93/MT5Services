@@ -104,10 +104,6 @@ class IndicatorConfig:
     enabled: bool = True      # 是否启用
     description: str = ""     # 指标描述
     tags: List[str] = field(default_factory=list)  # 标签，如 ["trend", "momentum"]
-    # Whether this indicator should be included in intrabar (live) snapshots.
-    # Set to False for volume-derived or session-sensitive indicators that are
-    # noisy on partial bars. Defaults to True (included in all snapshots).
-    intrabar_eligible: bool = True
     delta_bars: List[int] = field(default_factory=list)
 
 
@@ -235,7 +231,6 @@ class ConfigLoader:
                 enabled=indicator_data.get('enabled', True),
                 description=indicator_data.get('description', ''),
                 tags=indicator_data.get('tags', []),
-                intrabar_eligible=indicator_data.get('intrabar_eligible', True),
                 delta_bars=[
                     int(item)
                     for item in indicator_data.get('delta_bars', [])
@@ -492,7 +487,6 @@ class ConfigManager:
                         "enabled": indicator.enabled,
                         "description": indicator.description,
                         "tags": indicator.tags,
-                        "intrabar_eligible": indicator.intrabar_eligible,
                         "delta_bars": list(indicator.delta_bars),
                     }
                     data["indicators"].append(indicator_data)

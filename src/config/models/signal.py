@@ -53,6 +53,16 @@ class SignalConfig(BaseModel):
     voting_group_configs: list[dict] = Field(default_factory=list)
     # 即使属于 voting group，仍允许单独触发交易的策略名单（standalone_override 覆盖）
     standalone_override: list[str] = Field(default_factory=list)
+    # ── Performance Tracker（日内策略绩效追踪）──
+    perf_tracker_enabled: bool = True
+    perf_tracker_baseline_win_rate: float = 0.50
+    perf_tracker_min_multiplier: float = 0.50
+    perf_tracker_max_multiplier: float = 1.20
+    perf_tracker_streak_penalty_threshold: int = 3
+    perf_tracker_streak_penalty_factor: float = 0.90
+    perf_tracker_category_fallback_min_samples: int = 3
+    perf_tracker_session_reset_interval_hours: int = 0
+
     market_structure_enabled: bool = True
     market_structure_lookback_bars: int = 400
     market_structure_m1_lookback_bars: int = 120

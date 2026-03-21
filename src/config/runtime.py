@@ -19,7 +19,7 @@ class IngestSettings(BaseModel):
     tick_cache_size: int = 5000
     tick_initial_lookback_seconds: int = 20
     ingest_symbols: list[str] = Field(default_factory=lambda: ["EURUSD"])
-    ingest_tick_interval: float = 0.5
+    ingest_poll_interval: float = 0.5
     ingest_ohlc_timeframes: list[str] = Field(default_factory=lambda: ["M1", "H1"])
     ingest_ohlc_interval: float = 30.0
     ingest_ohlc_intervals: dict = Field(default_factory=dict)
@@ -77,7 +77,7 @@ def get_runtime_ingest_settings() -> IngestSettings:
         tick_cache_size=_cache_int(cache, "tick_cache_size", limits.tick_cache_size),
         tick_initial_lookback_seconds=ingest.tick_initial_lookback_seconds,
         ingest_symbols=trading.symbols,
-        ingest_tick_interval=intervals.tick_interval,
+        ingest_poll_interval=intervals.poll_interval,
         ingest_ohlc_timeframes=trading.timeframes,
         ingest_ohlc_interval=intervals.ohlc_interval,
         ingest_ohlc_intervals={},

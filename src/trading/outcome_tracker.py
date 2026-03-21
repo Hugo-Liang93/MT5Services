@@ -86,10 +86,14 @@ class OutcomeTracker:
         *,
         bars_to_evaluate: int = 3,
         max_pending: int = 500,
+        on_outcome_fn: Optional[Callable[[str, bool, float], None]] = None,
     ) -> None:
         self._write_fn = write_fn
         self._bars_to_evaluate = max(1, bars_to_evaluate)
         self._max_pending = max_pending
+        # 绩效追踪回调：(strategy, won, pnl) — 由 StrategyPerformanceTracker 注册。
+        # 每次信号结果评估完成时调用，提供实时日内反馈。
+        self._on_outcome_fn = on_outcome_fn
         # key: (symbol, timeframe, strategy) → list of pending outcomes
         self._pending: Dict[Tuple[str, str, str], List[_PendingOutcome]] = {}
         self._lock = threading.Lock()
@@ -187,6 +191,16 @@ class OutcomeTracker:
                     self._total_evaluated += 1
                     if won:
                         self._total_wins += 1
+
+            # 实时绩效回调：通知 PerformanceTracker
+            if won is not None and self._on_outcome_fn is not None:
+                try:
+                    self._on_outcome_fn(p.strategy, won, price_change or 0.0)
+                except Exception:
+                    logger.debug(
+                        "OutcomeTracker: on_outcome_fn callback failed for %s",
+                        p.strategy, exc_info=True,
+                    )
 
             rows.append((
                 now,
@@ -344,6 +358,16 @@ class OutcomeTracker:
                     self._total_evaluated += 1
                     if won:
                         self._total_wins += 1
+
+            # 实时绩效回调：通知 PerformanceTracker
+            if won is not None and self._on_outcome_fn is not None:
+                try:
+                    self._on_outcome_fn(p.strategy, won, price_change or 0.0)
+                except Exception:
+                    logger.debug(
+                        "OutcomeTracker: on_outcome_fn callback failed for %s",
+                        p.strategy, exc_info=True,
+                    )
 
             rows.append((
                 now,
