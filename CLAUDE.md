@@ -39,7 +39,7 @@ MT5Services/
 │   ├── economic.ini          # 经济日历与 Trade Guard 配置
 │   ├── risk.ini              # 风险限制（仓位数量、SL/TP 要求）
 │   ├── cache.ini             # 运行时内存缓存大小（覆盖 app.ini [limits]）
-│   ├── signal.ini            # 信号模块配置（Regime 检测阈值、策略参数、亲和度覆盖、HTF 缓存、投票组等）
+│   ├── signal.ini            # 信号模块配置（含 HTF 缓存、HTF 指标注入、信号质量追踪器参数）
 │   ├── indicators.json       # 指标定义与计算流水线
 │   └── composites.json       # 复合策略组合定义
 ├── src/
@@ -681,6 +681,11 @@ class MyNewStrategy:
         RegimeType.BREAKOUT:  0.XX,
         RegimeType.UNCERTAIN: 0.XX,
     }
+
+    # 5. HTF 指标（可选）— 需要引用其他时间框架的指标时声明
+    htf_indicators = {
+        "H1": ("adx14", "ema50"),  # 引用 H1 的 adx14 和 ema50
+    }
 ```
 
 #### Regime 亲和度设计指南
@@ -730,6 +735,58 @@ SoftRegimeResult:
     probabilities: dict[RegimeType, float]  # 概率分布，总和=1.0
 # 策略 affinity 改为加权平均：effective_affinity = Σ(prob[r] × affinity[r])
 ```
+
+---
+
+## HTF 指标上下文注入
+
+策略可以通过可选属性 `htf_indicators` 声明需要引用的**其他时间框架的指标数据**。系统在策略评估前自动从 `IndicatorManager` 查询已缓存的 HTF 指标并注入 `SignalContext.htf_indicators`。
+
+### 声明方式
+
+```python
+class MyStrategy:
+    name = "my_strategy"
+    required_indicators = ("rsi14",)           # 当前 TF 指标
+    htf_indicators = {"H1": ("adx14", "ema50")}  # 需要 H1 的 adx14 和 ema50
+    # ...
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        rsi = context.indicators.get("rsi14", {}).get("rsi")
+        h1_adx = context.htf_indicators.get("H1", {}).get("adx14", {}).get("adx")
+        h1_ema = context.htf_indicators.get("H1", {}).get("ema50", {}).get("ema")
+```
+
+### 工作原理
+
+- HTF 指标**不需要额外计算**——`IndicatorManager` 已经为所有配置的 `(symbol, timeframe)` 在 bar 收盘时计算了全量指标
+- `SignalRuntime._evaluate_strategies()` 在调用 `service.evaluate()` 前，从 `IndicatorManager.get_indicator()` 查询 HTF 数据
+- 未声明 `htf_indicators` 的策略不触发任何 HTF 查询（零开销）
+- HTF 数据天然低频更新（H4 每 4 小时才变），查询命中的是内存缓存
+
+### 与 HTFStateCache 的关系
+
+| HTFStateCache | HTF 指标注入 |
+|---------------|-------------|
+| 缓存信号方向（buy/sell） | 缓存指标数值（adx, ema...） |
+| 消费者：MultiTimeframeConfirm、TradeExecutor | 消费者：任何声明 `htf_indicators` 的策略 |
+
+两者互补，独立工作。
+
+### 配置
+
+`config/signal.ini` 的 `[htf_indicators]` section 提供全局开关：
+
+```ini
+[htf_indicators]
+enabled = true   # false 时所有 HTF 指标注入被禁用
+```
+
+### 边界情况
+
+- 目标 TF 未在 `app.ini` 配置 → 启动时 warning，运行时跳过
+- HTF 指标尚未计算（刚启动）→ 不注入，策略需安全访问（`.get()` 链）
+- 目标 TF = 当前 TF → 自动跳过（数据已在 `context.indicators` 中）
 
 ---
 

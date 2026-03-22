@@ -71,14 +71,18 @@ class SmaTrendStrategy:
             )
 
         spread = fast - slow
-        if spread > 0:
+        relative_spread = spread / slow if slow else 0.0
+        # 方向稳定性过滤：均线差距太小时视为无方向（防止震荡市反复交叉）
+        min_spread_pct = 0.0005  # 0.05%
+        if abs(relative_spread) < min_spread_pct:
+            action = "hold"
+        elif spread > 0:
             action = "buy"
         elif spread < 0:
             action = "sell"
         else:
             action = "hold"
 
-        relative_spread = spread / slow if slow else 0.0
         confidence = min(abs(relative_spread) * 100, 1.0)
         structure = _market_structure(context)
         structure_bias = str(structure.get("structure_bias") or "neutral")
@@ -315,14 +319,28 @@ class MacdMomentumStrategy:
         macd_line = macd_val
         signal_line = signal_val
 
+        # 动量加速度：hist 的 3-bar 变化量（delta_bars 自动计算）
+        macd_data = context.indicators.get("macd") or context.indicators.get("macd12_26_9") or {}
+        hist_d3 = macd_data.get("hist_d3")
+
         if hist > 0 and macd_line > signal_line:
             action = "buy"
             magnitude = abs(hist) / (abs(macd_line) + 1e-10)
             confidence = min(0.45 + min(magnitude * 2.0, 0.45), 0.9)
+            # 动量加速加分：hist_d3 > 0 表示柱状图正在放大
+            if hist_d3 is not None and hist_d3 > 0:
+                confidence = min(confidence + 0.08, 0.95)
+            # hist 接近零（弱动量）→ 降权，防止刚穿零轴的虚假信号
+            if abs(hist) < abs(macd_line) * 0.05:
+                confidence *= 0.75
         elif hist < 0 and macd_line < signal_line:
             action = "sell"
             magnitude = abs(hist) / (abs(macd_line) + 1e-10)
             confidence = min(0.45 + min(magnitude * 2.0, 0.45), 0.9)
+            if hist_d3 is not None and hist_d3 < 0:
+                confidence = min(confidence + 0.08, 0.95)
+            if abs(hist) < abs(macd_line) * 0.05:
+                confidence *= 0.75
         else:
             action = "hold"
             confidence = 0.1
@@ -339,6 +357,7 @@ class MacdMomentumStrategy:
                 "macd": macd_val,
                 "signal": signal_val,
                 "hist": hist_val,
+                "hist_d3": hist_d3,
             },
         )
 
@@ -524,7 +543,7 @@ class RocMomentumStrategy:
 
     name = "roc_momentum"
     category = "trend"
-    required_indicators = ("roc12", "adx14")
+    required_indicators = ("roc12", "adx14", "atr14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
         RegimeType.TRENDING:  0.85,  # 趋势中动量加速是强烈的持续信号
@@ -535,7 +554,7 @@ class RocMomentumStrategy:
 
     def __init__(self, *, adx_min: float = 23.0, roc_threshold: float = 0.1) -> None:
         self._adx_min = adx_min
-        self._roc_threshold = roc_threshold  # ROC 触发阈值（%），默认 0.1%
+        self._roc_threshold = roc_threshold  # ROC 触发基准阈值（%），ATR 归一化时作为下限
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         roc_value, roc_name = _resolve_indicator_value(
@@ -572,14 +591,24 @@ class RocMomentumStrategy:
                 metadata={"roc": roc_value, "adx": adx},
             )
 
+        # ATR 归一化 ROC 阈值：高波动市提高阈值，低波动市降低阈值
+        atr_data = context.indicators.get("atr14") or {}
+        atr_val = atr_data.get("atr")
+        close_price = float(context.metadata.get("close_price") or 0)
+        if atr_val and close_price > 0:
+            atr_pct = (atr_val / close_price) * 100
+            roc_threshold = max(atr_pct * 0.2, self._roc_threshold)
+        else:
+            roc_threshold = self._roc_threshold
+
         roc = roc_value
-        if roc > self._roc_threshold:
+        if roc > roc_threshold:
             action = "buy"
             # ADX 越强、ROC 越大，置信度越高
             adx_conf = min((adx - self._adx_min) / 30.0 * 0.3, 0.30)
             roc_conf = min(abs(roc) / 1.0 * 0.35, 0.35)
             confidence = min(0.40 + adx_conf + roc_conf, 0.90)
-        elif roc < -self._roc_threshold:
+        elif roc < -roc_threshold:
             action = "sell"
             adx_conf = min((adx - self._adx_min) / 30.0 * 0.3, 0.30)
             roc_conf = min(abs(roc) / 1.0 * 0.35, 0.35)

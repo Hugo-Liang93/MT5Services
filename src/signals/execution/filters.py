@@ -161,6 +161,33 @@ class SessionTransitionFilter:
 
 
 @dataclass
+class VolatilitySpikeFilter:
+    """Suppress signal evaluation when ATR spikes above a baseline multiple."""
+
+    spike_multiplier: float = 0.0  # 0 = disabled
+
+    def is_volatility_acceptable(
+        self,
+        indicators: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if self.spike_multiplier <= 0 or not indicators:
+            return True
+        atr_data = indicators.get("atr14")
+        if not isinstance(atr_data, dict):
+            return True
+        current_atr = atr_data.get("atr")
+        baseline_atr = atr_data.get("atr_sma") or atr_data.get("atr")
+        if (
+            current_atr is not None
+            and baseline_atr is not None
+            and baseline_atr > 0
+            and current_atr > baseline_atr * self.spike_multiplier
+        ):
+            return False
+        return True
+
+
+@dataclass
 class SignalFilterChain:
     """Composite filter that runs all pre-evaluation checks."""
 
@@ -168,6 +195,7 @@ class SignalFilterChain:
     session_transition_filter: Optional[SessionTransitionFilter] = None
     spread_filter: Optional[SpreadFilter] = None
     economic_filter: Optional[EconomicEventFilter] = None
+    volatility_filter: Optional[VolatilitySpikeFilter] = None
 
     def should_evaluate(
         self,
@@ -176,6 +204,7 @@ class SignalFilterChain:
         spread_points: float = 0.0,
         utc_now: Optional[datetime] = None,
         active_sessions: Optional[List[str]] = None,
+        indicators: Optional[Dict[str, Any]] = None,
     ) -> tuple[bool, str]:
         """Return (allowed, reason). reason is empty when allowed."""
         sessions = active_sessions
@@ -208,5 +237,11 @@ class SignalFilterChain:
             symbol, utc_now
         ):
             return False, "economic_event_window"
+
+        if (
+            self.volatility_filter
+            and not self.volatility_filter.is_volatility_acceptable(indicators)
+        ):
+            return False, "volatility_spike"
 
         return True, ""

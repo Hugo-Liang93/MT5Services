@@ -58,6 +58,7 @@ def get_signal_config() -> SignalConfig:
     standalone_override_section = dict(merged.get("standalone_override", {}))
     perf_tracker_section = dict(merged.get("performance_tracker", {}))
     htf_cache_section = dict(merged.get("htf_cache", {}))
+    htf_indicators_section = dict(merged.get("htf_indicators", {}))
     signal_quality_section = dict(merged.get("signal_quality", {}))
 
     renamed_preview = {
@@ -199,5 +200,15 @@ def get_signal_config() -> SignalConfig:
             f"signal_quality_{key}": value
             for key, value in signal_quality_section.items()
         },
+        **{
+            f"htf_indicators_{key}": value
+            for key, value in htf_indicators_section.items()
+            if key != "intrabar_confidence_decay"
+        },
+        **(
+            {"intrabar_confidence_decay": htf_indicators_section["intrabar_confidence_decay"]}
+            if "intrabar_confidence_decay" in htf_indicators_section
+            else {}
+        ),
     }
     return SignalConfig.model_validate(combined)

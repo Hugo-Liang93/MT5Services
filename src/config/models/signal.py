@@ -67,6 +67,15 @@ class SignalConfig(BaseModel):
     confidence_floor: float = 0.10
     # ── HTF Cache ──
     htf_cache_max_age_seconds: int = 14400
+    # ── HTF Indicators（跨时间框架指标注入）──
+    htf_indicators_enabled: bool = True
+    # ── Intrabar 置信度衰减 ──
+    intrabar_confidence_decay: float = 0.85
+    # ── HTF 方向对齐修正 ──
+    htf_conflict_penalty: float = 0.70
+    htf_alignment_boost: float = 1.10
+    # ── 波动率异常过滤 ──
+    volatility_atr_spike_multiplier: float = 2.5
     # ── Signal Quality Tracker ──
     signal_quality_bars_to_evaluate: int = 5
     signal_quality_max_pending: int = 500

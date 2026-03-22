@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-import dataclasses as _dc
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -23,8 +22,8 @@ from src.trading.sizing import (
     extract_atr_from_indicators,
 )
 from src.signals.models import SignalEvent
-from src.signals.strategies.htf_cache import HTFStateCache
 from src.risk.service import PreTradeRiskBlockedError
+from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
 from src.trading.position_manager import PositionManager
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
@@ -35,7 +34,6 @@ logger = logging.getLogger(__name__)
 class ExecutorConfig:
     enabled: bool = False
     min_confidence: float = 0.7
-    require_armed: bool = True
     max_concurrent_positions_per_symbol: int | None = 3
     risk_percent: float = 1.0
     sl_atr_multiplier: float = 1.5
@@ -52,21 +50,6 @@ class ExecutorConfig:
     # T-3: 自动半开恢复：熔断后等待 N 分钟再自动尝试
     circuit_auto_reset_minutes: int = 30
     max_spread_to_stop_ratio: float = 0.33
-    # HTF 对齐修正：若启用，冲突时软惩罚，一致时轻微加成。
-    htf_filter_enabled: bool = True
-    htf_conflict_penalty: float = 0.70
-    htf_alignment_boost: float = 1.10
-    # 交易触发白名单：仅允许列表内的策略触发实际下单。
-    # 空元组 = 不限制，所有策略均可触发（默认兼容行为）。
-    # 非空时，白名单外的策略信号仍正常产生（用于监控/投票），但不执行交易。
-    # 推荐配置：["consensus"] 或 ["consensus", "trend_triple_confirm"]
-    trade_trigger_strategies: tuple[str, ...] = field(default_factory=tuple)
-    # 分组保护：属于某个 voting group 的策略集合（union of all groups）。
-    # 非空时，这些策略不允许单独触发交易——只能通过其 vote group 结果触发。
-    # 空 frozenset = 不启用分组保护（兼容旧行为）。
-    voting_group_strategies: frozenset[str] = field(default_factory=frozenset)
-    # standalone_override：即使属于某个 voting group，仍允许单独触发交易的策略白名单。
-    standalone_override: frozenset[str] = field(default_factory=frozenset)
 
 
 class TradeExecutor:
@@ -78,21 +61,22 @@ class TradeExecutor:
         config: Optional[ExecutorConfig] = None,
         account_balance_getter: Optional[Any] = None,
         position_manager: Optional[PositionManager] = None,
-        htf_cache: Optional[HTFStateCache] = None,
         persist_execution_fn: Optional[Callable[[List], None]] = None,
         trade_outcome_tracker: Optional[TradeOutcomeTracker] = None,
         on_execution_skip: Optional[Callable[[str, str], None]] = None,
+        execution_gate: Optional[ExecutionGate] = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
         self._account_balance_getter = account_balance_getter
         self._position_manager = position_manager
-        self._htf_cache = htf_cache
         # T-4: 执行记录持久化回调（可选，用于写入 auto_executions 表）
         self._persist_execution_fn = persist_execution_fn
         self._trade_outcome_tracker = trade_outcome_tracker
         # 信号被拒绝时的回调：(signal_id, reason) → 通知 SignalQualityTracker 等
         self._on_execution_skip = on_execution_skip
+        # ExecutionGate: 策略域准入检查（voting group / whitelist / armed）
+        self._execution_gate = execution_gate or ExecutionGate()
         self._execution_count = 0
         self._last_execution_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
@@ -181,73 +165,15 @@ class TradeExecutor:
         if event.action not in ("buy", "sell"):
             return None
 
-        # ── Voting Group 分组保护 ─────────────────────────────────────
-        # 若策略属于某个 voting group，则默认不允许单独触发交易；
-        # 只有该 group 的 vote 结果信号（strategy = group_name）才能触发。
-        # standalone_override 白名单中的策略可豁免此限制。
-        if (
-            self.config.voting_group_strategies
-            and event.strategy in self.config.voting_group_strategies
-            and event.strategy not in self.config.standalone_override
-        ):
+        # ── 策略域准入检查（ExecutionGate）────────────────────────────
+        gate_allowed, gate_reason = self._execution_gate.check(event)
+        if not gate_allowed:
             logger.debug(
-                "TradeExecutor: skipping %s/%s %s - strategy %r is in a voting group "
-                "and not in standalone_override (use vote result signal to trigger)",
-                event.symbol, event.timeframe, event.action, event.strategy,
+                "TradeExecutor: skipping %s/%s %s - gate blocked: %s",
+                event.symbol, event.strategy, event.action, gate_reason,
             )
+            self._notify_skip(event.signal_id, gate_reason)
             return None
-
-        # ── 交易触发白名单过滤 ────────────────────────────────────────
-        # trade_trigger_strategies 非空时，仅允许白名单内的策略触发下单。
-        # 白名单外的策略信号仍正常产生（持久化、监控、投票均不受影响），
-        # 只是不在此处执行实际交易，避免多策略同向重复开仓。
-        allowed = self.config.trade_trigger_strategies
-        if allowed and event.strategy not in allowed:
-            logger.debug(
-                "TradeExecutor: skipping %s/%s %s - strategy %r not in "
-                "trade_trigger_strategies whitelist",
-                event.symbol, event.timeframe, event.action, event.strategy,
-            )
-            return None
-
-        # ── require_armed 检查 ────────────────────────────────────────
-        # confirmed 事件的 previous_state 是上一个 confirmed_state（idle/confirmed_buy），
-        # 永远不含 "armed"。因此同时检查 preview_state_at_close（bar 收盘时的盘中状态），
-        # 该字段由 runtime._transition_confirmed 在清除 preview 状态前注入。
-        if self.config.require_armed:
-            previous_state = event.metadata.get("previous_state", "")
-            preview_at_close = event.metadata.get("preview_state_at_close", "")
-            if "armed" not in previous_state and "armed" not in preview_at_close:
-                logger.info(
-                    "TradeExecutor: skipping %s/%s %s - require_armed=True but "
-                    "previous_state=%r, preview_state_at_close=%r",
-                    event.symbol, event.strategy, event.action,
-                    previous_state, preview_at_close,
-                )
-                self._notify_skip(event.signal_id, "require_armed")
-                return None
-
-        # ── HTF 方向软惩罚 ────────────────────────────────────────────
-        if self.config.htf_filter_enabled and self._htf_cache is not None:
-            htf_direction = self._htf_cache.get_htf_direction(event.symbol, event.timeframe)
-            if htf_direction is not None:
-                multiplier = (
-                    self.config.htf_alignment_boost
-                    if htf_direction == event.action
-                    else self.config.htf_conflict_penalty
-                )
-                event = _dc.replace(
-                    event,
-                    confidence=min(1.0, event.confidence * multiplier),
-                    metadata={
-                        **event.metadata,
-                        "htf_direction": htf_direction,
-                        "htf_alignment": (
-                            "aligned" if htf_direction == event.action else "conflict"
-                        ),
-                        "htf_confidence_multiplier": multiplier,
-                    },
-                )
 
         if event.confidence < self.config.min_confidence:
             logger.info(
@@ -820,15 +746,17 @@ class TradeExecutor:
             },
             "config": {
                 "min_confidence": self.config.min_confidence,
-                "require_armed": self.config.require_armed,
                 "max_concurrent_positions_per_symbol": self.config.max_concurrent_positions_per_symbol,
-                "htf_filter_enabled": self.config.htf_filter_enabled,
-                "htf_conflict_penalty": self.config.htf_conflict_penalty,
-                "htf_alignment_boost": self.config.htf_alignment_boost,
                 "max_spread_to_stop_ratio": self.config.max_spread_to_stop_ratio,
                 "risk_percent": self.config.risk_percent,
                 "sl_atr_multiplier": self.config.sl_atr_multiplier,
                 "tp_atr_multiplier": self.config.tp_atr_multiplier,
+            },
+            "execution_gate": {
+                "require_armed": self._execution_gate.config.require_armed,
+                "trade_trigger_strategies": list(self._execution_gate.config.trade_trigger_strategies),
+                "voting_group_strategies": sorted(self._execution_gate.config.voting_group_strategies),
+                "standalone_override": sorted(self._execution_gate.config.standalone_override),
             },
             "execution_quality": {
                 "recovered_from_state": int(self._execution_quality["recovered_from_state"] or 0),

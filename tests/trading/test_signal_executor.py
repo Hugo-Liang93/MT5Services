@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.signals.models import SignalEvent
+from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 
 
@@ -33,13 +34,6 @@ class DummyPositionManager:
     def active_positions(self):
         return list(self._positions)
 
-
-class DummyHTFCache:
-    def __init__(self, direction: str | None):
-        self.direction = direction
-
-    def get_htf_direction(self, symbol, timeframe):
-        return self.direction
 
 
 def _build_event(
@@ -83,12 +77,12 @@ def test_trade_executor_skips_when_spread_to_stop_ratio_is_too_high() -> None:
         trading_module=module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
             sl_atr_multiplier=1.0,
             tp_atr_multiplier=2.0,
             max_spread_to_stop_ratio=0.2,
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
     result = executor.on_signal_event(
@@ -106,12 +100,12 @@ def test_trade_executor_records_cost_metrics_on_success() -> None:
         trading_module=module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
             sl_atr_multiplier=2.0,
             tp_atr_multiplier=4.0,
             max_spread_to_stop_ratio=0.5,
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
     executor.on_signal_event(_build_event(spread_points=50.0, close_price=3000.0))
@@ -129,12 +123,12 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
         trading_module=module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
             sl_atr_multiplier=2.0,
             tp_atr_multiplier=4.0,
             max_spread_to_stop_ratio=0.5,
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
     executor.on_signal_event(
@@ -157,55 +151,6 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
     )
 
 
-def test_trade_executor_soft_penalizes_htf_conflict_before_threshold_check() -> None:
-    module = DummyTradingModule()
-    executor = TradeExecutor(
-        trading_module=module,
-        config=ExecutorConfig(
-            enabled=True,
-            require_armed=True,
-            min_confidence=0.6,
-            sl_atr_multiplier=2.0,
-            tp_atr_multiplier=4.0,
-            htf_filter_enabled=True,
-            htf_conflict_penalty=0.7,
-        ),
-        htf_cache=DummyHTFCache("sell"),
-    )
-    event = _build_event(spread_points=20.0, close_price=3000.0)
-    event = SignalEvent(**{**event.__dict__, "confidence": 0.8})
-
-    executor.on_signal_event(event)
-
-    assert module.calls == []
-
-
-def test_trade_executor_boosts_htf_alignment_confidence() -> None:
-    module = DummyTradingModule()
-    executor = TradeExecutor(
-        trading_module=module,
-        config=ExecutorConfig(
-            enabled=True,
-            require_armed=True,
-            min_confidence=0.9,
-            sl_atr_multiplier=2.0,
-            tp_atr_multiplier=4.0,
-            htf_filter_enabled=True,
-            htf_alignment_boost=1.1,
-        ),
-        htf_cache=DummyHTFCache("buy"),
-    )
-    event = _build_event(spread_points=20.0, close_price=3000.0)
-    event = SignalEvent(**{**event.__dict__, "confidence": 0.85})
-
-    executor.on_signal_event(event)
-
-    assert module.calls
-    assert executor.status()["recent_executions"][-1]["confidence"] == pytest.approx(
-        0.935
-    )
-
-
 def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
     module = DummyTradingModule()
     executor = TradeExecutor(
@@ -215,10 +160,10 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
         ),
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
             max_concurrent_positions_per_symbol=2,
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
     result = executor.on_signal_event(
@@ -238,12 +183,12 @@ def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
         trading_module=module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
             sl_atr_multiplier=1.5,
             tp_atr_multiplier=3.0,
             max_spread_to_stop_ratio=0.5,
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
     event = _build_event(spread_points=20.0, close_price=3000.0)
     event = SignalEvent(**{**event.__dict__, "timeframe": "M1"})
@@ -262,42 +207,15 @@ def test_trade_executor_passes_signal_id_as_request_id() -> None:
         trading_module=module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
     executor.on_signal_event(_build_event(spread_points=10.0, close_price=3000.0))
 
     assert module.calls
     assert module.calls[0][1]["request_id"] == "sig_1"
-
-
-def test_trade_executor_htf_none_direction_skips_modification() -> None:
-    """HTF 缓存未命中（返回 None）时跳过 HTF 修正，信号原样通过。"""
-    module = DummyTradingModule()
-    executor = TradeExecutor(
-        trading_module=module,
-        config=ExecutorConfig(
-            enabled=True,
-            require_armed=True,
-            min_confidence=0.5,
-            sl_atr_multiplier=2.0,
-            tp_atr_multiplier=4.0,
-            htf_filter_enabled=True,
-            htf_conflict_penalty=0.7,
-        ),
-        htf_cache=DummyHTFCache(None),  # 缓存未命中
-    )
-    event = _build_event(spread_points=20.0, close_price=3000.0)
-    event = SignalEvent(**{**event.__dict__, "confidence": 0.75})
-
-    executor.on_signal_event(event)
-
-    assert module.calls  # 正常执行（不被 HTF 惩罚）
-    last = executor.status()["recent_executions"][-1]
-    assert last["confidence"] == pytest.approx(0.75)  # 未被修改
-    assert "htf_direction" not in last.get("metadata", {})
 
 
 def test_trade_executor_voting_group_strategy_blocked() -> None:
@@ -307,9 +225,13 @@ def test_trade_executor_voting_group_strategy_blocked() -> None:
         trading_module=module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
-            voting_group_strategies=frozenset({"sma_trend", "supertrend"}),
+        ),
+        execution_gate=ExecutionGate(
+            ExecutionGateConfig(
+                require_armed=True,
+                voting_group_strategies=frozenset({"sma_trend", "supertrend"}),
+            )
         ),
     )
 
@@ -328,12 +250,16 @@ def test_trade_executor_voting_group_standalone_override_allows() -> None:
         trading_module=module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
             sl_atr_multiplier=2.0,
             tp_atr_multiplier=4.0,
-            voting_group_strategies=frozenset({"sma_trend", "supertrend"}),
-            standalone_override=frozenset({"sma_trend"}),
+        ),
+        execution_gate=ExecutionGate(
+            ExecutionGateConfig(
+                require_armed=True,
+                voting_group_strategies=frozenset({"sma_trend", "supertrend"}),
+                standalone_override=frozenset({"sma_trend"}),
+            )
         ),
     )
 
@@ -351,13 +277,13 @@ def test_trade_executor_circuit_breaker_auto_resets() -> None:
         trading_module=module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
             sl_atr_multiplier=2.0,
             tp_atr_multiplier=4.0,
             max_consecutive_failures=1,
             circuit_auto_reset_minutes=10,
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
     # 手动设置熔断状态
     executor._circuit_open = True
@@ -383,10 +309,10 @@ def test_trade_executor_uses_live_positions_when_tracking_state_is_stale() -> No
         position_manager=DummyPositionManager([]),
         config=ExecutorConfig(
             enabled=True,
-            require_armed=True,
             min_confidence=0.5,
             max_concurrent_positions_per_symbol=2,
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
     result = executor.on_signal_event(
@@ -398,3 +324,57 @@ def test_trade_executor_uses_live_positions_when_tracking_state_is_stale() -> No
     assert executor.status()["recent_executions"][-1]["reason"] == (
         "max_concurrent_positions_per_symbol"
     )
+
+
+# ── ExecutionGate 单元测试 ─────────────────────────────────────────────────
+
+def test_execution_gate_blocks_unarmed_signal() -> None:
+    gate = ExecutionGate(ExecutionGateConfig(require_armed=True))
+    event = _build_event(spread_points=10.0, close_price=3000.0)
+    # 覆盖 metadata，移除 armed 状态
+    event = SignalEvent(**{**event.__dict__, "metadata": {"previous_state": "idle"}})
+
+    allowed, reason = gate.check(event)
+
+    assert not allowed
+    assert reason == "require_armed"
+
+
+def test_execution_gate_allows_armed_signal() -> None:
+    gate = ExecutionGate(ExecutionGateConfig(require_armed=True))
+    event = _build_event(spread_points=10.0, close_price=3000.0)
+
+    allowed, reason = gate.check(event)
+
+    assert allowed
+    assert reason == ""
+
+
+def test_execution_gate_blocks_strategy_not_in_whitelist() -> None:
+    gate = ExecutionGate(
+        ExecutionGateConfig(
+            require_armed=False,
+            trade_trigger_strategies=("consensus",),
+        )
+    )
+    event = _build_event(spread_points=10.0, close_price=3000.0)
+
+    allowed, reason = gate.check(event)
+
+    assert not allowed
+    assert reason == "not_in_trade_trigger_whitelist"
+
+
+def test_execution_gate_allows_whitelisted_strategy() -> None:
+    gate = ExecutionGate(
+        ExecutionGateConfig(
+            require_armed=False,
+            trade_trigger_strategies=("sma_trend", "consensus"),
+        )
+    )
+    event = _build_event(spread_points=10.0, close_price=3000.0)
+
+    allowed, reason = gate.check(event)
+
+    assert allowed
+    assert reason == ""

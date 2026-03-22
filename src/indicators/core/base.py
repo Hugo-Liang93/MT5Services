@@ -1,6 +1,22 @@
-from typing import Iterable, List, Any, Sequence
+import math
+from typing import Any, Dict, Iterable, List, Sequence
 
 from src.clients.mt5_market import OHLC
+
+
+def sanitize_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """移除结果中的 NaN/Inf 值，防止级联传播到策略和下单。
+
+    如果所有数值字段都无效，返回空 dict（等同于指标计算失败）。
+    """
+    cleaned: Dict[str, Any] = {}
+    for key, value in result.items():
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        cleaned[key] = value
+    # 至少保留一个数值字段才算有效结果
+    has_numeric = any(isinstance(v, (int, float)) for v in cleaned.values())
+    return cleaned if has_numeric else {}
 
 
 def tail_bars(bars: Iterable[OHLC], lookback: int) -> List[OHLC]:

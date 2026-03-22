@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from src.signals.evaluation.regime import RegimeType
 from src.signals.execution.filters import SessionFilter, SignalFilterChain
 from src.signals.models import SignalDecision
 from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
@@ -64,6 +65,9 @@ class DummySignalService:
     def strategy_affinity_map(self, strategy: str):
         return {}
 
+    def strategy_htf_indicators(self, strategy: str):
+        return {}
+
     def evaluate(self, **kwargs):
         self.evaluate_calls.append(kwargs)
         indicators = kwargs["indicators"]
@@ -115,6 +119,11 @@ class DummyStructureAnalyzer:
             m1_lookback_bars=120,
         )
         self.calls = []
+        self._cache: dict[tuple[str, str], dict] = {}
+
+    @property
+    def cache_entries(self) -> int:
+        return len(self._cache)
 
     def analyze(
         self,
@@ -141,6 +150,30 @@ class DummyStructureAnalyzer:
             "breakout_state": "above_previous_day_high",
             "close_price": latest_close,
         }
+
+    def analyze_cached(
+        self,
+        symbol,
+        timeframe,
+        *,
+        scope="confirmed",
+        event_time=None,
+        latest_close=None,
+        lookback_bars_override=None,
+    ):
+        cache_key = (symbol, timeframe)
+        if scope == "intrabar" and cache_key in self._cache:
+            return dict(self._cache[cache_key])
+        result = self.analyze(
+            symbol,
+            timeframe,
+            event_time=event_time,
+            latest_close=latest_close,
+            lookback_bars_override=lookback_bars_override,
+        )
+        if scope == "confirmed" and result:
+            self._cache[cache_key] = dict(result)
+        return result
 
 
 def test_signal_runtime_processes_confirmed_snapshot_event() -> None:
@@ -836,3 +869,174 @@ def test_signal_runtime_uses_shorter_m1_market_structure_lookback() -> None:
     runtime.process_next_event(timeout=0.01)
 
     assert analyzer.calls[0]["lookback_bars_override"] == 120
+
+
+def test_signal_runtime_skips_market_structure_when_all_strategies_filtered_by_affinity() -> None:
+    """当所有策略的 affinity 都低于 min_affinity_skip 时，跳过市场结构分析。"""
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    analyzer = DummyStructureAnalyzer()
+
+    # 给 strategy_affinity_map 返回极低的 affinity
+    service.strategy_affinity_map = lambda strategy: {
+        RegimeType.TRENDING: 0.05,
+        RegimeType.RANGING: 0.05,
+        RegimeType.BREAKOUT: 0.05,
+        RegimeType.UNCERTAIN: 0.05,
+    }
+
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+        market_structure_analyzer=analyzer,
+        policy=SignalPolicy(min_affinity_skip=0.15),
+    )
+
+    runtime._on_snapshot(
+        "XAUUSD",
+        "M5",
+        datetime.now(timezone.utc),
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        "confirmed",
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    # 市场结构分析不应被调用（所有策略 affinity < 0.15 → 全部跳过）
+    assert analyzer.calls == []
+    # 策略评估也不应发生
+    assert service.evaluate_calls == []
+
+
+def test_signal_runtime_defers_market_structure_until_strategy_passes_gate() -> None:
+    """市场结构分析延迟到第一个通过 affinity gate 的策略时才计算。"""
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    analyzer = DummyStructureAnalyzer()
+
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+        market_structure_analyzer=analyzer,
+        policy=SignalPolicy(min_affinity_skip=0.0),
+    )
+
+    runtime._on_snapshot(
+        "XAUUSD",
+        "M5",
+        datetime.now(timezone.utc),
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        "confirmed",
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    # 策略通过了评估，市场结构应被调用（延迟计算生效）
+    assert len(analyzer.calls) == 1
+    # 市场结构数据应注入到策略的 metadata 中
+    assert service.evaluate_calls[0]["metadata"]["market_structure"]["structure_bias"] == "bullish_breakout"
+
+
+def test_signal_runtime_applies_htf_conflict_penalty_to_decision_confidence() -> None:
+    """HTF 方向冲突时，decision 的 confidence 被惩罚，持久化记录反映最终值。"""
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    # sma_trend: sma > ema → buy, confidence=0.8
+    htf_direction_calls = []
+
+    def mock_htf_direction(symbol, timeframe):
+        htf_direction_calls.append((symbol, timeframe))
+        return "sell"  # 冲突：策略 buy，HTF sell
+
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+        htf_direction_fn=mock_htf_direction,
+        htf_conflict_penalty=0.70,
+        htf_alignment_boost=1.10,
+    )
+
+    runtime._on_snapshot(
+        "XAUUSD",
+        "M5",
+        datetime.now(timezone.utc),
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        "confirmed",
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    assert htf_direction_calls == [("XAUUSD", "M5")]
+    # 持久化的 decision 应已包含 HTF 惩罚后的 confidence
+    persisted = service.persist_calls[0]
+    metadata = persisted["metadata"]
+    assert metadata.get("htf_direction") == "sell"
+    assert metadata.get("htf_alignment") == "conflict"
+
+
+def test_signal_runtime_applies_htf_alignment_boost_to_decision_confidence() -> None:
+    """HTF 方向一致时，decision 的 confidence 被加成。"""
+    source = DummySnapshotSource()
+    service = DummySignalService()
+
+    def mock_htf_direction(symbol, timeframe):
+        return "buy"  # 对齐：策略 buy，HTF buy
+
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+        htf_direction_fn=mock_htf_direction,
+        htf_conflict_penalty=0.70,
+        htf_alignment_boost=1.10,
+    )
+
+    runtime._on_snapshot(
+        "XAUUSD",
+        "M5",
+        datetime.now(timezone.utc),
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        "confirmed",
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    persisted = service.persist_calls[0]
+    metadata = persisted["metadata"]
+    assert metadata.get("htf_alignment") == "aligned"
+    assert metadata.get("htf_confidence_multiplier") == 1.10
+
+
+def test_signal_runtime_skips_htf_when_direction_fn_is_none() -> None:
+    """未配置 HTF direction 函数时不修改 confidence。"""
+    source = DummySnapshotSource()
+    service = DummySignalService()
+
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+        htf_direction_fn=None,
+    )
+
+    runtime._on_snapshot(
+        "XAUUSD",
+        "M5",
+        datetime.now(timezone.utc),
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        "confirmed",
+    )
+    runtime.process_next_event(timeout=0.01)
+
+    persisted = service.persist_calls[0]
+    # 没有 HTF 修正 metadata
+    assert "htf_direction" not in persisted.get("metadata", {})

@@ -81,6 +81,11 @@ class SignalRuntime:
         filter_chain: Optional[SignalFilterChain] = None,
         regime_detector: Optional[MarketRegimeDetector] = None,
         market_structure_analyzer: Optional[Any] = None,
+        htf_indicators_enabled: bool = True,
+        intrabar_confidence_decay: float = 1.0,
+        htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
+        htf_conflict_penalty: float = 0.70,
+        htf_alignment_boost: float = 1.10,
     ):
         self.service = service
         self.snapshot_source = snapshot_source
@@ -129,6 +134,8 @@ class SignalRuntime:
         self._strategy_scopes: dict[str, frozenset[str]] = {}
         # 启动时缓存每个策略的 regime_affinity，避免 process_next_event 热路径中的 getattr。
         self._strategy_affinity: dict[str, dict[RegimeType, float]] = {}
+        # HTF 指标声明缓存：{strategy_name: {tf: (indicator_names...)}}
+        self._strategy_htf_indicators: dict[str, dict[str, tuple[str, ...]]] = {}
         for target in self._targets:
             self._target_index.setdefault((target.symbol, target.timeframe), []).append(
                 target.strategy
@@ -145,6 +152,22 @@ class SignalRuntime:
                 self._strategy_affinity[target.strategy] = (
                     self.service.strategy_affinity_map(target.strategy)
                 )
+            if target.strategy not in self._strategy_htf_indicators:
+                self._strategy_htf_indicators[target.strategy] = (
+                    self.service.strategy_htf_indicators(target.strategy)
+                )
+        # 系统中已配置的时间框架集合（用于 HTF 指标解析校验）
+        self._configured_timeframes: frozenset[str] = frozenset(
+            target.timeframe.upper() for target in self._targets
+        )
+        # HTF 指标注入全局开关
+        self._htf_indicators_enabled: bool = htf_indicators_enabled
+        # Intrabar 置信度衰减因子（<1.0 降权未收盘 bar 信号）
+        self._intrabar_confidence_decay: float = min(intrabar_confidence_decay, 1.0)
+        # HTF 方向对齐修正：在策略评估后、持久化前应用，使记录的 confidence 反映真实值
+        self._htf_direction_fn = htf_direction_fn
+        self._htf_conflict_penalty: float = htf_conflict_penalty
+        self._htf_alignment_boost: float = htf_alignment_boost
 
         # R-2: 分片锁 — 热路径按 (symbol, timeframe) 分片，避免全局锁争用。
         # _state_lock 仅用于 _count_active_states() 的全量快照读取。
@@ -182,7 +205,7 @@ class SignalRuntime:
         self._vote_fusion_cache: dict[
             tuple[str, str, datetime], dict[str, tuple[str, Any]]
         ] = {}
-        self._market_structure_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        # (legacy field removed — cache now lives inside MarketStructureAnalyzer)
 
     @staticmethod
     def _build_group_engines(
@@ -367,7 +390,11 @@ class SignalRuntime:
                 for name, sessions in self.policy.strategy_sessions.items()
             },
             "market_structure_enabled": market_structure_enabled,
-            "market_structure_cache_entries": len(self._market_structure_cache),
+            "market_structure_cache_entries": (
+                self._market_structure_analyzer.cache_entries
+                if self._market_structure_analyzer is not None
+                else 0
+            ),
             "strategy_scopes": {
                 name: sorted(scopes) for name, scopes in self._strategy_scopes.items()
             },
@@ -853,6 +880,8 @@ class SignalRuntime:
         """
         snapshot_decisions: List = []
         min_affinity_skip = self.policy.min_affinity_skip
+        # 延迟市场结构分析：仅在第一个策略真正需要评估时按需计算一次
+        _structure_resolved = False
         strategies = self._target_index.get((symbol, timeframe), [])
         shard_lock = self._get_shard_lock(symbol, timeframe)
 
@@ -920,6 +949,35 @@ class SignalRuntime:
             ):
                 continue
 
+            # ── 延迟市场结构分析（仅首次触发时计算）──────────
+            if not _structure_resolved and self._market_structure_analyzer is not None:
+                _structure_resolved = True
+                try:
+                    structure_context = self._resolve_market_structure_context(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        scope=scope,
+                        event_time=event_time,
+                        bar_time=bar_time,
+                        latest_close=regime_metadata.get("close_price"),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to build market structure context for %s/%s",
+                        symbol, timeframe, exc_info=True,
+                    )
+                    structure_context = {}
+                if structure_context:
+                    regime_metadata["market_structure"] = structure_context
+
+            # ── HTF 指标注入 ──────────────────────────────────
+            htf_spec = self._strategy_htf_indicators.get(strategy)
+            htf_payload: Dict[str, Dict[str, Dict[str, Any]]] = (
+                self._resolve_htf_indicators(symbol, timeframe, htf_spec)
+                if self._htf_indicators_enabled and htf_spec
+                else {}
+            )
+
             decision = self.service.evaluate(
                 symbol=symbol,
                 timeframe=timeframe,
@@ -927,7 +985,35 @@ class SignalRuntime:
                 indicators=scoped_indicators,
                 metadata=regime_metadata,
                 persist=False,
+                htf_indicators=htf_payload,
             )
+            # ── Intrabar 置信度衰减 ──────────────────────
+            if scope == "intrabar" and self._intrabar_confidence_decay < 1.0:
+                import dataclasses as _dc
+                decision = _dc.replace(
+                    decision,
+                    confidence=decision.confidence * self._intrabar_confidence_decay,
+                )
+            # ── HTF 方向对齐修正 ──────────────────────────
+            if self._htf_direction_fn is not None and decision.action in ("buy", "sell"):
+                htf_dir = self._htf_direction_fn(symbol, timeframe)
+                if htf_dir is not None:
+                    import dataclasses as _dc
+                    htf_mul = (
+                        self._htf_alignment_boost
+                        if htf_dir == decision.action
+                        else self._htf_conflict_penalty
+                    )
+                    decision = _dc.replace(
+                        decision,
+                        confidence=min(1.0, decision.confidence * htf_mul),
+                    )
+                    # 注入 regime_metadata 使其流入 transition_metadata → 持久化记录
+                    regime_metadata["htf_direction"] = htf_dir
+                    regime_metadata["htf_alignment"] = (
+                        "aligned" if htf_dir == decision.action else "conflict"
+                    )
+                    regime_metadata["htf_confidence_multiplier"] = htf_mul
             snapshot_decisions.append(decision)
 
             transition_metadata = (
@@ -986,30 +1072,14 @@ class SignalRuntime:
         if analyzer is None:
             return {}
 
-        cache_key = (symbol, timeframe)
-        cached = self._market_structure_cache.get(cache_key)
-        if scope == "intrabar" and cached is not None:
-            # TTL 检查：缓存超过 5 分钟则视为过时，重新计算
-            cached_event_time = cached.get("event_time")
-            _STRUCTURE_CACHE_TTL = timedelta(seconds=300)
-            if cached_event_time is not None and (event_time - cached_event_time) < _STRUCTURE_CACHE_TTL:
-                return dict(cached.get("context") or {})
-            # 缓存过时，继续往下重新计算
-
-        context = analyzer.analyze(
+        return analyzer.analyze_cached(
             symbol,
             timeframe,
+            scope=scope,
             event_time=event_time,
             latest_close=latest_close,
             lookback_bars_override=self._market_structure_lookback_bars(timeframe),
         )
-        if scope == "confirmed" and context:
-            self._market_structure_cache[cache_key] = {
-                "bar_time": bar_time,
-                "event_time": event_time,
-                "context": dict(context),
-            }
-        return context
 
     def _emit_vote_signal(
         self,
@@ -1175,6 +1245,7 @@ class SignalRuntime:
                 spread_points=spread_points,
                 utc_now=event_time,
                 active_sessions=active_sessions,
+                indicators=indicators,
             )
             if not allowed:
                 logger.debug(
@@ -1204,26 +1275,16 @@ class SignalRuntime:
         # close_price 注入：在 scoped_indicators 收窄前从全量快照提取
         if "close_price" not in regime_metadata:
             regime_metadata["close_price"] = _extract_close_price(indicators)
-        if self._market_structure_analyzer is not None:
-            try:
-                structure_context = self._resolve_market_structure_context(
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    scope=scope,
-                    event_time=event_time,
-                    bar_time=bar_time,
-                    latest_close=regime_metadata.get("close_price"),
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to build market structure context for %s/%s",
-                    symbol,
-                    timeframe,
-                    exc_info=True,
-                )
-                structure_context = {}
-            if structure_context:
-                regime_metadata["market_structure"] = structure_context
+
+        # ── 快速全拒绝检查：如果没有任何策略能通过 affinity 门控，跳过后续所有重计算
+        if not self._any_strategy_eligible(
+            symbol, timeframe, scope, regime,
+            regime_metadata.get("_soft_regime"), active_sessions,
+        ):
+            self._processed_events += 1
+            self._run_count += 1
+            self._last_run_at = datetime.now(timezone.utc)
+            return True
 
         # ── Regime 稳定性追踪 ──────────────────────────────────────────────
         tracker = self._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
@@ -1250,6 +1311,81 @@ class SignalRuntime:
         self._last_run_at = datetime.now(timezone.utc)
         self._last_error = None
         return True
+
+    def _resolve_htf_indicators(
+        self,
+        symbol: str,
+        current_tf: str,
+        htf_spec: dict[str, tuple[str, ...]],
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """从 IndicatorManager 查询 HTF 指标，返回 {tf: {ind: {field: val}}}。"""
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for target_tf, indicator_names in htf_spec.items():
+            tf = target_tf.strip().upper()
+            if tf == current_tf.upper():
+                continue
+            if tf not in self._configured_timeframes:
+                continue
+            tf_indicators: Dict[str, Dict[str, Any]] = {}
+            for ind_name in indicator_names:
+                ind_data = self._get_htf_indicator(symbol, tf, ind_name)
+                if ind_data is not None:
+                    tf_indicators[ind_name] = ind_data
+            if tf_indicators:
+                result[tf] = tf_indicators
+        return result
+
+    def _get_htf_indicator(
+        self,
+        symbol: str,
+        timeframe: str,
+        indicator_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        """通过 snapshot_source（IndicatorManager）查询已缓存的 HTF 指标。"""
+        getter = getattr(self.snapshot_source, "get_indicator", None)
+        if callable(getter):
+            return getter(symbol, timeframe, indicator_name)
+        return None
+
+    def _any_strategy_eligible(
+        self,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        regime: RegimeType,
+        soft_regime: Optional[Dict[str, Any]],
+        active_sessions: List[str],
+    ) -> bool:
+        """Quick check: is there ANY strategy that could pass the evaluation loop?
+
+        If min_affinity_skip is disabled (0) or any strategy has sufficient
+        affinity, returns True.  Otherwise returns False, allowing the caller
+        to skip expensive downstream work (market structure, voting, etc.).
+        """
+        min_affinity_skip = self.policy.min_affinity_skip
+        if min_affinity_skip <= 0.0:
+            return True  # affinity gate disabled, always eligible
+        strategies = self._target_index.get((symbol, timeframe), [])
+        if not strategies:
+            return False
+        for strategy in strategies:
+            allowed_sessions = self.policy.strategy_sessions.get(strategy, ())
+            if allowed_sessions and not any(
+                s in allowed_sessions for s in active_sessions
+            ):
+                continue
+            allowed_timeframes = self.policy.strategy_timeframes.get(strategy, ())
+            if allowed_timeframes and timeframe not in allowed_timeframes:
+                continue
+            allowed_scopes = self._strategy_scopes.get(
+                strategy, frozenset(("intrabar", "confirmed"))
+            )
+            if scope not in allowed_scopes:
+                continue
+            affinity = self._effective_affinity(strategy, regime, soft_regime)
+            if affinity >= min_affinity_skip:
+                return True  # at least one strategy is eligible
+        return False
 
     def _effective_affinity(
         self,

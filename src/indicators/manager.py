@@ -764,16 +764,15 @@ class UnifiedIndicatorManager:
             name: dict(payload)
             for name, payload in indicators.items()
         }
-        current = self._last_preview_snapshot.get(cache_key)
-        if current is not None and current[0] == bar_time and current[1] == normalized:
-            return False
-        # 若已存在则先删除，以便将其移到末尾（MRU 位置）。
-        self._last_preview_snapshot.pop(cache_key, None)
-        self._last_preview_snapshot[cache_key] = (bar_time, normalized)
-        # 超出上限时淘汰最久未使用的条目（头部）。
-        max_entries = getattr(self, "_preview_snapshot_max_entries", 500)
-        while len(self._last_preview_snapshot) > max_entries:
-            self._last_preview_snapshot.popitem(last=False)
+        with self._results_lock:
+            current = self._last_preview_snapshot.get(cache_key)
+            if current is not None and current[0] == bar_time and current[1] == normalized:
+                return False
+            self._last_preview_snapshot.pop(cache_key, None)
+            self._last_preview_snapshot[cache_key] = (bar_time, normalized)
+            max_entries = getattr(self, "_preview_snapshot_max_entries", 500)
+            while len(self._last_preview_snapshot) > max_entries:
+                self._last_preview_snapshot.popitem(last=False)
         return True
 
     def _write_back_results(
@@ -1074,7 +1073,8 @@ class UnifiedIndicatorManager:
         computation (auto-derived from strategy scopes at startup).
         """
         cache_key = f"{symbol}_{timeframe}"
-        return self._last_preview_snapshot.get(cache_key)
+        with self._results_lock:
+            return self._last_preview_snapshot.get(cache_key)
 
     def compute(
         self,

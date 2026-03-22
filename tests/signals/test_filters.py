@@ -7,6 +7,7 @@ from src.signals.execution.filters import (
     SessionTransitionFilter,
     SignalFilterChain,
     SpreadFilter,
+    VolatilitySpikeFilter,
 )
 
 
@@ -66,3 +67,47 @@ def test_session_transition_filter_blocks_london_to_new_york_handoff() -> None:
 
     assert allowed is False
     assert reason == "session_transition_cooldown:london_to_new_york"
+
+
+def test_volatility_spike_filter_blocks_when_atr_exceeds_baseline() -> None:
+    chain = SignalFilterChain(
+        volatility_filter=VolatilitySpikeFilter(spike_multiplier=2.5),
+    )
+    indicators = {"atr14": {"atr": 8.0, "atr_sma": 3.0}}
+
+    allowed, reason = chain.should_evaluate(
+        "XAUUSD",
+        indicators=indicators,
+    )
+
+    assert allowed is False
+    assert reason == "volatility_spike"
+
+
+def test_volatility_spike_filter_allows_normal_atr() -> None:
+    chain = SignalFilterChain(
+        volatility_filter=VolatilitySpikeFilter(spike_multiplier=2.5),
+    )
+    indicators = {"atr14": {"atr": 5.0, "atr_sma": 3.0}}
+
+    allowed, reason = chain.should_evaluate(
+        "XAUUSD",
+        indicators=indicators,
+    )
+
+    assert allowed is True
+    assert reason == ""
+
+
+def test_volatility_spike_filter_disabled_when_multiplier_is_zero() -> None:
+    chain = SignalFilterChain(
+        volatility_filter=VolatilitySpikeFilter(spike_multiplier=0.0),
+    )
+    indicators = {"atr14": {"atr": 100.0, "atr_sma": 3.0}}
+
+    allowed, reason = chain.should_evaluate(
+        "XAUUSD",
+        indicators=indicators,
+    )
+
+    assert allowed is True

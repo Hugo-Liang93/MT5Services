@@ -40,9 +40,6 @@ class SignalPolicy:
     snapshot_dedupe_window_seconds: float = 1.0
     max_spread_points: float = 50.0
     allowed_sessions: tuple[str, ...] = (SESSION_LONDON, SESSION_NEW_YORK)
-    auto_trade_enabled: bool = False
-    auto_trade_min_confidence: float = 0.7
-    auto_trade_require_armed: bool = True
     # Pre-flight affinity gate: strategies with regime_affinity < this value
     # for the current Regime are skipped before calling service.evaluate().
     # Avoids wasting CPU on strategies that are clearly unreliable in the

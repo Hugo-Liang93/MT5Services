@@ -30,6 +30,56 @@ class MarketStructureAnalyzer:
     def __init__(self, market_service, config: MarketStructureConfig | None = None):
         self.market_service = market_service
         self.config = config or MarketStructureConfig()
+        # Internal cache: keyed by (symbol, timeframe)
+        self._cache: dict[tuple[str, str], dict[str, object]] = {}
+        self._cache_ttl = timedelta(seconds=300)
+
+    @property
+    def cache_entries(self) -> int:
+        return len(self._cache)
+
+    def analyze_cached(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        scope: str,
+        event_time: datetime | None = None,
+        latest_close: float | None = None,
+        lookback_bars_override: int | None = None,
+    ) -> dict[str, object]:
+        """Analyze with built-in scope-aware caching.
+
+        - confirmed scope: always recompute and update cache.
+        - intrabar scope: reuse cached result if within TTL, else recompute.
+        """
+        cache_key = (symbol, timeframe)
+
+        if scope == "intrabar":
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                cached_time = cached.get("_cached_at")
+                if (
+                    isinstance(cached_time, datetime)
+                    and event_time is not None
+                    and (event_time - cached_time) < self._cache_ttl
+                ):
+                    result = dict(cached)
+                    result.pop("_cached_at", None)
+                    return result
+
+        result = self.analyze(
+            symbol,
+            timeframe,
+            event_time=event_time,
+            latest_close=latest_close,
+            lookback_bars_override=lookback_bars_override,
+        )
+
+        if scope == "confirmed" and result:
+            self._cache[cache_key] = {**result, "_cached_at": event_time}
+
+        return result
 
     def analyze(
         self,

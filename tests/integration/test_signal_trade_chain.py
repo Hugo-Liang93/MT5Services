@@ -157,9 +157,6 @@ def _build_runtime(
         min_preview_confidence=0.3,
         min_preview_stable_seconds=min_preview_stable_seconds,
         preview_cooldown_seconds=0.0,
-        auto_trade_enabled=True,
-        auto_trade_min_confidence=0.3,
-        auto_trade_require_armed=require_armed,
         voting_enabled=False,         # 简化：关闭投票引擎，只测单策略
         min_affinity_skip=0.0,        # 不过滤任何策略
     )
@@ -184,19 +181,20 @@ def _build_executor(
     min_confidence: float = 0.3,
     max_consecutive_failures: int = 3,
 ) -> TradeExecutor:
+    from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
+
     return TradeExecutor(
         trading_module=trading_module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=require_armed,
             min_confidence=min_confidence,
             sl_atr_multiplier=1.5,
             tp_atr_multiplier=3.0,
             max_spread_to_stop_ratio=0.99,   # 测试中不过滤 spread
-            htf_filter_enabled=False,
             max_consecutive_failures=max_consecutive_failures,
             circuit_auto_reset_minutes=0,    # 不自动恢复
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=require_armed)),
         account_balance_getter=lambda: 10000.0,
     )
 
