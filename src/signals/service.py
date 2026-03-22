@@ -148,13 +148,13 @@ class SignalModule:
                 if not isinstance(tf_key, str) or not tf_key.strip():
                     raise AttributeError(
                         f"Strategy '{name}': htf_indicators key must be "
-                        f"a non-empty TF string (e.g. 'H1', 'H4')"
+                        f"a non-empty TF string (e.g. 'H1', 'D1')"
                     )
                 if not ind_names or not all(isinstance(i, str) for i in ind_names):
                     raise AttributeError(
                         f"Strategy '{name}': htf_indicators['{tf_key}'] must be "
                         f"a non-empty tuple/list of indicator name strings"
-                    )
+                )
 
     def register_strategy(self, strategy: SignalStrategy) -> None:
         self._validate_strategy_attrs(strategy)
@@ -225,7 +225,10 @@ class SignalModule:
         return tuple(str(s) for s in scopes)
 
     def strategy_htf_indicators(self, strategy: str) -> dict[str, tuple[str, ...]]:
-        """返回策略声明的 htf_indicators（不存在时返回空 dict）。"""
+        """返回策略声明的 htf_indicators（不存在时返回空 dict）。
+
+        格式: ``{"H1": ("adx14", "ema50"), "D1": ("sma20",)}``
+        """
         impl = self._strategies.get(strategy)
         if impl is None:
             return {}

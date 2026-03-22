@@ -230,10 +230,47 @@ def supertrend(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     }
 
 
+def _rsi_series_wilder(closes: List[float], period: int) -> List[float]:
+    """Build a full RSI series using Wilder smoothing (consistent with rsi()).
+
+    Returns one RSI value per close starting from index ``period``.
+    """
+    if len(closes) <= period:
+        return []
+
+    diffs = [closes[i + 1] - closes[i] for i in range(len(closes) - 1)]
+
+    # Seed with SMA of first ``period`` diffs
+    avg_gain = sum(max(d, 0.0) for d in diffs[:period]) / period
+    avg_loss = sum(max(-d, 0.0) for d in diffs[:period]) / period
+
+    series: List[float] = []
+    if avg_loss == 0:
+        series.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        series.append(100.0 - 100.0 / (1.0 + rs))
+
+    # Wilder exponential smoothing for subsequent diffs
+    for diff in diffs[period:]:
+        gain = max(diff, 0.0)
+        loss = max(-diff, 0.0)
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0:
+            series.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            series.append(100.0 - 100.0 / (1.0 + rs))
+
+    return series
+
+
 def stoch_rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     """Stochastic RSI — 对 RSI 序列再做随机化，对超买超卖更敏感。
 
     黄金日内交易中可以更早发现动量耗尽信号。
+    使用 Wilder 平滑计算 RSI 序列（与 rsi() 函数一致）。
 
     输出：
         stoch_rsi_k  — %K 线（平滑后的随机RSI）
@@ -244,38 +281,18 @@ def stoch_rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     smooth_k = get_int(params, "smooth_k", default=3)
     smooth_d = get_int(params, "smooth_d", default=3)
 
-    # 需要足够 bar 数构建 RSI 序列
-    needed = rsi_period + stoch_period + smooth_k + smooth_d + 5
+    # Need enough closes for Wilder RSI warmup + stoch window + smoothing
+    needed = rsi_period * 3 + stoch_period + smooth_k + smooth_d
     closes = get_closes(bars, needed)
-    if len(closes) < rsi_period + stoch_period:
+    if len(closes) <= rsi_period + stoch_period:
         return {}
 
-    # 计算 RSI 序列
-    rsi_series: List[float] = []
-    for start in range(len(closes) - rsi_period):
-        segment = closes[start: start + rsi_period + 1]
-        gains: List[float] = []
-        losses: List[float] = []
-        for prev_p, curr_p in zip(segment[:-1], segment[1:]):
-            diff = curr_p - prev_p
-            if diff >= 0:
-                gains.append(diff)
-                losses.append(0.0)
-            else:
-                gains.append(0.0)
-                losses.append(-diff)
-        avg_gain = sum(gains) / rsi_period
-        avg_loss = sum(losses) / rsi_period
-        if avg_loss == 0:
-            rsi_series.append(100.0)
-        else:
-            rs = avg_gain / avg_loss
-            rsi_series.append(100.0 - 100.0 / (1.0 + rs))
-
+    # Wilder-smoothed RSI series (one value per bar after warmup)
+    rsi_series = _rsi_series_wilder(closes, rsi_period)
     if len(rsi_series) < stoch_period:
         return {}
 
-    # 对 RSI 序列做随机化
+    # Stochastic of RSI series
     raw_k_series: List[float] = []
     for end in range(stoch_period, len(rsi_series) + 1):
         window_rsi = rsi_series[end - stoch_period: end]
@@ -289,7 +306,7 @@ def stoch_rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     if not raw_k_series:
         return {}
 
-    # 平滑 K 线（SMA smooth_k）
+    # Smooth K (SMA of raw_k)
     k_series: List[float] = []
     for end in range(smooth_k, len(raw_k_series) + 1):
         k_series.append(sum(raw_k_series[end - smooth_k: end]) / smooth_k)
@@ -299,7 +316,7 @@ def stoch_rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
 
     k_val = k_series[-1]
 
-    # D 线（K 的 SMA smooth_d）
+    # D line (SMA of K)
     d_window = k_series[-smooth_d:] if len(k_series) >= smooth_d else k_series
     d_val = sum(d_window) / len(d_window)
 

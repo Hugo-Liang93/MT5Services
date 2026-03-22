@@ -257,6 +257,15 @@ class TradingService:
         request_id = request_id or uuid4().hex
         risk_assessment: Optional[Dict[str, Any]] = None
         tagged_comment = self._tagged_comment(comment, request_id)
+        # 先估算保证金，注入 metadata 供 MarginAvailabilityRule 使用
+        margin_estimate: Optional[float] = None
+        try:
+            margin_estimate = self.estimate_margin(symbol=symbol, volume=volume, side=side, price=price)
+        except Exception:
+            margin_estimate = None
+        enriched_metadata = dict(metadata or {})
+        if margin_estimate is not None:
+            enriched_metadata["estimated_margin"] = margin_estimate
         if self.pre_trade_risk_service is not None:
             risk_assessment = self.pre_trade_risk_service.enforce_trade_allowed(
                 symbol=symbol,
@@ -269,13 +278,8 @@ class TradingService:
                 deviation=deviation,
                 comment=tagged_comment,
                 magic=magic,
-                metadata=metadata,
+                metadata=enriched_metadata,
             )
-        margin_estimate: Optional[float] = None
-        try:
-            margin_estimate = self.estimate_margin(symbol=symbol, volume=volume, side=side, price=price)
-        except Exception:
-            margin_estimate = None
 
         precheck_snapshot = self.precheck_trade(
             symbol=symbol,
@@ -376,6 +380,12 @@ class TradingService:
                 "comment": tagged_comment,
             }
 
+        # 记录交易频率（供 TradeFrequencyRule 使用）
+        if self.pre_trade_risk_service is not None:
+            try:
+                self.pre_trade_risk_service.record_trade_execution()
+            except Exception:
+                pass
         self._invalidate_account_cache()
         try:
             positions_count = len(self.get_positions(symbol=symbol))

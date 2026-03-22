@@ -30,6 +30,32 @@ def _get_delta(
     return float(val) if isinstance(val, (int, float)) else None
 
 
+# Delta momentum bonus defaults (overridable via signal.ini [strategy_params])
+_DELTA_D3_SCALE: float = 10.0        # d3 缩放系数
+_DELTA_D3_CAP: float = 0.05          # d3 加分上限
+_DELTA_D5_THRESHOLD: float = 8.0     # d5 耗竭判定阈值
+_DELTA_D5_BONUS: float = 0.03        # d5 耗竭固定加分
+
+
+def configure_delta_params(
+    *,
+    d3_scale: Optional[float] = None,
+    d3_cap: Optional[float] = None,
+    d5_threshold: Optional[float] = None,
+    d5_bonus: Optional[float] = None,
+) -> None:
+    """Override delta momentum bonus parameters (called at startup)."""
+    global _DELTA_D3_SCALE, _DELTA_D3_CAP, _DELTA_D5_THRESHOLD, _DELTA_D5_BONUS
+    if d3_scale is not None:
+        _DELTA_D3_SCALE = d3_scale
+    if d3_cap is not None:
+        _DELTA_D3_CAP = d3_cap
+    if d5_threshold is not None:
+        _DELTA_D5_THRESHOLD = d5_threshold
+    if d5_bonus is not None:
+        _DELTA_D5_BONUS = d5_bonus
+
+
 def _delta_momentum_bonus(
     d3: Optional[float],
     d5: Optional[float],
@@ -48,21 +74,19 @@ def _delta_momentum_bonus(
     parts: list[str] = []
 
     if d3 is not None:
-        # 短期反转确认：delta 方向与预期回归方向一致
         if action == "buy" and d3 > 0:
-            bonus += min(d3 / 10.0, 0.05)  # 上限 +0.05
+            bonus += min(d3 / _DELTA_D3_SCALE, _DELTA_D3_CAP)
             parts.append(f"d3_bounce={d3:+.1f}")
         elif action == "sell" and d3 < 0:
-            bonus += min(abs(d3) / 10.0, 0.05)
+            bonus += min(abs(d3) / _DELTA_D3_SCALE, _DELTA_D3_CAP)
             parts.append(f"d3_bounce={d3:+.1f}")
 
     if d5 is not None:
-        # 深度动量耗竭：大幅偏离暗示更强的均值回归概率
-        if action == "buy" and d5 < -8:
-            bonus += 0.03
+        if action == "buy" and d5 < -_DELTA_D5_THRESHOLD:
+            bonus += _DELTA_D5_BONUS
             parts.append(f"d5_exhaust={d5:+.1f}")
-        elif action == "sell" and d5 > 8:
-            bonus += 0.03
+        elif action == "sell" and d5 > _DELTA_D5_THRESHOLD:
+            bonus += _DELTA_D5_BONUS
             parts.append(f"d5_exhaust={d5:+.1f}")
 
     suffix = ",".join(parts) if parts else ""
@@ -82,6 +106,7 @@ class RsiReversionStrategy:
     category = "reversion"
     required_indicators = ("rsi14",)
     preferred_scopes = ("intrabar", "confirmed")
+    htf_indicators = {"M15": ("rsi14",)}
     regime_affinity = {
         RegimeType.TRENDING:  0.25,
         RegimeType.RANGING:   1.00,
@@ -136,6 +161,17 @@ class RsiReversionStrategy:
         if delta_suffix:
             reason += f",{delta_suffix}"
 
+        # HTF: M15 RSI confirmation — same-direction extreme validates reversion
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("M15", {})
+        htf_rsi = htf.get("rsi14", {}).get("rsi")
+        if htf_rsi is not None and action in ("buy", "sell"):
+            if action == "buy" and htf_rsi < 40:
+                htf_bonus = 0.06  # M15 also leaning oversold
+            elif action == "sell" and htf_rsi > 60:
+                htf_bonus = 0.06  # M15 also leaning overbought
+        confidence = min(confidence + htf_bonus, 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -144,7 +180,7 @@ class RsiReversionStrategy:
             confidence=confidence,
             reason=reason,
             used_indicators=[rsi_name] if rsi_name else ["rsi14"],
-            metadata={"rsi": rsi, "rsi_indicator": rsi_name or "rsi14"},
+            metadata={"rsi": rsi, "rsi_indicator": rsi_name or "rsi14", "htf_bonus": htf_bonus},
         )
 
 

@@ -125,7 +125,7 @@ class TestResolveHTFIndicators:
     """SignalRuntime._resolve_htf_indicators 解析逻辑。"""
 
     def test_normal_resolution(self):
-        """目标 TF 已配置且指标数据存在 → 正常返回。"""
+        """当前 M5 → 下一级已配置 TF 是 H1 → 正常返回 H1 数据。"""
         source = DummySnapshotSource(
             indicator_data={
                 ("XAUUSD", "H1", "adx14"): {"adx": 30.0, "plus_di": 22.0},
@@ -140,23 +140,11 @@ class TestResolveHTFIndicators:
         assert result["H1"]["adx14"]["adx"] == 30.0
         assert result["H1"]["ema50"]["ema"] == 2650.0
 
-    def test_target_tf_not_configured(self):
-        """目标 TF 未在 targets 中配置 → 跳过。"""
+    def test_no_higher_tf_configured(self):
+        """当前已是最高配置 TF → 无 HTF 可用 → 返回空。"""
         runtime, _, _ = _make_runtime()
-        # H4 不在 targets 配置中
         result = runtime._resolve_htf_indicators(
-            "XAUUSD", "M5", {"H4": ("adx14",)}
-        )
-        assert result == {}
-
-    def test_target_tf_equals_current(self):
-        """目标 TF = 当前 TF → 跳过（数据已在 context.indicators 中）。"""
-        source = DummySnapshotSource(
-            indicator_data={("XAUUSD", "M5", "adx14"): {"adx": 25.0}}
-        )
-        runtime, _, _ = _make_runtime(source=source)
-        result = runtime._resolve_htf_indicators(
-            "XAUUSD", "M5", {"M5": ("adx14",)}
+            "XAUUSD", "H1", {"H1": ("adx14",)}
         )
         assert result == {}
 
@@ -316,7 +304,7 @@ class TestValidateHTFIndicatorsAttr:
             required_indicators = ("rsi14",)
             preferred_scopes = ("confirmed",)
             regime_affinity = {r: 0.5 for r in RegimeType}
-            htf_indicators = "not_a_dict"
+            htf_indicators = "not_a_tuple"
 
             def evaluate(self, context):
                 pass

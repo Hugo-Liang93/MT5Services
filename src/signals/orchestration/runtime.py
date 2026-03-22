@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses as _dc
 import logging
 import queue
 import threading
@@ -84,8 +85,10 @@ class SignalRuntime:
         htf_indicators_enabled: bool = True,
         intrabar_confidence_decay: float = 1.0,
         htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
+        htf_context_fn: Optional[Callable[..., Any]] = None,
         htf_conflict_penalty: float = 0.70,
         htf_alignment_boost: float = 1.10,
+        htf_target_config: Optional[Dict[str, str]] = None,
     ):
         self.service = service
         self.snapshot_source = snapshot_source
@@ -136,6 +139,8 @@ class SignalRuntime:
         self._strategy_affinity: dict[str, dict[RegimeType, float]] = {}
         # HTF 指标声明缓存：{strategy_name: {tf: (indicator_names...)}}
         self._strategy_htf_indicators: dict[str, dict[str, tuple[str, ...]]] = {}
+        # INI 配置的 HTF per-indicator 覆盖（需在策略缓存循环前初始化）
+        self._htf_target_config: Dict[str, str] = htf_target_config or {}
         for target in self._targets:
             self._target_index.setdefault((target.symbol, target.timeframe), []).append(
                 target.strategy
@@ -153,8 +158,10 @@ class SignalRuntime:
                     self.service.strategy_affinity_map(target.strategy)
                 )
             if target.strategy not in self._strategy_htf_indicators:
+                raw_spec = self.service.strategy_htf_indicators(target.strategy)
+                # 合并 INI [strategy_htf] per-indicator 覆盖
                 self._strategy_htf_indicators[target.strategy] = (
-                    self.service.strategy_htf_indicators(target.strategy)
+                    self._apply_htf_overrides(target.strategy, raw_spec)
                 )
         # 系统中已配置的时间框架集合（用于 HTF 指标解析校验）
         self._configured_timeframes: frozenset[str] = frozenset(
@@ -166,6 +173,7 @@ class SignalRuntime:
         self._intrabar_confidence_decay: float = min(intrabar_confidence_decay, 1.0)
         # HTF 方向对齐修正：在策略评估后、持久化前应用，使记录的 confidence 反映真实值
         self._htf_direction_fn = htf_direction_fn
+        self._htf_context_fn = htf_context_fn
         self._htf_conflict_penalty: float = htf_conflict_penalty
         self._htf_alignment_boost: float = htf_alignment_boost
 
@@ -181,8 +189,8 @@ class SignalRuntime:
         # Confirmed snapshots can briefly burst during startup catch-up after
         # ingestion backfills closed bars. Keep enough headroom to buffer that
         # replay without dropping durable bar-close signals.
-        self._confirmed_events: queue.Queue = queue.Queue(maxsize=2048)
-        self._intrabar_events: queue.Queue = queue.Queue(maxsize=4096)
+        self._confirmed_events: queue.Queue = queue.Queue(maxsize=4096)
+        self._intrabar_events: queue.Queue = queue.Queue(maxsize=8192)
         self._last_run_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
         self._run_count = 0
@@ -885,6 +893,14 @@ class SignalRuntime:
         strategies = self._target_index.get((symbol, timeframe), [])
         shard_lock = self._get_shard_lock(symbol, timeframe)
 
+        # Pre-parse soft regime once for all strategies in this snapshot
+        _soft_parsed: Optional[SoftRegimeResult] = None
+        if self._soft_regime_enabled and regime_metadata.get("_soft_regime"):
+            try:
+                _soft_parsed = SoftRegimeResult.from_dict(regime_metadata["_soft_regime"])
+            except Exception:
+                pass
+
         for strategy in strategies:
             allowed_sessions = self.policy.strategy_sessions.get(strategy, ())
             if allowed_sessions and not any(
@@ -928,7 +944,8 @@ class SignalRuntime:
             # Pre-flight affinity gate — 计算结果传递给 evaluate() 复用
             if min_affinity_skip > 0.0:
                 affinity = self._effective_affinity(
-                    strategy, regime, regime_metadata.get("_soft_regime")
+                    strategy, regime, regime_metadata.get("_soft_regime"),
+                    _parsed_cache=_soft_parsed,
                 )
                 if affinity < min_affinity_skip:
                     continue
@@ -989,29 +1006,23 @@ class SignalRuntime:
             )
             # ── Intrabar 置信度衰减 ──────────────────────
             if scope == "intrabar" and self._intrabar_confidence_decay < 1.0:
-                import dataclasses as _dc
                 decision = _dc.replace(
                     decision,
                     confidence=decision.confidence * self._intrabar_confidence_decay,
                 )
             # ── HTF 方向对齐修正 ──────────────────────────
-            if self._htf_direction_fn is not None and decision.action in ("buy", "sell"):
-                htf_dir = self._htf_direction_fn(symbol, timeframe)
-                if htf_dir is not None:
-                    import dataclasses as _dc
-                    htf_mul = (
-                        self._htf_alignment_boost
-                        if htf_dir == decision.action
-                        else self._htf_conflict_penalty
-                    )
+            if decision.action in ("buy", "sell"):
+                htf_mul, htf_dir = self._compute_htf_alignment(
+                    symbol, timeframe, decision.action, scope,
+                )
+                if htf_mul is not None:
                     decision = _dc.replace(
                         decision,
                         confidence=min(1.0, decision.confidence * htf_mul),
                     )
-                    # 注入 regime_metadata 使其流入 transition_metadata → 持久化记录
                     regime_metadata["htf_direction"] = htf_dir
                     regime_metadata["htf_alignment"] = (
-                        "aligned" if htf_dir == decision.action else "conflict"
+                        "aligned" if htf_mul >= 1.0 else "conflict"
                     )
                     regime_metadata["htf_confidence_multiplier"] = htf_mul
             snapshot_decisions.append(decision)
@@ -1095,8 +1106,6 @@ class SignalRuntime:
         bar_time: datetime,
     ) -> None:
         """对单个 vote 结果信号执行状态机转换、持久化和事件发布。"""
-        import dataclasses as _dc
-
         adjusted_conf = min(1.0, vote_result.confidence * regime_stability)
         vote_result = _dc.replace(
             vote_result,
@@ -1211,17 +1220,34 @@ class SignalRuntime:
             event_time, bar_time,
         )
 
+    _CONFIRMED_BURST_LIMIT = 5  # 每连续消费 N 个 confirmed 后让出检查 intrabar
+
     def process_next_event(self, timeout: float = 0.5) -> bool:
         """从队列取一个快照事件并完整处理。
 
-        始终优先排空 confirmed（K 线收盘）队列，防止 intrabar 突发事件饿死收盘信号。
-        职责已分拆到 _evaluate_strategies() 和 _process_voting() 中，
-        本方法只负责事件解包、过滤前置检查和 Regime 预计算。
+        优先消费 confirmed 队列，但每连续 ``_CONFIRMED_BURST_LIMIT`` 个
+        confirmed 事件后主动检查 intrabar 队列取一个事件作为本轮处理对象，
+        防止 intrabar 策略在 confirmed 突发期间长时间饥饿。
         """
         # 优先排空 confirmed 队列
         try:
             event = self._confirmed_events.get_nowait()
+            self._confirmed_burst_count = getattr(self, "_confirmed_burst_count", 0) + 1
+            # Anti-starvation: after N consecutive confirmed, yield to intrabar
+            if self._confirmed_burst_count >= self._CONFIRMED_BURST_LIMIT:
+                self._confirmed_burst_count = 0
+                try:
+                    # Peek intrabar: if available, put confirmed back and process intrabar
+                    intrabar_event = self._intrabar_events.get_nowait()
+                    try:
+                        self._confirmed_events.put_nowait(event)
+                    except queue.Full:
+                        pass  # confirmed already processed, drop
+                    event = intrabar_event
+                except queue.Empty:
+                    pass  # No intrabar pending, continue with confirmed
         except queue.Empty:
+            self._confirmed_burst_count = 0
             try:
                 event = self._intrabar_events.get(timeout=timeout)
             except queue.Empty:
@@ -1312,6 +1338,89 @@ class SignalRuntime:
         self._last_error = None
         return True
 
+    def _compute_htf_alignment(
+        self,
+        symbol: str,
+        timeframe: str,
+        action: str,
+        scope: str,
+    ) -> tuple[Optional[float], Optional[str]]:
+        """Compute HTF alignment multiplier with strength weighting.
+
+        Returns ``(None, None)`` when no HTF data is available.
+        Uses enriched context (confidence, regime, stable_bars) when
+        ``htf_context_fn`` is provided; otherwise falls back to the
+        simple direction-only ``htf_direction_fn``.
+        """
+        # Try enriched context first
+        if self._htf_context_fn is not None:
+            ctx = self._htf_context_fn(symbol, timeframe)
+            if ctx is not None:
+                aligned = ctx.direction == action
+                base = self._htf_alignment_boost if aligned else self._htf_conflict_penalty
+
+                # Strength weighting: high-confidence HTF signal amplifies effect
+                strength = 1.0 + (ctx.confidence - 0.5) * 0.3  # [0.85, 1.15]
+                # Stability weighting: direction held for more bars amplifies effect
+                stability = min(1.0 + (ctx.stable_bars - 1) * 0.03, 1.15)  # cap at 1.15
+
+                raw_mul = base * strength * stability
+
+                # Intrabar: half-strength modification (signal not yet confirmed)
+                if scope == "intrabar":
+                    raw_mul = 1.0 + (raw_mul - 1.0) * 0.5
+
+                return raw_mul, ctx.direction
+
+        # Fallback: simple direction-only
+        if self._htf_direction_fn is not None:
+            htf_dir = self._htf_direction_fn(symbol, timeframe)
+            if htf_dir is not None:
+                base = (
+                    self._htf_alignment_boost
+                    if htf_dir == action
+                    else self._htf_conflict_penalty
+                )
+                if scope == "intrabar":
+                    base = 1.0 + (base - 1.0) * 0.5
+                return base, htf_dir
+
+        return None, None
+
+    def _apply_htf_overrides(
+        self,
+        strategy: str,
+        raw_spec: dict[str, tuple[str, ...]],
+    ) -> dict[str, tuple[str, ...]]:
+        """合并 INI ``[strategy_htf]`` per-indicator 覆盖到策略声明的默认 spec。
+
+        INI 格式: ``strategy.indicator = target_tf``
+        例: ``supertrend.adx14 = H4`` → 把 adx14 从默认 H1 移到 H4。
+        """
+        if not self._htf_target_config:
+            return raw_spec
+
+        # Build indicator → current_tf mapping from raw spec
+        overridden: dict[str, str] = {}  # indicator → new_tf
+        for ind_tf, indicators in raw_spec.items():
+            for ind_name in indicators:
+                config_key = f"{strategy}.{ind_name}"
+                new_tf = self._htf_target_config.get(config_key)
+                if new_tf:
+                    overridden[ind_name] = new_tf
+
+        if not overridden:
+            return raw_spec
+
+        # Rebuild spec with overrides
+        result: dict[str, list[str]] = {}
+        for tf, indicators in raw_spec.items():
+            for ind_name in indicators:
+                target_tf = overridden.get(ind_name, tf)
+                result.setdefault(target_tf, []).append(ind_name)
+
+        return {tf: tuple(inds) for tf, inds in result.items()}
+
     def _resolve_htf_indicators(
         self,
         symbol: str,
@@ -1392,11 +1501,13 @@ class SignalRuntime:
         strategy: str,
         regime: RegimeType,
         soft_regime: Optional[Dict[str, Any]],
+        *,
+        _parsed_cache: Optional[SoftRegimeResult] = None,
     ) -> float:
         affinity_map = self._strategy_affinity.get(strategy, {})
         if self._soft_regime_enabled and soft_regime:
             try:
-                parsed = SoftRegimeResult.from_dict(soft_regime)
+                parsed = _parsed_cache or SoftRegimeResult.from_dict(soft_regime)
                 return sum(
                     parsed.probability(item) * affinity_map.get(item, 0.5)
                     for item in RegimeType

@@ -37,7 +37,7 @@ MT5Services/
 │   ├── ingest.ini            # 后台数据采集配置
 │   ├── storage.ini           # 多通道队列持久化配置
 │   ├── economic.ini          # 经济日历与 Trade Guard 配置
-│   ├── risk.ini              # 风险限制（仓位数量、SL/TP 要求）
+│   ├── risk.ini              # 风险限制（仓位、SL/TP、保证金、交易频率）
 │   ├── cache.ini             # 运行时内存缓存大小（覆盖 app.ini [limits]）
 │   ├── signal.ini            # 信号模块配置（含 HTF 缓存、HTF 指标注入、信号质量追踪器参数）
 │   ├── indicators.json       # 指标定义与计算流水线
@@ -154,7 +154,7 @@ code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默
 | `config/ingest.ini` | 采集间隔、回填限制、重试配置 |
 | `config/storage.ini` | 队列通道大小、刷写间隔、批处理大小、溢出策略 |
 | `config/economic.ini` | 日历数据源（FRED、TradingEconomics）、Trade Guard 窗口 |
-| `config/risk.ini` | 最大仓位数、SL/TP 要求 |
+| `config/risk.ini` | 最大仓位数、SL/TP 要求、保证金安全系数、交易频率限制 |
 | `config/cache.ini` | 运行时内存缓存大小（覆盖 app.ini [limits]，优先级更高） |
 | `config/signal.ini` | 自动交易、仓位大小、过滤条件、状态机参数、HTF 缓存 TTL、信号质量追踪器、Regime 检测阈值、策略级参数覆盖、Regime 亲和度覆盖 |
 | `config/indicators.json` | 指标定义、参数、依赖关系、流水线配置 |
@@ -331,6 +331,7 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/trading/trade_outcome_tracker.py` | TradeOutcomeTracker：实际交易盈亏追踪（由 PositionManager 关仓触发） |
 | `src/trading/registry.py` | TradingAccountRegistry：多账户注册与服务工厂 |
 | `src/trading/models.py` | TradeOperationRecord 数据类 |
+| `src/risk/rules.py` | 风险规则：AccountSnapshotRule / DailyLossLimitRule / MarginAvailabilityRule / TradeFrequencyRule / ProtectionRule 等 |
 | `src/risk/models.py` | TradeIntent / RiskCheckResult / RiskAssessment 数据类 |
 | `src/market_structure/models.py` | MarketStructureContext 数据类 |
 | `src/monitoring/health_monitor.py` | SQLite 指标存储、告警、健康报告 |
@@ -691,10 +692,10 @@ class MyNewStrategy:
         RegimeType.UNCERTAIN: 0.XX,
     }
 
-    # 5. HTF 指标（可选）— 需要引用其他时间框架的指标时声明
-    htf_indicators = {
-        "H1": ("adx14", "ema50"),  # 引用 H1 的 adx14 和 ema50
-    }
+    # 5. HTF 指标（可选）— 声明需要的跨时间框架指标
+    #    策略只声明指标名，目标 TF 由 signal.ini [strategy_htf] 配置
+    #    未配置时自动用下一个更高的已配置 TF
+    htf_indicators = ("adx14", "ema50")
 ```
 
 #### Regime 亲和度设计指南
@@ -756,14 +757,16 @@ SoftRegimeResult:
 ```python
 class MyStrategy:
     name = "my_strategy"
-    required_indicators = ("rsi14",)           # 当前 TF 指标
-    htf_indicators = {"H1": ("adx14", "ema50")}  # 需要 H1 的 adx14 和 ema50
+    required_indicators = ("rsi14",)      # 当前 TF 指标
+    htf_indicators = ("adx14", "ema50")   # 需要的 HTF 指标（目标 TF 由 INI 配置）
     # ...
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         rsi = context.indicators.get("rsi14", {}).get("rsi")
-        h1_adx = context.htf_indicators.get("H1", {}).get("adx14", {}).get("adx")
-        h1_ema = context.htf_indicators.get("H1", {}).get("ema50", {}).get("ema")
+        # 取第一个（也是唯一的）HTF 数据，不关心具体来自哪个 TF
+        htf = next(iter(context.htf_indicators.values()), {})
+        htf_adx = htf.get("adx14", {}).get("adx")
+        htf_ema = htf.get("ema50", {}).get("ema")
 ```
 
 ### 工作原理
@@ -784,18 +787,26 @@ class MyStrategy:
 
 ### 配置
 
-`config/signal.ini` 的 `[htf_indicators]` section 提供全局开关：
+`config/signal.ini` 提供两个相关 section：
 
 ```ini
 [htf_indicators]
 enabled = true   # false 时所有 HTF 指标注入被禁用
+
+[strategy_htf]
+# 格式：策略名.运行TF = 目标TF
+# 未配置的组合自动用下一个更高的已配置 TF
+supertrend.M5 = H1
+supertrend.H1 = D1
+sma_trend.H1 = D1
 ```
 
 ### 边界情况
 
-- 目标 TF 未在 `app.ini` 配置 → 启动时 warning，运行时跳过
+- 目标 TF 未在 `app.ini` 配置 → 运行时跳过
 - HTF 指标尚未计算（刚启动）→ 不注入，策略需安全访问（`.get()` 链）
 - 目标 TF = 当前 TF → 自动跳过（数据已在 `context.indicators` 中）
+- 未配置 `[strategy_htf]` 且无更高 TF → 不注入
 
 ---
 
@@ -955,10 +966,10 @@ idle → preview_buy/sell（方向改变）
 2. **Regime fast-reject** (`SignalRuntime._any_strategy_eligible()`)：所有策略 affinity 不足时跳过全部后续计算
 3. **HTF direction alignment** (`SignalRuntime._evaluate_strategies()`)：HTF 方向冲突 ×0.70 / 对齐 ×1.10（在置信度管线内，持久化前）
 4. **Execution gate** (`src/trading/execution_gate.py`)：voting group 保护、交易触发白名单、require_armed 门控
-5. **Pre-trade risk service** (`src/risk/service.py`)：`DailyLossLimitRule`（日损失限制）、`AccountSnapshotRule`（仓位限制）、`BrokerConstraintRule` 等
+5. **Pre-trade risk service** (`src/risk/service.py`)：`DailyLossLimitRule`（日损失限制）、`AccountSnapshotRule`（仓位限制）、`MarginAvailabilityRule`（保证金动态检查）、`TradeFrequencyRule`（交易频率限制）、`BrokerConstraintRule` 等
 6. **Executor safety** (`src/trading/signal_executor.py`)：熔断器、**持仓数量预检**、成本检查（spread_to_stop_ratio）
 7. **Position manager** (`src/trading/position_manager.py`)：**日终自动平仓**（UTC 21:00，可配置开关）
-8. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M1: 1.0/2.0, M5: 1.2/2.5, M15: 1.3/2.8, H1: 1.5/3.0 ATR 倍数）
+8. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M1: 1.0/2.0, M5: 1.2/2.5, M15: 1.3/2.8, H1: 1.5/3.0 ATR 倍数）+ **时间框架差异化风险百分比**（M1: ×0.50, M5: ×0.75, M15: ×1.00, H1: ×1.20）
 
 ---
 
@@ -1168,6 +1179,7 @@ flake8 src/ tests/
   - `DailyLossLimitRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
   - `StrategyPerformanceTracker` → `src/signals/evaluation/performance.py`（与 Calibrator 平级，不在 trading 模块）
   - `TradeAPIDispatcher` → `src/api/trade_dispatcher.py`（独立文件，不在路由文件中）
+  - `MarginAvailabilityRule` / `TradeFrequencyRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
   - `UnifiedIndicatorSourceAdapter` → `src/signals/strategies/adapters.py`（解耦信号与指标的适配器）
 
 ---

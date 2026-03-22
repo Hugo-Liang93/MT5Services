@@ -268,6 +268,42 @@ class TestProfitFactor:
         # The PF penalty of 0.95 should slightly reduce
         assert mult < 1.20
 
+    def test_profit_factor_clamped_at_50(self):
+        """Extreme PF from tiny loss should be capped at 50."""
+        tracker = _make_tracker(category_fallback=1)
+        for _ in range(5):
+            tracker.record_outcome("rsi_reversion", won=True, pnl=100.0)
+        tracker.record_outcome("rsi_reversion", won=False, pnl=-0.001)
+
+        stats = tracker.get_strategy_stats("rsi_reversion")
+        assert stats is not None
+        pf = stats["profit_factor"]
+        assert pf is not None
+        assert pf <= 50.0, f"profit_factor should be capped at 50, got {pf}"
+
+    def test_pure_profit_strategy_gets_boost(self):
+        """All wins, zero losses → PF is None but should get multiplier boost."""
+        tracker = _make_tracker(category_fallback=1)
+        for _ in range(5):
+            tracker.record_outcome("rsi_reversion", won=True, pnl=10.0)
+
+        stats = tracker.get_strategy_stats("rsi_reversion")
+        assert stats is not None
+        assert stats["profit_factor"] is None  # no losses → None
+
+        mult = tracker.get_multiplier("rsi_reversion")
+        # Pure profit strategy should get boost (×1.05 from PF branch)
+        assert mult > 1.0, f"Pure profit strategy should be boosted, got {mult}"
+
+    def test_pure_loss_strategy_gets_suppressed(self):
+        """All losses, zero wins → PF is 0.0 and should be suppressed."""
+        tracker = _make_tracker(category_fallback=1)
+        for _ in range(5):
+            tracker.record_outcome("supertrend", won=False, pnl=-10.0)
+
+        mult = tracker.get_multiplier("supertrend")
+        assert mult < 1.0, f"Pure loss strategy should be suppressed, got {mult}"
+
 
 # ---------------------------------------------------------------------------
 # Thread safety (basic smoke test)

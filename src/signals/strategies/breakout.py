@@ -55,6 +55,7 @@ class BollingerBreakoutStrategy:
     category = "breakout"
     required_indicators = ("boll20",)
     preferred_scopes = ("intrabar", "confirmed")
+    htf_indicators = {"H1": ("boll20",)}
     regime_affinity = {
         RegimeType.TRENDING:  0.30,  # 趋势中价格走布林带边缘属正常，触带≠反转
         RegimeType.RANGING:   0.85,  # 震荡市触及上下轨是典型均值回归机会
@@ -157,6 +158,20 @@ class BollingerBreakoutStrategy:
                 confidence = max(confidence - 0.20, 0.0)
                 structure_note = structure_bias
 
+        # HTF: if H1 BB is also squeezed, breakout signal is stronger
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("H1", {})
+        htf_bb = htf.get("boll20", {})
+        htf_upper = htf_bb.get("bb_upper")
+        htf_lower = htf_bb.get("bb_lower")
+        htf_mid = htf_bb.get("bb_mid")
+        if htf_upper is not None and htf_lower is not None and htf_mid and htf_mid > 0:
+            htf_bw = (htf_upper - htf_lower) / htf_mid
+            if htf_bw < 0.01:
+                # H1 also squeezed → amplifies breakout expectation
+                htf_bonus = 0.06
+        confidence = min(confidence + htf_bonus, 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -178,6 +193,7 @@ class BollingerBreakoutStrategy:
                 "structure_bias": structure_bias,
                 "reclaim_state": reclaim_state,
                 "sweep_confirmation_state": sweep_confirmation_state,
+                "htf_bonus": htf_bonus,
             },
         )
 
@@ -211,6 +227,7 @@ class KeltnerBollingerSqueezeStrategy:
     category = "breakout"
     required_indicators = ("boll20", "keltner20")
     preferred_scopes = ("intrabar", "confirmed")
+    htf_indicators = {"H1": ("keltner20", "boll20")}
     regime_affinity = {
         RegimeType.TRENDING:  0.35,  # 趋势中 Squeeze 出现频率低，信号意义有限
         RegimeType.RANGING:   0.55,  # 震荡末期常出现 Squeeze，可提前布局
@@ -278,6 +295,21 @@ class KeltnerBollingerSqueezeStrategy:
             action = "hold"
             confidence = 0.15 if is_squeeze else 0.1
 
+        # HTF: H1 level squeeze confirmation amplifies breakout expectation
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("H1", {})
+        htf_bb = htf.get("boll20", {})
+        htf_kc = htf.get("keltner20", {})
+        htf_bb_u = htf_bb.get("bb_upper")
+        htf_bb_l = htf_bb.get("bb_lower")
+        htf_kc_u = htf_kc.get("kc_upper")
+        htf_kc_l = htf_kc.get("kc_lower")
+        if all(v is not None for v in (htf_bb_u, htf_bb_l, htf_kc_u, htf_kc_l)):
+            htf_squeeze = htf_bb_u < htf_kc_u and htf_bb_l > htf_kc_l
+            if htf_squeeze and is_squeeze:
+                htf_bonus = 0.08  # Both TFs squeezed → strong breakout setup
+        confidence = min(confidence + htf_bonus, 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -297,6 +329,7 @@ class KeltnerBollingerSqueezeStrategy:
                 "kc_lower": kc_lower,
                 "is_squeeze": is_squeeze,
                 "squeeze_bonus": squeeze_bonus,
+                "htf_bonus": htf_bonus,
             },
         )
 
@@ -317,6 +350,7 @@ class DonchianBreakoutStrategy:
     category = "breakout"
     required_indicators = ("donchian20", "adx14")
     preferred_scopes = ("confirmed",)
+    htf_indicators = {"H1": ("donchian20", "adx14")}
     regime_affinity = {
         RegimeType.TRENDING:  0.90,  # 趋势延续期创新高/低是高概率信号
         RegimeType.RANGING:   0.15,  # 震荡市假突破极多，即便有 ADX 过滤也危险
@@ -480,6 +514,23 @@ class DonchianBreakoutStrategy:
                 confidence = min(confidence + 0.08, 1.0)
                 structure_note = first_pullback_state
 
+        # HTF confirmation: H1 Donchian channel position validates breakout
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("H1", {})
+        htf_dc = htf.get("donchian20", {})
+        htf_upper = htf_dc.get("donchian_upper")
+        htf_lower = htf_dc.get("donchian_lower")
+        if htf_upper is not None and htf_lower is not None and d_close is not None:
+            if action == "buy" and d_close >= htf_upper:
+                htf_bonus = 0.10  # Also breaking H1 channel — strong
+            elif action == "sell" and d_close <= htf_lower:
+                htf_bonus = 0.10
+            elif action == "buy" and d_close < htf_lower:
+                htf_bonus = -0.05  # H1 bearish channel, short TF buy risky
+            elif action == "sell" and d_close > htf_upper:
+                htf_bonus = -0.05
+        confidence = min(confidence + htf_bonus, 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -503,6 +554,7 @@ class DonchianBreakoutStrategy:
                 "reclaim_state": reclaim_state,
                 "sweep_confirmation_state": sweep_confirmation_state,
                 "first_pullback_state": first_pullback_state,
+                "htf_bonus": htf_bonus,
             },
         )
 
@@ -946,13 +998,13 @@ class MultiTimeframeConfirmStrategy:
         if htf in ("buy", "sell", "hold"):
             return htf
         # 优先使用 htf_indicators（H1 的 ema50/sma20）判断方向
-        h1_data = context.htf_indicators.get("H1", {})
-        h1_ema = h1_data.get("ema50", {}).get("ema")
-        h1_sma = h1_data.get("sma20", {}).get("sma")
-        if h1_ema is not None and h1_sma is not None:
-            if h1_sma > h1_ema:
+        htf_data = context.htf_indicators.get("H1", {})
+        htf_ema = htf_data.get("ema50", {}).get("ema")
+        htf_sma = htf_data.get("sma20", {}).get("sma")
+        if htf_ema is not None and htf_sma is not None:
+            if htf_sma > htf_ema:
                 return "buy"
-            elif h1_sma < h1_ema:
+            elif htf_sma < htf_ema:
                 return "sell"
             return "hold"
         if self._htf_cache is not None:

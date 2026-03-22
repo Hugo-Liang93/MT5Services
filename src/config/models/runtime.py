@@ -121,6 +121,11 @@ class RiskConfig(BaseModel):
     daily_loss_limit_pct: float | None = None
     require_sl_for_market_orders: bool = True
     require_tp_or_sl_for_market_orders: bool = False
+    # 保证金安全系数（1.2 = 要求可用保证金 >= 预估保证金 × 1.2）
+    margin_safety_factor: float = 1.2
+    # 交易频率限制（None 或 0 = 不限制）
+    max_trades_per_day: int | None = None
+    max_trades_per_hour: int | None = None
 
 
 class TradingOpsConfig(BaseModel):

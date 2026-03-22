@@ -26,6 +26,7 @@ def shutdown_components(container: Any) -> None:
     for label, component, method in [
         ("monitoring_manager", container.monitoring_manager, "stop"),
         ("position_manager", container.position_manager, "stop"),
+        ("trade_executor", container.trade_executor, "shutdown"),
         ("signal_runtime", container.signal_runtime, "stop"),
         ("indicator_manager", container.indicator_manager, "shutdown"),
         ("economic_calendar_service", container.economic_calendar_service, "stop"),

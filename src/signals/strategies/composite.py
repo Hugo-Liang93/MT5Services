@@ -223,10 +223,11 @@ class CompositeSignalStrategy:
         buy_score = sum(d.confidence for d in buys) / total
         sell_score = sum(d.confidence for d in sells) / total
 
-        # 分歧惩罚：买卖都有票时降低置信度
+        # 分歧惩罚：与 VotingEngine 统一使用平方衰减
+        # 轻度分歧（0.55 vs 0.45）惩罚较轻，重度分歧（0.50 vs 0.50）严厉惩罚
         min_side = min(buy_score, sell_score)
-        disagreement = min_side / 0.5  # 归一化到 [0,1]
-        penalty = 1.0 - disagreement * 0.5
+        raw_disagreement = min_side / 0.5  # 归一化到 [0,1]
+        penalty = 1.0 - (raw_disagreement ** 2) * 0.5
 
         if buy_score > sell_score and buy_score >= 0.40:
             return "buy", buy_score * penalty, f"weighted_buy({buy_score:.2f})"

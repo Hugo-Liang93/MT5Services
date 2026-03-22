@@ -156,6 +156,7 @@ def build_executor_config(signal_config) -> ExecutorConfig:
         min_volume=signal_config.min_volume,
         max_volume=signal_config.max_volume,
         contract_size_map=dict(signal_config.contract_size_map),
+        timeframe_risk_multipliers=dict(signal_config.timeframe_risk_multipliers),
         max_consecutive_failures=signal_config.max_consecutive_failures,
         circuit_auto_reset_minutes=signal_config.circuit_auto_reset_minutes,
         max_spread_to_stop_ratio=signal_config.max_spread_to_stop_ratio,
@@ -303,6 +304,15 @@ def build_signal_components(
     )
     register_all_strategies(signal_module, htf_cache)
 
+    # ── Delta momentum 全局参数配置 ─────────────────────────────────────
+    from src.signals.strategies.mean_reversion import configure_delta_params
+    configure_delta_params(
+        d3_scale=signal_config.delta_d3_scale,
+        d3_cap=signal_config.delta_d3_cap,
+        d5_threshold=signal_config.delta_d5_threshold,
+        d5_bonus=signal_config.delta_d5_bonus,
+    )
+
     # ── 应用配置化参数覆盖 ────────────────────────────────────────────
     _apply_strategy_config_overrides(signal_module, signal_config)
 
@@ -318,16 +328,14 @@ def build_signal_components(
             if tf_upper not in configured_tfs:
                 _factory_logger.warning(
                     "Strategy '%s' declares htf_indicators[%s] but "
-                    "timeframe '%s' is not configured in app.ini. "
-                    "HTF data for this TF will be unavailable at runtime.",
+                    "timeframe '%s' is not configured in app.ini.",
                     strategy_name, tf_key, tf_upper,
                 )
             for ind_name in ind_names:
                 if ind_name not in _enabled_indicators:
                     _factory_logger.warning(
                         "Strategy '%s' declares htf_indicators[%s] → '%s' but "
-                        "indicator '%s' is not enabled in indicators.json. "
-                        "This indicator will be unavailable at runtime.",
+                        "indicator '%s' is not enabled in indicators.json.",
                         strategy_name, tf_key, ind_name, ind_name,
                     )
 
@@ -361,8 +369,10 @@ def build_signal_components(
         htf_indicators_enabled=signal_config.htf_indicators_enabled,
         intrabar_confidence_decay=signal_config.intrabar_confidence_decay,
         htf_direction_fn=htf_cache.get_htf_direction,
+        htf_context_fn=htf_cache.get_htf_context,
         htf_conflict_penalty=signal_config.htf_conflict_penalty,
         htf_alignment_boost=signal_config.htf_alignment_boost,
+        htf_target_config=dict(signal_config.strategy_htf_targets),
     )
 
     position_manager = PositionManager(

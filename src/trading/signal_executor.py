@@ -12,6 +12,8 @@ Usage in deps.py:
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -44,6 +46,8 @@ class ExecutorConfig:
     contract_size_map: Dict[str, float] = field(
         default_factory=lambda: {"XAUUSD": 100.0, "default": 100.0}
     )
+    # 时间框架差异化风险乘数：从 signal.ini [timeframe_risk] 加载，覆盖 sizing.py 默认值
+    timeframe_risk_multipliers: Dict[str, float] = field(default_factory=dict)
     default_volume: float = 0.01
     # 熔断器：连续失败超过此阈值后自动暂停自动交易
     max_consecutive_failures: int = 3
@@ -53,7 +57,12 @@ class ExecutorConfig:
 
 
 class TradeExecutor:
-    """Subscribes to SignalRuntime events and auto-executes confirmed trades."""
+    """Subscribes to SignalRuntime events and auto-executes confirmed trades.
+
+    Execution is **non-blocking**: ``on_signal_event()`` enqueues the event
+    and returns immediately so that SignalRuntime's main loop is never stalled
+    by slow MT5 API calls.  A background daemon thread drains the queue.
+    """
 
     def __init__(
         self,
@@ -81,6 +90,10 @@ class TradeExecutor:
         self._last_execution_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
         self._execution_log: list[dict] = []
+        # Async execution: decouple listener callback from MT5 API calls
+        self._exec_queue: queue.Queue = queue.Queue(maxsize=64)
+        self._exec_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
         self._execution_quality = {
             "recovered_from_state": 0,
             "risk_blocks": 0,
@@ -101,13 +114,54 @@ class TradeExecutor:
     def on_signal_event(self, event: SignalEvent) -> None:
         """Called by SignalRuntime for every signal state transition.
 
+        Non-blocking: enqueues the event for the background worker thread.
         Only acts on scope=confirmed transitions with a buy/sell action.
         """
         if event.scope != "confirmed":
             return
         if "confirmed" not in event.signal_state:
             return
-        self._handle_confirmed(event)
+        # Ensure worker thread is running (lazy start)
+        if self._exec_thread is None or not self._exec_thread.is_alive():
+            self._start_worker()
+        try:
+            self._exec_queue.put_nowait(event)
+        except queue.Full:
+            logger.warning(
+                "TradeExecutor queue full, dropping event %s/%s",
+                event.symbol, event.timeframe,
+            )
+
+    def _start_worker(self) -> None:
+        """Start the background execution worker thread (idempotent)."""
+        self._stop_event.clear()
+        t = threading.Thread(target=self._exec_worker, name="trade-executor", daemon=True)
+        t.start()
+        self._exec_thread = t
+
+    def _exec_worker(self) -> None:
+        """Drain execution queue in a dedicated thread."""
+        while not self._stop_event.is_set():
+            try:
+                event = self._exec_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                self._handle_confirmed(event)
+            except Exception:
+                logger.error("TradeExecutor worker error", exc_info=True)
+            finally:
+                self._exec_queue.task_done()
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """Wait until all queued events have been processed (for testing)."""
+        self._exec_queue.join()
+
+    def shutdown(self) -> None:
+        """Stop the background worker thread gracefully."""
+        self._stop_event.set()
+        if self._exec_thread is not None:
+            self._exec_thread.join(timeout=5.0)
 
     # ------------------------------------------------------------------
     # Internal execution logic
@@ -297,6 +351,7 @@ class TradeExecutor:
             min_volume=self.config.min_volume,
             max_volume=self.config.max_volume,
             contract_size=contract_size,
+            timeframe_risk_overrides=self.config.timeframe_risk_multipliers or None,
         )
 
     def _get_account_balance(self) -> Optional[float]:

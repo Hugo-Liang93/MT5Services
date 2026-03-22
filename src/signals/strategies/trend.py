@@ -32,6 +32,7 @@ class SmaTrendStrategy:
     category = "trend"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
+    htf_indicators = {"D1": ("sma20", "ema50")}
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # MA 金叉/死叉在趋势中最可靠
         RegimeType.RANGING:   0.20,  # 震荡市 MA 频繁交叉，产生大量虚假信号
@@ -134,6 +135,23 @@ class SmaTrendStrategy:
             if sweep_confirmation_state.startswith("bullish_"):
                 confidence = max(confidence - 0.22, 0.0)
                 structure_note = sweep_confirmation_state
+        # D1 HTF confirmation: daily trend alignment
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("D1", {})
+        htf_sma = htf.get("sma20", {}).get("sma")
+        htf_ema = htf.get("ema50", {}).get("ema")
+        if htf_sma is not None and htf_ema is not None:
+            htf_bullish = htf_sma > htf_ema
+            if action == "buy" and htf_bullish:
+                htf_bonus = 0.10
+            elif action == "sell" and not htf_bullish:
+                htf_bonus = 0.10
+            elif action == "buy" and not htf_bullish:
+                htf_bonus = -0.08
+            elif action == "sell" and htf_bullish:
+                htf_bonus = -0.08
+        confidence = min(max(confidence + htf_bonus, 0.0), 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -154,6 +172,7 @@ class SmaTrendStrategy:
                 "reclaim_state": reclaim_state,
                 "sweep_confirmation_state": sweep_confirmation_state,
                 "first_pullback_state": first_pullback_state,
+                "htf_bonus": htf_bonus,
             },
         )
 
@@ -174,6 +193,7 @@ class SupertrendStrategy:
     category = "trend"
     required_indicators = ("supertrend14", "adx14")
     preferred_scopes = ("confirmed",)
+    htf_indicators = {"H1": ("supertrend14", "adx14")}
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # Supertrend 专为趋势行情设计
         RegimeType.RANGING:   0.30,  # 震荡市 Supertrend 方向频繁翻转，假信号多
@@ -241,18 +261,33 @@ class SupertrendStrategy:
 
         adx_confidence = min((adx - self._adx_threshold) / 30.0 + 0.6, 1.0)
 
+        # HTF confirmation: if H1 supertrend agrees, boost confidence
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("H1", {})
+        htf_st = htf.get("supertrend14", {})
+        htf_dir = htf_st.get("direction")
+        if htf_dir is not None:
+            expected_dir = 1.0 if action == "buy" else -1.0
+            if htf_dir == expected_dir:
+                htf_bonus = 0.08
+            elif htf_dir == -expected_dir:
+                htf_bonus = -0.05
+
+        confidence = min(adx_confidence + htf_bonus, 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
             timeframe=context.timeframe,
             action=action,
-            confidence=adx_confidence,
+            confidence=confidence,
             reason=f"supertrend_direction={st_direction:.0f},adx={adx:.1f}",
             used_indicators=used or ["supertrend14", "adx14"],
             metadata={
                 "supertrend": st_value,
                 "direction": st_direction,
                 "adx": adx,
+                "htf_bonus": htf_bonus,
             },
         )
 
@@ -273,6 +308,7 @@ class MacdMomentumStrategy:
     category = "trend"
     required_indicators = ("macd",)
     preferred_scopes = ("confirmed",)
+    htf_indicators = {"D1": ("macd",)}
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # MACD 柱状图反映趋势动量，趋势中最准确
         RegimeType.RANGING:   0.30,  # 震荡市 MACD 来回交叉，产生频繁假信号
@@ -345,6 +381,21 @@ class MacdMomentumStrategy:
             action = "hold"
             confidence = 0.1
 
+        # D1 HTF confirmation: daily MACD histogram direction
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("D1", {})
+        htf_hist = htf.get("macd", {}).get("hist")
+        if htf_hist is not None:
+            if action == "buy" and htf_hist > 0:
+                htf_bonus = 0.08
+            elif action == "sell" and htf_hist < 0:
+                htf_bonus = 0.08
+            elif action == "buy" and htf_hist < 0:
+                htf_bonus = -0.06
+            elif action == "sell" and htf_hist > 0:
+                htf_bonus = -0.06
+        confidence = min(max(confidence + htf_bonus, 0.0), 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -358,6 +409,7 @@ class MacdMomentumStrategy:
                 "signal": signal_val,
                 "hist": hist_val,
                 "hist_d3": hist_d3,
+                "htf_bonus": htf_bonus,
             },
         )
 

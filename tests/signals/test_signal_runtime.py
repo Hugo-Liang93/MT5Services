@@ -647,8 +647,8 @@ def test_signal_runtime_status_exposes_split_queues() -> None:
     assert "confirmed_queue_capacity" in status
     assert "intrabar_queue_size" in status
     assert "intrabar_queue_capacity" in status
-    assert status["confirmed_queue_capacity"] == 2048
-    assert status["intrabar_queue_capacity"] == 4096
+    assert status["confirmed_queue_capacity"] == 4096
+    assert status["intrabar_queue_capacity"] == 8192
     assert "dropped_confirmed" in status
     assert "dropped_intrabar" in status
 
@@ -1040,3 +1040,155 @@ def test_signal_runtime_skips_htf_when_direction_fn_is_none() -> None:
     persisted = service.persist_calls[0]
     # 没有 HTF 修正 metadata
     assert "htf_direction" not in persisted.get("metadata", {})
+
+
+# ---------------------------------------------------------------------------
+# _compute_htf_alignment multi-dimensional weight tests
+# ---------------------------------------------------------------------------
+
+def _make_runtime_with_htf_context(context_fn):
+    """Create a minimal runtime with htf_context_fn for alignment tests."""
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    return SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        htf_context_fn=context_fn,
+        htf_conflict_penalty=0.70,
+        htf_alignment_boost=1.10,
+    )
+
+
+def _make_htf_context(direction="buy", confidence=0.5, regime="uncertain", stable_bars=1):
+    from src.signals.strategies.htf_cache import HTFDirectionContext
+    from datetime import datetime, timezone
+    return HTFDirectionContext(
+        direction=direction,
+        confidence=confidence,
+        regime=regime,
+        stable_bars=stable_bars,
+        updated_at=datetime.now(timezone.utc),
+    )
+
+
+def test_htf_alignment_no_context_returns_none():
+    """No htf_context_fn → (None, None)."""
+    rt = SignalRuntime(
+        service=DummySignalService(),
+        snapshot_source=DummySnapshotSource(),
+        targets=[SignalTarget("XAUUSD", "M5", "sma_trend")],
+    )
+    mul, direction = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    assert mul is None
+    assert direction is None
+
+
+def test_htf_alignment_aligned_confirmed_base():
+    """Aligned + default confidence(0.5) + stable_bars=1 → base boost (1.10)."""
+    ctx = _make_htf_context(direction="buy", confidence=0.5, stable_bars=1)
+    rt = _make_runtime_with_htf_context(lambda s, tf: ctx)
+    mul, direction = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    assert direction == "buy"
+    # strength=1.0, stability=1.0 → mul = 1.10 * 1.0 * 1.0 = 1.10
+    assert abs(mul - 1.10) < 0.01
+
+
+def test_htf_alignment_conflict_confirmed_base():
+    """Conflict + default confidence(0.5) + stable_bars=1 → base penalty (0.70)."""
+    ctx = _make_htf_context(direction="sell", confidence=0.5, stable_bars=1)
+    rt = _make_runtime_with_htf_context(lambda s, tf: ctx)
+    mul, direction = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    assert direction == "sell"
+    assert abs(mul - 0.70) < 0.01
+
+
+def test_htf_alignment_high_confidence_amplifies():
+    """High HTF confidence (0.8) amplifies alignment effect."""
+    ctx = _make_htf_context(direction="buy", confidence=0.8, stable_bars=1)
+    rt = _make_runtime_with_htf_context(lambda s, tf: ctx)
+    mul, _ = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    # strength = 1.0 + (0.8 - 0.5) * 0.3 = 1.09
+    # mul = 1.10 * 1.09 = 1.199
+    assert mul > 1.10, f"High conf should amplify boost beyond 1.10, got {mul}"
+
+
+def test_htf_alignment_low_confidence_dampens():
+    """Low HTF confidence (0.2) dampens alignment effect."""
+    ctx = _make_htf_context(direction="buy", confidence=0.2, stable_bars=1)
+    rt = _make_runtime_with_htf_context(lambda s, tf: ctx)
+    mul, _ = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    # strength = 1.0 + (0.2 - 0.5) * 0.3 = 0.91
+    # mul = 1.10 * 0.91 = 1.001
+    assert mul < 1.10, f"Low conf should dampen boost, got {mul}"
+
+
+def test_htf_alignment_high_stable_bars_amplifies():
+    """Many stable bars amplify the effect."""
+    ctx = _make_htf_context(direction="buy", confidence=0.5, stable_bars=6)
+    rt = _make_runtime_with_htf_context(lambda s, tf: ctx)
+    mul, _ = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    # stability = min(1.0 + (6-1)*0.03, 1.15) = min(1.15, 1.15) = 1.15
+    # mul = 1.10 * 1.0 * 1.15 = 1.265
+    assert mul > 1.20, f"High stable_bars should amplify, got {mul}"
+
+
+def test_htf_alignment_stable_bars_capped():
+    """stable_bars effect capped at 1.15."""
+    ctx5 = _make_htf_context(direction="buy", confidence=0.5, stable_bars=6)
+    ctx50 = _make_htf_context(direction="buy", confidence=0.5, stable_bars=50)
+    rt5 = _make_runtime_with_htf_context(lambda s, tf: ctx5)
+    rt50 = _make_runtime_with_htf_context(lambda s, tf: ctx50)
+    mul5, _ = rt5._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    mul50, _ = rt50._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    assert abs(mul5 - mul50) < 0.01, "Stability should be capped"
+
+
+def test_htf_alignment_intrabar_half_strength():
+    """Intrabar scope halves the deviation from 1.0."""
+    ctx = _make_htf_context(direction="buy", confidence=0.5, stable_bars=1)
+    rt = _make_runtime_with_htf_context(lambda s, tf: ctx)
+    confirmed_mul, _ = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    intrabar_mul, _ = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "intrabar")
+    # confirmed: 1.10, intrabar: 1.0 + (1.10 - 1.0) * 0.5 = 1.05
+    assert abs(intrabar_mul - 1.05) < 0.01
+    assert abs(confirmed_mul - intrabar_mul) > 0.03, "Intrabar should be less than confirmed"
+
+
+def test_htf_alignment_intrabar_conflict_half_strength():
+    """Intrabar conflict penalty is also halved."""
+    ctx = _make_htf_context(direction="sell", confidence=0.5, stable_bars=1)
+    rt = _make_runtime_with_htf_context(lambda s, tf: ctx)
+    confirmed_mul, _ = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    intrabar_mul, _ = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "intrabar")
+    # confirmed: 0.70, intrabar: 1.0 + (0.70 - 1.0) * 0.5 = 0.85
+    assert abs(intrabar_mul - 0.85) < 0.01
+    assert intrabar_mul > confirmed_mul, "Intrabar conflict should be less severe"
+
+
+def test_htf_alignment_fallback_to_direction_fn():
+    """When context_fn returns None, falls back to direction_fn."""
+    rt = SignalRuntime(
+        service=DummySignalService(),
+        snapshot_source=DummySnapshotSource(),
+        targets=[SignalTarget("XAUUSD", "M5", "sma_trend")],
+        htf_context_fn=lambda s, tf: None,
+        htf_direction_fn=lambda s, tf: "buy",
+        htf_alignment_boost=1.10,
+        htf_conflict_penalty=0.70,
+    )
+    mul, direction = rt._compute_htf_alignment("XAUUSD", "M5", "buy", "confirmed")
+    assert direction == "buy"
+    assert abs(mul - 1.10) < 0.01
+
+
+def test_htf_alignment_combined_factors():
+    """Combined: high confidence + high stable bars + aligned → strong boost."""
+    ctx = _make_htf_context(direction="sell", confidence=0.9, stable_bars=5)
+    rt = _make_runtime_with_htf_context(lambda s, tf: ctx)
+    mul, _ = rt._compute_htf_alignment("XAUUSD", "M5", "sell", "confirmed")
+    # strength = 1.0 + (0.9 - 0.5) * 0.3 = 1.12
+    # stability = min(1.0 + 4*0.03, 1.15) = 1.12
+    # mul = 1.10 * 1.12 * 1.12 = 1.38
+    assert mul > 1.30, f"Combined strong factors should give significant boost, got {mul}"

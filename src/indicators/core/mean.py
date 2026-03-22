@@ -78,8 +78,8 @@ def hma(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
 
     算法：HMA(n) = WMA(sqrt(n), 2 × WMA(n/2) - WMA(n))
 
-    HMA 的响应速度是普通 WMA 的 2 倍，同时保持价格平滑性，
-    非常适合黄金日内趋势判断。
+    优化：只需最后 sqrt_period 个 hull 差值即可做最终 WMA，
+    无需遍历全部历史位置。
 
     输出：
         hma  — Hull 移动平均值
@@ -90,19 +90,22 @@ def hma(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     half_period = max(period // 2, 1)
     sqrt_period = max(int(_math.sqrt(period)), 1)
 
-    # 计算 HMA 需要足够数据：完整 WMA(n) 和 WMA(n/2) 后还要对差值再做 WMA(sqrt(n))
-    # 总需求 ≈ period + sqrt_period
-    needed = period + sqrt_period + 5
-    closes = get_closes(bars, needed)
-    if len(closes) < period + sqrt_period:
+    # 只需 period + sqrt_period - 1 个 close 即可产生 sqrt_period 个 hull 差值
+    needed = period + sqrt_period - 1
+    closes = get_closes(bars, needed + 5)
+    if len(closes) < needed:
         return {}
 
-    # 对每个位置计算 2×WMA(n/2) - WMA(n)，构成 hull_series
+    # 只生成最后 sqrt_period 个 hull 差值（足够做 WMA(sqrt_period)）
     hull_series: List[float] = []
-    start_idx = period - 1  # WMA(n) 需要 period 个点，从 period-1 开始可用
-    for i in range(start_idx, len(closes)):
-        full_wma = _wma_raw(closes[: i + 1], period)
-        half_wma = _wma_raw(closes[: i + 1], half_period)
+    # 从 closes 末尾倒推：最后一个 hull 对应 closes[-1]，需要 closes[-period:]
+    # 往前再取 sqrt_period-1 个位置
+    end_len = len(closes)
+    first_pos = end_len - sqrt_period  # hull_series 第一个元素对应的 closes 结束位置
+    for pos in range(first_pos, end_len):
+        window_end = pos + 1
+        full_wma = _wma_raw(closes[:window_end], period)
+        half_wma = _wma_raw(closes[:window_end], half_period)
         hull_series.append(2.0 * half_wma - full_wma)
 
     if len(hull_series) < sqrt_period:

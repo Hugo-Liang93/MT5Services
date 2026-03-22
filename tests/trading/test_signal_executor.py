@@ -9,6 +9,12 @@ from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 
 
+def _fire(executor: TradeExecutor, event: SignalEvent) -> None:
+    """Send event and wait for async worker to process it."""
+    executor.on_signal_event(event)
+    executor.flush()
+
+
 class DummyTradingModule:
     def __init__(self):
         self.calls = []
@@ -85,11 +91,8 @@ def test_trade_executor_skips_when_spread_to_stop_ratio_is_too_high() -> None:
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    result = executor.on_signal_event(
-        _build_event(spread_points=80.0, close_price=3000.0)
-    )
+    _fire(executor, _build_event(spread_points=80.0, close_price=3000.0))
 
-    assert result is None
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == "spread_to_stop_ratio_too_high"
 
@@ -108,7 +111,7 @@ def test_trade_executor_records_cost_metrics_on_success() -> None:
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    executor.on_signal_event(_build_event(spread_points=50.0, close_price=3000.0))
+    _fire(executor, _build_event(spread_points=50.0, close_price=3000.0))
 
     assert module.calls
     cost = executor.status()["recent_executions"][-1]["cost"]
@@ -131,8 +134,7 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    executor.on_signal_event(
-        _build_event(
+    _fire(executor, _build_event(
             spread_points=30.0,
             close_price=3000.0,
             market_structure={
@@ -166,11 +168,8 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    result = executor.on_signal_event(
-        _build_event(spread_points=20.0, close_price=3000.0)
-    )
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
 
-    assert result is None
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == (
         "max_concurrent_positions_per_symbol"
@@ -193,7 +192,7 @@ def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
     event = _build_event(spread_points=20.0, close_price=3000.0)
     event = SignalEvent(**{**event.__dict__, "timeframe": "M1"})
 
-    executor.on_signal_event(event)
+    _fire(executor, event)
 
     assert module.calls
     payload = module.calls[0][1]
@@ -212,7 +211,7 @@ def test_trade_executor_passes_signal_id_as_request_id() -> None:
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    executor.on_signal_event(_build_event(spread_points=10.0, close_price=3000.0))
+    _fire(executor, _build_event(spread_points=10.0, close_price=3000.0))
 
     assert module.calls
     assert module.calls[0][1]["request_id"] == "sig_1"
@@ -235,11 +234,8 @@ def test_trade_executor_voting_group_strategy_blocked() -> None:
         ),
     )
 
-    result = executor.on_signal_event(
-        _build_event(spread_points=20.0, close_price=3000.0)
-    )
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
 
-    assert result is None
     assert module.calls == []
 
 
@@ -263,9 +259,7 @@ def test_trade_executor_voting_group_standalone_override_allows() -> None:
         ),
     )
 
-    executor.on_signal_event(
-        _build_event(spread_points=20.0, close_price=3000.0)
-    )
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
 
     assert module.calls  # sma_trend 在 override 中，允许执行
 
@@ -292,9 +286,7 @@ def test_trade_executor_circuit_breaker_auto_resets() -> None:
     from datetime import timedelta
     executor._circuit_open_at = datetime.now(timezone.utc) - timedelta(minutes=15)
 
-    executor.on_signal_event(
-        _build_event(spread_points=20.0, close_price=3000.0)
-    )
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
 
     # 自动恢复后应该执行
     assert module.calls
@@ -315,11 +307,8 @@ def test_trade_executor_uses_live_positions_when_tracking_state_is_stale() -> No
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    result = executor.on_signal_event(
-        _build_event(spread_points=10.0, close_price=3000.0)
-    )
+    _fire(executor, _build_event(spread_points=10.0, close_price=3000.0))
 
-    assert result is None
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == (
         "max_concurrent_positions_per_symbol"

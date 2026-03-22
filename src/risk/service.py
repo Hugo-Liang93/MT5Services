@@ -22,10 +22,12 @@ from .rules import (
     CalendarHealthRule,
     DailyLossLimitRule,
     EconomicEventRule,
+    MarginAvailabilityRule,
     MarketStructureRule,
     ProtectionRule,
     RuleContext,
     SessionWindowRule,
+    TradeFrequencyRule,
 )
 
 if TYPE_CHECKING:
@@ -69,9 +71,12 @@ class PreTradeRiskService:
         self.account_service = account_service
         self.settings = settings or get_economic_config()
         self.risk_settings = risk_settings or get_risk_config()
+        self._trade_frequency_rule = TradeFrequencyRule()
         self.rules = (
             AccountSnapshotRule(),
             DailyLossLimitRule(),
+            MarginAvailabilityRule(),
+            self._trade_frequency_rule,
             ProtectionRule(),
             SessionWindowRule(),
             MarketStructureRule(),
@@ -295,6 +300,10 @@ class PreTradeRiskService:
             "checks": [check.to_dict() for check in checks],
             "intent": intent_obj.to_dict(),
         }
+
+    def record_trade_execution(self, at: Optional[datetime] = None) -> None:
+        """Notify the frequency rule that a trade was executed."""
+        self._trade_frequency_rule.record_trade(at)
 
     def enforce_trade_allowed(self, **kwargs: Any) -> Dict[str, Any]:
         assessment = self.assess_trade(**kwargs)
