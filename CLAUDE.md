@@ -692,10 +692,9 @@ class MyNewStrategy:
         RegimeType.UNCERTAIN: 0.XX,
     }
 
-    # 5. HTF 指标（可选）— 声明需要的跨时间框架指标
-    #    策略只声明指标名，目标 TF 由 signal.ini [strategy_htf] 配置
-    #    未配置时自动用下一个更高的已配置 TF
-    htf_indicators = ("adx14", "ema50")
+    # 5. HTF 指标（可选）— 显式声明需要哪个 TF 的哪些指标
+    #    默认 TF 可通过 signal.ini [strategy_htf] per-indicator 覆盖
+    htf_indicators = {"H1": ("adx14", "ema50")}
 ```
 
 #### Regime 亲和度设计指南
@@ -750,23 +749,24 @@ SoftRegimeResult:
 
 ## HTF 指标上下文注入
 
-策略可以通过可选属性 `htf_indicators` 声明需要引用的**其他时间框架的指标数据**。系统在策略评估前自动从 `IndicatorManager` 查询已缓存的 HTF 指标并注入 `SignalContext.htf_indicators`。
+策略通过 `htf_indicators` 属性显式声明需要的**跨时间框架指标**（格式：`{TF: (指标名...)}`）。声明中的 TF 是默认值，可通过 `signal.ini [strategy_htf]` 按指标粒度覆盖。系统在策略评估前自动从 `IndicatorManager` 查询并注入 `SignalContext.htf_indicators`。
 
 ### 声明方式
 
 ```python
 class MyStrategy:
     name = "my_strategy"
-    required_indicators = ("rsi14",)      # 当前 TF 指标
-    htf_indicators = ("adx14", "ema50")   # 需要的 HTF 指标（目标 TF 由 INI 配置）
+    required_indicators = ("rsi14",)                      # 当前 TF 指标
+    htf_indicators = {"H1": ("adx14",), "D1": ("ema50",)}  # 显式声明 TF + 指标
     # ...
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         rsi = context.indicators.get("rsi14", {}).get("rsi")
-        # 取第一个（也是唯一的）HTF 数据，不关心具体来自哪个 TF
-        htf = next(iter(context.htf_indicators.values()), {})
-        htf_adx = htf.get("adx14", {}).get("adx")
-        htf_ema = htf.get("ema50", {}).get("ema")
+        # 按声明的 TF 显式访问 HTF 数据
+        h1 = context.htf_indicators.get("H1", {})
+        d1 = context.htf_indicators.get("D1", {})
+        h1_adx = h1.get("adx14", {}).get("adx")
+        d1_ema = d1.get("ema50", {}).get("ema")
 ```
 
 ### 工作原理
