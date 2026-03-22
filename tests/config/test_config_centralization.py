@@ -51,7 +51,7 @@ def test_centralized_config():
     assert "api" in system.modules_enabled
 
     assert get_shared_symbols() == ["XAUUSD"]
-    assert get_shared_timeframes() == ["M1", "M5", "M15", "H1"]
+    assert get_shared_timeframes() == ["M1", "M5", "M15", "H1", "D1"]
     assert get_shared_default_symbol() == "XAUUSD"
 
 

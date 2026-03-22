@@ -13,6 +13,15 @@ TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
     "H1": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0},
 }
 
+# 时间框架差异化风险百分比（乘数）：M1 更保守，H1 可更激进
+# 实际 risk_pct = base_risk_percent × multiplier
+TIMEFRAME_RISK_MULTIPLIER: dict[str, float] = {
+    "M1": 0.50,   # M1 噪声大，半仓
+    "M5": 0.75,   # M5 适中偏保守
+    "M15": 1.00,  # M15 基准
+    "H1": 1.20,   # H1 信号更可靠，可稍放大
+}
+
 
 @dataclass(frozen=True)
 class TradeParameters:
@@ -41,6 +50,7 @@ def compute_trade_params(
     min_volume: float = 0.01,
     max_volume: float = 1.0,
     contract_size: float = 100.0,
+    timeframe_risk_overrides: Optional[Dict[str, float]] = None,
 ) -> TradeParameters:
     """Compute SL, TP, and position size for a trade based on ATR.
 
@@ -81,7 +91,10 @@ def compute_trade_params(
     else:
         raise ValueError(f"action must be 'buy' or 'sell', got: {action}")
 
-    risk_amount = account_balance * (risk_percent / 100.0)
+    effective_risk_pct = risk_percent * resolve_timeframe_risk_multiplier(
+        timeframe, overrides=timeframe_risk_overrides,
+    )
+    risk_amount = account_balance * (effective_risk_pct / 100.0)
     risk_per_lot = sl_distance * contract_size
     if risk_per_lot > 0:
         raw_volume = risk_amount / risk_per_lot
@@ -119,6 +132,24 @@ def extract_atr_from_indicators(
                 except (TypeError, ValueError):
                     continue
     return None
+
+
+def resolve_timeframe_risk_multiplier(
+    timeframe: Optional[str],
+    *,
+    overrides: Optional[Dict[str, float]] = None,
+) -> float:
+    """Return the risk-percent multiplier for a given timeframe (default 1.0).
+
+    If *overrides* is provided (from signal.ini ``[timeframe_risk]``), it takes
+    precedence over the built-in ``TIMEFRAME_RISK_MULTIPLIER`` defaults.
+    """
+    if not timeframe:
+        return 1.0
+    tf = str(timeframe).strip().upper()
+    if overrides and tf in overrides:
+        return overrides[tf]
+    return TIMEFRAME_RISK_MULTIPLIER.get(tf, 1.0)
 
 
 def resolve_timeframe_sl_tp(

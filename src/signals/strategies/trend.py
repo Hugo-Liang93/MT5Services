@@ -32,6 +32,7 @@ class SmaTrendStrategy:
     category = "trend"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
+
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # MA 金叉/死叉在趋势中最可靠
         RegimeType.RANGING:   0.20,  # 震荡市 MA 频繁交叉，产生大量虚假信号
@@ -71,14 +72,18 @@ class SmaTrendStrategy:
             )
 
         spread = fast - slow
-        if spread > 0:
+        relative_spread = spread / slow if slow else 0.0
+        # 方向稳定性过滤：均线差距太小时视为无方向（防止震荡市反复交叉）
+        min_spread_pct = 0.0005  # 0.05%
+        if abs(relative_spread) < min_spread_pct:
+            action = "hold"
+        elif spread > 0:
             action = "buy"
         elif spread < 0:
             action = "sell"
         else:
             action = "hold"
 
-        relative_spread = spread / slow if slow else 0.0
         confidence = min(abs(relative_spread) * 100, 1.0)
         structure = _market_structure(context)
         structure_bias = str(structure.get("structure_bias") or "neutral")
@@ -130,6 +135,23 @@ class SmaTrendStrategy:
             if sweep_confirmation_state.startswith("bullish_"):
                 confidence = max(confidence - 0.22, 0.0)
                 structure_note = sweep_confirmation_state
+        # D1 HTF confirmation: daily trend alignment
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("D1", {})
+        htf_sma = htf.get("sma20", {}).get("sma")
+        htf_ema = htf.get("ema50", {}).get("ema")
+        if htf_sma is not None and htf_ema is not None:
+            htf_bullish = htf_sma > htf_ema
+            if action == "buy" and htf_bullish:
+                htf_bonus = 0.10
+            elif action == "sell" and not htf_bullish:
+                htf_bonus = 0.10
+            elif action == "buy" and not htf_bullish:
+                htf_bonus = -0.08
+            elif action == "sell" and htf_bullish:
+                htf_bonus = -0.08
+        confidence = min(max(confidence + htf_bonus, 0.0), 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -150,6 +172,7 @@ class SmaTrendStrategy:
                 "reclaim_state": reclaim_state,
                 "sweep_confirmation_state": sweep_confirmation_state,
                 "first_pullback_state": first_pullback_state,
+                "htf_bonus": htf_bonus,
             },
         )
 
@@ -170,6 +193,7 @@ class SupertrendStrategy:
     category = "trend"
     required_indicators = ("supertrend14", "adx14")
     preferred_scopes = ("confirmed",)
+
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # Supertrend 专为趋势行情设计
         RegimeType.RANGING:   0.30,  # 震荡市 Supertrend 方向频繁翻转，假信号多
@@ -237,18 +261,33 @@ class SupertrendStrategy:
 
         adx_confidence = min((adx - self._adx_threshold) / 30.0 + 0.6, 1.0)
 
+        # HTF confirmation: if H1 supertrend agrees, boost confidence
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("H1", {})
+        htf_st = htf.get("supertrend14", {})
+        htf_dir = htf_st.get("direction")
+        if htf_dir is not None:
+            expected_dir = 1.0 if action == "buy" else -1.0
+            if htf_dir == expected_dir:
+                htf_bonus = 0.08
+            elif htf_dir == -expected_dir:
+                htf_bonus = -0.05
+
+        confidence = min(adx_confidence + htf_bonus, 1.0)
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
             timeframe=context.timeframe,
             action=action,
-            confidence=adx_confidence,
+            confidence=confidence,
             reason=f"supertrend_direction={st_direction:.0f},adx={adx:.1f}",
             used_indicators=used or ["supertrend14", "adx14"],
             metadata={
                 "supertrend": st_value,
                 "direction": st_direction,
                 "adx": adx,
+                "htf_bonus": htf_bonus,
             },
         )
 
@@ -269,6 +308,7 @@ class MacdMomentumStrategy:
     category = "trend"
     required_indicators = ("macd",)
     preferred_scopes = ("confirmed",)
+
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # MACD 柱状图反映趋势动量，趋势中最准确
         RegimeType.RANGING:   0.30,  # 震荡市 MACD 来回交叉，产生频繁假信号
@@ -315,17 +355,46 @@ class MacdMomentumStrategy:
         macd_line = macd_val
         signal_line = signal_val
 
+        # 动量加速度：hist 的 3-bar 变化量（delta_bars 自动计算）
+        macd_data = context.indicators.get("macd") or context.indicators.get("macd12_26_9") or {}
+        hist_d3 = macd_data.get("hist_d3")
+
         if hist > 0 and macd_line > signal_line:
             action = "buy"
             magnitude = abs(hist) / (abs(macd_line) + 1e-10)
             confidence = min(0.45 + min(magnitude * 2.0, 0.45), 0.9)
+            # 动量加速加分：hist_d3 > 0 表示柱状图正在放大
+            if hist_d3 is not None and hist_d3 > 0:
+                confidence = min(confidence + 0.08, 0.95)
+            # hist 接近零（弱动量）→ 降权，防止刚穿零轴的虚假信号
+            if abs(hist) < abs(macd_line) * 0.05:
+                confidence *= 0.75
         elif hist < 0 and macd_line < signal_line:
             action = "sell"
             magnitude = abs(hist) / (abs(macd_line) + 1e-10)
             confidence = min(0.45 + min(magnitude * 2.0, 0.45), 0.9)
+            if hist_d3 is not None and hist_d3 < 0:
+                confidence = min(confidence + 0.08, 0.95)
+            if abs(hist) < abs(macd_line) * 0.05:
+                confidence *= 0.75
         else:
             action = "hold"
             confidence = 0.1
+
+        # D1 HTF confirmation: daily MACD histogram direction
+        htf_bonus = 0.0
+        htf = context.htf_indicators.get("D1", {})
+        htf_hist = htf.get("macd", {}).get("hist")
+        if htf_hist is not None:
+            if action == "buy" and htf_hist > 0:
+                htf_bonus = 0.08
+            elif action == "sell" and htf_hist < 0:
+                htf_bonus = 0.08
+            elif action == "buy" and htf_hist < 0:
+                htf_bonus = -0.06
+            elif action == "sell" and htf_hist > 0:
+                htf_bonus = -0.06
+        confidence = min(max(confidence + htf_bonus, 0.0), 1.0)
 
         return SignalDecision(
             strategy=self.name,
@@ -339,6 +408,8 @@ class MacdMomentumStrategy:
                 "macd": macd_val,
                 "signal": signal_val,
                 "hist": hist_val,
+                "hist_d3": hist_d3,
+                "htf_bonus": htf_bonus,
             },
         )
 
@@ -524,7 +595,7 @@ class RocMomentumStrategy:
 
     name = "roc_momentum"
     category = "trend"
-    required_indicators = ("roc12", "adx14")
+    required_indicators = ("roc12", "adx14", "atr14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
         RegimeType.TRENDING:  0.85,  # 趋势中动量加速是强烈的持续信号
@@ -535,7 +606,7 @@ class RocMomentumStrategy:
 
     def __init__(self, *, adx_min: float = 23.0, roc_threshold: float = 0.1) -> None:
         self._adx_min = adx_min
-        self._roc_threshold = roc_threshold  # ROC 触发阈值（%），默认 0.1%
+        self._roc_threshold = roc_threshold  # ROC 触发基准阈值（%），ATR 归一化时作为下限
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         roc_value, roc_name = _resolve_indicator_value(
@@ -572,14 +643,24 @@ class RocMomentumStrategy:
                 metadata={"roc": roc_value, "adx": adx},
             )
 
+        # ATR 归一化 ROC 阈值：高波动市提高阈值，低波动市降低阈值
+        atr_data = context.indicators.get("atr14") or {}
+        atr_val = atr_data.get("atr")
+        close_price = float(context.metadata.get("close_price") or 0)
+        if atr_val and close_price > 0:
+            atr_pct = (atr_val / close_price) * 100
+            roc_threshold = max(atr_pct * 0.2, self._roc_threshold)
+        else:
+            roc_threshold = self._roc_threshold
+
         roc = roc_value
-        if roc > self._roc_threshold:
+        if roc > roc_threshold:
             action = "buy"
             # ADX 越强、ROC 越大，置信度越高
             adx_conf = min((adx - self._adx_min) / 30.0 * 0.3, 0.30)
             roc_conf = min(abs(roc) / 1.0 * 0.35, 0.35)
             confidence = min(0.40 + adx_conf + roc_conf, 0.90)
-        elif roc < -self._roc_threshold:
+        elif roc < -roc_threshold:
             action = "sell"
             adx_conf = min((adx - self._adx_min) / 30.0 * 0.3, 0.30)
             roc_conf = min(abs(roc) / 1.0 * 0.35, 0.35)

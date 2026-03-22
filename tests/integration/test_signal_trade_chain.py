@@ -157,9 +157,6 @@ def _build_runtime(
         min_preview_confidence=0.3,
         min_preview_stable_seconds=min_preview_stable_seconds,
         preview_cooldown_seconds=0.0,
-        auto_trade_enabled=True,
-        auto_trade_min_confidence=0.3,
-        auto_trade_require_armed=require_armed,
         voting_enabled=False,         # 简化：关闭投票引擎，只测单策略
         min_affinity_skip=0.0,        # 不过滤任何策略
     )
@@ -184,19 +181,20 @@ def _build_executor(
     min_confidence: float = 0.3,
     max_consecutive_failures: int = 3,
 ) -> TradeExecutor:
+    from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
+
     return TradeExecutor(
         trading_module=trading_module,
         config=ExecutorConfig(
             enabled=True,
-            require_armed=require_armed,
             min_confidence=min_confidence,
             sl_atr_multiplier=1.5,
             tp_atr_multiplier=3.0,
             max_spread_to_stop_ratio=0.99,   # 测试中不过滤 spread
-            htf_filter_enabled=False,
             max_consecutive_failures=max_consecutive_failures,
             circuit_auto_reset_minutes=0,    # 不自动恢复
         ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=require_armed)),
         account_balance_getter=lambda: 10000.0,
     )
 
@@ -351,9 +349,11 @@ def test_circuit_breaker_pauses_and_resets() -> None:
         source.publish("XAUUSD", "M1", bt, indicators, scope="confirmed")
         time.sleep(0.05)
 
-    deadline = time.monotonic() + 3.0
+    # Wait for async executor to process all queued events
+    deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and executor._consecutive_failures < 3:
-        time.sleep(0.05)
+        time.sleep(0.1)
+    executor.flush()
 
     assert executor._circuit_open, "熔断器应已开路"
 
@@ -361,7 +361,8 @@ def test_circuit_breaker_pauses_and_resets() -> None:
     before = len(trading.calls)
     bt_block = base_time + timedelta(minutes=3)
     source.publish("XAUUSD", "M1", bt_block, indicators, scope="confirmed")
-    time.sleep(0.25)
+    time.sleep(0.3)
+    executor.flush()
     assert len(trading.calls) == before, "熔断器开路后不应再触发 dispatch"
 
     # 手动 reset
@@ -371,7 +372,12 @@ def test_circuit_breaker_pauses_and_resets() -> None:
     # 再发一个快照（新 bar_time）→ 此次 dispatch 成功（第 4 次，不再 fail）
     bt_reset = base_time + timedelta(minutes=4)
     source.publish("XAUUSD", "M1", bt_reset, indicators, scope="confirmed")
-    assert _wait_for_calls(trading, expected=before + 1), "reset 后应恢复下单"
+    # Wait for async execution
+    deadline2 = time.monotonic() + 5.0
+    while time.monotonic() < deadline2 and len(trading.calls) <= before:
+        time.sleep(0.1)
+    executor.flush()
+    assert len(trading.calls) > before, "reset 后应恢复下单"
     _, payload = trading.calls[-1]
     assert payload["side"] == "buy"
 

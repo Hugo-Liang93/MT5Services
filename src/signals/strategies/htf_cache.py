@@ -33,6 +33,7 @@ HTFStateCache 通过监听 SignalRuntime 的 confirmed 信号事件，
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -44,6 +45,18 @@ _DEFAULT_HTF_MAP: Dict[str, str] = {
     "H1": "H4",
     "H4": "D1",
 }
+
+
+
+@dataclass(frozen=True)
+class HTFDirectionContext:
+    """Enriched HTF direction record — carries strength information."""
+
+    direction: str  # "buy" or "sell"
+    confidence: float  # signal confidence at time of caching
+    regime: str  # regime type (e.g. "trending", "ranging")
+    stable_bars: int  # consecutive bars same direction was held
+    updated_at: datetime
 
 
 class HTFStateCache:
@@ -76,8 +89,8 @@ class HTFStateCache:
             source_strategies if source_strategies is not None
             else frozenset({"consensus"})
         )
-        # key: (symbol, timeframe) → (direction, updated_at)
-        self._cache: Dict[Tuple[str, str], Tuple[str, datetime]] = {}
+        # key: (symbol, timeframe) → HTFDirectionContext
+        self._cache: Dict[Tuple[str, str], HTFDirectionContext] = {}
         self._lock = threading.Lock()
         # 命中率统计
         self._hit_count: int = 0
@@ -92,6 +105,11 @@ class HTFStateCache:
         """返回 symbol 在 LTF 对应 HTF 上的最新方向（buy/sell/hold），
         若无缓存或已过期则返回 None。
         """
+        ctx = self.get_htf_context(symbol, ltf_timeframe)
+        return ctx.direction if ctx is not None else None
+
+    def get_htf_context(self, symbol: str, ltf_timeframe: str) -> Optional[HTFDirectionContext]:
+        """返回 HTF 上的完整方向上下文（含 confidence/regime/stable_bars）。"""
         htf = self._htf_map.get(ltf_timeframe)
         if htf is None:
             self._miss_count += 1
@@ -102,12 +120,11 @@ class HTFStateCache:
         if entry is None:
             self._miss_count += 1
             return None
-        direction, updated_at = entry
-        if datetime.now(timezone.utc) - updated_at > self._max_age:
+        if datetime.now(timezone.utc) - entry.updated_at > self._max_age:
             self._expired_count += 1
             return None
         self._hit_count += 1
-        return direction
+        return entry
 
     def on_signal_event(self, event: Any) -> None:
         """SignalRuntime 信号监听器：缓存 source_strategies 的 confirmed 信号方向。"""
@@ -117,7 +134,6 @@ class HTFStateCache:
         if not signal_state.startswith("confirmed_"):
             return
         if signal_state == "confirmed_cancelled":
-            # 共识取消 → 清除缓存，避免影响后续 MTF 判断
             key = (event.symbol, event.timeframe)
             with self._lock:
                 self._cache.pop(key, None)
@@ -125,8 +141,26 @@ class HTFStateCache:
         # confirmed_buy / confirmed_sell
         direction = signal_state.replace("confirmed_", "")
         key = (event.symbol, event.timeframe)
+        now = datetime.now(timezone.utc)
+
+        # Extract enriched context from event metadata
+        confidence = getattr(event, "confidence", 0.5)
+        regime = str(event.metadata.get("_regime", "uncertain"))
+
         with self._lock:
-            self._cache[key] = (direction, datetime.now(timezone.utc))
+            prev = self._cache.get(key)
+            # Track consecutive bars with same direction
+            stable_bars = 1
+            if prev is not None and prev.direction == direction:
+                stable_bars = prev.stable_bars + 1
+
+            self._cache[key] = HTFDirectionContext(
+                direction=direction,
+                confidence=confidence,
+                regime=regime,
+                stable_bars=stable_bars,
+                updated_at=now,
+            )
 
     def attach(self, runtime: Any) -> None:
         """将 HTFStateCache 注册到 SignalRuntime 作为信号监听器。"""
@@ -138,11 +172,14 @@ class HTFStateCache:
         with self._lock:
             snapshot = dict(self._cache)
         entries = {}
-        for (symbol, tf), (direction, updated_at) in snapshot.items():
-            age_seconds = (now - updated_at).total_seconds()
+        for (symbol, tf), ctx in snapshot.items():
+            age_seconds = (now - ctx.updated_at).total_seconds()
             entries[f"{symbol}/{tf}"] = {
-                "direction": direction,
-                "updated_at": updated_at.isoformat(),
+                "direction": ctx.direction,
+                "confidence": round(ctx.confidence, 4),
+                "regime": ctx.regime,
+                "stable_bars": ctx.stable_bars,
+                "updated_at": ctx.updated_at.isoformat(),
                 "age_seconds": round(age_seconds, 1),
                 "expired": age_seconds > self._max_age.total_seconds(),
             }

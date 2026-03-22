@@ -244,6 +244,8 @@ class CentralizedConfig:
             "max_positions_per_symbol",
             "max_open_positions_total",
             "max_pending_orders_per_symbol",
+            "max_trades_per_day",
+            "max_trades_per_hour",
         ):
             if str(risk_config.get(optional_int_key, "")).strip() == "":
                 risk_config[optional_int_key] = None

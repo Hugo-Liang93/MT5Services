@@ -36,6 +36,9 @@ class SignalContext:
     strategy: str
     indicators: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # HTF 指标：{target_tf: {indicator_name: {field: value}}}
+    # 例: {"H1": {"adx14": {"adx": 28.5}, "ema50": {"ema": 2650.0}}}
+    htf_indicators: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

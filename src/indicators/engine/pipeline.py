@@ -10,6 +10,7 @@ from dataclasses import dataclass
 # 使用绝对导入避免相对导入问题
 from ..cache.incremental import IncrementalIndicator, IndicatorState
 from ..cache.smart_cache import SmartCache, get_global_cache
+from ..core.base import sanitize_result
 from ..monitoring.metrics_collector import record_indicator_computation
 from .dependency_manager import DependencyManager, get_global_dependency_manager
 from .parallel_executor import ParallelExecutor, get_global_executor
@@ -316,11 +317,15 @@ class OptimizedPipeline:
                     params = self.dependency_manager.indicator_params.get(indicator, {})
                     result = func(context.bars, params)
 
+            # NaN/Inf 防护：在缓存和返回前清除无效值
+            if isinstance(result, dict) and not cache_hit:
+                result = sanitize_result(result) or None
+
             compute_time = time.time() - start_time
-            
+
             if cache_hit:
                 self.computation_stats["cached_computations"] += 1
-            
+
             # 记录性能指标
             if self.config.enable_monitoring:
                 record_indicator_computation(

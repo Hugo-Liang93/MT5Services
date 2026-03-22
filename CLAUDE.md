@@ -37,9 +37,9 @@ MT5Services/
 │   ├── ingest.ini            # 后台数据采集配置
 │   ├── storage.ini           # 多通道队列持久化配置
 │   ├── economic.ini          # 经济日历与 Trade Guard 配置
-│   ├── risk.ini              # 风险限制（仓位数量、SL/TP 要求）
+│   ├── risk.ini              # 风险限制（仓位、SL/TP、保证金、交易频率）
 │   ├── cache.ini             # 运行时内存缓存大小（覆盖 app.ini [limits]）
-│   ├── signal.ini            # 信号模块配置（Regime 检测阈值、策略参数、亲和度覆盖、HTF 缓存、投票组等）
+│   ├── signal.ini            # 信号模块配置（含 HTF 缓存、HTF 指标注入、信号质量追踪器参数）
 │   ├── indicators.json       # 指标定义与计算流水线
 │   └── composites.json       # 复合策略组合定义
 ├── src/
@@ -116,11 +116,13 @@ MT5Services/
 │   │   ├── strategies/       # 策略实现（trend/mean_reversion/breakout/composite）
 │   │   │   └── adapters.py   # UnifiedIndicatorSourceAdapter（解耦信号与指标）
 │   │   └── tracking/         # SignalRepository（信号持久化与查询）
-│   ├── trading/              # TradingModule、TradeExecutor、PositionManager、SignalQualityTracker、TradeOutcomeTracker
+│   ├── trading/              # TradingModule、TradeExecutor、ExecutionGate、PositionManager、SignalQualityTracker、TradeOutcomeTracker
+│   │   ├── execution_gate.py # ExecutionGate：策略域准入检查（voting group / 白名单 / armed）
 │   │   └── models.py         # TradeOperationRecord 数据类
 │   └── utils/                # 通用工具、内存管理器
 ├── tests/                    # 测试套件（镜像 src/ 结构）
 └── docs/                     # 架构文档、内部设计文档
+    └── architecture-flow.md  # 全链路流程图、数据流转矩阵、置信度管线路径
 ```
 
 ---
@@ -152,7 +154,7 @@ code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默
 | `config/ingest.ini` | 采集间隔、回填限制、重试配置 |
 | `config/storage.ini` | 队列通道大小、刷写间隔、批处理大小、溢出策略 |
 | `config/economic.ini` | 日历数据源（FRED、TradingEconomics）、Trade Guard 窗口 |
-| `config/risk.ini` | 最大仓位数、SL/TP 要求 |
+| `config/risk.ini` | 最大仓位数、SL/TP 要求、保证金安全系数、交易频率限制 |
 | `config/cache.ini` | 运行时内存缓存大小（覆盖 app.ini [limits]，优先级更高） |
 | `config/signal.ini` | 自动交易、仓位大小、过滤条件、状态机参数、HTF 缓存 TTL、信号质量追踪器、Regime 检测阈值、策略级参数覆盖、Regime 亲和度覆盖 |
 | `config/indicators.json` | 指标定义、参数、依赖关系、流水线配置 |
@@ -221,11 +223,15 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
                                        ↓
                               SignalRuntime（src/signals/orchestration/）
                                        ↓
-                              strategies 评估 + Regime 检测
+                         FilterChain（点差/时段/经济/波动率异常过滤）
+                                       ↓
+                         Regime 检测 → 快速全拒绝（所有策略 affinity 不足直接跳过）
+                                       ↓
+                         strategies 评估（含 HTF 置信度修正）
                                        ↓
                          VotingEngine（consensus / group 投票）
                                        ↓
-                        TradeExecutor → TradingService → MT5
+                         ExecutionGate（准入检查）→ TradeExecutor → MT5
 ```
 
 > **采集节奏说明**：`poll_interval` 是主循环的 sleep 间隔（控制 tick/quote 的有效采集频率）。
@@ -309,7 +315,7 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/signals/evaluation/calibrator.py` | ConfidenceCalibrator：分阶段历史胜率反馈校准 |
 | `src/signals/evaluation/performance.py` | StrategyPerformanceTracker：日内策略绩效追踪（纯内存实时反馈） |
 | `src/signals/evaluation/indicators_helpers.py` | 跨模块共享的指标数据提取函数集 |
-| `src/signals/execution/filters.py` | SignalFilterChain：点差/时段/经济事件/**时段切换冷却**过滤 |
+| `src/signals/execution/filters.py` | SignalFilterChain：点差/时段/经济事件/**时段切换冷却**/**波动率异常**过滤 |
 | `src/signals/tracking/repository.py` | SignalRepository：信号持久化与查询 |
 | `src/signals/strategies/htf_cache.py` | HTFStateCache：高时间框架状态缓存 |
 | `src/signals/strategies/adapters.py` | UnifiedIndicatorSourceAdapter：解耦信号模块与指标管理器 |
@@ -317,13 +323,15 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/signals/analytics/plugins.py` | AnalyticsPluginRegistry 插件扩展机制 |
 | `src/trading/service.py` | TradingModule：账户、持仓、订单生命周期 |
 | `src/trading/trading_service.py` | TradingService：底层下单、平仓、保证金计算 |
-| `src/trading/signal_executor.py` | TradeExecutor：信号自动下单执行、日内头寸限制、HTF 软惩罚 |
+| `src/trading/signal_executor.py` | TradeExecutor：信号自动下单执行、熔断器、成本检查 |
+| `src/trading/execution_gate.py` | ExecutionGate：策略域准入检查（voting group / 白名单 / armed） |
 | `src/trading/position_manager.py` | PositionManager：持仓监控、止损跟踪、日终自动平仓 |
 | `src/trading/sizing.py` | 仓位计算、时间框架差异化 SL/TP（`TimeframeSLTP`） |
 | `src/trading/signal_quality_tracker.py` | SignalQualityTracker：信号预测质量追踪（N bars 后评估，供 Calibrator） |
 | `src/trading/trade_outcome_tracker.py` | TradeOutcomeTracker：实际交易盈亏追踪（由 PositionManager 关仓触发） |
 | `src/trading/registry.py` | TradingAccountRegistry：多账户注册与服务工厂 |
 | `src/trading/models.py` | TradeOperationRecord 数据类 |
+| `src/risk/rules.py` | 风险规则：AccountSnapshotRule / DailyLossLimitRule / MarginAvailabilityRule / TradeFrequencyRule / ProtectionRule 等 |
 | `src/risk/models.py` | TradeIntent / RiskCheckResult / RiskAssessment 数据类 |
 | `src/market_structure/models.py` | MarketStructureContext 数据类 |
 | `src/monitoring/health_monitor.py` | SQLite 指标存储、告警、健康报告 |
@@ -649,10 +657,12 @@ SCALE_FACTORS = {"M1": 0.60, "M5": 0.75, "M15": 0.85, "H1": 1.00, "H4": 1.15, "D
 - 覆盖指标：`rsi14`, `macd`, `cci20`, `stochrsi`, `adx14`
 - 输出：`{"rsi": 28.5, "rsi_d3": -8.2, "rsi_d5": -12.0}`
 
-### Market Structure Cache（`src/signals/orchestration/runtime.py`）
+### Market Structure Cache（`src/market_structure/analyzer.py`）
 
-- confirmed scope：重新计算市场结构分析
+`MarketStructureAnalyzer.analyze_cached()` 内置 scope-aware 缓存：
+- confirmed scope：重新计算市场结构分析并写入缓存
 - intrabar scope：复用上一次 confirmed 的分析结果（避免重复计算）
+- TTL 过期自动失效（默认 5 分钟）
 - M1 lookback_bars = 120（2 小时），M5+ lookback_bars = 400
 
 ---
@@ -681,6 +691,10 @@ class MyNewStrategy:
         RegimeType.BREAKOUT:  0.XX,
         RegimeType.UNCERTAIN: 0.XX,
     }
+
+    # 5. HTF 指标 — 无需在策略代码中声明
+    #    通过 signal.ini [strategy_htf] 配置：策略名.指标名 = 来源TF
+    #    策略 evaluate() 中通过 context.htf_indicators.get("H1", {}) 按需访问
 ```
 
 #### Regime 亲和度设计指南
@@ -733,6 +747,80 @@ SoftRegimeResult:
 
 ---
 
+## HTF 指标上下文注入
+
+HTF 指标注入完全由 `signal.ini [strategy_htf]` 驱动。策略代码**不声明任何 HTF 属性**，只在 `evaluate()` 中按需消费 `context.htf_indicators`。
+
+### 配置方式
+
+```ini
+# signal.ini [strategy_htf]
+# 格式：策略名.指标名 = 来源TF
+supertrend.supertrend14 = H1
+supertrend.adx14 = H1
+sma_trend.sma20 = D1
+sma_trend.ema50 = D1
+rsi_reversion.rsi14 = M15
+```
+
+### 策略消费
+
+```python
+class MyStrategy:
+    name = "my_strategy"
+    required_indicators = ("rsi14",)
+    # 无 htf_indicators 属性 — HTF 完全由 INI 控制
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        rsi = context.indicators.get("rsi14", {}).get("rsi")
+        # 按 INI 配置的 TF 访问 HTF 数据（未配置时为空 dict，安全跳过）
+        h1 = context.htf_indicators.get("H1", {})
+        d1 = context.htf_indicators.get("D1", {})
+        h1_adx = h1.get("adx14", {}).get("adx")
+        d1_ema = d1.get("ema50", {}).get("ema")
+```
+
+### 工作原理
+
+- HTF 指标**不需要额外计算**——`IndicatorManager` 已经为所有配置的 `(symbol, timeframe)` 在 bar 收盘时计算了全量指标
+- `SignalRuntime._evaluate_strategies()` 在调用 `service.evaluate()` 前，从 `IndicatorManager.get_indicator()` 查询 HTF 数据
+- INI 中未配置的策略不触发任何 HTF 查询（零开销）
+- HTF 数据天然低频更新（H4 每 4 小时才变），查询命中的是内存缓存
+
+### 与 HTFStateCache 的关系
+
+| HTFStateCache | HTF 指标注入 |
+|---------------|-------------|
+| 缓存信号方向（buy/sell） | 缓存指标数值（adx, ema...） |
+| 消费者：MultiTimeframeConfirm、SignalRuntime（HTF 方向对齐修正） | 消费者：任何在 INI [strategy_htf] 中配置的策略 |
+
+两者互补，独立工作。
+
+### 配置
+
+`config/signal.ini` 提供两个相关 section：
+
+```ini
+[htf_indicators]
+enabled = true   # false 时所有 HTF 指标注入被禁用
+
+[strategy_htf]
+# 格式：策略名.运行TF = 目标TF
+# 未配置的组合自动用下一个更高的已配置 TF
+supertrend.M5 = H1
+supertrend.H1 = D1
+sma_trend.H1 = D1
+```
+
+### 边界情况
+
+- 目标 TF 未在 `app.ini` 配置 → 运行时跳过
+- HTF 指标尚未计算（刚启动）→ 不注入，策略需安全访问（`.get()` 链）
+- 目标 TF = 当前 TF → 自动跳过（数据已在 `context.indicators` 中）
+- 未配置 `[strategy_htf]` 且无更高 TF → 不注入
+
+---
+
 ## Signal Listener 架构
 
 `SignalRuntime._publish_signal_event()` 将 `SignalEvent` 广播给所有已注册的 listener。
@@ -744,7 +832,7 @@ SignalRuntime._publish_signal_event(event: SignalEvent)
     │
     ├─→ TradeExecutor.on_signal_event()      ← 自动下单
     │     仅处理 confirmed_buy / confirmed_sell
-    │     检查 min_confidence、require_armed、日内头寸限制、HTF 对齐
+    │     ExecutionGate 准入检查 → min_confidence → 持仓限制 → 成本检查
     │     通过后调用 TradingModule 下单
     │
     ├─→ SignalQualityTracker.on_signal_event()  ← 信号质量追踪
@@ -755,7 +843,7 @@ SignalRuntime._publish_signal_event(event: SignalEvent)
     │
     └─→ HTFStateCache.on_signal_event()      ← 高时间框架方向缓存
           仅处理 confirmed_buy / confirmed_sell / confirmed_cancelled
-          缓存方向 + 时间戳，供 TradeExecutor 做 HTF 软惩罚/对齐
+          缓存方向 + 时间戳，供 SignalRuntime 做 HTF 方向对齐修正
 ```
 
 ### SignalEvent 的类型（signal_state）
@@ -827,7 +915,11 @@ raw_confidence（策略规则输出）
     → post_affinity_confidence
     × session_performance_multiplier   (日内实时状态) ← StrategyPerformanceTracker
     → ConfidenceCalibrator             (长期统计校准) ← Calibrator
+    → max(confidence_floor, result)    (底线保护)
+    × intrabar_confidence_decay        (scope=intrabar 时 × 0.85)
+    × htf_alignment_multiplier         (对齐 ×1.10 / 冲突 ×0.70 / 无数据 ×1.0)
     = final_confidence
+    ★ 持久化的 confidence = 此最终值 = TradeExecutor 比较的值
 ```
 
 **effective_affinity 计算**：
@@ -881,13 +973,14 @@ idle → preview_buy/sell（方向改变）
 
 交易请求从内到外经过多层校验：
 
-1. **Signal filters** (`src/signals/execution/filters.py`)：经济事件过滤、价差过滤、交易时段过滤、**时段切换冷却期**（`SessionTransitionFilter`）
-2. **Pre-trade risk service** (`src/risk/service.py`)：账户级别检查
-3. **Risk rules** (`src/risk/rules.py`)：仓位限制、最大手数、SL/TP 要求、**日损失限制**（`DailyLossLimitRule`）
-4. **Trade guard** (`src/calendar/economic_calendar/trade_guard.py`)：高风险经济事件窗口内阻止交易
-5. **Executor safety** (`src/trading/signal_executor.py`)：**日内头寸限制**（`max_concurrent_positions_per_symbol`）、HTF 软惩罚（冲突 ×0.70 / 对齐 ×1.10）
-6. **Position manager** (`src/trading/position_manager.py`)：**日终自动平仓**（UTC 21:00，可配置开关）
-7. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M1: 1.0/2.0, M5: 1.2/2.5, M15: 1.3/2.8, H1: 1.5/3.0 ATR 倍数）
+1. **Signal filters** (`src/signals/execution/filters.py`)：时段/冷却期/价差/经济事件/**波动率异常**过滤（`SignalFilterChain` 统一入口）
+2. **Regime fast-reject** (`SignalRuntime._any_strategy_eligible()`)：所有策略 affinity 不足时跳过全部后续计算
+3. **HTF direction alignment** (`SignalRuntime._evaluate_strategies()`)：HTF 方向冲突 ×0.70 / 对齐 ×1.10（在置信度管线内，持久化前）
+4. **Execution gate** (`src/trading/execution_gate.py`)：voting group 保护、交易触发白名单、require_armed 门控
+5. **Pre-trade risk service** (`src/risk/service.py`)：`DailyLossLimitRule`（日损失限制）、`AccountSnapshotRule`（仓位限制）、`MarginAvailabilityRule`（保证金动态检查）、`TradeFrequencyRule`（交易频率限制）、`BrokerConstraintRule` 等
+6. **Executor safety** (`src/trading/signal_executor.py`)：熔断器、**持仓数量预检**、成本检查（spread_to_stop_ratio）
+7. **Position manager** (`src/trading/position_manager.py`)：**日终自动平仓**（UTC 21:00，可配置开关）
+8. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M1: 1.0/2.0, M5: 1.2/2.5, M15: 1.3/2.8, H1: 1.5/3.0 ATR 倍数）+ **时间框架差异化风险百分比**（M1: ×0.50, M5: ×0.75, M15: ×1.00, H1: ×1.20）
 
 ---
 
@@ -1081,15 +1174,23 @@ flake8 src/ tests/
 - **Soft Regime feature flag**：~~`soft_regime_enabled` 默认关闭~~（已修改：默认 `true`，概率化 Regime 分类已启用）
 - **策略参数配置化**：均值回归策略阈值（RSI 30/70、CCI ±100、WR -80/-20、StochRSI 20/80）和时段动量 ATR 阈值均已通过 `signal.ini` 的 `[strategy_params]` section 配置化。修改 INI 后需重启服务。
 - **Hot Reload 限制**：`[regime_detector]` 和 `[strategy_params]` 暂不支持热加载，需重启服务生效
+- **日损失限制统一**：~~TradeExecutor 中有独立的 daily_loss_check_fn~~（已移除：统一到 `risk.ini` 的 `DailyLossLimitRule`，由 `PreTradeRiskService` 执行）
+- **HTF 置信度修正位置**：~~TradeExecutor 在执行前篡改 event.confidence~~（已修复：HTF 方向对齐修正移入 `SignalRuntime._evaluate_strategies()` 置信度管线，持久化的 confidence = 最终执行值）
+- **SignalPolicy 精简**：~~包含 `auto_trade_enabled`/`auto_trade_min_confidence`/`auto_trade_require_armed`~~（已移除：这些参数仅在 `ExecutorConfig` / `ExecutionGateConfig` 中使用）
+- **市场结构缓存**：~~由 SignalRuntime 在外部管理 `_market_structure_cache`~~（已修复：缓存内置到 `MarketStructureAnalyzer.analyze_cached()`，scope-aware 自动管理）
+- **波动率异常过滤**：~~内联在 SignalRuntime._evaluate_strategies() 中~~（已移入 `SignalFilterChain` 的 `VolatilitySpikeFilter`）
 - **模块位置注意**：
   - `SignalRuntime` → `src/signals/orchestration/runtime.py`（不在 `src/signals/runtime.py`）
   - `MarketDataService` → `src/market/service.py`（不在 `src/core/market_service.py`）
   - `EconomicCalendarService` → `src/calendar/service.py`（不在 `src/core/economic_calendar_service.py`）
+  - `ExecutionGate` → `src/trading/execution_gate.py`（策略域准入检查，从 TradeExecutor 分离）
+  - `VolatilitySpikeFilter` → `src/signals/execution/filters.py`（与 `SignalFilterChain` 同文件）
   - `TimeframeScaler` → `src/signals/strategies/base.py`（与 `SignalStrategy` Protocol 同文件）
   - `SessionTransitionFilter` → `src/signals/execution/filters.py`（与 `SignalFilterChain` 同文件）
   - `DailyLossLimitRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
   - `StrategyPerformanceTracker` → `src/signals/evaluation/performance.py`（与 Calibrator 平级，不在 trading 模块）
   - `TradeAPIDispatcher` → `src/api/trade_dispatcher.py`（独立文件，不在路由文件中）
+  - `MarginAvailabilityRule` / `TradeFrequencyRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
   - `UnifiedIndicatorSourceAdapter` → `src/signals/strategies/adapters.py`（解耦信号与指标的适配器）
 
 ---

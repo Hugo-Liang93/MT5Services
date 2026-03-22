@@ -58,7 +58,10 @@ def get_signal_config() -> SignalConfig:
     standalone_override_section = dict(merged.get("standalone_override", {}))
     perf_tracker_section = dict(merged.get("performance_tracker", {}))
     htf_cache_section = dict(merged.get("htf_cache", {}))
+    htf_indicators_section = dict(merged.get("htf_indicators", {}))
+    strategy_htf_section = dict(merged.get("strategy_htf", {}))
     signal_quality_section = dict(merged.get("signal_quality", {}))
+    timeframe_risk_section = dict(merged.get("timeframe_risk", {}))
 
     renamed_preview = {
         ("min_preview_confidence" if key == "min_confidence" else key): value
@@ -177,6 +180,15 @@ def get_signal_config() -> SignalConfig:
             contract_sizes_section,
             key_transform=lambda value: value.upper(),
         ),
+        "timeframe_risk_multipliers": _normalize_float_map(
+            timeframe_risk_section,
+            key_transform=lambda value: value.upper(),
+        ),
+        "strategy_htf_targets": {
+            str(k).strip(): str(v).strip().upper()
+            for k, v in strategy_htf_section.items()
+            if str(k).strip() and str(v).strip()
+        },
         "session_spread_limits": _normalize_float_map(session_spread_limits_section),
         "strategy_sessions": _normalize_session_map(strategy_sessions_section),
         "strategy_timeframes": _normalize_session_map(strategy_timeframes_section),
@@ -199,5 +211,15 @@ def get_signal_config() -> SignalConfig:
             f"signal_quality_{key}": value
             for key, value in signal_quality_section.items()
         },
+        **{
+            f"htf_indicators_{key}": value
+            for key, value in htf_indicators_section.items()
+            if key != "intrabar_confidence_decay"
+        },
+        **(
+            {"intrabar_confidence_decay": htf_indicators_section["intrabar_confidence_decay"]}
+            if "intrabar_confidence_decay" in htf_indicators_section
+            else {}
+        ),
     }
     return SignalConfig.model_validate(combined)

@@ -170,9 +170,14 @@ class MarketRegimeDetector:
         ):
             return RegimeType.BREAKOUT
 
-        # ── 步骤 2：ADX 主判 ────────────────────────────────────────────
+        # ── 步骤 2：ADX 主判（含 RSI 动量辅助）────────────────────────
+        rsi = self._extract_rsi(indicators)
         if adx is not None:
             if adx >= self._adx_trending:
+                # RSI 动量辅助：RSI 40-60 区间说明动量方向不明确，
+                # 虽然 ADX 高但可能是假趋势（如横盘末期残余动量）
+                if rsi is not None and 40 < rsi < 60 and adx < self._adx_trending + 5:
+                    return RegimeType.UNCERTAIN
                 return RegimeType.TRENDING
 
             if adx < self._adx_ranging:
@@ -344,6 +349,18 @@ class MarketRegimeDetector:
             payload = indicators.get(name)
             if isinstance(payload, dict):
                 v = _safe_float(payload.get("adx"))
+                if v is not None:
+                    return v
+        return None
+
+    @staticmethod
+    def _extract_rsi(
+        indicators: Dict[str, Dict[str, Any]]
+    ) -> Optional[float]:
+        for name in ("rsi14", "rsi"):
+            payload = indicators.get(name)
+            if isinstance(payload, dict):
+                v = _safe_float(payload.get("rsi"))
                 if v is not None:
                     return v
         return None

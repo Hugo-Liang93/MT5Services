@@ -11,6 +11,8 @@ class SignalConfig(BaseModel):
     sl_atr_multiplier: float = 1.5
     tp_atr_multiplier: float = 3.0
     risk_percent_per_trade: float = 1.0
+    # 时间框架差异化风险乘数：tf → multiplier（覆盖 sizing.py 的默认值）
+    timeframe_risk_multipliers: dict[str, float] = Field(default_factory=dict)
     min_volume: float = 0.01
     max_volume: float = 1.0
     max_spread_points: float = 50.0
@@ -26,6 +28,11 @@ class SignalConfig(BaseModel):
     preview_cooldown_seconds: float = 30.0
     snapshot_dedupe_window_seconds: float = 1.0
     min_affinity_skip: float = 0.15
+    # Delta momentum bonus 参数（均值回归策略共享）
+    delta_d3_scale: float = 10.0
+    delta_d3_cap: float = 0.05
+    delta_d5_threshold: float = 8.0
+    delta_d5_bonus: float = 0.03
     soft_regime_enabled: bool = False
     voting_enabled: bool = True
     voting_consensus_threshold: float = 0.40
@@ -67,6 +74,18 @@ class SignalConfig(BaseModel):
     confidence_floor: float = 0.10
     # ── HTF Cache ──
     htf_cache_max_age_seconds: int = 14400
+    # ── HTF Indicators（跨时间框架指标注入）──
+    htf_indicators_enabled: bool = True
+    # 策略 HTF 目标 TF 映射：{strategy.running_tf: target_tf}
+    # 例：{"supertrend.M5": "H1", "sma_trend.H1": "D1"}
+    strategy_htf_targets: dict[str, str] = Field(default_factory=dict)
+    # ── Intrabar 置信度衰减 ──
+    intrabar_confidence_decay: float = 0.85
+    # ── HTF 方向对齐修正 ──
+    htf_conflict_penalty: float = 0.70
+    htf_alignment_boost: float = 1.10
+    # ── 波动率异常过滤 ──
+    volatility_atr_spike_multiplier: float = 2.5
     # ── Signal Quality Tracker ──
     signal_quality_bars_to_evaluate: int = 5
     signal_quality_max_pending: int = 500

@@ -11,6 +11,7 @@ from src.signals.execution.filters import (
     SessionTransitionFilter,
     SignalFilterChain,
     SpreadFilter,
+    VolatilitySpikeFilter,
 )
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import (
@@ -29,6 +30,7 @@ from src.signals.tracking.repository import TimescaleSignalRepository
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
+from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 
 
@@ -137,20 +139,16 @@ def build_signal_filter_chain(signal_config, economic_calendar_service) -> Signa
             lookback_minutes=signal_config.economic_lookback_minutes,
             importance_min=signal_config.economic_importance_min,
         ),
+        volatility_filter=VolatilitySpikeFilter(
+            spike_multiplier=signal_config.volatility_atr_spike_multiplier,
+        ),
     )
 
 
 def build_executor_config(signal_config) -> ExecutorConfig:
-    # 汇总所有 voting group 成员策略（用于分组保护）
-    voting_group_strategies: frozenset[str] = frozenset(
-        strategy
-        for cfg in signal_config.voting_group_configs
-        for strategy in cfg.get("strategies", [])
-    )
     return ExecutorConfig(
         enabled=signal_config.auto_trade_enabled,
         min_confidence=signal_config.auto_trade_min_confidence,
-        require_armed=signal_config.auto_trade_require_armed,
         max_concurrent_positions_per_symbol=signal_config.max_concurrent_positions_per_symbol,
         risk_percent=signal_config.risk_percent_per_trade,
         sl_atr_multiplier=signal_config.sl_atr_multiplier,
@@ -158,9 +156,21 @@ def build_executor_config(signal_config) -> ExecutorConfig:
         min_volume=signal_config.min_volume,
         max_volume=signal_config.max_volume,
         contract_size_map=dict(signal_config.contract_size_map),
+        timeframe_risk_multipliers=dict(signal_config.timeframe_risk_multipliers),
         max_consecutive_failures=signal_config.max_consecutive_failures,
         circuit_auto_reset_minutes=signal_config.circuit_auto_reset_minutes,
         max_spread_to_stop_ratio=signal_config.max_spread_to_stop_ratio,
+    )
+
+
+def build_execution_gate_config(signal_config) -> ExecutionGateConfig:
+    voting_group_strategies: frozenset[str] = frozenset(
+        strategy
+        for cfg in signal_config.voting_group_configs
+        for strategy in cfg.get("strategies", [])
+    )
+    return ExecutionGateConfig(
+        require_armed=signal_config.auto_trade_require_armed,
         trade_trigger_strategies=tuple(signal_config.trade_trigger_strategies),
         voting_group_strategies=voting_group_strategies,
         standalone_override=frozenset(signal_config.standalone_override),
@@ -206,9 +216,6 @@ def build_signal_policy(signal_config) -> SignalPolicy:
         snapshot_dedupe_window_seconds=signal_config.snapshot_dedupe_window_seconds,
         max_spread_points=signal_config.max_spread_points,
         allowed_sessions=allowed_sessions,
-        auto_trade_enabled=signal_config.auto_trade_enabled,
-        auto_trade_min_confidence=signal_config.auto_trade_min_confidence,
-        auto_trade_require_armed=signal_config.auto_trade_require_armed,
         min_affinity_skip=signal_config.min_affinity_skip,
         voting_enabled=signal_config.voting_enabled,
         voting_consensus_threshold=signal_config.voting_consensus_threshold,
@@ -297,8 +304,50 @@ def build_signal_components(
     )
     register_all_strategies(signal_module, htf_cache)
 
+    # ── Delta momentum 全局参数配置 ─────────────────────────────────────
+    from src.signals.strategies.mean_reversion import configure_delta_params
+    configure_delta_params(
+        d3_scale=signal_config.delta_d3_scale,
+        d3_cap=signal_config.delta_d3_cap,
+        d5_threshold=signal_config.delta_d5_threshold,
+        d5_bonus=signal_config.delta_d5_bonus,
+    )
+
     # ── 应用配置化参数覆盖 ────────────────────────────────────────────
     _apply_strategy_config_overrides(signal_module, signal_config)
+
+    # ── HTF INI 配置校验（硬错误，阻止启动）─────────────────────────
+    _enabled_indicators = {
+        cfg.name for cfg in indicator_manager.config.indicators if cfg.enabled
+    }
+    _registered_strategies = set(signal_module.list_strategies())
+    _htf_errors: list[str] = []
+    for compound_key, tf_value in signal_config.strategy_htf_targets.items():
+        parts = compound_key.split(".", 1)
+        if len(parts) != 2:
+            continue
+        strategy_name, ind_name = parts[0].strip(), parts[1].strip()
+        tf = tf_value.strip().upper()
+        if strategy_name not in _registered_strategies:
+            _htf_errors.append(
+                f"[strategy_htf] {compound_key}: strategy '{strategy_name}' not registered"
+            )
+        if tf not in configured_tfs:
+            _htf_errors.append(
+                f"[strategy_htf] {compound_key} = {tf}: timeframe '{tf}' not in app.ini"
+            )
+        if ind_name not in _enabled_indicators:
+            _htf_errors.append(
+                f"[strategy_htf] {compound_key} = {tf}: indicator '{ind_name}' not enabled in indicators.json"
+            )
+    if _htf_errors:
+        for err in _htf_errors:
+            _factory_logger.error(err)
+        raise ValueError(
+            f"signal.ini [strategy_htf] has {len(_htf_errors)} invalid entries: "
+            + "; ".join(_htf_errors[:3])
+            + ("..." if len(_htf_errors) > 3 else "")
+        )
 
     # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar 指标集合，
     # 注入到 indicator_manager。
@@ -327,6 +376,13 @@ def build_signal_components(
         filter_chain=filter_chain,
         market_structure_analyzer=market_structure_analyzer,
         regime_detector=regime_detector,
+        htf_indicators_enabled=signal_config.htf_indicators_enabled,
+        intrabar_confidence_decay=signal_config.intrabar_confidence_decay,
+        htf_direction_fn=htf_cache.get_htf_direction,
+        htf_context_fn=htf_cache.get_htf_context,
+        htf_conflict_penalty=signal_config.htf_conflict_penalty,
+        htf_alignment_boost=signal_config.htf_alignment_boost,
+        htf_target_config=dict(signal_config.strategy_htf_targets),
     )
 
     position_manager = PositionManager(
@@ -347,16 +403,18 @@ def build_signal_components(
     # signal_quality_tracker 在 trade_executor 之后创建，
     # 使用延迟绑定 lambda 确保引用正确。
     _skip_callback_holder: list = []
+
+    execution_gate = ExecutionGate(config=build_execution_gate_config(signal_config))
     trade_executor = TradeExecutor(
         trading_module=trade_module,
         config=build_executor_config(signal_config),
         position_manager=position_manager,
-        htf_cache=htf_cache,
         persist_execution_fn=persist_execution_fn,
         trade_outcome_tracker=trade_outcome_tracker,
         on_execution_skip=lambda sid, reason: (
             _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
         ),
+        execution_gate=execution_gate,
     )
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)
     htf_cache.attach(signal_runtime)
@@ -416,6 +474,7 @@ def register_signal_hot_reload(
         )
         if trade_executor is not None:
             trade_executor.config = build_executor_config(signal_config)
+            trade_executor._execution_gate.config = build_execution_gate_config(signal_config)
         if performance_tracker is not None:
             performance_tracker._config = build_performance_tracker_config(signal_config)
         if market_structure_analyzer is not None:

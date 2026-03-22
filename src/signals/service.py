@@ -137,7 +137,6 @@ class SignalModule:
                 f"(Dict[RegimeType, float] covering TRENDING/RANGING/BREAKOUT/UNCERTAIN). "
                 f"See CLAUDE.md for the Regime affinity design guide."
             )
-
     def register_strategy(self, strategy: SignalStrategy) -> None:
         self._validate_strategy_attrs(strategy)
         self._strategies[strategy.name] = strategy
@@ -206,6 +205,7 @@ class SignalModule:
         scopes = getattr(strategy_impl, "preferred_scopes", ("intrabar", "confirmed"))
         return tuple(str(s) for s in scopes)
 
+
     def all_required_indicators(self) -> list[str]:
         ordered: list[str] = []
         seen: set[str] = set()
@@ -236,6 +236,7 @@ class SignalModule:
         indicators: Optional[Dict[str, Dict[str, Any]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         persist: bool = True,
+        htf_indicators: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     ) -> SignalDecision:
         strategy_impl = self._strategies.get(strategy)
         if strategy_impl is None:
@@ -251,6 +252,7 @@ class SignalModule:
             strategy=strategy,
             indicators=indicator_payload,
             metadata=context_metadata,
+            htf_indicators=htf_indicators or {},
         )
         decision = strategy_impl.evaluate(context)
 

@@ -19,6 +19,23 @@ def store_preview_snapshot(
         name: dict(payload)
         for name, payload in indicators.items()
     }
+    lock = getattr(manager, "_results_lock", None)
+    if lock is not None:
+        with lock:
+            return _store_preview_snapshot_locked(
+                manager, cache_key, bar_time, normalized
+            )
+    return _store_preview_snapshot_locked(
+        manager, cache_key, bar_time, normalized
+    )
+
+
+def _store_preview_snapshot_locked(
+    manager,
+    cache_key: str,
+    bar_time: datetime,
+    normalized: Dict[str, Dict[str, float]],
+) -> bool:
     current = manager._last_preview_snapshot.get(cache_key)
     if current is not None and current[0] == bar_time and current[1] == normalized:
         return False

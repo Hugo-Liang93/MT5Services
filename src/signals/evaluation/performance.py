@@ -99,7 +99,9 @@ class _StrategyStats:
             return None
         if self.total_win_pnl == 0:
             return 0.0
-        return abs(self.total_win_pnl / self.total_loss_pnl)
+        # Clamp to prevent extreme values when loss is very small
+        raw = self.total_win_pnl / abs(self.total_loss_pnl)
+        return min(raw, 50.0)
 
     def record(self, won: bool, pnl: float) -> None:
         # NaN/Inf 防守：防止污染统计数据
@@ -383,9 +385,13 @@ class StrategyPerformanceTracker:
             elif pf > 2.0:
                 # 高 profit factor → 微幅提升
                 multiplier *= 1.05
-        elif pf is None and stats.losses > 0 and stats.total_win_pnl == 0 and stats.total >= 2:
-            # 纯亏损情况（有 losses 但 win pnl 全为 0），PF 无法计算但仍应压制
-            multiplier *= 0.90
+        elif pf is None and stats.total >= 2:
+            if stats.losses > 0 and stats.total_win_pnl == 0:
+                # 纯亏损情况（有 losses 但 win pnl 全为 0）
+                multiplier *= 0.90
+            elif stats.wins > 0 and stats.total_loss_pnl == 0:
+                # 纯利情况（全赢无亏）→ 微幅提升
+                multiplier *= 1.05
 
         # Clamp to bounds
         return max(cfg.min_multiplier, min(cfg.max_multiplier, multiplier))
@@ -451,19 +457,20 @@ class StrategyPerformanceTracker:
 
     def _build_summary_unlocked(self) -> Dict[str, Any]:
         """不加锁地构建 summary（调用者负责持锁）。"""
+        regime_by_strategy = self._regime_reverse_index()
+
         strategy_summaries: Dict[str, Dict[str, Any]] = {}
         for name, stats in self._stats.items():
             entry = stats.to_dict()
             entry["category"] = self._strategy_categories.get(name, "unknown")
             entry["multiplier"] = self._compute_multiplier(stats)
-            # regime 维度细分
-            regime_breakdown: Dict[str, Dict[str, Any]] = {}
-            for (strat, regime_val), r_stats in self._regime_stats.items():
-                if strat == name and r_stats.total > 0:
+            per_regime = regime_by_strategy.get(name)
+            if per_regime:
+                regime_breakdown: Dict[str, Dict[str, Any]] = {}
+                for regime_val, r_stats in per_regime.items():
                     r_entry = r_stats.to_dict()
                     r_entry["multiplier"] = self._compute_multiplier(r_stats)
                     regime_breakdown[regime_val] = r_entry
-            if regime_breakdown:
                 entry["regime_breakdown"] = regime_breakdown
             # 附加 trade source 的独立统计（如有）
             t_stats = self._trade_stats.get(name)
@@ -492,9 +499,18 @@ class StrategyPerformanceTracker:
             },
         }
 
+    def _regime_reverse_index(self) -> Dict[str, Dict[str, "_StrategyStats"]]:
+        """Build strategy → {regime: stats} reverse index (caller holds lock)."""
+        idx: Dict[str, Dict[str, "_StrategyStats"]] = {}
+        for (strat, regime_val), r_stats in self._regime_stats.items():
+            if r_stats.total > 0:
+                idx.setdefault(strat, {})[regime_val] = r_stats
+        return idx
+
     def strategy_ranking(self) -> List[Dict[str, Any]]:
         """按乘数排序返回策略排名，用于诊断。"""
         with self._lock:
+            regime_idx = self._regime_reverse_index()
             rows: List[Dict[str, Any]] = []
             for name, stats in self._stats.items():
                 if stats.total == 0:
@@ -503,14 +519,13 @@ class StrategyPerformanceTracker:
                 entry["strategy"] = name
                 entry["category"] = self._strategy_categories.get(name, "unknown")
                 entry["multiplier"] = self._compute_multiplier(stats)
-                # regime 维度细分
-                regime_breakdown: Dict[str, Dict[str, Any]] = {}
-                for (strat, regime_val), r_stats in self._regime_stats.items():
-                    if strat == name and r_stats.total > 0:
+                per_regime = regime_idx.get(name)
+                if per_regime:
+                    regime_breakdown: Dict[str, Dict[str, Any]] = {}
+                    for regime_val, r_stats in per_regime.items():
                         r_entry = r_stats.to_dict()
                         r_entry["multiplier"] = self._compute_multiplier(r_stats)
                         regime_breakdown[regime_val] = r_entry
-                if regime_breakdown:
                     entry["regime_breakdown"] = regime_breakdown
                 rows.append(entry)
         rows.sort(key=lambda r: r.get("multiplier", 1.0), reverse=True)

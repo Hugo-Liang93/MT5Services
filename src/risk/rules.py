@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
 
@@ -306,6 +306,148 @@ class DailyLossLimitRule(RiskRule):
             "loss_pct": None,
             "source": "unavailable",
         }
+
+
+class MarginAvailabilityRule(RiskRule):
+    """Blocks trades when estimated margin exceeds available free margin.
+
+    Reads ``estimated_margin`` from ``intent.metadata`` and ``margin_free``
+    from the account provider.  A configurable *safety factor* (default 1.2)
+    ensures a buffer above the minimum margin requirement.
+    """
+
+    name = "margin_availability"
+
+    def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
+        if not context.risk_settings.enabled or context.account_provider is None:
+            return []
+        safety = float(context.risk_settings.margin_safety_factor or 0)
+        if safety <= 0:
+            return []
+
+        estimated_margin = self._numeric(
+            (context.intent.metadata or {}).get("estimated_margin")
+        )
+        if estimated_margin is None or estimated_margin <= 0:
+            return []
+
+        try:
+            account_info = context.account_provider.account_info()
+        except Exception:
+            return [
+                RiskCheckResult(
+                    name=self.name,
+                    action="warn",
+                    reason="Margin check unavailable: account info could not be loaded",
+                )
+            ]
+
+        if isinstance(account_info, dict):
+            free_margin = self._numeric(account_info.get("margin_free"))
+        else:
+            free_margin = self._numeric(getattr(account_info, "margin_free", None))
+
+        if free_margin is None:
+            return [
+                RiskCheckResult(
+                    name=self.name,
+                    action="warn",
+                    reason="Free margin data unavailable from account info",
+                    details={"estimated_margin": estimated_margin},
+                )
+            ]
+
+        required = estimated_margin * safety
+        if free_margin >= required:
+            return []
+
+        return [
+            RiskCheckResult(
+                name=self.name,
+                action="block",
+                reason="Insufficient free margin for trade",
+                details={
+                    "estimated_margin": round(estimated_margin, 2),
+                    "required_margin": round(required, 2),
+                    "free_margin": round(free_margin, 2),
+                    "safety_factor": safety,
+                    "shortfall": round(required - free_margin, 2),
+                },
+            )
+        ]
+
+    @staticmethod
+    def _numeric(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+
+class TradeFrequencyRule(RiskRule):
+    """Limits the number of trades per day and per hour.
+
+    This is a *stateful* rule: call :meth:`record_trade` after every
+    successful trade execution so the rule can track timestamps.
+    """
+
+    name = "trade_frequency"
+
+    def __init__(self) -> None:
+        self._trade_timestamps: List[datetime] = []
+
+    def record_trade(self, at: Optional[datetime] = None) -> None:
+        """Record a successful trade execution timestamp."""
+        now = at or datetime.now(timezone.utc)
+        self._trade_timestamps.append(now)
+        # Prune entries older than 48h to bound memory
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+        self._trade_timestamps = [t for t in self._trade_timestamps if t > cutoff]
+
+    def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
+        if not context.risk_settings.enabled:
+            return []
+
+        checks: List[RiskCheckResult] = []
+        now = datetime.now(timezone.utc)
+
+        max_per_day = context.risk_settings.max_trades_per_day
+        if max_per_day is not None and max_per_day > 0:
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_count = sum(1 for t in self._trade_timestamps if t >= day_start)
+            if day_count >= max_per_day:
+                checks.append(
+                    RiskCheckResult(
+                        name="max_trades_per_day",
+                        action="block",
+                        reason="Daily trade limit reached",
+                        details={
+                            "trades_today": day_count,
+                            "limit": max_per_day,
+                        },
+                    )
+                )
+
+        max_per_hour = context.risk_settings.max_trades_per_hour
+        if max_per_hour is not None and max_per_hour > 0:
+            hour_ago = now - timedelta(hours=1)
+            hour_count = sum(1 for t in self._trade_timestamps if t >= hour_ago)
+            if hour_count >= max_per_hour:
+                checks.append(
+                    RiskCheckResult(
+                        name="max_trades_per_hour",
+                        action="block",
+                        reason="Hourly trade limit reached",
+                        details={
+                            "trades_last_hour": hour_count,
+                            "limit": max_per_hour,
+                        },
+                    )
+                )
+
+        return checks
 
 
 class SessionWindowRule(RiskRule):
