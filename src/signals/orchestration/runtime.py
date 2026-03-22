@@ -1427,19 +1427,29 @@ class SignalRuntime:
         current_tf: str,
         htf_spec: dict[str, tuple[str, ...]],
     ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """从 IndicatorManager 查询 HTF 指标，返回 {tf: {ind: {field: val}}}。"""
+        """从 IndicatorManager 查询 HTF 指标，返回 {tf: {ind: {field: val}}}。
+
+        htf_spec 中的 TF key 决定从哪些时间框架取数据。
+        指标名列表仅作为文档参考——实际注入该 TF 的**全部**可用指标，
+        策略 evaluate 中可自由访问任何已计算的指标。
+        """
         result: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        for target_tf, indicator_names in htf_spec.items():
+        all_getter = getattr(self.snapshot_source, "get_all_indicators", None)
+        for target_tf in htf_spec:
             tf = target_tf.strip().upper()
             if tf == current_tf.upper():
                 continue
             if tf not in self._configured_timeframes:
                 continue
-            tf_indicators: Dict[str, Dict[str, Any]] = {}
-            for ind_name in indicator_names:
-                ind_data = self._get_htf_indicator(symbol, tf, ind_name)
-                if ind_data is not None:
-                    tf_indicators[ind_name] = ind_data
+            if callable(all_getter):
+                tf_indicators = all_getter(symbol, tf)
+            else:
+                # Fallback: 逐个查询声明的指标
+                tf_indicators = {}
+                for ind_name in htf_spec[target_tf]:
+                    ind_data = self._get_htf_indicator(symbol, tf, ind_name)
+                    if ind_data is not None:
+                        tf_indicators[ind_name] = ind_data
             if tf_indicators:
                 result[tf] = tf_indicators
         return result
