@@ -316,28 +316,32 @@ def build_signal_components(
     # ── 应用配置化参数覆盖 ────────────────────────────────────────────
     _apply_strategy_config_overrides(signal_module, signal_config)
 
-    # ── HTF 指标声明校验 ────────────────────────────────────────────
-    # 启动时校验所有策略的 htf_indicators 声明合法性，仅 warning 不阻塞启动。
+    # ── HTF INI 配置校验 ────────────────────────────────────────────
     _enabled_indicators = {
         cfg.name for cfg in indicator_manager.config.indicators if cfg.enabled
     }
-    for strategy_name in signal_module.list_strategies():
-        htf_spec = signal_module.strategy_htf_indicators(strategy_name)
-        for tf_key, ind_names in htf_spec.items():
-            tf_upper = tf_key.strip().upper()
-            if tf_upper not in configured_tfs:
-                _factory_logger.warning(
-                    "Strategy '%s' declares htf_indicators[%s] but "
-                    "timeframe '%s' is not configured in app.ini.",
-                    strategy_name, tf_key, tf_upper,
-                )
-            for ind_name in ind_names:
-                if ind_name not in _enabled_indicators:
-                    _factory_logger.warning(
-                        "Strategy '%s' declares htf_indicators[%s] → '%s' but "
-                        "indicator '%s' is not enabled in indicators.json.",
-                        strategy_name, tf_key, ind_name, ind_name,
-                    )
+    _registered_strategies = set(signal_module.list_strategies())
+    for compound_key, tf_value in signal_config.strategy_htf_targets.items():
+        parts = compound_key.split(".", 1)
+        if len(parts) != 2:
+            continue
+        strategy_name, ind_name = parts[0].strip(), parts[1].strip()
+        tf = tf_value.strip().upper()
+        if strategy_name not in _registered_strategies:
+            _factory_logger.warning(
+                "[strategy_htf] %s: strategy '%s' not registered.",
+                compound_key, strategy_name,
+            )
+        if tf not in configured_tfs:
+            _factory_logger.warning(
+                "[strategy_htf] %s = %s: timeframe '%s' not in app.ini.",
+                compound_key, tf, tf,
+            )
+        if ind_name not in _enabled_indicators:
+            _factory_logger.warning(
+                "[strategy_htf] %s = %s: indicator '%s' not enabled.",
+                compound_key, tf, ind_name,
+            )
 
     # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar 指标集合，
     # 注入到 indicator_manager。

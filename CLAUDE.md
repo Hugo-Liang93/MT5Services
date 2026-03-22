@@ -692,9 +692,9 @@ class MyNewStrategy:
         RegimeType.UNCERTAIN: 0.XX,
     }
 
-    # 5. HTF 指标（可选）— 显式声明需要哪个 TF 的哪些指标
-    #    默认 TF 可通过 signal.ini [strategy_htf] per-indicator 覆盖
-    htf_indicators = {"H1": ("adx14", "ema50")}
+    # 5. HTF 指标 — 无需在策略代码中声明
+    #    通过 signal.ini [strategy_htf] 配置：策略名.指标名 = 来源TF
+    #    策略 evaluate() 中通过 context.htf_indicators.get("H1", {}) 按需访问
 ```
 
 #### Regime 亲和度设计指南
@@ -749,20 +749,31 @@ SoftRegimeResult:
 
 ## HTF 指标上下文注入
 
-策略通过 `htf_indicators` 属性显式声明需要的**跨时间框架指标**（格式：`{TF: (指标名...)}`）。声明中的 TF 是默认值，可通过 `signal.ini [strategy_htf]` 按指标粒度覆盖。系统在策略评估前自动从 `IndicatorManager` 查询并注入 `SignalContext.htf_indicators`。
+HTF 指标注入完全由 `signal.ini [strategy_htf]` 驱动。策略代码**不声明任何 HTF 属性**，只在 `evaluate()` 中按需消费 `context.htf_indicators`。
 
-### 声明方式
+### 配置方式
+
+```ini
+# signal.ini [strategy_htf]
+# 格式：策略名.指标名 = 来源TF
+supertrend.supertrend14 = H1
+supertrend.adx14 = H1
+sma_trend.sma20 = D1
+sma_trend.ema50 = D1
+rsi_reversion.rsi14 = M15
+```
+
+### 策略消费
 
 ```python
 class MyStrategy:
     name = "my_strategy"
-    required_indicators = ("rsi14",)                      # 当前 TF 指标
-    htf_indicators = {"H1": ("adx14",), "D1": ("ema50",)}  # 显式声明 TF + 指标
-    # ...
+    required_indicators = ("rsi14",)
+    # 无 htf_indicators 属性 — HTF 完全由 INI 控制
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         rsi = context.indicators.get("rsi14", {}).get("rsi")
-        # 按声明的 TF 显式访问 HTF 数据
+        # 按 INI 配置的 TF 访问 HTF 数据（未配置时为空 dict，安全跳过）
         h1 = context.htf_indicators.get("H1", {})
         d1 = context.htf_indicators.get("D1", {})
         h1_adx = h1.get("adx14", {}).get("adx")
@@ -773,7 +784,7 @@ class MyStrategy:
 
 - HTF 指标**不需要额外计算**——`IndicatorManager` 已经为所有配置的 `(symbol, timeframe)` 在 bar 收盘时计算了全量指标
 - `SignalRuntime._evaluate_strategies()` 在调用 `service.evaluate()` 前，从 `IndicatorManager.get_indicator()` 查询 HTF 数据
-- 未声明 `htf_indicators` 的策略不触发任何 HTF 查询（零开销）
+- INI 中未配置的策略不触发任何 HTF 查询（零开销）
 - HTF 数据天然低频更新（H4 每 4 小时才变），查询命中的是内存缓存
 
 ### 与 HTFStateCache 的关系
@@ -781,7 +792,7 @@ class MyStrategy:
 | HTFStateCache | HTF 指标注入 |
 |---------------|-------------|
 | 缓存信号方向（buy/sell） | 缓存指标数值（adx, ema...） |
-| 消费者：MultiTimeframeConfirm、SignalRuntime（HTF 方向对齐修正） | 消费者：任何声明 `htf_indicators` 的策略 |
+| 消费者：MultiTimeframeConfirm、SignalRuntime（HTF 方向对齐修正） | 消费者：任何在 INI [strategy_htf] 中配置的策略 |
 
 两者互补，独立工作。
 

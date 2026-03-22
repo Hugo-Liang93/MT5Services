@@ -106,7 +106,7 @@ class RsiReversionStrategy:
     category = "reversion"
     required_indicators = ("rsi14",)
     preferred_scopes = ("intrabar", "confirmed")
-    htf_indicators = {"M15": ("rsi14",)}
+
     regime_affinity = {
         RegimeType.TRENDING:  0.25,
         RegimeType.RANGING:   1.00,

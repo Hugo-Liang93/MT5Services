@@ -32,7 +32,7 @@ class SmaTrendStrategy:
     category = "trend"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
-    htf_indicators = {"D1": ("sma20", "ema50")}
+
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # MA 金叉/死叉在趋势中最可靠
         RegimeType.RANGING:   0.20,  # 震荡市 MA 频繁交叉，产生大量虚假信号
@@ -193,7 +193,7 @@ class SupertrendStrategy:
     category = "trend"
     required_indicators = ("supertrend14", "adx14")
     preferred_scopes = ("confirmed",)
-    htf_indicators = {"H1": ("supertrend14", "adx14")}
+
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # Supertrend 专为趋势行情设计
         RegimeType.RANGING:   0.30,  # 震荡市 Supertrend 方向频繁翻转，假信号多
@@ -308,7 +308,7 @@ class MacdMomentumStrategy:
     category = "trend"
     required_indicators = ("macd",)
     preferred_scopes = ("confirmed",)
-    htf_indicators = {"D1": ("macd",)}
+
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # MACD 柱状图反映趋势动量，趋势中最准确
         RegimeType.RANGING:   0.30,  # 震荡市 MACD 来回交叉，产生频繁假信号

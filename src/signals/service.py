@@ -137,25 +137,6 @@ class SignalModule:
                 f"(Dict[RegimeType, float] covering TRENDING/RANGING/BREAKOUT/UNCERTAIN). "
                 f"See CLAUDE.md for the Regime affinity design guide."
             )
-        htf_indicators = getattr(strategy, "htf_indicators", None)
-        if htf_indicators is not None:
-            if not isinstance(htf_indicators, dict):
-                raise AttributeError(
-                    f"Strategy '{name}': htf_indicators must be "
-                    f"Dict[str, tuple[str, ...]], got {type(htf_indicators).__name__}"
-                )
-            for tf_key, ind_names in htf_indicators.items():
-                if not isinstance(tf_key, str) or not tf_key.strip():
-                    raise AttributeError(
-                        f"Strategy '{name}': htf_indicators key must be "
-                        f"a non-empty TF string (e.g. 'H1', 'D1')"
-                    )
-                if not ind_names or not all(isinstance(i, str) for i in ind_names):
-                    raise AttributeError(
-                        f"Strategy '{name}': htf_indicators['{tf_key}'] must be "
-                        f"a non-empty tuple/list of indicator name strings"
-                )
-
     def register_strategy(self, strategy: SignalStrategy) -> None:
         self._validate_strategy_attrs(strategy)
         self._strategies[strategy.name] = strategy
@@ -224,18 +205,6 @@ class SignalModule:
         scopes = getattr(strategy_impl, "preferred_scopes", ("intrabar", "confirmed"))
         return tuple(str(s) for s in scopes)
 
-    def strategy_htf_indicators(self, strategy: str) -> dict[str, tuple[str, ...]]:
-        """返回策略声明的 htf_indicators（不存在时返回空 dict）。
-
-        格式: ``{"H1": ("adx14", "ema50"), "D1": ("sma20",)}``
-        """
-        impl = self._strategies.get(strategy)
-        if impl is None:
-            return {}
-        raw = getattr(impl, "htf_indicators", None)
-        if not isinstance(raw, dict):
-            return {}
-        return {str(k): tuple(str(i) for i in v) for k, v in raw.items()}
 
     def all_required_indicators(self) -> list[str]:
         ordered: list[str] = []

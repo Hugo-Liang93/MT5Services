@@ -56,12 +56,6 @@ class DummySignalService:
     def strategy_affinity_map(self, strategy: str):
         return {}
 
-    def strategy_htf_indicators(self, strategy: str):
-        mapping = {
-            "trend_htf": {"H1": ("adx14", "ema50")},
-        }
-        return mapping.get(strategy, {})
-
     def evaluate(self, **kwargs):
         self.evaluate_calls.append(kwargs)
         return SignalDecision(
@@ -84,6 +78,7 @@ def _make_runtime(
     source=None,
     targets=None,
     htf_indicators_enabled=True,
+    htf_target_config=None,
 ):
     service = service or DummySignalService()
     source = source or DummySnapshotSource()
@@ -92,6 +87,12 @@ def _make_runtime(
         SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="plain_trend"),
         SignalTarget(symbol="XAUUSD", timeframe="H1", strategy="trend_htf"),
     ]
+    if htf_target_config is None:
+        # Default: trend_htf strategy needs adx14+ema50 from H1
+        htf_target_config = {
+            "trend_htf.adx14": "H1",
+            "trend_htf.ema50": "H1",
+        }
     runtime = SignalRuntime(
         service=service,
         snapshot_source=source,
@@ -99,6 +100,7 @@ def _make_runtime(
         enable_confirmed_snapshot=True,
         policy=SignalPolicy(),
         htf_indicators_enabled=htf_indicators_enabled,
+        htf_target_config=htf_target_config,
     )
     return runtime, service, source
 
@@ -263,87 +265,53 @@ class TestHTFGlobalSwitch:
         assert htf_calls[0].get("htf_indicators", {}) == {}
 
 
-class TestStrategyHTFIndicatorsQuery:
-    """SignalModule.strategy_htf_indicators() 查询。"""
 
-    def test_returns_empty_for_no_declaration(self):
-        service = DummySignalService()
-        assert service.strategy_htf_indicators("plain_trend") == {}
+class TestHTFINIConfig:
+    """INI [strategy_htf] per-indicator 配置驱动 HTF 注入。"""
 
-    def test_returns_htf_spec(self):
-        service = DummySignalService()
-        spec = service.strategy_htf_indicators("trend_htf")
-        assert spec == {"H1": ("adx14", "ema50")}
+    def test_ini_config_injects_specified_indicators(self):
+        source = DummySnapshotSource(
+            indicator_data={
+                ("XAUUSD", "H1", "adx14"): {"adx": 30.0},
+                ("XAUUSD", "H1", "ema50"): {"ema": 2650.0},
+            }
+        )
+        runtime, _, _ = _make_runtime(
+            source=source,
+            htf_target_config={
+                "trend_htf.adx14": "H1",
+                "trend_htf.ema50": "H1",
+            },
+        )
+        result = runtime._resolve_htf_indicators(
+            "XAUUSD", "M5", {"H1": ["adx14", "ema50"]}
+        )
+        assert "H1" in result
+        assert result["H1"]["adx14"]["adx"] == 30.0
+        assert result["H1"]["ema50"]["ema"] == 2650.0
 
+    def test_unconfigured_strategy_gets_no_htf(self):
+        runtime, _, _ = _make_runtime(htf_target_config={})
+        assert runtime._strategy_htf_config == {}
 
-class TestValidateHTFIndicatorsAttr:
-    """_validate_strategy_attrs 对 htf_indicators 的校验。"""
+    def test_multi_tf_per_strategy(self):
+        source = DummySnapshotSource(
+            indicator_data={
+                ("XAUUSD", "M15", "rsi14"): {"rsi": 25.0},
+                ("XAUUSD", "H1", "ema50"): {"ema": 2650.0},
+            }
+        )
+        runtime, _, _ = _make_runtime(
+            source=source,
+            htf_target_config={
+                "trend_htf.rsi14": "M15",
+                "trend_htf.ema50": "H1",
+            },
+        )
+        spec = runtime._strategy_htf_config.get("trend_htf", {})
+        assert "M15" in spec
+        assert "H1" in spec
 
-    def test_valid_htf_indicators_passes(self):
-        from src.signals.evaluation.regime import RegimeType
-        from src.signals.service import SignalModule
-
-        class GoodStrategy:
-            name = "good"
-            required_indicators = ("rsi14",)
-            preferred_scopes = ("confirmed",)
-            regime_affinity = {r: 0.5 for r in RegimeType}
-            htf_indicators = {"H1": ("adx14",)}
-
-            def evaluate(self, context):
-                pass
-
-        SignalModule._validate_strategy_attrs(GoodStrategy())
-
-    def test_invalid_htf_type_raises(self):
-        from src.signals.evaluation.regime import RegimeType
-        from src.signals.service import SignalModule
-
-        class BadStrategy:
-            name = "bad"
-            required_indicators = ("rsi14",)
-            preferred_scopes = ("confirmed",)
-            regime_affinity = {r: 0.5 for r in RegimeType}
-            htf_indicators = "not_a_tuple"
-
-            def evaluate(self, context):
-                pass
-
-        with pytest.raises(AttributeError, match="htf_indicators must be"):
-            SignalModule._validate_strategy_attrs(BadStrategy())
-
-    def test_empty_indicator_list_raises(self):
-        from src.signals.evaluation.regime import RegimeType
-        from src.signals.service import SignalModule
-
-        class BadStrategy:
-            name = "bad"
-            required_indicators = ("rsi14",)
-            preferred_scopes = ("confirmed",)
-            regime_affinity = {r: 0.5 for r in RegimeType}
-            htf_indicators = {"H1": ()}
-
-            def evaluate(self, context):
-                pass
-
-        with pytest.raises(AttributeError, match="non-empty"):
-            SignalModule._validate_strategy_attrs(BadStrategy())
-
-    def test_no_htf_indicators_passes(self):
-        """不声明 htf_indicators 属性时校验通过。"""
-        from src.signals.evaluation.regime import RegimeType
-        from src.signals.service import SignalModule
-
-        class PlainStrategy:
-            name = "plain"
-            required_indicators = ("rsi14",)
-            preferred_scopes = ("confirmed",)
-            regime_affinity = {r: 0.5 for r in RegimeType}
-
-            def evaluate(self, context):
-                pass
-
-        SignalModule._validate_strategy_attrs(PlainStrategy())
 
 
 class TestConfiguredTimeframes:

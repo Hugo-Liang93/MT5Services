@@ -55,7 +55,7 @@ class BollingerBreakoutStrategy:
     category = "breakout"
     required_indicators = ("boll20",)
     preferred_scopes = ("intrabar", "confirmed")
-    htf_indicators = {"H1": ("boll20",)}
+
     regime_affinity = {
         RegimeType.TRENDING:  0.30,  # 趋势中价格走布林带边缘属正常，触带≠反转
         RegimeType.RANGING:   0.85,  # 震荡市触及上下轨是典型均值回归机会
@@ -227,7 +227,7 @@ class KeltnerBollingerSqueezeStrategy:
     category = "breakout"
     required_indicators = ("boll20", "keltner20")
     preferred_scopes = ("intrabar", "confirmed")
-    htf_indicators = {"H1": ("keltner20", "boll20")}
+
     regime_affinity = {
         RegimeType.TRENDING:  0.35,  # 趋势中 Squeeze 出现频率低，信号意义有限
         RegimeType.RANGING:   0.55,  # 震荡末期常出现 Squeeze，可提前布局
@@ -350,7 +350,7 @@ class DonchianBreakoutStrategy:
     category = "breakout"
     required_indicators = ("donchian20", "adx14")
     preferred_scopes = ("confirmed",)
-    htf_indicators = {"H1": ("donchian20", "adx14")}
+
     regime_affinity = {
         RegimeType.TRENDING:  0.90,  # 趋势延续期创新高/低是高概率信号
         RegimeType.RANGING:   0.15,  # 震荡市假突破极多，即便有 ADX 过滤也危险
@@ -905,7 +905,7 @@ class MultiTimeframeConfirmStrategy:
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
     # HTF 指标：从 H1 获取 ema50 和 sma20 判断高时间框架趋势方向
-    htf_indicators = {"H1": ("ema50", "sma20")}
+
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # 趋势市 LTF+HTF 双向一致，最可靠
         RegimeType.RANGING:   0.30,  # 震荡市 HTF 方向频繁反转，信号不稳

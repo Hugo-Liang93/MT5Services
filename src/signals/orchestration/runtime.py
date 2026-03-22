@@ -137,10 +137,9 @@ class SignalRuntime:
         self._strategy_scopes: dict[str, frozenset[str]] = {}
         # 启动时缓存每个策略的 regime_affinity，避免 process_next_event 热路径中的 getattr。
         self._strategy_affinity: dict[str, dict[RegimeType, float]] = {}
-        # HTF 指标声明缓存：{strategy_name: {tf: (indicator_names...)}}
-        self._strategy_htf_indicators: dict[str, dict[str, tuple[str, ...]]] = {}
-        # INI 配置的 HTF per-indicator 覆盖（需在策略缓存循环前初始化）
-        self._htf_target_config: Dict[str, str] = htf_target_config or {}
+        # HTF 指标配置：从 INI [strategy_htf] 解析（策略.指标 = TF）
+        # 按策略分组：{strategy_name: {tf: [indicator_names...]}}
+        self._strategy_htf_config = self._parse_htf_config(htf_target_config or {})
         for target in self._targets:
             self._target_index.setdefault((target.symbol, target.timeframe), []).append(
                 target.strategy
@@ -156,12 +155,6 @@ class SignalRuntime:
             if target.strategy not in self._strategy_affinity:
                 self._strategy_affinity[target.strategy] = (
                     self.service.strategy_affinity_map(target.strategy)
-                )
-            if target.strategy not in self._strategy_htf_indicators:
-                raw_spec = self.service.strategy_htf_indicators(target.strategy)
-                # 合并 INI [strategy_htf] per-indicator 覆盖
-                self._strategy_htf_indicators[target.strategy] = (
-                    self._apply_htf_overrides(target.strategy, raw_spec)
                 )
         # 系统中已配置的时间框架集合（用于 HTF 指标解析校验）
         self._configured_timeframes: frozenset[str] = frozenset(
@@ -987,8 +980,8 @@ class SignalRuntime:
                 if structure_context:
                     regime_metadata["market_structure"] = structure_context
 
-            # ── HTF 指标注入 ──────────────────────────────────
-            htf_spec = self._strategy_htf_indicators.get(strategy)
+            # ── HTF 指标注入（按 INI [strategy_htf] 配置按需查询）──
+            htf_spec = self._strategy_htf_config.get(strategy)
             htf_payload: Dict[str, Dict[str, Dict[str, Any]]] = (
                 self._resolve_htf_indicators(symbol, timeframe, htf_spec)
                 if self._htf_indicators_enabled and htf_spec
@@ -1387,69 +1380,45 @@ class SignalRuntime:
 
         return None, None
 
-    def _apply_htf_overrides(
-        self,
-        strategy: str,
-        raw_spec: dict[str, tuple[str, ...]],
-    ) -> dict[str, tuple[str, ...]]:
-        """合并 INI ``[strategy_htf]`` per-indicator 覆盖到策略声明的默认 spec。
+    @staticmethod
+    def _parse_htf_config(
+        raw: Dict[str, str],
+    ) -> dict[str, dict[str, list[str]]]:
+        """解析 INI ``[strategy_htf]`` 为按策略分组的 {strategy: {tf: [indicators]}}。
 
-        INI 格式: ``strategy.indicator = target_tf``
-        例: ``supertrend.adx14 = H4`` → 把 adx14 从默认 H1 移到 H4。
+        INI 格式: ``strategy.indicator = TF``
+        例: ``supertrend.adx14 = H1`` → {"supertrend": {"H1": ["adx14"]}}
         """
-        if not self._htf_target_config:
-            return raw_spec
-
-        # Build indicator → current_tf mapping from raw spec
-        overridden: dict[str, str] = {}  # indicator → new_tf
-        for ind_tf, indicators in raw_spec.items():
-            for ind_name in indicators:
-                config_key = f"{strategy}.{ind_name}"
-                new_tf = self._htf_target_config.get(config_key)
-                if new_tf:
-                    overridden[ind_name] = new_tf
-
-        if not overridden:
-            return raw_spec
-
-        # Rebuild spec with overrides
-        result: dict[str, list[str]] = {}
-        for tf, indicators in raw_spec.items():
-            for ind_name in indicators:
-                target_tf = overridden.get(ind_name, tf)
-                result.setdefault(target_tf, []).append(ind_name)
-
-        return {tf: tuple(inds) for tf, inds in result.items()}
+        result: dict[str, dict[str, list[str]]] = {}
+        for compound_key, tf_value in raw.items():
+            parts = compound_key.split(".", 1)
+            if len(parts) != 2:
+                continue
+            strategy_name, indicator_name = parts[0].strip(), parts[1].strip()
+            tf = tf_value.strip().upper()
+            if not strategy_name or not indicator_name or not tf:
+                continue
+            result.setdefault(strategy_name, {}).setdefault(tf, []).append(indicator_name)
+        return result
 
     def _resolve_htf_indicators(
         self,
         symbol: str,
         current_tf: str,
-        htf_spec: dict[str, tuple[str, ...]],
+        htf_spec: dict[str, list[str]],
     ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """从 IndicatorManager 查询 HTF 指标，返回 {tf: {ind: {field: val}}}。
-
-        htf_spec 中的 TF key 决定从哪些时间框架取数据。
-        指标名列表仅作为文档参考——实际注入该 TF 的**全部**可用指标，
-        策略 evaluate 中可自由访问任何已计算的指标。
-        """
+        """按 INI 配置按需查询 HTF 指标，返回 {tf: {ind: {field: val}}}。"""
         result: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        all_getter = getattr(self.snapshot_source, "get_all_indicators", None)
-        for target_tf in htf_spec:
-            tf = target_tf.strip().upper()
+        for tf, indicator_names in htf_spec.items():
             if tf == current_tf.upper():
                 continue
             if tf not in self._configured_timeframes:
                 continue
-            if callable(all_getter):
-                tf_indicators = all_getter(symbol, tf)
-            else:
-                # Fallback: 逐个查询声明的指标
-                tf_indicators = {}
-                for ind_name in htf_spec[target_tf]:
-                    ind_data = self._get_htf_indicator(symbol, tf, ind_name)
-                    if ind_data is not None:
-                        tf_indicators[ind_name] = ind_data
+            tf_indicators: Dict[str, Dict[str, Any]] = {}
+            for ind_name in indicator_names:
+                ind_data = self._get_htf_indicator(symbol, tf, ind_name)
+                if ind_data is not None:
+                    tf_indicators[ind_name] = ind_data
             if tf_indicators:
                 result[tf] = tf_indicators
         return result
