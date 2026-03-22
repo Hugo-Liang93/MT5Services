@@ -223,11 +223,15 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
                                        ↓
                               SignalRuntime（src/signals/orchestration/）
                                        ↓
-                              strategies 评估 + Regime 检测
+                         FilterChain（点差/时段/经济/波动率异常过滤）
+                                       ↓
+                         Regime 检测 → 快速全拒绝（所有策略 affinity 不足直接跳过）
+                                       ↓
+                         strategies 评估（含 HTF 置信度修正）
                                        ↓
                          VotingEngine（consensus / group 投票）
                                        ↓
-                        TradeExecutor → TradingService → MT5
+                         ExecutionGate（准入检查）→ TradeExecutor → MT5
 ```
 
 > **采集节奏说明**：`poll_interval` 是主循环的 sleep 间隔（控制 tick/quote 的有效采集频率）。
@@ -319,7 +323,7 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/signals/analytics/plugins.py` | AnalyticsPluginRegistry 插件扩展机制 |
 | `src/trading/service.py` | TradingModule：账户、持仓、订单生命周期 |
 | `src/trading/trading_service.py` | TradingService：底层下单、平仓、保证金计算 |
-| `src/trading/signal_executor.py` | TradeExecutor：信号自动下单执行、熔断器、日内头寸限制 |
+| `src/trading/signal_executor.py` | TradeExecutor：信号自动下单执行、熔断器、成本检查 |
 | `src/trading/execution_gate.py` | ExecutionGate：策略域准入检查（voting group / 白名单 / armed） |
 | `src/trading/position_manager.py` | PositionManager：持仓监控、止损跟踪、日终自动平仓 |
 | `src/trading/sizing.py` | 仓位计算、时间框架差异化 SL/TP（`TimeframeSLTP`） |
@@ -652,10 +656,12 @@ SCALE_FACTORS = {"M1": 0.60, "M5": 0.75, "M15": 0.85, "H1": 1.00, "H4": 1.15, "D
 - 覆盖指标：`rsi14`, `macd`, `cci20`, `stochrsi`, `adx14`
 - 输出：`{"rsi": 28.5, "rsi_d3": -8.2, "rsi_d5": -12.0}`
 
-### Market Structure Cache（`src/signals/orchestration/runtime.py`）
+### Market Structure Cache（`src/market_structure/analyzer.py`）
 
-- confirmed scope：重新计算市场结构分析
+`MarketStructureAnalyzer.analyze_cached()` 内置 scope-aware 缓存：
+- confirmed scope：重新计算市场结构分析并写入缓存
 - intrabar scope：复用上一次 confirmed 的分析结果（避免重复计算）
+- TTL 过期自动失效（默认 5 分钟）
 - M1 lookback_bars = 120（2 小时），M5+ lookback_bars = 400
 
 ---
