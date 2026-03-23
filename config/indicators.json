@@ -8,7 +8,7 @@
         "min_bars": 20
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "description": "20周期简单移动平均线",
       "tags": ["trend", "mean"]
@@ -60,7 +60,7 @@
         "min_bars": 15
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "delta_bars": [3, 5],
       "description": "14周期相对强弱指数",
@@ -74,7 +74,7 @@
         "min_bars": 6
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "description": "5周期相对强弱指数",
       "tags": ["momentum", "oscillator"]
@@ -118,7 +118,7 @@
         "min_bars": 20
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "description": "20周期布林带（函数内部自行计算SMA，无需依赖sma20）",
       "tags": ["volatility", "channel"]

@@ -1,7 +1,10 @@
 from typing import Any, Dict, Iterable, List
 
-from .base import get_closes, get_float, get_int, tail_bars
+import numpy as np
+
+from .base import get_closes, get_closes_array, get_float, get_hlc_arrays, get_int, tail_bars
 from .mean import _ema_sequence
+from ..cache.incremental import IndicatorState, IncrementalIndicator
 
 
 def rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
@@ -13,27 +16,97 @@ def rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     """
     period = get_int(params, "period", default=14, aliases=("window",))
     # 使用更多历史数据让 Wilder 平滑收敛
-    closes = get_closes(bars, period * 3 + 1)
+    closes = get_closes_array(bars, period * 3 + 1)
     if len(closes) <= period:
         return {}
 
-    # 首 period 根 bar 用简单平均初始化 avg_gain / avg_loss（Wilder 标准做法）
-    diffs = [closes[i + 1] - closes[i] for i in range(len(closes) - 1)]
-    avg_gain = sum(d for d in diffs[:period] if d > 0) / period
-    avg_loss = sum(-d for d in diffs[:period] if d < 0) / period
+    # 向量化 diff + gains/losses 提取
+    diffs = np.diff(closes)
+    gains = np.where(diffs > 0, diffs, 0.0)
+    losses = np.where(diffs < 0, -diffs, 0.0)
 
-    # Wilder 平滑余下的数据点
-    for diff in diffs[period:]:
-        gain = diff if diff > 0 else 0.0
-        loss = -diff if diff < 0 else 0.0
-        avg_gain = (avg_gain * (period - 1) + gain) / period
-        avg_loss = (avg_loss * (period - 1) + loss) / period
+    # 首 period 根用简单平均初始化（Wilder 标准做法）
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
+
+    # Wilder 平滑余下的数据点（有序列依赖，保留循环）
+    for i in range(period, len(diffs)):
+        avg_gain = (avg_gain * (period - 1) + float(gains[i])) / period
+        avg_loss = (avg_loss * (period - 1) + float(losses[i])) / period
 
     if avg_loss == 0:
         return {"rsi": 100.0}
     rs = avg_gain / avg_loss
     rsi_val = 100.0 - (100.0 / (1.0 + rs))
     return {"rsi": rsi_val}
+
+
+class RsiIncremental(IncrementalIndicator):
+    """Incremental RSI using Wilder smoothing: O(1) update per bar.
+
+    Full computation seeds the state with ``avg_gain``, ``avg_loss`` and
+    ``prev_close`` using the full Wilder smoothing pass.  Once seeded,
+    each new bar only needs:
+
+        diff = new_close - prev_close
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        self.min_data_points = get_int(params, "period", default=14, aliases=("window",)) + 1
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return rsi(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        ir = state.intermediate_results
+        return (
+            ir is not None
+            and "avg_gain" in ir
+            and "avg_loss" in ir
+            and "prev_close" in ir
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        period = get_int(self.params, "period", default=14, aliases=("window",))
+        avg_gain = float(state.intermediate_results["avg_gain"])  # type: ignore[index]
+        avg_loss = float(state.intermediate_results["avg_loss"])  # type: ignore[index]
+        prev_close = float(state.intermediate_results["prev_close"])  # type: ignore[index]
+        new_close = bars[-1].close
+        diff = new_close - prev_close
+        gain = diff if diff > 0 else 0.0
+        loss = -diff if diff < 0 else 0.0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0:
+            return {"rsi": 100.0}
+        rs = avg_gain / avg_loss
+        return {"rsi": 100.0 - (100.0 / (1.0 + rs))}
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        period = get_int(self.params, "period", default=14, aliases=("window",))
+        # Recompute avg_gain/avg_loss from full bar history for accurate state
+        closes = get_closes_array(bars, period * 3 + 1)
+        if len(closes) > period:
+            diffs = np.diff(closes)
+            gains = np.where(diffs > 0, diffs, 0.0)
+            losses = np.where(diffs < 0, -diffs, 0.0)
+            avg_gain = float(np.mean(gains[:period]))
+            avg_loss = float(np.mean(losses[:period]))
+            for i in range(period, len(diffs)):
+                avg_gain = (avg_gain * (period - 1) + float(gains[i])) / period
+                avg_loss = (avg_loss * (period - 1) + float(losses[i])) / period
+            state.intermediate_results = {
+                "avg_gain": avg_gain,
+                "avg_loss": avg_loss,
+                "prev_close": bars[-1].close,
+            }
+        return state
 
 
 def macd(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
@@ -44,6 +117,7 @@ def macd(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     if len(closes) < slow + signal:
         return {}
 
+    # EMA 有序列依赖，保留循环
     k_fast = 2 / (fast + 1)
     k_slow = 2 / (slow + 1)
     ema_fast = None
@@ -57,7 +131,7 @@ def macd(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     if len(macd_series) < signal:
         return {}
 
-    signal_val = _ema_sequence(macd_series[-(signal * 3) :], signal)
+    signal_val = _ema_sequence(macd_series[-(signal * 3):], signal)
     macd_val = macd_series[-1]
     hist_val = macd_val - signal_val
     return {"macd": macd_val, "signal": signal_val, "hist": hist_val}
@@ -78,15 +152,17 @@ def roc(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
 
 def cci(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     period = get_int(params, "period", default=20, aliases=("window",))
-    window = list(bars)[-period:] if not isinstance(bars, list) else bars[-period:]
+    window = tail_bars(bars, period)
     if len(window) < period:
         return {}
-    typicals = [(b.high + b.low + b.close) / 3 for b in window]
-    mean_tp = sum(typicals) / period
-    mean_dev = sum(abs(tp - mean_tp) for tp in typicals) / period
+    highs, lows, closes = get_hlc_arrays(window)
+    # 向量化 typical price 和 mean deviation
+    typicals = (highs + lows + closes) / 3.0
+    mean_tp = float(np.mean(typicals))
+    mean_dev = float(np.mean(np.abs(typicals - mean_tp)))
     if mean_dev == 0:
         return {}
-    last_tp = typicals[-1]
+    last_tp = float(typicals[-1])
     cci_val = (last_tp - mean_tp) / (0.015 * mean_dev)
     return {"cci": cci_val}
 
@@ -98,15 +174,19 @@ def stochastic(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     if len(window) < k_period:
         return {}
 
+    highs, lows, closes = get_hlc_arrays(window)
+
+    # 滑动窗口计算 %K
     k_values: List[float] = []
     for end_idx in range(k_period, len(window) + 1):
-        sample = window[:end_idx][-k_period:]
-        highest_high = max(bar.high for bar in sample)
-        lowest_low = min(bar.low for bar in sample)
+        h_slice = highs[end_idx - k_period:end_idx]
+        l_slice = lows[end_idx - k_period:end_idx]
+        highest_high = float(np.max(h_slice))
+        lowest_low = float(np.min(l_slice))
         if highest_high == lowest_low:
             k_values.append(50.0)
             continue
-        k_values.append((sample[-1].close - lowest_low) / (highest_high - lowest_low) * 100.0)
+        k_values.append((float(closes[end_idx - 1]) - lowest_low) / (highest_high - lowest_low) * 100.0)
 
     if not k_values:
         return {}
@@ -121,11 +201,12 @@ def williams_r(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     window = tail_bars(bars, period)
     if len(window) < period:
         return {}
-    highest_high = max(bar.high for bar in window)
-    lowest_low = min(bar.low for bar in window)
+    highs, lows, closes = get_hlc_arrays(window)
+    highest_high = float(np.max(highs))
+    lowest_low = float(np.min(lows))
     if highest_high == lowest_low:
         return {"williams_r": 0.0}
-    value = (highest_high - window[-1].close) / (highest_high - lowest_low) * -100.0
+    value = (highest_high - float(closes[-1])) / (highest_high - lowest_low) * -100.0
     return {"williams_r": value}
 
 
@@ -147,59 +228,59 @@ def supertrend(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     if len(window) < period + 2:
         return {}
 
-    # 计算每根 K 线的 True Range
-    trs: List[float] = []
-    prev_close = window[0].close
-    for bar in window[1:]:
-        tr = max(
-            bar.high - bar.low,
-            abs(bar.high - prev_close),
-            abs(bar.low - prev_close),
-        )
-        trs.append(tr)
-        prev_close = bar.close
+    highs, lows, closes = get_hlc_arrays(window)
+
+    # 向量化计算 True Range（从第 2 根 bar 开始）
+    prev_closes = closes[:-1]
+    h = highs[1:]
+    l = lows[1:]
+    trs = np.maximum(h - l, np.maximum(np.abs(h - prev_closes), np.abs(l - prev_closes)))
 
     # Wilder 平滑 ATR
-    if len(trs) < period:
+    n_tr = len(trs)
+    if n_tr < period:
         return {}
-    atr_val = sum(trs[:period]) / period
+    atr_val = float(np.mean(trs[:period]))
     atr_series: List[float] = [atr_val]
-    for tr in trs[period:]:
-        atr_val = (atr_val * (period - 1) + tr) / period
+    for i in range(period, n_tr):
+        atr_val = (atr_val * (period - 1) + float(trs[i])) / period
         atr_series.append(atr_val)
 
-    bars_for_st = window[1:]  # 与 trs 对齐，去掉第一根（用于计算首个 TR）
-    if len(bars_for_st) != len(trs):
+    # bars_for_st 与 trs 对齐
+    bars_for_st_highs = highs[1:]
+    bars_for_st_lows = lows[1:]
+    bars_for_st_closes = closes[1:]
+    if len(bars_for_st_closes) != n_tr:
         return {}
 
-    # 把 ATR 序列对齐到 bars（atr_series[i] 对应 bars_for_st[period + i - 1]）
-    # 只需要 atr_series 中有值的区间
-    aligned_start = period - 1  # bars_for_st 中第一根有 ATR 的索引
-    if len(bars_for_st) <= aligned_start:
+    aligned_start = period - 1
+    if len(bars_for_st_closes) <= aligned_start:
         return {}
 
-    # 迭代计算 Supertrend
+    # 迭代计算 Supertrend（方向有序列依赖）
     final_upper = 0.0
     final_lower = 0.0
     direction = 1.0
     supertrend_val = 0.0
 
-    for i, bar in enumerate(bars_for_st[aligned_start:]):
+    for i in range(len(atr_series)):
+        bar_idx = aligned_start + i
         atr_i = atr_series[i]
-        hl2 = (bar.high + bar.low) / 2.0
+        bar_h = float(bars_for_st_highs[bar_idx])
+        bar_l = float(bars_for_st_lows[bar_idx])
+        bar_c = float(bars_for_st_closes[bar_idx])
+        hl2 = (bar_h + bar_l) / 2.0
         basic_upper = hl2 + multiplier * atr_i
         basic_lower = hl2 - multiplier * atr_i
 
         if i == 0:
             final_upper = basic_upper
             final_lower = basic_lower
-            # 首轮方向由收盘价与基础上轨比较决定
-            direction = -1.0 if bar.close <= final_upper else 1.0
+            direction = -1.0 if bar_c <= final_upper else 1.0
             supertrend_val = final_upper if direction == -1.0 else final_lower
             continue
 
-        # 上轨：仅在前收盘价高于前最终上轨时允许上轨上移（限制下行更新）
-        prev_close_val = bars_for_st[aligned_start + i - 1].close
+        prev_close_val = float(bars_for_st_closes[bar_idx - 1])
         prev_final_upper = final_upper
         prev_final_lower = final_lower
 
@@ -216,9 +297,9 @@ def supertrend(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
 
         prev_direction = direction
         if prev_direction == -1.0:
-            direction = 1.0 if bar.close > prev_final_upper else -1.0
+            direction = 1.0 if bar_c > prev_final_upper else -1.0
         else:
-            direction = -1.0 if bar.close < prev_final_lower else 1.0
+            direction = -1.0 if bar_c < prev_final_lower else 1.0
 
         supertrend_val = final_lower if direction == 1.0 else final_upper
 
@@ -238,11 +319,14 @@ def _rsi_series_wilder(closes: List[float], period: int) -> List[float]:
     if len(closes) <= period:
         return []
 
-    diffs = [closes[i + 1] - closes[i] for i in range(len(closes) - 1)]
+    closes_arr = np.array(closes, dtype=np.float64)
+    diffs = np.diff(closes_arr)
+    gains = np.where(diffs > 0, diffs, 0.0)
+    losses = np.where(diffs < 0, -diffs, 0.0)
 
     # Seed with SMA of first ``period`` diffs
-    avg_gain = sum(max(d, 0.0) for d in diffs[:period]) / period
-    avg_loss = sum(max(-d, 0.0) for d in diffs[:period]) / period
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
 
     series: List[float] = []
     if avg_loss == 0:
@@ -252,9 +336,9 @@ def _rsi_series_wilder(closes: List[float], period: int) -> List[float]:
         series.append(100.0 - 100.0 / (1.0 + rs))
 
     # Wilder exponential smoothing for subsequent diffs
-    for diff in diffs[period:]:
-        gain = max(diff, 0.0)
-        loss = max(-diff, 0.0)
+    for i in range(period, len(diffs)):
+        gain = float(gains[i])
+        loss = float(losses[i])
         avg_gain = (avg_gain * (period - 1) + gain) / period
         avg_loss = (avg_loss * (period - 1) + loss) / period
         if avg_loss == 0:
@@ -292,24 +376,26 @@ def stoch_rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     if len(rsi_series) < stoch_period:
         return {}
 
-    # Stochastic of RSI series
+    # 向量化 Stochastic of RSI series
+    rsi_arr = np.array(rsi_series, dtype=np.float64)
     raw_k_series: List[float] = []
-    for end in range(stoch_period, len(rsi_series) + 1):
-        window_rsi = rsi_series[end - stoch_period: end]
-        lowest = min(window_rsi)
-        highest = max(window_rsi)
+    for end in range(stoch_period, len(rsi_arr) + 1):
+        window_rsi = rsi_arr[end - stoch_period:end]
+        lowest = float(np.min(window_rsi))
+        highest = float(np.max(window_rsi))
         if highest == lowest:
             raw_k_series.append(50.0)
         else:
-            raw_k_series.append((rsi_series[end - 1] - lowest) / (highest - lowest) * 100.0)
+            raw_k_series.append((float(rsi_arr[end - 1]) - lowest) / (highest - lowest) * 100.0)
 
     if not raw_k_series:
         return {}
 
     # Smooth K (SMA of raw_k)
+    k_arr = np.array(raw_k_series, dtype=np.float64)
     k_series: List[float] = []
-    for end in range(smooth_k, len(raw_k_series) + 1):
-        k_series.append(sum(raw_k_series[end - smooth_k: end]) / smooth_k)
+    for end in range(smooth_k, len(k_arr) + 1):
+        k_series.append(float(np.mean(k_arr[end - smooth_k:end])))
 
     if not k_series:
         return {}
