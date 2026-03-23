@@ -207,6 +207,25 @@ class BacktestEngine:
             len(all_bars),
         )
 
+        # 1.5 自动预加载 HTF 指标（如果启用了 HTF 对齐但未手动传入 htf_indicator_data）
+        if (
+            self._config.enable_htf_alignment
+            and not self._htf_indicator_data
+            and self._htf_direction_fn is None
+        ):
+            # 自动推断 HTF 时间框架：比当前 TF 更高的已配置 TF
+            _TF_RANK = {"M1": 1, "M5": 2, "M15": 3, "M30": 4, "H1": 5, "H4": 6, "D1": 7}
+            current_rank = _TF_RANK.get(timeframe, 0)
+            htf_list = [
+                tf for tf, rank in _TF_RANK.items()
+                if rank > current_rank and rank <= current_rank + 3
+            ]
+            if htf_list:
+                self._htf_indicator_data = self.preload_htf_indicators(
+                    symbol, htf_list,
+                    self._config.start_time, self._config.end_time,
+                )
+
         # 2. 如果没有预计算指标，一次性预计算全部（避免主循环内重复 pipeline 调用）
         if self._precomputed_indicators is not None:
             all_indicator_snapshots = self._precomputed_indicators
@@ -434,6 +453,55 @@ class BacktestEngine:
         except Exception:
             pass
         return regime, soft_regime_dict
+
+    def preload_htf_indicators(
+        self,
+        symbol: str,
+        htf_timeframes: List[str],
+        start_time: datetime,
+        end_time: datetime,
+        warmup_bars: int = 200,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """预加载高时间框架指标数据，供 HTF 方向对齐和策略消费。
+
+        Args:
+            symbol: 交易品种
+            htf_timeframes: 高时间框架列表（如 ["H1", "H4", "D1"]）
+            start_time: 回测开始时间
+            end_time: 回测结束时间
+            warmup_bars: 预热 bar 数量
+
+        Returns:
+            {timeframe: {indicator_name: {field: value}}} 按 TF 分组的最新指标快照
+        """
+        htf_data: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for tf in htf_timeframes:
+            try:
+                warmup = self._data_loader.preload_warmup_bars(
+                    symbol, tf, start_time, warmup_bars
+                )
+                htf_bars = self._data_loader.load_all_bars(
+                    symbol, tf, start_time, end_time
+                )
+                all_htf = warmup + htf_bars
+                if len(all_htf) < 2:
+                    logger.warning(
+                        "Backtest HTF: insufficient bars for %s/%s (%d)",
+                        symbol, tf, len(all_htf),
+                    )
+                    continue
+                indicators = self._compute_indicators(symbol, tf, all_htf)
+                if indicators:
+                    htf_data[tf] = indicators
+                    logger.info(
+                        "Backtest HTF: loaded %d bars for %s/%s, %d indicators",
+                        len(all_htf), symbol, tf, len(indicators),
+                    )
+            except Exception:
+                logger.warning(
+                    "Backtest HTF: failed to load %s/%s", symbol, tf, exc_info=True
+                )
+        return htf_data
 
     def _evaluate_strategies(
         self,

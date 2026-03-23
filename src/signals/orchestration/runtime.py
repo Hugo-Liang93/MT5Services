@@ -332,6 +332,8 @@ class SignalRuntime:
         self,
         item: tuple[str, str, str, Dict[str, Dict[str, float]], Dict[str, Any]],
     ) -> None:
+        # 标记入队时间（monotonic），供消费端检测僵尸事件
+        item[4]["_enqueued_at"] = time.monotonic()
         scope = item[0]
         target_queue = (
             self._confirmed_events if scope == "confirmed" else self._intrabar_events
@@ -1342,6 +1344,25 @@ class SignalRuntime:
         )
         bar_time = self._parse_event_time(metadata.get("bar_time", snapshot_time))
         event_time = bar_time if scope == "confirmed" else snapshot_time
+
+        # 过期事件清理：丢弃队列中停留过久的 intrabar 事件（可能是恢复后的僵尸事件）
+        # 基于 metadata 中的 _enqueued_at 时间戳（入队时间），而非 snapshot_time
+        # 以避免测试或历史回放场景中的误判
+        _enqueued_at_raw = metadata.get("_enqueued_at")
+        if scope == "intrabar" and _enqueued_at_raw is not None:
+            _MAX_INTRABAR_AGE_SECONDS = 300.0
+            try:
+                enqueued_at = float(_enqueued_at_raw)
+                queue_age = time.monotonic() - enqueued_at
+                if queue_age > _MAX_INTRABAR_AGE_SECONDS:
+                    logger.debug(
+                        "Dropping stale intrabar event for %s/%s (queue_age=%.1fs)",
+                        symbol, timeframe, queue_age,
+                    )
+                    self._processed_events += 1
+                    return True
+            except (TypeError, ValueError):
+                pass
         if self.filter_chain is not None and self.filter_chain.session_filter is not None:
             active_sessions = self.filter_chain.session_filter.current_sessions(event_time)
         else:

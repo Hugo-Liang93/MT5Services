@@ -211,16 +211,10 @@ class SignalFilterChain:
         if sessions is None and self.session_filter:
             sessions = self.session_filter.current_sessions(utc_now)
 
+        # 过滤器按 cheapest-first 排列：先做 O(1) 检查，I/O 最贵的放最后
         if self.session_filter and not self.session_filter.is_active_session(utc_now):
             sessions = sessions or self.session_filter.current_sessions(utc_now)
             return False, f"outside_allowed_sessions:{','.join(sessions)}"
-
-        if (
-            self.session_transition_filter
-            and not self.session_transition_filter.is_safe(utc_now)
-        ):
-            transition_name = self.session_transition_filter.active_transition(utc_now)
-            return False, f"session_transition_cooldown:{transition_name}"
 
         if self.spread_filter and not self.spread_filter.is_spread_acceptable(
             spread_points,
@@ -233,15 +227,22 @@ class SignalFilterChain:
                 f"spread_too_wide:{spread_points:.1f}>{threshold:.1f}[{session_label}]",
             )
 
-        if self.economic_filter and not self.economic_filter.is_safe_to_trade(
-            symbol, utc_now
-        ):
-            return False, "economic_event_window"
-
         if (
             self.volatility_filter
             and not self.volatility_filter.is_volatility_acceptable(indicators)
         ):
             return False, "volatility_spike"
+
+        if (
+            self.session_transition_filter
+            and not self.session_transition_filter.is_safe(utc_now)
+        ):
+            transition_name = self.session_transition_filter.active_transition(utc_now)
+            return False, f"session_transition_cooldown:{transition_name}"
+
+        if self.economic_filter and not self.economic_filter.is_safe_to_trade(
+            symbol, utc_now
+        ):
+            return False, "economic_event_window"
 
         return True, ""

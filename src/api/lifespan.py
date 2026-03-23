@@ -70,11 +70,13 @@ def create_lifespan(
         current_started = time.monotonic()
 
         try:
+            # 启动顺序：先 indicator_manager 注册 listener，再启动 ingestor
+            # 避免 ingestor 发出的 bar-close 事件在 indicator_manager 就绪前丢失
             for current_step, starter in [
                 ("storage", container.storage_writer.start),
+                ("indicators", container.indicator_manager.start),
                 ("ingestion", container.ingestor.start),
                 ("economic_calendar", container.economic_calendar_service.start),
-                ("indicators", container.indicator_manager.start),
                 ("signals", container.signal_runtime.start),
             ]:
                 current_started = time.monotonic()
