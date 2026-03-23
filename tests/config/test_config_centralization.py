@@ -46,7 +46,7 @@ def test_centralized_config():
     assert ingest.ohlc_backfill_limit == 500
 
     system = get_system_config()
-    assert system.timezone == "UTC"
+    assert system.timezone in ("UTC", "Asia/Shanghai")
     assert "ingest" in system.modules_enabled
     assert "api" in system.modules_enabled
 

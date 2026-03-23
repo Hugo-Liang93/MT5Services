@@ -37,7 +37,7 @@ This is intentional because the MT5 Python binding uses a global terminal sessio
 - `config/risk.ini`: risk limits and final execution session guard
 - `config/mt5.ini`: MT5 startup account selection and terminal connection
 - `config/db.ini`: PostgreSQL/TimescaleDB connection
-- `config/cache.ini`: cache compatibility settings
+- `config/cache.ini`: runtime cache overrides for in-memory limits
 - `config/signal.ini`: signal runtime, voting, circuit breaker, session spread limits, market structure
 - `config/indicators.json`: indicator pipeline configuration
 
@@ -98,16 +98,24 @@ The runtime now supports a more opinionated XAUUSD intraday profile:
   - `soft_regime_enabled = true` enables probability-weighted regime affinity
   - staged calibration is active: `<50 -> 0.0`, `50-99 -> 0.10`, `100+ -> 0.15`
   - HTF auto-trade filter is soft: conflict `0.70x`, alignment `1.10x`
+- `config/app.ini`
+  - `timezone = Asia/Shanghai`: 统一显示时区（日志时间戳使用此时区）
 - `config/risk.ini`
   - `allowed_sessions`: final trade execution session guard
-  - `daily_loss_limit_pct`: stop new trades after the configured daily loss threshold
+  - `daily_loss_limit_pct = 10.0`: stop new trades after 10% daily loss
+  - `max_open_positions_total = 5`: 总持仓上限
+  - `max_positions_per_symbol = 3`: 每品种持仓上限
+  - `max_volume_per_order = 0.1`: 单笔最大手数
   - `require_sl_for_market_orders = true`: market orders now require an SL by default for XAUUSD intraday safety
 - `config/economic.ini`
   - `trade_guard_mode = block`: high-impact economic windows now block XAUUSD entries by default instead of warn-only
 
-## Phase 4 Runtime Safety
+## Runtime Safety
 
 - `config/signal.ini`
+  - `auto_trade_enabled = true`: 自动交易开关
+  - `auto_trade_require_armed = false`: 无需 armed 状态即可下单（Demo 模式）
+  - `allowed_strategies = trend_vote,reversion_vote,...`: 交易触发白名单
   - `max_concurrent_positions_per_symbol`: signal-driven concurrent position cap per symbol
   - `session_transition_cooldown_minutes`: session handoff cooldown around `13:00 UTC`
   - `end_of_day_close_enabled`, `end_of_day_close_hour_utc`, `end_of_day_close_minute_utc`: UTC end-of-day closeout handled by `PositionManager`

@@ -191,7 +191,7 @@ def test_signal_runtime_processes_confirmed_snapshot_event() -> None:
         "XAUUSD",
         "M5",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     processed = runtime.process_next_event(timeout=0.01)
@@ -550,6 +550,7 @@ def test_signal_runtime_injects_soft_regime_metadata_when_enabled() -> None:
             "adx14": {"adx": 20.5},
             "sma20": {"sma": 201.0},
             "ema50": {"ema": 200.0},
+            "atr14": {"atr": 5.0},
         },
         "confirmed",
     )
@@ -668,7 +669,7 @@ def test_signal_runtime_injects_spread_points_from_market_service() -> None:
         "XAUUSD",
         "M5",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     runtime.process_next_event(timeout=0.01)
@@ -743,7 +744,7 @@ def test_signal_runtime_injects_market_structure_context() -> None:
         "XAUUSD",
         "M5",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     runtime.process_next_event(timeout=0.01)
@@ -863,7 +864,7 @@ def test_signal_runtime_uses_shorter_m1_market_structure_lookback() -> None:
         "XAUUSD",
         "M1",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     runtime.process_next_event(timeout=0.01)
@@ -899,7 +900,7 @@ def test_signal_runtime_skips_market_structure_when_all_strategies_filtered_by_a
         "XAUUSD",
         "M5",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     runtime.process_next_event(timeout=0.01)
@@ -930,7 +931,7 @@ def test_signal_runtime_defers_market_structure_until_strategy_passes_gate() -> 
         "XAUUSD",
         "M5",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     runtime.process_next_event(timeout=0.01)
@@ -967,7 +968,7 @@ def test_signal_runtime_applies_htf_conflict_penalty_to_decision_confidence() ->
         "XAUUSD",
         "M5",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     runtime.process_next_event(timeout=0.01)
@@ -1003,7 +1004,7 @@ def test_signal_runtime_applies_htf_alignment_boost_to_decision_confidence() -> 
         "XAUUSD",
         "M5",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     runtime.process_next_event(timeout=0.01)
@@ -1032,7 +1033,7 @@ def test_signal_runtime_skips_htf_when_direction_fn_is_none() -> None:
         "XAUUSD",
         "M5",
         datetime.now(timezone.utc),
-        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
+        {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}, "atr14": {"atr": 5.0}},
         "confirmed",
     )
     runtime.process_next_event(timeout=0.01)

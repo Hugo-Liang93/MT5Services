@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
@@ -396,15 +397,17 @@ class TradeFrequencyRule(RiskRule):
     name = "trade_frequency"
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._trade_timestamps: List[datetime] = []
 
     def record_trade(self, at: Optional[datetime] = None) -> None:
-        """Record a successful trade execution timestamp."""
+        """Record a successful trade execution timestamp (thread-safe)."""
         now = at or datetime.now(timezone.utc)
-        self._trade_timestamps.append(now)
-        # Prune entries older than 48h to bound memory
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
-        self._trade_timestamps = [t for t in self._trade_timestamps if t > cutoff]
+        with self._lock:
+            self._trade_timestamps.append(now)
+            # Prune entries older than 48h to bound memory
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+            self._trade_timestamps = [t for t in self._trade_timestamps if t > cutoff]
 
     def evaluate(self, context: RuleContext) -> List[RiskCheckResult]:
         if not context.risk_settings.enabled:
@@ -412,11 +415,13 @@ class TradeFrequencyRule(RiskRule):
 
         checks: List[RiskCheckResult] = []
         now = datetime.now(timezone.utc)
+        with self._lock:
+            timestamps = list(self._trade_timestamps)
 
         max_per_day = context.risk_settings.max_trades_per_day
         if max_per_day is not None and max_per_day > 0:
             day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            day_count = sum(1 for t in self._trade_timestamps if t >= day_start)
+            day_count = sum(1 for t in timestamps if t >= day_start)
             if day_count >= max_per_day:
                 checks.append(
                     RiskCheckResult(
@@ -433,7 +438,7 @@ class TradeFrequencyRule(RiskRule):
         max_per_hour = context.risk_settings.max_trades_per_hour
         if max_per_hour is not None and max_per_hour > 0:
             hour_ago = now - timedelta(hours=1)
-            hour_count = sum(1 for t in self._trade_timestamps if t >= hour_ago)
+            hour_count = sum(1 for t in timestamps if t >= hour_ago)
             if hour_count >= max_per_hour:
                 checks.append(
                     RiskCheckResult(

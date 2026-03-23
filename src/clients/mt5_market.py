@@ -133,7 +133,7 @@ class MT5MarketClient(MT5BaseClient):
             ask=ask,
             last=self._normalize_last_price(bid, ask, last),
             volume=float(self._get_field(tick, "volume", 0.0) or 0.0),
-            time=self._market_time_from_seconds(tick.time),
+            time=self._parse_server_timestamp(tick.time),
         )
 
     @MT5BaseClient.measured("get_ticks")
@@ -172,7 +172,7 @@ class MT5MarketClient(MT5BaseClient):
             OHLC(
                 symbol=symbol,
                 timeframe=timeframe,
-                time=self._market_time_from_seconds(self._get_field(rate, "time")),
+                time=self._parse_server_timestamp(self._get_field(rate, "time")),
                 open=self._get_field(rate, "open"),
                 high=self._get_field(rate, "high"),
                 low=self._get_field(rate, "low"),
@@ -187,11 +187,8 @@ class MT5MarketClient(MT5BaseClient):
         """从指定时间开始获取最多 limit 条 K 线，便于补全历史。"""
         self.connect()
         tf = self._timeframe_to_mt5(timeframe)
-        request_start = (
-            start.replace(tzinfo=timezone.utc)
-            if start.tzinfo is None
-            else start.astimezone(timezone.utc)
-        )
+        # MT5 copy_rates_range expects server-local-time; convert request times.
+        request_start = self._market_time_to_request(start)
         request_end = request_start + timedelta(
             seconds=timeframe_seconds(timeframe) * max(limit, 1)
         )
@@ -202,7 +199,8 @@ class MT5MarketClient(MT5BaseClient):
             OHLC(
                 symbol=symbol,
                 timeframe=timeframe,
-                time=datetime.fromtimestamp(float(self._get_field(rate, "time")), tz=timezone.utc),
+                # rate['time'] is broker-server epoch; normalize to UTC.
+                time=self._parse_server_timestamp(self._get_field(rate, "time")),
                 open=self._get_field(rate, "open"),
                 high=self._get_field(rate, "high"),
                 low=self._get_field(rate, "low"),
@@ -247,8 +245,8 @@ class MT5MarketClient(MT5BaseClient):
     def _tick_timestamp(self, tick) -> datetime:
         time_msc = self._get_field(tick, "time_msc")
         if time_msc is not None:
-            return self._market_time_from_milliseconds(int(time_msc))
-        return self._market_time_from_seconds(self._get_field(tick, "time"))
+            return self._parse_server_timestamp_msc(int(time_msc))
+        return self._parse_server_timestamp(self._get_field(tick, "time"))
 
     def _tick_time_msc(self, tick) -> Optional[int]:
         time_msc = self._get_field(tick, "time_msc")

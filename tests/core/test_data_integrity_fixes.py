@@ -216,6 +216,8 @@ def test_mt5_market_client_fetches_forward_ohlc_window_in_utc() -> None:
     client = object.__new__(MT5MarketClient)
     client.settings = SimpleNamespace(server_time_offset_hours=3)
     client._market_time_offset_seconds = 3 * 3600
+    client._configured_market_time_offset_seconds = 3 * 3600
+    client.tz = timezone.utc
     client.metrics = SimpleNamespace(record=lambda *args, **kwargs: None)
     client.connect = lambda: None
     client._timeframe_to_mt5 = lambda timeframe: timeframe
@@ -251,10 +253,12 @@ def test_mt5_market_client_fetches_forward_ohlc_window_in_utc() -> None:
             1,
         )
 
-    assert captured["start"] == datetime(2026, 3, 16, 12, 45, tzinfo=timezone.utc)
-    assert captured["end"] == datetime(2026, 3, 16, 12, 46, tzinfo=timezone.utc)
+    # _market_time_to_request adds the server offset (+3h) to convert UTC → server time
+    assert captured["start"] == datetime(2026, 3, 16, 15, 45, tzinfo=timezone.utc)
+    assert captured["end"] == datetime(2026, 3, 16, 15, 46, tzinfo=timezone.utc)
     assert len(bars) == 1
-    assert bars[0].time == datetime(2026, 3, 16, 12, 45, tzinfo=timezone.utc)
+    # _market_time_from_seconds normalizes server epoch back to UTC (subtracts 3h)
+    assert bars[0].time == datetime(2026, 3, 16, 9, 45, tzinfo=timezone.utc)
 
 
 def test_mt5_base_client_shutdown_resets_inferred_market_time_offset() -> None:
