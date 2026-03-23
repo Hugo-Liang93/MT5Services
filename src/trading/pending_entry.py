@@ -537,9 +537,13 @@ class PendingEntryManager:
         )
 
         # 用实际成交价更新 TradeParameters（frozen dataclass → replace）
+        # SL/TP 随 fill_price 等距平移，保持原始 ATR 距离不变
+        price_shift = fill_price - entry.trade_params.entry_price
         updated_params = dataclasses.replace(
             entry.trade_params,
             entry_price=fill_price,
+            stop_loss=round(entry.trade_params.stop_loss + price_shift, 2),
+            take_profit=round(entry.trade_params.take_profit + price_shift, 2),
         )
 
         # 入队给 fill_worker 执行（不在 monitor 线程中直接调用 execute_fn）

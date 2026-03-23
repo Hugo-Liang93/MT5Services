@@ -620,6 +620,12 @@ def get_trade_outcome_tracker() -> TradeOutcomeTracker:
     return _c.trade_outcome_tracker
 
 
+def get_pending_entry_manager() -> PendingEntryManager:
+    _ensure_initialized()
+    assert _c.pending_entry_manager is not None
+    return _c.pending_entry_manager
+
+
 def get_health_monitor_instance():
     _ensure_initialized()
     return _c.health_monitor

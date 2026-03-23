@@ -137,6 +137,12 @@ def create_lifespan(
                 container.signal_runtime,
                 ["status"],
             )
+            if getattr(container, "pending_entry_manager", None) is not None:
+                container.monitoring_manager.register_component(
+                    "pending_entry",
+                    container.pending_entry_manager,
+                    ["pending_entry"],
+                )
             container.monitoring_manager.start()
             mark_startup_step("monitoring", "ready", current_started)
             record_runtime_task_status(

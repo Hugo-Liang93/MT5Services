@@ -14,6 +14,7 @@ from src.api.deps import (
     get_indicator_manager,
     get_ingestor,
     get_monitoring_manager_instance,
+    get_pending_entry_manager,
     get_runtime_task_status,
     get_startup_status,
     get_trading_service,
@@ -615,4 +616,51 @@ async def get_runtime_tasks(component: str | None = None, task_name: str | None 
         }
     except Exception as e:
         logger.error(f"Failed to get runtime task status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pending Entry（价格确认入场）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/pending-entries", summary="查询所有挂起的入场意图")
+async def get_pending_entries() -> ApiResponse[Dict[str, Any]]:
+    """返回当前所有挂起的 PendingEntry 及统计数据。"""
+    try:
+        mgr = get_pending_entry_manager()
+        return ApiResponse.success_response(data=mgr.status())
+    except Exception as e:
+        logger.error("Failed to get pending entries: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pending-entries/{signal_id}/cancel", summary="取消指定的挂起入场")
+async def cancel_pending_entry(signal_id: str, reason: str = "api") -> ApiResponse[Dict[str, Any]]:
+    """取消指定 signal_id 的挂起入场意图。"""
+    try:
+        mgr = get_pending_entry_manager()
+        cancelled = mgr.cancel(signal_id, reason=reason)
+        return ApiResponse.success_response(
+            data={"cancelled": cancelled, "signal_id": signal_id, "reason": reason},
+        )
+    except Exception as e:
+        logger.error("Failed to cancel pending entry %s: %s", signal_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pending-entries/cancel-by-symbol", summary="按品种取消所有挂起入场")
+async def cancel_pending_entries_by_symbol(
+    symbol: str,
+    reason: str = "api",
+) -> ApiResponse[Dict[str, Any]]:
+    """取消指定品种的所有挂起入场意图。"""
+    try:
+        mgr = get_pending_entry_manager()
+        count = mgr.cancel_by_symbol(symbol, reason=reason)
+        return ApiResponse.success_response(
+            data={"cancelled_count": count, "symbol": symbol, "reason": reason},
+        )
+    except Exception as e:
+        logger.error("Failed to cancel pending entries for %s: %s", symbol, e)
         raise HTTPException(status_code=500, detail=str(e))

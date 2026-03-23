@@ -322,14 +322,14 @@ class TestPendingEntryManager:
         execute_fn.assert_called_once()
         assert mgr._stats["total_filled"] == 1
 
-    def test_fill_updates_entry_price(self) -> None:
-        """填单时 TradeParameters.entry_price 应更新为实际成交价。"""
+    def test_fill_updates_entry_price_and_shifts_sl_tp(self) -> None:
+        """填单时 entry_price/SL/TP 均应随实际成交价等距平移。"""
         execute_fn = MagicMock()
         market = FakeMarketService(FakeQuote(ask=2650.50, bid=2650.20))
         mgr = self._make_manager(market_service=market, execute_fn=execute_fn)
 
         pending = self._make_pending(entry_low=2649.0, entry_high=2651.0)
-        original_entry_price = pending.trade_params.entry_price
+        original = pending.trade_params
         mgr.submit(pending)
 
         mgr.start()
@@ -337,12 +337,20 @@ class TestPendingEntryManager:
         mgr.shutdown()
 
         execute_fn.assert_called_once()
-        # 第二个参数是 updated TradeParameters
-        call_args = execute_fn.call_args
-        updated_params = call_args[0][1]
+        updated_params = execute_fn.call_args[0][1]
         # 成交价应为 ask (buy) = 2650.50，而非原始 2650.0
-        assert updated_params.entry_price == 2650.50
-        assert updated_params.entry_price != original_entry_price
+        fill_price = 2650.50
+        price_shift = fill_price - original.entry_price  # +0.50
+        assert updated_params.entry_price == fill_price
+        assert updated_params.stop_loss == round(original.stop_loss + price_shift, 2)
+        assert updated_params.take_profit == round(original.take_profit + price_shift, 2)
+        # SL/TP 距离保持不变
+        assert abs(updated_params.entry_price - updated_params.stop_loss) == pytest.approx(
+            abs(original.entry_price - original.stop_loss), abs=0.01
+        )
+        assert abs(updated_params.take_profit - updated_params.entry_price) == pytest.approx(
+            abs(original.take_profit - original.entry_price), abs=0.01
+        )
 
     def test_no_fill_when_price_outside_zone(self) -> None:
         execute_fn = MagicMock()
