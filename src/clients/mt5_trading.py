@@ -677,7 +677,7 @@ class MT5TradingClient(MT5BaseClient):
         lookback_days: int = 7,
     ) -> Optional[dict[str, Any]]:
         self.connect()
-        end_time = datetime.now(timezone.utc)
+        end_time = self._server_now()
         start_time = end_time - timedelta(days=max(1, int(lookback_days)))
         deals = mt5.history_deals_get(start_time, end_time)
         if deals is None:
@@ -715,9 +715,9 @@ class MT5TradingClient(MT5BaseClient):
         deal = matched[-1]
         close_time_msc = getattr(deal, "time_msc", None)
         close_time = (
-            self._market_time_from_milliseconds(int(close_time_msc))
+            self._parse_server_timestamp_msc(int(close_time_msc))
             if close_time_msc
-            else self._market_time_from_seconds(float(getattr(deal, "time", 0) or 0))
+            else self._parse_server_timestamp(float(getattr(deal, "time", 0) or 0))
         )
         return {
             "ticket": int(ticket),

@@ -32,7 +32,17 @@ from ..evaluation.regime import (
 from ..execution.filters import SignalFilterChain
 from ..models import SignalEvent
 from ..service import SignalModule
+from .htf_resolver import compute_htf_alignment, parse_htf_config, resolve_htf_indicators
 from .policy import RuntimeSignalState, SignalPolicy
+from .state_machine import (
+    build_transition_metadata,
+    mark_emitted as _sm_mark_emitted,
+    should_emit as _sm_should_emit,
+    should_evaluate_snapshot as _sm_should_evaluate_snapshot,
+    snapshot_signature as _sm_snapshot_signature,
+    transition_confirmed,
+    transition_preview,
+)
 from .voting import StrategyVotingEngine
 
 if TYPE_CHECKING:
@@ -204,6 +214,7 @@ class SignalRuntime:
         self._run_count = 0
         self._processed_events = 0
         self._dropped_events = 0
+        self._warmup_skipped = 0
         # 保护 _state_by_target 的锁：background loop 写入，status()/API线程读取，
         # 必须避免并发迭代导致 "dictionary changed size during iteration"
         self._state_lock = threading.Lock()
@@ -219,7 +230,7 @@ class SignalRuntime:
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
         self._affinity_gates_skipped: int = 0
-        self._htf_stale_warnings: int = 0
+        self._htf_stale_counter: list[int] = [0]
         # 预初始化 event impact 缓存（避免竞态条件下的 getattr 延迟初始化）
         self._event_impact_cache: Dict[str, Any] = {
             "data": None,
@@ -293,6 +304,38 @@ class SignalRuntime:
             return
         if scope == "intrabar" and not self.enable_intrabar:
             return
+        # Warmup guard: skip signal evaluation for stale bars.
+        # During backfill, hundreds of historical bars flood the queue.
+        # These have no trading value and block real-time signal processing.
+        # Threshold: max(10× timeframe period, 15 min) — generous enough
+        # for normal processing latency, strict enough to block bulk backfill.
+        if scope == "confirmed":
+            bt = bar_time if bar_time.tzinfo else bar_time.replace(tzinfo=timezone.utc)
+            bar_age = (datetime.now(timezone.utc) - bt.astimezone(timezone.utc)).total_seconds()
+            max_age = timeframe_seconds(timeframe) * 10
+            if bar_age > max(max_age, 900):  # at least 15 min tolerance
+                self._warmup_skipped += 1
+                if self._warmup_skipped <= 5 or self._warmup_skipped % 200 == 0:
+                    logger.info(
+                        "Warmup skip: %s/%s bar_time=%s age=%.0fs > %ds (total_skipped=%d)",
+                        symbol, timeframe, bar_time.isoformat(),
+                        bar_age, max(max_age, 300), self._warmup_skipped,
+                    )
+                return
+            # Indicator readiness: ATR is required for trade execution.
+            # If the snapshot doesn't include atr14, indicators haven't
+            # fully warmed up yet — skip to avoid wasting the first
+            # state_changed=true transition on an un-executable signal.
+            required = getattr(self.policy, "warmup_required_indicators", ("atr14",))
+            if required and any(ind not in indicators for ind in required):
+                self._warmup_skipped += 1
+                if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
+                    missing = [ind for ind in required if ind not in indicators]
+                    logger.info(
+                        "Warmup skip (indicators missing: %s): %s/%s (total_skipped=%d)",
+                        missing, symbol, timeframe, self._warmup_skipped,
+                    )
+                return
         metadata = {
             "scope": scope,
             "bar_time": bar_time.isoformat(),
@@ -452,7 +495,8 @@ class SignalRuntime:
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
             "affinity_gates_skipped": self._affinity_gates_skipped,
-            "htf_stale_warnings": self._htf_stale_warnings,
+            "htf_stale_warnings": self._htf_stale_counter[0],
+            "warmup_skipped": self._warmup_skipped,
             # 持锁做快照再迭代，避免 background loop 同时写入导致 RuntimeError
             **self._count_active_states(),
         }
@@ -572,19 +616,20 @@ class SignalRuntime:
             parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
         )
 
+    @staticmethod
     def _build_transition_metadata(
-        self,
         metadata: Dict[str, Any],
         *,
         signal_state: str,
         state_changed: bool,
         previous_state: str,
     ) -> Dict[str, Any]:
-        enriched = dict(metadata)
-        enriched["signal_state"] = signal_state
-        enriched["state_changed"] = state_changed
-        enriched["previous_state"] = previous_state
-        return enriched
+        return build_transition_metadata(
+            metadata,
+            signal_state=signal_state,
+            state_changed=state_changed,
+            previous_state=previous_state,
+        )
 
     def _restore_state(self) -> None:
         recent_signals = getattr(self.service, "recent_signals", None)
@@ -692,8 +737,8 @@ class SignalRuntime:
         state.last_emitted_at = generated_at
         state.last_emitted_bar_time = bar_time
 
+    @staticmethod
     def _should_emit(
-        self,
         state: RuntimeSignalState,
         signal_state: str,
         event_time: datetime,
@@ -701,35 +746,20 @@ class SignalRuntime:
         *,
         cooldown_seconds: float,
     ) -> bool:
-        if state.last_emitted_state != signal_state:
-            return True
-        if state.last_emitted_bar_time != bar_time:
-            return True
-        if state.last_emitted_at is None:
-            return True
-        return (event_time - state.last_emitted_at).total_seconds() >= cooldown_seconds
+        return _sm_should_emit(state, signal_state, event_time, bar_time, cooldown_seconds=cooldown_seconds)
 
+    @staticmethod
     def _mark_emitted(
-        self,
         state: RuntimeSignalState,
         signal_state: str,
         event_time: datetime,
         bar_time: datetime,
     ) -> None:
-        state.last_emitted_state = signal_state
-        state.last_emitted_at = event_time
-        state.last_emitted_bar_time = bar_time
+        _sm_mark_emitted(state, signal_state, event_time, bar_time)
 
     @staticmethod
     def _snapshot_signature(indicators: Dict[str, Dict[str, float]]) -> int:
-        """O(n) hash：用 frozenset 替代 O(n log n) sorted tuple，热路径性能提升 30-50%。"""
-        return hash(
-            frozenset(
-                (name, frozenset(payload.items()))
-                for name, payload in indicators.items()
-                if isinstance(payload, dict)
-            )
-        )
+        return _sm_snapshot_signature(indicators)
 
     def _should_evaluate_snapshot(
         self,
@@ -740,77 +770,24 @@ class SignalRuntime:
         bar_time: datetime,
         indicators: Dict[str, Dict[str, float]],
     ) -> bool:
-        signature = self._snapshot_signature(indicators)
-        if (
-            state.last_snapshot_scope == scope
-            and state.last_snapshot_bar_time == bar_time
-            and state.last_snapshot_signature == signature
-        ):
-            previous_snapshot_time = state.last_snapshot_time
-            if scope == "confirmed":
-                return False
-            if previous_snapshot_time is not None:
-                elapsed = abs((event_time - previous_snapshot_time).total_seconds())
-                if elapsed < self.policy.snapshot_dedupe_window_seconds:
-                    return False
-        state.last_snapshot_scope = scope
-        state.last_snapshot_bar_time = bar_time
-        state.last_snapshot_signature = signature
-        state.last_snapshot_time = event_time
-        return True
+        return _sm_should_evaluate_snapshot(
+            state,
+            scope=scope,
+            event_time=event_time,
+            bar_time=bar_time,
+            indicators=indicators,
+            dedupe_window_seconds=self.policy.snapshot_dedupe_window_seconds,
+        )
 
+    @staticmethod
     def _transition_confirmed(
-        self,
         state: RuntimeSignalState,
         decision_action: str,
         event_time: datetime,
         bar_time: datetime,
         metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        previous_state = state.confirmed_state
-        # 在清除 preview 状态前保存快照，供 TradeExecutor require_armed 检查使用。
-        # confirmed 事件的 previous_state 是上一次 confirmed_state（idle/confirmed_buy 等），
-        # 永远不含 "armed"，若不单独传递 preview 状态则 require_armed=True 会阻断所有首次自动交易。
-        preview_state_at_close = state.preview_state
-        state.preview_state = "idle"
-        state.preview_action = None
-        state.preview_since = None
-        state.preview_bar_time = None
-
-        if decision_action not in {"buy", "sell"}:
-            if previous_state != "idle":
-                signal_state = "confirmed_cancelled"
-                state.confirmed_state = "idle"
-                state.confirmed_bar_time = bar_time
-                self._mark_emitted(state, signal_state, event_time, bar_time)
-                result = self._build_transition_metadata(
-                    metadata,
-                    signal_state=signal_state,
-                    state_changed=True,
-                    previous_state=previous_state,
-                )
-                result["preview_state_at_close"] = preview_state_at_close
-                return result
-            state.confirmed_state = "idle"
-            state.confirmed_bar_time = bar_time
-            return None
-
-        signal_state = f"confirmed_{decision_action}"
-        state.confirmed_state = signal_state
-        state.confirmed_bar_time = bar_time
-        if not self._should_emit(
-            state, signal_state, event_time, bar_time, cooldown_seconds=0.0
-        ):
-            return None
-        self._mark_emitted(state, signal_state, event_time, bar_time)
-        result = self._build_transition_metadata(
-            metadata,
-            signal_state=signal_state,
-            state_changed=signal_state != previous_state,
-            previous_state=previous_state,
-        )
-        result["preview_state_at_close"] = preview_state_at_close
-        return result
+        return transition_confirmed(state, decision_action, event_time, bar_time, metadata)
 
     def _transition_preview(
         self,
@@ -821,94 +798,18 @@ class SignalRuntime:
         bar_time: datetime,
         metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        previous_state = state.preview_state
-        if state.preview_bar_time is not None and state.preview_bar_time != bar_time:
-            state.preview_state = "idle"
-            state.preview_action = None
-            state.preview_since = None
-
-        bar_progress = float(metadata.get("bar_progress", 0.0) or 0.0)
-        actionable = (
-            decision_action in {"buy", "sell"}
-            and confidence >= self.policy.min_preview_confidence
-            and bar_progress >= self.policy.min_preview_bar_progress
-        )
-        state.preview_bar_time = bar_time
-
-        if not actionable:
-            if previous_state == "idle":
-                return None
-            state.preview_state = "idle"
-            state.preview_action = None
-            state.preview_since = None
-            signal_state = "cancelled"
-            if not self._should_emit(
-                state,
-                signal_state,
-                event_time,
-                bar_time,
-                cooldown_seconds=self.policy.preview_cooldown_seconds,
-            ):
-                return None
-            self._mark_emitted(state, signal_state, event_time, bar_time)
-            return self._build_transition_metadata(
-                metadata,
-                signal_state=signal_state,
-                state_changed=True,
-                previous_state=previous_state,
-            )
-
-        if state.preview_action != decision_action:
-            state.preview_action = decision_action
-            state.preview_since = event_time
-            state.preview_state = f"preview_{decision_action}"
-            signal_state = state.preview_state
-            if not self._should_emit(
-                state,
-                signal_state,
-                event_time,
-                bar_time,
-                cooldown_seconds=self.policy.preview_cooldown_seconds,
-            ):
-                return None
-            self._mark_emitted(state, signal_state, event_time, bar_time)
-            return self._build_transition_metadata(
-                metadata,
-                signal_state=signal_state,
-                state_changed=signal_state != previous_state,
-                previous_state=previous_state,
-            )
-
-        if state.preview_since is None:
-            state.preview_since = event_time
-            return None
-
-        stable_seconds = (event_time - state.preview_since).total_seconds()
-        if stable_seconds < self.policy.min_preview_stable_seconds:
-            return None
-
-        signal_state = f"armed_{decision_action}"
-        if state.preview_state == signal_state:
-            return None
-
-        state.preview_state = signal_state
-        if not self._should_emit(
+        return transition_preview(
             state,
-            signal_state,
+            decision_action,
+            confidence,
             event_time,
             bar_time,
-            cooldown_seconds=self.policy.preview_cooldown_seconds,
-        ):
-            return None
-        self._mark_emitted(state, signal_state, event_time, bar_time)
-        enriched = self._build_transition_metadata(
             metadata,
-            signal_state=signal_state,
-            state_changed=signal_state != previous_state,
-            previous_state=previous_state,
+            min_preview_confidence=self.policy.min_preview_confidence,
+            min_preview_bar_progress=self.policy.min_preview_bar_progress,
+            min_preview_stable_seconds=self.policy.min_preview_stable_seconds,
+            preview_cooldown_seconds=self.policy.preview_cooldown_seconds,
         )
-        enriched["preview_stable_seconds"] = stable_seconds
-        return enriched
 
     def _get_shard_lock(self, symbol: str, timeframe: str) -> threading.Lock:
         """懒初始化并返回 (symbol, timeframe) 对应的分片锁。
@@ -1135,10 +1036,17 @@ class SignalRuntime:
             if transition_metadata is None:
                 continue
 
-            record = self.service.persist_decision(
-                decision, indicators=scoped_indicators, metadata=transition_metadata
-            )
-            signal_id = record.signal_id if record is not None else ""
+            # Only persist state-changing events to DB (skip repeated same-state signals).
+            # This reduces ~95% of signal_events writes while keeping all data needed
+            # for calibration (signal_outcomes), performance tracking, and trade execution.
+            # Listeners (_publish_signal_event) still receive ALL transitions for real-time use.
+            signal_id = ""
+            if transition_metadata.get("state_changed", True):
+                record = self.service.persist_decision(
+                    decision, indicators=scoped_indicators, metadata=transition_metadata
+                )
+                signal_id = record.signal_id if record is not None else ""
+
             # 发布事件时携带全量 indicators（而非 scoped），
             # 使 TradeExecutor 等监听器能访问 ATR 等非策略核心但下单必需的指标。
             self._publish_signal_event(
@@ -1227,10 +1135,12 @@ class SignalRuntime:
             )
         )
         if transition_metadata is not None:
-            record = self.service.persist_decision(
-                vote_result, indicators=indicators, metadata=transition_metadata
-            )
-            signal_id = record.signal_id if record is not None else ""
+            signal_id = ""
+            if transition_metadata.get("state_changed", True):
+                record = self.service.persist_decision(
+                    vote_result, indicators=indicators, metadata=transition_metadata
+                )
+                signal_id = record.signal_id if record is not None else ""
             self._publish_signal_event(
                 vote_result, signal_id, scope, indicators, transition_metadata
             )
@@ -1455,71 +1365,26 @@ class SignalRuntime:
         action: str,
         scope: str,
     ) -> tuple[Optional[float], Optional[str]]:
-        """Compute HTF alignment multiplier with strength weighting.
-
-        Returns ``(None, None)`` when no HTF data is available.
-        Uses enriched context (confidence, regime, stable_bars) when
-        ``htf_context_fn`` is provided; otherwise falls back to the
-        simple direction-only ``htf_direction_fn``.
-        """
-        # Try enriched context first
-        if self._htf_context_fn is not None:
-            ctx = self._htf_context_fn(symbol, timeframe)
-            if ctx is not None:
-                aligned = ctx.direction == action
-                base = self._htf_alignment_boost if aligned else self._htf_conflict_penalty
-
-                # Strength weighting: high-confidence HTF signal amplifies effect
-                strength = 1.0 + (ctx.confidence - 0.5) * self._htf_strength_coeff
-                # Stability weighting: direction held for more bars amplifies effect
-                stability = min(
-                    1.0 + (ctx.stable_bars - 1) * self._htf_stability_per_bar,
-                    self._htf_stability_cap,
-                )
-
-                raw_mul = base * strength * stability
-
-                # Intrabar: reduced-strength modification (signal not yet confirmed)
-                if scope == "intrabar":
-                    raw_mul = 1.0 + (raw_mul - 1.0) * self._htf_intrabar_ratio
-
-                return raw_mul, ctx.direction
-
-        # Fallback: simple direction-only
-        if self._htf_direction_fn is not None:
-            htf_dir = self._htf_direction_fn(symbol, timeframe)
-            if htf_dir is not None:
-                base = (
-                    self._htf_alignment_boost
-                    if htf_dir == action
-                    else self._htf_conflict_penalty
-                )
-                if scope == "intrabar":
-                    base = 1.0 + (base - 1.0) * self._htf_intrabar_ratio
-                return base, htf_dir
-
-        return None, None
+        return compute_htf_alignment(
+            symbol,
+            timeframe,
+            action,
+            scope,
+            htf_context_fn=self._htf_context_fn,
+            htf_direction_fn=self._htf_direction_fn,
+            alignment_boost=self._htf_alignment_boost,
+            conflict_penalty=self._htf_conflict_penalty,
+            strength_coeff=self._htf_strength_coeff,
+            stability_per_bar=self._htf_stability_per_bar,
+            stability_cap=self._htf_stability_cap,
+            intrabar_ratio=self._htf_intrabar_ratio,
+        )
 
     @staticmethod
     def _parse_htf_config(
         raw: Dict[str, str],
     ) -> dict[str, dict[str, list[str]]]:
-        """解析 INI ``[strategy_htf]`` 为按策略分组的 {strategy: {tf: [indicators]}}。
-
-        INI 格式: ``strategy.indicator = TF``
-        例: ``supertrend.adx14 = H1`` → {"supertrend": {"H1": ["adx14"]}}
-        """
-        result: dict[str, dict[str, list[str]]] = {}
-        for compound_key, tf_value in raw.items():
-            parts = compound_key.split(".", 1)
-            if len(parts) != 2:
-                continue
-            strategy_name, indicator_name = parts[0].strip(), parts[1].strip()
-            tf = tf_value.strip().upper()
-            if not strategy_name or not indicator_name or not tf:
-                continue
-            result.setdefault(strategy_name, {}).setdefault(tf, []).append(indicator_name)
-        return result
+        return parse_htf_config(raw)
 
     def _resolve_htf_indicators(
         self,
@@ -1527,46 +1392,14 @@ class SignalRuntime:
         current_tf: str,
         htf_spec: dict[str, list[str]],
     ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """按 INI 配置按需查询 HTF 指标，返回 {tf: {ind: {field: val}}}。
-
-        Staleness check: 若 HTF 指标的 bar_time 距当前超过 2× HTF 周期，
-        视为陈旧数据，跳过注入并记 warning。策略代码无需感知。
-        """
-        now_utc = datetime.now(timezone.utc)
-        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        for tf, indicator_names in htf_spec.items():
-            if tf == current_tf.upper():
-                continue
-            if tf not in self._configured_timeframes:
-                continue
-            max_age = timedelta(seconds=timeframe_seconds(tf) * 2)
-            tf_indicators: Dict[str, Dict[str, Any]] = {}
-            for ind_name in indicator_names:
-                ind_data = self._get_htf_indicator(symbol, tf, ind_name)
-                if ind_data is None:
-                    continue
-                # Staleness check via _bar_time metadata
-                bar_time_str = ind_data.get("_bar_time")
-                if bar_time_str:
-                    try:
-                        bar_time_val = datetime.fromisoformat(bar_time_str)
-                        if bar_time_val.tzinfo is None:
-                            bar_time_val = bar_time_val.replace(tzinfo=timezone.utc)
-                        age = now_utc - bar_time_val
-                        if age > max_age:
-                            self._htf_stale_warnings += 1
-                            logger.warning(
-                                "HTF indicator %s/%s/%s stale: bar_time=%s age=%s > max=%s, skipping (total=%d)",
-                                symbol, tf, ind_name, bar_time_str, age, max_age,
-                                self._htf_stale_warnings,
-                            )
-                            continue
-                    except (ValueError, TypeError):
-                        pass  # parse failure: inject anyway
-                tf_indicators[ind_name] = ind_data
-            if tf_indicators:
-                result[tf] = tf_indicators
-        return result
+        return resolve_htf_indicators(
+            symbol,
+            current_tf,
+            htf_spec,
+            self._configured_timeframes,
+            self._get_htf_indicator,
+            self._htf_stale_counter,
+        )
 
     def _get_htf_indicator(
         self,

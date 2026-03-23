@@ -193,6 +193,11 @@ class MT5BaseClient:
         return self._to_tz(self._normalize_market_time(raw_utc))
 
     def _market_time_to_request(self, dt: datetime) -> datetime:
+        """Convert a UTC datetime to MT5 server-local time for API requests.
+
+        All ``mt5.copy_*``, ``mt5.history_*`` APIs expect server-local time.
+        Use this before passing time parameters to any MT5 API.
+        """
         if dt.tzinfo is None:
             utc_dt = dt.replace(tzinfo=timezone.utc)
         else:
@@ -201,6 +206,29 @@ class MT5BaseClient:
         if not offset_seconds:
             return utc_dt
         return utc_dt + timedelta(seconds=offset_seconds)
+
+    def _server_now(self) -> datetime:
+        """Return ``datetime.now()`` in MT5 server time, for use with MT5 APIs."""
+        return self._market_time_to_request(datetime.now(timezone.utc))
+
+    def _request_time_range(
+        self, start_utc: datetime, end_utc: datetime,
+    ) -> tuple[datetime, datetime]:
+        """Convert a UTC time range to server time for MT5 API requests."""
+        return self._market_time_to_request(start_utc), self._market_time_to_request(end_utc)
+
+    def _parse_server_timestamp(self, epoch_seconds: float) -> datetime:
+        """Convert an MT5 server-time epoch to a normalized UTC datetime.
+
+        MT5 APIs return timestamps as epoch seconds in server-local time.
+        This method applies the detected offset to normalize back to UTC.
+        Use this for all ``rate['time']``, ``deal.time``, ``order.time_setup`` etc.
+        """
+        return self._market_time_from_seconds(epoch_seconds)
+
+    def _parse_server_timestamp_msc(self, epoch_msc: int) -> datetime:
+        """Convert an MT5 server-time millisecond epoch to normalized UTC."""
+        return self._market_time_from_milliseconds(epoch_msc)
 
     def _get_field(self, obj, name: str, default=None):
         """兼容 numpy.void/dict/对象字段，返回基础类型值。"""

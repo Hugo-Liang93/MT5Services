@@ -43,11 +43,14 @@ MT5Services/
 │   ├── indicators.json       # 指标定义与计算流水线
 │   └── composites.json       # 复合策略组合定义
 ├── src/
-│   ├── api/                  # FastAPI 路由、中间件、Schema、DI 容器
+│   ├── app_runtime/          # 应用运行时（从 deps.py 拆分）
+│   │   ├── container.py      # AppContainer：纯组件持有（flat dataclass，无逻辑）
+│   │   ├── builder.py        # build_app_container()：构建所有组件（不启动线程）
+│   │   └── runtime.py        # AppRuntime：start/stop 生命周期管理
+│   ├── api/                  # FastAPI 路由、中间件、Schema、DI 适配层
 │   │   ├── factories/        # 组件工厂函数（market/storage/trading/signals/indicators）
-│   │   ├── trade_dispatcher.py # TradeAPIDispatcher 统一交易调度入口
-│   │   └── lifespan.py       # 启动/关闭生命周期管理
-│   ├── calendar/             # 经济日历服务（原 src/core/economic_calendar_service.py）
+│   │   └── trade_dispatcher.py # TradeAPIDispatcher 统一交易调度入口
+│   ├── calendar/             # 经济日历服务
 │   │   └── economic_calendar/ # calendar_sync / trade_guard / observability
 │   ├── clients/              # MT5 客户端封装（行情、交易、账户）
 │   ├── config/               # 配置加载、合并、Pydantic 模型
@@ -77,7 +80,7 @@ MT5Services/
 │   │   └── monitoring/       # 指标监控
 │   │       └── metrics_collector.py  # 计算耗时收集器
 │   ├── ingestion/            # 后台 Tick/OHLC/Intrabar 数据采集
-│   ├── market/               # MarketDataService（原 src/core/market_service.py）
+│   ├── market/               # MarketDataService
 │   ├── market_structure/     # 市场结构分析器（MarketStructureAnalyzer）
 │   │   └── models.py         # MarketStructureContext 数据类
 │   ├── monitoring/           # 健康检查
@@ -187,22 +190,21 @@ code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默
 
 ### Startup Sequence
 
-组件按以下顺序初始化（见 `src/api/lifespan.py` + `src/api/deps.py`）：
+组件初始化分为两个阶段（见 `src/app_runtime/`）：
 
-1. **StorageWriter** — TimescaleDB 多通道队列写入器
-2. **MarketDataService** — 内存行情缓存（`src/market/`）
-3. **BackgroundIngestor** — 后台行情数据采集线程
-4. **EconomicCalendarService** — 日历同步（`src/calendar/`）
-5. **UnifiedIndicatorManager** — 统一指标编排器
-6. **MarketStructureAnalyzer** — 市场结构分析器（`src/market_structure/`）
-7. **StrategyPerformanceTracker** — 日内策略绩效追踪（`src/signals/evaluation/performance.py`）
-8. **SignalModule** — 策略注册与评估引擎
-9. **SignalRuntime** — 事件驱动信号运行时（`src/signals/orchestration/`）
-10. **TradeExecutor** — 信号自动交易执行器（回调注入 PerformanceTracker）
-11. **PositionManager** — 持仓监控与管理
-12. **MonitoringManager** — 健康检查与巡检
+**构建阶段**（`build_app_container()` — 不启动线程）：
+1. **MarketDataService** → **StorageWriter** → 连接 → **BackgroundIngestor** → **UnifiedIndicatorManager**
+2. **EconomicCalendarService** → **TradingAccountRegistry** → **TradingModule**
+3. **SignalModule** + 策略注册 → **SignalRuntime** → **TradeExecutor** → listener 连接
+4. **HealthMonitor** → **MonitoringManager**
 
-关闭顺序相反。所有组件作为单例通过 `_Container` 类（`src/api/deps.py`）访问，通过 `FastAPI.Depends()` 在路由处理器中暴露。
+**启动阶段**（`AppRuntime.start()` — 按序启动后台线程）：
+1. StorageWriter.start() → IndicatorManager.start() → Ingestor.start()
+2. EconomicCalendarService.start() → SignalRuntime.start()
+3. Calibrator 热启动 → PendingEntryManager.start() → PositionManager.start()
+4. MonitoringManager 注册组件 + start()
+
+关闭顺序相反（信号源 → 执行层 → 数据层）。所有组件通过 `AppContainer`（`src/app_runtime/container.py`）持有，`src/api/deps.py` 仅作为 FastAPI DI 适配层暴露 getter 函数。
 
 ### Data Flow
 
@@ -289,8 +291,10 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 
 | 文件 | 职责 |
 |------|------|
-| `src/api/deps.py` | `_Container` DI 容器（按域拆分：Market/Signal/Trading/Monitoring 4 个子容器 + property 代理向后兼容） |
-| `src/api/lifespan.py` | 启动/关闭生命周期（`shutdown_components`） |
+| `src/app_runtime/container.py` | `AppContainer`：纯组件持有（flat dataclass，`__slots__`，可多实例） |
+| `src/app_runtime/builder.py` | `build_app_container()`：构建所有组件并连接依赖（不启动线程） |
+| `src/app_runtime/runtime.py` | `AppRuntime`：start/stop 生命周期管理（启动/关闭所有后台线程） |
+| `src/api/deps.py` | FastAPI DI 适配层（getter 函数 + lifespan，委托 `app_runtime`） |
 | `src/api/factories/` | 各组件工厂函数（market/storage/trading/signals/indicators） |
 | `src/api/__init__.py` | FastAPI app、CORS、API key 认证、路由注册 |
 | `src/api/trade_dispatcher.py` | TradeAPIDispatcher：统一交易 API 调度入口，减少路由层重复逻辑 |
@@ -1004,7 +1008,7 @@ Authentication: `X-API-Key` 请求头（在 `config/market.ini` 中配置）
 | economic | `/economic` | `/economic/calendar`, `/economic/calendar/risk-windows`, `/economic/calendar/trade-guard` |
 | indicators | `/indicators` | `/indicators/list`, `/indicators/{symbol}/{timeframe}`, `/indicators/compute` |
 | monitoring | `/monitoring` | `/monitoring/health`, `/monitoring/startup`, `/monitoring/queues`, `/monitoring/config/effective` |
-| signal | `/signal` | 信号查询、诊断、策略列表、投票信息、**`/monitoring/quality/{symbol}/{timeframe}`**（Regime + 信号质量） |
+| signal | `/signals` | 信号查询、诊断、策略列表、投票信息、**`/signals/monitoring/quality/{symbol}/{timeframe}`**（Regime + 信号质量） |
 
 响应通用包装器：
 ```python
@@ -1106,11 +1110,12 @@ from src.config import get_trading_config, get_api_config, get_db_config
 
 ### Dependency Injection
 
-向 `src/api/deps.py` 添加新服务组件：
-- 在 `_Container` 类中添加字段（`Optional[YourService] = None`）
+向系统添加新服务组件：
+- 在 `src/app_runtime/container.py` 的 `AppContainer` 中添加字段
 - 在 `src/api/factories/` 中添加对应工厂函数
-- 在 `src/api/lifespan.py` 的 `shutdown_components()` 中注册关闭逻辑
-- 通过 `FastAPI.Depends()` 在路由处理器中暴露
+- 在 `src/app_runtime/builder.py` 的 `build_app_container()` 中构建组件
+- 在 `src/app_runtime/runtime.py` 的 `AppRuntime.stop()` 中注册关闭逻辑
+- 在 `src/api/deps.py` 中添加 getter 函数，通过 `FastAPI.Depends()` 暴露
 
 ---
 
@@ -1197,7 +1202,12 @@ flake8 src/ tests/
 - **API 风控错误码细化**：`MARGIN_INSUFFICIENT_PRE` / `TRADE_FREQUENCY_LIMITED` / `POSITION_LIMIT_REACHED` / `SESSION_WINDOW_BLOCKED` 独立错误码，按 `rule_name` 映射
 - **Intrabar 衰减策略级差异化**：`strategy_params` 支持 `策略名__intrabar_decay = 0.90`，策略级覆盖全局默认值
 - **HTF 指标 staleness 检查**：`_resolve_htf_indicators()` 检查 `_bar_time`，超过 2×HTF 周期的陈旧数据自动跳过注入
+- **应用运行时三层架构**：`src/api/deps.py` 已拆分为 `src/app_runtime/`（container/builder/runtime），`deps.py` 仅保留 FastAPI getter 适配层。旧 `src/api/lifespan.py` 已删除，功能由 `AppRuntime` 接管。
+- **lifespan shutdown bug 已修复**：旧 `lifespan.py` 中 `container.market_data`（属性不存在）已在新 `AppRuntime.stop()` 中修正为 `c.market_service`
 - **模块位置注意**：
+  - `AppContainer` → `src/app_runtime/container.py`（纯组件持有，可多实例）
+  - `AppBuilder` → `src/app_runtime/builder.py`（构建组件，不启动线程）
+  - `AppRuntime` → `src/app_runtime/runtime.py`（生命周期管理）
   - `SignalRuntime` → `src/signals/orchestration/runtime.py`（不在 `src/signals/runtime.py`）
   - `MarketDataService` → `src/market/service.py`（不在 `src/core/market_service.py`）
   - `EconomicCalendarService` → `src/calendar/service.py`（不在 `src/core/economic_calendar_service.py`）

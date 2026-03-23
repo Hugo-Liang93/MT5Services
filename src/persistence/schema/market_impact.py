@@ -43,12 +43,14 @@ CREATE TABLE IF NOT EXISTS economic_event_market_impact (
     analysis_status     text NOT NULL DEFAULT 'pending',
     metadata            jsonb,
 
-    PRIMARY KEY (event_uid, symbol, timeframe)
+    PRIMARY KEY (recorded_at, event_uid, symbol, timeframe)
 );
 
 SELECT create_hypertable('economic_event_market_impact', 'recorded_at',
                           if_not_exists => TRUE, migrate_data => TRUE);
 
+CREATE UNIQUE INDEX IF NOT EXISTS eemi_upsert_idx
+ON economic_event_market_impact (event_uid, symbol, timeframe, recorded_at);
 CREATE INDEX IF NOT EXISTS eemi_event_idx
 ON economic_event_market_impact (event_name, symbol, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS eemi_country_idx

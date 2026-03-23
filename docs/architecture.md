@@ -32,7 +32,7 @@ MT5Services 是一个**生产级** FastAPI 量化交易平台，通过 MT5 Pytho
 **核心能力**：
 - 实时行情采集与内存缓存
 - 多指标计算流水线
-- 多策略信号生成（18 个策略 + 2 个复合策略）
+- 多策略信号生成与复合策略编排
 - 市场状态感知（Regime 分类）
 - 跨策略投票共识（Voting Engine）
 - 置信度校准（历史胜率反馈）
@@ -54,8 +54,7 @@ MT5Services/
 │   └── composites.json       # 复合策略定义
 └── src/
     ├── api/                  # FastAPI 路由 + DI 容器
-    │   ├── deps.py           # _Container 单例容器
-    │   ├── lifespan.py       # 启动/关闭生命周期
+    │   ├── deps.py           # FastAPI DI 适配层（getter 函数 + lifespan）
     │   └── factories/        # 组件工厂函数
     ├── calendar/             # 经济日历服务
     ├── clients/              # MT5 客户端（市场/账户/交易）
@@ -75,27 +74,31 @@ MT5Services/
 
 ## 3. 启动流程
 
-入口：`app.py` → `uvicorn` → `src/api/__init__.py` FastAPI app lifespan
+入口：`app.py` → `uvicorn` → `src/api/__init__.py` → `src/api/deps.py` → `src/app_runtime/`
 
 ```
-src/api/lifespan.py  create_lifespan()
+src/api/deps.py  _ensure_initialized()
     │
-    ├─ 1. StorageWriter.start()          # 多通道 TimescaleDB 队列
-    ├─ 2. MarketDataService init         # 内存行情缓存（src/market/）
-    ├─ 3. BackgroundIngestor.start()     # MT5 → 缓存 后台采集线程
-    ├─ 4. EconomicCalendarService.start()# 经济日历同步（src/calendar/）
-    ├─ 5. UnifiedIndicatorManager init   # 指标流水线
-    ├─ 6. MarketStructureAnalyzer init   # 市场结构分析
-    ├─ 7. SignalModule init              # 策略注册（18+2 个策略）
-    ├─ 8. SignalRuntime.start()          # 信号评估主循环
-    ├─ 9. TradeExecutor.start()          # 自动下单（可选）
-    ├─ 10. PositionManager.start()       # 持仓监控
-    └─ 11. MonitoringManager.start()     # 健康巡检
+    ├─ build market domain       # MarketDataService / StorageWriter / BackgroundIngestor
+    ├─ build trading domain      # EconomicCalendarService / TradingModule / registry
+    ├─ build signal domain       # MarketStructureAnalyzer / SignalModule / SignalRuntime
+    ├─ wire trackers             # HTFStateCache / SignalQualityTracker / TradeOutcomeTracker
+    └─ build monitoring domain   # HealthMonitor / MonitoringManager
+
+src/app_runtime/runtime.py  AppRuntime.start() / stop()
+    │
+    ├─ 1. storage.start()
+    ├─ 2. ingestion.start()
+    ├─ 3. economic_calendar.start()
+    ├─ 4. indicators.start()
+    ├─ 5. signals.start()
+    ├─ 6. position_manager.start() + sync_open_positions()
+    └─ 7. monitoring.start()
 ```
 
 关闭顺序相反（`shutdown_components()`）。
 
-所有组件作为单例存储在 `_Container`（`src/api/deps.py`），通过 `FastAPI.Depends()` 注入路由。
+所有组件通过 `AppContainer`（`src/app_runtime/container.py`）持有，`src/api/deps.py` 作为 FastAPI DI 适配层暴露 getter 函数。
 
 ---
 
@@ -149,7 +152,7 @@ SignalRuntime._on_snapshot()
 
 1. Regime 检测（MarketRegimeDetector，每快照一次）
 2. RegimeTracker 稳定性评分
-3. 过滤链（SignalFilterChain：点差/时段/经济事件）
+3. 过滤链（SignalFilterChain：点差/时段/经济事件/时段切换冷却）
 4. 策略评估（_evaluate_strategies）
    ├─ 检查 session 白名单
    ├─ 检查 timeframe 白名单
@@ -260,7 +263,7 @@ src/signals/
 │   ├── breakout.py         # 突破/波动率策略（6个）
 │   ├── session.py          # 时段动量策略（1个）
 │   ├── price_action.py     # 价格行为策略（1个）
-│   ├── composite.py        # 复合策略（2个，工厂函数）
+│   ├── composite.py        # 复合策略与工厂函数
 │   ├── adapters.py         # IndicatorSource 适配器
 │   ├── htf_cache.py        # 高时间框架状态缓存
 │   └── registry.py         # 策略注册表
@@ -480,7 +483,7 @@ config/*.ini        （已提交基础配置）
 | `/economic` | 经济日历（calendar, risk-windows, trade-guard） |
 | `/indicators` | 指标（list, {symbol}/{timeframe}, compute） |
 | `/monitoring` | 监控（health, startup, queues, config/effective） |
-| `/signal` | 信号（查询、诊断、策略列表、投票信息） |
+| `/signals` | 信号（查询、诊断、策略列表、投票信息、结构与质量监控） |
 
 ---
 
@@ -543,7 +546,7 @@ config/*.ini        （已提交基础配置）
 
 ---
 
-## Phase 4 Update
+## 当前补充
 
 - `SignalFilterChain` now includes `SessionTransitionFilter`, which suppresses new evaluations during the configured London -> New York cooldown window.
 - `SignalRuntime` caches confirmed market-structure context per `(symbol, timeframe)` and reuses it for intrabar events; M1 uses `m1_lookback_bars` instead of the wider default lookback.

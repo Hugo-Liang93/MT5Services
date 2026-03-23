@@ -44,7 +44,9 @@ src/signals/
 ├── orchestration/             # 运行时编排
 │   ├── runtime.py             # SignalRuntime（事件主循环，双队列）
 │   ├── policy.py              # SignalPolicy（运行时参数）+ VotingGroupConfig
-│   └── voting.py              # StrategyVotingEngine（加权投票）
+│   ├── voting.py              # StrategyVotingEngine（加权投票）
+│   ├── htf_resolver.py        # HTF 配置解析、指标查询、对齐乘数计算
+│   └── state_machine.py       # 状态机转换（preview/armed/confirmed 纯逻辑）
 │
 ├── strategies/                # 策略实现
 │   ├── base.py                # SignalStrategy Protocol + 辅助函数
@@ -552,7 +554,7 @@ CompositeSignalStrategy(
 
 ## 10. 诊断与质量报告
 
-`SignalModule` 提供多种诊断接口（均通过 `/signal` API 暴露）：
+`SignalModule` 提供多种诊断接口（均通过 `/signals` API 暴露）：
 
 ### 10.1 策略诊断（`strategy_diagnostics`）
 
@@ -633,7 +635,7 @@ class MyStrategy:
 
 ```python
 # API
-GET /signal/recent?strategy=consensus&scope=confirmed
+GET /signals/recent?strategy=consensus&scope=confirmed
 
 # 代码
 signal_module.recent_consensus_signals(symbol="XAUUSD", timeframe="H1")
@@ -664,7 +666,7 @@ def evaluate(self, context: SignalContext) -> SignalDecision:
 
 ---
 
-## Phase 4 Operational Notes
+## 当前运行补充
 
 - `SignalFilterChain` now supports `SessionTransitionFilter`, so a configured cooldown can block signal evaluation during the London -> New York handoff.
 - `SignalRuntime` reuses confirmed market-structure context for intrabar processing and tracks cache size in `runtime.status()`.

@@ -28,7 +28,7 @@ def test_get_runtime_task_status_formats_database_rows(monkeypatch) -> None:
     monkeypatch.setattr(deps, "_ensure_initialized", lambda: None)
     monkeypatch.setattr(
         deps,
-        "_c",
+        "_container",
         SimpleNamespace(
             storage_writer=SimpleNamespace(
                 db=SimpleNamespace(

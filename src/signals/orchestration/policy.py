@@ -63,6 +63,10 @@ class SignalPolicy:
     voting_groups: list[VotingGroupConfig] = field(default_factory=list)
     # 虽然属于某个 voting group，但仍允许单独触发交易的策略名单（白名单覆盖）。
     standalone_override: frozenset[str] = field(default_factory=frozenset)
+    # Indicators that must be present in the snapshot before signal evaluation.
+    # Prevents wasting state_changed=true transitions on incomplete data.
+    # Empty tuple disables the check (e.g. in tests).
+    warmup_required_indicators: tuple[str, ...] = ("atr14",)
 
 
 @dataclass
