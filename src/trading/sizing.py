@@ -93,6 +93,17 @@ def compute_trade_params(
     else:
         raise ValueError(f"action must be 'buy' or 'sell', got: {action}")
 
+    if stop_loss <= 0:
+        raise ValueError(
+            f"Computed stop_loss={stop_loss:.2f} is non-positive "
+            f"(price={current_price}, sl_distance={sl_distance})"
+        )
+    if take_profit <= 0:
+        raise ValueError(
+            f"Computed take_profit={take_profit:.2f} is non-positive "
+            f"(price={current_price}, tp_distance={tp_distance})"
+        )
+
     effective_risk_pct = risk_percent * resolve_timeframe_risk_multiplier(
         timeframe, overrides=timeframe_risk_overrides,
     )

@@ -49,6 +49,8 @@ def get_backtest_defaults() -> Dict[str, Any]:
         _set_float(result, parser, "backtest", "min_confidence", "min_confidence")
         _set_float(result, parser, "backtest", "contract_size", "contract_size")
         _set_float(result, parser, "backtest", "risk_percent", "risk_percent")
+        _set_bool(result, parser, "backtest", "enable_state_machine", "enable_state_machine")
+        _set_int(result, parser, "backtest", "min_preview_stable_bars", "min_preview_stable_bars")
 
     # [filters] section
     if parser.has_section("filters"):

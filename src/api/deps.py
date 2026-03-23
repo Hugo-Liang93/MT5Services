@@ -255,6 +255,7 @@ class _Container:
 
 
 _c = _Container()
+_initialized = False
 
 _startup_status = {
     "phase": "not_started",
@@ -378,10 +379,11 @@ def _record_runtime_task_status(
 
 
 def _ensure_initialized() -> None:
-    if _c.service is not None:
+    global _initialized
+    if _initialized:
         return
     with _init_lock:
-        if _c.service is not None:
+        if _initialized:
             return
 
         ingest_settings = get_runtime_ingest_settings()
@@ -503,6 +505,9 @@ def _ensure_initialized() -> None:
                 sort_keys=True,
             ),
         )
+        # 仅在所有组件初始化成功后标记为已初始化，
+        # 防止部分初始化后后续调用因 _initialized=True 跳过重初始化
+        _initialized = True
 
 
 def get_runtime_mode() -> str:

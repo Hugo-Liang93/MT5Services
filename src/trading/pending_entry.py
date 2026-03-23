@@ -341,13 +341,19 @@ class PendingEntryManager:
         logger.info("PendingEntryManager started (check_interval=%.2fs)", self._config.check_interval)
 
     def shutdown(self) -> None:
-        """停止监控并清理。"""
+        """停止监控并清理。
+
+        先等待 monitor 和 fill_worker 线程完全退出，
+        再清理 _pending，避免线程仍在迭代时并发修改。
+        """
         self._stop_event.set()
         if self._monitor_thread is not None:
             self._monitor_thread.join(timeout=5.0)
+            self._monitor_thread = None
         if self._fill_worker_thread is not None:
             self._fill_worker_thread.join(timeout=5.0)
-        # 将所有剩余 pending 标记为 cancelled
+            self._fill_worker_thread = None
+        # 线程已退出，安全清理 _pending
         with self._lock:
             for entry in self._pending.values():
                 if entry.status == "pending":
@@ -555,10 +561,19 @@ class PendingEntryManager:
         try:
             self._fill_queue.put_nowait(fill_result)
         except queue.Full:
+            # 成交结果不可丢弃：阻塞等待最多 5 秒
             logger.warning(
-                "PendingEntry fill queue full, dropping fill for %s",
+                "PendingEntry fill queue full, blocking for %s",
                 entry.signal_event.signal_id,
             )
+            try:
+                self._fill_queue.put(fill_result, timeout=5.0)
+            except queue.Full:
+                logger.error(
+                    "PendingEntry fill queue still full after 5s, fill LOST for %s. "
+                    "This indicates fill_worker is stuck or too slow.",
+                    entry.signal_event.signal_id,
+                )
 
     def _expire_entry(self, entry: PendingEntry) -> None:
         with self._lock:

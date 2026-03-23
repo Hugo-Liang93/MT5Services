@@ -280,13 +280,11 @@ class MarketRegimeDetector:
             # 所有分数极小时回退到均匀分布
             probabilities = {regime: 0.25 for regime in RegimeType}
         else:
+            # 单次归一化即可，浮点精度差异 < 1e-15，无需二次修正
+            inv_total = 1.0 / total
             probabilities = {
-                regime: score / total for regime, score in scores.items()
+                regime: score * inv_total for regime, score in scores.items()
             }
-            # 确保浮点归一化
-            p_sum = sum(probabilities.values())
-            if abs(p_sum - 1.0) > 1e-6 and p_sum > 0:
-                probabilities = {r: p / p_sum for r, p in probabilities.items()}
         dominant_regime = max(probabilities, key=probabilities.get)  # type: ignore[arg-type]
         return SoftRegimeResult(
             dominant_regime=dominant_regime,

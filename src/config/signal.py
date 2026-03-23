@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 from src.config.models.signal import SignalConfig
 from src.config.utils import get_merged_config
@@ -111,17 +114,26 @@ def get_signal_config() -> SignalConfig:
             try:
                 group_cfg["consensus_threshold"] = float(subsection["consensus_threshold"])
             except (TypeError, ValueError):
-                pass
+                logger.warning(
+                    "signal.ini [voting_group.%s] invalid consensus_threshold: %r",
+                    group_name, subsection["consensus_threshold"],
+                )
         if "min_quorum" in subsection:
             try:
                 group_cfg["min_quorum"] = int(subsection["min_quorum"])
             except (TypeError, ValueError):
-                pass
+                logger.warning(
+                    "signal.ini [voting_group.%s] invalid min_quorum: %r",
+                    group_name, subsection["min_quorum"],
+                )
         if "disagreement_penalty" in subsection:
             try:
                 group_cfg["disagreement_penalty"] = float(subsection["disagreement_penalty"])
             except (TypeError, ValueError):
-                pass
+                logger.warning(
+                    "signal.ini [voting_group.%s] invalid disagreement_penalty: %r",
+                    group_name, subsection["disagreement_penalty"],
+                )
         voting_group_configs.append(group_cfg)
 
     # ── Standalone Override 解析 ────────────────────────────────────────
@@ -143,7 +155,10 @@ def get_signal_config() -> SignalConfig:
             try:
                 strategy_params[key] = float(raw_value)
             except (TypeError, ValueError):
-                continue
+                logger.warning(
+                    "signal.ini [strategy_params] invalid value for '%s': %r (skipped)",
+                    key, raw_value,
+                )
 
     # ── Regime 亲和度覆盖 [regime_affinity.*] ────────────────────────────
     regime_affinity_overrides: dict[str, dict[str, float]] = {}

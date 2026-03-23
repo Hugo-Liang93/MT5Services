@@ -6,6 +6,7 @@ API defaults to reading from cache only; ingestion owns writes into the cache.
 from __future__ import annotations
 
 from collections import deque
+import concurrent.futures
 import logging
 import queue
 import threading
@@ -56,6 +57,10 @@ class MarketDataService:
         self._ohlc_event_sink: Optional[Callable[[str, str, datetime], None]] = None
         self._ohlc_close_listeners: list[Callable[[str, str, datetime], None]] = []
         self._intrabar_listeners: list[Callable[[str, str, OHLC], None]] = []
+        # 异步监听器线程池：避免慢监听器阻塞 ingestor 主线程
+        self._listener_executor: concurrent.futures.ThreadPoolExecutor = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="mds-listener")
+        )
 
     def list_symbols(self) -> List[str]:
         return self.client.list_symbols()
@@ -471,22 +476,56 @@ class MarketDataService:
                 existing.append(bar)
                 if len(existing) > self._intrabar_max_points:
                     del existing[:-self._intrabar_max_points]
+        # 异步分发 intrabar 监听器回调，避免慢监听器阻塞 ingestor 主线程
         for listener in list(self._intrabar_listeners):
-            try:
-                t0 = time.monotonic()
-                listener(symbol, timeframe, bar)
-                elapsed_ms = (time.monotonic() - t0) * 1000
-                if elapsed_ms > 100:
-                    logger.warning(
-                        "Slow intrabar listener for %s/%s took %.1fms",
-                        symbol, timeframe, elapsed_ms,
-                    )
-            except Exception:
-                logger.exception("Failed to publish intrabar event for %s/%s at %s", symbol, timeframe, bar.time)
+            self._listener_executor.submit(self._safe_call_intrabar_listener, listener, symbol, timeframe, bar)
 
     def attach_storage(self, storage_writer: Optional["StorageWriter"]) -> None:
         self._storage_writer = storage_writer
 
+    def shutdown(self) -> None:
+        """关闭监听器线程池，等待已提交的回调完成。"""
+        self._listener_executor.shutdown(wait=True, cancel_futures=False)
+        logger.info("MarketDataService: listener executor shutdown complete")
+
+    @staticmethod
+    def _safe_call_ohlc_listener(
+        listener: Callable[[str, str, datetime], None],
+        symbol: str,
+        timeframe: str,
+        bar_time: datetime,
+    ) -> None:
+        """线程池内安全调用 OHLC 收盘监听器。"""
+        try:
+            listener(symbol, timeframe, bar_time)
+        except Exception:
+            logger.exception(
+                "Failed to notify OHLC close listener for %s/%s at %s",
+                symbol, timeframe, bar_time,
+            )
+
+    @staticmethod
+    def _safe_call_intrabar_listener(
+        listener: Callable[[str, str, "OHLC"], None],
+        symbol: str,
+        timeframe: str,
+        bar: "OHLC",
+    ) -> None:
+        """线程池内安全调用 intrabar 监听器，含慢调用告警。"""
+        try:
+            t0 = time.monotonic()
+            listener(symbol, timeframe, bar)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            if elapsed_ms > 100:
+                logger.warning(
+                    "Slow intrabar listener for %s/%s took %.1fms",
+                    symbol, timeframe, elapsed_ms,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to publish intrabar event for %s/%s at %s",
+                symbol, timeframe, bar.time,
+            )
 
     def add_ohlc_close_listener(self, listener: Callable[[str, str, datetime], None]) -> None:
         with self._lock:
@@ -520,11 +559,9 @@ class MarketDataService:
         self._ohlc_event_sink = sink
 
     def enqueue_ohlc_closed_event(self, symbol: str, timeframe: str, bar_time: datetime) -> None:
+        # 异步分发监听器回调，避免慢监听器阻塞 ingestor 主线程
         for listener in list(self._ohlc_close_listeners):
-            try:
-                listener(symbol, timeframe, bar_time)
-            except Exception:
-                logger.exception("Failed to notify OHLC close listener for %s/%s at %s", symbol, timeframe, bar_time)
+            self._listener_executor.submit(self._safe_call_ohlc_listener, listener, symbol, timeframe, bar_time)
         if self._ohlc_event_sink is not None:
             try:
                 self._ohlc_event_sink(symbol, timeframe, bar_time)

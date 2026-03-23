@@ -119,7 +119,10 @@ class ConfidenceCalibrator:
         self._cache: Dict[_WinRateKey, Tuple[float, int]] = {}
         # 近期窗口缓存，结构与 _cache 相同
         self._recent_cache: Dict[_WinRateKey, Tuple[float, int]] = {}
+        # 写锁：仅用于 refresh/dump/load 等写操作，保护 _cache/_recent_cache 的整体替换
         self._cache_lock = threading.Lock()
+        # 统计锁：轻量级，仅保护计数器更新，避免与写锁竞争
+        self._stats_lock = threading.Lock()
         self._last_refresh: float = 0.0
         self._refresh_hours: int = 168   # 查询最近 7 天的历史
 
@@ -149,7 +152,7 @@ class ConfidenceCalibrator:
             target=self._bg_loop,
             args=(symbol,),
             name="calibrator-refresh",
-            daemon=True,
+            daemon=False,
         )
         self._bg_thread.start()
         logger.info(
@@ -158,10 +161,10 @@ class ConfidenceCalibrator:
         )
 
     def stop_background_refresh(self) -> None:
-        """停止后台刷新线程（最多等待 5 秒）。"""
+        """停止后台刷新线程（最多等待 10 秒）。"""
         self._bg_stop.set()
         if self._bg_thread is not None:
-            self._bg_thread.join(timeout=5.0)
+            self._bg_thread.join(timeout=10.0)
             self._bg_thread = None
         logger.info("ConfidenceCalibrator: background refresh stopped")
 
@@ -194,8 +197,8 @@ class ConfidenceCalibrator:
         calibrated = raw_confidence * (1.0 + (factor - 1.0) * effective_alpha)
         result = max(0.0, min(1.0, calibrated))
 
-        # 统计（加锁保护，避免多线程 lost updates）
-        with self._cache_lock:
+        # 统计（使用独立的轻量锁，避免与 refresh 写锁竞争）
+        with self._stats_lock:
             self._total_calibrated += 1
             if result > raw_confidence + 1e-4:
                 self._total_boosted += 1
@@ -266,10 +269,17 @@ class ConfidenceCalibrator:
 
     def describe(self) -> Dict[str, Any]:
         """返回当前状态，用于监控端点。"""
-        with self._cache_lock:
-            cache_size = len(self._cache)
-            recent_cache_size = len(self._recent_cache)
-            age_seconds = time.monotonic() - self._last_refresh if self._last_refresh else None
+        # 快照读取：无需加写锁，len() 和属性读取在 CPython 中是原子的
+        cache_size = len(self._cache)
+        recent_cache_size = len(self._recent_cache)
+        last_refresh = self._last_refresh
+        age_seconds = time.monotonic() - last_refresh if last_refresh else None
+        with self._stats_lock:
+            stats = {
+                "total_calibrated": self._total_calibrated,
+                "total_boosted": self._total_boosted,
+                "total_suppressed": self._total_suppressed,
+            }
         return {
             "alpha": self._alpha,
             "warmup_alpha": self._warmup_alpha,
@@ -282,11 +292,7 @@ class ConfidenceCalibrator:
             "recent_cache_entries": recent_cache_size,
             "cache_age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
             "refresh_interval_seconds": self._refresh_interval,
-            "stats": {
-                "total_calibrated": self._total_calibrated,
-                "total_boosted": self._total_boosted,
-                "total_suppressed": self._total_suppressed,
-            },
+            "stats": stats,
         }
 
     def dump(self, path: str) -> None:
@@ -294,14 +300,15 @@ class ConfidenceCalibrator:
 
         格式：``{"timestamp": ..., "cache": {"strat|act|regime": {"win_rate": 0.6, "total": 50}, ...}}``
         """
-        with self._cache_lock:
-            data = {
-                "timestamp": time.time(),
-                "cache": {
-                    f"{k[0]}|{k[1]}|{k[2]}": {"win_rate": v[0], "total": v[1]}
-                    for k, v in self._cache.items()
-                },
-            }
+        # 快照读取当前缓存引用，无需持有写锁（dict 遍历在 CPython 中是安全的）
+        cache_snapshot = self._cache
+        data = {
+            "timestamp": time.time(),
+            "cache": {
+                f"{k[0]}|{k[1]}|{k[2]}": {"win_rate": v[0], "total": v[1]}
+                for k, v in cache_snapshot.items()
+            },
+        }
         try:
             with open(path, "w", encoding="utf-8") as fp:
                 json.dump(data, fp, indent=2)
@@ -371,16 +378,19 @@ class ConfidenceCalibrator:
             仅允许压制，不允许放大，避免在行情转折点过度乐观。
         """
         regime_val = regime.value
-        with self._cache_lock:
-            # 优先查找 regime 细化版本
-            entry = self._cache.get((strategy, action, regime_val))
-            if entry is None:
-                # 回退到全局聚合（没有 regime 分类的旧数据）
-                entry = self._cache.get((strategy, action, "_all"))
-            # 读取近期缓存（与 cache 同一把锁）
-            recent_entry = self._recent_cache.get((strategy, action, regime_val))
-            if recent_entry is None:
-                recent_entry = self._recent_cache.get((strategy, action, "_all"))
+        # 无锁读取：_cache 和 _recent_cache 在 refresh() 中通过引用赋值原子替换，
+        # CPython dict.get() 是线程安全的，热路径无需与 refresh 写锁竞争。
+        cache = self._cache
+        recent_cache = self._recent_cache
+        # 优先查找 regime 细化版本
+        entry = cache.get((strategy, action, regime_val))
+        if entry is None:
+            # 回退到全局聚合（没有 regime 分类的旧数据）
+            entry = cache.get((strategy, action, "_all"))
+        # 读取近期缓存
+        recent_entry = recent_cache.get((strategy, action, regime_val))
+        if recent_entry is None:
+            recent_entry = recent_cache.get((strategy, action, "_all"))
 
         if entry is None:
             return None, 0

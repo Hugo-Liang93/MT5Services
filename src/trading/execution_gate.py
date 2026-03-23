@@ -63,7 +63,11 @@ class ExecutionGate:
         if self.config.require_armed:
             previous_state = event.metadata.get("previous_state", "")
             preview_at_close = event.metadata.get("preview_state_at_close", "")
-            if "armed" not in previous_state and "armed" not in preview_at_close:
+            # 精确匹配 armed 状态后缀，避免 "armed_cancel" 等被误判为 armed
+            _armed_states = ("armed_buy", "armed_sell")
+            prev_is_armed = previous_state in _armed_states
+            preview_is_armed = preview_at_close in _armed_states
+            if not prev_is_armed and not preview_is_armed:
                 return False, "require_armed"
 
         return True, ""

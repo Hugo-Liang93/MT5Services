@@ -22,7 +22,6 @@ from .health_common import is_finite_metric_value
 from .health_reporting import (
     cleanup_old_data,
     generate_report,
-    generate_report_legacy,
     get_recent_metrics,
     get_system_status,
 )
@@ -366,9 +365,6 @@ class HealthMonitor:
 
     def check_economic_calendar(self, component: str, service) -> Dict[str, Any]:
         return check_economic_calendar(self, component, service)
-
-    def _generate_report_legacy(self, hours: int = 24) -> Dict[str, Any]:
-        return generate_report_legacy(self, hours=hours)
 
     def generate_report(self, hours: int = 24) -> Dict[str, Any]:
         return generate_report(self, hours=hours)

@@ -77,6 +77,8 @@ class SignalModule:
             diagnostics_engine or SignalDiagnosticsAnalyzer()
         )
         self._strategies: dict[str, SignalStrategy] = {}
+        # 策略 regime_affinity 缓存：避免热路径中的 getattr 开销
+        self._strategy_affinity_cache: dict[str, dict] = {}
         default_strategies: Iterable[SignalStrategy] = strategies or (
             # ── 趋势跟踪策略（仅在 H1 运行，见 signal.ini [strategy_timeframes]）──
             SmaTrendStrategy(),
@@ -292,14 +294,16 @@ class SignalModule:
                     regime = self._regime_detector.detect(indicator_payload)
             else:
                 regime = self._regime_detector.detect(indicator_payload)
-        # 复用 runtime 预计算的 affinity（避免重复计算）；无预计算则自行计算。
+        # 复用 runtime 预计算的 affinity（避免重复计算和 getattr 开销）。
         pre_computed_affinity = context_metadata.get("_pre_computed_affinity")
         if pre_computed_affinity is not None:
             affinity = float(pre_computed_affinity)
         else:
-            affinity_map: Dict[RegimeType, float] = getattr(
-                strategy_impl, "regime_affinity", {}
-            )
+            # 回退路径：从策略注册表缓存中读取 affinity_map（无 getattr 开销）
+            affinity_map = self._strategy_affinity_cache.get(strategy)
+            if affinity_map is None:
+                affinity_map = getattr(strategy_impl, "regime_affinity", {})
+                self._strategy_affinity_cache[strategy] = affinity_map
             affinity = self._effective_affinity(affinity_map, regime, soft_regime)
         post_affinity = decision.confidence * affinity
         # ── 日内绩效乘数（实时反馈层）────────────────────────────────

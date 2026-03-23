@@ -159,16 +159,21 @@ class PositionManager:
     def update_price(self, ticket: int, current_price: float) -> None:
         with self._lock:
             pos = self._positions.get(ticket)
-        if pos is None:
-            return
+            if pos is None:
+                return
 
-        if pos.action == "buy":
-            if pos.highest_price is None or current_price > pos.highest_price:
-                pos.highest_price = current_price
-        elif pos.action == "sell":
-            if pos.lowest_price is None or current_price < pos.lowest_price:
-                pos.lowest_price = current_price
+            if pos.action == "buy":
+                if pos.highest_price is None or current_price > pos.highest_price:
+                    pos.highest_price = current_price
+            elif pos.action == "sell":
+                if pos.lowest_price is None or current_price < pos.lowest_price:
+                    pos.lowest_price = current_price
 
+        # breakeven/trailing 调用 MT5 API（可能耗时数秒），不能在锁内执行。
+        # 锁外前先检查 pos 是否仍在 _positions 中（另一线程可能已 remove）。
+        with self._lock:
+            if ticket not in self._positions:
+                return
         self._check_breakeven(pos, current_price)
         self._check_trailing_stop(pos, current_price)
 
@@ -383,6 +388,9 @@ class PositionManager:
 
         day_key = current.date().isoformat() if current.tzinfo is None else current.astimezone(timezone.utc).date().isoformat()
 
+        # 先标记 EOD 日期，防止并发 reconcile 在 close_all 期间触发二次 EOD
+        self._last_end_of_day_close_date = day_key
+
         positions_getter = getattr(self._trading, "get_positions", None)
         if callable(positions_getter):
             try:
@@ -392,19 +400,22 @@ class PositionManager:
         else:
             open_positions = []
         if not open_positions:
-            self._last_end_of_day_close_date = day_key
             return {"closed": [], "failed": []}
 
         close_all = getattr(self._trading, "close_all_positions", None)
         if not callable(close_all):
             return None
 
-        result = close_all(comment="end_of_day_closeout")
+        try:
+            result = close_all(comment="end_of_day_closeout")
+        except Exception as exc:
+            # close_all 异常时回退日期标记，允许下次 reconcile 循环重试
+            self._last_end_of_day_close_date = None
+            logger.error("EOD closeout failed, will retry next cycle: %s", exc)
+            return {"closed": [], "failed": [], "error": str(exc)}
         if not isinstance(result, dict):
             result = {"result": result}
         failed = list(result.get("failed", []) or [])
-        if not failed:
-            self._last_end_of_day_close_date = day_key
         logger.info(
             "PositionManager: end-of-day closeout executed at %s (closed=%s, failed=%s)",
             current.isoformat(),
@@ -499,6 +510,8 @@ class PositionManager:
             if self._modify_sl(pos, result.new_stop_loss):
                 pos.breakeven_applied = True
                 logger.info("Breakeven applied ticket=%d sl=%.2f", pos.ticket, result.new_stop_loss)
+            else:
+                logger.warning("Breakeven SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
 
     def _check_trailing_stop(self, pos: TrackedPosition, current_price: float) -> None:
         result = check_trailing_stop(
@@ -513,6 +526,8 @@ class PositionManager:
         if result.should_update and result.new_stop_loss is not None:
             if self._modify_sl(pos, result.new_stop_loss):
                 pos.trailing_active = True
+            else:
+                logger.warning("Trailing SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
 
     def _modify_sl(self, pos: TrackedPosition, new_sl: float) -> bool:
         try:
