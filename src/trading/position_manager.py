@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from .position_rules import check_breakeven, check_trailing_stop, should_close_end_of_day
 from .sizing import TradeParameters
 
 logger = logging.getLogger(__name__)
@@ -370,23 +371,17 @@ class PositionManager:
         if not self.end_of_day_close_enabled:
             return None
         current = now or datetime.now(timezone.utc)
-        if current.tzinfo is None:
-            current = current.replace(tzinfo=timezone.utc)
-        else:
-            current = current.astimezone(timezone.utc)
 
-        closeout_time = current.replace(
-            hour=self.end_of_day_close_hour_utc,
-            minute=self.end_of_day_close_minute_utc,
-            second=0,
-            microsecond=0,
+        eod_result = should_close_end_of_day(
+            current_time=current,
+            close_hour_utc=self.end_of_day_close_hour_utc,
+            close_minute_utc=self.end_of_day_close_minute_utc,
+            last_close_date=self._last_end_of_day_close_date,
         )
-        if current < closeout_time:
+        if not eod_result.should_close:
             return None
 
-        day_key = current.date().isoformat()
-        if self._last_end_of_day_close_date == day_key:
-            return None
+        day_key = current.date().isoformat() if current.tzinfo is None else current.astimezone(timezone.utc).date().isoformat()
 
         positions_getter = getattr(self._trading, "get_positions", None)
         if callable(positions_getter):
@@ -492,36 +487,32 @@ class PositionManager:
                     )
 
     def _check_breakeven(self, pos: TrackedPosition, current_price: float) -> None:
-        if pos.breakeven_applied:
-            return
-
-        threshold = pos.atr_at_entry * self.breakeven_atr_threshold
-        if pos.action == "buy" and current_price >= pos.entry_price + threshold:
-            new_sl = pos.entry_price + 0.01
-            if self._modify_sl(pos, new_sl):
+        result = check_breakeven(
+            action=pos.action,
+            entry_price=pos.entry_price,
+            current_price=current_price,
+            atr_at_entry=pos.atr_at_entry,
+            breakeven_atr_threshold=self.breakeven_atr_threshold,
+            already_applied=pos.breakeven_applied,
+        )
+        if result.should_apply and result.new_stop_loss is not None:
+            if self._modify_sl(pos, result.new_stop_loss):
                 pos.breakeven_applied = True
-                logger.info("Breakeven applied ticket=%d sl=%.2f", pos.ticket, new_sl)
-        elif pos.action == "sell" and current_price <= pos.entry_price - threshold:
-            new_sl = pos.entry_price - 0.01
-            if self._modify_sl(pos, new_sl):
-                pos.breakeven_applied = True
-                logger.info("Breakeven applied ticket=%d sl=%.2f", pos.ticket, new_sl)
+                logger.info("Breakeven applied ticket=%d sl=%.2f", pos.ticket, result.new_stop_loss)
 
     def _check_trailing_stop(self, pos: TrackedPosition, current_price: float) -> None:
-        if not pos.breakeven_applied:
-            return
-
-        trail_distance = pos.atr_at_entry * self.trailing_atr_multiplier
-        if pos.action == "buy" and pos.highest_price is not None:
-            new_sl = pos.highest_price - trail_distance
-            if new_sl > pos.stop_loss:
-                if self._modify_sl(pos, new_sl):
-                    pos.trailing_active = True
-        elif pos.action == "sell" and pos.lowest_price is not None:
-            new_sl = pos.lowest_price + trail_distance
-            if new_sl < pos.stop_loss:
-                if self._modify_sl(pos, new_sl):
-                    pos.trailing_active = True
+        result = check_trailing_stop(
+            action=pos.action,
+            current_stop_loss=pos.stop_loss,
+            atr_at_entry=pos.atr_at_entry,
+            trailing_atr_multiplier=self.trailing_atr_multiplier,
+            breakeven_applied=pos.breakeven_applied,
+            highest_price=pos.highest_price,
+            lowest_price=pos.lowest_price,
+        )
+        if result.should_update and result.new_stop_loss is not None:
+            if self._modify_sl(pos, result.new_stop_loss):
+                pos.trailing_active = True
 
     def _modify_sl(self, pos: TrackedPosition, new_sl: float) -> bool:
         try:

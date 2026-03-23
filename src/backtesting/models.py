@@ -43,6 +43,15 @@ class BacktestConfig:
     # 风险百分比
     risk_percent: float = 1.0
 
+    # ── 持仓管理（复用实盘 position_rules）────────────────────────────────
+    # breakeven / trailing stop（与实盘 PositionManager 相同参数）
+    trailing_atr_multiplier: float = 1.0
+    breakeven_atr_threshold: float = 1.0
+    # 日终自动平仓
+    end_of_day_close_enabled: bool = False
+    end_of_day_close_hour_utc: int = 21
+    end_of_day_close_minute_utc: int = 0
+
     # ── 过滤器配置（模拟实盘 SignalFilterChain）──────────────────────────
     # 总开关：是否启用过滤器模拟
     enable_filters: bool = True

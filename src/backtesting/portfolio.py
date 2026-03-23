@@ -1,4 +1,11 @@
-"""组合跟踪器：模拟持仓管理、SL/TP 检测、资金曲线追踪。"""
+"""组合跟踪器：模拟持仓管理，复用实盘 position_rules 纯逻辑。
+
+设计原则：回测使用实盘方法，不重新实现。
+- SL/TP 触发检测：回测独有（实盘由 MT5 服务器执行）
+- breakeven / trailing stop 判定：复用 src/trading/position_rules
+- 日终平仓判定：复用 src/trading/position_rules
+- PnL 计算：与实盘 _close_position 逻辑一致
+"""
 
 from __future__ import annotations
 
@@ -6,9 +13,14 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from src.clients.mt5_market import OHLC
+from src.trading.position_rules import (
+    check_breakeven,
+    check_trailing_stop,
+    should_close_end_of_day,
+)
 from src.trading.sizing import TradeParameters
 
 from .models import TradeRecord
@@ -31,6 +43,12 @@ class _Position:
     regime: str
     confidence: float
     entry_bar_index: int  # 开仓时的 bar 索引（用于计算 bars_held）
+    atr_at_entry: float = 0.0
+    # breakeven / trailing 状态（与实盘 TrackedPosition 一致）
+    breakeven_applied: bool = False
+    trailing_active: bool = False
+    highest_price: Optional[float] = None
+    lowest_price: Optional[float] = None
 
 
 class PortfolioTracker:
@@ -39,6 +57,9 @@ class PortfolioTracker:
     功能：
     - 模拟开仓/平仓
     - 每根 bar 检查 SL/TP 触发
+    - breakeven 止损（复用实盘 position_rules.check_breakeven）
+    - trailing stop（复用实盘 position_rules.check_trailing_stop）
+    - 日终自动平仓（复用实盘 position_rules.should_close_end_of_day）
     - 追踪资金曲线
     - 记录所有已关闭交易
     """
@@ -50,6 +71,13 @@ class PortfolioTracker:
         commission_per_lot: float = 0.0,
         slippage_points: float = 0.0,
         contract_size: float = 100.0,
+        # breakeven / trailing（与实盘 PositionManager 相同参数）
+        trailing_atr_multiplier: float = 1.0,
+        breakeven_atr_threshold: float = 1.0,
+        # 日终平仓（与实盘 PositionManager 相同参数）
+        end_of_day_close_enabled: bool = False,
+        end_of_day_close_hour_utc: int = 21,
+        end_of_day_close_minute_utc: int = 0,
     ) -> None:
         self.initial_balance = initial_balance
         self.current_balance = initial_balance
@@ -58,6 +86,15 @@ class PortfolioTracker:
         self._commission_per_lot = commission_per_lot
         self._slippage_points = slippage_points
         self._contract_size = contract_size
+        # breakeven / trailing 配置
+        self._trailing_atr_multiplier = trailing_atr_multiplier
+        self._breakeven_atr_threshold = breakeven_atr_threshold
+        # 日终平仓配置
+        self._end_of_day_close_enabled = end_of_day_close_enabled
+        self._end_of_day_close_hour_utc = end_of_day_close_hour_utc
+        self._end_of_day_close_minute_utc = end_of_day_close_minute_utc
+        self._last_end_of_day_close_date: Optional[str] = None
+
         self._open_positions: List[_Position] = []
         self._closed_trades: List[TradeRecord] = []
         self._equity_curve: List[Tuple[datetime, float]] = []
@@ -95,6 +132,7 @@ class PortfolioTracker:
         regime: str,
         confidence: float,
         bar_index: int,
+        atr_at_entry: float = 0.0,
     ) -> bool:
         """尝试开仓。
 
@@ -127,6 +165,9 @@ class PortfolioTracker:
             regime=regime,
             confidence=confidence,
             entry_bar_index=bar_index,
+            atr_at_entry=atr_at_entry,
+            highest_price=entry_price if action == "buy" else None,
+            lowest_price=entry_price if action == "sell" else None,
         )
         self._open_positions.append(pos)
         return True
@@ -135,11 +176,61 @@ class PortfolioTracker:
         """检查所有持仓的 SL/TP 是否触发。
 
         使用 bar 的 high/low 判断触发，先检查 SL 再检查 TP（保守估计）。
+        同时复用实盘 breakeven/trailing 逻辑更新 SL。
         """
+        # 先检查日终平仓
+        if self._end_of_day_close_enabled:
+            eod = should_close_end_of_day(
+                current_time=bar.time,
+                close_hour_utc=self._end_of_day_close_hour_utc,
+                close_minute_utc=self._end_of_day_close_minute_utc,
+                last_close_date=self._last_end_of_day_close_date,
+            )
+            if eod.should_close and self._open_positions:
+                self._last_end_of_day_close_date = bar.time.date().isoformat()
+                return self._close_all_with_reason(bar, bar_index, "end_of_day")
+
         closed: List[TradeRecord] = []
         remaining: List[_Position] = []
 
         for pos in self._open_positions:
+            # 更新极值价格（与实盘 PositionManager.update_price 一致）
+            if pos.action == "buy":
+                if pos.highest_price is None or bar.high > pos.highest_price:
+                    pos.highest_price = bar.high
+            elif pos.action == "sell":
+                if pos.lowest_price is None or bar.low < pos.lowest_price:
+                    pos.lowest_price = bar.low
+
+            # 复用实盘 breakeven 判定逻辑
+            if pos.atr_at_entry > 0:
+                be_result = check_breakeven(
+                    action=pos.action,
+                    entry_price=pos.entry_price,
+                    current_price=bar.close,
+                    atr_at_entry=pos.atr_at_entry,
+                    breakeven_atr_threshold=self._breakeven_atr_threshold,
+                    already_applied=pos.breakeven_applied,
+                )
+                if be_result.should_apply and be_result.new_stop_loss is not None:
+                    pos.stop_loss = be_result.new_stop_loss
+                    pos.breakeven_applied = True
+
+                # 复用实盘 trailing stop 判定逻辑
+                trail_result = check_trailing_stop(
+                    action=pos.action,
+                    current_stop_loss=pos.stop_loss,
+                    atr_at_entry=pos.atr_at_entry,
+                    trailing_atr_multiplier=self._trailing_atr_multiplier,
+                    breakeven_applied=pos.breakeven_applied,
+                    highest_price=pos.highest_price,
+                    lowest_price=pos.lowest_price,
+                )
+                if trail_result.should_update and trail_result.new_stop_loss is not None:
+                    pos.stop_loss = trail_result.new_stop_loss
+                    pos.trailing_active = True
+
+            # SL/TP 触发检查
             exit_price: Optional[float] = None
             exit_reason: Optional[str] = None
 
@@ -193,10 +284,16 @@ class PortfolioTracker:
 
     def close_all(self, bar: OHLC, bar_index: int) -> List[TradeRecord]:
         """强制平仓所有持仓。"""
+        return self._close_all_with_reason(bar, bar_index, "end_of_test")
+
+    def _close_all_with_reason(
+        self, bar: OHLC, bar_index: int, reason: str
+    ) -> List[TradeRecord]:
+        """按指定原因平仓所有持仓。"""
         closed: List[TradeRecord] = []
         for pos in self._open_positions:
             trade = self._close_position(
-                pos, bar.close, bar.time, bar_index, "end_of_test"
+                pos, bar.close, bar.time, bar_index, reason
             )
             closed.append(trade)
         self._open_positions = []

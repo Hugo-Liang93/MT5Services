@@ -1,13 +1,22 @@
-"""回测引擎核心：逐 bar 回放历史数据，复用生产指标和策略组件。"""
+"""回测引擎核心：逐 bar 回放历史数据，复用生产指标和策略组件。
+
+设计原则：回测使用实盘方法，不重新实现，避免模拟失真。
+- 过滤器：直接复用 SignalFilterChain（via BacktestFilterSimulator）
+- 策略评估：直接复用 SignalModule.evaluate()（含完整置信度管线）
+- 置信度后处理：复用 src/signals/confidence 中的纯函数
+- 持仓管理：复用 src/trading/position_rules 中的纯函数
+- 指标计算：直接复用 OptimizedPipeline.compute()
+"""
 
 from __future__ import annotations
 
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.clients.mt5_market import OHLC
+from src.signals.confidence import apply_htf_alignment, apply_intrabar_decay
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
@@ -47,6 +56,11 @@ class BacktestEngine:
         indicator_pipeline: Any,  # OptimizedPipeline
         regime_detector: Optional[MarketRegimeDetector] = None,
         voting_engine: Optional[Any] = None,  # StrategyVotingEngine
+        # 置信度后处理（复用实盘 SignalRuntime 管线）
+        intrabar_confidence_decay: float = 0.85,
+        htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
+        htf_alignment_boost: float = 1.10,
+        htf_conflict_penalty: float = 0.70,
     ) -> None:
         self._config = config
         self._data_loader = data_loader
@@ -55,12 +69,23 @@ class BacktestEngine:
         self._regime_detector = regime_detector or MarketRegimeDetector()
         self._voting_engine = voting_engine
 
+        # 置信度后处理参数（与实盘 SignalRuntime 相同）
+        self._intrabar_confidence_decay = intrabar_confidence_decay
+        self._htf_direction_fn = htf_direction_fn
+        self._htf_alignment_boost = htf_alignment_boost
+        self._htf_conflict_penalty = htf_conflict_penalty
+
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
             max_positions=config.max_positions,
             commission_per_lot=config.commission_per_lot,
             slippage_points=config.slippage_points,
             contract_size=config.contract_size,
+            trailing_atr_multiplier=config.trailing_atr_multiplier,
+            breakeven_atr_threshold=config.breakeven_atr_threshold,
+            end_of_day_close_enabled=config.end_of_day_close_enabled,
+            end_of_day_close_hour_utc=config.end_of_day_close_hour_utc,
+            end_of_day_close_minute_utc=config.end_of_day_close_minute_utc,
         )
 
         # 确定目标策略列表
@@ -346,8 +371,15 @@ class BacktestEngine:
         indicators: Dict[str, Dict[str, Any]],
         regime: RegimeType,
         soft_regime_dict: Optional[Dict[str, Any]],
+        scope: str = "confirmed",
     ) -> List[SignalDecision]:
-        """评估所有目标策略。"""
+        """评估所有目标策略。
+
+        复用实盘置信度管线：
+        1. SignalModule.evaluate() — affinity / performance / calibrator / floor
+        2. apply_intrabar_decay() — intrabar scope 衰减（复用 src/signals/confidence）
+        3. apply_htf_alignment() — HTF 方向对齐修正（复用 src/signals/confidence）
+        """
         metadata: Dict[str, Any] = {"_regime": regime.value}
         if soft_regime_dict is not None:
             metadata["_soft_regime"] = soft_regime_dict
@@ -375,6 +407,22 @@ class BacktestEngine:
                     persist=False,
                     htf_indicators={},
                 )
+
+                # ── 置信度后处理（复用实盘 SignalRuntime 管线）──
+                # 1. Intrabar 衰减
+                decision = apply_intrabar_decay(
+                    decision, scope, self._intrabar_confidence_decay
+                )
+                # 2. HTF 方向对齐修正
+                if self._htf_direction_fn is not None:
+                    htf_dir = self._htf_direction_fn(symbol, timeframe)
+                    decision = apply_htf_alignment(
+                        decision,
+                        htf_direction=htf_dir,
+                        alignment_boost=self._htf_alignment_boost,
+                        conflict_penalty=self._htf_conflict_penalty,
+                    )
+
                 decisions.append(decision)
             except Exception:
                 logger.debug(
@@ -430,6 +478,7 @@ class BacktestEngine:
             regime=regime.value,
             confidence=decision.confidence,
             bar_index=bar_index,
+            atr_at_entry=atr_value,
         )
 
     # ── 信号评估记录与回填 ─────────────────────────────────────────────
