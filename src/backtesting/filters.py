@@ -1,15 +1,13 @@
-"""回测过滤器模拟：在历史回放中复现实盘 SignalFilterChain 的行为。
+"""回测过滤器：直接复用实盘 SignalFilterChain，仅适配时间来源和统计收集。
 
-核心差异：
-- 实盘用 datetime.now(UTC)，回测用 bar.time（历史时间）
-- Spread 使用可配置的模拟值（历史 tick spread 数据可选注入）
-- 经济事件过滤可选（需要历史日历数据）
-- VolatilitySpikeFilter 直接复用（基于当前 bar 指标）
-
-设计原则：
-- 复用实盘 filter 的相同判断逻辑（不重新实现）
-- 仅适配时间来源（bar.time 替代 now()）
-- 过滤统计独立收集，不影响主循环性能
+核心设计：
+- 回测直接使用 SignalFilterChain.should_evaluate()（同一份代码）
+- 唯一差异：utc_now 传入 bar.time（历史时间）而非 datetime.now()
+- SignalFilterChain 本身已支持 utc_now 参数，无需任何适配
+- BacktestFilterSimulator 只负责：
+  1. 构建 SignalFilterChain 实例（按回测配置）
+  2. 为每次调用注入 bar.time 和模拟点差
+  3. 收集过滤统计（实盘不需要这层统计）
 """
 
 from __future__ import annotations
@@ -21,8 +19,10 @@ from typing import Any, Dict, List, Optional
 
 from src.signals.contracts import normalize_session_name
 from src.signals.execution.filters import (
+    EconomicEventFilter,
     SessionFilter,
     SessionTransitionFilter,
+    SignalFilterChain,
     SpreadFilter,
     VolatilitySpikeFilter,
 )
@@ -60,9 +60,11 @@ class BacktestFilterStats:
         )
 
     def record_rejection(
-        self, bar_time: datetime, filter_name: str, reason: str
+        self, bar_time: datetime, reason: str
     ) -> None:
         self.total_bars_rejected += 1
+        # 从 reason 提取过滤器名称（格式：filter_type:details）
+        filter_name = reason.split(":")[0] if ":" in reason else reason
         self.rejections_by_filter[filter_name] = (
             self.rejections_by_filter.get(filter_name, 0) + 1
         )
@@ -74,9 +76,6 @@ class BacktestFilterStats:
                     reason=reason,
                 )
             )
-
-    def record_pass(self) -> None:
-        pass  # total_bars_evaluated 在外部递增
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -97,23 +96,32 @@ class BacktestFilterStats:
 
 @dataclass
 class BacktestFilterConfig:
-    """回测过滤器配置。"""
+    """回测过滤器配置。
+
+    参数含义与 signal.ini 中的过滤器配置完全一致。
+    """
 
     # 总开关
     enabled: bool = True
-    # 时段过滤
+    # 时段过滤（对应 signal.ini [signal].allowed_sessions）
     session_filter_enabled: bool = True
     allowed_sessions: str = "london,newyork"
-    # 时段切换冷却
+    # 时段切换冷却（对应 signal.ini [signal].session_transition_cooldown_minutes）
     session_transition_enabled: bool = True
     session_transition_cooldown_minutes: int = 15
-    # 波动率异常
+    # 波动率异常（对应 signal.ini [signal].volatility_atr_spike_multiplier）
     volatility_filter_enabled: bool = True
     volatility_spike_multiplier: float = 2.5
-    # 点差过滤（回测中使用模拟点差）
+    # 点差过滤（回测中默认禁用，因为没有真实 spread 数据）
     spread_filter_enabled: bool = False
     max_spread_points: float = 50.0
     session_spread_limits: Dict[str, float] = field(default_factory=dict)
+    # 经济事件过滤（需要注入 TradeGuardProvider，回测中默认禁用）
+    economic_filter_enabled: bool = False
+    economic_provider: Optional[Any] = None
+    economic_lookahead_minutes: int = 30
+    economic_lookback_minutes: int = 15
+    economic_importance_min: int = 3
     # 模拟点差值（按时段，用于没有真实 spread 数据时）
     simulated_spread_by_session: Dict[str, float] = field(
         default_factory=lambda: {
@@ -128,62 +136,87 @@ class BacktestFilterConfig:
 class BacktestFilterSimulator:
     """回测过滤器模拟器。
 
-    复用实盘 SignalFilterChain 的各个子过滤器，
-    但使用历史 bar.time 替代 datetime.now() 进行判断。
+    **直接复用实盘 SignalFilterChain**——同一份过滤判断代码。
+    回测层只负责：
+    1. 按 BacktestFilterConfig 构建 SignalFilterChain 实例
+    2. 每次调用时注入 bar.time（替代 datetime.now()）和模拟点差
+    3. 收集过滤统计（实盘中不需要这层聚合）
 
-    用法：
-        simulator = BacktestFilterSimulator(config)
-        for bar in bars:
-            allowed, reason = simulator.should_evaluate(
-                symbol, bar.time, indicators
-            )
-            if not allowed:
-                continue  # 跳过此 bar 的策略评估
+    实盘 SignalRuntime._evaluate_strategies() 调用路径：
+        self.filter_chain.should_evaluate(symbol, spread_points=..., utc_now=event_time, ...)
+
+    回测调用路径（完全相同的 should_evaluate）：
+        self._filter_chain.should_evaluate(symbol, spread_points=..., utc_now=bar.time, ...)
     """
 
     def __init__(self, config: BacktestFilterConfig) -> None:
         self._config = config
         self._stats = BacktestFilterStats()
 
-        # 构建子过滤器（复用实盘组件）
-        self._session_filter: Optional[SessionFilter] = None
-        self._session_transition_filter: Optional[SessionTransitionFilter] = None
-        self._volatility_filter: Optional[VolatilitySpikeFilter] = None
-        self._spread_filter: Optional[SpreadFilter] = None
+        # 直接构建实盘 SignalFilterChain（同一个类）
+        self._filter_chain: Optional[SignalFilterChain] = None
 
         if not config.enabled:
             return
 
-        if config.session_filter_enabled:
-            sessions = tuple(
-                normalize_session_name(s.strip())
-                for s in config.allowed_sessions.split(",")
-                if s.strip()
-            )
-            self._session_filter = SessionFilter(allowed_sessions=sessions)
-
-        if config.session_transition_enabled:
-            self._session_transition_filter = SessionTransitionFilter(
-                cooldown_minutes=config.session_transition_cooldown_minutes,
-            )
-
-        if config.volatility_filter_enabled and config.volatility_spike_multiplier > 0:
-            self._volatility_filter = VolatilitySpikeFilter(
-                spike_multiplier=config.volatility_spike_multiplier,
-            )
-
-        if config.spread_filter_enabled:
-            self._spread_filter = SpreadFilter(
-                max_spread_points=config.max_spread_points,
-                session_max_spread_points={
-                    normalize_session_name(k): v
-                    for k, v in config.session_spread_limits.items()
-                },
-            )
+        self._filter_chain = SignalFilterChain(
+            session_filter=(
+                SessionFilter(
+                    allowed_sessions=tuple(
+                        normalize_session_name(s.strip())
+                        for s in config.allowed_sessions.split(",")
+                        if s.strip()
+                    )
+                )
+                if config.session_filter_enabled
+                else None
+            ),
+            session_transition_filter=(
+                SessionTransitionFilter(
+                    cooldown_minutes=config.session_transition_cooldown_minutes,
+                )
+                if config.session_transition_enabled
+                else None
+            ),
+            spread_filter=(
+                SpreadFilter(
+                    max_spread_points=config.max_spread_points,
+                    session_max_spread_points={
+                        normalize_session_name(k): v
+                        for k, v in config.session_spread_limits.items()
+                    },
+                )
+                if config.spread_filter_enabled
+                else None
+            ),
+            economic_filter=(
+                EconomicEventFilter(
+                    provider=config.economic_provider,
+                    lookahead_minutes=config.economic_lookahead_minutes,
+                    lookback_minutes=config.economic_lookback_minutes,
+                    importance_min=config.economic_importance_min,
+                )
+                if config.economic_filter_enabled and config.economic_provider
+                else None
+            ),
+            volatility_filter=(
+                VolatilitySpikeFilter(
+                    spike_multiplier=config.volatility_spike_multiplier,
+                )
+                if config.volatility_filter_enabled
+                and config.volatility_spike_multiplier > 0
+                else None
+            ),
+        )
 
     @property
     def stats(self) -> BacktestFilterStats:
         return self._stats
+
+    @property
+    def filter_chain(self) -> Optional[SignalFilterChain]:
+        """暴露内部的实盘 SignalFilterChain 实例（用于测试/调试）。"""
+        return self._filter_chain
 
     def should_evaluate(
         self,
@@ -194,10 +227,13 @@ class BacktestFilterSimulator:
     ) -> tuple[bool, str]:
         """判断在历史 bar_time 时刻是否应评估策略。
 
+        内部直接调用 SignalFilterChain.should_evaluate()，
+        传入 utc_now=bar_time 实现历史时间注入。
+
         Args:
             symbol: 交易品种
-            bar_time: 历史 K 线时间（替代 datetime.now()）
-            indicators: 当前 bar 的指标计算结果
+            bar_time: 历史 K 线时间（注入到 SignalFilterChain 的 utc_now 参数）
+            indicators: 当前 bar 的指标计算结果（用于波动率过滤）
             spread_points: 历史点差（可选，无则使用模拟值）
 
         Returns:
@@ -205,63 +241,40 @@ class BacktestFilterSimulator:
         """
         self._stats.total_bars_evaluated += 1
 
-        if not self._config.enabled:
+        if self._filter_chain is None:
             return True, ""
 
-        # 1. 时段过滤
-        if self._session_filter is not None:
-            if not self._session_filter.is_active_session(bar_time):
-                sessions = self._session_filter.current_sessions(bar_time)
-                reason = f"outside_allowed_sessions:{','.join(sessions)}"
-                self._stats.record_rejection(bar_time, "session", reason)
-                return False, reason
+        # 解析模拟点差
+        actual_spread = spread_points
+        if actual_spread is None and self._config.spread_filter_enabled:
+            actual_spread = self._get_simulated_spread(bar_time)
 
-        # 2. 时段切换冷却
-        if self._session_transition_filter is not None:
-            if not self._session_transition_filter.is_safe(bar_time):
-                transition = self._session_transition_filter.active_transition(
-                    bar_time
-                )
-                reason = f"session_transition_cooldown:{transition}"
-                self._stats.record_rejection(
-                    bar_time, "session_transition", reason
-                )
-                return False, reason
-
-        # 3. 点差过滤
-        if self._spread_filter is not None:
-            actual_spread = spread_points
-            if actual_spread is None:
-                # 使用模拟点差
-                actual_spread = self._get_simulated_spread(bar_time)
-
-            sessions = (
-                self._session_filter.current_sessions(bar_time)
-                if self._session_filter
-                else None
+        # 解析当前 session（与实盘 SignalRuntime 相同的逻辑）
+        active_sessions = None
+        if self._filter_chain.session_filter is not None:
+            active_sessions = self._filter_chain.session_filter.current_sessions(
+                bar_time
             )
-            if not self._spread_filter.is_spread_acceptable(
-                actual_spread, sessions=sessions
-            ):
-                threshold = self._spread_filter.threshold_for_sessions(sessions)
-                reason = f"spread_too_wide:{actual_spread:.1f}>{threshold:.1f}"
-                self._stats.record_rejection(bar_time, "spread", reason)
-                return False, reason
 
-        # 4. 波动率异常
-        if self._volatility_filter is not None and indicators:
-            if not self._volatility_filter.is_volatility_acceptable(indicators):
-                reason = "volatility_spike"
-                self._stats.record_rejection(bar_time, "volatility", reason)
-                return False, reason
+        # 直接调用实盘 SignalFilterChain.should_evaluate()
+        allowed, reason = self._filter_chain.should_evaluate(
+            symbol,
+            spread_points=actual_spread or 0.0,
+            utc_now=bar_time,
+            active_sessions=active_sessions,
+            indicators=indicators,
+        )
 
-        return True, ""
+        if not allowed:
+            self._stats.record_rejection(bar_time, reason)
+
+        return allowed, reason
 
     def _get_simulated_spread(self, bar_time: datetime) -> float:
         """根据 bar 时间推断模拟点差。"""
-        if self._session_filter is not None:
-            sessions = self._session_filter.current_sessions(bar_time)
+        if self._filter_chain and self._filter_chain.session_filter:
+            sessions = self._filter_chain.session_filter.current_sessions(bar_time)
             for session in sessions:
                 if session in self._config.simulated_spread_by_session:
                     return self._config.simulated_spread_by_session[session]
-        return self._config.max_spread_points * 0.5  # 默认返回阈值一半
+        return self._config.max_spread_points * 0.5
