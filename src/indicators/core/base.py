@@ -1,5 +1,7 @@
 import math
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
+
+import numpy as np
 
 from src.clients.mt5_market import OHLC
 
@@ -55,3 +57,55 @@ def get_float(params: dict, key: str, default: float, aliases: Sequence[str] = (
             except Exception:
                 continue
     return default
+
+
+# ---------------------------------------------------------------------------
+# NumPy 向量化辅助函数
+# ---------------------------------------------------------------------------
+
+
+def get_closes_array(bars: Iterable[OHLC], lookback: int) -> np.ndarray:
+    """返回 close 价格的 float64 numpy 数组。"""
+    return np.array(get_closes(bars, lookback), dtype=np.float64)
+
+
+def get_hlc_arrays(
+    bars: List[OHLC], lookback: int = 0
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """一次遍历提取 high/low/close 三个 numpy 数组。
+
+    Returns:
+        (highs, lows, closes) — 均为 float64 ndarray
+    """
+    window = bars[-lookback:] if lookback > 0 else bars
+    n = len(window)
+    highs = np.empty(n, dtype=np.float64)
+    lows = np.empty(n, dtype=np.float64)
+    closes = np.empty(n, dtype=np.float64)
+    for i, bar in enumerate(window):
+        highs[i] = bar.high
+        lows[i] = bar.low
+        closes[i] = bar.close
+    return highs, lows, closes
+
+
+def get_hlcv_arrays(
+    bars: List[OHLC], lookback: int = 0
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """一次遍历提取 high/low/close/volume 四个 numpy 数组。
+
+    Returns:
+        (highs, lows, closes, volumes) — 均为 float64 ndarray
+    """
+    window = bars[-lookback:] if lookback > 0 else bars
+    n = len(window)
+    highs = np.empty(n, dtype=np.float64)
+    lows = np.empty(n, dtype=np.float64)
+    closes = np.empty(n, dtype=np.float64)
+    volumes = np.empty(n, dtype=np.float64)
+    for i, bar in enumerate(window):
+        highs[i] = bar.high
+        lows[i] = bar.low
+        closes[i] = bar.close
+        volumes[i] = float(bar.volume or 0.0)
+    return highs, lows, closes, volumes

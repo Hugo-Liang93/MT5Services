@@ -712,4 +712,3 @@ def create_isolated_pipeline(
     pipeline._apply_runtime_config(initial=True)
     logger.info("Created isolated pipeline for backtesting")
     return pipeline
-        _global_pipeline = None
