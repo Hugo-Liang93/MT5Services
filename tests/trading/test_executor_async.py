@@ -158,8 +158,8 @@ def test_shutdown_stops_worker() -> None:
 
 
 def test_queue_overflow_drops_event() -> None:
-    """When queue is full, on_signal_event retries once (1s) then drops."""
-    module = DummyTradingModule(delay=3.0)  # very slow worker
+    """When queue is full, on_signal_event retries once (3s) then drops."""
+    module = DummyTradingModule(delay=5.0)  # very slow worker
     executor = _make_executor(module, maxsize=1)
 
     # First event goes into the queue
@@ -171,13 +171,13 @@ def test_queue_overflow_drops_event() -> None:
     # Fill the queue with one more event.
     executor.on_signal_event(_build_event(signal_id="sig_1"))
 
-    # Third event: queue full → backpressure retry (1s timeout) → then drop.
+    # Third event: queue full → backpressure retry (3s timeout) → then drop.
     t0 = time.perf_counter()
     executor.on_signal_event(_build_event(signal_id="sig_2"))
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
-    # Backpressure retry takes ~1s, allow up to 1500ms for CI jitter
-    assert elapsed_ms < 1500.0, f"on_signal_event blocked for {elapsed_ms:.1f}ms"
+    # Backpressure retry takes ~3s, allow up to 4000ms for CI jitter
+    assert elapsed_ms < 4000.0, f"on_signal_event blocked for {elapsed_ms:.1f}ms"
     assert executor._execution_quality["queue_overflows"] == 1
     executor.shutdown()
 

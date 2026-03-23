@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -243,9 +244,11 @@ class SignalQualityTracker:
 
         with self._lock:
             # 同一 (symbol, timeframe) 同一 bar_time 只推进一次
-            if self._last_advance_bar.get(symbol_tf) == bar_time_raw:
+            # bar_time_raw 为 None 时用 fallback 避免多个无 bar_time 事件被误去重
+            dedup_key = bar_time_raw if bar_time_raw is not None else f"_fallback_{time.monotonic()}"
+            if self._last_advance_bar.get(symbol_tf) == dedup_key:
                 return
-            self._last_advance_bar[symbol_tf] = bar_time_raw
+            self._last_advance_bar[symbol_tf] = dedup_key
 
             keys_to_scan = [
                 k for k in self._pending if k[0] == symbol_tf[0] and k[1] == symbol_tf[1]

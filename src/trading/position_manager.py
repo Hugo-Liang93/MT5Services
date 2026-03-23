@@ -159,15 +159,15 @@ class PositionManager:
     def update_price(self, ticket: int, current_price: float) -> None:
         with self._lock:
             pos = self._positions.get(ticket)
-        if pos is None:
-            return
+            if pos is None:
+                return
 
-        if pos.action == "buy":
-            if pos.highest_price is None or current_price > pos.highest_price:
-                pos.highest_price = current_price
-        elif pos.action == "sell":
-            if pos.lowest_price is None or current_price < pos.lowest_price:
-                pos.lowest_price = current_price
+            if pos.action == "buy":
+                if pos.highest_price is None or current_price > pos.highest_price:
+                    pos.highest_price = current_price
+            elif pos.action == "sell":
+                if pos.lowest_price is None or current_price < pos.lowest_price:
+                    pos.lowest_price = current_price
 
         self._check_breakeven(pos, current_price)
         self._check_trailing_stop(pos, current_price)
@@ -383,6 +383,9 @@ class PositionManager:
 
         day_key = current.date().isoformat() if current.tzinfo is None else current.astimezone(timezone.utc).date().isoformat()
 
+        # 先标记 EOD 日期，防止并发 reconcile 在 close_all 期间触发二次 EOD
+        self._last_end_of_day_close_date = day_key
+
         positions_getter = getattr(self._trading, "get_positions", None)
         if callable(positions_getter):
             try:
@@ -392,7 +395,6 @@ class PositionManager:
         else:
             open_positions = []
         if not open_positions:
-            self._last_end_of_day_close_date = day_key
             return {"closed": [], "failed": []}
 
         close_all = getattr(self._trading, "close_all_positions", None)
@@ -403,8 +405,6 @@ class PositionManager:
         if not isinstance(result, dict):
             result = {"result": result}
         failed = list(result.get("failed", []) or [])
-        if not failed:
-            self._last_end_of_day_close_date = day_key
         logger.info(
             "PositionManager: end-of-day closeout executed at %s (closed=%s, failed=%s)",
             current.isoformat(),

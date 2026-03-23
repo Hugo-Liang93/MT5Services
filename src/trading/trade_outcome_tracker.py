@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -108,12 +108,33 @@ class TradeOutcomeTracker:
         )
         with self._lock:
             self._active[signal_id] = trade
-            # 超出上限时丢弃最旧的
+            # 超出上限时丢弃最旧的（优先丢弃超过 24h 的条目）
             if len(self._active) > self._max_active:
-                oldest_key = min(
-                    self._active, key=lambda k: self._active[k].opened_at
-                )
-                self._active.pop(oldest_key, None)
+                now = datetime.now(timezone.utc)
+                stale_cutoff = now - timedelta(hours=24)
+                stale_keys = [
+                    k for k, v in self._active.items()
+                    if v.opened_at < stale_cutoff
+                ]
+                if stale_keys:
+                    for k in stale_keys[:len(self._active) - self._max_active]:
+                        removed = self._active.pop(k, None)
+                        if removed:
+                            self._total_unresolved += 1
+                            logger.warning(
+                                "TradeOutcomeTracker: evicting stale trade %s (opened %s)",
+                                k, removed.opened_at.isoformat(),
+                            )
+                elif len(self._active) > self._max_active:
+                    oldest_key = min(
+                        self._active, key=lambda k: self._active[k].opened_at
+                    )
+                    removed = self._active.pop(oldest_key, None)
+                    if removed:
+                        self._total_unresolved += 1
+                        logger.warning(
+                            "TradeOutcomeTracker: force-evicting oldest trade %s", oldest_key,
+                        )
         logger.debug(
             "TradeOutcomeTracker: registered trade signal_id=%s %s %s @ %.5f",
             signal_id, action, symbol, fill_price,

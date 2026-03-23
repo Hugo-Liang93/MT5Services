@@ -149,7 +149,7 @@ class ConfidenceCalibrator:
             target=self._bg_loop,
             args=(symbol,),
             name="calibrator-refresh",
-            daemon=True,
+            daemon=False,
         )
         self._bg_thread.start()
         logger.info(
@@ -158,10 +158,10 @@ class ConfidenceCalibrator:
         )
 
     def stop_background_refresh(self) -> None:
-        """停止后台刷新线程（最多等待 5 秒）。"""
+        """停止后台刷新线程（最多等待 10 秒）。"""
         self._bg_stop.set()
         if self._bg_thread is not None:
-            self._bg_thread.join(timeout=5.0)
+            self._bg_thread.join(timeout=10.0)
             self._bg_thread = None
         logger.info("ConfidenceCalibrator: background refresh stopped")
 

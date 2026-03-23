@@ -133,6 +133,9 @@ class SignalRuntime:
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._signal_listeners: List[Callable[[SignalEvent], None]] = []
         self._signal_listeners_lock = threading.Lock()
+        # Listener 熔断：连续失败 N 次后自动 deregister
+        self._listener_fail_counts: Dict[int, int] = {}  # id(listener) → count
+        self._LISTENER_MAX_CONSECUTIVE_FAILURES = 10
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
         self._strategy_requirements: dict[str, tuple[str, ...]] = {}
@@ -217,6 +220,13 @@ class SignalRuntime:
         self._loop_error_alert_threshold = 5
         self._affinity_gates_skipped: int = 0
         self._htf_stale_warnings: int = 0
+        # 预初始化 event impact 缓存（避免竞态条件下的 getattr 延迟初始化）
+        self._event_impact_cache: Dict[str, Any] = {
+            "data": None,
+            "expires_at": datetime.now(timezone.utc),
+        }
+        # Anti-starvation 计数器（预初始化，避免 getattr 延迟初始化）
+        self._confirmed_burst_count: int = 0
         self._vote_fusion_cache: dict[
             tuple[str, str, datetime], dict[str, tuple[str, Any]]
         ] = {}
@@ -343,10 +353,18 @@ class SignalRuntime:
                     return
                 except queue.Full:
                     self._confirmed_backpressure_failures += 1
-                    pass
             self._dropped_events += 1
             if scope == "confirmed":
                 self._dropped_confirmed += 1
+                # confirmed 事件丢弃是严重问题，每次都记录 WARNING
+                symbol, timeframe = item[1], item[2]
+                logger.warning(
+                    "CONFIRMED event DROPPED for %s/%s (backpressure_failures=%d, "
+                    "total_confirmed_dropped=%d). Bar-close signal permanently lost!",
+                    symbol, timeframe,
+                    self._confirmed_backpressure_failures,
+                    self._dropped_confirmed,
+                )
             else:
                 self._dropped_intrabar += 1
             now = time.monotonic()
@@ -502,13 +520,35 @@ class SignalRuntime:
             signal_id=signal_id,
             reason=decision.reason,
         )
+        listeners_to_remove: List[Callable] = []
         for listener in listeners:
+            lid = id(listener)
             try:
                 listener(event)
+                # 成功时重置失败计数
+                self._listener_fail_counts.pop(lid, None)
             except Exception as exc:
-                error_msg = f"Signal listener error [{getattr(listener, '__name__', repr(listener))}]: {exc}"
+                fail_count = self._listener_fail_counts.get(lid, 0) + 1
+                self._listener_fail_counts[lid] = fail_count
+                listener_name = getattr(listener, '__name__', repr(listener))
+                error_msg = f"Signal listener error [{listener_name}]: {exc} (failures={fail_count})"
                 self._last_error = error_msg
                 logger.error(error_msg, exc_info=True)
+                if fail_count >= self._LISTENER_MAX_CONSECUTIVE_FAILURES:
+                    logger.error(
+                        "LISTENER CIRCUIT BREAK: %s reached %d consecutive failures, "
+                        "auto-deregistering to prevent cascading errors",
+                        listener_name, fail_count,
+                    )
+                    listeners_to_remove.append(listener)
+        if listeners_to_remove:
+            with self._signal_listeners_lock:
+                for listener in listeners_to_remove:
+                    try:
+                        self._signal_listeners.remove(listener)
+                    except ValueError:
+                        pass
+                    self._listener_fail_counts.pop(id(listener), None)
 
     @staticmethod
     def _parse_event_time(value: Any) -> datetime:
@@ -914,16 +954,16 @@ class SignalRuntime:
             try:
                 _soft_parsed = SoftRegimeResult.from_dict(regime_metadata["_soft_regime"])
             except Exception:
-                pass
+                logger.info(
+                    "Failed to parse soft regime for %s/%s, falling back to hard regime",
+                    symbol, timeframe, exc_info=True,
+                )
 
         # 查询 event impact forecast（带 5 分钟 TTL 缓存，避免每 bar 查 DB）
         _event_impact: Optional[Dict[str, Any]] = None
         _impact_analyzer = getattr(self, "_market_impact_analyzer", None)
         if _impact_analyzer is not None and scope == "confirmed":
-            cache = getattr(self, "_event_impact_cache", None)
-            if cache is None:
-                self._event_impact_cache: Dict[str, Any] = {"data": None, "expires_at": event_time}
-                cache = self._event_impact_cache
+            cache = self._event_impact_cache
             if event_time >= cache.get("expires_at", event_time):
                 try:
                     eco_service = getattr(self, "_economic_calendar_service", None)
@@ -1018,7 +1058,7 @@ class SignalRuntime:
                         latest_close=regime_metadata.get("close_price"),
                     )
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Failed to build market structure context for %s/%s",
                         symbol, timeframe, exc_info=True,
                     )
@@ -1275,7 +1315,7 @@ class SignalRuntime:
         # 优先排空 confirmed 队列
         try:
             event = self._confirmed_events.get_nowait()
-            self._confirmed_burst_count = getattr(self, "_confirmed_burst_count", 0) + 1
+            self._confirmed_burst_count += 1
             # Anti-starvation: after N consecutive confirmed, yield to intrabar
             if self._confirmed_burst_count >= self._CONFIRMED_BURST_LIMIT:
                 self._confirmed_burst_count = 0
@@ -1622,8 +1662,8 @@ class SignalRuntime:
         ]
         for key in stale_keys:
             self._vote_fusion_cache.pop(key, None)
-        # 全局容量上限：防止高时间框架缓存无限积累导致内存泄漏
-        _MAX_FUSION_CACHE = 5000
+        # 全局容量上限：防止缓存无限积累导致内存泄漏
+        _MAX_FUSION_CACHE = 2000
         if len(self._vote_fusion_cache) > _MAX_FUSION_CACHE:
             sorted_keys = sorted(self._vote_fusion_cache.keys(), key=lambda k: k[2])
             to_remove = sorted_keys[: len(sorted_keys) - _MAX_FUSION_CACHE]
@@ -1643,13 +1683,17 @@ class SignalRuntime:
                 self.process_next_event(timeout=0.5)
                 backoff = 0.0  # 成功后重置退避
                 self._consecutive_loop_errors = 0
-                # 每 200 次事件检查一次 PerformanceTracker session 重置
+                # 每 200 次事件检查一次 PerformanceTracker session 重置 + 内存清理
                 _session_check_counter += 1
                 if _session_check_counter >= 200:
                     _session_check_counter = 0
                     perf_tracker = getattr(self.service, "_performance_tracker", None)
                     if perf_tracker is not None:
                         perf_tracker.check_session_reset()
+                    # 定期清理 indicator miss 计数器，防止无界增长
+                    _MAX_MISS_KEYS = 500
+                    if len(self._indicator_miss_counts) > _MAX_MISS_KEYS:
+                        self._indicator_miss_counts.clear()
             except Exception as exc:
                 self._last_error = str(exc)
                 self._consecutive_loop_errors += 1

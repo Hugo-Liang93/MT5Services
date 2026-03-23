@@ -23,15 +23,24 @@ def shutdown_components(container: Any) -> None:
         except Exception:
             logger.debug("Failed to dump calibrator cache during shutdown", exc_info=True)
 
+    # 关闭顺序：先停信号源头，再停执行层，最后停数据层。
+    # 1. monitoring — 停止健康检查（无副作用）
+    # 2. signal_runtime — 停止信号评估，阻止新信号产生
+    # 3. trade_executor — 停止执行器（含 pending_entry_manager 内部关闭）
+    # 4. position_manager — 停止持仓监控
+    # 5. ingestor — 停止数据采集（不再向 indicator/storage 写入）
+    # 6. indicator_manager — 停止指标计算
+    # 7. economic_calendar_service — 停止日历同步
+    # 8. storage_writer — 最后停持久化（确保前面组件的残余写入可落盘）
     for label, component, method in [
         ("monitoring_manager", container.monitoring_manager, "stop"),
-        ("position_manager", container.position_manager, "stop"),
-        ("pending_entry_manager", getattr(container, "pending_entry_manager", None), "shutdown"),
-        ("trade_executor", container.trade_executor, "shutdown"),
         ("signal_runtime", container.signal_runtime, "stop"),
+        ("trade_executor", container.trade_executor, "shutdown"),
+        ("pending_entry_manager", getattr(container, "pending_entry_manager", None), "shutdown"),
+        ("position_manager", container.position_manager, "stop"),
+        ("ingestor", container.ingestor, "stop"),
         ("indicator_manager", container.indicator_manager, "shutdown"),
         ("economic_calendar_service", container.economic_calendar_service, "stop"),
-        ("ingestor", container.ingestor, "stop"),
         ("storage_writer", container.storage_writer, "stop"),
     ]:
         if component is None:
