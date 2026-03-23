@@ -37,7 +37,7 @@ This is intentional because the MT5 Python binding uses a global terminal sessio
 - `config/risk.ini`: risk limits and final execution session guard
 - `config/mt5.ini`: MT5 startup account selection and terminal connection
 - `config/db.ini`: PostgreSQL/TimescaleDB connection
-- `config/cache.ini`: cache compatibility settings
+- `config/cache.ini`: runtime cache overrides for in-memory limits
 - `config/signal.ini`: signal runtime, voting, circuit breaker, session spread limits, market structure
 - `config/indicators.json`: indicator pipeline configuration
 
@@ -105,7 +105,7 @@ The runtime now supports a more opinionated XAUUSD intraday profile:
 - `config/economic.ini`
   - `trade_guard_mode = block`: high-impact economic windows now block XAUUSD entries by default instead of warn-only
 
-## Phase 4 Runtime Safety
+## Runtime Safety
 
 - `config/signal.ini`
   - `max_concurrent_positions_per_symbol`: signal-driven concurrent position cap per symbol

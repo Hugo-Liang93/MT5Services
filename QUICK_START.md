@@ -119,6 +119,8 @@ api_key =
 python app.py
 ```
 
+业务路由同时挂载在根路径和 `/v1` 前缀下，例如 `/signals/runtime/status` 与 `/v1/signals/runtime/status` 都可访问；`/health` 始终保留在根路径。
+
 ## 5. 启动后先做 5 个检查
 
 ### 基础检查
