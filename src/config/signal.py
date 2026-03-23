@@ -63,6 +63,7 @@ def get_signal_config() -> SignalConfig:
     signal_quality_section = dict(merged.get("signal_quality", {}))
     htf_alignment_section = dict(merged.get("htf_alignment", {}))
     timeframe_risk_section = dict(merged.get("timeframe_risk", {}))
+    pending_entry_section = dict(merged.get("pending_entry", {}))
 
     renamed_preview = {
         ("min_preview_confidence" if key == "min_confidence" else key): value
@@ -161,6 +162,34 @@ def get_signal_config() -> SignalConfig:
         if affinity_map:
             regime_affinity_overrides[strategy_name] = affinity_map
 
+    # ── Pending Entry 解析 ─────────────────────────────────────────────
+    pending_entry_timeout_bars: dict[str, float] = {}
+    pending_entry_strategy_overrides: dict[str, dict[str, float]] = {}
+    pending_entry_simple: dict[str, object] = {}
+    for raw_key, raw_value in pending_entry_section.items():
+        key = str(raw_key).strip()
+        # timeout_bars_M5 = 2.0 → timeout_bars["M5"] = 2.0
+        if key.startswith("timeout_bars_"):
+            tf = key[len("timeout_bars_"):].strip().upper()
+            if tf:
+                try:
+                    pending_entry_timeout_bars[tf] = float(raw_value)
+                except (TypeError, ValueError):
+                    pass
+        # strategy_override: supertrend__pullback_atr_factor = 0.4
+        elif "__" in key:
+            parts = key.split("__", 1)
+            if len(parts) == 2:
+                strategy_name, param_name = parts
+                if strategy_name not in pending_entry_strategy_overrides:
+                    pending_entry_strategy_overrides[strategy_name] = {}
+                try:
+                    pending_entry_strategy_overrides[strategy_name][param_name] = float(raw_value)
+                except (TypeError, ValueError):
+                    pass
+        else:
+            pending_entry_simple[key] = raw_value
+
     combined = {
         **signal_section,
         **renamed_preview,
@@ -226,5 +255,11 @@ def get_signal_config() -> SignalConfig:
             f"htf_alignment_{key}": value
             for key, value in htf_alignment_section.items()
         },
+        **{
+            f"pending_entry_{key}": value
+            for key, value in pending_entry_simple.items()
+        },
+        **({"pending_entry_timeout_bars": pending_entry_timeout_bars} if pending_entry_timeout_bars else {}),
+        **({"pending_entry_strategy_overrides": pending_entry_strategy_overrides} if pending_entry_strategy_overrides else {}),
     }
     return SignalConfig.model_validate(combined)

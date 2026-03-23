@@ -118,6 +118,7 @@ MT5Services/
 │   │   └── tracking/         # SignalRepository（信号持久化与查询）
 │   ├── trading/              # TradingModule、TradeExecutor、ExecutionGate、PositionManager、SignalQualityTracker、TradeOutcomeTracker
 │   │   ├── execution_gate.py # ExecutionGate：策略域准入检查（voting group / 白名单 / armed）
+│   │   ├── pending_entry.py  # PendingEntryManager：价格确认入场（Quote bid/ask 区间监控）
 │   │   └── models.py         # TradeOperationRecord 数据类
 │   └── utils/                # 通用工具、内存管理器
 ├── tests/                    # 测试套件（镜像 src/ 结构）
@@ -156,7 +157,7 @@ code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默
 | `config/economic.ini` | 日历数据源（FRED、TradingEconomics）、Trade Guard 窗口 |
 | `config/risk.ini` | 最大仓位数、SL/TP 要求、保证金安全系数、交易频率限制 |
 | `config/cache.ini` | 运行时内存缓存大小（覆盖 app.ini [limits]，优先级更高） |
-| `config/signal.ini` | 自动交易、仓位大小、过滤条件、状态机参数、HTF 缓存 TTL、信号质量追踪器、Regime 检测阈值、策略级参数覆盖、Regime 亲和度覆盖 |
+| `config/signal.ini` | 自动交易、仓位大小、过滤条件、状态机参数、HTF 缓存 TTL、信号质量追踪器、Regime 检测阈值、策略级参数覆盖、Regime 亲和度覆盖、**价格确认入场（Pending Entry）** |
 | `config/indicators.json` | 指标定义、参数、依赖关系、流水线配置 |
 | `config/composites.json` | 复合策略组合定义 |
 
@@ -231,7 +232,7 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
                                        ↓
                          VotingEngine（consensus / group 投票）
                                        ↓
-                         ExecutionGate（准入检查）→ TradeExecutor → MT5
+                         ExecutionGate（准入检查）→ PendingEntryManager（Quote 价格确认）→ TradeExecutor → MT5
 ```
 
 > **采集节奏说明**：`poll_interval` 是主循环的 sleep 间隔（控制 tick/quote 的有效采集频率）。
@@ -325,6 +326,7 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/trading/trading_service.py` | TradingService：底层下单、平仓、保证金计算 |
 | `src/trading/signal_executor.py` | TradeExecutor：信号自动下单执行、熔断器、成本检查 |
 | `src/trading/execution_gate.py` | ExecutionGate：策略域准入检查（voting group / 白名单 / armed） |
+| `src/trading/pending_entry.py` | PendingEntryManager：价格确认入场（信号 → 等 Quote 价格落入区间 → 执行） |
 | `src/trading/position_manager.py` | PositionManager：持仓监控、止损跟踪、日终自动平仓 |
 | `src/trading/sizing.py` | 仓位计算、时间框架差异化 SL/TP（`TimeframeSLTP`） |
 | `src/trading/signal_quality_tracker.py` | SignalQualityTracker：信号预测质量追踪（N bars 后评估，供 Calibrator） |
@@ -978,10 +980,11 @@ idle → preview_buy/sell（方向改变）
 2. **Regime fast-reject** (`SignalRuntime._any_strategy_eligible()`)：所有策略 affinity 不足时跳过全部后续计算
 3. **HTF direction alignment** (`SignalRuntime._evaluate_strategies()`)：HTF 方向冲突 ×0.70 / 对齐 ×1.10（在置信度管线内，持久化前）
 4. **Execution gate** (`src/trading/execution_gate.py`)：voting group 保护、交易触发白名单、require_armed 门控
-5. **Pre-trade risk service** (`src/risk/service.py`)：`DailyLossLimitRule`（日损失限制）、`AccountSnapshotRule`（仓位限制）、`MarginAvailabilityRule`（保证金动态检查）、`TradeFrequencyRule`（交易频率限制）、`BrokerConstraintRule` 等
-6. **Executor safety** (`src/trading/signal_executor.py`)：熔断器、**持仓数量预检**、成本检查（spread_to_stop_ratio）
-7. **Position manager** (`src/trading/position_manager.py`)：**日终自动平仓**（UTC 21:00，可配置开关）
-8. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M1: 1.0/2.0, M5: 1.2/2.5, M15: 1.3/2.8, H1: 1.5/3.0, D1: 2.0/4.0 ATR 倍数）+ **时间框架差异化风险百分比**（M1: ×0.50, M5: ×0.75, M15: ×1.00, H1: ×1.20, D1: ×1.50）
+5. **Pending entry** (`src/trading/pending_entry.py`)：**价格确认入场** — 信号产生后不立即下单，等 Quote bid/ask 落入 ATR 计算的入场区间后执行（按策略类型自动选择 pullback/momentum/symmetric 三种模式）
+6. **Pre-trade risk service** (`src/risk/service.py`)：`DailyLossLimitRule`（日损失限制）、`AccountSnapshotRule`（仓位限制）、`MarginAvailabilityRule`（保证金动态检查）、`TradeFrequencyRule`（交易频率限制）、`BrokerConstraintRule` 等
+7. **Executor safety** (`src/trading/signal_executor.py`)：熔断器、**持仓数量预检**、成本检查（spread_to_stop_ratio）
+8. **Position manager** (`src/trading/position_manager.py`)：**日终自动平仓**（UTC 21:00，可配置开关）
+9. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M1: 1.0/2.0, M5: 1.2/2.5, M15: 1.3/2.8, H1: 1.5/3.0, D1: 2.0/4.0 ATR 倍数）+ **时间框架差异化风险百分比**（M1: ×0.50, M5: ×0.75, M15: ×1.00, H1: ×1.20, D1: ×1.50）
 
 ---
 
@@ -1205,6 +1208,7 @@ flake8 src/ tests/
   - `DailyLossLimitRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
   - `StrategyPerformanceTracker` → `src/signals/evaluation/performance.py`（与 Calibrator 平级，不在 trading 模块）
   - `TradeAPIDispatcher` → `src/api/trade_dispatcher.py`（独立文件，不在路由文件中）
+  - `PendingEntryManager` → `src/trading/pending_entry.py`（价格确认入场，由 TradeExecutor 调用）
   - `MarginAvailabilityRule` / `TradeFrequencyRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
   - `UnifiedIndicatorSourceAdapter` → `src/signals/strategies/adapters.py`（解耦信号与指标的适配器）
 

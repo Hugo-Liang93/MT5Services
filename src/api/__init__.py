@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.api import account, economic, indicators, market, monitoring, signal, trade
+from src.backtesting.api import router as backtest_router
 from src.api import deps
 from src.api.schemas import ApiResponse
 from src.clients.mt5_market import MT5MarketError
@@ -126,6 +127,7 @@ v1.include_router(trade.router)
 v1.include_router(monitoring.router)
 v1.include_router(indicators.router)
 v1.include_router(signal.router)
+v1.include_router(backtest_router)
 app.include_router(v1)
 
 # 向后兼容：无前缀路由保留，确保现有客户端不中断

@@ -31,6 +31,7 @@ from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
 from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
+from src.trading.pending_entry import PendingEntryConfig, PendingEntryManager
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 
 
@@ -113,6 +114,23 @@ class SignalComponents:
     position_manager: PositionManager
     trade_executor: TradeExecutor
     performance_tracker: StrategyPerformanceTracker
+    pending_entry_manager: PendingEntryManager
+
+
+def build_pending_entry_config(signal_config) -> PendingEntryConfig:
+    return PendingEntryConfig(
+        pullback_atr_factor=signal_config.pending_entry_pullback_atr_factor,
+        chase_atr_factor=signal_config.pending_entry_chase_atr_factor,
+        momentum_atr_factor=signal_config.pending_entry_momentum_atr_factor,
+        symmetric_atr_factor=signal_config.pending_entry_symmetric_atr_factor,
+        check_interval=signal_config.pending_entry_check_interval,
+        max_spread_points=signal_config.pending_entry_max_spread_points,
+        timeout_bars=dict(signal_config.pending_entry_timeout_bars),
+        default_timeout_bars=signal_config.pending_entry_default_timeout_bars,
+        cancel_on_new_signal=signal_config.pending_entry_cancel_on_new_signal,
+        cancel_same_direction=signal_config.pending_entry_cancel_same_direction,
+        strategy_overrides=dict(signal_config.pending_entry_strategy_overrides),
+    )
 
 
 def build_signal_filter_chain(signal_config, economic_calendar_service) -> SignalFilterChain:
@@ -409,6 +427,22 @@ def build_signal_components(
     _skip_callback_holder: list = []
 
     execution_gate = ExecutionGate(config=build_execution_gate_config(signal_config))
+    # PendingEntryManager: 价格确认入场
+    pending_entry_config = build_pending_entry_config(signal_config)
+    # execute_fn 延迟绑定：TradeExecutor._execute 在创建后才可引用
+    _executor_holder: list = []
+    pending_entry_manager = PendingEntryManager(
+        config=pending_entry_config,
+        market_service=indicator_manager.market_service,
+        execute_fn=lambda event, params, cost: (
+            _executor_holder[0]._execute(event, params, cost_metrics=cost)
+            if _executor_holder
+            else None
+        ),
+        on_expired_fn=lambda sid, reason: (
+            _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
+        ),
+    )
     trade_executor = TradeExecutor(
         trading_module=trade_module,
         config=build_executor_config(signal_config),
@@ -419,7 +453,9 @@ def build_signal_components(
             _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
         ),
         execution_gate=execution_gate,
+        pending_entry_manager=pending_entry_manager,
     )
+    _executor_holder.append(trade_executor)
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)
     htf_cache.attach(signal_runtime)
 
@@ -467,6 +503,7 @@ def build_signal_components(
         position_manager=position_manager,
         trade_executor=trade_executor,
         performance_tracker=performance_tracker,
+        pending_entry_manager=pending_entry_manager,
     )
 
 
@@ -478,6 +515,7 @@ def register_signal_hot_reload(
     economic_calendar_service=None,
     market_structure_analyzer=None,
     performance_tracker=None,
+    pending_entry_manager=None,
 ) -> None:
     def _on_signal_config_change(filename: str) -> None:
         if filename != "signal.ini":
@@ -493,6 +531,8 @@ def register_signal_hot_reload(
             trade_executor._execution_gate.config = build_execution_gate_config(signal_config)
         if performance_tracker is not None:
             performance_tracker._config = build_performance_tracker_config(signal_config)
+        if pending_entry_manager is not None:
+            pending_entry_manager.config = build_pending_entry_config(signal_config)
         if market_structure_analyzer is not None:
             market_structure_analyzer.config = MarketStructureConfig(
                 enabled=signal_config.market_structure_enabled,

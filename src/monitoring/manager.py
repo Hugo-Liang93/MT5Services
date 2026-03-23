@@ -131,6 +131,9 @@ class MonitoringManager:
                             elif method == "economic_calendar" and hasattr(component_obj, "stats"):
                                 self.health_monitor.check_economic_calendar(name, component_obj)
 
+                            elif method == "pending_entry" and hasattr(component_obj, "status"):
+                                self._check_pending_entry(component_obj, name)
+
                         except Exception as e:
                             logger.error(f"Failed to execute monitoring method {method} for {name}: {e}")
 
@@ -192,6 +195,51 @@ class MonitoringManager:
                     logger.debug(f"Indicator freshness for {symbol}/{timeframe}: {freshness:.1f}s")
                 except Exception as e:
                     logger.error(f"Failed to check indicator freshness for {symbol}/{timeframe}: {e}")
+
+    def _check_pending_entry(self, pending_mgr, component_name: str):
+        """检查 PendingEntryManager 健康状态。"""
+        try:
+            status = pending_mgr.status()
+            stats = status.get("stats", {})
+            active = status.get("active_count", 0)
+            filled = stats.get("total_filled", 0)
+            expired = stats.get("total_expired", 0)
+            submitted = stats.get("total_submitted", 0)
+
+            # 记录活跃 pending 数量
+            self.health_monitor.record_metric(
+                component_name,
+                "pending_active_count",
+                float(active),
+                {"filled": filled, "expired": expired, "submitted": submitted},
+            )
+
+            # 记录 fill_rate
+            fill_rate = stats.get("fill_rate")
+            if fill_rate is not None:
+                self.health_monitor.record_metric(
+                    component_name,
+                    "pending_fill_rate",
+                    float(fill_rate),
+                    {"submitted": submitted, "filled": filled},
+                )
+
+            # monitor 线程存活检查
+            monitor_alive = (
+                hasattr(pending_mgr, "_monitor_thread")
+                and pending_mgr._monitor_thread is not None
+                and pending_mgr._monitor_thread.is_alive()
+            )
+            self.health_monitor.record_metric(
+                component_name,
+                "pending_monitor_alive",
+                1.0 if monitor_alive else 0.0,
+            )
+            if not monitor_alive:
+                logger.warning("PendingEntryManager monitor thread is not alive")
+
+        except Exception as e:
+            logger.error("Failed to check pending entry health: %s", e)
 
 
 # 单例实例

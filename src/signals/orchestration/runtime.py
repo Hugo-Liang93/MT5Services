@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
 
+from ..confidence import apply_intrabar_decay
 from ..evaluation.indicators_helpers import get_close
 from ..evaluation.regime import (
     MarketRegimeDetector,
@@ -1051,11 +1052,7 @@ class SignalRuntime:
                 decay = self._strategy_intrabar_decay.get(
                     strategy, self._intrabar_confidence_decay
                 )
-                if decay < 1.0:
-                    decision = _dc.replace(
-                        decision,
-                        confidence=decision.confidence * decay,
-                    )
+                decision = apply_intrabar_decay(decision, scope, decay)
             # ── HTF 方向对齐修正 ──────────────────────────
             if decision.action in ("buy", "sell"):
                 htf_mul, htf_dir = self._compute_htf_alignment(
