@@ -78,6 +78,7 @@ class PaperTradingBridge:
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
         self._bar_index = 0  # 单调递增的虚拟 bar 索引
+        self._active_symbol: Optional[str] = None  # 最近交易的品种（用于价格监控）
 
         self._portfolio = self._create_portfolio()
 
@@ -225,6 +226,7 @@ class PaperTradingBridge:
             return
 
         action = "buy" if event.signal_state == "confirmed_buy" else "sell"
+        self._active_symbol = event.symbol
 
         # 获取当前报价作为入场价
         quote = self._market_service.get_quote(event.symbol)
@@ -319,23 +321,14 @@ class PaperTradingBridge:
         with self._lock:
             if self._portfolio.open_position_count == 0:
                 return
+            symbol = self._active_symbol
 
-            # 收集所有持仓涉及的品种
-            symbols = {
-                pos.strategy  # 无法直接拿 symbol，遍历时构造 bar
-                for pos in self._portfolio._open_positions
-            }
-            # 实际上所有持仓共享同一个品种列表，从持仓提取
-            seen_symbols: set[str] = set()
-            for pos in self._portfolio._open_positions:
-                # _Position 没有 symbol 字段，从 signal_id 无法推断
-                # 使用默认品种获取报价
-                pass
+        if not symbol:
+            return
 
-            # 获取默认品种报价（当前系统主要交易 XAUUSD 单品种）
-            quote = self._market_service.get_quote()
-            if quote is None:
-                return
+        quote = self._market_service.get_quote(symbol)
+        if quote is None:
+            return
 
             bid = quote.bid
             ask = quote.ask
@@ -368,7 +361,9 @@ class PaperTradingBridge:
 
     def _get_last_price(self) -> float:
         """获取最新中间价，用于浮动盈亏计算。"""
-        quote = self._market_service.get_quote()
-        if quote is not None:
-            return (quote.bid + quote.ask) / 2.0
+        symbol = self._active_symbol
+        if symbol:
+            quote = self._market_service.get_quote(symbol)
+            if quote is not None:
+                return (quote.bid + quote.ask) / 2.0
         return 0.0

@@ -169,6 +169,11 @@ class PositionManager:
                 if pos.lowest_price is None or current_price < pos.lowest_price:
                     pos.lowest_price = current_price
 
+        # breakeven/trailing 调用 MT5 API（可能耗时数秒），不能在锁内执行。
+        # 锁外前先检查 pos 是否仍在 _positions 中（另一线程可能已 remove）。
+        with self._lock:
+            if ticket not in self._positions:
+                return
         self._check_breakeven(pos, current_price)
         self._check_trailing_stop(pos, current_price)
 
@@ -401,7 +406,13 @@ class PositionManager:
         if not callable(close_all):
             return None
 
-        result = close_all(comment="end_of_day_closeout")
+        try:
+            result = close_all(comment="end_of_day_closeout")
+        except Exception as exc:
+            # close_all 异常时回退日期标记，允许下次 reconcile 循环重试
+            self._last_end_of_day_close_date = None
+            logger.error("EOD closeout failed, will retry next cycle: %s", exc)
+            return {"closed": [], "failed": [], "error": str(exc)}
         if not isinstance(result, dict):
             result = {"result": result}
         failed = list(result.get("failed", []) or [])

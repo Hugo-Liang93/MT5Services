@@ -1718,9 +1718,15 @@ class SignalRuntime:
                     if perf_tracker is not None:
                         perf_tracker.check_session_reset()
                     # 定期清理 indicator miss 计数器，防止无界增长
+                    # 保留计数最高的条目（最频繁缺失的指标值得持续告警）
                     _MAX_MISS_KEYS = 500
                     if len(self._indicator_miss_counts) > _MAX_MISS_KEYS:
-                        self._indicator_miss_counts.clear()
+                        sorted_keys = sorted(
+                            self._indicator_miss_counts,
+                            key=self._indicator_miss_counts.get,  # type: ignore[arg-type]
+                        )
+                        for k in sorted_keys[: len(sorted_keys) - _MAX_MISS_KEYS]:
+                            self._indicator_miss_counts.pop(k, None)
             except Exception as exc:
                 self._last_error = str(exc)
                 self._consecutive_loop_errors += 1

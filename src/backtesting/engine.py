@@ -615,7 +615,9 @@ class BacktestEngine:
         """
         state = self._signal_states.get(strategy)
         if state is None:
-            return True  # 状态机未初始化（不应出现），兜底放行
+            # 惰性初始化：动态添加的策略也能参与状态机追踪
+            state = _BacktestSignalState()
+            self._signal_states[strategy] = state
 
         if action == state.current_action:
             state.stable_bars += 1
