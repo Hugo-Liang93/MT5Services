@@ -692,10 +692,17 @@ src/
 [ ] 去除 backtesting 对 fake config + api 内部函数的隐式依赖
 [ ] 定义关键事件 durable 等级
 [ ] 增加 live vs backtest replay consistency test
+[ ] 研究更多 confirmed+intrabar 双模式策略，提高 armed 覆盖率和整体可控性
+    — 当前 20 个策略中仅 7 个支持 intrabar（均值回归类），13 个 confirmed-only 策略
+      无法走 preview→armed 流程，require_armed=true 时这些策略永远无法触发交易。
+    — 目标：为趋势/突破类策略设计合理的 intrabar 预览逻辑，使 armed 机制能覆盖
+      更多策略，从而安全开启 require_armed=true 提高信号质量门控。
+    — 重点方向：supertrend/macd_momentum/ema_ribbon 等趋势策略的盘中趋势
+      强度变化是否适合做 intrabar 预警；donchian_breakout 盘中突破可信度评估。
 ```
 
 ---
 
 ## 12. 一句话策略
 
-**先把“系统怎么启动、模块怎么装配、实时和回测怎么共用内核”这三件事定住，再去继续扩策略和做 AI 优化。**
+**先把”系统怎么启动、模块怎么装配、实时和回测怎么共用内核”这三件事定住，再去继续扩策略和做 AI 优化。**
