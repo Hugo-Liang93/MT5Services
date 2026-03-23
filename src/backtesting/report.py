@@ -36,6 +36,10 @@ def format_summary(result: BacktestResult) -> str:
         f"{'─' * 60}",
     ]
 
+    # 过滤器统计
+    if result.filter_stats:
+        lines.extend(_format_filter_stats(result.filter_stats))
+
     # 按策略分组
     if result.metrics_by_strategy:
         lines.append("  按策略分组:")
@@ -73,6 +77,10 @@ def format_summary(result: BacktestResult) -> str:
             )
         lines.append(f"{'─' * 60}")
 
+    # 信号评估统计
+    if result.signal_evaluations:
+        lines.extend(_format_signal_eval_stats(result))
+
     # 参数信息
     if result.param_set:
         lines.append("  参数覆盖:")
@@ -86,6 +94,70 @@ def format_summary(result: BacktestResult) -> str:
     lines.append(f"{'=' * 60}")
     lines.append("")
     return "\n".join(lines)
+
+
+def _format_filter_stats(stats: Dict[str, Any]) -> List[str]:
+    """格式化过滤器统计信息。"""
+    lines = [
+        "  过滤器统计:",
+        f"    总评估 bars: {stats.get('total_bars_evaluated', 0)}",
+        f"    被过滤 bars: {stats.get('total_bars_rejected', 0)}",
+        f"    通过率:      {stats.get('pass_rate', 0) * 100:.1f}%",
+    ]
+    rejections = stats.get("rejections_by_filter", {})
+    if rejections:
+        lines.append("    按过滤器拒绝统计:")
+        for filter_name, count in sorted(
+            rejections.items(), key=lambda x: x[1], reverse=True
+        ):
+            lines.append(f"      {filter_name:<25} {count:>6} 次")
+    lines.append(f"{'─' * 60}")
+    return lines
+
+
+def _format_signal_eval_stats(result: BacktestResult) -> List[str]:
+    """格式化信号评估统计。"""
+    evals = result.signal_evaluations or []
+    if not evals:
+        return []
+
+    total = len(evals)
+    filtered = sum(1 for e in evals if e.filtered)
+    actionable = [e for e in evals if e.action in ("buy", "sell") and not e.filtered]
+    won = sum(1 for e in actionable if e.won is True)
+    lost = sum(1 for e in actionable if e.won is False)
+    win_rate = won / (won + lost) * 100 if (won + lost) > 0 else 0.0
+
+    lines = [
+        "  信号评估统计:",
+        f"    总评估次数: {total}",
+        f"    被过滤:     {filtered}",
+        f"    有方向信号: {len(actionable)}",
+        f"    信号胜率:   {win_rate:.1f}% ({won}W / {lost}L)",
+    ]
+
+    # 按策略的信号质量
+    by_strategy: Dict[str, Dict[str, int]] = {}
+    for e in actionable:
+        s = by_strategy.setdefault(e.strategy, {"won": 0, "lost": 0, "total": 0})
+        s["total"] += 1
+        if e.won is True:
+            s["won"] += 1
+        elif e.won is False:
+            s["lost"] += 1
+
+    if by_strategy:
+        lines.append(f"    {'策略':<30} {'信号数':>6} {'信号胜率':>8}")
+        for name, s in sorted(
+            by_strategy.items(),
+            key=lambda x: x[1]["total"],
+            reverse=True,
+        ):
+            wr = s["won"] / (s["won"] + s["lost"]) * 100 if (s["won"] + s["lost"]) > 0 else 0.0
+            lines.append(f"    {name:<30} {s['total']:>6} {wr:>7.1f}%")
+
+    lines.append(f"{'─' * 60}")
+    return lines
 
 
 def format_optimization_summary(results: List[BacktestResult]) -> str:

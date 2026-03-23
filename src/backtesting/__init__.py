@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+from .filters import BacktestFilterConfig, BacktestFilterSimulator, BacktestFilterStats
 from .models import (
     BacktestConfig,
     BacktestMetrics,
     BacktestResult,
     ParameterSpace,
+    SignalEvaluation,
     TradeRecord,
 )
 
 __all__ = [
     "BacktestConfig",
+    "BacktestFilterConfig",
+    "BacktestFilterSimulator",
+    "BacktestFilterStats",
     "BacktestMetrics",
     "BacktestResult",
     "ParameterSpace",
+    "SignalEvaluation",
     "TradeRecord",
 ]

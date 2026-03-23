@@ -14,8 +14,14 @@ from src.signals.service import SignalModule
 from src.trading.sizing import compute_trade_params
 
 from .data_loader import HistoricalDataLoader
+from .filters import BacktestFilterConfig, BacktestFilterSimulator
 from .metrics import compute_metrics, compute_metrics_grouped
-from .models import BacktestConfig, BacktestResult, generate_run_id
+from .models import (
+    BacktestConfig,
+    BacktestResult,
+    SignalEvaluation,
+    generate_run_id,
+)
 from .portfolio import PortfolioTracker
 
 logger = logging.getLogger(__name__)
@@ -29,6 +35,8 @@ class BacktestEngine:
     - 直接复用 SignalModule.evaluate() 评估策略（含完整置信度管线）
     - persist=False 避免写入生产 DB
     - 滚动窗口传入 bar 数据（窗口大小 = warmup_bars）
+    - 可选启用过滤器模拟（复现实盘 SignalFilterChain 行为）
+    - 信号评估记录（对应实盘 signal_outcomes，回测用 N bars 回填）
     """
 
     def __init__(
@@ -69,6 +77,30 @@ class BacktestEngine:
                 if ind not in seen:
                     seen.add(ind)
                     self._required_indicators.append(ind)
+
+        # 构建过滤器模拟器
+        self._filter_simulator = self._build_filter_simulator()
+
+        # 信号评估记录（用于回测质量分析 + 数据落表）
+        self._signal_evaluations: List[SignalEvaluation] = []
+        # 待回填的 pending 评估：{bar_index: [SignalEvaluation]}
+        self._pending_evaluations: Dict[int, List[SignalEvaluation]] = {}
+        self._bars_to_evaluate = 5  # N bars 后回填
+
+    def _build_filter_simulator(self) -> BacktestFilterSimulator:
+        """从 BacktestConfig 构建过滤器模拟器。"""
+        filter_config = BacktestFilterConfig(
+            enabled=self._config.enable_filters,
+            session_filter_enabled=self._config.filter_session_enabled,
+            allowed_sessions=self._config.filter_allowed_sessions,
+            session_transition_enabled=self._config.filter_session_transition_enabled,
+            session_transition_cooldown_minutes=self._config.filter_session_transition_cooldown,
+            volatility_filter_enabled=self._config.filter_volatility_enabled,
+            volatility_spike_multiplier=self._config.filter_volatility_spike_multiplier,
+            spread_filter_enabled=self._config.filter_spread_enabled,
+            max_spread_points=self._config.filter_max_spread_points,
+        )
+        return BacktestFilterSimulator(filter_config)
 
     def run(self) -> BacktestResult:
         """执行回测主循环。"""
@@ -113,6 +145,8 @@ class BacktestEngine:
                 metrics_by_strategy={},
                 metrics_by_confidence={},
                 param_set=self._config.strategy_params,
+                filter_stats=None,
+                signal_evaluations=[],
             )
 
         all_bars = warmup_bars + test_bars
@@ -148,39 +182,83 @@ class BacktestEngine:
             # 5. 检查持仓 SL/TP
             self._portfolio.check_exits(bar, bar_index)
 
-            # 6. 策略评估
+            # 5.5 回填待评估信号（N bars 后用当前价格回填结果）
+            self._backfill_evaluations(bar_index, bar.close)
+
+            # 6. 过滤器检查（模拟实盘 SignalFilterChain）
+            filter_allowed, filter_reason = self._filter_simulator.should_evaluate(
+                symbol=symbol,
+                bar_time=bar.time,
+                indicators=indicators,
+            )
+
+            if not filter_allowed:
+                # 记录被过滤的信号评估（所有策略标记为 filtered）
+                for strategy_name in self._target_strategies:
+                    self._record_evaluation(
+                        bar=bar,
+                        bar_index=bar_index,
+                        strategy=strategy_name,
+                        action="hold",
+                        confidence=0.0,
+                        regime=regime.value,
+                        filtered=True,
+                        filter_reason=filter_reason,
+                    )
+                continue
+
+            # 7. 策略评估
             decisions = self._evaluate_strategies(
                 symbol, timeframe, indicators, regime, soft_regime_dict
             )
 
-            # 7. 处理信号
+            # 8. 记录信号评估 + 处理信号
             for decision in decisions:
+                self._record_evaluation(
+                    bar=bar,
+                    bar_index=bar_index,
+                    strategy=decision.strategy,
+                    action=decision.action,
+                    confidence=decision.confidence,
+                    regime=regime.value,
+                )
                 self._process_decision(decision, bar, bar_index, indicators, regime)
 
-            # 8. 投票引擎
+            # 9. 投票引擎
             if self._voting_engine is not None and decisions:
                 actionable = [d for d in decisions if d.action in ("buy", "sell")]
                 if actionable:
                     consensus = self._voting_engine.vote(actionable, regime, "confirmed")
                     if consensus is not None:
+                        self._record_evaluation(
+                            bar=bar,
+                            bar_index=bar_index,
+                            strategy=consensus.strategy,
+                            action=consensus.action,
+                            confidence=consensus.confidence,
+                            regime=regime.value,
+                        )
                         self._process_decision(
                             consensus, bar, bar_index, indicators, regime
                         )
 
-            # 9. 记录资金曲线（采样）
+            # 10. 记录资金曲线（采样）
             if bar_index % equity_sample_interval == 0:
                 self._portfolio.record_equity(bar)
 
-        # 10. 最终资金快照
+        # 11. 最终资金快照
         if test_bars:
             self._portfolio.record_equity(test_bars[-1])
 
-        # 11. 强制平仓剩余持仓
+        # 12. 强制平仓剩余持仓
         last_bar = all_bars[-1]
         last_index = len(all_bars) - 1 - warmup_end
         self._portfolio.close_all(last_bar, last_index)
 
-        # 12. 汇总结果
+        # 13. 回填所有剩余的 pending 评估（用最后价格）
+        self._flush_pending_evaluations(last_bar.close)
+
+        # 14. 汇总结果
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         completed_at = datetime.now(timezone.utc)
 
@@ -199,12 +277,17 @@ class BacktestEngine:
             trades, self._config.initial_balance, equity_values, "confidence_level"
         )
 
+        # 过滤器统计
+        filter_stats = self._filter_simulator.stats.to_dict()
+
         logger.info(
-            "Backtest %s completed: %d trades, win_rate=%.2f%%, PnL=%.2f, elapsed=%dms",
+            "Backtest %s completed: %d trades, win_rate=%.2f%%, PnL=%.2f, "
+            "filter_pass_rate=%.1f%%, elapsed=%dms",
             run_id,
             metrics.total_trades,
             metrics.win_rate * 100,
             metrics.total_pnl,
+            self._filter_simulator.stats.pass_rate * 100,
             elapsed_ms,
         )
 
@@ -220,6 +303,8 @@ class BacktestEngine:
             metrics_by_strategy=metrics_by_strategy,
             metrics_by_confidence=metrics_by_confidence,
             param_set=self._config.strategy_params,
+            filter_stats=filter_stats,
+            signal_evaluations=self._signal_evaluations,
         )
 
     def _compute_indicators(
@@ -346,3 +431,105 @@ class BacktestEngine:
             confidence=decision.confidence,
             bar_index=bar_index,
         )
+
+    # ── 信号评估记录与回填 ─────────────────────────────────────────────
+
+    def _record_evaluation(
+        self,
+        bar: OHLC,
+        bar_index: int,
+        strategy: str,
+        action: str,
+        confidence: float,
+        regime: str,
+        filtered: bool = False,
+        filter_reason: str = "",
+    ) -> None:
+        """记录一次信号评估（对应实盘 SignalQualityTracker）。"""
+        eval_record = SignalEvaluation(
+            bar_time=bar.time,
+            strategy=strategy,
+            action=action,
+            confidence=confidence,
+            regime=regime,
+            price_at_signal=bar.close,
+            bars_to_evaluate=self._bars_to_evaluate,
+            filtered=filtered,
+            filter_reason=filter_reason,
+        )
+
+        # 有方向性信号才需要 N bars 后回填
+        if action in ("buy", "sell") and not filtered:
+            target_index = bar_index + self._bars_to_evaluate
+            self._pending_evaluations.setdefault(target_index, []).append(
+                eval_record
+            )
+        else:
+            # hold 或被过滤的直接存入
+            self._signal_evaluations.append(eval_record)
+
+    def _backfill_evaluations(self, current_bar_index: int, current_price: float) -> None:
+        """回填已到期的 pending 信号评估（N bars 后用当前价格计算盈亏）。"""
+        if current_bar_index not in self._pending_evaluations:
+            return
+
+        pending_list = self._pending_evaluations.pop(current_bar_index)
+        for ev in pending_list:
+            if ev.action == "buy":
+                pnl_pct = (
+                    (current_price - ev.price_at_signal) / ev.price_at_signal * 100
+                )
+                won = current_price > ev.price_at_signal
+            else:
+                pnl_pct = (
+                    (ev.price_at_signal - current_price) / ev.price_at_signal * 100
+                )
+                won = current_price < ev.price_at_signal
+
+            filled = SignalEvaluation(
+                bar_time=ev.bar_time,
+                strategy=ev.strategy,
+                action=ev.action,
+                confidence=ev.confidence,
+                regime=ev.regime,
+                price_at_signal=ev.price_at_signal,
+                price_after_n_bars=current_price,
+                bars_to_evaluate=ev.bars_to_evaluate,
+                won=won,
+                pnl_pct=round(pnl_pct, 4),
+                filtered=ev.filtered,
+                filter_reason=ev.filter_reason,
+            )
+            self._signal_evaluations.append(filled)
+
+    def _flush_pending_evaluations(self, last_price: float) -> None:
+        """回测结束时回填所有未到期的 pending 评估。"""
+        for _target_index, pending_list in sorted(self._pending_evaluations.items()):
+            for ev in pending_list:
+                if ev.action == "buy":
+                    pnl_pct = (
+                        (last_price - ev.price_at_signal) / ev.price_at_signal * 100
+                    )
+                    won = last_price > ev.price_at_signal
+                else:
+                    pnl_pct = (
+                        (ev.price_at_signal - last_price) / ev.price_at_signal * 100
+                    )
+                    won = last_price < ev.price_at_signal
+
+                filled = SignalEvaluation(
+                    bar_time=ev.bar_time,
+                    strategy=ev.strategy,
+                    action=ev.action,
+                    confidence=ev.confidence,
+                    regime=ev.regime,
+                    price_at_signal=ev.price_at_signal,
+                    price_after_n_bars=last_price,
+                    bars_to_evaluate=ev.bars_to_evaluate,
+                    won=won,
+                    pnl_pct=round(pnl_pct, 4),
+                    filtered=ev.filtered,
+                    filter_reason=ev.filter_reason,
+                )
+                self._signal_evaluations.append(filled)
+        self._pending_evaluations.clear()

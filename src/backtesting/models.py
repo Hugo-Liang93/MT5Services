@@ -43,6 +43,22 @@ class BacktestConfig:
     # 风险百分比
     risk_percent: float = 1.0
 
+    # ── 过滤器配置（模拟实盘 SignalFilterChain）──────────────────────────
+    # 总开关：是否启用过滤器模拟
+    enable_filters: bool = True
+    # 时段过滤
+    filter_session_enabled: bool = True
+    filter_allowed_sessions: str = "london,newyork"
+    # 时段切换冷却（分钟）
+    filter_session_transition_enabled: bool = True
+    filter_session_transition_cooldown: int = 15
+    # 波动率异常抑制（0 = 禁用）
+    filter_volatility_enabled: bool = True
+    filter_volatility_spike_multiplier: float = 2.5
+    # 点差过滤（回测中默认禁用，因为没有真实 spread 数据）
+    filter_spread_enabled: bool = False
+    filter_max_spread_points: float = 50.0
+
 
 @dataclass(frozen=True)
 class TradeRecord:
@@ -64,6 +80,30 @@ class TradeRecord:
     regime: str
     confidence: float
     exit_reason: str  # "take_profit" | "stop_loss" | "signal_exit" | "end_of_test"
+
+
+@dataclass(frozen=True)
+class SignalEvaluation:
+    """单次信号评估记录（无论是否开仓）。
+
+    对应实盘的 signal_outcomes 表，用于回测中跟踪
+    每个策略在每根 bar 上的评估结果和后续价格变化。
+    """
+
+    bar_time: datetime
+    strategy: str
+    action: str  # "buy" | "sell" | "hold"
+    confidence: float
+    regime: str
+    # N bars 后的价格变化（回填）
+    price_at_signal: float
+    price_after_n_bars: Optional[float] = None
+    bars_to_evaluate: int = 5
+    won: Optional[bool] = None
+    pnl_pct: Optional[float] = None
+    # 是否被过滤器拒绝（记录原因）
+    filtered: bool = False
+    filter_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,6 +142,10 @@ class BacktestResult:
     metrics_by_strategy: Dict[str, BacktestMetrics]
     metrics_by_confidence: Dict[str, BacktestMetrics]  # high/medium/low
     param_set: Dict[str, Any]
+    # 过滤器统计
+    filter_stats: Optional[Dict[str, Any]] = None
+    # 信号评估明细（用于回测质量分析）
+    signal_evaluations: Optional[List[SignalEvaluation]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为可 JSON 化的字典。"""
@@ -119,6 +163,11 @@ class BacktestResult:
         for trade in result["trades"]:
             trade["entry_time"] = trade["entry_time"].isoformat() if isinstance(trade["entry_time"], datetime) else trade["entry_time"]
             trade["exit_time"] = trade["exit_time"].isoformat() if isinstance(trade["exit_time"], datetime) else trade["exit_time"]
+        # 信号评估记录 datetime 转字符串
+        if result.get("signal_evaluations"):
+            for ev in result["signal_evaluations"]:
+                if isinstance(ev.get("bar_time"), datetime):
+                    ev["bar_time"] = ev["bar_time"].isoformat()
         return result
 
 

@@ -1,6 +1,10 @@
 """回测 FastAPI 路由。
 
 路由前缀: /v1/backtest
+
+支持两种结果存储模式：
+1. 内存缓存（即时查询运行状态）
+2. TimescaleDB 持久化（历史回测结果永久保存 + 信号评估明细）
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 
-# 简易内存结果存储（生产环境可替换为 DB）
+# 简易内存结果存储（用于查询运行状态，DB 持久化在回测完成后自动执行）
 _results_store: Dict[str, Dict[str, Any]] = {}
 _results_lock = threading.Lock()
 
@@ -38,6 +42,11 @@ class BacktestRunRequest(BaseModel):
     min_confidence: float = 0.55
     warmup_bars: int = 200
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
+    # 过滤器配置
+    enable_filters: bool = True
+    filter_allowed_sessions: str = "london,newyork"
+    filter_session_transition_cooldown: int = 15
+    filter_volatility_spike_multiplier: float = 2.5
 
 
 class BacktestOptimizeRequest(BaseModel):
@@ -106,7 +115,7 @@ async def run_optimization(
 
 @router.get("/results", response_model=ApiResponse)
 async def list_results() -> ApiResponse:
-    """列出所有回测结果。"""
+    """列出所有回测结果（内存中的运行状态）。"""
     with _results_lock:
         summaries = []
         for run_id, entry in _results_store.items():
@@ -126,26 +135,93 @@ async def list_results() -> ApiResponse:
 
 @router.get("/results/{run_id}", response_model=ApiResponse)
 async def get_result(run_id: str) -> ApiResponse:
-    """获取单次回测详情。"""
+    """获取单次回测详情（优先内存，回退 DB）。"""
     with _results_lock:
         entry = _results_store.get(run_id)
 
-    if entry is None:
-        return ApiResponse(success=False, error=f"Run {run_id} not found")
+    if entry is not None:
+        if entry["status"] == "running":
+            return ApiResponse(
+                success=True,
+                data={"run_id": run_id, "status": "running"},
+            )
+        if entry["status"] == "failed":
+            return ApiResponse(
+                success=False,
+                error=entry.get("error", "Unknown error"),
+            )
+        return ApiResponse(success=True, data=entry["result"])
 
-    if entry["status"] == "running":
-        return ApiResponse(
-            success=True,
-            data={"run_id": run_id, "status": "running"},
+    # 回退到 DB 查询
+    try:
+        repo = _get_backtest_repo()
+        if repo is not None:
+            db_result = repo.fetch_run(run_id)
+            if db_result is not None:
+                return ApiResponse(success=True, data=db_result)
+    except Exception:
+        logger.debug("DB fallback query failed for %s", run_id, exc_info=True)
+
+    return ApiResponse(success=False, error=f"Run {run_id} not found")
+
+
+@router.get("/history", response_model=ApiResponse)
+async def list_history(limit: int = 50, offset: int = 0) -> ApiResponse:
+    """查询历史回测结果列表（从 DB）。"""
+    try:
+        repo = _get_backtest_repo()
+        if repo is None:
+            return ApiResponse(success=False, error="Database not available")
+        runs = repo.fetch_runs(limit=limit, offset=offset)
+        return ApiResponse(success=True, data=runs)
+    except Exception as e:
+        return ApiResponse(success=False, error=str(e))
+
+
+@router.get("/history/{run_id}/trades", response_model=ApiResponse)
+async def get_trades(run_id: str) -> ApiResponse:
+    """查询某次回测的交易明细（从 DB）。"""
+    try:
+        repo = _get_backtest_repo()
+        if repo is None:
+            return ApiResponse(success=False, error="Database not available")
+        trades = repo.fetch_trades(run_id)
+        return ApiResponse(success=True, data=trades)
+    except Exception as e:
+        return ApiResponse(success=False, error=str(e))
+
+
+@router.get("/history/{run_id}/evaluations", response_model=ApiResponse)
+async def get_evaluations(
+    run_id: str,
+    strategy: Optional[str] = None,
+    filtered_only: bool = False,
+    limit: int = 1000,
+) -> ApiResponse:
+    """查询信号评估明细（从 DB）。"""
+    try:
+        repo = _get_backtest_repo()
+        if repo is None:
+            return ApiResponse(success=False, error="Database not available")
+        evals = repo.fetch_evaluations(
+            run_id, strategy=strategy, filtered_only=filtered_only, limit=limit
         )
+        return ApiResponse(success=True, data=evals)
+    except Exception as e:
+        return ApiResponse(success=False, error=str(e))
 
-    if entry["status"] == "failed":
-        return ApiResponse(
-            success=False,
-            error=entry.get("error", "Unknown error"),
-        )
 
-    return ApiResponse(success=True, data=entry["result"])
+@router.get("/history/{run_id}/evaluation-summary", response_model=ApiResponse)
+async def get_evaluation_summary(run_id: str) -> ApiResponse:
+    """查询信号评估汇总统计（从 DB）。"""
+    try:
+        repo = _get_backtest_repo()
+        if repo is None:
+            return ApiResponse(success=False, error="Database not available")
+        summary = repo.fetch_evaluation_summary(run_id)
+        return ApiResponse(success=True, data=summary)
+    except Exception as e:
+        return ApiResponse(success=False, error=str(e))
 
 
 # ── 后台执行函数 ────────────────────────────────────────────────
@@ -167,6 +243,11 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
             min_confidence=request.min_confidence,
             warmup_bars=request.warmup_bars,
             strategy_params=request.strategy_params,
+            # 过滤器配置
+            enable_filters=request.enable_filters,
+            filter_allowed_sessions=request.filter_allowed_sessions,
+            filter_session_transition_cooldown=request.filter_session_transition_cooldown,
+            filter_volatility_spike_multiplier=request.filter_volatility_spike_multiplier,
         )
 
         # 构建组件
@@ -181,6 +262,9 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
 
         result = engine.run()
         result_dict = result.to_dict()
+
+        # 持久化到 DB
+        _persist_result(result)
 
         with _results_lock:
             _results_store[run_id] = {
@@ -239,6 +323,11 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
         )
 
         results = optimizer.run()
+
+        # 持久化所有优化结果
+        for r in results:
+            _persist_result(r)
+
         results_dicts = [r.to_dict() for r in results[:50]]  # 最多返回 50 组
 
         with _results_lock:
@@ -258,6 +347,33 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
             }
 
 
+def _persist_result(result: Any) -> None:
+    """将回测结果持久化到 DB（best-effort，失败不影响主流程）。"""
+    try:
+        repo = _get_backtest_repo()
+        if repo is not None:
+            repo.save_result(result)
+    except Exception:
+        logger.warning("Failed to persist backtest result %s", result.run_id, exc_info=True)
+
+
+def _get_backtest_repo() -> Optional[Any]:
+    """获取 BacktestRepository 实例（懒加载）。"""
+    try:
+        from src.config.database import get_db_config
+        from src.persistence.db import TimescaleWriter
+        from src.persistence.repositories.backtest_repo import BacktestRepository
+
+        db_config = get_db_config()
+        writer = TimescaleWriter(settings=db_config)
+        repo = BacktestRepository(writer)
+        repo.ensure_schema()
+        return repo
+    except Exception:
+        logger.debug("BacktestRepository not available", exc_info=True)
+        return None
+
+
 def _build_api_components() -> Dict[str, Any]:
     """构建回测所需组件（API 上下文）。"""
     from src.config.database import get_db_config
@@ -271,13 +387,7 @@ def _build_api_components() -> Dict[str, Any]:
     from .data_loader import HistoricalDataLoader
 
     db_config = get_db_config()
-    writer = TimescaleWriter(
-        host=db_config.host,
-        port=db_config.port,
-        dbname=db_config.dbname,
-        user=db_config.user,
-        password=db_config.password,
-    )
+    writer = TimescaleWriter(settings=db_config)
     market_repo = MarketRepository(writer)
     data_loader = HistoricalDataLoader(market_repo)
 

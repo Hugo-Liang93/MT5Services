@@ -64,13 +64,7 @@ def _build_components(args: argparse.Namespace):  # type: ignore[no-untyped-def]
 
     # DB 连接
     db_config = get_db_config()
-    writer = TimescaleWriter(
-        host=db_config.host,
-        port=db_config.port,
-        dbname=db_config.dbname,
-        user=db_config.user,
-        password=db_config.password,
-    )
+    writer = TimescaleWriter(settings=db_config)
     market_repo = MarketRepository(writer)
     data_loader = HistoricalDataLoader(market_repo)
 
@@ -150,6 +144,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         initial_balance=args.balance,
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
+        enable_filters=not args.no_filters,
     )
 
     components = _build_components(args)
@@ -163,6 +158,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     result = engine.run()
     print(format_summary(result))
+
+    # 持久化到 DB
+    if not args.no_persist:
+        _persist_result(result, components.get("writer"))
 
     if args.output:
         from .report import result_to_json
@@ -292,6 +291,27 @@ def main() -> None:
         sys.exit(1)
 
 
+def _persist_result(result: Any, writer: Any = None) -> None:
+    """将回测结果持久化到 DB。"""
+    try:
+        from src.persistence.repositories.backtest_repo import BacktestRepository
+
+        if writer is None:
+            from src.config.database import get_db_config
+            from src.persistence.db import TimescaleWriter
+
+            db_config = get_db_config()
+            writer = TimescaleWriter(settings=db_config)
+
+        repo = BacktestRepository(writer)
+        repo.ensure_schema()
+        repo.save_result(result)
+        print(f"结果已持久化到数据库: {result.run_id}")
+    except Exception as e:
+        logger.warning("持久化失败: %s", e, exc_info=True)
+        print(f"警告: 持久化失败 - {e}")
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     """添加 run 和 optimize 共用的参数。"""
     parser.add_argument("--symbol", required=True, help="交易品种 (如 XAUUSD)")
@@ -312,6 +332,16 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--warmup", type=int, default=200, help="热身 bar 数量 (默认: 200)"
+    )
+    parser.add_argument(
+        "--no-filters",
+        action="store_true",
+        help="禁用过滤器模拟 (默认启用)",
+    )
+    parser.add_argument(
+        "--no-persist",
+        action="store_true",
+        help="不持久化结果到数据库",
     )
 
 
