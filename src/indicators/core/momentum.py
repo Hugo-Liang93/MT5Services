@@ -41,6 +41,74 @@ def rsi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     return {"rsi": rsi_val}
 
 
+class RsiIncremental(IncrementalIndicator):
+    """Incremental RSI using Wilder smoothing: O(1) update per bar.
+
+    Full computation seeds the state with ``avg_gain``, ``avg_loss`` and
+    ``prev_close`` using the full Wilder smoothing pass.  Once seeded,
+    each new bar only needs:
+
+        diff = new_close - prev_close
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        self.min_data_points = get_int(params, "period", default=14, aliases=("window",)) + 1
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return rsi(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        ir = state.intermediate_results
+        return (
+            ir is not None
+            and "avg_gain" in ir
+            and "avg_loss" in ir
+            and "prev_close" in ir
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        period = get_int(self.params, "period", default=14, aliases=("window",))
+        avg_gain = float(state.intermediate_results["avg_gain"])  # type: ignore[index]
+        avg_loss = float(state.intermediate_results["avg_loss"])  # type: ignore[index]
+        prev_close = float(state.intermediate_results["prev_close"])  # type: ignore[index]
+        new_close = bars[-1].close
+        diff = new_close - prev_close
+        gain = diff if diff > 0 else 0.0
+        loss = -diff if diff < 0 else 0.0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0:
+            return {"rsi": 100.0}
+        rs = avg_gain / avg_loss
+        return {"rsi": 100.0 - (100.0 / (1.0 + rs))}
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        period = get_int(self.params, "period", default=14, aliases=("window",))
+        # Recompute avg_gain/avg_loss from full bar history for accurate state
+        closes = get_closes_array(bars, period * 3 + 1)
+        if len(closes) > period:
+            diffs = np.diff(closes)
+            gains = np.where(diffs > 0, diffs, 0.0)
+            losses = np.where(diffs < 0, -diffs, 0.0)
+            avg_gain = float(np.mean(gains[:period]))
+            avg_loss = float(np.mean(losses[:period]))
+            for i in range(period, len(diffs)):
+                avg_gain = (avg_gain * (period - 1) + float(gains[i])) / period
+                avg_loss = (avg_loss * (period - 1) + float(losses[i])) / period
+            state.intermediate_results = {
+                "avg_gain": avg_gain,
+                "avg_loss": avg_loss,
+                "prev_close": bars[-1].close,
+            }
+        return state
+
+
 def macd(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     fast = get_int(params, "fast", default=12)
     slow = get_int(params, "slow", default=26)

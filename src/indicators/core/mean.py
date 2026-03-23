@@ -56,6 +56,51 @@ class EmaIncremental(IncrementalIndicator):
         return {"ema": prev_ema + k * (new_close - prev_ema)}
 
 
+class SmaIncremental(IncrementalIndicator):
+    """Incremental SMA: O(1) update using a running sum and ring buffer.
+
+    Full computation seeds the state with ``running_sum`` and the last
+    ``period`` closes.  Once seeded, each new bar only needs:
+
+        new_sma = old_sma + (new_close - dropped_close) / period
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        self.min_data_points = get_int(params, "period", default=20, aliases=("window",))
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return sma(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        return (
+            state.intermediate_results is not None
+            and "running_sum" in state.intermediate_results
+            and "last_closes" in state.intermediate_results
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        period = get_int(self.params, "period", default=20, aliases=("window",))
+        running_sum = float(state.intermediate_results["running_sum"])  # type: ignore[index]
+        last_closes = list(state.intermediate_results["last_closes"])  # type: ignore[index]
+        new_close = bars[-1].close
+        dropped = last_closes[0] if len(last_closes) >= period else 0.0
+        running_sum = running_sum - dropped + new_close
+        return {"sma": running_sum / period}
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        period = get_int(self.params, "period", default=20, aliases=("window",))
+        closes = [b.close for b in bars[-period:]]
+        state.intermediate_results = {
+            "running_sum": sum(closes),
+            "last_closes": closes,
+        }
+        return state
+
+
 def wma(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     period = get_int(params, "period", default=20, aliases=("window",))
     closes = get_closes_array(bars, period)
