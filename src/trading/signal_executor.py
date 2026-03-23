@@ -343,6 +343,13 @@ class TradeExecutor:
         cost_metrics: Dict[str, Optional[float]],
     ) -> Optional[Dict[str, Any]]:
         """创建 PendingEntry 并提交给 PendingEntryManager 等待价格确认。"""
+        if not event.signal_id:
+            logger.warning(
+                "TradeExecutor: cannot submit pending entry without signal_id for %s/%s",
+                event.symbol, event.strategy,
+            )
+            self._notify_skip(event.signal_id, "missing_signal_id")
+            return None
 
         # 确定 zone_mode：从策略 category 映射
         category = event.metadata.get("category", "")

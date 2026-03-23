@@ -7,12 +7,14 @@
     TradeExecutor._handle_confirmed()
         → PendingEntryManager.submit(PendingEntry)
         → _monitor_loop（后台线程，读取 Quote bid/ask）
-        → 价格确认 → TradeExecutor._execute()
+        → 价格确认 → _fill_queue → TradeExecutor._execute()
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import queue
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -32,6 +34,8 @@ _TF_SECONDS: dict[str, int] = {
     "H1": 3600,
     "H4": 14400,
     "D1": 86400,
+    "W1": 604800,
+    "MN": 2592000,
 }
 
 
@@ -110,6 +114,20 @@ _CATEGORY_ZONE_MODE: dict[str, str] = {
 }
 
 
+def _extract_quote_prices(quote: Any) -> Optional[tuple[float, float]]:
+    """安全地从 quote 对象提取 (bid, ask)，支持 object 和 dict。"""
+    try:
+        if isinstance(quote, dict):
+            bid = float(quote["bid"])
+            ask = float(quote["ask"])
+        else:
+            bid = float(quote.bid)
+            ask = float(quote.ask)
+        return bid, ask
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
 def compute_entry_zone(
     *,
     action: str,
@@ -158,8 +176,23 @@ def compute_timeout(timeframe: str, config: PendingEntryConfig) -> timedelta:
     return timedelta(seconds=bars * bar_seconds)
 
 
+# ── 填单结果（从 monitor 线程传递到 fill_worker 线程） ────────────────────────
+@dataclass(frozen=True)
+class _FillResult:
+    """monitor 线程确认价格后产生的填单指令。"""
+    signal_event: SignalEvent
+    trade_params: TradeParameters  # 已更新 entry_price
+    cost_metrics: dict[str, Any]
+
+
 class PendingEntryManager:
-    """管理挂起的入场意图，监控 Quote 价格确认后执行。"""
+    """管理挂起的入场意图，监控 Quote 价格确认后执行。
+
+    线程模型：
+    - monitor 线程：轮询 Quote，检查价格区间，将填单结果写入 _fill_queue
+    - fill_worker 线程：消费 _fill_queue，调用 execute_fn（避免与 TradeExecutor 竞争）
+    - 所有对 _pending 和 _stats 的访问都持 _lock
+    """
 
     def __init__(
         self,
@@ -176,9 +209,11 @@ class PendingEntryManager:
         self._pending: dict[str, PendingEntry] = {}  # signal_id → PendingEntry
         self._lock = threading.Lock()
         self._monitor_thread: Optional[threading.Thread] = None
+        self._fill_worker_thread: Optional[threading.Thread] = None
+        self._fill_queue: queue.Queue[_FillResult] = queue.Queue(maxsize=128)
         self._stop_event = threading.Event()
 
-        # 统计
+        # 统计（受 _lock 保护）
         self._stats = {
             "total_submitted": 0,
             "total_filled": 0,
@@ -199,7 +234,7 @@ class PendingEntryManager:
         """提交一个新的挂起入场。"""
         with self._lock:
             self._pending[entry.signal_event.signal_id] = entry
-        self._stats["total_submitted"] += 1
+            self._stats["total_submitted"] += 1
         logger.info(
             "PendingEntry submitted: %s/%s %s zone=[%.2f, %.2f] mode=%s expires=%s",
             entry.signal_event.symbol,
@@ -215,11 +250,11 @@ class PendingEntryManager:
         """取消指定的挂起入场。"""
         with self._lock:
             entry = self._pending.pop(signal_id, None)
-        if entry is None:
-            return False
-        entry.status = "cancelled"
-        entry.cancel_reason = reason
-        self._stats["total_cancelled"] += 1
+            if entry is None:
+                return False
+            entry.status = "cancelled"
+            entry.cancel_reason = reason
+            self._stats["total_cancelled"] += 1
         logger.info(
             "PendingEntry cancelled: %s/%s %s reason=%s",
             entry.signal_event.symbol,
@@ -231,7 +266,11 @@ class PendingEntryManager:
             try:
                 self._on_expired_fn(signal_id, f"pending_cancelled:{reason}")
             except Exception:
-                logger.debug("on_expired_fn callback failed", exc_info=True)
+                logger.warning(
+                    "on_expired_fn callback failed for cancelled signal %s",
+                    signal_id,
+                    exc_info=True,
+                )
         return True
 
     def cancel_by_symbol(
@@ -246,7 +285,7 @@ class PendingEntryManager:
         Args:
             exclude_direction: 不取消该方向的 pending（用于 cancel_same_direction=false）
         """
-        cancelled = 0
+        cancelled_entries: list[tuple[str, PendingEntry]] = []
         with self._lock:
             to_remove = [
                 sid
@@ -263,23 +302,29 @@ class PendingEntryManager:
                 entry.status = "cancelled"
                 entry.cancel_reason = reason
                 self._stats["total_cancelled"] += 1
-                cancelled += 1
-                if self._on_expired_fn:
-                    try:
-                        self._on_expired_fn(sid, f"pending_cancelled:{reason}")
-                    except Exception:
-                        logger.debug("on_expired_fn callback failed", exc_info=True)
-        if cancelled:
+                cancelled_entries.append((sid, entry))
+        # 回调在锁外执行（避免死锁）
+        for sid, entry in cancelled_entries:
+            if self._on_expired_fn:
+                try:
+                    self._on_expired_fn(sid, f"pending_cancelled:{reason}")
+                except Exception:
+                    logger.warning(
+                        "on_expired_fn callback failed for cancelled signal %s",
+                        sid,
+                        exc_info=True,
+                    )
+        if cancelled_entries:
             logger.info(
                 "PendingEntry cancel_by_symbol %s: cancelled %d entries (reason=%s)",
                 symbol,
-                cancelled,
+                len(cancelled_entries),
                 reason,
             )
-        return cancelled
+        return len(cancelled_entries)
 
     def start(self) -> None:
-        """启动价格监控线程。"""
+        """启动价格监控线程和填单执行线程。"""
         if self._monitor_thread is not None and self._monitor_thread.is_alive():
             return
         self._stop_event.clear()
@@ -288,6 +333,11 @@ class PendingEntryManager:
         )
         t.start()
         self._monitor_thread = t
+        fw = threading.Thread(
+            target=self._fill_worker, name="pending-entry-fill", daemon=True
+        )
+        fw.start()
+        self._fill_worker_thread = fw
         logger.info("PendingEntryManager started (check_interval=%.2fs)", self._config.check_interval)
 
     def shutdown(self) -> None:
@@ -295,6 +345,8 @@ class PendingEntryManager:
         self._stop_event.set()
         if self._monitor_thread is not None:
             self._monitor_thread.join(timeout=5.0)
+        if self._fill_worker_thread is not None:
+            self._fill_worker_thread.join(timeout=5.0)
         # 将所有剩余 pending 标记为 cancelled
         with self._lock:
             for entry in self._pending.values():
@@ -308,7 +360,7 @@ class PendingEntryManager:
             return sum(1 for e in self._pending.values() if e.status == "pending")
 
     def status(self) -> dict[str, Any]:
-        """返回状态快照。"""
+        """返回状态快照（线程安全）。"""
         with self._lock:
             entries = [
                 {
@@ -329,16 +381,17 @@ class PendingEntryManager:
                 for e in self._pending.values()
                 if e.status == "pending"
             ]
-        filled = self._stats["total_filled"]
-        submitted = self._stats["total_submitted"]
+            stats_copy = dict(self._stats)
+        filled = stats_copy["total_filled"]
+        submitted = stats_copy["total_submitted"]
         return {
             "active_count": len(entries),
             "entries": entries,
             "stats": {
-                **self._stats,
+                **stats_copy,
                 "fill_rate": round(filled / submitted, 3) if submitted > 0 else None,
                 "avg_price_improvement": (
-                    round(self._stats["total_price_improvement"] / filled, 4)
+                    round(stats_copy["total_price_improvement"] / filled, 4)
                     if filled > 0
                     else None
                 ),
@@ -354,6 +407,31 @@ class PendingEntryManager:
             except Exception:
                 logger.error("PendingEntryManager monitor error", exc_info=True)
             self._stop_event.wait(timeout=self._config.check_interval)
+
+    def _fill_worker(self) -> None:
+        """独立线程消费填单结果，调用 execute_fn。
+
+        与 TradeExecutor 的 exec_worker 隔离，避免竞争 TradeExecutor 内部状态。
+        """
+        while not self._stop_event.is_set():
+            try:
+                result = self._fill_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                self._execute_fn(
+                    result.signal_event,
+                    result.trade_params,
+                    result.cost_metrics,
+                )
+            except Exception:
+                logger.error(
+                    "PendingEntry execute failed after fill: %s",
+                    result.signal_event.signal_id,
+                    exc_info=True,
+                )
+            finally:
+                self._fill_queue.task_done()
 
     def _check_all_entries(self) -> None:
         now = datetime.now(timezone.utc)
@@ -376,19 +454,31 @@ class PendingEntryManager:
             self._check_price(entry, quote)
 
     def _check_price(self, entry: PendingEntry, quote: Any) -> None:
-        entry.checks_count += 1
+        prices = _extract_quote_prices(quote)
+        if prices is None:
+            return
+
+        bid, ask = prices
         action = entry.signal_event.action
-
         # BUY → 用 ask（实际买入价），SELL → 用 bid（实际卖出价）
-        check_price = float(quote.ask) if action == "buy" else float(quote.bid)
+        check_price = ask if action == "buy" else bid
 
-        # 更新 best_price_seen
-        if entry.best_price_seen is None:
-            entry.best_price_seen = check_price
-        elif action == "buy":
-            entry.best_price_seen = min(entry.best_price_seen, check_price)
-        else:
-            entry.best_price_seen = max(entry.best_price_seen, check_price)
+        with self._lock:
+            # 检查 entry 是否仍在 pending 中（可能已被其他线程 cancel）
+            if entry.signal_event.signal_id not in self._pending:
+                return
+            if entry.status != "pending":
+                return
+
+            entry.checks_count += 1
+
+            # 更新 best_price_seen
+            if entry.best_price_seen is None:
+                entry.best_price_seen = check_price
+            elif action == "buy":
+                entry.best_price_seen = min(entry.best_price_seen, check_price)
+            else:
+                entry.best_price_seen = max(entry.best_price_seen, check_price)
 
         # 检查是否在入场区间内
         if not (entry.entry_low <= check_price <= entry.entry_high):
@@ -396,7 +486,7 @@ class PendingEntryManager:
 
         # 额外 spread 检查
         if self._config.max_spread_points > 0:
-            spread_points = self._get_spread_points(quote, entry.signal_event.symbol)
+            spread_points = self._get_spread_points(bid, ask, entry.signal_event.symbol)
             if spread_points is not None and spread_points > self._config.max_spread_points:
                 logger.debug(
                     "PendingEntry %s: spread %.1f > max %.1f, skip this check",
@@ -408,29 +498,30 @@ class PendingEntryManager:
 
         self._fill_entry(entry, check_price)
 
-    def _get_spread_points(self, quote: Any, symbol: str) -> Optional[float]:
+    def _get_spread_points(self, bid: float, ask: float, symbol: str) -> Optional[float]:
         try:
             point = self._market.get_symbol_point(symbol)
             if point is None or point <= 0:
                 return None
-            return abs(float(quote.ask) - float(quote.bid)) / point
+            return abs(ask - bid) / point
         except Exception:
             return None
 
     def _fill_entry(self, entry: PendingEntry, fill_price: float) -> None:
-        entry.status = "filled"
-        entry.fill_price = fill_price
-
         with self._lock:
-            self._pending.pop(entry.signal_event.signal_id, None)
+            # 再次检查 entry 是否仍在 pending 中
+            if self._pending.pop(entry.signal_event.signal_id, None) is None:
+                return
+            entry.status = "filled"
+            entry.fill_price = fill_price
 
-        self._stats["total_filled"] += 1
-        # 价格改善：BUY 时 reference - fill（越低越好），SELL 时 fill - reference（越高越好）
-        if entry.signal_event.action == "buy":
-            improvement = entry.reference_price - fill_price
-        else:
-            improvement = fill_price - entry.reference_price
-        self._stats["total_price_improvement"] += improvement
+            self._stats["total_filled"] += 1
+            # 价格改善：BUY 时 reference - fill（越低越好），SELL 时 fill - reference（越高越好）
+            if entry.signal_event.action == "buy":
+                improvement = entry.reference_price - fill_price
+            else:
+                improvement = fill_price - entry.reference_price
+            self._stats["total_price_improvement"] += improvement
 
         logger.info(
             "PendingEntry filled: %s/%s %s @ %.2f (ref=%.2f, improve=%.2f, "
@@ -445,27 +536,34 @@ class PendingEntryManager:
             entry.checks_count,
         )
 
+        # 用实际成交价更新 TradeParameters（frozen dataclass → replace）
+        updated_params = dataclasses.replace(
+            entry.trade_params,
+            entry_price=fill_price,
+        )
+
+        # 入队给 fill_worker 执行（不在 monitor 线程中直接调用 execute_fn）
+        fill_result = _FillResult(
+            signal_event=entry.signal_event,
+            trade_params=updated_params,
+            cost_metrics=entry.cost_metrics,
+        )
         try:
-            self._execute_fn(
-                entry.signal_event,
-                entry.trade_params,
-                entry.cost_metrics,
-            )
-        except Exception:
-            logger.error(
-                "PendingEntry execute failed after fill: %s",
+            self._fill_queue.put_nowait(fill_result)
+        except queue.Full:
+            logger.warning(
+                "PendingEntry fill queue full, dropping fill for %s",
                 entry.signal_event.signal_id,
-                exc_info=True,
             )
 
     def _expire_entry(self, entry: PendingEntry) -> None:
-        entry.status = "expired"
-        entry.cancel_reason = "timeout"
-
         with self._lock:
-            self._pending.pop(entry.signal_event.signal_id, None)
+            if self._pending.pop(entry.signal_event.signal_id, None) is None:
+                return
+            entry.status = "expired"
+            entry.cancel_reason = "timeout"
+            self._stats["total_expired"] += 1
 
-        self._stats["total_expired"] += 1
         logger.info(
             "PendingEntry expired: %s/%s %s best_seen=%.2f zone=[%.2f, %.2f] checks=%d",
             entry.signal_event.symbol,
@@ -481,4 +579,8 @@ class PendingEntryManager:
             try:
                 self._on_expired_fn(entry.signal_event.signal_id, "pending_expired")
             except Exception:
-                logger.debug("on_expired_fn callback failed", exc_info=True)
+                logger.warning(
+                    "on_expired_fn callback failed for expired signal %s",
+                    entry.signal_event.signal_id,
+                    exc_info=True,
+                )

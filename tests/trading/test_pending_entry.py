@@ -16,6 +16,7 @@ from src.trading.pending_entry import (
     PendingEntry,
     PendingEntryConfig,
     PendingEntryManager,
+    _extract_quote_prices,
     compute_entry_zone,
     compute_timeout,
     _CATEGORY_ZONE_MODE,
@@ -96,6 +97,35 @@ class FakeMarketService:
         return 0.01
 
 
+# ── _extract_quote_prices tests ──────────────────────────────────────────
+
+
+class TestExtractQuotePrices:
+    def test_object_quote(self) -> None:
+        q = FakeQuote(bid=100.0, ask=100.5)
+        result = _extract_quote_prices(q)
+        assert result == (100.0, 100.5)
+
+    def test_dict_quote(self) -> None:
+        q = {"bid": 100.0, "ask": 100.5}
+        result = _extract_quote_prices(q)
+        assert result == (100.0, 100.5)
+
+    def test_missing_bid(self) -> None:
+        q = {"ask": 100.5}
+        result = _extract_quote_prices(q)
+        assert result is None
+
+    def test_none_quote(self) -> None:
+        result = _extract_quote_prices(None)
+        assert result is None
+
+    def test_invalid_values(self) -> None:
+        q = {"bid": "not_a_number", "ask": 100.5}
+        result = _extract_quote_prices(q)
+        assert result is None
+
+
 # ── compute_entry_zone tests ─────────────────────────────────────────────
 
 
@@ -174,10 +204,17 @@ class TestComputeTimeout:
         td = compute_timeout("M5", config)
         assert td == timedelta(seconds=2.0 * 300)  # 2 bars × 300s
 
-    def test_default_timeout(self) -> None:
+    def test_w1_uses_correct_bar_seconds(self) -> None:
         config = PendingEntryConfig()
-        td = compute_timeout("W1", config)  # unknown tf
-        assert td == timedelta(seconds=2.0 * 300)  # default_timeout_bars × M5 default
+        td = compute_timeout("W1", config)
+        # W1 not in timeout_bars → default_timeout_bars=2.0, bar_seconds=604800
+        assert td == timedelta(seconds=2.0 * 604800)
+
+    def test_unknown_tf_uses_defaults(self) -> None:
+        config = PendingEntryConfig()
+        td = compute_timeout("X99", config)
+        # unknown tf → default_timeout_bars=2.0, bar_seconds=300 (default)
+        assert td == timedelta(seconds=2.0 * 300)
 
 
 class TestCategoryZoneMode:
@@ -279,11 +316,33 @@ class TestPendingEntryManager:
 
         # Start and let it check
         mgr.start()
-        time.sleep(0.2)
+        time.sleep(0.3)
         mgr.shutdown()
 
         execute_fn.assert_called_once()
         assert mgr._stats["total_filled"] == 1
+
+    def test_fill_updates_entry_price(self) -> None:
+        """填单时 TradeParameters.entry_price 应更新为实际成交价。"""
+        execute_fn = MagicMock()
+        market = FakeMarketService(FakeQuote(ask=2650.50, bid=2650.20))
+        mgr = self._make_manager(market_service=market, execute_fn=execute_fn)
+
+        pending = self._make_pending(entry_low=2649.0, entry_high=2651.0)
+        original_entry_price = pending.trade_params.entry_price
+        mgr.submit(pending)
+
+        mgr.start()
+        time.sleep(0.3)
+        mgr.shutdown()
+
+        execute_fn.assert_called_once()
+        # 第二个参数是 updated TradeParameters
+        call_args = execute_fn.call_args
+        updated_params = call_args[0][1]
+        # 成交价应为 ask (buy) = 2650.50，而非原始 2650.0
+        assert updated_params.entry_price == 2650.50
+        assert updated_params.entry_price != original_entry_price
 
     def test_no_fill_when_price_outside_zone(self) -> None:
         execute_fn = MagicMock()
@@ -336,7 +395,7 @@ class TestPendingEntryManager:
         mgr.submit(pending)
 
         mgr.start()
-        time.sleep(0.2)
+        time.sleep(0.3)
         mgr.shutdown()
 
         execute_fn.assert_called_once()
@@ -391,3 +450,53 @@ class TestPendingEntryManager:
         mgr.submit(self._make_pending(signal_id="s2"))
         mgr.shutdown()
         assert mgr.active_count() == 0
+
+    def test_invalid_quote_skips_check(self) -> None:
+        """Quote 没有 bid/ask 属性时应安全跳过。"""
+        execute_fn = MagicMock()
+
+        class BadMarket:
+            def get_quote(self, symbol: str) -> dict:
+                return {"price": 2650.0}  # 缺少 bid/ask
+
+            def get_symbol_point(self, symbol: str) -> float:
+                return 0.01
+
+        mgr = PendingEntryManager(
+            config=PendingEntryConfig(check_interval=0.05),
+            market_service=BadMarket(),
+            execute_fn=execute_fn,
+        )
+        pending = self._make_pending(entry_low=2649.0, entry_high=2651.0)
+        mgr.submit(pending)
+
+        mgr.start()
+        time.sleep(0.2)
+        mgr.shutdown()
+
+        execute_fn.assert_not_called()
+
+    def test_dict_quote_works(self) -> None:
+        """支持 dict 形式的 quote。"""
+        execute_fn = MagicMock()
+
+        class DictMarket:
+            def get_quote(self, symbol: str) -> dict:
+                return {"bid": 2650.20, "ask": 2650.50}
+
+            def get_symbol_point(self, symbol: str) -> float:
+                return 0.01
+
+        mgr = PendingEntryManager(
+            config=PendingEntryConfig(check_interval=0.05),
+            market_service=DictMarket(),
+            execute_fn=execute_fn,
+        )
+        pending = self._make_pending(entry_low=2649.0, entry_high=2651.0)
+        mgr.submit(pending)
+
+        mgr.start()
+        time.sleep(0.3)
+        mgr.shutdown()
+
+        execute_fn.assert_called_once()

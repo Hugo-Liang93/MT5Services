@@ -340,6 +340,7 @@ class SignalModule:
             confidence=calibrated,
             metadata={
                 **decision.metadata,
+                "category": getattr(strategy_impl, "category", ""),
                 "regime": regime.value,
                 "regime_affinity": affinity,
                 "regime_source": "soft" if soft_regime is not None else "hard",
