@@ -87,6 +87,7 @@ class HistoricalDataLoader:
             limit=_MAX_QUERY_LIMIT,
         )
         bars = [self._row_to_ohlc(r) for r in rows]
+        bars = self._ensure_sorted(bars)
         logger.info(
             "Loaded %d bars for %s/%s [%s ~ %s]",
             len(bars),
@@ -114,6 +115,7 @@ class HistoricalDataLoader:
         bars = [self._row_to_ohlc(r) for r in rows]
         # 排除 start_time 本身（避免重复）
         bars = [b for b in bars if b.time < start_time]
+        bars = self._ensure_sorted(bars)
         logger.info(
             "Loaded %d warmup bars for %s/%s before %s",
             len(bars),
@@ -122,6 +124,29 @@ class HistoricalDataLoader:
             start_time.isoformat(),
         )
         return bars
+
+    @staticmethod
+    def _ensure_sorted(bars: List[OHLC]) -> List[OHLC]:
+        """确保 bars 按时间升序排列，乱序时自动排序并去重。"""
+        if len(bars) <= 1:
+            return bars
+        # 检查是否已排序
+        is_sorted = all(bars[i].time <= bars[i + 1].time for i in range(len(bars) - 1))
+        if not is_sorted:
+            logger.warning(
+                "OHLC bars not in chronological order, sorting %d bars", len(bars)
+            )
+            bars = sorted(bars, key=lambda b: b.time)
+        # 去重（相同时间戳只保留最后一条）
+        seen_times: set[datetime] = set()
+        unique: List[OHLC] = []
+        for bar in bars:
+            if bar.time not in seen_times:
+                seen_times.add(bar.time)
+                unique.append(bar)
+            else:
+                logger.debug("Duplicate bar at %s removed", bar.time)
+        return unique
 
     @staticmethod
     def _row_to_ohlc(row: tuple) -> OHLC:

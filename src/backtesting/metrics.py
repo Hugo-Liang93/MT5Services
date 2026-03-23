@@ -50,6 +50,12 @@ def compute_metrics(
     sortino = _sortino_ratio(returns)
     max_dd, max_dd_dur = _max_drawdown(equity_curve)
 
+    # Calmar Ratio = 年化收益率 / 最大回撤
+    calmar = 0.0
+    if max_dd > 0 and initial_balance > 0:
+        total_return_pct = total_pnl / initial_balance
+        calmar = total_return_pct / max_dd
+
     return BacktestMetrics(
         total_trades=total_trades,
         winning_trades=winning_trades,
@@ -66,6 +72,7 @@ def compute_metrics(
         avg_bars_held=round(avg_bars_held, 2),
         total_pnl=round(total_pnl, 2),
         total_pnl_pct=round(total_pnl_pct, 4),
+        calmar_ratio=round(calmar, 4),
     )
 
 
@@ -206,4 +213,5 @@ def _empty_metrics() -> BacktestMetrics:
         avg_bars_held=0.0,
         total_pnl=0.0,
         total_pnl_pct=0.0,
+        calmar_ratio=0.0,
     )

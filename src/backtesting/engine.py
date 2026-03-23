@@ -20,6 +20,7 @@ from src.signals.confidence import apply_htf_alignment, apply_intrabar_decay
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
+from src.trading.pending_entry import PendingEntryConfig, compute_entry_zone
 from src.trading.sizing import compute_trade_params
 
 from .data_loader import HistoricalDataLoader
@@ -88,6 +89,17 @@ class BacktestEngine:
             end_of_day_close_minute_utc=config.end_of_day_close_minute_utc,
         )
 
+        # Pending Entry 配置（复用实盘 compute_entry_zone 纯函数）
+        self._pending_entry_enabled = config.enable_pending_entry
+        self._pending_entry_config = PendingEntryConfig(
+            pullback_atr_factor=config.pending_entry_pullback_atr_factor,
+            chase_atr_factor=config.pending_entry_chase_atr_factor,
+            momentum_atr_factor=config.pending_entry_momentum_atr_factor,
+            symmetric_atr_factor=config.pending_entry_symmetric_atr_factor,
+        )
+        # 挂起的入场意图：{signal_key: (decision, entry_low, entry_high, expiry_bar)}
+        self._pending_entries: Dict[str, tuple[SignalDecision, float, float, int]] = {}
+
         # 确定目标策略列表
         if config.strategies:
             self._target_strategies = config.strategies
@@ -111,6 +123,8 @@ class BacktestEngine:
         # 待回填的 pending 评估：{bar_index: [SignalEvaluation]}
         self._pending_evaluations: Dict[int, List[SignalEvaluation]] = {}
         self._bars_to_evaluate = 5  # N bars 后回填
+        # 去重：已记录的 (bar_index, strategy) 组合
+        self._recorded_evals: set[tuple[int, str]] = set()
 
     def _build_filter_simulator(self) -> BacktestFilterSimulator:
         """从 BacktestConfig 构建过滤器模拟器。"""
@@ -198,14 +212,22 @@ class BacktestEngine:
 
             # 3. 计算指标
             indicators = self._compute_indicators(symbol, timeframe, window)
-            if not indicators:
-                continue
 
             # 4. Regime 检测
-            regime, soft_regime_dict = self._detect_regime(indicators)
+            regime: Optional[RegimeType] = None
+            soft_regime_dict: Optional[Dict[str, Any]] = None
+            if indicators:
+                regime, soft_regime_dict = self._detect_regime(indicators)
 
             # 5. 检查持仓 SL/TP
             self._portfolio.check_exits(bar, bar_index)
+
+            # 5.1 检查 Pending Entry 是否可填单（每根 bar 都需要检查）
+            if self._pending_entry_enabled and indicators and regime is not None:
+                self._check_pending_entries(bar, bar_index, indicators, regime)
+
+            if not indicators or regime is None:
+                continue
 
             # 5.5 回填待评估信号（N bars 后用当前价格回填结果）
             self._backfill_evaluations(bar_index, bar.close)
@@ -383,6 +405,9 @@ class BacktestEngine:
         metadata: Dict[str, Any] = {"_regime": regime.value}
         if soft_regime_dict is not None:
             metadata["_soft_regime"] = soft_regime_dict
+        # P1: enable_regime_affinity=False 时绕过 Regime 亲和度修正
+        if not self._config.enable_regime_affinity:
+            metadata["_pre_computed_affinity"] = 1.0
 
         decisions: List[SignalDecision] = []
         for strategy_name in self._target_strategies:
@@ -413,8 +438,11 @@ class BacktestEngine:
                 decision = apply_intrabar_decay(
                     decision, scope, self._intrabar_confidence_decay
                 )
-                # 2. HTF 方向对齐修正
-                if self._htf_direction_fn is not None:
+                # 2. HTF 方向对齐修正（受 enable_htf_alignment 控制）
+                if (
+                    self._config.enable_htf_alignment
+                    and self._htf_direction_fn is not None
+                ):
                     htf_dir = self._htf_direction_fn(symbol, timeframe)
                     decision = apply_htf_alignment(
                         decision,
@@ -457,6 +485,71 @@ class BacktestEngine:
         if atr_value <= 0:
             return
 
+        # Pending Entry 模拟：不立即开仓，等后续 bar 价格落入区间
+        if self._pending_entry_enabled:
+            category = decision.metadata.get("category", "trend")
+            from src.trading.pending_entry import _CATEGORY_ZONE_MODE
+
+            zone_mode = _CATEGORY_ZONE_MODE.get(category, "pullback")
+            entry_low, entry_high = compute_entry_zone(
+                action=decision.action,
+                close_price=bar.close,
+                atr=atr_value,
+                zone_mode=zone_mode,
+                config=self._pending_entry_config,
+                strategy_name=decision.strategy,
+            )
+            # 默认 2 bars 超时
+            expiry_bar = bar_index + 2
+            key = f"{decision.strategy}_{decision.action}"
+            self._pending_entries[key] = (decision, entry_low, entry_high, expiry_bar)
+            return
+
+        self._execute_entry(decision, bar, bar_index, atr_value, regime)
+
+    def _check_pending_entries(
+        self,
+        bar: OHLC,
+        bar_index: int,
+        indicators: Dict[str, Dict[str, Any]],
+        regime: RegimeType,
+    ) -> None:
+        """检查挂起的入场意图，价格落入区间则执行开仓。"""
+        if not self._pending_entries:
+            return
+
+        filled_keys: List[str] = []
+        for key, (decision, entry_low, entry_high, expiry_bar) in self._pending_entries.items():
+            # 检查超时
+            if bar_index > expiry_bar:
+                filled_keys.append(key)
+                continue
+
+            # 检查价格是否落入区间（用 bar 的 high/low 模拟盘中价格）
+            price_in_zone = bar.low <= entry_high and bar.high >= entry_low
+            if price_in_zone:
+                # 确定入场价格：取区间中点与 bar 范围的交集
+                fill_price = max(entry_low, min(bar.open, entry_high))
+                atr_data = indicators.get("atr14", {})
+                atr_value = atr_data.get("atr", 0.0)
+                if atr_value > 0:
+                    self._execute_entry(
+                        decision, bar, bar_index, atr_value, regime
+                    )
+                filled_keys.append(key)
+
+        for key in filled_keys:
+            self._pending_entries.pop(key, None)
+
+    def _execute_entry(
+        self,
+        decision: SignalDecision,
+        bar: OHLC,
+        bar_index: int,
+        atr_value: float,
+        regime: RegimeType,
+    ) -> None:
+        """执行实际开仓。"""
         try:
             trade_params = compute_trade_params(
                 action=decision.action,
@@ -494,7 +587,12 @@ class BacktestEngine:
         filtered: bool = False,
         filter_reason: str = "",
     ) -> None:
-        """记录一次信号评估（对应实盘 SignalQualityTracker）。"""
+        """记录一次信号评估（对应实盘 SignalQualityTracker）。去重同 bar 同策略。"""
+        dedup_key = (bar_index, strategy)
+        if dedup_key in self._recorded_evals:
+            return
+        self._recorded_evals.add(dedup_key)
+
         eval_record = SignalEvaluation(
             bar_time=bar.time,
             strategy=strategy,

@@ -43,6 +43,13 @@ class BacktestConfig:
     # 风险百分比
     risk_percent: float = 1.0
 
+    # ── Pending Entry 价格确认入场（复用实盘 pending_entry 纯逻辑）────────
+    enable_pending_entry: bool = False
+    pending_entry_pullback_atr_factor: float = 0.3
+    pending_entry_chase_atr_factor: float = 0.1
+    pending_entry_momentum_atr_factor: float = 0.5
+    pending_entry_symmetric_atr_factor: float = 0.4
+
     # ── 持仓管理（复用实盘 position_rules）────────────────────────────────
     # breakeven / trailing stop（与实盘 PositionManager 相同参数）
     trailing_atr_multiplier: float = 1.0
@@ -134,6 +141,7 @@ class BacktestMetrics:
     avg_bars_held: float
     total_pnl: float
     total_pnl_pct: float
+    calmar_ratio: float  # Return / Max Drawdown
 
 
 @dataclass
