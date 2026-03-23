@@ -283,22 +283,27 @@ class BacktestEngine:
                 )
                 self._process_decision(decision, bar, bar_index, indicators, regime)
 
-            # 9. 投票引擎
+            # 9. 投票引擎（捕获异常，避免单 bar 失败中止整个回测）
             if self._voting_engine is not None and decisions:
                 actionable = [d for d in decisions if d.action in ("buy", "sell")]
                 if actionable:
-                    consensus = self._voting_engine.vote(actionable, regime, "confirmed")
-                    if consensus is not None:
-                        self._record_evaluation(
-                            bar=bar,
-                            bar_index=bar_index,
-                            strategy=consensus.strategy,
-                            action=consensus.action,
-                            confidence=consensus.confidence,
-                            regime=regime.value,
-                        )
-                        self._process_decision(
-                            consensus, bar, bar_index, indicators, regime
+                    try:
+                        consensus = self._voting_engine.vote(actionable, regime, "confirmed")
+                        if consensus is not None:
+                            self._record_evaluation(
+                                bar=bar,
+                                bar_index=bar_index,
+                                strategy=consensus.strategy,
+                                action=consensus.action,
+                                confidence=consensus.confidence,
+                                regime=regime.value,
+                            )
+                            self._process_decision(
+                                consensus, bar, bar_index, indicators, regime
+                            )
+                    except Exception:
+                        logger.warning(
+                            "VotingEngine failed at bar %d", bar_index, exc_info=True
                         )
 
             # 10. 记录资金曲线（采样）
@@ -414,9 +419,13 @@ class BacktestEngine:
 
     def _detect_regime(
         self, indicators: Dict[str, Dict[str, Any]]
-    ) -> Tuple[RegimeType, Optional[Dict[str, Any]]]:
-        """检测市场 Regime。"""
-        regime = self._regime_detector.detect(indicators)
+    ) -> Tuple[Optional[RegimeType], Optional[Dict[str, Any]]]:
+        """检测市场 Regime。异常时返回 (None, None) 跳过该 bar。"""
+        try:
+            regime = self._regime_detector.detect(indicators)
+        except Exception:
+            logger.debug("Regime detection failed", exc_info=True)
+            return None, None
         soft_regime_dict: Optional[Dict[str, Any]] = None
         try:
             soft_result = self._regime_detector.detect_soft(indicators)
@@ -445,9 +454,13 @@ class BacktestEngine:
         metadata: Dict[str, Any] = {"_regime": regime.value}
         if soft_regime_dict is not None:
             metadata["_soft_regime"] = soft_regime_dict
-        # P1: enable_regime_affinity=False 时绕过 Regime 亲和度修正
+        # 置信度管线配置开关（通过 metadata 标记传递给 SignalModule.evaluate）
         if not self._config.enable_regime_affinity:
             metadata["_pre_computed_affinity"] = 1.0
+        if not self._config.enable_performance_tracker:
+            metadata["_skip_performance_tracker"] = True
+        if not self._config.enable_calibrator:
+            metadata["_skip_calibrator"] = True
 
         decisions: List[SignalDecision] = []
         for strategy_name in self._target_strategies:
@@ -543,8 +556,7 @@ class BacktestEngine:
                 config=self._pending_entry_config,
                 strategy_name=decision.strategy,
             )
-            # 默认 2 bars 超时
-            expiry_bar = bar_index + 2
+            expiry_bar = bar_index + self._config.pending_entry_expiry_bars
             key = f"{decision.strategy}_{decision.action}"
             self._pending_entries[key] = (decision, entry_low, entry_high, expiry_bar)
             return

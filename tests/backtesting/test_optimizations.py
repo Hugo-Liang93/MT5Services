@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -314,6 +314,112 @@ class TestBacktestConfig:
 
 
 # ── 资金曲线精确采样测试 ──────────────────────────────────────
+
+
+class TestConfigLoadsAllSections:
+    def test_position_section(self) -> None:
+        """backtest.ini [position] section 应被正确加载。"""
+        from src.backtesting.config import get_backtest_defaults
+
+        defaults = get_backtest_defaults()
+        # backtest.ini 新增了 [position] section
+        if "trailing_atr_multiplier" in defaults:
+            assert isinstance(defaults["trailing_atr_multiplier"], float)
+
+    def test_pending_entry_section(self) -> None:
+        """backtest.ini [pending_entry] section 应被正确加载。"""
+        from src.backtesting.config import get_backtest_defaults
+
+        defaults = get_backtest_defaults()
+        if "enable_pending_entry" in defaults:
+            assert isinstance(defaults["enable_pending_entry"], bool)
+
+    def test_confidence_section(self) -> None:
+        """backtest.ini [confidence] section 应被正确加载。"""
+        from src.backtesting.config import get_backtest_defaults
+
+        defaults = get_backtest_defaults()
+        if "enable_regime_affinity" in defaults:
+            assert defaults["enable_regime_affinity"] is True
+        if "enable_calibrator" in defaults:
+            assert defaults["enable_calibrator"] is True
+
+
+class TestPendingEntryExpiry:
+    def test_expiry_bars_configurable(self) -> None:
+        """BacktestConfig 应支持 pending_entry_expiry_bars 配置。"""
+        config = BacktestConfig(
+            symbol="XAUUSD",
+            timeframe="M5",
+            start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            pending_entry_expiry_bars=5,
+        )
+        assert config.pending_entry_expiry_bars == 5
+
+    def test_expiry_bars_default(self) -> None:
+        """默认超时应为 2 bars。"""
+        config = BacktestConfig(
+            symbol="XAUUSD",
+            timeframe="M5",
+            start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2025, 1, 2, tzinfo=timezone.utc),
+        )
+        assert config.pending_entry_expiry_bars == 2
+
+
+class TestConfidencePipelineFlags:
+    def test_metadata_flags_set(self) -> None:
+        """禁用置信度管线组件时 metadata 应包含跳过标记。"""
+        from src.backtesting.engine import BacktestEngine
+        from src.signals.models import SignalDecision
+
+        config = BacktestConfig(
+            symbol="XAUUSD",
+            timeframe="M5",
+            start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            strategies=["test"],
+            warmup_bars=5,
+            enable_regime_affinity=False,
+            enable_performance_tracker=False,
+            enable_calibrator=False,
+        )
+
+        data_loader = MagicMock()
+        data_loader.preload_warmup_bars.return_value = _make_bars(5)
+        test_bars = _make_bars(10)
+        for i, bar in enumerate(test_bars):
+            bar.time = _make_bars(5)[-1].time + timedelta(minutes=5 * (i + 1))
+        data_loader.load_all_bars.return_value = test_bars
+
+        signal_module = MagicMock()
+        signal_module.list_strategies.return_value = ["test"]
+        signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.evaluate.return_value = SignalDecision(
+            strategy="test", symbol="XAUUSD", timeframe="M5",
+            action="hold", confidence=0.0, reason="test",
+            used_indicators=["rsi14"],
+            timestamp=datetime.now(timezone.utc), metadata={},
+        )
+
+        pipeline = MagicMock()
+        pipeline.compute.return_value = {"rsi14": {"rsi": 50.0}, "atr14": {"atr": 5.0}}
+
+        engine = BacktestEngine(
+            config=config,
+            data_loader=data_loader,
+            signal_module=signal_module,
+            indicator_pipeline=pipeline,
+        )
+        engine.run()
+
+        # 检查 evaluate 调用时 metadata 是否包含正确的标记
+        for call in signal_module.evaluate.call_args_list:
+            meta = call.kwargs.get("metadata", {})
+            assert meta.get("_pre_computed_affinity") == 1.0
+            assert meta.get("_skip_performance_tracker") is True
+            assert meta.get("_skip_calibrator") is True
 
 
 class TestEquityCurveSampling:

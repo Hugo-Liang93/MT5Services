@@ -71,6 +71,45 @@ def get_backtest_defaults() -> Dict[str, Any]:
         _set_bool(result, parser, "filters", "spread_filter_enabled", "filter_spread_enabled")
         _set_float(result, parser, "filters", "max_spread_points", "filter_max_spread_points")
 
+    # [position] section — 持仓管理参数
+    if parser.has_section("position"):
+        _set_float(result, parser, "position", "trailing_atr_multiplier", "trailing_atr_multiplier")
+        _set_float(result, parser, "position", "breakeven_atr_threshold", "breakeven_atr_threshold")
+        _set_bool(result, parser, "position", "end_of_day_close_enabled", "end_of_day_close_enabled")
+        _set_int(result, parser, "position", "end_of_day_close_hour_utc", "end_of_day_close_hour_utc")
+        _set_int(result, parser, "position", "end_of_day_close_minute_utc", "end_of_day_close_minute_utc")
+
+    # [pending_entry] section — 价格确认入场参数
+    if parser.has_section("pending_entry"):
+        _set_bool(result, parser, "pending_entry", "enabled", "enable_pending_entry")
+        _set_int(result, parser, "pending_entry", "expiry_bars", "pending_entry_expiry_bars")
+        _set_float(
+            result, parser, "pending_entry", "pullback_atr_factor",
+            "pending_entry_pullback_atr_factor",
+        )
+        _set_float(
+            result, parser, "pending_entry", "chase_atr_factor",
+            "pending_entry_chase_atr_factor",
+        )
+        _set_float(
+            result, parser, "pending_entry", "momentum_atr_factor",
+            "pending_entry_momentum_atr_factor",
+        )
+        _set_float(
+            result, parser, "pending_entry", "symmetric_atr_factor",
+            "pending_entry_symmetric_atr_factor",
+        )
+
+    # [confidence] section — 置信度管线开关
+    if parser.has_section("confidence"):
+        _set_bool(result, parser, "confidence", "enable_regime_affinity", "enable_regime_affinity")
+        _set_bool(
+            result, parser, "confidence", "enable_performance_tracker",
+            "enable_performance_tracker",
+        )
+        _set_bool(result, parser, "confidence", "enable_calibrator", "enable_calibrator")
+        _set_bool(result, parser, "confidence", "enable_htf_alignment", "enable_htf_alignment")
+
     # [persistence] section
     if parser.has_section("persistence"):
         _set_int(

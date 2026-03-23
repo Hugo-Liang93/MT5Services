@@ -49,6 +49,7 @@ class BacktestConfig:
     pending_entry_chase_atr_factor: float = 0.1
     pending_entry_momentum_atr_factor: float = 0.5
     pending_entry_symmetric_atr_factor: float = 0.4
+    pending_entry_expiry_bars: int = 2  # Pending Entry 超时 bar 数
 
     # ── 持仓管理（复用实盘 position_rules）────────────────────────────────
     # breakeven / trailing stop（与实盘 PositionManager 相同参数）
