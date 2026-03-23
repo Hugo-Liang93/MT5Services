@@ -39,6 +39,7 @@ def shutdown_components(container: Any) -> None:
         ("pending_entry_manager", getattr(container, "pending_entry_manager", None), "shutdown"),
         ("position_manager", container.position_manager, "stop"),
         ("ingestor", container.ingestor, "stop"),
+        ("market_data", container.market_data, "shutdown"),
         ("indicator_manager", container.indicator_manager, "shutdown"),
         ("economic_calendar_service", container.economic_calendar_service, "stop"),
         ("storage_writer", container.storage_writer, "stop"),

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -35,6 +36,15 @@ from .models import (
 from .portfolio import PortfolioTracker
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _BacktestSignalState:
+    """回测信号状态机状态（模拟实盘 preview→armed→confirmed 转换）。"""
+
+    current_action: str = "hold"  # hold / buy / sell
+    stable_bars: int = 0
+    armed: bool = False
 
 
 class BacktestEngine:
@@ -125,6 +135,12 @@ class BacktestEngine:
 
         # 构建过滤器模拟器
         self._filter_simulator = self._build_filter_simulator()
+
+        # 信号状态机（模拟实盘 preview→armed→confirmed 状态转换）
+        self._signal_states: Dict[str, _BacktestSignalState] = {}
+        if config.enable_state_machine:
+            for s in self._target_strategies:
+                self._signal_states[s] = _BacktestSignalState()
 
         # 信号评估记录（用于回测质量分析 + 数据落表）
         self._signal_evaluations: List[SignalEvaluation] = []
@@ -583,6 +599,36 @@ class BacktestEngine:
                 )
         return decisions
 
+    def _update_state_machine(
+        self,
+        strategy: str,
+        action: str,
+        confidence: float,
+    ) -> bool:
+        """更新信号状态机，返回是否允许执行交易。
+
+        模拟实盘 preview→armed→confirmed 状态转换：
+        - 方向与上一 bar 相同：stable_bars 递增
+        - 方向改变：重置状态，stable_bars = 1
+        - stable_bars >= min_preview_stable_bars：标记为 armed
+        - 仅 armed 且方向为 buy/sell 时返回 True
+        """
+        state = self._signal_states.get(strategy)
+        if state is None:
+            return True  # 状态机未初始化（不应出现），兜底放行
+
+        if action == state.current_action:
+            state.stable_bars += 1
+        else:
+            state.current_action = action
+            state.stable_bars = 1
+            state.armed = False
+
+        if state.stable_bars >= self._config.min_preview_stable_bars:
+            state.armed = True
+
+        return state.armed and action in ("buy", "sell")
+
     def _process_decision(
         self,
         decision: SignalDecision,
@@ -593,9 +639,29 @@ class BacktestEngine:
     ) -> None:
         """处理单个信号决策：开仓或反向关仓。"""
         if decision.action not in ("buy", "sell"):
+            # 状态机仍需更新 hold 状态（重置方向）
+            if self._config.enable_state_machine:
+                self._update_state_machine(
+                    decision.strategy, decision.action, decision.confidence
+                )
             return
         if decision.confidence < self._config.min_confidence:
             return
+
+        # 信号状态机门控：方向需稳定 N bars 后才允许执行
+        if self._config.enable_state_machine:
+            armed = self._update_state_machine(
+                decision.strategy, decision.action, decision.confidence
+            )
+            if not armed:
+                logger.debug(
+                    "State machine: %s %s not armed yet (stable_bars=%d/%d)",
+                    decision.strategy,
+                    decision.action,
+                    self._signal_states[decision.strategy].stable_bars,
+                    self._config.min_preview_stable_bars,
+                )
+                return
 
         # 检查是否有反向持仓需要先关闭
         opposite = "sell" if decision.action == "buy" else "buy"

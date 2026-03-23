@@ -76,6 +76,10 @@ class BacktestConfig:
     filter_spread_enabled: bool = False
     filter_max_spread_points: float = 50.0
 
+    # ── 信号状态机回放（模拟实盘 preview→armed→confirmed 状态转换）────
+    enable_state_machine: bool = False
+    min_preview_stable_bars: int = 1  # preview 方向稳定 N 根 bar 后变为 armed
+
     # ── 信号评估记录上限（防止内存溢出）────────────────────────────
     max_signal_evaluations: int = 50000
 
