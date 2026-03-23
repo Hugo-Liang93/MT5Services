@@ -17,6 +17,42 @@ logger = logging.getLogger(__name__)
 _MAX_QUERY_LIMIT = 100_000
 
 
+class CachedDataLoader:
+    """预加载数据的缓存包装器，避免优化器多次迭代重复查询 DB。
+
+    将 warmup bars 和 test bars 缓存在内存中，
+    每次调用返回列表副本（防止被调用方修改原始数据）。
+    """
+
+    def __init__(
+        self,
+        warmup_bars: List[OHLC],
+        test_bars: List[OHLC],
+    ) -> None:
+        self._warmup_bars = warmup_bars
+        self._test_bars = test_bars
+
+    def preload_warmup_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        warmup_bars: int = 200,
+    ) -> List[OHLC]:
+        """返回缓存的 warmup bars 副本。"""
+        return list(self._warmup_bars)
+
+    def load_all_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> List[OHLC]:
+        """返回缓存的 test bars 副本。"""
+        return list(self._test_bars)
+
+
 class HistoricalDataLoader:
     """从 TimescaleDB 加载历史 OHLC 数据。
 

@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     bars_held INTEGER,
     regime TEXT,
     confidence DOUBLE PRECISION,
-    exit_reason TEXT
+    exit_reason TEXT,
+    slippage_cost DOUBLE PRECISION DEFAULT 0.0,
+    commission_cost DOUBLE PRECISION DEFAULT 0.0
 );
 
 -- 回测信号评估记录（对应实盘 signal_outcomes 表）
@@ -52,7 +54,8 @@ CREATE TABLE IF NOT EXISTS backtest_signal_evaluations (
     won BOOLEAN,
     pnl_pct DOUBLE PRECISION,
     filtered BOOLEAN NOT NULL DEFAULT FALSE,
-    filter_reason TEXT
+    filter_reason TEXT,
+    incomplete BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_bt_trades_run ON backtest_trades(run_id);
@@ -74,14 +77,15 @@ INSERT_TRADE_SQL = """
 INSERT INTO backtest_trades (run_id, strategy, action, entry_time, entry_price,
                              exit_time, exit_price, stop_loss, take_profit,
                              position_size, pnl, pnl_pct, bars_held, regime,
-                             confidence, exit_reason)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             confidence, exit_reason, slippage_cost, commission_cost)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 INSERT_EVALUATION_SQL = """
 INSERT INTO backtest_signal_evaluations (run_id, bar_time, strategy, action,
                                          confidence, regime, price_at_signal,
                                          price_after_n_bars, bars_to_evaluate,
-                                         won, pnl_pct, filtered, filter_reason)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                         won, pnl_pct, filtered, filter_reason,
+                                         incomplete)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """

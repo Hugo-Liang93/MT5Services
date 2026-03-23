@@ -64,6 +64,8 @@ class BacktestEngine:
         htf_conflict_penalty: float = 0.70,
         # HTF 指标预计算数据（从更高时间框架加载）
         htf_indicator_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+        # 性能优化：预计算指标快照（优化器复用时避免重复计算）
+        precomputed_indicators: Optional[List[Dict[str, Dict[str, Any]]]] = None,
     ) -> None:
         self._config = config
         self._data_loader = data_loader
@@ -79,6 +81,8 @@ class BacktestEngine:
         self._htf_conflict_penalty = htf_conflict_penalty
         # HTF 指标：{timeframe: {indicator_name: {field: value}}}
         self._htf_indicator_data = htf_indicator_data or {}
+        # 预计算指标快照（按 all_bars 索引对齐，优化器复用场景下跳过 pipeline）
+        self._precomputed_indicators = precomputed_indicators
 
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
@@ -203,19 +207,23 @@ class BacktestEngine:
             len(all_bars),
         )
 
-        # 2. 逐 bar 回放
+        # 2. 如果没有预计算指标，一次性预计算全部（避免主循环内重复 pipeline 调用）
+        if self._precomputed_indicators is not None:
+            all_indicator_snapshots = self._precomputed_indicators
+        else:
+            all_indicator_snapshots = self._precompute_all_indicators(
+                symbol, timeframe, all_bars, warmup_count
+            )
+
+        # 3. 逐 bar 回放
         equity_sample_interval = max(1, len(test_bars) // 500)  # 最多 500 个采样点
 
         for i in range(warmup_end, len(all_bars)):
             bar = all_bars[i]
             bar_index = i - warmup_end
 
-            # 滚动窗口：最近 warmup_count + 1 根 bar
-            window_start = max(0, i - warmup_count)
-            window = all_bars[window_start : i + 1]
-
-            # 3. 计算指标
-            indicators = self._compute_indicators(symbol, timeframe, window)
+            # 直接取预计算的指标快照
+            indicators = all_indicator_snapshots[i] if i < len(all_indicator_snapshots) else {}
 
             # 4. Regime 检测
             regime: Optional[RegimeType] = None
@@ -275,22 +283,27 @@ class BacktestEngine:
                 )
                 self._process_decision(decision, bar, bar_index, indicators, regime)
 
-            # 9. 投票引擎
+            # 9. 投票引擎（捕获异常，避免单 bar 失败中止整个回测）
             if self._voting_engine is not None and decisions:
                 actionable = [d for d in decisions if d.action in ("buy", "sell")]
                 if actionable:
-                    consensus = self._voting_engine.vote(actionable, regime, "confirmed")
-                    if consensus is not None:
-                        self._record_evaluation(
-                            bar=bar,
-                            bar_index=bar_index,
-                            strategy=consensus.strategy,
-                            action=consensus.action,
-                            confidence=consensus.confidence,
-                            regime=regime.value,
-                        )
-                        self._process_decision(
-                            consensus, bar, bar_index, indicators, regime
+                    try:
+                        consensus = self._voting_engine.vote(actionable, regime, "confirmed")
+                        if consensus is not None:
+                            self._record_evaluation(
+                                bar=bar,
+                                bar_index=bar_index,
+                                strategy=consensus.strategy,
+                                action=consensus.action,
+                                confidence=consensus.confidence,
+                                regime=regime.value,
+                            )
+                            self._process_decision(
+                                consensus, bar, bar_index, indicators, regime
+                            )
+                    except Exception:
+                        logger.warning(
+                            "VotingEngine failed at bar %d", bar_index, exc_info=True
                         )
 
             # 10. 记录资金曲线（采样）
@@ -358,6 +371,31 @@ class BacktestEngine:
             signal_evaluations=self._signal_evaluations,
         )
 
+    def _precompute_all_indicators(
+        self,
+        symbol: str,
+        timeframe: str,
+        all_bars: List[OHLC],
+        warmup_count: int,
+    ) -> List[Dict[str, Dict[str, Any]]]:
+        """一次性预计算所有 bar 位置的指标快照。
+
+        对每个 bar 位置构建滑动窗口并计算指标，结果列表按 all_bars 索引对齐。
+        优化器可将此结果缓存并在多次迭代中复用（指标值不随策略参数变化）。
+        """
+        t0 = time.monotonic()
+        snapshots: List[Dict[str, Dict[str, Any]]] = []
+        for i in range(len(all_bars)):
+            window_start = max(0, i - warmup_count)
+            window = all_bars[window_start : i + 1]
+            indicators = self._compute_indicators(symbol, timeframe, window)
+            snapshots.append(indicators)
+        elapsed = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "Pre-computed indicators for %d bars in %dms", len(all_bars), elapsed
+        )
+        return snapshots
+
     def _compute_indicators(
         self,
         symbol: str,
@@ -381,9 +419,13 @@ class BacktestEngine:
 
     def _detect_regime(
         self, indicators: Dict[str, Dict[str, Any]]
-    ) -> Tuple[RegimeType, Optional[Dict[str, Any]]]:
-        """检测市场 Regime。"""
-        regime = self._regime_detector.detect(indicators)
+    ) -> Tuple[Optional[RegimeType], Optional[Dict[str, Any]]]:
+        """检测市场 Regime。异常时返回 (None, None) 跳过该 bar。"""
+        try:
+            regime = self._regime_detector.detect(indicators)
+        except Exception:
+            logger.debug("Regime detection failed", exc_info=True)
+            return None, None
         soft_regime_dict: Optional[Dict[str, Any]] = None
         try:
             soft_result = self._regime_detector.detect_soft(indicators)
@@ -412,9 +454,13 @@ class BacktestEngine:
         metadata: Dict[str, Any] = {"_regime": regime.value}
         if soft_regime_dict is not None:
             metadata["_soft_regime"] = soft_regime_dict
-        # P1: enable_regime_affinity=False 时绕过 Regime 亲和度修正
+        # 置信度管线配置开关（通过 metadata 标记传递给 SignalModule.evaluate）
         if not self._config.enable_regime_affinity:
             metadata["_pre_computed_affinity"] = 1.0
+        if not self._config.enable_performance_tracker:
+            metadata["_skip_performance_tracker"] = True
+        if not self._config.enable_calibrator:
+            metadata["_skip_calibrator"] = True
 
         decisions: List[SignalDecision] = []
         for strategy_name in self._target_strategies:
@@ -510,8 +556,7 @@ class BacktestEngine:
                 config=self._pending_entry_config,
                 strategy_name=decision.strategy,
             )
-            # 默认 2 bars 超时
-            expiry_bar = bar_index + 2
+            expiry_bar = bar_index + self._config.pending_entry_expiry_bars
             key = f"{decision.strategy}_{decision.action}"
             self._pending_entries[key] = (decision, entry_low, entry_high, expiry_bar)
             return
@@ -607,6 +652,9 @@ class BacktestEngine:
         filter_reason: str = "",
     ) -> None:
         """记录一次信号评估（对应实盘 SignalQualityTracker）。去重同 bar 同策略。"""
+        # 内存保护：超过上限时静默丢弃
+        if len(self._signal_evaluations) >= self._config.max_signal_evaluations:
+            return
         dedup_key = (bar_index, strategy)
         if dedup_key in self._recorded_evals:
             return
@@ -634,6 +682,42 @@ class BacktestEngine:
             # hold 或被过滤的直接存入
             self._signal_evaluations.append(eval_record)
 
+    def _fill_evaluation(
+        self,
+        ev: SignalEvaluation,
+        exit_price: float,
+        incomplete: bool = False,
+    ) -> SignalEvaluation:
+        """回填单条信号评估的 N bars 后价格和盈亏。
+
+        Args:
+            ev: 原始待回填评估
+            exit_price: N bars 后的收盘价（或回测结束时的最后价格）
+            incomplete: 是否未满 N bars（回测结束时强制回填）
+        """
+        if ev.action == "buy":
+            pnl_pct = (exit_price - ev.price_at_signal) / ev.price_at_signal * 100
+            won = exit_price > ev.price_at_signal
+        else:
+            pnl_pct = (ev.price_at_signal - exit_price) / ev.price_at_signal * 100
+            won = exit_price < ev.price_at_signal
+
+        return SignalEvaluation(
+            bar_time=ev.bar_time,
+            strategy=ev.strategy,
+            action=ev.action,
+            confidence=ev.confidence,
+            regime=ev.regime,
+            price_at_signal=ev.price_at_signal,
+            price_after_n_bars=exit_price,
+            bars_to_evaluate=ev.bars_to_evaluate,
+            won=won,
+            pnl_pct=round(pnl_pct, 4),
+            filtered=ev.filtered,
+            filter_reason=ev.filter_reason,
+            incomplete=incomplete,
+        )
+
     def _backfill_evaluations(self, current_bar_index: int, current_price: float) -> None:
         """回填已到期的 pending 信号评估（N bars 后用当前价格计算盈亏）。"""
         if current_bar_index not in self._pending_evaluations:
@@ -641,61 +725,13 @@ class BacktestEngine:
 
         pending_list = self._pending_evaluations.pop(current_bar_index)
         for ev in pending_list:
-            if ev.action == "buy":
-                pnl_pct = (
-                    (current_price - ev.price_at_signal) / ev.price_at_signal * 100
-                )
-                won = current_price > ev.price_at_signal
-            else:
-                pnl_pct = (
-                    (ev.price_at_signal - current_price) / ev.price_at_signal * 100
-                )
-                won = current_price < ev.price_at_signal
-
-            filled = SignalEvaluation(
-                bar_time=ev.bar_time,
-                strategy=ev.strategy,
-                action=ev.action,
-                confidence=ev.confidence,
-                regime=ev.regime,
-                price_at_signal=ev.price_at_signal,
-                price_after_n_bars=current_price,
-                bars_to_evaluate=ev.bars_to_evaluate,
-                won=won,
-                pnl_pct=round(pnl_pct, 4),
-                filtered=ev.filtered,
-                filter_reason=ev.filter_reason,
-            )
+            filled = self._fill_evaluation(ev, current_price)
             self._signal_evaluations.append(filled)
 
     def _flush_pending_evaluations(self, last_price: float) -> None:
-        """回测结束时回填所有未到期的 pending 评估。"""
+        """回测结束时回填所有未到期的 pending 评估（标记为 incomplete）。"""
         for _target_index, pending_list in sorted(self._pending_evaluations.items()):
             for ev in pending_list:
-                if ev.action == "buy":
-                    pnl_pct = (
-                        (last_price - ev.price_at_signal) / ev.price_at_signal * 100
-                    )
-                    won = last_price > ev.price_at_signal
-                else:
-                    pnl_pct = (
-                        (ev.price_at_signal - last_price) / ev.price_at_signal * 100
-                    )
-                    won = last_price < ev.price_at_signal
-
-                filled = SignalEvaluation(
-                    bar_time=ev.bar_time,
-                    strategy=ev.strategy,
-                    action=ev.action,
-                    confidence=ev.confidence,
-                    regime=ev.regime,
-                    price_at_signal=ev.price_at_signal,
-                    price_after_n_bars=last_price,
-                    bars_to_evaluate=ev.bars_to_evaluate,
-                    won=won,
-                    pnl_pct=round(pnl_pct, 4),
-                    filtered=ev.filtered,
-                    filter_reason=ev.filter_reason,
-                )
+                filled = self._fill_evaluation(ev, last_price, incomplete=True)
                 self._signal_evaluations.append(filled)
         self._pending_evaluations.clear()

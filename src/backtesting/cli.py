@@ -26,6 +26,22 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def _cleanup_components(components: Dict[str, Any]) -> None:
+    """释放回测组件的独立资源（pipeline + DB 连接池）。"""
+    pipeline = components.get("pipeline")
+    if pipeline is not None:
+        try:
+            pipeline.shutdown()
+        except Exception:
+            pass
+    writer = components.get("writer")
+    if writer is not None:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
 def _parse_param(param_str: str) -> Tuple[str, List[Any]]:
     """解析参数定义字符串。
 
@@ -59,11 +75,14 @@ def _build_components(args: argparse.Namespace) -> Dict[str, Any]:
 
 def cmd_run(args: argparse.Namespace) -> None:
     """执行单次回测。"""
+    from .config import get_backtest_defaults
     from .engine import BacktestEngine
     from .models import BacktestConfig
     from .report import format_summary
 
     strategies = args.strategies.split(",") if args.strategies else None
+    # 从 backtest.ini 加载默认值，CLI 参数优先覆盖
+    ini_defaults = get_backtest_defaults()
     config = BacktestConfig(
         symbol=args.symbol,
         timeframe=args.timeframe,
@@ -74,31 +93,54 @@ def cmd_run(args: argparse.Namespace) -> None:
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
         enable_filters=not args.no_filters,
+        # ini 默认值覆盖（CLI 显式传入的参数已在上方设定，ini 仅补充未指定项）
+        commission_per_lot=ini_defaults.get("commission_per_lot", 0.0),
+        slippage_points=ini_defaults.get("slippage_points", 0.0),
+        contract_size=ini_defaults.get("contract_size", 100.0),
+        risk_percent=ini_defaults.get("risk_percent", 1.0),
+        max_positions=ini_defaults.get("max_positions", 3),
+        max_signal_evaluations=ini_defaults.get("max_signal_evaluations", 50000),
+        # 过滤器配置从 ini 加载
+        filter_session_enabled=ini_defaults.get("filter_session_enabled", True),
+        filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,newyork"),
+        filter_session_transition_enabled=ini_defaults.get(
+            "filter_session_transition_enabled", True
+        ),
+        filter_session_transition_cooldown=ini_defaults.get(
+            "filter_session_transition_cooldown", 15
+        ),
+        filter_volatility_enabled=ini_defaults.get("filter_volatility_enabled", True),
+        filter_volatility_spike_multiplier=ini_defaults.get(
+            "filter_volatility_spike_multiplier", 2.5
+        ),
     )
 
     components = _build_components(args)
-    engine = BacktestEngine(
-        config=config,
-        data_loader=components["data_loader"],
-        signal_module=components["signal_module"],
-        indicator_pipeline=components["pipeline"],
-        regime_detector=components["regime_detector"],
-        voting_engine=components.get("voting_engine"),
-    )
+    try:
+        engine = BacktestEngine(
+            config=config,
+            data_loader=components["data_loader"],
+            signal_module=components["signal_module"],
+            indicator_pipeline=components["pipeline"],
+            regime_detector=components["regime_detector"],
+            voting_engine=components.get("voting_engine"),
+        )
 
-    result = engine.run()
-    print(format_summary(result))
+        result = engine.run()
+        print(format_summary(result))
 
-    # 持久化到 DB
-    if not args.no_persist:
-        _persist_result(result, components.get("writer"))
+        # 持久化到 DB
+        if not args.no_persist:
+            _persist_result(result, components.get("writer"))
 
-    if args.output:
-        from .report import result_to_json
+        if args.output:
+            from .report import result_to_json
 
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(result_to_json(result))
-        print(f"结果已保存到: {args.output}")
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(result_to_json(result))
+            print(f"结果已保存到: {args.output}")
+    finally:
+        _cleanup_components(components)
 
 
 def cmd_optimize(args: argparse.Namespace) -> None:
@@ -132,31 +174,34 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     )
 
     components = _build_components(args)
-    base_module = components["signal_module"]
+    try:
+        base_module = components["signal_module"]
 
-    def module_factory(params: Dict[str, Any]):  # type: ignore[no-untyped-def]
-        return build_signal_module_with_overrides(base_module, params)
+        def module_factory(params: Dict[str, Any]):  # type: ignore[no-untyped-def]
+            return build_signal_module_with_overrides(base_module, params)
 
-    optimizer = ParameterOptimizer(
-        base_config=config,
-        param_space=param_space,
-        data_loader=components["data_loader"],
-        indicator_pipeline=components["pipeline"],
-        signal_module_factory=module_factory,
-        regime_detector=components["regime_detector"],
-        sort_metric=args.sort,
-    )
-
-    def progress(current: int, total: int, result: Any) -> None:
-        print(
-            f"  [{current}/{total}] "
-            f"Sharpe={result.metrics.sharpe_ratio:.4f} "
-            f"Win={result.metrics.win_rate * 100:.1f}% "
-            f"PnL={result.metrics.total_pnl:+.2f}"
+        optimizer = ParameterOptimizer(
+            base_config=config,
+            param_space=param_space,
+            data_loader=components["data_loader"],
+            indicator_pipeline=components["pipeline"],
+            signal_module_factory=module_factory,
+            regime_detector=components["regime_detector"],
+            sort_metric=args.sort,
         )
 
-    results = optimizer.run(progress_callback=progress)
-    print(format_optimization_summary(results))
+        def progress(current: int, total: int, result: Any) -> None:
+            print(
+                f"  [{current}/{total}] "
+                f"Sharpe={result.metrics.sharpe_ratio:.4f} "
+                f"Win={result.metrics.win_rate * 100:.1f}% "
+                f"PnL={result.metrics.total_pnl:+.2f}"
+            )
+
+        results = optimizer.run(progress_callback=progress)
+        print(format_optimization_summary(results))
+    finally:
+        _cleanup_components(components)
 
 
 def main() -> None:

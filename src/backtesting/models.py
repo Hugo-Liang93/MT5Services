@@ -49,6 +49,7 @@ class BacktestConfig:
     pending_entry_chase_atr_factor: float = 0.1
     pending_entry_momentum_atr_factor: float = 0.5
     pending_entry_symmetric_atr_factor: float = 0.4
+    pending_entry_expiry_bars: int = 2  # Pending Entry 超时 bar 数
 
     # ── 持仓管理（复用实盘 position_rules）────────────────────────────────
     # breakeven / trailing stop（与实盘 PositionManager 相同参数）
@@ -75,6 +76,9 @@ class BacktestConfig:
     filter_spread_enabled: bool = False
     filter_max_spread_points: float = 50.0
 
+    # ── 信号评估记录上限（防止内存溢出）────────────────────────────
+    max_signal_evaluations: int = 50000
+
 
 @dataclass(frozen=True)
 class TradeRecord:
@@ -96,6 +100,8 @@ class TradeRecord:
     regime: str
     confidence: float
     exit_reason: str  # "take_profit" | "stop_loss" | "signal_exit" | "end_of_test"
+    slippage_cost: float = 0.0  # 开仓+平仓滑点总成本
+    commission_cost: float = 0.0  # 手续费总成本
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,8 @@ class SignalEvaluation:
     # 是否被过滤器拒绝（记录原因）
     filtered: bool = False
     filter_reason: str = ""
+    # 回测结束时未满 N bars 的标记（价格回填不完整，统计时应区分对待）
+    incomplete: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,6 +150,8 @@ class BacktestMetrics:
     total_pnl: float
     total_pnl_pct: float
     calmar_ratio: float  # Return / Max Drawdown
+    max_consecutive_wins: int = 0
+    max_consecutive_losses: int = 0
 
 
 @dataclass
@@ -190,9 +200,16 @@ class BacktestResult:
 
 @dataclass
 class ParameterSpace:
-    """参数搜索空间定义。"""
+    """参数搜索空间定义。
+
+    支持三类参数搜索：
+    - strategy_params: 策略参数（signal.ini [strategy_params] 格式，双下划线）
+    - position_params: 持仓管理参数（trailing_atr_multiplier, breakeven_atr_threshold 等）
+    - regime_affinity_overrides: Regime 亲和度覆盖
+    """
 
     strategy_params: Dict[str, List[Any]] = field(default_factory=dict)
+    position_params: Dict[str, List[Any]] = field(default_factory=dict)
     regime_affinity_overrides: Dict[str, Dict[str, List[float]]] = field(
         default_factory=dict
     )

@@ -120,6 +120,8 @@ class BacktestRepository:
                 t.regime,
                 t.confidence,
                 t.exit_reason,
+                getattr(t, "slippage_cost", 0.0),
+                getattr(t, "commission_cost", 0.0),
             ))
         self._writer._batch(INSERT_TRADE_SQL, rows, page_size=200)
 
@@ -145,6 +147,7 @@ class BacktestRepository:
                 ev.pnl_pct,
                 ev.filtered,
                 ev.filter_reason or None,
+                getattr(ev, "incomplete", False),
             ))
         self._writer._batch(INSERT_EVALUATION_SQL, rows, page_size=500)
 

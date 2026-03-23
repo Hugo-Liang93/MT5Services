@@ -170,6 +170,10 @@ class PortfolioTracker:
             lowest_price=entry_price if action == "sell" else None,
         )
         self._open_positions.append(pos)
+        # 交易事件自动记录资金快照（精确捕捉开仓时刻的资金变化）
+        self._equity_curve.append(
+            (bar.time, self.current_balance + self._floating_pnl(bar.close))
+        )
         return True
 
     def check_exits(self, bar: OHLC, bar_index: int) -> List[TradeRecord]:
@@ -321,8 +325,15 @@ class PortfolioTracker:
 
         pnl = price_diff * pos.position_size * self._contract_size
         # 扣除出场手续费
-        commission = self._commission_per_lot * pos.position_size
-        pnl -= commission
+        exit_commission = self._commission_per_lot * pos.position_size
+        entry_commission = self._commission_per_lot * pos.position_size
+        total_commission = entry_commission + exit_commission
+        pnl -= exit_commission
+
+        # 计算滑点成本（开仓+平仓双向滑点 × 合约规模）
+        slippage_cost = (
+            self._slippage_points * 2 * pos.position_size * self._contract_size
+        )
 
         # 使用初始资金作为分母，避免资金耗尽时结果失真
         pnl_pct = (pnl / self.initial_balance * 100.0) if self.initial_balance > 0 else 0.0
@@ -330,6 +341,8 @@ class PortfolioTracker:
         self.current_balance += pnl
         if self.current_balance > self.peak_balance:
             self.peak_balance = self.current_balance
+        # 交易事件自动记录资金快照（精确捕捉平仓时刻的资金变化）
+        self._equity_curve.append((exit_time, self.current_balance))
 
         bars_held = bar_index - pos.entry_bar_index
 
@@ -350,6 +363,8 @@ class PortfolioTracker:
             regime=pos.regime,
             confidence=pos.confidence,
             exit_reason=exit_reason,
+            slippage_cost=round(slippage_cost, 2),
+            commission_cost=round(total_commission, 2),
         )
         self._closed_trades.append(trade)
         return trade

@@ -28,6 +28,9 @@ router = APIRouter(prefix="/backtest", tags=["backtest"])
 _results_store: Dict[str, Dict[str, Any]] = {}
 _results_lock = threading.Lock()
 
+# 并发限制：同一时刻最多 1 个回测/优化任务运行，避免耗尽 DB 连接和 CPU
+_backtest_semaphore = threading.Semaphore(1)
+
 
 # ── Request / Response Schemas ──────────────────────────────────
 
@@ -229,6 +232,17 @@ async def get_evaluation_summary(run_id: str) -> ApiResponse:
 
 def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
     """在后台线程执行回测。"""
+    acquired = _backtest_semaphore.acquire(timeout=5)
+    if not acquired:
+        with _results_lock:
+            _results_store[run_id] = {
+                "status": "failed",
+                "result": None,
+                "error": "另一个回测/优化任务正在执行，请稍后重试",
+            }
+        return
+
+    components: Optional[Dict[str, Any]] = None
     try:
         from src.backtesting.models import BacktestConfig
         from src.backtesting.engine import BacktestEngine
@@ -250,7 +264,7 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
             filter_volatility_spike_multiplier=request.filter_volatility_spike_multiplier,
         )
 
-        # 构建组件
+        # 构建组件（独立 pipeline + 独立 DB 连接池）
         components = _build_api_components(
             strategy_params=request.strategy_params or None,
         )
@@ -284,10 +298,24 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
                 "result": None,
                 "error": str(e),
             }
+    finally:
+        _cleanup_components(components)
+        _backtest_semaphore.release()
 
 
 def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None:
     """在后台线程执行参数优化。"""
+    acquired = _backtest_semaphore.acquire(timeout=5)
+    if not acquired:
+        with _results_lock:
+            _results_store[run_id] = {
+                "status": "failed",
+                "result": None,
+                "error": "另一个回测/优化任务正在执行，请稍后重试",
+            }
+        return
+
+    components: Optional[Dict[str, Any]] = None
     try:
         from src.backtesting.models import BacktestConfig, ParameterSpace
         from src.backtesting.optimizer import ParameterOptimizer, build_signal_module_with_overrides
@@ -349,6 +377,27 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
                 "result": None,
                 "error": str(e),
             }
+    finally:
+        _cleanup_components(components)
+        _backtest_semaphore.release()
+
+
+def _cleanup_components(components: Optional[Dict[str, Any]]) -> None:
+    """回测完成后释放独立 pipeline 和 DB 连接资源。"""
+    if components is None:
+        return
+    pipeline = components.get("pipeline")
+    if pipeline is not None:
+        try:
+            pipeline.shutdown()
+        except Exception:
+            logger.debug("Pipeline shutdown error", exc_info=True)
+    writer = components.get("writer")
+    if writer is not None:
+        try:
+            writer.close()
+        except Exception:
+            logger.debug("Writer close error", exc_info=True)
 
 
 def _persist_result(result: Any) -> None:
@@ -361,17 +410,24 @@ def _persist_result(result: Any) -> None:
         logger.warning("Failed to persist backtest result %s", result.run_id, exc_info=True)
 
 
+_cached_backtest_repo: Optional[Any] = None
+
+
 def _get_backtest_repo() -> Optional[Any]:
-    """获取 BacktestRepository 实例（懒加载）。"""
+    """获取 BacktestRepository 实例（懒加载 + 模块级缓存，独立连接池）。"""
+    global _cached_backtest_repo
+    if _cached_backtest_repo is not None:
+        return _cached_backtest_repo
     try:
         from src.config.database import get_db_config
         from src.persistence.db import TimescaleWriter
         from src.persistence.repositories.backtest_repo import BacktestRepository
 
         db_config = get_db_config()
-        writer = TimescaleWriter(settings=db_config)
+        writer = TimescaleWriter(settings=db_config, min_conn=1, max_conn=2)
         repo = BacktestRepository(writer)
         repo.ensure_schema()
+        _cached_backtest_repo = repo
         return repo
     except Exception:
         logger.debug("BacktestRepository not available", exc_info=True)
