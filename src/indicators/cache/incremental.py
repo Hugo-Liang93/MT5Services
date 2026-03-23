@@ -426,23 +426,3 @@ class IncrementalIndicator(ABC):
             "min_data_points": self.min_data_points,
             "state_count": len(self.state_store)
         }
-
-
-class SimpleIndicator(IncrementalIndicator):
-    """
-    简单指标基类（不支持增量计算）
-    
-    用于那些不适合或不需要增量计算的指标
-    """
-    
-    def __init__(self, name: str, params: Dict[str, Any]):
-        super().__init__(name, params)
-        self.supports_incremental = False
-    
-    def _can_use_incremental(self, bars: List[OHLC], state: IndicatorState) -> bool:
-        """简单指标不支持增量计算"""
-        return False
-    
-    def _compute_incremental(self, bars: List[OHLC], state: IndicatorState) -> Dict[str, float]:
-        """简单指标不支持增量计算"""
-        raise NotImplementedError(f"{self.name} does not support incremental computation")

@@ -96,69 +96,6 @@ def bollinger(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     return {"bb_mid": mean, "bb_upper": upper, "bb_lower": lower, "close": float(closes[-1])}
 
 
-class BollingerIncremental(IncrementalIndicator):
-    """Incremental Bollinger Bands: O(1) update using running sums.
-
-    Full computation seeds the state with ``running_sum``,
-    ``running_sq_sum`` and a ring buffer of the last ``period`` closes.
-    Once seeded, each new bar only needs:
-
-        running_sum  = running_sum  - dropped + new_close
-        running_sq_sum = running_sq_sum - dropped² + new_close²
-        mean = running_sum / period
-        std  = sqrt(running_sq_sum / period - mean²)
-    """
-
-    def __init__(self, name: str, params: Dict[str, Any]) -> None:
-        super().__init__(name, params)
-        self.min_data_points = get_int(params, "period", default=20, aliases=("window",))
-
-    def _compute_full(self, bars: list) -> Dict[str, float]:
-        return bollinger(bars, self.params)
-
-    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
-        if not super()._can_use_incremental(bars, state):
-            return False
-        ir = state.intermediate_results
-        return (
-            ir is not None
-            and "running_sum" in ir
-            and "running_sq_sum" in ir
-            and "last_closes" in ir
-        )
-
-    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
-        period = get_int(self.params, "period", default=20, aliases=("window",))
-        mult = get_float(self.params, "mult", default=2.0, aliases=("num_std",))
-        running_sum = float(state.intermediate_results["running_sum"])  # type: ignore[index]
-        running_sq_sum = float(state.intermediate_results["running_sq_sum"])  # type: ignore[index]
-        last_closes = list(state.intermediate_results["last_closes"])  # type: ignore[index]
-        new_close = bars[-1].close
-        dropped = last_closes[0] if len(last_closes) >= period else 0.0
-        running_sum = running_sum - dropped + new_close
-        running_sq_sum = running_sq_sum - dropped ** 2 + new_close ** 2
-        mean = running_sum / period
-        var = running_sq_sum / period - mean ** 2
-        std = var ** 0.5 if var > 0 else 0.0
-        return {
-            "bb_mid": mean,
-            "bb_upper": mean + mult * std,
-            "bb_lower": mean - mult * std,
-            "close": new_close,
-        }
-
-    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
-        state = super()._create_new_state(bars, result)
-        period = get_int(self.params, "period", default=20, aliases=("window",))
-        closes = get_closes_array(bars, period)
-        state.intermediate_results = {
-            "running_sum": float(np.sum(closes)),
-            "running_sq_sum": float(np.sum(closes ** 2)),
-            "last_closes": closes.tolist(),
-        }
-        return state
-
-
 def keltner(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     period = get_int(params, "period", default=20, aliases=("window",))
     atr_period = get_int(params, "atr_period", default=14)
