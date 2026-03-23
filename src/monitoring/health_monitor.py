@@ -42,10 +42,11 @@ class HealthMonitor:
             "data_latency": {"warning": 10.0, "critical": 30.0},
             "indicator_freshness": {"warning": 60.0, "critical": 300.0},
             "queue_depth": {"warning": 1000, "critical": 5000},
-            # 指标 LRU 缓存的命中率在正常运行下天然偏低（每根 K 线均产生唯一 key），
-            # 1~2% 属预期正常水平。阈值设为 warning<1% / critical<0.1%，
-            # 仅在缓存完全失效（接近 0）时告警，避免误报。
-            "cache_hit_rate": {"warning": 0.01, "critical": 0.001},
+            # 指标计算延迟 P99（毫秒）：单次指标计算批次耗时的第 99 百分位。
+            # warning=500ms 表示批量计算偶尔超时；critical=2000ms 表示严重性能退化。
+            "indicator_compute_p99_ms": {"warning": 500.0, "critical": 2000.0},
+            # 缓存命中率保留但仅作信息指标（不再用于告警）。
+            "cache_hit_rate": {"warning": 0.0, "critical": 0.0},
         }
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
         logger.info("HealthMonitor initialized with database: %s", db_path)
@@ -212,11 +213,14 @@ class HealthMonitor:
                 return "critical"
             if value >= thresholds["warning"]:
                 return "warning"
-        elif metric_name == "cache_hit_rate":
-            if value <= thresholds["critical"]:
+        elif metric_name == "indicator_compute_p99_ms":
+            if value >= thresholds["critical"] > 0:
                 return "critical"
-            if value <= thresholds["warning"]:
+            if value >= thresholds["warning"] > 0:
                 return "warning"
+        elif metric_name == "cache_hit_rate":
+            # 保留但不再告警（阈值已设为 0）
+            pass
         return None
 
     def _record_alert(
@@ -300,6 +304,11 @@ class HealthMonitor:
             return (
                 f"{component}: queue depth {alert_level} - "
                 f"current={value} threshold={threshold}"
+            )
+        if metric_name == "indicator_compute_p99_ms":
+            return (
+                f"{component}: compute P99 {alert_level} - "
+                f"current={value:.0f}ms threshold={threshold:.0f}ms"
             )
         if metric_name == "cache_hit_rate":
             return (

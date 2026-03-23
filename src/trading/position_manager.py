@@ -346,7 +346,7 @@ class PositionManager:
                     self._recovered_position_callback(pos)
                     recovered += 1
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Recovered position callback failed for ticket=%s",
                         ticket,
                         exc_info=True,

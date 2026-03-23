@@ -105,6 +105,7 @@ class IndicatorConfig:
     description: str = ""     # 指标描述
     tags: List[str] = field(default_factory=list)  # 标签，如 ["trend", "momentum"]
     delta_bars: List[int] = field(default_factory=list)
+    cache_ttl: Optional[int] = None  # per-indicator TTL (秒)；None = 使用全局 PipelineConfig.cache_ttl
 
 
 @dataclass

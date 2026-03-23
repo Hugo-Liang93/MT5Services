@@ -27,8 +27,11 @@ class TestResolveTimeframeRiskMultiplier:
     def test_h1_is_aggressive(self):
         assert resolve_timeframe_risk_multiplier("H1") == 1.20
 
+    def test_d1_is_most_aggressive(self):
+        assert resolve_timeframe_risk_multiplier("D1") == 1.50
+
     def test_unknown_timeframe_returns_1(self):
-        assert resolve_timeframe_risk_multiplier("D1") == 1.0
+        assert resolve_timeframe_risk_multiplier("W1") == 1.0
 
     def test_none_returns_1(self):
         assert resolve_timeframe_risk_multiplier(None) == 1.0

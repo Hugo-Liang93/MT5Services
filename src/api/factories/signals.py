@@ -382,6 +382,10 @@ def build_signal_components(
         htf_context_fn=htf_cache.get_htf_context,
         htf_conflict_penalty=signal_config.htf_conflict_penalty,
         htf_alignment_boost=signal_config.htf_alignment_boost,
+        htf_alignment_strength_coefficient=signal_config.htf_alignment_strength_coefficient,
+        htf_alignment_stability_per_bar=signal_config.htf_alignment_stability_per_bar,
+        htf_alignment_stability_cap=signal_config.htf_alignment_stability_cap,
+        htf_alignment_intrabar_strength_ratio=signal_config.htf_alignment_intrabar_strength_ratio,
         htf_target_config=dict(signal_config.strategy_htf_targets),
     )
 
@@ -418,6 +422,18 @@ def build_signal_components(
     )
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)
     htf_cache.attach(signal_runtime)
+
+    # 策略级 intrabar 置信度衰减覆盖（从 strategy_params *__intrabar_decay 提取）
+    _decay_overrides: dict[str, float] = {}
+    for key, value in signal_config.strategy_params.items():
+        if key.endswith("__intrabar_decay"):
+            strategy_name = key[: -len("__intrabar_decay")]
+            try:
+                _decay_overrides[strategy_name] = float(value)
+            except (TypeError, ValueError):
+                pass
+    if _decay_overrides:
+        signal_runtime.set_strategy_intrabar_decay(_decay_overrides)
 
     # 接线：PositionManager 关仓时通知 TradeOutcomeTracker
     position_manager.add_close_callback(trade_outcome_tracker.on_position_closed)

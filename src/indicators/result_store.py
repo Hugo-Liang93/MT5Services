@@ -96,6 +96,9 @@ def store_results(
             if value is None:
                 continue
             result_key = f"{symbol}_{timeframe}_{name}"
+            # Move to end for LRU ordering (delete first if exists)
+            if result_key in manager._results:
+                manager._results.move_to_end(result_key)
             manager._results[result_key] = IndicatorResult(
                 name=name,
                 value=value,
@@ -108,3 +111,6 @@ def store_results(
                 compute_time_ms=compute_time_ms,
                 success=True,
             )
+        # LRU eviction
+        while len(manager._results) > manager._results_max:
+            manager._results.popitem(last=False)

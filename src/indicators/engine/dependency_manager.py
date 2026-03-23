@@ -32,6 +32,7 @@ class DependencyManager:
         self.reverse_graph: Dict[str, Set[str]] = defaultdict(set)  # 反向依赖：指标 <- 依赖于此的指标
         self.indicator_params: Dict[str, Dict] = {}  # 指标参数
         self.indicator_funcs: Dict[str, callable] = {}  # 指标函数
+        self.indicator_cache_ttl: Dict[str, int] = {}  # per-indicator cache TTL (秒)
         
         logger.info("DependencyManager initialized")
     

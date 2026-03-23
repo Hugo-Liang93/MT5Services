@@ -84,6 +84,10 @@ class SignalConfig(BaseModel):
     # ── HTF 方向对齐修正 ──
     htf_conflict_penalty: float = 0.70
     htf_alignment_boost: float = 1.10
+    htf_alignment_strength_coefficient: float = 0.30
+    htf_alignment_stability_per_bar: float = 0.03
+    htf_alignment_stability_cap: float = 1.15
+    htf_alignment_intrabar_strength_ratio: float = 0.50
     # ── 波动率异常过滤 ──
     volatility_atr_spike_multiplier: float = 2.5
     # ── Signal Quality Tracker ──

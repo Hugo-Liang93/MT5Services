@@ -53,15 +53,19 @@ class BackgroundIngestor:
         self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
         )
-        # 连续失败退避：品种连续采集失败 _SYMBOL_ERROR_THRESHOLD 次后，
+        # 连续失败退避：品种连续采集失败 threshold 次后，
         # 进入指数退避冷却期，防止 MT5 网络抖动时日志被刷爆。
-        # 退避公式：cooldown = base × 2^(retry_count - 1)，上限 _SYMBOL_MAX_COOLDOWN
-        _SYMBOL_ERROR_THRESHOLD = 5
-        _SYMBOL_COOLDOWN_SECONDS = 60.0
-        _SYMBOL_MAX_COOLDOWN_SECONDS = 300.0   # 最长冷却 5 分钟
-        self._symbol_error_threshold = _SYMBOL_ERROR_THRESHOLD
-        self._symbol_cooldown_seconds = _SYMBOL_COOLDOWN_SECONDS
-        self._symbol_max_cooldown_seconds = _SYMBOL_MAX_COOLDOWN_SECONDS
+        # 退避公式：cooldown = base × 2^(retry_count - 1)，上限 max_cooldown
+        # 参数从 ingest.ini [error_recovery] 或 [ingest] section 加载。
+        self._symbol_error_threshold = int(
+            getattr(ingest_settings, "symbol_error_threshold", 5) or 5
+        )
+        self._symbol_cooldown_seconds = float(
+            getattr(ingest_settings, "symbol_cooldown_seconds", 60.0) or 60.0
+        )
+        self._symbol_max_cooldown_seconds = float(
+            getattr(ingest_settings, "symbol_max_cooldown_seconds", 300.0) or 300.0
+        )
         self._symbol_error_counts: Dict[str, int] = {}
         self._symbol_skip_until: Dict[str, float] = {}
         self._symbol_backoff_count: Dict[str, int] = {}  # 累计退避轮次

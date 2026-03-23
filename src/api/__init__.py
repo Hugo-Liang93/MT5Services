@@ -7,7 +7,7 @@ from __future__ import annotations
 import hmac
 import logging
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -117,6 +117,18 @@ def health(
     )
 
 
+# ── API 版本化：所有业务路由挂载到 /v1/ 下 ──
+v1 = APIRouter(prefix="/v1")
+v1.include_router(market.router)
+v1.include_router(economic.router)
+v1.include_router(account.router)
+v1.include_router(trade.router)
+v1.include_router(monitoring.router)
+v1.include_router(indicators.router)
+v1.include_router(signal.router)
+app.include_router(v1)
+
+# 向后兼容：无前缀路由保留，确保现有客户端不中断
 app.include_router(market.router)
 app.include_router(economic.router)
 app.include_router(account.router)

@@ -72,6 +72,17 @@ class PreTradeRiskService:
         self.settings = settings or get_economic_config()
         self.risk_settings = risk_settings or get_risk_config()
         self._trade_frequency_rule = TradeFrequencyRule()
+        # Rule execution order: fast-fail first (cheapest checks early),
+        # then progressively more expensive / external checks.
+        # 1. AccountSnapshot — in-memory account state (max positions, equity)
+        # 2. DailyLossLimit — equity vs balance comparison
+        # 3. MarginAvailability — margin calculation (may call MT5)
+        # 4. TradeFrequency — in-memory cooldown counter
+        # 5. Protection — SL/TP validation (pure arithmetic)
+        # 6. SessionWindow — time-based session check
+        # 7. MarketStructure — market structure context (cached)
+        # 8. EconomicEvent — economic calendar lookup (cached, may query DB)
+        # 9. CalendarHealth — calendar service health check
         self.rules = (
             AccountSnapshotRule(),
             DailyLossLimitRule(),

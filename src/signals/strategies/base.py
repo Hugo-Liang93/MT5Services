@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, Iterable, Optional, Protocol
 
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
+
+
+class StrategyCategory(str, Enum):
+    """策略分类枚举，用于 PerformanceTracker 的分类聚合。"""
+
+    TREND = "trend"
+    REVERSION = "reversion"
+    BREAKOUT = "breakout"
+    SESSION = "session"
+    PRICE_ACTION = "price_action"
+    COMPOSITE = "composite"
+    MULTI_TF = "multi_tf"
 
 
 class SignalStrategy(Protocol):

@@ -289,9 +289,10 @@ class OptimizedPipeline:
                         params = self.dependency_manager.indicator_params.get(indicator, {})
                         result = func(context.bars, params)
 
-                    # 缓存结果
+                    # 缓存结果（支持 per-indicator TTL）
                     if self.config.enable_cache and result is not None:
-                        self.cache.set(cache_key, result)
+                        ind_ttl = self.dependency_manager.indicator_cache_ttl.get(indicator)
+                        self.cache.set(cache_key, result, ttl=ind_ttl)
 
             # Fallback compute path: only runs when caching is disabled entirely.
             # When cache IS enabled, the block above already computed the result

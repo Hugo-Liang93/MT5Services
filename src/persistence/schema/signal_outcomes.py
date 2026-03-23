@@ -1,7 +1,7 @@
 """signal_outcomes 表 DDL — 记录信号事后结果，用于胜率统计。
 
 每条记录对应一个已发出的 confirmed 信号，在信号后 N 根 bar 收盘后
-由 OutcomeTracker 回填价格变动，标记信号是否"获胜"。
+由 SignalQualityTracker 回填价格变动，标记信号是否"获胜"。
 """
 
 DDL = """

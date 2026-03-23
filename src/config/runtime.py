@@ -34,6 +34,10 @@ class IngestSettings(BaseModel):
     intrabar_enabled: bool = True
     ingest_intrabar_interval: float = 15.0
     ingest_intrabar_intervals: dict = Field(default_factory=dict)
+    # error_recovery: 连续失败退避参数
+    symbol_error_threshold: int = 5
+    symbol_cooldown_seconds: float = 60.0
+    symbol_max_cooldown_seconds: float = 300.0
 
 
 class MarketSettings(BaseModel):
@@ -92,6 +96,9 @@ def get_runtime_ingest_settings() -> IngestSettings:
         intrabar_enabled=storage.intrabar_enabled,
         ingest_intrabar_interval=ingest.intrabar_interval,
         ingest_intrabar_intervals=dict(ingest.intrabar_intervals),
+        symbol_error_threshold=ingest.symbol_error_threshold,
+        symbol_cooldown_seconds=ingest.symbol_cooldown_seconds,
+        symbol_max_cooldown_seconds=ingest.symbol_max_cooldown_seconds,
     )
 
 

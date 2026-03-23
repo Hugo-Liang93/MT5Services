@@ -9,6 +9,7 @@ from collections import deque
 import logging
 import queue
 import threading
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tuple
 
@@ -453,6 +454,14 @@ class MarketDataService:
             self._ohlc_closed_cache[key] = sorted_bars[-keep_limit:]
 
     def set_intrabar(self, symbol: str, timeframe: str, bar: OHLC) -> None:
+        """Store intrabar snapshot for API access / debugging.
+
+        Accumulates successive snapshots of the *same* bar_time so
+        ``get_intrabar_series()`` can visualise how the current bar
+        evolves.  Indicator computation does **not** read from this
+        cache — ``_load_intrabar_bars()`` uses closed-bar cache +
+        the ``bar`` argument directly.
+        """
         key = ohlc_key(symbol, timeframe)
         with self._lock:
             existing = self._intrabar_cache.get(key)
@@ -464,7 +473,14 @@ class MarketDataService:
                     del existing[:-self._intrabar_max_points]
         for listener in list(self._intrabar_listeners):
             try:
+                t0 = time.monotonic()
                 listener(symbol, timeframe, bar)
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                if elapsed_ms > 100:
+                    logger.warning(
+                        "Slow intrabar listener for %s/%s took %.1fms",
+                        symbol, timeframe, elapsed_ms,
+                    )
             except Exception:
                 logger.exception("Failed to publish intrabar event for %s/%s at %s", symbol, timeframe, bar.time)
 
