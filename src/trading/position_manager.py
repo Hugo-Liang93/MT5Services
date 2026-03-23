@@ -499,6 +499,8 @@ class PositionManager:
             if self._modify_sl(pos, result.new_stop_loss):
                 pos.breakeven_applied = True
                 logger.info("Breakeven applied ticket=%d sl=%.2f", pos.ticket, result.new_stop_loss)
+            else:
+                logger.warning("Breakeven SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
 
     def _check_trailing_stop(self, pos: TrackedPosition, current_price: float) -> None:
         result = check_trailing_stop(
@@ -513,6 +515,8 @@ class PositionManager:
         if result.should_update and result.new_stop_loss is not None:
             if self._modify_sl(pos, result.new_stop_loss):
                 pos.trailing_active = True
+            else:
+                logger.warning("Trailing SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
 
     def _modify_sl(self, pos: TrackedPosition, new_sl: float) -> bool:
         try:

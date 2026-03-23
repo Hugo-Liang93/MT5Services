@@ -11,6 +11,7 @@ Usage in deps.py:
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 import queue
 import threading
@@ -100,7 +101,7 @@ class TradeExecutor:
         self._execution_count = 0
         self._last_execution_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
-        self._execution_log: list[dict] = []
+        self._execution_log: deque[dict] = deque(maxlen=100)
         # Async execution: decouple listener callback from MT5 API calls
         exec_queue_size = int(getattr(config, "exec_queue_size", 0) or 0) or 256
         self._exec_queue: queue.Queue = queue.Queue(maxsize=exec_queue_size)
@@ -288,8 +289,6 @@ class TradeExecutor:
                     "reason": "max_concurrent_positions_per_symbol",
                 }
             )
-            if len(self._execution_log) > 100:
-                self._execution_log = self._execution_log[-50:]
             self._notify_skip(event.signal_id, "position_limit")
             return None
 
@@ -334,8 +333,6 @@ class TradeExecutor:
                     "cost": cost_metrics,
                 }
             )
-            if len(self._execution_log) > 100:
-                self._execution_log = self._execution_log[-50:]
             self._notify_skip(event.signal_id, "spread_to_stop_ratio_too_high")
             return None
 
@@ -724,8 +721,6 @@ class TradeExecutor:
                 "success": True,
             }
             self._execution_log.append(log_entry)
-            if len(self._execution_log) > 100:
-                self._execution_log = self._execution_log[-50:]
             logger.info(
                 "TradeExecutor: executed %s %s vol=%.2f sl=%.2f tp=%.2f rr=%.2f (signal=%s)",
                 event.action, event.symbol,
@@ -805,8 +800,6 @@ class TradeExecutor:
                 "reason": reason,
                 "assessment": assessment,
             })
-            if len(self._execution_log) > 100:
-                self._execution_log = self._execution_log[-50:]
             self._notify_skip(event.signal_id, reason)
             if self._persist_execution_fn is not None:
                 try:
@@ -835,8 +828,6 @@ class TradeExecutor:
                 "success": False,
                 "error": str(exc),
             })
-            if len(self._execution_log) > 100:
-                self._execution_log = self._execution_log[-50:]
             logger.exception(
                 "TradeExecutor: failed to execute %s %s: %s", event.action, event.symbol, exc,
             )
@@ -913,7 +904,7 @@ class TradeExecutor:
                     4,
                 ) if slippage_samples else None,
             },
-            "recent_executions": self._execution_log[-10:],
+            "recent_executions": list(self._execution_log)[-10:],
             "pending_entries": (
                 self._pending_manager.status()
                 if self._pending_manager is not None

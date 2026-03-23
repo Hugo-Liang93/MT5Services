@@ -478,9 +478,15 @@ class SignalRuntime:
 
     def set_strategy_intrabar_decay(self, overrides: dict[str, float]) -> None:
         """Set per-strategy intrabar decay overrides (from strategy_params *__intrabar_decay)."""
-        self._strategy_intrabar_decay = {
-            k: min(float(v), 1.0) for k, v in overrides.items() if float(v) < 1.0
-        }
+        result: dict[str, float] = {}
+        for k, v in overrides.items():
+            try:
+                fv = float(v)
+                if fv < 1.0:
+                    result[k] = min(fv, 1.0)
+            except (TypeError, ValueError):
+                logger.warning("Invalid intrabar_decay value for strategy %s: %r", k, v)
+        self._strategy_intrabar_decay = result
 
     def add_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
         """Register a callback to receive SignalEvent on every state transition."""
