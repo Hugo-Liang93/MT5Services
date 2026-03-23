@@ -137,11 +137,25 @@ class SignalModule:
                 f"(Dict[RegimeType, float] covering TRENDING/RANGING/BREAKOUT/UNCERTAIN). "
                 f"See CLAUDE.md for the Regime affinity design guide."
             )
+        # category 校验：必须是 StrategyCategory 枚举值或对应的字符串
+        from .strategies.base import StrategyCategory
+
+        category = getattr(strategy, "category", None)
+        if category is not None:
+            valid_values = {c.value for c in StrategyCategory}
+            cat_str = str(category.value if isinstance(category, StrategyCategory) else category)
+            if cat_str not in valid_values:
+                raise AttributeError(
+                    f"Strategy '{name}' has invalid category '{cat_str}'. "
+                    f"Valid values: {sorted(valid_values)}"
+                )
+
     def register_strategy(self, strategy: SignalStrategy) -> None:
         self._validate_strategy_attrs(strategy)
         self._strategies[strategy.name] = strategy
         if self._performance_tracker is not None:
-            category = getattr(strategy, "category", "unknown")
+            raw_cat = getattr(strategy, "category", "unknown")
+            category = str(raw_cat.value if hasattr(raw_cat, "value") else raw_cat)
             self._performance_tracker.register_strategy(strategy.name, category)
 
     def intrabar_required_indicators(self) -> frozenset:
@@ -246,6 +260,7 @@ class SignalModule:
             symbol, timeframe
         )
         context_metadata = self._build_context_metadata(symbol, timeframe, metadata)
+        event_impact = context_metadata.pop("_event_impact_forecast", None)
         context = SignalContext(
             symbol=symbol,
             timeframe=timeframe,
@@ -253,6 +268,7 @@ class SignalModule:
             indicators=indicator_payload,
             metadata=context_metadata,
             htf_indicators=htf_indicators or {},
+            event_impact_forecast=event_impact,
         )
         decision = strategy_impl.evaluate(context)
 
@@ -389,6 +405,7 @@ class SignalModule:
         indicators: Dict[str, Dict[str, Any]],
         metadata: Dict[str, Any],
     ) -> Optional[SoftRegimeResult]:
+        # 优先复用 runtime 预计算的 soft regime（避免重复调用 detect_soft）
         precomputed = metadata.get("_soft_regime")
         if isinstance(precomputed, SoftRegimeResult):
             return precomputed
@@ -399,11 +416,13 @@ class SignalModule:
                 logger.debug("Invalid precomputed soft regime payload", exc_info=True)
         if not self._soft_regime_enabled:
             return None
-        try:
-            return self._regime_detector.detect_soft(indicators)
-        except Exception:
-            logger.debug("Failed to compute soft regime, falling back to hard detect", exc_info=True)
-            return None
+        # Standalone 模式（无 runtime 预计算）才自行检测
+        if "_regime" not in metadata:
+            try:
+                return self._regime_detector.detect_soft(indicators)
+            except Exception:
+                logger.debug("Failed to compute soft regime", exc_info=True)
+        return None
 
     @staticmethod
     def _effective_affinity(

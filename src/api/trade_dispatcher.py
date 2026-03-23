@@ -8,11 +8,24 @@ from src.risk.service import PreTradeRiskBlockedError
 from src.trading.service import TradingModule
 
 
+_RISK_RULE_ERROR_MAP: dict[str, AIErrorCode] = {
+    "daily_loss_limit": AIErrorCode.DAILY_LOSS_LIMIT,
+    "margin_availability": AIErrorCode.MARGIN_INSUFFICIENT_PRE,
+    "trade_frequency": AIErrorCode.TRADE_FREQUENCY_LIMITED,
+    "account_snapshot": AIErrorCode.POSITION_LIMIT_REACHED,
+    "session_window": AIErrorCode.SESSION_WINDOW_BLOCKED,
+}
+
+
 def _risk_error_code(assessment: dict[str, Any] | None) -> AIErrorCode:
     checks = list((assessment or {}).get("checks") or [])
-    if any(str(item.get("name")) == "daily_loss_limit" for item in checks):
-        return AIErrorCode.DAILY_LOSS_LIMIT
-    if str((assessment or {}).get("reason") or "").strip().lower() == "daily_loss_limit_reached":
+    # Match the first failed rule to a specific error code
+    for item in checks:
+        rule_name = str(item.get("name") or "").strip()
+        if rule_name in _RISK_RULE_ERROR_MAP:
+            return _RISK_RULE_ERROR_MAP[rule_name]
+    reason = str((assessment or {}).get("reason") or "").strip().lower()
+    if "daily_loss_limit" in reason:
         return AIErrorCode.DAILY_LOSS_LIMIT
     return AIErrorCode.TRADE_BLOCKED_BY_RISK
 

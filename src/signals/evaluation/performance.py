@@ -285,8 +285,19 @@ class StrategyPerformanceTracker:
             if regime_mult is not None:
                 return regime_mult
 
-            # 回退到全局策略统计
-            stats = self._stats.get(strategy)
+            # 当有实际交易数据（trade source）时优先使用，因为含真实滑点和成交价
+            primary_stats = self._stats.get(strategy)
+            trade_stats = self._trade_stats.get(strategy)
+            if trade_stats is not None and trade_stats.total >= self._config.category_fallback_min_samples:
+                # trade 数据充足：trade 0.7 + signal 0.3
+                trade_mult = self._compute_multiplier(trade_stats)
+                if primary_stats is not None and primary_stats.total > 0:
+                    signal_mult = self._compute_multiplier(primary_stats)
+                    return trade_mult * 0.7 + signal_mult * 0.3
+                return trade_mult
+
+            # 回退到全局策略统计（signal+trade 合并）
+            stats = primary_stats
             if stats is None or stats.total == 0:
                 return self._category_fallback_multiplier(strategy)
 
@@ -376,22 +387,24 @@ class StrategyPerformanceTracker:
             penalty = cfg.streak_penalty_factor ** excess
             multiplier *= penalty
 
-        # 3. Profit factor adjustment (subtle)
+        # 3. Profit factor adjustment (graduated)
         pf = stats.profit_factor
         if pf is not None and stats.total >= 2:
-            if pf < 0.8:
-                # 低 profit factor → 额外轻微压制
-                multiplier *= 0.95
+            if pf < 0.5:
+                multiplier *= 0.90  # 极差：亏损远超盈利
+            elif pf < 0.8:
+                multiplier *= 0.95  # 偏差
+            elif pf < 1.0:
+                multiplier *= 0.98  # 略亏：仍应轻微压制
             elif pf > 2.0:
-                # 高 profit factor → 微幅提升
-                multiplier *= 1.05
+                multiplier *= 1.05  # 优秀
+            elif pf > 1.5:
+                multiplier *= 1.02  # 良好
         elif pf is None and stats.total >= 2:
             if stats.losses > 0 and stats.total_win_pnl == 0:
-                # 纯亏损情况（有 losses 但 win pnl 全为 0）
-                multiplier *= 0.90
+                multiplier *= 0.90  # 纯亏损
             elif stats.wins > 0 and stats.total_loss_pnl == 0:
-                # 纯利情况（全赢无亏）→ 微幅提升
-                multiplier *= 1.05
+                multiplier *= 1.05  # 纯利
 
         # Clamp to bounds
         return max(cfg.min_multiplier, min(cfg.max_multiplier, multiplier))

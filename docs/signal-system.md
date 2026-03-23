@@ -59,6 +59,7 @@ src/signals/
 ├── evaluation/
 │   ├── regime.py              # MarketRegimeDetector + RegimeType + RegimeTracker
 │   ├── calibrator.py          # ConfidenceCalibrator（历史胜率混合校准）
+│   ├── performance.py         # StrategyPerformanceTracker（日内策略绩效追踪）
 │   └── indicators_helpers.py  # 指标提取工具函数
 │
 ├── execution/
@@ -644,7 +645,7 @@ signal_module.recent_consensus_signals(symbol="XAUUSD", timeframe="H1")
 
 ### Q: 置信度校准何时启用？
 
-`ConfidenceCalibrator` 在运行时默认启用轻量混合校准，当前参数为 `alpha=0.15`、`min_samples=50`、`recency_hours=8`。需要积累足够的交易历史（通过 `OutcomeTracker`）后才会生效；样本不足时会自动退化为不校准。近期胜率弱于基准时，运行时会禁止 boost，只保留压制能力。
+`ConfidenceCalibrator` 在运行时默认启用轻量混合校准，当前参数为 `alpha=0.15`、`min_samples=50`、`recency_hours=8`。需要积累足够的交易历史（通过 `SignalQualityTracker`）后才会生效；样本不足时会自动退化为不校准。近期胜率弱于基准时，运行时会禁止 boost，只保留压制能力。
 
 ### Q: HTFStateCache 是什么？
 

@@ -288,7 +288,7 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 
 | 文件 | 职责 |
 |------|------|
-| `src/api/deps.py` | `_Container` DI 容器、单例管理 |
+| `src/api/deps.py` | `_Container` DI 容器（按域拆分：Market/Signal/Trading/Monitoring 4 个子容器 + property 代理向后兼容） |
 | `src/api/lifespan.py` | 启动/关闭生命周期（`shutdown_components`） |
 | `src/api/factories/` | 各组件工厂函数（market/storage/trading/signals/indicators） |
 | `src/api/__init__.py` | FastAPI app、CORS、API key 认证、路由注册 |
@@ -815,9 +815,10 @@ sma_trend.H1 = D1
 ### 边界情况
 
 - 目标 TF 未在 `app.ini` 配置 → 运行时跳过
-- HTF 指标尚未计算（刚启动）→ 不注入，策略需安全访问（`.get()` 链）
+- HTF 指标尚未计算（刚启动）→ warmup 机制会在启动后 30s 内每 2s 重试 reconcile，一旦 OHLC 缓存就绪即触发计算；策略需安全访问（`.get()` 链）
 - 目标 TF = 当前 TF → 自动跳过（数据已在 `context.indicators` 中）
 - 未配置 `[strategy_htf]` 且无更高 TF → 不注入
+- HTF 指标仅在 HTF bar 收盘时更新 → `get_indicator()` 返回 `_bar_time` 字段，标识数据所属的 bar 收盘时间
 
 ---
 
@@ -980,13 +981,15 @@ idle → preview_buy/sell（方向改变）
 5. **Pre-trade risk service** (`src/risk/service.py`)：`DailyLossLimitRule`（日损失限制）、`AccountSnapshotRule`（仓位限制）、`MarginAvailabilityRule`（保证金动态检查）、`TradeFrequencyRule`（交易频率限制）、`BrokerConstraintRule` 等
 6. **Executor safety** (`src/trading/signal_executor.py`)：熔断器、**持仓数量预检**、成本检查（spread_to_stop_ratio）
 7. **Position manager** (`src/trading/position_manager.py`)：**日终自动平仓**（UTC 21:00，可配置开关）
-8. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M1: 1.0/2.0, M5: 1.2/2.5, M15: 1.3/2.8, H1: 1.5/3.0 ATR 倍数）+ **时间框架差异化风险百分比**（M1: ×0.50, M5: ×0.75, M15: ×1.00, H1: ×1.20）
+8. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M1: 1.0/2.0, M5: 1.2/2.5, M15: 1.3/2.8, H1: 1.5/3.0, D1: 2.0/4.0 ATR 倍数）+ **时间框架差异化风险百分比**（M1: ×0.50, M5: ×0.75, M15: ×1.00, H1: ×1.20, D1: ×1.50）
 
 ---
 
 ## API Endpoints
 
 Base URL: `http://<host>:8808`（默认）
+
+**API 版本化**：所有业务路由同时挂载在 `/v1/` 前缀和根路径下（向后兼容）。新客户端应使用 `/v1/` 前缀。`/health` 始终在根路径。
 
 Authentication: `X-API-Key` 请求头（在 `config/market.ini` 中配置）
 
@@ -1179,6 +1182,18 @@ flake8 src/ tests/
 - **SignalPolicy 精简**：~~包含 `auto_trade_enabled`/`auto_trade_min_confidence`/`auto_trade_require_armed`~~（已移除：这些参数仅在 `ExecutorConfig` / `ExecutionGateConfig` 中使用）
 - **市场结构缓存**：~~由 SignalRuntime 在外部管理 `_market_structure_cache`~~（已修复：缓存内置到 `MarketStructureAnalyzer.analyze_cached()`，scope-aware 自动管理）
 - **波动率异常过滤**：~~内联在 SignalRuntime._evaluate_strategies() 中~~（已移入 `SignalFilterChain` 的 `VolatilitySpikeFilter`）
+- **OutcomeTracker Dead Code**：~~`src/trading/outcome_tracker.py` 中的 `OutcomeTracker` 类（419 行）完全未使用~~（已删除：功能由 `SignalQualityTracker` 替代）
+- **D1 Sizing 缺失**：~~`TIMEFRAME_SL_TP` 和 `TIMEFRAME_RISK_MULTIPLIER` 仅覆盖 M1/M5/M15/H1~~（已修复：添加 D1 配置 sl=2.0 ATR, tp=4.0 ATR, risk=×1.50）
+- **Ingestor 退避阈值**：~~退避参数硬编码~~（已修复：通过 `ingest.ini [error_recovery]` section 配置化）
+- **HTF 对齐魔数**：~~strength/stability/intrabar_ratio 硬编码~~（已修复：通过 `signal.ini [htf_alignment]` section 配置化）
+- **TradeExecutor 队列溢出**：~~put_nowait 满则直接丢弃~~（已修复：confirmed 信号有 1s backpressure 重试 + 溢出计数器）
+- **PositionManager 恢复日志**：~~恢复失败仅 debug 级别~~（已修复：改为 warning 级别）
+- **event_store 自动清理**：~~依赖手工调用 cleanup_old_events()~~（已修复：_event_loop 中每日自动清理 7 天前数据）
+- **Intrabar listener 超时防护**：set_intrabar() listener 调用超过 100ms 时记录 warning 日志
+- **策略 category 枚举化**：`StrategyCategory(str, Enum)` 在 `base.py` 中定义，`_validate_strategy_attrs()` 在注册时校验合法性
+- **API 风控错误码细化**：`MARGIN_INSUFFICIENT_PRE` / `TRADE_FREQUENCY_LIMITED` / `POSITION_LIMIT_REACHED` / `SESSION_WINDOW_BLOCKED` 独立错误码，按 `rule_name` 映射
+- **Intrabar 衰减策略级差异化**：`strategy_params` 支持 `策略名__intrabar_decay = 0.90`，策略级覆盖全局默认值
+- **HTF 指标 staleness 检查**：`_resolve_htf_indicators()` 检查 `_bar_time`，超过 2×HTF 周期的陈旧数据自动跳过注入
 - **模块位置注意**：
   - `SignalRuntime` → `src/signals/orchestration/runtime.py`（不在 `src/signals/runtime.py`）
   - `MarketDataService` → `src/market/service.py`（不在 `src/core/market_service.py`）

@@ -46,56 +46,34 @@ class SmartCache:
         logger.info(f"SmartCache initialized: maxsize={maxsize}, ttl={ttl}s")
     
     def get(self, key: str) -> Optional[Any]:
-        """
-        获取缓存值
-        
-        Args:
-            key: 缓存键
-            
-        Returns:
-            缓存值，如果不存在或已过期则返回None
-        """
+        """获取缓存值，不存在或已过期返回 None。"""
         with self.lock:
             if key not in self.cache:
                 self.misses += 1
-                logger.debug(f"Cache miss: {key}")
                 return None
-            
-            value, timestamp = self.cache[key]
+
+            value, timestamp, item_ttl = self.cache[key]
             current_time = time.time()
-            
-            # 检查过期
-            if current_time - timestamp > self.ttl:
+            effective_ttl = item_ttl if item_ttl is not None else self.ttl
+
+            if current_time - timestamp > effective_ttl:
                 del self.cache[key]
                 self.expirations += 1
                 self.misses += 1
-                logger.debug(f"Cache expired: {key}, age={current_time - timestamp:.2f}s")
                 return None
-            
-            # 移动到最近使用（LRU）
+
             self.cache.move_to_end(key)
             self.hits += 1
-            logger.debug(f"Cache hit: {key}")
             return value
-    
-    def set(self, key: str, value: Any) -> None:
-        """
-        设置缓存值
-        
-        Args:
-            key: 缓存键
-            value: 缓存值
-        """
+
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """设置缓存值，可选 per-key TTL 覆盖全局 TTL。"""
         with self.lock:
-            # 检查是否需要淘汰（LRU）
             if len(self.cache) >= self.maxsize:
-                # 移除最久未使用
                 evicted_key, _ = self.cache.popitem(last=False)
                 self.evictions += 1
-                logger.debug(f"Cache eviction: {evicted_key}")
-            
-            self.cache[key] = (value, time.time())
-            logger.debug(f"Cache set: {key}")
+
+            self.cache[key] = (value, time.time(), ttl)
     
     def delete(self, key: str) -> bool:
         """
@@ -145,9 +123,10 @@ class SmartCache:
             total_age = 0
             valid_items = 0
             
-            for _, timestamp in self.cache.values():
+            for _, timestamp, item_ttl in self.cache.values():
                 age = current_time - timestamp
-                if age <= self.ttl:  # 只统计未过期的
+                effective_ttl = item_ttl if item_ttl is not None else self.ttl
+                if age <= effective_ttl:
                     total_age += age
                     valid_items += 1
             
@@ -177,27 +156,20 @@ class SmartCache:
             return list(self.cache.keys())
     
     def cleanup_expired(self) -> int:
-        """
-        清理过期缓存项
-        
-        Returns:
-            清理的过期项数量
-        """
+        """清理过期缓存项。"""
         with self.lock:
             current_time = time.time()
             expired_keys = []
-            
-            for key, (_, timestamp) in self.cache.items():
-                if current_time - timestamp > self.ttl:
+
+            for key, (_, timestamp, item_ttl) in self.cache.items():
+                effective_ttl = item_ttl if item_ttl is not None else self.ttl
+                if current_time - timestamp > effective_ttl:
                     expired_keys.append(key)
-            
+
             for key in expired_keys:
                 del self.cache[key]
                 self.expirations += 1
-            
-            if expired_keys:
-                logger.info(f"Cleaned up {len(expired_keys)} expired cache items")
-            
+
             return len(expired_keys)
     
     def resize(self, new_maxsize: int) -> None:

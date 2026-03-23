@@ -61,6 +61,7 @@ def get_signal_config() -> SignalConfig:
     htf_indicators_section = dict(merged.get("htf_indicators", {}))
     strategy_htf_section = dict(merged.get("strategy_htf", {}))
     signal_quality_section = dict(merged.get("signal_quality", {}))
+    htf_alignment_section = dict(merged.get("htf_alignment", {}))
     timeframe_risk_section = dict(merged.get("timeframe_risk", {}))
 
     renamed_preview = {
@@ -221,5 +222,9 @@ def get_signal_config() -> SignalConfig:
             if "intrabar_confidence_decay" in htf_indicators_section
             else {}
         ),
+        **{
+            f"htf_alignment_{key}": value
+            for key, value in htf_alignment_section.items()
+        },
     }
     return SignalConfig.model_validate(combined)

@@ -76,6 +76,7 @@ def write_events(
     update_rows: List[tuple] = []
     delete_keys: List[tuple[datetime, str]] = []
 
+    newly_released: List[EconomicCalendarEvent] = []
     for event in events:
         existing = existing_map.get(event.event_uid)
         prepared = service._apply_lifecycle(event, existing, observed_at, value_check=value_check)
@@ -91,6 +92,12 @@ def write_events(
                     job_type=job_type,
                 )
             )
+        # 检测状态变为 released 的事件
+        if (
+            prepared.status == "released"
+            and (existing is None or existing.status != "released")
+        ):
+            newly_released.append(prepared)
 
     with service._lock:
         if delete_keys:
@@ -102,6 +109,18 @@ def write_events(
         else:
             store_with_backpressure_control(service, "economic_calendar", rows)
             store_with_backpressure_control(service, "economic_calendar_updates", update_rows)
+
+    # 通知 MarketImpactAnalyzer 有新 released 事件
+    analyzer = getattr(service, "market_impact_analyzer", None)
+    if analyzer is not None and newly_released:
+        for released_event in newly_released:
+            try:
+                analyzer.on_event_released(released_event)
+            except Exception:
+                logger.exception(
+                    "MarketImpactAnalyzer callback failed for %s",
+                    released_event.event_uid,
+                )
 
     return {
         "written": len(rows),
@@ -123,9 +142,8 @@ def fetch_job_events(
     provider_errors: Dict[str, str] = {}
     events: List[EconomicCalendarEvent] = []
     for provider in service._normalize_sources(sources, job_type):
-        if provider == "tradingeconomics" and not service.settings.tradingeconomics_enabled:
-            continue
-        if provider == "fred" and not service.settings.fred_enabled:
+        provider_obj = service.registry.get(provider)
+        if provider_obj is None or not provider_obj.is_configured():
             continue
         try:
             fetched = service._fetch_from_provider(provider, start_at.date(), end_at.date(), countries)
@@ -437,6 +455,13 @@ def run_scheduler(service) -> None:
         if due_jobs:
             for job_type in sorted(due_jobs, key=service._job_interval):
                 safe_run_job(service, job_type)
+            # 每轮任务完成后推进 market impact 收集
+            analyzer = getattr(service, "market_impact_analyzer", None)
+            if analyzer is not None:
+                try:
+                    analyzer.tick()
+                except Exception:
+                    logger.exception("MarketImpactAnalyzer.tick() failed")
             continue
         upcoming = [next_run for next_run in service._next_run_at.values() if next_run is not None]
         wait_seconds = 5.0

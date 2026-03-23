@@ -88,6 +88,10 @@ class SignalRuntime:
         htf_context_fn: Optional[Callable[..., Any]] = None,
         htf_conflict_penalty: float = 0.70,
         htf_alignment_boost: float = 1.10,
+        htf_alignment_strength_coefficient: float = 0.30,
+        htf_alignment_stability_per_bar: float = 0.03,
+        htf_alignment_stability_cap: float = 1.15,
+        htf_alignment_intrabar_strength_ratio: float = 0.50,
         htf_target_config: Optional[Dict[str, str]] = None,
     ):
         self.service = service
@@ -163,12 +167,18 @@ class SignalRuntime:
         # HTF 指标注入全局开关
         self._htf_indicators_enabled: bool = htf_indicators_enabled
         # Intrabar 置信度衰减因子（<1.0 降权未收盘 bar 信号）
+        # 全局默认值，可被策略级 strategy_params 中 *__intrabar_decay 覆盖
         self._intrabar_confidence_decay: float = min(intrabar_confidence_decay, 1.0)
+        self._strategy_intrabar_decay: dict[str, float] = {}  # populated by set_strategy_intrabar_decay
         # HTF 方向对齐修正：在策略评估后、持久化前应用，使记录的 confidence 反映真实值
         self._htf_direction_fn = htf_direction_fn
         self._htf_context_fn = htf_context_fn
         self._htf_conflict_penalty: float = htf_conflict_penalty
         self._htf_alignment_boost: float = htf_alignment_boost
+        self._htf_strength_coeff: float = htf_alignment_strength_coefficient
+        self._htf_stability_per_bar: float = htf_alignment_stability_per_bar
+        self._htf_stability_cap: float = htf_alignment_stability_cap
+        self._htf_intrabar_ratio: float = htf_alignment_intrabar_strength_ratio
 
         # R-2: 分片锁 — 热路径按 (symbol, timeframe) 分片，避免全局锁争用。
         # _state_lock 仅用于 _count_active_states() 的全量快照读取。
@@ -177,6 +187,7 @@ class SignalRuntime:
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._indicator_miss_counts: dict[tuple[str, str, str], int] = {}
         # Separate queues by scope so that intrabar bursts cannot starve
         # confirmed (bar-close) events, which must never be dropped.
         # Confirmed snapshots can briefly burst during startup catch-up after
@@ -203,6 +214,8 @@ class SignalRuntime:
         # 提醒运维信号运行时已停滞，不依赖指数退避掩盖故障。
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
+        self._affinity_gates_skipped: int = 0
+        self._htf_stale_warnings: int = 0
         self._vote_fusion_cache: dict[
             tuple[str, str, datetime], dict[str, tuple[str, Any]]
         ] = {}
@@ -417,6 +430,8 @@ class SignalRuntime:
             + self._intrabar_events.maxsize,
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
+            "affinity_gates_skipped": self._affinity_gates_skipped,
+            "htf_stale_warnings": self._htf_stale_warnings,
             # 持锁做快照再迭代，避免 background loop 同时写入导致 RuntimeError
             **self._count_active_states(),
         }
@@ -438,6 +453,12 @@ class SignalRuntime:
         return {
             "voting_enabled": voting_engine is not None,
             "voting_config": voting_engine.describe() if voting_engine else None,
+        }
+
+    def set_strategy_intrabar_decay(self, overrides: dict[str, float]) -> None:
+        """Set per-strategy intrabar decay overrides (from strategy_params *__intrabar_decay)."""
+        self._strategy_intrabar_decay = {
+            k: min(float(v), 1.0) for k, v in overrides.items() if float(v) < 1.0
         }
 
     def add_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
@@ -894,6 +915,31 @@ class SignalRuntime:
             except Exception:
                 pass
 
+        # 查询 event impact forecast（带 5 分钟 TTL 缓存，避免每 bar 查 DB）
+        _event_impact: Optional[Dict[str, Any]] = None
+        _impact_analyzer = getattr(self, "_market_impact_analyzer", None)
+        if _impact_analyzer is not None and scope == "confirmed":
+            cache = getattr(self, "_event_impact_cache", None)
+            if cache is None:
+                self._event_impact_cache: Dict[str, Any] = {"data": None, "expires_at": event_time}
+                cache = self._event_impact_cache
+            if event_time >= cache.get("expires_at", event_time):
+                try:
+                    eco_service = getattr(self, "_economic_calendar_service", None)
+                    if eco_service is not None:
+                        upcoming_events = eco_service.get_high_impact_events(hours=2, limit=1)
+                        if upcoming_events:
+                            cache["data"] = _impact_analyzer.get_impact_forecast(
+                                upcoming_events[0].event_name, symbol=symbol
+                            )
+                        else:
+                            cache["data"] = None
+                    cache["expires_at"] = event_time + timedelta(minutes=5)
+                except Exception:
+                    cache["data"] = None
+                    cache["expires_at"] = event_time + timedelta(minutes=5)
+            _event_impact = cache.get("data")
+
         for strategy in strategies:
             allowed_sessions = self.policy.strategy_sessions.get(strategy, ())
             if allowed_sessions and not any(
@@ -917,15 +963,13 @@ class SignalRuntime:
                 if missing:
                     # 低频日志：每个 (symbol, tf, strategy) 组合每 100 次缺失只记录一次
                     miss_key = (symbol, timeframe, strategy)
-                    miss_count = getattr(self, "_indicator_miss_counts", {})
-                    if not hasattr(self, "_indicator_miss_counts"):
-                        self._indicator_miss_counts: dict[tuple[str, str, str], int] = {}
-                        miss_count = self._indicator_miss_counts
-                    miss_count[miss_key] = miss_count.get(miss_key, 0) + 1
-                    if miss_count[miss_key] <= 1 or miss_count[miss_key] % 100 == 0:
+                    self._indicator_miss_counts[miss_key] = (
+                        self._indicator_miss_counts.get(miss_key, 0) + 1
+                    )
+                    if self._indicator_miss_counts[miss_key] <= 1 or self._indicator_miss_counts[miss_key] % 100 == 0:
                         logger.warning(
                             "Strategy %s/%s/%s skipped: missing indicators %s (count=%d)",
-                            symbol, timeframe, strategy, missing, miss_count[miss_key],
+                            symbol, timeframe, strategy, missing, self._indicator_miss_counts[miss_key],
                         )
                     continue
                 scoped_indicators = {
@@ -941,6 +985,7 @@ class SignalRuntime:
                     _parsed_cache=_soft_parsed,
                 )
                 if affinity < min_affinity_skip:
+                    self._affinity_gates_skipped += 1
                     continue
                 regime_metadata["_pre_computed_affinity"] = affinity
             else:
@@ -980,6 +1025,10 @@ class SignalRuntime:
                 if structure_context:
                     regime_metadata["market_structure"] = structure_context
 
+            # ── Event impact forecast 注入 ──
+            if _event_impact is not None:
+                regime_metadata["_event_impact_forecast"] = _event_impact
+
             # ── HTF 指标注入（按 INI [strategy_htf] 配置按需查询）──
             htf_spec = self._strategy_htf_config.get(strategy)
             htf_payload: Dict[str, Dict[str, Dict[str, Any]]] = (
@@ -997,12 +1046,16 @@ class SignalRuntime:
                 persist=False,
                 htf_indicators=htf_payload,
             )
-            # ── Intrabar 置信度衰减 ──────────────────────
-            if scope == "intrabar" and self._intrabar_confidence_decay < 1.0:
-                decision = _dc.replace(
-                    decision,
-                    confidence=decision.confidence * self._intrabar_confidence_decay,
+            # ── Intrabar 置信度衰减（策略级覆盖 > 全局默认）──
+            if scope == "intrabar":
+                decay = self._strategy_intrabar_decay.get(
+                    strategy, self._intrabar_confidence_decay
                 )
+                if decay < 1.0:
+                    decision = _dc.replace(
+                        decision,
+                        confidence=decision.confidence * decay,
+                    )
             # ── HTF 方向对齐修正 ──────────────────────────
             if decision.action in ("buy", "sell"):
                 htf_mul, htf_dir = self._compute_htf_alignment(
@@ -1353,15 +1406,18 @@ class SignalRuntime:
                 base = self._htf_alignment_boost if aligned else self._htf_conflict_penalty
 
                 # Strength weighting: high-confidence HTF signal amplifies effect
-                strength = 1.0 + (ctx.confidence - 0.5) * 0.3  # [0.85, 1.15]
+                strength = 1.0 + (ctx.confidence - 0.5) * self._htf_strength_coeff
                 # Stability weighting: direction held for more bars amplifies effect
-                stability = min(1.0 + (ctx.stable_bars - 1) * 0.03, 1.15)  # cap at 1.15
+                stability = min(
+                    1.0 + (ctx.stable_bars - 1) * self._htf_stability_per_bar,
+                    self._htf_stability_cap,
+                )
 
                 raw_mul = base * strength * stability
 
-                # Intrabar: half-strength modification (signal not yet confirmed)
+                # Intrabar: reduced-strength modification (signal not yet confirmed)
                 if scope == "intrabar":
-                    raw_mul = 1.0 + (raw_mul - 1.0) * 0.5
+                    raw_mul = 1.0 + (raw_mul - 1.0) * self._htf_intrabar_ratio
 
                 return raw_mul, ctx.direction
 
@@ -1375,7 +1431,7 @@ class SignalRuntime:
                     else self._htf_conflict_penalty
                 )
                 if scope == "intrabar":
-                    base = 1.0 + (base - 1.0) * 0.5
+                    base = 1.0 + (base - 1.0) * self._htf_intrabar_ratio
                 return base, htf_dir
 
         return None, None
@@ -1407,18 +1463,43 @@ class SignalRuntime:
         current_tf: str,
         htf_spec: dict[str, list[str]],
     ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """按 INI 配置按需查询 HTF 指标，返回 {tf: {ind: {field: val}}}。"""
+        """按 INI 配置按需查询 HTF 指标，返回 {tf: {ind: {field: val}}}。
+
+        Staleness check: 若 HTF 指标的 bar_time 距当前超过 2× HTF 周期，
+        视为陈旧数据，跳过注入并记 warning。策略代码无需感知。
+        """
+        now_utc = datetime.now(timezone.utc)
         result: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for tf, indicator_names in htf_spec.items():
             if tf == current_tf.upper():
                 continue
             if tf not in self._configured_timeframes:
                 continue
+            max_age = timedelta(seconds=timeframe_seconds(tf) * 2)
             tf_indicators: Dict[str, Dict[str, Any]] = {}
             for ind_name in indicator_names:
                 ind_data = self._get_htf_indicator(symbol, tf, ind_name)
-                if ind_data is not None:
-                    tf_indicators[ind_name] = ind_data
+                if ind_data is None:
+                    continue
+                # Staleness check via _bar_time metadata
+                bar_time_str = ind_data.get("_bar_time")
+                if bar_time_str:
+                    try:
+                        bar_time_val = datetime.fromisoformat(bar_time_str)
+                        if bar_time_val.tzinfo is None:
+                            bar_time_val = bar_time_val.replace(tzinfo=timezone.utc)
+                        age = now_utc - bar_time_val
+                        if age > max_age:
+                            self._htf_stale_warnings += 1
+                            logger.warning(
+                                "HTF indicator %s/%s/%s stale: bar_time=%s age=%s > max=%s, skipping (total=%d)",
+                                symbol, tf, ind_name, bar_time_str, age, max_age,
+                                self._htf_stale_warnings,
+                            )
+                            continue
+                    except (ValueError, TypeError):
+                        pass  # parse failure: inject anyway
+                tf_indicators[ind_name] = ind_data
             if tf_indicators:
                 result[tf] = tf_indicators
         return result

@@ -11,6 +11,7 @@ TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
     "M5": {"sl_atr_mult": 1.2, "tp_atr_mult": 2.5},
     "M15": {"sl_atr_mult": 1.3, "tp_atr_mult": 2.8},
     "H1": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0},
+    "D1": {"sl_atr_mult": 2.0, "tp_atr_mult": 4.0},
 }
 
 # 时间框架差异化风险百分比（乘数）：M1 更保守，H1 可更激进
@@ -20,6 +21,7 @@ TIMEFRAME_RISK_MULTIPLIER: dict[str, float] = {
     "M5": 0.75,   # M5 适中偏保守
     "M15": 1.00,  # M15 基准
     "H1": 1.20,   # H1 信号更可靠，可稍放大
+    "D1": 1.50,   # D1 信号最稳定，允许更大仓位
 }
 
 

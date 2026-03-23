@@ -32,7 +32,7 @@ MT5Services 是一个**生产级** FastAPI 量化交易平台，通过 MT5 Pytho
 **核心能力**：
 - 实时行情采集与内存缓存
 - 多指标计算流水线
-- 多策略信号生成（14 个策略 + 2 个复合策略）
+- 多策略信号生成（18 个策略 + 2 个复合策略）
 - 市场状态感知（Regime 分类）
 - 跨策略投票共识（Voting Engine）
 - 置信度校准（历史胜率反馈）
@@ -86,7 +86,7 @@ src/api/lifespan.py  create_lifespan()
     ├─ 4. EconomicCalendarService.start()# 经济日历同步（src/calendar/）
     ├─ 5. UnifiedIndicatorManager init   # 指标流水线
     ├─ 6. MarketStructureAnalyzer init   # 市场结构分析
-    ├─ 7. SignalModule init              # 策略注册（14+2 个策略）
+    ├─ 7. SignalModule init              # 策略注册（18+2 个策略）
     ├─ 8. SignalRuntime.start()          # 信号评估主循环
     ├─ 9. TradeExecutor.start()          # 自动下单（可选）
     ├─ 10. PositionManager.start()       # 持仓监控
@@ -214,19 +214,21 @@ TradeExecutor（监听 signal_event）
 
 ### 5.5 TradeExecutor（`src/trading/signal_executor.py`）
 
-- **职责**：将 `SignalEvent` 转换为实际下单请求
+- **职责**：将 `SignalEvent` 转换为实际下单请求（异步队列 + daemon 工作线程）
 - **配置**：`auto_trade_enabled`、`auto_trade_min_confidence`、`auto_trade_require_armed`
-- **流程**：信号过滤 → 风控 → 仓位计算 → 下单
+- **队列**：内部 Queue（默认 64，可配置），confirmed 信号有 1s backpressure 重试
+- **流程**：信号入队 → 工作线程取出 → ExecutionGate 准入 → 风控 → 仓位计算 → 下单
 
 ### 5.6 PositionManager（`src/trading/position_manager.py`）
 
 - **职责**：持仓生命周期监控、止损跟踪、自动平仓触发
 - **后台**：独立线程，定期扫描持仓状态
 
-### 5.7 OutcomeTracker（`src/trading/outcome_tracker.py`）
+### 5.7 SignalQualityTracker / TradeOutcomeTracker（`src/trading/`）
 
-- **职责**：追踪每笔交易结果，计算各策略胜率和 Expectancy
-- **用途**：为 `ConfidenceCalibrator` 提供历史胜率数据
+- **SignalQualityTracker**（`signal_quality_tracker.py`）：信号预测质量追踪（N bars 后方向正确性），写入 `signal_outcomes` 表
+- **TradeOutcomeTracker**（`trade_outcome_tracker.py`）：实际交易盈亏追踪（由 PositionManager 关仓触发），写入 `trade_outcomes` 表
+- **用途**：为 `ConfidenceCalibrator`（长期统计校准）和 `StrategyPerformanceTracker`（日内实时反馈）提供数据
 
 ### 5.8 MarketStructureAnalyzer（`src/market_structure/analyzer.py`）
 
@@ -255,7 +257,9 @@ src/signals/
 │   ├── base.py             # SignalStrategy Protocol
 │   ├── trend.py            # 趋势策略（6个）
 │   ├── mean_reversion.py   # 均值回归策略（4个）
-│   ├── breakout.py         # 突破/波动率策略（4个）
+│   ├── breakout.py         # 突破/波动率策略（6个）
+│   ├── session.py          # 时段动量策略（1个）
+│   ├── price_action.py     # 价格行为策略（1个）
 │   ├── composite.py        # 复合策略（2个，工厂函数）
 │   ├── adapters.py         # IndicatorSource 适配器
 │   ├── htf_cache.py        # 高时间框架状态缓存
@@ -263,6 +267,7 @@ src/signals/
 ├── evaluation/
 │   ├── regime.py           # MarketRegimeDetector + RegimeTracker
 │   ├── calibrator.py       # ConfidenceCalibrator（历史胜率校准）
+│   ├── performance.py      # StrategyPerformanceTracker（日内绩效追踪）
 │   └── indicators_helpers.py
 ├── execution/
 │   └── filters.py          # SignalFilterChain
@@ -484,21 +489,26 @@ config/*.ini        （已提交基础配置）
 交易请求依次经过以下关卡（任一失败则拒绝）：
 
 ```
-1. SignalFilterChain
-   ├─ 交易时段过滤（london / newyork session）
-   ├─ 点差过滤（max_spread_points）
-   └─ 经济事件过滤
+1. SignalFilterChain（src/signals/execution/filters.py）
+   ├─ SessionFilter: 交易时段过滤
+   ├─ SessionTransitionFilter: 时段切换冷却
+   ├─ SpreadFilter: 点差过滤
+   ├─ EconomicEventFilter: 经济事件窗口
+   └─ VolatilitySpikeFilter: ATR 暴增过滤
 
 2. PreTradeRiskService（src/risk/service.py）
-   ├─ 账户余额/保证金检查
-   └─ 风险限制规则
+   规则按 fast-fail 顺序执行（廉价检查优先）：
+   ├─ ① AccountSnapshotRule: 持仓数/手数/保证金
+   ├─ ② DailyLossLimitRule: 日损失限制
+   ├─ ③ MarginAvailabilityRule: 保证金动态检查
+   ├─ ④ TradeFrequencyRule: 交易频率限制
+   ├─ ⑤ ProtectionRule: SL/TP 合规性
+   ├─ ⑥ SessionWindowRule: 交易时段检查
+   ├─ ⑦ MarketStructureRule: 市场结构检查
+   ├─ ⑧ EconomicEventRule: 经济事件窗口
+   └─ ⑨ CalendarHealthRule: 日历健康检查
 
-3. RiskRules（src/risk/rules.py）
-   ├─ 最大持仓数量
-   ├─ 最大手数
-   └─ SL/TP 要求
-
-4. TradeGuard（src/calendar/economic_calendar/trade_guard.py）
+3. TradeGuard（src/calendar/economic_calendar/trade_guard.py）
    └─ 高风险经济事件窗口内阻止交易
 ```
 

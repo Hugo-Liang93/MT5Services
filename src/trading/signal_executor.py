@@ -91,7 +91,8 @@ class TradeExecutor:
         self._last_error: Optional[str] = None
         self._execution_log: list[dict] = []
         # Async execution: decouple listener callback from MT5 API calls
-        self._exec_queue: queue.Queue = queue.Queue(maxsize=64)
+        exec_queue_size = int(getattr(config, "exec_queue_size", 0) or 0) or 64
+        self._exec_queue: queue.Queue = queue.Queue(maxsize=exec_queue_size)
         self._exec_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._execution_quality = {
@@ -100,6 +101,7 @@ class TradeExecutor:
             "slippage_samples": 0,
             "slippage_total_price": 0.0,
             "slippage_total_points": 0.0,
+            "queue_overflows": 0,
         }
         # 熔断器状态
         self._consecutive_failures: int = 0
@@ -127,10 +129,16 @@ class TradeExecutor:
         try:
             self._exec_queue.put_nowait(event)
         except queue.Full:
-            logger.warning(
-                "TradeExecutor queue full, dropping event %s/%s",
-                event.symbol, event.timeframe,
-            )
+            # Backpressure retry for confirmed signals
+            try:
+                self._exec_queue.put(event, timeout=1.0)
+            except queue.Full:
+                self._execution_quality["queue_overflows"] += 1
+                logger.warning(
+                    "TradeExecutor queue full after retry, dropping event %s/%s (overflows=%d)",
+                    event.symbol, event.timeframe,
+                    self._execution_quality["queue_overflows"],
+                )
 
     def _start_worker(self) -> None:
         """Start the background execution worker thread (idempotent)."""

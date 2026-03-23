@@ -111,7 +111,10 @@ class UnifiedIndicatorManager:
         self.event_store = get_event_store("events.db")
 
         self._indicator_funcs: Dict[str, Callable] = {}
-        self._results: Dict[str, IndicatorResult] = {}
+        # OrderedDict for LRU eviction: cap prevents unbounded growth during
+        # long-running sessions with dynamic symbols/indicators.
+        self._results: OrderedDict[str, IndicatorResult] = OrderedDict()
+        self._results_max: int = 2000
         self._results_lock = threading.RLock()
         self._stop = threading.Event()
         self._event_thread: Optional[threading.Thread] = None
@@ -181,6 +184,10 @@ class UnifiedIndicatorManager:
                 dependencies=indicator_config.dependencies or None,
                 incremental_class=incremental_class,
             )
+            if indicator_config.cache_ttl is not None:
+                self.dependency_manager.indicator_cache_ttl[indicator_config.name] = (
+                    indicator_config.cache_ttl
+                )
             self._indicator_funcs[indicator_config.name] = func
         # Intrabar eligible 集合在 set_intrabar_eligible_override() 注入前为空；
         # 正常启动路径下由策略的 preferred_scopes + required_indicators 自动推导。
@@ -304,6 +311,13 @@ class UnifiedIndicatorManager:
     def _event_loop(self) -> None:
         reconcile_interval = max(float(self.config.pipeline.poll_interval), 0.5)
         next_reconcile_at = time.monotonic()
+        # Auto-cleanup old events once per day (86400s)
+        _cleanup_interval = 86400.0
+        _next_cleanup_at = time.monotonic() + _cleanup_interval
+        # Warmup: first 30s after start, retry reconcile every 2s to fill
+        # HTF indicators as soon as ingestor populates OHLC cache.
+        _warmup_deadline = time.monotonic() + 30.0
+        _warmup_done = False
 
         while not self._stop.is_set():
             durable_events = self.event_store.claim_next_events(limit=EVENT_BATCH_SIZE)
@@ -312,11 +326,31 @@ class UnifiedIndicatorManager:
                 continue
 
             now = time.monotonic()
+            if now >= _next_cleanup_at:
+                try:
+                    self.cleanup_old_events(days_to_keep=7)
+                except Exception:
+                    logger.debug("event_store cleanup failed", exc_info=True)
+                _next_cleanup_at = time.monotonic() + _cleanup_interval
+
             if now >= next_reconcile_at:
                 if self._has_reconcile_ready_targets():
                     self._reconcile_all()
                     self._last_reconcile_at = datetime.now(timezone.utc)
-                next_reconcile_at = time.monotonic() + reconcile_interval
+                    if not _warmup_done:
+                        _warmup_done = True
+                        logger.info(
+                            "Indicator warmup complete: initial reconcile filled %d results",
+                            len(self._results),
+                        )
+                # During warmup window, retry every 2s; otherwise use normal interval
+                if not _warmup_done and now < _warmup_deadline:
+                    next_reconcile_at = time.monotonic() + 2.0
+                else:
+                    if not _warmup_done:
+                        _warmup_done = True  # deadline passed without data
+                        logger.info("Indicator warmup: deadline reached, proceeding without initial fill")
+                    next_reconcile_at = time.monotonic() + reconcile_interval
                 continue
 
             sleep_for = min(0.1, max(0.0, next_reconcile_at - time.monotonic()))
@@ -1035,7 +1069,10 @@ class UnifiedIndicatorManager:
         with self._results_lock:
             result = self._results.get(result_key)
         if result:
-            return result.value
+            enriched = dict(result.value)
+            if result.bar_time is not None:
+                enriched["_bar_time"] = result.bar_time.isoformat()
+            return enriched
         normalized = self._normalize_persisted_indicator_snapshot(
             self.market_service.latest_indicators(symbol, timeframe)
         )
@@ -1203,6 +1240,7 @@ class UnifiedIndicatorManager:
         with self._results_lock:
             result_stats = {
                 "total_results": len(self._results),
+                "results_max": self._results_max,
                 "symbols": len({result.symbol for result in self._results.values()}),
                 "timeframes": len({result.timeframe for result in self._results.values()}),
                 "indicators": len({result.name for result in self._results.values()}),

@@ -417,3 +417,94 @@ def calendar_updates(
             "data_freshness": "historical",
         },
     )
+
+
+# ── Market Impact 行情影响统计端点 ────────────────────────────────────
+
+
+def _get_market_impact_analyzer(
+    service: EconomicCalendarService = Depends(get_economic_calendar_service),
+):
+    analyzer = getattr(service, "market_impact_analyzer", None)
+    if analyzer is None:
+        raise HTTPException(status_code=503, detail="Market impact analyzer not enabled")
+    return analyzer
+
+
+@router.get("/calendar/market-impact/stats")
+def market_impact_stats(
+    event_name: Optional[str] = None,
+    country: Optional[str] = None,
+    importance_min: Optional[int] = None,
+    symbol: str = Query("XAUUSD"),
+    timeframe: str = Query("M5"),
+    limit: int = Query(50, ge=1, le=500),
+    analyzer=Depends(_get_market_impact_analyzer),
+):
+    """聚合统计：按事件类型分组的历史行情影响。"""
+    stats = analyzer.get_aggregated_stats(
+        event_name=event_name,
+        country=country,
+        importance_min=importance_min,
+        symbol=symbol,
+        timeframe=timeframe,
+        limit=limit,
+    )
+    return ApiResponse.success_response(
+        data=stats,
+        metadata={"count": len(stats), "symbol": symbol, "timeframe": timeframe},
+    )
+
+
+@router.get("/calendar/market-impact/upcoming")
+def market_impact_upcoming(
+    symbol: str = Query("XAUUSD"),
+    hours: int = Query(24, ge=1, le=168),
+    service: EconomicCalendarService = Depends(get_economic_calendar_service),
+):
+    """即将到来的事件 + 基于历史统计的预期影响。"""
+    analyzer = getattr(service, "market_impact_analyzer", None)
+    upcoming_events = service.get_high_impact_events(hours=hours)
+    results = []
+    for event in upcoming_events:
+        item = {
+            "event_uid": event.event_uid,
+            "event_name": event.event_name,
+            "scheduled_at": event.scheduled_at.isoformat(),
+            "country": event.country,
+            "importance": event.importance,
+            "status": event.status,
+            "impact_forecast": None,
+        }
+        if analyzer is not None:
+            forecast = analyzer.get_impact_forecast(event.event_name, symbol=symbol)
+            item["impact_forecast"] = forecast
+        results.append(item)
+    return ApiResponse.success_response(
+        data=results,
+        metadata={"count": len(results), "symbol": symbol, "hours": hours},
+    )
+
+
+@router.get("/calendar/market-impact/status")
+def market_impact_status(
+    service: EconomicCalendarService = Depends(get_economic_calendar_service),
+):
+    """Market Impact Analyzer 运行时状态。"""
+    analyzer = getattr(service, "market_impact_analyzer", None)
+    if analyzer is None:
+        return ApiResponse.success_response(data={"enabled": False})
+    return ApiResponse.success_response(data=analyzer.stats())
+
+
+@router.get("/calendar/market-impact/{event_uid}")
+def market_impact_detail(
+    event_uid: str,
+    symbol: str = Query("XAUUSD"),
+    analyzer=Depends(_get_market_impact_analyzer),
+):
+    """查询单个事件对指定品种的行情影响详情。"""
+    result = analyzer.get_event_impact(event_uid, symbol)
+    if result is None:
+        return ApiResponse.success_response(data=None, metadata={"found": False})
+    return ApiResponse.success_response(data=result, metadata={"found": True})

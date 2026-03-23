@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 
@@ -39,6 +39,8 @@ class SignalContext:
     # HTF 指标：{target_tf: {indicator_name: {field: value}}}
     # 例: {"H1": {"adx14": {"adx": 28.5}, "ema50": {"ema": 2650.0}}}
     htf_indicators: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
+    # 经济事件行情影响预测（来自 MarketImpactAnalyzer）
+    event_impact_forecast: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)

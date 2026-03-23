@@ -53,26 +53,195 @@ logger = logging.getLogger(__name__)
 _init_lock = threading.Lock()
 
 
-class _Container:
+class _MarketContainer:
+    """数据采集与行情缓存域。"""
     service: Optional[MarketDataService] = None
     storage_writer: Optional[StorageWriter] = None
     ingestor: Optional[BackgroundIngestor] = None
     indicator_manager: Optional[UnifiedIndicatorManager] = None
-    trade_registry: Optional[TradingAccountRegistry] = None
-    trade_module: Optional[TradingModule] = None
-    economic_calendar_service: Optional[EconomicCalendarService] = None
-    market_structure_analyzer: Optional[MarketStructureAnalyzer] = None
+
+
+class _SignalContainer:
+    """信号评估与置信度域。"""
     signal_module: Optional[SignalModule] = None
     signal_runtime: Optional[SignalRuntime] = None
     htf_cache: Optional[HTFStateCache] = None
     signal_quality_tracker: Optional[SignalQualityTracker] = None
-    trade_outcome_tracker: Optional[TradeOutcomeTracker] = None
     calibrator: Optional[ConfidenceCalibrator] = None
-    trade_executor: Optional[TradeExecutor] = None
     performance_tracker: Optional[StrategyPerformanceTracker] = None
+    market_structure_analyzer: Optional[MarketStructureAnalyzer] = None
+
+
+class _TradingContainer:
+    """交易执行与持仓域。"""
+    trade_registry: Optional[TradingAccountRegistry] = None
+    trade_module: Optional[TradingModule] = None
+    trade_executor: Optional[TradeExecutor] = None
     position_manager: Optional[PositionManager] = None
+    trade_outcome_tracker: Optional[TradeOutcomeTracker] = None
+
+
+class _MonitoringContainer:
+    """监控与健康检查域。"""
     health_monitor: Optional[object] = None
     monitoring_manager: Optional[object] = None
+
+
+class _Container:
+    """聚合容器 — 按功能域拆分的子容器 + 跨域组件。"""
+
+    def __init__(self) -> None:
+        self.market = _MarketContainer()
+        self.signal = _SignalContainer()
+        self.trading = _TradingContainer()
+        self.monitoring = _MonitoringContainer()
+        self.economic_calendar_service: Optional[EconomicCalendarService] = None
+        self.market_impact_analyzer: Optional[Any] = None
+
+    # 向后兼容属性 — shutdown_components / lifespan / Depends 函数通过这些属性访问
+    @property
+    def service(self) -> Optional[MarketDataService]:
+        return self.market.service
+
+    @service.setter
+    def service(self, v: Optional[MarketDataService]) -> None:
+        self.market.service = v
+
+    @property
+    def storage_writer(self) -> Optional[StorageWriter]:
+        return self.market.storage_writer
+
+    @storage_writer.setter
+    def storage_writer(self, v: Optional[StorageWriter]) -> None:
+        self.market.storage_writer = v
+
+    @property
+    def ingestor(self) -> Optional[BackgroundIngestor]:
+        return self.market.ingestor
+
+    @ingestor.setter
+    def ingestor(self, v: Optional[BackgroundIngestor]) -> None:
+        self.market.ingestor = v
+
+    @property
+    def indicator_manager(self) -> Optional[UnifiedIndicatorManager]:
+        return self.market.indicator_manager
+
+    @indicator_manager.setter
+    def indicator_manager(self, v: Optional[UnifiedIndicatorManager]) -> None:
+        self.market.indicator_manager = v
+
+    @property
+    def signal_module(self) -> Optional[SignalModule]:
+        return self.signal.signal_module
+
+    @signal_module.setter
+    def signal_module(self, v: Optional[SignalModule]) -> None:
+        self.signal.signal_module = v
+
+    @property
+    def signal_runtime(self) -> Optional[SignalRuntime]:
+        return self.signal.signal_runtime
+
+    @signal_runtime.setter
+    def signal_runtime(self, v: Optional[SignalRuntime]) -> None:
+        self.signal.signal_runtime = v
+
+    @property
+    def htf_cache(self) -> Optional[HTFStateCache]:
+        return self.signal.htf_cache
+
+    @htf_cache.setter
+    def htf_cache(self, v: Optional[HTFStateCache]) -> None:
+        self.signal.htf_cache = v
+
+    @property
+    def signal_quality_tracker(self) -> Optional[SignalQualityTracker]:
+        return self.signal.signal_quality_tracker
+
+    @signal_quality_tracker.setter
+    def signal_quality_tracker(self, v: Optional[SignalQualityTracker]) -> None:
+        self.signal.signal_quality_tracker = v
+
+    @property
+    def calibrator(self) -> Optional[ConfidenceCalibrator]:
+        return self.signal.calibrator
+
+    @calibrator.setter
+    def calibrator(self, v: Optional[ConfidenceCalibrator]) -> None:
+        self.signal.calibrator = v
+
+    @property
+    def performance_tracker(self) -> Optional[StrategyPerformanceTracker]:
+        return self.signal.performance_tracker
+
+    @performance_tracker.setter
+    def performance_tracker(self, v: Optional[StrategyPerformanceTracker]) -> None:
+        self.signal.performance_tracker = v
+
+    @property
+    def market_structure_analyzer(self) -> Optional[MarketStructureAnalyzer]:
+        return self.signal.market_structure_analyzer
+
+    @market_structure_analyzer.setter
+    def market_structure_analyzer(self, v: Optional[MarketStructureAnalyzer]) -> None:
+        self.signal.market_structure_analyzer = v
+
+    @property
+    def trade_registry(self) -> Optional[TradingAccountRegistry]:
+        return self.trading.trade_registry
+
+    @trade_registry.setter
+    def trade_registry(self, v: Optional[TradingAccountRegistry]) -> None:
+        self.trading.trade_registry = v
+
+    @property
+    def trade_module(self) -> Optional[TradingModule]:
+        return self.trading.trade_module
+
+    @trade_module.setter
+    def trade_module(self, v: Optional[TradingModule]) -> None:
+        self.trading.trade_module = v
+
+    @property
+    def trade_executor(self) -> Optional[TradeExecutor]:
+        return self.trading.trade_executor
+
+    @trade_executor.setter
+    def trade_executor(self, v: Optional[TradeExecutor]) -> None:
+        self.trading.trade_executor = v
+
+    @property
+    def position_manager(self) -> Optional[PositionManager]:
+        return self.trading.position_manager
+
+    @position_manager.setter
+    def position_manager(self, v: Optional[PositionManager]) -> None:
+        self.trading.position_manager = v
+
+    @property
+    def trade_outcome_tracker(self) -> Optional[TradeOutcomeTracker]:
+        return self.trading.trade_outcome_tracker
+
+    @trade_outcome_tracker.setter
+    def trade_outcome_tracker(self, v: Optional[TradeOutcomeTracker]) -> None:
+        self.trading.trade_outcome_tracker = v
+
+    @property
+    def health_monitor(self) -> Optional[object]:
+        return self.monitoring.health_monitor
+
+    @health_monitor.setter
+    def health_monitor(self, v: Optional[object]) -> None:
+        self.monitoring.health_monitor = v
+
+    @property
+    def monitoring_manager(self) -> Optional[object]:
+        return self.monitoring.monitoring_manager
+
+    @monitoring_manager.setter
+    def monitoring_manager(self, v: Optional[object]) -> None:
+        self.monitoring.monitoring_manager = v
 
 
 _c = _Container()
@@ -224,6 +393,18 @@ def _ensure_initialized() -> None:
         _c.economic_calendar_service = trading_components.economic_calendar_service
         _c.trade_registry = trading_components.trade_registry
         _c.trade_module = trading_components.trade_module
+
+        # Market Impact Analyzer
+        economic_settings = get_economic_config()
+        if economic_settings.market_impact_enabled:
+            from src.calendar.economic_calendar.market_impact import MarketImpactAnalyzer
+
+            _c.market_impact_analyzer = MarketImpactAnalyzer(
+                db_writer=_c.storage_writer.db,
+                market_repo=_c.storage_writer.db.market_repo,
+                settings=economic_settings,
+            )
+            _c.economic_calendar_service.market_impact_analyzer = _c.market_impact_analyzer
 
         signal_components = build_signal_components(
             indicator_manager=_c.indicator_manager,

@@ -61,6 +61,10 @@ class IngestConfig(BaseModel):
     max_allowed_delay: float = 60.0
     intrabar_interval: float = 15.0
     intrabar_intervals: Dict[str, float] = Field(default_factory=dict)
+    # error_recovery: 连续失败退避参数
+    symbol_error_threshold: int = 5
+    symbol_cooldown_seconds: float = 60.0
+    symbol_max_cooldown_seconds: float = 300.0
 
 
 class EconomicConfig(BaseModel):
@@ -108,6 +112,29 @@ class EconomicConfig(BaseModel):
     tradingeconomics_api_key: str | None = None
     fred_enabled: bool = True
     fred_api_key: str | None = None
+    # FMP (Financial Modeling Prep)
+    fmp_enabled: bool = False
+    fmp_api_key: str | None = None
+    # Alpha Vantage
+    alphavantage_enabled: bool = False
+    alphavantage_api_key: str | None = None
+    alphavantage_tracked_indicators: List[str] = Field(default_factory=list)
+    # Market Impact 行情影响统计
+    market_impact_enabled: bool = False
+    market_impact_symbols: List[str] = Field(default_factory=lambda: ["XAUUSD"])
+    market_impact_timeframes: List[str] = Field(default_factory=lambda: ["M1", "M5"])
+    market_impact_importance_min: int = 2
+    market_impact_pre_windows: List[int] = Field(default_factory=lambda: [30, 60, 120])
+    market_impact_post_windows: List[int] = Field(default_factory=lambda: [5, 15, 30, 60, 120])
+    market_impact_final_collection_delay_minutes: int = 130
+    market_impact_backfill_enabled: bool = True
+    market_impact_backfill_days: int = 30
+    market_impact_stats_refresh_interval_seconds: float = 21600.0
+    # Trade Guard 动态保护窗口阈值
+    market_impact_high_spike_threshold: float = 3.0
+    market_impact_high_spike_buffer_minutes: int = 60
+    market_impact_med_spike_threshold: float = 2.0
+    market_impact_med_spike_buffer_minutes: int = 45
 
 
 class RiskConfig(BaseModel):

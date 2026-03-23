@@ -6,7 +6,8 @@ import random
 import time as time_module
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, runtime_checkable
+from typing import Protocol
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -325,6 +326,33 @@ class EconomicCalendarEvent:
         )
 
 
+@runtime_checkable
+class EconomicCalendarProvider(Protocol):
+    """经济日历数据源提供者协议。"""
+
+    @property
+    def name(self) -> str:
+        """Provider 唯一标识（如 'tradingeconomics', 'fred', 'fmp'）。"""
+        ...
+
+    def fetch_events(
+        self,
+        start_date: date,
+        end_date: date,
+        countries: Optional[List[str]] = None,
+    ) -> List[EconomicCalendarEvent]:
+        """获取指定日期范围内的经济事件。"""
+        ...
+
+    def supports_release_watch(self) -> bool:
+        """是否支持实时发布监控（高频轮询模式）。"""
+        ...
+
+    def is_configured(self) -> bool:
+        """API key 等必要配置是否就绪。"""
+        ...
+
+
 class _BaseHttpClient:
     def __init__(self, settings: EconomicConfig):
         self.settings = settings
@@ -373,6 +401,16 @@ class _BaseHttpClient:
 
 class TradingEconomicsCalendarClient(_BaseHttpClient):
     base_url = "https://api.tradingeconomics.com/calendar"
+
+    @property
+    def name(self) -> str:
+        return "tradingeconomics"
+
+    def supports_release_watch(self) -> bool:
+        return True
+
+    def is_configured(self) -> bool:
+        return bool(self.settings.tradingeconomics_api_key)
 
     def fetch_events(
         self,
@@ -442,6 +480,16 @@ class TradingEconomicsCalendarClient(_BaseHttpClient):
 class FredCalendarClient(_BaseHttpClient):
     releases_dates_url = "https://api.stlouisfed.org/fred/releases/dates"
 
+    @property
+    def name(self) -> str:
+        return "fred"
+
+    def supports_release_watch(self) -> bool:
+        return False
+
+    def is_configured(self) -> bool:
+        return bool(self.settings.fred_api_key)
+
     def _should_include_release(self, release_id: str, release_name: str) -> bool:
         whitelist_ids = {item.strip() for item in self.settings.fred_release_whitelist_ids if item.strip()}
         whitelist_keywords = [item.strip().lower() for item in self.settings.fred_release_whitelist_keywords if item.strip()]
@@ -465,6 +513,7 @@ class FredCalendarClient(_BaseHttpClient):
         self,
         start_date: date,
         end_date: date,
+        countries: Optional[List[str]] = None,
     ) -> List[EconomicCalendarEvent]:
         api_key = self.settings.fred_api_key
         if not api_key:

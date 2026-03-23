@@ -8,9 +8,8 @@ from typing import Any, Dict, List, Optional
 from src.clients.economic_calendar import (
     EconomicCalendarError,
     EconomicCalendarEvent,
-    FredCalendarClient,
-    TradingEconomicsCalendarClient,
 )
+from src.clients.economic_calendar_registry import ProviderRegistry
 from src.config import EconomicConfig, get_economic_config
 from src.calendar.economic_calendar.calendar_sync import (
     ensure_worker_running,
@@ -76,13 +75,14 @@ class EconomicCalendarService:
         db_writer: TimescaleWriter,
         settings: Optional[EconomicConfig] = None,
         storage_writer: Optional[StorageWriter] = None,
+        provider_registry: Optional[ProviderRegistry] = None,
     ):
         self.db = db_writer
         self.settings = settings or get_economic_config()
         self.storage_writer = storage_writer
         self._lock = RLock()
-        self._te_client = TradingEconomicsCalendarClient(self.settings)
-        self._fred_client = FredCalendarClient(self.settings)
+        self.registry = provider_registry or ProviderRegistry()
+        self.market_impact_analyzer: Optional[Any] = None
         self._last_refresh_at: Optional[datetime] = None
         self._last_refresh_error: Optional[str] = None
         self._last_refresh_summary: Optional[Dict[str, Any]] = None
@@ -113,20 +113,18 @@ class EconomicCalendarService:
             for name in _JOB_LABELS
         }
         self._provider_status: Dict[str, Dict[str, Any]] = {
-            "tradingeconomics": {
-                "enabled": self.settings.tradingeconomics_enabled,
+            name: {
+                "enabled": provider.is_configured(),
                 "last_success_at": None,
                 "last_error": None,
                 "consecutive_failures": 0,
                 "last_event_count": 0,
-            },
-            "fred": {
-                "enabled": self.settings.fred_enabled,
-                "last_success_at": None,
-                "last_error": None,
-                "consecutive_failures": 0,
-                "last_event_count": 0,
-            },
+            }
+            for name, provider in (
+                (n, self.registry.get(n))
+                for n in self.registry.all_names()
+            )
+            if provider is not None
         }
 
     def attach_storage_writer(self, storage_writer: Optional[StorageWriter]) -> None:
@@ -170,12 +168,13 @@ class EconomicCalendarService:
 
     def _default_sources_for_job(self, job_type: str) -> List[str]:
         if job_type == "release_watch":
-            return ["tradingeconomics"]
-        return ["tradingeconomics", "fred"]
+            return self.registry.release_watch_names()
+        return self.registry.configured_names()
 
     def _normalize_sources(self, sources: Optional[List[str]], job_type: str) -> List[str]:
+        known = set(self.registry.all_names())
         requested = [source.strip().lower() for source in (sources or self._default_sources_for_job(job_type)) if source]
-        return [source for source in requested if source in {"tradingeconomics", "fred"}]
+        return [source for source in requested if source in known]
 
     def _job_window(self, job_type: str) -> tuple[datetime, datetime]:
         now = _utc_now()
@@ -201,37 +200,40 @@ class EconomicCalendarService:
     def _enrich_events(self, events: List[EconomicCalendarEvent]) -> List[EconomicCalendarEvent]:
         return [event.enrich_time_context(self.settings.local_timezone) for event in events]
 
-    def _update_provider_success(self, provider: str, event_count: int) -> None:
-        state = self._provider_status[provider]
+    def _update_provider_success(self, provider_name: str, event_count: int) -> None:
+        state = self._provider_status.get(provider_name)
+        if state is None:
+            return
         state["last_success_at"] = _utc_now().isoformat()
         state["last_error"] = None
         state["consecutive_failures"] = 0
         state["last_event_count"] = event_count
 
-    def _update_provider_failure(self, provider: str, exc: Exception) -> None:
-        state = self._provider_status[provider]
+    def _update_provider_failure(self, provider_name: str, exc: Exception) -> None:
+        state = self._provider_status.get(provider_name)
+        if state is None:
+            return
         state["last_error"] = str(exc)
         state["consecutive_failures"] = int(state["consecutive_failures"]) + 1
         state["last_event_count"] = 0
 
     def _fetch_from_provider(
         self,
-        provider: str,
+        provider_name: str,
         start_date: date,
         end_date: date,
         countries: Optional[List[str]],
     ) -> List[EconomicCalendarEvent]:
+        provider = self.registry.get(provider_name)
+        if provider is None:
+            logger.warning("Unknown economic calendar provider: %s", provider_name)
+            return []
         try:
-            if provider == "tradingeconomics":
-                events = self._te_client.fetch_events(start_date, end_date, countries=countries)
-            elif provider == "fred":
-                events = self._fred_client.fetch_events(start_date, end_date)
-            else:
-                return []
-            self._update_provider_success(provider, len(events))
+            events = provider.fetch_events(start_date, end_date, countries=countries)
+            self._update_provider_success(provider_name, len(events))
             return events
         except Exception as exc:
-            self._update_provider_failure(provider, exc)
+            self._update_provider_failure(provider_name, exc)
             raise
 
     def _derive_status(self, event: EconomicCalendarEvent, observed_at: datetime) -> str:

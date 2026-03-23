@@ -13,7 +13,7 @@
 """
 
 from .adapters import IndicatorSource, UnifiedIndicatorSourceAdapter
-from .base import SignalStrategy, _resolve_indicator_value
+from .base import SignalStrategy, StrategyCategory, _resolve_indicator_value
 from .breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
@@ -45,6 +45,7 @@ __all__ = [
     "RsiReversionStrategy",
     "SessionMomentumBias",
     "SignalStrategy",
+    "StrategyCategory",
     "SmaTrendStrategy",
     "StochRsiStrategy",
     "SqueezeReleaseFollow",
