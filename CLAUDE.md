@@ -124,6 +124,7 @@ MT5Services/
 │   │   ├── pending_entry.py  # PendingEntryManager：价格确认入场（Quote bid/ask 区间监控）
 │   │   └── models.py         # TradeOperationRecord 数据类
 │   └── utils/                # 通用工具、内存管理器
+│       └── timezone.py       # 统一时区模块（utc_now/to_display/LocalTimeFormatter）
 ├── tests/                    # 测试套件（镜像 src/ 结构）
 └── docs/                     # 架构文档、内部设计文档
     └── architecture-flow.md  # 全链路流程图、数据流转矩阵、置信度管线路径
@@ -295,6 +296,10 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/app_runtime/builder.py` | `build_app_container()`：构建所有组件并连接依赖（不启动线程） |
 | `src/app_runtime/runtime.py` | `AppRuntime`：start/stop 生命周期管理（启动/关闭所有后台线程） |
 | `src/api/deps.py` | FastAPI DI 适配层（getter 函数 + lifespan，委托 `app_runtime`） |
+| `src/utils/timezone.py` | 统一时区模块：`utc_now()`/`to_display()`/`LocalTimeFormatter`（日志北京时间） |
+| `src/market/event_bus.py` | `MarketEventBus`：事件订阅/分发（从 MarketDataService 提取） |
+| `src/signals/orchestration/htf_resolver.py` | HTF 配置解析、指标查询、对齐乘数计算（纯函数） |
+| `src/signals/orchestration/state_machine.py` | 状态机转换 preview/armed/confirmed（纯逻辑，可独立测试） |
 | `src/api/factories/` | 各组件工厂函数（market/storage/trading/signals/indicators） |
 | `src/api/__init__.py` | FastAPI app、CORS、API key 认证、路由注册 |
 | `src/api/trade_dispatcher.py` | TradeAPIDispatcher：统一交易 API 调度入口，减少路由层重复逻辑 |
@@ -1204,6 +1209,19 @@ flake8 src/ tests/
 - **HTF 指标 staleness 检查**：`_resolve_htf_indicators()` 检查 `_bar_time`，超过 2×HTF 周期的陈旧数据自动跳过注入
 - **应用运行时三层架构**：`src/api/deps.py` 已拆分为 `src/app_runtime/`（container/builder/runtime），`deps.py` 仅保留 FastAPI getter 适配层。旧 `src/api/lifespan.py` 已删除，功能由 `AppRuntime` 接管。
 - **lifespan shutdown bug 已修复**：旧 `lifespan.py` 中 `container.market_data`（属性不存在）已在新 `AppRuntime.stop()` 中修正为 `c.market_service`
+- **TradeFrequencyRule 线程安全**：`record_trade()` 和 `evaluate()` 通过 `threading.Lock` 保护，修复并发丢失时间戳的 bug
+- **MarketEventBus shutdown 防护**：`_shutdown_flag` + `RuntimeError` 捕获，防止 shutdown 后 dispatch 调用崩溃
+- **market_impact 表 DDL 修复**：PRIMARY KEY 加入 `recorded_at` 分区列，符合 TimescaleDB 要求
+- **OHLC 价格修复**：`get_ohlc_from()` 请求参数和响应时间戳统一走 `_market_time_to_request` / `_parse_server_timestamp`，修复 UTC+3 偏移导致的价格错误
+- **trade_outcomes close_price 修复**：`history_deals_get()` 时间参数统一走 `_server_now()`，修复平仓价获取失败
+- **Warmup guard**：SignalRuntime `_on_snapshot` 在 confirmed scope 下跳过过旧的 bar（`bar_age > max(10×tf, 15min)`），解决启动风暴导致 confirmed 队列溢出
+- **Warmup 指标完整性检查**：`SignalPolicy.warmup_required_indicators = ("atr14",)`，ATR 未就绪时不产生信号，避免浪费首次 `state_changed=true` 转换
+- **Signal 持久化优化**：`state_changed=false` 的重复信号不再写 DB，减少 ~95% signal_events 写入量。listener 仍收到所有事件
+- **统一时区模块**：`src/utils/timezone.py` 提供 `utc_now()`/`to_display()`/`LocalTimeFormatter`，日志时间戳统一为 `app.ini [system] timezone` 配置的显示时区
+- **MT5 统一时间 API**：`MT5BaseClient` 新增 `_server_now()`/`_parse_server_timestamp()`/`_parse_server_timestamp_msc()`/`_request_time_range()`，所有 MT5 API 调用统一走这些方法，消除散落各处的手动时区转换
+- **MarketEventBus**：从 `MarketDataService` 提取事件订阅/分发逻辑，`service.event_bus` 属性访问
+- **HTF Resolver**：`src/signals/orchestration/htf_resolver.py`，HTF 配置解析/指标查询/对齐乘数计算独立为纯函数模块
+- **State Machine**：`src/signals/orchestration/state_machine.py`，preview/armed/confirmed 状态转换纯逻辑，可独立测试
 - **模块位置注意**：
   - `AppContainer` → `src/app_runtime/container.py`（纯组件持有，可多实例）
   - `AppBuilder` → `src/app_runtime/builder.py`（构建组件，不启动线程）

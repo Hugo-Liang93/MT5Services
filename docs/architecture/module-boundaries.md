@@ -9,8 +9,9 @@
 
 ```
 src/
-├── api/                 [API 层] 路由、中间件、DI 容器、工厂
-├── market/              [数据层] 内存行情缓存
+├── app_runtime/         [运行时] 组件容器、构建、生命周期管理
+├── api/                 [API 层] 路由、中间件、DI 适配层、工厂
+├── market/              [数据层] 内存行情缓存 + 事件总线
 ├── ingestion/           [采集层] MT5 数据拉取
 ├── indicators/          [指标层] 计算流水线与快照发布
 ├── signals/             [信号层] 策略评估、状态机、投票
@@ -21,9 +22,9 @@ src/
 ├── monitoring/          [监控层] 健康检查、告警
 ├── persistence/         [持久化] TimescaleDB 写入与查询
 ├── config/              [配置层] 加载、合并、Pydantic 模型
-├── clients/             [客户端] MT5 binding 封装
+├── clients/             [客户端] MT5 binding 封装 + 统一时间 API
 ├── backtesting/         [回测层] 引擎、优化器、Walk-forward
-└── utils/               [工具层] 通用工具
+└── utils/               [工具层] 通用工具 + 统一时区模块
 ```
 
 ---

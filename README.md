@@ -95,9 +95,10 @@ MT5Services/
 │  ├─ signal.ini        # 信号状态机、自动交易、投票、市场结构与执行参数
 │  └─ indicators.json   # 指标定义与计算流水线
 ├─ src/
-│  ├─ api/              # FastAPI 路由、中间件、Schema、DI 容器
+│  ├─ app_runtime/      # 应用运行时（container/builder/runtime 三层分离）
+│  ├─ api/              # FastAPI 路由、中间件、Schema、DI 适配层
 │  ├─ calendar/         # EconomicCalendarService 与 trade guard
-│  ├─ clients/          # MT5 客户端封装（行情、交易、账户）
+│  ├─ clients/          # MT5 客户端封装（行情、交易、账户、统一时间 API）
 │  ├─ config/           # 配置加载、合并、Pydantic 模型
 │  ├─ indicators/       # 统一指标系统（管理器、引擎、缓存）
 │  ├─ ingestion/        # 后台 Tick/OHLC/Intrabar 数据采集
@@ -108,7 +109,7 @@ MT5Services/
 │  ├─ risk/             # 风险规则、模型、服务
 │  ├─ signals/          # 信号生成策略、运行时、过滤器
 │  ├─ trading/          # TradingModule、账户注册、信号执行器
-│  └─ utils/            # 通用工具、事件存储、内存管理器
+│  └─ utils/            # 通用工具、事件存储、统一时区模块
 ├─ tests/
 │  ├─ api/
 │  ├─ config/

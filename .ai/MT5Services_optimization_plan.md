@@ -666,15 +666,28 @@ src/
 ## 11. 附：可直接执行的首轮重构任务清单
 
 ```text
-[ ] 新建 docs/architecture/current-runtime-map.md
-[ ] 新建 docs/architecture/module-boundaries.md
-[ ] 新建 src/app_runtime/container.py
-[ ] 新建 src/app_runtime/builder.py
-[ ] 新建 src/app_runtime/runtime.py
-[ ] 将 src/api/deps.py 中的 build/start/stop 分离
-[ ] 为 MarketDataService 设计 cache/query/event 三分结构
+[x] 新建 docs/architecture/current-runtime-map.md
+[x] 新建 docs/architecture/module-boundaries.md
+[x] 新建 docs/refactor/deps-split-plan.md
+[x] 新建 docs/refactor/live-backtest-unification-plan.md
+[x] 新建 src/app_runtime/container.py
+[x] 新建 src/app_runtime/builder.py
+[x] 新建 src/app_runtime/runtime.py
+[x] 将 src/api/deps.py 中的 build/start/stop 分离（652→220 行）
+[x] 删除 src/api/lifespan.py（功能移入 AppRuntime）
+[x] 为 MarketDataService 提取 MarketEventBus（事件订阅/分发分离）
+[x] 为 SignalRuntime 提取 htf_resolver.py（HTF 纯逻辑 149 行）
+[x] 为 SignalRuntime 提取 state_machine.py（状态机纯逻辑 244 行）
+[x] 新建 src/utils/timezone.py（统一时区模块）
+[x] MT5 client 统一时间 API（_server_now/_parse_server_timestamp 等）
+[x] 修复 TradeFrequencyRule 线程安全（flaky 测试根因）
+[x] 修复 MarketEventBus shutdown 竞态
+[x] 修复 OHLC 价格时区偏移（get_ohlc_from）
+[x] 修复 trade_outcomes close_price 缺失（history_deals_get 时区）
+[x] 修复 market_impact 表 PK（TimescaleDB DDL）
+[x] Warmup guard：跳过历史 bar + ATR 完整性检查
+[x] Signal 持久化优化：只存 state_changed=true（~95% 减少）
 [ ] 为 UnifiedIndicatorManager 设计 compute/runtime 分离结构
-[ ] 为 SignalRuntime 设计 intake/evaluator/state_machine/emitter 分离结构
 [ ] 将 backtesting/api.py 改为 submit/query 风格
 [ ] 去除 backtesting 对 fake config + api 内部函数的隐式依赖
 [ ] 定义关键事件 durable 等级
