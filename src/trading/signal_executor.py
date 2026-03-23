@@ -26,6 +26,14 @@ from src.trading.sizing import (
 from src.signals.models import SignalEvent
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
+from src.trading.pending_entry import (
+    PendingEntry,
+    PendingEntryConfig,
+    PendingEntryManager,
+    compute_entry_zone,
+    compute_timeout,
+    _CATEGORY_ZONE_MODE,
+)
 from src.trading.position_manager import PositionManager
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
@@ -74,6 +82,7 @@ class TradeExecutor:
         trade_outcome_tracker: Optional[TradeOutcomeTracker] = None,
         on_execution_skip: Optional[Callable[[str, str], None]] = None,
         execution_gate: Optional[ExecutionGate] = None,
+        pending_entry_manager: Optional[PendingEntryManager] = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
@@ -86,6 +95,8 @@ class TradeExecutor:
         self._on_execution_skip = on_execution_skip
         # ExecutionGate: 策略域准入检查（voting group / whitelist / armed）
         self._execution_gate = execution_gate or ExecutionGate()
+        # PendingEntryManager: 价格确认入场
+        self._pending_manager = pending_entry_manager
         self._execution_count = 0
         self._last_execution_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
@@ -168,6 +179,8 @@ class TradeExecutor:
     def shutdown(self) -> None:
         """Stop the background worker thread gracefully."""
         self._stop_event.set()
+        if self._pending_manager is not None:
+            self._pending_manager.shutdown()
         if self._exec_thread is not None:
             self._exec_thread.join(timeout=5.0)
 
@@ -319,7 +332,57 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "spread_to_stop_ratio_too_high")
             return None
 
-        return self._execute(event, trade_params, cost_metrics=cost_metrics)
+        if self._pending_manager is None:
+            return self._execute(event, trade_params, cost_metrics=cost_metrics)
+        return self._submit_pending_entry(event, trade_params, cost_metrics)
+
+    def _submit_pending_entry(
+        self,
+        event: SignalEvent,
+        params: TradeParameters,
+        cost_metrics: Dict[str, Optional[float]],
+    ) -> Optional[Dict[str, Any]]:
+        """创建 PendingEntry 并提交给 PendingEntryManager 等待价格确认。"""
+
+        # 确定 zone_mode：从策略 category 映射
+        category = event.metadata.get("category", "")
+        zone_mode = _CATEGORY_ZONE_MODE.get(category, "symmetric")
+
+        config = self._pending_manager.config
+        entry_low, entry_high = compute_entry_zone(
+            action=event.action,
+            close_price=params.entry_price,
+            atr=params.atr_value,
+            zone_mode=zone_mode,
+            config=config,
+            strategy_name=event.strategy,
+        )
+        timeout = compute_timeout(event.timeframe, config)
+        now = datetime.now(timezone.utc)
+
+        pending = PendingEntry(
+            signal_event=event,
+            trade_params=params,
+            cost_metrics=dict(cost_metrics or {}),
+            entry_low=entry_low,
+            entry_high=entry_high,
+            reference_price=params.entry_price,
+            created_at=now,
+            expires_at=now + timeout,
+            zone_mode=zone_mode,
+        )
+
+        # 取消同品种旧 pending
+        if config.cancel_on_new_signal:
+            exclude = event.action if not config.cancel_same_direction else None
+            self._pending_manager.cancel_by_symbol(
+                event.symbol,
+                reason="new_signal_override",
+                exclude_direction=exclude,
+            )
+
+        self._pending_manager.submit(pending)
+        return None
 
     def _compute_params(self, event: SignalEvent) -> Optional[TradeParameters]:
         atr = extract_atr_from_indicators(event.indicators)
@@ -837,4 +900,9 @@ class TradeExecutor:
                 ) if slippage_samples else None,
             },
             "recent_executions": self._execution_log[-10:],
+            "pending_entries": (
+                self._pending_manager.status()
+                if self._pending_manager is not None
+                else None
+            ),
         }

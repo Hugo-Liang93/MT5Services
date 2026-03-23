@@ -94,6 +94,26 @@ class SignalConfig(BaseModel):
     signal_quality_bars_to_evaluate: int = 5
     signal_quality_max_pending: int = 500
 
+    # ═══════════════════════════════════════════════════════════════
+    # Pending Entry（价格确认入场）
+    # ═══════════════════════════════════════════════════════════════
+    pending_entry_pullback_atr_factor: float = 0.3
+    pending_entry_chase_atr_factor: float = 0.1
+    pending_entry_momentum_atr_factor: float = 0.5
+    pending_entry_symmetric_atr_factor: float = 0.4
+    pending_entry_check_interval: float = 0.5
+    pending_entry_max_spread_points: float = 0.0
+    pending_entry_default_timeout_bars: float = 2.0
+    pending_entry_timeout_bars: dict[str, float] = Field(
+        default_factory=lambda: {
+            "M1": 3.0, "M5": 2.0, "M15": 1.5,
+            "H1": 1.0, "H4": 0.5, "D1": 0.25,
+        }
+    )
+    pending_entry_cancel_on_new_signal: bool = True
+    pending_entry_cancel_same_direction: bool = False
+    pending_entry_strategy_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
+
     market_structure_enabled: bool = True
     market_structure_lookback_bars: int = 400
     market_structure_m1_lookback_bars: int = 120

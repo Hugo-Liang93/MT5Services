@@ -26,6 +26,7 @@ def shutdown_components(container: Any) -> None:
     for label, component, method in [
         ("monitoring_manager", container.monitoring_manager, "stop"),
         ("position_manager", container.position_manager, "stop"),
+        ("pending_entry_manager", getattr(container, "pending_entry_manager", None), "shutdown"),
         ("trade_executor", container.trade_executor, "shutdown"),
         ("signal_runtime", container.signal_runtime, "stop"),
         ("indicator_manager", container.indicator_manager, "shutdown"),
@@ -88,6 +89,11 @@ def create_lifespan(
                 except Exception:
                     logger.debug("Calibrator: warm-start load failed (non-fatal)", exc_info=True)
                 calibrator.start_background_refresh()
+
+            # PendingEntryManager: 启动价格监控线程
+            pending_mgr = getattr(container, "pending_entry_manager", None)
+            if pending_mgr is not None:
+                pending_mgr.start()
 
             current_step = "position_manager"
             current_started = time.monotonic()

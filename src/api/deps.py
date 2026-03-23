@@ -47,6 +47,7 @@ from src.trading import TradingAccountRegistry, TradingModule
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
+from src.trading.pending_entry import PendingEntryManager
 from src.trading.signal_executor import TradeExecutor
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ class _TradingContainer:
     trade_executor: Optional[TradeExecutor] = None
     position_manager: Optional[PositionManager] = None
     trade_outcome_tracker: Optional[TradeOutcomeTracker] = None
+    pending_entry_manager: Optional[PendingEntryManager] = None
 
 
 class _MonitoringContainer:
@@ -226,6 +228,14 @@ class _Container:
     @trade_outcome_tracker.setter
     def trade_outcome_tracker(self, v: Optional[TradeOutcomeTracker]) -> None:
         self.trading.trade_outcome_tracker = v
+
+    @property
+    def pending_entry_manager(self) -> Optional[PendingEntryManager]:
+        return self.trading.pending_entry_manager
+
+    @pending_entry_manager.setter
+    def pending_entry_manager(self, v: Optional[PendingEntryManager]) -> None:
+        self.trading.pending_entry_manager = v
 
     @property
     def health_monitor(self) -> Optional[object]:
@@ -423,6 +433,7 @@ def _ensure_initialized() -> None:
         _c.position_manager = signal_components.position_manager
         _c.trade_executor = signal_components.trade_executor
         _c.performance_tracker = signal_components.performance_tracker
+        _c.pending_entry_manager = signal_components.pending_entry_manager
         register_signal_hot_reload(
             _c.signal_runtime,
             get_signal_config,
@@ -430,6 +441,7 @@ def _ensure_initialized() -> None:
             economic_calendar_service=_c.economic_calendar_service,
             market_structure_analyzer=_c.market_structure_analyzer,
             performance_tracker=_c.performance_tracker,
+            pending_entry_manager=_c.pending_entry_manager,
         )
 
         _c.health_monitor = get_health_monitor("health_monitor.db")
