@@ -471,12 +471,14 @@ class ParallelExecutor:
     ) -> Dict[str, Optional[TaskResult]]:
         """
         并行执行多个任务
-        
+
+        使用 concurrent.futures.as_completed() 等待结果，避免轮询/sleep 延迟。
+
         Args:
             tasks: 任务列表，每个元素为 (func, args, kwargs)
             task_ids: 任务ID列表（如果为None则自动生成）
             use_cache: 是否使用缓存
-            
+
         Returns:
             任务结果字典
         """
@@ -486,16 +488,61 @@ class ParallelExecutor:
                 args_hash = hash(str(args) + str(kwargs))
                 task_id = self._generate_task_id(func.__name__, args_hash)
                 task_ids.append(task_id)
-        
-        # 提交所有任务
-        submitted_ids = []
+
+        results: Dict[str, Optional[TaskResult]] = {}
+        futures_map: Dict[concurrent.futures.Future[TaskResult], str] = {}
+
         for (func, args, kwargs), task_id in zip(tasks, task_ids):
-            submitted_id = self.submit_task(func, args, kwargs, task_id, use_cache)
-            submitted_ids.append(submitted_id)
-        
-        # 等待所有任务完成
-        results = self.wait_for_tasks(submitted_ids)
-        
+            # 检查缓存
+            if use_cache and self.enable_cache:
+                cached = self._get_cached_result(task_id)
+                if cached is not None:
+                    results[task_id] = TaskResult(
+                        task_id=task_id,
+                        status=TaskStatus.COMPLETED,
+                        result=cached,
+                        start_time=time.time(),
+                        end_time=time.time(),
+                    )
+                    with self.stats_lock:
+                        self.stats["total_tasks"] += 1
+                        self.stats["completed_tasks"] += 1
+                    continue
+
+            # 提交到线程池
+            future = self.executor.submit(
+                self._execute_task_with_retry, task_id, func, args, kwargs, use_cache
+            )
+            futures_map[future] = task_id
+            with self.stats_lock:
+                self.stats["total_tasks"] += 1
+
+        # 使用 as_completed 等待所有 future（无轮询/sleep）
+        for future in concurrent.futures.as_completed(futures_map):
+            task_id = futures_map[future]
+            try:
+                task_result = future.result()
+                results[task_id] = task_result
+                with self.task_lock:
+                    self.tasks[task_id] = task_result
+                with self.stats_lock:
+                    if task_result.success:
+                        self.stats["completed_tasks"] += 1
+                        if task_result.duration:
+                            self.stats["total_duration"] += task_result.duration
+                        if self.enable_cache:
+                            self._set_cached_result(task_id, task_result.result)
+                    else:
+                        self.stats["failed_tasks"] += 1
+            except Exception as e:
+                logger.error(f"Task {task_id} raised exception: {e}")
+                results[task_id] = TaskResult(
+                    task_id=task_id,
+                    status=TaskStatus.FAILED,
+                    result=None,
+                    error=str(e),
+                )
+
         return results
     
     def cancel_task(self, task_id: str) -> bool:
