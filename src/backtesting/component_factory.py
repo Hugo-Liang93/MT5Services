@@ -29,7 +29,7 @@ def build_backtest_components(
     """
     from src.config.database import get_db_config
     from src.config.indicator_config import get_global_config_manager
-    from src.indicators.engine.pipeline import get_global_pipeline
+    from src.indicators.engine.pipeline import create_isolated_pipeline
     from src.persistence.db import TimescaleWriter
     from src.persistence.repositories.market_repo import MarketRepository
     from src.signals.evaluation.regime import MarketRegimeDetector
@@ -37,16 +37,16 @@ def build_backtest_components(
 
     from .data_loader import HistoricalDataLoader
 
-    # DB 连接
+    # DB 连接（独立连接池，不争抢生产连接）
     db_config = get_db_config()
-    writer = TimescaleWriter(settings=db_config)
+    writer = TimescaleWriter(settings=db_config, min_conn=1, max_conn=3)
     market_repo = MarketRepository(writer)
     data_loader = HistoricalDataLoader(market_repo)
 
-    # 指标管线
+    # 指标管线（独立实例，不共享生产单例的缓存/线程池）
     config_manager = get_global_config_manager()
     indicator_config = config_manager.get_config()
-    pipeline = get_global_pipeline(indicator_config.pipeline)
+    pipeline = create_isolated_pipeline(indicator_config.pipeline)
 
     # 注册指标函数
     for ind_cfg in indicator_config.indicators:

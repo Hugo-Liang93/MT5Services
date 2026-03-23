@@ -677,4 +677,39 @@ def shutdown_global_pipeline() -> None:
     global _global_pipeline
     if _global_pipeline is not None:
         _global_pipeline.shutdown()
+
+
+def create_isolated_pipeline(
+    config: Optional[PipelineConfig] = None,
+) -> OptimizedPipeline:
+    """创建与生产环境完全隔离的 Pipeline 实例。
+
+    用于回测等场景，避免与生产共享缓存/依赖管理器/线程池。
+    每次调用返回全新实例，调用方负责在使用完毕后调用 shutdown()。
+    """
+    from ..cache.smart_cache import SmartCache
+
+    cfg = config or PipelineConfig()
+    pipeline = object.__new__(OptimizedPipeline)
+    pipeline.config = cfg
+    # 独立的依赖管理器
+    pipeline.dependency_manager = DependencyManager()
+    # 独立的缓存实例（不使用全局单例）
+    pipeline.cache = SmartCache(
+        maxsize=getattr(cfg, "cache_maxsize", 1000),
+        ttl=int(cfg.cache_ttl),
+    )
+    pipeline._executor = None
+    pipeline.incremental_indicators = {}
+    pipeline.computation_stats = {
+        "total_computations": 0,
+        "parallel_computations": 0,
+        "cached_computations": 0,
+        "incremental_computations": 0,
+        "failed_computations": 0,
+    }
+    pipeline._compute_log_counter = 0
+    pipeline._apply_runtime_config(initial=True)
+    logger.info("Created isolated pipeline for backtesting")
+    return pipeline
         _global_pipeline = None
