@@ -59,11 +59,14 @@ def _build_components(args: argparse.Namespace) -> Dict[str, Any]:
 
 def cmd_run(args: argparse.Namespace) -> None:
     """执行单次回测。"""
+    from .config import get_backtest_defaults
     from .engine import BacktestEngine
     from .models import BacktestConfig
     from .report import format_summary
 
     strategies = args.strategies.split(",") if args.strategies else None
+    # 从 backtest.ini 加载默认值，CLI 参数优先覆盖
+    ini_defaults = get_backtest_defaults()
     config = BacktestConfig(
         symbol=args.symbol,
         timeframe=args.timeframe,
@@ -74,6 +77,26 @@ def cmd_run(args: argparse.Namespace) -> None:
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
         enable_filters=not args.no_filters,
+        # ini 默认值覆盖（CLI 显式传入的参数已在上方设定，ini 仅补充未指定项）
+        commission_per_lot=ini_defaults.get("commission_per_lot", 0.0),
+        slippage_points=ini_defaults.get("slippage_points", 0.0),
+        contract_size=ini_defaults.get("contract_size", 100.0),
+        risk_percent=ini_defaults.get("risk_percent", 1.0),
+        max_positions=ini_defaults.get("max_positions", 3),
+        max_signal_evaluations=ini_defaults.get("max_signal_evaluations", 50000),
+        # 过滤器配置从 ini 加载
+        filter_session_enabled=ini_defaults.get("filter_session_enabled", True),
+        filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,newyork"),
+        filter_session_transition_enabled=ini_defaults.get(
+            "filter_session_transition_enabled", True
+        ),
+        filter_session_transition_cooldown=ini_defaults.get(
+            "filter_session_transition_cooldown", 15
+        ),
+        filter_volatility_enabled=ini_defaults.get("filter_volatility_enabled", True),
+        filter_volatility_spike_multiplier=ini_defaults.get(
+            "filter_volatility_spike_multiplier", 2.5
+        ),
     )
 
     components = _build_components(args)

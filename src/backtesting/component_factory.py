@@ -6,6 +6,8 @@ import importlib
 import logging
 from typing import Any, Dict, Optional
 
+from .config import get_backtest_defaults
+
 logger = logging.getLogger(__name__)
 
 

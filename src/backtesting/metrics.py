@@ -44,6 +44,9 @@ def compute_metrics(
 
     avg_bars_held = sum(t.bars_held for t in trades) / total_trades
 
+    # 连胜连败统计
+    max_cons_wins, max_cons_losses = _consecutive_streaks(trades)
+
     # 从资金曲线计算收益率序列
     returns = _compute_returns(equity_curve)
     sharpe = _sharpe_ratio(returns)
@@ -77,6 +80,8 @@ def compute_metrics(
         total_pnl=round(total_pnl, 2),
         total_pnl_pct=round(total_pnl_pct, 4),
         calmar_ratio=round(calmar, 4),
+        max_consecutive_wins=max_cons_wins,
+        max_consecutive_losses=max_cons_losses,
     )
 
 
@@ -117,6 +122,26 @@ def _confidence_level(confidence: float) -> str:
     elif confidence >= 0.6:
         return "medium"
     return "low"
+
+
+def _consecutive_streaks(trades: List[TradeRecord]) -> Tuple[int, int]:
+    """计算最大连胜和最大连败次数。"""
+    if not trades:
+        return 0, 0
+    max_wins = 0
+    max_losses = 0
+    current_wins = 0
+    current_losses = 0
+    for t in trades:
+        if t.pnl > 0:
+            current_wins += 1
+            current_losses = 0
+            max_wins = max(max_wins, current_wins)
+        else:
+            current_losses += 1
+            current_wins = 0
+            max_losses = max(max_losses, current_losses)
+    return max_wins, max_losses
 
 
 def _compute_returns(equity_curve: List[float]) -> List[float]:
@@ -218,4 +243,6 @@ def _empty_metrics() -> BacktestMetrics:
         total_pnl=0.0,
         total_pnl_pct=0.0,
         calmar_ratio=0.0,
+        max_consecutive_wins=0,
+        max_consecutive_losses=0,
     )

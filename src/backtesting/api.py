@@ -361,8 +361,14 @@ def _persist_result(result: Any) -> None:
         logger.warning("Failed to persist backtest result %s", result.run_id, exc_info=True)
 
 
+_cached_backtest_repo: Optional[Any] = None
+
+
 def _get_backtest_repo() -> Optional[Any]:
-    """获取 BacktestRepository 实例（懒加载）。"""
+    """获取 BacktestRepository 实例（懒加载 + 模块级缓存，避免每次请求重建连接）。"""
+    global _cached_backtest_repo
+    if _cached_backtest_repo is not None:
+        return _cached_backtest_repo
     try:
         from src.config.database import get_db_config
         from src.persistence.db import TimescaleWriter
@@ -372,6 +378,7 @@ def _get_backtest_repo() -> Optional[Any]:
         writer = TimescaleWriter(settings=db_config)
         repo = BacktestRepository(writer)
         repo.ensure_schema()
+        _cached_backtest_repo = repo
         return repo
     except Exception:
         logger.debug("BacktestRepository not available", exc_info=True)

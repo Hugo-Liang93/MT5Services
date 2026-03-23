@@ -12,7 +12,7 @@ from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.service import SignalModule
 from src.signals.strategies.registry import build_composite_strategies
 
-from .data_loader import HistoricalDataLoader
+from .data_loader import CachedDataLoader, HistoricalDataLoader
 from .engine import BacktestEngine
 from .models import BacktestConfig, BacktestResult, ParameterSpace
 
@@ -55,6 +55,10 @@ class ParameterOptimizer:
     ) -> List[BacktestResult]:
         """执行参数优化。
 
+        性能优化：
+        1. 一次性预加载数据（warmup + test bars），后续迭代使用 CachedDataLoader
+        2. 一次性预计算指标快照，所有参数组合复用（指标值不随策略参数变化）
+
         Returns:
             按 sort_metric 降序排列的回测结果列表。
         """
@@ -66,22 +70,75 @@ class ParameterOptimizer:
             self._param_space.search_mode,
         )
 
+        # ── 性能优化：一次性预加载数据 ──────────────────────────────
+        warmup_bars = self._data_loader.preload_warmup_bars(
+            self._base_config.symbol,
+            self._base_config.timeframe,
+            self._base_config.start_time,
+            self._base_config.warmup_bars,
+        )
+        test_bars = self._data_loader.load_all_bars(
+            self._base_config.symbol,
+            self._base_config.timeframe,
+            self._base_config.start_time,
+            self._base_config.end_time,
+        )
+        cached_loader = CachedDataLoader(warmup_bars, test_bars)
+
+        # ── 性能优化：一次性预计算指标 ──────────────────────────────
+        # 指标值只依赖 bar 数据，不随策略参数变化，可安全复用
+        precomputed: Optional[List[Dict[str, Any]]] = None
+        if test_bars:
+            logger.info(
+                "Pre-computing indicators for %d+%d bars...",
+                len(warmup_bars),
+                len(test_bars),
+            )
+            # 借助临时 engine 预计算指标
+            temp_module = self._signal_module_factory(combinations[0] if combinations else {})
+            temp_engine = BacktestEngine(
+                config=self._base_config,
+                data_loader=cached_loader,
+                signal_module=temp_module,
+                indicator_pipeline=self._pipeline,
+                regime_detector=self._regime_detector,
+            )
+            all_bars = warmup_bars + test_bars
+            precomputed = temp_engine._precompute_all_indicators(
+                self._base_config.symbol,
+                self._base_config.timeframe,
+                all_bars,
+                self._base_config.warmup_bars,
+            )
+
+        # 持仓参数键集合（用于从组合中分离策略参数和持仓参数）
+        position_param_keys = set(self._param_space.position_params.keys())
+
         results: List[BacktestResult] = []
         for i, param_set in enumerate(combinations):
+            # 分离策略参数和持仓参数
+            strategy_params = {
+                k: v for k, v in param_set.items() if k not in position_param_keys
+            }
+            position_overrides = {
+                k: v for k, v in param_set.items() if k in position_param_keys
+            }
+
             # 构建带参数覆盖的配置
-            config = replace(self._base_config, strategy_params=param_set)
+            config = replace(self._base_config, strategy_params=strategy_params, **position_overrides)
 
             # 构建独立的 SignalModule
-            signal_module = self._signal_module_factory(param_set)
+            signal_module = self._signal_module_factory(strategy_params)
 
-            # 创建引擎并运行
+            # 创建引擎并运行（复用缓存数据和预计算指标）
             engine = BacktestEngine(
                 config=config,
-                data_loader=self._data_loader,
+                data_loader=cached_loader,
                 signal_module=signal_module,
                 indicator_pipeline=self._pipeline,
                 regime_detector=self._regime_detector,
                 voting_engine=self._voting_engine,
+                precomputed_indicators=precomputed,
             )
             result = engine.run()
             results.append(result)
@@ -117,9 +174,16 @@ class ParameterOptimizer:
                 f"Unknown search mode: {self._param_space.search_mode}"
             )
 
+    def _merged_params(self) -> Dict[str, List[Any]]:
+        """合并策略参数和持仓参数为统一搜索空间。"""
+        merged: Dict[str, List[Any]] = {}
+        merged.update(self._param_space.strategy_params)
+        merged.update(self._param_space.position_params)
+        return merged
+
     def _grid_search(self) -> List[Dict[str, Any]]:
         """笛卡尔积展开所有参数组合。"""
-        params = self._param_space.strategy_params
+        params = self._merged_params()
         if not params:
             return [{}]
 
@@ -143,7 +207,7 @@ class ParameterOptimizer:
 
     def _random_search(self) -> List[Dict[str, Any]]:
         """从参数空间随机采样。"""
-        params = self._param_space.strategy_params
+        params = self._merged_params()
         if not params:
             return [{}]
 

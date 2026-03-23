@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .component_factory import build_backtest_components
+from .data_loader import CachedDataLoader
 from .filters import BacktestFilterConfig, BacktestFilterSimulator, BacktestFilterStats
 from .models import (
     BacktestConfig,
@@ -17,6 +18,7 @@ __all__ = [
     "BacktestConfig",
     "BacktestFilterConfig",
     "build_backtest_components",
+    "CachedDataLoader",
     "BacktestFilterSimulator",
     "BacktestFilterStats",
     "BacktestMetrics",

@@ -33,6 +33,8 @@ def format_summary(result: BacktestResult) -> str:
         f"  平均盈利:   {m.avg_win:+.4f}",
         f"  平均亏损:   {m.avg_loss:.4f}",
         f"  平均持仓:   {m.avg_bars_held:.1f} bars",
+        f"  最大连胜:   {m.max_consecutive_wins}",
+        f"  最大连败:   {m.max_consecutive_losses}",
         f"{'─' * 60}",
     ]
 
