@@ -36,8 +36,32 @@ def _utc_now() -> datetime:
 
 
 def compute_window_bounds(service, event: EconomicCalendarEvent) -> tuple[datetime, datetime]:
-    start = event.scheduled_at - timedelta(minutes=service.settings.pre_event_buffer_minutes)
-    end = event.scheduled_at + timedelta(minutes=service.settings.post_event_buffer_minutes)
+    pre_buffer = service.settings.pre_event_buffer_minutes
+    post_buffer = service.settings.post_event_buffer_minutes
+
+    # 动态扩大保护窗口：如果有 MarketImpactAnalyzer 且历史数据显示高波动
+    analyzer = getattr(service, "market_impact_analyzer", None)
+    if analyzer is not None and event.event_name:
+        # 阈值从 settings 读取，可通过 economic.ini [market_impact] 配置化
+        high_spike = getattr(service.settings, "market_impact_high_spike_threshold", 3.0)
+        med_spike = getattr(service.settings, "market_impact_med_spike_threshold", 2.0)
+        high_buffer = getattr(service.settings, "market_impact_high_spike_buffer_minutes", 60)
+        med_buffer = getattr(service.settings, "market_impact_med_spike_buffer_minutes", 45)
+        try:
+            forecast = analyzer.get_impact_forecast(event.event_name)
+            if forecast:
+                spike = forecast.get("expected_volatility_spike")
+                if spike is not None and spike > high_spike:
+                    pre_buffer = max(pre_buffer, high_buffer)
+                    post_buffer = max(post_buffer, high_buffer)
+                elif spike is not None and spike > med_spike:
+                    pre_buffer = max(pre_buffer, med_buffer)
+                    post_buffer = max(post_buffer, med_buffer)
+        except Exception:
+            pass
+
+    start = event.scheduled_at - timedelta(minutes=pre_buffer)
+    end = event.scheduled_at + timedelta(minutes=post_buffer)
     return start, end
 
 

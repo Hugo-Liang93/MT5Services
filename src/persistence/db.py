@@ -290,6 +290,20 @@ class TimescaleWriter:
             job_types=job_types,
         )
 
+    def write_market_impact(self, rows, page_size: int = 100) -> None:
+        self.economic_repo.write_market_impact(rows, page_size=page_size)
+
+    def fetch_market_impact_by_event(self, event_uid, symbol):
+        return self.economic_repo.fetch_market_impact_by_event(event_uid, symbol)
+
+    def fetch_market_impact_stats(self, **kwargs):
+        return self.economic_repo.fetch_market_impact_stats(**kwargs)
+
+    def fetch_released_events_without_impact(self, symbols, since, importance_min=2, limit=500):
+        return self.economic_repo.fetch_released_events_without_impact(
+            symbols, since, importance_min=importance_min, limit=limit
+        )
+
     def write_runtime_task_status(self, rows, page_size: int = 200) -> None:
         self.runtime_repo.write_runtime_task_status(rows, page_size=page_size)
 

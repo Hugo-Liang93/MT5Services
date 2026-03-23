@@ -192,21 +192,38 @@ class CentralizedConfig:
             configs["ingest"].get("ingest", {}),
             configs["ingest"].get("performance", {}),
             configs["ingest"].get("health", {}),
+            configs["ingest"].get("error_recovery", {}),
         )
+        # 从各 provider section 提取配置（过滤 None 避免覆盖 Pydantic 默认值）
+        _provider_fields: Dict[str, Any] = {}
+        for prefix, section_name in (
+            ("tradingeconomics", "tradingeconomics"),
+            ("fred", "fred"),
+            ("fmp", "fmp"),
+            ("alphavantage", "alphavantage"),
+        ):
+            section_data = configs["economic"].get(section_name, {})
+            for key in ("enabled", "api_key"):
+                val = section_data.get(key)
+                if val is not None:
+                    _provider_fields[f"{prefix}_{key}"] = val
+        # market_impact section 键名需要加前缀
+        _market_impact_raw = configs["economic"].get("market_impact", {})
+        _market_impact_fields = {
+            f"market_impact_{k}": v for k, v in _market_impact_raw.items() if v is not None
+        }
         economic_config = _merge_sections(
             {"local_timezone": shared_config["system"].get("timezone", "UTC")},
             configs["economic"].get("economic", {}),
-            {
-                "tradingeconomics_enabled": configs["economic"]
-                .get("tradingeconomics", {})
-                .get("enabled"),
-                "tradingeconomics_api_key": configs["economic"]
-                .get("tradingeconomics", {})
-                .get("api_key"),
-                "fred_enabled": configs["economic"].get("fred", {}).get("enabled"),
-                "fred_api_key": configs["economic"].get("fred", {}).get("api_key"),
-            },
+            _provider_fields,
+            _market_impact_fields,
         )
+        # Alpha Vantage tracked_indicators（逗号分隔列表）
+        av_section = configs["economic"].get("alphavantage", {})
+        if "tracked_indicators" in av_section:
+            economic_config["alphavantage_tracked_indicators"] = _split_csv(
+                av_section["tracked_indicators"]
+            )
         if "default_countries" in economic_config:
             economic_config["default_countries"] = _split_csv(
                 economic_config["default_countries"]
@@ -219,9 +236,19 @@ class CentralizedConfig:
             "curated_countries",
             "curated_currencies",
             "curated_statuses",
+            "market_impact_symbols",
+            "market_impact_timeframes",
         ):
             if list_key in economic_config:
                 economic_config[list_key] = _split_csv(economic_config[list_key])
+        # market_impact int 列表
+        for int_list_key in ("market_impact_pre_windows", "market_impact_post_windows"):
+            if int_list_key in economic_config:
+                raw = economic_config[int_list_key]
+                if isinstance(raw, str):
+                    economic_config[int_list_key] = [
+                        int(v.strip()) for v in raw.split(",") if v.strip()
+                    ]
         for optional_int_key in ("curated_importance_min", "trade_guard_importance_min"):
             if str(economic_config.get(optional_int_key, "")).strip() == "":
                 economic_config[optional_int_key] = None
@@ -232,12 +259,15 @@ class CentralizedConfig:
             economic_config["near_term_refresh_interval_seconds"] = economic_config[
                 "refresh_interval_seconds"
             ]
-        economic_config["tradingeconomics_api_key"] = _normalize_optional_secret(
-            economic_config.get("tradingeconomics_api_key")
-        )
-        economic_config["fred_api_key"] = _normalize_optional_secret(
-            economic_config.get("fred_api_key")
-        )
+        for api_key_field in (
+            "tradingeconomics_api_key",
+            "fred_api_key",
+            "fmp_api_key",
+            "alphavantage_api_key",
+        ):
+            economic_config[api_key_field] = _normalize_optional_secret(
+                economic_config.get(api_key_field)
+            )
 
         risk_config = dict(configs["risk"].get("risk", {}))
         for optional_int_key in (
@@ -315,10 +345,24 @@ class CentralizedConfig:
                 source = "ingest.ini[performance]." + field
             elif field in configs["ingest"].get("health", {}):
                 source = "ingest.ini[health]." + field
+            elif field in configs["ingest"].get("error_recovery", {}):
+                source = "ingest.ini[error_recovery]." + field
             else:
                 source = "default"
             self._set_provenance("ingest", field, source)
 
+        _PROVIDER_SECTION_MAP = {
+            "tradingeconomics_enabled": ("tradingeconomics", "enabled"),
+            "tradingeconomics_api_key": ("tradingeconomics", "api_key"),
+            "fred_enabled": ("fred", "enabled"),
+            "fred_api_key": ("fred", "api_key"),
+            "fmp_enabled": ("fmp", "enabled"),
+            "fmp_api_key": ("fmp", "api_key"),
+            "alphavantage_enabled": ("alphavantage", "enabled"),
+            "alphavantage_api_key": ("alphavantage", "api_key"),
+            "alphavantage_tracked_indicators": ("alphavantage", "tracked_indicators"),
+        }
+        _MARKET_IMPACT_FIELDS = {f for f in EconomicConfig.model_fields if f.startswith("market_impact_")}
         for field in EconomicConfig.model_fields:
             if field == "local_timezone":
                 source = self._option_source(
@@ -331,29 +375,19 @@ class CentralizedConfig:
                         key="timezone",
                     ),
                 )
-            elif field == "tradingeconomics_enabled":
+            elif field in _PROVIDER_SECTION_MAP:
+                section, key = _PROVIDER_SECTION_MAP[field]
                 source = self._option_source(
                     config_name="economic.ini",
-                    section="tradingeconomics",
-                    key="enabled",
+                    section=section,
+                    key=key,
                 )
-            elif field == "fred_enabled":
+            elif field in _MARKET_IMPACT_FIELDS:
+                ini_key = field.removeprefix("market_impact_")
                 source = self._option_source(
                     config_name="economic.ini",
-                    section="fred",
-                    key="enabled",
-                )
-            elif field == "tradingeconomics_api_key":
-                source = self._option_source(
-                    config_name="economic.ini",
-                    section="tradingeconomics",
-                    key="api_key",
-                )
-            elif field == "fred_api_key":
-                source = self._option_source(
-                    config_name="economic.ini",
-                    section="fred",
-                    key="api_key",
+                    section="market_impact",
+                    key=ini_key,
                 )
             else:
                 source = self._option_source(
@@ -431,10 +465,9 @@ class CentralizedConfig:
         if api_snapshot.get("api_key"):
             api_snapshot["api_key"] = "***"
         economic_snapshot = dict(config["economic"])
-        if economic_snapshot.get("tradingeconomics_api_key"):
-            economic_snapshot["tradingeconomics_api_key"] = "***"
-        if economic_snapshot.get("fred_api_key"):
-            economic_snapshot["fred_api_key"] = "***"
+        for key in ("tradingeconomics_api_key", "fred_api_key", "fmp_api_key", "alphavantage_api_key"):
+            if economic_snapshot.get(key):
+                economic_snapshot[key] = "***"
         return {
             "trading": dict(config["trading"]),
             "intervals": dict(config["intervals"]),
