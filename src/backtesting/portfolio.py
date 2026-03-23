@@ -308,17 +308,24 @@ class PortfolioTracker:
         exit_reason: str,
     ) -> TradeRecord:
         """关闭持仓并计算 PnL。"""
+        # 出场滑点模拟（与开仓方向相反）
         if pos.action == "buy":
-            price_diff = exit_price - pos.entry_price
+            actual_exit = exit_price - self._slippage_points
         else:
-            price_diff = pos.entry_price - exit_price
+            actual_exit = exit_price + self._slippage_points
+
+        if pos.action == "buy":
+            price_diff = actual_exit - pos.entry_price
+        else:
+            price_diff = pos.entry_price - actual_exit
 
         pnl = price_diff * pos.position_size * self._contract_size
         # 扣除出场手续费
         commission = self._commission_per_lot * pos.position_size
         pnl -= commission
 
-        pnl_pct = (pnl / self.current_balance * 100.0) if self.current_balance > 0 else 0.0
+        # 使用初始资金作为分母，避免资金耗尽时结果失真
+        pnl_pct = (pnl / self.initial_balance * 100.0) if self.initial_balance > 0 else 0.0
 
         self.current_balance += pnl
         if self.current_balance > self.peak_balance:
@@ -333,7 +340,7 @@ class PortfolioTracker:
             entry_time=pos.entry_time,
             entry_price=pos.entry_price,
             exit_time=exit_time,
-            exit_price=exit_price,
+            exit_price=actual_exit,
             stop_loss=pos.stop_loss,
             take_profit=pos.take_profit,
             position_size=pos.position_size,

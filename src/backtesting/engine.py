@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from src.clients.mt5_market import OHLC
 from src.signals.confidence import apply_htf_alignment, apply_intrabar_decay
@@ -62,6 +62,8 @@ class BacktestEngine:
         htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
         htf_alignment_boost: float = 1.10,
         htf_conflict_penalty: float = 0.70,
+        # HTF 指标预计算数据（从更高时间框架加载）
+        htf_indicator_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     ) -> None:
         self._config = config
         self._data_loader = data_loader
@@ -75,6 +77,8 @@ class BacktestEngine:
         self._htf_direction_fn = htf_direction_fn
         self._htf_alignment_boost = htf_alignment_boost
         self._htf_conflict_penalty = htf_conflict_penalty
+        # HTF 指标：{timeframe: {indicator_name: {field: value}}}
+        self._htf_indicator_data = htf_indicator_data or {}
 
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
@@ -98,7 +102,7 @@ class BacktestEngine:
             symmetric_atr_factor=config.pending_entry_symmetric_atr_factor,
         )
         # 挂起的入场意图：{signal_key: (decision, entry_low, entry_high, expiry_bar)}
-        self._pending_entries: Dict[str, tuple[SignalDecision, float, float, int]] = {}
+        self._pending_entries: Dict[str, Tuple[SignalDecision, float, float, int]] = {}
 
         # 确定目标策略列表
         if config.strategies:
@@ -108,7 +112,7 @@ class BacktestEngine:
 
         # 收集所有目标策略需要的指标名
         self._required_indicators: List[str] = []
-        seen: set[str] = set()
+        seen: Set[str] = set()
         for s in self._target_strategies:
             for ind in self._signal_module.strategy_requirements(s):
                 if ind not in seen:
@@ -124,7 +128,7 @@ class BacktestEngine:
         self._pending_evaluations: Dict[int, List[SignalEvaluation]] = {}
         self._bars_to_evaluate = 5  # N bars 后回填
         # 去重：已记录的 (bar_index, strategy) 组合
-        self._recorded_evals: set[tuple[int, str]] = set()
+        self._recorded_evals: Set[Tuple[int, str]] = set()
 
     def _build_filter_simulator(self) -> BacktestFilterSimulator:
         """从 BacktestConfig 构建过滤器模拟器。"""
@@ -226,13 +230,13 @@ class BacktestEngine:
             if self._pending_entry_enabled and indicators and regime is not None:
                 self._check_pending_entries(bar, bar_index, indicators, regime)
 
-            if not indicators or regime is None:
-                continue
-
             # 5.5 回填待评估信号（N bars 后用当前价格回填结果）
             self._backfill_evaluations(bar_index, bar.close)
 
-            # 6. 过滤器检查（模拟实盘 SignalFilterChain）
+            if not indicators or regime is None:
+                continue
+
+            # 6. 过滤器检查（模拟实盘 SignalFilterChain，需在 indicators 校验之后）
             filter_allowed, filter_reason = self._filter_simulator.should_evaluate(
                 symbol=symbol,
                 bar_time=bar.time,
@@ -368,13 +372,16 @@ class BacktestEngine:
                 symbol, timeframe, bars, self._required_indicators
             )
             return results
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning("Indicator computation failed: %s", e)
+            return {}
         except Exception:
-            logger.debug("Indicator computation failed", exc_info=True)
+            logger.warning("Unexpected indicator computation error", exc_info=True)
             return {}
 
     def _detect_regime(
         self, indicators: Dict[str, Dict[str, Any]]
-    ) -> tuple[RegimeType, Optional[Dict[str, Any]]]:
+    ) -> Tuple[RegimeType, Optional[Dict[str, Any]]]:
         """检测市场 Regime。"""
         regime = self._regime_detector.detect(indicators)
         soft_regime_dict: Optional[Dict[str, Any]] = None
@@ -430,7 +437,7 @@ class BacktestEngine:
                     indicators=scoped_indicators,
                     metadata=metadata,
                     persist=False,
-                    htf_indicators={},
+                    htf_indicators=self._htf_indicator_data,
                 )
 
                 # ── 置信度后处理（复用实盘 SignalRuntime 管线）──
@@ -452,9 +459,13 @@ class BacktestEngine:
                     )
 
                 decisions.append(decision)
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(
+                    "Strategy %s evaluation failed: %s", strategy_name, e
+                )
             except Exception:
-                logger.debug(
-                    "Strategy %s evaluation failed", strategy_name, exc_info=True
+                logger.warning(
+                    "Strategy %s unexpected error", strategy_name, exc_info=True
                 )
         return decisions
 
@@ -522,6 +533,10 @@ class BacktestEngine:
         for key, (decision, entry_low, entry_high, expiry_bar) in self._pending_entries.items():
             # 检查超时
             if bar_index > expiry_bar:
+                logger.debug(
+                    "Pending entry expired: %s %s at bar %d (expiry=%d)",
+                    decision.strategy, decision.action, bar_index, expiry_bar,
+                )
                 filled_keys.append(key)
                 continue
 
@@ -560,7 +575,11 @@ class BacktestEngine:
                 risk_percent=self._config.risk_percent,
                 contract_size=self._config.contract_size,
             )
-        except ValueError:
+        except ValueError as e:
+            logger.debug(
+                "Trade params computation failed for %s %s: %s",
+                decision.strategy, decision.action, e,
+            )
             return
 
         self._portfolio.open_position(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterator, List, Optional
+from typing import TYPE_CHECKING, Iterator, List, Optional, Set
 
 from src.clients.mt5_market import OHLC
 
@@ -138,7 +138,7 @@ class HistoricalDataLoader:
             )
             bars = sorted(bars, key=lambda b: b.time)
         # 去重（相同时间戳只保留最后一条）
-        seen_times: set[datetime] = set()
+        seen_times: Set[datetime] = set()
         unique: List[OHLC] = []
         for bar in bars:
             if bar.time not in seen_times:

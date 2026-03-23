@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.signals.contracts import normalize_session_name
 from src.signals.execution.filters import (
@@ -224,7 +224,7 @@ class BacktestFilterSimulator:
         bar_time: datetime,
         indicators: Optional[Dict[str, Dict[str, Any]]] = None,
         spread_points: Optional[float] = None,
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         """判断在历史 bar_time 时刻是否应评估策略。
 
         内部直接调用 SignalFilterChain.should_evaluate()，

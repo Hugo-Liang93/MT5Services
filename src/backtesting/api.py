@@ -251,13 +251,16 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
         )
 
         # 构建组件
-        components = _build_api_components()
+        components = _build_api_components(
+            strategy_params=request.strategy_params or None,
+        )
         engine = BacktestEngine(
             config=config,
             data_loader=components["data_loader"],
             signal_module=components["signal_module"],
             indicator_pipeline=components["pipeline"],
             regime_detector=components["regime_detector"],
+            voting_engine=components.get("voting_engine"),
         )
 
         result = engine.run()
@@ -309,7 +312,7 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
         components = _build_api_components()
         base_module = components["signal_module"]
 
-        def module_factory(params: Dict[str, Any]):  # type: ignore[no-untyped-def]
+        def module_factory(params: Dict[str, Any]) -> Any:
             return build_signal_module_with_overrides(base_module, params)
 
         optimizer = ParameterOptimizer(
@@ -319,6 +322,7 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
             indicator_pipeline=components["pipeline"],
             signal_module_factory=module_factory,
             regime_detector=components["regime_detector"],
+            voting_engine=components.get("voting_engine"),
             sort_metric=request.sort_metric,
         )
 
@@ -374,63 +378,13 @@ def _get_backtest_repo() -> Optional[Any]:
         return None
 
 
-def _build_api_components() -> Dict[str, Any]:
-    """构建回测所需组件（API 上下文）。"""
-    from src.config.database import get_db_config
-    from src.persistence.db import TimescaleWriter
-    from src.persistence.repositories.market_repo import MarketRepository
-    from src.signals.evaluation.regime import MarketRegimeDetector
-    from src.signals.service import SignalModule
-    from src.indicators.engine.pipeline import get_global_pipeline
-    from src.config.indicator_config import get_global_config_manager
+def _build_api_components(
+    strategy_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """构建回测所需组件（委托给共享工厂）。"""
+    from .component_factory import build_backtest_components
 
-    from .data_loader import HistoricalDataLoader
-
-    db_config = get_db_config()
-    writer = TimescaleWriter(settings=db_config)
-    market_repo = MarketRepository(writer)
-    data_loader = HistoricalDataLoader(market_repo)
-
-    config_manager = get_global_config_manager()
-    indicator_config = config_manager.get_config()
-    pipeline = get_global_pipeline(indicator_config.pipeline)
-
-    import importlib
-    for ind_cfg in indicator_config.indicators:
-        if not ind_cfg.enabled:
-            continue
-        parts = ind_cfg.func_path.rsplit(".", 1)
-        mod = importlib.import_module(parts[0])
-        func = getattr(mod, parts[1])
-        pipeline.register_indicator(
-            name=ind_cfg.name,
-            func=func,
-            params=ind_cfg.params,
-            dependencies=ind_cfg.dependencies or None,
-        )
-
-    class _NullIndicatorSource:
-        def get_indicator(self, symbol: str, timeframe: str, name: str) -> Optional[Dict[str, Any]]:
-            return None
-        def get_all_indicators(self, symbol: str, timeframe: str) -> Dict[str, Dict[str, Any]]:
-            return {}
-
-    regime_detector = MarketRegimeDetector()
-    signal_module = SignalModule(
-        indicator_source=_NullIndicatorSource(),
-        regime_detector=regime_detector,
-        soft_regime_enabled=True,
-    )
-
-    from src.signals.strategies.registry import register_composite_strategies
-    register_composite_strategies(signal_module)
-
-    return {
-        "data_loader": data_loader,
-        "signal_module": signal_module,
-        "pipeline": pipeline,
-        "regime_detector": regime_detector,
-    }
+    return build_backtest_components(strategy_params=strategy_params)
 
 
 def _extract_metrics(result_dict: Dict[str, Any]) -> Dict[str, Any]:

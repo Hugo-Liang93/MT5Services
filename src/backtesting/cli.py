@@ -21,12 +21,12 @@ import argparse
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-def _parse_param(param_str: str) -> tuple[str, List[Any]]:
+def _parse_param(param_str: str) -> Tuple[str, List[Any]]:
     """解析参数定义字符串。
 
     格式: "key=val1,val2,val3"
@@ -49,83 +49,12 @@ def _parse_param(param_str: str) -> tuple[str, List[Any]]:
     return key.strip(), values
 
 
-def _build_components(args: argparse.Namespace):  # type: ignore[no-untyped-def]
-    """构建回测所需的组件。"""
-    from src.config.database import get_db_config
-    from src.persistence.db import TimescaleWriter
-    from src.persistence.repositories.market_repo import MarketRepository
-    from src.signals.evaluation.regime import MarketRegimeDetector
-    from src.signals.service import SignalModule
-    from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
-    from src.indicators.engine.pipeline import get_global_pipeline
-    from src.config.indicator_config import get_global_config_manager
+def _build_components(args: argparse.Namespace) -> Dict[str, Any]:
+    """构建回测所需的组件（委托给共享工厂）。"""
+    from .component_factory import build_backtest_components
 
-    from .data_loader import HistoricalDataLoader
-
-    # DB 连接
-    db_config = get_db_config()
-    writer = TimescaleWriter(settings=db_config)
-    market_repo = MarketRepository(writer)
-    data_loader = HistoricalDataLoader(market_repo)
-
-    # 指标管线
-    config_manager = get_global_config_manager()
-    indicator_config = config_manager.get_config()
-    pipeline = get_global_pipeline(indicator_config.pipeline)
-
-    # 注册指标函数
-    import importlib
-    for ind_cfg in indicator_config.indicators:
-        if not ind_cfg.enabled:
-            continue
-        parts = ind_cfg.func_path.rsplit(".", 1)
-        mod = importlib.import_module(parts[0])
-        func = getattr(mod, parts[1])
-        pipeline.register_indicator(
-            name=ind_cfg.name,
-            func=func,
-            params=ind_cfg.params,
-            dependencies=ind_cfg.dependencies or None,
-        )
-
-    # 信号模块
-    class _NullIndicatorSource:
-        def get_indicator(self, symbol: str, timeframe: str, name: str) -> Optional[Dict[str, Any]]:
-            return None
-        def get_all_indicators(self, symbol: str, timeframe: str) -> Dict[str, Dict[str, Any]]:
-            return {}
-
-    regime_detector = MarketRegimeDetector()
-    signal_module = SignalModule(
-        indicator_source=_NullIndicatorSource(),
-        regime_detector=regime_detector,
-        soft_regime_enabled=True,
-    )
-
-    # 注册复合策略
-    from src.signals.strategies.registry import register_composite_strategies
-    register_composite_strategies(signal_module)
-
-    # 应用参数覆盖（如果有）
-    if hasattr(args, "strategy_params") and args.strategy_params:
-        from src.api.factories.signals import _apply_strategy_config_overrides
-
-        class _FakeConfig:
-            strategy_params: Dict[str, Any] = {}
-            regime_affinity_overrides: Dict[str, Dict[str, float]] = {}
-
-        fake_config = _FakeConfig()
-        fake_config.strategy_params = args.strategy_params
-        _apply_strategy_config_overrides(signal_module, fake_config)
-
-    return {
-        "data_loader": data_loader,
-        "signal_module": signal_module,
-        "pipeline": pipeline,
-        "regime_detector": regime_detector,
-        "writer": writer,
-        "market_repo": market_repo,
-    }
+    strategy_params = getattr(args, "strategy_params", None) or None
+    return build_backtest_components(strategy_params=strategy_params)
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -154,6 +83,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         signal_module=components["signal_module"],
         indicator_pipeline=components["pipeline"],
         regime_detector=components["regime_detector"],
+        voting_engine=components.get("voting_engine"),
     )
 
     result = engine.run()

@@ -61,7 +61,7 @@ class TestComputeMetrics:
         assert m.losing_trades == 0
         assert m.win_rate == 1.0
         assert m.total_pnl == 350.0
-        assert m.profit_factor == float("inf")
+        assert m.profit_factor == 999.99
 
     def test_mixed_trades(self) -> None:
         trades = [
@@ -126,12 +126,34 @@ class TestSharpeRatio:
 class TestSortinoRatio:
     def test_no_downside(self) -> None:
         result = _sortino_ratio([0.01, 0.02, 0.03])
-        assert result == float("inf")
+        assert result == 999.99
 
     def test_with_downside(self) -> None:
         returns = [0.01, -0.02, 0.03, -0.01, 0.02]
         sr = _sortino_ratio(returns)
         assert isinstance(sr, float)
+
+
+class TestCalmarRatio:
+    def test_calmar_with_drawdown(self) -> None:
+        """Calmar 应为年化收益率 / 最大回撤。"""
+        trades = [_make_trade(100.0), _make_trade(-50.0), _make_trade(200.0)]
+        equity = [10000.0, 10100.0, 10050.0, 10250.0]
+        m = compute_metrics(trades, 10000.0, equity)
+        assert m.calmar_ratio != 0.0
+        # 年化因子 = 252 / 4 = 63
+        # total_return_pct = 250 / 10000 = 0.025
+        # annualized = 0.025 * 63 = 1.575
+        # max_dd = (10100-10050)/10100 ≈ 0.00495
+        # calmar = 1.575 / 0.00495 ≈ 318.18
+        assert m.calmar_ratio > 0
+
+    def test_calmar_zero_drawdown(self) -> None:
+        """无回撤时 Calmar 应为 0。"""
+        trades = [_make_trade(100.0)]
+        equity = [10000.0, 10100.0]
+        m = compute_metrics(trades, 10000.0, equity)
+        assert m.calmar_ratio == 0.0
 
 
 class TestGroupedMetrics:

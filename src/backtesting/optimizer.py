@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 import random
 from dataclasses import replace
@@ -180,13 +179,18 @@ class ParameterOptimizer:
 def build_signal_module_with_overrides(
     base_module: SignalModule,
     param_overrides: Dict[str, Any],
+    regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> SignalModule:
     """构建带参数覆盖的独立 SignalModule 实例。
 
     复用 register_all_strategies() 的模式，但注入新的参数覆盖。
+
+    Args:
+        base_module: 基础 SignalModule 实例
+        param_overrides: 策略参数覆盖（signal.ini [strategy_params] 格式）
+        regime_affinity_overrides: Regime 亲和度覆盖（可选）
     """
     from src.api.factories.signals import _apply_strategy_config_overrides
-    from src.signals.strategies.adapters import IndicatorSource
 
     # 创建新的 SignalModule，复用相同的 indicator_source 和组件
     module = SignalModule(
@@ -199,9 +203,6 @@ def build_signal_module_with_overrides(
         soft_regime_enabled=base_module._soft_regime_enabled,
         confidence_floor=base_module._confidence_floor,
     )
-
-    # 注册默认策略
-    from src.signals.service import SignalModule as _SM
 
     # 重新注册所有单策略（从基础模块复制策略列表的类型来创建新实例）
     for name, strategy in base_module._strategies.items():
@@ -220,13 +221,13 @@ def build_signal_module_with_overrides(
         except Exception:
             pass
 
-    # 应用参数覆盖
+    # 应用参数覆盖 + regime 亲和度覆盖
     class _FakeConfig:
-        strategy_params: Dict[str, Any] = {}
-        regime_affinity_overrides: Dict[str, Dict[str, float]] = {}
+        pass
 
     fake_config = _FakeConfig()
-    fake_config.strategy_params = param_overrides
+    fake_config.strategy_params = param_overrides  # type: ignore[attr-defined]
+    fake_config.regime_affinity_overrides = regime_affinity_overrides or {}  # type: ignore[attr-defined]
     _apply_strategy_config_overrides(module, fake_config)
 
     return module

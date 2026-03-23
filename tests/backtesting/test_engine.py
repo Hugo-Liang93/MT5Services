@@ -161,3 +161,99 @@ class TestBacktestEngine:
         result = engine.run()
         # 所有 bar 都应被跳过，无交易
         assert result.metrics.total_trades == 0
+
+    def test_htf_indicators_passed_to_evaluate(self) -> None:
+        """HTF 指标数据应被传递到策略评估。"""
+        config = self._make_config(warmup_bars=5)
+        warmup = _make_bars(5)
+        test_data = _make_bars(10)
+        for i, bar in enumerate(test_data):
+            bar.time = warmup[-1].time + timedelta(minutes=5 * (i + 1))
+
+        data_loader = MagicMock()
+        data_loader.preload_warmup_bars.return_value = warmup
+        data_loader.load_all_bars.return_value = test_data
+
+        signal_module = MagicMock()
+        signal_module.list_strategies.return_value = ["rsi_reversion"]
+        signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.evaluate.return_value = SignalDecision(
+            strategy="rsi_reversion", symbol="XAUUSD", timeframe="M5",
+            action="hold", confidence=0.0, reason="test",
+            used_indicators=["rsi14"],
+            timestamp=datetime.now(timezone.utc), metadata={},
+        )
+
+        pipeline = MagicMock()
+        pipeline.compute.return_value = {
+            "rsi14": {"rsi": 50.0},
+            "atr14": {"atr": 5.0},
+        }
+
+        htf_data = {"H1": {"adx14": {"adx": 28.0}}}
+        engine = BacktestEngine(
+            config=config,
+            data_loader=data_loader,
+            signal_module=signal_module,
+            indicator_pipeline=pipeline,
+            htf_indicator_data=htf_data,
+        )
+        engine.run()
+
+        # 验证 evaluate 被调用时传入了 HTF 数据
+        for call in signal_module.evaluate.call_args_list:
+            assert call.kwargs.get("htf_indicators") == htf_data
+
+    def test_signal_evaluations_recorded(self) -> None:
+        """信号评估记录应被正确记录和回填。"""
+        config = self._make_config(warmup_bars=5, enable_filters=False)
+        warmup = _make_bars(5)
+        test_data = _make_bars(20)
+        for i, bar in enumerate(test_data):
+            bar.time = warmup[-1].time + timedelta(minutes=5 * (i + 1))
+
+        data_loader = MagicMock()
+        data_loader.preload_warmup_bars.return_value = warmup
+        data_loader.load_all_bars.return_value = test_data
+
+        signal_module = MagicMock()
+        signal_module.list_strategies.return_value = ["rsi_reversion"]
+        signal_module.strategy_requirements.return_value = ["rsi14"]
+
+        call_count = 0
+        def mock_evaluate(**kwargs: Any) -> SignalDecision:
+            nonlocal call_count
+            call_count += 1
+            action = "buy" if call_count == 1 else "hold"
+            conf = 0.7 if action == "buy" else 0.0
+            return SignalDecision(
+                strategy="rsi_reversion", symbol="XAUUSD", timeframe="M5",
+                action=action, confidence=conf, reason="test",
+                used_indicators=["rsi14"],
+                timestamp=datetime.now(timezone.utc), metadata={},
+            )
+        signal_module.evaluate.side_effect = mock_evaluate
+
+        pipeline = MagicMock()
+        pipeline.compute.return_value = {
+            "rsi14": {"rsi": 30.0},
+            "atr14": {"atr": 5.0},
+        }
+
+        engine = BacktestEngine(
+            config=config,
+            data_loader=data_loader,
+            signal_module=signal_module,
+            indicator_pipeline=pipeline,
+        )
+        result = engine.run()
+
+        assert result.signal_evaluations is not None
+        assert len(result.signal_evaluations) > 0
+        # 应有 buy 信号被记录
+        buy_evals = [e for e in result.signal_evaluations if e.action == "buy"]
+        assert len(buy_evals) >= 1
+        # 回填后应有 won/pnl_pct 字段
+        for ev in buy_evals:
+            assert ev.won is not None
+            assert ev.pnl_pct is not None

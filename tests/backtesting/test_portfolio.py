@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 import pytest
 
@@ -12,9 +13,9 @@ from src.trading.sizing import TradeParameters
 
 def _bar(
     close: float,
-    high: float | None = None,
-    low: float | None = None,
-    time_val: datetime | None = None,
+    high: Optional[float] = None,
+    low: Optional[float] = None,
+    time_val: Optional[datetime] = None,
 ) -> OHLC:
     t = time_val or datetime(2025, 1, 1, tzinfo=timezone.utc)
     h = high if high is not None else close + 1.0
@@ -153,3 +154,62 @@ class TestPortfolioTracker:
         # 多头：entry_price = close + slippage = 2000.5
         pos = pt._open_positions[0]
         assert pos.entry_price == 2000.5
+
+    def test_exit_slippage_buy(self) -> None:
+        """多头出场应扣除滑点（实际出场价 = SL/TP - slippage）。"""
+        pt = PortfolioTracker(
+            initial_balance=10000.0, contract_size=100.0, slippage_points=0.5
+        )
+        bar = _bar(2000.0)
+        params = _params(sl=1995.0, tp=2010.0, size=0.1)
+        pt.open_position("test", "buy", bar, params, "TRENDING", 0.7, 0)
+
+        # TP 触发
+        exit_bar = _bar(2008.0, high=2012.0, low=2005.0)
+        closed = pt.check_exits(exit_bar, 1)
+        assert len(closed) == 1
+        # 多头出场：exit_price = 2010.0 - 0.5 = 2009.5
+        assert closed[0].exit_price == 2009.5
+
+    def test_exit_slippage_sell(self) -> None:
+        """空头出场应加滑点（实际出场价 = SL/TP + slippage）。"""
+        pt = PortfolioTracker(
+            initial_balance=10000.0, contract_size=100.0, slippage_points=0.5
+        )
+        bar = _bar(2000.0)
+        params = _params(sl=2005.0, tp=1990.0, size=0.1)
+        pt.open_position("test", "sell", bar, params, "TRENDING", 0.7, 0)
+
+        # TP 触发
+        exit_bar = _bar(1992.0, high=1998.0, low=1989.0)
+        closed = pt.check_exits(exit_bar, 1)
+        assert len(closed) == 1
+        # 空头出场：exit_price = 1990.0 + 0.5 = 1990.5
+        assert closed[0].exit_price == 1990.5
+
+    def test_pnl_pct_uses_initial_balance(self) -> None:
+        """PnL 百分比应使用初始资金作为分母。"""
+        pt = PortfolioTracker(initial_balance=10000.0, contract_size=100.0)
+        bar = _bar(2000.0)
+        params = _params(sl=1995.0, tp=2010.0, size=0.1)
+        pt.open_position("test", "buy", bar, params, "TRENDING", 0.7, 0)
+
+        exit_bar = _bar(2008.0, high=2012.0, low=2005.0)
+        closed = pt.check_exits(exit_bar, 1)
+        assert len(closed) == 1
+        # PnL% = pnl / initial_balance * 100 (not current_balance)
+        expected_pnl_pct = closed[0].pnl / 10000.0 * 100.0
+        assert closed[0].pnl_pct == pytest.approx(round(expected_pnl_pct, 4))
+
+    def test_close_by_signal(self) -> None:
+        """按策略名关闭持仓。"""
+        pt = PortfolioTracker(initial_balance=10000.0, max_positions=5)
+        bar = _bar(2000.0)
+        params = _params()
+        pt.open_position("s1", "buy", bar, params, "TRENDING", 0.7, 0)
+        pt.open_position("s2", "sell", bar, params, "RANGING", 0.6, 0)
+
+        closed = pt.close_by_signal("s1", _bar(2005.0), 5)
+        assert len(closed) == 1
+        assert closed[0].strategy == "s1"
+        assert pt.open_position_count == 1

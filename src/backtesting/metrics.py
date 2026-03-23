@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from .models import BacktestMetrics, TradeRecord
 
@@ -33,7 +33,7 @@ def compute_metrics(
 
     total_profit = sum(t.pnl for t in winners)
     total_loss = abs(sum(t.pnl for t in losers))
-    profit_factor = total_profit / total_loss if total_loss > 0 else float("inf")
+    profit_factor = total_profit / total_loss if total_loss > 0 else 999.99
 
     avg_win = total_profit / winning_trades if winning_trades > 0 else 0.0
     avg_loss = total_loss / losing_trades if losing_trades > 0 else 0.0
@@ -52,9 +52,13 @@ def compute_metrics(
 
     # Calmar Ratio = 年化收益率 / 最大回撤
     calmar = 0.0
-    if max_dd > 0 and initial_balance > 0:
+    if max_dd > 0 and initial_balance > 0 and len(equity_curve) >= 2:
         total_return_pct = total_pnl / initial_balance
-        calmar = total_return_pct / max_dd
+        # 年化：假设 252 个交易日，基于 equity_curve 长度估算
+        n_periods = len(equity_curve)
+        annualization_factor = 252.0 / max(n_periods, 1)
+        annualized_return = total_return_pct * annualization_factor
+        calmar = annualized_return / max_dd
 
     return BacktestMetrics(
         total_trades=total_trades,
@@ -152,7 +156,7 @@ def _sortino_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
     mean_r = sum(excess) / len(excess)
     downside = [r for r in excess if r < 0]
     if not downside:
-        return float("inf") if mean_r > 0 else 0.0
+        return 999.99 if mean_r > 0 else 0.0
     downside_var = sum(r ** 2 for r in downside) / len(downside)
     downside_std = math.sqrt(downside_var) if downside_var > 0 else 0.0
     if downside_std == 0:
@@ -161,7 +165,7 @@ def _sortino_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
     return (mean_r / downside_std) * annualization
 
 
-def _max_drawdown(equity_curve: List[float]) -> tuple[float, int]:
+def _max_drawdown(equity_curve: List[float]) -> Tuple[float, int]:
     """计算最大回撤（百分比）和最大回撤持续 bar 数。"""
     if not equity_curve:
         return 0.0, 0

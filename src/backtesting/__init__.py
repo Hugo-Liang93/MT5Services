@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .component_factory import build_backtest_components
 from .filters import BacktestFilterConfig, BacktestFilterSimulator, BacktestFilterStats
 from .models import (
     BacktestConfig,
@@ -15,6 +16,7 @@ from .models import (
 __all__ = [
     "BacktestConfig",
     "BacktestFilterConfig",
+    "build_backtest_components",
     "BacktestFilterSimulator",
     "BacktestFilterStats",
     "BacktestMetrics",

@@ -196,7 +196,17 @@ def format_optimization_summary(results: List[BacktestResult]) -> str:
 
 def result_to_json(result: BacktestResult) -> str:
     """将回测结果序列化为 JSON。"""
-    return json.dumps(result.to_dict(), ensure_ascii=False, indent=2, default=str)
+    import math
+
+    def _json_default(obj: Any) -> Any:
+        if isinstance(obj, float):
+            if math.isinf(obj):
+                return 999.99 if obj > 0 else -999.99
+            if math.isnan(obj):
+                return None
+        return str(obj)
+
+    return json.dumps(result.to_dict(), ensure_ascii=False, indent=2, default=_json_default)
 
 
 def format_metrics_table(metrics: BacktestMetrics) -> Dict[str, Any]:
