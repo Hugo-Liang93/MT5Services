@@ -12,8 +12,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from src.app_runtime.container import AppContainer
 from src.app_runtime.builder import build_app_container
+from src.app_runtime.container import AppContainer
 from src.app_runtime.runtime import AppRuntime
 from src.calendar import EconomicCalendarService
 from src.config import get_signal_config
@@ -56,6 +56,7 @@ def _ensure_initialized() -> None:
 
 # ── Startup status ────────────────────────────────────────────
 
+
 def get_startup_status() -> dict:
     if _runtime is None:
         return {
@@ -76,7 +77,8 @@ def get_runtime_task_status(
     _ensure_initialized()
     assert _container is not None and _container.storage_writer is not None
     rows = _container.storage_writer.db.fetch_runtime_task_status(
-        component=component, task_name=task_name,
+        component=component,
+        task_name=task_name,
     )
     return [
         {
@@ -100,6 +102,7 @@ def get_runtime_task_status(
 
 # ── Lifespan ──────────────────────────────────────────────────
 
+
 @asynccontextmanager
 async def _lifespan(_app):  # type: ignore[no-untyped-def]
     _ensure_initialized()
@@ -115,6 +118,7 @@ lifespan = _lifespan
 
 
 # ── DI getters ────────────────────────────────────────────────
+
 
 def get_runtime_mode() -> str:
     return "unified"
@@ -248,3 +252,9 @@ def get_monitoring_manager_instance():  # type: ignore[no-untyped-def]
     _ensure_initialized()
     assert _container is not None
     return _container.monitoring_manager
+
+
+def get_performance_tracker() -> StrategyPerformanceTracker:
+    _ensure_initialized()
+    assert _container is not None and _container.performance_tracker is not None
+    return _container.performance_tracker
