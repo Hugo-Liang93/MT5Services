@@ -7,21 +7,23 @@ from typing import Any, Dict, Optional
 
 
 TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
-    "M1": {"sl_atr_mult": 1.2, "tp_atr_mult": 2.0},   # XAUUSD M1 原 1.0 过窄
-    "M5": {"sl_atr_mult": 1.5, "tp_atr_mult": 2.8},   # XAUUSD M5 原 1.2 易被扫损
-    "M15": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0},  # 原 1.3/2.8
-    "H1": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},   # 原 1.5/3.0
-    "D1": {"sl_atr_mult": 2.5, "tp_atr_mult": 4.5},   # 原 2.0/4.0
+    "M5": {"sl_atr_mult": 1.5, "tp_atr_mult": 2.8},
+    "M15": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0},
+    "M30": {"sl_atr_mult": 1.8, "tp_atr_mult": 3.2},
+    "H1": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},
+    "H4": {"sl_atr_mult": 2.2, "tp_atr_mult": 4.0},
+    "D1": {"sl_atr_mult": 2.5, "tp_atr_mult": 4.5},
 }
 
-# 时间框架差异化风险百分比（乘数）：M1 更保守，H1 可更激进
+# 时间框架差异化风险百分比（乘数）
 # 实际 risk_pct = base_risk_percent × multiplier
 TIMEFRAME_RISK_MULTIPLIER: dict[str, float] = {
-    "M1": 0.50,   # M1 噪声大，半仓
-    "M5": 0.75,   # M5 适中偏保守
+    "M5": 0.75,   # M5 执行层，适中偏保守
     "M15": 1.00,  # M15 基准
-    "H1": 1.20,   # H1 信号更可靠，可稍放大
-    "D1": 1.50,   # D1 信号最稳定，允许更大仓位
+    "M30": 1.10,  # M30 确认层，略激进
+    "H1": 1.20,   # H1 方向层，信号更可靠
+    "H4": 1.35,   # H4 过滤层，信号稳定
+    "D1": 1.50,   # D1 大势层，允许更大仓位
 }
 
 

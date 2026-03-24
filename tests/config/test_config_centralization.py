@@ -26,8 +26,10 @@ def test_centralized_config():
     trading = get_trading_config()
     assert trading.symbols == ["XAUUSD"]
     assert trading.default_symbol == "XAUUSD"
-    assert "M1" in trading.timeframes
+    assert "M5" in trading.timeframes
     assert "H1" in trading.timeframes
+    assert "M30" in trading.timeframes
+    assert "H4" in trading.timeframes
 
     intervals = get_interval_config()
     assert intervals.poll_interval == 0.5
@@ -51,7 +53,7 @@ def test_centralized_config():
     assert "api" in system.modules_enabled
 
     assert get_shared_symbols() == ["XAUUSD"]
-    assert get_shared_timeframes() == ["M1", "M5", "M15", "H1", "D1"]
+    assert get_shared_timeframes() == ["M5", "M15", "M30", "H1", "H4", "D1"]
     assert get_shared_default_symbol() == "XAUUSD"
 
 
@@ -61,7 +63,7 @@ def test_runtime_views_align_with_centralized_config():
 
     assert ingest_settings.ingest_symbols == ["XAUUSD"]
     assert ingest_settings.ingest_poll_interval == 0.5
-    assert "M1" in ingest_settings.ingest_ohlc_timeframes
+    assert "M5" in ingest_settings.ingest_ohlc_timeframes or "H1" in ingest_settings.ingest_ohlc_timeframes
     assert hasattr(ingest_settings, "intrabar_enabled")
 
     assert market_settings.default_symbol == "XAUUSD"

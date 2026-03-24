@@ -62,9 +62,9 @@ class TimeframeScaler:
     timeframe: str
     scale_map: Dict[str, float] = field(
         default_factory=lambda: {
-            "M1": 0.60,
             "M5": 0.75,
             "M15": 0.85,
+            "M30": 0.92,
             "H1": 1.00,
             "H4": 1.15,
             "D1": 1.30,

@@ -15,17 +15,20 @@ from src.trading.sizing import (
 
 class TestResolveTimeframeRiskMultiplier:
 
-    def test_m1_is_conservative(self):
-        assert resolve_timeframe_risk_multiplier("M1") == 0.50
-
-    def test_m5_is_moderate(self):
+    def test_m5_is_conservative(self):
         assert resolve_timeframe_risk_multiplier("M5") == 0.75
 
     def test_m15_is_baseline(self):
         assert resolve_timeframe_risk_multiplier("M15") == 1.00
 
+    def test_m30_is_moderate(self):
+        assert resolve_timeframe_risk_multiplier("M30") == 1.10
+
     def test_h1_is_aggressive(self):
         assert resolve_timeframe_risk_multiplier("H1") == 1.20
+
+    def test_h4_is_stable(self):
+        assert resolve_timeframe_risk_multiplier("H4") == 1.35
 
     def test_d1_is_most_aggressive(self):
         assert resolve_timeframe_risk_multiplier("D1") == 1.50
@@ -37,7 +40,7 @@ class TestResolveTimeframeRiskMultiplier:
         assert resolve_timeframe_risk_multiplier(None) == 1.0
 
     def test_case_insensitive(self):
-        assert resolve_timeframe_risk_multiplier("m1") == 0.50
+        assert resolve_timeframe_risk_multiplier("m5") == 0.75
         assert resolve_timeframe_risk_multiplier("h1") == 1.20
 
 
@@ -53,11 +56,11 @@ class TestComputeTradeParamsRiskMultiplier:
         contract_size=100.0,
     )
 
-    def test_m1_smaller_position_than_h1(self):
-        m1 = compute_trade_params(**self.BASE_ARGS, timeframe="M1")
+    def test_m5_smaller_position_than_h1(self):
+        m5 = compute_trade_params(**self.BASE_ARGS, timeframe="M5")
         h1 = compute_trade_params(**self.BASE_ARGS, timeframe="H1")
-        # M1 multiplier=0.5, H1 multiplier=1.2 → M1 position should be smaller
-        assert m1.position_size < h1.position_size
+        # M5 multiplier=0.75, H1 multiplier=1.20 → M5 position should be smaller
+        assert m5.position_size < h1.position_size
 
     def test_m15_equals_no_timeframe_risk_adj(self):
         # M15 multiplier = 1.0, so risk_amount is same as base
@@ -70,20 +73,15 @@ class TestComputeTradeParamsRiskMultiplier:
         assert m15.position_size > 0
 
     def test_risk_amount_scales_with_multiplier(self):
-        """Verify that M1 risk_amount is ~50% of M15."""
-        # M1: sl_mult=1.0, risk_mult=0.5 → sl_distance=2.0, risk_amount=50
-        # M15: sl_mult=1.3, risk_mult=1.0 → sl_distance=2.6, risk_amount=100
-        m1 = compute_trade_params(**self.BASE_ARGS, timeframe="M1")
+        """Verify that M5 risk_amount is ~75% of M15."""
+        # M5: sl_mult=1.5, risk_mult=0.75 → sl_distance=3.0, risk_amount=75
+        # M15: sl_mult=1.5, risk_mult=1.0 → sl_distance=3.0, risk_amount=100
+        m5 = compute_trade_params(**self.BASE_ARGS, timeframe="M5")
         m15 = compute_trade_params(**self.BASE_ARGS, timeframe="M15")
-        # M1 risk_amount = 10000 * (1.0 * 0.5 / 100) = 50
-        # M15 risk_amount = 10000 * (1.0 * 1.0 / 100) = 100
-        # Position size = risk_amount / (sl_distance * contract_size)
-        # M1: 50 / (2.0 * 100) = 0.25 → clamped to 0.25
-        # M15: 100 / (2.6 * 100) = 0.38 → clamped to 0.38
-        assert m1.position_size < m15.position_size
+        assert m5.position_size < m15.position_size
 
     def test_sl_tp_still_correct(self):
-        params = compute_trade_params(**self.BASE_ARGS, timeframe="M1")
+        params = compute_trade_params(**self.BASE_ARGS, timeframe="M5")
         assert params.stop_loss < params.entry_price  # buy: SL below entry
         assert params.take_profit > params.entry_price  # buy: TP above entry
 

@@ -190,16 +190,16 @@ def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
     event = _build_event(spread_points=20.0, close_price=3000.0)
-    event = SignalEvent(**{**event.__dict__, "timeframe": "M1"})
+    event = SignalEvent(**{**event.__dict__, "timeframe": "M5"})
 
     _fire(executor, event)
 
     assert module.calls
     payload = module.calls[0][1]
-    # M1: sl_atr_mult=1.2, tp_atr_mult=2.0, ATR=2.0
-    # SL = 3000 - 1.2*2 = 2997.6, TP = 3000 + 2.0*2 = 3004.0
-    assert payload["sl"] == pytest.approx(2997.6)
-    assert payload["tp"] == pytest.approx(3004.0)
+    # M5: sl_atr_mult=1.5, tp_atr_mult=2.8, ATR=2.0
+    # SL = 3000 - 1.5*2 = 2997.0, TP = 3000 + 2.8*2 = 3005.6
+    assert payload["sl"] == pytest.approx(2997.0)
+    assert payload["tp"] == pytest.approx(3005.6)
 
 
 def test_trade_executor_passes_signal_id_as_request_id() -> None:
