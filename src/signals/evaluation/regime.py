@@ -300,6 +300,12 @@ class MarketRegimeDetector:
             else:
                 scores[RegimeType.BREAKOUT] += 0.10
 
+        # Clamp scores to non-negative before normalizing (subtractions can
+        # drive individual scores below zero, producing invalid probabilities).
+        for regime in scores:
+            if scores[regime] < 0.0:
+                scores[regime] = 0.0
+
         total = sum(scores.values())
         if total < 1e-6:
             # 所有分数极小时回退到均匀分布

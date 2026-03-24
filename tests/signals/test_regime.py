@@ -15,6 +15,7 @@ from src.signals.evaluation.regime import (
 def _indicators(
     *,
     adx: float | None = None,
+    adx_d3: float | None = None,
     bb_upper: float | None = None,
     bb_lower: float | None = None,
     bb_mid: float | None = None,
@@ -23,7 +24,10 @@ def _indicators(
 ) -> dict:
     result: dict = {}
     if adx is not None:
-        result["adx14"] = {"adx": adx}
+        adx_dict: dict[str, float] = {"adx": adx}
+        if adx_d3 is not None:
+            adx_dict["adx_d3"] = adx_d3
+        result["adx14"] = adx_dict
     if bb_upper is not None or bb_lower is not None or bb_mid is not None:
         result["boll20"] = {
             "bb_upper": bb_upper,
@@ -252,6 +256,14 @@ class TestSoftRegime:
         d = MarketRegimeDetector()
         result = d.detect_soft(_indicators(adx=20.5))
         assert result.dominant_regime == RegimeType.UNCERTAIN
+
+    def test_soft_regime_no_negative_probabilities_with_high_adx_delta(self):
+        """High adx_d3 should not produce negative probabilities."""
+        d = MarketRegimeDetector()
+        result = d.detect_soft(_indicators(adx=30.0, adx_d3=8.0))
+        for regime, prob in result.probabilities.items():
+            assert prob >= 0.0, f"{regime} has negative probability {prob}"
+        assert sum(result.probabilities.values()) == pytest.approx(1.0)
 
     def test_soft_regime_round_trips_via_dict(self):
         d = MarketRegimeDetector()
