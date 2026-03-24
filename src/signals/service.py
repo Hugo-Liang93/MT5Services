@@ -397,6 +397,24 @@ class SignalModule:
         if decision.confidence > 0 and calibrated < self._confidence_floor:
             calibrated = self._confidence_floor
 
+        # ── 置信度管线摘要日志 ──────────────────────────────────────────
+        if decision.direction in ("buy", "sell") and decision.confidence > 0:
+            delta = calibrated - decision.confidence
+            if abs(delta) > 0.05:
+                logger.info(
+                    "Confidence[%s/%s/%s %s]: %.2f → %.2f "
+                    "(affinity=%.2f perf=%.2f regime=%s)",
+                    symbol,
+                    timeframe,
+                    strategy,
+                    decision.direction,
+                    decision.confidence,
+                    calibrated,
+                    affinity,
+                    perf_multiplier,
+                    regime.value,
+                )
+
         decision = dataclasses.replace(
             decision,
             confidence=calibrated,
@@ -446,10 +464,12 @@ class SignalModule:
         try:
             recent_bars = getter(symbol, timeframe, end_time=end_time, limit=recent_bars_limit)
         except Exception:
-            logger.debug(
-                "Failed to load recent bars for %s/%s",
+            log_fn = logger.warning if recent_bars_limit > 5 else logger.debug
+            log_fn(
+                "Failed to load recent bars for %s/%s (limit=%d)",
                 symbol,
                 timeframe,
+                recent_bars_limit,
                 exc_info=True,
             )
             return context_metadata

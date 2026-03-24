@@ -11,8 +11,11 @@ This layer is intentionally different from `src.signals.filters`:
 - risk.service: order-domain gating (whether a trade is allowed)
 """
 
+import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol
+
+logger = logging.getLogger(__name__)
 
 from src.config import EconomicConfig, RiskConfig, get_economic_config, get_risk_config
 
@@ -280,7 +283,18 @@ class PreTradeRiskService:
 
         checks: list[RiskCheckResult] = []
         for rule in self.rules:
-            checks.extend(rule.evaluate(context))
+            rule_checks = rule.evaluate(context)
+            checks.extend(rule_checks)
+            for check in rule_checks:
+                if check.verdict == "block":
+                    logger.warning(
+                        "Risk BLOCK [%s] %s %s %s: %s",
+                        check.name,
+                        intent_obj.symbol,
+                        intent_obj.side,
+                        intent_obj.volume,
+                        check.reason,
+                    )
 
         warnings = [check.reason for check in checks if check.verdict == "warn" and check.reason]
         reasons = [check.reason for check in checks if check.verdict == "block" and check.reason]

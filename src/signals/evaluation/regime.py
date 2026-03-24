@@ -32,10 +32,13 @@
 """
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class RegimeType(str, Enum):
@@ -302,8 +305,18 @@ class MarketRegimeDetector:
 
         # Clamp scores to non-negative before normalizing (subtractions can
         # drive individual scores below zero, producing invalid probabilities).
+        clamped = False
         for regime in scores:
             if scores[regime] < 0.0:
+                if not clamped:
+                    logger.debug(
+                        "Clamping negative regime score: %s=%.3f (adx=%.1f, adx_d3=%s)",
+                        regime.value,
+                        scores[regime],
+                        adx if adx is not None else -1.0,
+                        adx_d3,
+                    )
+                    clamped = True
                 scores[regime] = 0.0
 
         total = sum(scores.values())
