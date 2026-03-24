@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     id SERIAL PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
     strategy TEXT NOT NULL,
-    action TEXT NOT NULL,
+    direction TEXT NOT NULL,
     entry_time TIMESTAMPTZ NOT NULL,
     entry_price DOUBLE PRECISION NOT NULL,
     exit_time TIMESTAMPTZ NOT NULL,
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS backtest_signal_evaluations (
     run_id TEXT NOT NULL REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
     bar_time TIMESTAMPTZ NOT NULL,
     strategy TEXT NOT NULL,
-    action TEXT NOT NULL,
+    direction TEXT NOT NULL,
     confidence DOUBLE PRECISION NOT NULL,
     regime TEXT,
     price_at_signal DOUBLE PRECISION NOT NULL,
@@ -74,7 +74,7 @@ ON CONFLICT (run_id) DO NOTHING
 """
 
 INSERT_TRADE_SQL = """
-INSERT INTO backtest_trades (run_id, strategy, action, entry_time, entry_price,
+INSERT INTO backtest_trades (run_id, strategy, direction, entry_time, entry_price,
                              exit_time, exit_price, stop_loss, take_profit,
                              position_size, pnl, pnl_pct, bars_held, regime,
                              confidence, exit_reason, slippage_cost, commission_cost)
@@ -82,7 +82,7 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 INSERT_EVALUATION_SQL = """
-INSERT INTO backtest_signal_evaluations (run_id, bar_time, strategy, action,
+INSERT INTO backtest_signal_evaluations (run_id, bar_time, strategy, direction,
                                          confidence, regime, price_at_signal,
                                          price_after_n_bars, bars_to_evaluate,
                                          won, pnl_pct, filtered, filter_reason,

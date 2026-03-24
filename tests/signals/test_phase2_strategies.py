@@ -38,7 +38,7 @@ def test_fake_breakout_detector_emits_sell_on_failed_upper_breakout() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "sell"
+    assert decision.direction == "sell"
     assert decision.confidence > 0.7
     assert decision.metadata["reclaim_state"] == "bearish_reclaim_previous_day_high"
 
@@ -65,7 +65,7 @@ def test_fake_breakout_detector_emits_buy_on_failed_lower_breakout() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "buy"
+    assert decision.direction == "buy"
     assert decision.confidence > 0.7
     assert decision.metadata["reclaim_state"] == "bullish_reclaim_previous_day_low"
 
@@ -89,7 +89,7 @@ def test_fake_breakout_detector_holds_without_rejection_pattern() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "hold"
+    assert decision.direction == "hold"
     assert decision.reason == "no_fake_breakout"
 
 
@@ -114,7 +114,7 @@ def test_squeeze_release_follow_emits_buy_on_upside_release() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "buy"
+    assert decision.direction == "buy"
     assert decision.confidence > 0.75
     assert decision.metadata["compression_state"] == "contracted"
 
@@ -140,7 +140,7 @@ def test_squeeze_release_follow_emits_sell_on_downside_release() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "sell"
+    assert decision.direction == "sell"
     assert decision.confidence > 0.75
 
 
@@ -160,7 +160,7 @@ def test_squeeze_release_follow_holds_without_release() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "hold"
+    assert decision.direction == "hold"
     assert decision.reason == "no_squeeze_release"
 
 
@@ -182,7 +182,7 @@ def test_session_momentum_bias_suppresses_asia_session() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "hold"
+    assert decision.direction == "hold"
     assert decision.reason.startswith("asia_session_low_momentum")
 
 
@@ -208,7 +208,7 @@ def test_session_momentum_bias_emits_buy_when_london_trend_aligns() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "buy"
+    assert decision.direction == "buy"
     assert decision.confidence > 0.65
 
 
@@ -234,7 +234,7 @@ def test_session_momentum_bias_emits_sell_when_new_york_trend_aligns() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "sell"
+    assert decision.direction == "sell"
     assert decision.confidence > 0.65
 
 
@@ -256,7 +256,7 @@ def test_session_momentum_bias_holds_when_atr_is_too_low() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "hold"
+    assert decision.direction == "hold"
     assert decision.reason.startswith("atr_too_low_for_session")
 
 
@@ -277,7 +277,7 @@ def test_price_action_reversal_detects_bearish_engulfing() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "sell"
+    assert decision.direction == "sell"
     assert decision.reason == "bearish_engulfing"
 
 
@@ -298,7 +298,7 @@ def test_price_action_reversal_detects_bullish_engulfing() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "buy"
+    assert decision.direction == "buy"
     assert decision.reason == "bullish_engulfing"
 
 
@@ -319,7 +319,7 @@ def test_price_action_reversal_holds_without_pattern() -> None:
 
     decision = strategy.evaluate(context)
 
-    assert decision.action == "hold"
+    assert decision.direction == "hold"
     assert decision.reason == "no_price_action_pattern"
 
 
@@ -350,7 +350,7 @@ class AttrValidationStrategy:
             strategy=self.name,
             symbol=context.symbol,
             timeframe=context.timeframe,
-            action="hold",
+            direction="hold",
             confidence=0.0,
             reason="noop",
         )
@@ -435,8 +435,8 @@ def test_phase2_strategies_apply_expected_regime_affinity(
         persist=False,
     )
 
-    assert raw.action == expected_action
-    assert decision.action == expected_action
+    assert raw.direction == expected_action
+    assert decision.direction == expected_action
     expected_conf = raw.confidence * strategy.regime_affinity[regime]
     # 多层压制底线保护：service.py 中 _MIN_CALIBRATED_FLOOR = 0.10
     expected_conf = max(expected_conf, 0.10) if raw.confidence > 0 else expected_conf
@@ -509,7 +509,7 @@ def test_signal_module_injects_recent_bars_for_phase2_strategies() -> None:
         persist=False,
     )
 
-    assert decision.action == "sell"
+    assert decision.direction == "sell"
     assert len(source.calls) == 1
     assert source.calls[0]["limit"] == 5
     assert source.calls[0]["end_time"] == datetime(

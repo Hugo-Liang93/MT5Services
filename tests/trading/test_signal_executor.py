@@ -62,7 +62,7 @@ def _build_event(
         symbol="XAUUSD",
         timeframe="M5",
         strategy="sma_trend",
-        action="buy",
+        direction="buy",
         confidence=0.9,
         signal_state="confirmed_buy",
         scope="confirmed",

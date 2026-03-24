@@ -88,7 +88,7 @@ def evaluate_signal(
             continue
 
     # 优先返回非 hold 且置信度最高的；全 hold 时返回置信度最高的 hold
-    actionable = [d for d in decisions if d.action in ("buy", "sell")]
+    actionable = [d for d in decisions if d.direction in ("buy", "sell")]
     best = sorted(actionable, key=lambda x: x.confidence, reverse=True) or sorted(
         decisions, key=lambda x: x.confidence, reverse=True
     )
@@ -164,7 +164,7 @@ def best_signals_per_timeframe(
     cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
     buckets: Dict[str, Dict[str, Any]] = {}
     for row in rows:
-        action = row.get("action", "")
+        action = row.get("direction", "")
         if action not in ("buy", "sell"):
             continue
         confidence = row.get("confidence", 0.0) or 0.0

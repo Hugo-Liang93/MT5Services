@@ -77,7 +77,7 @@ class TestSmaTrendHTF:
             },
         )
         decision = SmaTrendStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == 0.10
 
     def test_sma_trend_htf_conflict_penalty(self) -> None:
@@ -91,7 +91,7 @@ class TestSmaTrendHTF:
             },
         )
         decision = SmaTrendStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == -0.08
 
     def test_sma_trend_htf_absent_no_effect(self) -> None:
@@ -139,7 +139,7 @@ class TestSupertrendHTF:
             },
         )
         decision = SupertrendStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == 0.08
 
     def test_supertrend_htf_conflict_penalty(self) -> None:
@@ -153,7 +153,7 @@ class TestSupertrendHTF:
             },
         )
         decision = SupertrendStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == -0.05
 
     def test_supertrend_htf_absent_no_effect(self) -> None:
@@ -202,7 +202,7 @@ class TestMacdMomentumHTF:
             },
         )
         decision = MacdMomentumStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == 0.08
 
     def test_macd_momentum_htf_conflict_penalty(self) -> None:
@@ -215,7 +215,7 @@ class TestMacdMomentumHTF:
             },
         )
         decision = MacdMomentumStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == -0.06
 
     def test_macd_momentum_htf_absent_no_effect(self) -> None:
@@ -269,7 +269,7 @@ class TestDonchianBreakoutHTF:
             },
         )
         decision = DonchianBreakoutStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == 0.10
 
     def test_donchian_breakout_htf_conflict_penalty(self) -> None:
@@ -286,7 +286,7 @@ class TestDonchianBreakoutHTF:
             },
         )
         decision = DonchianBreakoutStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == -0.05
 
     def test_donchian_breakout_htf_absent_no_effect(self) -> None:
@@ -344,7 +344,7 @@ class TestBollingerBreakoutHTF:
             },
         )
         decision = BollingerBreakoutStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         assert decision.metadata["htf_bonus"] == 0.06
 
     def test_bollinger_breakout_htf_conflict_penalty(self) -> None:
@@ -366,7 +366,7 @@ class TestBollingerBreakoutHTF:
             },
         )
         decision = BollingerBreakoutStrategy().evaluate(ctx)
-        assert decision.action == "buy"
+        assert decision.direction == "buy"
         # Wide H1 BB means no HTF squeeze bonus
         assert decision.metadata["htf_bonus"] == 0.0
 

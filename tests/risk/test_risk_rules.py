@@ -98,7 +98,7 @@ class TestMarginAvailabilityRule:
         ctx = _ctx(metadata={"estimated_margin": 100.0}, margin_free=100.0)
         checks = self.rule.evaluate(ctx)
         assert len(checks) == 1
-        assert checks[0].action == "block"
+        assert checks[0].verdict == "block"
         assert "Insufficient free margin" in checks[0].reason
         assert checks[0].details["shortfall"] > 0
 
@@ -135,7 +135,7 @@ class TestMarginAvailabilityRule:
         )
         checks = self.rule.evaluate(ctx)
         assert len(checks) == 1
-        assert checks[0].action == "warn"
+        assert checks[0].verdict == "warn"
 
     def test_warns_when_free_margin_field_missing(self):
         provider = FakeAccountProvider(margin_free=None)
@@ -146,7 +146,7 @@ class TestMarginAvailabilityRule:
         # margin_free is None in account_info → warn
         checks = self.rule.evaluate(ctx)
         assert len(checks) == 1
-        assert checks[0].action == "warn"
+        assert checks[0].verdict == "warn"
 
     def test_custom_safety_factor(self):
         # 100 * 2.0 = 200 > 150 → block
@@ -157,7 +157,7 @@ class TestMarginAvailabilityRule:
         )
         checks = self.rule.evaluate(ctx)
         assert len(checks) == 1
-        assert checks[0].action == "block"
+        assert checks[0].verdict == "block"
 
     def test_skipped_when_no_account_provider(self):
         intent = TradeIntent(symbol="XAUUSD", volume=0.1, side="buy", metadata={"estimated_margin": 100.0})
@@ -192,7 +192,7 @@ class TestTradeFrequencyRule:
         ctx = _ctx(max_trades_per_day=10)
         checks = rule.evaluate(ctx)
         assert any(c.name == "max_trades_per_day" for c in checks)
-        assert checks[0].action == "block"
+        assert checks[0].verdict == "block"
 
     def test_passes_when_under_daily_limit(self):
         rule = TradeFrequencyRule()

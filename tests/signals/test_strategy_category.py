@@ -29,7 +29,7 @@ def _make_strategy(name, category):
     s.category = category
     s.evaluate = lambda ctx: SignalDecision(
         strategy=name, symbol="X", timeframe="M5",
-        action="hold", confidence=0.0, reason="stub",
+        direction="hold", confidence=0.0, reason="stub",
     )
     return s
 

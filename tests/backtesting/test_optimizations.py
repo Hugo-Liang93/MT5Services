@@ -65,7 +65,7 @@ def _make_trade(
     return TradeRecord(
         signal_id="bt_test",
         strategy=strategy,
-        action="buy",
+        direction="buy",
         entry_time=t,
         entry_price=2000.0,
         exit_time=t,
@@ -182,7 +182,7 @@ class TestIncompleteEvaluation:
         ev = SignalEvaluation(
             bar_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
             strategy="test",
-            action="buy",
+            direction="buy",
             confidence=0.7,
             regime="TRENDING",
             price_at_signal=2000.0,
@@ -194,7 +194,7 @@ class TestIncompleteEvaluation:
         ev = SignalEvaluation(
             bar_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
             strategy="test",
-            action="buy",
+            direction="buy",
             confidence=0.7,
             regime="TRENDING",
             price_at_signal=2000.0,
@@ -331,8 +331,8 @@ class TestConfigLoadsAllSections:
         from src.backtesting.config import get_backtest_defaults
 
         defaults = get_backtest_defaults()
-        if "enable_pending_entry" in defaults:
-            assert isinstance(defaults["enable_pending_entry"], bool)
+        if "pending_entry_enabled" in defaults:
+            assert isinstance(defaults["pending_entry_enabled"], bool)
 
     def test_confidence_section(self) -> None:
         """backtest.ini [confidence] section 应被正确加载。"""
@@ -398,7 +398,7 @@ class TestConfidencePipelineFlags:
         signal_module.strategy_requirements.return_value = ["rsi14"]
         signal_module.evaluate.return_value = SignalDecision(
             strategy="test", symbol="XAUUSD", timeframe="M5",
-            action="hold", confidence=0.0, reason="test",
+            direction="hold", confidence=0.0, reason="test",
             used_indicators=["rsi14"],
             timestamp=datetime.now(timezone.utc), metadata={},
         )

@@ -107,7 +107,7 @@ def test_warns_when_calendar_health_is_degraded():
 
     result = service.assess_trade(symbol="XAUUSD")
 
-    assert result["action"] == "warn"
+    assert result["verdict"] == "warn"
     assert result["blocked"] is False
     assert result["calendar_health_degraded"] is True
     assert result["warnings"]
@@ -122,7 +122,7 @@ def test_blocks_when_calendar_health_mode_is_fail_closed():
 
     result = service.assess_trade(symbol="XAUUSD")
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["blocked"] is True
     assert result["calendar_health_mode"] == "fail_closed"
 
@@ -147,7 +147,7 @@ def test_allows_healthy_calendar_without_database_driver():
 
     result = service.assess_trade(symbol="XAUUSD")
 
-    assert result["action"] == "allow"
+    assert result["verdict"] == "allow"
     assert result["blocked"] is False
 
 
@@ -163,7 +163,7 @@ def test_blocks_when_position_limit_is_reached():
 
     result = service.assess_trade(symbol="XAUUSD", volume=0.1, side="buy")
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["blocked"] is True
     assert any(check["name"] == "max_positions_per_symbol" for check in result["checks"])
 
@@ -180,7 +180,7 @@ def test_blocks_when_symbol_volume_limit_would_be_exceeded():
 
     result = service.assess_trade(symbol="XAUUSD", volume=0.4, side="buy")
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["blocked"] is True
     assert any(check["name"] == "max_volume_per_symbol" for check in result["checks"])
 
@@ -195,7 +195,7 @@ def test_blocks_when_protection_is_required_but_missing():
 
     result = service.assess_trade(symbol="XAUUSD", volume=0.2, side="buy")
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["blocked"] is True
     assert any(check["name"] == "require_tp_or_sl_for_market_orders" for check in result["checks"])
 
@@ -215,7 +215,7 @@ def test_blocks_when_trade_is_outside_allowed_sessions():
         at_time=datetime.fromisoformat("2026-03-19T23:00:00+00:00"),
     )
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["blocked"] is True
     assert any(check["name"] == "allowed_sessions" for check in result["checks"])
 
@@ -242,7 +242,7 @@ def test_blocks_buy_against_bearish_sweep_confirmation():
         },
     )
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["blocked"] is True
     assert any(check["name"] == "market_structure" for check in result["checks"])
 
@@ -273,7 +273,7 @@ def test_warns_when_buying_against_new_york_open_downside_expansion():
         },
     )
 
-    assert result["action"] == "warn"
+    assert result["verdict"] == "warn"
     assert result["blocked"] is False
     assert "buy_against_new_york_open_downside_expansion" in result["warnings"]
 
@@ -290,7 +290,7 @@ def test_blocks_when_daily_loss_limit_is_reached() -> None:
 
     result = service.assess_trade(symbol="XAUUSD", volume=0.2, side="buy")
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["blocked"] is True
     check = next(item for item in result["checks"] if item["name"] == "daily_loss_limit")
     assert check["reason"] == "daily_loss_limit_reached"

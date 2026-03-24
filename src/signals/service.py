@@ -366,7 +366,7 @@ class SignalModule:
         # 对表现差的策略压制置信度，对表现好的微幅提升。
         # performance_tracker=None（默认）时此步跳过。
         perf_multiplier = 1.0
-        if self._performance_tracker is not None and decision.action in ("buy", "sell"):
+        if self._performance_tracker is not None and decision.direction in ("buy", "sell"):
             perf_multiplier = self._performance_tracker.get_multiplier(
                 decision.strategy,
                 regime=regime.value,
@@ -376,10 +376,10 @@ class SignalModule:
         # 在 Regime 亲和度修正之后，再根据该策略 (action, regime) 的历史胜率
         # 做混合校准，使置信度逐步收敛到与实际盈亏挂钩的值。
         # calibrator=None（默认）时此步跳过，对现有行为零影响。
-        if self._calibrator is not None and decision.action in ("buy", "sell"):
+        if self._calibrator is not None and decision.direction in ("buy", "sell"):
             calibrated = self._calibrator.calibrate(
                 strategy=decision.strategy,
-                action=decision.action,
+                action=decision.direction,
                 raw_confidence=post_performance,
                 regime=regime,
             )
@@ -416,7 +416,7 @@ class SignalModule:
                 "post_performance_confidence": post_performance,  # affinity + perf
                 "session_performance_multiplier": perf_multiplier,
                 "calibrated": self._calibrator is not None
-                and decision.action in ("buy", "sell"),
+                and decision.direction in ("buy", "sell"),
             },
         )
 
@@ -554,7 +554,7 @@ class SignalModule:
         symbol: Optional[str] = None,
         timeframe: Optional[str] = None,
         strategy: Optional[str] = None,
-        action: Optional[str] = None,
+        direction: Optional[str] = None,
         scope: str = "confirmed",
         limit: int = 200,
     ) -> list[dict[str, Any]]:
@@ -564,7 +564,7 @@ class SignalModule:
             symbol=symbol,
             timeframe=timeframe,
             strategy=strategy,
-            action=action,
+            direction=direction,
             scope=scope,
             limit=limit,
         )
@@ -841,7 +841,7 @@ class SignalModule:
                 symbol=payload.get("symbol"),
                 timeframe=payload.get("timeframe"),
                 strategy=payload.get("strategy"),
-                action=payload.get("action"),
+                direction=payload.get("direction"),
                 scope=payload.get("scope", "confirmed"),
                 limit=payload.get("limit", 200),
             ),

@@ -71,7 +71,7 @@ def process_symbol_timeframe_batch(
         try:
             end_idx = bar_index.get(bar_time)
             if end_idx is None:
-                prefix = manager._load_bars(symbol, timeframe, bar_time=bar_time)
+                prefix = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
                 if not prefix or prefix[-1].time != bar_time:
                     logger.debug(
                         "Skipping closed-bar event for %s/%s at %s because the target OHLC bar is unavailable",
@@ -154,7 +154,7 @@ def process_closed_bar_event(
     durable_event: bool,
 ) -> None:
     try:
-        bars = manager._load_bars(symbol, timeframe, bar_time=bar_time)
+        bars = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
         if not bars:
             return
         results, compute_time_ms = manager._compute_confirmed_results_for_bars(

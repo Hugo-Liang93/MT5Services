@@ -515,7 +515,7 @@ class UnifiedIndicatorManager:
                 bar_time,
             )
 
-    def _load_bars(
+    def _load_confirmed_bars(
         self,
         symbol: str,
         timeframe: str,
@@ -970,7 +970,7 @@ class UnifiedIndicatorManager:
                     )
 
     def _reconcile_symbol_timeframe(self, symbol: str, timeframe: str) -> None:
-        bars = self._load_bars(symbol, timeframe)
+        bars = self._load_confirmed_bars(symbol, timeframe)
         if not bars:
             return
         results, compute_time_ms = self._compute_confirmed_results_for_bars(

@@ -22,7 +22,7 @@ from uuid import uuid4
 from src.utils.common import timeframe_seconds
 
 from ..confidence import apply_intrabar_decay
-from ..evaluation.indicators_helpers import get_close
+from ..evaluation.indicators_helpers import extract_close_price
 from ..evaluation.regime import (
     MarketRegimeDetector,
     RegimeTracker,
@@ -50,10 +50,10 @@ from .state_machine import (
     build_transition_metadata,
     mark_emitted as _sm_mark_emitted,
     should_emit as _sm_should_emit,
-    should_evaluate_snapshot as _sm_should_evaluate_snapshot,
+    is_new_snapshot as _sm_is_new_snapshot,
     snapshot_signature as _sm_snapshot_signature,
     transition_confirmed,
-    transition_preview,
+    transition_intrabar,
 )
 from .voting import StrategyVotingEngine
 
@@ -61,11 +61,6 @@ if TYPE_CHECKING:
     from src.indicators.manager import UnifiedIndicatorManager
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_close_price(indicators: Dict[str, Dict[str, float]]) -> Optional[float]:
-    """从完整指标快照中提取收盘价（委托给 indicators_helpers.get_close）。"""
-    return get_close(indicators)
 
 
 class SnapshotSource(Protocol):
@@ -106,7 +101,7 @@ class SignalRuntime:
         regime_detector: Optional[MarketRegimeDetector] = None,
         market_structure_analyzer: Optional[Any] = None,
         htf_indicators_enabled: bool = True,
-        intrabar_confidence_decay: float = 1.0,
+        intrabar_confidence_factor: float = 1.0,
         htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
         htf_context_fn: Optional[Callable[..., Any]] = None,
         htf_conflict_penalty: float = 0.70,
@@ -190,9 +185,9 @@ class SignalRuntime:
         )
         # HTF 指标注入全局开关
         self._htf_indicators_enabled: bool = htf_indicators_enabled
-        # Intrabar 置信度衰减因子（<1.0 降权未收盘 bar 信号）
+        # Intrabar 置信度缩放因子（<1.0 降权未收盘 bar 信号）
         # 全局默认值，可被策略级 strategy_params 中 *__intrabar_decay 覆盖
-        self._intrabar_confidence_decay: float = min(intrabar_confidence_decay, 1.0)
+        self._intrabar_confidence_factor: float = min(intrabar_confidence_factor, 1.0)
         self._strategy_intrabar_decay: dict[str, float] = (
             {}
         )  # populated by set_strategy_intrabar_decay
@@ -584,7 +579,7 @@ class SignalRuntime:
             symbol=decision.symbol,
             timeframe=decision.timeframe,
             strategy=decision.strategy,
-            action=decision.action,
+            direction=decision.direction,
             confidence=decision.confidence,
             signal_state=signal_state,
             scope=scope,
@@ -786,7 +781,7 @@ class SignalRuntime:
     def _snapshot_signature(indicators: Dict[str, Dict[str, float]]) -> int:
         return _sm_snapshot_signature(indicators)
 
-    def _should_evaluate_snapshot(
+    def _is_new_snapshot(
         self,
         state: RuntimeSignalState,
         *,
@@ -795,7 +790,7 @@ class SignalRuntime:
         bar_time: datetime,
         indicators: Dict[str, Dict[str, float]],
     ) -> bool:
-        return _sm_should_evaluate_snapshot(
+        return _sm_is_new_snapshot(
             state,
             scope=scope,
             event_time=event_time,
@@ -816,7 +811,7 @@ class SignalRuntime:
             state, decision_action, event_time, bar_time, metadata
         )
 
-    def _transition_preview(
+    def _transition_intrabar(
         self,
         state: RuntimeSignalState,
         decision_action: str,
@@ -825,7 +820,7 @@ class SignalRuntime:
         bar_time: datetime,
         metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        return transition_preview(
+        return transition_intrabar(
             state,
             decision_action,
             confidence,
@@ -874,7 +869,7 @@ class SignalRuntime:
         2. 收窄 scoped_indicators
         3. 去重检查（snapshot signature）
         4. 调用 service.evaluate()
-        5. 状态机转换（transition_confirmed / transition_preview）
+        5. 状态机转换（transition_confirmed / transition_intrabar）
         6. 持久化 + 发布信号事件
         """
         snapshot_decisions: List = []
@@ -987,7 +982,7 @@ class SignalRuntime:
                 state = self._state_by_target.setdefault(
                     (symbol, timeframe, strategy), RuntimeSignalState()
                 )
-            if not self._should_evaluate_snapshot(
+            if not self._is_new_snapshot(
                 state,
                 scope=scope,
                 event_time=event_time,
@@ -1043,15 +1038,15 @@ class SignalRuntime:
             # ── Intrabar 置信度衰减（策略级覆盖 > 全局默认）──
             if scope == "intrabar":
                 decay = self._strategy_intrabar_decay.get(
-                    strategy, self._intrabar_confidence_decay
+                    strategy, self._intrabar_confidence_factor
                 )
                 decision = apply_intrabar_decay(decision, scope, decay)
             # ── HTF 方向对齐修正 ──────────────────────────
-            if decision.action in ("buy", "sell"):
+            if decision.direction in ("buy", "sell"):
                 htf_mul, htf_dir = self._compute_htf_alignment(
                     symbol,
                     timeframe,
-                    decision.action,
+                    decision.direction,
                     scope,
                 )
                 if htf_mul is not None:
@@ -1068,12 +1063,12 @@ class SignalRuntime:
 
             transition_metadata = (
                 self._transition_confirmed(
-                    state, decision.action, event_time, bar_time, regime_metadata
+                    state, decision.direction, event_time, bar_time, regime_metadata
                 )
                 if scope == "confirmed"
-                else self._transition_preview(
+                else self._transition_intrabar(
                     state,
-                    decision.action,
+                    decision.direction,
                     decision.confidence,
                     event_time,
                     bar_time,
@@ -1145,7 +1140,7 @@ class SignalRuntime:
             state_by_target=self._state_by_target,
             get_shard_lock=self._get_shard_lock,
             transition_confirmed_fn=self._transition_confirmed,
-            transition_preview_fn=self._transition_preview,
+            transition_intrabar_fn=self._transition_intrabar,
             persist_fn=self.service.persist_decision,
             publish_fn=self._publish_signal_event,
         )
@@ -1286,7 +1281,7 @@ class SignalRuntime:
         regime_metadata["session_buckets"] = list(active_sessions)
         # close_price 注入：在 scoped_indicators 收窄前从全量快照提取
         if "close_price" not in regime_metadata:
-            regime_metadata["close_price"] = _extract_close_price(indicators)
+            regime_metadata["close_price"] = extract_close_price(indicators)
 
         # ── 快速全拒绝检查：如果没有任何策略能通过 affinity 门控，跳过后续所有重计算
         if not self._any_strategy_eligible(

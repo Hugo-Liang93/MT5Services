@@ -79,8 +79,8 @@ class SignalConfig(BaseModel):
     # 策略 HTF 目标 TF 映射：{strategy.running_tf: target_tf}
     # 例：{"supertrend.M5": "H1", "sma_trend.H1": "D1"}
     strategy_htf_targets: dict[str, str] = Field(default_factory=dict)
-    # ── Intrabar 置信度衰减 ──
-    intrabar_confidence_decay: float = 0.85
+    # ── Intrabar 置信度缩放因子 ──
+    intrabar_confidence_factor: float = 0.85
     # ── HTF 方向对齐修正 ──
     htf_conflict_penalty: float = 0.70
     htf_alignment_boost: float = 1.10

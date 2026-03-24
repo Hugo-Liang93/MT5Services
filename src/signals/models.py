@@ -17,7 +17,7 @@ class SignalEvent:
     symbol: str
     timeframe: str
     strategy: str
-    action: str         # buy / sell / hold
+    direction: str      # buy / sell / hold
     confidence: float
     signal_state: str   # confirmed_buy, confirmed_sell, confirmed_cancelled,
                         # armed_buy, armed_sell, preview_buy, preview_sell, cancelled
@@ -48,7 +48,7 @@ class SignalDecision:
     strategy: str
     symbol: str
     timeframe: str
-    action: str
+    direction: str
     confidence: float
     reason: str
     used_indicators: List[str] = field(default_factory=list)
@@ -60,7 +60,7 @@ class SignalDecision:
             "strategy": self.strategy,
             "symbol": self.symbol,
             "timeframe": self.timeframe,
-            "action": self.action,
+            "direction": self.direction,
             "confidence": self.confidence,
             "reason": self.reason,
             "used_indicators": list(self.used_indicators),
@@ -76,7 +76,7 @@ class SignalRecord:
     symbol: str
     timeframe: str
     strategy: str
-    action: str
+    direction: str
     confidence: float
     reason: str
     used_indicators: List[str] = field(default_factory=list)
@@ -96,7 +96,7 @@ class SignalRecord:
             symbol=decision.symbol,
             timeframe=decision.timeframe,
             strategy=decision.strategy,
-            action=decision.action,
+            direction=decision.direction,
             confidence=float(decision.confidence),
             reason=decision.reason,
             used_indicators=list(decision.used_indicators),
@@ -111,7 +111,7 @@ class SignalRecord:
             self.symbol,
             self.timeframe,
             self.strategy,
-            self.action,
+            self.direction,
             self.confidence,
             self.reason,
             list(self.used_indicators),

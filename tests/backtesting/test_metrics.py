@@ -28,7 +28,7 @@ def _make_trade(
     return TradeRecord(
         signal_id="bt_test",
         strategy=strategy,
-        action="buy",
+        direction="buy",
         entry_time=t,
         entry_price=2000.0,
         exit_time=t,

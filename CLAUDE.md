@@ -448,7 +448,7 @@ BackgroundIngestor._ingest_ohlc()
  MarketDataService.set_ohlc_closed() + enqueue_ohlc_closed_event()
   ↓ 事件写入 events.db（持久化，不丢失）
   ↓ process_closed_bar_events_batch()
-  ↓ _load_bars() ← N 根完整收盘 K 线
+  ↓ _load_confirmed_bars() ← N 根完整收盘 K 线
   ↓ 全部 21 个已启用指标
   ↓ publish_snapshot(scope="confirmed")
   ↓ SignalRuntime._confirmed_events 队列（2048，优先消费，不可丢弃）
@@ -891,8 +891,8 @@ SignalRuntime._publish_signal_event(event: SignalEvent)
     │
     ├─→ SignalQualityTracker.on_signal_event()  ← 信号质量追踪
     │     仅处理 scope="confirmed" 的事件
-    │     ① _advance_pending：推进同 (symbol, tf) 下所有策略的 pending 计数
-    │     ② _record_pending：confirmed_buy/sell 时登记新 pending
+    │     ① _advance_pending_evaluations：推进同 (symbol, tf) 下所有策略的待评估计数
+    │     ② _register_signal_for_evaluation：confirmed_buy/sell 时登记新的待评估信号
     │     bars_elapsed 到期 → 写入 signal_outcomes 表 + 回调 PerformanceTracker(source="signal")
     │
     └─→ HTFStateCache.on_signal_event()      ← 高时间框架方向缓存
@@ -927,7 +927,7 @@ SignalRuntime._publish_signal_event(event: SignalEvent)
 
 ### SignalQualityTracker 评估路径
 
-每收到一个 scope="confirmed" 的 SignalEvent → `_advance_pending` 推进同 (symbol, tf) 下**所有策略**的 `bars_elapsed` → 达到 `bars_to_evaluate`（默认 5）后用最新收盘价评估。
+每收到一个 scope="confirmed" 的 SignalEvent → `_advance_pending_evaluations` 推进同 (symbol, tf) 下**所有策略**的 `bars_elapsed` → 达到 `bars_to_evaluate`（默认 5）后用最新收盘价评估。
 
 ### TradeOutcomeTracker 评估路径
 
@@ -945,7 +945,7 @@ SignalQualityTracker（信号质量评估完成）
     │
     └─→ write_fn(rows) → signal_outcomes 表（DB 持久化）
           → ConfidenceCalibrator 后台线程每小时查询 DB
-            按 (strategy, action, regime) 聚合最近 7 天胜率
+            按 (strategy, direction, regime) 聚合最近 7 天胜率
             分阶段校准（<50笔不校准，50-100轻微，100+正常）
 
 TradeOutcomeTracker（实际交易评估完成）
@@ -970,7 +970,7 @@ raw_confidence（策略规则输出）
     × session_performance_multiplier   (日内实时状态) ← StrategyPerformanceTracker
     → ConfidenceCalibrator             (长期统计校准) ← Calibrator
     → max(confidence_floor, result)    (底线保护)
-    × intrabar_confidence_decay        (scope=intrabar 时 × 0.85)
+    × intrabar_confidence_factor        (scope=intrabar 时 × 0.85)
     × htf_alignment_multiplier         (对齐 ×1.10 / 冲突 ×0.70 / 无数据 ×1.0)
     = final_confidence
     ★ 持久化的 confidence = 此最终值 = TradeExecutor 比较的值

@@ -196,6 +196,6 @@ class TestIntrabarDecay:
             service=DummyService(),
             snapshot_source=DummySource(),
             targets=[SignalTarget("X", "M5", "s")],
-            intrabar_confidence_decay=1.5,  # 超过 1.0
+            intrabar_confidence_factor=1.5,  # 超过 1.0
         )
-        assert runtime._intrabar_confidence_decay <= 1.0
+        assert runtime._intrabar_confidence_factor <= 1.0

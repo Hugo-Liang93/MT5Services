@@ -336,7 +336,7 @@ class DummyRiskService:
             "enabled": True,
             "mode": "warn_only",
             "blocked": False,
-            "action": "allow",
+            "verdict": "allow",
             "reason": None,
             "symbol": kwargs.get("symbol", "XAUUSD"),
             "active_windows": [],

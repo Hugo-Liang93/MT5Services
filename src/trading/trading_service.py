@@ -108,7 +108,7 @@ class TradingService:
         reason: str,
     ) -> Dict[str, Any]:
         updated = dict(assessment or {})
-        updated["action"] = "block"
+        updated["verdict"] = "block"
         updated["blocked"] = True
         updated["reason"] = reason
         warnings = list(updated.get("warnings") or [])
@@ -131,7 +131,7 @@ class TradingService:
             "enabled": True,
             "mode": "strict",
             "blocked": True,
-            "action": "block",
+            "verdict": "block",
             "reason": reason,
             "symbol": symbol,
             "active_windows": [],
@@ -465,7 +465,7 @@ class TradingService:
                         reason=reason,
                         checks=checks,
                         warnings=warnings,
-                        suggested_adjustment={"action": "adjust_sl_tp_or_wait"},
+                        suggested_adjustment={"verdict": "adjust_sl_tp_or_wait"},
                     )
                 # freeze_level 提示作为 warning
                 for c in broker_checks:
@@ -492,14 +492,14 @@ class TradingService:
                     reason=str(exc),
                     checks=checks,
                     warnings=warnings,
-                    suggested_adjustment={"action": "review_trade_parameters"},
+                    suggested_adjustment={"verdict": "review_trade_parameters"},
                 )
         if self.pre_trade_risk_service is None:
             return {
                 "enabled": False,
                 "mode": "off",
                 "blocked": False,
-                "action": "allow",
+                "verdict": "allow",
                 "reason": None,
                 "symbol": symbol,
                 "active_windows": [],
@@ -543,11 +543,11 @@ class TradingService:
                 assessment.setdefault("warnings", []).append(f"Margin estimate unavailable: {exc}")
                 assessment["margin_error"] = str(exc)
         assessment["request_id"] = request_id
-        assessment["executable"] = str(assessment.get("action") or "allow").lower() != "block"
+        assessment["executable"] = str(assessment.get("verdict") or "allow").lower() != "block"
         if not assessment["executable"]:
-            assessment["suggested_adjustment"] = {"action": "review_risk_windows"}
+            assessment["suggested_adjustment"] = {"verdict": "review_risk_windows"}
         elif assessment.get("margin_error"):
-            assessment["suggested_adjustment"] = {"action": "retry_margin_estimate"}
+            assessment["suggested_adjustment"] = {"verdict": "retry_margin_estimate"}
         else:
             assessment["suggested_adjustment"] = None
         return assessment

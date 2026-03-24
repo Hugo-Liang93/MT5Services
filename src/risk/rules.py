@@ -68,7 +68,7 @@ class AccountSnapshotRule(RiskRule):
             return [
                 RiskCheckResult(
                     name=self.name,
-                    action="warn",
+                    verdict="warn",
                     reason="Account state unavailable for structural risk checks",
                     details={"error": str(exc)},
                 )
@@ -79,7 +79,7 @@ class AccountSnapshotRule(RiskRule):
             checks.append(
                 RiskCheckResult(
                     name="max_volume_per_order",
-                    action="block",
+                    verdict="block",
                     reason="Requested volume exceeds per-order limit",
                     details={
                         "requested_volume": context.intent.volume,
@@ -92,7 +92,7 @@ class AccountSnapshotRule(RiskRule):
             checks.append(
                 RiskCheckResult(
                     name="max_positions_per_symbol",
-                    action="block",
+                    verdict="block",
                     reason="Open positions for symbol already at configured limit",
                     details={
                         "symbol": context.intent.symbol,
@@ -106,7 +106,7 @@ class AccountSnapshotRule(RiskRule):
             checks.append(
                 RiskCheckResult(
                     name="max_open_positions_total",
-                    action="block",
+                    verdict="block",
                     reason="Total open positions already at configured limit",
                     details={
                         "open_positions": len(all_positions),
@@ -119,7 +119,7 @@ class AccountSnapshotRule(RiskRule):
             checks.append(
                 RiskCheckResult(
                     name="max_pending_orders_per_symbol",
-                    action="block",
+                    verdict="block",
                     reason="Pending orders for symbol already at configured limit",
                     details={
                         "symbol": context.intent.symbol,
@@ -136,7 +136,7 @@ class AccountSnapshotRule(RiskRule):
                 checks.append(
                     RiskCheckResult(
                         name="max_volume_per_symbol",
-                        action="block",
+                        verdict="block",
                         reason="Projected symbol exposure exceeds configured limit",
                         details={
                             "symbol": context.intent.symbol,
@@ -165,7 +165,7 @@ class ProtectionRule(RiskRule):
             checks.append(
                 RiskCheckResult(
                     name="require_sl_for_market_orders",
-                    action="block",
+                    verdict="block",
                     reason="Stop loss is required for market orders",
                     details={"symbol": context.intent.symbol},
                 )
@@ -179,7 +179,7 @@ class ProtectionRule(RiskRule):
             checks.append(
                 RiskCheckResult(
                     name="require_tp_or_sl_for_market_orders",
-                    action="block",
+                    verdict="block",
                     reason="At least one protective exit is required for market orders",
                     details={"symbol": context.intent.symbol},
                 )
@@ -203,7 +203,7 @@ class DailyLossLimitRule(RiskRule):
             return [
                 RiskCheckResult(
                     name=self.name,
-                    action="warn",
+                    verdict="warn",
                     reason="Daily loss limit unavailable because account info could not be loaded",
                     details={"error": str(exc)},
                 )
@@ -217,7 +217,7 @@ class DailyLossLimitRule(RiskRule):
         return [
             RiskCheckResult(
                 name=self.name,
-                action="block",
+                verdict="block",
                 reason="daily_loss_limit_reached",
                 details={
                     **details,
@@ -338,7 +338,7 @@ class MarginAvailabilityRule(RiskRule):
             return [
                 RiskCheckResult(
                     name=self.name,
-                    action="warn",
+                    verdict="warn",
                     reason="Margin check unavailable: account info could not be loaded",
                 )
             ]
@@ -352,7 +352,7 @@ class MarginAvailabilityRule(RiskRule):
             return [
                 RiskCheckResult(
                     name=self.name,
-                    action="warn",
+                    verdict="warn",
                     reason="Free margin data unavailable from account info",
                     details={"estimated_margin": estimated_margin},
                 )
@@ -365,7 +365,7 @@ class MarginAvailabilityRule(RiskRule):
         return [
             RiskCheckResult(
                 name=self.name,
-                action="block",
+                verdict="block",
                 reason="Insufficient free margin for trade",
                 details={
                     "estimated_margin": round(estimated_margin, 2),
@@ -426,7 +426,7 @@ class TradeFrequencyRule(RiskRule):
                 checks.append(
                     RiskCheckResult(
                         name="max_trades_per_day",
-                        action="block",
+                        verdict="block",
                         reason="Daily trade limit reached",
                         details={
                             "trades_today": day_count,
@@ -443,7 +443,7 @@ class TradeFrequencyRule(RiskRule):
                 checks.append(
                     RiskCheckResult(
                         name="max_trades_per_hour",
-                        action="block",
+                        verdict="block",
                         reason="Hourly trade limit reached",
                         details={
                             "trades_last_hour": hour_count,
@@ -482,7 +482,7 @@ class SessionWindowRule(RiskRule):
         return [
             RiskCheckResult(
                 name=self.name,
-                action="block",
+                verdict="block",
                 reason=f"outside_allowed_sessions:{','.join(current_sessions)}",
                 details={
                     "current_sessions": current_sessions,
@@ -557,7 +557,7 @@ class MarketStructureRule(RiskRule):
             checks.append(
                 RiskCheckResult(
                     name=self.name,
-                    action="block",
+                    verdict="block",
                     reason="buy_conflicts_with_bearish_sweep_confirmation",
                     details={
                         "side": side,
@@ -571,7 +571,7 @@ class MarketStructureRule(RiskRule):
             checks.append(
                 RiskCheckResult(
                     name=self.name,
-                    action="block",
+                    verdict="block",
                     reason="sell_conflicts_with_bullish_sweep_confirmation",
                     details={
                         "side": side,
@@ -593,7 +593,7 @@ class MarketStructureRule(RiskRule):
                 checks.append(
                     RiskCheckResult(
                         name=f"{self.name}_new_york_open",
-                        action="warn",
+                        verdict="warn",
                         reason="buy_against_new_york_open_downside_expansion",
                         details={
                             "side": side,
@@ -611,7 +611,7 @@ class MarketStructureRule(RiskRule):
                 checks.append(
                     RiskCheckResult(
                         name=f"{self.name}_new_york_open",
-                        action="warn",
+                        verdict="warn",
                         reason="sell_against_new_york_open_upside_expansion",
                         details={
                             "side": side,
@@ -652,7 +652,7 @@ class EconomicEventRule(RiskRule):
         return [
             RiskCheckResult(
                 name=self.name,
-                action=action,
+                verdict=action,
                 reason=reason,
                 details={"assessment": assessment},
             )
@@ -703,7 +703,7 @@ class CalendarHealthRule(RiskRule):
         return [
             RiskCheckResult(
                 name=self.name,
-                action=action,
+                verdict=action,
                 reason="; ".join(reasons),
                 details={
                     "stale": stale,

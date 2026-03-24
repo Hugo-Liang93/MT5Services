@@ -51,7 +51,7 @@ class DummyTradingModule:
 
 def _build_event(
     *,
-    action: str = "buy",
+    direction: str = "buy",
     confidence: float = 0.9,
     signal_id: str = "sig_test",
 ) -> SignalEvent:
@@ -59,9 +59,9 @@ def _build_event(
         symbol="XAUUSD",
         timeframe="M5",
         strategy="sma_trend",
-        action=action,
+        direction=direction,
         confidence=confidence,
-        signal_state=f"confirmed_{action}",
+        signal_state=f"confirmed_{direction}",
         scope="confirmed",
         indicators={
             "atr14": {"atr": 2.0},
@@ -222,7 +222,7 @@ def test_lazy_worker_start() -> None:
         symbol="XAUUSD",
         timeframe="M5",
         strategy="rsi_reversion",
-        action="buy",
+        direction="buy",
         confidence=0.8,
         signal_state="preview_buy",
         scope="intrabar",  # not "confirmed" => early return

@@ -43,7 +43,7 @@ class TestNormalClose:
         )
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2000.0, confidence=0.75,
+            strategy="sma_trend", direction="buy", fill_price=2000.0, confidence=0.75,
         )
         tracker.on_position_closed(_make_pos(action="buy"), close_price=2010.0)
 
@@ -68,7 +68,7 @@ class TestNormalClose:
         tracker = TradeOutcomeTracker()
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="sell", fill_price=2010.0, confidence=0.70,
+            strategy="sma_trend", direction="sell", fill_price=2010.0, confidence=0.70,
         )
         tracker.on_position_closed(_make_pos(action="sell"), close_price=2000.0)
 
@@ -80,7 +80,7 @@ class TestNormalClose:
         tracker = TradeOutcomeTracker()
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2010.0, confidence=0.60,
+            strategy="sma_trend", direction="buy", fill_price=2010.0, confidence=0.60,
         )
         tracker.on_position_closed(_make_pos(action="buy"), close_price=2000.0)
 
@@ -101,7 +101,7 @@ class TestUnresolvedClose:
         )
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2000.0, confidence=0.75,
+            strategy="sma_trend", direction="buy", fill_price=2000.0, confidence=0.75,
         )
         tracker.on_position_closed(_make_pos(), close_price=None)
 
@@ -126,7 +126,7 @@ class TestUnresolvedClose:
         tracker = TradeOutcomeTracker()
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2000.0, confidence=0.75,
+            strategy="sma_trend", direction="buy", fill_price=2000.0, confidence=0.75,
         )
         tracker.on_position_closed(_make_pos(), close_price="not_a_number")
 
@@ -143,7 +143,7 @@ class TestCloseSource:
         tracker = TradeOutcomeTracker(write_fn=lambda rows: written.extend(rows))
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2000.0, confidence=0.75,
+            strategy="sma_trend", direction="buy", fill_price=2000.0, confidence=0.75,
         )
         tracker.on_position_closed(
             _make_pos(close_source="history_deals"), close_price=2005.0,
@@ -157,7 +157,7 @@ class TestCloseSource:
         tracker = TradeOutcomeTracker(write_fn=lambda rows: written.extend(rows))
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2000.0, confidence=0.75,
+            strategy="sma_trend", direction="buy", fill_price=2000.0, confidence=0.75,
         )
         tracker.on_position_closed(
             _make_pos(close_source="manual_reconcile"), close_price=2005.0,
@@ -171,7 +171,7 @@ class TestCloseSource:
         tracker = TradeOutcomeTracker(write_fn=lambda rows: written.extend(rows))
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2000.0, confidence=0.75,
+            strategy="sma_trend", direction="buy", fill_price=2000.0, confidence=0.75,
         )
         # pos 没有 _close_source 属性
         tracker.on_position_closed(_make_pos(), close_price=2005.0)
@@ -185,7 +185,7 @@ class TestCloseSource:
         tracker = TradeOutcomeTracker(write_fn=lambda rows: written.extend(rows))
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2000.0, confidence=0.75,
+            strategy="sma_trend", direction="buy", fill_price=2000.0, confidence=0.75,
         )
         tracker.on_position_closed(
             _make_pos(close_source="history_deals"), close_price=None,
@@ -214,12 +214,12 @@ class TestEdgeCases:
         # 交易 1: 正常关仓
         tracker.on_trade_opened(
             signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
-            strategy="sma_trend", action="buy", fill_price=2000.0, confidence=0.75,
+            strategy="sma_trend", direction="buy", fill_price=2000.0, confidence=0.75,
         )
         # 交易 2: unresolved
         tracker.on_trade_opened(
             signal_id="sig-2", symbol="XAUUSD", timeframe="M5",
-            strategy="rsi_reversion", action="sell", fill_price=2010.0, confidence=0.80,
+            strategy="rsi_reversion", direction="sell", fill_price=2010.0, confidence=0.80,
         )
 
         tracker.on_position_closed(_make_pos(signal_id="sig-1", action="buy"), close_price=2010.0)

@@ -22,7 +22,7 @@ class DummySignalService:
                     "strategy": strategy,
                     "symbol": symbol,
                     "timeframe": timeframe,
-                    "action": "buy",
+                    "direction": "buy",
                     "confidence": 0.9,
                     "reason": "unit_test",
                     "used_indicators": ["rsi"],
@@ -41,7 +41,7 @@ class DummySignalService:
                 "symbol": "XAUUSD",
                 "timeframe": "M5",
                 "strategy": "rsi_reversion",
-                "action": "buy",
+                "direction": "buy",
                 "confidence": 0.9,
                 "reason": "test",
                 "scope": scope,
@@ -58,7 +58,7 @@ class DummySignalService:
                 "symbol": "XAUUSD",
                 "timeframe": "M5",
                 "strategy": "rsi_reversion",
-                "action": "buy",
+                "direction": "buy",
                 "count": 3,
                 "scope": scope,
                 "avg_confidence": 0.82,
@@ -97,7 +97,7 @@ def test_signal_evaluate_endpoint() -> None:
     )
 
     assert response.success is True
-    assert response.data.action == "buy"
+    assert response.data.direction == "buy"
     assert response.data.metadata["source"] == "test"
 
 

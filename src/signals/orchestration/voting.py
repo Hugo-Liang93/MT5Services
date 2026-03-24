@@ -84,7 +84,7 @@ class StrategyVotingEngine:
         self._threshold = consensus_threshold
         self._min_quorum = min_quorum
         self._min_quorum_ratio = min_quorum_ratio
-        self._disagree_penalty = disagreement_penalty
+        self._disagreement_penalty = disagreement_penalty
         # group_name 决定投票结果信号的 strategy 字段值。
         # 默认 "consensus"（向后兼容）；命名 voting group 传入各自的 group name。
         self._group_name = group_name
@@ -140,10 +140,10 @@ class StrategyVotingEngine:
         sell_strategies: List[str] = []
 
         for d in decisions:
-            if d.action == "buy":
+            if d.direction == "buy":
                 buy_weight += d.confidence
                 buy_strategies.append(d.strategy)
-            elif d.action == "sell":
+            elif d.direction == "sell":
                 sell_weight += d.confidence
                 sell_strategies.append(d.strategy)
             else:
@@ -175,7 +175,7 @@ class StrategyVotingEngine:
         # 使用平方衰减：轻度分歧（0.55 vs 0.45）惩罚较轻，
         # 重度分歧（0.50 vs 0.50）仍然严厉惩罚
         raw_disagreement = min_side / 0.5
-        disagreement_factor = (raw_disagreement ** 2) * self._disagree_penalty
+        disagreement_factor = (raw_disagreement ** 2) * self._disagreement_penalty
 
         # ── 共识判断 ─────────────────────────────────────────────────
         if buy_score >= self._threshold and buy_score > sell_score:
@@ -213,7 +213,7 @@ class StrategyVotingEngine:
             strategy=self._group_name,
             symbol=symbol,
             timeframe=timeframe,
-            action=action,
+            direction=action,
             confidence=consensus_confidence,
             reason=reason,
             used_indicators=all_indicators,
@@ -240,5 +240,5 @@ class StrategyVotingEngine:
             "group_name": self._group_name,
             "consensus_threshold": self._threshold,
             "min_quorum": self._min_quorum,
-            "disagreement_penalty": self._disagree_penalty,
+            "disagreement_penalty": self._disagreement_penalty,
         }

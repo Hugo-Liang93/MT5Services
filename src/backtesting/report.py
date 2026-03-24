@@ -125,7 +125,7 @@ def _format_signal_eval_stats(result: BacktestResult) -> List[str]:
 
     total = len(evals)
     filtered = sum(1 for e in evals if e.filtered)
-    actionable = [e for e in evals if e.action in ("buy", "sell") and not e.filtered]
+    actionable = [e for e in evals if e.direction in ("buy", "sell") and not e.filtered]
     won = sum(1 for e in actionable if e.won is True)
     lost = sum(1 for e in actionable if e.won is False)
     win_rate = won / (won + lost) * 100 if (won + lost) > 0 else 0.0

@@ -61,7 +61,7 @@ class StorageWriter:
         self._stop.set()
         # 强制 flush 所有通道
         for name in list(self._channels.keys()):
-            self._maybe_flush(name, self._channels[name], force=True)
+            self._flush_if_due(name, self._channels[name], force=True)
         if self._thread:
             self._thread.join(timeout=timeout)
 
@@ -97,7 +97,7 @@ class StorageWriter:
         while not self._stop.is_set() or self._has_pending():
             for name, ch in self._channels.items():
                 self._drain_queue(ch["queue"], ch["pending"], ch["batch_size"])
-                self._maybe_flush(name, ch)
+                self._flush_if_due(name, ch)
             self._stop.wait(0.1)
 
     def _has_pending(self) -> bool:
@@ -147,7 +147,7 @@ class StorageWriter:
         if drained:
             pending.extend(drained)
 
-    def _maybe_flush(self, name: str, ch: Dict[str, object], force: bool = False) -> None:
+    def _flush_if_due(self, name: str, ch: Dict[str, object], force: bool = False) -> None:
         pending: deque = ch["pending"]  # type: ignore
         if not pending or not ch["enabled_fn"]():  # type: ignore
             return
@@ -183,7 +183,7 @@ class StorageWriter:
         write_fn: Callable[[Iterable[tuple]], None],
         enabled: Optional[Callable[[], bool]] = None,
         pending_maxsize: Optional[int] = None,
-        full_policy: Optional[str] = None,
+        overflow_policy: Optional[str] = None,
     ) -> None:
         enabled_fn = enabled or (lambda: True)
         self._channels[name] = {
@@ -194,7 +194,7 @@ class StorageWriter:
             "batch_size": batch_size,
             "write_fn": write_fn,
             "enabled_fn": enabled_fn,
-            "full_policy": (full_policy or self.settings.queue_full_policy or "auto").strip().lower(),
+            "overflow_policy": (overflow_policy or self.settings.queue_overflow_policy or "auto").strip().lower(),
         }
         self._last_flush[name] = time.time()
         self._channel_stats[name] = {
@@ -222,7 +222,7 @@ class StorageWriter:
                 "size": size,
                 "max": maxsize,
                 "pending": len(ch["pending"]),
-                "full_policy": ch["full_policy"],
+                "overflow_policy": ch["overflow_policy"],
                 "utilization_pct": round(utilization * 100, 1),
                 "status": status,
                 "drops_oldest": self._channel_stats[name]["dropped_oldest"],
@@ -335,7 +335,7 @@ class StorageWriter:
                 batch_size=batch_size,
                 write_fn=write_fn,
                 enabled=enabled_fn,
-                full_policy=parser.get(section, "full_policy", fallback=None),
+                overflow_policy=parser.get(section, "overflow_policy", fallback=None),
             )
             registered = True
 
@@ -375,7 +375,7 @@ class StorageWriter:
 
     def _handle_queue_full(self, name: str, ch: Dict[str, object], item: tuple) -> None:
         q: queue.Queue = ch["queue"]  # type: ignore[assignment]
-        policy = self._resolve_full_policy(ch)
+        policy = self._resolve_overflow_policy(ch)
         if not hasattr(self, "_queue_log_state"):
             self._queue_log_state = {}
         log_state = self._queue_log_state.setdefault(
@@ -466,8 +466,8 @@ class StorageWriter:
             self._drop_alert_last_at[name] = now
             self._drop_alert_last_total[name] = total_drops
 
-    def _resolve_full_policy(self, ch: Dict[str, object]) -> str:
-        policy = str(ch.get("full_policy", "auto")).strip().lower()
+    def _resolve_overflow_policy(self, ch: Dict[str, object]) -> str:
+        policy = str(ch.get("overflow_policy", "auto")).strip().lower()
         if policy != "auto":
             return policy
         channel_type = str(ch.get("type", "")).strip().lower()

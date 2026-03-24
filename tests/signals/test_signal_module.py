@@ -54,7 +54,7 @@ class DummySignalRepository:
                     "symbol": rows[-1][2],
                     "timeframe": rows[-1][3],
                     "strategy": rows[-1][4],
-                    "action": rows[-1][5],
+                    "direction": rows[-1][5],
                     "confidence": rows[-1][6],
                     "reason": rows[-1][7],
                     "used_indicators": rows[-1][8],
@@ -151,7 +151,7 @@ class AffinityProbeStrategy:
             strategy=self.name,
             symbol=context.symbol,
             timeframe=context.timeframe,
-            action="buy",
+            direction="buy",
             confidence=0.8,
             reason="probe",
         )
@@ -164,7 +164,7 @@ def test_signal_module_uses_indicator_source_for_default_payload() -> None:
         symbol="XAUUSD", timeframe="M5", strategy="sma_trend", persist=False
     )
 
-    assert decision.action == "buy"
+    assert decision.direction == "buy"
     assert decision.strategy == "sma_trend"
     assert "sma20" in decision.used_indicators
 
@@ -178,7 +178,7 @@ def test_signal_module_persists_and_can_query_recent() -> None:
 
     assert len(db.confirmed_rows) == 1
     assert recent[0]["strategy"] == "rsi_reversion"
-    assert recent[0]["action"] == "sell"
+    assert recent[0]["direction"] == "sell"
     assert recent[0]["scope"] == "confirmed"
 
 
@@ -246,8 +246,8 @@ def test_bollinger_breakout_strategy_uses_boll20_indicator() -> None:
         persist=False,
     )
     assert (
-        decision.action == "buy"
-    ), f"expected buy, got {decision.action}: {decision.reason}"
+        decision.direction == "buy"
+    ), f"expected buy, got {decision.direction}: {decision.reason}"
     assert "boll20" in decision.used_indicators
 
     # Price above upper band → expect sell signal
@@ -266,7 +266,7 @@ def test_bollinger_breakout_strategy_uses_boll20_indicator() -> None:
         indicators=indicators_sell,
         persist=False,
     )
-    assert decision_sell.action == "sell", f"expected sell, got {decision_sell.action}"
+    assert decision_sell.direction == "sell", f"expected sell, got {decision_sell.direction}"
 
 
 def test_signal_module_rejects_unknown_strategy() -> None:
@@ -331,7 +331,7 @@ class DummyDiagnosticRepository:
         return [
             {
                 "strategy": "sma_trend",
-                "action": "buy",
+                "direction": "buy",
                 "total": 5,
                 "wins": 3,
                 "losses": 2,
@@ -343,7 +343,7 @@ class DummyDiagnosticRepository:
             },
             {
                 "strategy": "rsi_reversion",
-                "action": "sell",
+                "direction": "sell",
                 "total": 4,
                 "wins": 2,
                 "losses": 2,
@@ -364,7 +364,7 @@ def test_strategy_diagnostics_reports_conflicts_and_missing_indicators() -> None
             "symbol": "XAUUSD",
             "timeframe": "M5",
             "strategy": "sma_trend",
-            "action": "buy",
+            "direction": "buy",
             "confidence": 0.8,
             "reason": "trend_up",
             "used_indicators": ["sma20", "ema50"],
@@ -378,7 +378,7 @@ def test_strategy_diagnostics_reports_conflicts_and_missing_indicators() -> None
             "symbol": "XAUUSD",
             "timeframe": "M5",
             "strategy": "rsi_reversion",
-            "action": "sell",
+            "direction": "sell",
             "confidence": 0.7,
             "reason": "rsi=76.0",
             "used_indicators": ["rsi14"],
@@ -392,7 +392,7 @@ def test_strategy_diagnostics_reports_conflicts_and_missing_indicators() -> None
             "symbol": "XAUUSD",
             "timeframe": "M5",
             "strategy": "rsi_reversion",
-            "action": "hold",
+            "direction": "hold",
             "confidence": 0.0,
             "reason": "missing_required_indicator:rsi",
             "used_indicators": ["rsi14"],
@@ -442,7 +442,7 @@ def test_signal_module_daily_quality_report() -> None:
             "symbol": "XAUUSD",
             "timeframe": "M5",
             "strategy": "sma_trend",
-            "action": "buy",
+            "direction": "buy",
             "confidence": 0.8,
             "reason": "trend_up",
             "used_indicators": ["sma20", "ema50"],
@@ -478,7 +478,7 @@ def test_signal_module_allows_custom_diagnostics_engine_injection() -> None:
             "symbol": "XAUUSD",
             "timeframe": "M5",
             "strategy": "sma_trend",
-            "action": "buy",
+            "direction": "buy",
             "confidence": 0.8,
             "reason": "trend_up",
             "used_indicators": ["sma20", "ema50"],
@@ -523,7 +523,7 @@ def test_signal_module_recent_by_trace_id_filters_rows() -> None:
             "symbol": "XAUUSD",
             "timeframe": "M5",
             "strategy": "sma_trend",
-            "action": "buy",
+            "direction": "buy",
             "confidence": 0.8,
             "reason": "trend_up",
             "used_indicators": ["sma20", "ema50"],
@@ -537,7 +537,7 @@ def test_signal_module_recent_by_trace_id_filters_rows() -> None:
             "symbol": "XAUUSD",
             "timeframe": "M5",
             "strategy": "rsi_reversion",
-            "action": "sell",
+            "direction": "sell",
             "confidence": 0.7,
             "reason": "rsi=72",
             "used_indicators": ["rsi14"],
@@ -614,7 +614,7 @@ def test_signal_module_recent_consensus_signals_filters_consensus_strategy() -> 
                     "symbol": "XAUUSD",
                     "timeframe": "M5",
                     "strategy": kwargs.get("strategy"),
-                    "action": "buy",
+                    "direction": "buy",
                     "confidence": 0.8,
                     "reason": "consensus",
                     "used_indicators": ["sma20"],

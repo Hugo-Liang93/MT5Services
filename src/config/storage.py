@@ -27,7 +27,7 @@ class StorageSettings(BaseModel):
     intrabar_flush_interval: float = 5.0
     intrabar_flush_batch_size: int = 200
     intrabar_queue_maxsize: int = 10000
-    queue_full_policy: str = "auto"
+    queue_overflow_policy: str = "auto"
     queue_put_timeout: float = 0.25
 
 
@@ -100,6 +100,6 @@ def load_storage_settings() -> StorageSettings:
         intrabar_flush_interval=_cfg_float(sec, "intrabar_flush_interval", 5.0),
         intrabar_flush_batch_size=_cfg_int(sec, "intrabar_flush_batch_size", 200),
         intrabar_queue_maxsize=_cfg_int(sec, "intrabar_queue_maxsize", 10000),
-        queue_full_policy=_cfg_str(sec, "queue_full_policy", "auto"),
+        queue_overflow_policy=_cfg_str(sec, "queue_overflow_policy", "auto"),
         queue_put_timeout=_cfg_float(sec, "queue_put_timeout", 0.25),
     )

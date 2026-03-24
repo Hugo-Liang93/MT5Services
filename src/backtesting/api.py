@@ -59,7 +59,7 @@ class BacktestRunRequest(BaseModel):
     warmup_bars: int = 200
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
     # 过滤器配置
-    enable_filters: bool = True
+    filters_enabled: bool = True
     filter_allowed_sessions: str = "london,newyork"
     filter_session_transition_cooldown: int = 15
     filter_volatility_spike_multiplier: float = 2.5
@@ -348,7 +348,7 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
             min_confidence=request.min_confidence,
             warmup_bars=request.warmup_bars,
             strategy_params=request.strategy_params,
-            enable_filters=request.enable_filters,
+            filters_enabled=request.filters_enabled,
             filter_allowed_sessions=request.filter_allowed_sessions,
             filter_session_transition_cooldown=request.filter_session_transition_cooldown,
             filter_volatility_spike_multiplier=request.filter_volatility_spike_multiplier,

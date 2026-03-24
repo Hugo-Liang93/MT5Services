@@ -54,7 +54,7 @@ def get_backtest_defaults() -> Dict[str, Any]:
 
     # [filters] section
     if parser.has_section("filters"):
-        _set_bool(result, parser, "filters", "enabled", "enable_filters")
+        _set_bool(result, parser, "filters", "enabled", "filters_enabled")
         _set_bool(result, parser, "filters", "session_filter_enabled", "filter_session_enabled")
         _set_str(result, parser, "filters", "allowed_sessions", "filter_allowed_sessions")
         _set_bool(
@@ -83,7 +83,7 @@ def get_backtest_defaults() -> Dict[str, Any]:
 
     # [pending_entry] section — 价格确认入场参数
     if parser.has_section("pending_entry"):
-        _set_bool(result, parser, "pending_entry", "enabled", "enable_pending_entry")
+        _set_bool(result, parser, "pending_entry", "enabled", "pending_entry_enabled")
         _set_int(result, parser, "pending_entry", "expiry_bars", "pending_entry_expiry_bars")
         _set_float(
             result, parser, "pending_entry", "pullback_atr_factor",

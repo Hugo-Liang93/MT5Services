@@ -105,7 +105,7 @@ def test_indicator_manager_loads_bar_time_window_from_market_service() -> None:
     manager.market_service = ServiceStub()
     manager._get_max_lookback = lambda: 10
 
-    bars = manager._load_bars("XAUUSD", "M1", bar_time=target_bar.time)
+    bars = manager._load_confirmed_bars("XAUUSD", "M1", bar_time=target_bar.time)
 
     assert calls["window"] == 1
     assert calls["latest"] == 0
@@ -439,7 +439,7 @@ def test_indicator_manager_avoids_recomputing_priority_indicators_in_full_confir
     manager = object.__new__(UnifiedIndicatorManager)
     manager.pipeline = SimpleNamespace(compute_staged=compute_staged)
     manager._priority_indicator_groups = (("rsi14",),)
-    manager._load_bars = lambda symbol, timeframe, bar_time=None: [_bar(3), _bar(4)]
+    manager._load_confirmed_bars = lambda symbol, timeframe, bar_time=None: [_bar(3), _bar(4)]
     manager._select_indicator_names_for_history = (
         lambda available_bars, indicator_names=None: list(indicator_names) if indicator_names else ["rsi14", "ema50"]
     )

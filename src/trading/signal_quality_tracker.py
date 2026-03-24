@@ -22,8 +22,8 @@ SignalQualityTracker 作为 SignalRuntime 的信号监听器注册：
     quality_tracker.attach(runtime) → runtime.add_signal_listener(on_signal_event)
 
 每次 scope="confirmed" 的 SignalEvent 到来时：
-    1. _advance_pending：推进同一 (symbol, timeframe) 下所有策略的 pending 计数
-    2. _record_pending：若为 confirmed_buy/sell，登记新的待评估信号
+    1. _advance_pending_evaluations：推进同一 (symbol, timeframe) 下所有策略的待评估计数
+    2. _register_signal_for_evaluation：若为 confirmed_buy/sell，登记新的待评估信号
     3. 当 bars_elapsed >= bars_to_evaluate，用最新 close 作为 exit_price 计算胜负，写入 DB
 """
 from __future__ import annotations
@@ -34,6 +34,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from src.signals.evaluation.indicators_helpers import extract_close_price
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,7 +43,7 @@ class _PendingSignal:
     """等待回填的未结信号记录。"""
 
     __slots__ = (
-        "signal_id", "symbol", "timeframe", "strategy", "action",
+        "signal_id", "symbol", "timeframe", "strategy", "direction",
         "confidence", "entry_price", "issued_at", "bar_time",
         "regime", "bars_elapsed",
     )
@@ -52,7 +54,7 @@ class _PendingSignal:
         symbol: str,
         timeframe: str,
         strategy: str,
-        action: str,
+        direction: str,
         confidence: float,
         entry_price: Optional[float],
         issued_at: datetime,
@@ -63,7 +65,7 @@ class _PendingSignal:
         self.symbol = symbol
         self.timeframe = timeframe
         self.strategy = strategy
-        self.action = action
+        self.direction = direction
         self.confidence = confidence
         self.entry_price = entry_price
         self.issued_at = issued_at
@@ -99,14 +101,14 @@ class SignalQualityTracker:
         self._bars_to_evaluate = max(1, bars_to_evaluate)
         self._max_pending = max_pending
         self._on_quality_fn = on_quality_fn
-        # key: (symbol, timeframe, strategy) → list of pending signals
-        self._pending: Dict[Tuple[str, str, str], List[_PendingSignal]] = {}
+        # key: (symbol, timeframe, strategy) → list of signals awaiting evaluation
+        self._awaiting_evaluation: Dict[Tuple[str, str, str], List[_PendingSignal]] = {}
         self._lock = threading.Lock()
         self._total_evaluated: int = 0
         self._total_wins: int = 0
         # 去重：同一 (symbol, timeframe) 同一 bar_time 只推进一次，
         # 防止同一根 bar 的多个策略事件重复推进 bars_elapsed。
-        self._last_advance_bar: Dict[Tuple[str, str], Any] = {}
+        self._last_advanced_bar_time: Dict[Tuple[str, str], Any] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -124,9 +126,9 @@ class SignalQualityTracker:
         if scope != "confirmed":
             return
 
-        self._advance_pending(event)
+        self._advance_pending_evaluations(event)
         if signal_state in ("confirmed_buy", "confirmed_sell"):
-            self._record_pending(event)
+            self._register_signal_for_evaluation(event)
 
     def winrate_summary(self) -> Dict[str, Any]:
         """返回内存中统计的信号质量实时胜率（不依赖 DB）。"""
@@ -139,7 +141,7 @@ class SignalQualityTracker:
                     if self._total_evaluated > 0
                     else None
                 ),
-                "pending_count": sum(len(v) for v in self._pending.values()),
+                "pending_count": sum(len(v) for v in self._awaiting_evaluation.values()),
             }
 
     def on_execution_skip(self, signal_id: str, reason: str) -> None:
@@ -151,11 +153,11 @@ class SignalQualityTracker:
         if not signal_id:
             return
         with self._lock:
-            for pending_list in self._pending.values():
+            for pending_list in self._awaiting_evaluation.values():
                 for p in pending_list:
                     if p.signal_id == signal_id:
                         # 标记为 skipped，_evaluate_pending 会据此跳过
-                        p.action = f"skipped:{reason}"
+                        p.direction = f"skipped:{reason}"
                         return
 
     def attach(self, runtime: Any) -> None:
@@ -166,35 +168,9 @@ class SignalQualityTracker:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _get_close_price(self, event: Any) -> Optional[float]:
-        """从 SignalEvent 中提取收盘价。
-
-        优先级：
-        1. ``event.metadata["close_price"]``：由 SignalRuntime 注入。
-        2. 扫描 ``event.indicators`` 所有 payload 的 ``close`` 字段（兜底）。
-        """
-        raw = event.metadata.get("close_price")
-        if raw is not None:
-            try:
-                return float(raw)
-            except (TypeError, ValueError):
-                pass
-
-        for payload in event.indicators.values():
-            if not isinstance(payload, dict):
-                continue
-            close = payload.get("close")
-            if close is not None:
-                try:
-                    return float(close)
-                except (TypeError, ValueError):
-                    pass
-
-        return None
-
-    def _record_pending(self, event: Any) -> None:
-        """记录一个新的待评估信号。"""
-        entry_price = self._get_close_price(event)
+    def _register_signal_for_evaluation(self, event: Any) -> None:
+        """注册一个新的待评估信号。"""
+        entry_price = extract_close_price(event.indicators, event.metadata)
         bar_time_raw = event.metadata.get("bar_time", event.generated_at)
         if isinstance(bar_time_raw, str):
             try:
@@ -213,7 +189,7 @@ class SignalQualityTracker:
             symbol=event.symbol,
             timeframe=event.timeframe,
             strategy=event.strategy,
-            action=event.action,
+            direction=event.direction,
             confidence=event.confidence,
             entry_price=entry_price,
             issued_at=event.generated_at,
@@ -222,19 +198,19 @@ class SignalQualityTracker:
         )
         key = (event.symbol, event.timeframe, event.strategy)
         with self._lock:
-            lst = self._pending.setdefault(key, [])
+            lst = self._awaiting_evaluation.setdefault(key, [])
             lst.append(pending)
             if len(lst) > self._max_pending:
                 lst.pop(0)
 
-    def _advance_pending(self, event: Any) -> None:
+    def _advance_pending_evaluations(self, event: Any) -> None:
         """收到新的 confirmed 快照，推进同一 (symbol, timeframe) 下所有策略的待评估计数。
 
         去重机制：同一根 bar 收盘后，N 个策略各自产生 SignalEvent 并触发此方法，
         但 bars_elapsed 只应推进 1 次（代表"又过了一根 bar"）。
         使用 (symbol, timeframe) → bar_time 映射去重。
         """
-        exit_price = self._get_close_price(event)
+        exit_price = extract_close_price(event.indicators, event.metadata)
         if exit_price is None:
             return
 
@@ -246,15 +222,15 @@ class SignalQualityTracker:
             # 同一 (symbol, timeframe) 同一 bar_time 只推进一次
             # bar_time_raw 为 None 时用 fallback 避免多个无 bar_time 事件被误去重
             dedup_key = bar_time_raw if bar_time_raw is not None else f"_fallback_{time.monotonic()}"
-            if self._last_advance_bar.get(symbol_tf) == dedup_key:
+            if self._last_advanced_bar_time.get(symbol_tf) == dedup_key:
                 return
-            self._last_advance_bar[symbol_tf] = dedup_key
+            self._last_advanced_bar_time[symbol_tf] = dedup_key
 
             keys_to_scan = [
-                k for k in self._pending if k[0] == symbol_tf[0] and k[1] == symbol_tf[1]
+                k for k in self._awaiting_evaluation if k[0] == symbol_tf[0] and k[1] == symbol_tf[1]
             ]
             for key in keys_to_scan:
-                lst = self._pending.get(key, [])
+                lst = self._awaiting_evaluation.get(key, [])
                 remaining: List[_PendingSignal] = []
                 for p in lst:
                     p.bars_elapsed += 1
@@ -262,7 +238,7 @@ class SignalQualityTracker:
                         to_evaluate.append(p)
                     else:
                         remaining.append(p)
-                self._pending[key] = remaining
+                self._awaiting_evaluation[key] = remaining
 
         if not to_evaluate:
             return
@@ -272,9 +248,9 @@ class SignalQualityTracker:
         for p in to_evaluate:
             if p.entry_price is not None and exit_price is not None:
                 price_change = exit_price - p.entry_price
-                if p.action == "buy":
+                if p.direction == "buy":
                     won = price_change > 0
-                elif p.action == "sell":
+                elif p.direction == "sell":
                     won = price_change < 0
                 else:
                     won = None
@@ -306,7 +282,7 @@ class SignalQualityTracker:
                 p.symbol,
                 p.timeframe,
                 p.strategy,
-                p.action,
+                p.direction,
                 p.confidence,
                 p.entry_price,
                 exit_price,

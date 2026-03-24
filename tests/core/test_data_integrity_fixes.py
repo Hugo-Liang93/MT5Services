@@ -644,7 +644,7 @@ def test_storage_writer_block_policy_waits_for_capacity_instead_of_dropping() ->
 
     q: queue.Queue = queue.Queue(maxsize=1)
     q.put(("existing",))
-    channel = {"queue": q, "type": "ohlc", "full_policy": "block"}
+    channel = {"queue": q, "type": "ohlc", "overflow_policy": "block"}
 
     def consumer() -> None:
         time.sleep(0.06)
@@ -700,7 +700,7 @@ def test_storage_writer_stats_include_queue_summary() -> None:
         "ohlc": {
             "queue": queue.Queue(maxsize=10),
             "pending": deque([("pending",)] * 2),
-            "full_policy": "block",
+            "overflow_policy": "block",
         }
     }
     writer._channel_stats = {

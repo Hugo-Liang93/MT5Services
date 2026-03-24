@@ -15,7 +15,7 @@ def test_signal_diagnostics_analyzer_builds_expected_report() -> None:
         {
             "generated_at": "2026-03-19T10:00:00+00:00",
             "strategy": "sma_trend",
-            "action": "buy",
+            "direction": "buy",
             "confidence": 0.9,
             "reason": "trend",
             "metadata": {"bar_time": "2026-03-19T10:00:00+00:00", "regime": "trending"},
@@ -23,7 +23,7 @@ def test_signal_diagnostics_analyzer_builds_expected_report() -> None:
         {
             "generated_at": "2026-03-19T10:00:00+00:00",
             "strategy": "rsi_reversion",
-            "action": "sell",
+            "direction": "sell",
             "confidence": 0.7,
             "reason": "rsi",
             "metadata": {"bar_time": "2026-03-19T10:00:00+00:00", "regime": "trending"},
@@ -31,7 +31,7 @@ def test_signal_diagnostics_analyzer_builds_expected_report() -> None:
         {
             "generated_at": "2026-03-19T10:05:00+00:00",
             "strategy": "rsi_reversion",
-            "action": "hold",
+            "direction": "hold",
             "confidence": 0.1,
             "reason": "missing_required_indicator:rsi",
             "metadata": {"bar_time": "2026-03-19T10:05:00+00:00", "regime": "ranging"},
@@ -60,7 +60,7 @@ def test_signal_diagnostics_analyzer_daily_quality_report_filters_24h_window() -
         {
             "generated_at": "2026-03-19T10:00:00+00:00",
             "strategy": "sma_trend",
-            "action": "buy",
+            "direction": "buy",
             "confidence": 0.8,
             "reason": "trend",
             "metadata": {"bar_time": "2026-03-19T10:00:00+00:00", "regime": "trending"},
@@ -68,7 +68,7 @@ def test_signal_diagnostics_analyzer_daily_quality_report_filters_24h_window() -
         {
             "generated_at": "2026-03-17T10:00:00+00:00",
             "strategy": "rsi_reversion",
-            "action": "hold",
+            "direction": "hold",
             "confidence": 0.1,
             "reason": "missing_required_indicator:rsi",
             "metadata": {"bar_time": "2026-03-17T10:00:00+00:00", "regime": "ranging"},
@@ -94,12 +94,12 @@ def test_signal_diagnostics_analyzer_supports_extensions_plugin() -> None:
     plugins = AnalyticsPluginRegistry()
     plugins.register(
         "action_entropy",
-        lambda rows, _report: {"unique_actions": len({str(r.get("action", "")) for r in rows})},
+        lambda rows, _report: {"unique_actions": len({str(r.get("direction", "")) for r in rows})},
     )
     analyzer = SignalDiagnosticsAnalyzer(plugin_registry=plugins)
     rows = [
-        {"generated_at": "2026-03-19T10:00:00+00:00", "strategy": "a", "action": "buy", "confidence": 0.9},
-        {"generated_at": "2026-03-19T10:01:00+00:00", "strategy": "b", "action": "sell", "confidence": 0.8},
+        {"generated_at": "2026-03-19T10:00:00+00:00", "strategy": "a", "direction": "buy", "confidence": 0.9},
+        {"generated_at": "2026-03-19T10:01:00+00:00", "strategy": "b", "direction": "sell", "confidence": 0.8},
     ]
 
     report = analyzer.build_report(
@@ -116,8 +116,8 @@ def test_signal_diagnostics_analyzer_supports_extensions_plugin() -> None:
 def test_daily_quality_report_counts_invalid_time_rows() -> None:
     analyzer = SignalDiagnosticsAnalyzer()
     rows = [
-        {"generated_at": "bad_time", "strategy": "a", "action": "buy", "confidence": 0.9},
-        {"generated_at": "2026-03-19T10:00:00+00:00", "strategy": "b", "action": "sell", "confidence": 0.8},
+        {"generated_at": "bad_time", "strategy": "a", "direction": "buy", "confidence": 0.9},
+        {"generated_at": "2026-03-19T10:00:00+00:00", "strategy": "b", "direction": "sell", "confidence": 0.8},
     ]
     report = analyzer.build_daily_quality_report(
         rows,

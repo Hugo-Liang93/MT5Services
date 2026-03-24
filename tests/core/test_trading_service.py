@@ -75,7 +75,7 @@ class DummyRiskService:
             "enabled": True,
             "mode": "warn_only",
             "blocked": False,
-            "action": "allow",
+            "verdict": "allow",
             "reason": None,
             "symbol": kwargs["symbol"],
             "active_windows": [],
@@ -171,7 +171,7 @@ def test_execute_trade_returns_structured_execution_details():
 
     assert result["ticket"] == 12345
     assert result["estimated_margin"] == 512.5
-    assert result["pre_trade_risk"]["action"] == "allow"
+    assert result["pre_trade_risk"]["verdict"] == "allow"
     assert result["pre_trade_risk"]["intent"]["metadata"]["market_structure"]["structure_bias"] == (
         "bullish_pullback"
     )
@@ -223,7 +223,7 @@ def test_execute_trade_dry_run_returns_precheck_without_sending_order():
     assert result["dry_run"] is True
     assert result["execution_attempts"] == 0
     assert client.open_trade_details_calls == []
-    assert result["precheck"]["action"] == "allow"
+    assert result["precheck"]["verdict"] == "allow"
 
 
 def test_execute_trade_retries_on_transient_failure():
@@ -322,7 +322,7 @@ def test_precheck_trade_blocks_non_positive_volume():
 
     result = service.precheck_trade(symbol="XAUUSD", volume=0, side="buy")
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["executable"] is False
     assert result["suggested_adjustment"] == {"volume": 0.01}
 
@@ -340,11 +340,11 @@ def test_precheck_trade_blocks_invalid_trade_parameters_before_execution():
         tp=2365.0,
     )
 
-    assert result["action"] == "block"
+    assert result["verdict"] == "block"
     assert result["executable"] is False
     assert result["reason"] == "Stop loss must be below entry price for buy orders"
     assert result["checks"][0]["name"] == "trade_parameters"
-    assert result["suggested_adjustment"] == {"action": "review_trade_parameters"}
+    assert result["suggested_adjustment"] == {"verdict": "review_trade_parameters"}
 
 
 def test_execute_trade_stops_when_precheck_is_not_executable():

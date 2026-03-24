@@ -668,7 +668,7 @@
     max(confidence_floor, result)
          ▼ final_confidence_from_evaluate
          │
-    ×  intrabar_confidence_decay (scope=intrabar 时, 策略级覆盖 > 全局 0.85)
+    ×  intrabar_confidence_factor (scope=intrabar 时, 策略级覆盖 > 全局 0.85)
          ▼
     ×  htf_alignment_multiplier
          │  base × strength × stability  (signal.ini [htf_alignment] 配置)

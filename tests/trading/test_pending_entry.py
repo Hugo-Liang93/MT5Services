@@ -32,7 +32,7 @@ def _make_signal_event(
     symbol: str = "XAUUSD",
     timeframe: str = "M5",
     strategy: str = "supertrend",
-    action: str = "buy",
+    direction: str = "buy",
     confidence: float = 0.8,
     signal_state: str = "confirmed_buy",
     scope: str = "confirmed",
@@ -44,7 +44,7 @@ def _make_signal_event(
         symbol=symbol,
         timeframe=timeframe,
         strategy=strategy,
-        action=action,
+        direction=direction,
         confidence=confidence,
         signal_state=signal_state,
         scope=scope,
@@ -250,7 +250,7 @@ class TestPendingEntryManager:
         self,
         *,
         signal_id: str = "sig-001",
-        action: str = "buy",
+        direction: str = "buy",
         entry_low: float = 2649.0,
         entry_high: float = 2651.0,
         timeout_seconds: float = 60.0,
@@ -259,7 +259,7 @@ class TestPendingEntryManager:
         now = datetime.now(timezone.utc)
         return PendingEntry(
             signal_event=_make_signal_event(
-                signal_id=signal_id, action=action, category=category,
+                signal_id=signal_id, direction=direction, category=category,
             ),
             trade_params=_make_trade_params(),
             cost_metrics={},
@@ -300,8 +300,8 @@ class TestPendingEntryManager:
 
     def test_cancel_by_symbol_exclude_direction(self) -> None:
         mgr = self._make_manager()
-        mgr.submit(self._make_pending(signal_id="s1", action="buy"))
-        mgr.submit(self._make_pending(signal_id="s2", action="sell"))
+        mgr.submit(self._make_pending(signal_id="s1", direction="buy"))
+        mgr.submit(self._make_pending(signal_id="s2", direction="sell"))
         cancelled = mgr.cancel_by_symbol("XAUUSD", "override", exclude_direction="buy")
         assert cancelled == 1  # only sell cancelled
         assert mgr.active_count() == 1
@@ -398,7 +398,7 @@ class TestPendingEntryManager:
         mgr = self._make_manager(market_service=market, execute_fn=execute_fn)
 
         pending = self._make_pending(
-            action="sell", entry_low=2649.0, entry_high=2651.0,
+            direction="sell", entry_low=2649.0, entry_high=2651.0,
         )
         mgr.submit(pending)
 

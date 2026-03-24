@@ -54,7 +54,7 @@ class SignalDiagnosticsAnalyzer:
 
         for row in rows:
             strategy = str(row.get("strategy") or "unknown")
-            action = str(row.get("action") or "hold")
+            action = str(row.get("direction") or "hold")
             confidence_raw = row.get("confidence")
             confidence = (
                 float(confidence_raw)

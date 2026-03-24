@@ -48,7 +48,7 @@ def _make_runtime(source=None, htf_target_config=None):
                 strategy=kwargs["strategy"],
                 symbol=kwargs["symbol"],
                 timeframe=kwargs["timeframe"],
-                action="hold",
+                direction="hold",
                 confidence=0.3,
                 reason="test",
             )
