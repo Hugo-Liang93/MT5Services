@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from src.utils.event_store import ClaimedEvent
 
 logger = logging.getLogger(__name__)
+
+
+def _get_pipeline_bus(manager):  # type: ignore[no-untyped-def]
+    """Return the PipelineEventBus attached to *manager*, or None."""
+    return getattr(manager, "_pipeline_event_bus", None)
 
 def process_closed_bar_events_batch(
     manager,
@@ -65,10 +71,19 @@ def process_symbol_timeframe_batch(
     skipped_insufficient_history = 0
     failed = 0
 
+    pipeline_bus = _get_pipeline_bus(manager)
+
     for event in events:
         event_id = event.event_id
         bar_time = event.bar_time
+        trace_id = uuid4().hex
         try:
+            # Broadcast: bar closed event received
+            if pipeline_bus is not None:
+                pipeline_bus.emit_bar_closed(
+                    trace_id, symbol, timeframe, "confirmed", bar_time,
+                )
+
             end_idx = bar_index.get(bar_time)
             if end_idx is None:
                 prefix = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
@@ -111,6 +126,17 @@ def process_symbol_timeframe_batch(
                 if durable_event:
                     manager._mark_event_skipped(event_id, "insufficient_history")
                 continue
+
+            # Broadcast: indicator computation completed
+            if pipeline_bus is not None:
+                pipeline_bus.emit_indicator_computed(
+                    trace_id, symbol, timeframe, "confirmed",
+                    compute_time_ms, len(results),
+                )
+
+            # Attach trace_id so downstream snapshot_publisher can forward it
+            manager._current_trace_id = trace_id
+
             manager._write_back_results(
                 symbol,
                 timeframe,
@@ -119,6 +145,9 @@ def process_symbol_timeframe_batch(
                 compute_time_ms,
                 bar_time=bar_time,
             )
+
+            manager._current_trace_id = None
+
             computed += 1
             if durable_event:
                 manager._mark_event_completed(event_id)
@@ -153,7 +182,12 @@ def process_closed_bar_event(
     bar_time: datetime,
     durable_event: bool,
 ) -> None:
+    pipeline_bus = _get_pipeline_bus(manager)
+    trace_id = uuid4().hex
     try:
+        if pipeline_bus is not None:
+            pipeline_bus.emit_bar_closed(trace_id, symbol, timeframe, "confirmed", bar_time)
+
         bars = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
         if not bars:
             return
@@ -165,6 +199,14 @@ def process_closed_bar_event(
         )
         if not results:
             return
+
+        if pipeline_bus is not None:
+            pipeline_bus.emit_indicator_computed(
+                trace_id, symbol, timeframe, "confirmed",
+                compute_time_ms, len(results),
+            )
+
+        manager._current_trace_id = trace_id
         manager._write_back_results(
             symbol,
             timeframe,
@@ -173,6 +215,7 @@ def process_closed_bar_event(
             compute_time_ms,
             bar_time=bar_time,
         )
+        manager._current_trace_id = None
     except Exception as exc:
         logger.exception(
             "Failed to process closed-bar event for %s/%s at %s",
@@ -195,6 +238,12 @@ def process_intrabar_event(
     timeframe: str,
     bar,
 ):
+    pipeline_bus = _get_pipeline_bus(manager)
+    trace_id = uuid4().hex
+
+    if pipeline_bus is not None:
+        pipeline_bus.emit_bar_closed(trace_id, symbol, timeframe, "intrabar", bar.time)
+
     eligible_names = manager._get_intrabar_eligible_names()
     eligible = list(eligible_names) if eligible_names else None
     bars = manager._load_intrabar_bars(symbol, timeframe, bar)
@@ -209,7 +258,18 @@ def process_intrabar_event(
     )
     if not bars or not results:
         return {}
+
+    if pipeline_bus is not None:
+        pipeline_bus.emit_indicator_computed(
+            trace_id, symbol, timeframe, "intrabar",
+            _compute_time_ms, len(results),
+        )
+
     grouped = manager._group_indicator_values(results)
     if not grouped:
         return {}
-    return manager._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
+
+    manager._current_trace_id = trace_id
+    result = manager._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
+    manager._current_trace_id = None
+    return result

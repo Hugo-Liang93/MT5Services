@@ -35,6 +35,7 @@ from src.config.signal import get_signal_config
 from src.indicators.manager import UnifiedIndicatorManager
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
+from src.monitoring.pipeline_event_bus import PipelineEvent, PipelineEventBus
 from src.signals.models import SignalEvent
 from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
@@ -468,6 +469,7 @@ async def admin_events_stream(
             return
         payload = {
             "type": "signal",
+            "trace_id": (event.metadata or {}).get("signal_trace_id", ""),
             "signal_id": event.signal_id,
             "symbol": event.symbol,
             "timeframe": event.timeframe,
@@ -509,3 +511,85 @@ async def admin_events_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+# 3.6  Pipeline Trace SSE（数据管道流转可视化）
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.get("/pipeline/stream")
+async def admin_pipeline_stream(
+    scope: str = Query(
+        default="all",
+        pattern="^(confirmed|intrabar|all)$",
+        description="过滤 scope（confirmed / intrabar / all）",
+    ),
+    symbol: Optional[str] = Query(default=None, description="按品种过滤"),
+    pipeline_bus: PipelineEventBus = Depends(deps.get_pipeline_event_bus),
+) -> StreamingResponse:
+    """SSE 端点：推送管道流转事件，前端可按 trace_id 绘制数据流转动画。
+
+    事件类型：
+    - ``bar_closed``: K 线收盘 / intrabar 更新到达指标管理器
+    - ``indicator_computed``: 指标计算完成（含耗时）
+    - ``snapshot_published``: 快照发布到 SignalRuntime 队列
+    - ``signal_evaluated``: 策略评估完成（含方向和置信度）
+
+    所有事件通过 ``trace_id`` 串联，同一条数据的完整链路共享同一个 trace_id。
+    """
+    queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue(maxsize=512)
+    loop = asyncio.get_running_loop()
+
+    def _on_pipeline_event(event: PipelineEvent) -> None:
+        if scope != "all" and event.scope != scope:
+            return
+        if symbol and event.symbol != symbol:
+            return
+        payload: Dict[str, Any] = {
+            "type": event.type,
+            "trace_id": event.trace_id,
+            "symbol": event.symbol,
+            "timeframe": event.timeframe,
+            "scope": event.scope,
+            "ts": event.ts,
+            **event.payload,
+        }
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+        except (RuntimeError, asyncio.QueueFull):
+            pass
+
+    pipeline_bus.add_listener(_on_pipeline_event)
+
+    async def event_generator():  # type: ignore[no-untyped-def]
+        heartbeat_interval = 15.0
+        try:
+            while True:
+                try:
+                    data = await asyncio.wait_for(
+                        queue.get(), timeout=heartbeat_interval
+                    )
+                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'ts': datetime.now(timezone.utc).isoformat()})}\n\n"
+        finally:
+            pipeline_bus.remove_listener(_on_pipeline_event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/pipeline/stats")
+async def admin_pipeline_stats(
+    pipeline_bus: PipelineEventBus = Depends(deps.get_pipeline_event_bus),
+) -> ApiResponse[Dict[str, Any]]:
+    """返回 Pipeline 事件总线的运行统计。"""
+    return ApiResponse(success=True, data=pipeline_bus.stats())

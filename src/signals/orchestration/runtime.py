@@ -352,12 +352,15 @@ class SignalRuntime:
                         self._warmup_skipped,
                     )
                 return
+        # Prefer upstream trace_id from PipelineEventBus (set by bar_event_handler)
+        # so the same ID flows through the entire pipeline for frontend tracing.
+        upstream_trace_id = getattr(self.snapshot_source, "_current_trace_id", None)
         metadata = {
             "scope": scope,
             "bar_time": bar_time.isoformat(),
             "snapshot_time": datetime.now(timezone.utc).isoformat(),
             "trigger_source": f"{scope}_snapshot",
-            "signal_trace_id": uuid4().hex,
+            "signal_trace_id": upstream_trace_id or uuid4().hex,
         }
         spread_getter = getattr(self.snapshot_source, "get_current_spread", None)
         market_service = getattr(self.snapshot_source, "market_service", None)
@@ -589,6 +592,20 @@ class SignalRuntime:
             signal_id=signal_id,
             reason=decision.reason,
         )
+        # Pipeline trace: broadcast signal_evaluated event
+        pipeline_bus = getattr(self, "_pipeline_event_bus", None)
+        trace_id = transition_metadata.get("signal_trace_id")
+        if pipeline_bus is not None and trace_id:
+            pipeline_bus.emit_signal_evaluated(
+                trace_id=trace_id,
+                symbol=decision.symbol,
+                timeframe=decision.timeframe,
+                scope=scope,
+                strategy=decision.strategy,
+                direction=decision.direction,
+                confidence=decision.confidence,
+                signal_state=signal_state,
+            )
         listeners_to_remove: List[Callable] = []
         for listener in listeners:
             lid = id(listener)

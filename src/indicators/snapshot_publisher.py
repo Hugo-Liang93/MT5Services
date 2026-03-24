@@ -56,6 +56,14 @@ def publish_snapshot(
     *,
     scope: str,
 ) -> None:
+    # Broadcast pipeline trace event (best-effort)
+    trace_id = getattr(manager, "_current_trace_id", None)
+    pipeline_bus = getattr(manager, "_pipeline_event_bus", None)
+    if pipeline_bus is not None and trace_id is not None:
+        pipeline_bus.emit_snapshot_published(
+            trace_id, symbol, timeframe, scope, len(indicators), bar_time,
+        )
+
     lock = getattr(manager, "_snapshot_listeners_lock", None)
     if lock is None:
         listeners = list(getattr(manager, "_snapshot_listeners", []))

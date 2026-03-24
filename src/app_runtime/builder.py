@@ -16,6 +16,7 @@ from src.api.factories import (
     register_signal_hot_reload,
 )
 from src.app_runtime.container import AppContainer
+from src.monitoring.pipeline_event_bus import PipelineEventBus
 from src.config import (
     get_economic_config,
     get_effective_config_snapshot,
@@ -67,6 +68,11 @@ def build_app_container(
     c.ingestor = create_ingestor(c.market_service, c.storage_writer, ingest_settings)
     c.indicator_manager = create_indicator_manager(c.market_service, c.storage_writer)
 
+    # ── Pipeline tracing (read-only observer bus) ──
+    c.pipeline_event_bus = PipelineEventBus()
+    c.indicator_manager._pipeline_event_bus = c.pipeline_event_bus
+    c.indicator_manager._current_trace_id = None  # thread-local scratch slot
+
     # ── Phase 2: Trading & calendar ──
     trading_components = build_trading_components(c.storage_writer, get_economic_config())
     c.economic_calendar_service = trading_components.economic_calendar_service
@@ -104,6 +110,8 @@ def build_app_container(
     c.trade_executor = signal_components.trade_executor
     c.performance_tracker = signal_components.performance_tracker
     c.pending_entry_manager = signal_components.pending_entry_manager
+    if c.signal_runtime is not None:
+        c.signal_runtime._pipeline_event_bus = c.pipeline_event_bus
     register_signal_hot_reload(
         c.signal_runtime,
         signal_config_loader,
