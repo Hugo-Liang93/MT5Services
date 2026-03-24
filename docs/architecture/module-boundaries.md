@@ -36,20 +36,17 @@ src/
 | 子模块 | 职责 | 不应做 |
 |--------|------|--------|
 | `__init__.py` | FastAPI app 创建、CORS、API key、路由注册 | 不应包含业务逻辑 |
-| `deps.py` | DI 容器持有 + 初始化编排 + getter 函数 | **过重**：当前混合了 build/start/health |
-| `lifespan.py` | 启动/关闭生命周期 | 不应包含组件构建逻辑 |
+| `deps.py` | FastAPI DI 适配层 (getter 函数 + lifespan) | 不应包含组件构建逻辑 |
 | `factories/` | 各域组件工厂函数 | 工厂内不应有运行时逻辑 |
 | `trade_dispatcher.py` | 统一交易 API 调度 | 不应包含风控判断 |
 | `schemas.py` | Pydantic 请求/响应模型 | 不应包含业务校验 |
 | 路由文件 | HTTP 端点处理 | 不应直接操作缓存或 DB |
 
-**已知问题**：
-- `deps.py`（652 行）承担了容器定义 + 初始化 + 状态追踪 + getter 四重职责
-- `factories/signals.py`（546 行）是最复杂的工厂，包含大量 listener 连接逻辑
-
-**兼容层**：
+**注意**：
+- 组件构建逻辑在 `src/app_runtime/builder.py`
+- 生命周期管理在 `src/app_runtime/runtime.py`
+- `deps.py` 仅保留 getter 函数 + lifespan 引用
 - API 同时挂载 `/v1/` 前缀和无前缀旧路由（向后兼容）
-- 23 个 property 代理（`_Container`）支持旧式 `container.service` 访问
 
 ---
 
@@ -64,8 +61,8 @@ src/
 
 **不应做**：MT5 采集（属于 ingestion）、指标计算（属于 indicators）
 
-**已知问题**（761 行，单一类）：
-- 混合了缓存管理、查询路由、事件总线、指标回写四种职责
+**已知问题**：
+- 事件总线已提取为 `MarketEventBus`（`src/market/event_bus.py`）
 - `get_ohlc()` 是 `get_ohlc_closed()` 的兼容别名
 
 **单一写入者**：BackgroundIngestor（通过 `set_*` 方法）
@@ -125,8 +122,11 @@ src/
 | `tracking/` | SignalRepository（信号持久化） |
 | `analytics/` | DiagnosticsEngine + 插件 |
 
-**已知问题**（runtime.py 1,744 行，最重模块）：
-混合了 6 种职责——事件摄取、过滤、Regime/HTF/结构注入、策略评估、状态机、信号广播
+**注意**：
+- 状态机已提取为 `state_machine.py`（纯逻辑）
+- 投票处理已提取为 `vote_processor.py`（纯函数）
+- 亲和度已提取为 `affinity.py`（纯函数）
+- HTF 解析已提取为 `htf_resolver.py`（纯函数）
 
 **回测复用**：
 - `SignalModule.evaluate()` — 直接复用
@@ -230,7 +230,7 @@ W = 写入, R = 读取, RW = 读写
 
 | 场景 | 入口 | 使用 deps.py? | 组件来源 |
 |------|------|:------------:|---------|
-| **生产 API** | `app.py` → lifespan | 是 | `_Container` 全局单例 |
+| **生产 API** | `app.py` → lifespan | 是 | `AppContainer` (via `AppRuntime`) |
 | **回测 API** | `/v1/backtest/run` | 否 | `build_backtest_components()` 独立创建 |
 | **回测 CLI** | `python -m src.backtesting` | 否 | 同上 |
 | **参数优化** | `/v1/backtest/optimize` | 否 | 每组参数独立创建 SignalModule |
@@ -247,8 +247,6 @@ W = 写入, R = 读取, RW = 读写
 |------|---------|------|
 | `src/api/__init__.py` | 无前缀旧路由（与 `/v1/` 重复） | 设定废弃窗口，后续移除 |
 | `src/market/service.py` | `get_ohlc()` 别名 | 统一到 `get_ohlc_closed()` |
-| `src/api/deps.py` | 23 个 property 代理 | 重构后移除 |
-| `src/api/deps.py` | 3 个 indicator getter 别名 | 统一为一个 |
 
 ---
 
