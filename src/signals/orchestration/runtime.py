@@ -32,8 +32,20 @@ from ..evaluation.regime import (
 from ..execution.filters import SignalFilterChain
 from ..models import SignalEvent
 from ..service import SignalModule
-from .htf_resolver import compute_htf_alignment, parse_htf_config, resolve_htf_indicators
+from .affinity import (
+    any_strategy_eligible as _any_strategy_eligible_fn,
+    effective_affinity as _effective_affinity_fn,
+)
+from .htf_resolver import (
+    compute_htf_alignment,
+    parse_htf_config,
+    resolve_htf_indicators,
+)
 from .policy import RuntimeSignalState, SignalPolicy
+from .vote_processor import (
+    fuse_vote_decisions,
+    process_voting as _do_process_voting,
+)
 from .state_machine import (
     build_transition_metadata,
     mark_emitted as _sm_mark_emitted,
@@ -119,9 +131,7 @@ class SignalRuntime:
             or getattr(service, "_regime_detector", None)
             or MarketRegimeDetector()
         )
-        self._soft_regime_enabled = bool(
-            getattr(service, "soft_regime_enabled", False)
-        )
+        self._soft_regime_enabled = bool(getattr(service, "soft_regime_enabled", False))
         self._market_structure_analyzer = market_structure_analyzer
         # 表决引擎：由 policy 配置决定是否启用。
         # voting_groups 非空时使用多组模式（全局 consensus 自动禁用）。
@@ -136,9 +146,9 @@ class SignalRuntime:
             else None
         )
         # 多组 voting 引擎列表：每个 (group_config, engine) 对应一个命名 voting group。
-        self._voting_group_engines: list[
-            tuple[Any, StrategyVotingEngine]
-        ] = self._build_group_engines(self.policy)
+        self._voting_group_engines: list[tuple[Any, StrategyVotingEngine]] = (
+            self._build_group_engines(self.policy)
+        )
         # Regime 稳定性跟踪：key=(symbol, timeframe)，每个交易对独立计数
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._signal_listeners: List[Callable[[SignalEvent], None]] = []
@@ -183,7 +193,9 @@ class SignalRuntime:
         # Intrabar 置信度衰减因子（<1.0 降权未收盘 bar 信号）
         # 全局默认值，可被策略级 strategy_params 中 *__intrabar_decay 覆盖
         self._intrabar_confidence_decay: float = min(intrabar_confidence_decay, 1.0)
-        self._strategy_intrabar_decay: dict[str, float] = {}  # populated by set_strategy_intrabar_decay
+        self._strategy_intrabar_decay: dict[str, float] = (
+            {}
+        )  # populated by set_strategy_intrabar_decay
         # HTF 方向对齐修正：在策略评估后、持久化前应用，使记录的 confidence 反映真实值
         self._htf_direction_fn = htf_direction_fn
         self._htf_context_fn = htf_context_fn
@@ -311,15 +323,21 @@ class SignalRuntime:
         # for normal processing latency, strict enough to block bulk backfill.
         if scope == "confirmed":
             bt = bar_time if bar_time.tzinfo else bar_time.replace(tzinfo=timezone.utc)
-            bar_age = (datetime.now(timezone.utc) - bt.astimezone(timezone.utc)).total_seconds()
+            bar_age = (
+                datetime.now(timezone.utc) - bt.astimezone(timezone.utc)
+            ).total_seconds()
             max_age = timeframe_seconds(timeframe) * 10
             if bar_age > max(max_age, 900):  # at least 15 min tolerance
                 self._warmup_skipped += 1
                 if self._warmup_skipped <= 5 or self._warmup_skipped % 200 == 0:
                     logger.info(
                         "Warmup skip: %s/%s bar_time=%s age=%.0fs > %ds (total_skipped=%d)",
-                        symbol, timeframe, bar_time.isoformat(),
-                        bar_age, max(max_age, 300), self._warmup_skipped,
+                        symbol,
+                        timeframe,
+                        bar_time.isoformat(),
+                        bar_age,
+                        max(max_age, 300),
+                        self._warmup_skipped,
                     )
                 return
             # Indicator readiness: ATR is required for trade execution.
@@ -333,7 +351,10 @@ class SignalRuntime:
                     missing = [ind for ind in required if ind not in indicators]
                     logger.info(
                         "Warmup skip (indicators missing: %s): %s/%s (total_skipped=%d)",
-                        missing, symbol, timeframe, self._warmup_skipped,
+                        missing,
+                        symbol,
+                        timeframe,
+                        self._warmup_skipped,
                     )
                 return
         metadata = {
@@ -406,7 +427,8 @@ class SignalRuntime:
                 logger.warning(
                     "CONFIRMED event DROPPED for %s/%s (backpressure_failures=%d, "
                     "total_confirmed_dropped=%d). Bar-close signal permanently lost!",
-                    symbol, timeframe,
+                    symbol,
+                    timeframe,
                     self._confirmed_backpressure_failures,
                     self._dropped_confirmed,
                 )
@@ -582,7 +604,7 @@ class SignalRuntime:
             except Exception as exc:
                 fail_count = self._listener_fail_counts.get(lid, 0) + 1
                 self._listener_fail_counts[lid] = fail_count
-                listener_name = getattr(listener, '__name__', repr(listener))
+                listener_name = getattr(listener, "__name__", repr(listener))
                 error_msg = f"Signal listener error [{listener_name}]: {exc} (failures={fail_count})"
                 self._last_error = error_msg
                 logger.error(error_msg, exc_info=True)
@@ -590,7 +612,8 @@ class SignalRuntime:
                     logger.error(
                         "LISTENER CIRCUIT BREAK: %s reached %d consecutive failures, "
                         "auto-deregistering to prevent cascading errors",
-                        listener_name, fail_count,
+                        listener_name,
+                        fail_count,
                     )
                     listeners_to_remove.append(listener)
         if listeners_to_remove:
@@ -746,7 +769,9 @@ class SignalRuntime:
         *,
         cooldown_seconds: float,
     ) -> bool:
-        return _sm_should_emit(state, signal_state, event_time, bar_time, cooldown_seconds=cooldown_seconds)
+        return _sm_should_emit(
+            state, signal_state, event_time, bar_time, cooldown_seconds=cooldown_seconds
+        )
 
     @staticmethod
     def _mark_emitted(
@@ -787,7 +812,9 @@ class SignalRuntime:
         bar_time: datetime,
         metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        return transition_confirmed(state, decision_action, event_time, bar_time, metadata)
+        return transition_confirmed(
+            state, decision_action, event_time, bar_time, metadata
+        )
 
     def _transition_preview(
         self,
@@ -861,11 +888,15 @@ class SignalRuntime:
         _soft_parsed: Optional[SoftRegimeResult] = None
         if self._soft_regime_enabled and regime_metadata.get("_soft_regime"):
             try:
-                _soft_parsed = SoftRegimeResult.from_dict(regime_metadata["_soft_regime"])
+                _soft_parsed = SoftRegimeResult.from_dict(
+                    regime_metadata["_soft_regime"]
+                )
             except Exception:
                 logger.info(
                     "Failed to parse soft regime for %s/%s, falling back to hard regime",
-                    symbol, timeframe, exc_info=True,
+                    symbol,
+                    timeframe,
+                    exc_info=True,
                 )
 
         # 查询 event impact forecast（带 5 分钟 TTL 缓存，避免每 bar 查 DB）
@@ -877,7 +908,9 @@ class SignalRuntime:
                 try:
                     eco_service = getattr(self, "_economic_calendar_service", None)
                     if eco_service is not None:
-                        upcoming_events = eco_service.get_high_impact_events(hours=2, limit=1)
+                        upcoming_events = eco_service.get_high_impact_events(
+                            hours=2, limit=1
+                        )
                         if upcoming_events:
                             cache["data"] = _impact_analyzer.get_impact_forecast(
                                 upcoming_events[0].event_name, symbol=symbol
@@ -916,10 +949,17 @@ class SignalRuntime:
                     self._indicator_miss_counts[miss_key] = (
                         self._indicator_miss_counts.get(miss_key, 0) + 1
                     )
-                    if self._indicator_miss_counts[miss_key] <= 1 or self._indicator_miss_counts[miss_key] % 100 == 0:
+                    if (
+                        self._indicator_miss_counts[miss_key] <= 1
+                        or self._indicator_miss_counts[miss_key] % 100 == 0
+                    ):
                         logger.warning(
                             "Strategy %s/%s/%s skipped: missing indicators %s (count=%d)",
-                            symbol, timeframe, strategy, missing, self._indicator_miss_counts[miss_key],
+                            symbol,
+                            timeframe,
+                            strategy,
+                            missing,
+                            self._indicator_miss_counts[miss_key],
                         )
                     continue
                 scoped_indicators = {
@@ -931,7 +971,9 @@ class SignalRuntime:
             # Pre-flight affinity gate — 计算结果传递给 evaluate() 复用
             if min_affinity_skip > 0.0:
                 affinity = self._effective_affinity(
-                    strategy, regime, regime_metadata.get("_soft_regime"),
+                    strategy,
+                    regime,
+                    regime_metadata.get("_soft_regime"),
                     _parsed_cache=_soft_parsed,
                 )
                 if affinity < min_affinity_skip:
@@ -969,7 +1011,9 @@ class SignalRuntime:
                 except Exception:
                     logger.warning(
                         "Failed to build market structure context for %s/%s",
-                        symbol, timeframe, exc_info=True,
+                        symbol,
+                        timeframe,
+                        exc_info=True,
                     )
                     structure_context = {}
                 if structure_context:
@@ -1005,7 +1049,10 @@ class SignalRuntime:
             # ── HTF 方向对齐修正 ──────────────────────────
             if decision.action in ("buy", "sell"):
                 htf_mul, htf_dir = self._compute_htf_alignment(
-                    symbol, timeframe, decision.action, scope,
+                    symbol,
+                    timeframe,
+                    decision.action,
+                    scope,
                 )
                 if htf_mul is not None:
                     decision = _dc.replace(
@@ -1091,59 +1138,16 @@ class SignalRuntime:
             lookback_bars_override=self._market_structure_lookback_bars(timeframe),
         )
 
-    def _emit_vote_signal(
-        self,
-        vote_result: Any,
-        group_name: str,
-        symbol: str,
-        timeframe: str,
-        scope: str,
-        regime_stability: float,
-        regime_metadata: Dict[str, Any],
-        indicators: Dict[str, Dict[str, float]],
-        event_time: datetime,
-        bar_time: datetime,
-    ) -> None:
-        """对单个 vote 结果信号执行状态机转换、持久化和事件发布。"""
-        adjusted_conf = min(1.0, vote_result.confidence * regime_stability)
-        vote_result = _dc.replace(
-            vote_result,
-            confidence=adjusted_conf,
-            metadata={
-                **vote_result.metadata,
-                "regime_stability_multiplier": round(regime_stability, 4),
-            },
+    def _get_vote_emit_kwargs(self) -> dict:
+        """Build keyword arguments for vote_processor functions."""
+        return dict(
+            state_by_target=self._state_by_target,
+            get_shard_lock=self._get_shard_lock,
+            transition_confirmed_fn=self._transition_confirmed,
+            transition_preview_fn=self._transition_preview,
+            persist_fn=self.service.persist_decision,
+            publish_fn=self._publish_signal_event,
         )
-        group_key = (symbol, timeframe, group_name)
-        shard_lock = self._get_shard_lock(symbol, timeframe)
-        with shard_lock:
-            group_state = self._state_by_target.setdefault(
-                group_key, RuntimeSignalState()
-            )
-        transition_metadata = (
-            self._transition_confirmed(
-                group_state, vote_result.action, event_time, bar_time, regime_metadata
-            )
-            if scope == "confirmed"
-            else self._transition_preview(
-                group_state,
-                vote_result.action,
-                vote_result.confidence,
-                event_time,
-                bar_time,
-                regime_metadata,
-            )
-        )
-        if transition_metadata is not None:
-            signal_id = ""
-            if transition_metadata.get("state_changed", True):
-                record = self.service.persist_decision(
-                    vote_result, indicators=indicators, metadata=transition_metadata
-                )
-                signal_id = record.signal_id if record is not None else ""
-            self._publish_signal_event(
-                vote_result, signal_id, scope, indicators, transition_metadata
-            )
 
     def _process_voting(
         self,
@@ -1158,67 +1162,22 @@ class SignalRuntime:
         event_time: datetime,
         bar_time: datetime,
     ) -> None:
-        """跨策略表决：根据配置模式发出命名 voting group 信号或全局 consensus 信号。
-
-        多组模式（voting_groups 非空）：
-            每个 group 仅对其成员策略的决策投票，产生以 group.name 命名的信号。
-            全局 consensus 在此模式下自动禁用。
-
-        单 consensus 模式（backward compatible）：
-            所有独立策略参与投票，产生 strategy="consensus" 信号。
-        """
-        if not snapshot_decisions:
-            return
-        snapshot_decisions = self._fuse_vote_decisions(
+        """跨策略表决：委托给 vote_processor 模块。"""
+        _do_process_voting(
+            snapshot_decisions,
             symbol,
             timeframe,
-            bar_time,
             scope,
-            snapshot_decisions,
-        )
-        if not snapshot_decisions:
-            return
-
-        # ── 多组模式 ──────────────────────────────────────────────────
-        if self._voting_group_engines:
-            for group_config, group_engine in self._voting_group_engines:
-                # 只取属于本 group 的成员策略决策
-                group_decisions = [
-                    d
-                    for d in snapshot_decisions
-                    if d.strategy in group_config.strategies
-                ]
-                if not group_decisions:
-                    continue
-                vote_result = group_engine.vote(
-                    group_decisions,
-                    regime=regime,
-                    scope=scope,
-                    exclude_composite=False,  # 分组明确指定成员，不需要自动排除复合策略
-                )
-                if vote_result is None:
-                    continue
-                self._emit_vote_signal(
-                    vote_result, group_config.name,
-                    symbol, timeframe, scope,
-                    regime_stability, regime_metadata, indicators,
-                    event_time, bar_time,
-                )
-            return
-
-        # ── 单 consensus 模式（backward compatible）───────────────────
-        if self._voting_engine is None:
-            return
-        consensus = self._voting_engine.vote(
-            snapshot_decisions, regime=regime, scope=scope
-        )
-        if consensus is None:
-            return
-        self._emit_vote_signal(
-            consensus, self._voting_engine.CONSENSUS_STRATEGY_NAME,
-            symbol, timeframe, scope,
-            regime_stability, regime_metadata, indicators,
-            event_time, bar_time,
+            regime,
+            regime_stability,
+            regime_metadata,
+            indicators,
+            event_time,
+            bar_time,
+            voting_engine=self._voting_engine,
+            voting_group_engines=self._voting_group_engines,
+            fusion_cache=self._vote_fusion_cache,
+            **self._get_vote_emit_kwargs(),
         )
 
     _CONFIRMED_BURST_LIMIT = 5  # 每连续消费 N 个 confirmed 后让出检查 intrabar
@@ -1273,14 +1232,21 @@ class SignalRuntime:
                 if queue_age > _MAX_INTRABAR_AGE_SECONDS:
                     logger.debug(
                         "Dropping stale intrabar event for %s/%s (queue_age=%.1fs)",
-                        symbol, timeframe, queue_age,
+                        symbol,
+                        timeframe,
+                        queue_age,
                     )
                     self._processed_events += 1
                     return True
             except (TypeError, ValueError):
                 pass
-        if self.filter_chain is not None and self.filter_chain.session_filter is not None:
-            active_sessions = self.filter_chain.session_filter.current_sessions(event_time)
+        if (
+            self.filter_chain is not None
+            and self.filter_chain.session_filter is not None
+        ):
+            active_sessions = self.filter_chain.session_filter.current_sessions(
+                event_time
+            )
         else:
             active_sessions = []
 
@@ -1314,8 +1280,7 @@ class SignalRuntime:
         if soft_regime is not None:
             regime_metadata["_soft_regime"] = soft_regime.to_dict()
             regime_metadata["regime_probabilities"] = {
-                item.value: soft_regime.probability(item)
-                for item in RegimeType
+                item.value: soft_regime.probability(item) for item in RegimeType
             }
         regime_metadata["session_buckets"] = list(active_sessions)
         # close_price 注入：在 scoped_indicators 收窄前从全量快照提取
@@ -1324,8 +1289,12 @@ class SignalRuntime:
 
         # ── 快速全拒绝检查：如果没有任何策略能通过 affinity 门控，跳过后续所有重计算
         if not self._any_strategy_eligible(
-            symbol, timeframe, scope, regime,
-            regime_metadata.get("_soft_regime"), active_sessions,
+            symbol,
+            timeframe,
+            scope,
+            regime,
+            regime_metadata.get("_soft_regime"),
+            active_sessions,
         ):
             self._processed_events += 1
             self._run_count += 1
@@ -1342,14 +1311,29 @@ class SignalRuntime:
 
         # ── 策略评估（含持久化 + 发布）─────────────────────────────────────
         snapshot_decisions = self._evaluate_strategies(
-            symbol, timeframe, scope, indicators,
-            regime, regime_metadata, event_time, bar_time, active_sessions,
+            symbol,
+            timeframe,
+            scope,
+            indicators,
+            regime,
+            regime_metadata,
+            event_time,
+            bar_time,
+            active_sessions,
         )
 
         # ── 跨策略表决（consensus 信号）────────────────────────────────────
         self._process_voting(
-            snapshot_decisions, symbol, timeframe, scope,
-            regime, regime_stability, regime_metadata, indicators, event_time, bar_time,
+            snapshot_decisions,
+            symbol,
+            timeframe,
+            scope,
+            regime,
+            regime_stability,
+            regime_metadata,
+            indicators,
+            event_time,
+            bar_time,
         )
 
         self._processed_events += 1
@@ -1422,36 +1406,22 @@ class SignalRuntime:
         soft_regime: Optional[Dict[str, Any]],
         active_sessions: List[str],
     ) -> bool:
-        """Quick check: is there ANY strategy that could pass the evaluation loop?
-
-        If min_affinity_skip is disabled (0) or any strategy has sufficient
-        affinity, returns True.  Otherwise returns False, allowing the caller
-        to skip expensive downstream work (market structure, voting, etc.).
-        """
-        min_affinity_skip = self.policy.min_affinity_skip
-        if min_affinity_skip <= 0.0:
-            return True  # affinity gate disabled, always eligible
-        strategies = self._target_index.get((symbol, timeframe), [])
-        if not strategies:
-            return False
-        for strategy in strategies:
-            allowed_sessions = self.policy.strategy_sessions.get(strategy, ())
-            if allowed_sessions and not any(
-                s in allowed_sessions for s in active_sessions
-            ):
-                continue
-            allowed_timeframes = self.policy.strategy_timeframes.get(strategy, ())
-            if allowed_timeframes and timeframe not in allowed_timeframes:
-                continue
-            allowed_scopes = self._strategy_scopes.get(
-                strategy, frozenset(("intrabar", "confirmed"))
-            )
-            if scope not in allowed_scopes:
-                continue
-            affinity = self._effective_affinity(strategy, regime, soft_regime)
-            if affinity >= min_affinity_skip:
-                return True  # at least one strategy is eligible
-        return False
+        """Quick check: delegates to affinity module."""
+        return _any_strategy_eligible_fn(
+            symbol,
+            timeframe,
+            scope,
+            regime,
+            soft_regime,
+            active_sessions,
+            min_affinity_skip=self.policy.min_affinity_skip,
+            target_index=self._target_index,
+            strategy_sessions=self.policy.strategy_sessions,
+            strategy_timeframes=self.policy.strategy_timeframes,
+            strategy_scopes=self._strategy_scopes,
+            strategy_affinity=self._strategy_affinity,
+            soft_regime_enabled=self._soft_regime_enabled,
+        )
 
     def _effective_affinity(
         self,
@@ -1461,74 +1431,14 @@ class SignalRuntime:
         *,
         _parsed_cache: Optional[SoftRegimeResult] = None,
     ) -> float:
-        affinity_map = self._strategy_affinity.get(strategy, {})
-        if self._soft_regime_enabled and soft_regime:
-            try:
-                parsed = _parsed_cache or SoftRegimeResult.from_dict(soft_regime)
-                return sum(
-                    parsed.probability(item) * affinity_map.get(item, 0.5)
-                    for item in RegimeType
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to parse soft regime for affinity gate: %s",
-                    strategy,
-                    exc_info=True,
-                )
-        return affinity_map.get(regime, 0.5)
-
-    def _fuse_vote_decisions(
-        self,
-        symbol: str,
-        timeframe: str,
-        bar_time: datetime,
-        scope: str,
-        decisions: List,
-    ) -> List:
-        cache_key = (symbol, timeframe, bar_time)
-        bucket = self._vote_fusion_cache.setdefault(cache_key, {})
-        for decision in decisions:
-            existing = bucket.get(decision.strategy)
-            if existing is None:
-                bucket[decision.strategy] = (scope, decision)
-                continue
-            existing_scope, existing_decision = existing
-            if existing_scope == "intrabar" and scope == "confirmed":
-                bucket[decision.strategy] = (scope, decision)
-                continue
-            if existing_scope == scope:
-                bucket[decision.strategy] = (scope, decision)
-                continue
-            if getattr(decision, "confidence", 0.0) >= getattr(
-                existing_decision, "confidence", 0.0
-            ):
-                bucket[decision.strategy] = (scope, decision)
-        self._prune_vote_fusion_cache(symbol, timeframe, bar_time)
-        return [item[1] for item in bucket.values()]
-
-    def _prune_vote_fusion_cache(
-        self,
-        symbol: str,
-        timeframe: str,
-        current_bar_time: datetime,
-    ) -> None:
-        keep_after = current_bar_time - timedelta(
-            seconds=max(timeframe_seconds(timeframe) * 2, 1)
+        return _effective_affinity_fn(
+            strategy,
+            regime,
+            soft_regime,
+            self._strategy_affinity,
+            self._soft_regime_enabled,
+            _parsed_cache=_parsed_cache,
         )
-        stale_keys = [
-            key
-            for key in self._vote_fusion_cache
-            if key[0] == symbol and key[1] == timeframe and key[2] < keep_after
-        ]
-        for key in stale_keys:
-            self._vote_fusion_cache.pop(key, None)
-        # 全局容量上限：防止缓存无限积累导致内存泄漏
-        _MAX_FUSION_CACHE = 2000
-        if len(self._vote_fusion_cache) > _MAX_FUSION_CACHE:
-            sorted_keys = sorted(self._vote_fusion_cache.keys(), key=lambda k: k[2])
-            to_remove = sorted_keys[: len(sorted_keys) - _MAX_FUSION_CACHE]
-            for key in to_remove:
-                self._vote_fusion_cache.pop(key, None)
 
     def _loop(self) -> None:
         """主事件循环，带指数退避以防止异常风暴。

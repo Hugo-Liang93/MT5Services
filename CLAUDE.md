@@ -68,6 +68,7 @@ MT5Services/
 │   │   ├── pipeline_runner.py    # 指标管道运行逻辑
 │   │   ├── result_store.py       # 指标结果存储与规范化
 │   │   ├── snapshot_publisher.py # 指标快照发布与去重
+│   │   ├── delta_metrics.py      # N-bar 变化率计算（纯函数，可复用于 backtest）
 │   │   ├── types.py              # 指标类型定义
 │   │   ├── cache/            # 缓存子系统
 │   │   │   ├── smart_cache.py    # 智能缓存机制
@@ -115,7 +116,7 @@ MT5Services/
 │   │   │   ├── performance.py    # StrategyPerformanceTracker 日内绩效
 │   │   │   └── indicators_helpers.py # 跨模块指标数据提取
 │   │   ├── execution/        # 信号过滤器（SignalFilterChain）
-│   │   ├── orchestration/    # SignalRuntime / SignalPolicy / StrategyVotingEngine
+│   │   ├── orchestration/    # SignalRuntime / SignalPolicy / VotingEngine / 纯函数模块
 │   │   ├── strategies/       # 策略实现（trend/mean_reversion/breakout/composite）
 │   │   │   └── adapters.py   # UnifiedIndicatorSourceAdapter（解耦信号与指标）
 │   │   └── tracking/         # SignalRepository（信号持久化与查询）
@@ -286,6 +287,21 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 
 `process_next_event()` 总是先 `get_nowait()` 从 confirmed 队列取，空才 blocking wait intrabar 队列。
 
+### Event Durability Levels
+
+系统中所有事件按可靠性要求分为三个等级：
+
+| 等级 | 要求 | 事件类型 | 当前实现 |
+|------|------|---------|---------|
+| **L1 (Durable)** | 必须持久化，不可丢失 | confirmed bar close、trade signal（state_changed=true）、order execution、risk block | events.db SQLite + signal_events/trade_outcomes 表 + backpressure 重试 |
+| **L2 (Recoverable)** | 允许丢失但可回放恢复 | indicator snapshot、reconcile 结果、OHLC 持久化 | StorageWriter 队列（block 策略）+ 定时 reconcile 兜底 |
+| **L3 (Best-effort)** | 最佳努力，丢失可接受 | intrabar preview、调试快照、部分监控指标 | put_nowait 队列满则丢弃 + 日志记录丢弃数 |
+
+**当前实现状态**：
+- L1 事件已通过 SQLite event store（confirmed bar）和 DB 写入（signal/trade outcomes）保障
+- L2 事件通过 StorageWriter 的 `block` 溢出策略 + IndicatorManager 的 `_reconcile_all()` 定时兜底保障
+- L3 事件通过 `drop_oldest` / `drop_newest` 溢出策略 + 丢弃计数器监控
+
 ---
 
 ## Key Source Files
@@ -300,6 +316,9 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/market/event_bus.py` | `MarketEventBus`：事件订阅/分发（从 MarketDataService 提取） |
 | `src/signals/orchestration/htf_resolver.py` | HTF 配置解析、指标查询、对齐乘数计算（纯函数） |
 | `src/signals/orchestration/state_machine.py` | 状态机转换 preview/armed/confirmed（纯逻辑，可独立测试） |
+| `src/signals/orchestration/vote_processor.py` | 投票处理：fusion/emit/process_voting（纯函数） |
+| `src/signals/orchestration/affinity.py` | Regime 亲和度计算 + 快速拒绝检查（纯函数） |
+| `src/indicators/delta_metrics.py` | N-bar 变化率计算（纯函数，可复用于 backtest） |
 | `src/api/factories/` | 各组件工厂函数（market/storage/trading/signals/indicators） |
 | `src/api/__init__.py` | FastAPI app、CORS、API key 认证、路由注册 |
 | `src/api/trade_dispatcher.py` | TradeAPIDispatcher：统一交易 API 调度入口，减少路由层重复逻辑 |
@@ -1222,6 +1241,9 @@ flake8 src/ tests/
 - **MarketEventBus**：从 `MarketDataService` 提取事件订阅/分发逻辑，`service.event_bus` 属性访问
 - **HTF Resolver**：`src/signals/orchestration/htf_resolver.py`，HTF 配置解析/指标查询/对齐乘数计算独立为纯函数模块
 - **State Machine**：`src/signals/orchestration/state_machine.py`，preview/armed/confirmed 状态转换纯逻辑，可独立测试
+- **Vote Processor**：`src/signals/orchestration/vote_processor.py`，投票 fusion/emit/dispatch 纯函数模块
+- **Affinity**：`src/signals/orchestration/affinity.py`，regime 亲和度计算 + 快速拒绝检查纯函数
+- **Delta Metrics**：`src/indicators/delta_metrics.py`，N-bar 变化率计算纯函数（可被 backtesting 直接复用）
 - **模块位置注意**：
   - `AppContainer` → `src/app_runtime/container.py`（纯组件持有，可多实例）
   - `AppBuilder` → `src/app_runtime/builder.py`（构建组件，不启动线程）

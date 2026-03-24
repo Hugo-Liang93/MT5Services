@@ -687,10 +687,13 @@ src/
 [x] 修复 market_impact 表 PK（TimescaleDB DDL）
 [x] Warmup guard：跳过历史 bar + ATR 完整性检查
 [x] Signal 持久化优化：只存 state_changed=true（~95% 减少）
-[ ] 为 UnifiedIndicatorManager 设计 compute/runtime 分离结构
-[ ] 将 backtesting/api.py 改为 submit/query 风格
-[ ] 去除 backtesting 对 fake config + api 内部函数的隐式依赖
-[ ] 定义关键事件 durable 等级
+[x] 为 SignalRuntime 提取 vote_processor.py（投票处理纯函数 234 行）
+[x] 为 SignalRuntime 提取 affinity.py（亲和度+快速拒绝纯函数 96 行）
+[x] 为 UnifiedIndicatorManager 提取 delta_metrics.py（N-bar 变化率纯函数 133 行）
+[x] 为 UnifiedIndicatorManager 提取 bar_loader.py（历史需求计算纯函数 97 行）
+[x] 将 backtesting/api.py 改为 submit/query 风格（BacktestJob + 状态枚举 + /jobs 端点）
+[x] 去除 backtesting 对 fake config + api 内部函数的隐式依赖（SignalModule.apply_param_overrides 公共 API）
+[x] 定义关键事件 durable 等级（L1 Durable / L2 Recoverable / L3 Best-effort，写入 CLAUDE.md）
 [ ] 增加 live vs backtest replay consistency test
 [ ] 研究更多 confirmed+intrabar 双模式策略，提高 armed 覆盖率和整体可控性
     — 当前 20 个策略中仅 7 个支持 intrabar（均值回归类），13 个 confirmed-only 策略

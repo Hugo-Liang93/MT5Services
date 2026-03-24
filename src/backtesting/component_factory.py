@@ -111,16 +111,8 @@ def _apply_overrides(
     strategy_params: Dict[str, Any],
     regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> None:
-    """应用策略参数和 Regime 亲和度覆盖。"""
-    from src.api.factories.signals import _apply_strategy_config_overrides
-
-    class _FakeConfig:
-        pass
-
-    fake_config = _FakeConfig()
-    fake_config.strategy_params = strategy_params  # type: ignore[attr-defined]
-    fake_config.regime_affinity_overrides = regime_affinity_overrides or {}  # type: ignore[attr-defined]
-    _apply_strategy_config_overrides(module, fake_config)
+    """应用策略参数和 Regime 亲和度覆盖（通过 SignalModule 公共 API）。"""
+    module.apply_param_overrides(strategy_params, regime_affinity_overrides)
 
 
 def _build_voting_engine(signal_module: Any) -> Optional[Any]:
