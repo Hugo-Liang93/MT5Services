@@ -20,6 +20,7 @@ from src.trading.pending_entry import PendingEntryManager
 from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import TradeExecutor
 from src.trading.signal_quality_tracker import SignalQualityTracker
+from src.monitoring.pipeline_event_bus import PipelineEventBus
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
 
@@ -57,6 +58,7 @@ class AppContainer:
         # Monitoring
         "health_monitor",
         "monitoring_manager",
+        "pipeline_event_bus",
     )
 
     def __init__(self) -> None:
@@ -85,3 +87,4 @@ class AppContainer:
 
         self.health_monitor: Optional[Any] = None
         self.monitoring_manager: Optional[Any] = None
+        self.pipeline_event_bus: Optional[PipelineEventBus] = None

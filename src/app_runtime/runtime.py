@@ -139,6 +139,10 @@ class AppRuntime:
             except Exception:
                 pass
 
+        pipeline_bus = getattr(c, "pipeline_event_bus", None)
+        if pipeline_bus is not None:
+            pipeline_bus.shutdown()
+
         self._status["phase"] = "stopped"
         self._status["ready"] = False
 

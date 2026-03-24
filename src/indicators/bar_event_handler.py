@@ -2,11 +2,31 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from src.utils.event_store import ClaimedEvent
 
 logger = logging.getLogger(__name__)
+
+
+def _get_pipeline_bus(manager):  # type: ignore[no-untyped-def]
+    """Return the PipelineEventBus attached to *manager*, or None."""
+    return getattr(manager, "_pipeline_event_bus", None)
+
+
+def _extract_ohlc(bar: object) -> Optional[Dict[str, float]]:
+    """Safely extract OHLC data from a bar object for pipeline tracing."""
+    try:
+        return {
+            "open": float(bar.open),
+            "high": float(bar.high),
+            "low": float(bar.low),
+            "close": float(bar.close),
+            "volume": float(getattr(bar, "volume", 0)),
+        }
+    except (AttributeError, TypeError):
+        return None
 
 def process_closed_bar_events_batch(
     manager,
@@ -65,11 +85,22 @@ def process_symbol_timeframe_batch(
     skipped_insufficient_history = 0
     failed = 0
 
+    pipeline_bus = _get_pipeline_bus(manager)
+
     for event in events:
         event_id = event.event_id
         bar_time = event.bar_time
+        trace_id = uuid4().hex
         try:
             end_idx = bar_index.get(bar_time)
+
+            # Broadcast: bar closed event received (with OHLC if available)
+            if pipeline_bus is not None:
+                ohlc = _extract_ohlc(bars[end_idx]) if end_idx is not None else None
+                pipeline_bus.emit_bar_closed(
+                    trace_id, symbol, timeframe, "confirmed", bar_time,
+                    ohlc=ohlc,
+                )
             if end_idx is None:
                 prefix = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
                 if not prefix or prefix[-1].time != bar_time:
@@ -111,14 +142,31 @@ def process_symbol_timeframe_batch(
                 if durable_event:
                     manager._mark_event_skipped(event_id, "insufficient_history")
                 continue
-            manager._write_back_results(
-                symbol,
-                timeframe,
-                prefix,
-                results,
-                compute_time_ms,
-                bar_time=bar_time,
-            )
+
+            # Broadcast: indicator computation completed
+            if pipeline_bus is not None:
+                pipeline_bus.emit_indicator_computed(
+                    trace_id, symbol, timeframe, "confirmed",
+                    compute_time_ms, len(results),
+                    indicator_names=sorted(results.keys()),
+                )
+
+            # Attach trace_id so downstream snapshot_publisher can forward it.
+            # Use try/finally to guarantee cleanup — if _write_back_results
+            # raises, a stale trace_id must not leak into later events.
+            manager._current_trace_id = trace_id
+            try:
+                manager._write_back_results(
+                    symbol,
+                    timeframe,
+                    prefix,
+                    results,
+                    compute_time_ms,
+                    bar_time=bar_time,
+                )
+            finally:
+                manager._current_trace_id = None
+
             computed += 1
             if durable_event:
                 manager._mark_event_completed(event_id)
@@ -153,8 +201,17 @@ def process_closed_bar_event(
     bar_time: datetime,
     durable_event: bool,
 ) -> None:
+    pipeline_bus = _get_pipeline_bus(manager)
+    trace_id = uuid4().hex
     try:
         bars = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
+
+        if pipeline_bus is not None:
+            ohlc = _extract_ohlc(bars[-1]) if bars else None
+            pipeline_bus.emit_bar_closed(
+                trace_id, symbol, timeframe, "confirmed", bar_time, ohlc=ohlc,
+            )
+
         if not bars:
             return
         results, compute_time_ms = manager._compute_confirmed_results_for_bars(
@@ -165,14 +222,26 @@ def process_closed_bar_event(
         )
         if not results:
             return
-        manager._write_back_results(
-            symbol,
-            timeframe,
-            bars,
-            results,
-            compute_time_ms,
-            bar_time=bar_time,
-        )
+
+        if pipeline_bus is not None:
+            pipeline_bus.emit_indicator_computed(
+                trace_id, symbol, timeframe, "confirmed",
+                compute_time_ms, len(results),
+                indicator_names=sorted(results.keys()),
+            )
+
+        manager._current_trace_id = trace_id
+        try:
+            manager._write_back_results(
+                symbol,
+                timeframe,
+                bars,
+                results,
+                compute_time_ms,
+                bar_time=bar_time,
+            )
+        finally:
+            manager._current_trace_id = None
     except Exception as exc:
         logger.exception(
             "Failed to process closed-bar event for %s/%s at %s",
@@ -195,6 +264,15 @@ def process_intrabar_event(
     timeframe: str,
     bar,
 ):
+    pipeline_bus = _get_pipeline_bus(manager)
+    trace_id = uuid4().hex
+
+    if pipeline_bus is not None:
+        pipeline_bus.emit_bar_closed(
+            trace_id, symbol, timeframe, "intrabar", bar.time,
+            ohlc=_extract_ohlc(bar),
+        )
+
     eligible_names = manager._get_intrabar_eligible_names()
     eligible = list(eligible_names) if eligible_names else None
     bars = manager._load_intrabar_bars(symbol, timeframe, bar)
@@ -209,7 +287,21 @@ def process_intrabar_event(
     )
     if not bars or not results:
         return {}
+
+    if pipeline_bus is not None:
+        pipeline_bus.emit_indicator_computed(
+            trace_id, symbol, timeframe, "intrabar",
+            _compute_time_ms, len(results),
+            indicator_names=sorted(results.keys()),
+        )
+
     grouped = manager._group_indicator_values(results)
     if not grouped:
         return {}
-    return manager._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
+
+    manager._current_trace_id = trace_id
+    try:
+        result = manager._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
+    finally:
+        manager._current_trace_id = None
+    return result

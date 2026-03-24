@@ -11,10 +11,19 @@ from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api import account, economic, indicators, market, monitoring, signal, trade
-from src.backtesting.api import router as backtest_router
-from src.api import deps
+from src.api import (
+    account,
+    admin,
+    deps,
+    economic,
+    indicators,
+    market,
+    monitoring,
+    signal,
+    trade,
+)
 from src.api.schemas import ApiResponse
+from src.backtesting.api import router as backtest_router
 from src.clients.mt5_market import MT5MarketError
 from src.config import get_api_config
 from src.market import MarketDataService
@@ -34,6 +43,7 @@ AUTH_EXEMPT_PATHS = {
 def _resolve_expected_api_key() -> str | None:
     configured_key = (api_config.api_key or "").strip() if api_config.api_key else ""
     return configured_key or None
+
 
 app = FastAPI(
     title="MT5 Market Data Service",
@@ -79,7 +89,9 @@ async def api_key_authentication(request: Request, call_next):
         )
 
     provided_api_key = request.headers.get(api_config.api_key_header, "").strip()
-    if not provided_api_key or not hmac.compare_digest(provided_api_key, expected_api_key):
+    if not provided_api_key or not hmac.compare_digest(
+        provided_api_key, expected_api_key
+    ):
         return JSONResponse(
             status_code=401,
             content={
@@ -128,6 +140,7 @@ v1.include_router(monitoring.router)
 v1.include_router(indicators.router)
 v1.include_router(signal.router)
 v1.include_router(backtest_router)
+v1.include_router(admin.router)
 app.include_router(v1)
 
 # 向后兼容：无前缀路由保留，确保现有客户端不中断
