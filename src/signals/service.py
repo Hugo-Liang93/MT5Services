@@ -652,13 +652,13 @@ class SignalModule:
         scope: str = "confirmed",
     ) -> dict[str, Any]:
         rows = self.summary(hours=hours, scope=scope)
-        action_totals: dict[str, int] = {}
+        direction_totals: dict[str, int] = {}
         strategy_totals: dict[str, int] = {}
         for row in rows:
-            action = str(row.get("action") or "unknown")
+            direction = str(row.get("direction") or "unknown")
             strategy = str(row.get("strategy") or "unknown")
             count = int(row.get("count") or 0)
-            action_totals[action] = action_totals.get(action, 0) + count
+            direction_totals[direction] = direction_totals.get(direction, 0) + count
             strategy_totals[strategy] = strategy_totals.get(strategy, 0) + count
         top_strategies = sorted(
             (
@@ -672,7 +672,7 @@ class SignalModule:
             "hours": hours,
             "scope": scope,
             "rows_analyzed": len(rows),
-            "action_totals": action_totals,
+            "direction_totals": direction_totals,
             "strategy_totals": strategy_totals,
             "top_strategies": top_strategies,
             "source": "repository.summary",
