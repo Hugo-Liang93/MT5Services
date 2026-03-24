@@ -112,6 +112,11 @@ def build_app_container(
     c.pending_entry_manager = signal_components.pending_entry_manager
     if c.signal_runtime is not None:
         c.signal_runtime._pipeline_event_bus = c.pipeline_event_bus
+        # 显式 warmup 屏障：信号评估在 ingestor 回补完成前被阻塞。
+        # 使用 lambda 延迟求值，避免构建阶段的顺序耦合。
+        if c.ingestor is not None:
+            _ingestor = c.ingestor  # capture narrowed reference for lambda
+            c.signal_runtime._warmup_ready_fn = lambda: not _ingestor.is_backfilling
     register_signal_hot_reload(
         c.signal_runtime,
         signal_config_loader,

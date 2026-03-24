@@ -69,17 +69,28 @@ class BackgroundIngestor:
         self._symbol_error_counts: Dict[str, int] = {}
         self._symbol_backoff_until: Dict[str, float] = {}
         self._symbol_backoff_count: Dict[str, int] = {}  # 累计退避轮次
+        # 回补完成标志：回补线程结束后设为 True，供 SignalRuntime 判断 warmup 状态
+        self._backfill_done = threading.Event()
+
+    @property
+    def is_backfilling(self) -> bool:
+        """回补线程是否仍在运行。无回补任务时视为已完成。"""
+        return not self._backfill_done.is_set()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        self._backfill_done.clear()
         self._init_backfill_progress()
         if self._backfill_progress:
             self._backfill_thread = threading.Thread(
                 target=self._backfill_async, name="mt5-backfill", daemon=True
             )
             self._backfill_thread.start()
+        else:
+            # 无回补任务，直接标记完成
+            self._backfill_done.set()
         self._thread = threading.Thread(target=self._run, name="mt5-ingestor", daemon=True)
         self._thread.start()
         windowed = 0 < self.settings.max_concurrent_symbols < len(self.settings.ingest_symbols)
@@ -546,3 +557,6 @@ class BackgroundIngestor:
             self._backfill_ohlc()
         except Exception as exc:  # pragma: no cover - 防御
             logger.warning("Backfill thread failed: %s", exc)
+        finally:
+            self._backfill_done.set()
+            logger.info("Backfill completed, warmup barrier lifted")

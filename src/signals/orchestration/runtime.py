@@ -111,6 +111,7 @@ class SignalRuntime:
         htf_alignment_stability_cap: float = 1.15,
         htf_alignment_intrabar_strength_ratio: float = 0.50,
         htf_target_config: Optional[Dict[str, str]] = None,
+        warmup_ready_fn: Optional[Callable[[], bool]] = None,
     ):
         self.service = service
         self.snapshot_source = snapshot_source
@@ -200,6 +201,11 @@ class SignalRuntime:
         self._htf_stability_per_bar: float = htf_alignment_stability_per_bar
         self._htf_stability_cap: float = htf_alignment_stability_cap
         self._htf_intrabar_ratio: float = htf_alignment_intrabar_strength_ratio
+        # 显式 warmup 屏障：回调返回 True 时才允许信号评估。
+        # None 表示无外部 warmup 控制（standalone / 测试场景），直接放行。
+        self._warmup_ready_fn: Optional[Callable[[], bool]] = warmup_ready_fn
+        # 每个 (symbol, tf) 在 warmup 结束后是否已收到首个实时 confirmed bar
+        self._first_realtime_bar_seen: set[tuple[str, str]] = set()
 
         # R-2: 分片锁 — 热路径按 (symbol, timeframe) 分片，避免全局锁争用。
         # _state_lock 仅用于 _count_active_states() 的全量快照读取。
@@ -311,30 +317,37 @@ class SignalRuntime:
             return
         if scope == "intrabar" and not self.enable_intrabar:
             return
-        # Warmup guard: skip signal evaluation for stale bars.
-        # During backfill, hundreds of historical bars flood the queue.
-        # These have no trading value and block real-time signal processing.
-        # Threshold: max(10× timeframe period, 15 min) — generous enough
-        # for normal processing latency, strict enough to block bulk backfill.
+        # ── Warmup barrier: 显式阶段屏障 ──────────────────────────
+        # warmup 期间（回补未完成）所有快照仅用于填充指标缓存，
+        # 不入队、不评估、不产生信号。confirmed 和 intrabar 都被屏蔽。
+        # 回补结束后还需要收到该 (symbol, tf) 的首个实时 confirmed bar
+        # 才解除屏障，确保策略基于完全新鲜的数据做出首次判断。
+        warmup_ready = (
+            self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
+        )
+        if not warmup_ready:
+            self._warmup_skipped += 1
+            if self._warmup_skipped <= 5 or self._warmup_skipped % 200 == 0:
+                logger.info(
+                    "Warmup barrier (backfilling): %s/%s scope=%s bar_time=%s (total_skipped=%d)",
+                    symbol,
+                    timeframe,
+                    scope,
+                    bar_time.isoformat(),
+                    self._warmup_skipped,
+                )
+            return
         if scope == "confirmed":
-            bt = bar_time if bar_time.tzinfo else bar_time.replace(tzinfo=timezone.utc)
-            bar_age = (
-                datetime.now(timezone.utc) - bt.astimezone(timezone.utc)
-            ).total_seconds()
-            max_age = timeframe_seconds(timeframe) * 10
-            if bar_age > max(max_age, 900):  # at least 15 min tolerance
-                self._warmup_skipped += 1
-                if self._warmup_skipped <= 5 or self._warmup_skipped % 200 == 0:
-                    logger.info(
-                        "Warmup skip: %s/%s bar_time=%s age=%.0fs > %ds (total_skipped=%d)",
-                        symbol,
-                        timeframe,
-                        bar_time.isoformat(),
-                        bar_age,
-                        max(max_age, 300),
-                        self._warmup_skipped,
-                    )
-                return
+            st_key = (symbol, timeframe)
+            if st_key not in self._first_realtime_bar_seen:
+                # 回补已完成，本条是该 (symbol, tf) 的首个实时 confirmed bar。
+                self._first_realtime_bar_seen.add(st_key)
+                logger.info(
+                    "Warmup lifted: first realtime bar for %s/%s at %s",
+                    symbol,
+                    timeframe,
+                    bar_time.isoformat(),
+                )
             # Indicator readiness: ATR is required for trade execution.
             # If the snapshot doesn't include atr14, indicators haven't
             # fully warmed up yet — skip to avoid wasting the first
@@ -351,6 +364,11 @@ class SignalRuntime:
                         timeframe,
                         self._warmup_skipped,
                     )
+                return
+        if scope == "intrabar" and self._warmup_ready_fn is not None:
+            st_key = (symbol, timeframe)
+            if st_key not in self._first_realtime_bar_seen:
+                # confirmed 首个实时 bar 尚未到达，跳过 intrabar
                 return
         # Prefer upstream trace_id from PipelineEventBus (set by bar_event_handler)
         # so the same ID flows through the entire pipeline for frontend tracing.
@@ -517,6 +535,10 @@ class SignalRuntime:
             "affinity_gates_skipped": self._affinity_gates_skipped,
             "htf_stale_warnings": self._htf_stale_counter[0],
             "warmup_skipped": self._warmup_skipped,
+            "warmup_ready": (
+                self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
+            ),
+            "warmup_realtime_symbols": len(self._first_realtime_bar_seen),
             # 持锁做快照再迭代，避免 background loop 同时写入导致 RuntimeError
             **self._count_active_states(),
         }
