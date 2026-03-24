@@ -22,6 +22,9 @@
 | 价格区间 | `pending_entry.compute_entry_zone()` | 纯函数直接导入 |
 | 策略参数覆盖 | `_apply_strategy_config_overrides()` | 同一函数 |
 | Regime 亲和度覆盖 | 配置驱动 | 同一格式 |
+| 参数推荐 | `ConfigApplicator` → `signal.local.ini` + 热更新 | `RecommendationEngine` 从 WF 结果生成 |
+
+> **参数推荐闭环**（新增）：Walk-Forward 验证 → `RecommendationEngine.generate()` → 人工审核 → `ConfigApplicator.apply()` → signal.local.ini 原子写入 + `SignalModule.apply_param_overrides()` 热更新。回滚时从备份恢复。推荐基于 OOS regime-specific 胜率生成亲和度建议，基于多窗口 best_params 中位数生成策略参数建议。
 
 ### 1.2 已独立实现（有理由的差异）
 

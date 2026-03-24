@@ -124,6 +124,18 @@ MT5Services/
 │   │   ├── execution_gate.py # ExecutionGate：策略域准入检查（voting group / 白名单 / armed）
 │   │   ├── pending_entry.py  # PendingEntryManager：价格确认入场（Quote bid/ask 区间监控）
 │   │   └── models.py         # TradeOperationRecord 数据类
+│   ├── backtesting/          # 回测与参数优化子系统
+│   │   ├── engine.py             # BacktestEngine：逐 bar 回放主循环
+│   │   ├── optimizer.py          # 网格/随机参数搜索
+│   │   ├── walk_forward.py       # Walk-Forward 前推验证（IS/OOS 分割）
+│   │   ├── recommendation.py     # 参数推荐引擎 + ConfigApplicator（生成/应用/回滚）
+│   │   ├── component_factory.py  # 构建独立 pipeline/SignalModule（绕过 deps.py）
+│   │   ├── data_loader.py        # CachedDataLoader：从 DB 加载历史 OHLC
+│   │   ├── portfolio.py          # PortfolioTracker：模拟持仓/SL/TP/资金曲线
+│   │   ├── filters.py            # 过滤器模拟（直接复用 SignalFilterChain）
+│   │   ├── metrics.py            # Sharpe/Sortino/Calmar/最大回撤计算
+│   │   ├── models.py             # BacktestResult/Recommendation/ParamChange 数据类
+│   │   └── api.py                # 回测 HTTP API（run/optimize/walk-forward/recommendations）
 │   └── utils/                # 通用工具、内存管理器
 │       └── timezone.py       # 统一时区模块（utc_now/to_display/LocalTimeFormatter）
 ├── tests/                    # 测试套件（镜像 src/ 结构）
@@ -368,6 +380,17 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/monitoring/health_checks.py` | 健康检查具体实现（从 health_monitor 拆分） |
 | `src/monitoring/health_reporting.py` | 健康报告生成 |
 | `src/monitoring/manager.py` | MonitoringManager：定时巡检、组件协调 |
+| `src/backtesting/engine.py` | BacktestEngine：逐 bar 回放主循环，复用 evaluate/filters/regime |
+| `src/backtesting/optimizer.py` | 网格/随机参数搜索，复用 CachedDataLoader + 预计算指标 |
+| `src/backtesting/walk_forward.py` | Walk-Forward 前推验证（IS/OOS 分割 + 过拟合检测） |
+| `src/backtesting/recommendation.py` | RecommendationEngine（参数推荐生成）+ ConfigApplicator（应用/回滚） |
+| `src/backtesting/component_factory.py` | `build_backtest_components()`：构建独立 pipeline/SignalModule |
+| `src/backtesting/data_loader.py` | CachedDataLoader：从 DB 加载历史 OHLC + 指标预计算缓存 |
+| `src/backtesting/portfolio.py` | PortfolioTracker：模拟持仓/SL/TP/资金曲线 |
+| `src/backtesting/metrics.py` | BacktestMetrics：Sharpe/Sortino/Calmar/最大回撤 |
+| `src/backtesting/models.py` | BacktestResult/Recommendation/ParamChange/RecommendationStatus |
+| `src/backtesting/api.py` | 回测 HTTP API 路由（run/optimize/walk-forward/recommendations） |
+| `src/persistence/repositories/backtest_repo.py` | 回测结果与推荐记录的 DB 仓储 |
 
 ---
 
@@ -1000,6 +1023,108 @@ idle → preview_buy/sell（方向改变）
 
 ---
 
+## Backtesting & Parameter Optimization
+
+### 模块概览
+
+`src/backtesting/` 是独立于实盘运行时的回测子系统，通过 `build_backtest_components()` 构建独立的指标 pipeline 和 SignalModule 实例，**不共享全局单例**。
+
+### 核心流程
+
+```
+历史 OHLC（DB）
+    → CachedDataLoader（预加载 + 指标预计算）
+    → BacktestEngine（逐 bar 回放）
+        → SignalModule.evaluate()（复用实盘策略代码）
+        → SignalFilterChain.should_evaluate()（复用实盘过滤器）
+        → PortfolioTracker（模拟 SL/TP/持仓）
+    → BacktestResult + BacktestMetrics
+```
+
+### 参数优化流程
+
+```
+ParameterSpace（参数搜索空间）
+    → Optimizer（网格/随机搜索）
+        → 每组参数独立创建 SignalModule
+        → BacktestEngine 评估
+    → 按 Sharpe/胜率/Calmar 排序
+    → 最优参数集合
+```
+
+### Walk-Forward 前推验证
+
+```
+历史数据 ──┬── IS 窗口（训练）→ Optimizer → best_params
+           └── OOS 窗口（验证）→ Engine(best_params) → OOS 指标
+           ↓ 滚动 N 次
+WalkForwardResult:
+    splits[]         各窗口 IS/OOS 结果
+    overfitting_ratio  IS Sharpe / OOS Sharpe（越接近 1.0 越好）
+    consistency_rate   OOS 盈利窗口占比
+```
+
+### 参数推荐系统
+
+Walk-Forward 验证完成后，`RecommendationEngine` 自动生成参数调整建议：
+
+```
+WalkForwardResult
+    → RecommendationEngine.generate()
+        → _aggregate_strategy_params()   多窗口 best_params 中位数聚合
+        → _recommend_regime_affinities() 基于 OOS regime 胜率调整亲和度
+        → _clip_changes()               裁剪极端变更（±30%）
+        → _rank_and_limit()             按变更幅度排序，限制数量
+    → Recommendation（PENDING 状态）
+```
+
+**推荐生命周期**：
+```
+PENDING → APPROVED → APPLIED → ROLLED_BACK（可选）
+           ↑ 人工审核    ↑ ConfigApplicator     ↑ ConfigApplicator
+```
+
+**ConfigApplicator 应用流程**：
+1. 创建 `signal.local.ini` 备份
+2. 原子写入新参数到 `signal.local.ini`（tempfile + os.replace）
+3. 调用 `SignalModule.apply_param_overrides()` 热更新内存
+4. 更新推荐状态为 APPLIED
+
+**安全约束**：
+- `overfitting_ratio > 1.5` → 拒绝生成（过拟合）
+- `consistency_rate < 50%` → 拒绝生成（不稳定）
+- OOS 总交易数 < 10 → 拒绝（样本不足）
+- 单参数变更裁剪到 ±30%
+- 亲和度调整步幅 ±15%
+- Regime-specific 胜率优先于全局胜率
+
+### 回测 API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/backtest/run` | POST | 单次回测 |
+| `/v1/backtest/optimize` | POST | 参数优化（后台任务） |
+| `/v1/backtest/walk-forward` | POST | Walk-Forward 前推验证（后台任务） |
+| `/v1/backtest/results/{run_id}` | GET | 查询回测/优化结果 |
+| `/v1/backtest/recommendations/generate` | POST | 从 WF 结果生成参数推荐 |
+| `/v1/backtest/recommendations/{rec_id}` | GET | 查询推荐详情 |
+| `/v1/backtest/recommendations/{rec_id}/approve` | POST | 人工审批推荐 |
+| `/v1/backtest/recommendations/{rec_id}/apply` | POST | 应用推荐到 signal.local.ini |
+| `/v1/backtest/recommendations/{rec_id}/rollback` | POST | 回滚已应用的推荐 |
+
+### 与实盘的复用关系
+
+| 能力 | 复用方式 |
+|------|---------|
+| 指标计算 | `OptimizedPipeline.compute()` 独立实例 |
+| 策略评估 | `SignalModule.evaluate()` 独立实例 |
+| 过滤器 | `SignalFilterChain` 直接复用 |
+| Regime 检测 | `MarketRegimeDetector` 独立实例 |
+| SL/TP 计算 | `sizing.compute_trade_params()` 纯函数 |
+| 价格确认区间 | `pending_entry.compute_entry_zone()` 纯函数 |
+
+---
+
 ## Risk Management Layers
 
 交易请求从内到外经过多层校验：
@@ -1033,6 +1158,7 @@ Authentication: `X-API-Key` 请求头（在 `config/market.ini` 中配置）
 | indicators | `/indicators` | `/indicators/list`, `/indicators/{symbol}/{timeframe}`, `/indicators/compute` |
 | monitoring | `/monitoring` | `/monitoring/health`, `/monitoring/startup`, `/monitoring/queues`, `/monitoring/config/effective` |
 | signal | `/signals` | 信号查询、诊断、策略列表、投票信息、**`/signals/monitoring/quality/{symbol}/{timeframe}`**（Regime + 信号质量） |
+| backtest | `/backtest` | `/backtest/run`, `/backtest/optimize`, `/backtest/walk-forward`, `/backtest/results/{run_id}`, `/backtest/recommendations/*`（生成/审批/应用/回滚） |
 
 响应通用包装器：
 ```python
@@ -1244,6 +1370,11 @@ flake8 src/ tests/
 - **Vote Processor**：`src/signals/orchestration/vote_processor.py`，投票 fusion/emit/dispatch 纯函数模块
 - **Affinity**：`src/signals/orchestration/affinity.py`，regime 亲和度计算 + 快速拒绝检查纯函数
 - **Delta Metrics**：`src/indicators/delta_metrics.py`，N-bar 变化率计算纯函数（可被 backtesting 直接复用）
+- **回测进程内执行**：当前回测任务通过 FastAPI `BackgroundTasks` 在进程内异步执行，非独立 worker。API 重启会丢失正在运行的任务
+- **WF 结果内存缓存**：`WalkForwardResult` 对象缓存在 `_wf_result_cache` 中，API 重启后丢失。生成推荐前须确保 WF 结果仍在内存中
+- **参数推荐 Hot Reload**：`ConfigApplicator.apply()` 通过 `SignalModule.apply_param_overrides()` 热更新内存参数；若 SignalModule 不可用（standalone 回测模式），仅写入文件
+- **推荐 INI 原子写入**：`_write_local_ini()` 使用 `tempfile.mkstemp()` + `os.replace()` 确保写入原子性，避免部分写入导致配置损坏
+- **推荐 DB 降级**：`apply`/`rollback` 端点在 DB 写入失败时降级为 warning 日志，不影响已成功的文件/内存操作
 - **模块位置注意**：
   - `AppContainer` → `src/app_runtime/container.py`（纯组件持有，可多实例）
   - `AppBuilder` → `src/app_runtime/builder.py`（构建组件，不启动线程）
@@ -1261,6 +1392,10 @@ flake8 src/ tests/
   - `PendingEntryManager` → `src/trading/pending_entry.py`（价格确认入场，由 TradeExecutor 调用）
   - `MarginAvailabilityRule` / `TradeFrequencyRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
   - `UnifiedIndicatorSourceAdapter` → `src/signals/strategies/adapters.py`（解耦信号与指标的适配器）
+  - `RecommendationEngine` / `ConfigApplicator` → `src/backtesting/recommendation.py`（参数推荐生成与应用）
+  - `BacktestRepository` → `src/persistence/repositories/backtest_repo.py`（回测结果与推荐记录仓储）
+  - `BacktestEngine` → `src/backtesting/engine.py`（逐 bar 回放，不在 optimizer.py 中）
+  - `WalkForwardValidator` → `src/backtesting/walk_forward.py`（前推验证，不在 optimizer.py 中）
 
 ---
 
