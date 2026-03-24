@@ -526,6 +526,10 @@ async def admin_pipeline_stream(
         description="过滤 scope（confirmed / intrabar / all）",
     ),
     symbol: Optional[str] = Query(default=None, description="按品种过滤"),
+    detail: bool = Query(
+        default=False,
+        description="是否包含完整数据（OHLC 价格、指标数值）。关闭时仅推送元数据以减少带宽",
+    ),
     pipeline_bus: PipelineEventBus = Depends(deps.get_pipeline_event_bus),
 ) -> StreamingResponse:
     """SSE 端点：推送管道流转事件，前端可按 trace_id 绘制数据流转动画。
@@ -537,7 +541,15 @@ async def admin_pipeline_stream(
     - ``signal_evaluated``: 策略评估完成（含方向和置信度）
 
     所有事件通过 ``trace_id`` 串联，同一条数据的完整链路共享同一个 trace_id。
+
+    ``detail=true`` 时额外推送：
+    - bar_closed 的 OHLC 价格
+    - indicator_computed 的指标名称列表
+    - snapshot_published 的完整指标数值
     """
+    # Keys to strip when detail=false (large payloads)
+    _detail_keys = {"ohlc", "indicator_names", "indicators"}
+
     queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue(maxsize=512)
     loop = asyncio.get_running_loop()
 
@@ -555,6 +567,9 @@ async def admin_pipeline_stream(
             "ts": event.ts,
             **event.payload,
         }
+        if not detail:
+            for key in _detail_keys:
+                payload.pop(key, None)
         try:
             loop.call_soon_threadsafe(queue.put_nowait, payload)
         except (RuntimeError, asyncio.QueueFull):

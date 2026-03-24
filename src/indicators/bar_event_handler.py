@@ -15,7 +15,7 @@ def _get_pipeline_bus(manager):  # type: ignore[no-untyped-def]
     return getattr(manager, "_pipeline_event_bus", None)
 
 
-def _extract_ohlc(bar) -> Optional[Dict]:  # type: ignore[no-untyped-def, type-arg]
+def _extract_ohlc(bar: object) -> Optional[Dict[str, float]]:
     """Safely extract OHLC data from a bar object for pipeline tracing."""
     try:
         return {
@@ -92,16 +92,15 @@ def process_symbol_timeframe_batch(
         bar_time = event.bar_time
         trace_id = uuid4().hex
         try:
-            # Broadcast: bar closed event received (with OHLC if available)
             end_idx = bar_index.get(bar_time)
+
+            # Broadcast: bar closed event received (with OHLC if available)
             if pipeline_bus is not None:
                 ohlc = _extract_ohlc(bars[end_idx]) if end_idx is not None else None
                 pipeline_bus.emit_bar_closed(
                     trace_id, symbol, timeframe, "confirmed", bar_time,
                     ohlc=ohlc,
                 )
-
-            end_idx = bar_index.get(bar_time)
             if end_idx is None:
                 prefix = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
                 if not prefix or prefix[-1].time != bar_time:
