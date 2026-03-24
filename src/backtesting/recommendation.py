@@ -100,6 +100,17 @@ class RecommendationEngine:
         # ── 生成 rationale ────────────────────────────────────────────
         rationale = self._build_rationale(wf_result, all_changes)
 
+        logger.info(
+            "推荐生成完成: %d 项变更 (策略参数 %d, 亲和度 %d), "
+            "OOS Sharpe=%.2f, 胜率=%.1f%%, 过拟合比=%.2f",
+            len(all_changes),
+            len(strategy_changes),
+            len(affinity_changes),
+            agg.sharpe_ratio,
+            agg.win_rate,
+            wf_result.overfitting_ratio,
+        )
+
         return Recommendation(
             rec_id=f"rec_{uuid.uuid4().hex[:12]}",
             source_run_id=source_run_id,
@@ -140,16 +151,20 @@ class RecommendationEngine:
         """多窗口 best_params 中位数聚合，与当前值对比生成变更。"""
         # 收集每个参数在各窗口的值
         param_values: Dict[str, List[float]] = {}
+        skipped_count = 0
         for split in wf_result.splits:
             for key, value in split.best_params.items():
                 try:
                     fval = float(value)
                 except (TypeError, ValueError):
+                    skipped_count += 1
                     continue
                 # 只处理 strategy_params 格式的键（双下划线分隔）
                 if "__" not in key:
                     continue
                 param_values.setdefault(key, []).append(fval)
+        if skipped_count > 0:
+            logger.debug("跳过 %d 个非数值参数", skipped_count)
 
         changes: List[ParamChange] = []
         for key, values in param_values.items():
@@ -168,9 +183,11 @@ class RecommendationEngine:
             if old_float is not None and old_float != 0:
                 change_pct = (median_val - old_float) / abs(old_float) * 100
             elif old_float == 0:
-                change_pct = 100.0 if median_val != 0 else 0.0
+                # 旧值为 0 时无法计算百分比变更，用绝对差值作为近似
+                # 避免裁剪逻辑误判（裁剪仅在有 old_value 时生效）
+                change_pct = 0.0 if median_val == 0 else 100.0
             else:
-                change_pct = 0.0  # 新增参数
+                change_pct = 0.0  # 新增参数（无旧值）
 
             # 跳过变更极小的参数（< 1%）
             if abs(change_pct) < 1.0 and old_float is not None:
@@ -192,49 +209,52 @@ class RecommendationEngine:
         wf_result: "WalkForwardResult",
         current_affinities: Dict[str, Dict[str, float]],
     ) -> List[ParamChange]:
-        """基于 OOS metrics_by_strategy × metrics_by_regime 推荐亲和度调整。"""
+        """基于 OOS metrics_by_regime 推荐亲和度调整。
+
+        优先使用 regime-specific 胜率；样本不足时回退到全局胜率。
+        """
         changes: List[ParamChange] = []
 
-        # 收集各窗口的 OOS metrics_by_strategy 中的胜率
-        strategy_regime_wins: Dict[str, Dict[str, List[float]]] = {}
+        # 收集各窗口 OOS 的 strategy 全局胜率和 regime 维度胜率
+        strategy_overall: Dict[str, List[float]] = {}
+        regime_perf: Dict[str, List[float]] = {}
+
         for split in wf_result.splits:
             oos = split.out_of_sample_result
-            # 遍历 metrics_by_strategy 提取每个策略的表现
             for strat_name, metrics in oos.metrics_by_strategy.items():
                 if metrics.total_trades < 3:
                     continue
-                # 取整体胜率作为近似
-                strategy_regime_wins.setdefault(strat_name, {}).setdefault(
-                    "_overall", []
-                ).append(metrics.win_rate)
+                strategy_overall.setdefault(strat_name, []).append(metrics.win_rate)
 
-            # 遍历 metrics_by_regime 看各 regime 下的整体表现
             for regime_name, metrics in oos.metrics_by_regime.items():
                 if metrics.total_trades < 3:
                     continue
-                strategy_regime_wins.setdefault("_regime_perf", {}).setdefault(
-                    regime_name, []
-                ).append(metrics.win_rate)
+                regime_perf.setdefault(regime_name.lower(), []).append(metrics.win_rate)
 
-        # 简化推荐：对已有覆盖的策略×regime 组合，
-        # 基于 OOS 整体胜率给出方向性建议
         regime_keys = ["trending", "ranging", "breakout", "uncertain"]
         for strat_name, curr_affinity in current_affinities.items():
-            strat_data = strategy_regime_wins.get(strat_name, {})
-            overall_rates = strat_data.get("_overall", [])
+            overall_rates = strategy_overall.get(strat_name, [])
             if len(overall_rates) < 2:
                 continue
-            avg_win_rate = statistics.mean(overall_rates)
+            avg_overall = statistics.mean(overall_rates)
 
             for regime_key in regime_keys:
                 old_val = curr_affinity.get(regime_key)
                 if old_val is None:
                     continue
 
-                # 高胜率策略 → 适度提升亲和度，低胜率 → 降低
-                if avg_win_rate > 55.0 and old_val < 0.8:
+                # 优先用 regime-specific 胜率，不足时回退到全局
+                regime_rates = regime_perf.get(regime_key, [])
+                win_rate = (
+                    statistics.mean(regime_rates)
+                    if len(regime_rates) >= 2
+                    else avg_overall
+                )
+
+                # 高胜率 → 适度提升亲和度，低胜率 → 降低
+                if win_rate > 55.0 and old_val < 0.8:
                     new_val = min(old_val * 1.15, 1.0)
-                elif avg_win_rate < 40.0 and old_val > 0.2:
+                elif win_rate < 40.0 and old_val > 0.2:
                     new_val = max(old_val * 0.85, 0.05)
                 else:
                     continue
