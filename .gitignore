@@ -64,6 +64,7 @@ config/*.local.ini
 config/*.local.json
 config/*.local.yaml
 config/*.local.yml
+config/backups/
 
 # Editors and OS files
 .vscode/
