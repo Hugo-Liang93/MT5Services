@@ -260,6 +260,33 @@ def test_session_momentum_bias_holds_when_atr_is_too_low() -> None:
     assert decision.reason.startswith("atr_too_low_for_session")
 
 
+def test_asian_range_breakout_holds_when_atr_is_zero() -> None:
+    from src.signals.strategies.session import AsianRangeBreakout
+
+    strategy = AsianRangeBreakout()
+    context = SignalContext(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy=strategy.name,
+        indicators={
+            "atr14": {"atr": 0.0},
+        },
+        metadata={
+            "session_buckets": ["london"],
+            "market_structure": {
+                "asia_range_high": 3010.0,
+                "asia_range_low": 2990.0,
+            },
+            "close_price": 3015.0,
+        },
+    )
+
+    decision = strategy.evaluate(context)
+
+    assert decision.direction == "hold"
+    assert "missing_atr" in decision.reason
+
+
 def test_price_action_reversal_detects_bearish_engulfing() -> None:
     strategy = PriceActionReversal()
     context = SignalContext(

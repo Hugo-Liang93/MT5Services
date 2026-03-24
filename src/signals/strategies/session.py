@@ -51,7 +51,7 @@ class AsianRangeBreakout:
         )
         used = [atr_name] if atr_name else ["atr14"]
 
-        if atr is None:
+        if atr is None or atr <= 0:
             return SignalDecision(
                 strategy=self.name,
                 symbol=context.symbol,
