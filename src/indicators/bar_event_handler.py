@@ -151,19 +151,21 @@ def process_symbol_timeframe_batch(
                     indicator_names=sorted(results.keys()),
                 )
 
-            # Attach trace_id so downstream snapshot_publisher can forward it
+            # Attach trace_id so downstream snapshot_publisher can forward it.
+            # Use try/finally to guarantee cleanup — if _write_back_results
+            # raises, a stale trace_id must not leak into later events.
             manager._current_trace_id = trace_id
-
-            manager._write_back_results(
-                symbol,
-                timeframe,
-                prefix,
-                results,
-                compute_time_ms,
-                bar_time=bar_time,
-            )
-
-            manager._current_trace_id = None
+            try:
+                manager._write_back_results(
+                    symbol,
+                    timeframe,
+                    prefix,
+                    results,
+                    compute_time_ms,
+                    bar_time=bar_time,
+                )
+            finally:
+                manager._current_trace_id = None
 
             computed += 1
             if durable_event:
@@ -229,15 +231,17 @@ def process_closed_bar_event(
             )
 
         manager._current_trace_id = trace_id
-        manager._write_back_results(
-            symbol,
-            timeframe,
-            bars,
-            results,
-            compute_time_ms,
-            bar_time=bar_time,
-        )
-        manager._current_trace_id = None
+        try:
+            manager._write_back_results(
+                symbol,
+                timeframe,
+                bars,
+                results,
+                compute_time_ms,
+                bar_time=bar_time,
+            )
+        finally:
+            manager._current_trace_id = None
     except Exception as exc:
         logger.exception(
             "Failed to process closed-bar event for %s/%s at %s",
@@ -296,6 +300,8 @@ def process_intrabar_event(
         return {}
 
     manager._current_trace_id = trace_id
-    result = manager._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
-    manager._current_trace_id = None
+    try:
+        result = manager._publish_intrabar_snapshot(symbol, timeframe, bar.time, grouped)
+    finally:
+        manager._current_trace_id = None
     return result
