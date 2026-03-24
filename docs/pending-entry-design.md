@@ -243,12 +243,12 @@ class PendingEntryManager:
         # 根据方向取对应价格
         # BUY → 用 ask（实际买入价）
         # SELL → 用 bid（实际卖出价）
-        check_price = quote.ask if event.action == "buy" else quote.bid
+        check_price = quote.ask if event.direction == "buy" else quote.bid
 
         # 更新 best_price_seen
         if entry.best_price_seen is None:
             entry.best_price_seen = check_price
-        elif event.action == "buy":
+        elif event.direction == "buy":
             entry.best_price_seen = min(entry.best_price_seen, check_price)
         else:
             entry.best_price_seen = max(entry.best_price_seen, check_price)
@@ -308,7 +308,7 @@ if self._pending_manager is not None and self._pending_manager.config.enabled:
     self._pending_manager.submit(pending)
     logger.info(
         "PendingEntry created: %s/%s %s zone=[%.2f, %.2f] timeout=%s",
-        event.symbol, event.strategy, event.action,
+        event.symbol, event.strategy, event.direction,
         pending.entry_low, pending.entry_high,
         pending.expires_at.isoformat(),
     )
@@ -491,7 +491,7 @@ WARN  PendingEntry spread too wide during fill: XAUUSD spread=65pts > max=50pts,
             {
                 "signal_id": "...",
                 "symbol": "XAUUSD",
-                "action": "buy",
+                "direction": "buy",
                 "strategy": "supertrend",
                 "zone": [2650.30, 2651.40],
                 "reference_price": 2651.00,

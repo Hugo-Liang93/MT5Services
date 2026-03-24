@@ -107,7 +107,7 @@
 │  │        → enqueue_ohlc_closed_event() 写入 events.db           │   │
 │  │                                                                │   │
 │  │  消费: bar_event_handler.process_closed_bar_events_batch()    │   │
-│  │        → pipeline_runner._load_bars(N 根完整收盘 K 线)         │   │
+│  │        → pipeline_runner._load_confirmed_bars(N 根完整收盘 K 线)         │   │
 │  │        → engine/pipeline.py 计算全部 21 个 enabled 指标        │   │
 │  │        → result_store 规范化 + delta_bars 一阶导数计算         │   │
 │  │                                                                │   │
@@ -224,7 +224,7 @@
 │  │    ├─ 4c. affinity gate (min_affinity_skip)                           │   │
 │  │    │       消费: strategy.regime_affinity + regime                     │   │
 │  │    │       产出: effective_affinity (soft regime 时加权平均)           │   │
-│  │    ├─ 4d. 快照去重 (_should_evaluate_snapshot)                        │   │
+│  │    ├─ 4d. 快照去重 (is_new_snapshot)                        │   │
 │  │    │                                                                  │   │
 │  │    ├─ 4e. 市场结构分析 (延迟按需, 首次触发时计算一次)                 │   │
 │  │    │  ┌─────────────────────────────────────────────────────────┐     │   │
@@ -254,7 +254,7 @@
 │  │    │  │     → ConfidenceCalibrator (长期统计校准)                │     │   │
 │  │    │  │     = final_confidence                                  │     │   │
 │  │    │  │                                                         │     │   │
-│  │    │  │ 产出: SignalDecision{action, confidence, reason, ...}   │     │   │
+│  │    │  │ 产出: SignalDecision{direction, confidence, reason, ...}   │     │   │
 │  │    │  └─────────────────────────────────────────────────────────┘     │   │
 │  │    │                                                                  │   │
 │  │    ├─ 4h. Intrabar 置信度衰减 (scope=intrabar 时 × decay)            │   │
@@ -281,7 +281,7 @@
 │  │    │       产出: SignalRecord{signal_id, ...}                         │   │
 │  │    │                                                                  │   │
 │  │    └─ 4l. 发布 SignalEvent                                            │   │
-│  │            产出: SignalEvent{symbol, tf, strategy, action,            │   │
+│  │            产出: SignalEvent{symbol, tf, strategy, direction,            │   │
 │  │                    confidence, signal_state, scope, indicators, ...}  │   │
 │  │            广播给所有 signal_listener                                  │   │
 │  │                                                                       │   │
@@ -353,13 +353,13 @@
 │  模块: src/trading/signal_executor.py                                       │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  输入: SignalEvent{symbol, strategy, action, confidence, signal_state, ...} │
+│  输入: SignalEvent{symbol, strategy, direction, confidence, signal_state, ...} │
 │                                                                              │
 │  ┌─── GATE 1: 基础过滤 ─────────────────────────────────────────────────┐   │
 │  │  scope != "confirmed"  → return                                       │   │
 │  │  signal_state 不含 "confirmed" → return                               │   │
 │  │  config.enabled == False → return                                     │   │
-│  │  action not in ("buy","sell") → return                                │   │
+│  │  direction not in ("buy","sell") → return                                │   │
 │  └───────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
 │                              ▼                                               │
@@ -472,7 +472,7 @@
 │  职责: 追踪由 TradeExecutor 开仓的仓位，移动止损/保本，日终平仓             │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  输入: track_position(ticket, signal_id, symbol, action, params, ...)       │
+│  输入: track_position(ticket, signal_id, symbol, direction, params, ...)       │
 │                                                                              │
 │  后台对账循环 (reconcile_interval = 10s):                                   │
 │  ┌───────────────────────────────────────────────────────────────────────┐   │
@@ -536,9 +536,9 @@
 │  ┌─── ConfidenceCalibrator ──────────────────────────────────────────────┐   │
 │  │  模块: src/signals/evaluation/calibrator.py                           │   │
 │  │  消费: DB signal_outcomes 表 (后台线程每 15 分钟查询)                 │   │
-│  │  逻辑: 按 (strategy, action, regime) 聚合近 8 小时胜率                │   │
+│  │  逻辑: 按 (strategy, direction, regime) 聚合近 8 小时胜率                │   │
 │  │        分阶段校准: <50笔 不校准, 50-100 轻微, 100+ 正常              │   │
-│  │  产出: calibrate(strategy, action, confidence) → 校准后 confidence    │   │
+│  │  产出: calibrate(strategy, direction, confidence) → 校准后 confidence    │   │
 │  │        → 被 SignalModule.evaluate() 置信度管线消费                    │   │
 │  └───────────────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────────────┘
