@@ -315,7 +315,10 @@ class SignalModule:
         indicator_payload = indicators or self.indicator_source.get_all_indicators(
             symbol, timeframe
         )
-        context_metadata = self._build_context_metadata(symbol, timeframe, metadata)
+        bars_depth = getattr(strategy_impl, "recent_bars_depth", 5)
+        context_metadata = self._build_context_metadata(
+            symbol, timeframe, metadata, recent_bars_limit=bars_depth,
+        )
         event_impact = context_metadata.pop("_event_impact_forecast", None)
         context = SignalContext(
             symbol=symbol,
@@ -394,6 +397,24 @@ class SignalModule:
         if decision.confidence > 0 and calibrated < self._confidence_floor:
             calibrated = self._confidence_floor
 
+        # ── 置信度管线摘要日志 ──────────────────────────────────────────
+        if decision.direction in ("buy", "sell") and decision.confidence > 0:
+            delta = calibrated - decision.confidence
+            if abs(delta) > 0.05:
+                logger.info(
+                    "Confidence[%s/%s/%s %s]: %.2f → %.2f "
+                    "(affinity=%.2f perf=%.2f regime=%s)",
+                    symbol,
+                    timeframe,
+                    strategy,
+                    decision.direction,
+                    decision.confidence,
+                    calibrated,
+                    affinity,
+                    perf_multiplier,
+                    regime.value,
+                )
+
         decision = dataclasses.replace(
             decision,
             confidence=calibrated,
@@ -429,6 +450,7 @@ class SignalModule:
         symbol: str,
         timeframe: str,
         metadata: Optional[Dict[str, Any]],
+        recent_bars_limit: int = 5,
     ) -> Dict[str, Any]:
         context_metadata = dict(metadata or {})
         if "recent_bars" in context_metadata:
@@ -440,12 +462,14 @@ class SignalModule:
 
         end_time = self._parse_optional_datetime(context_metadata.get("bar_time"))
         try:
-            recent_bars = getter(symbol, timeframe, end_time=end_time, limit=5)
+            recent_bars = getter(symbol, timeframe, end_time=end_time, limit=recent_bars_limit)
         except Exception:
-            logger.debug(
-                "Failed to load recent bars for %s/%s",
+            log_fn = logger.warning if recent_bars_limit > 5 else logger.debug
+            log_fn(
+                "Failed to load recent bars for %s/%s (limit=%d)",
                 symbol,
                 timeframe,
+                recent_bars_limit,
                 exc_info=True,
             )
             return context_metadata
@@ -652,13 +676,13 @@ class SignalModule:
         scope: str = "confirmed",
     ) -> dict[str, Any]:
         rows = self.summary(hours=hours, scope=scope)
-        action_totals: dict[str, int] = {}
+        direction_totals: dict[str, int] = {}
         strategy_totals: dict[str, int] = {}
         for row in rows:
-            action = str(row.get("action") or "unknown")
+            direction = str(row.get("direction") or "unknown")
             strategy = str(row.get("strategy") or "unknown")
             count = int(row.get("count") or 0)
-            action_totals[action] = action_totals.get(action, 0) + count
+            direction_totals[direction] = direction_totals.get(direction, 0) + count
             strategy_totals[strategy] = strategy_totals.get(strategy, 0) + count
         top_strategies = sorted(
             (
@@ -672,7 +696,7 @@ class SignalModule:
             "hours": hours,
             "scope": scope,
             "rows_analyzed": len(rows),
-            "action_totals": action_totals,
+            "direction_totals": direction_totals,
             "strategy_totals": strategy_totals,
             "top_strategies": top_strategies,
             "source": "repository.summary",

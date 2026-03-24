@@ -107,7 +107,7 @@ class TradePrecheckModel(BaseModel):
     event_blocked: bool = False
     calendar_health_degraded: bool = False
     blocked: bool
-    action: str
+    verdict: str
     reason: Optional[str] = None
     symbol: str
     active_windows: List[EconomicCalendarMergedRiskWindowModel] = Field(default_factory=list)

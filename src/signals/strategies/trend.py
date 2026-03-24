@@ -707,6 +707,7 @@ class FibPullbackStrategy:
 
     def __init__(self, *, swing_lookback: int = 20) -> None:
         self._swing_lookback = swing_lookback
+        self.recent_bars_depth: int = swing_lookback
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         direction, st_name = _resolve_indicator_value(

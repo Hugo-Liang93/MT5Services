@@ -251,7 +251,7 @@ class TradeExecutor:
         # ── 策略域准入检查（ExecutionGate）────────────────────────────
         gate_allowed, gate_reason = self._execution_gate.check(event)
         if not gate_allowed:
-            logger.debug(
+            logger.info(
                 "TradeExecutor: skipping %s/%s %s - gate blocked: %s",
                 event.symbol, event.strategy, event.direction, gate_reason,
             )

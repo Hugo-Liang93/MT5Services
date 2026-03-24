@@ -427,7 +427,9 @@ class SignalRuntime:
                     metadata["symbol_point"] = point_size
                     metadata["spread_price"] = spread_points * point_size
             except Exception:
-                pass
+                logger.debug(
+                    "Failed to resolve spread/point for %s", symbol, exc_info=True,
+                )
         if scope == "intrabar":
             if bar_time.tzinfo is None:
                 bar_time = bar_time.replace(tzinfo=timezone.utc)
@@ -1268,7 +1270,9 @@ class SignalRuntime:
                     try:
                         self._confirmed_events.put_nowait(event)
                     except queue.Full:
-                        pass  # confirmed already processed, drop
+                        logger.warning(
+                            "Confirmed event queue full, dropping re-queued event",
+                        )
                     event = intrabar_event
                 except queue.Empty:
                     pass  # No intrabar pending, continue with confirmed
@@ -1305,7 +1309,11 @@ class SignalRuntime:
                     self._processed_events += 1
                     return True
             except (TypeError, ValueError):
-                pass
+                logger.debug(
+                    "Failed to parse _enqueued_at for %s/%s intrabar event",
+                    symbol,
+                    timeframe,
+                )
         if (
             self.filter_chain is not None
             and self.filter_chain.session_filter is not None
@@ -1326,8 +1334,10 @@ class SignalRuntime:
                 indicators=indicators,
             )
             if not allowed:
-                logger.debug(
-                    "Signal evaluation skipped for %s/%s: %s", symbol, timeframe, reason
+                log_fn = logger.info if scope == "confirmed" else logger.debug
+                log_fn(
+                    "Signal evaluation skipped for %s/%s [%s]: %s",
+                    symbol, timeframe, scope, reason,
                 )
                 self._processed_events += 1
                 self._run_count += 1

@@ -77,7 +77,7 @@ class DummySignalRepository:
                 "symbol": rows[-1][2],
                 "timeframe": rows[-1][3],
                 "strategy": rows[-1][4],
-                "action": rows[-1][5],
+                "direction": rows[-1][5],
                 "count": 1,
                 "avg_confidence": rows[-1][6],
                 "last_seen_at": rows[-1][0].isoformat() if rows[-1][0] else None,
@@ -89,7 +89,7 @@ class DummySignalRepository:
         return [
             {
                 "strategy": "sma_trend",
-                "action": "buy",
+                "direction": "buy",
                 "total": 4,
                 "wins": 3,
                 "win_rate": 0.75,
@@ -102,7 +102,7 @@ class DummySignalRepository:
         return [
             {
                 "strategy": "sma_trend",
-                "action": "buy",
+                "direction": "buy",
                 "total": 4,
                 "wins": 3,
                 "losses": 1,
@@ -512,7 +512,7 @@ def test_signal_module_diagnostics_aggregate_summary_uses_repository_summary() -
 
     assert report["source"] == "repository.summary"
     assert report["rows_analyzed"] >= 1
-    assert report["action_totals"]["buy"] >= 1
+    assert report["direction_totals"]["buy"] >= 1
 
 
 def test_signal_module_recent_by_trace_id_filters_rows() -> None:

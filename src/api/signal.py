@@ -119,7 +119,7 @@ def recent_signals(
         symbol=symbol,
         timeframe=timeframe,
         strategy=strategy,
-        action=action,
+        direction=action,
         scope=scope,
         limit=limit,
     )
@@ -155,7 +155,7 @@ def best_signals_per_timeframe(
     """
     rows = service.recent_signals(
         symbol=symbol,
-        action=None,
+        direction=None,
         scope="confirmed",
         limit=2000,
     )

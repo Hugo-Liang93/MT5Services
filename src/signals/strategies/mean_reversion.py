@@ -486,6 +486,7 @@ class RsiDivergenceStrategy:
 
     def __init__(self, *, lookback_bars: int = 14) -> None:
         self._lookback_bars = lookback_bars
+        self.recent_bars_depth: int = lookback_bars
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         rsi_value, rsi_name = _resolve_indicator_value(

@@ -178,8 +178,8 @@ def quote_history(
         )
     except RuntimeError as exc:
         return ApiResponse.error_response(
-            error=str(exc),
             error_code=AIErrorCode.SERVICE_UNAVAILABLE,
+            error_message=str(exc),
         )
     items = [QuoteModel(**_model_payload(quote)) for quote in data]
     return ApiResponse.success_response(
@@ -224,8 +224,8 @@ def tick_history(
         )
     except RuntimeError as exc:
         return ApiResponse.error_response(
-            error=str(exc),
             error_code=AIErrorCode.SERVICE_UNAVAILABLE,
+            error_message=str(exc),
         )
     items = [TickModel(**_model_payload(tick)) for tick in data]
     return ApiResponse.success_response(
@@ -315,8 +315,8 @@ def ohlc_history(
         )
     except RuntimeError as exc:
         return ApiResponse.error_response(
-            error=str(exc),
             error_code=AIErrorCode.SERVICE_UNAVAILABLE,
+            error_message=str(exc),
         )
     items = [OHLCModel(**_model_payload(bar)) for bar in data]
     return ApiResponse.success_response(

@@ -260,6 +260,33 @@ def test_session_momentum_bias_holds_when_atr_is_too_low() -> None:
     assert decision.reason.startswith("atr_too_low_for_session")
 
 
+def test_asian_range_breakout_holds_when_atr_is_zero() -> None:
+    from src.signals.strategies.session import AsianRangeBreakout
+
+    strategy = AsianRangeBreakout()
+    context = SignalContext(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy=strategy.name,
+        indicators={
+            "atr14": {"atr": 0.0},
+        },
+        metadata={
+            "session_buckets": ["london"],
+            "market_structure": {
+                "asia_range_high": 3010.0,
+                "asia_range_low": 2990.0,
+            },
+            "close_price": 3015.0,
+        },
+    )
+
+    decision = strategy.evaluate(context)
+
+    assert decision.direction == "hold"
+    assert "missing_atr" in decision.reason
+
+
 def test_price_action_reversal_detects_bearish_engulfing() -> None:
     strategy = PriceActionReversal()
     context = SignalContext(
@@ -515,3 +542,42 @@ def test_signal_module_injects_recent_bars_for_phase2_strategies() -> None:
     assert source.calls[0]["end_time"] == datetime(
         2026, 3, 19, 10, 0, tzinfo=timezone.utc
     )
+
+
+def test_signal_module_injects_enough_recent_bars_for_fib_pullback() -> None:
+    source = Phase2IndicatorSource()
+    module = SignalModule(indicator_source=source)
+
+    module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="fib_pullback",
+        indicators={
+            "supertrend14": {"direction": 1.0},
+            "atr14": {"atr": 4.0},
+        },
+        metadata={"bar_time": "2026-03-19T10:00:00+00:00"},
+        persist=False,
+    )
+
+    assert len(source.calls) == 1
+    assert source.calls[0]["limit"] == 20
+
+
+def test_signal_module_injects_enough_recent_bars_for_rsi_divergence() -> None:
+    source = Phase2IndicatorSource()
+    module = SignalModule(indicator_source=source)
+
+    module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="rsi_divergence",
+        indicators={
+            "rsi14": {"rsi": 35.0},
+        },
+        metadata={"bar_time": "2026-03-19T10:00:00+00:00"},
+        persist=False,
+    )
+
+    assert len(source.calls) == 1
+    assert source.calls[0]["limit"] == 14
