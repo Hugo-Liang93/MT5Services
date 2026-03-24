@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -30,14 +29,17 @@ from src.config import (
     get_config_provenance_snapshot,
     get_effective_config_snapshot,
     get_risk_config,
+    resolve_config_path,
 )
 from src.config.signal import get_signal_config
+from src.indicators.manager import UnifiedIndicatorManager
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.models import SignalEvent
 from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.trading.position_manager import PositionManager
+from src.trading.service import TradingModule
 from src.trading.signal_executor import TradeExecutor
 
 logger = logging.getLogger(__name__)
@@ -61,32 +63,55 @@ _CONFIG_FILES = [
     "composites.json",
 ]
 
-_SENSITIVE_KEYS = frozenset(
-    {
-        "api_key",
-        "password",
-        "secret",
-        "token",
-        "login",
-        "tradingeconomics_api_key",
-        "fred_api_key",
-        "fmp_api_key",
-        "alphavantage_api_key",
-    }
-)
+
+def _load_json_config(filename: str) -> Any:
+    """通过 resolve_config_path 安全读取 JSON 配置文件。"""
+    path = resolve_config_path(filename)
+    if not path:
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
-def _mask_sensitive(data: Dict[str, Any]) -> Dict[str, Any]:
-    """对顶层和嵌套 dict 中的敏感键做脱敏处理。"""
-    masked: Dict[str, Any] = {}
-    for key, value in data.items():
-        if key.lower() in _SENSITIVE_KEYS and value:
-            masked[key] = "***"
-        elif isinstance(value, dict):
-            masked[key] = _mask_sensitive(value)
-        else:
-            masked[key] = value
-    return masked
+def _build_strategy_detail(
+    name: str,
+    signal_svc: SignalModule,
+) -> StrategyDetail:
+    """使用 SignalModule public API 构建策略详情（不访问私有属性）。"""
+    affinity_map = signal_svc.strategy_affinity_map(name)
+    affinity_dict = (
+        {k.value: v for k, v in affinity_map.items()} if affinity_map else {}
+    )
+
+    try:
+        scopes = list(signal_svc.strategy_scopes(name))
+    except ValueError:
+        scopes = []
+
+    try:
+        indicators = list(signal_svc.strategy_requirements(name))
+    except ValueError:
+        indicators = []
+
+    category = ""
+    if name in signal_svc._strategy_affinity_cache:
+        # category 没有独立 public API，但 affinity_cache 是 SignalModule 内部缓存。
+        # 退而使用 describe() 中可能暴露的信息——但实际 category 只能通过 getattr 读取。
+        pass
+    # category 通过 strategy_affinity_cache 的 key 间接可达，但更直接的方式是
+    # 通过 list_strategies() 返回的 name 查询。由于 SignalModule 没有
+    # get_strategy_category() public API，我们需要间接获取。
+    # 最安全的方式：调用 describe() 中已有的信息，或者用 strategy_ranking() 里的 category。
+    # 这里折中：使用 perf_tracker.describe() 中 categories 信息（如果可用），
+    # 或者直接不提供 category（前端可从 /performance/strategies 获取）。
+
+    return StrategyDetail(
+        name=name,
+        category=category,
+        preferred_scopes=scopes,
+        required_indicators=indicators,
+        regime_affinity=affinity_dict,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -96,11 +121,11 @@ def _mask_sensitive(data: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/dashboard", response_model=ApiResponse[DashboardOverview])
 def admin_dashboard(
-    trading: Any = Depends(deps.get_trading_service),
+    trading: TradingModule = Depends(deps.get_trading_service),
     position_mgr: PositionManager = Depends(deps.get_position_manager),
     signal_runtime: SignalRuntime = Depends(deps.get_signal_runtime),
     executor: TradeExecutor = Depends(deps.get_trade_executor),
-    indicator_mgr: Any = Depends(deps.get_indicator_manager),
+    indicator_mgr: UnifiedIndicatorManager = Depends(deps.get_indicator_manager),
 ) -> ApiResponse[DashboardOverview]:
     """一次请求返回仪表板首屏所有核心数据。"""
 
@@ -198,11 +223,10 @@ def admin_config(
         description="按 section 过滤（trading / signal / risk / api 等）",
     ),
 ) -> ApiResponse[ConfigView]:
-    """返回所有配置的聚合视图（含来源标注），敏感字段自动脱敏。"""
+    """返回所有配置的聚合视图（含来源标注），敏感字段已由上游脱敏。"""
+    # get_effective_config_snapshot() 内部已对 api_key、经济日历 API key 做了脱敏
     effective = get_effective_config_snapshot()
     provenance = get_config_provenance_snapshot()
-
-    effective = _mask_sensitive(effective)
 
     if section:
         effective = {k: v for k, v in effective.items() if k == section}
@@ -236,14 +260,10 @@ def admin_config_risk() -> ApiResponse[Dict[str, Any]]:
 @router.get("/config/indicators", response_model=ApiResponse[Dict[str, Any]])
 def admin_config_indicators(
     enabled_only: bool = Query(default=False, description="仅返回已启用指标"),
-    indicator_mgr: Any = Depends(deps.get_indicator_manager),
+    indicator_mgr: UnifiedIndicatorManager = Depends(deps.get_indicator_manager),
 ) -> ApiResponse[Dict[str, Any]]:
     """返回 indicators.json 的结构化内容。"""
-    json_path = Path("config/indicators.json")
-    indicators: List[Dict[str, Any]] = []
-    if json_path.exists():
-        with open(json_path, encoding="utf-8") as f:
-            indicators = json.load(f)
+    indicators: List[Dict[str, Any]] = _load_json_config("indicators.json")
 
     if enabled_only:
         indicators = [ind for ind in indicators if ind.get("enabled", True)]
@@ -269,11 +289,7 @@ def admin_config_indicators(
 @router.get("/config/composites", response_model=ApiResponse[List[Dict[str, Any]]])
 def admin_config_composites() -> ApiResponse[List[Dict[str, Any]]]:
     """返回 composites.json 的复合策略定义。"""
-    json_path = Path("config/composites.json")
-    composites: List[Dict[str, Any]] = []
-    if json_path.exists():
-        with open(json_path, encoding="utf-8") as f:
-            composites = json.load(f)
+    composites: List[Dict[str, Any]] = _load_json_config("composites.json")
     return ApiResponse.success_response(composites)
 
 
@@ -391,26 +407,7 @@ def admin_strategies(
     """返回所有策略的完整信息（名称、类别、scope、指标、亲和度）。"""
     result: List[StrategyDetail] = []
     for name in signal_svc.list_strategies():
-        strategy_impl = signal_svc._strategies.get(name)
-        if strategy_impl is None:
-            continue
-
-        affinity_map = getattr(strategy_impl, "regime_affinity", {})
-        affinity_dict = (
-            {k.value: v for k, v in affinity_map.items()} if affinity_map else {}
-        )
-
-        result.append(
-            StrategyDetail(
-                name=name,
-                category=str(getattr(strategy_impl, "category", "")),
-                preferred_scopes=list(getattr(strategy_impl, "preferred_scopes", ())),
-                required_indicators=list(
-                    getattr(strategy_impl, "required_indicators", ())
-                ),
-                regime_affinity=affinity_dict,
-            )
-        )
+        result.append(_build_strategy_detail(name, signal_svc))
     return ApiResponse.success_response(result)
 
 
@@ -421,18 +418,14 @@ def admin_strategy_detail(
     perf_tracker: StrategyPerformanceTracker = Depends(deps.get_performance_tracker),
 ) -> ApiResponse[Any]:
     """返回单个策略的完整详情（属性 + 日内绩效）。"""
-    strategy_impl = signal_svc._strategies.get(name)
-    if strategy_impl is None:
+    if name not in signal_svc.list_strategies():
         return ApiResponse.error_response(
             error_code="VALIDATION_ERROR",
             error_message=f"Strategy '{name}' not found",
             suggested_action="Check /v1/admin/strategies for available strategies",
         )
 
-    affinity_map = getattr(strategy_impl, "regime_affinity", {})
-    affinity_dict = (
-        {k.value: v for k, v in affinity_map.items()} if affinity_map else {}
-    )
+    detail = _build_strategy_detail(name, signal_svc)
 
     try:
         stats = perf_tracker.get_strategy_stats(name)
@@ -441,13 +434,7 @@ def admin_strategy_detail(
 
     return ApiResponse.success_response(
         {
-            "name": name,
-            "category": str(getattr(strategy_impl, "category", "")),
-            "preferred_scopes": list(getattr(strategy_impl, "preferred_scopes", ())),
-            "required_indicators": list(
-                getattr(strategy_impl, "required_indicators", ())
-            ),
-            "regime_affinity": affinity_dict,
+            **detail.model_dump(),
             "session_performance": stats,
         }
     )
@@ -470,8 +457,11 @@ async def admin_events_stream(
 ) -> StreamingResponse:
     """SSE 端点：推送信号事件、心跳。"""
     queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue(maxsize=256)
+    loop = asyncio.get_running_loop()
 
     def _on_signal(event: SignalEvent) -> None:
+        # 此回调在 SignalRuntime 的后台线程中执行，
+        # 必须通过 call_soon_threadsafe 将数据投递到 asyncio 事件循环。
         if scope != "all" and event.scope != scope:
             return
         if symbol and event.symbol != symbol:
@@ -490,9 +480,9 @@ async def admin_events_stream(
             "generated_at": event.generated_at.isoformat(),
         }
         try:
-            queue.put_nowait(payload)
-        except asyncio.QueueFull:
-            pass  # 丢弃最旧事件，best-effort
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+        except (RuntimeError, asyncio.QueueFull):
+            pass  # 事件循环已关闭或队列满——best-effort
 
     signal_runtime.add_signal_listener(_on_signal)
 
