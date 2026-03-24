@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS signal_events (
     symbol text NOT NULL,
     timeframe text NOT NULL,
     strategy text NOT NULL,
-    action text NOT NULL,
+    direction text NOT NULL,
     confidence double precision NOT NULL,
     reason text,
     used_indicators jsonb,
@@ -14,15 +14,15 @@ CREATE TABLE IF NOT EXISTS signal_events (
 );
 CREATE INDEX IF NOT EXISTS signal_events_time_idx
 ON signal_events (generated_at DESC, symbol, timeframe, strategy);
-CREATE INDEX IF NOT EXISTS signal_events_action_idx
-ON signal_events (action, generated_at DESC);
+CREATE INDEX IF NOT EXISTS signal_events_direction_idx
+ON signal_events (direction, generated_at DESC);
 CREATE TABLE IF NOT EXISTS signal_preview_events (
     generated_at timestamptz NOT NULL,
     signal_id text PRIMARY KEY,
     symbol text NOT NULL,
     timeframe text NOT NULL,
     strategy text NOT NULL,
-    action text NOT NULL,
+    direction text NOT NULL,
     confidence double precision NOT NULL,
     reason text,
     used_indicators jsonb,
@@ -31,8 +31,8 @@ CREATE TABLE IF NOT EXISTS signal_preview_events (
 );
 CREATE INDEX IF NOT EXISTS signal_preview_events_time_idx
 ON signal_preview_events (generated_at DESC, symbol, timeframe, strategy);
-CREATE INDEX IF NOT EXISTS signal_preview_events_action_idx
-ON signal_preview_events (action, generated_at DESC);
+CREATE INDEX IF NOT EXISTS signal_preview_events_direction_idx
+ON signal_preview_events (direction, generated_at DESC);
 """
 
 INSERT_SQL = """
@@ -42,7 +42,7 @@ INSERT INTO signal_events (
     symbol,
     timeframe,
     strategy,
-    action,
+    direction,
     confidence,
     reason,
     used_indicators,
@@ -55,7 +55,7 @@ ON CONFLICT (signal_id) DO UPDATE SET
     symbol = EXCLUDED.symbol,
     timeframe = EXCLUDED.timeframe,
     strategy = EXCLUDED.strategy,
-    action = EXCLUDED.action,
+    direction = EXCLUDED.direction,
     confidence = EXCLUDED.confidence,
     reason = EXCLUDED.reason,
     used_indicators = EXCLUDED.used_indicators,
@@ -70,7 +70,7 @@ INSERT INTO signal_preview_events (
     symbol,
     timeframe,
     strategy,
-    action,
+    direction,
     confidence,
     reason,
     used_indicators,
@@ -83,7 +83,7 @@ ON CONFLICT (signal_id) DO UPDATE SET
     symbol = EXCLUDED.symbol,
     timeframe = EXCLUDED.timeframe,
     strategy = EXCLUDED.strategy,
-    action = EXCLUDED.action,
+    direction = EXCLUDED.direction,
     confidence = EXCLUDED.confidence,
     reason = EXCLUDED.reason,
     used_indicators = EXCLUDED.used_indicators,

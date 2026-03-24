@@ -65,7 +65,7 @@ def snapshot_signature(indicators: Dict[str, Dict[str, float]]) -> int:
     )
 
 
-def should_evaluate_snapshot(
+def is_new_snapshot(
     state: RuntimeSignalState,
     *,
     scope: str,
@@ -146,7 +146,7 @@ def transition_confirmed(
     return result
 
 
-def transition_preview(
+def transition_intrabar(
     state: RuntimeSignalState,
     decision_action: str,
     confidence: float,

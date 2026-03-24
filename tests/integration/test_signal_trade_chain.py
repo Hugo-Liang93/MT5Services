@@ -20,7 +20,7 @@ import pytest
 
 from src.signals.models import SignalDecision, SignalEvent
 from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
-from src.signals.orchestration.runtime import _extract_close_price
+from src.signals.evaluation.indicators_helpers import extract_close_price
 from src.signals.service import SignalModule
 from src.signals.strategies.adapters import IndicatorSource
 from src.signals.strategies.trend import SmaTrendStrategy
@@ -404,30 +404,30 @@ def test_session_filter_blocks_signal_outside_session() -> None:
 
 
 # ===========================================================================
-# 测试 6：_extract_close_price 工具函数
+# 测试 6：extract_close_price 工具函数
 # ===========================================================================
 
-def test_extract_close_price_from_boll_payload() -> None:
+def testextract_close_price_from_boll_payload() -> None:
     indicators = {
         "boll20": {"bb_upper": 3010.0, "bb_lower": 2990.0, "bb_mid": 3000.0, "close": 3001.5},
         "sma20": {"sma": 2999.0},
     }
-    price = _extract_close_price(indicators)
+    price = extract_close_price(indicators)
     assert price == 3001.5
 
 
-def test_extract_close_price_falls_back_to_bb_mid() -> None:
+def testextract_close_price_falls_back_to_bb_mid() -> None:
     """没有 close 字段时，退回到 bb_mid。"""
     indicators = {
         "boll20": {"bb_upper": 3010.0, "bb_lower": 2990.0, "bb_mid": 3000.0},
     }
-    price = _extract_close_price(indicators)
+    price = extract_close_price(indicators)
     assert price == 3000.0
 
 
-def test_extract_close_price_returns_none_if_absent() -> None:
+def testextract_close_price_returns_none_if_absent() -> None:
     indicators = {"sma20": {"sma": 3000.0}}
-    assert _extract_close_price(indicators) is None
+    assert extract_close_price(indicators) is None
 
 
 # ===========================================================================
@@ -486,7 +486,7 @@ def test_trade_executor_skips_low_confidence() -> None:
 
     event = SignalEvent(
         symbol="XAUUSD", timeframe="M1", strategy="sma_trend",
-        action="buy", confidence=0.50,  # 低于阈值
+        direction="buy", confidence=0.50,  # 低于阈值
         signal_state="confirmed_buy", scope="confirmed",
         indicators={"atr14": {"atr": 5.0}, "sma20": {"sma": 3000.0}},
         metadata={"previous_state": "armed_buy", "close_price": 3000.0,

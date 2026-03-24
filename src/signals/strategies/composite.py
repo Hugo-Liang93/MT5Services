@@ -145,7 +145,7 @@ class CompositeSignalStrategy:
             strategy=self.name,
             symbol=context.symbol,
             timeframe=context.timeframe,
-            action=action,
+            direction=action,
             confidence=confidence,
             reason=reason,
             used_indicators=used,
@@ -167,8 +167,8 @@ class CompositeSignalStrategy:
         if not decisions:
             return "hold", 0.0, "no_sub_decisions"
 
-        buys = [d for d in decisions if d.action == "buy"]
-        sells = [d for d in decisions if d.action == "sell"]
+        buys = [d for d in decisions if d.direction == "buy"]
+        sells = [d for d in decisions if d.direction == "sell"]
         n = len(decisions)
 
         if self._combine_mode == "all_agree":

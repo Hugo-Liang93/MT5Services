@@ -239,7 +239,7 @@ class PendingEntryManager:
             "PendingEntry submitted: %s/%s %s zone=[%.2f, %.2f] mode=%s expires=%s",
             entry.signal_event.symbol,
             entry.signal_event.strategy,
-            entry.signal_event.action,
+            entry.signal_event.direction,
             entry.entry_low,
             entry.entry_high,
             entry.zone_mode,
@@ -259,7 +259,7 @@ class PendingEntryManager:
             "PendingEntry cancelled: %s/%s %s reason=%s",
             entry.signal_event.symbol,
             entry.signal_event.strategy,
-            entry.signal_event.action,
+            entry.signal_event.direction,
             reason,
         )
         if self._on_expired_fn:
@@ -294,7 +294,7 @@ class PendingEntryManager:
                 and entry.status == "pending"
                 and (
                     exclude_direction is None
-                    or entry.signal_event.action != exclude_direction
+                    or entry.signal_event.direction != exclude_direction
                 )
             ]
             for sid in to_remove:
@@ -372,7 +372,7 @@ class PendingEntryManager:
                 {
                     "signal_id": e.signal_event.signal_id,
                     "symbol": e.signal_event.symbol,
-                    "action": e.signal_event.action,
+                    "direction": e.signal_event.direction,
                     "strategy": e.signal_event.strategy,
                     "zone": [e.entry_low, e.entry_high],
                     "reference_price": e.reference_price,
@@ -465,9 +465,9 @@ class PendingEntryManager:
             return
 
         bid, ask = prices
-        action = entry.signal_event.action
+        direction = entry.signal_event.direction
         # BUY → 用 ask（实际买入价），SELL → 用 bid（实际卖出价）
-        check_price = ask if action == "buy" else bid
+        check_price = ask if direction == "buy" else bid
 
         with self._lock:
             # 检查 entry 是否仍在 pending 中（可能已被其他线程 cancel）
@@ -481,7 +481,7 @@ class PendingEntryManager:
             # 更新 best_price_seen
             if entry.best_price_seen is None:
                 entry.best_price_seen = check_price
-            elif action == "buy":
+            elif direction == "buy":
                 entry.best_price_seen = min(entry.best_price_seen, check_price)
             else:
                 entry.best_price_seen = max(entry.best_price_seen, check_price)
@@ -523,7 +523,7 @@ class PendingEntryManager:
 
             self._stats["total_filled"] += 1
             # 价格改善：BUY 时 reference - fill（越低越好），SELL 时 fill - reference（越高越好）
-            if entry.signal_event.action == "buy":
+            if entry.signal_event.direction == "buy":
                 improvement = entry.reference_price - fill_price
             else:
                 improvement = fill_price - entry.reference_price
@@ -534,7 +534,7 @@ class PendingEntryManager:
             "waited=%ds, checks=%d)",
             entry.signal_event.symbol,
             entry.signal_event.strategy,
-            entry.signal_event.action,
+            entry.signal_event.direction,
             fill_price,
             entry.reference_price,
             improvement,
@@ -587,7 +587,7 @@ class PendingEntryManager:
             "PendingEntry expired: %s/%s %s best_seen=%.2f zone=[%.2f, %.2f] checks=%d",
             entry.signal_event.symbol,
             entry.signal_event.strategy,
-            entry.signal_event.action,
+            entry.signal_event.direction,
             entry.best_price_seen or 0.0,
             entry.entry_low,
             entry.entry_high,

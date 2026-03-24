@@ -38,7 +38,7 @@ class _ActiveTrade:
     symbol: str
     timeframe: str
     strategy: str
-    action: str
+    direction: str
     confidence: float
     fill_price: float
     regime: Optional[str]
@@ -87,7 +87,7 @@ class TradeOutcomeTracker:
         symbol: str,
         timeframe: str,
         strategy: str,
-        action: str,
+        direction: str,
         fill_price: float,
         confidence: float,
         regime: Optional[str] = None,
@@ -100,7 +100,7 @@ class TradeOutcomeTracker:
             symbol=symbol,
             timeframe=timeframe,
             strategy=strategy,
-            action=action,
+            direction=direction,
             confidence=confidence,
             fill_price=fill_price,
             regime=regime,
@@ -137,7 +137,7 @@ class TradeOutcomeTracker:
                         )
         logger.debug(
             "TradeOutcomeTracker: registered trade signal_id=%s %s %s @ %.5f",
-            signal_id, action, symbol, fill_price,
+            signal_id, direction, symbol, fill_price,
         )
 
     def restore_tracked_position(self, pos: Any) -> None:
@@ -149,7 +149,7 @@ class TradeOutcomeTracker:
             symbol=str(getattr(pos, "symbol", "") or ""),
             timeframe=str(getattr(pos, "timeframe", "") or ""),
             strategy=str(getattr(pos, "strategy", "") or ""),
-            action=str(getattr(pos, "action", "") or ""),
+            direction=str(getattr(pos, "action", "") or ""),
             fill_price=float(getattr(pos, "entry_price", 0.0) or 0.0),
             confidence=float(getattr(pos, "confidence", 0.0) or 0.0),
             regime=getattr(pos, "regime", None),
@@ -196,9 +196,9 @@ class TradeOutcomeTracker:
         price_change: Optional[float] = None
         if close_price_f is not None:
             price_change = close_price_f - trade.fill_price
-            if trade.action == "buy":
+            if trade.direction == "buy":
                 won = price_change > 0
-            elif trade.action == "sell":
+            elif trade.direction == "sell":
                 won = price_change < 0
 
         with self._lock:
@@ -227,7 +227,7 @@ class TradeOutcomeTracker:
             logger.warning(
                 "TradeOutcomeTracker: unresolved close for signal_id=%s %s %s "
                 "(close_price unavailable, source=%s)",
-                signal_id, trade.action, trade.symbol, close_source,
+                signal_id, trade.direction, trade.symbol, close_source,
             )
 
         # DB 持久化（包括 unresolved，便于事后审计）
@@ -239,7 +239,7 @@ class TradeOutcomeTracker:
                 trade.symbol,
                 trade.timeframe,
                 trade.strategy,
-                trade.action,
+                trade.direction,
                 trade.confidence,
                 trade.fill_price,
                 close_price_f,

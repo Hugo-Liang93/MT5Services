@@ -133,7 +133,7 @@ for strategy in strategies[(symbol, timeframe)]:
     if regime_affinity[regime] < min_affinity_skip → skip（不调用 evaluate()）
 
     # ⑥ Snapshot 去重（相同 bar_time + signature 不重复评估）
-    if _should_evaluate_snapshot() == False → skip
+    if is_new_snapshot() == False → skip
 
     # ⑦ 策略评估
     decision = service.evaluate(strategy, scoped_indicators, regime_metadata)
@@ -143,7 +143,7 @@ for strategy in strategies[(symbol, timeframe)]:
     if scope == "confirmed":
         transition_metadata = _transition_confirmed(...)
     else:
-        transition_metadata = _transition_preview(...)
+        transition_metadata = transition_intrabar(...)
 
     # ⑨ 持久化 + 事件发布（仅在状态发生转换时）
     if transition_metadata:
@@ -192,7 +192,7 @@ def evaluate(self, context: SignalContext) -> SignalDecision:
     context.metadata    - 包含 _regime, bar_time, scope 等运行时信息
 
     返回 SignalDecision：
-        action: "buy" | "sell" | "hold"
+        direction: "buy" | "sell" | "hold"
         confidence: float (0.0–1.0)
         reason: str
         metadata: dict  # 策略内部调试信息
@@ -201,7 +201,7 @@ def evaluate(self, context: SignalContext) -> SignalDecision:
 
 **注意**：
 - `confidence` 应反映策略规则的"信号强度"，不需要考虑 Regime（由外层乘数处理）
-- `action="hold"` 表示无信号，`confidence` 无意义（不被使用）
+- `direction="hold"` 表示无信号，`confidence` 无意义（不被使用）
 - 不要在策略内部访问 `context.metadata["_regime"]` 做硬截断——这由 affinity 机制自然处理
 
 ### 4.3 Regime 亲和度设计指南
@@ -281,7 +281,7 @@ return UNCERTAIN
 
 - 跟踪最近 N 个 bar 的 Regime 序列
 - `stability_multiplier()` 返回 0.0–1.0，表示当前 Regime 的稳定程度
-- 在 `_emit_vote_signal()` 中，共识信号置信度 × `regime_stability`
+- 在 `process_and_emit_vote_signal()` 中，共识信号置信度 × `regime_stability`
 - 目的：刚发生 Regime 切换时，共识信号置信度降低，避免虚假突破
 
 ---
@@ -298,8 +298,8 @@ strategy.evaluate() → raw_confidence（规则层输出，0.0–1.0）
   post_affinity_confidence
          │
          ▼ （如果 ConfidenceCalibrator 已启用）
-calibrator.calibrate(strategy, action, raw_confidence=post_affinity, regime=regime)
-    ├─ 查询该 (strategy, action, regime) 的历史胜率
+calibrator.calibrate(strategy, direction, raw_confidence=post_affinity, regime=regime)
+    ├─ 查询该 (strategy, direction, regime) 的历史胜率
     ├─ 混合校准：calibrated = α × win_rate + (1-α) × post_affinity
     └─ 返回 calibrated_confidence
          │
@@ -349,7 +349,7 @@ effective_affinity = sum(
 
 ### 7.1 Intrabar 路径
 
-每个 `(symbol, timeframe, strategy)` 的 preview 状态由 `_transition_preview()` 管理：
+每个 `(symbol, timeframe, strategy)` 的 preview 状态由 `transition_intrabar()` 管理：
 
 ```
 状态变量：
@@ -359,7 +359,7 @@ effective_affinity = sum(
   preview_bar_time= datetime (当前 bar 开始时间)
 
 触发条件：
-  actionable = (action in buy/sell)
+  actionable = (direction in buy/sell)
              AND (confidence >= min_preview_confidence=0.55)
              AND (bar_progress >= min_preview_bar_progress=0.2)
 
@@ -367,14 +367,14 @@ effective_affinity = sum(
   ① not actionable AND previous != idle
       → idle + emit "cancelled"
 
-  ② actionable AND action changed
-      → preview_{action} + emit "preview_{action}"
+  ② actionable AND direction changed
+      → preview_{direction} + emit "preview_{direction}"
 
-  ③ actionable AND same action AND stable < 15s
+  ③ actionable AND same direction AND stable < 15s
       → 静默（不发出事件）
 
-  ④ actionable AND same action AND stable ≥ 15s
-      → armed_{action} + emit "armed_{action}"
+  ④ actionable AND same direction AND stable ≥ 15s
+      → armed_{direction} + emit "armed_{direction}"
 ```
 
 **bar_progress** 语义：`elapsed_seconds / timeframe_seconds`，防止 bar 刚开始时的噪声信号。
@@ -384,16 +384,16 @@ effective_affinity = sum(
 `_transition_confirmed()` 在每根 bar close 时执行：
 
 ```
-① action = "hold" AND previous_confirmed_state != "idle"
+① direction = "hold" AND previous_confirmed_state != "idle"
     → confirmed_state = "idle"
     → emit "confirmed_cancelled"（通知上层持仓已转向 hold）
 
-② action = "hold" AND previous = "idle"
+② direction = "hold" AND previous = "idle"
     → confirmed_state = "idle"（静默，不发出事件）
 
-③ action = "buy" | "sell"
-    → confirmed_state = "confirmed_{action}"
-    → emit "confirmed_{action}"
+③ direction = "buy" | "sell"
+    → confirmed_state = "confirmed_{direction}"
+    → emit "confirmed_{direction}"
 ```
 
 `preview_state_at_close` 记录 bar 收盘前瞬间的 preview 状态，供 `TradeExecutor` 的 `require_armed` 检查使用（已 armed 才允许自动下单）。
@@ -433,14 +433,14 @@ Voting 前还会先做一次同 bar 同策略融合：
 ### 8.2 算法
 
 ```python
-buy_score  = Σ(confidence[i] for decision[i].action == "buy") / Σ all_confidence
-sell_score = Σ(confidence[i] for decision[i].action == "sell") / Σ all_confidence
+buy_score  = Σ(confidence[i] for decision[i].direction == "buy") / Σ all_confidence
+sell_score = Σ(confidence[i] for decision[i].direction == "sell") / Σ all_confidence
 
 if buy_score >= consensus_threshold:
-    action = "buy"
+    direction = "buy"
     score  = buy_score
 elif sell_score >= consensus_threshold:
-    action = "sell"
+    direction = "sell"
     score  = sell_score
 else:
     return None  # 无共识

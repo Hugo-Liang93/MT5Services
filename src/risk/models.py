@@ -43,14 +43,14 @@ class TradeIntent:
 @dataclass(frozen=True)
 class RiskCheckResult:
     name: str
-    action: str = "allow"
+    verdict: str = "allow"
     reason: Optional[str] = None
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "action": self.action,
+            "verdict": self.verdict,
             "reason": self.reason,
             "details": dict(self.details),
         }
@@ -58,7 +58,7 @@ class RiskCheckResult:
 
 @dataclass(frozen=True)
 class RiskAssessment:
-    action: str
+    verdict: str
     blocked: bool
     reason: Optional[str]
     warnings: List[str] = field(default_factory=list)
@@ -66,7 +66,7 @@ class RiskAssessment:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "action": self.action,
+            "verdict": self.verdict,
             "blocked": self.blocked,
             "reason": self.reason,
             "warnings": list(self.warnings),

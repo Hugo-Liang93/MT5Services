@@ -51,7 +51,7 @@ class SignalEventRepository:
         symbol: Optional[str] = None,
         timeframe: Optional[str] = None,
         strategy: Optional[str] = None,
-        action: Optional[str] = None,
+        direction: Optional[str] = None,
         limit: int = 200,
     ) -> List[Tuple]:
         return self._fetch_signal_rows(
@@ -59,7 +59,7 @@ class SignalEventRepository:
             symbol=symbol,
             timeframe=timeframe,
             strategy=strategy,
-            action=action,
+            direction=direction,
             limit=limit,
         )
 
@@ -69,7 +69,7 @@ class SignalEventRepository:
         symbol: Optional[str] = None,
         timeframe: Optional[str] = None,
         strategy: Optional[str] = None,
-        action: Optional[str] = None,
+        direction: Optional[str] = None,
         limit: int = 200,
     ) -> List[Tuple]:
         return self._fetch_signal_rows(
@@ -77,7 +77,7 @@ class SignalEventRepository:
             symbol=symbol,
             timeframe=timeframe,
             strategy=strategy,
-            action=action,
+            direction=direction,
             limit=limit,
         )
 
@@ -88,11 +88,11 @@ class SignalEventRepository:
         symbol: Optional[str] = None,
         timeframe: Optional[str] = None,
         strategy: Optional[str] = None,
-        action: Optional[str] = None,
+        direction: Optional[str] = None,
         limit: int = 200,
     ) -> List[Tuple]:
         sql = (
-            "SELECT generated_at, signal_id, symbol, timeframe, strategy, action, confidence, reason, "
+            "SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason, "
             "used_indicators, indicators_snapshot, metadata "
             f"FROM {table_name} WHERE 1=1"
         )
@@ -106,9 +106,9 @@ class SignalEventRepository:
         if strategy is not None:
             sql += " AND strategy = %s"
             params.append(strategy)
-        if action is not None:
-            sql += " AND action = %s"
-            params.append(action)
+        if direction is not None:
+            sql += " AND direction = %s"
+            params.append(direction)
         sql += " ORDER BY generated_at DESC LIMIT %s"
         params.append(max(1, int(limit)))
         with self._writer.connection() as conn, conn.cursor() as cur:
@@ -123,12 +123,12 @@ class SignalEventRepository:
 
     def _summarize_signal_rows(self, *, table_name: str, hours: int = 24) -> List[Tuple]:
         sql = (
-            "SELECT symbol, timeframe, strategy, action, COUNT(*)::bigint AS count, "
+            "SELECT symbol, timeframe, strategy, direction, COUNT(*)::bigint AS count, "
             "AVG(confidence)::double precision AS avg_confidence, MAX(generated_at) AS last_seen_at "
             f"FROM {table_name} "
             "WHERE generated_at >= NOW() - (%s * INTERVAL '1 hour') "
-            "GROUP BY symbol, timeframe, strategy, action "
-            "ORDER BY symbol, timeframe, strategy, action"
+            "GROUP BY symbol, timeframe, strategy, direction "
+            "ORDER BY symbol, timeframe, strategy, direction"
         )
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, [max(1, int(hours))])
@@ -156,7 +156,7 @@ class SignalEventRepository:
                     executed_at,
                     entry.get("signal_id") or "",
                     entry.get("symbol") or "",
-                    entry.get("action") or "",
+                    entry.get("direction") or "",
                     entry.get("strategy") or "",
                     entry.get("confidence"),
                     params.get("volume"),

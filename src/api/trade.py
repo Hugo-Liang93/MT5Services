@@ -332,13 +332,13 @@ def trade_from_signal(
             details={"signal_id": request.signal_id},
         )
 
-    action = signal_row.get("action", "")
-    if action not in {"buy", "sell"}:
+    direction = signal_row.get("direction", "")
+    if direction not in {"buy", "sell"}:
         return ApiResponse.error_response(
             error_code=AIErrorCode.VALIDATION_ERROR,
-            error_message=f"Signal action '{action}' is not executable (buy/sell required)",
+            error_message=f"Signal direction '{direction}' is not executable (buy/sell required)",
             suggested_action=AIErrorAction.VALIDATE_PARAMETERS,
-            details={"signal_id": request.signal_id, "action": action},
+            details={"signal_id": request.signal_id, "direction": direction},
         )
 
     indicators = signal_row.get("indicators_snapshot") or {}
@@ -389,7 +389,7 @@ def trade_from_signal(
         )
 
     params = compute_trade_params(
-        action=action,
+        action=direction,
         current_price=entry_price,
         atr_value=atr,
         account_balance=balance,
@@ -398,11 +398,11 @@ def trade_from_signal(
     computed_params = {
         "symbol": signal_row.get("symbol"),
         "volume": volume,
-        "side": action,
+        "side": direction,
         "order_kind": "market",
         "sl": params.stop_loss,
         "tp": params.take_profit,
-        "comment": f"agent:{signal_row.get('strategy')}:{action}:{request.signal_id[:8]}",
+        "comment": f"agent:{signal_row.get('strategy')}:{direction}:{request.signal_id[:8]}",
         "request_id": request.signal_id,
         "metadata": {
             "entry_origin": "auto",
@@ -412,14 +412,14 @@ def trade_from_signal(
                 "strategy": signal_row.get("strategy"),
                 "timeframe": signal_row.get("timeframe"),
                 "confidence": signal_row.get("confidence"),
-                "action": action,
+                "direction": direction,
             },
         },
     }
     meta = {
         "operation": "trade_from_signal",
         "signal_id": request.signal_id,
-        "action": action,
+        "direction": direction,
         "volume": volume,
         "sl": params.stop_loss,
         "tp": params.take_profit,

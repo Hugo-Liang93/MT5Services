@@ -163,7 +163,7 @@ SignalRuntime._on_snapshot()
    │   ├─ strategy.evaluate(context) → raw_confidence
    │   ├─ × regime_affinity → post_affinity_confidence
    │   └─ ConfidenceCalibrator → final_confidence
-   └─ 状态机转换（_transition_confirmed / _transition_preview）
+   └─ 状态机转换（_transition_confirmed / transition_intrabar）
 5. 投票引擎（_process_voting）
    ├─ 多组模式：每组独立 VotingEngine → group.name 信号
    └─ 单 consensus 模式：全局 VotingEngine → "consensus" 信号
@@ -291,18 +291,18 @@ src/signals/
 |------|------|-------|
 | `sma_trend` | sma20, ema50 | confirmed |
 | `macd_momentum` | macd | confirmed |
-| `supertrend` | supertrend, adx14 | confirmed + intrabar |
-| `ema_ribbon` | ema8, ema21, ema55 | confirmed |
-| `hma_cross` | hma21, hma55 | confirmed |
-| `roc_momentum` | roc12 | confirmed |
+| `supertrend` | supertrend14, adx14 | confirmed |
+| `ema_ribbon` | ema9, hma20, ema50 | confirmed |
+| `hma_cross` | hma20, ema50 | confirmed |
+| `roc_momentum` | roc12, adx14 | confirmed |
 
 **均值回归**（`mean_reversion.py`）：
 
 | 策略 | 指标 | Scope |
 |------|------|-------|
 | `rsi_reversion` | rsi14 | intrabar + confirmed |
-| `stoch_rsi` | stochrsi | intrabar + confirmed |
-| `williams_r` | williams_r | intrabar + confirmed |
+| `stoch_rsi` | stoch_rsi14 | intrabar + confirmed |
+| `williams_r` | williamsr14 | intrabar + confirmed |
 | `cci_reversion` | cci20 | intrabar + confirmed |
 
 **突破/波动率**（`breakout.py`）：
@@ -310,11 +310,11 @@ src/signals/
 | 策略 | 指标 | Scope |
 |------|------|-------|
 | `bollinger_breakout` | boll20 | intrabar + confirmed |
-| `keltner_bb_squeeze` | boll20, keltner20 | confirmed |
+| `keltner_bb_squeeze` | boll20, keltner20 | intrabar + confirmed |
 | `donchian_breakout` | donchian20, adx14 | confirmed |
 | `fake_breakout` | donchian20, atr14 | confirmed |
 | `squeeze_release` | boll20, keltner20, macd | confirmed |
-| `multi_timeframe_confirm` | 跨时间框架 | confirmed |
+| `multi_timeframe_confirm` | sma20, ema50 | confirmed |
 
 **时段/价格行为**：
 
@@ -325,12 +325,10 @@ src/signals/
 
 **复合策略**（`composite.py`）：
 
-| 策略 | 子策略 | 模式 |
-|------|--------|------|
-| `trend_triple_confirm` | sma_trend + macd_momentum + supertrend | all_agree |
-| `breakout_double_confirm` | bollinger_breakout + keltner_bb_squeeze | majority |
-| `breakout_release_confirm` | donchian_breakout + squeeze_release | all_agree |
-| `reversal_rejection_confirm` | fake_breakout + price_action_reversal | all_agree |
+| 策略 | 子策略 | Scope | 模式 |
+|------|--------|-------|------|
+| `trend_triple_confirm` | supertrend + macd_momentum + sma_trend | confirmed | majority |
+| `breakout_double_confirm` | bollinger_breakout + donchian_breakout + keltner_bb_squeeze | confirmed | all_agree |
 
 ### 6.3 Regime 分类
 

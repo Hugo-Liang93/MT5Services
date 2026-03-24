@@ -79,7 +79,7 @@ def prune_vote_fusion_cache(
             fusion_cache.pop(key, None)
 
 
-def emit_vote_signal(
+def process_and_emit_vote_signal(
     vote_result: Any,
     group_name: str,
     symbol: str,
@@ -94,7 +94,7 @@ def emit_vote_signal(
     state_by_target: dict[tuple[str, str, str], RuntimeSignalState],
     get_shard_lock: Callable[[str, str], Any],
     transition_confirmed_fn: Callable[..., Optional[Dict[str, Any]]],
-    transition_preview_fn: Callable[..., Optional[Dict[str, Any]]],
+    transition_intrabar_fn: Callable[..., Optional[Dict[str, Any]]],
     persist_fn: Callable[..., Any],
     publish_fn: Callable[..., None],
 ) -> None:
@@ -114,12 +114,12 @@ def emit_vote_signal(
         group_state = state_by_target.setdefault(group_key, RuntimeSignalState())
     transition_metadata = (
         transition_confirmed_fn(
-            group_state, vote_result.action, event_time, bar_time, regime_metadata
+            group_state, vote_result.direction, event_time, bar_time, regime_metadata
         )
         if scope == "confirmed"
-        else transition_preview_fn(
+        else transition_intrabar_fn(
             group_state,
-            vote_result.action,
+            vote_result.direction,
             vote_result.confidence,
             event_time,
             bar_time,
@@ -154,7 +154,7 @@ def process_voting(
     state_by_target: dict[tuple[str, str, str], RuntimeSignalState],
     get_shard_lock: Callable[[str, str], Any],
     transition_confirmed_fn: Callable[..., Optional[Dict[str, Any]]],
-    transition_preview_fn: Callable[..., Optional[Dict[str, Any]]],
+    transition_intrabar_fn: Callable[..., Optional[Dict[str, Any]]],
     persist_fn: Callable[..., Any],
     publish_fn: Callable[..., None],
 ) -> None:
@@ -186,7 +186,7 @@ def process_voting(
         state_by_target=state_by_target,
         get_shard_lock=get_shard_lock,
         transition_confirmed_fn=transition_confirmed_fn,
-        transition_preview_fn=transition_preview_fn,
+        transition_intrabar_fn=transition_intrabar_fn,
         persist_fn=persist_fn,
         publish_fn=publish_fn,
     )
@@ -207,7 +207,7 @@ def process_voting(
             )
             if vote_result is None:
                 continue
-            emit_vote_signal(
+            process_and_emit_vote_signal(
                 vote_result,
                 group_config.name,
                 symbol,
@@ -228,7 +228,7 @@ def process_voting(
     consensus = voting_engine.vote(snapshot_decisions, regime=regime, scope=scope)
     if consensus is None:
         return
-    emit_vote_signal(
+    process_and_emit_vote_signal(
         consensus,
         voting_engine.CONSENSUS_STRATEGY_NAME,
         symbol,

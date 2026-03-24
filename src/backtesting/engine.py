@@ -68,7 +68,7 @@ class BacktestEngine:
         regime_detector: Optional[MarketRegimeDetector] = None,
         voting_engine: Optional[Any] = None,  # StrategyVotingEngine
         # 置信度后处理（复用实盘 SignalRuntime 管线）
-        intrabar_confidence_decay: float = 0.85,
+        intrabar_confidence_factor: float = 0.85,
         htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
         htf_alignment_boost: float = 1.10,
         htf_conflict_penalty: float = 0.70,
@@ -85,7 +85,7 @@ class BacktestEngine:
         self._voting_engine = voting_engine
 
         # 置信度后处理参数（与实盘 SignalRuntime 相同）
-        self._intrabar_confidence_decay = intrabar_confidence_decay
+        self._intrabar_confidence_factor = intrabar_confidence_factor
         self._htf_direction_fn = htf_direction_fn
         self._htf_alignment_boost = htf_alignment_boost
         self._htf_conflict_penalty = htf_conflict_penalty
@@ -108,7 +108,7 @@ class BacktestEngine:
         )
 
         # Pending Entry 配置（复用实盘 compute_entry_zone 纯函数）
-        self._pending_entry_enabled = config.enable_pending_entry
+        self._pending_entry_enabled = config.pending_entry_enabled
         self._pending_entry_config = PendingEntryConfig(
             pullback_atr_factor=config.pending_entry_pullback_atr_factor,
             chase_atr_factor=config.pending_entry_chase_atr_factor,
@@ -153,7 +153,7 @@ class BacktestEngine:
     def _build_filter_simulator(self) -> BacktestFilterSimulator:
         """从 BacktestConfig 构建过滤器模拟器。"""
         filter_config = BacktestFilterConfig(
-            enabled=self._config.enable_filters,
+            enabled=self._config.filters_enabled,
             session_filter_enabled=self._config.filter_session_enabled,
             allowed_sessions=self._config.filter_allowed_sessions,
             session_transition_enabled=self._config.filter_session_transition_enabled,
@@ -312,7 +312,7 @@ class BacktestEngine:
                     bar=bar,
                     bar_index=bar_index,
                     strategy=decision.strategy,
-                    action=decision.action,
+                    action=decision.direction,
                     confidence=decision.confidence,
                     regime=regime.value,
                 )
@@ -320,7 +320,7 @@ class BacktestEngine:
 
             # 9. 投票引擎（捕获异常，避免单 bar 失败中止整个回测）
             if self._voting_engine is not None and decisions:
-                actionable = [d for d in decisions if d.action in ("buy", "sell")]
+                actionable = [d for d in decisions if d.direction in ("buy", "sell")]
                 if actionable:
                     try:
                         consensus = self._voting_engine.vote(actionable, regime, "confirmed")
@@ -329,7 +329,7 @@ class BacktestEngine:
                                 bar=bar,
                                 bar_index=bar_index,
                                 strategy=consensus.strategy,
-                                action=consensus.action,
+                                action=consensus.direction,
                                 confidence=consensus.confidence,
                                 regime=regime.value,
                             )
@@ -573,7 +573,7 @@ class BacktestEngine:
                 # ── 置信度后处理（复用实盘 SignalRuntime 管线）──
                 # 1. Intrabar 衰减
                 decision = apply_intrabar_decay(
-                    decision, scope, self._intrabar_confidence_decay
+                    decision, scope, self._intrabar_confidence_factor
                 )
                 # 2. HTF 方向对齐修正（受 enable_htf_alignment 控制）
                 if (
@@ -640,11 +640,11 @@ class BacktestEngine:
         regime: RegimeType,
     ) -> None:
         """处理单个信号决策：开仓或反向关仓。"""
-        if decision.action not in ("buy", "sell"):
+        if decision.direction not in ("buy", "sell"):
             # 状态机仍需更新 hold 状态（重置方向）
             if self._config.enable_state_machine:
                 self._update_state_machine(
-                    decision.strategy, decision.action, decision.confidence
+                    decision.strategy, decision.direction, decision.confidence
                 )
             return
         if decision.confidence < self._config.min_confidence:
@@ -653,22 +653,22 @@ class BacktestEngine:
         # 信号状态机门控：方向需稳定 N bars 后才允许执行
         if self._config.enable_state_machine:
             armed = self._update_state_machine(
-                decision.strategy, decision.action, decision.confidence
+                decision.strategy, decision.direction, decision.confidence
             )
             if not armed:
                 logger.debug(
                     "State machine: %s %s not armed yet (stable_bars=%d/%d)",
                     decision.strategy,
-                    decision.action,
+                    decision.direction,
                     self._signal_states[decision.strategy].stable_bars,
                     self._config.min_preview_stable_bars,
                 )
                 return
 
         # 检查是否有反向持仓需要先关闭
-        opposite = "sell" if decision.action == "buy" else "buy"
+        opposite = "sell" if decision.direction == "buy" else "buy"
         for pos in list(self._portfolio._open_positions):
-            if pos.strategy == decision.strategy and pos.action == opposite:
+            if pos.strategy == decision.strategy and pos.direction == opposite:
                 self._portfolio.close_by_signal(decision.strategy, bar, bar_index)
                 break
 
@@ -685,7 +685,7 @@ class BacktestEngine:
 
             zone_mode = _CATEGORY_ZONE_MODE.get(category, "pullback")
             entry_low, entry_high = compute_entry_zone(
-                action=decision.action,
+                action=decision.direction,
                 close_price=bar.close,
                 atr=atr_value,
                 zone_mode=zone_mode,
@@ -693,7 +693,7 @@ class BacktestEngine:
                 strategy_name=decision.strategy,
             )
             expiry_bar = bar_index + self._config.pending_entry_expiry_bars
-            key = f"{decision.strategy}_{decision.action}"
+            key = f"{decision.strategy}_{decision.direction}"
             self._pending_entries[key] = (decision, entry_low, entry_high, expiry_bar)
             return
 
@@ -716,7 +716,7 @@ class BacktestEngine:
             if bar_index > expiry_bar:
                 logger.debug(
                     "Pending entry expired: %s %s at bar %d (expiry=%d)",
-                    decision.strategy, decision.action, bar_index, expiry_bar,
+                    decision.strategy, decision.direction, bar_index, expiry_bar,
                 )
                 filled_keys.append(key)
                 continue
@@ -748,7 +748,7 @@ class BacktestEngine:
         """执行实际开仓。"""
         try:
             trade_params = compute_trade_params(
-                action=decision.action,
+                action=decision.direction,
                 current_price=bar.close,
                 atr_value=atr_value,
                 account_balance=self._portfolio.current_balance,
@@ -759,13 +759,13 @@ class BacktestEngine:
         except ValueError as e:
             logger.debug(
                 "Trade params computation failed for %s %s: %s",
-                decision.strategy, decision.action, e,
+                decision.strategy, decision.direction, e,
             )
             return
 
         self._portfolio.open_position(
             strategy=decision.strategy,
-            action=decision.action,
+            action=decision.direction,
             bar=bar,
             trade_params=trade_params,
             regime=regime.value,
@@ -799,7 +799,7 @@ class BacktestEngine:
         eval_record = SignalEvaluation(
             bar_time=bar.time,
             strategy=strategy,
-            action=action,
+            direction=action,
             confidence=confidence,
             regime=regime,
             price_at_signal=bar.close,
@@ -831,7 +831,7 @@ class BacktestEngine:
             exit_price: N bars 后的收盘价（或回测结束时的最后价格）
             incomplete: 是否未满 N bars（回测结束时强制回填）
         """
-        if ev.action == "buy":
+        if ev.direction == "buy":
             pnl_pct = (exit_price - ev.price_at_signal) / ev.price_at_signal * 100
             won = exit_price > ev.price_at_signal
         else:
@@ -841,7 +841,7 @@ class BacktestEngine:
         return SignalEvaluation(
             bar_time=ev.bar_time,
             strategy=ev.strategy,
-            action=ev.action,
+            direction=ev.direction,
             confidence=ev.confidence,
             regime=ev.regime,
             price_at_signal=ev.price_at_signal,

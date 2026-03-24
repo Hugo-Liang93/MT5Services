@@ -11,7 +11,7 @@ def run_pipeline(
     indicator_names: Optional[List[str]] = None,
     bar_time=None,
 ) -> Tuple[List[Any], Dict[str, Dict[str, Any]], float]:
-    bars = manager._load_bars(symbol, timeframe, bar_time=bar_time)
+    bars = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
     if len(bars) < 2:
         return [], {}, 0.0
 

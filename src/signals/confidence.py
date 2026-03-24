@@ -61,12 +61,12 @@ def apply_htf_alignment(
     Returns:
         修改后的 SignalDecision（不可变替换）
     """
-    if decision.action not in ("buy", "sell"):
+    if decision.direction not in ("buy", "sell"):
         return decision
     if htf_direction is None:
         return decision
 
-    if htf_direction == decision.action:
+    if htf_direction == decision.direction:
         multiplier = alignment_boost
     else:
         multiplier = conflict_penalty

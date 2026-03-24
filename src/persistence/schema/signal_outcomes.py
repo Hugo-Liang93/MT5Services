@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
     symbol        text NOT NULL,
     timeframe     text NOT NULL,
     strategy      text NOT NULL,
-    action        text NOT NULL,
+    direction     text NOT NULL,
     confidence    double precision NOT NULL,
     entry_price   double precision,
     exit_price    double precision,
@@ -35,7 +35,7 @@ INSERT INTO signal_outcomes (
     symbol,
     timeframe,
     strategy,
-    action,
+    direction,
     confidence,
     entry_price,
     exit_price,
@@ -57,7 +57,7 @@ ON CONFLICT (signal_id) DO UPDATE SET
 WINRATE_SQL = """
 SELECT
     strategy,
-    action,
+    direction,
     COUNT(*)                                    AS total,
     SUM(CASE WHEN won THEN 1 ELSE 0 END)        AS wins,
     ROUND(
@@ -70,14 +70,14 @@ FROM signal_outcomes
 WHERE recorded_at >= NOW() - make_interval(hours => %s)
   AND won IS NOT NULL
   AND (%s IS NULL OR symbol = %s)
-GROUP BY strategy, action, regime
+GROUP BY strategy, direction, regime
 ORDER BY win_rate DESC, total DESC
 """
 
 EXPECTANCY_SQL = """
 SELECT
     strategy,
-    action,
+    direction,
     COUNT(*)                                              AS total,
     SUM(CASE WHEN won THEN 1 ELSE 0 END)                  AS wins,
     SUM(CASE WHEN won = FALSE THEN 1 ELSE 0 END)          AS losses,
@@ -113,6 +113,6 @@ FROM signal_outcomes
 WHERE recorded_at >= NOW() - make_interval(hours => %s)
   AND won IS NOT NULL
   AND (%s IS NULL OR symbol = %s)
-GROUP BY strategy, action
+GROUP BY strategy, direction
 ORDER BY expectancy DESC, total DESC
 """

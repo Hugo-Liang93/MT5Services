@@ -465,7 +465,7 @@ class SignalDecisionModel(BaseModel):
     strategy: str
     symbol: str
     timeframe: str
-    action: str
+    direction: str
     confidence: float
     reason: str
     used_indicators: List[str] = Field(default_factory=list)
@@ -479,7 +479,7 @@ class SignalEventModel(BaseModel):
     symbol: str
     timeframe: str
     strategy: str
-    action: str
+    direction: str
     confidence: float
     reason: str
     scope: str = "confirmed"
@@ -492,7 +492,7 @@ class SignalSummaryModel(BaseModel):
     symbol: str
     timeframe: str
     strategy: str
-    action: str
+    direction: str
     count: int
     scope: str = "confirmed"
     avg_confidence: Optional[float] = None

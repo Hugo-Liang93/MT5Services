@@ -245,7 +245,7 @@ class TradeExecutor:
                 )
                 return None
 
-        if event.action not in ("buy", "sell"):
+        if event.direction not in ("buy", "sell"):
             return None
 
         # ── 策略域准入检查（ExecutionGate）────────────────────────────
@@ -253,7 +253,7 @@ class TradeExecutor:
         if not gate_allowed:
             logger.debug(
                 "TradeExecutor: skipping %s/%s %s - gate blocked: %s",
-                event.symbol, event.strategy, event.action, gate_reason,
+                event.symbol, event.strategy, event.direction, gate_reason,
             )
             self._notify_skip(event.signal_id, gate_reason)
             return None
@@ -263,7 +263,7 @@ class TradeExecutor:
                 "TradeExecutor: skipping %s/%s %s - confidence %.3f < min=%.2f",
                 event.symbol,
                 event.strategy,
-                event.action,
+                event.direction,
                 event.confidence,
                 self.config.min_confidence,
             )
@@ -275,14 +275,14 @@ class TradeExecutor:
                 "TradeExecutor: skipping %s/%s %s - max_concurrent_positions_per_symbol reached",
                 event.symbol,
                 event.strategy,
-                event.action,
+                event.direction,
             )
             self._execution_log.append(
                 {
                     "at": datetime.now(timezone.utc).isoformat(),
                     "signal_id": event.signal_id,
                     "symbol": event.symbol,
-                    "action": event.action,
+                    "direction": event.direction,
                     "strategy": event.strategy,
                     "success": False,
                     "skipped": True,
@@ -300,7 +300,7 @@ class TradeExecutor:
             logger.warning(
                 "TradeExecutor: cannot compute trade params for %s/%s %s "
                 "(atr=%s, balance=%s, close_price=%s, indicators_keys=%s)",
-                event.symbol, event.strategy, event.action,
+                event.symbol, event.strategy, event.direction,
                 atr, balance, close_price,
                 list(event.indicators.keys()),
             )
@@ -316,7 +316,7 @@ class TradeExecutor:
                 "TradeExecutor: skipping %s/%s %s - spread_to_stop_ratio %.3f > max=%.3f",
                 event.symbol,
                 event.strategy,
-                event.action,
+                event.direction,
                 spread_to_stop_ratio,
                 self.config.max_spread_to_stop_ratio,
             )
@@ -325,7 +325,7 @@ class TradeExecutor:
                     "at": datetime.now(timezone.utc).isoformat(),
                     "signal_id": event.signal_id,
                     "symbol": event.symbol,
-                    "action": event.action,
+                    "direction": event.direction,
                     "strategy": event.strategy,
                     "success": False,
                     "skipped": True,
@@ -361,7 +361,7 @@ class TradeExecutor:
 
         config = self._pending_manager.config
         entry_low, entry_high = compute_entry_zone(
-            action=event.action,
+            action=event.direction,
             close_price=params.entry_price,
             atr=params.atr_value,
             zone_mode=zone_mode,
@@ -385,7 +385,7 @@ class TradeExecutor:
 
         # 取消同品种旧 pending
         if config.cancel_on_new_signal:
-            exclude = event.action if not config.cancel_same_direction else None
+            exclude = event.direction if not config.cancel_same_direction else None
             self._pending_manager.cancel_by_symbol(
                 event.symbol,
                 reason="new_signal_override",
@@ -422,7 +422,7 @@ class TradeExecutor:
         contract_size = self._get_contract_size(event.symbol)
 
         return compute_trade_params(
-            action=event.action,
+            action=event.direction,
             current_price=close_price,
             atr_value=atr,
             account_balance=balance,
@@ -669,11 +669,11 @@ class TradeExecutor:
         payload = {
             "symbol": event.symbol,
             "volume": params.position_size,
-            "side": event.action,
+            "side": event.direction,
             "order_kind": "market",
             "sl": params.stop_loss,
             "tp": params.take_profit,
-            "comment": f"auto:{event.strategy}:{event.action}",
+            "comment": f"auto:{event.strategy}:{event.direction}",
             "request_id": event.signal_id,
             "metadata": self._build_trade_metadata(event),
         }
@@ -706,7 +706,7 @@ class TradeExecutor:
                 "at": self._last_execution_at.isoformat(),
                 "signal_id": event.signal_id,
                 "symbol": event.symbol,
-                "action": event.action,
+                "direction": event.direction,
                 "strategy": event.strategy,
                 "confidence": event.confidence,
                 "params": {
@@ -723,7 +723,7 @@ class TradeExecutor:
             self._execution_log.append(log_entry)
             logger.info(
                 "TradeExecutor: executed %s %s vol=%.2f sl=%.2f tp=%.2f rr=%.2f (signal=%s)",
-                event.action, event.symbol,
+                event.direction, event.symbol,
                 params.position_size, params.stop_loss, params.take_profit,
                 params.risk_reward_ratio, event.signal_id,
             )
@@ -741,7 +741,7 @@ class TradeExecutor:
                             ticket=int(ticket),
                             signal_id=event.signal_id,
                             symbol=event.symbol,
-                            action=event.action,
+                            action=event.direction,
                             params=params,
                             timeframe=event.timeframe,
                             strategy=event.strategy,
@@ -767,7 +767,7 @@ class TradeExecutor:
                         symbol=event.symbol,
                         timeframe=event.timeframe,
                         strategy=event.strategy,
-                        action=event.action,
+                        direction=event.direction,
                         fill_price=(
                             float(result.get("fill_price"))
                             if isinstance(result, dict) and result.get("fill_price") is not None
@@ -793,7 +793,7 @@ class TradeExecutor:
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
                 "symbol": event.symbol,
-                "action": event.action,
+                "direction": event.direction,
                 "strategy": event.strategy,
                 "success": False,
                 "skipped": True,
@@ -807,7 +807,7 @@ class TradeExecutor:
                         "at": datetime.now(timezone.utc).isoformat(),
                         "signal_id": event.signal_id,
                         "symbol": event.symbol,
-                        "action": event.action,
+                        "direction": event.direction,
                         "strategy": event.strategy,
                         "success": False,
                         "error": reason,
@@ -823,13 +823,13 @@ class TradeExecutor:
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
                 "symbol": event.symbol,
-                "action": event.action,
+                "direction": event.direction,
                 "strategy": event.strategy,
                 "success": False,
                 "error": str(exc),
             })
             logger.exception(
-                "TradeExecutor: failed to execute %s %s: %s", event.action, event.symbol, exc,
+                "TradeExecutor: failed to execute %s %s: %s", event.direction, event.symbol, exc,
             )
             # 熔断器：连续失败达到阈值后开路，防止持续错误下的无效重试
             if (
@@ -849,7 +849,7 @@ class TradeExecutor:
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
                 "symbol": event.symbol,
-                "action": event.action,
+                "direction": event.direction,
                 "strategy": event.strategy,
                 "success": False,
                 "error": str(exc),

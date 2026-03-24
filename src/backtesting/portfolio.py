@@ -34,7 +34,7 @@ class _Position:
 
     signal_id: str
     strategy: str
-    action: str  # "buy" | "sell"
+    direction: str  # "buy" | "sell"
     entry_time: datetime
     entry_price: float
     stop_loss: float
@@ -156,7 +156,7 @@ class PortfolioTracker:
         pos = _Position(
             signal_id=signal_id,
             strategy=strategy,
-            action=action,
+            direction=action,
             entry_time=bar.time,
             entry_price=entry_price,
             stop_loss=trade_params.stop_loss,
@@ -199,17 +199,17 @@ class PortfolioTracker:
 
         for pos in self._open_positions:
             # 更新极值价格（与实盘 PositionManager.update_price 一致）
-            if pos.action == "buy":
+            if pos.direction == "buy":
                 if pos.highest_price is None or bar.high > pos.highest_price:
                     pos.highest_price = bar.high
-            elif pos.action == "sell":
+            elif pos.direction == "sell":
                 if pos.lowest_price is None or bar.low < pos.lowest_price:
                     pos.lowest_price = bar.low
 
             # 复用实盘 breakeven 判定逻辑
             if pos.atr_at_entry > 0:
                 be_result = check_breakeven(
-                    action=pos.action,
+                    action=pos.direction,
                     entry_price=pos.entry_price,
                     current_price=bar.close,
                     atr_at_entry=pos.atr_at_entry,
@@ -222,7 +222,7 @@ class PortfolioTracker:
 
                 # 复用实盘 trailing stop 判定逻辑
                 trail_result = check_trailing_stop(
-                    action=pos.action,
+                    action=pos.direction,
                     current_stop_loss=pos.stop_loss,
                     atr_at_entry=pos.atr_at_entry,
                     trailing_atr_multiplier=self._trailing_atr_multiplier,
@@ -238,7 +238,7 @@ class PortfolioTracker:
             exit_price: Optional[float] = None
             exit_reason: Optional[str] = None
 
-            if pos.action == "buy":
+            if pos.direction == "buy":
                 # 多头：low 触及 SL 或 high 触及 TP
                 if bar.low <= pos.stop_loss:
                     exit_price = pos.stop_loss
@@ -313,12 +313,12 @@ class PortfolioTracker:
     ) -> TradeRecord:
         """关闭持仓并计算 PnL。"""
         # 出场滑点模拟（与开仓方向相反）
-        if pos.action == "buy":
+        if pos.direction == "buy":
             actual_exit = exit_price - self._slippage_points
         else:
             actual_exit = exit_price + self._slippage_points
 
-        if pos.action == "buy":
+        if pos.direction == "buy":
             price_diff = actual_exit - pos.entry_price
         else:
             price_diff = pos.entry_price - actual_exit
@@ -349,7 +349,7 @@ class PortfolioTracker:
         trade = TradeRecord(
             signal_id=pos.signal_id,
             strategy=pos.strategy,
-            action=pos.action,
+            direction=pos.direction,
             entry_time=pos.entry_time,
             entry_price=pos.entry_price,
             exit_time=exit_time,
@@ -373,7 +373,7 @@ class PortfolioTracker:
         """计算所有持仓的浮动盈亏。"""
         total = 0.0
         for pos in self._open_positions:
-            if pos.action == "buy":
+            if pos.direction == "buy":
                 diff = current_price - pos.entry_price
             else:
                 diff = pos.entry_price - current_price

@@ -352,7 +352,7 @@ class PaperTradingBridge:
             for trade in closed_trades:
                 logger.info(
                     "paper_trade: 平仓 %s %s PnL=%.2f 原因=%s [%s]",
-                    trade.action,
+                    trade.direction,
                     trade.strategy,
                     trade.pnl,
                     trade.exit_reason,

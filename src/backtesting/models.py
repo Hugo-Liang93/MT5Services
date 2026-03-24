@@ -88,7 +88,7 @@ class BacktestConfig:
     risk_percent: float = 1.0
 
     # ── Pending Entry 价格确认入场（复用实盘 pending_entry 纯逻辑）────────
-    enable_pending_entry: bool = False
+    pending_entry_enabled: bool = False
     pending_entry_pullback_atr_factor: float = 0.3
     pending_entry_chase_atr_factor: float = 0.1
     pending_entry_momentum_atr_factor: float = 0.5
@@ -106,7 +106,7 @@ class BacktestConfig:
 
     # ── 过滤器配置（模拟实盘 SignalFilterChain）──────────────────────────
     # 总开关：是否启用过滤器模拟
-    enable_filters: bool = True
+    filters_enabled: bool = True
     # 时段过滤
     filter_session_enabled: bool = True
     filter_allowed_sessions: str = "london,newyork"
@@ -134,7 +134,7 @@ class TradeRecord:
 
     signal_id: str
     strategy: str
-    action: str  # "buy" | "sell"
+    direction: str  # "buy" | "sell"
     entry_time: datetime
     entry_price: float
     exit_time: datetime
@@ -162,7 +162,7 @@ class SignalEvaluation:
 
     bar_time: datetime
     strategy: str
-    action: str  # "buy" | "sell" | "hold"
+    direction: str  # "buy" | "sell" | "hold"
     confidence: float
     regime: str
     # N bars 后的价格变化（回填）

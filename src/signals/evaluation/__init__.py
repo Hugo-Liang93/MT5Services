@@ -4,7 +4,7 @@
 """
 
 from .calibrator import ConfidenceCalibrator
-from .indicators_helpers import get_atr, get_close, hold_decision
+from .indicators_helpers import extract_close_price, get_atr, get_close, hold_decision
 from .regime import MarketRegimeDetector, RegimeTracker, RegimeType
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "MarketRegimeDetector",
     "RegimeTracker",
     "RegimeType",
+    "extract_close_price",
     "get_atr",
     "get_close",
     "hold_decision",

@@ -232,7 +232,7 @@ class PreTradeRiskService:
                 "event_blocked": False,
                 "calendar_health_degraded": False,
                 "blocked": False,
-                "action": "allow",
+                "verdict": "allow",
                 "reason": None,
                 "symbol": intent_obj.symbol,
                 "active_windows": [],
@@ -282,14 +282,14 @@ class PreTradeRiskService:
         for rule in self.rules:
             checks.extend(rule.evaluate(context))
 
-        warnings = [check.reason for check in checks if check.action == "warn" and check.reason]
-        reasons = [check.reason for check in checks if check.action == "block" and check.reason]
-        action = "block" if any(check.action == "block" for check in checks) else (
-            "warn" if any(check.action == "warn" for check in checks) else "allow"
+        warnings = [check.reason for check in checks if check.verdict == "warn" and check.reason]
+        reasons = [check.reason for check in checks if check.verdict == "block" and check.reason]
+        verdict = "block" if any(check.verdict == "block" for check in checks) else (
+            "warn" if any(check.verdict == "warn" for check in checks) else "allow"
         )
         assessment_obj = RiskAssessment(
-            action=action,
-            blocked=action == "block",
+            verdict=verdict,
+            blocked=verdict == "block",
             reason="; ".join(dict.fromkeys(reasons)) if reasons else None,
             warnings=list(dict.fromkeys(warnings)),
             checks=checks,
@@ -302,7 +302,7 @@ class PreTradeRiskService:
             "mode": mode,
             "event_blocked": bool(base_assessment.get("blocked")),
             "calendar_health_degraded": bool(calendar_health.get("degraded")),
-            "action": assessment_obj.action,
+            "verdict": assessment_obj.verdict,
             "blocked": assessment_obj.blocked,
             "reason": assessment_obj.reason,
             "warnings": assessment_obj.warnings,
@@ -318,7 +318,7 @@ class PreTradeRiskService:
 
     def enforce_trade_allowed(self, **kwargs: Any) -> Dict[str, Any]:
         assessment = self.assess_trade(**kwargs)
-        if assessment["action"] == "block":
+        if assessment["verdict"] == "block":
             raise PreTradeRiskBlockedError(
                 assessment.get("reason") or "Trade blocked by pre-trade risk policy",
                 assessment=assessment,

@@ -215,7 +215,7 @@ class TradingModule:
             "enabled": True,
             "mode": "strict",
             "blocked": True,
-            "action": "block",
+            "verdict": "block",
             "reason": reason,
             "symbol": payload.get("symbol"),
             "active_windows": [],
@@ -224,7 +224,7 @@ class TradingModule:
             "checks": [
                 {
                     "name": "trade_control",
-                    "action": "block",
+                    "verdict": "block",
                     "reason": reason,
                     "details": {
                         "control_state": self.trade_control_status(),
@@ -288,7 +288,7 @@ class TradingModule:
             else:
                 op_stats["failed"] += 1
             if record.operation_type == "precheck_trade" and isinstance(record.response_payload, dict):
-                action = str(record.response_payload.get("action") or "allow").lower()
+                action = str(record.response_payload.get("verdict") or "allow").lower()
                 if action not in {"allow", "warn", "block"}:
                     action = "allow"
                 bucket["risk"]["blocked" if action == "block" else action] += 1
@@ -310,7 +310,7 @@ class TradingModule:
 
         precheck_payload = {key: value for key, value in payload.items() if key in PRECHECK_TRADE_FIELDS}
         precheck = self.precheck_trade(**precheck_payload)
-        action = str(precheck.get("action") or "allow").lower()
+        action = str(precheck.get("verdict") or "allow").lower()
         if config.dispatch_strict_mode and action == "block":
             raise PreTradeRiskBlockedError(
                 precheck.get("reason") or "trade blocked by risk control",
@@ -447,11 +447,11 @@ class TradingModule:
                 side=side,
                 order_kind=order_kind,
             )
-            risk_action = str(precheck.get("action") or "allow")
+            risk_action = str(precheck.get("verdict") or "allow")
             if precheck.get("reason"):
                 risk_reason = precheck.get("reason")
         except Exception as exc:  # noqa: BLE001
-            precheck = {"action": "warn", "reason": str(exc)}
+            precheck = {"verdict": "warn", "reason": str(exc)}
             risk_action = "warn"
             risk_reason = str(exc)
 

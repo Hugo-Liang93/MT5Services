@@ -35,7 +35,7 @@ def _make_signal_event(
     timeframe: str = "H1",
     strategy: str = "consensus",
     signal_state: str = "confirmed_buy",
-    action: str = "buy",
+    direction: str = "buy",
     confidence: float = 0.80,
     regime: str = "trending",
 ) -> SimpleNamespace:
@@ -44,7 +44,7 @@ def _make_signal_event(
         symbol=symbol,
         timeframe=timeframe,
         strategy=strategy,
-        action=action,
+        direction=direction,
         confidence=confidence,
         generated_at=datetime.now(timezone.utc),
         metadata={
@@ -129,7 +129,7 @@ class TestHTFStateCacheBasic:
         """confirmed_sell 应缓存 sell 方向。"""
         cache = HTFStateCache()
         event = _make_signal_event(
-            timeframe="M5", signal_state="confirmed_sell", action="sell"
+            timeframe="M5", signal_state="confirmed_sell", direction="sell"
         )
         cache.on_signal_event(event)
         # M1 的 HTF 是 M5
@@ -200,7 +200,7 @@ class TestHTFStateCacheSignalListener:
         # 切换到 sell
         cache.on_signal_event(
             _make_signal_event(
-                timeframe="H1", signal_state="confirmed_sell", action="sell"
+                timeframe="H1", signal_state="confirmed_sell", direction="sell"
             )
         )
         assert cache._cache[("XAUUSD", "H1")].stable_bars == 1
@@ -215,7 +215,7 @@ class TestHTFStateCacheSignalListener:
         assert ("XAUUSD", "H1") in cache._cache
 
         cache.on_signal_event(
-            _make_signal_event(timeframe="H1", signal_state="confirmed_cancelled", action="hold")
+            _make_signal_event(timeframe="H1", signal_state="confirmed_cancelled", direction="hold")
         )
         assert ("XAUUSD", "H1") not in cache._cache
 
@@ -256,7 +256,7 @@ class TestHTFStateCacheSignalListener:
         cache.on_signal_event(
             _make_signal_event(
                 symbol="EURUSD", timeframe="H1",
-                signal_state="confirmed_sell", action="sell",
+                signal_state="confirmed_sell", direction="sell",
             )
         )
         assert cache._cache[("XAUUSD", "H1")].direction == "buy"
@@ -295,7 +295,7 @@ class TestHTFStateCacheExpiration:
         """未过期的条目应正常返回。"""
         cache = HTFStateCache(max_age_seconds=3600.0)
         cache.on_signal_event(
-            _make_signal_event(timeframe="H1", signal_state="confirmed_sell", action="sell")
+            _make_signal_event(timeframe="H1", signal_state="confirmed_sell", direction="sell")
         )
         assert cache.get_htf_direction("XAUUSD", "M15") == "sell"
 
@@ -445,14 +445,14 @@ class TestHTFStateCacheConcurrency:
         def writer(thread_id: int) -> None:
             try:
                 for i in range(n_events_per_thread):
-                    direction = "confirmed_buy" if i % 2 == 0 else "confirmed_sell"
-                    action = "buy" if i % 2 == 0 else "sell"
+                    sig_state = "confirmed_buy" if i % 2 == 0 else "confirmed_sell"
+                    sig_dir = "buy" if i % 2 == 0 else "sell"
                     cache.on_signal_event(
                         _make_signal_event(
                             symbol=f"SYM{thread_id}",
                             timeframe="H1",
-                            signal_state=direction,
-                            action=action,
+                            signal_state=sig_state,
+                            direction=sig_dir,
                         )
                     )
             except Exception as e:
@@ -478,10 +478,10 @@ class TestHTFStateCacheConcurrency:
             try:
                 for i in range(200):
                     state = "confirmed_buy" if i % 2 == 0 else "confirmed_sell"
-                    action = "buy" if i % 2 == 0 else "sell"
+                    sig_dir = "buy" if i % 2 == 0 else "sell"
                     cache.on_signal_event(
                         _make_signal_event(
-                            timeframe="H1", signal_state=state, action=action,
+                            timeframe="H1", signal_state=state, direction=sig_dir,
                         )
                     )
                 stop_event.set()
@@ -531,7 +531,7 @@ class TestHTFStateCacheConcurrency:
                             _make_signal_event(
                                 timeframe="H1",
                                 signal_state="confirmed_cancelled",
-                                action="hold",
+                                direction="hold",
                             )
                         )
                 stop_event.set()

@@ -259,11 +259,11 @@ def get_signal_config() -> SignalConfig:
         **{
             f"htf_indicators_{key}": value
             for key, value in htf_indicators_section.items()
-            if key != "intrabar_confidence_decay"
+            if key != "intrabar_confidence_factor"
         },
         **(
-            {"intrabar_confidence_decay": htf_indicators_section["intrabar_confidence_decay"]}
-            if "intrabar_confidence_decay" in htf_indicators_section
+            {"intrabar_confidence_factor": htf_indicators_section["intrabar_confidence_factor"]}
+            if "intrabar_confidence_factor" in htf_indicators_section
             else {}
         ),
         **{

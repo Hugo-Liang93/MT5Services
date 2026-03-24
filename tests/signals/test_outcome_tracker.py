@@ -28,7 +28,7 @@ from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
 # 全局递增计数器，确保每个 _make_event 调用产生唯一的 bar_time。
 # Windows 上 datetime.now() 快速连续调用可能返回相同值（~15ms 分辨率），
-# 而 SignalQualityTracker._advance_pending 依赖 bar_time 去重，
+# 而 SignalQualityTracker._advance_pending_evaluations 依赖 bar_time 去重，
 # 相同 bar_time 的事件只推进一次 bars_elapsed。测试中每个事件代表不同 bar，
 # 因此必须保证 bar_time 唯一。
 _event_counter: int = 0
@@ -45,7 +45,7 @@ def _make_event(
     strategy: str = "test_strategy",
     signal_state: str = "confirmed_buy",
     scope: str = "confirmed",
-    action: str = "buy",
+    direction: str = "buy",
     confidence: float = 0.80,
     close: float = 1.1000,
     signal_id: str = "sig-001",
@@ -79,7 +79,7 @@ def _make_event(
         symbol=symbol,
         timeframe=timeframe,
         strategy=strategy,
-        action=action,
+        direction=direction,
         confidence=confidence,
         signal_id=signal_id,
         generated_at=datetime.now(timezone.utc),
@@ -108,7 +108,7 @@ class TestSignalQualityTrackerTrendScenario:
             event = _make_event(
                 signal_id=f"sig-{i:03d}",
                 signal_state="confirmed_buy",
-                action="buy",
+                direction="buy",
                 close=price,
             )
             tracker.on_signal_event(event)
@@ -140,13 +140,13 @@ class TestSignalQualityTrackerTrendScenario:
             bars_to_evaluate=2,
         )
         tracker.on_signal_event(
-            _make_event(close=1.1020, signal_state="confirmed_sell", action="sell", signal_id="s0")
+            _make_event(close=1.1020, signal_state="confirmed_sell", direction="sell", signal_id="s0")
         )
         tracker.on_signal_event(
-            _make_event(close=1.1025, signal_state="confirmed_sell", action="sell", signal_id="s1")
+            _make_event(close=1.1025, signal_state="confirmed_sell", direction="sell", signal_id="s1")
         )
         tracker.on_signal_event(
-            _make_event(close=1.1030, signal_state="confirmed_sell", action="sell", signal_id="s2")
+            _make_event(close=1.1030, signal_state="confirmed_sell", direction="sell", signal_id="s2")
         )
 
         assert len(rows_written) >= 1
@@ -163,7 +163,7 @@ class TestSignalQualityTrackerTrendScenario:
         for i in range(n):
             tracker.on_signal_event(_make_event(close=1.1000 + i * 0.001, signal_id=f"s{i}"))
 
-        total_pending = sum(len(v) for v in tracker._pending.values())
+        total_pending = sum(len(v) for v in tracker._awaiting_evaluation.values())
         assert total_pending < n
         assert len(rows_written) > 0
 
@@ -179,10 +179,10 @@ class TestSignalQualityTrackerCancelledAdvancesPending:
         )
         tracker.on_signal_event(_make_event(close=1.1000, signal_id="orig"))
         tracker.on_signal_event(
-            _make_event(close=1.1010, signal_state="confirmed_cancelled", action="hold", signal_id="c1")
+            _make_event(close=1.1010, signal_state="confirmed_cancelled", direction="hold", signal_id="c1")
         )
         tracker.on_signal_event(
-            _make_event(close=1.1020, signal_state="confirmed_cancelled", action="hold", signal_id="c2")
+            _make_event(close=1.1020, signal_state="confirmed_cancelled", direction="hold", signal_id="c2")
         )
 
         assert len(rows_written) == 1
@@ -204,7 +204,7 @@ class TestSignalQualityTrackerIntrabarIgnored:
                 _make_event(close=1.1010, scope="intrabar", signal_state="preview_buy")
             )
         assert len(rows_written) == 0
-        total_pending = sum(len(v) for v in tracker._pending.values())
+        total_pending = sum(len(v) for v in tracker._awaiting_evaluation.values())
         assert total_pending == 1
 
 
@@ -248,7 +248,7 @@ class TestSignalQualityTrackerMaxPending:
 
         key = ("EURUSD", "H1", "test_strategy")
         with tracker._lock:
-            lst = tracker._pending.get(key, [])
+            lst = tracker._awaiting_evaluation.get(key, [])
         assert len(lst) <= 3
 
 
@@ -306,7 +306,7 @@ class TestSignalQualityTrackerClosePriceExtraction:
         bar_t2 = bar_t1 + timedelta(hours=1)
         event_entry = SimpleNamespace(
             symbol="EURUSD", timeframe="H1", strategy="test",
-            action="buy", confidence=0.8, signal_id="e1",
+            direction="buy", confidence=0.8, signal_id="e1",
             generated_at=datetime.now(timezone.utc),
             metadata={
                 "signal_state": "confirmed_buy", "scope": "confirmed",
@@ -317,7 +317,7 @@ class TestSignalQualityTrackerClosePriceExtraction:
         )
         event_exit = SimpleNamespace(
             symbol="EURUSD", timeframe="H1", strategy="test",
-            action="buy", confidence=0.8, signal_id="e2",
+            direction="buy", confidence=0.8, signal_id="e2",
             generated_at=datetime.now(timezone.utc),
             metadata={
                 "signal_state": "confirmed_buy", "scope": "confirmed",
@@ -370,7 +370,7 @@ class TestSignalQualityTrackerClosePriceExtraction:
         tracker.on_signal_event(exit_)
 
         assert len(rows_written) == 0
-        total_pending = sum(len(v) for v in tracker._pending.values())
+        total_pending = sum(len(v) for v in tracker._awaiting_evaluation.values())
         assert total_pending >= 1
 
 
@@ -393,7 +393,7 @@ class TestTradeOutcomeTrackerBasic:
             symbol="XAUUSD",
             timeframe="M1",
             strategy="sma_trend",
-            action="buy",
+            direction="buy",
             fill_price=2000.0,
             confidence=0.85,
             regime="trending",
@@ -422,7 +422,7 @@ class TestTradeOutcomeTrackerBasic:
             symbol="XAUUSD",
             timeframe="M1",
             strategy="rsi_reversion",
-            action="sell",
+            direction="sell",
             fill_price=2000.0,
             confidence=0.75,
         )
@@ -458,7 +458,7 @@ class TestTradeOutcomeTrackerEdgeCases:
 
         tracker.on_trade_opened(
             signal_id="t-003", symbol="XAUUSD", timeframe="M1",
-            strategy="test", action="buy", fill_price=2000.0, confidence=0.8,
+            strategy="test", direction="buy", fill_price=2000.0, confidence=0.8,
         )
 
         pos = SimpleNamespace(signal_id="t-003", symbol="XAUUSD", action="buy")
@@ -531,7 +531,7 @@ class TestTradeOutcomeTrackerCallback:
             symbol="XAUUSD",
             timeframe="M1",
             strategy="ema_ribbon",
-            action="buy",
+            direction="buy",
             fill_price=2000.0,
             confidence=0.9,
             regime="trending",
@@ -557,7 +557,7 @@ class TestTradeOutcomeTrackerSummary:
         # 一笔赢
         tracker.on_trade_opened(
             signal_id="w1", symbol="XAUUSD", timeframe="M1",
-            strategy="test", action="buy", fill_price=2000.0, confidence=0.8,
+            strategy="test", direction="buy", fill_price=2000.0, confidence=0.8,
         )
         tracker.on_position_closed(
             SimpleNamespace(signal_id="w1"), close_price=2010.0,
@@ -566,7 +566,7 @@ class TestTradeOutcomeTrackerSummary:
         # 一笔亏
         tracker.on_trade_opened(
             signal_id="l1", symbol="XAUUSD", timeframe="M1",
-            strategy="test", action="buy", fill_price=2000.0, confidence=0.8,
+            strategy="test", direction="buy", fill_price=2000.0, confidence=0.8,
         )
         tracker.on_position_closed(
             SimpleNamespace(signal_id="l1"), close_price=1990.0,

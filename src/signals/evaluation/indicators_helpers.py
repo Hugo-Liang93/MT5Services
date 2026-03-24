@@ -12,6 +12,29 @@ from typing import Any, Dict, Optional
 from ..models import SignalDecision
 
 
+def extract_close_price(
+    indicators: Dict[str, Dict[str, Any]],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """从指标快照中提取收盘价，可选优先从 metadata 获取。
+
+    优先级：
+    1. ``metadata["close_price"]``（由 SignalRuntime 注入，精度最高）
+    2. 委托 :func:`get_close` 扫描 indicators payload
+
+    此函数整合了原 ``SignalQualityTracker._get_close_price`` 和
+    ``runtime._extract_close_price`` 的逻辑，作为统一入口。
+    """
+    if metadata is not None:
+        raw = metadata.get("close_price")
+        if raw is not None:
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                pass
+    return get_close(indicators)
+
+
 def get_close(indicators: Dict[str, Dict[str, Any]]) -> Optional[float]:
     """从指标快照中提取当前 bar 的收盘价。
 

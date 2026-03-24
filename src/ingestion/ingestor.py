@@ -67,7 +67,7 @@ class BackgroundIngestor:
             getattr(ingest_settings, "symbol_max_cooldown_seconds", 300.0) or 300.0
         )
         self._symbol_error_counts: Dict[str, int] = {}
-        self._symbol_skip_until: Dict[str, float] = {}
+        self._symbol_backoff_until: Dict[str, float] = {}
         self._symbol_backoff_count: Dict[str, int] = {}  # 累计退避轮次
 
     def start(self) -> None:
@@ -122,7 +122,7 @@ class BackgroundIngestor:
             now = time.time()
             for symbol in self._symbols_for_cycle():
                 # 冷却期内跳过连续多次失败的品种，避免 CPU 空转。
-                if now < self._symbol_skip_until.get(symbol, 0.0):
+                if now < self._symbol_backoff_until.get(symbol, 0.0):
                     continue
                 try:
                     self._ingest_quote(symbol)
@@ -142,7 +142,7 @@ class BackgroundIngestor:
                             self._symbol_cooldown_seconds * (2 ** backoff_round),
                             self._symbol_max_cooldown_seconds,
                         )
-                        self._symbol_skip_until[symbol] = now + cooldown
+                        self._symbol_backoff_until[symbol] = now + cooldown
                         self._symbol_error_counts.pop(symbol, None)
                         self._symbol_backoff_count[symbol] = backoff_round + 1
                         logger.error(

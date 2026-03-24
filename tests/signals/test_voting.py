@@ -24,7 +24,7 @@ def _decision(
         strategy=strategy,
         symbol=symbol,
         timeframe=timeframe,
-        action=action,
+        direction=action,
         confidence=confidence,
         reason="test",
         used_indicators=used_indicators or [],
@@ -57,7 +57,7 @@ class TestBasicVoting:
             scope=DEFAULT_SCOPE,
         )
         assert result is not None
-        assert result.action == "buy"
+        assert result.direction == "buy"
 
     def test_single_sell_above_threshold(self):
         engine = StrategyVotingEngine(consensus_threshold=0.40, min_quorum=1)
@@ -67,7 +67,7 @@ class TestBasicVoting:
             scope=DEFAULT_SCOPE,
         )
         assert result is not None
-        assert result.action == "sell"
+        assert result.direction == "sell"
 
     def test_strategy_field_is_consensus(self):
         engine = StrategyVotingEngine(min_quorum=1)
@@ -94,7 +94,7 @@ class TestQuorum:
         decisions = [_decision("buy", 0.8, "s1"), _decision("buy", 0.7, "s2")]
         result = engine.vote(decisions, regime=DEFAULT_REGIME, scope=DEFAULT_SCOPE)
         assert result is not None
-        assert result.action == "buy"
+        assert result.direction == "buy"
 
     def test_quorum_counts_sell_as_non_hold(self):
         engine = StrategyVotingEngine(min_quorum=2, consensus_threshold=0.40)
@@ -103,7 +103,7 @@ class TestQuorum:
         result = engine.vote(decisions, regime=DEFAULT_REGIME, scope=DEFAULT_SCOPE)
         # buy_score = 0.8/(0.8+0.3) ≈ 0.727 >= 0.40 且 > sell_score
         assert result is not None
-        assert result.action == "buy"
+        assert result.direction == "buy"
 
 
 # ── 置信度计算 ───────────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ class TestConfidenceCalculation:
         decisions = [_decision("buy", 0.8, "s1"), _decision("sell", 0.2, "s2")]
         result = engine.vote(decisions, regime=DEFAULT_REGIME, scope=DEFAULT_SCOPE)
         assert result is not None
-        assert result.action == "buy"
+        assert result.direction == "buy"
         assert result.confidence == pytest.approx(0.736)
 
     def test_hold_weight_reduces_direction_scores(self):
@@ -180,7 +180,7 @@ class TestThresholdFilter:
         decisions = [_decision("buy", 0.6, "s1"), _decision("hold", 0.4, "s2")]
         result = engine.vote(decisions, regime=DEFAULT_REGIME, scope=DEFAULT_SCOPE)
         assert result is not None
-        assert result.action == "buy"
+        assert result.direction == "buy"
 
     def test_sell_beats_buy_returns_sell(self):
         engine = StrategyVotingEngine(consensus_threshold=0.40, min_quorum=1)
@@ -190,7 +190,7 @@ class TestThresholdFilter:
         ]
         result = engine.vote(decisions, regime=DEFAULT_REGIME, scope=DEFAULT_SCOPE)
         assert result is not None
-        assert result.action == "sell"
+        assert result.direction == "sell"
 
 
 # ── 元数据字段 ───────────────────────────────────────────────────────────────
@@ -270,7 +270,7 @@ class TestIntegrationScenarios:
         decisions.append(_decision("hold", 0.30, "s7"))
         result = engine.vote(decisions, regime=RegimeType.TRENDING, scope="confirmed")
         assert result is not None
-        assert result.action == "buy"
+        assert result.direction == "buy"
         # buy_score ≈ 4.9/5.2 ≈ 0.94
         assert result.confidence > 0.8
 
@@ -293,4 +293,4 @@ class TestIntegrationScenarios:
         )
         result = engine.vote(decisions, regime=RegimeType.RANGING, scope="confirmed")
         assert result is not None
-        assert result.action == "sell"
+        assert result.direction == "sell"

@@ -395,7 +395,7 @@ def build_signal_components(
         market_structure_analyzer=market_structure_analyzer,
         regime_detector=regime_detector,
         htf_indicators_enabled=signal_config.htf_indicators_enabled,
-        intrabar_confidence_decay=signal_config.intrabar_confidence_decay,
+        intrabar_confidence_factor=signal_config.intrabar_confidence_factor,
         htf_direction_fn=htf_cache.get_htf_direction,
         htf_context_fn=htf_cache.get_htf_context,
         htf_conflict_penalty=signal_config.htf_conflict_penalty,

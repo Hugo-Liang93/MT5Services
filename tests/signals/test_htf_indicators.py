@@ -62,7 +62,7 @@ class DummySignalService:
             strategy=kwargs["strategy"],
             symbol=kwargs["symbol"],
             timeframe=kwargs["timeframe"],
-            action="hold",
+            direction="hold",
             confidence=0.3,
             reason="test",
         )

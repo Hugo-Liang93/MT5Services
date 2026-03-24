@@ -92,7 +92,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         initial_balance=args.balance,
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
-        enable_filters=not args.no_filters,
+        filters_enabled=not args.no_filters,
         # ini 默认值覆盖（CLI 显式传入的参数已在上方设定，ini 仅补充未指定项）
         commission_per_lot=ini_defaults.get("commission_per_lot", 0.0),
         slippage_points=ini_defaults.get("slippage_points", 0.0),

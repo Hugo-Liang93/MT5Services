@@ -18,7 +18,7 @@ class SignalRepository(Protocol):
         symbol: Optional[str] = None,
         timeframe: Optional[str] = None,
         strategy: Optional[str] = None,
-        action: Optional[str] = None,
+        direction: Optional[str] = None,
         scope: str = "confirmed",
         limit: int = 200,
     ) -> list[dict]:
@@ -83,7 +83,7 @@ class TimescaleSignalRepository:
             "symbol": row[2],
             "timeframe": row[3],
             "strategy": row[4],
-            "action": row[5],
+            "direction": row[5],
             "confidence": row[6],
             "reason": row[7],
             "used_indicators": row[8] or [],
@@ -99,7 +99,7 @@ class TimescaleSignalRepository:
             "symbol": row[0],
             "timeframe": row[1],
             "strategy": row[2],
-            "action": row[3],
+            "direction": row[3],
             "count": int(row[4] or 0),
             "avg_confidence": row[5],
             "last_seen_at": row[6].isoformat() if row[6] else None,
@@ -112,7 +112,7 @@ class TimescaleSignalRepository:
         symbol: Optional[str] = None,
         timeframe: Optional[str] = None,
         strategy: Optional[str] = None,
-        action: Optional[str] = None,
+        direction: Optional[str] = None,
         scope: str = "confirmed",
         limit: int = 200,
     ) -> list[dict]:
@@ -122,7 +122,7 @@ class TimescaleSignalRepository:
                 symbol=symbol,
                 timeframe=timeframe,
                 strategy=strategy,
-                action=action,
+                direction=direction,
                 limit=limit,
             )
             return [self._row_to_event(row, scope="confirmed") for row in rows]
@@ -131,7 +131,7 @@ class TimescaleSignalRepository:
                 symbol=symbol,
                 timeframe=timeframe,
                 strategy=strategy,
-                action=action,
+                direction=direction,
                 limit=limit,
             )
             return [self._row_to_event(row, scope="preview") for row in rows]
@@ -142,7 +142,7 @@ class TimescaleSignalRepository:
                 symbol=symbol,
                 timeframe=timeframe,
                 strategy=strategy,
-                action=action,
+                direction=direction,
                 limit=limit,
             )
         ]
@@ -152,7 +152,7 @@ class TimescaleSignalRepository:
                 symbol=symbol,
                 timeframe=timeframe,
                 strategy=strategy,
-                action=action,
+                direction=direction,
                 limit=limit,
             )
         ]
@@ -186,7 +186,7 @@ class TimescaleSignalRepository:
         return [
             {
                 "strategy": row[0],
-                "action": row[1],
+                "direction": row[1],
                 "total": row[2],
                 "wins": row[3],
                 "win_rate": float(row[4]) if row[4] is not None else None,
@@ -206,7 +206,7 @@ class TimescaleSignalRepository:
         return [
             {
                 "strategy": row[0],
-                "action": row[1],
+                "direction": row[1],
                 "total": int(row[2] or 0),
                 "wins": int(row[3] or 0),
                 "losses": int(row[4] or 0),

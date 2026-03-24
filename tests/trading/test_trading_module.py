@@ -43,8 +43,8 @@ class DummyTradingService:
 
     def precheck_trade(self, **kwargs):
         if kwargs.get("symbol") == "BLOCKED":
-            return {"action": "block", "symbol": kwargs["symbol"], "checks": [], "warnings": [], "blocked": True, "reason": "blocked"}
-        return {"action": "allow", "symbol": kwargs["symbol"], "checks": [], "warnings": [], "blocked": False}
+            return {"verdict": "block", "symbol": kwargs["symbol"], "checks": [], "warnings": [], "blocked": True, "reason": "blocked"}
+        return {"verdict": "allow", "symbol": kwargs["symbol"], "checks": [], "warnings": [], "blocked": False}
 
     def execute_trade_batch(self, trades, stop_on_error=False):
         return {

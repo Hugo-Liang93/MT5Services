@@ -50,11 +50,11 @@ class _DispatchService:
         if operation == "trade":
             return {"ticket": 1, "payload": payload}
         if operation == "blocked_trade":
-            raise PreTradeRiskBlockedError("blocked by risk", assessment={"action": "block"})
+            raise PreTradeRiskBlockedError("blocked by risk", assessment={"verdict": "block"})
         if operation == "blocked_daily_loss_trade":
             raise PreTradeRiskBlockedError(
                 "blocked by risk",
-                assessment={"action": "block", "checks": [{"name": "daily_loss_limit"}]},
+                assessment={"verdict": "block", "checks": [{"name": "daily_loss_limit"}]},
             )
         raise ValueError("unsupported trading operation")
 
@@ -77,7 +77,7 @@ class _DispatchService:
         if kwargs.get("symbol") == "XAUUSD_DAILY_LOSS":
             raise PreTradeRiskBlockedError(
                 "blocked by risk",
-                assessment={"action": "block", "checks": [{"name": "daily_loss_limit"}]},
+                assessment={"verdict": "block", "checks": [{"name": "daily_loss_limit"}]},
             )
         return {
             "ticket": 1,
@@ -133,7 +133,7 @@ class _SignalService:
                 "symbol": "XAUUSD",
                 "timeframe": "M5",
                 "strategy": "consensus",
-                "action": "buy",
+                "direction": "buy",
                 "confidence": 0.88,
                 "metadata": {"regime": "trend"},
                 "indicators_snapshot": {

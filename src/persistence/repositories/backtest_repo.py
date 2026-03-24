@@ -113,7 +113,7 @@ class BacktestRepository:
                 (
                     run_id,
                     t.strategy,
-                    t.action,
+                    t.direction,
                     t.entry_time,
                     t.entry_price,
                     t.exit_time,
@@ -146,7 +146,7 @@ class BacktestRepository:
                     run_id,
                     ev.bar_time,
                     ev.strategy,
-                    ev.action,
+                    ev.direction,
                     ev.confidence,
                     ev.regime,
                     ev.price_at_signal,
@@ -200,7 +200,7 @@ class BacktestRepository:
     def fetch_trades(self, run_id: str) -> List[Dict[str, Any]]:
         """查询某次回测的交易明细。"""
         sql = """
-        SELECT id, run_id, strategy, action, entry_time, entry_price,
+        SELECT id, run_id, strategy, direction, entry_time, entry_price,
                exit_time, exit_price, stop_loss, take_profit,
                position_size, pnl, pnl_pct, bars_held, regime,
                confidence, exit_reason
@@ -216,7 +216,7 @@ class BacktestRepository:
                     "id": r[0],
                     "run_id": r[1],
                     "strategy": r[2],
-                    "action": r[3],
+                    "direction": r[3],
                     "entry_time": (
                         r[4].isoformat() if isinstance(r[4], datetime) else r[4]
                     ),
@@ -258,7 +258,7 @@ class BacktestRepository:
         params.append(limit)
 
         sql = f"""
-        SELECT id, run_id, bar_time, strategy, action, confidence,
+        SELECT id, run_id, bar_time, strategy, direction, confidence,
                regime, price_at_signal, price_after_n_bars,
                bars_to_evaluate, won, pnl_pct, filtered, filter_reason
         FROM backtest_signal_evaluations
@@ -277,7 +277,7 @@ class BacktestRepository:
                         r[2].isoformat() if isinstance(r[2], datetime) else r[2]
                     ),
                     "strategy": r[3],
-                    "action": r[4],
+                    "direction": r[4],
                     "confidence": r[5],
                     "regime": r[6],
                     "price_at_signal": r[7],
@@ -296,7 +296,7 @@ class BacktestRepository:
         sql = """
         SELECT
             strategy,
-            action,
+            direction,
             COUNT(*) as total,
             COUNT(*) FILTER (WHERE filtered) as filtered_count,
             COUNT(*) FILTER (WHERE won = TRUE) as won_count,
@@ -305,16 +305,16 @@ class BacktestRepository:
             AVG(pnl_pct) FILTER (WHERE won IS NOT NULL) as avg_pnl_pct
         FROM backtest_signal_evaluations
         WHERE run_id = %s
-        GROUP BY strategy, action
-        ORDER BY strategy, action
+        GROUP BY strategy, direction
+        ORDER BY strategy, direction
         """
         rows = self._query(sql, (run_id,))
-        result: Dict[str, Any] = {"by_strategy_action": []}
+        result: Dict[str, Any] = {"by_strategy_direction": []}
         for r in rows:
-            result["by_strategy_action"].append(
+            result["by_strategy_direction"].append(
                 {
                     "strategy": r[0],
-                    "action": r[1],
+                    "direction": r[1],
                     "total": r[2],
                     "filtered_count": r[3],
                     "won_count": r[4],

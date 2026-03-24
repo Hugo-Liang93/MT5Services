@@ -102,7 +102,7 @@ class TestBacktestEngine:
                 strategy="rsi_reversion",
                 symbol="XAUUSD",
                 timeframe="M5",
-                action=action,
+                direction=action,
                 confidence=conf,
                 reason="test",
                 used_indicators=["rsi14"],
@@ -179,7 +179,7 @@ class TestBacktestEngine:
         signal_module.strategy_requirements.return_value = ["rsi14"]
         signal_module.evaluate.return_value = SignalDecision(
             strategy="rsi_reversion", symbol="XAUUSD", timeframe="M5",
-            action="hold", confidence=0.0, reason="test",
+            direction="hold", confidence=0.0, reason="test",
             used_indicators=["rsi14"],
             timestamp=datetime.now(timezone.utc), metadata={},
         )
@@ -206,7 +206,7 @@ class TestBacktestEngine:
 
     def test_signal_evaluations_recorded(self) -> None:
         """信号评估记录应被正确记录和回填。"""
-        config = self._make_config(warmup_bars=5, enable_filters=False)
+        config = self._make_config(warmup_bars=5, filters_enabled=False)
         warmup = _make_bars(5)
         test_data = _make_bars(20)
         for i, bar in enumerate(test_data):
@@ -228,7 +228,7 @@ class TestBacktestEngine:
             conf = 0.7 if action == "buy" else 0.0
             return SignalDecision(
                 strategy="rsi_reversion", symbol="XAUUSD", timeframe="M5",
-                action=action, confidence=conf, reason="test",
+                direction=action, confidence=conf, reason="test",
                 used_indicators=["rsi14"],
                 timestamp=datetime.now(timezone.utc), metadata={},
             )
@@ -251,7 +251,7 @@ class TestBacktestEngine:
         assert result.signal_evaluations is not None
         assert len(result.signal_evaluations) > 0
         # 应有 buy 信号被记录
-        buy_evals = [e for e in result.signal_evaluations if e.action == "buy"]
+        buy_evals = [e for e in result.signal_evaluations if e.direction == "buy"]
         assert len(buy_evals) >= 1
         # 回填后应有 won/pnl_pct 字段
         for ev in buy_evals:
