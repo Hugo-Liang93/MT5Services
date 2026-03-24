@@ -183,6 +183,55 @@ class TestWarmupBarrier:
         _emit_and_process(rt, "XAUUSD", "M5", _INDICATORS_FULL, "confirmed")
         assert len(service.evaluate_calls) == 1
 
+    def test_stale_bar_rejected_after_warmup(self) -> None:
+        """warmup_ready_fn=True 后，bar_time 过旧的快照仍被跳过（异步管道残留）。
+
+        BackgroundIngestor 标记回补完成后，指标管道中可能仍有排队中的
+        历史 bar 快照。这些 stale 快照不应被当作首个实时 bar。
+        """
+        source = DummySnapshotSource()
+        service = DummySignalService()
+        rt = _make_runtime(source, service, warmup_ready_fn=lambda: True)
+
+        # M5 bar_time 1 小时前——远超 2×300s+30s 阈值
+        stale_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        rt._on_snapshot("XAUUSD", "M5", stale_time, _INDICATORS_FULL, "confirmed")
+        processed = rt.process_next_event(timeout=0.01)
+        assert processed is False
+        assert len(service.evaluate_calls) == 0
+        # 首个实时 bar 未被标记
+        assert rt.status()["warmup_realtime_symbols"] == 0
+        assert rt.status()["warmup_skipped"] >= 1
+
+    def test_stale_bar_then_fresh_bar_lifts_barrier(self) -> None:
+        """stale bar 被拒绝后，后续 fresh bar 正常解除屏障。"""
+        source = DummySnapshotSource()
+        service = DummySignalService()
+        rt = _make_runtime(source, service, warmup_ready_fn=lambda: True)
+
+        # stale bar 被拒
+        stale_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        rt._on_snapshot("XAUUSD", "M5", stale_time, _INDICATORS_FULL, "confirmed")
+        rt.process_next_event(timeout=0.01)
+        assert rt.status()["warmup_realtime_symbols"] == 0
+
+        # fresh bar 通过
+        _emit_and_process(rt, "XAUUSD", "M5", _INDICATORS_FULL, "confirmed")
+        assert len(service.evaluate_calls) == 1
+        assert rt.status()["warmup_realtime_symbols"] == 1
+
+    def test_no_warmup_fn_skips_staleness_check(self) -> None:
+        """无 warmup_ready_fn 时不做 staleness 检查（standalone/测试兼容）。"""
+        source = DummySnapshotSource()
+        service = DummySignalService()
+        rt = _make_runtime(source, service, warmup_ready_fn=None)
+
+        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
+        rt._on_snapshot("XAUUSD", "M5", old_time, _INDICATORS_FULL, "confirmed")
+        processed = rt.process_next_event(timeout=0.01)
+        assert processed is True
+        assert len(service.evaluate_calls) == 1
+
 
 # ═══════════════════════════════════════════════════════════════
 # 必需指标检查
@@ -264,6 +313,23 @@ class TestIntrabarBarrier:
         processed = rt.process_next_event(timeout=0.01)
         assert processed is False
         assert len(service.evaluate_calls) == before
+
+    def test_stale_confirmed_does_not_lift_intrabar_barrier(self) -> None:
+        """stale confirmed bar 被拒后，intrabar 屏障仍然有效。"""
+        source = DummySnapshotSource()
+        service = DummySignalService()
+        rt = _make_runtime(source, service, warmup_ready_fn=lambda: True)
+
+        # stale confirmed——被拒，不解除屏障
+        stale_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        rt._on_snapshot("XAUUSD", "M5", stale_time, _INDICATORS_FULL, "confirmed")
+        rt.process_next_event(timeout=0.01)
+
+        # intrabar 仍被阻塞（首个实时 confirmed bar 未到达）
+        rt._on_snapshot("XAUUSD", "M5", _bar_time(), _INDICATORS_NO_ATR, "intrabar")
+        processed = rt.process_next_event(timeout=0.01)
+        assert processed is False
+        assert len(service.evaluate_calls) == 0
 
     def test_no_warmup_fn_intrabar_not_blocked(self) -> None:
         """无 warmup_ready_fn 时 intrabar 不受额外屏障限制。"""

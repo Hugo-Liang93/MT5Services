@@ -340,7 +340,38 @@ class SignalRuntime:
         if scope == "confirmed":
             st_key = (symbol, timeframe)
             if st_key not in self._first_realtime_bar_seen:
-                # 回补已完成，本条是该 (symbol, tf) 的首个实时 confirmed bar。
+                # Validate bar_time is truly recent before treating this as
+                # the first realtime bar.  BackgroundIngestor sets
+                # _backfill_done when enqueueing completes, but indicator/
+                # snapshot processing is async — stale backfill snapshots
+                # may still arrive after the flag flips.  A genuine realtime
+                # confirmed bar closes at most 1 bar-duration ago (+ margin
+                # for processing delay).
+                if self._warmup_ready_fn is not None:
+                    _bt = (
+                        bar_time
+                        if bar_time.tzinfo is not None
+                        else bar_time.replace(tzinfo=timezone.utc)
+                    )
+                    tf_secs = timeframe_seconds(timeframe)
+                    staleness = (
+                        datetime.now(timezone.utc) - _bt.astimezone(timezone.utc)
+                    ).total_seconds()
+                    # Allow up to 2× timeframe duration + 30s processing margin
+                    max_age = tf_secs * 2 + 30
+                    if staleness > max_age:
+                        self._warmup_skipped += 1
+                        if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
+                            logger.info(
+                                "Warmup skip (stale bar_time): %s/%s bar_time=%s staleness=%.0fs max_age=%.0fs (total_skipped=%d)",
+                                symbol,
+                                timeframe,
+                                bar_time.isoformat(),
+                                staleness,
+                                max_age,
+                                self._warmup_skipped,
+                            )
+                        return
                 self._first_realtime_bar_seen.add(st_key)
                 logger.info(
                     "Warmup lifted: first realtime bar for %s/%s at %s",

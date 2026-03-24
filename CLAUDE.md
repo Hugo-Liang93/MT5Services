@@ -1359,7 +1359,7 @@ flake8 src/ tests/
 - **market_impact 表 DDL 修复**：PRIMARY KEY 加入 `recorded_at` 分区列，符合 TimescaleDB 要求
 - **OHLC 价格修复**：`get_ohlc_from()` 请求参数和响应时间戳统一走 `_market_time_to_request` / `_parse_server_timestamp`，修复 UTC+3 偏移导致的价格错误
 - **trade_outcomes close_price 修复**：`history_deals_get()` 时间参数统一走 `_server_now()`，修复平仓价获取失败
-- **Warmup 显式屏障**：~~旧方案通过 `bar_age > max(10×tf, 15min)` 间接推断回补数据~~（已重构）。新方案：`BackgroundIngestor.is_backfilling` 属性 + `SignalRuntime._warmup_ready_fn` 回调，回补期间所有 confirmed/intrabar 快照不入队、不评估、不产生信号。回补结束后各 `(symbol, tf)` 需收到首个实时 confirmed bar 才解除 intrabar 屏障。IndicatorManager 在此期间正常计算指标填充缓存（API 可查询），仅信号评估被屏蔽。无 `warmup_ready_fn` 时（standalone/测试）行为与旧版兼容
+- **Warmup 显式屏障**：~~旧方案通过 `bar_age > max(10×tf, 15min)` 间接推断回补数据~~（已重构）。新方案：`BackgroundIngestor.is_backfilling` 属性 + `SignalRuntime._warmup_ready_fn` 回调，回补期间所有 confirmed/intrabar 快照不入队、不评估、不产生信号。回补结束后各 `(symbol, tf)` 需收到 **bar_time 经过 staleness 校验的** 首个实时 confirmed bar 才解除 intrabar 屏障（`bar_time` 距当前时间不超过 `2×tf_seconds + 30s`，防止异步管道残留的历史快照被误认为实时数据）。IndicatorManager 在此期间正常计算指标填充缓存（API 可查询），仅信号评估被屏蔽。无 `warmup_ready_fn` 时（standalone/测试）跳过 staleness 检查，行为与旧版兼容
 - **Warmup 指标完整性检查**：`SignalPolicy.warmup_required_indicators = ("atr14",)`，与 warmup 屏障互补——回补完成但 ATR 尚未计算时仍跳过，避免浪费首次 `state_changed=true` 转换
 - **Signal 持久化优化**：`state_changed=false` 的重复信号不再写 DB，减少 ~95% signal_events 写入量。listener 仍收到所有事件
 - **统一时区模块**：`src/utils/timezone.py` 提供 `utc_now()`/`to_display()`/`LocalTimeFormatter`，日志时间戳统一为 `app.ini [system] timezone` 配置的显示时区
