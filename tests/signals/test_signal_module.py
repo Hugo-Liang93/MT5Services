@@ -89,7 +89,7 @@ class DummySignalRepository:
         return [
             {
                 "strategy": "sma_trend",
-                "action": "buy",
+                "direction": "buy",
                 "total": 4,
                 "wins": 3,
                 "win_rate": 0.75,
@@ -102,7 +102,7 @@ class DummySignalRepository:
         return [
             {
                 "strategy": "sma_trend",
-                "action": "buy",
+                "direction": "buy",
                 "total": 4,
                 "wins": 3,
                 "losses": 1,
