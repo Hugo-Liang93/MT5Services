@@ -40,6 +40,10 @@ _backtest_semaphore = threading.Semaphore(1)
 _result_cache: Dict[str, Dict[str, Any]] = {}
 _result_cache_lock = threading.Lock()
 
+# Walk-Forward 结果缓存（WalkForwardResult 对象，不可序列化为 dict，独立缓存）
+_wf_result_cache: Dict[str, Any] = {}
+_wf_result_cache_lock = threading.Lock()
+
 
 # ── Request / Response Schemas ──────────────────────────────────
 
@@ -59,6 +63,27 @@ class BacktestRunRequest(BaseModel):
     filter_allowed_sessions: str = "london,newyork"
     filter_session_transition_cooldown: int = 15
     filter_volatility_spike_multiplier: float = 2.5
+
+
+class WalkForwardRequest(BaseModel):
+    symbol: str
+    timeframe: str
+    start_time: str = Field(..., description="ISO 格式起始时间")
+    end_time: str = Field(..., description="ISO 格式结束时间")
+    strategies: Optional[List[str]] = None
+    initial_balance: float = 10000.0
+    min_confidence: float = 0.55
+    warmup_bars: int = 200
+    param_space: Dict[str, List[Any]] = Field(
+        ..., description="参数搜索空间 {key: [val1, val2, ...]}"
+    )
+    search_mode: str = "grid"
+    max_combinations: int = 500
+    sort_metric: str = "sharpe_ratio"
+    # Walk-Forward 专属参数
+    n_splits: int = Field(default=5, description="滚动窗口数量")
+    train_ratio: float = Field(default=0.7, description="训练集占比")
+    anchored: bool = Field(default=False, description="是否使用锚定窗口")
 
 
 class BacktestOptimizeRequest(BaseModel):
@@ -141,6 +166,33 @@ async def run_optimization(
     )
     _register_job(job)
     background_tasks.add_task(_execute_optimization, run_id, request)
+    return ApiResponse(success=True, data=job.to_dict())
+
+
+@router.post("/walk-forward", response_model=ApiResponse)
+async def run_walk_forward(
+    request: WalkForwardRequest,
+    background_tasks: BackgroundTasks,
+) -> ApiResponse:
+    """提交 Walk-Forward 验证任务。"""
+    run_id = f"wf_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc)
+    job = BacktestJob(
+        run_id=run_id,
+        job_type="walk_forward",
+        status=BacktestJobStatus.PENDING,
+        submitted_at=now,
+        config_summary={
+            "symbol": request.symbol,
+            "timeframe": request.timeframe,
+            "start_time": request.start_time,
+            "end_time": request.end_time,
+            "n_splits": request.n_splits,
+            "train_ratio": request.train_ratio,
+        },
+    )
+    _register_job(job)
+    background_tasks.add_task(_execute_walk_forward, run_id, request)
     return ApiResponse(success=True, data=job.to_dict())
 
 
@@ -391,6 +443,111 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
 
     except Exception as e:
         logger.exception("Optimization %s failed", run_id)
+        _fail_job(run_id, str(e))
+    finally:
+        _cleanup_components(components)
+        _backtest_semaphore.release()
+
+
+def _execute_walk_forward(run_id: str, request: WalkForwardRequest) -> None:
+    """在后台线程执行 Walk-Forward 验证。"""
+    acquired = _backtest_semaphore.acquire(timeout=5)
+    if not acquired:
+        _fail_job(run_id, "另一个回测/优化任务正在执行，请稍后重试")
+        return
+
+    _start_job(run_id)
+    components: Optional[Dict[str, Any]] = None
+    try:
+        from src.backtesting.models import BacktestConfig, ParameterSpace
+        from src.backtesting.optimizer import build_signal_module_with_overrides
+        from src.backtesting.walk_forward import WalkForwardConfig, WalkForwardValidator
+
+        base_config = BacktestConfig(
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            start_time=datetime.fromisoformat(request.start_time).replace(
+                tzinfo=timezone.utc
+            ),
+            end_time=datetime.fromisoformat(request.end_time).replace(
+                tzinfo=timezone.utc
+            ),
+            strategies=request.strategies,
+            initial_balance=request.initial_balance,
+            min_confidence=request.min_confidence,
+            warmup_bars=request.warmup_bars,
+        )
+
+        param_space = ParameterSpace(
+            strategy_params=request.param_space,
+            search_mode=request.search_mode,
+            max_combinations=request.max_combinations,
+        )
+
+        wf_config = WalkForwardConfig(
+            total_start_time=base_config.start_time,
+            total_end_time=base_config.end_time,
+            base_config=base_config,
+            train_ratio=request.train_ratio,
+            n_splits=request.n_splits,
+            anchored=request.anchored,
+            optimization_metric=request.sort_metric,
+            param_space=param_space,
+        )
+
+        components = _build_api_components()
+        base_module = components["signal_module"]
+
+        def module_factory(params: Dict[str, Any]) -> Any:
+            return build_signal_module_with_overrides(base_module, params)
+
+        validator = WalkForwardValidator(
+            config=wf_config,
+            data_loader=components["data_loader"],
+            signal_module_factory=module_factory,
+            indicator_pipeline=components["pipeline"],
+            regime_detector=components["regime_detector"],
+            voting_engine=components.get("voting_engine"),
+        )
+
+        wf_result = validator.run()
+
+        # 缓存 WalkForwardResult 对象（供推荐引擎使用）
+        with _wf_result_cache_lock:
+            _wf_result_cache[run_id] = wf_result
+
+        # 持久化各窗口的 OOS 结果
+        for split in wf_result.splits:
+            _persist_result(split.out_of_sample_result)
+
+        # 序列化摘要给 API 查询
+        summary = {
+            "run_id": run_id,
+            "n_splits": len(wf_result.splits),
+            "overfitting_ratio": round(wf_result.overfitting_ratio, 4),
+            "consistency_rate": round(wf_result.consistency_rate, 4),
+            "aggregate_metrics": {
+                "total_trades": wf_result.aggregate_metrics.total_trades,
+                "win_rate": wf_result.aggregate_metrics.win_rate,
+                "sharpe_ratio": wf_result.aggregate_metrics.sharpe_ratio,
+                "max_drawdown": wf_result.aggregate_metrics.max_drawdown,
+                "total_pnl": wf_result.aggregate_metrics.total_pnl,
+                "profit_factor": wf_result.aggregate_metrics.profit_factor,
+            },
+            "splits": [
+                {
+                    "split_index": s.split_index,
+                    "best_params": s.best_params,
+                    "in_sample_sharpe": s.in_sample_result.metrics.sharpe_ratio,
+                    "out_of_sample_sharpe": s.out_of_sample_result.metrics.sharpe_ratio,
+                }
+                for s in wf_result.splits
+            ],
+        }
+        _complete_job(run_id, summary)
+
+    except Exception as e:
+        logger.exception("Walk-Forward %s failed", run_id)
         _fail_job(run_id, str(e))
     finally:
         _cleanup_components(components)
@@ -677,9 +834,18 @@ async def apply_recommendation(rec_id: str) -> ApiResponse:
         applicator = ConfigApplicator(signal_module=signal_module)
         backup_path = applicator.apply(rec)
 
+        # DB 持久化（失败时记录警告但不回滚文件操作——
+        # 配置已生效，DB 状态可通过下次查询时自愈）
         repo = _get_backtest_repo()
         if repo is not None:
-            repo.update_recommendation(rec)
+            try:
+                repo.update_recommendation(rec)
+            except Exception:
+                logger.warning(
+                    "推荐 %s 已应用但 DB 更新失败，状态可能不一致",
+                    rec_id,
+                    exc_info=True,
+                )
 
         with _rec_cache_lock:
             _rec_cache[rec_id] = rec
@@ -711,7 +877,14 @@ async def rollback_recommendation(rec_id: str) -> ApiResponse:
 
         repo = _get_backtest_repo()
         if repo is not None:
-            repo.update_recommendation(rec)
+            try:
+                repo.update_recommendation(rec)
+            except Exception:
+                logger.warning(
+                    "推荐 %s 已回滚但 DB 更新失败",
+                    rec_id,
+                    exc_info=True,
+                )
 
         with _rec_cache_lock:
             _rec_cache[rec_id] = rec
@@ -745,32 +918,21 @@ def _get_recommendation(rec_id: str) -> Optional[Any]:
 
 
 def _load_walk_forward_result(run_id: str) -> Optional[Any]:
-    """从内存缓存或 DB 加载 Walk-Forward 结果。
+    """从 Walk-Forward 专用缓存加载结果。
 
-    Walk-Forward 结果在回测 API 中以 job 结果形式缓存。
-    如果内存中没有，尝试从 DB 加载并重建 WalkForwardResult。
+    WalkForwardResult 对象（含 splits、BacktestResult 等）无法从 DB 重建，
+    因此仅在当前进程内有效。API 重启后需重新运行 Walk-Forward 验证。
     """
-    # 先检查内存缓存
-    with _result_cache_lock:
-        cached = _result_cache.get(run_id)
-    if cached is not None:
-        # 缓存可能是 dict 或 WalkForwardResult
-        if hasattr(cached, "splits"):
-            return cached
-        # 如果是 dict 形式（已序列化），无法直接重建
-        # WalkForwardResult 需要 BacktestResult 对象，无法从 dict 恢复
-        # 返回 None 让调用方处理
-        return None
-
-    return None
+    with _wf_result_cache_lock:
+        return _wf_result_cache.get(run_id)
 
 
 def _get_signal_module() -> Optional[Any]:
     """尝试获取运行时的 SignalModule 实例。"""
     try:
-        from src.api.deps import get_signal_module
+        from src.api.deps import get_signal_service
 
-        return get_signal_module()
+        return get_signal_service()
     except Exception:
         logger.debug("SignalModule not available (standalone backtest mode)")
         return None

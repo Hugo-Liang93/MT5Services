@@ -444,7 +444,10 @@ class ConfigApplicator:
         return backup_path
 
     def _write_local_ini(self, changes: List[ParamChange]) -> None:
-        """将变更合并写入 signal.local.ini。"""
+        """将变更合并写入 signal.local.ini（原子操作：先写临时文件再 rename）。"""
+        import os
+        import tempfile
+
         local_ini = self._config_dir / "signal.local.ini"
         parser = configparser.ConfigParser()
 
@@ -463,12 +466,23 @@ class ConfigApplicator:
                     parser.add_section(section_name)
                 parser.set(section_name, change.key, str(change.new_value))
 
-        with open(local_ini, "w") as f:
-            f.write(
-                "# 由参数推荐系统自动生成，优先级高于 signal.ini\n"
-                "# 手动编辑后需重启服务生效\n\n"
-            )
-            parser.write(f)
+        # 原子写入：先写临时文件，成功后 rename 覆盖目标
+        fd, tmp_path = tempfile.mkstemp(dir=str(self._config_dir), suffix=".ini.tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(
+                    "# 由参数推荐系统自动生成，优先级高于 signal.ini\n"
+                    "# 手动编辑后需重启服务生效\n\n"
+                )
+                parser.write(f)
+            os.replace(tmp_path, str(local_ini))
+        except Exception:
+            # 写入失败时清理临时文件
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
         logger.info("signal.local.ini 已更新: %d 项变更", len(changes))
 

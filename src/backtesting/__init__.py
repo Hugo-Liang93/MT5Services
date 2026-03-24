@@ -9,10 +9,14 @@ from .models import (
     BacktestConfig,
     BacktestMetrics,
     BacktestResult,
+    ParamChange,
     ParameterSpace,
+    Recommendation,
+    RecommendationStatus,
     SignalEvaluation,
     TradeRecord,
 )
+from .recommendation import ConfigApplicator, RecommendationEngine
 
 __all__ = [
     "BacktestConfig",
@@ -23,7 +27,12 @@ __all__ = [
     "BacktestFilterStats",
     "BacktestMetrics",
     "BacktestResult",
+    "ConfigApplicator",
+    "ParamChange",
     "ParameterSpace",
+    "Recommendation",
+    "RecommendationEngine",
+    "RecommendationStatus",
     "SignalEvaluation",
     "TradeRecord",
 ]
