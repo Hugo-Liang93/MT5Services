@@ -515,3 +515,42 @@ def test_signal_module_injects_recent_bars_for_phase2_strategies() -> None:
     assert source.calls[0]["end_time"] == datetime(
         2026, 3, 19, 10, 0, tzinfo=timezone.utc
     )
+
+
+def test_signal_module_injects_enough_recent_bars_for_fib_pullback() -> None:
+    source = Phase2IndicatorSource()
+    module = SignalModule(indicator_source=source)
+
+    module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="fib_pullback",
+        indicators={
+            "supertrend14": {"direction": 1.0},
+            "atr14": {"atr": 4.0},
+        },
+        metadata={"bar_time": "2026-03-19T10:00:00+00:00"},
+        persist=False,
+    )
+
+    assert len(source.calls) == 1
+    assert source.calls[0]["limit"] == 20
+
+
+def test_signal_module_injects_enough_recent_bars_for_rsi_divergence() -> None:
+    source = Phase2IndicatorSource()
+    module = SignalModule(indicator_source=source)
+
+    module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="rsi_divergence",
+        indicators={
+            "rsi14": {"rsi": 35.0},
+        },
+        metadata={"bar_time": "2026-03-19T10:00:00+00:00"},
+        persist=False,
+    )
+
+    assert len(source.calls) == 1
+    assert source.calls[0]["limit"] == 14

@@ -315,7 +315,10 @@ class SignalModule:
         indicator_payload = indicators or self.indicator_source.get_all_indicators(
             symbol, timeframe
         )
-        context_metadata = self._build_context_metadata(symbol, timeframe, metadata)
+        bars_depth = getattr(strategy_impl, "recent_bars_depth", 5)
+        context_metadata = self._build_context_metadata(
+            symbol, timeframe, metadata, recent_bars_limit=bars_depth,
+        )
         event_impact = context_metadata.pop("_event_impact_forecast", None)
         context = SignalContext(
             symbol=symbol,
@@ -429,6 +432,7 @@ class SignalModule:
         symbol: str,
         timeframe: str,
         metadata: Optional[Dict[str, Any]],
+        recent_bars_limit: int = 5,
     ) -> Dict[str, Any]:
         context_metadata = dict(metadata or {})
         if "recent_bars" in context_metadata:
@@ -440,7 +444,7 @@ class SignalModule:
 
         end_time = self._parse_optional_datetime(context_metadata.get("bar_time"))
         try:
-            recent_bars = getter(symbol, timeframe, end_time=end_time, limit=5)
+            recent_bars = getter(symbol, timeframe, end_time=end_time, limit=recent_bars_limit)
         except Exception:
             logger.debug(
                 "Failed to load recent bars for %s/%s",
