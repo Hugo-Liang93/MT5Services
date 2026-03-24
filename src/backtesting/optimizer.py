@@ -95,7 +95,9 @@ class ParameterOptimizer:
                 len(test_bars),
             )
             # 借助临时 engine 预计算指标
-            temp_module = self._signal_module_factory(combinations[0] if combinations else {})
+            temp_module = self._signal_module_factory(
+                combinations[0] if combinations else {}
+            )
             temp_engine = BacktestEngine(
                 config=self._base_config,
                 data_loader=cached_loader,
@@ -125,7 +127,9 @@ class ParameterOptimizer:
             }
 
             # 构建带参数覆盖的配置
-            config = replace(self._base_config, strategy_params=strategy_params, **position_overrides)
+            config = replace(
+                self._base_config, strategy_params=strategy_params, **position_overrides
+            )
 
             # 构建独立的 SignalModule
             signal_module = self._signal_module_factory(strategy_params)
@@ -170,9 +174,7 @@ class ParameterOptimizer:
         elif self._param_space.search_mode == "random":
             return self._random_search()
         else:
-            raise ValueError(
-                f"Unknown search mode: {self._param_space.search_mode}"
-            )
+            raise ValueError(f"Unknown search mode: {self._param_space.search_mode}")
 
     def _merged_params(self) -> Dict[str, List[Any]]:
         """合并策略参数和持仓参数为统一搜索空间。"""
@@ -254,8 +256,6 @@ def build_signal_module_with_overrides(
         param_overrides: 策略参数覆盖（signal.ini [strategy_params] 格式）
         regime_affinity_overrides: Regime 亲和度覆盖（可选）
     """
-    from src.api.factories.signals import _apply_strategy_config_overrides
-
     # 创建新的 SignalModule，复用相同的 indicator_source 和组件
     module = SignalModule(
         indicator_source=base_module.indicator_source,
@@ -286,12 +286,6 @@ def build_signal_module_with_overrides(
             pass
 
     # 应用参数覆盖 + regime 亲和度覆盖
-    class _FakeConfig:
-        pass
-
-    fake_config = _FakeConfig()
-    fake_config.strategy_params = param_overrides  # type: ignore[attr-defined]
-    fake_config.regime_affinity_overrides = regime_affinity_overrides or {}  # type: ignore[attr-defined]
-    _apply_strategy_config_overrides(module, fake_config)
+    module.apply_param_overrides(param_overrides, regime_affinity_overrides)
 
     return module

@@ -1,10 +1,13 @@
-"""回测 FastAPI 路由。
+"""回测 FastAPI 路由（submit/query job 模式）。
 
 路由前缀: /v1/backtest
 
-支持两种结果存储模式：
-1. 内存缓存（即时查询运行状态）
-2. TimescaleDB 持久化（历史回测结果永久保存 + 信号评估明细）
+Job 生命周期：
+  submit → pending → running → completed / failed
+
+存储：
+- BacktestJob 元数据：内存 + DB write-through（API 重启后可恢复）
+- BacktestResult 详情：DB 持久化（回测完成后写入）
 """
 
 from __future__ import annotations
@@ -20,16 +23,22 @@ from pydantic import BaseModel, Field
 
 from src.api.schemas import ApiResponse
 
+from .models import BacktestJob, BacktestJobStatus
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 
-# 简易内存结果存储（用于查询运行状态，DB 持久化在回测完成后自动执行）
-_results_store: Dict[str, Dict[str, Any]] = {}
-_results_lock = threading.Lock()
+# Job store: run_id → BacktestJob（内存 write-through，DB 持久化）
+_job_store: Dict[str, BacktestJob] = {}
+_job_lock = threading.Lock()
 
 # 并发限制：同一时刻最多 1 个回测/优化任务运行，避免耗尽 DB 连接和 CPU
 _backtest_semaphore = threading.Semaphore(1)
+
+# 回测结果缓存（仅运行中和刚完成的任务，历史数据从 DB 查询）
+_result_cache: Dict[str, Dict[str, Any]] = {}
+_result_cache_lock = threading.Lock()
 
 
 # ── Request / Response Schemas ──────────────────────────────────
@@ -69,10 +78,15 @@ class BacktestOptimizeRequest(BaseModel):
     sort_metric: str = "sharpe_ratio"
 
 
-class BacktestStatusResponse(BaseModel):
+class BacktestJobResponse(BaseModel):
     run_id: str
-    status: str  # "running" | "completed" | "failed"
-    message: Optional[str] = None
+    status: str
+    job_type: str = "backtest"
+    submitted_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    progress: float = 0.0
+    error: Optional[str] = None
 
 
 # ── 路由实现 ────────────────────────────────────────────────────
@@ -83,18 +97,24 @@ async def run_backtest(
     request: BacktestRunRequest,
     background_tasks: BackgroundTasks,
 ) -> ApiResponse:
-    """触发单次回测（异步执行）。"""
+    """提交单次回测任务。"""
     run_id = f"bt_{uuid.uuid4().hex[:12]}"
-
-    with _results_lock:
-        _results_store[run_id] = {"status": "running", "result": None, "error": None}
-
-    background_tasks.add_task(_execute_backtest, run_id, request)
-
-    return ApiResponse(
-        success=True,
-        data={"run_id": run_id, "status": "running"},
+    now = datetime.now(timezone.utc)
+    job = BacktestJob(
+        run_id=run_id,
+        job_type="backtest",
+        status=BacktestJobStatus.PENDING,
+        submitted_at=now,
+        config_summary={
+            "symbol": request.symbol,
+            "timeframe": request.timeframe,
+            "start_time": request.start_time,
+            "end_time": request.end_time,
+        },
     )
+    _register_job(job)
+    background_tasks.add_task(_execute_backtest, run_id, request)
+    return ApiResponse(success=True, data=job.to_dict())
 
 
 @router.post("/optimize", response_model=ApiResponse)
@@ -102,58 +122,53 @@ async def run_optimization(
     request: BacktestOptimizeRequest,
     background_tasks: BackgroundTasks,
 ) -> ApiResponse:
-    """触发参数优化（异步执行）。"""
+    """提交参数优化任务。"""
     run_id = f"opt_{uuid.uuid4().hex[:12]}"
-
-    with _results_lock:
-        _results_store[run_id] = {"status": "running", "result": None, "error": None}
-
-    background_tasks.add_task(_execute_optimization, run_id, request)
-
-    return ApiResponse(
-        success=True,
-        data={"run_id": run_id, "status": "running"},
+    now = datetime.now(timezone.utc)
+    job = BacktestJob(
+        run_id=run_id,
+        job_type="optimization",
+        status=BacktestJobStatus.PENDING,
+        submitted_at=now,
+        config_summary={
+            "symbol": request.symbol,
+            "timeframe": request.timeframe,
+            "start_time": request.start_time,
+            "end_time": request.end_time,
+            "search_mode": request.search_mode,
+            "max_combinations": request.max_combinations,
+        },
     )
+    _register_job(job)
+    background_tasks.add_task(_execute_optimization, run_id, request)
+    return ApiResponse(success=True, data=job.to_dict())
 
 
-@router.get("/results", response_model=ApiResponse)
-async def list_results() -> ApiResponse:
-    """列出所有回测结果（内存中的运行状态）。"""
-    with _results_lock:
-        summaries = []
-        for run_id, entry in _results_store.items():
-            summary: Dict[str, Any] = {"run_id": run_id, "status": entry["status"]}
-            if entry["result"] is not None:
-                if isinstance(entry["result"], list):
-                    # 优化结果
-                    summary["type"] = "optimization"
-                    summary["count"] = len(entry["result"])
-                else:
-                    summary["type"] = "backtest"
-                    summary["metrics"] = _extract_metrics(entry["result"])
-            summaries.append(summary)
+@router.get("/jobs", response_model=ApiResponse)
+async def list_jobs() -> ApiResponse:
+    """列出所有任务状态（内存中的活跃任务）。"""
+    with _job_lock:
+        jobs = [job.to_dict() for job in _job_store.values()]
+    return ApiResponse(success=True, data=jobs)
 
-    return ApiResponse(success=True, data=summaries)
+
+@router.get("/jobs/{run_id}", response_model=ApiResponse)
+async def get_job_status(run_id: str) -> ApiResponse:
+    """查询任务状态。"""
+    with _job_lock:
+        job = _job_store.get(run_id)
+    if job is not None:
+        return ApiResponse(success=True, data=job.to_dict())
+    return ApiResponse(success=False, error=f"Job {run_id} not found")
 
 
 @router.get("/results/{run_id}", response_model=ApiResponse)
 async def get_result(run_id: str) -> ApiResponse:
-    """获取单次回测详情（优先内存，回退 DB）。"""
-    with _results_lock:
-        entry = _results_store.get(run_id)
-
-    if entry is not None:
-        if entry["status"] == "running":
-            return ApiResponse(
-                success=True,
-                data={"run_id": run_id, "status": "running"},
-            )
-        if entry["status"] == "failed":
-            return ApiResponse(
-                success=False,
-                error=entry.get("error", "Unknown error"),
-            )
-        return ApiResponse(success=True, data=entry["result"])
+    """获取回测结果详情（优先内存缓存，回退 DB）。"""
+    with _result_cache_lock:
+        cached = _result_cache.get(run_id)
+    if cached is not None:
+        return ApiResponse(success=True, data=cached)
 
     # 回退到 DB 查询
     try:
@@ -165,7 +180,31 @@ async def get_result(run_id: str) -> ApiResponse:
     except Exception:
         logger.debug("DB fallback query failed for %s", run_id, exc_info=True)
 
+    # 检查 job 是否还在运行
+    with _job_lock:
+        job = _job_store.get(run_id)
+    if job is not None:
+        if job.status == BacktestJobStatus.RUNNING:
+            return ApiResponse(
+                success=True,
+                data={"run_id": run_id, "status": "running", "progress": job.progress},
+            )
+        if job.status == BacktestJobStatus.FAILED:
+            return ApiResponse(success=False, error=job.error or "Unknown error")
+        if job.status == BacktestJobStatus.PENDING:
+            return ApiResponse(
+                success=True,
+                data={"run_id": run_id, "status": "pending"},
+            )
+
     return ApiResponse(success=False, error=f"Run {run_id} not found")
+
+
+# 保留旧端点别名（向后兼容）
+@router.get("/results", response_model=ApiResponse)
+async def list_results() -> ApiResponse:
+    """列出所有任务（兼容旧 API）。"""
+    return await list_jobs()
 
 
 @router.get("/history", response_model=ApiResponse)
@@ -234,37 +273,35 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
     """在后台线程执行回测。"""
     acquired = _backtest_semaphore.acquire(timeout=5)
     if not acquired:
-        with _results_lock:
-            _results_store[run_id] = {
-                "status": "failed",
-                "result": None,
-                "error": "另一个回测/优化任务正在执行，请稍后重试",
-            }
+        _fail_job(run_id, "另一个回测/优化任务正在执行，请稍后重试")
         return
 
+    _start_job(run_id)
     components: Optional[Dict[str, Any]] = None
     try:
-        from src.backtesting.models import BacktestConfig
         from src.backtesting.engine import BacktestEngine
+        from src.backtesting.models import BacktestConfig
 
         config = BacktestConfig(
             symbol=request.symbol,
             timeframe=request.timeframe,
-            start_time=datetime.fromisoformat(request.start_time).replace(tzinfo=timezone.utc),
-            end_time=datetime.fromisoformat(request.end_time).replace(tzinfo=timezone.utc),
+            start_time=datetime.fromisoformat(request.start_time).replace(
+                tzinfo=timezone.utc
+            ),
+            end_time=datetime.fromisoformat(request.end_time).replace(
+                tzinfo=timezone.utc
+            ),
             strategies=request.strategies,
             initial_balance=request.initial_balance,
             min_confidence=request.min_confidence,
             warmup_bars=request.warmup_bars,
             strategy_params=request.strategy_params,
-            # 过滤器配置
             enable_filters=request.enable_filters,
             filter_allowed_sessions=request.filter_allowed_sessions,
             filter_session_transition_cooldown=request.filter_session_transition_cooldown,
             filter_volatility_spike_multiplier=request.filter_volatility_spike_multiplier,
         )
 
-        # 构建组件（独立 pipeline + 独立 DB 连接池）
         components = _build_api_components(
             strategy_params=request.strategy_params or None,
         )
@@ -280,24 +317,12 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
         result = engine.run()
         result_dict = result.to_dict()
 
-        # 持久化到 DB
         _persist_result(result)
-
-        with _results_lock:
-            _results_store[run_id] = {
-                "status": "completed",
-                "result": result_dict,
-                "error": None,
-            }
+        _complete_job(run_id, result_dict)
 
     except Exception as e:
         logger.exception("Backtest %s failed", run_id)
-        with _results_lock:
-            _results_store[run_id] = {
-                "status": "failed",
-                "result": None,
-                "error": str(e),
-            }
+        _fail_job(run_id, str(e))
     finally:
         _cleanup_components(components)
         _backtest_semaphore.release()
@@ -307,24 +332,27 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
     """在后台线程执行参数优化。"""
     acquired = _backtest_semaphore.acquire(timeout=5)
     if not acquired:
-        with _results_lock:
-            _results_store[run_id] = {
-                "status": "failed",
-                "result": None,
-                "error": "另一个回测/优化任务正在执行，请稍后重试",
-            }
+        _fail_job(run_id, "另一个回测/优化任务正在执行，请稍后重试")
         return
 
+    _start_job(run_id)
     components: Optional[Dict[str, Any]] = None
     try:
         from src.backtesting.models import BacktestConfig, ParameterSpace
-        from src.backtesting.optimizer import ParameterOptimizer, build_signal_module_with_overrides
+        from src.backtesting.optimizer import (
+            ParameterOptimizer,
+            build_signal_module_with_overrides,
+        )
 
         config = BacktestConfig(
             symbol=request.symbol,
             timeframe=request.timeframe,
-            start_time=datetime.fromisoformat(request.start_time).replace(tzinfo=timezone.utc),
-            end_time=datetime.fromisoformat(request.end_time).replace(tzinfo=timezone.utc),
+            start_time=datetime.fromisoformat(request.start_time).replace(
+                tzinfo=timezone.utc
+            ),
+            end_time=datetime.fromisoformat(request.end_time).replace(
+                tzinfo=timezone.utc
+            ),
             strategies=request.strategies,
             initial_balance=request.initial_balance,
             min_confidence=request.min_confidence,
@@ -355,31 +383,63 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
         )
 
         results = optimizer.run()
-
-        # 持久化所有优化结果
         for r in results:
             _persist_result(r)
 
-        results_dicts = [r.to_dict() for r in results[:50]]  # 最多返回 50 组
-
-        with _results_lock:
-            _results_store[run_id] = {
-                "status": "completed",
-                "result": results_dicts,
-                "error": None,
-            }
+        results_dicts = [r.to_dict() for r in results[:50]]
+        _complete_job(run_id, results_dicts)
 
     except Exception as e:
         logger.exception("Optimization %s failed", run_id)
-        with _results_lock:
-            _results_store[run_id] = {
-                "status": "failed",
-                "result": None,
-                "error": str(e),
-            }
+        _fail_job(run_id, str(e))
     finally:
         _cleanup_components(components)
         _backtest_semaphore.release()
+
+
+# ── Job 状态管理 ─────────────────────────────────────────────────
+
+
+def _register_job(job: BacktestJob) -> None:
+    """注册新任务到内存 store。"""
+    with _job_lock:
+        _job_store[job.run_id] = job
+
+
+def _start_job(run_id: str) -> None:
+    """标记任务开始执行。"""
+    with _job_lock:
+        job = _job_store.get(run_id)
+        if job is not None:
+            job.status = BacktestJobStatus.RUNNING
+            job.started_at = datetime.now(timezone.utc)
+
+
+def _complete_job(run_id: str, result: Any) -> None:
+    """标记任务完成并缓存结果。"""
+    now = datetime.now(timezone.utc)
+    with _job_lock:
+        job = _job_store.get(run_id)
+        if job is not None:
+            job.status = BacktestJobStatus.COMPLETED
+            job.completed_at = now
+            job.progress = 1.0
+    with _result_cache_lock:
+        _result_cache[run_id] = result
+
+
+def _fail_job(run_id: str, error: str) -> None:
+    """标记任务失败。"""
+    now = datetime.now(timezone.utc)
+    with _job_lock:
+        job = _job_store.get(run_id)
+        if job is not None:
+            job.status = BacktestJobStatus.FAILED
+            job.completed_at = now
+            job.error = error
+
+
+# ── 组件管理 ──────────────────────────────────────────────────────
 
 
 def _cleanup_components(components: Optional[Dict[str, Any]]) -> None:
@@ -407,7 +467,9 @@ def _persist_result(result: Any) -> None:
         if repo is not None:
             repo.save_result(result)
     except Exception:
-        logger.warning("Failed to persist backtest result %s", result.run_id, exc_info=True)
+        logger.warning(
+            "Failed to persist backtest result %s", result.run_id, exc_info=True
+        )
 
 
 _cached_backtest_repo: Optional[Any] = None

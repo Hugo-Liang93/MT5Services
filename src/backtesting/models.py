@@ -5,7 +5,53 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+
+
+class BacktestJobStatus(str, Enum):
+    """回测任务生命周期状态。"""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class BacktestJob:
+    """回测任务元数据（submit/query job 模式的核心数据结构）。
+
+    提交时立即持久化到 DB，运行过程中更新状态。
+    API 重启后仍可查询历史任务状态。
+    """
+
+    run_id: str
+    job_type: str  # "backtest" | "optimization"
+    status: BacktestJobStatus
+    submitted_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
+    # 进度透出（0.0 ~ 1.0）
+    progress: float = 0.0
+    # 配置摘要（用于 list 展示）
+    config_summary: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "job_type": self.job_type,
+            "status": self.status.value,
+            "submitted_at": self.submitted_at.isoformat(),
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": (
+                self.completed_at.isoformat() if self.completed_at else None
+            ),
+            "error": self.error,
+            "progress": round(self.progress, 3),
+            "config_summary": self.config_summary,
+        }
 
 
 @dataclass(frozen=True)
@@ -33,9 +79,7 @@ class BacktestConfig:
     slippage_points: float = 0.0
     # 参数覆盖（signal.ini [strategy_params] 格式）
     strategy_params: Dict[str, Any] = field(default_factory=dict)
-    regime_affinity_overrides: Dict[str, Dict[str, float]] = field(
-        default_factory=dict
-    )
+    regime_affinity_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
     # 指标热身 bar 数量
     warmup_bars: int = 200
     # 合约大小（XAUUSD = 100 oz/lot）
@@ -188,12 +232,18 @@ class BacktestResult:
         result["completed_at"] = self.completed_at.isoformat()
         result["config"]["start_time"] = self.config.start_time.isoformat()
         result["config"]["end_time"] = self.config.end_time.isoformat()
-        result["equity_curve"] = [
-            (t.isoformat(), v) for t, v in self.equity_curve
-        ]
+        result["equity_curve"] = [(t.isoformat(), v) for t, v in self.equity_curve]
         for trade in result["trades"]:
-            trade["entry_time"] = trade["entry_time"].isoformat() if isinstance(trade["entry_time"], datetime) else trade["entry_time"]
-            trade["exit_time"] = trade["exit_time"].isoformat() if isinstance(trade["exit_time"], datetime) else trade["exit_time"]
+            trade["entry_time"] = (
+                trade["entry_time"].isoformat()
+                if isinstance(trade["entry_time"], datetime)
+                else trade["entry_time"]
+            )
+            trade["exit_time"] = (
+                trade["exit_time"].isoformat()
+                if isinstance(trade["exit_time"], datetime)
+                else trade["exit_time"]
+            )
         # 信号评估记录 datetime 转字符串
         if result.get("signal_evaluations"):
             for ev in result["signal_evaluations"]:

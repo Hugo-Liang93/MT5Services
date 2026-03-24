@@ -24,6 +24,20 @@ from src.config.indicator_config import (
 from src.market import MarketDataService
 from src.utils.event_store import ClaimedEvent, get_event_store
 
+from .bar_loader import (
+    get_max_lookback as _get_max_lookback_fn,
+    get_min_required_history as _get_min_required_history_fn,
+    indicator_history_requirement as _indicator_history_requirement_fn,
+    indicator_requirements as _indicator_requirements_fn,
+    reconcile_min_bars as _reconcile_min_bars_fn,
+    resolve_indicator_names as _resolve_indicator_names_fn,
+    select_indicator_names_for_history as _select_indicator_names_fn,
+)
+from .delta_metrics import (
+    apply_delta_metrics as _apply_delta_metrics_fn,
+    get_delta_config as _get_delta_config_fn,
+    merge_snapshot_metrics_into_results as _merge_snapshot_metrics_fn,
+)
 from .bar_event_handler import (
     process_closed_bar_event,
     process_closed_bar_events_batch,
@@ -322,7 +336,9 @@ class UnifiedIndicatorManager:
         while not self._stop.is_set():
             durable_events = self.event_store.claim_next_events(limit=EVENT_BATCH_SIZE)
             if durable_events:
-                self._process_closed_bar_events_batch(durable_events, durable_event=True)
+                self._process_closed_bar_events_batch(
+                    durable_events, durable_event=True
+                )
                 continue
 
             now = time.monotonic()
@@ -349,7 +365,9 @@ class UnifiedIndicatorManager:
                 else:
                     if not _warmup_done:
                         _warmup_done = True  # deadline passed without data
-                        logger.info("Indicator warmup: deadline reached, proceeding without initial fill")
+                        logger.info(
+                            "Indicator warmup: deadline reached, proceeding without initial fill"
+                        )
                     next_reconcile_at = time.monotonic() + reconcile_interval
                 continue
 
@@ -482,7 +500,9 @@ class UnifiedIndicatorManager:
                     len(batch),
                 )
 
-    def _publish_closed_bar_event(self, symbol: str, timeframe: str, bar_time: datetime) -> None:
+    def _publish_closed_bar_event(
+        self, symbol: str, timeframe: str, bar_time: datetime
+    ) -> None:
         """Non-blocking: enqueue for async SQLite write by _event_writer_loop."""
         try:
             self._event_write_queue.put_nowait((symbol, timeframe, bar_time))
@@ -490,7 +510,9 @@ class UnifiedIndicatorManager:
             logger.warning(
                 "Event write queue full — bar close event dropped for %s/%s at %s; "
                 "reconcile will recover it.",
-                symbol, timeframe, bar_time,
+                symbol,
+                timeframe,
+                bar_time,
             )
 
     def _load_bars(
@@ -521,41 +543,26 @@ class UnifiedIndicatorManager:
         self,
         indicator_names: Optional[List[str]] = None,
     ) -> List[str]:
-        if indicator_names is not None:
-            return indicator_names
-        return [config.name for config in self.config.indicators if config.enabled]
+        configs = getattr(getattr(self, "config", None), "indicators", None) or []
+        return _resolve_indicator_names_fn(configs, indicator_names)
 
     @staticmethod
     def _indicator_history_requirement(config: IndicatorConfig) -> int:
-        params = getattr(config, "params", {}) or {}
-        return max(
-            *(int(params.get(key, 0) or 0) for key in (
-                "min_bars",
-                "period",
-                "slow",
-                "signal",
-                "fast",
-                "atr_period",
-                "k_period",
-                "d_period",
-                "lookback",
-            )),
-            2,
-        )
+        return _indicator_history_requirement_fn(config)
 
     def _indicator_requirements(
         self,
         indicator_names: Optional[List[str]] = None,
     ) -> Dict[str, int]:
         selected_names = set(self._resolve_indicator_names(indicator_names))
-        config_items = getattr(getattr(self, "config", None), "indicators", None)
-        if config_items is None:
+        configs = getattr(getattr(self, "config", None), "indicators", None)
+        if configs is None:
             return {name: 2 for name in selected_names}
         requirements: Dict[str, int] = {}
-        for config in config_items:
+        for config in configs:
             if not config.enabled or config.name not in selected_names:
                 continue
-            requirements[config.name] = self._indicator_history_requirement(config)
+            requirements[config.name] = _indicator_history_requirement_fn(config)
         return requirements
 
     def _select_indicator_names_for_history(
@@ -563,11 +570,11 @@ class UnifiedIndicatorManager:
         available_bars: int,
         indicator_names: Optional[List[str]] = None,
     ) -> List[str]:
-        requirements = self._indicator_requirements(indicator_names)
+        reqs = self._indicator_requirements(indicator_names)
         return [
             name
             for name in self._resolve_indicator_names(indicator_names)
-            if requirements.get(name, 2) <= available_bars
+            if reqs.get(name, 2) <= available_bars
         ]
 
     def _mark_event_skipped(
@@ -639,7 +646,9 @@ class UnifiedIndicatorManager:
     ) -> List[Any]:
         lookback = self._get_max_lookback()
         closed_limit = max(lookback - 1, 1)
-        closed_bars = self.market_service.get_ohlc(symbol, timeframe, count=closed_limit)
+        closed_bars = self.market_service.get_ohlc(
+            symbol, timeframe, count=closed_limit
+        )
         preview_bars = [item for item in closed_bars if item.time != bar.time]
         preview_bars.append(bar)
         return preview_bars[-lookback:]
@@ -652,14 +661,7 @@ class UnifiedIndicatorManager:
 
     def _indicator_delta_config(self) -> Dict[str, tuple[int, ...]]:
         config_items = getattr(getattr(self, "config", None), "indicators", None) or []
-        mapping: Dict[str, tuple[int, ...]] = {}
-        for config in config_items:
-            if not config.enabled or not getattr(config, "delta_bars", None):
-                continue
-            mapping[config.name] = tuple(
-                sorted({int(item) for item in config.delta_bars if int(item) > 0})
-            )
-        return mapping
+        return _get_delta_config_fn(config_items)
 
     def _apply_delta_metrics(
         self,
@@ -670,73 +672,29 @@ class UnifiedIndicatorManager:
         bar_time: Optional[datetime] = None,
     ) -> Dict[str, Dict[str, float]]:
         delta_config = self._indicator_delta_config()
-        if not delta_config or not indicators:
-            return indicators
 
-        max_delta = max((max(values) for values in delta_config.values()), default=0)
-        if max_delta <= 0:
-            return indicators
-
-        try:
-            if bar_time is not None and hasattr(self.market_service, "get_ohlc_window"):
-                history = list(
+        def _load_history(
+            sym: str,
+            tf: str,
+            bt: Optional[datetime],
+            count: int,
+        ) -> List[Any]:
+            if bt is not None and hasattr(self.market_service, "get_ohlc_window"):
+                return list(
                     self.market_service.get_ohlc_window(
-                        symbol,
-                        timeframe,
-                        end_time=bar_time,
-                        limit=max_delta + 1,
+                        sym, tf, end_time=bt, limit=count
                     )
                 )
-            else:
-                history = list(
-                    self.market_service.get_ohlc(
-                        symbol,
-                        timeframe,
-                        count=max_delta + 1,
-                    )
-                )
-        except Exception:
-            logger.debug(
-                "Failed to load historical bars for delta metrics: %s/%s",
-                symbol,
-                timeframe,
-                exc_info=True,
-            )
-            return indicators
+            return list(self.market_service.get_ohlc(sym, tf, count=count))
 
-        if not history:
-            return indicators
-
-        current_in_history = bool(bar_time is not None and history[-1].time == bar_time)
-        offset = 1 if current_in_history else 0
-
-        for indicator_name, payload in indicators.items():
-            delta_bars = delta_config.get(indicator_name)
-            if not delta_bars or not isinstance(payload, dict):
-                continue
-            for delta in delta_bars:
-                ref_index = -(delta + offset)
-                if len(history) < delta + offset:
-                    continue
-                try:
-                    reference_bar = history[ref_index]
-                except IndexError:
-                    continue
-                reference_payload = getattr(reference_bar, "indicators", None) or {}
-                reference_indicator = reference_payload.get(indicator_name)
-                if not isinstance(reference_indicator, dict):
-                    continue
-                for metric_name, current_value in list(payload.items()):
-                    if not isinstance(current_value, (int, float)):
-                        continue
-                    previous_value = reference_indicator.get(metric_name)
-                    if not isinstance(previous_value, (int, float)):
-                        continue
-                    payload[f"{metric_name}_d{delta}"] = round(
-                        float(current_value) - float(previous_value),
-                        6,
-                    )
-        return indicators
+        return _apply_delta_metrics_fn(
+            symbol,
+            timeframe,
+            indicators,
+            delta_config,
+            _load_history,
+            bar_time=bar_time,
+        )
 
     def _merge_snapshot_metrics_into_results(
         self,
@@ -744,24 +702,13 @@ class UnifiedIndicatorManager:
         timeframe: str,
         indicators: Dict[str, Dict[str, float]],
     ) -> None:
-        prefix = f"{symbol}_{timeframe}_"
-        results = getattr(self, "_results", None)
-        if not isinstance(results, dict) or not results:
-            return
-
-        def merge_into_results() -> None:
-            for indicator_name, payload in indicators.items():
-                result = results.get(f"{prefix}{indicator_name}")
-                if result is None or not isinstance(result.value, dict):
-                    continue
-                result.value.update(payload)
-
-        results_lock = getattr(self, "_results_lock", None)
-        if results_lock is None:
-            merge_into_results()
-            return
-        with results_lock:
-            merge_into_results()
+        _merge_snapshot_metrics_fn(
+            symbol,
+            timeframe,
+            indicators,
+            getattr(self, "_results", None),
+            getattr(self, "_results_lock", None),
+        )
 
     def _normalize_persisted_indicator_snapshot(
         self,
@@ -794,13 +741,14 @@ class UnifiedIndicatorManager:
         indicators: Dict[str, Dict[str, float]],
     ) -> bool:
         cache_key = f"{symbol}_{timeframe}"
-        normalized = {
-            name: dict(payload)
-            for name, payload in indicators.items()
-        }
+        normalized = {name: dict(payload) for name, payload in indicators.items()}
         with self._results_lock:
             current = self._last_preview_snapshot.get(cache_key)
-            if current is not None and current[0] == bar_time and current[1] == normalized:
+            if (
+                current is not None
+                and current[0] == bar_time
+                and current[1] == normalized
+            ):
                 return False
             self._last_preview_snapshot.pop(cache_key, None)
             self._last_preview_snapshot[cache_key] = (bar_time, normalized)
@@ -819,7 +767,9 @@ class UnifiedIndicatorManager:
         bar_time: Optional[datetime] = None,
     ) -> Dict[str, Dict[str, float]]:
         effective_bar_time = bar_time or (bars[-1].time if bars else None)
-        self._store_results(symbol, timeframe, effective_bar_time, results, compute_time_ms)
+        self._store_results(
+            symbol, timeframe, effective_bar_time, results, compute_time_ms
+        )
 
         if not bars or effective_bar_time is None:
             return {}
@@ -888,10 +838,7 @@ class UnifiedIndicatorManager:
         enriched = self._apply_delta_metrics(
             symbol,
             timeframe,
-            {
-                name: dict(payload)
-                for name, payload in indicators.items()
-            },
+            {name: dict(payload) for name, payload in indicators.items()},
             bar_time=bar_time,
         )
         return publish_intrabar_snapshot(self, symbol, timeframe, bar_time, enriched)
@@ -985,9 +932,7 @@ class UnifiedIndicatorManager:
         由 SignalModule.intrabar_required_indicators() 在启动时自动推导
         （策略的 preferred_scopes + required_indicators 的并集），注入到这里。
         """
-        enabled = frozenset(
-            cfg.name for cfg in self.config.indicators if cfg.enabled
-        )
+        enabled = frozenset(cfg.name for cfg in self.config.indicators if cfg.enabled)
         self._intrabar_eligible_cache = names & enabled
         logger.info(
             "Intrabar eligible indicators (auto-derived from strategy scopes): %s",
@@ -1037,13 +982,16 @@ class UnifiedIndicatorManager:
         self._write_back_results(symbol, timeframe, bars, results, compute_time_ms)
 
     def _get_max_lookback(self) -> int:
-        return max(self._indicator_requirements().values(), default=2)
+        configs = getattr(getattr(self, "config", None), "indicators", None) or []
+        return _get_max_lookback_fn(configs)
 
     def _get_min_required_history(self) -> int:
-        return max(min(self._indicator_requirements().values(), default=2), 2)
+        configs = getattr(getattr(self, "config", None), "indicators", None) or []
+        return _get_min_required_history_fn(configs)
 
     def _reconcile_min_bars(self) -> int:
-        return min(max(self._get_max_lookback(), 2), 100)
+        configs = getattr(getattr(self, "config", None), "indicators", None) or []
+        return _reconcile_min_bars_fn(configs)
 
     def _is_reconcile_target_ready(self, symbol: str, timeframe: str) -> bool:
         return self.market_service.has_cached_ohlc(
@@ -1125,7 +1073,9 @@ class UnifiedIndicatorManager:
             indicator_names=indicator_names,
         )
         if not bars:
-            logger.warning("Insufficient data for computation: %s/%s", symbol, timeframe)
+            logger.warning(
+                "Insufficient data for computation: %s/%s", symbol, timeframe
+            )
             return {}
         self._write_back_results(symbol, timeframe, bars, results, compute_time_ms)
         return results
@@ -1155,7 +1105,9 @@ class UnifiedIndicatorManager:
 
     def add_snapshot_listener(
         self,
-        listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
+        listener: Callable[
+            [str, str, datetime, Dict[str, Dict[str, float]], str], None
+        ],
     ) -> None:
         with self._snapshot_listeners_lock:
             if not hasattr(self, "_snapshot_listeners"):
@@ -1164,20 +1116,26 @@ class UnifiedIndicatorManager:
 
     def remove_snapshot_listener(
         self,
-        listener: Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None],
+        listener: Callable[
+            [str, str, datetime, Dict[str, Dict[str, float]], str], None
+        ],
     ) -> None:
         with self._snapshot_listeners_lock:
             if not hasattr(self, "_snapshot_listeners"):
                 return
             self._snapshot_listeners = [
-                item for item in self._snapshot_listeners if not same_listener_reference(item, listener)
+                item
+                for item in self._snapshot_listeners
+                if not same_listener_reference(item, listener)
             ]
 
     def set_priority_indicator_names(self, indicator_names: List[str]) -> None:
         group = self._normalize_indicator_group(indicator_names)
         self._priority_indicator_groups = (group,) if group else ()
 
-    def set_priority_indicator_groups(self, indicator_groups: List[List[str] | tuple[str, ...]]) -> None:
+    def set_priority_indicator_groups(
+        self, indicator_groups: List[List[str] | tuple[str, ...]]
+    ) -> None:
         ordered: list[tuple[str, ...]] = []
         seen: set[tuple[str, ...]] = set()
         for indicator_group in indicator_groups:
@@ -1242,7 +1200,9 @@ class UnifiedIndicatorManager:
                 "total_results": len(self._results),
                 "results_max": self._results_max,
                 "symbols": len({result.symbol for result in self._results.values()}),
-                "timeframes": len({result.timeframe for result in self._results.values()}),
+                "timeframes": len(
+                    {result.timeframe for result in self._results.values()}
+                ),
                 "indicators": len({result.name for result in self._results.values()}),
             }
         config_stats = {
@@ -1256,14 +1216,18 @@ class UnifiedIndicatorManager:
         }
         return {
             "mode": "event_driven",
-            "event_loop_running": bool(self._event_thread and self._event_thread.is_alive()),
+            "event_loop_running": bool(
+                self._event_thread and self._event_thread.is_alive()
+            ),
             "last_reconcile_at": (
                 self._last_reconcile_at.isoformat() if self._last_reconcile_at else None
             ),
             "total_computations": pipeline_stats.get("total_computations", 0),
             "failed_computations": pipeline_stats.get("failed_computations", 0),
             "cached_computations": pipeline_stats.get("cached_computations", 0),
-            "incremental_computations": pipeline_stats.get("incremental_computations", 0),
+            "incremental_computations": pipeline_stats.get(
+                "incremental_computations", 0
+            ),
             "parallel_computations": pipeline_stats.get("parallel_computations", 0),
             "cache_hits": cache_stats.get("hits", 0),
             "cache_misses": cache_stats.get("misses", 0),
@@ -1287,7 +1251,11 @@ class UnifiedIndicatorManager:
     def get_snapshot(self, symbol: str, timeframe: str) -> Optional[IndicatorSnapshot]:
         prefix = f"{symbol}_{timeframe}_"
         with self._results_lock:
-            matches = [result for key, result in self._results.items() if key.startswith(prefix)]
+            matches = [
+                result
+                for key, result in self._results.items()
+                if key.startswith(prefix)
+            ]
         if not matches:
             persisted = self._normalize_persisted_indicator_snapshot(
                 self.market_service.latest_indicators(symbol, timeframe)
@@ -1343,7 +1311,9 @@ def get_global_unified_manager(
     global _global_unified_manager
     if _global_unified_manager is None:
         if market_service is None:
-            raise ValueError("market_service is required on the first manager initialization")
+            raise ValueError(
+                "market_service is required on the first manager initialization"
+            )
         _global_unified_manager = UnifiedIndicatorManager(
             market_service=market_service,
             config_file=config_file,

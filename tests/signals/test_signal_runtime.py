@@ -518,11 +518,15 @@ def test_signal_runtime_fuses_intrabar_and_confirmed_votes_per_strategy() -> Non
     )
     bar_time = datetime.now(timezone.utc)
 
-    first = runtime._fuse_vote_decisions(
-        "XAUUSD", "M5", bar_time, "intrabar", [intrabar_decision]
+    from src.signals.orchestration.vote_processor import fuse_vote_decisions
+
+    first = fuse_vote_decisions(
+        "XAUUSD", "M5", bar_time, "intrabar", [intrabar_decision],
+        runtime._vote_fusion_cache,
     )
-    second = runtime._fuse_vote_decisions(
-        "XAUUSD", "M5", bar_time, "confirmed", [confirmed_decision]
+    second = fuse_vote_decisions(
+        "XAUUSD", "M5", bar_time, "confirmed", [confirmed_decision],
+        runtime._vote_fusion_cache,
     )
 
     assert len(first) == 1

@@ -25,7 +25,10 @@ from .strategies.breakout import (
     SqueezeReleaseFollow,
 )
 from .strategies.composite import CompositeSignalStrategy
-from .strategies.composite import build_breakout_double_confirm, build_trend_triple_confirm
+from .strategies.composite import (
+    build_breakout_double_confirm,
+    build_trend_triple_confirm,
+)
 from .strategies.mean_reversion import (
     CciReversionStrategy,
     RsiReversionStrategy,
@@ -70,7 +73,9 @@ class SignalModule:
         self._calibrator: Optional[ConfidenceCalibrator] = calibrator
         # 日内绩效追踪器：实时反馈层，基于当前 session 的策略表现动态调整置信度。
         # None = 不追踪（新部署或未配置时的默认状态）。
-        self._performance_tracker: Optional[StrategyPerformanceTracker] = performance_tracker
+        self._performance_tracker: Optional[StrategyPerformanceTracker] = (
+            performance_tracker
+        )
         self._soft_regime_enabled = bool(soft_regime_enabled)
         self._confidence_floor = max(0.0, float(confidence_floor))
         self._diagnostics_analyzer: DiagnosticsEngine = (
@@ -130,7 +135,7 @@ class SignalModule:
         if preferred_scopes is None:
             raise AttributeError(
                 f"Strategy '{name}' must define 'preferred_scopes' "
-                f"(e.g. (\"confirmed\",) or (\"intrabar\", \"confirmed\"))."
+                f'(e.g. ("confirmed",) or ("intrabar", "confirmed")).'
             )
         regime_affinity = getattr(strategy, "regime_affinity", None)
         if regime_affinity is None:
@@ -145,7 +150,9 @@ class SignalModule:
         category = getattr(strategy, "category", None)
         if category is not None:
             valid_values = {c.value for c in StrategyCategory}
-            cat_str = str(category.value if isinstance(category, StrategyCategory) else category)
+            cat_str = str(
+                category.value if isinstance(category, StrategyCategory) else category
+            )
             if cat_str not in valid_values:
                 raise AttributeError(
                     f"Strategy '{name}' has invalid category '{cat_str}'. "
@@ -175,6 +182,49 @@ class SignalModule:
             for ind in getattr(strategy, "required_indicators", ()):
                 result.add(str(ind))
         return frozenset(result)
+
+    def apply_param_overrides(
+        self,
+        strategy_params: Dict[str, Any],
+        regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> None:
+        """Apply strategy parameter and regime affinity overrides to registered strategies.
+
+        This is the public API for backtesting/optimization to override strategy internals
+        without importing API factory internals or creating fake config objects.
+
+        Args:
+            strategy_params: ``{"supertrend__adx_threshold": 23.0}``
+                → sets ``strategy._adx_threshold = 23.0``
+            regime_affinity_overrides: ``{"supertrend": {"trending": 1.0}}``
+                → overrides ``strategy.regime_affinity[RegimeType.TRENDING] = 1.0``
+        """
+        _regime_map = {
+            "trending": RegimeType.TRENDING,
+            "ranging": RegimeType.RANGING,
+            "breakout": RegimeType.BREAKOUT,
+            "uncertain": RegimeType.UNCERTAIN,
+        }
+        for compound_key, value in strategy_params.items():
+            parts = compound_key.split("__", 1)
+            if len(parts) != 2:
+                continue
+            strategy_name, param_name = parts
+            strategy = self._strategies.get(strategy_name)
+            if strategy is None:
+                continue
+            attr_name = f"_{param_name}"
+            if hasattr(strategy, attr_name):
+                setattr(strategy, attr_name, value)
+        if regime_affinity_overrides:
+            for strategy_name, affinity_dict in regime_affinity_overrides.items():
+                strategy = self._strategies.get(strategy_name)
+                if strategy is None:
+                    continue
+                for regime_key, weight in affinity_dict.items():
+                    regime_type = _regime_map.get(regime_key.lower())
+                    if regime_type is not None and hasattr(strategy, "regime_affinity"):
+                        strategy.regime_affinity[regime_type] = weight
 
     def list_strategies(self) -> list[str]:
         return sorted(self._strategies.keys())
@@ -220,7 +270,6 @@ class SignalModule:
             raise ValueError(f"unsupported signal strategy: {strategy}")
         scopes = getattr(strategy_impl, "preferred_scopes", ("intrabar", "confirmed"))
         return tuple(str(s) for s in scopes)
-
 
     def all_required_indicators(self) -> list[str]:
         ordered: list[str] = []
@@ -314,7 +363,8 @@ class SignalModule:
         perf_multiplier = 1.0
         if self._performance_tracker is not None and decision.action in ("buy", "sell"):
             perf_multiplier = self._performance_tracker.get_multiplier(
-                decision.strategy, regime=regime.value,
+                decision.strategy,
+                regime=regime.value,
             )
         post_performance = post_affinity * perf_multiplier
         # ── 置信度校准（历史胜率反馈层）────────────────────────────────
@@ -349,10 +399,7 @@ class SignalModule:
                 "regime_affinity": affinity,
                 "regime_source": "soft" if soft_regime is not None else "hard",
                 "regime_probabilities": (
-                    {
-                        item.value: soft_regime.probability(item)
-                        for item in RegimeType
-                    }
+                    {item.value: soft_regime.probability(item) for item in RegimeType}
                     if soft_regime is not None
                     else {regime.value: 1.0}
                 ),
@@ -676,7 +723,9 @@ class SignalModule:
         hours: int = 168,
         symbol: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        if self.repository is None or not hasattr(self.repository, "fetch_expectancy_stats"):
+        if self.repository is None or not hasattr(
+            self.repository, "fetch_expectancy_stats"
+        ):
             return []
         return self.repository.fetch_expectancy_stats(hours=hours, symbol=symbol)
 
@@ -693,7 +742,9 @@ class SignalModule:
 
         expectancy_by_strategy: dict[str, list[dict[str, Any]]] = {}
         for row in expectancy_rows:
-            expectancy_by_strategy.setdefault(str(row.get("strategy") or "unknown"), []).append(row)
+            expectancy_by_strategy.setdefault(
+                str(row.get("strategy") or "unknown"), []
+            ).append(row)
 
         strategy_breakdown = report.get("strategy_breakdown")
         if isinstance(strategy_breakdown, list):
@@ -712,9 +763,7 @@ class SignalModule:
                 item["payoff_ratio"] = best.get("payoff_ratio")
 
         negative_rows = [
-            row
-            for row in expectancy_rows
-            if float(row.get("expectancy") or 0.0) < 0.0
+            row for row in expectancy_rows if float(row.get("expectancy") or 0.0) < 0.0
         ]
         recommendations = report.setdefault("recommendations", [])
         if negative_rows:
