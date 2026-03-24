@@ -173,11 +173,11 @@ src/
 | `db.py` | DB 连接管理 |
 | `validator.py` | 数据校验 |
 | `schema/` | 各通道数据表 Schema |
-| `repositories/` | 按领域分离的数据仓储（trade/signal/economic/market/runtime） |
+| `repositories/` | 按领域分离的数据仓储（trade/signal/economic/market/runtime/backtest） |
 
 ---
 
-### 2.9 `src/backtesting/` — 回测
+### 2.9 `src/backtesting/` — 回测与参数优化
 
 | 子模块 | 职责 | 与实盘的关系 |
 |--------|------|------------|
@@ -187,9 +187,22 @@ src/
 | `portfolio.py` | 模拟持仓/SL/TP/资金曲线 | 复用 position_rules 纯函数 |
 | `optimizer.py` | 网格/随机参数搜索 | 复用 CachedDataLoader + 预计算指标 |
 | `walk_forward.py` | 前推验证 IS/OOS | 复用 optimizer + engine |
+| `recommendation.py` | 参数推荐引擎 + ConfigApplicator | 写入 signal.local.ini + 热更新 SignalModule |
 | `filters.py` | 过滤器模拟 | **直接复用** SignalFilterChain |
-| `api.py` | HTTP API（run/optimize/results） | 在进程内异步执行 |
+| `api.py` | HTTP API（run/optimize/walk-forward/recommendations） | 在进程内异步执行 |
 | `metrics.py` | Sharpe/Sortino/Calmar 计算 | 独立 |
+| `models.py` | BacktestResult/Recommendation/ParamChange | 独立 |
+
+**参数推荐工作流**：
+```
+Walk-Forward 验证 → WalkForwardResult（内存缓存）
+    → /recommendations/generate → Recommendation（PENDING）
+    → /recommendations/{id}/approve → APPROVED（人工审核）
+    → /recommendations/{id}/apply → ConfigApplicator → signal.local.ini + 热更新
+    → /recommendations/{id}/rollback → 恢复备份 + 热更新
+```
+
+**安全约束**：overfitting_ratio > 1.5 或 consistency_rate < 50% 时拒绝生成；单参数变更裁剪 ±30%
 
 ---
 
@@ -221,6 +234,8 @@ W = 写入, R = 读取, RW = 读写
 | **回测 API** | `/v1/backtest/run` | 否 | `build_backtest_components()` 独立创建 |
 | **回测 CLI** | `python -m src.backtesting` | 否 | 同上 |
 | **参数优化** | `/v1/backtest/optimize` | 否 | 每组参数独立创建 SignalModule |
+| **Walk-Forward** | `/v1/backtest/walk-forward` | 否 | optimizer + engine 滚动窗口 |
+| **参数推荐应用** | `/v1/backtest/recommendations/{id}/apply` | 部分 | 写 signal.local.ini + 可选热更新 SignalModule |
 | **单元测试** | pytest | 否 | Mock 对象 |
 | **集成测试** | pytest | 部分 | 混合 mock + 真实组件 |
 
