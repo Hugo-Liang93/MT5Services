@@ -117,7 +117,12 @@ class PipelineEventBus:
         timeframe: str,
         scope: str,
         bar_time: datetime,
+        *,
+        ohlc: Optional[Dict[str, Any]] = None,
     ) -> None:
+        payload: Dict[str, Any] = {"bar_time": bar_time.isoformat()}
+        if ohlc:
+            payload["ohlc"] = ohlc
         self.emit(
             PipelineEvent(
                 type=PIPELINE_BAR_CLOSED,
@@ -126,7 +131,7 @@ class PipelineEventBus:
                 timeframe=timeframe,
                 scope=scope,
                 ts=datetime.now(timezone.utc).isoformat(),
-                payload={"bar_time": bar_time.isoformat()},
+                payload=payload,
             )
         )
 
@@ -138,7 +143,15 @@ class PipelineEventBus:
         scope: str,
         compute_time_ms: float,
         indicator_count: int,
+        *,
+        indicator_names: Optional[List[str]] = None,
     ) -> None:
+        payload: Dict[str, Any] = {
+            "compute_time_ms": round(compute_time_ms, 2),
+            "indicator_count": indicator_count,
+        }
+        if indicator_names:
+            payload["indicator_names"] = indicator_names
         self.emit(
             PipelineEvent(
                 type=PIPELINE_INDICATOR_COMPUTED,
@@ -147,10 +160,7 @@ class PipelineEventBus:
                 timeframe=timeframe,
                 scope=scope,
                 ts=datetime.now(timezone.utc).isoformat(),
-                payload={
-                    "compute_time_ms": round(compute_time_ms, 2),
-                    "indicator_count": indicator_count,
-                },
+                payload=payload,
             )
         )
 
@@ -162,7 +172,15 @@ class PipelineEventBus:
         scope: str,
         indicator_count: int,
         bar_time: datetime,
+        *,
+        indicators: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> None:
+        payload: Dict[str, Any] = {
+            "indicator_count": indicator_count,
+            "bar_time": bar_time.isoformat(),
+        }
+        if indicators is not None:
+            payload["indicators"] = indicators
         self.emit(
             PipelineEvent(
                 type=PIPELINE_SNAPSHOT_PUBLISHED,
@@ -171,10 +189,7 @@ class PipelineEventBus:
                 timeframe=timeframe,
                 scope=scope,
                 ts=datetime.now(timezone.utc).isoformat(),
-                payload={
-                    "indicator_count": indicator_count,
-                    "bar_time": bar_time.isoformat(),
-                },
+                payload=payload,
             )
         )
 

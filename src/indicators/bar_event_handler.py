@@ -14,6 +14,20 @@ def _get_pipeline_bus(manager):  # type: ignore[no-untyped-def]
     """Return the PipelineEventBus attached to *manager*, or None."""
     return getattr(manager, "_pipeline_event_bus", None)
 
+
+def _extract_ohlc(bar) -> Optional[Dict]:  # type: ignore[no-untyped-def, type-arg]
+    """Safely extract OHLC data from a bar object for pipeline tracing."""
+    try:
+        return {
+            "open": float(bar.open),
+            "high": float(bar.high),
+            "low": float(bar.low),
+            "close": float(bar.close),
+            "volume": float(getattr(bar, "volume", 0)),
+        }
+    except (AttributeError, TypeError):
+        return None
+
 def process_closed_bar_events_batch(
     manager,
     events: List[ClaimedEvent],
@@ -78,10 +92,13 @@ def process_symbol_timeframe_batch(
         bar_time = event.bar_time
         trace_id = uuid4().hex
         try:
-            # Broadcast: bar closed event received
+            # Broadcast: bar closed event received (with OHLC if available)
+            end_idx = bar_index.get(bar_time)
             if pipeline_bus is not None:
+                ohlc = _extract_ohlc(bars[end_idx]) if end_idx is not None else None
                 pipeline_bus.emit_bar_closed(
                     trace_id, symbol, timeframe, "confirmed", bar_time,
+                    ohlc=ohlc,
                 )
 
             end_idx = bar_index.get(bar_time)
@@ -132,6 +149,7 @@ def process_symbol_timeframe_batch(
                 pipeline_bus.emit_indicator_computed(
                     trace_id, symbol, timeframe, "confirmed",
                     compute_time_ms, len(results),
+                    indicator_names=sorted(results.keys()),
                 )
 
             # Attach trace_id so downstream snapshot_publisher can forward it
@@ -185,10 +203,14 @@ def process_closed_bar_event(
     pipeline_bus = _get_pipeline_bus(manager)
     trace_id = uuid4().hex
     try:
-        if pipeline_bus is not None:
-            pipeline_bus.emit_bar_closed(trace_id, symbol, timeframe, "confirmed", bar_time)
-
         bars = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
+
+        if pipeline_bus is not None:
+            ohlc = _extract_ohlc(bars[-1]) if bars else None
+            pipeline_bus.emit_bar_closed(
+                trace_id, symbol, timeframe, "confirmed", bar_time, ohlc=ohlc,
+            )
+
         if not bars:
             return
         results, compute_time_ms = manager._compute_confirmed_results_for_bars(
@@ -204,6 +226,7 @@ def process_closed_bar_event(
             pipeline_bus.emit_indicator_computed(
                 trace_id, symbol, timeframe, "confirmed",
                 compute_time_ms, len(results),
+                indicator_names=sorted(results.keys()),
             )
 
         manager._current_trace_id = trace_id
@@ -242,7 +265,10 @@ def process_intrabar_event(
     trace_id = uuid4().hex
 
     if pipeline_bus is not None:
-        pipeline_bus.emit_bar_closed(trace_id, symbol, timeframe, "intrabar", bar.time)
+        pipeline_bus.emit_bar_closed(
+            trace_id, symbol, timeframe, "intrabar", bar.time,
+            ohlc=_extract_ohlc(bar),
+        )
 
     eligible_names = manager._get_intrabar_eligible_names()
     eligible = list(eligible_names) if eligible_names else None
@@ -263,6 +289,7 @@ def process_intrabar_event(
         pipeline_bus.emit_indicator_computed(
             trace_id, symbol, timeframe, "intrabar",
             _compute_time_ms, len(results),
+            indicator_names=sorted(results.keys()),
         )
 
     grouped = manager._group_indicator_values(results)

@@ -62,6 +62,7 @@ def publish_snapshot(
     if pipeline_bus is not None and trace_id is not None:
         pipeline_bus.emit_snapshot_published(
             trace_id, symbol, timeframe, scope, len(indicators), bar_time,
+            indicators=indicators,
         )
 
     lock = getattr(manager, "_snapshot_listeners_lock", None)
