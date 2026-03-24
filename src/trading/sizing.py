@@ -7,11 +7,11 @@ from typing import Any, Dict, Optional
 
 
 TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
-    "M1": {"sl_atr_mult": 1.0, "tp_atr_mult": 2.0},
-    "M5": {"sl_atr_mult": 1.2, "tp_atr_mult": 2.5},
-    "M15": {"sl_atr_mult": 1.3, "tp_atr_mult": 2.8},
-    "H1": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0},
-    "D1": {"sl_atr_mult": 2.0, "tp_atr_mult": 4.0},
+    "M1": {"sl_atr_mult": 1.2, "tp_atr_mult": 2.0},   # XAUUSD M1 原 1.0 过窄
+    "M5": {"sl_atr_mult": 1.5, "tp_atr_mult": 2.8},   # XAUUSD M5 原 1.2 易被扫损
+    "M15": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0},  # 原 1.3/2.8
+    "H1": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},   # 原 1.5/3.0
+    "D1": {"sl_atr_mult": 2.5, "tp_atr_mult": 4.5},   # 原 2.0/4.0
 }
 
 # 时间框架差异化风险百分比（乘数）：M1 更保守，H1 可更激进

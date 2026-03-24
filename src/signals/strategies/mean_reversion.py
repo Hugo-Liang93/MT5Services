@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
@@ -456,4 +456,191 @@ class StochRsiStrategy:
             reason=reason,
             used_indicators=used,
             metadata={"stoch_rsi_k": k, "stoch_rsi_d": d},
+        )
+
+
+class RsiDivergenceStrategy:
+    """RSI 背离策略 — 价格与 RSI 方向分歧的反转预警。
+
+    原理：价格创新高但 RSI 未创新高（顶背离，bearish divergence），
+    或价格创新低但 RSI 未创新低（底背离，bullish divergence）。
+    这是黄金日内最可靠的反转预警之一。
+
+    与 RsiReversionStrategy 的区别：
+    - RsiReversion 看 RSI 绝对值（超买超卖区域）
+    - RsiDivergence 看价格与 RSI 的方向分歧（相对关系）
+
+    仅在 confirmed scope 评估（需要完整 bar 确认高低点）。
+    """
+
+    name = "rsi_divergence"
+    category = "reversion"
+    required_indicators = ("rsi14",)
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 0.75,   # 趋势末端背离信号最可靠
+        RegimeType.RANGING: 0.60,
+        RegimeType.BREAKOUT: 0.40,
+        RegimeType.UNCERTAIN: 0.65,
+    }
+
+    def __init__(self, *, lookback_bars: int = 14) -> None:
+        self._lookback_bars = lookback_bars
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        rsi_value, rsi_name = _resolve_indicator_value(
+            context.indicators,
+            (
+                ("rsi14", "rsi"),
+                ("rsi14", "value"),
+                ("rsi", "rsi"),
+            ),
+        )
+        used: List[str] = [rsi_name] if rsi_name else ["rsi14"]
+
+        if rsi_value is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_rsi",
+                used_indicators=used,
+            )
+
+        recent_bars: Any = context.metadata.get("recent_bars")
+        if not isinstance(recent_bars, (list, tuple)) or len(recent_bars) < 5:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="insufficient_recent_bars",
+                used_indicators=used,
+            )
+
+        # 提取最近 N 根 bar 的 high/low/close
+        lookback = min(self._lookback_bars, len(recent_bars))
+        bars = recent_bars[-lookback:]
+
+        highs: List[float] = []
+        lows: List[float] = []
+        closes: List[float] = []
+        for bar in bars:
+            if isinstance(bar, dict):
+                h = bar.get("high")
+                lo = bar.get("low")
+                c = bar.get("close")
+            elif hasattr(bar, "high"):
+                h = getattr(bar, "high", None)
+                lo = getattr(bar, "low", None)
+                c = getattr(bar, "close", None)
+            else:
+                continue
+            if h is not None and lo is not None and c is not None:
+                try:
+                    highs.append(float(h))
+                    lows.append(float(lo))
+                    closes.append(float(c))
+                except (TypeError, ValueError):
+                    continue
+
+        if len(highs) < 5:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="insufficient_valid_bars",
+                used_indicators=used,
+            )
+
+        current_rsi = rsi_value
+        current_high = highs[-1]
+        current_low = lows[-1]
+
+        # 查找前半段的极值（排除最近 2 根 bar）
+        search_end = len(highs) - 2
+        if search_end < 2:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="not_enough_bars_for_divergence",
+                used_indicators=used,
+            )
+
+        prev_highest_idx = max(range(search_end), key=lambda i: highs[i])
+        prev_lowest_idx = min(range(search_end), key=lambda i: lows[i])
+        prev_high = highs[prev_highest_idx]
+        prev_low = lows[prev_lowest_idx]
+
+        # 通过 RSI delta 推算历史 RSI 近似值
+        d3 = _get_delta(context.indicators, "rsi14", "rsi", 3)
+        d5 = _get_delta(context.indicators, "rsi14", "rsi", 5)
+
+        action = "hold"
+        confidence = 0.0
+        divergence_type = ""
+
+        # 顶背离检测：价格创新高但 RSI 下降
+        if current_high >= prev_high * 0.999:  # 价格至少持平或创新高
+            if d5 is not None and d5 < -3.0:
+                # RSI 5-bar 下降超过 3 点 → 顶背离
+                action = "sell"
+                divergence_type = "bearish_divergence"
+                # 背离强度 = RSI 下降幅度
+                divergence_strength = min(abs(d5) / 15.0, 1.0)
+                confidence = 0.50 + divergence_strength * 0.30
+                # RSI 在高位时背离更有效
+                if current_rsi > 55:
+                    confidence += 0.06
+            elif d3 is not None and d3 < -4.0:
+                # 短期更急剧的下降也算
+                action = "sell"
+                divergence_type = "bearish_divergence_d3"
+                divergence_strength = min(abs(d3) / 10.0, 1.0)
+                confidence = 0.48 + divergence_strength * 0.25
+
+        # 底背离检测：价格创新低但 RSI 上升
+        if action == "hold" and current_low <= prev_low * 1.001:
+            if d5 is not None and d5 > 3.0:
+                action = "buy"
+                divergence_type = "bullish_divergence"
+                divergence_strength = min(d5 / 15.0, 1.0)
+                confidence = 0.50 + divergence_strength * 0.30
+                if current_rsi < 45:
+                    confidence += 0.06
+            elif d3 is not None and d3 > 4.0:
+                action = "buy"
+                divergence_type = "bullish_divergence_d3"
+                divergence_strength = min(d3 / 10.0, 1.0)
+                confidence = 0.48 + divergence_strength * 0.25
+
+        if action == "hold":
+            confidence = 0.0
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=min(confidence, 0.88),
+            reason=f"rsi_divergence:{divergence_type},rsi={current_rsi:.1f}",
+            used_indicators=used,
+            metadata={
+                "rsi": current_rsi,
+                "divergence_type": divergence_type,
+                "current_high": current_high,
+                "current_low": current_low,
+                "prev_high": prev_high,
+                "prev_low": prev_low,
+                "rsi_d3": d3,
+                "rsi_d5": d5,
+            },
         )

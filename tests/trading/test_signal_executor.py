@@ -196,7 +196,9 @@ def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
 
     assert module.calls
     payload = module.calls[0][1]
-    assert payload["sl"] == pytest.approx(2998.0)
+    # M1: sl_atr_mult=1.2, tp_atr_mult=2.0, ATR=2.0
+    # SL = 3000 - 1.2*2 = 2997.6, TP = 3000 + 2.0*2 = 3004.0
+    assert payload["sl"] == pytest.approx(2997.6)
     assert payload["tp"] == pytest.approx(3004.0)
 
 

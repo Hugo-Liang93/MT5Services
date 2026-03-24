@@ -31,14 +31,16 @@ from .strategies.composite import (
 )
 from .strategies.mean_reversion import (
     CciReversionStrategy,
+    RsiDivergenceStrategy,
     RsiReversionStrategy,
     StochRsiStrategy,
     WilliamsRStrategy,
 )
 from .strategies.price_action import PriceActionReversal
-from .strategies.session import SessionMomentumBias
+from .strategies.session import AsianRangeBreakout, SessionMomentumBias
 from .strategies.trend import (
     EmaRibbonStrategy,
+    FibPullbackStrategy,
     HmaCrossStrategy,
     MacdMomentumStrategy,
     RocMomentumStrategy,
@@ -93,12 +95,15 @@ class SignalModule:
             EmaRibbonStrategy(),
             HmaCrossStrategy(),
             RocMomentumStrategy(),
+            FibPullbackStrategy(),
             SessionMomentumBias(),
+            AsianRangeBreakout(),
             # ── 均值回归策略（asia + london + newyork）──────────────────────────
             RsiReversionStrategy(),
             StochRsiStrategy(),
             WilliamsRStrategy(),
             CciReversionStrategy(),
+            RsiDivergenceStrategy(),
             PriceActionReversal(),
             # ── 突破/波动率策略 ──────────────────────────────────────────────────
             BollingerBreakoutStrategy(),
