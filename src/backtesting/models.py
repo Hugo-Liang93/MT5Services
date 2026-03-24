@@ -271,6 +271,90 @@ class ParameterSpace:
     max_combinations: int = 500  # random 模式下的最大采样数
 
 
+class RecommendationStatus(str, Enum):
+    """参数推荐的生命周期状态。"""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    APPLIED = "applied"
+    ROLLED_BACK = "rolled_back"
+
+
+@dataclass(frozen=True)
+class ParamChange:
+    """单个参数变更。"""
+
+    section: str  # "strategy_params" | "regime_affinity.{strategy}"
+    key: str  # e.g. "supertrend__adx_threshold"
+    old_value: Optional[float]  # None = 新增参数
+    new_value: float
+    change_pct: float  # 变更幅度百分比（正=增大，负=减小）
+
+
+@dataclass
+class Recommendation:
+    """一条参数推荐记录。
+
+    由 Walk-Forward 验证结果自动生成，经人工审核后一键应用。
+    """
+
+    rec_id: str  # "rec_{uuid12}"
+    source_run_id: str  # Walk-Forward 的 run_id
+    created_at: datetime
+    status: RecommendationStatus
+
+    # Walk-Forward 验证指标
+    overfitting_ratio: float
+    consistency_rate: float
+    oos_sharpe: float  # OOS 聚合 Sharpe
+    oos_win_rate: float  # OOS 聚合胜率
+    oos_total_trades: int  # OOS 聚合交易数
+
+    # 推荐的参数变更
+    changes: List[ParamChange]
+
+    # 推荐理由（自动生成）
+    rationale: str
+
+    # 审核/应用信息
+    approved_at: Optional[datetime] = None
+    applied_at: Optional[datetime] = None
+    rolled_back_at: Optional[datetime] = None
+    backup_path: Optional[str] = None  # 应用前的配置备份路径
+
+    def to_dict(self) -> Dict[str, Any]:
+        """序列化为可 JSON 化的字典。"""
+        return {
+            "rec_id": self.rec_id,
+            "source_run_id": self.source_run_id,
+            "created_at": self.created_at.isoformat(),
+            "status": self.status.value,
+            "overfitting_ratio": round(self.overfitting_ratio, 4),
+            "consistency_rate": round(self.consistency_rate, 4),
+            "oos_sharpe": round(self.oos_sharpe, 4),
+            "oos_win_rate": round(self.oos_win_rate, 4),
+            "oos_total_trades": self.oos_total_trades,
+            "changes": [
+                {
+                    "section": c.section,
+                    "key": c.key,
+                    "old_value": c.old_value,
+                    "new_value": round(c.new_value, 6),
+                    "change_pct": round(c.change_pct, 2),
+                }
+                for c in self.changes
+            ],
+            "rationale": self.rationale,
+            "approved_at": (self.approved_at.isoformat() if self.approved_at else None),
+            "applied_at": (self.applied_at.isoformat() if self.applied_at else None),
+            "rolled_back_at": (
+                self.rolled_back_at.isoformat() if self.rolled_back_at else None
+            ),
+            "backup_path": self.backup_path,
+        }
+
+
 def generate_run_id() -> str:
     """生成唯一的回测运行 ID。"""
     return f"bt_{uuid.uuid4().hex[:12]}"

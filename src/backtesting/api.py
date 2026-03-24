@@ -515,3 +515,262 @@ def _extract_metrics(result_dict: Dict[str, Any]) -> Dict[str, Any]:
         "total_pnl": m.get("total_pnl", 0),
         "max_drawdown": m.get("max_drawdown", 0),
     }
+
+
+# ── 参数推荐 API ─────────────────────────────────────────────────────
+
+# 内存缓存（rec_id → Recommendation），DB write-through
+_rec_cache: Dict[str, Any] = {}
+_rec_cache_lock = threading.Lock()
+
+
+class GenerateRecommendationRequest(BaseModel):
+    walk_forward_run_id: str = Field(..., description="Walk-Forward 验证的 run_id")
+
+
+class ApproveRejectRequest(BaseModel):
+    reason: str = Field(default="", description="审核理由（可选）")
+
+
+@router.post("/recommendations/generate", response_model=ApiResponse)
+async def generate_recommendation(
+    request: GenerateRecommendationRequest,
+) -> ApiResponse:
+    """从 Walk-Forward 验证结果生成参数推荐。
+
+    前置条件：Walk-Forward 验证已完成且结果可查。
+    """
+    try:
+        wf_result = _load_walk_forward_result(request.walk_forward_run_id)
+        if wf_result is None:
+            return ApiResponse(
+                success=False,
+                error=f"Walk-Forward 结果 {request.walk_forward_run_id} 未找到",
+            )
+
+        from src.backtesting.recommendation import (
+            RecommendationEngine,
+            load_current_signal_config,
+        )
+
+        current_params, current_affinities = load_current_signal_config()
+        engine = RecommendationEngine()
+        rec = engine.generate(
+            wf_result=wf_result,
+            source_run_id=request.walk_forward_run_id,
+            current_strategy_params=current_params,
+            current_regime_affinities=current_affinities,
+        )
+
+        # 持久化
+        repo = _get_backtest_repo()
+        if repo is not None:
+            repo.save_recommendation(rec)
+
+        with _rec_cache_lock:
+            _rec_cache[rec.rec_id] = rec
+
+        return ApiResponse(success=True, data=rec.to_dict())
+
+    except ValueError as e:
+        return ApiResponse(success=False, error=str(e))
+    except Exception as e:
+        logger.exception("Failed to generate recommendation")
+        return ApiResponse(success=False, error=str(e))
+
+
+@router.get("/recommendations", response_model=ApiResponse)
+async def list_recommendations(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> ApiResponse:
+    """列出参数推荐记录（支持 status 筛选）。"""
+    try:
+        repo = _get_backtest_repo()
+        if repo is None:
+            return ApiResponse(success=False, error="Database not available")
+        recs = repo.fetch_recommendations(status=status, limit=limit, offset=offset)
+        return ApiResponse(success=True, data=[r.to_dict() for r in recs])
+    except Exception as e:
+        return ApiResponse(success=False, error=str(e))
+
+
+@router.get("/recommendations/{rec_id}", response_model=ApiResponse)
+async def get_recommendation(rec_id: str) -> ApiResponse:
+    """查看推荐详情（含参数 diff）。"""
+    rec = _get_recommendation(rec_id)
+    if rec is None:
+        return ApiResponse(success=False, error=f"推荐 {rec_id} 未找到")
+    return ApiResponse(success=True, data=rec.to_dict())
+
+
+@router.post("/recommendations/{rec_id}/approve", response_model=ApiResponse)
+async def approve_recommendation(
+    rec_id: str,
+    request: ApproveRejectRequest,
+) -> ApiResponse:
+    """审核通过参数推荐。"""
+    from src.backtesting.models import RecommendationStatus
+
+    rec = _get_recommendation(rec_id)
+    if rec is None:
+        return ApiResponse(success=False, error=f"推荐 {rec_id} 未找到")
+    if rec.status != RecommendationStatus.PENDING:
+        return ApiResponse(
+            success=False,
+            error=f"推荐状态为 {rec.status.value}，仅 pending 可审核",
+        )
+
+    rec.status = RecommendationStatus.APPROVED
+    rec.approved_at = datetime.now(timezone.utc)
+
+    repo = _get_backtest_repo()
+    if repo is not None:
+        repo.update_recommendation(rec)
+
+    with _rec_cache_lock:
+        _rec_cache[rec_id] = rec
+
+    return ApiResponse(success=True, data=rec.to_dict())
+
+
+@router.post("/recommendations/{rec_id}/reject", response_model=ApiResponse)
+async def reject_recommendation(
+    rec_id: str,
+    request: ApproveRejectRequest,
+) -> ApiResponse:
+    """审核拒绝参数推荐。"""
+    from src.backtesting.models import RecommendationStatus
+
+    rec = _get_recommendation(rec_id)
+    if rec is None:
+        return ApiResponse(success=False, error=f"推荐 {rec_id} 未找到")
+    if rec.status != RecommendationStatus.PENDING:
+        return ApiResponse(
+            success=False,
+            error=f"推荐状态为 {rec.status.value}，仅 pending 可拒绝",
+        )
+
+    rec.status = RecommendationStatus.REJECTED
+    repo = _get_backtest_repo()
+    if repo is not None:
+        repo.update_recommendation(rec)
+
+    with _rec_cache_lock:
+        _rec_cache[rec_id] = rec
+
+    return ApiResponse(success=True, data=rec.to_dict())
+
+
+@router.post("/recommendations/{rec_id}/apply", response_model=ApiResponse)
+async def apply_recommendation(rec_id: str) -> ApiResponse:
+    """应用已审核通过的推荐（写入 signal.local.ini + 内存热更新）。"""
+    from src.backtesting.recommendation import ConfigApplicator
+
+    rec = _get_recommendation(rec_id)
+    if rec is None:
+        return ApiResponse(success=False, error=f"推荐 {rec_id} 未找到")
+
+    try:
+        signal_module = _get_signal_module()
+        applicator = ConfigApplicator(signal_module=signal_module)
+        backup_path = applicator.apply(rec)
+
+        repo = _get_backtest_repo()
+        if repo is not None:
+            repo.update_recommendation(rec)
+
+        with _rec_cache_lock:
+            _rec_cache[rec_id] = rec
+
+        return ApiResponse(
+            success=True,
+            data={**rec.to_dict(), "backup_path": backup_path},
+        )
+    except ValueError as e:
+        return ApiResponse(success=False, error=str(e))
+    except Exception as e:
+        logger.exception("Failed to apply recommendation %s", rec_id)
+        return ApiResponse(success=False, error=str(e))
+
+
+@router.post("/recommendations/{rec_id}/rollback", response_model=ApiResponse)
+async def rollback_recommendation(rec_id: str) -> ApiResponse:
+    """回滚已应用的推荐。"""
+    from src.backtesting.recommendation import ConfigApplicator
+
+    rec = _get_recommendation(rec_id)
+    if rec is None:
+        return ApiResponse(success=False, error=f"推荐 {rec_id} 未找到")
+
+    try:
+        signal_module = _get_signal_module()
+        applicator = ConfigApplicator(signal_module=signal_module)
+        applicator.rollback(rec)
+
+        repo = _get_backtest_repo()
+        if repo is not None:
+            repo.update_recommendation(rec)
+
+        with _rec_cache_lock:
+            _rec_cache[rec_id] = rec
+
+        return ApiResponse(success=True, data=rec.to_dict())
+    except ValueError as e:
+        return ApiResponse(success=False, error=str(e))
+    except Exception as e:
+        logger.exception("Failed to rollback recommendation %s", rec_id)
+        return ApiResponse(success=False, error=str(e))
+
+
+# ── 推荐 helper ──────────────────────────────────────────────────────
+
+
+def _get_recommendation(rec_id: str) -> Optional[Any]:
+    """获取推荐记录（优先内存缓存，回退 DB）。"""
+    with _rec_cache_lock:
+        cached = _rec_cache.get(rec_id)
+    if cached is not None:
+        return cached
+
+    repo = _get_backtest_repo()
+    if repo is not None:
+        rec = repo.fetch_recommendation(rec_id)
+        if rec is not None:
+            with _rec_cache_lock:
+                _rec_cache[rec_id] = rec
+            return rec
+    return None
+
+
+def _load_walk_forward_result(run_id: str) -> Optional[Any]:
+    """从内存缓存或 DB 加载 Walk-Forward 结果。
+
+    Walk-Forward 结果在回测 API 中以 job 结果形式缓存。
+    如果内存中没有，尝试从 DB 加载并重建 WalkForwardResult。
+    """
+    # 先检查内存缓存
+    with _result_cache_lock:
+        cached = _result_cache.get(run_id)
+    if cached is not None:
+        # 缓存可能是 dict 或 WalkForwardResult
+        if hasattr(cached, "splits"):
+            return cached
+        # 如果是 dict 形式（已序列化），无法直接重建
+        # WalkForwardResult 需要 BacktestResult 对象，无法从 dict 恢复
+        # 返回 None 让调用方处理
+        return None
+
+    return None
+
+
+def _get_signal_module() -> Optional[Any]:
+    """尝试获取运行时的 SignalModule 实例。"""
+    try:
+        from src.api.deps import get_signal_module
+
+        return get_signal_module()
+    except Exception:
+        logger.debug("SignalModule not available (standalone backtest mode)")
+        return None

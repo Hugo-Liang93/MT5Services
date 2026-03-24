@@ -1,9 +1,10 @@
-"""回测数据仓储：回测运行、交易和信号评估记录的持久化。
+"""回测数据仓储：回测运行、交易、信号评估和参数推荐记录的持久化。
 
-将回测结果落表到 TimescaleDB，对应三张表：
+将回测结果落表到 TimescaleDB，对应四张表：
 - backtest_runs: 回测运行摘要
 - backtest_trades: 回测交易明细
 - backtest_signal_evaluations: 信号评估明细（含过滤统计）
+- backtest_recommendations: 参数推荐记录
 """
 
 from __future__ import annotations
@@ -20,10 +21,18 @@ from src.persistence.schema.backtest import (
     INSERT_RUN_SQL,
     INSERT_TRADE_SQL,
 )
+from src.persistence.schema.recommendation import DDL as RECOMMENDATION_DDL
+from src.persistence.schema.recommendation import (
+    FETCH_RECOMMENDATION_SQL,
+    INSERT_RECOMMENDATION_SQL,
+    LIST_RECOMMENDATIONS_SQL,
+    UPDATE_RECOMMENDATION_STATUS_SQL,
+)
 
 if TYPE_CHECKING:
     from src.backtesting.models import (
         BacktestResult,
+        Recommendation,
         SignalEvaluation,
         TradeRecord,
     )
@@ -39,11 +48,12 @@ class BacktestRepository:
         self._writer = writer
 
     def ensure_schema(self) -> None:
-        """确保回测相关表结构已创建。"""
+        """确保回测相关表结构已创建（含推荐表）。"""
         try:
             with self._writer.connection() as conn, conn.cursor() as cur:
                 cur.execute(DDL)
-            logger.info("Backtest schema ensured")
+                cur.execute(RECOMMENDATION_DDL)
+            logger.info("Backtest schema ensured (incl. recommendations)")
         except Exception:
             logger.warning("Failed to ensure backtest schema", exc_info=True)
 
@@ -67,16 +77,12 @@ class BacktestRepository:
         config_dict["end_time"] = result.config.end_time.isoformat()
 
         metrics_dict = asdict(result.metrics)
-        metrics_by_regime = {
-            k: asdict(v) for k, v in result.metrics_by_regime.items()
-        }
+        metrics_by_regime = {k: asdict(v) for k, v in result.metrics_by_regime.items()}
         metrics_by_strategy = {
             k: asdict(v) for k, v in result.metrics_by_strategy.items()
         }
 
-        equity_curve_ser = [
-            (t.isoformat(), v) for t, v in result.equity_curve
-        ]
+        equity_curve_ser = [(t.isoformat(), v) for t, v in result.equity_curve]
 
         duration_ms = int(
             (result.completed_at - result.started_at).total_seconds() * 1000
@@ -103,26 +109,28 @@ class BacktestRepository:
             return
         rows = []
         for t in trades:
-            rows.append((
-                run_id,
-                t.strategy,
-                t.action,
-                t.entry_time,
-                t.entry_price,
-                t.exit_time,
-                t.exit_price,
-                t.stop_loss,
-                t.take_profit,
-                t.position_size,
-                t.pnl,
-                t.pnl_pct,
-                t.bars_held,
-                t.regime,
-                t.confidence,
-                t.exit_reason,
-                getattr(t, "slippage_cost", 0.0),
-                getattr(t, "commission_cost", 0.0),
-            ))
+            rows.append(
+                (
+                    run_id,
+                    t.strategy,
+                    t.action,
+                    t.entry_time,
+                    t.entry_price,
+                    t.exit_time,
+                    t.exit_price,
+                    t.stop_loss,
+                    t.take_profit,
+                    t.position_size,
+                    t.pnl,
+                    t.pnl_pct,
+                    t.bars_held,
+                    t.regime,
+                    t.confidence,
+                    t.exit_reason,
+                    getattr(t, "slippage_cost", 0.0),
+                    getattr(t, "commission_cost", 0.0),
+                )
+            )
         self._writer._batch(INSERT_TRADE_SQL, rows, page_size=200)
 
     def _save_evaluations(
@@ -133,22 +141,24 @@ class BacktestRepository:
             return
         rows = []
         for ev in evaluations:
-            rows.append((
-                run_id,
-                ev.bar_time,
-                ev.strategy,
-                ev.action,
-                ev.confidence,
-                ev.regime,
-                ev.price_at_signal,
-                ev.price_after_n_bars,
-                ev.bars_to_evaluate,
-                ev.won,
-                ev.pnl_pct,
-                ev.filtered,
-                ev.filter_reason or None,
-                getattr(ev, "incomplete", False),
-            ))
+            rows.append(
+                (
+                    run_id,
+                    ev.bar_time,
+                    ev.strategy,
+                    ev.action,
+                    ev.confidence,
+                    ev.regime,
+                    ev.price_at_signal,
+                    ev.price_after_n_bars,
+                    ev.bars_to_evaluate,
+                    ev.won,
+                    ev.pnl_pct,
+                    ev.filtered,
+                    ev.filter_reason or None,
+                    getattr(ev, "incomplete", False),
+                )
+            )
         self._writer._batch(INSERT_EVALUATION_SQL, rows, page_size=500)
 
     def _query(self, sql: str, params: tuple) -> list:
@@ -201,25 +211,31 @@ class BacktestRepository:
         rows = self._query(sql, (run_id,))
         result = []
         for r in rows:
-            result.append({
-                "id": r[0],
-                "run_id": r[1],
-                "strategy": r[2],
-                "action": r[3],
-                "entry_time": r[4].isoformat() if isinstance(r[4], datetime) else r[4],
-                "entry_price": r[5],
-                "exit_time": r[6].isoformat() if isinstance(r[6], datetime) else r[6],
-                "exit_price": r[7],
-                "stop_loss": r[8],
-                "take_profit": r[9],
-                "position_size": r[10],
-                "pnl": r[11],
-                "pnl_pct": r[12],
-                "bars_held": r[13],
-                "regime": r[14],
-                "confidence": r[15],
-                "exit_reason": r[16],
-            })
+            result.append(
+                {
+                    "id": r[0],
+                    "run_id": r[1],
+                    "strategy": r[2],
+                    "action": r[3],
+                    "entry_time": (
+                        r[4].isoformat() if isinstance(r[4], datetime) else r[4]
+                    ),
+                    "entry_price": r[5],
+                    "exit_time": (
+                        r[6].isoformat() if isinstance(r[6], datetime) else r[6]
+                    ),
+                    "exit_price": r[7],
+                    "stop_loss": r[8],
+                    "take_profit": r[9],
+                    "position_size": r[10],
+                    "pnl": r[11],
+                    "pnl_pct": r[12],
+                    "bars_held": r[13],
+                    "regime": r[14],
+                    "confidence": r[15],
+                    "exit_reason": r[16],
+                }
+            )
         return result
 
     def fetch_evaluations(
@@ -253,22 +269,26 @@ class BacktestRepository:
         rows = self._query(sql, tuple(params))
         result = []
         for r in rows:
-            result.append({
-                "id": r[0],
-                "run_id": r[1],
-                "bar_time": r[2].isoformat() if isinstance(r[2], datetime) else r[2],
-                "strategy": r[3],
-                "action": r[4],
-                "confidence": r[5],
-                "regime": r[6],
-                "price_at_signal": r[7],
-                "price_after_n_bars": r[8],
-                "bars_to_evaluate": r[9],
-                "won": r[10],
-                "pnl_pct": r[11],
-                "filtered": r[12],
-                "filter_reason": r[13],
-            })
+            result.append(
+                {
+                    "id": r[0],
+                    "run_id": r[1],
+                    "bar_time": (
+                        r[2].isoformat() if isinstance(r[2], datetime) else r[2]
+                    ),
+                    "strategy": r[3],
+                    "action": r[4],
+                    "confidence": r[5],
+                    "regime": r[6],
+                    "price_at_signal": r[7],
+                    "price_after_n_bars": r[8],
+                    "bars_to_evaluate": r[9],
+                    "won": r[10],
+                    "pnl_pct": r[11],
+                    "filtered": r[12],
+                    "filter_reason": r[13],
+                }
+            )
         return result
 
     def fetch_evaluation_summary(self, run_id: str) -> Dict[str, Any]:
@@ -291,16 +311,18 @@ class BacktestRepository:
         rows = self._query(sql, (run_id,))
         result: Dict[str, Any] = {"by_strategy_action": []}
         for r in rows:
-            result["by_strategy_action"].append({
-                "strategy": r[0],
-                "action": r[1],
-                "total": r[2],
-                "filtered_count": r[3],
-                "won_count": r[4],
-                "lost_count": r[5],
-                "avg_confidence": round(float(r[6]), 4) if r[6] else None,
-                "avg_pnl_pct": round(float(r[7]), 4) if r[7] else None,
-            })
+            result["by_strategy_action"].append(
+                {
+                    "strategy": r[0],
+                    "action": r[1],
+                    "total": r[2],
+                    "filtered_count": r[3],
+                    "won_count": r[4],
+                    "lost_count": r[5],
+                    "avg_confidence": round(float(r[6]), 4) if r[6] else None,
+                    "avg_pnl_pct": round(float(r[7]), 4) if r[7] else None,
+                }
+            )
         return result
 
     @staticmethod
@@ -308,7 +330,9 @@ class BacktestRepository:
         """将 backtest_runs 行转为字典。"""
         return {
             "run_id": row[0],
-            "created_at": row[1].isoformat() if isinstance(row[1], datetime) else row[1],
+            "created_at": (
+                row[1].isoformat() if isinstance(row[1], datetime) else row[1]
+            ),
             "config": row[2],
             "param_set": row[3],
             "metrics": row[4],
@@ -319,3 +343,117 @@ class BacktestRepository:
             "duration_ms": row[9],
             "filter_stats": row[10] if len(row) > 10 else None,
         }
+
+    # ── 参数推荐 CRUD ─────────────────────────────────────────────────
+
+    def save_recommendation(self, rec: "Recommendation") -> None:
+        """持久化参数推荐记录。"""
+        changes_json = [
+            {
+                "section": c.section,
+                "key": c.key,
+                "old_value": c.old_value,
+                "new_value": c.new_value,
+                "change_pct": c.change_pct,
+            }
+            for c in rec.changes
+        ]
+        row = (
+            rec.rec_id,
+            rec.source_run_id,
+            rec.created_at,
+            rec.status.value,
+            rec.overfitting_ratio,
+            rec.consistency_rate,
+            rec.oos_sharpe,
+            rec.oos_win_rate,
+            rec.oos_total_trades,
+            self._writer._json(changes_json),
+            rec.rationale,
+        )
+        self._writer._batch(INSERT_RECOMMENDATION_SQL, [row])
+        logger.info("Recommendation %s persisted", rec.rec_id)
+
+    def update_recommendation(self, rec: "Recommendation") -> None:
+        """更新推荐记录的状态字段。"""
+        row = (
+            rec.status.value,
+            rec.approved_at,
+            rec.applied_at,
+            rec.rolled_back_at,
+            rec.backup_path,
+            rec.rec_id,
+        )
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(UPDATE_RECOMMENDATION_STATUS_SQL, row)
+        logger.info(
+            "Recommendation %s updated: status=%s", rec.rec_id, rec.status.value
+        )
+
+    def fetch_recommendation(self, rec_id: str) -> Optional["Recommendation"]:
+        """查询单条推荐记录。"""
+        rows = self._query(FETCH_RECOMMENDATION_SQL, (rec_id,))
+        if not rows:
+            return None
+        return self._rec_row_to_model(rows[0])
+
+    def fetch_recommendations(
+        self,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List["Recommendation"]:
+        """查询推荐记录列表。"""
+        if status:
+            where_clause = "WHERE status = %s"
+            params: tuple = (status, limit, offset)
+        else:
+            where_clause = ""
+            params = (limit, offset)
+
+        sql = LIST_RECOMMENDATIONS_SQL.format(where_clause=where_clause)
+        rows = self._query(sql, params)
+        return [self._rec_row_to_model(r) for r in rows]
+
+    @staticmethod
+    def _rec_row_to_model(row: tuple) -> "Recommendation":
+        """将 backtest_recommendations 行转为 Recommendation 模型。"""
+        from src.backtesting.models import (
+            ParamChange,
+            Recommendation,
+            RecommendationStatus,
+        )
+
+        changes_raw = row[9] if isinstance(row[9], list) else json.loads(row[9])
+        changes = [
+            ParamChange(
+                section=c["section"],
+                key=c["key"],
+                old_value=c.get("old_value"),
+                new_value=c["new_value"],
+                change_pct=c.get("change_pct", 0.0),
+            )
+            for c in changes_raw
+        ]
+
+        return Recommendation(
+            rec_id=row[0],
+            source_run_id=row[1],
+            created_at=(
+                row[2]
+                if isinstance(row[2], datetime)
+                else datetime.fromisoformat(row[2])
+            ),
+            status=RecommendationStatus(row[3]),
+            overfitting_ratio=row[4] or 0.0,
+            consistency_rate=row[5] or 0.0,
+            oos_sharpe=row[6] or 0.0,
+            oos_win_rate=row[7] or 0.0,
+            oos_total_trades=row[8] or 0,
+            changes=changes,
+            rationale=row[10] or "",
+            approved_at=row[11],
+            applied_at=row[12],
+            rolled_back_at=row[13],
+            backup_path=row[14],
+        )
