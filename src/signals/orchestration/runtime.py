@@ -1108,7 +1108,8 @@ class SignalRuntime:
             return None
         analyzer_config = getattr(analyzer, "config", None)
         default_lookback = int(getattr(analyzer_config, "lookback_bars", 400))
-        if str(timeframe).strip().upper() == "M1":
+        # 低时间框架（M5）使用缩减的 lookback bars 以控制计算量
+        if str(timeframe).strip().upper() in ("M1", "M5"):
             return max(
                 2,
                 int(getattr(analyzer_config, "m1_lookback_bars", 120) or 120),

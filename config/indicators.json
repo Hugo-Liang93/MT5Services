@@ -173,7 +173,8 @@
       "dependencies": [],
       "compute_mode": "standard",
       "enabled": true,
-      "description": "14周期趋势强度指标",
+      "delta_bars": [3, 5],
+      "description": "14周期趋势强度指标（含 delta 用于 regime 趋势启动/衰退检测）",
       "tags": ["trend", "volatility"]
     },
     {

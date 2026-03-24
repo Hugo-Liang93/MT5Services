@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
@@ -678,4 +678,230 @@ class RocMomentumStrategy:
             reason=f"roc={roc:.3f}%,adx={adx:.1f}",
             used_indicators=used or ["roc12", "adx14"],
             metadata={"roc": roc, "adx": adx},
+        )
+
+
+class FibPullbackStrategy:
+    """Fibonacci 回撤入场策略 — 在确认趋势中等待价格回撤至 Fib 关键水平后顺势入场。
+
+    原理：XAUUSD 强趋势中的回撤深度在 38.2%-61.8% 之间的概率约 60-65%。
+    策略在 HTF 趋势方向确认（Supertrend）后，从 recent_bars 找到 swing high/low，
+    计算 Fibonacci 回撤水平，当价格回撤至关键位并企稳时顺势入场。
+
+    Fib 关键水平：38.2%、50.0%、61.8%
+    """
+
+    name = "fib_pullback"
+    category = "trend"
+    required_indicators = ("supertrend14", "atr14")
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 1.00,
+        RegimeType.RANGING: 0.15,
+        RegimeType.BREAKOUT: 0.50,
+        RegimeType.UNCERTAIN: 0.40,
+    }
+
+    _FIB_LEVELS = (0.382, 0.500, 0.618)
+    _FIB_TOLERANCE = 0.03  # ±3% 容差带
+
+    def __init__(self, *, swing_lookback: int = 20) -> None:
+        self._swing_lookback = swing_lookback
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        direction, st_name = _resolve_indicator_value(
+            context.indicators,
+            (("supertrend14", "direction"), ("supertrend", "direction")),
+        )
+        atr, atr_name = _resolve_indicator_value(
+            context.indicators, (("atr14", "atr"), ("atr", "atr"))
+        )
+        used: List[str] = [n for n in (st_name, atr_name) if n]
+
+        if direction is None or atr is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="missing_required_indicators",
+                used_indicators=used or ["supertrend14", "atr14"],
+            )
+
+        # 趋势方向确认
+        if direction > 0:
+            trend = "bullish"
+        elif direction < 0:
+            trend = "bearish"
+        else:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="no_trend_direction",
+                used_indicators=used,
+            )
+
+        # 从 recent_bars 提取 swing high/low
+        recent_bars: Any = context.metadata.get("recent_bars")
+        if not isinstance(recent_bars, (list, tuple)) or len(recent_bars) < 5:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="insufficient_recent_bars",
+                used_indicators=used,
+            )
+
+        lookback = min(self._swing_lookback, len(recent_bars))
+        bars = recent_bars[-lookback:]
+
+        highs: List[float] = []
+        lows: List[float] = []
+        for bar in bars:
+            if isinstance(bar, dict):
+                h, lo = bar.get("high"), bar.get("low")
+            elif hasattr(bar, "high"):
+                h, lo = getattr(bar, "high", None), getattr(bar, "low", None)
+            else:
+                continue
+            if h is not None and lo is not None:
+                try:
+                    highs.append(float(h))
+                    lows.append(float(lo))
+                except (TypeError, ValueError):
+                    continue
+
+        if len(highs) < 5:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="insufficient_valid_bars",
+                used_indicators=used,
+            )
+
+        swing_high = max(highs)
+        swing_low = min(lows)
+        swing_range = swing_high - swing_low
+
+        if swing_range < atr * 0.5:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="swing_range_too_small",
+                used_indicators=used,
+            )
+
+        close_price = context.metadata.get("close_price")
+        try:
+            close_val = float(close_price) if close_price is not None else None
+        except (TypeError, ValueError):
+            close_val = None
+
+        if close_val is None:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="no_close_price",
+                used_indicators=used,
+            )
+
+        # 计算 Fibonacci 回撤水平
+        action = "hold"
+        confidence = 0.0
+        hit_level = 0.0
+        fib_price = 0.0
+
+        if trend == "bullish":
+            # 上升趋势：回撤 = 从 swing_high 向下
+            for level in self._FIB_LEVELS:
+                fib_p = swing_high - swing_range * level
+                lower_bound = fib_p - swing_range * self._FIB_TOLERANCE
+                upper_bound = fib_p + swing_range * self._FIB_TOLERANCE
+                if lower_bound <= close_val <= upper_bound:
+                    action = "buy"
+                    hit_level = level
+                    fib_price = fib_p
+                    break
+        else:  # bearish
+            # 下降趋势：回撤 = 从 swing_low 向上
+            for level in self._FIB_LEVELS:
+                fib_p = swing_low + swing_range * level
+                lower_bound = fib_p - swing_range * self._FIB_TOLERANCE
+                upper_bound = fib_p + swing_range * self._FIB_TOLERANCE
+                if lower_bound <= close_val <= upper_bound:
+                    action = "sell"
+                    hit_level = level
+                    fib_price = fib_p
+                    break
+
+        if action == "hold":
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                action="hold",
+                confidence=0.0,
+                reason="price_not_at_fib_level",
+                used_indicators=used,
+                metadata={
+                    "trend": trend,
+                    "swing_high": swing_high,
+                    "swing_low": swing_low,
+                    "close": close_val,
+                },
+            )
+
+        # 置信度：38.2% 最高（浅回撤趋势更强），61.8% 最低（深回撤风险大）
+        level_confidence = {0.382: 0.70, 0.500: 0.62, 0.618: 0.55}
+        confidence = level_confidence.get(hit_level, 0.55)
+
+        # HTF Supertrend 对齐加成
+        htf = context.htf_indicators.get("H1", {})
+        htf_direction = htf.get("supertrend14", {}).get("direction")
+        if htf_direction is not None:
+            if (trend == "bullish" and htf_direction > 0) or (
+                trend == "bearish" and htf_direction < 0
+            ):
+                confidence += 0.08  # HTF 同向确认
+
+        # 市场结构加成
+        structure = _market_structure(context)
+        first_pullback = str(structure.get("first_pullback_state") or "none")
+        if trend == "bullish" and first_pullback.startswith("bullish_"):
+            confidence += 0.06
+        elif trend == "bearish" and first_pullback.startswith("bearish_"):
+            confidence += 0.06
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            action=action,
+            confidence=min(confidence, 0.90),
+            reason=f"fib_pullback:{trend},level={hit_level:.1%},fib_price={fib_price:.2f}",
+            used_indicators=used,
+            metadata={
+                "trend": trend,
+                "hit_level": hit_level,
+                "fib_price": fib_price,
+                "swing_high": swing_high,
+                "swing_low": swing_low,
+                "close": close_val,
+                "first_pullback_state": first_pullback,
+            },
         )

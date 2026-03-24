@@ -170,13 +170,17 @@ class MarketRegimeDetector:
         ):
             return RegimeType.BREAKOUT
 
-        # ── 步骤 2：ADX 主判（含 RSI 动量辅助）────────────────────────
+        # ── 步骤 2：ADX 主判（含 RSI 动量辅助 + ADX delta 趋势启动检测）──
         rsi = self._extract_rsi(indicators)
+        adx_d3 = self._extract_adx_delta(indicators, "adx_d3")
         if adx is not None:
             if adx >= self._adx_trending:
                 # RSI 动量辅助：RSI 40-60 区间说明动量方向不明确，
                 # 虽然 ADX 高但可能是假趋势（如横盘末期残余动量）
                 if rsi is not None and 40 < rsi < 60 and adx < self._adx_trending + 5:
+                    # 但如果 ADX 正在快速上升，仍判为 TRENDING（趋势确立中）
+                    if adx_d3 is not None and adx_d3 > 3.0:
+                        return RegimeType.TRENDING
                     return RegimeType.UNCERTAIN
                 return RegimeType.TRENDING
 
@@ -193,6 +197,12 @@ class MarketRegimeDetector:
                 return RegimeType.RANGING
 
             # 18 ≤ ADX < 23：趋势与震荡之间的过渡区
+            # ADX delta 辅助：ADX 快速上升（d3 > 3.0）→ 趋势正在启动，提前判定
+            if adx_d3 is not None and adx_d3 > 3.0 and adx >= self._adx_ranging:
+                return RegimeType.TRENDING
+            # ADX 快速下降（d3 < -3.0）且仍在过渡区 → 趋势衰退
+            if adx_d3 is not None and adx_d3 < -3.0:
+                return RegimeType.UNCERTAIN
             return RegimeType.UNCERTAIN
 
         # ── 步骤 3：没有 ADX 数据，根据 BB 宽度粗判 ──────────────────
@@ -234,6 +244,8 @@ class MarketRegimeDetector:
             RegimeType.UNCERTAIN: 0.05,
         }
 
+        adx_d3 = self._extract_adx_delta(indicators, "adx_d3")
+
         if adx is None:
             scores[RegimeType.UNCERTAIN] += 0.75
         else:
@@ -259,6 +271,19 @@ class MarketRegimeDetector:
                 0.15 + range_transition * 0.85 + min(range_excess * 1.20, 0.40)
             )
             scores[RegimeType.UNCERTAIN] += 0.10 + uncertain_transition * 1.10
+
+            # ADX delta 修正：快速上升时增加 TRENDING 概率，快速下降时增加 UNCERTAIN
+            if adx_d3 is not None:
+                if adx_d3 > 3.0:
+                    # ADX 快速上升 → 趋势启动信号，boost TRENDING 概率
+                    delta_boost = min(adx_d3 / 10.0, 0.40)
+                    scores[RegimeType.TRENDING] += delta_boost
+                    scores[RegimeType.UNCERTAIN] -= delta_boost * 0.5
+                elif adx_d3 < -3.0:
+                    # ADX 快速下降 → 趋势衰退，boost UNCERTAIN/RANGING
+                    delta_decay = min(abs(adx_d3) / 10.0, 0.30)
+                    scores[RegimeType.UNCERTAIN] += delta_decay * 0.6
+                    scores[RegimeType.RANGING] += delta_decay * 0.4
 
         tightness = 0.0
         if bb_width_pct is not None and self._bb_tight_pct > 0:
@@ -347,6 +372,19 @@ class MarketRegimeDetector:
             payload = indicators.get(name)
             if isinstance(payload, dict):
                 v = _safe_float(payload.get("adx"))
+                if v is not None:
+                    return v
+        return None
+
+    @staticmethod
+    def _extract_adx_delta(
+        indicators: Dict[str, Dict[str, Any]], field: str = "adx_d3"
+    ) -> Optional[float]:
+        """提取 ADX 的 N-bar 变化率（delta），用于趋势启动/衰退检测。"""
+        for name in ("adx14", "adx"):
+            payload = indicators.get(name)
+            if isinstance(payload, dict):
+                v = _safe_float(payload.get(field))
                 if v is not None:
                     return v
         return None
