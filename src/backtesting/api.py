@@ -252,11 +252,63 @@ async def get_result(run_id: str) -> ApiResponse:
     return ApiResponse(success=False, error=f"Run {run_id} not found")
 
 
-# 保留旧端点别名（向后兼容）
+# 保留旧端点别名（向后兼容）——返回结果摘要而非原始 job 元数据
 @router.get("/results", response_model=ApiResponse)
 async def list_results() -> ApiResponse:
-    """列出所有任务（兼容旧 API）。"""
-    return await list_jobs()
+    """列出所有已完成任务的结果摘要（兼容旧 API）。"""
+    summaries: list[Dict[str, Any]] = []
+    with _job_lock:
+        jobs = list(_job_store.values())
+    for job in jobs:
+        entry: Dict[str, Any] = {
+            "run_id": job.run_id,
+            "type": job.job_type,
+            "status": job.status.value,
+            "submitted_at": job.submitted_at.isoformat(),
+            "completed_at": (
+                job.completed_at.isoformat() if job.completed_at else None
+            ),
+            "config_summary": job.config_summary,
+        }
+        with _result_cache_lock:
+            cached = _result_cache.get(job.run_id)
+        if cached is not None:
+            entry["metrics"] = _extract_result_metrics(cached, job.job_type)
+        summaries.append(entry)
+    return ApiResponse(success=True, data=summaries)
+
+
+def _extract_result_metrics(
+    cached: Any, job_type: str,
+) -> Dict[str, Any]:
+    """从缓存的结果中提取关键指标摘要。"""
+    if job_type == "optimization" and isinstance(cached, list):
+        return {
+            "optimization_count": len(cached),
+            "best": _pick_metrics(cached[0]) if cached else {},
+        }
+    if isinstance(cached, dict):
+        return _pick_metrics(cached)
+    return {}
+
+
+def _pick_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
+    """从单个 BacktestResult dict 中挑选关键指标。"""
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict):
+        return {}
+    return {
+        k: metrics[k]
+        for k in (
+            "total_trades",
+            "win_rate",
+            "sharpe_ratio",
+            "max_drawdown",
+            "total_pnl",
+            "profit_factor",
+        )
+        if k in metrics
+    }
 
 
 @router.get("/history", response_model=ApiResponse)
