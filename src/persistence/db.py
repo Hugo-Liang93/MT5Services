@@ -189,7 +189,31 @@ class TimescaleWriter:
                     pool.putconn(conn)
 
     def init_schema(self) -> None:
-        ddl = "CREATE EXTENSION IF NOT EXISTS timescaledb;\n" + "\n".join(DDL_STATEMENTS)
+        # Migration: rename legacy 'action' column to 'direction' in existing tables
+        migrate = """
+DO $$
+DECLARE
+    _tbl text;
+BEGIN
+    FOREACH _tbl IN ARRAY ARRAY[
+        'signal_events', 'signal_preview_events', 'signal_outcomes',
+        'auto_executions', 'trade_outcomes',
+        'backtest_trades', 'backtest_signal_evaluations'
+    ] LOOP
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = _tbl AND column_name = 'action'
+        ) AND NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = _tbl AND column_name = 'direction'
+        ) THEN
+            EXECUTE format('ALTER TABLE %I RENAME COLUMN action TO direction', _tbl);
+            RAISE NOTICE 'Renamed action → direction on %', _tbl;
+        END IF;
+    END LOOP;
+END $$;
+"""
+        ddl = "CREATE EXTENSION IF NOT EXISTS timescaledb;\n" + migrate + "\n".join(DDL_STATEMENTS)
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(ddl)
         logger.info("Timescale schema ensured")

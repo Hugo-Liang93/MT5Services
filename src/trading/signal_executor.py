@@ -129,11 +129,15 @@ class TradeExecutor:
         """Called by SignalRuntime for every signal state transition.
 
         Non-blocking: enqueues the event for the background worker thread.
-        Only acts on scope=confirmed transitions with a buy/sell action.
+        Only acts on scope=confirmed, state-changing transitions with a buy/sell action.
         """
         if event.scope != "confirmed":
             return
         if "confirmed" not in event.signal_state:
+            return
+        # Skip repeated (non-state-changed) signals — they have no signal_id
+        # because they are not persisted. Only new state transitions should trigger trades.
+        if not event.signal_id:
             return
         # Ensure worker thread is running (lazy start)
         if self._exec_thread is None or not self._exec_thread.is_alive():
@@ -673,7 +677,7 @@ class TradeExecutor:
             "order_kind": "market",
             "sl": params.stop_loss,
             "tp": params.take_profit,
-            "comment": f"auto:{event.strategy}:{event.direction}",
+            "comment": f"auto:{event.strategy}:{event.timeframe}:{event.direction}"[:31],
             "request_id": event.signal_id,
             "metadata": self._build_trade_metadata(event),
         }

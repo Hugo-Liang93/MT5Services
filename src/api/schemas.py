@@ -55,8 +55,11 @@ class PositionModel(BaseModel):
     symbol: str
     volume: float
     price_open: float
+    price_current: float
     sl: float
     tp: float
+    profit: float
+    swap: float
     time: str
     type: int
     magic: int

@@ -30,8 +30,11 @@ class Position:
     symbol: str
     volume: float
     price_open: float
+    price_current: float
     sl: float
     tp: float
+    profit: float
+    swap: float
     time: datetime
     type: int
     magic: int
@@ -107,8 +110,11 @@ class MT5AccountClient(MT5BaseClient):
                 symbol=p.symbol,
                 volume=p.volume,
                 price_open=p.price_open,
+                price_current=p.price_current,
                 sl=p.sl,
                 tp=p.tp,
+                profit=p.profit,
+                swap=p.swap,
                 time=self._parse_server_timestamp(p.time),
                 type=p.type,
                 magic=p.magic,

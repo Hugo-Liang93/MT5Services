@@ -206,6 +206,8 @@ class SignalRuntime:
         self._warmup_ready_fn: Optional[Callable[[], bool]] = warmup_ready_fn
         # 每个 (symbol, tf) 在 warmup 结束后是否已收到首个实时 confirmed bar
         self._first_realtime_bar_seen: set[tuple[str, str]] = set()
+        # 每个 (symbol, tf) 是否已收到首个含指标的 intrabar 快照
+        self._first_intrabar_snapshot_seen: set[tuple[str, str]] = set()
 
         # R-2: 分片锁 — 热路径按 (symbol, timeframe) 分片，避免全局锁争用。
         # _state_lock 仅用于 _count_active_states() 的全量快照读取。
@@ -401,6 +403,17 @@ class SignalRuntime:
             if st_key not in self._first_realtime_bar_seen:
                 # confirmed 首个实时 bar 尚未到达，跳过 intrabar
                 return
+            # 首次 intrabar 快照须包含足够指标（pipeline 已完成完整一轮计算），
+            # 否则策略评估时 intrabar 指标缺失，产生无意义的 warning。
+            # 判断标准：快照能满足至少一个 intrabar 策略的全部 required_indicators。
+            if st_key not in self._first_intrabar_snapshot_seen:
+                if not self._all_intrabar_strategies_satisfied(indicators):
+                    return
+                self._first_intrabar_snapshot_seen.add(st_key)
+                logger.info(
+                    "Intrabar ready: first complete snapshot for %s/%s (%d indicators)",
+                    symbol, timeframe, len(indicators),
+                )
         # Prefer upstream trace_id from PipelineEventBus (set by bar_event_handler)
         # so the same ID flows through the entire pipeline for frontend tracing.
         upstream_trace_id = getattr(self.snapshot_source, "_current_trace_id", None)
@@ -904,6 +917,26 @@ class SignalRuntime:
             min_preview_stable_seconds=self.policy.min_preview_stable_seconds,
             preview_cooldown_seconds=self.policy.preview_cooldown_seconds,
         )
+
+    def _all_intrabar_strategies_satisfied(
+        self, indicators: Dict[str, Dict[str, float]]
+    ) -> bool:
+        """检查快照是否能满足所有 intrabar 策略的 required_indicators。
+
+        在 warmup 过渡期，intrabar pipeline 可能分批发布部分指标快照。
+        只有当快照包含所有 intrabar 策略所需的指标时才放行，
+        避免部分策略因缺失指标产生无意义的 warning。
+        """
+        if not indicators:
+            return False
+        indicator_names = set(indicators.keys())
+        for strategy, scopes in self._strategy_scopes.items():
+            if "intrabar" not in scopes:
+                continue
+            required = self._strategy_requirements.get(strategy, ())
+            if required and any(ind not in indicator_names for ind in required):
+                return False
+        return True
 
     def _get_shard_lock(self, symbol: str, timeframe: str) -> threading.Lock:
         """懒初始化并返回 (symbol, timeframe) 对应的分片锁。
