@@ -167,6 +167,12 @@ class EconomicCalendarService:
         )
 
     def _default_sources_for_job(self, job_type: str) -> List[str]:
+        # Per-job provider 路由：配置了指定 sources 则仅用那些，否则走默认逻辑
+        configured_sources: List[str] = getattr(
+            self.settings, f"{job_type}_sources", []
+        )
+        if configured_sources:
+            return configured_sources
         if job_type == "release_watch":
             return self.registry.release_watch_names()
         return self.registry.configured_names()
@@ -538,6 +544,63 @@ class EconomicCalendarService:
             snapshot_reasons=snapshot_reasons,
             job_types=job_types,
         )
+
+    def compute_release_watch_interval(self) -> float:
+        """根据 DB 中最近的待发布事件动态计算 release_watch 轮询间隔（三档自适应）。
+
+        空闲档: 最近事件 > approaching_minutes → idle_interval
+        预热档: approaching_minutes 内 → approaching_interval
+        活跃档: active_minutes 内或刚发布 < post_event_minutes → active_interval
+        """
+        s = self.settings
+        idle = float(s.release_watch_idle_interval_seconds)
+        approaching = float(s.release_watch_approaching_interval_seconds)
+        active = float(s.release_watch_active_interval_seconds)
+        approaching_min = s.release_watch_approaching_minutes
+        active_min = s.release_watch_active_minutes
+        post_min = s.release_watch_post_event_minutes
+        imp_min = s.release_watch_importance_min
+
+        now = _utc_now()
+        window_start = now - timedelta(minutes=post_min)
+        window_end = now + timedelta(minutes=approaching_min + 10)
+        try:
+            events = self.get_events(
+                start_time=window_start,
+                end_time=window_end,
+                limit=50,
+                statuses=["scheduled", "imminent", "pending_release"],
+                importance_min=imp_min,
+            )
+        except Exception:
+            logger.warning("compute_release_watch_interval: DB query failed, using idle interval")
+            return idle
+
+        if not events:
+            return idle
+
+        # 找距离现在绝对值最小的事件（保留符号：负=已过，正=未来）
+        closest_delta: float = float("inf")
+        for event in events:
+            delta = (event.scheduled_at - now).total_seconds() / 60.0
+            if abs(delta) < abs(closest_delta):
+                closest_delta = delta
+
+        # 活跃档：事件前 active_min 到事件后 post_min
+        if -post_min <= closest_delta <= active_min:
+            return active
+
+        # 预热档：事件前 approaching_min 到 active_min
+        if active_min < closest_delta <= approaching_min:
+            return approaching
+
+        # 事件更远，精确等到预热档开始
+        if closest_delta > approaching_min:
+            wait_seconds = (closest_delta - approaching_min) * 60.0
+            return min(wait_seconds, idle)
+
+        # 事件已过 post_min 以上，回到空闲
+        return idle
 
     def is_stale(self) -> bool:
         if self._last_refresh_at is None:

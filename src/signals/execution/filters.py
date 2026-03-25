@@ -11,8 +11,11 @@ before order dispatch.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 from typing import Any, Dict, List, Optional, Protocol
 
 from ..contracts import (
@@ -103,16 +106,21 @@ class SpreadFilter:
 
 @dataclass
 class EconomicEventFilter:
-    """Suppress signals during high-impact economic event windows."""
+    """分级经济事件过滤器。
+
+    - importance >= block_importance_min（默认3）→ 阻断交易
+    - importance < block_importance_min           → 仅警告，不阻断
+    """
 
     provider: Optional[TradeGuardProvider] = None
     lookahead_minutes: int = 30
     lookback_minutes: int = 15
-    importance_min: int = 3
+    importance_min: int = 2
 
-    def is_safe_to_trade(self, symbol: str, utc_now: Optional[datetime] = None) -> bool:
+    def check_trade_guard(self, symbol: str, utc_now: Optional[datetime] = None) -> tuple[bool, str]:
+        """返回 (safe, reason)。safe=True 时可交易。"""
         if self.provider is None:
-            return True
+            return True, ""
         at_time = utc_now or datetime.now(timezone.utc)
         try:
             guard = self.provider.get_trade_guard(
@@ -122,9 +130,19 @@ class EconomicEventFilter:
                 lookback_minutes=self.lookback_minutes,
                 importance_min=self.importance_min,
             )
-            return not bool(guard.get("blocked"))
-        except Exception:
-            return True
+            severity = guard.get("severity", "none")
+            if severity == "block":
+                return False, "economic_event_block"
+            if severity == "warn":
+                return True, "economic_event_warn"
+            return True, ""
+        except Exception as exc:
+            logger.warning("Trade guard check failed for %s: %s", symbol, exc)
+            return True, ""
+
+    def is_safe_to_trade(self, symbol: str, utc_now: Optional[datetime] = None) -> bool:
+        safe, _ = self.check_trade_guard(symbol, utc_now)
+        return safe
 
 
 @dataclass
@@ -240,9 +258,10 @@ class SignalFilterChain:
             transition_name = self.session_transition_filter.active_transition(utc_now)
             return False, f"session_transition_cooldown:{transition_name}"
 
-        if self.economic_filter and not self.economic_filter.is_safe_to_trade(
-            symbol, utc_now
-        ):
-            return False, "economic_event_window"
+        if self.economic_filter:
+            safe, reason = self.economic_filter.check_trade_guard(symbol, utc_now)
+            if not safe:
+                return False, reason
+            # reason == "economic_event_warn" → 允许交易但日志记录（由调用方处理）
 
         return True, ""

@@ -192,6 +192,19 @@ def job_summary(
 
 
 def schedule_next_run(service, job_type: str, *, from_time: Optional[datetime] = None) -> None:
+    if job_type == "release_watch":
+        # 三档自适应：根据最近事件动态计算下次轮询间隔
+        base_interval = service._job_interval(job_type)
+        if base_interval <= 0:
+            service._next_run_at[job_type] = None
+            return
+        try:
+            interval = service.compute_release_watch_interval()
+        except Exception as exc:
+            logger.warning("compute_release_watch_interval() failed, using idle: %s", exc)
+            interval = float(service.settings.release_watch_idle_interval_seconds)
+        service._next_run_at[job_type] = (from_time or _utc_now()) + timedelta(seconds=interval)
+        return
     interval = service._job_interval(job_type)
     service._next_run_at[job_type] = None if interval <= 0 else (from_time or _utc_now()) + timedelta(seconds=interval)
 

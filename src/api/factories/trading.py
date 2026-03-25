@@ -39,6 +39,14 @@ def build_provider_registry(settings: EconomicConfig) -> ProviderRegistry:
             registry.register(FmpCalendarClient(settings))
         except ImportError:
             logger.warning("FMP calendar client not available (src.clients.fmp_calendar)")
+    # Jin10 — 延迟导入，仅在启用时加载（无需 API Key）
+    if settings.jin10_enabled:
+        try:
+            from src.clients.jin10_calendar import Jin10CalendarClient
+
+            registry.register(Jin10CalendarClient(settings))
+        except ImportError:
+            logger.warning("Jin10 calendar client not available (src.clients.jin10_calendar)")
     # Alpha Vantage — 延迟导入，仅在启用时加载
     if settings.alphavantage_enabled:
         try:

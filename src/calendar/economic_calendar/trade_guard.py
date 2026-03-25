@@ -243,13 +243,39 @@ def get_trade_guard(
         for window in merged_windows
         if evaluation_time < datetime.fromisoformat(window["window_start"])
     ]
+    # 分级压制：区分 block 和 warn
+    block_min: int = service.settings.trade_guard_block_importance_min
+    block_windows = [w for w in active_windows if (w.get("max_importance") or 0) >= block_min]
+    warn_windows = [w for w in active_windows if (w.get("max_importance") or 0) < block_min]
+    # 低 importance 事件使用更窄的保护窗口
+    # block 窗口 = scheduled_at ± pre/post_event_buffer（已由 build_window 计算）
+    # warn 窗口 = scheduled_at ± warn_pre/post_buffer（更窄，需要缩小已有窗口）
+    if warn_windows:
+        warn_pre: int = service.settings.trade_guard_warn_pre_buffer_minutes
+        warn_post: int = service.settings.trade_guard_warn_post_buffer_minutes
+        full_pre: int = service.settings.pre_event_buffer_minutes
+        full_post: int = service.settings.post_event_buffer_minutes
+        # 从 block 窗口边界向内收缩到 warn 窗口
+        shrink_start = timedelta(minutes=full_pre - warn_pre)
+        shrink_end = timedelta(minutes=full_post - warn_post)
+        warn_windows = [
+            w for w in warn_windows
+            if (datetime.fromisoformat(w["window_start"]) + shrink_start)
+            <= evaluation_time
+            <= (datetime.fromisoformat(w["window_end"]) - shrink_end)
+        ]
     return {
         "symbol": symbol,
         "evaluation_time": evaluation_time.isoformat(),
-        "blocked": bool(active_windows),
+        "blocked": bool(block_windows),
+        "warned": bool(warn_windows),
+        "severity": "block" if block_windows else ("warn" if warn_windows else "none"),
         "currencies": context["currencies"],
         "countries": context["countries"],
         "active_windows": active_windows,
+        "block_windows": block_windows,
+        "warn_windows": warn_windows,
         "upcoming_windows": upcoming_windows,
         "importance_min": importance_min if importance_min is not None else service.settings.high_importance_threshold,
+        "block_importance_min": block_min,
     }

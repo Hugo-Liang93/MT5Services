@@ -200,6 +200,7 @@ class CentralizedConfig:
             ("tradingeconomics", "tradingeconomics"),
             ("fred", "fred"),
             ("fmp", "fmp"),
+            ("jin10", "jin10"),
             ("alphavantage", "alphavantage"),
         ):
             section_data = configs["economic"].get(section_name, {})
@@ -207,6 +208,11 @@ class CentralizedConfig:
                 val = section_data.get(key)
                 if val is not None:
                     _provider_fields[f"{prefix}_{key}"] = val
+        # Jin10 token（非 api_key 字段名，单独处理）
+        _jin10_section = configs["economic"].get("jin10", {})
+        _jin10_token = _jin10_section.get("token")
+        if _jin10_token is not None:
+            _provider_fields["jin10_token"] = _jin10_token
         # market_impact section 键名需要加前缀
         _market_impact_raw = configs["economic"].get("market_impact", {})
         _market_impact_fields = {
@@ -232,6 +238,9 @@ class CentralizedConfig:
             "fred_release_whitelist_ids",
             "fred_release_whitelist_keywords",
             "fred_release_blacklist_keywords",
+            "calendar_sync_sources",
+            "near_term_sync_sources",
+            "release_watch_sources",
             "curated_sources",
             "curated_countries",
             "curated_currencies",
@@ -264,6 +273,7 @@ class CentralizedConfig:
             "fred_api_key",
             "fmp_api_key",
             "alphavantage_api_key",
+            "jin10_token",
         ):
             economic_config[api_key_field] = _normalize_optional_secret(
                 economic_config.get(api_key_field)

@@ -89,11 +89,23 @@ class EconomicConfig(BaseModel):
     near_term_window_hours: int = 72
     release_watch_lookback_minutes: int = 15
     release_watch_lookahead_minutes: int = 120
+    # 三档自适应 release_watch
+    release_watch_idle_interval_seconds: float = 1800.0
+    release_watch_approaching_interval_seconds: float = 600.0
+    release_watch_active_interval_seconds: float = 120.0
+    release_watch_approaching_minutes: int = 120
+    release_watch_active_minutes: int = 30
+    release_watch_post_event_minutes: int = 15
+    release_watch_importance_min: int = 2
     default_countries: List[str] = Field(default_factory=list)
     fred_release_whitelist_ids: List[str] = Field(default_factory=list)
     fred_release_whitelist_keywords: List[str] = Field(default_factory=list)
     fred_release_blacklist_keywords: List[str] = Field(default_factory=list)
-    curated_sources: List[str] = Field(default_factory=lambda: ["tradingeconomics"])
+    # Per-job provider 路由（逗号分隔，为空则使用全部已配置 provider）
+    calendar_sync_sources: List[str] = Field(default_factory=list)
+    near_term_sync_sources: List[str] = Field(default_factory=list)
+    release_watch_sources: List[str] = Field(default_factory=list)
+    curated_sources: List[str] = Field(default_factory=lambda: ["jin10"])
     curated_countries: List[str] = Field(default_factory=list)
     curated_currencies: List[str] = Field(default_factory=list)
     curated_statuses: List[str] = Field(
@@ -108,6 +120,10 @@ class EconomicConfig(BaseModel):
     trade_guard_lookback_minutes: int = 0
     trade_guard_importance_min: int | None = None
     trade_guard_provider_failure_threshold: int = 3
+    # 分级压制：低于 block_importance_min 的事件仅 warn，不 block
+    trade_guard_block_importance_min: int = 3
+    trade_guard_warn_pre_buffer_minutes: int = 15
+    trade_guard_warn_post_buffer_minutes: int = 10
     tradingeconomics_enabled: bool = True
     tradingeconomics_api_key: str | None = None
     fred_enabled: bool = True
@@ -115,6 +131,9 @@ class EconomicConfig(BaseModel):
     # FMP (Financial Modeling Prep)
     fmp_enabled: bool = False
     fmp_api_key: str | None = None
+    # Jin10 (金十数据)
+    jin10_enabled: bool = True
+    jin10_token: str | None = None
     # Alpha Vantage
     alphavantage_enabled: bool = False
     alphavantage_api_key: str | None = None
