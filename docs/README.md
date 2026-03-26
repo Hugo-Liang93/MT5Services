@@ -13,7 +13,9 @@
 
 | 文档 | 说明 |
 |------|------|
-| [价格确认入场](design/pending-entry.md) | PendingEntry 机制的设计方案 (已实现) |
+| [价格确认入场](design/pending-entry.md) | PendingEntry 机制的设计方案（已实现）|
+| [风控增强 — PnL 熔断与持久化恢复](design/risk-enhancement.md) | PerformanceTracker 重启恢复 + PnL 熔断器设计（已实现）|
+| [Next Plan — 下一阶段规划](design/next-plan.md) | Phase 2 优先级、技术方案、验收标准 |
 
 ## 其他参考
 

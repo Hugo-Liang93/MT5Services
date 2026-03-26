@@ -194,6 +194,64 @@ raw_confidence (策略输出)
 
 ---
 
+## 5.5 StrategyPerformanceTracker — 日内绩效追踪
+
+**模块**：`src/signals/evaluation/performance.py`
+
+纯内存的实时反馈层，置信度管线中的 `session_performance_multiplier` 来源。
+
+### 重启恢复
+
+`PerformanceTracker` 启动时通过 `warm_up_from_db()` 从 DB 恢复当天状态，避免重启后学习归零：
+
+```
+AppRuntime.start()
+    → _start_performance_tracker()
+        → signal_repo.fetch_recent_outcomes(hours=24)   # UNION ALL: signal_outcomes + trade_outcomes
+        → perf.warm_up_from_db(rows)                    # 按 recorded_at 升序重放
+        → 恢复后: wins/losses/streak/PnL 与重启前一致
+```
+
+非致命：DB 不可用时 catch Exception → debug log，不阻塞启动。
+
+### PnL 熔断器
+
+独立于 `TradeExecutor` 的技术熔断器，计实际亏损次数（非 API 失败）：
+
+```
+record_outcome(source="trade", won=False)
+    → _global_trade_loss_streak += 1
+    → 达到 pnl_circuit_max_consecutive_losses (默认 5)
+        → _pnl_circuit_paused = True
+        → 记录 _pnl_circuit_opened_at
+
+is_trading_paused()           ← TradeExecutor._handle_confirmed() 中调用
+    → True: 跳过下单 (notify_skip: "pnl_circuit_paused")
+    → 超过 cooldown_minutes (默认 120min) 自动复位
+    → 任意一笔盈利 (won=True) 重置连败计数器
+```
+
+**配置**（`signal.ini [pnl_circuit_breaker]`）：
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `enabled` | `true` | 总开关 |
+| `max_consecutive_losses` | `5` | 触发阈值 |
+| `cooldown_minutes` | `120` | 自动恢复等待时间 |
+
+### 两个熔断器对比
+
+| 维度 | TradeExecutor 技术熔断 | PnL 熔断（PerformanceTracker） |
+|------|----------------------|-------------------------------|
+| 计数对象 | MT5 API 失败次数 | 实际平仓亏损次数 |
+| 状态位置 | `TradeExecutor._circuit_open` | `PerformanceTracker._pnl_circuit_paused` |
+| 阈值 | `max_consecutive_failures = 3` | `max_consecutive_losses = 5` |
+| 自动恢复 | `circuit_auto_reset_minutes = 30` | `cooldown_minutes = 120` |
+| 重启恢复 | 不恢复（API 错误不持久化） | 从 DB 恢复（trade_outcomes 表）|
+| INI section | `[circuit_breaker]` | `[pnl_circuit_breaker]` |
+
+---
+
 ## 6. 状态机
 
 每个 `(symbol, timeframe, strategy)` 独立维护状态：

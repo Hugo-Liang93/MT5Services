@@ -51,15 +51,16 @@ MarketDataService → StorageWriter → BackgroundIngestor → UnifiedIndicatorM
 按序启动后台线程：
 
 ```
-1. StorageWriter        → DB 队列刷写
-2. IndicatorManager     → 注册 listener + 后台线程
-3. BackgroundIngestor   → MT5 采集主循环
-4. EconomicCalendar     → 日历同步
-5. SignalRuntime        → 信号评估事件循环
-6. Calibrator           → 置信度校准热启动
-7. PendingEntryManager  → 价格确认监控
-8. PositionManager      → 持仓监控 + sync
-9. MonitoringManager    → 定时巡检
+1. StorageWriter           → DB 队列刷写
+2. IndicatorManager        → 注册 listener + 后台线程
+3. BackgroundIngestor      → MT5 采集主循环
+4. EconomicCalendar        → 日历同步
+5. SignalRuntime           → 信号评估事件循环
+6. Calibrator              → 置信度校准热启动（从 JSON 缓存或 DB）
+7. PerformanceTracker      → 从 DB 重放过去 24h outcomes（重启恢复）
+8. PendingEntryManager     → 价格确认监控
+9. PositionManager         → 持仓监控 + sync
+10. MonitoringManager      → 定时巡检
 ```
 
 关闭顺序相反。所有组件通过 `AppContainer` 持有，`deps.py` 仅作 FastAPI DI 适配层。
@@ -115,6 +116,7 @@ SignalRuntime (双队列: confirmed 优先消费)
 | pending-entry | PendingEntryManager | Quote 价格确认监控 |
 | position-manager | PositionManager | 持仓监控、止损跟踪 |
 | calibrator-refresh | ConfidenceCalibrator | 定时刷新校准数据 |
+| health-flush | HealthMonitor | 写缓冲批量刷盘（每 5s） |
 | economic-sync | EconomicCalendar | 日历数据同步 |
 | monitoring | MonitoringManager | 定时健康巡检 |
 | storage-* × N | StorageWriter | 每通道一个刷写线程 |
@@ -125,8 +127,8 @@ SignalRuntime (双队列: confirmed 优先消费)
 |------|------|---------|
 | MT5 终端 | 行情采集 + 交易执行 | MT5 Python binding (进程内) |
 | TimescaleDB | 历史数据持久化 | psycopg2 连接池 |
-| SQLite (events.db) | 指标事件 durable store | 本地文件 |
-| SQLite (health_monitor.db) | 健康指标存储 | 本地文件 |
+| SQLite (events.db) | 指标事件 durable store（WAL 模式 + 持久化连接） | 本地文件 |
+| SQLite (health_monitor.db) | 健康指标存储（WAL 模式 + 写缓冲 + 后台刷盘） | 本地文件 |
 
 ## 7. 开发规则
 

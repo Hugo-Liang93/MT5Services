@@ -363,9 +363,17 @@
 │  └───────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
 │                              ▼                                               │
-│  ┌─── GATE 2: 熔断器 ───────────────────────────────────────────────────┐   │
-│  │  连续失败 ≥ max_consecutive_failures → circuit_open                   │   │
+│  ┌─── GATE 2: 技术熔断器 ────────────────────────────────────────────────┐   │
+│  │  连续 MT5 API 失败 ≥ max_consecutive_failures → circuit_open          │   │
 │  │  自动恢复: 超过 circuit_auto_reset_minutes → half-open 重试           │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                              │                                               │
+│                              ▼                                               │
+│  ┌─── GATE 2.5: PnL 熔断器 ─────────────────────────────────────────────┐   │
+│  │  PerformanceTracker.is_trading_paused()                               │   │
+│  │  连续实际亏损 ≥ pnl_circuit_max_consecutive_losses → 暂停             │   │
+│  │  自动恢复: 超过 pnl_circuit_cooldown_minutes                          │   │
+│  │  任意一笔盈利 → 立即重置连败计数                                       │   │
 │  └───────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
 │                              ▼                                               │
@@ -527,10 +535,12 @@
 │  ┌─── StrategyPerformanceTracker ────────────────────────────────────────┐   │
 │  │  模块: src/signals/evaluation/performance.py                          │   │
 │  │  消费: signal/trade 两链路的 outcome 回调                             │   │
-│  │  状态: 纯内存, per-strategy 滚动统计                                  │   │
-│  │        (wins, losses, streak, PnL, per-regime 维度)                   │   │
-│  │  产出: get_multiplier(strategy, regime) → [0.50, 1.20]               │   │
-│  │        → 被 SignalModule.evaluate() 置信度管线消费                    │   │
+│  │  状态: 内存 + 启动时从 DB 热恢复（过去 24h outcomes）                 │   │
+│  │        per-strategy 滚动统计 (wins, losses, streak, PnL, per-regime)  │   │
+│  │  产出 ①: get_multiplier(strategy, regime) → [0.50, 1.20]            │   │
+│  │          → 被 SignalModule.evaluate() 置信度管线消费                  │   │
+│  │  产出 ②: is_trading_paused() → bool                                  │   │
+│  │          → PnL 熔断器状态，被 TradeExecutor 在 GATE 2.5 查询         │   │
 │  └───────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌─── ConfidenceCalibrator ──────────────────────────────────────────────┐   │
@@ -640,7 +650,7 @@
 | TrackedPosition | PositionManager | 移动止损 / 对账 / 关仓回调 | 内存 (可从 MT5+审计恢复) |
 | signal_outcomes | SignalQualityTracker | ConfidenceCalibrator (后台聚合) | TimescaleDB signal_outcomes |
 | trade_outcomes | TradeOutcomeTracker | PerformanceTracker (实时反馈) | TimescaleDB trade_outcomes |
-| PerformanceMultiplier | PerformanceTracker | SignalModule 置信度管线 | 纯内存 (session 级重置) |
+| PerformanceMultiplier | PerformanceTracker | SignalModule 置信度管线 + TradeExecutor PnL 熔断检查 | 内存（启动时从 DB 恢复过去 24h） |
 | CalibrationFactor | ConfidenceCalibrator | SignalModule 置信度管线 | 内存 (每 15 分钟刷新) |
 
 ---
@@ -849,3 +859,5 @@
 | **RiskService 规则** | 各规则拒绝 | 返回独立错误码（MARGIN_INSUFFICIENT_PRE / TRADE_FREQUENCY_LIMITED 等） |
 | **PositionManager** | 仓位恢复失败 | warning 日志（非 debug），恢复计数返回给调用方 |
 | **PerformanceTracker** | 样本不足 | 回退到同 category 策略聚合绩效（StrategyCategory 枚举约束） |
+| **PerformanceTracker** | 服务重启 | 启动时从 DB 查询过去 24h signal_outcomes+trade_outcomes 并重放，恢复 wins/losses/streak |
+| **PerformanceTracker PnL 熔断** | 连续亏损 ≥ 5 | TradeExecutor GATE 2.5 检查 is_trading_paused() → 暂停 120 分钟；盈利后立即重置 |

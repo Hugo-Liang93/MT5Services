@@ -182,16 +182,29 @@ src/
 | 子模块 | 职责 | 与实盘的关系 |
 |--------|------|------------|
 | `component_factory.py` | 构建独立 pipeline/SignalModule | **绕过** deps.py，每次独立创建 |
-| `engine.py` | 逐 bar 回放主循环（874 行） | 复用 evaluate/filters/regime |
-| `data_loader.py` | 从 DB 加载历史 OHLC | 独立（不经 MarketDataService） |
+| `engine.py` | 逐 bar 回放主循环 | 复用 evaluate/filters/regime |
+| `data_loader.py` | 从 DB 加载历史 OHLC + 指标预计算缓存 | 独立（不经 MarketDataService） |
 | `portfolio.py` | 模拟持仓/SL/TP/资金曲线 | 复用 position_rules 纯函数 |
 | `optimizer.py` | 网格/随机参数搜索 | 复用 CachedDataLoader + 预计算指标 |
 | `walk_forward.py` | 前推验证 IS/OOS | 复用 optimizer + engine |
 | `recommendation.py` | 参数推荐引擎 + ConfigApplicator | 写入 signal.local.ini + 热更新 SignalModule |
 | `filters.py` | 过滤器模拟 | **直接复用** SignalFilterChain |
 | `api.py` | HTTP API（run/optimize/walk-forward/recommendations） | 在进程内异步执行 |
+| `config.py` | BacktestConfig（从 backtest.ini 加载，含成本参数） | 独立 |
 | `metrics.py` | Sharpe/Sortino/Calmar 计算 | 独立 |
-| `models.py` | BacktestResult/Recommendation/ParamChange | 独立 |
+| `models.py` | BacktestResult/Recommendation/ParamChange/BacktestJob | 独立 |
+
+**回测请求支持**：
+- `strategy_params`：全局策略参数覆盖
+- `strategy_params_per_tf`：按时间框架独立覆盖（与实盘 `[strategy_params.<TF>]` 等效）
+- `BacktestRequestBase`：所有请求类型（run/optimize/walk-forward）共用基类
+
+**真实交易成本**（`config/backtest.ini [backtest]`）：
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `commission_per_lot` | `7.0` | 单边手续费（进出合计 $14/手） |
+| `slippage_points` | `15.0` | 典型滑点（XAUUSD 范围 10-30 点）|
 
 **参数推荐工作流**：
 ```
@@ -238,6 +251,28 @@ W = 写入, R = 读取, RW = 读写
 | **参数推荐应用** | `/v1/backtest/recommendations/{id}/apply` | 部分 | 写 signal.local.ini + 可选热更新 SignalModule |
 | **单元测试** | pytest | 否 | Mock 对象 |
 | **集成测试** | pytest | 部分 | 混合 mock + 真实组件 |
+
+---
+
+### 2.10 `src/monitoring/` — 健康监控（已优化）
+
+| 特性 | 说明 |
+|------|------|
+| 持久化连接 | `_get_conn()` 返回单例 SQLite 连接，消除 `record_metric` 每次 connect/close 开销 |
+| WAL 模式 | `PRAGMA journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=30000` |
+| 写缓冲 + 后台刷盘 | `_write_buffer` 积攒指标行，后台线程每 5s 批量 INSERT；缓冲满 500 条立即刷盘 |
+| 告警同步写 | `_record_alert()` 绕过缓冲，同步执行，确保不丢失 |
+| `NullHealthMonitor` | 回测/批量优化场景使用，满足完整接口但零 I/O |
+
+### 2.11 `src/utils/event_store.py` — 指标事件 Durable Store（已优化）
+
+| 特性 | 说明 |
+|------|------|
+| 持久化连接 | `_get_conn()` 消除每次操作的 connect/close 开销 |
+| WAL + cache | 8MB 页缓存，busy_timeout 30s |
+| Stats 延迟写 | 每 20 次操作才落盘（`_STATS_FLUSH_EVERY = 20`），降低写放大 |
+| 原子领取 | `claim_next_events()` 用 `UPDATE…RETURNING` CTE，一条 SQL 完成原子操作 |
+| 显式 close | `close()` 方法刷新 pending stats 并关闭连接 |
 
 ---
 
