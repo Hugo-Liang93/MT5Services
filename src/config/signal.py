@@ -79,6 +79,10 @@ def _normalize_session_map(section: dict[str, object]) -> dict[str, list[str]]:
 def get_signal_config() -> SignalConfig:
     merged = get_merged_config("signal.ini")
     signal_section = dict(merged.get("signal", {}))
+    # 空值 → None，遵循 INI 约定：留空 = 不限制（与 risk.ini 加载一致）
+    for _optional_key in ("max_concurrent_positions_per_symbol",):
+        if str(signal_section.get(_optional_key, "")).strip() == "":
+            signal_section[_optional_key] = None
     preview_section = dict(merged.get("preview", {}))
     regime_section = dict(merged.get("regime", {}))
     voting_section = dict(merged.get("voting", {}))
