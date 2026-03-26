@@ -103,6 +103,7 @@ class TradeExecutor:
         self._execution_count = 0
         self._last_execution_at: datetime | None = None
         self._last_error: str | None = None
+        self._last_risk_block: str | None = None
         self._execution_log: deque[dict] = deque(maxlen=100)
         # Async execution: decouple listener callback from MT5 API calls
         exec_queue_size = int(getattr(config, "exec_queue_size", 0) or 0) or 256
@@ -727,7 +728,7 @@ class TradeExecutor:
             "order_kind": "market",
             "sl": params.stop_loss,
             "tp": params.take_profit,
-            "comment": f"auto:{event.strategy}:{event.timeframe}:{event.direction}"[:31],
+            "comment": f"{event.timeframe}:{event.strategy}:{event.direction}"[:31],
             "request_id": event.signal_id,
             "metadata": self._build_trade_metadata(event),
         }
@@ -737,6 +738,7 @@ class TradeExecutor:
             self._execution_count += 1
             self._last_execution_at = datetime.now(timezone.utc)
             self._last_error = None
+            self._last_risk_block = None
             # 成功执行：重置熔断器失败计数
             self._consecutive_failures = 0
             requested_price = None
@@ -844,7 +846,7 @@ class TradeExecutor:
                 result.setdefault("execution_quality", execution_quality)
             return result
         except PreTradeRiskBlockedError as exc:
-            self._last_error = str(exc)
+            self._last_risk_block = str(exc)
             self._execution_quality["risk_blocks"] += 1
             assessment = dict(exc.assessment or {})
             reason = str(assessment.get("reason") or exc)
@@ -931,6 +933,7 @@ class TradeExecutor:
             "execution_count": self._execution_count,
             "last_execution_at": self._last_execution_at.isoformat() if self._last_execution_at else None,
             "last_error": self._last_error,
+            "last_risk_block": self._last_risk_block,
             "circuit_breaker": {
                 "open": self._circuit_open,
                 "consecutive_failures": self._consecutive_failures,
