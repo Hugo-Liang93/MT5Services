@@ -8,6 +8,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,10 @@ class HealthMonitor:
             "cache_hit_rate": {"warning": 0.0, "critical": 0.0},
         }
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
+        # Report cache: avoid repeated SQLite full-table scans from SSE polling
+        self._report_cache: Optional[Dict[str, Any]] = None
+        self._report_cache_at: float = 0.0
+        self._report_cache_ttl: float = 15.0  # seconds
         logger.info("HealthMonitor initialized with database: %s", db_path)
 
     def configure_alerts(
@@ -367,7 +372,18 @@ class HealthMonitor:
         return check_economic_calendar(self, component, service)
 
     def generate_report(self, hours: int = 24) -> Dict[str, Any]:
-        return generate_report(self, hours=hours)
+        now = time.monotonic()
+        if (
+            hours == 24
+            and self._report_cache is not None
+            and now - self._report_cache_at < self._report_cache_ttl
+        ):
+            return self._report_cache
+        report = generate_report(self, hours=hours)
+        if hours == 24:
+            self._report_cache = report
+            self._report_cache_at = now
+        return report
 
     def get_recent_metrics(
         self,

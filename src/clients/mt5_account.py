@@ -63,7 +63,7 @@ class MT5AccountClientError(MT5TradeError):
 class MT5AccountClient(MT5BaseClient):
     # 对只读账户/持仓查询进行短 TTL 缓存，减少高并发下的 MT5 API 序列化压力。
     # 缓存仅用于读路径；写操作（下单/平仓）会主动使缓存失效。
-    _ACCOUNT_INFO_TTL = 3.0   # seconds
+    _ACCOUNT_INFO_TTL = 10.0  # seconds — SSE polls every 3s, no need for sub-10s freshness
     _POSITIONS_TTL = 3.0      # seconds
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
