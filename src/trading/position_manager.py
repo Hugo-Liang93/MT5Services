@@ -18,7 +18,13 @@ from .sizing import TradeParameters
 
 logger = logging.getLogger(__name__)
 
-_RESTORABLE_COMMENT_PREFIXES = ("auto:", "agent:")
+# Comment prefixes that identify positions opened by this system.
+# "auto:" is the legacy format; timeframe prefixes (e.g. "m5:", "h1:") are the
+# current format since the comment was changed to "{tf}:{strategy}:{direction}".
+_RESTORABLE_COMMENT_PREFIXES = (
+    "auto:", "agent:",
+    "m1:", "m5:", "m15:", "m30:", "h1:", "h4:", "d1:", "w1:", "mn1:",
+)
 
 
 @dataclass
