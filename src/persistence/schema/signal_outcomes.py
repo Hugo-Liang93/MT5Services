@@ -5,6 +5,19 @@
 """
 
 DDL = """
+-- Migration: 旧表 PK 为 (signal_id)，不含分区键 recorded_at，需重建为 hypertable
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_constraint co ON co.conrelid = c.oid
+        WHERE c.relname = 'signal_outcomes' AND co.conname = 'signal_outcomes_pkey'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM timescaledb_information.hypertables
+        WHERE hypertable_name = 'signal_outcomes'
+    ) THEN
+        DROP TABLE signal_outcomes;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS signal_outcomes (
     recorded_at   timestamptz NOT NULL,
     signal_id     text NOT NULL,
@@ -20,8 +33,12 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
     bars_held     int,
     regime        text,
     metadata      jsonb,
-    PRIMARY KEY (signal_id)
+    PRIMARY KEY (recorded_at, signal_id)
 );
+SELECT create_hypertable('signal_outcomes', 'recorded_at',
+                          if_not_exists => TRUE, migrate_data => TRUE);
+CREATE UNIQUE INDEX IF NOT EXISTS signal_outcomes_upsert_idx
+ON signal_outcomes (signal_id, recorded_at);
 CREATE INDEX IF NOT EXISTS signal_outcomes_symbol_idx
 ON signal_outcomes (symbol, timeframe, strategy, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS signal_outcomes_won_idx
@@ -46,7 +63,7 @@ INSERT INTO signal_outcomes (
     metadata
 )
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (signal_id) DO UPDATE SET
+ON CONFLICT (signal_id, recorded_at) DO UPDATE SET
     exit_price    = EXCLUDED.exit_price,
     price_change  = EXCLUDED.price_change,
     won           = EXCLUDED.won,

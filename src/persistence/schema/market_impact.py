@@ -90,8 +90,7 @@ INSERT INTO economic_event_market_impact (
     %s, %s,
     %s, %s, %s,
     %s, %s
-) ON CONFLICT (event_uid, symbol, timeframe) DO UPDATE SET
-    recorded_at = EXCLUDED.recorded_at,
+) ON CONFLICT (event_uid, symbol, timeframe, recorded_at) DO UPDATE SET
     released_at = COALESCE(EXCLUDED.released_at, economic_event_market_impact.released_at),
     actual = COALESCE(EXCLUDED.actual, economic_event_market_impact.actual),
     forecast = COALESCE(EXCLUDED.forecast, economic_event_market_impact.forecast),

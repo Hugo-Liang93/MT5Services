@@ -36,11 +36,24 @@ from src.signals.service import SignalModule
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
-@router.get("/strategies", response_model=ApiResponse[list[str]])
+@router.get("/strategies", response_model=ApiResponse[list[Dict[str, Any]]])
 def list_signal_strategies(
     service: SignalModule = Depends(get_signal_service),
-) -> ApiResponse[list[str]]:
-    strategies = service.list_strategies()
+) -> ApiResponse[list[Dict[str, Any]]]:
+    strategy_names = service.list_strategies()
+    strategies: list[Dict[str, Any]] = []
+    for name in strategy_names:
+        affinity_map = service.strategy_affinity_map(name)
+        strategies.append({
+            "name": name,
+            "category": service.strategy_category(name),
+            "preferred_scopes": list(service.strategy_scopes(name)),
+            "required_indicators": list(service.strategy_requirements(name)),
+            "regime_affinity": {
+                (k.value if hasattr(k, "value") else str(k)): v
+                for k, v in affinity_map.items()
+            },
+        })
     return ApiResponse.success_response(
         data=strategies,
         metadata={"count": len(strategies)},

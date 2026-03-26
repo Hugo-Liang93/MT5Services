@@ -29,6 +29,9 @@ from src.config import (
     load_storage_settings,
 )
 from src.monitoring import get_health_monitor, get_monitoring_manager
+from src.studio.service import StudioService
+from src.studio import mappers as studio_mappers
+from src.studio.models import build_event
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +87,16 @@ def build_app_container(
     if economic_settings.market_impact_enabled:
         from src.calendar.economic_calendar.market_impact import MarketImpactAnalyzer
 
+        _ingestor_ref = c.ingestor
         c.market_impact_analyzer = MarketImpactAnalyzer(
             db_writer=c.storage_writer.db,
             market_repo=c.storage_writer.db.market_repo,
             settings=economic_settings,
+            warmup_ready_fn=(
+                (lambda: not _ingestor_ref.is_backfilling)
+                if _ingestor_ref is not None
+                else None
+            ),
         )
         c.economic_calendar_service.market_impact_analyzer = c.market_impact_analyzer
 
@@ -149,6 +158,24 @@ def build_app_container(
     c.health_monitor.cleanup_old_data(days_to_keep=30)
     c.indicator_manager.cleanup_old_events(days_to_keep=7)
 
+    # ── Phase 5: Studio (observability layer) ──
+    c.studio_service = _build_studio_service(c)
+
+    # ── Spread / cost sanity check ──
+    _sig_cfg = signal_config_loader()
+    if _sig_cfg.base_spread_points > 0:
+        # 最小可能 SL ≈ base_spread × 3（极端低 ATR 场景的粗略下限）
+        min_plausible_sl = _sig_cfg.base_spread_points * 3
+        implied_ratio = _sig_cfg.base_spread_points / min_plausible_sl
+        if implied_ratio > _sig_cfg.max_spread_to_stop_ratio * 0.8:
+            logger.warning(
+                "Spread/cost config may be too tight: base_spread=%.0f, "
+                "max_spread_to_stop_ratio=%.2f. Low-ATR timeframes "
+                "might reject most trades. Consider raising the ratio.",
+                _sig_cfg.base_spread_points,
+                _sig_cfg.max_spread_to_stop_ratio,
+            )
+
     # ── Log effective config ──
     logger.info(
         "Effective runtime config: %s",
@@ -179,3 +206,212 @@ def build_app_container(
     )
 
     return c
+
+
+# ── Studio wiring ─────────────────────────────────────────────
+#
+# This is the ONLY place that knows about both business modules and Studio
+# mappers.  Each agent provider is a closure that captures a module reference
+# and calls the corresponding pure mapper function.
+
+
+def _build_studio_service(c: AppContainer) -> StudioService:
+    studio = StudioService()
+
+    # ── Register agent providers ──────────────────────────────
+    # Each lambda captures the module reference; the mapper receives
+    # only primitive data (dicts, bools) — never the module itself.
+
+    if c.ingestor is not None:
+        _ingestor = c.ingestor
+        studio.register_agent(
+            "collector",
+            lambda: studio_mappers.map_collector(
+                _ingestor.queue_stats(), _ingestor.is_backfilling
+            ),
+        )
+
+    if c.indicator_manager is not None:
+        _ind = c.indicator_manager
+        studio.register_agent(
+            "analyst",
+            lambda: studio_mappers.map_analyst(_ind.get_performance_stats()),
+        )
+        _ms = c.market_service
+        _ing = c.ingestor
+        _tfs = list(c.indicator_manager.config.timeframes)
+        studio.register_agent(
+            "live_analyst",
+            lambda: studio_mappers.map_live_analyst(
+                _ind.get_performance_stats(),
+                {tf: _ms.get_intrabar_series(None, tf) for tf in _tfs},
+                _ing.queue_stats().get("intrabar", {}) if _ing else {},
+            ),
+        )
+
+    if c.signal_module is not None:
+        _sm = c.signal_module
+        studio.register_agent(
+            "strategist",
+            lambda: studio_mappers.map_strategist(
+                len(_sm.list_strategies()),
+                _sm.recent_signals(limit=10, scope="confirmed"),
+            ),
+        )
+        _sr_for_live = c.signal_runtime
+        studio.register_agent(
+            "live_strategist",
+            lambda: studio_mappers.map_live_strategist(
+                _sm.list_intrabar_strategies(),
+                _sm.recent_signals(limit=20, scope="preview"),
+                _sr_for_live.status() if _sr_for_live else {},
+            ),
+        )
+
+    if c.signal_runtime is not None:
+        _sr = c.signal_runtime
+        studio.register_agent(
+            "auditor",
+            lambda: studio_mappers.map_auditor(_sr.status()),
+        )
+        studio.register_agent(
+            "voter",
+            lambda: studio_mappers.map_voter(_sr.status()),
+        )
+
+    if c.trade_executor is not None:
+        _te_risk = c.trade_executor
+        studio.register_agent(
+            "risk_officer",
+            lambda: studio_mappers.map_risk_officer(_te_risk.status()),
+        )
+
+    if c.trade_executor is not None:
+        _te = c.trade_executor
+        _pem = c.pending_entry_manager
+        studio.register_agent(
+            "trader",
+            lambda: studio_mappers.map_trader(
+                _te.status(),
+                _pem.status() if _pem is not None else {},
+            ),
+        )
+
+    if c.position_manager is not None:
+        _pm = c.position_manager
+        studio.register_agent(
+            "position_manager",
+            lambda: studio_mappers.map_position_manager(
+                _pm.active_positions(), _pm.status()
+            ),
+        )
+
+    if c.trade_module is not None:
+        import dataclasses as _dc
+        _tm = c.trade_module
+        studio.register_agent(
+            "accountant",
+            lambda: studio_mappers.map_accountant(
+                _dc.asdict(_tm.account_info()) if _dc.is_dataclass(_tm.account_info()) else _tm.account_info(),
+                _tm.trade_control_status(),
+            ),
+        )
+
+    if c.economic_calendar_service is not None:
+        _ecs = c.economic_calendar_service
+        studio.register_agent(
+            "calendar_reporter",
+            lambda: studio_mappers.map_calendar_reporter(
+                _ecs.stats(), _ecs.get_risk_windows()
+            ),
+        )
+
+    if c.health_monitor is not None:
+        _hm = c.health_monitor
+        studio.register_agent(
+            "inspector",
+            lambda: studio_mappers.map_inspector(_hm.generate_report()),
+        )
+
+    # ── Register summary providers ────────────────────────────
+
+    if c.trade_module is not None:
+        _tm_s = c.trade_module
+        studio.register_summary_provider(
+            lambda: {
+                "account": str((_tm_s.account_info() or {}).get("login", "")),
+                "environment": "live",
+            }
+        )
+
+    market_settings = get_runtime_market_settings()
+    _default_symbol = market_settings.default_symbol
+    studio.register_summary_provider(lambda: {"symbol": _default_symbol})
+
+    # ── Register event listeners ────────────────────────────
+    _register_studio_signal_listener(c, studio)
+    _register_studio_trade_listener(c, studio)
+
+    return studio
+
+
+def _register_studio_signal_listener(
+    c: AppContainer, studio: StudioService
+) -> None:
+    """Wire SignalRuntime's listener to push events into Studio."""
+    if c.signal_runtime is None:
+        return
+
+    def _on_signal(event: Any) -> None:
+        signal_state = getattr(event, "signal_state", "")
+        symbol = getattr(event, "symbol", "")
+        strategy = getattr(event, "strategy", "")
+        direction = getattr(event, "direction", "")
+        confidence = getattr(event, "confidence", 0.0)
+        timeframe = getattr(event, "timeframe", "")
+
+        if signal_state in ("confirmed_buy", "confirmed_sell"):
+            studio.emit_event(build_event(
+                "signal_generated",
+                source="strategist",
+                message=f"{symbol} {timeframe} {strategy} {direction} conf={confidence:.2f}",
+                level="success",
+                target="voter",
+                symbol=symbol,
+            ))
+        elif signal_state == "confirmed_cancelled":
+            studio.emit_event(build_event(
+                "signal_generated",
+                source="strategist",
+                message=f"{symbol} {timeframe} {strategy} 信号取消",
+                level="info",
+                symbol=symbol,
+            ))
+
+    c.signal_runtime.add_signal_listener(_on_signal)
+
+
+def _register_studio_trade_listener(
+    c: AppContainer, studio: StudioService
+) -> None:
+    """Wire TradeExecutor's trade callback to push events into Studio."""
+    if c.trade_executor is None:
+        return
+
+    def _on_trade(log_entry: Any) -> None:
+        symbol = log_entry.get("symbol", "")
+        direction = log_entry.get("direction", "")
+        strategy = log_entry.get("strategy", "")
+        params = log_entry.get("params", {})
+        volume = params.get("volume", 0)
+
+        studio.emit_event(build_event(
+            "trade_executed",
+            source="trader",
+            message=f"{symbol} {direction} {volume} lot | {strategy}",
+            level="success",
+            target="position_manager",
+            symbol=symbol,
+        ))
+
+    c.trade_executor.add_trade_listener(_on_trade)

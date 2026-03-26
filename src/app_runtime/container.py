@@ -22,6 +22,7 @@ from src.trading.signal_executor import TradeExecutor
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.monitoring.pipeline_event_bus import PipelineEventBus
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
+from src.studio.service import StudioService
 
 
 class AppContainer:
@@ -59,6 +60,8 @@ class AppContainer:
         "health_monitor",
         "monitoring_manager",
         "pipeline_event_bus",
+        # Studio
+        "studio_service",
     )
 
     def __init__(self) -> None:
@@ -88,3 +91,5 @@ class AppContainer:
         self.health_monitor: Optional[Any] = None
         self.monitoring_manager: Optional[Any] = None
         self.pipeline_event_bus: Optional[PipelineEventBus] = None
+
+        self.studio_service: Optional[StudioService] = None

@@ -136,6 +136,11 @@ MT5Services/
 │   │   ├── metrics.py            # Sharpe/Sortino/Calmar/最大回撤计算
 │   │   ├── models.py             # BacktestResult/Recommendation/ParamChange 数据类
 │   │   └── api.py                # 回测 HTTP API（run/optimize/walk-forward/recommendations）
+│   ├── studio/               # Studio 可观测性层（Anteater 3D 前端实时状态）
+│   │   ├── models.py         # Agent 元数据注册表（13 角色）+ build_agent/build_event 辅助函数
+│   │   ├── event_buffer.py   # 线程安全环形事件缓冲区（deque + Lock）
+│   │   ├── mappers.py        # 13 个纯映射函数（模块 status dict → StudioAgent dict，纯数据不含展示逻辑）
+│   │   └── service.py        # StudioService：Registry 模式 + SSE 订阅管理 + 事件广播
 │   └── utils/                # 通用工具、内存管理器
 │       └── timezone.py       # 统一时区模块（utc_now/to_display/LocalTimeFormatter）
 ├── tests/                    # 测试套件（镜像 src/ 结构）
@@ -211,6 +216,7 @@ code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默
 2. **EconomicCalendarService** → **TradingAccountRegistry** → **TradingModule**
 3. **SignalModule** + 策略注册 → **SignalRuntime** → **TradeExecutor** → listener 连接
 4. **HealthMonitor** → **MonitoringManager**
+5. **StudioService**（聚合层）→ 注册 13 个 agent provider + SignalRuntime 信号 listener
 
 **启动阶段**（`AppRuntime.start()` — 按序启动后台线程）：
 1. StorageWriter.start() → IndicatorManager.start() → Ingestor.start()
@@ -1159,6 +1165,7 @@ Authentication: `X-API-Key` 请求头（在 `config/market.ini` 中配置）
 | monitoring | `/monitoring` | `/monitoring/health`, `/monitoring/startup`, `/monitoring/queues`, `/monitoring/config/effective` |
 | signal | `/signals` | 信号查询、诊断、策略列表、投票信息、**`/signals/monitoring/quality/{symbol}/{timeframe}`**（Regime + 信号质量） |
 | backtest | `/backtest` | `/backtest/run`, `/backtest/optimize`, `/backtest/walk-forward`, `/backtest/results/{run_id}`, `/backtest/recommendations/*`（生成/审批/应用/回滚） |
+| studio | `/studio` | `/studio/agents`（13 个 agent 实时状态）, `/studio/agents/{id}`, `/studio/events`, `/studio/summary`, `/studio/stream`（SSE 实时推送） |
 
 响应通用包装器：
 ```python
@@ -1362,6 +1369,12 @@ flake8 src/ tests/
 - **Warmup 显式屏障**：~~旧方案通过 `bar_age > max(10×tf, 15min)` 间接推断回补数据~~（已重构）。新方案：`BackgroundIngestor.is_backfilling` 属性 + `SignalRuntime._warmup_ready_fn` 回调，回补期间所有 confirmed/intrabar 快照不入队、不评估、不产生信号。回补结束后各 `(symbol, tf)` 需收到 **bar_time 经过 staleness 校验的** 首个实时 confirmed bar 才解除 intrabar 屏障（`bar_time` 距当前时间不超过 `2×tf_seconds + 30s`，防止异步管道残留的历史快照被误认为实时数据）。IndicatorManager 在此期间正常计算指标填充缓存（API 可查询），仅信号评估被屏蔽。无 `warmup_ready_fn` 时（standalone/测试）跳过 staleness 检查，行为与旧版兼容
 - **Warmup 指标完整性检查**：`SignalPolicy.warmup_required_indicators = ("atr14",)`，与 warmup 屏障互补——回补完成但 ATR 尚未计算时仍跳过，避免浪费首次 `state_changed=true` 转换
 - **Signal 持久化优化**：`state_changed=false` 的重复信号不再写 DB，减少 ~95% signal_events 写入量。listener 仍收到所有事件
+- **Voting Group 成员信号抑制**：属于 voting group 的策略不再单独发布/持久化信号事件，只贡献 `snapshot_decisions` 给投票。`standalone_override` 白名单内的策略例外。投票结果（`*_vote`/`consensus`）正常发布。`ExecutionGate` 的 `voting_group_member` 拦截逻辑保留为防御层
+- **Studio 前后端分工标准化**：后端 mapper 只返回结构化数据（`status`/`alertLevel`/`metrics`），`task` 字段不含数值；前端负责所有展示渲染（标签、颜色、格式化）
+- **Studio 13 Agent 架构**：从 10 个扩展为 13 个 agent。新增：`auditor`（审核员，FilterChain+Regime 亲和度过滤统计）、`live_analyst`（实时分析员，intrabar 指标计算+迷你K线）、`live_strategist`（实时策略员，preview/armed 信号）。分析和策略各拆为 confirmed/intrabar 双链路
+- **IndicatorManager scope 维度统计**：`_scope_stats` 按 confirmed/intrabar/reconcile 三维度独立计数，避免 reconcile 重算混入 bar close 统计
+- **FilterChain 按 scope 分维度计数**：`_filter_by_scope` 分别统计 confirmed/intrabar 的通过/拦截次数，1h 滑动窗口也按 scope 分维度
+- **Ingestor intrabar 去重统计**：`queue_stats()` 新增 `intrabar.polls/deduped/updated` 字段，追踪 OHLC 未变化时的去重跳过比例
 - **统一时区模块**：`src/utils/timezone.py` 提供 `utc_now()`/`to_display()`/`LocalTimeFormatter`，日志时间戳统一为 `app.ini [system] timezone` 配置的显示时区
 - **MT5 统一时间 API**：`MT5BaseClient` 新增 `_server_now()`/`_parse_server_timestamp()`/`_parse_server_timestamp_msc()`/`_request_time_range()`，所有 MT5 API 调用统一走这些方法，消除散落各处的手动时区转换
 - **MarketEventBus**：从 `MarketDataService` 提取事件订阅/分发逻辑，`service.event_bus` 属性访问
@@ -1396,6 +1409,10 @@ flake8 src/ tests/
   - `BacktestRepository` → `src/persistence/repositories/backtest_repo.py`（回测结果与推荐记录仓储）
   - `BacktestEngine` → `src/backtesting/engine.py`（逐 bar 回放，不在 optimizer.py 中）
   - `WalkForwardValidator` → `src/backtesting/walk_forward.py`（前推验证，不在 optimizer.py 中）
+  - `StudioService` → `src/studio/service.py`（Registry 模式 + SSE 订阅管理，零业务模块导入）
+  - Studio mappers → `src/studio/mappers.py`（13 个纯函数，只返回结构化数据，不含展示文本；前端负责渲染）
+  - Studio 装配 → `src/app_runtime/builder.py` `_build_studio_service()`（唯一知道两边的绑定点）
+  - Studio API → `src/api/studio.py`（REST 4 端点 + SSE `/studio/stream`）
 
 ---
 

@@ -20,6 +20,7 @@ from src.api import (
     market,
     monitoring,
     signal,
+    studio,
     trade,
 )
 from src.api.schemas import ApiResponse
@@ -141,6 +142,7 @@ v1.include_router(indicators.router)
 v1.include_router(signal.router)
 v1.include_router(backtest_router)
 v1.include_router(admin.router)
+v1.include_router(studio.router)
 app.include_router(v1)
 
 # 向后兼容：无前缀路由保留，确保现有客户端不中断

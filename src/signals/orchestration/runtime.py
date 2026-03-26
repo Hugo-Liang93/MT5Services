@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses as _dc
 import logging
 import queue
+from collections import deque
 import threading
 import time
 from dataclasses import dataclass
@@ -145,6 +146,12 @@ class SignalRuntime:
         self._voting_group_engines: list[tuple[Any, StrategyVotingEngine]] = (
             self._build_group_engines(self.policy)
         )
+        # 属于 voting group 的策略集合（个体信号不发布，只贡献投票）
+        self._voting_group_members: frozenset[str] = frozenset(
+            name
+            for group in self.policy.voting_groups
+            for name in group.strategies
+        ) - self.policy.standalone_override
         # Regime 稳定性跟踪：key=(symbol, timeframe)，每个交易对独立计数
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._signal_listeners: List[Callable[[SignalEvent], None]] = []
@@ -245,6 +252,15 @@ class SignalRuntime:
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
         self._affinity_gates_skipped: int = 0
+        # FilterChain 按 scope 分维度计数
+        self._filter_by_scope: Dict[str, Dict[str, Any]] = {
+            "confirmed": {"passed": 0, "blocked": 0, "blocks": {}},
+            "intrabar": {"passed": 0, "blocked": 0, "blocks": {}},
+        }
+        # 滑动窗口：记录最近 1h 的 filter 事件 (timestamp, scope, "pass"|reason_category)
+        self._filter_window: deque[tuple[float, str, str]] = deque()
+        self._filter_window_seconds: float = 3600.0  # 1 hour
+        self._filter_started_at: float = time.monotonic()
         self._htf_stale_counter: list[int] = [0]
         # 预初始化 event impact 缓存（避免竞态条件下的 getattr 延迟初始化）
         self._event_impact_cache: Dict[str, Any] = {
@@ -289,6 +305,12 @@ class SignalRuntime:
             else None
         )
         self._voting_group_engines = self._build_group_engines(policy)
+        # 属于 voting group 的策略集合（个体信号不发布，只贡献投票）
+        self._voting_group_members: frozenset[str] = frozenset(
+            name
+            for group in self.policy.voting_groups
+            for name in group.strategies
+        ) - self.policy.standalone_override
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -517,6 +539,33 @@ class SignalRuntime:
                     target_queue.maxsize,
                 )
 
+    def _compute_filter_window_stats(self) -> dict:
+        """计算最近 1h 滑动窗口内的 filter 通过/拦截统计（按 scope 分维度）。"""
+        now = time.monotonic()
+        cutoff = now - self._filter_window_seconds
+        while self._filter_window and self._filter_window[0][0] < cutoff:
+            self._filter_window.popleft()
+
+        by_scope: Dict[str, Dict[str, Any]] = {}
+        for _, scope, cat in self._filter_window:
+            if scope not in by_scope:
+                by_scope[scope] = {"passed": 0, "blocked": 0, "blocks": {}}
+            s = by_scope[scope]
+            if cat == "_pass":
+                s["passed"] += 1
+            else:
+                s["blocked"] += 1
+                s["blocks"][cat] = s["blocks"].get(cat, 0) + 1
+
+        elapsed = now - self._filter_started_at
+        window_secs = min(elapsed, self._filter_window_seconds)
+
+        return {
+            "filter_window_seconds": self._filter_window_seconds,
+            "filter_window_elapsed": round(window_secs, 0),
+            "filter_window_by_scope": by_scope,
+        }
+
     def _count_active_states(self) -> dict:
         """持锁快照 _state_by_target，统计活跃的 preview/confirmed 状态数。"""
         with self._state_lock:
@@ -579,6 +628,11 @@ class SignalRuntime:
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
             "affinity_gates_skipped": self._affinity_gates_skipped,
+            "filter_by_scope": {
+                s: {"passed": d["passed"], "blocked": d["blocked"], "blocks": dict(d["blocks"])}
+                for s, d in self._filter_by_scope.items()
+            },
+            **self._compute_filter_window_stats(),
             "htf_stale_warnings": self._htf_stale_counter[0],
             "warmup_skipped": self._warmup_skipped,
             "warmup_ready": (
@@ -1183,19 +1237,25 @@ class SignalRuntime:
             if transition_metadata is None:
                 continue
 
+            # Voting group 成员：只贡献投票，不单独发布/持久化信号。
+            # 投票结果由 _process_voting 统一发布为 group 信号。
+            if decision.strategy in self._voting_group_members:
+                continue
+
             # Only persist state-changing events to DB (skip repeated same-state signals).
-            # This reduces ~95% of signal_events writes while keeping all data needed
-            # for calibration (signal_outcomes), performance tracking, and trade execution.
-            # Listeners (_publish_signal_event) still receive ALL transitions for real-time use.
             signal_id = ""
+            is_actionable = decision.direction in ("buy", "sell")
             if transition_metadata.get("state_changed", True):
                 record = self.service.persist_decision(
                     decision, indicators=scoped_indicators, metadata=transition_metadata
                 )
-                signal_id = record.signal_id if record is not None else ""
+                if record is not None:
+                    signal_id = record.signal_id
+                else:
+                    signal_id = uuid4().hex[:12]
+            elif is_actionable:
+                signal_id = uuid4().hex[:12]
 
-            # 发布事件时携带全量 indicators（而非 scoped），
-            # 使 TradeExecutor 等监听器能访问 ATR 等非策略核心但下单必需的指标。
             self._publish_signal_event(
                 decision, signal_id, scope, indicators, transition_metadata
             )
@@ -1372,10 +1432,20 @@ class SignalRuntime:
                     "Signal evaluation skipped for %s/%s [%s]: %s",
                     symbol, timeframe, scope, reason,
                 )
+                # 按 scope + reason prefix 分类计数
+                category = reason.split(":")[0] if reason else "unknown"
+                scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
+                scope_stats["blocked"] += 1
+                scope_stats["blocks"][category] = scope_stats["blocks"].get(category, 0) + 1
+                self._filter_window.append((time.monotonic(), scope, category))
                 self._processed_events += 1
                 self._run_count += 1
                 self._last_run_at = datetime.now(timezone.utc)
                 return True
+
+        scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
+        scope_stats["passed"] += 1
+        self._filter_window.append((time.monotonic(), scope, "_pass"))
 
         # ── Regime 检测：每次 snapshot 仅检测一次，结果共享给所有策略 ──────
         soft_regime: Optional[SoftRegimeResult] = None

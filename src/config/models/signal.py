@@ -15,6 +15,8 @@ class SignalConfig(BaseModel):
     timeframe_risk_multipliers: dict[str, float] = Field(default_factory=dict)
     min_volume: float = 0.01
     max_volume: float = 1.0
+    base_spread_points: float = 0.0
+    max_spread_multiplier: float = 2.70
     max_spread_points: float = 50.0
     allowed_sessions: str = "london,newyork"
     session_transition_cooldown_minutes: int = 15

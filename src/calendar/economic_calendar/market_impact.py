@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.clients.economic_calendar import EconomicCalendarEvent
 
@@ -43,10 +43,12 @@ class MarketImpactAnalyzer:
         db_writer: Any,
         market_repo: Any = None,
         settings: Any = None,
+        warmup_ready_fn: Optional[Callable[[], bool]] = None,
     ):
         self._db = db_writer
         self._market_repo = market_repo
         self._settings = settings
+        self._warmup_ready_fn = warmup_ready_fn
         self._pending: Dict[str, _PendingAnalysis] = {}
         self._lock = Lock()
 
@@ -130,6 +132,8 @@ class MarketImpactAnalyzer:
     def tick(self) -> None:
         """在 release_watch 每轮轮询中调用，检查到期的收集任务。"""
         if not self._enabled:
+            return
+        if self._warmup_ready_fn is not None and not self._warmup_ready_fn():
             return
 
         now = _utc_now()
@@ -340,9 +344,8 @@ class MarketImpactAnalyzer:
         status: str,
     ) -> Tuple:
         """将影响数据转换为 DB 行。"""
-        now = _utc_now()
         return (
-            now,  # recorded_at
+            event.scheduled_at,  # recorded_at — 用 scheduled_at 保持稳定，确保 ON CONFLICT 命中
             event.event_uid,
             symbol,
             timeframe,

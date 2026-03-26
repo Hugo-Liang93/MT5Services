@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -9,18 +10,52 @@ from src.config.models.signal import SignalConfig
 from src.config.utils import get_merged_config
 
 
+def _resolve_spread_limits(
+    signal_section: dict[str, object],
+    session_section: dict[str, object],
+) -> dict[str, float]:
+    """将 session_spread_limits 解析为绝对点差值。
+
+    当 base_spread_points > 0 时，session 值视为乘数，自动计算：
+        实际上限 = base_spread_points × 乘数
+    当 base_spread_points 未设置或为 0 时，session 值视为绝对点差（向后兼容）。
+    """
+    raw = _normalize_float_map(session_section)
+    base = _parse_float(signal_section.get("base_spread_points", 0))
+    if base <= 0:
+        return raw
+    return {session: round(base * multiplier, 1) for session, multiplier in raw.items()}
+
+
+def _resolve_max_spread(signal_section: dict[str, object]) -> float | None:
+    """当 base_spread_points > 0 时，用 base × max_spread_multiplier 覆盖 max_spread_points。"""
+    base = _parse_float(signal_section.get("base_spread_points", 0))
+    if base <= 0:
+        return None  # 向后兼容，由 INI 中的 max_spread_points 原值决定
+    multiplier = _parse_float(signal_section.get("max_spread_multiplier", 2.70))
+    return round(base * multiplier, 1)
+
+
+def _parse_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize_float_map(
     section: dict[str, object],
     *,
-    key_transform=lambda value: value,
+    key_transform: "Callable[[str], str] | None" = None,
 ) -> dict[str, float]:
+    _transform = key_transform if key_transform is not None else (lambda v: v)
     normalized: dict[str, float] = {}
     for raw_key, raw_value in section.items():
-        key = str(key_transform(str(raw_key).strip()))
+        key = str(_transform(str(raw_key).strip()))
         if not key:
             continue
         try:
-            normalized[key] = float(raw_value)
+            normalized[key] = float(str(raw_value))
         except (TypeError, ValueError):
             continue
     return normalized
@@ -234,7 +269,9 @@ def get_signal_config() -> SignalConfig:
             for k, v in strategy_htf_section.items()
             if str(k).strip() and str(v).strip()
         },
-        "session_spread_limits": _normalize_float_map(session_spread_limits_section),
+        "session_spread_limits": _resolve_spread_limits(
+            signal_section, session_spread_limits_section
+        ),
         "strategy_sessions": _normalize_session_map(strategy_sessions_section),
         "strategy_timeframes": _normalize_session_map(strategy_timeframes_section),
         "trade_trigger_strategies": [
@@ -277,4 +314,8 @@ def get_signal_config() -> SignalConfig:
         **({"pending_entry_timeout_bars": pending_entry_timeout_bars} if pending_entry_timeout_bars else {}),
         **({"pending_entry_strategy_overrides": pending_entry_strategy_overrides} if pending_entry_strategy_overrides else {}),
     }
+    # 自动计算 max_spread_points（base > 0 时覆盖手动值）
+    auto_max_spread = _resolve_max_spread(signal_section)
+    if auto_max_spread is not None:
+        combined["max_spread_points"] = auto_max_spread
     return SignalConfig.model_validate(combined)

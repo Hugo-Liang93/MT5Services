@@ -234,12 +234,23 @@ class SignalModule:
     def list_strategies(self) -> list[str]:
         return sorted(self._strategies.keys())
 
+    def list_intrabar_strategies(self) -> list[str]:
+        """返回 preferred_scopes 包含 intrabar 的策略名列表。"""
+        return sorted(
+            name for name, s in self._strategies.items()
+            if "intrabar" in getattr(s, "preferred_scopes", ())
+        )
+
     def strategy_requirements(self, strategy: str) -> tuple[str, ...]:
         strategy_impl = self._strategies.get(strategy)
         if strategy_impl is None:
             raise ValueError(f"unsupported signal strategy: {strategy}")
         requirements = getattr(strategy_impl, "required_indicators", ())
         return tuple(str(item) for item in requirements)
+
+    def strategy_category(self, strategy: str) -> str:
+        impl = self._strategies.get(strategy)
+        return str(getattr(impl, "category", "")) if impl else ""
 
     def strategy_affinity_map(self, strategy: str) -> Dict[RegimeType, float]:
         """返回策略的 regime_affinity 字典（不存在时返回空字典）。

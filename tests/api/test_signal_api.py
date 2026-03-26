@@ -15,6 +15,18 @@ class DummySignalService:
     def list_strategies(self):
         return ["rsi_reversion", "sma_trend"]
 
+    def strategy_category(self, strategy):
+        return "reversion" if "rsi" in strategy else "trend"
+
+    def strategy_scopes(self, strategy):
+        return ("confirmed",)
+
+    def strategy_requirements(self, strategy):
+        return ("rsi14",) if "rsi" in strategy else ("sma20", "ema50")
+
+    def strategy_affinity_map(self, strategy):
+        return {}
+
     def evaluate(self, symbol, timeframe, strategy, indicators=None, metadata=None):
         class _Decision:
             def to_dict(self):
@@ -87,7 +99,12 @@ def test_signal_strategies_endpoint() -> None:
     response = list_signal_strategies(service=DummySignalService())
 
     assert response.success is True
-    assert "sma_trend" in response.data
+    names = [s["name"] for s in response.data]
+    assert "sma_trend" in names
+    # Verify enriched fields
+    rsi = next(s for s in response.data if s["name"] == "rsi_reversion")
+    assert rsi["category"] == "reversion"
+    assert "rsi14" in rsi["required_indicators"]
 
 
 def test_signal_evaluate_endpoint() -> None:

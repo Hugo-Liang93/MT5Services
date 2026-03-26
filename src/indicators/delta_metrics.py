@@ -95,6 +95,9 @@ def apply_delta_metrics(
             for metric_name, current_value in list(payload.items()):
                 if not isinstance(current_value, (int, float)):
                     continue
+                # 跳过已有的 delta key（如 rsi_d3），避免递归叠加出 rsi_d3_d3
+                if "_d" in metric_name and metric_name.rsplit("_d", 1)[-1].isdigit():
+                    continue
                 previous_value = reference_indicator.get(metric_name)
                 if not isinstance(previous_value, (int, float)):
                     continue

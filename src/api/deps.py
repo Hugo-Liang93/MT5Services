@@ -34,6 +34,7 @@ from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import TradeExecutor
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.monitoring.pipeline_event_bus import PipelineEventBus
+from src.studio.service import StudioService
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
 logger = logging.getLogger(__name__)
@@ -265,3 +266,9 @@ def get_pipeline_event_bus() -> PipelineEventBus:
     _ensure_initialized()
     assert _container is not None and _container.pipeline_event_bus is not None
     return _container.pipeline_event_bus
+
+
+def get_studio_service() -> StudioService:
+    _ensure_initialized()
+    assert _container is not None and _container.studio_service is not None
+    return _container.studio_service

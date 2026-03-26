@@ -94,6 +94,8 @@ class TradeExecutor:
         self._trade_outcome_tracker = trade_outcome_tracker
         # 信号被拒绝时的回调：(signal_id, reason) → 通知 SignalQualityTracker 等
         self._on_execution_skip = on_execution_skip
+        # 交易执行后的回调列表：(log_entry: dict) → 通知 Studio 等观察者
+        self._on_trade_executed: list[Callable[[dict], None]] = []
         # ExecutionGate: 策略域准入检查（voting group / whitelist / armed）
         self._execution_gate = execution_gate or ExecutionGate()
         # PendingEntryManager: 价格确认入场
@@ -107,6 +109,10 @@ class TradeExecutor:
         self._exec_queue: queue.Queue = queue.Queue(maxsize=exec_queue_size)
         self._exec_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        # 信号接收与风控决策计数
+        self._signals_received: int = 0
+        self._signals_passed: int = 0
+        self._skip_reasons: Dict[str, int] = {}
         self._execution_quality = {
             "recovered_from_state": 0,
             "risk_blocks": 0,
@@ -202,11 +208,16 @@ class TradeExecutor:
 
     def _notify_skip(self, signal_id: str, reason: str) -> None:
         """通知下游组件该信号被跳过（未执行交易）。"""
+        self._skip_reasons[reason] = self._skip_reasons.get(reason, 0) + 1
         if self._on_execution_skip is not None and signal_id:
             try:
                 self._on_execution_skip(signal_id, reason)
             except Exception:
                 logger.debug("on_execution_skip callback failed", exc_info=True)
+
+    def add_trade_listener(self, fn: Callable[[dict], None]) -> None:
+        """Register a callback invoked after each successful trade execution."""
+        self._on_trade_executed.append(fn)
 
     def reset_circuit(self) -> None:
         """手动重置熔断器，恢复自动交易。"""
@@ -221,6 +232,7 @@ class TradeExecutor:
         return size_map.get(symbol, size_map.get("default", 100.0))
 
     def _handle_confirmed(self, event: SignalEvent) -> Optional[Dict[str, Any]]:
+        self._signals_received += 1
         if not self.config.enabled:
             return None
 
@@ -340,6 +352,7 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "spread_to_stop_ratio_too_high")
             return None
 
+        self._signals_passed += 1
         if self._pending_manager is None:
             return self._execute(event, trade_params, cost_metrics=cost_metrics)
         return self._submit_pending_entry(event, trade_params, cost_metrics)
@@ -725,6 +738,11 @@ class TradeExecutor:
                 "success": True,
             }
             self._execution_log.append(log_entry)
+            for fn in self._on_trade_executed:
+                try:
+                    fn(log_entry)
+                except Exception:
+                    logger.debug("on_trade_executed callback failed", exc_info=True)
             logger.info(
                 "TradeExecutor: executed %s %s vol=%.2f sl=%.2f tp=%.2f rr=%.2f (signal=%s)",
                 event.direction, event.symbol,
@@ -869,6 +887,10 @@ class TradeExecutor:
         slippage_samples = int(self._execution_quality["slippage_samples"] or 0)
         return {
             "enabled": self.config.enabled,
+            "signals_received": self._signals_received,
+            "signals_passed": self._signals_passed,
+            "signals_blocked": self._signals_received - self._signals_passed,
+            "skip_reasons": dict(self._skip_reasons),
             "execution_count": self._execution_count,
             "last_execution_at": self._last_execution_at.isoformat() if self._last_execution_at else None,
             "last_error": self._last_error,
