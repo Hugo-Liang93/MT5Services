@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable
 
 from src.clients.economic_calendar import EconomicCalendarEvent
 
@@ -27,10 +27,10 @@ class _PendingAnalysis:
     """正在等待收集的事件分析任务。"""
 
     event: EconomicCalendarEvent
-    symbols: List[str]
-    timeframes: List[str]
+    symbols: list[str]
+    timeframes: list[str]
     # 各阶段收集的目标时间
-    collection_stages: Dict[int, datetime]  # post_minutes → target_time
+    collection_stages: dict[int, datetime]  # post_minutes → target_time
     completed_stages: set = field(default_factory=set)
     created_at: datetime = field(default_factory=_utc_now)
 
@@ -38,28 +38,36 @@ class _PendingAnalysis:
 class MarketImpactAnalyzer:
     """经济事件行情影响分析器。"""
 
+    # OHLC row column indices (matching market_repo.fetch_ohlc_range format):
+    # (symbol[0], timeframe[1], open[2], high[3], low[4], close[5], volume[6], time[7])
+    _COL_OPEN = 2
+    _COL_HIGH = 3
+    _COL_LOW = 4
+    _COL_CLOSE = 5
+    _COL_TIME = 7
+
     def __init__(
         self,
         db_writer: Any,
         market_repo: Any = None,
         settings: Any = None,
-        warmup_ready_fn: Optional[Callable[[], bool]] = None,
+        warmup_ready_fn: Callable[[], bool] | None = None,
     ):
         self._db = db_writer
         self._market_repo = market_repo
         self._settings = settings
         self._warmup_ready_fn = warmup_ready_fn
-        self._pending: Dict[str, _PendingAnalysis] = {}
+        self._pending: dict[str, _PendingAnalysis] = {}
         self._lock = Lock()
 
     @property
-    def _symbols(self) -> List[str]:
+    def _symbols(self) -> list[str]:
         if self._settings and hasattr(self._settings, "market_impact_symbols"):
             return self._settings.market_impact_symbols
         return ["XAUUSD"]
 
     @property
-    def _timeframes(self) -> List[str]:
+    def _timeframes(self) -> list[str]:
         if self._settings and hasattr(self._settings, "market_impact_timeframes"):
             return self._settings.market_impact_timeframes
         return ["M1", "M5"]
@@ -71,13 +79,13 @@ class MarketImpactAnalyzer:
         return 2
 
     @property
-    def _pre_windows(self) -> List[int]:
+    def _pre_windows(self) -> list[int]:
         if self._settings and hasattr(self._settings, "market_impact_pre_windows"):
             return self._settings.market_impact_pre_windows
         return [30, 60, 120]
 
     @property
-    def _post_windows(self) -> List[int]:
+    def _post_windows(self) -> list[int]:
         if self._settings and hasattr(self._settings, "market_impact_post_windows"):
             return self._settings.market_impact_post_windows
         return [5, 15, 30, 60, 120]
@@ -110,7 +118,7 @@ class MarketImpactAnalyzer:
                 return
 
             released_at = event.released_at or event.scheduled_at
-            stages: Dict[int, datetime] = {}
+            stages: dict[int, datetime] = {}
             for post_min in self._post_windows:
                 stages[post_min] = released_at + timedelta(minutes=post_min + 1)
             # 最终收集
@@ -137,7 +145,7 @@ class MarketImpactAnalyzer:
             return
 
         now = _utc_now()
-        completed_uids: List[str] = []
+        completed_uids: list[str] = []
 
         with self._lock:
             pending_items = list(self._pending.items())
@@ -210,7 +218,7 @@ class MarketImpactAnalyzer:
         event: EconomicCalendarEvent,
         symbol: str,
         timeframe: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """从 market_repo 拉取事件前后 OHLC 数据，计算影响指标。"""
         if self._market_repo is None:
             return None
@@ -233,7 +241,7 @@ class MarketImpactAnalyzer:
         if not bars:
             return None
 
-        result: Dict[str, Any] = {}
+        result: dict[str, Any] = {}
 
         # 找到事件时刻最近的 bar 作为基准价格
         pre_price = self._find_price_at(bars, event_time)
@@ -242,13 +250,10 @@ class MarketImpactAnalyzer:
         if pre_price is None:
             return result
 
-        # OHLC 列索引：(symbol[0], tf[1], open[2], high[3], low[4], close[5], vol[6], time[7])
-        _TIME_IDX = 7
-
         # Pre windows
         for minutes in self._pre_windows:
             window_start = event_time - timedelta(minutes=minutes)
-            window_bars = [b for b in bars if window_start <= b[_TIME_IDX] < event_time]
+            window_bars = [b for b in bars if window_start <= b[self._COL_TIME] < event_time]
             change, range_val = self._calc_window_stats(window_bars, pre_price)
             result[f"pre_{minutes}m_change"] = change
             result[f"pre_{minutes}m_range"] = range_val
@@ -256,7 +261,7 @@ class MarketImpactAnalyzer:
         # Post windows
         for minutes in self._post_windows:
             window_end = event_time + timedelta(minutes=minutes)
-            window_bars = [b for b in bars if event_time <= b[_TIME_IDX] <= window_end]
+            window_bars = [b for b in bars if event_time <= b[self._COL_TIME] <= window_end]
             change, range_val = self._calc_window_stats(window_bars, pre_price)
             result[f"post_{minutes}m_change"] = change
             result[f"post_{minutes}m_range"] = range_val
@@ -274,14 +279,8 @@ class MarketImpactAnalyzer:
 
         return result
 
-    # OHLC 列索引常量（对应 market_repo.fetch_ohlc_range 返回格式）
-    _COL_HIGH = 3
-    _COL_LOW = 4
-    _COL_CLOSE = 5
-    _COL_TIME = 7
-
     @staticmethod
-    def _find_price_at(bars: List[Tuple], target_time: datetime) -> Optional[float]:
+    def _find_price_at(bars: list[tuple], target_time: datetime) -> float | None:
         """找到最接近 target_time 且不晚于它的 bar 的 close 价格。
 
         bars 格式：(symbol, timeframe, open, high, low, close, volume, time, indicators)
@@ -307,8 +306,8 @@ class MarketImpactAnalyzer:
 
     @staticmethod
     def _calc_window_stats(
-        bars: List[Tuple], pre_price: float
-    ) -> Tuple[Optional[float], Optional[float]]:
+        bars: list[tuple], pre_price: float
+    ) -> tuple[float | None, float | None]:
         """计算窗口内的价格变化和波动幅度。"""
         if not bars:
             return None, None
@@ -324,7 +323,7 @@ class MarketImpactAnalyzer:
         return change, range_val
 
     @staticmethod
-    def _calc_surprise(event: EconomicCalendarEvent) -> Optional[float]:
+    def _calc_surprise(event: EconomicCalendarEvent) -> float | None:
         """计算 actual vs forecast 的偏差百分比。"""
         try:
             actual = float(event.actual) if event.actual else None
@@ -340,9 +339,9 @@ class MarketImpactAnalyzer:
         event: EconomicCalendarEvent,
         symbol: str,
         timeframe: str,
-        impact: Dict[str, Any],
+        impact: dict[str, Any],
         status: str,
-    ) -> Tuple:
+    ) -> tuple:
         """将影响数据转换为 DB 行。"""
         return (
             event.scheduled_at,  # recorded_at — 用 scheduled_at 保持稳定，确保 ON CONFLICT 命中
@@ -387,7 +386,7 @@ class MarketImpactAnalyzer:
 
     def get_event_impact(
         self, event_uid: str, symbol: str = "XAUUSD"
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """查询单个事件的行情影响详情。"""
         row = self._db.fetch_market_impact_by_event(event_uid, symbol)
         if row is None:
@@ -396,13 +395,13 @@ class MarketImpactAnalyzer:
 
     def get_aggregated_stats(
         self,
-        event_name: Optional[str] = None,
-        country: Optional[str] = None,
-        importance_min: Optional[int] = None,
+        event_name: str | None = None,
+        country: str | None = None,
+        importance_min: int | None = None,
         symbol: str = "XAUUSD",
         timeframe: str = "M5",
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """聚合统计：按事件类型分组的历史平均影响。"""
         rows = self._db.fetch_market_impact_stats(
             symbol=symbol,
@@ -442,7 +441,7 @@ class MarketImpactAnalyzer:
         event_name: str,
         symbol: str = "XAUUSD",
         timeframe: str = "M5",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """为策略/Trade Guard 提供的简化接口。"""
         stats = self.get_aggregated_stats(
             event_name=event_name,
@@ -502,7 +501,7 @@ class MarketImpactAnalyzer:
         return count
 
     @staticmethod
-    def _row_to_dict(row: Tuple) -> Dict[str, Any]:
+    def _row_to_dict(row: tuple) -> dict[str, Any]:
         """将 DB 行转为字典。"""
         columns = [
             "recorded_at", "event_uid", "symbol", "timeframe",
@@ -530,7 +529,7 @@ class MarketImpactAnalyzer:
                 result[col] = val
         return result
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """返回分析器运行时状态。"""
         with self._lock:
             pending_count = len(self._pending)

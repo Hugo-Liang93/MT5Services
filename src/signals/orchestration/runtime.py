@@ -12,10 +12,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
-    Dict,
     Iterable,
-    List,
-    Optional,
     Protocol,
 )
 from uuid import uuid4
@@ -68,14 +65,14 @@ class SnapshotSource(Protocol):
     def add_snapshot_listener(
         self,
         listener: Callable[
-            [str, str, datetime, Dict[str, Dict[str, float]], str], None
+            [str, str, datetime, dict[str, dict[str, float]], str], None
         ],
     ) -> None: ...
 
     def remove_snapshot_listener(
         self,
         listener: Callable[
-            [str, str, datetime, Dict[str, Dict[str, float]], str], None
+            [str, str, datetime, dict[str, dict[str, float]], str], None
         ],
     ) -> None: ...
 
@@ -97,22 +94,22 @@ class SignalRuntime:
         targets: Iterable[SignalTarget],
         enable_confirmed_snapshot: bool = True,
         enable_intrabar: bool = False,
-        policy: Optional[SignalPolicy] = None,
-        filter_chain: Optional[SignalFilterChain] = None,
-        regime_detector: Optional[MarketRegimeDetector] = None,
-        market_structure_analyzer: Optional[Any] = None,
+        policy: SignalPolicy | None = None,
+        filter_chain: SignalFilterChain | None = None,
+        regime_detector: MarketRegimeDetector | None = None,
+        market_structure_analyzer: Any | None = None,
         htf_indicators_enabled: bool = True,
         intrabar_confidence_factor: float = 1.0,
-        htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
-        htf_context_fn: Optional[Callable[..., Any]] = None,
+        htf_direction_fn: Callable[[str, str], str | None] | None = None,
+        htf_context_fn: Callable[..., Any] | None = None,
         htf_conflict_penalty: float = 0.70,
         htf_alignment_boost: float = 1.10,
         htf_alignment_strength_coefficient: float = 0.30,
         htf_alignment_stability_per_bar: float = 0.03,
         htf_alignment_stability_cap: float = 1.15,
         htf_alignment_intrabar_strength_ratio: float = 0.50,
-        htf_target_config: Optional[Dict[str, str]] = None,
-        warmup_ready_fn: Optional[Callable[[], bool]] = None,
+        htf_target_config: dict[str, str] | None = None,
+        warmup_ready_fn: Callable[[], bool] | None = None,
     ):
         self.service = service
         self.snapshot_source = snapshot_source
@@ -133,7 +130,7 @@ class SignalRuntime:
         # 表决引擎：由 policy 配置决定是否启用。
         # voting_groups 非空时使用多组模式（全局 consensus 自动禁用）。
         # voting_groups 为空且 voting_enabled=True 时退回旧的单 consensus 行为。
-        self._voting_engine: Optional[StrategyVotingEngine] = (
+        self._voting_engine: StrategyVotingEngine | None = (
             StrategyVotingEngine(
                 consensus_threshold=self.policy.voting_consensus_threshold,
                 min_quorum=self.policy.voting_min_quorum,
@@ -154,10 +151,10 @@ class SignalRuntime:
         ) - self.policy.standalone_override
         # Regime 稳定性跟踪：key=(symbol, timeframe)，每个交易对独立计数
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
-        self._signal_listeners: List[Callable[[SignalEvent], None]] = []
+        self._signal_listeners: list[Callable[[SignalEvent], None]] = []
         self._signal_listeners_lock = threading.Lock()
         # Listener 熔断：连续失败 N 次后自动 deregister
-        self._listener_fail_counts: Dict[int, int] = {}  # id(listener) → count
+        self._listener_fail_counts: dict[int, int] = {}  # id(listener) → count
         self._LISTENER_MAX_CONSECUTIVE_FAILURES = 10
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
@@ -210,7 +207,7 @@ class SignalRuntime:
         self._htf_intrabar_ratio: float = htf_alignment_intrabar_strength_ratio
         # 显式 warmup 屏障：回调返回 True 时才允许信号评估。
         # None 表示无外部 warmup 控制（standalone / 测试场景），直接放行。
-        self._warmup_ready_fn: Optional[Callable[[], bool]] = warmup_ready_fn
+        self._warmup_ready_fn: Callable[[], bool] | None = warmup_ready_fn
         # 每个 (symbol, tf) 在 warmup 结束后是否已收到首个实时 confirmed bar
         self._first_realtime_bar_seen: set[tuple[str, str]] = set()
         # 每个 (symbol, tf) 是否已收到首个含指标的 intrabar 快照
@@ -222,7 +219,7 @@ class SignalRuntime:
         self._meta_lock = threading.Lock()  # 保护 _shard_locks 懒初始化
 
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._indicator_miss_counts: dict[tuple[str, str, str], int] = {}
         # Separate queues by scope so that intrabar bursts cannot starve
         # confirmed (bar-close) events, which must never be dropped.
@@ -231,8 +228,8 @@ class SignalRuntime:
         # replay without dropping durable bar-close signals.
         self._confirmed_events: queue.Queue = queue.Queue(maxsize=4096)
         self._intrabar_events: queue.Queue = queue.Queue(maxsize=8192)
-        self._last_run_at: Optional[datetime] = None
-        self._last_error: Optional[str] = None
+        self._last_run_at: datetime | None = None
+        self._last_error: str | None = None
         self._run_count = 0
         self._processed_events = 0
         self._dropped_events = 0
@@ -253,7 +250,7 @@ class SignalRuntime:
         self._loop_error_alert_threshold = 5
         self._affinity_gates_skipped: int = 0
         # FilterChain 按 scope 分维度计数
-        self._filter_by_scope: Dict[str, Dict[str, Any]] = {
+        self._filter_by_scope: dict[str, dict[str, Any]] = {
             "confirmed": {"passed": 0, "blocked": 0, "blocks": {}},
             "intrabar": {"passed": 0, "blocked": 0, "blocks": {}},
         }
@@ -263,7 +260,7 @@ class SignalRuntime:
         self._filter_started_at: float = time.monotonic()
         self._htf_stale_counter: list[int] = [0]
         # 预初始化 event impact 缓存（避免竞态条件下的 getattr 延迟初始化）
-        self._event_impact_cache: Dict[str, Any] = {
+        self._event_impact_cache: dict[str, Any] = {
             "data": None,
             "expires_at": datetime.now(timezone.utc),
         }
@@ -334,7 +331,7 @@ class SignalRuntime:
         symbol: str,
         timeframe: str,
         bar_time: datetime,
-        indicators: Dict[str, Dict[str, float]],
+        indicators: dict[str, dict[str, float]],
         scope: str,
     ) -> None:
         if scope == "confirmed" and not self.enable_confirmed_snapshot:
@@ -461,7 +458,7 @@ class SignalRuntime:
                     point_size = float(point_getter(symbol))
                     metadata["symbol_point"] = point_size
                     metadata["spread_price"] = spread_points * point_size
-            except Exception:
+            except (TypeError, ValueError, AttributeError, KeyError):
                 logger.debug(
                     "Failed to resolve spread/point for %s", symbol, exc_info=True,
                 )
@@ -478,7 +475,7 @@ class SignalRuntime:
 
     def _enqueue(
         self,
-        item: tuple[str, str, str, Dict[str, Dict[str, float]], Dict[str, Any]],
+        item: tuple[str, str, str, dict[str, dict[str, float]], dict[str, Any]],
     ) -> None:
         # 标记入队时间（monotonic），供消费端检测僵尸事件
         item[4]["_enqueued_at"] = time.monotonic()
@@ -546,7 +543,7 @@ class SignalRuntime:
         while self._filter_window and self._filter_window[0][0] < cutoff:
             self._filter_window.popleft()
 
-        by_scope: Dict[str, Dict[str, Any]] = {}
+        by_scope: dict[str, dict[str, Any]] = {}
         for _, scope, cat in self._filter_window:
             if scope not in by_scope:
                 by_scope[scope] = {"passed": 0, "blocked": 0, "blocks": {}}
@@ -645,7 +642,7 @@ class SignalRuntime:
 
     def get_regime_stability(
         self, symbol: str, timeframe: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         tracker = self._regime_trackers.get((symbol, timeframe))
         return tracker.describe() if tracker else None
 
@@ -692,8 +689,8 @@ class SignalRuntime:
         decision: Any,
         signal_id: str,
         scope: str,
-        indicators: Dict[str, Dict[str, float]],
-        transition_metadata: Dict[str, Any],
+        indicators: dict[str, dict[str, float]],
+        transition_metadata: dict[str, Any],
     ) -> None:
         with self._signal_listeners_lock:
             listeners = list(self._signal_listeners)
@@ -728,7 +725,7 @@ class SignalRuntime:
                 confidence=decision.confidence,
                 signal_state=signal_state,
             )
-        listeners_to_remove: List[Callable] = []
+        listeners_to_remove: list[Callable] = []
         for listener in listeners:
             lid = id(listener)
             try:
@@ -775,12 +772,12 @@ class SignalRuntime:
 
     @staticmethod
     def _build_transition_metadata(
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
         *,
         signal_state: str,
         state_changed: bool,
         previous_state: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return build_transition_metadata(
             metadata,
             signal_state=signal_state,
@@ -917,7 +914,7 @@ class SignalRuntime:
         _sm_mark_emitted(state, signal_state, event_time, bar_time)
 
     @staticmethod
-    def _snapshot_signature(indicators: Dict[str, Dict[str, float]]) -> int:
+    def _snapshot_signature(indicators: dict[str, dict[str, float]]) -> int:
         return _sm_snapshot_signature(indicators)
 
     def _is_new_snapshot(
@@ -927,7 +924,7 @@ class SignalRuntime:
         scope: str,
         event_time: datetime,
         bar_time: datetime,
-        indicators: Dict[str, Dict[str, float]],
+        indicators: dict[str, dict[str, float]],
     ) -> bool:
         return _sm_is_new_snapshot(
             state,
@@ -944,8 +941,8 @@ class SignalRuntime:
         decision_action: str,
         event_time: datetime,
         bar_time: datetime,
-        metadata: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
+        metadata: dict[str, Any],
+    ) -> dict[str, Any] | None:
         return transition_confirmed(
             state, decision_action, event_time, bar_time, metadata
         )
@@ -957,8 +954,8 @@ class SignalRuntime:
         confidence: float,
         event_time: datetime,
         bar_time: datetime,
-        metadata: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
+        metadata: dict[str, Any],
+    ) -> dict[str, Any] | None:
         return transition_intrabar(
             state,
             decision_action,
@@ -973,7 +970,7 @@ class SignalRuntime:
         )
 
     def _all_intrabar_strategies_satisfied(
-        self, indicators: Dict[str, Dict[str, float]]
+        self, indicators: dict[str, dict[str, float]]
     ) -> bool:
         """检查快照是否能满足所有 intrabar 策略的 required_indicators。
 
@@ -1014,13 +1011,13 @@ class SignalRuntime:
         symbol: str,
         timeframe: str,
         scope: str,
-        indicators: Dict[str, Dict[str, float]],
+        indicators: dict[str, dict[str, float]],
         regime: RegimeType,
-        regime_metadata: Dict[str, Any],
+        regime_metadata: dict[str, Any],
         event_time: datetime,
         bar_time: datetime,
-        active_sessions: List[str],
-    ) -> List:
+        active_sessions: list[str],
+    ) -> list:
         """评估该 snapshot 下所有策略，返回收集到的 SignalDecision 列表。
 
         职责：
@@ -1031,7 +1028,7 @@ class SignalRuntime:
         5. 状态机转换（transition_confirmed / transition_intrabar）
         6. 持久化 + 发布信号事件
         """
-        snapshot_decisions: List = []
+        snapshot_decisions: list = []
         min_affinity_skip = self.policy.min_affinity_skip
         # 延迟市场结构分析：仅在第一个策略真正需要评估时按需计算一次
         _structure_resolved = False
@@ -1039,7 +1036,7 @@ class SignalRuntime:
         shard_lock = self._get_shard_lock(symbol, timeframe)
 
         # Pre-parse soft regime once for all strategies in this snapshot
-        _soft_parsed: Optional[SoftRegimeResult] = None
+        _soft_parsed: SoftRegimeResult | None = None
         if self._soft_regime_enabled and regime_metadata.get("_soft_regime"):
             try:
                 _soft_parsed = SoftRegimeResult.from_dict(
@@ -1054,7 +1051,7 @@ class SignalRuntime:
                 )
 
         # 查询 event impact forecast（带 5 分钟 TTL 缓存，避免每 bar 查 DB）
-        _event_impact: Optional[Dict[str, Any]] = None
+        _event_impact: dict[str, Any] | None = None
         _impact_analyzer = getattr(self, "_market_impact_analyzer", None)
         if _impact_analyzer is not None and scope == "confirmed":
             cache = self._event_impact_cache
@@ -1179,7 +1176,7 @@ class SignalRuntime:
 
             # ── HTF 指标注入（按 INI [strategy_htf] 配置按需查询）──
             htf_spec = self._strategy_htf_config.get(strategy)
-            htf_payload: Dict[str, Dict[str, Dict[str, Any]]] = (
+            htf_payload: dict[str, dict[str, dict[str, Any]]] = (
                 self._resolve_htf_indicators(symbol, timeframe, htf_spec)
                 if self._htf_indicators_enabled and htf_spec
                 else {}
@@ -1194,75 +1191,97 @@ class SignalRuntime:
                 persist=False,
                 htf_indicators=htf_payload,
             )
-            # ── Intrabar 置信度衰减（策略级覆盖 > 全局默认）──
-            if scope == "intrabar":
-                decay = self._strategy_intrabar_decay.get(
-                    strategy, self._intrabar_confidence_factor
-                )
-                decision = apply_intrabar_decay(decision, scope, decay)
-            # ── HTF 方向对齐修正 ──────────────────────────
-            if decision.direction in ("buy", "sell"):
-                htf_mul, htf_dir = self._compute_htf_alignment(
-                    symbol,
-                    timeframe,
-                    decision.direction,
-                    scope,
-                )
-                if htf_mul is not None:
-                    decision = _dc.replace(
-                        decision,
-                        confidence=min(1.0, decision.confidence * htf_mul),
-                    )
-                    regime_metadata["htf_direction"] = htf_dir
-                    regime_metadata["htf_alignment"] = (
-                        "aligned" if htf_mul >= 1.0 else "conflict"
-                    )
-                    regime_metadata["htf_confidence_multiplier"] = htf_mul
+            decision = self._apply_confidence_adjustments(
+                decision, symbol, timeframe, strategy, scope, regime_metadata,
+            )
             snapshot_decisions.append(decision)
 
-            transition_metadata = (
-                self._transition_confirmed(
-                    state, decision.direction, event_time, bar_time, regime_metadata
-                )
-                if scope == "confirmed"
-                else self._transition_intrabar(
-                    state,
-                    decision.direction,
-                    decision.confidence,
-                    event_time,
-                    bar_time,
-                    regime_metadata,
-                )
-            )
-            if transition_metadata is None:
-                continue
-
-            # Voting group 成员：只贡献投票，不单独发布/持久化信号。
-            # 投票结果由 _process_voting 统一发布为 group 信号。
-            if decision.strategy in self._voting_group_members:
-                continue
-
-            # Only persist state-changing events to DB (skip repeated same-state signals).
-            signal_id = ""
-            is_actionable = decision.direction in ("buy", "sell")
-            if transition_metadata.get("state_changed", True):
-                record = self.service.persist_decision(
-                    decision, indicators=scoped_indicators, metadata=transition_metadata
-                )
-                if record is not None:
-                    signal_id = record.signal_id
-                else:
-                    signal_id = uuid4().hex[:12]
-            elif is_actionable:
-                signal_id = uuid4().hex[:12]
-
-            self._publish_signal_event(
-                decision, signal_id, scope, indicators, transition_metadata
+            self._transition_and_publish(
+                state, decision, scope, event_time, bar_time,
+                regime_metadata, scoped_indicators, indicators,
             )
 
         return snapshot_decisions
 
-    def _market_structure_lookback_bars(self, timeframe: str) -> Optional[int]:
+    def _apply_confidence_adjustments(
+        self,
+        decision: Any,
+        symbol: str,
+        timeframe: str,
+        strategy: str,
+        scope: str,
+        regime_metadata: dict[str, Any],
+    ) -> Any:
+        """Apply intrabar decay and HTF alignment to a raw decision."""
+        if scope == "intrabar":
+            decay = self._strategy_intrabar_decay.get(
+                strategy, self._intrabar_confidence_factor
+            )
+            decision = apply_intrabar_decay(decision, scope, decay)
+        if decision.direction in ("buy", "sell"):
+            htf_mul, htf_dir = self._compute_htf_alignment(
+                symbol, timeframe, decision.direction, scope,
+            )
+            if htf_mul is not None:
+                decision = _dc.replace(
+                    decision,
+                    confidence=min(1.0, decision.confidence * htf_mul),
+                )
+                regime_metadata["htf_direction"] = htf_dir
+                regime_metadata["htf_alignment"] = (
+                    "aligned" if htf_mul >= 1.0 else "conflict"
+                )
+                regime_metadata["htf_confidence_multiplier"] = htf_mul
+        return decision
+
+    def _transition_and_publish(
+        self,
+        state: "RuntimeSignalState",
+        decision: Any,
+        scope: str,
+        event_time: datetime,
+        bar_time: datetime,
+        regime_metadata: dict[str, Any],
+        scoped_indicators: dict[str, dict[str, float]],
+        full_indicators: dict[str, dict[str, float]],
+    ) -> None:
+        """Run state machine transition, persist if state changed, and publish."""
+        transition_metadata = (
+            self._transition_confirmed(
+                state, decision.direction, event_time, bar_time, regime_metadata
+            )
+            if scope == "confirmed"
+            else self._transition_intrabar(
+                state,
+                decision.direction,
+                decision.confidence,
+                event_time,
+                bar_time,
+                regime_metadata,
+            )
+        )
+        if transition_metadata is None:
+            return
+
+        # Voting group members only contribute votes; no standalone signal.
+        if decision.strategy in self._voting_group_members:
+            return
+
+        signal_id = ""
+        is_actionable = decision.direction in ("buy", "sell")
+        if transition_metadata.get("state_changed", True):
+            record = self.service.persist_decision(
+                decision, indicators=scoped_indicators, metadata=transition_metadata
+            )
+            signal_id = record.signal_id if record is not None else uuid4().hex[:12]
+        elif is_actionable:
+            signal_id = uuid4().hex[:12]
+
+        self._publish_signal_event(
+            decision, signal_id, scope, full_indicators, transition_metadata
+        )
+
+    def _market_structure_lookback_bars(self, timeframe: str) -> int | None:
         analyzer = self._market_structure_analyzer
         if analyzer is None:
             return None
@@ -1284,7 +1303,7 @@ class SignalRuntime:
         scope: str,
         event_time: datetime,
         bar_time: datetime,
-        latest_close: Optional[float],
+        latest_close: float | None,
     ) -> dict[str, Any]:
         analyzer = self._market_structure_analyzer
         if analyzer is None:
@@ -1312,14 +1331,14 @@ class SignalRuntime:
 
     def _process_voting(
         self,
-        snapshot_decisions: List,
+        snapshot_decisions: list,
         symbol: str,
         timeframe: str,
         scope: str,
         regime: RegimeType,
         regime_stability: float,
-        regime_metadata: Dict[str, Any],
-        indicators: Dict[str, Dict[str, float]],
+        regime_metadata: dict[str, Any],
+        indicators: dict[str, dict[str, float]],
         event_time: datetime,
         bar_time: datetime,
     ) -> None:
@@ -1343,112 +1362,89 @@ class SignalRuntime:
 
     _CONFIRMED_BURST_LIMIT = 5  # 每连续消费 N 个 confirmed 后让出检查 intrabar
 
-    def process_next_event(self, timeout: float = 0.5) -> bool:
-        """从队列取一个快照事件并完整处理。
-
-        优先消费 confirmed 队列，但每连续 ``_CONFIRMED_BURST_LIMIT`` 个
-        confirmed 事件后主动检查 intrabar 队列取一个事件作为本轮处理对象，
-        防止 intrabar 策略在 confirmed 突发期间长时间饥饿。
-        """
-        # 优先排空 confirmed 队列
+    def _dequeue_event(self, timeout: float) -> tuple | None:
+        """Dequeue one event with confirmed-priority + anti-starvation."""
         try:
             event = self._confirmed_events.get_nowait()
             self._confirmed_burst_count += 1
-            # Anti-starvation: after N consecutive confirmed, yield to intrabar
             if self._confirmed_burst_count >= self._CONFIRMED_BURST_LIMIT:
                 self._confirmed_burst_count = 0
                 try:
-                    # Peek intrabar: if available, put confirmed back and process intrabar
                     intrabar_event = self._intrabar_events.get_nowait()
                     try:
                         self._confirmed_events.put_nowait(event)
                     except queue.Full:
-                        logger.warning(
-                            "Confirmed event queue full, dropping re-queued event",
-                        )
+                        logger.warning("Confirmed event queue full, dropping re-queued event")
                     event = intrabar_event
                 except queue.Empty:
-                    pass  # No intrabar pending, continue with confirmed
+                    pass
+            return event
         except queue.Empty:
             self._confirmed_burst_count = 0
             try:
-                event = self._intrabar_events.get(timeout=timeout)
+                return self._intrabar_events.get(timeout=timeout)
             except queue.Empty:
-                return False
+                return None
 
-        scope, symbol, timeframe, indicators, metadata = event
-        snapshot_time = self._parse_event_time(
-            metadata.get("snapshot_time", datetime.now(timezone.utc))
-        )
-        bar_time = self._parse_event_time(metadata.get("bar_time", snapshot_time))
-        event_time = bar_time if scope == "confirmed" else snapshot_time
-
-        # 过期事件清理：丢弃队列中停留过久的 intrabar 事件（可能是恢复后的僵尸事件）
-        # 基于 metadata 中的 _enqueued_at 时间戳（入队时间），而非 snapshot_time
-        # 以避免测试或历史回放场景中的误判
-        _enqueued_at_raw = metadata.get("_enqueued_at")
-        if scope == "intrabar" and _enqueued_at_raw is not None:
-            _MAX_INTRABAR_AGE_SECONDS = 300.0
-            try:
-                enqueued_at = float(_enqueued_at_raw)
-                queue_age = time.monotonic() - enqueued_at
-                if queue_age > _MAX_INTRABAR_AGE_SECONDS:
-                    logger.debug(
-                        "Dropping stale intrabar event for %s/%s (queue_age=%.1fs)",
-                        symbol,
-                        timeframe,
-                        queue_age,
-                    )
-                    self._processed_events += 1
-                    return True
-            except (TypeError, ValueError):
+    def _is_stale_intrabar(self, scope: str, symbol: str, timeframe: str, metadata: dict[str, Any]) -> bool:
+        """Return True if an intrabar event has been in the queue too long."""
+        if scope != "intrabar":
+            return False
+        enqueued_raw = metadata.get("_enqueued_at")
+        if enqueued_raw is None:
+            return False
+        try:
+            queue_age = time.monotonic() - float(enqueued_raw)
+            if queue_age > 300.0:
                 logger.debug(
-                    "Failed to parse _enqueued_at for %s/%s intrabar event",
-                    symbol,
-                    timeframe,
+                    "Dropping stale intrabar event for %s/%s (queue_age=%.1fs)",
+                    symbol, timeframe, queue_age,
                 )
-        if (
-            self.filter_chain is not None
-            and self.filter_chain.session_filter is not None
-        ):
-            active_sessions = self.filter_chain.session_filter.current_sessions(
-                event_time
-            )
-        else:
-            active_sessions = []
-
-        if self.filter_chain is not None:
-            spread_points = float(metadata.get("spread_points", 0.0))
-            allowed, reason = self.filter_chain.should_evaluate(
-                symbol,
-                spread_points=spread_points,
-                utc_now=event_time,
-                active_sessions=active_sessions,
-                indicators=indicators,
-            )
-            if not allowed:
-                log_fn = logger.info if scope == "confirmed" else logger.debug
-                log_fn(
-                    "Signal evaluation skipped for %s/%s [%s]: %s",
-                    symbol, timeframe, scope, reason,
-                )
-                # 按 scope + reason prefix 分类计数
-                category = reason.split(":")[0] if reason else "unknown"
-                scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
-                scope_stats["blocked"] += 1
-                scope_stats["blocks"][category] = scope_stats["blocks"].get(category, 0) + 1
-                self._filter_window.append((time.monotonic(), scope, category))
-                self._processed_events += 1
-                self._run_count += 1
-                self._last_run_at = datetime.now(timezone.utc)
                 return True
+        except (TypeError, ValueError):
+            logger.debug("Failed to parse _enqueued_at for %s/%s intrabar event", symbol, timeframe)
+        return False
 
+    def _apply_filter_chain(
+        self, symbol: str, scope: str, timeframe: str,
+        event_time: datetime, indicators: dict[str, dict[str, float]],
+        active_sessions: list[str],
+        metadata: dict[str, Any],
+    ) -> bool:
+        """Run filter chain. Return True if evaluation is allowed."""
+        if self.filter_chain is None:
+            return True
+        spread_points = float(metadata.get("spread_points", 0.0))
+        allowed, reason = self.filter_chain.should_evaluate(
+            symbol,
+            spread_points=spread_points,
+            utc_now=event_time,
+            active_sessions=active_sessions,
+            indicators=indicators,
+        )
+        if allowed:
+            scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
+            scope_stats["passed"] += 1
+            self._filter_window.append((time.monotonic(), scope, "_pass"))
+            return True
+
+        log_fn = logger.info if scope == "confirmed" else logger.debug
+        log_fn("Signal evaluation skipped for %s/%s [%s]: %s", symbol, timeframe, scope, reason)
+        category = reason.split(":")[0] if reason else "unknown"
         scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
-        scope_stats["passed"] += 1
-        self._filter_window.append((time.monotonic(), scope, "_pass"))
+        scope_stats["blocked"] += 1
+        scope_stats["blocks"][category] = scope_stats["blocks"].get(category, 0) + 1
+        self._filter_window.append((time.monotonic(), scope, category))
+        return False
 
-        # ── Regime 检测：每次 snapshot 仅检测一次，结果共享给所有策略 ──────
-        soft_regime: Optional[SoftRegimeResult] = None
+    def _detect_regime(
+        self,
+        indicators: dict[str, dict[str, float]],
+        metadata: dict[str, Any],
+        active_sessions: list[str],
+    ) -> tuple[RegimeType, dict[str, Any]]:
+        """Run regime detection and build regime_metadata."""
+        soft_regime: SoftRegimeResult | None = None
         if self._soft_regime_enabled:
             soft_regime = self._regime_detector.detect_soft(indicators)
             regime = soft_regime.dominant_regime
@@ -1462,57 +1458,71 @@ class SignalRuntime:
                 item.value: soft_regime.probability(item) for item in RegimeType
             }
         regime_metadata["session_buckets"] = list(active_sessions)
-        # close_price 注入：在 scoped_indicators 收窄前从全量快照提取
         if "close_price" not in regime_metadata:
             regime_metadata["close_price"] = extract_close_price(indicators)
+        return regime, regime_metadata
 
-        # ── 快速全拒绝检查：如果没有任何策略能通过 affinity 门控，跳过后续所有重计算
+    def process_next_event(self, timeout: float = 0.5) -> bool:
+        """从队列取一个快照事件并完整处理。
+
+        优先消费 confirmed 队列，但每连续 ``_CONFIRMED_BURST_LIMIT`` 个
+        confirmed 事件后主动检查 intrabar 队列取一个事件作为本轮处理对象，
+        防止 intrabar 策略在 confirmed 突发期间长时间饥饿。
+        """
+        event = self._dequeue_event(timeout)
+        if event is None:
+            return False
+
+        scope, symbol, timeframe, indicators, metadata = event
+        snapshot_time = self._parse_event_time(
+            metadata.get("snapshot_time", datetime.now(timezone.utc))
+        )
+        bar_time = self._parse_event_time(metadata.get("bar_time", snapshot_time))
+        event_time = bar_time if scope == "confirmed" else snapshot_time
+
+        if self._is_stale_intrabar(scope, symbol, timeframe, metadata):
+            self._processed_events += 1
+            return True
+
+        if (
+            self.filter_chain is not None
+            and self.filter_chain.session_filter is not None
+        ):
+            active_sessions = self.filter_chain.session_filter.current_sessions(event_time)
+        else:
+            active_sessions = []
+
+        if not self._apply_filter_chain(symbol, scope, timeframe, event_time, indicators, active_sessions, metadata):
+            self._processed_events += 1
+            self._run_count += 1
+            self._last_run_at = datetime.now(timezone.utc)
+            return True
+
+        regime, regime_metadata = self._detect_regime(indicators, metadata, active_sessions)
+
+        # 快速全拒绝：所有策略 affinity 不足时跳过后续计算
         if not self._any_strategy_eligible(
-            symbol,
-            timeframe,
-            scope,
-            regime,
-            regime_metadata.get("_soft_regime"),
-            active_sessions,
+            symbol, timeframe, scope, regime,
+            regime_metadata.get("_soft_regime"), active_sessions,
         ):
             self._processed_events += 1
             self._run_count += 1
             self._last_run_at = datetime.now(timezone.utc)
             return True
 
-        # ── Regime 稳定性追踪 ──────────────────────────────────────────────
         tracker = self._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
         regime_stability = (
-            tracker.update(regime)
-            if scope == "confirmed"
-            else tracker.stability_multiplier()
+            tracker.update(regime) if scope == "confirmed" else tracker.stability_multiplier()
         )
 
-        # ── 策略评估（含持久化 + 发布）─────────────────────────────────────
         snapshot_decisions = self._evaluate_strategies(
-            symbol,
-            timeframe,
-            scope,
-            indicators,
-            regime,
-            regime_metadata,
-            event_time,
-            bar_time,
-            active_sessions,
+            symbol, timeframe, scope, indicators, regime,
+            regime_metadata, event_time, bar_time, active_sessions,
         )
 
-        # ── 跨策略表决（consensus 信号）────────────────────────────────────
         self._process_voting(
-            snapshot_decisions,
-            symbol,
-            timeframe,
-            scope,
-            regime,
-            regime_stability,
-            regime_metadata,
-            indicators,
-            event_time,
-            bar_time,
+            snapshot_decisions, symbol, timeframe, scope, regime,
+            regime_stability, regime_metadata, indicators, event_time, bar_time,
         )
 
         self._processed_events += 1
@@ -1527,7 +1537,7 @@ class SignalRuntime:
         timeframe: str,
         action: str,
         scope: str,
-    ) -> tuple[Optional[float], Optional[str]]:
+    ) -> tuple[float | None, str | None]:
         return compute_htf_alignment(
             symbol,
             timeframe,
@@ -1545,7 +1555,7 @@ class SignalRuntime:
 
     @staticmethod
     def _parse_htf_config(
-        raw: Dict[str, str],
+        raw: dict[str, str],
     ) -> dict[str, dict[str, list[str]]]:
         return parse_htf_config(raw)
 
@@ -1554,7 +1564,7 @@ class SignalRuntime:
         symbol: str,
         current_tf: str,
         htf_spec: dict[str, list[str]],
-    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    ) -> dict[str, dict[str, dict[str, Any]]]:
         return resolve_htf_indicators(
             symbol,
             current_tf,
@@ -1569,7 +1579,7 @@ class SignalRuntime:
         symbol: str,
         timeframe: str,
         indicator_name: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """通过 snapshot_source（IndicatorManager）查询已缓存的 HTF 指标。"""
         getter = getattr(self.snapshot_source, "get_indicator", None)
         if callable(getter):
@@ -1582,8 +1592,8 @@ class SignalRuntime:
         timeframe: str,
         scope: str,
         regime: RegimeType,
-        soft_regime: Optional[Dict[str, Any]],
-        active_sessions: List[str],
+        soft_regime: dict[str, Any] | None,
+        active_sessions: list[str],
     ) -> bool:
         """Quick check: delegates to affinity module."""
         return _any_strategy_eligible_fn(
@@ -1606,9 +1616,9 @@ class SignalRuntime:
         self,
         strategy: str,
         regime: RegimeType,
-        soft_regime: Optional[Dict[str, Any]],
+        soft_regime: dict[str, Any] | None,
         *,
-        _parsed_cache: Optional[SoftRegimeResult] = None,
+        _parsed_cache: SoftRegimeResult | None = None,
     ) -> float:
         return _effective_affinity_fn(
             strategy,
@@ -1646,9 +1656,13 @@ class SignalRuntime:
                         sorted_keys = sorted(
                             self._indicator_miss_counts,
                             key=self._indicator_miss_counts.get,  # type: ignore[arg-type]
+                            reverse=True,
                         )
-                        for k in sorted_keys[: len(sorted_keys) - _MAX_MISS_KEYS]:
-                            self._indicator_miss_counts.pop(k, None)
+                        # 保留 top-N 高频 miss 条目，淘汰低频的
+                        keep = set(sorted_keys[:_MAX_MISS_KEYS])
+                        for k in list(self._indicator_miss_counts):
+                            if k not in keep:
+                                self._indicator_miss_counts.pop(k, None)
             except Exception as exc:
                 self._last_error = str(exc)
                 self._consecutive_loop_errors += 1

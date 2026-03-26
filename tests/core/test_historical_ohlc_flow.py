@@ -62,6 +62,15 @@ def _bar(minute: int) -> OHLC:
     )
 
 
+def _init_scope_stats(manager: UnifiedIndicatorManager) -> None:
+    """Inject _scope_stats into a stub manager created via object.__new__."""
+    manager._scope_stats = {
+        "confirmed": {"computations": 0, "indicators": 0},
+        "intrabar": {"computations": 0, "indicators": 0},
+        "reconcile": {"computations": 0, "indicators": 0},
+    }
+
+
 def test_market_service_loads_historical_window_from_storage() -> None:
     service = MarketDataService(DummyClient(), market_settings=_market_settings())
     bars = [_bar(0), _bar(1), _bar(2)]
@@ -314,6 +323,7 @@ def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persistin
         )
     ]
     manager._last_preview_snapshot = {}
+    _init_scope_stats(manager)
 
     grouped = manager._process_intrabar_event("XAUUSD", "M1", intrabar_bar)
 
@@ -492,6 +502,7 @@ def test_indicator_manager_batches_same_scope_events_into_single_window_load() -
     manager._get_max_lookback = lambda: 5
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
     manager._write_back_results = lambda *args, **kwargs: None
+    _init_scope_stats(manager)
 
     manager._process_closed_bar_events_batch(
         [
@@ -523,6 +534,7 @@ def test_indicator_manager_prefers_event_id_completion_for_claimed_events() -> N
     manager._get_max_lookback = lambda: 5
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
     manager._write_back_results = lambda *args, **kwargs: None
+    _init_scope_stats(manager)
 
     manager._process_closed_bar_events_batch(
         [ClaimedEvent(event_id=99, symbol="XAUUSD", timeframe="M1", bar_time=bars[1].time)],
@@ -588,6 +600,7 @@ def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_miss
     manager._get_max_lookback = lambda: 3
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
     manager._write_back_results = lambda *args, **kwargs: None
+    _init_scope_stats(manager)
 
     manager._process_closed_bar_events_batch(
         [

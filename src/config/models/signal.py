@@ -28,14 +28,14 @@ class SignalConfig(BaseModel):
     min_preview_bar_progress: float = 0.15
     preview_stable_seconds: float = 15.0
     preview_cooldown_seconds: float = 30.0
-    snapshot_dedupe_window_seconds: float = 1.0
+    snapshot_dedupe_window_seconds: float = 0.3
     min_affinity_skip: float = 0.15
     # Delta momentum bonus 参数（均值回归策略共享）
     delta_d3_scale: float = 10.0
     delta_d3_cap: float = 0.05
     delta_d5_threshold: float = 8.0
     delta_d5_bonus: float = 0.03
-    soft_regime_enabled: bool = False
+    soft_regime_enabled: bool = True
     voting_enabled: bool = True
     voting_consensus_threshold: float = 0.40
     voting_min_quorum: int = 2

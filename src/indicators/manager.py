@@ -14,7 +14,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable
 
 from src.config.indicator_config import (
     IndicatorConfig,
@@ -79,25 +79,25 @@ from src.utils.common import ohlc_key, same_listener_reference, timeframe_second
 @dataclass
 class IndicatorResult:
     name: str
-    value: Dict[str, Any]
+    value: dict[str, Any]
     symbol: str
     timeframe: str
     timestamp: datetime
-    bar_time: Optional[datetime] = None
+    bar_time: datetime | None = None
     cache_hit: bool = False
     incremental: bool = False
     compute_time_ms: float = 0.0
     success: bool = True
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
 class IndicatorSnapshot:
     symbol: str
     timeframe: str
-    data: Dict[str, Any]
+    data: dict[str, Any]
     timestamp: datetime
-    bar_time: Optional[datetime] = None
+    bar_time: datetime | None = None
     compute_time_ms: float = 0.0
 
 
@@ -114,9 +114,9 @@ class UnifiedIndicatorManager:
     def __init__(
         self,
         market_service: MarketDataService,
-        config: Optional[UnifiedIndicatorConfig] = None,
-        config_file: Optional[str] = None,
-        storage_writer: Optional["StorageWriter"] = None,
+        config: UnifiedIndicatorConfig | None = None,
+        config_file: str | None = None,
+        storage_writer: "StorageWriter" | None = None,
     ):
         self.market_service = market_service
         self.storage_writer = storage_writer
@@ -124,24 +124,24 @@ class UnifiedIndicatorManager:
         self.config = config or self.config_manager.get_config()
         self.event_store = get_event_store("events.db")
 
-        self._indicator_funcs: Dict[str, Callable] = {}
+        self._indicator_funcs: dict[str, Callable] = {}
         # OrderedDict for LRU eviction: cap prevents unbounded growth during
         # long-running sessions with dynamic symbols/indicators.
         self._results: OrderedDict[str, IndicatorResult] = OrderedDict()
         self._results_max: int = 2000
         self._results_lock = threading.RLock()
         self._stop = threading.Event()
-        self._event_thread: Optional[threading.Thread] = None
-        self._reload_thread: Optional[threading.Thread] = None
-        self._last_reconcile_at: Optional[datetime] = None
+        self._event_thread: threading.Thread | None = None
+        self._reload_thread: threading.Thread | None = None
+        self._last_reconcile_at: datetime | None = None
         self._snapshot_listeners: list[
-            Callable[[str, str, datetime, Dict[str, Dict[str, float]], str], None]
+            Callable[[str, str, datetime, dict[str, dict[str, float]], str], None]
         ] = []
         self._snapshot_listeners_lock = threading.Lock()
         # 使用 OrderedDict 实现 LRU 淘汰，防止长期运行后内存无限增长。
         # 上限按 symbols × timeframes 的 10 倍估算，远超正常部署规模。
         self._last_preview_snapshot: OrderedDict[
-            str, Tuple[datetime, Dict[str, Dict[str, float]]]
+            str, tuple[datetime, dict[str, dict[str, float]]]
         ] = OrderedDict()
         self._preview_snapshot_max_entries = 500
         self._priority_indicator_groups: tuple[tuple[str, ...], ...] = ()
@@ -149,24 +149,24 @@ class UnifiedIndicatorManager:
         # per (symbol, timeframe).  The ingestor already controls frequency via
         # its own next_intrabar_at schedule; this is a defense-in-depth guard
         # that prevents duplicate runs caused by race conditions or config drift.
-        self._last_intrabar_compute: Dict[str, float] = {}
+        self._last_intrabar_compute: dict[str, float] = {}
         # Intrabar events are dispatched here from the ingestor thread so that
         # indicator computation never blocks data acquisition.  The dedicated
         # _intrabar_thread drains this queue independently.
         self._intrabar_queue: queue.Queue = queue.Queue(maxsize=200)
-        self._intrabar_thread: Optional[threading.Thread] = None
+        self._intrabar_thread: threading.Thread | None = None
         # Cached set of indicator names eligible for intrabar snapshots.
         # Built once in _register_indicators() and invalidated on _reinitialize().
-        self._intrabar_eligible_cache: Optional[frozenset] = None
+        self._intrabar_eligible_cache: frozenset | None = None
         # Bar-close events are published into this queue from the ingestor thread
         # (via _publish_closed_bar_event) without any I/O.  The dedicated
         # _writer_thread flushes them to SQLite in small batches so that data
         # acquisition is never stalled by a synchronous database write.
         self._event_write_queue: queue.Queue = queue.Queue(maxsize=2048)
-        self._writer_thread: Optional[threading.Thread] = None
+        self._writer_thread: threading.Thread | None = None
 
         # 按 scope 分维度计数（confirmed vs intrabar vs reconcile）
-        self._scope_stats: Dict[str, Dict[str, int]] = {
+        self._scope_stats: dict[str, dict[str, int]] = {
             "confirmed": {"computations": 0, "indicators": 0},
             "intrabar": {"computations": 0, "indicators": 0},
             "reconcile": {"computations": 0, "indicators": 0},
@@ -241,7 +241,7 @@ class UnifiedIndicatorManager:
         module = importlib.import_module(module_path)
         return getattr(module, func_name)
 
-    def _load_incremental_class(self, config: IndicatorConfig) -> Optional[type]:
+    def _load_incremental_class(self, config: IndicatorConfig) -> type | None:
         """Return an IncrementalIndicator subclass for *config* when available.
 
         Convention: if ``compute_mode == "incremental"`` and the indicator's
@@ -269,7 +269,7 @@ class UnifiedIndicatorManager:
                 )
                 return None
             return cls
-        except Exception as exc:
+        except (ImportError, AttributeError, TypeError) as exc:
             logger.warning(
                 "Failed to load incremental class for '%s': %s", config.name, exc
             )
@@ -383,7 +383,7 @@ class UnifiedIndicatorManager:
 
     def _process_closed_bar_events_batch(
         self,
-        events: List[ClaimedEvent],
+        events: list[ClaimedEvent],
         durable_event: bool,
     ) -> None:
         process_closed_bar_events_batch(self, events, durable_event)
@@ -392,7 +392,7 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        events: List[ClaimedEvent],
+        events: list[ClaimedEvent],
         durable_event: bool,
     ) -> None:
         process_symbol_timeframe_batch(self, symbol, timeframe, events, durable_event)
@@ -462,6 +462,23 @@ class UnifiedIndicatorManager:
         self._init_components()
         self._register_indicators()
 
+    def _flush_event_batch(self, first_item: object, phase: str = "batch") -> None:
+        """Write *first_item* plus up to 63 more items from the queue to SQLite."""
+        batch: list = [first_item]
+        for _ in range(63):
+            try:
+                batch.append(self._event_write_queue.get_nowait())
+            except queue.Empty:
+                break
+        try:
+            self.event_store.publish_events_batch(batch)
+        except Exception:
+            logger.exception(
+                "Failed to persist %s queued bar close events (%s)",
+                len(batch),
+                phase,
+            )
+
     def _event_writer_loop(self) -> None:
         """Drain _event_write_queue → SQLite in small batches.
 
@@ -471,41 +488,18 @@ class UnifiedIndicatorManager:
         flushed synchronously on shutdown before the thread exits.
         """
         while not self._stop.is_set():
-            batch: list = []
             try:
                 item = self._event_write_queue.get(timeout=0.1)
-                batch.append(item)
-                for _ in range(63):
-                    try:
-                        batch.append(self._event_write_queue.get_nowait())
-                    except queue.Empty:
-                        break
             except queue.Empty:
                 continue
-            try:
-                self.event_store.publish_events_batch(batch)
-            except Exception:
-                logger.exception(
-                    "Failed to persist %s queued bar close events in batch",
-                    len(batch),
-                )
-        # Drain any remaining items before the thread exits.
+            self._flush_event_batch(item, "loop")
+        # Drain remaining items on shutdown.
         while True:
             try:
-                batch = [self._event_write_queue.get_nowait()]
-                for _ in range(63):
-                    try:
-                        batch.append(self._event_write_queue.get_nowait())
-                    except queue.Empty:
-                        break
-                self.event_store.publish_events_batch(batch)
+                item = self._event_write_queue.get_nowait()
             except queue.Empty:
                 break
-            except Exception:
-                logger.exception(
-                    "Failed to persist %s queued bar close events during shutdown",
-                    len(batch),
-                )
+            self._flush_event_batch(item, "shutdown")
 
     def _publish_closed_bar_event(
         self, symbol: str, timeframe: str, bar_time: datetime
@@ -526,8 +520,8 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        bar_time: Optional[datetime] = None,
-    ) -> List[Any]:
+        bar_time: datetime | None = None,
+    ) -> list[Any]:
         lookback = self._get_max_lookback()
         if bar_time is None:
             return self.market_service.get_ohlc(
@@ -548,8 +542,8 @@ class UnifiedIndicatorManager:
 
     def _resolve_indicator_names(
         self,
-        indicator_names: Optional[List[str]] = None,
-    ) -> List[str]:
+        indicator_names: list[str] | None = None,
+    ) -> list[str]:
         configs = getattr(getattr(self, "config", None), "indicators", None) or []
         return _resolve_indicator_names_fn(configs, indicator_names)
 
@@ -559,13 +553,13 @@ class UnifiedIndicatorManager:
 
     def _indicator_requirements(
         self,
-        indicator_names: Optional[List[str]] = None,
-    ) -> Dict[str, int]:
+        indicator_names: list[str] | None = None,
+    ) -> dict[str, int]:
         selected_names = set(self._resolve_indicator_names(indicator_names))
         configs = getattr(getattr(self, "config", None), "indicators", None)
         if configs is None:
             return {name: 2 for name in selected_names}
-        requirements: Dict[str, int] = {}
+        requirements: dict[str, int] = {}
         for config in configs:
             if not config.enabled or config.name not in selected_names:
                 continue
@@ -575,8 +569,8 @@ class UnifiedIndicatorManager:
     def _select_indicator_names_for_history(
         self,
         available_bars: int,
-        indicator_names: Optional[List[str]] = None,
-    ) -> List[str]:
+        indicator_names: list[str] | None = None,
+    ) -> list[str]:
         reqs = self._indicator_requirements(indicator_names)
         return [
             name
@@ -608,9 +602,9 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        indicator_names: Optional[List[str]] = None,
-        bar_time: Optional[datetime] = None,
-    ) -> Tuple[List[Any], Dict[str, Dict[str, Any]], float]:
+        indicator_names: list[str] | None = None,
+        bar_time: datetime | None = None,
+    ) -> tuple[list[Any], dict[str, dict[str, Any]], float]:
         return run_pipeline(
             self,
             symbol,
@@ -623,9 +617,9 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        bars: List[Any],
-        indicator_names: Optional[List[str]] = None,
-    ) -> Tuple[Dict[str, Dict[str, Any]], float, List[str]]:
+        bars: list[Any],
+        indicator_names: list[str] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], float, list[str]]:
         return compute_with_bars(
             self,
             symbol,
@@ -635,7 +629,7 @@ class UnifiedIndicatorManager:
         )
 
     @staticmethod
-    def _normalize_indicator_group(indicator_names: List[str]) -> tuple[str, ...]:
+    def _normalize_indicator_group(indicator_names: list[str]) -> tuple[str, ...]:
         ordered: list[str] = []
         seen: set[str] = set()
         for indicator_name in indicator_names:
@@ -650,7 +644,7 @@ class UnifiedIndicatorManager:
         symbol: str,
         timeframe: str,
         bar: Any,
-    ) -> List[Any]:
+    ) -> list[Any]:
         lookback = self._get_max_lookback()
         closed_limit = max(lookback - 1, 1)
         closed_bars = self.market_service.get_ohlc(
@@ -662,11 +656,11 @@ class UnifiedIndicatorManager:
 
     def _group_indicator_values(
         self,
-        results: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, Dict[str, float]]:
+        results: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, float]]:
         return group_indicator_values(self, results)
 
-    def _indicator_delta_config(self) -> Dict[str, tuple[int, ...]]:
+    def _indicator_delta_config(self) -> dict[str, tuple[int, ...]]:
         config_items = getattr(getattr(self, "config", None), "indicators", None) or []
         return _get_delta_config_fn(config_items)
 
@@ -674,18 +668,18 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        indicators: Dict[str, Dict[str, float]],
+        indicators: dict[str, dict[str, float]],
         *,
-        bar_time: Optional[datetime] = None,
-    ) -> Dict[str, Dict[str, float]]:
+        bar_time: datetime | None = None,
+    ) -> dict[str, dict[str, float]]:
         delta_config = self._indicator_delta_config()
 
         def _load_history(
             sym: str,
             tf: str,
-            bt: Optional[datetime],
+            bt: datetime | None,
             count: int,
-        ) -> List[Any]:
+        ) -> list[Any]:
             if bt is not None and hasattr(self.market_service, "get_ohlc_window"):
                 return list(
                     self.market_service.get_ohlc_window(
@@ -707,7 +701,7 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        indicators: Dict[str, Dict[str, float]],
+        indicators: dict[str, dict[str, float]],
     ) -> None:
         _merge_snapshot_metrics_fn(
             symbol,
@@ -719,16 +713,16 @@ class UnifiedIndicatorManager:
 
     def _normalize_persisted_indicator_snapshot(
         self,
-        persisted: Dict[str, Any],
-    ) -> Dict[str, Dict[str, Any]]:
+        persisted: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
         return normalize_persisted_indicator_snapshot(self, persisted)
 
     def _store_results(
         self,
         symbol: str,
         timeframe: str,
-        bar_time: Optional[datetime],
-        results: Dict[str, Dict[str, Any]],
+        bar_time: datetime | None,
+        results: dict[str, dict[str, Any]],
         compute_time_ms: float,
     ) -> None:
         store_results(
@@ -745,7 +739,7 @@ class UnifiedIndicatorManager:
         symbol: str,
         timeframe: str,
         bar_time: datetime,
-        indicators: Dict[str, Dict[str, float]],
+        indicators: dict[str, dict[str, float]],
     ) -> bool:
         cache_key = f"{symbol}_{timeframe}"
         normalized = {name: dict(payload) for name, payload in indicators.items()}
@@ -768,11 +762,11 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        bars: List[Any],
-        results: Dict[str, Dict[str, Any]],
+        bars: list[Any],
+        results: dict[str, dict[str, Any]],
         compute_time_ms: float,
-        bar_time: Optional[datetime] = None,
-    ) -> Dict[str, Dict[str, float]]:
+        bar_time: datetime | None = None,
+    ) -> dict[str, dict[str, float]]:
         effective_bar_time = bar_time or (bars[-1].time if bars else None)
         self._store_results(
             symbol, timeframe, effective_bar_time, results, compute_time_ms
@@ -829,7 +823,7 @@ class UnifiedIndicatorManager:
         symbol: str,
         timeframe: str,
         bar_time: datetime,
-        indicators: Dict[str, Dict[str, float]],
+        indicators: dict[str, dict[str, float]],
         *,
         scope: str,
     ) -> None:
@@ -840,8 +834,8 @@ class UnifiedIndicatorManager:
         symbol: str,
         timeframe: str,
         bar_time: datetime,
-        indicators: Dict[str, Dict[str, float]],
-    ) -> Dict[str, Dict[str, float]]:
+        indicators: dict[str, dict[str, float]],
+    ) -> dict[str, dict[str, float]]:
         enriched = self._apply_delta_metrics(
             symbol,
             timeframe,
@@ -854,12 +848,12 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        bars: List[Any],
+        bars: list[Any],
         *,
         bar_time: datetime,
         scope: str,
-        indicator_names: Optional[List[str]] = None,
-    ) -> Tuple[Dict[str, Dict[str, Any]], float]:
+        indicator_names: list[str] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], float]:
         return compute_results_with_priority_groups(
             self,
             symbol,
@@ -874,12 +868,12 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        bars: List[Any],
+        bars: list[Any],
         *,
         bar_time: datetime,
         scope: str,
-        selected_names: Optional[List[str]] = None,
-    ) -> Tuple[Dict[str, Dict[str, Any]], float, set[str]]:
+        selected_names: list[str] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], float, set[str]]:
         return compute_priority_results(
             self,
             symbol,
@@ -894,10 +888,10 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        bars: List[Any],
+        bars: list[Any],
         *,
         bar_time: datetime,
-    ) -> Tuple[Dict[str, Dict[str, Any]], float]:
+    ) -> tuple[dict[str, dict[str, Any]], float]:
         results, compute_time = self._compute_results_with_priority_groups(
             symbol,
             timeframe,
@@ -913,11 +907,11 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        bars: List[Any],
+        bars: list[Any],
         *,
         bar_time: datetime,
-        indicator_names: Optional[List[str]] = None,
-    ) -> Tuple[Dict[str, Dict[str, Any]], float]:
+        indicator_names: list[str] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], float]:
         results, compute_time = self._compute_results_with_priority_groups(
             symbol,
             timeframe,
@@ -965,7 +959,7 @@ class UnifiedIndicatorManager:
         symbol: str,
         timeframe: str,
         bar: Any,
-    ) -> Dict[str, Dict[str, float]]:
+    ) -> dict[str, dict[str, float]]:
         return process_intrabar_event(self, symbol, timeframe, bar)
 
     def _reconcile_all(self) -> None:
@@ -1029,7 +1023,7 @@ class UnifiedIndicatorManager:
         symbol: str,
         timeframe: str,
         indicator_name: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         result_key = f"{symbol}_{timeframe}_{indicator_name}"
         with self._results_lock:
             result = self._results.get(result_key)
@@ -1047,9 +1041,9 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> dict[str, dict[str, Any]]:
         prefix = f"{symbol}_{timeframe}_"
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
         with self._results_lock:
             for key, result in self._results.items():
                 if key.startswith(prefix):
@@ -1064,7 +1058,7 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-    ) -> Optional[Tuple[datetime, Dict[str, Dict[str, float]]]]:
+    ) -> tuple[datetime, dict[str, dict[str, float]]] | None:
         """Return the most recent intrabar (live/partial-bar) indicator snapshot.
 
         Returns ``(bar_time, indicators)`` if a preview snapshot is available for
@@ -1082,8 +1076,8 @@ class UnifiedIndicatorManager:
         self,
         symbol: str,
         timeframe: str,
-        indicator_names: Optional[List[str]] = None,
-    ) -> Dict[str, Dict[str, Any]]:
+        indicator_names: list[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
         bars, results, compute_time_ms = self._run_pipeline(
             symbol,
             timeframe,
@@ -1097,7 +1091,7 @@ class UnifiedIndicatorManager:
         self._write_back_results(symbol, timeframe, bars, results, compute_time_ms)
         return results
 
-    def get_indicator_info(self, name: str) -> Optional[Dict[str, Any]]:
+    def get_indicator_info(self, name: str) -> dict[str, Any] | None:
         config = self.config_manager.get_indicator(name)
         if config is None:
             return None
@@ -1113,7 +1107,7 @@ class UnifiedIndicatorManager:
             "tags": config.tags,
         }
 
-    def list_indicators(self) -> List[Dict[str, Any]]:
+    def list_indicators(self) -> list[dict[str, Any]]:
         return [
             info
             for config in self.config.indicators
@@ -1123,7 +1117,7 @@ class UnifiedIndicatorManager:
     def add_snapshot_listener(
         self,
         listener: Callable[
-            [str, str, datetime, Dict[str, Dict[str, float]], str], None
+            [str, str, datetime, dict[str, dict[str, float]], str], None
         ],
     ) -> None:
         with self._snapshot_listeners_lock:
@@ -1134,7 +1128,7 @@ class UnifiedIndicatorManager:
     def remove_snapshot_listener(
         self,
         listener: Callable[
-            [str, str, datetime, Dict[str, Dict[str, float]], str], None
+            [str, str, datetime, dict[str, dict[str, float]], str], None
         ],
     ) -> None:
         with self._snapshot_listeners_lock:
@@ -1146,12 +1140,12 @@ class UnifiedIndicatorManager:
                 if not same_listener_reference(item, listener)
             ]
 
-    def set_priority_indicator_names(self, indicator_names: List[str]) -> None:
+    def set_priority_indicator_names(self, indicator_names: list[str]) -> None:
         group = self._normalize_indicator_group(indicator_names)
         self._priority_indicator_groups = (group,) if group else ()
 
     def set_priority_indicator_groups(
-        self, indicator_groups: List[List[str] | tuple[str, ...]]
+        self, indicator_groups: list[list[str] | tuple[str, ...]]
     ) -> None:
         ordered: list[tuple[str, ...]] = []
         seen: set[tuple[str, ...]] = set()
@@ -1209,7 +1203,7 @@ class UnifiedIndicatorManager:
             logger.exception("Failed to remove indicator %s", name)
             return False
 
-    def get_performance_stats(self) -> Dict[str, Any]:
+    def get_performance_stats(self) -> dict[str, Any]:
         pipeline_stats = self.pipeline.get_stats()
         cache_stats = pipeline_stats.get("cache", {})
         with self._results_lock:
@@ -1270,7 +1264,7 @@ class UnifiedIndicatorManager:
     def get_dependency_graph(self, format: str = "mermaid") -> str:
         return self.dependency_manager.visualize(format)
 
-    def get_snapshot(self, symbol: str, timeframe: str) -> Optional[IndicatorSnapshot]:
+    def get_snapshot(self, symbol: str, timeframe: str) -> IndicatorSnapshot | None:
         prefix = f"{symbol}_{timeframe}_"
         with self._results_lock:
             matches = [
@@ -1313,7 +1307,7 @@ class UnifiedIndicatorManager:
     def cleanup_old_events(self, days_to_keep: int = 7) -> None:
         self.event_store.cleanup_old_events(days_to_keep)
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         return self.get_performance_stats()
 
     def shutdown(self) -> None:
@@ -1321,14 +1315,14 @@ class UnifiedIndicatorManager:
         self.pipeline.shutdown()
 
 
-_global_unified_manager: Optional[UnifiedIndicatorManager] = None
+_global_unified_manager: UnifiedIndicatorManager | None = None
 
 
 def get_global_unified_manager(
-    market_service: Optional[MarketDataService] = None,
-    config_file: Optional[str] = None,
-    storage_writer: Optional["StorageWriter"] = None,
-    start_immediately: Optional[bool] = None,
+    market_service: MarketDataService | None = None,
+    config_file: str | None = None,
+    storage_writer: "StorageWriter" | None = None,
+    start_immediately: bool | None = None,
 ) -> UnifiedIndicatorManager:
     global _global_unified_manager
     if _global_unified_manager is None:

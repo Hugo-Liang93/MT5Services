@@ -17,7 +17,7 @@ import queue
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from src.trading.sizing import (
     TradeParameters,
@@ -52,11 +52,11 @@ class ExecutorConfig:
     min_volume: float = 0.01
     max_volume: float = 1.0
     # T-2: 按品种配置合约大小，替代全局固定值（XAUUSD=100, BTCUSD=1, 等）
-    contract_size_map: Dict[str, float] = field(
+    contract_size_map: dict[str, float] = field(
         default_factory=lambda: {"XAUUSD": 100.0, "default": 100.0}
     )
     # 时间框架差异化风险乘数：从 signal.ini [timeframe_risk] 加载，覆盖 sizing.py 默认值
-    timeframe_risk_multipliers: Dict[str, float] = field(default_factory=dict)
+    timeframe_risk_multipliers: dict[str, float] = field(default_factory=dict)
     default_volume: float = 0.01
     # 熔断器：连续失败超过此阈值后自动暂停自动交易
     max_consecutive_failures: int = 3
@@ -76,14 +76,14 @@ class TradeExecutor:
     def __init__(
         self,
         trading_module: Any,
-        config: Optional[ExecutorConfig] = None,
-        account_balance_getter: Optional[Any] = None,
-        position_manager: Optional[PositionManager] = None,
-        persist_execution_fn: Optional[Callable[[List], None]] = None,
-        trade_outcome_tracker: Optional[TradeOutcomeTracker] = None,
-        on_execution_skip: Optional[Callable[[str, str], None]] = None,
-        execution_gate: Optional[ExecutionGate] = None,
-        pending_entry_manager: Optional[PendingEntryManager] = None,
+        config: ExecutorConfig | None = None,
+        account_balance_getter: Any | None = None,
+        position_manager: PositionManager | None = None,
+        persist_execution_fn: Callable[[list], None] | None = None,
+        trade_outcome_tracker: TradeOutcomeTracker | None = None,
+        on_execution_skip: Callable[[str, str], None] | None = None,
+        execution_gate: ExecutionGate | None = None,
+        pending_entry_manager: PendingEntryManager | None = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
@@ -101,18 +101,19 @@ class TradeExecutor:
         # PendingEntryManager: 价格确认入场
         self._pending_manager = pending_entry_manager
         self._execution_count = 0
-        self._last_execution_at: Optional[datetime] = None
-        self._last_error: Optional[str] = None
+        self._last_execution_at: datetime | None = None
+        self._last_error: str | None = None
         self._execution_log: deque[dict] = deque(maxlen=100)
         # Async execution: decouple listener callback from MT5 API calls
         exec_queue_size = int(getattr(config, "exec_queue_size", 0) or 0) or 256
         self._exec_queue: queue.Queue = queue.Queue(maxsize=exec_queue_size)
-        self._exec_thread: Optional[threading.Thread] = None
+        self._exec_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         # 信号接收与风控决策计数
         self._signals_received: int = 0
         self._signals_passed: int = 0
-        self._skip_reasons: Dict[str, int] = {}
+        self._skip_reasons: dict[str, int] = {}
+        self._skip_lock = threading.Lock()
         self._execution_quality = {
             "recovered_from_state": 0,
             "risk_blocks": 0,
@@ -125,7 +126,7 @@ class TradeExecutor:
         self._consecutive_failures: int = 0
         self._circuit_open: bool = False
         # T-3: 记录熔断开路时间，用于自动恢复检查
-        self._circuit_open_at: Optional[datetime] = None
+        self._circuit_open_at: datetime | None = None
 
     # ------------------------------------------------------------------
     # Public listener interface
@@ -208,7 +209,8 @@ class TradeExecutor:
 
     def _notify_skip(self, signal_id: str, reason: str) -> None:
         """通知下游组件该信号被跳过（未执行交易）。"""
-        self._skip_reasons[reason] = self._skip_reasons.get(reason, 0) + 1
+        with self._skip_lock:
+            self._skip_reasons[reason] = self._skip_reasons.get(reason, 0) + 1
         if self._on_execution_skip is not None and signal_id:
             try:
                 self._on_execution_skip(signal_id, reason)
@@ -231,7 +233,7 @@ class TradeExecutor:
         size_map = self.config.contract_size_map
         return size_map.get(symbol, size_map.get("default", 100.0))
 
-    def _handle_confirmed(self, event: SignalEvent) -> Optional[Dict[str, Any]]:
+    def _handle_confirmed(self, event: SignalEvent) -> dict[str, Any | None]:
         self._signals_received += 1
         if not self.config.enabled:
             return None
@@ -361,8 +363,8 @@ class TradeExecutor:
         self,
         event: SignalEvent,
         params: TradeParameters,
-        cost_metrics: Dict[str, Optional[float]],
-    ) -> Optional[Dict[str, Any]]:
+        cost_metrics: dict[str, float | None],
+    ) -> dict[str, Any | None]:
         """创建 PendingEntry 并提交给 PendingEntryManager 等待价格确认。"""
         if not event.signal_id:
             logger.warning(
@@ -412,7 +414,7 @@ class TradeExecutor:
         self._pending_manager.submit(pending)
         return None
 
-    def _compute_params(self, event: SignalEvent) -> Optional[TradeParameters]:
+    def _compute_params(self, event: SignalEvent) -> TradeParameters | None:
         atr = extract_atr_from_indicators(event.indicators)
         if atr is None or atr <= 0:
             return None
@@ -422,7 +424,7 @@ class TradeExecutor:
             return None
 
         # T-1: 优先使用 runtime 注入的 close_price（策略域收窄前提取，所有策略均有效）
-        close_price: Optional[float] = None
+        close_price: float | None = None
         raw_close = event.metadata.get("close_price")
         if raw_close is not None:
             try:
@@ -453,22 +455,23 @@ class TradeExecutor:
             timeframe_risk_overrides=self.config.timeframe_risk_multipliers or None,
         )
 
-    def _get_account_balance(self) -> Optional[float]:
+    def _get_account_balance(self) -> float | None:
         if self._account_balance_getter is not None:
             try:
                 return float(self._account_balance_getter())
-            except Exception:
-                pass
+            except (TypeError, ValueError, AttributeError):
+                logger.debug("account_balance_getter failed", exc_info=True)
         try:
             info = self._trading.account_info()
             if isinstance(info, dict):
                 return float(info.get("equity") or info.get("balance") or 0)
             return float(getattr(info, "equity", None) or getattr(info, "balance", None) or 0)
-        except Exception:
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.debug("Failed to get account balance: %s", exc)
             return None
 
     @staticmethod
-    def _estimate_price(indicators: Dict[str, Dict[str, Any]]) -> Optional[float]:
+    def _estimate_price(indicators: dict[str, dict[str, Any]]) -> float | None:
         for name in ("bollinger20", "sma20", "close", "price"):
             payload = indicators.get(name)
             if isinstance(payload, dict):
@@ -489,7 +492,7 @@ class TradeExecutor:
         return open_positions >= limit
 
     def _open_positions_for_symbol(self, symbol: str) -> int:
-        tracked_count: Optional[int] = None
+        tracked_count: int | None = None
         if self._position_manager is not None:
             try:
                 tracked = [
@@ -498,7 +501,8 @@ class TradeExecutor:
                     if row.get("symbol") == symbol
                 ]
                 tracked_count = len(tracked)
-            except Exception:
+            except (TypeError, AttributeError) as exc:
+                logger.debug("Failed to count tracked positions: %s", exc)
                 tracked_count = None
 
         for attr_name in ("get_positions", "positions"):
@@ -524,7 +528,7 @@ class TradeExecutor:
         self,
         event: SignalEvent,
         params: TradeParameters,
-    ) -> Dict[str, Optional[float]]:
+    ) -> dict[str, float | None]:
         raw_spread = event.metadata.get("spread_points")
         try:
             spread_points = float(raw_spread) if raw_spread is not None else None
@@ -614,8 +618,8 @@ class TradeExecutor:
         }
 
     @staticmethod
-    def _build_trade_metadata(event: SignalEvent) -> Dict[str, Any]:
-        metadata: Dict[str, Any] = {
+    def _build_trade_metadata(event: SignalEvent) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
             "entry_origin": "auto",
             "signal": {
                 "signal_id": event.signal_id,
@@ -641,10 +645,10 @@ class TradeExecutor:
     def _record_slippage(
         self,
         *,
-        requested_price: Optional[float],
-        fill_price: Optional[float],
-        symbol_point: Optional[float],
-    ) -> Dict[str, Optional[float]]:
+        requested_price: float | None,
+        fill_price: float | None,
+        symbol_point: float | None,
+    ) -> dict[str, float | None]:
         try:
             requested = float(requested_price) if requested_price is not None else None
         except (TypeError, ValueError):
@@ -681,8 +685,8 @@ class TradeExecutor:
         event: SignalEvent,
         params: TradeParameters,
         *,
-        cost_metrics: Optional[Dict[str, Optional[float]]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        cost_metrics: dict[str, float | None] | None = None,
+    ) -> dict[str, Any | None]:
         payload = {
             "symbol": event.symbol,
             "volume": params.position_size,
@@ -883,14 +887,14 @@ class TradeExecutor:
                     logger.warning("TradeExecutor: persist fail-entry failed: %s", pe)
             return None
 
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> dict[str, Any]:
         slippage_samples = int(self._execution_quality["slippage_samples"] or 0)
         return {
             "enabled": self.config.enabled,
             "signals_received": self._signals_received,
             "signals_passed": self._signals_passed,
             "signals_blocked": self._signals_received - self._signals_passed,
-            "skip_reasons": dict(self._skip_reasons),
+            "skip_reasons": {k: v for k, v in self._skip_reasons.items()},
             "execution_count": self._execution_count,
             "last_execution_at": self._last_execution_at.isoformat() if self._last_execution_at else None,
             "last_error": self._last_error,

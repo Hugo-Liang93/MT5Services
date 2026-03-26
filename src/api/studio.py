@@ -20,6 +20,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
+from src.api.error_codes import AIErrorCode
 from src.api.schemas import ApiResponse
 from src.studio.service import StudioService
 from src.utils.timezone import utc_now
@@ -57,7 +58,10 @@ def studio_agent_detail(
     for agent in agents:
         if agent.get("id") == agent_id:
             return ApiResponse.success_response(data=agent)
-    return ApiResponse(success=False, error={"message": f"Agent '{agent_id}' not found"})
+    return ApiResponse.error_response(
+        error_code=AIErrorCode.NOT_FOUND,
+        error_message=f"Agent '{agent_id}' not found",
+    )
 
 
 @router.get("/events")

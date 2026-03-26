@@ -21,6 +21,28 @@ from typing import Any
 from .models import build_agent
 
 
+# ── Helper ─────────────────────────────────────────────────────
+
+
+def resolve_status(
+    agent_id: str,
+    checks: list[tuple[bool, str, str, str]],
+    default_status: str,
+    default_task: str,
+    metrics: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Evaluate *checks* top-to-bottom; return the first truthy match.
+
+    Each check is ``(condition, status, task, alert_level)``.
+    If none match, use *default_status* / *default_task*.
+    """
+    for condition, status, task, alert_level in checks:
+        if condition:
+            return build_agent(agent_id, status, task, metrics=metrics, alert_level=alert_level, **kwargs)
+    return build_agent(agent_id, default_status, default_task, metrics=metrics, **kwargs)
+
+
 # ── 1. collector ← BackgroundIngestor ───────────────────────────
 
 
@@ -30,30 +52,21 @@ def map_collector(queue_stats: dict[str, Any], is_backfilling: bool) -> dict[str
 
     if not ingest_alive:
         return build_agent("collector", "disconnected", "采集线程未运行", alert_level="error")
-    if is_backfilling:
-        return build_agent("collector", "thinking", "历史数据回补中")
 
     summary = queue_stats.get("summary", {})
     full_count = summary.get("full", 0)
     critical_count = summary.get("critical", 0)
-
     metrics: dict[str, Any] = {
         "channels": summary.get("total", 0),
         "full": full_count,
         "critical": critical_count,
     }
 
-    if full_count > 0:
-        return build_agent(
-            "collector", "blocked", "队列满溢",
-            metrics=metrics, alert_level="error",
-        )
-    if critical_count > 0:
-        return build_agent(
-            "collector", "warning", "队列压力高",
-            metrics=metrics, alert_level="warning",
-        )
-    return build_agent("collector", "working", "实时采集中", metrics=metrics)
+    return resolve_status("collector", [
+        (is_backfilling, "thinking", "历史数据回补中", "none"),
+        (full_count > 0, "blocked", "队列满溢", "error"),
+        (critical_count > 0, "warning", "队列压力高", "warning"),
+    ], "working", "实时采集中", metrics=metrics)
 
 
 # ── 2a. analyst ← UnifiedIndicatorManager (confirmed) ──────────
@@ -61,7 +74,6 @@ def map_collector(queue_stats: dict[str, Any], is_backfilling: bool) -> dict[str
 
 def map_analyst(perf_stats: dict[str, Any]) -> dict[str, Any]:
     running = perf_stats.get("event_loop_running", False)
-
     if not running:
         return build_agent("analyst", "error", "指标引擎未运行", alert_level="error")
 
@@ -69,19 +81,21 @@ def map_analyst(perf_stats: dict[str, Any]) -> dict[str, Any]:
     confirmed = scope_stats.get("confirmed", {})
     reconcile = scope_stats.get("reconcile", {})
     success_rate = perf_stats.get("success_rate", 0.0)
-    pct = success_rate * 100 if success_rate <= 1.0 else success_rate
+    computations = confirmed.get("computations", 0)
 
     metrics: dict[str, Any] = {
-        "success_rate": round(pct, 1),
-        "computations": confirmed.get("computations", 0),
+        "success_rate": round(float(success_rate), 1),
+        "computations": computations,
         "indicator_count": confirmed.get("indicators", 0),
         "reconcile_computations": reconcile.get("computations", 0),
         "indicator_names": perf_stats.get("confirmed_indicators", []),
     }
 
-    if confirmed.get("computations", 0) == 0 and reconcile.get("computations", 0) == 0:
-        return build_agent("analyst", "thinking", "等待K线收盘", metrics=metrics)
-    return build_agent("analyst", "working", "指标计算中", metrics=metrics)
+    no_data = computations == 0 and reconcile.get("computations", 0) == 0
+    return resolve_status("analyst", [
+        (no_data, "thinking", "等待K线收盘", "none"),
+        (success_rate < 80.0 and computations > 0, "warning", "计算失败率偏高", "warning"),
+    ], "working", "指标计算中", metrics=metrics)
 
 
 # ── 2b. live_analyst ← UnifiedIndicatorManager (intrabar) ──────
@@ -93,7 +107,6 @@ def map_live_analyst(
     intrabar_ingest_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     running = perf_stats.get("event_loop_running", False)
-
     if not running:
         return build_agent("live_analyst", "error", "指标引擎未运行", alert_level="error")
 
@@ -101,7 +114,6 @@ def map_live_analyst(
     intrabar = scope_stats.get("intrabar", {})
     ing = intrabar_ingest_stats or {}
 
-    # 按 TF 的 intrabar bar OHLC 快照（前端画迷你 K 线）
     bars_by_tf: dict[str, dict[str, Any]] = {}
     for tf, bars in (intrabar_bars_by_tf or {}).items():
         if not bars:
@@ -130,12 +142,12 @@ def map_live_analyst(
         "ingest_updated": ing.get("updated", 0),
     }
 
-    if intrabar.get("computations", 0) == 0:
-        return build_agent("live_analyst", "thinking", "等待盘中数据", metrics=metrics)
-    return build_agent("live_analyst", "working", "盘中指标计算中", metrics=metrics)
+    return resolve_status("live_analyst", [
+        (intrabar.get("computations", 0) == 0, "thinking", "等待盘中数据", "none"),
+    ], "working", "盘中指标计算中", metrics=metrics)
 
 
-# ── 3. strategist ← SignalModule ───────────────────────────────
+# ── 3a. strategist ← SignalModule ───────────────────────────────
 
 
 def map_strategist(
@@ -152,14 +164,10 @@ def map_strategist(
         "sell_count": sell,
     }
 
-    if strategy_count == 0:
-        return build_agent(
-            "strategist", "error", "无已注册策略",
-            metrics=metrics, alert_level="error",
-        )
-    if not recent_signals:
-        return build_agent("strategist", "idle", "等待快照", metrics=metrics)
-    return build_agent("strategist", "working", "策略评估中", metrics=metrics)
+    return resolve_status("strategist", [
+        (strategy_count == 0, "error", "无已注册策略", "error"),
+        (not recent_signals, "idle", "等待快照", "none"),
+    ], "working", "策略评估中", metrics=metrics)
 
 
 # ── 3b. live_strategist ← SignalModule (intrabar preview/armed) ─
@@ -183,36 +191,31 @@ def map_live_strategist(
         "active_preview": active_preview,
     }
 
-    if not intrabar_strategies:
-        return build_agent("live_strategist", "idle", "无盘中策略", metrics=metrics)
-    if active_preview > 0:
-        return build_agent("live_strategist", "thinking", "盘中预览中", metrics=metrics)
-    if preview_signals:
-        return build_agent("live_strategist", "working", "盘中策略评估中", metrics=metrics)
-    return build_agent("live_strategist", "idle", "等待盘中快照", metrics=metrics)
+    return resolve_status("live_strategist", [
+        (not intrabar_strategies, "idle", "无盘中策略", "none"),
+        (active_preview > 0, "thinking", "盘中预览中", "none"),
+        (bool(preview_signals), "working", "盘中策略评估中", "none"),
+    ], "idle", "等待盘中快照", metrics=metrics)
 
 
-# ── 3b. auditor ← SignalRuntime (FilterChain + affinity) ─────
+# ── 3c. auditor ← SignalRuntime (FilterChain + affinity) ─────
 
 
 def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
     affinity_skipped = runtime_status.get("affinity_gates_skipped", 0)
 
-    # 按 scope 分维度（累计）
     by_scope = runtime_status.get("filter_by_scope", {})
     confirmed = by_scope.get("confirmed", {})
     intrabar = by_scope.get("intrabar", {})
     total_passed = confirmed.get("passed", 0) + intrabar.get("passed", 0)
     total_blocked = confirmed.get("blocked", 0) + intrabar.get("blocked", 0)
 
-    # 滑动窗口（按 scope 分维度）
     w_elapsed = runtime_status.get("filter_window_elapsed", 0)
     w_seconds = runtime_status.get("filter_window_seconds", 3600)
     w_by_scope = runtime_status.get("filter_window_by_scope", {})
 
     metrics: dict[str, Any] = {
         "affinity_skipped": affinity_skipped,
-        # 累计 — 按 scope 分维度
         "confirmed_passed": confirmed.get("passed", 0),
         "confirmed_blocked": confirmed.get("blocked", 0),
         "confirmed_blocks": confirmed.get("blocks", {}),
@@ -222,7 +225,6 @@ def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
         "total_passed": total_passed,
         "total_blocked": total_blocked,
         "total_snapshots": total_passed + total_blocked,
-        # 滑动窗口 — 按 scope 分维度
         "window_elapsed": w_elapsed,
         "window_seconds": w_seconds,
         "window_by_scope": w_by_scope,
@@ -233,15 +235,10 @@ def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
         return build_agent("auditor", "idle", "等待指标快照", metrics=metrics)
 
     pass_rate = total_passed / total_evaluated * 100
-
-    if total_blocked > 0 and pass_rate < 30:
-        return build_agent(
-            "auditor", "blocked", "信号审核中",
-            metrics=metrics, alert_level="warning",
-        )
-    if total_blocked > 0:
-        return build_agent("auditor", "reviewing", "信号审核中", metrics=metrics)
-    return build_agent("auditor", "approved", "信号审核中", metrics=metrics)
+    return resolve_status("auditor", [
+        (total_blocked > 0 and pass_rate < 30, "blocked", "信号审核中", "warning"),
+        (total_blocked > 0, "reviewing", "信号审核中", "none"),
+    ], "approved", "信号审核中", metrics=metrics)
 
 
 # ── 4. voter ← SignalRuntime ──────────────────────────────────
@@ -249,7 +246,6 @@ def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
 
 def map_voter(runtime_status: dict[str, Any]) -> dict[str, Any]:
     running = runtime_status.get("running", False)
-
     if not running:
         return build_agent("voter", "disconnected", "运行时未启动", alert_level="error")
 
@@ -260,43 +256,33 @@ def map_voter(runtime_status: dict[str, Any]) -> dict[str, Any]:
         "active_preview": runtime_status.get("active_preview_states", 0),
     }
 
-    if metrics["active_confirmed"] > 0:
-        return build_agent("voter", "working", "投票进行中", metrics=metrics)
-    if metrics["active_preview"] > 0:
-        return build_agent("voter", "thinking", "预览评估中", metrics=metrics)
-    return build_agent("voter", "idle", "等待策略信号", metrics=metrics)
+    return resolve_status("voter", [
+        (metrics["active_confirmed"] > 0, "working", "投票进行中", "none"),
+        (metrics["active_preview"] > 0, "thinking", "预览评估中", "none"),
+    ], "idle", "等待策略信号", metrics=metrics)
 
 
-# ── 5. risk_officer ← SignalRuntime + StorageWriter ────────────
+# ── 5. risk_officer ← TradeExecutor ────────────────────────────
 
 
-def map_risk_officer(
-    executor_status: dict[str, Any],
-) -> dict[str, Any]:
+def map_risk_officer(executor_status: dict[str, Any]) -> dict[str, Any]:
     received = executor_status.get("signals_received", 0)
-    passed = executor_status.get("signals_passed", 0)
     blocked = executor_status.get("signals_blocked", 0)
-    skip_reasons = executor_status.get("skip_reasons", {})
     risk_blocks = executor_status.get("execution_quality", {}).get("risk_blocks", 0)
 
     metrics: dict[str, Any] = {
         "signals_received": received,
-        "signals_passed": passed,
+        "signals_passed": executor_status.get("signals_passed", 0),
         "signals_blocked": blocked,
-        "skip_reasons": skip_reasons,
+        "skip_reasons": executor_status.get("skip_reasons", {}),
         "risk_blocks": risk_blocks,
     }
 
-    if risk_blocks > 0:
-        return build_agent(
-            "risk_officer", "blocked", "风控拦截",
-            metrics=metrics, alert_level="warning",
-        )
-    if blocked > 0:
-        return build_agent("risk_officer", "reviewing", "风控审核中", metrics=metrics)
-    if received > 0:
-        return build_agent("risk_officer", "approved", "风控通过", metrics=metrics)
-    return build_agent("risk_officer", "idle", "等待信号", metrics=metrics)
+    return resolve_status("risk_officer", [
+        (risk_blocks > 0, "blocked", "风控拦截", "warning"),
+        (blocked > 0, "reviewing", "风控审核中", "none"),
+        (received > 0, "approved", "风控通过", "none"),
+    ], "idle", "等待信号", metrics=metrics)
 
 
 # ── 6. trader ← TradeExecutor ─────────────────────────────────
@@ -312,7 +298,6 @@ def map_trader(
     last_error = executor_status.get("last_error")
     recent = executor_status.get("recent_executions", [])
 
-    # pending entry 数据
     pe = pending_status or {}
     pe_entries = pe.get("entries", [])
     pe_stats = pe.get("stats", {})
@@ -323,7 +308,6 @@ def map_trader(
         "circuit_open": circuit_open,
         "consecutive_failures": circuit.get("consecutive_failures", 0),
         "last_error": last_error[:80] if last_error else None,
-        # pending entry
         "pending_entries": pe_entries,
         "pending_count": len(pe_entries),
         "pending_stats": {
@@ -338,27 +322,14 @@ def map_trader(
     if not enabled:
         return build_agent("trader", "disconnected", "自动交易已禁用", metrics=metrics)
     if circuit_open:
-        return build_agent(
-            "trader", "blocked", "熔断器触发",
-            metrics=metrics, alert_level="error",
-        )
+        return build_agent("trader", "blocked", "熔断器触发", metrics=metrics, alert_level="error")
     if last_error:
-        return build_agent(
-            "trader", "warning", "执行异常",
-            metrics=metrics, alert_level="warning",
-        )
+        return build_agent("trader", "warning", "执行异常", metrics=metrics, alert_level="warning")
     if pe_entries:
-        return build_agent(
-            "trader", "waiting", "价格确认中",
-            metrics=metrics, symbol="XAUUSD",
-        )
+        pe_symbol = pe_entries[0].get("symbol", "") if pe_entries else ""
+        return build_agent("trader", "waiting", "价格确认中", metrics=metrics, symbol=pe_symbol)
     if recent:
-        last = recent[-1]
-        symbol = last.get("symbol", "XAUUSD")
-        return build_agent(
-            "trader", "working", "交易执行中",
-            metrics=metrics, symbol=symbol,
-        )
+        return build_agent("trader", "working", "交易执行中", metrics=metrics, symbol=recent[-1].get("symbol", ""))
     return build_agent("trader", "idle", "等待信号", metrics=metrics)
 
 
@@ -370,18 +341,12 @@ def map_position_manager(
     pm_status: dict[str, Any],
 ) -> dict[str, Any]:
     running = pm_status.get("running", False)
-    tracked = pm_status.get("tracked_positions", 0)
-
     if not running:
-        return build_agent(
-            "position_manager", "disconnected", "持仓管理器未运行",
-            alert_level="error",
-        )
+        return build_agent("position_manager", "disconnected", "持仓管理器未运行", alert_level="error")
 
     total_pnl = sum(float(p.get("profit", 0) or 0) for p in positions)
-
     metrics: dict[str, Any] = {
-        "tracked_positions": tracked,
+        "tracked_positions": pm_status.get("tracked_positions", 0),
         "reconcile_count": pm_status.get("reconcile_count", 0),
         "total_pnl": round(total_pnl, 2),
     }
@@ -390,10 +355,7 @@ def map_position_manager(
         return build_agent("position_manager", "idle", "无活跃持仓", metrics=metrics)
 
     alert = "warning" if total_pnl < 0 else "none"
-    return build_agent(
-        "position_manager", "working", "持仓监控中",
-        metrics=metrics, alert_level=alert,
-    )
+    return build_agent("position_manager", "working", "持仓监控中", metrics=metrics, alert_level=alert)
 
 
 # ── 8. accountant ← TradingModule ─────────────────────────────
@@ -403,41 +365,27 @@ def map_accountant(
     account_info: dict[str, Any],
     trade_control: dict[str, Any],
 ) -> dict[str, Any]:
-    balance = account_info.get("balance", 0)
     equity = account_info.get("equity", 0)
     margin = account_info.get("margin", 0)
-    free_margin = account_info.get("free_margin") or account_info.get("margin_free", 0)
-    margin_pct = (equity / margin * 100) if margin > 0 else 9999.0
-
-    auto_entry = trade_control.get("auto_entry_enabled", True)
+    margin_pct = (equity / margin * 100) if margin > 0 else float("inf")
     close_only = trade_control.get("close_only_mode", False)
+    auto_entry = trade_control.get("auto_entry_enabled", True)
 
     metrics: dict[str, Any] = {
-        "balance": balance,
+        "balance": account_info.get("balance", 0),
         "equity": equity,
         "margin": margin,
-        "free_margin": free_margin,
-        "margin_pct": round(margin_pct, 1),
+        "free_margin": account_info.get("free_margin") or account_info.get("margin_free", 0),
+        "margin_pct": round(margin_pct, 1) if margin > 0 else None,
         "auto_entry": auto_entry,
         "close_only": close_only,
     }
 
-    if close_only:
-        return build_agent(
-            "accountant", "warning", "仅平仓模式",
-            metrics=metrics, alert_level="warning",
-        )
-    if margin_pct < 150:
-        return build_agent(
-            "accountant", "alert", "保证金不足",
-            metrics=metrics, alert_level="error",
-        )
-    if not auto_entry:
-        return build_agent(
-            "accountant", "idle", "自动入场已关闭",
-            metrics=metrics, alert_level="info",
-        )
-    return build_agent("accountant", "working", "账务正常", metrics=metrics)
+    return resolve_status("accountant", [
+        (close_only, "warning", "仅平仓模式", "warning"),
+        (margin_pct < 150, "alert", "保证金不足", "error"),
+        (not auto_entry, "idle", "自动入场已关闭", "info"),
+    ], "working", "账务正常", metrics=metrics)
 
 
 # ── 9. calendar_reporter ← EconomicCalendarService ────────────
@@ -465,26 +413,13 @@ def map_calendar_reporter(
     }
 
     if not running:
-        return build_agent(
-            "calendar_reporter", "disconnected", "日历服务未运行",
-            metrics=metrics, alert_level="error",
-        )
-    if stale:
-        return build_agent(
-            "calendar_reporter", "alert", "日历数据过期",
-            metrics=metrics, alert_level="error",
-        )
-    if high_impact:
-        return build_agent(
-            "calendar_reporter", "warning", "高影响事件激活",
-            metrics=metrics, alert_level="warning",
-        )
-    if failures > 0:
-        return build_agent(
-            "calendar_reporter", "warning", "数据拉取异常",
-            metrics=metrics, alert_level="warning",
-        )
-    return build_agent("calendar_reporter", "working", "日历监控中", metrics=metrics)
+        return build_agent("calendar_reporter", "disconnected", "日历服务未运行", metrics=metrics, alert_level="error")
+
+    return resolve_status("calendar_reporter", [
+        (stale, "alert", "日历数据过期", "error"),
+        (bool(high_impact), "warning", "高影响事件激活", "warning"),
+        (failures > 0, "warning", "数据拉取异常", "warning"),
+    ], "working", "日历监控中", metrics=metrics)
 
 
 # ── 10. inspector ← HealthMonitor ─────────────────────────────
@@ -492,21 +427,12 @@ def map_calendar_reporter(
 
 def map_inspector(health_report: dict[str, Any]) -> dict[str, Any]:
     overall = health_report.get("overall_status", "unknown")
-    active_alerts = health_report.get("active_alerts", [])
-
     metrics: dict[str, Any] = {
         "overall_status": overall,
-        "active_alert_count": len(active_alerts),
+        "active_alert_count": len(health_report.get("active_alerts", [])),
     }
 
-    if overall == "critical":
-        return build_agent(
-            "inspector", "error", "系统异常",
-            metrics=metrics, alert_level="error",
-        )
-    if overall == "warning":
-        return build_agent(
-            "inspector", "alert", "系统警告",
-            metrics=metrics, alert_level="warning",
-        )
-    return build_agent("inspector", "reviewing", "系统健康", metrics=metrics)
+    return resolve_status("inspector", [
+        (overall == "critical", "error", "系统异常", "error"),
+        (overall == "warning", "alert", "系统警告", "warning"),
+    ], "reviewing", "系统健康", metrics=metrics)

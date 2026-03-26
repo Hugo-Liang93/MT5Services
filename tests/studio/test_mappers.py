@@ -57,10 +57,15 @@ class TestCollector:
 
 class TestAnalyst:
     def test_working(self) -> None:
-        perf = {"event_loop_running": True, "total_computations": 100, "success_rate": 0.99, "cache_hits": 50}
+        perf = {
+            "event_loop_running": True,
+            "total_computations": 100,
+            "success_rate": 99.0,
+            "cache_hits": 50,
+            "scope_stats": {"confirmed": {"computations": 100, "indicators": 5}},
+        }
         agent = map_analyst(perf)
         assert agent["status"] == "working"
-        assert "99.0%" in agent["task"]
 
     def test_no_loop(self) -> None:
         agent = map_analyst({"event_loop_running": False})
@@ -72,7 +77,13 @@ class TestAnalyst:
         assert agent["status"] == "thinking"
 
     def test_high_failure(self) -> None:
-        perf = {"event_loop_running": True, "total_computations": 10, "failed_computations": 5, "success_rate": 0.5}
+        perf = {
+            "event_loop_running": True,
+            "total_computations": 10,
+            "failed_computations": 5,
+            "success_rate": 50.0,
+            "scope_stats": {"confirmed": {"computations": 10, "indicators": 5}},
+        }
         agent = map_analyst(perf)
         assert agent["status"] == "warning"
 
@@ -85,8 +96,8 @@ class TestStrategist:
         signals = [{"direction": "buy"}, {"direction": "sell"}, {"direction": "buy"}]
         agent = map_strategist(20, signals)
         assert agent["status"] == "working"
-        assert "2 买" in agent["task"]
-        assert "1 卖" in agent["task"]
+        assert agent["metrics"]["buy_count"] == 2
+        assert agent["metrics"]["sell_count"] == 1
 
     def test_no_signals(self) -> None:
         agent = map_strategist(20, [])
@@ -125,24 +136,21 @@ class TestVoter:
 
 
 class TestRiskOfficer:
-    def test_normal(self) -> None:
-        runtime = {"dropped_events": 0, "dropped_confirmed": 0, "affinity_gates_skipped": 5}
-        storage = {"summary": {"full": 0}}
-        agent = map_risk_officer(runtime, storage)
+    def test_approved(self) -> None:
+        status = {"signals_received": 5, "signals_passed": 5, "signals_blocked": 0, "execution_quality": {"risk_blocks": 0}}
+        agent = map_risk_officer(status)
+        assert agent["status"] == "approved"
+
+    def test_reviewing(self) -> None:
+        status = {"signals_received": 5, "signals_passed": 3, "signals_blocked": 2, "execution_quality": {"risk_blocks": 0}}
+        agent = map_risk_officer(status)
         assert agent["status"] == "reviewing"
 
-    def test_confirmed_dropped(self) -> None:
-        runtime = {"dropped_events": 1, "dropped_confirmed": 1, "affinity_gates_skipped": 0}
-        storage = {"summary": {"full": 0}}
-        agent = map_risk_officer(runtime, storage)
-        assert agent["status"] == "alert"
-        assert agent["alertLevel"] == "error"
-
-    def test_queue_full(self) -> None:
-        runtime = {"dropped_events": 0, "dropped_confirmed": 0, "affinity_gates_skipped": 0}
-        storage = {"summary": {"full": 2}}
-        agent = map_risk_officer(runtime, storage)
+    def test_risk_blocked(self) -> None:
+        status = {"signals_received": 5, "signals_passed": 3, "signals_blocked": 2, "execution_quality": {"risk_blocks": 1}}
+        agent = map_risk_officer(status)
         assert agent["status"] == "blocked"
+        assert agent["alertLevel"] == "warning"
 
 
 # ── trader ─────────────────────────────────────────────────────
@@ -166,7 +174,6 @@ class TestTrader:
         }
         agent = map_trader(status)
         assert agent["status"] == "working"
-        assert "XAUUSD" in agent["task"]
 
     def test_idle(self) -> None:
         status = {"enabled": True, "circuit_breaker": {"open": False}, "execution_count": 0, "last_error": None, "recent_executions": []}
@@ -183,7 +190,7 @@ class TestPositionManager:
         status = {"running": True, "tracked_positions": 2, "reconcile_count": 10}
         agent = map_position_manager(positions, status)
         assert agent["status"] == "working"
-        assert "+30.00" in agent["task"]
+        assert agent["metrics"]["total_pnl"] == 30.0
 
     def test_no_positions(self) -> None:
         agent = map_position_manager([], {"running": True, "tracked_positions": 0})
@@ -245,7 +252,7 @@ class TestCalendarReporter:
         windows = [{"impact": "high", "guard_active": True, "event_name": "FOMC"}]
         agent = map_calendar_reporter(stats, windows)
         assert agent["status"] == "warning"
-        assert "FOMC" in agent["task"]
+        assert agent["metrics"]["high_impact_active"] == 1
 
     def test_not_running(self) -> None:
         stats = {"running": "false", "stale": "false", "consecutive_failures": "0"}
