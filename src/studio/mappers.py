@@ -198,12 +198,10 @@ def map_live_strategist(
     ], "idle", "等待盘中快照", metrics=metrics)
 
 
-# ── 3c. auditor ← SignalRuntime (FilterChain + affinity) ─────
+# ── 3c. filter_guard ← SignalRuntime (FilterChain) ───────────
 
 
-def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
-    affinity_skipped = runtime_status.get("affinity_gates_skipped", 0)
-
+def map_filter_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
     by_scope = runtime_status.get("filter_by_scope", {})
     confirmed = by_scope.get("confirmed", {})
     intrabar = by_scope.get("intrabar", {})
@@ -215,10 +213,9 @@ def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
     w_by_scope = runtime_status.get("filter_window_by_scope", {})
 
     filter_total = total_passed + total_blocked
-    filter_pass_rate = (total_passed / filter_total * 100) if filter_total > 0 else 0.0
+    pass_rate = (total_passed / filter_total * 100) if filter_total > 0 else 0.0
 
     metrics: dict[str, Any] = {
-        "affinity_skipped": affinity_skipped,
         "confirmed_passed": confirmed.get("passed", 0),
         "confirmed_blocked": confirmed.get("blocked", 0),
         "confirmed_blocks": confirmed.get("blocks", {}),
@@ -228,19 +225,47 @@ def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
         "total_passed": total_passed,
         "total_blocked": total_blocked,
         "total_snapshots": filter_total,
-        "filter_pass_rate": round(filter_pass_rate, 1),
+        "pass_rate": round(pass_rate, 1),
         "window_elapsed": w_elapsed,
         "window_seconds": w_seconds,
         "window_by_scope": w_by_scope,
     }
 
     if filter_total == 0:
-        return build_agent("auditor", "idle", "等待指标快照", metrics=metrics)
+        return build_agent("filter_guard", "idle", "等待指标快照", metrics=metrics)
 
-    return resolve_status("auditor", [
-        (total_blocked > 0 and filter_pass_rate < 30, "blocked", "信号审核中", "warning"),
-        (total_blocked > 0 or affinity_skipped > 0, "reviewing", "信号审核中", "none"),
-    ], "approved", "信号审核中", metrics=metrics)
+    return resolve_status("filter_guard", [
+        (total_blocked > 0 and pass_rate < 30, "blocked", "环境过滤中", "warning"),
+        (total_blocked > 0, "reviewing", "环境过滤中", "none"),
+    ], "approved", "环境过滤中", metrics=metrics)
+
+
+# ── 3d. regime_guard ← SignalRuntime (RegimeDetector + affinity) ─
+
+
+def map_regime_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
+    affinity_skipped = runtime_status.get("affinity_gates_skipped", 0)
+    regime_map: dict[str, dict[str, Any]] = runtime_status.get("regime_map", {})
+
+    # 汇总各 (symbol/tf) 的当前 regime 分布
+    regime_counts: dict[str, int] = {}
+    for _key, info in regime_map.items():
+        r = info.get("current_regime")
+        if r:
+            regime_counts[r] = regime_counts.get(r, 0) + 1
+
+    metrics: dict[str, Any] = {
+        "affinity_skipped": affinity_skipped,
+        "regime_distribution": regime_counts,
+        "regime_details": regime_map,
+    }
+
+    if not regime_map:
+        return build_agent("regime_guard", "idle", "等待 Regime 数据", metrics=metrics)
+
+    return resolve_status("regime_guard", [
+        (affinity_skipped > 0, "reviewing", "Regime 研判中", "none"),
+    ], "approved", "Regime 研判中", metrics=metrics)
 
 
 # ── 4. voter ← SignalRuntime ──────────────────────────────────

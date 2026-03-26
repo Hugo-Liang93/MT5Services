@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
-from .base import _resolve_indicator_value
+from .base import _resolve_indicator_value, get_tf_param
 
 logger = logging.getLogger(__name__)
 
@@ -240,14 +240,15 @@ class SupertrendStrategy:
             )
 
         adx = adx_value if adx_value is not None else 0.0
-        if adx < self._adx_threshold:
+        adx_thresh = get_tf_param(self, "adx_threshold", context.timeframe, self._adx_threshold)
+        if adx < adx_thresh:
             return SignalDecision(
                 strategy=self.name,
                 symbol=context.symbol,
                 timeframe=context.timeframe,
                 direction="hold",
                 confidence=0.1,
-                reason=f"adx_too_low:{adx:.1f}<{self._adx_threshold}",
+                reason=f"adx_too_low:{adx:.1f}<{adx_thresh}",
                 used_indicators=used or ["supertrend14", "adx14"],
                 metadata={"adx": adx, "st_direction": st_direction},
             )
@@ -259,7 +260,7 @@ class SupertrendStrategy:
         else:
             action = "hold"
 
-        adx_confidence = min((adx - self._adx_threshold) / 30.0 + 0.6, 1.0)
+        adx_confidence = min((adx - adx_thresh) / 30.0 + 0.6, 1.0)
 
         # HTF confirmation: if H1 supertrend agrees, boost confidence
         htf_bonus = 0.0
@@ -631,38 +632,40 @@ class RocMomentumStrategy:
             )
 
         adx = adx_value if adx_value is not None else 0.0
-        if adx < self._adx_min:
+        tf = context.timeframe
+        adx_min = get_tf_param(self, "adx_min", tf, self._adx_min)
+        roc_thresh_base = get_tf_param(self, "roc_threshold", tf, self._roc_threshold)
+        if adx < adx_min:
             return SignalDecision(
                 strategy=self.name,
                 symbol=context.symbol,
                 timeframe=context.timeframe,
                 direction="hold",
                 confidence=0.10,
-                reason=f"adx_too_low:{adx:.1f}<{self._adx_min}",
+                reason=f"adx_too_low:{adx:.1f}<{adx_min}",
                 used_indicators=used or ["roc12", "adx14"],
                 metadata={"roc": roc_value, "adx": adx},
             )
 
-        # ATR 归一化 ROC 阈值：高波动市提高阈值，低波动市降低阈值
+        # ATR 归一化 ROC 阈值
         atr_data = context.indicators.get("atr14") or {}
         atr_val = atr_data.get("atr")
         close_price = float(context.metadata.get("close_price") or 0)
         if atr_val and close_price > 0:
             atr_pct = (atr_val / close_price) * 100
-            roc_threshold = max(atr_pct * 0.2, self._roc_threshold)
+            roc_threshold = max(atr_pct * 0.2, roc_thresh_base)
         else:
-            roc_threshold = self._roc_threshold
+            roc_threshold = roc_thresh_base
 
         roc = roc_value
         if roc > roc_threshold:
             action = "buy"
-            # ADX 越强、ROC 越大，置信度越高
-            adx_conf = min((adx - self._adx_min) / 30.0 * 0.3, 0.30)
+            adx_conf = min((adx - adx_min) / 30.0 * 0.3, 0.30)
             roc_conf = min(abs(roc) / 1.0 * 0.35, 0.35)
             confidence = min(0.40 + adx_conf + roc_conf, 0.90)
         elif roc < -roc_threshold:
             action = "sell"
-            adx_conf = min((adx - self._adx_min) / 30.0 * 0.3, 0.30)
+            adx_conf = min((adx - adx_min) / 30.0 * 0.3, 0.30)
             roc_conf = min(abs(roc) / 1.0 * 0.35, 0.35)
             confidence = min(0.40 + adx_conf + roc_conf, 0.90)
         else:

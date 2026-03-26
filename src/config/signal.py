@@ -185,7 +185,7 @@ def get_signal_config() -> SignalConfig:
     # ── Regime 检测阈值 ──────────────────────────────────────────────────
     regime_detector_section = dict(merged.get("regime_detector", {}))
 
-    # ── 策略级可调参数 [strategy_params] ─────────────────────────────────
+    # ── 策略级可调参数 [strategy_params] + [strategy_params.<TF>] ─────────
     strategy_params_section = dict(merged.get("strategy_params", {}))
     strategy_params: dict[str, float] = {}
     for raw_key, raw_value in strategy_params_section.items():
@@ -198,6 +198,28 @@ def get_signal_config() -> SignalConfig:
                     "signal.ini [strategy_params] invalid value for '%s': %r (skipped)",
                     key, raw_value,
                 )
+
+    # Per-TF 策略参数: [strategy_params.M5], [strategy_params.H1] 等
+    strategy_params_per_tf: dict[str, dict[str, float]] = {}
+    for section_name, section_data in merged.items():
+        if not section_name.startswith("strategy_params."):
+            continue
+        tf = section_name[len("strategy_params."):].strip().upper()
+        if not tf:
+            continue
+        tf_params: dict[str, float] = {}
+        for raw_key, raw_value in dict(section_data).items():
+            key = str(raw_key).strip()
+            if key:
+                try:
+                    tf_params[key] = float(raw_value)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "signal.ini [strategy_params.%s] invalid value for '%s': %r (skipped)",
+                        tf, key, raw_value,
+                    )
+        if tf_params:
+            strategy_params_per_tf[tf] = tf_params
 
     # ── Regime 亲和度覆盖 [regime_affinity.*] ────────────────────────────
     regime_affinity_overrides: dict[str, dict[str, float]] = {}
@@ -259,6 +281,7 @@ def get_signal_config() -> SignalConfig:
             for key, value in regime_detector_section.items()
         },
         "strategy_params": strategy_params,
+        "strategy_params_per_tf": strategy_params_per_tf,
         "regime_affinity_overrides": regime_affinity_overrides,
         "contract_size_map": _normalize_float_map(
             contract_sizes_section,

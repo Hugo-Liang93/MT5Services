@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
-from .base import _resolve_indicator_value
+from .base import _resolve_indicator_value, get_tf_param
 
 logger = logging.getLogger(__name__)
 
@@ -140,12 +140,15 @@ class RsiReversionStrategy:
             )
 
         rsi = rsi_value
-        if rsi <= self._oversold:
+        tf = context.timeframe
+        overbought = get_tf_param(self, "overbought", tf, self._overbought)
+        oversold = get_tf_param(self, "oversold", tf, self._oversold)
+        if rsi <= oversold:
             action = "buy"
-            confidence = min((self._oversold - rsi) / 30 + 0.4, 1.0)
-        elif rsi >= self._overbought:
+            confidence = min((oversold - rsi) / 30 + 0.4, 1.0)
+        elif rsi >= overbought:
             action = "sell"
-            confidence = min((rsi - self._overbought) / 30 + 0.4, 1.0)
+            confidence = min((rsi - overbought) / 30 + 0.4, 1.0)
         else:
             action = "hold"
             confidence = 0.2
@@ -235,13 +238,16 @@ class WilliamsRStrategy:
             )
 
         wr = wr_value  # 范围 -100 ~ 0
-        if wr <= self._oversold:
+        tf = context.timeframe
+        overbought = get_tf_param(self, "overbought", tf, self._overbought)
+        oversold = get_tf_param(self, "oversold", tf, self._oversold)
+        if wr <= oversold:
             action = "buy"
-            depth = (self._oversold - wr) / 20.0  # 0~1
+            depth = (oversold - wr) / 20.0  # 0~1
             confidence = min(0.45 + depth * 0.45, 0.90)
-        elif wr >= self._overbought:
+        elif wr >= overbought:
             action = "sell"
-            depth = (wr - self._overbought) / 20.0  # 0~1
+            depth = (wr - overbought) / 20.0  # 0~1
             confidence = min(0.45 + depth * 0.45, 0.90)
         else:
             action = "hold"
@@ -313,13 +319,16 @@ class CciReversionStrategy:
             )
 
         cci = cci_value
-        if cci <= self._lower_threshold:
+        tf = context.timeframe
+        upper = get_tf_param(self, "upper_threshold", tf, self._upper_threshold)
+        lower = get_tf_param(self, "lower_threshold", tf, self._lower_threshold)
+        if cci <= lower:
             action = "buy"
-            excess = min(abs(cci) - abs(self._lower_threshold), 200) / 200.0
+            excess = min(abs(cci) - abs(lower), 200) / 200.0
             confidence = min(0.45 + excess * 0.45, 0.90)
-        elif cci >= self._upper_threshold:
+        elif cci >= upper:
             action = "sell"
-            excess = min(cci - self._upper_threshold, 200) / 200.0
+            excess = min(cci - upper, 200) / 200.0
             confidence = min(0.45 + excess * 0.45, 0.90)
         else:
             action = "hold"
@@ -421,15 +430,18 @@ class StochRsiStrategy:
 
         k = k_value
         d = d_value
+        tf = context.timeframe
+        overbought = get_tf_param(self, "overbought", tf, self._overbought)
+        oversold = get_tf_param(self, "oversold", tf, self._oversold)
 
-        if k < self._oversold and k > d:
+        if k < oversold and k > d:
             action = "buy"
-            depth = (self._oversold - k) / 20.0
+            depth = (oversold - k) / 20.0
             cross_strength = min((k - d) / 5.0, 1.0)
             confidence = min(0.5 + depth * 0.3 + cross_strength * 0.2, 1.0)
-        elif k > self._overbought and k < d:
+        elif k > overbought and k < d:
             action = "sell"
-            depth = (k - self._overbought) / 20.0
+            depth = (k - overbought) / 20.0
             cross_strength = min((d - k) / 5.0, 1.0)
             confidence = min(0.5 + depth * 0.3 + cross_strength * 0.2, 1.0)
         else:

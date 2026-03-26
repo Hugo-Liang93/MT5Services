@@ -41,33 +41,19 @@ _factory_logger = _logging.getLogger(__name__)
 
 
 def _apply_strategy_config_overrides(module: SignalModule, signal_config) -> None:
-    """从 signal_config 应用 strategy_params 和 regime_affinity_overrides 到已注册策略。
-
-    strategy_params 格式：``{"supertrend__adx_threshold": 23.0, "rsi_reversion__oversold": 30}``
-    → 设置 strategy._adx_threshold = 23.0，strategy 由名称 "supertrend" 查找。
-
-    regime_affinity_overrides 格式：``{"supertrend": {"trending": 1.0, "ranging": 0.15}}``
-    → 覆盖 strategy.regime_affinity 中对应的 RegimeType 键。
-    """
+    """从 signal_config 构建 TFParamResolver 并注入到各策略 + 应用 regime_affinity 覆盖。"""
     from src.signals.evaluation.regime import RegimeType
+    from src.signals.strategies.tf_params import build_tf_param_resolver
 
-    strategies = module._strategies  # name → strategy instance
+    strategies = module._strategies
 
-    # ── strategy_params 覆盖 ──────────────────────────────────────────
-    for compound_key, value in signal_config.strategy_params.items():
-        parts = compound_key.split("__", 1)
-        if len(parts) != 2:
-            continue
-        strategy_name, param_name = parts
-        strategy = strategies.get(strategy_name)
-        if strategy is None:
-            continue
-        attr_name = f"_{param_name}"
-        if hasattr(strategy, attr_name):
-            setattr(strategy, attr_name, value)
-            _factory_logger.debug(
-                "strategy_params: %s.%s = %s", strategy_name, attr_name, value
-            )
+    # ── 构建 per-TF 参数查表器并注入 ─────────────────────────────────
+    per_tf = getattr(signal_config, "strategy_params_per_tf", {})
+    resolver = build_tf_param_resolver(signal_config.strategy_params, per_tf)
+    module._tf_param_resolver = resolver  # type: ignore[attr-defined]
+    for strategy in strategies.values():
+        strategy._tf_param_resolver = resolver  # type: ignore[attr-defined]
+    _factory_logger.info("TFParamResolver built: %s", resolver)
 
     # ── regime_affinity_overrides 覆盖 ────────────────────────────────
     _regime_map = {

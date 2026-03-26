@@ -136,6 +136,10 @@ class SignalConfig(BaseModel):
     # ═══════════════════════════════════════════════════════════════
     strategy_params: dict[str, float] = Field(default_factory=dict)
 
+    # Per-TF 策略参数覆盖 — [strategy_params.<TF>] section
+    # 查找优先级: per-TF 值 → 全局 strategy_params → 策略代码默认值
+    strategy_params_per_tf: dict[str, dict[str, float]] = Field(default_factory=dict)
+
     # ═══════════════════════════════════════════════════════════════
     # Regime 亲和度覆盖 — [regime_affinity.<strategy>] section
     # 键格式: <strategy_name> → {trending, ranging, breakout, uncertain}

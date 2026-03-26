@@ -4,7 +4,7 @@ from typing import Any
 
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
-from .base import _resolve_indicator_value
+from .base import _resolve_indicator_value, get_tf_param
 
 
 def _market_structure(context: SignalContext) -> dict[str, Any]:
@@ -120,25 +120,28 @@ class AsianRangeBreakout:
 
         # 区间宽度过滤（ATR 倍数）
         range_atr_ratio = asia_range / atr
-        if range_atr_ratio < self._min_range_atr:
+        tf = context.timeframe
+        min_atr = get_tf_param(self, "min_range_atr", tf, self._min_range_atr)
+        max_atr = get_tf_param(self, "max_range_atr", tf, self._max_range_atr)
+        if range_atr_ratio < min_atr:
             return SignalDecision(
                 strategy=self.name,
                 symbol=context.symbol,
                 timeframe=context.timeframe,
                 direction="hold",
                 confidence=0.1,
-                reason=f"asia_range_too_narrow:{range_atr_ratio:.2f}<{self._min_range_atr}",
+                reason=f"asia_range_too_narrow:{range_atr_ratio:.2f}<{min_atr}",
                 used_indicators=used,
                 metadata={"asia_range": asia_range, "range_atr_ratio": range_atr_ratio},
             )
-        if range_atr_ratio > self._max_range_atr:
+        if range_atr_ratio > max_atr:
             return SignalDecision(
                 strategy=self.name,
                 symbol=context.symbol,
                 timeframe=context.timeframe,
                 direction="hold",
                 confidence=0.1,
-                reason=f"asia_range_too_wide:{range_atr_ratio:.2f}>{self._max_range_atr}",
+                reason=f"asia_range_too_wide:{range_atr_ratio:.2f}>{max_atr}",
                 used_indicators=used,
                 metadata={"asia_range": asia_range, "range_atr_ratio": range_atr_ratio},
             )
@@ -327,7 +330,10 @@ class SessionMomentumBias:
                 used_indicators=used or ["atr14", "supertrend14"],
             )
 
-        min_atr_pct = self._london_min_atr_pct if session == "london" else self._other_min_atr_pct
+        tf = context.timeframe
+        london_min = get_tf_param(self, "london_min_atr_pct", tf, self._london_min_atr_pct)
+        other_min = get_tf_param(self, "other_min_atr_pct", tf, self._other_min_atr_pct)
+        min_atr_pct = london_min if session == "london" else other_min
         if atr_pct < min_atr_pct:
             return SignalDecision(
                 strategy=self.name,

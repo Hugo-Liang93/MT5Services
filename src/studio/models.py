@@ -32,7 +32,17 @@ AGENT_META: dict[str, dict[str, str]] = {
     "live_analyst": {
         "name": "实时分析员",
         "module": "UnifiedIndicatorManager(intrabar)",
-        "zone": "analysis_live",
+        "zone": "analysis",
+    },
+    "filter_guard": {
+        "name": "过滤员",
+        "module": "SignalFilterChain",
+        "zone": "filter",
+    },
+    "regime_guard": {
+        "name": "研判员",
+        "module": "RegimeDetector+AffinityGate",
+        "zone": "regime",
     },
     "strategist": {
         "name": "策略师",
@@ -42,47 +52,42 @@ AGENT_META: dict[str, dict[str, str]] = {
     "live_strategist": {
         "name": "实时策略员",
         "module": "SignalModule(intrabar)",
-        "zone": "strategy_live",
-    },
-    "auditor": {
-        "name": "审核员",
-        "module": "FilterChain+RegimeDetector",
-        "zone": "audit",
+        "zone": "strategy",
     },
     "voter": {
         "name": "投票主席",
         "module": "VotingEngine",
-        "zone": "voting",
+        "zone": "decision",
     },
     "risk_officer": {
         "name": "风控官",
-        "module": "FilterChain+RiskService",
-        "zone": "risk",
+        "module": "PreTradeRiskService",
+        "zone": "decision",
     },
     "trader": {
         "name": "交易员",
         "module": "TradeExecutor",
-        "zone": "trading",
+        "zone": "decision",
     },
     "position_manager": {
         "name": "仓管员",
         "module": "PositionManager",
-        "zone": "position",
+        "zone": "support",
     },
     "accountant": {
         "name": "会计",
         "module": "TradingModule",
-        "zone": "accounting",
+        "zone": "support",
     },
     "calendar_reporter": {
         "name": "日历员",
         "module": "EconomicCalendarService",
-        "zone": "calendar",
+        "zone": "support",
     },
     "inspector": {
         "name": "巡检员",
         "module": "MonitoringManager",
-        "zone": "inspection",
+        "zone": "support",
     },
 }
 

@@ -192,36 +192,30 @@ class SignalModule:
         self,
         strategy_params: Dict[str, Any],
         regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
+        *,
+        strategy_params_per_tf: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> None:
-        """Apply strategy parameter and regime affinity overrides to registered strategies.
-
-        This is the public API for backtesting/optimization to override strategy internals
-        without importing API factory internals or creating fake config objects.
+        """构建 TFParamResolver 并注入各策略 + 应用 regime_affinity 覆盖。
 
         Args:
-            strategy_params: ``{"supertrend__adx_threshold": 23.0}``
-                → sets ``strategy._adx_threshold = 23.0``
+            strategy_params: 全局默认 ``{"supertrend__adx_threshold": 23.0}``
             regime_affinity_overrides: ``{"supertrend": {"trending": 1.0}}``
-                → overrides ``strategy.regime_affinity[RegimeType.TRENDING] = 1.0``
+            strategy_params_per_tf: per-TF 覆盖 ``{"M5": {"rsi__overbought": 72.0}}``
         """
-        _regime_map = {
-            "trending": RegimeType.TRENDING,
-            "ranging": RegimeType.RANGING,
-            "breakout": RegimeType.BREAKOUT,
-            "uncertain": RegimeType.UNCERTAIN,
-        }
-        for compound_key, value in strategy_params.items():
-            parts = compound_key.split("__", 1)
-            if len(parts) != 2:
-                continue
-            strategy_name, param_name = parts
-            strategy = self._strategies.get(strategy_name)
-            if strategy is None:
-                continue
-            attr_name = f"_{param_name}"
-            if hasattr(strategy, attr_name):
-                setattr(strategy, attr_name, value)
+        from src.signals.strategies.tf_params import build_tf_param_resolver
+
+        resolver = build_tf_param_resolver(strategy_params, strategy_params_per_tf or {})
+        self._tf_param_resolver = resolver  # type: ignore[attr-defined]
+        for strategy in self._strategies.values():
+            strategy._tf_param_resolver = resolver  # type: ignore[attr-defined]
+
         if regime_affinity_overrides:
+            _regime_map = {
+                "trending": RegimeType.TRENDING,
+                "ranging": RegimeType.RANGING,
+                "breakout": RegimeType.BREAKOUT,
+                "uncertain": RegimeType.UNCERTAIN,
+            }
             for strategy_name, affinity_dict in regime_affinity_overrides.items():
                 strategy = self._strategies.get(strategy_name)
                 if strategy is None:

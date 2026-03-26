@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
-from .base import _resolve_indicator_value
+from .base import _resolve_indicator_value, get_tf_param
 
 logger = logging.getLogger(__name__)
 
@@ -394,15 +394,16 @@ class DonchianBreakoutStrategy:
             )
 
         adx = adx_val if adx_val is not None else 0.0
+        adx_min = get_tf_param(self, "adx_min", context.timeframe, self._adx_min)
 
-        if adx < self._adx_min:
+        if adx < adx_min:
             return SignalDecision(
                 strategy=self.name,
                 symbol=context.symbol,
                 timeframe=context.timeframe,
                 direction="hold",
                 confidence=0.1,
-                reason=f"adx_too_low:{adx:.1f}<{self._adx_min}",
+                reason=f"adx_too_low:{adx:.1f}<{adx_min}",
                 used_indicators=used or ["donchian20", "adx14"],
                 metadata={"adx": adx, "donchian_upper": d_upper, "donchian_lower": d_lower},
             )
@@ -412,12 +413,12 @@ class DonchianBreakoutStrategy:
         if d_close >= d_upper:
             action = "buy"
             di_bonus = 0.1 if (plus_di is not None and minus_di is not None and plus_di > minus_di) else 0.0
-            adx_conf = min((adx - self._adx_min) / 30.0 + 0.55, 0.85)
+            adx_conf = min((adx - adx_min) / 30.0 + 0.55, 0.85)
             confidence = min(adx_conf + di_bonus, 1.0)
         elif d_close <= d_lower:
             action = "sell"
             di_bonus = 0.1 if (plus_di is not None and minus_di is not None and minus_di > plus_di) else 0.0
-            adx_conf = min((adx - self._adx_min) / 30.0 + 0.55, 0.85)
+            adx_conf = min((adx - adx_min) / 30.0 + 0.55, 0.85)
             confidence = min(adx_conf + di_bonus, 1.0)
         else:
             action = "hold"

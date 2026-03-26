@@ -91,6 +91,22 @@ class TimeframeScaler:
         return float(value) * factor
 
 
+def get_tf_param(
+    strategy: Any,
+    param: str,
+    tf: str,
+    default: float,
+) -> float:
+    """从策略的 TFParamResolver 获取 per-TF 参数值。
+
+    查找顺序: per-TF 覆盖 → 全局 INI 值 → default（策略代码硬编码）。
+    """
+    resolver = getattr(strategy, "_tf_param_resolver", None)
+    if resolver is None:
+        return default
+    return resolver.get(getattr(strategy, "name", ""), param, tf, default=default)
+
+
 def _resolve_indicator_value(
     indicators: Dict[str, Dict[str, Any]],
     candidates: Iterable[tuple[str, str]],

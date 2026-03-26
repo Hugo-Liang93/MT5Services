@@ -118,7 +118,8 @@ MT5Services/
 │   │   ├── execution/        # 信号过滤器（SignalFilterChain）
 │   │   ├── orchestration/    # SignalRuntime / SignalPolicy / VotingEngine / 纯函数模块
 │   │   ├── strategies/       # 策略实现（trend/mean_reversion/breakout/composite）
-│   │   │   └── adapters.py   # UnifiedIndicatorSourceAdapter（解耦信号与指标）
+│   │   │   ├── adapters.py   # UnifiedIndicatorSourceAdapter（解耦信号与指标）
+│   │   │   └── tf_params.py  # TFParamResolver：per-TF 策略参数查表器
 │   │   └── tracking/         # SignalRepository（信号持久化与查询）
 │   ├── trading/              # TradingModule、TradeExecutor、ExecutionGate、PositionManager、SignalQualityTracker、TradeOutcomeTracker
 │   │   ├── execution_gate.py # ExecutionGate：策略域准入检查（voting group / 白名单 / armed）
@@ -189,19 +190,48 @@ code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默
 
 ### Signal 模块配置化体系（signal.ini 新增 sections）
 
-信号模块的可调优参数通过三层配置覆盖，无需改动策略源码：
+信号模块的可调优参数通过多层配置覆盖，无需改动策略源码：
 
 | Section | 格式 | 影响范围 | 说明 |
 |---------|------|---------|------|
-| `[regime_detector]` | `adx_trending_threshold = 23.0` | 全局 | Regime 分类阈值，影响所有策略的 affinity |
-| `[strategy_params]` | `<strategy>__<param> = value` | 单策略 | 覆盖策略内部参数（如 ADX 门槛、超买超卖阈值） |
+| `[regime_detector]` | `adx_trending_threshold = 23.0` | 全局 | Regime 分类阈值 |
+| `[strategy_params]` | `<strategy>__<param> = value` | 单策略（全 TF 兜底） | 全局默认策略参数 |
+| `[strategy_params.<TF>]` | `<strategy>__<param> = value` | 单策略 × 单 TF | **per-TF 策略参数覆盖** |
 | `[regime_affinity.<name>]` | `trending = 1.00` | 单策略 | 覆盖策略的 Regime 亲和度权重 |
 
-**strategy_params 键格式**：双下划线 `__` 分隔策略名和参数名。参数名对应策略 `__init__` 中以 `_` 开头的内部属性。
-- 例：`supertrend__adx_threshold = 23.0` → `SupertrendStrategy._adx_threshold = 23.0`
-- 例：`rsi_reversion__oversold = 25` → `RsiReversionStrategy._oversold = 25`
+**Per-TF 策略参数**（`TFParamResolver` 架构）：
 
-**覆盖时机**：工厂函数 `build_signal_components()` 在所有策略注册后一次性应用配置覆盖。
+策略参数通过 `TFParamResolver` 查表器管理，支持按时间框架独立配置。
+
+查找优先级：`[strategy_params.<TF>]` → `[strategy_params]` → 策略代码 default 参数
+
+```ini
+# 全局默认（所有 TF 兜底）
+[strategy_params]
+rsi_reversion__overbought = 78
+supertrend__adx_threshold = 21
+
+# M5 特化（回测优化产出）
+[strategy_params.M5]
+rsi_reversion__overbought = 72
+rsi_reversion__oversold = 25
+
+# H4 特化
+[strategy_params.H4]
+rsi_reversion__overbought = 75
+```
+
+**键格式**：双下划线 `__` 分隔策略名和参数名。
+- 例：`supertrend__adx_threshold = 23.0`
+- 策略在 `evaluate(context)` 中通过 `get_tf_param(self, "adx_threshold", context.timeframe, default)` 查表
+
+**核心文件**：
+- `src/signals/strategies/tf_params.py` — `TFParamResolver` + `build_tf_param_resolver()`
+- `src/signals/strategies/base.py` — `get_tf_param()` 便利函数
+- `src/config/signal.py` — 加载 `[strategy_params.<TF>]` section
+- `src/api/factories/signals.py` — 构建 resolver 并注入策略实例
+
+**覆盖时机**：`build_signal_components()` 构建 resolver 后注入；回测通过 `apply_param_overrides(strategy_params_per_tf=...)` 热更新。
 
 ---
 
@@ -700,15 +730,30 @@ sell_score = Σ confidence(sell) / Σ all confidence
 
 ## Key Algorithms（XAUUSD 日内优化）
 
+### TFParamResolver — Per-TF 策略参数（`src/signals/strategies/tf_params.py`）
+
+策略参数按时间框架独立配置，替代旧的全局 `setattr` + `TimeframeScaler` 线性缩放方案：
+
+```python
+# 策略 evaluate 中通过 get_tf_param 查表
+from .base import get_tf_param
+
+overbought = get_tf_param(self, "overbought", context.timeframe, self._overbought)
+# M5 → 72.0 (per-TF)   H1 → 78.0 (全局)   D1 → 78.0 (fallback 全局)
+```
+
+查找优先级：`[strategy_params.<TF>]` → `[strategy_params]` → default 参数
+
 ### TimeframeScaler（`src/signals/strategies/base.py`）
 
-按时间框架自动缩放策略阈值和周期，减少 M1/M5 与 H1 参数失配：
+按时间框架缩放指标**周期**（如 lookback_bars），仍可用于非参数化的周期缩放场景：
 
 ```python
 SCALE_FACTORS = {"M1": 0.60, "M5": 0.75, "M15": 0.85, "H1": 1.00, "H4": 1.15, "D1": 1.30}
 # scaler.scale_period(14) → M1 下返回 8, M5 下返回 10
-# scaler.scale_threshold(25.0) → M1 下返回 15.0
 ```
+
+> **注意**：策略阈值参数（overbought/adx_threshold 等）不再使用 TimeframeScaler 缩放，改为通过 `TFParamResolver` 精确配置。
 
 ### Indicator Delta（`src/indicators/result_store.py`）
 
@@ -1340,7 +1385,7 @@ flake8 src/ tests/
 - **HTF cache TTL**：~~当前固定 4 小时~~（已修复：通过 `signal.ini` 的 `[htf_cache] max_age_seconds` 配置，默认 14400 秒）
 - **SignalQualityTracker 参数**：~~bars_to_evaluate / max_pending 硬编码~~（已修复：通过 `signal.ini` 的 `[signal_quality]` section 配置）
 - **Soft Regime feature flag**：~~`soft_regime_enabled` 默认关闭~~（已修改：默认 `true`，概率化 Regime 分类已启用）
-- **策略参数配置化**：均值回归策略阈值（RSI 30/70、CCI ±100、WR -80/-20、StochRSI 20/80）和时段动量 ATR 阈值均已通过 `signal.ini` 的 `[strategy_params]` section 配置化。修改 INI 后需重启服务。
+- **策略参数 per-TF 配置化**：所有可调策略参数（RSI/CCI/WR/StochRSI 阈值、ADX 门槛、ATR 阈值）通过 `TFParamResolver` 支持按时间框架独立配置。`[strategy_params]` 为全局默认，`[strategy_params.M5]` 等为 per-TF 覆盖。策略通过 `get_tf_param()` 在 evaluate 时按 `context.timeframe` 查表。旧的 `setattr` 直接修改策略属性的方式已废弃。
 - **Hot Reload 限制**：`[regime_detector]` 和 `[strategy_params]` 暂不支持热加载，需重启服务生效
 - **日损失限制统一**：~~TradeExecutor 中有独立的 daily_loss_check_fn~~（已移除：统一到 `risk.ini` 的 `DailyLossLimitRule`，由 `PreTradeRiskService` 执行）
 - **HTF 置信度修正位置**：~~TradeExecutor 在执行前篡改 event.confidence~~（已修复：HTF 方向对齐修正移入 `SignalRuntime._evaluate_strategies()` 置信度管线，持久化的 confidence = 最终执行值）
@@ -1398,6 +1443,8 @@ flake8 src/ tests/
   - `ExecutionGate` → `src/trading/execution_gate.py`（策略域准入检查，从 TradeExecutor 分离）
   - `VolatilitySpikeFilter` → `src/signals/execution/filters.py`（与 `SignalFilterChain` 同文件）
   - `TimeframeScaler` → `src/signals/strategies/base.py`（与 `SignalStrategy` Protocol 同文件）
+  - `TFParamResolver` → `src/signals/strategies/tf_params.py`（per-TF 策略参数查表器）
+  - `get_tf_param()` → `src/signals/strategies/base.py`（策略 evaluate 中查表的便利函数）
   - `SessionTransitionFilter` → `src/signals/execution/filters.py`（与 `SignalFilterChain` 同文件）
   - `DailyLossLimitRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
   - `StrategyPerformanceTracker` → `src/signals/evaluation/performance.py`（与 Calibrator 平级，不在 trading 模块）

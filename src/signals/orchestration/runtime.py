@@ -639,6 +639,7 @@ class SignalRuntime:
             # 持锁做快照再迭代，避免 background loop 同时写入导致 RuntimeError
             **self._count_active_states(),
             "voting_groups": self._voting_groups_summary(),
+            "regime_map": self.get_regime_stability_map(),
         }
 
     def _voting_groups_summary(self) -> list[dict[str, Any]]:

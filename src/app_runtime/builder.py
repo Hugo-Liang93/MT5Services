@@ -272,8 +272,12 @@ def _build_studio_service(c: AppContainer) -> StudioService:
     if c.signal_runtime is not None:
         _sr = c.signal_runtime
         studio.register_agent(
-            "auditor",
-            lambda: studio_mappers.map_auditor(_sr.status()),
+            "filter_guard",
+            lambda: studio_mappers.map_filter_guard(_sr.status()),
+        )
+        studio.register_agent(
+            "regime_guard",
+            lambda: studio_mappers.map_regime_guard(_sr.status()),
         )
         studio.register_agent(
             "voter",
