@@ -49,6 +49,8 @@ class TrackedPosition:
     trailing_active: bool = False
     highest_price: Optional[float] = None
     lowest_price: Optional[float] = None
+    current_price: Optional[float] = None
+    close_source: Optional[str] = None
 
 
 class PositionManager:
@@ -168,21 +170,23 @@ class PositionManager:
             pos = self._positions.get(ticket)
             if pos is None:
                 return
-
+            # 更新价格跟踪
+            pos.current_price = current_price
             if pos.action == "buy":
                 if pos.highest_price is None or current_price > pos.highest_price:
                     pos.highest_price = current_price
             elif pos.action == "sell":
                 if pos.lowest_price is None or current_price < pos.lowest_price:
                     pos.lowest_price = current_price
+            # 快照用于锁外 MT5 API 调用
+            need_breakeven = not pos.breakeven_applied
+            need_trailing = pos.breakeven_applied
 
-        # breakeven/trailing 调用 MT5 API（可能耗时数秒），不能在锁内执行。
-        # 锁外前先检查 pos 是否仍在 _positions 中（另一线程可能已 remove）。
-        with self._lock:
-            if ticket not in self._positions:
-                return
-        self._check_breakeven(pos, current_price)
-        self._check_trailing_stop(pos, current_price)
+        # breakeven/trailing 调用 MT5 API（可能耗时数秒），在锁外执行。
+        if need_breakeven:
+            self._check_breakeven(pos, current_price)
+        if need_trailing:
+            self._check_trailing_stop(pos, current_price)
 
     def add_close_callback(
         self,
@@ -229,6 +233,12 @@ class PositionManager:
                 "trailing_active": pos.trailing_active,
                 "highest_price": pos.highest_price,
                 "lowest_price": pos.lowest_price,
+                "current_price": pos.current_price,
+                "unrealized_pnl": (
+                    round((pos.current_price - pos.entry_price) * (1 if pos.action == "buy" else -1), 2)
+                    if pos.current_price is not None
+                    else None
+                ),
                 "opened_at": pos.opened_at.isoformat(),
             }
             for pos in snapshot
@@ -465,6 +475,7 @@ class PositionManager:
 
         symbols: set[str] = {pos.symbol for pos in tracked_tickets.values()}
         mt5_positions: Dict[int, Any] = {}
+        failed_symbols: set[str] = set()
         for symbol in symbols:
             try:
                 open_positions = self._trading.get_positions(symbol=symbol)
@@ -473,9 +484,13 @@ class PositionManager:
                     if ticket is not None:
                         mt5_positions[int(ticket)] = raw_pos
             except Exception as exc:
+                failed_symbols.add(symbol)
                 logger.debug("PositionManager: get_positions(%s) error: %s", symbol, exc)
 
         for ticket, pos in tracked_tickets.items():
+            # 跳过查询失败的 symbol，防止 MT5 连接闪断时误判持仓已关闭
+            if pos.symbol in failed_symbols:
+                continue
             mt5_pos = mt5_positions.get(ticket)
             if mt5_pos is None:
                 close_price = None
@@ -505,8 +520,7 @@ class PositionManager:
                     ticket, pos.action, pos.symbol, close_source,
                 )
                 self.remove_position(ticket)
-                # 附加 close_source 供下游回调使用
-                pos._close_source = close_source  # type: ignore[attr-defined]
+                pos.close_source = close_source
                 for cb in list(self._close_callbacks):
                     try:
                         cb(pos, close_price)
@@ -517,6 +531,21 @@ class PositionManager:
                             cb_exc,
                         )
                 continue
+
+            # 检测部分平仓：MT5 volume 与 tracked volume 不一致时更新
+            mt5_volume = getattr(mt5_pos, "volume", None)
+            if mt5_volume is not None:
+                try:
+                    live_vol = float(mt5_volume)
+                    if live_vol > 0 and abs(live_vol - pos.volume) > 1e-6:
+                        logger.info(
+                            "PositionManager: partial close detected ticket=%d volume %.2f→%.2f",
+                            ticket, pos.volume, live_vol,
+                        )
+                        with self._lock:
+                            pos.volume = live_vol
+                except (TypeError, ValueError):
+                    pass
 
             current_price = getattr(mt5_pos, "price_current", None)
             if current_price is not None:

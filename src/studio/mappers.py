@@ -214,6 +214,9 @@ def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
     w_seconds = runtime_status.get("filter_window_seconds", 3600)
     w_by_scope = runtime_status.get("filter_window_by_scope", {})
 
+    filter_total = total_passed + total_blocked
+    filter_pass_rate = (total_passed / filter_total * 100) if filter_total > 0 else 0.0
+
     metrics: dict[str, Any] = {
         "affinity_skipped": affinity_skipped,
         "confirmed_passed": confirmed.get("passed", 0),
@@ -224,20 +227,19 @@ def map_auditor(runtime_status: dict[str, Any]) -> dict[str, Any]:
         "intrabar_blocks": intrabar.get("blocks", {}),
         "total_passed": total_passed,
         "total_blocked": total_blocked,
-        "total_snapshots": total_passed + total_blocked,
+        "total_snapshots": filter_total,
+        "filter_pass_rate": round(filter_pass_rate, 1),
         "window_elapsed": w_elapsed,
         "window_seconds": w_seconds,
         "window_by_scope": w_by_scope,
     }
 
-    total_evaluated = total_passed + total_blocked
-    if total_evaluated == 0:
+    if filter_total == 0:
         return build_agent("auditor", "idle", "等待指标快照", metrics=metrics)
 
-    pass_rate = total_passed / total_evaluated * 100
     return resolve_status("auditor", [
-        (total_blocked > 0 and pass_rate < 30, "blocked", "信号审核中", "warning"),
-        (total_blocked > 0, "reviewing", "信号审核中", "none"),
+        (total_blocked > 0 and filter_pass_rate < 30, "blocked", "信号审核中", "warning"),
+        (total_blocked > 0 or affinity_skipped > 0, "reviewing", "信号审核中", "none"),
     ], "approved", "信号审核中", metrics=metrics)
 
 
@@ -300,6 +302,7 @@ def map_trader(
     circuit = executor_status.get("circuit_breaker", {})
     circuit_open = circuit.get("open", False)
     last_error = executor_status.get("last_error")
+    last_risk_block = executor_status.get("last_risk_block")
     recent = executor_status.get("recent_executions", [])
 
     pe = pending_status or {}
@@ -312,6 +315,7 @@ def map_trader(
         "circuit_open": circuit_open,
         "consecutive_failures": circuit.get("consecutive_failures", 0),
         "last_error": last_error[:80] if last_error else None,
+        "last_risk_block": last_risk_block[:80] if last_risk_block else None,
         "pending_entries": pe_entries,
         "pending_count": len(pe_entries),
         "pending_stats": {
@@ -329,6 +333,8 @@ def map_trader(
         return build_agent("trader", "blocked", "熔断器触发", metrics=metrics, alert_level="error")
     if last_error:
         return build_agent("trader", "warning", "执行异常", metrics=metrics, alert_level="warning")
+    if last_risk_block:
+        return build_agent("trader", "idle", "风控拦截", metrics=metrics)
     if pe_entries:
         pe_symbol = pe_entries[0].get("symbol", "") if pe_entries else ""
         return build_agent("trader", "waiting", "价格确认中", metrics=metrics, symbol=pe_symbol)
@@ -395,6 +401,7 @@ def map_accountant(
         (mg_state == "critical", "error", "保证金紧急", "error"),
         (mg_state == "danger", "alert", "保证金危险", "error"),
         (mg_state == "warn", "warning", "保证金预警", "warning"),
+        (margin_pct < 150, "alert", "保证金不足", "error"),
         (not auto_entry, "idle", "自动入场已关闭", "info"),
     ], "working", "账务正常", metrics=metrics)
 
