@@ -114,6 +114,9 @@ class TradeExecutor:
         self._signals_passed: int = 0
         self._skip_reasons: dict[str, int] = {}
         self._skip_lock = threading.Lock()
+        # 按 timeframe 分维度统计：{tf: {received, passed, skip_reasons: {reason: count}}}
+        self._tf_stats: dict[str, dict[str, Any]] = {}
+        self._margin_guard: Any = None  # Optional[MarginGuard], injected via set_margin_guard()
         self._execution_quality = {
             "recovered_from_state": 0,
             "risk_blocks": 0,
@@ -207,10 +210,15 @@ class TradeExecutor:
     # Internal execution logic
     # ------------------------------------------------------------------
 
-    def _notify_skip(self, signal_id: str, reason: str) -> None:
+    def _notify_skip(self, signal_id: str, reason: str, timeframe: str = "") -> None:
         """通知下游组件该信号被跳过（未执行交易）。"""
         with self._skip_lock:
             self._skip_reasons[reason] = self._skip_reasons.get(reason, 0) + 1
+            if timeframe:
+                tf_entry = self._tf_stats.setdefault(
+                    timeframe, {"received": 0, "passed": 0, "skip_reasons": {}}
+                )
+                tf_entry["skip_reasons"][reason] = tf_entry["skip_reasons"].get(reason, 0) + 1
         if self._on_execution_skip is not None and signal_id:
             try:
                 self._on_execution_skip(signal_id, reason)
@@ -220,6 +228,10 @@ class TradeExecutor:
     def add_trade_listener(self, fn: Callable[[dict], None]) -> None:
         """Register a callback invoked after each successful trade execution."""
         self._on_trade_executed.append(fn)
+
+    def set_margin_guard(self, guard: Any) -> None:
+        """Inject MarginGuard for margin-level based trade blocking."""
+        self._margin_guard = guard
 
     def reset_circuit(self) -> None:
         """手动重置熔断器，恢复自动交易。"""
@@ -235,6 +247,13 @@ class TradeExecutor:
 
     def _handle_confirmed(self, event: SignalEvent) -> dict[str, Any | None]:
         self._signals_received += 1
+        tf = event.timeframe or ""
+        if tf:
+            with self._skip_lock:
+                tf_entry = self._tf_stats.setdefault(
+                    tf, {"received": 0, "passed": 0, "skip_reasons": {}}
+                )
+                tf_entry["received"] += 1
         if not self.config.enabled:
             return None
 
@@ -266,6 +285,15 @@ class TradeExecutor:
         if event.direction not in ("buy", "sell"):
             return None
 
+        # ── 保证金水位检查（MarginGuard）────────────────────────────
+        if self._margin_guard is not None and self._margin_guard.should_block_new_trades():
+            logger.info(
+                "TradeExecutor: skipping %s/%s %s - margin guard blocked",
+                event.symbol, event.strategy, event.direction,
+            )
+            self._notify_skip(event.signal_id, "margin_guard_block", tf)
+            return None
+
         # ── 策略域准入检查（ExecutionGate）────────────────────────────
         gate_allowed, gate_reason = self._execution_gate.check(event)
         if not gate_allowed:
@@ -273,7 +301,7 @@ class TradeExecutor:
                 "TradeExecutor: skipping %s/%s %s - gate blocked: %s",
                 event.symbol, event.strategy, event.direction, gate_reason,
             )
-            self._notify_skip(event.signal_id, gate_reason)
+            self._notify_skip(event.signal_id, gate_reason, tf)
             return None
 
         if event.confidence < self.config.min_confidence:
@@ -285,7 +313,7 @@ class TradeExecutor:
                 event.confidence,
                 self.config.min_confidence,
             )
-            self._notify_skip(event.signal_id, "min_confidence")
+            self._notify_skip(event.signal_id, "min_confidence", tf)
             return None
 
         if self._reached_position_limit(event.symbol):
@@ -307,7 +335,7 @@ class TradeExecutor:
                     "reason": "max_concurrent_positions_per_symbol",
                 }
             )
-            self._notify_skip(event.signal_id, "position_limit")
+            self._notify_skip(event.signal_id, "position_limit", tf)
             return None
 
         trade_params = self._compute_params(event)
@@ -322,7 +350,7 @@ class TradeExecutor:
                 atr, balance, close_price,
                 list(event.indicators.keys()),
             )
-            self._notify_skip(event.signal_id, "trade_params_unavailable")
+            self._notify_skip(event.signal_id, "trade_params_unavailable", tf)
             return None
         cost_metrics = self._estimate_cost_metrics(event, trade_params)
         spread_to_stop_ratio = cost_metrics.get("spread_to_stop_ratio")
@@ -351,10 +379,15 @@ class TradeExecutor:
                     "cost": cost_metrics,
                 }
             )
-            self._notify_skip(event.signal_id, "spread_to_stop_ratio_too_high")
+            self._notify_skip(event.signal_id, "spread_to_stop_ratio_too_high", tf)
             return None
 
         self._signals_passed += 1
+        if tf:
+            with self._skip_lock:
+                self._tf_stats.setdefault(
+                    tf, {"received": 0, "passed": 0, "skip_reasons": {}}
+                )["passed"] += 1
         if self._pending_manager is None:
             return self._execute(event, trade_params, cost_metrics=cost_metrics)
         return self._submit_pending_entry(event, trade_params, cost_metrics)
@@ -371,7 +404,7 @@ class TradeExecutor:
                 "TradeExecutor: cannot submit pending entry without signal_id for %s/%s",
                 event.symbol, event.strategy,
             )
-            self._notify_skip(event.signal_id, "missing_signal_id")
+            self._notify_skip(event.signal_id, "missing_signal_id", event.timeframe or "")
             return None
 
         # 确定 zone_mode：从策略 category 映射
@@ -826,7 +859,7 @@ class TradeExecutor:
                 "reason": reason,
                 "assessment": assessment,
             })
-            self._notify_skip(event.signal_id, reason)
+            self._notify_skip(event.signal_id, reason, event.timeframe or "")
             if self._persist_execution_fn is not None:
                 try:
                     self._persist_execution_fn([{
@@ -933,6 +966,15 @@ class TradeExecutor:
                     / slippage_samples,
                     4,
                 ) if slippage_samples else None,
+            },
+            "by_timeframe": {
+                tf: {
+                    "received": entry["received"],
+                    "passed": entry["passed"],
+                    "blocked": entry["received"] - entry["passed"],
+                    "skip_reasons": dict(entry["skip_reasons"]),
+                }
+                for tf, entry in self._tf_stats.items()
             },
             "recent_executions": list(self._execution_log)[-10:],
             "pending_entries": (

@@ -638,7 +638,18 @@ class SignalRuntime:
             "warmup_realtime_symbols": len(self._first_realtime_bar_seen),
             # 持锁做快照再迭代，避免 background loop 同时写入导致 RuntimeError
             **self._count_active_states(),
+            "voting_groups": self._voting_groups_summary(),
         }
+
+    def _voting_groups_summary(self) -> list[dict[str, Any]]:
+        """Return voting group definitions for Studio display."""
+        result: list[dict[str, Any]] = []
+        for group_config, _engine in self._voting_group_engines:
+            result.append({
+                "name": group_config.name,
+                "strategies": sorted(group_config.strategies),
+            })
+        return result
 
     def get_regime_stability(
         self, symbol: str, timeframe: str

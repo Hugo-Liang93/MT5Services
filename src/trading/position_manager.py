@@ -81,6 +81,7 @@ class PositionManager:
         self._last_reconcile_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
         self._last_end_of_day_close_date: Optional[str] = None
+        self._margin_guard: Any = None  # Optional[MarginGuard], injected via set_margin_guard()
 
     def start(self, reconcile_interval: float = 10.0) -> None:
         if self._reconcile_thread is not None and self._reconcile_thread.is_alive():
@@ -247,6 +248,7 @@ class PositionManager:
                 "end_of_day_close_minute_utc": self.end_of_day_close_minute_utc,
             },
             "last_end_of_day_close_date": self._last_end_of_day_close_date,
+            "margin_guard": self._margin_guard.status() if self._margin_guard is not None else None,
         }
 
     @staticmethod
@@ -359,11 +361,16 @@ class PositionManager:
                     )
         return {"synced": synced, "recovered": recovered, "skipped": skipped}
 
+    def set_margin_guard(self, guard: Any) -> None:
+        """Inject a MarginGuard instance (optional, called from builder)."""
+        self._margin_guard = guard
+
     def _reconcile_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
                 self._run_end_of_day_closeout()
                 self._reconcile_with_mt5()
+                self._run_margin_guard()
                 self._reconcile_count += 1
                 self._last_reconcile_at = datetime.now(timezone.utc)
                 self._last_error = None
@@ -371,6 +378,25 @@ class PositionManager:
                 self._last_error = str(exc)
                 logger.warning("PositionManager reconcile error: %s", exc)
             self._stop_event.wait(timeout=self._reconcile_interval)
+
+    def _run_margin_guard(self) -> None:
+        guard = self._margin_guard
+        if guard is None or not guard.config.enabled:
+            return
+        account_fn = getattr(self._trading, "account_info", None)
+        if not callable(account_fn):
+            return
+        try:
+            info = account_fn()
+        except Exception:
+            return
+        equity = float(getattr(info, "equity", 0) or 0)
+        margin = float(getattr(info, "margin", 0) or 0)
+        free_margin = float(getattr(info, "margin_free", 0) or getattr(info, "free_margin", 0) or 0)
+        if equity <= 0:
+            return
+        snapshot = guard.evaluate(equity, margin, free_margin)
+        guard.act(snapshot)
 
     def _run_end_of_day_closeout(self, now: Optional[datetime] = None) -> Optional[dict]:
         if not self.end_of_day_close_enabled:

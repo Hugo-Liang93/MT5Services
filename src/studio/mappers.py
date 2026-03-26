@@ -249,11 +249,14 @@ def map_voter(runtime_status: dict[str, Any]) -> dict[str, Any]:
     if not running:
         return build_agent("voter", "disconnected", "运行时未启动", alert_level="error")
 
+    voting_groups: list[dict[str, Any]] = runtime_status.get("voting_groups", [])
+
     metrics: dict[str, Any] = {
         "processed_events": runtime_status.get("processed_events", 0),
         "dropped_events": runtime_status.get("dropped_events", 0),
         "active_confirmed": runtime_status.get("active_confirmed_states", 0),
         "active_preview": runtime_status.get("active_preview_states", 0),
+        "voting_groups": voting_groups,
     }
 
     return resolve_status("voter", [
@@ -276,6 +279,7 @@ def map_risk_officer(executor_status: dict[str, Any]) -> dict[str, Any]:
         "signals_blocked": blocked,
         "skip_reasons": executor_status.get("skip_reasons", {}),
         "risk_blocks": risk_blocks,
+        "by_timeframe": executor_status.get("by_timeframe", {}),
     }
 
     return resolve_status("risk_officer", [
@@ -364,12 +368,16 @@ def map_position_manager(
 def map_accountant(
     account_info: dict[str, Any],
     trade_control: dict[str, Any],
+    margin_guard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     equity = account_info.get("equity", 0)
     margin = account_info.get("margin", 0)
     margin_pct = (equity / margin * 100) if margin > 0 else float("inf")
     close_only = trade_control.get("close_only_mode", False)
     auto_entry = trade_control.get("auto_entry_enabled", True)
+
+    mg = margin_guard or {}
+    mg_state = mg.get("state", "unknown")
 
     metrics: dict[str, Any] = {
         "balance": account_info.get("balance", 0),
@@ -379,11 +387,14 @@ def map_accountant(
         "margin_pct": round(margin_pct, 1) if margin > 0 else None,
         "auto_entry": auto_entry,
         "close_only": close_only,
+        "margin_guard": mg if mg else None,
     }
 
     return resolve_status("accountant", [
         (close_only, "warning", "仅平仓模式", "warning"),
-        (margin_pct < 150, "alert", "保证金不足", "error"),
+        (mg_state == "critical", "error", "保证金紧急", "error"),
+        (mg_state == "danger", "alert", "保证金危险", "error"),
+        (mg_state == "warn", "warning", "保证金预警", "warning"),
         (not auto_entry, "idle", "自动入场已关闭", "info"),
     ], "working", "账务正常", metrics=metrics)
 
