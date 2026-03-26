@@ -22,7 +22,9 @@
 
 ## 检测逻辑（优先级从高到低）
 
-  1. Keltner-Bollinger Squeeze（bb_upper < kc_upper AND bb_lower > kc_lower）→ BREAKOUT
+  1. Keltner-Bollinger Squeeze（BB 完全在 KC 内）：
+       - ADX < 18 → RANGING（低波动盘整蓄力，均值回归可行）
+       - ADX ≥ 18 → BREAKOUT（趋势启动前兆）
   2. ADX ≥ 23 → TRENDING
   3. ADX < 18：
        a. BB 宽度 < bb_tight_pct（默认 0.8%）→ BREAKOUT（价格盘整蓄力）
@@ -162,7 +164,8 @@ class MarketRegimeDetector:
         adx = self._extract_adx(indicators)
 
         # ── 步骤 1：Keltner-Bollinger Squeeze ──────────────────────────
-        # 布林带完全在肯特纳通道内 → 波动率极度压缩，等待方向性释放
+        # 布林带完全在肯特纳通道内 → 波动率极度压缩。
+        # ADX 弱时 squeeze 是盘整蓄力（RANGING），ADX 强时是突破前兆（BREAKOUT）。
         if (
             bb_upper is not None
             and bb_lower is not None
@@ -171,6 +174,8 @@ class MarketRegimeDetector:
             and bb_upper < kc_upper
             and bb_lower > kc_lower
         ):
+            if adx is not None and adx < self._adx_ranging:
+                return RegimeType.RANGING
             return RegimeType.BREAKOUT
 
         # ── 步骤 2：ADX 主判（含 RSI 动量辅助 + ADX delta 趋势启动检测）──
@@ -294,7 +299,21 @@ class MarketRegimeDetector:
         scores[RegimeType.BREAKOUT] += 0.10 + tightness * 1.00
 
         if is_squeeze:
-            scores[RegimeType.BREAKOUT] += 2.00
+            # Squeeze = 波动率极度压缩。语义取决于 ADX 强度：
+            # ADX 低 → 盘整蓄力（RANGING 为主，均值回归可行）
+            # ADX 高 → 趋势启动前兆（BREAKOUT 为主）
+            if adx is not None and adx < self._adx_ranging:
+                # ADX 弱：squeeze 是盘整特征，RANGING 主导
+                scores[RegimeType.RANGING] += 1.20
+                scores[RegimeType.BREAKOUT] += 0.80
+            elif adx is not None and adx >= self._adx_trending:
+                # ADX 强：squeeze 是突破前兆，BREAKOUT 主导
+                scores[RegimeType.BREAKOUT] += 1.80
+                scores[RegimeType.RANGING] += 0.20
+            else:
+                # ADX 中等：BREAKOUT 和 RANGING 平分
+                scores[RegimeType.BREAKOUT] += 1.20
+                scores[RegimeType.RANGING] += 0.80
         elif adx is not None:
             if adx < self._adx_ranging:
                 scores[RegimeType.BREAKOUT] += tightness * 0.80

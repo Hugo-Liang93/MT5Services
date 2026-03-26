@@ -88,12 +88,21 @@ class TestRangingRegime:
 # ── BREAKOUT ─────────────────────────────────────────────────────────────────
 
 class TestBreakoutRegime:
-    def test_kc_bb_squeeze(self):
-        """BB 完全在 KC 内 → BREAKOUT（最高优先级）。"""
+    def test_kc_bb_squeeze_low_adx(self):
+        """BB 完全在 KC 内 + ADX 低 → RANGING（盘整蓄力）。"""
         d = MarketRegimeDetector()
-        # KC: 1990–2010, BB: 1995–2005 → squeeze
         ind = _indicators(
             adx=15.0,
+            bb_upper=2005.0, bb_lower=1995.0, bb_mid=2000.0,
+            kc_upper=2010.0, kc_lower=1990.0,
+        )
+        assert d.detect(ind) == RegimeType.RANGING
+
+    def test_kc_bb_squeeze_mid_adx(self):
+        """BB 完全在 KC 内 + ADX 中等 → BREAKOUT（突破前兆）。"""
+        d = MarketRegimeDetector()
+        ind = _indicators(
+            adx=19.0,
             bb_upper=2005.0, bb_lower=1995.0, bb_mid=2000.0,
             kc_upper=2010.0, kc_lower=1990.0,
         )
@@ -239,9 +248,10 @@ class TestSoftRegime:
 
     def test_soft_regime_breakout_dominates_squeeze(self):
         d = MarketRegimeDetector()
+        # ADX=22 (above ranging threshold) + squeeze → BREAKOUT dominant
         result = d.detect_soft(
             _indicators(
-                adx=18.0,
+                adx=22.0,
                 bb_upper=2005.0,
                 bb_lower=1995.0,
                 bb_mid=2000.0,
@@ -250,6 +260,22 @@ class TestSoftRegime:
             )
         )
         assert result.dominant_regime == RegimeType.BREAKOUT
+        assert result.is_kc_bb_squeeze is True
+
+    def test_soft_regime_squeeze_low_adx_favors_ranging(self):
+        """Squeeze + low ADX → RANGING dominant (consolidation)."""
+        d = MarketRegimeDetector()
+        result = d.detect_soft(
+            _indicators(
+                adx=13.0,
+                bb_upper=2005.0,
+                bb_lower=1995.0,
+                bb_mid=2000.0,
+                kc_upper=2010.0,
+                kc_lower=1990.0,
+            )
+        )
+        assert result.dominant_regime == RegimeType.RANGING
         assert result.is_kc_bb_squeeze is True
 
     def test_soft_regime_uncertain_dominates_transition_zone(self):
