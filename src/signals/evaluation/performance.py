@@ -158,6 +158,12 @@ class PerformanceTrackerConfig:
         单策略样本不足此值时，回退到同类策略的聚合绩效。
     session_reset_interval_hours:
         Session 重置间隔（小时），0 = 不自动重置。
+    pnl_circuit_enabled:
+        是否启用基于真实亏损的熔断器（区别于 TradeExecutor 的技术失败熔断）。
+    pnl_circuit_max_consecutive_losses:
+        连续实际亏损次数达到此值后暂停自动交易。
+    pnl_circuit_cooldown_minutes:
+        PnL 熔断开路后自动恢复的等待时间（分钟），0 = 不自动恢复。
     """
 
     enabled: bool = True
@@ -168,6 +174,10 @@ class PerformanceTrackerConfig:
     streak_penalty_factor: float = 0.90
     category_fallback_min_samples: int = 3
     session_reset_interval_hours: int = 0
+    # PnL 熔断器（计实际亏损次数，不计技术故障）
+    pnl_circuit_enabled: bool = True
+    pnl_circuit_max_consecutive_losses: int = 5
+    pnl_circuit_cooldown_minutes: int = 120
 
 
 class StrategyPerformanceTracker:
@@ -196,6 +206,10 @@ class StrategyPerformanceTracker:
         self._trade_stats: Dict[str, _StrategyStats] = {}
         self._session_start_at: float = time.monotonic()
         self._total_recorded: int = 0
+        # PnL 熔断器状态（账户级别，仅追踪 source="trade" 的连续亏损）
+        self._global_trade_loss_streak: int = 0
+        self._pnl_circuit_paused: bool = False
+        self._pnl_circuit_opened_at: float = 0.0  # monotonic
 
     # ------------------------------------------------------------------
     # Configuration
@@ -259,6 +273,25 @@ class StrategyPerformanceTracker:
             if source == "trade":
                 trade_stats = self._trade_stats.setdefault(strategy, _StrategyStats())
                 trade_stats.record(won, pnl)
+                # PnL 熔断器：追踪账户级别的连续实际亏损
+                if self._config.pnl_circuit_enabled:
+                    if won:
+                        self._global_trade_loss_streak = 0
+                    else:
+                        self._global_trade_loss_streak += 1
+                        if (
+                            not self._pnl_circuit_paused
+                            and self._global_trade_loss_streak
+                            >= self._config.pnl_circuit_max_consecutive_losses
+                        ):
+                            self._pnl_circuit_paused = True
+                            self._pnl_circuit_opened_at = time.monotonic()
+                            logger.warning(
+                                "PnL circuit breaker OPEN: %d consecutive losses, "
+                                "pausing %d min",
+                                self._global_trade_loss_streak,
+                                self._config.pnl_circuit_cooldown_minutes,
+                            )
 
             self._total_recorded += 1
 
@@ -423,11 +456,73 @@ class StrategyPerformanceTracker:
             self._trade_stats.clear()
             self._total_recorded = 0
             self._session_start_at = time.monotonic()
+            # PnL 熔断器随 session 重置一起清零
+            self._global_trade_loss_streak = 0
+            self._pnl_circuit_paused = False
+            self._pnl_circuit_opened_at = 0.0
         logger.info(
             "StrategyPerformanceTracker: session reset (had %d outcomes)",
             summary.get("total_recorded", 0),
         )
         return summary
+
+    def is_trading_paused(self) -> bool:
+        """检查 PnL 熔断器是否处于开路状态（暂停自动交易）。
+
+        若 cooldown 超时则自动复位。线程安全。
+        """
+        with self._lock:
+            if not self._pnl_circuit_paused:
+                return False
+            cooldown = self._config.pnl_circuit_cooldown_minutes
+            if cooldown > 0:
+                elapsed = (time.monotonic() - self._pnl_circuit_opened_at) / 60.0
+                if elapsed >= cooldown:
+                    self._pnl_circuit_paused = False
+                    self._global_trade_loss_streak = 0
+                    logger.info(
+                        "PnL circuit breaker RESET after %.1f min cooldown", elapsed
+                    )
+                    return False
+            return self._pnl_circuit_paused
+
+    def warm_up_from_db(self, rows: List[Dict[str, Any]]) -> int:
+        """从 DB 历史记录重放 outcomes，恢复重启前的 wins/losses/streak 状态。
+
+        参数
+        ----
+        rows:
+            由 SignalEventRepository.fetch_recent_outcomes() 返回的 dict 列表，
+            已按 recorded_at 升序排列。每条包含：
+            strategy, won, pnl, regime, source, recorded_at。
+
+        返回
+        ----
+        实际重放的记录数（won is not None 的条数）。
+        """
+        count = 0
+        for row in rows:
+            strategy = row.get("strategy")
+            won = row.get("won")
+            if not strategy or won is None:
+                continue
+            try:
+                pnl = float(row.get("pnl") or 0.0)
+            except (TypeError, ValueError):
+                pnl = 0.0
+            regime = row.get("regime")
+            source = str(row.get("source") or "signal")
+            self.record_outcome(strategy, bool(won), pnl, regime=regime, source=source)
+            count += 1
+        if count:
+            logger.info(
+                "StrategyPerformanceTracker: restored %d outcomes from DB "
+                "(trade_loss_streak=%d, pnl_paused=%s)",
+                count,
+                self._global_trade_loss_streak,
+                self._pnl_circuit_paused,
+            )
+        return count
 
     def check_session_reset(self) -> bool:
         """检查是否应自动重置 session（基于配置的间隔）。返回是否执行了重置。"""

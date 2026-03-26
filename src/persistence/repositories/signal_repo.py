@@ -210,3 +210,50 @@ class SignalEventRepository:
                 [max(1, hours), symbol, symbol],
             )
             return cur.fetchall()
+
+    def fetch_recent_outcomes(self, *, hours: int = 24) -> List[dict]:
+        """查询最近 N 小时内的信号和交易结果，按时间升序排列。
+
+        用于 PerformanceTracker 重启后的 warm-up：将历史结果重放
+        进内存统计，恢复 wins/losses/streak 状态。
+
+        返回 list of dict，每条记录包含：
+            strategy, won, pnl, regime, source, recorded_at
+        """
+        sql = """
+SELECT strategy,
+       won,
+       COALESCE(price_change, 0.0) AS pnl,
+       regime,
+       'signal'                    AS source,
+       recorded_at
+FROM signal_outcomes
+WHERE recorded_at >= NOW() - (%s * INTERVAL '1 hour')
+  AND won IS NOT NULL
+UNION ALL
+SELECT strategy,
+       won,
+       COALESCE(price_change, 0.0) AS pnl,
+       regime,
+       'trade'                     AS source,
+       recorded_at
+FROM trade_outcomes
+WHERE recorded_at >= NOW() - (%s * INTERVAL '1 hour')
+  AND won IS NOT NULL
+ORDER BY recorded_at ASC
+"""
+        h = max(1, int(hours))
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, [h, h])
+            rows = cur.fetchall()
+        return [
+            {
+                "strategy": r[0],
+                "won": r[1],
+                "pnl": float(r[2]) if r[2] is not None else 0.0,
+                "regime": r[3],
+                "source": r[4],
+                "recorded_at": r[5],
+            }
+            for r in rows
+        ]

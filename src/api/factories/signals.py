@@ -85,6 +85,9 @@ def build_performance_tracker_config(signal_config) -> PerformanceTrackerConfig:
         streak_penalty_factor=signal_config.perf_tracker_streak_penalty_factor,
         category_fallback_min_samples=signal_config.perf_tracker_category_fallback_min_samples,
         session_reset_interval_hours=signal_config.perf_tracker_session_reset_interval_hours,
+        pnl_circuit_enabled=signal_config.perf_tracker_pnl_circuit_enabled,
+        pnl_circuit_max_consecutive_losses=signal_config.perf_tracker_pnl_circuit_max_consecutive_losses,
+        pnl_circuit_cooldown_minutes=signal_config.perf_tracker_pnl_circuit_cooldown_minutes,
     )
 
 
@@ -440,6 +443,7 @@ def build_signal_components(
         ),
         execution_gate=execution_gate,
         pending_entry_manager=pending_entry_manager,
+        performance_tracker=performance_tracker,
     )
     _executor_holder.append(trade_executor)
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)

@@ -71,6 +71,10 @@ class SignalConfig(BaseModel):
     perf_tracker_streak_penalty_factor: float = 0.90
     perf_tracker_category_fallback_min_samples: int = 3
     perf_tracker_session_reset_interval_hours: int = 0
+    # PnL 熔断器（计实际亏损次数，与 circuit_breaker 的技术故障计数相互独立）
+    perf_tracker_pnl_circuit_enabled: bool = True
+    perf_tracker_pnl_circuit_max_consecutive_losses: int = 5
+    perf_tracker_pnl_circuit_cooldown_minutes: int = 120
 
     # ── 置信度底线 ──
     confidence_floor: float = 0.10

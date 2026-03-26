@@ -76,6 +76,7 @@ class AppRuntime:
                 self._record_task_status(current_step, "ready", current_started)
 
             self._start_calibrator()
+            self._start_performance_tracker()
             self._start_pending_entry()
             self._start_position_manager()
             self._register_monitoring()
@@ -159,6 +160,26 @@ class AppRuntime:
         except Exception:
             logger.debug("Calibrator: warm-start load failed (non-fatal)", exc_info=True)
         calibrator.start_background_refresh()
+
+    def _start_performance_tracker(self) -> None:
+        """从 DB 恢复 PerformanceTracker 的日内统计，防止重启导致学习归零。
+
+        查询过去 24 小时的 signal_outcomes + trade_outcomes，按时间升序重放。
+        非致命：DB 不可用时仅记录 debug 日志，不影响启动流程。
+        """
+        perf = self.container.performance_tracker
+        if perf is None:
+            return
+        sw = self.container.storage_writer
+        if sw is None:
+            return
+        try:
+            rows = sw.db.signal_repo.fetch_recent_outcomes(hours=24)
+            perf.warm_up_from_db(rows)
+        except Exception:
+            logger.debug(
+                "PerformanceTracker: warm-up from DB failed (non-fatal)", exc_info=True
+            )
 
     def _start_pending_entry(self) -> None:
         if self.container.pending_entry_manager is not None:

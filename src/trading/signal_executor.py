@@ -17,7 +17,10 @@ import queue
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from src.signals.evaluation.performance import StrategyPerformanceTracker
 
 from src.trading.sizing import (
     TradeParameters,
@@ -84,6 +87,7 @@ class TradeExecutor:
         on_execution_skip: Callable[[str, str], None] | None = None,
         execution_gate: ExecutionGate | None = None,
         pending_entry_manager: PendingEntryManager | None = None,
+        performance_tracker: "StrategyPerformanceTracker | None" = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
@@ -100,6 +104,8 @@ class TradeExecutor:
         self._execution_gate = execution_gate or ExecutionGate()
         # PendingEntryManager: 价格确认入场
         self._pending_manager = pending_entry_manager
+        # PerformanceTracker: PnL 熔断器检查
+        self._performance_tracker = performance_tracker
         self._execution_count = 0
         self._last_execution_at: datetime | None = None
         self._last_error: str | None = None
@@ -284,6 +290,18 @@ class TradeExecutor:
                 return None
 
         if event.direction not in ("buy", "sell"):
+            return None
+
+        # ── PnL 熔断检查（连续实际亏损）─────────────────────────────
+        if (
+            self._performance_tracker is not None
+            and self._performance_tracker.is_trading_paused()
+        ):
+            logger.warning(
+                "TradeExecutor: PnL circuit open, skipping %s/%s %s",
+                event.symbol, event.strategy, event.direction,
+            )
+            self._notify_skip(event.signal_id, "pnl_circuit_paused", tf)
             return None
 
         # ── 保证金水位检查（MarginGuard）────────────────────────────
