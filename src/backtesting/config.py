@@ -119,6 +119,42 @@ def get_backtest_defaults() -> Dict[str, Any]:
             "max_signal_evaluations",
         )
 
+    # [optimizer] section
+    if parser.has_section("optimizer"):
+        _set_str(result, parser, "optimizer", "default_search_mode", "search_mode")
+        _set_int(result, parser, "optimizer", "max_combinations", "max_combinations")
+        _set_str(result, parser, "optimizer", "sort_metric", "sort_metric")
+
+    # signal.ini / signal.local.ini defaults — sizing-related runtime constraints
+    try:
+        from src.config import get_signal_config
+
+        signal_config = get_signal_config()
+        result.setdefault("min_volume", float(signal_config.min_volume))
+        result.setdefault("max_volume", float(signal_config.max_volume))
+    except Exception:
+        logger.debug("Failed to load signal config defaults for backtest", exc_info=True)
+
+    # risk.ini / risk.local.ini defaults — risk guard constraints
+    try:
+        from src.config import get_risk_config
+
+        risk_config = get_risk_config()
+        if "max_positions" not in result and risk_config.max_positions_per_symbol is not None:
+            result["max_positions"] = int(risk_config.max_positions_per_symbol)
+        if risk_config.max_volume_per_order is not None:
+            result.setdefault("max_volume_per_order", float(risk_config.max_volume_per_order))
+        if risk_config.max_volume_per_symbol is not None:
+            result.setdefault("max_volume_per_symbol", float(risk_config.max_volume_per_symbol))
+        if risk_config.daily_loss_limit_pct is not None:
+            result.setdefault("daily_loss_limit_pct", float(risk_config.daily_loss_limit_pct))
+        if risk_config.max_trades_per_day is not None:
+            result.setdefault("max_trades_per_day", int(risk_config.max_trades_per_day))
+        if risk_config.max_trades_per_hour is not None:
+            result.setdefault("max_trades_per_hour", int(risk_config.max_trades_per_hour))
+    except Exception:
+        logger.debug("Failed to load risk config defaults for backtest", exc_info=True)
+
     logger.debug("Loaded backtest defaults from %s: %d keys", read_files, len(result))
     return result
 

@@ -1,10 +1,16 @@
-"""历史 OHLC 数据加载器，从 TimescaleDB 流式读取。"""
+"""历史 OHLC 数据加载器，从 TimescaleDB 流式读取。
+
+新增组件：
+- DataCache       进程级 OHLC 数据缓存，避免相同参数重复查询 DB
+- CachingDataLoader  透明缓存包装层，drop-in 替换 HistoricalDataLoader
+"""
 
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterator, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from src.clients.mt5_market import OHLC
 
@@ -202,3 +208,197 @@ class HistoricalDataLoader:
             volume=float(volume or 0.0),
             indicators=dict(indicators) if indicators else None,
         )
+
+
+# ─── 进程级 OHLC 数据缓存 ──────────────────────────────────────────────────────
+
+
+class DataCache:
+    """进程级 OHLC 数据缓存，避免相同参数的回测任务重复查询 TimescaleDB。
+
+    缓存策略：
+    - warmup bars 按 (symbol, tf, start_iso, warmup_count) 索引
+    - test bars   按 (symbol, tf, start_iso, end_iso) 索引
+    - 各自独立缓存，支持部分命中（如相同 test 区间但不同 warmup 数量）
+    - FIFO 淘汰（Python 3.7+ dict 保持插入顺序）
+    - 历史数据不可变，无需 TTL
+
+    线程安全：内置 Lock，多线程并发任务安全共享。
+    """
+
+    def __init__(self, max_entries: int = 6) -> None:
+        self._lock = threading.Lock()
+        self._warmup: Dict[Tuple, List[OHLC]] = {}
+        self._test: Dict[Tuple, List[OHLC]] = {}
+        self._max_entries = max_entries
+        self._hits = 0
+        self._misses = 0
+
+    def get_or_load_warmup(
+        self,
+        loader: "HistoricalDataLoader",
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        warmup_bars: int,
+    ) -> List[OHLC]:
+        """返回 warmup bars，缓存命中时跳过 DB 查询。"""
+        key: Tuple = (symbol, timeframe, start_time.isoformat(), warmup_bars)
+        with self._lock:
+            if key in self._warmup:
+                self._hits += 1
+                logger.debug("DataCache warmup HIT  %s/%s warmup=%d", symbol, timeframe, warmup_bars)
+                return list(self._warmup[key])
+        # Cache miss — load outside lock
+        self._misses += 1
+        logger.debug("DataCache warmup MISS %s/%s warmup=%d", symbol, timeframe, warmup_bars)
+        bars = loader.preload_warmup_bars(symbol, timeframe, start_time, warmup_bars)
+        with self._lock:
+            self._evict(self._warmup)
+            self._warmup[key] = bars
+        return list(bars)
+
+    def get_or_load_test(
+        self,
+        loader: "HistoricalDataLoader",
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> List[OHLC]:
+        """返回 test bars，缓存命中时跳过 DB 查询。"""
+        key: Tuple = (symbol, timeframe, start_time.isoformat(), end_time.isoformat())
+        with self._lock:
+            if key in self._test:
+                self._hits += 1
+                logger.debug(
+                    "DataCache test HIT  %s/%s [%s ~ %s]",
+                    symbol, timeframe, start_time.date(), end_time.date(),
+                )
+                return list(self._test[key])
+        # Cache miss — load outside lock
+        self._misses += 1
+        logger.debug(
+            "DataCache test MISS %s/%s [%s ~ %s]",
+            symbol, timeframe, start_time.date(), end_time.date(),
+        )
+        bars = loader.load_all_bars(symbol, timeframe, start_time, end_time)
+        with self._lock:
+            self._evict(self._test)
+            self._test[key] = bars
+        return list(bars)
+
+    def _evict(self, cache_dict: Dict) -> None:
+        """FIFO 淘汰：缓存满时删除最老的条目。"""
+        while len(cache_dict) >= self._max_entries:
+            oldest = next(iter(cache_dict))
+            del cache_dict[oldest]
+
+    def invalidate(
+        self,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+    ) -> int:
+        """清除指定条件的缓存（数据重新导入后调用）。"""
+        with self._lock:
+            if symbol is None and timeframe is None:
+                n = len(self._warmup) + len(self._test)
+                self._warmup.clear()
+                self._test.clear()
+                return n
+            def _match(k: Tuple) -> bool:
+                return (symbol is None or k[0] == symbol) and (
+                    timeframe is None or k[1] == timeframe
+                )
+            w_keys = [k for k in self._warmup if _match(k)]
+            t_keys = [k for k in self._test if _match(k)]
+            for k in w_keys:
+                del self._warmup[k]
+            for k in t_keys:
+                del self._test[k]
+            return len(w_keys) + len(t_keys)
+
+    def stats(self) -> Dict[str, Any]:
+        with self._lock:
+            total = self._hits + self._misses
+            return {
+                "warmup_entries": len(self._warmup),
+                "test_entries": len(self._test),
+                "max_entries": self._max_entries,
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": self._hits / total if total > 0 else 0.0,
+            }
+
+
+class CachingDataLoader:
+    """HistoricalDataLoader 的透明缓存包装，与 HistoricalDataLoader 接口完全兼容。
+
+    BacktestEngine / ParameterOptimizer / WalkForwardValidator 通过
+    preload_warmup_bars() 和 load_all_bars() 访问数据，CachingDataLoader
+    将这两个调用路由到 DataCache，相同参数只查询 DB 一次。
+    """
+
+    def __init__(
+        self,
+        inner: HistoricalDataLoader,
+        cache: "DataCache",
+    ) -> None:
+        self._inner = inner
+        self._cache = cache
+
+    def preload_warmup_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        warmup_bars: int = 200,
+    ) -> List[OHLC]:
+        return self._cache.get_or_load_warmup(
+            self._inner, symbol, timeframe, start_time, warmup_bars
+        )
+
+    def load_all_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> List[OHLC]:
+        return self._cache.get_or_load_test(
+            self._inner, symbol, timeframe, start_time, end_time
+        )
+
+    def load_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        end_time: datetime,
+        chunk_size: int = 1000,
+    ) -> Iterator[List[OHLC]]:
+        """流式分块加载（不经过缓存，适合单次大量数据场景）。"""
+        yield from self._inner.load_bars(symbol, timeframe, start_time, end_time, chunk_size)
+
+    @property
+    def cache(self) -> "DataCache":
+        return self._cache
+
+
+# ─── 进程级单例 ──────────────────────────────────────────────────────────────
+
+_shared_data_cache: Optional[DataCache] = None
+_shared_data_cache_lock = threading.Lock()
+
+
+def get_shared_data_cache(max_entries: int = 6) -> DataCache:
+    """获取进程级共享 DataCache 单例。
+
+    max_entries 仅在首次创建时生效；后续调用忽略该参数。
+    """
+    global _shared_data_cache
+    if _shared_data_cache is None:
+        with _shared_data_cache_lock:
+            if _shared_data_cache is None:
+                _shared_data_cache = DataCache(max_entries=max_entries)
+    return _shared_data_cache

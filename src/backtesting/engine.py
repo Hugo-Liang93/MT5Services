@@ -100,6 +100,14 @@ class BacktestEngine:
             commission_per_lot=config.commission_per_lot,
             slippage_points=config.slippage_points,
             contract_size=config.contract_size,
+            min_volume=config.min_volume,
+            max_volume=config.max_volume,
+            max_volume_per_order=config.max_volume_per_order,
+            max_volume_per_symbol=config.max_volume_per_symbol,
+            max_volume_per_day=config.max_volume_per_day,
+            daily_loss_limit_pct=config.daily_loss_limit_pct,
+            max_trades_per_day=config.max_trades_per_day,
+            max_trades_per_hour=config.max_trades_per_hour,
             trailing_atr_multiplier=config.trailing_atr_multiplier,
             breakeven_atr_threshold=config.breakeven_atr_threshold,
             end_of_day_close_enabled=config.end_of_day_close_enabled,
@@ -118,11 +126,38 @@ class BacktestEngine:
         # 挂起的入场意图：{signal_key: (decision, entry_low, entry_high, expiry_bar)}
         self._pending_entries: Dict[str, Tuple[SignalDecision, float, float, int]] = {}
 
-        # 确定目标策略列表
+        # 确定目标策略列表，并过滤掉回测 SignalModule 不支持的名称。
+        available_strategies = set(self._signal_module.list_strategies())
         if config.strategies:
-            self._target_strategies = config.strategies
+            requested_strategies = []
+            seen_requested: Set[str] = set()
+            for strategy in config.strategies:
+                name = str(strategy).strip()
+                if not name or name in seen_requested:
+                    continue
+                requested_strategies.append(name)
+                seen_requested.add(name)
+
+            unsupported = [
+                strategy for strategy in requested_strategies
+                if strategy not in available_strategies
+            ]
+            if unsupported:
+                logger.warning(
+                    "BacktestEngine: ignoring unsupported strategies: %s",
+                    ", ".join(sorted(unsupported)),
+                )
+            self._target_strategies = [
+                strategy for strategy in requested_strategies
+                if strategy in available_strategies
+            ]
+            if not self._target_strategies:
+                raise ValueError(
+                    "No supported strategies remain after filtering requested strategies: "
+                    f"{requested_strategies}"
+                )
         else:
-            self._target_strategies = self._signal_module.list_strategies()
+            self._target_strategies = sorted(available_strategies)
 
         # 收集所有目标策略需要的指标名
         self._required_indicators: List[str] = []
@@ -256,6 +291,7 @@ class BacktestEngine:
         for i in range(warmup_end, len(all_bars)):
             bar = all_bars[i]
             bar_index = i - warmup_end
+            self._portfolio.observe_bar(bar)
 
             # 直接取预计算的指标快照
             indicators = all_indicator_snapshots[i] if i < len(all_indicator_snapshots) else {}
@@ -754,12 +790,23 @@ class BacktestEngine:
                 account_balance=self._portfolio.current_balance,
                 timeframe=self._config.timeframe,
                 risk_percent=self._config.risk_percent,
+                min_volume=self._config.min_volume,
+                max_volume=self._config.max_volume,
                 contract_size=self._config.contract_size,
             )
         except ValueError as e:
             logger.debug(
                 "Trade params computation failed for %s %s: %s",
                 decision.strategy, decision.direction, e,
+            )
+            return
+
+        allowed, reason = self._portfolio.can_open_position(bar, trade_params)
+        if not allowed:
+            logger.debug(
+                "Entry blocked by portfolio risk guard for %s: %s",
+                decision.strategy,
+                reason,
             )
             return
 

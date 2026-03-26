@@ -213,3 +213,51 @@ class TestPortfolioTracker:
         assert len(closed) == 1
         assert closed[0].strategy == "s1"
         assert pt.open_position_count == 1
+
+    def test_max_volume_per_order(self) -> None:
+        pt = PortfolioTracker(initial_balance=10000.0, max_volume_per_order=0.05)
+        bar = _bar(2000.0)
+        params = _params(size=0.10)
+        assert pt.open_position("test", "buy", bar, params, "TRENDING", 0.7, 0) is False
+
+    def test_max_trades_per_day(self) -> None:
+        pt = PortfolioTracker(initial_balance=10000.0, max_trades_per_day=1)
+        bar1 = _bar(2000.0, time_val=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc))
+        bar2 = _bar(2001.0, time_val=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc))
+        params = _params(size=0.05)
+        assert pt.open_position("s1", "buy", bar1, params, "TRENDING", 0.7, 0) is True
+        assert pt.open_position("s2", "buy", bar2, params, "TRENDING", 0.7, 1) is False
+
+    def test_max_trades_per_hour(self) -> None:
+        pt = PortfolioTracker(initial_balance=10000.0, max_trades_per_hour=1)
+        bar1 = _bar(2000.0, time_val=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc))
+        bar2 = _bar(2001.0, time_val=datetime(2025, 1, 1, 9, 30, tzinfo=timezone.utc))
+        params = _params(size=0.05)
+        assert pt.open_position("s1", "buy", bar1, params, "TRENDING", 0.7, 0) is True
+        assert pt.open_position("s2", "buy", bar2, params, "TRENDING", 0.7, 1) is False
+
+    def test_max_volume_per_day(self) -> None:
+        pt = PortfolioTracker(initial_balance=10000.0, max_volume_per_day=0.15)
+        bar1 = _bar(2000.0, time_val=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc))
+        bar2 = _bar(2001.0, time_val=datetime(2025, 1, 1, 11, 0, tzinfo=timezone.utc))
+        params = _params(size=0.10)
+        assert pt.open_position("s1", "buy", bar1, params, "TRENDING", 0.7, 0) is True
+        assert pt.open_position("s2", "buy", bar2, params, "TRENDING", 0.7, 1) is False
+
+    def test_daily_loss_limit_blocks_new_entries(self) -> None:
+        pt = PortfolioTracker(
+            initial_balance=10000.0,
+            contract_size=100.0,
+            daily_loss_limit_pct=1.0,
+        )
+        day_start = _bar(2000.0, time_val=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc))
+        pt.observe_bar(day_start)
+        params = _params(sl=1995.0, tp=2010.0, size=1.0)
+        assert pt.open_position("s1", "buy", day_start, params, "TRENDING", 0.7, 0) is True
+
+        # 先制造较大浮亏，使当日亏损超过 1%
+        stressed = _bar(1985.0, high=1988.0, low=1984.0, time_val=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc))
+        pt.record_equity(stressed)
+
+        second_params = _params(entry=1985.0, sl=1980.0, tp=1995.0, size=0.10)
+        assert pt.open_position("s2", "buy", stressed, second_params, "TRENDING", 0.7, 1) is False

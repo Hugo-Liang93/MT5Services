@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.service import SignalModule
+from src.signals.strategies.breakout import MultiTimeframeConfirmStrategy
 from src.signals.strategies.registry import build_composite_strategies
 
 from .data_loader import CachedDataLoader, HistoricalDataLoader
@@ -242,10 +243,72 @@ class ParameterOptimizer:
         return combinations
 
 
+def _extract_tf_param_overrides(
+    module: SignalModule,
+) -> tuple[Dict[str, Any], Dict[str, Dict[str, float]]]:
+    """Extract effective global/per-TF strategy params from a SignalModule."""
+    resolver = getattr(module, "_tf_param_resolver", None)
+    if resolver is None or not hasattr(resolver, "dump"):
+        return {}, {}
+
+    global_params: Dict[str, Any] = {}
+    per_tf_params: Dict[str, Dict[str, float]] = {}
+    for compound_key, bucket in resolver.dump().items():
+        if not isinstance(bucket, dict):
+            continue
+        for scope, value in bucket.items():
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if scope == "__global__":
+                global_params[compound_key] = numeric_value
+            else:
+                per_tf_params.setdefault(str(scope).upper(), {})[
+                    compound_key
+                ] = numeric_value
+
+    return global_params, per_tf_params
+
+
+def _extract_regime_affinity_overrides(
+    module: SignalModule,
+) -> Dict[str, Dict[str, float]]:
+    """Extract the effective strategy regime affinities from a SignalModule."""
+    overrides: Dict[str, Dict[str, float]] = {}
+    for strategy_name, strategy in module._strategies.items():
+        affinity_map = getattr(strategy, "regime_affinity", None)
+        if not isinstance(affinity_map, dict):
+            continue
+        serialized: Dict[str, float] = {}
+        for regime, value in affinity_map.items():
+            regime_key = regime.value if isinstance(regime, RegimeType) else str(regime).lower()
+            try:
+                serialized[regime_key] = float(value)
+            except (TypeError, ValueError):
+                continue
+        if serialized:
+            overrides[strategy_name] = serialized
+    return overrides
+
+
+def _merge_nested_maps(
+    base: Dict[str, Dict[str, float]],
+    overrides: Optional[Dict[str, Dict[str, float]]],
+) -> Dict[str, Dict[str, float]]:
+    merged = {key: dict(value) for key, value in base.items()}
+    if overrides:
+        for key, value in overrides.items():
+            merged.setdefault(key, {}).update(dict(value))
+    return merged
+
+
 def build_signal_module_with_overrides(
     base_module: SignalModule,
     param_overrides: Dict[str, Any],
     regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
+    *,
+    strategy_params_per_tf: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> SignalModule:
     """构建带参数覆盖的独立 SignalModule 实例。
 
@@ -259,7 +322,7 @@ def build_signal_module_with_overrides(
     # 创建新的 SignalModule，复用相同的 indicator_source 和组件
     module = SignalModule(
         indicator_source=base_module.indicator_source,
-        strategies=None,
+        strategies=(),
         repository=None,  # 回测不写入 DB
         regime_detector=base_module._regime_detector,
         calibrator=base_module._calibrator,
@@ -270,9 +333,17 @@ def build_signal_module_with_overrides(
 
     # 重新注册所有单策略（从基础模块复制策略列表的类型来创建新实例）
     for name, strategy in base_module._strategies.items():
+        if getattr(strategy, "metadata", {}).get("composite"):
+            continue
         strategy_class = type(strategy)
         try:
-            new_instance = strategy_class()
+            if isinstance(strategy, MultiTimeframeConfirmStrategy):
+                new_instance = strategy_class(
+                    state_reader=getattr(strategy, "_state_reader", None),
+                    htf_cache=getattr(strategy, "_htf_cache", None),
+                )
+            else:
+                new_instance = strategy_class()
             module.register_strategy(new_instance)
         except Exception:
             # 复合策略或需要参数的策略，直接跳过
@@ -285,7 +356,24 @@ def build_signal_module_with_overrides(
         except Exception:
             pass
 
-    # 应用参数覆盖 + regime 亲和度覆盖
-    module.apply_param_overrides(param_overrides, regime_affinity_overrides)
+    base_strategy_params, base_strategy_params_per_tf = _extract_tf_param_overrides(
+        base_module
+    )
+    merged_strategy_params = dict(base_strategy_params)
+    merged_strategy_params.update(param_overrides)
+    merged_strategy_params_per_tf = _merge_nested_maps(
+        base_strategy_params_per_tf, strategy_params_per_tf
+    )
+    merged_regime_affinities = _merge_nested_maps(
+        _extract_regime_affinity_overrides(base_module),
+        regime_affinity_overrides,
+    )
+
+    # 保留基线 signal.ini / signal.local.ini 参数，再叠加本次优化覆盖。
+    module.apply_param_overrides(
+        merged_strategy_params,
+        merged_regime_affinities or None,
+        strategy_params_per_tf=merged_strategy_params_per_tf or None,
+    )
 
     return module

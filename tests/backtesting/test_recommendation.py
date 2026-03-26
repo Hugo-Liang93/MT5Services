@@ -25,6 +25,7 @@ from src.backtesting.recommendation import (
     MAX_CHANGES_PER_REC,
     ConfigApplicator,
     RecommendationEngine,
+    load_current_signal_config,
 )
 
 # ── Test Fixtures ────────────────────────────────────────────────────
@@ -247,6 +248,26 @@ class TestParamAggregation:
         assert len(strategy_changes) == 0
 
 
+    def test_uses_timeframe_scoped_section_when_timeframe_provided(self) -> None:
+        split_params = [
+            {"rsi_reversion__oversold": 20.0},
+            {"rsi_reversion__oversold": 25.0},
+            {"rsi_reversion__oversold": 30.0},
+        ]
+        wf = _make_wf_result(n_splits=3, split_params=split_params)
+        engine = RecommendationEngine()
+        rec = engine.generate(
+            wf,
+            "wf_test",
+            current_strategy_params={"rsi_reversion__oversold": 30.0},
+            timeframe="M5",
+        )
+
+        strategy_changes = [c for c in rec.changes if c.section == "strategy_params.M5"]
+        assert len(strategy_changes) == 1
+        assert strategy_changes[0].key == "rsi_reversion__oversold"
+
+
 class TestChangeClipping:
     """变更幅度裁剪测试。"""
 
@@ -360,6 +381,7 @@ class TestConfigApplicator:
     def _make_rec(
         self,
         status: RecommendationStatus = RecommendationStatus.APPROVED,
+        strategy_section: str = "strategy_params",
     ) -> Recommendation:
         return Recommendation(
             rec_id="rec_test123",
@@ -373,7 +395,7 @@ class TestConfigApplicator:
             oos_total_trades=50,
             changes=[
                 ParamChange(
-                    section="strategy_params",
+                    section=strategy_section,
                     key="rsi_reversion__oversold",
                     old_value=30.0,
                     new_value=26.0,
@@ -436,6 +458,30 @@ class TestConfigApplicator:
             affinity_overrides = call_args[0][1]
             assert strategy_params["rsi_reversion__oversold"] == 26.0
             assert affinity_overrides["supertrend"]["ranging"] == 0.19
+
+    def test_apply_writes_per_tf_section_and_hot_reload_kwargs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir)
+            mock_module = MagicMock()
+            rec = self._make_rec(strategy_section="strategy_params.M5")
+            applicator = ConfigApplicator(
+                config_dir=config_dir, signal_module=mock_module
+            )
+            applicator.apply(rec)
+
+            parser = configparser.ConfigParser()
+            parser.read(str(config_dir / "signal.local.ini"))
+            assert parser.has_section("strategy_params.M5")
+            assert (
+                parser.get("strategy_params.M5", "rsi_reversion__oversold") == "26.0"
+            )
+
+            call_args = mock_module.apply_param_overrides.call_args
+            assert call_args[0][0] == {}
+            assert call_args[0][1]["supertrend"]["ranging"] == 0.19
+            assert call_args[1]["strategy_params_per_tf"] == {
+                "M5": {"rsi_reversion__oversold": 26.0}
+            }
 
     def test_apply_creates_backup(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -500,3 +546,23 @@ class TestConfigApplicator:
             assert parser.get("strategy_params", "old_param") == "42.0"
             # 其他 section 保留
             assert parser.get("signal", "auto_trade_enabled") == "false"
+
+
+def test_load_current_signal_config_merges_timeframe_specific_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.config.utils as config_utils
+
+    merged = {
+        "strategy_params": {"rsi_reversion__oversold": "30.0"},
+        "strategy_params.M5": {"rsi_reversion__oversold": "22.0"},
+        "regime_affinity.supertrend": {"ranging": "0.2"},
+    }
+
+    monkeypatch.setattr(config_utils, "get_merged_config", lambda _: merged)
+
+    effective, per_tf, affinities = load_current_signal_config("M5")
+
+    assert effective["rsi_reversion__oversold"] == 22.0
+    assert per_tf["M5"]["rsi_reversion__oversold"] == 22.0
+    assert affinities["supertrend"]["ranging"] == 0.2

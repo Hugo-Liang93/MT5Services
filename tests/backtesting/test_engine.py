@@ -133,6 +133,34 @@ class TestBacktestEngine:
         # 管线应该被调用了
         assert pipeline.compute.call_count > 0
 
+    def test_unsupported_requested_strategies_are_filtered(self) -> None:
+        config = self._make_config(
+            strategies=["trend_vote", "rsi_reversion", "multi_timeframe_confirm"]
+        )
+        data_loader = MagicMock()
+        signal_module = MagicMock()
+        signal_module.list_strategies.return_value = [
+            "rsi_reversion",
+            "multi_timeframe_confirm",
+        ]
+        signal_module.strategy_requirements.side_effect = lambda name: {
+            "rsi_reversion": ("rsi14",),
+            "multi_timeframe_confirm": ("sma20", "ema50"),
+        }[name]
+        pipeline = MagicMock()
+
+        engine = BacktestEngine(
+            config=config,
+            data_loader=data_loader,
+            signal_module=signal_module,
+            indicator_pipeline=pipeline,
+        )
+
+        assert engine._target_strategies == [
+            "rsi_reversion",
+            "multi_timeframe_confirm",
+        ]
+
     def test_indicator_failure_skips_bar(self) -> None:
         """指标计算失败时应跳过该 bar。"""
         config = self._make_config(warmup_bars=5)
@@ -146,7 +174,7 @@ class TestBacktestEngine:
         data_loader.load_all_bars.return_value = test_data
 
         signal_module = MagicMock()
-        signal_module.list_strategies.return_value = ["test_strategy"]
+        signal_module.list_strategies.return_value = ["rsi_reversion"]
         signal_module.strategy_requirements.return_value = ["rsi14"]
 
         pipeline = MagicMock()

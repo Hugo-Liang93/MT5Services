@@ -1,5 +1,12 @@
 """
 Lightweight health monitoring with SQLite-backed metrics and alerts.
+
+改造要点（相比原版）：
+- 持久化连接（_get_conn），消除 record_metric 每次 connect/close 开销
+- WAL 模式 + busy_timeout，提升并发读写能力
+- 写入缓冲区（_write_buffer）+ 后台刷盘线程，每 _FLUSH_INTERVAL 秒批量 INSERT
+- 告警写入（_record_alert）仍同步执行，确保告警不丢失
+- NullHealthMonitor：回测 / 测试用的空实现，零 I/O
 """
 
 from __future__ import annotations
@@ -10,7 +17,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .health_checks import (
     check_cache_stats,
@@ -29,6 +36,25 @@ from .health_reporting import (
 
 logger = logging.getLogger(__name__)
 
+# 后台刷盘间隔（秒）
+_FLUSH_INTERVAL = 5.0
+# 缓冲区达到此条数时立即触发刷盘（防止内存无限增长）
+_FLUSH_BUFFER_MAX = 500
+
+
+def _make_conn(db_path: str) -> sqlite3.Connection:
+    """创建持久化 SQLite 连接，启用 WAL 和性能 PRAGMA。"""
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA cache_size=-4096")  # 4 MB page cache
+    return conn
+
+
+# 写缓冲行类型：(timestamp, component, metric_name, metric_value, details_json, alert_level)
+_MetricRow = Tuple[str, str, str, float, Optional[str], Optional[str]]
+
 
 class HealthMonitor:
     """SQLite-backed runtime health monitor."""
@@ -36,6 +62,15 @@ class HealthMonitor:
     def __init__(self, db_path: str = "health_monitor.db"):
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._conn: Optional[sqlite3.Connection] = None
+
+        # 写入缓冲区（延迟落盘，降低 SQLite 写压力）
+        self._write_buffer: List[_MetricRow] = []
+
+        # 后台刷盘控制
+        self._stop_flush = threading.Event()
+        self._flush_thread: Optional[threading.Thread] = None
+
         self._init_db()
         self.metrics: Dict[str, List[Dict[str, Any]]] = {}
         self.alerts = {
@@ -43,7 +78,6 @@ class HealthMonitor:
             "indicator_freshness": {"warning": 60.0, "critical": 300.0},
             "queue_depth": {"warning": 1000, "critical": 5000},
             # 指标计算延迟 P99（毫秒）：单次指标计算批次耗时的第 99 百分位。
-            # warning=500ms 表示批量计算偶尔超时；critical=2000ms 表示严重性能退化。
             "indicator_compute_p99_ms": {"warning": 500.0, "critical": 2000.0},
             # 缓存命中率保留但仅作信息指标（不再用于告警）。
             "cache_hit_rate": {"warning": 0.0, "critical": 0.0},
@@ -53,22 +87,38 @@ class HealthMonitor:
         self._report_cache: Optional[Dict[str, Any]] = None
         self._report_cache_at: float = 0.0
         self._report_cache_ttl: float = 15.0  # seconds
+
+        self._start_flush_thread()
         logger.info("HealthMonitor initialized with database: %s", db_path)
 
-    def configure_alerts(
-        self,
-        *,
-        data_latency_warning: Optional[float] = None,
-        data_latency_critical: Optional[float] = None,
-    ) -> None:
-        if data_latency_warning is not None:
-            self.alerts["data_latency"]["warning"] = float(data_latency_warning)
-        if data_latency_critical is not None:
-            self.alerts["data_latency"]["critical"] = float(data_latency_critical)
+    # ─── 连接管理 ───────────────────────────────────────────────────────────
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """返回持久化连接（首次调用时创建）。调用方需持有 self._lock。"""
+        if self._conn is None:
+            self._conn = _make_conn(self.db_path)
+        return self._conn
+
+    def close(self) -> None:
+        """刷新缓冲区并关闭连接（进程退出 / 测试清理时调用）。"""
+        self._stop_flush.set()
+        if self._flush_thread is not None:
+            self._flush_thread.join(timeout=10.0)
+        self._flush_buffer()
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    logger.debug("HealthMonitor close: conn.close() failed", exc_info=True)
+                finally:
+                    self._conn = None
+
+    # ─── 初始化 ─────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -122,7 +172,61 @@ class HealthMonitor:
                 """
             )
             conn.commit()
-            conn.close()
+
+    # ─── 后台刷盘 ────────────────────────────────────────────────────────────
+
+    def _start_flush_thread(self) -> None:
+        self._flush_thread = threading.Thread(
+            target=self._flush_worker,
+            daemon=True,
+            name="health-monitor-flush",
+        )
+        self._flush_thread.start()
+
+    def _flush_worker(self) -> None:
+        while not self._stop_flush.wait(_FLUSH_INTERVAL):
+            self._flush_buffer()
+
+    def _flush_buffer(self) -> None:
+        """将缓冲区中的指标行批量写入 DB。"""
+        with self._lock:
+            if not self._write_buffer:
+                return
+            rows = self._write_buffer
+            self._write_buffer = []
+            conn = self._get_conn()
+            try:
+                conn.executemany(
+                    """
+                    INSERT INTO health_metrics
+                    (timestamp, component, metric_name, metric_value, details, alert_level)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+                conn.commit()
+            except Exception:
+                logger.warning(
+                    "HealthMonitor: failed to flush %s metric rows", len(rows), exc_info=True
+                )
+                # 失败时把数据放回缓冲区（不重复放超限的部分）
+                overflow = max(0, len(self._write_buffer) + len(rows) - _FLUSH_BUFFER_MAX)
+                self._write_buffer = rows[overflow:] + self._write_buffer
+
+    # ─── 配置 ────────────────────────────────────────────────────────────────
+
+    def configure_alerts(
+        self,
+        *,
+        data_latency_warning: Optional[float] = None,
+        data_latency_critical: Optional[float] = None,
+    ) -> None:
+        if data_latency_warning is not None:
+            self.alerts["data_latency"]["warning"] = float(data_latency_warning)
+        if data_latency_critical is not None:
+            self.alerts["data_latency"]["critical"] = float(data_latency_critical)
+
+    # ─── 核心写入 ────────────────────────────────────────────────────────────
 
     def record_metric(
         self,
@@ -143,6 +247,7 @@ class HealthMonitor:
             else None
         )
 
+        # 内存缓存（最后 100 条，用于 get_recent_metrics 快速访问）
         key = f"{component}.{metric_name}"
         self.metrics.setdefault(key, []).append(
             {
@@ -155,25 +260,37 @@ class HealthMonitor:
         if len(self.metrics[key]) > 100:
             self.metrics[key] = self.metrics[key][-100:]
 
+        details_json = json.dumps(details) if details else None
+
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO health_metrics
-                (timestamp, component, metric_name, metric_value, details, alert_level)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    timestamp,
-                    component,
-                    metric_name,
-                    metric_value,
-                    json.dumps(details) if details else None,
-                    alert_level,
-                ),
+            # 指标写入缓冲区（延迟落盘）
+            self._write_buffer.append(
+                (timestamp, component, metric_name, metric_value, details_json, alert_level)
             )
+            # 缓冲区超限时立即刷盘（防止内存无限增长）
+            if len(self._write_buffer) >= _FLUSH_BUFFER_MAX:
+                rows = self._write_buffer
+                self._write_buffer = []
+                conn = self._get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO health_metrics
+                        (timestamp, component, metric_name, metric_value, details, alert_level)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        rows,
+                    )
+                    conn.commit()
+                except Exception:
+                    logger.warning(
+                        "HealthMonitor: overflow flush failed (%s rows)", len(rows), exc_info=True
+                    )
+
+            # 告警写入同步执行（不缓冲，确保告警不丢失）
             if alert_level in {"warning", "critical"}:
+                conn = self._get_conn()
+                cursor = conn.cursor()
                 self._record_alert(
                     cursor,
                     timestamp,
@@ -183,8 +300,9 @@ class HealthMonitor:
                     metric_value,
                     details,
                 )
-            conn.commit()
-            conn.close()
+                conn.commit()
+
+    # ─── 内部辅助 ────────────────────────────────────────────────────────────
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -223,7 +341,6 @@ class HealthMonitor:
             if value >= thresholds["warning"] > 0:
                 return "warning"
         elif metric_name == "cache_hit_rate":
-            # 保留但不再告警（阈值已设为 0）
             pass
         return None
 
@@ -334,7 +451,7 @@ class HealthMonitor:
         if alert_key not in self.active_alerts:
             return False
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -345,10 +462,11 @@ class HealthMonitor:
                 (self._utc_now().isoformat(), resolved_by, component, metric_name),
             )
             conn.commit()
-            conn.close()
         del self.active_alerts[alert_key]
         logger.info("Resolved alert: %s.%s", component, metric_name)
         return True
+
+    # ─── 代理检查方法（委托给 health_checks 模块） ─────────────────────────
 
     def check_data_latency(self, component: str, service, symbol: str, timeframe: str) -> float:
         return check_data_latency(self, component, service, symbol, timeframe)
@@ -370,6 +488,8 @@ class HealthMonitor:
 
     def check_economic_calendar(self, component: str, service) -> Dict[str, Any]:
         return check_economic_calendar(self, component, service)
+
+    # ─── 报告 ────────────────────────────────────────────────────────────────
 
     def generate_report(self, hours: int = 24) -> Dict[str, Any]:
         now = time.monotonic()
@@ -399,6 +519,85 @@ class HealthMonitor:
     def get_system_status(self) -> Dict[str, Any]:
         return get_system_status(self)
 
+
+# ─── No-op 实现（回测 / 测试专用）─────────────────────────────────────────────
+
+
+class NullHealthMonitor:
+    """回测 / 测试用的空实现，满足 HealthMonitor 的全部接口但不做任何 I/O。"""
+
+    def __init__(self) -> None:
+        self.metrics: Dict[str, List[Dict[str, Any]]] = {}
+        self.alerts: Dict[str, Any] = {}
+        self.active_alerts: Dict[str, Any] = {}
+
+    def configure_alerts(self, **kwargs: Any) -> None:
+        pass
+
+    def record_metric(
+        self,
+        component: str,
+        metric_name: str,
+        value: float,
+        details: Dict[str, Any] | None = None,
+        check_alert: bool = True,
+    ) -> None:
+        pass
+
+    def resolve_alert(self, component: str, metric_name: str, resolved_by: str = "system") -> bool:
+        return False
+
+    def check_data_latency(self, *args: Any, **kwargs: Any) -> float:
+        return 0.0
+
+    def check_indicator_freshness(self, *args: Any, **kwargs: Any) -> float:
+        return 0.0
+
+    def check_queue_stats(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return {}
+
+    def check_cache_stats(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return {}
+
+    def check_economic_calendar(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return {}
+
+    def generate_report(self, hours: int = 24) -> Dict[str, Any]:
+        return {
+            "overall_status": "unknown",
+            "components": {},
+            "summary": {
+                "total_metrics": 0,
+                "warning_count": 0,
+                "critical_count": 0,
+                "advisory_warning_count": 0,
+                "advisory_critical_count": 0,
+            },
+            "active_alerts": [],
+            "recent_alerts": [],
+        }
+
+    def get_recent_metrics(
+        self, component: str, metric_name: str, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        return []
+
+    def cleanup_old_data(self, days_to_keep: int = 30) -> None:
+        pass
+
+    def get_system_status(self) -> Dict[str, Any]:
+        return {
+            "overall_status": "unknown",
+            "components_status": {},
+            "metrics_summary": {},
+            "active_alerts": [],
+        }
+
+    def close(self) -> None:
+        pass
+
+
+# ─── 单例 ──────────────────────────────────────────────────────────────────────
 
 _health_monitor_instance = None
 

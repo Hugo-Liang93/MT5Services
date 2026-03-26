@@ -1,10 +1,16 @@
 """optimizer.py 单元测试。"""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.backtesting.models import ParameterSpace
-from src.backtesting.optimizer import ParameterOptimizer
+from src.backtesting.optimizer import ParameterOptimizer, build_signal_module_with_overrides
+from src.signals.evaluation.regime import RegimeType
+from src.signals.service import SignalModule
+from src.signals.strategies.breakout import MultiTimeframeConfirmStrategy
+from src.signals.strategies.htf_cache import HTFStateCache
 
 
 class TestParameterSpace:
@@ -74,3 +80,94 @@ class TestGridSearch:
 
         assert len(combos) == 3
         assert combos[0] == {"threshold": 0.5}
+
+
+class _NullIndicatorSource:
+    def get_indicator(self, symbol, timeframe, name):  # type: ignore[no-untyped-def]
+        return None
+
+    def get_all_indicators(self, symbol, timeframe):  # type: ignore[no-untyped-def]
+        return {}
+
+
+def test_build_signal_module_with_overrides_preserves_base_per_tf_config() -> None:
+    base_module = SignalModule(indicator_source=_NullIndicatorSource())
+    base_module.apply_param_overrides(
+        {"rsi_reversion__oversold": 30.0},
+        {"rsi_reversion": {"ranging": 0.9}},
+        strategy_params_per_tf={"M5": {"rsi_reversion__oversold": 22.0}},
+    )
+
+    module = build_signal_module_with_overrides(
+        base_module,
+        {"rsi_reversion__overbought": 75.0},
+    )
+
+    resolver = module._tf_param_resolver
+    assert resolver.get("rsi_reversion", "oversold", "M5", default=0.0) == 22.0
+    assert resolver.get("rsi_reversion", "oversold", "H1", default=0.0) == 30.0
+    assert resolver.get("rsi_reversion", "overbought", "M5", default=0.0) == 75.0
+    assert module.strategy_affinity_map("rsi_reversion")[RegimeType.RANGING] == 0.9
+
+
+def test_build_signal_module_with_overrides_preserves_mtf_cache() -> None:
+    base_module = SignalModule(indicator_source=_NullIndicatorSource(), strategies=())
+    htf_cache = HTFStateCache()
+    base_module.register_strategy(MultiTimeframeConfirmStrategy(htf_cache=htf_cache))
+
+    module = build_signal_module_with_overrides(base_module, {})
+
+    cloned = module._strategies["multi_timeframe_confirm"]
+    assert getattr(cloned, "_htf_cache", None) is htf_cache
+
+
+def test_build_backtest_components_registers_multi_timeframe_confirm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.backtesting.component_factory as component_factory
+
+    class _DummyWriter:
+        def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+    class _DummyMarketRepo:
+        def __init__(self, writer):  # type: ignore[no-untyped-def]
+            self.writer = writer
+
+    class _DummyLoader:
+        def __init__(self, repo):  # type: ignore[no-untyped-def]
+            self.repo = repo
+
+    class _DummyPipeline:
+        def register_indicator(self, **kwargs):  # type: ignore[no-untyped-def]
+            return None
+
+    class _DummyConfigManager:
+        def get_config(self):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                pipeline=SimpleNamespace(),
+                indicators=[],
+            )
+
+    monkeypatch.setattr("src.config.database.get_db_config", lambda: object())
+    monkeypatch.setattr("src.config.indicator_config.get_global_config_manager", lambda: _DummyConfigManager())
+    monkeypatch.setattr("src.indicators.engine.pipeline.create_isolated_pipeline", lambda cfg: _DummyPipeline())
+    monkeypatch.setattr("src.persistence.db.TimescaleWriter", _DummyWriter)
+    monkeypatch.setattr("src.persistence.repositories.market_repo.MarketRepository", _DummyMarketRepo)
+    monkeypatch.setattr("src.backtesting.data_loader.HistoricalDataLoader", _DummyLoader)
+    monkeypatch.setattr(
+        "src.config.signal.get_signal_config",
+        lambda: SimpleNamespace(
+            strategy_params={},
+            strategy_params_per_tf={},
+            regime_affinity_overrides={},
+            htf_cache_max_age_seconds=14400,
+        ),
+    )
+
+    components = component_factory.build_backtest_components()
+
+    signal_module = components["signal_module"]
+    requirements = signal_module.strategy_requirements("multi_timeframe_confirm")
+    assert "sma20" in requirements
+    assert "ema50" in requirements

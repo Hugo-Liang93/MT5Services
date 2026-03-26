@@ -15,7 +15,7 @@ def generate_report(monitor, hours: int = 24) -> Dict[str, Any]:
     cutoff = monitor._utc_now() - timedelta(hours=hours)
 
     with monitor._lock:
-        conn = sqlite3.connect(monitor.db_path)
+        conn = monitor._get_conn()
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -103,7 +103,6 @@ def generate_report(monitor, hours: int = 24) -> Dict[str, Any]:
         report["recent_alerts"] = _load_recent_alerts(cursor, cutoff.isoformat())
         _persist_system_status(cursor, monitor, report)
         conn.commit()
-        conn.close()
 
     return report
 
@@ -119,7 +118,7 @@ def get_recent_metrics(
         return monitor.metrics[key][-limit:]
 
     with monitor._lock:
-        conn = sqlite3.connect(monitor.db_path)
+        conn = monitor._get_conn()
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -142,7 +141,6 @@ def get_recent_metrics(
                     "alert_level": alert_level,
                 }
             )
-        conn.close()
     return metrics
 
 
@@ -150,7 +148,7 @@ def cleanup_old_data(monitor, days_to_keep: int = 30) -> None:
     cutoff = monitor._utc_now() - timedelta(days=days_to_keep)
 
     with monitor._lock:
-        conn = sqlite3.connect(monitor.db_path)
+        conn = monitor._get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM health_metrics WHERE timestamp < ?", (cutoff.isoformat(),))
         metrics_deleted = cursor.rowcount
@@ -162,7 +160,6 @@ def cleanup_old_data(monitor, days_to_keep: int = 30) -> None:
         cursor.execute("DELETE FROM system_status WHERE timestamp < ?", (cutoff.isoformat(),))
         status_deleted = cursor.rowcount
         conn.commit()
-        conn.close()
 
     logger.info(
         "Cleaned up health monitor data: %s metrics, %s alerts, %s status records",
@@ -174,7 +171,7 @@ def cleanup_old_data(monitor, days_to_keep: int = 30) -> None:
 
 def get_system_status(monitor) -> Dict[str, Any]:
     with monitor._lock:
-        conn = sqlite3.connect(monitor.db_path)
+        conn = monitor._get_conn()
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -185,7 +182,6 @@ def get_system_status(monitor) -> Dict[str, Any]:
             """
         )
         row = cursor.fetchone()
-        conn.close()
 
     if row:
         timestamp, overall_status, components_status_json, metrics_summary_json = row
@@ -226,7 +222,8 @@ def _load_recent_alerts(cursor, cutoff: str) -> List[Dict[str, Any]]:
             "threshold": threshold,
             "message": message,
         }
-        for timestamp, component, metric_name, alert_level, metric_value, threshold, message in cursor.fetchall()
+        for timestamp, component, metric_name, alert_level, metric_value, threshold, message
+        in cursor.fetchall()
     ]
 
 

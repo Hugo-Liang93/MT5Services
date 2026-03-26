@@ -55,3 +55,8 @@ def load_db_settings() -> DBSettings:
         pg_database=_cfg_str(sec, "database", "mt5"),
         pg_schema=_cfg_str(sec, "schema", "public"),
     )
+
+
+def get_db_config() -> DBSettings:
+    """Backward-compatible alias for legacy imports."""
+    return load_db_settings()

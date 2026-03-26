@@ -59,6 +59,7 @@ class RecommendationEngine:
         source_run_id: str,
         current_strategy_params: Optional[Dict[str, Any]] = None,
         current_regime_affinities: Optional[Dict[str, Dict[str, float]]] = None,
+        timeframe: Optional[str] = None,
     ) -> Recommendation:
         """从 Walk-Forward 结果生成参数推荐。
 
@@ -83,8 +84,9 @@ class RecommendationEngine:
         agg = wf_result.aggregate_metrics
 
         # ── 策略参数：多窗口中位数聚合 ────────────────────────────────
+        target_timeframe = timeframe or self._resolve_recommendation_timeframe(wf_result)
         strategy_changes = self._aggregate_strategy_params(
-            wf_result, current_strategy_params
+            wf_result, current_strategy_params, target_timeframe
         )
 
         # ── Regime 亲和度推荐 ─────────────────────────────────────────
@@ -125,6 +127,18 @@ class RecommendationEngine:
             rationale=rationale,
         )
 
+    @staticmethod
+    def _resolve_recommendation_timeframe(
+        wf_result: "WalkForwardResult",
+    ) -> Optional[str]:
+        config = getattr(wf_result, "config", None)
+        base_config = getattr(config, "base_config", None)
+        timeframe = getattr(base_config, "timeframe", None)
+        if timeframe is None:
+            return None
+        tf = str(timeframe).strip().upper()
+        return tf or None
+
     def _validate_safety(self, wf_result: "WalkForwardResult") -> None:
         """检查 Walk-Forward 结果是否满足安全门槛。"""
         if wf_result.overfitting_ratio >= MAX_OVERFITTING_RATIO:
@@ -147,6 +161,7 @@ class RecommendationEngine:
         self,
         wf_result: "WalkForwardResult",
         current_params: Dict[str, Any],
+        timeframe: Optional[str],
     ) -> List[ParamChange]:
         """多窗口 best_params 中位数聚合，与当前值对比生成变更。"""
         # 收集每个参数在各窗口的值
@@ -167,6 +182,9 @@ class RecommendationEngine:
             logger.debug("跳过 %d 个非数值参数", skipped_count)
 
         changes: List[ParamChange] = []
+        section_name = (
+            f"strategy_params.{timeframe.upper()}" if timeframe else "strategy_params"
+        )
         for key, values in param_values.items():
             if len(values) < 2:
                 # 至少 2 个窗口才有统计意义
@@ -195,7 +213,7 @@ class RecommendationEngine:
 
             changes.append(
                 ParamChange(
-                    section="strategy_params",
+                    section=section_name,
                     key=key,
                     old_value=old_float,
                     new_value=median_val,
@@ -390,11 +408,15 @@ class ConfigApplicator:
 
         # ── 内存热更新 ───────────────────────────────────────────────
         if self._signal_module is not None:
-            strategy_params, affinity_overrides = self._extract_override_dicts(
-                rec.changes
-            )
+            (
+                strategy_params,
+                strategy_params_per_tf,
+                affinity_overrides,
+            ) = self._extract_override_dicts(rec.changes)
             self._signal_module.apply_param_overrides(
-                strategy_params, affinity_overrides
+                strategy_params,
+                affinity_overrides,
+                strategy_params_per_tf=strategy_params_per_tf,
             )
             logger.info(
                 "内存热更新完成: %d 策略参数, %d 亲和度覆盖",
@@ -439,9 +461,15 @@ class ConfigApplicator:
 
         # 重新加载内存参数
         if self._signal_module is not None:
-            restored_params, restored_affinities = self._read_current_overrides()
+            (
+                restored_params,
+                restored_params_per_tf,
+                restored_affinities,
+            ) = self._read_current_overrides()
             self._signal_module.apply_param_overrides(
-                restored_params, restored_affinities
+                restored_params,
+                restored_affinities,
+                strategy_params_per_tf=restored_params_per_tf,
             )
 
         rec.status = RecommendationStatus.ROLLED_BACK
@@ -476,10 +504,12 @@ class ConfigApplicator:
             parser.read(str(local_ini))
 
         for change in changes:
-            if change.section == "strategy_params":
-                if not parser.has_section("strategy_params"):
-                    parser.add_section("strategy_params")
-                parser.set("strategy_params", change.key, str(change.new_value))
+            if change.section == "strategy_params" or change.section.startswith(
+                "strategy_params."
+            ):
+                if not parser.has_section(change.section):
+                    parser.add_section(change.section)
+                parser.set(change.section, change.key, str(change.new_value))
             elif change.section.startswith("regime_affinity."):
                 section_name = change.section
                 if not parser.has_section(section_name):
@@ -508,14 +538,15 @@ class ConfigApplicator:
 
     def _read_current_overrides(
         self,
-    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]]]:
+    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
         """从 signal.local.ini 读取当前覆盖参数。"""
         local_ini = self._config_dir / "signal.local.ini"
         strategy_params: Dict[str, Any] = {}
+        strategy_params_per_tf: Dict[str, Dict[str, float]] = {}
         affinity_overrides: Dict[str, Dict[str, float]] = {}
 
         if not local_ini.exists():
-            return strategy_params, affinity_overrides
+            return strategy_params, strategy_params_per_tf, affinity_overrides
 
         parser = configparser.ConfigParser()
         parser.read(str(local_ini))
@@ -528,7 +559,15 @@ class ConfigApplicator:
                     strategy_params[key] = val
 
         for section in parser.sections():
-            if section.startswith("regime_affinity."):
+            if section.startswith("strategy_params."):
+                tf = section.split(".", 1)[1].upper()
+                tf_params = strategy_params_per_tf.setdefault(tf, {})
+                for key, val in parser.items(section):
+                    try:
+                        tf_params[key] = float(val)
+                    except ValueError:
+                        pass
+            elif section.startswith("regime_affinity."):
                 strat_name = section.split(".", 1)[1]
                 affinity_overrides[strat_name] = {}
                 for key, val in parser.items(section):
@@ -537,37 +576,44 @@ class ConfigApplicator:
                     except ValueError:
                         pass
 
-        return strategy_params, affinity_overrides
+        return strategy_params, strategy_params_per_tf, affinity_overrides
 
     @staticmethod
     def _extract_override_dicts(
         changes: List[ParamChange],
-    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]]]:
+    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
         """从 ParamChange 列表提取 apply_param_overrides 所需的字典。"""
         strategy_params: Dict[str, Any] = {}
+        strategy_params_per_tf: Dict[str, Dict[str, float]] = {}
         affinity_overrides: Dict[str, Dict[str, float]] = {}
 
         for c in changes:
             if c.section == "strategy_params":
                 strategy_params[c.key] = c.new_value
+            elif c.section.startswith("strategy_params."):
+                tf = c.section.split(".", 1)[1].upper()
+                strategy_params_per_tf.setdefault(tf, {})[c.key] = c.new_value
             elif c.section.startswith("regime_affinity."):
                 strat_name = c.section.split(".", 1)[1]
                 affinity_overrides.setdefault(strat_name, {})[c.key] = c.new_value
 
-        return strategy_params, affinity_overrides
+        return strategy_params, strategy_params_per_tf, affinity_overrides
 
 
-def load_current_signal_config() -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]]]:
+def load_current_signal_config(
+    timeframe: Optional[str] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
     """从 signal.ini + signal.local.ini 加载当前策略参数和亲和度覆盖。
 
     Returns:
-        (strategy_params, regime_affinity_overrides) 元组
+        (effective_strategy_params, strategy_params_per_tf, regime_affinity_overrides) 元组
     """
     from src.config.utils import get_merged_config
 
     merged = get_merged_config("signal.ini")
 
     strategy_params: Dict[str, Any] = {}
+    strategy_params_per_tf: Dict[str, Dict[str, float]] = {}
     affinity_overrides: Dict[str, Dict[str, float]] = {}
 
     sp = merged.get("strategy_params", {})
@@ -576,6 +622,17 @@ def load_current_signal_config() -> Tuple[Dict[str, Any], Dict[str, Dict[str, fl
             strategy_params[key] = float(val)
         except (TypeError, ValueError):
             strategy_params[key] = val
+
+    for section_name, section_data in merged.items():
+        if not section_name.startswith("strategy_params."):
+            continue
+        tf = section_name.split(".", 1)[1].upper()
+        tf_params = strategy_params_per_tf.setdefault(tf, {})
+        for key, val in section_data.items():
+            try:
+                tf_params[key] = float(val)
+            except (TypeError, ValueError):
+                pass
 
     for section_name, section_data in merged.items():
         if section_name.startswith("regime_affinity."):
@@ -587,4 +644,8 @@ def load_current_signal_config() -> Tuple[Dict[str, Any], Dict[str, Dict[str, fl
                 except (TypeError, ValueError):
                     pass
 
-    return strategy_params, affinity_overrides
+    effective_strategy_params = dict(strategy_params)
+    if timeframe:
+        effective_strategy_params.update(strategy_params_per_tf.get(timeframe.upper(), {}))
+
+    return effective_strategy_params, strategy_params_per_tf, affinity_overrides

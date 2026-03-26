@@ -58,6 +58,7 @@ class BacktestRunRequest(BaseModel):
     min_confidence: float = 0.55
     warmup_bars: int = 200
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
+    strategy_params_per_tf: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     # 过滤器配置
     filters_enabled: bool = True
     filter_allowed_sessions: str = "london,newyork"
@@ -74,6 +75,8 @@ class WalkForwardRequest(BaseModel):
     initial_balance: float = 10000.0
     min_confidence: float = 0.55
     warmup_bars: int = 200
+    strategy_params: Dict[str, Any] = Field(default_factory=dict)
+    strategy_params_per_tf: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     param_space: Dict[str, List[Any]] = Field(
         ..., description="参数搜索空间 {key: [val1, val2, ...]}"
     )
@@ -95,12 +98,94 @@ class BacktestOptimizeRequest(BaseModel):
     initial_balance: float = 10000.0
     min_confidence: float = 0.55
     warmup_bars: int = 200
+    strategy_params: Dict[str, Any] = Field(default_factory=dict)
+    strategy_params_per_tf: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     param_space: Dict[str, List[Any]] = Field(
         ..., description="参数搜索空间 {key: [val1, val2, ...]}"
     )
     search_mode: str = "grid"
     max_combinations: int = 500
     sort_metric: str = "sharpe_ratio"
+
+
+class BacktestRequestBase(BaseModel):
+    symbol: str
+    timeframe: str
+    start_time: str = Field(..., description="ISO start time, e.g. YYYY-MM-DD")
+    end_time: str = Field(..., description="ISO end time, e.g. YYYY-MM-DD")
+    strategies: Optional[List[str]] = None
+
+    initial_balance: Optional[float] = None
+    min_confidence: Optional[float] = None
+    warmup_bars: Optional[int] = None
+    max_positions: Optional[int] = None
+    commission_per_lot: Optional[float] = None
+    slippage_points: Optional[float] = None
+    contract_size: Optional[float] = None
+    risk_percent: Optional[float] = None
+    min_volume: Optional[float] = None
+    max_volume: Optional[float] = None
+    max_volume_per_order: Optional[float] = None
+    max_volume_per_symbol: Optional[float] = None
+    max_volume_per_day: Optional[float] = None
+    daily_loss_limit_pct: Optional[float] = None
+    max_trades_per_day: Optional[int] = None
+    max_trades_per_hour: Optional[int] = None
+
+    strategy_params: Dict[str, Any] = Field(default_factory=dict)
+    strategy_params_per_tf: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    regime_affinity_overrides: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+
+    pending_entry_enabled: Optional[bool] = None
+    pending_entry_pullback_atr_factor: Optional[float] = None
+    pending_entry_chase_atr_factor: Optional[float] = None
+    pending_entry_momentum_atr_factor: Optional[float] = None
+    pending_entry_symmetric_atr_factor: Optional[float] = None
+    pending_entry_expiry_bars: Optional[int] = None
+
+    trailing_atr_multiplier: Optional[float] = None
+    breakeven_atr_threshold: Optional[float] = None
+    end_of_day_close_enabled: Optional[bool] = None
+    end_of_day_close_hour_utc: Optional[int] = None
+    end_of_day_close_minute_utc: Optional[int] = None
+
+    filters_enabled: Optional[bool] = None
+    filter_session_enabled: Optional[bool] = None
+    filter_allowed_sessions: Optional[str] = None
+    filter_session_transition_enabled: Optional[bool] = None
+    filter_session_transition_cooldown: Optional[int] = None
+    filter_volatility_enabled: Optional[bool] = None
+    filter_volatility_spike_multiplier: Optional[float] = None
+    filter_spread_enabled: Optional[bool] = None
+    filter_max_spread_points: Optional[float] = None
+
+    enable_regime_affinity: Optional[bool] = None
+    enable_performance_tracker: Optional[bool] = None
+    enable_calibrator: Optional[bool] = None
+    enable_htf_alignment: Optional[bool] = None
+
+    enable_state_machine: Optional[bool] = None
+    min_preview_stable_bars: Optional[int] = None
+    max_signal_evaluations: Optional[int] = None
+
+
+class BacktestRunRequest(BacktestRequestBase):
+    pass
+
+
+class BacktestOptimizeRequest(BacktestRequestBase):
+    param_space: Dict[str, List[Any]] = Field(
+        ..., description="Parameter search space: {key: [val1, val2, ...]}"
+    )
+    search_mode: Optional[str] = None
+    max_combinations: Optional[int] = None
+    sort_metric: Optional[str] = None
+
+
+class WalkForwardRequest(BacktestOptimizeRequest):
+    n_splits: int = Field(default=5, description="Number of rolling splits")
+    train_ratio: float = Field(default=0.7, description="Train set ratio")
+    anchored: bool = Field(default=False, description="Whether to use anchored windows")
 
 
 class BacktestJobResponse(BaseModel):
@@ -112,6 +197,314 @@ class BacktestJobResponse(BaseModel):
     completed_at: Optional[str] = None
     progress: float = 0.0
     error: Optional[str] = None
+
+
+_CONFIG_OVERRIDE_FIELDS = (
+    "initial_balance",
+    "min_confidence",
+    "warmup_bars",
+    "max_positions",
+    "commission_per_lot",
+    "slippage_points",
+    "contract_size",
+    "risk_percent",
+    "min_volume",
+    "max_volume",
+    "max_volume_per_order",
+    "max_volume_per_symbol",
+    "max_volume_per_day",
+    "daily_loss_limit_pct",
+    "max_trades_per_day",
+    "max_trades_per_hour",
+    "pending_entry_enabled",
+    "pending_entry_pullback_atr_factor",
+    "pending_entry_chase_atr_factor",
+    "pending_entry_momentum_atr_factor",
+    "pending_entry_symmetric_atr_factor",
+    "pending_entry_expiry_bars",
+    "trailing_atr_multiplier",
+    "breakeven_atr_threshold",
+    "end_of_day_close_enabled",
+    "end_of_day_close_hour_utc",
+    "end_of_day_close_minute_utc",
+    "filters_enabled",
+    "filter_session_enabled",
+    "filter_allowed_sessions",
+    "filter_session_transition_enabled",
+    "filter_session_transition_cooldown",
+    "filter_volatility_enabled",
+    "filter_volatility_spike_multiplier",
+    "filter_spread_enabled",
+    "filter_max_spread_points",
+    "enable_regime_affinity",
+    "enable_performance_tracker",
+    "enable_calibrator",
+    "enable_htf_alignment",
+    "enable_state_machine",
+    "min_preview_stable_bars",
+    "max_signal_evaluations",
+)
+
+_SORT_METRICS = (
+    "sharpe_ratio",
+    "sortino_ratio",
+    "calmar_ratio",
+    "profit_factor",
+    "win_rate",
+    "total_pnl",
+    "expectancy",
+)
+
+_SEARCH_MODES = ("grid", "random")
+
+
+def _load_backtest_defaults() -> Dict[str, Any]:
+    from .config import get_backtest_defaults
+
+    return get_backtest_defaults()
+
+
+def _load_signal_config() -> Any:
+    from src.config.signal import get_signal_config
+
+    return get_signal_config()
+
+
+_PARAM_TEMPLATE_SPECS: Dict[str, Dict[str, Any]] = {
+    "supertrend__adx_threshold": {"default": 23.0, "step": 2.0, "min": 18.0, "max": 30.0, "precision": 1},
+    "roc_momentum__adx_min": {"default": 23.0, "step": 2.0, "min": 18.0, "max": 30.0, "precision": 1},
+    "roc_momentum__roc_threshold": {"default": 0.10, "step": 0.02, "min": 0.05, "max": 0.30, "precision": 2},
+    "donchian_breakout__adx_min": {"default": 23.0, "step": 2.0, "min": 18.0, "max": 30.0, "precision": 1},
+    "rsi_reversion__overbought": {"default": 70.0, "step": 3.0, "min": 65.0, "max": 85.0, "precision": 0},
+    "rsi_reversion__oversold": {"default": 30.0, "step": 3.0, "min": 15.0, "max": 35.0, "precision": 0},
+    "williams_r__overbought": {"default": -20.0, "step": 5.0, "min": -35.0, "max": -10.0, "precision": 0},
+    "williams_r__oversold": {"default": -80.0, "step": 5.0, "min": -90.0, "max": -65.0, "precision": 0},
+    "cci_reversion__upper_threshold": {"default": 100.0, "step": 20.0, "min": 100.0, "max": 220.0, "precision": 0},
+    "cci_reversion__lower_threshold": {"default": -100.0, "step": 20.0, "min": -220.0, "max": -100.0, "precision": 0},
+    "stoch_rsi__overbought": {"default": 80.0, "step": 5.0, "min": 70.0, "max": 90.0, "precision": 0},
+    "stoch_rsi__oversold": {"default": 20.0, "step": 5.0, "min": 10.0, "max": 30.0, "precision": 0},
+    "rsi_reversion__intrabar_decay": {"default": 0.90, "step": 0.04, "min": 0.70, "max": 0.95, "precision": 2},
+    "stoch_rsi__intrabar_decay": {"default": 0.88, "step": 0.04, "min": 0.70, "max": 0.95, "precision": 2},
+    "williams_r__intrabar_decay": {"default": 0.88, "step": 0.04, "min": 0.70, "max": 0.95, "precision": 2},
+    "cci_reversion__intrabar_decay": {"default": 0.88, "step": 0.04, "min": 0.70, "max": 0.95, "precision": 2},
+    "bollinger_breakout__intrabar_decay": {"default": 0.78, "step": 0.04, "min": 0.65, "max": 0.90, "precision": 2},
+    "keltner_bb_squeeze__intrabar_decay": {"default": 0.80, "step": 0.04, "min": 0.65, "max": 0.90, "precision": 2},
+    "session_momentum__london_min_atr_pct": {
+        "default": 0.00050, "step": 0.00006, "min": 0.00020, "max": 0.00080, "precision": 5,
+    },
+    "session_momentum__other_min_atr_pct": {
+        "default": 0.00038, "step": 0.00005, "min": 0.00015, "max": 0.00065, "precision": 5,
+    },
+}
+
+
+def _normalize_strategy_name_list(raw_values: Optional[List[str]]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for raw in raw_values or []:
+        value = str(raw).strip()
+        if not value or value in seen:
+            continue
+        normalized.append(value)
+        seen.add(value)
+    return normalized
+
+
+def _collect_configured_strategies(signal_config: Any) -> List[str]:
+    ordered: List[str] = []
+    seen = set()
+
+    def add(name: str) -> None:
+        value = str(name).strip()
+        if not value or value in seen:
+            return
+        ordered.append(value)
+        seen.add(value)
+
+    for name in getattr(signal_config, "strategy_timeframes", {}).keys():
+        add(name)
+    for compound_key in getattr(signal_config, "strategy_params", {}).keys():
+        add(str(compound_key).split("__", 1)[0])
+    for tf_bucket in getattr(signal_config, "strategy_params_per_tf", {}).values():
+        for compound_key in tf_bucket.keys():
+            add(str(compound_key).split("__", 1)[0])
+    for name in getattr(signal_config, "regime_affinity_overrides", {}).keys():
+        add(name)
+    return ordered
+
+
+def _resolve_template_strategies(
+    signal_config: Any,
+    timeframe: str,
+    requested: Optional[List[str]] = None,
+) -> List[str]:
+    requested_list = _normalize_strategy_name_list(requested)
+    candidates = requested_list or _collect_configured_strategies(signal_config)
+    timeframe_upper = timeframe.upper()
+    resolved: List[str] = []
+    seen = set()
+    strategy_timeframes = getattr(signal_config, "strategy_timeframes", {})
+
+    for strategy in candidates:
+        if strategy in seen:
+            continue
+        allowed = [
+            str(tf).strip().upper()
+            for tf in strategy_timeframes.get(strategy, [])
+            if str(tf).strip()
+        ]
+        if allowed and timeframe_upper not in allowed:
+            continue
+        resolved.append(strategy)
+        seen.add(strategy)
+    return resolved
+
+
+def _effective_strategy_params_for_timeframe(
+    signal_config: Any,
+    timeframe: str,
+) -> Dict[str, float]:
+    merged = {
+        str(key): float(value)
+        for key, value in getattr(signal_config, "strategy_params", {}).items()
+    }
+    timeframe_bucket = getattr(signal_config, "strategy_params_per_tf", {}).get(
+        timeframe.upper(), {}
+    )
+    for key, value in timeframe_bucket.items():
+        merged[str(key)] = float(value)
+    return merged
+
+
+def _generate_template_values(
+    compound_key: str,
+    current_value: Optional[float],
+) -> List[float]:
+    spec = _PARAM_TEMPLATE_SPECS.get(compound_key)
+    if spec is None:
+        if current_value is None:
+            return []
+        magnitude = abs(float(current_value))
+        if magnitude >= 1:
+            step = max(1.0, round(magnitude * 0.1))
+            candidates = [
+                current_value - 2 * step,
+                current_value - step,
+                current_value,
+                current_value + step,
+                current_value + 2 * step,
+            ]
+            return sorted({round(float(v), 2) for v in candidates})
+        step = max(0.01, round(max(magnitude * 0.15, 0.01), 2))
+        candidates = [
+            max(0.0, current_value - 2 * step),
+            max(0.0, current_value - step),
+            current_value,
+            current_value + step,
+            current_value + 2 * step,
+        ]
+        return sorted({round(float(v), 4) for v in candidates})
+
+    base = float(current_value if current_value is not None else spec["default"])
+    step = float(spec["step"])
+    min_value = float(spec["min"])
+    max_value = float(spec["max"])
+    precision = int(spec["precision"])
+    candidates = [
+        max(min_value, min(max_value, base - 2 * step)),
+        max(min_value, min(max_value, base - step)),
+        max(min_value, min(max_value, base)),
+        max(min_value, min(max_value, base + step)),
+        max(min_value, min(max_value, base + 2 * step)),
+    ]
+    return sorted({round(value, precision) for value in candidates})
+
+
+def _build_param_space_template(
+    timeframe: str,
+    requested_strategies: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    signal_config = _load_signal_config()
+    resolved_strategies = _resolve_template_strategies(
+        signal_config,
+        timeframe,
+        requested_strategies,
+    )
+    effective_strategy_params = _effective_strategy_params_for_timeframe(
+        signal_config,
+        timeframe,
+    )
+
+    baseline_strategy_params: Dict[str, float] = {}
+    param_space: Dict[str, List[float]] = {}
+    for strategy in resolved_strategies:
+        strategy_keys = [
+            key for key in effective_strategy_params.keys()
+            if key.startswith(f"{strategy}__")
+        ]
+        for compound_key in strategy_keys:
+            current_value = effective_strategy_params.get(compound_key)
+            if current_value is not None:
+                baseline_strategy_params[compound_key] = current_value
+            values = _generate_template_values(compound_key, current_value)
+            if values:
+                param_space[compound_key] = values
+
+    notes = [
+        "param_space 基于 signal.ini 当前生效策略参数生成，可继续在前端编辑。",
+        "未显式选择 strategies 时，会按当前 timeframe 自动筛选可运行策略。",
+    ]
+    if not param_space:
+        notes.append("当前所选策略没有已配置的 strategy_params 模板，请手动补充 param_space。")
+
+    return {
+        "timeframe": timeframe.upper(),
+        "requested_strategies": _normalize_strategy_name_list(requested_strategies),
+        "resolved_strategies": resolved_strategies,
+        "baseline_strategy_params": baseline_strategy_params,
+        "param_space": param_space,
+        "notes": notes,
+    }
+
+
+def _parse_request_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+
+
+def _build_backtest_config(request: BacktestRequestBase) -> Any:
+    from src.backtesting.models import BacktestConfig
+
+    defaults = _load_backtest_defaults()
+    config_kwargs: Dict[str, Any] = {
+        "symbol": request.symbol,
+        "timeframe": request.timeframe,
+        "start_time": _parse_request_datetime(request.start_time),
+        "end_time": _parse_request_datetime(request.end_time),
+        "strategies": request.strategies,
+        "strategy_params": request.strategy_params,
+        "strategy_params_per_tf": request.strategy_params_per_tf,
+        "regime_affinity_overrides": request.regime_affinity_overrides,
+    }
+    for field_name in _CONFIG_OVERRIDE_FIELDS:
+        value = getattr(request, field_name, None)
+        if value is not None:
+            config_kwargs[field_name] = value
+        elif field_name in defaults:
+            config_kwargs[field_name] = defaults[field_name]
+    return BacktestConfig(**config_kwargs)
+
+
+def _resolve_optimizer_settings(request: BacktestOptimizeRequest) -> Dict[str, Any]:
+    defaults = _load_backtest_defaults()
+    return {
+        "search_mode": request.search_mode or defaults.get("search_mode", "grid"),
+        "max_combinations": (
+            request.max_combinations
+            if request.max_combinations is not None
+            else defaults.get("max_combinations", 500)
+        ),
+        "sort_metric": request.sort_metric or defaults.get("sort_metric", "sharpe_ratio"),
+    }
 
 
 # ── 路由实现 ────────────────────────────────────────────────────
@@ -148,6 +541,7 @@ async def run_optimization(
     background_tasks: BackgroundTasks,
 ) -> ApiResponse:
     """提交参数优化任务。"""
+    optimizer_settings = _resolve_optimizer_settings(request)
     run_id = f"opt_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
     job = BacktestJob(
@@ -160,8 +554,8 @@ async def run_optimization(
             "timeframe": request.timeframe,
             "start_time": request.start_time,
             "end_time": request.end_time,
-            "search_mode": request.search_mode,
-            "max_combinations": request.max_combinations,
+            "search_mode": optimizer_settings["search_mode"],
+            "max_combinations": optimizer_settings["max_combinations"],
         },
     )
     _register_job(job)
@@ -175,6 +569,7 @@ async def run_walk_forward(
     background_tasks: BackgroundTasks,
 ) -> ApiResponse:
     """提交 Walk-Forward 验证任务。"""
+    optimizer_settings = _resolve_optimizer_settings(request)
     run_id = f"wf_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
     job = BacktestJob(
@@ -189,11 +584,70 @@ async def run_walk_forward(
             "end_time": request.end_time,
             "n_splits": request.n_splits,
             "train_ratio": request.train_ratio,
+            "search_mode": optimizer_settings["search_mode"],
+            "max_combinations": optimizer_settings["max_combinations"],
         },
     )
     _register_job(job)
     background_tasks.add_task(_execute_walk_forward, run_id, request)
     return ApiResponse(success=True, data=job.to_dict())
+
+
+@router.get("/config/defaults", response_model=ApiResponse)
+async def get_backtest_config_defaults() -> ApiResponse:
+    """Return resolved backtest defaults and API-exposed capabilities."""
+    defaults = _load_backtest_defaults()
+    return ApiResponse(
+        success=True,
+        data={
+            "defaults": defaults,
+            "supported": {
+                "search_modes": list(_SEARCH_MODES),
+                "sort_metrics": list(_SORT_METRICS),
+                "run_fields": [
+                    "symbol",
+                    "timeframe",
+                    "start_time",
+                    "end_time",
+                    "strategies",
+                    *_CONFIG_OVERRIDE_FIELDS,
+                    "strategy_params",
+                    "strategy_params_per_tf",
+                    "regime_affinity_overrides",
+                ],
+                "optimize_fields": [
+                    "param_space",
+                    "search_mode",
+                    "max_combinations",
+                    "sort_metric",
+                ],
+                "walk_forward_fields": [
+                    "n_splits",
+                    "train_ratio",
+                    "anchored",
+                ],
+            },
+        },
+    )
+
+
+@router.get("/config/param-space-template", response_model=ApiResponse)
+async def get_backtest_param_space_template(
+    timeframe: str,
+    strategies: Optional[str] = None,
+) -> ApiResponse:
+    """Return a strategy-aware param_space template for optimize/WF jobs."""
+    requested = None
+    if strategies:
+        requested = [
+            item.strip()
+            for item in strategies.split(",")
+            if item.strip()
+        ]
+    return ApiResponse(
+        success=True,
+        data=_build_param_space_template(timeframe, requested),
+    )
 
 
 @router.get("/jobs", response_model=ApiResponse)
@@ -384,30 +838,13 @@ def _execute_backtest(run_id: str, request: BacktestRunRequest) -> None:
     components: Optional[Dict[str, Any]] = None
     try:
         from src.backtesting.engine import BacktestEngine
-        from src.backtesting.models import BacktestConfig
 
-        config = BacktestConfig(
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            start_time=datetime.fromisoformat(request.start_time).replace(
-                tzinfo=timezone.utc
-            ),
-            end_time=datetime.fromisoformat(request.end_time).replace(
-                tzinfo=timezone.utc
-            ),
-            strategies=request.strategies,
-            initial_balance=request.initial_balance,
-            min_confidence=request.min_confidence,
-            warmup_bars=request.warmup_bars,
-            strategy_params=request.strategy_params,
-            filters_enabled=request.filters_enabled,
-            filter_allowed_sessions=request.filter_allowed_sessions,
-            filter_session_transition_cooldown=request.filter_session_transition_cooldown,
-            filter_volatility_spike_multiplier=request.filter_volatility_spike_multiplier,
-        )
+        config = _build_backtest_config(request)
 
         components = _build_api_components(
             strategy_params=request.strategy_params or None,
+            strategy_params_per_tf=request.strategy_params_per_tf or None,
+            regime_affinity_overrides=request.regime_affinity_overrides or None,
         )
         engine = BacktestEngine(
             config=config,
@@ -442,34 +879,26 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
     _start_job(run_id)
     components: Optional[Dict[str, Any]] = None
     try:
-        from src.backtesting.models import BacktestConfig, ParameterSpace
+        from src.backtesting.models import ParameterSpace
         from src.backtesting.optimizer import (
             ParameterOptimizer,
             build_signal_module_with_overrides,
         )
 
-        config = BacktestConfig(
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            start_time=datetime.fromisoformat(request.start_time).replace(
-                tzinfo=timezone.utc
-            ),
-            end_time=datetime.fromisoformat(request.end_time).replace(
-                tzinfo=timezone.utc
-            ),
-            strategies=request.strategies,
-            initial_balance=request.initial_balance,
-            min_confidence=request.min_confidence,
-            warmup_bars=request.warmup_bars,
-        )
+        optimizer_settings = _resolve_optimizer_settings(request)
+        config = _build_backtest_config(request)
 
         param_space = ParameterSpace(
             strategy_params=request.param_space,
-            search_mode=request.search_mode,
-            max_combinations=request.max_combinations,
+            search_mode=optimizer_settings["search_mode"],
+            max_combinations=optimizer_settings["max_combinations"],
         )
 
-        components = _build_api_components()
+        components = _build_api_components(
+            strategy_params=request.strategy_params or None,
+            strategy_params_per_tf=request.strategy_params_per_tf or None,
+            regime_affinity_overrides=request.regime_affinity_overrides or None,
+        )
         base_module = components["signal_module"]
 
         def module_factory(params: Dict[str, Any]) -> Any:
@@ -483,7 +912,7 @@ def _execute_optimization(run_id: str, request: BacktestOptimizeRequest) -> None
             signal_module_factory=module_factory,
             regime_detector=components["regime_detector"],
             voting_engine=components.get("voting_engine"),
-            sort_metric=request.sort_metric,
+            sort_metric=optimizer_settings["sort_metric"],
         )
 
         results = optimizer.run()
@@ -511,29 +940,17 @@ def _execute_walk_forward(run_id: str, request: WalkForwardRequest) -> None:
     _start_job(run_id)
     components: Optional[Dict[str, Any]] = None
     try:
-        from src.backtesting.models import BacktestConfig, ParameterSpace
+        from src.backtesting.models import ParameterSpace
         from src.backtesting.optimizer import build_signal_module_with_overrides
         from src.backtesting.walk_forward import WalkForwardConfig, WalkForwardValidator
 
-        base_config = BacktestConfig(
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            start_time=datetime.fromisoformat(request.start_time).replace(
-                tzinfo=timezone.utc
-            ),
-            end_time=datetime.fromisoformat(request.end_time).replace(
-                tzinfo=timezone.utc
-            ),
-            strategies=request.strategies,
-            initial_balance=request.initial_balance,
-            min_confidence=request.min_confidence,
-            warmup_bars=request.warmup_bars,
-        )
+        optimizer_settings = _resolve_optimizer_settings(request)
+        base_config = _build_backtest_config(request)
 
         param_space = ParameterSpace(
             strategy_params=request.param_space,
-            search_mode=request.search_mode,
-            max_combinations=request.max_combinations,
+            search_mode=optimizer_settings["search_mode"],
+            max_combinations=optimizer_settings["max_combinations"],
         )
 
         wf_config = WalkForwardConfig(
@@ -543,11 +960,15 @@ def _execute_walk_forward(run_id: str, request: WalkForwardRequest) -> None:
             train_ratio=request.train_ratio,
             n_splits=request.n_splits,
             anchored=request.anchored,
-            optimization_metric=request.sort_metric,
+            optimization_metric=optimizer_settings["sort_metric"],
             param_space=param_space,
         )
 
-        components = _build_api_components()
+        components = _build_api_components(
+            strategy_params=request.strategy_params or None,
+            strategy_params_per_tf=request.strategy_params_per_tf or None,
+            regime_affinity_overrides=request.regime_affinity_overrides or None,
+        )
         base_module = components["signal_module"]
 
         def module_factory(params: Dict[str, Any]) -> Any:
@@ -707,11 +1128,17 @@ def _get_backtest_repo() -> Optional[Any]:
 
 def _build_api_components(
     strategy_params: Optional[Dict[str, Any]] = None,
+    strategy_params_per_tf: Optional[Dict[str, Dict[str, Any]]] = None,
+    regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
     """构建回测所需组件（委托给共享工厂）。"""
     from .component_factory import build_backtest_components
 
-    return build_backtest_components(strategy_params=strategy_params)
+    return build_backtest_components(
+        strategy_params=strategy_params,
+        strategy_params_per_tf=strategy_params_per_tf,
+        regime_affinity_overrides=regime_affinity_overrides,
+    )
 
 
 def _extract_metrics(result_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -762,13 +1189,21 @@ async def generate_recommendation(
             load_current_signal_config,
         )
 
-        current_params, current_affinities = load_current_signal_config()
+        wf_timeframe = getattr(
+            getattr(getattr(wf_result, "config", None), "base_config", None),
+            "timeframe",
+            None,
+        )
+        current_params, _, current_affinities = load_current_signal_config(
+            wf_timeframe
+        )
         engine = RecommendationEngine()
         rec = engine.generate(
             wf_result=wf_result,
             source_run_id=request.walk_forward_run_id,
             current_strategy_params=current_params,
             current_regime_affinities=current_affinities,
+            timeframe=wf_timeframe,
         )
 
         # 持久化

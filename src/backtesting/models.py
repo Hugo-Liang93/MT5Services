@@ -79,6 +79,8 @@ class BacktestConfig:
     slippage_points: float = 0.0
     # 参数覆盖（signal.ini [strategy_params] 格式）
     strategy_params: Dict[str, Any] = field(default_factory=dict)
+    # Per-TF 参数覆盖（signal.ini [strategy_params.<TF>] 格式）
+    strategy_params_per_tf: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     regime_affinity_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
     # 指标热身 bar 数量
     warmup_bars: int = 200
@@ -86,6 +88,16 @@ class BacktestConfig:
     contract_size: float = 100.0
     # 风险百分比
     risk_percent: float = 1.0
+    # 最小/最大下单手数（与实盘 sizing 约束一致）
+    min_volume: float = 0.01
+    max_volume: float = 1.0
+    # 单笔/单日/单品种手数与频率限制
+    max_volume_per_order: Optional[float] = None
+    max_volume_per_symbol: Optional[float] = None
+    max_volume_per_day: Optional[float] = None
+    daily_loss_limit_pct: Optional[float] = None
+    max_trades_per_day: Optional[int] = None
+    max_trades_per_hour: Optional[int] = None
 
     # ── Pending Entry 价格确认入场（复用实盘 pending_entry 纯逻辑）────────
     pending_entry_enabled: bool = False
@@ -285,7 +297,7 @@ class RecommendationStatus(str, Enum):
 class ParamChange:
     """单个参数变更。"""
 
-    section: str  # "strategy_params" | "regime_affinity.{strategy}"
+    section: str  # "strategy_params" | "strategy_params.{TF}" | "regime_affinity.{strategy}"
     key: str  # e.g. "supertrend__adx_threshold"
     old_value: Optional[float]  # None = 新增参数
     new_value: float

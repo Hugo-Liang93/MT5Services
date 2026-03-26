@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Deque, Dict, List, Optional, Tuple
 
 from src.clients.mt5_market import OHLC
 from src.trading.position_rules import (
@@ -71,6 +72,14 @@ class PortfolioTracker:
         commission_per_lot: float = 0.0,
         slippage_points: float = 0.0,
         contract_size: float = 100.0,
+        min_volume: float = 0.01,
+        max_volume: float = 1.0,
+        max_volume_per_order: Optional[float] = None,
+        max_volume_per_symbol: Optional[float] = None,
+        max_volume_per_day: Optional[float] = None,
+        daily_loss_limit_pct: Optional[float] = None,
+        max_trades_per_day: Optional[int] = None,
+        max_trades_per_hour: Optional[int] = None,
         # breakeven / trailing（与实盘 PositionManager 相同参数）
         trailing_atr_multiplier: float = 1.0,
         breakeven_atr_threshold: float = 1.0,
@@ -86,6 +95,14 @@ class PortfolioTracker:
         self._commission_per_lot = commission_per_lot
         self._slippage_points = slippage_points
         self._contract_size = contract_size
+        self._min_volume = min_volume
+        self._max_volume = max_volume
+        self._max_volume_per_order = max_volume_per_order
+        self._max_volume_per_symbol = max_volume_per_symbol
+        self._max_volume_per_day = max_volume_per_day
+        self._daily_loss_limit_pct = daily_loss_limit_pct
+        self._max_trades_per_day = max_trades_per_day
+        self._max_trades_per_hour = max_trades_per_hour
         # breakeven / trailing 配置
         self._trailing_atr_multiplier = trailing_atr_multiplier
         self._breakeven_atr_threshold = breakeven_atr_threshold
@@ -99,6 +116,12 @@ class PortfolioTracker:
         self._closed_trades: List[TradeRecord] = []
         self._equity_curve: List[Tuple[datetime, float]] = []
         self._current_bar_index: int = 0
+        # O(1) 日内交易计数（key = date ISO string）
+        self._daily_trade_counts: Dict[str, int] = {}
+        # 滚动 1 小时交易时间戳窗口（deque 左侧自动淘汰，摊销 O(1)）
+        self._hourly_window: Deque[datetime] = deque()
+        self._daily_opened_volume: Dict[str, float] = {}
+        self._daily_start_equity: Dict[str, float] = {}
 
     @property
     def closed_trades(self) -> List[TradeRecord]:
@@ -121,7 +144,69 @@ class PortfolioTracker:
         """记录当前资金快照（含浮动盈亏）。"""
         floating_pnl = self._floating_pnl(bar.close)
         equity = self.current_balance + floating_pnl
+        self._ensure_day_start_equity(bar.time, equity)
         self._equity_curve.append((bar.time, equity))
+
+    def observe_bar(self, bar: OHLC) -> None:
+        """记录日初权益基线，供日损限制使用。"""
+        self._ensure_day_start_equity(
+            bar.time,
+            self.current_balance + self._floating_pnl(bar.open),
+        )
+
+    def can_open_position(
+        self,
+        bar: OHLC,
+        trade_params: TradeParameters,
+    ) -> tuple[bool, str]:
+        """检查开仓是否满足回测风控限制。"""
+        if len(self._open_positions) >= self._max_positions:
+            return False, "max_positions"
+
+        volume = float(trade_params.position_size)
+        if volume < self._min_volume:
+            return False, "min_volume"
+        if volume > self._max_volume:
+            return False, "max_volume"
+        if self._max_volume_per_order is not None and volume > self._max_volume_per_order:
+            return False, "max_volume_per_order"
+
+        open_volume = sum(pos.position_size for pos in self._open_positions)
+        if self._max_volume_per_symbol is not None and open_volume + volume > self._max_volume_per_symbol:
+            return False, "max_volume_per_symbol"
+
+        day_key = bar.time.date().isoformat()
+        day_opened_volume = self._daily_opened_volume.get(day_key, 0.0)
+        if self._max_volume_per_day is not None and day_opened_volume + volume > self._max_volume_per_day:
+            return False, "max_volume_per_day"
+
+        if self._max_trades_per_day is not None and self._max_trades_per_day > 0:
+            trades_today = self._daily_trade_counts.get(day_key, 0)
+            if trades_today >= self._max_trades_per_day:
+                return False, "max_trades_per_day"
+
+        if self._max_trades_per_hour is not None and self._max_trades_per_hour > 0:
+            hour_ago = bar.time - timedelta(hours=1)
+            # 修剪滑出 1 小时窗口的旧记录（摊销 O(1)）
+            while self._hourly_window and self._hourly_window[0] < hour_ago:
+                self._hourly_window.popleft()
+            if len(self._hourly_window) >= self._max_trades_per_hour:
+                return False, "max_trades_per_hour"
+
+        # _floating_pnl 只计算一次，避免重复遍历所有持仓
+        current_close_equity = self.current_balance + self._floating_pnl(bar.close)
+        self._ensure_day_start_equity(bar.time, current_close_equity)
+        start_equity = self._daily_start_equity.get(day_key)
+        if (
+            self._daily_loss_limit_pct is not None
+            and start_equity is not None
+            and start_equity > 0
+        ):
+            loss_pct = max(0.0, ((start_equity - current_close_equity) / start_equity) * 100.0)
+            if loss_pct >= self._daily_loss_limit_pct:
+                return False, "daily_loss_limit_pct"
+
+        return True, ""
 
     def open_position(
         self,
@@ -139,7 +224,8 @@ class PortfolioTracker:
         Returns:
             是否成功开仓。
         """
-        if len(self._open_positions) >= self._max_positions:
+        allowed, _ = self.can_open_position(bar, trade_params)
+        if not allowed:
             return False
 
         # 模拟滑点
@@ -170,11 +256,19 @@ class PortfolioTracker:
             lowest_price=entry_price if action == "sell" else None,
         )
         self._open_positions.append(pos)
+        day_key = bar.time.date().isoformat()
+        self._daily_trade_counts[day_key] = self._daily_trade_counts.get(day_key, 0) + 1
+        self._hourly_window.append(bar.time)
+        self._daily_opened_volume[day_key] = self._daily_opened_volume.get(day_key, 0.0) + trade_params.position_size
         # 交易事件自动记录资金快照（精确捕捉开仓时刻的资金变化）
         self._equity_curve.append(
             (bar.time, self.current_balance + self._floating_pnl(bar.close))
         )
         return True
+
+    def _ensure_day_start_equity(self, timestamp: datetime, equity: float) -> None:
+        day_key = timestamp.date().isoformat()
+        self._daily_start_equity.setdefault(day_key, equity)
 
     def check_exits(self, bar: OHLC, bar_index: int) -> List[TradeRecord]:
         """检查所有持仓的 SL/TP 是否触发。
