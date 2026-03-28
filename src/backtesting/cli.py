@@ -113,6 +113,14 @@ def cmd_run(args: argparse.Namespace) -> None:
         filter_volatility_spike_multiplier=ini_defaults.get(
             "filter_volatility_spike_multiplier", 2.5
         ),
+        regime_tp_trending=ini_defaults.get("regime_tp_trending", 1.20),
+        regime_tp_ranging=ini_defaults.get("regime_tp_ranging", 0.80),
+        regime_tp_breakout=ini_defaults.get("regime_tp_breakout", 1.10),
+        regime_tp_uncertain=ini_defaults.get("regime_tp_uncertain", 1.00),
+        regime_sl_trending=ini_defaults.get("regime_sl_trending", 1.00),
+        regime_sl_ranging=ini_defaults.get("regime_sl_ranging", 0.90),
+        regime_sl_breakout=ini_defaults.get("regime_sl_breakout", 1.10),
+        regime_sl_uncertain=ini_defaults.get("regime_sl_uncertain", 1.00),
     )
 
     components = _build_components(args)
@@ -145,11 +153,13 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_optimize(args: argparse.Namespace) -> None:
     """执行参数优化。"""
+    from .config import get_backtest_defaults
     from .models import BacktestConfig, ParameterSpace
     from .optimizer import ParameterOptimizer, build_signal_module_with_overrides
     from .report import format_optimization_summary
 
     strategies = args.strategies.split(",") if args.strategies else None
+    ini_defaults = get_backtest_defaults()
     config = BacktestConfig(
         symbol=args.symbol,
         timeframe=args.timeframe,
@@ -159,6 +169,19 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         initial_balance=args.balance,
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
+        commission_per_lot=ini_defaults.get("commission_per_lot", 0.0),
+        slippage_points=ini_defaults.get("slippage_points", 0.0),
+        contract_size=ini_defaults.get("contract_size", 100.0),
+        risk_percent=ini_defaults.get("risk_percent", 1.0),
+        max_positions=ini_defaults.get("max_positions", 3),
+        regime_tp_trending=ini_defaults.get("regime_tp_trending", 1.20),
+        regime_tp_ranging=ini_defaults.get("regime_tp_ranging", 0.80),
+        regime_tp_breakout=ini_defaults.get("regime_tp_breakout", 1.10),
+        regime_tp_uncertain=ini_defaults.get("regime_tp_uncertain", 1.00),
+        regime_sl_trending=ini_defaults.get("regime_sl_trending", 1.00),
+        regime_sl_ranging=ini_defaults.get("regime_sl_ranging", 0.90),
+        regime_sl_breakout=ini_defaults.get("regime_sl_breakout", 1.10),
+        regime_sl_uncertain=ini_defaults.get("regime_sl_uncertain", 1.00),
     )
 
     # 解析参数空间
@@ -202,6 +225,76 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         print(format_optimization_summary(results))
     finally:
         _cleanup_components(components)
+
+
+def cmd_compare_tf(args: argparse.Namespace) -> None:
+    """按多个 timeframe 批量运行基线回测并输出对比报告。"""
+    from .config import get_backtest_defaults
+    from .engine import BacktestEngine
+    from .models import BacktestConfig
+    from .report import format_timeframe_comparison
+
+    strategies = args.strategies.split(",") if args.strategies else None
+    timeframes = [tf.strip().upper() for tf in args.timeframes.split(",") if tf.strip()]
+    if not timeframes:
+        raise ValueError("timeframes 不能为空，例如: M1,M5,M15,H1")
+
+    ini_defaults = get_backtest_defaults()
+    results_by_tf: Dict[str, Any] = {}
+    for timeframe in timeframes:
+        components = _build_components(args)
+        try:
+            config = BacktestConfig(
+                symbol=args.symbol,
+                timeframe=timeframe,
+                start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
+                end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
+                strategies=strategies,
+                initial_balance=args.balance,
+                min_confidence=args.min_confidence,
+                warmup_bars=args.warmup,
+                filters_enabled=not args.no_filters,
+                commission_per_lot=ini_defaults.get("commission_per_lot", 0.0),
+                slippage_points=ini_defaults.get("slippage_points", 0.0),
+                contract_size=ini_defaults.get("contract_size", 100.0),
+                risk_percent=ini_defaults.get("risk_percent", 1.0),
+                max_positions=ini_defaults.get("max_positions", 3),
+                max_signal_evaluations=ini_defaults.get("max_signal_evaluations", 50000),
+                filter_session_enabled=ini_defaults.get("filter_session_enabled", True),
+                filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,newyork"),
+                filter_session_transition_enabled=ini_defaults.get(
+                    "filter_session_transition_enabled", True
+                ),
+                filter_session_transition_cooldown=ini_defaults.get(
+                    "filter_session_transition_cooldown", 15
+                ),
+                filter_volatility_enabled=ini_defaults.get("filter_volatility_enabled", True),
+                filter_volatility_spike_multiplier=ini_defaults.get(
+                    "filter_volatility_spike_multiplier", 2.5
+                ),
+                regime_tp_trending=ini_defaults.get("regime_tp_trending", 1.20),
+                regime_tp_ranging=ini_defaults.get("regime_tp_ranging", 0.80),
+                regime_tp_breakout=ini_defaults.get("regime_tp_breakout", 1.10),
+                regime_tp_uncertain=ini_defaults.get("regime_tp_uncertain", 1.00),
+                regime_sl_trending=ini_defaults.get("regime_sl_trending", 1.00),
+                regime_sl_ranging=ini_defaults.get("regime_sl_ranging", 0.90),
+                regime_sl_breakout=ini_defaults.get("regime_sl_breakout", 1.10),
+                regime_sl_uncertain=ini_defaults.get("regime_sl_uncertain", 1.00),
+            )
+            engine = BacktestEngine(
+                config=config,
+                data_loader=components["data_loader"],
+                signal_module=components["signal_module"],
+                indicator_pipeline=components["pipeline"],
+                regime_detector=components["regime_detector"],
+                voting_engine=components.get("voting_engine"),
+            )
+            logger.info("Running baseline backtest for timeframe=%s", timeframe)
+            result = engine.run()
+            results_by_tf[timeframe] = result
+        finally:
+            _cleanup_components(components)
+    print(format_timeframe_comparison(results_by_tf))
 
 
 def main() -> None:
@@ -250,6 +343,18 @@ def main() -> None:
         help="排序指标 (默认: sharpe_ratio)",
     )
 
+    # compare-tf 子命令
+    cmp_parser = subparsers.add_parser("compare-tf", help="按多个 timeframe 运行基线对比")
+    cmp_parser.add_argument("--symbol", required=True, help="交易品种 (如 XAUUSD)")
+    cmp_parser.add_argument("--timeframes", required=True, help="时间框架列表 (如 M1,M5,M15,H1)")
+    cmp_parser.add_argument("--start", required=True, help="起始日期 (YYYY-MM-DD)")
+    cmp_parser.add_argument("--end", required=True, help="结束日期 (YYYY-MM-DD)")
+    cmp_parser.add_argument("--strategies", type=str, default=None, help="策略列表 (逗号分隔)")
+    cmp_parser.add_argument("--balance", type=float, default=10000.0, help="初始资金 (默认: 10000)")
+    cmp_parser.add_argument("--min-confidence", type=float, default=0.55, help="最低开仓置信度")
+    cmp_parser.add_argument("--warmup", type=int, default=200, help="热身 bar 数量")
+    cmp_parser.add_argument("--no-filters", action="store_true", help="禁用过滤器模拟")
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -261,6 +366,8 @@ def main() -> None:
         cmd_run(args)
     elif args.command == "optimize":
         cmd_optimize(args)
+    elif args.command == "compare-tf":
+        cmd_compare_tf(args)
     else:
         parser.print_help()
         sys.exit(1)

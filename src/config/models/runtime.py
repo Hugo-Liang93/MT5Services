@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Literal
 
 from pydantic import BaseModel, Field
 
@@ -164,9 +164,10 @@ class RiskConfig(BaseModel):
     max_pending_orders_per_symbol: int | None = None
     max_volume_per_order: float | None = None
     max_volume_per_symbol: float | None = None
+    max_net_lots_per_symbol: float | None = None
     daily_loss_limit_pct: float | None = None
-    require_sl_for_market_orders: bool = True
-    require_tp_or_sl_for_market_orders: bool = False
+    # 市价单保护模式：off / sl / sl_or_tp
+    market_order_protection: Literal["off", "sl", "sl_or_tp"] = "sl"
     # 保证金安全系数（1.2 = 要求可用保证金 >= 预估保证金 × 1.2）
     margin_safety_factor: float = 1.2
     # 交易频率限制（None 或 0 = 不限制）

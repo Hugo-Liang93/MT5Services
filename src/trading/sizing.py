@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from src.signals.evaluation.regime import RegimeType
 
 TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
     "M5": {"sl_atr_mult": 1.5, "tp_atr_mult": 2.8},
@@ -26,7 +27,6 @@ TIMEFRAME_RISK_MULTIPLIER: dict[str, float] = {
     "D1": 1.50,   # D1 大势层，允许更大仓位
 }
 
-
 @dataclass(frozen=True)
 class TradeParameters:
     """Computed trade parameters based on ATR and risk management."""
@@ -39,6 +39,18 @@ class TradeParameters:
     atr_value: float
     sl_distance: float
     tp_distance: float
+
+
+@dataclass(frozen=True)
+class RegimeSizing:
+    tp_trending: float = 1.20
+    tp_ranging: float = 0.80
+    tp_breakout: float = 1.10
+    tp_uncertain: float = 1.00
+    sl_trending: float = 1.00
+    sl_ranging: float = 0.90
+    sl_breakout: float = 1.10
+    sl_uncertain: float = 1.00
 
 
 def compute_trade_params(
@@ -55,6 +67,8 @@ def compute_trade_params(
     max_volume: float = 1.0,
     contract_size: float = 100.0,
     timeframe_risk_overrides: Optional[Dict[str, float]] = None,
+    regime: Optional[str] = None,
+    regime_sizing: Optional[RegimeSizing] = None,
 ) -> TradeParameters:
     """Compute SL, TP, and position size for a trade based on ATR.
 
@@ -83,6 +97,12 @@ def compute_trade_params(
         default_sl=sl_atr_multiplier,
         default_tp=tp_atr_multiplier,
     )
+    regime_sl_multiplier, regime_tp_multiplier = resolve_regime_sl_tp_multiplier(
+        regime,
+        regime_sizing=regime_sizing,
+    )
+    resolved_sl_multiplier *= regime_sl_multiplier
+    resolved_tp_multiplier *= regime_tp_multiplier
     sl_distance = atr_value * resolved_sl_multiplier
     tp_distance = atr_value * resolved_tp_multiplier
 
@@ -182,3 +202,26 @@ def resolve_timeframe_sl_tp(
         float(profile.get("sl_atr_mult", default_sl)),
         float(profile.get("tp_atr_mult", default_tp)),
     )
+
+
+def resolve_regime_sl_tp_multiplier(
+    regime: Optional[str],
+    *,
+    regime_sizing: Optional[RegimeSizing] = None,
+) -> tuple[float, float]:
+    """根据行情 Regime 返回 SL/TP 缩放倍数（默认 1.0, 1.0）。"""
+    if not regime:
+        return 1.0, 1.0
+    sizing = regime_sizing or RegimeSizing()
+    key = str(regime).strip().lower()
+    if key.startswith("regimetype."):
+        key = key.split(".", 1)[1]
+    if key == RegimeType.TRENDING.value:
+        return float(sizing.sl_trending), float(sizing.tp_trending)
+    if key == RegimeType.RANGING.value:
+        return float(sizing.sl_ranging), float(sizing.tp_ranging)
+    if key == RegimeType.BREAKOUT.value:
+        return float(sizing.sl_breakout), float(sizing.tp_breakout)
+    if key == RegimeType.UNCERTAIN.value:
+        return float(sizing.sl_uncertain), float(sizing.tp_uncertain)
+    return 1.0, 1.0

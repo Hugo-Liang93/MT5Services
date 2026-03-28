@@ -56,9 +56,10 @@ class DummyCalendar:
 
 
 class DummyPosition:
-    def __init__(self, symbol: str, volume: float) -> None:
+    def __init__(self, symbol: str, volume: float, type: int = 0) -> None:
         self.symbol = symbol
         self.volume = volume
+        self.type = type
 
 
 class DummyOrder:
@@ -102,7 +103,7 @@ def test_warns_when_calendar_health_is_degraded():
     service = PreTradeRiskService(
         economic_calendar_service=DummyCalendar(stale=True, provider_failures=3),
         settings=_settings(trade_guard_mode="warn_only", trade_guard_calendar_health_mode="warn_only"),
-        risk_settings=RiskConfig(require_sl_for_market_orders=False),
+        risk_settings=RiskConfig(market_order_protection="off"),
     )
 
     result = service.assess_trade(symbol="XAUUSD")
@@ -142,7 +143,7 @@ def test_allows_healthy_calendar_without_database_driver():
     service = PreTradeRiskService(
         economic_calendar_service=DummyCalendar(),
         settings=_settings(),
-        risk_settings=RiskConfig(require_sl_for_market_orders=False),
+        risk_settings=RiskConfig(market_order_protection="off"),
     )
 
     result = service.assess_trade(symbol="XAUUSD")
@@ -185,19 +186,40 @@ def test_blocks_when_symbol_volume_limit_would_be_exceeded():
     assert any(check["name"] == "max_volume_per_symbol" for check in result["checks"])
 
 
+def test_blocks_when_same_direction_net_lots_limit_would_be_exceeded():
+    service = PreTradeRiskService(
+        economic_calendar_service=DummyCalendar(),
+        account_service=DummyAccountService(
+            positions=[
+                DummyPosition("XAUUSD", 0.20, type=0),
+                DummyPosition("XAUUSD", 0.08, type=0),
+                DummyPosition("XAUUSD", 0.10, type=1),
+            ],
+        ),
+        settings=_settings(),
+        risk_settings=RiskConfig(max_net_lots_per_symbol=0.30),
+    )
+
+    result = service.assess_trade(symbol="XAUUSD", volume=0.05, side="buy")
+
+    assert result["verdict"] == "block"
+    assert result["blocked"] is True
+    assert any(check["name"] == "max_net_lots_per_symbol" for check in result["checks"])
+
+
 def test_blocks_when_protection_is_required_but_missing():
     service = PreTradeRiskService(
         economic_calendar_service=DummyCalendar(),
         account_service=DummyAccountService(),
         settings=_settings(),
-        risk_settings=RiskConfig(require_tp_or_sl_for_market_orders=True),
+        risk_settings=RiskConfig(market_order_protection="sl_or_tp"),
     )
 
     result = service.assess_trade(symbol="XAUUSD", volume=0.2, side="buy")
 
     assert result["verdict"] == "block"
     assert result["blocked"] is True
-    assert any(check["name"] == "require_tp_or_sl_for_market_orders" for check in result["checks"])
+    assert any(check["name"] == "market_order_protection" for check in result["checks"])
 
 
 def test_blocks_when_trade_is_outside_allowed_sessions():
@@ -252,7 +274,7 @@ def test_warns_when_buying_against_new_york_open_downside_expansion():
         economic_calendar_service=DummyCalendar(),
         account_service=DummyAccountService(),
         settings=_settings(),
-        risk_settings=RiskConfig(require_sl_for_market_orders=False),
+        risk_settings=RiskConfig(market_order_protection="off"),
     )
 
     result = service.assess_trade(

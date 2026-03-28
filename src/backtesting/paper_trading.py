@@ -20,7 +20,7 @@ from src.clients.mt5_market import OHLC
 from src.market.service import MarketDataService
 from src.signals.models import SignalEvent
 from src.signals.service import SignalModule
-from src.trading.sizing import compute_trade_params, extract_atr_from_indicators
+from src.trading.sizing import RegimeSizing, compute_trade_params, extract_atr_from_indicators
 
 from .metrics import compute_metrics
 from .models import BacktestMetrics, TradeRecord
@@ -44,6 +44,14 @@ class PaperTradingConfig:
     min_confidence: float = 0.55
     end_of_day_close_enabled: bool = False
     end_of_day_close_hour_utc: int = 21
+    regime_tp_trending: float = 1.20
+    regime_tp_ranging: float = 0.80
+    regime_tp_breakout: float = 1.10
+    regime_tp_uncertain: float = 1.00
+    regime_sl_trending: float = 1.00
+    regime_sl_ranging: float = 0.90
+    regime_sl_breakout: float = 1.10
+    regime_sl_uncertain: float = 1.00
 
 
 class PaperTradingBridge:
@@ -249,6 +257,21 @@ class PaperTradingBridge:
                 timeframe=event.timeframe,
                 risk_percent=self._config.risk_percent,
                 contract_size=self._config.contract_size,
+                regime=str(
+                    event.metadata.get("regime")
+                    or event.metadata.get("_regime")
+                    or "unknown"
+                ),
+                regime_sizing=RegimeSizing(
+                    tp_trending=self._config.regime_tp_trending,
+                    tp_ranging=self._config.regime_tp_ranging,
+                    tp_breakout=self._config.regime_tp_breakout,
+                    tp_uncertain=self._config.regime_tp_uncertain,
+                    sl_trending=self._config.regime_sl_trending,
+                    sl_ranging=self._config.regime_sl_ranging,
+                    sl_breakout=self._config.regime_sl_breakout,
+                    sl_uncertain=self._config.regime_sl_uncertain,
+                ),
             )
 
             # 构造模拟 bar 用于 PortfolioTracker

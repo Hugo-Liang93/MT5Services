@@ -131,6 +131,14 @@ class BacktestRequestBase(BaseModel):
     daily_loss_limit_pct: Optional[float] = None
     max_trades_per_day: Optional[int] = None
     max_trades_per_hour: Optional[int] = None
+    regime_tp_trending: Optional[float] = None
+    regime_tp_ranging: Optional[float] = None
+    regime_tp_breakout: Optional[float] = None
+    regime_tp_uncertain: Optional[float] = None
+    regime_sl_trending: Optional[float] = None
+    regime_sl_ranging: Optional[float] = None
+    regime_sl_breakout: Optional[float] = None
+    regime_sl_uncertain: Optional[float] = None
 
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
     strategy_params_per_tf: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -216,6 +224,14 @@ _CONFIG_OVERRIDE_FIELDS = (
     "daily_loss_limit_pct",
     "max_trades_per_day",
     "max_trades_per_hour",
+    "regime_tp_trending",
+    "regime_tp_ranging",
+    "regime_tp_breakout",
+    "regime_tp_uncertain",
+    "regime_sl_trending",
+    "regime_sl_ranging",
+    "regime_sl_breakout",
+    "regime_sl_uncertain",
     "pending_entry_enabled",
     "pending_entry_pullback_atr_factor",
     "pending_entry_chase_atr_factor",

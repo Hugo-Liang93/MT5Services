@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 
 from src.trading.sizing import (
+    RegimeSizing,
     TIMEFRAME_RISK_MULTIPLIER,
     TradeParameters,
     compute_trade_params,
+    resolve_regime_sl_tp_multiplier,
     resolve_timeframe_risk_multiplier,
     resolve_timeframe_sl_tp,
 )
@@ -162,3 +164,38 @@ class TestTimeframeRiskOverrides:
         assert resolve_timeframe_risk_multiplier("M1", overrides={"M1": 0.80}) == 0.80
         # Fallback to default when override doesn't have the key
         assert resolve_timeframe_risk_multiplier("H1", overrides={"M1": 0.80}) == 1.20
+
+
+class TestRegimeAwareSizing:
+    BASE_ARGS = dict(
+        action="buy",
+        current_price=3000.0,
+        atr_value=2.0,
+        account_balance=10000.0,
+        risk_percent=1.0,
+        contract_size=100.0,
+        timeframe="M15",
+    )
+
+    def test_resolve_regime_multiplier_defaults(self):
+        sl, tp = resolve_regime_sl_tp_multiplier("trending")
+        assert sl == 1.0
+        assert tp == 1.2
+
+    def test_ranging_has_tighter_tp_and_sl(self):
+        base = compute_trade_params(**self.BASE_ARGS, regime="uncertain")
+        ranging = compute_trade_params(**self.BASE_ARGS, regime="ranging")
+        assert ranging.tp_distance < base.tp_distance
+        assert ranging.sl_distance < base.sl_distance
+
+    def test_breakout_has_wider_tp_and_sl(self):
+        base = compute_trade_params(**self.BASE_ARGS, regime="uncertain")
+        breakout = compute_trade_params(**self.BASE_ARGS, regime="breakout")
+        assert breakout.tp_distance > base.tp_distance
+        assert breakout.sl_distance > base.sl_distance
+
+    def test_custom_regime_sizing_object_is_applied(self):
+        custom = RegimeSizing(tp_trending=1.5, sl_trending=0.8)
+        params = compute_trade_params(**self.BASE_ARGS, regime="trending", regime_sizing=custom)
+        assert params.tp_distance > 6.0  # M15 默认 tp=3.0, atr=2.0 → 6.0
+        assert params.sl_distance < 3.0  # M15 默认 sl=1.5,atr=2.0 → 3.0

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from src.signals.evaluation.performance import StrategyPerformanceTracker
 
 from src.trading.sizing import (
+    RegimeSizing,
     TradeParameters,
     compute_trade_params,
     extract_atr_from_indicators,
@@ -66,6 +67,7 @@ class ExecutorConfig:
     # T-3: 自动半开恢复：熔断后等待 N 分钟再自动尝试
     circuit_auto_reset_minutes: int = 30
     max_spread_to_stop_ratio: float = 0.33
+    regime_sizing: RegimeSizing = field(default_factory=RegimeSizing)
 
 
 class TradeExecutor:
@@ -505,6 +507,12 @@ class TradeExecutor:
             max_volume=self.config.max_volume,
             contract_size=contract_size,
             timeframe_risk_overrides=self.config.timeframe_risk_multipliers or None,
+            regime=str(
+                event.metadata.get("regime")
+                or event.metadata.get("_regime")
+                or ""
+            ),
+            regime_sizing=self.config.regime_sizing,
         )
 
     def _get_account_balance(self) -> float | None:
