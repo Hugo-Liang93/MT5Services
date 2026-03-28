@@ -185,6 +185,7 @@ def get_signal_config() -> SignalConfig:
 
     # ── Regime 检测阈值 ──────────────────────────────────────────────────
     regime_detector_section = dict(merged.get("regime_detector", {}))
+    regime_sizing_section = dict(merged.get("regime_sizing", {}))
 
     # ── 策略级可调参数 [strategy_params] + [strategy_params.<TF>] ─────────
     strategy_params_section = dict(merged.get("strategy_params", {}))
@@ -280,6 +281,10 @@ def get_signal_config() -> SignalConfig:
         **{
             f"regime_{key}": value
             for key, value in regime_detector_section.items()
+        },
+        **{
+            f"regime_{key}": value
+            for key, value in regime_sizing_section.items()
         },
         "strategy_params": strategy_params,
         "strategy_params_per_tf": strategy_params_per_tf,

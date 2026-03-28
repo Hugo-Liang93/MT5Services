@@ -148,6 +148,35 @@ class AccountSnapshotRule(RiskRule):
                     )
                 )
 
+        if settings.max_net_lots_per_symbol is not None:
+            intent_side = str(context.intent.side or "").strip().lower()
+            if intent_side in {"buy", "sell"}:
+                same_side_volume = 0.0
+                for position in symbol_positions:
+                    # 单品种 MT5 持仓方向：type 0=buy, 1=sell
+                    pos_type = int(getattr(position, "type", -1))
+                    if (intent_side == "buy" and pos_type == 0) or (
+                        intent_side == "sell" and pos_type == 1
+                    ):
+                        same_side_volume += float(getattr(position, "volume", 0.0) or 0.0)
+                projected_net_lots = same_side_volume + float(context.intent.volume or 0.0)
+                if projected_net_lots > settings.max_net_lots_per_symbol:
+                    checks.append(
+                        RiskCheckResult(
+                            name="max_net_lots_per_symbol",
+                            verdict="block",
+                            reason="Projected same-direction net lots exceed configured limit",
+                            details={
+                                "symbol": context.intent.symbol,
+                                "side": intent_side,
+                                "current_same_side_lots": round(same_side_volume, 4),
+                                "requested_volume": context.intent.volume,
+                                "projected_net_lots": round(projected_net_lots, 4),
+                                "limit": settings.max_net_lots_per_symbol,
+                            },
+                        )
+                    )
+
         return checks
 
 
@@ -161,27 +190,31 @@ class ProtectionRule(RiskRule):
             return []
 
         checks: List[RiskCheckResult] = []
-        if context.risk_settings.require_sl_for_market_orders and context.intent.sl is None:
+        mode = str(context.risk_settings.market_order_protection or "off").strip().lower()
+        if mode == "off":
+            return checks
+
+        if mode == "sl" and context.intent.sl is None:
             checks.append(
                 RiskCheckResult(
-                    name="require_sl_for_market_orders",
+                    name="market_order_protection",
                     verdict="block",
                     reason="Stop loss is required for market orders",
-                    details={"symbol": context.intent.symbol},
+                    details={"symbol": context.intent.symbol, "mode": mode},
                 )
             )
 
         if (
-            context.risk_settings.require_tp_or_sl_for_market_orders
+            mode == "sl_or_tp"
             and context.intent.sl is None
             and context.intent.tp is None
         ):
             checks.append(
                 RiskCheckResult(
-                    name="require_tp_or_sl_for_market_orders",
+                    name="market_order_protection",
                     verdict="block",
                     reason="At least one protective exit is required for market orders",
-                    details={"symbol": context.intent.symbol},
+                    details={"symbol": context.intent.symbol, "mode": mode},
                 )
             )
         return checks

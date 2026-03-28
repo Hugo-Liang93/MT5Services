@@ -196,6 +196,37 @@ def format_optimization_summary(results: List[BacktestResult]) -> str:
     return "\n".join(lines)
 
 
+def format_timeframe_comparison(results_by_tf: Dict[str, BacktestResult]) -> str:
+    """按 timeframe 输出回测核心指标对比表。"""
+    if not results_by_tf:
+        return "无可比较的 timeframe 结果。"
+    rows = sorted(results_by_tf.items(), key=lambda kv: kv[0])
+    lines = [
+        "",
+        f"{'=' * 92}",
+        "  Timeframe 基线对比",
+        f"{'=' * 92}",
+        f"  {'TF':<6} {'Trades':>8} {'Win%':>8} {'PnL':>12} {'Sharpe':>9} {'PF':>8} {'MaxDD%':>9}",
+        f"{'─' * 92}",
+    ]
+    for tf, result in rows:
+        m = result.metrics
+        lines.append(
+            f"  {tf:<6} {m.total_trades:>8} {m.win_rate * 100:>7.1f}% "
+            f"{m.total_pnl:>+11.2f} {m.sharpe_ratio:>8.4f} "
+            f"{m.profit_factor:>7.3f} {m.max_drawdown * 100:>8.2f}%"
+        )
+    best = max(rows, key=lambda kv: kv[1].metrics.sharpe_ratio)
+    lines.append(f"{'─' * 92}")
+    lines.append(
+        f"  最佳 Sharpe: {best[0]} ({best[1].metrics.sharpe_ratio:.4f}), "
+        f"PnL={best[1].metrics.total_pnl:+.2f}, Win={best[1].metrics.win_rate * 100:.1f}%"
+    )
+    lines.append(f"{'=' * 92}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def result_to_json(result: BacktestResult) -> str:
     """将回测结果序列化为 JSON。"""
     import math

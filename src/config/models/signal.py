@@ -133,6 +133,14 @@ class SignalConfig(BaseModel):
     regime_adx_trending_threshold: float = 23.0
     regime_adx_ranging_threshold: float = 18.0
     regime_bb_tight_pct: float = 0.008
+    regime_tp_trending: float = 1.20
+    regime_tp_ranging: float = 0.80
+    regime_tp_breakout: float = 1.10
+    regime_tp_uncertain: float = 1.00
+    regime_sl_trending: float = 1.00
+    regime_sl_ranging: float = 0.90
+    regime_sl_breakout: float = 1.10
+    regime_sl_uncertain: float = 1.00
 
     # ═══════════════════════════════════════════════════════════════
     # 策略级可调参数 — [strategy_params] section

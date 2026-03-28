@@ -22,7 +22,7 @@ from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
 from src.trading.pending_entry import PendingEntryConfig, compute_entry_zone
-from src.trading.sizing import compute_trade_params
+from src.trading.sizing import RegimeSizing, compute_trade_params
 
 from .data_loader import HistoricalDataLoader
 from .filters import BacktestFilterConfig, BacktestFilterSimulator
@@ -793,6 +793,17 @@ class BacktestEngine:
                 min_volume=self._config.min_volume,
                 max_volume=self._config.max_volume,
                 contract_size=self._config.contract_size,
+                regime=regime.value,
+                regime_sizing=RegimeSizing(
+                    tp_trending=self._config.regime_tp_trending,
+                    tp_ranging=self._config.regime_tp_ranging,
+                    tp_breakout=self._config.regime_tp_breakout,
+                    tp_uncertain=self._config.regime_tp_uncertain,
+                    sl_trending=self._config.regime_sl_trending,
+                    sl_ranging=self._config.regime_sl_ranging,
+                    sl_breakout=self._config.regime_sl_breakout,
+                    sl_uncertain=self._config.regime_sl_uncertain,
+                ),
             )
         except ValueError as e:
             logger.debug(

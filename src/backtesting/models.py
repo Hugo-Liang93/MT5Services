@@ -98,6 +98,15 @@ class BacktestConfig:
     daily_loss_limit_pct: Optional[float] = None
     max_trades_per_day: Optional[int] = None
     max_trades_per_hour: Optional[int] = None
+    # Regime 感知 SL/TP 缩放（与实盘 signal.ini [regime_sizing] 对齐）
+    regime_tp_trending: float = 1.20
+    regime_tp_ranging: float = 0.80
+    regime_tp_breakout: float = 1.10
+    regime_tp_uncertain: float = 1.00
+    regime_sl_trending: float = 1.00
+    regime_sl_ranging: float = 0.90
+    regime_sl_breakout: float = 1.10
+    regime_sl_uncertain: float = 1.00
 
     # ── Pending Entry 价格确认入场（复用实盘 pending_entry 纯逻辑）────────
     pending_entry_enabled: bool = False

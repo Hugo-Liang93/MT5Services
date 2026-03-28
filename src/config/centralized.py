@@ -292,6 +292,7 @@ class CentralizedConfig:
         for optional_float_key in (
             "max_volume_per_order",
             "max_volume_per_symbol",
+            "max_net_lots_per_symbol",
             "daily_loss_limit_pct",
         ):
             if str(risk_config.get(optional_float_key, "")).strip() == "":

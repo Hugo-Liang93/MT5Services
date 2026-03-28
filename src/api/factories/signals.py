@@ -32,6 +32,7 @@ from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.trading.position_manager import PositionManager
 from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
 from src.trading.pending_entry import PendingEntryConfig, PendingEntryManager
+from src.trading.sizing import RegimeSizing
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 
 
@@ -167,6 +168,16 @@ def build_executor_config(signal_config) -> ExecutorConfig:
         max_consecutive_failures=signal_config.max_consecutive_failures,
         circuit_auto_reset_minutes=signal_config.circuit_auto_reset_minutes,
         max_spread_to_stop_ratio=signal_config.max_spread_to_stop_ratio,
+        regime_sizing=RegimeSizing(
+            tp_trending=signal_config.regime_tp_trending,
+            tp_ranging=signal_config.regime_tp_ranging,
+            tp_breakout=signal_config.regime_tp_breakout,
+            tp_uncertain=signal_config.regime_tp_uncertain,
+            sl_trending=signal_config.regime_sl_trending,
+            sl_ranging=signal_config.regime_sl_ranging,
+            sl_breakout=signal_config.regime_sl_breakout,
+            sl_uncertain=signal_config.regime_sl_uncertain,
+        ),
     )
 
 

@@ -132,6 +132,14 @@ def get_backtest_defaults() -> Dict[str, Any]:
         signal_config = get_signal_config()
         result.setdefault("min_volume", float(signal_config.min_volume))
         result.setdefault("max_volume", float(signal_config.max_volume))
+        result.setdefault("regime_tp_trending", float(signal_config.regime_tp_trending))
+        result.setdefault("regime_tp_ranging", float(signal_config.regime_tp_ranging))
+        result.setdefault("regime_tp_breakout", float(signal_config.regime_tp_breakout))
+        result.setdefault("regime_tp_uncertain", float(signal_config.regime_tp_uncertain))
+        result.setdefault("regime_sl_trending", float(signal_config.regime_sl_trending))
+        result.setdefault("regime_sl_ranging", float(signal_config.regime_sl_ranging))
+        result.setdefault("regime_sl_breakout", float(signal_config.regime_sl_breakout))
+        result.setdefault("regime_sl_uncertain", float(signal_config.regime_sl_uncertain))
     except Exception:
         logger.debug("Failed to load signal config defaults for backtest", exc_info=True)
 
