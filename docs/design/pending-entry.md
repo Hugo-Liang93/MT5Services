@@ -528,9 +528,9 @@ PendingEntry 的结果（filled/expired/cancelled）可写入 StorageWriter 的 
 |------|---------|------|
 | `src/trading/pending_entry.py` | **新增** | PendingEntryManager + PendingEntry + PendingEntryConfig |
 | `src/trading/signal_executor.py` | **修改** | `_handle_confirmed()` 尾部分支 + `_build_pending_entry()` 方法 |
-| `src/api/factories/signals.py` | **修改** | 工厂函数创建 PendingEntryManager 并注入 TradeExecutor |
-| `src/api/lifespan.py` | **修改** | shutdown 中加入 PendingEntryManager.shutdown() |
-| `src/api/deps.py` | **修改** | `_TradingContainer` 新增 `pending_entry_manager` 字段 |
+| `src/app_runtime/factories/signals.py` | **修改** | 工厂函数创建 PendingEntryManager 并注入 TradeExecutor |
+| `src/app_runtime/runtime.py` | **修改** | shutdown 中加入 PendingEntryManager.shutdown() |
+| `src/app_runtime/container.py` | **修改** | `AppContainer` 新增 `pending_entry_manager` 字段 |
 | `src/config/signal.py` | **修改** | 解析 `[pending_entry]` section |
 | `config/signal.ini` | **修改** | 新增 `[pending_entry]` section（默认 `enabled = false`） |
 | `tests/trading/test_pending_entry.py` | **新增** | PendingEntryManager 单元测试 |

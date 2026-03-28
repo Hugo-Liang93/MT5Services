@@ -264,8 +264,13 @@ class PositionManager:
                 "end_of_day_close_minute_utc": self.end_of_day_close_minute_utc,
             },
             "last_end_of_day_close_date": self._last_end_of_day_close_date,
-            "margin_guard": self._margin_guard.status() if self._margin_guard is not None else None,
+            "margin_guard": self.margin_guard_status(),
         }
+
+    def margin_guard_status(self) -> Dict[str, Any] | None:
+        if self._margin_guard is None:
+            return None
+        return self._margin_guard.status()
 
     @staticmethod
     def _default_atr_from_position(price_open: float, stop_loss: float) -> float:

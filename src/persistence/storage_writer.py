@@ -32,6 +32,7 @@ class StorageWriter:
         self.db = db_writer
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._lock = threading.RLock()
         self.config_path = resolve_config_path(config_path or "storage.ini")
 
         # 动态管理的通道：name -> {queue, pending(deque), flush_interval, batch_size, write_fn, enabled_fn}
@@ -59,11 +60,16 @@ class StorageWriter:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
-        # 强制 flush 所有通道
-        for name in list(self._channels.keys()):
-            self._flush_if_due(name, self._channels[name], force=True)
         if self._thread:
-            self._thread.join(timeout=timeout)
+            thread = self._thread
+            thread.join(timeout=timeout)
+            self._thread = None
+            if thread.is_alive():
+                logger.warning("StorageWriter stop timed out; writer thread still alive")
+                return
+        with self._lock:
+            for name in list(self._channels.keys()):
+                self._flush_if_due(name, self._channels[name], force=True)
 
     # --- enqueue API ---
     def enqueue(self, channel: str, item: tuple) -> None:
@@ -95,16 +101,18 @@ class StorageWriter:
     # --- 内部线程 ---
     def _run(self) -> None:
         while not self._stop.is_set() or self._has_pending():
-            for name, ch in self._channels.items():
-                self._drain_queue(ch["queue"], ch["pending"], ch["batch_size"])
-                self._flush_if_due(name, ch)
+            with self._lock:
+                for name, ch in self._channels.items():
+                    self._drain_queue(ch["queue"], ch["pending"], ch["batch_size"])
+                    self._flush_if_due(name, ch)
             self._stop.wait(0.1)
 
     def _has_pending(self) -> bool:
-        for ch in self._channels.values():
-            if not ch["queue"].empty() or ch["pending"]:
-                return True
-        return False
+        with self._lock:
+            for ch in self._channels.values():
+                if not ch["queue"].empty() or ch["pending"]:
+                    return True
+            return False
 
     def _enqueue(self, name: str, item: tuple) -> None:
         """将数据加入队列，添加队列监控"""
@@ -186,57 +194,59 @@ class StorageWriter:
         overflow_policy: Optional[str] = None,
     ) -> None:
         enabled_fn = enabled or (lambda: True)
-        self._channels[name] = {
-            "type": channel_type,
-            "queue": queue.Queue(maxsize=maxsize),
-            "pending": deque(maxlen=pending_maxsize or maxsize * 2),
-            "flush_interval": flush_interval,
-            "batch_size": batch_size,
-            "write_fn": write_fn,
-            "enabled_fn": enabled_fn,
-            "overflow_policy": (overflow_policy or self.settings.queue_overflow_policy or "auto").strip().lower(),
-        }
-        self._last_flush[name] = time.time()
-        self._channel_stats[name] = {
-            "dropped_oldest": 0,
-            "dropped_newest": 0,
-            "blocked_puts": 0,
-            "full_errors": 0,
-        }
-        self._queue_log_state[name] = {
-            "usage_level": 0.0,
-            "last_full_warning_at": 0.0,
-        }
+        with self._lock:
+            self._channels[name] = {
+                "type": channel_type,
+                "queue": queue.Queue(maxsize=maxsize),
+                "pending": deque(maxlen=pending_maxsize or maxsize * 2),
+                "flush_interval": flush_interval,
+                "batch_size": batch_size,
+                "write_fn": write_fn,
+                "enabled_fn": enabled_fn,
+                "overflow_policy": (overflow_policy or self.settings.queue_overflow_policy or "auto").strip().lower(),
+            }
+            self._last_flush[name] = time.time()
+            self._channel_stats[name] = {
+                "dropped_oldest": 0,
+                "dropped_newest": 0,
+                "blocked_puts": 0,
+                "full_errors": 0,
+            }
+            self._queue_log_state[name] = {
+                "usage_level": 0.0,
+                "last_full_warning_at": 0.0,
+            }
 
     # --- 监控 ---
     def stats(self) -> dict:
         queues = {}
         summary = {"total": 0, "high": 0, "critical": 0, "full": 0}
-        for name, ch in self._channels.items():
-            q: queue.Queue = ch["queue"]  # type: ignore[assignment]
-            maxsize = q.maxsize
-            size = q.qsize()
-            utilization = (size / maxsize) if maxsize else 0.0
-            status = self._queue_status(utilization, size, maxsize)
-            queues[name] = {
-                "size": size,
-                "max": maxsize,
-                "pending": len(ch["pending"]),
-                "overflow_policy": ch["overflow_policy"],
-                "utilization_pct": round(utilization * 100, 1),
-                "status": status,
-                "drops_oldest": self._channel_stats[name]["dropped_oldest"],
-                "drops_newest": self._channel_stats[name]["dropped_newest"],
-                "blocked_puts": self._channel_stats[name]["blocked_puts"],
-                "full_errors": self._channel_stats[name]["full_errors"],
-            }
-            summary["total"] += 1
-            if status == "full":
-                summary["full"] += 1
-            elif status == "critical":
-                summary["critical"] += 1
-            elif status == "high":
-                summary["high"] += 1
+        with self._lock:
+            for name, ch in self._channels.items():
+                q: queue.Queue = ch["queue"]  # type: ignore[assignment]
+                maxsize = q.maxsize
+                size = q.qsize()
+                utilization = (size / maxsize) if maxsize else 0.0
+                status = self._queue_status(utilization, size, maxsize)
+                queues[name] = {
+                    "size": size,
+                    "max": maxsize,
+                    "pending": len(ch["pending"]),
+                    "overflow_policy": ch["overflow_policy"],
+                    "utilization_pct": round(utilization * 100, 1),
+                    "status": status,
+                    "drops_oldest": self._channel_stats[name]["dropped_oldest"],
+                    "drops_newest": self._channel_stats[name]["dropped_newest"],
+                    "blocked_puts": self._channel_stats[name]["blocked_puts"],
+                    "full_errors": self._channel_stats[name]["full_errors"],
+                }
+                summary["total"] += 1
+                if status == "full":
+                    summary["full"] += 1
+                elif status == "critical":
+                    summary["critical"] += 1
+                elif status == "high":
+                    summary["high"] += 1
         return {
             "queues": queues,
             "summary": summary,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
+import os
 import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
@@ -694,11 +695,32 @@ class NullEventStore:
 
 # ─── 单例 ──────────────────────────────────────────────────────────────────────
 
-_event_store_instance: Optional[LocalEventStore] = None
+_event_store_instances: Dict[str, LocalEventStore] = {}
 
 
 def get_event_store(db_path: str = "events.db") -> LocalEventStore:
-    global _event_store_instance
-    if _event_store_instance is None:
-        _event_store_instance = LocalEventStore(db_path)
-    return _event_store_instance
+    normalized_path = os.path.abspath(db_path)
+    instance = _event_store_instances.get(normalized_path)
+    if instance is None:
+        instance = LocalEventStore(normalized_path)
+        _event_store_instances[normalized_path] = instance
+    return instance
+
+
+def close_event_store(
+    *,
+    db_path: str | None = None,
+    instance: LocalEventStore | None = None,
+) -> None:
+    keys_to_close: list[str] = []
+    if instance is not None:
+        keys_to_close.extend(
+            key for key, value in _event_store_instances.items() if value is instance
+        )
+    elif db_path is not None:
+        keys_to_close.append(os.path.abspath(db_path))
+
+    for key in keys_to_close:
+        store = _event_store_instances.pop(key, None)
+        if store is not None:
+            store.close()

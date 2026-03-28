@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from src.config.file_manager import get_file_config_manager
 from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
@@ -517,7 +518,7 @@ def register_signal_hot_reload(
     market_structure_analyzer=None,
     performance_tracker=None,
     pending_entry_manager=None,
-) -> None:
+) -> Callable[[], None]:
     def _on_signal_config_change(filename: str) -> None:
         if filename != "signal.ini":
             return
@@ -544,4 +545,10 @@ def register_signal_hot_reload(
                 compression_reference_bars=signal_config.market_structure_reference_window_bars,
             )
 
-    get_file_config_manager().register_change_callback(_on_signal_config_change)
+    manager = get_file_config_manager()
+    manager.register_change_callback(_on_signal_config_change)
+
+    def _cleanup() -> None:
+        manager.unregister_change_callback(_on_signal_config_change)
+
+    return _cleanup

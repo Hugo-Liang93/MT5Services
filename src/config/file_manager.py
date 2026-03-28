@@ -193,6 +193,10 @@ class FileConfigManager:
         if callback not in self._change_callbacks:
             self._change_callbacks.append(callback)
 
+    def unregister_change_callback(self, callback: Callable[[str], None]) -> None:
+        if callback in self._change_callbacks:
+            self._change_callbacks.remove(callback)
+
     def _load_all_configs(self):
         for config_file in self.watcher._iter_config_files():
             self._load_config(config_file.name)
@@ -217,6 +221,16 @@ class FileConfigManager:
         with self._lock:
             self.configs[filename] = config
         logger.info("Loaded config: %s", filename)
+
+    def reload(self, filename: str, *, notify: bool = True) -> bool:
+        config_path = self.config_dir / filename
+        if not config_path.exists():
+            logger.warning("Config file not found: %s", filename)
+            return False
+        self._load_config(filename)
+        if notify:
+            self._notify_config_change(filename)
+        return True
 
     def get(self, filename: str, section: str, key: str, default: Any = None) -> Any:
         schema_key = f"{section}.{key}" if section else key
@@ -418,3 +432,11 @@ def get_file_config_manager(config_dir: str = "config") -> FileConfigManager:
     if _config_manager_instance is None:
         _config_manager_instance = FileConfigManager(config_dir)
     return _config_manager_instance
+
+
+def close_file_config_manager() -> None:
+    global _config_manager_instance
+    manager = _config_manager_instance
+    _config_manager_instance = None
+    if manager is not None:
+        manager.stop()

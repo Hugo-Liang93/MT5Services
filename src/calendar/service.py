@@ -154,7 +154,10 @@ class EconomicCalendarService:
         if job_type == "calendar_sync":
             return float(self.settings.calendar_sync_interval_seconds)
         if job_type == "near_term_sync":
-            return float(self.settings.near_term_refresh_interval_seconds or self.settings.refresh_interval_seconds)
+            value = self.settings.near_term_refresh_interval_seconds
+            return float(
+                value if value is not None else self.settings.refresh_interval_seconds
+            )
         if job_type == "release_watch":
             return float(self.settings.release_watch_interval_seconds)
         return 0.0

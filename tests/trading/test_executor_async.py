@@ -157,6 +157,18 @@ def test_shutdown_stops_worker() -> None:
     assert not thread.is_alive()
 
 
+def test_shutdown_drains_queued_confirmed_events() -> None:
+    module = DummyTradingModule(delay=0.05)
+    executor = _make_executor(module)
+
+    executor.on_signal_event(_build_event(signal_id="sig_shutdown"))
+    executor.shutdown(timeout=2.0)
+
+    assert len(module.calls) == 1
+    assert executor._exec_thread is None
+    assert executor._exec_queue.empty()
+
+
 def test_queue_overflow_drops_event() -> None:
     """When queue is full, on_signal_event retries once (3s) then drops."""
     module = DummyTradingModule(delay=5.0)  # very slow worker

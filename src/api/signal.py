@@ -11,8 +11,8 @@ from src.api.deps import (
     get_market_service,
     get_market_structure_analyzer,
     get_signal_quality_tracker,
+    get_runtime_read_model,
     get_trade_outcome_tracker,
-    get_position_manager,
     get_signal_runtime,
     get_signal_service,
 )
@@ -20,10 +20,10 @@ from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.market import MarketDataService
 from src.market_structure import MarketStructureAnalyzer
 from src.signals.strategies.htf_cache import HTFStateCache
+from src.readmodels.runtime import RuntimeReadModel
 from src.signals.orchestration import SignalRuntime
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
-from src.trading.position_manager import PositionManager
 from src.api.schemas import (
     ApiResponse,
     SignalDecisionModel,
@@ -40,20 +40,7 @@ router = APIRouter(prefix="/signals", tags=["signals"])
 def list_signal_strategies(
     service: SignalModule = Depends(get_signal_service),
 ) -> ApiResponse[list[Dict[str, Any]]]:
-    strategy_names = service.list_strategies()
-    strategies: list[Dict[str, Any]] = []
-    for name in strategy_names:
-        affinity_map = service.strategy_affinity_map(name)
-        strategies.append({
-            "name": name,
-            "category": service.strategy_category(name),
-            "preferred_scopes": list(service.strategy_scopes(name)),
-            "required_indicators": list(service.strategy_requirements(name)),
-            "regime_affinity": {
-                (k.value if hasattr(k, "value") else str(k)): v
-                for k, v in affinity_map.items()
-            },
-        })
+    strategies = service.strategy_catalog()
     return ApiResponse.success_response(
         data=strategies,
         metadata={"count": len(strategies)},
@@ -318,20 +305,23 @@ def signal_trace_events(
 
 @router.get("/runtime/status", response_model=ApiResponse[dict])
 def signal_runtime_status(
-    service: SignalRuntime = Depends(get_signal_runtime),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
-    return ApiResponse.success_response(data=service.status())
+    return ApiResponse.success_response(data=runtime_views.signal_runtime_summary())
 
 
-@router.get("/positions", response_model=ApiResponse[list])
+@router.get("/positions", response_model=ApiResponse[dict])
 def get_tracked_positions(
-    manager: PositionManager = Depends(get_position_manager),
-) -> ApiResponse[list]:
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
     """Return positions currently tracked by the signal position manager."""
-    positions = manager.active_positions()
+    payload = runtime_views.tracked_positions_payload(limit=100)
     return ApiResponse.success_response(
-        data=positions,
-        metadata={"count": len(positions), **manager.status()},
+        data=payload,
+        metadata={
+            "count": payload["count"],
+            "position_manager_status": payload["manager"]["status"],
+        },
     )
 
 

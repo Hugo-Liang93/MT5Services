@@ -379,7 +379,12 @@ def map_position_manager(
     if not running:
         return build_agent("position_manager", "disconnected", "持仓管理器未运行", alert_level="error")
 
-    total_pnl = sum(float(p.get("profit", 0) or 0) for p in positions)
+    total_pnl = sum(
+        float(
+            p.get("unrealized_pnl", p.get("profit", 0)) or 0
+        )
+        for p in positions
+    )
     metrics: dict[str, Any] = {
         "tracked_positions": pm_status.get("tracked_positions", 0),
         "reconcile_count": pm_status.get("reconcile_count", 0),

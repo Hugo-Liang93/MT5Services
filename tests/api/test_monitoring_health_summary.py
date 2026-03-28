@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from src.api.monitoring import (
-    TRADE_TRIGGER_METHODS,
-    _build_runtime_health_summary,
-    _build_runtime_trading_summary,
-    _build_storage_runtime_summary,
-)
+from src.api.monitoring import TRADE_TRIGGER_METHODS
+from src.readmodels.runtime import RuntimeReadModel
 
 
 def test_build_runtime_health_summary_includes_event_outcomes() -> None:
-    summary = _build_runtime_health_summary(
+    summary = RuntimeReadModel.build_indicator_summary(
         {
             "mode": "event_driven",
             "event_loop_running": True,
@@ -54,7 +50,7 @@ def test_build_runtime_health_summary_includes_event_outcomes() -> None:
 
 
 def test_build_runtime_health_summary_marks_critical_when_event_loop_stops() -> None:
-    summary = _build_runtime_health_summary(
+    summary = RuntimeReadModel.build_indicator_summary(
         {
             "event_loop_running": False,
             "failed_computations": 0,
@@ -66,7 +62,7 @@ def test_build_runtime_health_summary_marks_critical_when_event_loop_stops() -> 
 
 
 def test_build_storage_runtime_summary_marks_warning_for_high_queue() -> None:
-    summary = _build_storage_runtime_summary(
+    summary = RuntimeReadModel.build_storage_summary(
         {
             "threads": {"writer_alive": True, "ingest_alive": True},
             "summary": {"total": 4, "high": 1, "critical": 0, "full": 0},
@@ -83,13 +79,17 @@ def test_build_storage_runtime_summary_marks_warning_for_high_queue() -> None:
 
 
 def test_build_runtime_trading_summary_includes_risk_and_coordination_issues() -> None:
-    summary = _build_runtime_trading_summary(
+    summary = RuntimeReadModel.build_trading_summary(
         {
             "active_account_alias": "live",
             "accounts": [{"alias": "live"}],
             "summary": [{"status": "failed", "count": 2}],
             "recent": [],
-            "daily": {"failed": 2, "success": 0, "risk": {"blocked": 1, "warn": 0, "allow": 3}},
+            "daily": {
+                "failed": 2,
+                "success": 0,
+                "risk": {"blocked": 1, "warn": 0, "allow": 3},
+            },
         }
     )
 
@@ -98,13 +98,17 @@ def test_build_runtime_trading_summary_includes_risk_and_coordination_issues() -
     assert any("风控拦截" in msg for msg in summary["coordination_issues"])
 
 
-def test_trade_trigger_methods_include_signal_and_trade_paths() -> None:
+def test_trade_trigger_methods_are_versioned() -> None:
     method_ids = {item["id"] for item in TRADE_TRIGGER_METHODS}
-    signal_method = next(item for item in TRADE_TRIGGER_METHODS if item["id"] == "signal_api_execute_trade")
+    signal_method = next(
+        item
+        for item in TRADE_TRIGGER_METHODS
+        if item["id"] == "signal_api_execute_trade"
+    )
 
     assert "trade_api_direct" in method_ids
     assert "trade_api_dispatch" in method_ids
     assert "trade_api_batch" in method_ids
     assert "signal_api_execute_trade" in method_ids
     assert "signal_runtime_auto_trade" in method_ids
-    assert signal_method["path"] == "/trade/from-signal"
+    assert signal_method["path"] == "/v1/trade/from-signal"

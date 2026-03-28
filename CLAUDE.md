@@ -229,7 +229,7 @@ rsi_reversion__overbought = 75
 - `src/signals/strategies/tf_params.py` — `TFParamResolver` + `build_tf_param_resolver()`
 - `src/signals/strategies/base.py` — `get_tf_param()` 便利函数
 - `src/config/signal.py` — 加载 `[strategy_params.<TF>]` section
-- `src/api/factories/signals.py` — 构建 resolver 并注入策略实例
+- `src/app_runtime/factories/signals.py` — 构建 resolver 并注入策略实例
 
 **覆盖时机**：`build_signal_components()` 构建 resolver 后注入；回测通过 `apply_param_overrides(strategy_params_per_tf=...)` 热更新。
 
@@ -341,7 +341,7 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 
 | 等级 | 要求 | 事件类型 | 当前实现 |
 |------|------|---------|---------|
-| **L1 (Durable)** | 必须持久化，不可丢失 | confirmed bar close、trade signal（state_changed=true）、order execution、risk block | events.db SQLite + signal_events/trade_outcomes 表 + backpressure 重试 |
+| **L1 (Durable)** | 必须持久化，不可丢失 | confirmed bar close、trade signal（state_changed=true）、order execution、risk block | `runtime_data_dir/events.db` SQLite + signal_events/trade_outcomes 表 + backpressure 重试 |
 | **L2 (Recoverable)** | 允许丢失但可回放恢复 | indicator snapshot、reconcile 结果、OHLC 持久化 | StorageWriter 队列（block 策略）+ 定时 reconcile 兜底 |
 | **L3 (Best-effort)** | 最佳努力，丢失可接受 | intrabar preview、调试快照、部分监控指标 | put_nowait 队列满则丢弃 + 日志记录丢弃数 |
 
@@ -367,7 +367,7 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/signals/orchestration/vote_processor.py` | 投票处理：fusion/emit/process_voting（纯函数） |
 | `src/signals/orchestration/affinity.py` | Regime 亲和度计算 + 快速拒绝检查（纯函数） |
 | `src/indicators/delta_metrics.py` | N-bar 变化率计算（纯函数，可复用于 backtest） |
-| `src/api/factories/` | 各组件工厂函数（market/storage/trading/signals/indicators） |
+| `src/app_runtime/factories/` | 各组件工厂函数（market/storage/trading/signals/indicators） |
 | `src/api/__init__.py` | FastAPI app、CORS、API key 认证、路由注册 |
 | `src/api/trade_dispatcher.py` | TradeAPIDispatcher：统一交易 API 调度入口，减少路由层重复逻辑 |
 | `src/config/centralized.py` | Pydantic 配置模型（所有配置节） |
@@ -482,7 +482,7 @@ BackgroundIngestor._ingest_ohlc()
   │ 仅写入已收盘 bar
   ↓
  MarketDataService.set_ohlc_closed() + enqueue_ohlc_closed_event()
-  ↓ 事件写入 events.db（持久化，不丢失）
+  ↓ 事件写入 `runtime_data_dir/events.db`（持久化，不丢失）
   ↓ process_closed_bar_events_batch()
   ↓ _load_confirmed_bars() ← N 根完整收盘 K 线
   ↓ 全部 21 个已启用指标
@@ -500,7 +500,7 @@ intrabar 指标集合 = 所有满足以下条件的指标并集：
     "intrabar" ∈ strategy.preferred_scopes  AND  该指标 ∈ strategy.required_indicators
 ```
 
-**推导流程（`src/api/factories/signals.py` 启动时执行）**：
+**推导流程（`src/app_runtime/factories/signals.py` 启动时执行）**：
 ```
 SignalModule.intrabar_required_indicators()
   → 遍历所有策略，收集 preferred_scopes 含 "intrabar" 的策略的 required_indicators 并集
@@ -1314,7 +1314,7 @@ from src.config import get_trading_config, get_api_config, get_db_config
 
 向系统添加新服务组件：
 - 在 `src/app_runtime/container.py` 的 `AppContainer` 中添加字段
-- 在 `src/api/factories/` 中添加对应工厂函数
+- 在 `src/app_runtime/factories/` 中添加对应工厂函数
 - 在 `src/app_runtime/builder.py` 的 `build_app_container()` 中构建组件
 - 在 `src/app_runtime/runtime.py` 的 `AppRuntime.stop()` 中注册关闭逻辑
 - 在 `src/api/deps.py` 中添加 getter 函数，通过 `FastAPI.Depends()` 暴露

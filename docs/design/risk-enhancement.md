@@ -140,7 +140,7 @@ perf_tracker_pnl_circuit_cooldown_minutes: int = 120
 | `src/config/models/signal.py` | 新增 3 个 `perf_tracker_pnl_circuit_*` 字段 |
 | `src/config/signal.py` | 读取 `[pnl_circuit_breaker]` section |
 | `src/app_runtime/runtime.py` | 新增 `_start_performance_tracker()` 调用 |
-| `src/api/factories/signals.py` | 传入 `performance_tracker` 到 TradeExecutor |
+| `src/app_runtime/factories/signals.py` | 传入 `performance_tracker` 到 TradeExecutor |
 | `src/trading/signal_executor.py` | GATE 2.5 PnL 熔断检查 |
 | `config/signal.ini` | 新增 `[pnl_circuit_breaker]` section |
 | `config/backtest.ini` | `commission_per_lot = 7.0`，`slippage_points = 15.0` |

@@ -186,7 +186,7 @@ class TestTrader:
 
 class TestPositionManager:
     def test_with_positions(self) -> None:
-        positions = [{"profit": 50.0}, {"profit": -20.0}]
+        positions = [{"unrealized_pnl": 50.0}, {"unrealized_pnl": -20.0}]
         status = {"running": True, "tracked_positions": 2, "reconcile_count": 10}
         agent = map_position_manager(positions, status)
         assert agent["status"] == "working"
@@ -201,10 +201,16 @@ class TestPositionManager:
         assert agent["status"] == "disconnected"
 
     def test_negative_pnl_warns(self) -> None:
-        positions = [{"profit": -100.0}]
+        positions = [{"unrealized_pnl": -100.0}]
         status = {"running": True, "tracked_positions": 1, "reconcile_count": 5}
         agent = map_position_manager(positions, status)
         assert agent["alertLevel"] == "warning"
+
+    def test_profit_field_remains_supported_for_legacy_inputs(self) -> None:
+        positions = [{"profit": 12.5}]
+        status = {"running": True, "tracked_positions": 1, "reconcile_count": 1}
+        agent = map_position_manager(positions, status)
+        assert agent["metrics"]["total_pnl"] == 12.5
 
 
 # ── accountant ─────────────────────────────────────────────────

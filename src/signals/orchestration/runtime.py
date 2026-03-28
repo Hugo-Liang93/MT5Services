@@ -325,6 +325,18 @@ class SignalRuntime:
         self.snapshot_source.remove_snapshot_listener(self._on_snapshot)
         if self._thread:
             self._thread.join(timeout=timeout)
+            self._thread = None
+        self._clear_queue(self._confirmed_events)
+        self._clear_queue(self._intrabar_events)
+        self._confirmed_burst_count = 0
+
+    @staticmethod
+    def _clear_queue(q: queue.Queue) -> None:
+        while True:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                break
 
     def _on_snapshot(
         self,

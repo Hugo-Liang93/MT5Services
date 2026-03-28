@@ -8,10 +8,13 @@ import time
 from typing import Any, Callable, Optional
 
 from src.app_runtime.container import AppContainer
+from src.config import get_runtime_data_path
+from src.config.file_manager import close_file_config_manager
+from src.monitoring.health_monitor import close_health_monitor
+from src.monitoring.manager import close_monitoring_manager
+from src.utils.event_store import close_event_store
 
 logger = logging.getLogger(__name__)
-
-_CALIBRATOR_CACHE_PATH = "data/calibrator_cache.json"
 
 
 class AppRuntime:
@@ -106,8 +109,9 @@ class AppRuntime:
         # Calibrator: persist cache before stopping
         if c.calibrator is not None:
             try:
-                os.makedirs("data", exist_ok=True)
-                c.calibrator.dump(_CALIBRATOR_CACHE_PATH)
+                calibrator_cache_path = get_runtime_data_path("calibrator_cache.json")
+                os.makedirs(os.path.dirname(calibrator_cache_path), exist_ok=True)
+                c.calibrator.dump(calibrator_cache_path)
                 c.calibrator.stop_background_refresh()
             except Exception:
                 logger.debug("Failed to dump calibrator cache during shutdown", exc_info=True)
@@ -144,6 +148,39 @@ class AppRuntime:
         if pipeline_bus is not None:
             pipeline_bus.shutdown()
 
+        for callback in reversed(list(getattr(c, "shutdown_callbacks", []))):
+            try:
+                callback()
+            except Exception:
+                logger.debug("Failed to run runtime shutdown callback", exc_info=True)
+        c.shutdown_callbacks.clear()
+
+        indicator_manager = c.indicator_manager
+        if indicator_manager is not None:
+            event_store = getattr(indicator_manager, "event_store", None)
+            if event_store is not None:
+                try:
+                    close_event_store(instance=event_store)
+                except Exception:
+                    logger.debug("Failed to close indicator event store during shutdown", exc_info=True)
+
+        if c.monitoring_manager is not None:
+            try:
+                close_monitoring_manager(instance=c.monitoring_manager)
+            except Exception:
+                logger.debug("Failed to close monitoring manager during shutdown", exc_info=True)
+
+        if c.health_monitor is not None:
+            try:
+                close_health_monitor(instance=c.health_monitor)
+            except Exception:
+                logger.debug("Failed to close health monitor during shutdown", exc_info=True)
+
+        try:
+            close_file_config_manager()
+        except Exception:
+            logger.debug("Failed to close file config manager during shutdown", exc_info=True)
+
         self._status["phase"] = "stopped"
         self._status["ready"] = False
 
@@ -154,8 +191,9 @@ class AppRuntime:
         if calibrator is None:
             return
         try:
-            os.makedirs("data", exist_ok=True)
-            loaded = calibrator.load(_CALIBRATOR_CACHE_PATH)
+            calibrator_cache_path = get_runtime_data_path("calibrator_cache.json")
+            os.makedirs(os.path.dirname(calibrator_cache_path), exist_ok=True)
+            loaded = calibrator.load(calibrator_cache_path)
             logger.info("Calibrator: loaded %d cache entries from disk", loaded)
         except Exception:
             logger.debug("Calibrator: warm-start load failed (non-fatal)", exc_info=True)
@@ -220,6 +258,9 @@ class AppRuntime:
             "economic_calendar", c.economic_calendar_service, ["economic_calendar"]
         )
         c.monitoring_manager.register_component("signals", c.signal_runtime, ["status"])
+        c.monitoring_manager.register_component(
+            "trading", c.trade_module, ["monitoring_summary"]
+        )
         if c.pending_entry_manager is not None:
             c.monitoring_manager.register_component(
                 "pending_entry", c.pending_entry_manager, ["pending_entry"]

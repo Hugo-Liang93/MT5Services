@@ -156,6 +156,8 @@ def test_provenance_reports_local_ini_sources(monkeypatch):
         ("app.ini", "system", "api_port"): "app.local.ini[system].api_port",
         ("app.ini", "system", "timezone"): "app.local.ini[system].timezone",
         ("market.ini", "security", "api_key"): "market.local.ini[security].api_key",
+        ("economic.ini", "jin10", "enabled"): "economic.local.ini[jin10].enabled",
+        ("economic.ini", "jin10", "token"): "economic.local.ini[jin10].token",
     }
 
     monkeypatch.setattr(centralized, "get_merged_config", lambda name: config_map.get(name, {}))
@@ -174,3 +176,52 @@ def test_provenance_reports_local_ini_sources(monkeypatch):
     assert provenance["api"]["port"] == "app.local.ini[system].api_port"
     assert provenance["api"]["api_key"] == "market.local.ini[security].api_key"
     assert provenance["economic"]["local_timezone"] == "app.local.ini[system].timezone"
+
+
+def test_effective_config_snapshot_masks_jin10_token(monkeypatch):
+    config_map = {
+        "app.ini": {
+            "trading": {
+                "symbols": "XAUUSD",
+                "timeframes": "M1",
+                "default_symbol": "XAUUSD",
+            },
+            "intervals": {},
+            "limits": {},
+            "system": {},
+        },
+        "market.ini": {"security": {"api_key": "api-secret"}},
+        "ingest.ini": {},
+        "economic.ini": {
+            "jin10": {"enabled": True, "token": "jin10-secret"},
+            "tradingeconomics": {"enabled": False},
+            "fred": {"enabled": False},
+        },
+        "mt5.ini": {},
+        "db.ini": {},
+        "storage.ini": {},
+        "cache.ini": {},
+    }
+
+    monkeypatch.setattr(centralized, "get_merged_config", lambda name: config_map.get(name, {}))
+    source_map = {
+        ("economic.ini", "jin10", "enabled"): "economic.local.ini[jin10].enabled",
+        ("economic.ini", "jin10", "token"): "economic.local.ini[jin10].token",
+        ("market.ini", "security", "api_key"): "market.local.ini[security].api_key",
+    }
+    monkeypatch.setattr(
+        centralized,
+        "get_merged_option_source",
+        lambda config_name, section, key, base_config="app.ini", base_dir=None: source_map.get(
+            (config_name, section, key)
+        ),
+    )
+
+    manager = centralized.CentralizedConfig()
+    snapshot = manager.get_effective_config_snapshot()
+    provenance = manager.get_config_provenance_snapshot()
+
+    assert snapshot["api"]["api_key"] == "***"
+    assert snapshot["economic"]["jin10_token"] == "***"
+    assert provenance["economic"]["jin10_enabled"] == "economic.local.ini[jin10].enabled"
+    assert provenance["economic"]["jin10_token"] == "economic.local.ini[jin10].token"

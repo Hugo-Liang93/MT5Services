@@ -57,6 +57,27 @@ def test_position_manager_runs_end_of_day_closeout_once_per_day() -> None:
     assert manager.status()["last_end_of_day_close_date"] == "2026-03-20"
 
 
+def test_position_manager_exposes_margin_guard_status_via_public_api() -> None:
+    trading = DummyTradingModule()
+    manager = PositionManager(trading_module=trading)
+
+    class _Guard:
+        @staticmethod
+        def status():
+            return {"state": "warn", "margin_level_pct": 180.0}
+
+    manager.set_margin_guard(_Guard())
+
+    assert manager.margin_guard_status() == {
+        "state": "warn",
+        "margin_level_pct": 180.0,
+    }
+    assert manager.status()["margin_guard"] == {
+        "state": "warn",
+        "margin_level_pct": 180.0,
+    }
+
+
 def test_position_manager_does_not_close_before_cutoff() -> None:
     trading = DummyTradingModule(positions=[{"ticket": 1}])
     manager = PositionManager(

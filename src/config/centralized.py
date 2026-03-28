@@ -8,6 +8,7 @@ signal-specific loading live in smaller submodules.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List
 
 from src.config.models import (
@@ -369,6 +370,8 @@ class CentralizedConfig:
             "fred_api_key": ("fred", "api_key"),
             "fmp_enabled": ("fmp", "enabled"),
             "fmp_api_key": ("fmp", "api_key"),
+            "jin10_enabled": ("jin10", "enabled"),
+            "jin10_token": ("jin10", "token"),
             "alphavantage_enabled": ("alphavantage", "enabled"),
             "alphavantage_api_key": ("alphavantage", "api_key"),
             "alphavantage_tracked_indicators": ("alphavantage", "tracked_indicators"),
@@ -476,7 +479,13 @@ class CentralizedConfig:
         if api_snapshot.get("api_key"):
             api_snapshot["api_key"] = "***"
         economic_snapshot = dict(config["economic"])
-        for key in ("tradingeconomics_api_key", "fred_api_key", "fmp_api_key", "alphavantage_api_key"):
+        for key in (
+            "tradingeconomics_api_key",
+            "fred_api_key",
+            "fmp_api_key",
+            "jin10_token",
+            "alphavantage_api_key",
+        ):
             if economic_snapshot.get(key):
                 economic_snapshot[key] = "***"
         return {
@@ -604,3 +613,11 @@ def get_effective_config_snapshot() -> Dict[str, Any]:
 
 def get_config_provenance_snapshot() -> Dict[str, Dict[str, str]]:
     return _config_manager.get_config_provenance_snapshot()
+
+
+def get_runtime_data_path(filename: str) -> str:
+    runtime_data_dir = Path(get_system_config().runtime_data_dir).expanduser()
+    if not runtime_data_dir.is_absolute():
+        runtime_data_dir = Path(__file__).resolve().parents[2] / runtime_data_dir
+    runtime_data_dir.mkdir(parents=True, exist_ok=True)
+    return str(runtime_data_dir / filename)

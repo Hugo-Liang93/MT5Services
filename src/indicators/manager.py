@@ -21,6 +21,7 @@ from src.config.indicator_config import (
     UnifiedIndicatorConfig,
     get_global_config_manager,
 )
+from src.config import get_runtime_data_path
 from src.market import MarketDataService
 from src.utils.event_store import ClaimedEvent, get_event_store
 
@@ -122,7 +123,7 @@ class UnifiedIndicatorManager:
         self.storage_writer = storage_writer
         self.config_manager = get_global_config_manager(config_file)
         self.config = config or self.config_manager.get_config()
-        self.event_store = get_event_store("events.db")
+        self.event_store = get_event_store(get_runtime_data_path("events.db"))
 
         self._indicator_funcs: dict[str, Callable] = {}
         # OrderedDict for LRU eviction: cap prevents unbounded growth during

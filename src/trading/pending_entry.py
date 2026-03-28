@@ -325,19 +325,23 @@ class PendingEntryManager:
 
     def start(self) -> None:
         """启动价格监控线程和填单执行线程。"""
-        if self._monitor_thread is not None and self._monitor_thread.is_alive():
+        monitor_alive = self._monitor_thread is not None and self._monitor_thread.is_alive()
+        fill_alive = self._fill_worker_thread is not None and self._fill_worker_thread.is_alive()
+        if monitor_alive and fill_alive:
             return
         self._stop_event.clear()
-        t = threading.Thread(
-            target=self._monitor_loop, name="pending-entry-monitor", daemon=True
-        )
-        t.start()
-        self._monitor_thread = t
-        fw = threading.Thread(
-            target=self._fill_worker, name="pending-entry-fill", daemon=True
-        )
-        fw.start()
-        self._fill_worker_thread = fw
+        if not monitor_alive:
+            t = threading.Thread(
+                target=self._monitor_loop, name="pending-entry-monitor", daemon=True
+            )
+            t.start()
+            self._monitor_thread = t
+        if not fill_alive:
+            fw = threading.Thread(
+                target=self._fill_worker, name="pending-entry-fill", daemon=True
+            )
+            fw.start()
+            self._fill_worker_thread = fw
         logger.info("PendingEntryManager started (check_interval=%.2fs)", self._config.check_interval)
 
     def shutdown(self) -> None:
@@ -353,6 +357,7 @@ class PendingEntryManager:
         if self._fill_worker_thread is not None:
             self._fill_worker_thread.join(timeout=5.0)
             self._fill_worker_thread = None
+        self._clear_fill_queue()
         # 线程已退出，安全清理 _pending
         with self._lock:
             for entry in self._pending.values():
@@ -419,7 +424,7 @@ class PendingEntryManager:
 
         与 TradeExecutor 的 exec_worker 隔离，避免竞争 TradeExecutor 内部状态。
         """
-        while not self._stop_event.is_set():
+        while not self._stop_event.is_set() or not self._fill_queue.empty():
             try:
                 result = self._fill_queue.get(timeout=1.0)
             except queue.Empty:
@@ -438,6 +443,14 @@ class PendingEntryManager:
                 )
             finally:
                 self._fill_queue.task_done()
+
+    def _clear_fill_queue(self) -> None:
+        while True:
+            try:
+                self._fill_queue.get_nowait()
+                self._fill_queue.task_done()
+            except queue.Empty:
+                break
 
     def _check_all_entries(self) -> None:
         now = datetime.now(timezone.utc)

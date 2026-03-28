@@ -15,6 +15,7 @@ from collections import deque
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
@@ -191,7 +192,7 @@ class TradeExecutor:
 
     def _exec_worker(self) -> None:
         """Drain execution queue in a dedicated thread."""
-        while not self._stop_event.is_set():
+        while not self._stop_event.is_set() or not self._exec_queue.empty():
             try:
                 event = self._exec_queue.get(timeout=1.0)
             except queue.Empty:
@@ -205,15 +206,21 @@ class TradeExecutor:
 
     def flush(self, timeout: float = 5.0) -> None:
         """Wait until all queued events have been processed (for testing)."""
-        self._exec_queue.join()
+        deadline = time.monotonic() + max(0.0, timeout)
+        while self._exec_queue.unfinished_tasks > 0:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("TradeExecutor flush timed out")
+            time.sleep(0.01)
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout: float = 5.0) -> None:
         """Stop the background worker thread gracefully."""
         self._stop_event.set()
         if self._pending_manager is not None:
             self._pending_manager.shutdown()
         if self._exec_thread is not None:
-            self._exec_thread.join(timeout=5.0)
+            self._exec_thread.join(timeout=timeout)
+            self._exec_thread = None
+        self._clear_exec_queue()
 
     # ------------------------------------------------------------------
     # Internal execution logic
@@ -237,6 +244,20 @@ class TradeExecutor:
     def add_trade_listener(self, fn: Callable[[dict], None]) -> None:
         """Register a callback invoked after each successful trade execution."""
         self._on_trade_executed.append(fn)
+
+    def remove_trade_listener(self, fn: Callable[[dict], None]) -> None:
+        try:
+            self._on_trade_executed.remove(fn)
+        except ValueError:
+            pass
+
+    def _clear_exec_queue(self) -> None:
+        while True:
+            try:
+                self._exec_queue.get_nowait()
+                self._exec_queue.task_done()
+            except queue.Empty:
+                break
 
     def set_margin_guard(self, guard: Any) -> None:
         """Inject MarginGuard for margin-level based trade blocking."""

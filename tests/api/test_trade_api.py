@@ -23,6 +23,7 @@ from src.api.schemas import (
 )
 from src.clients.mt5_account import Order, Position
 from src.clients.base import MT5TradeError
+from src.readmodels.runtime import RuntimeReadModel
 from src.risk.service import PreTradeRiskBlockedError
 
 
@@ -202,13 +203,15 @@ def test_trade_daily_summary_endpoint() -> None:
 
 
 def test_trade_control_status_endpoint() -> None:
+    executor = _ExecutorService()
     response = trade_control_status(
         service=_DispatchService(),
-        executor=_ExecutorService(),
+        runtime_views=RuntimeReadModel(trade_executor=executor),
     )
 
     assert response.success is True
     assert response.data["trade_control"]["auto_entry_enabled"] is True
+    assert response.data["executor"]["status"] == "disabled"
     assert response.metadata["operation"] == "trade_control_status"
 
 
@@ -225,6 +228,7 @@ def test_trade_control_update_endpoint_can_reset_circuit() -> None:
         ),
         service=service,
         executor=executor,
+        runtime_views=RuntimeReadModel(trade_executor=executor),
     )
 
     assert response.success is True
@@ -234,15 +238,17 @@ def test_trade_control_update_endpoint_can_reset_circuit() -> None:
 
 
 def test_trade_reconcile_endpoint_returns_manager_snapshot() -> None:
+    manager = _PositionManagerService()
     response = trade_reconcile(
         TradeReconcileRequest(sync_open_positions=True),
-        manager=_PositionManagerService(),
+        manager=manager,
+        runtime_views=RuntimeReadModel(position_manager=manager),
     )
 
     assert response.success is True
     assert response.data["reconcile"]["recovered"] == 1
     assert response.data["position_manager"]["tracked_positions"] == 1
-    assert response.data["tracked_positions"][0]["symbol"] == "XAUUSD"
+    assert response.data["tracked_positions"]["items"][0]["symbol"] == "XAUUSD"
 
 
 def test_trade_dispatch_returns_risk_block_error() -> None:

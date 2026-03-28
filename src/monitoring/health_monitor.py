@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -599,11 +600,32 @@ class NullHealthMonitor:
 
 # ─── 单例 ──────────────────────────────────────────────────────────────────────
 
-_health_monitor_instance = None
+_health_monitor_instances: Dict[str, HealthMonitor] = {}
 
 
 def get_health_monitor(db_path: str = "health_monitor.db") -> HealthMonitor:
-    global _health_monitor_instance
-    if _health_monitor_instance is None:
-        _health_monitor_instance = HealthMonitor(db_path)
-    return _health_monitor_instance
+    normalized_path = os.path.abspath(db_path)
+    instance = _health_monitor_instances.get(normalized_path)
+    if instance is None:
+        instance = HealthMonitor(normalized_path)
+        _health_monitor_instances[normalized_path] = instance
+    return instance
+
+
+def close_health_monitor(
+    *,
+    db_path: str | None = None,
+    instance: HealthMonitor | None = None,
+) -> None:
+    keys_to_close: list[str] = []
+    if instance is not None:
+        keys_to_close.extend(
+            key for key, value in _health_monitor_instances.items() if value is instance
+        )
+    elif db_path is not None:
+        keys_to_close.append(os.path.abspath(db_path))
+
+    for key in keys_to_close:
+        monitor = _health_monitor_instances.pop(key, None)
+        if monitor is not None:
+            monitor.close()

@@ -1,6 +1,4 @@
-"""
-Unified FastAPI app entrypoint.
-"""
+"""Unified FastAPI application entrypoint."""
 
 from __future__ import annotations
 
@@ -32,6 +30,7 @@ from src.trading.service import TradingModule
 
 logger = logging.getLogger(__name__)
 api_config = get_api_config()
+
 AUTH_EXEMPT_PATHS = {
     "/health",
     "/openapi.json",
@@ -42,7 +41,12 @@ AUTH_EXEMPT_PATHS = {
 
 
 def _resolve_expected_api_key() -> str | None:
-    configured_key = (api_config.api_key or "").strip() if api_config.api_key else ""
+    current_api_config = get_api_config()
+    configured_key = (
+        (current_api_config.api_key or "").strip()
+        if current_api_config.api_key
+        else ""
+    )
     return configured_key or None
 
 
@@ -56,7 +60,6 @@ app = FastAPI(
 
 if api_config.enable_cors:
     cors_allow_origins = ["*"]
-    # Browsers do not allow credentialed requests when origin is wildcard.
     cors_allow_credentials = "*" not in cors_allow_origins
     app.add_middleware(
         CORSMiddleware,
@@ -69,7 +72,8 @@ if api_config.enable_cors:
 
 @app.middleware("http")
 async def api_key_authentication(request: Request, call_next):
-    if not api_config.auth_enabled:
+    current_api_config = get_api_config()
+    if not current_api_config.auth_enabled:
         return await call_next(request)
 
     if request.url.path in AUTH_EXEMPT_PATHS:
@@ -84,12 +88,16 @@ async def api_key_authentication(request: Request, call_next):
                 "success": False,
                 "error": {
                     "code": "api_auth_not_configured",
-                    "message": "API authentication is enabled but no API key is configured",
+                    "message": (
+                        "API authentication is enabled but no API key is configured"
+                    ),
                 },
             },
         )
 
-    provided_api_key = request.headers.get(api_config.api_key_header, "").strip()
+    provided_api_key = request.headers.get(
+        current_api_config.api_key_header, ""
+    ).strip()
     if not provided_api_key or not hmac.compare_digest(
         provided_api_key, expected_api_key
     ):
@@ -131,7 +139,6 @@ def health(
     )
 
 
-# ── API 版本化：所有业务路由挂载到 /v1/ 下 ──
 v1 = APIRouter(prefix="/v1")
 v1.include_router(market.router)
 v1.include_router(economic.router)
@@ -144,15 +151,6 @@ v1.include_router(backtest_router)
 v1.include_router(admin.router)
 v1.include_router(studio.router)
 app.include_router(v1)
-
-# 向后兼容：无前缀路由保留，确保现有客户端不中断
-app.include_router(market.router)
-app.include_router(economic.router)
-app.include_router(account.router)
-app.include_router(trade.router)
-app.include_router(monitoring.router)
-app.include_router(indicators.router)
-app.include_router(signal.router)
 
 
 __all__ = ["app"]

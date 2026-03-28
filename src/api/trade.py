@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 
 from src.api.deps import (
     get_position_manager,
+    get_runtime_read_model,
     get_signal_service,
     get_trade_executor,
     get_trading_service,
@@ -35,6 +36,7 @@ from src.api.schemas import (
 )
 from src.clients.base import MT5TradeError
 from src.risk.service import PreTradeRiskBlockedError
+from src.readmodels.runtime import RuntimeReadModel
 from src.signals.service import SignalModule
 from src.trading.sizing import compute_trade_params, extract_atr_from_indicators
 from src.trading.position_manager import PositionManager
@@ -99,12 +101,12 @@ def trade_daily_summary(
 @router.get("/trade/control", response_model=ApiResponse[dict])
 def trade_control_status(
     service: TradingModule = Depends(get_trading_service),
-    executor: TradeExecutor = Depends(get_trade_executor),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
     return ApiResponse.success_response(
         data={
             "trade_control": service.trade_control_status(),
-            "executor": executor.status(),
+            "executor": runtime_views.trade_executor_summary(),
         },
         metadata={"operation": "trade_control_status"},
     )
@@ -115,6 +117,7 @@ def trade_control_update(
     request: TradeControlRequest,
     service: TradingModule = Depends(get_trading_service),
     executor: TradeExecutor = Depends(get_trade_executor),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
     control = service.update_trade_control(
         auto_entry_enabled=request.auto_entry_enabled,
@@ -126,7 +129,7 @@ def trade_control_update(
     return ApiResponse.success_response(
         data={
             "trade_control": control,
-            "executor": executor.status(),
+            "executor": runtime_views.trade_executor_summary(),
         },
         metadata={
             "operation": "trade_control_update",
@@ -139,6 +142,7 @@ def trade_control_update(
 def trade_reconcile(
     request: TradeReconcileRequest,
     manager: PositionManager = Depends(get_position_manager),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
     reconcile_result = (
         manager.sync_open_positions() if request.sync_open_positions else {"skipped": True}
@@ -146,8 +150,8 @@ def trade_reconcile(
     return ApiResponse.success_response(
         data={
             "reconcile": reconcile_result,
-            "position_manager": manager.status(),
-            "tracked_positions": manager.active_positions(),
+            "position_manager": runtime_views.position_manager_summary(),
+            "tracked_positions": runtime_views.tracked_positions_payload(limit=100),
         },
         metadata={"operation": "trade_reconcile"},
     )

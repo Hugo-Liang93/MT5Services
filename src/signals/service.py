@@ -244,7 +244,8 @@ class SignalModule:
 
     def strategy_category(self, strategy: str) -> str:
         impl = self._strategies.get(strategy)
-        return str(getattr(impl, "category", "")) if impl else ""
+        raw = getattr(impl, "category", "") if impl else ""
+        return str(raw.value if hasattr(raw, "value") else raw)
 
     def strategy_affinity_map(self, strategy: str) -> Dict[RegimeType, float]:
         """返回策略的 regime_affinity 字典（不存在时返回空字典）。
@@ -280,6 +281,24 @@ class SignalModule:
             raise ValueError(f"unsupported signal strategy: {strategy}")
         scopes = getattr(strategy_impl, "preferred_scopes", ("intrabar", "confirmed"))
         return tuple(str(s) for s in scopes)
+
+    def describe_strategy(self, strategy: str) -> dict[str, Any]:
+        if strategy not in self._strategies:
+            raise ValueError(f"unsupported signal strategy: {strategy}")
+        affinity_map = self.strategy_affinity_map(strategy)
+        return {
+            "name": strategy,
+            "category": self.strategy_category(strategy) or None,
+            "preferred_scopes": list(self.strategy_scopes(strategy)),
+            "required_indicators": list(self.strategy_requirements(strategy)),
+            "regime_affinity": {
+                (key.value if hasattr(key, "value") else str(key)): float(value)
+                for key, value in affinity_map.items()
+            },
+        }
+
+    def strategy_catalog(self) -> list[dict[str, Any]]:
+        return [self.describe_strategy(name) for name in self.list_strategies()]
 
     def all_required_indicators(self) -> list[str]:
         ordered: list[str] = []

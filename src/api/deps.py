@@ -34,6 +34,7 @@ from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import TradeExecutor
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.monitoring.pipeline_event_bus import PipelineEventBus
+from src.readmodels.runtime import RuntimeReadModel
 from src.studio.service import StudioService
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
@@ -54,6 +55,19 @@ def _ensure_initialized() -> None:
             return
         _container = build_app_container(signal_config_loader=get_signal_config)
         _runtime = AppRuntime(_container, signal_config_loader=get_signal_config)
+
+
+def _shutdown_initialized_runtime() -> None:
+    global _runtime, _container
+    runtime = _runtime
+    _runtime = None
+    _container = None
+    if runtime is None:
+        return
+    try:
+        runtime.stop()
+    except Exception:
+        logger.exception("Failed to stop runtime during lifespan shutdown")
 
 
 # ── Startup status ────────────────────────────────────────────
@@ -113,7 +127,7 @@ async def _lifespan(_app):  # type: ignore[no-untyped-def]
     try:
         yield
     finally:
-        _runtime.stop()
+        _shutdown_initialized_runtime()
 
 
 lifespan = _lifespan
@@ -266,6 +280,12 @@ def get_pipeline_event_bus() -> PipelineEventBus:
     _ensure_initialized()
     assert _container is not None and _container.pipeline_event_bus is not None
     return _container.pipeline_event_bus
+
+
+def get_runtime_read_model() -> RuntimeReadModel:
+    _ensure_initialized()
+    assert _container is not None and _container.runtime_read_model is not None
+    return _container.runtime_read_model
 
 
 def get_studio_service() -> StudioService:

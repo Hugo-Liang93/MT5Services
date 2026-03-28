@@ -57,6 +57,19 @@ def test_dequeue_event_returns_none_on_empty() -> None:
     assert event is None
 
 
+def test_stop_clears_runtime_queues_and_thread_reference() -> None:
+    rt = _make_runtime()
+    rt._confirmed_events.put(("confirmed", "XAUUSD", "M5", {}, {}))
+    rt._intrabar_events.put(("intrabar", "XAUUSD", "M5", {}, {}))
+    rt._thread = SimpleNamespace(join=lambda timeout=None: None)
+
+    rt.stop()
+
+    assert rt._thread is None
+    assert rt._confirmed_events.empty()
+    assert rt._intrabar_events.empty()
+
+
 def test_dequeue_event_anti_starvation() -> None:
     """After _CONFIRMED_BURST_LIMIT consecutive confirmed events,
     should yield to an intrabar event if available."""

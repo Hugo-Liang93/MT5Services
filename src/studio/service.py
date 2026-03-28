@@ -110,24 +110,27 @@ class StudioService:
     def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
         return self._event_buffer.recent(limit)
 
-    def build_summary(self) -> dict[str, Any]:
+    def build_summary(
+        self,
+        agents: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Build a summary object for the frontend TopBar."""
         from src.utils.timezone import utc_now
 
-        agents = self.build_agents()
+        current_agents = agents if agents is not None else self.build_agents()
         active = sum(
-            1 for a in agents
+            1 for a in current_agents
             if a.get("status") not in ("idle", "disconnected", "error")
         )
         alerts = sum(
-            1 for a in agents
+            1 for a in current_agents
             if a.get("alertLevel") in ("warning", "error")
         )
 
         summary: dict[str, Any] = {
             "activeAgents": active,
             "alertCount": alerts,
-            "health": _overall_health(agents),
+            "health": _overall_health(current_agents),
             "updatedAt": utc_now().isoformat(),
         }
 
@@ -141,10 +144,11 @@ class StudioService:
 
     def build_snapshot(self) -> dict[str, Any]:
         """Full snapshot for SSE initial push."""
+        agents = self.build_agents()
         return {
-            "agents": self.build_agents(),
+            "agents": agents,
             "events": self.recent_events(50),
-            "summary": self.build_summary(),
+            "summary": self.build_summary(agents),
         }
 
     # ── Event emission (thread-safe, called from any thread) ───

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from src.calendar import EconomicCalendarService
 from src.indicators.manager import UnifiedIndicatorManager
@@ -21,6 +21,7 @@ from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import TradeExecutor
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.monitoring.pipeline_event_bus import PipelineEventBus
+from src.readmodels.runtime import RuntimeReadModel
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.studio.service import StudioService
 
@@ -60,8 +61,11 @@ class AppContainer:
         "health_monitor",
         "monitoring_manager",
         "pipeline_event_bus",
+        "runtime_read_model",
         # Studio
         "studio_service",
+        # Runtime cleanup
+        "shutdown_callbacks",
     )
 
     def __init__(self) -> None:
@@ -91,5 +95,7 @@ class AppContainer:
         self.health_monitor: Optional[Any] = None
         self.monitoring_manager: Optional[Any] = None
         self.pipeline_event_bus: Optional[PipelineEventBus] = None
+        self.runtime_read_model: Optional[RuntimeReadModel] = None
 
         self.studio_service: Optional[StudioService] = None
+        self.shutdown_callbacks: list[Callable[[], None]] = []

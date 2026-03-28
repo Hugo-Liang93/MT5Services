@@ -65,6 +65,25 @@ def _create_app(**dep_overrides: Any) -> FastAPI:
     signal_svc.strategy_requirements.return_value = ("sma20", "ema50")
     signal_svc.strategy_winrates.return_value = []
     signal_svc._strategy_affinity_cache = {}
+    signal_svc.strategy_catalog.return_value = [
+        {
+            "name": "sma_trend",
+            "category": "trend",
+            "preferred_scopes": ["confirmed"],
+            "required_indicators": ["sma20", "ema50"],
+            "regime_affinity": {},
+        },
+        {
+            "name": "rsi_reversion",
+            "category": "reversion",
+            "preferred_scopes": ["confirmed"],
+            "required_indicators": ["rsi14"],
+            "regime_affinity": {},
+        },
+    ]
+    signal_svc.describe_strategy.side_effect = lambda name: next(
+        row for row in signal_svc.strategy_catalog.return_value if row["name"] == name
+    )
 
     perf_tracker = dep_overrides.get("perf_tracker", MagicMock())
     perf_tracker.strategy_ranking.return_value = []
@@ -80,6 +99,31 @@ def _create_app(**dep_overrides: Any) -> FastAPI:
     ingestor = dep_overrides.get("ingestor", MagicMock())
     ingestor.queue_stats.return_value = {"total_queues": 6}
 
+    runtime_views = dep_overrides.get("runtime_views", MagicMock())
+    if "runtime_views" not in dep_overrides:
+        runtime_views.dashboard_overview.return_value = {
+            "system": {
+                "status": "healthy",
+                "uptime_seconds": 5.0,
+                "started_at": "2025-01-01T00:00:00+00:00",
+                "ready": True,
+                "phase": "running",
+            },
+            "account": {"balance": 10000, "equity": 10000},
+            "positions": {"count": 0, "items": []},
+            "signals": {"running": True},
+            "executor": {
+                "enabled": True,
+                "circuit_open": False,
+                "consecutive_failures": 0,
+                "execution_count": 5,
+                "last_execution_at": None,
+                "pending_entries_count": 0,
+            },
+            "storage": {"total_queues": 6},
+            "indicators": {"count": 21},
+        }
+
     app.dependency_overrides[deps.get_trading_service] = lambda: trading
     app.dependency_overrides[deps.get_position_manager] = lambda: position_mgr
     app.dependency_overrides[deps.get_signal_runtime] = lambda: signal_runtime
@@ -89,6 +133,7 @@ def _create_app(**dep_overrides: Any) -> FastAPI:
     app.dependency_overrides[deps.get_performance_tracker] = lambda: perf_tracker
     app.dependency_overrides[deps.get_calibrator] = lambda: calibrator
     app.dependency_overrides[deps.get_pipeline_event_bus] = lambda: pipeline_bus
+    app.dependency_overrides[deps.get_runtime_read_model] = lambda: runtime_views
 
     # get_ingestor 通过 patch 处理（不是 Depends 参数）
     app.state.ingestor = ingestor
@@ -148,7 +193,30 @@ class TestDashboard:
         ingestor.queue_stats.side_effect = RuntimeError("db down")
         mock_ingestor.return_value = ingestor
 
-        app = _create_app(trading=trading)
+        runtime_views = MagicMock()
+        runtime_views.dashboard_overview.return_value = {
+            "system": {
+                "status": "starting",
+                "uptime_seconds": None,
+                "started_at": None,
+                "ready": False,
+                "phase": "starting",
+            },
+            "account": {"error": "unavailable"},
+            "positions": {"error": "unavailable"},
+            "signals": {"error": "unavailable"},
+            "executor": {
+                "enabled": False,
+                "circuit_open": False,
+                "consecutive_failures": 0,
+                "execution_count": 0,
+                "last_execution_at": None,
+                "pending_entries_count": 0,
+            },
+            "storage": {"error": "unavailable"},
+            "indicators": {"error": "unavailable"},
+        }
+        app = _create_app(trading=trading, runtime_views=runtime_views)
         tc = TestClient(app)
         resp = tc.get("/v1/admin/dashboard")
         assert resp.status_code == 200
@@ -339,25 +407,24 @@ class TestHelpers:
 
     def test_build_strategy_detail(self) -> None:
         svc = MagicMock()
-        svc.strategy_affinity_map.return_value = {}
-        svc.strategy_scopes.return_value = ("confirmed", "intrabar")
-        svc.strategy_requirements.return_value = ("rsi14",)
-        svc._strategy_affinity_cache = {}
+        svc.describe_strategy.return_value = {
+            "name": "rsi_reversion",
+            "category": "reversion",
+            "preferred_scopes": ["confirmed", "intrabar"],
+            "required_indicators": ["rsi14"],
+            "regime_affinity": {},
+        }
 
         detail = _build_strategy_detail("rsi_reversion", svc)
         assert detail.name == "rsi_reversion"
+        assert detail.category == "reversion"
         assert detail.preferred_scopes == ["confirmed", "intrabar"]
         assert detail.required_indicators == ["rsi14"]
 
     def test_build_strategy_detail_error_handling(self) -> None:
         """strategy_scopes / strategy_requirements 抛异常时不崩溃。"""
         svc = MagicMock()
-        svc.strategy_affinity_map.return_value = None
-        svc.strategy_scopes.side_effect = ValueError("not found")
-        svc.strategy_requirements.side_effect = ValueError("not found")
-        svc._strategy_affinity_cache = {}
+        svc.describe_strategy.side_effect = ValueError("not found")
 
-        detail = _build_strategy_detail("unknown", svc)
-        assert detail.preferred_scopes == []
-        assert detail.required_indicators == []
-        assert detail.regime_affinity == {}
+        with pytest.raises(ValueError):
+            _build_strategy_detail("unknown", svc)

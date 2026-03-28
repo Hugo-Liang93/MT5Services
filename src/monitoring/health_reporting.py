@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 def generate_report(monitor, hours: int = 24) -> Dict[str, Any]:
     cutoff = monitor._utc_now() - timedelta(hours=hours)
+    monitor._flush_buffer()
 
     with monitor._lock:
         conn = monitor._get_conn()
@@ -146,6 +147,7 @@ def get_recent_metrics(
 
 def cleanup_old_data(monitor, days_to_keep: int = 30) -> None:
     cutoff = monitor._utc_now() - timedelta(days=days_to_keep)
+    monitor._flush_buffer()
 
     with monitor._lock:
         conn = monitor._get_conn()

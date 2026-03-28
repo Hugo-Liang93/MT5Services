@@ -46,6 +46,14 @@ class MonitoringManager:
         }
         logger.info(f"Registered component for monitoring: {name}")
 
+    @staticmethod
+    def _summary_status_value(summary: Dict[str, Any]) -> float:
+        failed = 0
+        for row in list(summary.get("summary", []) or []):
+            if row.get("status") == "failed":
+                failed += int(row.get("count", 0) or 0)
+        return 0.5 if failed > 0 else 1.0
+
     def list_registered_components(self) -> List[Dict[str, Any]]:
         """返回已注册组件快照，供监控 API 展示。"""
         rows: List[Dict[str, Any]] = []
@@ -133,6 +141,24 @@ class MonitoringManager:
 
                             elif method == "pending_entry" and hasattr(component_obj, "status"):
                                 self._check_pending_entry(component_obj, name)
+
+                            elif method == "status" and hasattr(component_obj, "status"):
+                                status_payload = component_obj.status()
+                                self.health_monitor.record_metric(
+                                    name,
+                                    "runtime_status",
+                                    1.0,
+                                    status_payload if isinstance(status_payload, dict) else {"value": status_payload},
+                                )
+
+                            elif method == "monitoring_summary" and hasattr(component_obj, "monitoring_summary"):
+                                summary_payload = component_obj.monitoring_summary(hours=24)
+                                self.health_monitor.record_metric(
+                                    name,
+                                    "monitoring_summary",
+                                    self._summary_status_value(summary_payload),
+                                    summary_payload,
+                                )
 
                         except Exception as e:
                             logger.error(f"Failed to execute monitoring method {method} for {name}: {e}")
@@ -242,18 +268,44 @@ class MonitoringManager:
             logger.error("Failed to check pending entry health: %s", e)
 
 
-# 单例实例
-_monitoring_manager_instance = None
+_monitoring_manager_instances: Dict[tuple[int, int], MonitoringManager] = {}
 
 
 def get_monitoring_manager(
     health_monitor: HealthMonitor = None,
     check_interval: int = 60
 ) -> MonitoringManager:
-    """获取监控管理器单例"""
-    global _monitoring_manager_instance
-    if _monitoring_manager_instance is None:
-        if health_monitor is None:
-            health_monitor = get_health_monitor()
-        _monitoring_manager_instance = MonitoringManager(health_monitor, check_interval)
-    return _monitoring_manager_instance
+    """获取与指定监控器绑定的 MonitoringManager 实例。"""
+    if health_monitor is None:
+        health_monitor = get_health_monitor()
+    key = (id(health_monitor), int(check_interval))
+    instance = _monitoring_manager_instances.get(key)
+    if instance is None:
+        instance = MonitoringManager(health_monitor, check_interval)
+        _monitoring_manager_instances[key] = instance
+    return instance
+
+
+def close_monitoring_manager(
+    *,
+    instance: MonitoringManager | None = None,
+    health_monitor: HealthMonitor | None = None,
+    check_interval: int | None = None,
+) -> None:
+    keys_to_close: list[tuple[int, int]] = []
+    if instance is not None:
+        keys_to_close.extend(
+            key for key, value in _monitoring_manager_instances.items() if value is instance
+        )
+    elif health_monitor is not None:
+        if check_interval is None:
+            keys_to_close.extend(
+                key for key in _monitoring_manager_instances if key[0] == id(health_monitor)
+            )
+        else:
+            keys_to_close.append((id(health_monitor), int(check_interval)))
+
+    for key in keys_to_close:
+        manager = _monitoring_manager_instances.pop(key, None)
+        if manager is not None:
+            manager.stop()

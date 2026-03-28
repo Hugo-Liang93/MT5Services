@@ -66,6 +66,23 @@ def test_build_snapshot_contains_all() -> None:
     assert len(snapshot["events"]) == 1
 
 
+def test_build_snapshot_reuses_single_agent_snapshot_for_summary() -> None:
+    studio = StudioService()
+    calls = {"count": 0}
+
+    def _provider():
+        calls["count"] += 1
+        return build_agent("collector", "working", f"call-{calls['count']}")
+
+    studio.register_agent("collector", _provider)
+
+    snapshot = studio.build_snapshot()
+
+    assert calls["count"] == 1
+    assert snapshot["agents"][0]["task"] == "call-1"
+    assert snapshot["summary"]["activeAgents"] == 1
+
+
 def test_summary_provider_failure_is_safe() -> None:
     studio = StudioService()
     studio.register_summary_provider(lambda: (_ for _ in ()).throw(RuntimeError("boom")))

@@ -16,6 +16,7 @@ from src.trading.pending_entry import (
     PendingEntry,
     PendingEntryConfig,
     PendingEntryManager,
+    _FillResult,
     _extract_quote_prices,
     compute_entry_zone,
     compute_timeout,
@@ -458,6 +459,26 @@ class TestPendingEntryManager:
         mgr.submit(self._make_pending(signal_id="s2"))
         mgr.shutdown()
         assert mgr.active_count() == 0
+
+    def test_shutdown_drains_fill_queue(self) -> None:
+        executed: list[str] = []
+        mgr = self._make_manager(
+            execute_fn=lambda event, params, cost: executed.append(event.signal_id)
+        )
+        pending = self._make_pending(signal_id="sig-fill-drain")
+        mgr._fill_queue.put(
+            _FillResult(
+                signal_event=pending.signal_event,
+                trade_params=pending.trade_params,
+                cost_metrics=pending.cost_metrics,
+            )
+        )
+
+        mgr.start()
+        mgr.shutdown()
+
+        assert executed == ["sig-fill-drain"]
+        assert mgr._fill_queue.empty()
 
     def test_invalid_quote_skips_check(self) -> None:
         """Quote 没有 bid/ask 属性时应安全跳过。"""

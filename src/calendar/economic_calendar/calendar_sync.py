@@ -499,9 +499,6 @@ def start_service(service) -> None:
         logger.info("Economic calendar service is disabled")
         return
     restore_job_state(service)
-    if service.settings.startup_refresh:
-        for job_type in ("near_term_sync", "release_watch"):
-            safe_run_job(service, job_type)
     if not any(service._job_interval(job_type) > 0 for job_type in _JOB_LABELS):
         logger.info("Economic calendar background refresh disabled by interval <= 0")
         return
@@ -509,12 +506,17 @@ def start_service(service) -> None:
         return
     service._stop_event.clear()
     now = _utc_now()
+    startup_immediate_jobs = (
+        {"near_term_sync", "release_watch"} if service.settings.startup_refresh else set()
+    )
     for job_type in _JOB_LABELS:
         interval = service._job_interval(job_type)
         scheduled_at = startup_schedule_time(service, job_type, now)
         restored_next_run = service._next_run_at.get(job_type)
         if interval <= 0:
             service._next_run_at[job_type] = None
+        elif job_type in startup_immediate_jobs:
+            service._next_run_at[job_type] = now
         elif restored_next_run is None or restored_next_run <= now:
             service._next_run_at[job_type] = scheduled_at
         elif job_type == "calendar_sync" and service.settings.startup_refresh and scheduled_at is not None:

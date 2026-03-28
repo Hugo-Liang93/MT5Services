@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.monitoring.health_monitor import HealthMonitor
-from src.monitoring.manager import MonitoringManager
+from src.monitoring.health_monitor import HealthMonitor, close_health_monitor, get_health_monitor
+from src.monitoring.manager import (
+    MonitoringManager,
+    close_monitoring_manager,
+    get_monitoring_manager,
+)
 
 
 def test_health_report_skips_non_finite_metrics(tmp_path: Path) -> None:
@@ -61,3 +65,18 @@ def test_monitoring_manager_lists_registered_components(tmp_path: Path) -> None:
     assert [item["name"] for item in rows] == ["market_data", "signals"]
     assert rows[0]["methods"] == ["data_latency"]
     assert rows[1]["methods"] == ["status"]
+
+
+def test_monitoring_manager_factory_is_scoped_by_health_monitor(tmp_path: Path) -> None:
+    monitor_a = get_health_monitor(str(tmp_path / "a.db"))
+    monitor_b = get_health_monitor(str(tmp_path / "b.db"))
+
+    manager_a = get_monitoring_manager(monitor_a, check_interval=5)
+    manager_b = get_monitoring_manager(monitor_b, check_interval=5)
+
+    assert manager_a is not manager_b
+
+    close_monitoring_manager(instance=manager_a)
+    close_monitoring_manager(instance=manager_b)
+    close_health_monitor(instance=monitor_a)
+    close_health_monitor(instance=monitor_b)
