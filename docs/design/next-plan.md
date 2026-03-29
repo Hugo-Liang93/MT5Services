@@ -1,6 +1,6 @@
 # Next Plan — 下一阶段开发规划
 
-> 更新日期：2026-03-27
+> 更新日期：2026-03-29
 > 基于当前系统状态与已实现功能制定。
 
 ---
@@ -11,7 +11,7 @@
 
 | 能力 | 状态 |
 |------|------|
-| 信号生成（20 策略 + 投票引擎） | ✅ 生产就绪 |
+| 信号生成（23 策略 + 5 复合 + 投票引擎） | ✅ 生产就绪 |
 | 置信度管线（Regime × Perf × Calibrator × HTF） | ✅ 生产就绪 |
 | 价格确认入场（PendingEntry 3 种模式） | ✅ 生产就绪 |
 | 技术熔断器（MT5 API 失败计数） | ✅ 生产就绪 |
@@ -20,7 +20,7 @@
 | 回测引擎（含真实成本、per-TF 参数） | ✅ 已实现 |
 | Walk-Forward + 参数推荐 | ✅ 已实现 |
 | SQLite WAL 持久化优化 | ✅ 已实现 |
-| Studio 可观测性（13 Agent SSE） | ✅ 已实现 |
+| Studio 可观测性（14 Agent SSE） | ✅ 已实现 |
 | 日终自动平仓 | ✅ 已实现 |
 | 同向叠加控制 | ⚠️ 仅 per-symbol 持仓数限制，无净敞口控制 |
 | 盈亏比动态调整 | ⚠️ ATR 倍数固定（含 TF 差异化），未随 Regime 调整 |
@@ -104,17 +104,18 @@ if net_lots + new_volume > config.max_net_lots_per_symbol:
 
 **问题**：Walk-Forward 结果存内存缓存，API 重启后丢失；无法跨 session 对比历史回测。
 
-**方案**：
+**当前状态**：⚠️ 部分已实现 — `backtest_repo.py`（459 行）已有 `save_result()` / `save_recommendation()` 等方法，回测结果和推荐记录可持久化到 DB。Walk-Forward splits 的 DB 持久化和重启恢复仍为待做。
+
+**剩余工作**：
 
 ```
-BacktestJob 完成 → 结果写入 DB（backtest_runs / backtest_trades）
-Walk-Forward 结果 → 写入 backtest_wf_splits 表
-API 重启后 → 从 DB 查询历史 job list
+Walk-Forward 结果 → 写入 backtest_wf_splits 表（待做）
+API 重启后 → 从 DB 查询历史 WF 结果 list（待做）
 ```
 
 **涉及文件**：`src/persistence/repositories/backtest_repo.py`、`src/backtesting/api.py`
 
-**复杂度**：中（schema 已有部分定义，补全写入逻辑）
+**复杂度**：低（repo 框架已就绪，补全 WF 相关写入/查询）
 
 ---
 

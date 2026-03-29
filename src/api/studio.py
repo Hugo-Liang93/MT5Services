@@ -18,7 +18,7 @@ import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.error_codes import AIErrorCode
 from src.api.schemas import ApiResponse
@@ -120,9 +120,13 @@ async def studio_stream(
         - ``heartbeat``: keep-alive
     """
     if studio.subscriber_count >= _MAX_SSE_CONNECTIONS:
-        return ApiResponse(
-            success=False,
-            error={"message": f"Too many SSE connections (max {_MAX_SSE_CONNECTIONS})"},
+        return JSONResponse(
+            status_code=429,
+            content=ApiResponse.error_response(
+                error_code="too_many_sse_connections",
+                error_message=f"Too many SSE connections (max {_MAX_SSE_CONNECTIONS})",
+            ).model_dump(),
+            headers={"Retry-After": "5"},
         )
 
     loop = asyncio.get_running_loop()
@@ -131,7 +135,7 @@ async def studio_stream(
     async def event_generator():  # type: ignore[no-untyped-def]
         try:
             # 1. Initial full snapshot
-            yield _format_sse("snapshot", studio.build_snapshot())
+            yield _format_sse("snapshot", studio.build_snapshot(force_refresh=True))
 
             # Track last-sent agent states for diff detection
             last_agents: dict[str, dict[str, Any]] = {
@@ -159,7 +163,8 @@ async def studio_stream(
                 # Periodic agent diff-push
                 if now - last_refresh >= _AGENT_REFRESH_SECONDS:
                     last_refresh = now
-                    for agent in studio.build_agents():
+                    snapshot = studio.refresh_snapshot()
+                    for agent in snapshot["agents"]:
                         aid = str(agent.get("id", ""))
                         prev = last_agents.get(aid)
                         if prev is None or _agent_changed(prev, agent):

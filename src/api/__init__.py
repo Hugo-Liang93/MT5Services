@@ -13,6 +13,7 @@ from src.api import (
     account,
     admin,
     deps,
+    decision,
     economic,
     indicators,
     market,
@@ -38,6 +39,7 @@ AUTH_EXEMPT_PATHS = {
     "/docs/oauth2-redirect",
     "/redoc",
 }
+AUTH_QUERY_PARAM_PATHS = {"/v1/studio/stream"}
 
 
 def _resolve_expected_api_key() -> str | None:
@@ -48,6 +50,15 @@ def _resolve_expected_api_key() -> str | None:
         else ""
     )
     return configured_key or None
+
+
+def _resolve_provided_api_key(request: Request, header_name: str) -> str:
+    provided_api_key = request.headers.get(header_name, "").strip()
+    if provided_api_key:
+        return provided_api_key
+    if request.url.path in AUTH_QUERY_PARAM_PATHS:
+        return request.query_params.get("api_key", "").strip()
+    return ""
 
 
 app = FastAPI(
@@ -95,9 +106,10 @@ async def api_key_authentication(request: Request, call_next):
             },
         )
 
-    provided_api_key = request.headers.get(
-        current_api_config.api_key_header, ""
-    ).strip()
+    provided_api_key = _resolve_provided_api_key(
+        request,
+        current_api_config.api_key_header,
+    )
     if not provided_api_key or not hmac.compare_digest(
         provided_api_key, expected_api_key
     ):
@@ -141,6 +153,7 @@ def health(
 
 v1 = APIRouter(prefix="/v1")
 v1.include_router(market.router)
+v1.include_router(decision.router)
 v1.include_router(economic.router)
 v1.include_router(account.router)
 v1.include_router(trade.router)

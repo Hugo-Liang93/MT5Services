@@ -71,6 +71,18 @@
 
 - 若改动影响架构、流程或关键配置，需同步更新相关文档（如 `docs/architecture-flow.md`）。
 
+## 10) Working Principles
+
+You must reason from first principles. Start from the real objective, constraints, and root problem rather than conventions, templates, or the user's proposed path.
+
+Rules:
+1. If the user's goal, motivation, or success criteria are unclear, pause and clarify before proposing implementation.
+2. If the user's requested path is not the shortest or most effective path, say so directly and propose a better one.
+3. Always prefer root-cause analysis over surface-level fixes. Every non-trivial recommendation must answer: why this decision?
+4. Keep outputs decision-focused. Include only information that changes action, architecture, risk, or tradeoffs.
+5. Do not optimize for agreement. Optimize for correctness, clarity, and leverage.
+6. If assumptions are necessary, state them explicitly and minimize them.
+
 ---
 
 如与更深层目录中的 `AGENTS.md` 冲突，以更深层文件为准；如与系统/开发者/用户指令冲突，以后者为准。

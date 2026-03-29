@@ -9,13 +9,17 @@ from starlette.requests import Request
 from src.api import api_key_authentication
 
 
-def _request(path: str, headers: list[tuple[bytes, bytes]] | None = None) -> Request:
+def _request(
+    path: str,
+    headers: list[tuple[bytes, bytes]] | None = None,
+    query_string: bytes = b"",
+) -> Request:
     scope = {
         "type": "http",
         "method": "GET",
         "path": path,
         "headers": headers or [],
-        "query_string": b"",
+        "query_string": query_string,
         "scheme": "http",
         "server": ("testserver", 80),
         "client": ("127.0.0.1", 12345),
@@ -81,3 +85,26 @@ def test_api_key_authentication_rejects_when_reloaded_key_changes(monkeypatch) -
     )
 
     assert response.status_code == 401
+
+
+def test_api_key_authentication_accepts_sse_query_param(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "src.api.get_api_config",
+        lambda: SimpleNamespace(
+            auth_enabled=True,
+            api_key="stream-key",
+            api_key_header="X-API-Key",
+        ),
+    )
+
+    async def call_next(_request: Request) -> JSONResponse:
+        return JSONResponse({"ok": True}, status_code=200)
+
+    response = asyncio.run(
+        api_key_authentication(
+            _request("/v1/studio/stream", query_string=b"api_key=stream-key"),
+            call_next,
+        )
+    )
+
+    assert response.status_code == 200

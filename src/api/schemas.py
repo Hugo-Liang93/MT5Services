@@ -6,7 +6,7 @@ AI友好接口优化 - 扩展ApiResponse模型
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, TypeVar, Generic, List, Dict, Any
+from typing import Optional, TypeVar, Generic, List, Dict, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -379,6 +379,113 @@ class RuntimeTaskStatusModel(BaseModel):
     consecutive_failures: int = 0
     last_error: Optional[str] = None
     details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DecisionFocusContextModel(BaseModel):
+    workflowId: Optional[str] = None
+    employeeRole: Optional[str] = None
+    title: str
+    subtitle: str
+    focusRoles: List[str] = Field(default_factory=list)
+
+
+class DecisionMarketContextModel(BaseModel):
+    symbol: str
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    spread: Optional[float] = None
+    balance: Optional[float] = None
+    equity: Optional[float] = None
+    openPositionCount: int = 0
+    openPnl: float = 0.0
+
+
+class DecisionSignalContextModel(BaseModel):
+    formalCount: int = 0
+    previewCount: int = 0
+    recentCount: int = 0
+    buyCount: int = 0
+    sellCount: int = 0
+    holdCount: int = 0
+    dominantBias: Literal["偏多", "偏空", "观望"] = "观望"
+
+
+class DecisionRiskContextModel(BaseModel):
+    activeGuardCount: int = 0
+    highImpactWindowCount: int = 0
+    activeGuardLabels: List[str] = Field(default_factory=list)
+    topWarnings: List[str] = Field(default_factory=list)
+
+
+class DecisionOperationPressureModel(BaseModel):
+    name: str
+    utilizationPct: float
+
+
+class DecisionOperationContextModel(BaseModel):
+    activeRoleCount: int = 0
+    abnormalRoleCount: int = 0
+    disconnectedRoleCount: int = 0
+    queuePressureCount: int = 0
+    queuePressures: List[DecisionOperationPressureModel] = Field(default_factory=list)
+
+
+class DecisionSystemTaskModel(BaseModel):
+    role: str
+    status: str
+    task: str
+
+
+class DecisionSystemContextModel(BaseModel):
+    healthStatus: Literal["healthy", "degraded", "unhealthy", "unknown"] = "unknown"
+    currentTasks: List[DecisionSystemTaskModel] = Field(default_factory=list)
+
+
+class DecisionContextEventModel(BaseModel):
+    source: str
+    target: Optional[str] = None
+    level: str
+    message: str
+    createdAt: str
+
+
+class DecisionContextModel(BaseModel):
+    generatedAt: str
+    focus: DecisionFocusContextModel
+    market: DecisionMarketContextModel
+    signals: DecisionSignalContextModel
+    risks: DecisionRiskContextModel
+    operations: DecisionOperationContextModel
+    system: DecisionSystemContextModel
+    recentEvents: List[DecisionContextEventModel] = Field(default_factory=list)
+
+
+class DecisionBriefRequest(BaseModel):
+    context: DecisionContextModel
+
+
+class DecisionEvidenceModel(BaseModel):
+    title: str
+    value: str
+    tone: Literal["positive", "warning", "danger", "neutral"] = "neutral"
+
+
+class DecisionBriefModel(BaseModel):
+    focusTitle: str
+    focusSubtitle: str
+    stance: Literal["偏多", "偏空", "观望"]
+    confidence: float
+    summary: str
+    recommendedAction: str
+    actionHint: str
+    evidence: List[DecisionEvidenceModel] = Field(default_factory=list)
+    conflicts: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    invalidations: List[str] = Field(default_factory=list)
+    focusRoles: List[str] = Field(default_factory=list)
+    generatedAt: str
+    source: Literal["heuristic", "remote", "fallback"] = "remote"
+    sourceLabel: str
 
 
 T = TypeVar("T")

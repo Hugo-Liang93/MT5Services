@@ -1,11 +1,4 @@
-"""Studio protocol constants and builder helpers.
-
-This module defines the agent metadata registry and provides pure helper
-functions for constructing ``StudioAgent`` / ``StudioEvent`` dicts that
-conform to the Anteater frontend protocol (``types/protocol.ts``).
-
-No business-module imports — all data arrives as primitives.
-"""
+"""Studio protocol constants and builder helpers."""
 
 from __future__ import annotations
 
@@ -13,10 +6,6 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from src.utils.timezone import utc_now
-
-# ── Agent metadata registry ────────────────────────────────────
-# Static information per agent role. Matches the frontend's
-# ``config/employees.ts`` — keep in sync when roles change.
 
 AGENT_META: dict[str, dict[str, str]] = {
     "collector": {
@@ -30,7 +19,7 @@ AGENT_META: dict[str, dict[str, str]] = {
         "zone": "analysis",
     },
     "live_analyst": {
-        "name": "实时分析员",
+        "name": "盘中分析员",
         "module": "UnifiedIndicatorManager(intrabar)",
         "zone": "analysis",
     },
@@ -40,7 +29,7 @@ AGENT_META: dict[str, dict[str, str]] = {
         "zone": "filter",
     },
     "regime_guard": {
-        "name": "研判员",
+        "name": "状态守卫",
         "module": "RegimeDetector+AffinityGate",
         "zone": "regime",
     },
@@ -50,7 +39,7 @@ AGENT_META: dict[str, dict[str, str]] = {
         "zone": "strategy",
     },
     "live_strategist": {
-        "name": "实时策略员",
+        "name": "盘中策略员",
         "module": "SignalModule(intrabar)",
         "zone": "strategy",
     },
@@ -70,29 +59,31 @@ AGENT_META: dict[str, dict[str, str]] = {
         "zone": "decision",
     },
     "position_manager": {
-        "name": "仓管员",
+        "name": "仓位管理员",
         "module": "PositionManager",
         "zone": "support",
     },
     "accountant": {
-        "name": "会计",
+        "name": "会计模块",
         "module": "TradingModule",
         "zone": "support",
     },
     "calendar_reporter": {
-        "name": "日历员",
+        "name": "日历模块",
         "module": "EconomicCalendarService",
         "zone": "support",
     },
+    "backtester": {
+        "name": "回测模块",
+        "module": "BacktestingWorkbench",
+        "zone": "support",
+    },
     "inspector": {
-        "name": "巡检员",
+        "name": "巡检模块",
         "module": "MonitoringManager",
         "zone": "support",
     },
 }
-
-
-# ── Builder helpers ─────────────────────────────────────────────
 
 
 def build_agent(
@@ -104,7 +95,6 @@ def build_agent(
     alert_level: str = "none",
     symbol: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Construct a StudioAgent dict conforming to the frontend protocol."""
     meta = AGENT_META.get(agent_id, {"name": agent_id, "module": "", "zone": ""})
     result: dict[str, Any] = {
         "id": agent_id,
@@ -133,7 +123,6 @@ def build_event(
     symbol: Optional[str] = None,
     event_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Construct a StudioEvent dict conforming to the frontend protocol."""
     result: dict[str, Any] = {
         "eventId": event_id or uuid4().hex[:12],
         "type": event_type,

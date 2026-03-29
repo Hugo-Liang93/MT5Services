@@ -295,10 +295,14 @@ def map_voter(runtime_status: dict[str, Any]) -> dict[str, Any]:
 # ── 5. risk_officer ← TradeExecutor ────────────────────────────
 
 
-def map_risk_officer(executor_status: dict[str, Any]) -> dict[str, Any]:
+def map_risk_officer(
+    executor_status: dict[str, Any],
+    support_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     received = executor_status.get("signals_received", 0)
     blocked = executor_status.get("signals_blocked", 0)
     risk_blocks = executor_status.get("execution_quality", {}).get("risk_blocks", 0)
+    evidence = support_evidence or {}
 
     metrics: dict[str, Any] = {
         "signals_received": received,
@@ -307,6 +311,8 @@ def map_risk_officer(executor_status: dict[str, Any]) -> dict[str, Any]:
         "skip_reasons": executor_status.get("skip_reasons", {}),
         "risk_blocks": risk_blocks,
         "by_timeframe": executor_status.get("by_timeframe", {}),
+        "support_evidence": evidence,
+        "upstream_modules": [key for key in evidence.keys()],
     }
 
     return resolve_status("risk_officer", [
@@ -471,6 +477,29 @@ def map_calendar_reporter(
 
 
 # ── 10. inspector ← HealthMonitor ─────────────────────────────
+
+
+def map_backtester(backtest_status: dict[str, Any]) -> dict[str, Any]:
+    running_jobs = int(backtest_status.get("running_jobs", 0) or 0)
+    pending_jobs = int(backtest_status.get("pending_jobs", 0) or 0)
+    failed_jobs = int(backtest_status.get("failed_jobs", 0) or 0)
+    completed_jobs = int(backtest_status.get("completed_jobs", 0) or 0)
+
+    metrics: dict[str, Any] = {
+        "running_jobs": running_jobs,
+        "pending_jobs": pending_jobs,
+        "completed_jobs": completed_jobs,
+        "failed_jobs": failed_jobs,
+        "latest_job": backtest_status.get("latest_job"),
+        "result_cache_size": backtest_status.get("result_cache_size", 0),
+    }
+
+    return resolve_status("backtester", [
+        (running_jobs > 0, "working", "回测任务运行中", "none"),
+        (pending_jobs > 0, "thinking", "回测任务排队中", "none"),
+        (failed_jobs > 0, "warning", "最近回测存在失败", "warning"),
+        (completed_jobs > 0, "reviewing", "研究结果可复核", "none"),
+    ], "idle", "等待研究任务", metrics=metrics)
 
 
 def map_inspector(health_report: dict[str, Any]) -> dict[str, Any]:

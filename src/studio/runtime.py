@@ -6,6 +6,7 @@ import dataclasses
 from typing import Any
 
 from src.app_runtime.container import AppContainer
+from src.backtesting.api import get_backtest_runtime_status
 from src.config import get_runtime_market_settings
 from src.studio import mappers as studio_mappers
 from src.studio.models import build_event
@@ -14,6 +15,91 @@ from src.studio.service import StudioService
 
 def build_studio_service(container: AppContainer) -> StudioService:
     studio = StudioService()
+    trade_module = container.trade_module
+    position_manager = container.position_manager
+    economic_calendar = container.economic_calendar_service
+    health_monitor = container.health_monitor
+
+    def _account_info_payload() -> dict[str, Any]:
+        if trade_module is None:
+            return {}
+        try:
+            account_info = trade_module.account_info()
+            if dataclasses.is_dataclass(account_info):
+                return dataclasses.asdict(account_info)
+            return dict(account_info or {})
+        except Exception:
+            return {}
+
+    def _calendar_windows() -> list[dict[str, Any]]:
+        if economic_calendar is None:
+            return []
+        try:
+            return list(economic_calendar.get_risk_windows() or [])
+        except Exception:
+            return []
+
+    def _calendar_stats() -> dict[str, Any]:
+        if economic_calendar is None:
+            return {}
+        try:
+            return dict(economic_calendar.stats() or {})
+        except Exception:
+            return {}
+
+    def _inspector_report() -> dict[str, Any]:
+        if health_monitor is None:
+            return {}
+        try:
+            return dict(health_monitor.generate_report() or {})
+        except Exception:
+            return {}
+
+    def _risk_support_evidence() -> dict[str, Any]:
+        account_info = _account_info_payload()
+        trade_control = (
+            trade_module.trade_control_status() if trade_module is not None else {}
+        )
+        margin_guard = (
+            position_manager.margin_guard_status()
+            if position_manager is not None
+            else {}
+        )
+        windows = _calendar_windows()
+        inspector_report = _inspector_report()
+        high_impact_active = [
+            window
+            for window in windows
+            if str(window.get("impact", "")).lower() == "high"
+            and bool(window.get("guard_active"))
+        ]
+        return {
+            "accountant": {
+                "balance": account_info.get("balance"),
+                "equity": account_info.get("equity"),
+                "free_margin": account_info.get("free_margin")
+                or account_info.get("margin_free"),
+                "close_only_mode": bool(trade_control.get("close_only_mode")),
+                "auto_entry_enabled": bool(
+                    trade_control.get("auto_entry_enabled", True)
+                ),
+                "margin_guard_state": margin_guard.get("state"),
+            },
+            "calendar_reporter": {
+                "risk_window_count": len(windows),
+                "high_impact_active": len(high_impact_active),
+                "active_guard_labels": [
+                    str(window.get("event_name") or "")
+                    for window in high_impact_active[:3]
+                    if str(window.get("event_name") or "").strip()
+                ],
+                "stale": _calendar_stats().get("stale"),
+            },
+            "inspector": {
+                "overall_status": inspector_report.get("overall_status"),
+                "active_alert_count": len(inspector_report.get("active_alerts", [])),
+            },
+        }
 
     if container.ingestor is not None:
         ingestor = container.ingestor
@@ -80,7 +166,10 @@ def build_studio_service(container: AppContainer) -> StudioService:
         trade_executor = container.trade_executor
         studio.register_agent(
             "risk_officer",
-            lambda: studio_mappers.map_risk_officer(trade_executor.status()),
+            lambda: studio_mappers.map_risk_officer(
+                trade_executor.status(),
+                support_evidence=_risk_support_evidence(),
+            ),
         )
         pending_entry_manager = container.pending_entry_manager
         studio.register_agent(
@@ -104,18 +193,9 @@ def build_studio_service(container: AppContainer) -> StudioService:
         )
 
     if container.trade_module is not None:
-        trade_module = container.trade_module
-        position_manager = container.position_manager
-
-        def _account_info_payload() -> Any:
-            account_info = trade_module.account_info()
-            if dataclasses.is_dataclass(account_info):
-                return dataclasses.asdict(account_info)
-            return account_info
-
         def _summary_provider() -> dict[str, Any]:
             account_info = _account_info_payload() or {}
-            login = account_info.get("login", "") if isinstance(account_info, dict) else ""
+            login = account_info.get("login", "")
             return {"account": str(login), "environment": "live"}
 
         studio.register_agent(
@@ -133,20 +213,23 @@ def build_studio_service(container: AppContainer) -> StudioService:
         studio.register_summary_provider(_summary_provider)
 
     if container.economic_calendar_service is not None:
-        economic_calendar = container.economic_calendar_service
         studio.register_agent(
             "calendar_reporter",
             lambda: studio_mappers.map_calendar_reporter(
-                economic_calendar.stats(),
-                economic_calendar.get_risk_windows(),
+                _calendar_stats(),
+                _calendar_windows(),
             ),
         )
 
+    studio.register_agent(
+        "backtester",
+        lambda: studio_mappers.map_backtester(get_backtest_runtime_status()),
+    )
+
     if container.health_monitor is not None:
-        health_monitor = container.health_monitor
         studio.register_agent(
             "inspector",
-            lambda: studio_mappers.map_inspector(health_monitor.generate_report()),
+            lambda: studio_mappers.map_inspector(_inspector_report()),
         )
 
     market_settings = get_runtime_market_settings()

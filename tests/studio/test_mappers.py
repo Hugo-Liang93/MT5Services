@@ -13,6 +13,7 @@ from src.studio.mappers import (
     map_trader,
     map_position_manager,
     map_accountant,
+    map_backtester,
     map_calendar_reporter,
     map_inspector,
 )
@@ -152,6 +153,15 @@ class TestRiskOfficer:
         assert agent["status"] == "blocked"
         assert agent["alertLevel"] == "warning"
 
+    def test_support_evidence_is_exposed(self) -> None:
+        status = {"signals_received": 2, "signals_passed": 1, "signals_blocked": 1, "execution_quality": {"risk_blocks": 0}}
+        agent = map_risk_officer(
+            status,
+            support_evidence={"accountant": {"margin_guard_state": "warn"}},
+        )
+        assert agent["metrics"]["support_evidence"]["accountant"]["margin_guard_state"] == "warn"
+        assert "accountant" in agent["metrics"]["upstream_modules"]
+
 
 # ── trader ─────────────────────────────────────────────────────
 
@@ -264,6 +274,16 @@ class TestCalendarReporter:
         stats = {"running": "false", "stale": "false", "consecutive_failures": "0"}
         agent = map_calendar_reporter(stats, [])
         assert agent["status"] == "disconnected"
+
+
+class TestBacktester:
+    def test_running_job(self) -> None:
+        agent = map_backtester({"running_jobs": 1, "pending_jobs": 0, "failed_jobs": 0, "completed_jobs": 0})
+        assert agent["status"] == "working"
+
+    def test_recent_failure_warns(self) -> None:
+        agent = map_backtester({"running_jobs": 0, "pending_jobs": 0, "failed_jobs": 1, "completed_jobs": 0})
+        assert agent["status"] == "warning"
 
 
 # ── inspector ──────────────────────────────────────────────────

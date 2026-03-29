@@ -83,6 +83,24 @@ def test_build_snapshot_reuses_single_agent_snapshot_for_summary() -> None:
     assert snapshot["summary"]["activeAgents"] == 1
 
 
+def test_build_agents_uses_shared_snapshot_cache_between_reads() -> None:
+    studio = StudioService(snapshot_ttl_seconds=60.0)
+    calls = {"count": 0}
+
+    def _provider():
+        calls["count"] += 1
+        return build_agent("collector", "working", f"call-{calls['count']}")
+
+    studio.register_agent("collector", _provider)
+
+    first = studio.build_agents()
+    second = studio.build_agents()
+
+    assert calls["count"] == 1
+    assert first[0]["task"] == "call-1"
+    assert second[0]["task"] == "call-1"
+
+
 def test_summary_provider_failure_is_safe() -> None:
     studio = StudioService()
     studio.register_summary_provider(lambda: (_ for _ in ()).throw(RuntimeError("boom")))

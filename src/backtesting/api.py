@@ -1088,6 +1088,32 @@ def _fail_job(run_id: str, error: str) -> None:
 # ── 组件管理 ──────────────────────────────────────────────────────
 
 
+def get_backtest_runtime_status() -> Dict[str, Any]:
+    with _job_lock:
+        jobs = list(_job_store.values())
+
+    pending_jobs = [job for job in jobs if job.status == BacktestJobStatus.PENDING]
+    running_jobs = [job for job in jobs if job.status == BacktestJobStatus.RUNNING]
+    completed_jobs = [job for job in jobs if job.status == BacktestJobStatus.COMPLETED]
+    failed_jobs = [job for job in jobs if job.status == BacktestJobStatus.FAILED]
+
+    latest_job = None
+    if jobs:
+        latest_job = max(jobs, key=lambda job: job.submitted_at).to_dict()
+
+    with _result_cache_lock:
+        result_cache_size = len(_result_cache)
+
+    return {
+        "pending_jobs": len(pending_jobs),
+        "running_jobs": len(running_jobs),
+        "completed_jobs": len(completed_jobs),
+        "failed_jobs": len(failed_jobs),
+        "latest_job": latest_job,
+        "result_cache_size": result_cache_size,
+    }
+
+
 def _cleanup_components(components: Optional[Dict[str, Any]]) -> None:
     """回测完成后释放独立 pipeline 和 DB 连接资源。"""
     if components is None:

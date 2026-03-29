@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 def test_event_store() -> None:
     test_db = "test_events.db"
+    event_store = None
     try:
         from src.utils.event_store import LocalEventStore
 
@@ -26,12 +27,15 @@ def test_event_store() -> None:
         stats = event_store.get_stats()
         assert stats["total"] >= 1
     finally:
+        if event_store is not None:
+            event_store.close()
         if os.path.exists(test_db):
             os.remove(test_db)
 
 
 def test_health_monitor() -> None:
     test_db = "test_health.db"
+    monitor = None
     try:
         from src.monitoring import HealthMonitor
 
@@ -48,6 +52,8 @@ def test_health_monitor() -> None:
         assert report["overall_status"] in {"healthy", "warning", "critical"}
         assert len(metrics) >= 1
     finally:
+        if monitor is not None:
+            monitor.close()
         if os.path.exists(test_db):
             os.remove(test_db)
 
