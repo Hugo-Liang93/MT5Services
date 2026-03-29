@@ -243,10 +243,33 @@ def get_trade_guard(
         for window in merged_windows
         if evaluation_time < datetime.fromisoformat(window["window_start"])
     ]
+    # 品种相关性过滤：非直接相关事件 importance 降 1 级
+    relevance_enabled = getattr(
+        service.settings, "trade_guard_relevance_filter_enabled", False
+    )
+    gold_keywords: list[str] = []
+    if relevance_enabled:
+        raw_kw = getattr(service.settings, "gold_impact_keywords", "")
+        gold_keywords = [k.strip().lower() for k in str(raw_kw).split(",") if k.strip()]
+
+    def _effective_importance(window: Dict[str, Any]) -> int:
+        raw_imp = window.get("max_importance") or 0
+        if not relevance_enabled or not gold_keywords:
+            return raw_imp
+        # 合并窗口可能包含多个事件名（event_names 列表）
+        names = window.get("event_names") or []
+        if not names:
+            single = window.get("event_name") or ""
+            names = [single] if single else []
+        combined = " ".join(str(n) for n in names).lower()
+        if any(kw in combined for kw in gold_keywords):
+            return raw_imp  # 匹配 → 保持原始 importance
+        return max(0, raw_imp - 1)  # 不匹配 → 降 1 级
+
     # 分级压制：区分 block 和 warn
     block_min: int = service.settings.trade_guard_block_importance_min
-    block_windows = [w for w in active_windows if (w.get("max_importance") or 0) >= block_min]
-    warn_windows = [w for w in active_windows if (w.get("max_importance") or 0) < block_min]
+    block_windows = [w for w in active_windows if _effective_importance(w) >= block_min]
+    warn_windows = [w for w in active_windows if _effective_importance(w) < block_min and _effective_importance(w) >= 1]
     # 低 importance 事件使用更窄的保护窗口
     # block 窗口 = scheduled_at ± pre/post_event_buffer（已由 build_window 计算）
     # warn 窗口 = scheduled_at ± warn_pre/post_buffer（更窄，需要缩小已有窗口）

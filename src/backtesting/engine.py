@@ -89,8 +89,12 @@ class BacktestEngine:
         self._htf_direction_fn = htf_direction_fn
         self._htf_alignment_boost = htf_alignment_boost
         self._htf_conflict_penalty = htf_conflict_penalty
-        # HTF 指标：{timeframe: {indicator_name: {field: value}}}
+        # HTF 指标：{timeframe: {indicator_name: {field: value}}}（静态快照，向后兼容）
         self._htf_indicator_data = htf_indicator_data or {}
+        # HTF 时序数据：{timeframe: [(bar_time, indicators), ...]}，按 bar 时间查找
+        self._htf_timeseries: Dict[str, List[tuple[datetime, Dict[str, Dict[str, Any]]]]] = {}
+        # 预计算的时间索引（避免每次 _lookup_htf_at_time 都生成临时列表）
+        self._htf_time_indexes: Dict[str, List[datetime]] = {}
         # 预计算指标快照（按 all_bars 索引对齐，优化器复用场景下跳过 pipeline）
         self._precomputed_indicators = precomputed_indicators
 
@@ -159,7 +163,24 @@ class BacktestEngine:
         else:
             self._target_strategies = sorted(available_strategies)
 
-        # 收集所有目标策略需要的指标名
+        # 按 strategy_timeframes 白名单过滤（与实盘 SignalRuntime 行为一致）
+        tf_whitelist = config.strategy_timeframes
+        if tf_whitelist:
+            tf_upper = config.timeframe.upper()
+            before_count = len(self._target_strategies)
+            self._target_strategies = [
+                s for s in self._target_strategies
+                if s not in tf_whitelist
+                or tf_upper in [t.upper() for t in tf_whitelist[s]]
+            ]
+            filtered = before_count - len(self._target_strategies)
+            if filtered > 0:
+                logger.info(
+                    "Backtest: filtered %d strategies not allowed on %s by strategy_timeframes",
+                    filtered, config.timeframe,
+                )
+
+        # 收集所有目标策略需要的指标名 + regime 检测需要的指标
         self._required_indicators: List[str] = []
         seen: Set[str] = set()
         for s in self._target_strategies:
@@ -167,6 +188,11 @@ class BacktestEngine:
                 if ind not in seen:
                     seen.add(ind)
                     self._required_indicators.append(ind)
+        # regime 检测依赖 adx14 + boll20 + keltner20，缺失时全部降级为 uncertain
+        for regime_ind in ("adx14", "boll20", "keltner20"):
+            if regime_ind not in seen:
+                seen.add(regime_ind)
+                self._required_indicators.append(regime_ind)
 
         # 构建过滤器模拟器
         self._filter_simulator = self._build_filter_simulator()
@@ -187,6 +213,11 @@ class BacktestEngine:
 
     def _build_filter_simulator(self) -> BacktestFilterSimulator:
         """从 BacktestConfig 构建过滤器模拟器。"""
+        # 经济事件过滤：从 DB 预加载历史事件
+        economic_provider = None
+        if self._config.filter_economic_enabled:
+            economic_provider = self._load_economic_provider()
+
         filter_config = BacktestFilterConfig(
             enabled=self._config.filters_enabled,
             session_filter_enabled=self._config.filter_session_enabled,
@@ -197,8 +228,62 @@ class BacktestEngine:
             volatility_spike_multiplier=self._config.filter_volatility_spike_multiplier,
             spread_filter_enabled=self._config.filter_spread_enabled,
             max_spread_points=self._config.filter_max_spread_points,
+            economic_filter_enabled=self._config.filter_economic_enabled and economic_provider is not None,
+            economic_provider=economic_provider,
+            economic_lookahead_minutes=self._config.filter_economic_lookahead_minutes,
+            economic_lookback_minutes=self._config.filter_economic_lookback_minutes,
+            economic_importance_min=self._config.filter_economic_importance_min,
         )
         return BacktestFilterSimulator(filter_config)
+
+    def _load_economic_provider(self) -> Any:
+        """从 DB 加载回测期间的经济事件，构建 BacktestTradeGuardProvider。"""
+        try:
+            from .economic_provider import (
+                BacktestTradeGuardProvider,
+                _SimpleSettings,
+                load_backtest_economic_events,
+            )
+            from src.persistence.db import TimescaleWriter
+            from src.config.database import load_db_settings
+            from src.persistence.repositories.economic_repo import EconomicCalendarRepository
+            from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+
+            settings = load_db_settings()
+            writer = TimescaleWriter(settings, min_conn=1, max_conn=2)
+            repo = EconomicCalendarRepository(writer)
+
+            context = infer_symbol_context(self._config.symbol)
+            events = load_backtest_economic_events(
+                economic_repo=repo,
+                start_time=self._config.start_time,
+                end_time=self._config.end_time,
+                currencies=context["currencies"] or None,
+                importance_min=self._config.filter_economic_importance_min,
+            )
+            writer.close()
+
+            if not events:
+                logger.info("No economic events found for backtest period, economic filter disabled")
+                return None
+
+            # 从 economic.ini 加载 relevance 配置
+            try:
+                from src.config.runtime import load_runtime_config
+                rt_cfg = load_runtime_config()
+                eco_settings = _SimpleSettings(
+                    trade_guard_relevance_filter_enabled=getattr(
+                        rt_cfg, "trade_guard_relevance_filter_enabled", False
+                    ),
+                    gold_impact_keywords=getattr(rt_cfg, "gold_impact_keywords", ""),
+                )
+            except Exception:
+                eco_settings = _SimpleSettings()
+
+            return BacktestTradeGuardProvider(events, eco_settings)
+        except Exception:
+            logger.warning("Failed to load economic calendar for backtest", exc_info=True)
+            return None
 
     def run(self) -> BacktestResult:
         """执行回测主循环。"""
@@ -225,6 +310,17 @@ class BacktestEngine:
         test_bars = self._data_loader.load_all_bars(
             symbol, timeframe, self._config.start_time, self._config.end_time
         )
+
+        # warmup 数据不足时，从 test_bars 前部借用
+        if len(warmup_bars) < warmup_count and len(test_bars) > warmup_count:
+            borrow = warmup_count - len(warmup_bars)
+            warmup_bars = warmup_bars + test_bars[:borrow]
+            test_bars = test_bars[borrow:]
+            logger.info(
+                "Backtest: borrowed %d bars from test data for warmup "
+                "(total warmup=%d, remaining test=%d)",
+                borrow, len(warmup_bars), len(test_bars),
+            )
 
         if not test_bars:
             logger.warning("Backtest %s: no test data found", run_id)
@@ -336,6 +432,10 @@ class BacktestEngine:
                         filter_reason=filter_reason,
                     )
                 continue
+
+            # 6.5. 按当前 bar 时间查找对应 HTF 指标（动态时序查找）
+            if self._htf_timeseries:
+                self._htf_indicator_data = self._lookup_htf_at_time(bar.time)
 
             # 7. 策略评估
             decisions = self._evaluate_strategies(
@@ -467,18 +567,28 @@ class BacktestEngine:
         )
         return snapshots
 
+    _SENTINEL = object()
+
     def _compute_indicators(
         self,
         symbol: str,
         timeframe: str,
         bars: List[OHLC],
+        indicator_names: Any = _SENTINEL,
     ) -> Dict[str, Dict[str, Any]]:
-        """使用生产 Pipeline 计算指标。"""
+        """使用生产 Pipeline 计算指标。
+
+        Args:
+            indicator_names: 指定计算哪些指标。
+                不传（sentinel）= 使用 _required_indicators；
+                传 None = 计算全部已注册指标。
+        """
         if len(bars) < 2:
             return {}
+        names = self._required_indicators if indicator_names is self._SENTINEL else indicator_names
         try:
             results = self._pipeline.compute(
-                symbol, timeframe, bars, self._required_indicators
+                symbol, timeframe, bars, names
             )
             return results
         except (KeyError, TypeError, ValueError) as e:
@@ -514,17 +624,13 @@ class BacktestEngine:
         end_time: datetime,
         warmup_bars: int = 200,
     ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """预加载高时间框架指标数据，供 HTF 方向对齐和策略消费。
+        """预加载高时间框架指标的时序数据，供逐 bar 查找。
 
-        Args:
-            symbol: 交易品种
-            htf_timeframes: 高时间框架列表（如 ["H1", "H4", "D1"]）
-            start_time: 回测开始时间
-            end_time: 回测结束时间
-            warmup_bars: 预热 bar 数量
+        返回格式与旧版兼容（最终快照），但同时填充 ``_htf_timeseries``
+        以支持按 bar 时间查找对应时点的 HTF 指标值。
 
         Returns:
-            {timeframe: {indicator_name: {field: value}}} 按 TF 分组的最新指标快照
+            {timeframe: {indicator_name: {field: value}}} 最新快照（向后兼容）
         """
         htf_data: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for tf in htf_timeframes:
@@ -542,18 +648,48 @@ class BacktestEngine:
                         symbol, tf, len(all_htf),
                     )
                     continue
-                indicators = self._compute_indicators(symbol, tf, all_htf)
-                if indicators:
-                    htf_data[tf] = indicators
+                # 逐 bar 计算 HTF 指标（滚动窗口），建立时序索引
+                ts_list: List[tuple[datetime, Dict[str, Dict[str, Any]]]] = []
+                window_size = min(warmup_bars, len(all_htf))
+                for end_idx in range(window_size, len(all_htf) + 1):
+                    window = all_htf[max(0, end_idx - window_size):end_idx]
+                    # HTF 计算全量指标（不限于 M5 策略需要的子集）
+                    snap = self._compute_indicators(symbol, tf, window, indicator_names=None)
+                    if snap:
+                        bar_time = window[-1].time
+                        ts_list.append((bar_time, snap))
+                if ts_list:
+                    self._htf_timeseries[tf] = ts_list
+                    # 预计算时间索引（避免 _lookup_htf_at_time 每次生成临时列表）
+                    self._htf_time_indexes[tf] = [t[0] for t in ts_list]
+                    # 向后兼容：最终快照
+                    htf_data[tf] = ts_list[-1][1]
                     logger.info(
                         "Backtest HTF: loaded %d bars for %s/%s, %d indicators",
-                        len(all_htf), symbol, tf, len(indicators),
+                        len(all_htf), symbol, tf, len(ts_list[-1][1]),
                     )
             except Exception:
                 logger.warning(
                     "Backtest HTF: failed to load %s/%s", symbol, tf, exc_info=True
                 )
         return htf_data
+
+    def _lookup_htf_at_time(
+        self, bar_time: datetime,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """按 bar 时间查找对应时点的 HTF 指标（二分查找最近的已收盘 HTF bar）。"""
+        from bisect import bisect_right
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for tf, ts_list in self._htf_timeseries.items():
+            if not ts_list:
+                continue
+            times = self._htf_time_indexes.get(tf)
+            if times is None:
+                continue
+            idx = bisect_right(times, bar_time) - 1
+            if idx >= 0:
+                result[tf] = ts_list[idx][1]
+        return result
 
     def _evaluate_strategies(
         self,
@@ -606,12 +742,8 @@ class BacktestEngine:
                     htf_indicators=self._htf_indicator_data,
                 )
 
-                # ── 置信度后处理（复用实盘 SignalRuntime 管线）──
-                # 1. Intrabar 衰减
-                decision = apply_intrabar_decay(
-                    decision, scope, self._intrabar_confidence_factor
-                )
-                # 2. HTF 方向对齐修正（受 enable_htf_alignment 控制）
+                # ── 置信度后处理（与实盘 SignalRuntime 顺序一致）──
+                # 1. HTF 方向对齐修正（先作用于原始置信度）
                 if (
                     self._config.enable_htf_alignment
                     and self._htf_direction_fn is not None
@@ -623,6 +755,10 @@ class BacktestEngine:
                         alignment_boost=self._htf_alignment_boost,
                         conflict_penalty=self._htf_conflict_penalty,
                     )
+                # 2. Intrabar 衰减（最后降权，与实盘顺序一致）
+                decision = apply_intrabar_decay(
+                    decision, scope, self._intrabar_confidence_factor
+                )
 
                 decisions.append(decision)
             except (KeyError, TypeError, ValueError) as e:

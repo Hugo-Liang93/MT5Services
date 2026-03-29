@@ -83,12 +83,27 @@ def cmd_run(args: argparse.Namespace) -> None:
     strategies = args.strategies.split(",") if args.strategies else None
     # 从 backtest.ini 加载默认值，CLI 参数优先覆盖
     ini_defaults = get_backtest_defaults()
+
+    # 从 signal.ini 加载 strategy_timeframes 白名单
+    try:
+        from src.config import get_signal_config
+        _sig_cfg = get_signal_config()
+        _stf_raw = getattr(_sig_cfg, "strategy_timeframes", {}) or {}
+        # 转换为 {strategy: [tf1, tf2]} 格式
+        strategy_timeframes: Dict[str, list] = {
+            k: (v if isinstance(v, list) else [t.strip() for t in str(v).split(",") if t.strip()])
+            for k, v in _stf_raw.items()
+        }
+    except Exception:
+        strategy_timeframes = {}
+
     config = BacktestConfig(
         symbol=args.symbol,
         timeframe=args.timeframe,
         start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
         end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
         strategies=strategies,
+        strategy_timeframes=strategy_timeframes,
         initial_balance=args.balance,
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
@@ -113,6 +128,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         filter_volatility_spike_multiplier=ini_defaults.get(
             "filter_volatility_spike_multiplier", 2.5
         ),
+        filter_economic_enabled=not getattr(args, "no_economic", False),
         regime_tp_trending=ini_defaults.get("regime_tp_trending", 1.20),
         regime_tp_ranging=ini_defaults.get("regime_tp_ranging", 0.80),
         regime_tp_breakout=ini_defaults.get("regime_tp_breakout", 1.10),
@@ -121,7 +137,26 @@ def cmd_run(args: argparse.Namespace) -> None:
         regime_sl_ranging=ini_defaults.get("regime_sl_ranging", 0.90),
         regime_sl_breakout=ini_defaults.get("regime_sl_breakout", 1.10),
         regime_sl_uncertain=ini_defaults.get("regime_sl_uncertain", 1.00),
+        **({"trailing_atr_multiplier": args.trailing} if getattr(args, "trailing", None) else {}),
+        **({"breakeven_atr_threshold": args.breakeven} if getattr(args, "breakeven", None) else {}),
     )
+
+    # CLI SL/TP 覆盖（安全方式：深拷贝 → 修改副本 → 回测结束后恢复）
+    _sl_tp_backup: Optional[Dict] = None
+    if getattr(args, "sl_mult", None) is not None or getattr(args, "tp_mult", None) is not None:
+        import copy
+        from src.trading.sizing import TIMEFRAME_SL_TP
+        tf = args.timeframe.upper()
+        if tf in TIMEFRAME_SL_TP:
+            _sl_tp_backup = copy.deepcopy(TIMEFRAME_SL_TP)
+            if args.sl_mult is not None:
+                TIMEFRAME_SL_TP[tf]["sl_atr_mult"] = args.sl_mult
+            if args.tp_mult is not None:
+                TIMEFRAME_SL_TP[tf]["tp_atr_mult"] = args.tp_mult
+            logger.info(
+                "CLI override: %s SL/TP = %.1f/%.1f ATR (will restore after backtest)",
+                tf, TIMEFRAME_SL_TP[tf]["sl_atr_mult"], TIMEFRAME_SL_TP[tf]["tp_atr_mult"],
+            )
 
     components = _build_components(args)
     try:
@@ -148,6 +183,11 @@ def cmd_run(args: argparse.Namespace) -> None:
                 f.write(result_to_json(result))
             print(f"结果已保存到: {args.output}")
     finally:
+        # 恢复被 CLI 覆盖的全局 SL/TP 参数（无论回测成功失败）
+        if _sl_tp_backup is not None:
+            from src.trading.sizing import TIMEFRAME_SL_TP
+            TIMEFRAME_SL_TP.clear()
+            TIMEFRAME_SL_TP.update(_sl_tp_backup)
         _cleanup_components(components)
 
 
@@ -424,6 +464,27 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         "--no-persist",
         action="store_true",
         help="不持久化结果到数据库",
+    )
+    parser.add_argument(
+        "--no-economic",
+        action="store_true",
+        help="禁用经济日历事件过滤（默认启用）",
+    )
+    parser.add_argument(
+        "--sl-mult", type=float, default=None,
+        help="覆盖 SL ATR 倍数（如 2.0）",
+    )
+    parser.add_argument(
+        "--tp-mult", type=float, default=None,
+        help="覆盖 TP ATR 倍数（如 3.0）",
+    )
+    parser.add_argument(
+        "--trailing", type=float, default=None,
+        help="Trailing stop ATR 倍数（如 0.8）",
+    )
+    parser.add_argument(
+        "--breakeven", type=float, default=None,
+        help="Breakeven 触发 ATR 阈值（如 0.8）",
     )
 
 

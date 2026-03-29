@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import logging
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _load_signal_config_snapshot():
+    """加载 signal_config 的独立快照，不依赖 @lru_cache 全局单例。
+
+    回测必须使用快照而非全局缓存，避免：
+    1. 实盘 hot reload 后回测使用旧配置
+    2. 多个并发回测共享同一个 config 对象
+    """
+    from src.config.signal import get_signal_config
+
+    # 获取当前缓存版本的深拷贝
+    cached = get_signal_config()
+    return copy.deepcopy(cached)
 
 
 def build_backtest_components(
@@ -88,7 +103,7 @@ def build_backtest_components(
 
     # 回测默认 SignalModule 已包含基础单策略和主要复合策略；
     # 这里补齐依赖 HTFStateCache 的 late strategies（如 multi_timeframe_confirm）。
-    signal_config = get_signal_config()
+    signal_config = _load_signal_config_snapshot()
     htf_cache = HTFStateCache(
         max_age_seconds=getattr(signal_config, "htf_cache_max_age_seconds", 14400),
     )
@@ -160,10 +175,9 @@ def _apply_overrides(
 def _build_voting_engine(signal_module: Any) -> Optional[Any]:
     """尝试从 signal.ini 配置构建 VotingEngine。"""
     try:
-        from src.config.signal import get_signal_config
         from src.signals.orchestration.voting import StrategyVotingEngine
 
-        signal_config = get_signal_config()
+        signal_config = _load_signal_config_snapshot()
         policy = signal_config.policy if hasattr(signal_config, "policy") else None
         if policy and hasattr(policy, "voting_enabled") and policy.voting_enabled:
             return StrategyVotingEngine(

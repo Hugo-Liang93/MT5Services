@@ -125,6 +125,9 @@ class EconomicConfig(BaseModel):
     trade_guard_block_importance_min: int = 3
     trade_guard_warn_pre_buffer_minutes: int = 15
     trade_guard_warn_post_buffer_minutes: int = 10
+    # 品种相关性过滤：非直接相关事件 importance 自动降 1 级
+    trade_guard_relevance_filter_enabled: bool = False
+    gold_impact_keywords: str = ""
     tradingeconomics_enabled: bool = True
     tradingeconomics_api_key: str | None = None
     fred_enabled: bool = True

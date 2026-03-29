@@ -82,6 +82,8 @@ class BacktestConfig:
     # Per-TF 参数覆盖（signal.ini [strategy_params.<TF>] 格式）
     strategy_params_per_tf: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     regime_affinity_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # 策略-TF 白名单：{strategy_name: [tf1, tf2, ...]}，空 dict = 不限制
+    strategy_timeframes: Dict[str, List[str]] = field(default_factory=dict)
     # 指标热身 bar 数量
     warmup_bars: int = 200
     # 合约大小（XAUUSD = 100 oz/lot）
@@ -99,13 +101,17 @@ class BacktestConfig:
     max_trades_per_day: Optional[int] = None
     max_trades_per_hour: Optional[int] = None
     # Regime 感知 SL/TP 缩放（与实盘 signal.ini [regime_sizing] 对齐）
-    regime_tp_trending: float = 1.20
-    regime_tp_ranging: float = 0.80
-    regime_tp_breakout: float = 1.10
-    regime_tp_uncertain: float = 1.00
-    regime_sl_trending: float = 1.00
-    regime_sl_ranging: float = 0.90
+    # trending: 给趋势更大的 TP 空间，SL 适度放宽避免被回调打掉
+    regime_tp_trending: float = 1.30
+    regime_sl_trending: float = 1.10
+    # ranging: 快进快出，TP 和 SL 都收紧
+    regime_tp_ranging: float = 0.75
+    regime_sl_ranging: float = 0.85
+    # breakout: 突破后波动大，TP 扩大抓波段
+    regime_tp_breakout: float = 1.20
     regime_sl_breakout: float = 1.10
+    # uncertain: 基准
+    regime_tp_uncertain: float = 1.00
     regime_sl_uncertain: float = 1.00
 
     # ── Pending Entry 价格确认入场（复用实盘 pending_entry 纯逻辑）────────
@@ -118,8 +124,10 @@ class BacktestConfig:
 
     # ── 持仓管理（复用实盘 position_rules）────────────────────────────────
     # breakeven / trailing stop（与实盘 PositionManager 相同参数）
-    trailing_atr_multiplier: float = 1.0
-    breakeven_atr_threshold: float = 1.0
+    # 盈利 0.8 ATR 后开始 trailing（更快锁定利润）
+    trailing_atr_multiplier: float = 0.8
+    # 盈利 0.8 ATR 后移动 SL 到保本点
+    breakeven_atr_threshold: float = 0.8
     # 日终自动平仓
     end_of_day_close_enabled: bool = False
     end_of_day_close_hour_utc: int = 21
@@ -137,6 +145,11 @@ class BacktestConfig:
     # 波动率异常抑制（0 = 禁用）
     filter_volatility_enabled: bool = True
     filter_volatility_spike_multiplier: float = 2.5
+    # 经济日历事件过滤（需要 DB 中有历史经济日历数据）
+    filter_economic_enabled: bool = True
+    filter_economic_lookahead_minutes: int = 30
+    filter_economic_lookback_minutes: int = 15
+    filter_economic_importance_min: int = 2
     # 点差过滤（回测中默认禁用，因为没有真实 spread 数据）
     filter_spread_enabled: bool = False
     filter_max_spread_points: float = 50.0
