@@ -62,81 +62,9 @@ class CompositeSpec:
     preferred_scopes: Tuple[str, ...]
 
 
-# ── 内置复合策略配置表 ────────────────────────────────────────────────────────
-# 每次 build() 时各 factory 都会创建独立实例，
-# 避免与 SignalModule 中注册的单策略实例共享对象，
-# 从而防止 VotingEngine 重复计票。
-_COMPOSITE_STRATEGY_SPECS: List[CompositeSpec] = [
-    # 趋势三重确认：Supertrend + MACD + SMA 多数同向时入场
-    CompositeSpec(
-        name="trend_triple_confirm",
-        sub_strategy_factories=(SupertrendStrategy, MacdMomentumStrategy, SmaTrendStrategy),
-        combine_mode="majority",
-        regime_affinity={
-            RegimeType.TRENDING:  1.00,  # 趋势行情核心策略，完全置信
-            RegimeType.RANGING:   0.10,  # 震荡中趋势信号噪声高，几乎压制
-            RegimeType.BREAKOUT:  0.55,  # 突破初期方向确认有用，中等权重
-            RegimeType.UNCERTAIN: 0.40,  # 过渡区保守
-        },
-        preferred_scopes=("confirmed",),
-    ),
-    # 突破双重确认：Bollinger + Donchian + Keltner Squeeze 同时确认，过滤假突破
-    CompositeSpec(
-        name="breakout_double_confirm",
-        sub_strategy_factories=(
-            BollingerBreakoutStrategy,
-            DonchianBreakoutStrategy,
-            KeltnerBollingerSqueezeStrategy,
-        ),
-        combine_mode="all_agree",
-        regime_affinity={
-            RegimeType.TRENDING:  0.45,  # 趋势已确立后突破信号滞后，适中
-            RegimeType.RANGING:   0.20,  # 震荡区间内假突破多，大幅压制
-            RegimeType.BREAKOUT:  1.00,  # 突破行情完美场景
-            RegimeType.UNCERTAIN: 0.55,  # 可能即将突破，给予中等权重
-        },
-        preferred_scopes=("confirmed",),
-    ),
-    # 震荡双重确认：RSI + StochRSI 同时超买/超卖的均值回归
-    CompositeSpec(
-        name="reversion_double_confirm",
-        sub_strategy_factories=(RsiReversionStrategy, StochRsiStrategy),
-        combine_mode="all_agree",
-        regime_affinity={
-            RegimeType.TRENDING:  0.15,  # 趋势中均值回归胜率极低
-            RegimeType.RANGING:   1.00,  # 震荡行情核心策略
-            RegimeType.BREAKOUT:  0.25,  # 突破行情中超买/超卖信号不可靠
-            RegimeType.UNCERTAIN: 0.55,  # 中等保守
-        },
-        preferred_scopes=("confirmed", "intrabar"),
-    ),
-    # 突破释放确认：Donchian 趋势突破 + Squeeze 释放方向一致时追随
-    CompositeSpec(
-        name="breakout_release_confirm",
-        sub_strategy_factories=(DonchianBreakoutStrategy, SqueezeReleaseFollow),
-        combine_mode="all_agree",
-        regime_affinity={
-            RegimeType.TRENDING: 0.35,
-            RegimeType.RANGING: 0.15,
-            RegimeType.BREAKOUT: 1.00,
-            RegimeType.UNCERTAIN: 0.50,
-        },
-        preferred_scopes=("confirmed",),
-    ),
-    # 假突破反转确认：通道假突破 + K 线反转形态同向时才参与均值回归
-    CompositeSpec(
-        name="reversal_rejection_confirm",
-        sub_strategy_factories=(FakeBreakoutDetector, PriceActionReversal),
-        combine_mode="all_agree",
-        regime_affinity={
-            RegimeType.TRENDING: 0.10,
-            RegimeType.RANGING: 1.00,
-            RegimeType.BREAKOUT: 0.45,
-            RegimeType.UNCERTAIN: 0.60,
-        },
-        preferred_scopes=("confirmed",),
-    ),
-]
+
+# 复合策略定义完全由 config/composites.json 驱动，不再有硬编码回退。
+# JSON 加载失败时 build_composite_strategies() 直接报错。
 
 
 def _load_specs_from_json(path: str) -> Optional[List[CompositeSpec]]:
@@ -145,9 +73,12 @@ def _load_specs_from_json(path: str) -> Optional[List[CompositeSpec]]:
     JSON 中使用策略类名字符串（如 "SupertrendStrategy"），此函数将其解析为工厂函数。
     解析失败时返回 None，调用方应回退到硬编码默认值。
     """
+    from .multi_tf_entry import HTFTrendM5Entry
+
     _CLASS_MAP: Dict[str, Any] = {
         "BollingerBreakoutStrategy": BollingerBreakoutStrategy,
         "DonchianBreakoutStrategy": DonchianBreakoutStrategy,
+        "HTFTrendM5Entry": HTFTrendM5Entry,
         "EmaRibbonStrategy": EmaRibbonStrategy,
         "FakeBreakoutDetector": FakeBreakoutDetector,
         "KeltnerBollingerSqueezeStrategy": KeltnerBollingerSqueezeStrategy,
@@ -228,7 +159,18 @@ def build_composite_strategies(
         _here = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(_here, "..", "..", "config", "composites.json")
 
-    specs = _load_specs_from_json(config_path) or _COMPOSITE_STRATEGY_SPECS
+    specs = _load_specs_from_json(config_path)
+    if specs is None:
+        if not os.path.exists(config_path):
+            logger.warning(
+                "composites.json not found at %s, no composite strategies loaded",
+                config_path,
+            )
+            return []
+        raise RuntimeError(
+            f"Failed to parse composite strategies from {config_path}. "
+            f"File exists but contains invalid JSON or unrecognized strategy names."
+        )
     strategies = []
     for spec in specs:
         sub_instances = [factory() for factory in spec.sub_strategy_factories]

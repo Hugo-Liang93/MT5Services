@@ -166,6 +166,16 @@ def build_executor_config(signal_config) -> ExecutorConfig:
         max_volume=signal_config.max_volume,
         contract_size_map=dict(signal_config.contract_size_map),
         timeframe_risk_multipliers=dict(signal_config.timeframe_risk_multipliers),
+        timeframe_min_confidence=dict(
+            getattr(signal_config, "timeframe_min_confidence", {}) or {}
+        ),
+        htf_conflict_block_timeframes=frozenset(
+            getattr(signal_config, "htf_conflict_block_timeframes", frozenset()) or frozenset()
+        ),
+        htf_conflict_exempt_categories=frozenset(
+            getattr(signal_config, "htf_conflict_exempt_categories", frozenset())
+            or frozenset({"reversion"})
+        ),
         max_consecutive_failures=signal_config.max_consecutive_failures,
         circuit_auto_reset_minutes=signal_config.circuit_auto_reset_minutes,
         max_spread_to_stop_ratio=signal_config.max_spread_to_stop_ratio,

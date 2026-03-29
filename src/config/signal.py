@@ -106,6 +106,8 @@ def get_signal_config() -> SignalConfig:
     signal_quality_section = dict(merged.get("signal_quality", {}))
     htf_alignment_section = dict(merged.get("htf_alignment", {}))
     timeframe_risk_section = dict(merged.get("timeframe_risk", {}))
+    timeframe_min_confidence_section = dict(merged.get("timeframe_min_confidence", {}))
+    htf_conflict_block_section = dict(merged.get("htf_conflict_block", {}))
     pending_entry_section = dict(merged.get("pending_entry", {}))
 
     renamed_preview = {
@@ -296,6 +298,24 @@ def get_signal_config() -> SignalConfig:
         "timeframe_risk_multipliers": _normalize_float_map(
             timeframe_risk_section,
             key_transform=lambda value: value.upper(),
+        ),
+        "timeframe_min_confidence": _normalize_float_map(
+            timeframe_min_confidence_section,
+            key_transform=lambda value: value.upper(),
+        ),
+        "htf_conflict_block_timeframes": frozenset(
+            tf.strip().upper()
+            for tf in str(
+                htf_conflict_block_section.get("enabled_timeframes", "")
+            ).split(",")
+            if tf.strip()
+        ),
+        "htf_conflict_exempt_categories": frozenset(
+            cat.strip()
+            for cat in str(
+                htf_conflict_block_section.get("exempt_categories", "reversion")
+            ).split(",")
+            if cat.strip()
         ),
         "strategy_htf_targets": {
             str(k).strip(): str(v).strip().upper()

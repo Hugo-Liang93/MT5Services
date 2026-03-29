@@ -18,19 +18,19 @@ from src.trading.sizing import (
 class TestResolveTimeframeRiskMultiplier:
 
     def test_m5_is_conservative(self):
-        assert resolve_timeframe_risk_multiplier("M5") == 0.75
+        assert resolve_timeframe_risk_multiplier("M5") == 0.50
 
     def test_m15_is_baseline(self):
-        assert resolve_timeframe_risk_multiplier("M15") == 1.00
+        assert resolve_timeframe_risk_multiplier("M15") == 0.75
 
     def test_m30_is_moderate(self):
-        assert resolve_timeframe_risk_multiplier("M30") == 1.10
+        assert resolve_timeframe_risk_multiplier("M30") == 0.90
 
     def test_h1_is_aggressive(self):
-        assert resolve_timeframe_risk_multiplier("H1") == 1.20
+        assert resolve_timeframe_risk_multiplier("H1") == 1.00
 
     def test_h4_is_stable(self):
-        assert resolve_timeframe_risk_multiplier("H4") == 1.35
+        assert resolve_timeframe_risk_multiplier("H4") == 1.20
 
     def test_d1_is_most_aggressive(self):
         assert resolve_timeframe_risk_multiplier("D1") == 1.50
@@ -42,8 +42,8 @@ class TestResolveTimeframeRiskMultiplier:
         assert resolve_timeframe_risk_multiplier(None) == 1.0
 
     def test_case_insensitive(self):
-        assert resolve_timeframe_risk_multiplier("m5") == 0.75
-        assert resolve_timeframe_risk_multiplier("h1") == 1.20
+        assert resolve_timeframe_risk_multiplier("m5") == 0.50
+        assert resolve_timeframe_risk_multiplier("h1") == 1.00
 
 
 class TestComputeTradeParamsRiskMultiplier:
@@ -163,7 +163,7 @@ class TestTimeframeRiskOverrides:
     def test_resolve_with_override(self):
         assert resolve_timeframe_risk_multiplier("M1", overrides={"M1": 0.80}) == 0.80
         # Fallback to default when override doesn't have the key
-        assert resolve_timeframe_risk_multiplier("H1", overrides={"M1": 0.80}) == 1.20
+        assert resolve_timeframe_risk_multiplier("H1", overrides={"M1": 0.80}) == 1.00
 
 
 class TestRegimeAwareSizing:
@@ -197,5 +197,8 @@ class TestRegimeAwareSizing:
     def test_custom_regime_sizing_object_is_applied(self):
         custom = RegimeSizing(tp_trending=1.5, sl_trending=0.8)
         params = compute_trade_params(**self.BASE_ARGS, regime="trending", regime_sizing=custom)
-        assert params.tp_distance > 6.0  # M15 默认 tp=3.0, atr=2.0 → 6.0
-        assert params.sl_distance < 3.0  # M15 默认 sl=1.5,atr=2.0 → 3.0
+        # M15: base tp=3.5 × 1.5 = 5.25 × atr=2.0 → 10.5
+        assert params.tp_distance > 6.0
+        # M15: base sl=2.0 × 0.8 = 1.6 × atr=2.0 → 3.2, verify regime scaling applied
+        base = compute_trade_params(**self.BASE_ARGS, regime="trending")
+        assert params.sl_distance < base.sl_distance  # 0.8× 比 1.0× 更小

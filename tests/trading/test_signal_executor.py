@@ -91,7 +91,8 @@ def test_trade_executor_skips_when_spread_to_stop_ratio_is_too_high() -> None:
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    _fire(executor, _build_event(spread_points=80.0, close_price=3000.0))
+    # M5 SL = 2.0 ATR × 2.0 = 4.0 points → spread 120 / (4.0 × 100) = 0.30 > 0.2
+    _fire(executor, _build_event(spread_points=120.0, close_price=3000.0))
 
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == "spread_to_stop_ratio_too_high"
@@ -196,10 +197,10 @@ def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
 
     assert module.calls
     payload = module.calls[0][1]
-    # M5: sl_atr_mult=1.5, tp_atr_mult=2.8, ATR=2.0
-    # SL = 3000 - 1.5*2 = 2997.0, TP = 3000 + 2.8*2 = 3005.6
-    assert payload["sl"] == pytest.approx(2997.0)
-    assert payload["tp"] == pytest.approx(3005.6)
+    # M5: sl_atr_mult=2.0, tp_atr_mult=3.5, ATR=2.0
+    # SL = 3000 - 2.0*2 = 2996.0, TP = 3000 + 3.5*2 = 3007.0
+    assert payload["sl"] == pytest.approx(2996.0)
+    assert payload["tp"] == pytest.approx(3007.0)
 
 
 def test_trade_executor_passes_signal_id_as_request_id() -> None:

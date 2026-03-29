@@ -13,6 +13,14 @@ class SignalConfig(BaseModel):
     risk_percent_per_trade: float = 1.0
     # 时间框架差异化风险乘数：tf → multiplier（覆盖 sizing.py 的默认值）
     timeframe_risk_multipliers: dict[str, float] = Field(default_factory=dict)
+    # Per-TF 最低交易置信度：低 TF 噪声多可设更高阈值过滤弱信号
+    timeframe_min_confidence: dict[str, float] = Field(default_factory=dict)
+    # HTF 方向冲突时强制拒绝交易的 TF 集合
+    htf_conflict_block_timeframes: frozenset[str] = Field(default_factory=frozenset)
+    # 豁免 HTF 冲突阻止的策略类别（均值回归天然做反向）
+    htf_conflict_exempt_categories: frozenset[str] = Field(
+        default_factory=lambda: frozenset({"reversion"})
+    )
     min_volume: float = 0.01
     max_volume: float = 1.0
     base_spread_points: float = 0.0

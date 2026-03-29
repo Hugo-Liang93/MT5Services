@@ -8,22 +8,22 @@ from typing import Any, Dict, Optional
 from src.signals.evaluation.regime import RegimeType
 
 TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
-    "M5": {"sl_atr_mult": 1.5, "tp_atr_mult": 2.8},
-    "M15": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0},
-    "M30": {"sl_atr_mult": 1.8, "tp_atr_mult": 3.2},
-    "H1": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},
-    "H4": {"sl_atr_mult": 2.2, "tp_atr_mult": 4.0},
-    "D1": {"sl_atr_mult": 2.5, "tp_atr_mult": 4.5},
+    "M5": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},
+    "M15": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},
+    "M30": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},
+    "H1": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.0},
+    "H4": {"sl_atr_mult": 2.2, "tp_atr_mult": 3.5},
+    "D1": {"sl_atr_mult": 2.5, "tp_atr_mult": 4.0},
 }
 
 # 时间框架差异化风险百分比（乘数）
 # 实际 risk_pct = base_risk_percent × multiplier
 TIMEFRAME_RISK_MULTIPLIER: dict[str, float] = {
-    "M5": 0.75,   # M5 执行层，适中偏保守
-    "M15": 1.00,  # M15 基准
-    "M30": 1.10,  # M30 确认层，略激进
-    "H1": 1.20,   # H1 方向层，信号更可靠
-    "H4": 1.35,   # H4 过滤层，信号稳定
+    "M5": 0.50,   # M5 噪声大，SL 已加宽，仓位需缩小
+    "M15": 0.75,  # M15 中等
+    "M30": 0.90,  # M30 确认层
+    "H1": 1.00,   # H1 基准
+    "H4": 1.20,   # H4 过滤层，信号稳定
     "D1": 1.50,   # D1 大势层，允许更大仓位
 }
 
