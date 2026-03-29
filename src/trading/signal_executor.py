@@ -50,6 +50,14 @@ logger = logging.getLogger(__name__)
 class ExecutorConfig:
     enabled: bool = False
     min_confidence: float = 0.7
+    # Per-TF 最低置信度覆盖：低 TF 噪声多需要更高阈值过滤弱信号
+    timeframe_min_confidence: dict[str, float] = field(default_factory=dict)
+    # HTF 方向冲突时强制拒绝交易的 TF 列表（低 TF 逆大周期方向不应交易）
+    htf_conflict_block_timeframes: frozenset[str] = field(default_factory=frozenset)
+    # 豁免 HTF 冲突阻止的策略类别（如均值回归天然做反向，不应被大周期方向限制）
+    htf_conflict_exempt_categories: frozenset[str] = field(
+        default_factory=lambda: frozenset({"reversion"})
+    )
     max_concurrent_positions_per_symbol: int | None = 3
     risk_percent: float = 1.0
     sl_atr_multiplier: float = 1.5
@@ -135,6 +143,9 @@ class TradeExecutor:
             "slippage_total_points": 0.0,
             "queue_overflows": 0,
         }
+        # 溢出丢弃审计（保留最近 50 条，供 status() 查询）
+        self._dropped_signals: list[dict[str, Any]] = []
+        self._max_dropped_history: int = 50
         # 熔断器状态
         self._consecutive_failures: int = 0
         self._circuit_open: bool = False
@@ -174,14 +185,26 @@ class TradeExecutor:
                 self._exec_queue.put(event, timeout=3.0)
             except queue.Full:
                 self._execution_quality["queue_overflows"] += 1
+                sig_id = getattr(event, "signal_id", "") or ""
                 logger.error(
                     "TradeExecutor queue full after 3s retry, DROPPING confirmed event "
                     "%s/%s/%s signal_id=%s (overflows=%d). "
                     "Trading opportunity permanently lost!",
                     event.symbol, event.timeframe, event.strategy,
-                    getattr(event, "signal_id", ""),
+                    sig_id,
                     self._execution_quality["queue_overflows"],
                 )
+                # 审计记录：保留最近 N 条丢弃信号供 status() 查询
+                self._dropped_signals.append({
+                    "signal_id": sig_id,
+                    "symbol": event.symbol,
+                    "timeframe": event.timeframe,
+                    "strategy": event.strategy,
+                    "direction": getattr(event, "direction", ""),
+                    "dropped_at": time.time(),
+                })
+                if len(self._dropped_signals) > self._max_dropped_history:
+                    self._dropped_signals = self._dropped_signals[-self._max_dropped_history:]
 
     def _start_worker(self) -> None:
         """Start the background execution worker thread (idempotent)."""
@@ -346,16 +369,38 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, gate_reason, tf)
             return None
 
-        if event.confidence < self.config.min_confidence:
+        # Per-TF min_confidence：低 TF 可要求更高置信度过滤噪声
+        effective_min_conf = self.config.timeframe_min_confidence.get(
+            tf, self.config.min_confidence
+        )
+        if event.confidence < effective_min_conf:
             logger.info(
-                "TradeExecutor: skipping %s/%s %s - confidence %.3f < min=%.2f",
+                "TradeExecutor: skipping %s/%s %s - confidence %.3f < min=%.2f (tf=%s)",
                 event.symbol,
                 event.strategy,
                 event.direction,
                 event.confidence,
-                self.config.min_confidence,
+                effective_min_conf,
+                tf,
             )
             self._notify_skip(event.signal_id, "min_confidence", tf)
+            return None
+
+        # HTF 方向冲突强制阻止：低 TF 趋势策略逆大周期方向不允许交易
+        # 均值回归策略豁免——它们天然做反向（如 RSI 超买做空在上涨趋势中是合理的）
+        strategy_category = event.metadata.get("strategy_category", "")
+        if (
+            tf in self.config.htf_conflict_block_timeframes
+            and event.metadata.get("htf_alignment") == "conflict"
+            and strategy_category not in self.config.htf_conflict_exempt_categories
+        ):
+            logger.info(
+                "TradeExecutor: BLOCKING %s/%s/%s %s - HTF direction conflict "
+                "on low TF %s (htf_dir=%s, category=%s)",
+                event.symbol, tf, event.strategy, event.direction,
+                tf, event.metadata.get("htf_direction", "?"), strategy_category,
+            )
+            self._notify_skip(event.signal_id, "htf_conflict_block", tf)
             return None
 
         if self._reached_position_limit(event.symbol):

@@ -695,6 +695,7 @@ def test_storage_writer_stats_include_queue_summary() -> None:
     from src.persistence.storage_writer import StorageWriter
 
     writer = object.__new__(StorageWriter)
+    writer._lock = threading.RLock()
     writer._thread = SimpleNamespace(is_alive=lambda: True)
     writer._channels = {
         "ohlc": {

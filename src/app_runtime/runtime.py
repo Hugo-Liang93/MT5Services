@@ -66,15 +66,21 @@ class AppRuntime:
         current_started = time.monotonic()
 
         try:
-            for current_step, starter in [
-                ("storage", c.storage_writer.start),
-                ("indicators", c.indicator_manager.start),
-                ("ingestion", c.ingestor.start),
-                ("economic_calendar", c.economic_calendar_service.start),
-                ("signals", c.signal_runtime.start),
-            ]:
+            _components = [
+                ("storage", c.storage_writer),
+                ("indicators", c.indicator_manager),
+                ("ingestion", c.ingestor),
+                ("economic_calendar", c.economic_calendar_service),
+                ("signals", c.signal_runtime),
+            ]
+            for current_step, component in _components:
+                if component is None:
+                    raise RuntimeError(
+                        f"Component '{current_step}' is None — "
+                        f"build_app_container() likely failed to initialize it"
+                    )
                 current_started = time.monotonic()
-                starter()
+                component.start()
                 self._mark_step(current_step, "ready", current_started)
                 self._record_task_status(current_step, "ready", current_started)
 

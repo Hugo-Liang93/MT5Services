@@ -103,6 +103,9 @@ class DummySignalService:
             }
         )
 
+    def get_strategy(self, name: str):
+        return None  # Dummy: no real strategy objects
+
     def recent_signals(self, **kwargs):
         scope = kwargs.get("scope", "confirmed")
         rows = list(self.recent_rows)

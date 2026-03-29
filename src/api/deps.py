@@ -44,17 +44,33 @@ _init_lock = threading.Lock()
 # ── Global singleton ──────────────────────────────────────────
 _runtime: Optional[AppRuntime] = None
 _container: Optional[AppContainer] = None
+_init_failed: bool = False
+_init_error: Optional[Exception] = None
 
 
 def _ensure_initialized() -> None:
-    global _runtime, _container
+    global _runtime, _container, _init_failed, _init_error
     if _container is not None:
         return
+    if _init_failed:
+        raise RuntimeError(
+            f"Container initialization previously failed: {_init_error}"
+        )
     with _init_lock:
         if _container is not None:
             return
-        _container = build_app_container(signal_config_loader=get_signal_config)
-        _runtime = AppRuntime(_container, signal_config_loader=get_signal_config)
+        if _init_failed:
+            raise RuntimeError(
+                f"Container initialization previously failed: {_init_error}"
+            )
+        try:
+            _container = build_app_container(signal_config_loader=get_signal_config)
+            _runtime = AppRuntime(_container, signal_config_loader=get_signal_config)
+        except Exception as exc:
+            _init_failed = True
+            _init_error = exc
+            logger.exception("Container initialization failed permanently")
+            raise
 
 
 def _shutdown_initialized_runtime() -> None:

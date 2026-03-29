@@ -340,7 +340,12 @@ class MarketRegimeDetector:
 
         total = sum(scores.values())
         if total < 1e-6:
-            # 所有分数极小时回退到均匀分布
+            # 所有分数极小时回退到均匀分布——这表示指标数据异常或全部 clamped
+            logger.warning(
+                "Soft regime scores near zero (total=%.2e, clamped=%s), "
+                "falling back to uniform distribution",
+                total, clamped,
+            )
             probabilities = {regime: 0.25 for regime in RegimeType}
         else:
             # 单次归一化即可，浮点精度差异 < 1e-15，无需二次修正

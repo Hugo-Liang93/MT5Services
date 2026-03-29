@@ -207,7 +207,7 @@ class PendingEntryManager:
         self._on_expired_fn = on_expired_fn  # (signal_id, reason) 过期回调
 
         self._pending: dict[str, PendingEntry] = {}  # signal_id → PendingEntry
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # RLock: 回调链可能重入 submit/cancel
         self._monitor_thread: Optional[threading.Thread] = None
         self._fill_worker_thread: Optional[threading.Thread] = None
         self._fill_queue: queue.Queue[_FillResult] = queue.Queue(maxsize=128)
@@ -587,6 +587,12 @@ class PendingEntryManager:
                     "This indicates fill_worker is stuck or too slow.",
                     entry.signal_event.signal_id,
                 )
+                # 标记为 expired 并从 _pending 移除，避免永久滞留内存
+                with self._lock:
+                    self._pending.pop(entry.signal_event.signal_id, None)
+                    entry.status = "expired"
+                    entry.cancel_reason = "fill_queue_overflow"
+                    self._stats["total_expired"] += 1
 
     def _expire_entry(self, entry: PendingEntry) -> None:
         with self._lock:

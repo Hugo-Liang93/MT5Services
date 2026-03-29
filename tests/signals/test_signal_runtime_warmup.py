@@ -64,6 +64,9 @@ class DummySignalService:
             {"decision": decision, "indicators": indicators, "metadata": metadata or {}}
         )
 
+    def get_strategy(self, name: str):  # type: ignore[no-untyped-def]
+        return None
+
     def recent_signals(self, **kwargs):  # type: ignore[no-untyped-def]
         return []
 

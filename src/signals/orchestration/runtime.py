@@ -1016,19 +1016,15 @@ class SignalRuntime:
     def _get_shard_lock(self, symbol: str, timeframe: str) -> threading.Lock:
         """懒初始化并返回 (symbol, timeframe) 对应的分片锁。
 
-        双重检查锁定（Double-Checked Locking）模式：
-        - 热路径（读）无需 meta_lock；仅在首次创建时持锁。
-        - 保证不同 (symbol, timeframe) 对的状态写入可独立进行。
+        使用 dict.setdefault 保证同一 key 只创建一个 Lock 实例，
+        在 meta_lock 保护下操作，避免 double-checked locking 的内存可见性问题。
         """
         key = (symbol, timeframe)
         lock = self._shard_locks.get(key)
-        if lock is None:
-            with self._meta_lock:
-                lock = self._shard_locks.get(key)
-                if lock is None:
-                    lock = threading.Lock()
-                    self._shard_locks[key] = lock
-        return lock
+        if lock is not None:
+            return lock
+        with self._meta_lock:
+            return self._shard_locks.setdefault(key, threading.Lock())
 
     def _evaluate_strategies(
         self,
@@ -1124,6 +1120,18 @@ class SignalRuntime:
                     self._indicator_miss_counts[miss_key] = (
                         self._indicator_miss_counts.get(miss_key, 0) + 1
                     )
+                    # 即时限制：超 600 条时淘汰低频条目，防止两次定期清理间无界增长
+                    if len(self._indicator_miss_counts) > 600:
+                        _keep_top = 200
+                        _sorted = sorted(
+                            self._indicator_miss_counts,
+                            key=self._indicator_miss_counts.get,  # type: ignore[arg-type]
+                            reverse=True,
+                        )
+                        _keep_set = set(_sorted[:_keep_top])
+                        for _k in list(self._indicator_miss_counts):
+                            if _k not in _keep_set:
+                                self._indicator_miss_counts.pop(_k, None)
                     if (
                         self._indicator_miss_counts[miss_key] <= 1
                         or self._indicator_miss_counts[miss_key] % 100 == 0
@@ -1236,12 +1244,12 @@ class SignalRuntime:
         scope: str,
         regime_metadata: dict[str, Any],
     ) -> Any:
-        """Apply intrabar decay and HTF alignment to a raw decision."""
-        if scope == "intrabar":
-            decay = self._strategy_intrabar_decay.get(
-                strategy, self._intrabar_confidence_factor
-            )
-            decision = apply_intrabar_decay(decision, scope, decay)
+        """Apply HTF alignment first, then intrabar decay.
+
+        顺序很重要：HTF 对齐应该作用于原始置信度（完整乘数效果），
+        intrabar 衰减最后应用（统一降权未收盘 bar 的信号）。
+        """
+        # 1. HTF 方向对齐修正（作用于原始置信度）
         if decision.direction in ("buy", "sell"):
             htf_mul, htf_dir = self._compute_htf_alignment(
                 symbol, timeframe, decision.direction, scope,
@@ -1256,6 +1264,12 @@ class SignalRuntime:
                     "aligned" if htf_mul >= 1.0 else "conflict"
                 )
                 regime_metadata["htf_confidence_multiplier"] = htf_mul
+        # 2. Intrabar 衰减（最后降权，不影响 HTF 对齐效果）
+        if scope == "intrabar":
+            decay = self._strategy_intrabar_decay.get(
+                strategy, self._intrabar_confidence_factor
+            )
+            decision = apply_intrabar_decay(decision, scope, decay)
         return decision
 
     def _transition_and_publish(
@@ -1286,6 +1300,13 @@ class SignalRuntime:
         )
         if transition_metadata is None:
             return
+
+        # 注入策略类别到 metadata，供 TradeExecutor 做 HTF 冲突阻止的类别豁免判断
+        _strat_obj = self.service.get_strategy(decision.strategy)
+        if _strat_obj is not None:
+            transition_metadata["strategy_category"] = getattr(
+                _strat_obj, "category", ""
+            )
 
         # Voting group members only contribute votes; no standalone signal.
         if decision.strategy in self._voting_group_members:

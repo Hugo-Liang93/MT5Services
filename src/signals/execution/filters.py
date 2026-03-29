@@ -12,6 +12,7 @@ before order dispatch.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -195,12 +196,12 @@ class VolatilitySpikeFilter:
             return True
         current_atr = atr_data.get("atr")
         baseline_atr = atr_data.get("atr_sma") or atr_data.get("atr")
-        if (
-            current_atr is not None
-            and baseline_atr is not None
-            and baseline_atr > 0
-            and current_atr > baseline_atr * self.spike_multiplier
-        ):
+        if current_atr is None or baseline_atr is None:
+            return True
+        # NaN/Inf 防御：异常数值视为波动率不可信，放行由下游决策
+        if not math.isfinite(current_atr) or not math.isfinite(baseline_atr):
+            return True
+        if baseline_atr > 0 and current_atr > baseline_atr * self.spike_multiplier:
             return False
         return True
 

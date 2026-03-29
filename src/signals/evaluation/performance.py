@@ -509,6 +509,10 @@ class StrategyPerformanceTracker:
             try:
                 pnl = float(row.get("pnl") or 0.0)
             except (TypeError, ValueError):
+                logger.warning(
+                    "warm_up_from_db: invalid pnl=%r for strategy=%s, defaulting to 0.0",
+                    row.get("pnl"), strategy,
+                )
                 pnl = 0.0
             regime = row.get("regime")
             source = str(row.get("source") or "signal")

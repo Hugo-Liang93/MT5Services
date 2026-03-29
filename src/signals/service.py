@@ -25,10 +25,7 @@ from .strategies.breakout import (
     SqueezeReleaseFollow,
 )
 from .strategies.composite import CompositeSignalStrategy
-from .strategies.composite import (
-    build_breakout_double_confirm,
-    build_trend_triple_confirm,
-)
+from .strategies.multi_tf_entry import HTFTrendM5Entry
 from .strategies.mean_reversion import (
     CciReversionStrategy,
     RsiDivergenceStrategy,
@@ -111,9 +108,9 @@ class SignalModule:
             DonchianBreakoutStrategy(),
             FakeBreakoutDetector(),
             SqueezeReleaseFollow(),
-            # ── 复合策略（多重确认，高精度低频率）────────────────────────────────
-            build_trend_triple_confirm(),
-            build_breakout_double_confirm(),
+            # ── 多时间框架联动策略 ────────────────────────────────────────────
+            HTFTrendM5Entry(),
+            # 复合策略由 registry.register_composite_strategies() 从 composites.json 注册
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)
@@ -224,6 +221,10 @@ class SignalModule:
                     regime_type = _regime_map.get(regime_key.lower())
                     if regime_type is not None and hasattr(strategy, "regime_affinity"):
                         strategy.regime_affinity[regime_type] = weight
+
+    def get_strategy(self, name: str) -> Optional["SignalStrategy"]:
+        """Return strategy instance by name, or None if not registered."""
+        return self._strategies.get(name)
 
     def list_strategies(self) -> list[str]:
         return sorted(self._strategies.keys())
