@@ -157,7 +157,7 @@ def build_composite_strategies(
     if config_path is None:
         # 自动定位：从本文件向上两级找到项目根目录
         _here = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(_here, "..", "..", "config", "composites.json")
+        config_path = os.path.join(_here, "..", "..", "..", "config", "composites.json")
 
     specs = _load_specs_from_json(config_path)
     if specs is None:
