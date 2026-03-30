@@ -378,25 +378,46 @@ class PositionManager:
             if not isinstance(opened_at, datetime):
                 opened_at = datetime.now(timezone.utc)
 
+            # 恢复的仓位缺少 entry_indicators，尝试从当前快照补充
+            # （不完美——用的是当前值而非入场时的值，但比完全没有强，
+            # 至少能让 Indicator Exit 的方向翻转检测生效）
+            restored_indicators: Dict[str, Dict] = {}
+            symbol_str = str(getattr(raw_pos, "symbol", "") or "")
+            timeframe_str = str(context.get("timeframe") or "")
+            if self._indicator_snapshot_fn and symbol_str and timeframe_str:
+                try:
+                    snap = self._indicator_snapshot_fn(symbol_str, timeframe_str)
+                    if snap:
+                        restored_indicators = dict(snap)
+                except Exception:
+                    pass
+
             pos = TrackedPosition(
                 ticket=ticket,
                 signal_id=str(context.get("signal_id") or f"restored:{ticket}"),
-                symbol=str(getattr(raw_pos, "symbol", "") or ""),
+                symbol=symbol_str,
                 action=action,
                 entry_price=float(context.get("fill_price") or entry_price),
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 volume=volume,
                 atr_at_entry=self._default_atr_from_position(entry_price, stop_loss),
-                timeframe=str(context.get("timeframe") or ""),
+                timeframe=timeframe_str,
                 strategy=str(context.get("strategy") or ""),
                 confidence=context.get("confidence"),
                 regime=context.get("regime"),
                 source=str(context.get("source") or "mt5_bootstrap"),
+                entry_indicators=restored_indicators,
                 comment=str(context.get("comment") or comment),
                 opened_at=opened_at,
                 highest_price=entry_price if action == "buy" else None,
                 lowest_price=entry_price if action == "sell" else None,
+                # 推断 breakeven 状态：如果 SL 已经 >= entry_price（多头）或 <= entry_price（空头），
+                # 说明之前已经应用过 breakeven，恢复该状态以便 trailing SL 能立即工作
+                breakeven_applied=(
+                    (action == "buy" and stop_loss >= entry_price)
+                    or (action == "sell" and stop_loss <= entry_price and stop_loss > 0)
+                ),
             )
             with self._lock:
                 self._positions[ticket] = pos
