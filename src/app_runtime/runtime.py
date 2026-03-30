@@ -246,6 +246,13 @@ class AppRuntime:
             logger.info("PositionManager startup sync: %s", recovery_result)
         except Exception:
             logger.warning("PositionManager startup sync failed", exc_info=True)
+        # 启动时强制平仓过夜仓位（EOD 因服务宕机被跳过的兜底）
+        try:
+            overnight_result = c.position_manager.force_close_overnight()
+            if overnight_result is not None:
+                logger.warning("Overnight force close on startup: %s", overnight_result)
+        except Exception:
+            logger.warning("Overnight force close failed", exc_info=True)
         self._mark_step("position_manager", "ready", current_started)
 
     def _register_monitoring(self) -> None:

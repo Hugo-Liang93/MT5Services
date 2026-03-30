@@ -292,6 +292,75 @@ class PositionManager:
             "margin_guard": self.margin_guard_status(),
         }
 
+    def is_after_eod_today(self) -> bool:
+        """当天 EOD 已执行，当前处于 EOD 后禁止开仓的窗口。
+
+        用于 TradeExecutor 在开仓前检查，防止 EOD 平仓后又开新仓。
+        次日首个交易时段（亚盘 UTC 0:00）开始后自动解除。
+        """
+        if not self.end_of_day_close_enabled:
+            return False
+        if self._last_end_of_day_close_date is None:
+            return False
+        now = datetime.now(timezone.utc)
+        today = now.date().isoformat()
+        if self._last_end_of_day_close_date != today:
+            return False
+        # EOD 已执行，且当前时间仍在 EOD 之后（同一天）
+        return True
+
+    def force_close_overnight(self) -> Optional[Dict[str, Any]]:
+        """启动时检测并强制平仓过夜仓位。
+
+        如果 EOD 因服务宕机而被跳过，次日启动时立即全平。
+        只在 end_of_day_close_enabled=True 时生效。
+        """
+        if not self.end_of_day_close_enabled:
+            return None
+
+        positions_getter = getattr(self._trading, "get_positions", None)
+        if not callable(positions_getter):
+            return None
+        try:
+            open_positions = list(positions_getter())
+        except Exception:
+            return None
+        if not open_positions:
+            return None
+
+        # 检查是否有仓位是"昨天或更早"开的
+        now = datetime.now(timezone.utc)
+        overnight: list = []
+        for pos in open_positions:
+            opened = getattr(pos, "time", None)
+            if opened is None:
+                overnight.append(pos)
+                continue
+            if not isinstance(opened, datetime):
+                overnight.append(pos)
+                continue
+            opened_utc = opened if opened.tzinfo else opened.replace(tzinfo=timezone.utc)
+            if opened_utc.date() < now.date():
+                overnight.append(pos)
+
+        if not overnight:
+            return None
+
+        logger.warning(
+            "PositionManager: detected %d overnight positions, force closing",
+            len(overnight),
+        )
+        close_all = getattr(self._trading, "close_all_positions", None)
+        if not callable(close_all):
+            return None
+        try:
+            result = close_all(comment="overnight_force_close")
+            logger.info("Overnight force close result: %s", result)
+            return result if isinstance(result, dict) else {"result": result}
+        except Exception as exc:
+            logger.error("Overnight force close failed: %s", exc)
+            return {"error": str(exc)}
+
     def margin_guard_status(self) -> Dict[str, Any] | None:
         if self._margin_guard is None:
             return None

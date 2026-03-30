@@ -403,6 +403,19 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "htf_conflict_block", tf)
             return None
 
+        # ── EOD 后禁止开新仓（当天已执行日终平仓，不允许再开仓持过夜）──
+        if (
+            self._position_manager is not None
+            and hasattr(self._position_manager, "is_after_eod_today")
+            and self._position_manager.is_after_eod_today()
+        ):
+            logger.info(
+                "TradeExecutor: BLOCKING %s/%s %s - after EOD closeout, no new positions today",
+                event.symbol, event.strategy, event.direction,
+            )
+            self._notify_skip(event.signal_id, "after_eod_block", tf)
+            return None
+
         if self._reached_position_limit(event.symbol):
             logger.info(
                 "TradeExecutor: skipping %s/%s %s - max_concurrent_positions_per_symbol reached",
