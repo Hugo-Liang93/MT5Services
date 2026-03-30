@@ -61,40 +61,11 @@ def compute_results_with_priority_groups(
     if not selected_names:
         return {}, 0.0
 
-    selected_set = set(selected_names)
-    priority_groups = [
-        indicator_group
-        for indicator_group in getattr(manager, "_priority_indicator_groups", ())
-        if indicator_group and all(indicator_name in selected_set for indicator_name in indicator_group)
-    ]
-    published_groups: set[tuple[str, ...]] = set()
-
-    def on_level_complete(
-        _level_results: Dict[str, Dict[str, Any]],
-        accumulated_results: Dict[str, Dict[str, Any]],
-    ) -> None:
-        for indicator_group in priority_groups:
-            if indicator_group in published_groups:
-                continue
-            if any(indicator_name not in accumulated_results for indicator_name in indicator_group):
-                continue
-            group_results = {
-                indicator_name: accumulated_results[indicator_name]
-                for indicator_name in indicator_group
-            }
-            grouped = manager._group_indicator_values(group_results)
-            if not grouped or any(indicator_name not in grouped for indicator_name in indicator_group):
-                continue
-            published_groups.add(indicator_group)
-            # Confirmed scope: skip partial snapshots — the full snapshot is
-            # published by _write_back_results() after the pipeline completes.
-            # Publishing incomplete confirmed snapshots floods the confirmed
-            # queue with events that have only a subset of indicators, causing
-            # all strategies to log "missing indicators" warnings.
-            if scope == "confirmed":
-                continue
-            manager._publish_intrabar_snapshot(symbol, timeframe, bar_time, grouped)
-
+    # No on_level_complete callback: partial snapshots caused strategies to
+    # log "missing indicators" warnings for indicators in other groups.
+    # Full snapshots are published by the caller:
+    # - confirmed: _write_back_results()
+    # - intrabar: _handle_intrabar_event()
     started_at = time.time()
     compute_staged = getattr(manager.pipeline, "compute_staged", None)
     if callable(compute_staged):
@@ -104,7 +75,6 @@ def compute_results_with_priority_groups(
                 timeframe,
                 bars,
                 indicators=selected_names,
-                on_level_complete=on_level_complete if priority_groups else None,
                 scope=scope,
             )
         except TypeError as exc:
@@ -115,7 +85,6 @@ def compute_results_with_priority_groups(
                 timeframe,
                 bars,
                 indicators=selected_names,
-                on_level_complete=on_level_complete if priority_groups else None,
             )
     else:
         results = manager.pipeline.compute(symbol, timeframe, bars, selected_names)
@@ -167,15 +136,5 @@ def compute_priority_results(
             continue
         merged_results.update(group_results)
         covered_names.update(indicator_group)
-        if scope == "confirmed":
-            manager._publish_snapshot(
-                symbol,
-                timeframe,
-                bar_time,
-                grouped,
-                scope="confirmed",
-            )
-        else:
-            manager._publish_intrabar_snapshot(symbol, timeframe, bar_time, grouped)
 
     return merged_results, total_compute_time_ms, covered_names

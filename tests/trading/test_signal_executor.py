@@ -197,10 +197,10 @@ def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
 
     assert module.calls
     payload = module.calls[0][1]
-    # M5: sl_atr_mult=2.0, tp_atr_mult=3.5, ATR=2.0
-    # SL = 3000 - 2.0*2 = 2996.0, TP = 3000 + 3.5*2 = 3007.0
-    assert payload["sl"] == pytest.approx(2996.0)
-    assert payload["tp"] == pytest.approx(3007.0)
+    # M5: sl_atr_mult=1.8, tp_atr_mult=2.5, ATR=2.0
+    # SL = 3000 - 1.8*2 = 2996.4, TP = 3000 + 2.5*2 = 3005.0
+    assert payload["sl"] == pytest.approx(2996.4)
+    assert payload["tp"] == pytest.approx(3005.0)
 
 
 def test_trade_executor_passes_signal_id_as_request_id() -> None:

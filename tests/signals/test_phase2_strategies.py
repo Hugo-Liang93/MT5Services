@@ -580,4 +580,5 @@ def test_signal_module_injects_enough_recent_bars_for_rsi_divergence() -> None:
     )
 
     assert len(source.calls) == 1
-    assert source.calls[0]["limit"] == 14
+    # lookback_bars(14) + RSI_PERIOD(14) = 28 bars needed for true divergence detection
+    assert source.calls[0]["limit"] == 28

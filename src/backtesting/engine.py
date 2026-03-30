@@ -958,12 +958,14 @@ class BacktestEngine:
                 )
                 return
 
-        # 检查是否有反向持仓需要先关闭
-        opposite = "sell" if decision.direction == "buy" else "buy"
-        for pos in list(self._portfolio._open_positions):
-            if pos.strategy == decision.strategy and pos.direction == opposite:
-                self._portfolio.close_by_signal(decision.strategy, bar, bar_index)
-                break
+        # 不做 signal_exit 反手平仓 — 与实盘 TradeExecutor 行为一致：
+        # 实盘中反向信号直接开新仓（如果持仓数未满），旧仓由 SL/TP/Trailing 自然出场。
+        # 旧逻辑会以 bar.close 平仓旧仓（signal_exit），放弃 trailing SL 已锁定的利润。
+
+        # 检查同策略同方向是否已有持仓（避免重复开仓）
+        for pos in self._portfolio._open_positions:
+            if pos.strategy == decision.strategy and pos.direction == decision.direction:
+                return  # 已有同方向持仓，跳过
 
         # 获取 ATR 值用于 sizing
         atr_data = indicators.get("atr14", {})
@@ -976,7 +978,7 @@ class BacktestEngine:
             category = decision.metadata.get("category", "trend")
             from src.trading.pending_entry import _CATEGORY_ZONE_MODE
 
-            zone_mode = _CATEGORY_ZONE_MODE.get(category, "pullback")
+            zone_mode = _CATEGORY_ZONE_MODE.get(category, "symmetric")
             entry_low, entry_high = compute_entry_zone(
                 action=decision.direction,
                 close_price=bar.close,
@@ -984,6 +986,8 @@ class BacktestEngine:
                 zone_mode=zone_mode,
                 config=self._pending_entry_config,
                 strategy_name=decision.strategy,
+                category=category,
+                indicators=indicators,
             )
             expiry_bar = bar_index + self._config.pending_entry_expiry_bars
             key = f"{decision.strategy}_{decision.direction}"

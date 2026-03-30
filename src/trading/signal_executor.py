@@ -506,6 +506,8 @@ class TradeExecutor:
             zone_mode=zone_mode,
             config=config,
             strategy_name=event.strategy,
+            category=category,
+            indicators=event.indicators,
         )
         timeout = compute_timeout(event.timeframe, config)
         now = datetime.now(timezone.utc)

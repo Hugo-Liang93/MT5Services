@@ -367,29 +367,20 @@ def test_indicator_manager_priority_indicator_groups_are_deduplicated_and_ordere
 
 
 def test_indicator_manager_publishes_priority_confirmed_snapshots_per_group() -> None:
-    """Confirmed scope: partial group snapshots are intentionally skipped.
+    """Neither confirmed nor intrabar scope publishes partial group snapshots.
 
-    pipeline_runner.py on_level_complete() skips publishing for confirmed
-    scope to avoid flooding the confirmed queue with partial snapshots.
-    Only intrabar scope publishes per-group partial snapshots.
+    pipeline_runner.py no longer uses on_level_complete callbacks.
+    Full snapshots are published by the caller:
+    - confirmed: _write_back_results()
+    - intrabar: _handle_intrabar_event()
     """
     published = []
     bar_time = _bar(4).time
     bars = [_bar(3), _bar(4)]
 
-    def compute_staged(symbol, timeframe, current_bars, indicators=None, on_level_complete=None, scope=None):
+    def compute_staged(symbol, timeframe, current_bars, indicators=None, scope=None):
         assert current_bars == bars
         assert indicators == ["rsi14", "sma20", "ema50"]
-        if on_level_complete is not None:
-            on_level_complete({"rsi14": {"rsi": 52.0}}, {"rsi14": {"rsi": 52.0}})
-            on_level_complete(
-                {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
-                {
-                    "rsi14": {"rsi": 52.0},
-                    "sma20": {"sma": 201.0},
-                    "ema50": {"ema": 200.0},
-                },
-            )
         return {
             "rsi14": {"rsi": 52.0},
             "sma20": {"sma": 201.0},
@@ -407,7 +398,7 @@ def test_indicator_manager_publishes_priority_confirmed_snapshots_per_group() ->
         (symbol, timeframe, bar_time, indicators, "intrabar")
     )
 
-    # Confirmed scope: on_level_complete is called but skips publishing
+    # Confirmed scope: no partial publishing
     results, compute_time_ms = manager._compute_results_with_priority_groups(
         "XAUUSD",
         "M1",
@@ -422,10 +413,9 @@ def test_indicator_manager_publishes_priority_confirmed_snapshots_per_group() ->
         "ema50": {"ema": 200.0},
     }
     assert compute_time_ms >= 0.0
-    # Confirmed scope does NOT publish partial group snapshots
     assert published == []
 
-    # Intrabar scope: partial group snapshots ARE published
+    # Intrabar scope: also no partial publishing (full snapshot by caller)
     published.clear()
     results2, _ = manager._compute_results_with_priority_groups(
         "XAUUSD",
@@ -435,16 +425,7 @@ def test_indicator_manager_publishes_priority_confirmed_snapshots_per_group() ->
         scope="intrabar",
     )
     assert results2 == results
-    assert published == [
-        ("XAUUSD", "M1", bar_time, {"rsi14": {"rsi": 52.0}}, "intrabar"),
-        (
-            "XAUUSD",
-            "M1",
-            bar_time,
-            {"sma20": {"sma": 201.0}, "ema50": {"ema": 200.0}},
-            "intrabar",
-        ),
-    ]
+    assert published == []
 
 
 def test_indicator_manager_avoids_recomputing_priority_indicators_in_full_confirmed_batch() -> None:

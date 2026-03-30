@@ -52,7 +52,7 @@ class BollingerBreakoutStrategy:
     """
 
     name = "bollinger_breakout"
-    category = "breakout"
+    category = "reversion"
     required_indicators = ("boll20",)
     preferred_scopes = ("intrabar", "confirmed")
 
@@ -564,7 +564,7 @@ class FakeBreakoutDetector:
     """Detect failed Donchian breakouts that reject back into the channel."""
 
     name = "fake_breakout"
-    category = "breakout"
+    category = "reversion"  # 假突破后反转入场，本质是回归策略
     required_indicators = ("donchian20", "atr14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
@@ -905,7 +905,7 @@ class MultiTimeframeConfirmStrategy:
     category = "multi_tf"
     required_indicators = ("sma20", "ema50")
     preferred_scopes = ("confirmed",)
-    # HTF 指标：从 H1 获取 ema50 和 sma20 判断高时间框架趋势方向
+    # HTF 指标：通过 signal.ini [strategy_htf] 注入（当前配 H4），策略代码不硬编码 TF
 
     regime_affinity = {
         RegimeType.TRENDING:  1.00,  # 趋势市 LTF+HTF 双向一致，最可靠
@@ -998,16 +998,16 @@ class MultiTimeframeConfirmStrategy:
         htf = context.metadata.get("htf_direction")
         if htf in ("buy", "sell", "hold"):
             return htf
-        # 优先使用 htf_indicators（H1 的 ema50/sma20）判断方向
-        htf_data = context.htf_indicators.get("H1", {})
-        htf_ema = htf_data.get("ema50", {}).get("ema")
-        htf_sma = htf_data.get("sma20", {}).get("sma")
-        if htf_ema is not None and htf_sma is not None:
-            if htf_sma > htf_ema:
-                return "buy"
-            elif htf_sma < htf_ema:
-                return "sell"
-            return "hold"
+        # 从 htf_indicators 中查找包含 ema50+sma20 的 HTF（由 INI 配置驱动，不硬编码 TF）
+        for _tf, htf_data in context.htf_indicators.items():
+            htf_ema = htf_data.get("ema50", {}).get("ema")
+            htf_sma = htf_data.get("sma20", {}).get("sma")
+            if htf_ema is not None and htf_sma is not None:
+                if htf_sma > htf_ema:
+                    return "buy"
+                elif htf_sma < htf_ema:
+                    return "sell"
+                return "hold"
         if self._htf_cache is not None:
             try:
                 direction = self._htf_cache.get_htf_direction(

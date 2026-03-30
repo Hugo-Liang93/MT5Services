@@ -22,13 +22,11 @@ HTFStateCache 通过监听 SignalRuntime 的 confirmed 信号事件，
 
 ## 时间框架映射
 
-| LTF   | HTF（默认） |
-|-------|------------|
-| M1    | M5         |
-| M5    | M15        |
-| M15   | H1         |
-| H1    | H4         |
-| H4    | D1         |
+生产环境中，``build_signal_components()`` 根据 ``app.ini`` 已配置的时间框架
+自动构建映射（每个 TF → 链条中下一个已配置的更高 TF）。
+例如 configured = {M5,M15,M30,H1,H4,D1} → M5→M15, M15→M30, M30→H1, H1→H4, H4→D1。
+
+仅当 ``htf_map=None``（standalone/测试场景）时使用 ``_DEFAULT_HTF_MAP`` 兜底。
 """
 from __future__ import annotations
 

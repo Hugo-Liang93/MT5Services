@@ -509,18 +509,20 @@ class EmaRibbonStrategy:
 
 
 class HmaCrossStrategy:
-    """基于 HMA/EMA 交叉的低滞后趋势策略。
+    """基于 HMA/EMA 相对位置与间距强度的低滞后趋势策略。
+
+    注意：策略名 "hma_cross" 是历史命名，实际逻辑并非交叉检测，
+    而是 HMA 相对 EMA 的持续位置判断 + 间距强度。保留原名以兼容
+    INI 配置、投票组、DB 历史记录等已有引用。
 
     HMA（Hull MA）的最大优势是极低滞后——比同周期 EMA 快约半个周期响应。
-    HMA(20) 穿越 EMA(50) 比 SMA(20)/EMA(50) 提前 1-3 根 bar 发出信号，
-    适合 M1 等快节奏时间框架捕捉趋势初期机会。
 
     信号逻辑：
-    - HMA20 > EMA50 且间距扩大（动量向上）→ buy
-    - HMA20 < EMA50 且间距扩大（动量向下）→ sell
+    - HMA20 > EMA50 → buy，间距越大置信度越高
+    - HMA20 < EMA50 → sell，间距越大置信度越高
     - 置信度由两线间距（相对 EMA50 的百分比）决定
 
-    仅在 bar 收盘时评估：均线交叉需要收盘确认避免假突破。
+    仅在 bar 收盘时评估。
     """
 
     name = "hma_cross"

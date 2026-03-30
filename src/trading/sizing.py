@@ -8,12 +8,12 @@ from typing import Any, Dict, Optional
 from src.signals.evaluation.regime import RegimeType
 
 TIMEFRAME_SL_TP: dict[str, dict[str, float]] = {
-    "M5": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},
-    "M15": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},
-    "M30": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.5},
-    "H1": {"sl_atr_mult": 2.0, "tp_atr_mult": 3.0},
-    "H4": {"sl_atr_mult": 2.2, "tp_atr_mult": 3.5},
-    "D1": {"sl_atr_mult": 2.5, "tp_atr_mult": 4.0},
+    "M5": {"sl_atr_mult": 1.8, "tp_atr_mult": 2.5},
+    "M15": {"sl_atr_mult": 1.8, "tp_atr_mult": 2.5},
+    "M30": {"sl_atr_mult": 2.0, "tp_atr_mult": 2.5},
+    "H1": {"sl_atr_mult": 2.0, "tp_atr_mult": 2.5},
+    "H4": {"sl_atr_mult": 2.2, "tp_atr_mult": 3.0},
+    "D1": {"sl_atr_mult": 2.5, "tp_atr_mult": 3.5},
 }
 
 # 时间框架差异化风险百分比（乘数）

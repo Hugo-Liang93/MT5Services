@@ -294,14 +294,17 @@ confidence = score × (1.0 - disagreement_factor) × regime_stability
 
 ## 8. 复合策略
 
-| 策略 | 子策略 | 模式 |
-|------|--------|------|
-| `trend_triple_confirm` | supertrend + macd_momentum + sma_trend | majority |
-| `breakout_double_confirm` | bollinger_breakout + donchian_breakout + keltner_bb_squeeze | all_agree |
+| 策略 | 子策略 | Scope | 模式 |
+|------|--------|-------|------|
+| `trend_triple_confirm` | supertrend + macd_momentum + sma_trend | confirmed | majority |
+| `breakout_double_confirm` | donchian_breakout + keltner_bb_squeeze + squeeze_release | confirmed | all_agree |
+| `reversion_double_confirm` | rsi_reversion + stoch_rsi | intrabar + confirmed | all_agree |
+| `breakout_release_confirm` | donchian_breakout + squeeze_release | confirmed | all_agree |
+| `reversal_rejection_confirm` | fake_breakout + price_action_reversal | confirmed | all_agree |
 
 组合模式: `all_agree` (全部一致) / `majority` (过半) / `weighted_sum` (加权)。
 
-复合策略不参与 VotingEngine 投票 (避免重复计票)。
+复合策略由 `config/composites.json` 声明式配置，通过 `build_composite_strategies()` 动态构建。不参与 VotingEngine 投票 (避免重复计票)。
 
 ---
 

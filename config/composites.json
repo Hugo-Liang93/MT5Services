@@ -14,9 +14,9 @@
   {
     "name": "breakout_double_confirm",
     "sub_strategies": [
-      "BollingerBreakoutStrategy",
       "DonchianBreakoutStrategy",
-      "KeltnerBollingerSqueezeStrategy"
+      "KeltnerBollingerSqueezeStrategy",
+      "SqueezeReleaseFollow"
     ],
     "combine_mode": "all_agree",
     "regime_affinity": {

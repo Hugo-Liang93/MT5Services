@@ -164,15 +164,20 @@ class RsiReversionStrategy:
         if delta_suffix:
             reason += f",{delta_suffix}"
 
-        # HTF: M15 RSI confirmation — same-direction extreme validates reversion
+        # HTF RSI confirmation — same-direction extreme validates reversion
+        # HTF TF 由 signal.ini [strategy_htf] 驱动，不硬编码 TF
         htf_bonus = 0.0
-        htf = context.htf_indicators.get("M15", {})
-        htf_rsi = htf.get("rsi14", {}).get("rsi")
+        htf_rsi = None
+        for _tf, _htf_data in context.htf_indicators.items():
+            _val = _htf_data.get("rsi14", {}).get("rsi")
+            if _val is not None:
+                htf_rsi = _val
+                break
         if htf_rsi is not None and action in ("buy", "sell"):
             if action == "buy" and htf_rsi < 40:
-                htf_bonus = 0.06  # M15 also leaning oversold
+                htf_bonus = 0.06  # HTF also leaning oversold
             elif action == "sell" and htf_rsi > 60:
-                htf_bonus = 0.06  # M15 also leaning overbought
+                htf_bonus = 0.06  # HTF also leaning overbought
         confidence = min(confidence + htf_bonus, 1.0)
 
         return SignalDecision(
@@ -471,12 +476,45 @@ class StochRsiStrategy:
         )
 
 
+def _compute_rsi_series(closes: List[float], period: int = 14) -> List[float]:
+    """从 close 序列计算 RSI 序列（Wilder 平滑）。
+
+    返回长度 = len(closes) - period 的 RSI 列表，
+    索引 0 对应 closes[period] 的 RSI。
+    """
+    if len(closes) <= period:
+        return []
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    gains = [max(d, 0.0) for d in deltas[:period]]
+    losses = [max(-d, 0.0) for d in deltas[:period]]
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    rsi_values: List[float] = []
+    if avg_loss == 0.0:
+        rsi_values.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        rsi_values.append(100.0 - 100.0 / (1.0 + rs))
+    for i in range(period, len(deltas)):
+        d = deltas[i]
+        avg_gain = (avg_gain * (period - 1) + max(d, 0.0)) / period
+        avg_loss = (avg_loss * (period - 1) + max(-d, 0.0)) / period
+        if avg_loss == 0.0:
+            rsi_values.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            rsi_values.append(100.0 - 100.0 / (1.0 + rs))
+    return rsi_values
+
+
 class RsiDivergenceStrategy:
     """RSI 背离策略 — 价格与 RSI 方向分歧的反转预警。
 
     原理：价格创新高但 RSI 未创新高（顶背离，bearish divergence），
     或价格创新低但 RSI 未创新低（底背离，bullish divergence）。
-    这是黄金日内最可靠的反转预警之一。
+
+    实现：从 recent_bars 的 close 序列计算 RSI 序列，
+    在两个价格极值点上对比各自对应的 RSI 值。
 
     与 RsiReversionStrategy 的区别：
     - RsiReversion 看 RSI 绝对值（超买超卖区域）
@@ -496,9 +534,12 @@ class RsiDivergenceStrategy:
         RegimeType.UNCERTAIN: 0.65,
     }
 
+    _RSI_PERIOD: int = 14
+
     def __init__(self, *, lookback_bars: int = 14) -> None:
         self._lookback_bars = lookback_bars
-        self.recent_bars_depth: int = lookback_bars
+        # 需要额外 RSI_PERIOD 根 bar 作为 RSI 计算的 warmup
+        self.recent_bars_depth: int = lookback_bars + self._RSI_PERIOD
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         rsi_value, rsi_name = _resolve_indicator_value(
@@ -523,7 +564,8 @@ class RsiDivergenceStrategy:
             )
 
         recent_bars: Any = context.metadata.get("recent_bars")
-        if not isinstance(recent_bars, (list, tuple)) or len(recent_bars) < 5:
+        min_bars_needed = self._lookback_bars + self._RSI_PERIOD
+        if not isinstance(recent_bars, (list, tuple)) or len(recent_bars) < min_bars_needed:
             return SignalDecision(
                 strategy=self.name,
                 symbol=context.symbol,
@@ -534,18 +576,13 @@ class RsiDivergenceStrategy:
                 used_indicators=used,
             )
 
-        # 提取最近 N 根 bar 的 high/low/close
-        lookback = min(self._lookback_bars, len(recent_bars))
-        bars = recent_bars[-lookback:]
-
-        highs: List[float] = []
-        lows: List[float] = []
-        closes: List[float] = []
-        for bar in bars:
+        # 提取 OHLC
+        all_highs: List[float] = []
+        all_lows: List[float] = []
+        all_closes: List[float] = []
+        for bar in recent_bars:
             if isinstance(bar, dict):
-                h = bar.get("high")
-                lo = bar.get("low")
-                c = bar.get("close")
+                h, lo, c = bar.get("high"), bar.get("low"), bar.get("close")
             elif hasattr(bar, "high"):
                 h = getattr(bar, "high", None)
                 lo = getattr(bar, "low", None)
@@ -554,13 +591,13 @@ class RsiDivergenceStrategy:
                 continue
             if h is not None and lo is not None and c is not None:
                 try:
-                    highs.append(float(h))
-                    lows.append(float(lo))
-                    closes.append(float(c))
+                    all_highs.append(float(h))
+                    all_lows.append(float(lo))
+                    all_closes.append(float(c))
                 except (TypeError, ValueError):
                     continue
 
-        if len(highs) < 5:
+        if len(all_closes) < min_bars_needed:
             return SignalDecision(
                 strategy=self.name,
                 symbol=context.symbol,
@@ -571,11 +608,31 @@ class RsiDivergenceStrategy:
                 used_indicators=used,
             )
 
-        current_rsi = rsi_value
+        # 计算 RSI 序列
+        rsi_series = _compute_rsi_series(all_closes, self._RSI_PERIOD)
+        # rsi_series[i] 对应 all_closes[i + RSI_PERIOD]
+        # 截取最后 lookback_bars 段（与价格对齐）
+        n = min(self._lookback_bars, len(rsi_series))
+        if n < 5:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                direction="hold",
+                confidence=0.0,
+                reason="insufficient_rsi_series",
+                used_indicators=used,
+            )
+
+        # 对齐：取最后 n 根 bar 的价格和 RSI
+        highs = all_highs[-n:]
+        lows = all_lows[-n:]
+        rsi_aligned = rsi_series[-n:]
+        current_rsi = rsi_value  # 使用指标系统的精确值
         current_high = highs[-1]
         current_low = lows[-1]
 
-        # 查找前半段的极值（排除最近 2 根 bar）
+        # 在前半段（排除最近 2 根）搜索价格极值
         search_end = len(highs) - 2
         if search_end < 2:
             return SignalDecision(
@@ -592,48 +649,34 @@ class RsiDivergenceStrategy:
         prev_lowest_idx = min(range(search_end), key=lambda i: lows[i])
         prev_high = highs[prev_highest_idx]
         prev_low = lows[prev_lowest_idx]
-
-        # 通过 RSI delta 推算历史 RSI 近似值
-        d3 = _get_delta(context.indicators, "rsi14", "rsi", 3)
-        d5 = _get_delta(context.indicators, "rsi14", "rsi", 5)
+        prev_high_rsi = rsi_aligned[prev_highest_idx]
+        prev_low_rsi = rsi_aligned[prev_lowest_idx]
 
         action = "hold"
         confidence = 0.0
         divergence_type = ""
 
-        # 顶背离检测：价格创新高但 RSI 下降
-        if current_high >= prev_high * 0.999:  # 价格至少持平或创新高
-            if d5 is not None and d5 < -3.0:
-                # RSI 5-bar 下降超过 3 点 → 顶背离
+        # 顶背离：价格创新高（或持平）但 RSI 低于前高点的 RSI
+        if current_high >= prev_high * 0.999:
+            rsi_drop = prev_high_rsi - current_rsi
+            if rsi_drop > 3.0:
                 action = "sell"
                 divergence_type = "bearish_divergence"
-                # 背离强度 = RSI 下降幅度
-                divergence_strength = min(abs(d5) / 15.0, 1.0)
+                divergence_strength = min(rsi_drop / 15.0, 1.0)
                 confidence = 0.50 + divergence_strength * 0.30
-                # RSI 在高位时背离更有效
                 if current_rsi > 55:
                     confidence += 0.06
-            elif d3 is not None and d3 < -4.0:
-                # 短期更急剧的下降也算
-                action = "sell"
-                divergence_type = "bearish_divergence_d3"
-                divergence_strength = min(abs(d3) / 10.0, 1.0)
-                confidence = 0.48 + divergence_strength * 0.25
 
-        # 底背离检测：价格创新低但 RSI 上升
+        # 底背离：价格创新低（或持平）但 RSI 高于前低点的 RSI
         if action == "hold" and current_low <= prev_low * 1.001:
-            if d5 is not None and d5 > 3.0:
+            rsi_rise = current_rsi - prev_low_rsi
+            if rsi_rise > 3.0:
                 action = "buy"
                 divergence_type = "bullish_divergence"
-                divergence_strength = min(d5 / 15.0, 1.0)
+                divergence_strength = min(rsi_rise / 15.0, 1.0)
                 confidence = 0.50 + divergence_strength * 0.30
                 if current_rsi < 45:
                     confidence += 0.06
-            elif d3 is not None and d3 > 4.0:
-                action = "buy"
-                divergence_type = "bullish_divergence_d3"
-                divergence_strength = min(d3 / 10.0, 1.0)
-                confidence = 0.48 + divergence_strength * 0.25
 
         if action == "hold":
             confidence = 0.0
@@ -653,7 +696,111 @@ class RsiDivergenceStrategy:
                 "current_low": current_low,
                 "prev_high": prev_high,
                 "prev_low": prev_low,
-                "rsi_d3": d3,
-                "rsi_d5": d5,
+                "prev_high_rsi": prev_high_rsi if action != "hold" else None,
+                "prev_low_rsi": prev_low_rsi if action != "hold" else None,
+            },
+        )
+
+
+class VwapReversionStrategy:
+    """VWAP 均值回归策略 — 价格偏离 VWAP 标准差带时回归入场。
+
+    VWAP（成交量加权平均价）是日内机构的基准价格。
+    价格偏离 VWAP 超过 ±band_sigma 个标准差时，
+    预期回归到 VWAP 附近。
+
+    注意：需要 vwap30 指标启用（indicators.json 中 enabled=true）。
+    Demo 账户无真实成交量时，指标数据为空，策略自动 hold。
+
+    接收 intrabar + confirmed：VWAP 带的触及是实时事件。
+    """
+
+    name = "vwap_reversion"
+    category = "reversion"
+    required_indicators = ("vwap30",)
+    preferred_scopes = ("intrabar", "confirmed")
+    regime_affinity = {
+        RegimeType.TRENDING: 0.25,
+        RegimeType.RANGING: 1.00,
+        RegimeType.BREAKOUT: 0.30,
+        RegimeType.UNCERTAIN: 0.55,
+    }
+
+    _band_sigma: float = 1.5  # 偏离 N 个标准差时触发
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        used: List[str] = ["vwap30"]
+        hold = SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            direction="hold",
+            confidence=0.0,
+            reason="no_vwap_setup",
+            used_indicators=used,
+        )
+
+        vwap_data = context.indicators.get("vwap30")
+        if not isinstance(vwap_data, dict):
+            return hold
+
+        vwap = vwap_data.get("vwap")
+        upper = vwap_data.get("upper_band")
+        lower = vwap_data.get("lower_band")
+        std_dev = vwap_data.get("std_dev")
+
+        if vwap is None or upper is None or lower is None:
+            return hold
+
+        close_val = vwap_data.get("close")
+        if close_val is None:
+            close_val = context.metadata.get("close")
+        if close_val is None:
+            return hold
+
+        tf = context.timeframe
+        band_sigma = get_tf_param(self, "band_sigma", tf, self._band_sigma)
+
+        # 计算实际偏离（以标准差为单位）
+        if std_dev is not None and std_dev > 0:
+            deviation = (close_val - vwap) / std_dev
+        elif vwap > 0:
+            # fallback：用 band 宽度估算
+            band_width = upper - lower
+            if band_width > 0:
+                deviation = (close_val - vwap) / (band_width / (2 * band_sigma))
+            else:
+                return hold
+        else:
+            return hold
+
+        action = "hold"
+        confidence = 0.0
+
+        if deviation >= band_sigma:
+            # 价格在 VWAP 上方 N σ → 预期回落 → sell
+            action = "sell"
+            excess = deviation - band_sigma
+            confidence = min(0.50 + excess * 0.15, 0.88)
+        elif deviation <= -band_sigma:
+            # 价格在 VWAP 下方 N σ → 预期回升 → buy
+            action = "buy"
+            excess = abs(deviation) - band_sigma
+            confidence = min(0.50 + excess * 0.15, 0.88)
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            direction=action,
+            confidence=confidence,
+            reason=f"vwap_dev={deviation:.2f}sigma,band={band_sigma:.1f}",
+            used_indicators=used,
+            metadata={
+                "vwap": vwap,
+                "close": close_val,
+                "deviation_sigma": round(deviation, 3),
+                "upper_band": upper,
+                "lower_band": lower,
             },
         )

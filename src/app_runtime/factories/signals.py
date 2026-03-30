@@ -304,17 +304,20 @@ def build_signal_components(
         regime_detector=regime_detector,
     )
 
-    # 根据当前实际配置的时间框架决定 LTF→HTF 映射。
-    # 系统当前只配置了 M1 和 H1，默认映射 M1→M5 会导致 M5 永远没有缓存数据，
-    # MultiTimeframeConfirmStrategy 的 HTF 方向始终为 None（策略退化为 hold）。
-    # 通过检测已配置时间框架来自动确定最近的 HTF，避免策略空转。
+    # 根据当前实际配置的时间框架，自动构建完整的 LTF→HTF 映射。
+    # 每个已配置的 TF 映射到链条中下一个已配置的更高 TF。
+    # 例如 configured = {M5,M15,M30,H1,H4,D1} → M5→M15, M15→M30, M30→H1, H1→H4, H4→D1
     configured_tfs = set(indicator_manager.config.timeframes)
-    _default_htf_chain = ["M5", "M15", "H1", "H4", "D1"]
-    m1_htf = next(
-        (tf for tf in _default_htf_chain if tf in configured_tfs and tf != "M1"),
-        None,
-    )
-    htf_map = {"M1": m1_htf} if m1_htf else {}
+    _tf_chain = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+    htf_map: dict[str, str] = {}
+    for i, tf in enumerate(_tf_chain):
+        if tf not in configured_tfs:
+            continue
+        # 找到链条中下一个已配置的更高 TF
+        for j in range(i + 1, len(_tf_chain)):
+            if _tf_chain[j] in configured_tfs:
+                htf_map[tf] = _tf_chain[j]
+                break
     # 多组投票模式下，HTFStateCache 需监听 voting group 信号而非 consensus。
     # 自动推导 source_strategies：有 voting_groups 时用 group name，否则用 "consensus"。
     htf_source_strategies: frozenset[str] | None = None

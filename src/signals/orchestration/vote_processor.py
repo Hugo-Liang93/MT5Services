@@ -98,14 +98,20 @@ def process_and_emit_vote_signal(
     persist_fn: Callable[..., Any],
     publish_fn: Callable[..., None],
 ) -> None:
-    """Execute state transition, persist and publish for a single vote result signal."""
-    adjusted_conf = min(1.0, vote_result.confidence * regime_stability)
+    """Execute state transition, persist and publish for a single vote result signal.
+
+    regime_stability is recorded in metadata for observability but no longer
+    multiplied into confidence.  The vote engine's avg_confidence + consensus
+    bonus already produces values on the same scale as individual strategy
+    confidence; an extra stability multiplier inflated vote confidence well
+    above single-strategy levels, making a shared min_confidence threshold
+    meaningless (vote easily 0.95+ while strategies sit at 0.40).
+    """
     vote_result = _dc.replace(
         vote_result,
-        confidence=adjusted_conf,
         metadata={
             **vote_result.metadata,
-            "regime_stability_multiplier": round(regime_stability, 4),
+            "regime_stability": round(regime_stability, 4),
         },
     )
     group_key = (symbol, timeframe, group_name)

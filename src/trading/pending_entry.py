@@ -128,6 +128,111 @@ def _extract_quote_prices(quote: Any) -> Optional[tuple[float, float]]:
         return None
 
 
+def _compute_reference_price(
+    *,
+    action: str,
+    close_price: float,
+    atr: float,
+    category: str,
+    indicators: Optional[Dict[str, Any]] = None,
+) -> float:
+    """根据策略 category 从指标数据计算智能入场参考价。
+
+    核心原则：参考价不是"当前价格在哪"，而是"合理的入场价在哪"。
+    - trend     → 最近的均线支撑/阻力（EMA20/Supertrend 线）
+    - reversion → 均值位置（BB middle）
+    - breakout  → 突破的关键价位（Donchian upper/lower）
+    - price_action → close（K 线形态的确认价就是 close）
+
+    如果指标数据缺失，安全回退到 close_price。
+    """
+    if not indicators:
+        return close_price
+
+    ref = close_price
+
+    if category == "trend":
+        # 趋势策略：参考最近均线作为回调目标
+        # 优先 supertrend 线（最贴近趋势支撑/阻力），其次 EMA20/SMA20
+        st = indicators.get("supertrend14", {})
+        st_value = st.get("supertrend")
+        st_dir = st.get("direction")
+        if st_value is not None and st_dir is not None:
+            try:
+                st_value = float(st_value)
+                st_dir = int(st_dir)
+                # buy + supertrend 在下方 → 回调到 supertrend 线附近入场
+                if action == "buy" and st_dir > 0 and st_value < close_price:
+                    ref = st_value
+                elif action == "sell" and st_dir < 0 and st_value > close_price:
+                    ref = st_value
+            except (TypeError, ValueError):
+                pass
+
+        # 如果 supertrend 没给出合理参考价，尝试 EMA
+        if ref == close_price:
+            for ema_key in ("ema9", "sma20", "hma20"):
+                ema_data = indicators.get(ema_key, {})
+                ema_val = ema_data.get("ema") or ema_data.get("sma") or ema_data.get("hma")
+                if ema_val is not None:
+                    try:
+                        ema_val = float(ema_val)
+                        # 均线在 close 和 close-ATR 之间才是合理的回调目标
+                        if action == "buy" and close_price - atr < ema_val < close_price:
+                            ref = ema_val
+                            break
+                        elif action == "sell" and close_price < ema_val < close_price + atr:
+                            ref = ema_val
+                            break
+                    except (TypeError, ValueError):
+                        continue
+
+    elif category == "reversion":
+        # 均值回归：参考 BB middle（均值）或 VWAP
+        bb = indicators.get("boll20", {})
+        bb_mid = bb.get("bb_middle")
+        if bb_mid is not None:
+            try:
+                ref = float(bb_mid)
+            except (TypeError, ValueError):
+                pass
+        if ref == close_price:
+            vwap = indicators.get("vwap30", {})
+            vwap_val = vwap.get("vwap")
+            if vwap_val is not None:
+                try:
+                    ref = float(vwap_val)
+                except (TypeError, ValueError):
+                    pass
+
+    elif category == "breakout":
+        # 突破策略：参考突破的关键价位
+        don = indicators.get("donchian20", {})
+        if action == "buy":
+            don_upper = don.get("donchian_upper")
+            if don_upper is not None:
+                try:
+                    ref = float(don_upper)
+                except (TypeError, ValueError):
+                    pass
+        else:
+            don_lower = don.get("donchian_lower")
+            if don_lower is not None:
+                try:
+                    ref = float(don_lower)
+                except (TypeError, ValueError):
+                    pass
+
+    # price_action / session / composite / multi_tf → 保持 close_price
+    # （K 线形态的确认价就是 close，没有更好的锚点）
+
+    # 安全护栏：参考价不能偏离 close 超过 1.5×ATR（防止异常数据）
+    if atr > 0 and abs(ref - close_price) > 1.5 * atr:
+        ref = close_price
+
+    return ref
+
+
 def compute_entry_zone(
     *,
     action: str,
@@ -136,34 +241,49 @@ def compute_entry_zone(
     zone_mode: str,
     config: PendingEntryConfig,
     strategy_name: str = "",
+    category: str = "",
+    indicators: Optional[Dict[str, Any]] = None,
 ) -> tuple[float, float]:
-    """计算入场价格区间 [entry_low, entry_high]。"""
+    """计算入场价格区间 [entry_low, entry_high]。
+
+    当 indicators 不为空时，根据 category 计算智能参考价替代 close_price，
+    使入场区间锚定在策略逻辑认为合理的价位上（而不是 bar close）。
+    """
+    # 计算智能参考价
+    ref_price = _compute_reference_price(
+        action=action,
+        close_price=close_price,
+        atr=atr,
+        category=category,
+        indicators=indicators,
+    )
+
     overrides = config.strategy_overrides.get(strategy_name, {})
 
     if zone_mode == "pullback":
         pullback = overrides.get("pullback_atr_factor", config.pullback_atr_factor)
         chase = overrides.get("chase_atr_factor", config.chase_atr_factor)
         if action == "buy":
-            entry_low = close_price - pullback * atr
-            entry_high = close_price + chase * atr
+            entry_low = ref_price - pullback * atr
+            entry_high = ref_price + chase * atr
         else:
-            entry_low = close_price - chase * atr
-            entry_high = close_price + pullback * atr
+            entry_low = ref_price - chase * atr
+            entry_high = ref_price + pullback * atr
 
     elif zone_mode == "momentum":
         momentum = overrides.get("momentum_atr_factor", config.momentum_atr_factor)
         chase = overrides.get("chase_atr_factor", config.chase_atr_factor)
         if action == "buy":
-            entry_low = close_price - chase * atr
-            entry_high = close_price + momentum * atr
+            entry_low = ref_price - chase * atr
+            entry_high = ref_price + momentum * atr
         else:
-            entry_low = close_price - momentum * atr
-            entry_high = close_price + chase * atr
+            entry_low = ref_price - momentum * atr
+            entry_high = ref_price + chase * atr
 
     else:  # symmetric
         sym = overrides.get("symmetric_atr_factor", config.symmetric_atr_factor)
-        entry_low = close_price - sym * atr
-        entry_high = close_price + sym * atr
+        entry_low = ref_price - sym * atr
+        entry_high = ref_price + sym * atr
 
     return round(entry_low, 2), round(entry_high, 2)
 

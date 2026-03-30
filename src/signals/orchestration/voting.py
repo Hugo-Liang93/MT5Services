@@ -33,22 +33,21 @@ consensus_bonus = normalize(agreement_ratio) × max_consensus_bonus
 # 4. 分歧惩罚（保留，平方衰减）
 disagreement_factor = (min_side_ratio / 0.5)² × disagreement_penalty
 
-# 5. 最终
-confidence = avg_confidence × (1 + consensus_bonus) × (1 - disagreement_factor)
-→ 与单策略在同一量级（0.3-0.7），可用同一个 min_confidence 阈值
+# 5. 最终（consensus_bonus 用加法，不用乘法）
+confidence = (avg_confidence + consensus_bonus) × (1 - disagreement_factor)
+→ 全票同意时 +0.15 绝对值（加法），非乘法 ×1.15
+→ 加法保证幅度固定：avg=0.45 → 0.60, avg=0.70 → 0.85
+→ 乘法的问题：avg=0.85 × 1.15 = 0.98（膨胀到接近 1.0）
 ```
 
-## 旧算法 vs 新算法对比
+## 设计原则
 
-| 场景 | 旧（比例制） | 新（锚定制） |
-|------|-------------|-------------|
-| 3 策略全 buy, avg conf 0.55 | 0.85+ | 0.63 |
-| 5 buy(0.6) + 2 sell(0.3) | 0.72 | 0.62 |
-| 2 buy(0.8) + 8 hold(0.1) | 0.67 | 0.84 |
-| 10 buy(0.3) + 1 sell(0.7) | 0.59 | 0.33 |
+输入 decisions 已经过完整置信度管线（affinity × perf × calibrator），
+avg_confidence 已锚定在真实水平（通常 0.3-0.6）。
 
-新算法让 vote 和单策略走同一把尺子，TradeExecutor 的
-per-TF min_confidence 无需为 vote 做特殊适配。
+consensus_bonus 用加法而非乘法，确保加成幅度固定（最多 +0.15），
+不随 avg_confidence 的高低而被放大。同时 regime_stability 不再
+乘入 confidence（仅记录到 metadata 供观测）。
 """
 from __future__ import annotations
 
@@ -192,9 +191,12 @@ class StrategyVotingEngine:
         disagreement_factor = (raw_disagreement ** 2) * self._disagreement_penalty
 
         # ── 最终 confidence ──────────────────────────────────────────
+        # consensus_bonus 用加法而非乘法：全票同向 +0.15 绝对值。
+        # 加法保证加成幅度固定，不会因 avg_confidence 高而被放大。
+        # 例：avg=0.45 全票 → 0.45+0.15=0.60，avg=0.70 全票 → 0.70+0.15=0.85
         consensus_confidence = min(
             1.0,
-            avg_confidence * (1.0 + consensus_bonus) * (1.0 - disagreement_factor),
+            (avg_confidence + consensus_bonus) * (1.0 - disagreement_factor),
         )
 
         # ── 汇总指标 ────────────────────────────────────────────────

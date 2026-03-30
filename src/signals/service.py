@@ -31,9 +31,10 @@ from .strategies.mean_reversion import (
     RsiDivergenceStrategy,
     RsiReversionStrategy,
     StochRsiStrategy,
+    VwapReversionStrategy,
     WilliamsRStrategy,
 )
-from .strategies.price_action import PriceActionReversal
+from .strategies.price_action import OrderBlockEntryStrategy, PriceActionReversal
 from .strategies.session import AsianRangeBreakout, SessionMomentumBias
 from .strategies.trend import (
     EmaRibbonStrategy,
@@ -101,7 +102,9 @@ class SignalModule:
             WilliamsRStrategy(),
             CciReversionStrategy(),
             RsiDivergenceStrategy(),
+            VwapReversionStrategy(),
             PriceActionReversal(),
+            OrderBlockEntryStrategy(),
             # ── 突破/波动率策略 ──────────────────────────────────────────────────
             BollingerBreakoutStrategy(),
             KeltnerBollingerSqueezeStrategy(),

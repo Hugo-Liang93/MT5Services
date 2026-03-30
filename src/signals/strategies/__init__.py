@@ -24,9 +24,9 @@ from .breakout import (
 )
 from .composite import CombineMode, CompositeSignalStrategy
 from .htf_cache import HTFStateCache
-from .mean_reversion import RsiDivergenceStrategy, RsiReversionStrategy, StochRsiStrategy
+from .mean_reversion import RsiDivergenceStrategy, RsiReversionStrategy, StochRsiStrategy, VwapReversionStrategy
 from .multi_tf_entry import HTFTrendM5Entry
-from .price_action import PriceActionReversal
+from .price_action import OrderBlockEntryStrategy, PriceActionReversal
 from .session import AsianRangeBreakout, SessionMomentumBias
 from .trend import EmaRibbonStrategy, FibPullbackStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
 
@@ -45,6 +45,7 @@ __all__ = [
     "KeltnerBollingerSqueezeStrategy",
     "MacdMomentumStrategy",
     "MultiTimeframeConfirmStrategy",
+    "OrderBlockEntryStrategy",
     "PriceActionReversal",
     "RsiDivergenceStrategy",
     "RsiReversionStrategy",
@@ -56,4 +57,5 @@ __all__ = [
     "SqueezeReleaseFollow",
     "SupertrendStrategy",
     "UnifiedIndicatorSourceAdapter",
+    "VwapReversionStrategy",
 ]

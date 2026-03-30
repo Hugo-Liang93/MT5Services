@@ -251,6 +251,21 @@ def _register_studio_signal_listener(
     if container.signal_runtime is None:
         return None
 
+    def _is_vote_result_strategy(strategy_name: str) -> bool:
+        policy = container.signal_runtime.policy
+        voting_group_names = {
+            group.name
+            for group in getattr(policy, "voting_groups", []) or []
+            if getattr(group, "name", "")
+        }
+        if strategy_name in voting_group_names:
+            return True
+        return bool(
+            getattr(policy, "voting_enabled", False)
+            and not getattr(policy, "voting_groups", [])
+            and strategy_name == "consensus"
+        )
+
     def _on_signal(event: Any) -> None:
         signal_state = getattr(event, "signal_state", "")
         symbol = getattr(event, "symbol", "")
@@ -258,15 +273,17 @@ def _register_studio_signal_listener(
         direction = getattr(event, "direction", "")
         confidence = getattr(event, "confidence", 0.0)
         timeframe = getattr(event, "timeframe", "")
+        source = "voter" if _is_vote_result_strategy(strategy) else "strategist"
+        target = "risk_officer"
 
         if signal_state in ("confirmed_buy", "confirmed_sell"):
             studio.emit_event(
                 build_event(
                     "signal_generated",
-                    source="strategist",
+                    source=source,
                     message=f"{symbol} {timeframe} {strategy} {direction} conf={confidence:.2f}",
                     level="success",
-                    target="voter",
+                    target=target,
                     symbol=symbol,
                 )
             )
@@ -274,9 +291,10 @@ def _register_studio_signal_listener(
             studio.emit_event(
                 build_event(
                     "signal_generated",
-                    source="strategist",
-                    message=f"{symbol} {timeframe} {strategy} 信号取消",
+                    source=source,
+                    message=f"{symbol} {timeframe} {strategy} ????",
                     level="info",
+                    target=target,
                     symbol=symbol,
                 )
             )
