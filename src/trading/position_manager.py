@@ -299,9 +299,15 @@ class PositionManager:
 
     @staticmethod
     def _default_atr_from_position(price_open: float, stop_loss: float) -> float:
+        """从入场价和止损价反推 ATR 近似值。
+
+        SL 距离 = sl_atr_mult × ATR，所以 ATR ≈ SL距离 / sl_atr_mult。
+        使用 2.0 作为默认 SL 倍数（覆盖 M30/H1 的配置值）。
+        """
         try:
             if stop_loss:
-                return abs(float(price_open) - float(stop_loss))
+                sl_distance = abs(float(price_open) - float(stop_loss))
+                return sl_distance / 2.0  # 反推 ATR
         except (TypeError, ValueError):
             return 0.0
         return 0.0
