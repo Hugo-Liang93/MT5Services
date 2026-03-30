@@ -53,18 +53,37 @@ class PendingEntryConfig:
     check_interval: float = 0.5
     max_spread_points: float = 0.0  # 0 = 不做额外 spread 检查
 
-    # 超时（bars 数量）
+    # 超时（bars 数量）— 全局默认值
     timeout_bars: dict[str, float] = field(
         default_factory=lambda: {
             "M1": 3.0,
             "M5": 2.0,
             "M15": 1.5,
+            "M30": 1.5,
             "H1": 1.0,
             "H4": 0.5,
             "D1": 0.25,
         }
     )
     default_timeout_bars: float = 2.0
+
+    # 按 category 的超时倍率：乘以上面的 timeout_bars 得到最终超时
+    # trend 信号有效期长（等回调），reversion 短（极值稍纵即逝），breakout 中等
+    category_timeout_multiplier: dict[str, float] = field(
+        default_factory=lambda: {
+            "trend": 1.0,
+            "reversion": 0.6,
+            "breakout": 0.8,
+            "session": 1.0,
+            "price_action": 0.7,
+            "composite": 0.8,
+            "multi_tf": 1.0,
+        }
+    )
+
+    # 超时降级：超时时如果价格偏离参考价 < 此值×ATR，以市价入场而非丢弃
+    # 0 = 禁用降级（超时直接丢弃）
+    timeout_fallback_atr: float = 0.5
 
     # 信号覆盖行为
     cancel_on_new_signal: bool = True
@@ -288,11 +307,19 @@ def compute_entry_zone(
     return round(entry_low, 2), round(entry_high, 2)
 
 
-def compute_timeout(timeframe: str, config: PendingEntryConfig) -> timedelta:
-    """计算超时时长。"""
+def compute_timeout(
+    timeframe: str,
+    config: PendingEntryConfig,
+    category: str = "",
+) -> timedelta:
+    """计算超时时长。按 category 应用倍率（均值回归短，趋势长）。"""
     tf = timeframe.strip().upper()
     bars = config.timeout_bars.get(tf, config.default_timeout_bars)
-    bar_seconds = _TF_SECONDS.get(tf, 300)  # 默认按 M5
+    # 按 category 调整：reversion ×0.6, breakout ×0.8, trend ×1.0
+    if category:
+        multiplier = config.category_timeout_multiplier.get(category, 1.0)
+        bars *= multiplier
+    bar_seconds = _TF_SECONDS.get(tf, 300)
     return timedelta(seconds=bars * bar_seconds)
 
 
@@ -715,6 +742,34 @@ class PendingEntryManager:
                     self._stats["total_expired"] += 1
 
     def _expire_entry(self, entry: PendingEntry) -> None:
+        # ── 超时降级：价格离参考价不远时以当前价市价入场 ──
+        fallback_atr = self._config.timeout_fallback_atr
+        if fallback_atr > 0 and entry.trade_params.atr_value > 0:
+            quote = self._market.get_quote(entry.signal_event.symbol)
+            if quote is not None:
+                prices = _extract_quote_prices(quote)
+                if prices is not None:
+                    bid, ask = prices
+                    check_price = ask if entry.signal_event.direction == "buy" else bid
+                    distance = abs(check_price - entry.reference_price)
+                    threshold = entry.trade_params.atr_value * fallback_atr
+
+                    if distance <= threshold:
+                        logger.info(
+                            "PendingEntry timeout fallback: %s/%s %s @ %.2f "
+                            "(ref=%.2f, dist=%.2f < threshold=%.2f)",
+                            entry.signal_event.symbol,
+                            entry.signal_event.strategy,
+                            entry.signal_event.direction,
+                            check_price,
+                            entry.reference_price,
+                            distance,
+                            threshold,
+                        )
+                        self._fill_entry(entry, check_price)
+                        return
+
+        # ── 正常超时：丢弃 ──
         with self._lock:
             if self._pending.pop(entry.signal_event.signal_id, None) is None:
                 return

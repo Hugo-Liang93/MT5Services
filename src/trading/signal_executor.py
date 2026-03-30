@@ -509,7 +509,7 @@ class TradeExecutor:
             category=category,
             indicators=event.indicators,
         )
-        timeout = compute_timeout(event.timeframe, config)
+        timeout = compute_timeout(event.timeframe, config, category=category)
         now = datetime.now(timezone.utc)
 
         pending = PendingEntry(
