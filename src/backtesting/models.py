@@ -154,6 +154,32 @@ class BacktestConfig:
     filter_spread_enabled: bool = False
     filter_max_spread_points: float = 50.0
 
+    # ── Trailing Take Profit（盈利后主动收缩 TP）────────────────────────
+    trailing_tp_enabled: bool = False
+    trailing_tp_activation_atr: float = 1.5  # 浮盈超过此 ATR 倍数后激活
+    trailing_tp_trail_atr: float = 0.8       # 从最高盈利回撤的 ATR 距离
+
+    # ── 指标驱动出场（持仓期间检测指标反转，收紧 SL）───────────────────
+    indicator_exit_enabled: bool = False
+    indicator_exit_supertrend_enabled: bool = True
+    indicator_exit_supertrend_tighten_atr: float = 0.5
+    indicator_exit_rsi_enabled: bool = True
+    indicator_exit_rsi_overbought: float = 75.0
+    indicator_exit_rsi_oversold: float = 25.0
+    indicator_exit_rsi_delta_threshold: float = 5.0
+    indicator_exit_rsi_tighten_atr: float = 0.5
+    indicator_exit_macd_enabled: bool = True
+    indicator_exit_macd_tighten_atr: float = 0.5
+    indicator_exit_adx_enabled: bool = True
+    indicator_exit_adx_entry_min: float = 25.0
+    indicator_exit_adx_collapse_threshold: float = 10.0
+    indicator_exit_adx_tighten_atr: float = 0.3
+
+    # ── 连败熔断器（基于 bar 计数）──────────────────────────────────
+    circuit_breaker_enabled: bool = False
+    circuit_breaker_max_consecutive_losses: int = 5
+    circuit_breaker_cooldown_bars: int = 20
+
     # ── 信号状态机回放（模拟实盘 preview→armed→confirmed 状态转换）────
     enable_state_machine: bool = False
     min_preview_stable_bars: int = 1  # preview 方向稳定 N 根 bar 后变为 armed

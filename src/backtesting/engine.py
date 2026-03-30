@@ -38,6 +38,37 @@ from .portfolio import PortfolioTracker
 logger = logging.getLogger(__name__)
 
 
+class _CircuitBreaker:
+    """回测用连败熔断器（基于 bar 计数，非墙钟时间）。"""
+
+    def __init__(self, max_consecutive_losses: int = 5, cooldown_bars: int = 20) -> None:
+        self._max_losses = max_consecutive_losses
+        self._cooldown_bars = cooldown_bars
+        self._consecutive_losses: int = 0
+        self._paused: bool = False
+        self._paused_at_bar: int = 0
+        self.total_pauses: int = 0
+
+    def record_outcome(self, won: bool, bar_index: int) -> None:
+        if won:
+            self._consecutive_losses = 0
+            return
+        self._consecutive_losses += 1
+        if not self._paused and self._consecutive_losses >= self._max_losses:
+            self._paused = True
+            self._paused_at_bar = bar_index
+            self.total_pauses += 1
+
+    def is_paused(self, bar_index: int) -> bool:
+        if not self._paused:
+            return False
+        if self._cooldown_bars > 0 and (bar_index - self._paused_at_bar) >= self._cooldown_bars:
+            self._paused = False
+            self._consecutive_losses = 0
+            return False
+        return True
+
+
 @dataclass
 class _BacktestSignalState:
     """回测信号状态机状态（模拟实盘 preview→armed→confirmed 转换）。"""
@@ -66,7 +97,9 @@ class BacktestEngine:
         signal_module: SignalModule,
         indicator_pipeline: Any,  # OptimizedPipeline
         regime_detector: Optional[MarketRegimeDetector] = None,
-        voting_engine: Optional[Any] = None,  # StrategyVotingEngine
+        voting_engine: Optional[Any] = None,  # StrategyVotingEngine（单 consensus）
+        voting_group_engines: Optional[List[Any]] = None,  # [(VotingGroupConfig, Engine)]
+        performance_tracker: Optional[Any] = None,  # StrategyPerformanceTracker
         # 置信度后处理（复用实盘 SignalRuntime 管线）
         intrabar_confidence_factor: float = 0.85,
         htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
@@ -83,6 +116,14 @@ class BacktestEngine:
         self._pipeline = indicator_pipeline
         self._regime_detector = regime_detector or MarketRegimeDetector()
         self._voting_engine = voting_engine
+        self._voting_group_engines: List[Any] = voting_group_engines or []
+        self._performance_tracker = performance_tracker
+        # 属于 voting group 的策略（不单独 process_decision，只贡献投票）
+        self._voting_group_members: frozenset = frozenset(
+            name
+            for group_cfg, _eng in self._voting_group_engines
+            for name in group_cfg.strategies
+        )
 
         # 置信度后处理参数（与实盘 SignalRuntime 相同）
         self._intrabar_confidence_factor = intrabar_confidence_factor
@@ -98,9 +139,39 @@ class BacktestEngine:
         # 预计算指标快照（按 all_bars 索引对齐，优化器复用场景下跳过 pipeline）
         self._precomputed_indicators = precomputed_indicators
 
+        # 指标驱动出场配置
+        from src.trading.position_rules import IndicatorExitConfig
+        indicator_exit_cfg = IndicatorExitConfig(
+            enabled=config.indicator_exit_enabled,
+            supertrend_enabled=config.indicator_exit_supertrend_enabled,
+            supertrend_tighten_atr=config.indicator_exit_supertrend_tighten_atr,
+            rsi_enabled=config.indicator_exit_rsi_enabled,
+            rsi_overbought=config.indicator_exit_rsi_overbought,
+            rsi_oversold=config.indicator_exit_rsi_oversold,
+            rsi_delta_threshold=config.indicator_exit_rsi_delta_threshold,
+            rsi_tighten_atr=config.indicator_exit_rsi_tighten_atr,
+            macd_enabled=config.indicator_exit_macd_enabled,
+            macd_tighten_atr=config.indicator_exit_macd_tighten_atr,
+            adx_enabled=config.indicator_exit_adx_enabled,
+            adx_entry_min=config.indicator_exit_adx_entry_min,
+            adx_collapse_threshold=config.indicator_exit_adx_collapse_threshold,
+            adx_tighten_atr=config.indicator_exit_adx_tighten_atr,
+        )
+
+        # 连败熔断器
+        self._circuit_breaker: _CircuitBreaker | None = None
+        if config.circuit_breaker_enabled:
+            self._circuit_breaker = _CircuitBreaker(
+                max_consecutive_losses=config.circuit_breaker_max_consecutive_losses,
+                cooldown_bars=config.circuit_breaker_cooldown_bars,
+            )
+
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
             max_positions=config.max_positions,
+            trailing_tp_enabled=config.trailing_tp_enabled,
+            trailing_tp_activation_atr=config.trailing_tp_activation_atr,
+            trailing_tp_trail_atr=config.trailing_tp_trail_atr,
             commission_per_lot=config.commission_per_lot,
             slippage_points=config.slippage_points,
             contract_size=config.contract_size,
@@ -117,6 +188,7 @@ class BacktestEngine:
             end_of_day_close_enabled=config.end_of_day_close_enabled,
             end_of_day_close_hour_utc=config.end_of_day_close_hour_utc,
             end_of_day_close_minute_utc=config.end_of_day_close_minute_utc,
+            indicator_exit_config=indicator_exit_cfg,
         )
 
         # Pending Entry 配置（复用实盘 compute_entry_zone 纯函数）
@@ -398,8 +470,24 @@ class BacktestEngine:
             if indicators:
                 regime, soft_regime_dict = self._detect_regime(indicators)
 
-            # 5. 检查持仓 SL/TP
-            self._portfolio.check_exits(bar, bar_index)
+            # 5. 检查持仓 SL/TP + 指标驱动出场
+            closed_trades = self._portfolio.check_exits(bar, bar_index, indicators)
+            # 连败熔断器 + PerformanceTracker：记录交易结果
+            if closed_trades:
+                for trade in closed_trades:
+                    if self._circuit_breaker is not None:
+                        self._circuit_breaker.record_outcome(trade.pnl > 0, bar_index)
+                    if self._performance_tracker is not None:
+                        try:
+                            self._performance_tracker.record_outcome(
+                                strategy=trade.strategy,
+                                won=trade.pnl > 0,
+                                pnl=trade.pnl,
+                                regime=trade.regime,
+                                source="trade",
+                            )
+                        except Exception:
+                            pass
 
             # 5.1 检查 Pending Entry 是否可填单（每根 bar 都需要检查）
             if self._pending_entry_enabled and indicators and regime is not None:
@@ -442,7 +530,8 @@ class BacktestEngine:
                 symbol, timeframe, indicators, regime, soft_regime_dict
             )
 
-            # 8. 记录信号评估 + 处理信号
+            # 8. 记录信号评估 + 处理独立策略信号
+            #    属于 voting group 的策略不单独 process_decision（与实盘一致）
             for decision in decisions:
                 self._record_evaluation(
                     bar=bar,
@@ -452,18 +541,46 @@ class BacktestEngine:
                     confidence=decision.confidence,
                     regime=regime.value,
                 )
-                self._process_decision(decision, bar, bar_index, indicators, regime)
+                if decision.strategy not in self._voting_group_members:
+                    self._process_decision(decision, bar, bar_index, indicators, regime)
 
-            # 9. 投票引擎（捕获异常，避免单 bar 失败中止整个回测）
-            if self._voting_engine is not None and decisions:
-                actionable = [d for d in decisions if d.direction in ("buy", "sell")]
-                if actionable:
-                    try:
-                        consensus = self._voting_engine.vote(actionable, regime, "confirmed")
+            # 9. 投票引擎（多组模式 + 单 consensus 模式）
+            actionable = [d for d in decisions if d.direction in ("buy", "sell")]
+            if actionable:
+                try:
+                    # 多组模式：每组独立投票，产生独立信号
+                    if self._voting_group_engines:
+                        for group_cfg, group_engine in self._voting_group_engines:
+                            group_decisions = [
+                                d for d in actionable
+                                if d.strategy in group_cfg.strategies
+                            ]
+                            if group_decisions:
+                                vote = group_engine.vote(
+                                    group_decisions,
+                                    regime=regime,
+                                    scope="confirmed",
+                                    exclude_composite=False,
+                                )
+                                if vote is not None:
+                                    self._record_evaluation(
+                                        bar=bar, bar_index=bar_index,
+                                        strategy=vote.strategy,
+                                        action=vote.direction,
+                                        confidence=vote.confidence,
+                                        regime=regime.value,
+                                    )
+                                    self._process_decision(
+                                        vote, bar, bar_index, indicators, regime
+                                    )
+                    # 单 consensus 模式
+                    elif self._voting_engine is not None:
+                        consensus = self._voting_engine.vote(
+                            actionable, regime=regime, scope="confirmed"
+                        )
                         if consensus is not None:
                             self._record_evaluation(
-                                bar=bar,
-                                bar_index=bar_index,
+                                bar=bar, bar_index=bar_index,
                                 strategy=consensus.strategy,
                                 action=consensus.direction,
                                 confidence=consensus.confidence,
@@ -472,10 +589,10 @@ class BacktestEngine:
                             self._process_decision(
                                 consensus, bar, bar_index, indicators, regime
                             )
-                    except Exception:
-                        logger.warning(
-                            "VotingEngine failed at bar %d", bar_index, exc_info=True
-                        )
+                except Exception:
+                    logger.warning(
+                        "VotingEngine failed at bar %d", bar_index, exc_info=True
+                    )
 
             # 10. 记录资金曲线（采样）
             if bar_index % equity_sample_interval == 0:
@@ -822,6 +939,10 @@ class BacktestEngine:
         if decision.confidence < self._config.min_confidence:
             return
 
+        # 连败熔断器检查
+        if self._circuit_breaker is not None and self._circuit_breaker.is_paused(bar_index):
+            return
+
         # 信号状态机门控：方向需稳定 N bars 后才允许执行
         if self._config.enable_state_machine:
             armed = self._update_state_machine(
@@ -869,7 +990,7 @@ class BacktestEngine:
             self._pending_entries[key] = (decision, entry_low, entry_high, expiry_bar)
             return
 
-        self._execute_entry(decision, bar, bar_index, atr_value, regime)
+        self._execute_entry(decision, bar, bar_index, atr_value, regime, indicators)
 
     def _check_pending_entries(
         self,
@@ -902,7 +1023,7 @@ class BacktestEngine:
                 atr_value = atr_data.get("atr", 0.0)
                 if atr_value > 0:
                     self._execute_entry(
-                        decision, bar, bar_index, atr_value, regime
+                        decision, bar, bar_index, atr_value, regime, indicators
                     )
                 filled_keys.append(key)
 
@@ -916,6 +1037,7 @@ class BacktestEngine:
         bar_index: int,
         atr_value: float,
         regime: RegimeType,
+        indicators: Dict[str, Dict[str, Any]] = {},  # noqa: B006
     ) -> None:
         """执行实际开仓。"""
         try:
@@ -966,6 +1088,7 @@ class BacktestEngine:
             confidence=decision.confidence,
             bar_index=bar_index,
             atr_at_entry=atr_value,
+            entry_indicators=indicators,
         )
 
     # ── 信号评估记录与回填 ─────────────────────────────────────────────

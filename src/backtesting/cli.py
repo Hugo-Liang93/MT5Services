@@ -139,6 +139,29 @@ def cmd_run(args: argparse.Namespace) -> None:
         regime_sl_uncertain=ini_defaults.get("regime_sl_uncertain", 1.00),
         **({"trailing_atr_multiplier": args.trailing} if getattr(args, "trailing", None) else {}),
         **({"breakeven_atr_threshold": args.breakeven} if getattr(args, "breakeven", None) else {}),
+        # Trailing Take Profit
+        trailing_tp_enabled=ini_defaults.get("trailing_tp_enabled", False),
+        trailing_tp_activation_atr=ini_defaults.get("trailing_tp_activation_atr", 1.5),
+        trailing_tp_trail_atr=ini_defaults.get("trailing_tp_trail_atr", 0.8),
+        # 指标驱动出场
+        indicator_exit_enabled=ini_defaults.get("indicator_exit_enabled", False),
+        indicator_exit_supertrend_enabled=ini_defaults.get("indicator_exit_supertrend_enabled", True),
+        indicator_exit_supertrend_tighten_atr=ini_defaults.get("indicator_exit_supertrend_tighten_atr", 0.5),
+        indicator_exit_rsi_enabled=ini_defaults.get("indicator_exit_rsi_enabled", True),
+        indicator_exit_rsi_overbought=ini_defaults.get("indicator_exit_rsi_overbought", 75.0),
+        indicator_exit_rsi_oversold=ini_defaults.get("indicator_exit_rsi_oversold", 25.0),
+        indicator_exit_rsi_delta_threshold=ini_defaults.get("indicator_exit_rsi_delta_threshold", 5.0),
+        indicator_exit_rsi_tighten_atr=ini_defaults.get("indicator_exit_rsi_tighten_atr", 0.5),
+        indicator_exit_macd_enabled=ini_defaults.get("indicator_exit_macd_enabled", True),
+        indicator_exit_macd_tighten_atr=ini_defaults.get("indicator_exit_macd_tighten_atr", 0.5),
+        indicator_exit_adx_enabled=ini_defaults.get("indicator_exit_adx_enabled", True),
+        indicator_exit_adx_entry_min=ini_defaults.get("indicator_exit_adx_entry_min", 25.0),
+        indicator_exit_adx_collapse_threshold=ini_defaults.get("indicator_exit_adx_collapse_threshold", 10.0),
+        indicator_exit_adx_tighten_atr=ini_defaults.get("indicator_exit_adx_tighten_atr", 0.3),
+        # 连败熔断器
+        circuit_breaker_enabled=ini_defaults.get("circuit_breaker_enabled", False),
+        circuit_breaker_max_consecutive_losses=ini_defaults.get("circuit_breaker_max_consecutive_losses", 5),
+        circuit_breaker_cooldown_bars=ini_defaults.get("circuit_breaker_cooldown_bars", 20),
     )
 
     # CLI SL/TP 覆盖（安全方式：深拷贝 → 修改副本 → 回测结束后恢复）
@@ -167,6 +190,8 @@ def cmd_run(args: argparse.Namespace) -> None:
             indicator_pipeline=components["pipeline"],
             regime_detector=components["regime_detector"],
             voting_engine=components.get("voting_engine"),
+            voting_group_engines=components.get("voting_group_engines"),
+            performance_tracker=components.get("performance_tracker"),
         )
 
         result = engine.run()
@@ -328,6 +353,8 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
                 indicator_pipeline=components["pipeline"],
                 regime_detector=components["regime_detector"],
                 voting_engine=components.get("voting_engine"),
+            voting_group_engines=components.get("voting_group_engines"),
+            performance_tracker=components.get("performance_tracker"),
             )
             logger.info("Running baseline backtest for timeframe=%s", timeframe)
             result = engine.run()

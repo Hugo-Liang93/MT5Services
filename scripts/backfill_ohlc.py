@@ -89,7 +89,7 @@ def backfill(
             if not dry_run:
                 # 写入 DB（upsert）
                 rows = [
-                    (b.symbol, b.timeframe, b.time, b.open, b.high, b.low, b.close, float(b.volume or 0.0))
+                    (b.symbol, b.timeframe, b.open, b.high, b.low, b.close, float(b.volume or 0.0), b.time.isoformat())
                     for b in bars
                 ]
                 try:

@@ -168,12 +168,14 @@ class PerformanceTrackerConfig:
 
     enabled: bool = True
     baseline_win_rate: float = 0.50
-    min_multiplier: float = 0.50
+    min_multiplier: float = 0.80
     max_multiplier: float = 1.20
     streak_penalty_threshold: int = 3
     streak_penalty_factor: float = 0.90
     category_fallback_min_samples: int = 3
-    session_reset_interval_hours: int = 0
+    # 冷启动保护：样本不足此值时 multiplier 固定为 1.0（不压制也不提升）
+    min_samples_for_penalty: int = 3
+    session_reset_interval_hours: int = 8
     # PnL 熔断器（计实际亏损次数，不计技术故障）
     pnl_circuit_enabled: bool = True
     pnl_circuit_max_consecutive_losses: int = 5
@@ -396,12 +398,17 @@ class StrategyPerformanceTracker:
         """核心乘数计算。
 
         三个因素：
+        0. 冷启动保护 → 样本不足时返回 1.0
         1. win_rate vs baseline → 基础乘数
         2. 连败惩罚 → 额外折扣
         3. profit_factor → 微调
         """
         cfg = self._config
         multiplier = 1.0
+
+        # 0. 冷启动保护：样本不足时不压制
+        if stats.total < cfg.min_samples_for_penalty:
+            return 1.0
 
         # 1. Win rate adjustment
         win_rate = stats.win_rate

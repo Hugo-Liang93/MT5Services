@@ -13,7 +13,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from .position_rules import check_breakeven, check_trailing_stop, should_close_end_of_day
+from .position_rules import (
+    IndicatorExitConfig,
+    check_breakeven,
+    check_indicator_exit,
+    check_trailing_stop,
+    check_trailing_take_profit,
+    should_close_end_of_day,
+)
 from .sizing import TradeParameters
 
 logger = logging.getLogger(__name__)
@@ -45,6 +52,7 @@ class TrackedPosition:
     source: str = "signal_executor"
     comment: str = ""
     opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    entry_indicators: Dict[str, Dict] = field(default_factory=dict)
     breakeven_applied: bool = False
     trailing_active: bool = False
     highest_price: Optional[float] = None
@@ -65,6 +73,14 @@ class PositionManager:
         end_of_day_close_enabled: bool = False,
         end_of_day_close_hour_utc: int = 21,
         end_of_day_close_minute_utc: int = 0,
+        # Trailing Take Profit（盈利后主动收缩 TP）
+        trailing_tp_enabled: bool = False,
+        trailing_tp_activation_atr: float = 1.5,
+        trailing_tp_trail_atr: float = 0.8,
+        # 指标驱动出场（持仓期间检测指标反转，收紧 SL）
+        indicator_exit_config: IndicatorExitConfig = IndicatorExitConfig(),
+        # 指标快照回调（接收 symbol+timeframe 返回 indicators Dict）
+        indicator_snapshot_fn: Optional[Callable[[str, str], Dict[str, Dict]]] = None,
     ):
         self._trading = trading_module
         self.trailing_atr_multiplier = trailing_atr_multiplier
@@ -72,6 +88,11 @@ class PositionManager:
         self.end_of_day_close_enabled = bool(end_of_day_close_enabled)
         self.end_of_day_close_hour_utc = int(end_of_day_close_hour_utc)
         self.end_of_day_close_minute_utc = int(end_of_day_close_minute_utc)
+        self._trailing_tp_enabled = trailing_tp_enabled
+        self._trailing_tp_activation_atr = trailing_tp_activation_atr
+        self._trailing_tp_trail_atr = trailing_tp_trail_atr
+        self._indicator_exit_config = indicator_exit_config
+        self._indicator_snapshot_fn = indicator_snapshot_fn
         self._positions: Dict[int, TrackedPosition] = {}
         self._lock = threading.Lock()
         self._close_callbacks: List[Callable[[TrackedPosition, Optional[float]], None]] = []
@@ -182,11 +203,15 @@ class PositionManager:
             need_breakeven = not pos.breakeven_applied
             need_trailing = pos.breakeven_applied
 
-        # breakeven/trailing 调用 MT5 API（可能耗时数秒），在锁外执行。
+        # breakeven/trailing/trailing_tp/indicator_exit 调用 MT5 API（可能耗时），在锁外执行。
         if need_breakeven:
             self._check_breakeven(pos, current_price)
         if need_trailing:
             self._check_trailing_stop(pos, current_price)
+        if self._trailing_tp_enabled and pos.atr_at_entry > 0:
+            self._check_trailing_tp(pos)
+        if self._indicator_exit_config.enabled and pos.atr_at_entry > 0:
+            self._check_indicator_exit(pos, current_price)
 
     def add_close_callback(
         self,
@@ -611,3 +636,66 @@ class PositionManager:
         except Exception as exc:
             logger.warning("Failed to modify SL for ticket=%d: %s", pos.ticket, exc)
             return False
+
+    def _modify_tp(self, pos: TrackedPosition, new_tp: float) -> bool:
+        try:
+            target_tp = round(new_tp, 2)
+            result = self._trading.modify_positions(ticket=pos.ticket, symbol=pos.symbol, tp=target_tp)
+            if isinstance(result, dict):
+                modified = {int(item) for item in result.get("modified", []) if item is not None}
+                if modified and pos.ticket not in modified:
+                    raise RuntimeError(f"ticket {pos.ticket} not modified")
+                failed = list(result.get("failed", []) or [])
+                if failed and pos.ticket not in modified:
+                    raise RuntimeError(str(failed[0]))
+            pos.take_profit = target_tp
+            return True
+        except Exception as exc:
+            logger.warning("Failed to modify TP for ticket=%d: %s", pos.ticket, exc)
+            return False
+
+    def _check_trailing_tp(self, pos: TrackedPosition) -> None:
+        result = check_trailing_take_profit(
+            action=pos.action,
+            entry_price=pos.entry_price,
+            current_take_profit=pos.take_profit,
+            atr_at_entry=pos.atr_at_entry,
+            activation_atr=self._trailing_tp_activation_atr,
+            trail_atr=self._trailing_tp_trail_atr,
+            highest_price=pos.highest_price,
+            lowest_price=pos.lowest_price,
+        )
+        if result.should_update and result.new_take_profit is not None:
+            if self._modify_tp(pos, result.new_take_profit):
+                logger.info(
+                    "Trailing TP applied ticket=%d tp=%.2f",
+                    pos.ticket, result.new_take_profit,
+                )
+
+    def _check_indicator_exit(self, pos: TrackedPosition, current_price: float) -> None:
+        if not pos.entry_indicators or not self._indicator_snapshot_fn:
+            return
+        if not pos.timeframe:
+            return
+        try:
+            current_indicators = self._indicator_snapshot_fn(pos.symbol, pos.timeframe)
+        except Exception:
+            return
+        if not current_indicators:
+            return
+        result = check_indicator_exit(
+            direction=pos.action,
+            current_price=current_price,
+            current_sl=pos.stop_loss,
+            entry_price=pos.entry_price,
+            atr_at_entry=pos.atr_at_entry,
+            entry_indicators=pos.entry_indicators,
+            current_indicators=current_indicators,
+            config=self._indicator_exit_config,
+        )
+        if result.should_tighten_sl and result.new_stop_loss is not None:
+            if self._modify_sl(pos, result.new_stop_loss):
+                logger.info(
+                    "Indicator exit SL tightened ticket=%d reason=%s sl=%.2f",
+                    pos.ticket, result.reason, result.new_stop_loss,
+                )

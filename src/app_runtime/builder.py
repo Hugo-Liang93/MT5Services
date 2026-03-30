@@ -124,6 +124,12 @@ def build_app_container(
     container.signal_quality_tracker = signal_components.signal_quality_tracker
     container.trade_outcome_tracker = signal_components.trade_outcome_tracker
     container.position_manager = signal_components.position_manager
+    # 注入指标快照回调（供 indicator_exit 使用）
+    if container.position_manager is not None and container.indicator_manager is not None:
+        _im = container.indicator_manager
+        container.position_manager._indicator_snapshot_fn = (
+            lambda sym, tf: _im.get_indicator(sym, tf) or {}
+        )
     container.trade_executor = signal_components.trade_executor
     _wire_margin_guard(
         container.position_manager,

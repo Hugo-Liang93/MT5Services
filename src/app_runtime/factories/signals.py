@@ -418,6 +418,24 @@ def build_signal_components(
         htf_target_config=dict(signal_config.strategy_htf_targets),
     )
 
+    from src.trading.position_rules import IndicatorExitConfig
+    indicator_exit_cfg = IndicatorExitConfig(
+        enabled=signal_config.indicator_exit_enabled,
+        supertrend_enabled=signal_config.indicator_exit_supertrend_enabled,
+        supertrend_tighten_atr=signal_config.indicator_exit_supertrend_tighten_atr,
+        rsi_enabled=signal_config.indicator_exit_rsi_enabled,
+        rsi_overbought=signal_config.indicator_exit_rsi_overbought,
+        rsi_oversold=signal_config.indicator_exit_rsi_oversold,
+        rsi_delta_threshold=signal_config.indicator_exit_rsi_delta_threshold,
+        rsi_tighten_atr=signal_config.indicator_exit_rsi_tighten_atr,
+        macd_enabled=signal_config.indicator_exit_macd_enabled,
+        macd_tighten_atr=signal_config.indicator_exit_macd_tighten_atr,
+        adx_enabled=signal_config.indicator_exit_adx_enabled,
+        adx_entry_min=signal_config.indicator_exit_adx_entry_min,
+        adx_collapse_threshold=signal_config.indicator_exit_adx_collapse_threshold,
+        adx_tighten_atr=signal_config.indicator_exit_adx_tighten_atr,
+    )
+
     position_manager = PositionManager(
         trading_module=trade_module,
         trailing_atr_multiplier=signal_config.trailing_atr_multiplier,
@@ -425,6 +443,10 @@ def build_signal_components(
         end_of_day_close_enabled=signal_config.end_of_day_close_enabled,
         end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
         end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
+        trailing_tp_enabled=signal_config.trailing_tp_enabled,
+        trailing_tp_activation_atr=signal_config.trailing_tp_activation_atr,
+        trailing_tp_trail_atr=signal_config.trailing_tp_trail_atr,
+        indicator_exit_config=indicator_exit_cfg,
     )
     # 交易结果追踪器：追踪实际执行的交易盈亏（由 TradeExecutor 登记，PositionManager 关仓评估）
     trade_outcome_tracker = TradeOutcomeTracker(

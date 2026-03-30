@@ -95,10 +95,25 @@ def build_backtest_components(
             return {}
 
     regime_detector = MarketRegimeDetector()
+
+    # 构建 PerformanceTracker（与实盘共用同一逻辑）
+    performance_tracker = None
+    try:
+        from src.signals.evaluation.performance import (
+            PerformanceTrackerConfig,
+            StrategyPerformanceTracker,
+        )
+        performance_tracker = StrategyPerformanceTracker(
+            config=PerformanceTrackerConfig(enabled=True),
+        )
+    except Exception:
+        logger.debug("PerformanceTracker not available for backtest", exc_info=True)
+
     signal_module = SignalModule(
         indicator_source=_NullIndicatorSource(),
         regime_detector=regime_detector,
         soft_regime_enabled=True,
+        performance_tracker=performance_tracker,
     )
 
     # 回测默认 SignalModule 已包含基础单策略和主要复合策略；
@@ -143,8 +158,8 @@ def build_backtest_components(
         strategy_params_per_tf=merged_strategy_params_per_tf or None,
     )
 
-    # 构建 Voting Engine（如果配置了 voting groups）
-    voting_engine = _build_voting_engine(signal_module)
+    # 构建 Voting Engine（单 consensus + 多组）
+    voting_engine, voting_group_engines = _build_voting_engines()
 
     return {
         "data_loader": data_loader,
@@ -152,6 +167,8 @@ def build_backtest_components(
         "pipeline": pipeline,
         "regime_detector": regime_detector,
         "voting_engine": voting_engine,
+        "voting_group_engines": voting_group_engines,
+        "performance_tracker": performance_tracker,
         "writer": writer,
         "market_repo": market_repo,
     }
@@ -172,17 +189,48 @@ def _apply_overrides(
     )
 
 
-def _build_voting_engine(signal_module: Any) -> Optional[Any]:
-    """尝试从 signal.ini 配置构建 VotingEngine。"""
+def _build_voting_engines() -> tuple:
+    """从 signal.ini 构建 VotingEngine（单 consensus + 多组）。
+
+    Returns:
+        (voting_engine, voting_group_engines) — 与实盘 SignalRuntime 一致的双模式。
+        多组模式启用时 voting_engine=None，单 consensus 反之。
+    """
     try:
+        from src.signals.orchestration.policy import VotingGroupConfig
         from src.signals.orchestration.voting import StrategyVotingEngine
 
         signal_config = _load_signal_config_snapshot()
-        policy = signal_config.policy if hasattr(signal_config, "policy") else None
-        if policy and hasattr(policy, "voting_enabled") and policy.voting_enabled:
-            return StrategyVotingEngine(
-                consensus_threshold=getattr(policy, "consensus_threshold", 0.40),
-            )
+        if not getattr(signal_config, "voting_enabled", False):
+            return None, []
+
+        # 多组模式：从 voting_group_configs 构建
+        group_configs = getattr(signal_config, "voting_group_configs", []) or []
+        if group_configs:
+            group_engines: list = []
+            for gcfg in group_configs:
+                vgc = VotingGroupConfig(
+                    name=gcfg["name"],
+                    strategies=frozenset(gcfg["strategies"]),
+                    consensus_threshold=gcfg.get("consensus_threshold", 0.40),
+                    min_quorum=gcfg.get("min_quorum", 2),
+                    disagreement_penalty=gcfg.get("disagreement_penalty", 0.50),
+                )
+                engine = StrategyVotingEngine(
+                    group_name=vgc.name,
+                    consensus_threshold=vgc.consensus_threshold,
+                    min_quorum=vgc.min_quorum,
+                    disagreement_penalty=vgc.disagreement_penalty,
+                )
+                group_engines.append((vgc, engine))
+            return None, group_engines  # 多组模式禁用全局 consensus
+
+        # 单 consensus 模式
+        return StrategyVotingEngine(
+            consensus_threshold=getattr(signal_config, "voting_consensus_threshold", 0.40),
+            min_quorum=getattr(signal_config, "voting_min_quorum", 2),
+            disagreement_penalty=getattr(signal_config, "voting_disagreement_penalty", 0.50),
+        ), []
     except Exception:
         logger.debug("Voting engine not available", exc_info=True)
-    return None
+        return None, []
