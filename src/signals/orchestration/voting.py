@@ -194,8 +194,9 @@ class StrategyVotingEngine:
         # consensus_bonus 用加法而非乘法：全票同向 +0.15 绝对值。
         # 加法保证加成幅度固定，不会因 avg_confidence 高而被放大。
         # 例：avg=0.45 全票 → 0.45+0.15=0.60，avg=0.70 全票 → 0.70+0.15=0.85
+        # 硬上限 0.95：vote confidence 不应达到 1.0（满分应只属于确定性事件）
         consensus_confidence = min(
-            1.0,
+            0.95,
             (avg_confidence + consensus_bonus) * (1.0 - disagreement_factor),
         )
 

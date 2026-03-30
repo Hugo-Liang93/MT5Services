@@ -283,6 +283,15 @@ class TestIntegrationScenarios:
         # avg=0.70 + bonus=0.15 (additive, full agreement) = 0.85
         assert result.confidence == pytest.approx(0.85, abs=0.01)
 
+    def test_confidence_capped_at_095(self):
+        """High avg + full agreement should not exceed 0.95."""
+        engine = self._make_engine()
+        # avg = 0.90, bonus = 0.15 → raw = 1.05 → capped at 0.95
+        decisions = [_decision("buy", 0.90, f"s{i}") for i in range(3)]
+        result = engine.vote(decisions, regime=RegimeType.TRENDING, scope="confirmed")
+        assert result is not None
+        assert result.confidence == pytest.approx(0.95)
+
     def test_no_consensus_mixed(self):
         """4 buy + 4 sell → 完全对立，无共识。"""
         engine = self._make_engine()
