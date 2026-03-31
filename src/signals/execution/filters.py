@@ -266,3 +266,53 @@ class SignalFilterChain:
             # reason == "economic_event_warn" → 允许交易但日志记录（由调用方处理）
 
         return True, ""
+
+    def filter_status(
+        self,
+        symbol: str = "XAUUSD",
+        *,
+        utc_now: Optional[datetime] = None,
+    ) -> dict[str, dict[str, Any]]:
+        """返回每个过滤规则的当前实时状态，供 Studio 前端展示。"""
+        result: dict[str, dict[str, Any]] = {}
+
+        if self.session_filter:
+            sessions = self.session_filter.current_sessions(utc_now)
+            active = self.session_filter.is_active_session(utc_now)
+            result["session"] = {
+                "active": active,
+                "current_sessions": sessions,
+                "allowed_sessions": list(self.session_filter.allowed_sessions),
+            }
+
+        if self.session_transition_filter:
+            transition = self.session_transition_filter.active_transition(utc_now)
+            result["session_transition"] = {
+                "active": transition is None,
+                "in_cooldown": transition is not None,
+                "transition_name": transition,
+                "cooldown_minutes": self.session_transition_filter.cooldown_minutes,
+            }
+
+        if self.volatility_filter:
+            result["volatility"] = {
+                "active": True,
+                "spike_multiplier": self.volatility_filter.spike_multiplier,
+                "enabled": self.volatility_filter.spike_multiplier > 0,
+            }
+
+        if self.spread_filter:
+            result["spread"] = {
+                "active": True,
+                "enabled": True,
+            }
+
+        if self.economic_filter:
+            safe, reason = self.economic_filter.check_trade_guard(symbol, utc_now)
+            result["economic"] = {
+                "active": safe,
+                "blocked": not safe,
+                "reason": reason if not safe else "",
+            }
+
+        return result

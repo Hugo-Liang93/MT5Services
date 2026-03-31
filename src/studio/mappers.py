@@ -215,6 +215,8 @@ def map_filter_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
     filter_total = total_passed + total_blocked
     pass_rate = (total_passed / filter_total * 100) if filter_total > 0 else 0.0
 
+    realtime = runtime_status.get("filter_realtime_status", {})
+
     metrics: dict[str, Any] = {
         "confirmed_passed": confirmed.get("passed", 0),
         "confirmed_blocked": confirmed.get("blocked", 0),
@@ -229,6 +231,7 @@ def map_filter_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
         "window_elapsed": w_elapsed,
         "window_seconds": w_seconds,
         "window_by_scope": w_by_scope,
+        "realtime_filters": realtime,
     }
 
     if filter_total == 0:

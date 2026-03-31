@@ -655,6 +655,12 @@ class SignalRuntime:
             **self._count_active_states(),
             "voting_groups": self._voting_groups_summary(),
             "regime_map": self.get_regime_stability_map(),
+            "filter_realtime_status": (
+                self.filter_chain.filter_status()
+                if self.filter_chain is not None
+                and hasattr(self.filter_chain, "filter_status")
+                else {}
+            ),
         }
 
     def _voting_groups_summary(self) -> list[dict[str, Any]]:
