@@ -99,6 +99,21 @@ def build_studio_service(container: AppContainer) -> StudioService:
                 "overall_status": inspector_report.get("overall_status"),
                 "active_alert_count": len(inspector_report.get("active_alerts", [])),
             },
+            "performance_tracker": {
+                "pnl_circuit_paused": (
+                    container.performance_tracker.is_trading_paused()
+                    if container.performance_tracker is not None
+                    else False
+                ),
+            },
+            "position_manager": {
+                "is_after_eod": (
+                    position_manager.is_after_eod_today()
+                    if position_manager is not None
+                    and hasattr(position_manager, "is_after_eod_today")
+                    else False
+                ),
+            },
         }
 
     if container.ingestor is not None:

@@ -306,6 +306,9 @@ def map_risk_officer(
     risk_blocks = executor_status.get("execution_quality", {}).get("risk_blocks", 0)
     evidence = support_evidence or {}
 
+    pnl_paused = evidence.get("performance_tracker", {}).get("pnl_circuit_paused", False)
+    after_eod = evidence.get("position_manager", {}).get("is_after_eod", False)
+
     metrics: dict[str, Any] = {
         "signals_received": received,
         "signals_passed": executor_status.get("signals_passed", 0),
@@ -313,11 +316,15 @@ def map_risk_officer(
         "skip_reasons": executor_status.get("skip_reasons", {}),
         "risk_blocks": risk_blocks,
         "by_timeframe": executor_status.get("by_timeframe", {}),
+        "pnl_circuit_paused": pnl_paused,
+        "after_eod_block": after_eod,
         "support_evidence": evidence,
         "upstream_modules": [key for key in evidence.keys()],
     }
 
     return resolve_status("risk_officer", [
+        (pnl_paused, "blocked", "PnL 熔断暂停交易", "error"),
+        (after_eod, "blocked", "日终平仓后禁止开仓", "warning"),
         (risk_blocks > 0, "blocked", "风控拦截", "warning"),
         (blocked > 0, "reviewing", "风控审核中", "none"),
         (received > 0, "approved", "风控通过", "none"),
