@@ -176,12 +176,13 @@ class StrategyVotingEngine:
 
         # ── 共识加成：多数策略同向时给予奖励 ─────────────────────────
         # agreement_ratio ∈ [0, 1]：胜出方数量占非 hold 总数的比例
-        # 过半时才有加成，全票同意时达到 max_consensus_bonus
-        if non_hold_count > 0:
+        # quorum_factor：参与人数越多，共识越可信（2人=0.5, 3人=0.67, 5人=0.80）
+        # 两者相乘：2/2 全票 +0.075, 3/3 全票 +0.10, 5/5 全票 +0.12
+        if non_hold_count > 0 and winning_count >= 2:
             agreement_ratio = winning_count / non_hold_count
-            # 归一化：0.5 → 0（刚过半），1.0 → 1（全票）
             normalized = max(0.0, (agreement_ratio - 0.5) / 0.5)
-            consensus_bonus = normalized * self._max_consensus_bonus
+            quorum_factor = 1.0 - 1.0 / winning_count
+            consensus_bonus = normalized * quorum_factor * self._max_consensus_bonus
         else:
             consensus_bonus = 0.0
 

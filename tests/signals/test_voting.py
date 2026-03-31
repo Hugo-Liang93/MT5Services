@@ -110,19 +110,18 @@ class TestQuorum:
 
 class TestConfidenceCalculation:
     def test_pure_buy_consensus_confidence(self):
-        """无 sell 方向 → disagreement=0, 全票同意 → avg + bonus（加法）。"""
+        """2 buy 全票 → bonus = normalized × quorum_factor × max_bonus。"""
         engine = StrategyVotingEngine(
             consensus_threshold=0.40, min_quorum=1, disagreement_penalty=0.50
         )
-        # buy_weight=1.0, sell_weight=0, hold_weight=0
-        # avg_confidence = (0.6+0.4)/2 = 0.5
-        # agreement_ratio=2/2=1.0, normalized=1.0 → bonus=0.15
-        # disagreement_factor = 0
-        # confidence = (0.5 + 0.15) × 1.0 = 0.65
+        # avg = (0.6+0.4)/2 = 0.5
+        # winning_count=2, quorum_factor = 1-1/2 = 0.5
+        # bonus = 1.0 × 0.5 × 0.15 = 0.075
+        # confidence = (0.5 + 0.075) × 1.0 = 0.575
         decisions = [_decision("buy", 0.6, "s1"), _decision("buy", 0.4, "s2")]
         result = engine.vote(decisions, regime=DEFAULT_REGIME, scope=DEFAULT_SCOPE)
         assert result is not None
-        assert result.confidence == pytest.approx(0.65)
+        assert result.confidence == pytest.approx(0.575)
 
     def test_disagreement_reduces_confidence(self):
         """买卖各半 → disagreement_factor=0.5*penalty → confidence 下降。"""
@@ -154,20 +153,17 @@ class TestConfidenceCalculation:
         assert result.confidence == pytest.approx(0.736)
 
     def test_hold_weight_reduces_direction_scores(self):
-        """hold 权重加入总权重后，方向得分下降。"""
+        """1 buy + 1 hold → winning_count=1 → 无 bonus（单策略不奖励）。"""
         engine = StrategyVotingEngine(
             consensus_threshold=0.40, min_quorum=1, disagreement_penalty=0.50
         )
-        # buy=0.6, hold=0.4 → total=1.0
-        # buy_score=0.6, sell_score=0 → action="buy"
         # avg_confidence = 0.6/1 = 0.6
-        # non_hold=1, winning=1, agreement_ratio=1/1=1.0 → bonus=0.15
-        # disagreement_factor = 0
-        # confidence = (0.6 + 0.15) × 1.0 = 0.75
+        # winning_count=1 < 2 → bonus=0
+        # confidence = (0.6 + 0) × 1.0 = 0.60
         decisions = [_decision("buy", 0.6, "s1"), _decision("hold", 0.4, "s2")]
         result = engine.vote(decisions, regime=DEFAULT_REGIME, scope=DEFAULT_SCOPE)
         assert result is not None
-        assert result.confidence == pytest.approx(0.75)
+        assert result.confidence == pytest.approx(0.60)
 
 
 # ── 阈值过滤 ─────────────────────────────────────────────────────────────────
@@ -271,8 +267,9 @@ class TestIntegrationScenarios:
     def test_strong_buy_consensus(self):
         """7 buy + 1 hold → 强烈买入共识。
 
-        avg_confidence = 0.70, 全票同向 bonus = +0.15（加法），无分歧。
-        confidence = 0.70 + 0.15 = 0.85
+        avg=0.70, winning_count=7, quorum_factor=1-1/7=0.857
+        bonus = 1.0 × 0.857 × 0.15 = 0.1286
+        confidence = 0.70 + 0.1286 = 0.8286
         """
         engine = self._make_engine()
         decisions = [_decision("buy", 0.70, f"s{i}") for i in range(7)]
@@ -280,8 +277,8 @@ class TestIntegrationScenarios:
         result = engine.vote(decisions, regime=RegimeType.TRENDING, scope="confirmed")
         assert result is not None
         assert result.direction == "buy"
-        # avg=0.70 + bonus=0.15 (additive, full agreement) = 0.85
-        assert result.confidence == pytest.approx(0.85, abs=0.01)
+        # quorum_factor = 6/7 ≈ 0.857, bonus ≈ 0.129
+        assert result.confidence == pytest.approx(0.829, abs=0.01)
 
     def test_confidence_capped_at_095(self):
         """High avg + full agreement should not exceed 0.95."""
