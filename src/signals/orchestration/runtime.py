@@ -249,6 +249,8 @@ class SignalRuntime:
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
         self._affinity_gates_skipped: int = 0
+        # Per-TF 计数：affinity skip / raw confidence skip
+        self._per_tf_skips: dict[str, dict[str, int]] = {}
         # FilterChain 按 scope 分维度计数
         self._filter_by_scope: dict[str, dict[str, Any]] = {
             "confirmed": {"passed": 0, "blocked": 0, "blocks": {}},
@@ -637,6 +639,7 @@ class SignalRuntime:
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
             "affinity_gates_skipped": self._affinity_gates_skipped,
+            "per_tf_skips": dict(self._per_tf_skips),
             "filter_by_scope": {
                 s: {"passed": d["passed"], "blocked": d["blocked"], "blocks": dict(d["blocks"])}
                 for s, d in self._filter_by_scope.items()
@@ -1161,6 +1164,8 @@ class SignalRuntime:
                 )
                 if affinity < min_affinity_skip:
                     self._affinity_gates_skipped += 1
+                    tf_skip = self._per_tf_skips.setdefault(timeframe, {"affinity": 0, "raw_conf": 0})
+                    tf_skip["affinity"] += 1
                     continue
                 regime_metadata["_pre_computed_affinity"] = affinity
             else:

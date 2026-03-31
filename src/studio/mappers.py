@@ -246,6 +246,7 @@ def map_filter_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
 def map_regime_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
     affinity_skipped = runtime_status.get("affinity_gates_skipped", 0)
     regime_map: dict[str, dict[str, Any]] = runtime_status.get("regime_map", {})
+    per_tf_skips: dict[str, dict[str, int]] = runtime_status.get("per_tf_skips", {})
 
     # 汇总各 (symbol/tf) 的当前 regime 分布
     regime_counts: dict[str, int] = {}
@@ -256,6 +257,7 @@ def map_regime_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
 
     metrics: dict[str, Any] = {
         "affinity_skipped": affinity_skipped,
+        "per_tf_skips": per_tf_skips,
         "regime_distribution": regime_counts,
         "regime_details": regime_map,
     }
