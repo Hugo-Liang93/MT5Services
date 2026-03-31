@@ -362,6 +362,11 @@ class SignalModule:
         )
         decision = strategy_impl.evaluate(context)
 
+        # ── 原始置信度门槛（提前拦截低质量信号，省后续计算）────────────
+        min_raw = context_metadata.get("_min_raw_confidence", 0.45)
+        if decision.direction in ("buy", "sell") and decision.confidence < min_raw:
+            return decision  # 策略本身不够确信，跳过 affinity/perf/calibrator
+
         # ── Regime 亲和度修正 ────────────────────────────────────────────
         # 从策略类属性 regime_affinity 读取当前 Regime 对应的乘数，
         # 压制在当前行情类型下不可靠的策略。

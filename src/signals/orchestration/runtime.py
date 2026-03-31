@@ -1270,6 +1270,11 @@ class SignalRuntime:
                 strategy, self._intrabar_confidence_factor
             )
             decision = apply_intrabar_decay(decision, scope, decay)
+        # 3. 管线末端兜底：多层乘法压制后不应低于 floor（D3 fix）
+        if decision.confidence > 0 and decision.direction in ("buy", "sell"):
+            floor = self._confidence_floor if hasattr(self, "_confidence_floor") else 0.10
+            if decision.confidence < floor:
+                decision = _dc.replace(decision, confidence=floor)
         return decision
 
     def _transition_and_publish(

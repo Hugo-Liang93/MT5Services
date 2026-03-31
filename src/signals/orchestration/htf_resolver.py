@@ -132,7 +132,14 @@ def compute_htf_alignment(
                 stability_cap,
             )
 
-            raw_mul = base * strength * stability
+            if aligned:
+                # D1 fix: aligned 场景下 stability 放大 boost，但保证 >= 1.0
+                # （低置信度 HTF 不应让对齐变成压制）
+                raw_mul = max(1.0, base * strength * stability)
+            else:
+                # D2 fix: conflict 场景下 stability 越高惩罚越重
+                # stability=1.0 → factor=1.0（不变）, stability=1.15 → factor=0.85（加重）
+                raw_mul = base * strength * (2.0 - stability)
 
             # Intrabar: reduced-strength modification (signal not yet confirmed)
             if scope == "intrabar":
