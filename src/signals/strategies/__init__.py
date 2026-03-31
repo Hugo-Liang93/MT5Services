@@ -28,6 +28,7 @@ from .mean_reversion import RsiDivergenceStrategy, RsiReversionStrategy, StochRs
 from .multi_tf_entry import HTFTrendM5Entry
 from .price_action import OrderBlockEntryStrategy, PriceActionReversal
 from .session import AsianRangeBreakout, SessionMomentumBias
+from .trendline import TrendlineThreeTouchStrategy
 from .trend import EmaRibbonStrategy, FibPullbackStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
 
 __all__ = [
@@ -56,6 +57,7 @@ __all__ = [
     "StochRsiStrategy",
     "SqueezeReleaseFollow",
     "SupertrendStrategy",
+    "TrendlineThreeTouchStrategy",
     "UnifiedIndicatorSourceAdapter",
     "VwapReversionStrategy",
 ]

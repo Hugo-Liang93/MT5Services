@@ -36,6 +36,7 @@ from .strategies.mean_reversion import (
 )
 from .strategies.price_action import OrderBlockEntryStrategy, PriceActionReversal
 from .strategies.session import AsianRangeBreakout, SessionMomentumBias
+from .strategies.trendline import TrendlineThreeTouchStrategy
 from .strategies.trend import (
     EmaRibbonStrategy,
     FibPullbackStrategy,
@@ -113,6 +114,8 @@ class SignalModule:
             SqueezeReleaseFollow(),
             # ── 多时间框架联动策略 ────────────────────────────────────────────
             HTFTrendM5Entry(),
+            # ── 趋势线策略（仅 H1/H4）──────────────────────────────────────────
+            TrendlineThreeTouchStrategy(),
             # 复合策略由 registry.register_composite_strategies() 从 composites.json 注册
         )
         for strategy in default_strategies:
