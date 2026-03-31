@@ -496,42 +496,43 @@ class StrategyPerformanceTracker:
     def warm_up_from_db(self, rows: List[Dict[str, Any]]) -> int:
         """从 DB 历史记录重放 outcomes，恢复重启前的 wins/losses/streak 状态。
 
-        参数
-        ----
-        rows:
-            由 SignalEventRepository.fetch_recent_outcomes() 返回的 dict 列表，
-            已按 recorded_at 升序排列。每条包含：
-            strategy, won, pnl, regime, source, recorded_at。
-
-        返回
-        ----
-        实际重放的记录数（won is not None 的条数）。
+        注意：warm_up 期间暂时禁用 PnL 熔断器触发。
+        原因：warm_up 加载的是历史数据（如过夜仓强平），不应让历史亏损
+        触发本次 session 的交易暂停。重放完成后重置 loss streak。
         """
         count = 0
-        for row in rows:
-            strategy = row.get("strategy")
-            won = row.get("won")
-            if not strategy or won is None:
-                continue
-            try:
-                pnl = float(row.get("pnl") or 0.0)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "warm_up_from_db: invalid pnl=%r for strategy=%s, defaulting to 0.0",
-                    row.get("pnl"), strategy,
-                )
-                pnl = 0.0
-            regime = row.get("regime")
-            source = str(row.get("source") or "signal")
-            self.record_outcome(strategy, bool(won), pnl, regime=regime, source=source)
-            count += 1
+        # 暂存 PnL circuit 状态，warm_up 期间不触发
+        saved_pnl_enabled = self._config.pnl_circuit_enabled
+        self._config.pnl_circuit_enabled = False
+        try:
+            for row in rows:
+                strategy = row.get("strategy")
+                won = row.get("won")
+                if not strategy or won is None:
+                    continue
+                try:
+                    pnl = float(row.get("pnl") or 0.0)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "warm_up_from_db: invalid pnl=%r for strategy=%s, defaulting to 0.0",
+                        row.get("pnl"), strategy,
+                    )
+                    pnl = 0.0
+                regime = row.get("regime")
+                source = str(row.get("source") or "signal")
+                self.record_outcome(strategy, bool(won), pnl, regime=regime, source=source)
+                count += 1
+        finally:
+            self._config.pnl_circuit_enabled = saved_pnl_enabled
+            # 重置 loss streak：历史连败不应影响新 session
+            self._global_trade_loss_streak = 0
+            self._pnl_circuit_paused = False
+            self._pnl_circuit_opened_at = 0.0
         if count:
             logger.info(
                 "StrategyPerformanceTracker: restored %d outcomes from DB "
-                "(trade_loss_streak=%d, pnl_paused=%s)",
+                "(pnl_circuit reset after warm_up)",
                 count,
-                self._global_trade_loss_streak,
-                self._pnl_circuit_paused,
             )
         return count
 
