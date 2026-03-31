@@ -16,6 +16,7 @@ class DummyAccountInfo:
     equity: float
     margin: float
     margin_free: float
+    profit: float
     leverage: int
     currency: str
 
@@ -88,7 +89,7 @@ class DummyTradingService:
 
 class DummyAccountService:
     def account_info(self):
-        return DummyAccountInfo(1001, 1000.0, 1010.0, 50.0, 960.0, 100, "USD")
+        return DummyAccountInfo(1001, 1000.0, 1010.0, 50.0, 960.0, 10.0, 100, "USD")
 
     def positions(self, symbol=None):
         return []

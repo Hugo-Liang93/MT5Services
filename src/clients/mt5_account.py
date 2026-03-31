@@ -20,6 +20,7 @@ class AccountInfo:
     equity: float
     margin: float
     margin_free: float
+    profit: float
     leverage: int
     currency: str
 
@@ -90,6 +91,7 @@ class MT5AccountClient(MT5BaseClient):
             equity=info.equity,
             margin=info.margin,
             margin_free=info.margin_free,
+            profit=info.profit,
             leverage=info.leverage,
             currency=info.currency,
         )

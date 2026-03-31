@@ -46,6 +46,7 @@ class AccountInfoModel(BaseModel):
     equity: float
     margin: float
     margin_free: float
+    profit: float
     leverage: int
     currency: str
 
