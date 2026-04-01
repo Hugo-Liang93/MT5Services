@@ -73,12 +73,12 @@ def _load_specs_from_json(path: str) -> Optional[List[CompositeSpec]]:
     JSON 中使用策略类名字符串（如 "SupertrendStrategy"），此函数将其解析为工厂函数。
     解析失败时返回 None，调用方应回退到硬编码默认值。
     """
-    from .multi_tf_entry import HTFTrendM5Entry
+    from .multi_tf_entry import HTFTrendPullback
 
     _CLASS_MAP: Dict[str, Any] = {
         "BollingerBreakoutStrategy": BollingerBreakoutStrategy,
         "DonchianBreakoutStrategy": DonchianBreakoutStrategy,
-        "HTFTrendM5Entry": HTFTrendM5Entry,
+        "HTFTrendPullback": HTFTrendPullback,
         "EmaRibbonStrategy": EmaRibbonStrategy,
         "FakeBreakoutDetector": FakeBreakoutDetector,
         "KeltnerBollingerSqueezeStrategy": KeltnerBollingerSqueezeStrategy,

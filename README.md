@@ -169,17 +169,18 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 
 ## 信号系统
 
-20 个内置策略，分为 5 类：
+30+ 内置策略，分为 6 类：
 
 | 类型 | 策略数 | Scope | 代表 |
 |------|--------|-------|------|
-| 趋势跟踪 | 6 | confirmed | sma_trend, supertrend, ema_ribbon |
-| 均值回归 | 4 | intrabar + confirmed | rsi_reversion, stoch_rsi |
-| 突破/波动率 | 6 | 混合 | bollinger_breakout, donchian_breakout |
-| 时段动量 | 1 | confirmed | session_momentum |
-| 价格行为 | 1 | confirmed | price_action_reversal |
+| 跨 TF 联动 | 7 | confirmed / intrabar | htf_trend_pullback, dual_tf_momentum, m5_scalp_rsi |
+| 趋势跟踪 | 6 | confirmed | supertrend, roc_momentum, fib_pullback |
+| 均值回归 | 4 | intrabar + confirmed | rsi_reversion, stoch_rsi, cci_reversion |
+| 突破/波动率 | 6 | 混合 | donchian_breakout, keltner_bb_squeeze |
+| 价格行为 | 2 | confirmed | price_action_reversal, order_block_entry |
+| M5 快速标量 | 3 | intrabar + confirmed | m5_scalp_rsi, m5_momentum_burst |
 
-另有 2 个复合策略 (trend_triple_confirm, breakout_double_confirm) 和 VotingEngine 多组投票。
+另有 5 个复合策略和 4 组方向一致性投票（momentum/breakout/reversion/reversal）。
 
 ## 风险管理
 

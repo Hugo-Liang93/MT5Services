@@ -25,7 +25,8 @@ from .strategies.breakout import (
     SqueezeReleaseFollow,
 )
 from .strategies.composite import CompositeSignalStrategy
-from .strategies.multi_tf_entry import HTFTrendM5Entry
+from .strategies.m5_scalp import M5MomentumBurst, M5ScalpRSI
+from .strategies.multi_tf_entry import DualTFMomentum, HTFTrendPullback
 from .strategies.mean_reversion import (
     CciReversionStrategy,
     RsiDivergenceStrategy,
@@ -113,7 +114,15 @@ class SignalModule:
             FakeBreakoutDetector(),
             SqueezeReleaseFollow(),
             # ── 多时间框架联动策略 ────────────────────────────────────────────
-            HTFTrendM5Entry(),
+            HTFTrendPullback(),                                  # H1 定向 + LTF 回调（M5/M15/M30）
+            HTFTrendPullback(name="htf_h4_pullback", htf="H4"),  # H4 定向 + LTF 回调（M30/H1）
+            HTFTrendPullback(name="htf_m30_pullback", htf="M30"),  # M30 定向 + M5 回调
+            DualTFMomentum(),                                     # H1+LTF 双 TF 动量共振
+            DualTFMomentum(name="dual_h4_momentum", htf="H4"),   # H4+LTF 双 TF 动量共振
+            # ── M5 专用快速策略（intrabar 优先）────────────────────────
+            M5ScalpRSI(),                                         # M30 定向 + M5 RSI 极值标量
+            M5ScalpRSI(name="m5_scalp_rsi_h1", htf="H1"),       # H1 定向 + M5 RSI 极值标量
+            M5MomentumBurst(),                                    # M30 定向 + M5 ADX/RSI 动量突发
             # ── 趋势线策略（仅 H1/H4）──────────────────────────────────────────
             TrendlineThreeTouchStrategy(),
             # 复合策略由 registry.register_composite_strategies() 从 composites.json 注册

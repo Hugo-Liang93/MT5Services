@@ -1,19 +1,4 @@
-"""回测 CLI 入口。
-
-使用方式::
-
-    python -m src.backtesting.cli run \\
-        --symbol XAUUSD --timeframe M5 \\
-        --start 2025-01-01 --end 2025-06-01 \\
-        --strategies rsi_reversion,supertrend
-
-    python -m src.backtesting.cli optimize \\
-        --symbol XAUUSD --timeframe M5 \\
-        --start 2025-01-01 --end 2025-06-01 \\
-        --param "rsi_reversion__oversold=25,30,35" \\
-        --param "rsi_reversion__overbought=70,75,80" \\
-        --mode grid --sort sharpe_ratio
-"""
+# docstring removed during encoding normalization
 
 from __future__ import annotations
 
@@ -27,75 +12,46 @@ logger = logging.getLogger(__name__)
 
 
 def _cleanup_components(components: Dict[str, Any]) -> None:
-    """释放回测组件的独立资源（pipeline + DB 连接池）。"""
-    pipeline = components.get("pipeline")
-    if pipeline is not None:
-        try:
-            pipeline.shutdown()
-        except Exception:
-            pass
-    writer = components.get("writer")
-    if writer is not None:
-        try:
-            writer.close()
-        except Exception:
-            pass
-
-
-def _parse_param(param_str: str) -> Tuple[str, List[Any]]:
-    """解析参数定义字符串。
-
-    格式: "key=val1,val2,val3"
-    值自动转换为 float/int。
-    """
-    if "=" not in param_str:
-        raise ValueError(f"Invalid param format: {param_str!r}. Expected 'key=val1,val2,...'")
-    key, values_str = param_str.split("=", 1)
-    values: List[Any] = []
-    for v in values_str.split(","):
-        v = v.strip()
-        try:
-            # 尝试 int
-            values.append(int(v))
-        except ValueError:
-            try:
-                values.append(float(v))
-            except ValueError:
-                values.append(v)
-    return key.strip(), values
-
-
-def _build_components(args: argparse.Namespace) -> Dict[str, Any]:
-    """构建回测所需的组件（委托给共享工厂）。"""
+    # docstring removed during encoding normalization
     from .component_factory import build_backtest_components
 
     strategy_params = getattr(args, "strategy_params", None) or None
     return build_backtest_components(strategy_params=strategy_params)
 
 
+def _load_strategy_scope_overrides() -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    try:
+        from .component_factory import _load_signal_config_snapshot
+
+        signal_config = _load_signal_config_snapshot()
+    except Exception:
+        return {}, {}
+
+    def _normalize(mapping: Any) -> Dict[str, List[str]]:
+        normalized: Dict[str, List[str]] = {}
+        for name, values in (mapping or {}).items():
+            items = list(values) if isinstance(values, (list, tuple, set)) else [values]
+            cleaned = [str(item).strip() for item in items if str(item).strip()]
+            if cleaned:
+                normalized[str(name)] = cleaned
+        return normalized
+
+    return (
+        _normalize(getattr(signal_config, "strategy_timeframes", {}) or {}),
+        _normalize(getattr(signal_config, "strategy_sessions", {}) or {}),
+    )
+
+
 def cmd_run(args: argparse.Namespace) -> None:
-    """执行单次回测。"""
+    # docstring removed during encoding normalization
     from .config import get_backtest_defaults
     from .engine import BacktestEngine
     from .models import BacktestConfig
     from .report import format_summary
 
     strategies = args.strategies.split(",") if args.strategies else None
-    # 从 backtest.ini 加载默认值，CLI 参数优先覆盖
     ini_defaults = get_backtest_defaults()
-
-    # 从 signal.ini 加载 strategy_timeframes 白名单
-    try:
-        from src.config import get_signal_config
-        _sig_cfg = get_signal_config()
-        _stf_raw = getattr(_sig_cfg, "strategy_timeframes", {}) or {}
-        # 转换为 {strategy: [tf1, tf2]} 格式
-        strategy_timeframes: Dict[str, list] = {
-            k: (v if isinstance(v, list) else [t.strip() for t in str(v).split(",") if t.strip()])
-            for k, v in _stf_raw.items()
-        }
-    except Exception:
-        strategy_timeframes = {}
+    strategy_timeframes, strategy_sessions = _load_strategy_scope_overrides()
 
     config = BacktestConfig(
         symbol=args.symbol,
@@ -104,18 +60,17 @@ def cmd_run(args: argparse.Namespace) -> None:
         end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
         strategies=strategies,
         strategy_timeframes=strategy_timeframes,
+        strategy_sessions=strategy_sessions,
         initial_balance=args.balance,
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
         filters_enabled=not args.no_filters,
-        # ini 默认值覆盖（CLI 显式传入的参数已在上方设定，ini 仅补充未指定项）
         commission_per_lot=ini_defaults.get("commission_per_lot", 0.0),
         slippage_points=ini_defaults.get("slippage_points", 0.0),
         contract_size=ini_defaults.get("contract_size", 100.0),
         risk_percent=ini_defaults.get("risk_percent", 1.0),
         max_positions=ini_defaults.get("max_positions", 3),
         max_signal_evaluations=ini_defaults.get("max_signal_evaluations", 50000),
-        # 过滤器配置从 ini 加载
         filter_session_enabled=ini_defaults.get("filter_session_enabled", True),
         filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,newyork"),
         filter_session_transition_enabled=ini_defaults.get(
@@ -137,38 +92,68 @@ def cmd_run(args: argparse.Namespace) -> None:
         regime_sl_ranging=ini_defaults.get("regime_sl_ranging", 0.90),
         regime_sl_breakout=ini_defaults.get("regime_sl_breakout", 1.10),
         regime_sl_uncertain=ini_defaults.get("regime_sl_uncertain", 1.00),
-        **({"trailing_atr_multiplier": args.trailing} if getattr(args, "trailing", None) else {}),
-        **({"breakeven_atr_threshold": args.breakeven} if getattr(args, "breakeven", None) else {}),
-        # Trailing Take Profit
+        **(
+            {"trailing_atr_multiplier": args.trailing}
+            if getattr(args, "trailing", None)
+            else {}
+        ),
+        **(
+            {"breakeven_atr_threshold": args.breakeven}
+            if getattr(args, "breakeven", None)
+            else {}
+        ),
         trailing_tp_enabled=ini_defaults.get("trailing_tp_enabled", False),
         trailing_tp_activation_atr=ini_defaults.get("trailing_tp_activation_atr", 1.5),
         trailing_tp_trail_atr=ini_defaults.get("trailing_tp_trail_atr", 0.8),
-        # 指标驱动出场
         indicator_exit_enabled=ini_defaults.get("indicator_exit_enabled", False),
-        indicator_exit_supertrend_enabled=ini_defaults.get("indicator_exit_supertrend_enabled", True),
-        indicator_exit_supertrend_tighten_atr=ini_defaults.get("indicator_exit_supertrend_tighten_atr", 0.5),
+        indicator_exit_supertrend_enabled=ini_defaults.get(
+            "indicator_exit_supertrend_enabled", True
+        ),
+        indicator_exit_supertrend_tighten_atr=ini_defaults.get(
+            "indicator_exit_supertrend_tighten_atr", 0.5
+        ),
         indicator_exit_rsi_enabled=ini_defaults.get("indicator_exit_rsi_enabled", True),
-        indicator_exit_rsi_overbought=ini_defaults.get("indicator_exit_rsi_overbought", 75.0),
-        indicator_exit_rsi_oversold=ini_defaults.get("indicator_exit_rsi_oversold", 25.0),
-        indicator_exit_rsi_delta_threshold=ini_defaults.get("indicator_exit_rsi_delta_threshold", 5.0),
-        indicator_exit_rsi_tighten_atr=ini_defaults.get("indicator_exit_rsi_tighten_atr", 0.5),
+        indicator_exit_rsi_overbought=ini_defaults.get(
+            "indicator_exit_rsi_overbought", 75.0
+        ),
+        indicator_exit_rsi_oversold=ini_defaults.get(
+            "indicator_exit_rsi_oversold", 25.0
+        ),
+        indicator_exit_rsi_delta_threshold=ini_defaults.get(
+            "indicator_exit_rsi_delta_threshold", 5.0
+        ),
+        indicator_exit_rsi_tighten_atr=ini_defaults.get(
+            "indicator_exit_rsi_tighten_atr", 0.5
+        ),
         indicator_exit_macd_enabled=ini_defaults.get("indicator_exit_macd_enabled", True),
-        indicator_exit_macd_tighten_atr=ini_defaults.get("indicator_exit_macd_tighten_atr", 0.5),
+        indicator_exit_macd_tighten_atr=ini_defaults.get(
+            "indicator_exit_macd_tighten_atr", 0.5
+        ),
         indicator_exit_adx_enabled=ini_defaults.get("indicator_exit_adx_enabled", True),
-        indicator_exit_adx_entry_min=ini_defaults.get("indicator_exit_adx_entry_min", 25.0),
-        indicator_exit_adx_collapse_threshold=ini_defaults.get("indicator_exit_adx_collapse_threshold", 10.0),
-        indicator_exit_adx_tighten_atr=ini_defaults.get("indicator_exit_adx_tighten_atr", 0.3),
-        # 连败熔断器
+        indicator_exit_adx_entry_min=ini_defaults.get(
+            "indicator_exit_adx_entry_min", 25.0
+        ),
+        indicator_exit_adx_collapse_threshold=ini_defaults.get(
+            "indicator_exit_adx_collapse_threshold", 10.0
+        ),
+        indicator_exit_adx_tighten_atr=ini_defaults.get(
+            "indicator_exit_adx_tighten_atr", 0.3
+        ),
         circuit_breaker_enabled=ini_defaults.get("circuit_breaker_enabled", False),
-        circuit_breaker_max_consecutive_losses=ini_defaults.get("circuit_breaker_max_consecutive_losses", 5),
-        circuit_breaker_cooldown_bars=ini_defaults.get("circuit_breaker_cooldown_bars", 20),
+        circuit_breaker_max_consecutive_losses=ini_defaults.get(
+            "circuit_breaker_max_consecutive_losses", 5
+        ),
+        circuit_breaker_cooldown_bars=ini_defaults.get(
+            "circuit_breaker_cooldown_bars", 20
+        ),
     )
 
-    # CLI SL/TP 覆盖（安全方式：深拷贝 → 修改副本 → 回测结束后恢复）
     _sl_tp_backup: Optional[Dict] = None
     if getattr(args, "sl_mult", None) is not None or getattr(args, "tp_mult", None) is not None:
         import copy
+
         from src.trading.sizing import TIMEFRAME_SL_TP
+
         tf = args.timeframe.upper()
         if tf in TIMEFRAME_SL_TP:
             _sl_tp_backup = copy.deepcopy(TIMEFRAME_SL_TP)
@@ -178,7 +163,9 @@ def cmd_run(args: argparse.Namespace) -> None:
                 TIMEFRAME_SL_TP[tf]["tp_atr_mult"] = args.tp_mult
             logger.info(
                 "CLI override: %s SL/TP = %.1f/%.1f ATR (will restore after backtest)",
-                tf, TIMEFRAME_SL_TP[tf]["sl_atr_mult"], TIMEFRAME_SL_TP[tf]["tp_atr_mult"],
+                tf,
+                TIMEFRAME_SL_TP[tf]["sl_atr_mult"],
+                TIMEFRAME_SL_TP[tf]["tp_atr_mult"],
             )
 
     components = _build_components(args)
@@ -197,7 +184,6 @@ def cmd_run(args: argparse.Namespace) -> None:
         result = engine.run()
         print(format_summary(result))
 
-        # 持久化到 DB
         if not args.no_persist:
             _persist_result(result, components.get("writer"))
 
@@ -206,18 +192,17 @@ def cmd_run(args: argparse.Namespace) -> None:
 
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(result_to_json(result))
-            print(f"结果已保存到: {args.output}")
+            print(f": {args.output}")
     finally:
-        # 恢复被 CLI 覆盖的全局 SL/TP 参数（无论回测成功失败）
         if _sl_tp_backup is not None:
             from src.trading.sizing import TIMEFRAME_SL_TP
+
             TIMEFRAME_SL_TP.clear()
             TIMEFRAME_SL_TP.update(_sl_tp_backup)
         _cleanup_components(components)
 
-
 def cmd_optimize(args: argparse.Namespace) -> None:
-    """执行参数优化。"""
+    # docstring removed during encoding normalization
     from .config import get_backtest_defaults
     from .models import BacktestConfig, ParameterSpace
     from .optimizer import ParameterOptimizer, build_signal_module_with_overrides
@@ -225,12 +210,15 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 
     strategies = args.strategies.split(",") if args.strategies else None
     ini_defaults = get_backtest_defaults()
+    strategy_timeframes, strategy_sessions = _load_strategy_scope_overrides()
     config = BacktestConfig(
         symbol=args.symbol,
         timeframe=args.timeframe,
         start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
         end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
         strategies=strategies,
+        strategy_timeframes=strategy_timeframes,
+        strategy_sessions=strategy_sessions,
         initial_balance=args.balance,
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
@@ -249,7 +237,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         regime_sl_uncertain=ini_defaults.get("regime_sl_uncertain", 1.00),
     )
 
-    # 解析参数空间
     param_dict: Dict[str, List[Any]] = {}
     for p in args.param:
         key, values = _parse_param(p)
@@ -291,9 +278,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     finally:
         _cleanup_components(components)
 
-
 def cmd_compare_tf(args: argparse.Namespace) -> None:
-    """按多个 timeframe 批量运行基线回测并输出对比报告。"""
+    # docstring removed during encoding normalization
     from .config import get_backtest_defaults
     from .engine import BacktestEngine
     from .models import BacktestConfig
@@ -302,9 +288,10 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
     strategies = args.strategies.split(",") if args.strategies else None
     timeframes = [tf.strip().upper() for tf in args.timeframes.split(",") if tf.strip()]
     if not timeframes:
-        raise ValueError("timeframes 不能为空，例如: M1,M5,M15,H1")
+        raise ValueError("timeframes  M1,M5,M15,H1 ")
 
     ini_defaults = get_backtest_defaults()
+    strategy_timeframes, strategy_sessions = _load_strategy_scope_overrides()
     results_by_tf: Dict[str, Any] = {}
     for timeframe in timeframes:
         components = _build_components(args)
@@ -315,6 +302,8 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
                 start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
                 end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
                 strategies=strategies,
+                strategy_timeframes=strategy_timeframes,
+                strategy_sessions=strategy_sessions,
                 initial_balance=args.balance,
                 min_confidence=args.min_confidence,
                 warmup_bars=args.warmup,
@@ -353,8 +342,8 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
                 indicator_pipeline=components["pipeline"],
                 regime_detector=components["regime_detector"],
                 voting_engine=components.get("voting_engine"),
-            voting_group_engines=components.get("voting_group_engines"),
-            performance_tracker=components.get("performance_tracker"),
+                voting_group_engines=components.get("voting_group_engines"),
+                performance_tracker=components.get("performance_tracker"),
             )
             logger.info("Running baseline backtest for timeframe=%s", timeframe)
             result = engine.run()
@@ -363,85 +352,8 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
             _cleanup_components(components)
     print(format_timeframe_comparison(results_by_tf))
 
-
 def main() -> None:
-    """CLI 主入口。"""
-    parser = argparse.ArgumentParser(
-        description="MT5Services 回测工具",
-        prog="python -m src.backtesting.cli",
-    )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="启用详细日志"
-    )
-    subparsers = parser.add_subparsers(dest="command", help="子命令")
-
-    # run 子命令
-    run_parser = subparsers.add_parser("run", help="运行单次回测")
-    _add_common_args(run_parser)
-    run_parser.add_argument(
-        "-o", "--output", type=str, help="输出 JSON 文件路径"
-    )
-
-    # optimize 子命令
-    opt_parser = subparsers.add_parser("optimize", help="运行参数优化")
-    _add_common_args(opt_parser)
-    opt_parser.add_argument(
-        "--param",
-        action="append",
-        required=True,
-        help="参数定义 (格式: key=val1,val2,val3)，可多次指定",
-    )
-    opt_parser.add_argument(
-        "--mode",
-        choices=["grid", "random"],
-        default="grid",
-        help="搜索模式 (默认: grid)",
-    )
-    opt_parser.add_argument(
-        "--max-combos",
-        type=int,
-        default=500,
-        help="最大参数组合数 (默认: 500)",
-    )
-    opt_parser.add_argument(
-        "--sort",
-        type=str,
-        default="sharpe_ratio",
-        help="排序指标 (默认: sharpe_ratio)",
-    )
-
-    # compare-tf 子命令
-    cmp_parser = subparsers.add_parser("compare-tf", help="按多个 timeframe 运行基线对比")
-    cmp_parser.add_argument("--symbol", required=True, help="交易品种 (如 XAUUSD)")
-    cmp_parser.add_argument("--timeframes", required=True, help="时间框架列表 (如 M1,M5,M15,H1)")
-    cmp_parser.add_argument("--start", required=True, help="起始日期 (YYYY-MM-DD)")
-    cmp_parser.add_argument("--end", required=True, help="结束日期 (YYYY-MM-DD)")
-    cmp_parser.add_argument("--strategies", type=str, default=None, help="策略列表 (逗号分隔)")
-    cmp_parser.add_argument("--balance", type=float, default=10000.0, help="初始资金 (默认: 10000)")
-    cmp_parser.add_argument("--min-confidence", type=float, default=0.55, help="最低开仓置信度")
-    cmp_parser.add_argument("--warmup", type=int, default=200, help="热身 bar 数量")
-    cmp_parser.add_argument("--no-filters", action="store_true", help="禁用过滤器模拟")
-
-    args = parser.parse_args()
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s: %(message)s")
-    else:
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-    if args.command == "run":
-        cmd_run(args)
-    elif args.command == "optimize":
-        cmd_optimize(args)
-    elif args.command == "compare-tf":
-        cmd_compare_tf(args)
-    else:
-        parser.print_help()
-        sys.exit(1)
-
-
-def _persist_result(result: Any, writer: Any = None) -> None:
-    """将回测结果持久化到 DB。"""
+    # docstring removed during encoding normalization
     try:
         from src.persistence.repositories.backtest_repo import BacktestRepository
 
@@ -455,63 +367,63 @@ def _persist_result(result: Any, writer: Any = None) -> None:
         repo = BacktestRepository(writer)
         repo.ensure_schema()
         repo.save_result(result)
-        print(f"结果已持久化到数据库: {result.run_id}")
+        print(f": {result.run_id}")
     except Exception as e:
-        logger.warning("持久化失败: %s", e, exc_info=True)
-        print(f"警告: 持久化失败 - {e}")
+        logger.warning("? %s", e, exc_info=True)
+        print(f": ?- {e}")
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    """添加 run 和 optimize 共用的参数。"""
-    parser.add_argument("--symbol", required=True, help="交易品种 (如 XAUUSD)")
-    parser.add_argument("--timeframe", required=True, help="时间框架 (如 M5)")
-    parser.add_argument("--start", required=True, help="起始日期 (YYYY-MM-DD)")
-    parser.add_argument("--end", required=True, help="结束日期 (YYYY-MM-DD)")
+    # docstring removed during encoding normalization
+    parser.add_argument("--symbol", required=True, help=" (?XAUUSD)")
+    parser.add_argument("--timeframe", required=True, help=" (?M5)")
+    parser.add_argument("--start", required=True, help=" (YYYY-MM-DD)")
+    parser.add_argument("--end", required=True, help=" (YYYY-MM-DD)")
     parser.add_argument(
-        "--strategies", type=str, default=None, help="策略列表 (逗号分隔)"
+        "--strategies", type=str, default=None, help=" ()"
     )
     parser.add_argument(
-        "--balance", type=float, default=10000.0, help="初始资金 (默认: 10000)"
+        "--balance", type=float, default=10000.0, help=" (: 10000)"
     )
     parser.add_argument(
         "--min-confidence",
         type=float,
         default=0.55,
-        help="最低开仓置信度 (默认: 0.55)",
+        help=" (: 0.55)",
     )
     parser.add_argument(
-        "--warmup", type=int, default=200, help="热身 bar 数量 (默认: 200)"
+        "--warmup", type=int, default=200, help=" bar  (: 200)"
     )
     parser.add_argument(
         "--no-filters",
         action="store_true",
-        help="禁用过滤器模拟 (默认启用)",
+        help="?()",
     )
     parser.add_argument(
         "--no-persist",
         action="store_true",
-        help="不持久化结果到数据库",
+        help="",
     )
     parser.add_argument(
         "--no-economic",
         action="store_true",
-        help="禁用经济日历事件过滤（默认启用）",
+        help="",
     )
     parser.add_argument(
         "--sl-mult", type=float, default=None,
-        help="覆盖 SL ATR 倍数（如 2.0）",
+        help="Override stop-loss ATR multiplier, e.g. 2.0",
     )
     parser.add_argument(
         "--tp-mult", type=float, default=None,
-        help="覆盖 TP ATR 倍数（如 3.0）",
+        help="Override take-profit ATR multiplier, e.g. 3.0",
     )
     parser.add_argument(
         "--trailing", type=float, default=None,
-        help="Trailing stop ATR 倍数（如 0.8）",
+        help="Override trailing-stop ATR multiplier, e.g. 0.8",
     )
     parser.add_argument(
         "--breakeven", type=float, default=None,
-        help="Breakeven 触发 ATR 阈值（如 0.8）",
+        help="Override breakeven ATR threshold, e.g. 0.8",
     )
 
 

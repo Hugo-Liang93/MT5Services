@@ -286,6 +286,26 @@ def _load_signal_config() -> Any:
     return get_signal_config()
 
 
+def _strategy_scope_overrides(signal_config: Any) -> Dict[str, Dict[str, list[str]]]:
+    def _normalize(mapping: Any) -> Dict[str, list[str]]:
+        normalized: Dict[str, list[str]] = {}
+        for name, values in (mapping or {}).items():
+            items = list(values) if isinstance(values, (list, tuple, set)) else [values]
+            cleaned = [str(item).strip() for item in items if str(item).strip()]
+            if cleaned:
+                normalized[str(name)] = cleaned
+        return normalized
+
+    return {
+        "strategy_timeframes": _normalize(
+            getattr(signal_config, "strategy_timeframes", {}) or {}
+        ),
+        "strategy_sessions": _normalize(
+            getattr(signal_config, "strategy_sessions", {}) or {}
+        ),
+    }
+
+
 _PARAM_TEMPLATE_SPECS: Dict[str, Dict[str, Any]] = {
     "supertrend__adx_threshold": {"default": 23.0, "step": 2.0, "min": 18.0, "max": 30.0, "precision": 1},
     "roc_momentum__adx_min": {"default": 23.0, "step": 2.0, "min": 18.0, "max": 30.0, "precision": 1},
@@ -491,6 +511,7 @@ def _build_backtest_config(request: BacktestRequestBase) -> Any:
     from src.backtesting.models import BacktestConfig
 
     defaults = _load_backtest_defaults()
+    signal_config = _load_signal_config()
     config_kwargs: Dict[str, Any] = {
         "symbol": request.symbol,
         "timeframe": request.timeframe,
@@ -500,6 +521,7 @@ def _build_backtest_config(request: BacktestRequestBase) -> Any:
         "strategy_params": request.strategy_params,
         "strategy_params_per_tf": request.strategy_params_per_tf,
         "regime_affinity_overrides": request.regime_affinity_overrides,
+        **_strategy_scope_overrides(signal_config),
     }
     for field_name in _CONFIG_OVERRIDE_FIELDS:
         value = getattr(request, field_name, None)

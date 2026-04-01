@@ -84,6 +84,9 @@ class BacktestConfig:
     regime_affinity_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
     # 策略-TF 白名单：{strategy_name: [tf1, tf2, ...]}，空 dict = 不限制
     strategy_timeframes: Dict[str, List[str]] = field(default_factory=dict)
+    # per-strategy session 限制（与生产 signal.ini [strategy_sessions] 一致）
+    # {strategy_name: [session1, session2, ...]}，空 dict = 不限制
+    strategy_sessions: Dict[str, List[str]] = field(default_factory=dict)
     # 指标热身 bar 数量
     warmup_bars: int = 200
     # 合约大小（XAUUSD = 100 oz/lot）

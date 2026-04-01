@@ -179,6 +179,9 @@ def build_executor_config(signal_config) -> ExecutorConfig:
         max_consecutive_failures=signal_config.max_consecutive_failures,
         circuit_auto_reset_minutes=signal_config.circuit_auto_reset_minutes,
         max_spread_to_stop_ratio=signal_config.max_spread_to_stop_ratio,
+        reentry_cooldown_bars=int(
+            getattr(signal_config, "reentry_cooldown_bars", 3) or 3
+        ),
         regime_sizing=RegimeSizing(
             tp_trending=signal_config.regime_tp_trending,
             tp_ranging=signal_config.regime_tp_ranging,
@@ -200,7 +203,6 @@ def build_execution_gate_config(signal_config) -> ExecutionGateConfig:
     )
     return ExecutionGateConfig(
         require_armed=signal_config.auto_trade_require_armed,
-        trade_trigger_strategies=tuple(signal_config.trade_trigger_strategies),
         voting_group_strategies=voting_group_strategies,
         standalone_override=frozenset(signal_config.standalone_override),
     )

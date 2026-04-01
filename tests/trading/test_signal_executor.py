@@ -177,6 +177,73 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
     )
 
 
+def test_trade_executor_skips_when_same_strategy_direction_position_is_active() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=DummyPositionManager(
+            [
+                {
+                    "symbol": "XAUUSD",
+                    "timeframe": "M5",
+                    "strategy": "sma_trend",
+                    "action": "buy",
+                }
+            ]
+        ),
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            max_concurrent_positions_per_symbol=3,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        "position_same_strategy_direction"
+    )
+
+
+def test_trade_executor_allows_reentry_after_same_strategy_direction_position_is_closed() -> None:
+    module = DummyTradingModule()
+    tracked_positions = [
+        {
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "action": "buy",
+        }
+    ]
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=DummyPositionManager(tracked_positions),
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            max_concurrent_positions_per_symbol=3,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+    tracked_positions.clear()
+    event = SignalEvent(
+        **{
+            **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
+            "signal_id": "sig_2",
+            "generated_at": datetime.now(timezone.utc),
+        }
+    )
+
+    _fire(executor, event)
+
+    assert len(module.calls) == 1
+    assert module.calls[0][1]["request_id"] == "sig_2"
+
+
 def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
     module = DummyTradingModule()
     executor = TradeExecutor(
@@ -341,32 +408,3 @@ def test_execution_gate_allows_armed_signal() -> None:
     assert allowed
     assert reason == ""
 
-
-def test_execution_gate_blocks_strategy_not_in_whitelist() -> None:
-    gate = ExecutionGate(
-        ExecutionGateConfig(
-            require_armed=False,
-            trade_trigger_strategies=("consensus",),
-        )
-    )
-    event = _build_event(spread_points=10.0, close_price=3000.0)
-
-    allowed, reason = gate.check(event)
-
-    assert not allowed
-    assert reason == "not_in_trade_trigger_whitelist"
-
-
-def test_execution_gate_allows_whitelisted_strategy() -> None:
-    gate = ExecutionGate(
-        ExecutionGateConfig(
-            require_armed=False,
-            trade_trigger_strategies=("sma_trend", "consensus"),
-        )
-    )
-    event = _build_event(spread_points=10.0, close_price=3000.0)
-
-    allowed, reason = gate.check(event)
-
-    assert allowed
-    assert reason == ""

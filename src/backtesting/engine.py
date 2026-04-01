@@ -252,6 +252,20 @@ class BacktestEngine:
                     filtered, config.timeframe,
                 )
 
+        # per-strategy session 限制（与实盘 SignalRuntime.strategy_sessions 行为一致）
+        from src.signals.contracts import normalize_session_name
+        self._strategy_sessions: Dict[str, tuple[str, ...]] = {
+            name: tuple(normalize_session_name(s) for s in sessions)
+            for name, sessions in config.strategy_sessions.items()
+            if sessions
+        }
+
+        # 用于在 run() 和 _evaluate_strategies() 中查询 bar 的 current_sessions
+        self._session_filter: Optional[Any] = None
+        if self._strategy_sessions:
+            from src.signals.execution.filters import SessionFilter
+            self._session_filter = SessionFilter(allowed_sessions=("london", "newyork", "asia"))
+
         # 收集所有目标策略需要的指标名 + regime 检测需要的指标
         self._required_indicators: List[str] = []
         seen: Set[str] = set()
@@ -527,7 +541,8 @@ class BacktestEngine:
 
             # 7. 策略评估
             decisions = self._evaluate_strategies(
-                symbol, timeframe, indicators, regime, soft_regime_dict
+                symbol, timeframe, indicators, regime, soft_regime_dict,
+                bar_time=bar.time,
             )
 
             # 8. 记录信号评估 + 处理独立策略信号
@@ -816,6 +831,7 @@ class BacktestEngine:
         regime: RegimeType,
         soft_regime_dict: Optional[Dict[str, Any]],
         scope: str = "confirmed",
+        bar_time: Optional[datetime] = None,
     ) -> List[SignalDecision]:
         """评估所有目标策略。
 
@@ -835,9 +851,20 @@ class BacktestEngine:
         if not self._config.enable_calibrator:
             metadata["_skip_calibrator"] = True
 
+        # per-strategy session 过滤：计算当前 bar 所属 session
+        current_sessions: List[str] = []
+        if self._strategy_sessions and self._session_filter and bar_time is not None:
+            current_sessions = self._session_filter.current_sessions(bar_time)
+
         decisions: List[SignalDecision] = []
         for strategy_name in self._target_strategies:
             try:
+                # per-strategy session 过滤（与实盘 SignalRuntime 行为一致）
+                allowed_sessions = self._strategy_sessions.get(strategy_name, ())
+                if allowed_sessions and current_sessions:
+                    if not any(s in allowed_sessions for s in current_sessions):
+                        continue
+
                 # 检查策略所需指标是否都已计算
                 required = self._signal_module.strategy_requirements(strategy_name)
                 missing = [ind for ind in required if ind not in indicators]

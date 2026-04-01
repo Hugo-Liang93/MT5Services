@@ -12,6 +12,7 @@ import dataclasses as _dc
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
 
@@ -138,7 +139,9 @@ def process_and_emit_vote_signal(
             record = persist_fn(
                 vote_result, indicators=indicators, metadata=transition_metadata
             )
-            signal_id = record.signal_id if record is not None else ""
+            signal_id = record.signal_id if record is not None else uuid4().hex[:12]
+        elif scope == "confirmed" and vote_result.direction in ("buy", "sell"):
+            signal_id = uuid4().hex[:12]
         publish_fn(vote_result, signal_id, scope, indicators, transition_metadata)
 
 

@@ -95,7 +95,6 @@ def get_signal_config() -> SignalConfig:
     execution_costs_section = dict(merged.get("execution_costs", {}))
     market_structure_section = dict(merged.get("market_structure", {}))
     safety_section = dict(merged.get("safety", {}))
-    trade_triggers_section = dict(merged.get("trade_triggers", {}))
     voting_groups_section = dict(merged.get("voting_groups", {}))
     standalone_override_section = dict(merged.get("standalone_override", {}))
     perf_tracker_section = dict(merged.get("performance_tracker", {}))
@@ -327,11 +326,6 @@ def get_signal_config() -> SignalConfig:
         ),
         "strategy_sessions": _normalize_session_map(strategy_sessions_section),
         "strategy_timeframes": _normalize_session_map(strategy_timeframes_section),
-        "trade_trigger_strategies": [
-            s.strip()
-            for s in str(trade_triggers_section.get("allowed_strategies", "")).split(",")
-            if s.strip()
-        ],
         "voting_group_configs": voting_group_configs,
         "standalone_override": standalone_override,
         **{

@@ -53,6 +53,18 @@ def _run_single(
     from src.backtesting.engine import BacktestEngine
     from src.backtesting.models import BacktestConfig
 
+    # 从 signal.ini 加载 per-strategy session 和 timeframe 配置
+    from src.backtesting.component_factory import _load_signal_config_snapshot
+    signal_config = _load_signal_config_snapshot()
+    strategy_sessions: dict = {}
+    for name, sess_list in getattr(signal_config, "strategy_sessions", {}).items():
+        if sess_list:
+            strategy_sessions[name] = list(sess_list) if not isinstance(sess_list, list) else sess_list
+    strategy_timeframes: dict = {}
+    for name, tf_list in getattr(signal_config, "strategy_timeframes", {}).items():
+        if tf_list:
+            strategy_timeframes[name] = list(tf_list) if not isinstance(tf_list, list) else tf_list
+
     config = BacktestConfig(
         symbol="XAUUSD",
         timeframe=tf,
@@ -64,11 +76,13 @@ def _run_single(
         filters_enabled=filters_enabled,
         filter_session_enabled=filters_enabled,
         filter_allowed_sessions=sessions,
-        # 与实盘 signal.ini 对齐
-        trailing_tp_enabled=True,
-        trailing_tp_activation_atr=1.2,
-        trailing_tp_trail_atr=0.6,
-        indicator_exit_enabled=True,
+        strategy_sessions=strategy_sessions,
+        strategy_timeframes=strategy_timeframes,
+        # 从 signal.ini 读取出场参数，与实盘保持一致
+        trailing_tp_enabled=bool(getattr(signal_config, "trailing_tp_enabled", True)),
+        trailing_tp_activation_atr=float(getattr(signal_config, "trailing_tp_activation_atr", 1.2)),
+        trailing_tp_trail_atr=float(getattr(signal_config, "trailing_tp_trail_atr", 0.6)),
+        indicator_exit_enabled=bool(getattr(signal_config, "indicator_exit_enabled", False)),
     )
     components = build_backtest_components()
     engine = BacktestEngine(
@@ -78,6 +92,8 @@ def _run_single(
         indicator_pipeline=components["pipeline"],
         regime_detector=components["regime_detector"],
         voting_engine=components.get("voting_engine"),
+        voting_group_engines=components.get("voting_group_engines"),
+        performance_tracker=components.get("performance_tracker"),
     )
     result = engine.run()
     m = result.metrics

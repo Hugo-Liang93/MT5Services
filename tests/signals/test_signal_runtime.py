@@ -208,6 +208,40 @@ def test_signal_runtime_processes_confirmed_snapshot_event() -> None:
     assert service.persist_calls[0]["metadata"]["signal_state"] == "confirmed_buy"
 
 
+def test_signal_runtime_assigns_transient_signal_id_for_repeated_confirmed_actionable_events() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
+        enable_confirmed_snapshot=True,
+        enable_intrabar=False,
+    )
+    captured_events = []
+    runtime.add_signal_listener(captured_events.append)
+
+    indicators = {
+        "sma20": {"sma": 201.0},
+        "ema50": {"ema": 200.0},
+        "atr14": {"atr": 5.0},
+    }
+    first_bar = datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc)
+    second_bar = datetime(2026, 3, 19, 10, 5, tzinfo=timezone.utc)
+
+    runtime._on_snapshot("XAUUSD", "M5", first_bar, indicators, "confirmed")
+    runtime.process_next_event(timeout=0.01)
+    runtime._on_snapshot("XAUUSD", "M5", second_bar, indicators, "confirmed")
+    runtime.process_next_event(timeout=0.01)
+
+    assert len(captured_events) == 2
+    assert captured_events[0].signal_id
+    assert captured_events[1].signal_id
+    assert captured_events[0].signal_id != captured_events[1].signal_id
+    assert captured_events[0].metadata["state_changed"] is True
+    assert captured_events[1].metadata["state_changed"] is False
+
+
 def test_signal_runtime_status_exposes_trigger_mode() -> None:
     source = DummySnapshotSource()
     service = DummySignalService()

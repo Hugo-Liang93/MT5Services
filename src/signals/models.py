@@ -25,7 +25,9 @@ class SignalEvent:
     indicators: Dict[str, Dict[str, float]]
     metadata: Dict[str, Any]
     generated_at: datetime
-    signal_id: str = ""     # populated after persist; empty for non-persisted events
+    # Persisted signal record id, or a transient event id for actionable confirmed
+    # events that are intentionally not persisted (for example repeated confirms).
+    signal_id: str = ""
     reason: str = ""
 
 

@@ -6,8 +6,7 @@ with account-level risk controls (which live in ``src.risk.service``).
 
 Responsibilities (moved here from TradeExecutor to enforce clean boundaries):
   1. Voting-group protection — member strategies cannot trigger trades alone.
-  2. Trade-trigger whitelist — only listed strategies may trigger trades.
-  3. require_armed gate — signal must have been "armed" (stable preview)
+  2. require_armed gate — signal must have been "armed" (stable preview)
      before the confirmed bar to be eligible for execution.
 """
 
@@ -25,9 +24,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ExecutionGateConfig:
     require_armed: bool = True
-    # Trade-trigger whitelist: only these strategy names may trigger trades.
-    # Empty tuple = no restriction (all strategies allowed).
-    trade_trigger_strategies: tuple[str, ...] = field(default_factory=tuple)
     # Voting-group protection: strategies belonging to any voting group.
     # Non-empty ⇒ these strategies are blocked from standalone execution;
     # only the vote-group result signal (strategy = group_name) may trigger.
@@ -53,11 +49,6 @@ class ExecutionGate:
             and event.strategy not in self.config.standalone_override
         ):
             return False, "voting_group_member"
-
-        # ── Trade-trigger whitelist ────────────────────────────────────
-        allowed = self.config.trade_trigger_strategies
-        if allowed and event.strategy not in allowed:
-            return False, "not_in_trade_trigger_whitelist"
 
         # ── require_armed gate ─────────────────────────────────────────
         if self.config.require_armed:

@@ -1,6 +1,6 @@
 # Next Plan — 下一阶段开发规划
 
-> 更新日期：2026-03-29
+> 更新日期：2026-04-01
 > 基于当前系统状态与已实现功能制定。
 
 ---
@@ -11,19 +11,22 @@
 
 | 能力 | 状态 |
 |------|------|
-| 信号生成（23 策略 + 5 复合 + 投票引擎） | ✅ 生产就绪 |
+| 信号生成（30+ 策略 + 5 复合 + 4 投票组） | ✅ 生产就绪 |
+| 跨 TF 策略体系（HTFTrendPullback / DualTFMomentum） | ✅ M30 已验证盈利 |
+| M5 专用 intrabar 策略（ScalpRSI / MomentumBurst） | ✅ 已实现，待验证 |
 | 置信度管线（Regime × Perf × Calibrator × HTF） | ✅ 生产就绪 |
 | 价格确认入场（PendingEntry 3 种模式） | ✅ 生产就绪 |
 | 技术熔断器（MT5 API 失败计数） | ✅ 生产就绪 |
 | PnL 熔断器（实际亏损连续计数） | ✅ 已实现 |
 | PerformanceTracker 重启恢复 | ✅ 已实现 |
-| 回测引擎（含真实成本、per-TF 参数） | ✅ 已实现 |
+| 回测引擎（per-strategy session + voting groups + 真实成本） | ✅ 已实现 |
 | Walk-Forward + 参数推荐 | ✅ 已实现 |
-| SQLite WAL 持久化优化 | ✅ 已实现 |
 | Studio 可观测性（14 Agent SSE） | ✅ 已实现 |
 | 日终自动平仓 | ✅ 已实现 |
-| 同向叠加控制 | ⚠️ 仅 per-symbol 持仓数限制，无净敞口控制 |
-| 盈亏比动态调整 | ⚠️ ATR 倍数固定（含 TF 差异化），未随 Regime 调整 |
+| 同向再入场冷却（reentry_cooldown_bars） | ✅ 已实现 |
+| 同向叠加控制 | ⚠️ 仅 per-symbol 持仓数限制 + 冷却 bar，无净敞口控制 |
+| 盈亏比动态调整 | ⚠️ ATR 倍数按 TF 差异化 + Regime 缩放，但仍需优化 |
+| Indicator Exit | ⚠️ 已禁用（A/B 实验证明误触发率过高） |
 | 权益曲线过滤 | ❌ 未实现 |
 | 经济日历 Trade Guard | ✅ 已实现 |
 

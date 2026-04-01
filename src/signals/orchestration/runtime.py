@@ -85,7 +85,7 @@ class SignalTarget:
 
 
 class SignalRuntime:
-    """Event-driven runtime based on indicator snapshots."""
+    """基于快照事件驱动的信号运行时。"""
 
     def __init__(
         self,
@@ -117,9 +117,9 @@ class SignalRuntime:
         self.enable_intrabar = bool(enable_intrabar)
         self.policy = policy or SignalPolicy()
         self.filter_chain = filter_chain
-        # Regime 检测器：在 process_next_event 循环开始前仅检测一次，
-        # 结果通过 metadata["_regime"] 传递给 service.evaluate()，
-        # 避免每个策略重复调用 detect()（N 策略 → 1次检测）。
+        # Regime 检测在 process_next_event 主循环内完成，结果写入 metadata 后再传给 service.evaluate()。
+        # 若外部未显式注入 detector，则优先复用 service 上挂载的 detector。
+        # 这样每个快照只做一次 regime 判定，避免重复计算。
         self._regime_detector: MarketRegimeDetector = (
             regime_detector
             or getattr(service, "_regime_detector", None)
@@ -127,9 +127,9 @@ class SignalRuntime:
         )
         self._soft_regime_enabled = bool(getattr(service, "soft_regime_enabled", False))
         self._market_structure_analyzer = market_structure_analyzer
-        # 表决引擎：由 policy 配置决定是否启用。
-        # voting_groups 非空时使用多组模式（全局 consensus 自动禁用）。
-        # voting_groups 为空且 voting_enabled=True 时退回旧的单 consensus 行为。
+        # policy 在未配置 voting_groups 时，使用单层 consensus 投票引擎。
+        # voting_groups 会为每个分组创建独立 engine，并在组内汇总策略投票。
+        # 一旦启用 voting_groups，全局 consensus engine 就不再参与。
         self._voting_engine: StrategyVotingEngine | None = (
             StrategyVotingEngine(
                 consensus_threshold=self.policy.voting_consensus_threshold,
@@ -139,34 +139,34 @@ class SignalRuntime:
             if self.policy.voting_enabled and not self.policy.voting_groups
             else None
         )
-        # 多组 voting 引擎列表：每个 (group_config, engine) 对应一个命名 voting group。
+        # 分组投票路径维护 (group_config, engine) 对，逐组完成 vote fusion。
         self._voting_group_engines: list[tuple[Any, StrategyVotingEngine]] = (
             self._build_group_engines(self.policy)
         )
-        # 属于 voting group 的策略集合（个体信号不发布，只贡献投票）
+        # voting group 成员只参与组内投票，不再作为独立策略单独发信号。
         self._voting_group_members: frozenset[str] = frozenset(
             name
             for group in self.policy.voting_groups
             for name in group.strategies
         ) - self.policy.standalone_override
-        # Regime 稳定性跟踪：key=(symbol, timeframe)，每个交易对独立计数
+        # RegimeTracker 按 (symbol, timeframe) 建立，维护每个交易目标的状态稳定度。
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._signal_listeners: list[Callable[[SignalEvent], None]] = []
         self._signal_listeners_lock = threading.Lock()
-        # Listener 熔断：连续失败 N 次后自动 deregister
-        self._listener_fail_counts: dict[int, int] = {}  # id(listener) → count
+        # Listener 连续失败计数按 id(listener) 统计，达到阈值后自动摘除。
+        self._listener_fail_counts: dict[int, int] = {}  # id(listener) -> 连续失败次数
         self._LISTENER_MAX_CONSECUTIVE_FAILURES = 10
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
         self._strategy_requirements: dict[str, tuple[str, ...]] = {}
-        # Maps strategy name → frozenset of scopes it wants to receive.
-        # Populated from strategy_impl.preferred_scopes; falls back to both
-        # scopes for strategies that do not declare a preference.
+        # 记录每个策略希望接收的 scope 集合。
+        # 优先读取 strategy_impl.preferred_scopes，
+        # 未声明偏好时默认同时接收 confirmed 与 intrabar。
         self._strategy_scopes: dict[str, frozenset[str]] = {}
-        # 启动时缓存每个策略的 regime_affinity，避免 process_next_event 热路径中的 getattr。
+        # 策略 regime_affinity 预先缓存，避免在 process_next_event 中重复 getattr/service 调用。
         self._strategy_affinity: dict[str, dict[RegimeType, float]] = {}
-        # HTF 指标配置：从 INI [strategy_htf] 解析（策略.指标 = TF）
-        # 按策略分组：{strategy_name: {tf: [indicator_names...]}}
+        # HTF 指标配置来自 INI [strategy_htf]，解析后供每个策略按需注入高周期指标。
+        # 结构为 strategy_name -> {tf: [indicator_names...]}
         self._strategy_htf_config = self._parse_htf_config(htf_target_config or {})
         for target in self._targets:
             self._target_index.setdefault((target.symbol, target.timeframe), []).append(
@@ -184,19 +184,19 @@ class SignalRuntime:
                 self._strategy_affinity[target.strategy] = (
                     self.service.strategy_affinity_map(target.strategy)
                 )
-        # 系统中已配置的时间框架集合（用于 HTF 指标解析校验）
+        # 所有 target 中显式声明的 timeframe 集合，供 HTF 解析与运行时约束复用。
         self._configured_timeframes: frozenset[str] = frozenset(
             target.timeframe.upper() for target in self._targets
         )
-        # HTF 指标注入全局开关
+        # 是否开启 HTF 指标解析与透传。
         self._htf_indicators_enabled: bool = htf_indicators_enabled
-        # Intrabar 置信度缩放因子（<1.0 降权未收盘 bar 信号）
-        # 全局默认值，可被策略级 strategy_params 中 *__intrabar_decay 覆盖
+        # Intrabar 置信度衰减系数上限为 1.0，避免放大未收盘 bar 的信号强度。
+        # 具体策略可再通过 strategy_params 中的 *__intrabar_decay 覆盖默认值。
         self._intrabar_confidence_factor: float = min(intrabar_confidence_factor, 1.0)
         self._strategy_intrabar_decay: dict[str, float] = (
             {}
         )  # populated by set_strategy_intrabar_decay
-        # HTF 方向对齐修正：在策略评估后、持久化前应用，使记录的 confidence 反映真实值
+        # HTF 方向对齐相关参数：冲突惩罚、顺势增益与稳定度加成都会体现在 confidence。
         self._htf_direction_fn = htf_direction_fn
         self._htf_context_fn = htf_context_fn
         self._htf_conflict_penalty: float = htf_conflict_penalty
@@ -205,18 +205,18 @@ class SignalRuntime:
         self._htf_stability_per_bar: float = htf_alignment_stability_per_bar
         self._htf_stability_cap: float = htf_alignment_stability_cap
         self._htf_intrabar_ratio: float = htf_alignment_intrabar_strength_ratio
-        # 显式 warmup 屏障：回调返回 True 时才允许信号评估。
-        # None 表示无外部 warmup 控制（standalone / 测试场景），直接放行。
+        # warmup_ready_fn 返回 True 后，运行时才开始接受需要 warmup 的实时评估。
+        # 传入 None 表示不做额外 warmup 屏障，standalone/回放场景可直接运行。
         self._warmup_ready_fn: Callable[[], bool] | None = warmup_ready_fn
-        # 每个 (symbol, tf) 在 warmup 结束后是否已收到首个实时 confirmed bar
+        # 记录每个 (symbol, tf) 首根 warmup 后的 confirmed bar，作为 intrabar 放行前置条件。
         self._first_realtime_bar_seen: set[tuple[str, str]] = set()
-        # 每个 (symbol, tf) 是否已收到首个含指标的 intrabar 快照
+        # 记录每个 (symbol, tf) 首个 intrabar 快照，避免在基础上下文尚未建立时放行。
         self._first_intrabar_snapshot_seen: set[tuple[str, str]] = set()
 
-        # R-2: 分片锁 — 热路径按 (symbol, timeframe) 分片，避免全局锁争用。
-        # _state_lock 仅用于 _count_active_states() 的全量快照读取。
+        # R-2: 每个 (symbol, timeframe) 独占一把分片锁，避免同目标状态并发竞争。
+        # _state_lock 仅保护全局状态容器；_count_active_states() 等读路径不依赖它持锁遍历。
         self._shard_locks: dict[tuple[str, str], threading.Lock] = {}
-        self._meta_lock = threading.Lock()  # 保护 _shard_locks 懒初始化
+        self._meta_lock = threading.Lock()  # 保护 _shard_locks 的懒加载创建。
 
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -234,52 +234,52 @@ class SignalRuntime:
         self._processed_events = 0
         self._dropped_events = 0
         self._warmup_skipped = 0
-        # 保护 _state_by_target 的锁：background loop 写入，status()/API线程读取，
-        # 必须避免并发迭代导致 "dictionary changed size during iteration"
+        # 保护 _state_by_target，避免 background loop 与 status()/API 并发读取时触发字典变更异常。
+        # 典型症状是 status() 与后台循环并发时抛出 "dictionary changed size during iteration"。
         self._state_lock = threading.Lock()
         self._dropped_confirmed = 0
         self._dropped_intrabar = 0
         self._confirmed_backpressure_waits = 0
         self._confirmed_backpressure_failures = 0
         self._last_drop_log_at: float = 0.0
-        self._dropped_at_last_log: int = 0  # 上次日志时的总丢弃数，用于计算 delta
+        self._dropped_at_last_log: int = 0  # 上次日志快照对应的丢弃计数，用于计算本轮 delta。
         self._state_by_target: dict[tuple[str, str, str], RuntimeSignalState] = {}
-        # 连续异常计数：超过阈值时发出 ERROR 级 DEGRADED 告警，
-        # 提醒运维信号运行时已停滞，不依赖指数退避掩盖故障。
+        # 连续 loop 异常达到阈值后可触发 ERROR/DEGRADED 等运行状态告警。
+        # 这里只累计后台主循环故障次数，不把单次策略/监听器异常误判为整体运行故障。
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
         self._affinity_gates_skipped: int = 0
-        # Per-TF 管线计数：各层丢弃/通过统计
+        # Per-TF 统计被 affinity/raw_conf 等原因跳过的次数。
         self._per_tf_skips: dict[str, dict[str, int]] = {}
-        # Per-TF 策略评估统计：evaluated / hold / passed_confidence / below_confidence
+        # Per-TF 统计 evaluated / hold / buy_sell / below_min_conf 等评估结果。
         self._per_tf_eval_stats: dict[str, dict[str, int]] = {}
-        # FilterChain 按 scope 分维度计数
+        # FilterChain 按 scope 记录通过/拦截统计。
         self._filter_by_scope: dict[str, dict[str, Any]] = {
             "confirmed": {"passed": 0, "blocked": 0, "blocks": {}},
             "intrabar": {"passed": 0, "blocked": 0, "blocks": {}},
         }
-        # 滑动窗口：记录最近 1h 的 filter 事件 (timestamp, scope, "pass"|reason_category)
+        # 滑动窗口统计最近 1h 内 filter 的 pass/block 分布：(timestamp, scope, category)。
         self._filter_window: deque[tuple[float, str, str]] = deque()
         self._filter_window_seconds: float = 3600.0  # 1 hour
         self._filter_started_at: float = time.monotonic()
         self._htf_stale_counter: list[int] = [0]
-        # 预初始化 event impact 缓存（避免竞态条件下的 getattr 延迟初始化）
+        # 经济事件影响预测结果做短 TTL 缓存，避免每个 confirmed 快照都重复 getattr/service 查询。
         self._event_impact_cache: dict[str, Any] = {
             "data": None,
             "expires_at": datetime.now(timezone.utc),
         }
-        # Anti-starvation 计数器（预初始化，避免 getattr 延迟初始化）
+        # Anti-starvation 计数器：限制 confirmed 连续独占队列，周期性给 intrabar 让路。
         self._confirmed_burst_count: int = 0
         self._vote_fusion_cache: dict[
             tuple[str, str, datetime], dict[str, tuple[str, Any]]
         ] = {}
-        # (legacy field removed — cache now lives inside MarketStructureAnalyzer)
+        # legacy 字段已删除，相关缓存现由 MarketStructureAnalyzer 内部维护。
 
     @staticmethod
     def _build_group_engines(
         policy: SignalPolicy,
     ) -> "list[tuple[Any, StrategyVotingEngine]]":
-        """根据 policy.voting_groups 构建每组独立的 StrategyVotingEngine。"""
+        # Build voting engines from policy.voting_groups.
         return [
             (
                 group,
@@ -306,7 +306,7 @@ class SignalRuntime:
             else None
         )
         self._voting_group_engines = self._build_group_engines(policy)
-        # 属于 voting group 的策略集合（个体信号不发布，只贡献投票）
+        # voting group 成员只参与组内投票，不再作为独立策略单独发信号。
         self._voting_group_members: frozenset[str] = frozenset(
             name
             for group in self.policy.voting_groups
@@ -354,11 +354,11 @@ class SignalRuntime:
             return
         if scope == "intrabar" and not self.enable_intrabar:
             return
-        # ── Warmup barrier: 显式阶段屏障 ──────────────────────────
-        # warmup 期间（回补未完成）所有快照仅用于填充指标缓存，
-        # 不入队、不评估、不产生信号。confirmed 和 intrabar 都被屏蔽。
-        # 回补结束后还需要收到该 (symbol, tf) 的首个实时 confirmed bar
-        # 才解除屏障，确保策略基于完全新鲜的数据做出首次判断。
+        # Warmup barrier：只有 warmup 完成后，才允许实时 confirmed/intrabar 事件进入评估。
+        # warmup 未就绪时直接丢弃实时快照，避免冷启动阶段产生伪信号。
+        # 这样可以保证 confirmed 与 intrabar 都建立在已稳定的指标上下文之上。
+        # 首次放行以 (symbol, tf) 为粒度，先看到 confirmed bar 再允许对应 intrabar。
+        # 防止未收盘快照抢先进入状态机，破坏同一交易目标的事件顺序。
         warmup_ready = (
             self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
         )
@@ -380,7 +380,7 @@ class SignalRuntime:
                 # Validate bar_time is truly recent before treating this as
                 # the first realtime bar.  BackgroundIngestor sets
                 # _backfill_done when enqueueing completes, but indicator/
-                # snapshot processing is async — stale backfill snapshots
+                # snapshot processing is async; stale backfill snapshots
                 # may still arrive after the flag flips.  A genuine realtime
                 # confirmed bar closes at most 1 bar-duration ago (+ margin
                 # for processing delay).
@@ -394,7 +394,7 @@ class SignalRuntime:
                     staleness = (
                         datetime.now(timezone.utc) - _bt.astimezone(timezone.utc)
                     ).total_seconds()
-                    # Allow up to 2× timeframe duration + 30s processing margin
+                    # Allow up to 2x timeframe duration + 30s processing margin
                     max_age = tf_secs * 2 + 30
                     if staleness > max_age:
                         self._warmup_skipped += 1
@@ -416,10 +416,10 @@ class SignalRuntime:
                     timeframe,
                     bar_time.isoformat(),
                 )
-            # Indicator readiness: ATR is required for trade execution.
-            # If the snapshot doesn't include atr14, indicators haven't
-            # fully warmed up yet — skip to avoid wasting the first
-            # state_changed=true transition on an un-executable signal.
+            # 指标就绪性检查：交易执行至少需要 ATR。
+            # 如果快照里还没有 atr14，说明指标热身尚未完成，
+            # 此时跳过可以避免把首个 state_changed=true 机会浪费在
+            # 实际不可执行的信号上。
             required = getattr(self.policy, "warmup_required_indicators", ("atr14",))
             if required and any(ind not in indicators for ind in required):
                 self._warmup_skipped += 1
@@ -436,11 +436,11 @@ class SignalRuntime:
         if scope == "intrabar" and self._warmup_ready_fn is not None:
             st_key = (symbol, timeframe)
             if st_key not in self._first_realtime_bar_seen:
-                # confirmed 首个实时 bar 尚未到达，跳过 intrabar
+                # 没看到首根 confirmed bar 之前，不放行任何 intrabar。
                 return
-            # 首次 intrabar 快照须包含足够指标（pipeline 已完成完整一轮计算），
-            # 否则策略评估时 intrabar 指标缺失，产生无意义的 warning。
-            # 判断标准：快照能满足至少一个 intrabar 策略的全部 required_indicators。
+            # 首个 intrabar 快照到来时先登记，确保 pipeline 已建立对应目标的基础上下文。
+            # 如果当前 intrabar 缺少首轮 required_indicators，则继续等待而不是告警。
+            # 这样可以避免 warmup 切换边界上，残缺 intrabar 快照误触发 required_indicators 校验。
             if st_key not in self._first_intrabar_snapshot_seen:
                 if not self._all_intrabar_strategies_satisfied(indicators):
                     return
@@ -493,7 +493,7 @@ class SignalRuntime:
         self,
         item: tuple[str, str, str, dict[str, dict[str, float]], dict[str, Any]],
     ) -> None:
-        # 标记入队时间（monotonic），供消费端检测僵尸事件
+        # 记录单调时钟入队时间，供后续判断队列等待时长与 stale intrabar。
         item[4]["_enqueued_at"] = time.monotonic()
         scope = item[0]
         target_queue = (
@@ -504,7 +504,7 @@ class SignalRuntime:
         except queue.Full:
             if scope == "confirmed":
                 try:
-                    # confirmed 事件优先保证可靠性：短暂阻塞等待消费者腾挪队列。
+                    # confirmed 事件允许一次带超时的回压等待，尽量避免关键信号被瞬时挤掉。
                     self._confirmed_backpressure_waits += 1
                     target_queue.put(
                         item,
@@ -519,7 +519,7 @@ class SignalRuntime:
             self._dropped_events += 1
             if scope == "confirmed":
                 self._dropped_confirmed += 1
-                # confirmed 事件丢弃是严重问题，每次都记录 WARNING
+                # confirmed 事件最终仍被丢弃时提升到 WARNING，便于排查实时链路拥塞。
                 symbol, timeframe = item[1], item[2]
                 logger.warning(
                     "CONFIRMED event DROPPED for %s/%s (backpressure_failures=%d, "
@@ -539,7 +539,7 @@ class SignalRuntime:
                 self._dropped_at_last_log = self._dropped_events
                 symbol, timeframe = item[1], item[2]
                 logger.error(
-                    "Signal runtime %s queue is full — indicator snapshot dropped "
+                    "Signal runtime %s queue is full - indicator snapshot dropped "
                     "(dropped_since_last_log=%d, total_dropped=%d, "
                     "scope=%s, symbol=%s, timeframe=%s, maxsize=%d). "
                     "Consider increasing queue capacity or reducing event frequency.",
@@ -553,7 +553,7 @@ class SignalRuntime:
                 )
 
     def _compute_filter_window_stats(self) -> dict:
-        """计算最近 1h 滑动窗口内的 filter 通过/拦截统计（按 scope 分维度）。"""
+        # Compute rolling 1h filter pass/block stats grouped by scope.
         now = time.monotonic()
         cutoff = now - self._filter_window_seconds
         while self._filter_window and self._filter_window[0][0] < cutoff:
@@ -580,7 +580,7 @@ class SignalRuntime:
         }
 
     def _count_active_states(self) -> dict:
-        """持锁快照 _state_by_target，统计活跃的 preview/confirmed 状态数。"""
+        # Restore preview and confirmed state from recent persisted rows.
         with self._state_lock:
             snapshot = list(self._state_by_target.values())
         return {
@@ -653,7 +653,7 @@ class SignalRuntime:
                 self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
             ),
             "warmup_realtime_symbols": len(self._first_realtime_bar_seen),
-            # 持锁做快照再迭代，避免 background loop 同时写入导致 RuntimeError
+            # 即使 background loop 异常退出，这里也继续暴露当前活跃状态计数。
             **self._count_active_states(),
             "voting_groups": self._voting_groups_summary(),
             "regime_map": self.get_regime_stability_map(),
@@ -667,7 +667,7 @@ class SignalRuntime:
         }
 
     def _voting_groups_summary(self) -> list[dict[str, Any]]:
-        """Return voting group definitions for Studio display."""
+        """返回当前配置的 voting group 摘要。"""
         result: list[dict[str, Any]] = []
         for group_config, _engine in self._voting_group_engines:
             result.append({
@@ -696,7 +696,7 @@ class SignalRuntime:
         }
 
     def set_strategy_intrabar_decay(self, overrides: dict[str, float]) -> None:
-        """Set per-strategy intrabar decay overrides (from strategy_params *__intrabar_decay)."""
+        """按策略设置 intrabar 置信度衰减覆盖。"""
         result: dict[str, float] = {}
         for k, v in overrides.items():
             try:
@@ -708,7 +708,7 @@ class SignalRuntime:
         self._strategy_intrabar_decay = result
 
     def add_signal_listener(self, listener: Callable[[SignalEvent], None]) -> None:
-        """Register a callback to receive SignalEvent on every state transition."""
+        """注册信号监听器。"""
         with self._signal_listeners_lock:
             if listener not in self._signal_listeners:
                 self._signal_listeners.append(listener)
@@ -766,7 +766,7 @@ class SignalRuntime:
             lid = id(listener)
             try:
                 listener(event)
-                # 成功时重置失败计数
+                # 成功回调后清空该 listener 的连续失败计数。
                 self._listener_fail_counts.pop(lid, None)
             except Exception as exc:
                 fail_count = self._listener_fail_counts.get(lid, 0) + 1
@@ -1008,11 +1008,11 @@ class SignalRuntime:
     def _all_intrabar_strategies_satisfied(
         self, indicators: dict[str, dict[str, float]]
     ) -> bool:
-        """检查快照是否能满足所有 intrabar 策略的 required_indicators。
+        """检查所有 intrabar 策略所需指标是否已就绪。
 
-        在 warmup 过渡期，intrabar pipeline 可能分批发布部分指标快照。
-        只有当快照包含所有 intrabar 策略所需的指标时才放行，
-        避免部分策略因缺失指标产生无意义的 warning。
+        warmup 阶段只有在 intrabar pipeline 已具备全部 required_indicators 时才允许继续，
+        这样可以避免策略在缺失关键指标的首批快照上被错误评估。
+        若任一 intrabar 策略仍缺指标，则返回 False，由上游继续等待。
         """
         if not indicators:
             return False
@@ -1026,10 +1026,10 @@ class SignalRuntime:
         return True
 
     def _get_shard_lock(self, symbol: str, timeframe: str) -> threading.Lock:
-        """懒初始化并返回 (symbol, timeframe) 对应的分片锁。
+        """按 (symbol, timeframe) 获取分片锁。
 
-        使用 dict.setdefault 保证同一 key 只创建一个 Lock 实例，
-        在 meta_lock 保护下操作，避免 double-checked locking 的内存可见性问题。
+        不能直接用 dict.setdefault 在无锁路径创建 Lock，否则同一 key 可能被并发初始化多次。
+        这里用 meta_lock 包住懒加载，形成轻量的 double-checked locking。
         """
         key = (symbol, timeframe)
         lock = self._shard_locks.get(key)
@@ -1050,19 +1050,19 @@ class SignalRuntime:
         bar_time: datetime,
         active_sessions: list[str],
     ) -> list:
-        """评估该 snapshot 下所有策略，返回收集到的 SignalDecision 列表。
+        """评估单个 snapshot 下所有可运行策略，并返回 SignalDecision 列表。
 
-        职责：
-        1. 筛选适合当前 scope / regime 的策略（affinity gate）
-        2. 收窄 scoped_indicators
-        3. 去重检查（snapshot signature）
+        流程包括：
+        1. 按 scope / regime / affinity 做预筛选
+        2. 裁剪 scoped_indicators
+        3. 校验 snapshot signature 是否为新快照
         4. 调用 service.evaluate()
-        5. 状态机转换（transition_confirmed / transition_intrabar）
-        6. 持久化 + 发布信号事件
+        5. 驱动 transition_confirmed / transition_intrabar
+        6. 汇总结果并更新运行时统计
         """
         snapshot_decisions: list = []
         min_affinity_skip = self.policy.min_affinity_skip
-        # 延迟市场结构分析：仅在第一个策略真正需要评估时按需计算一次
+        # 市场结构上下文按 snapshot 只解析一次，随后复用到同批所有策略的 metadata。
         _structure_resolved = False
         strategies = self._target_index.get((symbol, timeframe), [])
         shard_lock = self._get_shard_lock(symbol, timeframe)
@@ -1082,7 +1082,7 @@ class SignalRuntime:
                     exc_info=True,
                 )
 
-        # 查询 event impact forecast（带 5 分钟 TTL 缓存，避免每 bar 查 DB）
+        # event impact forecast 使用 5 分钟 TTL 缓存，避免每个 confirmed bar 都重复查服务/DB。
         _event_impact: dict[str, Any] | None = None
         _impact_analyzer = getattr(self, "_market_impact_analyzer", None)
         if _impact_analyzer is not None and scope == "confirmed":
@@ -1127,12 +1127,12 @@ class SignalRuntime:
             if required_indicators:
                 missing = [ind for ind in required_indicators if ind not in indicators]
                 if missing:
-                    # 低频日志：每个 (symbol, tf, strategy) 组合每 100 次缺失只记录一次
+                    # 缺指标计数按 (symbol, tf, strategy) 聚合，仅在首次与每 100 次时打印告警。
                     miss_key = (symbol, timeframe, strategy)
                     self._indicator_miss_counts[miss_key] = (
                         self._indicator_miss_counts.get(miss_key, 0) + 1
                     )
-                    # 即时限制：超 600 条时淘汰低频条目，防止两次定期清理间无界增长
+                    # miss key 过多时只保留 top-200 高频项，避免计数表无限增长。
                     if len(self._indicator_miss_counts) > 600:
                         _keep_top = 200
                         _sorted = sorted(
@@ -1163,7 +1163,7 @@ class SignalRuntime:
             else:
                 scoped_indicators = indicators
 
-            # Pre-flight affinity gate — 计算结果传递给 evaluate() 复用
+            # Pre-flight affinity gate 在 evaluate() 前运行，直接跳过明显不匹配当前 regime 的策略。
             if min_affinity_skip > 0.0:
                 affinity = self._effective_affinity(
                     strategy,
@@ -1193,7 +1193,7 @@ class SignalRuntime:
             ):
                 continue
 
-            # ── 延迟市场结构分析（仅首次触发时计算）──────────
+            # 市场结构上下文只解析一次，并共享给同一快照下的所有策略评估。
             if not _structure_resolved and self._market_structure_analyzer is not None:
                 _structure_resolved = True
                 try:
@@ -1216,11 +1216,11 @@ class SignalRuntime:
                 if structure_context:
                     regime_metadata["market_structure"] = structure_context
 
-            # ── Event impact forecast 注入 ──
+            # Event impact forecast 命中时写入 metadata，供策略做事件前避险或降权。
             if _event_impact is not None:
                 regime_metadata["_event_impact_forecast"] = _event_impact
 
-            # ── HTF 指标注入（按 INI [strategy_htf] 配置按需查询）──
+            # HTF 指标按 INI [strategy_htf] 配置解析，并在本轮 evaluate() 时透传。
             htf_spec = self._strategy_htf_config.get(strategy)
             htf_payload: dict[str, dict[str, dict[str, Any]]] = (
                 self._resolve_htf_indicators(symbol, timeframe, htf_spec)
@@ -1242,7 +1242,7 @@ class SignalRuntime:
             )
             snapshot_decisions.append(decision)
 
-            # Per-TF 评估统计
+            # Per-TF 评估计数。
             tf_eval = self._per_tf_eval_stats.setdefault(
                 timeframe, {"evaluated": 0, "hold": 0, "buy_sell": 0, "below_min_conf": 0}
             )
@@ -1270,10 +1270,10 @@ class SignalRuntime:
     ) -> Any:
         """Apply HTF alignment first, then intrabar decay.
 
-        顺序很重要：HTF 对齐应该作用于原始置信度（完整乘数效果），
-        intrabar 衰减最后应用（统一降权未收盘 bar 的信号）。
+        先应用 HTF 方向对齐的置信度修正，再对 intrabar 做衰减。
+        intrabar 的降权只影响未收盘快照，不会覆盖 confirmed bar 的最终置信度。
         """
-        # 1. HTF 方向对齐修正（作用于原始置信度）
+        # 1. HTF 对齐优先，先把顺势增益或逆势惩罚体现在 confidence 上。
         if decision.direction in ("buy", "sell"):
             htf_mul, htf_dir = self._compute_htf_alignment(
                 symbol, timeframe, decision.direction, scope,
@@ -1288,13 +1288,13 @@ class SignalRuntime:
                     "aligned" if htf_mul >= 1.0 else "conflict"
                 )
                 regime_metadata["htf_confidence_multiplier"] = htf_mul
-        # 2. Intrabar 衰减（最后降权，不影响 HTF 对齐效果）
+        # 2. Intrabar 衰减只在 scope=intrabar 时生效，避免覆盖 HTF 调整后的 confirmed 结果。
         if scope == "intrabar":
             decay = self._strategy_intrabar_decay.get(
                 strategy, self._intrabar_confidence_factor
             )
             decision = apply_intrabar_decay(decision, scope, decay)
-        # 3. 管线末端兜底：多层乘法压制后不应低于 floor（D3 fix）
+        # 3. 对可交易方向施加最小置信度地板，防止修正后跌到接近 0 的极端值。
         if decision.confidence > 0 and decision.direction in ("buy", "sell"):
             floor = self._confidence_floor if hasattr(self, "_confidence_floor") else 0.10
             if decision.confidence < floor:
@@ -1312,7 +1312,7 @@ class SignalRuntime:
         scoped_indicators: dict[str, dict[str, float]],
         full_indicators: dict[str, dict[str, float]],
     ) -> None:
-        """Run state machine transition, persist if state changed, and publish."""
+        """驱动状态机转移、持久化 actionable 决策并发布 SignalEvent。"""
         transition_metadata = (
             self._transition_confirmed(
                 state, decision.direction, event_time, bar_time, regime_metadata
@@ -1330,7 +1330,7 @@ class SignalRuntime:
         if transition_metadata is None:
             return
 
-        # 注入策略类别到 metadata，供 TradeExecutor 做 HTF 冲突阻止的类别豁免判断
+        # 将策略 category 写入 metadata，供 TradeExecutor 处理 HTF 冲突豁免等执行规则。
         _strat_obj = self.service.get_strategy(decision.strategy)
         if _strat_obj is not None:
             transition_metadata["strategy_category"] = getattr(
@@ -1361,7 +1361,7 @@ class SignalRuntime:
             return None
         analyzer_config = getattr(analyzer, "config", None)
         default_lookback = int(getattr(analyzer_config, "lookback_bars", 400))
-        # 低时间框架（M5）使用缩减的 lookback bars 以控制计算量
+        # M1/M5 使用更短的 lookback bars，避免市场结构分析在低周期上过重。
         if str(timeframe).strip().upper() in ("M1", "M5"):
             return max(
                 2,
@@ -1393,7 +1393,7 @@ class SignalRuntime:
         )
 
     def _get_vote_emit_kwargs(self) -> dict:
-        """Build keyword arguments for vote_processor functions."""
+        """构造投票融合阶段所需的回调与共享状态。"""
         return dict(
             state_by_target=self._state_by_target,
             get_shard_lock=self._get_shard_lock,
@@ -1416,7 +1416,7 @@ class SignalRuntime:
         event_time: datetime,
         bar_time: datetime,
     ) -> None:
-        """跨策略表决：委托给 vote_processor 模块。"""
+        # Publish the signal event assembled by the runtime.
         _do_process_voting(
             snapshot_decisions,
             symbol,
@@ -1434,10 +1434,10 @@ class SignalRuntime:
             **self._get_vote_emit_kwargs(),
         )
 
-    _CONFIRMED_BURST_LIMIT = 5  # 每连续消费 N 个 confirmed 后让出检查 intrabar
+    _CONFIRMED_BURST_LIMIT = 5  # 连续处理 N 个 confirmed 后，主动让出一次机会给 intrabar。
 
     def _dequeue_event(self, timeout: float) -> tuple | None:
-        """Dequeue one event with confirmed-priority + anti-starvation."""
+        """按 anti-starvation 策略从 confirmed/intrabar 队列中取下一条事件。"""
         try:
             event = self._confirmed_events.get_nowait()
             self._confirmed_burst_count += 1
@@ -1461,7 +1461,7 @@ class SignalRuntime:
                 return None
 
     def _is_stale_intrabar(self, scope: str, symbol: str, timeframe: str, metadata: dict[str, Any]) -> bool:
-        """Return True if an intrabar event has been in the queue too long."""
+        """判断 intrabar 事件是否已在队列中滞留过久。"""
         if scope != "intrabar":
             return False
         enqueued_raw = metadata.get("_enqueued_at")
@@ -1485,7 +1485,7 @@ class SignalRuntime:
         active_sessions: list[str],
         metadata: dict[str, Any],
     ) -> bool:
-        """Run filter chain. Return True if evaluation is allowed."""
+        """执行 FilterChain 过滤，并同步维护按 scope 的统计窗口。"""
         if self.filter_chain is None:
             return True
         spread_points = float(metadata.get("spread_points", 0.0))
@@ -1504,7 +1504,7 @@ class SignalRuntime:
 
         log_fn = logger.info if scope == "confirmed" else logger.debug
         log_fn("Signal evaluation skipped for %s/%s [%s]: %s", symbol, timeframe, scope, reason)
-        # 保留完整 reason（含具体时段/值），同时用 category 做滑动窗口统计
+        # 将 reason 按前缀归类，便于统计各类 filter block 的占比。
         category = reason.split(":")[0] if reason else "unknown"
         scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
         scope_stats["blocked"] += 1
@@ -1518,7 +1518,7 @@ class SignalRuntime:
         metadata: dict[str, Any],
         active_sessions: list[str],
     ) -> tuple[RegimeType, dict[str, Any]]:
-        """Run regime detection and build regime_metadata."""
+        """检测当前 snapshot 的 regime，并回填 soft regime 等 metadata。"""
         soft_regime: SoftRegimeResult | None = None
         if self._soft_regime_enabled:
             soft_regime = self._regime_detector.detect_soft(indicators)
@@ -1538,11 +1538,11 @@ class SignalRuntime:
         return regime, regime_metadata
 
     def process_next_event(self, timeout: float = 0.5) -> bool:
-        """从队列取一个快照事件并完整处理。
+        """处理单个队列事件。
 
-        优先消费 confirmed 队列，但每连续 ``_CONFIRMED_BURST_LIMIT`` 个
-        confirmed 事件后主动检查 intrabar 队列取一个事件作为本轮处理对象，
-        防止 intrabar 策略在 confirmed 突发期间长时间饥饿。
+        优先消费 confirmed，但为了避免 confirmed 长时间独占队列，内部会受
+        ``_CONFIRMED_BURST_LIMIT`` 限制，周期性插入一次 intrabar 处理机会。
+        这样可以在高频 confirmed 到来时，仍让 intrabar 获得基本的调度公平性。
         """
         event = self._dequeue_event(timeout)
         if event is None:
@@ -1575,7 +1575,7 @@ class SignalRuntime:
 
         regime, regime_metadata = self._detect_regime(indicators, metadata, active_sessions)
 
-        # 快速全拒绝：所有策略 affinity 不足时跳过后续计算
+        # 若当前 regime/scope 下没有任何策略具备可执行 affinity，直接跳过整批快照。
         if not self._any_strategy_eligible(
             symbol, timeframe, scope, regime,
             regime_metadata.get("_soft_regime"), active_sessions,
@@ -1655,7 +1655,7 @@ class SignalRuntime:
         timeframe: str,
         indicator_name: str,
     ) -> dict[str, Any] | None:
-        """通过 snapshot_source（IndicatorManager）查询已缓存的 HTF 指标。"""
+        # Subscribe to snapshot_source and wire HTF snapshot listeners.
         getter = getattr(self.snapshot_source, "get_indicator", None)
         if callable(getter):
             return getter(symbol, timeframe, indicator_name)
@@ -1670,7 +1670,7 @@ class SignalRuntime:
         soft_regime: dict[str, Any] | None,
         active_sessions: list[str],
     ) -> bool:
-        """Quick check: delegates to affinity module."""
+        """判断当前 regime/scope/session 下是否至少有一个策略值得继续评估。"""
         return _any_strategy_eligible_fn(
             symbol,
             timeframe,
@@ -1705,27 +1705,27 @@ class SignalRuntime:
         )
 
     def _loop(self) -> None:
-        """主事件循环，带指数退避以防止异常风暴。
+        """后台主循环。
 
-        正常情况：每次 process_next_event 成功后退避重置为 0。
-        异常情况：等待时间翻倍（1→2→4→...→30 秒上限），让错误有喘息时间。
+        持续调用 process_next_event；若出现异常则进入带上限的退避重试，
+        避免忙等刷屏，同时保留恢复机会。
         """
         backoff: float = 0.0
         _session_check_counter = 0
         while not self._stop.is_set():
             try:
                 self.process_next_event(timeout=0.5)
-                backoff = 0.0  # 成功后重置退避
+                backoff = 0.0  # 成功处理后立即清空异常退避。
                 self._consecutive_loop_errors = 0
-                # 每 200 次事件检查一次 PerformanceTracker session 重置 + 内存清理
+                # 每 200 次循环做一次轻量维护：session reset 与 miss 计数清理。
                 _session_check_counter += 1
                 if _session_check_counter >= 200:
                     _session_check_counter = 0
                     perf_tracker = getattr(self.service, "_performance_tracker", None)
                     if perf_tracker is not None:
                         perf_tracker.check_session_reset()
-                    # 定期清理 indicator miss 计数器，防止无界增长
-                    # 保留计数最高的条目（最频繁缺失的指标值得持续告警）
+                    # 定期收缩 indicator miss 统计，避免长期运行时键数量无限膨胀。
+                    # 这里只保留最常见的 miss key，既保留诊断价值，也控制内存占用。
                     _MAX_MISS_KEYS = 500
                     if len(self._indicator_miss_counts) > _MAX_MISS_KEYS:
                         sorted_keys = sorted(
@@ -1733,7 +1733,7 @@ class SignalRuntime:
                             key=self._indicator_miss_counts.get,  # type: ignore[arg-type]
                             reverse=True,
                         )
-                        # 保留 top-N 高频 miss 条目，淘汰低频的
+                        # 仅保留 top-N 高频 miss 记录。
                         keep = set(sorted_keys[:_MAX_MISS_KEYS])
                         for k in list(self._indicator_miss_counts):
                             if k not in keep:

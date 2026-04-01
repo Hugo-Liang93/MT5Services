@@ -168,6 +168,14 @@ def test_build_backtest_config_uses_defaults_and_overrides(
             "enable_state_machine": True,
         },
     )
+    monkeypatch.setattr(
+        backtest_api,
+        "_load_signal_config",
+        lambda: SimpleNamespace(
+            strategy_timeframes={"ema_cross": ["M5", "M15"]},
+            strategy_sessions={"ema_cross": ["london", "newyork"]},
+        ),
+    )
     request = backtest_api.BacktestRunRequest(
         symbol="XAUUSD",
         timeframe="M5",
@@ -198,6 +206,8 @@ def test_build_backtest_config_uses_defaults_and_overrides(
     assert config.strategy_params == {"ema_cross_fast": 12}
     assert config.strategy_params_per_tf == {"M5": {"ema_cross_fast": 9}}
     assert config.regime_affinity_overrides == {"ema_cross": {"trend": 1.3}}
+    assert config.strategy_timeframes == {"ema_cross": ["M5", "M15"]}
+    assert config.strategy_sessions == {"ema_cross": ["london", "newyork"]}
 
 
 def test_run_optimization_job_summary_uses_default_optimizer_settings(
@@ -268,7 +278,7 @@ def test_get_param_space_template_uses_effective_timeframe_params(
                 "rsi_reversion": ["M5", "M15"],
                 "supertrend": ["M5", "M15"],
             },
-            trade_trigger_strategies=[],
+
             strategy_params={
                 "rsi_reversion__overbought": 78.0,
                 "rsi_reversion__oversold": 22.0,
@@ -314,7 +324,7 @@ def test_get_param_space_template_auto_filters_by_timeframe(
                 "session_momentum": ["M15", "M30"],
                 "multi_timeframe_confirm": ["M30", "H1"],
             },
-            trade_trigger_strategies=[],
+
             strategy_params={
                 "rsi_reversion__overbought": 78.0,
                 "session_momentum__london_min_atr_pct": 0.00050,

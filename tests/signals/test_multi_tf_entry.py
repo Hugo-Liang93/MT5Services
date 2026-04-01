@@ -1,4 +1,4 @@
-"""multi_tf_entry.py 单元测试 — HTFTrendM5Entry 策略。"""
+"""multi_tf_entry.py 单元测试 — HTFTrendPullback 策略。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.signals.models import SignalContext, SignalDecision
-from src.signals.strategies.multi_tf_entry import HTFTrendM5Entry
+from src.signals.strategies.multi_tf_entry import HTFTrendPullback
 
 
 def _make_context(
@@ -35,19 +35,19 @@ def _make_context(
     return SignalContext(
         symbol="XAUUSD",
         timeframe=timeframe,
-        strategy="htf_trend_m5_entry",
+        strategy="htf_trend_pullback",
         indicators=indicators,
         htf_indicators=htf_indicators,
         metadata={"close": close},
     )
 
 
-class TestHTFTrendM5Entry:
+class TestHTFTrendPullback:
     def setup_method(self) -> None:
-        self.strategy = HTFTrendM5Entry()
+        self.strategy = HTFTrendPullback()
 
     def test_attributes(self) -> None:
-        assert self.strategy.name == "htf_trend_m5_entry"
+        assert self.strategy.name == "htf_trend_pullback"
         assert self.strategy.category == "multi_tf"
         assert "rsi14" in self.strategy.required_indicators
         assert "atr14" in self.strategy.required_indicators
@@ -135,9 +135,10 @@ class TestHTFTrendM5Entry:
         assert d_high.direction == "buy"
         assert d_high.confidence > d_low.confidence
 
-    def test_metadata_contains_h1_info(self) -> None:
-        """决策 metadata 包含 H1 方向和 ADX 信息。"""
+    def test_metadata_contains_htf_info(self) -> None:
+        """决策 metadata 包含 HTF 方向和 ADX 信息。"""
         ctx = _make_context(rsi=45.0, h1_direction=1.0, h1_adx=28.0)
         decision = self.strategy.evaluate(ctx)
-        assert decision.metadata["h1_direction"] == 1
-        assert decision.metadata["h1_adx"] == 28.0
+        assert decision.metadata["htf_direction"] == 1
+        assert decision.metadata["htf_adx"] == 28.0
+        assert decision.metadata["htf"] == "H1"

@@ -1,10 +1,10 @@
-"""TradeExecutor: auto-executes trades in response to confirmed signal events.
+"""TradeExecutor：消费确认信号并执行自动下单。
 
-Lives in the trading module, not the signal module, to maintain clean separation:
-- Signal module  → generates and publishes SignalEvent (knows nothing about trading)
-- TradeExecutor  → subscribes via SignalRuntime.add_signal_listener(), executes trades
+职责边界保持清晰：
+- 信号模块只负责生成并发布 `SignalEvent`
+- `TradeExecutor` 通过 `SignalRuntime.add_signal_listener()` 订阅事件并执行交易
 
-Usage in deps.py:
+在 `deps.py` 中的典型接入方式：
     executor = TradeExecutor(trading_module=_c.trade_module, config=cfg)
     signal_runtime.add_signal_listener(executor.on_signal_event)
 """
@@ -50,11 +50,11 @@ logger = logging.getLogger(__name__)
 class ExecutorConfig:
     enabled: bool = False
     min_confidence: float = 0.7
-    # Per-TF 最低置信度覆盖：低 TF 噪声多需要更高阈值过滤弱信号
+    # 按时间框架覆盖最低交易置信度，低周期可以设置更严格阈值。
     timeframe_min_confidence: dict[str, float] = field(default_factory=dict)
-    # HTF 方向冲突时强制拒绝交易的 TF 列表（低 TF 逆大周期方向不应交易）
+    # 在这些低周期上，一旦 HTF 方向冲突就直接阻止开仓。
     htf_conflict_block_timeframes: frozenset[str] = field(default_factory=frozenset)
-    # 豁免 HTF 冲突阻止的策略类别（如均值回归天然做反向，不应被大周期方向限制）
+    # 豁免 HTF 冲突拦截的策略类别，例如均值回归天然允许逆势。
     htf_conflict_exempt_categories: frozenset[str] = field(
         default_factory=lambda: frozenset({"reversion"})
     )
@@ -64,18 +64,20 @@ class ExecutorConfig:
     tp_atr_multiplier: float = 3.0
     min_volume: float = 0.01
     max_volume: float = 1.0
-    # T-2: 按品种配置合约大小，替代全局固定值（XAUUSD=100, BTCUSD=1, 等）
+    # 合约大小映射，未命中的品种回退到 `default`。
     contract_size_map: dict[str, float] = field(
         default_factory=lambda: {"XAUUSD": 100.0, "default": 100.0}
     )
-    # 时间框架差异化风险乘数：从 signal.ini [timeframe_risk] 加载，覆盖 sizing.py 默认值
+    # 按时间框架覆盖仓位风险倍率，优先级高于 `sizing.py` 默认值。
     timeframe_risk_multipliers: dict[str, float] = field(default_factory=dict)
     default_volume: float = 0.01
-    # 熔断器：连续失败超过此阈值后自动暂停自动交易
+    # 技术故障熔断阈值，连续失败达到上限后暂停自动交易。
     max_consecutive_failures: int = 3
-    # T-3: 自动半开恢复：熔断后等待 N 分钟再自动尝试
+    # 熔断器自动恢复时间，单位分钟。
     circuit_auto_reset_minutes: int = 30
     max_spread_to_stop_ratio: float = 0.33
+    # 同策略同方向再入场冷却 bar 数（0=禁止同向再入场，N=间隔 N 根 bar 后允许加仓）
+    reentry_cooldown_bars: int = 3
     regime_sizing: RegimeSizing = field(default_factory=RegimeSizing)
 
 
@@ -104,18 +106,18 @@ class TradeExecutor:
         self.config = config or ExecutorConfig()
         self._account_balance_getter = account_balance_getter
         self._position_manager = position_manager
-        # T-4: 执行记录持久化回调（可选，用于写入 auto_executions 表）
+        # 执行记录持久化回调，通常落到 `auto_executions` 一类存储。
         self._persist_execution_fn = persist_execution_fn
         self._trade_outcome_tracker = trade_outcome_tracker
-        # 信号被拒绝时的回调：(signal_id, reason) → 通知 SignalQualityTracker 等
+        # 跳过执行时的通知回调，向下游传递 `(signal_id, reason)`。
         self._on_execution_skip = on_execution_skip
-        # 交易执行后的回调列表：(log_entry: dict) → 通知 Studio 等观察者
+        # 成交监听回调，向外暴露标准化执行日志 `log_entry`。
         self._on_trade_executed: list[Callable[[dict], None]] = []
-        # ExecutionGate: 策略域准入检查（voting group / whitelist / armed）
+        # 前置准入过滤器，处理 voting group、armed 等执行门规则。
         self._execution_gate = execution_gate or ExecutionGate()
-        # PendingEntryManager: 价格确认入场
+        # 价格确认入场管理器；为空时直接市价执行。
         self._pending_manager = pending_entry_manager
-        # PerformanceTracker: PnL 熔断器检查
+        # 日内绩效跟踪器，用于 PnL 熔断。
         self._performance_tracker = performance_tracker
         self._execution_count = 0
         self._last_execution_at: datetime | None = None
@@ -127,12 +129,12 @@ class TradeExecutor:
         self._exec_queue: queue.Queue = queue.Queue(maxsize=exec_queue_size)
         self._exec_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        # 信号接收与风控决策计数
+        # 统计收到的 confirmed 事件总数。
         self._signals_received: int = 0
         self._signals_passed: int = 0
         self._skip_reasons: dict[str, int] = {}
         self._skip_lock = threading.Lock()
-        # 按 timeframe 分维度统计：{tf: {received, passed, skip_reasons: {reason: count}}}
+        # 分时间框架统计接收/放行/拦截原因。
         self._tf_stats: dict[str, dict[str, Any]] = {}
         self._margin_guard: Any = None  # Optional[MarginGuard], injected via set_margin_guard()
         self._execution_quality = {
@@ -143,14 +145,17 @@ class TradeExecutor:
             "slippage_total_points": 0.0,
             "queue_overflows": 0,
         }
-        # 溢出丢弃审计（保留最近 50 条，供 status() 查询）
+        # 最近被丢弃的信号样本，供 `status()` 诊断队列溢出。
         self._dropped_signals: list[dict[str, Any]] = []
         self._max_dropped_history: int = 50
-        # 熔断器状态
+        # 连续失败计数与熔断状态。
         self._consecutive_failures: int = 0
         self._circuit_open: bool = False
-        # T-3: 记录熔断开路时间，用于自动恢复检查
+        # 熔断打开时间，用于自动恢复计算。
         self._circuit_open_at: datetime | None = None
+        # 同策略同方向再入场冷却：记录上次开仓的 bar_time
+        # key = (symbol, strategy, direction), value = bar_time(datetime)
+        self._last_entry_bar_time: dict[tuple[str, str, str], datetime] = {}
 
     # ------------------------------------------------------------------
     # Public listener interface
@@ -166,8 +171,7 @@ class TradeExecutor:
             return
         if "confirmed" not in event.signal_state:
             return
-        # Skip repeated (non-state-changed) signals — they have no signal_id
-        # because they are not persisted. Only new state transitions should trigger trades.
+        # 没有 signal_id 的 confirmed 事件不进入执行链。
         if not event.signal_id:
             return
         # Ensure worker thread is running (lazy start)
@@ -194,7 +198,7 @@ class TradeExecutor:
                     sig_id,
                     self._execution_quality["queue_overflows"],
                 )
-                # 审计记录：保留最近 N 条丢弃信号供 status() 查询
+                # 保留最近一批被丢弃的 confirmed 信号，便于通过 status() 排查。
                 self._dropped_signals.append({
                     "signal_id": sig_id,
                     "symbol": event.symbol,
@@ -207,14 +211,14 @@ class TradeExecutor:
                     self._dropped_signals = self._dropped_signals[-self._max_dropped_history:]
 
     def _start_worker(self) -> None:
-        """Start the background execution worker thread (idempotent)."""
+        """启动后台执行线程。"""
         self._stop_event.clear()
         t = threading.Thread(target=self._exec_worker, name="trade-executor", daemon=True)
         t.start()
         self._exec_thread = t
 
     def _exec_worker(self) -> None:
-        """Drain execution queue in a dedicated thread."""
+        """后台消费执行队列，串行处理 confirmed 交易事件。"""
         while not self._stop_event.is_set() or not self._exec_queue.empty():
             try:
                 event = self._exec_queue.get(timeout=1.0)
@@ -228,7 +232,7 @@ class TradeExecutor:
                 self._exec_queue.task_done()
 
     def flush(self, timeout: float = 5.0) -> None:
-        """Wait until all queued events have been processed (for testing)."""
+        """等待执行队列清空，超时则抛出 TimeoutError。"""
         deadline = time.monotonic() + max(0.0, timeout)
         while self._exec_queue.unfinished_tasks > 0:
             if time.monotonic() >= deadline:
@@ -236,7 +240,7 @@ class TradeExecutor:
             time.sleep(0.01)
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        """Stop the background worker thread gracefully."""
+        """停止后台线程并清理残留执行队列。"""
         self._stop_event.set()
         if self._pending_manager is not None:
             self._pending_manager.shutdown()
@@ -250,7 +254,7 @@ class TradeExecutor:
     # ------------------------------------------------------------------
 
     def _notify_skip(self, signal_id: str, reason: str, timeframe: str = "") -> None:
-        """通知下游组件该信号被跳过（未执行交易）。"""
+        # Notify downstream components that a signal was skipped.
         with self._skip_lock:
             self._skip_reasons[reason] = self._skip_reasons.get(reason, 0) + 1
             if timeframe:
@@ -265,7 +269,7 @@ class TradeExecutor:
                 logger.debug("on_execution_skip callback failed", exc_info=True)
 
     def add_trade_listener(self, fn: Callable[[dict], None]) -> None:
-        """Register a callback invoked after each successful trade execution."""
+        """注册成交监听回调。"""
         self._on_trade_executed.append(fn)
 
     def remove_trade_listener(self, fn: Callable[[dict], None]) -> None:
@@ -283,18 +287,18 @@ class TradeExecutor:
                 break
 
     def set_margin_guard(self, guard: Any) -> None:
-        """Inject MarginGuard for margin-level based trade blocking."""
+        """注入保证金保护器。"""
         self._margin_guard = guard
 
     def reset_circuit(self) -> None:
-        """手动重置熔断器，恢复自动交易。"""
+        # Reset the circuit breaker manually.
         self._circuit_open = False
         self._consecutive_failures = 0
         self._circuit_open_at = None
         logger.info("TradeExecutor: circuit breaker manually reset")
 
     def _get_contract_size(self, symbol: str) -> float:
-        """T-2: 按品种返回合约大小，优先精确匹配，fallback 到 'default'。"""
+        # Return the configured contract size for a symbol.
         size_map = self.config.contract_size_map
         return size_map.get(symbol, size_map.get("default", 100.0))
 
@@ -310,9 +314,9 @@ class TradeExecutor:
         if not self.config.enabled:
             return None
 
-        # ── 熔断器检查（含 T-3 自动半开恢复）────────────────────────────
+        # 技术故障熔断器优先于后续所有交易检查。
         if self._circuit_open:
-            # T-3: 若距熔断开路已超过 circuit_auto_reset_minutes，自动尝试半开
+            # T-3: 超过自动恢复窗口后，允许先进入 half-open 再尝试一次。
             if (
                 self.config.circuit_auto_reset_minutes > 0
                 and self._circuit_open_at is not None
@@ -338,7 +342,7 @@ class TradeExecutor:
         if event.direction not in ("buy", "sell"):
             return None
 
-        # ── PnL 熔断检查（连续实际亏损）─────────────────────────────
+        # PnL 熔断由日内绩效跟踪器维护，独立于技术故障熔断。
         if (
             self._performance_tracker is not None
             and self._performance_tracker.is_trading_paused()
@@ -350,7 +354,7 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "pnl_circuit_paused", tf)
             return None
 
-        # ── 保证金水位检查（MarginGuard）────────────────────────────
+        # 保证金保护在真正计算仓位前拦截新开仓请求。
         if self._margin_guard is not None and self._margin_guard.should_block_new_trades():
             logger.info(
                 "TradeExecutor: skipping %s/%s %s - margin guard blocked",
@@ -359,7 +363,7 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "margin_guard_block", tf)
             return None
 
-        # ── 策略域准入检查（ExecutionGate）────────────────────────────
+        # 执行门负责策略级准入规则，例如 voting group 和 armed 检查。
         gate_allowed, gate_reason = self._execution_gate.check(event)
         if not gate_allowed:
             logger.info(
@@ -369,7 +373,28 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, gate_reason, tf)
             return None
 
-        # Per-TF min_confidence：低 TF 可要求更高置信度过滤噪声
+        duplicate_reason = self._duplicate_execution_reason(event)
+        if duplicate_reason:
+            logger.info(
+                "TradeExecutor: skipping %s/%s/%s %s - duplicate execution context: %s",
+                event.symbol, tf, event.strategy, event.direction, duplicate_reason,
+            )
+            self._execution_log.append(
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "signal_id": event.signal_id,
+                    "symbol": event.symbol,
+                    "direction": event.direction,
+                    "strategy": event.strategy,
+                    "success": False,
+                    "skipped": True,
+                    "reason": duplicate_reason,
+                }
+            )
+            self._notify_skip(event.signal_id, duplicate_reason, tf)
+            return None
+
+        # Per-TF 最小置信度覆盖优先于全局 min_confidence。
         effective_min_conf = self.config.timeframe_min_confidence.get(
             tf, self.config.min_confidence
         )
@@ -386,8 +411,8 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "min_confidence", tf)
             return None
 
-        # HTF 方向冲突强制阻止：低 TF 趋势策略逆大周期方向不允许交易
-        # 均值回归策略豁免——它们天然做反向（如 RSI 超买做空在上涨趋势中是合理的）
+        # HTF 方向冲突可在低周期直接阻止开仓；默认仅豁免允许逆势的策略类别。
+        # 这能避免趋势跟随策略在高周期反向时，仍在低周期继续追价入场。
         strategy_category = event.metadata.get("strategy_category", "")
         if (
             tf in self.config.htf_conflict_block_timeframes
@@ -403,7 +428,7 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "htf_conflict_block", tf)
             return None
 
-        # ── EOD 后禁止开新仓（当天已执行日终平仓，不允许再开仓持过夜）──
+        # 日终平仓后，当天剩余时间内不再新开仓，避免 EOD 后又被实时信号重新拉起仓位。
         if (
             self._position_manager is not None
             and hasattr(self._position_manager, "is_after_eod_today")
@@ -437,6 +462,34 @@ class TradeExecutor:
             )
             self._notify_skip(event.signal_id, "position_limit", tf)
             return None
+
+        # ── 同策略同方向再入场冷却 ────────────────────────────────
+        cooldown_bars = self.config.reentry_cooldown_bars
+        if cooldown_bars > 0:
+            reentry_key = (event.symbol, event.strategy, event.direction)
+            bar_time_raw = event.metadata.get("bar_time")
+            bar_time: datetime | None = None
+            if isinstance(bar_time_raw, datetime):
+                bar_time = bar_time_raw
+            elif isinstance(bar_time_raw, str):
+                try:
+                    bar_time = datetime.fromisoformat(bar_time_raw)
+                except (ValueError, TypeError):
+                    pass
+            last_bar = self._last_entry_bar_time.get(reentry_key)
+            if bar_time and last_bar:
+                tf_seconds = self._tf_to_seconds(tf)
+                if tf_seconds > 0:
+                    elapsed_bars = abs((bar_time - last_bar).total_seconds()) / tf_seconds
+                    if elapsed_bars < cooldown_bars:
+                        logger.info(
+                            "TradeExecutor: skipping %s/%s/%s %s - reentry cooldown "
+                            "(%.1f bars < %d required)",
+                            event.symbol, tf, event.strategy, event.direction,
+                            elapsed_bars, cooldown_bars,
+                        )
+                        self._notify_skip(event.signal_id, "reentry_cooldown", tf)
+                        return None
 
         trade_params = self._compute_params(event)
         if trade_params is None:
@@ -498,7 +551,7 @@ class TradeExecutor:
         params: TradeParameters,
         cost_metrics: dict[str, float | None],
     ) -> dict[str, Any | None]:
-        """创建 PendingEntry 并提交给 PendingEntryManager 等待价格确认。"""
+        # Create and submit a pending entry for later price confirmation.
         if not event.signal_id:
             logger.warning(
                 "TradeExecutor: cannot submit pending entry without signal_id for %s/%s",
@@ -507,7 +560,7 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "missing_signal_id", event.timeframe or "")
             return None
 
-        # 确定 zone_mode：从策略 category 映射
+        # 根据策略 category 选择 zone_mode。
         category = event.metadata.get("category", "")
         zone_mode = _CATEGORY_ZONE_MODE.get(category, "symmetric")
 
@@ -537,7 +590,7 @@ class TradeExecutor:
             zone_mode=zone_mode,
         )
 
-        # 取消同品种旧 pending
+        # 新信号到来时，可按配置取消同品种旧的 pending entry。
         if config.cancel_on_new_signal:
             exclude = event.direction if not config.cancel_same_direction else None
             self._pending_manager.cancel_by_symbol(
@@ -558,7 +611,7 @@ class TradeExecutor:
         if balance is None or balance <= 0:
             return None
 
-        # T-1: 优先使用 runtime 注入的 close_price（策略域收窄前提取，所有策略均有效）
+        # T-1: 优先使用 runtime 透传的 close_price，缺失时再从指标快照估算。
         close_price: float | None = None
         raw_close = event.metadata.get("close_price")
         if raw_close is not None:
@@ -566,13 +619,13 @@ class TradeExecutor:
                 close_price = float(raw_close)
             except (TypeError, ValueError):
                 close_price = None
-        # fallback：扫描指标 payload（旧路径）
+        # fallback 到 payload/指标快照中的价格型字段。
         if close_price is None or close_price <= 0:
             close_price = self._estimate_price(event.indicators)
         if close_price is None or close_price <= 0:
             return None
 
-        # T-2: 按品种读取合约大小
+        # T-2: 合约大小参与最终仓位与盈亏距离计算。
         contract_size = self._get_contract_size(event.symbol)
 
         return compute_trade_params(
@@ -610,6 +663,14 @@ class TradeExecutor:
         except (TypeError, ValueError, AttributeError) as exc:
             logger.debug("Failed to get account balance: %s", exc)
             return None
+
+    @staticmethod
+    def _tf_to_seconds(tf: str) -> int:
+        """Convert timeframe string to seconds (e.g. 'M15' → 900)."""
+        tf = tf.upper().strip()
+        _map = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+                "H1": 3600, "H4": 14400, "D1": 86400}
+        return _map.get(tf, 0)
 
     @staticmethod
     def _estimate_price(indicators: dict[str, dict[str, Any]]) -> float | None:
@@ -664,6 +725,55 @@ class TradeExecutor:
             except Exception:
                 continue
         return tracked_count or 0
+
+    def _duplicate_execution_reason(self, event: SignalEvent) -> str:
+        if self._has_matching_active_position(event):
+            return "position_same_strategy_direction"
+        if self._has_matching_pending_entry(event):
+            return "pending_entry_same_strategy_direction"
+        return ""
+
+    def _has_matching_active_position(self, event: SignalEvent) -> bool:
+        if self._position_manager is None:
+            return False
+        try:
+            active_positions = self._position_manager.active_positions()
+        except Exception:
+            logger.debug(
+                "Failed to inspect active positions for duplicate guard",
+                exc_info=True,
+            )
+            return False
+        for row in active_positions or []:
+            if (
+                row.get("symbol") == event.symbol
+                and row.get("timeframe") == event.timeframe
+                and row.get("strategy") == event.strategy
+                and row.get("action") == event.direction
+            ):
+                return True
+        return False
+
+    def _has_matching_pending_entry(self, event: SignalEvent) -> bool:
+        if self._pending_manager is None:
+            return False
+        try:
+            status = self._pending_manager.status()
+        except Exception:
+            logger.debug(
+                "Failed to inspect pending entries for duplicate guard",
+                exc_info=True,
+            )
+            return False
+        for row in status.get("entries", []) or []:
+            if (
+                row.get("symbol") == event.symbol
+                and row.get("timeframe") == event.timeframe
+                and row.get("strategy") == event.strategy
+                and row.get("direction") == event.direction
+            ):
+                return True
+        return False
 
     def _estimate_cost_metrics(
         self,
@@ -846,7 +956,7 @@ class TradeExecutor:
             self._last_execution_at = datetime.now(timezone.utc)
             self._last_error = None
             self._last_risk_block = None
-            # 成功执行：重置熔断器失败计数
+            # 执行成功后重置连续失败计数。
             self._consecutive_failures = 0
             requested_price = None
             fill_price = None
@@ -884,6 +994,12 @@ class TradeExecutor:
                 "success": True,
             }
             self._execution_log.append(log_entry)
+            # 记录冷却期 bar_time
+            _bar_time = event.metadata.get("bar_time")
+            if _bar_time is not None:
+                self._last_entry_bar_time[
+                    (event.symbol, event.strategy, event.direction)
+                ] = _bar_time
             for fn in self._on_trade_executed:
                 try:
                     fn(log_entry)
@@ -895,7 +1011,7 @@ class TradeExecutor:
                 params.position_size, params.stop_loss, params.take_profit,
                 params.risk_reward_ratio, event.signal_id,
             )
-            # T-4: 持久化执行记录
+            # T-4: 持久化成功执行记录。
             if self._persist_execution_fn is not None:
                 try:
                     self._persist_execution_fn([log_entry])
@@ -927,7 +1043,7 @@ class TradeExecutor:
                             "TradeExecutor: failed to register position ticket=%s: %s",
                             ticket, pm_exc,
                         )
-            # 通知 TradeOutcomeTracker 登记活跃交易
+            # 通知 TradeOutcomeTracker 登记新开仓交易。
             if self._trade_outcome_tracker is not None:
                 try:
                     self._trade_outcome_tracker.on_trade_opened(
@@ -999,7 +1115,7 @@ class TradeExecutor:
             logger.exception(
                 "TradeExecutor: failed to execute %s %s: %s", event.direction, event.symbol, exc,
             )
-            # 熔断器：连续失败达到阈值后开路，防止持续错误下的无效重试
+            # 连续失败达到阈值后打开熔断，避免持续错误重试把交易链路打满。
             if (
                 not self._circuit_open
                 and self._consecutive_failures >= self.config.max_consecutive_failures
@@ -1012,7 +1128,7 @@ class TradeExecutor:
                     self._consecutive_failures,
                     self.config.circuit_auto_reset_minutes,
                 )
-            # T-4: 持久化失败记录
+            # T-4: 持久化失败执行记录。
             fail_entry = {
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
@@ -1058,7 +1174,9 @@ class TradeExecutor:
             },
             "execution_gate": {
                 "require_armed": self._execution_gate.config.require_armed,
-                "trade_trigger_strategies": list(self._execution_gate.config.trade_trigger_strategies),
+                "trade_trigger_strategies": list(
+                    getattr(self._execution_gate.config, "trade_trigger_strategies", ())
+                ),
                 "voting_group_strategies": sorted(self._execution_gate.config.voting_group_strategies),
                 "standalone_override": sorted(self._execution_gate.config.standalone_override),
             },

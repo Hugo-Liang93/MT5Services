@@ -82,8 +82,8 @@ class SignalConfig(BaseModel):
     strategy_sessions: dict[str, list[str]] = Field(default_factory=dict)
     strategy_timeframes: dict[str, list[str]] = Field(default_factory=dict)
     max_spread_to_stop_ratio: float = 0.33
-    # 交易触发白名单：仅列表内的策略允许触发实际下单（空列表 = 不限制）
-    trade_trigger_strategies: list[str] = Field(default_factory=list)
+    # 同策略同方向再入场冷却 bar 数（0=不冷却每根 bar 都可以，N=间隔 N 根后允许加仓）
+    reentry_cooldown_bars: int = 3
     # 多组 Voting 配置：原始 dict 列表，在工厂层转换为 VotingGroupConfig 对象
     # 每个 dict 包含: name, strategies(list), consensus_threshold, min_quorum, disagreement_penalty
     voting_group_configs: list[dict] = Field(default_factory=list)

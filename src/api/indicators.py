@@ -91,10 +91,10 @@ async def get_performance_stats(
     manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[Dict[str, Any]]:
     """
-    鑾峰彇浼樺寲鎸囨爣鏈嶅姟鐨勬€ц兘缁熻
+    获取优化指标服务的性能统计。
     
     Returns:
-        鎬ц兘缁熻淇℃伅
+        性能统计信息
     """
     try:
         stats = manager.get_performance_stats()
@@ -110,7 +110,7 @@ async def get_performance_stats(
         logger.error(f"Failed to get performance stats: {e}")
         return ApiResponse.error_response(
             error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
-            error_message=f"鑾峰彇鎬ц兘缁熻澶辫触: {str(e)}",
+            error_message=f"获取性能统计失败: {str(e)}",
             suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__}
         )
@@ -121,10 +121,10 @@ async def clear_cache(
     manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[Dict[str, int]]:
     """
-    娓呯┖鎸囨爣缂撳瓨
+    清空指标缓存。
     
     Returns:
-        娓呴櫎鐨勭紦瀛橀」鏁伴噺
+        清除的缓存条目数量
     """
     try:
         cache_count = manager.clear_cache()
@@ -140,7 +140,7 @@ async def clear_cache(
         logger.error(f"Failed to clear cache: {e}")
         return ApiResponse.error_response(
             error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
-            error_message=f"娓呯┖缂撳瓨澶辫触: {str(e)}",
+            error_message=f"清空缓存失败: {str(e)}",
             suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__}
         )
@@ -148,17 +148,17 @@ async def clear_cache(
 
 @router.get("/dependency/graph", response_model=ApiResponse[Dict[str, str]])
 async def get_dependency_graph(
-    format: str = Query("mermaid", description="鍥惧舰鏍煎紡: mermaid 鎴?dot"),
+    format: str = Query("mermaid", description="图形格式: mermaid 或 dot"),
     manager: UnifiedIndicatorManager = Depends(get_unified_indicator_manager)
 ) -> ApiResponse[Dict[str, str]]:
     """
-    鑾峰彇鎸囨爣渚濊禆鍏崇郴鍥?
+    获取指标依赖关系图。
     
     Args:
-        format: 鍥惧舰鏍煎紡锛坢ermaid 鎴?dot锛?
+        format: 图形格式（`mermaid` 或 `dot`）
         
     Returns:
-        渚濊禆鍏崇郴鍥?
+        依赖关系图
     """
     try:
         graph = manager.get_dependency_graph(format)
@@ -175,7 +175,7 @@ async def get_dependency_graph(
         logger.error(f"Failed to get dependency graph: {e}")
         return ApiResponse.error_response(
             error_code=AIErrorCode.INTERNAL_SERVER_ERROR,
-            error_message=f"鑾峰彇渚濊禆鍏崇郴鍥惧け璐? {str(e)}",
+            error_message=f"获取依赖关系图失败: {str(e)}",
             suggested_action=AIErrorAction.RETRY_AFTER_DELAY,
             details={"exception_type": type(e).__name__, "format": format}
         )
@@ -422,5 +422,4 @@ async def compute_indicators(
                 "indicators": request.indicators
             }
         )
-
 
