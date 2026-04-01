@@ -354,6 +354,8 @@ class PendingEntryManager:
         self._on_expired_fn = on_expired_fn  # (signal_id, reason) 过期回调
 
         self._pending: dict[str, PendingEntry] = {}  # signal_id → PendingEntry
+        # MT5 挂单追踪：signal_id → {ticket, expires_at, direction, symbol, strategy}
+        self._mt5_orders: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()  # RLock: 回调链可能重入 submit/cancel
         self._monitor_thread: Optional[threading.Thread] = None
         self._fill_worker_thread: Optional[threading.Thread] = None
@@ -367,6 +369,8 @@ class PendingEntryManager:
             "total_expired": 0,
             "total_cancelled": 0,
             "total_price_improvement": 0.0,
+            "mt5_orders_placed": 0,
+            "mt5_orders_expired": 0,
         }
 
     @property
@@ -468,7 +472,98 @@ class PendingEntryManager:
                 len(cancelled_entries),
                 reason,
             )
-        return len(cancelled_entries)
+        # 同时取消该品种的 MT5 挂单
+        mt5_cancelled = self.cancel_mt5_orders_by_symbol(symbol, reason)
+        return len(cancelled_entries) + mt5_cancelled
+
+    # ── MT5 挂单生命周期管理 ──────────────────────────────────────
+
+    def track_mt5_order(
+        self,
+        signal_id: str,
+        order_ticket: int,
+        expires_at: datetime,
+        direction: str,
+        symbol: str,
+        strategy: str,
+    ) -> None:
+        """注册 MT5 挂单，由 monitor loop 负责超时取消。"""
+        with self._lock:
+            self._mt5_orders[signal_id] = {
+                "ticket": order_ticket,
+                "expires_at": expires_at,
+                "direction": direction,
+                "symbol": symbol,
+                "strategy": strategy,
+            }
+            self._stats["mt5_orders_placed"] += 1
+        logger.info(
+            "PendingEntry: tracking MT5 order ticket=%d for %s/%s %s (expires=%s)",
+            order_ticket, symbol, strategy, direction,
+            expires_at.isoformat(),
+        )
+
+    def _check_mt5_order_expiry(self) -> None:
+        """检查 MT5 挂单是否超时，超时则通过 MT5 API 取消。"""
+        now = datetime.now(timezone.utc)
+        expired: list[tuple[str, dict[str, Any]]] = []
+        with self._lock:
+            for sid, info in list(self._mt5_orders.items()):
+                if now >= info["expires_at"]:
+                    expired.append((sid, self._mt5_orders.pop(sid)))
+                    self._stats["mt5_orders_expired"] += 1
+
+        for sid, info in expired:
+            ticket = info["ticket"]
+            try:
+                # 通过 market_service 获取 trading client 取消挂单
+                trading = getattr(self._market, "_trading_client", None)
+                if trading is None:
+                    trading = getattr(self._market, "trading_client", None)
+                if trading is not None and hasattr(trading, "cancel_orders_by_tickets"):
+                    trading.cancel_orders_by_tickets([ticket])
+                    logger.info(
+                        "PendingEntry: cancelled expired MT5 order ticket=%d "
+                        "for %s/%s (signal=%s)",
+                        ticket, info["symbol"], info["strategy"], sid[:8],
+                    )
+                else:
+                    logger.warning(
+                        "PendingEntry: cannot cancel MT5 order ticket=%d — "
+                        "no trading client available",
+                        ticket,
+                    )
+            except Exception:
+                logger.error(
+                    "PendingEntry: failed to cancel MT5 order ticket=%d",
+                    ticket, exc_info=True,
+                )
+            if self._on_expired_fn:
+                try:
+                    self._on_expired_fn(sid, "mt5_order_expired")
+                except Exception:
+                    pass
+
+    def cancel_mt5_orders_by_symbol(
+        self, symbol: str, reason: str = "new_signal_override"
+    ) -> int:
+        """取消指定品种的所有 MT5 挂单。"""
+        to_cancel: list[tuple[str, dict[str, Any]]] = []
+        with self._lock:
+            for sid, info in list(self._mt5_orders.items()):
+                if info["symbol"] == symbol:
+                    to_cancel.append((sid, self._mt5_orders.pop(sid)))
+        for sid, info in to_cancel:
+            ticket = info["ticket"]
+            try:
+                trading = getattr(self._market, "_trading_client", None)
+                if trading is None:
+                    trading = getattr(self._market, "trading_client", None)
+                if trading is not None and hasattr(trading, "cancel_orders_by_tickets"):
+                    trading.cancel_orders_by_tickets([ticket])
+            except Exception:
+                logger.error("Failed to cancel MT5 order ticket=%d", ticket, exc_info=True)
+        return len(to_cancel)
 
     def start(self) -> None:
         """启动价格监控线程和填单执行线程。"""
@@ -562,6 +657,7 @@ class PendingEntryManager:
         while not self._stop_event.is_set():
             try:
                 self._check_all_entries()
+                self._check_mt5_order_expiry()
             except Exception:
                 logger.error("PendingEntryManager monitor error", exc_info=True)
             self._stop_event.wait(timeout=self._config.check_interval)

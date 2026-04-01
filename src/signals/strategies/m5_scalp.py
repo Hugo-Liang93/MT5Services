@@ -176,7 +176,7 @@ class M5MomentumBurst:
     """
 
     name = "m5_momentum_burst"
-    category = "multi_tf"
+    category = "breakout"
     required_indicators = ("rsi14", "adx14")
     preferred_scopes = ("intrabar", "confirmed")
 

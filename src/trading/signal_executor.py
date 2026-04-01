@@ -551,7 +551,13 @@ class TradeExecutor:
         params: TradeParameters,
         cost_metrics: dict[str, float | None],
     ) -> dict[str, Any | None]:
-        # Create and submit a pending entry for later price confirmation.
+        """通过 MT5 限价/止损挂单实现价格确认入场。
+
+        根据 zone_mode 决定挂单类型：
+          - pullback: LIMIT 单（等回调到有利价位）
+          - momentum: STOP 单（等突破到目标价位）
+          - symmetric: LIMIT 单（以参考价为中心）
+        """
         if not event.signal_id:
             logger.warning(
                 "TradeExecutor: cannot submit pending entry without signal_id for %s/%s",
@@ -560,7 +566,6 @@ class TradeExecutor:
             self._notify_skip(event.signal_id, "missing_signal_id", event.timeframe or "")
             return None
 
-        # 根据策略 category 选择 zone_mode。
         category = event.metadata.get("category", "")
         zone_mode = _CATEGORY_ZONE_MODE.get(category, "symmetric")
 
@@ -576,21 +581,21 @@ class TradeExecutor:
             indicators=event.indicators,
         )
         timeout = compute_timeout(event.timeframe, config, category=category)
-        now = datetime.now(timezone.utc)
 
-        pending = PendingEntry(
-            signal_event=event,
-            trade_params=params,
-            cost_metrics=dict(cost_metrics or {}),
+        # ── 确定挂单类型和价格 ──
+        order_kind, trigger_price = self._resolve_pending_order(
+            direction=event.direction,
+            zone_mode=zone_mode,
             entry_low=entry_low,
             entry_high=entry_high,
-            reference_price=params.entry_price,
-            created_at=now,
-            expires_at=now + timeout,
-            zone_mode=zone_mode,
         )
 
-        # 新信号到来时，可按配置取消同品种旧的 pending entry。
+        # SL/TP 按挂单价偏移（相对于原始 entry_price 的差值）
+        price_shift = trigger_price - params.entry_price
+        adjusted_sl = round(params.stop_loss + price_shift, 2)
+        adjusted_tp = round(params.take_profit + price_shift, 2)
+
+        # 新信号到来时，取消同品种旧挂单
         if config.cancel_on_new_signal:
             exclude = event.direction if not config.cancel_same_direction else None
             self._pending_manager.cancel_by_symbol(
@@ -599,8 +604,94 @@ class TradeExecutor:
                 exclude_direction=exclude,
             )
 
-        self._pending_manager.submit(pending)
-        return None
+        # ── 向 MT5 发送限价/止损挂单 ──
+        tf = event.timeframe or ""
+        payload = {
+            "symbol": event.symbol,
+            "volume": params.position_size,
+            "side": event.direction,
+            "order_kind": order_kind,
+            "price": trigger_price,
+            "sl": adjusted_sl,
+            "tp": adjusted_tp,
+            "comment": f"{tf}:{event.strategy}:{order_kind}"[:31],
+            "request_id": event.signal_id,
+            "metadata": self._build_trade_metadata(event),
+        }
+
+        try:
+            result = self._trading.dispatch_operation("trade", payload)
+            order_ticket = None
+            if isinstance(result, dict):
+                order_ticket = result.get("order") or result.get("ticket")
+
+            logger.info(
+                "TradeExecutor: placed %s %s %s @ %.2f (zone=[%.2f,%.2f] mode=%s) "
+                "sl=%.2f tp=%.2f ticket=%s",
+                order_kind, event.direction, event.symbol, trigger_price,
+                entry_low, entry_high, zone_mode,
+                adjusted_sl, adjusted_tp, order_ticket,
+            )
+
+            # 注册到 PendingEntryManager 追踪生命周期（超时取消）
+            if order_ticket is not None:
+                self._pending_manager.track_mt5_order(
+                    signal_id=event.signal_id,
+                    order_ticket=order_ticket,
+                    expires_at=datetime.now(timezone.utc) + timeout,
+                    direction=event.direction,
+                    symbol=event.symbol,
+                    strategy=event.strategy,
+                )
+
+            self._execution_log.append({
+                "at": datetime.now(timezone.utc).isoformat(),
+                "signal_id": event.signal_id,
+                "symbol": event.symbol,
+                "direction": event.direction,
+                "strategy": event.strategy,
+                "success": True,
+                "pending": True,
+                "order_kind": order_kind,
+                "trigger_price": trigger_price,
+                "order_ticket": order_ticket,
+            })
+            return result
+
+        except Exception as exc:
+            logger.error(
+                "TradeExecutor: failed to place %s order for %s/%s: %s",
+                order_kind, event.symbol, event.strategy, exc,
+            )
+            self._notify_skip(event.signal_id, f"pending_order_failed:{exc}", tf)
+            return None
+
+    @staticmethod
+    def _resolve_pending_order(
+        direction: str,
+        zone_mode: str,
+        entry_low: float,
+        entry_high: float,
+    ) -> tuple[str, float]:
+        """根据 zone_mode 和方向确定 MT5 挂单类型和触发价格。
+
+        Returns:
+            (order_kind, trigger_price)
+            order_kind: "limit" 或 "stop"
+            trigger_price: 挂单价格
+        """
+        if zone_mode == "momentum":
+            # 动量追突破：BUY STOP（价格上破）/ SELL STOP（价格下破）
+            if direction == "buy":
+                return "stop", entry_high  # 价格涨过 entry_high 触发
+            else:
+                return "stop", entry_low   # 价格跌破 entry_low 触发
+        else:
+            # pullback / symmetric：LIMIT 单（等回调）
+            if direction == "buy":
+                return "limit", entry_low   # 等价格回调到 entry_low 买入
+            else:
+                return "limit", entry_high  # 等价格回调到 entry_high 卖出
 
     def _compute_params(self, event: SignalEvent) -> TradeParameters | None:
         atr = extract_atr_from_indicators(event.indicators)
