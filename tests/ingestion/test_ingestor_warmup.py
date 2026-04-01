@@ -34,6 +34,7 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         "symbol_cooldown_seconds": 60.0,
         "symbol_max_cooldown_seconds": 300.0,
         "backfill_batch_bars": 100,
+        "ohlc_backfill_limit": 500,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -48,12 +49,11 @@ def _make_ingestor(
     storage = MagicMock()
 
     if db_has_data:
-        # 模拟 DB 有历史数据——需要回补
+        # 模拟 DB 有历史数据——需要回补（使用近期时间避免 gap 检测跳过）
+        recent = datetime.now(timezone.utc) - timedelta(hours=2)
         db = MagicMock()
-        db.last_tick_time.return_value = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        db.last_ohlc_time.return_value = datetime(
-            2025, 1, 1, 0, 0, tzinfo=timezone.utc
-        )
+        db.last_tick_time.return_value = recent
+        db.last_ohlc_time.return_value = recent
         storage.db = db
     else:
         # 模拟 DB 无数据——无回补任务

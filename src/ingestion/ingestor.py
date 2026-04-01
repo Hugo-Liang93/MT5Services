@@ -474,9 +474,20 @@ class BackgroundIngestor:
                     continue
                 if last_ts:
                     key = ohlc_key(symbol, tf)
+                    tf_seconds = timeframe_seconds(tf)
+                    # Gap 检测：如果 DB 中最新数据太旧（超过 backfill_limit 个周期），
+                    # 忽略旧的 last_ts，让 Ingestor 走初次拉取路径重新初始化。
+                    gap_seconds = (now - last_ts).total_seconds()
+                    max_gap = tf_seconds * self.settings.ohlc_backfill_limit
+                    if gap_seconds > max_gap:
+                        logger.warning(
+                            "OHLC gap detected for %s %s: last_ts=%s (%.1fh ago), "
+                            "exceeds max_gap=%ds. Resetting to fresh init.",
+                            symbol, tf, last_ts, gap_seconds / 3600, max_gap,
+                        )
+                        continue  # 不设 _last_ohlc_time → 走初次拉取路径
                     self._set_last_ohlc_time_if_newer(key, last_ts)
                     self._backfill_progress[key] = last_ts
-                    tf_seconds = timeframe_seconds(tf)
                     self._backfill_cutoff[key] = now - timedelta(seconds=tf_seconds)
 
     def _get_last_ohlc_time(self, key: str) -> Optional[datetime]:
