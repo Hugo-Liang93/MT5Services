@@ -151,6 +151,7 @@ def build_studio_service(container: AppContainer) -> StudioService:
             lambda: studio_mappers.map_strategist(
                 len(signal_module.list_strategies()),
                 signal_module.recent_signals(limit=10, scope="confirmed"),
+                signal_runtime.status() if signal_runtime else {},
             ),
         )
         studio.register_agent(

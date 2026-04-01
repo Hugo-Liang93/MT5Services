@@ -249,8 +249,10 @@ class SignalRuntime:
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
         self._affinity_gates_skipped: int = 0
-        # Per-TF 计数：affinity skip / raw confidence skip
+        # Per-TF 管线计数：各层丢弃/通过统计
         self._per_tf_skips: dict[str, dict[str, int]] = {}
+        # Per-TF 策略评估统计：evaluated / hold / passed_confidence / below_confidence
+        self._per_tf_eval_stats: dict[str, dict[str, int]] = {}
         # FilterChain 按 scope 分维度计数
         self._filter_by_scope: dict[str, dict[str, Any]] = {
             "confirmed": {"passed": 0, "blocked": 0, "blocks": {}},
@@ -655,6 +657,7 @@ class SignalRuntime:
             **self._count_active_states(),
             "voting_groups": self._voting_groups_summary(),
             "regime_map": self.get_regime_stability_map(),
+            "per_tf_eval_stats": dict(self._per_tf_eval_stats),
             "filter_realtime_status": (
                 self.filter_chain.filter_status()
                 if self.filter_chain is not None
@@ -1238,6 +1241,16 @@ class SignalRuntime:
                 decision, symbol, timeframe, strategy, scope, regime_metadata,
             )
             snapshot_decisions.append(decision)
+
+            # Per-TF 评估统计
+            tf_eval = self._per_tf_eval_stats.setdefault(
+                timeframe, {"evaluated": 0, "hold": 0, "buy_sell": 0, "below_min_conf": 0}
+            )
+            tf_eval["evaluated"] += 1
+            if decision.direction in ("buy", "sell"):
+                tf_eval["buy_sell"] += 1
+            else:
+                tf_eval["hold"] += 1
 
             self._transition_and_publish(
                 state, decision, scope, event_time, bar_time,

@@ -153,15 +153,19 @@ def map_live_analyst(
 def map_strategist(
     strategy_count: int,
     recent_signals: list[dict[str, Any]],
+    runtime_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     buy = sum(1 for s in recent_signals if s.get("direction") == "buy")
     sell = sum(1 for s in recent_signals if s.get("direction") == "sell")
+    rt = runtime_status or {}
 
     metrics: dict[str, Any] = {
         "strategy_count": strategy_count,
         "recent_signal_count": len(recent_signals),
         "buy_count": buy,
         "sell_count": sell,
+        "per_tf_eval_stats": rt.get("per_tf_eval_stats", {}),
+        "per_tf_skips": rt.get("per_tf_skips", {}),
     }
 
     return resolve_status("strategist", [
