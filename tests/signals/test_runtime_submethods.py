@@ -195,7 +195,7 @@ def test_apply_filter_chain_blocked_tracks_stats() -> None:
     assert allowed is False
     scope_stats = rt._filter_by_scope.get("confirmed", {})
     assert scope_stats["blocked"] == 1
-    assert scope_stats["blocks"].get("spread") == 1
+    assert scope_stats["blocks"].get("spread:too_wide") == 1
 
 
 def test_apply_filter_chain_passed_tracks_stats() -> None:

@@ -1504,10 +1504,11 @@ class SignalRuntime:
 
         log_fn = logger.info if scope == "confirmed" else logger.debug
         log_fn("Signal evaluation skipped for %s/%s [%s]: %s", symbol, timeframe, scope, reason)
+        # 保留完整 reason（含具体时段/值），同时用 category 做滑动窗口统计
         category = reason.split(":")[0] if reason else "unknown"
         scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
         scope_stats["blocked"] += 1
-        scope_stats["blocks"][category] = scope_stats["blocks"].get(category, 0) + 1
+        scope_stats["blocks"][reason] = scope_stats["blocks"].get(reason, 0) + 1
         self._filter_window.append((time.monotonic(), scope, category))
         return False
 
