@@ -66,29 +66,27 @@ class AppRuntime:
         current_started = time.monotonic()
 
         try:
-            _components = [
-                ("storage", c.storage_writer),
-                ("indicators", c.indicator_manager),
-                ("ingestion", c.ingestor),
-                ("economic_calendar", c.economic_calendar_service),
-                ("signals", c.signal_runtime),
-            ]
-            for current_step, component in _components:
-                if component is None:
-                    raise RuntimeError(
-                        f"Component '{current_step}' is None — "
-                        f"build_app_container() likely failed to initialize it"
-                    )
-                current_started = time.monotonic()
-                component.start()
-                self._mark_step(current_step, "ready", current_started)
-                self._record_task_status(current_step, "ready", current_started)
+            current_step = "storage"
+            storage = c.storage_writer
+            if storage is None:
+                raise RuntimeError("Component 'storage' is None — build_app_container() failed")
+            current_started = time.monotonic()
+            storage.start()
+            self._mark_step(current_step, "ready", current_started)
+            self._record_task_status(current_step, "ready", current_started)
 
-            self._start_calibrator()
             self._start_performance_tracker()
             self._restore_trading_state()
-            self._start_pending_entry()
-            self._start_position_manager()
+
+            current_step = "runtime_mode"
+            current_started = time.monotonic()
+            controller = getattr(c, "runtime_mode_controller", None)
+            if controller is None:
+                raise RuntimeError("Component 'runtime_mode_controller' is None")
+            controller.start()
+            self._mark_step(current_step, "ready", current_started)
+            self._record_task_status(current_step, "ready", current_started)
+
             self._register_monitoring()
 
             self._status["phase"] = "running"
@@ -112,6 +110,13 @@ class AppRuntime:
         """Gracefully stop all components in reverse order."""
         self._status["phase"] = "stopping"
         c = self.container
+
+        controller = getattr(c, "runtime_mode_controller", None)
+        if controller is not None:
+            try:
+                controller.stop()
+            except Exception:
+                logger.debug("Failed to stop runtime mode controller during shutdown", exc_info=True)
 
         # Calibrator: persist cache before stopping
         if c.calibrator is not None:
@@ -193,19 +198,6 @@ class AppRuntime:
 
     # ── Internal helpers ────────────────────────────────────────
 
-    def _start_calibrator(self) -> None:
-        calibrator = self.container.calibrator
-        if calibrator is None:
-            return
-        try:
-            calibrator_cache_path = get_runtime_data_path("calibrator_cache.json")
-            os.makedirs(os.path.dirname(calibrator_cache_path), exist_ok=True)
-            loaded = calibrator.load(calibrator_cache_path)
-            logger.info("Calibrator: loaded %d cache entries from disk", loaded)
-        except Exception:
-            logger.debug("Calibrator: warm-start load failed (non-fatal)", exc_info=True)
-        calibrator.start_background_refresh()
-
     def _start_performance_tracker(self) -> None:
         """从 DB 恢复 PerformanceTracker 的日内统计，防止重启导致学习归零。
 
@@ -226,14 +218,9 @@ class AppRuntime:
                 "PerformanceTracker: warm-up from DB failed (non-fatal)", exc_info=True
             )
 
-    def _start_pending_entry(self) -> None:
-        if self.container.pending_entry_manager is not None:
-            self.container.pending_entry_manager.start()
-
     def _restore_trading_state(self) -> None:
         recovery = getattr(self.container, "trading_state_recovery", None)
         trade_module = self.container.trade_module
-        pending_entry_manager = self.container.pending_entry_manager
         if recovery is None:
             return
         try:
@@ -247,41 +234,6 @@ class AppRuntime:
                     logger.info("Trade control restored from persistence")
             except Exception:
                 logger.warning("Trade control restore failed", exc_info=True)
-        if trade_module is not None and pending_entry_manager is not None:
-            try:
-                result = recovery.restore_pending_orders(
-                    pending_entry_manager=pending_entry_manager,
-                    trading_module=trade_module,
-                )
-                logger.info("Pending order recovery: %s", result)
-            except Exception:
-                logger.warning("Pending order restore failed", exc_info=True)
-
-    def _start_position_manager(self) -> None:
-        c = self.container
-        if c.position_manager is None:
-            return
-        current_started = time.monotonic()
-        reconcile_interval = 60
-        if self._signal_config_loader is not None:
-            try:
-                reconcile_interval = self._signal_config_loader().position_reconcile_interval
-            except Exception:
-                pass
-        c.position_manager.start(reconcile_interval=reconcile_interval)
-        try:
-            recovery_result = c.position_manager.sync_open_positions()
-            logger.info("PositionManager startup sync: %s", recovery_result)
-        except Exception:
-            logger.warning("PositionManager startup sync failed", exc_info=True)
-        # 启动时强制平仓过夜仓位（EOD 因服务宕机被跳过的兜底）
-        try:
-            overnight_result = c.position_manager.force_close_overnight()
-            if overnight_result is not None:
-                logger.warning("Overnight force close on startup: %s", overnight_result)
-        except Exception:
-            logger.warning("Overnight force close failed", exc_info=True)
-        self._mark_step("position_manager", "ready", current_started)
 
     def _register_monitoring(self) -> None:
         c = self.container

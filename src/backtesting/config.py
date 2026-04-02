@@ -118,23 +118,6 @@ def get_backtest_defaults() -> Dict[str, Any]:
         _set_float(result, parser, "trailing_tp", "activation_atr", "trailing_tp_activation_atr")
         _set_float(result, parser, "trailing_tp", "trail_atr", "trailing_tp_trail_atr")
 
-    # [indicator_exit] section — 指标驱动出场
-    if parser.has_section("indicator_exit"):
-        _set_bool(result, parser, "indicator_exit", "enabled", "indicator_exit_enabled")
-        _set_bool(result, parser, "indicator_exit", "supertrend_enabled", "indicator_exit_supertrend_enabled")
-        _set_float(result, parser, "indicator_exit", "supertrend_tighten_atr", "indicator_exit_supertrend_tighten_atr")
-        _set_bool(result, parser, "indicator_exit", "rsi_enabled", "indicator_exit_rsi_enabled")
-        _set_float(result, parser, "indicator_exit", "rsi_overbought", "indicator_exit_rsi_overbought")
-        _set_float(result, parser, "indicator_exit", "rsi_oversold", "indicator_exit_rsi_oversold")
-        _set_float(result, parser, "indicator_exit", "rsi_delta_threshold", "indicator_exit_rsi_delta_threshold")
-        _set_float(result, parser, "indicator_exit", "rsi_tighten_atr", "indicator_exit_rsi_tighten_atr")
-        _set_bool(result, parser, "indicator_exit", "macd_enabled", "indicator_exit_macd_enabled")
-        _set_float(result, parser, "indicator_exit", "macd_tighten_atr", "indicator_exit_macd_tighten_atr")
-        _set_bool(result, parser, "indicator_exit", "adx_enabled", "indicator_exit_adx_enabled")
-        _set_float(result, parser, "indicator_exit", "adx_entry_min", "indicator_exit_adx_entry_min")
-        _set_float(result, parser, "indicator_exit", "adx_collapse_threshold", "indicator_exit_adx_collapse_threshold")
-        _set_float(result, parser, "indicator_exit", "adx_tighten_atr", "indicator_exit_adx_tighten_atr")
-
     # [circuit_breaker] section — 连败熔断器
     if parser.has_section("circuit_breaker"):
         _set_bool(result, parser, "circuit_breaker", "enabled", "circuit_breaker_enabled")

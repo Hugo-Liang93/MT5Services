@@ -28,6 +28,7 @@ from src.monitoring.pipeline_event_bus import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.studio.service import StudioService
+from src.app_runtime.mode_controller import RuntimeModeController
 
 
 class AppContainer:
@@ -70,6 +71,7 @@ class AppContainer:
         "monitoring_manager",
         "pipeline_event_bus",
         "runtime_read_model",
+        "runtime_mode_controller",
         # Studio
         "studio_service",
         # Runtime cleanup
@@ -108,6 +110,7 @@ class AppContainer:
         self.monitoring_manager: Optional[Any] = None
         self.pipeline_event_bus: Optional[PipelineEventBus] = None
         self.runtime_read_model: Optional[RuntimeReadModel] = None
+        self.runtime_mode_controller: Optional[RuntimeModeController] = None
 
         self.studio_service: Optional[StudioService] = None
         self.shutdown_callbacks: list[Callable[[], None]] = []

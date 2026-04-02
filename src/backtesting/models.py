@@ -162,22 +162,6 @@ class BacktestConfig:
     trailing_tp_activation_atr: float = 1.5  # 浮盈超过此 ATR 倍数后激活
     trailing_tp_trail_atr: float = 0.8       # 从最高盈利回撤的 ATR 距离
 
-    # ── 指标驱动出场（持仓期间检测指标反转，收紧 SL）───────────────────
-    indicator_exit_enabled: bool = False
-    indicator_exit_supertrend_enabled: bool = True
-    indicator_exit_supertrend_tighten_atr: float = 0.5
-    indicator_exit_rsi_enabled: bool = True
-    indicator_exit_rsi_overbought: float = 75.0
-    indicator_exit_rsi_oversold: float = 25.0
-    indicator_exit_rsi_delta_threshold: float = 5.0
-    indicator_exit_rsi_tighten_atr: float = 0.5
-    indicator_exit_macd_enabled: bool = True
-    indicator_exit_macd_tighten_atr: float = 0.5
-    indicator_exit_adx_enabled: bool = True
-    indicator_exit_adx_entry_min: float = 25.0
-    indicator_exit_adx_collapse_threshold: float = 10.0
-    indicator_exit_adx_tighten_atr: float = 0.3
-
     # ── 连败熔断器（基于 bar 计数）──────────────────────────────────
     circuit_breaker_enabled: bool = False
     circuit_breaker_max_consecutive_losses: int = 5

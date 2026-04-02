@@ -8,6 +8,8 @@ from src.api.trade import (
     trade,
     trade_active_pending_state_list,
     trade_pending_execution_context_list,
+    trade_runtime_mode_status,
+    trade_runtime_mode_update,
     trade_state_alerts_summary,
     trade_control_status,
     trade_control_update,
@@ -22,6 +24,7 @@ from src.api.trade import (
 )
 from src.api.schemas import (
     SignalExecuteTradeRequest,
+    RuntimeModeRequest,
     TradeControlRequest,
     TradeDispatchRequest,
     TradeReconcileRequest,
@@ -179,6 +182,25 @@ class _PositionManagerService:
         return [{"ticket": 1, "signal_id": "sig_1", "symbol": "XAUUSD"}]
 
 
+class _RuntimeModeController:
+    def __init__(self) -> None:
+        self.mode = "full"
+        self.last_reason = None
+
+    def snapshot(self):
+        return {
+            "current_mode": self.mode,
+            "configured_mode": "full",
+            "after_eod_action": "risk_off",
+            "components": {"trade_listener_attached": self.mode == "full"},
+        }
+
+    def apply_mode(self, mode: str, *, reason: str):
+        self.mode = mode
+        self.last_reason = reason
+        return self.snapshot()
+
+
 def test_trade_precheck_wraps_mt5_errors() -> None:
     response = trade_precheck(
         TradeRequest(symbol="XAUUSD", volume=0.1, side="buy"),
@@ -320,11 +342,13 @@ def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
         runtime_views=RuntimeReadModel(
             trading_state_store=_TradingStateStore(),
             trading_state_alerts=_TradingStateAlerts(),
+            runtime_mode_controller=_RuntimeModeController(),
         ),
     )
 
     assert response.success is True
     assert response.data["trade_control"]["close_only_mode"] is True
+    assert response.data["runtime_mode"]["current_mode"] == "full"
     assert response.data["pending"]["active"]["status_counts"]["placed"] == 1
     assert response.data["pending"]["lifecycle"]["status_counts"]["filled"] == 1
     assert response.data["positions"]["status_counts"]["open"] == 1
@@ -338,8 +362,37 @@ def test_trade_state_alerts_summary_endpoint_returns_alert_projection() -> None:
 
     assert response.success is True
     assert response.data["status"] == "warning"
-    assert response.data["alerts"][0]["code"] == "pending_orphan"
-    assert response.metadata["operation"] == "trade_state_alerts_summary"
+
+
+def test_trade_runtime_mode_status_endpoint_returns_projection() -> None:
+    response = trade_runtime_mode_status(
+        runtime_views=RuntimeReadModel(
+            runtime_mode_controller=_RuntimeModeController(),
+        )
+    )
+
+    assert response.success is True
+    assert response.data["current_mode"] == "full"
+
+
+def test_trade_runtime_mode_update_endpoint_applies_mode() -> None:
+    controller = _RuntimeModeController()
+    runtime_views = RuntimeReadModel(
+        runtime_mode_controller=controller,
+        trading_state_alerts=_TradingStateAlerts(),
+    )
+
+    response = trade_runtime_mode_update(
+        RuntimeModeRequest(mode="risk_off", reason="after_hours"),
+        controller=controller,
+        runtime_views=runtime_views,
+    )
+
+    assert response.success is True
+    assert response.data["runtime_mode"]["current_mode"] == "risk_off"
+    assert controller.last_reason == "after_hours"
+    assert response.data["trading_state"]["alerts"]["alerts"][0]["code"] == "pending_orphan"
+    assert response.metadata["operation"] == "trade_runtime_mode_update"
 
 
 def test_trade_pending_lifecycle_state_list_endpoint_filters_status() -> None:

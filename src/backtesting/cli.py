@@ -105,40 +105,6 @@ def cmd_run(args: argparse.Namespace) -> None:
         trailing_tp_enabled=ini_defaults.get("trailing_tp_enabled", False),
         trailing_tp_activation_atr=ini_defaults.get("trailing_tp_activation_atr", 1.5),
         trailing_tp_trail_atr=ini_defaults.get("trailing_tp_trail_atr", 0.8),
-        indicator_exit_enabled=ini_defaults.get("indicator_exit_enabled", False),
-        indicator_exit_supertrend_enabled=ini_defaults.get(
-            "indicator_exit_supertrend_enabled", True
-        ),
-        indicator_exit_supertrend_tighten_atr=ini_defaults.get(
-            "indicator_exit_supertrend_tighten_atr", 0.5
-        ),
-        indicator_exit_rsi_enabled=ini_defaults.get("indicator_exit_rsi_enabled", True),
-        indicator_exit_rsi_overbought=ini_defaults.get(
-            "indicator_exit_rsi_overbought", 75.0
-        ),
-        indicator_exit_rsi_oversold=ini_defaults.get(
-            "indicator_exit_rsi_oversold", 25.0
-        ),
-        indicator_exit_rsi_delta_threshold=ini_defaults.get(
-            "indicator_exit_rsi_delta_threshold", 5.0
-        ),
-        indicator_exit_rsi_tighten_atr=ini_defaults.get(
-            "indicator_exit_rsi_tighten_atr", 0.5
-        ),
-        indicator_exit_macd_enabled=ini_defaults.get("indicator_exit_macd_enabled", True),
-        indicator_exit_macd_tighten_atr=ini_defaults.get(
-            "indicator_exit_macd_tighten_atr", 0.5
-        ),
-        indicator_exit_adx_enabled=ini_defaults.get("indicator_exit_adx_enabled", True),
-        indicator_exit_adx_entry_min=ini_defaults.get(
-            "indicator_exit_adx_entry_min", 25.0
-        ),
-        indicator_exit_adx_collapse_threshold=ini_defaults.get(
-            "indicator_exit_adx_collapse_threshold", 10.0
-        ),
-        indicator_exit_adx_tighten_atr=ini_defaults.get(
-            "indicator_exit_adx_tighten_atr", 0.3
-        ),
         circuit_breaker_enabled=ini_defaults.get("circuit_breaker_enabled", False),
         circuit_breaker_max_consecutive_losses=ini_defaults.get(
             "circuit_breaker_max_consecutive_losses", 5

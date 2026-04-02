@@ -14,9 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from .position_rules import (
-    IndicatorExitConfig,
     check_breakeven,
-    check_indicator_exit,
     check_trailing_stop,
     check_trailing_take_profit,
     should_close_end_of_day,
@@ -52,7 +50,6 @@ class TrackedPosition:
     source: str = "signal_executor"
     comment: str = ""
     opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    entry_indicators: Dict[str, Dict] = field(default_factory=dict)
     breakeven_applied: bool = False
     trailing_active: bool = False
     highest_price: Optional[float] = None
@@ -77,10 +74,6 @@ class PositionManager:
         trailing_tp_enabled: bool = False,
         trailing_tp_activation_atr: float = 1.5,
         trailing_tp_trail_atr: float = 0.8,
-        # 指标驱动出场（持仓期间检测指标反转，收紧 SL）
-        indicator_exit_config: IndicatorExitConfig = IndicatorExitConfig(),
-        # 指标快照回调（接收 symbol+timeframe 返回 indicators Dict）
-        indicator_snapshot_fn: Optional[Callable[[str, str], Dict[str, Dict]]] = None,
     ):
         self._trading = trading_module
         self.trailing_atr_multiplier = trailing_atr_multiplier
@@ -91,8 +84,6 @@ class PositionManager:
         self._trailing_tp_enabled = trailing_tp_enabled
         self._trailing_tp_activation_atr = trailing_tp_activation_atr
         self._trailing_tp_trail_atr = trailing_tp_trail_atr
-        self._indicator_exit_config = indicator_exit_config
-        self._indicator_snapshot_fn = indicator_snapshot_fn
         self._positions: Dict[int, TrackedPosition] = {}
         self._lock = threading.Lock()
         self._close_callbacks: List[Callable[[TrackedPosition, Optional[float]], None]] = []
@@ -162,7 +153,6 @@ class PositionManager:
         highest_price: Optional[float] = None,
         lowest_price: Optional[float] = None,
         current_price: Optional[float] = None,
-        entry_indicators: Optional[Dict[str, Dict]] = None,
     ) -> TrackedPosition:
         resolved_entry_price = (
             float(fill_price) if fill_price is not None else float(params.entry_price)
@@ -184,7 +174,6 @@ class PositionManager:
             source=source,
             comment=str(comment or ""),
             opened_at=opened_at or datetime.now(timezone.utc),
-            entry_indicators=dict(entry_indicators or {}),
             breakeven_applied=bool(breakeven_applied),
             trailing_active=bool(trailing_active),
             highest_price=(
@@ -229,15 +218,13 @@ class PositionManager:
             need_breakeven = not pos.breakeven_applied
             need_trailing = pos.breakeven_applied
 
-        # breakeven/trailing/trailing_tp/indicator_exit 调用 MT5 API（可能耗时），在锁外执行。
+        # breakeven/trailing/trailing_tp 调用 MT5 API（可能耗时），在锁外执行。
         if need_breakeven:
             self._check_breakeven(pos, current_price)
         if need_trailing:
             self._check_trailing_stop(pos, current_price)
         if self._trailing_tp_enabled and pos.atr_at_entry > 0:
             self._check_trailing_tp(pos)
-        if self._indicator_exit_config.enabled and pos.atr_at_entry > 0:
-            self._check_indicator_exit(pos, current_price)
 
     def add_close_callback(
         self,
@@ -505,19 +492,8 @@ class PositionManager:
             if not isinstance(opened_at, datetime):
                 opened_at = datetime.now(timezone.utc)
 
-            # 恢复的仓位缺少 entry_indicators，尝试从当前快照补充
-            # （不完美——用的是当前值而非入场时的值，但比完全没有强，
-            # 至少能让 Indicator Exit 的方向翻转检测生效）
-            restored_indicators: Dict[str, Dict] = {}
             symbol_str = str(getattr(raw_pos, "symbol", "") or "")
             timeframe_str = str(merged_context.get("timeframe") or "")
-            if self._indicator_snapshot_fn and symbol_str and timeframe_str:
-                try:
-                    snap = self._indicator_snapshot_fn(symbol_str, timeframe_str)
-                    if snap:
-                        restored_indicators = dict(snap)
-                except Exception:
-                    pass
 
             pos = TrackedPosition(
                 ticket=ticket,
@@ -537,7 +513,6 @@ class PositionManager:
                 confidence=merged_context.get("confidence"),
                 regime=merged_context.get("regime"),
                 source=str(merged_context.get("source") or "mt5_bootstrap"),
-                entry_indicators=restored_indicators,
                 comment=effective_comment,
                 opened_at=opened_at,
                 highest_price=(
@@ -859,34 +834,4 @@ class PositionManager:
                 logger.info(
                     "Trailing TP applied ticket=%d tp=%.2f",
                     pos.ticket, result.new_take_profit,
-                )
-
-    def _check_indicator_exit(self, pos: TrackedPosition, current_price: float) -> None:
-        if not pos.entry_indicators or not self._indicator_snapshot_fn:
-            return
-        if not pos.timeframe:
-            return
-        try:
-            current_indicators = self._indicator_snapshot_fn(pos.symbol, pos.timeframe)
-        except Exception:
-            return
-        if not current_indicators:
-            return
-        result = check_indicator_exit(
-            direction=pos.action,
-            current_price=current_price,
-            current_sl=pos.stop_loss,
-            entry_price=pos.entry_price,
-            atr_at_entry=pos.atr_at_entry,
-            entry_indicators=pos.entry_indicators,
-            current_indicators=current_indicators,
-            config=self._indicator_exit_config,
-        )
-        if result.should_tighten_sl and result.new_stop_loss is not None:
-            if self._modify_sl(pos, result.new_stop_loss):
-                if self._on_position_updated is not None:
-                    self._on_position_updated(pos, "indicator_exit_tightened")
-                logger.info(
-                    "Indicator exit SL tightened ticket=%d reason=%s sl=%.2f",
-                    pos.ticket, result.reason, result.new_stop_loss,
                 )

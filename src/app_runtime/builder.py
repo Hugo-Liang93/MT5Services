@@ -7,6 +7,12 @@ import logging
 from typing import Any, Optional
 
 from src.app_runtime.container import AppContainer
+from src.app_runtime.mode_controller import (
+    RuntimeMode,
+    RuntimeModeController,
+    RuntimeModeEODAction,
+    RuntimeModePolicy,
+)
 from src.app_runtime.factories import (
     build_signal_components,
     build_trading_components,
@@ -153,12 +159,6 @@ def build_app_container(
     container.signal_quality_tracker = signal_components.signal_quality_tracker
     container.trade_outcome_tracker = signal_components.trade_outcome_tracker
     container.position_manager = signal_components.position_manager
-    # 注入指标快照回调（供 indicator_exit 使用）
-    if container.position_manager is not None and container.indicator_manager is not None:
-        _im = container.indicator_manager
-        container.position_manager._indicator_snapshot_fn = (
-            lambda sym, tf: _im.get_indicator(sym, tf) or {}
-        )
     container.trade_executor = signal_components.trade_executor
     _wire_margin_guard(
         container.position_manager,
@@ -184,6 +184,22 @@ def build_app_container(
         pending_entry_manager=container.pending_entry_manager,
     )
     container.shutdown_callbacks.append(signal_hot_reload_cleanup)
+
+    if container.trade_module is not None:
+        trading_ops_config = get_trading_ops_config()
+        container.runtime_mode_controller = RuntimeModeController(
+            container,
+            policy=RuntimeModePolicy(
+                initial_mode=RuntimeMode(trading_ops_config.runtime_mode),
+                after_eod_action=RuntimeModeEODAction(
+                    trading_ops_config.runtime_mode_after_eod
+                ),
+                auto_check_interval_seconds=(
+                    trading_ops_config.runtime_mode_auto_check_interval_seconds
+                ),
+            ),
+            signal_config_loader=signal_config_loader,
+        )
 
     # Phase 4: monitoring
     container.health_monitor = get_health_monitor(
@@ -229,6 +245,7 @@ def build_app_container(
         pending_entry_manager=container.pending_entry_manager,
         trading_state_store=container.trading_state_store,
         trading_state_alerts=container.trading_state_alerts,
+        runtime_mode_controller=container.runtime_mode_controller,
     )
 
     # Phase 6: frontend observability

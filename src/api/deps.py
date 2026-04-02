@@ -14,6 +14,7 @@ from typing import Optional
 
 from src.app_runtime.builder import build_app_container
 from src.app_runtime.container import AppContainer
+from src.app_runtime.mode_controller import RuntimeModeController
 from src.app_runtime.runtime import AppRuntime
 from src.calendar import EconomicCalendarService
 from src.config import get_signal_config
@@ -153,7 +154,10 @@ lifespan = _lifespan
 
 
 def get_runtime_mode() -> str:
-    return "unified"
+    _ensure_initialized()
+    if _container is None or _container.runtime_mode_controller is None:
+        return "full"
+    return _container.runtime_mode_controller.snapshot().get("current_mode") or "full"
 
 
 def is_monitoring_enabled() -> bool:
@@ -302,6 +306,12 @@ def get_runtime_read_model() -> RuntimeReadModel:
     _ensure_initialized()
     assert _container is not None and _container.runtime_read_model is not None
     return _container.runtime_read_model
+
+
+def get_runtime_mode_controller() -> RuntimeModeController:
+    _ensure_initialized()
+    assert _container is not None and _container.runtime_mode_controller is not None
+    return _container.runtime_mode_controller
 
 
 def get_studio_service() -> StudioService:

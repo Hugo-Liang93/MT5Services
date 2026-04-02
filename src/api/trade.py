@@ -7,10 +7,12 @@ from fastapi import APIRouter, Depends, Query
 from src.api.deps import (
     get_position_manager,
     get_runtime_read_model,
+    get_runtime_mode_controller,
     get_signal_service,
     get_trade_executor,
     get_trading_service,
 )
+from src.app_runtime.mode_controller import RuntimeModeController
 from src.api.trade_dispatcher import TradeAPIDispatcher
 from src.api.error_codes import AIErrorAction, AIErrorCode, get_trade_error_details
 from src.api.schemas import (
@@ -26,6 +28,7 @@ from src.api.schemas import (
     ModifyPositionsRequest,
     OrderModel,
     PositionModel,
+    RuntimeModeRequest,
     TradePrecheckModel,
     TradeRequest,
     TradeDispatchRequest,
@@ -140,6 +143,46 @@ def trade_control_update(
             "operation": "trade_control_update",
             "reset_circuit": request.reset_circuit,
         },
+    )
+
+
+@router.get("/trade/runtime-mode", response_model=ApiResponse[dict])
+def trade_runtime_mode_status(
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=runtime_views.runtime_mode_summary(),
+        metadata={"operation": "trade_runtime_mode_status"},
+    )
+
+
+@router.post("/trade/runtime-mode", response_model=ApiResponse[dict])
+def trade_runtime_mode_update(
+    request: RuntimeModeRequest,
+    controller: RuntimeModeController = Depends(get_runtime_mode_controller),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    try:
+        snapshot = controller.apply_mode(request.mode, reason=request.reason or "api")
+    except Exception as exc:
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.INVALID_PARAMETER,
+            error_message=str(exc),
+            suggested_action=AIErrorAction.CHECK_REQUEST_PARAMETERS,
+            details={
+                "operation": "trade_runtime_mode_update",
+                "mode": request.mode,
+            },
+        )
+    return ApiResponse.success_response(
+        data={
+            "runtime_mode": snapshot,
+            "trading_state": runtime_views.trading_state_summary(
+                pending_limit=20,
+                position_limit=20,
+            ),
+        },
+        metadata={"operation": "trade_runtime_mode_update"},
     )
 
 

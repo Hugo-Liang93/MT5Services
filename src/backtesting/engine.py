@@ -139,25 +139,6 @@ class BacktestEngine:
         # 预计算指标快照（按 all_bars 索引对齐，优化器复用场景下跳过 pipeline）
         self._precomputed_indicators = precomputed_indicators
 
-        # 指标驱动出场配置
-        from src.trading.position_rules import IndicatorExitConfig
-        indicator_exit_cfg = IndicatorExitConfig(
-            enabled=config.indicator_exit_enabled,
-            supertrend_enabled=config.indicator_exit_supertrend_enabled,
-            supertrend_tighten_atr=config.indicator_exit_supertrend_tighten_atr,
-            rsi_enabled=config.indicator_exit_rsi_enabled,
-            rsi_overbought=config.indicator_exit_rsi_overbought,
-            rsi_oversold=config.indicator_exit_rsi_oversold,
-            rsi_delta_threshold=config.indicator_exit_rsi_delta_threshold,
-            rsi_tighten_atr=config.indicator_exit_rsi_tighten_atr,
-            macd_enabled=config.indicator_exit_macd_enabled,
-            macd_tighten_atr=config.indicator_exit_macd_tighten_atr,
-            adx_enabled=config.indicator_exit_adx_enabled,
-            adx_entry_min=config.indicator_exit_adx_entry_min,
-            adx_collapse_threshold=config.indicator_exit_adx_collapse_threshold,
-            adx_tighten_atr=config.indicator_exit_adx_tighten_atr,
-        )
-
         # 连败熔断器
         self._circuit_breaker: _CircuitBreaker | None = None
         if config.circuit_breaker_enabled:
@@ -188,7 +169,6 @@ class BacktestEngine:
             end_of_day_close_enabled=config.end_of_day_close_enabled,
             end_of_day_close_hour_utc=config.end_of_day_close_hour_utc,
             end_of_day_close_minute_utc=config.end_of_day_close_minute_utc,
-            indicator_exit_config=indicator_exit_cfg,
         )
 
         # Pending Entry 配置（复用实盘 compute_entry_zone 纯函数）
@@ -1120,7 +1100,6 @@ class BacktestEngine:
             confidence=decision.confidence,
             bar_index=bar_index,
             atr_at_entry=atr_value,
-            entry_indicators=indicators,
         )
 
     # ── 信号评估记录与回填 ─────────────────────────────────────────────

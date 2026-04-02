@@ -165,6 +165,20 @@ class DummyTradingStateAlerts:
         }
 
 
+class DummyRuntimeModeController:
+    def __init__(self, current_mode: str = "full") -> None:
+        self._current_mode = current_mode
+
+    def snapshot(self):
+        return {
+            "current_mode": self._current_mode,
+            "configured_mode": "full",
+            "after_eod_action": "risk_off",
+            "auto_check_interval_seconds": 15.0,
+            "components": {"trade_listener_attached": self._current_mode == "full"},
+        }
+
+
 def test_health_report_contains_unified_runtime_sections() -> None:
     read_model = RuntimeReadModel(
         health_monitor=DummyHealthMonitor(),
@@ -234,11 +248,13 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
         pending_entry_manager=DummyPendingEntryManager(),
         trading_state_store=DummyTradingStateStore(),
         trading_state_alerts=DummyTradingStateAlerts(),
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="observe"),
     )
 
     summary = read_model.trading_state_summary(pending_limit=10, position_limit=10)
 
     assert summary["trade_control"]["close_only_mode"] is True
+    assert summary["runtime_mode"]["current_mode"] == "observe"
     assert summary["pending"]["active"]["status_counts"]["placed"] == 1
     assert summary["pending"]["active"]["status_counts"]["orphan"] == 1
     assert summary["pending"]["lifecycle"]["status_counts"]["filled"] == 1
@@ -247,3 +263,27 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
     assert summary["pending"]["execution_contexts"]["source_counts"]["mt5_order"] == 1
     assert summary["positions"]["status_counts"]["open"] == 1
     assert summary["alerts"]["status"] == "warning"
+
+
+def test_runtime_indicator_summary_marks_disabled_when_mode_intentionally_stopped() -> None:
+    read_model = RuntimeReadModel(
+        indicator_manager=type(
+            "IndicatorManager",
+            (),
+            {
+                "get_performance_stats": staticmethod(
+                    lambda: {
+                        "event_loop_running": False,
+                        "failed_computations": 0,
+                        "event_store": {"pending": 0, "failed": 0, "retrying": 0},
+                        "pipeline": {"cache": {}},
+                    }
+                )
+            },
+        )(),
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="risk_off"),
+    )
+
+    summary = read_model.indicator_summary()
+
+    assert summary["status"] == "disabled"

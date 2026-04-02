@@ -147,6 +147,11 @@ class TradeControlRequest(BaseModel):
     reset_circuit: bool = False
 
 
+class RuntimeModeRequest(BaseModel):
+    mode: Literal["full", "observe", "risk_off", "ingest_only"]
+    reason: str = ""
+
+
 class TradeReconcileRequest(BaseModel):
     sync_open_positions: bool = True
 

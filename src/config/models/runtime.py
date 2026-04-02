@@ -183,5 +183,8 @@ class TradingOpsConfig(BaseModel):
     dispatch_strict_mode: bool = True
     dispatch_timeout_ms: int = 5000
     daily_summary_recent_limit: int = 1000
+    runtime_mode: Literal["full", "observe", "risk_off", "ingest_only"] = "full"
+    runtime_mode_after_eod: Literal["disabled", "risk_off", "ingest_only"] = "disabled"
+    runtime_mode_auto_check_interval_seconds: float = 15.0
     pending_recovery_orphan_action: Literal["record_only", "cancel"] = "record_only"
     pending_recovery_missing_action: Literal["mark_missing", "ignore"] = "mark_missing"

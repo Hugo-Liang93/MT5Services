@@ -18,9 +18,7 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 from src.clients.mt5_market import OHLC
 from src.trading.position_rules import (
-    IndicatorExitConfig,
     check_breakeven,
-    check_indicator_exit,
     check_trailing_stop,
     check_trailing_take_profit,
     should_close_end_of_day,
@@ -48,8 +46,6 @@ class _Position:
     confidence: float
     entry_bar_index: int  # 开仓时的 bar 索引（用于计算 bars_held）
     atr_at_entry: float = 0.0
-    # 入场时指标快照（用于指标反转对比）
-    entry_indicators: Dict[str, Dict] = field(default_factory=dict)
     # breakeven / trailing 状态（与实盘 TrackedPosition 一致）
     breakeven_applied: bool = False
     trailing_active: bool = False
@@ -96,8 +92,6 @@ class PortfolioTracker:
         trailing_tp_enabled: bool = False,
         trailing_tp_activation_atr: float = 1.5,
         trailing_tp_trail_atr: float = 0.8,
-        # 指标驱动出场
-        indicator_exit_config: IndicatorExitConfig = IndicatorExitConfig(),
     ) -> None:
         self.initial_balance = initial_balance
         self.current_balance = initial_balance
@@ -126,8 +120,6 @@ class PortfolioTracker:
         self._trailing_tp_enabled = trailing_tp_enabled
         self._trailing_tp_activation_atr = trailing_tp_activation_atr
         self._trailing_tp_trail_atr = trailing_tp_trail_atr
-        # 指标驱动出场配置
-        self._indicator_exit_config = indicator_exit_config
 
         self._open_positions: List[_Position] = []
         self._closed_trades: List[TradeRecord] = []
@@ -235,7 +227,6 @@ class PortfolioTracker:
         confidence: float,
         bar_index: int,
         atr_at_entry: float = 0.0,
-        entry_indicators: Dict[str, Dict] = {},  # noqa: B006
     ) -> bool:
         """尝试开仓。
 
@@ -270,7 +261,6 @@ class PortfolioTracker:
             confidence=confidence,
             entry_bar_index=bar_index,
             atr_at_entry=atr_at_entry,
-            entry_indicators=dict(entry_indicators) if entry_indicators else {},
             highest_price=entry_price if action == "buy" else None,
             lowest_price=entry_price if action == "sell" else None,
         )
@@ -367,33 +357,6 @@ class PortfolioTracker:
                     )
                     if ttp_result.should_update and ttp_result.new_take_profit is not None:
                         pos.take_profit = ttp_result.new_take_profit
-
-            # 指标驱动出场（收紧 SL，在 SL/TP 触发前执行）
-            if (
-                self._indicator_exit_config.enabled
-                and indicators
-                and pos.entry_indicators
-                and pos.atr_at_entry > 0
-            ):
-                ind_result = check_indicator_exit(
-                    direction=pos.direction,
-                    current_price=bar.close,
-                    current_sl=pos.stop_loss,
-                    entry_price=pos.entry_price,
-                    atr_at_entry=pos.atr_at_entry,
-                    entry_indicators=pos.entry_indicators,
-                    current_indicators=indicators,
-                    config=self._indicator_exit_config,
-                )
-                if ind_result.should_close:
-                    trade = self._close_position(
-                        pos, bar.close, bar.time, bar_index,
-                        f"indicator_exit:{ind_result.reason}",
-                    )
-                    closed.append(trade)
-                    continue
-                elif ind_result.should_tighten_sl and ind_result.new_stop_loss is not None:
-                    pos.stop_loss = ind_result.new_stop_loss
 
             # SL/TP 触发检查
             exit_price: Optional[float] = None

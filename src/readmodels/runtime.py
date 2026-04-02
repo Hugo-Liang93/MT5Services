@@ -20,6 +20,7 @@ class RuntimeReadModel:
         pending_entry_manager: Any = None,
         trading_state_store: Any = None,
         trading_state_alerts: Any = None,
+        runtime_mode_controller: Any = None,
     ) -> None:
         self._health_monitor = health_monitor
         self._ingestor = ingestor
@@ -31,6 +32,18 @@ class RuntimeReadModel:
         self._pending_entry_manager = pending_entry_manager
         self._trading_state_store = trading_state_store
         self._trading_state_alerts = trading_state_alerts
+        self._runtime_mode_controller = runtime_mode_controller
+
+    def _current_runtime_mode(self) -> str | None:
+        controller = self._runtime_mode_controller
+        if controller is None:
+            return None
+        try:
+            snapshot = controller.snapshot()
+        except Exception:
+            return None
+        mode = snapshot.get("current_mode")
+        return str(mode) if mode else None
 
     @staticmethod
     def _runtime_indicator_status(
@@ -434,9 +447,15 @@ class RuntimeReadModel:
                 "config": {},
                 "timestamp": None,
             }
-        return self.build_indicator_summary(
+        summary = self.build_indicator_summary(
             self._indicator_manager.get_performance_stats()
         )
+        if (
+            self._current_runtime_mode() in {"risk_off", "ingest_only"}
+            and not summary.get("event_loop_running", False)
+        ):
+            summary["status"] = "disabled"
+        return summary
 
     def trading_summary(self, *, hours: int = 24) -> dict[str, Any]:
         if self._trading_service is None:
@@ -487,7 +506,13 @@ class RuntimeReadModel:
                 "last_run_at": None,
                 "last_error": "signal_runtime_unavailable",
             }
-        return self.build_signal_runtime_summary(self._signal_runtime.status())
+        summary = self.build_signal_runtime_summary(self._signal_runtime.status())
+        if (
+            self._current_runtime_mode() in {"risk_off", "ingest_only"}
+            and not summary.get("running", False)
+        ):
+            summary["status"] = "disabled"
+        return summary
 
     def pending_entries_summary(self) -> dict[str, Any]:
         if self._pending_entry_manager is None:
@@ -497,7 +522,10 @@ class RuntimeReadModel:
                 "entries": [],
                 "stats": {},
             }
-        return self.build_pending_entries_summary(self._pending_entry_manager.status())
+        summary = self.build_pending_entries_summary(self._pending_entry_manager.status())
+        if self._current_runtime_mode() == "ingest_only":
+            summary["status"] = "disabled"
+        return summary
 
     def trade_executor_summary(self) -> dict[str, Any]:
         if self._trade_executor is None:
@@ -534,10 +562,24 @@ class RuntimeReadModel:
                 "positions": {"count": 0, "items": []},
             }
         positions = list(self._position_manager.active_positions())
-        return self.build_position_manager_summary(
+        summary = self.build_position_manager_summary(
             self._position_manager.status(),
             positions,
         )
+        if (
+            self._current_runtime_mode() == "ingest_only"
+            and not summary.get("running", False)
+        ):
+            summary["status"] = "disabled"
+        return summary
+
+    def runtime_mode_summary(self) -> dict[str, Any]:
+        controller = self._runtime_mode_controller
+        if controller is None:
+            return {"status": "unavailable", "current_mode": None}
+        snapshot = dict(controller.snapshot() or {})
+        snapshot["status"] = "healthy"
+        return snapshot
 
     def tracked_positions_payload(self, *, limit: int = 20) -> dict[str, Any]:
         summary = self.position_manager_summary()
@@ -660,6 +702,7 @@ class RuntimeReadModel:
         lifecycle_pending = self.pending_order_lifecycle_payload(limit=pending_limit)
         return {
             "trade_control": self.persisted_trade_control_payload(),
+            "runtime_mode": self.runtime_mode_summary(),
             "pending": {
                 "active": active_pending,
                 "lifecycle": lifecycle_pending,
