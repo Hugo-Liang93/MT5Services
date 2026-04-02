@@ -146,6 +146,7 @@ class SignalConfig(BaseModel):
     pending_entry_cancel_on_new_signal: bool = True
     pending_entry_cancel_same_direction: bool = False
     pending_entry_strategy_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
+    pending_entry_tf_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
 
     market_structure_enabled: bool = True
     market_structure_lookback_bars: int = 400

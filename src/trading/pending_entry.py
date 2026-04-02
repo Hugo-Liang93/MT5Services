@@ -92,6 +92,10 @@ class PendingEntryConfig:
     # 策略级 ATR factor 覆盖: {"supertrend": {"pullback_atr_factor": 0.4}}
     strategy_overrides: dict[str, dict[str, float]] = field(default_factory=dict)
 
+    # Per-TF ATR factor 覆盖: {"M5": {"pullback_atr_factor": 0.15}}
+    # 优先级：strategy_overrides > tf_overrides > 全局默认
+    tf_overrides: dict[str, dict[str, float]] = field(default_factory=dict)
+
 
 @dataclass
 class PendingEntry:
@@ -262,13 +266,15 @@ def compute_entry_zone(
     strategy_name: str = "",
     category: str = "",
     indicators: Optional[Dict[str, Any]] = None,
+    timeframe: str = "",
 ) -> tuple[float, float]:
     """计算入场价格区间 [entry_low, entry_high]。
 
     当 indicators 不为空时，根据 category 计算智能参考价替代 close_price，
     使入场区间锚定在策略逻辑认为合理的价位上（而不是 bar close）。
+
+    参数优先级：strategy_overrides > tf_overrides > 全局默认
     """
-    # 计算智能参考价
     ref_price = _compute_reference_price(
         action=action,
         close_price=close_price,
@@ -277,11 +283,16 @@ def compute_entry_zone(
         indicators=indicators,
     )
 
-    overrides = config.strategy_overrides.get(strategy_name, {})
+    # 参数查找：strategy_overrides > tf_overrides > 全局默认
+    strat_ov = config.strategy_overrides.get(strategy_name, {})
+    tf_ov = config.tf_overrides.get(timeframe.upper(), {}) if timeframe else {}
+
+    def _resolve(key: str, default: float) -> float:
+        return strat_ov.get(key, tf_ov.get(key, default))
 
     if zone_mode == "pullback":
-        pullback = overrides.get("pullback_atr_factor", config.pullback_atr_factor)
-        chase = overrides.get("chase_atr_factor", config.chase_atr_factor)
+        pullback = _resolve("pullback_atr_factor", config.pullback_atr_factor)
+        chase = _resolve("chase_atr_factor", config.chase_atr_factor)
         if action == "buy":
             entry_low = ref_price - pullback * atr
             entry_high = ref_price + chase * atr
@@ -290,8 +301,8 @@ def compute_entry_zone(
             entry_high = ref_price + pullback * atr
 
     elif zone_mode == "momentum":
-        momentum = overrides.get("momentum_atr_factor", config.momentum_atr_factor)
-        chase = overrides.get("chase_atr_factor", config.chase_atr_factor)
+        momentum = _resolve("momentum_atr_factor", config.momentum_atr_factor)
+        chase = _resolve("chase_atr_factor", config.chase_atr_factor)
         if action == "buy":
             entry_low = ref_price - chase * atr
             entry_high = ref_price + momentum * atr
@@ -300,7 +311,7 @@ def compute_entry_zone(
             entry_high = ref_price + chase * atr
 
     else:  # symmetric
-        sym = overrides.get("symmetric_atr_factor", config.symmetric_atr_factor)
+        sym = _resolve("symmetric_atr_factor", config.symmetric_atr_factor)
         entry_low = ref_price - sym * atr
         entry_high = ref_price + sym * atr
 

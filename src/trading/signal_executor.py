@@ -579,6 +579,7 @@ class TradeExecutor:
             strategy_name=event.strategy,
             category=category,
             indicators=event.indicators,
+            timeframe=event.timeframe or "",
         )
         timeout = compute_timeout(event.timeframe, config, category=category)
 

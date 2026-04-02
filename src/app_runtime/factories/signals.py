@@ -121,6 +121,7 @@ def build_pending_entry_config(signal_config) -> PendingEntryConfig:
         cancel_on_new_signal=signal_config.pending_entry_cancel_on_new_signal,
         cancel_same_direction=signal_config.pending_entry_cancel_same_direction,
         strategy_overrides=dict(signal_config.pending_entry_strategy_overrides),
+        tf_overrides=dict(signal_config.pending_entry_tf_overrides),
     )
 
 

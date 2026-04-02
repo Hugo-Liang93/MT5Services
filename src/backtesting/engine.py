@@ -1015,6 +1015,7 @@ class BacktestEngine:
                 strategy_name=decision.strategy,
                 category=category,
                 indicators=indicators,
+                timeframe=self._config.timeframe,
             )
             expiry_bar = bar_index + self._config.pending_entry_expiry_bars
             key = f"{decision.strategy}_{decision.direction}"

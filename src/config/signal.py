@@ -108,6 +108,17 @@ def get_signal_config() -> SignalConfig:
     timeframe_min_confidence_section = dict(merged.get("timeframe_min_confidence", {}))
     htf_conflict_block_section = dict(merged.get("htf_conflict_block", {}))
     pending_entry_section = dict(merged.get("pending_entry", {}))
+    # per-TF pending entry 覆盖: [pending_entry.M5], [pending_entry.H1] 等
+    pending_entry_tf_overrides: dict[str, dict[str, float]] = {}
+    for section_key in merged:
+        if str(section_key).startswith("pending_entry."):
+            tf = str(section_key).split(".", 1)[1].strip().upper()
+            if tf:
+                pending_entry_tf_overrides[tf] = {
+                    str(k).strip(): float(v)
+                    for k, v in dict(merged[section_key]).items()
+                    if str(k).strip()
+                }
 
     renamed_preview = {
         ("min_preview_confidence" if key == "min_confidence" else key): value
@@ -364,6 +375,7 @@ def get_signal_config() -> SignalConfig:
         },
         **({"pending_entry_timeout_bars": pending_entry_timeout_bars} if pending_entry_timeout_bars else {}),
         **({"pending_entry_strategy_overrides": pending_entry_strategy_overrides} if pending_entry_strategy_overrides else {}),
+        **({"pending_entry_tf_overrides": pending_entry_tf_overrides} if pending_entry_tf_overrides else {}),
     }
     # 自动计算 max_spread_points（base > 0 时覆盖手动值）
     auto_max_spread = _resolve_max_spread(signal_section)
