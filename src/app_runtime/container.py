@@ -30,6 +30,10 @@ from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 from src.studio.service import StudioService
 from src.app_runtime.lifecycle import RuntimeComponentRegistry
 from src.app_runtime.mode_controller import RuntimeModeController
+from src.app_runtime.mode_policy import (
+    RuntimeModeAutoTransitionPolicy,
+    RuntimeModeTransitionGuard,
+)
 
 
 class AppContainer:
@@ -73,6 +77,8 @@ class AppContainer:
         "pipeline_event_bus",
         "runtime_read_model",
         "runtime_component_registry",
+        "runtime_mode_guard",
+        "runtime_mode_auto_policy",
         "runtime_mode_controller",
         # Studio
         "studio_service",
@@ -113,6 +119,8 @@ class AppContainer:
         self.pipeline_event_bus: Optional[PipelineEventBus] = None
         self.runtime_read_model: Optional[RuntimeReadModel] = None
         self.runtime_component_registry: Optional[RuntimeComponentRegistry] = None
+        self.runtime_mode_guard: Optional[RuntimeModeTransitionGuard] = None
+        self.runtime_mode_auto_policy: Optional[RuntimeModeAutoTransitionPolicy] = None
         self.runtime_mode_controller: Optional[RuntimeModeController] = None
 
         self.studio_service: Optional[StudioService] = None

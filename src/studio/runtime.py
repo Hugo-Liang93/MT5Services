@@ -308,7 +308,7 @@ def _register_studio_signal_listener(
                 build_event(
                     "signal_generated",
                     source=source,
-                    message=f"{symbol} {timeframe} {strategy} ????",
+                    message=f"{symbol} {timeframe} {strategy} 已取消",
                     level="info",
                     target=target,
                     symbol=symbol,

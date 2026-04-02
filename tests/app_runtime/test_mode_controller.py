@@ -10,10 +10,12 @@ from src.app_runtime.lifecycle import (
     RuntimeComponentRegistry,
     ThreadedRuntimeComponent,
 )
-from src.app_runtime.mode_controller import (
+from src.app_runtime.mode_controller import RuntimeModeController
+from src.app_runtime.mode_policy import (
     RuntimeMode,
-    RuntimeModeController,
+    RuntimeModeAutoTransitionPolicy,
     RuntimeModePolicy,
+    RuntimeModeTransitionGuard,
 )
 
 
@@ -255,6 +257,8 @@ def test_mode_controller_full_and_observe_toggle_trade_listener() -> None:
     controller = RuntimeModeController(
         container,
         policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
+        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        auto_transition_policy=RuntimeModeAutoTransitionPolicy(),
     )
 
     full = controller.apply_mode(RuntimeMode.FULL, reason="test")
@@ -274,6 +278,8 @@ def test_mode_controller_blocks_ingest_only_when_live_risk_exists() -> None:
     controller = RuntimeModeController(
         container,
         policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
+        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        auto_transition_policy=RuntimeModeAutoTransitionPolicy(),
     )
 
     with pytest.raises(RuntimeError, match="ingest_only"):

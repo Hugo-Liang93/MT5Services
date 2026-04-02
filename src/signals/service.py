@@ -41,11 +41,7 @@ class SignalModule:
         self._regime_detector: MarketRegimeDetector = (
             regime_detector or MarketRegimeDetector()
         )
-        # 置信度校准器：基于历史胜率对原始 confidence 进行混合校准。
-        # None = 不校准（新部署或没有足够历史数据时的默认状态）。
         self._calibrator: Optional[ConfidenceCalibrator] = calibrator
-        # 日内绩效追踪器：实时反馈层，基于当前 session 的策略表现动态调整置信度。
-        # None = 不追踪（新部署或未配置时的默认状态）。
         self._performance_tracker: Optional[StrategyPerformanceTracker] = (
             performance_tracker
         )
@@ -55,7 +51,7 @@ class SignalModule:
             diagnostics_engine or SignalDiagnosticsAnalyzer()
         )
         self._strategies: dict[str, SignalStrategy] = {}
-        # 策略 regime_affinity 缓存：避免热路径中的 getattr 开销
+        # Cache strategy regime affinity metadata to avoid repeated getattr in hot paths.
         self._strategy_affinity_cache: dict[str, dict] = {}
         default_strategies: Iterable[SignalStrategy] = (
             list(strategies) if strategies is not None else build_default_strategy_set()
@@ -65,9 +61,9 @@ class SignalModule:
 
     @staticmethod
     def _validate_strategy_attrs(strategy: SignalStrategy) -> None:
-        """S-1: 注册时校验策略必须具备的四个类属性，提供清晰错误信息。
+        """S-1: Validate the required strategy class attributes at registration time.
 
-        缺少任一属性时抛出 ``AttributeError``，避免在运行时热路径中静默失效。
+        Raise ``AttributeError`` early instead of failing silently in the runtime hot path.
         """
         name = getattr(strategy, "name", None)
         if not name or not isinstance(name, str):

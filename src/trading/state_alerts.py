@@ -18,9 +18,18 @@ class TradingStateAlerts:
         self._account_alias_getter = account_alias_getter or (lambda: "")
 
     def summary(self, *, pending_limit: int = 50, position_limit: int = 50) -> dict[str, Any]:
-        active_pending = self._safe_pending_states(statuses=["placed", "orphan"], limit=pending_limit)
-        lifecycle_missing = self._safe_pending_states(statuses=["missing"], limit=pending_limit)
-        open_positions = self._safe_position_states(statuses=["open"], limit=position_limit)
+        active_pending = self._safe_pending_states(
+            statuses=["placed", "orphan"],
+            limit=pending_limit,
+        )
+        lifecycle_missing = self._safe_pending_states(
+            statuses=["missing"],
+            limit=pending_limit,
+        )
+        open_positions = self._safe_position_states(
+            statuses=["open"],
+            limit=position_limit,
+        )
         live_orders = self._safe_live_orders()
         live_positions = self._safe_live_positions()
 

@@ -14,10 +14,14 @@ from src.app_runtime.lifecycle import (
     ThreadedRuntimeComponent,
 )
 from src.app_runtime.mode_controller import (
-    RuntimeMode,
     RuntimeModeController,
+)
+from src.app_runtime.mode_policy import (
+    RuntimeMode,
+    RuntimeModeAutoTransitionPolicy,
     RuntimeModeEODAction,
     RuntimeModePolicy,
+    RuntimeModeTransitionGuard,
 )
 from src.app_runtime.factories import (
     build_signal_components,
@@ -197,17 +201,25 @@ def build_app_container(
             container,
             signal_config_loader=signal_config_loader,
         )
+        container.runtime_mode_guard = RuntimeModeTransitionGuard(
+            trading_module_getter=lambda: container.trade_module,
+        )
+        container.runtime_mode_auto_policy = RuntimeModeAutoTransitionPolicy(
+            after_eod_action=RuntimeModeEODAction(
+                trading_ops_config.runtime_mode_after_eod
+            ),
+        )
         container.runtime_mode_controller = RuntimeModeController(
             container,
             policy=RuntimeModePolicy(
                 initial_mode=RuntimeMode(trading_ops_config.runtime_mode),
-                after_eod_action=RuntimeModeEODAction(
-                    trading_ops_config.runtime_mode_after_eod
-                ),
+                after_eod_action=container.runtime_mode_auto_policy.after_eod_action,
                 auto_check_interval_seconds=(
                     trading_ops_config.runtime_mode_auto_check_interval_seconds
                 ),
             ),
+            guard=container.runtime_mode_guard,
+            auto_transition_policy=container.runtime_mode_auto_policy,
         )
 
     # Phase 4: monitoring

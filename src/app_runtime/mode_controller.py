@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from typing import TYPE_CHECKING
+
+from src.app_runtime.mode_policy import (
+    RuntimeMode,
+    RuntimeModeAutoTransitionPolicy,
+    RuntimeModePolicy,
+    RuntimeModeTransitionGuard,
+)
 
 if TYPE_CHECKING:
     from src.app_runtime.container import AppContainer
@@ -13,37 +18,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class RuntimeMode(str, Enum):
-    FULL = "full"
-    OBSERVE = "observe"
-    RISK_OFF = "risk_off"
-    INGEST_ONLY = "ingest_only"
-
-
-class RuntimeModeEODAction(str, Enum):
-    DISABLED = "disabled"
-    RISK_OFF = "risk_off"
-    INGEST_ONLY = "ingest_only"
-
-
-@dataclass(frozen=True)
-class RuntimeModePolicy:
-    initial_mode: RuntimeMode = RuntimeMode.FULL
-    after_eod_action: RuntimeModeEODAction = RuntimeModeEODAction.DISABLED
-    auto_check_interval_seconds: float = 15.0
-
-
 class RuntimeModeController:
-    """统一管理运行模式与组件生命周期。"""
+    """统一管理运行模式状态与组件生命周期执行。"""
 
     def __init__(
         self,
         container: AppContainer,
         *,
         policy: RuntimeModePolicy,
+        guard: RuntimeModeTransitionGuard,
+        auto_transition_policy: RuntimeModeAutoTransitionPolicy,
     ) -> None:
         self._container = container
         self._policy = policy
+        self._guard = guard
+        self._auto_transition_policy = auto_transition_policy
         self._current_mode: RuntimeMode | None = None
         self._last_transition_at: datetime | None = None
         self._last_transition_reason: str | None = None
@@ -89,8 +78,7 @@ class RuntimeModeController:
             }
 
     def _apply_mode_locked(self, target: RuntimeMode, *, reason: str) -> None:
-        if target == RuntimeMode.INGEST_ONLY:
-            self._assert_ingest_only_safe()
+        self._guard.ensure_can_enter(target)
         registry = self._container.runtime_component_registry
         if registry is None:
             raise RuntimeError("runtime_component_registry is not configured")
@@ -102,7 +90,7 @@ class RuntimeModeController:
         logger.info("Runtime mode applied: mode=%s reason=%s", target.value, reason)
 
     def _start_monitor(self) -> None:
-        if self._policy.after_eod_action == RuntimeModeEODAction.DISABLED:
+        if not self._auto_transition_policy.enabled:
             return
         if self._monitor_thread is not None and self._monitor_thread.is_alive():
             return
@@ -124,36 +112,18 @@ class RuntimeModeController:
 
     def _evaluate_auto_transition(self) -> None:
         with self._lock:
-            if self._current_mode not in {RuntimeMode.FULL, RuntimeMode.OBSERVE}:
-                return
             position_manager = self._container.position_manager
-            if position_manager is None or not position_manager.is_after_eod_today():
-                return
-            target = (
-                RuntimeMode.RISK_OFF
-                if self._policy.after_eod_action == RuntimeModeEODAction.RISK_OFF
-                else RuntimeMode.INGEST_ONLY
+            after_eod_today = bool(
+                position_manager is not None and position_manager.is_after_eod_today()
             )
-            if target == RuntimeMode.INGEST_ONLY and not self._can_enter_ingest_only():
-                target = RuntimeMode.RISK_OFF
+            target = self._auto_transition_policy.resolve_after_eod(
+                current_mode=self._current_mode,
+                after_eod_today=after_eod_today,
+                can_enter_ingest_only=self._guard.can_enter_ingest_only(),
+            )
+            if target is None:
+                return
             self._apply_mode_locked(target, reason="after_eod")
-
-    def _assert_ingest_only_safe(self) -> None:
-        if not self._can_enter_ingest_only():
-            raise RuntimeError("ingest_only requires no open positions and no pending orders")
-
-    def _can_enter_ingest_only(self) -> bool:
-        trading = self._container.trade_module
-        if trading is None:
-            return True
-        positions = getattr(trading, "get_positions", None)
-        orders = getattr(trading, "get_orders", None)
-        try:
-            open_positions = list(positions() or []) if callable(positions) else []
-            open_orders = list(orders() or []) if callable(orders) else []
-        except Exception:
-            return False
-        return not open_positions and not open_orders
 
     def _component_status_snapshot(self) -> dict[str, object]:
         registry = self._container.runtime_component_registry
