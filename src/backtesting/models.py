@@ -345,6 +345,56 @@ class RecommendationStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class ParamRobustness:
+    """单个参数的鲁棒性评估结果。"""
+
+    param_key: str  # e.g. "supertrend__adx_threshold"
+    base_value: float  # 最优参数值
+    base_sharpe: float  # 最优参数对应的 Sharpe
+    # 扰动后 Sharpe 的变异系数（标准差/均值），越小越鲁棒
+    sharpe_cv: float
+    # 扰动后 Sharpe 的最小值
+    min_sharpe: float
+    # 扰动后最大 Sharpe 降幅百分比（相对 base_sharpe）
+    max_degradation_pct: float
+    # 是否稳定（sharpe_cv < 0.3 且 max_degradation_pct < 30%）
+    is_stable: bool
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "param_key": self.param_key,
+            "base_value": self.base_value,
+            "base_sharpe": round(self.base_sharpe, 4),
+            "sharpe_cv": round(self.sharpe_cv, 4),
+            "min_sharpe": round(self.min_sharpe, 4),
+            "max_degradation_pct": round(self.max_degradation_pct, 2),
+            "is_stable": self.is_stable,
+        }
+
+
+@dataclass
+class RobustnessResult:
+    """参数鲁棒性检查结果。"""
+
+    best_params: Dict[str, Any]
+    best_sharpe: float
+    param_robustness: List[ParamRobustness]
+    # 所有参数均稳定
+    all_stable: bool
+    # 不稳定参数列表
+    fragile_params: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "best_params": self.best_params,
+            "best_sharpe": round(self.best_sharpe, 4),
+            "param_robustness": [p.to_dict() for p in self.param_robustness],
+            "all_stable": self.all_stable,
+            "fragile_params": self.fragile_params,
+        }
+
+
+@dataclass(frozen=True)
 class ParamChange:
     """单个参数变更。"""
 

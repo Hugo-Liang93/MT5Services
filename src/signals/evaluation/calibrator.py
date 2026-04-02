@@ -94,11 +94,11 @@ class ConfidenceCalibrator:
         alpha: float = 0.15,
         baseline_win_rate: float = 0.50,
         max_boost: float = 1.30,
-        min_samples: int = 50,
+        min_samples: int = 100,
         refresh_interval_seconds: int = 3600,
         recency_hours: int = 8,
         warmup_alpha: float = 0.10,
-        full_alpha_min_samples: int = 100,
+        full_alpha_min_samples: int = 200,
     ) -> None:
         if not (0.0 <= alpha <= 1.0):
             raise ValueError(f"alpha must be in [0.0, 1.0], got {alpha}")

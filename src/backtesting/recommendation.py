@@ -22,6 +22,7 @@ from .models import (
     ParamChange,
     Recommendation,
     RecommendationStatus,
+    RobustnessResult,
 )
 
 if TYPE_CHECKING:
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ── 安全护栏常量 ─────────────────────────────────────────────────────
 MAX_CHANGE_PCT = 30.0  # 单参数最大变更幅度（%）
 MAX_CHANGES_PER_REC = 10  # 每次推荐最多参数变更数
-MIN_OOS_TRADES = 30  # OOS 最小交易数
+MIN_OOS_TRADES = 50  # OOS 最小交易数
 MAX_OVERFITTING_RATIO = 2.0  # 最大允许过拟合比
 MIN_CONSISTENCY_RATE = 0.6  # 最低 OOS 窗口盈利比例
 
@@ -60,6 +61,7 @@ class RecommendationEngine:
         current_strategy_params: Optional[Dict[str, Any]] = None,
         current_regime_affinities: Optional[Dict[str, Dict[str, float]]] = None,
         timeframe: Optional[str] = None,
+        robustness: Optional[RobustnessResult] = None,
     ) -> Recommendation:
         """从 Walk-Forward 结果生成参数推荐。
 
@@ -97,6 +99,22 @@ class RecommendationEngine:
         # ── 合并、裁剪、排序 ─────────────────────────────────────────
         all_changes = strategy_changes + affinity_changes
         all_changes = self._clip_changes(all_changes)
+
+        # ── 过滤脆弱参数（鲁棒性检查不通过的参数不推荐）──────────────
+        if robustness and robustness.fragile_params:
+            fragile_set = set(robustness.fragile_params)
+            before_count = len(all_changes)
+            all_changes = [
+                c for c in all_changes if c.key not in fragile_set
+            ]
+            filtered = before_count - len(all_changes)
+            if filtered > 0:
+                logger.warning(
+                    "鲁棒性检查：过滤 %d 个脆弱参数: %s",
+                    filtered,
+                    [k for k in fragile_set if k in {c.key for c in strategy_changes + affinity_changes}],
+                )
+
         all_changes = self._rank_and_limit(all_changes)
 
         # ── 生成 rationale ────────────────────────────────────────────

@@ -96,6 +96,7 @@ class SignalConfig(BaseModel):
     perf_tracker_max_multiplier: float = 1.20
     perf_tracker_streak_penalty_threshold: int = 3
     perf_tracker_streak_penalty_factor: float = 0.90
+    perf_tracker_min_samples_for_penalty: int = 8
     perf_tracker_category_fallback_min_samples: int = 3
     perf_tracker_session_reset_interval_hours: int = 0
     # PnL 熔断器（计实际亏损次数，与 circuit_breaker 的技术故障计数相互独立）

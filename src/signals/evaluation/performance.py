@@ -174,7 +174,7 @@ class PerformanceTrackerConfig:
     streak_penalty_factor: float = 0.90
     category_fallback_min_samples: int = 3
     # 冷启动保护：样本不足此值时 multiplier 固定为 1.0（不压制也不提升）
-    min_samples_for_penalty: int = 3
+    min_samples_for_penalty: int = 8
     session_reset_interval_hours: int = 8
     # PnL 熔断器（计实际亏损次数，不计技术故障）
     pnl_circuit_enabled: bool = True

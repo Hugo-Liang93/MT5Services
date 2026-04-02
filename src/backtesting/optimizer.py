@@ -15,7 +15,13 @@ from src.signals.strategies.registry import build_composite_strategies
 
 from .data_loader import CachedDataLoader, HistoricalDataLoader
 from .engine import BacktestEngine
-from .models import BacktestConfig, BacktestResult, ParameterSpace
+from .models import (
+    BacktestConfig,
+    BacktestResult,
+    ParamRobustness,
+    ParameterSpace,
+    RobustnessResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +247,171 @@ class ParameterOptimizer:
                 combinations.append(dict(zip(keys, combo)))
 
         return combinations
+
+    def robustness_check(
+        self,
+        best_params: Dict[str, Any],
+        perturbation_pcts: Optional[List[float]] = None,
+        *,
+        stability_cv_threshold: float = 0.30,
+        stability_degradation_threshold: float = 30.0,
+    ) -> RobustnessResult:
+        """对最优参数进行邻域扰动鲁棒性检验。
+
+        对 best_params 中的每个数值参数，分别做 ±5%, ±10% 扰动，
+        其余参数保持不变，重跑回测，评估 Sharpe 的稳定性。
+
+        Args:
+            best_params: 优化器产出的最优参数集合
+            perturbation_pcts: 扰动百分比列表（默认 [-10, -5, +5, +10]）
+            stability_cv_threshold: Sharpe 变异系数阈值（越小越严格）
+            stability_degradation_threshold: 最大允许 Sharpe 降幅百分比
+
+        Returns:
+            RobustnessResult 包含每个参数的稳定性评分
+        """
+        if perturbation_pcts is None:
+            perturbation_pcts = [-10.0, -5.0, 5.0, 10.0]
+
+        # ── 预加载数据（与 run() 相同，复用缓存）─────────────────────
+        warmup_bars = self._data_loader.preload_warmup_bars(
+            self._base_config.symbol,
+            self._base_config.timeframe,
+            self._base_config.start_time,
+            self._base_config.warmup_bars,
+        )
+        test_bars = self._data_loader.load_all_bars(
+            self._base_config.symbol,
+            self._base_config.timeframe,
+            self._base_config.start_time,
+            self._base_config.end_time,
+        )
+        cached_loader = CachedDataLoader(warmup_bars, test_bars)
+
+        # ── 预计算指标 ──────────────────────────────────────────────
+        precomputed: Optional[List[Dict[str, Any]]] = None
+        if test_bars:
+            temp_module = self._signal_module_factory(best_params)
+            temp_engine = BacktestEngine(
+                config=self._base_config,
+                data_loader=cached_loader,
+                signal_module=temp_module,
+                indicator_pipeline=self._pipeline,
+                regime_detector=self._regime_detector,
+            )
+            all_bars = warmup_bars + test_bars
+            precomputed = temp_engine._precompute_all_indicators(
+                self._base_config.symbol,
+                self._base_config.timeframe,
+                all_bars,
+                self._base_config.warmup_bars,
+            )
+
+        # ── 基线回测（最优参数本身）────────────────────────────────
+        base_module = self._signal_module_factory(best_params)
+        base_engine = BacktestEngine(
+            config=self._base_config,
+            data_loader=cached_loader,
+            signal_module=base_module,
+            indicator_pipeline=self._pipeline,
+            regime_detector=self._regime_detector,
+            voting_engine=self._voting_engine,
+            precomputed_indicators=precomputed,
+        )
+        base_result = base_engine.run()
+        base_sharpe = base_result.metrics.sharpe_ratio
+
+        # ── 逐参数扰动 ──────────────────────────────────────────────
+        # 筛选可扰动的数值参数
+        numeric_params: Dict[str, float] = {}
+        for k, v in best_params.items():
+            try:
+                numeric_params[k] = float(v)
+            except (TypeError, ValueError):
+                continue
+
+        robustness_list: List[ParamRobustness] = []
+
+        for param_key, base_value in numeric_params.items():
+            if base_value == 0:
+                # 值为 0 的参数无法做百分比扰动，跳过
+                continue
+
+            perturbed_sharpes: List[float] = [base_sharpe]
+
+            for pct in perturbation_pcts:
+                perturbed_value = base_value * (1.0 + pct / 100.0)
+                perturbed_params = dict(best_params)
+                perturbed_params[param_key] = perturbed_value
+
+                module = self._signal_module_factory(perturbed_params)
+                engine = BacktestEngine(
+                    config=self._base_config,
+                    data_loader=cached_loader,
+                    signal_module=module,
+                    indicator_pipeline=self._pipeline,
+                    regime_detector=self._regime_detector,
+                    voting_engine=self._voting_engine,
+                    precomputed_indicators=precomputed,
+                )
+                result = engine.run()
+                perturbed_sharpes.append(result.metrics.sharpe_ratio)
+
+            # ── 计算稳定性指标 ───────────────────────────────────
+            mean_sharpe = sum(perturbed_sharpes) / len(perturbed_sharpes)
+            min_sharpe = min(perturbed_sharpes)
+
+            if mean_sharpe > 0:
+                variance = sum(
+                    (s - mean_sharpe) ** 2 for s in perturbed_sharpes
+                ) / len(perturbed_sharpes)
+                std_sharpe = variance**0.5
+                cv = std_sharpe / mean_sharpe
+            else:
+                cv = float("inf")
+
+            if base_sharpe > 0:
+                max_degradation = (base_sharpe - min_sharpe) / base_sharpe * 100
+            else:
+                max_degradation = 0.0 if min_sharpe >= base_sharpe else 100.0
+
+            is_stable = (
+                cv < stability_cv_threshold
+                and max_degradation < stability_degradation_threshold
+            )
+
+            robustness_list.append(
+                ParamRobustness(
+                    param_key=param_key,
+                    base_value=base_value,
+                    base_sharpe=base_sharpe,
+                    sharpe_cv=cv,
+                    min_sharpe=min_sharpe,
+                    max_degradation_pct=max_degradation,
+                    is_stable=is_stable,
+                )
+            )
+
+            logger.info(
+                "Robustness [%s]: base=%.3f, CV=%.3f, min_sharpe=%.3f, "
+                "max_degrad=%.1f%%, stable=%s",
+                param_key,
+                base_value,
+                cv,
+                min_sharpe,
+                max_degradation,
+                is_stable,
+            )
+
+        fragile = [r.param_key for r in robustness_list if not r.is_stable]
+
+        return RobustnessResult(
+            best_params=dict(best_params),
+            best_sharpe=base_sharpe,
+            param_robustness=robustness_list,
+            all_stable=len(fragile) == 0,
+            fragile_params=fragile,
+        )
 
 
 def _extract_tf_param_overrides(

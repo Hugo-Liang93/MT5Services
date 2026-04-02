@@ -85,6 +85,7 @@ def build_performance_tracker_config(signal_config) -> PerformanceTrackerConfig:
         max_multiplier=signal_config.perf_tracker_max_multiplier,
         streak_penalty_threshold=signal_config.perf_tracker_streak_penalty_threshold,
         streak_penalty_factor=signal_config.perf_tracker_streak_penalty_factor,
+        min_samples_for_penalty=signal_config.perf_tracker_min_samples_for_penalty,
         category_fallback_min_samples=signal_config.perf_tracker_category_fallback_min_samples,
         session_reset_interval_hours=signal_config.perf_tracker_session_reset_interval_hours,
         pnl_circuit_enabled=signal_config.perf_tracker_pnl_circuit_enabled,
@@ -290,7 +291,8 @@ def build_signal_components(
         alpha=0.15,
         baseline_win_rate=0.50,
         max_boost=1.30,
-        min_samples=50,
+        min_samples=100,
+        full_alpha_min_samples=200,
         refresh_interval_seconds=900,
         recency_hours=8,
     )
