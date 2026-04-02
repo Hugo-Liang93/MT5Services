@@ -10,8 +10,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.service import SignalModule
-from src.signals.strategies.breakout import MultiTimeframeConfirmStrategy
-from src.signals.strategies.registry import build_composite_strategies
+from src.signals.strategies.catalog import clone_registered_strategies
 
 from .data_loader import CachedDataLoader, HistoricalDataLoader
 from .engine import BacktestEngine
@@ -490,10 +489,18 @@ def build_signal_module_with_overrides(
         param_overrides: 策略参数覆盖（signal.ini [strategy_params] 格式）
         regime_affinity_overrides: Regime 亲和度覆盖（可选）
     """
+    htf_cache = None
+    mtf_strategy = base_module.get_strategy("multi_timeframe_confirm")
+    if mtf_strategy is not None:
+        htf_cache = getattr(mtf_strategy, "_htf_cache", None)
+
     # 创建新的 SignalModule，复用相同的 indicator_source 和组件
     module = SignalModule(
         indicator_source=base_module.indicator_source,
-        strategies=(),
+        strategies=clone_registered_strategies(
+            base_module.list_strategies(),
+            htf_cache=htf_cache,
+        ),
         repository=None,  # 回测不写入 DB
         regime_detector=base_module._regime_detector,
         calibrator=base_module._calibrator,
@@ -501,31 +508,6 @@ def build_signal_module_with_overrides(
         soft_regime_enabled=base_module._soft_regime_enabled,
         confidence_floor=base_module._confidence_floor,
     )
-
-    # 重新注册所有单策略（从基础模块复制策略列表的类型来创建新实例）
-    for name, strategy in base_module._strategies.items():
-        if getattr(strategy, "metadata", {}).get("composite"):
-            continue
-        strategy_class = type(strategy)
-        try:
-            if isinstance(strategy, MultiTimeframeConfirmStrategy):
-                new_instance = strategy_class(
-                    state_reader=getattr(strategy, "_state_reader", None),
-                    htf_cache=getattr(strategy, "_htf_cache", None),
-                )
-            else:
-                new_instance = strategy_class()
-            module.register_strategy(new_instance)
-        except Exception:
-            # 复合策略或需要参数的策略，直接跳过
-            pass
-
-    # 注册复合策略
-    for composite in build_composite_strategies():
-        try:
-            module.register_strategy(composite)
-        except Exception:
-            pass
 
     base_strategy_params, base_strategy_params_per_tf = _extract_tf_param_overrides(
         base_module

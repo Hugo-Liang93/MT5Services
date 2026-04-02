@@ -192,7 +192,7 @@ class _RuntimeModeController:
             "current_mode": self.mode,
             "configured_mode": "full",
             "after_eod_action": "ingest_only",
-            "components": {"trade_listener_attached": self.mode == "full"},
+            "components": {"trade_execution": self.mode == "full"},
         }
 
     def apply_mode(self, mode: str, *, reason: str):

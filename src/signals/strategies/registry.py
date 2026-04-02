@@ -24,14 +24,13 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 from .composite import CompositeSignalStrategy, CombineMode
 from .htf_cache import HTFStateCache
 from ..evaluation.regime import RegimeType
-from ..service import SignalModule
 from .breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
@@ -49,6 +48,9 @@ from .trend import (
     SmaTrendStrategy,
     SupertrendStrategy,
 )
+
+if TYPE_CHECKING:
+    from ..service import SignalModule
 
 
 @dataclass(frozen=True)

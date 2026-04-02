@@ -7,6 +7,7 @@ import pytest
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext, SignalDecision
 from src.signals.service import SignalModule
+from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.composite import CompositeSignalStrategy
 from src.signals.strategies.trend import SmaTrendStrategy, SupertrendStrategy
 
@@ -167,6 +168,14 @@ def test_signal_module_uses_indicator_source_for_default_payload() -> None:
     assert decision.direction == "buy"
     assert decision.strategy == "sma_trend"
     assert "sma20" in decision.used_indicators
+
+
+def test_signal_module_defaults_come_from_shared_strategy_catalog() -> None:
+    module = SignalModule(indicator_source=DummyIndicatorSource())
+
+    assert module.list_strategies() == sorted(
+        strategy.name for strategy in build_default_strategy_set()
+    )
 
 
 def test_signal_module_persists_and_can_query_recent() -> None:

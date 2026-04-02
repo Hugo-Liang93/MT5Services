@@ -16,37 +16,8 @@ from .evaluation.regime import MarketRegimeDetector, RegimeType, SoftRegimeResul
 from .models import SignalContext, SignalDecision, SignalRecord
 from .strategies.adapters import IndicatorSource
 from .strategies.base import SignalStrategy
-from .strategies.breakout import (
-    BollingerBreakoutStrategy,
-    DonchianBreakoutStrategy,
-    FakeBreakoutDetector,
-    KeltnerBollingerSqueezeStrategy,
-    MultiTimeframeConfirmStrategy,
-    SqueezeReleaseFollow,
-)
+from .strategies.catalog import build_default_strategy_set
 from .strategies.composite import CompositeSignalStrategy
-from .strategies.m5_scalp import M5MomentumBurst, M5ScalpRSI
-from .strategies.multi_tf_entry import DualTFMomentum, HTFTrendPullback
-from .strategies.mean_reversion import (
-    CciReversionStrategy,
-    RsiDivergenceStrategy,
-    RsiReversionStrategy,
-    StochRsiStrategy,
-    VwapReversionStrategy,
-    WilliamsRStrategy,
-)
-from .strategies.price_action import OrderBlockEntryStrategy, PriceActionReversal
-from .strategies.session import AsianRangeBreakout, SessionMomentumBias
-from .strategies.trendline import TrendlineThreeTouchStrategy
-from .strategies.trend import (
-    EmaRibbonStrategy,
-    FibPullbackStrategy,
-    HmaCrossStrategy,
-    MacdMomentumStrategy,
-    RocMomentumStrategy,
-    SmaTrendStrategy,
-    SupertrendStrategy,
-)
 from .tracking.repository import SignalRepository
 
 logger = logging.getLogger(__name__)
@@ -86,46 +57,8 @@ class SignalModule:
         self._strategies: dict[str, SignalStrategy] = {}
         # 策略 regime_affinity 缓存：避免热路径中的 getattr 开销
         self._strategy_affinity_cache: dict[str, dict] = {}
-        default_strategies: Iterable[SignalStrategy] = strategies or (
-            # ── 趋势跟踪策略（仅在 H1 运行，见 signal.ini [strategy_timeframes]）──
-            SmaTrendStrategy(),
-            MacdMomentumStrategy(),
-            # ── 趋势跟踪策略（M1 + H1）──────────────────────────────────────────
-            SupertrendStrategy(),
-            EmaRibbonStrategy(),
-            HmaCrossStrategy(),
-            RocMomentumStrategy(),
-            FibPullbackStrategy(),
-            SessionMomentumBias(),
-            AsianRangeBreakout(),
-            # ── 均值回归策略（asia + london + newyork）──────────────────────────
-            RsiReversionStrategy(),
-            StochRsiStrategy(),
-            WilliamsRStrategy(),
-            CciReversionStrategy(),
-            RsiDivergenceStrategy(),
-            VwapReversionStrategy(),
-            PriceActionReversal(),
-            OrderBlockEntryStrategy(),
-            # ── 突破/波动率策略 ──────────────────────────────────────────────────
-            BollingerBreakoutStrategy(),
-            KeltnerBollingerSqueezeStrategy(),
-            DonchianBreakoutStrategy(),
-            FakeBreakoutDetector(),
-            SqueezeReleaseFollow(),
-            # ── 多时间框架联动策略 ────────────────────────────────────────────
-            HTFTrendPullback(),                                  # H1 定向 + LTF 回调（M5/M15/M30）
-            HTFTrendPullback(name="htf_h4_pullback", htf="H4"),  # H4 定向 + LTF 回调（M30/H1）
-            HTFTrendPullback(name="htf_m30_pullback", htf="M30"),  # M30 定向 + M5 回调
-            DualTFMomentum(),                                     # H1+LTF 双 TF 动量共振
-            DualTFMomentum(name="dual_h4_momentum", htf="H4"),   # H4+LTF 双 TF 动量共振
-            # ── M5 专用快速策略（intrabar 优先）────────────────────────
-            M5ScalpRSI(),                                         # M30 定向 + M5 RSI 极值标量
-            M5ScalpRSI(name="m5_scalp_rsi_h1", htf="H1"),       # H1 定向 + M5 RSI 极值标量
-            M5MomentumBurst(),                                    # M30 定向 + M5 ADX/RSI 动量突发
-            # ── 趋势线策略（仅 H1/H4）──────────────────────────────────────────
-            TrendlineThreeTouchStrategy(),
-            # 复合策略由 registry.register_composite_strategies() 从 composites.json 注册
+        default_strategies: Iterable[SignalStrategy] = (
+            list(strategies) if strategies is not None else build_default_strategy_set()
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)

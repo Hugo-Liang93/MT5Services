@@ -25,8 +25,8 @@ from src.signals.service import SignalModule
 from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 from src.signals.orchestration.policy import VotingGroupConfig
 from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
+from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.htf_cache import HTFStateCache
-from src.signals.strategies.registry import register_all_strategies
 from src.signals.tracking.repository import TimescaleSignalRepository
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
@@ -300,15 +300,6 @@ def build_signal_components(
     performance_tracker = StrategyPerformanceTracker(
         config=build_performance_tracker_config(signal_config),
     )
-    signal_module = SignalModule(
-        indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
-        repository=TimescaleSignalRepository(storage_writer.db),
-        calibrator=calibrator,
-        performance_tracker=performance_tracker,
-        soft_regime_enabled=signal_config.soft_regime_enabled,
-        confidence_floor=signal_config.confidence_floor,
-        regime_detector=regime_detector,
-    )
 
     # 根据当前实际配置的时间框架，自动构建完整的 LTF→HTF 映射。
     # 每个已配置的 TF 映射到链条中下一个已配置的更高 TF。
@@ -340,7 +331,16 @@ def build_signal_components(
         max_age_seconds=signal_config.htf_cache_max_age_seconds,
         source_strategies=htf_source_strategies,
     )
-    register_all_strategies(signal_module, htf_cache)
+    signal_module = SignalModule(
+        indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
+        strategies=build_default_strategy_set(htf_cache=htf_cache),
+        repository=TimescaleSignalRepository(storage_writer.db),
+        calibrator=calibrator,
+        performance_tracker=performance_tracker,
+        soft_regime_enabled=signal_config.soft_regime_enabled,
+        confidence_floor=signal_config.confidence_floor,
+        regime_detector=regime_detector,
+    )
 
     # ── Delta momentum 全局参数配置 ─────────────────────────────────────
     from src.signals.strategies.mean_reversion import configure_delta_params

@@ -211,11 +211,15 @@ class TradeExecutor:
                     self._dropped_signals = self._dropped_signals[-self._max_dropped_history:]
 
     def _start_worker(self) -> None:
-        """启动后台执行线程。"""
+        """?????????"""
         self._stop_event.clear()
         t = threading.Thread(target=self._exec_worker, name="trade-executor", daemon=True)
         t.start()
         self._exec_thread = t
+
+    def start(self) -> None:
+        """?????????? confirmed ???????????"""
+        self._stop_event.clear()
 
     def _exec_worker(self) -> None:
         """后台消费执行队列，串行处理 confirmed 交易事件。"""
@@ -232,22 +236,26 @@ class TradeExecutor:
                 self._exec_queue.task_done()
 
     def flush(self, timeout: float = 5.0) -> None:
-        """等待执行队列清空，超时则抛出 TimeoutError。"""
+        """?????????????? TimeoutError?"""
         deadline = time.monotonic() + max(0.0, timeout)
         while self._exec_queue.unfinished_tasks > 0:
             if time.monotonic() >= deadline:
                 raise TimeoutError("TradeExecutor flush timed out")
             time.sleep(0.01)
 
-    def shutdown(self, timeout: float = 5.0) -> None:
-        """停止后台线程并清理残留执行队列。"""
+    def stop(self, timeout: float = 5.0) -> None:
+        """?????????????????????????"""
         self._stop_event.set()
-        if self._pending_manager is not None:
-            self._pending_manager.shutdown()
         if self._exec_thread is not None:
             self._exec_thread.join(timeout=timeout)
             self._exec_thread = None
         self._clear_exec_queue()
+
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """????????????????"""
+        self.stop(timeout=timeout)
+        if self._pending_manager is not None:
+            self._pending_manager.shutdown()
 
     # ------------------------------------------------------------------
     # Internal execution logic

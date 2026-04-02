@@ -5,6 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 from src.app_runtime.container import AppContainer
+from src.app_runtime.lifecycle import (
+    FunctionalRuntimeComponent,
+    RuntimeComponentRegistry,
+    ThreadedRuntimeComponent,
+)
 from src.app_runtime.mode_controller import (
     RuntimeMode,
     RuntimeModeController,
@@ -47,7 +52,15 @@ class _SignalRuntime(_StartStopComponent):
 
 class _Executor:
     def __init__(self) -> None:
+        self.start_calls = 0
+        self.stop_calls = 0
         self.shutdown_calls = 0
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self.stop_calls += 1
 
     def on_signal_event(self, event) -> None:
         return None
@@ -119,6 +132,7 @@ class _TradeModule:
 
 def _build_container(*, positions=None, orders=None) -> AppContainer:
     container = AppContainer()
+    listener_state = {"attached": False}
     container.storage_writer = _StartStopComponent("_thread")
     container.ingestor = _StartStopComponent("_thread")
     container.indicator_manager = _StartStopComponent("_event_thread")
@@ -130,6 +144,109 @@ def _build_container(*, positions=None, orders=None) -> AppContainer:
     container.calibrator = _Calibrator()
     container.trade_module = _TradeModule(positions=positions, orders=orders)
     container.trading_state_recovery = _Recovery()
+    container.runtime_component_registry = RuntimeComponentRegistry(
+        [
+            ThreadedRuntimeComponent(
+                name="storage",
+                component=container.storage_writer,
+                supported_modes=frozenset(mode.value for mode in RuntimeMode),
+                thread_attr="_thread",
+            ),
+            ThreadedRuntimeComponent(
+                name="ingestion",
+                component=container.ingestor,
+                supported_modes=frozenset(mode.value for mode in RuntimeMode),
+                thread_attr="_thread",
+            ),
+            FunctionalRuntimeComponent(
+                name="indicators",
+                supported_modes=frozenset(
+                    {RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value}
+                ),
+                start_fn=lambda: (
+                    container.indicator_manager.start(),
+                    container.calibrator.start_background_refresh(),
+                    container.economic_calendar_service.start(),
+                ),
+                stop_fn=lambda: (
+                    container.calibrator.stop_background_refresh(),
+                    container.economic_calendar_service.stop(),
+                    container.indicator_manager.shutdown(),
+                ),
+                is_running_fn=lambda: bool(
+                    getattr(container.indicator_manager, "_event_thread", None) is not None
+                    and container.indicator_manager._event_thread.is_alive()
+                ),
+            ),
+            FunctionalRuntimeComponent(
+                name="signals",
+                supported_modes=frozenset(
+                    {RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value}
+                ),
+                start_fn=container.signal_runtime.start,
+                stop_fn=container.signal_runtime.stop,
+                is_running_fn=lambda: bool(
+                    getattr(container.signal_runtime, "_thread", None) is not None
+                    and container.signal_runtime._thread.is_alive()
+                ),
+            ),
+            FunctionalRuntimeComponent(
+                name="trade_execution",
+                supported_modes=frozenset({RuntimeMode.FULL.value}),
+                start_fn=lambda: (
+                    container.trade_executor.start(),
+                    container.signal_runtime.add_signal_listener(
+                        container.trade_executor.on_signal_event
+                    ),
+                    listener_state.__setitem__("attached", True),
+                ),
+                stop_fn=lambda: (
+                    container.signal_runtime.remove_signal_listener(
+                        container.trade_executor.on_signal_event
+                    ),
+                    listener_state.__setitem__("attached", False),
+                    container.trade_executor.stop(),
+                ),
+                is_running_fn=lambda: bool(listener_state["attached"]),
+            ),
+            FunctionalRuntimeComponent(
+                name="pending_entry",
+                supported_modes=frozenset(
+                    {
+                        RuntimeMode.FULL.value,
+                        RuntimeMode.OBSERVE.value,
+                        RuntimeMode.RISK_OFF.value,
+                    }
+                ),
+                start_fn=container.pending_entry_manager.start,
+                stop_fn=container.pending_entry_manager.shutdown,
+                is_running_fn=lambda: bool(
+                    getattr(container.pending_entry_manager, "_monitor_thread", None)
+                    is not None
+                    and container.pending_entry_manager._monitor_thread.is_alive()
+                ),
+            ),
+            FunctionalRuntimeComponent(
+                name="position_manager",
+                supported_modes=frozenset(
+                    {
+                        RuntimeMode.FULL.value,
+                        RuntimeMode.OBSERVE.value,
+                        RuntimeMode.RISK_OFF.value,
+                    }
+                ),
+                start_fn=lambda: container.position_manager.start(
+                    reconcile_interval=30
+                ),
+                stop_fn=container.position_manager.stop,
+                is_running_fn=lambda: bool(
+                    getattr(container.position_manager, "_reconcile_thread", None)
+                    is not None
+                    and container.position_manager._reconcile_thread.is_alive()
+                ),
+            ),
+        ]
+    )
     return container
 
 
@@ -138,17 +255,18 @@ def test_mode_controller_full_and_observe_toggle_trade_listener() -> None:
     controller = RuntimeModeController(
         container,
         policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
-        signal_config_loader=lambda: SimpleNamespace(position_reconcile_interval=30),
     )
 
     full = controller.apply_mode(RuntimeMode.FULL, reason="test")
     assert full["current_mode"] == "full"
     assert container.signal_runtime.listeners == [container.trade_executor.on_signal_event]
+    assert container.trade_executor.start_calls == 1
 
     observe = controller.apply_mode(RuntimeMode.OBSERVE, reason="test")
 
     assert observe["current_mode"] == "observe"
     assert container.signal_runtime.listeners == []
+    assert container.trade_executor.stop_calls == 1
 
 
 def test_mode_controller_blocks_ingest_only_when_live_risk_exists() -> None:

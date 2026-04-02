@@ -50,8 +50,8 @@ def build_backtest_components(
     from src.persistence.repositories.market_repo import MarketRepository
     from src.signals.evaluation.regime import MarketRegimeDetector
     from src.signals.service import SignalModule
+    from src.signals.strategies.catalog import build_default_strategy_set
     from src.signals.strategies.htf_cache import HTFStateCache
-    from src.signals.strategies.registry import register_late_strategies
 
     from .data_loader import CachingDataLoader, HistoricalDataLoader, get_shared_data_cache
 
@@ -95,6 +95,10 @@ def build_backtest_components(
             return {}
 
     regime_detector = MarketRegimeDetector()
+    signal_config = _load_signal_config_snapshot()
+    htf_cache = HTFStateCache(
+        max_age_seconds=getattr(signal_config, "htf_cache_max_age_seconds", 14400),
+    )
 
     # 构建 PerformanceTracker（与实盘共用同一逻辑）
     performance_tracker = None
@@ -111,18 +115,11 @@ def build_backtest_components(
 
     signal_module = SignalModule(
         indicator_source=_NullIndicatorSource(),
+        strategies=build_default_strategy_set(htf_cache=htf_cache),
         regime_detector=regime_detector,
         soft_regime_enabled=True,
         performance_tracker=performance_tracker,
     )
-
-    # 回测默认 SignalModule 已包含基础单策略和主要复合策略；
-    # 这里补齐依赖 HTFStateCache 的 late strategies（如 multi_timeframe_confirm）。
-    signal_config = _load_signal_config_snapshot()
-    htf_cache = HTFStateCache(
-        max_age_seconds=getattr(signal_config, "htf_cache_max_age_seconds", 14400),
-    )
-    register_late_strategies(signal_module, htf_cache)
 
     # 回测基线默认对齐当前 signal.ini / signal.local.ini，再叠加显式请求覆盖。
 
