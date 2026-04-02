@@ -20,6 +20,10 @@ from src.trading.pending_entry import PendingEntryManager
 from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import TradeExecutor
 from src.trading.signal_quality_tracker import SignalQualityTracker
+from src.trading.state_alerts import TradingStateAlerts
+from src.trading.state_recovery import TradingStateRecovery
+from src.trading.state_recovery_policy import TradingStateRecoveryPolicy
+from src.trading.state_store import TradingStateStore
 from src.monitoring.pipeline_event_bus import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
@@ -54,6 +58,10 @@ class AppContainer:
         "position_manager",
         "trade_outcome_tracker",
         "pending_entry_manager",
+        "trading_state_store",
+        "trading_state_alerts",
+        "trading_state_recovery",
+        "trading_state_recovery_policy",
         # Calendar
         "economic_calendar_service",
         "market_impact_analyzer",
@@ -88,6 +96,10 @@ class AppContainer:
         self.position_manager: Optional[PositionManager] = None
         self.trade_outcome_tracker: Optional[TradeOutcomeTracker] = None
         self.pending_entry_manager: Optional[PendingEntryManager] = None
+        self.trading_state_store: Optional[TradingStateStore] = None
+        self.trading_state_alerts: Optional[TradingStateAlerts] = None
+        self.trading_state_recovery: Optional[TradingStateRecovery] = None
+        self.trading_state_recovery_policy: Optional[TradingStateRecoveryPolicy] = None
 
         self.economic_calendar_service: Optional[EconomicCalendarService] = None
         self.market_impact_analyzer: Optional[Any] = None

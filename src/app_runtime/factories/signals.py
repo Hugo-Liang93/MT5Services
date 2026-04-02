@@ -268,6 +268,7 @@ def build_signal_components(
     trade_module,
     economic_calendar_service,
     signal_config,
+    trading_state_store=None,
 ) -> SignalComponents:
     market_structure_analyzer = MarketStructureAnalyzer(
         indicator_manager.market_service,
@@ -483,6 +484,11 @@ def build_signal_components(
         on_expired_fn=lambda sid, reason: (
             _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
         ),
+        inspect_mt5_order_fn=lambda info: (
+            _executor_holder[0]._inspect_pending_mt5_order(info)
+            if _executor_holder
+            else {"status": "pending"}
+        ),
     )
     trade_executor = TradeExecutor(
         trading_module=trade_module,
@@ -520,8 +526,38 @@ def build_signal_components(
             ticket=ticket,
             comment=comment,
         ),
+        position_state_resolver=(
+            trading_state_store.resolve_position_state
+            if trading_state_store is not None
+            else None
+        ),
         recovered_position_callback=trade_outcome_tracker.restore_tracked_position,
     )
+    if trading_state_store is not None:
+        pending_entry_manager.set_mt5_order_lifecycle_hooks(
+            on_tracked=trading_state_store.record_pending_order_placed,
+            on_filled=lambda info, state: trading_state_store.mark_pending_order_filled(
+                info,
+                state=state,
+            ),
+            on_expired=lambda info, reason: trading_state_store.mark_pending_order_expired(
+                info,
+                reason=reason,
+            ),
+            on_cancelled=lambda info, reason: trading_state_store.mark_pending_order_cancelled(
+                info,
+                reason=reason,
+            ),
+            on_missing=lambda info, reason: trading_state_store.mark_pending_order_missing(
+                info,
+                reason=reason,
+            ),
+        )
+        position_manager.set_state_hooks(
+            on_position_tracked=trading_state_store.record_position_tracked,
+            on_position_updated=trading_state_store.record_position_update,
+            on_position_closed=trading_state_store.mark_position_closed,
+        )
 
     # 信号质量追踪器：N bars 后评估信号预测质量（供 Calibrator 长期统计校准）
     signal_quality_tracker = SignalQualityTracker(

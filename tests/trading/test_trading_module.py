@@ -305,6 +305,23 @@ def test_trading_module_can_pause_auto_entries_without_blocking_manual_trade() -
     assert len(registry.trading_service.execute_calls) == 1
 
 
+def test_trading_module_can_apply_persisted_trade_control_state() -> None:
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    state = module.apply_trade_control_state(
+        {
+            "auto_entry_enabled": False,
+            "close_only_mode": True,
+            "updated_at": "2026-04-02T09:00:00+00:00",
+            "reason": "restored",
+        }
+    )
+
+    assert state["auto_entry_enabled"] is False
+    assert state["close_only_mode"] is True
+    assert state["reason"] == "restored"
+
+
 def test_trading_module_replays_successful_trade_when_request_id_reused() -> None:
     registry = DummyRegistry()
     module = TradingModule(registry=registry, db_writer=DummyDBWriter())

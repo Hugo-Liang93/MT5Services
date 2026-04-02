@@ -16,7 +16,7 @@ import logging
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -643,6 +643,24 @@ class TradeExecutor:
                     direction=event.direction,
                     symbol=event.symbol,
                     strategy=event.strategy,
+                    timeframe=tf,
+                    confidence=event.confidence,
+                    regime=event.metadata.get("regime"),
+                    comment=str(result.get("comment") or payload["comment"]) if isinstance(result, dict) else payload["comment"],
+                    params=params,
+                    order_kind=order_kind,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                    trigger_price=trigger_price,
+                    entry_price_requested=params.entry_price,
+                    stop_loss=adjusted_sl,
+                    take_profit=adjusted_tp,
+                    volume=params.position_size,
+                    created_at=datetime.now(timezone.utc),
+                    metadata={
+                        "category": category,
+                        "order_kind": order_kind,
+                    },
                 )
 
             self._execution_log.append({
@@ -657,6 +675,7 @@ class TradeExecutor:
                 "trigger_price": trigger_price,
                 "order_ticket": order_ticket,
             })
+            self._record_reentry_bar_time(event)
             return result
 
         except Exception as exc:
@@ -850,14 +869,19 @@ class TradeExecutor:
         if self._pending_manager is None:
             return False
         try:
-            status = self._pending_manager.status()
+            contexts_fn = getattr(self._pending_manager, "active_execution_contexts", None)
+            if callable(contexts_fn):
+                entries = list(contexts_fn() or [])
+            else:
+                status = self._pending_manager.status()
+                entries = list(status.get("entries", []) or [])
         except Exception:
             logger.debug(
                 "Failed to inspect pending entries for duplicate guard",
                 exc_info=True,
             )
             return False
-        for row in status.get("entries", []) or []:
+        for row in entries:
             if (
                 row.get("symbol") == event.symbol
                 and row.get("timeframe") == event.timeframe
@@ -866,6 +890,14 @@ class TradeExecutor:
             ):
                 return True
         return False
+
+    def _record_reentry_bar_time(self, event: SignalEvent) -> None:
+        bar_time = event.metadata.get("bar_time")
+        if bar_time is None:
+            return
+        self._last_entry_bar_time[
+            (event.symbol, event.strategy, event.direction)
+        ] = bar_time
 
     def _estimate_cost_metrics(
         self,
@@ -1023,6 +1055,261 @@ class TradeExecutor:
             "slippage_points": slippage_points,
         }
 
+    @staticmethod
+    def _row_value(row: Any, key: str, default: Any = None) -> Any:
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return getattr(row, key, default)
+
+    @classmethod
+    def _position_direction(cls, row: Any, fallback: str = "") -> str:
+        direction = str(cls._row_value(row, "action", "") or "").strip().lower()
+        if direction in {"buy", "sell"}:
+            return direction
+        try:
+            position_type = int(cls._row_value(row, "type", 0) or 0)
+            return "sell" if position_type == 1 else "buy"
+        except (TypeError, ValueError):
+            return str(fallback or "").strip().lower()
+
+    @classmethod
+    def _find_live_position_for_pending_order(
+        cls,
+        positions: list[Any],
+        *,
+        symbol: str,
+        direction: str,
+        comment: str,
+        timeframe: str = "",
+        strategy: str = "",
+    ) -> Any | None:
+        target_symbol = str(symbol or "").strip()
+        target_direction = str(direction or "").strip().lower()
+        target_comment = str(comment or "").strip()
+        target_prefix = cls._comment_prefix(timeframe, strategy)
+        exact_matches: list[Any] = []
+        prefix_matches: list[Any] = []
+        directional_matches: list[Any] = []
+        for row in positions or []:
+            row_symbol = str(cls._row_value(row, "symbol", "") or "").strip()
+            if target_symbol and row_symbol != target_symbol:
+                continue
+            row_direction = cls._position_direction(row, fallback=target_direction)
+            if target_direction and row_direction and row_direction != target_direction:
+                continue
+            row_comment = str(cls._row_value(row, "comment", "") or "").strip()
+            if target_comment and row_comment == target_comment:
+                exact_matches.append(row)
+                continue
+            if target_prefix and row_comment.lower().startswith(target_prefix):
+                prefix_matches.append(row)
+                continue
+            directional_matches.append(row)
+        matches = exact_matches or prefix_matches
+        if not matches and len(directional_matches) == 1:
+            matches = directional_matches
+        if not matches:
+            return None
+        matches.sort(
+            key=lambda row: (
+                int(cls._row_value(row, "time_msc", 0) or 0),
+                (
+                    int(raw_time.timestamp())
+                    if isinstance((raw_time := cls._row_value(row, "time", 0)), datetime)
+                    else int(raw_time or 0)
+                ),
+                int(cls._row_value(row, "ticket", 0) or 0),
+            )
+        )
+        return matches[-1]
+
+    @staticmethod
+    def _comment_prefix(timeframe: str, strategy: str) -> str:
+        tf = str(timeframe or "").strip().lower()
+        strat = str(strategy or "").strip().lower()
+        if not tf or not strat:
+            return ""
+        return f"{tf}:{strat}:"
+
+    def _tracked_position_tickets(self) -> set[int]:
+        if self._position_manager is None:
+            return set()
+        try:
+            active_positions = self._position_manager.active_positions()
+        except Exception as exc:
+            logger.debug("Failed to inspect tracked position tickets: %s", exc)
+            return set()
+        tickets: set[int] = set()
+        for row in active_positions or []:
+            try:
+                ticket = int(self._row_value(row, "ticket", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if ticket > 0:
+                tickets.add(ticket)
+        return tickets
+
+    @staticmethod
+    def _params_from_pending_fill(
+        base_params: TradeParameters | None,
+        *,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+        volume: float,
+    ) -> TradeParameters:
+        if isinstance(base_params, TradeParameters):
+            resolved_sl = stop_loss if stop_loss > 0 else base_params.stop_loss
+            resolved_tp = take_profit if take_profit > 0 else base_params.take_profit
+            resolved_volume = volume if volume > 0 else base_params.position_size
+            return replace(
+                base_params,
+                entry_price=entry_price,
+                stop_loss=resolved_sl,
+                take_profit=resolved_tp,
+                position_size=resolved_volume,
+                sl_distance=abs(entry_price - resolved_sl),
+                tp_distance=abs(resolved_tp - entry_price),
+            )
+
+        resolved_sl = stop_loss if stop_loss > 0 else entry_price
+        resolved_tp = take_profit if take_profit > 0 else entry_price
+        sl_distance = abs(entry_price - resolved_sl)
+        tp_distance = abs(resolved_tp - entry_price)
+        rr = (tp_distance / sl_distance) if sl_distance > 0 else 0.0
+        return TradeParameters(
+            entry_price=entry_price,
+            stop_loss=resolved_sl,
+            take_profit=resolved_tp,
+            position_size=volume,
+            risk_reward_ratio=rr,
+            atr_value=sl_distance / 2.0 if sl_distance > 0 else 0.0,
+            sl_distance=sl_distance,
+            tp_distance=tp_distance,
+        )
+
+    def _inspect_pending_mt5_order(self, info: dict[str, Any]) -> dict[str, Any]:
+        order_ticket = int(info.get("ticket", 0) or 0)
+        symbol = str(info.get("symbol") or "").strip()
+        direction = str(info.get("direction") or "").strip().lower()
+        comment = str(info.get("comment") or "").strip()
+        signal_id = str(info.get("signal_id") or "").strip()
+
+        orders_getter = getattr(self._trading, "get_orders", None)
+        if callable(orders_getter):
+            try:
+                open_orders = list(orders_getter(symbol=symbol))
+            except Exception as exc:
+                logger.debug(
+                    "TradeExecutor: get_orders(%s) failed while inspecting pending MT5 order %s: %s",
+                    symbol,
+                    order_ticket,
+                    exc,
+                )
+                return {"status": "pending", "reason": "orders_lookup_failed"}
+            for row in open_orders or []:
+                try:
+                    live_order_ticket = int(self._row_value(row, "ticket", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if live_order_ticket == order_ticket:
+                    return {"status": "pending"}
+
+        positions_getter = getattr(self._trading, "get_positions", None)
+        if not callable(positions_getter):
+            return {"status": "pending", "reason": "positions_lookup_unavailable"}
+
+        try:
+            open_positions = list(positions_getter(symbol=symbol))
+        except Exception as exc:
+            logger.debug(
+                "TradeExecutor: get_positions(%s) failed while inspecting pending MT5 order %s: %s",
+                symbol,
+                order_ticket,
+                exc,
+            )
+            return {"status": "pending", "reason": "positions_lookup_failed"}
+
+        raw_position = self._find_live_position_for_pending_order(
+            open_positions,
+            symbol=symbol,
+            direction=direction,
+            comment=comment,
+            timeframe=str(info.get("timeframe") or ""),
+            strategy=str(info.get("strategy") or ""),
+        )
+        if raw_position is None:
+            return {"status": "missing", "reason": "order_missing_without_position"}
+
+        position_ticket = int(self._row_value(raw_position, "ticket", 0) or 0)
+        fill_price = float(self._row_value(raw_position, "price_open", 0.0) or 0.0)
+        stop_loss = float(self._row_value(raw_position, "sl", 0.0) or 0.0)
+        take_profit = float(self._row_value(raw_position, "tp", 0.0) or 0.0)
+        volume = float(self._row_value(raw_position, "volume", 0.0) or 0.0)
+        opened_at = self._row_value(raw_position, "time", None)
+        resolved_comment = str(self._row_value(raw_position, "comment", "") or comment)
+        params = self._params_from_pending_fill(
+            info.get("params"),
+            entry_price=fill_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            volume=volume,
+        )
+
+        if (
+            self._position_manager is not None
+            and position_ticket > 0
+            and position_ticket not in self._tracked_position_tickets()
+        ):
+            try:
+                self._position_manager.track_position(
+                    ticket=position_ticket,
+                    signal_id=signal_id or f"restored:{position_ticket}",
+                    symbol=symbol,
+                    action=direction or self._position_direction(raw_position),
+                    params=params,
+                    timeframe=str(info.get("timeframe") or ""),
+                    strategy=str(info.get("strategy") or ""),
+                    confidence=info.get("confidence"),
+                    regime=info.get("regime"),
+                    comment=resolved_comment,
+                    opened_at=opened_at,
+                    fill_price=fill_price if fill_price > 0 else None,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "TradeExecutor: failed to register filled pending MT5 order ticket=%s -> position=%s: %s",
+                    order_ticket,
+                    position_ticket,
+                    exc,
+                )
+
+        if self._trade_outcome_tracker is not None and signal_id:
+            try:
+                self._trade_outcome_tracker.on_trade_opened(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    timeframe=str(info.get("timeframe") or ""),
+                    strategy=str(info.get("strategy") or ""),
+                    direction=direction or self._position_direction(raw_position),
+                    fill_price=fill_price if fill_price > 0 else params.entry_price,
+                    confidence=float(info.get("confidence") or 0.0),
+                    regime=info.get("regime"),
+                    opened_at=opened_at,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "TradeExecutor: failed to restore trade outcome tracking for signal=%s pending MT5 fill: %s",
+                    signal_id,
+                    exc,
+                )
+
+        return {
+            "status": "filled",
+            "ticket": position_ticket,
+            "fill_price": fill_price,
+        }
+
     def _execute(
         self,
         event: SignalEvent,
@@ -1087,11 +1374,7 @@ class TradeExecutor:
             }
             self._execution_log.append(log_entry)
             # 记录冷却期 bar_time
-            _bar_time = event.metadata.get("bar_time")
-            if _bar_time is not None:
-                self._last_entry_bar_time[
-                    (event.symbol, event.strategy, event.direction)
-                ] = _bar_time
+            self._record_reentry_bar_time(event)
             for fn in self._on_trade_executed:
                 try:
                     fn(log_entry)

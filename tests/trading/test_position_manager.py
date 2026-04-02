@@ -187,6 +187,53 @@ def test_position_manager_sync_open_positions_restores_agent_comment_without_aud
     assert active[0]["comment"] == "agent:consensus:buy:sig_1"
 
 
+def test_position_manager_sync_open_positions_prefers_persisted_runtime_state() -> None:
+    trading = DummyTradingModule(
+        positions=[
+            SimpleNamespace(
+                ticket=113,
+                symbol="XAUUSD",
+                volume=0.1,
+                price_open=3001.0,
+                sl=2991.0,
+                tp=3021.0,
+                time=datetime(2026, 3, 20, 12, 5, tzinfo=timezone.utc),
+                type=0,
+                comment="manual_trade",
+            )
+        ]
+    )
+    manager = PositionManager(trading_module=trading)
+    manager.set_recovery_hooks(
+        position_state_resolver=lambda ticket: {
+            "signal_id": "sig-persisted",
+            "timeframe": "M15",
+            "strategy": "trend_vote",
+            "confidence": 0.88,
+            "regime": "trend",
+            "entry_price": 3000.5,
+            "atr_at_entry": 4.2,
+            "highest_price": 3015.0,
+            "current_price": 3012.0,
+            "breakeven_applied": True,
+            "trailing_active": True,
+            "comment": "M15:trend_vote:buy",
+            "source": "position_runtime_state",
+        },
+    )
+
+    result = manager.sync_open_positions()
+
+    assert result == {"synced": 1, "recovered": 0, "skipped": 0}
+    active = manager.active_positions()
+    assert active[0]["signal_id"] == "sig-persisted"
+    assert active[0]["strategy"] == "trend_vote"
+    assert active[0]["entry_price"] == 3000.5
+    assert active[0]["breakeven_applied"] is True
+    assert active[0]["trailing_active"] is True
+    assert active[0]["highest_price"] == 3015.0
+
+
 def test_position_manager_reconcile_uses_real_close_price_from_history() -> None:
     trading = DummyTradingModule(positions=[])
     trading.close_details[202] = {"close_price": 3012.4}

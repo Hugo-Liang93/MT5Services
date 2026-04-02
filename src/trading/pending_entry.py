@@ -358,11 +358,18 @@ class PendingEntryManager:
         market_service: Any,
         execute_fn: Callable[[SignalEvent, TradeParameters, Dict[str, Any]], Any],
         on_expired_fn: Optional[Callable[[str, str], None]] = None,
+        inspect_mt5_order_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ):
         self._config = config
         self._market = market_service
         self._execute_fn = execute_fn
         self._on_expired_fn = on_expired_fn  # (signal_id, reason) 过期回调
+        self._inspect_mt5_order_fn = inspect_mt5_order_fn
+        self._on_mt5_order_tracked: Optional[Callable[[Dict[str, Any]], None]] = None
+        self._on_mt5_order_filled: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None
+        self._on_mt5_order_expired: Optional[Callable[[Dict[str, Any], str], None]] = None
+        self._on_mt5_order_cancelled: Optional[Callable[[Dict[str, Any], str], None]] = None
+        self._on_mt5_order_missing: Optional[Callable[[Dict[str, Any], str], None]] = None
 
         self._pending: dict[str, PendingEntry] = {}  # signal_id → PendingEntry
         # MT5 挂单追踪：signal_id → {ticket, expires_at, direction, symbol, strategy}
@@ -381,7 +388,9 @@ class PendingEntryManager:
             "total_cancelled": 0,
             "total_price_improvement": 0.0,
             "mt5_orders_placed": 0,
+            "mt5_orders_filled": 0,
             "mt5_orders_expired": 0,
+            "mt5_orders_missing": 0,
         }
 
     @property
@@ -407,6 +416,35 @@ class PendingEntryManager:
             entry.zone_mode,
             entry.expires_at.strftime("%H:%M:%S"),
         )
+
+    def set_mt5_order_lifecycle_hooks(
+        self,
+        *,
+        on_tracked: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_filled: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
+        on_expired: Optional[Callable[[Dict[str, Any], str], None]] = None,
+        on_cancelled: Optional[Callable[[Dict[str, Any], str], None]] = None,
+        on_missing: Optional[Callable[[Dict[str, Any], str], None]] = None,
+    ) -> None:
+        self._on_mt5_order_tracked = on_tracked
+        self._on_mt5_order_filled = on_filled
+        self._on_mt5_order_expired = on_expired
+        self._on_mt5_order_cancelled = on_cancelled
+        self._on_mt5_order_missing = on_missing
+
+    def inspect_mt5_order(self, info: Dict[str, Any]) -> Dict[str, Any]:
+        inspector = self._inspect_mt5_order_fn
+        if not callable(inspector):
+            return {"status": "pending"}
+        return inspector(dict(info)) or {"status": "pending"}
+
+    def restore_mt5_order(self, info: Dict[str, Any]) -> None:
+        restored = dict(info)
+        signal_id = str(restored.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+        with self._lock:
+            self._mt5_orders[signal_id] = restored
 
     def cancel(self, signal_id: str, reason: str = "manual") -> bool:
         """取消指定的挂起入场。"""
@@ -484,7 +522,11 @@ class PendingEntryManager:
                 reason,
             )
         # 同时取消该品种的 MT5 挂单
-        mt5_cancelled = self.cancel_mt5_orders_by_symbol(symbol, reason)
+        mt5_cancelled = self.cancel_mt5_orders_by_symbol(
+            symbol,
+            reason,
+            exclude_direction=exclude_direction,
+        )
         return len(cancelled_entries) + mt5_cancelled
 
     # ── MT5 挂单生命周期管理 ──────────────────────────────────────
@@ -497,22 +539,123 @@ class PendingEntryManager:
         direction: str,
         symbol: str,
         strategy: str,
+        *,
+        timeframe: str = "",
+        confidence: Optional[float] = None,
+        regime: Optional[str] = None,
+        comment: str = "",
+        params: Optional[TradeParameters] = None,
+        order_kind: str = "",
+        entry_low: Optional[float] = None,
+        entry_high: Optional[float] = None,
+        trigger_price: Optional[float] = None,
+        entry_price_requested: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        volume: Optional[float] = None,
+        created_at: Optional[datetime] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """注册 MT5 挂单，由 monitor loop 负责超时取消。"""
+        tracked_info = {
+            "ticket": order_ticket,
+            "signal_id": signal_id,
+            "expires_at": expires_at,
+            "direction": direction,
+            "symbol": symbol,
+            "strategy": strategy,
+            "timeframe": timeframe,
+            "confidence": confidence,
+            "regime": regime,
+            "comment": str(comment or ""),
+            "params": params,
+            "order_kind": str(order_kind or ""),
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "trigger_price": trigger_price,
+            "entry_price_requested": entry_price_requested,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "volume": volume,
+            "created_at": created_at,
+            "metadata": dict(metadata or {}),
+        }
         with self._lock:
-            self._mt5_orders[signal_id] = {
-                "ticket": order_ticket,
-                "expires_at": expires_at,
-                "direction": direction,
-                "symbol": symbol,
-                "strategy": strategy,
-            }
+            self._mt5_orders[signal_id] = tracked_info
             self._stats["mt5_orders_placed"] += 1
+        if self._on_mt5_order_tracked is not None:
+            self._on_mt5_order_tracked(dict(tracked_info))
         logger.info(
             "PendingEntry: tracking MT5 order ticket=%d for %s/%s %s (expires=%s)",
             order_ticket, symbol, strategy, direction,
             expires_at.isoformat(),
         )
+
+    def _check_mt5_order_state(self) -> None:
+        """检查已追踪 MT5 挂单是否仍在挂单簿，或已经成交转为持仓。"""
+        if not callable(self._inspect_mt5_order_fn):
+            return
+
+        with self._lock:
+            tracked_orders = [
+                (sid, dict(info))
+                for sid, info in self._mt5_orders.items()
+            ]
+
+        for sid, info in tracked_orders:
+            try:
+                state = self.inspect_mt5_order(dict(info))
+            except Exception:
+                logger.warning(
+                    "PendingEntry: inspect_mt5_order_fn failed for signal %s",
+                    sid,
+                    exc_info=True,
+                )
+                continue
+
+            status = str(state.get("status") or "pending").strip().lower()
+            if status not in {"filled", "missing"}:
+                continue
+
+            with self._lock:
+                current = self._mt5_orders.get(sid)
+                if current is None:
+                    continue
+                if int(current.get("ticket", 0) or 0) != int(info.get("ticket", 0) or 0):
+                    continue
+                self._mt5_orders.pop(sid, None)
+                if status == "filled":
+                    self._stats["mt5_orders_filled"] += 1
+                else:
+                    self._stats["mt5_orders_missing"] += 1
+
+            if status == "filled" and self._on_mt5_order_filled is not None:
+                self._on_mt5_order_filled(dict(info), dict(state))
+            if status == "missing" and self._on_mt5_order_missing is not None:
+                self._on_mt5_order_missing(
+                    dict(info),
+                    str(state.get("reason") or "missing_without_fill"),
+                )
+
+            if status == "filled":
+                logger.info(
+                    "PendingEntry: MT5 order ticket=%d filled for %s/%s (signal=%s, position=%s)",
+                    int(info.get("ticket", 0) or 0),
+                    info.get("symbol"),
+                    info.get("strategy"),
+                    sid[:8],
+                    state.get("ticket"),
+                )
+            else:
+                logger.info(
+                    "PendingEntry: MT5 order ticket=%d no longer exists for %s/%s "
+                    "(signal=%s, reason=%s)",
+                    int(info.get("ticket", 0) or 0),
+                    info.get("symbol"),
+                    info.get("strategy"),
+                    sid[:8],
+                    state.get("reason") or "missing_without_fill",
+                )
 
     def _check_mt5_order_expiry(self) -> None:
         """检查 MT5 挂单是否超时，超时则通过 MT5 API 取消。"""
@@ -521,18 +664,19 @@ class PendingEntryManager:
         with self._lock:
             for sid, info in list(self._mt5_orders.items()):
                 if now >= info["expires_at"]:
-                    expired.append((sid, self._mt5_orders.pop(sid)))
-                    self._stats["mt5_orders_expired"] += 1
+                    expired.append((sid, dict(info)))
 
         for sid, info in expired:
             ticket = info["ticket"]
+            cancelled = False
             try:
                 # 通过 market_service 获取 trading client 取消挂单
                 trading = getattr(self._market, "_trading_client", None)
                 if trading is None:
                     trading = getattr(self._market, "trading_client", None)
                 if trading is not None and hasattr(trading, "cancel_orders_by_tickets"):
-                    trading.cancel_orders_by_tickets([ticket])
+                    result = trading.cancel_orders_by_tickets([ticket])
+                    cancelled = self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled"))
                     logger.info(
                         "PendingEntry: cancelled expired MT5 order ticket=%d "
                         "for %s/%s (signal=%s)",
@@ -549,21 +693,41 @@ class PendingEntryManager:
                     "PendingEntry: failed to cancel MT5 order ticket=%d",
                     ticket, exc_info=True,
                 )
+            if cancelled:
+                with self._lock:
+                    current = self._mt5_orders.get(sid)
+                    if current is not None and int(current.get("ticket", 0) or 0) == int(ticket):
+                        self._mt5_orders.pop(sid, None)
+                        self._stats["mt5_orders_expired"] += 1
+                if self._on_mt5_order_expired is not None:
+                    self._on_mt5_order_expired(dict(info), "mt5_order_expired")
             if self._on_expired_fn:
                 try:
-                    self._on_expired_fn(sid, "mt5_order_expired")
+                    if cancelled:
+                        self._on_expired_fn(sid, "mt5_order_expired")
                 except Exception:
                     pass
 
     def cancel_mt5_orders_by_symbol(
-        self, symbol: str, reason: str = "new_signal_override"
+        self,
+        symbol: str,
+        reason: str = "new_signal_override",
+        *,
+        exclude_direction: Optional[str] = None,
     ) -> int:
         """取消指定品种的所有 MT5 挂单。"""
         to_cancel: list[tuple[str, dict[str, Any]]] = []
         with self._lock:
             for sid, info in list(self._mt5_orders.items()):
-                if info["symbol"] == symbol:
-                    to_cancel.append((sid, self._mt5_orders.pop(sid)))
+                if (
+                    info["symbol"] == symbol
+                    and (
+                        exclude_direction is None
+                        or str(info.get("direction") or "") != exclude_direction
+                    )
+                ):
+                    to_cancel.append((sid, dict(info)))
+        cancelled_count = 0
         for sid, info in to_cancel:
             ticket = info["ticket"]
             try:
@@ -571,10 +735,31 @@ class PendingEntryManager:
                 if trading is None:
                     trading = getattr(self._market, "trading_client", None)
                 if trading is not None and hasattr(trading, "cancel_orders_by_tickets"):
-                    trading.cancel_orders_by_tickets([ticket])
+                    result = trading.cancel_orders_by_tickets([ticket])
+                    if self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled")):
+                        with self._lock:
+                            current = self._mt5_orders.get(sid)
+                            if current is not None and int(current.get("ticket", 0) or 0) == int(ticket):
+                                self._mt5_orders.pop(sid, None)
+                        cancelled_count += 1
+                        if self._on_mt5_order_cancelled is not None:
+                            self._on_mt5_order_cancelled(dict(info), reason)
             except Exception:
                 logger.error("Failed to cancel MT5 order ticket=%d", ticket, exc_info=True)
-        return len(to_cancel)
+        return cancelled_count
+
+    @staticmethod
+    def _ticket_in_result(result: Any, ticket: int, *, success_keys: tuple[str, ...]) -> bool:
+        if isinstance(result, dict):
+            success = set()
+            for key in success_keys:
+                success.update(int(item) for item in result.get(key, []) if item is not None)
+            failed = {int(item) for item in result.get("failed", []) if item is not None}
+            if ticket in success:
+                return True
+            if failed:
+                return ticket not in failed
+        return bool(result)
 
     def start(self) -> None:
         """启动价格监控线程和填单执行线程。"""
@@ -664,10 +849,41 @@ class PendingEntryManager:
 
     # ── 内部逻辑 ──────────────────────────────────────────────────────────
 
+    def active_execution_contexts(self) -> list[dict[str, Any]]:
+        with self._lock:
+            pending_entries = [
+                {
+                    "signal_id": e.signal_event.signal_id,
+                    "symbol": e.signal_event.symbol,
+                    "timeframe": e.signal_event.timeframe,
+                    "strategy": e.signal_event.strategy,
+                    "direction": e.signal_event.direction,
+                    "source": "pending_entry",
+                    "status": e.status,
+                }
+                for e in self._pending.values()
+                if e.status == "pending"
+            ]
+            mt5_entries = [
+                {
+                    "signal_id": str(info.get("signal_id") or ""),
+                    "symbol": str(info.get("symbol") or ""),
+                    "timeframe": str(info.get("timeframe") or ""),
+                    "strategy": str(info.get("strategy") or ""),
+                    "direction": str(info.get("direction") or ""),
+                    "source": "mt5_order",
+                    "status": "pending",
+                    "ticket": int(info.get("ticket") or 0),
+                }
+                for info in self._mt5_orders.values()
+            ]
+        return pending_entries + mt5_entries
+
     def _monitor_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
                 self._check_all_entries()
+                self._check_mt5_order_state()
                 self._check_mt5_order_expiry()
             except Exception:
                 logger.error("PendingEntryManager monitor error", exc_info=True)

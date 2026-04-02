@@ -6,13 +6,19 @@ from src.api.trade import (
     orders,
     positions,
     trade,
+    trade_active_pending_state_list,
+    trade_pending_execution_context_list,
+    trade_state_alerts_summary,
     trade_control_status,
     trade_control_update,
     trade_daily_summary,
     trade_dispatch,
     trade_from_signal,
+    trade_pending_lifecycle_state_list,
+    trade_position_state_list,
     trade_precheck,
     trade_reconcile,
+    trade_state_summary,
 )
 from src.api.schemas import (
     SignalExecuteTradeRequest,
@@ -211,6 +217,7 @@ def test_trade_control_status_endpoint() -> None:
 
     assert response.success is True
     assert response.data["trade_control"]["auto_entry_enabled"] is True
+    assert response.data["persisted_trade_control"] is None
     assert response.data["executor"]["status"] == "disabled"
     assert response.metadata["operation"] == "trade_control_status"
 
@@ -249,6 +256,140 @@ def test_trade_reconcile_endpoint_returns_manager_snapshot() -> None:
     assert response.data["reconcile"]["recovered"] == 1
     assert response.data["position_manager"]["tracked_positions"] == 1
     assert response.data["tracked_positions"]["items"][0]["symbol"] == "XAUUSD"
+    assert "trading_state" in response.data
+
+
+class _TradingStateStore:
+    def load_trade_control_state(self):
+        return {"auto_entry_enabled": False, "close_only_mode": True}
+
+    def list_pending_order_states(self, *, statuses=None, limit=100):
+        rows = [
+            {"order_ticket": 101, "status": "placed", "symbol": "XAUUSD"},
+            {"order_ticket": 102, "status": "orphan", "symbol": "XAUUSD"},
+            {"order_ticket": 103, "status": "filled", "symbol": "XAUUSD"},
+        ]
+        if statuses:
+            rows = [row for row in rows if row["status"] in set(statuses)]
+        return rows[:limit]
+
+    def list_position_runtime_states(self, *, statuses=None, limit=100):
+        rows = [
+            {"position_ticket": 201, "status": "open", "symbol": "XAUUSD"},
+            {"position_ticket": 202, "status": "closed", "symbol": "XAUUSD"},
+        ]
+        if statuses:
+            rows = [row for row in rows if row["status"] in set(statuses)]
+        return rows[:limit]
+
+
+class _TradingStateAlerts:
+    def summary(self):
+        return {
+            "status": "warning",
+            "alerts": [{"code": "pending_orphan", "severity": "warning"}],
+            "summary": [{"code": "pending_orphan", "status": "failed"}],
+            "observed": {"active_pending_count": 2},
+        }
+
+
+class _PendingEntryManager:
+    def active_execution_contexts(self):
+        return [
+            {
+                "signal_id": "sig_1",
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "strategy": "sma_trend",
+                "direction": "buy",
+                "source": "pending_entry",
+            },
+            {
+                "signal_id": "sig_2",
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "strategy": "sma_trend",
+                "direction": "buy",
+                "source": "mt5_order",
+            },
+        ]
+
+
+def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
+    response = trade_state_summary(
+        runtime_views=RuntimeReadModel(
+            trading_state_store=_TradingStateStore(),
+            trading_state_alerts=_TradingStateAlerts(),
+        ),
+    )
+
+    assert response.success is True
+    assert response.data["trade_control"]["close_only_mode"] is True
+    assert response.data["pending"]["active"]["status_counts"]["placed"] == 1
+    assert response.data["pending"]["lifecycle"]["status_counts"]["filled"] == 1
+    assert response.data["positions"]["status_counts"]["open"] == 1
+    assert response.data["alerts"]["status"] == "warning"
+
+
+def test_trade_state_alerts_summary_endpoint_returns_alert_projection() -> None:
+    response = trade_state_alerts_summary(
+        runtime_views=RuntimeReadModel(trading_state_alerts=_TradingStateAlerts()),
+    )
+
+    assert response.success is True
+    assert response.data["status"] == "warning"
+    assert response.data["alerts"][0]["code"] == "pending_orphan"
+    assert response.metadata["operation"] == "trade_state_alerts_summary"
+
+
+def test_trade_pending_lifecycle_state_list_endpoint_filters_status() -> None:
+    response = trade_pending_lifecycle_state_list(
+        status="orphan",
+        limit=20,
+        runtime_views=RuntimeReadModel(trading_state_store=_TradingStateStore()),
+    )
+
+    assert response.success is True
+    assert response.data["count"] == 1
+    assert response.data["items"][0]["status"] == "orphan"
+    assert response.metadata["operation"] == "trade_pending_lifecycle_state_list"
+
+
+def test_trade_active_pending_state_list_endpoint_returns_active_projection() -> None:
+    response = trade_active_pending_state_list(
+        limit=20,
+        runtime_views=RuntimeReadModel(trading_state_store=_TradingStateStore()),
+    )
+
+    assert response.success is True
+    assert response.data["view"] == "active"
+    assert response.data["count"] == 2
+    assert response.metadata["operation"] == "trade_active_pending_state_list"
+
+
+def test_trade_pending_execution_context_list_endpoint_returns_runtime_projection() -> None:
+    response = trade_pending_execution_context_list(
+        runtime_views=RuntimeReadModel(pending_entry_manager=_PendingEntryManager()),
+    )
+
+    assert response.success is True
+    assert response.data["view"] == "execution_contexts"
+    assert response.data["source_counts"]["pending_entry"] == 1
+    assert response.data["source_counts"]["mt5_order"] == 1
+    assert response.metadata["operation"] == "trade_pending_execution_context_list"
+
+
+def test_trade_position_state_list_endpoint_filters_status() -> None:
+    response = trade_position_state_list(
+        status="open",
+        limit=20,
+        runtime_views=RuntimeReadModel(trading_state_store=_TradingStateStore()),
+    )
+
+    assert response.success is True
+    assert response.data["count"] == 1
+    assert response.data["items"][0]["status"] == "open"
+    assert response.metadata["operation"] == "trade_position_state_list"
 
 
 def test_trade_dispatch_returns_risk_block_error() -> None:

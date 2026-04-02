@@ -1,7 +1,8 @@
-"""三点确认趋势线策略
+"""最佳拟合趋势线策略。
 
-连接 3 个依次抬高的 swing low（上升趋势线）或 3 个依次降低的 swing high
-（下降趋势线），价格第 3 次触碰趋势线时顺势入场。
+在最近 N 根 bar 中提取全部 swing low / swing high，
+搜索能覆盖尽量多 swing 点的支撑 / 压力趋势线，
+再等待当前价格轻触趋势线附近时顺势入场。
 
 仅在 H1/H4 级别运行（低 TF swing 点不稳定，趋势线不可靠）。
 斜率以 ATR 归一化，过滤太平（横盘）和太陡（不可持续）的线。
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from ..evaluation.regime import RegimeType
 from ..models import SignalContext, SignalDecision
@@ -19,32 +20,36 @@ from .base import _resolve_indicator_value, get_tf_param
 logger = logging.getLogger(__name__)
 
 
-# ── 数据结构 ──────────────────────────────────────────────────────────
-
-
 @dataclass(frozen=True)
 class SwingPoint:
     """检测到的 swing high/low 极值点。"""
 
-    index: int  # 在 recent_bars 数组中的位置
-    price: float  # high（swing high）或 low（swing low）
+    index: int
+    price: float
 
 
 @dataclass(frozen=True)
-class TrendlineResult:
-    """经过三点验证的趋势线。"""
+class TrendlineTouch:
+    """当前 bar 相对趋势线的触碰结果。"""
 
-    direction: str  # "ascending" or "descending"
-    point1: SwingPoint
-    point2: SwingPoint
-    point3: SwingPoint
-    slope_per_bar: float  # 每 bar 的原始斜率
-    normalized_slope: float  # 斜率 / ATR
-    fit_error: float  # 第 3 点偏离程度（ATR 归一化）
-    trendline_price_at_current: float  # 趋势线在当前 bar 的投射价格
+    is_valid: bool
+    touch_distance: float
 
 
-# ── Bar 提取工具 ─────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class TrendlineCandidate:
+    """由全部 swing 点拟合出的候选趋势线。"""
+
+    direction: str
+    anchor1: SwingPoint
+    anchor2: SwingPoint
+    covered_points: tuple[SwingPoint, ...]
+    slope_per_bar: float
+    normalized_slope: float
+    mean_error_atr: float
+    max_error_atr: float
+    trendline_price_at_current: float
+    score: tuple[int, int, int, float, float, int]
 
 
 def _bar_value(bar: Any, field: str) -> Optional[float]:
@@ -59,7 +64,35 @@ def _bar_value(bar: Any, field: str) -> Optional[float]:
         return None
 
 
-# ── Swing 检测 ───────────────────────────────────────────────────────
+def _project_price(anchor: SwingPoint, slope_per_bar: float, index: int) -> float:
+    return anchor.price + slope_per_bar * (index - anchor.index)
+
+
+def _evaluate_trendline_touch(
+    *,
+    direction: str,
+    trendline_price: float,
+    touch_price: float,
+    close_price: float,
+    tolerance: float,
+) -> TrendlineTouch:
+    """评估当前 bar 是否属于“轻触趋势线附近”。
+
+    轻触要求：
+    - 触点必须落在趋势线双边容差区间内；
+    - 收盘价仍需站在线的顺势一侧。
+    """
+    touch_distance = abs(touch_price - trendline_price)
+    within_band = touch_distance <= tolerance if tolerance > 0 else touch_distance == 0.0
+
+    if direction == "buy":
+        is_valid = within_band and close_price > trendline_price
+    elif direction == "sell":
+        is_valid = within_band and close_price < trendline_price
+    else:
+        is_valid = False
+
+    return TrendlineTouch(is_valid=is_valid, touch_distance=touch_distance)
 
 
 def _detect_swing_lows(
@@ -67,10 +100,7 @@ def _detect_swing_lows(
     window: int,
     min_spacing: int,
 ) -> List[SwingPoint]:
-    """检测 swing low：bar[i].low 是前后各 window 根 bar 中的最低点。
-
-    min_spacing 约束两个 swing 之间的最小 bar 间距（冲突时保留更低的）。
-    """
+    """检测 swing low。"""
     swings: List[SwingPoint] = []
     n = len(bars)
 
@@ -106,7 +136,7 @@ def _detect_swing_highs(
     window: int,
     min_spacing: int,
 ) -> List[SwingPoint]:
-    """检测 swing high：bar[i].high 是前后各 window 根 bar 中的最高点。"""
+    """检测 swing high。"""
     swings: List[SwingPoint] = []
     n = len(bars)
 
@@ -137,124 +167,137 @@ def _detect_swing_highs(
     return swings
 
 
-# ── 趋势线拟合 ───────────────────────────────────────────────────────
-
-
-def _find_ascending_trendline(
-    swing_lows: List[SwingPoint],
-    atr: float,
-    current_bar_index: int,
+def _candidate_score(
     *,
-    min_slope_atr: float = 0.01,
-    max_slope_atr: float = 0.15,
-    fit_tolerance_atr: float = 0.5,
-) -> Optional[TrendlineResult]:
-    """从 3 个依次抬高的 swing low 中找上升趋势线。
+    covered_count: int,
+    span: int,
+    violation_count: int,
+    mean_error_atr: float,
+    max_error_atr: float,
+    latest_covered_index: int,
+) -> tuple[int, int, int, float, float, int]:
+    """趋势线排序规则。
 
-    从最近的 swing 向前搜索，首个满足条件的三元组即返回（最近 = 最可操作）。
+    优先级：
+    1. 覆盖 swing 点数量更多
+    2. 时间跨度更长
+    3. 违例更少
+    4. 平均偏差更小
+    5. 最大偏差更小
+    6. 最近覆盖点更靠近当前
     """
-    if len(swing_lows) < 3:
-        return None
-
-    for i in range(len(swing_lows) - 1, 1, -1):
-        p3 = swing_lows[i]
-        for j in range(i - 1, 0, -1):
-            p2 = swing_lows[j]
-            if p3.price <= p2.price:
-                continue
-            for k in range(j - 1, -1, -1):
-                p1 = swing_lows[k]
-                if p2.price <= p1.price:
-                    continue
-
-                dx = p2.index - p1.index
-                if dx == 0:
-                    continue
-                slope = (p2.price - p1.price) / dx
-                norm_slope = slope / atr if atr > 0 else 0.0
-                if norm_slope < min_slope_atr or norm_slope > max_slope_atr:
-                    continue
-
-                predicted_p3 = p1.price + slope * (p3.index - p1.index)
-                fit_error = abs(p3.price - predicted_p3)
-                if fit_error > fit_tolerance_atr * atr:
-                    continue
-
-                tl_at_current = p1.price + slope * (current_bar_index - p1.index)
-                return TrendlineResult(
-                    direction="ascending",
-                    point1=p1,
-                    point2=p2,
-                    point3=p3,
-                    slope_per_bar=slope,
-                    normalized_slope=norm_slope,
-                    fit_error=fit_error / atr if atr > 0 else 0.0,
-                    trendline_price_at_current=tl_at_current,
-                )
-    return None
+    return (
+        covered_count,
+        span,
+        -violation_count,
+        -mean_error_atr,
+        -max_error_atr,
+        latest_covered_index,
+    )
 
 
-def _find_descending_trendline(
-    swing_highs: List[SwingPoint],
+def _find_best_trendline(
+    points: Sequence[SwingPoint],
     atr: float,
     current_bar_index: int,
     *,
+    direction: str,
     min_slope_atr: float = 0.01,
     max_slope_atr: float = 0.15,
     fit_tolerance_atr: float = 0.5,
-) -> Optional[TrendlineResult]:
-    """从 3 个依次降低的 swing high 中找下降趋势线。"""
-    if len(swing_highs) < 3:
+    min_covered_points: int = 3,
+    max_break_violations: int = 0,
+) -> Optional[TrendlineCandidate]:
+    """在全部 swing 点中搜索覆盖度最高的趋势线。"""
+    if len(points) < min_covered_points or atr <= 0:
         return None
 
-    for i in range(len(swing_highs) - 1, 1, -1):
-        p3 = swing_highs[i]
-        for j in range(i - 1, 0, -1):
-            p2 = swing_highs[j]
-            if p3.price >= p2.price:
+    tolerance = fit_tolerance_atr * atr
+    best: Optional[TrendlineCandidate] = None
+
+    for left in range(len(points) - 1):
+        anchor1 = points[left]
+        for right in range(left + 1, len(points)):
+            anchor2 = points[right]
+            if anchor2.index <= anchor1.index:
                 continue
-            for k in range(j - 1, -1, -1):
-                p1 = swing_highs[k]
-                if p2.price >= p1.price:
+
+            if direction == "ascending" and anchor2.price <= anchor1.price:
+                continue
+            if direction == "descending" and anchor2.price >= anchor1.price:
+                continue
+
+            slope = (anchor2.price - anchor1.price) / (anchor2.index - anchor1.index)
+            normalized_slope = abs(slope) / atr
+            if normalized_slope < min_slope_atr or normalized_slope > max_slope_atr:
+                continue
+
+            covered_points: list[SwingPoint] = []
+            errors_atr: list[float] = []
+            violation_count = 0
+
+            for point in points:
+                expected = _project_price(anchor1, slope, point.index)
+                error = abs(point.price - expected)
+                if error <= tolerance:
+                    covered_points.append(point)
+                    errors_atr.append(error / atr)
                     continue
 
-                dx = p2.index - p1.index
-                if dx == 0:
-                    continue
-                slope = (p2.price - p1.price) / dx  # 负数
-                norm_slope = abs(slope) / atr if atr > 0 else 0.0
-                if norm_slope < min_slope_atr or norm_slope > max_slope_atr:
-                    continue
+                if direction == "ascending" and point.price < expected - tolerance:
+                    violation_count += 1
+                elif direction == "descending" and point.price > expected + tolerance:
+                    violation_count += 1
 
-                predicted_p3 = p1.price + slope * (p3.index - p1.index)
-                fit_error = abs(p3.price - predicted_p3)
-                if fit_error > fit_tolerance_atr * atr:
-                    continue
+            if len(covered_points) < min_covered_points:
+                continue
+            if violation_count > max_break_violations:
+                continue
 
-                tl_at_current = p1.price + slope * (current_bar_index - p1.index)
-                return TrendlineResult(
-                    direction="descending",
-                    point1=p1,
-                    point2=p2,
-                    point3=p3,
-                    slope_per_bar=slope,
-                    normalized_slope=norm_slope,
-                    fit_error=fit_error / atr if atr > 0 else 0.0,
-                    trendline_price_at_current=tl_at_current,
-                )
-    return None
+            covered_points = sorted(covered_points, key=lambda item: item.index)
+            mean_error_atr = sum(errors_atr) / len(errors_atr)
+            max_error_atr = max(errors_atr) if errors_atr else 0.0
+            span = covered_points[-1].index - covered_points[0].index
+            score = _candidate_score(
+                covered_count=len(covered_points),
+                span=span,
+                violation_count=violation_count,
+                mean_error_atr=mean_error_atr,
+                max_error_atr=max_error_atr,
+                latest_covered_index=covered_points[-1].index,
+            )
+
+            candidate = TrendlineCandidate(
+                direction=direction,
+                anchor1=anchor1,
+                anchor2=anchor2,
+                covered_points=tuple(covered_points),
+                slope_per_bar=slope,
+                normalized_slope=normalized_slope,
+                mean_error_atr=mean_error_atr,
+                max_error_atr=max_error_atr,
+                trendline_price_at_current=_project_price(anchor1, slope, current_bar_index),
+                score=score,
+            )
+
+            if best is None or candidate.score > best.score:
+                best = candidate
+
+    return best
 
 
-# ── 策略类 ───────────────────────────────────────────────────────────
+def _covered_points_payload(points: Iterable[SwingPoint]) -> list[dict[str, float | int]]:
+    return [
+        {"index": point.index, "price": point.price}
+        for point in points
+    ]
 
 
 class TrendlineThreeTouchStrategy:
-    """三点确认趋势线入场策略。
+    """趋势线最佳拟合入场策略。
 
-    连接 3 个 swing low（上升）或 swing high（下降）形成趋势线，
-    当前 bar 触碰趋势线时顺势入场。
-
-    仅 H1/H4 级别运行，低 TF 噪声导致趋势线不可靠。
+    在最近 lookback bars 的 swing 点中，搜索覆盖度最高的趋势线，
+    再等待当前 bar 轻触趋势线时顺势入场。
     """
 
     name = "trendline_3touch"
@@ -274,6 +317,7 @@ class TrendlineThreeTouchStrategy:
     _min_slope_atr: float = 0.01
     _max_slope_atr: float = 0.15
     _fit_tolerance_atr: float = 0.5
+    _min_covered_points: int = 3
 
     def __init__(self, *, lookback_bars: int = 80) -> None:
         self.recent_bars_depth: int = lookback_bars
@@ -315,39 +359,67 @@ class TrendlineThreeTouchStrategy:
             return hold
 
         current_idx = len(bars) - 1
-
         swing_lows = _detect_swing_lows(list(bars), swing_window, min_spacing)
         swing_highs = _detect_swing_highs(list(bars), swing_window, min_spacing)
 
-        ascending = _find_ascending_trendline(
-            swing_lows, atr, current_idx,
-            min_slope_atr=min_slope, max_slope_atr=max_slope, fit_tolerance_atr=fit_tol,
+        ascending = _find_best_trendline(
+            swing_lows,
+            atr,
+            current_idx,
+            direction="ascending",
+            min_slope_atr=min_slope,
+            max_slope_atr=max_slope,
+            fit_tolerance_atr=fit_tol,
+            min_covered_points=self._min_covered_points,
         )
-        descending = _find_descending_trendline(
-            swing_highs, atr, current_idx,
-            min_slope_atr=min_slope, max_slope_atr=max_slope, fit_tolerance_atr=fit_tol,
+        descending = _find_best_trendline(
+            swing_highs,
+            atr,
+            current_idx,
+            direction="descending",
+            min_slope_atr=min_slope,
+            max_slope_atr=max_slope,
+            fit_tolerance_atr=fit_tol,
+            min_covered_points=self._min_covered_points,
         )
 
-        candidates: List[tuple[str, float, TrendlineResult, str]] = []
+        candidates: list[tuple[str, float, TrendlineCandidate, str, TrendlineTouch]] = []
 
         if ascending is not None:
-            tl_price = ascending.trendline_price_at_current
             tolerance = touch_tol * atr
-            if cur_low <= tl_price + tolerance and cur_close > tl_price:
-                conf = self._compute_confidence(ascending, atr, cur_low, tl_price, tolerance)
-                candidates.append(("buy", conf, ascending, "ascending_trendline_touch"))
+            touch = _evaluate_trendline_touch(
+                direction="buy",
+                trendline_price=ascending.trendline_price_at_current,
+                touch_price=cur_low,
+                close_price=cur_close,
+                tolerance=tolerance,
+            )
+            if touch.is_valid:
+                conf = self._compute_confidence(ascending, touch.touch_distance, tolerance)
+                candidates.append(("buy", conf, ascending, "ascending_trendline_touch", touch))
 
         if descending is not None:
-            tl_price = descending.trendline_price_at_current
             tolerance = touch_tol * atr
-            if cur_high >= tl_price - tolerance and cur_close < tl_price:
-                conf = self._compute_confidence(descending, atr, cur_high, tl_price, tolerance)
-                candidates.append(("sell", conf, descending, "descending_trendline_touch"))
+            touch = _evaluate_trendline_touch(
+                direction="sell",
+                trendline_price=descending.trendline_price_at_current,
+                touch_price=cur_high,
+                close_price=cur_close,
+                tolerance=tolerance,
+            )
+            if touch.is_valid:
+                conf = self._compute_confidence(descending, touch.touch_distance, tolerance)
+                candidates.append(("sell", conf, descending, "descending_trendline_touch", touch))
 
         if not candidates:
             return hold
 
-        action, confidence, tl, pattern = max(candidates, key=lambda x: x[1])
+        action, confidence, candidate, pattern, touch = max(candidates, key=lambda item: item[1])
+        covered_points = candidate.covered_points
+        first_point = covered_points[0]
+        second_point = covered_points[1] if len(covered_points) > 1 else covered_points[0]
+        third_point = covered_points[2] if len(covered_points) > 2 else covered_points[-1]
+
         return SignalDecision(
             strategy=self.name,
             symbol=context.symbol,
@@ -355,56 +427,63 @@ class TrendlineThreeTouchStrategy:
             direction=action,
             confidence=min(confidence, 0.90),
             reason=(
-                f"{pattern}:slope={tl.normalized_slope:.4f}/bar,"
-                f"span={tl.point3.index - tl.point1.index}bars,"
-                f"fit={tl.fit_error:.3f}atr"
+                f"{pattern}:touches={len(covered_points)},"
+                f"slope={candidate.normalized_slope:.4f}/bar,"
+                f"mean_err={candidate.mean_error_atr:.3f}atr"
             ),
             used_indicators=used,
             metadata={
                 "atr": atr,
                 "pattern": pattern,
-                "trendline_price": tl.trendline_price_at_current,
-                "slope_per_bar": tl.slope_per_bar,
-                "normalized_slope": tl.normalized_slope,
-                "fit_error_atr": tl.fit_error,
-                "p1_index": tl.point1.index,
-                "p1_price": tl.point1.price,
-                "p2_index": tl.point2.index,
-                "p2_price": tl.point2.price,
-                "p3_index": tl.point3.index,
-                "p3_price": tl.point3.price,
-                "span_bars": tl.point3.index - tl.point1.index,
+                "trendline_price": candidate.trendline_price_at_current,
+                "touch_distance": touch.touch_distance,
+                "slope_per_bar": candidate.slope_per_bar,
+                "normalized_slope": candidate.normalized_slope,
+                "mean_error_atr": candidate.mean_error_atr,
+                "fit_error_atr": candidate.max_error_atr,
+                "covered_point_count": len(covered_points),
+                "covered_points": _covered_points_payload(covered_points),
+                "anchor1_index": candidate.anchor1.index,
+                "anchor1_price": candidate.anchor1.price,
+                "anchor2_index": candidate.anchor2.index,
+                "anchor2_price": candidate.anchor2.price,
+                "p1_index": first_point.index,
+                "p1_price": first_point.price,
+                "p2_index": second_point.index,
+                "p2_price": second_point.price,
+                "p3_index": third_point.index,
+                "p3_price": third_point.price,
+                "span_bars": covered_points[-1].index - covered_points[0].index,
                 "close": cur_close,
             },
         )
 
     def _compute_confidence(
         self,
-        tl: TrendlineResult,
-        atr: float,
-        touch_price: float,
-        tl_price: float,
+        candidate: TrendlineCandidate,
+        touch_distance: float,
         tolerance: float,
     ) -> float:
-        conf = 0.50
+        conf = 0.48
 
-        # 趋势线跨度 bonus（10~60+ bar）
-        span = tl.point3.index - tl.point1.index
+        covered_count = len(candidate.covered_points)
+        conf += min(max(covered_count - self._min_covered_points, 0) * 0.05, 0.15)
+
+        span = candidate.covered_points[-1].index - candidate.covered_points[0].index
         if span > 10:
-            conf += min((span - 10) / 50.0 * 0.12, 0.12)
+            conf += min((span - 10) / 50.0 * 0.10, 0.10)
 
-        # 斜率质量 bonus（0.06 ATR/bar 附近最优）
         optimal = 0.06
-        deviation = abs(tl.normalized_slope - optimal) / optimal
-        conf += max(0.10 * (1.0 - min(deviation, 1.0)), 0.0)
+        deviation = abs(candidate.normalized_slope - optimal) / optimal
+        conf += max(0.08 * (1.0 - min(deviation, 1.0)), 0.0)
 
-        # 第 3 点拟合精度 bonus
-        fit_precision = max(1.0 - tl.fit_error / self._fit_tolerance_atr, 0.0)
-        conf += fit_precision * 0.10
+        mean_precision = max(1.0 - candidate.mean_error_atr / max(self._fit_tolerance_atr, 1e-6), 0.0)
+        conf += mean_precision * 0.07
 
-        # 触碰精度 bonus
+        max_precision = max(1.0 - candidate.max_error_atr / max(self._fit_tolerance_atr, 1e-6), 0.0)
+        conf += max_precision * 0.07
+
         if tolerance > 0:
-            touch_dist = abs(touch_price - tl_price)
-            conf += max(1.0 - touch_dist / tolerance, 0.0) * 0.08
+            conf += max(1.0 - touch_distance / tolerance, 0.0) * 0.08
 
         return min(conf, 0.90)

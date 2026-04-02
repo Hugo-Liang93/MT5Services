@@ -209,3 +209,27 @@ def test_sync_still_skips_unknown_comments() -> None:
 
     assert result["skipped"] == 1
     assert manager.active_positions() == []
+
+
+def test_reconcile_recovers_new_open_positions_before_price_management() -> None:
+    raw_pos = SimpleNamespace(
+        ticket=602,
+        symbol="XAUUSD",
+        volume=0.1,
+        price_open=3000.0,
+        price_current=3012.0,
+        sl=2990.0,
+        tp=3020.0,
+        time=datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc),
+        type=0,
+        comment="M15:trend_vote:buy",
+    )
+    trading = FailingTradingModule(positions=[raw_pos])
+    manager = PositionManager(trading_module=trading)
+
+    manager._reconcile_with_mt5()
+
+    active = manager.active_positions()
+    assert len(active) == 1
+    assert active[0]["ticket"] == 602
+    assert active[0]["current_price"] == 3012.0

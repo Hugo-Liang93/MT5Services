@@ -99,9 +99,15 @@ class PositionManager:
         self._position_context_resolver: Optional[
             Callable[[int, Optional[str]], Optional[Dict[str, Any]]]
         ] = None
+        self._position_state_resolver: Optional[
+            Callable[[int], Optional[Dict[str, Any]]]
+        ] = None
         self._recovered_position_callback: Optional[
             Callable[[TrackedPosition], None]
         ] = None
+        self._on_position_tracked: Optional[Callable[[TrackedPosition, str], None]] = None
+        self._on_position_updated: Optional[Callable[[TrackedPosition, str], None]] = None
+        self._on_position_closed: Optional[Callable[[TrackedPosition, Optional[float]], None]] = None
 
         self._reconcile_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -151,6 +157,12 @@ class PositionManager:
         comment: str = "",
         opened_at: Optional[datetime] = None,
         fill_price: Optional[float] = None,
+        breakeven_applied: bool = False,
+        trailing_active: bool = False,
+        highest_price: Optional[float] = None,
+        lowest_price: Optional[float] = None,
+        current_price: Optional[float] = None,
+        entry_indicators: Optional[Dict[str, Dict]] = None,
     ) -> TrackedPosition:
         resolved_entry_price = (
             float(fill_price) if fill_price is not None else float(params.entry_price)
@@ -172,11 +184,25 @@ class PositionManager:
             source=source,
             comment=str(comment or ""),
             opened_at=opened_at or datetime.now(timezone.utc),
-            highest_price=resolved_entry_price if action == "buy" else None,
-            lowest_price=resolved_entry_price if action == "sell" else None,
+            entry_indicators=dict(entry_indicators or {}),
+            breakeven_applied=bool(breakeven_applied),
+            trailing_active=bool(trailing_active),
+            highest_price=(
+                highest_price
+                if highest_price is not None
+                else (resolved_entry_price if action == "buy" else None)
+            ),
+            lowest_price=(
+                lowest_price
+                if lowest_price is not None
+                else (resolved_entry_price if action == "sell" else None)
+            ),
+            current_price=current_price,
         )
         with self._lock:
             self._positions[ticket] = pos
+        if self._on_position_tracked is not None:
+            self._on_position_tracked(pos, "tracked")
         logger.info(
             "Tracking position ticket=%d signal=%s %s %s",
             ticket,
@@ -226,10 +252,25 @@ class PositionManager:
         position_context_resolver: Optional[
             Callable[[int, Optional[str]], Optional[Dict[str, Any]]]
         ] = None,
+        position_state_resolver: Optional[
+            Callable[[int], Optional[Dict[str, Any]]]
+        ] = None,
         recovered_position_callback: Optional[Callable[[TrackedPosition], None]] = None,
     ) -> None:
         self._position_context_resolver = position_context_resolver
+        self._position_state_resolver = position_state_resolver
         self._recovered_position_callback = recovered_position_callback
+
+    def set_state_hooks(
+        self,
+        *,
+        on_position_tracked: Optional[Callable[[TrackedPosition, str], None]] = None,
+        on_position_updated: Optional[Callable[[TrackedPosition, str], None]] = None,
+        on_position_closed: Optional[Callable[[TrackedPosition, Optional[float]], None]] = None,
+    ) -> None:
+        self._on_position_tracked = on_position_tracked
+        self._on_position_updated = on_position_updated
+        self._on_position_closed = on_position_closed
 
     def remove_position(self, ticket: int) -> None:
         with self._lock:
@@ -419,6 +460,17 @@ class PositionManager:
                     continue
 
             comment = str(getattr(raw_pos, "comment", "") or "")
+            persisted_state = None
+            if self._position_state_resolver is not None:
+                try:
+                    persisted_state = dict(self._position_state_resolver(ticket) or {})
+                except Exception:
+                    logger.debug(
+                        "Position state resolver failed for ticket=%s",
+                        ticket,
+                        exc_info=True,
+                    )
+                    persisted_state = None
             context = None
             if self._position_context_resolver is not None:
                 try:
@@ -430,16 +482,22 @@ class PositionManager:
                         exc_info=True,
                     )
                     context = None
-            context = dict(context or {})
-            if not context.get("signal_id") and not self._is_restorable_comment(comment):
+            merged_context = dict(persisted_state or {})
+            merged_context.update(dict(context or {}))
+            effective_comment = str(merged_context.get("comment") or comment)
+            if not merged_context.get("signal_id") and not self._is_restorable_comment(effective_comment):
                 skipped += 1
                 continue
 
             action = str(
-                context.get("action")
+                merged_context.get("action")
                 or self._action_from_position_type(getattr(raw_pos, "type", None))
             )
-            entry_price = float(getattr(raw_pos, "price_open", 0.0) or 0.0)
+            entry_price = float(
+                merged_context.get("entry_price")
+                or getattr(raw_pos, "price_open", 0.0)
+                or 0.0
+            )
             stop_loss = float(getattr(raw_pos, "sl", 0.0) or 0.0)
             take_profit = float(getattr(raw_pos, "tp", 0.0) or 0.0)
             volume = float(getattr(raw_pos, "volume", 0.0) or 0.0)
@@ -452,7 +510,7 @@ class PositionManager:
             # 至少能让 Indicator Exit 的方向翻转检测生效）
             restored_indicators: Dict[str, Dict] = {}
             symbol_str = str(getattr(raw_pos, "symbol", "") or "")
-            timeframe_str = str(context.get("timeframe") or "")
+            timeframe_str = str(merged_context.get("timeframe") or "")
             if self._indicator_snapshot_fn and symbol_str and timeframe_str:
                 try:
                     snap = self._indicator_snapshot_fn(symbol_str, timeframe_str)
@@ -463,35 +521,51 @@ class PositionManager:
 
             pos = TrackedPosition(
                 ticket=ticket,
-                signal_id=str(context.get("signal_id") or f"restored:{ticket}"),
+                signal_id=str(merged_context.get("signal_id") or f"restored:{ticket}"),
                 symbol=symbol_str,
                 action=action,
-                entry_price=float(context.get("fill_price") or entry_price),
+                entry_price=float(merged_context.get("fill_price") or entry_price),
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 volume=volume,
-                atr_at_entry=self._default_atr_from_position(entry_price, stop_loss),
-                timeframe=timeframe_str,
-                strategy=str(context.get("strategy") or ""),
-                confidence=context.get("confidence"),
-                regime=context.get("regime"),
-                source=str(context.get("source") or "mt5_bootstrap"),
-                entry_indicators=restored_indicators,
-                comment=str(context.get("comment") or comment),
-                opened_at=opened_at,
-                highest_price=entry_price if action == "buy" else None,
-                lowest_price=entry_price if action == "sell" else None,
-                # 推断 breakeven 状态：如果 SL 已经 >= entry_price（多头）或 <= entry_price（空头），
-                # 说明之前已经应用过 breakeven，恢复该状态以便 trailing SL 能立即工作
-                breakeven_applied=(
-                    (action == "buy" and stop_loss >= entry_price)
-                    or (action == "sell" and stop_loss <= entry_price and stop_loss > 0)
+                atr_at_entry=float(
+                    merged_context.get("atr_at_entry")
+                    or self._default_atr_from_position(entry_price, stop_loss)
                 ),
+                timeframe=timeframe_str,
+                strategy=str(merged_context.get("strategy") or ""),
+                confidence=merged_context.get("confidence"),
+                regime=merged_context.get("regime"),
+                source=str(merged_context.get("source") or "mt5_bootstrap"),
+                entry_indicators=restored_indicators,
+                comment=effective_comment,
+                opened_at=opened_at,
+                highest_price=(
+                    merged_context.get("highest_price")
+                    if merged_context.get("highest_price") is not None
+                    else (entry_price if action == "buy" else None)
+                ),
+                lowest_price=(
+                    merged_context.get("lowest_price")
+                    if merged_context.get("lowest_price") is not None
+                    else (entry_price if action == "sell" else None)
+                ),
+                current_price=merged_context.get("current_price"),
+                breakeven_applied=bool(
+                    merged_context.get("breakeven_applied")
+                    or (
+                        (action == "buy" and stop_loss >= entry_price)
+                        or (action == "sell" and stop_loss <= entry_price and stop_loss > 0)
+                    )
+                ),
+                trailing_active=bool(merged_context.get("trailing_active")),
             )
             with self._lock:
                 self._positions[ticket] = pos
+            if self._on_position_tracked is not None:
+                self._on_position_tracked(pos, "recovered")
             synced += 1
-            if self._recovered_position_callback is not None and context.get("signal_id"):
+            if self._recovered_position_callback is not None and merged_context.get("signal_id"):
                 try:
                     self._recovered_position_callback(pos)
                     recovered += 1
@@ -593,6 +667,15 @@ class PositionManager:
         return result
 
     def _reconcile_with_mt5(self) -> None:
+        # Recover newly-opened MT5 positions each cycle so pending-order fills
+        # can enter the management pipeline without requiring a service restart.
+        try:
+            recovery = self.sync_open_positions()
+            if int(recovery.get("synced", 0) or 0) > 0:
+                logger.info("PositionManager reconcile recovered positions: %s", recovery)
+        except Exception as exc:
+            logger.debug("PositionManager: sync_open_positions during reconcile failed: %s", exc)
+
         with self._lock:
             tracked_tickets = dict(self._positions)
 
@@ -656,6 +739,8 @@ class PositionManager:
                             ticket,
                             cb_exc,
                         )
+                if self._on_position_closed is not None:
+                    self._on_position_closed(pos, close_price)
                 continue
 
             # 检测部分平仓：MT5 volume 与 tracked volume 不一致时更新
@@ -670,6 +755,8 @@ class PositionManager:
                         )
                         with self._lock:
                             pos.volume = live_vol
+                        if self._on_position_updated is not None:
+                            self._on_position_updated(pos, "partial_close")
                 except (TypeError, ValueError):
                     pass
 
@@ -696,6 +783,8 @@ class PositionManager:
         if result.should_apply and result.new_stop_loss is not None:
             if self._modify_sl(pos, result.new_stop_loss):
                 pos.breakeven_applied = True
+                if self._on_position_updated is not None:
+                    self._on_position_updated(pos, "breakeven_applied")
                 logger.info("Breakeven applied ticket=%d sl=%.2f", pos.ticket, result.new_stop_loss)
             else:
                 logger.warning("Breakeven SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
@@ -713,6 +802,8 @@ class PositionManager:
         if result.should_update and result.new_stop_loss is not None:
             if self._modify_sl(pos, result.new_stop_loss):
                 pos.trailing_active = True
+                if self._on_position_updated is not None:
+                    self._on_position_updated(pos, "trailing_sl_updated")
             else:
                 logger.warning("Trailing SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
 
@@ -763,6 +854,8 @@ class PositionManager:
         )
         if result.should_update and result.new_take_profit is not None:
             if self._modify_tp(pos, result.new_take_profit):
+                if self._on_position_updated is not None:
+                    self._on_position_updated(pos, "trailing_tp_updated")
                 logger.info(
                     "Trailing TP applied ticket=%d tp=%.2f",
                     pos.ticket, result.new_take_profit,
@@ -791,6 +884,8 @@ class PositionManager:
         )
         if result.should_tighten_sl and result.new_stop_loss is not None:
             if self._modify_sl(pos, result.new_stop_loss):
+                if self._on_position_updated is not None:
+                    self._on_position_updated(pos, "indicator_exit_tightened")
                 logger.info(
                     "Indicator exit SL tightened ticket=%d reason=%s sl=%.2f",
                     pos.ticket, result.reason, result.new_stop_loss,

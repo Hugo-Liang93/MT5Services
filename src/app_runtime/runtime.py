@@ -86,6 +86,7 @@ class AppRuntime:
 
             self._start_calibrator()
             self._start_performance_tracker()
+            self._restore_trading_state()
             self._start_pending_entry()
             self._start_position_manager()
             self._register_monitoring()
@@ -229,6 +230,33 @@ class AppRuntime:
         if self.container.pending_entry_manager is not None:
             self.container.pending_entry_manager.start()
 
+    def _restore_trading_state(self) -> None:
+        recovery = getattr(self.container, "trading_state_recovery", None)
+        trade_module = self.container.trade_module
+        pending_entry_manager = self.container.pending_entry_manager
+        if recovery is None:
+            return
+        try:
+            recovery.warm_start()
+        except Exception:
+            logger.warning("Trading state warm-start failed", exc_info=True)
+        if trade_module is not None:
+            try:
+                result = recovery.restore_trade_control(trade_module)
+                if result.get("restored"):
+                    logger.info("Trade control restored from persistence")
+            except Exception:
+                logger.warning("Trade control restore failed", exc_info=True)
+        if trade_module is not None and pending_entry_manager is not None:
+            try:
+                result = recovery.restore_pending_orders(
+                    pending_entry_manager=pending_entry_manager,
+                    trading_module=trade_module,
+                )
+                logger.info("Pending order recovery: %s", result)
+            except Exception:
+                logger.warning("Pending order restore failed", exc_info=True)
+
     def _start_position_manager(self) -> None:
         c = self.container
         if c.position_manager is None:
@@ -274,6 +302,12 @@ class AppRuntime:
         c.monitoring_manager.register_component(
             "trading", c.trade_module, ["monitoring_summary"]
         )
+        if c.trading_state_alerts is not None:
+            c.monitoring_manager.register_component(
+                "trading_state",
+                c.trading_state_alerts,
+                ["monitoring_summary"],
+            )
         if c.pending_entry_manager is not None:
             c.monitoring_manager.register_component(
                 "pending_entry", c.pending_entry_manager, ["pending_entry"]

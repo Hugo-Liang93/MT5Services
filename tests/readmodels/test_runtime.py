@@ -105,6 +105,65 @@ class DummyPendingEntryManager:
             "stats": {"total_submitted": 2, "fill_rate": 0.5},
         }
 
+    def active_execution_contexts(self):
+        return [
+            {
+                "signal_id": "sig_1",
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "strategy": "sma_trend",
+                "direction": "buy",
+                "source": "pending_entry",
+            },
+            {
+                "signal_id": "sig_2",
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "strategy": "sma_trend",
+                "direction": "buy",
+                "source": "mt5_order",
+            },
+        ]
+
+
+class DummyTradingStateStore:
+    def load_trade_control_state(self):
+        return {
+            "auto_entry_enabled": False,
+            "close_only_mode": True,
+            "reason": "persisted",
+        }
+
+    def list_pending_order_states(self, *, statuses=None, limit=100):
+        rows = [
+            {"order_ticket": 1, "status": "placed", "symbol": "XAUUSD"},
+            {"order_ticket": 2, "status": "orphan", "symbol": "XAUUSD"},
+            {"order_ticket": 3, "status": "filled", "symbol": "XAUUSD"},
+            {"order_ticket": 4, "status": "expired", "symbol": "XAUUSD"},
+        ]
+        if statuses:
+            rows = [row for row in rows if row["status"] in set(statuses)]
+        return rows[:limit]
+
+    def list_position_runtime_states(self, *, statuses=None, limit=100):
+        rows = [
+            {"position_ticket": 11, "status": "open", "symbol": "XAUUSD"},
+            {"position_ticket": 12, "status": "closed", "symbol": "XAUUSD"},
+        ]
+        if statuses:
+            rows = [row for row in rows if row["status"] in set(statuses)]
+        return rows[:limit]
+
+
+class DummyTradingStateAlerts:
+    def summary(self):
+        return {
+            "status": "warning",
+            "alerts": [{"code": "pending_orphan", "severity": "warning"}],
+            "summary": [{"code": "pending_orphan", "status": "failed"}],
+            "observed": {"active_pending_count": 2},
+        }
+
 
 def test_health_report_contains_unified_runtime_sections() -> None:
     read_model = RuntimeReadModel(
@@ -168,3 +227,23 @@ def test_runtime_trade_and_position_projections_are_normalized() -> None:
     assert executor["signals"]["blocked"] == 1
     assert positions["manager"]["reconcile"]["count"] == 5
     assert pending["entries"][0]["signal_id"] == "sig_1"
+
+
+def test_runtime_trading_state_projection_is_normalized() -> None:
+    read_model = RuntimeReadModel(
+        pending_entry_manager=DummyPendingEntryManager(),
+        trading_state_store=DummyTradingStateStore(),
+        trading_state_alerts=DummyTradingStateAlerts(),
+    )
+
+    summary = read_model.trading_state_summary(pending_limit=10, position_limit=10)
+
+    assert summary["trade_control"]["close_only_mode"] is True
+    assert summary["pending"]["active"]["status_counts"]["placed"] == 1
+    assert summary["pending"]["active"]["status_counts"]["orphan"] == 1
+    assert summary["pending"]["lifecycle"]["status_counts"]["filled"] == 1
+    assert summary["pending"]["lifecycle"]["status_counts"]["expired"] == 1
+    assert summary["pending"]["execution_contexts"]["source_counts"]["pending_entry"] == 1
+    assert summary["pending"]["execution_contexts"]["source_counts"]["mt5_order"] == 1
+    assert summary["positions"]["status_counts"]["open"] == 1
+    assert summary["alerts"]["status"] == "warning"

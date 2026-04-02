@@ -24,6 +24,7 @@ from src.config import (
     get_runtime_ingest_settings,
     get_runtime_market_settings,
     get_signal_config,
+    get_trading_ops_config,
     load_db_settings,
     load_mt5_settings,
     load_storage_settings,
@@ -32,6 +33,10 @@ from src.monitoring import get_health_monitor, get_monitoring_manager
 from src.monitoring.pipeline_event_bus import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
 from src.studio.runtime import build_studio_service
+from src.trading.state_alerts import TradingStateAlerts
+from src.trading.state_recovery import TradingStateRecovery
+from src.trading.state_recovery_policy import TradingStateRecoveryPolicy
+from src.trading.state_store import TradingStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +91,29 @@ def build_app_container(
     container.trade_registry = trading_components.trade_registry
     container.trade_module = trading_components.trade_module
     default_account_alias: Optional[str] = trading_components.default_account_alias
+    if container.trade_module is not None and container.storage_writer is not None:
+        trading_ops_config = get_trading_ops_config()
+        container.trading_state_store = TradingStateStore(
+            container.storage_writer.db,
+            account_alias_getter=lambda: container.trade_module.active_account_alias,
+        )
+        container.trading_state_alerts = TradingStateAlerts(
+            state_store=container.trading_state_store,
+            trading_module=container.trade_module,
+            account_alias_getter=lambda: container.trade_module.active_account_alias,
+        )
+        container.trading_state_recovery_policy = TradingStateRecoveryPolicy(
+            container.trading_state_store,
+            orphan_action=trading_ops_config.pending_recovery_orphan_action,
+            missing_action=trading_ops_config.pending_recovery_missing_action,
+        )
+        container.trading_state_recovery = TradingStateRecovery(
+            container.trading_state_store,
+            policy=container.trading_state_recovery_policy,
+        )
+        container.trade_module.set_trade_control_update_hook(
+            container.trading_state_store.sync_trade_control
+        )
 
     economic_settings = get_economic_config()
     if economic_settings.market_impact_enabled:
@@ -113,6 +141,7 @@ def build_app_container(
         trade_module=container.trade_module,
         economic_calendar_service=container.economic_calendar_service,
         signal_config=signal_config_loader(),
+        trading_state_store=container.trading_state_store,
     )
     container.calibrator = signal_components.calibrator
     container.market_structure_analyzer = (
@@ -198,6 +227,8 @@ def build_app_container(
         trade_executor=container.trade_executor,
         position_manager=container.position_manager,
         pending_entry_manager=container.pending_entry_manager,
+        trading_state_store=container.trading_state_store,
+        trading_state_alerts=container.trading_state_alerts,
     )
 
     # Phase 6: frontend observability

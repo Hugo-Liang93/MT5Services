@@ -18,6 +18,8 @@ class RuntimeReadModel:
         trade_executor: Any = None,
         position_manager: Any = None,
         pending_entry_manager: Any = None,
+        trading_state_store: Any = None,
+        trading_state_alerts: Any = None,
     ) -> None:
         self._health_monitor = health_monitor
         self._ingestor = ingestor
@@ -27,6 +29,8 @@ class RuntimeReadModel:
         self._trade_executor = trade_executor
         self._position_manager = position_manager
         self._pending_entry_manager = pending_entry_manager
+        self._trading_state_store = trading_state_store
+        self._trading_state_alerts = trading_state_alerts
 
     @staticmethod
     def _runtime_indicator_status(
@@ -547,6 +551,129 @@ class RuntimeReadModel:
             },
         }
 
+    @staticmethod
+    def _state_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in rows:
+            status = str(row.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
+    def pending_order_state_payload(
+        self,
+        *,
+        statuses: Optional[list[str]] = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        if self._trading_state_store is None:
+            return {"count": 0, "status_counts": {}, "items": []}
+        items = list(
+            self._trading_state_store.list_pending_order_states(
+                statuses=statuses,
+                limit=limit,
+            )
+        )
+        return {
+            "count": len(items),
+            "status_counts": self._state_counts(items),
+            "items": items,
+        }
+
+    def active_pending_order_payload(
+        self,
+        *,
+        limit: int = 20,
+        include_orphan: bool = True,
+    ) -> dict[str, Any]:
+        active_statuses = ["placed"]
+        if include_orphan:
+            active_statuses.append("orphan")
+        payload = self.pending_order_state_payload(
+            statuses=active_statuses,
+            limit=limit,
+        )
+        payload["view"] = "active"
+        payload["active_statuses"] = active_statuses
+        return payload
+
+    def pending_order_lifecycle_payload(
+        self,
+        *,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        payload = self.pending_order_state_payload(limit=limit)
+        payload["view"] = "lifecycle"
+        return payload
+
+    def pending_execution_context_payload(self) -> dict[str, Any]:
+        if self._pending_entry_manager is None:
+            return {"count": 0, "source_counts": {}, "items": []}
+        contexts_fn = getattr(self._pending_entry_manager, "active_execution_contexts", None)
+        if callable(contexts_fn):
+            items = list(contexts_fn() or [])
+        else:
+            status = self.pending_entries_summary()
+            items = list(status.get("entries", []) or [])
+        source_counts: dict[str, int] = {}
+        for row in items:
+            source = str(row.get("source") or "unknown")
+            source_counts[source] = source_counts.get(source, 0) + 1
+        return {
+            "count": len(items),
+            "source_counts": source_counts,
+            "items": items,
+            "view": "execution_contexts",
+        }
+
+    def position_runtime_state_payload(
+        self,
+        *,
+        statuses: Optional[list[str]] = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        if self._trading_state_store is None:
+            return {"count": 0, "status_counts": {}, "items": []}
+        items = list(
+            self._trading_state_store.list_position_runtime_states(
+                statuses=statuses,
+                limit=limit,
+            )
+        )
+        return {
+            "count": len(items),
+            "status_counts": self._state_counts(items),
+            "items": items,
+        }
+
+    def persisted_trade_control_payload(self) -> dict[str, Any] | None:
+        if self._trading_state_store is None:
+            return None
+        return self._trading_state_store.load_trade_control_state()
+
+    def trading_state_summary(
+        self,
+        *,
+        pending_limit: int = 20,
+        position_limit: int = 20,
+    ) -> dict[str, Any]:
+        active_pending = self.active_pending_order_payload(limit=pending_limit)
+        lifecycle_pending = self.pending_order_lifecycle_payload(limit=pending_limit)
+        return {
+            "trade_control": self.persisted_trade_control_payload(),
+            "pending": {
+                "active": active_pending,
+                "lifecycle": lifecycle_pending,
+                "execution_contexts": self.pending_execution_context_payload(),
+            },
+            "positions": self.position_runtime_state_payload(limit=position_limit),
+            "alerts": self.trading_state_alerts_summary(),
+        }
+
+    def trading_state_alerts_summary(self) -> dict[str, Any]:
+        if self._trading_state_alerts is None:
+            return {"status": "unavailable", "alerts": [], "summary": [], "observed": {}}
+        return self._trading_state_alerts.summary()
+
     def dashboard_overview(self, startup_status: Mapping[str, Any]) -> dict[str, Any]:
         account = self._safe_call(
             lambda: self._trading_service.health(),
@@ -565,6 +692,7 @@ class RuntimeReadModel:
             "system": self.build_system_status(startup_status),
             "account": account,
             "positions": self.tracked_positions_payload(),
+            "trading_state": self.trading_state_summary(),
             "signals": self.signal_runtime_summary(),
             "executor": self.trade_executor_summary(),
             "storage": storage,

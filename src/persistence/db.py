@@ -21,6 +21,7 @@ from src.persistence.repositories import (
     MarketRepository,
     RuntimeStatusRepository,
     SignalEventRepository,
+    TradingStateRepository,
     TradeOperationRepository,
 )
 from src.persistence.schema import DDL_STATEMENTS
@@ -42,6 +43,7 @@ class TimescaleWriter:
         self._market_repo: Optional[MarketRepository] = None
         self._signal_repo: Optional[SignalEventRepository] = None
         self._trade_repo: Optional[TradeOperationRepository] = None
+        self._trading_state_repo: Optional[TradingStateRepository] = None
         self._economic_repo: Optional[EconomicCalendarRepository] = None
         self._runtime_repo: Optional[RuntimeStatusRepository] = None
         self._init_pool()
@@ -76,6 +78,14 @@ class TimescaleWriter:
         if repo is None:
             repo = EconomicCalendarRepository(self)
             self._economic_repo = repo
+        return repo
+
+    @property
+    def trading_state_repo(self) -> TradingStateRepository:
+        repo = getattr(self, "_trading_state_repo", None)
+        if repo is None:
+            repo = TradingStateRepository(self)
+            self._trading_state_repo = repo
         return repo
 
     @property
@@ -342,6 +352,24 @@ END $$;
 
     def summarize_trade_operations(self, **kwargs):
         return self.trade_repo.summarize_trade_operations(**kwargs)
+
+    def write_pending_order_states(self, rows, page_size: int = 200) -> None:
+        self.trading_state_repo.write_pending_order_states(rows, page_size=page_size)
+
+    def fetch_pending_order_states(self, **kwargs):
+        return self.trading_state_repo.fetch_pending_order_states(**kwargs)
+
+    def write_position_runtime_states(self, rows, page_size: int = 200) -> None:
+        self.trading_state_repo.write_position_runtime_states(rows, page_size=page_size)
+
+    def fetch_position_runtime_states(self, **kwargs):
+        return self.trading_state_repo.fetch_position_runtime_states(**kwargs)
+
+    def write_trade_control_states(self, rows, page_size: int = 50) -> None:
+        self.trading_state_repo.write_trade_control_states(rows, page_size=page_size)
+
+    def fetch_trade_control_state(self, *, account_alias: str):
+        return self.trading_state_repo.fetch_trade_control_state(account_alias=account_alias)
 
     def write_signal_events(self, rows, page_size: int = 200) -> None:
         self.signal_repo.write_signal_events(rows, page_size=page_size)

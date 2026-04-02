@@ -1,16 +1,15 @@
 """tests/signals/test_trendline_strategy.py — TrendlineThreeTouchStrategy 单元测试。"""
 from __future__ import annotations
 
-import pytest
-
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext
 from src.signals.strategies.trendline import (
+    SwingPoint,
     TrendlineThreeTouchStrategy,
     _detect_swing_highs,
     _detect_swing_lows,
-    _find_ascending_trendline,
-    _find_descending_trendline,
+    _evaluate_trendline_touch,
+    _find_best_trendline,
 )
 
 
@@ -28,30 +27,25 @@ def _context(bars: list[dict], atr: float = 8.0, tf: str = "H1") -> SignalContex
     )
 
 
-# ── Swing 检测测试 ──────────────────────────────────────────────────
-
-
 class TestSwingDetection:
     def test_detect_swing_lows_basic(self):
-        """V 形底部应该被检测为 swing low。"""
         bars = [
-            _bar(100, 105, 95, 102),   # 0
-            _bar(102, 103, 90, 91),    # 1
-            _bar(91, 92, 85, 87),      # 2 ← swing low (lowest)
-            _bar(87, 95, 86, 94),      # 3
-            _bar(94, 100, 93, 99),     # 4
-            _bar(99, 105, 98, 104),    # 5
+            _bar(100, 105, 95, 102),
+            _bar(102, 103, 90, 91),
+            _bar(91, 92, 85, 87),
+            _bar(87, 95, 86, 94),
+            _bar(94, 100, 93, 99),
+            _bar(99, 105, 98, 104),
         ]
         swings = _detect_swing_lows(bars, window=2, min_spacing=1)
         assert len(swings) >= 1
         assert swings[0].price == 85.0
 
     def test_detect_swing_highs_basic(self):
-        """倒 V 顶部应该被检测为 swing high。"""
         bars = [
             _bar(100, 105, 95, 102),
             _bar(102, 110, 101, 108),
-            _bar(108, 115, 107, 113),  # ← swing high
+            _bar(108, 115, 107, 113),
             _bar(113, 112, 105, 106),
             _bar(106, 107, 100, 101),
             _bar(101, 103, 98, 100),
@@ -61,178 +55,202 @@ class TestSwingDetection:
         assert swings[0].price == 115.0
 
     def test_min_spacing_filters_close_swings(self):
-        """间距太近的 swing 应该被合并（保留更低的）。"""
         bars = [
-            _bar(100, 102, 90, 91),    # 0
-            _bar(91, 93, 85, 87),      # 1 ← swing low 85
-            _bar(87, 95, 86, 94),      # 2
-            _bar(94, 96, 84, 88),      # 3 ← swing low 84, too close to 1
-            _bar(88, 100, 87, 99),     # 4
-            _bar(99, 105, 98, 104),    # 5
+            _bar(100, 102, 90, 91),
+            _bar(91, 93, 85, 87),
+            _bar(87, 95, 86, 94),
+            _bar(94, 96, 84, 88),
+            _bar(88, 100, 87, 99),
+            _bar(99, 105, 98, 104),
         ]
         swings = _detect_swing_lows(bars, window=1, min_spacing=5)
-        # Should merge: keep lower one (84)
         assert len(swings) == 1
         assert swings[0].price == 84.0
 
-    def test_no_swings_in_flat_data(self):
-        """完全水平的数据不应产生 swing。"""
-        bars = [_bar(100, 101, 99, 100) for _ in range(20)]
-        lows = _detect_swing_lows(bars, window=3, min_spacing=5)
-        highs = _detect_swing_highs(bars, window=3, min_spacing=5)
-        # Flat data: every bar has same low/high, so no bar is strictly the minimum/maximum
-        # (all are equal, so the < / > check fails)
-        assert len(lows) == 0 or all(s.price == 99.0 for s in lows)
 
-
-# ── 趋势线拟合测试 ──────────────────────────────────────────────────
-
-
-class TestTrendlineFitting:
-    def _rising_swings(self):
-        """3 个依次抬高的 swing low。"""
-        from src.signals.strategies.trendline import SwingPoint
-        return [
+class TestTrendlineCandidateSearch:
+    def test_best_ascending_trendline_prefers_more_covered_points(self):
+        swings = [
             SwingPoint(index=0, price=100.0),
-            SwingPoint(index=20, price=104.0),   # +4 over 20 bars
-            SwingPoint(index=40, price=108.0),   # +4 over 20 bars (完美拟合)
+            SwingPoint(index=20, price=104.0),
+            SwingPoint(index=40, price=108.0),
+            SwingPoint(index=60, price=112.0),
+            SwingPoint(index=75, price=130.0),
         ]
-
-    def _falling_swings(self):
-        from src.signals.strategies.trendline import SwingPoint
-        return [
-            SwingPoint(index=0, price=120.0),
-            SwingPoint(index=20, price=116.0),
-            SwingPoint(index=40, price=112.0),
-        ]
-
-    def test_ascending_trendline_found(self):
-        result = _find_ascending_trendline(
-            self._rising_swings(), atr=8.0, current_bar_index=45,
-            min_slope_atr=0.01, max_slope_atr=0.15, fit_tolerance_atr=0.5,
+        candidate = _find_best_trendline(
+            swings,
+            atr=8.0,
+            current_bar_index=79,
+            direction="ascending",
+            min_slope_atr=0.01,
+            max_slope_atr=0.15,
+            fit_tolerance_atr=0.5,
+            min_covered_points=3,
         )
-        assert result is not None
-        assert result.direction == "ascending"
-        # slope = 4/20 = 0.2, normalized = 0.2/8 = 0.025
-        assert 0.02 < result.normalized_slope < 0.03
+        assert candidate is not None
+        assert candidate.direction == "ascending"
+        assert len(candidate.covered_points) == 4
+        assert 0.02 < candidate.normalized_slope < 0.03
 
-    def test_descending_trendline_found(self):
-        result = _find_descending_trendline(
-            self._falling_swings(), atr=8.0, current_bar_index=45,
-            min_slope_atr=0.01, max_slope_atr=0.15, fit_tolerance_atr=0.5,
-        )
-        assert result is not None
-        assert result.direction == "descending"
-
-    def test_slope_too_flat_rejected(self):
-        from src.signals.strategies.trendline import SwingPoint
-        # 3 个几乎水平的 swing low
+    def test_best_trendline_rejects_flat_slope(self):
         flat = [
             SwingPoint(index=0, price=100.0),
             SwingPoint(index=20, price=100.01),
             SwingPoint(index=40, price=100.02),
         ]
-        result = _find_ascending_trendline(
-            flat, atr=8.0, current_bar_index=45,
-            min_slope_atr=0.01, max_slope_atr=0.15,
+        candidate = _find_best_trendline(
+            flat,
+            atr=8.0,
+            current_bar_index=45,
+            direction="ascending",
+            min_slope_atr=0.01,
+            max_slope_atr=0.15,
+            fit_tolerance_atr=0.5,
         )
-        assert result is None  # slope ~0.0001 < 0.01
+        assert candidate is None
 
-    def test_slope_too_steep_rejected(self):
-        from src.signals.strategies.trendline import SwingPoint
+    def test_best_trendline_rejects_steep_slope(self):
         steep = [
             SwingPoint(index=0, price=100.0),
             SwingPoint(index=5, price=110.0),
             SwingPoint(index=10, price=120.0),
         ]
-        result = _find_ascending_trendline(
-            steep, atr=8.0, current_bar_index=12,
-            min_slope_atr=0.01, max_slope_atr=0.15,
+        candidate = _find_best_trendline(
+            steep,
+            atr=8.0,
+            current_bar_index=12,
+            direction="ascending",
+            min_slope_atr=0.01,
+            max_slope_atr=0.15,
+            fit_tolerance_atr=0.5,
         )
-        # slope = 10/5 = 2.0, normalized = 2.0/8 = 0.25 > 0.15
-        assert result is None
+        assert candidate is None
 
-    def test_third_point_bad_fit_rejected(self):
-        from src.signals.strategies.trendline import SwingPoint
-        # p1→p2 line predicts p3=108, but actual p3=115 (too far)
-        bad_fit = [
+    def test_best_trendline_rejects_support_line_with_break_violation(self):
+        violating = [
             SwingPoint(index=0, price=100.0),
             SwingPoint(index=20, price=104.0),
-            SwingPoint(index=40, price=115.0),  # predicted 108, off by 7
+            SwingPoint(index=30, price=96.0),
+            SwingPoint(index=40, price=108.0),
+            SwingPoint(index=60, price=112.0),
         ]
-        result = _find_ascending_trendline(
-            bad_fit, atr=8.0, current_bar_index=45,
-            fit_tolerance_atr=0.5,  # tolerance = 0.5*8 = 4, error = 7 > 4
+        candidate = _find_best_trendline(
+            violating,
+            atr=8.0,
+            current_bar_index=65,
+            direction="ascending",
+            min_slope_atr=0.01,
+            max_slope_atr=0.15,
+            fit_tolerance_atr=0.5,
+            min_covered_points=3,
+            max_break_violations=0,
         )
-        assert result is None
+        assert candidate is None
 
-    def test_insufficient_swings_returns_none(self):
-        from src.signals.strategies.trendline import SwingPoint
-        result = _find_ascending_trendline(
-            [SwingPoint(0, 100.0), SwingPoint(20, 104.0)],
-            atr=8.0, current_bar_index=30,
+
+class TestTrendlineTouchRule:
+    def test_buy_touch_accepts_light_touch_inside_band(self):
+        touch = _evaluate_trendline_touch(
+            direction="buy",
+            trendline_price=3000.5,
+            touch_price=3000.0,
+            close_price=3005.0,
+            tolerance=2.4,
         )
-        assert result is None
+        assert touch.is_valid is True
 
+    def test_buy_touch_rejects_deep_break_below_trendline(self):
+        touch = _evaluate_trendline_touch(
+            direction="buy",
+            trendline_price=3000.5,
+            touch_price=2994.0,
+            close_price=3005.0,
+            tolerance=2.4,
+        )
+        assert touch.is_valid is False
 
-# ── 策略集成测试 ─────────────────────────────────────────────────────
+    def test_sell_touch_rejects_deep_break_above_trendline(self):
+        touch = _evaluate_trendline_touch(
+            direction="sell",
+            trendline_price=3000.5,
+            touch_price=3007.0,
+            close_price=2998.0,
+            tolerance=2.4,
+        )
+        assert touch.is_valid is False
 
 
 class TestTrendlineStrategy:
-    def _build_ascending_bars(self, atr: float = 8.0) -> list[dict]:
-        """构建带有 3 个上升 swing low 的 bar 序列，最后一根触碰趋势线。"""
+    def _build_ascending_bars(self) -> list[dict]:
         bars: list[dict] = []
-        # 前 20 根：噪声填充
         for i in range(20):
             bars.append(_bar(3000.0 + i * 0.1, 3002.0, 2998.0 + i * 0.1, 3001.0 + i * 0.1))
 
-        # Swing low 1: index ~23, low = 2990
-        bars.append(_bar(2995.0, 2997.0, 2991.0, 2995.0))  # 20
-        bars.append(_bar(2994.0, 2996.0, 2990.5, 2993.0))  # 21
-        bars.append(_bar(2993.0, 2995.0, 2990.0, 2992.0))  # 22 ← swing low
-        bars.append(_bar(2992.0, 2998.0, 2991.0, 2997.0))  # 23
-        bars.append(_bar(2997.0, 3005.0, 2996.0, 3004.0))  # 24
-        bars.append(_bar(3004.0, 3008.0, 3003.0, 3007.0))  # 25
-        bars.append(_bar(3007.0, 3010.0, 3005.0, 3009.0))  # 26
-
-        # 回调到 Swing low 2: index ~32, low = 2994（高于 2990）
-        bars.append(_bar(3009.0, 3010.0, 3000.0, 3001.0))  # 27
-        bars.append(_bar(3001.0, 3003.0, 2996.0, 2997.0))  # 28
-        bars.append(_bar(2997.0, 2999.0, 2995.0, 2996.0))  # 29
-        bars.append(_bar(2996.0, 2998.0, 2994.0, 2995.0))  # 30 ← swing low
-        bars.append(_bar(2995.0, 3002.0, 2994.5, 3001.0))  # 31
-        bars.append(_bar(3001.0, 3008.0, 3000.0, 3007.0))  # 32
-        bars.append(_bar(3007.0, 3012.0, 3006.0, 3011.0))  # 33
-        bars.append(_bar(3011.0, 3015.0, 3010.0, 3014.0))  # 34
-
-        # 回调到 Swing low 3: index ~39, low ≈ 2998（趋势线预测值附近）
-        bars.append(_bar(3014.0, 3015.0, 3005.0, 3006.0))  # 35
-        bars.append(_bar(3006.0, 3008.0, 3000.0, 3001.0))  # 36
-        bars.append(_bar(3001.0, 3003.0, 2998.0, 2999.0))  # 37 ← swing low
-        bars.append(_bar(2999.0, 3005.0, 2998.5, 3004.0))  # 38
-        bars.append(_bar(3004.0, 3010.0, 3003.0, 3009.0))  # 39
-
-        # 上涨后再回调到趋势线附近 — 当前 bar 触碰
-        bars.append(_bar(3009.0, 3012.0, 3008.0, 3011.0))  # 40
-        bars.append(_bar(3011.0, 3014.0, 3010.0, 3013.0))  # 41
-        bars.append(_bar(3013.0, 3014.0, 3005.0, 3006.0))  # 42
-        # 趋势线：从 2990(idx22) 到 2994(idx30)，斜率 = 4/8 = 0.5/bar
-        # 在 idx 43 的预测值 ≈ 2990 + 0.5*(43-22) = 3000.5
-        # 当前 bar：low 触碰趋势线附近，close 在上方
-        bars.append(_bar(3005.0, 3007.0, 3000.0, 3005.0))  # 43 ← touch
-
+        bars.extend(
+            [
+                _bar(2995.0, 2997.0, 2991.0, 2995.0),
+                _bar(2994.0, 2996.0, 2990.5, 2993.0),
+                _bar(2993.0, 2995.0, 2990.0, 2992.0),
+                _bar(2992.0, 2998.0, 2991.0, 2997.0),
+                _bar(2997.0, 3005.0, 2996.0, 3004.0),
+                _bar(3004.0, 3008.0, 3003.0, 3007.0),
+                _bar(3007.0, 3010.0, 3005.0, 3009.0),
+                _bar(3009.0, 3010.0, 3000.0, 3001.0),
+                _bar(3001.0, 3003.0, 2996.0, 2997.0),
+                _bar(2997.0, 2999.0, 2995.0, 2996.0),
+                _bar(2996.0, 2998.0, 2994.0, 2995.0),
+                _bar(2995.0, 3002.0, 2994.5, 3001.0),
+                _bar(3001.0, 3008.0, 3000.0, 3007.0),
+                _bar(3007.0, 3012.0, 3006.0, 3011.0),
+                _bar(3011.0, 3015.0, 3010.0, 3014.0),
+                _bar(3014.0, 3015.0, 3005.0, 3006.0),
+                _bar(3006.0, 3008.0, 3000.0, 3001.0),
+                _bar(3001.0, 3003.0, 2998.0, 2999.0),
+                _bar(2999.0, 3005.0, 2998.5, 3004.0),
+                _bar(3004.0, 3010.0, 3003.0, 3009.0),
+                _bar(3009.0, 3012.0, 3008.0, 3011.0),
+                _bar(3011.0, 3014.0, 3010.0, 3013.0),
+                _bar(3013.0, 3014.0, 3005.0, 3006.0),
+                _bar(3005.0, 3007.0, 3000.0, 3005.0),
+            ]
+        )
         return bars
+
+    def _build_descending_bars(self) -> list[dict]:
+        pivot = 6000.0
+        mirrored: list[dict] = []
+        for bar in self._build_ascending_bars():
+            mirrored.append(
+                _bar(
+                    pivot - bar["open"],
+                    pivot - bar["low"],
+                    pivot - bar["high"],
+                    pivot - bar["close"],
+                )
+            )
+        return mirrored
 
     def test_ascending_trendline_buy(self):
         strategy = TrendlineThreeTouchStrategy(lookback_bars=50)
+        decision = strategy.evaluate(_context(self._build_ascending_bars()))
+        assert decision.direction == "buy"
+        assert decision.confidence >= 0.50
+        assert decision.metadata["covered_point_count"] >= 3
+        assert len(decision.metadata["covered_points"]) == decision.metadata["covered_point_count"]
+
+    def test_descending_trendline_sell(self):
+        strategy = TrendlineThreeTouchStrategy(lookback_bars=50)
+        decision = strategy.evaluate(_context(self._build_descending_bars()))
+        assert decision.direction == "sell"
+        assert decision.confidence >= 0.50
+        assert decision.metadata["covered_point_count"] >= 3
+
+    def test_hold_when_touch_bar_deeply_breaks_below_trendline(self):
+        strategy = TrendlineThreeTouchStrategy(lookback_bars=50)
         bars = self._build_ascending_bars()
+        bars[-1] = _bar(3005.0, 3007.0, 2994.0, 3005.0)
         decision = strategy.evaluate(_context(bars))
-        # 因为 swing 检测依赖窗口，可能检测不到完美的三点
-        # 只验证策略不崩溃且能正确返回
-        assert decision.direction in ("buy", "hold")
-        if decision.direction == "buy":
-            assert decision.confidence >= 0.50
-            assert "ascending" in decision.reason
+        assert decision.direction == "hold"
 
     def test_hold_when_insufficient_bars(self):
         strategy = TrendlineThreeTouchStrategy()
@@ -251,7 +269,6 @@ class TestTrendlineStrategy:
         assert strategy.evaluate(ctx).direction == "hold"
 
     def test_hold_in_flat_market(self):
-        """水平市场没有趋势线 → hold。"""
         strategy = TrendlineThreeTouchStrategy(lookback_bars=30)
         bars = [_bar(3000.0, 3002.0, 2998.0, 3001.0) for _ in range(30)]
         decision = strategy.evaluate(_context(bars))
@@ -259,18 +276,24 @@ class TestTrendlineStrategy:
 
     def test_confidence_capped_at_090(self):
         strategy = TrendlineThreeTouchStrategy()
-        assert strategy.regime_affinity[RegimeType.TRENDING] == 1.00
-        # Confidence cap is enforced in _compute_confidence
-        conf = strategy._compute_confidence(
-            type("FakeTL", (), {
-                "point1": type("P", (), {"index": 0, "price": 100})(),
-                "point2": type("P", (), {"index": 30, "price": 110})(),
-                "point3": type("P", (), {"index": 60, "price": 120})(),
+        fake = type(
+            "FakeCandidate",
+            (),
+            {
+                "covered_points": (
+                    SwingPoint(index=0, price=100.0),
+                    SwingPoint(index=20, price=104.0),
+                    SwingPoint(index=40, price=108.0),
+                    SwingPoint(index=60, price=112.0),
+                    SwingPoint(index=80, price=116.0),
+                    SwingPoint(index=100, price=120.0),
+                ),
                 "normalized_slope": 0.06,
-                "fit_error": 0.0,
-            })(),
-            atr=8.0, touch_price=120.0, tl_price=120.0, tolerance=2.4,
-        )
+                "mean_error_atr": 0.0,
+                "max_error_atr": 0.0,
+            },
+        )()
+        conf = strategy._compute_confidence(fake, touch_distance=0.0, tolerance=2.4)
         assert conf <= 0.90
 
 

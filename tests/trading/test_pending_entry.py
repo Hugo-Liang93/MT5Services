@@ -239,12 +239,14 @@ class TestPendingEntryManager:
         market_service: Optional[FakeMarketService] = None,
         execute_fn: Optional[Any] = None,
         on_expired_fn: Optional[Any] = None,
+        inspect_mt5_order_fn: Optional[Any] = None,
     ) -> PendingEntryManager:
         return PendingEntryManager(
             config=PendingEntryConfig(check_interval=0.05),
             market_service=market_service or FakeMarketService(),
             execute_fn=execute_fn or MagicMock(),
             on_expired_fn=on_expired_fn,
+            inspect_mt5_order_fn=inspect_mt5_order_fn,
         )
 
     def _make_pending(
@@ -439,6 +441,24 @@ class TestPendingEntryManager:
         assert "stats" in status
         assert status["stats"]["total_submitted"] == 1
 
+    def test_active_execution_contexts_include_mt5_orders(self) -> None:
+        mgr = self._make_manager()
+        mgr.submit(self._make_pending(signal_id="sig-local"))
+        mgr.track_mt5_order(
+            signal_id="sig-mt5",
+            order_ticket=7003,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            direction="buy",
+            symbol="XAUUSD",
+            strategy="supertrend",
+            timeframe="M5",
+        )
+
+        contexts = mgr.active_execution_contexts()
+
+        assert len(contexts) == 2
+        assert {item["source"] for item in contexts} == {"pending_entry", "mt5_order"}
+
     def test_best_price_tracked_for_buy(self) -> None:
         market = FakeMarketService(FakeQuote(ask=2655.0, bid=2654.50))
         mgr = self._make_manager(market_service=market)
@@ -529,3 +549,91 @@ class TestPendingEntryManager:
         mgr.shutdown()
 
         execute_fn.assert_called_once()
+
+    def test_mt5_order_fill_is_removed_after_inspection(self) -> None:
+        inspected = []
+        mgr = self._make_manager(
+            inspect_mt5_order_fn=lambda info: (
+                inspected.append(info["ticket"]) or {"status": "filled", "ticket": 9001}
+            )
+        )
+
+        mgr.track_mt5_order(
+            signal_id="sig-mt5-fill",
+            order_ticket=7001,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            direction="buy",
+            symbol="XAUUSD",
+            strategy="supertrend",
+            timeframe="M5",
+            confidence=0.8,
+            comment="M5:supertrend:limit_rsigmt5",
+            params=_make_trade_params(),
+        )
+
+        mgr._check_mt5_order_state()
+
+        assert inspected == [7001]
+        assert mgr._mt5_orders == {}
+        assert mgr.status()["stats"]["mt5_orders_filled"] == 1
+
+    def test_mt5_order_missing_is_dropped_without_expiry(self) -> None:
+        mgr = self._make_manager(
+            inspect_mt5_order_fn=lambda info: {
+                "status": "missing",
+                "reason": "order_missing_without_position",
+            }
+        )
+
+        mgr.track_mt5_order(
+            signal_id="sig-mt5-missing",
+            order_ticket=7002,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            direction="sell",
+            symbol="XAUUSD",
+            strategy="supertrend",
+            comment="M5:supertrend:limit_rsigmt6",
+        )
+
+        mgr._check_mt5_order_state()
+
+        assert mgr._mt5_orders == {}
+        assert mgr.status()["stats"]["mt5_orders_missing"] == 1
+
+    def test_cancel_by_symbol_respects_exclude_direction_for_mt5_orders(self) -> None:
+        market = FakeMarketService()
+        trading_client = MagicMock()
+        trading_client.cancel_orders_by_tickets.side_effect = [
+            {"canceled": [7005], "failed": []},
+        ]
+        market._trading_client = trading_client
+        mgr = self._make_manager(market_service=market)
+        mgr.track_mt5_order(
+            signal_id="sig-buy",
+            order_ticket=7004,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            direction="buy",
+            symbol="XAUUSD",
+            strategy="supertrend",
+            timeframe="M5",
+        )
+        mgr.track_mt5_order(
+            signal_id="sig-sell",
+            order_ticket=7005,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            direction="sell",
+            symbol="XAUUSD",
+            strategy="supertrend",
+            timeframe="M5",
+        )
+
+        cancelled = mgr.cancel_by_symbol(
+            "XAUUSD",
+            "override",
+            exclude_direction="buy",
+        )
+
+        assert cancelled == 1
+        assert trading_client.cancel_orders_by_tickets.call_args_list[0].args[0] == [7005]
+        assert "sig-buy" in mgr._mt5_orders
+        assert "sig-sell" not in mgr._mt5_orders

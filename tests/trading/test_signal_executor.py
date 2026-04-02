@@ -6,6 +6,7 @@ import pytest
 
 from src.signals.models import SignalEvent
 from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
+from src.trading.sizing import TradeParameters
 from src.trading.signal_executor import ExecutorConfig, TradeExecutor
 
 
@@ -19,6 +20,7 @@ class DummyTradingModule:
     def __init__(self):
         self.calls = []
         self.live_positions = []
+        self.live_orders = []
 
     def dispatch_operation(self, operation, payload):
         self.calls.append((operation, payload))
@@ -32,13 +34,55 @@ class DummyTradingModule:
             return list(self.live_positions)
         return [row for row in self.live_positions if row.get("symbol") == symbol]
 
+    def get_orders(self, symbol=None):
+        if symbol is None:
+            return list(self.live_orders)
+        return [row for row in self.live_orders if row.get("symbol") == symbol]
+
 
 class DummyPositionManager:
     def __init__(self, positions):
         self._positions = positions
+        self.track_calls = []
 
     def active_positions(self):
         return list(self._positions)
+
+    def track_position(self, **kwargs):
+        self.track_calls.append(kwargs)
+        tracked = {
+            "ticket": kwargs["ticket"],
+            "symbol": kwargs["symbol"],
+            "timeframe": kwargs.get("timeframe"),
+            "strategy": kwargs.get("strategy"),
+            "action": kwargs.get("action"),
+        }
+        self._positions.append(tracked)
+        return tracked
+
+
+class DummyTradeOutcomeTracker:
+    def __init__(self):
+        self.opened = []
+
+    def on_trade_opened(self, **kwargs):
+        self.opened.append(kwargs)
+
+
+class DummyPendingManager:
+    def __init__(self, contexts=None, *, config=None):
+        self._contexts = list(contexts or [])
+        self.config = config
+        self.tracked_orders = []
+
+    def active_execution_contexts(self):
+        return list(self._contexts)
+
+    def status(self):
+        return {"active_count": len(self._contexts), "entries": list(self._contexts), "stats": {}}
+
+    def track_mt5_order(self, **kwargs):
+        self.tracked_orders.append(kwargs)
 
 
 
@@ -244,6 +288,88 @@ def test_trade_executor_allows_reentry_after_same_strategy_direction_position_is
     assert module.calls[0][1]["request_id"] == "sig_2"
 
 
+def test_trade_executor_skips_when_same_strategy_direction_mt5_pending_order_exists() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        pending_entry_manager=DummyPendingManager(
+            [
+                {
+                    "symbol": "XAUUSD",
+                    "timeframe": "M5",
+                    "strategy": "sma_trend",
+                    "direction": "buy",
+                    "source": "mt5_order",
+                }
+            ]
+        ),
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        "pending_entry_same_strategy_direction"
+    )
+
+
+def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> None:
+    from src.trading.pending_entry import PendingEntryConfig
+
+    module = DummyTradingModule()
+    pending_manager = DummyPendingManager(
+        config=PendingEntryConfig(cancel_on_new_signal=False),
+    )
+    executor = TradeExecutor(
+        trading_module=module,
+        pending_entry_manager=pending_manager,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            reentry_cooldown_bars=3,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+    )
+
+    first = _build_event(spread_points=20.0, close_price=3000.0)
+    first = SignalEvent(
+        **{
+            **first.__dict__,
+            "signal_id": "sig_pending_1",
+            "metadata": {
+                **first.metadata,
+                "bar_time": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+            },
+        }
+    )
+    second = _build_event(spread_points=20.0, close_price=3000.0)
+    second = SignalEvent(
+        **{
+            **second.__dict__,
+            "signal_id": "sig_pending_2",
+            "metadata": {
+                **second.metadata,
+                "bar_time": datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc),
+            },
+            "generated_at": datetime.now(timezone.utc),
+        }
+    )
+
+    _fire(executor, first)
+    _fire(executor, second)
+
+    assert len(module.calls) == 1
+    assert len(pending_manager.tracked_orders) == 1
+    assert executor._last_entry_bar_time[("XAUUSD", "sma_trend", "buy")] == datetime(
+        2026, 1, 1, 0, 0, tzinfo=timezone.utc
+    )
+
+
 def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
     module = DummyTradingModule()
     executor = TradeExecutor(
@@ -285,6 +411,124 @@ def test_trade_executor_passes_signal_id_as_request_id() -> None:
 
     assert module.calls
     assert module.calls[0][1]["request_id"] == "sig_1"
+
+
+def test_trade_executor_registers_filled_pending_mt5_order_immediately() -> None:
+    module = DummyTradingModule()
+    module.live_positions = [
+        {
+            "ticket": 101,
+            "symbol": "XAUUSD",
+            "comment": "M5:sma_trend:limit_rsig1",
+            "price_open": 2999.5,
+            "sl": 2995.5,
+            "tp": 3007.5,
+            "volume": 0.05,
+            "time": datetime.now(timezone.utc),
+        }
+    ]
+    position_manager = DummyPositionManager([])
+    outcome_tracker = DummyTradeOutcomeTracker()
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=position_manager,
+        trade_outcome_tracker=outcome_tracker,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+    )
+
+    result = executor._inspect_pending_mt5_order(
+        {
+            "signal_id": "sig_1",
+            "ticket": 7001,
+            "symbol": "XAUUSD",
+            "direction": "buy",
+            "strategy": "sma_trend",
+            "timeframe": "M5",
+            "confidence": 0.9,
+            "regime": "trend",
+            "comment": "M5:sma_trend:limit_rsig1",
+            "params": TradeParameters(
+                entry_price=3000.0,
+                stop_loss=2996.0,
+                take_profit=3008.0,
+                position_size=0.05,
+                risk_reward_ratio=2.0,
+                atr_value=2.0,
+                sl_distance=4.0,
+                tp_distance=8.0,
+            ),
+        }
+    )
+
+    assert result["status"] == "filled"
+    assert result["ticket"] == 101
+    assert len(position_manager.track_calls) == 1
+    assert position_manager.track_calls[0]["ticket"] == 101
+    assert position_manager.track_calls[0]["signal_id"] == "sig_1"
+    assert outcome_tracker.opened[0]["signal_id"] == "sig_1"
+    assert outcome_tracker.opened[0]["fill_price"] == pytest.approx(2999.5)
+
+
+def test_trade_executor_matches_filled_pending_order_by_strategy_prefix_when_comment_differs() -> None:
+    module = DummyTradingModule()
+    module.live_positions = [
+        {
+            "ticket": 202,
+            "symbol": "XAUUSD",
+            "type": 0,
+            "comment": "M30:htf_h4_pullback:limit",
+            "price_open": 4649.15,
+            "sl": 4583.65,
+            "tp": 4731.02,
+            "volume": 0.01,
+            "time": datetime.now(timezone.utc),
+        }
+    ]
+    position_manager = DummyPositionManager([])
+    outcome_tracker = DummyTradeOutcomeTracker()
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=position_manager,
+        trade_outcome_tracker=outcome_tracker,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+    )
+
+    result = executor._inspect_pending_mt5_order(
+        {
+            "signal_id": "sig_h4_pullback",
+            "ticket": 7002,
+            "symbol": "XAUUSD",
+            "direction": "buy",
+            "strategy": "htf_h4_pullback",
+            "timeframe": "M30",
+            "confidence": 0.53,
+            "comment": "M30:htf_h4_pullba_r7fab5734",
+            "params": TradeParameters(
+                entry_price=4661.06,
+                stop_loss=4583.65,
+                take_profit=4731.02,
+                position_size=0.01,
+                risk_reward_ratio=1.0,
+                atr_value=29.77,
+                sl_distance=77.41,
+                tp_distance=69.96,
+            ),
+        }
+    )
+
+    assert result["status"] == "filled"
+    assert result["ticket"] == 202
+    assert len(position_manager.track_calls) == 1
+    assert position_manager.track_calls[0]["signal_id"] == "sig_h4_pullback"
+    assert outcome_tracker.opened[0]["signal_id"] == "sig_h4_pullback"
 
 
 def test_trade_executor_voting_group_strategy_blocked() -> None:
@@ -407,4 +651,3 @@ def test_execution_gate_allows_armed_signal() -> None:
 
     assert allowed
     assert reason == ""
-

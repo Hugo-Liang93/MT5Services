@@ -106,6 +106,11 @@ def trade_control_status(
     return ApiResponse.success_response(
         data={
             "trade_control": service.trade_control_status(),
+            "persisted_trade_control": runtime_views.persisted_trade_control_payload(),
+            "trading_state": runtime_views.trading_state_summary(
+                pending_limit=10,
+                position_limit=10,
+            ),
             "executor": runtime_views.trade_executor_summary(),
         },
         metadata={"operation": "trade_control_status"},
@@ -152,8 +157,101 @@ def trade_reconcile(
             "reconcile": reconcile_result,
             "position_manager": runtime_views.position_manager_summary(),
             "tracked_positions": runtime_views.tracked_positions_payload(limit=100),
+            "trading_state": runtime_views.trading_state_summary(
+                pending_limit=20,
+                position_limit=20,
+            ),
         },
         metadata={"operation": "trade_reconcile"},
+    )
+
+
+@router.get("/trade/state", response_model=ApiResponse[dict])
+def trade_state_summary(
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=runtime_views.trading_state_summary(
+            pending_limit=20,
+            position_limit=20,
+        ),
+        metadata={"operation": "trade_state_summary"},
+    )
+
+
+@router.get("/trade/state/alerts", response_model=ApiResponse[dict])
+def trade_state_alerts_summary(
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=runtime_views.trading_state_alerts_summary(),
+        metadata={"operation": "trade_state_alerts_summary"},
+    )
+
+
+@router.get("/trade/state/pending/active", response_model=ApiResponse[dict])
+def trade_active_pending_state_list(
+    limit: int = Query(default=50, ge=1, le=500),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=runtime_views.active_pending_order_payload(limit=limit),
+        metadata={
+            "operation": "trade_active_pending_state_list",
+            "limit": limit,
+        },
+    )
+
+
+@router.get("/trade/state/execution-contexts", response_model=ApiResponse[dict])
+def trade_pending_execution_context_list(
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=runtime_views.pending_execution_context_payload(),
+        metadata={"operation": "trade_pending_execution_context_list"},
+    )
+
+
+@router.get("/trade/state/pending/lifecycle", response_model=ApiResponse[dict])
+def trade_pending_lifecycle_state_list(
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    normalized_status = str(status).strip() if isinstance(status, str) else None
+    statuses = [normalized_status] if normalized_status else None
+    return ApiResponse.success_response(
+        data=runtime_views.pending_order_state_payload(
+            statuses=statuses,
+            limit=limit,
+        ),
+        metadata={
+            "operation": "trade_pending_lifecycle_state_list",
+            "status": normalized_status,
+            "limit": limit,
+        },
+    )
+
+
+@router.get("/trade/state/positions", response_model=ApiResponse[dict])
+def trade_position_state_list(
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    normalized_status = str(status).strip() if isinstance(status, str) else None
+    statuses = [normalized_status] if normalized_status else None
+    return ApiResponse.success_response(
+        data=runtime_views.position_runtime_state_payload(
+            statuses=statuses,
+            limit=limit,
+        ),
+        metadata={
+            "operation": "trade_position_state_list",
+            "status": normalized_status,
+            "limit": limit,
+        },
     )
 
 

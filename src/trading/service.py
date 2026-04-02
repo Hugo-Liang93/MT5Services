@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
 from threading import RLock
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from src.persistence.db import TimescaleWriter
 from src.config import get_trading_config, get_trading_ops_config
@@ -64,6 +64,7 @@ class TradingModule:
             "updated_at": None,
             "reason": None,
         }
+        self._trade_control_update_hook: Optional[Callable[[dict[str, Any]], None]] = None
         self._idempotency_lock = RLock()
         self._idempotent_success_cache: dict[str, dict[str, Any]] = {}
 
@@ -182,6 +183,27 @@ class TradingModule:
         with self._trade_control_lock:
             return dict(self._trade_control_state)
 
+    def set_trade_control_update_hook(
+        self,
+        fn: Optional[Callable[[dict[str, Any]], None]],
+    ) -> None:
+        self._trade_control_update_hook = fn
+
+    def apply_trade_control_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        with self._trade_control_lock:
+            self._trade_control_state["auto_entry_enabled"] = bool(
+                state.get("auto_entry_enabled", True)
+            )
+            self._trade_control_state["close_only_mode"] = bool(
+                state.get("close_only_mode", False)
+            )
+            self._trade_control_state["reason"] = str(state.get("reason") or "").strip() or None
+            updated_at = state.get("updated_at")
+            self._trade_control_state["updated_at"] = (
+                updated_at.isoformat() if isinstance(updated_at, datetime) else updated_at
+            )
+            return dict(self._trade_control_state)
+
     def update_trade_control(
         self,
         *,
@@ -196,7 +218,10 @@ class TradingModule:
                 self._trade_control_state["close_only_mode"] = bool(close_only_mode)
             self._trade_control_state["reason"] = str(reason).strip() or None
             self._trade_control_state["updated_at"] = datetime.now(timezone.utc).isoformat()
-            return dict(self._trade_control_state)
+            snapshot = dict(self._trade_control_state)
+        if self._trade_control_update_hook is not None:
+            self._trade_control_update_hook(snapshot)
+        return snapshot
 
     @staticmethod
     def _entry_origin(payload: Dict[str, Any]) -> str:
