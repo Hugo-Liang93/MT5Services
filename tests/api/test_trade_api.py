@@ -191,7 +191,7 @@ class _RuntimeModeController:
         return {
             "current_mode": self.mode,
             "configured_mode": "full",
-            "after_eod_action": "risk_off",
+            "after_eod_action": "ingest_only",
             "components": {"trade_listener_attached": self.mode == "full"},
         }
 

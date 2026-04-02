@@ -173,7 +173,7 @@ class DummyRuntimeModeController:
         return {
             "current_mode": self._current_mode,
             "configured_mode": "full",
-            "after_eod_action": "risk_off",
+            "after_eod_action": "ingest_only",
             "auto_check_interval_seconds": 15.0,
             "components": {"trade_listener_attached": self._current_mode == "full"},
         }
