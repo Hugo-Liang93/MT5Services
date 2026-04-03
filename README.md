@@ -210,6 +210,13 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 7. **TradeExecutor 安全** — 熔断器/持仓预检/成本检查
 8. **PositionManager** — 日终自动平仓
 
+### 交易应用边界
+
+- `TradingCommandService`：只负责命令类动作，例如下单、预检、平仓、撤单、改单、交易控制更新。
+- `TradingQueryService`：只负责查询类动作，例如账户信息、持仓/挂单查询、交易汇总、审计读取、健康状态。
+- `dispatch_operation(...)`：仅接受命令操作，不再承载 `daily_summary`、`entry_status`、`positions`、`orders` 等读操作。
+- API 与读模型默认依赖命令/查询服务，而不是直接依赖 `TradingModule` 的大而全入口。
+
 ## 测试与质量
 
 ```bash

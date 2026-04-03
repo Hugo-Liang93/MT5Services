@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from src.trading.application import TradingCommandService, TradingQueryService
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.service import TradingModule
 
@@ -262,6 +263,15 @@ def test_trading_module_dispatch_operation_rejects_unknown():
         assert "unsupported trading operation" in str(exc)
 
 
+def test_trading_module_dispatch_operation_rejects_query_operations() -> None:
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    with pytest.raises(ValueError) as exc_info:
+        module.dispatch_operation("daily_summary", {})
+
+    assert "unsupported trading operation" in str(exc_info.value)
+
+
 def test_trading_module_entry_to_order_status_ready():
     module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
 
@@ -269,6 +279,15 @@ def test_trading_module_entry_to_order_status_ready():
 
     assert status["ready_for_order"] is True
     assert status["stages"]["order"] == "ready"
+
+
+def test_trading_module_exposes_command_and_query_services() -> None:
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    assert isinstance(module.commands, TradingCommandService)
+    assert isinstance(module.queries, TradingQueryService)
+    assert module.commands.active_account_alias == "live"
+    assert module.queries.active_account_alias == "live"
 
 
 def test_trading_module_dispatch_trade_respects_risk_block():

@@ -13,7 +13,7 @@ class RuntimeReadModel:
         health_monitor: Any = None,
         ingestor: Any = None,
         indicator_manager: Any = None,
-        trading_service: Any = None,
+        trading_queries: Any = None,
         signal_runtime: Any = None,
         trade_executor: Any = None,
         position_manager: Any = None,
@@ -26,7 +26,7 @@ class RuntimeReadModel:
         self._health_monitor = health_monitor
         self._ingestor = ingestor
         self._indicator_manager = indicator_manager
-        self._trading_service = trading_service
+        self._trading_queries = trading_queries
         self._signal_runtime = signal_runtime
         self._trade_executor = trade_executor
         self._position_manager = position_manager
@@ -460,7 +460,7 @@ class RuntimeReadModel:
         return summary
 
     def trading_summary(self, *, hours: int = 24) -> dict[str, Any]:
-        if self._trading_service is None:
+        if self._trading_queries is None:
             return {
                 "status": "critical",
                 "active_account_alias": None,
@@ -472,7 +472,7 @@ class RuntimeReadModel:
                 "recent": [],
             }
         return self.build_trading_summary(
-            self._trading_service.monitoring_summary(hours=hours)
+            self._trading_queries.monitoring_summary(hours=hours)
         )
 
     def health_report(self, *, hours: int = 24) -> dict[str, Any]:
@@ -737,7 +737,7 @@ class RuntimeReadModel:
 
     def dashboard_overview(self, startup_status: Mapping[str, Any]) -> dict[str, Any]:
         account = self._safe_call(
-            lambda: self._trading_service.health(),
+            lambda: self._trading_queries.health(),
             {"error": "unavailable"},
         )
         storage = self._safe_call(

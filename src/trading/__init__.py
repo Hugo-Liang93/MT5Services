@@ -1,3 +1,4 @@
+from .application import TradingCommandService, TradingQueryService
 from .models import TradeOperationRecord
 from .signal_quality_tracker import SignalQualityTracker
 from .trade_outcome_tracker import TradeOutcomeTracker
@@ -16,5 +17,7 @@ __all__ = [
     "TradeOutcomeTracker",
     "TradeParameters",
     "TradingAccountRegistry",
+    "TradingCommandService",
     "TradingModule",
+    "TradingQueryService",
 ]

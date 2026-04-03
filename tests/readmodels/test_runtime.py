@@ -202,7 +202,7 @@ def test_health_report_contains_unified_runtime_sections() -> None:
         health_monitor=DummyHealthMonitor(),
         ingestor=DummyIngestor(),
         indicator_manager=DummyIndicatorManager(),
-        trading_service=DummyTradingService(),
+        trading_queries=DummyTradingService(),
     )
 
     report = read_model.health_report(hours=6)
@@ -218,7 +218,7 @@ def test_dashboard_overview_uses_unified_projection_shape() -> None:
     read_model = RuntimeReadModel(
         ingestor=DummyIngestor(),
         indicator_manager=DummyIndicatorManager(),
-        trading_service=DummyTradingService(),
+        trading_queries=DummyTradingService(),
         signal_runtime=DummySignalRuntime(),
         trade_executor=DummyTradeExecutor(),
         position_manager=DummyPositionManager(),

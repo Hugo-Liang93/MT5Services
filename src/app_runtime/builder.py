@@ -261,7 +261,7 @@ def build_app_container(
         health_monitor=container.health_monitor,
         ingestor=container.ingestor,
         indicator_manager=container.indicator_manager,
-        trading_service=container.trade_module,
+        trading_queries=(container.trade_module.queries if container.trade_module is not None else None),
         signal_runtime=container.signal_runtime,
         trade_executor=container.trade_executor,
         position_manager=container.position_manager,

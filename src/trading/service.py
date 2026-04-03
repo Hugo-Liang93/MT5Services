@@ -12,6 +12,7 @@ from src.persistence.db import TimescaleWriter
 from src.config import get_trading_config, get_trading_ops_config
 from src.risk.service import PreTradeRiskBlockedError
 
+from .application import TradingCommandService, TradingQueryService
 from .models import TradeOperationRecord
 from .registry import TradingAccountRegistry
 
@@ -67,6 +68,8 @@ class TradingModule:
         self._trade_control_update_hook: Optional[Callable[[dict[str, Any]], None]] = None
         self._idempotency_lock = RLock()
         self._idempotent_success_cache: dict[str, dict[str, Any]] = {}
+        self.commands = TradingCommandService(self)
+        self.queries = TradingQueryService(self)
 
     def _active_account(self) -> str:
         return self.active_account_alias
@@ -413,10 +416,6 @@ class TradingModule:
             "close": lambda: self.close_position(**payload),
             "close_all": lambda: self.close_all_positions(**payload),
             "cancel_orders": lambda: self.cancel_orders(**payload),
-            "positions": lambda: self.positions(payload.get("symbol")),
-            "orders": lambda: self.orders(payload.get("symbol")),
-            "daily_summary": lambda: self.daily_trade_summary(),
-            "entry_status": lambda: self.entry_to_order_status(**payload),
         }
         if operation not in handlers:
             raise ValueError(f"unsupported trading operation: {operation}")

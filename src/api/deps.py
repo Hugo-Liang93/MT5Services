@@ -29,7 +29,12 @@ from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
-from src.trading import TradingAccountRegistry, TradingModule
+from src.trading import (
+    TradingAccountRegistry,
+    TradingCommandService,
+    TradingModule,
+    TradingQueryService,
+)
 from src.trading.exposure_closeout import ExposureCloseoutController
 from src.trading.pending_entry import PendingEntryManager
 from src.trading.position_manager import PositionManager
@@ -171,16 +176,28 @@ def get_market_service() -> MarketDataService:
     return _container.market_service
 
 
-def get_account_service() -> TradingModule:
+def get_account_service() -> TradingQueryService:
     _ensure_initialized()
     assert _container is not None and _container.trade_module is not None
-    return _container.trade_module
+    return _container.trade_module.queries
 
 
 def get_trading_service() -> TradingModule:
     _ensure_initialized()
     assert _container is not None and _container.trade_module is not None
     return _container.trade_module
+
+
+def get_trading_command_service() -> TradingCommandService:
+    _ensure_initialized()
+    assert _container is not None and _container.trade_module is not None
+    return _container.trade_module.commands
+
+
+def get_trading_query_service() -> TradingQueryService:
+    _ensure_initialized()
+    assert _container is not None and _container.trade_module is not None
+    return _container.trade_module.queries
 
 
 def get_pre_trade_risk_service() -> PreTradeRiskService:

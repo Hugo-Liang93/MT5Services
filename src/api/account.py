@@ -14,7 +14,7 @@ from src.api.schemas import (
     TradingAccountModel,
 )
 from src.clients.base import MT5TradeError
-from src.trading.service import TradingModule
+from src.trading.application import TradingQueryService
 
 router = APIRouter(tags=["account"])
 
@@ -32,7 +32,7 @@ def _order_model_from_dataclass(order) -> OrderModel:
 
 
 @router.get("/account/info", response_model=ApiResponse[AccountInfoModel])
-def account_info(svc: TradingModule = Depends(get_account_service)) -> ApiResponse[AccountInfoModel]:
+def account_info(svc: TradingQueryService = Depends(get_account_service)) -> ApiResponse[AccountInfoModel]:
     active_alias = svc.active_account_alias
     try:
         info = svc.account_info()
@@ -76,7 +76,7 @@ def account_info(svc: TradingModule = Depends(get_account_service)) -> ApiRespon
 @router.get("/account/positions", response_model=ApiResponse[List[PositionModel]])
 def account_positions(
     symbol: Optional[str] = Query(default=None, description="symbol filter"),
-    svc: TradingModule = Depends(get_account_service),
+    svc: TradingQueryService = Depends(get_account_service),
 ) -> ApiResponse[List[PositionModel]]:
     active_alias = svc.active_account_alias
     try:
@@ -127,7 +127,7 @@ def account_positions(
 @router.get("/account/orders", response_model=ApiResponse[List[OrderModel]])
 def account_orders(
     symbol: Optional[str] = Query(default=None, description="symbol filter"),
-    svc: TradingModule = Depends(get_account_service),
+    svc: TradingQueryService = Depends(get_account_service),
 ) -> ApiResponse[List[OrderModel]]:
     active_alias = svc.active_account_alias
     try:
@@ -174,7 +174,7 @@ def account_orders(
 
 
 @router.get("/account/list", response_model=ApiResponse[List[TradingAccountModel]])
-def account_list(svc: TradingModule = Depends(get_account_service)) -> ApiResponse[List[TradingAccountModel]]:
+def account_list(svc: TradingQueryService = Depends(get_account_service)) -> ApiResponse[List[TradingAccountModel]]:
     accounts = [TradingAccountModel(**item) for item in svc.list_accounts()]
     return ApiResponse.success_response(
         data=accounts,

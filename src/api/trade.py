@@ -11,7 +11,8 @@ from src.api.deps import (
     get_runtime_mode_controller,
     get_signal_service,
     get_trade_executor,
-    get_trading_service,
+    get_trading_command_service,
+    get_trading_query_service,
 )
 from src.app_runtime.mode_controller import RuntimeModeController
 from src.api.trade_dispatcher import TradeAPIDispatcher
@@ -48,7 +49,7 @@ from src.trading.sizing import compute_trade_params, extract_atr_from_indicators
 from src.trading.position_manager import PositionManager
 from src.trading.exposure_closeout import ExposureCloseoutController
 from src.trading.signal_executor import TradeExecutor
-from src.trading.service import TradingModule
+from src.trading.application import TradingCommandService, TradingQueryService
 
 router = APIRouter(tags=["trade"])
 
@@ -77,7 +78,7 @@ def _order_model_from_dataclass(order) -> OrderModel:
 @router.post("/trade/dispatch", response_model=ApiResponse[dict])
 def trade_dispatch(
     request: TradeDispatchRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     dispatcher = TradeAPIDispatcher(service)
     return dispatcher.dispatch(request.operation, request.payload)
@@ -85,7 +86,7 @@ def trade_dispatch(
 
 @router.get("/trade/daily_summary", response_model=ApiResponse[dict])
 def trade_daily_summary(
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[dict]:
     return ApiResponse.success_response(
         data=service.daily_trade_summary(),
@@ -98,7 +99,7 @@ def trade_daily_summary(
 
 @router.get("/trade/control", response_model=ApiResponse[dict])
 def trade_control_status(
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingQueryService = Depends(get_trading_query_service),
     runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
     return ApiResponse.success_response(
@@ -118,7 +119,7 @@ def trade_control_status(
 @router.post("/trade/control", response_model=ApiResponse[dict])
 def trade_control_update(
     request: TradeControlRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
     executor: TradeExecutor = Depends(get_trade_executor),
     runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
@@ -309,7 +310,7 @@ def trade_entry_status(
     volume: float = Query(default=0.1, gt=0),
     side: str = Query(default="buy"),
     order_kind: str = Query(default="market"),
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[dict]:
     return ApiResponse.success_response(
         data=service.entry_to_order_status(
@@ -328,7 +329,7 @@ def trade_entry_status(
 @router.post("/trade/precheck", response_model=ApiResponse[TradePrecheckModel])
 def trade_precheck(
     request: TradeRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[TradePrecheckModel]:
     active_alias = service.active_account_alias
     try:
@@ -383,7 +384,7 @@ def trade_precheck(
 @router.post("/trade", response_model=ApiResponse[dict])
 def trade(
     request: TradeRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -469,7 +470,8 @@ def trade(
 def trade_from_signal(
     request: SignalExecuteTradeRequest,
     signal_service: SignalModule = Depends(get_signal_service),
-    service: TradingModule = Depends(get_trading_service),
+    command_service: TradingCommandService = Depends(get_trading_command_service),
+    query_service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[dict]:
     """从 confirmed 信号触发交易（职责归属交易模块）。"""
     rows = signal_service.recent_signals(scope="confirmed", limit=500)
@@ -502,7 +504,7 @@ def trade_from_signal(
         )
 
     try:
-        account = service.account_info() or {}
+        account = query_service.account_info() or {}
         equity = account.get("equity") if isinstance(account, dict) else getattr(account, "equity", None)
         balance_value = account.get("balance") if isinstance(account, dict) else getattr(account, "balance", None)
         balance = float(equity or balance_value or 0)
@@ -574,12 +576,12 @@ def trade_from_signal(
         "sl": params.stop_loss,
         "tp": params.take_profit,
         "risk_reward_ratio": params.risk_reward_ratio,
-        "account_alias": service.active_account_alias,
+        "account_alias": command_service.active_account_alias,
         "dry_run": request.dry_run,
     }
     if request.dry_run:
         return ApiResponse.success_response(data={"dry_run": True, **computed_params}, metadata=meta)
-    result = service.dispatch_operation("trade", computed_params)
+    result = command_service.dispatch_operation("trade", computed_params)
     return ApiResponse.success_response(
         data=result if isinstance(result, dict) else {"result": result},
         metadata=meta,
@@ -589,7 +591,7 @@ def trade_from_signal(
 @router.post("/close", response_model=ApiResponse[dict])
 def close(
     request: CloseRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -633,7 +635,7 @@ def close(
 @router.post("/trade/batch", response_model=ApiResponse[dict])
 def trade_batch(
     request: BatchTradeRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     result = service.execute_trade_batch(
@@ -654,7 +656,7 @@ def trade_batch(
 @router.post("/close_all", response_model=ApiResponse[dict])
 def close_all(
     request: CloseAllRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -720,7 +722,7 @@ def trade_closeout_exposure(
 @router.post("/close/batch", response_model=ApiResponse[dict])
 def close_batch(
     request: BatchCloseRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -755,7 +757,7 @@ def close_batch(
 @router.post("/cancel_orders", response_model=ApiResponse[dict])
 def cancel_orders(
     request: CancelOrdersRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -791,7 +793,7 @@ def cancel_orders(
 @router.post("/cancel_orders/batch", response_model=ApiResponse[dict])
 def cancel_orders_batch(
     request: BatchCancelOrdersRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -822,7 +824,7 @@ def cancel_orders_batch(
 @router.post("/estimate_margin", response_model=ApiResponse[dict])
 def estimate_margin(
     request: EstimateMarginRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -866,7 +868,7 @@ def estimate_margin(
 @router.put("/modify_orders", response_model=ApiResponse[dict])
 def modify_orders(
     request: ModifyOrdersRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -904,7 +906,7 @@ def modify_orders(
 @router.put("/modify_positions", response_model=ApiResponse[dict])
 def modify_positions(
     request: ModifyPositionsRequest,
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingCommandService = Depends(get_trading_command_service),
 ) -> ApiResponse[dict]:
     active_alias = service.active_account_alias
     try:
@@ -943,7 +945,7 @@ def modify_positions(
 def positions(
     symbol: Optional[str] = Query(default=None, description="trading symbol"),
     magic: Optional[int] = Query(default=None, description="magic id"),
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[List[PositionModel]]:
     active_alias = service.active_account_alias
     try:
@@ -981,7 +983,7 @@ def positions(
 def orders(
     symbol: Optional[str] = Query(default=None, description="trading symbol"),
     magic: Optional[int] = Query(default=None, description="magic id"),
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[List[OrderModel]]:
     active_alias = service.active_account_alias
     try:
@@ -1013,7 +1015,7 @@ def orders(
 
 
 @router.get("/trade/accounts", response_model=ApiResponse[List[TradingAccountModel]])
-def trading_accounts(service: TradingModule = Depends(get_trading_service)) -> ApiResponse[List[TradingAccountModel]]:
+def trading_accounts(service: TradingQueryService = Depends(get_trading_query_service)) -> ApiResponse[List[TradingAccountModel]]:
     accounts = [TradingAccountModel(**item) for item in service.list_accounts()]
     return ApiResponse.success_response(
         data=accounts,
@@ -1031,7 +1033,7 @@ def trade_operations(
     operation_type: Optional[str] = Query(default=None, description="operation type"),
     status: Optional[str] = Query(default=None, description="operation status"),
     limit: int = Query(default=100, ge=1, le=500),
-    service: TradingModule = Depends(get_trading_service),
+    service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[List[dict]]:
     items = service.recent_operations(
         operation_type=operation_type,

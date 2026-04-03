@@ -6,13 +6,13 @@ from src.api.error_codes import AIErrorAction, AIErrorCode
 from src.api.risk_adapter import risk_error_code_from_assessment
 from src.api.schemas import ApiResponse
 from src.risk.service import PreTradeRiskBlockedError
-from src.trading.service import TradingModule
+from src.trading.application import TradingCommandService
 
 
 class TradeAPIDispatcher:
     """统一交易 API 调度入口，减少路由层重复逻辑。"""
 
-    def __init__(self, service: TradingModule):
+    def __init__(self, service: TradingCommandService):
         self.service = service
 
     def dispatch(self, operation: str, payload: dict[str, Any] | None = None) -> ApiResponse[Any]:

@@ -570,7 +570,8 @@ def test_trade_from_signal_is_executed_by_trade_module_api() -> None:
     response = trade_from_signal(
         SignalExecuteTradeRequest(signal_id="sig_1"),
         signal_service=_SignalService(),
-        service=service,
+        command_service=service,
+        query_service=service,
     )
 
     assert response.success is True

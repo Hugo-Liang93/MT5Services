@@ -27,7 +27,6 @@ from src.backtesting.api import router as backtest_router
 from src.clients.mt5_market import MT5MarketError
 from src.config import get_api_config
 from src.market import MarketDataService
-from src.trading.service import TradingModule
 
 logger = logging.getLogger(__name__)
 api_config = get_api_config()
@@ -131,7 +130,7 @@ async def api_key_authentication(request: Request, call_next):
 @app.get("/health", response_model=ApiResponse[dict])
 def health(
     service: MarketDataService = Depends(deps.get_market_service),
-    trading: TradingModule = Depends(deps.get_trading_service),
+    trading=Depends(deps.get_trading_query_service),
 ) -> ApiResponse[dict]:
     try:
         market_status = service.health()
