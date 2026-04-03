@@ -199,6 +199,32 @@
 2. 新增运行时逻辑时，优先归入 `runtime_recovery.py`、`runtime_processing.py`、`runtime_evaluator.py` 这类明确职责文件。
 3. 状态迁移、投票、HTF 解析等独立规则优先留在独立协作者文件，不回流到 `runtime.py`。
 
+## `src/backtesting/` 规范
+
+`backtesting` 负责离线评估、参数优化与前推验证，但同样应保持“薄协调器 + 明确协作者”的结构：
+
+- `engine.py`
+  - 回测协调器
+  - 主循环与结果汇总
+- `engine_filters.py`
+  - 过滤器模拟器构建
+  - 经济事件回测数据装配
+- `engine_indicators.py`
+  - 指标预计算
+  - Regime 检测
+  - HTF 指标时序加载与查找
+- `engine_signals.py`
+  - 策略评估
+  - 状态机推进
+  - 挂起入场模拟
+  - 开仓执行与信号评估回填
+
+### `backtesting` 导入规则
+
+1. `engine.py` 只保留主循环编排与结果汇总，不再堆积过滤、HTF、策略评估和执行细节。
+2. 回测协作者复用实盘纯函数和领域对象，不单独复制 live 策略逻辑。
+3. 新增回测能力时，优先归入现有协作者文件；只有形成稳定新职责时才新增文件。
+
 ## 新增文件归位规则
 
 新增实现文件前，按以下顺序判断：
