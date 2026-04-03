@@ -1,3 +1,4 @@
+from .policy import CloseoutRuntimeModeAction, ExposureCloseoutPolicy
 from .service import (
     CloseoutActionResult,
     ExposureCloseoutController,
@@ -6,8 +7,10 @@ from .service import (
 )
 
 __all__ = [
+    "CloseoutRuntimeModeAction",
     "CloseoutActionResult",
     "ExposureCloseoutController",
+    "ExposureCloseoutPolicy",
     "ExposureCloseoutResult",
     "ExposureCloseoutService",
 ]

@@ -217,6 +217,14 @@ class _ExposureCloseoutController:
             "last_requested_at": None,
             "last_completed_at": None,
             "result": None,
+            "runtime_mode_transition": {
+                "configured_action": "ingest_only",
+                "target_mode": None,
+                "applied": False,
+                "reason": None,
+                "error": None,
+                "snapshot": None,
+            },
         }
 
     def execute(self, *, reason: str, comment: str):
@@ -228,14 +236,22 @@ class _ExposureCloseoutController:
             "last_comment": comment,
             "last_requested_at": "2026-01-01T00:00:00+00:00",
             "last_completed_at": "2026-01-01T00:00:00+00:00",
-            "result": {
-                "completed": True,
-                "positions": {"requested": [1], "completed": [1], "failed": [], "error": None},
-                "orders": {"requested": [2], "completed": [2], "failed": [], "error": None},
-                "remaining_positions": [],
-                "remaining_orders": [],
-            },
-        }
+                "result": {
+                    "completed": True,
+                    "positions": {"requested": [1], "completed": [1], "failed": [], "error": None},
+                    "orders": {"requested": [2], "completed": [2], "failed": [], "error": None},
+                    "remaining_positions": [],
+                    "remaining_orders": [],
+                },
+                "runtime_mode_transition": {
+                    "configured_action": "ingest_only",
+                    "target_mode": "ingest_only",
+                    "applied": True,
+                    "reason": "closeout:manual_risk_off",
+                    "error": None,
+                    "snapshot": {"current_mode": "ingest_only"},
+                },
+            }
         return dict(self._status)
 
     def status(self):
@@ -502,6 +518,7 @@ def test_trade_state_closeout_summary_endpoint_returns_projection() -> None:
     assert response.success is True
     assert response.data["status"] == "completed"
     assert response.data["result"]["orders"]["completed"] == [2]
+    assert response.data["runtime_mode_transition"]["target_mode"] == "ingest_only"
 
 
 def test_trade_runtime_mode_status_endpoint_returns_projection() -> None:
@@ -556,6 +573,7 @@ def test_trade_closeout_exposure_endpoint_executes_unified_controller() -> None:
     assert response.success is True
     assert response.data["closeout"]["status"] == "completed"
     assert response.data["closeout"]["result"]["positions"]["completed"] == [1]
+    assert response.data["closeout"]["runtime_mode_transition"]["applied"] is True
     assert response.data["trading_state"]["closeout"]["last_reason"] == "manual_risk_off"
     assert response.metadata["operation"] == "trade_closeout_exposure"
 

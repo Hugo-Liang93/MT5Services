@@ -15,20 +15,24 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from .events import (
+    PIPELINE_BAR_CLOSED,
+    PIPELINE_EXECUTION_BLOCKED,
+    PIPELINE_EXECUTION_DECIDED,
+    PIPELINE_EXECUTION_FAILED,
+    PIPELINE_EXECUTION_SUBMITTED,
+    PIPELINE_INDICATOR_COMPUTED,
+    PIPELINE_PENDING_ORDER_SUBMITTED,
+    PIPELINE_SIGNAL_EVALUATED,
+    PIPELINE_SIGNAL_FILTER_DECIDED,
+    PIPELINE_SNAPSHOT_PUBLISHED,
+)
+
 logger = logging.getLogger(__name__)
-
-# ── Event types ─────────────────────────────────────────────────
-
-PIPELINE_BAR_CLOSED = "bar_closed"
-PIPELINE_INDICATOR_COMPUTED = "indicator_computed"
-PIPELINE_SNAPSHOT_PUBLISHED = "snapshot_published"
-PIPELINE_SIGNAL_FILTER_DECIDED = "signal_filter_decided"
-PIPELINE_SIGNAL_EVALUATED = "signal_evaluated"
 
 
 @dataclass(frozen=True)
@@ -249,6 +253,155 @@ class PipelineEventBus:
                     "category": category,
                     "spread_points": round(float(spread_points), 4),
                     "active_sessions": list(active_sessions or []),
+                },
+            )
+        )
+
+    def emit_execution_decided(
+        self,
+        trace_id: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        *,
+        strategy: str,
+        direction: str,
+        order_kind: str,
+    ) -> None:
+        self.emit(
+            PipelineEvent(
+                type=PIPELINE_EXECUTION_DECIDED,
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                ts=datetime.now(timezone.utc).isoformat(),
+                payload={
+                    "strategy": strategy,
+                    "direction": direction,
+                    "order_kind": order_kind,
+                },
+            )
+        )
+
+    def emit_execution_blocked(
+        self,
+        trace_id: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        *,
+        strategy: str,
+        direction: str,
+        reason: str,
+        category: str,
+    ) -> None:
+        self.emit(
+            PipelineEvent(
+                type=PIPELINE_EXECUTION_BLOCKED,
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                ts=datetime.now(timezone.utc).isoformat(),
+                payload={
+                    "strategy": strategy,
+                    "direction": direction,
+                    "reason": reason,
+                    "category": category,
+                },
+            )
+        )
+
+    def emit_execution_submitted(
+        self,
+        trace_id: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        *,
+        strategy: str,
+        direction: str,
+        order_kind: str,
+        request_id: str,
+        ticket: int | None = None,
+    ) -> None:
+        self.emit(
+            PipelineEvent(
+                type=PIPELINE_EXECUTION_SUBMITTED,
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                ts=datetime.now(timezone.utc).isoformat(),
+                payload={
+                    "strategy": strategy,
+                    "direction": direction,
+                    "order_kind": order_kind,
+                    "request_id": request_id,
+                    "ticket": ticket,
+                },
+            )
+        )
+
+    def emit_pending_order_submitted(
+        self,
+        trace_id: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        *,
+        strategy: str,
+        direction: str,
+        order_kind: str,
+        request_id: str,
+        ticket: int | None = None,
+    ) -> None:
+        self.emit(
+            PipelineEvent(
+                type=PIPELINE_PENDING_ORDER_SUBMITTED,
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                ts=datetime.now(timezone.utc).isoformat(),
+                payload={
+                    "strategy": strategy,
+                    "direction": direction,
+                    "order_kind": order_kind,
+                    "request_id": request_id,
+                    "ticket": ticket,
+                },
+            )
+        )
+
+    def emit_execution_failed(
+        self,
+        trace_id: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        *,
+        strategy: str,
+        direction: str,
+        order_kind: str,
+        reason: str,
+        category: str,
+    ) -> None:
+        self.emit(
+            PipelineEvent(
+                type=PIPELINE_EXECUTION_FAILED,
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                ts=datetime.now(timezone.utc).isoformat(),
+                payload={
+                    "strategy": strategy,
+                    "direction": direction,
+                    "order_kind": order_kind,
+                    "reason": reason,
+                    "category": category,
                 },
             )
         )

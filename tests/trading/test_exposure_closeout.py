@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.trading.closeout import ExposureCloseoutService
+from src.trading.closeout import (
+    CloseoutRuntimeModeAction,
+    ExposureCloseoutController,
+    ExposureCloseoutPolicy,
+    ExposureCloseoutService,
+)
 
 
 class DummyExposureTrading:
@@ -59,3 +64,45 @@ def test_exposure_closeout_service_reports_remaining_orders_when_cancel_fails() 
     assert result.completed is False
     assert result.remaining_order_tickets == [301]
     assert result.orders.failed == [{"ticket": 301, "error": "market_closed"}]
+
+
+def test_manual_closeout_controller_switches_runtime_mode_after_success() -> None:
+    trading = DummyExposureTrading()
+    controller = ExposureCloseoutController(ExposureCloseoutService(trading))
+    calls: list[tuple[str, str]] = []
+    controller.configure_runtime_mode_transition(
+        policy=ExposureCloseoutPolicy(
+            after_manual_closeout_action=CloseoutRuntimeModeAction.INGEST_ONLY
+        ),
+        apply_mode=lambda mode, *, reason: (
+            calls.append((mode, reason)) or {"current_mode": mode}
+        ),
+    )
+
+    status = controller.execute(reason="manual_risk_off", comment="manual_exposure_closeout")
+
+    assert status["status"] == "completed"
+    assert status["runtime_mode_transition"]["applied"] is True
+    assert status["runtime_mode_transition"]["target_mode"] == "ingest_only"
+    assert status["runtime_mode_transition"]["snapshot"]["current_mode"] == "ingest_only"
+    assert calls == [("ingest_only", "closeout:manual_risk_off")]
+
+
+def test_eod_closeout_controller_does_not_switch_runtime_mode() -> None:
+    trading = DummyExposureTrading()
+    controller = ExposureCloseoutController(ExposureCloseoutService(trading))
+    calls: list[tuple[str, str]] = []
+    controller.configure_runtime_mode_transition(
+        policy=ExposureCloseoutPolicy(
+            after_manual_closeout_action=CloseoutRuntimeModeAction.INGEST_ONLY
+        ),
+        apply_mode=lambda mode, *, reason: (
+            calls.append((mode, reason)) or {"current_mode": mode}
+        ),
+    )
+
+    status = controller.execute(reason="eod_closeout", comment="end_of_day_closeout")
+
+    assert status["runtime_mode_transition"]["applied"] is False
+    assert status["runtime_mode_transition"]["target_mode"] is None
+    assert calls == []

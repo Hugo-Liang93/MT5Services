@@ -29,6 +29,7 @@ from .sizing import (
     compute_trade_params,
     extract_atr_from_indicators,
 )
+from src.monitoring.pipeline import PipelineEventBus
 from src.signals.models import SignalEvent
 from src.risk.service import PreTradeRiskBlockedError
 from .gate import ExecutionGate, ExecutionGateConfig
@@ -102,6 +103,7 @@ class TradeExecutor:
         execution_gate: ExecutionGate | None = None,
         pending_entry_manager: PendingEntryManager | None = None,
         performance_tracker: "StrategyPerformanceTracker | None" = None,
+        pipeline_event_bus: PipelineEventBus | None = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
@@ -120,6 +122,7 @@ class TradeExecutor:
         self._pending_manager = pending_entry_manager
         # 日内绩效跟踪器，用于 PnL 熔断。
         self._performance_tracker = performance_tracker
+        self._pipeline_event_bus = pipeline_event_bus
         self._execution_count = 0
         self._last_execution_at: datetime | None = None
         self._last_error: str | None = None
@@ -280,6 +283,127 @@ class TradeExecutor:
             except Exception:
                 logger.debug("on_execution_skip callback failed", exc_info=True)
 
+    @staticmethod
+    def _trace_id_for_event(event: SignalEvent) -> str:
+        return str(event.metadata.get("signal_trace_id") or "").strip()
+
+    def _emit_execution_decided(self, event: SignalEvent, *, order_kind: str) -> None:
+        pipeline_bus = self._pipeline_event_bus
+        trace_id = self._trace_id_for_event(event)
+        if pipeline_bus is None or not trace_id:
+            return
+        pipeline_bus.emit_execution_decided(
+            trace_id=trace_id,
+            symbol=event.symbol,
+            timeframe=event.timeframe or "",
+            scope=event.scope,
+            strategy=event.strategy,
+            direction=event.direction,
+            order_kind=order_kind,
+        )
+
+    def _emit_execution_blocked(
+        self,
+        event: SignalEvent,
+        *,
+        reason: str,
+        category: str,
+    ) -> None:
+        pipeline_bus = self._pipeline_event_bus
+        trace_id = self._trace_id_for_event(event)
+        if pipeline_bus is None or not trace_id:
+            return
+        pipeline_bus.emit_execution_blocked(
+            trace_id=trace_id,
+            symbol=event.symbol,
+            timeframe=event.timeframe or "",
+            scope=event.scope,
+            strategy=event.strategy,
+            direction=event.direction,
+            reason=reason,
+            category=category,
+        )
+
+    def _emit_execution_submitted(
+        self,
+        event: SignalEvent,
+        *,
+        order_kind: str,
+        ticket: Any = None,
+    ) -> None:
+        pipeline_bus = self._pipeline_event_bus
+        trace_id = self._trace_id_for_event(event)
+        if pipeline_bus is None or not trace_id:
+            return
+        normalized_ticket: int | None = None
+        try:
+            normalized_ticket = int(ticket) if ticket is not None else None
+        except (TypeError, ValueError):
+            normalized_ticket = None
+        pipeline_bus.emit_execution_submitted(
+            trace_id=trace_id,
+            symbol=event.symbol,
+            timeframe=event.timeframe or "",
+            scope=event.scope,
+            strategy=event.strategy,
+            direction=event.direction,
+            order_kind=order_kind,
+            request_id=event.signal_id,
+            ticket=normalized_ticket,
+        )
+
+    def _emit_pending_order_submitted(
+        self,
+        event: SignalEvent,
+        *,
+        order_kind: str,
+        ticket: Any = None,
+    ) -> None:
+        pipeline_bus = self._pipeline_event_bus
+        trace_id = self._trace_id_for_event(event)
+        if pipeline_bus is None or not trace_id:
+            return
+        normalized_ticket: int | None = None
+        try:
+            normalized_ticket = int(ticket) if ticket is not None else None
+        except (TypeError, ValueError):
+            normalized_ticket = None
+        pipeline_bus.emit_pending_order_submitted(
+            trace_id=trace_id,
+            symbol=event.symbol,
+            timeframe=event.timeframe or "",
+            scope=event.scope,
+            strategy=event.strategy,
+            direction=event.direction,
+            order_kind=order_kind,
+            request_id=event.signal_id,
+            ticket=normalized_ticket,
+        )
+
+    def _emit_execution_failed(
+        self,
+        event: SignalEvent,
+        *,
+        order_kind: str,
+        reason: str,
+        category: str,
+    ) -> None:
+        pipeline_bus = self._pipeline_event_bus
+        trace_id = self._trace_id_for_event(event)
+        if pipeline_bus is None or not trace_id:
+            return
+        pipeline_bus.emit_execution_failed(
+            trace_id=trace_id,
+            symbol=event.symbol,
+            timeframe=event.timeframe or "",
+            scope=event.scope,
+            strategy=event.strategy,
+            direction=event.direction,
+            order_kind=order_kind,
+            reason=reason,
+            category=category,
+        )
+
     def add_trade_listener(self, fn: Callable[[dict], None]) -> None:
         """注册成交监听回调。"""
         self._on_trade_executed.append(fn)
@@ -363,6 +487,11 @@ class TradeExecutor:
                 "TradeExecutor: PnL circuit open, skipping %s/%s %s",
                 event.symbol, event.strategy, event.direction,
             )
+            self._emit_execution_blocked(
+                event,
+                reason="pnl_circuit_paused",
+                category="performance",
+            )
             self._notify_skip(event.signal_id, "pnl_circuit_paused", tf)
             return None
 
@@ -371,6 +500,11 @@ class TradeExecutor:
             logger.info(
                 "TradeExecutor: skipping %s/%s %s - margin guard blocked",
                 event.symbol, event.strategy, event.direction,
+            )
+            self._emit_execution_blocked(
+                event,
+                reason="margin_guard_block",
+                category="risk_guard",
             )
             self._notify_skip(event.signal_id, "margin_guard_block", tf)
             return None
@@ -381,6 +515,11 @@ class TradeExecutor:
             logger.info(
                 "TradeExecutor: skipping %s/%s %s - gate blocked: %s",
                 event.symbol, event.strategy, event.direction, gate_reason,
+            )
+            self._emit_execution_blocked(
+                event,
+                reason=gate_reason,
+                category="execution_gate",
             )
             self._notify_skip(event.signal_id, gate_reason, tf)
             return None
@@ -403,6 +542,11 @@ class TradeExecutor:
                     "reason": duplicate_reason,
                 }
             )
+            self._emit_execution_blocked(
+                event,
+                reason=duplicate_reason,
+                category="duplicate_guard",
+            )
             self._notify_skip(event.signal_id, duplicate_reason, tf)
             return None
 
@@ -419,6 +563,11 @@ class TradeExecutor:
                 event.confidence,
                 effective_min_conf,
                 tf,
+            )
+            self._emit_execution_blocked(
+                event,
+                reason="min_confidence",
+                category="confidence",
             )
             self._notify_skip(event.signal_id, "min_confidence", tf)
             return None
@@ -437,6 +586,11 @@ class TradeExecutor:
                 event.symbol, tf, event.strategy, event.direction,
                 tf, event.metadata.get("htf_direction", "?"), strategy_category,
             )
+            self._emit_execution_blocked(
+                event,
+                reason="htf_conflict_block",
+                category="htf_alignment",
+            )
             self._notify_skip(event.signal_id, "htf_conflict_block", tf)
             return None
 
@@ -449,6 +603,11 @@ class TradeExecutor:
             logger.info(
                 "TradeExecutor: BLOCKING %s/%s %s - after EOD closeout, no new positions today",
                 event.symbol, event.strategy, event.direction,
+            )
+            self._emit_execution_blocked(
+                event,
+                reason="after_eod_block",
+                category="eod_guard",
             )
             self._notify_skip(event.signal_id, "after_eod_block", tf)
             return None
@@ -471,6 +630,11 @@ class TradeExecutor:
                     "skipped": True,
                     "reason": "max_concurrent_positions_per_symbol",
                 }
+            )
+            self._emit_execution_blocked(
+                event,
+                reason="position_limit",
+                category="position_limit",
             )
             self._notify_skip(event.signal_id, "position_limit", tf)
             return None
@@ -500,6 +664,11 @@ class TradeExecutor:
                             event.symbol, tf, event.strategy, event.direction,
                             elapsed_bars, cooldown_bars,
                         )
+                        self._emit_execution_blocked(
+                            event,
+                            reason="reentry_cooldown",
+                            category="cooldown",
+                        )
                         self._notify_skip(event.signal_id, "reentry_cooldown", tf)
                         return None
 
@@ -514,6 +683,11 @@ class TradeExecutor:
                 event.symbol, event.strategy, event.direction,
                 atr, balance, close_price,
                 list(event.indicators.keys()),
+            )
+            self._emit_execution_blocked(
+                event,
+                reason="trade_params_unavailable",
+                category="trade_params",
             )
             self._notify_skip(event.signal_id, "trade_params_unavailable", tf)
             return None
@@ -544,6 +718,11 @@ class TradeExecutor:
                     "cost": cost_metrics,
                 }
             )
+            self._emit_execution_blocked(
+                event,
+                reason="spread_to_stop_ratio_too_high",
+                category="cost_guard",
+            )
             self._notify_skip(event.signal_id, "spread_to_stop_ratio_too_high", tf)
             return None
 
@@ -553,6 +732,10 @@ class TradeExecutor:
                 self._tf_stats.setdefault(
                     tf, {"received": 0, "passed": 0, "skip_reasons": {}}
                 )["passed"] += 1
+        self._emit_execution_decided(
+            event,
+            order_kind="market" if self._pending_manager is None else "pending",
+        )
         if self._pending_manager is None:
             return self._execute(event, trade_params, cost_metrics=cost_metrics)
         return self._submit_pending_entry(event, trade_params, cost_metrics)
@@ -574,6 +757,11 @@ class TradeExecutor:
             logger.warning(
                 "TradeExecutor: cannot submit pending entry without signal_id for %s/%s",
                 event.symbol, event.strategy,
+            )
+            self._emit_execution_blocked(
+                event,
+                reason="missing_signal_id",
+                category="execution_input",
             )
             self._notify_skip(event.signal_id, "missing_signal_id", event.timeframe or "")
             return None
@@ -674,6 +862,11 @@ class TradeExecutor:
                         "order_kind": order_kind,
                     },
                 )
+                self._emit_pending_order_submitted(
+                    event,
+                    order_kind=order_kind,
+                    ticket=order_ticket,
+                )
 
             self._execution_log.append({
                 "at": datetime.now(timezone.utc).isoformat(),
@@ -694,6 +887,12 @@ class TradeExecutor:
             logger.error(
                 "TradeExecutor: failed to place %s order for %s/%s: %s",
                 order_kind, event.symbol, event.strategy, exc,
+            )
+            self._emit_execution_failed(
+                event,
+                order_kind=order_kind,
+                reason=str(exc),
+                category="pending_submit",
             )
             self._notify_skip(event.signal_id, f"pending_order_failed:{exc}", tf)
             return None
@@ -1346,6 +1545,11 @@ class TradeExecutor:
                     symbol_point = None
                 if result.get("recovered_from_state"):
                     self._execution_quality["recovered_from_state"] += 1
+                self._emit_execution_submitted(
+                    event,
+                    order_kind="market",
+                    ticket=result.get("ticket") or result.get("order"),
+                )
             execution_quality = self._record_slippage(
                 requested_price=requested_price,
                 fill_price=fill_price,
@@ -1445,6 +1649,11 @@ class TradeExecutor:
             self._execution_quality["risk_blocks"] += 1
             assessment = dict(exc.assessment or {})
             reason = str(assessment.get("reason") or exc)
+            self._emit_execution_blocked(
+                event,
+                reason=reason,
+                category="risk_service",
+            )
             self._execution_log.append({
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
@@ -1475,6 +1684,12 @@ class TradeExecutor:
         except Exception as exc:
             self._last_error = str(exc)
             self._consecutive_failures += 1
+            self._emit_execution_failed(
+                event,
+                order_kind="market",
+                reason=str(exc),
+                category="dispatch",
+            )
             self._execution_log.append({
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,

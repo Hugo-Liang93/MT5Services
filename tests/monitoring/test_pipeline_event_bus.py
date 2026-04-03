@@ -10,7 +10,12 @@ import pytest
 
 from src.monitoring.pipeline import (
     PIPELINE_BAR_CLOSED,
+    PIPELINE_EXECUTION_BLOCKED,
+    PIPELINE_EXECUTION_DECIDED,
+    PIPELINE_EXECUTION_FAILED,
+    PIPELINE_EXECUTION_SUBMITTED,
     PIPELINE_INDICATOR_COMPUTED,
+    PIPELINE_PENDING_ORDER_SUBMITTED,
     PIPELINE_SIGNAL_EVALUATED,
     PIPELINE_SNAPSHOT_PUBLISHED,
     PipelineEvent,
@@ -209,6 +214,43 @@ class TestConvenienceEmitters:
         assert ev.payload["direction"] == "buy"
         assert ev.payload["confidence"] == 0.8765  # rounded to 4 dp
         assert ev.payload["signal_state"] == "confirmed_buy"
+
+    def test_emit_execution_events(self, bus: PipelineEventBus) -> None:
+        received: list[PipelineEvent] = []
+        bus.add_listener(received.append)
+
+        bus.emit_execution_decided(
+            "t8", "XAUUSD", "M5", "confirmed",
+            strategy="trendline", direction="buy", order_kind="market",
+        )
+        bus.emit_execution_blocked(
+            "t8", "XAUUSD", "M5", "confirmed",
+            strategy="trendline", direction="buy", reason="after_eod_block", category="eod_guard",
+        )
+        bus.emit_execution_submitted(
+            "t8", "XAUUSD", "M5", "confirmed",
+            strategy="trendline", direction="buy", order_kind="market", request_id="sig-1", ticket=1001,
+        )
+        bus.emit_pending_order_submitted(
+            "t8", "XAUUSD", "M5", "confirmed",
+            strategy="trendline", direction="buy", order_kind="limit", request_id="sig-2", ticket=1002,
+        )
+        bus.emit_execution_failed(
+            "t8", "XAUUSD", "M5", "confirmed",
+            strategy="trendline", direction="buy", order_kind="market", reason="network_error", category="dispatch",
+        )
+
+        assert [item.type for item in received] == [
+            PIPELINE_EXECUTION_DECIDED,
+            PIPELINE_EXECUTION_BLOCKED,
+            PIPELINE_EXECUTION_SUBMITTED,
+            PIPELINE_PENDING_ORDER_SUBMITTED,
+            PIPELINE_EXECUTION_FAILED,
+        ]
+        assert received[1].payload["reason"] == "after_eod_block"
+        assert received[2].payload["ticket"] == 1001
+        assert received[3].payload["order_kind"] == "limit"
+        assert received[4].payload["category"] == "dispatch"
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import time
 from datetime import date, datetime, timezone
-from threading import RLock
 from typing import Any, Callable, Dict, Optional
 
 from src.persistence.db import TimescaleWriter
@@ -14,6 +13,7 @@ from .services import TradingCommandService, TradingQueryService
 from .control import TradeControlStateService
 from ..models import TradeCommandAuditRecord
 from .audit import TradeCommandAuditService, TradeDailyStatsService
+from .idempotency import TradeExecutionReplayService
 from ..registry import TradingAccountRegistry
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,10 @@ class TradingModule:
             account_alias_getter=lambda: self.active_account_alias,
         )
         self._daily_stats = TradeDailyStatsService()
-        self._idempotency_lock = RLock()
-        self._idempotent_success_cache: dict[str, dict[str, Any]] = {}
+        self._trade_execution_replay = TradeExecutionReplayService(
+            self._command_audit,
+            audit_lookback_limit=_IDEMPOTENT_LOOKBACK_LIMIT,
+        )
         self.commands = TradingCommandService(self)
         self.queries = TradingQueryService(self)
 
@@ -93,34 +95,10 @@ class TradingModule:
         request_id: Optional[str],
         result: Any,
     ) -> None:
-        if not request_id or not isinstance(result, dict):
-            return
-        with self._idempotency_lock:
-            self._idempotent_success_cache[str(request_id)] = dict(result)
-            if len(self._idempotent_success_cache) > 500:
-                keys = list(self._idempotent_success_cache.keys())
-                for key in keys[:-250]:
-                    self._idempotent_success_cache.pop(key, None)
+        self._trade_execution_replay.cache_successful_trade_result(request_id, result)
 
     def _find_idempotent_trade_result(self, request_id: str) -> Optional[dict[str, Any]]:
-        normalized = str(request_id or "").strip()
-        if not normalized:
-            return None
-        with self._idempotency_lock:
-            cached = self._idempotent_success_cache.get(normalized)
-        if cached is not None:
-            replayed = dict(cached)
-            replayed["idempotent_replay"] = True
-            replayed["idempotent_source"] = "memory"
-            return replayed
-        replayed = self._command_audit.fetch_successful_trade_result(
-            request_id=normalized,
-            limit=_IDEMPOTENT_LOOKBACK_LIMIT,
-        )
-        if replayed is not None:
-            self._cache_successful_trade_result(normalized, replayed)
-            return replayed
-        return None
+        return self._trade_execution_replay.find_successful_trade_result(request_id)
 
     def trade_control_status(self) -> dict[str, Any]:
         return self._trade_control.status()

@@ -1,5 +1,9 @@
 # TODO
 
-- 决定人工触发 `POST /v1/trade/closeout-exposure` 成功后，是否自动切换 `runtime_mode`，以及切换到 `risk_off` 还是 `ingest_only`。
-- 继续细化主链路结构化事件模型，补充策略级过滤/风控节点与执行阻断节点的标准化事件分类，避免后续 trace 语义漂移。
-- 继续按职责拆分 `TradingModule` 剩余协调逻辑，优先评估 idempotency/replay 是否应独立成正式组件。
+当前没有已确认但尚未拍板的架构级 TODO。
+
+后续若新增事项，继续按以下原则登记：
+
+- 只记录需要单独决策的架构/边界问题
+- 不记录可直接实施的小修小补
+- 每条 TODO 必须明确影响模块与待拍板点

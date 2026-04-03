@@ -165,6 +165,36 @@ class _PipelineTraceRepo:
                     "signal_state": "confirmed",
                 },
             },
+            {
+                "id": 6,
+                "trace_id": "trace-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "scope": "confirmed",
+                "event_type": "execution_decided",
+                "recorded_at": datetime(2026, 1, 1, 8, 15, 30, tzinfo=timezone.utc),
+                "payload": {
+                    "strategy": "trendline",
+                    "direction": "buy",
+                    "order_kind": "market",
+                },
+            },
+            {
+                "id": 7,
+                "trace_id": "trace-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "scope": "confirmed",
+                "event_type": "execution_submitted",
+                "recorded_at": datetime(2026, 1, 1, 8, 16, tzinfo=timezone.utc),
+                "payload": {
+                    "strategy": "trendline",
+                    "direction": "buy",
+                    "order_kind": "market",
+                    "request_id": "sig-1",
+                    "ticket": 7001,
+                },
+            },
         ]
 
 
@@ -211,7 +241,10 @@ def test_trade_trace_projection_aggregates_signal_to_outcome_chain() -> None:
     assert trace["identifiers"]["position_tickets"] == [8001]
     assert trace["summary"]["stages"]["pipeline_bar_closed"] == "present"
     assert trace["summary"]["stages"]["pipeline_signal_filter"] == "present"
+    assert trace["summary"]["stages"]["pipeline_execution_decision"] == "present"
+    assert trace["summary"]["stages"]["pipeline_execution_submission"] == "present"
     assert trace["summary"]["pipeline_event_counts"]["signal_filter_decided"] == 1
+    assert trace["summary"]["pipeline_event_counts"]["execution_submitted"] == 1
     assert trace["summary"]["stages"]["confirmed_signal"] == "present"
     assert trace["summary"]["pending_status_counts"]["filled"] == 1
     assert trace["summary"]["position_status_counts"]["closed"] == 1
@@ -240,3 +273,4 @@ def test_trade_trace_projection_supports_trace_id_only_chain() -> None:
     assert trace["identifiers"]["signal_ids"] == ["sig-1"]
     assert trace["timeline"][0]["stage"] == "pipeline.bar_closed"
     assert trace["summary"]["stages"]["pipeline_signal_filter"] == "present"
+    assert trace["summary"]["stages"]["pipeline_execution_decision"] == "present"

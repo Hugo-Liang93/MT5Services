@@ -74,6 +74,7 @@ PipelineEventBus -> PipelineTraceRecorder -> pipeline_trace_events
 - 信号跟踪记录
 - 自动交易触发
 - Pipeline trace 过滤/评估事件
+- Pipeline trace 执行决策/阻断/提交/失败事件
 
 ### 2.4 交易执行
 
@@ -146,6 +147,7 @@ pipeline_trace_events
 + pending_order_states / position_runtime_states / trade_outcomes
 -> TradingFlowTraceReadModel
 -> /v1/trade/trace/{signal_id}
+-> /v1/trade/trace/by-trace/{trace_id}
 ```
 
 这样可以避免：

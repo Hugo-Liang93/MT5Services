@@ -7,7 +7,7 @@ from collections import deque
 from datetime import datetime
 from typing import Any
 
-from src.monitoring.pipeline import PipelineEvent, PipelineEventBus
+from .event_bus import PipelineEvent, PipelineEventBus
 
 logger = logging.getLogger(__name__)
 

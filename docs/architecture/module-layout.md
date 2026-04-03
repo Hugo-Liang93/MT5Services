@@ -31,6 +31,7 @@
   - 交易模块聚合根
   - 交易控制状态
   - 交易审计与日内统计
+  - 幂等回放与执行结果复用
 - `execution/`
   - 执行门禁
   - 下单执行器
@@ -80,6 +81,7 @@
   - 健康报告
 - `pipeline/`
   - pipeline 事件总线
+  - pipeline 结构化事件分类
   - pipeline trace 持久化 recorder
 
 ### `monitoring` 导入规则

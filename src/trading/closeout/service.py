@@ -3,9 +3,10 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from ..ports import ExposureCloseoutPort
+from .policy import ExposureCloseoutPolicy
 
 
 @dataclass
@@ -182,6 +183,8 @@ class ExposureCloseoutController:
     def __init__(self, service: ExposureCloseoutService):
         self._service = service
         self._lock = threading.Lock()
+        self._post_closeout_policy = ExposureCloseoutPolicy()
+        self._apply_runtime_mode: Callable[..., dict[str, Any]] | None = None
         self._last_status: dict[str, Any] = {
             "status": "idle",
             "last_reason": None,
@@ -189,11 +192,41 @@ class ExposureCloseoutController:
             "last_requested_at": None,
             "last_completed_at": None,
             "result": None,
+            "runtime_mode_transition": {
+                "configured_action": self._post_closeout_policy.after_manual_closeout_action.value,
+                "target_mode": None,
+                "applied": False,
+                "reason": None,
+                "error": None,
+                "snapshot": None,
+            },
         }
+
+    def configure_runtime_mode_transition(
+        self,
+        *,
+        policy: ExposureCloseoutPolicy,
+        apply_mode: Callable[..., dict[str, Any]],
+    ) -> None:
+        with self._lock:
+            self._post_closeout_policy = policy
+            self._apply_runtime_mode = apply_mode
+            self._last_status["runtime_mode_transition"] = {
+                "configured_action": policy.after_manual_closeout_action.value,
+                "target_mode": None,
+                "applied": False,
+                "reason": None,
+                "error": None,
+                "snapshot": None,
+            }
 
     def execute(self, *, reason: str, comment: str) -> dict[str, Any]:
         requested_at = datetime.now(timezone.utc)
         result = self._service.execute(comment=comment).as_dict()
+        runtime_mode_transition = self._apply_post_closeout_transition(
+            reason=reason,
+            completed=bool(result.get("completed")),
+        )
         status = {
             "status": "completed" if result.get("completed") else "incomplete",
             "last_reason": reason,
@@ -201,6 +234,7 @@ class ExposureCloseoutController:
             "last_requested_at": requested_at.isoformat(),
             "last_completed_at": requested_at.isoformat() if result.get("completed") else None,
             "result": result,
+            "runtime_mode_transition": runtime_mode_transition,
         }
         with self._lock:
             self._last_status = status
@@ -209,3 +243,38 @@ class ExposureCloseoutController:
     def status(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._last_status)
+
+    def _apply_post_closeout_transition(
+        self,
+        *,
+        reason: str,
+        completed: bool,
+    ) -> dict[str, Any]:
+        target_mode = self._post_closeout_policy.resolve_runtime_mode_target(
+            reason=reason,
+            completed=completed,
+        )
+        transition = {
+            "configured_action": self._post_closeout_policy.after_manual_closeout_action.value,
+            "target_mode": target_mode,
+            "applied": False,
+            "reason": None,
+            "error": None,
+            "snapshot": None,
+        }
+        if target_mode is None:
+            return transition
+        if self._apply_runtime_mode is None:
+            transition["error"] = "runtime_mode_controller_not_configured"
+            return transition
+        transition_reason = f"closeout:{reason}"
+        try:
+            snapshot = self._apply_runtime_mode(target_mode, reason=transition_reason)
+        except Exception as exc:
+            transition["error"] = str(exc)
+            transition["reason"] = transition_reason
+            return transition
+        transition["applied"] = True
+        transition["reason"] = transition_reason
+        transition["snapshot"] = snapshot
+        return transition

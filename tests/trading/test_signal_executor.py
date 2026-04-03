@@ -4,6 +4,12 @@ from datetime import datetime, timezone
 
 import pytest
 
+from src.monitoring.pipeline import (
+    PIPELINE_EXECUTION_BLOCKED,
+    PIPELINE_EXECUTION_DECIDED,
+    PIPELINE_EXECUTION_SUBMITTED,
+    PipelineEventBus,
+)
 from src.signals.models import SignalEvent
 from src.trading.execution import ExecutionGate, ExecutionGateConfig
 from src.trading.execution import TradeParameters
@@ -99,6 +105,7 @@ def _build_event(
         "spread_price": spread_points * symbol_point,
         "symbol_point": symbol_point,
         "close_price": close_price,
+        "signal_trace_id": "trace_sig_1",
     }
     if market_structure:
         metadata["market_structure"] = market_structure
@@ -144,6 +151,9 @@ def test_trade_executor_skips_when_spread_to_stop_ratio_is_too_high() -> None:
 
 def test_trade_executor_records_cost_metrics_on_success() -> None:
     module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
     executor = TradeExecutor(
         trading_module=module,
         config=ExecutorConfig(
@@ -154,6 +164,7 @@ def test_trade_executor_records_cost_metrics_on_success() -> None:
             max_spread_to_stop_ratio=0.5,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        pipeline_event_bus=pipeline_bus,
     )
 
     _fire(executor, _build_event(spread_points=50.0, close_price=3000.0))
@@ -163,6 +174,10 @@ def test_trade_executor_records_cost_metrics_on_success() -> None:
     assert cost["estimated_cost_points"] == 50.0
     assert cost["estimated_cost_price"] == 0.5
     assert cost["spread_to_stop_ratio"] is not None
+    assert [event.type for event in received][-2:] == [
+        PIPELINE_EXECUTION_DECIDED,
+        PIPELINE_EXECUTION_SUBMITTED,
+    ]
 
 
 def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None:
@@ -200,6 +215,9 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
 
 def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
     module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
     executor = TradeExecutor(
         trading_module=module,
         position_manager=DummyPositionManager(
@@ -211,6 +229,7 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
             max_concurrent_positions_per_symbol=2,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        pipeline_event_bus=pipeline_bus,
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -219,6 +238,8 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
     assert executor.status()["recent_executions"][-1]["reason"] == (
         "max_concurrent_positions_per_symbol"
     )
+    assert received[-1].type == PIPELINE_EXECUTION_BLOCKED
+    assert received[-1].payload["reason"] == "position_limit"
 
 
 def test_trade_executor_skips_when_same_strategy_direction_position_is_active() -> None:

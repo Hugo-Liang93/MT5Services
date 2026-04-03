@@ -3,6 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Sequence
 
+from src.monitoring.pipeline import (
+    PIPELINE_STAGE_DEFINITIONS,
+    pipeline_event_status,
+    pipeline_event_summary,
+    pipeline_stage_name,
+    pipeline_stage_presence,
+)
+
 
 class TradingFlowTraceReadModel:
     """交易主链路 trace 只读投影。
@@ -245,31 +253,17 @@ class TradingFlowTraceReadModel:
         positions = list(facts.get("positions") or [])
         return {
             "stages": {
-                "pipeline_bar_closed": (
-                    "present"
-                    if self._has_pipeline_stage(pipeline_events, "bar_closed")
-                    else "missing"
-                ),
-                "pipeline_indicator_computed": (
-                    "present"
-                    if self._has_pipeline_stage(pipeline_events, "indicator_computed")
-                    else "missing"
-                ),
-                "pipeline_snapshot_published": (
-                    "present"
-                    if self._has_pipeline_stage(pipeline_events, "snapshot_published")
-                    else "missing"
-                ),
-                "pipeline_signal_filter": (
-                    "present"
-                    if self._has_pipeline_stage(pipeline_events, "signal_filter_decided")
-                    else "missing"
-                ),
-                "pipeline_signal_evaluated": (
-                    "present"
-                    if self._has_pipeline_stage(pipeline_events, "signal_evaluated")
-                    else "missing"
-                ),
+                **{
+                    definition.summary_key: (
+                        "present"
+                        if pipeline_stage_presence(
+                            pipeline_events,
+                            definition.summary_key,
+                        )
+                        else "missing"
+                    )
+                    for definition in PIPELINE_STAGE_DEFINITIONS
+                },
                 "preview_signal": "present" if facts.get("signal_preview") else "missing",
                 "confirmed_signal": (
                     "present" if facts.get("signal_confirmed") else "missing"
@@ -380,17 +374,17 @@ class TradingFlowTraceReadModel:
         events: list[dict[str, Any]] = []
         for row in pipeline_events:
             event_type = str(row.get("event_type") or "unknown")
-            stage = self._pipeline_stage_name(event_type)
+            stage = pipeline_stage_name(event_type)
             events.append(
                 self._timeline_event(
                     event_id=(
                         f"{signal_id}:pipeline:{row.get('trace_id')}:{row.get('id') or self._datetime_key(row.get('recorded_at'))}:{event_type}"
                     ),
                     stage=stage,
-                    status=self._pipeline_status(row),
+                    status=pipeline_event_status(row),
                     at=row.get("recorded_at"),
                     source="pipeline_trace_events",
-                    summary=self._pipeline_summary(row),
+                    summary=pipeline_event_summary(row),
                     details=row,
                 )
             )
@@ -659,55 +653,6 @@ class TradingFlowTraceReadModel:
             "summary": summary,
             "details": self._json_safe(details),
         }
-
-    @staticmethod
-    def _has_pipeline_stage(rows: Sequence[dict[str, Any]], event_type: str) -> bool:
-        target = str(event_type).strip()
-        return any(str(row.get("event_type") or "").strip() == target for row in rows)
-
-    @staticmethod
-    def _pipeline_stage_name(event_type: str) -> str:
-        normalized = str(event_type or "unknown").strip()
-        mapping = {
-            "bar_closed": "pipeline.bar_closed",
-            "indicator_computed": "pipeline.indicator_computed",
-            "snapshot_published": "pipeline.snapshot_published",
-            "signal_filter_decided": "pipeline.signal_filter",
-            "signal_evaluated": "pipeline.signal_evaluated",
-        }
-        return mapping.get(normalized, f"pipeline.{normalized}")
-
-    @staticmethod
-    def _pipeline_status(row: dict[str, Any]) -> str:
-        event_type = str(row.get("event_type") or "")
-        payload = row.get("payload") or {}
-        if event_type == "signal_filter_decided":
-            return "passed" if payload.get("allowed") else "blocked"
-        if event_type == "signal_evaluated":
-            return str(payload.get("signal_state") or "evaluated")
-        return "observed"
-
-    @classmethod
-    def _pipeline_summary(cls, row: dict[str, Any]) -> str:
-        event_type = str(row.get("event_type") or "")
-        payload = row.get("payload") or {}
-        if event_type == "bar_closed":
-            return "行情 bar close"
-        if event_type == "indicator_computed":
-            return "指标计算完成"
-        if event_type == "snapshot_published":
-            return "指标快照发布"
-        if event_type == "signal_filter_decided":
-            return (
-                f"信号过滤通过: {payload.get('category') or 'pass'}"
-                if payload.get("allowed")
-                else f"信号过滤拦截: {payload.get('reason') or 'unknown'}"
-            )
-        if event_type == "signal_evaluated":
-            strategy = payload.get("strategy") or "unknown"
-            direction = payload.get("direction") or "hold"
-            return f"策略评估: {strategy}/{direction}"
-        return f"Pipeline 事件: {event_type}"
 
     def _pending_event_time(self, row: dict[str, Any]) -> Any:
         status = str(row.get("status") or "")

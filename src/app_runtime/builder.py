@@ -54,6 +54,10 @@ from src.trading.state import TradingStateAlerts
 from src.trading.state import TradingStateRecovery
 from src.trading.state import TradingStateRecoveryPolicy
 from src.trading.state import TradingStateStore
+from src.trading.closeout import (
+    CloseoutRuntimeModeAction,
+    ExposureCloseoutPolicy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +168,7 @@ def build_app_container(
         economic_calendar_service=container.economic_calendar_service,
         signal_config=signal_config_loader(),
         trading_state_store=container.trading_state_store,
+        pipeline_event_bus=container.pipeline_event_bus,
     )
     container.calibrator = signal_components.calibrator
     container.market_structure_analyzer = (
@@ -230,6 +235,15 @@ def build_app_container(
             guard=container.runtime_mode_guard,
             auto_transition_policy=container.runtime_mode_auto_policy,
         )
+        if container.exposure_closeout_controller is not None:
+            container.exposure_closeout_controller.configure_runtime_mode_transition(
+                policy=ExposureCloseoutPolicy(
+                    after_manual_closeout_action=CloseoutRuntimeModeAction(
+                        trading_ops_config.runtime_mode_after_manual_closeout
+                    )
+                ),
+                apply_mode=container.runtime_mode_controller.apply_mode,
+            )
 
     # Phase 4: monitoring
     container.health_monitor = get_health_monitor(

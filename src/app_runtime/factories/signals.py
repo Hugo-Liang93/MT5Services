@@ -274,6 +274,7 @@ def build_signal_components(
     economic_calendar_service,
     signal_config,
     trading_state_store=None,
+    pipeline_event_bus=None,
 ) -> SignalComponents:
     market_structure_analyzer = MarketStructureAnalyzer(
         indicator_manager.market_service,
@@ -493,6 +494,7 @@ def build_signal_components(
         execution_gate=execution_gate,
         pending_entry_manager=pending_entry_manager,
         performance_tracker=performance_tracker,
+        pipeline_event_bus=pipeline_event_bus,
     )
     _executor_holder.append(trade_executor)
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)

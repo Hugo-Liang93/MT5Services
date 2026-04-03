@@ -252,6 +252,30 @@ def test_trading_module_dispatch_trade_filters_execute_only_fields_from_precheck
     assert result["ticket"] == 123
 
 
+def test_trading_module_replays_same_request_id_from_memory_cache() -> None:
+    registry = DummyRegistry()
+    module = TradingModule(registry=registry, db_writer=DummyDBWriter())
+
+    first = module.execute_trade(
+        symbol="XAUUSD",
+        volume=0.2,
+        side="buy",
+        request_id="req_same_trade",
+    )
+    second = module.execute_trade(
+        symbol="XAUUSD",
+        volume=0.2,
+        side="buy",
+        request_id="req_same_trade",
+    )
+
+    assert first["ticket"] == 123
+    assert second["ticket"] == 123
+    assert second["idempotent_replay"] is True
+    assert second["idempotent_source"] == "memory"
+    assert len(registry.trading_service.execute_calls) == 1
+
+
 def test_trading_module_dispatch_operation_rejects_unknown():
     module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
 

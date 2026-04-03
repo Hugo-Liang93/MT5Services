@@ -150,6 +150,10 @@ SignalRuntime (双队列: confirmed 优先, intrabar best-effort)
 - `GET /v1/trade/state/closeout`：查看最近一次风险收口状态
 - `POST /v1/trade/closeout-exposure`：人工触发统一风险收口
 
+人工/API 触发的收口在成功完成后，会根据 `config/app.ini` 中的
+`[trading_ops].runtime_mode_after_manual_closeout` 自动切换运行模式。
+当前默认值为 `ingest_only`。
+
 ## 配置系统
 
 ### 优先级（高→低）
@@ -220,6 +224,7 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 - `TradeControlStateService`：负责 `auto_entry_enabled / close_only_mode` 状态与准入拦截。
 - `TradeCommandAuditService`：负责交易命令审计读写与审计回放查询，只记录命令，不再混入查询调用。
 - `TradeDailyStatsService`：负责日内交易统计聚合。
+- `TradeExecutionReplayService`：负责 `execute_trade` 的幂等回放缓存与审计回放查询。
 - `TradingModule`：保留为应用协调器，不再直接持有上述共享状态实现细节。
 
 ### 审计与 Trace
@@ -227,7 +232,7 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 - `trade_command_audits`：交易命令审计表，只记录 `execute_trade / precheck_trade / close / cancel / modify` 等命令类动作。
 - 查询类调用不再写入同一张审计表，避免把命令审计、健康探针和运行查询混成一个事实源。
 - `GET /v1/trade/command-audits`：读取最近交易命令审计。
-- `pipeline_trace_events`：PipelineEventBus 的持久化事实表，记录 `bar_closed / indicator_computed / snapshot_published / signal_filter_decided / signal_evaluated` 上游链路节点。
+- `pipeline_trace_events`：PipelineEventBus 的持久化事实表，记录 `bar_closed / indicator_computed / snapshot_published / signal_filter_decided / signal_evaluated / execution_decided / execution_blocked / execution_submitted / pending_order_submitted / execution_failed` 主链路节点。
 - `GET /v1/trade/trace/{signal_id}`：按 `signal_id` 聚合 `pipeline_trace_events / signal_events / auto_executions / trade_command_audits / pending_order_states / position_runtime_states / trade_outcomes`，输出从市场数据到交易结果的时间线与节点关系，供可视化与问题定位使用。
 - `GET /v1/trade/trace/by-trace/{trace_id}`：按 pipeline `trace_id` 聚合同一条链路，覆盖“被过滤、尚未生成 signal_id”的排查场景。
 
