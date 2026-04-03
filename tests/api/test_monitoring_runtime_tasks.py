@@ -61,7 +61,7 @@ def test_get_runtime_task_status_formats_database_rows(monkeypatch) -> None:
 
 def test_runtime_tasks_endpoint_returns_items_and_filters(monkeypatch) -> None:
     monkeypatch.setattr(
-        "src.api.monitoring.get_runtime_task_status",
+        "src.api.monitoring_routes.runtime.get_runtime_task_status",
         lambda component=None, task_name=None: [
             {
                 "component": component,
@@ -90,7 +90,7 @@ def test_pending_entries_endpoint_uses_runtime_read_model(monkeypatch) -> None:
         def pending_entries_summary(self):
             return {"status": "healthy", "active_count": 1, "entries": [{"signal_id": "sig_1"}]}
 
-    monkeypatch.setattr("src.api.monitoring.get_runtime_read_model", lambda: _RuntimeViews())
+    monkeypatch.setattr("src.api.monitoring_routes.runtime.get_runtime_read_model", lambda: _RuntimeViews())
 
     response = asyncio.run(get_pending_entries())
 

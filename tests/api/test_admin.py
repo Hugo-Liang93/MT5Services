@@ -153,8 +153,8 @@ def client() -> TestClient:
 
 
 class TestDashboard:
-    @patch("src.api.admin.deps.get_startup_status")
-    @patch("src.api.admin.deps.get_ingestor")
+    @patch("src.api.admin_routes.dashboard.deps.get_startup_status")
+    @patch("src.api.admin_routes.dashboard.deps.get_ingestor")
     def test_dashboard_success(
         self, mock_ingestor: MagicMock, mock_startup: MagicMock, client: TestClient
     ) -> None:
@@ -178,8 +178,8 @@ class TestDashboard:
         assert "account" in overview
         assert "executor" in overview
 
-    @patch("src.api.admin.deps.get_startup_status")
-    @patch("src.api.admin.deps.get_ingestor")
+    @patch("src.api.admin_routes.dashboard.deps.get_startup_status")
+    @patch("src.api.admin_routes.dashboard.deps.get_ingestor")
     def test_dashboard_service_unavailable(
         self, mock_ingestor: MagicMock, mock_startup: MagicMock
     ) -> None:
@@ -231,8 +231,8 @@ class TestDashboard:
 
 
 class TestConfig:
-    @patch("src.api.admin.get_effective_config_snapshot")
-    @patch("src.api.admin.get_config_provenance_snapshot")
+    @patch("src.api.admin_routes.config.get_effective_config_snapshot")
+    @patch("src.api.admin_routes.config.get_config_provenance_snapshot")
     def test_config_full(
         self, mock_prov: MagicMock, mock_eff: MagicMock, client: TestClient
     ) -> None:
@@ -246,8 +246,8 @@ class TestConfig:
         assert "risk" in data["effective"]
         assert len(data["files"]) > 0
 
-    @patch("src.api.admin.get_effective_config_snapshot")
-    @patch("src.api.admin.get_config_provenance_snapshot")
+    @patch("src.api.admin_routes.config.get_effective_config_snapshot")
+    @patch("src.api.admin_routes.config.get_config_provenance_snapshot")
     def test_config_section_filter(
         self, mock_prov: MagicMock, mock_eff: MagicMock, client: TestClient
     ) -> None:
@@ -260,7 +260,7 @@ class TestConfig:
         assert "risk" in data["effective"]
         assert "trading" not in data["effective"]
 
-    @patch("src.api.admin.get_signal_config")
+    @patch("src.api.admin_routes.config.get_signal_config")
     def test_config_signal(self, mock_cfg: MagicMock, client: TestClient) -> None:
         cfg = MagicMock()
         cfg.model_dump.return_value = {"auto_trade": True}
@@ -270,7 +270,7 @@ class TestConfig:
         assert resp.status_code == 200
         assert resp.json()["data"]["auto_trade"] is True
 
-    @patch("src.api.admin.get_risk_config")
+    @patch("src.api.admin_routes.config.get_risk_config")
     def test_config_risk(self, mock_cfg: MagicMock, client: TestClient) -> None:
         cfg = MagicMock()
         cfg.model_dump.return_value = {"max_positions": 5}
@@ -280,7 +280,7 @@ class TestConfig:
         assert resp.status_code == 200
         assert resp.json()["data"]["max_positions"] == 5
 
-    @patch("src.api.admin._load_json_config")
+    @patch("src.api.admin_routes.config.load_json_config")
     def test_config_indicators(self, mock_load: MagicMock, client: TestClient) -> None:
         mock_load.return_value = [
             {"name": "rsi14", "enabled": True},
@@ -292,7 +292,7 @@ class TestConfig:
         assert data["total_count"] == 2
         assert data["enabled_count"] == 1
 
-    @patch("src.api.admin._load_json_config")
+    @patch("src.api.admin_routes.config.load_json_config")
     def test_config_indicators_enabled_only(
         self, mock_load: MagicMock, client: TestClient
     ) -> None:
@@ -304,7 +304,7 @@ class TestConfig:
         data = resp.json()["data"]
         assert data["total_count"] == 1  # only enabled
 
-    @patch("src.api.admin._load_json_config")
+    @patch("src.api.admin_routes.config.load_json_config")
     def test_config_composites(self, mock_load: MagicMock, client: TestClient) -> None:
         mock_load.return_value = [{"name": "trend_triple_confirm"}]
         resp = client.get("/v1/admin/config/composites")
@@ -389,13 +389,13 @@ class TestPipelineStats:
 
 
 class TestHelpers:
-    @patch("src.api.admin.resolve_config_path")
+    @patch("src.api.admin_routes.common.resolve_config_path")
     def test_load_json_config_missing(self, mock_resolve: MagicMock) -> None:
         mock_resolve.return_value = None
         result = _load_json_config("nonexistent.json")
         assert result == []
 
-    @patch("src.api.admin.resolve_config_path")
+    @patch("src.api.admin_routes.common.resolve_config_path")
     def test_load_json_config_exists(
         self, mock_resolve: MagicMock, tmp_path: Any
     ) -> None:

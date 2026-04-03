@@ -12,11 +12,11 @@ def test_trigger_config_reload_clears_caches_and_reloads_file(monkeypatch) -> No
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "src.api.monitoring.reload_configs",
+        "src.api.monitoring_routes.runtime.reload_configs",
         lambda: calls.append("reload_configs"),
     )
     monkeypatch.setattr(
-        "src.api.monitoring.get_file_config_manager",
+        "src.api.monitoring_routes.runtime.get_file_config_manager",
         lambda: SimpleNamespace(
             reload=lambda filename: calls.append(f"file:{filename}") or True
         ),
@@ -33,9 +33,9 @@ def test_trigger_config_reload_clears_caches_and_reloads_file(monkeypatch) -> No
 
 
 def test_trigger_config_reload_raises_when_file_missing(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring.reload_configs", lambda: None)
+    monkeypatch.setattr("src.api.monitoring_routes.runtime.reload_configs", lambda: None)
     monkeypatch.setattr(
-        "src.api.monitoring.get_file_config_manager",
+        "src.api.monitoring_routes.runtime.get_file_config_manager",
         lambda: SimpleNamespace(reload=lambda filename: False),
     )
 

@@ -8,9 +8,9 @@ from src.api.monitoring import health_ready
 
 
 def test_health_ready_raises_when_critical_component_is_degraded(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring.get_startup_status", lambda: {"ready": True, "phase": "running"})
+    monkeypatch.setattr("src.api.monitoring_routes.health.get_startup_status", lambda: {"ready": True, "phase": "running"})
     monkeypatch.setattr(
-        "src.api.monitoring.get_ingestor",
+        "src.api.monitoring_routes.health.get_ingestor",
         lambda: type(
             "Ingestor",
             (),
@@ -18,7 +18,7 @@ def test_health_ready_raises_when_critical_component_is_degraded(monkeypatch) ->
         )(),
     )
     monkeypatch.setattr(
-        "src.api.monitoring.get_indicator_manager",
+        "src.api.monitoring_routes.health.get_indicator_manager",
         lambda: type(
             "IndicatorManager",
             (),
@@ -37,9 +37,9 @@ def test_health_ready_raises_when_critical_component_is_degraded(monkeypatch) ->
 
 
 def test_health_ready_returns_ready_when_checks_pass(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.monitoring.get_startup_status", lambda: {"ready": True, "phase": "running"})
+    monkeypatch.setattr("src.api.monitoring_routes.health.get_startup_status", lambda: {"ready": True, "phase": "running"})
     monkeypatch.setattr(
-        "src.api.monitoring.get_ingestor",
+        "src.api.monitoring_routes.health.get_ingestor",
         lambda: type(
             "Ingestor",
             (),
@@ -47,7 +47,7 @@ def test_health_ready_returns_ready_when_checks_pass(monkeypatch) -> None:
         )(),
     )
     monkeypatch.setattr(
-        "src.api.monitoring.get_indicator_manager",
+        "src.api.monitoring_routes.health.get_indicator_manager",
         lambda: type(
             "IndicatorManager",
             (),
