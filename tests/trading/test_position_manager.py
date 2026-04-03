@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from src.trading.exposure_closeout import ExposureCloseoutService
+from src.trading.exposure_closeout import (
+    ExposureCloseoutController,
+    ExposureCloseoutService,
+)
 from src.trading.position_manager import PositionManager
 from src.trading.sizing import TradeParameters
 
@@ -49,7 +52,9 @@ class DummyTradingModule:
 def _manager(trading: DummyTradingModule, **kwargs) -> PositionManager:
     return PositionManager(
         trading_module=trading,
-        end_of_day_closeout=ExposureCloseoutService(trading),
+        end_of_day_closeout=ExposureCloseoutController(
+            ExposureCloseoutService(trading)
+        ),
         **kwargs,
     )
 

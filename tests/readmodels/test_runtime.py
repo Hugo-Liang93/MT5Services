@@ -179,6 +179,24 @@ class DummyRuntimeModeController:
         }
 
 
+class DummyExposureCloseoutController:
+    def status(self):
+        return {
+            "status": "completed",
+            "last_reason": "end_of_day",
+            "last_comment": "end_of_day_closeout",
+            "last_requested_at": "2026-01-01T00:00:00+00:00",
+            "last_completed_at": "2026-01-01T00:00:00+00:00",
+            "result": {
+                "completed": True,
+                "positions": {"completed": [101], "failed": [], "requested": [101], "error": None},
+                "orders": {"completed": [201], "failed": [], "requested": [201], "error": None},
+                "remaining_positions": [],
+                "remaining_orders": [],
+            },
+        }
+
+
 def test_health_report_contains_unified_runtime_sections() -> None:
     read_model = RuntimeReadModel(
         health_monitor=DummyHealthMonitor(),
@@ -248,6 +266,7 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
         pending_entry_manager=DummyPendingEntryManager(),
         trading_state_store=DummyTradingStateStore(),
         trading_state_alerts=DummyTradingStateAlerts(),
+        exposure_closeout_controller=DummyExposureCloseoutController(),
         runtime_mode_controller=DummyRuntimeModeController(current_mode="observe"),
     )
 
@@ -255,6 +274,8 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
 
     assert summary["trade_control"]["close_only_mode"] is True
     assert summary["runtime_mode"]["current_mode"] == "observe"
+    assert summary["closeout"]["status"] == "completed"
+    assert summary["closeout"]["result"]["orders"]["completed"] == [201]
     assert summary["pending"]["active"]["status_counts"]["placed"] == 1
     assert summary["pending"]["active"]["status_counts"]["orphan"] == 1
     assert summary["pending"]["lifecycle"]["status_counts"]["filled"] == 1

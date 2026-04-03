@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from .ports import ExposureCloseoutPort
@@ -172,3 +174,38 @@ class ExposureCloseoutService:
             return list(self._trading.get_orders() or []), None
         except Exception as exc:
             return [], str(exc)
+
+
+class ExposureCloseoutController:
+    """统一的风险收口命令入口，供 EOD 与人工/API 复用。"""
+
+    def __init__(self, service: ExposureCloseoutService):
+        self._service = service
+        self._lock = threading.Lock()
+        self._last_status: dict[str, Any] = {
+            "status": "idle",
+            "last_reason": None,
+            "last_comment": None,
+            "last_requested_at": None,
+            "last_completed_at": None,
+            "result": None,
+        }
+
+    def execute(self, *, reason: str, comment: str) -> dict[str, Any]:
+        requested_at = datetime.now(timezone.utc)
+        result = self._service.execute(comment=comment).as_dict()
+        status = {
+            "status": "completed" if result.get("completed") else "incomplete",
+            "last_reason": reason,
+            "last_comment": comment,
+            "last_requested_at": requested_at.isoformat(),
+            "last_completed_at": requested_at.isoformat() if result.get("completed") else None,
+            "result": result,
+        }
+        with self._lock:
+            self._last_status = status
+        return dict(status)
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._last_status)

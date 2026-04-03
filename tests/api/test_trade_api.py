@@ -6,6 +6,8 @@ from src.api.trade import (
     orders,
     positions,
     trade,
+    trade_closeout_exposure,
+    trade_state_closeout_summary,
     trade_active_pending_state_list,
     trade_pending_execution_context_list,
     trade_runtime_mode_status,
@@ -23,6 +25,7 @@ from src.api.trade import (
     trade_state_summary,
 )
 from src.api.schemas import (
+    ExposureCloseoutRequest,
     SignalExecuteTradeRequest,
     RuntimeModeRequest,
     TradeControlRequest,
@@ -201,6 +204,42 @@ class _RuntimeModeController:
         return self.snapshot()
 
 
+class _ExposureCloseoutController:
+    def __init__(self) -> None:
+        self.last_reason = None
+        self.last_comment = None
+        self._status = {
+            "status": "idle",
+            "last_reason": None,
+            "last_comment": None,
+            "last_requested_at": None,
+            "last_completed_at": None,
+            "result": None,
+        }
+
+    def execute(self, *, reason: str, comment: str):
+        self.last_reason = reason
+        self.last_comment = comment
+        self._status = {
+            "status": "completed",
+            "last_reason": reason,
+            "last_comment": comment,
+            "last_requested_at": "2026-01-01T00:00:00+00:00",
+            "last_completed_at": "2026-01-01T00:00:00+00:00",
+            "result": {
+                "completed": True,
+                "positions": {"requested": [1], "completed": [1], "failed": [], "error": None},
+                "orders": {"requested": [2], "completed": [2], "failed": [], "error": None},
+                "remaining_positions": [],
+                "remaining_orders": [],
+            },
+        }
+        return dict(self._status)
+
+    def status(self):
+        return dict(self._status)
+
+
 def test_trade_precheck_wraps_mt5_errors() -> None:
     response = trade_precheck(
         TradeRequest(symbol="XAUUSD", volume=0.1, side="buy"),
@@ -342,6 +381,7 @@ def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
         runtime_views=RuntimeReadModel(
             trading_state_store=_TradingStateStore(),
             trading_state_alerts=_TradingStateAlerts(),
+            exposure_closeout_controller=_ExposureCloseoutController(),
             runtime_mode_controller=_RuntimeModeController(),
         ),
     )
@@ -349,6 +389,7 @@ def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
     assert response.success is True
     assert response.data["trade_control"]["close_only_mode"] is True
     assert response.data["runtime_mode"]["current_mode"] == "full"
+    assert response.data["closeout"]["status"] == "idle"
     assert response.data["pending"]["active"]["status_counts"]["placed"] == 1
     assert response.data["pending"]["lifecycle"]["status_counts"]["filled"] == 1
     assert response.data["positions"]["status_counts"]["open"] == 1
@@ -362,6 +403,18 @@ def test_trade_state_alerts_summary_endpoint_returns_alert_projection() -> None:
 
     assert response.success is True
     assert response.data["status"] == "warning"
+
+
+def test_trade_state_closeout_summary_endpoint_returns_projection() -> None:
+    controller = _ExposureCloseoutController()
+    controller.execute(reason="manual_risk_off", comment="manual_exposure_closeout")
+    response = trade_state_closeout_summary(
+        runtime_views=RuntimeReadModel(exposure_closeout_controller=controller),
+    )
+
+    assert response.success is True
+    assert response.data["status"] == "completed"
+    assert response.data["result"]["orders"]["completed"] == [2]
 
 
 def test_trade_runtime_mode_status_endpoint_returns_projection() -> None:
@@ -393,6 +446,31 @@ def test_trade_runtime_mode_update_endpoint_applies_mode() -> None:
     assert controller.last_reason == "after_hours"
     assert response.data["trading_state"]["alerts"]["alerts"][0]["code"] == "pending_orphan"
     assert response.metadata["operation"] == "trade_runtime_mode_update"
+
+
+def test_trade_closeout_exposure_endpoint_executes_unified_controller() -> None:
+    controller = _ExposureCloseoutController()
+    runtime_views = RuntimeReadModel(
+        trading_state_store=_TradingStateStore(),
+        trading_state_alerts=_TradingStateAlerts(),
+        exposure_closeout_controller=controller,
+        runtime_mode_controller=_RuntimeModeController(),
+    )
+
+    response = trade_closeout_exposure(
+        ExposureCloseoutRequest(
+            reason="manual_risk_off",
+            comment="manual_exposure_closeout",
+        ),
+        controller=controller,
+        runtime_views=runtime_views,
+    )
+
+    assert response.success is True
+    assert response.data["closeout"]["status"] == "completed"
+    assert response.data["closeout"]["result"]["positions"]["completed"] == [1]
+    assert response.data["trading_state"]["closeout"]["last_reason"] == "manual_risk_off"
+    assert response.metadata["operation"] == "trade_closeout_exposure"
 
 
 def test_trade_pending_lifecycle_state_list_endpoint_filters_status() -> None:

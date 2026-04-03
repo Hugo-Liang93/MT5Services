@@ -152,6 +152,11 @@ class RuntimeModeRequest(BaseModel):
     reason: str = ""
 
 
+class ExposureCloseoutRequest(BaseModel):
+    reason: str = "manual_risk_off"
+    comment: str = "manual_exposure_closeout"
+
+
 class TradeReconcileRequest(BaseModel):
     sync_open_positions: bool = True
 

@@ -167,6 +167,9 @@ def build_app_container(
     container.htf_cache = signal_components.htf_cache
     container.signal_quality_tracker = signal_components.signal_quality_tracker
     container.trade_outcome_tracker = signal_components.trade_outcome_tracker
+    container.exposure_closeout_controller = (
+        signal_components.exposure_closeout_controller
+    )
     container.position_manager = signal_components.position_manager
     container.trade_executor = signal_components.trade_executor
     _wire_margin_guard(
@@ -265,6 +268,7 @@ def build_app_container(
         pending_entry_manager=container.pending_entry_manager,
         trading_state_store=container.trading_state_store,
         trading_state_alerts=container.trading_state_alerts,
+        exposure_closeout_controller=container.exposure_closeout_controller,
         runtime_mode_controller=container.runtime_mode_controller,
     )
 

@@ -30,6 +30,7 @@ from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.trading import TradingAccountRegistry, TradingModule
+from src.trading.exposure_closeout import ExposureCloseoutController
 from src.trading.pending_entry import PendingEntryManager
 from src.trading.position_manager import PositionManager
 from src.trading.signal_executor import TradeExecutor
@@ -246,6 +247,12 @@ def get_position_manager() -> PositionManager:
     _ensure_initialized()
     assert _container is not None and _container.position_manager is not None
     return _container.position_manager
+
+
+def get_exposure_closeout_controller() -> ExposureCloseoutController:
+    _ensure_initialized()
+    assert _container is not None and _container.exposure_closeout_controller is not None
+    return _container.exposure_closeout_controller
 
 
 def get_calibrator() -> ConfidenceCalibrator:

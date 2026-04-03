@@ -20,6 +20,7 @@ class RuntimeReadModel:
         pending_entry_manager: Any = None,
         trading_state_store: Any = None,
         trading_state_alerts: Any = None,
+        exposure_closeout_controller: Any = None,
         runtime_mode_controller: Any = None,
     ) -> None:
         self._health_monitor = health_monitor
@@ -32,6 +33,7 @@ class RuntimeReadModel:
         self._pending_entry_manager = pending_entry_manager
         self._trading_state_store = trading_state_store
         self._trading_state_alerts = trading_state_alerts
+        self._exposure_closeout_controller = exposure_closeout_controller
         self._runtime_mode_controller = runtime_mode_controller
 
     def _current_runtime_mode(self) -> str | None:
@@ -581,6 +583,21 @@ class RuntimeReadModel:
         snapshot["status"] = "healthy"
         return snapshot
 
+    def exposure_closeout_summary(self) -> dict[str, Any]:
+        controller = self._exposure_closeout_controller
+        if controller is None:
+            return {
+                "status": "unavailable",
+                "last_reason": None,
+                "last_comment": None,
+                "last_requested_at": None,
+                "last_completed_at": None,
+                "result": None,
+            }
+        snapshot = dict(controller.status() or {})
+        snapshot.setdefault("status", "idle")
+        return snapshot
+
     def tracked_positions_payload(self, *, limit: int = 20) -> dict[str, Any]:
         summary = self.position_manager_summary()
         positions = list(summary.get("positions", {}).get("items", []) or [])[:limit]
@@ -703,6 +720,7 @@ class RuntimeReadModel:
         return {
             "trade_control": self.persisted_trade_control_payload(),
             "runtime_mode": self.runtime_mode_summary(),
+            "closeout": self.exposure_closeout_summary(),
             "pending": {
                 "active": active_pending,
                 "lifecycle": lifecycle_pending,

@@ -19,7 +19,7 @@ from .position_rules import (
     check_trailing_take_profit,
     should_close_end_of_day,
 )
-from .exposure_closeout import ExposureCloseoutService
+from .exposure_closeout import ExposureCloseoutController
 from .ports import PositionManagementPort
 from .sizing import TradeParameters
 
@@ -66,7 +66,7 @@ class PositionManager:
     def __init__(
         self,
         trading_module: PositionManagementPort,
-        end_of_day_closeout: ExposureCloseoutService,
+        end_of_day_closeout: ExposureCloseoutController,
         *,
         trailing_atr_multiplier: float = 1.0,
         breakeven_atr_threshold: float = 1.0,
@@ -602,7 +602,11 @@ class PositionManager:
         day_key = current.date().isoformat() if current.tzinfo is None else current.astimezone(timezone.utc).date().isoformat()
         self._last_end_of_day_gate_date = day_key
 
-        result = self._end_of_day_closeout.execute(comment="end_of_day_closeout").as_dict()
+        closeout_status = self._end_of_day_closeout.execute(
+            reason="end_of_day",
+            comment="end_of_day_closeout",
+        )
+        result = dict(closeout_status.get("result") or {})
         if result.get("completed"):
             self._last_end_of_day_close_date = day_key
             logger.info(

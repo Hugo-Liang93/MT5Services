@@ -18,6 +18,7 @@ from src.signals.strategies.htf_cache import HTFStateCache
 from src.trading import TradingAccountRegistry, TradingModule
 from src.trading.pending_entry import PendingEntryManager
 from src.trading.position_manager import PositionManager
+from src.trading.exposure_closeout import ExposureCloseoutController
 from src.trading.signal_executor import TradeExecutor
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.state_alerts import TradingStateAlerts
@@ -61,6 +62,7 @@ class AppContainer:
         "trade_registry",
         "trade_module",
         "trade_executor",
+        "exposure_closeout_controller",
         "position_manager",
         "trade_outcome_tracker",
         "pending_entry_manager",
@@ -103,6 +105,7 @@ class AppContainer:
         self.trade_registry: Optional[TradingAccountRegistry] = None
         self.trade_module: Optional[TradingModule] = None
         self.trade_executor: Optional[TradeExecutor] = None
+        self.exposure_closeout_controller: Optional[ExposureCloseoutController] = None
         self.position_manager: Optional[PositionManager] = None
         self.trade_outcome_tracker: Optional[TradeOutcomeTracker] = None
         self.pending_entry_manager: Optional[PendingEntryManager] = None

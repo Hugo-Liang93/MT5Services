@@ -55,6 +55,8 @@ uvicorn src.api:app --host 0.0.0.0 --port 8808
 - Swagger UI: `http://localhost:8808/docs`
 - ReDoc: `http://localhost:8808/redoc`
 - Health: `http://localhost:8808/health`
+- 交易状态: `http://localhost:8808/v1/trade/state`
+- 风险收口状态: `http://localhost:8808/v1/trade/state/closeout`
 
 ### 4. 启动验证
 
@@ -133,6 +135,19 @@ SignalRuntime (双队列: confirmed 优先, intrabar best-effort)
     ├─ VotingEngine (跨策略投票)
     └─ TradeExecutor → PendingEntryManager → MT5 下单
 ```
+
+## 风险收口
+
+交易侧的风险收口统一通过 `ExposureCloseoutController` 执行，不再由 API、EOD、仓位管理分别拼接：
+
+- `ExposureCloseoutService`：负责一次性平掉全部持仓并撤销全部挂单
+- `ExposureCloseoutController`：负责统一命令入口与最近一次收口状态
+- `PositionManager`：在 EOD 时触发收口，但不再承担撤挂单编排
+
+当前提供两个只读/命令入口：
+
+- `GET /v1/trade/state/closeout`：查看最近一次风险收口状态
+- `POST /v1/trade/closeout-exposure`：人工触发统一风险收口
 
 ## 配置系统
 

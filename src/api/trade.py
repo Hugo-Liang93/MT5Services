@@ -5,6 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 
 from src.api.deps import (
+    get_exposure_closeout_controller,
     get_position_manager,
     get_runtime_read_model,
     get_runtime_mode_controller,
@@ -24,6 +25,7 @@ from src.api.schemas import (
     CloseAllRequest,
     CloseRequest,
     EstimateMarginRequest,
+    ExposureCloseoutRequest,
     ModifyOrdersRequest,
     ModifyPositionsRequest,
     OrderModel,
@@ -43,6 +45,7 @@ from src.readmodels.runtime import RuntimeReadModel
 from src.signals.service import SignalModule
 from src.trading.sizing import compute_trade_params, extract_atr_from_indicators
 from src.trading.position_manager import PositionManager
+from src.trading.exposure_closeout import ExposureCloseoutController
 from src.trading.signal_executor import TradeExecutor
 from src.trading.service import TradingModule
 
@@ -229,6 +232,16 @@ def trade_state_alerts_summary(
     return ApiResponse.success_response(
         data=runtime_views.trading_state_alerts_summary(),
         metadata={"operation": "trade_state_alerts_summary"},
+    )
+
+
+@router.get("/trade/state/closeout", response_model=ApiResponse[dict])
+def trade_state_closeout_summary(
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=runtime_views.exposure_closeout_summary(),
+        metadata={"operation": "trade_state_closeout_summary"},
     )
 
 
@@ -684,6 +697,32 @@ def close_all(
                 "magic": request.magic,
             },
         )
+
+
+@router.post("/trade/closeout-exposure", response_model=ApiResponse[dict])
+def trade_closeout_exposure(
+    request: ExposureCloseoutRequest,
+    controller: ExposureCloseoutController = Depends(get_exposure_closeout_controller),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[dict]:
+    result = controller.execute(
+        reason=request.reason,
+        comment=request.comment,
+    )
+    return ApiResponse.success_response(
+        data={
+            "closeout": result,
+            "trading_state": runtime_views.trading_state_summary(
+                pending_limit=20,
+                position_limit=20,
+            ),
+        },
+        metadata={
+            "operation": "trade_closeout_exposure",
+            "reason": request.reason,
+            "comment": request.comment,
+        },
+    )
 
 
 @router.post("/close/batch", response_model=ApiResponse[dict])
