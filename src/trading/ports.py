@@ -41,6 +41,14 @@ class PositionManagementPort(TradingQueryPort, Protocol):
     ) -> Optional[dict[str, Any]]: ...
 
 
+class ExposureCloseoutPort(
+    PositionManagementPort,
+    PendingOrderCancellationPort,
+    Protocol,
+):
+    pass
+
+
 class RecoveryTradingPort(
     TradingQueryPort,
     PendingOrderCancellationPort,

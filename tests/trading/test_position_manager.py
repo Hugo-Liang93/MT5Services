@@ -3,14 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from src.trading.exposure_closeout import ExposureCloseoutService
 from src.trading.position_manager import PositionManager
 from src.trading.sizing import TradeParameters
 
 
 class DummyTradingModule:
-    def __init__(self, positions=None):
+    def __init__(self, positions=None, orders=None):
         self._positions = list(positions or [])
+        self._orders = list(orders or [])
         self.close_all_calls = []
+        self.cancel_calls = []
         self.modify_calls = []
         self.close_details = {}
         self.modify_result = None
@@ -20,10 +23,18 @@ class DummyTradingModule:
             return list(self._positions)
         return [row for row in self._positions if getattr(row, "symbol", None) == symbol]
 
+    def get_orders(self, symbol=None, magic=None):
+        return list(self._orders)
+
     def close_all_positions(self, **kwargs):
         self.close_all_calls.append(kwargs)
         self._positions = []
         return {"closed": [1], "failed": []}
+
+    def cancel_orders_by_tickets(self, tickets):
+        self.cancel_calls.append(list(tickets))
+        self._orders = []
+        return {"canceled": list(tickets), "failed": []}
 
     def modify_positions(self, **kwargs):
         self.modify_calls.append(kwargs)
@@ -35,10 +46,21 @@ class DummyTradingModule:
         return self.close_details.get(ticket)
 
 
-def test_position_manager_runs_end_of_day_closeout_once_per_day() -> None:
-    trading = DummyTradingModule(positions=[{"ticket": 1}])
-    manager = PositionManager(
+def _manager(trading: DummyTradingModule, **kwargs) -> PositionManager:
+    return PositionManager(
         trading_module=trading,
+        end_of_day_closeout=ExposureCloseoutService(trading),
+        **kwargs,
+    )
+
+
+def test_position_manager_runs_end_of_day_closeout_once_per_day() -> None:
+    trading = DummyTradingModule(
+        positions=[{"ticket": 1}],
+        orders=[SimpleNamespace(ticket=11)],
+    )
+    manager = _manager(
+        trading,
         end_of_day_close_enabled=True,
         end_of_day_close_hour_utc=21,
         end_of_day_close_minute_utc=0,
@@ -51,15 +73,19 @@ def test_position_manager_runs_end_of_day_closeout_once_per_day() -> None:
         datetime(2026, 3, 20, 21, 5, tzinfo=timezone.utc)
     )
 
-    assert first == {"closed": [1], "failed": []}
+    assert first["completed"] is True
+    assert first["positions"]["completed"] == [1]
+    assert first["orders"]["completed"] == [11]
     assert second is None
     assert trading.close_all_calls == [{"comment": "end_of_day_closeout"}]
+    assert trading.cancel_calls == [[11]]
+    assert manager.status()["last_end_of_day_gate_date"] == "2026-03-20"
     assert manager.status()["last_end_of_day_close_date"] == "2026-03-20"
 
 
 def test_position_manager_exposes_margin_guard_status_via_public_api() -> None:
     trading = DummyTradingModule()
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     class _Guard:
         @staticmethod
@@ -80,8 +106,8 @@ def test_position_manager_exposes_margin_guard_status_via_public_api() -> None:
 
 def test_position_manager_does_not_close_before_cutoff() -> None:
     trading = DummyTradingModule(positions=[{"ticket": 1}])
-    manager = PositionManager(
-        trading_module=trading,
+    manager = _manager(
+        trading,
         end_of_day_close_enabled=True,
         end_of_day_close_hour_utc=21,
         end_of_day_close_minute_utc=0,
@@ -93,6 +119,7 @@ def test_position_manager_does_not_close_before_cutoff() -> None:
 
     assert result is None
     assert trading.close_all_calls == []
+    assert trading.cancel_calls == []
 
 
 def test_position_manager_sync_open_positions_restores_signal_context() -> None:
@@ -111,7 +138,7 @@ def test_position_manager_sync_open_positions_restores_signal_context() -> None:
             )
         ]
     )
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
     recovered = []
     manager.set_recovery_hooks(
         position_context_resolver=lambda ticket, comment: {
@@ -153,7 +180,7 @@ def test_position_manager_sync_open_positions_skips_manual_positions_without_con
             )
         ]
     )
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     result = manager.sync_open_positions()
 
@@ -177,7 +204,7 @@ def test_position_manager_sync_open_positions_restores_agent_comment_without_aud
             )
         ]
     )
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     result = manager.sync_open_positions()
 
@@ -203,7 +230,7 @@ def test_position_manager_sync_open_positions_prefers_persisted_runtime_state() 
             )
         ]
     )
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
     manager.set_recovery_hooks(
         position_state_resolver=lambda ticket: {
             "signal_id": "sig-persisted",
@@ -237,7 +264,7 @@ def test_position_manager_sync_open_positions_prefers_persisted_runtime_state() 
 def test_position_manager_reconcile_uses_real_close_price_from_history() -> None:
     trading = DummyTradingModule(positions=[])
     trading.close_details[202] = {"close_price": 3012.4}
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
     closed = []
     manager.add_close_callback(lambda pos, close_price: closed.append((pos.ticket, close_price)))
     manager.track_position(
@@ -265,7 +292,7 @@ def test_position_manager_reconcile_uses_real_close_price_from_history() -> None
 
 def test_position_manager_modify_sl_targets_single_ticket() -> None:
     trading = DummyTradingModule(positions=[])
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
     pos = manager.track_position(
         ticket=303,
         signal_id="sig-modify",
@@ -291,8 +318,8 @@ def test_position_manager_modify_sl_targets_single_ticket() -> None:
 def test_position_manager_does_not_mark_breakeven_when_modify_fails() -> None:
     trading = DummyTradingModule(positions=[])
     trading.modify_result = {"modified": [], "failed": [{"ticket": 404, "error": "position_not_found"}]}
-    manager = PositionManager(
-        trading_module=trading,
+    manager = _manager(
+        trading,
         breakeven_atr_threshold=1.0,
     )
     manager.track_position(
@@ -316,3 +343,34 @@ def test_position_manager_does_not_mark_breakeven_when_modify_fails() -> None:
 
     active = manager.active_positions()
     assert active[0]["breakeven_applied"] is False
+
+
+def test_position_manager_keeps_eod_gate_and_retries_when_orders_remain() -> None:
+    class StickyOrderTradingModule(DummyTradingModule):
+        def cancel_orders_by_tickets(self, tickets):
+            self.cancel_calls.append(list(tickets))
+            return {"canceled": [], "failed": [{"ticket": tickets[0], "error": "market_closed"}]}
+
+    trading = StickyOrderTradingModule(
+        positions=[],
+        orders=[SimpleNamespace(ticket=77)],
+    )
+    manager = _manager(
+        trading,
+        end_of_day_close_enabled=True,
+        end_of_day_close_hour_utc=21,
+        end_of_day_close_minute_utc=0,
+    )
+
+    first = manager._run_end_of_day_closeout(
+        datetime(2026, 3, 20, 21, 1, tzinfo=timezone.utc)
+    )
+    second = manager._run_end_of_day_closeout(
+        datetime(2026, 3, 20, 21, 2, tzinfo=timezone.utc)
+    )
+
+    assert first["completed"] is False
+    assert second["completed"] is False
+    assert manager.status()["last_end_of_day_gate_date"] == "2026-03-20"
+    assert manager.status()["last_end_of_day_close_date"] is None
+    assert trading.cancel_calls == [[77], [77]]

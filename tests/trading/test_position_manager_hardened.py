@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from src.trading.exposure_closeout import ExposureCloseoutService
 from src.trading.position_manager import PositionManager, TrackedPosition
 from src.trading.sizing import TradeParameters
 
@@ -39,11 +40,29 @@ class FailingTradingModule:
             return list(self._positions)
         return [p for p in self._positions if getattr(p, "symbol", None) == symbol]
 
+    def get_orders(self, symbol=None, magic=None):
+        return []
+
+    def close_all_positions(self, **kwargs):
+        self._positions = []
+        return {"closed": [], "failed": []}
+
+    def cancel_orders_by_tickets(self, tickets):
+        return {"canceled": list(tickets), "failed": []}
+
     def get_position_close_details(self, ticket, *, symbol=None, lookback_days=7):
         return None
 
     def modify_positions(self, **kwargs):
         return {"modified": [kwargs.get("ticket")], "failed": []}
+
+
+def _manager(trading: FailingTradingModule, **kwargs) -> PositionManager:
+    return PositionManager(
+        trading_module=trading,
+        end_of_day_closeout=ExposureCloseoutService(trading),
+        **kwargs,
+    )
 
 
 # ── Flash-disconnect guard ────────────────────────────────────────
@@ -53,7 +72,7 @@ def test_reconcile_skips_symbols_with_failed_queries() -> None:
     """When get_positions() fails for a symbol, tracked positions for that
     symbol must NOT be removed (they might still be open in MT5)."""
     trading = FailingTradingModule(fail_symbols={"XAUUSD"})
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
     closed = []
     manager.add_close_callback(lambda pos, price: closed.append(pos.ticket))
 
@@ -72,7 +91,7 @@ def test_reconcile_removes_closed_positions_for_healthy_symbols() -> None:
     """Positions for symbols where get_positions() succeeds and returns
     empty should still be detected as closed."""
     trading = FailingTradingModule(positions=[], fail_symbols=set())
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
     closed = []
     manager.add_close_callback(lambda pos, price: closed.append(pos.ticket))
 
@@ -96,7 +115,7 @@ def test_reconcile_detects_partial_close() -> None:
         ticket=300, symbol="XAUUSD", volume=0.05, price_current=3010.0,
     )
     trading = FailingTradingModule(positions=[raw_pos])
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     manager.track_position(
         ticket=300, signal_id="sig-3", symbol="XAUUSD", action="buy",
@@ -117,7 +136,7 @@ def test_active_positions_includes_unrealized_pnl() -> None:
         ticket=400, symbol="XAUUSD", volume=0.10, price_current=3015.0,
     )
     trading = FailingTradingModule(positions=[raw_pos])
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     manager.track_position(
         ticket=400, signal_id="sig-4", symbol="XAUUSD", action="buy",
@@ -136,7 +155,7 @@ def test_active_positions_unrealized_pnl_sell() -> None:
         ticket=401, symbol="XAUUSD", volume=0.10, price_current=2990.0,
     )
     trading = FailingTradingModule(positions=[raw_pos])
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     manager.track_position(
         ticket=401, signal_id="sig-5", symbol="XAUUSD", action="sell",
@@ -157,7 +176,7 @@ def test_close_source_set_on_reconcile_removal() -> None:
     """When reconcile removes a position, close_source should be set on the
     TrackedPosition passed to callbacks."""
     trading = FailingTradingModule(positions=[])
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
     received_source = []
     manager.add_close_callback(lambda pos, price: received_source.append(pos.close_source))
 
@@ -184,7 +203,7 @@ def test_sync_restores_positions_with_timeframe_comment_prefix() -> None:
         comment="M15:trend_vote:buy",
     )
     trading = FailingTradingModule(positions=[raw_pos])
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     result = manager.sync_open_positions()
 
@@ -203,7 +222,7 @@ def test_sync_still_skips_unknown_comments() -> None:
         comment="manual_trade_by_user",
     )
     trading = FailingTradingModule(positions=[raw_pos])
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     result = manager.sync_open_positions()
 
@@ -225,7 +244,7 @@ def test_reconcile_recovers_new_open_positions_before_price_management() -> None
         comment="M15:trend_vote:buy",
     )
     trading = FailingTradingModule(positions=[raw_pos])
-    manager = PositionManager(trading_module=trading)
+    manager = _manager(trading)
 
     manager._reconcile_with_mt5()
 

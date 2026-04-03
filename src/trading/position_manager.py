@@ -19,6 +19,7 @@ from .position_rules import (
     check_trailing_take_profit,
     should_close_end_of_day,
 )
+from .exposure_closeout import ExposureCloseoutService
 from .ports import PositionManagementPort
 from .sizing import TradeParameters
 
@@ -65,6 +66,7 @@ class PositionManager:
     def __init__(
         self,
         trading_module: PositionManagementPort,
+        end_of_day_closeout: ExposureCloseoutService,
         *,
         trailing_atr_multiplier: float = 1.0,
         breakeven_atr_threshold: float = 1.0,
@@ -77,6 +79,7 @@ class PositionManager:
         trailing_tp_trail_atr: float = 0.8,
     ):
         self._trading = trading_module
+        self._end_of_day_closeout = end_of_day_closeout
         self.trailing_atr_multiplier = trailing_atr_multiplier
         self.breakeven_atr_threshold = breakeven_atr_threshold
         self.end_of_day_close_enabled = bool(end_of_day_close_enabled)
@@ -107,6 +110,7 @@ class PositionManager:
         self._reconcile_count: int = 0
         self._last_reconcile_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
+        self._last_end_of_day_gate_date: Optional[str] = None
         self._last_end_of_day_close_date: Optional[str] = None
         self._margin_guard: Any = None  # Optional[MarginGuard], injected via set_margin_guard()
 
@@ -320,6 +324,7 @@ class PositionManager:
                 "end_of_day_close_hour_utc": self.end_of_day_close_hour_utc,
                 "end_of_day_close_minute_utc": self.end_of_day_close_minute_utc,
             },
+            "last_end_of_day_gate_date": self._last_end_of_day_gate_date,
             "last_end_of_day_close_date": self._last_end_of_day_close_date,
             "margin_guard": self.margin_guard_status(),
         }
@@ -332,11 +337,11 @@ class PositionManager:
         """
         if not self.end_of_day_close_enabled:
             return False
-        if self._last_end_of_day_close_date is None:
+        if self._last_end_of_day_gate_date is None:
             return False
         now = datetime.now(timezone.utc)
         today = now.date().isoformat()
-        if self._last_end_of_day_close_date != today:
+        if self._last_end_of_day_gate_date != today:
             return False
         # EOD 已执行，且当前时间仍在 EOD 之后（同一天）
         return True
@@ -595,33 +600,25 @@ class PositionManager:
             return None
 
         day_key = current.date().isoformat() if current.tzinfo is None else current.astimezone(timezone.utc).date().isoformat()
+        self._last_end_of_day_gate_date = day_key
 
-        # 先标记 EOD 日期，防止并发 reconcile 在 close_all 期间触发二次 EOD
-        self._last_end_of_day_close_date = day_key
-
-        try:
-            open_positions = list(self._trading.get_positions())
-        except Exception:
-            open_positions = []
-        if not open_positions:
-            return {"closed": [], "failed": []}
-
-        try:
-            result = self._trading.close_all_positions(comment="end_of_day_closeout")
-        except Exception as exc:
-            # close_all 异常时回退日期标记，允许下次 reconcile 循环重试
-            self._last_end_of_day_close_date = None
-            logger.error("EOD closeout failed, will retry next cycle: %s", exc)
-            return {"closed": [], "failed": [], "error": str(exc)}
-        if not isinstance(result, dict):
-            result = {"result": result}
-        failed = list(result.get("failed", []) or [])
-        logger.info(
-            "PositionManager: end-of-day closeout executed at %s (closed=%s, failed=%s)",
-            current.isoformat(),
-            len(result.get("closed", []) or []),
-            len(failed),
-        )
+        result = self._end_of_day_closeout.execute(comment="end_of_day_closeout").as_dict()
+        if result.get("completed"):
+            self._last_end_of_day_close_date = day_key
+            logger.info(
+                "PositionManager: end-of-day closeout completed at %s (closed=%s, canceled=%s)",
+                current.isoformat(),
+                len(result["positions"]["completed"]),
+                len(result["orders"]["completed"]),
+            )
+        else:
+            self._last_error = "end_of_day_closeout_incomplete"
+            logger.warning(
+                "PositionManager: end-of-day closeout incomplete at %s (remaining_positions=%s, remaining_orders=%s)",
+                current.isoformat(),
+                len(result.get("remaining_positions", []) or []),
+                len(result.get("remaining_orders", []) or []),
+            )
         return result
 
     def _reconcile_with_mt5(self) -> None:

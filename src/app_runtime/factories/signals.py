@@ -30,6 +30,7 @@ from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.tracking.repository import TimescaleSignalRepository
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
+from src.trading.exposure_closeout import ExposureCloseoutService
 from src.trading.position_manager import PositionManager
 from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
 from src.trading.pending_entry import PendingEntryConfig, PendingEntryManager
@@ -427,8 +428,10 @@ def build_signal_components(
         htf_target_config=dict(signal_config.strategy_htf_targets),
     )
 
+    end_of_day_closeout = ExposureCloseoutService(trade_module)
     position_manager = PositionManager(
         trading_module=trade_module,
+        end_of_day_closeout=end_of_day_closeout,
         trailing_atr_multiplier=signal_config.trailing_atr_multiplier,
         breakeven_atr_threshold=signal_config.breakeven_atr_threshold,
         end_of_day_close_enabled=signal_config.end_of_day_close_enabled,
