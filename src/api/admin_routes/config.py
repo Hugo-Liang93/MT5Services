@@ -12,8 +12,19 @@ from src.config.signal import get_signal_config
 from src.indicators.manager import UnifiedIndicatorManager
 
 from .common import CONFIG_FILES, load_json_config
+from .view_models import IndicatorsConfigView
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def _normalize_indicator_items(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        raw_items = payload.get("indicators", [])
+        if isinstance(raw_items, list):
+            return [item for item in raw_items if isinstance(item, dict)]
+    return []
 
 
 @router.get("/config", response_model=ApiResponse[ConfigView])
@@ -36,12 +47,12 @@ def admin_config_risk() -> ApiResponse[Dict[str, Any]]:
     return ApiResponse.success_response(get_risk_config().model_dump())
 
 
-@router.get("/config/indicators", response_model=ApiResponse[Dict[str, Any]])
+@router.get("/config/indicators", response_model=ApiResponse[IndicatorsConfigView])
 def admin_config_indicators(
     enabled_only: bool = Query(default=False, description="仅返回已启用指标。"),
     indicator_mgr: UnifiedIndicatorManager = Depends(deps.get_indicator_manager),
-) -> ApiResponse[Dict[str, Any]]:
-    indicators: List[Dict[str, Any]] = load_json_config("indicators.json")
+) -> ApiResponse[IndicatorsConfigView]:
+    indicators = _normalize_indicator_items(load_json_config("indicators.json"))
     if enabled_only:
         indicators = [item for item in indicators if item.get("enabled", True)]
     intrabar_names: List[str] = []
@@ -52,12 +63,12 @@ def admin_config_indicators(
     except Exception:
         pass
     return ApiResponse.success_response(
-        {
-            "indicators": indicators,
-            "total_count": len(indicators),
-            "enabled_count": sum(1 for item in indicators if item.get("enabled", True)),
-            "intrabar_indicators": intrabar_names,
-        }
+        IndicatorsConfigView(
+            indicators=indicators,
+            total_count=len(indicators),
+            enabled_count=sum(1 for item in indicators if item.get("enabled", True)),
+            intrabar_indicators=intrabar_names,
+        )
     )
 
 

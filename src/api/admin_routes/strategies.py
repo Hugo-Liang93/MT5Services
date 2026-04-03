@@ -13,6 +13,7 @@ from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 
 from .common import build_strategy_detail
+from .view_models import ConfidencePipelineView, StrategySessionDetailView
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -44,7 +45,7 @@ def admin_performance_strategies(
     return ApiResponse.success_response(report)
 
 
-@router.get("/performance/confidence-pipeline/{symbol}/{timeframe}", response_model=ApiResponse[Dict[str, Any]])
+@router.get("/performance/confidence-pipeline/{symbol}/{timeframe}", response_model=ApiResponse[ConfidencePipelineView])
 def admin_confidence_pipeline(
     symbol: str,
     timeframe: str,
@@ -52,7 +53,7 @@ def admin_confidence_pipeline(
     signal_svc: SignalModule = Depends(deps.get_signal_service),
     perf_tracker: StrategyPerformanceTracker = Depends(deps.get_performance_tracker),
     calibrator: ConfidenceCalibrator = Depends(deps.get_calibrator),
-) -> ApiResponse[Dict[str, Any]]:
+) -> ApiResponse[ConfidencePipelineView]:
     regime_info = signal_runtime.get_regime_stability(symbol, timeframe) or {}
     strategies_pipeline: List[Dict[str, Any]] = []
     for descriptor in signal_svc.strategy_catalog():
@@ -67,7 +68,13 @@ def admin_confidence_pipeline(
             multiplier = 1.0
         strategies_pipeline.append({**descriptor, "session_multiplier": multiplier, "session_stats": stats})
     return ApiResponse.success_response(
-        {"symbol": symbol, "timeframe": timeframe, "regime": regime_info, "calibrator": calibrator.describe(), "strategies": strategies_pipeline}
+        ConfidencePipelineView(
+            symbol=symbol,
+            timeframe=timeframe,
+            regime=regime_info,
+            calibrator=calibrator.describe(),
+            strategies=strategies_pipeline,
+        )
     )
 
 
@@ -76,12 +83,12 @@ def admin_strategies(signal_svc: SignalModule = Depends(deps.get_signal_service)
     return ApiResponse.success_response([StrategyDetail(**row) for row in signal_svc.strategy_catalog()])
 
 
-@router.get("/strategies/{name}", response_model=ApiResponse[Dict[str, Any]])
+@router.get("/strategies/{name}", response_model=ApiResponse[StrategySessionDetailView])
 def admin_strategy_detail(
     name: str,
     signal_svc: SignalModule = Depends(deps.get_signal_service),
     perf_tracker: StrategyPerformanceTracker = Depends(deps.get_performance_tracker),
-) -> ApiResponse[Dict[str, Any]]:
+) -> ApiResponse[StrategySessionDetailView]:
     if name not in signal_svc.list_strategies():
         return ApiResponse.error_response(error_code="VALIDATION_ERROR", error_message=f"Strategy '{name}' not found", suggested_action="Check /v1/admin/strategies for available strategies")
     detail = build_strategy_detail(name, signal_svc)
@@ -89,4 +96,6 @@ def admin_strategy_detail(
         stats = perf_tracker.get_strategy_stats(name)
     except Exception:
         stats = None
-    return ApiResponse.success_response({**detail.model_dump(), "session_performance": stats})
+    return ApiResponse.success_response(
+        StrategySessionDetailView(**detail.model_dump(), session_performance=stats)
+    )

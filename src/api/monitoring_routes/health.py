@@ -15,6 +15,15 @@ from src.api.deps import (
     get_startup_status,
 )
 from src.api.schemas import ApiResponse
+from .view_models import (
+    AlertResolutionView,
+    FailedEventsResetView,
+    HealthLiveView,
+    MonitoredComponentsView,
+    ReadyProbeView,
+    RuntimeActionView,
+    TradingTriggerMethodsView,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
@@ -42,12 +51,12 @@ async def get_health_status(hours: int = 24) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/health/live", summary="存活探针")
+@router.get("/health/live", response_model=HealthLiveView, summary="存活探针")
 async def health_live() -> Dict[str, Any]:
-    return {"status": "alive", "timestamp": _utc_now()}
+    return HealthLiveView(status="alive", timestamp=_utc_now()).model_dump()
 
 
-@router.get("/health/ready", summary="就绪探针")
+@router.get("/health/ready", response_model=ReadyProbeView, summary="就绪探针")
 async def health_ready() -> Dict[str, Any]:
     try:
         startup = get_startup_status()
@@ -74,7 +83,12 @@ async def health_ready() -> Dict[str, Any]:
                 status_code=503,
                 detail={"status": "not_ready", "failed_checks": failed_checks, "checks": checks},
             )
-        return {"status": "ready", "checks": checks, "startup_phase": startup.get("phase"), "timestamp": _utc_now()}
+        return ReadyProbeView(
+            status="ready",
+            checks=checks,
+            startup_phase=startup.get("phase"),
+            timestamp=_utc_now(),
+        ).model_dump()
     except HTTPException:
         raise
     except Exception as exc:
@@ -117,43 +131,50 @@ async def get_metrics(component: str, metric_name: str, limit: int = 100) -> Lis
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/consistency/check", summary="手动触发一致性检查")
+@router.post("/consistency/check", response_model=RuntimeActionView, summary="手动触发一致性检查")
 async def trigger_consistency_check() -> Dict[str, Any]:
     try:
         get_indicator_manager().trigger_consistency_check()
-        return {"status": "success", "message": "Consistency check triggered"}
+        return RuntimeActionView(status="success", message="Consistency check triggered").model_dump()
     except Exception as exc:
         logger.error("Failed to trigger consistency check: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/events/reset-failed", summary="重置失败事件")
+@router.post("/events/reset-failed", response_model=FailedEventsResetView, summary="重置失败事件")
 async def reset_failed_events() -> Dict[str, Any]:
     try:
         reset_count = get_indicator_manager().reset_failed_events()
-        return {"status": "success", "message": f"Reset {reset_count} failed events", "reset_count": reset_count}
+        return FailedEventsResetView(
+            status="success",
+            message=f"Reset {reset_count} failed events",
+            reset_count=reset_count,
+        ).model_dump()
     except Exception as exc:
         logger.error("Failed to reset failed events: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/events/cleanup", summary="清理旧事件")
+@router.post("/events/cleanup", response_model=RuntimeActionView, summary="清理旧事件")
 async def cleanup_old_events(days_to_keep: int = 7) -> Dict[str, Any]:
     try:
         get_indicator_manager().cleanup_old_events(days_to_keep)
-        return {"status": "success", "message": f"Cleaned up events older than {days_to_keep} days"}
+        return RuntimeActionView(
+            status="success",
+            message=f"Cleaned up events older than {days_to_keep} days",
+        ).model_dump()
     except Exception as exc:
         logger.error("Failed to cleanup old events: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/alerts/resolve/{component}/{metric_name}", summary="手动解决告警")
+@router.post("/alerts/resolve/{component}/{metric_name}", response_model=AlertResolutionView, summary="手动解决告警")
 async def resolve_alert(component: str, metric_name: str, resolved_by: str = "api") -> Dict[str, Any]:
     try:
         success = get_health_monitor_instance().resolve_alert(component, metric_name, resolved_by)
         if success:
-            return {"status": "success", "message": f"Alert resolved for {component}.{metric_name}"}
-        return {"status": "not_found", "message": f"No active alert found for {component}.{metric_name}"}
+            return AlertResolutionView(status="success", message=f"Alert resolved for {component}.{metric_name}").model_dump()
+        return AlertResolutionView(status="not_found", message=f"No active alert found for {component}.{metric_name}").model_dump()
     except Exception as exc:
         logger.error("Failed to resolve alert for %s.%s: %s", component, metric_name, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -168,19 +189,24 @@ async def get_system_status() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/components", summary="获取监控组件列表")
+@router.get("/components", response_model=MonitoredComponentsView, summary="获取监控组件列表")
 async def get_monitored_components() -> Dict[str, Any]:
     try:
         monitoring_manager = get_monitoring_manager_instance()
         rows = []
         if monitoring_manager and hasattr(monitoring_manager, "list_registered_components"):
             rows = monitoring_manager.list_registered_components()
-        return {"status": "success", "components": rows, "count": len(rows), "check_interval": getattr(monitoring_manager, "check_interval", None)}
+        return MonitoredComponentsView(
+            status="success",
+            components=rows,
+            count=len(rows),
+            check_interval=getattr(monitoring_manager, "check_interval", None),
+        ).model_dump()
     except Exception as exc:
         logger.error("Failed to get monitored components: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/trading/trigger-methods", summary="获取交易触发入口")
+@router.get("/trading/trigger-methods", response_model=TradingTriggerMethodsView, summary="获取交易触发入口")
 async def get_trading_trigger_methods() -> Dict[str, Any]:
-    return {"status": "success", "count": len(TRADE_TRIGGER_METHODS), "methods": TRADE_TRIGGER_METHODS}
+    return TradingTriggerMethodsView(status="success", count=len(TRADE_TRIGGER_METHODS), methods=TRADE_TRIGGER_METHODS).model_dump()

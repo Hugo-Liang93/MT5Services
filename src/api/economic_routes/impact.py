@@ -9,6 +9,12 @@ from src.api.deps import get_economic_calendar_service
 from src.api.schemas import ApiResponse
 from src.calendar import EconomicCalendarService
 from src.utils.timezone import utc_now
+from .view_models import (
+    EnrichedCalendarItemView,
+    MarketImpactStatsItemView,
+    MarketImpactStatusView,
+    MarketImpactUpcomingItemView,
+)
 
 router = APIRouter(prefix="/economic", tags=["economic"])
 
@@ -53,7 +59,7 @@ def _gold_impact_fallback(event_name: str, currency: str) -> Optional[dict[str, 
     return None
 
 
-@router.get("/calendar/enriched")
+@router.get("/calendar/enriched", response_model=ApiResponse[list[EnrichedCalendarItemView]])
 def calendar_enriched(
     symbol: str = Query("XAUUSD"),
     hours: int = Query(48, ge=1, le=168),
@@ -110,7 +116,10 @@ def calendar_enriched(
         item["gold_impact"] = impact
         results.append(item)
     results.sort(key=lambda x: x["scheduled_at"])
-    return ApiResponse.success_response(data=results, metadata={"count": len(results), "symbol": symbol, "hours": hours, "importance_min": importance_min})
+    return ApiResponse.success_response(
+        data=[EnrichedCalendarItemView(**item) for item in results],
+        metadata={"count": len(results), "symbol": symbol, "hours": hours, "importance_min": importance_min},
+    )
 
 
 def _get_market_impact_analyzer(service: EconomicCalendarService = Depends(get_economic_calendar_service)):
@@ -120,7 +129,7 @@ def _get_market_impact_analyzer(service: EconomicCalendarService = Depends(get_e
     return analyzer
 
 
-@router.get("/calendar/market-impact/stats")
+@router.get("/calendar/market-impact/stats", response_model=ApiResponse[list[MarketImpactStatsItemView]])
 def market_impact_stats(
     event_name: Optional[str] = None,
     country: Optional[str] = None,
@@ -131,10 +140,13 @@ def market_impact_stats(
     analyzer=Depends(_get_market_impact_analyzer),
 ):
     stats = analyzer.get_aggregated_stats(event_name=event_name, country=country, importance_min=importance_min, symbol=symbol, timeframe=timeframe, limit=limit)
-    return ApiResponse.success_response(data=stats, metadata={"count": len(stats), "symbol": symbol, "timeframe": timeframe})
+    return ApiResponse.success_response(
+        data=[MarketImpactStatsItemView(**item) for item in stats],
+        metadata={"count": len(stats), "symbol": symbol, "timeframe": timeframe},
+    )
 
 
-@router.get("/calendar/market-impact/upcoming")
+@router.get("/calendar/market-impact/upcoming", response_model=ApiResponse[list[MarketImpactUpcomingItemView]])
 def market_impact_upcoming(symbol: str = Query("XAUUSD"), hours: int = Query(24, ge=1, le=168), service: EconomicCalendarService = Depends(get_economic_calendar_service)):
     analyzer = getattr(service, "market_impact_analyzer", None)
     upcoming_events = service.get_high_impact_events(hours=hours)
@@ -144,15 +156,18 @@ def market_impact_upcoming(symbol: str = Query("XAUUSD"), hours: int = Query(24,
         if analyzer is not None:
             item["impact_forecast"] = analyzer.get_impact_forecast(event.event_name, symbol=symbol)
         results.append(item)
-    return ApiResponse.success_response(data=results, metadata={"count": len(results), "symbol": symbol, "hours": hours})
+    return ApiResponse.success_response(
+        data=[MarketImpactUpcomingItemView(**item) for item in results],
+        metadata={"count": len(results), "symbol": symbol, "hours": hours},
+    )
 
 
-@router.get("/calendar/market-impact/status")
+@router.get("/calendar/market-impact/status", response_model=ApiResponse[MarketImpactStatusView])
 def market_impact_status(service: EconomicCalendarService = Depends(get_economic_calendar_service)):
     analyzer = getattr(service, "market_impact_analyzer", None)
     if analyzer is None:
-        return ApiResponse.success_response(data={"enabled": False})
-    return ApiResponse.success_response(data=analyzer.stats())
+        return ApiResponse.success_response(data=MarketImpactStatusView(enabled=False))
+    return ApiResponse.success_response(data=MarketImpactStatusView(**analyzer.stats()))
 
 
 @router.get("/calendar/market-impact/{event_uid}")

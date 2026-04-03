@@ -13,6 +13,7 @@ from src.api.schemas import ApiResponse
 from src.monitoring.pipeline import PipelineEvent, PipelineEventBus
 from src.signals.models import SignalEvent
 from src.signals.orchestration import SignalRuntime
+from .view_models import PipelineStatsView
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -111,6 +112,8 @@ async def admin_pipeline_stream(
     return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
 
 
-@router.get("/pipeline/stats")
-async def admin_pipeline_stats(pipeline_bus: PipelineEventBus = Depends(deps.get_pipeline_event_bus)) -> ApiResponse[Dict[str, Any]]:
-    return ApiResponse.success_response(pipeline_bus.stats())
+@router.get("/pipeline/stats", response_model=ApiResponse[PipelineStatsView])
+async def admin_pipeline_stats(
+    pipeline_bus: PipelineEventBus = Depends(deps.get_pipeline_event_bus),
+) -> ApiResponse[PipelineStatsView]:
+    return ApiResponse.success_response(PipelineStatsView(**pipeline_bus.stats()))

@@ -21,6 +21,13 @@ from src.config import get_effective_config_snapshot, reload_configs
 from src.config.file_manager import get_file_config_manager
 
 from .health import TRADE_TRIGGER_METHODS
+from .view_models import (
+    ConfigReloadView,
+    EffectiveRuntimeConfigView,
+    PendingEntriesBySymbolCancellationView,
+    PendingEntryCancellationView,
+    RuntimeTasksView,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
@@ -30,8 +37,8 @@ def _enum_or_raw(value: Any) -> str:
     return getattr(value, "value", value)
 
 
-@router.get("/config/effective", summary="获取当前有效运行配置")
-async def get_effective_runtime_config() -> ApiResponse[Dict[str, Any]]:
+@router.get("/config/effective", response_model=ApiResponse[EffectiveRuntimeConfigView], summary="获取当前有效运行配置")
+async def get_effective_runtime_config() -> ApiResponse[EffectiveRuntimeConfigView]:
     try:
         indicator_manager = get_indicator_manager()
         snapshot = get_effective_config_snapshot()
@@ -45,7 +52,7 @@ async def get_effective_runtime_config() -> ApiResponse[Dict[str, Any]]:
             "indicator_cache_maxsize": indicator_manager.config.pipeline.cache_maxsize,
             "indicator_cache_strategy": _enum_or_raw(indicator_manager.config.pipeline.cache_strategy),
         }
-        return ApiResponse.success_response(snapshot)
+        return ApiResponse.success_response(EffectiveRuntimeConfigView(**snapshot))
     except Exception as exc:
         logger.error("Failed to get effective runtime config: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -96,7 +103,7 @@ async def get_startup_monitoring() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/config/reload", summary="手动触发配置热加载")
+@router.post("/config/reload", response_model=ConfigReloadView, summary="手动触发配置热加载")
 async def trigger_config_reload(filename: str = "signal.ini") -> Dict[str, Any]:
     try:
         reload_configs()
@@ -104,16 +111,19 @@ async def trigger_config_reload(filename: str = "signal.ini") -> Dict[str, Any]:
         reloaded = manager.reload(filename)
         if not reloaded:
             raise FileNotFoundError(filename)
-        return {"success": True, "reloaded": filename, "cache_cleared": True}
+        return ConfigReloadView(success=True, reloaded=filename, cache_cleared=True).model_dump()
     except Exception as exc:
         logger.error("Config reload failed for %s: %s", filename, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/runtime-tasks", summary="获取运行时任务状态")
+@router.get("/runtime-tasks", response_model=RuntimeTasksView, summary="获取运行时任务状态")
 async def get_runtime_tasks(component: str | None = None, task_name: str | None = None) -> Dict[str, Any]:
     try:
-        return {"items": get_runtime_task_status(component=component, task_name=task_name), "filters": {"component": component, "task_name": task_name}}
+        return {
+            "items": get_runtime_task_status(component=component, task_name=task_name),
+            "filters": {"component": component, "task_name": task_name},
+        }
     except Exception as exc:
         logger.error("Failed to get runtime task status: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -128,21 +138,23 @@ async def get_pending_entries() -> ApiResponse[Dict[str, Any]]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/pending-entries/{signal_id}/cancel", summary="取消指定挂起入场")
-async def cancel_pending_entry(signal_id: str, reason: str = "api") -> ApiResponse[Dict[str, Any]]:
+@router.post("/pending-entries/{signal_id}/cancel", response_model=ApiResponse[PendingEntryCancellationView], summary="取消指定挂起入场")
+async def cancel_pending_entry(signal_id: str, reason: str = "api") -> ApiResponse[PendingEntryCancellationView]:
     try:
         cancelled = get_pending_entry_manager().cancel(signal_id, reason=reason)
-        return ApiResponse.success_response({"cancelled": cancelled, "signal_id": signal_id, "reason": reason})
+        return ApiResponse.success_response(PendingEntryCancellationView(cancelled=cancelled, signal_id=signal_id, reason=reason))
     except Exception as exc:
         logger.error("Failed to cancel pending entry %s: %s", signal_id, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/pending-entries/cancel-by-symbol", summary="按品种取消全部挂起入场")
-async def cancel_pending_entries_by_symbol(symbol: str, reason: str = "api") -> ApiResponse[Dict[str, Any]]:
+@router.post("/pending-entries/cancel-by-symbol", response_model=ApiResponse[PendingEntriesBySymbolCancellationView], summary="按品种取消全部挂起入场")
+async def cancel_pending_entries_by_symbol(symbol: str, reason: str = "api") -> ApiResponse[PendingEntriesBySymbolCancellationView]:
     try:
         count = get_pending_entry_manager().cancel_by_symbol(symbol, reason=reason)
-        return ApiResponse.success_response({"cancelled_count": count, "symbol": symbol, "reason": reason})
+        return ApiResponse.success_response(
+            PendingEntriesBySymbolCancellationView(cancelled_count=count, symbol=symbol, reason=reason)
+        )
     except Exception as exc:
         logger.error("Failed to cancel pending entries for %s: %s", symbol, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

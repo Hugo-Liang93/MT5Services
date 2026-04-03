@@ -118,6 +118,7 @@
   - `monitoring_routes/`
     - `health.py`：健康、组件、性能与指标
     - `runtime.py`：运行态监控、挂单管理与配置热加载
+    - `view_models.py`：监控只读视图 schema
   - `market.py`：行情 API 组合根
   - `market_routes/`
     - `query.py`：报价、K 线、tick 与品种查询
@@ -141,11 +142,13 @@
     - `strategies.py`：策略与绩效报表
     - `streams.py`：事件流与 pipeline 统计
     - `common.py`：子域内共享辅助函数
+    - `view_models.py`：后台核心只读视图 schema
   - `economic.py`：经济日历 API 组合根
   - `economic_routes/`
     - `calendar.py`：日历、风险窗口与更新流
     - `impact.py`：市场影响分析
     - `common.py`：子域内共享依赖与序列化
+    - `view_models.py`：经济日历增强与 impact 视图 schema
   - `studio.py`：Studio API 组合根
   - `studio_routes/`
     - `rest.py`：Studio 面板查询接口
