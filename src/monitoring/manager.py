@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import get_shared_symbols, get_shared_timeframes
 
-from .health_monitor import HealthMonitor, get_health_monitor
+from .health.monitor import HealthMonitor, get_health_monitor
 
 logger = logging.getLogger(__name__)
 

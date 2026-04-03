@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.trading.exposure_closeout import ExposureCloseoutService
+from src.trading.closeout import ExposureCloseoutService
 
 
 class DummyExposureTrading:

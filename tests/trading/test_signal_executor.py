@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 import pytest
 
 from src.signals.models import SignalEvent
-from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
-from src.trading.sizing import TradeParameters
-from src.trading.signal_executor import ExecutorConfig, TradeExecutor
+from src.trading.execution import ExecutionGate, ExecutionGateConfig
+from src.trading.execution import TradeParameters
+from src.trading.execution import ExecutorConfig, TradeExecutor
 
 
 def _fire(executor: TradeExecutor, event: SignalEvent) -> None:
@@ -319,7 +319,7 @@ def test_trade_executor_skips_when_same_strategy_direction_mt5_pending_order_exi
 
 
 def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> None:
-    from src.trading.pending_entry import PendingEntryConfig
+    from src.trading.pending import PendingEntryConfig
 
     module = DummyTradingModule()
     pending_manager = DummyPendingManager(

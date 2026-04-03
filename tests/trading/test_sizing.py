@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.trading.sizing import (
+from src.trading.execution import (
     RegimeSizing,
     TIMEFRAME_RISK_MULTIPLIER,
     TradeParameters,

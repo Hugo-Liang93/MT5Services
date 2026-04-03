@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.trading.state_recovery_policy import TradingStateRecoveryPolicy
+from src.trading.state import TradingStateRecoveryPolicy
 
 
 class DummyStateStore:

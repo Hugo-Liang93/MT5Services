@@ -6,7 +6,7 @@ import sqlite3
 from datetime import timedelta
 from typing import Any, Dict, List, Tuple
 
-from .health_common import is_finite_metric_value, metric_overall_impact
+from .common import is_finite_metric_value, metric_overall_impact
 
 logger = logging.getLogger(__name__)
 

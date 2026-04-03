@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from src.trading.ports import RecoveryTradingPort, TradeControlStatePort
-from src.trading.state_recovery_policy import TradingStateRecoveryPolicy
+from ..ports import RecoveryTradingPort, TradeControlStatePort
+from .recovery_policy import TradingStateRecoveryPolicy
 
 
 class TradingStateRecovery:
@@ -127,7 +127,7 @@ class TradingStateRecovery:
 
     @staticmethod
     def _datetime_or_none(value: Any):
-        from src.trading.state_store import TradingStateStore
+        from src.trading.state import TradingStateStore
 
         return TradingStateStore._datetime_or_none(value)
 
@@ -152,7 +152,7 @@ class TradingStateRecovery:
         params_meta = dict(metadata.get("params") or {})
         params = None
         if params_meta:
-            from src.trading.sizing import TradeParameters
+            from src.trading.execution import TradeParameters
 
             entry_price = float(params_meta.get("entry_price") or row.get("trigger_price") or 0.0)
             stop_loss = float(params_meta.get("stop_loss") or row.get("stop_loss") or entry_price)

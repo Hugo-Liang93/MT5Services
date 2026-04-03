@@ -21,9 +21,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 from src.signals.models import SignalEvent
-from src.trading.sizing import TradeParameters
+from ..execution.sizing import TradeParameters
 
-from .ports import PendingOrderCancellationPort
+from ..ports import PendingOrderCancellationPort
 
 logger = logging.getLogger(__name__)
 

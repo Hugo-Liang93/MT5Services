@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.monitoring.pipeline_event_bus import PipelineEvent, PipelineEventBus
-from src.monitoring.pipeline_trace_recorder import PipelineTraceRecorder
+from src.monitoring.pipeline import PipelineEvent, PipelineEventBus
+from src.monitoring.pipeline import PipelineTraceRecorder
 
 
 class _DBWriter:

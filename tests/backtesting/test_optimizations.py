@@ -29,7 +29,7 @@ from src.backtesting.models import (
 )
 from src.backtesting.portfolio import PortfolioTracker
 from src.clients.mt5_market import OHLC
-from src.trading.sizing import TradeParameters
+from src.trading.execution import TradeParameters
 
 
 def _make_bars(count: int, base_price: float = 2000.0) -> List[OHLC]:

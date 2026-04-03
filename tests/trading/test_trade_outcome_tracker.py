@@ -15,7 +15,7 @@ from typing import Any, List, Optional, Tuple
 
 import pytest
 
-from src.trading.trade_outcome_tracker import TradeOutcomeTracker
+from src.trading.tracking import TradeOutcomeTracker
 
 
 def _make_pos(

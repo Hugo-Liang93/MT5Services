@@ -20,7 +20,7 @@ from src.clients.mt5_market import OHLC
 from src.market.service import MarketDataService
 from src.signals.models import SignalEvent
 from src.signals.service import SignalModule
-from src.trading.sizing import RegimeSizing, compute_trade_params, extract_atr_from_indicators
+from src.trading.execution import RegimeSizing, compute_trade_params, extract_atr_from_indicators
 
 from .metrics import compute_metrics
 from .models import BacktestMetrics, TradeRecord

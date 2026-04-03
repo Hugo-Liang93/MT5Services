@@ -28,17 +28,17 @@ from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
 from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.tracking.repository import TimescaleSignalRepository
-from src.trading.signal_quality_tracker import SignalQualityTracker
-from src.trading.trade_outcome_tracker import TradeOutcomeTracker
-from src.trading.exposure_closeout import (
+from src.trading.tracking import SignalQualityTracker
+from src.trading.tracking import TradeOutcomeTracker
+from src.trading.closeout import (
     ExposureCloseoutController,
     ExposureCloseoutService,
 )
-from src.trading.position_manager import PositionManager
-from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
-from src.trading.pending_entry import PendingEntryConfig, PendingEntryManager
-from src.trading.sizing import RegimeSizing
-from src.trading.signal_executor import ExecutorConfig, TradeExecutor
+from src.trading.positions import PositionManager
+from src.trading.execution import ExecutionGate, ExecutionGateConfig
+from src.trading.pending import PendingEntryConfig, PendingEntryManager
+from src.trading.execution import RegimeSizing
+from src.trading.execution import ExecutorConfig, TradeExecutor
 
 
 import logging as _logging

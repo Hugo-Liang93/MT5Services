@@ -7,7 +7,7 @@ import pytest
 
 from src.trading.application import TradingCommandService, TradingQueryService
 from src.risk.service import PreTradeRiskBlockedError
-from src.trading.service import TradingModule
+from src.trading.application import TradingModule
 
 
 @dataclass

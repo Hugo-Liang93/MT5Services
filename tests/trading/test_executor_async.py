@@ -20,8 +20,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.signals.models import SignalEvent
-from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
-from src.trading.signal_executor import ExecutorConfig, TradeExecutor
+from src.trading.execution import ExecutionGate, ExecutionGateConfig
+from src.trading.execution import ExecutorConfig, TradeExecutor
 
 
 # ---------------------------------------------------------------------------

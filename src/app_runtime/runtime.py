@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 from src.app_runtime.container import AppContainer
 from src.config import get_runtime_data_path
 from src.config.file_manager import close_file_config_manager
-from src.monitoring.health_monitor import close_health_monitor
+from src.monitoring.health import close_health_monitor
 from src.monitoring.manager import close_monitoring_manager
 from src.utils.event_store import close_event_store
 

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.signals.models import SignalEvent
-from src.trading.pending_entry import (
+from src.trading.pending import (
     PendingEntry,
     PendingEntryConfig,
     PendingEntryManager,
@@ -22,7 +22,7 @@ from src.trading.pending_entry import (
     compute_timeout,
     _CATEGORY_ZONE_MODE,
 )
-from src.trading.sizing import TradeParameters
+from src.trading.execution import TradeParameters
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────

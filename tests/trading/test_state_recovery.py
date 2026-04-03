@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from src.trading.state_recovery import TradingStateRecovery
-from src.trading.state_recovery_policy import TradingStateRecoveryPolicy
+from src.trading.state import TradingStateRecovery
+from src.trading.state import TradingStateRecoveryPolicy
 
 
 class DummyStateStore:

@@ -47,10 +47,10 @@ from src.risk.service import PreTradeRiskBlockedError
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.signals.service import SignalModule
-from src.trading.sizing import compute_trade_params, extract_atr_from_indicators
-from src.trading.position_manager import PositionManager
-from src.trading.exposure_closeout import ExposureCloseoutController
-from src.trading.signal_executor import TradeExecutor
+from src.trading.execution import compute_trade_params, extract_atr_from_indicators
+from src.trading.positions import PositionManager
+from src.trading.closeout import ExposureCloseoutController
+from src.trading.execution import TradeExecutor
 from src.trading.application import TradingCommandService, TradingQueryService
 
 router = APIRouter(tags=["trade"])

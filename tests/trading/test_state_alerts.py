@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.trading.state_alerts import TradingStateAlerts
+from src.trading.state import TradingStateAlerts
 
 
 class DummyStateStore:

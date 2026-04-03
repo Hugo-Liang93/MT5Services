@@ -118,7 +118,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     if getattr(args, "sl_mult", None) is not None or getattr(args, "tp_mult", None) is not None:
         import copy
 
-        from src.trading.sizing import TIMEFRAME_SL_TP
+        from src.trading.execution import TIMEFRAME_SL_TP
 
         tf = args.timeframe.upper()
         if tf in TIMEFRAME_SL_TP:
@@ -161,7 +161,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             print(f": {args.output}")
     finally:
         if _sl_tp_backup is not None:
-            from src.trading.sizing import TIMEFRAME_SL_TP
+            from src.trading.execution import TIMEFRAME_SL_TP
 
             TIMEFRAME_SL_TP.clear()
             TIMEFRAME_SL_TP.update(_sl_tp_backup)

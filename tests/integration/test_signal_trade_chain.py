@@ -25,7 +25,7 @@ from src.signals.service import SignalModule
 from src.signals.strategies.adapters import IndicatorSource
 from src.signals.strategies.trend import SmaTrendStrategy
 from src.signals.strategies.mean_reversion import RsiReversionStrategy
-from src.trading.signal_executor import ExecutorConfig, TradeExecutor
+from src.trading.execution import ExecutorConfig, TradeExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ def _build_executor(
     min_confidence: float = 0.3,
     max_consecutive_failures: int = 3,
 ) -> TradeExecutor:
-    from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
+    from src.trading.execution import ExecutionGate, ExecutionGateConfig
 
     return TradeExecutor(
         trading_module=trading_module,

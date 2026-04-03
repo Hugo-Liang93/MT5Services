@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.monitoring.pipeline_event_bus import (
+from src.monitoring.pipeline import (
     PIPELINE_BAR_CLOSED,
     PIPELINE_INDICATOR_COMPUTED,
     PIPELINE_SIGNAL_EVALUATED,

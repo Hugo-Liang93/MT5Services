@@ -22,7 +22,7 @@ from src.api.admin_schemas import (
     SystemStatusSnapshot,
 )
 from src.api.schemas import ApiResponse
-from src.monitoring.pipeline_event_bus import PipelineEventBus
+from src.monitoring.pipeline import PipelineEventBus
 
 
 # ── Helpers ───────────────────────────────────────────────────

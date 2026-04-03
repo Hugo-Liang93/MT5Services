@@ -23,8 +23,8 @@ from types import SimpleNamespace
 from typing import List, Tuple, Optional
 from unittest.mock import MagicMock
 
-from src.trading.signal_quality_tracker import SignalQualityTracker
-from src.trading.trade_outcome_tracker import TradeOutcomeTracker
+from src.trading.tracking import SignalQualityTracker
+from src.trading.tracking import TradeOutcomeTracker
 
 # 全局递增计数器，确保每个 _make_event 调用产生唯一的 bar_time。
 # Windows 上 datetime.now() 快速连续调用可能返回相同值（~15ms 分辨率），

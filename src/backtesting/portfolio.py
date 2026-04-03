@@ -17,13 +17,13 @@ from datetime import datetime, timedelta
 from typing import Deque, Dict, List, Optional, Tuple
 
 from src.clients.mt5_market import OHLC
-from src.trading.position_rules import (
+from src.trading.positions import (
     check_breakeven,
     check_trailing_stop,
     check_trailing_take_profit,
     should_close_end_of_day,
 )
-from src.trading.sizing import TradeParameters
+from src.trading.execution import TradeParameters
 
 from .models import TradeRecord
 

@@ -10,11 +10,11 @@ from src.persistence.db import TimescaleWriter
 from src.config import get_trading_config, get_trading_ops_config
 from src.risk.service import PreTradeRiskBlockedError
 
-from .application import TradingCommandService, TradingQueryService
-from .control_state import TradeControlStateService
-from .models import TradeCommandAuditRecord
-from .operation_state import TradeCommandAuditService, TradeDailyStatsService
-from .registry import TradingAccountRegistry
+from .services import TradingCommandService, TradingQueryService
+from .control import TradeControlStateService
+from ..models import TradeCommandAuditRecord
+from .audit import TradeCommandAuditService, TradeDailyStatsService
+from ..registry import TradingAccountRegistry
 
 logger = logging.getLogger(__name__)
 

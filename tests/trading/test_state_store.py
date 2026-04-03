@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from src.trading.position_manager import TrackedPosition
-from src.trading.state_store import TradingStateStore
+from src.trading.positions import TrackedPosition
+from src.trading.state import TradingStateStore
 
 
 class DummyDB:

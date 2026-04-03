@@ -20,15 +20,15 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from .health_checks import (
+from .checks import (
     check_cache_stats,
     check_data_latency,
     check_economic_calendar,
     check_indicator_freshness,
     check_queue_stats,
 )
-from .health_common import is_finite_metric_value
-from .health_reporting import (
+from .common import is_finite_metric_value
+from .reporting import (
     cleanup_old_data,
     generate_report,
     get_recent_metrics,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.monitoring.health_monitor import HealthMonitor, close_health_monitor, get_health_monitor
+from src.monitoring.health import HealthMonitor, close_health_monitor, get_health_monitor
 from src.monitoring.manager import (
     MonitoringManager,
     close_monitoring_manager,

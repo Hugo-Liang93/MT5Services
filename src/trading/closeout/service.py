@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .ports import ExposureCloseoutPort
+from ..ports import ExposureCloseoutPort
 
 
 @dataclass

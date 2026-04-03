@@ -35,16 +35,16 @@ from src.trading import (
     TradingModule,
     TradingQueryService,
 )
-from src.trading.exposure_closeout import ExposureCloseoutController
-from src.trading.pending_entry import PendingEntryManager
-from src.trading.position_manager import PositionManager
-from src.trading.signal_executor import TradeExecutor
-from src.trading.signal_quality_tracker import SignalQualityTracker
-from src.monitoring.pipeline_event_bus import PipelineEventBus
+from src.trading.closeout import ExposureCloseoutController
+from src.trading.pending import PendingEntryManager
+from src.trading.positions import PositionManager
+from src.trading.execution import TradeExecutor
+from src.trading.tracking import SignalQualityTracker
+from src.monitoring.pipeline import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.studio.service import StudioService
-from src.trading.trade_outcome_tracker import TradeOutcomeTracker
+from src.trading.tracking import TradeOutcomeTracker
 
 logger = logging.getLogger(__name__)
 _init_lock = threading.Lock()

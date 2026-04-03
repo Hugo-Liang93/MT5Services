@@ -21,8 +21,8 @@ from src.signals.confidence import apply_htf_alignment, apply_intrabar_decay
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
-from src.trading.pending_entry import PendingEntryConfig, compute_entry_zone
-from src.trading.sizing import RegimeSizing, compute_trade_params
+from src.trading.pending import PendingEntryConfig, compute_entry_zone
+from src.trading.execution import RegimeSizing, compute_trade_params
 
 from .data_loader import HistoricalDataLoader
 from .filters import BacktestFilterConfig, BacktestFilterSimulator
@@ -983,7 +983,7 @@ class BacktestEngine:
         # Pending Entry 模拟：不立即开仓，等后续 bar 价格落入区间
         if self._pending_entry_enabled:
             category = decision.metadata.get("category", "trend")
-            from src.trading.pending_entry import _CATEGORY_ZONE_MODE
+            from src.trading.pending import _CATEGORY_ZONE_MODE
 
             zone_mode = _CATEGORY_ZONE_MODE.get(category, "symmetric")
             entry_low, entry_high = compute_entry_zone(

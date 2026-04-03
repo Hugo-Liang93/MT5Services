@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from src.signals.evaluation.performance import StrategyPerformanceTracker
 
-from src.trading.sizing import (
+from .sizing import (
     RegimeSizing,
     TradeParameters,
     compute_trade_params,
@@ -31,8 +31,8 @@ from src.trading.sizing import (
 )
 from src.signals.models import SignalEvent
 from src.risk.service import PreTradeRiskBlockedError
-from src.trading.execution_gate import ExecutionGate, ExecutionGateConfig
-from src.trading.pending_entry import (
+from .gate import ExecutionGate, ExecutionGateConfig
+from ..pending.manager import (
     PendingEntry,
     PendingEntryConfig,
     PendingEntryManager,
@@ -40,9 +40,9 @@ from src.trading.pending_entry import (
     compute_timeout,
     _CATEGORY_ZONE_MODE,
 )
-from src.trading.ports import ExecutorTradingPort
-from src.trading.position_manager import PositionManager
-from src.trading.trade_outcome_tracker import TradeOutcomeTracker
+from ..ports import ExecutorTradingPort
+from ..positions.manager import PositionManager
+from ..tracking.trade_outcome import TradeOutcomeTracker
 
 logger = logging.getLogger(__name__)
 

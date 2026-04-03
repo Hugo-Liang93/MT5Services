@@ -4,7 +4,7 @@ from datetime import date
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .service import TradingModule
+    from .module import TradingModule
 
 
 class TradingCommandService:

@@ -13,15 +13,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from .position_rules import (
+from .rules import (
     check_breakeven,
     check_trailing_stop,
     check_trailing_take_profit,
     should_close_end_of_day,
 )
-from .exposure_closeout import ExposureCloseoutController
-from .ports import PositionManagementPort
-from .sizing import TradeParameters
+from ..closeout.service import ExposureCloseoutController
+from ..ports import PositionManagementPort
+from ..execution.sizing import TradeParameters
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 from src.persistence.db import TimescaleWriter
 
-from .models import TradeCommandAuditRecord
+from ..models import TradeCommandAuditRecord
 
 
 class TradeCommandAuditService:

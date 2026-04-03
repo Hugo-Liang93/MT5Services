@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
-from src.trading.position_manager import TrackedPosition
-from src.trading.state_models import (
+from ..positions.manager import TrackedPosition
+from .models import (
     PendingOrderStateRecord,
     PositionRuntimeStateRecord,
     TradeControlStateRecord,

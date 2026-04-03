@@ -27,7 +27,7 @@ from src.config import (
 )
 from src.config.signal import get_signal_config
 from src.indicators.manager import UnifiedIndicatorManager
-from src.monitoring.pipeline_event_bus import PipelineEvent, PipelineEventBus
+from src.monitoring.pipeline import PipelineEvent, PipelineEventBus
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.models import SignalEvent
