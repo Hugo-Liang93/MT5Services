@@ -127,6 +127,13 @@
     - `catalog.py`：指标目录、依赖图、缓存与性能
     - `values.py`：指标值查询与计算
     - `models.py`：子域专属 schema
+  - `account.py`：账户查询 API 组合根
+  - `account_routes/`
+    - `queries.py`：账户、持仓、挂单与账户列表查询
+    - `common.py`：账户子域内 dataclass 到响应模型的转换
+  - `decision.py`：决策摘要 API 组合根
+  - `decision_routes/`
+    - `brief.py`：决策摘要生成入口
   - `admin.py`：后台 API 组合根
   - `admin_routes/`
     - `dashboard.py`：后台概览
@@ -139,6 +146,11 @@
     - `calendar.py`：日历、风险窗口与更新流
     - `impact.py`：市场影响分析
     - `common.py`：子域内共享依赖与序列化
+  - `studio.py`：Studio API 组合根
+  - `studio_routes/`
+    - `rest.py`：Studio 面板查询接口
+    - `stream.py`：Studio SSE 推送接口
+    - `common.py`：Studio 子域内依赖解析
 
 ### `api` 导入规则
 

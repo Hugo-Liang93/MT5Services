@@ -2,16 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from src.api.schemas import ApiResponse, DecisionBriefModel, DecisionBriefRequest
-from src.decision import build_decision_brief
+from .decision_routes import brief_router
+from .decision_routes.brief import decision_brief
 
-router = APIRouter(prefix="/decision", tags=["decision"])
+router = APIRouter(tags=["decision"])
+router.include_router(brief_router)
 
-
-@router.post("/brief", response_model=ApiResponse[DecisionBriefModel])
-def decision_brief(request: DecisionBriefRequest) -> ApiResponse[DecisionBriefModel]:
-    brief = DecisionBriefModel(**build_decision_brief(request.context.model_dump()))
-    return ApiResponse.success_response(
-        data=brief,
-        metadata={"provider": "backend_heuristic_engine"},
-    )
+__all__ = [
+    "decision_brief",
+    "router",
+]
