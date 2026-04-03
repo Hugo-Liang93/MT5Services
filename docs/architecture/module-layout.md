@@ -91,6 +91,32 @@
 - `src.monitoring.health`
 - `src.monitoring.pipeline`
 
+## `src/api/` 规范
+
+`api` 根目录按“协议适配 + 子域路由”组织：
+
+- 根目录保留：
+  - `__init__.py`：FastAPI 应用装配
+  - `deps.py`：DI 适配
+  - `schemas.py`：共享请求/基础响应模型
+  - `<domain>.py`：子域组合根
+- 复杂子域应继续拆成子包，例如：
+  - `trade.py`：交易 API 组合根
+  - `trade_routes/`
+    - `commands.py`：交易命令路由
+    - `state.py`：状态与只读查询路由
+    - `trace.py`：链路追踪路由
+    - `runtime.py`：运行模式路由
+    - `view_models.py`：前端核心只读 schema
+    - `common.py`：仅限子域内复用的路由辅助函数
+
+### `api` 导入规则
+
+1. 路由函数只做 HTTP 协议适配、错误映射和响应封装。
+2. 业务编排必须下沉到应用服务或读模型，禁止在路由中堆积跨域决策逻辑。
+3. 复杂子域的根路由文件只作为组合根，不直接承载全部实现。
+4. 前端核心只读接口优先提供稳定 schema，避免长期使用 `ApiResponse[dict]` 作为主契约。
+
 ## 新增文件归位规则
 
 新增实现文件前，按以下顺序判断：
