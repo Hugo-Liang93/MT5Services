@@ -7,7 +7,7 @@
     TradeExecutor._handle_confirmed()
         → PendingEntryManager.submit(PendingEntry)
         → _monitor_loop（后台线程，读取 Quote bid/ask）
-        → 价格确认 → _fill_queue → TradeExecutor._execute()
+        → 价格确认 → _fill_queue → execute_fn()
 """
 
 from __future__ import annotations

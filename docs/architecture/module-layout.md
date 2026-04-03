@@ -36,6 +36,10 @@
   - 执行门禁
   - 下单执行器
   - 仓位 sizing 与交易参数计算
+  - `executor.py` 保留执行协调器
+  - `params.py` 负责交易参数、价格与成本估算
+  - `pending_orders.py` 负责挂单提交流程、重复防重与成交识别
+  - `eventing.py` 负责执行事件、提交结果与成交记录
 - `pending/`
   - 挂单追踪、过期、成交衔接
 - `positions/`

@@ -16,8 +16,8 @@ import logging
 import queue
 import threading
 import time
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -25,22 +25,30 @@ if TYPE_CHECKING:
 
 from .sizing import (
     RegimeSizing,
-    TradeParameters,
-    compute_trade_params,
     extract_atr_from_indicators,
+)
+from .eventing import (
+    emit_execution_blocked as _emit_execution_blocked_helper,
+    emit_execution_decided as _emit_execution_decided_helper,
+    execute_market_order as _execute_market_order_helper,
+    notify_skip as _notify_skip_helper,
 )
 from src.monitoring.pipeline import PipelineEventBus
 from src.signals.models import SignalEvent
-from src.risk.service import PreTradeRiskBlockedError
 from .gate import ExecutionGate, ExecutionGateConfig
-from ..pending.manager import (
-    PendingEntry,
-    PendingEntryConfig,
-    PendingEntryManager,
-    compute_entry_zone,
-    compute_timeout,
-    _CATEGORY_ZONE_MODE,
+from .params import (
+    compute_params as _compute_params_helper,
+    estimate_cost_metrics as _estimate_cost_metrics_helper,
+    estimate_price as _estimate_price_helper,
+    get_account_balance as _get_account_balance_helper,
+    tf_to_seconds as _tf_to_seconds_helper,
 )
+from .pending_orders import (
+    duplicate_execution_reason as _duplicate_execution_reason_helper,
+    reached_position_limit as _reached_position_limit_helper,
+    submit_pending_entry as _submit_pending_entry_helper,
+)
+from ..pending.manager import PendingEntryManager
 from ..ports import ExecutorTradingPort
 from ..positions.manager import PositionManager
 from ..tracking.trade_outcome import TradeOutcomeTracker
@@ -268,142 +276,6 @@ class TradeExecutor:
     # Internal execution logic
     # ------------------------------------------------------------------
 
-    def _notify_skip(self, signal_id: str, reason: str, timeframe: str = "") -> None:
-        # Notify downstream components that a signal was skipped.
-        with self._skip_lock:
-            self._skip_reasons[reason] = self._skip_reasons.get(reason, 0) + 1
-            if timeframe:
-                tf_entry = self._tf_stats.setdefault(
-                    timeframe, {"received": 0, "passed": 0, "skip_reasons": {}}
-                )
-                tf_entry["skip_reasons"][reason] = tf_entry["skip_reasons"].get(reason, 0) + 1
-        if self._on_execution_skip is not None and signal_id:
-            try:
-                self._on_execution_skip(signal_id, reason)
-            except Exception:
-                logger.debug("on_execution_skip callback failed", exc_info=True)
-
-    @staticmethod
-    def _trace_id_for_event(event: SignalEvent) -> str:
-        return str(event.metadata.get("signal_trace_id") or "").strip()
-
-    def _emit_execution_decided(self, event: SignalEvent, *, order_kind: str) -> None:
-        pipeline_bus = self._pipeline_event_bus
-        trace_id = self._trace_id_for_event(event)
-        if pipeline_bus is None or not trace_id:
-            return
-        pipeline_bus.emit_execution_decided(
-            trace_id=trace_id,
-            symbol=event.symbol,
-            timeframe=event.timeframe or "",
-            scope=event.scope,
-            strategy=event.strategy,
-            direction=event.direction,
-            order_kind=order_kind,
-        )
-
-    def _emit_execution_blocked(
-        self,
-        event: SignalEvent,
-        *,
-        reason: str,
-        category: str,
-    ) -> None:
-        pipeline_bus = self._pipeline_event_bus
-        trace_id = self._trace_id_for_event(event)
-        if pipeline_bus is None or not trace_id:
-            return
-        pipeline_bus.emit_execution_blocked(
-            trace_id=trace_id,
-            symbol=event.symbol,
-            timeframe=event.timeframe or "",
-            scope=event.scope,
-            strategy=event.strategy,
-            direction=event.direction,
-            reason=reason,
-            category=category,
-        )
-
-    def _emit_execution_submitted(
-        self,
-        event: SignalEvent,
-        *,
-        order_kind: str,
-        ticket: Any = None,
-    ) -> None:
-        pipeline_bus = self._pipeline_event_bus
-        trace_id = self._trace_id_for_event(event)
-        if pipeline_bus is None or not trace_id:
-            return
-        normalized_ticket: int | None = None
-        try:
-            normalized_ticket = int(ticket) if ticket is not None else None
-        except (TypeError, ValueError):
-            normalized_ticket = None
-        pipeline_bus.emit_execution_submitted(
-            trace_id=trace_id,
-            symbol=event.symbol,
-            timeframe=event.timeframe or "",
-            scope=event.scope,
-            strategy=event.strategy,
-            direction=event.direction,
-            order_kind=order_kind,
-            request_id=event.signal_id,
-            ticket=normalized_ticket,
-        )
-
-    def _emit_pending_order_submitted(
-        self,
-        event: SignalEvent,
-        *,
-        order_kind: str,
-        ticket: Any = None,
-    ) -> None:
-        pipeline_bus = self._pipeline_event_bus
-        trace_id = self._trace_id_for_event(event)
-        if pipeline_bus is None or not trace_id:
-            return
-        normalized_ticket: int | None = None
-        try:
-            normalized_ticket = int(ticket) if ticket is not None else None
-        except (TypeError, ValueError):
-            normalized_ticket = None
-        pipeline_bus.emit_pending_order_submitted(
-            trace_id=trace_id,
-            symbol=event.symbol,
-            timeframe=event.timeframe or "",
-            scope=event.scope,
-            strategy=event.strategy,
-            direction=event.direction,
-            order_kind=order_kind,
-            request_id=event.signal_id,
-            ticket=normalized_ticket,
-        )
-
-    def _emit_execution_failed(
-        self,
-        event: SignalEvent,
-        *,
-        order_kind: str,
-        reason: str,
-        category: str,
-    ) -> None:
-        pipeline_bus = self._pipeline_event_bus
-        trace_id = self._trace_id_for_event(event)
-        if pipeline_bus is None or not trace_id:
-            return
-        pipeline_bus.emit_execution_failed(
-            trace_id=trace_id,
-            symbol=event.symbol,
-            timeframe=event.timeframe or "",
-            scope=event.scope,
-            strategy=event.strategy,
-            direction=event.direction,
-            order_kind=order_kind,
-            reason=reason,
-            category=category,
-        )
-
     def add_trade_listener(self, fn: Callable[[dict], None]) -> None:
         """注册成交监听回调。"""
         self._on_trade_executed.append(fn)
@@ -432,11 +304,6 @@ class TradeExecutor:
         self._consecutive_failures = 0
         self._circuit_open_at = None
         logger.info("TradeExecutor: circuit breaker manually reset")
-
-    def _get_contract_size(self, symbol: str) -> float:
-        # Return the configured contract size for a symbol.
-        size_map = self.config.contract_size_map
-        return size_map.get(symbol, size_map.get("default", 100.0))
 
     def _handle_confirmed(self, event: SignalEvent) -> dict[str, Any | None]:
         self._signals_received += 1
@@ -487,12 +354,13 @@ class TradeExecutor:
                 "TradeExecutor: PnL circuit open, skipping %s/%s %s",
                 event.symbol, event.strategy, event.direction,
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason="pnl_circuit_paused",
                 category="performance",
             )
-            self._notify_skip(event.signal_id, "pnl_circuit_paused", tf)
+            _notify_skip_helper(self, event.signal_id, "pnl_circuit_paused", tf)
             return None
 
         # 保证金保护在真正计算仓位前拦截新开仓请求。
@@ -501,12 +369,13 @@ class TradeExecutor:
                 "TradeExecutor: skipping %s/%s %s - margin guard blocked",
                 event.symbol, event.strategy, event.direction,
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason="margin_guard_block",
                 category="risk_guard",
             )
-            self._notify_skip(event.signal_id, "margin_guard_block", tf)
+            _notify_skip_helper(self, event.signal_id, "margin_guard_block", tf)
             return None
 
         # 执行门负责策略级准入规则，例如 voting group 和 armed 检查。
@@ -516,15 +385,16 @@ class TradeExecutor:
                 "TradeExecutor: skipping %s/%s %s - gate blocked: %s",
                 event.symbol, event.strategy, event.direction, gate_reason,
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason=gate_reason,
                 category="execution_gate",
             )
-            self._notify_skip(event.signal_id, gate_reason, tf)
+            _notify_skip_helper(self, event.signal_id, gate_reason, tf)
             return None
 
-        duplicate_reason = self._duplicate_execution_reason(event)
+        duplicate_reason = _duplicate_execution_reason_helper(self, event)
         if duplicate_reason:
             logger.info(
                 "TradeExecutor: skipping %s/%s/%s %s - duplicate execution context: %s",
@@ -542,12 +412,13 @@ class TradeExecutor:
                     "reason": duplicate_reason,
                 }
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason=duplicate_reason,
                 category="duplicate_guard",
             )
-            self._notify_skip(event.signal_id, duplicate_reason, tf)
+            _notify_skip_helper(self, event.signal_id, duplicate_reason, tf)
             return None
 
         # Per-TF 最小置信度覆盖优先于全局 min_confidence。
@@ -564,12 +435,13 @@ class TradeExecutor:
                 effective_min_conf,
                 tf,
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason="min_confidence",
                 category="confidence",
             )
-            self._notify_skip(event.signal_id, "min_confidence", tf)
+            _notify_skip_helper(self, event.signal_id, "min_confidence", tf)
             return None
 
         # HTF 方向冲突可在低周期直接阻止开仓；默认仅豁免允许逆势的策略类别。
@@ -586,12 +458,13 @@ class TradeExecutor:
                 event.symbol, tf, event.strategy, event.direction,
                 tf, event.metadata.get("htf_direction", "?"), strategy_category,
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason="htf_conflict_block",
                 category="htf_alignment",
             )
-            self._notify_skip(event.signal_id, "htf_conflict_block", tf)
+            _notify_skip_helper(self, event.signal_id, "htf_conflict_block", tf)
             return None
 
         # 日终平仓后，当天剩余时间内不再新开仓，避免 EOD 后又被实时信号重新拉起仓位。
@@ -604,15 +477,16 @@ class TradeExecutor:
                 "TradeExecutor: BLOCKING %s/%s %s - after EOD closeout, no new positions today",
                 event.symbol, event.strategy, event.direction,
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason="after_eod_block",
                 category="eod_guard",
             )
-            self._notify_skip(event.signal_id, "after_eod_block", tf)
+            _notify_skip_helper(self, event.signal_id, "after_eod_block", tf)
             return None
 
-        if self._reached_position_limit(event.symbol):
+        if _reached_position_limit_helper(self, event.symbol):
             logger.info(
                 "TradeExecutor: skipping %s/%s %s - max_concurrent_positions_per_symbol reached",
                 event.symbol,
@@ -631,12 +505,13 @@ class TradeExecutor:
                     "reason": "max_concurrent_positions_per_symbol",
                 }
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason="position_limit",
                 category="position_limit",
             )
-            self._notify_skip(event.signal_id, "position_limit", tf)
+            _notify_skip_helper(self, event.signal_id, "position_limit", tf)
             return None
 
         # ── 同策略同方向再入场冷却 ────────────────────────────────
@@ -654,7 +529,7 @@ class TradeExecutor:
                     pass
             last_bar = self._last_entry_bar_time.get(reentry_key)
             if bar_time and last_bar:
-                tf_seconds = self._tf_to_seconds(tf)
+                tf_seconds = _tf_to_seconds_helper(tf)
                 if tf_seconds > 0:
                     elapsed_bars = abs((bar_time - last_bar).total_seconds()) / tf_seconds
                     if elapsed_bars < cooldown_bars:
@@ -664,19 +539,24 @@ class TradeExecutor:
                             event.symbol, tf, event.strategy, event.direction,
                             elapsed_bars, cooldown_bars,
                         )
-                        self._emit_execution_blocked(
+                        _emit_execution_blocked_helper(
+                            self,
                             event,
                             reason="reentry_cooldown",
                             category="cooldown",
                         )
-                        self._notify_skip(event.signal_id, "reentry_cooldown", tf)
+                        _notify_skip_helper(
+                            self, event.signal_id, "reentry_cooldown", tf
+                        )
                         return None
 
-        trade_params = self._compute_params(event)
+        trade_params = _compute_params_helper(self, event)
         if trade_params is None:
             atr = extract_atr_from_indicators(event.indicators)
-            balance = self._get_account_balance()
-            close_price = event.metadata.get("close_price") or self._estimate_price(event.indicators)
+            balance = _get_account_balance_helper(self)
+            close_price = event.metadata.get("close_price") or _estimate_price_helper(
+                event.indicators
+            )
             logger.warning(
                 "TradeExecutor: cannot compute trade params for %s/%s %s "
                 "(atr=%s, balance=%s, close_price=%s, indicators_keys=%s)",
@@ -684,14 +564,17 @@ class TradeExecutor:
                 atr, balance, close_price,
                 list(event.indicators.keys()),
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason="trade_params_unavailable",
                 category="trade_params",
             )
-            self._notify_skip(event.signal_id, "trade_params_unavailable", tf)
+            _notify_skip_helper(
+                self, event.signal_id, "trade_params_unavailable", tf
+            )
             return None
-        cost_metrics = self._estimate_cost_metrics(event, trade_params)
+        cost_metrics = _estimate_cost_metrics_helper(self, event, trade_params)
         spread_to_stop_ratio = cost_metrics.get("spread_to_stop_ratio")
         if (
             spread_to_stop_ratio is not None
@@ -718,12 +601,15 @@ class TradeExecutor:
                     "cost": cost_metrics,
                 }
             )
-            self._emit_execution_blocked(
+            _emit_execution_blocked_helper(
+                self,
                 event,
                 reason="spread_to_stop_ratio_too_high",
                 category="cost_guard",
             )
-            self._notify_skip(event.signal_id, "spread_to_stop_ratio_too_high", tf)
+            _notify_skip_helper(
+                self, event.signal_id, "spread_to_stop_ratio_too_high", tf
+            )
             return None
 
         self._signals_passed += 1
@@ -732,1005 +618,16 @@ class TradeExecutor:
                 self._tf_stats.setdefault(
                     tf, {"received": 0, "passed": 0, "skip_reasons": {}}
                 )["passed"] += 1
-        self._emit_execution_decided(
+        _emit_execution_decided_helper(
+            self,
             event,
             order_kind="market" if self._pending_manager is None else "pending",
         )
         if self._pending_manager is None:
-            return self._execute(event, trade_params, cost_metrics=cost_metrics)
-        return self._submit_pending_entry(event, trade_params, cost_metrics)
-
-    def _submit_pending_entry(
-        self,
-        event: SignalEvent,
-        params: TradeParameters,
-        cost_metrics: dict[str, float | None],
-    ) -> dict[str, Any | None]:
-        """通过 MT5 限价/止损挂单实现价格确认入场。
-
-        根据 zone_mode 决定挂单类型：
-          - pullback: LIMIT 单（等回调到有利价位）
-          - momentum: STOP 单（等突破到目标价位）
-          - symmetric: LIMIT 单（以参考价为中心）
-        """
-        if not event.signal_id:
-            logger.warning(
-                "TradeExecutor: cannot submit pending entry without signal_id for %s/%s",
-                event.symbol, event.strategy,
+            return _execute_market_order_helper(
+                self, event, trade_params, cost_metrics=cost_metrics
             )
-            self._emit_execution_blocked(
-                event,
-                reason="missing_signal_id",
-                category="execution_input",
-            )
-            self._notify_skip(event.signal_id, "missing_signal_id", event.timeframe or "")
-            return None
-
-        category = event.metadata.get("category", "")
-        zone_mode = _CATEGORY_ZONE_MODE.get(category, "symmetric")
-
-        config = self._pending_manager.config
-        entry_low, entry_high = compute_entry_zone(
-            action=event.direction,
-            close_price=params.entry_price,
-            atr=params.atr_value,
-            zone_mode=zone_mode,
-            config=config,
-            strategy_name=event.strategy,
-            category=category,
-            indicators=event.indicators,
-            timeframe=event.timeframe or "",
-        )
-        timeout = compute_timeout(event.timeframe, config, category=category)
-
-        # ── 确定挂单类型和价格 ──
-        order_kind, trigger_price = self._resolve_pending_order(
-            direction=event.direction,
-            zone_mode=zone_mode,
-            entry_low=entry_low,
-            entry_high=entry_high,
-        )
-
-        # SL/TP 按挂单价偏移（相对于原始 entry_price 的差值）
-        price_shift = trigger_price - params.entry_price
-        adjusted_sl = round(params.stop_loss + price_shift, 2)
-        adjusted_tp = round(params.take_profit + price_shift, 2)
-
-        # 新信号到来时，取消同品种旧挂单
-        if config.cancel_on_new_signal:
-            exclude = event.direction if not config.cancel_same_direction else None
-            self._pending_manager.cancel_by_symbol(
-                event.symbol,
-                reason="new_signal_override",
-                exclude_direction=exclude,
-            )
-
-        # ── 向 MT5 发送限价/止损挂单 ──
-        tf = event.timeframe or ""
-        payload = {
-            "symbol": event.symbol,
-            "volume": params.position_size,
-            "side": event.direction,
-            "order_kind": order_kind,
-            "price": trigger_price,
-            "sl": adjusted_sl,
-            "tp": adjusted_tp,
-            "comment": f"{tf}:{event.strategy}:{order_kind}"[:31],
-            "request_id": event.signal_id,
-            "metadata": self._build_trade_metadata(event),
-        }
-
-        try:
-            result = self._trading.dispatch_operation("trade", payload)
-            order_ticket = None
-            if isinstance(result, dict):
-                order_ticket = result.get("order") or result.get("ticket")
-
-            logger.info(
-                "TradeExecutor: placed %s %s %s @ %.2f (zone=[%.2f,%.2f] mode=%s) "
-                "sl=%.2f tp=%.2f ticket=%s",
-                order_kind, event.direction, event.symbol, trigger_price,
-                entry_low, entry_high, zone_mode,
-                adjusted_sl, adjusted_tp, order_ticket,
-            )
-
-            # 注册到 PendingEntryManager 追踪生命周期（超时取消）
-            if order_ticket is not None:
-                self._pending_manager.track_mt5_order(
-                    signal_id=event.signal_id,
-                    order_ticket=order_ticket,
-                    expires_at=datetime.now(timezone.utc) + timeout,
-                    direction=event.direction,
-                    symbol=event.symbol,
-                    strategy=event.strategy,
-                    timeframe=tf,
-                    confidence=event.confidence,
-                    regime=event.metadata.get("regime"),
-                    comment=str(result.get("comment") or payload["comment"]) if isinstance(result, dict) else payload["comment"],
-                    params=params,
-                    order_kind=order_kind,
-                    entry_low=entry_low,
-                    entry_high=entry_high,
-                    trigger_price=trigger_price,
-                    entry_price_requested=params.entry_price,
-                    stop_loss=adjusted_sl,
-                    take_profit=adjusted_tp,
-                    volume=params.position_size,
-                    created_at=datetime.now(timezone.utc),
-                    metadata={
-                        "category": category,
-                        "order_kind": order_kind,
-                    },
-                )
-                self._emit_pending_order_submitted(
-                    event,
-                    order_kind=order_kind,
-                    ticket=order_ticket,
-                )
-
-            self._execution_log.append({
-                "at": datetime.now(timezone.utc).isoformat(),
-                "signal_id": event.signal_id,
-                "symbol": event.symbol,
-                "direction": event.direction,
-                "strategy": event.strategy,
-                "success": True,
-                "pending": True,
-                "order_kind": order_kind,
-                "trigger_price": trigger_price,
-                "order_ticket": order_ticket,
-            })
-            self._record_reentry_bar_time(event)
-            return result
-
-        except Exception as exc:
-            logger.error(
-                "TradeExecutor: failed to place %s order for %s/%s: %s",
-                order_kind, event.symbol, event.strategy, exc,
-            )
-            self._emit_execution_failed(
-                event,
-                order_kind=order_kind,
-                reason=str(exc),
-                category="pending_submit",
-            )
-            self._notify_skip(event.signal_id, f"pending_order_failed:{exc}", tf)
-            return None
-
-    @staticmethod
-    def _resolve_pending_order(
-        direction: str,
-        zone_mode: str,
-        entry_low: float,
-        entry_high: float,
-    ) -> tuple[str, float]:
-        """根据 zone_mode 和方向确定 MT5 挂单类型和触发价格。
-
-        Returns:
-            (order_kind, trigger_price)
-            order_kind: "limit" 或 "stop"
-            trigger_price: 挂单价格
-        """
-        if zone_mode == "momentum":
-            # 动量追突破：BUY STOP（价格上破）/ SELL STOP（价格下破）
-            if direction == "buy":
-                return "stop", entry_high  # 价格涨过 entry_high 触发
-            else:
-                return "stop", entry_low   # 价格跌破 entry_low 触发
-        else:
-            # pullback / symmetric：LIMIT 单（等回调）
-            if direction == "buy":
-                return "limit", entry_low   # 等价格回调到 entry_low 买入
-            else:
-                return "limit", entry_high  # 等价格回调到 entry_high 卖出
-
-    def _compute_params(self, event: SignalEvent) -> TradeParameters | None:
-        atr = extract_atr_from_indicators(event.indicators)
-        if atr is None or atr <= 0:
-            return None
-
-        balance = self._get_account_balance()
-        if balance is None or balance <= 0:
-            return None
-
-        # T-1: 优先使用 runtime 透传的 close_price，缺失时再从指标快照估算。
-        close_price: float | None = None
-        raw_close = event.metadata.get("close_price")
-        if raw_close is not None:
-            try:
-                close_price = float(raw_close)
-            except (TypeError, ValueError):
-                close_price = None
-        # fallback 到 payload/指标快照中的价格型字段。
-        if close_price is None or close_price <= 0:
-            close_price = self._estimate_price(event.indicators)
-        if close_price is None or close_price <= 0:
-            return None
-
-        # T-2: 合约大小参与最终仓位与盈亏距离计算。
-        contract_size = self._get_contract_size(event.symbol)
-
-        return compute_trade_params(
-            action=event.direction,
-            current_price=close_price,
-            atr_value=atr,
-            account_balance=balance,
-            timeframe=event.timeframe,
-            risk_percent=self.config.risk_percent,
-            sl_atr_multiplier=self.config.sl_atr_multiplier,
-            tp_atr_multiplier=self.config.tp_atr_multiplier,
-            min_volume=self.config.min_volume,
-            max_volume=self.config.max_volume,
-            contract_size=contract_size,
-            timeframe_risk_overrides=self.config.timeframe_risk_multipliers or None,
-            regime=str(
-                event.metadata.get("regime")
-                or event.metadata.get("_regime")
-                or ""
-            ),
-            regime_sizing=self.config.regime_sizing,
-        )
-
-    def _get_account_balance(self) -> float | None:
-        if self._account_balance_getter is not None:
-            try:
-                return float(self._account_balance_getter())
-            except (TypeError, ValueError, AttributeError):
-                logger.debug("account_balance_getter failed", exc_info=True)
-        try:
-            info = self._trading.account_info()
-            if isinstance(info, dict):
-                return float(info.get("equity") or info.get("balance") or 0)
-            return float(getattr(info, "equity", None) or getattr(info, "balance", None) or 0)
-        except (TypeError, ValueError, AttributeError) as exc:
-            logger.debug("Failed to get account balance: %s", exc)
-            return None
-
-    @staticmethod
-    def _tf_to_seconds(tf: str) -> int:
-        """Convert timeframe string to seconds (e.g. 'M15' → 900)."""
-        tf = tf.upper().strip()
-        _map = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
-                "H1": 3600, "H4": 14400, "D1": 86400}
-        return _map.get(tf, 0)
-
-    @staticmethod
-    def _estimate_price(indicators: dict[str, dict[str, Any]]) -> float | None:
-        for name in ("bollinger20", "sma20", "close", "price"):
-            payload = indicators.get(name)
-            if isinstance(payload, dict):
-                for fld in ("close", "value", "last", "bb_mid", "sma"):
-                    val = payload.get(fld)
-                    if val is not None:
-                        try:
-                            return float(val)
-                        except (TypeError, ValueError):
-                            continue
-        return None
-
-    def _reached_position_limit(self, symbol: str) -> bool:
-        limit = self.config.max_concurrent_positions_per_symbol
-        if limit is None or limit <= 0:
-            return False
-        open_positions = self._open_positions_for_symbol(symbol)
-        return open_positions >= limit
-
-    def _open_positions_for_symbol(self, symbol: str) -> int:
-        tracked_count: int | None = None
-        if self._position_manager is not None:
-            try:
-                tracked = [
-                    row
-                    for row in self._position_manager.active_positions()
-                    if row.get("symbol") == symbol
-                ]
-                tracked_count = len(tracked)
-            except (TypeError, AttributeError) as exc:
-                logger.debug("Failed to count tracked positions: %s", exc)
-                tracked_count = None
-
-        try:
-            rows = self._trading.get_positions(symbol=symbol)
-            live_count = len(list(rows or []))
-            if tracked_count is None:
-                return live_count
-            return max(tracked_count, live_count)
-        except Exception:
-            pass
-        return tracked_count or 0
-
-    def _duplicate_execution_reason(self, event: SignalEvent) -> str:
-        if self._has_matching_active_position(event):
-            return "position_same_strategy_direction"
-        if self._has_matching_pending_entry(event):
-            return "pending_entry_same_strategy_direction"
-        return ""
-
-    def _has_matching_active_position(self, event: SignalEvent) -> bool:
-        if self._position_manager is None:
-            return False
-        try:
-            active_positions = self._position_manager.active_positions()
-        except Exception:
-            logger.debug(
-                "Failed to inspect active positions for duplicate guard",
-                exc_info=True,
-            )
-            return False
-        for row in active_positions or []:
-            if (
-                row.get("symbol") == event.symbol
-                and row.get("timeframe") == event.timeframe
-                and row.get("strategy") == event.strategy
-                and row.get("action") == event.direction
-            ):
-                return True
-        return False
-
-    def _has_matching_pending_entry(self, event: SignalEvent) -> bool:
-        if self._pending_manager is None:
-            return False
-        try:
-            contexts_fn = getattr(self._pending_manager, "active_execution_contexts", None)
-            if callable(contexts_fn):
-                entries = list(contexts_fn() or [])
-            else:
-                status = self._pending_manager.status()
-                entries = list(status.get("entries", []) or [])
-        except Exception:
-            logger.debug(
-                "Failed to inspect pending entries for duplicate guard",
-                exc_info=True,
-            )
-            return False
-        for row in entries:
-            if (
-                row.get("symbol") == event.symbol
-                and row.get("timeframe") == event.timeframe
-                and row.get("strategy") == event.strategy
-                and row.get("direction") == event.direction
-            ):
-                return True
-        return False
-
-    def _record_reentry_bar_time(self, event: SignalEvent) -> None:
-        bar_time = event.metadata.get("bar_time")
-        if bar_time is None:
-            return
-        self._last_entry_bar_time[
-            (event.symbol, event.strategy, event.direction)
-        ] = bar_time
-
-    def _estimate_cost_metrics(
-        self,
-        event: SignalEvent,
-        params: TradeParameters,
-    ) -> dict[str, float | None]:
-        raw_spread = event.metadata.get("spread_points")
-        try:
-            spread_points = float(raw_spread) if raw_spread is not None else None
-        except (TypeError, ValueError):
-            spread_points = None
-
-        raw_symbol_point = event.metadata.get("symbol_point")
-        try:
-            symbol_point = (
-                float(raw_symbol_point) if raw_symbol_point is not None else None
-            )
-        except (TypeError, ValueError):
-            symbol_point = None
-        if symbol_point is not None and symbol_point <= 0:
-            symbol_point = None
-
-        raw_spread_price = event.metadata.get("spread_price")
-        try:
-            spread_price = (
-                float(raw_spread_price) if raw_spread_price is not None else None
-            )
-        except (TypeError, ValueError):
-            spread_price = None
-        if spread_price is None and spread_points is not None and symbol_point is not None:
-            spread_price = spread_points * symbol_point
-        if spread_points is None and spread_price is not None and symbol_point is not None:
-            spread_points = spread_price / symbol_point
-
-        raw_close = event.metadata.get("close_price")
-        try:
-            close_price = float(raw_close) if raw_close is not None else None
-        except (TypeError, ValueError):
-            close_price = None
-        if close_price is None or close_price <= 0:
-            close_price = self._estimate_price(event.indicators)
-
-        stop_distance = None
-        reward_distance = None
-        if close_price is not None and close_price > 0:
-            stop_distance = abs(close_price - params.stop_loss)
-            reward_distance = abs(params.take_profit - close_price)
-
-        stop_distance_points = None
-        reward_distance_points = None
-        if symbol_point is not None and symbol_point > 0:
-            if stop_distance is not None:
-                stop_distance_points = stop_distance / symbol_point
-            if reward_distance is not None:
-                reward_distance_points = reward_distance / symbol_point
-
-        spread_to_stop_ratio = None
-        if spread_points is not None:
-            if stop_distance_points is not None and stop_distance_points > 0:
-                spread_to_stop_ratio = round(spread_points / stop_distance_points, 4)
-            elif spread_price is not None and stop_distance and stop_distance > 0:
-                spread_to_stop_ratio = round(spread_price / stop_distance, 4)
-
-        reward_to_cost_ratio = None
-        if spread_points is not None and spread_points > 0:
-            if reward_distance_points is not None:
-                reward_to_cost_ratio = round(
-                    reward_distance_points / spread_points, 4
-                )
-            elif spread_price is not None and spread_price > 0 and reward_distance is not None:
-                reward_to_cost_ratio = round(reward_distance / spread_price, 4)
-
-        return {
-            "estimated_cost_points": spread_points,
-            "estimated_cost_price": (
-                round(spread_price, 6) if spread_price is not None else None
-            ),
-            "symbol_point": symbol_point,
-            "stop_distance": round(stop_distance, 4) if stop_distance is not None else None,
-            "stop_distance_points": (
-                round(stop_distance_points, 2)
-                if stop_distance_points is not None
-                else None
-            ),
-            "reward_distance": round(reward_distance, 4) if reward_distance is not None else None,
-            "reward_distance_points": (
-                round(reward_distance_points, 2)
-                if reward_distance_points is not None
-                else None
-            ),
-            "spread_to_stop_ratio": spread_to_stop_ratio,
-            "reward_to_cost_ratio": reward_to_cost_ratio,
-        }
-
-    @staticmethod
-    def _build_trade_metadata(event: SignalEvent) -> dict[str, Any]:
-        metadata: dict[str, Any] = {
-            "entry_origin": "auto",
-            "signal": {
-                "signal_id": event.signal_id,
-                "strategy": event.strategy,
-                "timeframe": event.timeframe,
-                "signal_state": event.signal_state,
-                "confidence": round(float(event.confidence), 4),
-            }
-        }
-        regime = event.metadata.get("regime")
-        if regime is not None:
-            metadata["regime"] = regime
-        raw_structure = event.metadata.get("market_structure")
-        if isinstance(raw_structure, dict):
-            metadata["market_structure"] = dict(raw_structure)
-        elif hasattr(raw_structure, "to_dict"):
-            try:
-                metadata["market_structure"] = raw_structure.to_dict()
-            except Exception:
-                pass
-        return metadata
-
-    def _record_slippage(
-        self,
-        *,
-        requested_price: float | None,
-        fill_price: float | None,
-        symbol_point: float | None,
-    ) -> dict[str, float | None]:
-        try:
-            requested = float(requested_price) if requested_price is not None else None
-        except (TypeError, ValueError):
-            requested = None
-        try:
-            filled = float(fill_price) if fill_price is not None else None
-        except (TypeError, ValueError):
-            filled = None
-        if requested is None or filled is None:
-            return {
-                "requested_price": requested,
-                "fill_price": filled,
-                "slippage_price": None,
-                "slippage_points": None,
-            }
-
-        slippage_price = round(filled - requested, 6)
-        slippage_points = None
-        if symbol_point is not None and symbol_point > 0:
-            slippage_points = round(slippage_price / symbol_point, 2)
-        self._execution_quality["slippage_samples"] += 1
-        self._execution_quality["slippage_total_price"] += slippage_price
-        if slippage_points is not None:
-            self._execution_quality["slippage_total_points"] += slippage_points
-        return {
-            "requested_price": requested,
-            "fill_price": filled,
-            "slippage_price": slippage_price,
-            "slippage_points": slippage_points,
-        }
-
-    @staticmethod
-    def _row_value(row: Any, key: str, default: Any = None) -> Any:
-        if isinstance(row, dict):
-            return row.get(key, default)
-        return getattr(row, key, default)
-
-    @classmethod
-    def _position_direction(cls, row: Any, fallback: str = "") -> str:
-        direction = str(cls._row_value(row, "action", "") or "").strip().lower()
-        if direction in {"buy", "sell"}:
-            return direction
-        try:
-            position_type = int(cls._row_value(row, "type", 0) or 0)
-            return "sell" if position_type == 1 else "buy"
-        except (TypeError, ValueError):
-            return str(fallback or "").strip().lower()
-
-    @classmethod
-    def _find_live_position_for_pending_order(
-        cls,
-        positions: list[Any],
-        *,
-        symbol: str,
-        direction: str,
-        comment: str,
-        timeframe: str = "",
-        strategy: str = "",
-    ) -> Any | None:
-        target_symbol = str(symbol or "").strip()
-        target_direction = str(direction or "").strip().lower()
-        target_comment = str(comment or "").strip()
-        target_prefix = cls._comment_prefix(timeframe, strategy)
-        exact_matches: list[Any] = []
-        prefix_matches: list[Any] = []
-        directional_matches: list[Any] = []
-        for row in positions or []:
-            row_symbol = str(cls._row_value(row, "symbol", "") or "").strip()
-            if target_symbol and row_symbol != target_symbol:
-                continue
-            row_direction = cls._position_direction(row, fallback=target_direction)
-            if target_direction and row_direction and row_direction != target_direction:
-                continue
-            row_comment = str(cls._row_value(row, "comment", "") or "").strip()
-            if target_comment and row_comment == target_comment:
-                exact_matches.append(row)
-                continue
-            if target_prefix and row_comment.lower().startswith(target_prefix):
-                prefix_matches.append(row)
-                continue
-            directional_matches.append(row)
-        matches = exact_matches or prefix_matches
-        if not matches and len(directional_matches) == 1:
-            matches = directional_matches
-        if not matches:
-            return None
-        matches.sort(
-            key=lambda row: (
-                int(cls._row_value(row, "time_msc", 0) or 0),
-                (
-                    int(raw_time.timestamp())
-                    if isinstance((raw_time := cls._row_value(row, "time", 0)), datetime)
-                    else int(raw_time or 0)
-                ),
-                int(cls._row_value(row, "ticket", 0) or 0),
-            )
-        )
-        return matches[-1]
-
-    @staticmethod
-    def _comment_prefix(timeframe: str, strategy: str) -> str:
-        tf = str(timeframe or "").strip().lower()
-        strat = str(strategy or "").strip().lower()
-        if not tf or not strat:
-            return ""
-        return f"{tf}:{strat}:"
-
-    def _tracked_position_tickets(self) -> set[int]:
-        if self._position_manager is None:
-            return set()
-        try:
-            active_positions = self._position_manager.active_positions()
-        except Exception as exc:
-            logger.debug("Failed to inspect tracked position tickets: %s", exc)
-            return set()
-        tickets: set[int] = set()
-        for row in active_positions or []:
-            try:
-                ticket = int(self._row_value(row, "ticket", 0) or 0)
-            except (TypeError, ValueError):
-                continue
-            if ticket > 0:
-                tickets.add(ticket)
-        return tickets
-
-    @staticmethod
-    def _params_from_pending_fill(
-        base_params: TradeParameters | None,
-        *,
-        entry_price: float,
-        stop_loss: float,
-        take_profit: float,
-        volume: float,
-    ) -> TradeParameters:
-        if isinstance(base_params, TradeParameters):
-            resolved_sl = stop_loss if stop_loss > 0 else base_params.stop_loss
-            resolved_tp = take_profit if take_profit > 0 else base_params.take_profit
-            resolved_volume = volume if volume > 0 else base_params.position_size
-            return replace(
-                base_params,
-                entry_price=entry_price,
-                stop_loss=resolved_sl,
-                take_profit=resolved_tp,
-                position_size=resolved_volume,
-                sl_distance=abs(entry_price - resolved_sl),
-                tp_distance=abs(resolved_tp - entry_price),
-            )
-
-        resolved_sl = stop_loss if stop_loss > 0 else entry_price
-        resolved_tp = take_profit if take_profit > 0 else entry_price
-        sl_distance = abs(entry_price - resolved_sl)
-        tp_distance = abs(resolved_tp - entry_price)
-        rr = (tp_distance / sl_distance) if sl_distance > 0 else 0.0
-        return TradeParameters(
-            entry_price=entry_price,
-            stop_loss=resolved_sl,
-            take_profit=resolved_tp,
-            position_size=volume,
-            risk_reward_ratio=rr,
-            atr_value=sl_distance / 2.0 if sl_distance > 0 else 0.0,
-            sl_distance=sl_distance,
-            tp_distance=tp_distance,
-        )
-
-    def _inspect_pending_mt5_order(self, info: dict[str, Any]) -> dict[str, Any]:
-        order_ticket = int(info.get("ticket", 0) or 0)
-        symbol = str(info.get("symbol") or "").strip()
-        direction = str(info.get("direction") or "").strip().lower()
-        comment = str(info.get("comment") or "").strip()
-        signal_id = str(info.get("signal_id") or "").strip()
-
-        try:
-            open_orders = list(self._trading.get_orders(symbol=symbol))
-        except Exception as exc:
-            logger.debug(
-                "TradeExecutor: get_orders(%s) failed while inspecting pending MT5 order %s: %s",
-                symbol,
-                order_ticket,
-                exc,
-            )
-            return {"status": "pending", "reason": "orders_lookup_failed"}
-        for row in open_orders or []:
-            try:
-                live_order_ticket = int(self._row_value(row, "ticket", 0) or 0)
-            except (TypeError, ValueError):
-                continue
-            if live_order_ticket == order_ticket:
-                return {"status": "pending"}
-
-        try:
-            open_positions = list(self._trading.get_positions(symbol=symbol))
-        except Exception as exc:
-            logger.debug(
-                "TradeExecutor: get_positions(%s) failed while inspecting pending MT5 order %s: %s",
-                symbol,
-                order_ticket,
-                exc,
-            )
-            return {"status": "pending", "reason": "positions_lookup_failed"}
-
-        raw_position = self._find_live_position_for_pending_order(
-            open_positions,
-            symbol=symbol,
-            direction=direction,
-            comment=comment,
-            timeframe=str(info.get("timeframe") or ""),
-            strategy=str(info.get("strategy") or ""),
-        )
-        if raw_position is None:
-            return {"status": "missing", "reason": "order_missing_without_position"}
-
-        position_ticket = int(self._row_value(raw_position, "ticket", 0) or 0)
-        fill_price = float(self._row_value(raw_position, "price_open", 0.0) or 0.0)
-        stop_loss = float(self._row_value(raw_position, "sl", 0.0) or 0.0)
-        take_profit = float(self._row_value(raw_position, "tp", 0.0) or 0.0)
-        volume = float(self._row_value(raw_position, "volume", 0.0) or 0.0)
-        opened_at = self._row_value(raw_position, "time", None)
-        resolved_comment = str(self._row_value(raw_position, "comment", "") or comment)
-        params = self._params_from_pending_fill(
-            info.get("params"),
-            entry_price=fill_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            volume=volume,
-        )
-
-        if (
-            self._position_manager is not None
-            and position_ticket > 0
-            and position_ticket not in self._tracked_position_tickets()
-        ):
-            try:
-                self._position_manager.track_position(
-                    ticket=position_ticket,
-                    signal_id=signal_id or f"restored:{position_ticket}",
-                    symbol=symbol,
-                    action=direction or self._position_direction(raw_position),
-                    params=params,
-                    timeframe=str(info.get("timeframe") or ""),
-                    strategy=str(info.get("strategy") or ""),
-                    confidence=info.get("confidence"),
-                    regime=info.get("regime"),
-                    comment=resolved_comment,
-                    opened_at=opened_at,
-                    fill_price=fill_price if fill_price > 0 else None,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "TradeExecutor: failed to register filled pending MT5 order ticket=%s -> position=%s: %s",
-                    order_ticket,
-                    position_ticket,
-                    exc,
-                )
-
-        if self._trade_outcome_tracker is not None and signal_id:
-            try:
-                self._trade_outcome_tracker.on_trade_opened(
-                    signal_id=signal_id,
-                    symbol=symbol,
-                    timeframe=str(info.get("timeframe") or ""),
-                    strategy=str(info.get("strategy") or ""),
-                    direction=direction or self._position_direction(raw_position),
-                    fill_price=fill_price if fill_price > 0 else params.entry_price,
-                    confidence=float(info.get("confidence") or 0.0),
-                    regime=info.get("regime"),
-                    opened_at=opened_at,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "TradeExecutor: failed to restore trade outcome tracking for signal=%s pending MT5 fill: %s",
-                    signal_id,
-                    exc,
-                )
-
-        return {
-            "status": "filled",
-            "ticket": position_ticket,
-            "fill_price": fill_price,
-        }
-
-    def _execute(
-        self,
-        event: SignalEvent,
-        params: TradeParameters,
-        *,
-        cost_metrics: dict[str, float | None] | None = None,
-    ) -> dict[str, Any | None]:
-        payload = {
-            "symbol": event.symbol,
-            "volume": params.position_size,
-            "side": event.direction,
-            "order_kind": "market",
-            "sl": params.stop_loss,
-            "tp": params.take_profit,
-            "comment": f"{event.timeframe}:{event.strategy}:{event.direction}"[:31],
-            "request_id": event.signal_id,
-            "metadata": self._build_trade_metadata(event),
-        }
-
-        try:
-            result = self._trading.dispatch_operation("trade", payload)
-            self._execution_count += 1
-            self._last_execution_at = datetime.now(timezone.utc)
-            self._last_error = None
-            self._last_risk_block = None
-            # 执行成功后重置连续失败计数。
-            self._consecutive_failures = 0
-            requested_price = None
-            fill_price = None
-            symbol_point = None
-            if isinstance(result, dict):
-                requested_price = result.get("requested_price") or result.get("price")
-                fill_price = result.get("fill_price") or result.get("price")
-                try:
-                    symbol_point = float(cost_metrics.get("symbol_point")) if cost_metrics else None
-                except (TypeError, ValueError):
-                    symbol_point = None
-                if result.get("recovered_from_state"):
-                    self._execution_quality["recovered_from_state"] += 1
-                self._emit_execution_submitted(
-                    event,
-                    order_kind="market",
-                    ticket=result.get("ticket") or result.get("order"),
-                )
-            execution_quality = self._record_slippage(
-                requested_price=requested_price,
-                fill_price=fill_price,
-                symbol_point=symbol_point,
-            )
-            log_entry = {
-                "at": self._last_execution_at.isoformat(),
-                "signal_id": event.signal_id,
-                "symbol": event.symbol,
-                "direction": event.direction,
-                "strategy": event.strategy,
-                "confidence": event.confidence,
-                "params": {
-                    "volume": params.position_size,
-                    "entry_price": fill_price if fill_price is not None else params.entry_price,
-                    "sl": params.stop_loss,
-                    "tp": params.take_profit,
-                    "rr": params.risk_reward_ratio,
-                },
-                "cost": dict(cost_metrics or {}),
-                "execution_quality": execution_quality,
-                "success": True,
-            }
-            self._execution_log.append(log_entry)
-            # 记录冷却期 bar_time
-            self._record_reentry_bar_time(event)
-            for fn in self._on_trade_executed:
-                try:
-                    fn(log_entry)
-                except Exception:
-                    logger.debug("on_trade_executed callback failed", exc_info=True)
-            logger.info(
-                "TradeExecutor: executed %s %s vol=%.2f sl=%.2f tp=%.2f rr=%.2f (signal=%s)",
-                event.direction, event.symbol,
-                params.position_size, params.stop_loss, params.take_profit,
-                params.risk_reward_ratio, event.signal_id,
-            )
-            # T-4: 持久化成功执行记录。
-            if self._persist_execution_fn is not None:
-                try:
-                    self._persist_execution_fn([log_entry])
-                except Exception as pe:
-                    logger.warning("TradeExecutor: persist execution failed: %s", pe)
-            if self._position_manager is not None and isinstance(result, dict):
-                ticket = result.get("ticket") or result.get("order")
-                if ticket:
-                    try:
-                        self._position_manager.track_position(
-                            ticket=int(ticket),
-                            signal_id=event.signal_id,
-                            symbol=event.symbol,
-                            action=event.direction,
-                            params=params,
-                            timeframe=event.timeframe,
-                            strategy=event.strategy,
-                            confidence=event.confidence,
-                            regime=event.metadata.get("regime"),
-                            comment=str(result.get("comment") or payload["comment"]),
-                            fill_price=(
-                                float(result.get("fill_price"))
-                                if result.get("fill_price") is not None
-                                else None
-                            ),
-                        )
-                    except Exception as pm_exc:
-                        logger.warning(
-                            "TradeExecutor: failed to register position ticket=%s: %s",
-                            ticket, pm_exc,
-                        )
-            # 通知 TradeOutcomeTracker 登记新开仓交易。
-            if self._trade_outcome_tracker is not None:
-                try:
-                    self._trade_outcome_tracker.on_trade_opened(
-                        signal_id=event.signal_id,
-                        symbol=event.symbol,
-                        timeframe=event.timeframe,
-                        strategy=event.strategy,
-                        direction=event.direction,
-                        fill_price=(
-                            float(result.get("fill_price"))
-                            if isinstance(result, dict) and result.get("fill_price") is not None
-                            else params.entry_price
-                        ),
-                        confidence=event.confidence,
-                        regime=event.metadata.get("regime"),
-                    )
-                except Exception as ot_exc:
-                    logger.warning(
-                        "TradeExecutor: failed to notify trade_outcome_tracker: %s",
-                        ot_exc,
-                    )
-            if isinstance(result, dict):
-                result.setdefault("execution_quality", execution_quality)
-            return result
-        except PreTradeRiskBlockedError as exc:
-            self._last_risk_block = str(exc)
-            self._execution_quality["risk_blocks"] += 1
-            assessment = dict(exc.assessment or {})
-            reason = str(assessment.get("reason") or exc)
-            self._emit_execution_blocked(
-                event,
-                reason=reason,
-                category="risk_service",
-            )
-            self._execution_log.append({
-                "at": datetime.now(timezone.utc).isoformat(),
-                "signal_id": event.signal_id,
-                "symbol": event.symbol,
-                "direction": event.direction,
-                "strategy": event.strategy,
-                "success": False,
-                "skipped": True,
-                "reason": reason,
-                "assessment": assessment,
-            })
-            self._notify_skip(event.signal_id, reason, event.timeframe or "")
-            if self._persist_execution_fn is not None:
-                try:
-                    self._persist_execution_fn([{
-                        "at": datetime.now(timezone.utc).isoformat(),
-                        "signal_id": event.signal_id,
-                        "symbol": event.symbol,
-                        "direction": event.direction,
-                        "strategy": event.strategy,
-                        "success": False,
-                        "error": reason,
-                        "metadata": {"blocked_by_risk": assessment},
-                    }])
-                except Exception as pe:
-                    logger.warning("TradeExecutor: persist blocked-entry failed: %s", pe)
-            return None
-        except Exception as exc:
-            self._last_error = str(exc)
-            self._consecutive_failures += 1
-            self._emit_execution_failed(
-                event,
-                order_kind="market",
-                reason=str(exc),
-                category="dispatch",
-            )
-            self._execution_log.append({
-                "at": datetime.now(timezone.utc).isoformat(),
-                "signal_id": event.signal_id,
-                "symbol": event.symbol,
-                "direction": event.direction,
-                "strategy": event.strategy,
-                "success": False,
-                "error": str(exc),
-            })
-            logger.exception(
-                "TradeExecutor: failed to execute %s %s: %s", event.direction, event.symbol, exc,
-            )
-            # 连续失败达到阈值后打开熔断，避免持续错误重试把交易链路打满。
-            if (
-                not self._circuit_open
-                and self._consecutive_failures >= self.config.max_consecutive_failures
-            ):
-                self._circuit_open = True
-                self._circuit_open_at = datetime.now(timezone.utc)
-                logger.error(
-                    "TradeExecutor: circuit breaker OPENED after %d consecutive failures. "
-                    "Auto-trading suspended. Will auto-reset in %d minutes or call reset_circuit().",
-                    self._consecutive_failures,
-                    self.config.circuit_auto_reset_minutes,
-                )
-            # T-4: 持久化失败执行记录。
-            fail_entry = {
-                "at": datetime.now(timezone.utc).isoformat(),
-                "signal_id": event.signal_id,
-                "symbol": event.symbol,
-                "direction": event.direction,
-                "strategy": event.strategy,
-                "success": False,
-                "error": str(exc),
-            }
-            if self._persist_execution_fn is not None:
-                try:
-                    self._persist_execution_fn([fail_entry])
-                except Exception as pe:
-                    logger.warning("TradeExecutor: persist fail-entry failed: %s", pe)
-            return None
+        return _submit_pending_entry_helper(self, event, trade_params, cost_metrics)
 
     def status(self) -> dict[str, Any]:
         slippage_samples = int(self._execution_quality["slippage_samples"] or 0)

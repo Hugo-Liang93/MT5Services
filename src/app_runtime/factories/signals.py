@@ -39,6 +39,8 @@ from src.trading.execution import ExecutionGate, ExecutionGateConfig
 from src.trading.pending import PendingEntryConfig, PendingEntryManager
 from src.trading.execution import RegimeSizing
 from src.trading.execution import ExecutorConfig, TradeExecutor
+from src.trading.execution.eventing import execute_market_order
+from src.trading.execution.pending_orders import inspect_pending_mt5_order
 
 
 import logging as _logging
@@ -469,7 +471,7 @@ def build_signal_components(
         market_service=indicator_manager.market_service,
         cancellation_port=trade_module,
         execute_fn=lambda event, params, cost: (
-            _executor_holder[0]._execute(event, params, cost_metrics=cost)
+            execute_market_order(_executor_holder[0], event, params, cost_metrics=cost)
             if _executor_holder
             else None
         ),
@@ -477,7 +479,7 @@ def build_signal_components(
             _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
         ),
         inspect_mt5_order_fn=lambda info: (
-            _executor_holder[0]._inspect_pending_mt5_order(info)
+            inspect_pending_mt5_order(_executor_holder[0], info)
             if _executor_holder
             else {"status": "pending"}
         ),

@@ -14,6 +14,7 @@ from src.signals.models import SignalEvent
 from src.trading.execution import ExecutionGate, ExecutionGateConfig
 from src.trading.execution import TradeParameters
 from src.trading.execution import ExecutorConfig, TradeExecutor
+from src.trading.execution.pending_orders import inspect_pending_mt5_order
 
 
 def _fire(executor: TradeExecutor, event: SignalEvent) -> None:
@@ -461,7 +462,8 @@ def test_trade_executor_registers_filled_pending_mt5_order_immediately() -> None
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    result = executor._inspect_pending_mt5_order(
+    result = inspect_pending_mt5_order(
+        executor,
         {
             "signal_id": "sig_1",
             "ticket": 7001,
@@ -522,7 +524,8 @@ def test_trade_executor_matches_filled_pending_order_by_strategy_prefix_when_com
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
-    result = executor._inspect_pending_mt5_order(
+    result = inspect_pending_mt5_order(
+        executor,
         {
             "signal_id": "sig_h4_pullback",
             "ticket": 7002,
