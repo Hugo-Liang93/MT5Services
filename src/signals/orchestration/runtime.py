@@ -334,6 +334,9 @@ class SignalRuntime:
         self._clear_queue(self._intrabar_events)
         self._confirmed_burst_count = 0
 
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
     @staticmethod
     def _clear_queue(q: queue.Queue) -> None:
         while True:

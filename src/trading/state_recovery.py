@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from src.trading.ports import RecoveryTradingPort, TradeControlStatePort
 from src.trading.state_recovery_policy import TradingStateRecoveryPolicy
 
 
@@ -21,29 +22,22 @@ class TradingStateRecovery:
     def warm_start(self) -> None:
         self._store.warm_start()
 
-    def restore_trade_control(self, trading_module: Any) -> dict[str, Any]:
+    def restore_trade_control(self, trading_module: TradeControlStatePort) -> dict[str, Any]:
         state = self._store.load_trade_control_state()
         if not state:
             return {"restored": False}
-        apply_fn = getattr(trading_module, "apply_trade_control_state", None)
-        if not callable(apply_fn):
-            return {"restored": False, "reason": "apply_unavailable"}
-        apply_fn(state)
+        trading_module.apply_trade_control_state(state)
         return {"restored": True}
 
     def restore_pending_orders(
         self,
         *,
         pending_entry_manager: Any,
-        trading_module: Any,
+        trading_module: RecoveryTradingPort,
     ) -> dict[str, Any]:
         states = list(self._store.list_active_pending_orders())
-        get_orders = getattr(trading_module, "get_orders", None)
-        if not callable(get_orders):
-            return {"restored": 0, "expired": 0, "filled": 0, "missing": 0, "orphan": 0}
-
         try:
-            live_orders = list(get_orders())
+            live_orders = list(trading_module.get_orders())
         except Exception as exc:
             return {
                 "restored": 0,
@@ -77,7 +71,6 @@ class TradingStateRecovery:
             "ignored_missing": 0,
             "orphan_cancelled": 0,
         }
-        cancel_orders = getattr(trading_module, "cancel_orders_by_tickets", None)
 
         for row in states:
             info = self._state_to_pending_info(row)
@@ -87,12 +80,11 @@ class TradingStateRecovery:
                 expires_at = self._datetime_or_none(info.get("expires_at"))
                 if expires_at is not None and datetime.now(timezone.utc) >= expires_at:
                     cancelled = False
-                    if callable(cancel_orders):
-                        try:
-                            result = cancel_orders([order_ticket])
-                            cancelled = self._ticket_was_cancelled(result, order_ticket)
-                        except Exception:
-                            cancelled = False
+                    try:
+                        result = trading_module.cancel_orders_by_tickets([order_ticket])
+                        cancelled = self._ticket_was_cancelled(result, order_ticket)
+                    except Exception:
+                        cancelled = False
                     if cancelled:
                         self._store.mark_pending_order_expired(info, reason="startup_expired")
                         summary["expired"] += 1

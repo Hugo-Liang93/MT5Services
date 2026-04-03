@@ -43,41 +43,6 @@ class FunctionalRuntimeComponent:
             **dict(self.metadata),
         }
 
-
-@dataclass
-class ThreadedRuntimeComponent:
-    name: str
-    component: Any
-    supported_modes: frozenset[str]
-    thread_attr: str
-    start_method: str = "start"
-    stop_method: str = "stop"
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def start(self) -> None:
-        if self.component is None:
-            return
-        getattr(self.component, self.start_method)()
-
-    def stop(self) -> None:
-        if self.component is None:
-            return
-        getattr(self.component, self.stop_method)()
-
-    def is_running(self) -> bool:
-        if self.component is None:
-            return False
-        thread = getattr(self.component, self.thread_attr, None)
-        return bool(thread is not None and thread.is_alive())
-
-    def snapshot(self) -> dict[str, Any]:
-        return {
-            "running": self.is_running(),
-            "supported_modes": sorted(self.supported_modes),
-            **dict(self.metadata),
-        }
-
-
 class RuntimeComponentRegistry:
     def __init__(self, components: Iterable[RuntimeManagedComponent] = ()) -> None:
         self._components: "OrderedDict[str, RuntimeManagedComponent]" = OrderedDict()

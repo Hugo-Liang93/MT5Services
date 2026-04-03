@@ -11,7 +11,6 @@ from src.app_runtime.container import AppContainer
 from src.app_runtime.lifecycle import (
     FunctionalRuntimeComponent,
     RuntimeComponentRegistry,
-    ThreadedRuntimeComponent,
 )
 from src.app_runtime.mode_controller import (
     RuntimeModeController,
@@ -411,8 +410,7 @@ def _build_runtime_component_registry(
         pending = container.pending_entry_manager
         if pending is None:
             return
-        thread = getattr(pending, "_monitor_thread", None)
-        was_running = bool(thread is not None and thread.is_alive())
+        was_running = pending.is_running()
         pending.start()
         recovery = container.trading_state_recovery
         trading = container.trade_module
@@ -430,8 +428,7 @@ def _build_runtime_component_registry(
         position_manager = container.position_manager
         if position_manager is None:
             return
-        thread = getattr(position_manager, "_reconcile_thread", None)
-        was_running = bool(thread is not None and thread.is_alive())
+        was_running = position_manager.is_running()
         reconcile_interval = float(signal_config_loader().position_reconcile_interval)
         position_manager.start(reconcile_interval=reconcile_interval)
         if not was_running:
@@ -452,21 +449,41 @@ def _build_runtime_component_registry(
 
     return RuntimeComponentRegistry(
         [
-            ThreadedRuntimeComponent(
+            FunctionalRuntimeComponent(
                 name="storage",
-                component=container.storage_writer,
                 supported_modes=all_modes,
-                thread_attr="_thread",
-                start_method="start",
-                stop_method="stop",
+                start_fn=lambda: (
+                    container.storage_writer.start()
+                    if container.storage_writer is not None
+                    else None
+                ),
+                stop_fn=lambda: (
+                    container.storage_writer.stop()
+                    if container.storage_writer is not None
+                    else None
+                ),
+                is_running_fn=lambda: bool(
+                    container.storage_writer is not None
+                    and container.storage_writer.is_running()
+                ),
             ),
-            ThreadedRuntimeComponent(
+            FunctionalRuntimeComponent(
                 name="ingestion",
-                component=container.ingestor,
                 supported_modes=all_modes,
-                thread_attr="_thread",
-                start_method="start",
-                stop_method="stop",
+                start_fn=lambda: (
+                    container.ingestor.start()
+                    if container.ingestor is not None
+                    else None
+                ),
+                stop_fn=lambda: (
+                    container.ingestor.stop()
+                    if container.ingestor is not None
+                    else None
+                ),
+                is_running_fn=lambda: bool(
+                    container.ingestor is not None
+                    and container.ingestor.is_running()
+                ),
             ),
             FunctionalRuntimeComponent(
                 name="indicators",
@@ -475,8 +492,7 @@ def _build_runtime_component_registry(
                 stop_fn=_stop_indicator_stack,
                 is_running_fn=lambda: bool(
                     container.indicator_manager is not None
-                    and getattr(container.indicator_manager, "_event_thread", None) is not None
-                    and container.indicator_manager._event_thread.is_alive()
+                    and container.indicator_manager.is_running()
                 ),
             ),
             FunctionalRuntimeComponent(
@@ -486,8 +502,7 @@ def _build_runtime_component_registry(
                 stop_fn=_stop_signals,
                 is_running_fn=lambda: bool(
                     container.signal_runtime is not None
-                    and getattr(container.signal_runtime, "_thread", None) is not None
-                    and container.signal_runtime._thread.is_alive()
+                    and container.signal_runtime.is_running()
                 ),
             ),
             FunctionalRuntimeComponent(
@@ -508,9 +523,7 @@ def _build_runtime_component_registry(
                 ),
                 is_running_fn=lambda: bool(
                     container.pending_entry_manager is not None
-                    and getattr(container.pending_entry_manager, "_monitor_thread", None)
-                    is not None
-                    and container.pending_entry_manager._monitor_thread.is_alive()
+                    and container.pending_entry_manager.is_running()
                 ),
             ),
             FunctionalRuntimeComponent(
@@ -524,9 +537,7 @@ def _build_runtime_component_registry(
                 ),
                 is_running_fn=lambda: bool(
                     container.position_manager is not None
-                    and getattr(container.position_manager, "_reconcile_thread", None)
-                    is not None
-                    and container.position_manager._reconcile_thread.is_alive()
+                    and container.position_manager.is_running()
                 ),
             ),
         ]

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from src.trading.ports import PendingOrderCancellationPort
+
 
 OrphanRecoveryAction = Literal["record_only", "cancel"]
 MissingRecoveryAction = Literal["mark_missing", "ignore"]
@@ -39,19 +41,18 @@ class TradingStateRecoveryPolicy:
         self,
         order_row: Any,
         *,
-        trading_module: Any,
+        trading_module: PendingOrderCancellationPort,
     ) -> str:
         self._store.mark_pending_order_orphan(order_row)
         if self._orphan_action != "cancel":
             return "orphan"
 
         ticket = self._ticket(order_row)
-        cancel_orders = getattr(trading_module, "cancel_orders_by_tickets", None)
-        if ticket <= 0 or not callable(cancel_orders):
+        if ticket <= 0:
             return "orphan"
 
         try:
-            result = cancel_orders([ticket])
+            result = trading_module.cancel_orders_by_tickets([ticket])
         except Exception:
             return "orphan"
 

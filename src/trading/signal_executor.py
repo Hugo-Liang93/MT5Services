@@ -40,6 +40,7 @@ from src.trading.pending_entry import (
     compute_timeout,
     _CATEGORY_ZONE_MODE,
 )
+from src.trading.ports import ExecutorTradingPort
 from src.trading.position_manager import PositionManager
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
@@ -91,7 +92,7 @@ class TradeExecutor:
 
     def __init__(
         self,
-        trading_module: Any,
+        trading_module: ExecutorTradingPort,
         config: ExecutorConfig | None = None,
         account_balance_getter: Any | None = None,
         position_manager: PositionManager | None = None,
@@ -220,6 +221,9 @@ class TradeExecutor:
     def start(self) -> None:
         """启用执行器，允许后续 confirmed 事件重新拉起执行线程。"""
         self._stop_event.clear()
+
+    def is_running(self) -> bool:
+        return self._exec_thread is not None and self._exec_thread.is_alive()
 
     def _exec_worker(self) -> None:
         """后台消费执行队列，串行处理 confirmed 交易事件。"""
@@ -826,23 +830,14 @@ class TradeExecutor:
                 logger.debug("Failed to count tracked positions: %s", exc)
                 tracked_count = None
 
-        for attr_name in ("get_positions", "positions"):
-            getter = getattr(self._trading, attr_name, None)
-            if not callable(getter):
-                continue
-            try:
-                rows = getter(symbol=symbol)
-            except TypeError:
-                rows = getter(symbol)
-            except Exception:
-                continue
-            try:
-                live_count = len(list(rows or []))
-                if tracked_count is None:
-                    return live_count
-                return max(tracked_count, live_count)
-            except Exception:
-                continue
+        try:
+            rows = self._trading.get_positions(symbol=symbol)
+            live_count = len(list(rows or []))
+            if tracked_count is None:
+                return live_count
+            return max(tracked_count, live_count)
+        except Exception:
+            pass
         return tracked_count or 0
 
     def _duplicate_execution_reason(self, event: SignalEvent) -> str:
@@ -1203,32 +1198,26 @@ class TradeExecutor:
         comment = str(info.get("comment") or "").strip()
         signal_id = str(info.get("signal_id") or "").strip()
 
-        orders_getter = getattr(self._trading, "get_orders", None)
-        if callable(orders_getter):
+        try:
+            open_orders = list(self._trading.get_orders(symbol=symbol))
+        except Exception as exc:
+            logger.debug(
+                "TradeExecutor: get_orders(%s) failed while inspecting pending MT5 order %s: %s",
+                symbol,
+                order_ticket,
+                exc,
+            )
+            return {"status": "pending", "reason": "orders_lookup_failed"}
+        for row in open_orders or []:
             try:
-                open_orders = list(orders_getter(symbol=symbol))
-            except Exception as exc:
-                logger.debug(
-                    "TradeExecutor: get_orders(%s) failed while inspecting pending MT5 order %s: %s",
-                    symbol,
-                    order_ticket,
-                    exc,
-                )
-                return {"status": "pending", "reason": "orders_lookup_failed"}
-            for row in open_orders or []:
-                try:
-                    live_order_ticket = int(self._row_value(row, "ticket", 0) or 0)
-                except (TypeError, ValueError):
-                    continue
-                if live_order_ticket == order_ticket:
-                    return {"status": "pending"}
-
-        positions_getter = getattr(self._trading, "get_positions", None)
-        if not callable(positions_getter):
-            return {"status": "pending", "reason": "positions_lookup_unavailable"}
+                live_order_ticket = int(self._row_value(row, "ticket", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if live_order_ticket == order_ticket:
+                return {"status": "pending"}
 
         try:
-            open_positions = list(positions_getter(symbol=symbol))
+            open_positions = list(self._trading.get_positions(symbol=symbol))
         except Exception as exc:
             logger.debug(
                 "TradeExecutor: get_positions(%s) failed while inspecting pending MT5 order %s: %s",

@@ -782,6 +782,11 @@ class PendingEntryManager:
             self._fill_worker_thread = fw
         logger.info("PendingEntryManager started (check_interval=%.2fs)", self._config.check_interval)
 
+    def is_running(self) -> bool:
+        monitor_alive = self._monitor_thread is not None and self._monitor_thread.is_alive()
+        fill_alive = self._fill_worker_thread is not None and self._fill_worker_thread.is_alive()
+        return monitor_alive and fill_alive
+
     def shutdown(self) -> None:
         """停止监控并清理。
 

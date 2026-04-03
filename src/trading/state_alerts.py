@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from src.trading.ports import TradingQueryPort
+
 
 class TradingStateAlerts:
     """独立的交易状态告警评估器。"""
@@ -10,11 +12,11 @@ class TradingStateAlerts:
         self,
         *,
         state_store: Any,
-        trading_module: Any,
+        trading_module: TradingQueryPort,
         account_alias_getter: Optional[Callable[[], str]] = None,
     ) -> None:
         self._state_store = state_store
-        self._trading_module = trading_module
+        self._trading = trading_module
         self._account_alias_getter = account_alias_getter or (lambda: "")
 
     def summary(self, *, pending_limit: int = 50, position_limit: int = 50) -> dict[str, Any]:
@@ -141,20 +143,14 @@ class TradingStateAlerts:
             return []
 
     def _safe_live_orders(self) -> list[Any]:
-        getter = getattr(self._trading_module, "get_orders", None)
-        if not callable(getter):
-            return []
         try:
-            return list(getter())
+            return list(self._trading.get_orders())
         except Exception:
             return []
 
     def _safe_live_positions(self) -> list[Any]:
-        getter = getattr(self._trading_module, "get_positions", None)
-        if not callable(getter):
-            return []
         try:
-            return list(getter())
+            return list(self._trading.get_positions())
         except Exception:
             return []
 

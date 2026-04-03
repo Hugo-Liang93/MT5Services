@@ -330,6 +330,9 @@ class UnifiedIndicatorManager:
         self.market_service.remove_intrabar_listener(self._on_intrabar)
         logger.info("UnifiedIndicatorManager stopped")
 
+    def is_running(self) -> bool:
+        return bool(self._event_thread and self._event_thread.is_alive())
+
     def _event_loop(self) -> None:
         reconcile_interval = max(float(self.config.pipeline.poll_interval), 0.5)
         next_reconcile_at = time.monotonic()

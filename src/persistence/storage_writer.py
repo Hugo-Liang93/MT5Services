@@ -71,6 +71,9 @@ class StorageWriter:
             for name in list(self._channels.keys()):
                 self._flush_if_due(name, self._channels[name], force=True)
 
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
     # --- enqueue API ---
     def enqueue(self, channel: str, item: tuple) -> None:
         """通用入队接口，便于外部自定义通道使用。"""

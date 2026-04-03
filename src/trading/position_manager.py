@@ -19,6 +19,7 @@ from .position_rules import (
     check_trailing_take_profit,
     should_close_end_of_day,
 )
+from .ports import PositionManagementPort
 from .sizing import TradeParameters
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ class PositionManager:
 
     def __init__(
         self,
-        trading_module: Any,
+        trading_module: PositionManagementPort,
         *,
         trailing_atr_multiplier: float = 1.0,
         breakeven_atr_threshold: float = 1.0,
@@ -131,6 +132,9 @@ class PositionManager:
             self._reconcile_thread.join(timeout=5.0)
             self._reconcile_thread = None
         logger.info("PositionManager stopped")
+
+    def is_running(self) -> bool:
+        return self._reconcile_thread is not None and self._reconcile_thread.is_alive()
 
     def track_position(
         self,
@@ -301,7 +305,7 @@ class PositionManager:
         with self._lock:
             position_count = len(self._positions)
         return {
-            "running": self._reconcile_thread is not None and self._reconcile_thread.is_alive(),
+            "running": self.is_running(),
             "reconcile_interval": self._reconcile_interval,
             "reconcile_count": self._reconcile_count,
             "last_reconcile_at": self._last_reconcile_at.isoformat()
@@ -346,11 +350,8 @@ class PositionManager:
         if not self.end_of_day_close_enabled:
             return None
 
-        positions_getter = getattr(self._trading, "get_positions", None)
-        if not callable(positions_getter):
-            return None
         try:
-            open_positions = list(positions_getter())
+            open_positions = list(self._trading.get_positions())
         except Exception:
             return None
         if not open_positions:
@@ -378,11 +379,8 @@ class PositionManager:
             "PositionManager: detected %d overnight positions, force closing",
             len(overnight),
         )
-        close_all = getattr(self._trading, "close_all_positions", None)
-        if not callable(close_all):
-            return None
         try:
-            result = close_all(comment="overnight_force_close")
+            result = self._trading.close_all_positions(comment="overnight_force_close")
             logger.info("Overnight force close result: %s", result)
             return result if isinstance(result, dict) else {"result": result}
         except Exception as exc:
@@ -422,12 +420,8 @@ class PositionManager:
         return any(normalized.startswith(prefix) for prefix in _RESTORABLE_COMMENT_PREFIXES)
 
     def sync_open_positions(self) -> dict[str, Any]:
-        positions_getter = getattr(self._trading, "get_positions", None)
-        if not callable(positions_getter):
-            return {"synced": 0, "recovered": 0, "skipped": 0}
-
         try:
-            open_positions = list(positions_getter())
+            open_positions = list(self._trading.get_positions())
         except Exception as exc:
             self._last_error = f"sync_open_positions: {exc}"
             logger.warning("PositionManager sync_open_positions error: %s", exc)
@@ -574,11 +568,8 @@ class PositionManager:
         guard = self._margin_guard
         if guard is None or not guard.config.enabled:
             return
-        account_fn = getattr(self._trading, "account_info", None)
-        if not callable(account_fn):
-            return
         try:
-            info = account_fn()
+            info = self._trading.account_info()
         except Exception:
             return
         equity = float(getattr(info, "equity", 0) or 0)
@@ -608,23 +599,15 @@ class PositionManager:
         # 先标记 EOD 日期，防止并发 reconcile 在 close_all 期间触发二次 EOD
         self._last_end_of_day_close_date = day_key
 
-        positions_getter = getattr(self._trading, "get_positions", None)
-        if callable(positions_getter):
-            try:
-                open_positions = list(positions_getter())
-            except Exception:
-                open_positions = []
-        else:
+        try:
+            open_positions = list(self._trading.get_positions())
+        except Exception:
             open_positions = []
         if not open_positions:
             return {"closed": [], "failed": []}
 
-        close_all = getattr(self._trading, "close_all_positions", None)
-        if not callable(close_all):
-            return None
-
         try:
-            result = close_all(comment="end_of_day_closeout")
+            result = self._trading.close_all_positions(comment="end_of_day_closeout")
         except Exception as exc:
             # close_all 异常时回退日期标记，允许下次 reconcile 循环重试
             self._last_end_of_day_close_date = None
@@ -679,25 +662,26 @@ class PositionManager:
             if mt5_pos is None:
                 close_price = None
                 close_source = "mt5_missing"
-                close_details_getter = getattr(self._trading, "get_position_close_details", None)
-                if callable(close_details_getter):
-                    try:
-                        close_details = close_details_getter(ticket=ticket, symbol=pos.symbol)
-                    except Exception as exc:
-                        logger.debug(
-                            "PositionManager: get_position_close_details(%s) error: %s",
-                            ticket,
-                            exc,
-                        )
-                        close_details = None
-                    if isinstance(close_details, dict):
-                        raw_close_price = close_details.get("close_price")
-                        if raw_close_price is not None:
-                            try:
-                                close_price = float(raw_close_price)
-                                close_source = "history_deals"
-                            except (TypeError, ValueError):
-                                close_price = None
+                try:
+                    close_details = self._trading.get_position_close_details(
+                        ticket=ticket,
+                        symbol=pos.symbol,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "PositionManager: get_position_close_details(%s) error: %s",
+                        ticket,
+                        exc,
+                    )
+                    close_details = None
+                if isinstance(close_details, dict):
+                    raw_close_price = close_details.get("close_price")
+                    if raw_close_price is not None:
+                        try:
+                            close_price = float(raw_close_price)
+                            close_source = "history_deals"
+                        except (TypeError, ValueError):
+                            close_price = None
                 logger.info(
                     "PositionManager: ticket=%d (%s %s) no longer open in MT5, "
                     "removing (close_source=%s)",

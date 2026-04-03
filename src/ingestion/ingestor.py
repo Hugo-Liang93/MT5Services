@@ -113,6 +113,9 @@ class BackgroundIngestor:
         self._fetch_executor.shutdown(wait=False)
         logger.info("Background ingestor stopped")
 
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
     def _fetch_ohlc_with_timeout(self, fn: Callable[[], Any]) -> Any:
         """在独立线程中执行 MT5 OHLC 调用，超时则抛出 MT5MarketError。
 

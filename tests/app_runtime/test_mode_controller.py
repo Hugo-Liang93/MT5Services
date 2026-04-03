@@ -8,7 +8,6 @@ from src.app_runtime.container import AppContainer
 from src.app_runtime.lifecycle import (
     FunctionalRuntimeComponent,
     RuntimeComponentRegistry,
-    ThreadedRuntimeComponent,
 )
 from src.app_runtime.mode_controller import RuntimeModeController
 from src.app_runtime.mode_policy import (
@@ -36,6 +35,10 @@ class _StartStopComponent:
 
     def shutdown(self) -> None:
         self.stop()
+
+    def is_running(self) -> bool:
+        thread = getattr(self, self._thread_attr, None)
+        return bool(thread is not None and thread.is_alive())
 
 
 class _SignalRuntime(_StartStopComponent):
@@ -148,17 +151,19 @@ def _build_container(*, positions=None, orders=None) -> AppContainer:
     container.trading_state_recovery = _Recovery()
     container.runtime_component_registry = RuntimeComponentRegistry(
         [
-            ThreadedRuntimeComponent(
+            FunctionalRuntimeComponent(
                 name="storage",
-                component=container.storage_writer,
                 supported_modes=frozenset(mode.value for mode in RuntimeMode),
-                thread_attr="_thread",
+                start_fn=container.storage_writer.start,
+                stop_fn=container.storage_writer.stop,
+                is_running_fn=container.storage_writer.is_running,
             ),
-            ThreadedRuntimeComponent(
+            FunctionalRuntimeComponent(
                 name="ingestion",
-                component=container.ingestor,
                 supported_modes=frozenset(mode.value for mode in RuntimeMode),
-                thread_attr="_thread",
+                start_fn=container.ingestor.start,
+                stop_fn=container.ingestor.stop,
+                is_running_fn=container.ingestor.is_running,
             ),
             FunctionalRuntimeComponent(
                 name="indicators",
@@ -175,10 +180,7 @@ def _build_container(*, positions=None, orders=None) -> AppContainer:
                     container.economic_calendar_service.stop(),
                     container.indicator_manager.shutdown(),
                 ),
-                is_running_fn=lambda: bool(
-                    getattr(container.indicator_manager, "_event_thread", None) is not None
-                    and container.indicator_manager._event_thread.is_alive()
-                ),
+                is_running_fn=container.indicator_manager.is_running,
             ),
             FunctionalRuntimeComponent(
                 name="signals",
@@ -187,10 +189,7 @@ def _build_container(*, positions=None, orders=None) -> AppContainer:
                 ),
                 start_fn=container.signal_runtime.start,
                 stop_fn=container.signal_runtime.stop,
-                is_running_fn=lambda: bool(
-                    getattr(container.signal_runtime, "_thread", None) is not None
-                    and container.signal_runtime._thread.is_alive()
-                ),
+                is_running_fn=container.signal_runtime.is_running,
             ),
             FunctionalRuntimeComponent(
                 name="trade_execution",
@@ -222,11 +221,7 @@ def _build_container(*, positions=None, orders=None) -> AppContainer:
                 ),
                 start_fn=container.pending_entry_manager.start,
                 stop_fn=container.pending_entry_manager.shutdown,
-                is_running_fn=lambda: bool(
-                    getattr(container.pending_entry_manager, "_monitor_thread", None)
-                    is not None
-                    and container.pending_entry_manager._monitor_thread.is_alive()
-                ),
+                is_running_fn=container.pending_entry_manager.is_running,
             ),
             FunctionalRuntimeComponent(
                 name="position_manager",
@@ -241,11 +236,7 @@ def _build_container(*, positions=None, orders=None) -> AppContainer:
                     reconcile_interval=30
                 ),
                 stop_fn=container.position_manager.stop,
-                is_running_fn=lambda: bool(
-                    getattr(container.position_manager, "_reconcile_thread", None)
-                    is not None
-                    and container.position_manager._reconcile_thread.is_alive()
-                ),
+                is_running_fn=container.position_manager.is_running,
             ),
         ]
     )

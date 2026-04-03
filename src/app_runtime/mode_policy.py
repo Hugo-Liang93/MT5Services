@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Callable
+
+from src.trading.ports import TradingQueryPort
 
 
 class RuntimeMode(str, Enum):
@@ -27,7 +29,7 @@ class RuntimeModePolicy:
 
 @dataclass(frozen=True)
 class RuntimeModeTransitionGuard:
-    trading_module_getter: Callable[[], Any | None]
+    trading_module_getter: Callable[[], TradingQueryPort | None]
 
     def can_enter(self, mode: RuntimeMode) -> bool:
         if mode != RuntimeMode.INGEST_ONLY:
@@ -42,11 +44,9 @@ class RuntimeModeTransitionGuard:
         trading = self.trading_module_getter()
         if trading is None:
             return True
-        positions = getattr(trading, "get_positions", None)
-        orders = getattr(trading, "get_orders", None)
         try:
-            open_positions = list(positions() or []) if callable(positions) else []
-            open_orders = list(orders() or []) if callable(orders) else []
+            open_positions = list(trading.get_positions() or [])
+            open_orders = list(trading.get_orders() or [])
         except Exception:
             return False
         return not open_positions and not open_orders
