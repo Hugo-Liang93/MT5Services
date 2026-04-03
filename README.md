@@ -229,6 +229,7 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 - `GET /v1/trade/command-audits`：读取最近交易命令审计。
 - `pipeline_trace_events`：PipelineEventBus 的持久化事实表，记录 `bar_closed / indicator_computed / snapshot_published / signal_filter_decided / signal_evaluated` 上游链路节点。
 - `GET /v1/trade/trace/{signal_id}`：按 `signal_id` 聚合 `pipeline_trace_events / signal_events / auto_executions / trade_command_audits / pending_order_states / position_runtime_states / trade_outcomes`，输出从市场数据到交易结果的时间线与节点关系，供可视化与问题定位使用。
+- `GET /v1/trade/trace/by-trace/{trace_id}`：按 pipeline `trace_id` 聚合同一条链路，覆盖“被过滤、尚未生成 signal_id”的排查场景。
 
 ## 测试与质量
 

@@ -64,8 +64,8 @@ class TradingFlowTraceReadModel:
             limit=100,
         )
         trace_ids = self._collect_trace_ids(
-            preview_signal=preview_signal,
-            confirmed_signal=confirmed_signal,
+            preview_signals=[preview_signal] if preview_signal is not None else [],
+            confirmed_signals=[confirmed_signal] if confirmed_signal is not None else [],
             operations=operations,
         )
         pipeline_events = self._pipeline_trace_repo.fetch_pipeline_trace_events(
@@ -73,28 +73,140 @@ class TradingFlowTraceReadModel:
             limit=500,
         )
 
+        return self._build_trace_response(
+            signal_id=normalized_signal_id,
+            trace_id=trace_ids[0] if len(trace_ids) == 1 else None,
+            preview_signals=[preview_signal] if preview_signal is not None else [],
+            confirmed_signals=[confirmed_signal] if confirmed_signal is not None else [],
+            pipeline_events=pipeline_events,
+            auto_executions=auto_executions,
+            operations=operations,
+            pending_orders=pending_orders,
+            positions=positions,
+            signal_outcomes=signal_outcomes,
+            trade_outcomes=trade_outcomes,
+        )
+
+    def trace_by_trace_id(self, trace_id: str) -> dict[str, Any]:
+        normalized_trace_id = str(trace_id or "").strip()
+        preview_signals = self._signal_repo.fetch_signal_events_by_trace_id(
+            trace_id=normalized_trace_id,
+            scope="preview",
+            limit=50,
+        )
+        confirmed_signals = self._signal_repo.fetch_signal_events_by_trace_id(
+            trace_id=normalized_trace_id,
+            scope="confirmed",
+            limit=50,
+        )
+        operations = self._command_audit_repo.fetch_trace_operations_by_trace_id(
+            account_alias=self._account_alias_getter(),
+            trace_id=normalized_trace_id,
+            limit=100,
+        )
+        signal_ids = self._collect_signal_ids(
+            preview_signals=preview_signals,
+            confirmed_signals=confirmed_signals,
+            operations=operations,
+        )
+        auto_executions = self._fetch_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._signal_repo.fetch_auto_executions,
+            limit=50,
+        )
+        signal_outcomes = self._fetch_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._signal_repo.fetch_signal_outcomes,
+            limit=20,
+        )
+        trade_outcomes = self._fetch_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._signal_repo.fetch_trade_outcomes,
+            limit=20,
+        )
+        pending_orders = self._fetch_state_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._trading_state_repo.fetch_pending_order_states,
+            limit=100,
+        )
+        positions = self._fetch_state_by_signal_ids(
+            signal_ids=signal_ids,
+            fetcher=self._trading_state_repo.fetch_position_runtime_states,
+            limit=100,
+        )
+        pipeline_events = self._pipeline_trace_repo.fetch_pipeline_trace_events(
+            trace_ids=[normalized_trace_id],
+            limit=500,
+        )
+        primary_signal_id = signal_ids[0] if signal_ids else None
+        return self._build_trace_response(
+            signal_id=primary_signal_id,
+            trace_id=normalized_trace_id,
+            preview_signals=preview_signals,
+            confirmed_signals=confirmed_signals,
+            pipeline_events=pipeline_events,
+            auto_executions=auto_executions,
+            operations=operations,
+            pending_orders=pending_orders,
+            positions=positions,
+            signal_outcomes=signal_outcomes,
+            trade_outcomes=trade_outcomes,
+        )
+
+    def _build_trace_response(
+        self,
+        *,
+        signal_id: str | None,
+        trace_id: str | None,
+        preview_signals: Sequence[dict[str, Any]],
+        confirmed_signals: Sequence[dict[str, Any]],
+        pipeline_events: Sequence[dict[str, Any]],
+        auto_executions: Sequence[dict[str, Any]],
+        operations: Sequence[dict[str, Any]],
+        pending_orders: Sequence[dict[str, Any]],
+        positions: Sequence[dict[str, Any]],
+        signal_outcomes: Sequence[dict[str, Any]],
+        trade_outcomes: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        normalized_signal_id = str(signal_id or "").strip() or None
+        normalized_trace_id = str(trace_id or "").strip() or None
+        preview_signal = preview_signals[0] if preview_signals else None
+        confirmed_signal = confirmed_signals[0] if confirmed_signals else None
+        trace_ids = self._collect_trace_ids(
+            preview_signals=preview_signals,
+            confirmed_signals=confirmed_signals,
+            operations=operations,
+        )
+        signal_ids = self._collect_signal_ids(
+            preview_signals=preview_signals,
+            confirmed_signals=confirmed_signals,
+            operations=operations,
+        )
         facts = {
             "signal_preview": preview_signal,
             "signal_confirmed": confirmed_signal,
-            "pipeline_trace_events": pipeline_events,
-            "auto_executions": auto_executions,
-            "trade_command_audits": operations,
-            "pending_orders": pending_orders,
-            "positions": positions,
-            "signal_outcomes": signal_outcomes,
-            "trade_outcomes": trade_outcomes,
+            "signal_preview_events": list(preview_signals),
+            "signal_confirmed_events": list(confirmed_signals),
+            "pipeline_trace_events": list(pipeline_events),
+            "auto_executions": list(auto_executions),
+            "trade_command_audits": list(operations),
+            "pending_orders": list(pending_orders),
+            "positions": list(positions),
+            "signal_outcomes": list(signal_outcomes),
+            "trade_outcomes": list(trade_outcomes),
         }
         identifiers = self._build_identifiers(
             signal_id=normalized_signal_id,
-            operations=operations,
+            signal_ids=signal_ids,
             trace_ids=trace_ids,
+            operations=operations,
             pending_orders=pending_orders,
             positions=positions,
         )
         timeline = self._build_timeline(
-            signal_id=normalized_signal_id,
-            preview_signal=preview_signal,
-            confirmed_signal=confirmed_signal,
+            signal_id=normalized_signal_id or normalized_trace_id or "trace",
+            preview_signals=preview_signals,
+            confirmed_signals=confirmed_signals,
             pipeline_events=pipeline_events,
             auto_executions=auto_executions,
             operations=operations,
@@ -105,10 +217,12 @@ class TradingFlowTraceReadModel:
         )
         return {
             "signal_id": normalized_signal_id,
+            "trace_id": normalized_trace_id,
             "found": any(
                 [
-                    preview_signal,
-                    confirmed_signal,
+                    preview_signals,
+                    confirmed_signals,
+                    pipeline_events,
                     auto_executions,
                     operations,
                     pending_orders,
@@ -182,13 +296,18 @@ class TradingFlowTraceReadModel:
     def _build_identifiers(
         self,
         *,
-        signal_id: str,
+        signal_id: str | None,
+        signal_ids: Sequence[str],
         operations: Sequence[dict[str, Any]],
         trace_ids: Sequence[str],
         pending_orders: Sequence[dict[str, Any]],
         positions: Sequence[dict[str, Any]],
     ) -> dict[str, Any]:
-        request_ids = {signal_id}
+        request_ids = {
+            str(item).strip()
+            for item in [signal_id, *signal_ids]
+            if str(item or "").strip()
+        }
         normalized_trace_ids = {
             str(item).strip() for item in trace_ids if str(item or "").strip()
         }
@@ -236,6 +355,7 @@ class TradingFlowTraceReadModel:
 
         return {
             "signal_id": signal_id,
+            "signal_ids": sorted({str(item).strip() for item in signal_ids if str(item or "").strip()}),
             "request_ids": sorted(request_ids),
             "trace_ids": sorted(normalized_trace_ids),
             "operation_ids": sorted(operation_ids),
@@ -247,8 +367,8 @@ class TradingFlowTraceReadModel:
         self,
         *,
         signal_id: str,
-        preview_signal: Optional[dict[str, Any]],
-        confirmed_signal: Optional[dict[str, Any]],
+        preview_signals: Sequence[dict[str, Any]],
+        confirmed_signals: Sequence[dict[str, Any]],
         pipeline_events: Sequence[dict[str, Any]],
         auto_executions: Sequence[dict[str, Any]],
         operations: Sequence[dict[str, Any]],
@@ -274,10 +394,10 @@ class TradingFlowTraceReadModel:
                     details=row,
                 )
             )
-        if preview_signal is not None:
+        for index, preview_signal in enumerate(preview_signals):
             events.append(
                 self._timeline_event(
-                    event_id=f"{signal_id}:signal_preview",
+                    event_id=f"{signal_id}:signal_preview:{index}",
                     stage="signal.preview",
                     status="preview",
                     at=preview_signal.get("generated_at"),
@@ -286,10 +406,10 @@ class TradingFlowTraceReadModel:
                     details=preview_signal,
                 )
             )
-        if confirmed_signal is not None:
+        for index, confirmed_signal in enumerate(confirmed_signals):
             events.append(
                 self._timeline_event(
-                    event_id=f"{signal_id}:signal_confirmed",
+                    event_id=f"{signal_id}:signal_confirmed:{index}",
                     stage="signal.confirmed",
                     status="confirmed",
                     at=confirmed_signal.get("generated_at"),
@@ -412,12 +532,12 @@ class TradingFlowTraceReadModel:
     def _collect_trace_ids(
         self,
         *,
-        preview_signal: Optional[dict[str, Any]],
-        confirmed_signal: Optional[dict[str, Any]],
+        preview_signals: Sequence[dict[str, Any]],
+        confirmed_signals: Sequence[dict[str, Any]],
         operations: Sequence[dict[str, Any]],
     ) -> list[str]:
         trace_ids: set[str] = set()
-        for row in (preview_signal, confirmed_signal):
+        for row in [*preview_signals, *confirmed_signals]:
             if not row:
                 continue
             metadata = row.get("metadata") or {}
@@ -430,6 +550,86 @@ class TradingFlowTraceReadModel:
                 if trace_id:
                     trace_ids.add(trace_id)
         return sorted(trace_ids)
+
+    def _collect_signal_ids(
+        self,
+        *,
+        preview_signals: Sequence[dict[str, Any]],
+        confirmed_signals: Sequence[dict[str, Any]],
+        operations: Sequence[dict[str, Any]],
+    ) -> list[str]:
+        signal_ids: set[str] = set()
+        for row in [*preview_signals, *confirmed_signals]:
+            signal_id = str(row.get("signal_id") or "").strip()
+            if signal_id:
+                signal_ids.add(signal_id)
+        for row in operations:
+            for payload in (row.get("request_payload") or {}, row.get("response_payload") or {}):
+                metadata = payload.get("metadata") or {}
+                signal = metadata.get("signal") or {}
+                signal_id = str(signal.get("signal_id") or "").strip()
+                if signal_id:
+                    signal_ids.add(signal_id)
+                direct = str(payload.get("request_id") or "").strip()
+                if direct:
+                    signal_ids.add(direct)
+        return sorted(signal_ids)
+
+    @staticmethod
+    def _fetch_by_signal_ids(
+        *,
+        signal_ids: Sequence[str],
+        fetcher: Any,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for signal_id in signal_ids:
+            for row in fetcher(signal_id=signal_id, limit=limit):
+                key = (
+                    str(row.get("signal_id") or ""),
+                    str(row.get("recorded_at") or row.get("executed_at") or ""),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row)
+        rows.sort(
+            key=lambda item: str(
+                item.get("recorded_at")
+                or item.get("executed_at")
+                or item.get("generated_at")
+                or ""
+            )
+        )
+        return rows
+
+    def _fetch_state_by_signal_ids(
+        self,
+        *,
+        signal_ids: Sequence[str],
+        fetcher: Any,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for signal_id in signal_ids:
+            for row in fetcher(
+                account_alias=self._account_alias_getter(),
+                signal_id=signal_id,
+                limit=limit,
+            ):
+                ticket = str(
+                    row.get("order_ticket")
+                    or row.get("position_ticket")
+                    or row.get("signal_id")
+                    or ""
+                )
+                if ticket in seen:
+                    continue
+                seen.add(ticket)
+                rows.append(row)
+        return rows
 
     @staticmethod
     def _count_by_key(rows: Sequence[dict[str, Any]], key: str) -> dict[str, int]:

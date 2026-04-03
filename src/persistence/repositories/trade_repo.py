@@ -107,6 +107,36 @@ LIMIT %s
             ],
         )
 
+    def fetch_trace_operations_by_trace_id(
+        self,
+        *,
+        account_alias: str,
+        trace_id: str,
+        limit: int = 100,
+    ) -> List[dict[str, Any]]:
+        sql = """
+SELECT recorded_at, operation_id, account_alias, command_type, status,
+       symbol, side, order_kind, volume, ticket, order_id, deal_id, magic,
+       duration_ms, error_message, request_payload, response_payload
+FROM trade_command_audits
+WHERE account_alias = %s
+  AND (
+        COALESCE(request_payload->>'trace_id', '') = %s
+        OR COALESCE(response_payload->>'trace_id', '') = %s
+      )
+ORDER BY recorded_at ASC
+LIMIT %s
+"""
+        return self._fetch_dicts(
+            sql,
+            [
+                account_alias,
+                trace_id,
+                trace_id,
+                max(1, int(limit)),
+            ],
+        )
+
     def _fetch_dicts(self, sql: str, params: List[Any]) -> List[dict[str, Any]]:
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)

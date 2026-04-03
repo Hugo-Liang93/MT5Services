@@ -234,6 +234,20 @@ def trade_trace_by_signal_id(
     )
 
 
+@router.get("/trade/trace/by-trace/{trace_id}", response_model=ApiResponse[dict])
+def trade_trace_by_trace_id(
+    trace_id: str,
+    trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=trace_views.trace_by_trace_id(trace_id),
+        metadata={
+            "operation": "trade_trace_by_trace_id",
+            "trace_id": trace_id,
+        },
+    )
+
+
 @router.get("/trade/state/alerts", response_model=ApiResponse[dict])
 def trade_state_alerts_summary(
     runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),

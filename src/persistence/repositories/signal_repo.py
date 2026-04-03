@@ -100,6 +100,28 @@ class SignalEventRepository:
         )
         return rows[0] if rows else None
 
+    def fetch_signal_events_by_trace_id(
+        self,
+        *,
+        trace_id: str,
+        scope: str = "confirmed",
+        limit: int = 50,
+    ) -> List[dict[str, Any]]:
+        table_name = (
+            "signal_preview_events"
+            if str(scope or "").strip().lower() == "preview"
+            else "signal_events"
+        )
+        return self._fetch_dict_rows(
+            "SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason, "
+            "used_indicators, indicators_snapshot, metadata "
+            f"FROM {table_name} "
+            "WHERE COALESCE(metadata->>'signal_trace_id', '') = %s "
+            "ORDER BY generated_at ASC "
+            "LIMIT %s",
+            [trace_id, max(1, int(limit))],
+        )
+
     def _fetch_signal_rows(
         self,
         *,

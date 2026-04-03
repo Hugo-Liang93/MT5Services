@@ -54,6 +54,35 @@ class _SignalRepo:
             }
         ]
 
+    def fetch_signal_events_by_trace_id(
+        self,
+        *,
+        trace_id: str,
+        scope: str = "confirmed",
+        limit: int = 50,
+    ):
+        rows = [
+            {
+                "generated_at": datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
+                "signal_id": "sig-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "strategy": "trendline",
+                "direction": "buy",
+                "confidence": 0.62,
+                "metadata": {"signal_trace_id": trace_id},
+            }
+        ]
+        if scope == "preview":
+            return rows
+        return [
+            {
+                **rows[0],
+                "generated_at": datetime(2026, 1, 1, 8, 15, tzinfo=timezone.utc),
+                "confidence": 0.68,
+            }
+        ]
+
 
 class _TradeRepo:
     def fetch_trace_operations(self, *, account_alias: str, signal_id: str, limit: int = 100):
@@ -73,6 +102,9 @@ class _TradeRepo:
                 "deal_id": 9001,
             }
         ]
+
+    def fetch_trace_operations_by_trace_id(self, *, account_alias: str, trace_id: str, limit: int = 100):
+        return []
 
 
 class _PipelineTraceRepo:
@@ -188,3 +220,23 @@ def test_trade_trace_projection_aggregates_signal_to_outcome_chain() -> None:
     assert trace["timeline"][-1]["stage"] == "outcome.trade"
     assert len(trace["graph"]["nodes"]) == len(trace["timeline"])
     assert len(trace["graph"]["edges"]) == len(trace["timeline"]) - 1
+
+
+def test_trade_trace_projection_supports_trace_id_only_chain() -> None:
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_SignalRepo(),
+        command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=_PipelineTraceRepo(),
+        trading_state_repo=_TradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    trace = read_model.trace_by_trace_id("trace-1")
+
+    assert trace["found"] is True
+    assert trace["signal_id"] == "sig-1"
+    assert trace["trace_id"] == "trace-1"
+    assert trace["identifiers"]["trace_ids"] == ["trace-1"]
+    assert trace["identifiers"]["signal_ids"] == ["sig-1"]
+    assert trace["timeline"][0]["stage"] == "pipeline.bar_closed"
+    assert trace["summary"]["stages"]["pipeline_signal_filter"] == "present"

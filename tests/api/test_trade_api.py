@@ -7,6 +7,7 @@ from src.api.trade import (
     positions,
     trade,
     trade_closeout_exposure,
+    trade_trace_by_trace_id,
     trade_trace_by_signal_id,
     trade_state_closeout_summary,
     trade_active_pending_state_list,
@@ -245,9 +246,12 @@ class _TradeTraceReadModel:
     def trace_by_signal_id(self, signal_id: str):
         return {
             "signal_id": signal_id,
+            "trace_id": "trace_1",
             "found": True,
             "identifiers": {
                 "signal_id": signal_id,
+                "signal_ids": [signal_id],
+                "trace_ids": ["trace_1"],
                 "request_ids": [signal_id],
                 "operation_ids": ["op_1"],
                 "order_tickets": [7001],
@@ -259,6 +263,34 @@ class _TradeTraceReadModel:
             "timeline": [
                 {"id": "a", "stage": "signal.confirmed"},
                 {"id": "b", "stage": "trade.execute_trade"},
+            ],
+            "graph": {
+                "nodes": [{"id": "a"}, {"id": "b"}],
+                "edges": [{"from": "a", "to": "b", "relation": "next"}],
+            },
+            "facts": {},
+        }
+
+    def trace_by_trace_id(self, trace_id: str):
+        return {
+            "signal_id": None,
+            "trace_id": trace_id,
+            "found": True,
+            "identifiers": {
+                "signal_id": None,
+                "signal_ids": [],
+                "trace_ids": [trace_id],
+                "request_ids": [],
+                "operation_ids": [],
+                "order_tickets": [],
+                "position_tickets": [],
+            },
+            "summary": {
+                "stages": {"pipeline_signal_filter": "present"},
+            },
+            "timeline": [
+                {"id": "a", "stage": "pipeline.bar_closed"},
+                {"id": "b", "stage": "pipeline.signal_filter"},
             ],
             "graph": {
                 "nodes": [{"id": "a"}, {"id": "b"}],
@@ -432,9 +464,23 @@ def test_trade_trace_endpoint_returns_flow_projection() -> None:
 
     assert response.success is True
     assert response.data["signal_id"] == "sig_1"
+    assert response.data["trace_id"] == "trace_1"
     assert response.data["identifiers"]["order_tickets"] == [7001]
     assert response.data["graph"]["edges"][0]["relation"] == "next"
     assert response.metadata["operation"] == "trade_trace_by_signal_id"
+
+
+def test_trade_trace_by_trace_id_endpoint_returns_flow_projection() -> None:
+    response = trade_trace_by_trace_id(
+        "trace_1",
+        trace_views=_TradeTraceReadModel(),
+    )
+
+    assert response.success is True
+    assert response.data["trace_id"] == "trace_1"
+    assert response.data["timeline"][0]["stage"] == "pipeline.bar_closed"
+    assert response.data["summary"]["stages"]["pipeline_signal_filter"] == "present"
+    assert response.metadata["operation"] == "trade_trace_by_trace_id"
 
 
 def test_trade_state_alerts_summary_endpoint_returns_alert_projection() -> None:
