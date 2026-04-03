@@ -23,6 +23,8 @@ from typing import Any, Callable, Dict, Optional
 from src.signals.models import SignalEvent
 from src.trading.sizing import TradeParameters
 
+from .ports import PendingOrderCancellationPort
+
 logger = logging.getLogger(__name__)
 
 # ── 时间框架 → bar 周期秒数映射 ──────────────────────────────────────────────
@@ -356,12 +358,14 @@ class PendingEntryManager:
         self,
         config: PendingEntryConfig,
         market_service: Any,
+        cancellation_port: PendingOrderCancellationPort,
         execute_fn: Callable[[SignalEvent, TradeParameters, Dict[str, Any]], Any],
         on_expired_fn: Optional[Callable[[str, str], None]] = None,
         inspect_mt5_order_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ):
         self._config = config
         self._market = market_service
+        self._cancellation_port = cancellation_port
         self._execute_fn = execute_fn
         self._on_expired_fn = on_expired_fn  # (signal_id, reason) 过期回调
         self._inspect_mt5_order_fn = inspect_mt5_order_fn
@@ -670,24 +674,13 @@ class PendingEntryManager:
             ticket = info["ticket"]
             cancelled = False
             try:
-                # 通过 market_service 获取 trading client 取消挂单
-                trading = getattr(self._market, "_trading_client", None)
-                if trading is None:
-                    trading = getattr(self._market, "trading_client", None)
-                if trading is not None and hasattr(trading, "cancel_orders_by_tickets"):
-                    result = trading.cancel_orders_by_tickets([ticket])
-                    cancelled = self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled"))
-                    logger.info(
-                        "PendingEntry: cancelled expired MT5 order ticket=%d "
-                        "for %s/%s (signal=%s)",
-                        ticket, info["symbol"], info["strategy"], sid[:8],
-                    )
-                else:
-                    logger.warning(
-                        "PendingEntry: cannot cancel MT5 order ticket=%d — "
-                        "no trading client available",
-                        ticket,
-                    )
+                result = self._cancellation_port.cancel_orders_by_tickets([ticket])
+                cancelled = self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled"))
+                logger.info(
+                    "PendingEntry: cancelled expired MT5 order ticket=%d "
+                    "for %s/%s (signal=%s)",
+                    ticket, info["symbol"], info["strategy"], sid[:8],
+                )
             except Exception:
                 logger.error(
                     "PendingEntry: failed to cancel MT5 order ticket=%d",
@@ -731,19 +724,15 @@ class PendingEntryManager:
         for sid, info in to_cancel:
             ticket = info["ticket"]
             try:
-                trading = getattr(self._market, "_trading_client", None)
-                if trading is None:
-                    trading = getattr(self._market, "trading_client", None)
-                if trading is not None and hasattr(trading, "cancel_orders_by_tickets"):
-                    result = trading.cancel_orders_by_tickets([ticket])
-                    if self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled")):
-                        with self._lock:
-                            current = self._mt5_orders.get(sid)
-                            if current is not None and int(current.get("ticket", 0) or 0) == int(ticket):
-                                self._mt5_orders.pop(sid, None)
-                        cancelled_count += 1
-                        if self._on_mt5_order_cancelled is not None:
-                            self._on_mt5_order_cancelled(dict(info), reason)
+                result = self._cancellation_port.cancel_orders_by_tickets([ticket])
+                if self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled")):
+                    with self._lock:
+                        current = self._mt5_orders.get(sid)
+                        if current is not None and int(current.get("ticket", 0) or 0) == int(ticket):
+                            self._mt5_orders.pop(sid, None)
+                    cancelled_count += 1
+                    if self._on_mt5_order_cancelled is not None:
+                        self._on_mt5_order_cancelled(dict(info), reason)
             except Exception:
                 logger.error("Failed to cancel MT5 order ticket=%d", ticket, exc_info=True)
         return cancelled_count

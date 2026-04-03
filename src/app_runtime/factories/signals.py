@@ -466,6 +466,7 @@ def build_signal_components(
     pending_entry_manager = PendingEntryManager(
         config=pending_entry_config,
         market_service=indicator_manager.market_service,
+        cancellation_port=trade_module,
         execute_fn=lambda event, params, cost: (
             _executor_holder[0]._execute(event, params, cost_metrics=cost)
             if _executor_holder

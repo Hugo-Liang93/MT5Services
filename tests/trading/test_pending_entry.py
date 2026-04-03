@@ -98,6 +98,16 @@ class FakeMarketService:
         return 0.01
 
 
+class FakeCancellationPort:
+    def __init__(self):
+        self.calls: list[list[int]] = []
+        self.result: Any = {"canceled": [], "failed": []}
+
+    def cancel_orders_by_tickets(self, tickets: list[int]) -> Any:
+        self.calls.append(list(tickets))
+        return self.result
+
+
 # ── _extract_quote_prices tests ──────────────────────────────────────────
 
 
@@ -237,6 +247,7 @@ class TestPendingEntryManager:
         self,
         *,
         market_service: Optional[FakeMarketService] = None,
+        cancellation_port: Optional[Any] = None,
         execute_fn: Optional[Any] = None,
         on_expired_fn: Optional[Any] = None,
         inspect_mt5_order_fn: Optional[Any] = None,
@@ -244,6 +255,7 @@ class TestPendingEntryManager:
         return PendingEntryManager(
             config=PendingEntryConfig(check_interval=0.05),
             market_service=market_service or FakeMarketService(),
+            cancellation_port=cancellation_port or FakeCancellationPort(),
             execute_fn=execute_fn or MagicMock(),
             on_expired_fn=on_expired_fn,
             inspect_mt5_order_fn=inspect_mt5_order_fn,
@@ -418,6 +430,7 @@ class TestPendingEntryManager:
         mgr = PendingEntryManager(
             config=PendingEntryConfig(check_interval=0.05, max_spread_points=50.0),
             market_service=market,
+            cancellation_port=FakeCancellationPort(),
             execute_fn=execute_fn,
         )
 
@@ -514,6 +527,7 @@ class TestPendingEntryManager:
         mgr = PendingEntryManager(
             config=PendingEntryConfig(check_interval=0.05),
             market_service=BadMarket(),
+            cancellation_port=FakeCancellationPort(),
             execute_fn=execute_fn,
         )
         pending = self._make_pending(entry_low=2649.0, entry_high=2651.0)
@@ -539,6 +553,7 @@ class TestPendingEntryManager:
         mgr = PendingEntryManager(
             config=PendingEntryConfig(check_interval=0.05),
             market_service=DictMarket(),
+            cancellation_port=FakeCancellationPort(),
             execute_fn=execute_fn,
         )
         pending = self._make_pending(entry_low=2649.0, entry_high=2651.0)
@@ -600,14 +615,39 @@ class TestPendingEntryManager:
         assert mgr._mt5_orders == {}
         assert mgr.status()["stats"]["mt5_orders_missing"] == 1
 
+    def test_mt5_order_expiry_uses_cancellation_port(self) -> None:
+        cancellation_port = MagicMock()
+        cancellation_port.cancel_orders_by_tickets.return_value = {
+            "canceled": [7010],
+            "failed": [],
+        }
+        mgr = self._make_manager(cancellation_port=cancellation_port)
+        mgr.track_mt5_order(
+            signal_id="sig-mt5-expire",
+            order_ticket=7010,
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            direction="buy",
+            symbol="XAUUSD",
+            strategy="supertrend",
+            timeframe="M5",
+        )
+
+        mgr._check_mt5_order_expiry()
+
+        assert cancellation_port.cancel_orders_by_tickets.call_args_list[0].args[0] == [7010]
+        assert mgr._mt5_orders == {}
+        assert mgr.status()["stats"]["mt5_orders_expired"] == 1
+
     def test_cancel_by_symbol_respects_exclude_direction_for_mt5_orders(self) -> None:
         market = FakeMarketService()
-        trading_client = MagicMock()
-        trading_client.cancel_orders_by_tickets.side_effect = [
+        cancellation_port = MagicMock()
+        cancellation_port.cancel_orders_by_tickets.side_effect = [
             {"canceled": [7005], "failed": []},
         ]
-        market._trading_client = trading_client
-        mgr = self._make_manager(market_service=market)
+        mgr = self._make_manager(
+            market_service=market,
+            cancellation_port=cancellation_port,
+        )
         mgr.track_mt5_order(
             signal_id="sig-buy",
             order_ticket=7004,
@@ -634,6 +674,6 @@ class TestPendingEntryManager:
         )
 
         assert cancelled == 1
-        assert trading_client.cancel_orders_by_tickets.call_args_list[0].args[0] == [7005]
+        assert cancellation_port.cancel_orders_by_tickets.call_args_list[0].args[0] == [7005]
         assert "sig-buy" in mgr._mt5_orders
         assert "sig-sell" not in mgr._mt5_orders
