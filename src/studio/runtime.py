@@ -6,7 +6,7 @@ import dataclasses
 from typing import Any
 
 from src.app_runtime.container import AppContainer
-from src.backtesting.api import get_backtest_runtime_status
+from src.backtesting.runtime_store import get_backtest_runtime_status
 from src.config import get_runtime_market_settings
 from src.studio import mappers as studio_mappers
 from src.studio.models import build_event

@@ -1,11 +1,10 @@
-"""Tests for backtest API legacy /results endpoint."""
+"""Tests for backtest API routes and configuration helpers."""
 
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 from fastapi import BackgroundTasks
@@ -46,11 +45,17 @@ def _sample_result() -> dict:
 
 @pytest.fixture()
 def backtest_api():
-    """Import backtest_api after src.api is loaded to avoid circular import."""
-    import src.api  # noqa: F401  — ensure __init__ runs first
-    import src.backtesting.api as mod
+    import src.api  # noqa: F401
+    from src.backtesting import api_config, runtime_store
+    from src.backtesting.api_routes import config as config_routes
+    from src.backtesting.api_routes import jobs as jobs_routes
 
-    return mod
+    return SimpleNamespace(
+        api_config=api_config,
+        config_routes=config_routes,
+        jobs_routes=jobs_routes,
+        store=runtime_store.backtest_runtime_store,
+    )
 
 
 def _run(coro):  # type: ignore[no-untyped-def]
@@ -61,55 +66,61 @@ def _run(coro):  # type: ignore[no-untyped-def]
         loop.close()
 
 
+def _snapshot_state(store) -> tuple[dict[str, BacktestJob], dict[str, object]]:
+    jobs = {job.run_id: job for job in store.list_jobs()}
+    results = {run_id: store.get_result(run_id) for run_id in jobs}
+    return jobs, results
+
+
+def _restore_state(store, jobs: dict[str, BacktestJob], results: dict[str, object]) -> None:
+    store.reset()
+    for job in jobs.values():
+        store.register_job(job)
+    for run_id, result in results.items():
+        if result is not None:
+            store.set_result(run_id, result)
+
+
 def test_list_results_returns_result_summaries(backtest_api) -> None:
-    """Legacy /results should return type + metrics, not raw job dicts."""
-    orig_jobs = dict(backtest_api._job_store)
-    orig_cache = dict(backtest_api._result_cache)
+    store = backtest_api.store
+    orig_jobs, orig_results = _snapshot_state(store)
     try:
-        backtest_api._job_store.clear()
-        backtest_api._result_cache.clear()
+        store.reset()
+        store.register_job(_make_job("bt_1", job_type="backtest"))
+        store.set_result("bt_1", _sample_result())
 
-        job = _make_job("bt_1", job_type="backtest")
-        backtest_api._job_store["bt_1"] = job
-        backtest_api._result_cache["bt_1"] = _sample_result()
-
-        response = _run(backtest_api.list_results())
+        response = _run(backtest_api.jobs_routes.list_results())
 
         assert response.success is True
         results = response.data
         assert len(results) == 1
         entry = results[0]
-        # Legacy contract fields
         assert entry["type"] == "backtest"
         assert entry["run_id"] == "bt_1"
         assert "metrics" in entry
         assert entry["metrics"]["total_trades"] == 42
         assert entry["metrics"]["sharpe_ratio"] == 1.2
-        # Should NOT contain raw job-only fields
         assert "job_type" not in entry
         assert "progress" not in entry
     finally:
-        backtest_api._job_store.clear()
-        backtest_api._job_store.update(orig_jobs)
-        backtest_api._result_cache.clear()
-        backtest_api._result_cache.update(orig_cache)
+        _restore_state(store, orig_jobs, orig_results)
 
 
 def test_list_results_optimization_includes_count(backtest_api) -> None:
-    orig_jobs = dict(backtest_api._job_store)
-    orig_cache = dict(backtest_api._result_cache)
+    store = backtest_api.store
+    orig_jobs, orig_results = _snapshot_state(store)
     try:
-        backtest_api._job_store.clear()
-        backtest_api._result_cache.clear()
+        store.reset()
+        store.register_job(_make_job("opt_1", job_type="optimization"))
+        store.set_result(
+            "opt_1",
+            [
+                _sample_result(),
+                {**_sample_result(), "run_id": "opt_1_2"},
+            ],
+        )
 
-        job = _make_job("opt_1", job_type="optimization")
-        backtest_api._job_store["opt_1"] = job
-        backtest_api._result_cache["opt_1"] = [
-            _sample_result(),
-            {**_sample_result(), "run_id": "opt_1_2"},
-        ]
-
-        response = _run(backtest_api.list_results())
+        response = _run(backtest_api.jobs_routes.list_results())
 
         assert response.success is True
         entry = response.data[0]
@@ -117,33 +128,24 @@ def test_list_results_optimization_includes_count(backtest_api) -> None:
         assert entry["metrics"]["optimization_count"] == 2
         assert entry["metrics"]["best"]["total_trades"] == 42
     finally:
-        backtest_api._job_store.clear()
-        backtest_api._job_store.update(orig_jobs)
-        backtest_api._result_cache.clear()
-        backtest_api._result_cache.update(orig_cache)
+        _restore_state(store, orig_jobs, orig_results)
 
 
 def test_list_results_pending_job_has_no_metrics(backtest_api) -> None:
-    orig_jobs = dict(backtest_api._job_store)
-    orig_cache = dict(backtest_api._result_cache)
+    store = backtest_api.store
+    orig_jobs, orig_results = _snapshot_state(store)
     try:
-        backtest_api._job_store.clear()
-        backtest_api._result_cache.clear()
+        store.reset()
+        store.register_job(_make_job("bt_2", status=BacktestJobStatus.PENDING))
 
-        job = _make_job("bt_2", status=BacktestJobStatus.PENDING)
-        backtest_api._job_store["bt_2"] = job
-
-        response = _run(backtest_api.list_results())
+        response = _run(backtest_api.jobs_routes.list_results())
 
         assert response.success is True
         entry = response.data[0]
         assert entry["status"] == "pending"
         assert "metrics" not in entry
     finally:
-        backtest_api._job_store.clear()
-        backtest_api._job_store.update(orig_jobs)
-        backtest_api._result_cache.clear()
-        backtest_api._result_cache.update(orig_cache)
+        _restore_state(store, orig_jobs, orig_results)
 
 
 def test_build_backtest_config_uses_defaults_and_overrides(
@@ -151,8 +153,8 @@ def test_build_backtest_config_uses_defaults_and_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        backtest_api,
-        "_load_backtest_defaults",
+        backtest_api.api_config,
+        "load_backtest_defaults",
         lambda: {
             "initial_balance": 15000.0,
             "max_positions": 4,
@@ -169,14 +171,14 @@ def test_build_backtest_config_uses_defaults_and_overrides(
         },
     )
     monkeypatch.setattr(
-        backtest_api,
-        "_load_signal_config",
+        backtest_api.api_config,
+        "load_signal_config",
         lambda: SimpleNamespace(
             strategy_timeframes={"ema_cross": ["M5", "M15"]},
             strategy_sessions={"ema_cross": ["london", "newyork"]},
         ),
     )
-    request = backtest_api.BacktestRunRequest(
+    request = backtest_api.api_config.BacktestRunRequest(
         symbol="XAUUSD",
         timeframe="M5",
         start_time="2025-01-01",
@@ -188,7 +190,7 @@ def test_build_backtest_config_uses_defaults_and_overrides(
         regime_affinity_overrides={"ema_cross": {"trend": 1.3}},
     )
 
-    config = backtest_api._build_backtest_config(request)
+    config = backtest_api.api_config.build_backtest_config(request)
 
     assert config.initial_balance == 15000.0
     assert config.max_positions == 4
@@ -215,18 +217,19 @@ def test_run_optimization_job_summary_uses_default_optimizer_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        backtest_api,
-        "_load_backtest_defaults",
+        backtest_api.api_config,
+        "load_backtest_defaults",
         lambda: {
             "search_mode": "random",
             "max_combinations": 77,
             "sort_metric": "profit_factor",
         },
     )
-    orig_jobs = dict(backtest_api._job_store)
+    store = backtest_api.store
+    orig_jobs, orig_results = _snapshot_state(store)
     try:
-        backtest_api._job_store.clear()
-        request = backtest_api.BacktestOptimizeRequest(
+        store.reset()
+        request = backtest_api.api_config.BacktestOptimizeRequest(
             symbol="XAUUSD",
             timeframe="M5",
             start_time="2025-01-01",
@@ -234,15 +237,16 @@ def test_run_optimization_job_summary_uses_default_optimizer_settings(
             param_space={"ema_cross_fast": [9, 12]},
         )
 
-        response = _run(backtest_api.run_optimization(request, BackgroundTasks()))
+        response = _run(
+            backtest_api.jobs_routes.run_optimization(request, BackgroundTasks())
+        )
 
         assert response.success is True
         summary = response.data["config_summary"]
         assert summary["search_mode"] == "random"
         assert summary["max_combinations"] == 77
     finally:
-        backtest_api._job_store.clear()
-        backtest_api._job_store.update(orig_jobs)
+        _restore_state(store, orig_jobs, orig_results)
 
 
 def test_get_backtest_config_defaults_exposes_supported_fields(
@@ -250,12 +254,12 @@ def test_get_backtest_config_defaults_exposes_supported_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        backtest_api,
-        "_load_backtest_defaults",
+        backtest_api.api_config,
+        "load_backtest_defaults",
         lambda: {"risk_percent": 2.0, "search_mode": "grid"},
     )
 
-    response = _run(backtest_api.get_backtest_config_defaults())
+    response = _run(backtest_api.config_routes.get_backtest_config_defaults())
 
     assert response.success is True
     assert response.data["defaults"]["risk_percent"] == 2.0
@@ -271,14 +275,13 @@ def test_get_param_space_template_uses_effective_timeframe_params(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        backtest_api,
-        "_load_signal_config",
+        backtest_api.api_config,
+        "load_signal_config",
         lambda: SimpleNamespace(
             strategy_timeframes={
                 "rsi_reversion": ["M5", "M15"],
                 "supertrend": ["M5", "M15"],
             },
-
             strategy_params={
                 "rsi_reversion__overbought": 78.0,
                 "rsi_reversion__oversold": 22.0,
@@ -295,7 +298,7 @@ def test_get_param_space_template_uses_effective_timeframe_params(
     )
 
     response = _run(
-        backtest_api.get_backtest_param_space_template(
+        backtest_api.config_routes.get_backtest_param_space_template(
             timeframe="M5",
             strategies="rsi_reversion,supertrend",
         )
@@ -316,15 +319,14 @@ def test_get_param_space_template_auto_filters_by_timeframe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        backtest_api,
-        "_load_signal_config",
+        backtest_api.api_config,
+        "load_signal_config",
         lambda: SimpleNamespace(
             strategy_timeframes={
                 "rsi_reversion": ["M5", "M15"],
                 "session_momentum": ["M15", "M30"],
                 "multi_timeframe_confirm": ["M30", "H1"],
             },
-
             strategy_params={
                 "rsi_reversion__overbought": 78.0,
                 "session_momentum__london_min_atr_pct": 0.00050,
@@ -336,7 +338,7 @@ def test_get_param_space_template_auto_filters_by_timeframe(
     )
 
     response = _run(
-        backtest_api.get_backtest_param_space_template(
+        backtest_api.config_routes.get_backtest_param_space_template(
             timeframe="M30",
             strategies=None,
         )
