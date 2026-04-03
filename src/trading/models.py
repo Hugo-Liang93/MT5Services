@@ -7,9 +7,9 @@ from uuid import uuid4
 
 
 @dataclass(frozen=True)
-class TradeOperationRecord:
+class TradeCommandAuditRecord:
     account_alias: str
-    operation_type: str
+    command_type: str
     status: str
     symbol: Optional[str] = None
     side: Optional[str] = None
@@ -31,7 +31,7 @@ class TradeOperationRecord:
             self.recorded_at,
             self.operation_id,
             self.account_alias,
-            self.operation_type,
+            self.command_type,
             self.status,
             self.symbol,
             self.side,

@@ -162,15 +162,15 @@ class TradingQueryService:
             limit=limit,
         )
 
-    def recent_operations(
+    def recent_command_audits(
         self,
         *,
-        operation_type: Optional[str] = None,
+        command_type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
     ) -> list[dict]:
-        return self._module.recent_operations(
-            operation_type=operation_type,
+        return self._module.recent_command_audits(
+            command_type=command_type,
             status=status,
             limit=limit,
         )

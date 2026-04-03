@@ -673,20 +673,21 @@ class PendingEntryManager:
         for sid, info in expired:
             ticket = info["ticket"]
             cancelled = False
+            result: Any = None
             try:
                 result = self._cancellation_port.cancel_orders_by_tickets([ticket])
                 cancelled = self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled"))
-                logger.info(
-                    "PendingEntry: cancelled expired MT5 order ticket=%d "
-                    "for %s/%s (signal=%s)",
-                    ticket, info["symbol"], info["strategy"], sid[:8],
-                )
             except Exception:
                 logger.error(
                     "PendingEntry: failed to cancel MT5 order ticket=%d",
                     ticket, exc_info=True,
                 )
             if cancelled:
+                logger.info(
+                    "PendingEntry: cancelled expired MT5 order ticket=%d "
+                    "for %s/%s (signal=%s)",
+                    ticket, info["symbol"], info["strategy"], sid[:8],
+                )
                 with self._lock:
                     current = self._mt5_orders.get(sid)
                     if current is not None and int(current.get("ticket", 0) or 0) == int(ticket):
@@ -700,6 +701,16 @@ class PendingEntryManager:
                         self._on_expired_fn(sid, "mt5_order_expired")
                 except Exception:
                     pass
+            elif result is not None:
+                logger.warning(
+                    "PendingEntry: expiry cancel not confirmed for MT5 order ticket=%d "
+                    "for %s/%s (signal=%s, result=%s)",
+                    ticket,
+                    info["symbol"],
+                    info["strategy"],
+                    sid[:8],
+                    result,
+                )
 
     def cancel_mt5_orders_by_symbol(
         self,
@@ -742,13 +753,34 @@ class PendingEntryManager:
         if isinstance(result, dict):
             success = set()
             for key in success_keys:
-                success.update(int(item) for item in result.get(key, []) if item is not None)
-            failed = {int(item) for item in result.get("failed", []) if item is not None}
+                success.update(
+                    PendingEntryManager._extract_tickets(result.get(key, []))
+                )
+            failed = PendingEntryManager._extract_tickets(result.get("failed", []))
             if ticket in success:
                 return True
             if failed:
                 return ticket not in failed
         return bool(result)
+
+    @staticmethod
+    def _extract_tickets(items: Any) -> set[int]:
+        tickets: set[int] = set()
+        for item in list(items or []):
+            candidate = item
+            if isinstance(item, dict):
+                candidate = (
+                    item.get("ticket")
+                    or item.get("order")
+                    or item.get("order_id")
+                )
+            try:
+                normalized = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            if normalized > 0:
+                tickets.add(normalized)
+        return tickets
 
     def start(self) -> None:
         """启动价格监控线程和填单执行线程。"""

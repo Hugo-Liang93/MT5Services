@@ -8,11 +8,11 @@ from typing import Any, Callable, Optional
 
 from src.persistence.db import TimescaleWriter
 
-from .models import TradeOperationRecord
+from .models import TradeCommandAuditRecord
 
 
-class TradeOperationAuditService:
-    """交易操作审计服务。"""
+class TradeCommandAuditService:
+    """交易命令审计服务。"""
 
     def __init__(
         self,
@@ -36,12 +36,12 @@ class TradeOperationAuditService:
             return [self._json_safe(item) for item in value]
         return str(value)
 
-    def record(self, record: TradeOperationRecord) -> None:
+    def record(self, record: TradeCommandAuditRecord) -> None:
         if self._db_writer is None:
             return
-        normalized = TradeOperationRecord(
+        normalized = TradeCommandAuditRecord(
             account_alias=record.account_alias,
-            operation_type=record.operation_type,
+            command_type=record.command_type,
             status=record.status,
             symbol=record.symbol,
             side=record.side,
@@ -58,7 +58,7 @@ class TradeOperationAuditService:
             recorded_at=record.recorded_at,
             operation_id=record.operation_id,
         )
-        self._db_writer.write_trade_operations([normalized.to_row()])
+        self._db_writer.write_trade_command_audits([normalized.to_row()])
 
     def fetch_successful_trade_result(
         self,
@@ -68,9 +68,9 @@ class TradeOperationAuditService:
     ) -> Optional[dict[str, Any]]:
         if self._db_writer is None:
             return None
-        rows = self._db_writer.fetch_trade_operations(
+        rows = self._db_writer.fetch_trade_command_audits(
             account_alias=self._account_alias_getter(),
-            operation_type="execute_trade",
+            command_type="execute_trade",
             status="success",
             limit=limit,
         )
@@ -89,18 +89,18 @@ class TradeOperationAuditService:
             return replayed
         return None
 
-    def recent_operations(
+    def recent_command_audits(
         self,
         *,
-        operation_type: Optional[str] = None,
+        command_type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
     ) -> list[dict]:
         if self._db_writer is None:
             return []
-        rows = self._db_writer.fetch_trade_operations(
+        rows = self._db_writer.fetch_trade_command_audits(
             account_alias=self._account_alias_getter(),
-            operation_type=operation_type,
+            command_type=command_type,
             status=status,
             limit=limit,
         )
@@ -109,7 +109,7 @@ class TradeOperationAuditService:
                 "recorded_at": row[0].isoformat() if row[0] else None,
                 "operation_id": row[1],
                 "account_alias": row[2],
-                "operation_type": row[3],
+                "command_type": row[3],
                 "status": row[4],
                 "symbol": row[5],
                 "side": row[6],
@@ -130,14 +130,14 @@ class TradeOperationAuditService:
     def summarize_operations(self, *, hours: int = 24) -> list[dict[str, Any]]:
         if self._db_writer is None:
             return []
-        rows = self._db_writer.summarize_trade_operations(
+        rows = self._db_writer.summarize_trade_command_audits(
             hours=hours,
             account_alias=self._account_alias_getter(),
         )
         return [
             {
                 "account_alias": row[0],
-                "operation_type": row[1],
+                "command_type": row[1],
                 "status": row[2],
                 "count": int(row[3] or 0),
                 "avg_duration_ms": float(row[4] or 0.0),
@@ -164,8 +164,8 @@ class TradeDailyStatsService:
             }
         )
 
-    def update(self, record: TradeOperationRecord) -> None:
-        if record.operation_type not in {
+    def update(self, record: TradeCommandAuditRecord) -> None:
+        if record.command_type not in {
             "execute_trade",
             "precheck_trade",
             "close_position",
@@ -194,7 +194,7 @@ class TradeDailyStatsService:
             else:
                 symbol_stats["failed"] += 1
             op_stats = bucket["operations"].setdefault(
-                record.operation_type,
+                record.command_type,
                 {"total": 0, "success": 0, "failed": 0},
             )
             op_stats["total"] += 1
@@ -202,7 +202,7 @@ class TradeDailyStatsService:
                 op_stats["success"] += 1
             else:
                 op_stats["failed"] += 1
-            if record.operation_type == "precheck_trade" and isinstance(record.response_payload, dict):
+            if record.command_type == "precheck_trade" and isinstance(record.response_payload, dict):
                 action = str(record.response_payload.get("verdict") or "allow").lower()
                 if action not in {"allow", "warn", "block"}:
                     action = "allow"

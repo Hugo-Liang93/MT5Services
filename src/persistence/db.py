@@ -22,7 +22,7 @@ from src.persistence.repositories import (
     RuntimeStatusRepository,
     SignalEventRepository,
     TradingStateRepository,
-    TradeOperationRepository,
+    TradeCommandAuditRepository,
 )
 from src.persistence.schema import DDL_STATEMENTS
 
@@ -42,7 +42,7 @@ class TimescaleWriter:
         self._reconnect_lock = threading.Lock()
         self._market_repo: Optional[MarketRepository] = None
         self._signal_repo: Optional[SignalEventRepository] = None
-        self._trade_repo: Optional[TradeOperationRepository] = None
+        self._trade_command_repo: Optional[TradeCommandAuditRepository] = None
         self._trading_state_repo: Optional[TradingStateRepository] = None
         self._economic_repo: Optional[EconomicCalendarRepository] = None
         self._runtime_repo: Optional[RuntimeStatusRepository] = None
@@ -65,11 +65,11 @@ class TimescaleWriter:
         return repo
 
     @property
-    def trade_repo(self) -> TradeOperationRepository:
-        repo = getattr(self, "_trade_repo", None)
+    def trade_command_repo(self) -> TradeCommandAuditRepository:
+        repo = getattr(self, "_trade_command_repo", None)
         if repo is None:
-            repo = TradeOperationRepository(self)
-            self._trade_repo = repo
+            repo = TradeCommandAuditRepository(self)
+            self._trade_command_repo = repo
         return repo
 
     @property
@@ -344,14 +344,14 @@ END $$;
     def fetch_runtime_task_status(self, component=None, task_name=None):
         return self.runtime_repo.fetch_runtime_task_status(component=component, task_name=task_name)
 
-    def write_trade_operations(self, rows, page_size: int = 200) -> None:
-        self.trade_repo.write_trade_operations(rows, page_size=page_size)
+    def write_trade_command_audits(self, rows, page_size: int = 200) -> None:
+        self.trade_command_repo.write_trade_command_audits(rows, page_size=page_size)
 
-    def fetch_trade_operations(self, **kwargs):
-        return self.trade_repo.fetch_trade_operations(**kwargs)
+    def fetch_trade_command_audits(self, **kwargs):
+        return self.trade_command_repo.fetch_trade_command_audits(**kwargs)
 
-    def summarize_trade_operations(self, **kwargs):
-        return self.trade_repo.summarize_trade_operations(**kwargs)
+    def summarize_trade_command_audits(self, **kwargs):
+        return self.trade_command_repo.summarize_trade_command_audits(**kwargs)
 
     def write_pending_order_states(self, rows, page_size: int = 200) -> None:
         self.trading_state_repo.write_pending_order_states(rows, page_size=page_size)

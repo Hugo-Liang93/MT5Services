@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime as _dt, timezone as _tz
-from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple
 
 from src.persistence.schema import (
     INSERT_AUTO_EXECUTIONS_SQL,
@@ -80,6 +80,25 @@ class SignalEventRepository:
             direction=direction,
             limit=limit,
         )
+
+    def fetch_signal_event_by_id(
+        self,
+        *,
+        signal_id: str,
+        scope: str = "confirmed",
+    ) -> Optional[dict[str, Any]]:
+        table_name = (
+            "signal_preview_events"
+            if str(scope or "").strip().lower() == "preview"
+            else "signal_events"
+        )
+        rows = self._fetch_dict_rows(
+            "SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason, "
+            "used_indicators, indicators_snapshot, metadata "
+            f"FROM {table_name} WHERE signal_id = %s LIMIT 1",
+            [signal_id],
+        )
+        return rows[0] if rows else None
 
     def _fetch_signal_rows(
         self,
@@ -257,3 +276,65 @@ ORDER BY recorded_at ASC
             }
             for r in rows
         ]
+
+    def fetch_auto_executions(
+        self,
+        *,
+        signal_id: str,
+        limit: int = 50,
+    ) -> List[dict[str, Any]]:
+        return self._fetch_dict_rows(
+            """
+SELECT executed_at, signal_id, symbol, direction, strategy, confidence,
+       volume, entry_price, stop_loss, take_profit, risk_reward,
+       success, error_message, metadata
+FROM auto_executions
+WHERE signal_id = %s
+ORDER BY executed_at ASC
+LIMIT %s
+""",
+            [signal_id, max(1, int(limit))],
+        )
+
+    def fetch_signal_outcomes(
+        self,
+        *,
+        signal_id: str,
+        limit: int = 20,
+    ) -> List[dict[str, Any]]:
+        return self._fetch_dict_rows(
+            """
+SELECT recorded_at, signal_id, symbol, timeframe, strategy, direction, confidence,
+       entry_price, exit_price, price_change, won, bars_held, regime, metadata
+FROM signal_outcomes
+WHERE signal_id = %s
+ORDER BY recorded_at ASC
+LIMIT %s
+""",
+            [signal_id, max(1, int(limit))],
+        )
+
+    def fetch_trade_outcomes(
+        self,
+        *,
+        signal_id: str,
+        limit: int = 20,
+    ) -> List[dict[str, Any]]:
+        return self._fetch_dict_rows(
+            """
+SELECT recorded_at, signal_id, symbol, timeframe, strategy, direction, confidence,
+       fill_price, close_price, price_change, won, regime, metadata
+FROM trade_outcomes
+WHERE signal_id = %s
+ORDER BY recorded_at ASC
+LIMIT %s
+""",
+            [signal_id, max(1, int(limit))],
+        )
+
+    def _fetch_dict_rows(self, sql: str, params: list[Any]) -> List[dict[str, Any]]:
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in rows]

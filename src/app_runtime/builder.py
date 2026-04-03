@@ -47,6 +47,7 @@ from src.config import (
 from src.monitoring import get_health_monitor, get_monitoring_manager
 from src.monitoring.pipeline_event_bus import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
+from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.studio.runtime import build_studio_service
 from src.trading.state_alerts import TradingStateAlerts
 from src.trading.state_recovery import TradingStateRecovery
@@ -271,6 +272,13 @@ def build_app_container(
         exposure_closeout_controller=container.exposure_closeout_controller,
         runtime_mode_controller=container.runtime_mode_controller,
     )
+    if container.storage_writer is not None and container.trade_module is not None:
+        container.trade_trace_read_model = TradingFlowTraceReadModel(
+            signal_repo=container.storage_writer.db.signal_repo,
+            command_audit_repo=container.storage_writer.db.trade_command_repo,
+            trading_state_repo=container.storage_writer.db.trading_state_repo,
+            account_alias_getter=lambda: container.trade_module.active_account_alias,
+        )
 
     # Phase 6: frontend observability
     container.studio_service = build_studio_service(container)

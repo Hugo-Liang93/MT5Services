@@ -12,8 +12,8 @@ from src.risk.service import PreTradeRiskBlockedError
 
 from .application import TradingCommandService, TradingQueryService
 from .control_state import TradeControlStateService
-from .models import TradeOperationRecord
-from .operation_state import TradeDailyStatsService, TradeOperationAuditService
+from .models import TradeCommandAuditRecord
+from .operation_state import TradeCommandAuditService, TradeDailyStatsService
 from .registry import TradingAccountRegistry
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class TradingModule:
             active_account_alias or self.registry.default_account_alias()
         )
         self._trade_control = TradeControlStateService()
-        self._audit = TradeOperationAuditService(
+        self._command_audit = TradeCommandAuditService(
             db_writer=self.db_writer,
             account_alias_getter=lambda: self.active_account_alias,
         )
@@ -82,11 +82,11 @@ class TradingModule:
             "active": True,
         }
 
-    def _record_operation(self, record: TradeOperationRecord) -> None:
+    def _record_command_audit(self, record: TradeCommandAuditRecord) -> None:
         try:
-            self._audit.record(record)
+            self._command_audit.record(record)
         except Exception:
-            logger.exception("Failed to persist trade operation audit for %s", record.operation_type)
+            logger.exception("Failed to persist trade command audit for %s", record.command_type)
 
     def _cache_successful_trade_result(
         self,
@@ -113,7 +113,7 @@ class TradingModule:
             replayed["idempotent_replay"] = True
             replayed["idempotent_source"] = "memory"
             return replayed
-        replayed = self._audit.fetch_successful_trade_result(
+        replayed = self._command_audit.fetch_successful_trade_result(
             request_id=normalized,
             limit=_IDEMPOTENT_LOOKBACK_LIMIT,
         )
@@ -150,7 +150,7 @@ class TradingModule:
     def _enforce_trade_control(self, payload: Dict[str, Any]) -> None:
         self._trade_control.enforce(payload)
 
-    def _update_daily_stats(self, record: TradeOperationRecord) -> None:
+    def _update_daily_stats(self, record: TradeCommandAuditRecord) -> None:
         self._daily_stats.update(record)
 
     def _run_trade_with_dispatch_controls(self, payload: Dict[str, Any]) -> dict:
@@ -180,7 +180,7 @@ class TradingModule:
             result.setdefault("dispatch_precheck", precheck)
         return result
 
-    def _execute(self, operation_type: str, account_alias: Optional[str], payload: Dict[str, Any], fn):
+    def _execute_command(self, operation_type: str, account_alias: Optional[str], payload: Dict[str, Any], fn):
         started = time.monotonic()
         resolved_alias = self.registry.resolve_alias(account_alias)
         trace_id = str(payload.get("request_id") or payload.get("trace_id") or "")
@@ -199,9 +199,9 @@ class TradingModule:
                         result,
                     )
             duration_ms = int((time.monotonic() - started) * 1000)
-            record = TradeOperationRecord(
+            record = TradeCommandAuditRecord(
                 account_alias=resolved_alias,
-                operation_type=operation_type,
+                command_type=operation_type,
                 status="success",
                 symbol=payload.get("symbol"),
                 side=payload.get("side"),
@@ -215,14 +215,14 @@ class TradingModule:
             )
             if isinstance(result, dict):
                 result.setdefault("operation_id", record.operation_id)
-            self._record_operation(record)
+            self._record_command_audit(record)
             self._update_daily_stats(record)
             return result
         except Exception as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
-            record = TradeOperationRecord(
+            record = TradeCommandAuditRecord(
                 account_alias=resolved_alias,
-                operation_type=operation_type,
+                command_type=operation_type,
                 status="failed",
                 symbol=payload.get("symbol"),
                 side=payload.get("side"),
@@ -235,7 +235,7 @@ class TradingModule:
                 request_payload={**payload, "trace_id": trace_id or None},
                 response_payload={},
             )
-            self._record_operation(record)
+            self._record_command_audit(record)
             self._update_daily_stats(record)
             raise
 
@@ -342,7 +342,7 @@ class TradingModule:
             _trading,
             account_service,
         ):
-            return self._execute("account_info", alias, {"account_alias": alias}, account_service.account_info)
+            return account_service.account_info()
 
     def positions(self, symbol: Optional[str] = None):
         with self._active_scope() as (
@@ -350,12 +350,7 @@ class TradingModule:
             _trading,
             account_service,
         ):
-            return self._execute(
-                "positions",
-                alias,
-                {"account_alias": alias, "symbol": symbol},
-                lambda: account_service.positions(symbol),
-            )
+            return account_service.positions(symbol)
 
     def orders(self, symbol: Optional[str] = None):
         with self._active_scope() as (
@@ -363,12 +358,7 @@ class TradingModule:
             _trading,
             account_service,
         ):
-            return self._execute(
-                "orders",
-                alias,
-                {"account_alias": alias, "symbol": symbol},
-                lambda: account_service.orders(symbol),
-            )
+            return account_service.orders(symbol)
 
     def execute_trade(self, **kwargs: Any):
         request_id = str(kwargs.get("request_id") or "").strip()
@@ -383,7 +373,7 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute("execute_trade", alias, payload, lambda: trading_service.execute_trade(**kwargs))
+            return self._execute_command("execute_trade", alias, payload, lambda: trading_service.execute_trade(**kwargs))
 
     def precheck_trade(self, **kwargs: Any):
         with self._active_scope() as (
@@ -392,7 +382,7 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute("precheck_trade", alias, payload, lambda: trading_service.precheck_trade(**kwargs))
+            return self._execute_command("precheck_trade", alias, payload, lambda: trading_service.precheck_trade(**kwargs))
 
     def execute_trade_batch(self, trades: list[dict], stop_on_error: bool = False):
         all_results = []
@@ -412,10 +402,10 @@ class TradingModule:
                     break
 
         batch_alias = self.active_account_alias
-        self._record_operation(
-            TradeOperationRecord(
+        self._record_command_audit(
+            TradeCommandAuditRecord(
                 account_alias=batch_alias,
-                operation_type="execute_trade_batch",
+                command_type="execute_trade_batch",
                 status="success" if failure_count == 0 else "partial_failure",
                 duration_ms=None,
                 request_payload={"count": len(trades), "stop_on_error": stop_on_error},
@@ -440,7 +430,7 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute("close_position", alias, payload, lambda: trading_service.close_position(**kwargs))
+            return self._execute_command("close_position", alias, payload, lambda: trading_service.close_position(**kwargs))
 
     def close_all_positions(self, **kwargs: Any):
         with self._active_scope() as (
@@ -449,7 +439,7 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute("close_all_positions", alias, payload, lambda: trading_service.close_all_positions(**kwargs))
+            return self._execute_command("close_all_positions", alias, payload, lambda: trading_service.close_all_positions(**kwargs))
 
     def close_positions_by_tickets(self, tickets: list[int], deviation: int = 20, comment: str = "close_batch"):
         with self._active_scope() as (
@@ -458,7 +448,7 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, "tickets": tickets, "deviation": deviation, "comment": comment}
-            return self._execute(
+            return self._execute_command(
                 "close_positions_by_tickets",
                 alias,
                 payload,
@@ -472,7 +462,7 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute("cancel_orders", alias, payload, lambda: trading_service.cancel_orders(**kwargs))
+            return self._execute_command("cancel_orders", alias, payload, lambda: trading_service.cancel_orders(**kwargs))
 
     def cancel_orders_by_tickets(self, tickets: list[int]):
         with self._active_scope() as (
@@ -481,7 +471,7 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, "tickets": tickets}
-            return self._execute(
+            return self._execute_command(
                 "cancel_orders_by_tickets",
                 alias,
                 payload,
@@ -490,12 +480,11 @@ class TradingModule:
 
     def estimate_margin(self, **kwargs: Any):
         with self._active_scope() as (
-            alias,
+            _alias,
             trading_service,
             _account_service,
         ):
-            payload = {"account_alias": alias, **kwargs}
-            return self._execute("estimate_margin", alias, payload, lambda: {"margin": trading_service.estimate_margin(**kwargs)})
+            return {"margin": trading_service.estimate_margin(**kwargs)}
 
     def modify_orders(self, **kwargs: Any):
         with self._active_scope() as (
@@ -504,7 +493,7 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute("modify_orders", alias, payload, lambda: trading_service.modify_orders(**kwargs))
+            return self._execute_command("modify_orders", alias, payload, lambda: trading_service.modify_orders(**kwargs))
 
     def modify_positions(self, **kwargs: Any):
         with self._active_scope() as (
@@ -513,25 +502,23 @@ class TradingModule:
             _account_service,
         ):
             payload = {"account_alias": alias, **kwargs}
-            return self._execute("modify_positions", alias, payload, lambda: trading_service.modify_positions(**kwargs))
+            return self._execute_command("modify_positions", alias, payload, lambda: trading_service.modify_positions(**kwargs))
 
     def get_positions(self, symbol: Optional[str] = None, magic: Optional[int] = None):
         with self._active_scope() as (
-            alias,
+            _alias,
             trading_service,
             _account_service,
         ):
-            payload = {"account_alias": alias, "symbol": symbol, "magic": magic}
-            return self._execute("get_positions", alias, payload, lambda: trading_service.get_positions(symbol, magic))
+            return trading_service.get_positions(symbol, magic)
 
     def get_orders(self, symbol: Optional[str] = None, magic: Optional[int] = None):
         with self._active_scope() as (
-            alias,
+            _alias,
             trading_service,
             _account_service,
         ):
-            payload = {"account_alias": alias, "symbol": symbol, "magic": magic}
-            return self._execute("get_orders", alias, payload, lambda: trading_service.get_orders(symbol, magic))
+            return trading_service.get_orders(symbol, magic)
 
     def get_position_close_details(
         self,
@@ -541,25 +528,14 @@ class TradingModule:
         lookback_days: int = 7,
     ) -> Optional[dict[str, Any]]:
         with self._active_scope() as (
-            alias,
+            _alias,
             trading_service,
             _account_service,
         ):
-            payload = {
-                "account_alias": alias,
-                "ticket": ticket,
-                "symbol": symbol,
-                "lookback_days": lookback_days,
-            }
-            return self._execute(
-                "get_position_close_details",
-                alias,
-                payload,
-                lambda: trading_service.get_position_close_details(
-                    ticket=ticket,
-                    symbol=symbol,
-                    lookback_days=lookback_days,
-                ),
+            return trading_service.get_position_close_details(
+                ticket=ticket,
+                symbol=symbol,
+                lookback_days=lookback_days,
             )
 
     def resolve_position_context(
@@ -569,8 +545,8 @@ class TradingModule:
         comment: Optional[str] = None,
         limit: int = 500,
     ) -> Optional[dict[str, Any]]:
-        for row in self.recent_operations(
-            operation_type="execute_trade",
+        for row in self.recent_command_audits(
+            command_type="execute_trade",
             status="success",
             limit=limit,
         ):
@@ -599,17 +575,17 @@ class TradingModule:
             }
         return None
 
-    def recent_operations(
+    def recent_command_audits(
         self,
         *,
-        operation_type: Optional[str] = None,
+        command_type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
     ) -> list[dict]:
         if self.db_writer is None:
             return []
-        return self._audit.recent_operations(
-            operation_type=operation_type,
+        return self._command_audit.recent_command_audits(
+            command_type=command_type,
             status=status,
             limit=limit,
         )
@@ -628,6 +604,6 @@ class TradingModule:
             "accounts": self.list_accounts(),
             "trade_control": self.trade_control_status(),
             "daily": self.daily_trade_summary(),
-            "summary": self._audit.summarize_operations(hours=hours),
-            "recent": self.recent_operations(limit=20),
+            "summary": self._command_audit.summarize_operations(hours=hours),
+            "recent": self.recent_command_audits(limit=20),
         }

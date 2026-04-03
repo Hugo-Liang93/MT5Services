@@ -30,6 +30,7 @@ class TradingStateRepository:
         *,
         account_alias: Optional[str] = None,
         statuses: Optional[Sequence[str]] = None,
+        signal_id: Optional[str] = None,
         limit: int = 500,
     ) -> List[dict]:
         sql = (
@@ -46,6 +47,9 @@ class TradingStateRepository:
         if account_alias is not None:
             sql += " AND account_alias = %s"
             params.append(account_alias)
+        if signal_id is not None:
+            sql += " AND signal_id = %s"
+            params.append(signal_id)
         if statuses:
             placeholders = ", ".join(["%s"] * len(statuses))
             sql += f" AND status IN ({placeholders})"
@@ -68,6 +72,7 @@ class TradingStateRepository:
         *,
         account_alias: Optional[str] = None,
         statuses: Optional[Sequence[str]] = None,
+        signal_id: Optional[str] = None,
         limit: int = 500,
     ) -> List[dict]:
         sql = (
@@ -85,6 +90,9 @@ class TradingStateRepository:
         if account_alias is not None:
             sql += " AND account_alias = %s"
             params.append(account_alias)
+        if signal_id is not None:
+            sql += " AND signal_id = %s"
+            params.append(signal_id)
         if statuses:
             placeholders = ", ".join(["%s"] * len(statuses))
             sql += f" AND status IN ({placeholders})"

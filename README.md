@@ -57,6 +57,7 @@ uvicorn src.api:app --host 0.0.0.0 --port 8808
 - Health: `http://localhost:8808/health`
 - 交易状态: `http://localhost:8808/v1/trade/state`
 - 风险收口状态: `http://localhost:8808/v1/trade/state/closeout`
+- 交易链路 Trace: `http://localhost:8808/v1/trade/trace/{signal_id}`
 
 ### 4. 启动验证
 
@@ -217,9 +218,16 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 - `dispatch_operation(...)`：仅接受命令操作，不再承载 `daily_summary`、`entry_status`、`positions`、`orders` 等读操作。
 - API 与读模型默认依赖命令/查询服务，而不是直接依赖 `TradingModule` 的大而全入口。
 - `TradeControlStateService`：负责 `auto_entry_enabled / close_only_mode` 状态与准入拦截。
-- `TradeOperationAuditService`：负责交易操作审计读写与审计回放查询。
+- `TradeCommandAuditService`：负责交易命令审计读写与审计回放查询，只记录命令，不再混入查询调用。
 - `TradeDailyStatsService`：负责日内交易统计聚合。
 - `TradingModule`：保留为应用协调器，不再直接持有上述共享状态实现细节。
+
+### 审计与 Trace
+
+- `trade_command_audits`：交易命令审计表，只记录 `execute_trade / precheck_trade / close / cancel / modify` 等命令类动作。
+- 查询类调用不再写入同一张审计表，避免把命令审计、健康探针和运行查询混成一个事实源。
+- `GET /v1/trade/command-audits`：读取最近交易命令审计。
+- `GET /v1/trade/trace/{signal_id}`：按 `signal_id` 聚合 `signal_events / auto_executions / trade_command_audits / pending_order_states / position_runtime_states / trade_outcomes`，输出时间线与节点关系，供后续可视化与问题定位使用。
 
 ## 测试与质量
 

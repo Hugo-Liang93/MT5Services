@@ -127,10 +127,10 @@ class DummyDBWriter:
     def __init__(self):
         self.rows = []
 
-    def write_trade_operations(self, rows):
+    def write_trade_command_audits(self, rows):
         self.rows.extend(list(rows))
 
-    def fetch_trade_operations(self, **kwargs):
+    def fetch_trade_command_audits(self, **kwargs):
         if not self.rows:
             return []
         return [
@@ -155,7 +155,7 @@ class DummyDBWriter:
             )
         ]
 
-    def summarize_trade_operations(self, **kwargs):
+    def summarize_trade_command_audits(self, **kwargs):
         return [("live", "execute_trade", "success", 1, 12.0, self.rows[-1][0])]
 
 
@@ -171,15 +171,14 @@ def test_trading_module_records_account_aware_trade_operations():
     assert module.db_writer.rows[-1][3] == "execute_trade"
 
 
-def test_trading_module_records_account_info_as_json_safe_payload():
+def test_trading_module_account_info_does_not_write_command_audit():
     db = DummyDBWriter()
     module = TradingModule(registry=DummyRegistry(), db_writer=db)
 
     info = module.account_info()
 
     assert info.login == 1001
-    payload = db.rows[-1][16]
-    assert payload["result"]["login"] == 1001
+    assert db.rows == []
 
 
 def test_trading_module_monitoring_summary_reads_audit_rows():
@@ -189,7 +188,7 @@ def test_trading_module_monitoring_summary_reads_audit_rows():
 
     summary = module.monitoring_summary(hours=24)
 
-    assert summary["summary"][0]["operation_type"] == "execute_trade"
+    assert summary["summary"][0]["command_type"] == "execute_trade"
     assert summary["active_account_alias"] == "live"
     assert summary["accounts"][0]["alias"] == "live"
     assert summary["accounts"][0]["active"] is True

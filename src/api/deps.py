@@ -42,6 +42,7 @@ from src.trading.signal_executor import TradeExecutor
 from src.trading.signal_quality_tracker import SignalQualityTracker
 from src.monitoring.pipeline_event_bus import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
+from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.studio.service import StudioService
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
 
@@ -330,6 +331,12 @@ def get_runtime_read_model() -> RuntimeReadModel:
     _ensure_initialized()
     assert _container is not None and _container.runtime_read_model is not None
     return _container.runtime_read_model
+
+
+def get_trade_trace_read_model() -> TradingFlowTraceReadModel:
+    _ensure_initialized()
+    assert _container is not None and _container.trade_trace_read_model is not None
+    return _container.trade_trace_read_model
 
 
 def get_runtime_mode_controller() -> RuntimeModeController:

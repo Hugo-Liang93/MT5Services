@@ -6,7 +6,7 @@ import pytest
 
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.control_state import TradeControlStateService
-from src.trading.models import TradeOperationRecord
+from src.trading.models import TradeCommandAuditRecord
 from src.trading.operation_state import TradeDailyStatsService
 
 
@@ -31,9 +31,9 @@ def test_trade_daily_stats_service_builds_summary_from_records() -> None:
     stats = TradeDailyStatsService()
     recorded_at = datetime(2026, 4, 3, 2, 0, tzinfo=timezone.utc)
     stats.update(
-        TradeOperationRecord(
+        TradeCommandAuditRecord(
             account_alias="live",
-            operation_type="execute_trade",
+            command_type="execute_trade",
             status="success",
             symbol="XAUUSD",
             side="buy",

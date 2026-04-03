@@ -638,6 +638,28 @@ class TestPendingEntryManager:
         assert mgr._mt5_orders == {}
         assert mgr.status()["stats"]["mt5_orders_expired"] == 1
 
+    def test_mt5_order_expiry_handles_structured_failed_payload(self) -> None:
+        cancellation_port = MagicMock()
+        cancellation_port.cancel_orders_by_tickets.return_value = {
+            "canceled": [],
+            "failed": [{"ticket": 7011, "error": "market_closed"}],
+        }
+        mgr = self._make_manager(cancellation_port=cancellation_port)
+        mgr.track_mt5_order(
+            signal_id="sig-mt5-expire-structured",
+            order_ticket=7011,
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            direction="buy",
+            symbol="XAUUSD",
+            strategy="supertrend",
+            timeframe="M5",
+        )
+
+        mgr._check_mt5_order_expiry()
+
+        assert "sig-mt5-expire-structured" in mgr._mt5_orders
+        assert mgr.status()["stats"]["mt5_orders_expired"] == 0
+
     def test_cancel_by_symbol_respects_exclude_direction_for_mt5_orders(self) -> None:
         market = FakeMarketService()
         cancellation_port = MagicMock()

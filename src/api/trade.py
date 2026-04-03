@@ -10,6 +10,7 @@ from src.api.deps import (
     get_runtime_read_model,
     get_runtime_mode_controller,
     get_signal_service,
+    get_trade_trace_read_model,
     get_trade_executor,
     get_trading_command_service,
     get_trading_query_service,
@@ -44,6 +45,7 @@ from src.api.schemas import (
 from src.clients.base import MT5TradeError
 from src.risk.service import PreTradeRiskBlockedError
 from src.readmodels.runtime import RuntimeReadModel
+from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.signals.service import SignalModule
 from src.trading.sizing import compute_trade_params, extract_atr_from_indicators
 from src.trading.position_manager import PositionManager
@@ -215,6 +217,20 @@ def trade_state_summary(
             position_limit=20,
         ),
         metadata={"operation": "trade_state_summary"},
+    )
+
+
+@router.get("/trade/trace/{signal_id}", response_model=ApiResponse[dict])
+def trade_trace_by_signal_id(
+    signal_id: str,
+    trace_views: TradingFlowTraceReadModel = Depends(get_trade_trace_read_model),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(
+        data=trace_views.trace_by_signal_id(signal_id),
+        metadata={
+            "operation": "trade_trace_by_signal_id",
+            "signal_id": signal_id,
+        },
     )
 
 
@@ -1028,24 +1044,24 @@ def trading_accounts(service: TradingQueryService = Depends(get_trading_query_se
     )
 
 
-@router.get("/trade/operations", response_model=ApiResponse[List[dict]])
-def trade_operations(
-    operation_type: Optional[str] = Query(default=None, description="operation type"),
+@router.get("/trade/command-audits", response_model=ApiResponse[List[dict]])
+def trade_command_audits(
+    command_type: Optional[str] = Query(default=None, description="command type"),
     status: Optional[str] = Query(default=None, description="operation status"),
     limit: int = Query(default=100, ge=1, le=500),
     service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[List[dict]]:
-    items = service.recent_operations(
-        operation_type=operation_type,
+    items = service.recent_command_audits(
+        command_type=command_type,
         status=status,
         limit=limit,
     )
     return ApiResponse.success_response(
         data=items,
         metadata={
-            "operation": "trade_operations",
+            "operation": "trade_command_audits",
             "account_alias": service.active_account_alias,
-            "operation_type": operation_type,
+            "command_type": command_type,
             "status": status,
             "count": len(items),
         },

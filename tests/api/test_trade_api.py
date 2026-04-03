@@ -7,6 +7,7 @@ from src.api.trade import (
     positions,
     trade,
     trade_closeout_exposure,
+    trade_trace_by_signal_id,
     trade_state_closeout_summary,
     trade_active_pending_state_list,
     trade_pending_execution_context_list,
@@ -240,6 +241,33 @@ class _ExposureCloseoutController:
         return dict(self._status)
 
 
+class _TradeTraceReadModel:
+    def trace_by_signal_id(self, signal_id: str):
+        return {
+            "signal_id": signal_id,
+            "found": True,
+            "identifiers": {
+                "signal_id": signal_id,
+                "request_ids": [signal_id],
+                "operation_ids": ["op_1"],
+                "order_tickets": [7001],
+                "position_tickets": [8001],
+            },
+            "summary": {
+                "stages": {"confirmed_signal": "present", "trade_outcome": "present"},
+            },
+            "timeline": [
+                {"id": "a", "stage": "signal.confirmed"},
+                {"id": "b", "stage": "trade.execute_trade"},
+            ],
+            "graph": {
+                "nodes": [{"id": "a"}, {"id": "b"}],
+                "edges": [{"from": "a", "to": "b", "relation": "next"}],
+            },
+            "facts": {},
+        }
+
+
 def test_trade_precheck_wraps_mt5_errors() -> None:
     response = trade_precheck(
         TradeRequest(symbol="XAUUSD", volume=0.1, side="buy"),
@@ -394,6 +422,19 @@ def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
     assert response.data["pending"]["lifecycle"]["status_counts"]["filled"] == 1
     assert response.data["positions"]["status_counts"]["open"] == 1
     assert response.data["alerts"]["status"] == "warning"
+
+
+def test_trade_trace_endpoint_returns_flow_projection() -> None:
+    response = trade_trace_by_signal_id(
+        "sig_1",
+        trace_views=_TradeTraceReadModel(),
+    )
+
+    assert response.success is True
+    assert response.data["signal_id"] == "sig_1"
+    assert response.data["identifiers"]["order_tickets"] == [7001]
+    assert response.data["graph"]["edges"][0]["relation"] == "next"
+    assert response.metadata["operation"] == "trade_trace_by_signal_id"
 
 
 def test_trade_state_alerts_summary_endpoint_returns_alert_projection() -> None:
