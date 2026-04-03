@@ -16,11 +16,13 @@ class TradingFlowTraceReadModel:
         *,
         signal_repo: Any,
         command_audit_repo: Any,
+        pipeline_trace_repo: Any,
         trading_state_repo: Any,
         account_alias_getter: Callable[[], str],
     ) -> None:
         self._signal_repo = signal_repo
         self._command_audit_repo = command_audit_repo
+        self._pipeline_trace_repo = pipeline_trace_repo
         self._trading_state_repo = trading_state_repo
         self._account_alias_getter = account_alias_getter
 
@@ -61,10 +63,20 @@ class TradingFlowTraceReadModel:
             signal_id=normalized_signal_id,
             limit=100,
         )
+        trace_ids = self._collect_trace_ids(
+            preview_signal=preview_signal,
+            confirmed_signal=confirmed_signal,
+            operations=operations,
+        )
+        pipeline_events = self._pipeline_trace_repo.fetch_pipeline_trace_events(
+            trace_ids=trace_ids,
+            limit=500,
+        )
 
         facts = {
             "signal_preview": preview_signal,
             "signal_confirmed": confirmed_signal,
+            "pipeline_trace_events": pipeline_events,
             "auto_executions": auto_executions,
             "trade_command_audits": operations,
             "pending_orders": pending_orders,
@@ -75,6 +87,7 @@ class TradingFlowTraceReadModel:
         identifiers = self._build_identifiers(
             signal_id=normalized_signal_id,
             operations=operations,
+            trace_ids=trace_ids,
             pending_orders=pending_orders,
             positions=positions,
         )
@@ -82,6 +95,7 @@ class TradingFlowTraceReadModel:
             signal_id=normalized_signal_id,
             preview_signal=preview_signal,
             confirmed_signal=confirmed_signal,
+            pipeline_events=pipeline_events,
             auto_executions=auto_executions,
             operations=operations,
             pending_orders=pending_orders,
@@ -112,10 +126,36 @@ class TradingFlowTraceReadModel:
 
     def _build_summary(self, *, facts: dict[str, Any]) -> dict[str, Any]:
         operations = list(facts.get("trade_command_audits") or [])
+        pipeline_events = list(facts.get("pipeline_trace_events") or [])
         pending_orders = list(facts.get("pending_orders") or [])
         positions = list(facts.get("positions") or [])
         return {
             "stages": {
+                "pipeline_bar_closed": (
+                    "present"
+                    if self._has_pipeline_stage(pipeline_events, "bar_closed")
+                    else "missing"
+                ),
+                "pipeline_indicator_computed": (
+                    "present"
+                    if self._has_pipeline_stage(pipeline_events, "indicator_computed")
+                    else "missing"
+                ),
+                "pipeline_snapshot_published": (
+                    "present"
+                    if self._has_pipeline_stage(pipeline_events, "snapshot_published")
+                    else "missing"
+                ),
+                "pipeline_signal_filter": (
+                    "present"
+                    if self._has_pipeline_stage(pipeline_events, "signal_filter_decided")
+                    else "missing"
+                ),
+                "pipeline_signal_evaluated": (
+                    "present"
+                    if self._has_pipeline_stage(pipeline_events, "signal_evaluated")
+                    else "missing"
+                ),
                 "preview_signal": "present" if facts.get("signal_preview") else "missing",
                 "confirmed_signal": (
                     "present" if facts.get("signal_confirmed") else "missing"
@@ -133,6 +173,7 @@ class TradingFlowTraceReadModel:
                     "present" if facts.get("trade_outcomes") else "missing"
                 ),
             },
+            "pipeline_event_counts": self._count_by_key(pipeline_events, "event_type"),
             "command_counts": self._count_by_key(operations, "command_type"),
             "pending_status_counts": self._count_by_key(pending_orders, "status"),
             "position_status_counts": self._count_by_key(positions, "status"),
@@ -143,10 +184,14 @@ class TradingFlowTraceReadModel:
         *,
         signal_id: str,
         operations: Sequence[dict[str, Any]],
+        trace_ids: Sequence[str],
         pending_orders: Sequence[dict[str, Any]],
         positions: Sequence[dict[str, Any]],
     ) -> dict[str, Any]:
         request_ids = {signal_id}
+        normalized_trace_ids = {
+            str(item).strip() for item in trace_ids if str(item or "").strip()
+        }
         operation_ids: set[str] = set()
         order_tickets: set[int] = set()
         position_tickets: set[int] = set()
@@ -192,6 +237,7 @@ class TradingFlowTraceReadModel:
         return {
             "signal_id": signal_id,
             "request_ids": sorted(request_ids),
+            "trace_ids": sorted(normalized_trace_ids),
             "operation_ids": sorted(operation_ids),
             "order_tickets": sorted(order_tickets),
             "position_tickets": sorted(position_tickets),
@@ -203,6 +249,7 @@ class TradingFlowTraceReadModel:
         signal_id: str,
         preview_signal: Optional[dict[str, Any]],
         confirmed_signal: Optional[dict[str, Any]],
+        pipeline_events: Sequence[dict[str, Any]],
         auto_executions: Sequence[dict[str, Any]],
         operations: Sequence[dict[str, Any]],
         pending_orders: Sequence[dict[str, Any]],
@@ -211,6 +258,22 @@ class TradingFlowTraceReadModel:
         trade_outcomes: Sequence[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
+        for row in pipeline_events:
+            event_type = str(row.get("event_type") or "unknown")
+            stage = self._pipeline_stage_name(event_type)
+            events.append(
+                self._timeline_event(
+                    event_id=(
+                        f"{signal_id}:pipeline:{row.get('trace_id')}:{row.get('id') or self._datetime_key(row.get('recorded_at'))}:{event_type}"
+                    ),
+                    stage=stage,
+                    status=self._pipeline_status(row),
+                    at=row.get("recorded_at"),
+                    source="pipeline_trace_events",
+                    summary=self._pipeline_summary(row),
+                    details=row,
+                )
+            )
         if preview_signal is not None:
             events.append(
                 self._timeline_event(
@@ -346,6 +409,28 @@ class TradingFlowTraceReadModel:
             )
         return {"nodes": nodes, "edges": edges}
 
+    def _collect_trace_ids(
+        self,
+        *,
+        preview_signal: Optional[dict[str, Any]],
+        confirmed_signal: Optional[dict[str, Any]],
+        operations: Sequence[dict[str, Any]],
+    ) -> list[str]:
+        trace_ids: set[str] = set()
+        for row in (preview_signal, confirmed_signal):
+            if not row:
+                continue
+            metadata = row.get("metadata") or {}
+            trace_id = str(metadata.get("signal_trace_id") or "").strip()
+            if trace_id:
+                trace_ids.add(trace_id)
+        for row in operations:
+            for payload in (row.get("request_payload") or {}, row.get("response_payload") or {}):
+                trace_id = str(payload.get("trace_id") or "").strip()
+                if trace_id:
+                    trace_ids.add(trace_id)
+        return sorted(trace_ids)
+
     @staticmethod
     def _count_by_key(rows: Sequence[dict[str, Any]], key: str) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -374,6 +459,55 @@ class TradingFlowTraceReadModel:
             "summary": summary,
             "details": self._json_safe(details),
         }
+
+    @staticmethod
+    def _has_pipeline_stage(rows: Sequence[dict[str, Any]], event_type: str) -> bool:
+        target = str(event_type).strip()
+        return any(str(row.get("event_type") or "").strip() == target for row in rows)
+
+    @staticmethod
+    def _pipeline_stage_name(event_type: str) -> str:
+        normalized = str(event_type or "unknown").strip()
+        mapping = {
+            "bar_closed": "pipeline.bar_closed",
+            "indicator_computed": "pipeline.indicator_computed",
+            "snapshot_published": "pipeline.snapshot_published",
+            "signal_filter_decided": "pipeline.signal_filter",
+            "signal_evaluated": "pipeline.signal_evaluated",
+        }
+        return mapping.get(normalized, f"pipeline.{normalized}")
+
+    @staticmethod
+    def _pipeline_status(row: dict[str, Any]) -> str:
+        event_type = str(row.get("event_type") or "")
+        payload = row.get("payload") or {}
+        if event_type == "signal_filter_decided":
+            return "passed" if payload.get("allowed") else "blocked"
+        if event_type == "signal_evaluated":
+            return str(payload.get("signal_state") or "evaluated")
+        return "observed"
+
+    @classmethod
+    def _pipeline_summary(cls, row: dict[str, Any]) -> str:
+        event_type = str(row.get("event_type") or "")
+        payload = row.get("payload") or {}
+        if event_type == "bar_closed":
+            return "行情 bar close"
+        if event_type == "indicator_computed":
+            return "指标计算完成"
+        if event_type == "snapshot_published":
+            return "指标快照发布"
+        if event_type == "signal_filter_decided":
+            return (
+                f"信号过滤通过: {payload.get('category') or 'pass'}"
+                if payload.get("allowed")
+                else f"信号过滤拦截: {payload.get('reason') or 'unknown'}"
+            )
+        if event_type == "signal_evaluated":
+            strategy = payload.get("strategy") or "unknown"
+            direction = payload.get("direction") or "hold"
+            return f"策略评估: {strategy}/{direction}"
+        return f"Pipeline 事件: {event_type}"
 
     def _pending_event_time(self, row: dict[str, Any]) -> Any:
         status = str(row.get("status") or "")

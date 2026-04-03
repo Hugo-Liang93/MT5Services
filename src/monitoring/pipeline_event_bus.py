@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 PIPELINE_BAR_CLOSED = "bar_closed"
 PIPELINE_INDICATOR_COMPUTED = "indicator_computed"
 PIPELINE_SNAPSHOT_PUBLISHED = "snapshot_published"
+PIPELINE_SIGNAL_FILTER_DECIDED = "signal_filter_decided"
 PIPELINE_SIGNAL_EVALUATED = "signal_evaluated"
 
 
@@ -217,6 +218,37 @@ class PipelineEventBus:
                     "direction": direction,
                     "confidence": round(confidence, 4),
                     "signal_state": signal_state,
+                },
+            )
+        )
+
+    def emit_signal_filter_decided(
+        self,
+        trace_id: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        *,
+        allowed: bool,
+        reason: str,
+        category: str,
+        spread_points: float,
+        active_sessions: list[str] | None = None,
+    ) -> None:
+        self.emit(
+            PipelineEvent(
+                type=PIPELINE_SIGNAL_FILTER_DECIDED,
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                ts=datetime.now(timezone.utc).isoformat(),
+                payload={
+                    "allowed": bool(allowed),
+                    "reason": reason,
+                    "category": category,
+                    "spread_points": round(float(spread_points), 4),
+                    "active_sessions": list(active_sessions or []),
                 },
             )
         )

@@ -26,6 +26,7 @@ from src.trading.state_recovery import TradingStateRecovery
 from src.trading.state_recovery_policy import TradingStateRecoveryPolicy
 from src.trading.state_store import TradingStateStore
 from src.monitoring.pipeline_event_bus import PipelineEventBus
+from src.monitoring.pipeline_trace_recorder import PipelineTraceRecorder
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.trading.trade_outcome_tracker import TradeOutcomeTracker
@@ -78,6 +79,7 @@ class AppContainer:
         "health_monitor",
         "monitoring_manager",
         "pipeline_event_bus",
+        "pipeline_trace_recorder",
         "runtime_read_model",
         "trade_trace_read_model",
         "runtime_component_registry",
@@ -122,6 +124,7 @@ class AppContainer:
         self.health_monitor: Optional[Any] = None
         self.monitoring_manager: Optional[Any] = None
         self.pipeline_event_bus: Optional[PipelineEventBus] = None
+        self.pipeline_trace_recorder: Optional[PipelineTraceRecorder] = None
         self.runtime_read_model: Optional[RuntimeReadModel] = None
         self.trade_trace_read_model: Optional[TradingFlowTraceReadModel] = None
         self.runtime_component_registry: Optional[RuntimeComponentRegistry] = None

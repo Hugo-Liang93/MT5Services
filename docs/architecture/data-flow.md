@@ -20,6 +20,7 @@ MT5
 BackgroundIngestor -> StorageWriter -> TimescaleDB
 Indicator events -> runtime_data_dir/events.db
 Monitoring metrics -> runtime_data_dir/health_monitor.db
+PipelineEventBus -> PipelineTraceRecorder -> pipeline_trace_events
 ```
 
 ## 2. 数据生成链路
@@ -72,6 +73,7 @@ Monitoring metrics -> runtime_data_dir/health_monitor.db
 - SignalEvent
 - 信号跟踪记录
 - 自动交易触发
+- Pipeline trace 过滤/评估事件
 
 ### 2.4 交易执行
 
@@ -94,7 +96,13 @@ Monitoring metrics -> runtime_data_dir/health_monitor.db
 - signal_records
 - signal_outcomes
 - trade_outcomes
-- trade_operations
+- trade_command_audits
+
+除此之外，交易主链路可视化相关的结构化事实表包括：
+
+- `pipeline_trace_events`
+- `pending_order_states`
+- `position_runtime_states`
 
 ### 3.2 本地运行时状态
 
@@ -129,6 +137,16 @@ Monitoring metrics -> runtime_data_dir/health_monitor.db
 - trade_executor_summary
 - pending_entries_summary
 - tracked_positions_payload
+
+交易主链路 Trace 则独立为：
+
+```text
+pipeline_trace_events
++ signal_events / auto_executions / trade_command_audits
++ pending_order_states / position_runtime_states / trade_outcomes
+-> TradingFlowTraceReadModel
+-> /v1/trade/trace/{signal_id}
+```
 
 这样可以避免：
 

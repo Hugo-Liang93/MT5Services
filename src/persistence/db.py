@@ -19,6 +19,7 @@ from src.config import DBSettings
 from src.persistence.repositories import (
     EconomicCalendarRepository,
     MarketRepository,
+    PipelineTraceRepository,
     RuntimeStatusRepository,
     SignalEventRepository,
     TradingStateRepository,
@@ -45,6 +46,7 @@ class TimescaleWriter:
         self._trade_command_repo: Optional[TradeCommandAuditRepository] = None
         self._trading_state_repo: Optional[TradingStateRepository] = None
         self._economic_repo: Optional[EconomicCalendarRepository] = None
+        self._pipeline_trace_repo: Optional[PipelineTraceRepository] = None
         self._runtime_repo: Optional[RuntimeStatusRepository] = None
         self._init_pool()
 
@@ -78,6 +80,14 @@ class TimescaleWriter:
         if repo is None:
             repo = EconomicCalendarRepository(self)
             self._economic_repo = repo
+        return repo
+
+    @property
+    def pipeline_trace_repo(self) -> PipelineTraceRepository:
+        repo = getattr(self, "_pipeline_trace_repo", None)
+        if repo is None:
+            repo = PipelineTraceRepository(self)
+            self._pipeline_trace_repo = repo
         return repo
 
     @property
@@ -346,6 +356,12 @@ END $$;
 
     def write_trade_command_audits(self, rows, page_size: int = 200) -> None:
         self.trade_command_repo.write_trade_command_audits(rows, page_size=page_size)
+
+    def write_pipeline_trace_events(self, rows, page_size: int = 200) -> None:
+        self.pipeline_trace_repo.write_pipeline_trace_events(rows, page_size=page_size)
+
+    def fetch_pipeline_trace_events(self, **kwargs):
+        return self.pipeline_trace_repo.fetch_pipeline_trace_events(**kwargs)
 
     def fetch_trade_command_audits(self, **kwargs):
         return self.trade_command_repo.fetch_trade_command_audits(**kwargs)

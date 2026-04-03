@@ -46,6 +46,7 @@ from src.config import (
 )
 from src.monitoring import get_health_monitor, get_monitoring_manager
 from src.monitoring.pipeline_event_bus import PipelineEventBus
+from src.monitoring.pipeline_trace_recorder import PipelineTraceRecorder
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.studio.runtime import build_studio_service
@@ -95,6 +96,11 @@ def build_app_container(
     container.pipeline_event_bus = PipelineEventBus()
     container.indicator_manager._pipeline_event_bus = container.pipeline_event_bus
     container.indicator_manager._current_trace_id = None
+    if container.storage_writer is not None:
+        container.pipeline_trace_recorder = PipelineTraceRecorder(
+            pipeline_bus=container.pipeline_event_bus,
+            db_writer=container.storage_writer.db,
+        )
 
     # Phase 2: trading and economic calendar
     trading_components = build_trading_components(
@@ -276,6 +282,7 @@ def build_app_container(
         container.trade_trace_read_model = TradingFlowTraceReadModel(
             signal_repo=container.storage_writer.db.signal_repo,
             command_audit_repo=container.storage_writer.db.trade_command_repo,
+            pipeline_trace_repo=container.storage_writer.db.pipeline_trace_repo,
             trading_state_repo=container.storage_writer.db.trading_state_repo,
             account_alias_getter=lambda: container.trade_module.active_account_alias,
         )
@@ -495,6 +502,24 @@ def _build_runtime_component_registry(
                 is_running_fn=lambda: bool(
                     container.ingestor is not None
                     and container.ingestor.is_running()
+                ),
+            ),
+            FunctionalRuntimeComponent(
+                name="pipeline_trace",
+                supported_modes=signal_modes,
+                start_fn=lambda: (
+                    container.pipeline_trace_recorder.start()
+                    if container.pipeline_trace_recorder is not None
+                    else None
+                ),
+                stop_fn=lambda: (
+                    container.pipeline_trace_recorder.stop()
+                    if container.pipeline_trace_recorder is not None
+                    else None
+                ),
+                is_running_fn=lambda: bool(
+                    container.pipeline_trace_recorder is not None
+                    and container.pipeline_trace_recorder.is_running()
                 ),
             ),
             FunctionalRuntimeComponent(

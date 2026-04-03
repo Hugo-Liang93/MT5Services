@@ -16,6 +16,7 @@ class _SignalRepo:
                 "strategy": "trendline",
                 "direction": "buy",
                 "confidence": 0.62,
+                "metadata": {"signal_trace_id": "trace-1"},
             }
         return {
             "generated_at": datetime(2026, 1, 1, 8, 15, tzinfo=timezone.utc),
@@ -25,6 +26,7 @@ class _SignalRepo:
             "strategy": "trendline",
             "direction": "buy",
             "confidence": 0.68,
+            "metadata": {"signal_trace_id": "trace-1"},
         }
 
     def fetch_auto_executions(self, *, signal_id: str, limit: int = 50):
@@ -73,6 +75,67 @@ class _TradeRepo:
         ]
 
 
+class _PipelineTraceRepo:
+    def fetch_pipeline_trace_events(self, *, trace_ids, limit: int = 500):
+        assert trace_ids == ["trace-1"]
+        return [
+            {
+                "id": 1,
+                "trace_id": "trace-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "scope": "confirmed",
+                "event_type": "bar_closed",
+                "recorded_at": datetime(2026, 1, 1, 7, 59, tzinfo=timezone.utc),
+                "payload": {"bar_time": "2026-01-01T07:59:00+00:00"},
+            },
+            {
+                "id": 2,
+                "trace_id": "trace-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "scope": "confirmed",
+                "event_type": "indicator_computed",
+                "recorded_at": datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
+                "payload": {"indicator_count": 5},
+            },
+            {
+                "id": 3,
+                "trace_id": "trace-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "scope": "confirmed",
+                "event_type": "snapshot_published",
+                "recorded_at": datetime(2026, 1, 1, 8, 0, 5, tzinfo=timezone.utc),
+                "payload": {"indicator_count": 5},
+            },
+            {
+                "id": 4,
+                "trace_id": "trace-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "scope": "confirmed",
+                "event_type": "signal_filter_decided",
+                "recorded_at": datetime(2026, 1, 1, 8, 0, 10, tzinfo=timezone.utc),
+                "payload": {"allowed": True, "category": "_pass", "reason": ""},
+            },
+            {
+                "id": 5,
+                "trace_id": "trace-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "scope": "confirmed",
+                "event_type": "signal_evaluated",
+                "recorded_at": datetime(2026, 1, 1, 8, 15, tzinfo=timezone.utc),
+                "payload": {
+                    "strategy": "trendline",
+                    "direction": "buy",
+                    "signal_state": "confirmed",
+                },
+            },
+        ]
+
+
 class _TradingStateRepo:
     def fetch_pending_order_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
         return [
@@ -102,6 +165,7 @@ def test_trade_trace_projection_aggregates_signal_to_outcome_chain() -> None:
     read_model = TradingFlowTraceReadModel(
         signal_repo=_SignalRepo(),
         command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=_PipelineTraceRepo(),
         trading_state_repo=_TradingStateRepo(),
         account_alias_getter=lambda: "live",
     )
@@ -110,13 +174,17 @@ def test_trade_trace_projection_aggregates_signal_to_outcome_chain() -> None:
 
     assert trace["found"] is True
     assert trace["identifiers"]["signal_id"] == "sig-1"
+    assert trace["identifiers"]["trace_ids"] == ["trace-1"]
     assert trace["identifiers"]["order_tickets"] == [7001]
     assert trace["identifiers"]["position_tickets"] == [8001]
+    assert trace["summary"]["stages"]["pipeline_bar_closed"] == "present"
+    assert trace["summary"]["stages"]["pipeline_signal_filter"] == "present"
+    assert trace["summary"]["pipeline_event_counts"]["signal_filter_decided"] == 1
     assert trace["summary"]["stages"]["confirmed_signal"] == "present"
     assert trace["summary"]["pending_status_counts"]["filled"] == 1
     assert trace["summary"]["position_status_counts"]["closed"] == 1
     assert trace["summary"]["command_counts"]["execute_trade"] == 1
-    assert trace["timeline"][0]["stage"] == "signal.preview"
+    assert trace["timeline"][0]["stage"] == "pipeline.bar_closed"
     assert trace["timeline"][-1]["stage"] == "outcome.trade"
     assert len(trace["graph"]["nodes"]) == len(trace["timeline"])
     assert len(trace["graph"]["edges"]) == len(trace["timeline"]) - 1

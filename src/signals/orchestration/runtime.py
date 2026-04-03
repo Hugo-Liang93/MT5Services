@@ -1492,6 +1492,7 @@ class SignalRuntime:
         if self.filter_chain is None:
             return True
         spread_points = float(metadata.get("spread_points", 0.0))
+        trace_id = str(metadata.get("signal_trace_id") or "").strip()
         allowed, reason = self.filter_chain.should_evaluate(
             symbol,
             spread_points=spread_points,
@@ -1499,6 +1500,20 @@ class SignalRuntime:
             active_sessions=active_sessions,
             indicators=indicators,
         )
+        pipeline_bus = getattr(self, "_pipeline_event_bus", None)
+        category = reason.split(":")[0] if reason else "_pass"
+        if pipeline_bus is not None and trace_id:
+            pipeline_bus.emit_signal_filter_decided(
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                allowed=allowed,
+                reason=reason or "",
+                category=category,
+                spread_points=spread_points,
+                active_sessions=active_sessions,
+            )
         if allowed:
             scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
             scope_stats["passed"] += 1
