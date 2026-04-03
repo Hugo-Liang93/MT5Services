@@ -163,6 +163,38 @@
 3. 复杂子域的根路由文件只作为组合根，不直接承载全部实现。
 4. 前端核心只读接口优先提供稳定 schema，避免长期使用 `ApiResponse[dict]` 作为主契约。
 
+## `src/signals/orchestration/` 规范
+
+`signals/orchestration` 负责信号运行时编排，但应保持“薄协调器 + 明确协作者”的结构：
+
+- `runtime.py`
+  - 运行时协调器
+  - 组件生命周期
+  - 队列与后台主循环入口
+- `runtime_recovery.py`
+  - 运行态恢复
+  - confirmed/preview 状态还原
+- `runtime_processing.py`
+  - 事件出队
+  - filter/regime 处理
+  - 单事件处理流程
+- `runtime_evaluator.py`
+  - 策略评估
+  - confidence 调整
+  - 状态迁移与 signal 发布
+- `state_machine.py`
+  - confirmed/preview 状态迁移规则
+- `vote_processor.py`
+  - 投票融合
+- `htf_resolver.py`
+  - HTF 指标解析与对齐辅助
+
+### `signals/orchestration` 导入规则
+
+1. `runtime.py` 作为门面与协调器，不再承载所有细节实现。
+2. 新增运行时逻辑时，优先归入 `runtime_recovery.py`、`runtime_processing.py`、`runtime_evaluator.py` 这类明确职责文件。
+3. 状态迁移、投票、HTF 解析等独立规则优先留在独立协作者文件，不回流到 `runtime.py`。
+
 ## 新增文件归位规则
 
 新增实现文件前，按以下顺序判断：

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import dataclasses as _dc
 import logging
 import queue
 from collections import deque
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -19,8 +18,6 @@ from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
 
-from ..confidence import apply_intrabar_decay
-from ..evaluation.indicators_helpers import extract_close_price
 from ..evaluation.regime import (
     MarketRegimeDetector,
     RegimeTracker,
@@ -40,9 +37,30 @@ from .htf_resolver import (
     resolve_htf_indicators,
 )
 from .policy import RuntimeSignalState, SignalPolicy
+from .runtime_evaluator import (
+    apply_confidence_adjustments as _runtime_apply_confidence_adjustments,
+    evaluate_strategies as _runtime_evaluate_strategies,
+    get_vote_emit_kwargs as _runtime_get_vote_emit_kwargs,
+    market_structure_lookback_bars as _runtime_market_structure_lookback_bars,
+    process_voting as _runtime_process_voting,
+    publish_signal_event as _runtime_publish_signal_event,
+    resolve_market_structure_context as _runtime_resolve_market_structure_context,
+    transition_and_publish as _runtime_transition_and_publish,
+)
+from .runtime_processing import (
+    apply_filter_chain as _runtime_apply_filter_chain,
+    dequeue_event as _runtime_dequeue_event,
+    detect_regime as _runtime_detect_regime,
+    is_stale_intrabar as _runtime_is_stale_intrabar,
+    process_next_event as _runtime_process_next_event,
+)
+from .runtime_recovery import (
+    restore_confirmed_state as _runtime_restore_confirmed_state,
+    restore_preview_state as _runtime_restore_preview_state,
+    restore_state as _runtime_restore_state,
+)
 from .vote_processor import (
     fuse_vote_decisions,
-    process_voting as _do_process_voting,
 )
 from .state_machine import (
     build_transition_metadata,
@@ -731,69 +749,9 @@ class SignalRuntime:
         indicators: dict[str, dict[str, float]],
         transition_metadata: dict[str, Any],
     ) -> None:
-        with self._signal_listeners_lock:
-            listeners = list(self._signal_listeners)
-        if not listeners:
-            return
-        signal_state = transition_metadata.get("signal_state", "")
-        event = SignalEvent(
-            symbol=decision.symbol,
-            timeframe=decision.timeframe,
-            strategy=decision.strategy,
-            direction=decision.direction,
-            confidence=decision.confidence,
-            signal_state=signal_state,
-            scope=scope,
-            indicators=indicators,
-            metadata=transition_metadata,
-            generated_at=decision.timestamp,
-            signal_id=signal_id,
-            reason=decision.reason,
+        _runtime_publish_signal_event(
+            self, decision, signal_id, scope, indicators, transition_metadata
         )
-        # Pipeline trace: broadcast signal_evaluated event
-        pipeline_bus = getattr(self, "_pipeline_event_bus", None)
-        trace_id = transition_metadata.get("signal_trace_id")
-        if pipeline_bus is not None and trace_id:
-            pipeline_bus.emit_signal_evaluated(
-                trace_id=trace_id,
-                symbol=decision.symbol,
-                timeframe=decision.timeframe,
-                scope=scope,
-                strategy=decision.strategy,
-                direction=decision.direction,
-                confidence=decision.confidence,
-                signal_state=signal_state,
-            )
-        listeners_to_remove: list[Callable] = []
-        for listener in listeners:
-            lid = id(listener)
-            try:
-                listener(event)
-                # 成功回调后清空该 listener 的连续失败计数。
-                self._listener_fail_counts.pop(lid, None)
-            except Exception as exc:
-                fail_count = self._listener_fail_counts.get(lid, 0) + 1
-                self._listener_fail_counts[lid] = fail_count
-                listener_name = getattr(listener, "__name__", repr(listener))
-                error_msg = f"Signal listener error [{listener_name}]: {exc} (failures={fail_count})"
-                self._last_error = error_msg
-                logger.error(error_msg, exc_info=True)
-                if fail_count >= self._LISTENER_MAX_CONSECUTIVE_FAILURES:
-                    logger.error(
-                        "LISTENER CIRCUIT BREAK: %s reached %d consecutive failures, "
-                        "auto-deregistering to prevent cascading errors",
-                        listener_name,
-                        fail_count,
-                    )
-                    listeners_to_remove.append(listener)
-        if listeners_to_remove:
-            with self._signal_listeners_lock:
-                for listener in listeners_to_remove:
-                    try:
-                        self._signal_listeners.remove(listener)
-                    except ValueError:
-                        pass
-                    self._listener_fail_counts.pop(id(listener), None)
 
     @staticmethod
     def _parse_event_time(value: Any) -> datetime:
@@ -825,61 +783,7 @@ class SignalRuntime:
         )
 
     def _restore_state(self) -> None:
-        recent_signals = getattr(self.service, "recent_signals", None)
-        if not callable(recent_signals):
-            return
-
-        limit = max(len(self._targets) * 6, 200)
-        try:
-            rows = recent_signals(scope="all", limit=limit)
-        except Exception:
-            logger.exception("Failed to restore signal runtime state from repository")
-            return
-
-        now = datetime.now(timezone.utc)
-        restored_confirmed: set[tuple[str, str, str]] = set()
-        restored_preview: set[tuple[str, str, str]] = set()
-        # Track the timestamp of each restored confirmed state so that
-        # preview rows for the same key that pre-date the confirmed event
-        # are not mistakenly restored on top of it.
-        restored_confirmed_at: dict[tuple[str, str, str], datetime] = {}
-        for row in rows:
-            key = (row.get("symbol"), row.get("timeframe"), row.get("strategy"))
-            if key[0] is None or key[1] is None or key[2] is None:
-                continue
-            metadata = row.get("metadata") or {}
-            signal_state = str(metadata.get("signal_state", "")).strip().lower()
-            scope = (
-                str(row.get("scope") or metadata.get("scope") or "confirmed")
-                .strip()
-                .lower()
-            )
-            generated_at_raw = row.get("generated_at") or metadata.get("snapshot_time")
-            bar_time_raw = metadata.get("bar_time") or row.get("generated_at")
-            if generated_at_raw is None or bar_time_raw is None:
-                continue
-            generated_at = self._parse_event_time(generated_at_raw)
-            bar_time = self._parse_event_time(bar_time_raw)
-            state = self._state_by_target.setdefault(key, RuntimeSignalState())
-
-            if scope == "confirmed" and key not in restored_confirmed:
-                restored_confirmed.add(key)
-                restored_confirmed_at[key] = generated_at
-                self._restore_confirmed_state(
-                    state, signal_state, generated_at, bar_time
-                )
-                continue
-
-            if scope in {"preview", "intrabar"} and key not in restored_preview:
-                # Don't restore a preview state that pre-dates an already-
-                # restored confirmed event: the confirmed state supersedes it.
-                confirmed_at = restored_confirmed_at.get(key)
-                if confirmed_at is not None and generated_at <= confirmed_at:
-                    continue
-                restored_preview.add(key)
-                self._restore_preview_state(
-                    key[1], state, signal_state, generated_at, bar_time, now
-                )
+        _runtime_restore_state(self)
 
     def _restore_confirmed_state(
         self,
@@ -888,20 +792,7 @@ class SignalRuntime:
         generated_at: datetime,
         bar_time: datetime,
     ) -> None:
-        if signal_state == "confirmed_cancelled":
-            state.confirmed_state = "idle"
-            state.confirmed_bar_time = bar_time
-            state.last_emitted_state = signal_state
-            state.last_emitted_at = generated_at
-            state.last_emitted_bar_time = bar_time
-            return
-        if signal_state not in {"confirmed_buy", "confirmed_sell"}:
-            return
-        state.confirmed_state = signal_state
-        state.confirmed_bar_time = bar_time
-        state.last_emitted_state = signal_state
-        state.last_emitted_at = generated_at
-        state.last_emitted_bar_time = bar_time
+        _runtime_restore_confirmed_state(state, signal_state, generated_at, bar_time)
 
     def _restore_preview_state(
         self,
@@ -912,23 +803,9 @@ class SignalRuntime:
         bar_time: datetime,
         now: datetime,
     ) -> None:
-        if signal_state not in {
-            "preview_buy",
-            "preview_sell",
-            "armed_buy",
-            "armed_sell",
-        }:
-            return
-        if now >= bar_time + timedelta(seconds=max(timeframe_seconds(timeframe), 1)):
-            return
-        action = signal_state.rsplit("_", 1)[-1]
-        state.preview_state = signal_state
-        state.preview_action = action
-        state.preview_bar_time = bar_time
-        state.preview_since = generated_at
-        state.last_emitted_state = signal_state
-        state.last_emitted_at = generated_at
-        state.last_emitted_bar_time = bar_time
+        _runtime_restore_preview_state(
+            timeframe, state, signal_state, generated_at, bar_time, now
+        )
 
     @staticmethod
     def _should_emit(
@@ -1053,214 +930,18 @@ class SignalRuntime:
         bar_time: datetime,
         active_sessions: list[str],
     ) -> list:
-        """评估单个 snapshot 下所有可运行策略，并返回 SignalDecision 列表。
-
-        流程包括：
-        1. 按 scope / regime / affinity 做预筛选
-        2. 裁剪 scoped_indicators
-        3. 校验 snapshot signature 是否为新快照
-        4. 调用 service.evaluate()
-        5. 驱动 transition_confirmed / transition_intrabar
-        6. 汇总结果并更新运行时统计
-        """
-        snapshot_decisions: list = []
-        min_affinity_skip = self.policy.min_affinity_skip
-        # 市场结构上下文按 snapshot 只解析一次，随后复用到同批所有策略的 metadata。
-        _structure_resolved = False
-        strategies = self._target_index.get((symbol, timeframe), [])
-        shard_lock = self._get_shard_lock(symbol, timeframe)
-
-        # Pre-parse soft regime once for all strategies in this snapshot
-        _soft_parsed: SoftRegimeResult | None = None
-        if self._soft_regime_enabled and regime_metadata.get("_soft_regime"):
-            try:
-                _soft_parsed = SoftRegimeResult.from_dict(
-                    regime_metadata["_soft_regime"]
-                )
-            except Exception:
-                logger.info(
-                    "Failed to parse soft regime for %s/%s, falling back to hard regime",
-                    symbol,
-                    timeframe,
-                    exc_info=True,
-                )
-
-        # event impact forecast 使用 5 分钟 TTL 缓存，避免每个 confirmed bar 都重复查服务/DB。
-        _event_impact: dict[str, Any] | None = None
-        _impact_analyzer = getattr(self, "_market_impact_analyzer", None)
-        if _impact_analyzer is not None and scope == "confirmed":
-            cache = self._event_impact_cache
-            if event_time >= cache.get("expires_at", event_time):
-                try:
-                    eco_service = getattr(self, "_economic_calendar_service", None)
-                    if eco_service is not None:
-                        upcoming_events = eco_service.get_high_impact_events(
-                            hours=2, limit=1
-                        )
-                        if upcoming_events:
-                            cache["data"] = _impact_analyzer.get_impact_forecast(
-                                upcoming_events[0].event_name, symbol=symbol
-                            )
-                        else:
-                            cache["data"] = None
-                    cache["expires_at"] = event_time + timedelta(minutes=5)
-                except Exception:
-                    cache["data"] = None
-                    cache["expires_at"] = event_time + timedelta(minutes=5)
-            _event_impact = cache.get("data")
-
-        for strategy in strategies:
-            allowed_sessions = self.policy.strategy_sessions.get(strategy, ())
-            if allowed_sessions and not any(
-                session_name in allowed_sessions for session_name in active_sessions
-            ):
-                continue
-
-            allowed_timeframes = self.policy.strategy_timeframes.get(strategy, ())
-            if allowed_timeframes and timeframe not in allowed_timeframes:
-                continue
-
-            allowed_scopes = self._strategy_scopes.get(
-                strategy, frozenset(("intrabar", "confirmed"))
-            )
-            if scope not in allowed_scopes:
-                continue
-
-            required_indicators = self._strategy_requirements.get(strategy, ())
-            if required_indicators:
-                missing = [ind for ind in required_indicators if ind not in indicators]
-                if missing:
-                    # 缺指标计数按 (symbol, tf, strategy) 聚合，仅在首次与每 100 次时打印告警。
-                    miss_key = (symbol, timeframe, strategy)
-                    self._indicator_miss_counts[miss_key] = (
-                        self._indicator_miss_counts.get(miss_key, 0) + 1
-                    )
-                    # miss key 过多时只保留 top-200 高频项，避免计数表无限增长。
-                    if len(self._indicator_miss_counts) > 600:
-                        _keep_top = 200
-                        _sorted = sorted(
-                            self._indicator_miss_counts,
-                            key=self._indicator_miss_counts.get,  # type: ignore[arg-type]
-                            reverse=True,
-                        )
-                        _keep_set = set(_sorted[:_keep_top])
-                        for _k in list(self._indicator_miss_counts):
-                            if _k not in _keep_set:
-                                self._indicator_miss_counts.pop(_k, None)
-                    if (
-                        self._indicator_miss_counts[miss_key] <= 1
-                        or self._indicator_miss_counts[miss_key] % 100 == 0
-                    ):
-                        logger.warning(
-                            "Strategy %s/%s/%s skipped: missing indicators %s (count=%d)",
-                            symbol,
-                            timeframe,
-                            strategy,
-                            missing,
-                            self._indicator_miss_counts[miss_key],
-                        )
-                    continue
-                scoped_indicators = {
-                    ind: indicators[ind] for ind in required_indicators
-                }
-            else:
-                scoped_indicators = indicators
-
-            # Pre-flight affinity gate 在 evaluate() 前运行，直接跳过明显不匹配当前 regime 的策略。
-            if min_affinity_skip > 0.0:
-                affinity = self._effective_affinity(
-                    strategy,
-                    regime,
-                    regime_metadata.get("_soft_regime"),
-                    _parsed_cache=_soft_parsed,
-                )
-                if affinity < min_affinity_skip:
-                    self._affinity_gates_skipped += 1
-                    tf_skip = self._per_tf_skips.setdefault(timeframe, {"affinity": 0, "raw_conf": 0})
-                    tf_skip["affinity"] += 1
-                    continue
-                regime_metadata["_pre_computed_affinity"] = affinity
-            else:
-                regime_metadata.pop("_pre_computed_affinity", None)
-
-            with shard_lock:
-                state = self._state_by_target.setdefault(
-                    (symbol, timeframe, strategy), RuntimeSignalState()
-                )
-            if not self._is_new_snapshot(
-                state,
-                scope=scope,
-                event_time=event_time,
-                bar_time=bar_time,
-                indicators=scoped_indicators,
-            ):
-                continue
-
-            # 市场结构上下文只解析一次，并共享给同一快照下的所有策略评估。
-            if not _structure_resolved and self._market_structure_analyzer is not None:
-                _structure_resolved = True
-                try:
-                    structure_context = self._resolve_market_structure_context(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        scope=scope,
-                        event_time=event_time,
-                        bar_time=bar_time,
-                        latest_close=regime_metadata.get("close_price"),
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to build market structure context for %s/%s",
-                        symbol,
-                        timeframe,
-                        exc_info=True,
-                    )
-                    structure_context = {}
-                if structure_context:
-                    regime_metadata["market_structure"] = structure_context
-
-            # Event impact forecast 命中时写入 metadata，供策略做事件前避险或降权。
-            if _event_impact is not None:
-                regime_metadata["_event_impact_forecast"] = _event_impact
-
-            # HTF 指标按 INI [strategy_htf] 配置解析，并在本轮 evaluate() 时透传。
-            htf_spec = self._strategy_htf_config.get(strategy)
-            htf_payload: dict[str, dict[str, dict[str, Any]]] = (
-                self._resolve_htf_indicators(symbol, timeframe, htf_spec)
-                if self._htf_indicators_enabled and htf_spec
-                else {}
-            )
-
-            decision = self.service.evaluate(
-                symbol=symbol,
-                timeframe=timeframe,
-                strategy=strategy,
-                indicators=scoped_indicators,
-                metadata=regime_metadata,
-                persist=False,
-                htf_indicators=htf_payload,
-            )
-            decision = self._apply_confidence_adjustments(
-                decision, symbol, timeframe, strategy, scope, regime_metadata,
-            )
-            snapshot_decisions.append(decision)
-
-            # Per-TF 评估计数。
-            tf_eval = self._per_tf_eval_stats.setdefault(
-                timeframe, {"evaluated": 0, "hold": 0, "buy_sell": 0, "below_min_conf": 0}
-            )
-            tf_eval["evaluated"] += 1
-            if decision.direction in ("buy", "sell"):
-                tf_eval["buy_sell"] += 1
-            else:
-                tf_eval["hold"] += 1
-
-            self._transition_and_publish(
-                state, decision, scope, event_time, bar_time,
-                regime_metadata, scoped_indicators, indicators,
-            )
-
-        return snapshot_decisions
+        return _runtime_evaluate_strategies(
+            self,
+            symbol,
+            timeframe,
+            scope,
+            indicators,
+            regime,
+            regime_metadata,
+            event_time,
+            bar_time,
+            active_sessions,
+        )
 
     def _apply_confidence_adjustments(
         self,
@@ -1271,38 +952,9 @@ class SignalRuntime:
         scope: str,
         regime_metadata: dict[str, Any],
     ) -> Any:
-        """Apply HTF alignment first, then intrabar decay.
-
-        先应用 HTF 方向对齐的置信度修正，再对 intrabar 做衰减。
-        intrabar 的降权只影响未收盘快照，不会覆盖 confirmed bar 的最终置信度。
-        """
-        # 1. HTF 对齐优先，先把顺势增益或逆势惩罚体现在 confidence 上。
-        if decision.direction in ("buy", "sell"):
-            htf_mul, htf_dir = self._compute_htf_alignment(
-                symbol, timeframe, decision.direction, scope,
-            )
-            if htf_mul is not None:
-                decision = _dc.replace(
-                    decision,
-                    confidence=min(1.0, decision.confidence * htf_mul),
-                )
-                regime_metadata["htf_direction"] = htf_dir
-                regime_metadata["htf_alignment"] = (
-                    "aligned" if htf_mul >= 1.0 else "conflict"
-                )
-                regime_metadata["htf_confidence_multiplier"] = htf_mul
-        # 2. Intrabar 衰减只在 scope=intrabar 时生效，避免覆盖 HTF 调整后的 confirmed 结果。
-        if scope == "intrabar":
-            decay = self._strategy_intrabar_decay.get(
-                strategy, self._intrabar_confidence_factor
-            )
-            decision = apply_intrabar_decay(decision, scope, decay)
-        # 3. 对可交易方向施加最小置信度地板，防止修正后跌到接近 0 的极端值。
-        if decision.confidence > 0 and decision.direction in ("buy", "sell"):
-            floor = self._confidence_floor if hasattr(self, "_confidence_floor") else 0.10
-            if decision.confidence < floor:
-                decision = _dc.replace(decision, confidence=floor)
-        return decision
+        return _runtime_apply_confidence_adjustments(
+            self, decision, symbol, timeframe, strategy, scope, regime_metadata
+        )
 
     def _transition_and_publish(
         self,
@@ -1315,62 +967,20 @@ class SignalRuntime:
         scoped_indicators: dict[str, dict[str, float]],
         full_indicators: dict[str, dict[str, float]],
     ) -> None:
-        """驱动状态机转移、持久化 actionable 决策并发布 SignalEvent。"""
-        transition_metadata = (
-            self._transition_confirmed(
-                state, decision.direction, event_time, bar_time, regime_metadata
-            )
-            if scope == "confirmed"
-            else self._transition_intrabar(
-                state,
-                decision.direction,
-                decision.confidence,
-                event_time,
-                bar_time,
-                regime_metadata,
-            )
-        )
-        if transition_metadata is None:
-            return
-
-        # 将策略 category 写入 metadata，供 TradeExecutor 处理 HTF 冲突豁免等执行规则。
-        _strat_obj = self.service.get_strategy(decision.strategy)
-        if _strat_obj is not None:
-            transition_metadata["strategy_category"] = getattr(
-                _strat_obj, "category", ""
-            )
-
-        # Voting group members only contribute votes; no standalone signal.
-        if decision.strategy in self._voting_group_members:
-            return
-
-        signal_id = ""
-        is_actionable = decision.direction in ("buy", "sell")
-        if transition_metadata.get("state_changed", True):
-            record = self.service.persist_decision(
-                decision, indicators=scoped_indicators, metadata=transition_metadata
-            )
-            signal_id = record.signal_id if record is not None else uuid4().hex[:12]
-        elif is_actionable:
-            signal_id = uuid4().hex[:12]
-
-        self._publish_signal_event(
-            decision, signal_id, scope, full_indicators, transition_metadata
+        _runtime_transition_and_publish(
+            self,
+            state,
+            decision,
+            scope,
+            event_time,
+            bar_time,
+            regime_metadata,
+            scoped_indicators,
+            full_indicators,
         )
 
     def _market_structure_lookback_bars(self, timeframe: str) -> int | None:
-        analyzer = self._market_structure_analyzer
-        if analyzer is None:
-            return None
-        analyzer_config = getattr(analyzer, "config", None)
-        default_lookback = int(getattr(analyzer_config, "lookback_bars", 400))
-        # M1/M5 使用更短的 lookback bars，避免市场结构分析在低周期上过重。
-        if str(timeframe).strip().upper() in ("M1", "M5"):
-            return max(
-                2,
-                int(getattr(analyzer_config, "m1_lookback_bars", 120) or 120),
-            )
-        return default_lookback
+        return _runtime_market_structure_lookback_bars(self, timeframe)
 
     def _resolve_market_structure_context(
         self,
@@ -1382,29 +992,18 @@ class SignalRuntime:
         bar_time: datetime,
         latest_close: float | None,
     ) -> dict[str, Any]:
-        analyzer = self._market_structure_analyzer
-        if analyzer is None:
-            return {}
-
-        return analyzer.analyze_cached(
-            symbol,
-            timeframe,
+        return _runtime_resolve_market_structure_context(
+            self,
+            symbol=symbol,
+            timeframe=timeframe,
             scope=scope,
             event_time=event_time,
+            bar_time=bar_time,
             latest_close=latest_close,
-            lookback_bars_override=self._market_structure_lookback_bars(timeframe),
         )
 
     def _get_vote_emit_kwargs(self) -> dict:
-        """构造投票融合阶段所需的回调与共享状态。"""
-        return dict(
-            state_by_target=self._state_by_target,
-            get_shard_lock=self._get_shard_lock,
-            transition_confirmed_fn=self._transition_confirmed,
-            transition_intrabar_fn=self._transition_intrabar,
-            persist_fn=self.service.persist_decision,
-            publish_fn=self._publish_signal_event,
-        )
+        return _runtime_get_vote_emit_kwargs(self)
 
     def _process_voting(
         self,
@@ -1419,8 +1018,8 @@ class SignalRuntime:
         event_time: datetime,
         bar_time: datetime,
     ) -> None:
-        # Publish the signal event assembled by the runtime.
-        _do_process_voting(
+        _runtime_process_voting(
+            self,
             snapshot_decisions,
             symbol,
             timeframe,
@@ -1431,56 +1030,15 @@ class SignalRuntime:
             indicators,
             event_time,
             bar_time,
-            voting_engine=self._voting_engine,
-            voting_group_engines=self._voting_group_engines,
-            fusion_cache=self._vote_fusion_cache,
-            **self._get_vote_emit_kwargs(),
         )
 
     _CONFIRMED_BURST_LIMIT = 5  # 连续处理 N 个 confirmed 后，主动让出一次机会给 intrabar。
 
     def _dequeue_event(self, timeout: float) -> tuple | None:
-        """按 anti-starvation 策略从 confirmed/intrabar 队列中取下一条事件。"""
-        try:
-            event = self._confirmed_events.get_nowait()
-            self._confirmed_burst_count += 1
-            if self._confirmed_burst_count >= self._CONFIRMED_BURST_LIMIT:
-                self._confirmed_burst_count = 0
-                try:
-                    intrabar_event = self._intrabar_events.get_nowait()
-                    try:
-                        self._confirmed_events.put_nowait(event)
-                    except queue.Full:
-                        logger.warning("Confirmed event queue full, dropping re-queued event")
-                    event = intrabar_event
-                except queue.Empty:
-                    pass
-            return event
-        except queue.Empty:
-            self._confirmed_burst_count = 0
-            try:
-                return self._intrabar_events.get(timeout=timeout)
-            except queue.Empty:
-                return None
+        return _runtime_dequeue_event(self, timeout)
 
     def _is_stale_intrabar(self, scope: str, symbol: str, timeframe: str, metadata: dict[str, Any]) -> bool:
-        """判断 intrabar 事件是否已在队列中滞留过久。"""
-        if scope != "intrabar":
-            return False
-        enqueued_raw = metadata.get("_enqueued_at")
-        if enqueued_raw is None:
-            return False
-        try:
-            queue_age = time.monotonic() - float(enqueued_raw)
-            if queue_age > 300.0:
-                logger.debug(
-                    "Dropping stale intrabar event for %s/%s (queue_age=%.1fs)",
-                    symbol, timeframe, queue_age,
-                )
-                return True
-        except (TypeError, ValueError):
-            logger.debug("Failed to parse _enqueued_at for %s/%s intrabar event", symbol, timeframe)
-        return False
+        return _runtime_is_stale_intrabar(scope, symbol, timeframe, metadata)
 
     def _apply_filter_chain(
         self, symbol: str, scope: str, timeframe: str,
@@ -1488,47 +1046,16 @@ class SignalRuntime:
         active_sessions: list[str],
         metadata: dict[str, Any],
     ) -> bool:
-        """执行 FilterChain 过滤，并同步维护按 scope 的统计窗口。"""
-        if self.filter_chain is None:
-            return True
-        spread_points = float(metadata.get("spread_points", 0.0))
-        trace_id = str(metadata.get("signal_trace_id") or "").strip()
-        allowed, reason = self.filter_chain.should_evaluate(
+        return _runtime_apply_filter_chain(
+            self,
             symbol,
-            spread_points=spread_points,
-            utc_now=event_time,
-            active_sessions=active_sessions,
-            indicators=indicators,
+            scope,
+            timeframe,
+            event_time,
+            indicators,
+            active_sessions,
+            metadata,
         )
-        pipeline_bus = getattr(self, "_pipeline_event_bus", None)
-        category = reason.split(":")[0] if reason else "_pass"
-        if pipeline_bus is not None and trace_id:
-            pipeline_bus.emit_signal_filter_decided(
-                trace_id=trace_id,
-                symbol=symbol,
-                timeframe=timeframe,
-                scope=scope,
-                allowed=allowed,
-                reason=reason or "",
-                category=category,
-                spread_points=spread_points,
-                active_sessions=active_sessions,
-            )
-        if allowed:
-            scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
-            scope_stats["passed"] += 1
-            self._filter_window.append((time.monotonic(), scope, "_pass"))
-            return True
-
-        log_fn = logger.info if scope == "confirmed" else logger.debug
-        log_fn("Signal evaluation skipped for %s/%s [%s]: %s", symbol, timeframe, scope, reason)
-        # 将 reason 按前缀归类，便于统计各类 filter block 的占比。
-        category = reason.split(":")[0] if reason else "unknown"
-        scope_stats = self._filter_by_scope.setdefault(scope, {"passed": 0, "blocked": 0, "blocks": {}})
-        scope_stats["blocked"] += 1
-        scope_stats["blocks"][reason] = scope_stats["blocks"].get(reason, 0) + 1
-        self._filter_window.append((time.monotonic(), scope, category))
-        return False
 
     def _detect_regime(
         self,
@@ -1536,93 +1063,10 @@ class SignalRuntime:
         metadata: dict[str, Any],
         active_sessions: list[str],
     ) -> tuple[RegimeType, dict[str, Any]]:
-        """检测当前 snapshot 的 regime，并回填 soft regime 等 metadata。"""
-        soft_regime: SoftRegimeResult | None = None
-        if self._soft_regime_enabled:
-            soft_regime = self._regime_detector.detect_soft(indicators)
-            regime = soft_regime.dominant_regime
-        else:
-            regime = self._regime_detector.detect(indicators)
-        regime_metadata = dict(metadata)
-        regime_metadata["_regime"] = regime.value
-        if soft_regime is not None:
-            regime_metadata["_soft_regime"] = soft_regime.to_dict()
-            regime_metadata["regime_probabilities"] = {
-                item.value: soft_regime.probability(item) for item in RegimeType
-            }
-        regime_metadata["session_buckets"] = list(active_sessions)
-        if "close_price" not in regime_metadata:
-            regime_metadata["close_price"] = extract_close_price(indicators)
-        return regime, regime_metadata
+        return _runtime_detect_regime(self, indicators, metadata, active_sessions)
 
     def process_next_event(self, timeout: float = 0.5) -> bool:
-        """处理单个队列事件。
-
-        优先消费 confirmed，但为了避免 confirmed 长时间独占队列，内部会受
-        ``_CONFIRMED_BURST_LIMIT`` 限制，周期性插入一次 intrabar 处理机会。
-        这样可以在高频 confirmed 到来时，仍让 intrabar 获得基本的调度公平性。
-        """
-        event = self._dequeue_event(timeout)
-        if event is None:
-            return False
-
-        scope, symbol, timeframe, indicators, metadata = event
-        snapshot_time = self._parse_event_time(
-            metadata.get("snapshot_time", datetime.now(timezone.utc))
-        )
-        bar_time = self._parse_event_time(metadata.get("bar_time", snapshot_time))
-        event_time = bar_time if scope == "confirmed" else snapshot_time
-
-        if self._is_stale_intrabar(scope, symbol, timeframe, metadata):
-            self._processed_events += 1
-            return True
-
-        if (
-            self.filter_chain is not None
-            and self.filter_chain.session_filter is not None
-        ):
-            active_sessions = self.filter_chain.session_filter.current_sessions(event_time)
-        else:
-            active_sessions = []
-
-        if not self._apply_filter_chain(symbol, scope, timeframe, event_time, indicators, active_sessions, metadata):
-            self._processed_events += 1
-            self._run_count += 1
-            self._last_run_at = datetime.now(timezone.utc)
-            return True
-
-        regime, regime_metadata = self._detect_regime(indicators, metadata, active_sessions)
-
-        # 若当前 regime/scope 下没有任何策略具备可执行 affinity，直接跳过整批快照。
-        if not self._any_strategy_eligible(
-            symbol, timeframe, scope, regime,
-            regime_metadata.get("_soft_regime"), active_sessions,
-        ):
-            self._processed_events += 1
-            self._run_count += 1
-            self._last_run_at = datetime.now(timezone.utc)
-            return True
-
-        tracker = self._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
-        regime_stability = (
-            tracker.update(regime) if scope == "confirmed" else tracker.stability_multiplier()
-        )
-
-        snapshot_decisions = self._evaluate_strategies(
-            symbol, timeframe, scope, indicators, regime,
-            regime_metadata, event_time, bar_time, active_sessions,
-        )
-
-        self._process_voting(
-            snapshot_decisions, symbol, timeframe, scope, regime,
-            regime_stability, regime_metadata, indicators, event_time, bar_time,
-        )
-
-        self._processed_events += 1
-        self._run_count += 1
-        self._last_run_at = datetime.now(timezone.utc)
-        self._last_error = None
-        return True
+        return _runtime_process_next_event(self, timeout)
 
     def _compute_htf_alignment(
         self,
