@@ -62,6 +62,18 @@ class PreTradeRiskBlockedError(RuntimeError):
         self.assessment = assessment
 
 
+def resolve_risk_failure_key(assessment: Dict[str, Any] | None) -> str | None:
+    checks = list((assessment or {}).get("checks") or [])
+    for item in checks:
+        rule_name = str(item.get("name") or "").strip()
+        if rule_name:
+            return rule_name
+    reason = str((assessment or {}).get("reason") or "").strip().lower()
+    if reason == "daily_loss_limit_reached":
+        return "daily_loss_limit"
+    return None
+
+
 class PreTradeRiskService:
     def __init__(
         self,

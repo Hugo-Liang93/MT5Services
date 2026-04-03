@@ -15,6 +15,7 @@ from src.api.deps import (
 )
 from src.app_runtime.mode_controller import RuntimeModeController
 from src.api.trade_dispatcher import TradeAPIDispatcher
+from src.api.risk_adapter import risk_error_code_from_assessment
 from src.api.error_codes import AIErrorAction, AIErrorCode, get_trade_error_details
 from src.api.schemas import (
     ApiResponse,
@@ -71,15 +72,6 @@ def _order_model_from_dataclass(order) -> OrderModel:
     payload = dict(order.__dict__)
     payload["time"] = order.time.isoformat()
     return OrderModel(**payload)
-
-
-def _risk_error_code_from_assessment(assessment: dict | None) -> AIErrorCode:
-    checks = list((assessment or {}).get("checks") or [])
-    if any(str(item.get("name")) == "daily_loss_limit" for item in checks):
-        return AIErrorCode.DAILY_LOSS_LIMIT
-    if str((assessment or {}).get("reason") or "").strip().lower() == "daily_loss_limit_reached":
-        return AIErrorCode.DAILY_LOSS_LIMIT
-    return AIErrorCode.TRADE_BLOCKED_BY_RISK
 
 
 @router.post("/trade/dispatch", response_model=ApiResponse[dict])
@@ -435,7 +427,7 @@ def trade(
         )
     except PreTradeRiskBlockedError as exc:
         return ApiResponse.error_response(
-            error_code=_risk_error_code_from_assessment(exc.assessment),
+            error_code=risk_error_code_from_assessment(exc.assessment),
             error_message=str(exc),
             suggested_action=AIErrorAction.WAIT_FOR_RISK_WINDOW,
             details={

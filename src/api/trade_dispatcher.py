@@ -3,31 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from src.api.error_codes import AIErrorAction, AIErrorCode
+from src.api.risk_adapter import risk_error_code_from_assessment
 from src.api.schemas import ApiResponse
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.service import TradingModule
-
-
-_RISK_RULE_ERROR_MAP: dict[str, AIErrorCode] = {
-    "daily_loss_limit": AIErrorCode.DAILY_LOSS_LIMIT,
-    "margin_availability": AIErrorCode.MARGIN_INSUFFICIENT_PRE,
-    "trade_frequency": AIErrorCode.TRADE_FREQUENCY_LIMITED,
-    "account_snapshot": AIErrorCode.POSITION_LIMIT_REACHED,
-    "session_window": AIErrorCode.SESSION_WINDOW_BLOCKED,
-}
-
-
-def _risk_error_code(assessment: dict[str, Any] | None) -> AIErrorCode:
-    checks = list((assessment or {}).get("checks") or [])
-    # Match the first failed rule to a specific error code
-    for item in checks:
-        rule_name = str(item.get("name") or "").strip()
-        if rule_name in _RISK_RULE_ERROR_MAP:
-            return _RISK_RULE_ERROR_MAP[rule_name]
-    reason = str((assessment or {}).get("reason") or "").strip().lower()
-    if "daily_loss_limit" in reason:
-        return AIErrorCode.DAILY_LOSS_LIMIT
-    return AIErrorCode.TRADE_BLOCKED_BY_RISK
 
 
 class TradeAPIDispatcher:
@@ -55,7 +34,7 @@ class TradeAPIDispatcher:
             )
         except PreTradeRiskBlockedError as exc:
             return ApiResponse.error_response(
-                error_code=_risk_error_code(exc.assessment),
+                error_code=risk_error_code_from_assessment(exc.assessment),
                 error_message=str(exc),
                 suggested_action=AIErrorAction.WAIT_FOR_RISK_WINDOW,
                 details={

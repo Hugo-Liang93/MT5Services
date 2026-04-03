@@ -555,6 +555,15 @@ class PositionManager:
         """Inject a MarginGuard instance (optional, called from builder)."""
         self._margin_guard = guard
 
+    def tighten_trailing_stops(self, factor: float) -> int:
+        original = float(self.trailing_atr_multiplier or 0.0)
+        tightened = original * float(factor or 0.0)
+        if tightened <= 0.0 or tightened >= original:
+            return 0
+        self.trailing_atr_multiplier = tightened
+        with self._lock:
+            return len(self._positions)
+
     def _reconcile_loop(self) -> None:
         while not self._stop_event.is_set():
             try:

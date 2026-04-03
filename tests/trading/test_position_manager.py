@@ -109,6 +109,20 @@ def test_position_manager_exposes_margin_guard_status_via_public_api() -> None:
     }
 
 
+def test_position_manager_tighten_trailing_stops_uses_public_method() -> None:
+    trading = DummyTradingModule()
+    manager = _manager(trading, trailing_atr_multiplier=3.0)
+    manager._positions = {
+        1: {"ticket": 1},
+        2: {"ticket": 2},
+    }
+
+    count = manager.tighten_trailing_stops(0.5)
+
+    assert count == 2
+    assert manager.trailing_atr_multiplier == 1.5
+
+
 def test_position_manager_does_not_close_before_cutoff() -> None:
     trading = DummyTradingModule(positions=[{"ticket": 1}])
     manager = _manager(

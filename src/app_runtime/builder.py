@@ -555,74 +555,23 @@ def _wire_margin_guard(
 ) -> None:
     """Construct and inject MarginGuard into PositionManager and TradeExecutor."""
     try:
-        from configparser import ConfigParser
+        from src.risk.runtime import wire_margin_guard
 
-        from src.risk.margin_guard import MarginGuard, load_margin_guard_config
-
-        parser = ConfigParser()
-        parser.read("config/risk.ini", encoding="utf-8")
-        section = (
-            dict(parser["margin_guard"])
-            if parser.has_section("margin_guard")
-            else {}
+        guard = wire_margin_guard(
+            position_manager=position_manager,
+            trade_module=trade_module,
+            trade_executor=trade_executor,
         )
-        config = load_margin_guard_config(section)
-        if not config.enabled:
+        if guard is None:
             return
-
-        def close_worst() -> dict:
-            positions_fn = getattr(trade_module, "get_positions", None)
-            close_fn = getattr(trade_module, "close_position", None)
-            if not callable(positions_fn) or not callable(close_fn):
-                return {"error": "no close capability"}
-            positions = list(positions_fn())
-            if not positions:
-                return {"closed": None}
-            worst = min(positions, key=lambda p: float(getattr(p, "profit", 0) or 0))
-            ticket = int(getattr(worst, "ticket", 0))
-            if ticket <= 0:
-                return {"error": "invalid ticket"}
-            result = close_fn(ticket, comment="margin_guard_emergency")
-            return {"ticket": ticket, "result": result}
-
-        def close_all() -> dict:
-            fn = getattr(trade_module, "close_all_positions", None)
-            if callable(fn):
-                return fn(comment="margin_guard_emergency_all")
-            return {"error": "no close_all capability"}
-
-        def tighten_stops(factor: float) -> int:
-            original = position_manager.trailing_atr_multiplier
-            tightened = original * factor
-            if tightened >= original:
-                return 0
-            position_manager.trailing_atr_multiplier = tightened
-            logger.info(
-                "MarginGuard: trailing ATR multiplier tightened %.2f -> %.2f",
-                original,
-                tightened,
-            )
-            with position_manager._lock:
-                count = len(position_manager._positions)
-            return count
-
-        guard = MarginGuard(
-            config,
-            close_worst_fn=close_worst,
-            close_all_fn=close_all,
-            tighten_stops_fn=tighten_stops,
-        )
-        position_manager.set_margin_guard(guard)
-        if trade_executor is not None and hasattr(trade_executor, "set_margin_guard"):
-            trade_executor.set_margin_guard(guard)
         logger.info(
             "MarginGuard wired: warn=%.0f%% danger=%.0f%% critical=%.0f%% "
             "block=%.0f%% emergency=%.0f%%",
-            config.warn_level,
-            config.danger_level,
-            config.critical_level,
-            config.block_new_trades_level,
-            config.emergency_close_level,
+            guard.config.warn_level,
+            guard.config.danger_level,
+            guard.config.critical_level,
+            guard.config.block_new_trades_level,
+            guard.config.emergency_close_level,
         )
     except Exception:
         logger.warning(
