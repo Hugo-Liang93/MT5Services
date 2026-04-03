@@ -1,5 +1,7 @@
 from .application import TradingCommandService, TradingQueryService
+from .control_state import TradeControlStateService
 from .models import TradeOperationRecord
+from .operation_state import TradeDailyStatsService, TradeOperationAuditService
 from .signal_quality_tracker import SignalQualityTracker
 from .trade_outcome_tracker import TradeOutcomeTracker
 from .position_manager import PositionManager, TrackedPosition
@@ -14,8 +16,11 @@ __all__ = [
     "SignalQualityTracker",
     "TrackedPosition",
     "TradeOperationRecord",
+    "TradeOperationAuditService",
     "TradeOutcomeTracker",
     "TradeParameters",
+    "TradeControlStateService",
+    "TradeDailyStatsService",
     "TradingAccountRegistry",
     "TradingCommandService",
     "TradingModule",

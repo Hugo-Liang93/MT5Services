@@ -216,6 +216,10 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 - `TradingQueryService`：只负责查询类动作，例如账户信息、持仓/挂单查询、交易汇总、审计读取、健康状态。
 - `dispatch_operation(...)`：仅接受命令操作，不再承载 `daily_summary`、`entry_status`、`positions`、`orders` 等读操作。
 - API 与读模型默认依赖命令/查询服务，而不是直接依赖 `TradingModule` 的大而全入口。
+- `TradeControlStateService`：负责 `auto_entry_enabled / close_only_mode` 状态与准入拦截。
+- `TradeOperationAuditService`：负责交易操作审计读写与审计回放查询。
+- `TradeDailyStatsService`：负责日内交易统计聚合。
+- `TradingModule`：保留为应用协调器，不再直接持有上述共享状态实现细节。
 
 ## 测试与质量
 

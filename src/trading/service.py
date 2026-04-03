@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import defaultdict
-from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
 from threading import RLock
 from typing import Any, Callable, Dict, Optional
@@ -13,7 +11,9 @@ from src.config import get_trading_config, get_trading_ops_config
 from src.risk.service import PreTradeRiskBlockedError
 
 from .application import TradingCommandService, TradingQueryService
+from .control_state import TradeControlStateService
 from .models import TradeOperationRecord
+from .operation_state import TradeDailyStatsService, TradeOperationAuditService
 from .registry import TradingAccountRegistry
 
 logger = logging.getLogger(__name__)
@@ -48,24 +48,12 @@ class TradingModule:
         self.active_account_alias = self.registry.resolve_alias(
             active_account_alias or self.registry.default_account_alias()
         )
-        self._daily_stats_lock = RLock()
-        self._daily_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {
-            "total": 0,
-            "success": 0,
-            "failed": 0,
-            "symbols": {},
-            "operations": {},
-            "risk": {"blocked": 0, "warn": 0, "allow": 0},
-            "last_trade_at": None,
-        })
-        self._trade_control_lock = RLock()
-        self._trade_control_state: dict[str, Any] = {
-            "auto_entry_enabled": True,
-            "close_only_mode": False,
-            "updated_at": None,
-            "reason": None,
-        }
-        self._trade_control_update_hook: Optional[Callable[[dict[str, Any]], None]] = None
+        self._trade_control = TradeControlStateService()
+        self._audit = TradeOperationAuditService(
+            db_writer=self.db_writer,
+            account_alias_getter=lambda: self.active_account_alias,
+        )
+        self._daily_stats = TradeDailyStatsService()
         self._idempotency_lock = RLock()
         self._idempotent_success_cache: dict[str, dict[str, Any]] = {}
         self.commands = TradingCommandService(self)
@@ -94,43 +82,9 @@ class TradingModule:
             "active": True,
         }
 
-    def _json_safe(self, value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, float, bool)):
-            return value
-        if isinstance(value, datetime):
-            return value.isoformat()
-        if is_dataclass(value):
-            return self._json_safe(asdict(value))
-        if isinstance(value, dict):
-            return {str(k): self._json_safe(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [self._json_safe(item) for item in value]
-        return str(value)
-
     def _record_operation(self, record: TradeOperationRecord) -> None:
-        if self.db_writer is None:
-            return
         try:
-            normalized = TradeOperationRecord(
-                account_alias=record.account_alias,
-                operation_type=record.operation_type,
-                status=record.status,
-                symbol=record.symbol,
-                side=record.side,
-                order_kind=record.order_kind,
-                volume=record.volume,
-                ticket=record.ticket,
-                order_id=record.order_id,
-                deal_id=record.deal_id,
-                magic=record.magic,
-                duration_ms=record.duration_ms,
-                error_message=record.error_message,
-                request_payload=self._json_safe(record.request_payload),
-                response_payload=self._json_safe(record.response_payload),
-                recorded_at=record.recorded_at,
-                operation_id=record.operation_id,
-            )
-            self.db_writer.write_trade_operations([normalized.to_row()])
+            self._audit.record(record)
         except Exception:
             logger.exception("Failed to persist trade operation audit for %s", record.operation_type)
 
@@ -159,53 +113,26 @@ class TradingModule:
             replayed["idempotent_replay"] = True
             replayed["idempotent_source"] = "memory"
             return replayed
-        if self.db_writer is None:
-            return None
-        rows = self.db_writer.fetch_trade_operations(
-            account_alias=self.active_account_alias,
-            operation_type="execute_trade",
-            status="success",
+        replayed = self._audit.fetch_successful_trade_result(
+            request_id=normalized,
             limit=_IDEMPOTENT_LOOKBACK_LIMIT,
         )
-        for row in rows:
-            request_payload = row[15] or {}
-            response_payload = row[16] or {}
-            if str(request_payload.get("request_id") or "").strip() != normalized:
-                continue
-            if not isinstance(response_payload, dict):
-                continue
-            replayed = dict(response_payload)
-            replayed.setdefault("operation_id", row[1])
-            replayed["idempotent_replay"] = True
-            replayed["idempotent_source"] = "audit"
+        if replayed is not None:
             self._cache_successful_trade_result(normalized, replayed)
             return replayed
         return None
 
     def trade_control_status(self) -> dict[str, Any]:
-        with self._trade_control_lock:
-            return dict(self._trade_control_state)
+        return self._trade_control.status()
 
     def set_trade_control_update_hook(
         self,
         fn: Optional[Callable[[dict[str, Any]], None]],
     ) -> None:
-        self._trade_control_update_hook = fn
+        self._trade_control.set_update_hook(fn)
 
     def apply_trade_control_state(self, state: dict[str, Any]) -> dict[str, Any]:
-        with self._trade_control_lock:
-            self._trade_control_state["auto_entry_enabled"] = bool(
-                state.get("auto_entry_enabled", True)
-            )
-            self._trade_control_state["close_only_mode"] = bool(
-                state.get("close_only_mode", False)
-            )
-            self._trade_control_state["reason"] = str(state.get("reason") or "").strip() or None
-            updated_at = state.get("updated_at")
-            self._trade_control_state["updated_at"] = (
-                updated_at.isoformat() if isinstance(updated_at, datetime) else updated_at
-            )
-            return dict(self._trade_control_state)
+        return self._trade_control.apply_state(state)
 
     def update_trade_control(
         self,
@@ -214,113 +141,17 @@ class TradingModule:
         close_only_mode: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> dict[str, Any]:
-        with self._trade_control_lock:
-            if auto_entry_enabled is not None:
-                self._trade_control_state["auto_entry_enabled"] = bool(auto_entry_enabled)
-            if close_only_mode is not None:
-                self._trade_control_state["close_only_mode"] = bool(close_only_mode)
-            self._trade_control_state["reason"] = str(reason).strip() or None
-            self._trade_control_state["updated_at"] = datetime.now(timezone.utc).isoformat()
-            snapshot = dict(self._trade_control_state)
-        if self._trade_control_update_hook is not None:
-            self._trade_control_update_hook(snapshot)
-        return snapshot
-
-    @staticmethod
-    def _entry_origin(payload: Dict[str, Any]) -> str:
-        metadata = payload.get("metadata") if isinstance(payload, dict) else None
-        if isinstance(metadata, dict):
-            return str(metadata.get("entry_origin") or "manual").strip().lower()
-        return "manual"
-
-    def _build_control_assessment(
-        self,
-        *,
-        reason: str,
-        payload: Dict[str, Any],
-    ) -> dict[str, Any]:
-        return {
-            "enabled": True,
-            "mode": "strict",
-            "blocked": True,
-            "verdict": "block",
-            "reason": reason,
-            "symbol": payload.get("symbol"),
-            "active_windows": [],
-            "upcoming_windows": [],
-            "warnings": [],
-            "checks": [
-                {
-                    "name": "trade_control",
-                    "verdict": "block",
-                    "reason": reason,
-                    "details": {
-                        "control_state": self.trade_control_status(),
-                        "entry_origin": self._entry_origin(payload),
-                    },
-                }
-            ],
-            "intent": {k: v for k, v in payload.items() if k in PRECHECK_TRADE_FIELDS},
-        }
+        return self._trade_control.update(
+            auto_entry_enabled=auto_entry_enabled,
+            close_only_mode=close_only_mode,
+            reason=reason,
+        )
 
     def _enforce_trade_control(self, payload: Dict[str, Any]) -> None:
-        state = self.trade_control_status()
-        entry_origin = self._entry_origin(payload)
-        if state.get("close_only_mode"):
-            raise PreTradeRiskBlockedError(
-                "trade entry disabled: close_only_mode_enabled",
-                assessment=self._build_control_assessment(
-                    reason="close_only_mode_enabled",
-                    payload=payload,
-                ),
-            )
-        if entry_origin == "auto" and not bool(state.get("auto_entry_enabled", True)):
-            raise PreTradeRiskBlockedError(
-                "trade entry disabled: auto_entry_paused",
-                assessment=self._build_control_assessment(
-                    reason="auto_entry_paused",
-                    payload=payload,
-                ),
-            )
+        self._trade_control.enforce(payload)
 
     def _update_daily_stats(self, record: TradeOperationRecord) -> None:
-        if record.operation_type not in {
-            "execute_trade",
-            "precheck_trade",
-            "close_position",
-            "close_all_positions",
-            "cancel_orders",
-            "modify_orders",
-            "modify_positions",
-        }:
-            return
-        day = (record.recorded_at or datetime.now(timezone.utc)).date().isoformat()
-        with self._daily_stats_lock:
-            bucket = self._daily_stats[day]
-            bucket["total"] += 1
-            if record.status == "success":
-                bucket["success"] += 1
-            else:
-                bucket["failed"] += 1
-            symbol = record.symbol or "unknown"
-            symbol_stats = bucket["symbols"].setdefault(symbol, {"total": 0, "success": 0, "failed": 0})
-            symbol_stats["total"] += 1
-            if record.status == "success":
-                symbol_stats["success"] += 1
-            else:
-                symbol_stats["failed"] += 1
-            op_stats = bucket["operations"].setdefault(record.operation_type, {"total": 0, "success": 0, "failed": 0})
-            op_stats["total"] += 1
-            if record.status == "success":
-                op_stats["success"] += 1
-            else:
-                op_stats["failed"] += 1
-            if record.operation_type == "precheck_trade" and isinstance(record.response_payload, dict):
-                action = str(record.response_payload.get("verdict") or "allow").lower()
-                if action not in {"allow", "warn", "block"}:
-                    action = "allow"
-                bucket["risk"]["blocked" if action == "block" else action] += 1
-            bucket["last_trade_at"] = (record.recorded_at or datetime.now(timezone.utc)).isoformat()
+        self._daily_stats.update(record)
 
     def _run_trade_with_dispatch_controls(self, payload: Dict[str, Any]) -> dict:
         config = get_trading_ops_config()
@@ -422,27 +253,10 @@ class TradingModule:
         return handlers[operation]()
 
     def daily_trade_summary(self, summary_date: Optional[date] = None) -> dict[str, Any]:
-        day_key = (summary_date or datetime.now(timezone.utc).date()).isoformat()
-        with self._daily_stats_lock:
-            snapshot = dict(self._daily_stats.get(day_key, {}))
-        if not snapshot:
-            snapshot = {
-                "total": 0,
-                "success": 0,
-                "failed": 0,
-                "symbols": {},
-                "operations": {},
-                "risk": {"blocked": 0, "warn": 0, "allow": 0},
-                "last_trade_at": None,
-            }
-        total = int(snapshot.get("total", 0))
-        success = int(snapshot.get("success", 0))
-        return {
-            "date": day_key,
-            "account_alias": self.active_account_alias,
-            **snapshot,
-            "success_rate": round((success / total) * 100, 2) if total else 0.0,
-        }
+        return self._daily_stats.summary(
+            account_alias=self.active_account_alias,
+            summary_date=summary_date,
+        )
 
     def entry_to_order_status(
         self,
@@ -780,7 +594,7 @@ class TradingModule:
                 "fill_price": response_payload.get("fill_price") or response_payload.get("price"),
                 "comment": payload_comment or comment,
                 "source": "restored_signal_trade" if signal_meta else "restored_trade",
-                "entry_origin": self._entry_origin(request_payload),
+                "entry_origin": self._trade_control.entry_origin(request_payload),
                 "request_id": request_id,
             }
         return None
@@ -794,34 +608,11 @@ class TradingModule:
     ) -> list[dict]:
         if self.db_writer is None:
             return []
-        rows = self.db_writer.fetch_trade_operations(
-            account_alias=self.active_account_alias,
+        return self._audit.recent_operations(
             operation_type=operation_type,
             status=status,
             limit=limit,
         )
-        return [
-            {
-                "recorded_at": row[0].isoformat() if row[0] else None,
-                "operation_id": row[1],
-                "account_alias": row[2],
-                "operation_type": row[3],
-                "status": row[4],
-                "symbol": row[5],
-                "side": row[6],
-                "order_kind": row[7],
-                "volume": row[8],
-                "ticket": row[9],
-                "order_id": row[10],
-                "deal_id": row[11],
-                "magic": row[12],
-                "duration_ms": row[13],
-                "error_message": row[14],
-                "request_payload": row[15] or {},
-                "response_payload": row[16] or {},
-            }
-            for row in rows
-        ]
 
     def monitoring_summary(self, *, hours: int = 24) -> dict:
         if self.db_writer is None:
@@ -832,25 +623,11 @@ class TradingModule:
                 "summary": [],
                 "recent": [],
             }
-        rows = self.db_writer.summarize_trade_operations(
-            hours=hours,
-            account_alias=self.active_account_alias,
-        )
         return {
             "active_account_alias": self.active_account_alias,
             "accounts": self.list_accounts(),
             "trade_control": self.trade_control_status(),
             "daily": self.daily_trade_summary(),
-            "summary": [
-                {
-                    "account_alias": row[0],
-                    "operation_type": row[1],
-                    "status": row[2],
-                    "count": int(row[3] or 0),
-                    "avg_duration_ms": float(row[4] or 0.0),
-                    "last_seen_at": row[5].isoformat() if row[5] else None,
-                }
-                for row in rows
-            ],
+            "summary": self._audit.summarize_operations(hours=hours),
             "recent": self.recent_operations(limit=20),
         }
