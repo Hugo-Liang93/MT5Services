@@ -21,7 +21,10 @@ from .view_models import (
     ExposureCloseoutSummaryView,
     PendingOrderStateListView,
     PositionRuntimeStateListView,
+    TradeCommandAuditView,
     TradeControlStatusView,
+    TradeDailySummaryView,
+    TradeEntryStatusView,
     TradeStateAlertsView,
     TradeStateSummaryView,
 )
@@ -29,7 +32,7 @@ from .view_models import (
 router = APIRouter(tags=["trade"])
 
 
-@router.get("/trade/daily_summary", response_model=ApiResponse[dict])
+@router.get("/trade/daily_summary", response_model=ApiResponse[TradeDailySummaryView])
 def trade_daily_summary(
     service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[dict]:
@@ -176,7 +179,7 @@ def trade_position_state_list(
     )
 
 
-@router.get("/trade/entry_status", response_model=ApiResponse[dict])
+@router.get("/trade/entry_status", response_model=ApiResponse[TradeEntryStatusView])
 def trade_entry_status(
     symbol: Optional[str] = Query(default=None),
     volume: float = Query(default=0.1, gt=0),
@@ -289,7 +292,7 @@ def trading_accounts(
     )
 
 
-@router.get("/trade/command-audits", response_model=ApiResponse[List[dict]])
+@router.get("/trade/command-audits", response_model=ApiResponse[List[TradeCommandAuditView]])
 def trade_command_audits(
     command_type: Optional[str] = Query(default=None, description="command type"),
     status: Optional[str] = Query(default=None, description="operation status"),

@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class FlexibleSignalView(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class SignalRuntimeSummaryView(FlexibleSignalView):
+    status: str
+    running: bool
+    target_count: int = 0
+    trigger_mode: Dict[str, Any] = Field(default_factory=dict)
+    strategy_sessions: Dict[str, Any] = Field(default_factory=dict)
+    strategy_scopes: Dict[str, Any] = Field(default_factory=dict)
+    market_structure: Dict[str, Any] = Field(default_factory=dict)
+    queues: Dict[str, Any] = Field(default_factory=dict)
+    last_error: Optional[str] = None
+
+
+class TrackedPositionsView(FlexibleSignalView):
+    count: int = 0
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+    manager: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RegimeReportView(FlexibleSignalView):
+    symbol: str
+    timeframe: str
+
+
+class MarketStructureView(FlexibleSignalView):
+    symbol: str
+    timeframe: str
+
+
+class VotingStatsView(FlexibleSignalView):
+    voting_enabled: bool = False
+    voting_config: Optional[Dict[str, Any]] = None
+    regime_stability: Dict[str, Any] = Field(default_factory=dict)
+
+
+class HTFCacheStatusView(FlexibleSignalView):
+    pass
+
+
+class CalibratorStatusView(FlexibleSignalView):
+    pass
+
+
+class StrategyDiagnosticsView(FlexibleSignalView):
+    pass
+
+
+class SignalMonitoringQualityView(FlexibleSignalView):
+    symbol: str
+    timeframe: str
+    regime: Dict[str, Any] = Field(default_factory=dict)
+    quality: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StrategyWinrateView(FlexibleSignalView):
+    pass

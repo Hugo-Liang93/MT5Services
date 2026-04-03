@@ -22,18 +22,27 @@ from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
+from .view_models import (
+    CalibratorStatusView,
+    HTFCacheStatusView,
+    MarketStructureView,
+    RegimeReportView,
+    SignalRuntimeSummaryView,
+    TrackedPositionsView,
+    VotingStatsView,
+)
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
-@router.get("/runtime/status", response_model=ApiResponse[dict])
+@router.get("/runtime/status", response_model=ApiResponse[SignalRuntimeSummaryView])
 def signal_runtime_status(
     runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
     return ApiResponse.success_response(data=runtime_views.signal_runtime_summary())
 
 
-@router.get("/positions", response_model=ApiResponse[dict])
+@router.get("/positions", response_model=ApiResponse[TrackedPositionsView])
 def get_tracked_positions(
     runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
@@ -47,7 +56,7 @@ def get_tracked_positions(
     )
 
 
-@router.get("/regime/{symbol}/{timeframe}", response_model=ApiResponse[Dict[str, object]])
+@router.get("/regime/{symbol}/{timeframe}", response_model=ApiResponse[RegimeReportView])
 def get_regime(
     symbol: str,
     timeframe: str,
@@ -59,7 +68,7 @@ def get_regime(
     )
 
 
-@router.get("/market-structure/{symbol}/{timeframe}", response_model=ApiResponse[Dict[str, object]])
+@router.get("/market-structure/{symbol}/{timeframe}", response_model=ApiResponse[MarketStructureView])
 def get_market_structure(
     symbol: str,
     timeframe: str,
@@ -108,7 +117,7 @@ def get_market_structure(
     )
 
 
-@router.get("/voting/stats", response_model=ApiResponse[Dict[str, object]])
+@router.get("/voting/stats", response_model=ApiResponse[VotingStatsView])
 def voting_stats(
     runtime: SignalRuntime = Depends(get_signal_runtime),
 ) -> ApiResponse[Dict[str, object]]:
@@ -123,21 +132,21 @@ def voting_stats(
     )
 
 
-@router.get("/htf/cache", response_model=ApiResponse[Dict[str, object]])
+@router.get("/htf/cache", response_model=ApiResponse[HTFCacheStatusView])
 def htf_cache_status(
     htf_cache: HTFStateCache = Depends(get_htf_cache),
 ) -> ApiResponse[Dict[str, object]]:
     return ApiResponse.success_response(data=htf_cache.describe())
 
 
-@router.get("/calibrator/status", response_model=ApiResponse[Dict[str, object]])
+@router.get("/calibrator/status", response_model=ApiResponse[CalibratorStatusView])
 def calibrator_status(
     calibrator: ConfidenceCalibrator = Depends(get_calibrator),
 ) -> ApiResponse[Dict[str, object]]:
     return ApiResponse.success_response(data=calibrator.describe())
 
 
-@router.post("/calibrator/refresh", response_model=ApiResponse[Dict[str, object]])
+@router.post("/calibrator/refresh", response_model=ApiResponse[CalibratorStatusView])
 def calibrator_refresh(
     hours: int = Query(default=168, ge=24, le=24 * 90),
     calibrator: ConfidenceCalibrator = Depends(get_calibrator),

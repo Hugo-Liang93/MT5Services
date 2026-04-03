@@ -148,6 +148,18 @@ class TradeControlStatusView(FlexibleModel):
     executor: dict[str, Any] = Field(default_factory=dict)
 
 
+class TradeDailySummaryView(FlexibleModel):
+    pass
+
+
+class TradeEntryStatusView(FlexibleModel):
+    pass
+
+
+class TradeCommandAuditView(FlexibleModel):
+    pass
+
+
 class TradeControlUpdateView(FlexibleModel):
     trade_control: dict[str, Any] = Field(default_factory=dict)
     executor: dict[str, Any] = Field(default_factory=dict)

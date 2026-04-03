@@ -114,6 +114,7 @@
     - `catalog.py`：策略目录、近期信号与汇总
     - `runtime.py`：运行态、仓位与市场结构
     - `diagnostics.py`：质量、冲突与 trace 诊断
+    - `view_models.py`：信号运行态与诊断视图 schema
   - `monitoring.py`：监控 API 组合根
   - `monitoring_routes/`
     - `health.py`：健康、组件、性能与指标

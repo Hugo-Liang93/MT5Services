@@ -9,11 +9,16 @@ from src.api.schemas import ApiResponse, SignalEventModel
 from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
+from .view_models import (
+    SignalMonitoringQualityView,
+    StrategyDiagnosticsView,
+    StrategyWinrateView,
+)
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
-@router.get("/diagnostics/strategy-conflicts", response_model=ApiResponse[Dict[str, object]])
+@router.get("/diagnostics/strategy-conflicts", response_model=ApiResponse[StrategyDiagnosticsView])
 def strategy_conflict_diagnostics(
     symbol: Optional[str] = Query(default=None),
     timeframe: Optional[str] = Query(default=None),
@@ -36,7 +41,7 @@ def strategy_conflict_diagnostics(
     return ApiResponse.success_response(data=report)
 
 
-@router.get("/diagnostics/daily-report", response_model=ApiResponse[Dict[str, object]])
+@router.get("/diagnostics/daily-report", response_model=ApiResponse[StrategyDiagnosticsView])
 def signal_daily_quality_report(
     symbol: Optional[str] = Query(default=None),
     timeframe: Optional[str] = Query(default=None),
@@ -59,7 +64,7 @@ def signal_daily_quality_report(
     return ApiResponse.success_response(data=report)
 
 
-@router.get("/diagnostics/aggregate-summary", response_model=ApiResponse[Dict[str, object]])
+@router.get("/diagnostics/aggregate-summary", response_model=ApiResponse[StrategyDiagnosticsView])
 def signal_diagnostics_aggregate_summary(
     hours: int = Query(default=24, ge=1, le=24 * 30),
     scope: str = Query(default="confirmed", pattern="^(confirmed|preview|all)$"),
@@ -70,7 +75,7 @@ def signal_diagnostics_aggregate_summary(
     )
 
 
-@router.get("/monitoring/quality/{symbol}/{timeframe}", response_model=ApiResponse[Dict[str, object]])
+@router.get("/monitoring/quality/{symbol}/{timeframe}", response_model=ApiResponse[SignalMonitoringQualityView])
 def signal_monitoring_quality(
     symbol: str,
     timeframe: str,
@@ -112,7 +117,7 @@ def signal_trace_events(
     )
 
 
-@router.get("/outcomes/winrate", response_model=ApiResponse[list[Dict[str, object]]])
+@router.get("/outcomes/winrate", response_model=ApiResponse[list[StrategyWinrateView]])
 def signal_outcomes_winrate(
     hours: int = Query(default=168, ge=1, le=24 * 90),
     symbol: Optional[str] = Query(default=None),
