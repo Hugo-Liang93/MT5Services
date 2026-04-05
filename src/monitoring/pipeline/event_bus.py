@@ -24,12 +24,14 @@ from .events import (
     PIPELINE_EXECUTION_BLOCKED,
     PIPELINE_EXECUTION_DECIDED,
     PIPELINE_EXECUTION_FAILED,
+    PIPELINE_EXECUTION_SKIPPED,
     PIPELINE_EXECUTION_SUBMITTED,
     PIPELINE_INDICATOR_COMPUTED,
     PIPELINE_PENDING_ORDER_SUBMITTED,
     PIPELINE_SIGNAL_EVALUATED,
     PIPELINE_SIGNAL_FILTER_DECIDED,
     PIPELINE_SNAPSHOT_PUBLISHED,
+    PIPELINE_VOTING_COMPLETED,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,7 +210,15 @@ class PipelineEventBus:
         direction: str,
         confidence: float,
         signal_state: str,
+        **extra: Any,
     ) -> None:
+        data: Dict[str, Any] = {
+            "strategy": strategy,
+            "direction": direction,
+            "confidence": round(confidence, 4),
+            "signal_state": signal_state,
+        }
+        data.update(extra)
         self.emit(
             PipelineEvent(
                 type=PIPELINE_SIGNAL_EVALUATED,
@@ -217,12 +227,7 @@ class PipelineEventBus:
                 timeframe=timeframe,
                 scope=scope,
                 ts=datetime.now(timezone.utc).isoformat(),
-                payload={
-                    "strategy": strategy,
-                    "direction": direction,
-                    "confidence": round(confidence, 4),
-                    "signal_state": signal_state,
-                },
+                payload=data,
             )
         )
 
@@ -403,6 +408,70 @@ class PipelineEventBus:
                     "reason": reason,
                     "category": category,
                 },
+            )
+        )
+
+    def emit_voting_completed(
+        self,
+        trace_id: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        *,
+        group_name: str,
+        winning_direction: Optional[str],
+        final_confidence: Optional[float],
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        data = dict(payload or {})
+        data.update({
+            "group_name": group_name,
+            "winning_direction": winning_direction,
+            "final_confidence": final_confidence,
+        })
+        self.emit(
+            PipelineEvent(
+                type=PIPELINE_VOTING_COMPLETED,
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                ts=datetime.now(timezone.utc).isoformat(),
+                payload=data,
+            )
+        )
+
+    def emit_execution_skipped(
+        self,
+        trace_id: str,
+        symbol: str,
+        timeframe: str,
+        scope: str,
+        *,
+        strategy: str,
+        direction: str,
+        skip_reason: str,
+        skip_category: str,
+        confidence: Optional[float] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        data = dict(extra or {})
+        data.update({
+            "strategy": strategy,
+            "direction": direction,
+            "skip_reason": skip_reason,
+            "skip_category": skip_category,
+            "confidence": confidence,
+        })
+        self.emit(
+            PipelineEvent(
+                type=PIPELINE_EXECUTION_SKIPPED,
+                trace_id=trace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                scope=scope,
+                ts=datetime.now(timezone.utc).isoformat(),
+                payload=data,
             )
         )
 

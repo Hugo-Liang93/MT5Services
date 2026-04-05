@@ -14,6 +14,8 @@ PIPELINE_EXECUTION_BLOCKED = "execution_blocked"
 PIPELINE_EXECUTION_SUBMITTED = "execution_submitted"
 PIPELINE_PENDING_ORDER_SUBMITTED = "pending_order_submitted"
 PIPELINE_EXECUTION_FAILED = "execution_failed"
+PIPELINE_VOTING_COMPLETED = "voting_completed"
+PIPELINE_EXECUTION_SKIPPED = "execution_skipped"
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,12 @@ PIPELINE_STAGE_DEFINITIONS: tuple[PipelineStageDefinition, ...] = (
     PipelineStageDefinition(
         "pipeline_execution_failure", frozenset({PIPELINE_EXECUTION_FAILED})
     ),
+    PipelineStageDefinition(
+        "pipeline_voting", frozenset({PIPELINE_VOTING_COMPLETED})
+    ),
+    PipelineStageDefinition(
+        "pipeline_execution_skip", frozenset({PIPELINE_EXECUTION_SKIPPED})
+    ),
 )
 
 
@@ -82,6 +90,8 @@ def pipeline_stage_name(event_type: str) -> str:
         PIPELINE_EXECUTION_SUBMITTED: "pipeline.execution_submitted",
         PIPELINE_PENDING_ORDER_SUBMITTED: "pipeline.pending_order_submitted",
         PIPELINE_EXECUTION_FAILED: "pipeline.execution_failed",
+        PIPELINE_VOTING_COMPLETED: "pipeline.voting_completed",
+        PIPELINE_EXECUTION_SKIPPED: "pipeline.execution_skipped",
     }
     return mapping.get(normalized, f"pipeline.{normalized}")
 
@@ -101,6 +111,10 @@ def pipeline_event_status(row: Mapping[str, Any]) -> str:
         return "submitted"
     if event_type == PIPELINE_EXECUTION_FAILED:
         return "failed"
+    if event_type == PIPELINE_VOTING_COMPLETED:
+        return str(payload.get("winning_direction") or "voted")
+    if event_type == PIPELINE_EXECUTION_SKIPPED:
+        return "skipped"
     return "observed"
 
 
@@ -139,4 +153,14 @@ def pipeline_event_summary(row: Mapping[str, Any]) -> str:
         return f"挂单已提交: {direction}/{order_kind}"
     if event_type == PIPELINE_EXECUTION_FAILED:
         return f"执行失败: {payload.get('reason') or 'unknown'}"
+    if event_type == PIPELINE_VOTING_COMPLETED:
+        group = payload.get("group_name") or "consensus"
+        direction = payload.get("winning_direction") or "none"
+        conf = payload.get("final_confidence")
+        conf_str = f" conf={conf:.3f}" if conf is not None else ""
+        return f"投票完成: {group}/{direction}{conf_str}"
+    if event_type == PIPELINE_EXECUTION_SKIPPED:
+        reason = payload.get("skip_reason") or "unknown"
+        strategy = payload.get("strategy") or "?"
+        return f"执行跳过: {strategy} ({reason})"
     return f"Pipeline 事件: {event_type}"

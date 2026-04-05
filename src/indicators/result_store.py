@@ -26,9 +26,8 @@ def normalize_persisted_indicator_snapshot(
     manager,
     persisted: Dict[str, Any],
 ) -> Dict[str, Dict[str, Any]]:
+    """将持久化的指标快照规范化为 {indicator_name: {metric: value}} 格式。"""
     normalized: Dict[str, Dict[str, Any]] = {}
-    consumed_keys: set[str] = set()
-
     for indicator_name, payload in persisted.items():
         if not isinstance(payload, dict):
             continue
@@ -37,46 +36,8 @@ def normalize_persisted_indicator_snapshot(
             for metric_name, raw_value in payload.items()
             if isinstance(raw_value, (int, float))
         }
-        if not numeric_payload:
-            continue
-        normalized[indicator_name] = numeric_payload
-        consumed_keys.add(indicator_name)
-
-    legacy_scalars = {
-        key: float(value)
-        for key, value in persisted.items()
-        if isinstance(value, (int, float))
-    }
-    configured_names = [config.name for config in manager.config.indicators if config.enabled]
-
-    for indicator_name in configured_names:
-        direct_value = legacy_scalars.get(indicator_name)
-        prefixed_values = {
-            metric_name[len(indicator_name) + 1 :]: value
-            for metric_name, value in legacy_scalars.items()
-            if metric_name.startswith(f"{indicator_name}_")
-        }
-        if direct_value is None and not prefixed_values:
-            continue
-
-        payload = dict(normalized.get(indicator_name, {}))
-        if direct_value is not None:
-            payload[indicator_name] = direct_value
-            consumed_keys.add(indicator_name)
-        payload.update(prefixed_values)
-        consumed_keys.update(
-            metric_name
-            for metric_name in legacy_scalars
-            if metric_name == indicator_name
-            or metric_name.startswith(f"{indicator_name}_")
-        )
-        normalized[indicator_name] = payload
-
-    for key, value in legacy_scalars.items():
-        if key in consumed_keys:
-            continue
-        normalized[key] = {key: value}
-
+        if numeric_payload:
+            normalized[indicator_name] = numeric_payload
     return normalized
 
 

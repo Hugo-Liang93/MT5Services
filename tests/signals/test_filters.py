@@ -11,8 +11,8 @@ from src.signals.execution.filters import (
 )
 
 
-def test_session_filter_normalizes_newyork_alias() -> None:
-    session_filter = SessionFilter(allowed_sessions=("london", "newyork"))
+def test_session_filter_accepts_canonical_names() -> None:
+    session_filter = SessionFilter(allowed_sessions=("london", "new_york"))
     assert session_filter.allowed_sessions == ("london", "new_york")
 
 
@@ -38,7 +38,7 @@ def test_session_filter_matches_contract_session_boundaries() -> None:
 
 def test_spread_filter_uses_session_specific_limit() -> None:
     chain = SignalFilterChain(
-        session_filter=SessionFilter(allowed_sessions=("asia", "london", "newyork")),
+        session_filter=SessionFilter(allowed_sessions=("asia", "london", "new_york")),
         spread_filter=SpreadFilter(
             max_spread_points=50.0,
             session_max_spread_points={"asia": 30.0, "london": 45.0},

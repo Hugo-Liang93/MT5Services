@@ -227,7 +227,7 @@ def test_blocks_when_trade_is_outside_allowed_sessions():
         economic_calendar_service=DummyCalendar(),
         account_service=DummyAccountService(),
         settings=_settings(),
-        risk_settings=RiskConfig(allowed_sessions="london,newyork"),
+        risk_settings=RiskConfig(allowed_sessions="london,new_york"),
     )
 
     result = service.assess_trade(

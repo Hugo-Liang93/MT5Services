@@ -585,6 +585,14 @@ class PendingEntryManager:
             "metadata": dict(metadata or {}),
         }
         with self._lock:
+            if signal_id in self._mt5_orders:
+                existing_ticket = self._mt5_orders[signal_id].get("ticket")
+                logger.warning(
+                    "PendingEntry: signal_id=%s already tracked with ticket=%s, "
+                    "ignoring duplicate submission with ticket=%d",
+                    signal_id, existing_ticket, order_ticket,
+                )
+                return
             self._mt5_orders[signal_id] = tracked_info
             self._stats["mt5_orders_placed"] += 1
         if self._on_mt5_order_tracked is not None:

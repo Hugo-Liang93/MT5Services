@@ -171,6 +171,7 @@ def build_app_container(
         pipeline_event_bus=container.pipeline_event_bus,
     )
     container.calibrator = signal_components.calibrator
+    container.regime_detector = signal_components.regime_detector
     container.market_structure_analyzer = (
         signal_components.market_structure_analyzer
     )
@@ -201,6 +202,9 @@ def build_app_container(
     signal_hot_reload_cleanup = register_signal_hot_reload(
         container.signal_runtime,
         signal_config_loader,
+        signal_module=container.signal_module,
+        regime_detector=container.regime_detector,
+        calibrator=container.calibrator,
         trade_executor=container.trade_executor,
         economic_calendar_service=container.economic_calendar_service,
         market_structure_analyzer=container.market_structure_analyzer,

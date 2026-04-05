@@ -21,6 +21,7 @@ def _make_tracker(
     max_mult: float = 1.20,
     streak_threshold: int = 3,
     category_fallback: int = 3,
+    min_samples_for_penalty: int = 1,
 ) -> StrategyPerformanceTracker:
     cfg = PerformanceTrackerConfig(
         enabled=enabled,
@@ -29,6 +30,7 @@ def _make_tracker(
         max_multiplier=max_mult,
         streak_penalty_threshold=streak_threshold,
         category_fallback_min_samples=category_fallback,
+        min_samples_for_penalty=min_samples_for_penalty,
     )
     tracker = StrategyPerformanceTracker(config=cfg)
     tracker.register_strategy("rsi_reversion", "reversion")

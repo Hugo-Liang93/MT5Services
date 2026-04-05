@@ -58,6 +58,7 @@ class AppContainer:
         "htf_cache",
         "signal_quality_tracker",
         "calibrator",
+        "regime_detector",
         "performance_tracker",
         "market_structure_analyzer",
         # Trading
@@ -103,6 +104,7 @@ class AppContainer:
         self.htf_cache: Optional[HTFStateCache] = None
         self.signal_quality_tracker: Optional[SignalQualityTracker] = None
         self.calibrator: Optional[ConfidenceCalibrator] = None
+        self.regime_detector: Optional[Any] = None
         self.performance_tracker: Optional[StrategyPerformanceTracker] = None
         self.market_structure_analyzer: Optional[MarketStructureAnalyzer] = None
 

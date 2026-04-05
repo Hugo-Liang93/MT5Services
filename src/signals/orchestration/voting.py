@@ -88,6 +88,7 @@ class StrategyVotingEngine:
         disagreement_penalty: float = 0.50,
         max_consensus_bonus: float = 0.15,
         group_name: str = "consensus",
+        strategy_weights: dict[str, float] | None = None,
     ) -> None:
         self._threshold = consensus_threshold
         self._min_quorum = min_quorum
@@ -95,6 +96,8 @@ class StrategyVotingEngine:
         self._disagreement_penalty = disagreement_penalty
         self._max_consensus_bonus = max_consensus_bonus
         self._group_name = group_name
+        # 策略级投票权重：用于对高度相关的策略降权（默认全 1.0）
+        self._strategy_weights: dict[str, float] = dict(strategy_weights or {})
 
     # ------------------------------------------------------------------
     # Public API
@@ -128,16 +131,18 @@ class StrategyVotingEngine:
         sell_confidences: List[float] = []
 
         for d in decisions:
+            w = self._strategy_weights.get(d.strategy, 1.0)
+            weighted_conf = d.confidence * w
             if d.direction == "buy":
-                buy_weight += d.confidence
+                buy_weight += weighted_conf
                 buy_strategies.append(d.strategy)
-                buy_confidences.append(d.confidence)
+                buy_confidences.append(weighted_conf)
             elif d.direction == "sell":
-                sell_weight += d.confidence
+                sell_weight += weighted_conf
                 sell_strategies.append(d.strategy)
-                sell_confidences.append(d.confidence)
+                sell_confidences.append(weighted_conf)
             else:
-                hold_weight += d.confidence
+                hold_weight += weighted_conf
 
         total_weight = buy_weight + sell_weight + hold_weight
         if total_weight < 1e-9:
@@ -258,4 +263,5 @@ class StrategyVotingEngine:
             "min_quorum_ratio": self._min_quorum_ratio,
             "disagreement_penalty": self._disagreement_penalty,
             "max_consensus_bonus": self._max_consensus_bonus,
+            "strategy_weights": dict(self._strategy_weights) if self._strategy_weights else {},
         }

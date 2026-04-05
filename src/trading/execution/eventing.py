@@ -14,7 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 def notify_skip(
-    executor: "TradeExecutor", signal_id: str, reason: str, timeframe: str = ""
+    executor: "TradeExecutor",
+    signal_id: str,
+    reason: str,
+    timeframe: str = "",
+    *,
+    event: "SignalEvent | None" = None,
 ) -> None:
     with executor._skip_lock:
         executor._skip_reasons[reason] = executor._skip_reasons.get(reason, 0) + 1
@@ -30,6 +35,44 @@ def notify_skip(
             executor._on_execution_skip(signal_id, reason)
         except Exception:
             logger.debug("on_execution_skip callback failed", exc_info=True)
+    # 发射 EXECUTION_SKIPPED pipeline 事件
+    pipeline_bus = getattr(executor, "_pipeline_bus", None)
+    if pipeline_bus is not None and hasattr(pipeline_bus, "emit_execution_skipped") and event is not None:
+        tid = str(event.metadata.get("signal_trace_id") or "")
+        pipeline_bus.emit_execution_skipped(
+            trace_id=tid,
+            symbol=event.symbol,
+            timeframe=timeframe or event.timeframe or "",
+            scope=event.metadata.get("scope", "confirmed"),
+            strategy=event.strategy,
+            direction=event.direction,
+            skip_reason=reason,
+            skip_category=_skip_reason_category(reason),
+            confidence=event.confidence,
+        )
+
+
+def _skip_reason_category(reason: str) -> str:
+    """将 skip reason 映射到类别。"""
+    categories = {
+        "min_confidence": "confidence",
+        "position_limit": "position",
+        "pnl_circuit_paused": "circuit",
+        "margin_guard_block": "risk_guard",
+        "htf_conflict_block": "htf_alignment",
+        "after_eod_block": "eod_guard",
+        "reentry_cooldown": "cooldown",
+        "spread_to_stop_ratio_too_high": "cost_guard",
+        "trade_params_unavailable": "trade_params",
+    }
+    for key, cat in categories.items():
+        if key in reason:
+            return cat
+    if "duplicate" in reason or "same_strategy" in reason:
+        return "duplicate_guard"
+    if "gate" in reason or "voting_group" in reason or "armed" in reason:
+        return "execution_gate"
+    return "other"
 
 
 def trace_id_for_event(event: "SignalEvent") -> str:

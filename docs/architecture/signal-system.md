@@ -10,8 +10,12 @@
 src/signals/
 ├── service.py                 # SignalModule (策略注册 + evaluate())
 ├── models.py                  # SignalEvent / SignalContext / SignalDecision
+├── confidence.py              # 置信度管线纯函数
 ├── orchestration/
-│   ├── runtime.py             # SignalRuntime (事件主循环, 双队列)
+│   ├── runtime.py             # SignalRuntime 协调器 (生命周期 + 队列)
+│   ├── runtime_evaluator.py   # 策略评估 + confidence 调整 + 信号发布
+│   ├── runtime_processing.py  # 事件出队 + filter/regime + 单事件处理
+│   ├── runtime_recovery.py    # 运行态恢复 (confirmed/preview 状态还原)
 │   ├── policy.py              # SignalPolicy + VotingGroupConfig
 │   ├── voting.py              # StrategyVotingEngine
 │   ├── htf_resolver.py        # HTF 配置解析与对齐乘数 (纯函数)
@@ -19,16 +23,21 @@ src/signals/
 │   ├── vote_processor.py      # 投票处理 (纯函数)
 │   └── affinity.py            # Regime 亲和度 + 快速拒绝 (纯函数)
 ├── strategies/
-│   ├── base.py                # SignalStrategy Protocol + TimeframeScaler
-│   ├── trend.py               # 趋势策略 (6个)
-│   ├── mean_reversion.py      # 均值回归策略 (4个)
+│   ├── base.py                # SignalStrategy Protocol + TimeframeScaler + get_tf_param()
+│   ├── catalog.py             # build_named_strategy_catalog() (41+ 策略统一构建)
+│   ├── registry.py            # StrategyRegistry + build_composite_strategies()
+│   ├── trend.py               # 趋势策略 (7个)
+│   ├── mean_reversion.py      # 均值回归策略 (6个)
 │   ├── breakout.py            # 突破/波动率策略 (6个)
 │   ├── session.py             # 时段动量策略
 │   ├── price_action.py        # 价格行为策略
-│   ├── composite.py           # 复合策略 + 工厂函数
+│   ├── multi_tf_entry.py      # HTFTrendPullback / DualTFMomentum (跨TF策略)
+│   ├── m5_scalp.py            # M5ScalpRSI / M5MomentumBurst
+│   ├── trendline.py           # TrendlineThreeTouch
+│   ├── composite.py           # CompositeStrategy 基类
 │   ├── adapters.py            # UnifiedIndicatorSourceAdapter
 │   ├── htf_cache.py           # HTFStateCache
-│   └── registry.py            # 策略注册表
+│   └── tf_params.py           # TFParamResolver
 ├── evaluation/
 │   ├── regime.py              # MarketRegimeDetector + SoftRegimeResult
 │   ├── calibrator.py          # ConfidenceCalibrator (历史胜率校准)

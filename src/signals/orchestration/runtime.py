@@ -252,6 +252,7 @@ class SignalRuntime:
         self._processed_events = 0
         self._dropped_events = 0
         self._warmup_skipped = 0
+        self._warmup_lock = threading.Lock()  # 保护 warmup 相关共享状态
         # 保护 _state_by_target，避免 background loop 与 status()/API 并发读取时触发字典变更异常。
         # 典型症状是 status() 与后台循环并发时抛出 "dictionary changed size during iteration"。
         self._state_lock = threading.Lock()
@@ -291,7 +292,6 @@ class SignalRuntime:
         self._vote_fusion_cache: dict[
             tuple[str, str, datetime], dict[str, tuple[str, Any]]
         ] = {}
-        # legacy 字段已删除，相关缓存现由 MarketStructureAnalyzer 内部维护。
 
     @staticmethod
     def _build_group_engines(
@@ -307,6 +307,7 @@ class SignalRuntime:
                     min_quorum=group.min_quorum,
                     min_quorum_ratio=group.min_quorum_ratio,
                     disagreement_penalty=group.disagreement_penalty,
+                    strategy_weights=group.strategy_weights,
                 ),
             )
             for group in policy.voting_groups
@@ -383,93 +384,78 @@ class SignalRuntime:
         warmup_ready = (
             self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
         )
-        if not warmup_ready:
-            self._warmup_skipped += 1
-            if self._warmup_skipped <= 5 or self._warmup_skipped % 200 == 0:
-                logger.info(
-                    "Warmup barrier (backfilling): %s/%s scope=%s bar_time=%s (total_skipped=%d)",
-                    symbol,
-                    timeframe,
-                    scope,
-                    bar_time.isoformat(),
-                    self._warmup_skipped,
-                )
-            return
-        if scope == "confirmed":
-            st_key = (symbol, timeframe)
-            if st_key not in self._first_realtime_bar_seen:
-                # Validate bar_time is truly recent before treating this as
-                # the first realtime bar.  BackgroundIngestor sets
-                # _backfill_done when enqueueing completes, but indicator/
-                # snapshot processing is async; stale backfill snapshots
-                # may still arrive after the flag flips.  A genuine realtime
-                # confirmed bar closes at most 1 bar-duration ago (+ margin
-                # for processing delay).
-                if self._warmup_ready_fn is not None:
-                    _bt = (
-                        bar_time
-                        if bar_time.tzinfo is not None
-                        else bar_time.replace(tzinfo=timezone.utc)
-                    )
-                    tf_secs = timeframe_seconds(timeframe)
-                    staleness = (
-                        datetime.now(timezone.utc) - _bt.astimezone(timezone.utc)
-                    ).total_seconds()
-                    # Allow up to 2x timeframe duration + 30s processing margin
-                    max_age = tf_secs * 2 + 30
-                    if staleness > max_age:
-                        self._warmup_skipped += 1
-                        if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
-                            logger.info(
-                                "Warmup skip (stale bar_time): %s/%s bar_time=%s staleness=%.0fs max_age=%.0fs (total_skipped=%d)",
-                                symbol,
-                                timeframe,
-                                bar_time.isoformat(),
-                                staleness,
-                                max_age,
-                                self._warmup_skipped,
-                            )
-                        return
-                self._first_realtime_bar_seen.add(st_key)
-                logger.info(
-                    "Warmup lifted: first realtime bar for %s/%s at %s",
-                    symbol,
-                    timeframe,
-                    bar_time.isoformat(),
-                )
-            # 指标就绪性检查：交易执行至少需要 ATR。
-            # 如果快照里还没有 atr14，说明指标热身尚未完成，
-            # 此时跳过可以避免把首个 state_changed=true 机会浪费在
-            # 实际不可执行的信号上。
-            required = getattr(self.policy, "warmup_required_indicators", ("atr14",))
-            if required and any(ind not in indicators for ind in required):
+        with self._warmup_lock:
+            if not warmup_ready:
                 self._warmup_skipped += 1
-                if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
-                    missing = [ind for ind in required if ind not in indicators]
+                if self._warmup_skipped <= 5 or self._warmup_skipped % 200 == 0:
                     logger.info(
-                        "Warmup skip (indicators missing: %s): %s/%s (total_skipped=%d)",
-                        missing,
+                        "Warmup barrier (backfilling): %s/%s scope=%s bar_time=%s (total_skipped=%d)",
                         symbol,
                         timeframe,
+                        scope,
+                        bar_time.isoformat(),
                         self._warmup_skipped,
                     )
                 return
-        if scope == "intrabar" and self._warmup_ready_fn is not None:
-            st_key = (symbol, timeframe)
-            if st_key not in self._first_realtime_bar_seen:
-                # 没看到首根 confirmed bar 之前，不放行任何 intrabar。
-                return
-            # 首个 intrabar 快照到来时先登记，确保 pipeline 已建立对应目标的基础上下文。
-            # 如果当前 intrabar 缺少首轮 required_indicators，则继续等待而不是告警。
-            # 这样可以避免 warmup 切换边界上，残缺 intrabar 快照误触发 required_indicators 校验。
-            if st_key not in self._first_intrabar_snapshot_seen:
-                if not self._all_intrabar_strategies_satisfied(indicators):
+            if scope == "confirmed":
+                st_key = (symbol, timeframe)
+                if st_key not in self._first_realtime_bar_seen:
+                    if self._warmup_ready_fn is not None:
+                        _bt = (
+                            bar_time
+                            if bar_time.tzinfo is not None
+                            else bar_time.replace(tzinfo=timezone.utc)
+                        )
+                        tf_secs = timeframe_seconds(timeframe)
+                        staleness = (
+                            datetime.now(timezone.utc) - _bt.astimezone(timezone.utc)
+                        ).total_seconds()
+                        max_age = tf_secs * 2 + 30
+                        if staleness > max_age:
+                            self._warmup_skipped += 1
+                            if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
+                                logger.info(
+                                    "Warmup skip (stale bar_time): %s/%s bar_time=%s staleness=%.0fs max_age=%.0fs (total_skipped=%d)",
+                                    symbol,
+                                    timeframe,
+                                    bar_time.isoformat(),
+                                    staleness,
+                                    max_age,
+                                    self._warmup_skipped,
+                                )
+                            return
+                    self._first_realtime_bar_seen.add(st_key)
+                    logger.info(
+                        "Warmup lifted: first realtime bar for %s/%s at %s",
+                        symbol,
+                        timeframe,
+                        bar_time.isoformat(),
+                    )
+                required = getattr(self.policy, "warmup_required_indicators", ("atr14",))
+                if required and any(ind not in indicators for ind in required):
+                    self._warmup_skipped += 1
+                    if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
+                        missing = [ind for ind in required if ind not in indicators]
+                        logger.info(
+                            "Warmup skip (indicators missing: %s): %s/%s (total_skipped=%d)",
+                            missing,
+                            symbol,
+                            timeframe,
+                            self._warmup_skipped,
+                        )
                     return
-                self._first_intrabar_snapshot_seen.add(st_key)
-                logger.info(
-                    "Intrabar ready: first complete snapshot for %s/%s (%d indicators)",
-                    symbol, timeframe, len(indicators),
-                )
+            if scope == "intrabar" and self._warmup_ready_fn is not None:
+                st_key = (symbol, timeframe)
+                if st_key not in self._first_realtime_bar_seen:
+                    return
+                if st_key not in self._first_intrabar_snapshot_seen:
+                    if not self._all_intrabar_strategies_satisfied(indicators):
+                        return
+                    self._first_intrabar_snapshot_seen.add(st_key)
+                    logger.info(
+                        "Intrabar ready: first complete snapshot for %s/%s (%d indicators)",
+                        symbol, timeframe, len(indicators),
+                    )
         # Prefer upstream trace_id from PipelineEventBus (set by bar_event_handler)
         # so the same ID flows through the entire pipeline for frontend tracing.
         upstream_trace_id = getattr(self.snapshot_source, "_current_trace_id", None)
@@ -654,11 +640,6 @@ class SignalRuntime:
             "confirmed_queue_capacity": self._confirmed_events.maxsize,
             "intrabar_queue_size": self._intrabar_events.qsize(),
             "intrabar_queue_capacity": self._intrabar_events.maxsize,
-            # Aggregate fields kept for backward compatibility.
-            "queue_size": self._confirmed_events.qsize()
-            + self._intrabar_events.qsize(),
-            "queue_capacity": self._confirmed_events.maxsize
-            + self._intrabar_events.maxsize,
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
             "affinity_gates_skipped": self._affinity_gates_skipped,
@@ -669,11 +650,11 @@ class SignalRuntime:
             },
             **self._compute_filter_window_stats(),
             "htf_stale_warnings": self._htf_stale_counter[0],
-            "warmup_skipped": self._warmup_skipped,
+            "warmup_skipped": self._warmup_skipped,  # atomic read under GIL
             "warmup_ready": (
                 self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
             ),
-            "warmup_realtime_symbols": len(self._first_realtime_bar_seen),
+            "warmup_realtime_symbols": len(self._first_realtime_bar_seen),  # atomic read under GIL
             # 即使 background loop 异常退出，这里也继续暴露当前活跃状态计数。
             **self._count_active_states(),
             "voting_groups": self._voting_groups_summary(),

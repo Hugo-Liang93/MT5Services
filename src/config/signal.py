@@ -16,22 +16,20 @@ def _resolve_spread_limits(
 ) -> dict[str, float]:
     """将 session_spread_limits 解析为绝对点差值。
 
-    当 base_spread_points > 0 时，session 值视为乘数，自动计算：
-        实际上限 = base_spread_points × 乘数
-    当 base_spread_points 未设置或为 0 时，session 值视为绝对点差（向后兼容）。
+    base_spread_points × 乘数 = 实际上限。
     """
     raw = _normalize_float_map(session_section)
-    base = _parse_float(signal_section.get("base_spread_points", 0))
+    base = _parse_float(signal_section.get("base_spread_points", 30))
     if base <= 0:
-        return raw
+        raise ValueError("base_spread_points must be > 0")
     return {session: round(base * multiplier, 1) for session, multiplier in raw.items()}
 
 
 def _resolve_max_spread(signal_section: dict[str, object]) -> float | None:
-    """当 base_spread_points > 0 时，用 base × max_spread_multiplier 覆盖 max_spread_points。"""
-    base = _parse_float(signal_section.get("base_spread_points", 0))
+    """用 base_spread_points × max_spread_multiplier 计算全局点差上限。"""
+    base = _parse_float(signal_section.get("base_spread_points", 30))
     if base <= 0:
-        return None  # 向后兼容，由 INI 中的 max_spread_points 原值决定
+        raise ValueError("base_spread_points must be > 0")
     multiplier = _parse_float(signal_section.get("max_spread_multiplier", 2.70))
     return round(base * multiplier, 1)
 
@@ -97,6 +95,9 @@ def get_signal_config() -> SignalConfig:
     safety_section = dict(merged.get("safety", {}))
     voting_groups_section = dict(merged.get("voting_groups", {}))
     standalone_override_section = dict(merged.get("standalone_override", {}))
+    calibrator_section = dict(merged.get("calibrator", {}))
+    calibrator_recency_by_tf_section = dict(merged.get("calibrator.recency_hours_by_tf", {}))
+    equity_curve_section = dict(merged.get("equity_curve_filter", {}))
     perf_tracker_section = dict(merged.get("performance_tracker", {}))
     pnl_circuit_section = dict(merged.get("pnl_circuit_breaker", {}))
     htf_cache_section = dict(merged.get("htf_cache", {}))
@@ -186,6 +187,20 @@ def get_signal_config() -> SignalConfig:
                     "signal.ini [voting_group.%s] invalid disagreement_penalty: %r",
                     group_name, subsection["disagreement_penalty"],
                 )
+        # strategy_weights: strategy_name=weight（对高相关性策略降权）
+        weights_section = dict(merged.get(f"voting_group.{group_name}.weights", {}))
+        if weights_section:
+            parsed_weights: dict[str, float] = {}
+            for strat_name, weight_str in weights_section.items():
+                try:
+                    parsed_weights[str(strat_name).strip()] = float(weight_str)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "signal.ini [voting_group.%s.weights] invalid weight for %s: %r",
+                        group_name, strat_name, weight_str,
+                    )
+            if parsed_weights:
+                group_cfg["strategy_weights"] = parsed_weights
         voting_group_configs.append(group_cfg)
 
     # ── Standalone Override 解析 ────────────────────────────────────────
@@ -339,6 +354,18 @@ def get_signal_config() -> SignalConfig:
         "strategy_timeframes": _normalize_session_map(strategy_timeframes_section),
         "voting_group_configs": voting_group_configs,
         "standalone_override": standalone_override,
+        **{
+            f"calibrator_{key}": value
+            for key, value in calibrator_section.items()
+        },
+        "calibrator_recency_hours_by_tf": {
+            tf.upper(): int(hours)
+            for tf, hours in calibrator_recency_by_tf_section.items()
+        } if calibrator_recency_by_tf_section else {},
+        **{
+            f"equity_curve_filter_{key}": value
+            for key, value in equity_curve_section.items()
+        },
         **{
             f"perf_tracker_{key}": value
             for key, value in perf_tracker_section.items()

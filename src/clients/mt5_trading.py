@@ -663,10 +663,17 @@ class MT5TradingClient(MT5BaseClient):
                 "tp": tp if tp is not None else p.tp,
             }
             result = mt5.order_send(req)
-            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                failed.append({"ticket": p.ticket, "symbol": p.symbol, "error": result and result.comment})
+            retcode = int(result.retcode) if result is not None else -1
+            comment = str(getattr(result, "comment", "") or "")
+            if result is None or retcode != mt5.TRADE_RETCODE_DONE:
+                failed.append({
+                    "ticket": p.ticket, "symbol": p.symbol,
+                    "error": comment, "retcode": retcode,
+                })
             else:
-                modified.append(p.ticket)
+                modified.append({
+                    "ticket": p.ticket, "retcode": retcode, "comment": comment,
+                })
         return {"modified": modified, "failed": failed}
 
     def get_position_close_details(

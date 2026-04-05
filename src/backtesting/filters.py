@@ -105,7 +105,7 @@ class BacktestFilterConfig:
     enabled: bool = True
     # 时段过滤（对应 signal.ini [signal].allowed_sessions）
     session_filter_enabled: bool = True
-    allowed_sessions: str = "london,newyork"
+    allowed_sessions: str = "london,new_york"
     # 时段切换冷却（对应 signal.ini [signal].session_transition_cooldown_minutes）
     session_transition_enabled: bool = True
     session_transition_cooldown_minutes: int = 15
@@ -127,7 +127,7 @@ class BacktestFilterConfig:
         default_factory=lambda: {
             "asia": 30.0,
             "london": 25.0,
-            "newyork": 20.0,
+            "new_york": 20.0,
             "off_hours": 45.0,
         }
     )

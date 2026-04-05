@@ -166,7 +166,7 @@ def test_build_backtest_config_uses_defaults_and_overrides(
             "daily_loss_limit_pct": 8.0,
             "max_trades_per_day": 6,
             "max_trades_per_hour": 2,
-            "filter_allowed_sessions": "asia,london,newyork",
+            "filter_allowed_sessions": "asia,london,new_york",
             "enable_state_machine": True,
         },
     )
@@ -175,7 +175,7 @@ def test_build_backtest_config_uses_defaults_and_overrides(
         "load_signal_config",
         lambda: SimpleNamespace(
             strategy_timeframes={"ema_cross": ["M5", "M15"]},
-            strategy_sessions={"ema_cross": ["london", "newyork"]},
+            strategy_sessions={"ema_cross": ["london", "new_york"]},
         ),
     )
     request = backtest_api.api_config.BacktestRunRequest(
@@ -203,13 +203,13 @@ def test_build_backtest_config_uses_defaults_and_overrides(
     assert config.daily_loss_limit_pct == 8.0
     assert config.max_trades_per_day == 6
     assert config.max_trades_per_hour == 2
-    assert config.filter_allowed_sessions == "asia,london,newyork"
+    assert config.filter_allowed_sessions == "asia,london,new_york"
     assert config.enable_state_machine is True
     assert config.strategy_params == {"ema_cross_fast": 12}
     assert config.strategy_params_per_tf == {"M5": {"ema_cross_fast": 9}}
     assert config.regime_affinity_overrides == {"ema_cross": {"trend": 1.3}}
     assert config.strategy_timeframes == {"ema_cross": ["M5", "M15"]}
-    assert config.strategy_sessions == {"ema_cross": ["london", "newyork"]}
+    assert config.strategy_sessions == {"ema_cross": ["london", "new_york"]}
 
 
 def test_run_optimization_job_summary_uses_default_optimizer_settings(

@@ -149,7 +149,7 @@ def test_build_backtest_components_registers_multi_timeframe_confirm(
                 indicators=[],
             )
 
-    monkeypatch.setattr("src.config.database.get_db_config", lambda: object())
+    monkeypatch.setattr("src.config.database.load_db_settings", lambda: object())
     monkeypatch.setattr("src.config.indicator_config.get_global_config_manager", lambda: _DummyConfigManager())
     monkeypatch.setattr("src.indicators.engine.pipeline.create_isolated_pipeline", lambda cfg: _DummyPipeline())
     monkeypatch.setattr("src.persistence.db.TimescaleWriter", _DummyWriter)

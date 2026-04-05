@@ -42,7 +42,7 @@ MT5Services/
 ├── pyproject.toml            # 项目元数据、依赖、工具配置
 ├── requirements.txt          # 运行时依赖
 ├── config/                   # 所有配置文件
-│   ├── app.ini               # 单一信号源：品种、时间框架、采集间隔、缓存限制
+│   ├── app.ini               # 品种、时间框架、采集间隔、缓存限制、运行模式
 │   ├── market.ini            # API 服务配置（host、port、认证、CORS）
 │   ├── mt5.ini               # MT5 终端连接与账户配置
 │   ├── db.ini                # TimescaleDB 连接配置
@@ -51,123 +51,161 @@ MT5Services/
 │   ├── economic.ini          # 经济日历与 Trade Guard 配置
 │   ├── risk.ini              # 风险限制（仓位、SL/TP、保证金、交易频率）
 │   ├── cache.ini             # 运行时内存缓存大小（覆盖 app.ini [limits]）
-│   ├── signal.ini            # 信号模块配置（含 HTF 缓存、HTF 指标注入、信号质量追踪器参数）
+│   ├── signal.ini            # 信号模块配置（HTF、投票、Regime、策略参数、过滤器）
+│   ├── backtest.ini          # 回测专用配置（初始余额、过滤器、仓位、熔断器）
 │   ├── indicators.json       # 指标定义与计算流水线
 │   └── composites.json       # 复合策略组合定义
 ├── src/
-│   ├── app_runtime/          # 应用运行时（从 deps.py 拆分）
+│   ├── app_runtime/          # 应用运行时（容器 + 装配 + 生命周期 + 模式控制）
 │   │   ├── container.py      # AppContainer：纯组件持有（flat dataclass，无逻辑）
 │   │   ├── builder.py        # build_app_container()：构建所有组件（不启动线程）
-│   │   └── runtime.py        # AppRuntime：start/stop 生命周期管理
+│   │   ├── runtime.py        # AppRuntime：start/stop 生命周期管理
+│   │   ├── lifecycle.py      # RuntimeManagedComponent Protocol + RuntimeComponentRegistry
+│   │   ├── mode_controller.py # RuntimeModeController：运行模式编排（FULL/OBSERVE/RISK_OFF/INGEST_ONLY）
+│   │   ├── mode_policy.py    # RuntimeMode 枚举 + 转换守卫 + 自动转换策略
+│   │   └── factories/        # 各组件工厂函数（market/storage/trading/signals/indicators）
 │   ├── api/                  # FastAPI 路由、中间件、Schema、DI 适配层
-│   │   ├── admin.py          # 管理面板路由（仪表盘/配置/策略/SSE 事件流）
-│   │   ├── admin_schemas.py  # Admin API 响应 Schema
-│   │   ├── factories/        # 组件工厂函数（market/storage/trading/signals/indicators）
-│   │   └── trade_dispatcher.py # TradeAPIDispatcher 统一交易调度入口
+│   │   ├── __init__.py       # FastAPI app 初始化、CORS、API key 认证、路由注册
+│   │   ├── deps.py           # DI 适配层（getter 函数 + lifespan，委托 app_runtime）
+│   │   ├── schemas.py        # 通用响应模型（ApiResponse[T]）
+│   │   ├── error_codes.py    # AIErrorCode 枚举
+│   │   ├── <domain>.py       # 各子域组合根（trade/signal/market/admin/...）
+│   │   ├── trade_routes/     # 交易命令/状态/追踪/运行模式路由
+│   │   ├── signal_routes/    # 策略目录/运行态/诊断路由
+│   │   ├── market_routes/    # 报价/K线/tick/流式订阅
+│   │   ├── indicators_routes/ # 指标目录/值查询/计算
+│   │   ├── monitoring_routes/ # 健康/运行态/配置热加载
+│   │   ├── admin_routes/     # 仪表盘/配置/策略/绩效/SSE
+│   │   ├── account_routes/   # 账户/持仓/挂单查询
+│   │   ├── economic_routes/  # 日历/风险窗口/影响分析
+│   │   ├── studio_routes/    # Studio REST + SSE
+│   │   └── decision_routes/  # 决策摘要
 │   ├── calendar/             # 经济日历服务
-│   │   └── economic_calendar/ # calendar_sync / trade_guard / observability
-│   ├── clients/              # MT5 客户端封装（行情、交易、账户）
+│   │   └── economic_calendar/ # calendar_sync / trade_guard / market_impact / observability
+│   ├── clients/              # MT5 客户端封装（行情、交易、账户）+ 经济日历适配器
 │   ├── config/               # 配置加载、合并、Pydantic 模型
-│   │   ├── models/           # signal.py / runtime.py 配置模型
-│   │   ├── database.py       # 数据库配置加载
-│   │   ├── indicator_config.py  # 指标配置加载
-│   │   ├── indicator_runtime.py # 指标运行时配置
-│   │   ├── mt5.py            # MT5 终端配置加载
-│   │   ├── signal.py         # 信号模块配置加载
-│   │   ├── storage.py        # 存储配置加载
-│   │   └── runtime.py        # 运行时配置加载
+│   ├── decision/             # 决策引擎（上下文融合 → 立场/信心/证据/冲突/风险）
 │   ├── indicators/           # 统一指标系统（管理器、引擎、缓存）
 │   │   ├── manager.py        # UnifiedIndicatorManager 核心编排器
 │   │   ├── bar_event_handler.py  # 收盘K线事件批处理
+│   │   ├── bar_loader.py     # Bar 加载与指标历史需求计算（纯函数）
 │   │   ├── pipeline_runner.py    # 指标管道运行逻辑
 │   │   ├── result_store.py       # 指标结果存储与规范化
 │   │   ├── snapshot_publisher.py # 指标快照发布与去重
 │   │   ├── delta_metrics.py      # N-bar 变化率计算（纯函数，可复用于 backtest）
-│   │   ├── types.py              # 指标类型定义
-│   │   ├── cache/            # 缓存子系统
-│   │   │   ├── smart_cache.py    # 智能缓存机制
-│   │   │   └── incremental.py    # 增量计算支持
+│   │   ├── cache/            # 缓存子系统（smart_cache / incremental）
 │   │   ├── core/             # 指标计算函数（mean/momentum/volatility/volume）
-│   │   ├── engine/           # 计算引擎
-│   │   │   ├── pipeline.py       # 计算管道
-│   │   │   ├── dependency_manager.py # 依赖管理器
-│   │   │   └── parallel_executor.py  # 并行执行器
-│   │   └── monitoring/       # 指标监控
-│   │       └── metrics_collector.py  # 计算耗时收集器
+│   │   ├── engine/           # 计算引擎（pipeline / dependency_manager / parallel_executor）
+│   │   └── monitoring/       # 指标监控（metrics_collector）
 │   ├── ingestion/            # 后台 Tick/OHLC/Intrabar 数据采集
-│   ├── market/               # MarketDataService
+│   ├── market/               # MarketDataService + MarketEventBus
 │   ├── market_structure/     # 市场结构分析器（MarketStructureAnalyzer）
-│   │   └── models.py         # MarketStructureContext 数据类
-│   ├── monitoring/           # 健康检查
-│   │   ├── health_monitor.py # SQLite 指标存储、告警
-│   │   ├── health_checks.py  # 健康检查实现
-│   │   ├── health_common.py  # 健康检查通用工具
-│   │   ├── health_reporting.py # 健康报告生成
-│   │   ├── pipeline_event_bus.py # 指标管线事件总线（计算耗时/异常事件分发）
-│   │   └── manager.py        # MonitoringManager 定时巡检
+│   ├── monitoring/           # 健康检查与监控
+│   │   ├── manager.py        # MonitoringManager 定时巡检
+│   │   ├── health/           # 健康检查（monitor / checks / reporting / common）
+│   │   └── pipeline/         # Pipeline 事件总线 + 结构化事件 + Trace Recorder
 │   ├── persistence/          # TimescaleDB 写入器、队列持久化、Schema 定义
 │   │   ├── storage_writer.py # 基于队列的多通道持久化
 │   │   ├── db.py             # 数据库连接管理
-│   │   ├── validator.py      # 数据校验
-│   │   ├── schema/           # 各通道数据表 Schema
-│   │   └── repositories/     # 数据仓储层（按领域分离）
-│   │       ├── trade_repo.py     # 交易操作仓储
-│   │       ├── signal_repo.py    # 信号追踪仓储
-│   │       ├── economic_repo.py  # 经济日历仓储
-│   │       ├── market_repo.py    # 市场数据仓储
-│   │       └── runtime_repo.py   # 运行时任务仓储
-│   ├── risk/                 # 风险规则、模型、服务
-│   │   └── models.py         # TradeIntent / RiskCheckResult / RiskAssessment
+│   │   ├── schema/           # 各通道数据表 Schema（含 pipeline_trace_events / trade_command_audits）
+│   │   └── repositories/     # 数据仓储层（trade / signal / economic / market / runtime / backtest / pipeline_trace / trading_state）
+│   ├── risk/                 # 风险规则、模型、服务、端口
+│   │   ├── service.py        # PreTradeRiskService
+│   │   ├── rules.py          # 风控规则（DailyLoss/Account/Margin/Frequency/Protection）
+│   │   ├── ports.py          # MarginGuard Protocol 定义
+│   │   ├── margin_guard.py   # 保证金守卫
+│   │   └── runtime.py        # wire_margin_guard() 装配函数
 │   ├── signals/              # 信号生成策略、运行时、过滤器
 │   │   ├── models.py         # SignalEvent / SignalContext / SignalDecision / SignalRecord
-│   │   ├── confidence.py     # 置信度管线纯函数（apply_confidence_pipeline）
-│   │   ├── analytics/        # 诊断分析工具
-│   │   │   ├── diagnostics.py    # DiagnosticsEngine 实现
-│   │   │   ├── interfaces.py     # DiagnosticsEngine Protocol 定义
-│   │   │   └── plugins.py        # AnalyticsPluginRegistry 插件扩展
+│   │   ├── service.py        # SignalModule：策略注册、evaluate()、diagnostics
+│   │   ├── confidence.py     # 置信度管线纯函数
+│   │   ├── analytics/        # 诊断分析（diagnostics / interfaces / plugins）
 │   │   ├── contracts/        # 接口/常量定义（sessions.py）
 │   │   ├── evaluation/       # Regime 分类、置信度校准、绩效追踪
-│   │   │   ├── regime.py         # MarketRegimeDetector / SoftRegimeResult
-│   │   │   ├── calibrator.py     # ConfidenceCalibrator 历史校准
-│   │   │   ├── performance.py    # StrategyPerformanceTracker 日内绩效
-│   │   │   └── indicators_helpers.py # 跨模块指标数据提取
 │   │   ├── execution/        # 信号过滤器（SignalFilterChain）
-│   │   ├── orchestration/    # SignalRuntime / SignalPolicy / VotingEngine / 纯函数模块
-│   │   ├── strategies/       # 策略实现（trend/mean_reversion/breakout/composite/multi_tf）
-│   │   │   ├── adapters.py   # UnifiedIndicatorSourceAdapter（解耦信号与指标）
-│   │   │   ├── multi_tf_entry.py # HTFTrendM5Entry：H1 定方向 + M5 回调入场联动策略
-│   │   │   └── tf_params.py  # TFParamResolver：per-TF 策略参数查表器
+│   │   ├── orchestration/    # SignalRuntime 编排（协调器 + 协作者）
+│   │   │   ├── runtime.py            # 协调器 + 生命周期 + 队列
+│   │   │   ├── runtime_evaluator.py  # 策略评估 + confidence 调整 + 信号发布
+│   │   │   ├── runtime_processing.py # 事件出队 + filter/regime + 单事件处理
+│   │   │   ├── runtime_recovery.py   # 运行态恢复（confirmed/preview 状态还原）
+│   │   │   ├── policy.py             # SignalPolicy + VotingGroupConfig
+│   │   │   ├── voting.py             # StrategyVotingEngine
+│   │   │   ├── state_machine.py      # 状态机转换（纯逻辑）
+│   │   │   ├── vote_processor.py     # 投票处理（纯函数）
+│   │   │   ├── htf_resolver.py       # HTF 配置解析与对齐（纯函数）
+│   │   │   └── affinity.py           # Regime 亲和度 + 快速拒绝（纯函数）
+│   │   ├── strategies/       # 策略实现与注册
+│   │   │   ├── base.py       # SignalStrategy Protocol + TimeframeScaler + get_tf_param()
+│   │   │   ├── catalog.py    # build_named_strategy_catalog()：统一策略目录构建（41+策略）
+│   │   │   ├── registry.py   # StrategyRegistry + build_composite_strategies()
+│   │   │   ├── adapters.py   # UnifiedIndicatorSourceAdapter
+│   │   │   ├── tf_params.py  # TFParamResolver：per-TF 策略参数查表器
+│   │   │   ├── htf_cache.py  # HTFStateCache
+│   │   │   ├── trend.py / mean_reversion.py / breakout.py / session.py / price_action.py
+│   │   │   ├── multi_tf_entry.py  # HTFTrendPullback / DualTFMomentum（多 HTF 实例）
+│   │   │   ├── m5_scalp.py   # M5ScalpRSI / M5MomentumBurst
+│   │   │   ├── trendline.py  # TrendlineThreeTouch
+│   │   │   └── composite.py  # CompositeStrategy 基类
 │   │   └── tracking/         # SignalRepository（信号持久化与查询）
-│   ├── trading/              # TradingModule、TradeExecutor、ExecutionGate、PositionManager、SignalQualityTracker、TradeOutcomeTracker
-│   │   ├── execution_gate.py # ExecutionGate：策略域准入检查（voting group / 白名单 / armed）
-│   │   ├── pending_entry.py  # PendingEntryManager：价格确认入场（Quote bid/ask 区间监控）
-│   │   └── models.py         # TradeOperationRecord 数据类
+│   ├── trading/              # 交易执行（分层子包架构）
+│   │   ├── ports.py          # 8 个跨边界 Protocol（TradingQueryPort / ExecutorTradingPort / ...）
+│   │   ├── models.py         # TradeCommandAuditRecord 等共享模型
+│   │   ├── registry.py       # TradingAccountRegistry
+│   │   ├── trading_service.py # TradingService：底层 MT5 交易适配
+│   │   ├── application/      # 应用服务层
+│   │   │   ├── module.py     # TradingModule（交易聚合根）
+│   │   │   ├── services.py   # TradingCommandService + TradingQueryService
+│   │   │   ├── control.py    # TradeControlStateService
+│   │   │   ├── audit.py      # TradeCommandAuditService + TradeDailyStatsService
+│   │   │   ├── idempotency.py # TradeExecutionReplayService（幂等回放）
+│   │   │   └── signal_execution.py # SignalTradeCommandService（信号驱动下单）
+│   │   ├── execution/        # 执行层
+│   │   │   ├── executor.py   # TradeExecutor（执行协调器 + 熔断器）
+│   │   │   ├── gate.py       # ExecutionGate（策略域准入检查）
+│   │   │   ├── params.py     # TradeParameters 计算 + 成本估算
+│   │   │   ├── sizing.py     # RegimeSizing（仓位计算 + TF 差异化 SL/TP）
+│   │   │   ├── pending_orders.py # 挂单提交 + 防重 + 成交识别
+│   │   │   └── eventing.py   # 执行事件 + 提交结果 + 成交记录
+│   │   ├── pending/          # 挂单追踪（PendingOrderManager）
+│   │   ├── positions/        # 持仓管理（PositionManager + 持仓规则）
+│   │   ├── closeout/         # 风险收口（ExposureCloseoutService + 收口策略）
+│   │   ├── tracking/         # 信号质量跟踪（SignalQualityTracker）+ 成交结果跟踪（TradeOutcomeTracker）
+│   │   └── state/            # 状态持久化 + 恢复 + 告警（store / models / recovery / alerts）
 │   ├── backtesting/          # 回测与参数优化子系统
-│   │   ├── economic_provider.py   # 回测用经济日历 TradeGuard 提供者（DB 预加载 + 内存查询）
-│   │   ├── engine.py             # BacktestEngine：逐 bar 回放主循环
-│   │   ├── optimizer.py          # 网格/随机参数搜索
-│   │   ├── walk_forward.py       # Walk-Forward 前推验证（IS/OOS 分割）
-│   │   ├── recommendation.py     # 参数推荐引擎 + ConfigApplicator（生成/应用/回滚）
-│   │   ├── component_factory.py  # 构建独立 pipeline/SignalModule（绕过 deps.py）
-│   │   ├── data_loader.py        # CachedDataLoader：从 DB 加载历史 OHLC
-│   │   ├── portfolio.py          # PortfolioTracker：模拟持仓/SL/TP/资金曲线
-│   │   ├── filters.py            # 过滤器模拟（直接复用 SignalFilterChain）
-│   │   ├── metrics.py            # Sharpe/Sortino/Calmar/最大回撤计算
-│   │   ├── models.py             # BacktestResult/Recommendation/ParamChange 数据类
-│   │   └── api.py                # 回测 HTTP API（run/optimize/walk-forward/recommendations）
+│   │   ├── engine.py         # BacktestEngine：逐 bar 回放（薄协调器）
+│   │   ├── engine_filters.py # 过滤器构建 + 经济事件装配
+│   │   ├── engine_indicators.py # 指标预计算 + HTF 指标查找
+│   │   ├── engine_signals.py # 策略评估 + 状态机推进 + 挂起入场模拟
+│   │   ├── optimizer.py      # 网格/随机参数搜索
+│   │   ├── walk_forward.py   # Walk-Forward 前推验证
+│   │   ├── recommendation.py # RecommendationEngine + ConfigApplicator
+│   │   ├── config.py         # 回测配置加载（从 backtest.ini + signal.ini 合并）
+│   │   ├── component_factory.py # 构建独立 pipeline/SignalModule
+│   │   ├── data_loader.py    # CachedDataLoader
+│   │   ├── portfolio.py      # PortfolioTracker
+│   │   ├── metrics.py        # BacktestMetrics
+│   │   ├── models.py         # BacktestResult / Recommendation / ParamChange
+│   │   ├── api.py            # 回测 HTTP 组合根
+│   │   ├── api_config.py     # 回测请求模型 + 配置解析
+│   │   ├── api_execution.py  # 后台任务执行 + 组件装配
+│   │   ├── api_recommendations.py # 推荐查询逻辑
+│   │   ├── runtime_store.py  # 回测 API 运行态存储（任务/结果/缓存）
+│   │   └── api_routes/       # 路由子包（config / jobs / recommendations）
 │   ├── readmodels/           # Read-model 投影层（运行时状态聚合）
-│   │   └── runtime.py        # RuntimeReadModel：仪表盘/指标/交易/信号运行时摘要投影
+│   │   ├── runtime.py        # RuntimeReadModel：仪表盘/指标/交易/信号运行时摘要投影
+│   │   └── trade_trace.py    # TradingFlowTraceReadModel：交易链路追踪只读投影
 │   ├── studio/               # Studio 可观测性层（Anteater 3D 前端实时状态）
-│   │   ├── models.py         # Agent 元数据注册表（14 角色）+ build_agent/build_event 辅助函数
-│   │   ├── event_buffer.py   # 线程安全环形事件缓冲区（deque + Lock）
-│   │   ├── mappers.py        # 14 个纯映射函数（模块 status dict → StudioAgent dict，纯数据不含展示逻辑）
-│   │   ├── runtime.py        # StudioRuntime：Studio 事件桥接与生命周期
-│   │   └── service.py        # StudioService：Registry 模式 + SSE 订阅管理 + 事件广播
-│   └── utils/                # 通用工具、内存管理器
+│   │   ├── models.py         # Agent 元数据注册表（14 角色）
+│   │   ├── event_buffer.py   # 线程安全环形事件缓冲区
+│   │   ├── mappers.py        # 14 个纯映射函数（只返回结构化数据）
+│   │   ├── runtime.py        # StudioRuntime：事件桥接与生命周期
+│   │   └── service.py        # StudioService：Registry + SSE 订阅管理
+│   └── utils/                # 通用工具
 │       └── timezone.py       # 统一时区模块（utc_now/to_display/LocalTimeFormatter）
 ├── tests/                    # 测试套件（镜像 src/ 结构）
-└── docs/                     # 架构文档、内部设计文档
-    └── architecture-flow.md  # 全链路流程图、数据流转矩阵、置信度管线路径
+└── docs/                     # 架构文档
+    ├── architecture/         # overview / data-flow / signal-system / module-boundaries / module-layout
+    └── design/               # pending-entry / risk-enhancement / next-plan
 ```
 
 ---
@@ -344,6 +382,9 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `economic_repo.py` | 经济日历数据存取 |
 | `market_repo.py` | 市场数据（OHLC/Tick/Quote）历史查询 |
 | `runtime_repo.py` | 运行时任务状态持久化 |
+| `backtest_repo.py` | 回测结果与推荐记录仓储 |
+| `pipeline_trace_repo.py` | Pipeline trace 事件查询 |
+| `trading_state_repo.py` | 挂单/持仓运行时状态 + 交易审计 |
 
 ### Signal Runtime Queue Architecture
 
@@ -419,36 +460,54 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/signals/strategies/adapters.py` | UnifiedIndicatorSourceAdapter：解耦信号模块与指标管理器 |
 | `src/signals/analytics/interfaces.py` | DiagnosticsEngine Protocol 定义 |
 | `src/signals/analytics/plugins.py` | AnalyticsPluginRegistry 插件扩展机制 |
-| `src/trading/service.py` | TradingModule：账户、持仓、订单生命周期 |
-| `src/trading/trading_service.py` | TradingService：底层下单、平仓、保证金计算 |
-| `src/trading/signal_executor.py` | TradeExecutor：信号自动下单执行、熔断器、成本检查 |
-| `src/trading/execution_gate.py` | ExecutionGate：策略域准入检查（voting group / 白名单 / armed） |
-| `src/trading/pending_entry.py` | PendingEntryManager：价格确认入场（信号 → 等 Quote 价格落入区间 → 执行） |
-| `src/trading/pending_entry.py` (`_compute_reference_price()`) | 按 category 计算智能入场参考价（trend→均线支撑, reversion→BB middle, breakout→Donchian 关键位） |
-| `src/trading/position_manager.py` | PositionManager：持仓监控、止损跟踪、日终自动平仓 |
-| `src/trading/sizing.py` | 仓位计算、时间框架差异化 SL/TP（`TimeframeSLTP`） |
-| `src/trading/signal_quality_tracker.py` | SignalQualityTracker：信号预测质量追踪（N bars 后评估，供 Calibrator） |
-| `src/trading/trade_outcome_tracker.py` | TradeOutcomeTracker：实际交易盈亏追踪（由 PositionManager 关仓触发） |
+| `src/trading/ports.py` | 8 个跨边界 Protocol（TradingQueryPort / ExecutorTradingPort / ExposureCloseoutPort / ...） |
+| `src/trading/application/module.py` | TradingModule：交易聚合根（账户、持仓、订单生命周期） |
+| `src/trading/application/services.py` | TradingCommandService + TradingQueryService（CQRS 分离） |
+| `src/trading/application/control.py` | TradeControlStateService（交易控制状态） |
+| `src/trading/application/audit.py` | TradeCommandAuditService + TradeDailyStatsService |
+| `src/trading/application/signal_execution.py` | SignalTradeCommandService（信号驱动下单） |
+| `src/trading/trading_service.py` | TradingService：底层 MT5 交易适配 |
+| `src/trading/execution/executor.py` | TradeExecutor：执行协调器 + 熔断器 |
+| `src/trading/execution/gate.py` | ExecutionGate：策略域准入检查 |
+| `src/trading/execution/params.py` | TradeParameters 计算 + 成本估算 |
+| `src/trading/execution/sizing.py` | RegimeSizing（仓位计算 + TF 差异化 SL/TP） |
+| `src/trading/execution/pending_orders.py` | 挂单提交 + 防重 + 成交识别 |
+| `src/trading/execution/eventing.py` | 执行事件 + 提交结果 + 成交记录 |
+| `src/trading/pending/manager.py` | PendingOrderManager：挂单追踪、过期、成交衔接 |
+| `src/trading/positions/manager.py` | PositionManager：持仓监控、止损跟踪、日终自动平仓 |
+| `src/trading/closeout/service.py` | ExposureCloseoutService：风险收口（平仓 + 撤单） |
+| `src/trading/tracking/signal_quality.py` | SignalQualityTracker：信号预测质量追踪 |
+| `src/trading/tracking/trade_outcome.py` | TradeOutcomeTracker：实际交易盈亏追踪 |
+| `src/trading/state/` | 状态持久化（store / models / recovery / recovery_policy / alerts） |
 | `src/trading/registry.py` | TradingAccountRegistry：多账户注册与服务工厂 |
-| `src/trading/models.py` | TradeOperationRecord 数据类 |
-| `src/risk/rules.py` | 风险规则：AccountSnapshotRule / DailyLossLimitRule / MarginAvailabilityRule / TradeFrequencyRule / ProtectionRule 等 |
-| `src/risk/models.py` | TradeIntent / RiskCheckResult / RiskAssessment 数据类 |
+| `src/trading/models.py` | TradeCommandAuditRecord 等共享模型 |
+| `src/risk/service.py` | PreTradeRiskService |
+| `src/risk/rules.py` | 风控规则：AccountSnapshotRule / DailyLossLimitRule / MarginAvailabilityRule / TradeFrequencyRule 等 |
+| `src/risk/ports.py` | MarginGuardPositionPort / MarginGuardTradePort / MarginGuardExecutorPort |
+| `src/risk/runtime.py` | wire_margin_guard()：保证金守卫装配函数 |
 | `src/market_structure/models.py` | MarketStructureContext 数据类 |
-| `src/monitoring/health_monitor.py` | SQLite 指标存储、告警、健康报告 |
-| `src/monitoring/health_checks.py` | 健康检查具体实现（从 health_monitor 拆分） |
-| `src/monitoring/health_reporting.py` | 健康报告生成 |
 | `src/monitoring/manager.py` | MonitoringManager：定时巡检、组件协调 |
-| `src/backtesting/engine.py` | BacktestEngine：逐 bar 回放主循环，复用 evaluate/filters/regime |
-| `src/backtesting/optimizer.py` | 网格/随机参数搜索，复用 CachedDataLoader + 预计算指标 |
-| `src/backtesting/walk_forward.py` | Walk-Forward 前推验证（IS/OOS 分割 + 过拟合检测） |
-| `src/backtesting/recommendation.py` | RecommendationEngine（参数推荐生成）+ ConfigApplicator（应用/回滚） |
-| `src/backtesting/component_factory.py` | `build_backtest_components()`：构建独立 pipeline/SignalModule |
-| `src/backtesting/data_loader.py` | CachedDataLoader：从 DB 加载历史 OHLC + 指标预计算缓存 |
-| `src/backtesting/portfolio.py` | PortfolioTracker：模拟持仓/SL/TP/资金曲线 |
-| `src/backtesting/metrics.py` | BacktestMetrics：Sharpe/Sortino/Calmar/最大回撤 |
-| `src/backtesting/models.py` | BacktestResult/Recommendation/ParamChange/RecommendationStatus |
-| `src/backtesting/api.py` | 回测 HTTP API 路由（run/optimize/walk-forward/recommendations） |
-| `src/persistence/repositories/backtest_repo.py` | 回测结果与推荐记录的 DB 仓储 |
+| `src/monitoring/health/monitor.py` | HealthMonitor：SQLite 指标存储、告警 |
+| `src/monitoring/health/checks.py` | 健康检查具体实现 |
+| `src/monitoring/health/reporting.py` | 健康报告生成 |
+| `src/monitoring/pipeline/event_bus.py` | PipelineEventBus：pipeline 事件总线 |
+| `src/monitoring/pipeline/events.py` | 10 种 pipeline 结构化事件 + 阶段定义 |
+| `src/monitoring/pipeline/trace_recorder.py` | PipelineTraceRecorder：trace 持久化 |
+| `src/decision/service.py` | build_decision_brief()：上下文融合决策引擎 |
+| `src/readmodels/runtime.py` | RuntimeReadModel：运行时状态聚合投影 |
+| `src/readmodels/trade_trace.py` | TradingFlowTraceReadModel：交易链路追踪只读投影 |
+| `src/backtesting/engine.py` | BacktestEngine：逐 bar 回放薄协调器 |
+| `src/backtesting/engine_signals.py` | 策略评估 + 状态机推进 + 挂起入场模拟 |
+| `src/backtesting/engine_indicators.py` | 指标预计算 + HTF 指标查找 |
+| `src/backtesting/engine_filters.py` | 过滤器构建 + 经济事件装配 |
+| `src/backtesting/config.py` | 回测配置加载（backtest.ini + signal.ini 合并） |
+| `src/backtesting/optimizer.py` | 网格/随机参数搜索 |
+| `src/backtesting/walk_forward.py` | Walk-Forward 前推验证 |
+| `src/backtesting/recommendation.py` | RecommendationEngine + ConfigApplicator |
+| `src/backtesting/api.py` | 回测 HTTP 组合根 |
+| `src/backtesting/api_routes/` | 路由子包（config / jobs / recommendations） |
+| `src/backtesting/runtime_store.py` | 回测 API 运行态存储 |
+| `src/persistence/repositories/` | 数据仓储层：trade / signal / economic / market / runtime / backtest / pipeline_trace / trading_state |
 
 ---
 
@@ -863,8 +922,8 @@ class MyNewStrategy:
    - 时段动量 → `src/signals/strategies/session.py`
    - 价格行为 → `src/signals/strategies/price_action.py`
    - 组合策略 → `src/signals/strategies/composite.py`
-2. 在 `src/signals/strategies/__init__.py` 中添加导出
-3. 在 `src/signals/service.py` 的默认策略列表中注册实例
+2. 在 `src/signals/strategies/catalog.py` 的 `build_named_strategy_catalog()` 中注册实例
+3. 在 `src/signals/strategies/__init__.py` 中添加导出
 4. 在 `tests/signals/` 中添加单元测试，覆盖四种 Regime 下的输出
 5. （可选）在 `config/signal.ini` 中调整参数
 
@@ -1228,12 +1287,13 @@ PENDING → APPROVED → APPLIED → ROLLED_BACK（可选）
 1. **Signal filters** (`src/signals/execution/filters.py`)：时段/冷却期/价差/经济事件/**波动率异常**过滤（`SignalFilterChain` 统一入口）
 2. **Regime fast-reject** (`SignalRuntime._any_strategy_eligible()`)：所有策略 affinity 不足时跳过全部后续计算
 3. **HTF direction alignment** (`SignalRuntime._evaluate_strategies()`)：HTF 方向冲突 ×0.70 / 对齐 ×1.10（在置信度管线内，持久化前）
-4. **Execution gate** (`src/trading/execution_gate.py`)：voting group 保护、交易触发白名单、require_armed 门控
-5. **Pending entry** (`src/trading/pending_entry.py`)：**价格确认入场** — 信号产生后不立即下单，等 Quote bid/ask 落入 ATR 计算的入场区间后执行（按策略类型自动选择 pullback/momentum/symmetric 三种模式）。入场区间参考价按策略 category 自动从指标数据计算（trend→最近均线, reversion→BB middle, breakout→Donchian 关键位），不再统一使用 bar close
+4. **Execution gate** (`src/trading/execution/gate.py`)：voting group 保护、require_armed 门控
+5. **Pending orders** (`src/trading/execution/pending_orders.py`)：MT5 原生挂单（limit/stop），按策略 category 自动选择 pullback/momentum/symmetric 三种入场模式。入场区间参考价按策略 category 从指标数据计算（trend→均线支撑, reversion→BB middle, breakout→Donchian 关键位）
 6. **Pre-trade risk service** (`src/risk/service.py`)：`DailyLossLimitRule`（日损失限制）、`AccountSnapshotRule`（仓位限制）、`MarginAvailabilityRule`（保证金动态检查）、`TradeFrequencyRule`（交易频率限制）、`BrokerConstraintRule` 等
-7. **Executor safety** (`src/trading/signal_executor.py`)：熔断器、**持仓数量预检**、成本检查（spread_to_stop_ratio）
-8. **Position manager** (`src/trading/position_manager.py`)：**日终自动平仓**（UTC 21:00，可配置开关）
-9. **Sizing** (`src/trading/sizing.py`)：**时间框架差异化 SL/TP**（M5: 1.8/2.5, M15: 1.8/2.5, M30: 2.0/2.5, H1: 2.0/2.5, H4: 2.2/3.0, D1: 2.5/3.5 ATR 倍数）+ **时间框架差异化风险百分比**（M5: ×0.50, M15: ×0.75, M30: ×0.90, H1: ×1.00, H4: ×1.20, D1: ×1.50）+ **Per-TF min_confidence**（`signal.ini [timeframe_min_confidence]`：M5=0.78, H1=0.70, D1=0.60）+ **HTF 方向冲突阻止**（`[htf_conflict_block]`：M5/M15/M30 趋势策略逆大周期方向直接拒绝，均值回归策略豁免）
+7. **Executor safety** (`src/trading/execution/executor.py`)：熔断器、**持仓数量预检**、成本检查（spread_to_stop_ratio）
+8. **Exposure closeout** (`src/trading/closeout/service.py`)：**日终自动平仓** + 挂单撤销（ExposureCloseoutService）
+9. **Position manager** (`src/trading/positions/manager.py`)：持仓监控、止损跟踪
+10. **Sizing** (`src/trading/execution/sizing.py`)：**RegimeSizing** — 时间框架差异化 SL/TP（M5: 1.8/2.5, M15: 1.8/2.5, M30: 2.0/2.5, H1: 2.0/2.5, H4: 2.2/3.0, D1: 2.5/3.5 ATR 倍数）+ **时间框架差异化风险百分比**（M5: ×0.50, M15: ×0.75, M30: ×0.90, H1: ×1.00, H4: ×1.20, D1: ×1.50）+ **Per-TF min_confidence**（`signal.ini [timeframe_min_confidence]`：M5=0.78, H1=0.70, D1=0.60）+ **HTF 方向冲突阻止**（`[htf_conflict_block]`：M5/M15/M30 趋势策略逆大周期方向直接拒绝，均值回归策略豁免）
 
 ---
 
@@ -1248,7 +1308,8 @@ Authentication: `X-API-Key` 请求头（在 `config/market.ini` 中配置）
 | Router | Prefix | 主要端点 |
 |--------|--------|---------|
 | market | `/` | `/symbols`, `/quote`, `/ticks`, `/ohlc`, `/stream`（SSE） |
-| trade | `/` | `/trade`, `/close`, `/close_all`, `/trade/precheck`, `/estimate_margin` |
+| trade | `/` | `/trade`, `/close`, `/close_all`, `/trade/precheck`, `/estimate_margin`, `/trade/trace/{signal_id}`, `/trade/trace/by-trace/{trace_id}`, `/trade/runtime/mode` |
+| decision | `/decision` | `/decision/brief`（上下文融合决策摘要） |
 | account | `/account` | `/account/info`, `/account/positions`, `/account/orders` |
 | economic | `/economic` | `/economic/calendar`, `/economic/calendar/risk-windows`, `/economic/calendar/trade-guard` |
 | indicators | `/indicators` | `/indicators/list`, `/indicators/{symbol}/{timeframe}`, `/indicators/compute` |
@@ -1272,10 +1333,11 @@ ApiResponse[T]:
 
 ## Adding New API Routes
 
-1. 在 `src/api/` 中创建路由文件
-2. 在 `src/api/schemas.py` 中添加 Pydantic 请求/响应 Schema
-3. 在 `src/api/__init__.py` 中注册路由
+1. 在对应子域的 `src/api/<domain>_routes/` 中创建路由文件（或在已有路由文件中添加）
+2. 在子域 `view_models.py` 中添加 Pydantic 响应 Schema（或在 `src/api/schemas.py` 中添加共享 Schema）
+3. 在子域组合根 `src/api/<domain>.py` 中注册新路由
 4. 在 `src/api/error_codes.py` 中添加错误码
+5. 业务逻辑下沉到应用服务或 `src/readmodels/`，路由层只做 HTTP 协议适配
 
 ---
 
@@ -1501,44 +1563,58 @@ flake8 src/ tests/
 - **fake_breakout category 修正**：从 `breakout` 改为 `reversion`（假突破后反转入场，本质是回归策略），影响入场 zone_mode 从 momentum 变为 symmetric
 - **智能入场参考价**：`compute_entry_zone()` 新增 `_compute_reference_price()`，按策略 category 从指标数据计算合理入场锚点（trend→均线支撑, reversion→BB middle, breakout→Donchian 关键位），替代之前统一使用 bar close 作为区间中心
 - **deps.py 初始化无失败标记**：`_ensure_initialized()` 在 `build_app_container()` 抛异常后不设 init_failed 标志，后续请求会反复重试构建并产生重复异常日志
+- **运行模式系统**（`src/app_runtime/mode_controller.py`）：4 种运行模式 `FULL`/`OBSERVE`/`RISK_OFF`/`INGEST_ONLY`，通过 `RuntimeModeController` 编排组件启停。`app.ini [trading_ops]` 配置 `runtime_mode` 和 `runtime_mode_after_eod`。组件通过 `RuntimeManagedComponent` Protocol 声明 `supported_modes`
+- **Trading 分层子包架构**（2026-04-03）：`src/trading/` 从平铺文件重组为 7 个子包（application/execution/pending/positions/closeout/tracking/state）+ `ports.py` 端口层。外部模块应优先依赖子包 `__init__.py` 导出
+- **Trading Ports**（`src/trading/ports.py`）：8 个 Protocol 定义跨边界依赖合约（TradingQueryPort / TradeControlStatePort / PendingOrderCancellationPort / PositionManagementPort / ExposureCloseoutPort / RecoveryTradingPort / TradeDispatchPort / ExecutorTradingPort）
+- **Trading CQRS**：`TradingCommandService`（写操作）+ `TradingQueryService`（读操作）分离，在 `src/trading/application/services.py`
+- **SignalRuntime 协作者拆分**（2026-04-03）：`runtime.py`（协调器）+ `runtime_evaluator.py`（策略评估）+ `runtime_processing.py`（事件处理）+ `runtime_recovery.py`（状态恢复）
+- **BacktestEngine 协作者拆分**（2026-04-03）：`engine.py`（薄协调器）+ `engine_filters.py` + `engine_indicators.py` + `engine_signals.py`
+- **Pipeline Trace 系统**（`src/monitoring/pipeline/`）：10 种结构化事件（bar_closed → indicator_computed → snapshot_published → signal_filter/evaluated → execution_decided/blocked/submitted/failed）+ `PipelineTraceRecorder` 持久化到 `pipeline_trace_events` 表
+- **TradingFlowTraceReadModel**（`src/readmodels/trade_trace.py`）：聚合信号/执行/审计/挂单/持仓/结果的交易链路只读投影，支持按 signal_id 和 trace_id 查询
+- **Decision 模块**（`src/decision/service.py`）：`build_decision_brief()` 上下文融合决策引擎，输出立场/信心/证据/冲突/风险/失效条件
+- **策略目录统一**（`src/signals/strategies/catalog.py`）：`build_named_strategy_catalog()` 返回 OrderedDict，统一策略构建入口（41+ 预构建策略）；`clone_registered_strategies()` 安全克隆
+- **API 路由模块化**（2026-04-03）：10 个子域路由包（trade_routes/signal_routes/market_routes/...），每个包独立处理对应领域的端点 + view_models
+- **Backtesting API 拆分**（2026-04-03）：从 1 个 1500+ 行文件 → `api.py`（组合根）+ `api_config.py` + `api_execution.py` + `api_recommendations.py` + `runtime_store.py` + `api_routes/` 子包
 - **模块位置注意**：
   - `AppContainer` → `src/app_runtime/container.py`（纯组件持有，可多实例）
-  - `AppBuilder` → `src/app_runtime/builder.py`（构建组件，不启动线程）
+  - `build_app_container` → `src/app_runtime/builder.py`（构建不启动线程）
   - `AppRuntime` → `src/app_runtime/runtime.py`（生命周期管理）
-  - `SignalRuntime` → `src/signals/orchestration/runtime.py`（不在 `src/signals/runtime.py`）
-  - `MarketDataService` → `src/market/service.py`（不在 `src/core/market_service.py`）
-  - `EconomicCalendarService` → `src/calendar/service.py`（不在 `src/core/economic_calendar_service.py`）
-  - `ExecutionGate` → `src/trading/execution_gate.py`（策略域准入检查，从 TradeExecutor 分离）
-  - `VolatilitySpikeFilter` → `src/signals/execution/filters.py`（与 `SignalFilterChain` 同文件）
-  - `TimeframeScaler` → `src/signals/strategies/base.py`（与 `SignalStrategy` Protocol 同文件）
-  - `TFParamResolver` → `src/signals/strategies/tf_params.py`（per-TF 策略参数查表器）
-  - `get_tf_param()` → `src/signals/strategies/base.py`（策略 evaluate 中查表的便利函数）
-  - `SessionTransitionFilter` → `src/signals/execution/filters.py`（与 `SignalFilterChain` 同文件）
-  - `DailyLossLimitRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
-  - `StrategyPerformanceTracker` → `src/signals/evaluation/performance.py`（与 Calibrator 平级，不在 trading 模块）
-  - `TradeAPIDispatcher` → `src/api/trade_dispatcher.py`（独立文件，不在路由文件中）
-  - `PendingEntryManager` → `src/trading/pending_entry.py`（价格确认入场，由 TradeExecutor 调用）
-  - `MarginAvailabilityRule` / `TradeFrequencyRule` → `src/risk/rules.py`（与其他 Risk Rules 同文件）
-  - `UnifiedIndicatorSourceAdapter` → `src/signals/strategies/adapters.py`（解耦信号与指标的适配器）
-  - `RecommendationEngine` / `ConfigApplicator` → `src/backtesting/recommendation.py`（参数推荐生成与应用）
-  - `BacktestRepository` → `src/persistence/repositories/backtest_repo.py`（回测结果与推荐记录仓储）
-  - `BacktestEngine` → `src/backtesting/engine.py`（逐 bar 回放，不在 optimizer.py 中）
-  - `WalkForwardValidator` → `src/backtesting/walk_forward.py`（前推验证，不在 optimizer.py 中）
-  - `StudioService` → `src/studio/service.py`（Registry 模式 + SSE 订阅管理，零业务模块导入）
-  - `StudioRuntime` → `src/studio/runtime.py`（Studio 事件桥接与生命周期管理）
-  - Studio mappers → `src/studio/mappers.py`（14 个纯函数，只返回结构化数据，不含展示文本；前端负责渲染）
-  - Studio 装配 → `src/app_runtime/builder.py` `_build_studio_service()`（唯一知道两边的绑定点）
-  - Studio API → `src/api/studio.py`（REST 4 端点 + SSE `/studio/stream`）
-  - Admin API → `src/api/admin.py`（仪表盘/配置/策略/绩效/SSE 事件流）
-  - `RuntimeReadModel` → `src/readmodels/runtime.py`（运行时状态聚合投影，供 admin/monitoring API 使用）
-  - `PipelineEventBus` → `src/monitoring/pipeline_event_bus.py`（指标管线事件总线）
-  - `confidence_pipeline` → `src/signals/confidence.py`（置信度管线纯函数）
-  - `build_composite_strategies` → `src/signals/strategies/registry.py`（从 composites.json 构建复合策略）
-  - `HTFTrendPullback` / `DualTFMomentum` → `src/signals/strategies/multi_tf_entry.py`（HTF 定方向 + LTF 回调/共振入场策略，支持多 HTF 实例）
-  - `M5ScalpRSI` / `M5MomentumBurst` → `src/signals/strategies/m5_scalp.py`（M5 专用 intrabar 快速策略）
-  - `OrderBlockEntryStrategy` → `src/signals/strategies/price_action.py`（OB 回踩入场策略）
-  - `VwapReversionStrategy` → `src/signals/strategies/mean_reversion.py`（VWAP 均值回归策略，Demo 暂不启用）
-  - `BacktestTradeGuardProvider` → `src/backtesting/economic_provider.py`（回测用经济日历 TradeGuard，DB 预加载到内存）
+  - `RuntimeModeController` → `src/app_runtime/mode_controller.py`（运行模式编排）
+  - `RuntimeManagedComponent` → `src/app_runtime/lifecycle.py`（组件生命周期 Protocol）
+  - `SignalRuntime` → `src/signals/orchestration/runtime.py`
+  - `MarketDataService` → `src/market/service.py`
+  - `EconomicCalendarService` → `src/calendar/service.py`
+  - `TradingModule` → `src/trading/application/module.py`（不再在 `src/trading/service.py`）
+  - `TradingCommandService` / `TradingQueryService` → `src/trading/application/services.py`
+  - `TradeExecutor` → `src/trading/execution/executor.py`（不再在 `src/trading/signal_executor.py`）
+  - `ExecutionGate` → `src/trading/execution/gate.py`（不再在 `src/trading/execution_gate.py`）
+  - `RegimeSizing` → `src/trading/execution/sizing.py`（不再在 `src/trading/sizing.py`）
+  - `PositionManager` → `src/trading/positions/manager.py`（不再在 `src/trading/position_manager.py`）
+  - `PendingOrderManager` → `src/trading/pending/manager.py`（不再在 `src/trading/pending_entry.py`）
+  - `ExposureCloseoutService` → `src/trading/closeout/service.py`
+  - `SignalQualityTracker` → `src/trading/tracking/signal_quality.py`
+  - `TradeOutcomeTracker` → `src/trading/tracking/trade_outcome.py`
+  - `TradeControlStateService` → `src/trading/application/control.py`
+  - `Trading Ports` → `src/trading/ports.py`（8 个 Protocol）
+  - `Risk Ports` → `src/risk/ports.py`（MarginGuard 3 个 Protocol）
+  - `HealthMonitor` → `src/monitoring/health/monitor.py`（不再在 `src/monitoring/health_monitor.py`）
+  - `PipelineEventBus` → `src/monitoring/pipeline/event_bus.py`（不再在 `src/monitoring/pipeline_event_bus.py`）
+  - `PipelineTraceRecorder` → `src/monitoring/pipeline/trace_recorder.py`
+  - `StrategyPerformanceTracker` → `src/signals/evaluation/performance.py`
+  - `build_named_strategy_catalog` → `src/signals/strategies/catalog.py`
+  - `build_composite_strategies` → `src/signals/strategies/registry.py`
+  - `confidence_pipeline` → `src/signals/confidence.py`
+  - `RuntimeReadModel` → `src/readmodels/runtime.py`
+  - `TradingFlowTraceReadModel` → `src/readmodels/trade_trace.py`
+  - `build_decision_brief` → `src/decision/service.py`
+  - `StudioService` → `src/studio/service.py`
+  - `StudioRuntime` → `src/studio/runtime.py`
+  - Studio mappers → `src/studio/mappers.py`（14 个纯函数）
+  - Admin API → `src/api/admin.py`（组合根）+ `src/api/admin_routes/`（子包）
+  - Trade API → `src/api/trade.py`（组合根）+ `src/api/trade_routes/`（子包）
+  - `BacktestEngine` → `src/backtesting/engine.py`（薄协调器）
+  - 回测配置 → `src/backtesting/config.py`（从 backtest.ini + signal.ini 合并加载）
+  - `BacktestTradeGuardProvider` → `src/backtesting/economic_provider.py`
 
 ---
 

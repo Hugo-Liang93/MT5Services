@@ -511,10 +511,6 @@ class EmaRibbonStrategy:
 class HmaCrossStrategy:
     """基于 HMA/EMA 相对位置与间距强度的低滞后趋势策略。
 
-    注意：策略名 "hma_cross" 是历史命名，实际逻辑并非交叉检测，
-    而是 HMA 相对 EMA 的持续位置判断 + 间距强度。保留原名以兼容
-    INI 配置、投票组、DB 历史记录等已有引用。
-
     HMA（Hull MA）的最大优势是极低滞后——比同周期 EMA 快约半个周期响应。
 
     信号逻辑：

@@ -206,34 +206,22 @@ class TimescaleWriter:
                     except Exception:
                         pass
                 elif pool is not None:
-                    pool.putconn(conn)
+                    try:
+                        pool.putconn(conn)
+                    except Exception:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                else:
+                    # pool 重建中（_reconnect 正在执行），安全关闭孤立连接
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
     def init_schema(self) -> None:
-        # Migration: rename legacy 'action' column to 'direction' in existing tables
-        migrate = """
-DO $$
-DECLARE
-    _tbl text;
-BEGIN
-    FOREACH _tbl IN ARRAY ARRAY[
-        'signal_events', 'signal_preview_events', 'signal_outcomes',
-        'auto_executions', 'trade_outcomes',
-        'backtest_trades', 'backtest_signal_evaluations'
-    ] LOOP
-        IF EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = _tbl AND column_name = 'action'
-        ) AND NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = _tbl AND column_name = 'direction'
-        ) THEN
-            EXECUTE format('ALTER TABLE %I RENAME COLUMN action TO direction', _tbl);
-            RAISE NOTICE 'Renamed action → direction on %', _tbl;
-        END IF;
-    END LOOP;
-END $$;
-"""
-        ddl = "CREATE EXTENSION IF NOT EXISTS timescaledb;\n" + migrate + "\n".join(DDL_STATEMENTS)
+        ddl = "CREATE EXTENSION IF NOT EXISTS timescaledb;\n" + "\n".join(DDL_STATEMENTS)
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(ddl)
         logger.info("Timescale schema ensured")
@@ -377,6 +365,11 @@ END $$;
 
     def write_position_runtime_states(self, rows, page_size: int = 200) -> None:
         self.trading_state_repo.write_position_runtime_states(rows, page_size=page_size)
+
+    def write_position_sl_tp_history(self, rows, page_size: int = 200) -> None:
+        from src.persistence.schema.position_sl_tp_history import INSERT_SQL
+
+        self._batch(INSERT_SQL, rows, page_size=page_size)
 
     def fetch_position_runtime_states(self, **kwargs):
         return self.trading_state_repo.fetch_position_runtime_states(**kwargs)

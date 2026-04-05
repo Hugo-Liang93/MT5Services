@@ -141,7 +141,7 @@ class BacktestConfig:
     filters_enabled: bool = True
     # 时段过滤
     filter_session_enabled: bool = True
-    filter_allowed_sessions: str = "london,newyork"
+    filter_allowed_sessions: str = "london,new_york"
     # 时段切换冷却（分钟）
     filter_session_transition_enabled: bool = True
     filter_session_transition_cooldown: int = 15

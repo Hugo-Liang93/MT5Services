@@ -421,9 +421,9 @@ class StrategyPerformanceTracker:
             # win_rate_ratio=0.5 → multiplier≈0.71; =1.5 → ≈1.22; =2.0 → ≈1.41
             multiplier = win_rate_ratio ** 0.5
 
-        # 2. Streak penalty (only for losing streaks)
+        # 2. Streak penalty (only for losing streaks, capped at 10 excess)
         if stats.current_streak < -cfg.streak_penalty_threshold:
-            excess = abs(stats.current_streak) - cfg.streak_penalty_threshold
+            excess = min(abs(stats.current_streak) - cfg.streak_penalty_threshold, 10)
             penalty = cfg.streak_penalty_factor ** excess
             multiplier *= penalty
 

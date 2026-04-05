@@ -72,7 +72,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         max_positions=ini_defaults.get("max_positions", 3),
         max_signal_evaluations=ini_defaults.get("max_signal_evaluations", 50000),
         filter_session_enabled=ini_defaults.get("filter_session_enabled", True),
-        filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,newyork"),
+        filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,new_york"),
         filter_session_transition_enabled=ini_defaults.get(
             "filter_session_transition_enabled", True
         ),
@@ -281,7 +281,7 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
                 max_positions=ini_defaults.get("max_positions", 3),
                 max_signal_evaluations=ini_defaults.get("max_signal_evaluations", 50000),
                 filter_session_enabled=ini_defaults.get("filter_session_enabled", True),
-                filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,newyork"),
+                filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,new_york"),
                 filter_session_transition_enabled=ini_defaults.get(
                     "filter_session_transition_enabled", True
                 ),
@@ -324,10 +324,10 @@ def main() -> None:
         from src.persistence.repositories.backtest_repo import BacktestRepository
 
         if writer is None:
-            from src.config.database import get_db_config
+            from src.config.database import load_db_settings
             from src.persistence.db import TimescaleWriter
 
-            db_config = get_db_config()
+            db_config = load_db_settings()
             writer = TimescaleWriter(settings=db_config)
 
         repo = BacktestRepository(writer)

@@ -65,18 +65,8 @@ def _shared_indicator_defaults() -> tuple[List[str], List[str], float]:
 
 
 def normalize_indicator_func_path(func_path: str) -> str:
-    """Map legacy indicator function paths to the canonical package layout."""
-    normalized = func_path.replace("src.indicators_unified.", "src.indicators.")
-    legacy_prefixes = {
-        "src.indicators.mean.": "src.indicators.core.mean.",
-        "src.indicators.momentum.": "src.indicators.core.momentum.",
-        "src.indicators.volatility.": "src.indicators.core.volatility.",
-        "src.indicators.volume.": "src.indicators.core.volume.",
-    }
-    for legacy_prefix, canonical_prefix in legacy_prefixes.items():
-        if normalized.startswith(legacy_prefix):
-            return normalized.replace(legacy_prefix, canonical_prefix, 1)
-    return normalized
+    """Validate and return the canonical indicator function path."""
+    return func_path
 
 
 class ComputeMode(str, Enum):

@@ -257,7 +257,7 @@ class BacktestEngine:
         self._session_filter: Optional[Any] = None
         if self._strategy_sessions:
             from src.signals.execution.filters import SessionFilter
-            self._session_filter = SessionFilter(allowed_sessions=("london", "newyork", "asia"))
+            self._session_filter = SessionFilter(allowed_sessions=("london", "new_york", "asia"))
 
         # 收集所有目标策略需要的指标名 + regime 检测需要的指标
         self._required_indicators: List[str] = []

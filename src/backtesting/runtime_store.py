@@ -7,14 +7,25 @@ from typing import Any, Dict, Optional
 from .models import BacktestJob, BacktestJobStatus
 
 
+_MAX_CACHED_ENTRIES = 50
+
+
+def _evict_oldest(store: Dict[str, Any], max_size: int = _MAX_CACHED_ENTRIES) -> None:
+    """淘汰最早插入的条目，保持字典大小在上限内。"""
+    while len(store) > max_size:
+        oldest_key = next(iter(store))
+        del store[oldest_key]
+
+
 class BacktestRuntimeStore:
     """回测 API 运行态存储。"""
 
-    def __init__(self) -> None:
+    def __init__(self, max_entries: int = _MAX_CACHED_ENTRIES) -> None:
         self.jobs: Dict[str, BacktestJob] = {}
         self.results: Dict[str, Any] = {}
         self.walk_forward_results: Dict[str, Any] = {}
         self.recommendations: Dict[str, Any] = {}
+        self._max_entries = max_entries
 
         self.job_lock = threading.Lock()
         self.result_lock = threading.Lock()
@@ -25,6 +36,7 @@ class BacktestRuntimeStore:
     def register_job(self, job: BacktestJob) -> None:
         with self.job_lock:
             self.jobs[job.run_id] = job
+            _evict_oldest(self.jobs, self._max_entries)
 
     def list_jobs(self) -> list[BacktestJob]:
         with self.job_lock:
@@ -47,6 +59,7 @@ class BacktestRuntimeStore:
                 job.progress = 1.0
         with self.result_lock:
             self.results[run_id] = result
+            _evict_oldest(self.results, self._max_entries)
 
     def fail_job(self, run_id: str, error: str) -> None:
         now = datetime.now(timezone.utc)
@@ -93,10 +106,12 @@ class BacktestRuntimeStore:
     def set_result(self, run_id: str, result: Any) -> None:
         with self.result_lock:
             self.results[run_id] = result
+            _evict_oldest(self.results, self._max_entries)
 
     def store_walk_forward_result(self, run_id: str, result: Any) -> None:
         with self.walk_forward_lock:
             self.walk_forward_results[run_id] = result
+            _evict_oldest(self.walk_forward_results, self._max_entries)
 
     def get_walk_forward_result(self, run_id: str) -> Any:
         with self.walk_forward_lock:
@@ -109,6 +124,7 @@ class BacktestRuntimeStore:
     def store_recommendation(self, rec_id: str, recommendation: Any) -> None:
         with self.recommendation_lock:
             self.recommendations[rec_id] = recommendation
+            _evict_oldest(self.recommendations, self._max_entries)
 
     def reset(self) -> None:
         with self.job_lock:

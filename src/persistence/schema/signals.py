@@ -33,6 +33,9 @@ CREATE INDEX IF NOT EXISTS signal_preview_events_time_idx
 ON signal_preview_events (generated_at DESC, symbol, timeframe, strategy);
 CREATE INDEX IF NOT EXISTS signal_preview_events_direction_idx
 ON signal_preview_events (direction, generated_at DESC);
+CREATE INDEX IF NOT EXISTS signal_events_trace_id_idx
+ON signal_events USING GIN ((metadata->'signal_trace_id'))
+WHERE metadata->'signal_trace_id' IS NOT NULL;
 """
 
 INSERT_SQL = """

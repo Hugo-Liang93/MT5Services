@@ -103,6 +103,7 @@ class PositionManager:
         self._on_position_tracked: Optional[Callable[[TrackedPosition, str], None]] = None
         self._on_position_updated: Optional[Callable[[TrackedPosition, str], None]] = None
         self._on_position_closed: Optional[Callable[[TrackedPosition, Optional[float]], None]] = None
+        self._sl_tp_history_writer: Optional[Callable[[list[tuple]], None]] = None
 
         self._reconcile_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -750,7 +751,7 @@ class PositionManager:
             already_applied=pos.breakeven_applied,
         )
         if result.should_apply and result.new_stop_loss is not None:
-            if self._modify_sl(pos, result.new_stop_loss):
+            if self._modify_sl(pos, result.new_stop_loss, reason="breakeven"):
                 pos.breakeven_applied = True
                 if self._on_position_updated is not None:
                     self._on_position_updated(pos, "breakeven_applied")
@@ -776,39 +777,127 @@ class PositionManager:
             else:
                 logger.warning("Trailing SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
 
-    def _modify_sl(self, pos: TrackedPosition, new_sl: float) -> bool:
+    def _modify_sl(self, pos: TrackedPosition, new_sl: float, reason: str = "trailing_sl") -> bool:
+        old_sl = pos.stop_loss
+        target_sl = round(new_sl, 2)
+        retcode: int | None = None
+        broker_comment: str = ""
+        success = False
         try:
-            target_sl = round(new_sl, 2)
             result = self._trading.modify_positions(ticket=pos.ticket, symbol=pos.symbol, sl=target_sl)
             if isinstance(result, dict):
-                modified = {int(item) for item in result.get("modified", []) if item is not None}
-                if modified and pos.ticket not in modified:
+                modified_list = result.get("modified", [])
+                modified_tickets = {
+                    int(item["ticket"]) if isinstance(item, dict) else int(item)
+                    for item in modified_list if item is not None
+                }
+                if modified_list and isinstance(modified_list[0], dict):
+                    retcode = modified_list[0].get("retcode")
+                    broker_comment = modified_list[0].get("comment", "")
+                if modified_tickets and pos.ticket not in modified_tickets:
                     raise RuntimeError(f"ticket {pos.ticket} not modified")
                 failed = list(result.get("failed", []) or [])
-                if failed and pos.ticket not in modified:
-                    raise RuntimeError(str(failed[0]))
+                if failed and pos.ticket not in modified_tickets:
+                    retcode = failed[0].get("retcode") if isinstance(failed[0], dict) else None
+                    broker_comment = str(failed[0].get("error", "")) if isinstance(failed[0], dict) else str(failed[0])
+                    raise RuntimeError(broker_comment)
             pos.stop_loss = target_sl
+            success = True
             return True
         except Exception as exc:
             logger.warning("Failed to modify SL for ticket=%d: %s", pos.ticket, exc)
+            if not broker_comment:
+                broker_comment = str(exc)
             return False
+        finally:
+            self._record_sl_tp_change(
+                pos, reason=reason, action_type="modify_sl",
+                old_sl=old_sl, new_sl=target_sl, old_tp=None, new_tp=None,
+                success=success, retcode=retcode, broker_comment=broker_comment,
+            )
 
-    def _modify_tp(self, pos: TrackedPosition, new_tp: float) -> bool:
+    def _modify_tp(self, pos: TrackedPosition, new_tp: float, reason: str = "trailing_tp") -> bool:
+        old_tp = pos.take_profit
+        target_tp = round(new_tp, 2)
+        retcode: int | None = None
+        broker_comment: str = ""
+        success = False
         try:
-            target_tp = round(new_tp, 2)
             result = self._trading.modify_positions(ticket=pos.ticket, symbol=pos.symbol, tp=target_tp)
             if isinstance(result, dict):
-                modified = {int(item) for item in result.get("modified", []) if item is not None}
-                if modified and pos.ticket not in modified:
+                modified_list = result.get("modified", [])
+                modified_tickets = {
+                    int(item["ticket"]) if isinstance(item, dict) else int(item)
+                    for item in modified_list if item is not None
+                }
+                if modified_list and isinstance(modified_list[0], dict):
+                    retcode = modified_list[0].get("retcode")
+                    broker_comment = modified_list[0].get("comment", "")
+                if modified_tickets and pos.ticket not in modified_tickets:
                     raise RuntimeError(f"ticket {pos.ticket} not modified")
                 failed = list(result.get("failed", []) or [])
-                if failed and pos.ticket not in modified:
-                    raise RuntimeError(str(failed[0]))
+                if failed and pos.ticket not in modified_tickets:
+                    retcode = failed[0].get("retcode") if isinstance(failed[0], dict) else None
+                    broker_comment = str(failed[0].get("error", "")) if isinstance(failed[0], dict) else str(failed[0])
+                    raise RuntimeError(broker_comment)
             pos.take_profit = target_tp
+            success = True
             return True
         except Exception as exc:
             logger.warning("Failed to modify TP for ticket=%d: %s", pos.ticket, exc)
+            if not broker_comment:
+                broker_comment = str(exc)
             return False
+        finally:
+            self._record_sl_tp_change(
+                pos, reason=reason, action_type="modify_tp",
+                old_sl=None, new_sl=None, old_tp=old_tp, new_tp=target_tp,
+                success=success, retcode=retcode, broker_comment=broker_comment,
+            )
+
+    def _record_sl_tp_change(
+        self,
+        pos: TrackedPosition,
+        *,
+        reason: str,
+        action_type: str,
+        old_sl: float | None,
+        new_sl: float | None,
+        old_tp: float | None,
+        new_tp: float | None,
+        success: bool,
+        retcode: int | None,
+        broker_comment: str,
+    ) -> None:
+        """将 SL/TP 变更记录写入 position_sl_tp_history 表。"""
+        if self._sl_tp_history_writer is None:
+            return
+        from src.utils.timezone import utc_now
+        try:
+            row = (
+                utc_now(),                           # recorded_at
+                "",                                  # account_alias（由 writer 填充）
+                int(pos.ticket),                     # position_ticket
+                pos.signal_id,                       # signal_id
+                pos.symbol,                          # symbol
+                action_type,                         # action_type
+                reason,                              # reason
+                old_sl,                              # old_stop_loss
+                new_sl,                              # new_stop_loss
+                old_tp,                              # old_take_profit
+                new_tp,                              # new_take_profit
+                pos.current_price,                   # current_price
+                pos.highest_price,                   # highest_price
+                pos.lowest_price,                    # lowest_price
+                pos.atr_at_entry,                    # atr_at_entry
+                success,                             # success
+                retcode,                             # retcode
+                broker_comment[:200] if broker_comment else None,  # broker_comment
+                "{}",                                # metadata (JSON)
+            )
+            self._sl_tp_history_writer([row])
+        except Exception as exc:
+            logger.debug("Failed to write SL/TP history: %s", exc)
 
     def _check_trailing_tp(self, pos: TrackedPosition) -> None:
         result = check_trailing_take_profit(

@@ -39,12 +39,11 @@ from src.trading.closeout import ExposureCloseoutController
 from src.trading.pending import PendingEntryManager
 from src.trading.positions import PositionManager
 from src.trading.execution import TradeExecutor
-from src.trading.tracking import SignalQualityTracker
+from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 from src.monitoring.pipeline import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.studio.service import StudioService
-from src.trading.tracking import TradeOutcomeTracker
 
 logger = logging.getLogger(__name__)
 _init_lock = threading.Lock()
@@ -65,12 +64,8 @@ def _ensure_initialized() -> None:
             f"Container initialization previously failed: {_init_error}"
         )
     with _init_lock:
-        if _container is not None:
-            return
-        if _init_failed:
-            raise RuntimeError(
-                f"Container initialization previously failed: {_init_error}"
-            )
+        if _container is not None:  # double-check under lock (thread safety)
+            return  # type: ignore[unreachable]
         try:
             _container = build_app_container(signal_config_loader=get_signal_config)
             _runtime = AppRuntime(_container, signal_config_loader=get_signal_config)
@@ -164,7 +159,9 @@ def get_runtime_mode() -> str:
     _ensure_initialized()
     if _container is None or _container.runtime_mode_controller is None:
         return "full"
-    return _container.runtime_mode_controller.snapshot().get("current_mode") or "full"
+    snap = _container.runtime_mode_controller.snapshot()
+    mode = snap.get("current_mode")
+    return str(mode) if mode else "full"
 
 
 def is_monitoring_enabled() -> bool:
@@ -208,6 +205,7 @@ def get_pre_trade_risk_service() -> PreTradeRiskService:
     trading_service = _container.trade_registry.get_trading_service(
         _container.trade_module.active_account_alias
     )
+    assert trading_service.pre_trade_risk_service is not None
     return trading_service.pre_trade_risk_service
 
 

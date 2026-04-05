@@ -44,11 +44,11 @@ def get_backtest_repo() -> Optional[Any]:
     if _cached_backtest_repo is not None:
         return _cached_backtest_repo
     try:
-        from src.config.database import get_db_config
+        from src.config.database import load_db_settings
         from src.persistence.db import TimescaleWriter
         from src.persistence.repositories.backtest_repo import BacktestRepository
 
-        db_config = get_db_config()
+        db_config = load_db_settings()
         writer = TimescaleWriter(settings=db_config, min_conn=1, max_conn=2)
         repo = BacktestRepository(writer)
         repo.ensure_schema()

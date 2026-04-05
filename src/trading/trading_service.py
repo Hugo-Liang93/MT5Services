@@ -235,7 +235,7 @@ class TradingService:
             return __import__("MetaTrader5").ORDER_TYPE_SELL
         raise MT5TradingClientError(f"Unsupported side: {side}")
 
-    # --- Backward-compatible API expected by src.api.trade ---
+    # --- 交易执行核心 API ---
     def execute_trade(
         self,
         symbol: str,

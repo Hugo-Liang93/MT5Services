@@ -64,11 +64,14 @@ def _bar(minute: int) -> OHLC:
 
 def _init_scope_stats(manager: UnifiedIndicatorManager) -> None:
     """Inject _scope_stats into a stub manager created via object.__new__."""
+    import threading
+
     manager._scope_stats = {
         "confirmed": {"computations": 0, "indicators": 0},
         "intrabar": {"computations": 0, "indicators": 0},
         "reconcile": {"computations": 0, "indicators": 0},
     }
+    manager._scope_stats_lock = threading.Lock()
 
 
 def test_market_service_loads_historical_window_from_storage() -> None:
@@ -185,30 +188,6 @@ def test_backfill_writes_closed_bars_into_cache_and_event_flow() -> None:
     assert len(writes[0][0]) == len(closed_bars)
     assert cached_batches == [("XAUUSD", "M1", closed_bars)]
     assert events == [("XAUUSD", "M1", bar.time) for bar in closed_bars]
-
-
-def test_indicator_manager_normalizes_legacy_flat_persisted_values() -> None:
-    manager = object.__new__(UnifiedIndicatorManager)
-    manager.config = SimpleNamespace(
-        indicators=[
-            SimpleNamespace(name="macd", enabled=True),
-            SimpleNamespace(name="rsi14", enabled=True),
-        ]
-    )
-
-    normalized = manager._normalize_persisted_indicator_snapshot(
-        {
-            "macd": 1.2,
-            "macd_signal": 0.7,
-            "macd_hist": 0.5,
-            "rsi14": 55.0,
-        }
-    )
-
-    assert normalized == {
-        "macd": {"macd": 1.2, "signal": 0.7, "hist": 0.5},
-        "rsi14": {"rsi14": 55.0},
-    }
 
 
 def test_write_back_results_persists_grouped_indicator_payload() -> None:

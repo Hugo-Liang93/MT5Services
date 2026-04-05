@@ -166,6 +166,8 @@ def process_voting(
     transition_intrabar_fn: Callable[..., Optional[Dict[str, Any]]],
     persist_fn: Callable[..., Any],
     publish_fn: Callable[..., None],
+    pipeline_bus: Optional[Any] = None,
+    trace_id: str = "",
 ) -> None:
     """Cross-strategy voting: dispatch to named voting groups or global consensus.
 
@@ -174,7 +176,7 @@ def process_voting(
         producing a signal named after group.name.
         Global consensus is automatically disabled.
 
-    Single consensus mode (backward compatible):
+    Single consensus mode:
         All independent strategies participate in voting,
         producing a strategy="consensus" signal.
     """
@@ -214,6 +216,24 @@ def process_voting(
                 scope=scope,
                 exclude_composite=False,
             )
+            # 发射投票完成事件（无论是否产生信号）
+            if pipeline_bus is not None and hasattr(pipeline_bus, "emit_voting_completed"):
+                pipeline_bus.emit_voting_completed(
+                    trace_id=trace_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    scope=scope,
+                    group_name=group_config.name,
+                    winning_direction=vote_result.direction if vote_result else None,
+                    final_confidence=vote_result.confidence if vote_result else None,
+                    payload={
+                        "strategies_count": len(group_decisions),
+                        "strategy_decisions": [
+                            {"strategy": d.strategy, "direction": d.direction, "confidence": round(d.confidence, 4)}
+                            for d in group_decisions
+                        ],
+                    },
+                )
             if vote_result is None:
                 continue
             process_and_emit_vote_signal(
@@ -231,10 +251,27 @@ def process_voting(
             )
         return
 
-    # Single consensus mode (backward compatible)
+    # Single consensus mode
     if voting_engine is None:
         return
     consensus = voting_engine.vote(snapshot_decisions, regime=regime, scope=scope)
+    if pipeline_bus is not None and hasattr(pipeline_bus, "emit_voting_completed"):
+        pipeline_bus.emit_voting_completed(
+            trace_id=trace_id,
+            symbol=symbol,
+            timeframe=timeframe,
+            scope=scope,
+            group_name="consensus",
+            winning_direction=consensus.direction if consensus else None,
+            final_confidence=consensus.confidence if consensus else None,
+            payload={
+                "strategies_count": len(snapshot_decisions),
+                "strategy_decisions": [
+                    {"strategy": d.strategy, "direction": d.direction, "confidence": round(d.confidence, 4)}
+                    for d in snapshot_decisions
+                ],
+            },
+        )
     if consensus is None:
         return
     process_and_emit_vote_signal(

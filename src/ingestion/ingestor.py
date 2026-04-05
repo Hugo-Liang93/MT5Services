@@ -44,6 +44,7 @@ class BackgroundIngestor:
         self._intrabar_polls: int = 0
         self._intrabar_deduped: int = 0
         self._intrabar_updated: int = 0
+        self._intrabar_stats_lock = threading.Lock()
         self._ohlc_lock = threading.Lock()  # 保护 _last_ohlc_time 的并发读写
         self._backfill_progress: Dict[str, datetime] = {}
         self._backfill_cutoff: Dict[str, datetime] = {}
@@ -408,15 +409,15 @@ class BackgroundIngestor:
                 continue
 
             # Dedup: only act when the bar content actually changed.
-            self._intrabar_polls += 1
             current = (bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
-            if self._last_intrabar_snapshot.get(key) == current:
-                self._intrabar_deduped += 1
-                next_intrabar_at[key] = now + interval
-                continue
-
-            self._intrabar_updated += 1
-            self._last_intrabar_snapshot[key] = current
+            with self._intrabar_stats_lock:
+                self._intrabar_polls += 1
+                if self._last_intrabar_snapshot.get(key) == current:
+                    self._intrabar_deduped += 1
+                    next_intrabar_at[key] = now + interval
+                    continue
+                self._intrabar_updated += 1
+                self._last_intrabar_snapshot[key] = current
             self.service.set_intrabar(symbol, tf, bar)
 
             if self.settings.intrabar_enabled:
@@ -448,11 +449,12 @@ class BackgroundIngestor:
         stats = self.storage.stats()
         stats["threads"]["ingest_alive"] = self._thread.is_alive() if self._thread else False
         stats["threads"]["backfill_alive"] = self._backfill_thread.is_alive() if self._backfill_thread else False
-        stats["intrabar"] = {
-            "polls": self._intrabar_polls,
-            "deduped": self._intrabar_deduped,
-            "updated": self._intrabar_updated,
-        }
+        with self._intrabar_stats_lock:
+            stats["intrabar"] = {
+                "polls": self._intrabar_polls,
+                "deduped": self._intrabar_deduped,
+                "updated": self._intrabar_updated,
+            }
         return stats
 
     def _init_backfill_progress(self) -> None:

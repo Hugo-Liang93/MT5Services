@@ -34,7 +34,7 @@ from src.config.centralized import (
     reload_configs,
     validate_config_consistency,
 )
-from src.config.database import DBSettings, get_db_config, load_db_settings
+from src.config.database import DBSettings, load_db_settings
 from src.config.indicator_config import (
     CacheStrategy,
     ComputeMode,
@@ -96,7 +96,6 @@ __all__ = [
     "UnifiedIndicatorConfig",
     "get_api_config",
     "get_config_provenance_snapshot",
-    "get_db_config",
     "get_economic_config",
     "get_effective_config_snapshot",
     "get_indicator_config",

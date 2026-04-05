@@ -172,6 +172,7 @@ class UnifiedIndicatorManager:
             "intrabar": {"computations": 0, "indicators": 0},
             "reconcile": {"computations": 0, "indicators": 0},
         }
+        self._scope_stats_lock = threading.Lock()
 
         self._init_components()
         self._register_indicators()
@@ -903,8 +904,9 @@ class UnifiedIndicatorManager:
             bar_time=bar_time,
             scope="confirmed",
         )
-        self._scope_stats["confirmed"]["computations"] += 1
-        self._scope_stats["confirmed"]["indicators"] += len(results)
+        with self._scope_stats_lock:
+            self._scope_stats["confirmed"]["computations"] += 1
+            self._scope_stats["confirmed"]["indicators"] += len(results)
         return results, compute_time
 
     def _compute_intrabar_results_for_bars(
@@ -924,8 +926,9 @@ class UnifiedIndicatorManager:
             scope="intrabar",
             indicator_names=indicator_names,
         )
-        self._scope_stats["intrabar"]["computations"] += 1
-        self._scope_stats["intrabar"]["indicators"] += len(results)
+        with self._scope_stats_lock:
+            self._scope_stats["intrabar"]["computations"] += 1
+            self._scope_stats["intrabar"]["indicators"] += len(results)
         return results, compute_time
 
     def _process_closed_bar_event(
@@ -992,8 +995,9 @@ class UnifiedIndicatorManager:
             bar_time=bars[-1].time,
             scope="confirmed",
         )
-        self._scope_stats["reconcile"]["computations"] += 1
-        self._scope_stats["reconcile"]["indicators"] += len(results)
+        with self._scope_stats_lock:
+            self._scope_stats["reconcile"]["computations"] += 1
+            self._scope_stats["reconcile"]["indicators"] += len(results)
         self._write_back_results(symbol, timeframe, bars, results, compute_time_ms)
 
     def _get_max_lookback(self) -> int:
@@ -1247,7 +1251,7 @@ class UnifiedIndicatorManager:
             "cache_hits": cache_stats.get("hits", 0),
             "cache_misses": cache_stats.get("misses", 0),
             "success_rate": pipeline_stats.get("success_rate", 0),
-            "scope_stats": dict(self._scope_stats),
+            "scope_stats": {k: dict(v) for k, v in self._scope_stats.items()},
             "confirmed_indicators": sorted(
                 cfg.name for cfg in self.config.indicators if cfg.enabled
             ),

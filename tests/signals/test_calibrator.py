@@ -12,7 +12,7 @@ def test_confidence_calibrator_phase1_defaults() -> None:
     state = calibrator.describe()
 
     assert state["alpha"] == pytest.approx(0.15)
-    assert state["min_samples"] == 50
+    assert state["min_samples"] == 100
     assert state["recency_hours"] == 8
 
 
@@ -20,13 +20,13 @@ def test_confidence_calibrator_refresh_uses_phase1_sample_thresholds() -> None:
     def fetch_winrates(*, hours: int, symbol=None):
         if hours == 168:
             return [
-                ("supertrend", "buy", 49, 30, 0.61, 0.70, 5.0, "trending"),
-                ("supertrend", "buy", 50, 31, 0.62, 0.70, 5.0, "trending"),
+                ("supertrend", "buy", 99, 60, 0.61, 0.70, 5.0, "trending"),
+                ("supertrend", "buy", 100, 62, 0.62, 0.70, 5.0, "trending"),
             ]
         if hours == 8:
             return [
-                ("supertrend", "buy", 24, 15, 0.61, 0.70, 5.0, "trending"),
-                ("supertrend", "buy", 25, 15, 0.60, 0.70, 5.0, "trending"),
+                ("supertrend", "buy", 49, 30, 0.61, 0.70, 5.0, "trending"),
+                ("supertrend", "buy", 50, 31, 0.60, 0.70, 5.0, "trending"),
             ]
         raise AssertionError(f"unexpected hours={hours}")
 
@@ -46,13 +46,13 @@ def test_confidence_calibrator_uses_staged_alpha_by_sample_count() -> None:
     def fetch_winrates(*, hours: int, symbol=None):
         if hours == 168:
             return [
-                ("supertrend", "buy", 60, 42, 0.70, 0.70, 5.0, "trending"),
-                ("macd_momentum", "buy", 120, 84, 0.70, 0.70, 5.0, "trending"),
+                ("supertrend", "buy", 150, 105, 0.70, 0.70, 5.0, "trending"),
+                ("macd_momentum", "buy", 250, 175, 0.70, 0.70, 5.0, "trending"),
             ]
         if hours == 8:
             return [
-                ("supertrend", "buy", 30, 21, 0.70, 0.70, 5.0, "trending"),
-                ("macd_momentum", "buy", 60, 42, 0.70, 0.70, 5.0, "trending"),
+                ("supertrend", "buy", 75, 52, 0.70, 0.70, 5.0, "trending"),
+                ("macd_momentum", "buy", 125, 87, 0.70, 0.70, 5.0, "trending"),
             ]
         raise AssertionError(f"unexpected hours={hours}")
 
@@ -80,9 +80,9 @@ def test_alpha_zero_returns_raw_confidence() -> None:
 
 
 def test_below_min_samples_returns_raw_confidence() -> None:
-    """历史样本 < min_samples(50) 时不校准。"""
+    """历史样本 < min_samples(100) 时不校准。"""
     def fetch(*, hours, symbol=None):
-        return [("strat", "buy", 49, 30, 0.61, 0.7, 5.0, "trending")]
+        return [("strat", "buy", 99, 60, 0.61, 0.7, 5.0, "trending")]
 
     calibrator = ConfidenceCalibrator(fetch_winrates_fn=fetch)
     calibrator.refresh()
@@ -91,13 +91,13 @@ def test_below_min_samples_returns_raw_confidence() -> None:
 
 
 def test_50_to_100_samples_uses_warmup_alpha() -> None:
-    """50-100 样本使用 warmup_alpha(0.10)，而非 full alpha(0.15)。"""
+    """100-200 样本使用 warmup_alpha(0.10)，而非 full alpha(0.15)。"""
     # win_rate=0.70, factor=0.70/0.50=1.40 → capped by max_boost=1.30
     # calibrated = 0.80 * (1 + (1.30 - 1) * 0.10) = 0.80 * 1.03 = 0.824
     def fetch(*, hours, symbol=None):
         if hours == 168:
-            return [("strat", "buy", 75, 52, 0.70, 0.7, 5.0, "trending")]
-        return [("strat", "buy", 37, 26, 0.70, 0.7, 5.0, "trending")]
+            return [("strat", "buy", 150, 105, 0.70, 0.7, 5.0, "trending")]
+        return [("strat", "buy", 75, 52, 0.70, 0.7, 5.0, "trending")]
 
     calibrator = ConfidenceCalibrator(fetch_winrates_fn=fetch)
     calibrator.refresh()
@@ -109,11 +109,11 @@ def test_50_to_100_samples_uses_warmup_alpha() -> None:
 
 
 def test_above_100_samples_uses_full_alpha() -> None:
-    """≥100 样本使用 full alpha(0.15)。"""
+    """≥200 样本使用 full alpha(0.15)。"""
     def fetch(*, hours, symbol=None):
         if hours == 168:
-            return [("strat", "buy", 150, 105, 0.70, 0.7, 5.0, "trending")]
-        return [("strat", "buy", 75, 52, 0.70, 0.7, 5.0, "trending")]
+            return [("strat", "buy", 250, 175, 0.70, 0.7, 5.0, "trending")]
+        return [("strat", "buy", 125, 87, 0.70, 0.7, 5.0, "trending")]
 
     calibrator = ConfidenceCalibrator(fetch_winrates_fn=fetch)
     calibrator.refresh()
@@ -161,11 +161,11 @@ def test_recency_protection_caps_boost_when_recent_poor() -> None:
     """历史 7 天胜率好(boost)但近期 8h 胜率低于 baseline 时，禁止 boost。"""
     def fetch(*, hours, symbol=None):
         if hours == 168:
-            # 历史胜率不错
-            return [("strat", "buy", 150, 105, 0.70, 0.7, 5.0, "trending")]
+            # 历史胜率不错（≥200 笔使用 full alpha）
+            return [("strat", "buy", 250, 175, 0.70, 0.7, 5.0, "trending")]
         if hours == 8:
             # 近期胜率下滑到 baseline 以下
-            return [("strat", "buy", 30, 12, 0.40, 0.7, 5.0, "trending")]
+            return [("strat", "buy", 50, 20, 0.40, 0.7, 5.0, "trending")]
         return []
 
     calibrator = ConfidenceCalibrator(fetch_winrates_fn=fetch)

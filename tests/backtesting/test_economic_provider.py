@@ -31,7 +31,7 @@ def _make_event(
         importance=importance,
         scheduled_at=base + timedelta(hours=hours_offset),
         status="released",
-        session_bucket="newyork",
+        session_bucket="new_york",
     )
 
 

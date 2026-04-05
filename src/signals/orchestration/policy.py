@@ -26,6 +26,8 @@ class VotingGroupConfig:
     min_quorum: int = 2
     min_quorum_ratio: float = 0.0  # > 0 时取 max(min_quorum, ceil(total × ratio))
     disagreement_penalty: float = 0.50
+    # 策略级投票权重：对高度相关的策略降权（默认 1.0，配置低于 1.0 表示降权）
+    strategy_weights: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -59,7 +61,7 @@ class SignalPolicy:
     # ── 多组 Voting 配置 ──────────────────────────────────────────────
     # 每个 VotingGroupConfig 代表一个独立的投票组，产生以 group.name 命名的信号。
     # 非空时，全局单一 consensus 投票自动禁用（被 groups 取代）。
-    # 空列表 = 使用旧的全局 consensus 行为（backward compatible）。
+    # 空列表 = 使用全局 consensus 模式。
     voting_groups: list[VotingGroupConfig] = field(default_factory=list)
     # 虽然属于某个 voting group，但仍允许单独触发交易的策略名单（白名单覆盖）。
     standalone_override: frozenset[str] = field(default_factory=frozenset)

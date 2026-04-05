@@ -7,7 +7,7 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     merged = {
         "signal": {
             "auto_trade_enabled": "true",
-            "allowed_sessions": "london,newyork",
+            "allowed_sessions": "london,new_york",
             "max_spread_points": "55",
             "max_concurrent_positions_per_symbol": "3",
             "session_transition_cooldown_minutes": "15",
@@ -27,11 +27,11 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
             "circuit_auto_reset_minutes": "20",
         },
         "contract_sizes": {"XAUUSD": "100", "default": "10"},
-        "session_spread_limits": {"asia": "30", "newyork": "48"},
+        "session_spread_limits": {"asia": "1.80", "new_york": "1.80"},
         "strategy_sessions": {
             "rsi_reversion": "asia,london",
-            "sma_trend": "london,newyork",
-            "session_momentum": "london,newyork",
+            "sma_trend": "london,new_york",
+            "session_momentum": "london,new_york",
         },
         "strategy_timeframes": {
             "rsi_reversion": "M1,M5",
@@ -88,9 +88,9 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     assert cfg.max_concurrent_positions_per_symbol == 3
     assert cfg.session_transition_cooldown_minutes == 15
     assert cfg.contract_size_map["XAUUSD"] == 100.0
-    assert cfg.session_spread_limits["asia"] == 30.0
+    assert cfg.session_spread_limits["asia"] == 54.0  # 30 * 1.80
     assert cfg.strategy_sessions["rsi_reversion"] == ["asia", "london"]
-    assert cfg.strategy_sessions["session_momentum"] == ["london", "newyork"]
+    assert cfg.strategy_sessions["session_momentum"] == ["london", "new_york"]
     assert cfg.strategy_timeframes["rsi_reversion"] == ["m1", "m5"]
     assert cfg.strategy_timeframes["ema_ribbon"] == ["m5", "m15"]
     assert cfg.strategy_timeframes["session_momentum"] == ["m5", "m15"]

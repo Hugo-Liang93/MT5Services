@@ -42,7 +42,7 @@ def build_backtest_components(
         包含 data_loader / signal_module / pipeline / regime_detector /
         voting_engine / writer / market_repo 的字典
     """
-    from src.config.database import get_db_config
+    from src.config.database import load_db_settings
     from src.config.indicator_config import get_global_config_manager
     from src.config.signal import get_signal_config
     from src.indicators.engine.pipeline import create_isolated_pipeline
@@ -56,7 +56,7 @@ def build_backtest_components(
     from .data_loader import CachingDataLoader, HistoricalDataLoader, get_shared_data_cache
 
     # DB 连接（独立连接池，不争抢生产连接）
-    db_config = get_db_config()
+    db_config = load_db_settings()
     writer = TimescaleWriter(settings=db_config, min_conn=1, max_conn=3)
     market_repo = MarketRepository(writer)
     # 使用 CachingDataLoader 透明包装：相同 (symbol, tf, 日期) 参数只查询 DB 一次
@@ -212,12 +212,14 @@ def _build_voting_engines() -> tuple:
                     consensus_threshold=gcfg.get("consensus_threshold", 0.40),
                     min_quorum=gcfg.get("min_quorum", 2),
                     disagreement_penalty=gcfg.get("disagreement_penalty", 0.50),
+                    strategy_weights=gcfg.get("strategy_weights", {}),
                 )
                 engine = StrategyVotingEngine(
                     group_name=vgc.name,
                     consensus_threshold=vgc.consensus_threshold,
                     min_quorum=vgc.min_quorum,
                     disagreement_penalty=vgc.disagreement_penalty,
+                    strategy_weights=vgc.strategy_weights,
                 )
                 group_engines.append((vgc, engine))
             return None, group_engines  # 多组模式禁用全局 consensus

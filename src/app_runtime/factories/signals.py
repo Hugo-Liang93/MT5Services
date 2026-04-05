@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 from src.config.file_manager import get_file_config_manager
 from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
@@ -103,6 +103,7 @@ def build_performance_tracker_config(signal_config) -> PerformanceTrackerConfig:
 @dataclass(frozen=True)
 class SignalComponents:
     calibrator: ConfidenceCalibrator
+    regime_detector: MarketRegimeDetector
     market_structure_analyzer: MarketStructureAnalyzer
     signal_module: SignalModule
     signal_runtime: SignalRuntime
@@ -244,6 +245,7 @@ def build_signal_policy(signal_config) -> SignalPolicy:
             min_quorum=cfg.get("min_quorum", 2),
             min_quorum_ratio=cfg.get("min_quorum_ratio", 0.0),
             disagreement_penalty=cfg.get("disagreement_penalty", 0.50),
+            strategy_weights=cfg.get("strategy_weights", {}),
         )
         for cfg in signal_config.voting_group_configs
         if cfg.get("name") and cfg.get("strategies")
@@ -297,14 +299,20 @@ def build_signal_components(
     )
     calibrator = ConfidenceCalibrator(
         fetch_winrates_fn=storage_writer.db.fetch_winrates,
-        alpha=0.15,
-        baseline_win_rate=0.50,
-        max_boost=1.30,
-        min_samples=100,
-        full_alpha_min_samples=200,
-        refresh_interval_seconds=900,
-        recency_hours=8,
+        alpha=float(signal_config.calibrator_alpha),
+        baseline_win_rate=float(signal_config.calibrator_baseline_win_rate),
+        max_boost=float(signal_config.calibrator_max_boost),
+        min_samples=int(signal_config.calibrator_min_samples),
+        full_alpha_min_samples=int(signal_config.calibrator_full_alpha_min_samples),
+        refresh_interval_seconds=int(signal_config.calibrator_refresh_interval_seconds),
+        recency_hours=int(signal_config.calibrator_recency_hours),
     )
+    # 注入 per-TF 近期窗口配置
+    if signal_config.calibrator_recency_hours_by_tf:
+        calibrator._recency_hours_by_tf.update(signal_config.calibrator_recency_hours_by_tf)
+        calibrator._recency_windows = tuple(sorted(set(
+            calibrator._recency_hours_by_tf.values()
+        )))
     performance_tracker = StrategyPerformanceTracker(
         config=build_performance_tracker_config(signal_config),
     )
@@ -450,6 +458,7 @@ def build_signal_components(
         trailing_tp_activation_atr=signal_config.trailing_tp_activation_atr,
         trailing_tp_trail_atr=signal_config.trailing_tp_trail_atr,
     )
+    position_manager._sl_tp_history_writer = storage_writer.db.write_position_sl_tp_history
     # 交易结果追踪器：追踪实际执行的交易盈亏（由 TradeExecutor 登记，PositionManager 关仓评估）
     trade_outcome_tracker = TradeOutcomeTracker(
         write_fn=storage_writer.db.write_trade_outcomes,
@@ -484,6 +493,20 @@ def build_signal_components(
             else {"status": "pending"}
         ),
     )
+    # 权益曲线过滤器
+    from src.trading.execution.equity_filter import EquityCurveFilter, EquityCurveFilterConfig
+
+    equity_filter: EquityCurveFilter | None = None
+    if signal_config.equity_curve_filter_enabled:
+        equity_filter = EquityCurveFilter(
+            balance_getter=lambda: _get_balance_for_equity_filter(trade_module),
+            config=EquityCurveFilterConfig(
+                enabled=True,
+                ma_period=signal_config.equity_curve_filter_ma_period,
+                min_samples=signal_config.equity_curve_filter_min_samples,
+            ),
+        )
+
     trade_executor = TradeExecutor(
         trading_module=trade_module,
         config=build_executor_config(signal_config),
@@ -497,6 +520,7 @@ def build_signal_components(
         pending_entry_manager=pending_entry_manager,
         performance_tracker=performance_tracker,
         pipeline_event_bus=pipeline_event_bus,
+        equity_curve_filter=equity_filter,
     )
     _executor_holder.append(trade_executor)
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)
@@ -567,6 +591,7 @@ def build_signal_components(
 
     return SignalComponents(
         calibrator=calibrator,
+        regime_detector=regime_detector,
         market_structure_analyzer=market_structure_analyzer,
         signal_module=signal_module,
         signal_runtime=signal_runtime,
@@ -581,15 +606,77 @@ def build_signal_components(
     )
 
 
+def _get_balance_for_equity_filter(trade_module: Any) -> float | None:
+    try:
+        info = trade_module.account_info()
+        if isinstance(info, dict):
+            return float(info.get("equity") or info.get("balance") or 0)
+        return float(getattr(info, "equity", None) or getattr(info, "balance", None) or 0)
+    except Exception:
+        return None
+
+
+def _apply_strategy_hot_reload(signal_module: Any, signal_config: Any) -> None:
+    """热更新策略参数 + Regime 亲和度。"""
+    try:
+        signal_module.apply_param_overrides(
+            signal_config.strategy_params,
+            signal_config.regime_affinity_overrides or None,
+            strategy_params_per_tf=signal_config.strategy_params_per_tf or None,
+        )
+        _factory_logger.info("Hot reload: strategy params + regime affinity updated")
+    except Exception:
+        _factory_logger.exception("Hot reload: failed to apply strategy param overrides")
+
+
+def _apply_regime_detector_hot_reload(regime_detector: Any, signal_config: Any) -> None:
+    """热更新 Regime 检测器阈值。"""
+    try:
+        adx_trending = getattr(signal_config, "regime_adx_trending_threshold", None)
+        adx_ranging = getattr(signal_config, "regime_adx_ranging_threshold", None)
+        bb_tight = getattr(signal_config, "regime_bb_tight_pct", None)
+        updated = False
+        if adx_trending is not None:
+            regime_detector._adx_trending_threshold = float(adx_trending)
+            updated = True
+        if adx_ranging is not None:
+            regime_detector._adx_ranging_threshold = float(adx_ranging)
+            updated = True
+        if bb_tight is not None:
+            regime_detector._bb_tight_pct = float(bb_tight)
+            updated = True
+        if updated:
+            _factory_logger.info("Hot reload: regime detector thresholds updated")
+    except Exception:
+        _factory_logger.exception("Hot reload: failed to update regime detector")
+
+
+def _apply_calibrator_hot_reload(calibrator: Any, signal_config: Any) -> None:
+    """热更新 Calibrator 参数。"""
+    try:
+        calibrator._recency_hours = int(signal_config.calibrator_recency_hours)
+        if signal_config.calibrator_recency_hours_by_tf:
+            calibrator._recency_hours_by_tf.update(signal_config.calibrator_recency_hours_by_tf)
+            calibrator._recency_windows = tuple(sorted(set(
+                calibrator._recency_hours_by_tf.values()
+            )))
+        _factory_logger.info("Hot reload: calibrator config updated")
+    except Exception:
+        _factory_logger.exception("Hot reload: failed to update calibrator")
+
+
 def register_signal_hot_reload(
     signal_runtime,
     signal_config_loader,
     *,
+    signal_module=None,
+    regime_detector=None,
     trade_executor=None,
     economic_calendar_service=None,
     market_structure_analyzer=None,
     performance_tracker=None,
     pending_entry_manager=None,
+    calibrator=None,
 ) -> Callable[[], None]:
     def _on_signal_config_change(filename: str) -> None:
         if filename != "signal.ini":
@@ -600,6 +687,15 @@ def register_signal_hot_reload(
             signal_config,
             economic_calendar_service,
         )
+        # 策略参数 + Regime 亲和度热更新
+        if signal_module is not None:
+            _apply_strategy_hot_reload(signal_module, signal_config)
+        # Regime 检测器参数热更新
+        if regime_detector is not None:
+            _apply_regime_detector_hot_reload(regime_detector, signal_config)
+        # Calibrator per-TF 窗口热更新
+        if calibrator is not None:
+            _apply_calibrator_hot_reload(calibrator, signal_config)
         if trade_executor is not None:
             trade_executor.config = build_executor_config(signal_config)
             trade_executor._execution_gate.config = build_execution_gate_config(signal_config)
@@ -616,6 +712,7 @@ def register_signal_hot_reload(
                 compression_window_bars=signal_config.market_structure_compression_window_bars,
                 compression_reference_bars=signal_config.market_structure_reference_window_bars,
             )
+        _factory_logger.info("signal.ini hot reload complete")
 
     manager = get_file_config_manager()
     manager.register_change_callback(_on_signal_config_change)

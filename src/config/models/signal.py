@@ -26,7 +26,7 @@ class SignalConfig(BaseModel):
     base_spread_points: float = 0.0
     max_spread_multiplier: float = 2.70
     max_spread_points: float = 50.0
-    allowed_sessions: str = "london,newyork"
+    allowed_sessions: str = "london,new_york"
     session_transition_cooldown_minutes: int = 15
     economic_filter_enabled: bool = True
     economic_lookahead_minutes: int = 30
@@ -89,6 +89,25 @@ class SignalConfig(BaseModel):
     perf_tracker_pnl_circuit_max_consecutive_losses: int = 5
     perf_tracker_pnl_circuit_cooldown_minutes: int = 120
 
+    # ── Calibrator（置信度历史校准）──
+    calibrator_alpha: float = 0.15
+    calibrator_warmup_alpha: float = 0.10
+    calibrator_min_samples: int = 100
+    calibrator_full_alpha_min_samples: int = 200
+    calibrator_baseline_win_rate: float = 0.50
+    calibrator_max_boost: float = 1.30
+    calibrator_recency_hours: int = 8
+    calibrator_refresh_interval_seconds: int = 3600
+    calibrator_recency_hours_by_tf: dict[str, int] = Field(
+        default_factory=lambda: {
+            "M1": 4, "M5": 8, "M15": 12, "M30": 16,
+            "H1": 24, "H4": 72, "D1": 168,
+        }
+    )
+    # ── Equity Curve Filter（权益曲线过滤）──
+    equity_curve_filter_enabled: bool = False
+    equity_curve_filter_ma_period: int = 20
+    equity_curve_filter_min_samples: int = 5
     # ── 置信度底线 ──
     confidence_floor: float = 0.10
     # ── HTF Cache ──

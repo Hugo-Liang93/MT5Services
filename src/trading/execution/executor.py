@@ -112,6 +112,7 @@ class TradeExecutor:
         pending_entry_manager: PendingEntryManager | None = None,
         performance_tracker: "StrategyPerformanceTracker | None" = None,
         pipeline_event_bus: PipelineEventBus | None = None,
+        equity_curve_filter: Any | None = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
@@ -130,6 +131,8 @@ class TradeExecutor:
         self._pending_manager = pending_entry_manager
         # 日内绩效跟踪器，用于 PnL 熔断。
         self._performance_tracker = performance_tracker
+        # 权益曲线过滤器。
+        self._equity_curve_filter = equity_curve_filter
         self._pipeline_event_bus = pipeline_event_bus
         self._execution_count = 0
         self._last_execution_at: datetime | None = None
@@ -360,8 +363,25 @@ class TradeExecutor:
                 reason="pnl_circuit_paused",
                 category="performance",
             )
-            _notify_skip_helper(self, event.signal_id, "pnl_circuit_paused", tf)
+            _notify_skip_helper(self, event.signal_id, "pnl_circuit_paused", tf, event=event)
             return None
+
+        # 权益曲线过滤器：账户权益低于 MA 时暂停开仓。
+        if self._equity_curve_filter is not None:
+            self._equity_curve_filter.record_equity()
+            if self._equity_curve_filter.should_block():
+                logger.info(
+                    "TradeExecutor: skipping %s/%s %s - equity curve below MA",
+                    event.symbol, event.strategy, event.direction,
+                )
+                _emit_execution_blocked_helper(
+                    self,
+                    event,
+                    reason="equity_curve_below_ma",
+                    category="equity_filter",
+                )
+                _notify_skip_helper(self, event.signal_id, "equity_curve_below_ma", tf, event=event)
+                return None
 
         # 保证金保护在真正计算仓位前拦截新开仓请求。
         if self._margin_guard is not None and self._margin_guard.should_block_new_trades():
@@ -375,7 +395,7 @@ class TradeExecutor:
                 reason="margin_guard_block",
                 category="risk_guard",
             )
-            _notify_skip_helper(self, event.signal_id, "margin_guard_block", tf)
+            _notify_skip_helper(self, event.signal_id, "margin_guard_block", tf, event=event)
             return None
 
         # 执行门负责策略级准入规则，例如 voting group 和 armed 检查。
@@ -391,7 +411,7 @@ class TradeExecutor:
                 reason=gate_reason,
                 category="execution_gate",
             )
-            _notify_skip_helper(self, event.signal_id, gate_reason, tf)
+            _notify_skip_helper(self, event.signal_id, gate_reason, tf, event=event)
             return None
 
         duplicate_reason = _duplicate_execution_reason_helper(self, event)
@@ -418,7 +438,7 @@ class TradeExecutor:
                 reason=duplicate_reason,
                 category="duplicate_guard",
             )
-            _notify_skip_helper(self, event.signal_id, duplicate_reason, tf)
+            _notify_skip_helper(self, event.signal_id, duplicate_reason, tf, event=event)
             return None
 
         # Per-TF 最小置信度覆盖优先于全局 min_confidence。
@@ -441,7 +461,7 @@ class TradeExecutor:
                 reason="min_confidence",
                 category="confidence",
             )
-            _notify_skip_helper(self, event.signal_id, "min_confidence", tf)
+            _notify_skip_helper(self, event.signal_id, "min_confidence", tf, event=event)
             return None
 
         # HTF 方向冲突可在低周期直接阻止开仓；默认仅豁免允许逆势的策略类别。
@@ -464,7 +484,7 @@ class TradeExecutor:
                 reason="htf_conflict_block",
                 category="htf_alignment",
             )
-            _notify_skip_helper(self, event.signal_id, "htf_conflict_block", tf)
+            _notify_skip_helper(self, event.signal_id, "htf_conflict_block", tf, event=event)
             return None
 
         # 日终平仓后，当天剩余时间内不再新开仓，避免 EOD 后又被实时信号重新拉起仓位。
@@ -483,7 +503,7 @@ class TradeExecutor:
                 reason="after_eod_block",
                 category="eod_guard",
             )
-            _notify_skip_helper(self, event.signal_id, "after_eod_block", tf)
+            _notify_skip_helper(self, event.signal_id, "after_eod_block", tf, event=event)
             return None
 
         if _reached_position_limit_helper(self, event.symbol):
@@ -511,7 +531,7 @@ class TradeExecutor:
                 reason="position_limit",
                 category="position_limit",
             )
-            _notify_skip_helper(self, event.signal_id, "position_limit", tf)
+            _notify_skip_helper(self, event.signal_id, "position_limit", tf, event=event)
             return None
 
         # ── 同策略同方向再入场冷却 ────────────────────────────────
@@ -546,7 +566,7 @@ class TradeExecutor:
                             category="cooldown",
                         )
                         _notify_skip_helper(
-                            self, event.signal_id, "reentry_cooldown", tf
+                            self, event.signal_id, "reentry_cooldown", tf, event=event
                         )
                         return None
 
@@ -571,7 +591,7 @@ class TradeExecutor:
                 category="trade_params",
             )
             _notify_skip_helper(
-                self, event.signal_id, "trade_params_unavailable", tf
+                self, event.signal_id, "trade_params_unavailable", tf, event=event
             )
             return None
         cost_metrics = _estimate_cost_metrics_helper(self, event, trade_params)
@@ -608,7 +628,7 @@ class TradeExecutor:
                 category="cost_guard",
             )
             _notify_skip_helper(
-                self, event.signal_id, "spread_to_stop_ratio_too_high", tf
+                self, event.signal_id, "spread_to_stop_ratio_too_high", tf, event=event
             )
             return None
 
@@ -648,6 +668,11 @@ class TradeExecutor:
                 "circuit_open_at": self._circuit_open_at.isoformat() if self._circuit_open_at else None,
                 "auto_reset_minutes": self.config.circuit_auto_reset_minutes,
             },
+            "equity_curve_filter": (
+                self._equity_curve_filter.status()
+                if self._equity_curve_filter is not None
+                else {"enabled": False}
+            ),
             "config": {
                 "min_confidence": self.config.min_confidence,
                 "max_concurrent_positions_per_symbol": self.config.max_concurrent_positions_per_symbol,

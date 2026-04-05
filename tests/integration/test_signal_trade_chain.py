@@ -397,7 +397,7 @@ def test_session_filter_blocks_signal_outside_session() -> None:
     sf = SessionFilter(allowed_sessions=("london", "new_york"))
 
     off_hour_utc = datetime(2026, 3, 20, 3, 0, tzinfo=timezone.utc)  # UTC 03:00
-    assert not sf.is_active_session(off_hour_utc), "UTC 03:00 不应属于 london/newyork"
+    assert not sf.is_active_session(off_hour_utc), "UTC 03:00 不应属于 london/new_york"
 
     london_hour_utc = datetime(2026, 3, 20, 9, 0, tzinfo=timezone.utc)  # UTC 09:00
     assert sf.is_active_session(london_hour_utc), "UTC 09:00 应属于 london session"

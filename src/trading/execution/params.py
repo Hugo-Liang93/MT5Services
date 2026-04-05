@@ -17,6 +17,11 @@ def get_contract_size(executor: "TradeExecutor", symbol: str) -> float:
     return size_map.get(symbol, size_map.get("default", 100.0))
 
 
+def get_symbol_precision(executor: "TradeExecutor", symbol: str) -> tuple[int, float]:
+    """返回品种的价格小数位数和手数步长。当前 XAUUSD 单品种固定值。"""
+    return 2, 0.01
+
+
 def compute_params(
     executor: "TradeExecutor", event: "SignalEvent"
 ) -> TradeParameters | None:
@@ -41,6 +46,7 @@ def compute_params(
         return None
 
     contract_size = get_contract_size(executor, event.symbol)
+    digits, volume_step = get_symbol_precision(executor, event.symbol)
 
     return compute_trade_params(
         action=event.direction,
@@ -57,6 +63,8 @@ def compute_params(
         timeframe_risk_overrides=executor.config.timeframe_risk_multipliers or None,
         regime=str(event.metadata.get("regime") or event.metadata.get("_regime") or ""),
         regime_sizing=executor.config.regime_sizing,
+        digits=digits,
+        volume_step=volume_step,
     )
 
 

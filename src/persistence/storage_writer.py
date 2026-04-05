@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import queue
 from collections import deque
+from pathlib import Path
 import threading
 import time
 from typing import Callable, Dict, Iterable, List, Optional
@@ -46,14 +49,67 @@ class StorageWriter:
         self._drop_alert_last_at: Dict[str, float] = {}
         # 60 秒内丢弃超过此数则触发 ERROR 告警
         self._drop_alert_rate_threshold = 50
+        # DLQ 目录：刷写失败的批次持久化到此处，下次启动时重放
+        self._dlq_dir = self._init_dlq_dir()
         if not self._register_channels_from_config():
             raise RuntimeError("No storage channels configured; please provide config/storage.ini")
+
+    # --- DLQ（Dead Letter Queue）---
+    def _init_dlq_dir(self) -> Path:
+        from src.config.centralized import get_runtime_data_path
+
+        dlq_path = Path(get_runtime_data_path("dlq"))
+        dlq_path.mkdir(parents=True, exist_ok=True)
+        return dlq_path
+
+    def _dump_to_dlq(self, channel: str, rows: list[tuple]) -> None:
+        """将刷写失败的批次序列化到 DLQ 文件。"""
+        if not rows:
+            return
+        ts = int(time.time() * 1000)
+        path = self._dlq_dir / f"{channel}_{ts}.jsonl"
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                for row in rows:
+                    f.write(json.dumps(row, default=str) + "\n")
+            logger.warning(
+                "StorageWriter: dumped %d failed rows for channel '%s' to DLQ: %s",
+                len(rows), channel, path.name,
+            )
+        except Exception as exc:
+            logger.error("StorageWriter: failed to write DLQ file %s: %s", path, exc)
+
+    def _replay_dlq(self) -> None:
+        """启动时扫描 DLQ 目录，将残留的失败批次重新写入对应通道。"""
+        if not self._dlq_dir.exists():
+            return
+        files = sorted(self._dlq_dir.glob("*.jsonl"))
+        if not files:
+            return
+        logger.info("StorageWriter: found %d DLQ files to replay", len(files))
+        for path in files:
+            channel = path.stem.rsplit("_", 1)[0]
+            ch = self._channels.get(channel)
+            if not ch:
+                logger.warning("StorageWriter: DLQ channel '%s' not registered, removing %s", channel, path.name)
+                path.unlink(missing_ok=True)
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    rows = [tuple(json.loads(line)) for line in f if line.strip()]
+                if rows:
+                    ch["write_fn"](rows)  # type: ignore[index]
+                    logger.info("StorageWriter: replayed %d rows from DLQ %s", len(rows), path.name)
+                path.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.error("StorageWriter: DLQ replay failed for %s: %s (will retry next start)", path.name, exc)
 
     # --- 生命周期 ---
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self.db.init_schema()
+        self._replay_dlq()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="storage-writer", daemon=True)
         self._thread.start()
@@ -169,10 +225,11 @@ class StorageWriter:
         due_time = (now - last) >= interval
         due_batch = len(pending) >= batch_size
         if force or due_time or due_batch:
+            batch = list(pending)
             attempts = 0
             while attempts < self.settings.flush_retry_attempts:
                 try:
-                    ch["write_fn"](list(pending))  # type: ignore
+                    ch["write_fn"](batch)  # type: ignore
                     pending.clear()
                     self._last_flush[name] = now
                     return
@@ -180,6 +237,8 @@ class StorageWriter:
                     attempts += 1
                     logger.warning("Flush %s failed (attempt %s): %s", name, attempts, exc)
                     if attempts >= self.settings.flush_retry_attempts:
+                        self._dump_to_dlq(name, batch)
+                        pending.clear()
                         self._last_flush[name] = now
                         return
                     time.sleep(self.settings.flush_retry_backoff)

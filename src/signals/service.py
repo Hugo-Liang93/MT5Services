@@ -359,6 +359,7 @@ class SignalModule:
                 action=decision.direction,
                 raw_confidence=post_performance,
                 regime=regime,
+                timeframe=timeframe,
             )
         else:
             calibrated = post_performance

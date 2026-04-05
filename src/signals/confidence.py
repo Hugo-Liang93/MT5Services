@@ -9,9 +9,17 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Optional
 
 from .models import SignalDecision
+
+
+def _safe_confidence(value: float) -> float:
+    """确保 confidence 是有限浮点数，NaN/Inf 降级为 0.0。"""
+    if math.isfinite(value):
+        return value
+    return 0.0
 
 
 def apply_intrabar_decay(
@@ -35,7 +43,7 @@ def apply_intrabar_decay(
         return decision
     return dataclasses.replace(
         decision,
-        confidence=decision.confidence * decay,
+        confidence=_safe_confidence(decision.confidence * decay),
     )
 
 
@@ -73,7 +81,7 @@ def apply_htf_alignment(
 
     return dataclasses.replace(
         decision,
-        confidence=min(1.0, decision.confidence * multiplier),
+        confidence=_safe_confidence(min(1.0, decision.confidence * multiplier)),
         metadata={
             **decision.metadata,
             "htf_direction": htf_direction,

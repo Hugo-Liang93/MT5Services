@@ -313,6 +313,17 @@ def publish_signal_event(
     pipeline_bus = getattr(runtime, "_pipeline_event_bus", None)
     trace_id = transition_metadata.get("signal_trace_id")
     if pipeline_bus is not None and trace_id:
+        # 扩展 payload 包含置信度管线中间值 + Regime 快照
+        eval_payload: dict[str, Any] = {}
+        meta = decision.metadata or {}
+        for key in (
+            "raw_confidence", "regime_affinity", "post_affinity_confidence",
+            "session_performance_multiplier", "post_performance_confidence",
+            "regime", "regime_source", "regime_probabilities",
+            "htf_direction", "htf_alignment", "htf_confidence_multiplier",
+        ):
+            if key in meta:
+                eval_payload[key] = meta[key]
         pipeline_bus.emit_signal_evaluated(
             trace_id=trace_id,
             symbol=decision.symbol,
@@ -322,6 +333,7 @@ def publish_signal_event(
             direction=decision.direction,
             confidence=decision.confidence,
             signal_state=signal_state,
+            **eval_payload,
         )
     listeners_to_remove: list[Any] = []
     for listener in listeners:
@@ -470,6 +482,11 @@ def process_voting(
     event_time: datetime,
     bar_time: datetime,
 ) -> None:
+    # 获取当前事件的 trace_id 用于 pipeline 事件关联
+    trace_id = ""
+    if hasattr(runtime, "_current_trace_id"):
+        trace_id = getattr(runtime, "_current_trace_id", "") or ""
+    pipeline_bus = getattr(runtime, "_pipeline_bus", None)
     _do_process_voting(
         snapshot_decisions,
         symbol,
@@ -484,5 +501,7 @@ def process_voting(
         voting_engine=runtime._voting_engine,
         voting_group_engines=runtime._voting_group_engines,
         fusion_cache=runtime._vote_fusion_cache,
+        pipeline_bus=pipeline_bus,
+        trace_id=trace_id,
         **get_vote_emit_kwargs(runtime),
     )

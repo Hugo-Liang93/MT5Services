@@ -8,10 +8,6 @@ SESSION_OFF_HOURS = "off_hours"
 
 def normalize_session_name(name: str) -> str:
     value = str(name).strip().lower()
-    legacy_aliases = {
-        "newyork": SESSION_NEW_YORK,
-    }
-    value = legacy_aliases.get(value, value)
     if value in {SESSION_ASIA, SESSION_LONDON, SESSION_NEW_YORK, SESSION_OFF_HOURS}:
         return value
     return value

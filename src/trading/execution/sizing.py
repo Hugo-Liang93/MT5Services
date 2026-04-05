@@ -69,6 +69,8 @@ def compute_trade_params(
     timeframe_risk_overrides: Optional[Dict[str, float]] = None,
     regime: Optional[str] = None,
     regime_sizing: Optional[RegimeSizing] = None,
+    digits: int = 2,
+    volume_step: float = 0.01,
 ) -> TradeParameters:
     """Compute SL, TP, and position size for a trade based on ATR.
 
@@ -136,18 +138,23 @@ def compute_trade_params(
     else:
         raw_volume = min_volume
 
-    position_size = max(min_volume, min(max_volume, round(raw_volume, 2)))
+    # 对齐 volume 到品种的 volume_step（避免 MT5 拒绝非法手数）
+    if volume_step > 0:
+        aligned = round(raw_volume / volume_step) * volume_step
+    else:
+        aligned = round(raw_volume, 2)
+    position_size = max(min_volume, min(max_volume, round(aligned, 8)))
     risk_reward = tp_distance / sl_distance if sl_distance > 0 else 0.0
 
     return TradeParameters(
-        entry_price=current_price,
-        stop_loss=round(stop_loss, 2),
-        take_profit=round(take_profit, 2),
+        entry_price=round(current_price, digits),
+        stop_loss=round(stop_loss, digits),
+        take_profit=round(take_profit, digits),
         position_size=position_size,
         risk_reward_ratio=round(risk_reward, 2),
         atr_value=atr_value,
-        sl_distance=round(sl_distance, 2),
-        tp_distance=round(tp_distance, 2),
+        sl_distance=round(sl_distance, digits),
+        tp_distance=round(tp_distance, digits),
     )
 
 
