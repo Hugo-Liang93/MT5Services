@@ -761,8 +761,9 @@ def test_timescale_writer_wraps_ohlc_indicators_with_json_adapter() -> None:
 def test_tick_schema_includes_time_msc_backfill_migration() -> None:
     from src.persistence.schema.ticks import DDL
 
-    assert "ADD COLUMN IF NOT EXISTS time_msc" in DDL
-    assert "SET time_msc = FLOOR(EXTRACT(EPOCH FROM time) * 1000)::bigint" in DDL
+    # time_msc 已合并到主 DDL（不再是 ALTER TABLE migration）
+    assert "time_msc" in DDL
+    assert "idx_ticks_symbol_time_msc" in DDL
 
 
 def test_market_service_merge_ticks_orders_by_time_msc() -> None:

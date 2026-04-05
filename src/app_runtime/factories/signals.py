@@ -350,7 +350,7 @@ def build_signal_components(
     signal_module = SignalModule(
         indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
         strategies=build_default_strategy_set(htf_cache=htf_cache),
-        repository=TimescaleSignalRepository(storage_writer.db),
+        repository=TimescaleSignalRepository(storage_writer.db, storage_writer=storage_writer),
         calibrator=calibrator,
         performance_tracker=performance_tracker,
         soft_regime_enabled=signal_config.soft_regime_enabled,

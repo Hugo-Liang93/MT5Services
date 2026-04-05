@@ -122,10 +122,11 @@ def test_indicator_config_reflects_phase1_intraday_changes():
     indicators = {indicator.name: indicator for indicator in config.indicators}
 
     assert {"rsi5", "macd_fast", "ema21", "ema55"} <= set(indicators)
-    assert indicators["rsi5"].enabled is True
-    assert indicators["macd_fast"].enabled is True
-    assert indicators["ema21"].enabled is True
-    assert indicators["ema55"].enabled is True
+    # rsi5/macd_fast/ema21/ema55 无策略依赖，已被禁用（rsi14/macd/ema9+ema50 已覆盖）
+    assert indicators["rsi5"].enabled is False
+    assert indicators["macd_fast"].enabled is False
+    assert indicators["ema21"].enabled is False
+    assert indicators["ema55"].enabled is False
     assert indicators["mfi14"].enabled is False
     assert indicators["obv30"].enabled is False
     assert indicators["wma20"].enabled is False

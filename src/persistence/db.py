@@ -236,6 +236,33 @@ class TimescaleWriter:
             cur.execute(ddl)
         logger.info("Timescale schema ensured")
 
+    def ensure_retention_policies(
+        self, override_days: Optional[dict[str, int]] = None
+    ) -> None:
+        """Apply retention + compression policies to all hypertables.
+
+        Idempotent — safe to call on every startup.
+        """
+        from src.persistence.retention import apply_retention_policies
+
+        try:
+            with self.connection() as conn, conn.cursor() as cur:
+                results = apply_retention_policies(cur, override_days=override_days)
+                applied = sum(1 for v in results.values() if not v.startswith("FAILED"))
+                failed = sum(1 for v in results.values() if v.startswith("FAILED"))
+                logger.info(
+                    "Retention policies applied: %d ok, %d failed (of %d tables)",
+                    applied,
+                    failed,
+                    len(results),
+                )
+                if failed:
+                    for table, status in results.items():
+                        if status.startswith("FAILED"):
+                            logger.warning("  %s: %s", table, status)
+        except Exception as exc:
+            logger.warning("Failed to apply retention policies (non-fatal): %s", exc)
+
     def write_ticks(self, rows, page_size: int = 1000) -> None:
         self.market_repo.write_ticks(rows, page_size=page_size)
 

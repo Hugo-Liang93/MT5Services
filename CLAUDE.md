@@ -108,7 +108,7 @@ MT5Services/
 │   ├── market_structure/     # 市场结构分析器（MarketStructureAnalyzer）
 │   ├── monitoring/           # 健康检查与监控
 │   │   ├── manager.py        # MonitoringManager 定时巡检
-│   │   ├── health/           # 健康检查（monitor / checks / reporting / common）
+│   │   ├── health/           # 健康检查（monitor / metrics_store / checks / reporting / common）
 │   │   └── pipeline/         # Pipeline 事件总线 + 结构化事件 + Trace Recorder
 │   ├── persistence/          # TimescaleDB 写入器、队列持久化、Schema 定义
 │   │   ├── storage_writer.py # 基于队列的多通道持久化
@@ -216,7 +216,7 @@ MT5Services/
 │   ├── studio/               # Studio 可观测性层（Anteater 3D 前端实时状态）
 │   │   ├── models.py         # Agent 元数据注册表（14 角色）
 │   │   ├── event_buffer.py   # 线程安全环形事件缓冲区
-│   │   ├── mappers.py        # 14 个纯映射函数（只返回结构化数据）
+│   │   ├── mappers.py        # 16 个纯映射函数（只返回结构化数据）
 │   │   ├── runtime.py        # StudioRuntime：事件桥接与生命周期
 │   │   └── service.py        # StudioService：Registry + SSE 订阅管理
 │   └── utils/                # 通用工具
@@ -325,7 +325,7 @@ rsi_reversion__overbought = 75
 2. **EconomicCalendarService** → **TradingAccountRegistry** → **TradingModule**
 3. **SignalModule** + 策略注册 → **SignalRuntime** → **TradeExecutor** → listener 连接
 4. **HealthMonitor** → **MonitoringManager**
-5. **StudioService**（聚合层）→ 注册 14 个 agent provider + SignalRuntime 信号 listener
+5. **StudioService**（聚合层）→ 注册 16 个 agent provider + SignalRuntime 信号 listener
 
 **启动阶段**（`AppRuntime.start()` — 按序启动后台线程）：
 1. StorageWriter.start() → IndicatorManager.start() → Ingestor.start()
@@ -390,6 +390,8 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | ohlc | 5,000 | 1s | 200 | block |
 | ohlc_indicators | 5,000 | 1s | 200 | block |
 | economic_calendar | 1,000 | 2s | 100 | auto |
+| economic_calendar_updates | 2,000 | 2s | 200 | auto |
+| signal_preview | 5,000 | 2s | 200 | drop_newest |
 
 ### Persistence Repository Layer
 
@@ -507,7 +509,8 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/risk/runtime.py` | wire_margin_guard()：保证金守卫装配函数 |
 | `src/market_structure/models.py` | MarketStructureContext 数据类 |
 | `src/monitoring/manager.py` | MonitoringManager：定时巡检、组件协调 |
-| `src/monitoring/health/monitor.py` | HealthMonitor：SQLite 指标存储、告警 |
+| `src/monitoring/health/monitor.py` | HealthMonitor：内存环形缓冲指标 + SQLite 告警历史 |
+| `src/monitoring/health/metrics_store.py` | MetricsStore：纯内存 deque 环形缓冲 + 轻量告警 SQLite |
 | `src/monitoring/health/checks.py` | 健康检查具体实现 |
 | `src/monitoring/health/reporting.py` | 健康报告生成 |
 | `src/monitoring/pipeline/event_bus.py` | PipelineEventBus：pipeline 事件总线 |
@@ -600,7 +603,7 @@ BackgroundIngestor._ingest_ohlc()
   ↓ 事件写入 `runtime_data_dir/events.db`（持久化，不丢失）
   ↓ process_closed_bar_events_batch()
   ↓ _load_confirmed_bars() ← N 根完整收盘 K 线
-  ↓ 全部 21 个已启用指标
+  ↓ 全部 15 个已启用指标
   ↓ publish_snapshot(scope="confirmed")
   ↓ SignalRuntime._confirmed_events 队列（2048，优先消费，不可丢弃）
   ↓ scope="confirmed" 的策略评估
@@ -1559,7 +1562,7 @@ flake8 src/ tests/
 - **Signal 持久化优化**：`state_changed=false` 的重复信号不再写 DB，减少 ~95% signal_events 写入量。listener 仍收到所有事件
 - **Voting Group 成员信号抑制**：属于 voting group 的策略不再单独发布/持久化信号事件，只贡献 `snapshot_decisions` 给投票。`standalone_override` 白名单内的策略例外。投票结果（`*_vote`/`consensus`）正常发布。`ExecutionGate` 的 `voting_group_member` 拦截逻辑保留为防御层
 - **Studio 前后端分工标准化**：后端 mapper 只返回结构化数据（`status`/`alertLevel`/`metrics`），`task` 字段不含数值；前端负责所有展示渲染（标签、颜色、格式化）
-- **Studio 14 Agent 架构**：从 10 个扩展为 14 个 agent。新增：`filter_guard`（过滤员）、`regime_guard`（研判员）、`live_analyst`（实时分析员，intrabar 指标计算+迷你K线）、`live_strategist`（实时策略员，preview/armed 信号）。分析和策略各拆为 confirmed/intrabar 双链路
+- **Studio 16 Agent 架构**：从 10 个扩展为 16 个 agent。新增：`filter_guard`（过滤员）、`regime_guard`（研判员）、`live_analyst`（实时分析员）、`live_strategist`（实时策略员）、`backtester`（回测）、`paper_trader`（模拟交易）。分析和策略各拆为 confirmed/intrabar 双链路
 - **IndicatorManager scope 维度统计**：`_scope_stats` 按 confirmed/intrabar/reconcile 三维度独立计数，避免 reconcile 重算混入 bar close 统计
 - **FilterChain 按 scope 分维度计数**：`_filter_by_scope` 分别统计 confirmed/intrabar 的通过/拦截次数，1h 滑动窗口也按 scope 分维度
 - **Ingestor intrabar 去重统计**：`queue_stats()` 新增 `intrabar.polls/deduped/updated` 字段，追踪 OHLC 未变化时的去重跳过比例
@@ -1650,7 +1653,7 @@ flake8 src/ tests/
   - `build_decision_brief` → `src/decision/service.py`
   - `StudioService` → `src/studio/service.py`
   - `StudioRuntime` → `src/studio/runtime.py`
-  - Studio mappers → `src/studio/mappers.py`（14 个纯函数）
+  - Studio mappers → `src/studio/mappers.py`（16 个纯函数）
   - Admin API → `src/api/admin.py`（组合根）+ `src/api/admin_routes/`（子包）
   - Trade API → `src/api/trade.py`（组合根）+ `src/api/trade_routes/`（子包）
   - `BacktestEngine` → `src/backtesting/engine/runner.py`（不再在 `src/backtesting/engine.py`）
@@ -1674,6 +1677,17 @@ flake8 src/ tests/
   - Paper Trading 配置 → `config/paper_trading.ini`
   - Paper Trading API → `src/api/paper_trading.py`（组合根）+ `src/api/paper_trading_routes/`
   - `PaperTradingRepository` → `src/persistence/repositories/paper_trading_repo.py`
+  - `MetricsStore` → `src/monitoring/health/metrics_store.py`（纯内存环形缓冲 + 告警 SQLite）
+  - `make_sqlite_conn` → `src/utils/sqlite_conn.py`（统一 SQLite 连接工厂）
+  - `retention.py` → `src/persistence/retention.py`（TimescaleDB retention + compression policy）
+- **HealthMonitor 重构（2026-04-05）**：从 SQLite `health_metrics`/`system_status` 表改为纯内存 `MetricsStore`（`collections.deque` 环形缓冲，per-key 2400 条 ≈ 3.3h）。告警历史保留轻量 SQLite（`health_alerts.db`）。消除 ~300 万条/天 SQLite 写入和 3.3GB 文件膨胀。后台刷盘线程已移除。对外接口不变
+- **TimescaleDB retention + compression policy（2026-04-05）**：16 个 hypertable 三级保留策略（L1 审计 730 天 / L2 业务 180-365 天 / L3 高频 7-90 天），启动时自动幂等配置。`config/db.ini [retention]` 可覆盖天数。`src/persistence/retention.py` 定义 policy，`StorageWriter.start()` 调用
+- **日志文件持久化（2026-04-05）**：`RotatingFileHandler` 100MB×10 轮转 + WARNING 级别独立 `errors.log`。配置 `app.ini [system]` 的 `log_file_enabled/log_dir/log_file_max_mb/log_file_backup_count/log_error_file`
+- **signal_preview_events 异步化（2026-04-05）**：preview 信号从同步直写 PG 改为 StorageWriter 异步队列（`signal_preview` 通道，`drop_newest` 策略），释放 PG 连接资源。confirmed 信号保持同步直写
+- **配置隐私分层（2026-04-05）**：`signal.ini`/`risk.ini` 中策略调优参数和风险限制值全部置空，实际值在 `.local.ini`（gitignored）中。`DBSettings` 凭据默认值从 `"postgres"` 改为空字符串，启动时缺失凭据输出 error 日志。新建 `config/risk.local.ini`
+- **统一 SQLite 连接工厂（2026-04-05）**：三处 `_make_conn()` 合并为 `src/utils/sqlite_conn.py` 的 `make_sqlite_conn(db_path, cache_mb, busy_timeout_ms)`
+- **启用指标数量变更**：从 21 个降至 15 个（禁用 ema21/ema55/rsi5/macd_fast/stoch14/williamsr14 + 原有的 mfi14/obv30/vwap30/wma20）
+- **复合策略数量变更**：从 5 个调整为 4 个（移除 `breakout_release_confirm`）
 
 ---
 

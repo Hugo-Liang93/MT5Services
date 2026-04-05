@@ -19,14 +19,6 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# SQLite pragmas optimized for WAL-mode queue workload
-_PRAGMAS = [
-    "PRAGMA journal_mode=WAL",
-    "PRAGMA synchronous=NORMAL",
-    "PRAGMA busy_timeout=5000",
-    "PRAGMA cache_size=-4096",  # 4MB page cache
-]
-
 _DDL = """
 CREATE TABLE IF NOT EXISTS signal_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,11 +107,8 @@ class WalSignalQueue:
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(
-                self._db_path, check_same_thread=False
-            )
-            for pragma in _PRAGMAS:
-                self._conn.execute(pragma)
+            from src.utils.sqlite_conn import make_sqlite_conn
+            self._conn = make_sqlite_conn(self._db_path, cache_mb=4, busy_timeout_ms=5000)
         return self._conn
 
     def put_nowait(

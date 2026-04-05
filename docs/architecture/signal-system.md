@@ -308,7 +308,6 @@ confidence = score × (1.0 - disagreement_factor) × regime_stability
 | `trend_triple_confirm` | supertrend + macd_momentum + sma_trend | confirmed | majority |
 | `breakout_double_confirm` | donchian_breakout + keltner_bb_squeeze + squeeze_release | confirmed | all_agree |
 | `reversion_double_confirm` | rsi_reversion + stoch_rsi | intrabar + confirmed | all_agree |
-| `breakout_release_confirm` | donchian_breakout + squeeze_release | confirmed | all_agree |
 | `reversal_rejection_confirm` | fake_breakout + price_action_reversal | confirmed | all_agree |
 
 组合模式: `all_agree` (全部一致) / `majority` (过半) / `weighted_sum` (加权)。

@@ -54,8 +54,12 @@ def test_health_monitor() -> None:
     finally:
         if monitor is not None:
             monitor.close()
-        if os.path.exists(test_db):
-            os.remove(test_db)
+        # Clean up all possible DB files (legacy health.db + new alerts DB + WAL files)
+        for pattern_path in [test_db, "health_alerts.db"]:
+            for suffix in ["", "-shm", "-wal"]:
+                p = pattern_path + suffix
+                if os.path.exists(p):
+                    os.remove(p)
 
 
 def compare_optimizations() -> None:

@@ -109,6 +109,13 @@ class StorageWriter:
         if self._thread and self._thread.is_alive():
             return
         self.db.init_schema()
+        try:
+            from src.config.database import load_retention_config
+            enabled, override_days = load_retention_config()
+            if enabled:
+                self.db.ensure_retention_policies(override_days=override_days or None)
+        except Exception as exc:
+            logger.warning("Retention policy setup skipped: %s", exc)
         self._replay_dlq()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="storage-writer", daemon=True)
@@ -431,6 +438,9 @@ class StorageWriter:
             "ohlc_indicators": lambda rows: self.db.write_ohlc(rows, upsert=True, page_size=page_size),
             "economic_calendar": lambda rows: self.db.write_economic_calendar(rows, page_size=page_size),
             "economic_calendar_updates": lambda rows: self.db.write_economic_calendar_updates(
+                rows, page_size=page_size
+            ),
+            "signal_preview": lambda rows: self.db.write_signal_preview_events(
                 rows, page_size=page_size
             ),
         }

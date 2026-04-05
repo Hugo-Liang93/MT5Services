@@ -19,7 +19,8 @@ MT5
 ```text
 BackgroundIngestor -> StorageWriter -> TimescaleDB
 Indicator events -> runtime_data_dir/events.db
-Monitoring metrics -> runtime_data_dir/health_monitor.db
+Monitoring metrics -> 内存环形缓冲 (MetricsStore)，告警 -> health_alerts.db
+Signal queue -> runtime_data_dir/signal_queue.db (WAL)
 PipelineEventBus -> PipelineTraceRecorder -> pipeline_trace_events
 ```
 
@@ -108,11 +109,17 @@ PipelineEventBus -> PipelineTraceRecorder -> pipeline_trace_events
 ### 3.2 本地运行时状态
 
 - `runtime_data_dir/events.db`
-  - 指标收盘事件 durable store
-- `runtime_data_dir/health_monitor.db`
-  - 健康监控指标与告警
+  - 指标收盘事件 durable store（SQLite WAL，7 天保留）
+- `runtime_data_dir/signal_queue.db`
+  - confirmed 信号持久化队列（SQLite WAL，消费即删）
+- `runtime_data_dir/health_alerts.db`
+  - 告警历史（SQLite，轻量级，仅存 alert_history 表）
+- 健康指标（data_latency/indicator_freshness/queue_depth 等）
+  - 纯内存 MetricsStore（deque 环形缓冲，per-key 2400 条 ≈ 3.3h，重启后重新采集）
 - `runtime_data_dir/calibrator_cache.json`
   - calibrator 缓存
+- `data/logs/mt5services.log` + `data/logs/errors.log`
+  - RotatingFileHandler 日志文件（100MB×10 轮转 + WARNING 独立文件）
 
 ## 4. 前端与运维供给链路
 

@@ -110,22 +110,38 @@ class DummyIndicatorSource:
 
 
 class TradingModuleCapture:
-    """捕获所有 dispatch_operation 调用的假 TradingModule。"""
+    """捕获所有 dispatch_operation 调用的假 TradingModule。
+
+    内置 threading.Event 通知机制，消除 polling sleep 的 flaky timeout。
+    """
 
     def __init__(self, fail_count: int = 0):
         self.calls: List[tuple] = []
         self._fail_count = fail_count
         self._call_count = 0
+        self._call_event = threading.Event()
 
     def dispatch_operation(self, operation, payload):
         self._call_count += 1
         self.calls.append((operation, payload))
+        self._call_event.set()
         if self._fail_count > 0 and self._call_count <= self._fail_count:
             raise RuntimeError("simulated dispatch failure")
         return {"ticket": 123456, "success": True}
 
     def account_info(self):
         return {"equity": 10000.0}
+
+    def wait_for_calls(self, expected: int, timeout: float = 10.0) -> bool:
+        """等待至少 expected 次 dispatch_operation 调用（事件驱动，不 polling）。"""
+        deadline = time.monotonic() + timeout
+        while len(self.calls) < expected:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self._call_event.clear()
+            self._call_event.wait(timeout=min(remaining, 1.0))
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -199,14 +215,9 @@ def _build_executor(
     )
 
 
-def _wait_for_calls(module: TradingModuleCapture, expected: int, timeout: float = 3.0) -> bool:
-    """等待 module 收到至少 expected 次 dispatch_operation 调用。"""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if len(module.calls) >= expected:
-            return True
-        time.sleep(0.02)
-    return False
+def _wait_for_calls(module: TradingModuleCapture, expected: int, timeout: float = 10.0) -> bool:
+    """向后兼容包装器 — 委托给 TradingModuleCapture.wait_for_calls()。"""
+    return module.wait_for_calls(expected, timeout=timeout)
 
 
 # ===========================================================================
@@ -349,10 +360,8 @@ def test_circuit_breaker_pauses_and_resets() -> None:
         source.publish("XAUUSD", "M1", bt, indicators, scope="confirmed")
         time.sleep(0.05)
 
-    # Wait for async executor to process all queued events
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and executor._consecutive_failures < 3:
-        time.sleep(0.1)
+    # 等待 3 次 dispatch 调用完成（含失败的）
+    trading.wait_for_calls(3, timeout=10.0)
     executor.flush()
 
     assert executor._circuit_open, "熔断器应已开路"
@@ -372,10 +381,7 @@ def test_circuit_breaker_pauses_and_resets() -> None:
     # 再发一个快照（新 bar_time）→ 此次 dispatch 成功（第 4 次，不再 fail）
     bt_reset = base_time + timedelta(minutes=4)
     source.publish("XAUUSD", "M1", bt_reset, indicators, scope="confirmed")
-    # Wait for async execution
-    deadline2 = time.monotonic() + 5.0
-    while time.monotonic() < deadline2 and len(trading.calls) <= before:
-        time.sleep(0.1)
+    trading.wait_for_calls(before + 1, timeout=10.0)
     executor.flush()
     assert len(trading.calls) > before, "reset 后应恢复下单"
     _, payload = trading.calls[-1]

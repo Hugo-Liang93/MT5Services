@@ -33,14 +33,11 @@ class ClaimedEvent:
     bar_time: datetime
 
 
+from src.utils.sqlite_conn import make_sqlite_conn
+
+
 def _make_conn(db_path: str) -> sqlite3.Connection:
-    """创建持久化 SQLite 连接，启用 WAL 和性能 PRAGMA。"""
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA cache_size=-8192")  # 8 MB page cache
-    return conn
+    return make_sqlite_conn(db_path, cache_mb=8, busy_timeout_ms=30000)
 
 
 class LocalEventStore:

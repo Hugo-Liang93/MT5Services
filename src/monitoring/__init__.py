@@ -1,7 +1,8 @@
 """监控模块
 
-health_monitor.py — HealthMonitor：SQLite 指标存储、告警、健康报告
-manager.py        — MonitoringManager：定时巡检、组件协调
+health/monitor.py  — HealthMonitor：内存环形缓冲指标 + SQLite 告警历史
+health/metrics_store.py — MetricsStore：纯内存 deque 环形缓冲 + 轻量告警 SQLite
+manager.py         — MonitoringManager：定时巡检、组件协调
 """
 
 from .health.monitor import HealthMonitor, get_health_monitor

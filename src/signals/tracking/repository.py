@@ -45,13 +45,23 @@ class SignalRepository(Protocol):
 
 
 class TimescaleSignalRepository:
-    def __init__(self, db_writer: "TimescaleWriter"):
+    def __init__(
+        self,
+        db_writer: "TimescaleWriter",
+        storage_writer: Any = None,
+    ):
         self._db = getattr(db_writer, "signal_repo", db_writer)
+        self._storage_writer = storage_writer
 
     def append(self, record: SignalRecord) -> None:
         scope = self._resolve_scope(record.metadata)
         if scope == "preview":
-            self._db.write_signal_preview_events([record.to_row()])
+            # preview 信号是 L3 best-effort，走异步队列释放 PG 连接
+            if self._storage_writer is not None:
+                self._storage_writer.enqueue("signal_preview", record.to_row())
+            else:
+                # fallback: 无 StorageWriter 时同步写入（standalone/测试模式）
+                self._db.write_signal_preview_events([record.to_row()])
             return
         self._db.write_signal_events([record.to_row()])
 

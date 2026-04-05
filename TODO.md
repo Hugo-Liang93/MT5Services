@@ -16,6 +16,14 @@
 - ~~A3: 增量指标扩展（9→15 incremental）+ 孤儿指标禁用（21→15 启用）~~
 - ~~策略优化：+macd_divergence/adx_trend_fade，清理 squeeze_release，复合策略 5→4~~
 - ~~数据库 schema 全面重建：26 表，14 hypertable，统一索引命名，CHECK 约束，+circuit_breaker_history~~
+- ~~持久化架构审查：health_monitor.db 重构为内存环形缓冲（3.3GB→0），SQLite 仅存告警历史~~
+- ~~TimescaleDB retention + compression policy：16 表三级保留策略，启动时自动幂等配置~~
+- ~~日志文件持久化：RotatingFileHandler 100MB×10 + WARNING 独立 errors.log~~
+- ~~signal_preview_events 异步化：同步直写 PG → StorageWriter 异步队列（drop_newest）~~
+- ~~配置隐私分层：signal.ini/risk.ini 私域值置空，凭据默认值清除，新建 risk.local.ini~~
+- ~~统一 SQLite 连接工厂：3 处 _make_conn() → src/utils/sqlite_conn.py~~
+- ~~flaky 集成测试修复：test_app_health 全局状态污染 + Event 驱动等待替代 polling~~
+- ~~过时测试修复：rsi5 enabled 断言 + tick schema migration 断言~~
 
 ---
 

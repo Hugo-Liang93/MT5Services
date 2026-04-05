@@ -20,6 +20,7 @@ class DummyIngestor:
 
 def test_health_uses_trading_module_health(monkeypatch):
     monkeypatch.setattr("src.api.deps.get_ingestor", lambda: DummyIngestor())
+    monkeypatch.setattr("src.api.deps.get_runtime_mode", lambda: "FULL")
 
     response = health(service=DummyMarketService(), trading=DummyTradingModule())
 

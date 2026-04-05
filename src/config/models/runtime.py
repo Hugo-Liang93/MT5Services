@@ -35,6 +35,12 @@ class SystemConfig(BaseModel):
     modules_enabled: List[str] = Field(
         default_factory=lambda: ["ingest", "api", "indicators", "storage"]
     )
+    # 日志文件持久化
+    log_file_enabled: bool = True
+    log_dir: str = "data/logs"
+    log_file_max_mb: int = 100
+    log_file_backup_count: int = 10
+    log_error_file: str = "errors.log"
 
 
 class APIConfig(BaseModel):

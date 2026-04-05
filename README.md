@@ -40,7 +40,7 @@ pip install -e ".[dev,test]"
 | `config/app.ini` | 交易品种、时间框架、采集间隔 |
 | `config/market.ini` | API host/port、认证 (API Key)、CORS |
 
-敏感信息放入 `config/*.local.ini`（已被 `.gitignore`）。
+敏感信息（凭据/API key）和个人调优参数（策略权重/风险限制）放入 `config/*.local.ini`（已被 `.gitignore`）。提交到 Git 的 `.ini` 文件中对应字段已置空。
 
 ### 3. 启动
 
@@ -90,8 +90,10 @@ MT5Services/
 │   ├── market.ini            # API 服务配置
 │   ├── mt5.ini               # MT5 终端连接
 │   ├── db.ini                # 数据库连接
-│   ├── signal.ini            # 信号模块配置
-│   ├── risk.ini              # 风险限制
+│   ├── signal.ini            # 信号模块配置（调优参数在 signal.local.ini）
+│   ├── risk.ini              # 风险限制（具体阈值在 risk.local.ini）
+│   ├── backtest.ini          # 回测与参数优化
+│   ├── paper_trading.ini     # Paper Trading 影子交易
 │   ├── economic.ini          # 经济日历与 Trade Guard
 │   ├── ingest.ini            # 后台采集配置
 │   ├── storage.ini           # 持久化队列配置
@@ -108,7 +110,7 @@ MT5Services/
 │   ├── ingestion/            # 后台数据采集
 │   ├── market/               # MarketDataService (内存缓存)
 │   ├── market_structure/     # 市场结构分析
-│   ├── monitoring/           # 健康检查
+│   ├── monitoring/           # 健康监控（内存环形缓冲 + SQLite 告警）
 │   ├── persistence/          # TimescaleDB 写入器
 │   ├── risk/                 # 风险规则与服务
 │   ├── signals/              # 信号生成 (策略/运行时/投票/过滤)
@@ -177,30 +179,34 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 | 路由前缀 | 功能 |
 |---------|------|
 | `/` | 行情 (symbols, quote, ticks, ohlc, stream SSE) |
-| `/trade` | 交易 (下单, 平仓, 预检, 保证金估算) |
+| `/trade` | 交易 (下单, 平仓, 预检, 保证金估算, 链路 trace) |
 | `/account` | 账户 (info, positions, orders) |
 | `/indicators` | 指标 (list, 查询, 按需计算) |
 | `/signals` | 信号 (策略列表, 评估, 诊断, 投票, 质量监控) |
 | `/economic` | 经济日历 (事件, 风险窗口, Trade Guard) |
 | `/monitoring` | 系统监控 (health, startup, queues, config) |
+| `/decision` | 决策摘要 (上下文融合 brief) |
 | `/backtest` | 回测 (run, optimize, walk-forward, 参数推荐) |
+| `/paper-trading` | 模拟交易 (start/stop, trades, positions, metrics) |
+| `/admin` | 管理后台 (dashboard, config, strategies, SSE) |
+| `/studio` | Studio (16 agent 实时状态, events, SSE stream) |
 
 响应统一包装：`ApiResponse[T]` — `{success, data, error, error_code, metadata}`
 
 ## 信号系统
 
-30+ 内置策略，分为 6 类：
+35 个内置策略（31 基础 + 4 复合），分为 6 类：
 
 | 类型 | 策略数 | Scope | 代表 |
 |------|--------|-------|------|
 | 跨 TF 联动 | 7 | confirmed / intrabar | htf_trend_pullback, dual_tf_momentum, m5_scalp_rsi |
-| 趋势跟踪 | 6 | confirmed | supertrend, roc_momentum, fib_pullback |
-| 均值回归 | 4 | intrabar + confirmed | rsi_reversion, stoch_rsi, cci_reversion |
+| 趋势跟踪 | 7 | confirmed | supertrend, roc_momentum, fib_pullback, adx_trend_fade |
+| 均值回归 | 5 | intrabar + confirmed | rsi_reversion, stoch_rsi, cci_reversion, macd_divergence |
 | 突破/波动率 | 6 | 混合 | donchian_breakout, keltner_bb_squeeze |
-| 价格行为 | 2 | confirmed | price_action_reversal, order_block_entry |
+| 价格行为 | 3 | confirmed | price_action_reversal, order_block_entry, trendline_3touch |
 | M5 快速标量 | 3 | intrabar + confirmed | m5_scalp_rsi, m5_momentum_burst |
 
-另有 5 个复合策略和 4 组方向一致性投票（momentum/breakout/reversion/reversal）。
+另有 4 个声明式复合策略（composites.json）和 4 组方向一致性投票（momentum/breakout/reversion/reversal）。
 
 ## 风险管理
 
