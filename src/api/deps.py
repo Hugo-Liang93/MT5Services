@@ -43,6 +43,7 @@ from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 from src.monitoring.pipeline import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
+from src.backtesting.paper_trading.bridge import PaperTradingBridge
 from src.studio.service import StudioService
 
 logger = logging.getLogger(__name__)
@@ -347,3 +348,9 @@ def get_studio_service() -> StudioService:
     _ensure_initialized()
     assert _container is not None and _container.studio_service is not None
     return _container.studio_service
+
+
+def get_paper_trading_bridge() -> Optional[PaperTradingBridge]:
+    _ensure_initialized()
+    assert _container is not None
+    return _container.paper_trading_bridge

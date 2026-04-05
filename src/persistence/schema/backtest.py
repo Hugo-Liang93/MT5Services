@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     metrics_by_regime JSONB,
     metrics_by_strategy JSONB,
     equity_curve JSONB,
-    status TEXT NOT NULL DEFAULT 'completed',
+    status TEXT NOT NULL DEFAULT 'completed'
+        CHECK (status IN ('running', 'completed', 'failed')),
     duration_ms INTEGER,
     filter_stats JSONB
 );

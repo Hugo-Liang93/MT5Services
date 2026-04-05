@@ -182,7 +182,13 @@ MT5Services/
 │   │   ├── config.py         # INI 配置加载（backtest.ini + signal.ini 合并）
 │   │   ├── cli.py            # CLI 命令
 │   │   ├── component_factory.py # 组件构建工厂
-│   │   ├── paper_trading.py  # Paper Trading（半成品，待重构为 paper_trading/ 子包）
+│   │   ├── paper_trading/    # Paper Trading 影子交易子包
+│   │   │   ├── bridge.py     # PaperTradingBridge：信号监听 + 模拟执行
+│   │   │   ├── portfolio.py  # PaperPortfolio：实时持仓管理（bid/ask 驱动）
+│   │   │   ├── tracker.py    # PaperTradeTracker：持久化钩子（异步刷写 DB）
+│   │   │   ├── config.py     # PaperTradingConfig（config/paper_trading.ini）
+│   │   │   ├── models.py     # PaperTradeRecord / PaperSession / PaperMetrics
+│   │   │   └── ports.py      # Protocol 定义
 │   │   ├── engine/           # 回测引擎
 │   │   │   ├── runner.py     # BacktestEngine 主协调器
 │   │   │   ├── indicators.py # 指标预计算（编排调用实盘 Pipeline）
@@ -255,6 +261,7 @@ code defaults       （src/config/centralized.py 中 Pydantic 模型的字段默
 | `config/signal.ini` | 自动交易、仓位大小、过滤条件、状态机参数、HTF 缓存 TTL、信号质量追踪器、Regime 检测阈值、策略级参数覆盖、Regime 亲和度覆盖、**价格确认入场（Pending Entry）** |
 | `config/indicators.json` | 指标定义、参数、依赖关系、流水线配置 |
 | `config/composites.json` | 复合策略组合定义 |
+| `config/paper_trading.ini` | Paper Trading 影子交易配置（初始余额、风险参数、SL/TP、日终平仓、Regime 缩放、监控间隔） |
 
 ### No `.env` Files
 
@@ -528,7 +535,13 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/backtesting/data/store.py` | 回测运行态存储 |
 | `src/api/backtest.py` | 回测 API 组合根 |
 | `src/api/backtest_routes/` | 回测路由子包（schemas / execution / helpers / routes） |
-| `src/persistence/repositories/` | 数据仓储层：trade / signal / economic / market / runtime / backtest / pipeline_trace / trading_state |
+| `src/api/paper_trading.py` | Paper Trading API 组合根 |
+| `src/api/paper_trading_routes/` | Paper Trading 路由子包 |
+| `src/backtesting/paper_trading/bridge.py` | PaperTradingBridge：信号监听 + 模拟执行 |
+| `src/backtesting/paper_trading/portfolio.py` | PaperPortfolio：bid/ask 驱动的实时持仓管理 |
+| `src/backtesting/paper_trading/tracker.py` | PaperTradeTracker：异步持久化钩子 |
+| `src/backtesting/paper_trading/config.py` | PaperTradingConfig 加载（paper_trading.ini） |
+| `src/persistence/repositories/` | 数据仓储层：trade / signal / economic / market / runtime / backtest / pipeline_trace / trading_state / paper_trading |
 
 ---
 
@@ -1337,7 +1350,8 @@ Authentication: `X-API-Key` 请求头（在 `config/market.ini` 中配置）
 | monitoring | `/monitoring` | `/monitoring/health`, `/monitoring/startup`, `/monitoring/queues`, `/monitoring/config/effective` |
 | signal | `/signals` | 信号查询、诊断、策略列表、投票信息、**`/signals/monitoring/quality/{symbol}/{timeframe}`**（Regime + 信号质量） |
 | backtest | `/backtest` | `/backtest/run`, `/backtest/optimize`, `/backtest/walk-forward`, `/backtest/results/{run_id}`, `/backtest/recommendations/*`（生成/审批/应用/回滚） |
-| studio | `/studio` | `/studio/agents`（14 个 agent 实时状态）, `/studio/agents/{id}`, `/studio/events`, `/studio/summary`, `/studio/stream`（SSE 实时推送） |
+| paper-trading | `/paper-trading` | `/paper-trading/status`, `/paper-trading/start`, `/paper-trading/stop`, `/paper-trading/reset`, `/paper-trading/trades`, `/paper-trading/positions`, `/paper-trading/metrics`, `/paper-trading/session`, `/paper-trading/history/*`（sessions/trades/performance） |
+| studio | `/studio` | `/studio/agents`（16 个 agent 实时状态）, `/studio/agents/{id}`, `/studio/events`, `/studio/summary`, `/studio/stream`（SSE 实时推送） |
 | admin | `/admin` | `/admin/dashboard`, `/admin/config`, `/admin/config/signal`, `/admin/config/risk`, `/admin/config/indicators`, `/admin/config/composites`, `/admin/performance/strategies`, `/admin/strategies`, `/admin/events/stream`（SSE）, `/admin/pipeline/stream`（SSE） |
 
 响应通用包装器：
@@ -1586,7 +1600,9 @@ flake8 src/ tests/
 - **BacktestConfig 嵌套子配置**（2026-04-05）：`BacktestConfig` 拆分为 8 个 frozen 子 dataclass（`PositionConfig`/`RiskConfig`/`FilterConfig`/`PendingEntryConfig`/`TrailingTPConfig`/`CircuitBreakerConfig`/`MonteCarloConfig`/`ConfidenceConfig`）。旧平铺字段通过 `from_flat()` classmethod 构建。引擎内部通过 `config.position.xxx`/`config.risk.xxx`/`config.filters.xxx` 等访问
 - **回测子包化**（2026-04-05）：5 个子包 `engine/`/`filtering/`/`analysis/`/`optimization/`/`data/`，从平铺 20+ 文件重组为领域聚合的子包结构
 - **BacktestResult.monte_carlo_result**：字段从 `monte_carlo` 重命名为 `monte_carlo_result`，避免与模块名冲突
-- **Paper Trading 半成品**：`src/backtesting/paper_trading.py` 从未集成，有缩进 bug，计划重构为 `src/backtesting/paper_trading/` 子包（职责上属于回测→验证流程）
+- **Paper Trading 模块**（2026-04-05）：从半成品重构为完整子包 `src/backtesting/paper_trading/`（6 文件）。`PaperTradingBridge` 作为 `SignalRuntime` listener 接收确认信号，`PaperPortfolio` 用 bid/ask 驱动持仓退出。独立数据表（`paper_trading_sessions` + `paper_trade_outcomes`），`PaperTradeTracker` 异步刷写。注册为 `RuntimeManagedComponent`（supported_modes=FULL/OBSERVE）。API 端点 `/v1/paper-trading/*`（11 个端点）。Studio 新增 `paper_trader` agent。配置 `config/paper_trading.ini`（默认 enabled=false）
+- **信号队列持久化**（A4，2026-04-05）：`confirmed_events` 从内存 `queue.Queue` 改为 `WalSignalQueue`（`src/signals/orchestration/wal_queue.py`），SQLite WAL 模式。重启后 pending 事件自动恢复（in-flight 事件 reset 为 pending）。`intrabar_events` 保持内存队列（best-effort，可丢弃）。WAL DB 路径 `runtime_data/signal_queue.db`
+- **指标增量计算扩展**（A3，2026-04-05）：新增 6 个增量指标类（`MacdIncremental`/`AdxIncremental`/`SupertrendIncremental`/`KeltnerIncremental`/`DonchianIncremental`），enabled 指标从 9 → 15 个 incremental。剩余 standard：stoch14/williamsr14/roc12/cci20/stoch_rsi14/hma20（窗口型或多层计算，增量收益低）
 - **deps.py 初始化无失败标记**：`_ensure_initialized()` 在 `build_app_container()` 抛异常后不设 init_failed 标志，后续请求会反复重试构建并产生重复异常日志
 - **运行模式系统**（`src/app_runtime/mode_controller.py`）：4 种运行模式 `FULL`/`OBSERVE`/`RISK_OFF`/`INGEST_ONLY`，通过 `RuntimeModeController` 编排组件启停。`app.ini [trading_ops]` 配置 `runtime_mode` 和 `runtime_mode_after_eod`。组件通过 `RuntimeManagedComponent` Protocol 声明 `supported_modes`
 - **Trading 分层子包架构**（2026-04-03）：`src/trading/` 从平铺文件重组为 7 个子包（application/execution/pending/positions/closeout/tracking/state）+ `ports.py` 端口层。外部模块应优先依赖子包 `__init__.py` 导出
@@ -1652,6 +1668,12 @@ flake8 src/ tests/
   - `compute_metrics` → `src/backtesting/analysis/metrics.py`（不再在 `src/backtesting/metrics.py`）
   - 蒙特卡洛检验 → `src/backtesting/analysis/monte_carlo.py`（不再在 `src/backtesting/monte_carlo.py`）
   - 策略相关性 → `src/backtesting/analysis/correlation.py`（不再在 `src/backtesting/correlation.py`）
+  - `PaperTradingBridge` → `src/backtesting/paper_trading/bridge.py`（**不再在** `src/backtesting/paper_trading.py`）
+  - `PaperPortfolio` → `src/backtesting/paper_trading/portfolio.py`
+  - `PaperTradeTracker` → `src/backtesting/paper_trading/tracker.py`
+  - Paper Trading 配置 → `config/paper_trading.ini`
+  - Paper Trading API → `src/api/paper_trading.py`（组合根）+ `src/api/paper_trading_routes/`
+  - `PaperTradingRepository` → `src/persistence/repositories/paper_trading_repo.py`
 
 ---
 

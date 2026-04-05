@@ -518,6 +518,28 @@ def map_backtester(backtest_status: dict[str, Any]) -> dict[str, Any]:
     ], "idle", "等待研究任务", metrics=metrics)
 
 
+def map_paper_trader(paper_status: dict[str, Any]) -> dict[str, Any]:
+    running = bool(paper_status.get("running", False))
+    open_positions = int(paper_status.get("open_positions", 0) or 0)
+    closed_trades = int(paper_status.get("closed_trades", 0) or 0)
+    signals_executed = int(paper_status.get("signals_executed", 0) or 0)
+    floating_pnl = float(paper_status.get("floating_pnl", 0) or 0)
+
+    metrics: dict[str, Any] = {
+        "open_positions": open_positions,
+        "closed_trades": closed_trades,
+        "signals_executed": signals_executed,
+        "floating_pnl": round(floating_pnl, 2),
+        "current_balance": paper_status.get("current_balance"),
+    }
+
+    return resolve_status("paper_trader", [
+        (running and open_positions > 0, "working", "模拟持仓中", "none"),
+        (running and open_positions == 0, "reviewing", "等待信号", "none"),
+        (not running and closed_trades > 0, "idle", "已停止，有历史记录", "none"),
+    ], "idle", "未启用", metrics=metrics)
+
+
 def map_inspector(health_report: dict[str, Any]) -> dict[str, Any]:
     overall = health_report.get("overall_status", "unknown")
     metrics: dict[str, Any] = {

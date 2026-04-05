@@ -137,6 +137,87 @@ def macd(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     return {"macd": macd_val, "signal": signal_val, "hist": hist_val}
 
 
+class MacdIncremental(IncrementalIndicator):
+    """Incremental MACD: O(1) update using three EMA states.
+
+    State: ema_fast, ema_slow, ema_signal (three scalar values).
+    Each bar: one EMA step per state.
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        fast = get_int(params, "fast", default=12)
+        slow = get_int(params, "slow", default=26)
+        signal = get_int(params, "signal", default=9)
+        self.min_data_points = slow + signal
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return macd(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        ir = state.intermediate_results
+        return (
+            ir is not None
+            and "ema_fast" in ir
+            and "ema_slow" in ir
+            and "ema_signal" in ir
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        fast = get_int(self.params, "fast", default=12)
+        slow = get_int(self.params, "slow", default=26)
+        signal = get_int(self.params, "signal", default=9)
+        k_fast = 2.0 / (fast + 1)
+        k_slow = 2.0 / (slow + 1)
+        k_signal = 2.0 / (signal + 1)
+
+        ir = state.intermediate_results
+        ema_fast = float(ir["ema_fast"])  # type: ignore[index]
+        ema_slow = float(ir["ema_slow"])  # type: ignore[index]
+        ema_signal_val = float(ir["ema_signal"])  # type: ignore[index]
+
+        new_close = bars[-1].close
+        ema_fast = ema_fast + k_fast * (new_close - ema_fast)
+        ema_slow = ema_slow + k_slow * (new_close - ema_slow)
+        macd_val = ema_fast - ema_slow
+        ema_signal_val = ema_signal_val + k_signal * (macd_val - ema_signal_val)
+        hist_val = macd_val - ema_signal_val
+
+        return {"macd": macd_val, "signal": ema_signal_val, "hist": hist_val}
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        fast = get_int(self.params, "fast", default=12)
+        slow = get_int(self.params, "slow", default=26)
+        signal = get_int(self.params, "signal", default=9)
+
+        from .base import get_closes
+        closes = get_closes(bars, slow + signal + 5)
+        if len(closes) < slow + signal:
+            return state
+
+        k_fast = 2.0 / (fast + 1)
+        k_slow = 2.0 / (slow + 1)
+        ema_f: float | None = None
+        ema_s: float | None = None
+        macd_series: List[float] = []
+        for price in closes:
+            ema_f = price if ema_f is None else ema_f + k_fast * (price - ema_f)
+            ema_s = price if ema_s is None else ema_s + k_slow * (price - ema_s)
+            macd_series.append(ema_f - ema_s)
+
+        ema_signal_val = _ema_sequence(macd_series[-(signal * 3):], signal)
+
+        state.intermediate_results = {
+            "ema_fast": ema_f,
+            "ema_slow": ema_s,
+            "ema_signal": ema_signal_val,
+        }
+        return state
+
+
 def roc(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     period = get_int(params, "period", default=12, aliases=("window",))
     closes = get_closes(bars, period + 1)
@@ -309,6 +390,103 @@ def supertrend(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
         "upper_band": final_upper,
         "lower_band": final_lower,
     }
+
+
+class SupertrendIncremental(IncrementalIndicator):
+    """Incremental Supertrend: ATR (Wilder) + band logic.
+
+    State: atr_val, final_upper, final_lower, direction, prev_close.
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        period = get_int(params, "period", default=14, aliases=("atr_period", "window"))
+        self.min_data_points = period * 2 + 2
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return supertrend(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        ir = state.intermediate_results
+        return (
+            ir is not None
+            and "atr_val" in ir
+            and "final_upper" in ir
+            and "final_lower" in ir
+            and "direction" in ir
+            and "prev_close" in ir
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        period = get_int(self.params, "period", default=14, aliases=("atr_period", "window"))
+        multiplier = get_float(self.params, "multiplier", default=3.0, aliases=("mult",))
+
+        ir = state.intermediate_results
+        prev_atr = float(ir["atr_val"])  # type: ignore[index]
+        prev_final_upper = float(ir["final_upper"])  # type: ignore[index]
+        prev_final_lower = float(ir["final_lower"])  # type: ignore[index]
+        prev_direction = float(ir["direction"])  # type: ignore[index]
+        prev_close = float(ir["prev_close"])  # type: ignore[index]
+
+        bar = bars[-1]
+        tr = max(bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close))
+        atr_val = (prev_atr * (period - 1) + tr) / period
+
+        hl2 = (bar.high + bar.low) / 2.0
+        basic_upper = hl2 + multiplier * atr_val
+        basic_lower = hl2 - multiplier * atr_val
+
+        final_upper = (
+            min(basic_upper, prev_final_upper)
+            if prev_close <= prev_final_upper
+            else basic_upper
+        )
+        final_lower = (
+            max(basic_lower, prev_final_lower)
+            if prev_close >= prev_final_lower
+            else basic_lower
+        )
+
+        if prev_direction == -1.0:
+            direction = 1.0 if bar.close > prev_final_upper else -1.0
+        else:
+            direction = -1.0 if bar.close < prev_final_lower else 1.0
+
+        supertrend_val = final_lower if direction == 1.0 else final_upper
+
+        return {
+            "supertrend": supertrend_val,
+            "direction": direction,
+            "upper_band": final_upper,
+            "lower_band": final_lower,
+        }
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        full_result = self._compute_full(bars)
+        if full_result:
+            period = get_int(self.params, "period", default=14, aliases=("atr_period", "window"))
+            window = tail_bars(bars, period * 2 + 2)
+            highs, lows, closes = get_hlc_arrays(window)
+            from .volatility import _compute_tr_array
+            trs = _compute_tr_array(highs, lows, closes)
+            if len(trs) >= period:
+                atr_val = float(np.mean(trs[:period]))
+                for i in range(period, len(trs)):
+                    atr_val = (atr_val * (period - 1) + float(trs[i])) / period
+            else:
+                atr_val = 0.0
+
+            state.intermediate_results = {
+                "atr_val": atr_val,
+                "final_upper": full_result.get("upper_band", 0.0),
+                "final_lower": full_result.get("lower_band", 0.0),
+                "direction": full_result.get("direction", 1.0),
+                "prev_close": bars[-1].close,
+            }
+        return state
 
 
 def _rsi_series_wilder(closes: List[float], period: int) -> List[float]:

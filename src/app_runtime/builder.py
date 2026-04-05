@@ -213,6 +213,9 @@ def build_app_container(
     )
     container.shutdown_callbacks.append(signal_hot_reload_cleanup)
 
+    # Paper Trading (between signal system and runtime mode controller)
+    _build_paper_trading(container)
+
     if container.trade_module is not None:
         trading_ops_config = get_trading_ops_config()
         container.runtime_component_registry = _build_runtime_component_registry(
@@ -484,6 +487,25 @@ def _build_runtime_component_registry(
             except Exception:
                 logger.warning("Overnight force close failed", exc_info=True)
 
+    def _start_paper_trading(c: AppContainer) -> None:
+        bridge = c.paper_trading_bridge
+        tracker = c.paper_trade_tracker
+        if bridge is None:
+            return
+        if tracker is not None:
+            tracker.start()
+        bridge.start()
+
+    def _stop_paper_trading(c: AppContainer) -> None:
+        bridge = c.paper_trading_bridge
+        tracker = c.paper_trade_tracker
+        if bridge is not None:
+            bridge.stop()
+            # 保存 session 信息
+            if tracker is not None and bridge._session is not None:
+                tracker.save_session(bridge._session)
+                tracker.stop()
+
     return RuntimeComponentRegistry(
         [
             FunctionalRuntimeComponent(
@@ -595,8 +617,70 @@ def _build_runtime_component_registry(
                     and container.position_manager.is_running()
                 ),
             ),
+            FunctionalRuntimeComponent(
+                name="paper_trading",
+                supported_modes=frozenset(
+                    {RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value}
+                ),
+                start_fn=lambda: _start_paper_trading(container),
+                stop_fn=lambda: _stop_paper_trading(container),
+                is_running_fn=lambda: bool(
+                    container.paper_trading_bridge is not None
+                    and container.paper_trading_bridge.is_running()
+                ),
+            ),
         ]
     )
+
+
+def _build_paper_trading(container: AppContainer) -> None:
+    """Construct Paper Trading bridge and tracker if enabled."""
+    try:
+        from src.backtesting.paper_trading.config import load_paper_trading_config
+        from src.backtesting.paper_trading.bridge import PaperTradingBridge
+        from src.backtesting.paper_trading.tracker import PaperTradeTracker
+
+        pt_config = load_paper_trading_config()
+        if not pt_config.enabled:
+            logger.debug("Paper trading disabled (enabled=false)")
+            return
+
+        if container.market_service is None:
+            logger.warning("Paper trading: no market_service, skipping")
+            return
+
+        # Tracker (持久化钩子)
+        db_writer = (
+            container.storage_writer.db if container.storage_writer is not None else None
+        )
+        tracker = PaperTradeTracker(
+            db_writer=db_writer,
+            flush_interval=pt_config.persist_flush_interval,
+        )
+        container.paper_trade_tracker = tracker
+
+        # Bridge (核心)
+        market_service = container.market_service
+        bridge = PaperTradingBridge(
+            config=pt_config,
+            market_quote_fn=market_service.get_quote,
+            on_trade_closed=tracker.on_trade_closed,
+            on_trade_opened=tracker.on_trade_opened,
+        )
+        container.paper_trading_bridge = bridge
+
+        # 注册为 signal listener
+        if container.signal_runtime is not None:
+            container.signal_runtime.add_signal_listener(bridge.on_signal_event)
+
+        logger.info(
+            "Paper trading wired: balance=%.0f, max_pos=%d, min_conf=%.2f",
+            pt_config.initial_balance,
+            pt_config.max_positions,
+            pt_config.min_confidence,
+        )
+    except Exception:
+        logger.warning("Paper trading setup failed", exc_info=True)
 
 
 def _wire_margin_guard(

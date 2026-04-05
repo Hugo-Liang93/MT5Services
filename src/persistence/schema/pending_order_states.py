@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS pending_order_states (
     signal_id TEXT,
     request_id TEXT,
     symbol TEXT NOT NULL,
-    direction TEXT NOT NULL,
+    direction TEXT NOT NULL
+        CHECK (direction IN ('buy', 'sell')),
     strategy TEXT,
     timeframe TEXT,
     category TEXT,
@@ -28,18 +29,25 @@ CREATE TABLE IF NOT EXISTS pending_order_states (
     position_ticket BIGINT,
     deal_id BIGINT,
     fill_price DOUBLE PRECISION,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('placed', 'filled', 'expired', 'cancelled', 'missing', 'orphan')),
     status_reason TEXT,
     last_seen_at TIMESTAMPTZ,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS pending_order_states_account_status_idx
-ON pending_order_states (account_alias, status, updated_at DESC);
-CREATE INDEX IF NOT EXISTS pending_order_states_signal_idx
-ON pending_order_states (signal_id, updated_at DESC);
-CREATE INDEX IF NOT EXISTS pending_order_states_expires_idx
-ON pending_order_states (status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_pending_orders_account_status
+    ON pending_order_states (account_alias, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pending_orders_signal
+    ON pending_order_states (signal_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pending_orders_expires
+    ON pending_order_states (status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_pending_orders_symbol_status
+    ON pending_order_states (symbol, status);
 """
 
 UPSERT_SQL = """

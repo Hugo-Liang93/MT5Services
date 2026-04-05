@@ -19,6 +19,7 @@ from src.api import (
     indicators,
     market,
     monitoring,
+    paper_trading,
     signal,
     studio,
     trade,
@@ -161,6 +162,7 @@ v1.include_router(indicators.router)
 v1.include_router(signal.router)
 v1.include_router(backtest.router)
 v1.include_router(admin.router)
+v1.include_router(paper_trading.router)
 v1.include_router(studio.router)
 app.include_router(v1)
 

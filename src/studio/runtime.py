@@ -242,6 +242,13 @@ def build_studio_service(container: AppContainer) -> StudioService:
         lambda: studio_mappers.map_backtester(get_backtest_runtime_status()),
     )
 
+    if container.paper_trading_bridge is not None:
+        _pt_bridge = container.paper_trading_bridge
+        studio.register_agent(
+            "paper_trader",
+            lambda: studio_mappers.map_paper_trader(_pt_bridge.status()),
+        )
+
     if container.health_monitor is not None:
         studio.register_agent(
             "inspector",

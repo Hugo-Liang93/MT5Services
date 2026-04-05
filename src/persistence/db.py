@@ -19,6 +19,7 @@ from src.config import DBSettings
 from src.persistence.repositories import (
     EconomicCalendarRepository,
     MarketRepository,
+    PaperTradingRepository,
     PipelineTraceRepository,
     RuntimeStatusRepository,
     SignalEventRepository,
@@ -48,6 +49,7 @@ class TimescaleWriter:
         self._economic_repo: Optional[EconomicCalendarRepository] = None
         self._pipeline_trace_repo: Optional[PipelineTraceRepository] = None
         self._runtime_repo: Optional[RuntimeStatusRepository] = None
+        self._paper_trading_repo: Optional[PaperTradingRepository] = None
         self._init_pool()
 
     @property
@@ -104,6 +106,14 @@ class TimescaleWriter:
         if repo is None:
             repo = RuntimeStatusRepository(self)
             self._runtime_repo = repo
+        return repo
+
+    @property
+    def paper_trading_repo(self) -> PaperTradingRepository:
+        repo = getattr(self, "_paper_trading_repo", None)
+        if repo is None:
+            repo = PaperTradingRepository(self)
+            self._paper_trading_repo = repo
         return repo
 
     def _json(self, value):

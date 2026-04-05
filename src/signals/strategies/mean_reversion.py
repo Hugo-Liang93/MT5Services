@@ -507,6 +507,162 @@ def _compute_rsi_series(closes: List[float], period: int = 14) -> List[float]:
     return rsi_values
 
 
+class MacdDivergenceStrategy:
+    """MACD 背离策略 — 价格与 MACD 柱状图方向分歧的反转预警。
+
+    原理：价格创新高但 MACD 柱状图未跟随（顶背离），
+    或价格创新低但 MACD 柱状图未跟随（底背离）。
+
+    与 RsiDivergence 的区别：
+    - RSI 背离检测振荡器极值分歧
+    - MACD 背离检测动量衰竭（histogram 缩小 = 多空力量消退）
+    - MACD 对趋势末期的快慢均线收敛更敏感
+
+    仅在 confirmed scope 评估（需要完整 bar 确认高低点）。
+    """
+
+    name = "macd_divergence"
+    category = "reversion"
+    required_indicators = ("macd",)
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 0.80,   # 趋势末端背离最可靠
+        RegimeType.RANGING: 0.50,
+        RegimeType.BREAKOUT: 0.35,
+        RegimeType.UNCERTAIN: 0.60,
+    }
+
+    def __init__(self, *, lookback_bars: int = 14) -> None:
+        self._lookback_bars = lookback_bars
+        self.recent_bars_depth: int = lookback_bars + 5
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        used: List[str] = ["macd"]
+        hold = SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            direction="hold",
+            confidence=0.0,
+            reason="no_macd_divergence",
+            used_indicators=used,
+        )
+
+        macd_data = context.indicators.get("macd")
+        if not isinstance(macd_data, dict):
+            return hold
+
+        current_hist = macd_data.get("hist")
+        current_macd = macd_data.get("macd")
+        if current_hist is None or current_macd is None:
+            return hold
+
+        recent_bars: Any = context.metadata.get("recent_bars")
+        if not isinstance(recent_bars, (list, tuple)) or len(recent_bars) < self._lookback_bars:
+            return hold
+
+        # 提取价格序列
+        all_highs: List[float] = []
+        all_lows: List[float] = []
+        all_closes: List[float] = []
+        for bar in recent_bars:
+            if isinstance(bar, dict):
+                h, lo, c = bar.get("high"), bar.get("low"), bar.get("close")
+            elif hasattr(bar, "high"):
+                h = getattr(bar, "high", None)
+                lo = getattr(bar, "low", None)
+                c = getattr(bar, "close", None)
+            else:
+                continue
+            if h is not None and lo is not None and c is not None:
+                try:
+                    all_highs.append(float(h))
+                    all_lows.append(float(lo))
+                    all_closes.append(float(c))
+                except (TypeError, ValueError):
+                    continue
+
+        n = min(self._lookback_bars, len(all_highs))
+        if n < 5:
+            return hold
+
+        highs = all_highs[-n:]
+        lows = all_lows[-n:]
+
+        # 从 close 序列计算简化 MACD histogram 序列
+        # 用快慢 EMA 差值的变化趋势作为 histogram 代理
+        fast_k = 2.0 / (12 + 1)
+        slow_k = 2.0 / (26 + 1)
+        # 用所有可用的 close 计算 MACD 序列
+        all_for_macd = all_closes[-(n + 30):]  # 多取一些做 warmup
+        if len(all_for_macd) < 26:
+            return hold
+
+        ema_f = all_for_macd[0]
+        ema_s = all_for_macd[0]
+        macd_hist_series: List[float] = []
+        for price in all_for_macd:
+            ema_f = ema_f + fast_k * (price - ema_f)
+            ema_s = ema_s + slow_k * (price - ema_s)
+            macd_hist_series.append(ema_f - ema_s)
+
+        # 取最后 n 个与价格对齐
+        hist_aligned = macd_hist_series[-n:]
+        current_high = highs[-1]
+        current_low = lows[-1]
+
+        # 搜索前半段极值（排除最近 2 根）
+        search_end = len(highs) - 2
+        if search_end < 2:
+            return hold
+
+        prev_highest_idx = max(range(search_end), key=lambda i: highs[i])
+        prev_lowest_idx = min(range(search_end), key=lambda i: lows[i])
+        prev_high = highs[prev_highest_idx]
+        prev_low = lows[prev_lowest_idx]
+        prev_high_hist = hist_aligned[prev_highest_idx]
+        prev_low_hist = hist_aligned[prev_lowest_idx]
+        current_hist_val = hist_aligned[-1]
+
+        action = "hold"
+        confidence = 0.0
+        divergence_type = ""
+
+        # 顶背离：价格创新高但 MACD histogram 下降
+        if current_high >= prev_high * 0.999:
+            hist_drop = prev_high_hist - current_hist_val
+            if hist_drop > 0 and prev_high_hist > 0:
+                action = "sell"
+                divergence_type = "bearish_macd_divergence"
+                strength = min(hist_drop / max(abs(prev_high_hist), 0.01), 1.0)
+                confidence = 0.50 + strength * 0.28
+
+        # 底背离：价格创新低但 MACD histogram 上升
+        if action == "hold" and current_low <= prev_low * 1.001:
+            hist_rise = current_hist_val - prev_low_hist
+            if hist_rise > 0 and prev_low_hist < 0:
+                action = "buy"
+                divergence_type = "bullish_macd_divergence"
+                strength = min(hist_rise / max(abs(prev_low_hist), 0.01), 1.0)
+                confidence = 0.50 + strength * 0.28
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            direction=action,
+            confidence=min(confidence, 0.85),
+            reason=f"macd_div:{divergence_type},hist={current_hist_val:.4f}",
+            used_indicators=used,
+            metadata={
+                "macd_hist": current_hist_val,
+                "divergence_type": divergence_type,
+                "current_high": current_high,
+                "current_low": current_low,
+            },
+        )
+
+
 class RsiDivergenceStrategy:
     """RSI 背离策略 — 价格与 RSI 方向分歧的反转预警。
 

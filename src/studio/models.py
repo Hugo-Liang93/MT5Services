@@ -78,6 +78,11 @@ AGENT_META: dict[str, dict[str, str]] = {
         "module": "BacktestingWorkbench",
         "zone": "support",
     },
+    "paper_trader": {
+        "name": "模拟交易员",
+        "module": "PaperTradingBridge",
+        "zone": "support",
+    },
     "inspector": {
         "name": "巡检模块",
         "module": "MonitoringManager",

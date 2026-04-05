@@ -128,6 +128,7 @@ class SignalRuntime:
         htf_alignment_intrabar_strength_ratio: float = 0.50,
         htf_target_config: dict[str, str] | None = None,
         warmup_ready_fn: Callable[[], bool] | None = None,
+        wal_db_path: str | None = None,
     ):
         self.service = service
         self.snapshot_source = snapshot_source
@@ -241,10 +242,14 @@ class SignalRuntime:
         self._indicator_miss_counts: dict[tuple[str, str, str], int] = {}
         # Separate queues by scope so that intrabar bursts cannot starve
         # confirmed (bar-close) events, which must never be dropped.
-        # Confirmed snapshots can briefly burst during startup catch-up after
-        # ingestion backfills closed bars. Keep enough headroom to buffer that
-        # replay without dropping durable bar-close signals.
-        self._confirmed_events: queue.Queue = queue.Queue(maxsize=4096)
+        # WAL-backed queue for confirmed events survives process restarts.
+        # Intrabar stays in-memory (best-effort, droppable by design).
+        self._wal_db_path = wal_db_path
+        if wal_db_path:
+            from .wal_queue import WalSignalQueue
+            self._confirmed_events: Any = WalSignalQueue(wal_db_path)
+        else:
+            self._confirmed_events: Any = queue.Queue(maxsize=4096)
         self._intrabar_events: queue.Queue = queue.Queue(maxsize=8192)
         self._last_run_at: datetime | None = None
         self._last_error: str | None = None
@@ -349,7 +354,14 @@ class SignalRuntime:
         if self._thread:
             self._thread.join(timeout=timeout)
             self._thread = None
-        self._clear_queue(self._confirmed_events)
+        # WAL queue: don't clear — events persist for restart recovery.
+        # In-memory queues: clear as before.
+        if not self._wal_db_path:
+            self._clear_queue(self._confirmed_events)
+        else:
+            # Close WAL connection cleanly
+            if hasattr(self._confirmed_events, "close"):
+                self._confirmed_events.close()
         self._clear_queue(self._intrabar_events)
         self._confirmed_burst_count = 0
 

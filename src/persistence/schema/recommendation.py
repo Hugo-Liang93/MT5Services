@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS backtest_recommendations (
     rec_id TEXT PRIMARY KEY,
     source_run_id TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    status TEXT NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'applied', 'rolled_back', 'rejected')),
     overfitting_ratio DOUBLE PRECISION,
     consistency_rate DOUBLE PRECISION,
     oos_sharpe DOUBLE PRECISION,

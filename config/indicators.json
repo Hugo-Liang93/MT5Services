@@ -35,8 +35,8 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
-      "description": "21周期指数移动平均线",
+      "enabled": false,
+      "description": "21周期指数移动平均线（无策略依赖，ema9/ema50 已覆盖快慢均线）",
       "tags": ["trend", "mean"]
     },
     {
@@ -48,8 +48,8 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
-      "description": "55周期指数移动平均线",
+      "enabled": false,
+      "description": "55周期指数移动平均线（无策略依赖，ema50 已覆盖）",
       "tags": ["trend", "mean"]
     },
     {
@@ -75,8 +75,8 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
-      "description": "5周期相对强弱指数",
+      "enabled": false,
+      "description": "5周期相对强弱指数（无策略依赖，rsi14 已覆盖）",
       "tags": ["momentum", "oscillator"]
     },
     {
@@ -89,7 +89,7 @@
         "min_bars": 26
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "description": "标准MACD",
       "tags": ["momentum", "trend"]
@@ -104,9 +104,9 @@
         "min_bars": 13
       },
       "dependencies": [],
-      "compute_mode": "standard",
-      "enabled": true,
-      "description": "5-13-5 快速MACD，用于M1短周期动量确认",
+      "compute_mode": "incremental",
+      "enabled": false,
+      "description": "5-13-5 快速MACD（无策略依赖，原计划 M1 使用但无 M1 策略）",
       "tags": ["momentum", "trend"]
     },
     {
@@ -146,8 +146,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
-      "description": "14周期随机指标",
+      "enabled": false,
+      "description": "14周期随机指标（无策略依赖，stoch_rsi14 已替代）",
       "tags": ["momentum", "oscillator"]
     },
     {
@@ -159,8 +159,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
-      "description": "14周期威廉指标",
+      "enabled": false,
+      "description": "14周期威廉指标（策略 williams_r 已禁用，与 RSI 数学等价）",
       "tags": ["momentum", "oscillator"]
     },
     {
@@ -171,7 +171,7 @@
         "min_bars": 29
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "delta_bars": [3, 5],
       "description": "14周期趋势强度指标（含 delta 用于 regime 趋势启动/衰退检测）",
@@ -198,7 +198,7 @@
         "min_bars": 20
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "description": "20周期唐奇安通道",
       "tags": ["trend", "channel"]
@@ -253,7 +253,7 @@
         "min_bars": 21
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "description": "20周期肯特纳通道（函数内部自行计算ATR，无需依赖atr14）",
       "tags": ["volatility", "channel"]
@@ -293,7 +293,7 @@
         "min_bars": 30
       },
       "dependencies": [],
-      "compute_mode": "standard",
+      "compute_mode": "incremental",
       "enabled": true,
       "description": "14周期Supertrend趋势跟踪指标（黄金日内交易核心指标）",
       "tags": ["trend", "volatility"]

@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS position_runtime_states (
     signal_id TEXT,
     order_ticket BIGINT,
     symbol TEXT NOT NULL,
-    direction TEXT NOT NULL,
+    direction TEXT NOT NULL
+        CHECK (direction IN ('buy', 'sell')),
     timeframe TEXT,
     strategy TEXT,
     comment TEXT,
@@ -26,17 +27,23 @@ CREATE TABLE IF NOT EXISTS position_runtime_states (
     current_price DOUBLE PRECISION,
     breakeven_applied BOOLEAN NOT NULL DEFAULT FALSE,
     trailing_active BOOLEAN NOT NULL DEFAULT FALSE,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('open', 'closed')),
     closed_at TIMESTAMPTZ,
     close_source TEXT,
     close_price DOUBLE PRECISION,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS position_runtime_states_account_status_idx
-ON position_runtime_states (account_alias, status, updated_at DESC);
-CREATE INDEX IF NOT EXISTS position_runtime_states_signal_idx
-ON position_runtime_states (signal_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pos_states_account_status
+    ON position_runtime_states (account_alias, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pos_states_signal
+    ON position_runtime_states (signal_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pos_states_symbol_status
+    ON position_runtime_states (symbol, status);
 """
 
 UPSERT_SQL = """

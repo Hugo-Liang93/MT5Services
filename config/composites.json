@@ -15,8 +15,7 @@
     "name": "breakout_double_confirm",
     "sub_strategies": [
       "DonchianBreakoutStrategy",
-      "KeltnerBollingerSqueezeStrategy",
-      "SqueezeReleaseFollow"
+      "KeltnerBollingerSqueezeStrategy"
     ],
     "combine_mode": "all_agree",
     "regime_affinity": {
@@ -38,18 +37,6 @@
       "UNCERTAIN": 0.55
     },
     "preferred_scopes": ["confirmed", "intrabar"]
-  },
-  {
-    "name": "breakout_release_confirm",
-    "sub_strategies": ["DonchianBreakoutStrategy", "SqueezeReleaseFollow"],
-    "combine_mode": "all_agree",
-    "regime_affinity": {
-      "TRENDING": 0.35,
-      "RANGING": 0.15,
-      "BREAKOUT": 1.00,
-      "UNCERTAIN": 0.50
-    },
-    "preferred_scopes": ["confirmed"]
   },
   {
     "name": "reversal_rejection_confirm",

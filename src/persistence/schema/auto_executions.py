@@ -3,6 +3,8 @@
 每条记录对应一次 on_signal_event 触发的自动交易：
 - 成功记录：包含下单参数、止损止盈、风险收益比。
 - 失败记录：包含错误信息，用于排查熔断触发原因。
+
+TimescaleDB hypertable，分区键 executed_at。
 """
 
 DDL = """
@@ -10,7 +12,8 @@ CREATE TABLE IF NOT EXISTS auto_executions (
     executed_at     timestamptz NOT NULL,
     signal_id       text NOT NULL,
     symbol          text NOT NULL,
-    direction       text NOT NULL,
+    direction       text NOT NULL
+                    CHECK (direction IN ('buy', 'sell')),
     strategy        text NOT NULL,
     confidence      double precision,
     volume          double precision,
@@ -21,11 +24,15 @@ CREATE TABLE IF NOT EXISTS auto_executions (
     success         boolean NOT NULL,
     error_message   text,
     metadata        jsonb,
-    PRIMARY KEY (signal_id, executed_at)
+    PRIMARY KEY (executed_at, signal_id)
 );
-CREATE INDEX IF NOT EXISTS auto_executions_symbol_idx
+SELECT create_hypertable('auto_executions', 'executed_at',
+                          if_not_exists => TRUE, migrate_data => TRUE);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_exec_signal
+ON auto_executions (signal_id, executed_at ASC);
+CREATE INDEX IF NOT EXISTS idx_auto_exec_symbol
 ON auto_executions (symbol, executed_at DESC);
-CREATE INDEX IF NOT EXISTS auto_executions_success_idx
+CREATE INDEX IF NOT EXISTS idx_auto_exec_success
 ON auto_executions (success, executed_at DESC);
 """
 

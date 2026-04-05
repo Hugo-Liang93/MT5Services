@@ -30,6 +30,8 @@ from src.monitoring.pipeline import PipelineTraceRecorder
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.trading.tracking import TradeOutcomeTracker
+from src.backtesting.paper_trading.bridge import PaperTradingBridge
+from src.backtesting.paper_trading.tracker import PaperTradeTracker
 from src.studio.service import StudioService
 from src.app_runtime.lifecycle import RuntimeComponentRegistry
 from src.app_runtime.mode_controller import RuntimeModeController
@@ -87,6 +89,9 @@ class AppContainer:
         "runtime_mode_guard",
         "runtime_mode_auto_policy",
         "runtime_mode_controller",
+        # Paper Trading
+        "paper_trading_bridge",
+        "paper_trade_tracker",
         # Studio
         "studio_service",
         # Runtime cleanup
@@ -133,6 +138,9 @@ class AppContainer:
         self.runtime_mode_guard: Optional[RuntimeModeTransitionGuard] = None
         self.runtime_mode_auto_policy: Optional[RuntimeModeAutoTransitionPolicy] = None
         self.runtime_mode_controller: Optional[RuntimeModeController] = None
+
+        self.paper_trading_bridge: Optional[PaperTradingBridge] = None
+        self.paper_trade_tracker: Optional[PaperTradeTracker] = None
 
         self.studio_service: Optional[StudioService] = None
         self.shutdown_callbacks: list[Callable[[], None]] = []

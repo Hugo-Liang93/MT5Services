@@ -6,26 +6,14 @@
 """
 
 DDL = """
--- Migration: 旧表 PK 为 (signal_id)，不含分区键 recorded_at，需重建为 hypertable
-DO $$ BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_class c JOIN pg_constraint co ON co.conrelid = c.oid
-        WHERE c.relname = 'trade_outcomes' AND co.conname = 'trade_outcomes_pkey'
-    ) AND NOT EXISTS (
-        SELECT 1 FROM timescaledb_information.hypertables
-        WHERE hypertable_name = 'trade_outcomes'
-    ) THEN
-        DROP TABLE trade_outcomes;
-    END IF;
-END $$;
-
 CREATE TABLE IF NOT EXISTS trade_outcomes (
     recorded_at   timestamptz NOT NULL,
     signal_id     text NOT NULL,
     symbol        text NOT NULL,
     timeframe     text NOT NULL,
     strategy      text NOT NULL,
-    direction     text NOT NULL,
+    direction     text NOT NULL
+                  CHECK (direction IN ('buy', 'sell')),
     confidence    double precision NOT NULL,
     fill_price    double precision,
     close_price   double precision,
@@ -37,12 +25,14 @@ CREATE TABLE IF NOT EXISTS trade_outcomes (
 );
 SELECT create_hypertable('trade_outcomes', 'recorded_at',
                           if_not_exists => TRUE, migrate_data => TRUE);
-CREATE UNIQUE INDEX IF NOT EXISTS trade_outcomes_upsert_idx
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_outcomes_upsert
 ON trade_outcomes (signal_id, recorded_at);
-CREATE INDEX IF NOT EXISTS trade_outcomes_symbol_idx
+CREATE INDEX IF NOT EXISTS idx_trade_outcomes_symbol
 ON trade_outcomes (symbol, timeframe, strategy, recorded_at DESC);
-CREATE INDEX IF NOT EXISTS trade_outcomes_won_idx
+CREATE INDEX IF NOT EXISTS idx_trade_outcomes_won
 ON trade_outcomes (won, strategy, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trade_outcomes_recent
+ON trade_outcomes (recorded_at DESC) WHERE won IS NOT NULL;
 """
 
 INSERT_SQL = """

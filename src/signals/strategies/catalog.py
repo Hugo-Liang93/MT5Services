@@ -16,6 +16,7 @@ from .composite import CompositeSignalStrategy
 from .m5_scalp import M5MomentumBurst, M5ScalpRSI
 from .mean_reversion import (
     CciReversionStrategy,
+    MacdDivergenceStrategy,
     RsiDivergenceStrategy,
     RsiReversionStrategy,
     StochRsiStrategy,
@@ -27,6 +28,7 @@ from .price_action import OrderBlockEntryStrategy, PriceActionReversal
 from .registry import build_composite_strategies
 from .session import AsianRangeBreakout, SessionMomentumBias
 from .trend import (
+    AdxTrendFadeStrategy,
     EmaRibbonStrategy,
     FibPullbackStrategy,
     HmaCrossStrategy,
@@ -60,6 +62,7 @@ def build_named_strategy_catalog(
         WilliamsRStrategy(),
         CciReversionStrategy(),
         RsiDivergenceStrategy(),
+        MacdDivergenceStrategy(),
         VwapReversionStrategy(),
         PriceActionReversal(),
         OrderBlockEntryStrategy(),
@@ -76,6 +79,7 @@ def build_named_strategy_catalog(
         M5ScalpRSI(),
         M5ScalpRSI(name="m5_scalp_rsi_h1", htf="H1"),
         M5MomentumBurst(),
+        AdxTrendFadeStrategy(),
         TrendlineThreeTouchStrategy(),
         MultiTimeframeConfirmStrategy(htf_cache=htf_cache),
     ):

@@ -1,47 +1,50 @@
+"""经济事件市场影响持久化 Schema。"""
+
 DDL = """
 CREATE TABLE IF NOT EXISTS economic_event_market_impact (
-    recorded_at         timestamptz NOT NULL,
-    event_uid           text NOT NULL,
-    symbol              text NOT NULL,
-    timeframe           text NOT NULL,
+    recorded_at         TIMESTAMPTZ NOT NULL,
+    event_uid           TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    timeframe           TEXT NOT NULL,
 
-    event_name          text NOT NULL,
-    country             text,
-    currency            text,
-    importance          integer,
-    scheduled_at        timestamptz NOT NULL,
-    released_at         timestamptz,
+    event_name          TEXT NOT NULL,
+    country             TEXT,
+    currency            TEXT,
+    importance          INTEGER,
+    scheduled_at        TIMESTAMPTZ NOT NULL,
+    released_at         TIMESTAMPTZ,
 
-    actual              text,
-    forecast            text,
-    previous            text,
-    surprise_pct        double precision,
+    actual              TEXT,
+    forecast            TEXT,
+    previous            TEXT,
+    surprise_pct        DOUBLE PRECISION,
 
-    pre_price           double precision,
-    pre_30m_change      double precision,
-    pre_30m_range       double precision,
-    pre_60m_change      double precision,
-    pre_60m_range       double precision,
-    pre_120m_change     double precision,
-    pre_120m_range      double precision,
+    pre_price           DOUBLE PRECISION,
+    pre_30m_change      DOUBLE PRECISION,
+    pre_30m_range       DOUBLE PRECISION,
+    pre_60m_change      DOUBLE PRECISION,
+    pre_60m_range       DOUBLE PRECISION,
+    pre_120m_change     DOUBLE PRECISION,
+    pre_120m_range      DOUBLE PRECISION,
 
-    post_5m_change      double precision,
-    post_5m_range       double precision,
-    post_15m_change     double precision,
-    post_15m_range      double precision,
-    post_30m_change     double precision,
-    post_30m_range      double precision,
-    post_60m_change     double precision,
-    post_60m_range      double precision,
-    post_120m_change    double precision,
-    post_120m_range     double precision,
+    post_5m_change      DOUBLE PRECISION,
+    post_5m_range       DOUBLE PRECISION,
+    post_15m_change     DOUBLE PRECISION,
+    post_15m_range      DOUBLE PRECISION,
+    post_30m_change     DOUBLE PRECISION,
+    post_30m_range      DOUBLE PRECISION,
+    post_60m_change     DOUBLE PRECISION,
+    post_60m_range      DOUBLE PRECISION,
+    post_120m_change    DOUBLE PRECISION,
+    post_120m_range     DOUBLE PRECISION,
 
-    volatility_pre_atr  double precision,
-    volatility_post_atr double precision,
-    volatility_spike    double precision,
+    volatility_pre_atr  DOUBLE PRECISION,
+    volatility_post_atr DOUBLE PRECISION,
+    volatility_spike    DOUBLE PRECISION,
 
-    analysis_status     text NOT NULL DEFAULT 'pending',
-    metadata            jsonb,
+    analysis_status     TEXT NOT NULL DEFAULT 'pending'
+        CHECK (analysis_status IN ('pending', 'partial', 'complete', 'failed')),
+    metadata            JSONB,
 
     PRIMARY KEY (recorded_at, event_uid, symbol, timeframe)
 );
@@ -49,14 +52,14 @@ CREATE TABLE IF NOT EXISTS economic_event_market_impact (
 SELECT create_hypertable('economic_event_market_impact', 'recorded_at',
                           if_not_exists => TRUE, migrate_data => TRUE);
 
-CREATE UNIQUE INDEX IF NOT EXISTS eemi_upsert_idx
-ON economic_event_market_impact (event_uid, symbol, timeframe, recorded_at);
-CREATE INDEX IF NOT EXISTS eemi_event_idx
-ON economic_event_market_impact (event_name, symbol, recorded_at DESC);
-CREATE INDEX IF NOT EXISTS eemi_country_idx
-ON economic_event_market_impact (country, importance DESC, recorded_at DESC);
-CREATE INDEX IF NOT EXISTS eemi_status_idx
-ON economic_event_market_impact (analysis_status, recorded_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_market_impact_upsert
+    ON economic_event_market_impact(event_uid, symbol, timeframe, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_market_impact_event
+    ON economic_event_market_impact(event_name, symbol, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_market_impact_country
+    ON economic_event_market_impact(country, importance DESC, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_market_impact_status
+    ON economic_event_market_impact(analysis_status, recorded_at DESC);
 """
 
 UPSERT_SQL = """

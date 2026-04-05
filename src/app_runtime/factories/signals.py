@@ -420,6 +420,10 @@ def build_signal_components(
 
     signal_policy = build_signal_policy(signal_config)
     filter_chain = build_signal_filter_chain(signal_config, economic_calendar_service)
+    # WAL-backed persistent queue for confirmed signal events
+    from src.config import get_runtime_data_path
+    wal_db_path = get_runtime_data_path("signal_queue.db")
+
     signal_runtime = SignalRuntime(
         service=signal_module,
         snapshot_source=indicator_manager,
@@ -441,6 +445,7 @@ def build_signal_components(
         htf_alignment_stability_cap=signal_config.htf_alignment_stability_cap,
         htf_alignment_intrabar_strength_ratio=signal_config.htf_alignment_intrabar_strength_ratio,
         htf_target_config=dict(signal_config.strategy_htf_targets),
+        wal_db_path=wal_db_path,
     )
 
     end_of_day_closeout = ExposureCloseoutController(

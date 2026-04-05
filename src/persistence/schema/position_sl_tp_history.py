@@ -22,12 +22,15 @@ CREATE TABLE IF NOT EXISTS position_sl_tp_history (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     PRIMARY KEY (id, recorded_at)
 );
+
 SELECT create_hypertable('position_sl_tp_history', 'recorded_at',
     if_not_exists => TRUE, migrate_data => TRUE);
-CREATE INDEX IF NOT EXISTS position_sl_tp_history_ticket_idx
-ON position_sl_tp_history (position_ticket, recorded_at DESC);
-CREATE INDEX IF NOT EXISTS position_sl_tp_history_symbol_idx
-ON position_sl_tp_history (symbol, recorded_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sl_tp_history_ticket
+    ON position_sl_tp_history (position_ticket, recorded_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sl_tp_history_symbol
+    ON position_sl_tp_history (symbol, recorded_at DESC);
 """
 
 INSERT_SQL = """

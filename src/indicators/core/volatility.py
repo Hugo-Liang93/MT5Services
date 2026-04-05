@@ -195,6 +195,256 @@ def donchian(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     return {"donchian_upper": upper, "donchian_lower": lower, "donchian_mid": mid, "close": float(closes[-1])}
 
 
+class KeltnerIncremental(IncrementalIndicator):
+    """Incremental Keltner Channel: EMA(typical_price) + ATR bands.
+
+    State: ema_tp (EMA of typical price) + atr_val (Wilder ATR) + prev_close.
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        period = get_int(params, "period", default=20, aliases=("window",))
+        atr_period = get_int(params, "atr_period", default=14)
+        self.min_data_points = max(period, atr_period) + 1
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return keltner(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        ir = state.intermediate_results
+        return (
+            ir is not None
+            and "ema_tp" in ir
+            and "atr_val" in ir
+            and "prev_close" in ir
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        period = get_int(self.params, "period", default=20, aliases=("window",))
+        atr_period = get_int(self.params, "atr_period", default=14)
+        mult = get_float(self.params, "mult", default=2.0)
+
+        ir = state.intermediate_results
+        ema_tp = float(ir["ema_tp"])  # type: ignore[index]
+        atr_val = float(ir["atr_val"])  # type: ignore[index]
+        prev_close = float(ir["prev_close"])  # type: ignore[index]
+
+        bar = bars[-1]
+        tp = (bar.high + bar.low + bar.close) / 3.0
+        k = 2.0 / (period + 1)
+        ema_tp = ema_tp + k * (tp - ema_tp)
+
+        tr = max(bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close))
+        atr_val = (atr_val * (atr_period - 1) + tr) / atr_period
+
+        return {
+            "kc_mid": ema_tp,
+            "kc_upper": ema_tp + mult * atr_val,
+            "kc_lower": ema_tp - mult * atr_val,
+        }
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        period = get_int(self.params, "period", default=20, aliases=("window",))
+        atr_period = get_int(self.params, "atr_period", default=14)
+
+        window = tail_bars(bars, max(period, atr_period) * 3 + 1)
+        if len(window) < max(period, atr_period):
+            return state
+
+        highs, lows, closes = get_hlc_arrays(window)
+        typicals = ((highs + lows + closes) / 3.0).tolist()
+        ema_tp = typicals[0]
+        k = 2.0 / (period + 1)
+        for tp in typicals[1:]:
+            ema_tp = ema_tp + k * (tp - ema_tp)
+
+        trs = _compute_tr_array(highs, lows, closes)
+        atr_val = float(np.mean(trs[:atr_period]))
+        for i in range(atr_period, len(trs)):
+            atr_val = (atr_val * (atr_period - 1) + float(trs[i])) / atr_period
+
+        state.intermediate_results = {
+            "ema_tp": ema_tp,
+            "atr_val": atr_val,
+            "prev_close": bars[-1].close,
+        }
+        return state
+
+
+class DonchianIncremental(IncrementalIndicator):
+    """Incremental Donchian Channel using ring buffer of highs/lows.
+
+    State: last N highs and lows (ring buffer). O(N) worst case per update
+    (for min/max scan) but avoids full bar iteration.
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        self.min_data_points = get_int(params, "period", default=20, aliases=("window",))
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return donchian(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        ir = state.intermediate_results
+        return (
+            ir is not None
+            and "last_highs" in ir
+            and "last_lows" in ir
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        period = get_int(self.params, "period", default=20, aliases=("window",))
+        ir = state.intermediate_results
+        last_highs = list(ir["last_highs"])  # type: ignore[index]
+        last_lows = list(ir["last_lows"])  # type: ignore[index]
+
+        bar = bars[-1]
+        last_highs.append(bar.high)
+        last_lows.append(bar.low)
+        if len(last_highs) > period:
+            last_highs = last_highs[-period:]
+            last_lows = last_lows[-period:]
+
+        upper = max(last_highs)
+        lower = min(last_lows)
+        mid = (upper + lower) / 2.0
+        return {
+            "donchian_upper": upper,
+            "donchian_lower": lower,
+            "donchian_mid": mid,
+            "close": bar.close,
+        }
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        period = get_int(self.params, "period", default=20, aliases=("window",))
+        window = tail_bars(bars, period)
+        state.intermediate_results = {
+            "last_highs": [b.high for b in window],
+            "last_lows": [b.low for b in window],
+        }
+        return state
+
+
+class AdxIncremental(IncrementalIndicator):
+    """Incremental ADX using Wilder smoothing for +DM, -DM, TR, and DX.
+
+    State: smooth_plus, smooth_minus, atr_val, adx_val, prev_high, prev_low, prev_close.
+    """
+
+    def __init__(self, name: str, params: Dict[str, Any]) -> None:
+        super().__init__(name, params)
+        period = get_int(params, "period", default=14, aliases=("window",))
+        self.min_data_points = period * 2 + 1
+
+    def _compute_full(self, bars: list) -> Dict[str, float]:
+        return adx(bars, self.params)
+
+    def _can_use_incremental(self, bars: list, state: IndicatorState) -> bool:
+        if not super()._can_use_incremental(bars, state):
+            return False
+        ir = state.intermediate_results
+        return (
+            ir is not None
+            and "smooth_plus" in ir
+            and "smooth_minus" in ir
+            and "atr_val" in ir
+            and "adx_val" in ir
+            and "prev_high" in ir
+            and "prev_low" in ir
+            and "prev_close" in ir
+        )
+
+    def _compute_incremental(self, bars: list, state: IndicatorState) -> Dict[str, float]:
+        period = get_int(self.params, "period", default=14, aliases=("window",))
+        ir = state.intermediate_results
+        smooth_plus = float(ir["smooth_plus"])  # type: ignore[index]
+        smooth_minus = float(ir["smooth_minus"])  # type: ignore[index]
+        atr_val = float(ir["atr_val"])  # type: ignore[index]
+        adx_val = float(ir["adx_val"])  # type: ignore[index]
+        prev_high = float(ir["prev_high"])  # type: ignore[index]
+        prev_low = float(ir["prev_low"])  # type: ignore[index]
+        prev_close = float(ir["prev_close"])  # type: ignore[index]
+
+        bar = bars[-1]
+        up_move = bar.high - prev_high
+        down_move = prev_low - bar.low
+        plus_dm = up_move if (up_move > down_move and up_move > 0) else 0.0
+        minus_dm = down_move if (down_move > up_move and down_move > 0) else 0.0
+
+        tr = max(bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close))
+
+        # Wilder smoothing
+        atr_val = atr_val - (atr_val / period) + tr
+        smooth_plus = smooth_plus - (smooth_plus / period) + plus_dm
+        smooth_minus = smooth_minus - (smooth_minus / period) + minus_dm
+
+        if atr_val <= 0:
+            return {"adx": adx_val, "plus_di": 0.0, "minus_di": 0.0}
+
+        plus_di = 100.0 * (smooth_plus / atr_val)
+        minus_di = 100.0 * (smooth_minus / atr_val)
+        di_sum = plus_di + minus_di
+        dx = abs(plus_di - minus_di) / di_sum * 100.0 if di_sum > 0 else 0.0
+
+        # Wilder smoothing for ADX itself
+        adx_val = (adx_val * (period - 1) + dx) / period
+
+        return {"adx": adx_val, "plus_di": plus_di, "minus_di": minus_di}
+
+    def _create_new_state(self, bars: list, result: Dict[str, float]) -> IndicatorState:
+        state = super()._create_new_state(bars, result)
+        period = get_int(self.params, "period", default=14, aliases=("window",))
+        window = tail_bars(bars, period * 3)
+        if len(window) < period * 2 + 1:
+            return state
+
+        highs, lows, closes = get_hlc_arrays(window)
+        up_move = np.diff(highs)
+        down_move = -np.diff(lows)
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        trs = _compute_tr_array(highs, lows, closes)
+        n = len(trs)
+
+        if n < period * 2:
+            return state
+
+        atr_s = float(np.sum(trs[:period]))
+        sp = float(np.sum(plus_dm[:period]))
+        sm = float(np.sum(minus_dm[:period]))
+        dx_values: list[float] = []
+
+        for idx in range(period, n):
+            atr_s = atr_s - (atr_s / period) + float(trs[idx])
+            sp = sp - (sp / period) + float(plus_dm[idx])
+            sm = sm - (sm / period) + float(minus_dm[idx])
+            if atr_s > 0:
+                pdi = 100.0 * (sp / atr_s)
+                mdi = 100.0 * (sm / atr_s)
+                di_sum = pdi + mdi
+                dx_values.append(abs(pdi - mdi) / di_sum * 100.0 if di_sum > 0 else 0.0)
+
+        adx_val = sum(dx_values[-period:]) / period if len(dx_values) >= period else 0.0
+
+        state.intermediate_results = {
+            "smooth_plus": sp,
+            "smooth_minus": sm,
+            "atr_val": atr_s,
+            "adx_val": adx_val,
+            "prev_high": bars[-1].high,
+            "prev_low": bars[-1].low,
+            "prev_close": bars[-1].close,
+        }
+        return state
+
+
 def adx(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     period = get_int(params, "period", default=14, aliases=("window",))
     window = tail_bars(bars, period * 3)

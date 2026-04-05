@@ -907,3 +907,111 @@ class FibPullbackStrategy:
                 "first_pullback_state": first_pullback,
             },
         )
+
+
+class AdxTrendFadeStrategy:
+    """ADX 趋势衰竭策略 — 检测趋势力量急剧下降的反转预警。
+
+    原理：当 ADX 从高位（>25）快速下降（delta_d3 < 阈值）时，
+    表明趋势动能正在消退。结合 +DI/-DI 交叉方向确定反转方向。
+
+    核心逻辑：
+    - ADX 当前值 > adx_high_threshold（趋势曾经存在）
+    - ADX 3-bar delta < fade_threshold（正在快速衰退）
+    - +DI > -DI 且 ADX 下降 → 多头趋势衰竭 → sell
+    - -DI > +DI 且 ADX 下降 → 空头趋势衰竭 → buy
+
+    使用已有的 adx14 delta_bars=[3,5]，无需新增指标。
+    """
+
+    name = "adx_trend_fade"
+    category = "reversion"
+    required_indicators = ("adx14",)
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 0.85,    # 趋势中检测衰竭最有价值
+        RegimeType.RANGING: 0.10,     # 盘整中 ADX 本身就低，无意义
+        RegimeType.BREAKOUT: 0.30,    # 突破中 ADX 上升，不适用
+        RegimeType.UNCERTAIN: 0.55,   # 不确定时可能正在从趋势过渡
+    }
+
+    _adx_high_threshold: float = 25.0
+    _fade_threshold: float = -4.0  # d3 < -4 表示 ADX 3 bar 下降超 4 点
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        tf = context.timeframe
+        adx_high = get_tf_param(self, "adx_high_threshold", tf, self._adx_high_threshold)
+        fade_thresh = get_tf_param(self, "fade_threshold", tf, self._fade_threshold)
+
+        used: List[str] = ["adx14"]
+        hold = SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            direction="hold",
+            confidence=0.0,
+            reason="no_adx_fade",
+            used_indicators=used,
+        )
+
+        adx_data = context.indicators.get("adx14")
+        if not isinstance(adx_data, dict):
+            return hold
+
+        adx_val = adx_data.get("adx")
+        plus_di = adx_data.get("plus_di")
+        minus_di = adx_data.get("minus_di")
+        adx_d3 = adx_data.get("adx_d3")
+
+        if adx_val is None or plus_di is None or minus_di is None:
+            return hold
+        if adx_d3 is None:
+            return hold
+
+        # 条件1：ADX 当前仍在较高位（趋势曾经存在）
+        if adx_val < adx_high:
+            return hold
+
+        # 条件2：ADX 正在快速下降
+        if adx_d3 > fade_thresh:
+            return hold
+
+        # 判断原趋势方向 → 反转方向
+        fade_strength = min(abs(adx_d3) / 10.0, 1.0)
+
+        if plus_di > minus_di:
+            # 多头趋势正在衰竭 → sell
+            action = "sell"
+            di_gap = plus_di - minus_di
+        else:
+            # 空头趋势正在衰竭 → buy
+            action = "buy"
+            di_gap = minus_di - plus_di
+
+        # DI 差距越小（趋势越弱），衰竭信号越可信
+        di_convergence_bonus = max(0, 0.10 - di_gap / 100.0)
+
+        confidence = 0.50 + fade_strength * 0.25 + di_convergence_bonus
+
+        # 可选：d5 提供额外确认（持续性衰退）
+        adx_d5 = adx_data.get("adx_d5")
+        if adx_d5 is not None and adx_d5 < fade_thresh:
+            confidence += 0.04  # 持续衰退加分
+
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            direction=action,
+            confidence=min(confidence, 0.85),
+            reason=f"adx_fade:adx={adx_val:.1f},d3={adx_d3:.1f},+di={plus_di:.1f},-di={minus_di:.1f}",
+            used_indicators=used,
+            metadata={
+                "adx": adx_val,
+                "adx_d3": adx_d3,
+                "adx_d5": adx_d5,
+                "plus_di": plus_di,
+                "minus_di": minus_di,
+                "fade_strength": fade_strength,
+            },
+        )
