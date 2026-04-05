@@ -102,7 +102,7 @@ events.db
 health_monitor.db
 
 # Project-local generated data
-data/
+/data/
 # ML model artifacts (不含源码目录 src/**/models/)
 /models/
 tmp/

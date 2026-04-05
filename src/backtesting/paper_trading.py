@@ -22,9 +22,9 @@ from src.signals.models import SignalEvent
 from src.signals.service import SignalModule
 from src.trading.execution import RegimeSizing, compute_trade_params, extract_atr_from_indicators
 
-from .metrics import compute_metrics
+from .analysis import compute_metrics
 from .models import BacktestMetrics, TradeRecord
-from .portfolio import PortfolioTracker
+from .engine import PortfolioTracker
 
 logger = logging.getLogger(__name__)
 

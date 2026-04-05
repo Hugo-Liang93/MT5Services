@@ -6,7 +6,7 @@ from typing import Optional
 
 import pytest
 
-from src.backtesting.portfolio import PortfolioTracker
+from src.backtesting.engine.portfolio import PortfolioTracker
 from src.clients.mt5_market import OHLC
 from src.trading.execution import TradeParameters
 

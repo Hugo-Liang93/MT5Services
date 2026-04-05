@@ -18,8 +18,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.backtesting.data_loader import CachedDataLoader
-from src.backtesting.metrics import _consecutive_streaks, compute_metrics
+from src.backtesting.data.loader import CachedDataLoader
+from src.backtesting.analysis.metrics import _consecutive_streaks, compute_metrics
 from src.backtesting.models import (
     BacktestConfig,
     BacktestMetrics,
@@ -27,7 +27,7 @@ from src.backtesting.models import (
     SignalEvaluation,
     TradeRecord,
 )
-from src.backtesting.portfolio import PortfolioTracker
+from src.backtesting.engine.portfolio import PortfolioTracker
 from src.clients.mt5_market import OHLC
 from src.trading.execution import TradeParameters
 
@@ -137,7 +137,7 @@ class TestSignalEvaluationLimit:
             end_time=datetime(2025, 1, 2, tzinfo=timezone.utc),
             max_signal_evaluations=100,
         )
-        assert config.max_signal_evaluations == 100
+        assert config.max_signal_evaluations == 100  # stays at top level
 
     def test_default_limit(self) -> None:
         """默认上限应为 50000。"""
@@ -348,14 +348,14 @@ class TestConfigLoadsAllSections:
 class TestPendingEntryExpiry:
     def test_expiry_bars_configurable(self) -> None:
         """BacktestConfig 应支持 pending_entry_expiry_bars 配置。"""
-        config = BacktestConfig(
+        config = BacktestConfig.from_flat(
             symbol="XAUUSD",
             timeframe="M5",
             start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
             end_time=datetime(2025, 1, 2, tzinfo=timezone.utc),
             pending_entry_expiry_bars=5,
         )
-        assert config.pending_entry_expiry_bars == 5
+        assert config.pending_entry.expiry_bars == 5
 
     def test_expiry_bars_default(self) -> None:
         """默认超时应为 2 bars。"""
@@ -365,7 +365,7 @@ class TestPendingEntryExpiry:
             start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
             end_time=datetime(2025, 1, 2, tzinfo=timezone.utc),
         )
-        assert config.pending_entry_expiry_bars == 2
+        assert config.pending_entry.expiry_bars == 2
 
 
 class TestConfidencePipelineFlags:
@@ -374,7 +374,7 @@ class TestConfidencePipelineFlags:
         from src.backtesting.engine import BacktestEngine
         from src.signals.models import SignalDecision
 
-        config = BacktestConfig(
+        config = BacktestConfig.from_flat(
             symbol="XAUUSD",
             timeframe="M5",
             start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),

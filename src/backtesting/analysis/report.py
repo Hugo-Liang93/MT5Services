@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from .models import BacktestMetrics, BacktestResult
+from ..models import BacktestMetrics, BacktestResult
 
 
 def format_summary(result: BacktestResult) -> str:

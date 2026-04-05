@@ -46,9 +46,10 @@ def _sample_result() -> dict:
 @pytest.fixture()
 def backtest_api():
     import src.api  # noqa: F401
-    from src.backtesting import api_config, runtime_store
-    from src.backtesting.api_routes import config as config_routes
-    from src.backtesting.api_routes import jobs as jobs_routes
+    from src.api.backtest_routes import schemas as api_config
+    from src.api.backtest_routes import config as config_routes
+    from src.api.backtest_routes import jobs as jobs_routes
+    from src.backtesting.data import store as runtime_store
 
     return SimpleNamespace(
         api_config=api_config,
@@ -193,17 +194,17 @@ def test_build_backtest_config_uses_defaults_and_overrides(
     config = backtest_api.api_config.build_backtest_config(request)
 
     assert config.initial_balance == 15000.0
-    assert config.max_positions == 4
-    assert config.risk_percent == 1.2
-    assert config.min_volume == 0.02
-    assert config.max_volume == 0.8
-    assert config.max_volume_per_order == 0.15
-    assert config.max_volume_per_symbol == 0.30
-    assert config.max_volume_per_day == 0.5
-    assert config.daily_loss_limit_pct == 8.0
-    assert config.max_trades_per_day == 6
-    assert config.max_trades_per_hour == 2
-    assert config.filter_allowed_sessions == "asia,london,new_york"
+    assert config.risk.max_positions == 4
+    assert config.position.risk_percent == 1.2
+    assert config.position.min_volume == 0.02
+    assert config.position.max_volume == 0.8
+    assert config.risk.max_volume_per_order == 0.15
+    assert config.risk.max_volume_per_symbol == 0.30
+    assert config.risk.max_volume_per_day == 0.5
+    assert config.risk.daily_loss_limit_pct == 8.0
+    assert config.risk.max_trades_per_day == 6
+    assert config.risk.max_trades_per_hour == 2
+    assert config.filters.allowed_sessions == "asia,london,new_york"
     assert config.enable_state_machine is True
     assert config.strategy_params == {"ema_cross_fast": 12}
     assert config.strategy_params_per_tf == {"M5": {"ema_cross_fast": 9}}

@@ -17,8 +17,8 @@ router = APIRouter(tags=["market"])
 
 
 @router.get("/symbols")
-def symbols(service: MarketDataService = Depends(get_market_service)) -> List[str]:
-    return service.list_symbols()
+def symbols(service: MarketDataService = Depends(get_market_service)) -> ApiResponse[List[str]]:
+    return ApiResponse.success_response(service.list_symbols())
 
 
 @router.get("/symbol/info", response_model=ApiResponse[SymbolInfoModel])

@@ -59,33 +59,33 @@ async def get_effective_runtime_config() -> ApiResponse[EffectiveRuntimeConfigVi
 
 
 @router.get("/economic-calendar", summary="获取经济日历监控摘要")
-async def get_economic_calendar_monitoring() -> Dict[str, Any]:
+async def get_economic_calendar_monitoring() -> ApiResponse[Dict[str, Any]]:
     try:
         health_monitor = get_health_monitor_instance()
         service = get_economic_calendar_service()
-        return {
+        return ApiResponse.success_response({
             "service": service.stats(),
             "metrics": {
                 "staleness": health_monitor.get_recent_metrics("economic_calendar", "economic_calendar_staleness", 50),
                 "provider_failures": health_monitor.get_recent_metrics("economic_calendar", "economic_provider_failures", 50),
             },
-        }
+        })
     except Exception as exc:
         logger.error("Failed to get economic calendar monitoring summary: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/trading", summary="获取交易监控摘要")
-async def get_trading_monitoring(hours: int = 24) -> Dict[str, Any]:
+async def get_trading_monitoring(hours: int = 24) -> ApiResponse[Dict[str, Any]]:
     try:
-        return get_runtime_read_model().trading_summary(hours=hours)
+        return ApiResponse.success_response(get_runtime_read_model().trading_summary(hours=hours))
     except Exception as exc:
         logger.error("Failed to get trading monitoring summary: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/startup", summary="获取启动阶段与运行状态摘要")
-async def get_startup_monitoring() -> Dict[str, Any]:
+async def get_startup_monitoring() -> ApiResponse[Dict[str, Any]]:
     try:
         status = get_startup_status()
         status["runtime"] = {
@@ -97,33 +97,35 @@ async def get_startup_monitoring() -> Dict[str, Any]:
                 "monitoring": bool(get_monitoring_manager_instance()),
             },
         }
-        return status
+        return ApiResponse.success_response(status)
     except Exception as exc:
         logger.error("Failed to get startup monitoring summary: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/config/reload", response_model=ConfigReloadView, summary="手动触发配置热加载")
-async def trigger_config_reload(filename: str = "signal.ini") -> Dict[str, Any]:
+@router.post("/config/reload", summary="手动触发配置热加载")
+async def trigger_config_reload(filename: str = "signal.ini") -> ApiResponse[ConfigReloadView]:
     try:
         reload_configs()
         manager = get_file_config_manager()
         reloaded = manager.reload(filename)
         if not reloaded:
             raise FileNotFoundError(filename)
-        return ConfigReloadView(success=True, reloaded=filename, cache_cleared=True).model_dump()
+        return ApiResponse.success_response(
+            ConfigReloadView(success=True, reloaded=filename, cache_cleared=True).model_dump()
+        )
     except Exception as exc:
         logger.error("Config reload failed for %s: %s", filename, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/runtime-tasks", response_model=RuntimeTasksView, summary="获取运行时任务状态")
-async def get_runtime_tasks(component: str | None = None, task_name: str | None = None) -> Dict[str, Any]:
+@router.get("/runtime-tasks", summary="获取运行时任务状态")
+async def get_runtime_tasks(component: str | None = None, task_name: str | None = None) -> ApiResponse[RuntimeTasksView]:
     try:
-        return {
+        return ApiResponse.success_response({
             "items": get_runtime_task_status(component=component, task_name=task_name),
             "filters": {"component": component, "task_name": task_name},
-        }
+        })
     except Exception as exc:
         logger.error("Failed to get runtime task status: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

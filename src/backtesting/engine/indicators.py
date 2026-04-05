@@ -9,7 +9,7 @@ from src.clients.mt5_market import OHLC
 from src.signals.evaluation.regime import RegimeType
 
 if TYPE_CHECKING:
-    from .engine import BacktestEngine
+    from .runner import BacktestEngine
 
 logger = logging.getLogger(__name__)
 

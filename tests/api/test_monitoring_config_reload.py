@@ -24,11 +24,10 @@ def test_trigger_config_reload_clears_caches_and_reloads_file(monkeypatch) -> No
 
     response = asyncio.run(trigger_config_reload("signal.ini"))
 
-    assert response == {
-        "success": True,
-        "reloaded": "signal.ini",
-        "cache_cleared": True,
-    }
+    assert response.success is True
+    assert response.data["success"] is True
+    assert response.data["reloaded"] == "signal.ini"
+    assert response.data["cache_cleared"] is True
     assert calls == ["reload_configs", "file:signal.ini"]
 
 

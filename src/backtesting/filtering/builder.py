@@ -3,37 +3,38 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from .filters import BacktestFilterConfig, BacktestFilterSimulator
+from .simulator import BacktestFilterConfig, BacktestFilterSimulator
 
 if TYPE_CHECKING:
-    from .engine import BacktestEngine
+    from ..engine.runner import BacktestEngine
 
 logger = logging.getLogger(__name__)
 
 
 def build_filter_simulator(engine: "BacktestEngine") -> BacktestFilterSimulator:
     """从 BacktestConfig 构建过滤器模拟器。"""
+    f = engine._config.filters
     economic_provider = None
-    if engine._config.filter_economic_enabled:
+    if f.economic_enabled:
         economic_provider = load_economic_provider(engine)
 
     filter_config = BacktestFilterConfig(
-        enabled=engine._config.filters_enabled,
-        session_filter_enabled=engine._config.filter_session_enabled,
-        allowed_sessions=engine._config.filter_allowed_sessions,
-        session_transition_enabled=engine._config.filter_session_transition_enabled,
-        session_transition_cooldown_minutes=engine._config.filter_session_transition_cooldown,
-        volatility_filter_enabled=engine._config.filter_volatility_enabled,
-        volatility_spike_multiplier=engine._config.filter_volatility_spike_multiplier,
-        spread_filter_enabled=engine._config.filter_spread_enabled,
-        max_spread_points=engine._config.filter_max_spread_points,
+        enabled=f.enabled,
+        session_filter_enabled=f.session_enabled,
+        allowed_sessions=f.allowed_sessions,
+        session_transition_enabled=f.session_transition_enabled,
+        session_transition_cooldown_minutes=f.session_transition_cooldown,
+        volatility_filter_enabled=f.volatility_enabled,
+        volatility_spike_multiplier=f.volatility_spike_multiplier,
+        spread_filter_enabled=f.spread_enabled,
+        max_spread_points=f.max_spread_points,
         economic_filter_enabled=(
-            engine._config.filter_economic_enabled and economic_provider is not None
+            f.economic_enabled and economic_provider is not None
         ),
         economic_provider=economic_provider,
-        economic_lookahead_minutes=engine._config.filter_economic_lookahead_minutes,
-        economic_lookback_minutes=engine._config.filter_economic_lookback_minutes,
-        economic_importance_min=engine._config.filter_economic_importance_min,
+        economic_lookahead_minutes=f.economic_lookahead_minutes,
+        economic_lookback_minutes=f.economic_lookback_minutes,
+        economic_importance_min=f.economic_importance_min,
     )
     return BacktestFilterSimulator(filter_config)
 
@@ -41,7 +42,7 @@ def build_filter_simulator(engine: "BacktestEngine") -> BacktestFilterSimulator:
 def load_economic_provider(engine: "BacktestEngine") -> Any:
     """从 DB 加载回测期间的经济事件，构建 BacktestTradeGuardProvider。"""
     try:
-        from .economic_provider import (
+        from .economic import (
             BacktestTradeGuardProvider,
             _SimpleSettings,
             load_backtest_economic_events,
@@ -61,7 +62,7 @@ def load_economic_provider(engine: "BacktestEngine") -> Any:
             start_time=engine._config.start_time,
             end_time=engine._config.end_time,
             currencies=context["currencies"] or None,
-            importance_min=engine._config.filter_economic_importance_min,
+            importance_min=engine._config.filters.economic_importance_min,
         )
         writer.close()
 

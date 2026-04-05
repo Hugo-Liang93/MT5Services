@@ -12,9 +12,9 @@ from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.service import SignalModule
 from src.signals.strategies.catalog import clone_registered_strategies
 
-from .data_loader import CachedDataLoader, HistoricalDataLoader
-from .engine import BacktestEngine
-from .models import (
+from ..data.loader import CachedDataLoader, HistoricalDataLoader
+from ..engine.runner import BacktestEngine
+from ..models import (
     BacktestConfig,
     BacktestResult,
     ParamRobustness,
@@ -133,9 +133,28 @@ class ParameterOptimizer:
             }
 
             # 构建带参数覆盖的配置
-            config = replace(
-                self._base_config, strategy_params=strategy_params, **position_overrides
-            )
+            if position_overrides:
+                from ..models import _FLAT_FIELD_MAP, _SUB_CONFIG_CLASSES
+                # 将平铺的 position_overrides 路由到对应子配置
+                sub_buckets: Dict[str, Dict[str, Any]] = {}
+                for k, v in position_overrides.items():
+                    mapping = _FLAT_FIELD_MAP.get(k)
+                    if mapping:
+                        sub_name, nested_key = mapping
+                        sub_buckets.setdefault(sub_name, {})[nested_key] = v
+                nested_overrides: Dict[str, Any] = {}
+                for sub_name, sub_kwargs in sub_buckets.items():
+                    current_sub = getattr(self._base_config, sub_name)
+                    nested_overrides[sub_name] = replace(current_sub, **sub_kwargs)
+                config = replace(
+                    self._base_config,
+                    strategy_params=strategy_params,
+                    **nested_overrides,
+                )
+            else:
+                config = replace(
+                    self._base_config, strategy_params=strategy_params,
+                )
 
             # 构建独立的 SignalModule
             signal_module = self._signal_module_factory(strategy_params)
@@ -174,7 +193,7 @@ class ParameterOptimizer:
 
         # Deflated Sharpe Ratio：修正多次试验的 Sharpe 膨胀
         if total >= 2 and results:
-            from .monte_carlo import compute_deflated_sharpe
+            from ..analysis.monte_carlo import compute_deflated_sharpe
 
             best = results[0]
             if best.metrics.total_trades >= 10:
@@ -183,9 +202,9 @@ class ParameterOptimizer:
                     num_trials=total,
                     num_trades=best.metrics.total_trades,
                 )
-                if best.monte_carlo is None:
-                    best.monte_carlo = {}
-                best.monte_carlo["deflated_sharpe"] = dsr.to_dict()
+                if best.monte_carlo_result is None:
+                    best.monte_carlo_result = {}
+                best.monte_carlo_result["deflated_sharpe"] = dsr.to_dict()
                 if dsr.is_significant:
                     logger.info(
                         "Optimizer: best Sharpe %.4f is SIGNIFICANT after %d trials "

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.backtesting.metrics import (
+from src.backtesting.analysis.metrics import (
     _compute_returns,
     _max_drawdown,
     _sharpe_ratio,

@@ -53,7 +53,7 @@ def build_backtest_components(
     from src.signals.strategies.catalog import build_default_strategy_set
     from src.signals.strategies.htf_cache import HTFStateCache
 
-    from .data_loader import CachingDataLoader, HistoricalDataLoader, get_shared_data_cache
+    from .data.loader import CachingDataLoader, HistoricalDataLoader, get_shared_data_cache
 
     # DB 连接（独立连接池，不争抢生产连接）
     db_config = load_db_settings()

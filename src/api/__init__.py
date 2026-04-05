@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from src.api import (
     account,
     admin,
+    backtest,
     deps,
     decision,
     economic,
@@ -23,7 +24,6 @@ from src.api import (
     trade,
 )
 from src.api.schemas import ApiResponse
-from src.backtesting.api import router as backtest_router
 from src.clients.mt5_market import MT5MarketError
 from src.config import get_api_config
 from src.market import MarketDataService
@@ -159,7 +159,7 @@ v1.include_router(trade.router)
 v1.include_router(monitoring.router)
 v1.include_router(indicators.router)
 v1.include_router(signal.router)
-v1.include_router(backtest_router)
+v1.include_router(backtest.router)
 v1.include_router(admin.router)
 v1.include_router(studio.router)
 app.include_router(v1)

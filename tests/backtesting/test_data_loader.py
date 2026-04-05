@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.backtesting.data_loader import HistoricalDataLoader
+from src.backtesting.data.loader import HistoricalDataLoader
 from src.clients.mt5_market import OHLC
 
 

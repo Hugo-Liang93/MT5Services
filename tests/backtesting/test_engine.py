@@ -46,7 +46,7 @@ class TestBacktestEngine:
             "warmup_bars": 50,
         }
         defaults.update(kwargs)
-        return BacktestConfig(**defaults)
+        return BacktestConfig.from_flat(**defaults)
 
     def test_empty_data(self) -> None:
         """测试无数据时返回空结果。"""

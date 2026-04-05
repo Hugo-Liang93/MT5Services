@@ -20,7 +20,7 @@ from src.backtesting.models import (
     Recommendation,
     RecommendationStatus,
 )
-from src.backtesting.recommendation import (
+from src.backtesting.optimization.recommendation import (
     MAX_CHANGE_PCT,
     MAX_CHANGES_PER_REC,
     ConfigApplicator,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.backtesting.monte_carlo import (
+from src.backtesting.analysis.monte_carlo import (
     DeflatedSharpeResult,
     MonteCarloConfig,
     MonteCarloResult,

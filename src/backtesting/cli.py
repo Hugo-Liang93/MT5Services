@@ -60,14 +60,14 @@ def cmd_run(args: argparse.Namespace) -> None:
     from .config import get_backtest_defaults
     from .engine import BacktestEngine
     from .models import BacktestConfig
-    from .report import format_summary
+    from .analysis import format_summary
 
     strategies = args.strategies.split(",") if args.strategies else None
     ini_defaults = get_backtest_defaults()
     strategy_timeframes, strategy_sessions = _load_strategy_scope_overrides()
     cli_strategy_params = _parse_cli_strategy_params(args)
 
-    config = BacktestConfig(
+    config = BacktestConfig.from_flat(
         symbol=args.symbol,
         timeframe=args.timeframe,
         start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
@@ -171,7 +171,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             _persist_result(result, components.get("writer"))
 
         if args.output:
-            from .report import result_to_json
+            from .analysis import result_to_json
 
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(result_to_json(result))
@@ -188,13 +188,13 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     # docstring removed during encoding normalization
     from .config import get_backtest_defaults
     from .models import BacktestConfig, ParameterSpace
-    from .optimizer import ParameterOptimizer, build_signal_module_with_overrides
-    from .report import format_optimization_summary
+    from .optimization import ParameterOptimizer, build_signal_module_with_overrides
+    from .analysis import format_optimization_summary
 
     strategies = args.strategies.split(",") if args.strategies else None
     ini_defaults = get_backtest_defaults()
     strategy_timeframes, strategy_sessions = _load_strategy_scope_overrides()
-    config = BacktestConfig(
+    config = BacktestConfig.from_flat(
         symbol=args.symbol,
         timeframe=args.timeframe,
         start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
@@ -266,7 +266,7 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
     from .config import get_backtest_defaults
     from .engine import BacktestEngine
     from .models import BacktestConfig
-    from .report import format_timeframe_comparison
+    from .analysis import format_timeframe_comparison
 
     strategies = args.strategies.split(",") if args.strategies else None
     timeframes = [tf.strip().upper() for tf in args.timeframes.split(",") if tf.strip()]
@@ -279,7 +279,7 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
     for timeframe in timeframes:
         components = _build_components(args)
         try:
-            config = BacktestConfig(
+            config = BacktestConfig.from_flat(
                 symbol=args.symbol,
                 timeframe=timeframe,
                 start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),

@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from src.backtesting.economic_provider import (
+from src.backtesting.filtering.economic import (
     BacktestTradeGuardProvider,
     _SimpleEvent,
     _SimpleSettings,

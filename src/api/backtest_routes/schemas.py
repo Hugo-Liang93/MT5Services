@@ -54,6 +54,9 @@ CONFIG_OVERRIDE_FIELDS = (
     "enable_performance_tracker",
     "enable_calibrator",
     "enable_htf_alignment",
+    "htf_alignment_boost",
+    "htf_conflict_penalty",
+    "bars_to_evaluate",
     "enable_state_machine",
     "min_preview_stable_bars",
     "max_signal_evaluations",
@@ -135,6 +138,9 @@ class BacktestRequestBase(BaseModel):
     enable_performance_tracker: Optional[bool] = None
     enable_calibrator: Optional[bool] = None
     enable_htf_alignment: Optional[bool] = None
+    htf_alignment_boost: Optional[float] = None
+    htf_conflict_penalty: Optional[float] = None
+    bars_to_evaluate: Optional[int] = None
 
     enable_state_machine: Optional[bool] = None
     min_preview_stable_bars: Optional[int] = None
@@ -172,7 +178,7 @@ class BacktestJobResponse(BaseModel):
 
 
 def load_backtest_defaults() -> Dict[str, Any]:
-    from .config import get_backtest_defaults
+    from src.backtesting.config import get_backtest_defaults
 
     return get_backtest_defaults()
 
@@ -426,7 +432,7 @@ def build_backtest_config(request: BacktestRequestBase) -> Any:
             config_kwargs[field_name] = value
         elif field_name in defaults:
             config_kwargs[field_name] = defaults[field_name]
-    return BacktestConfig(**config_kwargs)
+    return BacktestConfig.from_flat(**config_kwargs)
 
 
 def resolve_optimizer_settings(request: BacktestOptimizeRequest) -> Dict[str, Any]:

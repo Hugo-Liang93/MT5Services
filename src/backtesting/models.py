@@ -54,131 +54,263 @@ class BacktestJob:
         }
 
 
-@dataclass(frozen=True)
-class BacktestConfig:
-    """回测运行配置。"""
+# ── 回测子配置 ────────────────────────────────────────────────────
 
-    symbol: str
-    timeframe: str
-    start_time: datetime
-    end_time: datetime
-    strategies: Optional[List[str]] = None  # None = 全部策略
-    initial_balance: float = 10000.0
-    # 置信度管线开关
-    enable_regime_affinity: bool = True
-    enable_performance_tracker: bool = True
-    enable_calibrator: bool = True
-    enable_htf_alignment: bool = True
-    # 最低开仓置信度
-    min_confidence: float = 0.55
-    # 最大同时持仓数
-    max_positions: int = 3
-    # 手续费（每手）
-    commission_per_lot: float = 0.0
-    # 滑点模拟（点数）
-    slippage_points: float = 0.0
-    # 参数覆盖（signal.ini [strategy_params] 格式）
-    strategy_params: Dict[str, Any] = field(default_factory=dict)
-    # Per-TF 参数覆盖（signal.ini [strategy_params.<TF>] 格式）
-    strategy_params_per_tf: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    regime_affinity_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    # 策略-TF 白名单：{strategy_name: [tf1, tf2, ...]}，空 dict = 不限制
-    strategy_timeframes: Dict[str, List[str]] = field(default_factory=dict)
-    # per-strategy session 限制（与生产 signal.ini [strategy_sessions] 一致）
-    # {strategy_name: [session1, session2, ...]}，空 dict = 不限制
-    strategy_sessions: Dict[str, List[str]] = field(default_factory=dict)
-    # 指标热身 bar 数量
-    warmup_bars: int = 200
-    # 合约大小（XAUUSD = 100 oz/lot）
+
+@dataclass(frozen=True)
+class PositionConfig:
+    """持仓管理配置（sizing / trailing / breakeven / EOD / regime sizing）。"""
+
     contract_size: float = 100.0
-    # 风险百分比
     risk_percent: float = 1.0
-    # 最小/最大下单手数（与实盘 sizing 约束一致）
     min_volume: float = 0.01
     max_volume: float = 1.0
-    # 单笔/单日/单品种手数与频率限制
+    trailing_atr_multiplier: float = 0.8
+    breakeven_atr_threshold: float = 0.8
+    end_of_day_close_enabled: bool = False
+    end_of_day_close_hour_utc: int = 21
+    end_of_day_close_minute_utc: int = 0
+    # Regime 感知 SL/TP 缩放
+    regime_tp_trending: float = 1.30
+    regime_sl_trending: float = 1.10
+    regime_tp_ranging: float = 0.75
+    regime_sl_ranging: float = 0.85
+    regime_tp_breakout: float = 1.20
+    regime_sl_breakout: float = 1.10
+    regime_tp_uncertain: float = 1.00
+    regime_sl_uncertain: float = 1.00
+
+
+@dataclass(frozen=True)
+class RiskConfig:
+    """风控约束配置（仓位限制 / 手数限制 / 频率限制 / 成本）。"""
+
+    max_positions: int = 3
+    commission_per_lot: float = 0.0
+    slippage_points: float = 0.0
     max_volume_per_order: Optional[float] = None
     max_volume_per_symbol: Optional[float] = None
     max_volume_per_day: Optional[float] = None
     daily_loss_limit_pct: Optional[float] = None
     max_trades_per_day: Optional[int] = None
     max_trades_per_hour: Optional[int] = None
-    # Regime 感知 SL/TP 缩放（与实盘 signal.ini [regime_sizing] 对齐）
-    # trending: 给趋势更大的 TP 空间，SL 适度放宽避免被回调打掉
-    regime_tp_trending: float = 1.30
-    regime_sl_trending: float = 1.10
-    # ranging: 快进快出，TP 和 SL 都收紧
-    regime_tp_ranging: float = 0.75
-    regime_sl_ranging: float = 0.85
-    # breakout: 突破后波动大，TP 扩大抓波段
-    regime_tp_breakout: float = 1.20
-    regime_sl_breakout: float = 1.10
-    # uncertain: 基准
-    regime_tp_uncertain: float = 1.00
-    regime_sl_uncertain: float = 1.00
 
-    # ── Pending Entry 价格确认入场（复用实盘 pending_entry 纯逻辑）────────
-    pending_entry_enabled: bool = False
-    pending_entry_pullback_atr_factor: float = 0.3
-    pending_entry_chase_atr_factor: float = 0.1
-    pending_entry_momentum_atr_factor: float = 0.5
-    pending_entry_symmetric_atr_factor: float = 0.4
-    pending_entry_expiry_bars: int = 2  # Pending Entry 超时 bar 数
 
-    # ── 持仓管理（复用实盘 position_rules）────────────────────────────────
-    # breakeven / trailing stop（与实盘 PositionManager 相同参数）
-    # 盈利 0.8 ATR 后开始 trailing（更快锁定利润）
-    trailing_atr_multiplier: float = 0.8
-    # 盈利 0.8 ATR 后移动 SL 到保本点
-    breakeven_atr_threshold: float = 0.8
-    # 日终自动平仓
-    end_of_day_close_enabled: bool = False
-    end_of_day_close_hour_utc: int = 21
-    end_of_day_close_minute_utc: int = 0
+@dataclass(frozen=True)
+class FilterConfig:
+    """过滤器配置（模拟实盘 SignalFilterChain）。"""
 
-    # ── 过滤器配置（模拟实盘 SignalFilterChain）──────────────────────────
-    # 总开关：是否启用过滤器模拟
-    filters_enabled: bool = True
-    # 时段过滤
-    filter_session_enabled: bool = True
-    filter_allowed_sessions: str = "london,new_york"
-    # 时段切换冷却（分钟）
-    filter_session_transition_enabled: bool = True
-    filter_session_transition_cooldown: int = 15
-    # 波动率异常抑制（0 = 禁用）
-    filter_volatility_enabled: bool = True
-    filter_volatility_spike_multiplier: float = 2.5
-    # 经济日历事件过滤（需要 DB 中有历史经济日历数据）
-    filter_economic_enabled: bool = True
-    filter_economic_lookahead_minutes: int = 30
-    filter_economic_lookback_minutes: int = 15
-    filter_economic_importance_min: int = 2
-    # 点差过滤（回测中默认禁用，因为没有真实 spread 数据）
-    filter_spread_enabled: bool = False
-    filter_max_spread_points: float = 50.0
+    enabled: bool = True
+    session_enabled: bool = True
+    allowed_sessions: str = "london,new_york"
+    session_transition_enabled: bool = True
+    session_transition_cooldown: int = 15
+    volatility_enabled: bool = True
+    volatility_spike_multiplier: float = 2.5
+    economic_enabled: bool = True
+    economic_lookahead_minutes: int = 30
+    economic_lookback_minutes: int = 15
+    economic_importance_min: int = 2
+    spread_enabled: bool = False
+    max_spread_points: float = 50.0
 
-    # ── Trailing Take Profit（盈利后主动收缩 TP）────────────────────────
-    trailing_tp_enabled: bool = False
-    trailing_tp_activation_atr: float = 1.5  # 浮盈超过此 ATR 倍数后激活
-    trailing_tp_trail_atr: float = 0.8       # 从最高盈利回撤的 ATR 距离
 
-    # ── 连败熔断器（基于 bar 计数）──────────────────────────────────
-    circuit_breaker_enabled: bool = False
-    circuit_breaker_max_consecutive_losses: int = 5
-    circuit_breaker_cooldown_bars: int = 20
+@dataclass(frozen=True)
+class PendingEntryConfig:
+    """Pending Entry 价格确认入场配置。"""
 
-    # ── 信号状态机回放（模拟实盘 preview→armed→confirmed 状态转换）────
+    enabled: bool = False
+    pullback_atr_factor: float = 0.3
+    chase_atr_factor: float = 0.1
+    momentum_atr_factor: float = 0.5
+    symmetric_atr_factor: float = 0.4
+    expiry_bars: int = 2
+
+
+@dataclass(frozen=True)
+class TrailingTPConfig:
+    """Trailing Take Profit 配置。"""
+
+    enabled: bool = False
+    activation_atr: float = 1.5
+    trail_atr: float = 0.8
+
+
+@dataclass(frozen=True)
+class CircuitBreakerConfig:
+    """连败熔断器配置（基于 bar 计数）。"""
+
+    enabled: bool = False
+    max_consecutive_losses: int = 5
+    cooldown_bars: int = 20
+
+
+@dataclass(frozen=True)
+class MonteCarloConfig:
+    """蒙特卡洛排列检验配置。"""
+
+    enabled: bool = False
+    simulations: int = 1000
+    confidence_level: float = 0.95
+    seed: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class ConfidenceConfig:
+    """置信度管线配置。"""
+
+    min_confidence: float = 0.55
+    enable_regime_affinity: bool = True
+    enable_performance_tracker: bool = True
+    enable_calibrator: bool = True
+    enable_htf_alignment: bool = True
+    htf_alignment_boost: float = 1.10
+    htf_conflict_penalty: float = 0.70
+    bars_to_evaluate: int = 5
+
+
+# ── 字段名映射（flat key -> (sub_config_field, nested_key)）──────────
+
+
+_FLAT_FIELD_MAP: Dict[str, Tuple[str, str]] = {
+    # PositionConfig
+    "contract_size": ("position", "contract_size"),
+    "risk_percent": ("position", "risk_percent"),
+    "min_volume": ("position", "min_volume"),
+    "max_volume": ("position", "max_volume"),
+    "trailing_atr_multiplier": ("position", "trailing_atr_multiplier"),
+    "breakeven_atr_threshold": ("position", "breakeven_atr_threshold"),
+    "end_of_day_close_enabled": ("position", "end_of_day_close_enabled"),
+    "end_of_day_close_hour_utc": ("position", "end_of_day_close_hour_utc"),
+    "end_of_day_close_minute_utc": ("position", "end_of_day_close_minute_utc"),
+    "regime_tp_trending": ("position", "regime_tp_trending"),
+    "regime_sl_trending": ("position", "regime_sl_trending"),
+    "regime_tp_ranging": ("position", "regime_tp_ranging"),
+    "regime_sl_ranging": ("position", "regime_sl_ranging"),
+    "regime_tp_breakout": ("position", "regime_tp_breakout"),
+    "regime_sl_breakout": ("position", "regime_sl_breakout"),
+    "regime_tp_uncertain": ("position", "regime_tp_uncertain"),
+    "regime_sl_uncertain": ("position", "regime_sl_uncertain"),
+    # RiskConfig
+    "max_positions": ("risk", "max_positions"),
+    "commission_per_lot": ("risk", "commission_per_lot"),
+    "slippage_points": ("risk", "slippage_points"),
+    "max_volume_per_order": ("risk", "max_volume_per_order"),
+    "max_volume_per_symbol": ("risk", "max_volume_per_symbol"),
+    "max_volume_per_day": ("risk", "max_volume_per_day"),
+    "daily_loss_limit_pct": ("risk", "daily_loss_limit_pct"),
+    "max_trades_per_day": ("risk", "max_trades_per_day"),
+    "max_trades_per_hour": ("risk", "max_trades_per_hour"),
+    # FilterConfig
+    "filters_enabled": ("filters", "enabled"),
+    "filter_session_enabled": ("filters", "session_enabled"),
+    "filter_allowed_sessions": ("filters", "allowed_sessions"),
+    "filter_session_transition_enabled": ("filters", "session_transition_enabled"),
+    "filter_session_transition_cooldown": ("filters", "session_transition_cooldown"),
+    "filter_volatility_enabled": ("filters", "volatility_enabled"),
+    "filter_volatility_spike_multiplier": ("filters", "volatility_spike_multiplier"),
+    "filter_economic_enabled": ("filters", "economic_enabled"),
+    "filter_economic_lookahead_minutes": ("filters", "economic_lookahead_minutes"),
+    "filter_economic_lookback_minutes": ("filters", "economic_lookback_minutes"),
+    "filter_economic_importance_min": ("filters", "economic_importance_min"),
+    "filter_spread_enabled": ("filters", "spread_enabled"),
+    "filter_max_spread_points": ("filters", "max_spread_points"),
+    # PendingEntryConfig
+    "pending_entry_enabled": ("pending_entry", "enabled"),
+    "pending_entry_pullback_atr_factor": ("pending_entry", "pullback_atr_factor"),
+    "pending_entry_chase_atr_factor": ("pending_entry", "chase_atr_factor"),
+    "pending_entry_momentum_atr_factor": ("pending_entry", "momentum_atr_factor"),
+    "pending_entry_symmetric_atr_factor": ("pending_entry", "symmetric_atr_factor"),
+    "pending_entry_expiry_bars": ("pending_entry", "expiry_bars"),
+    # TrailingTPConfig
+    "trailing_tp_enabled": ("trailing_tp", "enabled"),
+    "trailing_tp_activation_atr": ("trailing_tp", "activation_atr"),
+    "trailing_tp_trail_atr": ("trailing_tp", "trail_atr"),
+    # CircuitBreakerConfig
+    "circuit_breaker_enabled": ("circuit_breaker", "enabled"),
+    "circuit_breaker_max_consecutive_losses": ("circuit_breaker", "max_consecutive_losses"),
+    "circuit_breaker_cooldown_bars": ("circuit_breaker", "cooldown_bars"),
+    # MonteCarloConfig
+    "monte_carlo_enabled": ("monte_carlo", "enabled"),
+    "monte_carlo_simulations": ("monte_carlo", "simulations"),
+    "monte_carlo_confidence_level": ("monte_carlo", "confidence_level"),
+    "monte_carlo_seed": ("monte_carlo", "seed"),
+    # ConfidenceConfig
+    "min_confidence": ("confidence", "min_confidence"),
+    "enable_regime_affinity": ("confidence", "enable_regime_affinity"),
+    "enable_performance_tracker": ("confidence", "enable_performance_tracker"),
+    "enable_calibrator": ("confidence", "enable_calibrator"),
+    "enable_htf_alignment": ("confidence", "enable_htf_alignment"),
+    "htf_alignment_boost": ("confidence", "htf_alignment_boost"),
+    "htf_conflict_penalty": ("confidence", "htf_conflict_penalty"),
+    "bars_to_evaluate": ("confidence", "bars_to_evaluate"),
+}
+
+_SUB_CONFIG_CLASSES: Dict[str, type] = {
+    "position": PositionConfig,
+    "risk": RiskConfig,
+    "filters": FilterConfig,
+    "pending_entry": PendingEntryConfig,
+    "trailing_tp": TrailingTPConfig,
+    "circuit_breaker": CircuitBreakerConfig,
+    "monte_carlo": MonteCarloConfig,
+    "confidence": ConfidenceConfig,
+}
+
+
+@dataclass(frozen=True)
+class BacktestConfig:
+    """回测运行配置。"""
+
+    # ── 核心参数（不属于任何子配置）────────────────────────────────
+    symbol: str
+    timeframe: str
+    start_time: datetime
+    end_time: datetime
+    strategies: Optional[List[str]] = None
+    initial_balance: float = 10000.0
+    strategy_params: Dict[str, Any] = field(default_factory=dict)
+    strategy_params_per_tf: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    regime_affinity_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    strategy_timeframes: Dict[str, List[str]] = field(default_factory=dict)
+    strategy_sessions: Dict[str, List[str]] = field(default_factory=dict)
+    warmup_bars: int = 200
     enable_state_machine: bool = False
-    min_preview_stable_bars: int = 1  # preview 方向稳定 N 根 bar 后变为 armed
-
-    # ── 信号评估记录上限（防止内存溢出）────────────────────────────
+    min_preview_stable_bars: int = 1
     max_signal_evaluations: int = 50000
 
-    # ── 蒙特卡洛排列检验 ────────────────────────────────────────
-    monte_carlo_enabled: bool = False
-    monte_carlo_simulations: int = 1000
-    monte_carlo_confidence_level: float = 0.95
-    monte_carlo_seed: Optional[int] = None
+    # ── 嵌套子配置 ────────────────────────────────────────────────
+    position: PositionConfig = field(default_factory=PositionConfig)
+    risk: RiskConfig = field(default_factory=RiskConfig)
+    filters: FilterConfig = field(default_factory=FilterConfig)
+    pending_entry: PendingEntryConfig = field(default_factory=PendingEntryConfig)
+    trailing_tp: TrailingTPConfig = field(default_factory=TrailingTPConfig)
+    circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
+    monte_carlo: MonteCarloConfig = field(default_factory=MonteCarloConfig)
+    confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
+
+    @classmethod
+    def from_flat(cls, **kwargs: Any) -> "BacktestConfig":
+        """从平铺的字段字典构建 BacktestConfig（向后兼容）。
+
+        接受旧式平铺字段名（如 ``filter_session_enabled``），
+        自动归类到对应子配置中。
+        """
+        sub_buckets: Dict[str, Dict[str, Any]] = {}
+        core_kwargs: Dict[str, Any] = {}
+
+        for key, value in kwargs.items():
+            mapping = _FLAT_FIELD_MAP.get(key)
+            if mapping is not None:
+                sub_name, nested_key = mapping
+                sub_buckets.setdefault(sub_name, {})[nested_key] = value
+            else:
+                core_kwargs[key] = value
+
+        for sub_name, sub_kwargs in sub_buckets.items():
+            core_kwargs[sub_name] = _SUB_CONFIG_CLASSES[sub_name](**sub_kwargs)
+
+        return cls(**core_kwargs)
 
 
 @dataclass(frozen=True)
@@ -275,7 +407,7 @@ class BacktestResult:
     # 信号评估明细（用于回测质量分析）
     signal_evaluations: Optional[List[SignalEvaluation]] = None
     # 蒙特卡洛排列检验结果
-    monte_carlo: Optional[Dict[str, Any]] = None
+    monte_carlo_result: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为可 JSON 化的字典。"""

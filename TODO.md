@@ -4,34 +4,67 @@
 
 ---
 
-## 回测模块重构（下一 session 优先）
+## 已完成归档（2026-04-05）
 
-### P0: BacktestConfig 拆分为嵌套子配置
+- ~~P0: BacktestConfig 拆分为 8 个嵌套子配置 + `from_flat()` 向后兼容~~
+- ~~P0: 回测子包化（5 个子包：engine/filtering/analysis/optimization/data）+ API 迁移到 `src/api/backtest*`~~
+- ~~P1: 硬编码魔数配置化（htf_alignment_boost/conflict_penalty/bars_to_evaluate → ConfidenceConfig + backtest.ini）~~
+- ~~P1: 补全缺失测试（+24 用例：test_backtest_filters/test_backtest_config/test_component_factory）~~
+- ~~API 响应格式统一（15 个端点 → ApiResponse[T] 包装）~~
 
-当前 BacktestConfig 有 64 个字段平铺在一个 dataclass 中，违反单一职责。
+---
 
-- 拆分为 ~8 个子 dataclass：`PositionConfig` / `FilterConfig` / `RiskConfig` / `PendingEntryConfig` / `TrailingTPConfig` / `CircuitBreakerConfig` / `MonteCarloConfig` / `ConfidenceConfig`
-- 影响范围：54+ 处 `config.filter_xxx` → `config.filters.xxx` 引用更新
-- 涉及文件：`models.py` / `engine.py` / `engine_signals.py` / `engine_filters.py` / `paper_trading.py` / `cli.py` / `api_config.py` / 全部测试
-- 执行方式：自底向上，先改 models.py，再逐文件更新引用
+## Paper Trading 模块（下一 session 优先）
 
-### P1: 硬编码魔数配置化
+从 `src/backtesting/paper_trading.py` 半成品升级为 backtesting 子包，作为回测→实盘的信任桥梁。
 
-以下参数应从 `backtest.ini` 加载而非硬编码在构造函数默认值中：
+### 设计方案
 
-| 参数 | 当前位置 | 当前默认值 | 建议 INI section |
-|------|---------|-----------|-----------------|
-| `htf_alignment_boost` | engine.py:119 | 1.10 | `[confidence]` |
-| `htf_conflict_penalty` | engine.py:120 | 0.70 | `[confidence]` |
-| `bars_to_evaluate` | engine.py:270 | 5 | `[persistence]` |
+**定位**：用实盘信号流 + 实时行情做"影子交易"，产生独立的策略评估数据。不经过 MT5 执行，不影响实盘任何数据。
 
-### P1: 补全回测模块缺失测试
+**模块结构**（backtesting 子包，职责属于回测→验证流程）：
+```
+src/backtesting/paper_trading/
+├── __init__.py
+├── bridge.py          # PaperTradingBridge：信号监听 + 模拟执行
+├── portfolio.py       # 持仓管理（复用 engine/portfolio.py 或独立适配）
+├── tracker.py         # PaperTradeTracker：持久化钩子（写入独立表）
+├── config.py          # PaperTradingConfig 加载（config/paper_trading.ini）
+├── models.py          # PaperTradeRecord / PaperSignalEvaluation 数据类
+└── ports.py           # Protocol 定义（与 SignalRuntime / MarketDataService 交互边界）
+```
 
-| 文件 | 当前覆盖 | 需要补充 |
-|------|---------|---------|
-| `filters.py` / `engine_filters.py` | 无独立测试 | `test_backtest_filters.py` |
-| `component_factory.py` | 仅集成测试 | `test_component_factory.py`（单元级） |
-| `config.py` | 无独立测试 | `test_backtest_config.py`（INI 解析） |
+**数据表设计（独立于实盘表，不混表存储）**：
+```
+paper_trade_outcomes     ← 模拟交易记录（独立表，不与 trade_outcomes 混用）
+paper_signal_evaluations ← 模拟信号评估（独立表，不与 signal_outcomes 混用）
+paper_trading_sessions   ← 模拟交易 session（start/stop/config snapshot/汇总指标）
+```
+
+**运行时集成**：
+- 注册为 `RuntimeManagedComponent`，`supported_modes = {FULL, OBSERVE}`
+- OBSERVE 模式下自动激活（TradeExecutor 静默时 Paper Trader 接管）
+- 作为 SignalRuntime 的 signal listener（和 TradeExecutor 并列）
+
+**绩效反馈**：
+- 独立的 `PaperPerformanceTracker`（不混入实盘 StrategyPerformanceTracker）
+- 通过 API 暴露 paper trading 专属绩效（胜率/Sharpe/盈亏/持仓）
+- 与实盘绩效并排对比的 ReadModel
+
+**配置**：`config/paper_trading.ini`（独立于 backtest.ini）
+
+**API**：在 `src/api/backtest_routes/` 中新增 paper trading 端点，或单独建 `src/api/paper_trading_routes/`
+
+**监控**：Studio 新增 `paper_trader` agent 角色
+
+### 关键准则
+- 数据表完全独立于实盘表，不混表存储
+- 模块间通过 Protocol/Port 交互
+- 所有参数通过 INI 配置驱动
+
+### 前置清理
+- 删除 `src/backtesting/paper_trading.py`（半成品，有缩进 bug，未集成）
+- 在 `src/backtesting/paper_trading/` 下全新实现为子包，不做兼容
 
 ---
 
@@ -44,18 +77,6 @@
 - SL/TP ATR 倍数精调 + Trailing 参数调优
 - Pending Entry 实盘效果验证
 - 利用 strategy_weights 机制，回测计算投票组内策略相关性矩阵，对相关性 > 0.8 的策略设置降权
-
----
-
-## API 层优化
-
-### 响应格式统一
-
-~15 个端点直接返回 Pydantic model 而非 `ApiResponse[T]` 包装。主要集中在：
-
-- `monitoring_routes/`：health/live、health/ready、components、config/reload 等
-- `studio_routes/`：agents、events、summary 缺少 response_model
-- K8s 探针（/health/live, /health/ready）可例外
 
 ---
 

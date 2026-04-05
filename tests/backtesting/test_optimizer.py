@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.backtesting.models import ParameterSpace
-from src.backtesting.optimizer import ParameterOptimizer, build_signal_module_with_overrides
+from src.backtesting.optimization.optimizer import ParameterOptimizer, build_signal_module_with_overrides
 from src.signals.evaluation.regime import RegimeType
 from src.signals.service import SignalModule
 from src.signals.strategies.breakout import MultiTimeframeConfirmStrategy
@@ -154,7 +154,7 @@ def test_build_backtest_components_registers_multi_timeframe_confirm(
     monkeypatch.setattr("src.indicators.engine.pipeline.create_isolated_pipeline", lambda cfg: _DummyPipeline())
     monkeypatch.setattr("src.persistence.db.TimescaleWriter", _DummyWriter)
     monkeypatch.setattr("src.persistence.repositories.market_repo.MarketRepository", _DummyMarketRepo)
-    monkeypatch.setattr("src.backtesting.data_loader.HistoricalDataLoader", _DummyLoader)
+    monkeypatch.setattr("src.backtesting.data.loader.HistoricalDataLoader", _DummyLoader)
     monkeypatch.setattr(
         "src.config.signal.get_signal_config",
         lambda: SimpleNamespace(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from .api_routes import config_router, jobs_router, recommendations_router
+from .backtest_routes import config_router, jobs_router, recommendations_router
 
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 

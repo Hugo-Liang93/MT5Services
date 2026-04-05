@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter
 
 from src.api.schemas import ApiResponse
-from src.backtesting import api_config
+from src.api.backtest_routes import schemas as api_config
 
 router = APIRouter()
 

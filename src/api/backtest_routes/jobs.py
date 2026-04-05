@@ -8,9 +8,9 @@ from typing import Any, Dict
 from fastapi import APIRouter, BackgroundTasks
 
 from src.api.schemas import ApiResponse
-from src.backtesting import api_config, api_execution
+from src.api.backtest_routes import schemas as api_config, execution as api_execution
 from src.backtesting.models import BacktestJob, BacktestJobStatus
-from src.backtesting.runtime_store import backtest_runtime_store
+from src.backtesting.data import backtest_runtime_store
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ async def run_correlation_analysis(
             "No signal evaluations in this result (run with max_signal_evaluations > 0)",
             error_code="NO_DATA",
         )
-    from src.backtesting.correlation import (
+    from src.backtesting.analysis.correlation import (
         analyze_strategy_correlation,
         extract_signal_directions_from_evaluations,
     )

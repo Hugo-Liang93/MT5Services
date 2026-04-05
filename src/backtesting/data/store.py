@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from .models import BacktestJob, BacktestJobStatus
+from ..models import BacktestJob, BacktestJobStatus
 
 
 _MAX_CACHED_ENTRIES = 50

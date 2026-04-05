@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from .models import (
+from ..models import (
     ParamChange,
     Recommendation,
     RecommendationStatus,

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from .component_factory import build_backtest_components
-from .data_loader import CachedDataLoader
-from .filters import BacktestFilterConfig, BacktestFilterSimulator, BacktestFilterStats
+from .data import CachedDataLoader
+from .engine import BacktestEngine, PortfolioTracker
+from .filtering import BacktestFilterConfig, BacktestFilterSimulator, BacktestFilterStats
 from .models import (
     BacktestConfig,
     BacktestMetrics,
@@ -16,10 +17,11 @@ from .models import (
     SignalEvaluation,
     TradeRecord,
 )
-from .recommendation import ConfigApplicator, RecommendationEngine
+from .optimization import ConfigApplicator, RecommendationEngine
 
 __all__ = [
     "BacktestConfig",
+    "BacktestEngine",
     "BacktestFilterConfig",
     "build_backtest_components",
     "CachedDataLoader",
@@ -29,6 +31,7 @@ __all__ = [
     "BacktestResult",
     "ConfigApplicator",
     "ParamChange",
+    "PortfolioTracker",
     "ParameterSpace",
     "Recommendation",
     "RecommendationEngine",

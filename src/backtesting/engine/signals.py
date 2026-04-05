@@ -10,10 +10,10 @@ from src.signals.models import SignalDecision
 from src.trading.pending import compute_entry_zone
 from src.trading.execution import RegimeSizing, compute_trade_params
 
-from .models import SignalEvaluation
+from ..models import SignalEvaluation
 
 if TYPE_CHECKING:
-    from .engine import BacktestEngine, _BacktestSignalState
+    from .runner import BacktestEngine, _BacktestSignalState
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,15 @@ def evaluate_strategies(
     scope: str = "confirmed",
     bar_time: Optional[Any] = None,
 ) -> List[SignalDecision]:
+    conf = engine._config.confidence
     metadata: Dict[str, Any] = {"_regime": regime.value}
     if soft_regime_dict is not None:
         metadata["_soft_regime"] = soft_regime_dict
-    if not engine._config.enable_regime_affinity:
+    if not conf.enable_regime_affinity:
         metadata["_pre_computed_affinity"] = 1.0
-    if not engine._config.enable_performance_tracker:
+    if not conf.enable_performance_tracker:
         metadata["_skip_performance_tracker"] = True
-    if not engine._config.enable_calibrator:
+    if not conf.enable_calibrator:
         metadata["_skip_calibrator"] = True
 
     current_sessions: List[str] = []
@@ -70,7 +71,7 @@ def evaluate_strategies(
                 htf_indicators=engine._htf_indicator_data,
             )
 
-            if engine._config.enable_htf_alignment and engine._htf_direction_fn is not None:
+            if conf.enable_htf_alignment and engine._htf_direction_fn is not None:
                 htf_dir = engine._htf_direction_fn(symbol, timeframe)
                 decision = apply_htf_alignment(
                     decision,
@@ -128,7 +129,7 @@ def process_decision(
                 engine, decision.strategy, decision.direction, decision.confidence
             )
         return
-    if decision.confidence < engine._config.min_confidence:
+    if decision.confidence < engine._config.confidence.min_confidence:
         return
 
     if engine._circuit_breaker is not None and engine._circuit_breaker.is_paused(bar_index):
@@ -172,7 +173,7 @@ def process_decision(
             indicators=indicators,
             timeframe=engine._config.timeframe,
         )
-        expiry_bar = bar_index + engine._config.pending_entry_expiry_bars
+        expiry_bar = bar_index + engine._config.pending_entry.expiry_bars
         key = f"{decision.strategy}_{decision.direction}"
         engine._pending_entries[key] = (decision, entry_low, entry_high, expiry_bar)
         return
@@ -221,6 +222,7 @@ def execute_entry(
     indicators: Dict[str, Dict[str, Any]] | None = None,
 ) -> None:
     del indicators
+    pos = engine._config.position
     try:
         trade_params = compute_trade_params(
             action=decision.direction,
@@ -228,20 +230,20 @@ def execute_entry(
             atr_value=atr_value,
             account_balance=engine._portfolio.current_balance,
             timeframe=engine._config.timeframe,
-            risk_percent=engine._config.risk_percent,
-            min_volume=engine._config.min_volume,
-            max_volume=engine._config.max_volume,
-            contract_size=engine._config.contract_size,
+            risk_percent=pos.risk_percent,
+            min_volume=pos.min_volume,
+            max_volume=pos.max_volume,
+            contract_size=pos.contract_size,
             regime=regime.value,
             regime_sizing=RegimeSizing(
-                tp_trending=engine._config.regime_tp_trending,
-                tp_ranging=engine._config.regime_tp_ranging,
-                tp_breakout=engine._config.regime_tp_breakout,
-                tp_uncertain=engine._config.regime_tp_uncertain,
-                sl_trending=engine._config.regime_sl_trending,
-                sl_ranging=engine._config.regime_sl_ranging,
-                sl_breakout=engine._config.regime_sl_breakout,
-                sl_uncertain=engine._config.regime_sl_uncertain,
+                tp_trending=pos.regime_tp_trending,
+                tp_ranging=pos.regime_tp_ranging,
+                tp_breakout=pos.regime_tp_breakout,
+                tp_uncertain=pos.regime_tp_uncertain,
+                sl_trending=pos.regime_sl_trending,
+                sl_ranging=pos.regime_sl_ranging,
+                sl_breakout=pos.regime_sl_breakout,
+                sl_uncertain=pos.regime_sl_uncertain,
             ),
         )
     except ValueError as exc:

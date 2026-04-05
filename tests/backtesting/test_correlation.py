@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.backtesting.correlation import (
+from src.backtesting.analysis.correlation import (
     CorrelationAnalysis,
     analyze_strategy_correlation,
     extract_signal_directions_from_evaluations,

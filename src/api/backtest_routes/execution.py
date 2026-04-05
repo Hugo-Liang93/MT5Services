@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from . import api_config as config_service
-from .runtime_store import backtest_runtime_store
+from . import schemas as config_service
+from src.backtesting.data import backtest_runtime_store
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def build_api_components(
     strategy_params_per_tf: Optional[Dict[str, Dict[str, Any]]] = None,
     regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
-    from .component_factory import build_backtest_components
+    from src.backtesting.component_factory import build_backtest_components
 
     return build_backtest_components(
         strategy_params=strategy_params,
@@ -148,7 +148,7 @@ def execute_optimization(run_id: str, request: config_service.BacktestOptimizeRe
     components: Optional[Dict[str, Any]] = None
     try:
         from src.backtesting.models import ParameterSpace
-        from src.backtesting.optimizer import ParameterOptimizer, build_signal_module_with_overrides
+        from src.backtesting.optimization import ParameterOptimizer, build_signal_module_with_overrides
 
         optimizer_settings = config_service.resolve_optimizer_settings(request)
         config = config_service.build_backtest_config(request)
@@ -201,8 +201,8 @@ def execute_walk_forward(run_id: str, request: config_service.WalkForwardRequest
     components: Optional[Dict[str, Any]] = None
     try:
         from src.backtesting.models import ParameterSpace
-        from src.backtesting.optimizer import build_signal_module_with_overrides
-        from src.backtesting.walk_forward import WalkForwardConfig, WalkForwardValidator
+        from src.backtesting.optimization import build_signal_module_with_overrides
+        from src.backtesting.optimization import WalkForwardConfig, WalkForwardValidator
 
         optimizer_settings = config_service.resolve_optimizer_settings(request)
         base_config = config_service.build_backtest_config(request)

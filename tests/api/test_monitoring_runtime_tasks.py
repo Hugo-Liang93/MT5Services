@@ -74,7 +74,8 @@ def test_runtime_tasks_endpoint_returns_items_and_filters(monkeypatch) -> None:
 
     response = asyncio.run(get_runtime_tasks(component="startup", task_name="monitoring"))
 
-    assert response["items"] == [
+    assert response.success is True
+    assert response.data["items"] == [
         {
             "component": "startup",
             "task_name": "monitoring",
@@ -82,7 +83,7 @@ def test_runtime_tasks_endpoint_returns_items_and_filters(monkeypatch) -> None:
             "details": {"startup": True},
         }
     ]
-    assert response["filters"] == {"component": "startup", "task_name": "monitoring"}
+    assert response.data["filters"] == {"component": "startup", "task_name": "monitoring"}
 
 
 def test_pending_entries_endpoint_uses_runtime_read_model(monkeypatch) -> None:

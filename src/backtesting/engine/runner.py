@@ -2,7 +2,7 @@
 
 设计原则：回测使用实盘方法，不重新实现，避免模拟失真。
 - 过滤器：直接复用 SignalFilterChain（via BacktestFilterSimulator）
-- 策略评估：直接复用 SignalModule.evaluate()（含完整置信度管线）
+- 策���评估：直接复用 SignalModule.evaluate()（含完整置信度管线）
 - 置信度后处理：复用 src/signals/confidence 中的纯函数
 - 持仓管理：复用 src/trading/position_rules 中的纯函数
 - 指标计算：直接复用 OptimizedPipeline.compute()
@@ -20,18 +20,18 @@ from src.clients.mt5_market import OHLC
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
-from src.trading.pending import PendingEntryConfig
+from src.trading.pending import PendingEntryConfig as TradingPendingEntryConfig
 
-from .data_loader import HistoricalDataLoader
-from .engine_filters import build_filter_simulator as _build_filter_simulator_helper
-from .engine_indicators import (
+from ..data.loader import HistoricalDataLoader
+from ..filtering.builder import build_filter_simulator as _build_filter_simulator_helper
+from .indicators import (
     compute_indicators as _compute_indicators_helper,
     detect_regime as _detect_regime_helper,
     lookup_htf_at_time as _lookup_htf_at_time_helper,
     preload_htf_indicators as _preload_htf_indicators_helper,
     precompute_all_indicators as _precompute_all_indicators_helper,
 )
-from .engine_signals import (
+from .signals import (
     backfill_evaluations as _backfill_evaluations_helper,
     check_pending_entries as _check_pending_entries_helper,
     evaluate_strategies as _evaluate_strategies_helper,
@@ -39,8 +39,8 @@ from .engine_signals import (
     process_decision as _process_decision_helper,
     record_evaluation as _record_evaluation_helper,
 )
-from .metrics import compute_metrics, compute_metrics_grouped
-from .models import (
+from ..analysis.metrics import compute_metrics, compute_metrics_grouped
+from ..models import (
     BacktestConfig,
     BacktestResult,
     SignalEvaluation,
@@ -84,7 +84,7 @@ class _CircuitBreaker:
 
 @dataclass
 class _BacktestSignalState:
-    """回测信号状态机状态（模拟实盘 preview→armed→confirmed 转换）。"""
+    """回测信号状态机状态（模拟实盘 preview->armed->confirmed 转换）。"""
 
     current_action: str = "hold"  # hold / buy / sell
     stable_bars: int = 0
@@ -153,20 +153,22 @@ class BacktestEngine:
         self._precomputed_indicators = precomputed_indicators
 
         # 连败熔断器
+        cb = config.circuit_breaker
         self._circuit_breaker: _CircuitBreaker | None = None
-        if config.circuit_breaker_enabled:
+        if cb.enabled:
             self._circuit_breaker = _CircuitBreaker(
-                max_consecutive_losses=config.circuit_breaker_max_consecutive_losses,
-                cooldown_bars=config.circuit_breaker_cooldown_bars,
+                max_consecutive_losses=cb.max_consecutive_losses,
+                cooldown_bars=cb.cooldown_bars,
             )
 
         # Pending Entry 配置（复用实盘 compute_entry_zone 纯函数）
-        self._pending_entry_enabled = config.pending_entry_enabled
-        self._pending_entry_config = PendingEntryConfig(
-            pullback_atr_factor=config.pending_entry_pullback_atr_factor,
-            chase_atr_factor=config.pending_entry_chase_atr_factor,
-            momentum_atr_factor=config.pending_entry_momentum_atr_factor,
-            symmetric_atr_factor=config.pending_entry_symmetric_atr_factor,
+        pe = config.pending_entry
+        self._pending_entry_enabled = pe.enabled
+        self._pending_entry_config = TradingPendingEntryConfig(
+            pullback_atr_factor=pe.pullback_atr_factor,
+            chase_atr_factor=pe.chase_atr_factor,
+            momentum_atr_factor=pe.momentum_atr_factor,
+            symmetric_atr_factor=pe.symmetric_atr_factor,
         )
         # 挂起的入场意图：{signal_key: (decision, entry_low, entry_high, expiry_bar)}
         self._pending_entries: Dict[str, Tuple[SignalDecision, float, float, int]] = {}
@@ -253,11 +255,15 @@ class BacktestEngine:
         self._filter_simulator = _build_filter_simulator_helper(self)
 
         self._state_factory = _BacktestSignalState
-        self._bars_to_evaluate = 5
+        self._bars_to_evaluate = config.confidence.bars_to_evaluate
 
     def _reset_run_state(self) -> None:
         """重置每次 run() 的运行时状态，确保引擎可复用。"""
         config = self._config
+        pos = config.position
+        risk = config.risk
+        ttp = config.trailing_tp
+
         self._signal_states: Dict[str, _BacktestSignalState] = {}
         if config.enable_state_machine:
             for s in self._target_strategies:
@@ -267,26 +273,26 @@ class BacktestEngine:
         self._recorded_evals: Set[Tuple[int, str]] = set()
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
-            max_positions=config.max_positions,
-            trailing_tp_enabled=config.trailing_tp_enabled,
-            trailing_tp_activation_atr=config.trailing_tp_activation_atr,
-            trailing_tp_trail_atr=config.trailing_tp_trail_atr,
-            commission_per_lot=config.commission_per_lot,
-            slippage_points=config.slippage_points,
-            contract_size=config.contract_size,
-            min_volume=config.min_volume,
-            max_volume=config.max_volume,
-            max_volume_per_order=config.max_volume_per_order,
-            max_volume_per_symbol=config.max_volume_per_symbol,
-            max_volume_per_day=config.max_volume_per_day,
-            daily_loss_limit_pct=config.daily_loss_limit_pct,
-            max_trades_per_day=config.max_trades_per_day,
-            max_trades_per_hour=config.max_trades_per_hour,
-            trailing_atr_multiplier=config.trailing_atr_multiplier,
-            breakeven_atr_threshold=config.breakeven_atr_threshold,
-            end_of_day_close_enabled=config.end_of_day_close_enabled,
-            end_of_day_close_hour_utc=config.end_of_day_close_hour_utc,
-            end_of_day_close_minute_utc=config.end_of_day_close_minute_utc,
+            max_positions=risk.max_positions,
+            trailing_tp_enabled=ttp.enabled,
+            trailing_tp_activation_atr=ttp.activation_atr,
+            trailing_tp_trail_atr=ttp.trail_atr,
+            commission_per_lot=risk.commission_per_lot,
+            slippage_points=risk.slippage_points,
+            contract_size=pos.contract_size,
+            min_volume=pos.min_volume,
+            max_volume=pos.max_volume,
+            max_volume_per_order=risk.max_volume_per_order,
+            max_volume_per_symbol=risk.max_volume_per_symbol,
+            max_volume_per_day=risk.max_volume_per_day,
+            daily_loss_limit_pct=risk.daily_loss_limit_pct,
+            max_trades_per_day=risk.max_trades_per_day,
+            max_trades_per_hour=risk.max_trades_per_hour,
+            trailing_atr_multiplier=pos.trailing_atr_multiplier,
+            breakeven_atr_threshold=pos.breakeven_atr_threshold,
+            end_of_day_close_enabled=pos.end_of_day_close_enabled,
+            end_of_day_close_hour_utc=pos.end_of_day_close_hour_utc,
+            end_of_day_close_minute_utc=pos.end_of_day_close_minute_utc,
         )
 
     def run(self) -> BacktestResult:
@@ -330,7 +336,7 @@ class BacktestEngine:
         if not test_bars:
             logger.warning("Backtest %s: no test data found", run_id)
             completed_at = datetime.now(timezone.utc)
-            from .metrics import _empty_metrics
+            from ..analysis.metrics import _empty_metrics
 
             return BacktestResult(
                 config=self._config,
@@ -361,7 +367,7 @@ class BacktestEngine:
 
         # 1.5 自动预加载 HTF 指标（如果启用了 HTF 对齐但未手动传入 htf_indicator_data）
         if (
-            self._config.enable_htf_alignment
+            self._config.confidence.enable_htf_alignment
             and not self._htf_indicator_data
             and self._htf_direction_fn is None
         ):
@@ -448,8 +454,7 @@ class BacktestEngine:
                 for strategy_name in self._target_strategies:
                     _record_evaluation_helper(
                         self,
-                        bar=bar,
-                        bar_index=bar_index,
+                        bar=bar, bar_index=bar_index,
                         strategy=strategy_name,
                         action="hold",
                         confidence=0.0,
@@ -596,17 +601,19 @@ class BacktestEngine:
 
         # 蒙特卡洛排列检验
         mc_result = None
-        if self._config.monte_carlo_enabled and trades:
-            from .monte_carlo import MonteCarloConfig, run_monte_carlo
+        mc = self._config.monte_carlo
+        if mc.enabled and trades:
+            from ..analysis.monte_carlo import MonteCarloConfig as MCRunConfig
+            from ..analysis.monte_carlo import run_monte_carlo
 
             mc_result = run_monte_carlo(
                 pnl_sequence=[t.pnl for t in trades],
                 initial_balance=self._config.initial_balance,
-                config=MonteCarloConfig(
+                config=MCRunConfig(
                     enabled=True,
-                    num_simulations=self._config.monte_carlo_simulations,
-                    confidence_level=self._config.monte_carlo_confidence_level,
-                    seed=self._config.monte_carlo_seed,
+                    num_simulations=mc.simulations,
+                    confidence_level=mc.confidence_level,
+                    seed=mc.seed,
                 ),
             ).to_dict()
             if mc_result.get("is_significant"):
@@ -636,5 +643,5 @@ class BacktestEngine:
             param_set=self._config.strategy_params,
             filter_stats=filter_stats,
             signal_evaluations=self._signal_evaluations,
-            monte_carlo=mc_result,
+            monte_carlo_result=mc_result,
         )

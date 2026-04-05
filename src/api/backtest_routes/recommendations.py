@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter
 
 from src.api.schemas import ApiResponse
-from src.backtesting import api_recommendations
+from src.api.backtest_routes import helpers as api_recommendations
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ async def generate_recommendation(
                 error=f"Walk-Forward 结果 {request.walk_forward_run_id} 未找到",
             )
 
-        from src.backtesting.recommendation import (
+        from src.backtesting.optimization.recommendation import (
             RecommendationEngine,
             load_current_signal_config,
         )
@@ -153,7 +153,7 @@ async def reject_recommendation(
 
 @router.post("/recommendations/{rec_id}/apply", response_model=ApiResponse)
 async def apply_recommendation(rec_id: str) -> ApiResponse:
-    from src.backtesting.recommendation import ConfigApplicator
+    from src.backtesting.optimization.recommendation import ConfigApplicator
 
     recommendation = api_recommendations.get_recommendation(rec_id)
     if recommendation is None:
@@ -192,7 +192,7 @@ async def apply_recommendation(rec_id: str) -> ApiResponse:
 
 @router.post("/recommendations/{rec_id}/rollback", response_model=ApiResponse)
 async def rollback_recommendation(rec_id: str) -> ApiResponse:
-    from src.backtesting.recommendation import ConfigApplicator
+    from src.backtesting.optimization.recommendation import ConfigApplicator
 
     recommendation = api_recommendations.get_recommendation(rec_id)
     if recommendation is None:

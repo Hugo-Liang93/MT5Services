@@ -25,7 +25,7 @@ from src.trading.positions import (
 )
 from src.trading.execution import TradeParameters
 
-from .models import TradeRecord
+from ..models import TradeRecord
 
 logger = logging.getLogger(__name__)
 

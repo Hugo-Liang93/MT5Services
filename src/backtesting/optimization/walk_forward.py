@@ -15,10 +15,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from src.signals.evaluation.regime import MarketRegimeDetector
 from src.signals.service import SignalModule
 
-from .data_loader import HistoricalDataLoader
-from .engine import BacktestEngine
-from .metrics import _empty_metrics, compute_metrics
-from .models import BacktestConfig, BacktestMetrics, BacktestResult, ParameterSpace
+from ..data.loader import HistoricalDataLoader
+from ..engine.runner import BacktestEngine
+from ..analysis.metrics import _empty_metrics, compute_metrics
+from ..models import BacktestConfig, BacktestMetrics, BacktestResult, ParameterSpace
 from .optimizer import ParameterOptimizer
 
 logger = logging.getLogger(__name__)

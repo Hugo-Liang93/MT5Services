@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Tuple
 
-from .models import BacktestMetrics, TradeRecord
+from ..models import BacktestMetrics, TradeRecord
 
 
 def compute_metrics(

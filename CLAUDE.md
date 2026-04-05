@@ -79,7 +79,13 @@ MT5Services/
 │   │   ├── account_routes/   # 账户/持仓/挂单查询
 │   │   ├── economic_routes/  # 日历/风险窗口/影响分析
 │   │   ├── studio_routes/    # Studio REST + SSE
-│   │   └── decision_routes/  # 决策摘要
+│   │   ├── decision_routes/  # 决策摘要
+│   │   ├── backtest.py       # 回测 API 组合根
+│   │   └── backtest_routes/  # 回测路由子包
+│   │       ├── schemas.py    # 请求模型 + 构建逻辑
+│   │       ├── execution.py  # 后台任务执行
+│   │       ├── helpers.py    # 推荐请求处理
+│   │       └── routes/       # 路由（config.py / jobs.py / recommendations.py）
 │   ├── calendar/             # 经济日历服务
 │   │   └── economic_calendar/ # calendar_sync / trade_guard / market_impact / observability
 │   ├── clients/              # MT5 客户端封装（行情、交易、账户）+ 经济日历适配器
@@ -171,26 +177,33 @@ MT5Services/
 │   │   ├── closeout/         # 风险收口（ExposureCloseoutService + 收口策略）
 │   │   ├── tracking/         # 信号质量跟踪（SignalQualityTracker）+ 成交结果跟踪（TradeOutcomeTracker）
 │   │   └── state/            # 状态持久化 + 恢复 + 告警（store / models / recovery / alerts）
-│   ├── backtesting/          # 回测与参数优化子系统
-│   │   ├── engine.py         # BacktestEngine：逐 bar 回放（薄协调器）
-│   │   ├── engine_filters.py # 过滤器构建 + 经济事件装配
-│   │   ├── engine_indicators.py # 指标预计算 + HTF 指标查找
-│   │   ├── engine_signals.py # 策略评估 + 状态机推进 + 挂起入场模拟
-│   │   ├── optimizer.py      # 网格/随机参数搜索
-│   │   ├── walk_forward.py   # Walk-Forward 前推验证
-│   │   ├── recommendation.py # RecommendationEngine + ConfigApplicator
-│   │   ├── config.py         # 回测配置加载（从 backtest.ini + signal.ini 合并）
-│   │   ├── component_factory.py # 构建独立 pipeline/SignalModule
-│   │   ├── data_loader.py    # CachedDataLoader
-│   │   ├── portfolio.py      # PortfolioTracker
-│   │   ├── metrics.py        # BacktestMetrics
-│   │   ├── models.py         # BacktestResult / Recommendation / ParamChange
-│   │   ├── api.py            # 回测 HTTP 组合根
-│   │   ├── api_config.py     # 回测请求模型 + 配置解析
-│   │   ├── api_execution.py  # 后台任务执行 + 组件装配
-│   │   ├── api_recommendations.py # 推荐查询逻辑
-│   │   ├── runtime_store.py  # 回测 API 运行态存储（任务/结果/缓存）
-│   │   └── api_routes/       # 路由子包（config / jobs / recommendations）
+│   ├── backtesting/          # 回测与参数优化子系统（5 个子包）
+│   │   ├── models.py         # 核心数据模型（BacktestConfig + 8 个子配置）
+│   │   ├── config.py         # INI 配置加载（backtest.ini + signal.ini 合并）
+│   │   ├── cli.py            # CLI 命令
+│   │   ├── component_factory.py # 组件构建工厂
+│   │   ├── paper_trading.py  # Paper Trading（半成品，待重构为 paper_trading/ 子包）
+│   │   ├── engine/           # 回测引擎
+│   │   │   ├── runner.py     # BacktestEngine 主协调器
+│   │   │   ├── indicators.py # 指标预计算（编排调用实盘 Pipeline）
+│   │   │   ├── signals.py    # 策略评估（编排调用实盘 SignalModule）
+│   │   │   └── portfolio.py  # PortfolioTracker 持仓管理
+│   │   ├── filtering/        # 过滤器系统
+│   │   │   ├── simulator.py  # BacktestFilterSimulator
+│   │   │   ├── builder.py    # 构建过滤器实例
+│   │   │   └── economic.py   # 经济事件提供者
+│   │   ├── analysis/         # 统计分析
+│   │   │   ├── metrics.py    # compute_metrics / Sharpe / Sortino / 回撤
+│   │   │   ├── correlation.py # 策略相关性矩阵
+│   │   │   ├── monte_carlo.py # 蒙特卡洛排列检验
+│   │   │   └── report.py     # 终端报告 + JSON 序列化
+│   │   ├── optimization/     # 参数优化
+│   │   │   ├── optimizer.py  # 网格/随机参数搜索
+│   │   │   ├── walk_forward.py # Walk-Forward 前推验证
+│   │   │   └── recommendation.py # 参数推荐引擎
+│   │   └── data/             # 数据加载
+│   │       ├── loader.py     # HistoricalDataLoader / CachedDataLoader
+│   │       └── store.py      # 回测运行态存储
 │   ├── readmodels/           # Read-model 投影层（运行时状态聚合）
 │   │   ├── runtime.py        # RuntimeReadModel：仪表盘/指标/交易/信号运行时摘要投影
 │   │   └── trade_trace.py    # TradingFlowTraceReadModel：交易链路追踪只读投影
@@ -496,17 +509,25 @@ OHLC 收盘事件 → IndicatorManager → 快照发布
 | `src/decision/service.py` | build_decision_brief()：上下文融合决策引擎 |
 | `src/readmodels/runtime.py` | RuntimeReadModel：运行时状态聚合投影 |
 | `src/readmodels/trade_trace.py` | TradingFlowTraceReadModel：交易链路追踪只读投影 |
-| `src/backtesting/engine.py` | BacktestEngine：逐 bar 回放薄协调器 |
-| `src/backtesting/engine_signals.py` | 策略评估 + 状态机推进 + 挂起入场模拟 |
-| `src/backtesting/engine_indicators.py` | 指标预计算 + HTF 指标查找 |
-| `src/backtesting/engine_filters.py` | 过滤器构建 + 经济事件装配 |
+| `src/backtesting/engine/runner.py` | BacktestEngine：逐 bar 回放主协调器 |
+| `src/backtesting/engine/signals.py` | 策略评估 + 状态机推进 + 挂起入场模拟 |
+| `src/backtesting/engine/indicators.py` | 指标预计算 + HTF 指标查找 |
+| `src/backtesting/engine/portfolio.py` | PortfolioTracker 持仓管理 |
+| `src/backtesting/filtering/builder.py` | 过滤器构建 + 经济事件装配 |
+| `src/backtesting/filtering/simulator.py` | BacktestFilterSimulator |
 | `src/backtesting/config.py` | 回测配置加载（backtest.ini + signal.ini 合并） |
-| `src/backtesting/optimizer.py` | 网格/随机参数搜索 |
-| `src/backtesting/walk_forward.py` | Walk-Forward 前推验证 |
-| `src/backtesting/recommendation.py` | RecommendationEngine + ConfigApplicator |
-| `src/backtesting/api.py` | 回测 HTTP 组合根 |
-| `src/backtesting/api_routes/` | 路由子包（config / jobs / recommendations） |
-| `src/backtesting/runtime_store.py` | 回测 API 运行态存储 |
+| `src/backtesting/models.py` | BacktestConfig（8 个子配置） + BacktestResult / Recommendation |
+| `src/backtesting/optimization/optimizer.py` | 网格/随机参数搜索 |
+| `src/backtesting/optimization/walk_forward.py` | Walk-Forward 前推验证 |
+| `src/backtesting/optimization/recommendation.py` | RecommendationEngine + ConfigApplicator |
+| `src/backtesting/analysis/metrics.py` | compute_metrics / Sharpe / Sortino / 回撤 |
+| `src/backtesting/analysis/monte_carlo.py` | 蒙特卡洛排列检验 |
+| `src/backtesting/analysis/correlation.py` | 策略相关性矩阵 |
+| `src/backtesting/analysis/report.py` | 终端报告 + JSON 序列化 |
+| `src/backtesting/data/loader.py` | HistoricalDataLoader / CachedDataLoader |
+| `src/backtesting/data/store.py` | 回测运行态存储 |
+| `src/api/backtest.py` | 回测 API 组合根 |
+| `src/api/backtest_routes/` | 回测路由子包（schemas / execution / helpers / routes） |
 | `src/persistence/repositories/` | 数据仓储层：trade / signal / economic / market / runtime / backtest / pipeline_trace / trading_state |
 
 ---
@@ -1182,18 +1203,18 @@ idle → preview_buy/sell（方向改变）
 
 ### 模块概览
 
-`src/backtesting/` 是独立于实盘运行时的回测子系统，通过 `build_backtest_components()` 构建独立的指标 pipeline 和 SignalModule 实例，**不共享全局单例**。
+`src/backtesting/` 是独立于实盘运行时的回测子系统（5 个子包：`engine/`、`filtering/`、`analysis/`、`optimization/`、`data/`），通过 `build_backtest_components()` 构建独立的指标 pipeline 和 SignalModule 实例，**不共享全局单例**。回测 API 已迁移至 `src/api/backtest.py` + `src/api/backtest_routes/`，与其他 10 个域路由模式对齐。
 
 ### 核心流程
 
 ```
 历史 OHLC（DB）
-    → CachedDataLoader（预加载 + 指标预计算）
-    → BacktestEngine（逐 bar 回放）
-        → SignalModule.evaluate()（复用实盘策略代码）
-        → SignalFilterChain.should_evaluate()（复用实盘过滤器）
-        → PortfolioTracker（模拟 SL/TP/持仓）
-    → BacktestResult + BacktestMetrics
+    → CachedDataLoader（data/loader.py，预加载 + 指标预计算）
+    → BacktestEngine（engine/runner.py，逐 bar 回放）
+        → SignalModule.evaluate()（engine/signals.py，复用实盘策略代码）
+        → BacktestFilterSimulator（filtering/simulator.py，复用实盘过滤器）
+        → PortfolioTracker（engine/portfolio.py，模拟 SL/TP/持仓）
+    → BacktestResult + compute_metrics()（analysis/metrics.py）
 ```
 
 ### 参数优化流程
@@ -1562,19 +1583,23 @@ flake8 src/ tests/
 - **回测 signal_exit 反手已移除**：回测引擎不再在策略方向翻转时强制平仓旧持仓，与实盘 TradeExecutor 行为一致（旧仓由 SL/TP/Trailing 自然出场）
 - **fake_breakout category 修正**：从 `breakout` 改为 `reversion`（假突破后反转入场，本质是回归策略），影响入场 zone_mode 从 momentum 变为 symmetric
 - **智能入场参考价**：`compute_entry_zone()` 新增 `_compute_reference_price()`，按策略 category 从指标数据计算合理入场锚点（trend→均线支撑, reversion→BB middle, breakout→Donchian 关键位），替代之前统一使用 bar close 作为区间中心
+- **BacktestConfig 嵌套子配置**（2026-04-05）：`BacktestConfig` 拆分为 8 个 frozen 子 dataclass（`PositionConfig`/`RiskConfig`/`FilterConfig`/`PendingEntryConfig`/`TrailingTPConfig`/`CircuitBreakerConfig`/`MonteCarloConfig`/`ConfidenceConfig`）。旧平铺字段通过 `from_flat()` classmethod 构建。引擎内部通过 `config.position.xxx`/`config.risk.xxx`/`config.filters.xxx` 等访问
+- **回测子包化**（2026-04-05）：5 个子包 `engine/`/`filtering/`/`analysis/`/`optimization/`/`data/`，从平铺 20+ 文件重组为领域聚合的子包结构
+- **BacktestResult.monte_carlo_result**：字段从 `monte_carlo` 重命名为 `monte_carlo_result`，避免与模块名冲突
+- **Paper Trading 半成品**：`src/backtesting/paper_trading.py` 从未集成，有缩进 bug，计划重构为 `src/backtesting/paper_trading/` 子包（职责上属于回测→验证流程）
 - **deps.py 初始化无失败标记**：`_ensure_initialized()` 在 `build_app_container()` 抛异常后不设 init_failed 标志，后续请求会反复重试构建并产生重复异常日志
 - **运行模式系统**（`src/app_runtime/mode_controller.py`）：4 种运行模式 `FULL`/`OBSERVE`/`RISK_OFF`/`INGEST_ONLY`，通过 `RuntimeModeController` 编排组件启停。`app.ini [trading_ops]` 配置 `runtime_mode` 和 `runtime_mode_after_eod`。组件通过 `RuntimeManagedComponent` Protocol 声明 `supported_modes`
 - **Trading 分层子包架构**（2026-04-03）：`src/trading/` 从平铺文件重组为 7 个子包（application/execution/pending/positions/closeout/tracking/state）+ `ports.py` 端口层。外部模块应优先依赖子包 `__init__.py` 导出
 - **Trading Ports**（`src/trading/ports.py`）：8 个 Protocol 定义跨边界依赖合约（TradingQueryPort / TradeControlStatePort / PendingOrderCancellationPort / PositionManagementPort / ExposureCloseoutPort / RecoveryTradingPort / TradeDispatchPort / ExecutorTradingPort）
 - **Trading CQRS**：`TradingCommandService`（写操作）+ `TradingQueryService`（读操作）分离，在 `src/trading/application/services.py`
 - **SignalRuntime 协作者拆分**（2026-04-03）：`runtime.py`（协调器）+ `runtime_evaluator.py`（策略评估）+ `runtime_processing.py`（事件处理）+ `runtime_recovery.py`（状态恢复）
-- **BacktestEngine 协作者拆分**（2026-04-03）：`engine.py`（薄协调器）+ `engine_filters.py` + `engine_indicators.py` + `engine_signals.py`
+- **BacktestEngine 协作者拆分**（2026-04-03→2026-04-05 子包化）：`engine/runner.py`（主协调器）+ `engine/signals.py` + `engine/indicators.py` + `engine/portfolio.py`；过滤器 → `filtering/`；分析 → `analysis/`；优化 → `optimization/`；数据 → `data/`
 - **Pipeline Trace 系统**（`src/monitoring/pipeline/`）：10 种结构化事件（bar_closed → indicator_computed → snapshot_published → signal_filter/evaluated → execution_decided/blocked/submitted/failed）+ `PipelineTraceRecorder` 持久化到 `pipeline_trace_events` 表
 - **TradingFlowTraceReadModel**（`src/readmodels/trade_trace.py`）：聚合信号/执行/审计/挂单/持仓/结果的交易链路只读投影，支持按 signal_id 和 trace_id 查询
 - **Decision 模块**（`src/decision/service.py`）：`build_decision_brief()` 上下文融合决策引擎，输出立场/信心/证据/冲突/风险/失效条件
 - **策略目录统一**（`src/signals/strategies/catalog.py`）：`build_named_strategy_catalog()` 返回 OrderedDict，统一策略构建入口（41+ 预构建策略）；`clone_registered_strategies()` 安全克隆
 - **API 路由模块化**（2026-04-03）：10 个子域路由包（trade_routes/signal_routes/market_routes/...），每个包独立处理对应领域的端点 + view_models
-- **Backtesting API 拆分**（2026-04-03）：从 1 个 1500+ 行文件 → `api.py`（组合根）+ `api_config.py` + `api_execution.py` + `api_recommendations.py` + `runtime_store.py` + `api_routes/` 子包
+- **Backtesting API 统一迁移**（2026-04-03→2026-04-05 迁移至 `src/api/`）：API 文件从 `src/backtesting/` 迁移到 `src/api/backtest.py`（组合根）+ `src/api/backtest_routes/`（schemas/execution/helpers/routes），与其他 10 个域路由模式对齐。15 个端点统一包装 `ApiResponse[T]`
 - **模块位置注意**：
   - `AppContainer` → `src/app_runtime/container.py`（纯组件持有，可多实例）
   - `build_app_container` → `src/app_runtime/builder.py`（构建不启动线程）
@@ -1612,9 +1637,21 @@ flake8 src/ tests/
   - Studio mappers → `src/studio/mappers.py`（14 个纯函数）
   - Admin API → `src/api/admin.py`（组合根）+ `src/api/admin_routes/`（子包）
   - Trade API → `src/api/trade.py`（组合根）+ `src/api/trade_routes/`（子包）
-  - `BacktestEngine` → `src/backtesting/engine.py`（薄协调器）
+  - `BacktestEngine` → `src/backtesting/engine/runner.py`（不再在 `src/backtesting/engine.py`）
   - 回测配置 → `src/backtesting/config.py`（从 backtest.ini + signal.ini 合并加载）
-  - `BacktestTradeGuardProvider` → `src/backtesting/economic_provider.py`
+  - `BacktestConfig` → `src/backtesting/models.py`（8 个嵌套子 dataclass）
+  - `PortfolioTracker` → `src/backtesting/engine/portfolio.py`（不再在 `src/backtesting/portfolio.py`）
+  - `Optimizer` → `src/backtesting/optimization/optimizer.py`（不再在 `src/backtesting/optimizer.py`）
+  - `WalkForwardValidator` → `src/backtesting/optimization/walk_forward.py`（不再在 `src/backtesting/walk_forward.py`）
+  - `RecommendationEngine` → `src/backtesting/optimization/recommendation.py`（不再在 `src/backtesting/recommendation.py`）
+  - `CachedDataLoader` → `src/backtesting/data/loader.py`（不再在 `src/backtesting/data_loader.py`）
+  - 回测运行态存储 → `src/backtesting/data/store.py`（不再在 `src/backtesting/runtime_store.py`）
+  - 回测 API → `src/api/backtest.py`（组合根）+ `src/api/backtest_routes/`（不再在 `src/backtesting/api.py`）
+  - `BacktestTradeGuardProvider` → `src/backtesting/filtering/economic.py`（不再在 `src/backtesting/economic_provider.py`）
+  - `BacktestFilterSimulator` → `src/backtesting/filtering/simulator.py`（不再在 `src/backtesting/filters.py`）
+  - `compute_metrics` → `src/backtesting/analysis/metrics.py`（不再在 `src/backtesting/metrics.py`）
+  - 蒙特卡洛检验 → `src/backtesting/analysis/monte_carlo.py`（不再在 `src/backtesting/monte_carlo.py`）
+  - 策略相关性 → `src/backtesting/analysis/correlation.py`（不再在 `src/backtesting/correlation.py`）
 
 ---
 

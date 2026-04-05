@@ -111,6 +111,9 @@ def get_backtest_defaults() -> Dict[str, Any]:
         )
         _set_bool(result, parser, "confidence", "enable_calibrator", "enable_calibrator")
         _set_bool(result, parser, "confidence", "enable_htf_alignment", "enable_htf_alignment")
+        _set_float(result, parser, "confidence", "htf_alignment_boost", "htf_alignment_boost")
+        _set_float(result, parser, "confidence", "htf_conflict_penalty", "htf_conflict_penalty")
+        _set_int(result, parser, "confidence", "bars_to_evaluate", "bars_to_evaluate")
 
     # [trailing_tp] section — Trailing Take Profit
     if parser.has_section("trailing_tp"):
