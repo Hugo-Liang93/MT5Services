@@ -351,6 +351,9 @@ class TimescaleWriter:
     def fetch_pipeline_trace_events(self, **kwargs):
         return self.pipeline_trace_repo.fetch_pipeline_trace_events(**kwargs)
 
+    def fetch_pipeline_trace_filtered(self, **kwargs):
+        return self.pipeline_trace_repo.fetch_pipeline_trace_filtered(**kwargs)
+
     def fetch_trade_command_audits(self, **kwargs):
         return self.trade_command_repo.fetch_trade_command_audits(**kwargs)
 
@@ -370,6 +373,37 @@ class TimescaleWriter:
         from src.persistence.schema.position_sl_tp_history import INSERT_SQL
 
         self._batch(INSERT_SQL, rows, page_size=page_size)
+
+    def fetch_position_sl_tp_history(
+        self,
+        *,
+        position_ticket: int | None = None,
+        symbol: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        conditions = []
+        params: list = []
+        if position_ticket is not None:
+            conditions.append("position_ticket = %s")
+            params.append(int(position_ticket))
+        if symbol is not None:
+            conditions.append("symbol = %s")
+            params.append(str(symbol))
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = (
+            f"SELECT recorded_at, account_alias, position_ticket, signal_id, symbol, "
+            f"action_type, reason, old_stop_loss, new_stop_loss, old_take_profit, "
+            f"new_take_profit, current_price, highest_price, lowest_price, "
+            f"atr_at_entry, success, retcode, broker_comment, metadata "
+            f"FROM position_sl_tp_history{where} "
+            f"ORDER BY recorded_at DESC LIMIT %s OFFSET %s"
+        )
+        params.extend([limit, offset])
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
 
     def fetch_position_runtime_states(self, **kwargs):
         return self.trading_state_repo.fetch_position_runtime_states(**kwargs)

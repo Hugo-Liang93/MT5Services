@@ -10,6 +10,7 @@ from src.api.deps import (
     get_htf_cache,
     get_market_service,
     get_market_structure_analyzer,
+    get_performance_tracker,
     get_runtime_read_model,
     get_signal_runtime,
     get_signal_service,
@@ -21,6 +22,7 @@ from src.readmodels.runtime import RuntimeReadModel
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
+from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.strategies.htf_cache import HTFStateCache
 from .view_models import (
     CalibratorStatusView,
@@ -157,3 +159,39 @@ def calibrator_refresh(
         data={**calibrator.describe(), "rows_loaded": count},
         metadata={"hours": hours},
     )
+
+
+@router.get(
+    "/performance-tracker",
+    response_model=ApiResponse[dict],
+    summary="日内策略绩效追踪器状态",
+)
+async def get_performance_tracker_status(
+    perf: StrategyPerformanceTracker = Depends(get_performance_tracker),
+) -> ApiResponse[dict]:
+    return ApiResponse.success_response(data=perf.describe())
+
+
+@router.get(
+    "/voting/describe",
+    response_model=ApiResponse[list],
+    summary="当前投票组配置和状态",
+)
+async def get_voting_describe(
+    runtime: SignalRuntime = Depends(get_signal_runtime),
+) -> ApiResponse[list]:
+    groups = []
+    if hasattr(runtime, "_voting_group_engines"):
+        for group_config, engine in runtime._voting_group_engines:
+            groups.append({
+                "name": group_config.name,
+                "strategies": sorted(group_config.strategies),
+                "engine": engine.describe(),
+            })
+    if hasattr(runtime, "_voting_engine") and runtime._voting_engine is not None:
+        groups.append({
+            "name": "consensus",
+            "strategies": [],
+            "engine": runtime._voting_engine.describe(),
+        })
+    return ApiResponse.success_response(data=groups)

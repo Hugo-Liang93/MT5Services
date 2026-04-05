@@ -221,3 +221,46 @@ async def get_evaluation_summary(run_id: str) -> ApiResponse:
         return ApiResponse(success=True, data=summary)
     except Exception as exc:
         return ApiResponse(success=False, error=str(exc))
+
+
+@router.post(
+    "/results/{run_id}/correlation-analysis",
+    response_model=ApiResponse[dict],
+    summary="对回测结果运行策略相关性分析",
+)
+async def run_correlation_analysis(
+    run_id: str,
+    correlation_threshold: float = 0.80,
+    penalty_weight: float = 0.50,
+) -> ApiResponse[dict]:
+    result = backtest_runtime_store.get_result(run_id)
+    if result is None:
+        return ApiResponse.error_response(
+            f"Result {run_id} not found", error_code="NOT_FOUND",
+        )
+    evaluations = getattr(result, "signal_evaluations", None)
+    if not evaluations:
+        return ApiResponse.error_response(
+            "No signal evaluations in this result (run with max_signal_evaluations > 0)",
+            error_code="NO_DATA",
+        )
+    from src.backtesting.correlation import (
+        analyze_strategy_correlation,
+        extract_signal_directions_from_evaluations,
+    )
+
+    directions = extract_signal_directions_from_evaluations(evaluations)
+    if len(directions) < 2:
+        return ApiResponse.error_response(
+            "Need at least 2 strategies with signals for correlation analysis",
+            error_code="INSUFFICIENT_DATA",
+        )
+    analysis = analyze_strategy_correlation(
+        directions,
+        correlation_threshold=correlation_threshold,
+        penalty_weight=penalty_weight,
+    )
+    return ApiResponse.success_response(
+        data=analysis.to_dict(),
+        metadata={"run_id": run_id, "strategies_analyzed": len(directions)},
+    )

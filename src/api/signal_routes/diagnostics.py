@@ -136,3 +136,52 @@ def signal_outcomes_winrate(
             "trade_outcome_stats": trade_tracker.summary(),
         },
     )
+
+
+@router.get(
+    "/diagnostics/pipeline-trace",
+    response_model=ApiResponse[list],
+    summary="Pipeline trace 事件通用查询",
+)
+async def get_pipeline_trace(
+    trace_id: Optional[str] = Query(None, description="Trace ID 精确匹配"),
+    symbol: Optional[str] = Query(None, description="品种过滤"),
+    timeframe: Optional[str] = Query(None, description="时间框架过滤"),
+    event_type: Optional[str] = Query(None, description="事件类型过滤"),
+    scope: Optional[str] = Query(None, description="scope 过滤 (confirmed/intrabar)"),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    runtime: SignalRuntime = Depends(get_signal_runtime),
+) -> ApiResponse[list]:
+    try:
+        snapshot_source = getattr(runtime, "snapshot_source", None)
+        db = None
+        if snapshot_source is not None:
+            storage = getattr(snapshot_source, "storage_writer", None)
+            if storage is not None:
+                db = getattr(storage, "db", None)
+        if db is None:
+            return ApiResponse.error_response("DB not available", error_code="SERVICE_UNAVAILABLE")
+        rows = db.fetch_pipeline_trace_filtered(
+            trace_id=trace_id,
+            symbol=symbol,
+            timeframe=timeframe,
+            event_type=event_type,
+            scope=scope,
+            limit=limit,
+            offset=offset,
+        )
+        for row in rows:
+            for key in ("recorded_at",):
+                val = row.get(key)
+                if val is not None and hasattr(val, "isoformat"):
+                    row[key] = val.isoformat()
+        return ApiResponse.success_response(
+            data=rows,
+            metadata={"count": len(rows), "filters": {
+                "trace_id": trace_id, "symbol": symbol,
+                "timeframe": timeframe, "event_type": event_type, "scope": scope,
+            }},
+        )
+    except Exception as exc:
+        return ApiResponse.error_response(str(exc), error_code="INTERNAL_ERROR")

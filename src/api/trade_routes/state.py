@@ -314,3 +314,33 @@ def trade_command_audits(
             "count": len(items),
         },
     )
+
+
+@router.get(
+    "/trade/positions/{ticket}/sl-tp-history",
+    response_model=ApiResponse[list],
+    summary="查询持仓的 SL/TP 修改历史",
+)
+async def get_sl_tp_history(
+    ticket: int,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    read_model: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[list]:
+    try:
+        db = read_model._storage_writer.db
+        rows = db.fetch_position_sl_tp_history(
+            position_ticket=ticket, limit=limit, offset=offset,
+        )
+        # datetime 转字符串
+        for row in rows:
+            for key in ("recorded_at",):
+                val = row.get(key)
+                if val is not None and hasattr(val, "isoformat"):
+                    row[key] = val.isoformat()
+        return ApiResponse.success_response(
+            data=rows,
+            metadata={"position_ticket": ticket, "count": len(rows)},
+        )
+    except Exception as exc:
+        return ApiResponse.error_response(str(exc), error_code="INTERNAL_ERROR")
