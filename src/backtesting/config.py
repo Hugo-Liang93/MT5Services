@@ -124,6 +124,12 @@ def get_backtest_defaults() -> Dict[str, Any]:
         _set_int(result, parser, "circuit_breaker", "max_consecutive_losses", "circuit_breaker_max_consecutive_losses")
         _set_int(result, parser, "circuit_breaker", "cooldown_bars", "circuit_breaker_cooldown_bars")
 
+    # [monte_carlo] section — 蒙特卡洛排列检验
+    if parser.has_section("monte_carlo"):
+        _set_bool(result, parser, "monte_carlo", "enabled", "monte_carlo_enabled")
+        _set_int(result, parser, "monte_carlo", "num_simulations", "monte_carlo_simulations")
+        _set_float(result, parser, "monte_carlo", "confidence_level", "monte_carlo_confidence_level")
+
     # [persistence] section
     if parser.has_section("persistence"):
         _set_int(

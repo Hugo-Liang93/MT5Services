@@ -595,6 +595,34 @@ class BacktestEngine:
             elapsed_ms,
         )
 
+        # 蒙特卡洛排列检验
+        mc_result = None
+        if self._config.monte_carlo_enabled and trades:
+            from .monte_carlo import MonteCarloConfig, run_monte_carlo
+
+            mc_result = run_monte_carlo(
+                pnl_sequence=[t.pnl for t in trades],
+                initial_balance=self._config.initial_balance,
+                config=MonteCarloConfig(
+                    enabled=True,
+                    num_simulations=self._config.monte_carlo_simulations,
+                    confidence_level=self._config.monte_carlo_confidence_level,
+                    seed=self._config.monte_carlo_seed,
+                ),
+            ).to_dict()
+            if mc_result.get("is_significant"):
+                logger.info(
+                    "Backtest %s: Monte Carlo SIGNIFICANT (Sharpe p=%.4f, PF p=%.4f)",
+                    run_id, mc_result["sharpe_p_value"], mc_result["profit_factor_p_value"],
+                )
+            else:
+                logger.warning(
+                    "Backtest %s: Monte Carlo NOT significant (Sharpe p=%.4f, "
+                    "real=%.4f vs random 95th=%.4f)",
+                    run_id, mc_result["sharpe_p_value"],
+                    mc_result["real_sharpe"], mc_result["random_sharpe_95th"],
+                )
+
         return BacktestResult(
             config=self._config,
             run_id=run_id,
@@ -609,4 +637,5 @@ class BacktestEngine:
             param_set=self._config.strategy_params,
             filter_stats=filter_stats,
             signal_evaluations=self._signal_evaluations,
+            monte_carlo=mc_result,
         )

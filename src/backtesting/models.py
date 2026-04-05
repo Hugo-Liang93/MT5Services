@@ -174,6 +174,12 @@ class BacktestConfig:
     # ── 信号评估记录上限（防止内存溢出）────────────────────────────
     max_signal_evaluations: int = 50000
 
+    # ── 蒙特卡洛排列检验 ────────────────────────────────────────
+    monte_carlo_enabled: bool = False
+    monte_carlo_simulations: int = 1000
+    monte_carlo_confidence_level: float = 0.95
+    monte_carlo_seed: Optional[int] = None
+
 
 @dataclass(frozen=True)
 class TradeRecord:
@@ -268,6 +274,8 @@ class BacktestResult:
     filter_stats: Optional[Dict[str, Any]] = None
     # 信号评估明细（用于回测质量分析）
     signal_evaluations: Optional[List[SignalEvaluation]] = None
+    # 蒙特卡洛排列检验结果
+    monte_carlo: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为可 JSON 化的字典。"""
