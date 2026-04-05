@@ -5,7 +5,47 @@
 
 ---
 
-## Phase 2：中等复杂度（推荐下一步实施）
+## Phase 0：策略验证闭环（最高优先）
+
+### 0.1 各 TF 基线回测
+
+**执行方式**：`tools/backtest_runner.py` 本地执行，不走 API
+
+```bash
+# 各 TF 分别跑，近 3 个月数据
+python tools/backtest_runner.py --timeframe M5 --days 90
+python tools/backtest_runner.py --timeframe M15 --days 90
+python tools/backtest_runner.py --timeframe M30 --days 90
+python tools/backtest_runner.py --timeframe H1 --days 90
+```
+
+**产出要求**：每个 TF 记录 PnL / WR / Sharpe / Sortino / MaxDD / 总交易数。汇总为对比表判断哪些 TF 可行。
+
+### 0.2 策略相关性裁剪
+
+**执行方式**：回测时加 `--monte-carlo` 获取蒙特卡洛 p-value，用 `correlation.py` 生成相关性矩阵
+
+**裁剪规则**：
+- 同投票组内相关性 >0.7 → 保留 Sharpe 最高的，其余 regime_affinity 全设 0.0
+- 蒙特卡洛 p-value >0.1 → 策略收益不显著优于随机，考虑禁用
+- 目标：从 31 基础策略精简到 15-20 个
+
+**涉及文件**：`signal.local.ini`（affinity 覆盖）、`config/composites.json`（复合策略成员）
+
+### 0.3 Paper Trading 验证
+
+**配置**：`config/paper_trading.ini` 设 `enabled = true`，`app.ini [trading_ops] runtime_mode = observe`
+
+**验证清单**：
+1. 信号是否正常接收（`/v1/paper-trading/trades`）
+2. 模拟持仓是否正确管理 SL/TP（`/v1/paper-trading/positions`）
+3. 日终是否自动平仓
+4. 持久化是否完整（`paper_trading_sessions` / `paper_trade_outcomes` 表）
+5. 绩效 vs 回测对比（差距 >30% 需排查）
+
+---
+
+## Phase 2：中等复杂度（参数优化）
 
 ### 2A. Regime-Aware 动态 TP/SL 倍数
 
