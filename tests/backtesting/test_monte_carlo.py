@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from src.backtesting.monte_carlo import MonteCarloConfig, MonteCarloResult, run_monte_carlo
+from src.backtesting.monte_carlo import (
+    DeflatedSharpeResult,
+    MonteCarloConfig,
+    MonteCarloResult,
+    compute_deflated_sharpe,
+    run_monte_carlo,
+)
 
 
 def test_insufficient_data_returns_not_significant() -> None:
@@ -64,3 +70,51 @@ def test_to_dict_keys() -> None:
         "is_significant",
     }
     assert set(d.keys()) == expected_keys
+
+
+# ── Deflated Sharpe Ratio ────────────────────────────────────
+
+
+def test_dsr_few_trials_no_deflation() -> None:
+    """2 次试验，Sharpe 几乎不需要修正。"""
+    result = compute_deflated_sharpe(
+        observed_sharpe=1.5, num_trials=2, num_trades=100,
+    )
+    assert result.expected_max_sharpe < result.observed_sharpe
+    assert result.num_trials == 2
+
+
+def test_dsr_many_trials_inflated() -> None:
+    """100 次试验后，期望最大 Sharpe 约 2.3+，普通的 1.5 不再显著。"""
+    result = compute_deflated_sharpe(
+        observed_sharpe=1.5, num_trials=100, num_trades=200,
+    )
+    assert result.expected_max_sharpe > 1.5
+    assert not result.is_significant
+    assert result.p_value > 0.05
+
+
+def test_dsr_very_high_sharpe_still_significant() -> None:
+    """极高 Sharpe 即使 100 次试验后仍然显著。"""
+    result = compute_deflated_sharpe(
+        observed_sharpe=4.0, num_trials=100, num_trades=200,
+    )
+    assert result.is_significant
+    assert result.p_value < 0.05
+
+
+def test_dsr_insufficient_data() -> None:
+    result = compute_deflated_sharpe(
+        observed_sharpe=2.0, num_trials=1, num_trades=5,
+    )
+    assert not result.is_significant
+    assert result.p_value == 0.5
+
+
+def test_dsr_to_dict_keys() -> None:
+    result = compute_deflated_sharpe(1.0, 50, 100)
+    d = result.to_dict()
+    assert "observed_sharpe" in d
+    assert "deflated_sharpe" in d
+    assert "p_value" in d
+    assert "is_significant" in d

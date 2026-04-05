@@ -171,6 +171,36 @@ class ParameterOptimizer:
             key=lambda r: getattr(r.metrics, self._sort_metric, 0.0),
             reverse=True,
         )
+
+        # Deflated Sharpe Ratio：修正多次试验的 Sharpe 膨胀
+        if total >= 2 and results:
+            from .monte_carlo import compute_deflated_sharpe
+
+            best = results[0]
+            if best.metrics.total_trades >= 10:
+                dsr = compute_deflated_sharpe(
+                    observed_sharpe=best.metrics.sharpe_ratio,
+                    num_trials=total,
+                    num_trades=best.metrics.total_trades,
+                )
+                if best.monte_carlo is None:
+                    best.monte_carlo = {}
+                best.monte_carlo["deflated_sharpe"] = dsr.to_dict()
+                if dsr.is_significant:
+                    logger.info(
+                        "Optimizer: best Sharpe %.4f is SIGNIFICANT after %d trials "
+                        "(DSR=%.4f, p=%.4f, expected_max=%.4f)",
+                        best.metrics.sharpe_ratio, total,
+                        dsr.deflated_sharpe, dsr.p_value, dsr.expected_max_sharpe,
+                    )
+                else:
+                    logger.warning(
+                        "Optimizer: best Sharpe %.4f NOT significant after %d trials "
+                        "(DSR=%.4f, p=%.4f, expected_max=%.4f)",
+                        best.metrics.sharpe_ratio, total,
+                        dsr.deflated_sharpe, dsr.p_value, dsr.expected_max_sharpe,
+                    )
+
         return results
 
     def _generate_combinations(self) -> List[Dict[str, Any]]:

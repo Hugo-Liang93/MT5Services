@@ -206,6 +206,113 @@ def _std(values: List[float], mean: float) -> float:
     return math.sqrt(variance)
 
 
+# ── Deflated Sharpe Ratio ──────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class DeflatedSharpeResult:
+    """Deflated Sharpe Ratio 结果（Marcos López de Prado, 2014）。"""
+
+    observed_sharpe: float
+    expected_max_sharpe: float
+    deflated_sharpe: float
+    num_trials: int
+    num_trades: int
+    p_value: float
+    is_significant: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "observed_sharpe": round(self.observed_sharpe, 4),
+            "expected_max_sharpe": round(self.expected_max_sharpe, 4),
+            "deflated_sharpe": round(self.deflated_sharpe, 4),
+            "num_trials": self.num_trials,
+            "num_trades": self.num_trades,
+            "p_value": round(self.p_value, 4),
+            "is_significant": self.is_significant,
+        }
+
+
+def compute_deflated_sharpe(
+    observed_sharpe: float,
+    num_trials: int,
+    num_trades: int,
+    returns_skew: float = 0.0,
+    returns_kurtosis: float = 3.0,
+    confidence_level: float = 0.95,
+) -> DeflatedSharpeResult:
+    """计算 Deflated Sharpe Ratio（多重比较修正后的 Sharpe）。
+
+    当你试了 N 组参数，选了 Sharpe 最高的那个，这个 Sharpe 是被"膨胀"的。
+    DSR 修正了这个膨胀，给出真实的统计显著性。
+
+    Args:
+        observed_sharpe: 最优参数组合的 Sharpe Ratio
+        num_trials: 尝试了多少组参数（越多膨胀越大）
+        num_trades: 最优组合的交易次数
+        returns_skew: 收益率序列的偏度（0 = 正态）
+        returns_kurtosis: 收益率序列的峰度（3 = 正态）
+        confidence_level: 显著性水平
+
+    Returns:
+        DeflatedSharpeResult 包含修正后的 Sharpe 和 p-value
+    """
+    if num_trials < 2 or num_trades < 10:
+        return DeflatedSharpeResult(
+            observed_sharpe=observed_sharpe,
+            expected_max_sharpe=0.0,
+            deflated_sharpe=observed_sharpe,
+            num_trials=num_trials,
+            num_trades=num_trades,
+            p_value=0.5,
+            is_significant=False,
+        )
+
+    # Euler-Mascheroni 常数近似
+    euler_mascheroni = 0.5772156649
+    # E[max(SR)] ≈ √(2 * ln(N)) - (γ + ln(π/2)) / √(2 * ln(N))
+    ln_n = math.log(max(num_trials, 2))
+    sqrt_2_ln_n = math.sqrt(2.0 * ln_n)
+    expected_max_sr = sqrt_2_ln_n - (euler_mascheroni + math.log(math.pi / 2.0)) / (
+        2.0 * sqrt_2_ln_n
+    )
+
+    # Sharpe 估计量的标准误差（含偏度和峰度修正）
+    sr = observed_sharpe
+    sr2 = sr * sr
+    se_sharpe = math.sqrt(
+        (1.0 + 0.5 * sr2 - returns_skew * sr + ((returns_kurtosis - 3.0) / 4.0) * sr2)
+        / max(num_trades - 1, 1)
+    )
+
+    if se_sharpe < 1e-12:
+        return DeflatedSharpeResult(
+            observed_sharpe=observed_sharpe,
+            expected_max_sharpe=expected_max_sr,
+            deflated_sharpe=observed_sharpe,
+            num_trials=num_trials,
+            num_trades=num_trades,
+            p_value=0.0 if observed_sharpe > expected_max_sr else 1.0,
+            is_significant=observed_sharpe > expected_max_sr,
+        )
+
+    # DSR = (SR_observed - E[max(SR)]) / SE(SR)
+    dsr = (observed_sharpe - expected_max_sr) / se_sharpe
+
+    # p-value（标准正态 CDF）
+    p_value = 0.5 * (1.0 + math.erf(-dsr / math.sqrt(2.0)))
+
+    return DeflatedSharpeResult(
+        observed_sharpe=observed_sharpe,
+        expected_max_sharpe=expected_max_sr,
+        deflated_sharpe=round(dsr, 4),
+        num_trials=num_trials,
+        num_trades=num_trades,
+        p_value=p_value,
+        is_significant=p_value < (1.0 - confidence_level),
+    )
+
+
 def _insufficient_data(
     n: int,
     pnl_sequence: List[float],

@@ -42,6 +42,19 @@ def _load_strategy_scope_overrides() -> Tuple[Dict[str, List[str]], Dict[str, Li
     )
 
 
+def _parse_cli_strategy_params(args: argparse.Namespace) -> Dict[str, Any]:
+    """解析 --param KEY=VALUE 命令行参数为 strategy_params dict。"""
+    params: Dict[str, Any] = {}
+    for param_str in (getattr(args, "param", None) or []):
+        if "=" in param_str:
+            key, val = param_str.split("=", 1)
+            try:
+                params[key.strip()] = float(val.strip())
+            except ValueError:
+                params[key.strip()] = val.strip()
+    return params
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     # docstring removed during encoding normalization
     from .config import get_backtest_defaults
@@ -52,6 +65,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     strategies = args.strategies.split(",") if args.strategies else None
     ini_defaults = get_backtest_defaults()
     strategy_timeframes, strategy_sessions = _load_strategy_scope_overrides()
+    cli_strategy_params = _parse_cli_strategy_params(args)
 
     config = BacktestConfig(
         symbol=args.symbol,
@@ -112,6 +126,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         circuit_breaker_cooldown_bars=ini_defaults.get(
             "circuit_breaker_cooldown_bars", 20
         ),
+        strategy_params=cli_strategy_params,
+        monte_carlo_enabled=getattr(args, "monte_carlo", False),
+        monte_carlo_simulations=getattr(args, "monte_carlo_sims", 1000),
     )
 
     _sl_tp_backup: Optional[Dict] = None
@@ -390,6 +407,23 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--breakeven", type=float, default=None,
         help="Override breakeven ATR threshold, e.g. 0.8",
+    )
+    parser.add_argument(
+        "--monte-carlo",
+        action="store_true",
+        help="Run Monte Carlo significance test on results",
+    )
+    parser.add_argument(
+        "--monte-carlo-sims",
+        type=int,
+        default=1000,
+        help="Number of Monte Carlo simulations (default: 1000)",
+    )
+    parser.add_argument(
+        "--param",
+        action="append",
+        metavar="KEY=VALUE",
+        help="Override strategy param, e.g. --param rsi_reversion__overbought=72",
     )
 
 
