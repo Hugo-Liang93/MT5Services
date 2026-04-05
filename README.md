@@ -242,7 +242,7 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 - `GET /v1/trade/trace/{signal_id}`：按 `signal_id` 聚合 `pipeline_trace_events / signal_events / auto_executions / trade_command_audits / pending_order_states / position_runtime_states / trade_outcomes`，输出从市场数据到交易结果的时间线与节点关系，供可视化与问题定位使用。
 - `GET /v1/trade/trace/by-trace/{trace_id}`：按 pipeline `trace_id` 聚合同一条链路，覆盖“被过滤、尚未生成 signal_id”的排查场景。
 
-模块布局规范见：[docs/architecture/module-layout.md](/D:/MT5Services/docs/architecture/module-layout.md)。
+模块布局规范见：[docs/architecture.md](docs/architecture.md)。
 
 ## 测试与质量
 
@@ -263,11 +263,10 @@ flake8 src/ tests/
 
 | 文档 | 说明 |
 |------|------|
-| [架构概览](docs/architecture/overview.md) | 系统架构、启动流程、数据流详解 |
-| [数据流全链路](docs/architecture/data-flow.md) | 完整数据流转图与事件链 |
-| [信号系统设计](docs/architecture/signal-system.md) | 策略开发、Regime、状态机、投票引擎 |
-| [模块边界](docs/architecture/module-boundaries.md) | 各模块职责与依赖矩阵 |
-| [价格确认入场](docs/design/pending-entry.md) | PendingEntry 机制设计方案 |
+| [系统架构参考](docs/architecture.md) | 分层、启动流程、数据流、模块边界、布局规范 |
+| [信号系统深度参考](docs/signal-system.md) | 策略列表、Intrabar 链路、投票引擎、置信度管线 |
+| [价格确认入场](docs/design/pending-entry.md) | PendingEntry 机制设计方案（已实现） |
+| [风控增强](docs/design/risk-enhancement.md) | PnL 熔断 + PerformanceTracker 恢复（已实现） |
 
 ## 许可
 

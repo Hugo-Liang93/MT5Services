@@ -68,6 +68,14 @@ lot_step / point_value / min_volume 等从 MT5 symbol_info 动态获取。
 
 ---
 
+## P2.5: 配置热重载决策
+
+- [ ] signal.ini 交易成本阈值偏紧（base_spread_points=30, max_spread_to_stop_ratio=0.33）启动持续警告，低 ATR 时段大量拦截
+- [ ] 非 signal.ini 配置热重载策略：运行中的 market/economic/monitoring 组件是否原地热应用还是重建运行时
+- [ ] market.ini 应用壳层配置（docs_enabled/CORS 等）热重载：重建 FastAPI app 还是必须重启
+
+---
+
 ## P3: 前端 Dashboard
 
 - [ ] 设计新 dashboard 架构（技术栈选型）
