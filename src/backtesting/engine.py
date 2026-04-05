@@ -160,30 +160,6 @@ class BacktestEngine:
                 cooldown_bars=config.circuit_breaker_cooldown_bars,
             )
 
-        self._portfolio = PortfolioTracker(
-            initial_balance=config.initial_balance,
-            max_positions=config.max_positions,
-            trailing_tp_enabled=config.trailing_tp_enabled,
-            trailing_tp_activation_atr=config.trailing_tp_activation_atr,
-            trailing_tp_trail_atr=config.trailing_tp_trail_atr,
-            commission_per_lot=config.commission_per_lot,
-            slippage_points=config.slippage_points,
-            contract_size=config.contract_size,
-            min_volume=config.min_volume,
-            max_volume=config.max_volume,
-            max_volume_per_order=config.max_volume_per_order,
-            max_volume_per_symbol=config.max_volume_per_symbol,
-            max_volume_per_day=config.max_volume_per_day,
-            daily_loss_limit_pct=config.daily_loss_limit_pct,
-            max_trades_per_day=config.max_trades_per_day,
-            max_trades_per_hour=config.max_trades_per_hour,
-            trailing_atr_multiplier=config.trailing_atr_multiplier,
-            breakeven_atr_threshold=config.breakeven_atr_threshold,
-            end_of_day_close_enabled=config.end_of_day_close_enabled,
-            end_of_day_close_hour_utc=config.end_of_day_close_hour_utc,
-            end_of_day_close_minute_utc=config.end_of_day_close_minute_utc,
-        )
-
         # Pending Entry 配置（复用实盘 compute_entry_zone 纯函数）
         self._pending_entry_enabled = config.pending_entry_enabled
         self._pending_entry_config = PendingEntryConfig(
@@ -276,23 +252,46 @@ class BacktestEngine:
         # 构建过滤器模拟器
         self._filter_simulator = _build_filter_simulator_helper(self)
 
-        # 信号状态机（模拟实盘 preview→armed→confirmed 状态转换）
-        self._signal_states: Dict[str, _BacktestSignalState] = {}
         self._state_factory = _BacktestSignalState
+        self._bars_to_evaluate = 5
+
+    def _reset_run_state(self) -> None:
+        """重置每次 run() 的运行时状态，确保引擎可复用。"""
+        config = self._config
+        self._signal_states: Dict[str, _BacktestSignalState] = {}
         if config.enable_state_machine:
             for s in self._target_strategies:
                 self._signal_states[s] = _BacktestSignalState()
-
-        # 信号评估记录（用于回测质量分析 + 数据落表）
         self._signal_evaluations: List[SignalEvaluation] = []
-        # 待回填的 pending 评估：{bar_index: [SignalEvaluation]}
         self._pending_evaluations: Dict[int, List[SignalEvaluation]] = {}
-        self._bars_to_evaluate = 5  # N bars 后回填
-        # 去重：已记录的 (bar_index, strategy) 组合
         self._recorded_evals: Set[Tuple[int, str]] = set()
+        self._portfolio = PortfolioTracker(
+            initial_balance=config.initial_balance,
+            max_positions=config.max_positions,
+            trailing_tp_enabled=config.trailing_tp_enabled,
+            trailing_tp_activation_atr=config.trailing_tp_activation_atr,
+            trailing_tp_trail_atr=config.trailing_tp_trail_atr,
+            commission_per_lot=config.commission_per_lot,
+            slippage_points=config.slippage_points,
+            contract_size=config.contract_size,
+            min_volume=config.min_volume,
+            max_volume=config.max_volume,
+            max_volume_per_order=config.max_volume_per_order,
+            max_volume_per_symbol=config.max_volume_per_symbol,
+            max_volume_per_day=config.max_volume_per_day,
+            daily_loss_limit_pct=config.daily_loss_limit_pct,
+            max_trades_per_day=config.max_trades_per_day,
+            max_trades_per_hour=config.max_trades_per_hour,
+            trailing_atr_multiplier=config.trailing_atr_multiplier,
+            breakeven_atr_threshold=config.breakeven_atr_threshold,
+            end_of_day_close_enabled=config.end_of_day_close_enabled,
+            end_of_day_close_hour_utc=config.end_of_day_close_hour_utc,
+            end_of_day_close_minute_utc=config.end_of_day_close_minute_utc,
+        )
 
     def run(self) -> BacktestResult:
-        """执行回测主循环。"""
+        """执行回测主循环。支持多次调用（每次自动重置状态）。"""
+        self._reset_run_state()
         run_id = generate_run_id()
         started_at = datetime.now(timezone.utc)
         t0 = time.monotonic()

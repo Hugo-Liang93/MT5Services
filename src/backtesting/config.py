@@ -143,39 +143,39 @@ def get_backtest_defaults() -> Dict[str, Any]:
         _set_int(result, parser, "optimizer", "max_combinations", "max_combinations")
         _set_str(result, parser, "optimizer", "sort_metric", "sort_metric")
 
-    # signal.ini / signal.local.ini defaults — sizing-related runtime constraints
+    # signal.ini / signal.local.ini defaults — 自动继承 sizing 和 regime 参数
+    _SIGNAL_INHERIT_FIELDS = (
+        "min_volume", "max_volume",
+        "regime_tp_trending", "regime_tp_ranging", "regime_tp_breakout", "regime_tp_uncertain",
+        "regime_sl_trending", "regime_sl_ranging", "regime_sl_breakout", "regime_sl_uncertain",
+    )
     try:
         from src.config import get_signal_config
 
         signal_config = get_signal_config()
-        result.setdefault("min_volume", float(signal_config.min_volume))
-        result.setdefault("max_volume", float(signal_config.max_volume))
-        result.setdefault("regime_tp_trending", float(signal_config.regime_tp_trending))
-        result.setdefault("regime_tp_ranging", float(signal_config.regime_tp_ranging))
-        result.setdefault("regime_tp_breakout", float(signal_config.regime_tp_breakout))
-        result.setdefault("regime_tp_uncertain", float(signal_config.regime_tp_uncertain))
-        result.setdefault("regime_sl_trending", float(signal_config.regime_sl_trending))
-        result.setdefault("regime_sl_ranging", float(signal_config.regime_sl_ranging))
-        result.setdefault("regime_sl_breakout", float(signal_config.regime_sl_breakout))
-        result.setdefault("regime_sl_uncertain", float(signal_config.regime_sl_uncertain))
+        for field_name in _SIGNAL_INHERIT_FIELDS:
+            val = getattr(signal_config, field_name, None)
+            if val is not None:
+                result.setdefault(field_name, float(val))
     except Exception:
         logger.debug("Failed to load signal config defaults for backtest", exc_info=True)
 
-    # risk.ini / risk.local.ini defaults — risk guard constraints
+    # risk.ini / risk.local.ini defaults — 自动继承风控约束
+    _RISK_INHERIT_FIELDS = {
+        "max_positions_per_symbol": ("max_positions", int),
+        "max_volume_per_order": ("max_volume_per_order", float),
+        "max_volume_per_symbol": ("max_volume_per_symbol", float),
+        "daily_loss_limit_pct": ("daily_loss_limit_pct", float),
+        "max_trades_per_day": ("max_trades_per_day", int),
+    }
     try:
         from src.config import get_risk_config
 
         risk_config = get_risk_config()
-        if "max_positions" not in result and risk_config.max_positions_per_symbol is not None:
-            result["max_positions"] = int(risk_config.max_positions_per_symbol)
-        if risk_config.max_volume_per_order is not None:
-            result.setdefault("max_volume_per_order", float(risk_config.max_volume_per_order))
-        if risk_config.max_volume_per_symbol is not None:
-            result.setdefault("max_volume_per_symbol", float(risk_config.max_volume_per_symbol))
-        if risk_config.daily_loss_limit_pct is not None:
-            result.setdefault("daily_loss_limit_pct", float(risk_config.daily_loss_limit_pct))
-        if risk_config.max_trades_per_day is not None:
-            result.setdefault("max_trades_per_day", int(risk_config.max_trades_per_day))
+        for src_field, (dst_field, cast_fn) in _RISK_INHERIT_FIELDS.items():
+            val = getattr(risk_config, src_field, None)
+            if val is not None:
+                result.setdefault(dst_field, cast_fn(val))
         if risk_config.max_trades_per_hour is not None:
             result.setdefault("max_trades_per_hour", int(risk_config.max_trades_per_hour))
     except Exception:
