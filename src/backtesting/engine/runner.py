@@ -257,6 +257,29 @@ class BacktestEngine:
         self._state_factory = _BacktestSignalState
         self._bars_to_evaluate = config.confidence.bars_to_evaluate
 
+        # Chandelier Exit 配置：从 signal.ini 加载（回测与实盘共享同一套出场参数）
+        from src.trading.positions.exit_rules import ChandelierConfig as _CC
+        from src.trading.positions.exit_rules import profile_from_aggression as _pfa
+        from src.config.signal import get_signal_config as _get_sc
+        try:
+            _sc = _get_sc()
+            self._chandelier_config = _CC(
+                regime_aware=_sc.chandelier_regime_aware,
+                fallback_profile=_pfa(_sc.chandelier_fallback_alpha),
+                breakeven_enabled=_sc.chandelier_breakeven_enabled,
+                breakeven_buffer_r=_sc.chandelier_breakeven_buffer_r,
+                min_breakeven_buffer=_sc.chandelier_min_breakeven_buffer,
+                signal_exit_enabled=_sc.chandelier_signal_exit_enabled,
+                signal_exit_confirmation_bars=_sc.chandelier_signal_exit_confirmation_bars,
+                timeout_bars=_sc.chandelier_timeout_bars,
+                max_tp_r=_sc.chandelier_max_tp_r,
+                enforce_r_floor=_sc.chandelier_enforce_r_floor,
+                aggression_overrides=dict(_sc.chandelier_aggression_overrides),
+                tf_trail_scale=dict(_sc.chandelier_tf_trail_scale),
+            )
+        except Exception:
+            self._chandelier_config = _CC(regime_aware=True)
+
     def _reset_run_state(self) -> None:
         """重置每次 run() 的运行时状态，确保引擎可复用。"""
         config = self._config
@@ -271,7 +294,6 @@ class BacktestEngine:
         self._signal_evaluations: List[SignalEvaluation] = []
         self._pending_evaluations: Dict[int, List[SignalEvaluation]] = {}
         self._recorded_evals: Set[Tuple[int, str]] = set()
-        from src.trading.positions.exit_rules import ChandelierConfig as _CC
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
             max_positions=risk.max_positions,
@@ -286,7 +308,7 @@ class BacktestEngine:
             daily_loss_limit_pct=risk.daily_loss_limit_pct,
             max_trades_per_day=risk.max_trades_per_day,
             max_trades_per_hour=risk.max_trades_per_hour,
-            chandelier_config=_CC(regime_aware=True),
+            chandelier_config=self._chandelier_config,
             end_of_day_close_enabled=pos.end_of_day_close_enabled,
             end_of_day_close_hour_utc=pos.end_of_day_close_hour_utc,
             end_of_day_close_minute_utc=pos.end_of_day_close_minute_utc,

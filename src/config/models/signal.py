@@ -190,3 +190,24 @@ class SignalConfig(BaseModel):
     # 键格式: <strategy_name> → {trending, ranging, breakout, uncertain}
     # ═══════════════════════════════════════════════════════════════
     regime_affinity_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+    # ═══════════════════════════════════════════════════════════════
+    # Chandelier Exit 出场系统 — [chandelier] section
+    # ═══════════════════════════════════════════════════════════════
+    chandelier_regime_aware: bool = True
+    chandelier_fallback_alpha: float = 0.50
+    chandelier_breakeven_enabled: bool = True
+    chandelier_breakeven_buffer_r: float = 0.1
+    chandelier_min_breakeven_buffer: float = 1.0
+    chandelier_signal_exit_enabled: bool = True
+    chandelier_signal_exit_confirmation_bars: int = 2
+    chandelier_timeout_bars: int = 0
+    chandelier_max_tp_r: float = 5.0
+    chandelier_enforce_r_floor: bool = True
+
+    # Aggression 系数覆盖 — [exit_profile] section
+    # 键格式: category__regime = alpha（例 trend__trending = 0.85）
+    chandelier_aggression_overrides: dict[tuple[str, str], float] = Field(default_factory=dict)
+
+    # Per-TF trail 缩放 — [exit_profile.tf_scale] section
+    chandelier_tf_trail_scale: dict[str, float] = Field(default_factory=dict)

@@ -121,6 +121,34 @@ def get_signal_config() -> SignalConfig:
                     if str(k).strip()
                 }
 
+    # ── Chandelier Exit 配置 ──────────────────────────────────────────────
+    chandelier_section = dict(merged.get("chandelier", {}))
+    exit_profile_section = dict(merged.get("exit_profile", {}))
+    exit_profile_tf_scale_section = dict(merged.get("exit_profile.tf_scale", {}))
+
+    # 解析 aggression 覆盖：category__regime = alpha
+    chandelier_aggression_overrides: dict[tuple[str, str], float] = {}
+    for raw_key, raw_value in exit_profile_section.items():
+        key = str(raw_key).strip()
+        if "__" not in key:
+            continue
+        parts = key.split("__", 1)
+        if len(parts) == 2:
+            cat, regime = parts[0].strip().lower(), parts[1].strip().lower()
+            try:
+                chandelier_aggression_overrides[(cat, regime)] = float(raw_value)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "signal.ini [exit_profile] invalid alpha for '%s': %r",
+                    key, raw_value,
+                )
+
+    # 解析 per-TF trail 缩放
+    chandelier_tf_trail_scale = _normalize_float_map(
+        exit_profile_tf_scale_section,
+        key_transform=lambda value: value.upper(),
+    )
+
     renamed_preview = {
         ("min_preview_confidence" if key == "min_confidence" else key): value
         for key, value in preview_section.items()
@@ -403,6 +431,13 @@ def get_signal_config() -> SignalConfig:
         **({"pending_entry_timeout_bars": pending_entry_timeout_bars} if pending_entry_timeout_bars else {}),
         **({"pending_entry_strategy_overrides": pending_entry_strategy_overrides} if pending_entry_strategy_overrides else {}),
         **({"pending_entry_tf_overrides": pending_entry_tf_overrides} if pending_entry_tf_overrides else {}),
+        # ── Chandelier Exit ──
+        **{
+            f"chandelier_{key}": value
+            for key, value in chandelier_section.items()
+        },
+        **({"chandelier_aggression_overrides": chandelier_aggression_overrides} if chandelier_aggression_overrides else {}),
+        **({"chandelier_tf_trail_scale": chandelier_tf_trail_scale} if chandelier_tf_trail_scale else {}),
     }
     # 自动计算 max_spread_points（base > 0 时覆盖手动值）
     auto_max_spread = _resolve_max_spread(signal_section)

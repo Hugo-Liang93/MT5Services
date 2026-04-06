@@ -11,8 +11,10 @@
   规则 5: 硬上界 TP — R 倍数天花板
   规则 6: 日终平仓 — 到达指定 UTC 时间全平
 
-Regime-aware: 根据 (strategy_category, current_regime) 动态选择出场 profile，
-实现"顺势仓位宽 trail，逆势仓位紧 trail"。
+Regime-aware: 根据 (strategy_category, current_regime) 通过 aggression 系数
+动态选择出场 profile，实现"顺势仓位宽 trail，逆势仓位紧 trail"。
+
+Per-TF 缩放: chandelier_multiplier 按时间框架缩放，补偿不同 TF 的 ATR 统计特性差异。
 
 设计原则：
   - 纯函数，无状态，不依赖任何运行时组件
@@ -33,62 +35,111 @@ from typing import Dict, List, Optional, Tuple
 
 @dataclass(frozen=True)
 class ExitProfile:
-    """单个出场参数集。可按 (strategy_category, regime) 组合配置。"""
+    """单个出场参数集。由 aggression 系数驱动，三参数内在关联。
+
+    aggression 越高 → 越"放手"：宽 trail、低锁利、晚 breakeven（顺势）
+    aggression 越低 → 越"保护"：紧 trail、高锁利、早 breakeven（逆势）
+    """
 
     chandelier_atr_multiplier: float = 2.5
     lock_ratio: float = 0.5
     breakeven_r: float = 1.0
 
 
-# ── Regime × Category 出场 profile 矩阵 ────────────────────────────────────
-# 查找优先级：(category, regime) → (category, "default") → DEFAULT_PROFILE
-# 顺势仓位：宽 trail + 低锁利（让利润跑）
-# 逆势仓位：窄 trail + 高锁利（快速保护）
+def profile_from_aggression(alpha: float) -> ExitProfile:
+    """从 aggression 系数 α ∈ [0, 1] 生成出场 profile。
 
-DEFAULT_PROFILE = ExitProfile(chandelier_atr_multiplier=2.5, lock_ratio=0.5, breakeven_r=1.0)
+    三参数公式（α 驱动，内在一致）：
+      chandelier_atr_multiplier = 1.5 + 2.0 × α    → [1.5, 3.5]
+      lock_ratio                = 0.9 - 0.5 × α    → [0.4, 0.9]
+      breakeven_r               = 0.6 + 0.6 × α    → [0.6, 1.2]
+    """
+    alpha = max(0.0, min(1.0, alpha))
+    return ExitProfile(
+        chandelier_atr_multiplier=round(1.5 + 2.0 * alpha, 4),
+        lock_ratio=round(0.9 - 0.5 * alpha, 4),
+        breakeven_r=round(0.6 + 0.6 * alpha, 4),
+    )
 
-EXIT_PROFILE_MATRIX: Dict[Tuple[str, str], ExitProfile] = {
+
+# ── Regime × Category → aggression 映射 ──────────────────────────────────
+# 判定逻辑：category 与 regime 是否"顺势"
+#   顺势 = (trend+trending) / (reversion+ranging) / (breakout+breakout|trending)
+#   逆势 = (trend+ranging) / (reversion+trending|breakout) / (breakout+ranging)
+#   中性 = uncertain 或其他
+
+# 默认 aggression 系数表（可被 INI 覆盖）
+DEFAULT_AGGRESSION_MAP: Dict[Tuple[str, str], float] = {
     # trend 策略
-    ("trend", "trending"):   ExitProfile(3.5, 0.4, 1.2),  # 顺势：宽 trail
-    ("trend", "ranging"):    ExitProfile(2.0, 0.8, 0.8),  # 逆势：紧 trail
-    ("trend", "breakout"):   ExitProfile(3.0, 0.5, 1.0),
-    ("trend", "uncertain"):  ExitProfile(2.5, 0.6, 0.9),
+    ("trend", "trending"):   0.85,   # 顺势：宽 trail
+    ("trend", "ranging"):    0.15,   # 逆势：紧 trail
+    ("trend", "breakout"):   0.65,   # 偏顺势
+    ("trend", "uncertain"):  0.50,   # 中性
     # reversion 策略
-    ("reversion", "trending"):  ExitProfile(1.5, 0.9, 0.6),  # 逆势：最紧
-    ("reversion", "ranging"):   ExitProfile(3.0, 0.5, 1.0),  # 顺势：宽 trail
-    ("reversion", "breakout"):  ExitProfile(1.5, 0.9, 0.6),  # 逆势
-    ("reversion", "uncertain"): ExitProfile(2.0, 0.7, 0.8),
+    ("reversion", "trending"):  0.10,   # 逆势：最紧
+    ("reversion", "ranging"):   0.80,   # 顺势：宽 trail
+    ("reversion", "breakout"):  0.10,   # 逆势
+    ("reversion", "uncertain"): 0.45,   # 偏逆势
     # breakout 策略
-    ("breakout", "trending"):   ExitProfile(3.5, 0.4, 1.2),  # 突破进入趋势
-    ("breakout", "ranging"):    ExitProfile(1.5, 0.9, 0.6),  # 假突破：快退
-    ("breakout", "breakout"):   ExitProfile(3.5, 0.4, 1.2),  # 顺势
-    ("breakout", "uncertain"):  ExitProfile(2.5, 0.6, 0.9),
+    ("breakout", "trending"):   0.85,   # 突破进入趋势
+    ("breakout", "ranging"):    0.10,   # 假突破：快退
+    ("breakout", "breakout"):   0.85,   # 顺势
+    ("breakout", "uncertain"):  0.50,   # 中性
+}
+
+DEFAULT_AGGRESSION = 0.50  # fallback
+
+# ── Per-TF trail 缩放因子 ─────────────────────────────────────────────────
+# 补偿不同 TF 的 ATR 统计特性差异：
+#   低 TF (M5/M15): ATR 自相关低、尾部风险高 → 需更宽 trail
+#   高 TF (H4/D1): ATR 平滑、可预测性高 → 可略紧
+
+DEFAULT_TF_TRAIL_SCALE: Dict[str, float] = {
+    "M5":  1.20,
+    "M15": 1.10,
+    "M30": 1.00,
+    "H1":  1.00,
+    "H4":  0.95,
+    "D1":  0.90,
 }
 
 
 def resolve_exit_profile(
     strategy_category: str,
     current_regime: str,
+    aggression_overrides: Optional[Dict[Tuple[str, str], float]] = None,
 ) -> ExitProfile:
-    """根据 (strategy_category, current_regime) 查找出场 profile。"""
+    """根据 (strategy_category, current_regime) 生成出场 profile。
+
+    查找优先级：aggression_overrides → DEFAULT_AGGRESSION_MAP → DEFAULT_AGGRESSION
+    """
     key = (strategy_category.lower(), current_regime.lower())
-    profile = EXIT_PROFILE_MATRIX.get(key)
-    if profile is not None:
-        return profile
-    # fallback: 只按 category 查默认
-    default_key = (strategy_category.lower(), "uncertain")
-    return EXIT_PROFILE_MATRIX.get(default_key, DEFAULT_PROFILE)
+    source = aggression_overrides if aggression_overrides else DEFAULT_AGGRESSION_MAP
+    alpha = source.get(key)
+    if alpha is None:
+        alpha = DEFAULT_AGGRESSION_MAP.get(key, DEFAULT_AGGRESSION)
+    return profile_from_aggression(alpha)
+
+
+def resolve_tf_trail_scale(
+    timeframe: str,
+    tf_scale_overrides: Optional[Dict[str, float]] = None,
+) -> float:
+    """返回 per-TF 的 Chandelier trail 缩放因子。"""
+    tf = timeframe.strip().upper() if timeframe else ""
+    if tf_scale_overrides and tf in tf_scale_overrides:
+        return tf_scale_overrides[tf]
+    return DEFAULT_TF_TRAIL_SCALE.get(tf, 1.0)
 
 
 @dataclass(frozen=True)
 class ChandelierConfig:
-    """Chandelier Exit 出场配置。"""
+    """Chandelier Exit 出场配置。全部参数从 INI 注入。"""
 
-    # 规则 2b: Breakeven + 梯度锁利基础参数
+    # 规则 2b: Breakeven + 连续锁利基础参数
     breakeven_enabled: bool = True
     breakeven_buffer_r: float = 0.1
     min_breakeven_buffer: float = 1.0
-    lock_step_r: float = 0.5
 
     # 规则 3: 信号反转
     signal_exit_enabled: bool = True
@@ -100,9 +151,19 @@ class ChandelierConfig:
     # 硬上界 TP
     max_tp_r: float = 5.0
 
-    # 是否启用 regime-aware profile（True=按矩阵查找，False=用 fallback_profile）
+    # 是否启用 regime-aware profile（True=按 aggression 查找，False=用 fallback_profile）
     regime_aware: bool = True
-    fallback_profile: ExitProfile = field(default_factory=lambda: DEFAULT_PROFILE)
+    fallback_profile: ExitProfile = field(default_factory=lambda: ExitProfile())
+
+    # Aggression 系数覆盖：(category, regime) → α ∈ [0, 1]
+    aggression_overrides: Dict[Tuple[str, str], float] = field(default_factory=dict)
+
+    # Per-TF trail 缩放因子
+    tf_trail_scale: Dict[str, float] = field(default_factory=dict)
+
+    # R 单位保护：effective_chandelier_mult ≥ initial_sl_atr_mult
+    # 防止 Chandelier 在入场时立即收紧 SL，导致 R 单位失真
+    enforce_r_floor: bool = True
 
 
 # ── 结果 ────────────────────────────────────────────────────────────────────
@@ -223,16 +284,15 @@ def compute_breakeven_sl(
     breakeven_buffer_r: float,
     min_buffer: float,
     already_activated: bool,
-    lock_step_r: float = 0.5,
     lock_ratio: float = 0.5,
 ) -> tuple[Optional[float], bool]:
-    """计算 breakeven + 梯度锁利 SL 位置。
+    """计算 breakeven + 连续锁利 SL 位置。
 
     当浮盈达到 breakeven_r 后，SL 移到保本位。
-    之后每增加 lock_step_r，锁定更多利润（按 lock_ratio 比例）。
+    之后随浮盈增长，连续锁定利润（按 lock_ratio 比例）。
 
-    例：breakeven_r=1.0, lock_step_r=0.5, lock_ratio=0.5
-      浮盈 1.0R → SL = entry + 0.1R（保本）
+    例：breakeven_r=1.0, lock_ratio=0.5
+      浮盈 1.0R → SL = entry + 0.1R（保本 buffer）
       浮盈 1.5R → SL = entry + 0.75R（锁 50% of 1.5R）
       浮盈 2.0R → SL = entry + 1.0R（锁 50% of 2.0R）
       浮盈 3.0R → SL = entry + 1.5R（锁 50% of 3.0R）
@@ -258,11 +318,9 @@ def compute_breakeven_sl(
     # 基础保本 buffer
     buffer = max(breakeven_buffer_r * initial_risk, min_buffer)
 
-    # 梯度锁利：超过 breakeven_r 的部分，按 lock_step_r 步进，锁定 lock_ratio 比例
-    if lock_step_r > 0 and lock_ratio > 0 and peak_profit_r > breakeven_r:
-        # 锁定金额 = 历史最高浮盈 × lock_ratio
+    # 连续锁利：锁定 = 峰值浮盈 × lock_ratio（线性跟踪，无阶梯跳变）
+    if lock_ratio > 0 and peak_profit_r > breakeven_r:
         lock_amount = peak_profit_r * lock_ratio * initial_risk
-        # 确保锁定金额至少 ≥ 保本 buffer
         lock_amount = max(lock_amount, buffer)
     else:
         lock_amount = buffer
@@ -378,12 +436,18 @@ def evaluate_exit(
     recent_signal_dirs: Optional[List[str]] = None,
     strategy_category: str = "",
     current_regime: str = "",
+    timeframe: str = "",
+    initial_sl_atr_mult: float = 0.0,
     config: Optional[ChandelierConfig] = None,
 ) -> ExitCheckResult:
-    """统一出场评估入口。按顺序执行 4 条规则。
+    """统一出场评估入口。按顺序执行 6 条规则。
 
-    根据 (strategy_category, current_regime) 动态选择出场 profile，
-    实现"顺势仓位宽 trail，逆势仓位紧 trail"。
+    根据 (strategy_category, current_regime) 通过 aggression 系数动态选择出场 profile。
+    Chandelier multiplier 再经 per-TF 缩放和 R 单位约束。
+
+    新增参数：
+      - timeframe: 当前持仓的 TF（用于 per-TF trail 缩放）
+      - initial_sl_atr_mult: 入场时的 SL ATR 倍数（用于 R 单位保护约束）
 
     调用方职责：
       - 每 bar 先更新 peak_price（调用前）
@@ -396,9 +460,20 @@ def evaluate_exit(
 
     # 根据 (category, regime) 查找出场 profile
     if config.regime_aware and strategy_category and current_regime:
-        profile = resolve_exit_profile(strategy_category, current_regime)
+        profile = resolve_exit_profile(
+            strategy_category, current_regime, config.aggression_overrides or None,
+        )
     else:
         profile = config.fallback_profile
+
+    # ── Per-TF trail 缩放 + R 单位保护 ──
+    raw_chandelier_mult = profile.chandelier_atr_multiplier
+    tf_scale = resolve_tf_trail_scale(timeframe, config.tf_trail_scale or None)
+    effective_chandelier_mult = raw_chandelier_mult * tf_scale
+
+    # R 单位保护：Chandelier mult 不得低于入场 SL mult，否则 R 单位失真
+    if config.enforce_r_floor and initial_sl_atr_mult > 0:
+        effective_chandelier_mult = max(effective_chandelier_mult, initial_sl_atr_mult)
 
     # 计算 R 倍数（用 bar_close 近似）
     r_multiple = 0.0
@@ -420,16 +495,15 @@ def evaluate_exit(
     if result is not None:
         return result
 
-    # ③ Chandelier trailing + Breakeven（参数来自 regime-aware profile）
+    # ③ Chandelier trailing + Breakeven（参数来自 regime-aware profile + TF 缩放）
     chandelier_sl = compute_chandelier_sl(
-        action, peak_price, current_atr, profile.chandelier_atr_multiplier,
+        action, peak_price, current_atr, effective_chandelier_mult,
     )
 
     breakeven_sl, be_activated = compute_breakeven_sl(
         action, entry_price, peak_price, initial_risk,
         profile.breakeven_r, config.breakeven_buffer_r,
         config.min_breakeven_buffer, breakeven_already_activated,
-        lock_step_r=config.lock_step_r,
         lock_ratio=profile.lock_ratio,
     )
 

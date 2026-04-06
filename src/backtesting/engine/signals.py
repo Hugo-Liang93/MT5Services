@@ -276,6 +276,7 @@ def execute_entry(
         bar_index=bar_index,
         atr_at_entry=atr_value,
         strategy_category=strategy_category,
+        timeframe=engine._config.timeframe,
     )
 
 

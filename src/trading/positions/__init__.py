@@ -5,6 +5,7 @@ from .exit_rules import (
     ExitCheckResult,
     evaluate_exit,
     check_end_of_day,
+    profile_from_aggression,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "ExitCheckResult",
     "evaluate_exit",
     "check_end_of_day",
+    "profile_from_aggression",
 ]

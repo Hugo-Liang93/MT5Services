@@ -22,6 +22,11 @@ from ..closeout.service import ExposureCloseoutController
 from ..ports import PositionManagementPort
 from ..execution.sizing import TradeParameters
 
+_TF_SECONDS: dict[str, int] = {
+    "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+    "H1": 3600, "H4": 14400, "D1": 86400, "W1": 604800,
+}
+
 
 class IndicatorSource(Protocol):
     """读取已计算好的指标快照（由 IndicatorManager 实现）。"""
@@ -70,6 +75,7 @@ class TrackedPosition:
     bars_held: int = 0
     breakeven_activated: bool = False
     strategy_category: str = ""  # trend / reversion / breakout
+    sl_atr_mult: float = 0.0  # 入场 SL 的 ATR 倍数（用于 Chandelier R 单位保护）
     recent_signal_dirs: list = field(default_factory=list)
     # 出场追溯字段（由 _check_chandelier_exit 写入，on_position_closed 读取）
     last_exit_reason: str = ""  # trailing_stop / signal_exit / timeout / stop_loss / take_profit
@@ -216,6 +222,9 @@ class PositionManager:
             ),
             current_price=current_price,
         )
+        # 计算入场 SL ATR 倍数（用于 Chandelier R 单位保护约束）
+        if params.atr_value > 0 and params.sl_distance > 0:
+            pos.sl_atr_mult = round(params.sl_distance / params.atr_value, 4)
         with self._lock:
             self._positions[ticket] = pos
         if self._on_position_tracked is not None:
@@ -320,24 +329,29 @@ class PositionManager:
                 "action": pos.action,
                 "timeframe": pos.timeframe,
                 "strategy": pos.strategy,
+                "strategy_category": pos.strategy_category,
                 "confidence": pos.confidence,
                 "regime": pos.regime,
                 "source": pos.source,
-                "comment": pos.comment,
                 "entry_price": pos.entry_price,
                 "stop_loss": pos.stop_loss,
                 "take_profit": pos.take_profit,
                 "volume": pos.volume,
-                "breakeven_applied": pos.breakeven_applied,
-                "trailing_active": pos.trailing_active,
-                "highest_price": pos.highest_price,
-                "lowest_price": pos.lowest_price,
                 "current_price": pos.current_price,
+                "peak_price": pos.peak_price,
                 "unrealized_pnl": (
                     round((pos.current_price - pos.entry_price) * (1 if pos.action == "buy" else -1), 2)
                     if pos.current_price is not None
                     else None
                 ),
+                # Chandelier Exit 实时状态
+                "initial_risk": round(pos.initial_risk, 2),
+                "r_multiple": pos.last_r_multiple,
+                "bars_held": pos.bars_held,
+                "breakeven_activated": pos.breakeven_activated,
+                "sl_atr_mult": pos.sl_atr_mult,
+                "last_exit_reason": pos.last_exit_reason or None,
+                "last_exit_regime": pos.last_exit_regime or None,
                 "opened_at": pos.opened_at.isoformat(),
             }
             for pos in snapshot
@@ -346,6 +360,7 @@ class PositionManager:
     def status(self) -> Dict[str, Any]:
         with self._lock:
             position_count = len(self._positions)
+        cfg = self._chandelier_config
         return {
             "running": self.is_running(),
             "reconcile_interval": self._reconcile_interval,
@@ -356,11 +371,16 @@ class PositionManager:
             "last_error": self._last_error,
             "tracked_positions": position_count,
             "config": {
-                "trailing_atr_multiplier": self.trailing_atr_multiplier,
-                "breakeven_atr_threshold": self.breakeven_atr_threshold,
                 "end_of_day_close_enabled": self.end_of_day_close_enabled,
                 "end_of_day_close_hour_utc": self.end_of_day_close_hour_utc,
                 "end_of_day_close_minute_utc": self.end_of_day_close_minute_utc,
+                "chandelier_regime_aware": cfg.regime_aware,
+                "chandelier_max_tp_r": cfg.max_tp_r,
+                "chandelier_breakeven_buffer_r": cfg.breakeven_buffer_r,
+                "chandelier_signal_exit_bars": cfg.signal_exit_confirmation_bars,
+                "chandelier_timeout_bars": cfg.timeout_bars,
+                "chandelier_enforce_r_floor": cfg.enforce_r_floor,
+                "chandelier_tf_trail_scale": dict(cfg.tf_trail_scale) if cfg.tf_trail_scale else {},
             },
             "last_end_of_day_gate_date": self._last_end_of_day_gate_date,
             "last_end_of_day_close_date": self._last_end_of_day_close_date,
@@ -572,6 +592,11 @@ class PositionManager:
                 ),
                 trailing_active=bool(merged_context.get("trailing_active")),
             )
+            # 计算 sl_atr_mult（恢复路径：从 entry/sl/atr 反算）
+            if pos.atr_at_entry > 0 and pos.stop_loss > 0:
+                pos.sl_atr_mult = round(
+                    abs(pos.entry_price - pos.stop_loss) / pos.atr_at_entry, 4,
+                )
             with self._lock:
                 self._positions[ticket] = pos
             if self._on_position_tracked is not None:
@@ -808,6 +833,13 @@ class PositionManager:
         except Exception:
             return pos.regime or ""
 
+    @staticmethod
+    def _compute_bars_held(pos: TrackedPosition) -> int:
+        """从持仓时长和 TF 计算已持有 bar 数。"""
+        tf_sec = _TF_SECONDS.get(pos.timeframe.upper(), 3600)
+        elapsed = (datetime.now(timezone.utc) - pos.opened_at).total_seconds()
+        return max(0, int(elapsed / tf_sec))
+
     def _check_chandelier_exit(self, pos: TrackedPosition, current_price: float) -> None:
         """Chandelier Exit 持仓检查。
 
@@ -819,6 +851,7 @@ class PositionManager:
         if pos.initial_risk <= 0:
             return
 
+        pos.bars_held = self._compute_bars_held(pos)
         current_atr = self._get_current_atr(pos)
         current_regime = self._get_current_regime(pos)
 
@@ -839,6 +872,8 @@ class PositionManager:
             recent_signal_dirs=pos.recent_signal_dirs,
             strategy_category=pos.strategy_category,
             current_regime=current_regime,
+            timeframe=pos.timeframe,
+            initial_sl_atr_mult=pos.sl_atr_mult,
             config=self._chandelier_config,
         )
 

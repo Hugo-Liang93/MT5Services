@@ -51,6 +51,8 @@ class _Position:
     breakeven_activated: bool = False
     recent_signal_dirs: list = field(default_factory=list)  # 最近 N bar 策略方向
     strategy_category: str = ""  # trend / reversion / breakout
+    timeframe: str = ""  # 用于 per-TF trail 缩放
+    sl_atr_mult: float = 0.0  # 入场 SL 的 ATR 倍数（用于 R 单位保护）
     # 旧体系兼容字段
     breakeven_applied: bool = False
     trailing_active: bool = False
@@ -221,6 +223,7 @@ class PortfolioTracker:
         bar_index: int,
         atr_at_entry: float = 0.0,
         strategy_category: str = "",
+        timeframe: str = "",
     ) -> bool:
         """尝试开仓。
 
@@ -259,6 +262,8 @@ class PortfolioTracker:
             initial_risk=initial_risk,
             peak_price=entry_price,
             strategy_category=strategy_category,
+            timeframe=timeframe,
+            sl_atr_mult=round(trade_params.sl_distance / atr_at_entry, 4) if atr_at_entry > 0 else 0.0,
             highest_price=entry_price if action == "buy" else None,
             lowest_price=entry_price if action == "sell" else None,
         )
@@ -352,7 +357,7 @@ class PortfolioTracker:
                 if len(pos.recent_signal_dirs) > max_keep:
                     pos.recent_signal_dirs = pos.recent_signal_dirs[-max_keep:]
 
-            # Chandelier Exit 统一评估（regime-aware）
+            # Chandelier Exit 统一评估（regime-aware + per-TF 缩放 + R 单位保护）
             result = evaluate_exit(
                 action=pos.direction,
                 entry_price=pos.entry_price,
@@ -368,6 +373,8 @@ class PortfolioTracker:
                 recent_signal_dirs=pos.recent_signal_dirs,
                 strategy_category=pos.strategy_category,
                 current_regime=current_regime,
+                timeframe=pos.timeframe,
+                initial_sl_atr_mult=pos.sl_atr_mult,
                 config=self._chandelier_config,
             )
 
