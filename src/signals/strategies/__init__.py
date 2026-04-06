@@ -30,6 +30,7 @@ from .price_action import OrderBlockEntryStrategy, PriceActionReversal
 from .session import AsianRangeBreakout, SessionMomentumBias
 from .trendline import TrendlineThreeTouchStrategy
 from .trend import EmaRibbonStrategy, FibPullbackStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
+from .volatility_structure import BarMomentumSurge, RangeBoxBreakout
 
 __all__ = [
     "AsianRangeBreakout",
@@ -60,4 +61,6 @@ __all__ = [
     "TrendlineThreeTouchStrategy",
     "UnifiedIndicatorSourceAdapter",
     "VwapReversionStrategy",
+    "RangeBoxBreakout",
+    "BarMomentumSurge",
 ]

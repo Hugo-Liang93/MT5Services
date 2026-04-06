@@ -236,8 +236,30 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 1. 对应文件实现策略类（必填：`name` / `required_indicators` / `preferred_scopes` / `regime_affinity`）
 2. `src/signals/strategies/catalog.py` 注册
 3. `src/signals/strategies/__init__.py` 导出
-4. `tests/signals/` 添加测试
-5. 详细 scope 决策树见 `docs/signal-system.md`
+4. `signal.ini` + `signal.local.ini` 的 `[strategy_timeframes]` **必须同时添加**（local 覆盖 ini）
+5. 指标字段名确认：先在 `src/indicators/core/` 中检查 return dict keys（`donchian_upper` 不是 `upper`）
+6. `tests/signals/` 添加测试
+7. 详细 scope 决策树见 `docs/signal-system.md`
+
+### 策略生命周期管理
+
+策略有三种状态：**活跃 → 冻结 → 废弃**。核心原则：**不物理删除策略代码，通过配置控制生命周期**。
+
+**冻结（Freeze）**：回测表现不佳 → `signal.local.ini` 中 `[regime_affinity.<name>]` 全设 0.0
+- 策略代码保留，回测仍会评估（但 affinity=0 不产生交易）
+- 市场环境变化后可随时恢复 affinity 重新验证
+
+**废弃（Deprecate）**：连续 3 个季度冻结 + 与其他策略高度冗余（相关性 >0.90）
+- 从 `[strategy_timeframes]` 移除所有 TF 条目 → 不加载到回测引擎
+- 代码中策略类添加 `# DEPRECATED: <reason>` 注释
+- 减少回测计算开销，但代码资产不丢失
+
+**判定标准**（回测驱动）：
+- 冻结触发：单 TF 回测 WR<35% 且 PnL<0 持续 2 个季度
+- 降权触发：与同组其他策略相关性 >0.70 → affinity 降低但不归零
+- 废弃触发：冻结满 3 个季度 + 相关性 >0.90（与存活策略信号完全重复）
+
+**禁止操作**：直接从 `catalog.py` 删除策略注册（会导致历史回测不可复现）
 
 ### 新增 API 路由
 1. `src/api/<domain>_routes/` 创建路由文件

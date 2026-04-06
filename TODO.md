@@ -67,18 +67,15 @@
 
 ---
 
-## P1.5: 出场参数配置化（P2 前置 — 下个 session 首要）
+## P1.5: 出场参数配置化 ✅ 已完成（2026-04-06）
 
-> 当前 EXIT_PROFILE_MATRIX 硬编码在 exit_rules.py 中。所有需要回测验证的参数必须配置化。
-
-- [ ] signal.ini 新增 `[position_management]` section（ChandelierConfig 参数）
-- [ ] signal.ini 新增 `[exit_profile.*]` sections（category × regime 矩阵）
-- [ ] signal.ini 新增 `[exit_profile.tf_scale]` section（per-TF 缩放因子）
-- [ ] src/config/signal.py 解析上述 sections
-- [ ] exit_rules.py 从配置加载 profile，代码中无硬编码默认值
-- [ ] 工厂函数传入解析后的配置
+- [x] signal.ini 新增 `[chandelier]` + `[exit_profile]` + `[exit_profile.tf_scale]`
+- [x] aggression 系数驱动 profile（α → mult/lock/breakeven_r，36→12 参数）
+- [x] per-TF trail 缩放（M5:×1.20 → D1:×0.90）
+- [x] R 单位保护约束（chandelier_mult ≥ initial_SL_mult）
+- [x] 删除死参数 lock_step_r（连续锁利，无阶梯跳变）
+- [x] 实盘监控修复：bars_held 动态计算 + active_positions Chandelier 状态 + status 配置可观测
 - [ ] H1 回测验证新出场系统（对比旧体系基线）
-- [ ] 用 `tools/sltp_grid_search.py` 搜索最优 profile 参数
 - [ ] 确认 W/L ≥ 1.0 + WR ≥ 45% 的可行参数区间
 
 ---

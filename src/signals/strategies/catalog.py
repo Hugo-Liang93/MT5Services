@@ -38,6 +38,7 @@ from .trend import (
     SupertrendStrategy,
 )
 from .trendline import TrendlineThreeTouchStrategy
+from .volatility_structure import BarMomentumSurge, RangeBoxBreakout
 
 
 def build_named_strategy_catalog(
@@ -82,6 +83,8 @@ def build_named_strategy_catalog(
         AdxTrendFadeStrategy(),
         TrendlineThreeTouchStrategy(),
         MultiTimeframeConfirmStrategy(htf_cache=htf_cache),
+        RangeBoxBreakout(),
+        BarMomentumSurge(),
     ):
         strategies[strategy.name] = strategy
 
