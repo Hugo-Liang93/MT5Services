@@ -30,15 +30,14 @@
 
 > 目标：用数据证明策略体系有效，而不是靠直觉。没有基线无法判断任何调参是"改进"还是"过拟合"。
 
-### 0.1 各 TF 基线回测
+### 0.1 各 TF 基线回测 ✅ 已完成（2026-04-06）
 
-- [ ] M5 基线回测（近 3 个月数据）→ 记录 PnL / WR / Sharpe / MaxDD / 总交易数
-- [ ] M15 基线回测 → 同上
-- [ ] M30 基线回测 → 同上（此前已有初步结果，需用最新参数重跑）
-- [ ] H1 基线回测 → 同上
-- [ ] 汇总对比表：哪些 TF 盈利、哪些亏损、哪些样本不足
-- 工具：`tools/backtest_runner.py` 本地直接执行
-- 产出：每个 TF 的基线数据写入回测结果表，作为后续所有优化的参照基准
+- [x] M5/M15/M30/H1 基线回测（旧出场体系）→ 全部亏损
+- [x] H1 零成本验证 → WR=72.5%, Sharpe=1.03 → **策略方向判断有效**
+- [x] SL/TP 网格搜索 → 36 组合，确认固定 ATR 倍数模式无法解决盈亏比问题
+- [x] Chandelier Exit 出场系统重构 → regime-aware + 梯度锁利
+- 结论：问题在出场结构（盈亏比 W/L=0.4），不在策略方向。已切换到 Chandelier Exit
+- 下一步：出场参数配置化 → 回测验证 → 策略裁剪
 
 ### 0.2 策略相关性分析 + 裁剪
 
@@ -65,6 +64,22 @@
 - [ ] 对比 Paper Trading 实际绩效 vs 回测预期（关注：成交率、滑点假设、信号延迟）
 - [ ] 如果 Paper 结果与回测差距 >30%，排查原因（过拟合？执行假设不成立？）
 - 判定标准：Paper 结果确认后才可进入 P2 实盘阶段
+
+---
+
+## P1.5: 出场参数配置化（P2 前置 — 下个 session 首要）
+
+> 当前 EXIT_PROFILE_MATRIX 硬编码在 exit_rules.py 中。所有需要回测验证的参数必须配置化。
+
+- [ ] signal.ini 新增 `[position_management]` section（ChandelierConfig 参数）
+- [ ] signal.ini 新增 `[exit_profile.*]` sections（category × regime 矩阵）
+- [ ] signal.ini 新增 `[exit_profile.tf_scale]` section（per-TF 缩放因子）
+- [ ] src/config/signal.py 解析上述 sections
+- [ ] exit_rules.py 从配置加载 profile，代码中无硬编码默认值
+- [ ] 工厂函数传入解析后的配置
+- [ ] H1 回测验证新出场系统（对比旧体系基线）
+- [ ] 用 `tools/sltp_grid_search.py` 搜索最优 profile 参数
+- [ ] 确认 W/L ≥ 1.0 + WR ≥ 45% 的可行参数区间
 
 ---
 

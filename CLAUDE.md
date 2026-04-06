@@ -118,7 +118,7 @@ raw_confidence（策略规则输出）
 6. **Pre-trade risk service** — DailyLossLimit / AccountSnapshot / MarginAvailability / TradeFrequency
 7. **Executor safety** — 技术熔断器 + 持仓数量预检 + spread_to_stop_ratio 检查
 8. **ExposureCloseout** — 日终自动平仓 + 挂单撤销
-9. **PositionManager** — 持仓监控、止损跟踪、breakeven
+9. **PositionManager + Chandelier Exit** — 统一出场规则（`exit_rules.py`）：初始 SL / Chandelier trailing（current_ATR 动态）/ breakeven + 梯度锁利 / 信号反转 N-bar 确认 / 超时 / 日终平仓。Regime-aware：按 (category × regime) 选择出场 profile
 10. **RegimeSizing** — TF 差异化 SL/TP（M5:1.8/2.5 ~ D1:2.5/3.5 ATR）+ TF 差异化风险%（M5:×0.50 ~ D1:×1.50）+ per-TF min_confidence
 
 ### Warmup 屏障
@@ -175,6 +175,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | TradingModule | `src/trading/application/module.py` |
 | TradeExecutor | `src/trading/execution/executor.py` |
 | PositionManager | `src/trading/positions/manager.py` |
+| 统一出场规则（Chandelier Exit） | `src/trading/positions/exit_rules.py` |
 | PendingOrderManager | `src/trading/pending/manager.py` |
 | HealthMonitor (内存环形缓冲) | `src/monitoring/health/monitor.py` |
 | MetricsStore | `src/monitoring/health/metrics_store.py` |
