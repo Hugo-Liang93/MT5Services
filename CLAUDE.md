@@ -326,11 +326,9 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 
 > 仅列出仍在生效的、影响日常开发的问题。已修复的历史问题见 git log。
 
-- **Hot Reload 限制**：`[regime_detector]` 和 `[strategy_params]` 暂不支持热加载，需重启服务生效
-- **Config snapshot at import time**：`src/api/__init__.py` 在导入时一次性读取 API 配置，修改 `market.ini` 后需重启
-- **deps.py 初始化无失败标记**：`_ensure_initialized()` 在 `build_app_container()` 抛异常后不设 init_failed 标志，后续请求反复重试
+- **Config snapshot at import time**：`src/api/__init__.py` 在导入时一次性读取 API 配置（`@lru_cache`），修改 `market.ini` 后需调用 `/v1/admin/reload-config` 或重启
 - **回测进程内执行**：当前回测任务通过 FastAPI `BackgroundTasks` 在进程内异步执行，API 重启会丢失正在运行的任务
-- **WF 结果内存缓存**：`WalkForwardResult` 对象缓存在内存中，API 重启后丢失
+- **WF 结果内存缓存**：`WalkForwardResult` 对象缓存在内存中（上限 50），API 重启后丢失
 - **generate_report(hours=24)**：内存环形缓冲 ring_size=2400 仅覆盖 ~3.3h，24h 报告窗口内早期数据为空
 - **Flaky 集成测试风险**：`test_signal_trade_chain.py` 中的测试依赖 `deps` 模块全局状态隔离，若新增 API 测试触发 `_ensure_initialized()` 可能污染后续测试
 
