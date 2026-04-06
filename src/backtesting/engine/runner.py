@@ -271,12 +271,10 @@ class BacktestEngine:
         self._signal_evaluations: List[SignalEvaluation] = []
         self._pending_evaluations: Dict[int, List[SignalEvaluation]] = {}
         self._recorded_evals: Set[Tuple[int, str]] = set()
+        from src.trading.positions.exit_rules import ChandelierConfig as _CC
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
             max_positions=risk.max_positions,
-            trailing_tp_enabled=ttp.enabled,
-            trailing_tp_activation_atr=ttp.activation_atr,
-            trailing_tp_trail_atr=ttp.trail_atr,
             commission_per_lot=risk.commission_per_lot,
             slippage_points=risk.slippage_points,
             contract_size=pos.contract_size,
@@ -288,8 +286,7 @@ class BacktestEngine:
             daily_loss_limit_pct=risk.daily_loss_limit_pct,
             max_trades_per_day=risk.max_trades_per_day,
             max_trades_per_hour=risk.max_trades_per_hour,
-            trailing_atr_multiplier=pos.trailing_atr_multiplier,
-            breakeven_atr_threshold=pos.breakeven_atr_threshold,
+            chandelier_config=_CC(regime_aware=True),
             end_of_day_close_enabled=pos.end_of_day_close_enabled,
             end_of_day_close_hour_utc=pos.end_of_day_close_hour_utc,
             end_of_day_close_minute_utc=pos.end_of_day_close_minute_utc,
@@ -399,6 +396,9 @@ class BacktestEngine:
         # 3. 逐 bar 回放
         equity_sample_interval = max(1, len(test_bars) // 500)  # 最多 500 个采样点
 
+        # 上一 bar 的策略/投票方向（供 Chandelier 信号反转检查）
+        _last_signal_directions: Dict[str, str] = {}
+
         for i in range(warmup_end, len(all_bars)):
             bar = all_bars[i]
             bar_index = i - warmup_end
@@ -413,8 +413,19 @@ class BacktestEngine:
             if indicators:
                 regime, soft_regime_dict = _detect_regime_helper(self, indicators)
 
-            # 5. 检查持仓 SL/TP + 指标驱动出场
-            closed_trades = self._portfolio.check_exits(bar, bar_index, indicators)
+            # 提取当前 ATR 供 Chandelier Exit 使用
+            _current_atr = 0.0
+            atr_data = indicators.get("atr14") if indicators else None
+            if isinstance(atr_data, dict):
+                _current_atr = float(atr_data.get("atr", 0.0) or 0.0)
+
+            # 5. 检查持仓出场（Chandelier Exit 4 规则，regime-aware）
+            closed_trades = self._portfolio.check_exits(
+                bar, bar_index, indicators,
+                current_atr=_current_atr,
+                current_regime=regime.value if regime else "",
+                signal_directions=_last_signal_directions,
+            )
             # 连败熔断器 + PerformanceTracker：记录交易结果
             if closed_trades:
                 for trade in closed_trades:
@@ -549,6 +560,25 @@ class BacktestEngine:
                     logger.warning(
                         "VotingEngine failed at bar %d", bar_index, exc_info=True
                     )
+
+            # 9.5 收集本 bar 的策略/投票方向（供下一 bar 的 Chandelier 信号反转检查）
+            _last_signal_directions = {}
+            for d in decisions:
+                if d.direction in ("buy", "sell"):
+                    _last_signal_directions[d.strategy] = d.direction
+            # 投票组结果也记录（持仓策略名是投票组名，如 "momentum_vote"）
+            if actionable and self._voting_group_engines:
+                for group_cfg, group_engine in self._voting_group_engines:
+                    group_decisions = [
+                        dd for dd in actionable if dd.strategy in group_cfg.strategies
+                    ]
+                    if group_decisions:
+                        vote = group_engine.vote(
+                            group_decisions, regime=regime, scope="confirmed",
+                            exclude_composite=False,
+                        )
+                        if vote is not None and vote.direction in ("buy", "sell"):
+                            _last_signal_directions[vote.strategy] = vote.direction
 
             # 10. 记录资金曲线（采样）
             if bar_index % equity_sample_interval == 0:

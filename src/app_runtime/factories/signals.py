@@ -451,17 +451,16 @@ def build_signal_components(
     end_of_day_closeout = ExposureCloseoutController(
         ExposureCloseoutService(trade_module)
     )
+    from src.trading.positions.exit_rules import ChandelierConfig as _ChandelierConfig
     position_manager = PositionManager(
         trading_module=trade_module,
         end_of_day_closeout=end_of_day_closeout,
-        trailing_atr_multiplier=signal_config.trailing_atr_multiplier,
-        breakeven_atr_threshold=signal_config.breakeven_atr_threshold,
+        chandelier_config=_ChandelierConfig(regime_aware=True),
+        indicator_source=indicator_manager,
+        regime_detector=regime_detector,
         end_of_day_close_enabled=signal_config.end_of_day_close_enabled,
         end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
         end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
-        trailing_tp_enabled=signal_config.trailing_tp_enabled,
-        trailing_tp_activation_atr=signal_config.trailing_tp_activation_atr,
-        trailing_tp_trail_atr=signal_config.trailing_tp_trail_atr,
     )
     position_manager._sl_tp_history_writer = storage_writer.db.write_position_sl_tp_history
     # 交易结果追踪器：追踪实际执行的交易盈亏（由 TradeExecutor 登记，PositionManager 关仓评估）
@@ -529,6 +528,7 @@ def build_signal_components(
     )
     _executor_holder.append(trade_executor)
     signal_runtime.add_signal_listener(trade_executor.on_signal_event)
+    signal_runtime.add_signal_listener(position_manager.on_signal_event)
     htf_cache.attach(signal_runtime)
 
     # 策略级 intrabar 置信度衰减覆盖（从 strategy_params *__intrabar_decay 提取）

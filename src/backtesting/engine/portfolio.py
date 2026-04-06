@@ -1,10 +1,8 @@
-"""组合跟踪器：模拟持仓管理，复用实盘 position_rules 纯逻辑。
+"""组合跟踪器：模拟持仓管理。
 
-设计原则：回测使用实盘方法，不重新实现。
-- SL/TP 触发检测：回测独有（实盘由 MT5 服务器执行）
-- breakeven / trailing stop 判定：复用 src/trading/position_rules
-- 日终平仓判定：复用 src/trading/position_rules
-- PnL 计算：与实盘 _close_position 逻辑一致
+出场系统：统一出场规则（src/trading/positions/exit_rules.py）
+  4 条独立规则：初始 SL / Chandelier trailing / 信号反转 / 超时
+  回测和实盘共用同一套纯函数（evaluate_exit）。
 """
 
 from __future__ import annotations
@@ -17,11 +15,10 @@ from datetime import datetime, timedelta
 from typing import Deque, Dict, List, Optional, Tuple
 
 from src.clients.mt5_market import OHLC
-from src.trading.positions import (
-    check_breakeven,
-    check_trailing_stop,
-    check_trailing_take_profit,
-    should_close_end_of_day,
+from src.trading.positions.exit_rules import (
+    ChandelierConfig,
+    evaluate_exit,
+    check_end_of_day,
 )
 from src.trading.execution import TradeParameters
 
@@ -46,7 +43,15 @@ class _Position:
     confidence: float
     entry_bar_index: int  # 开仓时的 bar 索引（用于计算 bars_held）
     atr_at_entry: float = 0.0
-    # breakeven / trailing 状态（与实盘 TrackedPosition 一致）
+    # Chandelier Exit 状态
+    initial_risk: float = 0.0  # R = |entry - initial_sl|，开仓时计算，不变
+    peak_price: Optional[float] = None  # 持仓期最高价（多头）/最低价（空头）
+    bars_held: int = 0
+    bars_since_peak: int = 0
+    breakeven_activated: bool = False
+    recent_signal_dirs: list = field(default_factory=list)  # 最近 N bar 策略方向
+    strategy_category: str = ""  # trend / reversion / breakout
+    # 旧体系兼容字段
     breakeven_applied: bool = False
     trailing_active: bool = False
     highest_price: Optional[float] = None
@@ -58,10 +63,8 @@ class PortfolioTracker:
 
     功能：
     - 模拟开仓/平仓
-    - 每根 bar 检查 SL/TP 触发
-    - breakeven 止损（复用实盘 position_rules.check_breakeven）
-    - trailing stop（复用实盘 position_rules.check_trailing_stop）
-    - 日终自动平仓（复用实盘 position_rules.should_close_end_of_day）
+    - 每根 bar 检查出场（Chandelier Exit 4 规则）
+    - 日终自动平仓
     - 追踪资金曲线
     - 记录所有已关闭交易
     """
@@ -81,17 +84,12 @@ class PortfolioTracker:
         daily_loss_limit_pct: Optional[float] = None,
         max_trades_per_day: Optional[int] = None,
         max_trades_per_hour: Optional[int] = None,
-        # breakeven / trailing（与实盘 PositionManager 相同参数）
-        trailing_atr_multiplier: float = 1.0,
-        breakeven_atr_threshold: float = 1.0,
+        # Chandelier Exit 出场配置
+        chandelier_config: Optional[ChandelierConfig] = None,
         # 日终平仓（与实盘 PositionManager 相同参数）
         end_of_day_close_enabled: bool = False,
         end_of_day_close_hour_utc: int = 21,
         end_of_day_close_minute_utc: int = 0,
-        # Trailing Take Profit（盈利后主动收缩 TP）
-        trailing_tp_enabled: bool = False,
-        trailing_tp_activation_atr: float = 1.5,
-        trailing_tp_trail_atr: float = 0.8,
     ) -> None:
         self.initial_balance = initial_balance
         self.current_balance = initial_balance
@@ -108,18 +106,13 @@ class PortfolioTracker:
         self._daily_loss_limit_pct = daily_loss_limit_pct
         self._max_trades_per_day = max_trades_per_day
         self._max_trades_per_hour = max_trades_per_hour
-        # breakeven / trailing 配置
-        self._trailing_atr_multiplier = trailing_atr_multiplier
-        self._breakeven_atr_threshold = breakeven_atr_threshold
+        # Chandelier Exit
+        self._chandelier_config = chandelier_config or ChandelierConfig()
         # 日终平仓配置
         self._end_of_day_close_enabled = end_of_day_close_enabled
         self._end_of_day_close_hour_utc = end_of_day_close_hour_utc
         self._end_of_day_close_minute_utc = end_of_day_close_minute_utc
         self._last_end_of_day_close_date: Optional[str] = None
-        # Trailing Take Profit 配置
-        self._trailing_tp_enabled = trailing_tp_enabled
-        self._trailing_tp_activation_atr = trailing_tp_activation_atr
-        self._trailing_tp_trail_atr = trailing_tp_trail_atr
 
         self._open_positions: List[_Position] = []
         self._closed_trades: List[TradeRecord] = []
@@ -227,6 +220,7 @@ class PortfolioTracker:
         confidence: float,
         bar_index: int,
         atr_at_entry: float = 0.0,
+        strategy_category: str = "",
     ) -> bool:
         """尝试开仓。
 
@@ -248,6 +242,7 @@ class PortfolioTracker:
         self.current_balance -= commission
 
         signal_id = f"bt_{uuid.uuid4().hex[:8]}"
+        initial_risk = abs(entry_price - trade_params.stop_loss)
         pos = _Position(
             signal_id=signal_id,
             strategy=strategy,
@@ -261,6 +256,9 @@ class PortfolioTracker:
             confidence=confidence,
             entry_bar_index=bar_index,
             atr_at_entry=atr_at_entry,
+            initial_risk=initial_risk,
+            peak_price=entry_price,
+            strategy_category=strategy_category,
             highest_price=entry_price if action == "buy" else None,
             lowest_price=entry_price if action == "sell" else None,
         )
@@ -284,103 +282,118 @@ class PortfolioTracker:
         bar: OHLC,
         bar_index: int,
         indicators: Dict[str, Dict] = {},  # noqa: B006
+        *,
+        current_atr: float = 0.0,
+        current_regime: str = "",
+        signal_directions: Optional[Dict[str, str]] = None,
     ) -> List[TradeRecord]:
-        """检查所有持仓的 SL/TP 是否触发。
+        """检查所有持仓是否应平仓。
 
-        使用 bar 的 high/low 判断触发，先检查 SL 再检查 TP（保守估计）。
-        同时复用实盘 breakeven/trailing 逻辑更新 SL。
-        在 SL/TP 触发前执行指标驱动出场检测（收紧 SL）。
+        使用 Chandelier Exit 4 规则系统：
+        1. 初始 SL 触发
+        2. Chandelier trailing（current_ATR 动态）+ Breakeven 保护
+        3. 信号反转 N-bar 确认
+        4. 超时退出
+
+        Args:
+            bar: 当前 OHLC bar
+            bar_index: bar 索引
+            indicators: 指标数据（未使用，保留接口兼容）
+            current_atr: 当前 ATR 值（Chandelier trailing 用）
+            signal_directions: 当前 bar 各策略/投票组方向
+                {"momentum_vote": "buy", "trend_triple_confirm": "sell", ...}
         """
         # 先检查日终平仓
         if self._end_of_day_close_enabled:
-            eod = should_close_end_of_day(
+            eod_triggered = check_end_of_day(
                 current_time=bar.time,
                 close_hour_utc=self._end_of_day_close_hour_utc,
                 close_minute_utc=self._end_of_day_close_minute_utc,
                 last_close_date=self._last_end_of_day_close_date,
             )
-            if eod.should_close and self._open_positions:
+            if eod_triggered and self._open_positions:
                 self._last_end_of_day_close_date = bar.time.date().isoformat()
                 return self._close_all_with_reason(bar, bar_index, "end_of_day")
 
         closed: List[TradeRecord] = []
         remaining: List[_Position] = []
+        sig_dirs = signal_directions or {}
 
         for pos in self._open_positions:
-            # 更新极值价格（与实盘 PositionManager.update_price 一致）
+            # 更新 peak price
             if pos.direction == "buy":
-                if pos.highest_price is None or bar.high > pos.highest_price:
-                    pos.highest_price = bar.high
-            elif pos.direction == "sell":
-                if pos.lowest_price is None or bar.low < pos.lowest_price:
-                    pos.lowest_price = bar.low
-
-            # 复用实盘 breakeven 判定逻辑
-            if pos.atr_at_entry > 0:
-                be_result = check_breakeven(
-                    action=pos.direction,
-                    entry_price=pos.entry_price,
-                    current_price=bar.close,
-                    atr_at_entry=pos.atr_at_entry,
-                    breakeven_atr_threshold=self._breakeven_atr_threshold,
-                    already_applied=pos.breakeven_applied,
-                )
-                if be_result.should_apply and be_result.new_stop_loss is not None:
-                    pos.stop_loss = be_result.new_stop_loss
-                    pos.breakeven_applied = True
-
-                # 复用实盘 trailing stop 判定逻辑
-                trail_result = check_trailing_stop(
-                    action=pos.direction,
-                    current_stop_loss=pos.stop_loss,
-                    atr_at_entry=pos.atr_at_entry,
-                    trailing_atr_multiplier=self._trailing_atr_multiplier,
-                    breakeven_applied=pos.breakeven_applied,
-                    highest_price=pos.highest_price,
-                    lowest_price=pos.lowest_price,
-                )
-                if trail_result.should_update and trail_result.new_stop_loss is not None:
-                    pos.stop_loss = trail_result.new_stop_loss
-                    pos.trailing_active = True
-
-                # Trailing Take Profit：盈利超阈值后收缩 TP 主动锁利
-                if self._trailing_tp_enabled:
-                    ttp_result = check_trailing_take_profit(
-                        action=pos.direction,
-                        entry_price=pos.entry_price,
-                        current_take_profit=pos.take_profit,
-                        atr_at_entry=pos.atr_at_entry,
-                        activation_atr=self._trailing_tp_activation_atr,
-                        trail_atr=self._trailing_tp_trail_atr,
-                        highest_price=pos.highest_price,
-                        lowest_price=pos.lowest_price,
-                    )
-                    if ttp_result.should_update and ttp_result.new_take_profit is not None:
-                        pos.take_profit = ttp_result.new_take_profit
-
-            # SL/TP 触发检查
-            exit_price: Optional[float] = None
-            exit_reason: Optional[str] = None
-
-            if pos.direction == "buy":
-                # 多头：low 触及 SL 或 high 触及 TP
-                if bar.low <= pos.stop_loss:
-                    exit_price = pos.stop_loss
-                    exit_reason = "stop_loss"
-                elif bar.high >= pos.take_profit:
-                    exit_price = pos.take_profit
-                    exit_reason = "take_profit"
+                old_peak = pos.peak_price or pos.entry_price
+                new_peak = max(old_peak, bar.high)
+                if new_peak > old_peak:
+                    pos.peak_price = new_peak
+                    pos.bars_since_peak = 0
+                else:
+                    pos.bars_since_peak += 1
+                # 旧字段兼容
+                pos.highest_price = pos.peak_price
             else:
-                # 空头：high 触及 SL 或 low 触及 TP
-                if bar.high >= pos.stop_loss:
-                    exit_price = pos.stop_loss
-                    exit_reason = "stop_loss"
-                elif bar.low <= pos.take_profit:
-                    exit_price = pos.take_profit
-                    exit_reason = "take_profit"
+                old_peak = pos.peak_price or pos.entry_price
+                new_peak = min(old_peak, bar.low)
+                if new_peak < old_peak:
+                    pos.peak_price = new_peak
+                    pos.bars_since_peak = 0
+                else:
+                    pos.bars_since_peak += 1
+                pos.lowest_price = pos.peak_price
 
-            if exit_price is not None and exit_reason is not None:
-                trade = self._close_position(pos, exit_price, bar.time, bar_index, exit_reason)
+            pos.bars_held += 1
+
+            # 记录策略方向到 recent_signal_dirs
+            strategy_dir = sig_dirs.get(pos.strategy, "")
+            if strategy_dir:
+                pos.recent_signal_dirs.append(strategy_dir)
+                # 只保留最近 N 条（N = confirmation_bars + 缓冲）
+                max_keep = self._chandelier_config.signal_exit_confirmation_bars + 2
+                if len(pos.recent_signal_dirs) > max_keep:
+                    pos.recent_signal_dirs = pos.recent_signal_dirs[-max_keep:]
+
+            # Chandelier Exit 统一评估（regime-aware）
+            result = evaluate_exit(
+                action=pos.direction,
+                entry_price=pos.entry_price,
+                bar_high=bar.high,
+                bar_low=bar.low,
+                bar_close=bar.close,
+                current_stop_loss=pos.stop_loss,
+                initial_risk=pos.initial_risk,
+                peak_price=pos.peak_price or pos.entry_price,
+                current_atr=current_atr,
+                bars_held=pos.bars_held,
+                breakeven_already_activated=pos.breakeven_activated,
+                recent_signal_dirs=pos.recent_signal_dirs,
+                strategy_category=pos.strategy_category,
+                current_regime=current_regime,
+                config=self._chandelier_config,
+            )
+
+            # 更新持仓状态
+            pos.breakeven_activated = result.breakeven_activated
+            if result.new_stop_loss is not None:
+                pos.stop_loss = result.new_stop_loss
+
+            if result.should_close:
+                # 确定平仓价格
+                if result.close_reason == "take_profit":
+                    # TP 按硬上界价格成交
+                    tp_dist = self._chandelier_config.max_tp_r * pos.initial_risk
+                    if pos.direction == "buy":
+                        exit_price = pos.entry_price + tp_dist
+                    else:
+                        exit_price = pos.entry_price - tp_dist
+                elif result.close_reason in ("stop_loss", "trailing_stop"):
+                    exit_price = pos.stop_loss
+                else:
+                    # signal_exit / timeout → 按 bar.close 平仓
+                    exit_price = bar.close
+
+                trade = self._close_position(
+                    pos, exit_price, bar.time, bar_index, result.close_reason,
+                )
                 closed.append(trade)
             else:
                 remaining.append(pos)

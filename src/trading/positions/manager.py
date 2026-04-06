@@ -1,8 +1,8 @@
-"""Basic position manager for signal-initiated trades.
+"""Position manager for signal-initiated trades.
 
-Tracks positions opened by the TradeExecutor and provides
-trailing stop and breakeven management via a background reconcile loop
-that periodically syncs state with MT5 open positions.
+Tracks positions opened by the TradeExecutor. Uses Chandelier Exit
+(regime-aware, ATR-dynamic) for trailing stop management via a background
+reconcile loop that periodically syncs state with MT5 open positions.
 """
 
 from __future__ import annotations
@@ -11,17 +11,28 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
-from .rules import (
-    check_breakeven,
-    check_trailing_stop,
-    check_trailing_take_profit,
-    should_close_end_of_day,
+from .exit_rules import (
+    ChandelierConfig,
+    evaluate_exit,
+    check_end_of_day,
 )
 from ..closeout.service import ExposureCloseoutController
 from ..ports import PositionManagementPort
 from ..execution.sizing import TradeParameters
+
+
+class IndicatorSource(Protocol):
+    """读取已计算好的指标快照（由 IndicatorManager 实现）。"""
+
+    def get_indicator(
+        self, symbol: str, timeframe: str, indicator_name: str,
+    ) -> Optional[Dict[str, Any]]: ...
+
+    def get_all_indicators(
+        self, symbol: str, timeframe: str,
+    ) -> Dict[str, Dict[str, Any]]: ...
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +63,19 @@ class TrackedPosition:
     source: str = "signal_executor"
     comment: str = ""
     opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Chandelier Exit 状态
+    initial_risk: float = 0.0  # R = |entry - initial_sl|，开仓时计算
+    initial_stop_loss: float = 0.0  # 开仓时的原始 SL
+    peak_price: Optional[float] = None
+    bars_held: int = 0
+    breakeven_activated: bool = False
+    strategy_category: str = ""  # trend / reversion / breakout
+    recent_signal_dirs: list = field(default_factory=list)
+    # 出场追溯字段（由 _check_chandelier_exit 写入，on_position_closed 读取）
+    last_exit_reason: str = ""  # trailing_stop / signal_exit / timeout / stop_loss / take_profit
+    last_r_multiple: float = 0.0  # 退出时的 R 倍数
+    last_exit_regime: str = ""  # 退出时的 regime
+    # 旧字段（兼容 + peak 跟踪）
     breakeven_applied: bool = False
     trailing_active: bool = False
     highest_price: Optional[float] = None
@@ -68,26 +92,21 @@ class PositionManager:
         trading_module: PositionManagementPort,
         end_of_day_closeout: ExposureCloseoutController,
         *,
-        trailing_atr_multiplier: float = 1.0,
-        breakeven_atr_threshold: float = 1.0,
+        chandelier_config: Optional[ChandelierConfig] = None,
+        indicator_source: Optional[IndicatorSource] = None,
+        regime_detector: Optional[Any] = None,
         end_of_day_close_enabled: bool = False,
         end_of_day_close_hour_utc: int = 21,
         end_of_day_close_minute_utc: int = 0,
-        # Trailing Take Profit（盈利后主动收缩 TP）
-        trailing_tp_enabled: bool = False,
-        trailing_tp_activation_atr: float = 1.5,
-        trailing_tp_trail_atr: float = 0.8,
     ):
         self._trading = trading_module
         self._end_of_day_closeout = end_of_day_closeout
-        self.trailing_atr_multiplier = trailing_atr_multiplier
-        self.breakeven_atr_threshold = breakeven_atr_threshold
+        self._chandelier_config = chandelier_config or ChandelierConfig()
+        self._indicator_source = indicator_source
+        self._regime_detector = regime_detector
         self.end_of_day_close_enabled = bool(end_of_day_close_enabled)
         self.end_of_day_close_hour_utc = int(end_of_day_close_hour_utc)
         self.end_of_day_close_minute_utc = int(end_of_day_close_minute_utc)
-        self._trailing_tp_enabled = trailing_tp_enabled
-        self._trailing_tp_activation_atr = trailing_tp_activation_atr
-        self._trailing_tp_trail_atr = trailing_tp_trail_atr
         self._positions: Dict[int, TrackedPosition] = {}
         self._lock = threading.Lock()
         self._close_callbacks: List[Callable[[TrackedPosition, Optional[float]], None]] = []
@@ -220,20 +239,38 @@ class PositionManager:
             if pos.action == "buy":
                 if pos.highest_price is None or current_price > pos.highest_price:
                     pos.highest_price = current_price
+                    pos.peak_price = pos.highest_price
             elif pos.action == "sell":
                 if pos.lowest_price is None or current_price < pos.lowest_price:
                     pos.lowest_price = current_price
-            # 快照用于锁外 MT5 API 调用
-            need_breakeven = not pos.breakeven_applied
-            need_trailing = pos.breakeven_applied
+                    pos.peak_price = pos.lowest_price
 
-        # breakeven/trailing/trailing_tp 调用 MT5 API（可能耗时），在锁外执行。
-        if need_breakeven:
-            self._check_breakeven(pos, current_price)
-        if need_trailing:
-            self._check_trailing_stop(pos, current_price)
-        if self._trailing_tp_enabled and pos.atr_at_entry > 0:
-            self._check_trailing_tp(pos)
+        # Chandelier Exit 检查（锁外执行，可能调 MT5 API）
+        self._check_chandelier_exit(pos, current_price)
+
+    def on_signal_event(self, event: Any) -> None:
+        """接收 SignalRuntime 的信号事件，更新持仓的 recent_signal_dirs。
+
+        仅处理 scope="confirmed" 的信号（bar close 确认）。
+        将信号方向写入对应策略/投票组名下的所有持仓。
+        """
+        if getattr(event, "scope", "") != "confirmed":
+            return
+        direction = getattr(event, "direction", "")
+        if direction not in ("buy", "sell", "hold"):
+            return
+        strategy = getattr(event, "strategy", "")
+        if not strategy:
+            return
+
+        with self._lock:
+            for pos in self._positions.values():
+                if pos.strategy == strategy:
+                    pos.recent_signal_dirs.append(direction)
+                    # 只保留最近 N 条
+                    max_keep = self._chandelier_config.signal_exit_confirmation_bars + 2
+                    if len(pos.recent_signal_dirs) > max_keep:
+                        pos.recent_signal_dirs = pos.recent_signal_dirs[-max_keep:]
 
     def add_close_callback(
         self,
@@ -600,13 +637,13 @@ class PositionManager:
             return None
         current = now or datetime.now(timezone.utc)
 
-        eod_result = should_close_end_of_day(
+        eod_triggered = check_end_of_day(
             current_time=current,
             close_hour_utc=self.end_of_day_close_hour_utc,
             close_minute_utc=self.end_of_day_close_minute_utc,
             last_close_date=self._last_end_of_day_close_date,
         )
-        if not eod_result.should_close:
+        if not eod_triggered:
             return None
 
         day_key = current.date().isoformat() if current.tzinfo is None else current.astimezone(timezone.utc).date().isoformat()
@@ -741,41 +778,98 @@ class PositionManager:
                         exc,
                     )
 
-    def _check_breakeven(self, pos: TrackedPosition, current_price: float) -> None:
-        result = check_breakeven(
+    # ── Chandelier Exit 出场检查 ────────────────────────────────────────
+
+    def _get_current_atr(self, pos: TrackedPosition) -> float:
+        """从 IndicatorManager 读取当前 ATR（已计算好的缓存值）。"""
+        if self._indicator_source is None:
+            return pos.atr_at_entry  # fallback: 用开仓时的 ATR
+        atr_data = self._indicator_source.get_indicator(
+            pos.symbol, pos.timeframe, "atr14",
+        )
+        if isinstance(atr_data, dict):
+            val = atr_data.get("atr")
+            if val is not None and float(val) > 0:
+                return float(val)
+        return pos.atr_at_entry
+
+    def _get_current_regime(self, pos: TrackedPosition) -> str:
+        """从 IndicatorManager 读取指标并检测当前 Regime。"""
+        if self._indicator_source is None or self._regime_detector is None:
+            return pos.regime or ""
+        indicators = self._indicator_source.get_all_indicators(
+            pos.symbol, pos.timeframe,
+        )
+        if not indicators:
+            return pos.regime or ""
+        try:
+            regime = self._regime_detector.detect(indicators)
+            return regime.value
+        except Exception:
+            return pos.regime or ""
+
+    def _check_chandelier_exit(self, pos: TrackedPosition, current_price: float) -> None:
+        """Chandelier Exit 持仓检查。
+
+        实盘职责分工：
+        - SL/TP 触发：由 MT5 服务器执行（毫秒级），不在此处检查
+        - Chandelier trailing：计算新 SL 位置，通过 MT5 API 修改服务器端 SL
+        - 信号反转/超时：主动发起平仓请求
+        """
+        if pos.initial_risk <= 0:
+            return
+
+        current_atr = self._get_current_atr(pos)
+        current_regime = self._get_current_regime(pos)
+
+        result = evaluate_exit(
             action=pos.action,
             entry_price=pos.entry_price,
-            current_price=current_price,
-            atr_at_entry=pos.atr_at_entry,
-            breakeven_atr_threshold=self.breakeven_atr_threshold,
-            already_applied=pos.breakeven_applied,
-        )
-        if result.should_apply and result.new_stop_loss is not None:
-            if self._modify_sl(pos, result.new_stop_loss, reason="breakeven"):
-                pos.breakeven_applied = True
-                if self._on_position_updated is not None:
-                    self._on_position_updated(pos, "breakeven_applied")
-                logger.info("Breakeven applied ticket=%d sl=%.2f", pos.ticket, result.new_stop_loss)
-            else:
-                logger.warning("Breakeven SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
-
-    def _check_trailing_stop(self, pos: TrackedPosition, current_price: float) -> None:
-        result = check_trailing_stop(
-            action=pos.action,
+            # 实盘 SL/TP 触发由 MT5 服务器处理，这里传实时价仅用于
+            # R 倍数计算、breakeven 判断、Chandelier trail 计算
+            bar_high=current_price,
+            bar_low=current_price,
+            bar_close=current_price,
             current_stop_loss=pos.stop_loss,
-            atr_at_entry=pos.atr_at_entry,
-            trailing_atr_multiplier=self.trailing_atr_multiplier,
-            breakeven_applied=pos.breakeven_applied,
-            highest_price=pos.highest_price,
-            lowest_price=pos.lowest_price,
+            initial_risk=pos.initial_risk,
+            peak_price=pos.peak_price or pos.entry_price,
+            current_atr=current_atr,
+            bars_held=pos.bars_held,
+            breakeven_already_activated=pos.breakeven_activated,
+            recent_signal_dirs=pos.recent_signal_dirs,
+            strategy_category=pos.strategy_category,
+            current_regime=current_regime,
+            config=self._chandelier_config,
         )
-        if result.should_update and result.new_stop_loss is not None:
-            if self._modify_sl(pos, result.new_stop_loss):
-                pos.trailing_active = True
-                if self._on_position_updated is not None:
-                    self._on_position_updated(pos, "trailing_sl_updated")
+
+        pos.breakeven_activated = result.breakeven_activated
+        # 持续更新追溯字段（每次检查都写入最新值，平仓时读取）
+        pos.last_r_multiple = result.r_multiple
+        pos.last_exit_regime = current_regime
+        if result.close_reason:
+            pos.last_exit_reason = result.close_reason
+
+        # 主动退出（信号反转 / 超时）：把 SL 收紧到当前价附近，
+        # 由 MT5 服务器在下一个 tick 触发平仓。
+        if result.should_close and result.close_reason in ("signal_exit", "timeout"):
+            # SL 设到当前价的不利方向 1 点处，确保下一个 tick 触发
+            if pos.action == "buy":
+                urgent_sl = current_price - 0.01
             else:
-                logger.warning("Trailing SL modify failed ticket=%d target_sl=%.2f", pos.ticket, result.new_stop_loss)
+                urgent_sl = current_price + 0.01
+            logger.info(
+                "Chandelier urgent exit: ticket=%d reason=%s strategy=%s r=%.2f → sl=%.2f",
+                pos.ticket, result.close_reason, pos.strategy, result.r_multiple, urgent_sl,
+            )
+            self._modify_sl(pos, urgent_sl, reason=result.close_reason)
+            return
+
+        # Trailing SL 更新（通过 MT5 API 修改服务器端 SL）
+        if result.new_stop_loss is not None and result.new_stop_loss != pos.stop_loss:
+            if self._modify_sl(pos, result.new_stop_loss, reason="chandelier_trail"):
+                if self._on_position_updated is not None:
+                    self._on_position_updated(pos, "chandelier_trail")
+
 
     def _modify_sl(self, pos: TrackedPosition, new_sl: float, reason: str = "trailing_sl") -> bool:
         old_sl = pos.stop_loss
@@ -899,22 +993,3 @@ class PositionManager:
         except Exception as exc:
             logger.debug("Failed to write SL/TP history: %s", exc)
 
-    def _check_trailing_tp(self, pos: TrackedPosition) -> None:
-        result = check_trailing_take_profit(
-            action=pos.action,
-            entry_price=pos.entry_price,
-            current_take_profit=pos.take_profit,
-            atr_at_entry=pos.atr_at_entry,
-            activation_atr=self._trailing_tp_activation_atr,
-            trail_atr=self._trailing_tp_trail_atr,
-            highest_price=pos.highest_price,
-            lowest_price=pos.lowest_price,
-        )
-        if result.should_update and result.new_take_profit is not None:
-            if self._modify_tp(pos, result.new_take_profit):
-                if self._on_position_updated is not None:
-                    self._on_position_updated(pos, "trailing_tp_updated")
-                logger.info(
-                    "Trailing TP applied ticket=%d tp=%.2f",
-                    pos.ticket, result.new_take_profit,
-                )

@@ -109,6 +109,31 @@
 - [ ] `[regime_detector]` / `[strategy_params]` 热重载支持（当前需重启）
 - [ ] market.ini 应用壳层配置热重载决策
 
+### Intrabar 交易链路（从观测层升级为交易层）
+
+> 当前 intrabar 仅做 preview/armed 预热，`require_armed=false`，对交易无实际影响。
+> 目标：让 intrabar 策略能盘中直接入场，获得更好的入场价格。
+
+**核心设计**：用低 TF 完整 K 线替代当前 OHLC 快照作为盘中观测源
+
+```
+H1 策略盘中入场示例：
+  M5 bar 收盘（L1 可靠）→ 计算 M5 指标（语义正确的完整 K 线指标）
+    → 作为 H1 策略的盘中输入 → 策略评估
+    → 信号稳定 ≥ N 根 M5 bar → 盘中入场
+    → H1 bar 收盘 → confirmed 验证：一致→持仓继续，反转→平仓
+```
+
+- [ ] 设计文档：`docs/design/intrabar-trading.md`（链路、去重、风控、回测方案）
+- [ ] bar 内去重机制：同一 bar 内同一策略同一方向只允许入场一次（`traded_this_bar`）
+- [ ] confirmed 验证角色：intrabar 已开仓 → confirmed 反转时平仓（而非重复开仓）
+- [ ] 盘中入场条件：独立策略模式（不经投票组）+ 更高 min_confidence 阈值
+- [ ] 仓位计算：盘中 ATR 不完整，需用上一根完整 bar 的 ATR 或低 TF ATR
+- [ ] 回测支持：用 M5 bar 数据回测高 TF 策略的盘中入场效果
+- [ ] 风控覆盖：intrabar 交易需经过同样的风控堆栈（可精简但不可跳过）
+
+**前置条件**：P0-P1 完成，confirmed 链路策略有效性已验证
+
 ### 架构解耦
 
 - [ ] A5: PendingOrderManager 从 TradeExecutor 提升为独立组件

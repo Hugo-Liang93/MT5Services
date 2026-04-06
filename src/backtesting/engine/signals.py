@@ -262,6 +262,10 @@ def execute_entry(
         )
         return
 
+    # 获取策略 category（用于 regime-aware 出场 profile 查找）
+    strategy_obj = engine._signal_module.get_strategy(decision.strategy)
+    strategy_category = getattr(strategy_obj, "category", "") if strategy_obj else ""
+
     engine._portfolio.open_position(
         strategy=decision.strategy,
         action=decision.direction,
@@ -271,6 +275,7 @@ def execute_entry(
         confidence=decision.confidence,
         bar_index=bar_index,
         atr_at_entry=atr_value,
+        strategy_category=strategy_category,
     )
 
 

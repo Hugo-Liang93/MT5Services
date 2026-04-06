@@ -158,6 +158,81 @@ def evaluate(self, context: SignalContext) -> SignalDecision:
 
 Intrabar 指标集合由策略 `preferred_scopes` + `required_indicators` 在启动时**自动推导**，无需手动配置。
 
+### 3.6 Intrabar 指标自动推导机制
+
+```
+intrabar 指标集合 = 所有满足以下条件的指标并集：
+    "intrabar" ∈ strategy.preferred_scopes  AND  该指标 ∈ strategy.required_indicators
+
+推导流程（src/app_runtime/factories/signals.py 启动时执行）：
+  SignalModule.intrabar_required_indicators()
+    → 遍历所有策略，收集 preferred_scopes 含 "intrabar" 的策略的 required_indicators 并集
+    → 注入到 UnifiedIndicatorManager.set_intrabar_eligible_override()
+    → indicator manager 的 intrabar pipeline 仅计算该集合中的指标
+```
+
+**当前自动推导结果（8 个）**：
+
+| 指标 | 来源策略 | 盘中语义 |
+|------|---------|---------|
+| `rsi14` | rsi_reversion | 超买超卖是实时状态，盘中触极值即预警 |
+| `stoch_rsi14` | stoch_rsi | 同上 |
+| `williamsr14` | williams_r | 同上 |
+| `cci20` | cci_reversion | 同上 |
+| `boll20` | bollinger_breakout, keltner_bb_squeeze, breakout_double_confirm | 盘中触及/突破通道边界即可预警 |
+| `keltner20` | keltner_bb_squeeze | BB/KC 挤压是实时状态 |
+| `donchian20` | breakout_double_confirm | 当前 bar 只能扩大通道（不会收窄），盘中值单调可信 |
+| `adx14` | breakout_double_confirm | ADX 变化缓慢，盘中值与收盘差距极小 |
+
+其余 confirmed-only 指标（sma20, ema9/21/50/55, hma20, rsi5, macd, macd_fast, roc12, supertrend14, atr14, stoch14）仅在 confirmed 链路计算。
+
+### 3.7 指标语义分析（intrabar 适用性判断依据）
+
+| 指标类别 | 代表指标 | 盘中语义 | 适合 intrabar |
+|---------|---------|---------|:------------:|
+| 移动均线（MA/EMA/HMA） | sma20, ema9/50, hma20 | 当前 bar 未收盘时 close 是最新 tick 价，均线随 tick 频繁波动，无收盘意义 | **No** |
+| 趋势跟踪（Supertrend） | supertrend14 | 基于 ATR 的价格通道，收盘前方向可频繁翻转，给出假信号 | **No** |
+| 动量趋势（MACD/ROC） | macd, macd_fast, roc12 | 以 EMA 为基础，同样受未收盘价格噪声影响 | **No** |
+| 振荡器（RSI/CCI/Williams/StochRSI） | rsi14, cci20, williamsr14, stoch_rsi14 | 超买超卖是**实时状态**，盘中触极值比收盘才知道更有价值 | **Yes** |
+| 波动率通道（Bollinger/Keltner） | boll20, keltner20 | 价格盘中触及/突破通道边界本身就是信号，无需等待收盘 | **Yes** |
+| 趋势通道（Donchian） | donchian20 | 当前 bar 只能**扩大**通道（不会收窄），盘中值单调可信 | **Yes** |
+| 趋势强度（ADX） | adx14 | ADX 变化缓慢，盘中值与收盘值差距极小，可信 | **Yes** |
+| 波动率基准（ATR） | atr14 | 消费方（sizing/fake_breakout）全在 confirmed 时执行；keltner20 内部自行计算 ATR | **No** |
+
+### 3.8 策略 scope 经验判断表
+
+| 策略类型 | preferred_scopes | 代表指标 | 原因 |
+|---------|:---------------:|---------|------|
+| 均线交叉（MA Cross） | confirmed | sma/ema/hma | 均线需要收盘价定型，盘中值噪声大 |
+| 趋势跟踪（Supertrend/ROC） | confirmed | supertrend14/roc12 | 趋势方向收盘才稳定 |
+| MACD 动量 | confirmed | macd | EMA 底层，收盘前频繁变动 |
+| 价格行为（K 线形态） | confirmed | atr14 | 形态必须 K 线收盘才能确认完整 |
+| 时段动量 | confirmed | atr14/supertrend14 | 基于已收盘 K 线统计规律 |
+| **RSI/CCI/Williams/StochRSI** | **intrabar + confirmed** | rsi14/cci20/williamsr14/stoch_rsi14 | 超买超卖是实时状态，盘中触值即可预警 |
+| **Bollinger 触边** | **intrabar + confirmed** | boll20 | 价格触及/突破通道边界不需要等收盘 |
+| **Keltner 挤压** | **intrabar + confirmed** | boll20/keltner20 | BB 完全在 KC 内是实时状态 |
+| Donchian 突破（需站稳） | confirmed | donchian20 | 需收盘确认站稳通道外，防假突破 |
+
+### 3.9 TFParamResolver — Per-TF 策略参数
+
+策略参数按时间框架独立配置。查找优先级：`[strategy_params.<TF>]` → `[strategy_params]` → 策略代码 default。
+
+```ini
+# 全局默认（所有 TF 兜底）
+[strategy_params]
+rsi_reversion__overbought = 78
+supertrend__adx_threshold = 21
+
+# M5 特化
+[strategy_params.M5]
+rsi_reversion__overbought = 72
+rsi_reversion__oversold = 25
+```
+
+**键格式**：双下划线 `__` 分隔策略名和参数名。策略中通过 `get_tf_param(self, "overbought", context.timeframe, default)` 查表。
+
+**核心文件**：`src/signals/strategies/tf_params.py`（TFParamResolver）、`src/signals/strategies/base.py`（get_tf_param）、`src/config/signal.py`（加载 section）、`src/app_runtime/factories/signals.py`（构建注入）。
+
 ---
 
 ## 4. Regime 系统
@@ -283,11 +358,30 @@ idle → preview_buy/sell (方向改变 + conf≥0.55 + bar_progress≥0.2)
 
 ## 7. Voting Engine
 
-### 两种模式
+### 两种模式（互斥）
 
-**单 consensus**: `SignalPolicy(voting_enabled=True, voting_groups=[])` → 所有策略投票 → `strategy="consensus"`
+**单 consensus**: `voting_enabled=True` 且 `voting_groups=[]` → 所有策略投票 → `strategy="consensus"`
 
-**多 voting group**: 每组独立投票 → 产生 group.name 信号 → 全局 consensus 自动禁用
+**多 voting group**: `voting_groups` 非空 → 每组独立投票 → 产生 group.name 信号 → **全局 consensus 自动禁用**（`_voting_engine = None`）
+
+当前配置为**多 voting group 模式**（4 组）。两种模式不会同时存在。
+
+### 组内策略不能独立发信号（三层保护）
+
+**加入 voting group 的策略，默认丧失独立发出交易信号的能力**。它们的评估结果只汇入组投票，不单独触发交易：
+
+1. **SignalRuntime 层**（`runtime_evaluator.py`）：组员 decision 不 persist、不 publish signal event，直接 return
+2. **BacktestEngine 层**（`runner.py`）：组员 decision 只 record_evaluation（统计），不 process_decision（开仓）
+3. **ExecutionGate 兜底**（`gate.py`）：即使 signal event 泄漏，gate 以 `"voting_group_member"` 理由阻止下单
+
+**例外**：`standalone_override` 集合中的策略可豁免（既参与投票又保留独立下单能力）。当前无豁免策略。
+
+成员集合构建：
+```python
+_voting_group_members = frozenset(
+    name for group in policy.voting_groups for name in group.strategies
+) - policy.standalone_override
+```
 
 ### 算法
 

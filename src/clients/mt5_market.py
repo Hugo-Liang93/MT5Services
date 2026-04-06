@@ -177,7 +177,7 @@ class MT5MarketClient(MT5BaseClient):
                 high=self._get_field(rate, "high"),
                 low=self._get_field(rate, "low"),
                 close=self._get_field(rate, "close"),
-                volume=self._get_field(rate, "real_volume", 0.0),
+                volume=self._get_field(rate, "tick_volume", 0.0),
                 )
                 for rate in rates
             ]
@@ -205,7 +205,7 @@ class MT5MarketClient(MT5BaseClient):
                 high=self._get_field(rate, "high"),
                 low=self._get_field(rate, "low"),
                 close=self._get_field(rate, "close"),
-                volume=self._get_field(rate, "real_volume", 0.0),
+                volume=self._get_field(rate, "tick_volume", 0.0),
             )
             for rate in list(rates)[:limit]
         ]

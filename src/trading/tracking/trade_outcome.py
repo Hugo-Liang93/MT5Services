@@ -212,10 +212,12 @@ class TradeOutcomeTracker:
         # 实时绩效回调（仅已解析的交易）
         if won is not None and price_change is not None and self._on_outcome_fn is not None:
             try:
+                exit_reason = getattr(pos, "last_exit_reason", "") or ""
                 self._on_outcome_fn(
                     trade.strategy, won, price_change,
                     regime=trade.regime,
                     source="trade",
+                    exit_reason=exit_reason,
                 )
             except Exception:
                 logger.debug(
@@ -233,6 +235,20 @@ class TradeOutcomeTracker:
         # DB 持久化（包括 unresolved，便于事后审计）
         if self._write_fn is not None:
             now = datetime.now(timezone.utc)
+            # 从 TrackedPosition 提取 Chandelier Exit 追溯字段
+            exit_reason = getattr(pos, "last_exit_reason", "") or ""
+            r_multiple = getattr(pos, "last_r_multiple", None)
+            exit_regime = getattr(pos, "last_exit_regime", "") or ""
+            metadata: Dict[str, Any] = {
+                "opened_at": trade.opened_at.isoformat(),
+                "close_source": close_source if close_price_f is not None else "mt5_missing",
+            }
+            if exit_reason:
+                metadata["exit_reason"] = exit_reason
+            if r_multiple is not None:
+                metadata["r_multiple"] = round(float(r_multiple), 4)
+            if exit_regime:
+                metadata["exit_regime"] = exit_regime
             rows: List[Tuple] = [(
                 now,
                 trade.signal_id,
@@ -246,10 +262,7 @@ class TradeOutcomeTracker:
                 price_change,
                 won,
                 trade.regime,
-                {
-                    "opened_at": trade.opened_at.isoformat(),
-                    "close_source": close_source if close_price_f is not None else "mt5_missing",
-                },
+                metadata,
             )]
             try:
                 self._write_fn(rows)
