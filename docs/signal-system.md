@@ -24,11 +24,12 @@ src/signals/
 │   └── affinity.py            # Regime 亲和度 + 快速拒绝 (纯函数)
 ├── strategies/
 │   ├── base.py                # SignalStrategy Protocol + TimeframeScaler + get_tf_param()
-│   ├── catalog.py             # build_named_strategy_catalog() (41+ 策略统一构建)
+│   ├── catalog.py             # build_named_strategy_catalog() (42+ 策略统一构建)
 │   ├── registry.py            # StrategyRegistry + build_composite_strategies()
 │   ├── trend.py               # 趋势策略 (7个)
 │   ├── mean_reversion.py      # 均值回归策略 (6个)
 │   ├── breakout.py            # 突破/波动率策略 (6个)
+│   ├── volatility_structure.py # RangeBoxBreakout + BarMomentumSurge (波动率结构策略)
 │   ├── session.py             # 时段动量策略
 │   ├── price_action.py        # 价格行为策略
 │   ├── multi_tf_entry.py      # HTFTrendPullback / DualTFMomentum (跨TF策略)
