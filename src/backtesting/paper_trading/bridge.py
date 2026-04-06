@@ -69,6 +69,10 @@ class PaperTradingBridge:
         self._portfolio: Optional[PaperPortfolio] = None
         self._active_symbols: set[str] = set()
 
+        # 实验追踪
+        self._experiment_id: Optional[str] = None
+        self._source_backtest_run_id: Optional[str] = None
+
         # 统计
         self._signals_received = 0
         self._signals_executed = 0
@@ -76,6 +80,15 @@ class PaperTradingBridge:
         self._reject_reasons: Dict[str, int] = {}
 
     # ── RuntimeManagedComponent Protocol ───────────────────────────
+
+    def set_experiment_context(
+        self,
+        experiment_id: Optional[str] = None,
+        source_backtest_run_id: Optional[str] = None,
+    ) -> None:
+        """设置实验追踪上下文（需在 start() 之前调用）。"""
+        self._experiment_id = experiment_id
+        self._source_backtest_run_id = source_backtest_run_id
 
     def start(self) -> None:
         """启动 Paper Trading session 和价格监控线程。"""
@@ -93,6 +106,8 @@ class PaperTradingBridge:
             started_at=utc_now(),
             initial_balance=self._config.initial_balance,
             config_snapshot=self._config.to_dict(),
+            experiment_id=self._experiment_id,
+            source_backtest_run_id=self._source_backtest_run_id,
         )
         self._portfolio = PaperPortfolio(self._config, session_id)
         self._active_symbols.clear()
@@ -181,9 +196,7 @@ class PaperTradingBridge:
         atr_value = extract_atr_from_indicators(event.indicators)
         if atr_value is None or atr_value <= 0:
             self._signals_rejected += 1
-            self._reject_reasons["no_atr"] = (
-                self._reject_reasons.get("no_atr", 0) + 1
-            )
+            self._reject_reasons["no_atr"] = self._reject_reasons.get("no_atr", 0) + 1
             return
 
         direction = "buy" if event.signal_state == "confirmed_buy" else "sell"
@@ -199,9 +212,7 @@ class PaperTradingBridge:
 
         mid_price = (quote.bid + quote.ask) / 2.0
         regime = str(
-            event.metadata.get("regime")
-            or event.metadata.get("_regime")
-            or "unknown"
+            event.metadata.get("regime") or event.metadata.get("_regime") or "unknown"
         )
 
         with self._lock:
@@ -256,7 +267,11 @@ class PaperTradingBridge:
 
             bid, ask = self._get_best_quote()
             floating = self._portfolio.floating_pnl(bid, ask) if bid > 0 else 0.0
-            equity = self._portfolio.equity(bid, ask) if bid > 0 else self._portfolio.current_balance
+            equity = (
+                self._portfolio.equity(bid, ask)
+                if bid > 0
+                else self._portfolio.current_balance
+            )
 
             return {
                 "running": self._running,
@@ -285,10 +300,7 @@ class PaperTradingBridge:
         with self._lock:
             if self._portfolio is None:
                 return []
-            return [
-                t.to_dict()
-                for t in self._portfolio._open_positions.values()
-            ]
+            return [t.to_dict() for t in self._portfolio._open_positions.values()]
 
     def get_metrics(self) -> Dict[str, Any]:
         with self._lock:

@@ -1,8 +1,8 @@
 """全链路集成测试：indicator snapshot → signal 状态机 → TradeExecutor 下单
 
 测试范围：
-  1. SmaTrendStrategy buy 信号：confirmed snapshot → TradeExecutor 触发下单
-  2. RsiReversionStrategy sell 信号：confirmed snapshot → TradeExecutor 触发下单
+  1. 趋势 buy 信号：confirmed snapshot → TradeExecutor 触发下单
+  2. RSI 超卖 buy 信号：confirmed snapshot → TradeExecutor 触发下单
   3. require_armed 完整流程：intrabar(preview) → intrabar(armed) → confirmed → 下单
   4. 熔断器：连续失败 N 次后暂停，reset 后恢复
   5. close_position 竞态修复验证：order_send=None 且持仓已消失 → 视为成功
@@ -18,14 +18,81 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.signals.models import SignalDecision, SignalEvent
+from src.signals.evaluation.regime import RegimeType
+from src.signals.models import SignalContext, SignalDecision, SignalEvent
 from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 from src.signals.evaluation.indicators_helpers import extract_close_price
 from src.signals.service import SignalModule
 from src.signals.strategies.adapters import IndicatorSource
-from src.signals.strategies.legacy.trend import SmaTrendStrategy
-from src.signals.strategies.legacy.mean_reversion import RsiReversionStrategy
+from src.signals.strategies.base import SignalStrategy, StrategyCategory
 from src.trading.execution import ExecutorConfig, TradeExecutor
+
+
+# ---------------------------------------------------------------------------
+# 测试用 Stub 策略（替代已移除的 legacy 策略）
+# ---------------------------------------------------------------------------
+
+class StubTrendBuyStrategy:
+    """总是输出 buy 信号的 stub 策略，用于集成测试。"""
+    name = "stub_trend_buy"
+    category = StrategyCategory.TREND
+    required_indicators = ("atr14",)
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 1.0,
+        RegimeType.RANGING: 0.3,
+        RegimeType.BREAKOUT: 0.5,
+        RegimeType.UNCERTAIN: 0.3,
+    }
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        atr_data = context.indicators.get("atr14", {})
+        atr = atr_data.get("atr", 5.0)
+        close = extract_close_price(context.indicators) or 3000.0
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            direction="buy",
+            confidence=0.80,
+            reason="stub_trend_buy",
+            metadata={"close": close, "atr": atr},
+        )
+
+
+class StubIntrabarStrategy:
+    """支持 intrabar scope 的 stub 策略，RSI<30 买入。"""
+    name = "stub_intrabar"
+    category = StrategyCategory.REVERSION
+    required_indicators = ("rsi14", "atr14")
+    preferred_scopes = ("intrabar", "confirmed")
+    regime_affinity = {
+        RegimeType.TRENDING: 0.3,
+        RegimeType.RANGING: 1.0,
+        RegimeType.BREAKOUT: 0.3,
+        RegimeType.UNCERTAIN: 0.5,
+    }
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        rsi_data = context.indicators.get("rsi14", {})
+        rsi = rsi_data.get("rsi")
+        if rsi is not None and rsi < 30:
+            return SignalDecision(
+                strategy=self.name,
+                symbol=context.symbol,
+                timeframe=context.timeframe,
+                direction="buy",
+                confidence=0.75,
+                reason=f"rsi={rsi:.1f}<30",
+            )
+        return SignalDecision(
+            strategy=self.name,
+            symbol=context.symbol,
+            timeframe=context.timeframe,
+            direction="hold",
+            confidence=0.0,
+            reason="no_signal",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +219,7 @@ def _build_signal_module(indicators: dict = None) -> SignalModule:
     src = DummyIndicatorSource(indicators or {})
     return SignalModule(
         indicator_source=src,
-        strategies=[SmaTrendStrategy(), RsiReversionStrategy()],
+        strategies=[StubTrendBuyStrategy(), StubIntrabarStrategy()],
     )
 
 
@@ -174,11 +241,10 @@ def _build_runtime(
         min_preview_stable_seconds=min_preview_stable_seconds,
         preview_cooldown_seconds=0.0,
         voting_enabled=False,         # 简化：关闭投票引擎，只测单策略
-        min_affinity_skip=0.0,        # 不过滤任何策略
     )
     targets = [
-        SignalTarget("XAUUSD", "M1", "sma_trend"),
-        SignalTarget("XAUUSD", "M1", "rsi_reversion"),
+        SignalTarget("XAUUSD", "M1", "stub_trend_buy"),
+        SignalTarget("XAUUSD", "M1", "stub_intrabar"),
     ]
     return SignalRuntime(
         service=signal_module,
@@ -221,11 +287,11 @@ def _wait_for_calls(module: TradingModuleCapture, expected: int, timeout: float 
 
 
 # ===========================================================================
-# 测试 1：confirmed snapshot → sma_trend buy → TradeExecutor 下单
+# 测试 1：confirmed snapshot → stub_trend buy → TradeExecutor 下单
 # ===========================================================================
 
 def test_confirmed_buy_triggers_trade() -> None:
-    """confirmed 快照触发 sma_trend buy 信号，TradeExecutor 成功下单。"""
+    """confirmed 快照触发趋势 buy 信号，TradeExecutor 成功下单。"""
     indicators = _trending_buy_indicators(close=3000.0, atr=5.0)
     module = _build_signal_module(indicators)
     source = SnapshotSource(spread_points=5.0)
@@ -252,11 +318,11 @@ def test_confirmed_buy_triggers_trade() -> None:
 
 
 # ===========================================================================
-# 测试 2：RSI 超卖 → rsi_reversion sell 信号 → 下单
+# 测试 2：RSI 超卖 → stub_intrabar buy 信号 → 下单
 # ===========================================================================
 
 def test_rsi_oversold_triggers_buy_trade() -> None:
-    """RSI < 30 触发 rsi_reversion buy 信号，TradeExecutor 成功下单。"""
+    """RSI < 30 触发 stub_intrabar buy 信号，TradeExecutor 成功下单。"""
     indicators = _ranging_rsi_buy_indicators(close=3000.0, atr=4.0)
     module = _build_signal_module(indicators)
     source = SnapshotSource()
@@ -287,7 +353,7 @@ def test_rsi_oversold_triggers_buy_trade() -> None:
 def test_require_armed_full_state_machine() -> None:
     """require_armed=True 时，信号须经 preview→armed 阶段才能触发下单。
 
-    使用 RsiReversionStrategy（preferred_scopes = ("intrabar", "confirmed")）：
+    使用 StubIntrabarStrategy（preferred_scopes = ("intrabar", "confirmed")）：
       1. intrabar 快照 (RSI=22 < 30) → preview_buy
       2. intrabar 快照（微小差异绕过去重）→ armed_buy（stable_seconds=0）
       3. confirmed 快照 → confirmed_buy，TradeExecutor 检测到 armed → 下单
@@ -295,7 +361,7 @@ def test_require_armed_full_state_machine() -> None:
     注意：confirmed 队列优先于 intrabar 队列，所以需要等待 intrabar 事件
     全部被消费完，再发布 confirmed 快照，否则 confirmed 会先处理。
     """
-    # 使用 RANGING + RSI 超卖指标，触发 RsiReversionStrategy（支持 intrabar）
+    # 使用 RANGING + RSI 超卖指标，触发 StubIntrabarStrategy（支持 intrabar）
     indicators = _ranging_rsi_buy_indicators(close=3000.0, atr=5.0)
     module = _build_signal_module(indicators)
     source = SnapshotSource()

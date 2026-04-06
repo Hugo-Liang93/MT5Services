@@ -37,12 +37,6 @@ class SignalConfig(BaseModel):
     preview_stable_seconds: float = 15.0
     preview_cooldown_seconds: float = 30.0
     snapshot_dedupe_window_seconds: float = 0.3
-    min_affinity_skip: float = 0.15
-    # Delta momentum bonus 参数（均值回归策略共享）
-    delta_d3_scale: float = 10.0
-    delta_d3_cap: float = 0.05
-    delta_d5_threshold: float = 8.0
-    delta_d5_bonus: float = 0.03
     soft_regime_enabled: bool = True
     voting_enabled: bool = True
     voting_consensus_threshold: float = 0.40
@@ -119,13 +113,6 @@ class SignalConfig(BaseModel):
     strategy_htf_targets: dict[str, str] = Field(default_factory=dict)
     # ── Intrabar 置信度缩放因子 ──
     intrabar_confidence_factor: float = 0.85
-    # ── HTF 方向对齐修正 ──
-    htf_conflict_penalty: float = 0.70
-    htf_alignment_boost: float = 1.10
-    htf_alignment_strength_coefficient: float = 0.30
-    htf_alignment_stability_per_bar: float = 0.03
-    htf_alignment_stability_cap: float = 1.15
-    htf_alignment_intrabar_strength_ratio: float = 0.50
     # ── 波动率异常过滤 ──
     volatility_atr_spike_multiplier: float = 2.5
     # ── Signal Quality Tracker ──
@@ -133,12 +120,8 @@ class SignalConfig(BaseModel):
     signal_quality_max_pending: int = 500
 
     # ═══════════════════════════════════════════════════════════════
-    # Pending Entry（价格确认入场）
+    # Pending Entry（价格确认入场 — 入场区间由策略 _entry_spec() 驱动）
     # ═══════════════════════════════════════════════════════════════
-    pending_entry_pullback_atr_factor: float = 0.3
-    pending_entry_chase_atr_factor: float = 0.1
-    pending_entry_momentum_atr_factor: float = 0.5
-    pending_entry_symmetric_atr_factor: float = 0.4
     pending_entry_check_interval: float = 0.5
     pending_entry_max_spread_points: float = 0.0
     pending_entry_default_timeout_bars: float = 2.0
@@ -150,8 +133,6 @@ class SignalConfig(BaseModel):
     )
     pending_entry_cancel_on_new_signal: bool = True
     pending_entry_cancel_same_direction: bool = False
-    pending_entry_strategy_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
-    pending_entry_tf_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
 
     market_structure_enabled: bool = True
     market_structure_lookback_bars: int = 400

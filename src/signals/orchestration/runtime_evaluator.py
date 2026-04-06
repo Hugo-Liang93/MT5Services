@@ -31,7 +31,6 @@ def evaluate_strategies(
     active_sessions: list[str],
 ) -> list:
     snapshot_decisions: list = []
-    min_affinity_skip = runtime.policy.min_affinity_skip
     structure_resolved = False
     strategies = runtime._target_index.get((symbol, timeframe), [])
     shard_lock = runtime._get_shard_lock(symbol, timeframe)
@@ -79,23 +78,7 @@ def evaluate_strategies(
         else:
             scoped_indicators = indicators
 
-        if min_affinity_skip > 0.0:
-            affinity = runtime._effective_affinity(
-                strategy,
-                regime,
-                regime_metadata.get("_soft_regime"),
-                _parsed_cache=soft_parsed,
-            )
-            if affinity < min_affinity_skip:
-                runtime._affinity_gates_skipped += 1
-                tf_skip = runtime._per_tf_skips.setdefault(
-                    timeframe, {"affinity": 0, "raw_conf": 0}
-                )
-                tf_skip["affinity"] += 1
-                continue
-            regime_metadata["_pre_computed_affinity"] = affinity
-        else:
-            regime_metadata.pop("_pre_computed_affinity", None)
+        regime_metadata.pop("_pre_computed_affinity", None)
 
         with shard_lock:
             state = runtime._state_by_target.setdefault(
@@ -255,20 +238,6 @@ def apply_confidence_adjustments(
     scope: str,
     regime_metadata: dict[str, Any],
 ) -> Any:
-    if decision.direction in ("buy", "sell"):
-        htf_mul, htf_dir = runtime._compute_htf_alignment(
-            symbol, timeframe, decision.direction, scope
-        )
-        if htf_mul is not None:
-            decision = _dc.replace(
-                decision,
-                confidence=min(1.0, decision.confidence * htf_mul),
-            )
-            regime_metadata["htf_direction"] = htf_dir
-            regime_metadata["htf_alignment"] = (
-                "aligned" if htf_mul >= 1.0 else "conflict"
-            )
-            regime_metadata["htf_confidence_multiplier"] = htf_mul
     if scope == "intrabar":
         decay = runtime._strategy_intrabar_decay.get(
             strategy, runtime._intrabar_confidence_factor

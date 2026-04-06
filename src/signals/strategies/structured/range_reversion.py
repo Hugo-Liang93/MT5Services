@@ -54,8 +54,8 @@ class StructuredRangeReversion(StructuredStrategyBase):
             if htf_adx is not None and float(htf_adx) > 25 and htf_dir is not None:
                 if int(htf_dir) == -1:
                     return False, None, 0, "htf_bearish"
-            adx_bonus = 0.05 if adx is not None and adx < 18 else 0.0
-            return True, "buy", adx_bonus, f"oversold:rsi={rsi:.0f},bb={bb_pos}"
+            adx_score = 0.7 if adx is not None and adx < 18 else 0.4
+            return True, "buy", adx_score, f"oversold:rsi={rsi:.0f},bb={bb_pos}"
 
         if rsi >= self._rsi_overbought and (bb_pos is None or bb_pos >= self._bb_high):
             if rsi_d3 is not None and rsi_d3 > 0:
@@ -63,8 +63,8 @@ class StructuredRangeReversion(StructuredStrategyBase):
             if htf_adx is not None and float(htf_adx) > 25 and htf_dir is not None:
                 if int(htf_dir) == 1:
                     return False, None, 0, "htf_bullish"
-            adx_bonus = 0.05 if adx is not None and adx < 18 else 0.0
-            return True, "sell", adx_bonus, f"overbought:rsi={rsi:.0f},bb={bb_pos}"
+            adx_score = 0.7 if adx is not None and adx < 18 else 0.4
+            return True, "sell", adx_score, f"overbought:rsi={rsi:.0f},bb={bb_pos}"
 
         return False, None, 0, f"rsi_mid:{rsi:.0f}"
 
@@ -72,14 +72,14 @@ class StructuredRangeReversion(StructuredStrategyBase):
         # Stoch RSI 交叉加分
         stoch = ctx.indicators.get("stoch_rsi14", {})
         k, d = stoch.get("k"), stoch.get("d")
-        bonus = 0.0
+        score = 0.0
         if k is not None and d is not None:
             sk, sd = float(k), float(d)
             if direction == "buy" and sk > sd and sk < 25:
-                bonus = 0.08
+                score = 0.8
             elif direction == "sell" and sk < sd and sk > 75:
-                bonus = 0.08
-        return True, bonus, "timing_ok"
+                score = 0.8
+        return True, score, "timing_ok"
 
     def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
         close = self._close(ctx)
@@ -87,16 +87,22 @@ class StructuredRangeReversion(StructuredStrategyBase):
         ms = self._ms(ctx)
         if close is not None and atr is not None and atr > 0:
             if _near_structure_level(close, ms, atr, max_atr=0.8):
-                return 0.10, "near_level"
+                return 1.0, "near_level"
         return 0.0, ""
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         mfi = self._mfi(ctx)
         if mfi is None:
             return 0.0
-        # MFI 与方向一致
         if direction == "buy" and mfi < 25:
-            return 0.05
+            return 1.0
         if direction == "sell" and mfi > 75:
-            return 0.05
+            return 1.0
         return 0.0
+
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        return {"entry_type": "limit", "entry_price": None, "entry_zone_atr": 0.4}
+
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        # 均值回归：紧 trail + 快锁利，反转幅度有限
+        return {"aggression": 0.15, "sl_atr": 1.0, "tp_atr": 1.8}

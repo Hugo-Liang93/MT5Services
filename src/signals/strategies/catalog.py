@@ -4,54 +4,14 @@ from collections import OrderedDict
 from typing import Any, Iterable, Optional
 
 from .base import SignalStrategy
-from .composite import CompositeSignalStrategy
-from .legacy.breakout import (
-    BollingerBreakoutStrategy,
-    DonchianBreakoutStrategy,
-    FakeBreakoutDetector,
-    KeltnerBollingerSqueezeStrategy,
-    MultiTimeframeConfirmStrategy,
-    SqueezeReleaseFollow,
-)
-from .legacy.m5_scalp import M5MomentumBurst, M5ScalpRSI
-from .legacy.mean_reversion import (
-    CciReversionStrategy,
-    MacdDivergenceStrategy,
-    RsiDivergenceStrategy,
-    RsiReversionStrategy,
-    StochRsiStrategy,
-    VwapReversionStrategy,
-    WilliamsRStrategy,
-)
-from .legacy.multi_tf_entry import DualTFMomentum, HTFTrendPullback
-from .legacy.price_action import OrderBlockEntryStrategy, PriceActionReversal
-from .legacy.session import AsianRangeBreakout, SessionMomentumBias
-from .registry import build_composite_strategies
 from .structured import (
     StructuredBreakoutFollow,
+    StructuredLowbarEntry,
     StructuredRangeReversion,
     StructuredSessionBreakout,
     StructuredSweepReversal,
     StructuredTrendContinuation,
     StructuredTrendlineTouch,
-)
-from .legacy.trend import (
-    AdxTrendFadeStrategy,
-    EmaRibbonStrategy,
-    FibPullbackStrategy,
-    HmaCrossStrategy,
-    MacdMomentumStrategy,
-    RocMomentumStrategy,
-    SmaTrendStrategy,
-    SupertrendStrategy,
-)
-from .legacy.trendline import TrendlineThreeTouchStrategy
-from .legacy.volatility_structure import (
-    AtrRegimeShift,
-    BarMomentumSurge,
-    RangeBoxBreakout,
-    RangeMeanReversion,
-    SwingStructureBreak,
 )
 
 
@@ -63,45 +23,6 @@ def build_named_strategy_catalog(
     strategies: "OrderedDict[str, SignalStrategy]" = OrderedDict()
 
     for strategy in (
-        SmaTrendStrategy(),
-        MacdMomentumStrategy(),
-        SupertrendStrategy(),
-        EmaRibbonStrategy(),
-        HmaCrossStrategy(),
-        RocMomentumStrategy(),
-        FibPullbackStrategy(),
-        SessionMomentumBias(),
-        AsianRangeBreakout(),
-        RsiReversionStrategy(),
-        StochRsiStrategy(),
-        WilliamsRStrategy(),
-        CciReversionStrategy(),
-        RsiDivergenceStrategy(),
-        MacdDivergenceStrategy(),
-        VwapReversionStrategy(),
-        PriceActionReversal(),
-        OrderBlockEntryStrategy(),
-        BollingerBreakoutStrategy(),
-        KeltnerBollingerSqueezeStrategy(),
-        DonchianBreakoutStrategy(),
-        FakeBreakoutDetector(),
-        SqueezeReleaseFollow(),
-        HTFTrendPullback(),
-        HTFTrendPullback(name="htf_h4_pullback", htf="H4"),
-        HTFTrendPullback(name="htf_m30_pullback", htf="M30"),
-        DualTFMomentum(),
-        DualTFMomentum(name="dual_h4_momentum", htf="H4"),
-        M5ScalpRSI(),
-        M5ScalpRSI(name="m5_scalp_rsi_h1", htf="H1"),
-        M5MomentumBurst(),
-        AdxTrendFadeStrategy(),
-        TrendlineThreeTouchStrategy(),
-        MultiTimeframeConfirmStrategy(htf_cache=htf_cache),
-        RangeBoxBreakout(),
-        BarMomentumSurge(),
-        AtrRegimeShift(),
-        SwingStructureBreak(),
-        RangeMeanReversion(),
         StructuredTrendContinuation(),
         StructuredTrendContinuation(name="structured_trend_h4", htf="H4"),
         StructuredSweepReversal(),
@@ -109,12 +30,9 @@ def build_named_strategy_catalog(
         StructuredRangeReversion(),
         StructuredSessionBreakout(),
         StructuredTrendlineTouch(),
+        StructuredLowbarEntry(),
     ):
         strategies[strategy.name] = strategy
-
-    if include_composites:
-        for strategy in build_composite_strategies():
-            strategies[strategy.name] = strategy
 
     return strategies
 

@@ -46,36 +46,49 @@
 - ~~WAL Queue 重入 + IndicatorManager 线程守卫 + PositionManager 启动同步~~
 - ~~DLQ 文件清理 + listener_fail_counts 清理~~
 
+**架构清理**
+- ~~Legacy 策略全面移除：35 个 legacy 策略 + 4 个复合策略代码删除~~
+- ~~切换到纯结构化策略架构：7 个策略（8 个注册实例含 trend_h4 变体）~~
+- ~~清理 signal.ini：移除 legacy strategy_timeframes/regime_affinity/strategy_params/voting_groups~~
+- ~~清理 composites.json / registry.py / composite.py~~
+
+**A7 入场职责回归策略层**
+- ~~策略 _entry_spec() 输出入场意图（entry_type/entry_price/entry_zone_atr）~~
+- ~~PendingEntryManager 退化为纯执行层：读取策略入场规格，不再按 category 推算~~
+- ~~移除 _CATEGORY_ZONE_MODE / _compute_reference_price() / category_timeout_multiplier~~
+- ~~TradeExecutor 分支简化：entry_type=market → 直接市价，limit/stop → 挂单~~
+- ~~signal.ini [pending_entry] 移除 zone ATR factors + per-TF 覆盖~~
+
+**Regime 预检清理**
+- ~~移除三层冗余 regime affinity 预检（affinity.py 全局预检 + evaluator 逐策略预检 + base.py fast-reject）~~
+- ~~结构化策略在 _why() 内部自行判断 regime 适应性，外部预检纯属双重计算~~
+- ~~删除 affinity.py、min_affinity_skip 配置、_regime_fast_reject 硬编码~~
+
+**策略信号管线精简（A9 + 死代码清理 + HTF 冲突移除）**
+- ~~htf_alignment 完全移除（不再计算/记录/乘 confidence）~~
+- ~~Executor HTF 冲突检查移除（执行层不做信号质量决策）~~
+- ~~死代码清理：confidence.py apply_htf_alignment / htf_resolver.py compute_htf_alignment~~
+
+**统一评分框架 + 策略接口标准化**
+- ~~每层 score 0~1 × budget（why=0.15, when=0.15, where=0.10, vol=0.05）~~
+- ~~策略必须实现 6 个接口：_why / _when / _entry_spec / _exit_spec（强制）+ _where / _volume_bonus（可选）~~
+- ~~出场参数（aggression + sl_atr + tp_atr）由策略 _exit_spec() 输出，执行层读取~~
+- ~~checks.py 通用检查工具函数集（HTF/ADX/RSI/Bar/Volume 纯函数）~~
+
 ---
 
 ## P0: 结构化策略优化（当前最高优先）
 
-> 目标：让结构化策略在 H1 trending regime 上的盈利能力（WR=48.1%, PnL=+85）扩展到更多场景。
+> 目标：刷新纯结构化架构下的回测基线，优化各策略/TF/Regime 组合的盈利能力。
+> 前置：Legacy 已移除 + A7 入场职责已回归策略层，管线已清洁。
 
-### 回测现状（2026-04-06，3 个月 2025-12-30~2026-03-30）
+### 待办
 
-| 策略 | H1 | M30 |
-|------|-----|------|
-| structured_trend_continuation | 18笔/44.4%/-61 | 32笔/40.6%/-316 |
-| structured_sweep_reversal | — | 2笔/100%/+91 |
-| structured_trendline_touch | 9笔/33.3%/-362 | — |
-| macd_momentum (legacy) | 28笔/42.9%/+3 | — |
-| **H1 TRENDING regime** | **52笔/48.1%/+85** | — |
-
-### 待优化
-
-- [ ] H1 BREAKOUT regime 拖累修复（34笔/29.4%/-1013）— 结构化策略在 breakout 下入场时机差
+- [ ] 刷新全 TF 基线回测（纯结构化策略，含 entry_spec 入场逻辑）
+- [ ] H1 BREAKOUT regime 优化 — 结构化策略在 breakout 下入场时机差
 - [ ] structured_trend_continuation RSI 区间网格搜索（当前 32-55 buy / 45-68 sell）
-- [ ] structured_trendline_touch WR=33.3% 分析 — 趋势线质量评估是否需要更严格
-- [ ] M30 整体优化：W/L=0.80，trailing_stop 盈利但 SL 亏损过大
-- [ ] 冻结 M30 上的 order_block_entry（28笔/25%/-814，最大亏损源）
-
-### P0.4 Legacy 策略 Confidence 优化（降级为可选）
-
-> 路径 B 已用结构化策略替代，以下仅在需要保留 legacy 策略活跃时执行。
-
-- [ ] sma_trend / macd_momentum / roc_momentum：用百分位排名替代绝对值映射
-- [ ] 可选：HTF alignment 改加减法替代乘法
+- [ ] structured_trendline_touch WR 分析 — 趋势线质量评估是否需要更严格
+- [ ] M30 整体优化：trailing_stop 盈利但 SL 亏损过大
 
 ---
 
@@ -95,7 +108,7 @@
 
 ### 2.1 Walk-Forward 前推验证
 
-- [ ] 对结构化策略 + macd_momentum，跑 Walk-Forward（3 个月 IS + 1 个月 OOS，滚动 4-6 窗口）
+- [ ] 对结构化策略跑 Walk-Forward（3 个月 IS + 1 个月 OOS，滚动 4-6 窗口）
 - [ ] 检查 overfitting_ratio：>1.5 的策略标记为不可信
 - [ ] 检查 consistency_rate：<50% 的策略参数不稳定
 - [ ] 用 `RecommendationEngine.generate()` 生成调参建议
@@ -160,12 +173,7 @@ H1 策略盘中入场示例：
 > 策略变聪明后，管线应变简单。以下改动消除策略层与管线层的职责重叠。
 > 横切关注点（performance/calibrator）通过**装饰器**接入，不在各模块重复实现。
 
-#### A7: 入场职责回归策略层
-
-- [ ] 策略 evaluate() 在 metadata 中输出 `suggested_entry_price` + `entry_type`（limit/market）
-- [ ] PendingEntryManager 退化为纯执行层：收到策略建议价 → 挂单 → 超时取消
-- [ ] 废弃 PendingEntryManager 的 "按 category 选入场模式" 逻辑（pullback/momentum/symmetric 模板）
-- [ ] TradeExecutor 读取 metadata 决定挂单/市价，不再自行推算入场价
+#### ~~A7: 入场职责回归策略层~~（已完成 2026-04-06）
 
 #### A8: PerformanceTracker 按信号等级追踪（装饰器接入）
 
@@ -174,13 +182,26 @@ H1 策略盘中入场示例：
 - [ ] 乘数按 grade 分别计算：A 级信号可获更高 multiplier，C 级被压制
 - [ ] signal_grade A/B/C 已在 StructuredStrategyBase.evaluate() 中自动计算
 
-#### A9: 置信度管线精简（结构化策略专用）
+#### A9: 置信度管线精简（已完成 2026-04-06）
 
-- [ ] **移除 htf_alignment**：结构化策略 Why 层已做 HTF 方向检查，外部再乘 ×1.10/×0.70 是双重计算
-- [ ] **简化 Calibrator**：结构化策略的 confidence 设计已考虑分布（base + 多因子加分），短期跳过校准
-- [ ] **保留 regime_affinity**：外部 regime 门控仍有价值，但值可放宽（策略已内部检查 ADX/趋势方向）
-- [ ] **保留 confidence_floor + intrabar_factor**
-- [ ] 实现方式：按 strategy category 判断是否跳过 htf_alignment / calibrator
+- [x] **htf_alignment 完全移除**：不再计算、不再记录；结构化策略 Why 层内部处理 HTF 方向
+- [x] **Executor HTF 冲突检查移除**：执行层不做信号质量决策
+- [x] **死代码清理**：confidence.py apply_htf_alignment / htf_resolver.py compute_htf_alignment 移除
+- [x] **Calibrator/PerformanceTracker**：配置层不启用，管线透传
+- [x] **统一评分框架**：每层 score 0~1 × budget（why=0.15, when=0.15, where=0.10, vol=0.05）
+
+#### ~~A10: 策略工具函数集~~（已完成 2026-04-06）
+
+- [x] `checks.py` 纯函数工具集：htf_direction / adx_in_range / rsi_extreme / bar_close_position 等
+- [x] 策略按需调用，不强制使用
+
+#### A11: regime_affinity 乘数审视（待回测数据验证）
+
+> _why() 已用 ADX/HTF 做了 regime 检查（硬门控），regime_affinity 在 service.py 中再乘一次（软门控）。
+> 两者对同一件事做了两次判断，可能需要移除或简化。需要对比回测数据决定。
+
+- [ ] 对比 regime_affinity=1.0（禁用）vs 当前值的回测差异
+- [ ] 如果差异不大，移除 regime_affinity 乘法，管线简化为纯策略评分
 
 ### 架构解耦
 

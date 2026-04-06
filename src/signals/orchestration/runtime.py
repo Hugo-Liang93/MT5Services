@@ -27,12 +27,7 @@ from ..evaluation.regime import (
 from ..execution.filters import SignalFilterChain
 from ..models import SignalEvent
 from ..service import SignalModule
-from .affinity import (
-    any_strategy_eligible as _any_strategy_eligible_fn,
-    effective_affinity as _effective_affinity_fn,
-)
 from .htf_resolver import (
-    compute_htf_alignment,
     parse_htf_config,
     resolve_htf_indicators,
 )
@@ -118,14 +113,7 @@ class SignalRuntime:
         market_structure_analyzer: Any | None = None,
         htf_indicators_enabled: bool = True,
         intrabar_confidence_factor: float = 1.0,
-        htf_direction_fn: Callable[[str, str], str | None] | None = None,
         htf_context_fn: Callable[..., Any] | None = None,
-        htf_conflict_penalty: float = 0.70,
-        htf_alignment_boost: float = 1.10,
-        htf_alignment_strength_coefficient: float = 0.30,
-        htf_alignment_stability_per_bar: float = 0.03,
-        htf_alignment_stability_cap: float = 1.15,
-        htf_alignment_intrabar_strength_ratio: float = 0.50,
         htf_target_config: dict[str, str] | None = None,
         warmup_ready_fn: Callable[[], bool] | None = None,
         wal_db_path: str | None = None,
@@ -216,14 +204,7 @@ class SignalRuntime:
             {}
         )  # populated by set_strategy_intrabar_decay
         # HTF 方向对齐相关参数：冲突惩罚、顺势增益与稳定度加成都会体现在 confidence。
-        self._htf_direction_fn = htf_direction_fn
         self._htf_context_fn = htf_context_fn
-        self._htf_conflict_penalty: float = htf_conflict_penalty
-        self._htf_alignment_boost: float = htf_alignment_boost
-        self._htf_strength_coeff: float = htf_alignment_strength_coefficient
-        self._htf_stability_per_bar: float = htf_alignment_stability_per_bar
-        self._htf_stability_cap: float = htf_alignment_stability_cap
-        self._htf_intrabar_ratio: float = htf_alignment_intrabar_strength_ratio
         # warmup_ready_fn 返回 True 后，运行时才开始接受需要 warmup 的实时评估。
         # 传入 None 表示不做额外 warmup 屏障，standalone/回放场景可直接运行。
         self._warmup_ready_fn: Callable[[], bool] | None = warmup_ready_fn
@@ -272,9 +253,6 @@ class SignalRuntime:
         # 这里只累计后台主循环故障次数，不把单次策略/监听器异常误判为整体运行故障。
         self._consecutive_loop_errors = 0
         self._loop_error_alert_threshold = 5
-        self._affinity_gates_skipped: int = 0
-        # Per-TF 统计被 affinity/raw_conf 等原因跳过的次数。
-        self._per_tf_skips: dict[str, dict[str, int]] = {}
         # Per-TF 统计 evaluated / hold / buy_sell / below_min_conf 等评估结果。
         self._per_tf_eval_stats: dict[str, dict[str, int]] = {}
         # FilterChain 按 scope 记录通过/拦截统计。
@@ -657,8 +635,6 @@ class SignalRuntime:
             "intrabar_queue_capacity": self._intrabar_events.maxsize,
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
-            "affinity_gates_skipped": self._affinity_gates_skipped,
-            "per_tf_skips": dict(self._per_tf_skips),
             "filter_by_scope": {
                 s: {"passed": d["passed"], "blocked": d["blocked"], "blocks": dict(d["blocks"])}
                 for s, d in self._filter_by_scope.items()
@@ -1065,28 +1041,6 @@ class SignalRuntime:
     def process_next_event(self, timeout: float = 0.5) -> bool:
         return _runtime_process_next_event(self, timeout)
 
-    def _compute_htf_alignment(
-        self,
-        symbol: str,
-        timeframe: str,
-        action: str,
-        scope: str,
-    ) -> tuple[float | None, str | None]:
-        return compute_htf_alignment(
-            symbol,
-            timeframe,
-            action,
-            scope,
-            htf_context_fn=self._htf_context_fn,
-            htf_direction_fn=self._htf_direction_fn,
-            alignment_boost=self._htf_alignment_boost,
-            conflict_penalty=self._htf_conflict_penalty,
-            strength_coeff=self._htf_strength_coeff,
-            stability_per_bar=self._htf_stability_per_bar,
-            stability_cap=self._htf_stability_cap,
-            intrabar_ratio=self._htf_intrabar_ratio,
-        )
-
     @staticmethod
     def _parse_htf_config(
         raw: dict[str, str],
@@ -1119,49 +1073,6 @@ class SignalRuntime:
         if callable(getter):
             return getter(symbol, timeframe, indicator_name)
         return None
-
-    def _any_strategy_eligible(
-        self,
-        symbol: str,
-        timeframe: str,
-        scope: str,
-        regime: RegimeType,
-        soft_regime: dict[str, Any] | None,
-        active_sessions: list[str],
-    ) -> bool:
-        """判断当前 regime/scope/session 下是否至少有一个策略值得继续评估。"""
-        return _any_strategy_eligible_fn(
-            symbol,
-            timeframe,
-            scope,
-            regime,
-            soft_regime,
-            active_sessions,
-            min_affinity_skip=self.policy.min_affinity_skip,
-            target_index=self._target_index,
-            strategy_sessions=self.policy.strategy_sessions,
-            strategy_timeframes=self.policy.strategy_timeframes,
-            strategy_scopes=self._strategy_scopes,
-            strategy_affinity=self._strategy_affinity,
-            soft_regime_enabled=self._soft_regime_enabled,
-        )
-
-    def _effective_affinity(
-        self,
-        strategy: str,
-        regime: RegimeType,
-        soft_regime: dict[str, Any] | None,
-        *,
-        _parsed_cache: SoftRegimeResult | None = None,
-    ) -> float:
-        return _effective_affinity_fn(
-            strategy,
-            regime,
-            soft_regime,
-            self._strategy_affinity,
-            self._soft_regime_enabled,
-            _parsed_cache=_parsed_cache,
-        )
 
     def _loop(self) -> None:
         """后台主循环。

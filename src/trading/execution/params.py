@@ -48,6 +48,11 @@ def compute_params(
     contract_size = get_contract_size(executor, event.symbol)
     digits, volume_step = get_symbol_precision(executor, event.symbol)
 
+    # 策略 exit_spec 可覆盖全局 SL/TP 倍数
+    _exit_spec = event.metadata.get("exit_spec", {})
+    sl_mult = _exit_spec.get("sl_atr") or executor.config.sl_atr_multiplier
+    tp_mult = _exit_spec.get("tp_atr") or executor.config.tp_atr_multiplier
+
     return compute_trade_params(
         action=event.direction,
         current_price=close_price,
@@ -55,8 +60,8 @@ def compute_params(
         account_balance=balance,
         timeframe=event.timeframe,
         risk_percent=executor.config.risk_percent,
-        sl_atr_multiplier=executor.config.sl_atr_multiplier,
-        tp_atr_multiplier=executor.config.tp_atr_multiplier,
+        sl_atr_multiplier=sl_mult,
+        tp_atr_multiplier=tp_mult,
         min_volume=executor.config.min_volume,
         max_volume=executor.config.max_volume,
         contract_size=contract_size,

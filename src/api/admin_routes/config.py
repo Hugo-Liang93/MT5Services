@@ -70,8 +70,3 @@ def admin_config_indicators(
             intrabar_indicators=intrabar_names,
         )
     )
-
-
-@router.get("/config/composites", response_model=ApiResponse[List[Dict[str, Any]]])
-def admin_config_composites() -> ApiResponse[List[Dict[str, Any]]]:
-    return ApiResponse.success_response(load_json_config("composites.json"))

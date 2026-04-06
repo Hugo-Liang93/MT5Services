@@ -439,27 +439,22 @@ def evaluate_exit(
     timeframe: str = "",
     initial_sl_atr_mult: float = 0.0,
     config: Optional[ChandelierConfig] = None,
+    exit_spec: Optional[Dict[str, Any]] = None,
 ) -> ExitCheckResult:
     """统一出场评估入口。按顺序执行 6 条规则。
 
-    根据 (strategy_category, current_regime) 通过 aggression 系数动态选择出场 profile。
-    Chandelier multiplier 再经 per-TF 缩放和 R 单位约束。
-
-    新增参数：
-      - timeframe: 当前持仓的 TF（用于 per-TF trail 缩放）
-      - initial_sl_atr_mult: 入场时的 SL ATR 倍数（用于 R 单位保护约束）
-
-    调用方职责：
-      - 每 bar 先更新 peak_price（调用前）
-      - 传入当前 regime（每 bar 重新检测的）
-      - 记录策略方向到 recent_signal_dirs
-      - 将返回的 new_stop_loss / breakeven_activated 更新到持仓对象
+    出场 profile 来源（优先级从高到低）：
+      1. exit_spec["aggression"]（策略 _exit_spec() 输出）
+      2. (strategy_category, current_regime) 映射（legacy 兼容）
+      3. fallback_profile（全局默认 α=0.50）
     """
     if config is None:
         config = ChandelierConfig()
 
-    # 根据 (category, regime) 查找出场 profile
-    if config.regime_aware and strategy_category and current_regime:
+    # 策略 exit_spec 优先
+    if exit_spec and "aggression" in exit_spec:
+        profile = profile_from_aggression(exit_spec["aggression"])
+    elif config.regime_aware and strategy_category and current_regime:
         profile = resolve_exit_profile(
             strategy_category, current_regime, config.aggression_overrides or None,
         )

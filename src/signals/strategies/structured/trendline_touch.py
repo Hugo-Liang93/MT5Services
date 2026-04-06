@@ -9,7 +9,7 @@ from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
 from .base import StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
 
-from ..legacy.trendline import (
+from .trendline_utils import (
     _bar_value,
     _detect_swing_highs,
     _detect_swing_lows,
@@ -65,8 +65,8 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
             return True, None, 0, f"htf_weak:{htf_adx}"
 
         direction_hint = "buy" if int(htf_dir) == 1 else "sell"
-        adx_bonus = min(float(htf_adx or 20) / 40.0 * 0.10, 0.10) if htf_adx else 0.0
-        return True, direction_hint, adx_bonus, f"htf:{direction_hint}"
+        score = min(float(htf_adx or 20) / 40.0, 1.0) if htf_adx else 0.3
+        return True, direction_hint, score, f"htf:{direction_hint}"
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
         atr = self._atr(ctx)
@@ -153,27 +153,44 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         vr = self._volume_ratio(ctx)
-        return 0.05 if vr is not None and vr > 1.3 else 0.0
+        return 1.0 if vr is not None and vr > 1.3 else 0.0
+
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        if self._last_tl is not None:
+            return {
+                "entry_type": "limit",
+                "entry_price": self._last_tl.trendline_price_at_current,
+                "entry_zone_atr": 0.3,
+            }
+        return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
+
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        # 趋势线触碰：顺势中等 trail
+        return {"aggression": 0.70, "sl_atr": None, "tp_atr": None}
 
     def _tl_conf(self, candidate: Any, touch_dist: float, tol: float) -> float:
-        conf = 0.0
+        """趋势线质量评分，返回 0~1。"""
+        score = 0.0
         n = len(candidate.covered_points)
-        conf += min(max(n - self._min_covered_points, 0) * 0.04, 0.12)
+        # 覆盖点越多越好（3 点起算，每多 1 点 +0.15，上限 0.45）
+        score += min(max(n - self._min_covered_points, 0) * 0.15, 0.45)
+        # 跨度越大越好
         span = candidate.covered_points[-1].index - candidate.covered_points[0].index
         if span > 10:
-            conf += min((span - 10) / 50.0 * 0.08, 0.08)
+            score += min((span - 10) / 50.0, 0.3)
+        # 触碰越近越好
         if tol > 0:
-            conf += max(1.0 - touch_dist / tol, 0.0) * 0.06
-        return conf
+            score += max(1.0 - touch_dist / tol, 0.0) * 0.25
+        return min(score, 1.0)
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         used = list(self.required_indicators)
         self._last_tl: Any = None
         self._last_dir: Optional[str] = None
 
-        why_ok, direction_hint, why_conf, why_reason = self._why(context)
+        why_ok, direction_hint, why_score, why_reason = self._why(context)
 
-        when_ok, when_conf, when_reason = self._when(context, direction_hint)
+        when_ok, when_score, when_reason = self._when(context, direction_hint)
         if not when_ok:
             return self._hold(when_reason, used)
 
@@ -181,30 +198,43 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
         if direction is None:
             return self._hold("no_direction", used)
 
-        htf_penalty = 0.0
+        # HTF 方向冲突时降低 why_score
         if direction_hint is not None and direction != direction_hint:
-            htf_penalty = -0.08
+            why_score = max(why_score - 0.3, 0.0)
 
-        where_bonus, where_info = self._where(context, direction)
-        vol_bonus = self._volume_bonus(context, direction)
+        where_score, where_info = self._where(context, direction)
+        vol_score = self._volume_bonus(context, direction)
 
         confidence = (
             self._base_confidence
-            + why_conf
-            + when_conf
-            + where_bonus
-            + vol_bonus
-            + htf_penalty
+            + min(why_score, 1.0) * self._WHY_BUDGET
+            + min(when_score, 1.0) * self._WHEN_BUDGET
+            + min(where_score, 1.0) * self._WHERE_BUDGET
+            + min(vol_score, 1.0) * self._VOL_BUDGET
         )
+
+        grade = (
+            "A" if where_score > 0 and vol_score > 0
+            else "B" if where_score > 0 or vol_score > 0 else "C"
+        )
+
         reason = f"trendline_{direction}:{when_reason},{why_reason}"
         if where_info:
             reason += f",{where_info}"
 
+        entry_spec = self._entry_spec(context, direction)
+        exit_spec = self._exit_spec(context, direction)
+
         md: Dict[str, Any] = {
             "why": why_reason,
             "when": when_reason,
-            "where_bonus": where_bonus,
-            "vol_bonus": vol_bonus,
+            "why_score": round(min(why_score, 1.0), 3),
+            "when_score": round(min(when_score, 1.0), 3),
+            "where_score": round(min(where_score, 1.0), 3),
+            "vol_score": round(min(vol_score, 1.0), 3),
+            "signal_grade": grade,
+            "entry_spec": entry_spec,
+            "exit_spec": exit_spec,
         }
         if self._last_tl is not None:
             tl = self._last_tl

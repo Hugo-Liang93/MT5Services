@@ -6,7 +6,6 @@ from .signal_routes import catalog_router, diagnostics_router, runtime_router
 from .signal_routes.catalog import (
     best_signals_per_timeframe,
     evaluate_signal,
-    list_composite_strategies,
     list_signal_strategies,
     recent_consensus_signals,
     recent_signals,
@@ -45,7 +44,6 @@ __all__ = [
     "get_regime",
     "get_tracked_positions",
     "htf_cache_status",
-    "list_composite_strategies",
     "list_signal_strategies",
     "recent_consensus_signals",
     "recent_signals",

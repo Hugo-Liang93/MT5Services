@@ -45,12 +45,6 @@ _TF_SECONDS: dict[str, int] = {
 class PendingEntryConfig:
     """[pending_entry] section 配置。"""
 
-    # 区间参数（ATR 倍数）
-    pullback_atr_factor: float = 0.3
-    chase_atr_factor: float = 0.1
-    momentum_atr_factor: float = 0.5
-    symmetric_atr_factor: float = 0.4
-
     # 价格监控
     check_interval: float = 0.5
     max_spread_points: float = 0.0  # 0 = 不做额外 spread 检查
@@ -69,19 +63,6 @@ class PendingEntryConfig:
     )
     default_timeout_bars: float = 2.0
 
-    # 按 category 的超时倍率：乘以上面的 timeout_bars 得到最终超时
-    # trend 信号有效期长（等回调），reversion 短（极值稍纵即逝），breakout 中等
-    category_timeout_multiplier: dict[str, float] = field(
-        default_factory=lambda: {
-            "trend": 1.0,
-            "reversion": 0.6,
-            "breakout": 0.8,
-            "session": 1.0,
-            "price_action": 0.7,
-            "composite": 0.8,
-            "multi_tf": 1.0,
-        }
-    )
 
     # 超时降级：超时时如果价格偏离参考价 < 此值×ATR，以市价入场而非丢弃
     # 0 = 禁用降级（超时直接丢弃）
@@ -91,12 +72,6 @@ class PendingEntryConfig:
     cancel_on_new_signal: bool = True
     cancel_same_direction: bool = False
 
-    # 策略级 ATR factor 覆盖: {"supertrend": {"pullback_atr_factor": 0.4}}
-    strategy_overrides: dict[str, dict[str, float]] = field(default_factory=dict)
-
-    # Per-TF ATR factor 覆盖: {"M5": {"pullback_atr_factor": 0.15}}
-    # 优先级：strategy_overrides > tf_overrides > 全局默认
-    tf_overrides: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -127,16 +102,6 @@ class PendingEntry:
     cancel_reason: str = ""
 
 
-# ── Zone Mode 映射：StrategyCategory → zone_mode ─────────────────────────────
-_CATEGORY_ZONE_MODE: dict[str, str] = {
-    "trend": "pullback",
-    "reversion": "symmetric",
-    "breakout": "momentum",
-    "session": "pullback",
-    "price_action": "pullback",
-    "composite": "symmetric",
-    "multi_tf": "pullback",
-}
 
 
 def _extract_quote_prices(quote: Any) -> Optional[tuple[float, float]]:
@@ -153,185 +118,13 @@ def _extract_quote_prices(quote: Any) -> Optional[tuple[float, float]]:
         return None
 
 
-def _compute_reference_price(
-    *,
-    action: str,
-    close_price: float,
-    atr: float,
-    category: str,
-    indicators: Optional[Dict[str, Any]] = None,
-) -> float:
-    """根据策略 category 从指标数据计算智能入场参考价。
-
-    核心原则：参考价不是"当前价格在哪"，而是"合理的入场价在哪"。
-    - trend     → 最近的均线支撑/阻力（EMA20/Supertrend 线）
-    - reversion → 均值位置（BB middle）
-    - breakout  → 突破的关键价位（Donchian upper/lower）
-    - price_action → close（K 线形态的确认价就是 close）
-
-    如果指标数据缺失，安全回退到 close_price。
-    """
-    if not indicators:
-        return close_price
-
-    ref = close_price
-
-    if category == "trend":
-        # 趋势策略：参考最近均线作为回调目标
-        # 优先 supertrend 线（最贴近趋势支撑/阻力），其次 EMA20/SMA20
-        st = indicators.get("supertrend14", {})
-        st_value = st.get("supertrend")
-        st_dir = st.get("direction")
-        if st_value is not None and st_dir is not None:
-            try:
-                st_value = float(st_value)
-                st_dir = int(st_dir)
-                # buy + supertrend 在下方 → 回调到 supertrend 线附近入场
-                if action == "buy" and st_dir > 0 and st_value < close_price:
-                    ref = st_value
-                elif action == "sell" and st_dir < 0 and st_value > close_price:
-                    ref = st_value
-            except (TypeError, ValueError):
-                pass
-
-        # 如果 supertrend 没给出合理参考价，尝试 EMA
-        if ref == close_price:
-            for ema_key in ("ema9", "sma20", "hma20"):
-                ema_data = indicators.get(ema_key, {})
-                ema_val = ema_data.get("ema") or ema_data.get("sma") or ema_data.get("hma")
-                if ema_val is not None:
-                    try:
-                        ema_val = float(ema_val)
-                        # 均线在 close 和 close-ATR 之间才是合理的回调目标
-                        if action == "buy" and close_price - atr < ema_val < close_price:
-                            ref = ema_val
-                            break
-                        elif action == "sell" and close_price < ema_val < close_price + atr:
-                            ref = ema_val
-                            break
-                    except (TypeError, ValueError):
-                        continue
-
-    elif category == "reversion":
-        # 均值回归：参考 BB middle（均值）或 VWAP
-        bb = indicators.get("boll20", {})
-        bb_mid = bb.get("bb_middle")
-        if bb_mid is not None:
-            try:
-                ref = float(bb_mid)
-            except (TypeError, ValueError):
-                pass
-        if ref == close_price:
-            vwap = indicators.get("vwap30", {})
-            vwap_val = vwap.get("vwap")
-            if vwap_val is not None:
-                try:
-                    ref = float(vwap_val)
-                except (TypeError, ValueError):
-                    pass
-
-    elif category == "breakout":
-        # 突破策略：参考突破的关键价位
-        don = indicators.get("donchian20", {})
-        if action == "buy":
-            don_upper = don.get("donchian_upper")
-            if don_upper is not None:
-                try:
-                    ref = float(don_upper)
-                except (TypeError, ValueError):
-                    pass
-        else:
-            don_lower = don.get("donchian_lower")
-            if don_lower is not None:
-                try:
-                    ref = float(don_lower)
-                except (TypeError, ValueError):
-                    pass
-
-    # price_action / session / composite / multi_tf → 保持 close_price
-    # （K 线形态的确认价就是 close，没有更好的锚点）
-
-    # 安全护栏：参考价不能偏离 close 超过 1.5×ATR（防止异常数据）
-    if atr > 0 and abs(ref - close_price) > 1.5 * atr:
-        ref = close_price
-
-    return ref
-
-
-def compute_entry_zone(
-    *,
-    action: str,
-    close_price: float,
-    atr: float,
-    zone_mode: str,
-    config: PendingEntryConfig,
-    strategy_name: str = "",
-    category: str = "",
-    indicators: Optional[Dict[str, Any]] = None,
-    timeframe: str = "",
-) -> tuple[float, float]:
-    """计算入场价格区间 [entry_low, entry_high]。
-
-    当 indicators 不为空时，根据 category 计算智能参考价替代 close_price，
-    使入场区间锚定在策略逻辑认为合理的价位上（而不是 bar close）。
-
-    参数优先级：strategy_overrides > tf_overrides > 全局默认
-    """
-    ref_price = _compute_reference_price(
-        action=action,
-        close_price=close_price,
-        atr=atr,
-        category=category,
-        indicators=indicators,
-    )
-
-    # 参数查找：strategy_overrides > tf_overrides > 全局默认
-    strat_ov = config.strategy_overrides.get(strategy_name, {})
-    tf_ov = config.tf_overrides.get(timeframe.upper(), {}) if timeframe else {}
-
-    def _resolve(key: str, default: float) -> float:
-        return strat_ov.get(key, tf_ov.get(key, default))
-
-    if zone_mode == "pullback":
-        pullback = _resolve("pullback_atr_factor", config.pullback_atr_factor)
-        chase = _resolve("chase_atr_factor", config.chase_atr_factor)
-        if action == "buy":
-            entry_low = ref_price - pullback * atr
-            entry_high = ref_price + chase * atr
-        else:
-            entry_low = ref_price - chase * atr
-            entry_high = ref_price + pullback * atr
-
-    elif zone_mode == "momentum":
-        momentum = _resolve("momentum_atr_factor", config.momentum_atr_factor)
-        chase = _resolve("chase_atr_factor", config.chase_atr_factor)
-        if action == "buy":
-            entry_low = ref_price - chase * atr
-            entry_high = ref_price + momentum * atr
-        else:
-            entry_low = ref_price - momentum * atr
-            entry_high = ref_price + chase * atr
-
-    else:  # symmetric
-        sym = _resolve("symmetric_atr_factor", config.symmetric_atr_factor)
-        entry_low = ref_price - sym * atr
-        entry_high = ref_price + sym * atr
-
-    return round(entry_low, 2), round(entry_high, 2)
-
-
 def compute_timeout(
     timeframe: str,
     config: PendingEntryConfig,
-    category: str = "",
 ) -> timedelta:
-    """计算超时时长。按 category 应用倍率（均值回归短，趋势长）。"""
-    tf = timeframe.strip().upper()
+    """计算超时时长（纯 TF 驱动）。"""
+    tf = timeframe.strip().upper() if timeframe else ""
     bars = config.timeout_bars.get(tf, config.default_timeout_bars)
-    # 按 category 调整：reversion ×0.6, breakout ×0.8, trend ×1.0
-    if category:
-        multiplier = config.category_timeout_multiplier.get(category, 1.0)
-        bars *= multiplier
     bar_seconds = _TF_SECONDS.get(tf, 300)
     return timedelta(seconds=bars * bar_seconds)
 

@@ -67,15 +67,14 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
             if direction == "sell" and rsi < self._rsi_min_sell:
                 return False, None, 0, f"rsi_cold:{rsi:.0f}"
 
-        rise_bonus = min(d3 / 8.0 * 0.12, 0.12)
-        return True, direction, rise_bonus, f"adx={adx:.0f},d3={d3:.1f}"
+        score = min(d3 / 6.0, 1.0)
+        return True, direction, score, f"adx={adx:.0f},d3={d3:.1f}"
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
-        # ADX + DI 已在 why 中验证，when 检查 bar 力度
         bs = ctx.indicators.get("bar_stats20", {})
         br = bs.get("body_ratio")
-        bonus = 0.05 if br is not None and float(br) > 1.2 else 0.0
-        return True, bonus, f"body={br}"
+        score = 0.7 if br is not None and float(br) > 1.2 else 0.3
+        return True, score, f"body={br}"
 
     def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
         ms = self._ms(ctx)
@@ -83,18 +82,25 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
         breached = ms.get("breached_levels", [])
 
         if direction == "buy" and str(breakout).startswith("above_") and breached:
-            return 0.10, f"break={breakout}"
+            return 1.0, f"break={breakout}"
         if direction == "sell" and str(breakout).startswith("below_") and breached:
-            return 0.10, f"break={breakout}"
+            return 1.0, f"break={breakout}"
 
         fp = ms.get("first_pullback_state", "none")
         if direction == "buy" and str(fp).startswith("bullish_"):
-            return 0.08, f"pullback={fp}"
+            return 0.7, f"pullback={fp}"
         if direction == "sell" and str(fp).startswith("bearish_"):
-            return 0.08, f"pullback={fp}"
+            return 0.7, f"pullback={fp}"
 
         return 0.0, ""
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         vr = self._volume_ratio(ctx)
-        return 0.08 if vr is not None and vr > 1.8 else 0.0
+        return 1.0 if vr is not None and vr > 1.8 else 0.0
+
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        return {"entry_type": "stop", "entry_price": None, "entry_zone_atr": 0.2}
+
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        # 突破追价：宽 trail 让趋势跑
+        return {"aggression": 0.85, "sl_atr": None, "tp_atr": None}

@@ -228,7 +228,10 @@ _FLAT_FIELD_MAP: Dict[str, Tuple[str, str]] = {
     "trailing_tp_trail_atr": ("trailing_tp", "trail_atr"),
     # CircuitBreakerConfig
     "circuit_breaker_enabled": ("circuit_breaker", "enabled"),
-    "circuit_breaker_max_consecutive_losses": ("circuit_breaker", "max_consecutive_losses"),
+    "circuit_breaker_max_consecutive_losses": (
+        "circuit_breaker",
+        "max_consecutive_losses",
+    ),
     "circuit_breaker_cooldown_bars": ("circuit_breaker", "cooldown_bars"),
     # MonteCarloConfig
     "monte_carlo_enabled": ("monte_carlo", "enabled"),
@@ -408,6 +411,8 @@ class BacktestResult:
     signal_evaluations: Optional[List[SignalEvaluation]] = None
     # 蒙特卡洛排列检验结果
     monte_carlo_result: Optional[Dict[str, Any]] = None
+    # 实验追踪 ID（跨 Research/Backtest/PaperTrading 关联）
+    experiment_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为可 JSON 化的字典。"""
@@ -522,7 +527,9 @@ class RobustnessResult:
 class ParamChange:
     """单个参数变更。"""
 
-    section: str  # "strategy_params" | "strategy_params.{TF}" | "regime_affinity.{strategy}"
+    section: (
+        str  # "strategy_params" | "strategy_params.{TF}" | "regime_affinity.{strategy}"
+    )
     key: str  # e.g. "supertrend__adx_threshold"
     old_value: Optional[float]  # None = 新增参数
     new_value: float
@@ -559,6 +566,8 @@ class Recommendation:
     applied_at: Optional[datetime] = None
     rolled_back_at: Optional[datetime] = None
     backup_path: Optional[str] = None  # 应用前的配置备份路径
+    # 实验追踪 ID（跨 Research/Backtest/PaperTrading 关联）
+    experiment_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为可 JSON 化的字典。"""
@@ -589,6 +598,7 @@ class Recommendation:
                 self.rolled_back_at.isoformat() if self.rolled_back_at else None
             ),
             "backup_path": self.backup_path,
+            "experiment_id": self.experiment_id,
         }
 
 

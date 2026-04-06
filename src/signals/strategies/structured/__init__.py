@@ -5,6 +5,7 @@ from .breakout_follow import StructuredBreakoutFollow
 from .range_reversion import StructuredRangeReversion
 from .session_breakout import StructuredSessionBreakout
 from .trendline_touch import StructuredTrendlineTouch
+from .lowbar_entry import StructuredLowbarEntry
 
 __all__ = [
     "StructuredStrategyBase",
@@ -14,4 +15,5 @@ __all__ = [
     "StructuredRangeReversion",
     "StructuredSessionBreakout",
     "StructuredTrendlineTouch",
+    "StructuredLowbarEntry",
 ]

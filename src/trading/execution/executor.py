@@ -62,12 +62,6 @@ class ExecutorConfig:
     min_confidence: float = 0.7
     # 按时间框架覆盖最低交易置信度，低周期可以设置更严格阈值。
     timeframe_min_confidence: dict[str, float] = field(default_factory=dict)
-    # 在这些低周期上，一旦 HTF 方向冲突就直接阻止开仓。
-    htf_conflict_block_timeframes: frozenset[str] = field(default_factory=frozenset)
-    # 豁免 HTF 冲突拦截的策略类别，例如均值回归天然允许逆势。
-    htf_conflict_exempt_categories: frozenset[str] = field(
-        default_factory=lambda: frozenset({"reversion"})
-    )
     max_concurrent_positions_per_symbol: int | None = 3
     risk_percent: float = 1.0
     sl_atr_multiplier: float = 1.5
@@ -485,29 +479,6 @@ class TradeExecutor:
             _notify_skip_helper(self, event.signal_id, "min_confidence", tf, event=event)
             return None
 
-        # HTF 方向冲突可在低周期直接阻止开仓；默认仅豁免允许逆势的策略类别。
-        # 这能避免趋势跟随策略在高周期反向时，仍在低周期继续追价入场。
-        strategy_category = event.metadata.get("strategy_category", "")
-        if (
-            tf in self.config.htf_conflict_block_timeframes
-            and event.metadata.get("htf_alignment") == "conflict"
-            and strategy_category not in self.config.htf_conflict_exempt_categories
-        ):
-            logger.info(
-                "TradeExecutor: BLOCKING %s/%s/%s %s - HTF direction conflict "
-                "on low TF %s (htf_dir=%s, category=%s)",
-                event.symbol, tf, event.strategy, event.direction,
-                tf, event.metadata.get("htf_direction", "?"), strategy_category,
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason="htf_conflict_block",
-                category="htf_alignment",
-            )
-            _notify_skip_helper(self, event.signal_id, "htf_conflict_block", tf, event=event)
-            return None
-
         # 日终平仓后，当天剩余时间内不再新开仓，避免 EOD 后又被实时信号重新拉起仓位。
         if (
             self._position_manager is not None
@@ -659,12 +630,16 @@ class TradeExecutor:
                 self._tf_stats.setdefault(
                     tf, {"received": 0, "passed": 0, "skip_reasons": {}}
                 )["passed"] += 1
+        entry_spec = event.metadata.get("entry_spec", {})
+        entry_type = entry_spec.get("entry_type", "market")
+        use_market = entry_type == "market" or self._pending_manager is None
+
         _emit_execution_decided_helper(
             self,
             event,
-            order_kind="market" if self._pending_manager is None else "pending",
+            order_kind="market" if use_market else entry_type,
         )
-        if self._pending_manager is None:
+        if use_market:
             return _execute_market_order_helper(
                 self, event, trade_params, cost_metrics=cost_metrics
             )

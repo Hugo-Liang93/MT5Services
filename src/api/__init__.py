@@ -13,13 +13,15 @@ from src.api import (
     account,
     admin,
     backtest,
-    deps,
     decision,
+    deps,
     economic,
+    experiment,
     indicators,
     market,
     monitoring,
     paper_trading,
+    research,
     signal,
     studio,
     trade,
@@ -45,9 +47,7 @@ AUTH_QUERY_PARAM_PATHS = {"/v1/studio/stream"}
 def _resolve_expected_api_key() -> str | None:
     current_api_config = get_api_config()
     configured_key = (
-        (current_api_config.api_key or "").strip()
-        if current_api_config.api_key
-        else ""
+        (current_api_config.api_key or "").strip() if current_api_config.api_key else ""
     )
     return configured_key or None
 
@@ -163,6 +163,8 @@ v1.include_router(signal.router)
 v1.include_router(backtest.router)
 v1.include_router(admin.router)
 v1.include_router(paper_trading.router)
+v1.include_router(experiment.router)
+v1.include_router(research.router)
 v1.include_router(studio.router)
 app.include_router(v1)
 

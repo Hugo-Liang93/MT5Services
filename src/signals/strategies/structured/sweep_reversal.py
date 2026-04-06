@@ -41,19 +41,20 @@ class StructuredSweepReversal(StructuredStrategyBase):
             return False, None, 0, "no_rsi"
 
         if rsi <= self._rsi_extreme_low:
-            # 超卖 → 潜在买入反转
             if rsi_d3 is not None and rsi_d3 < 0:
                 return False, None, 0, "still_falling"
-            return True, "buy", 0.08, f"oversold:{rsi:.0f}"
+            # RSI 越极端，score 越高
+            score = min((self._rsi_extreme_low - rsi) / 15.0 + 0.5, 1.0)
+            return True, "buy", score, f"oversold:{rsi:.0f}"
         elif rsi >= self._rsi_extreme_high:
             if rsi_d3 is not None and rsi_d3 > 0:
                 return False, None, 0, "still_rising"
-            return True, "sell", 0.08, f"overbought:{rsi:.0f}"
+            score = min((rsi - self._rsi_extreme_high) / 15.0 + 0.5, 1.0)
+            return True, "sell", score, f"overbought:{rsi:.0f}"
 
         return False, None, 0, f"rsi_mid:{rsi:.0f}"
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
-        # RSI 极端本身就是时机条件，Why 已检查。这里做 bar 形态二次确认。
         bs = ctx.indicators.get("bar_stats20", {})
         close_pos = bs.get("close_position")
         if close_pos is not None:
@@ -62,7 +63,8 @@ class StructuredSweepReversal(StructuredStrategyBase):
                 return False, 0, f"bearish_bar:{cp:.2f}"
             if direction == "sell" and cp > 0.60:
                 return False, 0, f"bullish_bar:{cp:.2f}"
-        return True, 0.05, "bar_ok"
+        # bar 形态确认通过，给基础分
+        return True, 0.5, "bar_ok"
 
     def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
         ms = self._ms(ctx)
@@ -71,17 +73,24 @@ class StructuredSweepReversal(StructuredStrategyBase):
 
         if direction == "buy":
             if str(sweep).startswith("bullish_"):
-                return 0.15, f"sweep={sweep}"
+                return 1.0, f"sweep={sweep}"
             if str(reclaim).startswith("bullish_reclaim"):
-                return 0.10, f"reclaim={reclaim}"
+                return 0.7, f"reclaim={reclaim}"
         else:
             if str(sweep).startswith("bearish_"):
-                return 0.15, f"sweep={sweep}"
+                return 1.0, f"sweep={sweep}"
             if str(reclaim).startswith("bearish_reclaim"):
-                return 0.10, f"reclaim={reclaim}"
+                return 0.7, f"reclaim={reclaim}"
 
         return 0.0, ""
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         vr = self._volume_ratio(ctx)
-        return 0.08 if vr is not None and vr > 2.0 else 0.0
+        return 1.0 if vr is not None and vr > 2.0 else 0.0
+
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
+
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        # 反转：紧 trail 快速锁利
+        return {"aggression": 0.20, "sl_atr": 1.2, "tp_atr": 2.0}

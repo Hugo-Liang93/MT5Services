@@ -13,7 +13,6 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
             "session_transition_cooldown_minutes": "15",
         },
         "regime": {
-            "min_affinity_skip": "0.25",
             "soft_regime_enabled": "true",
         },
         "voting": {
@@ -78,7 +77,6 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     finally:
         signal_config.get_signal_config.cache_clear()
 
-    assert cfg.min_affinity_skip == 0.25
     assert cfg.soft_regime_enabled is True
     assert cfg.voting_enabled is True
     assert cfg.voting_consensus_threshold == 0.45

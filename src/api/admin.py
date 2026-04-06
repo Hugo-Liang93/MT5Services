@@ -7,7 +7,6 @@ from .admin_routes.common import build_strategy_detail as _build_strategy_detail
 from .admin_routes.common import load_json_config as _load_json_config
 from .admin_routes.config import (
     admin_config,
-    admin_config_composites,
     admin_config_indicators,
     admin_config_risk,
     admin_config_signal,
@@ -31,7 +30,6 @@ __all__ = [
     "_build_strategy_detail",
     "_load_json_config",
     "admin_config",
-    "admin_config_composites",
     "admin_config_indicators",
     "admin_config_risk",
     "admin_config_signal",

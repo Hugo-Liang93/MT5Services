@@ -74,7 +74,8 @@ class TrackedPosition:
     peak_price: Optional[float] = None
     bars_held: int = 0
     breakeven_activated: bool = False
-    strategy_category: str = ""  # trend / reversion / breakout
+    strategy_category: str = ""  # trend / reversion / breakout（legacy，结构化策略用 exit_spec）
+    exit_spec: dict = field(default_factory=dict)  # 策略 _exit_spec() 输出
     sl_atr_mult: float = 0.0  # 入场 SL 的 ATR 倍数（用于 Chandelier R 单位保护）
     recent_signal_dirs: list = field(default_factory=list)
     # 出场追溯字段（由 _check_chandelier_exit 写入，on_position_closed 读取）
@@ -192,6 +193,7 @@ class PositionManager:
         highest_price: Optional[float] = None,
         lowest_price: Optional[float] = None,
         current_price: Optional[float] = None,
+        exit_spec: Optional[dict] = None,
     ) -> TrackedPosition:
         resolved_entry_price = (
             float(fill_price) if fill_price is not None else float(params.entry_price)
@@ -230,6 +232,8 @@ class PositionManager:
         # 计算入场 SL ATR 倍数（用于 Chandelier R 单位保护约束）
         if params.atr_value > 0 and params.sl_distance > 0:
             pos.sl_atr_mult = round(params.sl_distance / params.atr_value, 4)
+        if exit_spec:
+            pos.exit_spec = dict(exit_spec)
         with self._lock:
             self._positions[ticket] = pos
         if self._on_position_tracked is not None:
@@ -880,6 +884,7 @@ class PositionManager:
             timeframe=pos.timeframe,
             initial_sl_atr_mult=pos.sl_atr_mult,
             config=self._chandelier_config,
+            exit_spec=pos.exit_spec or None,
         )
 
         pos.breakeven_activated = result.breakeven_activated

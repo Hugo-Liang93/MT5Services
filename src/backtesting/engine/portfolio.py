@@ -50,7 +50,8 @@ class _Position:
     bars_since_peak: int = 0
     breakeven_activated: bool = False
     recent_signal_dirs: list = field(default_factory=list)  # 最近 N bar 策略方向
-    strategy_category: str = ""  # trend / reversion / breakout
+    strategy_category: str = ""  # trend / reversion / breakout（legacy）
+    exit_spec: dict = field(default_factory=dict)  # 策略 _exit_spec() 输出
     timeframe: str = ""  # 用于 per-TF trail 缩放
     sl_atr_mult: float = 0.0  # 入场 SL 的 ATR 倍数（用于 R 单位保护）
     # 旧体系兼容字段
@@ -224,6 +225,7 @@ class PortfolioTracker:
         atr_at_entry: float = 0.0,
         strategy_category: str = "",
         timeframe: str = "",
+        exit_spec: Optional[dict] = None,
     ) -> bool:
         """尝试开仓。
 
@@ -262,6 +264,7 @@ class PortfolioTracker:
             initial_risk=initial_risk,
             peak_price=entry_price,
             strategy_category=strategy_category,
+            exit_spec=dict(exit_spec) if exit_spec else {},
             timeframe=timeframe,
             sl_atr_mult=round(trade_params.sl_distance / atr_at_entry, 4) if atr_at_entry > 0 else 0.0,
             highest_price=entry_price if action == "buy" else None,
@@ -376,6 +379,7 @@ class PortfolioTracker:
                 timeframe=pos.timeframe,
                 initial_sl_atr_mult=pos.sl_atr_mult,
                 config=self._chandelier_config,
+                exit_spec=getattr(pos, "exit_spec", None),
             )
 
             # 更新持仓状态

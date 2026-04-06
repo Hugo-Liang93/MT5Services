@@ -42,11 +42,6 @@ class SignalPolicy:
     snapshot_dedupe_window_seconds: float = 1.0
     max_spread_points: float = 50.0
     allowed_sessions: tuple[str, ...] = (SESSION_LONDON, SESSION_NEW_YORK)
-    # Pre-flight affinity gate: strategies with regime_affinity < this value
-    # for the current Regime are skipped before calling service.evaluate().
-    # Avoids wasting CPU on strategies that are clearly unreliable in the
-    # current market type.  Set to 0.0 to disable.
-    min_affinity_skip: float = 0.15
     # Strategy voting engine settings
     voting_enabled: bool = True
     voting_consensus_threshold: float = 0.40

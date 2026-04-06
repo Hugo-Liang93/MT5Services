@@ -74,12 +74,13 @@ class StructuredSessionBreakout(StructuredStrategyBase):
             if direction == "sell" and int(htf_dir) != -1:
                 return False, None, 0, "htf_conflict"
 
-        pen_bonus = min(pen * 0.12, 0.12)
-        htf_bonus = 0.08 if htf_dir is not None else 0.0
+        pen_score = min(pen / 0.5, 1.0)  # 0.5 ATR 穿透 = 满分
+        htf_score = 0.4 if htf_dir is not None else 0.0
+        score = min(pen_score * 0.6 + htf_score, 1.0)
         return (
             True,
             direction,
-            pen_bonus + htf_bonus,
+            score,
             f"asia_break:{direction},pen={pen:.2f}",
         )
 
@@ -88,18 +89,27 @@ class StructuredSessionBreakout(StructuredStrategyBase):
         d3 = ad["adx_d3"]
         if d3 is not None and d3 < self._adx_d3_min:
             return False, 0, f"adx_flat:d3={d3:.1f}"
-        return True, 0.03, "adx_rising"
+        # ADX 上升动量越强 score 越高
+        score = min(float(d3 or 1.0) / 3.0, 1.0)
+        return True, score, "adx_rising"
 
     def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
         ms = self._ms(ctx)
         breakout = ms.get("breakout_state", "none")
         if "asia" in str(breakout):
-            return 0.08, f"break={breakout}"
+            return 1.0, f"break={breakout}"
         compression = ms.get("compression_state", "unknown")
         if compression == "contracted":
-            return 0.05, "compressed"
+            return 0.6, "compressed"
         return 0.0, ""
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:  # type: ignore[override]
         vr = self._volume_ratio(ctx)
-        return 0.05 if vr is not None and vr > 1.5 else 0.0
+        return 1.0 if vr is not None and vr > 1.5 else 0.0
+
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
+
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        # 时段突破：中等 trail
+        return {"aggression": 0.60, "sl_atr": None, "tp_atr": None}

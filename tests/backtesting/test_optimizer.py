@@ -9,8 +9,8 @@ from src.backtesting.models import ParameterSpace
 from src.backtesting.optimization.optimizer import ParameterOptimizer, build_signal_module_with_overrides
 from src.signals.evaluation.regime import RegimeType
 from src.signals.service import SignalModule
-from src.signals.strategies.legacy.breakout import MultiTimeframeConfirmStrategy
 from src.signals.strategies.htf_cache import HTFStateCache
+from src.signals.strategies.structured import StructuredTrendContinuation
 
 
 class TestParameterSpace:
@@ -93,32 +93,30 @@ class _NullIndicatorSource:
 def test_build_signal_module_with_overrides_preserves_base_per_tf_config() -> None:
     base_module = SignalModule(indicator_source=_NullIndicatorSource())
     base_module.apply_param_overrides(
-        {"rsi_reversion__oversold": 30.0},
-        {"rsi_reversion": {"ranging": 0.9}},
-        strategy_params_per_tf={"M5": {"rsi_reversion__oversold": 22.0}},
+        {"structured_range_reversion__some_param": 30.0},
+        {"structured_range_reversion": {"ranging": 0.9}},
+        strategy_params_per_tf={"M5": {"structured_range_reversion__some_param": 22.0}},
     )
 
     module = build_signal_module_with_overrides(
         base_module,
-        {"rsi_reversion__overbought": 75.0},
+        {"structured_range_reversion__other_param": 75.0},
     )
 
     resolver = module._tf_param_resolver
-    assert resolver.get("rsi_reversion", "oversold", "M5", default=0.0) == 22.0
-    assert resolver.get("rsi_reversion", "oversold", "H1", default=0.0) == 30.0
-    assert resolver.get("rsi_reversion", "overbought", "M5", default=0.0) == 75.0
-    assert module.strategy_affinity_map("rsi_reversion")[RegimeType.RANGING] == 0.9
+    assert resolver.get("structured_range_reversion", "some_param", "M5", default=0.0) == 22.0
+    assert resolver.get("structured_range_reversion", "some_param", "H1", default=0.0) == 30.0
+    assert resolver.get("structured_range_reversion", "other_param", "M5", default=0.0) == 75.0
+    assert module.strategy_affinity_map("structured_range_reversion")[RegimeType.RANGING] == 0.9
 
 
-def test_build_signal_module_with_overrides_preserves_mtf_cache() -> None:
+def test_build_signal_module_with_overrides_preserves_strategies() -> None:
     base_module = SignalModule(indicator_source=_NullIndicatorSource(), strategies=())
-    htf_cache = HTFStateCache()
-    base_module.register_strategy(MultiTimeframeConfirmStrategy(htf_cache=htf_cache))
+    base_module.register_strategy(StructuredTrendContinuation())
 
     module = build_signal_module_with_overrides(base_module, {})
 
-    cloned = module._strategies["multi_timeframe_confirm"]
-    assert getattr(cloned, "_htf_cache", None) is htf_cache
+    assert "structured_trend_continuation" in module._strategies
 
 
 def test_build_backtest_components_registers_multi_timeframe_confirm(
@@ -168,6 +166,6 @@ def test_build_backtest_components_registers_multi_timeframe_confirm(
     components = component_factory.build_backtest_components()
 
     signal_module = components["signal_module"]
-    requirements = signal_module.strategy_requirements("multi_timeframe_confirm")
-    assert "sma20" in requirements
-    assert "ema50" in requirements
+    requirements = signal_module.strategy_requirements("structured_trend_continuation")
+    assert "rsi14" in requirements
+    assert "atr14" in requirements

@@ -32,5 +32,4 @@ CONFIG_FILES = [
     "economic.ini",
     "cache.ini",
     "indicators.json",
-    "composites.json",
 ]

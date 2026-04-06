@@ -5,10 +5,9 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.clients.mt5_market import OHLC
-from src.signals.confidence import apply_htf_alignment, apply_intrabar_decay
+from src.signals.confidence import apply_intrabar_decay
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalDecision
-from src.trading.pending import compute_entry_zone
 from src.trading.execution import RegimeSizing, compute_trade_params
 
 from ..models import SignalEvaluation
@@ -103,14 +102,6 @@ def evaluate_strategies(
                 htf_indicators=htf_data,
             )
 
-            if conf.enable_htf_alignment and engine._htf_direction_fn is not None:
-                htf_dir = engine._htf_direction_fn(symbol, timeframe)
-                decision = apply_htf_alignment(
-                    decision,
-                    htf_direction=htf_dir,
-                    alignment_boost=engine._htf_alignment_boost,
-                    conflict_penalty=engine._htf_conflict_penalty,
-                )
             decision = apply_intrabar_decay(
                 decision, scope, engine._intrabar_confidence_factor
             )
@@ -190,21 +181,22 @@ def process_decision(
         return
 
     if engine._pending_entry_enabled:
-        from src.trading.pending import _CATEGORY_ZONE_MODE
+        entry_spec = decision.metadata.get("entry_spec", {})
+        entry_type = entry_spec.get("entry_type", "market")
 
-        category = decision.metadata.get("category", "trend")
-        zone_mode = _CATEGORY_ZONE_MODE.get(category, "symmetric")
-        entry_low, entry_high = compute_entry_zone(
-            action=decision.direction,
-            close_price=bar.close,
-            atr=atr_value,
-            zone_mode=zone_mode,
-            config=engine._pending_entry_config,
-            strategy_name=decision.strategy,
-            category=category,
-            indicators=indicators,
-            timeframe=engine._config.timeframe,
-        )
+        if entry_type == "market":
+            # 市价策略：跳过 pending，直接在 bar.close 入场
+            execute_entry(engine, decision, bar, bar_index, atr_value, regime, indicators)
+            return
+
+        suggested_price = entry_spec.get("entry_price")
+        zone_atr = entry_spec.get("entry_zone_atr", 0.3)
+
+        ref_price = float(suggested_price) if suggested_price is not None else bar.close
+        half_zone = zone_atr * atr_value
+        entry_low = round(ref_price - half_zone, 2)
+        entry_high = round(ref_price + half_zone, 2)
+
         expiry_bar = bar_index + engine._config.pending_entry.expiry_bars
         key = f"{decision.strategy}_{decision.direction}"
         engine._pending_entries[key] = (decision, entry_low, entry_high, expiry_bar)
@@ -255,6 +247,9 @@ def execute_entry(
 ) -> None:
     del indicators
     pos = engine._config.position
+    # 策略 exit_spec 可覆盖全局 SL/TP 倍数（回测默认 1.5 / 3.0）
+    _exit_spec = decision.metadata.get("exit_spec", {})
+
     try:
         trade_params = compute_trade_params(
             action=decision.direction,
@@ -263,6 +258,8 @@ def execute_entry(
             account_balance=engine._portfolio.current_balance,
             timeframe=engine._config.timeframe,
             risk_percent=pos.risk_percent,
+            sl_atr_multiplier=_exit_spec.get("sl_atr") or 1.5,
+            tp_atr_multiplier=_exit_spec.get("tp_atr") or 3.0,
             min_volume=pos.min_volume,
             max_volume=pos.max_volume,
             contract_size=pos.contract_size,
@@ -309,6 +306,7 @@ def execute_entry(
         atr_at_entry=atr_value,
         strategy_category=strategy_category,
         timeframe=engine._config.timeframe,
+        exit_spec=_exit_spec or None,
     )
 
 

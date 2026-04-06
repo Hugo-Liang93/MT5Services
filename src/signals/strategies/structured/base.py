@@ -20,15 +20,19 @@ class StructuredStrategyBase:
     """结构化策略基类。
 
     子类必须设置类属性：name, category, required_indicators, regime_affinity
-    子类必须实现：_when(), _why()
-    子类可选实现：_where()（默认返回 0 加分）
+    子类必须实现：_why(), _when(), _entry_spec(), _exit_spec()
+    子类可选实现：_where(), _volume_bonus()
 
-    评估流程：
-        1. Why → 确定方向 + 确认条件（硬门控）
-        2. When → 入场时机（硬门控）
-        3. Where → 结构位加分（软门控）
-        4. Volume → 量能加分（软门控）
-        5. 合并置信度
+    评估流程（信号决策）：
+        1. Why  → 确定方向 + 确认条件（硬门控, score 0~1）
+        2. When → 入场时机（硬门控, score 0~1）
+        3. Where → 结构位加分（软门控, score 0~1）
+        4. Volume → 量能加分（软门控, score 0~1）
+        5. 合并置信度 = base + Σ(score × budget)
+
+    执行规格（信号通过后）：
+        6. _entry_spec() → 入场方式（market/limit/stop + 价格）
+        7. _exit_spec()  → 出场参数（aggression α 或显式 profile）
     """
 
     name: str = ""
@@ -39,6 +43,12 @@ class StructuredStrategyBase:
 
     _htf: str = "H1"
     _base_confidence: float = 0.50
+
+    # 统一评分预算：每层 score 0~1，乘以预算得到 confidence 贡献
+    _WHY_BUDGET: float = 0.15
+    _WHEN_BUDGET: float = 0.15
+    _WHERE_BUDGET: float = 0.10
+    _VOL_BUDGET: float = 0.05
 
     def __init__(self, name: Optional[str] = None, htf: str = "H1") -> None:
         if name:
@@ -110,64 +120,89 @@ class StructuredStrategyBase:
     # ── 子类必须实现 ──
 
     def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
-        """方向确认（硬门控）。返回 (ok, direction, conf_bonus, reason)。"""
+        """方向确认（硬门控）。返回 (ok, direction, score, reason)。
+        score: 0.0~1.0 方向确认质量（× _WHY_BUDGET 得到 confidence 贡献）。
+        """
         raise NotImplementedError
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
-        """入场时机（硬门控）。返回 (ok, conf_bonus, reason)。"""
+        """入场时机（硬门控）。返回 (ok, score, reason)。
+        score: 0.0~1.0 时机精度（× _WHEN_BUDGET 得到 confidence 贡献）。
+        """
         raise NotImplementedError
 
     def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
-        """结构位加分（软门控）。返回 (bonus, reason)。默认 0。"""
+        """结构位加分（软门控）。返回 (score, reason)。默认 0。
+        score: 0.0~1.0 结构位质量（× _WHERE_BUDGET 得到 confidence 贡献）。
+        """
         return 0.0, ""
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
-        """量能加分（软门控）。默认 0。"""
+        """量能加分（软门控）。默认 0。
+        返回 0.0~1.0 量能确认质量（× _VOL_BUDGET 得到 confidence 贡献）。
+        """
         return 0.0
 
-    # ── 评估框架 ──
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        """入场规格（子类必须实现）。
 
-    # regime affinity 低于此值时跳过全部三层评估（计算优化）
-    _regime_fast_reject: float = 0.10
+        返回 dict:
+            entry_type: "market" | "limit" | "stop"
+            entry_price: 入场参考价（None = 当前 close）
+            entry_zone_atr: 可接受偏差（ATR 倍数）
+        """
+        raise NotImplementedError
+
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        """出场规格（子类必须实现）。
+
+        返回 dict:
+            aggression: float 0~1，驱动 Chandelier Exit profile
+                        高 → 宽 trail / 低锁利 / 晚 breakeven（顺势）
+                        低 → 紧 trail / 高锁利 / 早 breakeven（逆势）
+            sl_atr: SL 距离 ATR 倍数（None = 用全局 sl_atr_multiplier）
+            tp_atr: TP 距离 ATR 倍数（None = 用全局 tp_atr_multiplier）
+        """
+        raise NotImplementedError
+
+    # ── 评估框架 ──
 
     def evaluate(self, context: SignalContext) -> SignalDecision:
         used = list(self.required_indicators)
 
-        # 快速拒绝：regime affinity 极低时不浪费计算
-        regime_str = context.metadata.get("_regime")
-        if regime_str:
-            try:
-                aff = self.regime_affinity.get(RegimeType(regime_str), 0.5)
-                if aff < self._regime_fast_reject:
-                    return self._hold(f"regime_reject:{regime_str}", used)
-            except ValueError:
-                pass
-
-        why_ok, direction, why_conf, why_reason = self._why(context)
+        why_ok, direction, why_score, why_reason = self._why(context)
         if not why_ok or direction is None:
             return self._hold(why_reason, used)
 
-        when_ok, when_conf, when_reason = self._when(context, direction)
+        when_ok, when_score, when_reason = self._when(context, direction)
         if not when_ok:
             return self._hold(when_reason, used)
 
-        where_bonus, where_info = self._where(context, direction)
-        vol_bonus = self._volume_bonus(context, direction)
+        where_score, where_info = self._where(context, direction)
+        vol_score = self._volume_bonus(context, direction)
 
+        # 统一评分：base + 各层 score(0~1) × 预算
         confidence = (
-            self._base_confidence + why_conf + when_conf + where_bonus + vol_bonus
+            self._base_confidence
+            + min(why_score, 1.0) * self._WHY_BUDGET
+            + min(when_score, 1.0) * self._WHEN_BUDGET
+            + min(where_score, 1.0) * self._WHERE_BUDGET
+            + min(vol_score, 1.0) * self._VOL_BUDGET
         )
 
-        # 信号等级：A(三层+量能) / B(两层) / C(仅硬门控)
+        # 信号等级：A(四层全有) / B(三层) / C(仅硬门控)
         grade = (
             "A"
-            if where_bonus > 0 and vol_bonus > 0
-            else "B" if where_bonus > 0 or vol_bonus > 0 else "C"
+            if where_score > 0 and vol_score > 0
+            else "B" if where_score > 0 or vol_score > 0 else "C"
         )
 
         reason = f"{self.name}_{direction}:{why_reason},{when_reason}"
         if where_info:
             reason += f",{where_info}"
+
+        entry_spec = self._entry_spec(context, direction)
+        exit_spec = self._exit_spec(context, direction)
 
         return self._make_decision(
             direction,
@@ -177,9 +212,13 @@ class StructuredStrategyBase:
             metadata={
                 "why": why_reason,
                 "when": when_reason,
-                "where_bonus": where_bonus,
-                "vol_bonus": vol_bonus,
+                "why_score": round(min(why_score, 1.0), 3),
+                "when_score": round(min(when_score, 1.0), 3),
+                "where_score": round(min(where_score, 1.0), 3),
+                "vol_score": round(min(vol_score, 1.0), 3),
                 "signal_grade": grade,
+                "entry_spec": entry_spec,
+                "exit_spec": exit_spec,
             },
         )
 
@@ -247,6 +286,7 @@ def _near_structure_level(
 
 
 def _structure_bias_bonus(ms: Dict[str, Any], direction: str) -> Tuple[float, str]:
+    """返回 0~1 的结构位质量分。"""
     bias = ms.get("structure_bias", "neutral")
     bullish_biases = (
         "bullish_breakout",
@@ -262,14 +302,14 @@ def _structure_bias_bonus(ms: Dict[str, Any], direction: str) -> Tuple[float, st
     )
 
     if direction == "buy" and bias in bullish_biases:
-        return 0.10, f"struct={bias}"
+        return 0.8, f"struct={bias}"
     if direction == "sell" and bias in bearish_biases:
-        return 0.10, f"struct={bias}"
+        return 0.8, f"struct={bias}"
 
     fp = ms.get("first_pullback_state", "none")
     if direction == "buy" and str(fp).startswith("bullish_first_pullback"):
-        return 0.12, f"first_pb={fp}"
+        return 1.0, f"first_pb={fp}"
     if direction == "sell" and str(fp).startswith("bearish_first_pullback"):
-        return 0.12, f"first_pb={fp}"
+        return 1.0, f"first_pb={fp}"
 
     return 0.0, ""

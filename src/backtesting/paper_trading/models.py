@@ -86,6 +86,10 @@ class PaperSession:
     initial_balance: float
     config_snapshot: Dict[str, Any] = field(default_factory=dict)
     stopped_at: Optional[datetime] = None
+    # 实验追踪 ID（跨 Research/Backtest/PaperTrading 关联）
+    experiment_id: Optional[str] = None
+    # 关联的回测 run_id（从 Recommendation 启动时填充）
+    source_backtest_run_id: Optional[str] = None
     final_balance: Optional[float] = None
     total_trades: int = 0
     winning_trades: int = 0
@@ -101,6 +105,8 @@ class PaperSession:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "session_id": self.session_id,
+            "experiment_id": self.experiment_id,
+            "source_backtest_run_id": self.source_backtest_run_id,
             "started_at": self.started_at.isoformat(),
             "stopped_at": self.stopped_at.isoformat() if self.stopped_at else None,
             "initial_balance": self.initial_balance,
@@ -110,7 +116,9 @@ class PaperSession:
             "losing_trades": self.losing_trades,
             "total_pnl": round(self.total_pnl, 2),
             "max_drawdown_pct": round(self.max_drawdown_pct, 4),
-            "sharpe_ratio": round(self.sharpe_ratio, 4) if self.sharpe_ratio is not None else None,
+            "sharpe_ratio": (
+                round(self.sharpe_ratio, 4) if self.sharpe_ratio is not None else None
+            ),
             "is_active": self.is_active,
         }
 

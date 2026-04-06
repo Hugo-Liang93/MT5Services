@@ -304,12 +304,6 @@ class TestConfig:
         data = resp.json()["data"]
         assert data["total_count"] == 1  # only enabled
 
-    @patch("src.api.admin_routes.config.load_json_config")
-    def test_config_composites(self, mock_load: MagicMock, client: TestClient) -> None:
-        mock_load.return_value = [{"name": "trend_triple_confirm"}]
-        resp = client.get("/v1/admin/config/composites")
-        assert resp.status_code == 200
-        assert len(resp.json()["data"]) == 1
 
 
 # ═══════════════════════════════════════════════════════════════

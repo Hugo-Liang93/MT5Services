@@ -55,8 +55,8 @@ class StructuredTrendContinuation(StructuredStrategyBase):
             if direction == "sell" and close > float(htf_ema):
                 return False, None, 0, "above_ema"
 
-        adx_bonus = min(htf_adx_f / 40.0 * 0.15, 0.15)
-        return True, direction, adx_bonus, f"htf:{direction},adx={htf_adx_f:.0f}"
+        score = min(htf_adx_f / 40.0, 1.0)
+        return True, direction, score, f"htf:{direction},adx={htf_adx_f:.0f}"
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
         tf = ctx.timeframe
@@ -80,12 +80,19 @@ class StructuredTrendContinuation(StructuredStrategyBase):
                 return False, 0, f"rsi_rising:d3={rsi_d3:.1f}"
 
         center = (lo + hi) / 2
-        quality = max(0.0, 1.0 - abs(rsi - center) / 20.0)
-        return True, quality * 0.10, f"rsi={rsi:.0f}"
+        score = max(0.0, 1.0 - abs(rsi - center) / 20.0)
+        return True, score, f"rsi={rsi:.0f}"
 
     def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
         return _structure_bias_bonus(self._ms(ctx), direction)
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         vr = self._volume_ratio(ctx)
-        return 0.05 if vr is not None and vr > 1.5 else 0.0
+        return 1.0 if vr is not None and vr > 1.5 else 0.0
+
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
+
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+        # 趋势回调：宽 trail 让利润奔跑
+        return {"aggression": 0.80, "sl_atr": None, "tp_atr": None}

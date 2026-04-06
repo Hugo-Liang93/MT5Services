@@ -199,19 +199,6 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
         runtime, indicators, metadata, active_sessions
     )
 
-    if not runtime._any_strategy_eligible(
-        symbol,
-        timeframe,
-        scope,
-        regime,
-        regime_metadata.get("_soft_regime"),
-        active_sessions,
-    ):
-        runtime._processed_events += 1
-        runtime._run_count += 1
-        runtime._last_run_at = datetime.now(timezone.utc)
-        return True
-
     tracker = runtime._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
     regime_stability = (
         tracker.update(regime)

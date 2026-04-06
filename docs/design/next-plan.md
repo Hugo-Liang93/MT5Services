@@ -30,7 +30,7 @@ python tools/backtest_runner.py --timeframe H1 --days 90
 - 蒙特卡洛 p-value >0.1 → 策略收益不显著优于随机，考虑禁用
 - 目标：从 31 基础策略精简到 15-20 个
 
-**涉及文件**：`signal.local.ini`（affinity 覆盖）、`config/composites.json`（复合策略成员）
+**涉及文件**：`signal.local.ini`（affinity 覆盖）
 
 ### 0.3 Paper Trading 验证
 
@@ -42,6 +42,32 @@ python tools/backtest_runner.py --timeframe H1 --days 90
 3. 日终是否自动平仓
 4. 持久化是否完整（`paper_trading_sessions` / `paper_trade_outcomes` 表）
 5. 绩效 vs 回测对比（差距 >30% 需排查）
+
+### 0.4 实验链路闭环（2026-04-06 已实现）
+
+**已完成**：Research → Backtest → Paper Trading → Live 的数据契约和链路打通。
+
+- **experiment_id 穿透**：`MiningResult`、`BacktestResult`、`Recommendation`、`PaperSession` 均支持 `experiment_id` 可选字段
+- **start-from-recommendation**：`POST /v1/paper-trading/start-from-recommendation` 从已 apply 的推荐关联启动 Paper Trading
+- **验证对比纯函数**：`compare_paper_vs_backtest()` 对比胜率/Sharpe/回撤，`GET /v1/paper-trading/validate` 端点
+- **Experiment Registry**：`experiments` 表 + `/v1/experiments` API，被动追踪实验全生命周期
+- **Research 持久化 + API**：`research_mining_runs` 表 + `/v1/research/mining` API
+
+**链路工作流**：
+```
+POST /v1/experiments                        → 创建实验
+POST /v1/research/mining/run                → 挖掘（带 experiment_id）
+  ↓ 人工编码策略
+POST /v1/backtest/run                       → 回测（带 experiment_id）
+POST /v1/backtest/walk-forward              → WF 验证
+POST /v1/backtest/recommendations/generate  → 生成推荐
+POST /v1/backtest/recommendations/{id}/approve + apply
+POST /v1/paper-trading/start-from-recommendation → 关联启动 Paper
+GET  /v1/paper-trading/validate             → 自动对比
+GET  /v1/experiments/{id}/timeline          → 查看全链路
+  ↓ 人工确认
+POST /v1/runtime/mode (→ full)              → 上线
+```
 
 ---
 

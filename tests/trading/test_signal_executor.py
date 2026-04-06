@@ -358,6 +358,7 @@ def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> Non
         execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
     )
 
+    _limit_spec = {"entry_type": "limit", "entry_price": 3000.0, "entry_zone_atr": 0.3}
     first = _build_event(spread_points=20.0, close_price=3000.0)
     first = SignalEvent(
         **{
@@ -366,6 +367,7 @@ def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> Non
             "metadata": {
                 **first.metadata,
                 "bar_time": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+                "entry_spec": _limit_spec,
             },
         }
     )
@@ -377,6 +379,7 @@ def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> Non
             "metadata": {
                 **second.metadata,
                 "bar_time": datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc),
+                "entry_spec": _limit_spec,
             },
             "generated_at": datetime.now(timezone.utc),
         }

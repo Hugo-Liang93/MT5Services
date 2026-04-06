@@ -13,7 +13,7 @@ from .eventing import (
     emit_pending_order_submitted,
     notify_skip,
 )
-from ..pending.manager import compute_entry_zone, compute_timeout, _CATEGORY_ZONE_MODE
+from ..pending.manager import compute_timeout
 from .sizing import TradeParameters
 
 if TYPE_CHECKING:
@@ -42,26 +42,24 @@ def submit_pending_entry(
         )
         return None
 
-    category = event.metadata.get("category", "")
-    zone_mode = _CATEGORY_ZONE_MODE.get(category, "symmetric")
-
     config = executor._pending_manager.config
-    entry_low, entry_high = compute_entry_zone(
-        action=event.direction,
-        close_price=params.entry_price,
-        atr=params.atr_value,
-        zone_mode=zone_mode,
-        config=config,
-        strategy_name=event.strategy,
-        category=category,
-        indicators=event.indicators,
-        timeframe=event.timeframe or "",
-    )
-    timeout = compute_timeout(event.timeframe, config, category=category)
+
+    # 从策略 entry_spec 读取入场意图
+    entry_spec = event.metadata.get("entry_spec", {})
+    entry_type = entry_spec.get("entry_type", "market")
+    suggested_price = entry_spec.get("entry_price")
+    zone_atr = entry_spec.get("entry_zone_atr", 0.3)
+
+    ref_price = float(suggested_price) if suggested_price is not None else params.entry_price
+    half_zone = zone_atr * params.atr_value
+    entry_low = ref_price - half_zone
+    entry_high = ref_price + half_zone
+
+    timeout = compute_timeout(event.timeframe, config)
 
     order_kind, trigger_price = resolve_pending_order(
         direction=event.direction,
-        zone_mode=zone_mode,
+        entry_type=entry_type,
         entry_low=entry_low,
         entry_high=entry_high,
     )
@@ -99,14 +97,14 @@ def submit_pending_entry(
             order_ticket = result.get("order") or result.get("ticket")
 
         logger.info(
-            "TradeExecutor: placed %s %s %s @ %.2f (zone=[%.2f,%.2f] mode=%s) sl=%.2f tp=%.2f ticket=%s",
+            "TradeExecutor: placed %s %s %s @ %.2f (zone=[%.2f,%.2f] type=%s) sl=%.2f tp=%.2f ticket=%s",
             order_kind,
             event.direction,
             event.symbol,
             trigger_price,
             entry_low,
             entry_high,
-            zone_mode,
+            entry_type,
             adjusted_sl,
             adjusted_tp,
             order_ticket,
@@ -137,7 +135,7 @@ def submit_pending_entry(
                 volume=params.position_size,
                 created_at=datetime.now(timezone.utc),
                 metadata={
-                    "category": category,
+                    "entry_type": entry_type,
                     "order_kind": order_kind,
                 },
             )
@@ -183,14 +181,17 @@ def submit_pending_entry(
 
 def resolve_pending_order(
     direction: str,
-    zone_mode: str,
+    entry_type: str,
     entry_low: float,
     entry_high: float,
 ) -> tuple[str, float]:
-    if zone_mode == "momentum":
+    """根据策略指定的 entry_type 决定订单类型和触发价。"""
+    if entry_type == "stop":
+        # stop order：buy 追高 / sell 追低
         if direction == "buy":
             return "stop", entry_high
         return "stop", entry_low
+    # limit order（默认）：buy 等回调 / sell 等反弹
     if direction == "buy":
         return "limit", entry_low
     return "limit", entry_high

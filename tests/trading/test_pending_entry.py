@@ -18,9 +18,7 @@ from src.trading.pending import (
     PendingEntryManager,
     _FillResult,
     _extract_quote_prices,
-    compute_entry_zone,
     compute_timeout,
-    _CATEGORY_ZONE_MODE,
 )
 from src.trading.execution import TradeParameters
 
@@ -137,78 +135,6 @@ class TestExtractQuotePrices:
         assert result is None
 
 
-# ── compute_entry_zone tests ─────────────────────────────────────────────
-
-
-class TestComputeEntryZone:
-    def test_pullback_buy(self) -> None:
-        config = PendingEntryConfig()
-        low, high = compute_entry_zone(
-            action="buy",
-            close_price=2650.0,
-            atr=3.5,
-            zone_mode="pullback",
-            config=config,
-        )
-        # BUY pullback: low = close - 0.3*ATR, high = close + 0.1*ATR
-        assert low == pytest.approx(2650.0 - 0.3 * 3.5, abs=0.01)
-        assert high == pytest.approx(2650.0 + 0.1 * 3.5, abs=0.01)
-
-    def test_pullback_sell(self) -> None:
-        config = PendingEntryConfig()
-        low, high = compute_entry_zone(
-            action="sell",
-            close_price=2650.0,
-            atr=3.5,
-            zone_mode="pullback",
-            config=config,
-        )
-        # SELL pullback: low = close - 0.1*ATR, high = close + 0.3*ATR
-        assert low == pytest.approx(2650.0 - 0.1 * 3.5, abs=0.01)
-        assert high == pytest.approx(2650.0 + 0.3 * 3.5, abs=0.01)
-
-    def test_momentum_buy(self) -> None:
-        config = PendingEntryConfig()
-        low, high = compute_entry_zone(
-            action="buy",
-            close_price=2650.0,
-            atr=3.5,
-            zone_mode="momentum",
-            config=config,
-        )
-        # BUY momentum: low = close - 0.1*ATR, high = close + 0.5*ATR
-        assert low == pytest.approx(2650.0 - 0.1 * 3.5, abs=0.01)
-        assert high == pytest.approx(2650.0 + 0.5 * 3.5, abs=0.01)
-
-    def test_symmetric(self) -> None:
-        config = PendingEntryConfig()
-        low, high = compute_entry_zone(
-            action="buy",
-            close_price=2650.0,
-            atr=3.5,
-            zone_mode="symmetric",
-            config=config,
-        )
-        # Symmetric: close ± 0.4*ATR
-        assert low == pytest.approx(2650.0 - 0.4 * 3.5, abs=0.01)
-        assert high == pytest.approx(2650.0 + 0.4 * 3.5, abs=0.01)
-
-    def test_strategy_override(self) -> None:
-        config = PendingEntryConfig(
-            strategy_overrides={"supertrend": {"pullback_atr_factor": 0.5}}
-        )
-        low, high = compute_entry_zone(
-            action="buy",
-            close_price=2650.0,
-            atr=3.5,
-            zone_mode="pullback",
-            config=config,
-            strategy_name="supertrend",
-        )
-        # Overridden pullback: 0.5 instead of 0.3
-        assert low == pytest.approx(2650.0 - 0.5 * 3.5, abs=0.01)
-
-
 class TestComputeTimeout:
     def test_m5_timeout(self) -> None:
         config = PendingEntryConfig()
@@ -226,17 +152,6 @@ class TestComputeTimeout:
         td = compute_timeout("X99", config)
         # unknown tf → default_timeout_bars=2.0, bar_seconds=300 (default)
         assert td == timedelta(seconds=2.0 * 300)
-
-
-class TestCategoryZoneMode:
-    def test_trend_is_pullback(self) -> None:
-        assert _CATEGORY_ZONE_MODE["trend"] == "pullback"
-
-    def test_reversion_is_symmetric(self) -> None:
-        assert _CATEGORY_ZONE_MODE["reversion"] == "symmetric"
-
-    def test_breakout_is_momentum(self) -> None:
-        assert _CATEGORY_ZONE_MODE["breakout"] == "momentum"
 
 
 # ── PendingEntryManager tests ─────────────────────────────────────────────

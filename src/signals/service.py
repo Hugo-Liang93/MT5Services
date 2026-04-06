@@ -17,7 +17,6 @@ from .models import SignalContext, SignalDecision, SignalRecord
 from .strategies.adapters import IndicatorSource
 from .strategies.base import SignalStrategy
 from .strategies.catalog import build_default_strategy_set
-from .strategies.composite import CompositeSignalStrategy
 from .tracking.repository import SignalRepository
 
 logger = logging.getLogger(__name__)
@@ -789,14 +788,6 @@ class SignalModule:
             return []
         return self._performance_tracker.strategy_ranking()
 
-    def list_composite_strategies(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for name in self.list_strategies():
-            impl = self._strategies.get(name)
-            if isinstance(impl, CompositeSignalStrategy):
-                rows.append(impl.describe())
-        return rows
-
     def recent_by_trace_id(
         self,
         *,
@@ -891,7 +882,6 @@ class SignalModule:
                 hours=payload.get("hours", 168),
                 symbol=payload.get("symbol"),
             ),
-            "composite_strategies": self.list_composite_strategies,
             "session_performance": self.session_performance,
             "session_performance_ranking": self.session_performance_ranking,
             "recent_by_trace_id": lambda: self.recent_by_trace_id(

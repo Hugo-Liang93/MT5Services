@@ -117,18 +117,12 @@ class SignalComponents:
 
 def build_pending_entry_config(signal_config) -> PendingEntryConfig:
     return PendingEntryConfig(
-        pullback_atr_factor=signal_config.pending_entry_pullback_atr_factor,
-        chase_atr_factor=signal_config.pending_entry_chase_atr_factor,
-        momentum_atr_factor=signal_config.pending_entry_momentum_atr_factor,
-        symmetric_atr_factor=signal_config.pending_entry_symmetric_atr_factor,
         check_interval=signal_config.pending_entry_check_interval,
         max_spread_points=signal_config.pending_entry_max_spread_points,
         timeout_bars=dict(signal_config.pending_entry_timeout_bars),
         default_timeout_bars=signal_config.pending_entry_default_timeout_bars,
         cancel_on_new_signal=signal_config.pending_entry_cancel_on_new_signal,
         cancel_same_direction=signal_config.pending_entry_cancel_same_direction,
-        strategy_overrides=dict(signal_config.pending_entry_strategy_overrides),
-        tf_overrides=dict(signal_config.pending_entry_tf_overrides),
     )
 
 
@@ -257,7 +251,6 @@ def build_signal_policy(signal_config) -> SignalPolicy:
         snapshot_dedupe_window_seconds=signal_config.snapshot_dedupe_window_seconds,
         max_spread_points=signal_config.max_spread_points,
         allowed_sessions=allowed_sessions,
-        min_affinity_skip=signal_config.min_affinity_skip,
         voting_enabled=signal_config.voting_enabled,
         voting_consensus_threshold=signal_config.voting_consensus_threshold,
         voting_min_quorum=signal_config.voting_min_quorum,
@@ -357,15 +350,6 @@ def build_signal_components(
         regime_detector=regime_detector,
     )
 
-    # ── Delta momentum 全局参数配置 ─────────────────────────────────────
-    from src.signals.strategies.legacy.mean_reversion import configure_delta_params
-    configure_delta_params(
-        d3_scale=signal_config.delta_d3_scale,
-        d3_cap=signal_config.delta_d3_cap,
-        d5_threshold=signal_config.delta_d5_threshold,
-        d5_bonus=signal_config.delta_d5_bonus,
-    )
-
     # ── 应用配置化参数覆盖 ────────────────────────────────────────────
     _apply_strategy_config_overrides(signal_module, signal_config)
 
@@ -435,14 +419,7 @@ def build_signal_components(
         regime_detector=regime_detector,
         htf_indicators_enabled=signal_config.htf_indicators_enabled,
         intrabar_confidence_factor=signal_config.intrabar_confidence_factor,
-        htf_direction_fn=htf_cache.get_htf_direction,
         htf_context_fn=htf_cache.get_htf_context,
-        htf_conflict_penalty=signal_config.htf_conflict_penalty,
-        htf_alignment_boost=signal_config.htf_alignment_boost,
-        htf_alignment_strength_coefficient=signal_config.htf_alignment_strength_coefficient,
-        htf_alignment_stability_per_bar=signal_config.htf_alignment_stability_per_bar,
-        htf_alignment_stability_cap=signal_config.htf_alignment_stability_cap,
-        htf_alignment_intrabar_strength_ratio=signal_config.htf_alignment_intrabar_strength_ratio,
         htf_target_config=dict(signal_config.strategy_htf_targets),
         wal_db_path=wal_db_path,
     )

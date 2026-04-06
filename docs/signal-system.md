@@ -24,18 +24,17 @@ src/signals/
 │   └── affinity.py            # Regime 亲和度 + 快速拒绝 (纯函数)
 ├── strategies/
 │   ├── base.py                # SignalStrategy Protocol + TimeframeScaler + get_tf_param()
-│   ├── catalog.py             # build_named_strategy_catalog() (42+ 策略统一构建)
-│   ├── registry.py            # StrategyRegistry + build_composite_strategies()
-│   ├── trend.py               # 趋势策略 (7个)
-│   ├── mean_reversion.py      # 均值回归策略 (6个)
-│   ├── breakout.py            # 突破/波动率策略 (6个)
-│   ├── volatility_structure.py # RangeBoxBreakout + BarMomentumSurge (波动率结构策略)
-│   ├── session.py             # 时段动量策略
-│   ├── price_action.py        # 价格行为策略
-│   ├── multi_tf_entry.py      # HTFTrendPullback / DualTFMomentum (跨TF策略)
-│   ├── m5_scalp.py            # M5ScalpRSI / M5MomentumBurst
-│   ├── trendline.py           # TrendlineThreeTouch
-│   ├── composite.py           # CompositeStrategy 基类
+│   ├── catalog.py             # build_named_strategy_catalog() (7 个结构化策略, 8 个注册实例)
+│   ├── structured/            # 结构化策略 (Why/When/Where 三层 + _entry_spec 入场规格)
+│   │   ├── base.py            # StructuredStrategyBase
+│   │   ├── trend_continuation.py
+│   │   ├── sweep_reversal.py
+│   │   ├── breakout_follow.py
+│   │   ├── range_reversion.py
+│   │   ├── session_breakout.py
+│   │   ├── trendline_touch.py
+│   │   ├── lowbar_entry.py
+│   │   └── trendline_utils.py # 趋势线检测纯函数
 │   ├── adapters.py            # UnifiedIndicatorSourceAdapter
 │   ├── htf_cache.py           # HTFStateCache
 │   └── tf_params.py           # TFParamResolver
@@ -172,20 +171,16 @@ intrabar 指标集合 = 所有满足以下条件的指标并集：
     → indicator manager 的 intrabar pipeline 仅计算该集合中的指标
 ```
 
-**当前自动推导结果（8 个）**：
+**当前自动推导结果**（来自 `preferred_scopes` 含 "intrabar" 的策略）：
 
 | 指标 | 来源策略 | 盘中语义 |
 |------|---------|---------|
-| `rsi14` | rsi_reversion | 超买超卖是实时状态，盘中触极值即预警 |
-| `stoch_rsi14` | stoch_rsi | 同上 |
-| `williamsr14` | williams_r | 同上 |
-| `cci20` | cci_reversion | 同上 |
-| `boll20` | bollinger_breakout, keltner_bb_squeeze, breakout_double_confirm | 盘中触及/突破通道边界即可预警 |
-| `keltner20` | keltner_bb_squeeze | BB/KC 挤压是实时状态 |
-| `donchian20` | breakout_double_confirm | 当前 bar 只能扩大通道（不会收窄），盘中值单调可信 |
-| `adx14` | breakout_double_confirm | ADX 变化缓慢，盘中值与收盘差距极小 |
+| `rsi14` | structured_range_reversion | 超买超卖是实时状态，盘中触极值即预警 |
+| `atr14` | structured_range_reversion | ATR 变化缓慢，盘中值与收盘差距极小 |
+| `adx14` | structured_range_reversion | ADX 变化缓慢 |
+| `boll20` | structured_range_reversion | 盘中触及通道边界即可预警 |
 
-其余 confirmed-only 指标（sma20, ema9/21/50/55, hma20, rsi5, macd, macd_fast, roc12, supertrend14, atr14, stoch14）仅在 confirmed 链路计算。
+当前仅 `structured_range_reversion` 支持 intrabar scope。其余策略仅在 confirmed 链路评估。
 
 ### 3.7 指标语义分析（intrabar 适用性判断依据）
 
@@ -221,13 +216,11 @@ intrabar 指标集合 = 所有满足以下条件的指标并集：
 ```ini
 # 全局默认（所有 TF 兜底）
 [strategy_params]
-rsi_reversion__overbought = 78
-supertrend__adx_threshold = 21
+structured_range_reversion__some_param = 0.5
 
-# M5 特化
-[strategy_params.M5]
-rsi_reversion__overbought = 72
-rsi_reversion__oversold = 25
+# M15 特化
+[strategy_params.M15]
+structured_range_reversion__some_param = 0.4
 ```
 
 **键格式**：双下划线 `__` 分隔策略名和参数名。策略中通过 `get_tf_param(self, "overbought", context.timeframe, default)` 查表。
@@ -365,7 +358,7 @@ idle → preview_buy/sell (方向改变 + conf≥0.55 + bar_progress≥0.2)
 
 **多 voting group**: `voting_groups` 非空 → 每组独立投票 → 产生 group.name 信号 → **全局 consensus 自动禁用**（`_voting_engine = None`）
 
-当前配置为**多 voting group 模式**（4 组）。两种模式不会同时存在。
+当前配置为**投票组清空状态**（2026-04-06 切换到结构化策略后）。结构化策略各自独立评估，内置 Why/When/Where 质量控制，后续按需重建投票组。
 
 ### 组内策略不能独立发信号（三层保护）
 
@@ -396,29 +389,14 @@ confidence = score × (1.0 - disagreement_factor) × regime_stability
 
 ---
 
-## 8. 复合策略
-
-| 策略 | 子策略 | Scope | 模式 |
-|------|--------|-------|------|
-| `trend_triple_confirm` | supertrend + macd_momentum + sma_trend | confirmed | majority |
-| `breakout_double_confirm` | donchian_breakout + keltner_bb_squeeze + squeeze_release | confirmed | all_agree |
-| `reversion_double_confirm` | rsi_reversion + stoch_rsi | intrabar + confirmed | all_agree |
-| `reversal_rejection_confirm` | fake_breakout + price_action_reversal | confirmed | all_agree |
-
-组合模式: `all_agree` (全部一致) / `majority` (过半) / `weighted_sum` (加权)。
-
-复合策略由 `config/composites.json` 声明式配置，通过 `build_composite_strategies()` 动态构建。不参与 VotingEngine 投票 (避免重复计票)。
-
----
-
-## 9. HTF 指标注入
+## 8. HTF 指标注入
 
 通过 `signal.ini [strategy_htf]` 配置，策略代码不声明 HTF 属性：
 
 ```ini
 [strategy_htf]
-supertrend.supertrend14 = H1
-sma_trend.sma20 = D1
+# 结构化策略的 HTF 数据由策略 Why 层内部处理，
+# 如需外部注入：策略名.指标名 = 来源TF
 ```
 
 策略中按需消费:
@@ -432,7 +410,7 @@ h1_adx = h1.get("adx14", {}).get("adx")
 
 ---
 
-## 10. Signal Listener 架构
+## 9. Signal Listener 架构
 
 ```
 SignalRuntime._publish_signal_event(event)

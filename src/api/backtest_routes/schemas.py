@@ -146,6 +146,9 @@ class BacktestRequestBase(BaseModel):
     min_preview_stable_bars: Optional[int] = None
     max_signal_evaluations: Optional[int] = None
 
+    # 实验追踪 ID（跨 Research/Backtest/PaperTrading 关联）
+    experiment_id: Optional[str] = None
+
 
 class BacktestRunRequest(BacktestRequestBase):
     pass
@@ -210,29 +213,145 @@ def strategy_scope_overrides(signal_config: Any) -> Dict[str, Dict[str, list[str
 
 
 _PARAM_TEMPLATE_SPECS: Dict[str, Dict[str, Any]] = {
-    "supertrend__adx_threshold": {"default": 23.0, "step": 2.0, "min": 18.0, "max": 30.0, "precision": 1},
-    "roc_momentum__adx_min": {"default": 23.0, "step": 2.0, "min": 18.0, "max": 30.0, "precision": 1},
-    "roc_momentum__roc_threshold": {"default": 0.10, "step": 0.02, "min": 0.05, "max": 0.30, "precision": 2},
-    "donchian_breakout__adx_min": {"default": 23.0, "step": 2.0, "min": 18.0, "max": 30.0, "precision": 1},
-    "rsi_reversion__overbought": {"default": 70.0, "step": 3.0, "min": 65.0, "max": 85.0, "precision": 0},
-    "rsi_reversion__oversold": {"default": 30.0, "step": 3.0, "min": 15.0, "max": 35.0, "precision": 0},
-    "williams_r__overbought": {"default": -20.0, "step": 5.0, "min": -35.0, "max": -10.0, "precision": 0},
-    "williams_r__oversold": {"default": -80.0, "step": 5.0, "min": -90.0, "max": -65.0, "precision": 0},
-    "cci_reversion__upper_threshold": {"default": 100.0, "step": 20.0, "min": 100.0, "max": 220.0, "precision": 0},
-    "cci_reversion__lower_threshold": {"default": -100.0, "step": 20.0, "min": -220.0, "max": -100.0, "precision": 0},
-    "stoch_rsi__overbought": {"default": 80.0, "step": 5.0, "min": 70.0, "max": 90.0, "precision": 0},
-    "stoch_rsi__oversold": {"default": 20.0, "step": 5.0, "min": 10.0, "max": 30.0, "precision": 0},
-    "rsi_reversion__intrabar_decay": {"default": 0.90, "step": 0.04, "min": 0.70, "max": 0.95, "precision": 2},
-    "stoch_rsi__intrabar_decay": {"default": 0.88, "step": 0.04, "min": 0.70, "max": 0.95, "precision": 2},
-    "williams_r__intrabar_decay": {"default": 0.88, "step": 0.04, "min": 0.70, "max": 0.95, "precision": 2},
-    "cci_reversion__intrabar_decay": {"default": 0.88, "step": 0.04, "min": 0.70, "max": 0.95, "precision": 2},
-    "bollinger_breakout__intrabar_decay": {"default": 0.78, "step": 0.04, "min": 0.65, "max": 0.90, "precision": 2},
-    "keltner_bb_squeeze__intrabar_decay": {"default": 0.80, "step": 0.04, "min": 0.65, "max": 0.90, "precision": 2},
+    "supertrend__adx_threshold": {
+        "default": 23.0,
+        "step": 2.0,
+        "min": 18.0,
+        "max": 30.0,
+        "precision": 1,
+    },
+    "roc_momentum__adx_min": {
+        "default": 23.0,
+        "step": 2.0,
+        "min": 18.0,
+        "max": 30.0,
+        "precision": 1,
+    },
+    "roc_momentum__roc_threshold": {
+        "default": 0.10,
+        "step": 0.02,
+        "min": 0.05,
+        "max": 0.30,
+        "precision": 2,
+    },
+    "donchian_breakout__adx_min": {
+        "default": 23.0,
+        "step": 2.0,
+        "min": 18.0,
+        "max": 30.0,
+        "precision": 1,
+    },
+    "rsi_reversion__overbought": {
+        "default": 70.0,
+        "step": 3.0,
+        "min": 65.0,
+        "max": 85.0,
+        "precision": 0,
+    },
+    "rsi_reversion__oversold": {
+        "default": 30.0,
+        "step": 3.0,
+        "min": 15.0,
+        "max": 35.0,
+        "precision": 0,
+    },
+    "williams_r__overbought": {
+        "default": -20.0,
+        "step": 5.0,
+        "min": -35.0,
+        "max": -10.0,
+        "precision": 0,
+    },
+    "williams_r__oversold": {
+        "default": -80.0,
+        "step": 5.0,
+        "min": -90.0,
+        "max": -65.0,
+        "precision": 0,
+    },
+    "cci_reversion__upper_threshold": {
+        "default": 100.0,
+        "step": 20.0,
+        "min": 100.0,
+        "max": 220.0,
+        "precision": 0,
+    },
+    "cci_reversion__lower_threshold": {
+        "default": -100.0,
+        "step": 20.0,
+        "min": -220.0,
+        "max": -100.0,
+        "precision": 0,
+    },
+    "stoch_rsi__overbought": {
+        "default": 80.0,
+        "step": 5.0,
+        "min": 70.0,
+        "max": 90.0,
+        "precision": 0,
+    },
+    "stoch_rsi__oversold": {
+        "default": 20.0,
+        "step": 5.0,
+        "min": 10.0,
+        "max": 30.0,
+        "precision": 0,
+    },
+    "rsi_reversion__intrabar_decay": {
+        "default": 0.90,
+        "step": 0.04,
+        "min": 0.70,
+        "max": 0.95,
+        "precision": 2,
+    },
+    "stoch_rsi__intrabar_decay": {
+        "default": 0.88,
+        "step": 0.04,
+        "min": 0.70,
+        "max": 0.95,
+        "precision": 2,
+    },
+    "williams_r__intrabar_decay": {
+        "default": 0.88,
+        "step": 0.04,
+        "min": 0.70,
+        "max": 0.95,
+        "precision": 2,
+    },
+    "cci_reversion__intrabar_decay": {
+        "default": 0.88,
+        "step": 0.04,
+        "min": 0.70,
+        "max": 0.95,
+        "precision": 2,
+    },
+    "bollinger_breakout__intrabar_decay": {
+        "default": 0.78,
+        "step": 0.04,
+        "min": 0.65,
+        "max": 0.90,
+        "precision": 2,
+    },
+    "keltner_bb_squeeze__intrabar_decay": {
+        "default": 0.80,
+        "step": 0.04,
+        "min": 0.65,
+        "max": 0.90,
+        "precision": 2,
+    },
     "session_momentum__london_min_atr_pct": {
-        "default": 0.00050, "step": 0.00006, "min": 0.00020, "max": 0.00080, "precision": 5,
+        "default": 0.00050,
+        "step": 0.00006,
+        "min": 0.00020,
+        "max": 0.00080,
+        "precision": 5,
     },
     "session_momentum__other_min_atr_pct": {
-        "default": 0.00038, "step": 0.00005, "min": 0.00015, "max": 0.00065, "precision": 5,
+        "default": 0.00038,
+        "step": 0.00005,
+        "min": 0.00015,
+        "max": 0.00065,
+        "precision": 5,
     },
 }
 
@@ -378,7 +497,8 @@ def build_param_space_template(
     param_space: Dict[str, List[float]] = {}
     for strategy in resolved_strategies:
         strategy_keys = [
-            key for key in effective_strategy_params.keys()
+            key
+            for key in effective_strategy_params.keys()
             if key.startswith(f"{strategy}__")
         ]
         for compound_key in strategy_keys:
@@ -394,7 +514,9 @@ def build_param_space_template(
         "未显式选择 strategies 时，会按当前 timeframe 自动筛选可运行策略。",
     ]
     if not param_space:
-        notes.append("当前所选策略没有已配置的 strategy_params 模板，请手动补充 param_space。")
+        notes.append(
+            "当前所选策略没有已配置的 strategy_params 模板，请手动补充 param_space。"
+        )
 
     return {
         "timeframe": timeframe.upper(),
@@ -444,5 +566,6 @@ def resolve_optimizer_settings(request: BacktestOptimizeRequest) -> Dict[str, An
             if request.max_combinations is not None
             else defaults.get("max_combinations", 500)
         ),
-        "sort_metric": request.sort_metric or defaults.get("sort_metric", "sharpe_ratio"),
+        "sort_metric": request.sort_metric
+        or defaults.get("sort_metric", "sharpe_ratio"),
     }

@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from . import schemas as config_service
 from src.backtesting.data import backtest_runtime_store
+
+from . import schemas as config_service
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,31 @@ def persist_result(result: Any) -> None:
         logger.warning(
             "Failed to persist backtest result %s", result.run_id, exc_info=True
         )
+
+
+def _update_experiment_on_backtest(result: Any) -> None:
+    """侧效：回测完成后更新 experiments 表（experiment_id 为空时跳过）。"""
+    exp_id = getattr(result, "experiment_id", None)
+    if not exp_id:
+        return
+    try:
+        from src.persistence.repositories.experiment_repo import ExperimentRepository
+
+        repo = get_backtest_repo()
+        if repo is None:
+            return
+        exp_repo = ExperimentRepository(repo._writer)
+        exp_repo.ensure_schema()
+        exp_repo.advance_to_backtest(exp_id, result.run_id)
+        metrics = getattr(result, "metrics", None)
+        if metrics is not None:
+            exp_repo.record_backtest_metrics(
+                exp_id,
+                sharpe=getattr(metrics, "sharpe_ratio", 0.0),
+                win_rate=getattr(metrics, "win_rate", 0.0),
+            )
+    except Exception:
+        logger.debug("Failed to update experiment %s", exp_id, exc_info=True)
 
 
 def get_backtest_repo() -> Optional[Any]:
@@ -105,7 +131,9 @@ def pick_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
 def execute_backtest(run_id: str, request: config_service.BacktestRunRequest) -> None:
     acquired = backtest_runtime_store.semaphore.acquire(timeout=5)
     if not acquired:
-        backtest_runtime_store.fail_job(run_id, "另一个回测/优化任务正在执行，请稍后重试")
+        backtest_runtime_store.fail_job(
+            run_id, "另一个回测/优化任务正在执行，请稍后重试"
+        )
         return
 
     backtest_runtime_store.start_job(run_id)
@@ -128,7 +156,9 @@ def execute_backtest(run_id: str, request: config_service.BacktestRunRequest) ->
             voting_engine=components.get("voting_engine"),
         )
         result = engine.run()
+        result.experiment_id = request.experiment_id
         persist_result(result)
+        _update_experiment_on_backtest(result)
         backtest_runtime_store.complete_job(run_id, result.to_dict())
     except Exception as exc:
         logger.exception("Backtest %s failed", run_id)
@@ -138,17 +168,24 @@ def execute_backtest(run_id: str, request: config_service.BacktestRunRequest) ->
         backtest_runtime_store.semaphore.release()
 
 
-def execute_optimization(run_id: str, request: config_service.BacktestOptimizeRequest) -> None:
+def execute_optimization(
+    run_id: str, request: config_service.BacktestOptimizeRequest
+) -> None:
     acquired = backtest_runtime_store.semaphore.acquire(timeout=5)
     if not acquired:
-        backtest_runtime_store.fail_job(run_id, "另一个回测/优化任务正在执行，请稍后重试")
+        backtest_runtime_store.fail_job(
+            run_id, "另一个回测/优化任务正在执行，请稍后重试"
+        )
         return
 
     backtest_runtime_store.start_job(run_id)
     components: Optional[Dict[str, Any]] = None
     try:
         from src.backtesting.models import ParameterSpace
-        from src.backtesting.optimization import ParameterOptimizer, build_signal_module_with_overrides
+        from src.backtesting.optimization import (
+            ParameterOptimizer,
+            build_signal_module_with_overrides,
+        )
 
         optimizer_settings = config_service.resolve_optimizer_settings(request)
         config = config_service.build_backtest_config(request)
@@ -179,6 +216,7 @@ def execute_optimization(run_id: str, request: config_service.BacktestOptimizeRe
         )
         results = optimizer.run()
         for result in results:
+            result.experiment_id = request.experiment_id
             persist_result(result)
         backtest_runtime_store.complete_job(
             run_id, [result.to_dict() for result in results[:50]]
@@ -191,18 +229,25 @@ def execute_optimization(run_id: str, request: config_service.BacktestOptimizeRe
         backtest_runtime_store.semaphore.release()
 
 
-def execute_walk_forward(run_id: str, request: config_service.WalkForwardRequest) -> None:
+def execute_walk_forward(
+    run_id: str, request: config_service.WalkForwardRequest
+) -> None:
     acquired = backtest_runtime_store.semaphore.acquire(timeout=5)
     if not acquired:
-        backtest_runtime_store.fail_job(run_id, "另一个回测/优化任务正在执行，请稍后重试")
+        backtest_runtime_store.fail_job(
+            run_id, "另一个回测/优化任务正在执行，请稍后重试"
+        )
         return
 
     backtest_runtime_store.start_job(run_id)
     components: Optional[Dict[str, Any]] = None
     try:
         from src.backtesting.models import ParameterSpace
-        from src.backtesting.optimization import build_signal_module_with_overrides
-        from src.backtesting.optimization import WalkForwardConfig, WalkForwardValidator
+        from src.backtesting.optimization import (
+            WalkForwardConfig,
+            WalkForwardValidator,
+            build_signal_module_with_overrides,
+        )
 
         optimizer_settings = config_service.resolve_optimizer_settings(request)
         base_config = config_service.build_backtest_config(request)
@@ -242,6 +287,7 @@ def execute_walk_forward(run_id: str, request: config_service.WalkForwardRequest
         wf_result = validator.run()
         backtest_runtime_store.store_walk_forward_result(run_id, wf_result)
         for split in wf_result.splits:
+            split.out_of_sample_result.experiment_id = request.experiment_id
             persist_result(split.out_of_sample_result)
         summary = {
             "run_id": run_id,

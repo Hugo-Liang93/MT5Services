@@ -180,12 +180,3 @@ def recent_consensus_signals(
     )
 
 
-@router.get("/strategies/composite", response_model=ApiResponse[list[Dict[str, Any]]])
-def list_composite_strategies(
-    service: SignalModule = Depends(get_signal_service),
-) -> ApiResponse[list[Dict[str, Any]]]:
-    result = service.list_composite_strategies()
-    return ApiResponse.success_response(
-        data=result,
-        metadata={"count": len(result)},
-    )

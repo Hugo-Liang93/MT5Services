@@ -531,19 +531,15 @@ def build_signal_module_with_overrides(
 ) -> SignalModule:
     """构建带参数覆盖的独立 SignalModule 实例。
 
-    复用 register_all_strategies() 的模式，但注入新的参数覆盖。
+    构建独立的 SignalModule 实例，注入参数覆盖。
 
     Args:
         base_module: 基础 SignalModule 实例
         param_overrides: 策略参数覆盖（signal.ini [strategy_params] 格式）
         regime_affinity_overrides: Regime 亲和度覆盖（可选）
     """
-    htf_cache = None
-    mtf_strategy = base_module.get_strategy("multi_timeframe_confirm")
-    if mtf_strategy is not None:
-        htf_cache = getattr(mtf_strategy, "_htf_cache", None)
-
     # 创建新的 SignalModule，复用相同的 indicator_source 和组件
+    htf_cache = None
     module = SignalModule(
         indicator_source=base_module.indicator_source,
         strategies=clone_registered_strategies(

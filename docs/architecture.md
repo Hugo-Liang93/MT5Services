@@ -25,6 +25,7 @@ FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 →
 | `src/decision/` | 上下文融合决策引擎 |
 | `src/market_structure/` | 市场结构分析 |
 | `src/backtesting/` | 回测引擎 + 参数优化 + Paper Trading |
+| `src/research/` | 信号挖掘：指标预测力分析 + 阈值扫描 + Regime 亲和度调优 |
 
 ### 1.2 运行时装配层（src/app_runtime/）
 

@@ -180,15 +180,10 @@ class BacktestEngine:
                 cooldown_bars=cb.cooldown_bars,
             )
 
-        # Pending Entry 配置（复用实盘 compute_entry_zone 纯函数）
+        # Pending Entry 配置（入场区间由策略 entry_spec 驱动）
         pe = config.pending_entry
         self._pending_entry_enabled = pe.enabled
-        self._pending_entry_config = TradingPendingEntryConfig(
-            pullback_atr_factor=pe.pullback_atr_factor,
-            chase_atr_factor=pe.chase_atr_factor,
-            momentum_atr_factor=pe.momentum_atr_factor,
-            symmetric_atr_factor=pe.symmetric_atr_factor,
-        )
+        self._pending_entry_config = TradingPendingEntryConfig()
         # 挂起的入场意图：{signal_key: (decision, entry_low, entry_high, expiry_bar)}
         self._pending_entries: Dict[str, Tuple[SignalDecision, float, float, int]] = {}
 

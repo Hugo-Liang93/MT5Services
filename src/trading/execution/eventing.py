@@ -385,6 +385,7 @@ def execute_market_order(
                             if result.get("fill_price") is not None
                             else None
                         ),
+                        exit_spec=event.metadata.get("exit_spec"),
                     )
                 except Exception as pm_exc:
                     logger.warning(
