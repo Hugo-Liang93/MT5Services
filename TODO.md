@@ -39,19 +39,34 @@
 - 结论：问题在出场结构（盈亏比 W/L=0.4），不在策略方向。已切换到 Chandelier Exit
 - 下一步：出场参数配置化 → 回测验证 → 策略裁剪
 
-### 0.2 策略相关性分析 + 裁剪
+### 0.2 策略相关性分析 + 裁剪（部分完成 2026-04-06）
 
-- [ ] 用 `correlation.py` 跑各 TF 的策略信号方向相关性矩阵
-- [ ] 识别高相关策略对（>0.7）：这些策略同时入场等于变相加仓
-- [ ] 相关组内保留 Sharpe 最高的，其余通过 regime_affinity 全设 0.0 禁用
-- [ ] 投票组成员重新评估：组内不应有高度相关的策略
-- 目标：从 31 个基础策略精简到 15-20 个真正独立的信号源
+- [x] H1 相关性矩阵：ema_ribbon×hma_cross r=1.0, momentum_vote×supertrend r=1.0
+- [x] 确认已有冻结策略（6 个 affinity=0.0）有效
+- [x] Confidence 管线根因分析：低 conf 来自 affinity 压制 + 乘法链衰减
+- [ ] momentum_vote 投票组重组（当前与 supertrend 100% 相关，退化为单策略）
+- [ ] 基于新出场体系重新评估已冻结策略的 affinity 值
+- 结论：H1 上实际只有 2 个独立信号源（supertrend 系），需要引入新维度策略
 
-### 0.3 新策略验证
+### 0.3 新策略引入（进行中 2026-04-06）
 
-- [ ] macd_divergence 各 TF 回测 → 判断是否值得保留在 reversal_vote 组
-- [ ] adx_trend_fade 各 TF 回测 → 同上
-- [ ] trendline_3touch 回测验证（该策略目前完全未经验证）
+已完成：
+- [x] `range_box_breakout`（箱体突破）→ H1: 8 笔 WR=50% PnL=+15 **唯一盈利策略**
+- [x] `bar_momentum_surge`（大 bar 动量）→ H1: 30 笔 WR=43%
+- [x] `bar_stats20` 指标（bar body/range 滚动统计）
+
+待完成：
+- [ ] `bar_momentum_surge` per-TF 参数调优（M30 WR=14% → body_multiplier 需提到 2.5+）
+- [ ] ATR Regime Shift 策略（波动率压缩→扩张）
+- [ ] Swing Structure 策略（高低点结构 + 回调入场）
+- [ ] Trend Exhaustion Filter（趋势衰竭过滤器，作为 SignalFilterChain 组件）
+- [ ] Range Mean Reversion 策略（箱体内回归，填补 ranging 覆盖）
+
+### 0.4 策略 Confidence 公式优化
+
+- [ ] sma_trend / macd_momentum / roc_momentum：用百分位排名替代绝对值映射
+- [ ] 目标：raw_conf 分布从 [0.40, 0.60] 拓宽到 [0.40, 0.90]
+- [ ] 可选：HTF alignment 改加减法替代乘法（减少管线乘法链衰减）
 
 ---
 
