@@ -57,6 +57,62 @@ def test_auto_transition_policy_falls_back_to_risk_off_when_ingest_only_is_unsaf
     ) == RuntimeMode.RISK_OFF
 
 
+def test_session_start_restores_initial_mode_after_auto_eod() -> None:
+    policy = RuntimeModeAutoTransitionPolicy(
+        after_eod_action=RuntimeModeEODAction.INGEST_ONLY
+    )
+
+    # EOD 自动降级到 INGEST_ONLY 后，新交易日恢复 FULL
+    assert policy.resolve_session_start(
+        current_mode=RuntimeMode.INGEST_ONLY,
+        after_eod_today=False,
+        was_auto_transitioned=True,
+        initial_mode=RuntimeMode.FULL,
+    ) == RuntimeMode.FULL
+
+
+def test_session_start_noop_when_not_auto_transitioned() -> None:
+    policy = RuntimeModeAutoTransitionPolicy(
+        after_eod_action=RuntimeModeEODAction.INGEST_ONLY
+    )
+
+    # 手动切换的 INGEST_ONLY 不会自动恢复
+    assert policy.resolve_session_start(
+        current_mode=RuntimeMode.INGEST_ONLY,
+        after_eod_today=False,
+        was_auto_transitioned=False,
+        initial_mode=RuntimeMode.FULL,
+    ) is None
+
+
+def test_session_start_noop_when_still_after_eod() -> None:
+    policy = RuntimeModeAutoTransitionPolicy(
+        after_eod_action=RuntimeModeEODAction.INGEST_ONLY
+    )
+
+    # 仍在 EOD 期间，不恢复
+    assert policy.resolve_session_start(
+        current_mode=RuntimeMode.INGEST_ONLY,
+        after_eod_today=True,
+        was_auto_transitioned=True,
+        initial_mode=RuntimeMode.FULL,
+    ) is None
+
+
+def test_session_start_noop_when_already_at_initial_mode() -> None:
+    policy = RuntimeModeAutoTransitionPolicy(
+        after_eod_action=RuntimeModeEODAction.RISK_OFF
+    )
+
+    # 已经是初始模式
+    assert policy.resolve_session_start(
+        current_mode=RuntimeMode.FULL,
+        after_eod_today=False,
+        was_auto_transitioned=True,
+        initial_mode=RuntimeMode.FULL,
+    ) is None
+
+
 def test_auto_transition_policy_noops_outside_active_modes_or_before_eod() -> None:
     policy = RuntimeModeAutoTransitionPolicy(
         after_eod_action=RuntimeModeEODAction.RISK_OFF

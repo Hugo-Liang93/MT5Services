@@ -334,6 +334,19 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 - **generate_report(hours=24)**：内存环形缓冲 ring_size=2400 仅覆盖 ~3.3h，24h 报告窗口内早期数据为空
 - **Flaky 集成测试风险**：`test_signal_trade_chain.py` 中的测试依赖 `deps` 模块全局状态隔离，若新增 API 测试触发 `_ensure_initialized()` 可能污染后续测试
 
+### 长期运行稳定性（2026-04-06 修复）
+
+以下问题已在本轮修复中解决，记录防护机制供后续维护参考：
+
+- **EOD 跨日自动恢复**：`RuntimeModeAutoTransitionPolicy.resolve_session_start()` 检测新交易日自动恢复 `initial_mode`，仅对 EOD 自动降级生效（手动切换不受影响）
+- **apply_mode 异常保护**：`RuntimeComponentRegistry.apply_mode()` 每个组件 start/stop 独立 try/except，部分失败仍更新模式状态，错误记入 `last_error`
+- **TradeExecutor 双线程防护**：`stop()` 超时后保留线程引用，`start()` 等待僵尸线程退出后才 clear `_stop_event`，`_start_worker()` 有存活检查
+- **WAL Queue 重入**：`close()` 后 `reopen()` 重建连接并 reset in-flight 事件；`_get_conn()` 检查 `_closed` 标志防止静默重连
+- **IndicatorManager 线程守卫**：`_any_thread_alive()` 检查全部 4 线程；`stop()` 清引用并记录超时警告
+- **PositionManager 启动同步**：`start()` 中先执行一次 `_reconcile_with_mt5()`，修复 stop 期间 peak_price 等状态断档
+- **DLQ 文件清理**：`_cleanup_stale_dlq()` 在启动时清理超过 7 天的失败文件
+- **listener_fail_counts 清理**：`remove_signal_listener()` 中同步清理对应 key
+
 ---
 
 ## 深度参考文档（按需读取）

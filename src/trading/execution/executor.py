@@ -227,6 +227,9 @@ class TradeExecutor:
 
     def _start_worker(self) -> None:
         """启动后台执行线程。"""
+        # 防止双线程：旧线程仍活着时复用，不创建新线程
+        if self._exec_thread is not None and self._exec_thread.is_alive():
+            return
         self._stop_event.clear()
         t = threading.Thread(target=self._exec_worker, name="trade-executor", daemon=True)
         t.start()
@@ -234,6 +237,16 @@ class TradeExecutor:
 
     def start(self) -> None:
         """启用执行器，允许后续 confirmed 事件重新拉起执行线程。"""
+        # 等待上一次 stop() 超时遗留的僵尸线程退出
+        old = self._exec_thread
+        if old is not None and old.is_alive():
+            logger.warning("TradeExecutor: waiting for previous worker to finish")
+            old.join(timeout=5.0)
+            if old.is_alive():
+                logger.error(
+                    "TradeExecutor: previous worker still alive after re-join, "
+                    "new signals will reuse it instead of creating a new thread"
+                )
         self._stop_event.clear()
 
     def is_running(self) -> bool:
@@ -266,7 +279,15 @@ class TradeExecutor:
         self._stop_event.set()
         if self._exec_thread is not None:
             self._exec_thread.join(timeout=timeout)
-            self._exec_thread = None
+            if self._exec_thread.is_alive():
+                logger.warning(
+                    "TradeExecutor worker did not stop within %.1fs, "
+                    "will be cleaned up on next start()",
+                    timeout,
+                )
+                # 保留引用，start() 会检测并等待
+            else:
+                self._exec_thread = None
         self._clear_exec_queue()
 
     def shutdown(self, timeout: float = 5.0) -> None:

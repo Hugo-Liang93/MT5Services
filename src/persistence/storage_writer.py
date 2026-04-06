@@ -79,10 +79,24 @@ class StorageWriter:
         except Exception as exc:
             logger.error("StorageWriter: failed to write DLQ file %s: %s", path, exc)
 
+    def _cleanup_stale_dlq(self, max_age_days: int = 7) -> None:
+        """清理超龄 DLQ 文件，防止磁盘无限积累。"""
+        if not self._dlq_dir.exists():
+            return
+        cutoff = time.time() - max_age_days * 86400
+        for path in self._dlq_dir.glob("*.jsonl"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+                    logger.info("StorageWriter: cleaned up stale DLQ file: %s", path.name)
+            except Exception as exc:
+                logger.debug("StorageWriter: failed to clean DLQ file %s: %s", path, exc)
+
     def _replay_dlq(self) -> None:
         """启动时扫描 DLQ 目录，将残留的失败批次重新写入对应通道。"""
         if not self._dlq_dir.exists():
             return
+        self._cleanup_stale_dlq()
         files = sorted(self._dlq_dir.glob("*.jsonl"))
         if not files:
             return

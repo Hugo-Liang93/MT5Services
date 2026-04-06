@@ -79,3 +79,20 @@ class RuntimeModeAutoTransitionPolicy:
         if target == RuntimeMode.INGEST_ONLY and not can_enter_ingest_only:
             return RuntimeMode.RISK_OFF
         return target
+
+    def resolve_session_start(
+        self,
+        *,
+        current_mode: RuntimeMode | None,
+        after_eod_today: bool,
+        was_auto_transitioned: bool,
+        initial_mode: RuntimeMode,
+    ) -> RuntimeMode | None:
+        """新交易日开始：若当前模式是 EOD 自动降级的结果，恢复到初始模式。"""
+        if not was_auto_transitioned:
+            return None
+        if after_eod_today:
+            return None
+        if current_mode == initial_mode:
+            return None
+        return initial_mode

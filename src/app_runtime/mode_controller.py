@@ -34,6 +34,7 @@ class RuntimeModeController:
         self._guard = guard
         self._auto_transition_policy = auto_transition_policy
         self._current_mode: RuntimeMode | None = None
+        self._is_auto_transitioned: bool = False
         self._last_transition_at: datetime | None = None
         self._last_transition_reason: str | None = None
         self._last_error: str | None = None
@@ -59,6 +60,7 @@ class RuntimeModeController:
     def apply_mode(self, mode: RuntimeMode | str, *, reason: str) -> dict[str, object]:
         target = mode if isinstance(mode, RuntimeMode) else RuntimeMode(str(mode).strip().lower())
         with self._lock:
+            self._is_auto_transitioned = False
             self._apply_mode_locked(target, reason=reason)
             return self.snapshot()
 
@@ -69,6 +71,7 @@ class RuntimeModeController:
                 "configured_mode": self._policy.initial_mode.value,
                 "after_eod_action": self._policy.after_eod_action.value,
                 "auto_check_interval_seconds": self._policy.auto_check_interval_seconds,
+                "is_auto_transitioned": self._is_auto_transitioned,
                 "last_transition_at": (
                     self._last_transition_at.isoformat() if self._last_transition_at else None
                 ),
@@ -82,12 +85,21 @@ class RuntimeModeController:
         registry = self._container.runtime_component_registry
         if registry is None:
             raise RuntimeError("runtime_component_registry is not configured")
-        registry.apply_mode(target.value)
+        partial_error: str | None = None
+        try:
+            registry.apply_mode(target.value)
+        except RuntimeError as exc:
+            # 部分组件失败，但模式已尽力切换。记录错误，继续更新状态。
+            partial_error = str(exc)
+            logger.warning(
+                "Mode '%s' applied with partial failure: %s", target.value, exc
+            )
         self._current_mode = target
         self._last_transition_at = datetime.now(timezone.utc)
         self._last_transition_reason = reason
-        self._last_error = None
-        logger.info("Runtime mode applied: mode=%s reason=%s", target.value, reason)
+        self._last_error = partial_error
+        if partial_error is None:
+            logger.info("Runtime mode applied: mode=%s reason=%s", target.value, reason)
 
     def _start_monitor(self) -> None:
         if not self._auto_transition_policy.enabled:
@@ -116,6 +128,20 @@ class RuntimeModeController:
             after_eod_today = bool(
                 position_manager is not None and position_manager.is_after_eod_today()
             )
+
+            # 新交易日检测：EOD 自动降级后恢复初始模式
+            restore = self._auto_transition_policy.resolve_session_start(
+                current_mode=self._current_mode,
+                after_eod_today=after_eod_today,
+                was_auto_transitioned=self._is_auto_transitioned,
+                initial_mode=self._policy.initial_mode,
+            )
+            if restore is not None:
+                self._is_auto_transitioned = False
+                self._apply_mode_locked(restore, reason="session_start")
+                return
+
+            # EOD 自动降级
             target = self._auto_transition_policy.resolve_after_eod(
                 current_mode=self._current_mode,
                 after_eod_today=after_eod_today,
@@ -123,6 +149,7 @@ class RuntimeModeController:
             )
             if target is None:
                 return
+            self._is_auto_transitioned = True
             self._apply_mode_locked(target, reason="after_eod")
 
     def _component_status_snapshot(self) -> dict[str, object]:

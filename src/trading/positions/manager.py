@@ -145,6 +145,11 @@ class PositionManager:
             return
         self._reconcile_interval = max(1.0, reconcile_interval)
         self._stop_event.clear()
+        # 启动前立即同步一次持仓价格，修复 stop 期间 peak_price 等状态过时的问题
+        try:
+            self._reconcile_with_mt5()
+        except Exception as exc:
+            logger.warning("PositionManager: initial reconcile on start failed: %s", exc)
         self._reconcile_thread = threading.Thread(
             target=self._reconcile_loop,
             name="position-manager-reconcile",

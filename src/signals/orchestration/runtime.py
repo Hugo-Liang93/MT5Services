@@ -341,6 +341,9 @@ class SignalRuntime:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        # WAL queue: close() 后需要 reopen 以重建连接并 reset in-flight 事件
+        if self._wal_db_path and hasattr(self._confirmed_events, "reopen"):
+            self._confirmed_events.reopen()
         self._restore_state()
         self.snapshot_source.add_snapshot_listener(self._on_snapshot)
         self._thread = threading.Thread(
@@ -733,6 +736,7 @@ class SignalRuntime:
                 self._signal_listeners.remove(listener)
             except ValueError:
                 pass
+            self._listener_fail_counts.pop(id(listener), None)
 
     def _publish_signal_event(
         self,

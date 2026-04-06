@@ -128,6 +128,19 @@
 
 ---
 
+## 已完成归档（2026-04-06 长期运行稳定性修复）
+
+- [x] EOD 跨日自动恢复：`resolve_session_start()` 新交易日检测 + `_is_auto_transitioned` 标志
+- [x] P0: `apply_mode()` 异常保护——组件部分失败仍更新模式，不再半启动半停止
+- [x] P0: TradeExecutor 双线程防护——stop 超时保留引用 + start 等待僵尸 + _start_worker 存活检查
+- [x] P1: WAL Queue `reopen()` 方法——close 后重入执行 _init_db + _closed 标志检查
+- [x] P1: IndicatorManager 全线程守卫——`_any_thread_alive()` + stop 清引用 + 超时警告
+- [x] P1: PositionManager 启动时立即 reconcile——修复 stop 期间 peak_price 断档
+- [x] P2: DLQ 文件 7 天自动清理——`_cleanup_stale_dlq()` 在启动时执行
+- [x] P2: `_listener_fail_counts` 清理——`remove_signal_listener()` 同步 pop
+
+---
+
 ## P4: 架构演进（实盘稳定后）
 
 ### 配置热重载

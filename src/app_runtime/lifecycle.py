@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeManagedComponent(Protocol):
@@ -57,12 +60,28 @@ class RuntimeComponentRegistry:
 
     def apply_mode(self, mode: str) -> None:
         target_mode = str(mode).strip().lower()
+        errors: list[str] = []
         for component in self._components.values():
             if target_mode in component.supported_modes:
-                component.start()
+                try:
+                    component.start()
+                except Exception as exc:
+                    msg = f"{component.name}.start() failed: {exc}"
+                    logger.error(msg, exc_info=True)
+                    errors.append(msg)
         for component in reversed(tuple(self._components.values())):
             if target_mode not in component.supported_modes:
-                component.stop()
+                try:
+                    component.stop()
+                except Exception as exc:
+                    msg = f"{component.name}.stop() failed: {exc}"
+                    logger.error(msg, exc_info=True)
+                    errors.append(msg)
+        if errors:
+            raise RuntimeError(
+                f"apply_mode('{target_mode}') partial failure ({len(errors)}): "
+                + "; ".join(errors)
+            )
 
     def status_snapshot(self) -> dict[str, Any]:
         return {

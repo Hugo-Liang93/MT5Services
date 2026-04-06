@@ -277,8 +277,15 @@ class UnifiedIndicatorManager:
             )
             return None
 
+    def _any_thread_alive(self) -> bool:
+        """任一后台线程存活则返回 True。"""
+        for t in (self._event_thread, self._writer_thread, self._intrabar_thread, self._reload_thread):
+            if t is not None and t.is_alive():
+                return True
+        return False
+
     def start(self) -> None:
-        if self._event_thread and self._event_thread.is_alive():
+        if self._any_thread_alive():
             return
 
         self._stop.clear()
@@ -305,9 +312,7 @@ class UnifiedIndicatorManager:
         )
         self._intrabar_thread.start()
 
-        if self.config.hot_reload and not (
-            self._reload_thread and self._reload_thread.is_alive()
-        ):
+        if self.config.hot_reload:
             self._reload_thread = threading.Thread(
                 target=self._reload_loop,
                 name="IndicatorConfigReloader",
@@ -319,14 +324,24 @@ class UnifiedIndicatorManager:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._writer_thread:
-            self._writer_thread.join(timeout=3.0)
-        if self._event_thread:
-            self._event_thread.join(timeout=5.0)
-        if self._intrabar_thread:
-            self._intrabar_thread.join(timeout=2.0)
-        if self._reload_thread:
-            self._reload_thread.join(timeout=2.0)
+        threads_with_timeout: list[tuple[str, threading.Thread | None, float]] = [
+            ("writer", self._writer_thread, 3.0),
+            ("event", self._event_thread, 5.0),
+            ("intrabar", self._intrabar_thread, 2.0),
+            ("reload", self._reload_thread, 2.0),
+        ]
+        for name, thread, timeout in threads_with_timeout:
+            if thread is not None:
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    logger.warning(
+                        "IndicatorManager %s thread did not stop within %.1fs",
+                        name, timeout,
+                    )
+        self._writer_thread = None
+        self._event_thread = None
+        self._intrabar_thread = None
+        self._reload_thread = None
         self.market_service.set_ohlc_event_sink(None)
         self.market_service.remove_intrabar_listener(self._on_intrabar)
         logger.info("UnifiedIndicatorManager stopped")

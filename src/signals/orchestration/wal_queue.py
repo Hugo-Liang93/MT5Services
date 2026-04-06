@@ -105,8 +105,19 @@ class WalSignalQueue:
                     pending,
                 )
 
+    def reopen(self) -> None:
+        """Reopen after close(): create fresh connection and reset in-flight events."""
+        with self._lock:
+            self._closed = False
+            self._conn = None
+        self._init_db()
+
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
+            if self._closed:
+                raise RuntimeError(
+                    "WalSignalQueue is closed; call reopen() before further use"
+                )
             from src.utils.sqlite_conn import make_sqlite_conn
             self._conn = make_sqlite_conn(self._db_path, cache_mb=4, busy_timeout_ms=5000)
         return self._conn

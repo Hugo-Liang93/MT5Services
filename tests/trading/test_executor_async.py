@@ -222,6 +222,44 @@ def test_worker_handles_exception() -> None:
     executor.shutdown()
 
 
+def test_stop_timeout_does_not_create_dual_threads() -> None:
+    """stop() 超时后 start() 不会产生双线程。"""
+    module = DummyTradingModule(delay=0.5)  # worker 处理中
+    executor = _make_executor(module)
+
+    # 触发 lazy worker
+    executor.on_signal_event(_build_event(signal_id="sig_slow"))
+    time.sleep(0.05)  # 确保 worker 已启动并拿到事件
+
+    old_thread = executor._exec_thread
+    assert old_thread is not None and old_thread.is_alive()
+
+    # stop with very short timeout → join 超时
+    executor.stop(timeout=0.01)
+
+    # stop 保留了线程引用（因为它还活着）
+    assert executor._exec_thread is not None
+    assert executor._exec_thread is old_thread
+
+    # start() 应该等待旧线程退出（_stop_event 仍 set，旧线程会自行退出）
+    executor.start()
+
+    # 旧线程应该已退出
+    assert not old_thread.is_alive(), "Old worker thread should have exited during start()"
+
+    # 发新事件触发 _start_worker
+    executor.on_signal_event(_build_event(signal_id="sig_new"))
+    time.sleep(0.05)
+
+    new_thread = executor._exec_thread
+    assert new_thread is not None
+    # 新线程不是旧线程（旧的已死）
+    assert new_thread is not old_thread
+    assert new_thread.is_alive()
+
+    executor.shutdown(timeout=5.0)
+
+
 def test_lazy_worker_start() -> None:
     """Worker thread is NOT started at construction; only on first on_signal_event."""
     executor = _make_executor()

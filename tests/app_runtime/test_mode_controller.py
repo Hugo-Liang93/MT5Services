@@ -275,3 +275,108 @@ def test_mode_controller_blocks_ingest_only_when_live_risk_exists() -> None:
 
     with pytest.raises(RuntimeError, match="ingest_only"):
         controller.apply_mode(RuntimeMode.INGEST_ONLY, reason="test")
+
+
+def test_auto_eod_sets_flag_and_session_start_restores() -> None:
+    """EOD 自动降级后，新交易日自动恢复初始模式。"""
+    from src.app_runtime.mode_policy import RuntimeModeEODAction
+
+    container = _build_container()
+    pos_mgr: _PositionManager = container.position_manager  # type: ignore[assignment]
+    controller = RuntimeModeController(
+        container,
+        policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
+        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        auto_transition_policy=RuntimeModeAutoTransitionPolicy(
+            after_eod_action=RuntimeModeEODAction.INGEST_ONLY,
+        ),
+    )
+
+    # 启动到 FULL
+    controller.apply_mode(RuntimeMode.FULL, reason="startup")
+    assert controller.current_mode == RuntimeMode.FULL
+    snap = controller.snapshot()
+    assert snap["is_auto_transitioned"] is False
+
+    # 模拟 EOD 触发自动降级
+    pos_mgr.after_eod = True
+    controller._evaluate_auto_transition()  # type: ignore[attr-defined]
+    assert controller.current_mode == RuntimeMode.INGEST_ONLY
+    snap = controller.snapshot()
+    assert snap["is_auto_transitioned"] is True
+    assert snap["last_transition_reason"] == "after_eod"
+
+    # 模拟新交易日 → 自动恢复
+    pos_mgr.after_eod = False
+    controller._evaluate_auto_transition()  # type: ignore[attr-defined]
+    assert controller.current_mode == RuntimeMode.FULL
+    snap = controller.snapshot()
+    assert snap["is_auto_transitioned"] is False
+    assert snap["last_transition_reason"] == "session_start"
+
+
+def test_manual_ingest_only_not_auto_restored() -> None:
+    """手动切换到 INGEST_ONLY 不会被自动恢复。"""
+    from src.app_runtime.mode_policy import RuntimeModeEODAction
+
+    container = _build_container()
+    pos_mgr: _PositionManager = container.position_manager  # type: ignore[assignment]
+    controller = RuntimeModeController(
+        container,
+        policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
+        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        auto_transition_policy=RuntimeModeAutoTransitionPolicy(
+            after_eod_action=RuntimeModeEODAction.INGEST_ONLY,
+        ),
+    )
+
+    # 手动切换到 INGEST_ONLY
+    controller.apply_mode(RuntimeMode.INGEST_ONLY, reason="manual")
+    assert controller.current_mode == RuntimeMode.INGEST_ONLY
+    assert controller.snapshot()["is_auto_transitioned"] is False
+
+    # 新交易日不会恢复
+    pos_mgr.after_eod = False
+    controller._evaluate_auto_transition()  # type: ignore[attr-defined]
+    assert controller.current_mode == RuntimeMode.INGEST_ONLY
+
+
+def test_apply_mode_partial_failure_still_updates_mode() -> None:
+    """组件 start() 部分失败时，模式仍更新，last_error 记录失败详情。"""
+    container = _build_container()
+    # 让 indicator_manager.start() 抛异常
+    original_start = container.indicator_manager.start
+    call_count = {"n": 0}
+
+    def flaky_start() -> None:
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("simulated indicator start failure")
+        original_start()
+
+    container.indicator_manager.start = flaky_start  # type: ignore[assignment]
+
+    controller = RuntimeModeController(
+        container,
+        policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
+        guard=RuntimeModeTransitionGuard(trading_module_getter=lambda: container.trade_module),
+        auto_transition_policy=RuntimeModeAutoTransitionPolicy(),
+    )
+
+    # 首次 apply_mode(FULL) 成功
+    controller.apply_mode(RuntimeMode.FULL, reason="setup")
+    assert controller.current_mode == RuntimeMode.FULL
+
+    # 切到 INGEST_ONLY（indicators.stop() 正常）
+    controller.apply_mode(RuntimeMode.INGEST_ONLY, reason="eod")
+    assert controller.current_mode == RuntimeMode.INGEST_ONLY
+
+    # 切回 FULL → indicators.start() 抛异常
+    snap = controller.apply_mode(RuntimeMode.FULL, reason="restore")
+    # 模式仍更新为 FULL
+    assert controller.current_mode == RuntimeMode.FULL
+    # last_error 记录了部分失败
+    assert snap["last_error"] is not None
+    assert "partial failure" in str(snap["last_error"])
+    # 其他组件仍正常运行
+    assert container.signal_runtime.is_running()  # type: ignore[union-attr]
