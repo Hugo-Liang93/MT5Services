@@ -23,8 +23,8 @@ from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 from src.signals.evaluation.indicators_helpers import extract_close_price
 from src.signals.service import SignalModule
 from src.signals.strategies.adapters import IndicatorSource
-from src.signals.strategies.trend import SmaTrendStrategy
-from src.signals.strategies.mean_reversion import RsiReversionStrategy
+from src.signals.strategies.legacy.trend import SmaTrendStrategy
+from src.signals.strategies.legacy.mean_reversion import RsiReversionStrategy
 from src.trading.execution import ExecutorConfig, TradeExecutor
 
 

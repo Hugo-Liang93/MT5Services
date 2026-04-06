@@ -33,6 +33,19 @@ def vwap(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     return {"vwap": sum_pv / total_volume}
 
 
+def volume_ratio(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
+    """当前 bar volume 与近期均值的比率，检测异常放量。"""
+    period = get_int(params, "period", default=20, aliases=("window",))
+    window = tail_bars(bars, period + 1)
+    if len(window) <= period:
+        return {}
+    _, _, _, volumes = get_hlcv_arrays(window)
+    avg_vol = float(np.mean(volumes[:-1]))
+    current_vol = float(volumes[-1])
+    ratio = current_vol / avg_vol if avg_vol > 0 else 1.0
+    return {"volume_ratio": ratio, "avg_volume": avg_vol}
+
+
 def mfi(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
     period = get_int(params, "period", default=14, aliases=("window",))
     window = tail_bars(bars, period + 1)

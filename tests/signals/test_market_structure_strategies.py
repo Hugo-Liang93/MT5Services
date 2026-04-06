@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from src.signals.models import SignalContext
-from src.signals.strategies.breakout import (
+from src.signals.strategies.legacy.breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
 )
-from src.signals.strategies.trend import SmaTrendStrategy
+from src.signals.strategies.legacy.trend import SmaTrendStrategy
 
 
 def test_bollinger_breakout_boosts_reclaim_reversion() -> None:

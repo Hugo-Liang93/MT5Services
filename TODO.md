@@ -39,28 +39,28 @@
 - 结论：问题在出场结构（盈亏比 W/L=0.4），不在策略方向。已切换到 Chandelier Exit
 - 下一步：出场参数配置化 → 回测验证 → 策略裁剪
 
-### 0.2 策略相关性分析 + 裁剪（部分完成 2026-04-06）
+### 0.2 策略相关性分析 + 裁剪 ✅ 已完成（2026-04-06）
 
 - [x] H1 相关性矩阵：ema_ribbon×hma_cross r=1.0, momentum_vote×supertrend r=1.0
 - [x] 确认已有冻结策略（6 个 affinity=0.0）有效
 - [x] Confidence 管线根因分析：低 conf 来自 affinity 压制 + 乘法链衰减
-- [ ] momentum_vote 投票组重组（当前与 supertrend 100% 相关，退化为单策略）
-- [ ] 基于新出场体系重新评估已冻结策略的 affinity 值
-- 结论：H1 上实际只有 2 个独立信号源（supertrend 系），需要引入新维度策略
+- [x] momentum_vote 投票组重组：supertrend+bar_momentum_surge+swing_structure_break（3 个不同维度）
+- [x] breakout_vote 加入 atr_regime_shift + range_box_breakout；reversion_vote 加入 range_mean_reversion
+- [x] donchian_breakout/roc_momentum/order_block_entry 回归 standalone 独立评估
+- [x] squeeze_release 从 breakout_vote 移除（回测 0% 有效信号）
+- [x] 6 个冻结策略重评估：冻结原因为信号冗余/数据缺陷，与出场体系无关 → 全部维持 affinity=0.0
 
-### 0.3 新策略引入（进行中 2026-04-06）
+### 0.3 新策略引入 ✅ 已完成（2026-04-06）
 
-已完成：
 - [x] `range_box_breakout`（箱体突破）→ H1: 8 笔 WR=50% PnL=+15 **唯一盈利策略**
 - [x] `bar_momentum_surge`（大 bar 动量）→ H1: 30 笔 WR=43%
 - [x] `bar_stats20` 指标（bar body/range 滚动统计）
-
-待完成：
-- [ ] `bar_momentum_surge` per-TF 参数调优（M30 WR=14% → body_multiplier 需提到 2.5+）
-- [ ] ATR Regime Shift 策略（波动率压缩→扩张）
-- [ ] Swing Structure 策略（高低点结构 + 回调入场）
-- [ ] Trend Exhaustion Filter（趋势衰竭过滤器，作为 SignalFilterChain 组件）
-- [ ] Range Mean Reversion 策略（箱体内回归，填补 ranging 覆盖）
+- [x] `bar_momentum_surge` per-TF 参数配置化（M30: body_multiplier=2.5, close_thresh=0.75）
+- [x] `atr_regime_shift`（波动率压缩→扩张，ADX delta + DI 方向 + BB 压缩）
+- [x] `swing_structure_break`（Donchian 突破 + ADX 趋势确认 + RSI 过滤）
+- [x] `range_mean_reversion`（BB 通道位置回归 + ADX 低位 + RSI 一致性，填补 ranging 覆盖）
+- [x] `TrendExhaustionFilter`（SignalFilterChain warn 型组件：ADX 从高位下降 = 趋势衰竭警告）
+- 下一步：各 TF 回测验证新策略效果
 
 ### 0.4 策略 Confidence 公式优化
 
@@ -173,6 +173,32 @@ H1 策略盘中入场示例：
 - [ ] 风控覆盖：intrabar 交易需经过同样的风控堆栈（可精简但不可跳过）
 
 **前置条件**：P0-P1 完成，confirmed 链路策略有效性已验证
+
+### 结构化策略架构适配（路径 B 后续）
+
+> 策略变聪明后，管线应变简单。以下改动消除策略层与管线层的职责重叠。
+
+#### A7: 入场职责回归策略层
+
+- [ ] 策略 evaluate() 在 metadata 中输出 `suggested_entry_price` + `entry_type`（limit/market）
+- [ ] PendingEntryManager 退化为纯执行层：收到策略建议价 → 挂单 → 超时取消
+- [ ] 废弃 PendingEntryManager 的 "按 category 选入场模式" 逻辑（pullback/momentum/symmetric 模板）
+- [ ] TradeExecutor 读取 metadata 决定挂单/市价，不再自行推算入场价
+
+#### A8: PerformanceTracker 按信号等级追踪
+
+- [ ] 策略 evaluate() 在 metadata 输出 `signal_grade`（A/B/C：三层都满足=A，两层=B，仅硬门控=C）
+- [ ] StructuredStrategyBase.evaluate() 自动计算 grade（基于 where_bonus + vol_bonus 是否 > 0）
+- [ ] PerformanceTracker key 从 `strategy_name` 改为 `(strategy_name, signal_grade)`
+- [ ] 乘数按 grade 分别计算：A 级信号可获更高 multiplier，C 级被压制
+
+#### A9: 置信度管线精简（结构化策略专用）
+
+- [ ] **移除 htf_alignment**：结构化策略 Why 层已做 HTF 方向检查，外部再乘 ×1.10/×0.70 是双重计算
+- [ ] **简化 Calibrator**：结构化策略的 confidence 设计已考虑分布（base + 多因子加分），短期跳过校准
+- [ ] **保留 regime_affinity**：外部 regime 门控仍有价值，但值可放宽（策略已内部检查 ADX/趋势方向）
+- [ ] **保留 confidence_floor + intrabar_factor**
+- [ ] 实现方式：按 strategy category 判断是否跳过 htf_alignment / calibrator
 
 ### 架构解耦
 

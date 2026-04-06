@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext
-from src.signals.strategies.trendline import (
+from src.signals.strategies.legacy.trendline import (
     SwingPoint,
     TrendlineThreeTouchStrategy,
     _detect_swing_highs,

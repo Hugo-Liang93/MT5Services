@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -40,6 +41,31 @@ def evaluate_strategies(
     if not conf.enable_calibrator:
         metadata["_skip_calibrator"] = True
 
+    # 注入 MarketStructure 上下文（结构化策略依赖）
+    ms_analyzer = getattr(engine, "_market_structure_analyzer", None)
+    if ms_analyzer is not None:
+        try:
+            ms_ctx = ms_analyzer.analyze(
+                symbol, timeframe,
+                event_time=bar_time,
+                latest_close=indicators.get("boll20", {}).get("close")
+                or indicators.get("donchian20", {}).get("close"),
+            )
+            if ms_ctx:
+                metadata["market_structure"] = (
+                    ms_ctx.to_dict() if hasattr(ms_ctx, "to_dict") else ms_ctx
+                )
+        except Exception:
+            logger.debug("MarketStructure analysis failed in backtest", exc_info=True)
+
+    # 注入 recent_bars（TrendlineTouch / PriceActionReversal 等策略依赖）
+    recent_bars_window = getattr(engine, "_recent_bars_window", None)
+    if recent_bars_window is not None:
+        metadata["recent_bars"] = [
+            dataclasses.asdict(b) if dataclasses.is_dataclass(b) else b
+            for b in recent_bars_window
+        ]
+
     current_sessions: List[str] = []
     if engine._strategy_sessions and engine._session_filter and bar_time is not None:
         current_sessions = engine._session_filter.current_sessions(bar_time)
@@ -61,6 +87,12 @@ def evaluate_strategies(
                 ind: indicators[ind] for ind in required if ind in indicators
             }
 
+            # HTF fallback：当策略在 TF=X 上运行且需要 HTF=X 的数据时，
+            # 用当前 TF 的 indicators 作为 fallback（避免 H1 策略 HTF=H1 时空）
+            htf_data = dict(engine._htf_indicator_data)
+            if timeframe not in htf_data:
+                htf_data[timeframe] = indicators
+
             decision = engine._signal_module.evaluate(
                 symbol=symbol,
                 timeframe=timeframe,
@@ -68,7 +100,7 @@ def evaluate_strategies(
                 indicators=scoped_indicators,
                 metadata=metadata,
                 persist=False,
-                htf_indicators=engine._htf_indicator_data,
+                htf_indicators=htf_data,
             )
 
             if conf.enable_htf_alignment and engine._htf_direction_fn is not None:

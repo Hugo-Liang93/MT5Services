@@ -7,13 +7,13 @@ import pytest
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext, SignalDecision
 from src.signals.service import SignalModule
-from src.signals.strategies.breakout import (
+from src.signals.strategies.legacy.breakout import (
     FakeBreakoutDetector,
     MultiTimeframeConfirmStrategy,
     SqueezeReleaseFollow,
 )
-from src.signals.strategies.price_action import PriceActionReversal
-from src.signals.strategies.session import SessionMomentumBias
+from src.signals.strategies.legacy.price_action import PriceActionReversal
+from src.signals.strategies.legacy.session import SessionMomentumBias
 
 
 def test_fake_breakout_detector_emits_sell_on_failed_upper_breakout() -> None:
@@ -261,7 +261,7 @@ def test_session_momentum_bias_holds_when_atr_is_too_low() -> None:
 
 
 def test_asian_range_breakout_holds_when_atr_is_zero() -> None:
-    from src.signals.strategies.session import AsianRangeBreakout
+    from src.signals.strategies.legacy.session import AsianRangeBreakout
 
     strategy = AsianRangeBreakout()
     context = SignalContext(

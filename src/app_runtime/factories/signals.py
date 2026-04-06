@@ -1,49 +1,47 @@
 from __future__ import annotations
 
+import logging as _logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from src.config.file_manager import get_file_config_manager
 from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
 from src.signals.contracts import normalize_session_name
+from src.signals.evaluation.calibrator import ConfidenceCalibrator
+from src.signals.evaluation.performance import (
+    PerformanceTrackerConfig,
+    StrategyPerformanceTracker,
+)
+from src.signals.evaluation.regime import MarketRegimeDetector
 from src.signals.execution.filters import (
     EconomicEventFilter,
     SessionFilter,
     SessionTransitionFilter,
     SignalFilterChain,
     SpreadFilter,
+    TrendExhaustionFilter,
     VolatilitySpikeFilter,
 )
-from src.signals.evaluation.calibrator import ConfidenceCalibrator
-from src.signals.evaluation.performance import (
-    PerformanceTrackerConfig,
-    StrategyPerformanceTracker,
-)
-
-from src.signals.evaluation.regime import MarketRegimeDetector
-from src.signals.service import SignalModule
 from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 from src.signals.orchestration.policy import VotingGroupConfig
+from src.signals.service import SignalModule
 from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
 from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.tracking.repository import TimescaleSignalRepository
-from src.trading.tracking import SignalQualityTracker
-from src.trading.tracking import TradeOutcomeTracker
-from src.trading.closeout import (
-    ExposureCloseoutController,
-    ExposureCloseoutService,
+from src.trading.closeout import ExposureCloseoutController, ExposureCloseoutService
+from src.trading.execution import (
+    ExecutionGate,
+    ExecutionGateConfig,
+    ExecutorConfig,
+    RegimeSizing,
+    TradeExecutor,
 )
-from src.trading.positions import PositionManager
-from src.trading.execution import ExecutionGate, ExecutionGateConfig
-from src.trading.pending import PendingEntryConfig, PendingEntryManager
-from src.trading.execution import RegimeSizing
-from src.trading.execution import ExecutorConfig, TradeExecutor
 from src.trading.execution.eventing import execute_market_order
 from src.trading.execution.pending_orders import inspect_pending_mt5_order
-
-
-import logging as _logging
+from src.trading.pending import PendingEntryConfig, PendingEntryManager
+from src.trading.positions import PositionManager
+from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 
 _factory_logger = _logging.getLogger(__name__)
 
@@ -161,6 +159,7 @@ def build_signal_filter_chain(signal_config, economic_calendar_service) -> Signa
         volatility_filter=VolatilitySpikeFilter(
             spike_multiplier=signal_config.volatility_atr_spike_multiplier,
         ),
+        trend_exhaustion_filter=TrendExhaustionFilter(),
     )
 
 
@@ -359,7 +358,7 @@ def build_signal_components(
     )
 
     # ── Delta momentum 全局参数配置 ─────────────────────────────────────
-    from src.signals.strategies.mean_reversion import configure_delta_params
+    from src.signals.strategies.legacy.mean_reversion import configure_delta_params
     configure_delta_params(
         d3_scale=signal_config.delta_d3_scale,
         d3_cap=signal_config.delta_d3_cap,
@@ -451,7 +450,9 @@ def build_signal_components(
     end_of_day_closeout = ExposureCloseoutController(
         ExposureCloseoutService(trade_module)
     )
-    from src.trading.positions.exit_rules import ChandelierConfig as _ChandelierConfig, ExitProfile as _EP, profile_from_aggression as _pfa
+    from src.trading.positions.exit_rules import ChandelierConfig as _ChandelierConfig
+    from src.trading.positions.exit_rules import ExitProfile as _EP
+    from src.trading.positions.exit_rules import profile_from_aggression as _pfa
     _chandelier_cfg = _ChandelierConfig(
         regime_aware=signal_config.chandelier_regime_aware,
         fallback_profile=_pfa(signal_config.chandelier_fallback_alpha),
@@ -512,7 +513,10 @@ def build_signal_components(
         ),
     )
     # 权益曲线过滤器
-    from src.trading.execution.equity_filter import EquityCurveFilter, EquityCurveFilterConfig
+    from src.trading.execution.equity_filter import (
+        EquityCurveFilter,
+        EquityCurveFilterConfig,
+    )
 
     equity_filter: EquityCurveFilter | None = None
     if signal_config.equity_curve_filter_enabled:

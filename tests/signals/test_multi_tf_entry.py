@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.signals.models import SignalContext, SignalDecision
-from src.signals.strategies.multi_tf_entry import HTFTrendPullback
+from src.signals.strategies.legacy.multi_tf_entry import HTFTrendPullback
 
 
 def _make_context(

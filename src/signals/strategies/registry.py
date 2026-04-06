@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 from .composite import CompositeSignalStrategy, CombineMode
 from .htf_cache import HTFStateCache
 from ..evaluation.regime import RegimeType
-from .breakout import (
+from .legacy.breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
     FakeBreakoutDetector,
@@ -39,10 +39,10 @@ from .breakout import (
     MultiTimeframeConfirmStrategy,
     SqueezeReleaseFollow,
 )
-from .price_action import PriceActionReversal
-from .mean_reversion import RsiReversionStrategy, StochRsiStrategy
-from .session import SessionMomentumBias
-from .trend import (
+from .legacy.price_action import PriceActionReversal
+from .legacy.mean_reversion import RsiReversionStrategy, StochRsiStrategy
+from .legacy.session import SessionMomentumBias
+from .legacy.trend import (
     EmaRibbonStrategy,
     MacdMomentumStrategy,
     SmaTrendStrategy,
@@ -75,7 +75,7 @@ def _load_specs_from_json(path: str) -> Optional[List[CompositeSpec]]:
     JSON 中使用策略类名字符串（如 "SupertrendStrategy"），此函数将其解析为工厂函数。
     解析失败时返回 None，调用方应回退到硬编码默认值。
     """
-    from .multi_tf_entry import HTFTrendPullback
+    from .legacy.multi_tf_entry import HTFTrendPullback
 
     _CLASS_MAP: Dict[str, Any] = {
         "BollingerBreakoutStrategy": BollingerBreakoutStrategy,

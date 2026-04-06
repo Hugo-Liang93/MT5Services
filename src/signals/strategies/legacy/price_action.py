@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
-from ..evaluation.regime import RegimeType
-from ..models import SignalContext, SignalDecision
-from .base import _resolve_indicator_value, get_tf_param
+from ...evaluation.regime import RegimeType
+from ...models import SignalContext, SignalDecision
+from ..base import _resolve_indicator_value, get_tf_param
 
 
 def _recent_bars(context: SignalContext) -> list[Any]:

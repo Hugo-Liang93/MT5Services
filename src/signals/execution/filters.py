@@ -118,7 +118,9 @@ class EconomicEventFilter:
     lookback_minutes: int = 15
     importance_min: int = 2
 
-    def check_trade_guard(self, symbol: str, utc_now: Optional[datetime] = None) -> tuple[bool, str]:
+    def check_trade_guard(
+        self, symbol: str, utc_now: Optional[datetime] = None
+    ) -> tuple[bool, str]:
         """返回 (safe, reason)。safe=True 时可交易。"""
         if self.provider is None:
             return True, ""
@@ -163,11 +165,7 @@ class SessionTransitionFilter:
             current = current.replace(tzinfo=timezone.utc)
         else:
             current = current.astimezone(timezone.utc)
-        current_minute = (
-            current.hour * 60
-            + current.minute
-            + (current.second / 60.0)
-        )
+        current_minute = current.hour * 60 + current.minute + (current.second / 60.0)
         for name, center_minute in self.transition_schedule_utc.items():
             if abs(current_minute - float(center_minute)) <= float(
                 self.cooldown_minutes
@@ -207,6 +205,53 @@ class VolatilitySpikeFilter:
 
 
 @dataclass
+class TrendExhaustionFilter:
+    """Detect trend exhaustion: ADX falling from high levels.
+
+    This is a **warn-only** filter — it never blocks evaluation.
+    When exhaustion is detected, ``should_evaluate`` returns a warning tag
+    that downstream components (regime detector, confidence pipeline) can use.
+
+    Detection logic:
+      - ADX was recently high (>= high_mark) but is now falling (adx_d3 < fall_rate)
+      - Optionally: RSI in neutral zone (no strong momentum to sustain trend)
+    """
+
+    high_mark: float = 28.0  # ADX 曾达到的高位标记
+    fall_rate: float = -2.5  # adx_d3 低于此值 = 下降中
+    rsi_neutral_low: float = 40.0  # RSI 在 [40, 60] = 动量不足
+    rsi_neutral_high: float = 60.0
+
+    def detect(self, indicators: Optional[Dict[str, Any]] = None) -> tuple[bool, str]:
+        """Return (exhaustion_detected, reason)."""
+        if not indicators:
+            return False, ""
+        adx_data = indicators.get("adx14")
+        if not isinstance(adx_data, dict):
+            return False, ""
+
+        adx_val = adx_data.get("adx")
+        adx_d3 = adx_data.get("adx_d3")
+        if adx_val is None or adx_d3 is None:
+            return False, ""
+
+        # ADX 在高位但正在下降
+        if adx_val >= self.high_mark and adx_d3 <= self.fall_rate:
+            rsi_data = indicators.get("rsi14")
+            rsi_val = rsi_data.get("rsi") if isinstance(rsi_data, dict) else None
+            rsi_neutral = (
+                rsi_val is not None
+                and self.rsi_neutral_low <= rsi_val <= self.rsi_neutral_high
+            )
+            reason = f"trend_exhaustion:adx={adx_val:.1f},d3={adx_d3:.1f}"
+            if rsi_neutral:
+                reason += f",rsi_neutral={rsi_val:.1f}"
+            return True, reason
+
+        return False, ""
+
+
+@dataclass
 class SignalFilterChain:
     """Composite filter that runs all pre-evaluation checks."""
 
@@ -215,6 +260,7 @@ class SignalFilterChain:
     spread_filter: Optional[SpreadFilter] = None
     economic_filter: Optional[EconomicEventFilter] = None
     volatility_filter: Optional[VolatilitySpikeFilter] = None
+    trend_exhaustion_filter: Optional[TrendExhaustionFilter] = None
 
     def should_evaluate(
         self,
@@ -265,6 +311,12 @@ class SignalFilterChain:
                 return False, reason
             # reason == "economic_event_warn" → 允许交易但日志记录（由调用方处理）
 
+        # Trend exhaustion: warn-only, never blocks
+        if self.trend_exhaustion_filter:
+            exhausted, ex_reason = self.trend_exhaustion_filter.detect(indicators)
+            if exhausted:
+                return True, ex_reason  # allowed=True but reason 非空 → warn
+
         return True, ""
 
     def filter_status(
@@ -313,6 +365,15 @@ class SignalFilterChain:
                 "active": safe,
                 "blocked": not safe,
                 "reason": reason if not safe else "",
+            }
+
+        if self.trend_exhaustion_filter:
+            # filter_status 不接收 indicators，此处仅展示配置
+            result["trend_exhaustion"] = {
+                "active": True,
+                "enabled": True,
+                "high_mark": self.trend_exhaustion_filter.high_mark,
+                "fall_rate": self.trend_exhaustion_filter.fall_rate,
             }
 
         return result

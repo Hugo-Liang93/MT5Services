@@ -7,6 +7,7 @@ from src.signals.execution.filters import (
     SessionTransitionFilter,
     SignalFilterChain,
     SpreadFilter,
+    TrendExhaustionFilter,
     VolatilitySpikeFilter,
 )
 
@@ -111,3 +112,68 @@ def test_volatility_spike_filter_disabled_when_multiplier_is_zero() -> None:
     )
 
     assert allowed is True
+
+
+def test_trend_exhaustion_detects_falling_adx() -> None:
+    f = TrendExhaustionFilter(high_mark=28.0, fall_rate=-2.5)
+    detected, reason = f.detect(
+        {
+            "adx14": {"adx": 30.0, "adx_d3": -4.0},
+            "rsi14": {"rsi": 50.0},
+        }
+    )
+    assert detected is True
+    assert "trend_exhaustion" in reason
+    assert "rsi_neutral" in reason  # RSI 50 is in neutral zone
+
+
+def test_trend_exhaustion_ignores_low_adx() -> None:
+    f = TrendExhaustionFilter(high_mark=28.0, fall_rate=-2.5)
+    detected, _ = f.detect(
+        {
+            "adx14": {"adx": 20.0, "adx_d3": -4.0},
+        }
+    )
+    assert detected is False
+
+
+def test_trend_exhaustion_ignores_rising_adx() -> None:
+    f = TrendExhaustionFilter(high_mark=28.0, fall_rate=-2.5)
+    detected, _ = f.detect(
+        {
+            "adx14": {"adx": 30.0, "adx_d3": 2.0},
+        }
+    )
+    assert detected is False
+
+
+def test_trend_exhaustion_filter_in_chain_warns_not_blocks() -> None:
+    chain = SignalFilterChain(
+        trend_exhaustion_filter=TrendExhaustionFilter(),
+    )
+    indicators = {
+        "adx14": {"adx": 32.0, "adx_d3": -5.0},
+        "rsi14": {"rsi": 48.0},
+    }
+    allowed, reason = chain.should_evaluate(
+        "XAUUSD",
+        indicators=indicators,
+    )
+    # Warn-only: allowed is True but reason is non-empty
+    assert allowed is True
+    assert "trend_exhaustion" in reason
+
+
+def test_trend_exhaustion_filter_silent_when_no_exhaustion() -> None:
+    chain = SignalFilterChain(
+        trend_exhaustion_filter=TrendExhaustionFilter(),
+    )
+    indicators = {
+        "adx14": {"adx": 25.0, "adx_d3": 3.0},
+    }
+    allowed, reason = chain.should_evaluate(
+        "XAUUSD",
+        indicators=indicators,
+    )
+    assert allowed is True
+    assert reason == ""

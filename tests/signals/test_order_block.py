@@ -5,7 +5,7 @@ import pytest
 
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext
-from src.signals.strategies.price_action import OrderBlockEntryStrategy
+from src.signals.strategies.legacy.price_action import OrderBlockEntryStrategy
 
 
 def _make_bar(

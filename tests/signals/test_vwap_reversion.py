@@ -5,7 +5,7 @@ import pytest
 
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext
-from src.signals.strategies.mean_reversion import VwapReversionStrategy
+from src.signals.strategies.legacy.mean_reversion import VwapReversionStrategy
 
 
 def _context(

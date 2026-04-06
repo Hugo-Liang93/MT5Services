@@ -4,7 +4,8 @@ from collections import OrderedDict
 from typing import Any, Iterable, Optional
 
 from .base import SignalStrategy
-from .breakout import (
+from .composite import CompositeSignalStrategy
+from .legacy.breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
     FakeBreakoutDetector,
@@ -12,9 +13,8 @@ from .breakout import (
     MultiTimeframeConfirmStrategy,
     SqueezeReleaseFollow,
 )
-from .composite import CompositeSignalStrategy
-from .m5_scalp import M5MomentumBurst, M5ScalpRSI
-from .mean_reversion import (
+from .legacy.m5_scalp import M5MomentumBurst, M5ScalpRSI
+from .legacy.mean_reversion import (
     CciReversionStrategy,
     MacdDivergenceStrategy,
     RsiDivergenceStrategy,
@@ -23,11 +23,19 @@ from .mean_reversion import (
     VwapReversionStrategy,
     WilliamsRStrategy,
 )
-from .multi_tf_entry import DualTFMomentum, HTFTrendPullback
-from .price_action import OrderBlockEntryStrategy, PriceActionReversal
+from .legacy.multi_tf_entry import DualTFMomentum, HTFTrendPullback
+from .legacy.price_action import OrderBlockEntryStrategy, PriceActionReversal
+from .legacy.session import AsianRangeBreakout, SessionMomentumBias
 from .registry import build_composite_strategies
-from .session import AsianRangeBreakout, SessionMomentumBias
-from .trend import (
+from .structured import (
+    StructuredBreakoutFollow,
+    StructuredRangeReversion,
+    StructuredSessionBreakout,
+    StructuredSweepReversal,
+    StructuredTrendContinuation,
+    StructuredTrendlineTouch,
+)
+from .legacy.trend import (
     AdxTrendFadeStrategy,
     EmaRibbonStrategy,
     FibPullbackStrategy,
@@ -37,8 +45,14 @@ from .trend import (
     SmaTrendStrategy,
     SupertrendStrategy,
 )
-from .trendline import TrendlineThreeTouchStrategy
-from .volatility_structure import BarMomentumSurge, RangeBoxBreakout
+from .legacy.trendline import TrendlineThreeTouchStrategy
+from .legacy.volatility_structure import (
+    AtrRegimeShift,
+    BarMomentumSurge,
+    RangeBoxBreakout,
+    RangeMeanReversion,
+    SwingStructureBreak,
+)
 
 
 def build_named_strategy_catalog(
@@ -85,6 +99,16 @@ def build_named_strategy_catalog(
         MultiTimeframeConfirmStrategy(htf_cache=htf_cache),
         RangeBoxBreakout(),
         BarMomentumSurge(),
+        AtrRegimeShift(),
+        SwingStructureBreak(),
+        RangeMeanReversion(),
+        StructuredTrendContinuation(),
+        StructuredTrendContinuation(name="structured_trend_h4", htf="H4"),
+        StructuredSweepReversal(),
+        StructuredBreakoutFollow(),
+        StructuredRangeReversion(),
+        StructuredSessionBreakout(),
+        StructuredTrendlineTouch(),
     ):
         strategies[strategy.name] = strategy
 
@@ -128,6 +152,7 @@ def clone_registered_strategies(
         cloned.append(strategy)
     if missing:
         raise ValueError(
-            "Unregistered strategies requested from catalog: " + ", ".join(sorted(missing))
+            "Unregistered strategies requested from catalog: "
+            + ", ".join(sorted(missing))
         )
     return cloned

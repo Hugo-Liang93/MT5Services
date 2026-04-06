@@ -230,8 +230,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": false,
-      "description": "14周期资金流量指标（demo账户缺少真实成交量，开发阶段直接停用）",
+      "enabled": true,
+      "description": "14周期资金流量指标",
       "tags": [
         "volume",
         "momentum"
@@ -262,8 +262,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": false,
-      "description": "30周期能量潮指标（demo账户缺少真实成交量，开发阶段直接停用）",
+      "enabled": true,
+      "description": "30周期能量潮指标",
       "tags": [
         "volume",
         "trend"
@@ -332,11 +332,26 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": false,
-      "description": "30周期成交量加权均价（demo账号成交量为0，禁用避免无意义计算）",
+      "enabled": true,
+      "description": "30周期成交量加权均价",
       "tags": [
         "volume",
         "mean"
+      ]
+    },
+    {
+      "name": "volume_ratio20",
+      "func_path": "src.indicators.core.volume.volume_ratio",
+      "params": {
+        "period": 20,
+        "min_bars": 21
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "当前bar成交量与近20bar均值的比率（异常放量检测）",
+      "tags": [
+        "volume"
       ]
     },
     {

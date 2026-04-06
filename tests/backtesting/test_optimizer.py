@@ -9,7 +9,7 @@ from src.backtesting.models import ParameterSpace
 from src.backtesting.optimization.optimizer import ParameterOptimizer, build_signal_module_with_overrides
 from src.signals.evaluation.regime import RegimeType
 from src.signals.service import SignalModule
-from src.signals.strategies.breakout import MultiTimeframeConfirmStrategy
+from src.signals.strategies.legacy.breakout import MultiTimeframeConfirmStrategy
 from src.signals.strategies.htf_cache import HTFStateCache
 
 

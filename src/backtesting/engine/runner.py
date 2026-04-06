@@ -82,6 +82,25 @@ class _CircuitBreaker:
         return True
 
 
+class _BacktestBarService:
+    """轻量级适配器：让 MarketStructureAnalyzer 在回测中使用 bar 窗口数据。
+
+    MarketStructureAnalyzer 需要 market_service.get_ohlc_closed(symbol, tf, limit)。
+    本类在主循环中通过 update_window() 更新当前 bar 窗口。
+    """
+
+    def __init__(self) -> None:
+        self._bars: list[Any] = []
+
+    def update_window(self, bars: list[Any]) -> None:
+        self._bars = bars
+
+    def get_ohlc_closed(
+        self, symbol: str, timeframe: str, limit: int = 200
+    ) -> list[Any]:
+        return self._bars[-limit:] if len(self._bars) > limit else list(self._bars)
+
+
 @dataclass
 class _BacktestSignalState:
     """回测信号状态机状态（模拟实盘 preview->armed->confirmed 转换）。"""
@@ -257,6 +276,17 @@ class BacktestEngine:
         self._state_factory = _BacktestSignalState
         self._bars_to_evaluate = config.confidence.bars_to_evaluate
 
+        # MarketStructureAnalyzer（结构化策略依赖）
+        self._market_structure_analyzer: Any = None
+        try:
+            from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
+            self._market_structure_analyzer = MarketStructureAnalyzer(
+                market_service=_BacktestBarService(),
+                config=MarketStructureConfig(lookback_bars=200),
+            )
+        except Exception:
+            logger.debug("MarketStructureAnalyzer not available for backtest", exc_info=True)
+
         # Chandelier Exit 配置：从 signal.ini 加载（回测与实盘共享同一套出场参数）
         from src.trading.positions.exit_rules import ChandelierConfig as _CC
         from src.trading.positions.exit_rules import profile_from_aggression as _pfa
@@ -425,6 +455,15 @@ class BacktestEngine:
             bar = all_bars[i]
             bar_index = i - warmup_end
             self._portfolio.observe_bar(bar)
+
+            # 更新 MarketStructure bar 窗口（结构化策略依赖）
+            if self._market_structure_analyzer is not None:
+                ms_svc = self._market_structure_analyzer.market_service
+                if hasattr(ms_svc, "update_window"):
+                    ms_svc.update_window(all_bars[max(0, i - 400) : i + 1])
+
+            # ��入 recent_bars 窗口（TrendlineTouch 等策略依赖，最多 80 根）
+            self._recent_bars_window = all_bars[max(0, i - 80) : i + 1]
 
             # 直接取预计算的指标快照
             indicators = all_indicator_snapshots[i] if i < len(all_indicator_snapshots) else {}

@@ -13,9 +13,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from ..evaluation.regime import RegimeType
-from ..models import SignalContext, SignalDecision
-from .base import _resolve_indicator_value, get_tf_param
+from ...evaluation.regime import RegimeType
+from ...models import SignalContext, SignalDecision
+from ..base import _resolve_indicator_value, get_tf_param
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,102 @@
+"""StructuredRangeReversion — 结构位回归。"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional, Tuple
+
+from ...evaluation.regime import RegimeType
+from ...models import SignalContext
+from ..base import get_tf_param
+from .base import StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+
+
+class StructuredRangeReversion(StructuredStrategyBase):
+    """RSI/BB 极端 + 低 ADX + 结构水平接近加分。"""
+
+    name = "structured_range_reversion"
+    category = "reversion"
+    required_indicators = ("rsi14", "atr14", "adx14", "boll20")
+    preferred_scopes = ("confirmed", "intrabar")
+    regime_affinity = {
+        RegimeType.TRENDING: 0.05,
+        RegimeType.RANGING: 1.00,
+        RegimeType.BREAKOUT: 0.10,
+        RegimeType.UNCERTAIN: 0.50,
+    }
+
+    _adx_max: float = 22.0
+    _rsi_oversold: float = 28.0
+    _rsi_overbought: float = 72.0
+    _bb_low: float = 0.15
+    _bb_high: float = 0.85
+    _base_confidence: float = 0.48
+
+    def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
+        ad = self._adx_full(ctx)
+        adx = ad["adx"]
+        if adx is not None and adx > self._adx_max:
+            return False, None, 0, f"trending:{adx:.0f}"
+
+        # HTF 不应有强同向趋势
+        htf = self._htf_data(ctx)
+        htf_adx = htf.get("adx14", {}).get("adx")
+        htf_dir = htf.get("supertrend14", {}).get("direction")
+
+        rsi, rsi_d3 = self._rsi(ctx)
+        bb_pos = self._bb_position(ctx)
+        if rsi is None:
+            return False, None, 0, "no_rsi"
+
+        if rsi <= self._rsi_oversold and (bb_pos is None or bb_pos <= self._bb_low):
+            if rsi_d3 is not None and rsi_d3 < 0:
+                return False, None, 0, "still_falling"
+            # HTF 冲突检查
+            if htf_adx is not None and float(htf_adx) > 25 and htf_dir is not None:
+                if int(htf_dir) == -1:
+                    return False, None, 0, "htf_bearish"
+            adx_bonus = 0.05 if adx is not None and adx < 18 else 0.0
+            return True, "buy", adx_bonus, f"oversold:rsi={rsi:.0f},bb={bb_pos}"
+
+        if rsi >= self._rsi_overbought and (bb_pos is None or bb_pos >= self._bb_high):
+            if rsi_d3 is not None and rsi_d3 > 0:
+                return False, None, 0, "still_rising"
+            if htf_adx is not None and float(htf_adx) > 25 and htf_dir is not None:
+                if int(htf_dir) == 1:
+                    return False, None, 0, "htf_bullish"
+            adx_bonus = 0.05 if adx is not None and adx < 18 else 0.0
+            return True, "sell", adx_bonus, f"overbought:rsi={rsi:.0f},bb={bb_pos}"
+
+        return False, None, 0, f"rsi_mid:{rsi:.0f}"
+
+    def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
+        # Stoch RSI 交叉加分
+        stoch = ctx.indicators.get("stoch_rsi14", {})
+        k, d = stoch.get("k"), stoch.get("d")
+        bonus = 0.0
+        if k is not None and d is not None:
+            sk, sd = float(k), float(d)
+            if direction == "buy" and sk > sd and sk < 25:
+                bonus = 0.08
+            elif direction == "sell" and sk < sd and sk > 75:
+                bonus = 0.08
+        return True, bonus, "timing_ok"
+
+    def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
+        close = self._close(ctx)
+        atr = self._atr(ctx)
+        ms = self._ms(ctx)
+        if close is not None and atr is not None and atr > 0:
+            if _near_structure_level(close, ms, atr, max_atr=0.8):
+                return 0.10, "near_level"
+        return 0.0, ""
+
+    def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
+        mfi = self._mfi(ctx)
+        if mfi is None:
+            return 0.0
+        # MFI 与方向一致
+        if direction == "buy" and mfi < 25:
+            return 0.05
+        if direction == "sell" and mfi > 75:
+            return 0.05
+        return 0.0

@@ -14,7 +14,7 @@
 
 from .adapters import IndicatorSource, UnifiedIndicatorSourceAdapter
 from .base import SignalStrategy, StrategyCategory, _resolve_indicator_value
-from .breakout import (
+from .legacy.breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
     FakeBreakoutDetector,
@@ -24,16 +24,43 @@ from .breakout import (
 )
 from .composite import CombineMode, CompositeSignalStrategy
 from .htf_cache import HTFStateCache
-from .mean_reversion import RsiDivergenceStrategy, RsiReversionStrategy, StochRsiStrategy, VwapReversionStrategy
-from .multi_tf_entry import DualTFMomentum, HTFTrendPullback
-from .price_action import OrderBlockEntryStrategy, PriceActionReversal
-from .session import AsianRangeBreakout, SessionMomentumBias
-from .trendline import TrendlineThreeTouchStrategy
-from .trend import EmaRibbonStrategy, FibPullbackStrategy, MacdMomentumStrategy, SmaTrendStrategy, SupertrendStrategy
-from .volatility_structure import BarMomentumSurge, RangeBoxBreakout
+from .legacy.mean_reversion import (
+    RsiDivergenceStrategy,
+    RsiReversionStrategy,
+    StochRsiStrategy,
+    VwapReversionStrategy,
+)
+from .legacy.multi_tf_entry import DualTFMomentum, HTFTrendPullback
+from .legacy.price_action import OrderBlockEntryStrategy, PriceActionReversal
+from .legacy.session import AsianRangeBreakout, SessionMomentumBias
+from .structured import (
+    StructuredBreakoutFollow,
+    StructuredRangeReversion,
+    StructuredSessionBreakout,
+    StructuredSweepReversal,
+    StructuredTrendContinuation,
+    StructuredTrendlineTouch,
+)
+from .legacy.trend import (
+    EmaRibbonStrategy,
+    FibPullbackStrategy,
+    MacdMomentumStrategy,
+    SmaTrendStrategy,
+    SupertrendStrategy,
+)
+from .legacy.trendline import TrendlineThreeTouchStrategy
+from .legacy.volatility_structure import (
+    AtrRegimeShift,
+    BarMomentumSurge,
+    RangeBoxBreakout,
+    RangeMeanReversion,
+    SwingStructureBreak,
+)
 
 __all__ = [
     "AsianRangeBreakout",
+    "AtrRegimeShift",
+    "BarMomentumSurge",
     "BollingerBreakoutStrategy",
     "CombineMode",
     "CompositeSignalStrategy",
@@ -49,6 +76,8 @@ __all__ = [
     "MultiTimeframeConfirmStrategy",
     "OrderBlockEntryStrategy",
     "PriceActionReversal",
+    "RangeMeanReversion",
+    "RangeBoxBreakout",
     "RsiDivergenceStrategy",
     "RsiReversionStrategy",
     "SessionMomentumBias",
@@ -58,9 +87,14 @@ __all__ = [
     "StochRsiStrategy",
     "SqueezeReleaseFollow",
     "SupertrendStrategy",
+    "StructuredBreakoutFollow",
+    "StructuredRangeReversion",
+    "StructuredSessionBreakout",
+    "StructuredSweepReversal",
+    "StructuredTrendContinuation",
+    "StructuredTrendlineTouch",
+    "SwingStructureBreak",
     "TrendlineThreeTouchStrategy",
     "UnifiedIndicatorSourceAdapter",
     "VwapReversionStrategy",
-    "RangeBoxBreakout",
-    "BarMomentumSurge",
 ]

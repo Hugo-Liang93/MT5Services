@@ -13,12 +13,12 @@ from __future__ import annotations
 import pytest
 
 from src.signals.models import SignalContext, SignalDecision
-from src.signals.strategies.trend import (
+from src.signals.strategies.legacy.trend import (
     MacdMomentumStrategy,
     SmaTrendStrategy,
     SupertrendStrategy,
 )
-from src.signals.strategies.breakout import (
+from src.signals.strategies.legacy.breakout import (
     BollingerBreakoutStrategy,
     DonchianBreakoutStrategy,
 )

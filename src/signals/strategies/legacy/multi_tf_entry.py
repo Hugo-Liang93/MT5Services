@@ -20,9 +20,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from ..evaluation.regime import RegimeType
-from ..models import SignalContext, SignalDecision
-from .base import get_tf_param
+from ...evaluation.regime import RegimeType
+from ...models import SignalContext, SignalDecision
+from ..base import get_tf_param
 
 logger = logging.getLogger(__name__)
 

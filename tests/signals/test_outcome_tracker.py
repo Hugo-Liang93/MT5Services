@@ -17,14 +17,14 @@
 """
 from __future__ import annotations
 
-import pytest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 from unittest.mock import MagicMock
 
-from src.trading.tracking import SignalQualityTracker
-from src.trading.tracking import TradeOutcomeTracker
+import pytest
+
+from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 
 # 全局递增计数器，确保每个 _make_event 调用产生唯一的 bar_time。
 # Windows 上 datetime.now() 快速连续调用可能返回相同值（~15ms 分辨率），
@@ -515,7 +515,7 @@ class TestTradeOutcomeTrackerCallback:
         """确认 on_outcome_fn 收到 source='trade'。"""
         callback_calls: List[dict] = []
 
-        def mock_callback(strategy, won, pnl, *, regime=None, source="signal"):
+        def mock_callback(strategy, won, pnl, *, regime=None, source="signal", exit_reason=""):
             callback_calls.append({
                 "strategy": strategy,
                 "won": won,

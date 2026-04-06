@@ -9,7 +9,7 @@ from src.signals.models import SignalContext, SignalDecision
 from src.signals.service import SignalModule
 from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.composite import CompositeSignalStrategy
-from src.signals.strategies.trend import SmaTrendStrategy, SupertrendStrategy
+from src.signals.strategies.legacy.trend import SmaTrendStrategy, SupertrendStrategy
 
 
 class DummyIndicatorSource:
@@ -646,7 +646,7 @@ def test_signal_module_recent_consensus_signals_filters_consensus_strategy() -> 
 
 def test_intrabar_required_indicators_derives_from_strategy_scopes() -> None:
     """intrabar_required_indicators() 自动推导：仅收集 intrabar 策略的指标。"""
-    from src.signals.strategies.mean_reversion import RsiReversionStrategy
+    from src.signals.strategies.legacy.mean_reversion import RsiReversionStrategy
 
     module = SignalModule(
         indicator_source=DummyIndicatorSource(),
