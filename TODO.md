@@ -82,13 +82,23 @@
 > 目标：刷新纯结构化架构下的回测基线，优化各策略/TF/Regime 组合的盈利能力。
 > 前置：Legacy 已移除 + A7 入场职责已回归策略层，管线已清洁。
 
+### 回测基线（2026-04-07，3 个月 2025-12-30~2026-03-30）
+
+M15 已冻结（PF=0.00）。仅 M30/H1 活跃。
+
+| TF | 笔数 | PnL | PF | 主要问题 |
+|----|------|-----|-----|---------|
+| H1 | 32 | +1 | 1.00 | lowbar_entry ranging 29笔/-160 拖累 |
+| M30 | 39 | -573 | 0.41 | trend_continuation breakout/uncertain 全亏 |
+
+关键发现：出场全部由 Chandelier trailing（aggression）驱动，初始 SL/TP 几乎不影响结果。
+
 ### 待办
 
-- [ ] 刷新全 TF 基线回测（纯结构化策略，含 entry_spec 入场逻辑）
-- [ ] H1 BREAKOUT regime 优化 — 结构化策略在 breakout 下入场时机差
-- [ ] structured_trend_continuation RSI 区间网格搜索（当前 32-55 buy / 45-68 sell）
+- [ ] **aggression 网格搜索**：per-strategy × per-TF 搜索最优 α（当前核心调参变量）
+- [ ] **lowbar_entry 决策**：收紧 ADX 门控（36→22 仅 ranging）或冻结
+- [ ] **trend_continuation M30 修复**：breakout+uncertain 21笔全亏，_why() 条件需收紧
 - [ ] structured_trendline_touch WR 分析 — 趋势线质量评估是否需要更严格
-- [ ] M30 整体优化：trailing_stop 盈利但 SL 亏损过大
 
 ---
 

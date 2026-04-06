@@ -133,5 +133,5 @@ class StructuredLowbarEntry(StructuredStrategyBase):
         return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        # 极端 bar 反转：紧 SL + 短 TP，反转幅度有限
-        return {"aggression": 0.15, "sl_atr": 0.8, "tp_atr": 1.5}
+        # 极端 bar 反转：紧 trail 快锁利，SL/TP 用全局默认
+        return {"aggression": 0.15, "sl_atr": None, "tp_atr": None}
