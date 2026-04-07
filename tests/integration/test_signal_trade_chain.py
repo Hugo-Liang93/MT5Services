@@ -512,7 +512,6 @@ def test_close_position_returns_true_when_position_gone_after_send_none() -> Non
     但重查持仓发现 position 已不存在（被 SL/TP 平仓），
     close_position 应返回 True 而不是抛出异常。
     """
-    import MetaTrader5 as mt5
     from src.clients.mt5_trading import MT5TradingClient
     from src.config.mt5 import MT5Settings
 
@@ -531,19 +530,22 @@ def test_close_position_returns_true_when_position_gone_after_send_none() -> Non
     settings = MT5Settings(login=0, password="", server="")
     client = MT5TradingClient(settings=settings)
 
+    mock_mt5 = MagicMock()
+    mock_mt5.positions_get.side_effect = [
+        (fake_pos,),   # 初始 positions_get → 找到持仓
+        (),            # 重查（order_send None 后）→ 持仓已消失
+    ]
+    mock_mt5.symbol_info_tick.return_value = fake_tick
+    mock_mt5.last_error.return_value = (-2, 'Invalid "comment" argument')
+    mock_mt5.ORDER_TYPE_BUY = 0
+    mock_mt5.ORDER_TYPE_SELL = 1
+    mock_mt5.TRADE_ACTION_DEAL = 1
+
     with (
         patch.object(client, "connect"),
-        patch("MetaTrader5.positions_get") as mock_positions_get,
-        patch("MetaTrader5.symbol_info_tick", return_value=fake_tick),
+        patch("src.clients.mt5_trading.mt5", mock_mt5),
         patch.object(client, "_send_order_with_supported_fillings", return_value=None),
-        patch("MetaTrader5.last_error", return_value=(-2, 'Invalid "comment" argument')),
     ):
-        # 第一次调用（找持仓）返回 pos，后续调用（竞态重查）返回空 → 已被 SL/TP 平仓
-        mock_positions_get.side_effect = [
-            (fake_pos,),   # 初始 positions_get → 找到持仓
-            (),            # 重查（order_send None 后）→ 持仓已消失
-        ]
-
         result = client.close_position(ticket=99999)
         assert result is True, "持仓已消失时应返回 True，而非抛出异常"
 

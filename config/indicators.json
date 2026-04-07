@@ -230,8 +230,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
-      "description": "14周期资金流量指标",
+      "enabled": false,
+      "description": "14周期资金流量指标（当前无策略依赖，停用）",
       "tags": [
         "volume",
         "momentum"
@@ -262,8 +262,8 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
-      "description": "30周期能量潮指标",
+      "enabled": false,
+      "description": "30周期能量潮指标（当前无策略依赖，停用）",
       "tags": [
         "volume",
         "trend"

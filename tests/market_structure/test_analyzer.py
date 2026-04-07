@@ -210,6 +210,15 @@ def test_market_structure_analyzer_detects_bearish_sweep_confirmation() -> None:
             close=3001.5,
         )
     )
+    # 当前 bar：close 低于 sweep bar 的 close，确认看跌
+    bars.append(
+        _build_bar(
+            day1 + timedelta(hours=8, minutes=5),
+            high=3001.8,
+            low=2999.5,
+            close=3000.5,
+        )
+    )
 
     analyzer = MarketStructureAnalyzer(DummyMarketService(bars))
 

@@ -9,7 +9,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from src.clients.mt5_market import MT5MarketClient
@@ -241,11 +241,12 @@ def test_mt5_market_client_fetches_forward_ohlc_window_in_utc() -> None:
             "real_volume": 2.0,
         },
     ]
-    with patch("src.clients.mt5_market.mt5.copy_rates_range", autospec=True) as copy_rates_range:
-        copy_rates_range.side_effect = lambda symbol, tf, start, end: captured.update(
-            {"symbol": symbol, "tf": tf, "start": start, "end": end}
-        ) or raw_rates
+    mock_mt5 = MagicMock()
+    mock_mt5.copy_rates_range.side_effect = lambda symbol, tf, start, end: captured.update(
+        {"symbol": symbol, "tf": tf, "start": start, "end": end}
+    ) or raw_rates
 
+    with patch("src.clients.mt5_market.mt5", mock_mt5):
         bars = client.get_ohlc_from(
             "XAUUSD",
             "M1",
@@ -370,11 +371,13 @@ def test_mt5_market_client_uses_default_tick_lookback_without_ingest_settings() 
 
     captured = {}
 
-    with patch("src.clients.mt5_market.mt5.copy_ticks_from", autospec=True) as copy_ticks_from:
-        copy_ticks_from.side_effect = lambda symbol, start, limit, flags: captured.update(
-            {"symbol": symbol, "start": start, "limit": limit, "flags": flags}
-        ) or [SimpleNamespace()]
+    mock_mt5 = MagicMock()
+    mock_mt5.COPY_TICKS_ALL = 1
+    mock_mt5.copy_ticks_from.side_effect = lambda symbol, start, limit, flags: captured.update(
+        {"symbol": symbol, "start": start, "limit": limit, "flags": flags}
+    ) or [SimpleNamespace()]
 
+    with patch("src.clients.mt5_market.mt5", mock_mt5):
         ticks = client.get_ticks("XAUUSD", 10, None)
 
     assert len(ticks) == 1
@@ -390,14 +393,16 @@ def test_mt5_market_client_normalizes_quote_last_price_from_bid_ask() -> None:
     client._get_field = lambda obj, name, default=None: getattr(obj, name, default)
     client._market_time_from_seconds = lambda value: datetime(2026, 1, 1, tzinfo=timezone.utc)
 
-    with patch("src.clients.mt5_market.mt5.symbol_info_tick", autospec=True) as symbol_info_tick:
-        symbol_info_tick.return_value = SimpleNamespace(
-            bid=5000.0,
-            ask=5000.4,
-            last=0.0,
-            volume=12.0,
-            time=1767225600,
-        )
+    mock_mt5 = MagicMock()
+    mock_mt5.symbol_info_tick.return_value = SimpleNamespace(
+        bid=5000.0,
+        ask=5000.4,
+        last=0.0,
+        volume=12.0,
+        time=1767225600,
+    )
+
+    with patch("src.clients.mt5_market.mt5", mock_mt5):
         quote = client.get_quote("XAUUSD")
 
     assert quote.last == 5000.2
@@ -417,13 +422,13 @@ def test_mt5_trading_client_estimate_margin_uses_public_order_type_mapper() -> N
 
     client.side_and_kind_to_order_type = _order_type
 
-    with patch("src.clients.mt5_trading.mt5.symbol_info_tick", autospec=True) as symbol_info_tick:
-        with patch("src.clients.mt5_trading.mt5.order_calc_margin", autospec=True) as order_calc_margin:
-            with patch("src.clients.mt5_trading.mt5.ORDER_TYPE_BUY", 0):
-                symbol_info_tick.return_value = SimpleNamespace(ask=3025.5, bid=3025.2)
-                order_calc_margin.return_value = 123.45
+    mock_mt5 = MagicMock()
+    mock_mt5.symbol_info_tick.return_value = SimpleNamespace(ask=3025.5, bid=3025.2)
+    mock_mt5.order_calc_margin.return_value = 123.45
+    mock_mt5.ORDER_TYPE_BUY = 0
 
-                margin = client.estimate_margin("XAUUSD", 0.01, "buy")
+    with patch("src.clients.mt5_trading.mt5", mock_mt5):
+        margin = client.estimate_margin("XAUUSD", 0.01, "buy")
 
     assert margin == 123.45
     assert captured == {"side": "buy", "order_kind": "market"}
