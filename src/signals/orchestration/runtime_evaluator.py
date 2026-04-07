@@ -211,7 +211,7 @@ def _resolve_event_impact_forecast(
     cache = runtime._event_impact_cache
     if event_time >= cache.get("expires_at", event_time):
         try:
-            eco_service = getattr(runtime, "_economic_calendar_service", None)
+            eco_service, _imp = _resolve_eco_provider(runtime)
             if eco_service is not None:
                 upcoming_events = eco_service.get_high_impact_events(hours=2, limit=1)
                 if upcoming_events:
@@ -228,6 +228,7 @@ def _resolve_event_impact_forecast(
 
 
 _EVENT_DECAY_TTL_SECONDS: float = 60.0
+_EVENT_DECAY_CACHE_MAX: int = 128
 
 
 def _compute_economic_event_decay(
@@ -258,33 +259,50 @@ def _compute_economic_event_decay(
         return entry["decay"]
 
     # --- 获取 symbol-aware provider ---
-    provider = _resolve_eco_provider(runtime)
+    provider, importance_min = _resolve_eco_provider(runtime)
     if provider is None:
         return 1.0
 
     try:
-        decay = _query_symbol_event_decay(provider, symbol)
+        decay = _query_symbol_event_decay(provider, symbol, importance_min)
     except Exception:
         decay = 1.0
 
     cache[symbol] = {"decay": decay, "expires_at": now_mono + _EVENT_DECAY_TTL_SECONDS}
+
+    # 防止缓存无限增长：超过上限时清除已过期条目
+    if len(cache) > _EVENT_DECAY_CACHE_MAX:
+        expired = [k for k, v in cache.items() if now_mono >= v["expires_at"]]
+        for k in expired:
+            del cache[k]
+
     return decay
 
 
-def _resolve_eco_provider(runtime: "SignalRuntime") -> Any:
-    """从 filter_chain 或旧属性解析经济日历 provider。"""
+def _resolve_eco_provider(
+    runtime: "SignalRuntime",
+) -> tuple[Any, int]:
+    """从 filter_chain 或旧属性解析经济日历 provider 及 importance 阈值。
+
+    Returns:
+        (provider_or_None, importance_min)
+    """
     fc = runtime.filter_chain
     if fc is not None:
         eco_filter = getattr(fc, "economic_filter", None)
         if eco_filter is not None:
             provider = getattr(eco_filter, "provider", None)
             if provider is not None:
-                return provider
+                importance = getattr(eco_filter, "importance_min", 2)
+                return provider, int(importance)
     # 向后兼容：若外部直接注入了 _economic_calendar_service
-    return getattr(runtime, "_economic_calendar_service", None)
+    fallback = getattr(runtime, "_economic_calendar_service", None)
+    return fallback, 2
 
 
-def _query_symbol_event_decay(provider: Any, symbol: str) -> float:
+def _query_symbol_event_decay(
+    provider: Any, symbol: str, importance_min: int = 2
+) -> float:
     """对单个 symbol 查询最近相关高影响事件并计算 decay 因子。"""
     from datetime import timezone
 
@@ -301,6 +319,7 @@ def _query_symbol_event_decay(provider: Any, symbol: str) -> float:
         countries=context["countries"] or None,
         currencies=context["currencies"] or None,
         statuses=["scheduled", "imminent", "pending_release", "released"],
+        importance_min=importance_min,
     )
     if not events:
         return 1.0
