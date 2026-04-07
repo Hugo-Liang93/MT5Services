@@ -13,31 +13,35 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
+from src.utils.common import timeframe_seconds
+
+from ..closeout.service import ExposureCloseoutController
+from ..execution.sizing import TradeParameters
+from ..ports import PositionManagementPort
 from .exit_rules import (
     ChandelierConfig,
-    evaluate_exit,
     check_end_of_day,
+    evaluate_exit,
+    resolve_aggression,
 )
-from ..closeout.service import ExposureCloseoutController
-from ..ports import PositionManagementPort
-from ..execution.sizing import TradeParameters
-
-_TF_SECONDS: dict[str, int] = {
-    "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
-    "H1": 3600, "H4": 14400, "D1": 86400, "W1": 604800,
-}
 
 
 class IndicatorSource(Protocol):
     """读取已计算好的指标快照（由 IndicatorManager 实现）。"""
 
     def get_indicator(
-        self, symbol: str, timeframe: str, indicator_name: str,
+        self,
+        symbol: str,
+        timeframe: str,
+        indicator_name: str,
     ) -> Optional[Dict[str, Any]]: ...
 
     def get_all_indicators(
-        self, symbol: str, timeframe: str,
+        self,
+        symbol: str,
+        timeframe: str,
     ) -> Dict[str, Dict[str, Any]]: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +49,28 @@ logger = logging.getLogger(__name__)
 # "auto:" is the legacy format; timeframe prefixes (e.g. "m5:", "h1:") are the
 # current format since the comment was changed to "{tf}:{strategy}:{direction}".
 _RESTORABLE_COMMENT_PREFIXES = (
-    "auto:", "agent:",
-    "m1:", "m5:", "m15:", "m30:", "h1:", "h4:", "d1:", "w1:", "mn1:",
+    "auto:",
+    "agent:",
+    "m1:",
+    "m5:",
+    "m15:",
+    "m30:",
+    "h1:",
+    "h4:",
+    "d1:",
+    "w1:",
+    "mn1:",
 )
+
+
+@dataclass(frozen=True)
+class _ChandelierAction:
+    """锁内 evaluate 产出的待执行 SL 修改动作，锁外执行 MT5 API 调用。"""
+
+    pos: "TrackedPosition"
+    new_sl: float
+    reason: str
+    notify_update: bool = False  # 是否通知 on_position_updated 回调
 
 
 @dataclass
@@ -74,12 +97,16 @@ class TrackedPosition:
     peak_price: Optional[float] = None
     bars_held: int = 0
     breakeven_activated: bool = False
-    strategy_category: str = ""  # trend / reversion / breakout（legacy，结构化策略用 exit_spec）
+    strategy_category: str = (
+        ""  # trend / reversion / breakout（legacy，结构化策略用 exit_spec）
+    )
     exit_spec: dict = field(default_factory=dict)  # 策略 _exit_spec() 输出
     sl_atr_mult: float = 0.0  # 入场 SL 的 ATR 倍数（用于 Chandelier R 单位保护）
     recent_signal_dirs: list = field(default_factory=list)
     # 出场追溯字段（由 _check_chandelier_exit 写入，on_position_closed 读取）
-    last_exit_reason: str = ""  # trailing_stop / signal_exit / timeout / stop_loss / take_profit
+    last_exit_reason: str = (
+        ""  # trailing_stop / signal_exit / timeout / stop_loss / take_profit
+    )
     last_r_multiple: float = 0.0  # 退出时的 R 倍数
     last_exit_regime: str = ""  # 退出时的 regime
     # 旧字段（兼容 + peak 跟踪）
@@ -116,7 +143,9 @@ class PositionManager:
         self.end_of_day_close_minute_utc = int(end_of_day_close_minute_utc)
         self._positions: Dict[int, TrackedPosition] = {}
         self._lock = threading.Lock()
-        self._close_callbacks: List[Callable[[TrackedPosition, Optional[float]], None]] = []
+        self._close_callbacks: List[
+            Callable[[TrackedPosition, Optional[float]], None]
+        ] = []
         self._position_context_resolver: Optional[
             Callable[[int, Optional[str]], Optional[Dict[str, Any]]]
         ] = None
@@ -126,9 +155,15 @@ class PositionManager:
         self._recovered_position_callback: Optional[
             Callable[[TrackedPosition], None]
         ] = None
-        self._on_position_tracked: Optional[Callable[[TrackedPosition, str], None]] = None
-        self._on_position_updated: Optional[Callable[[TrackedPosition, str], None]] = None
-        self._on_position_closed: Optional[Callable[[TrackedPosition, Optional[float]], None]] = None
+        self._on_position_tracked: Optional[Callable[[TrackedPosition, str], None]] = (
+            None
+        )
+        self._on_position_updated: Optional[Callable[[TrackedPosition, str], None]] = (
+            None
+        )
+        self._on_position_closed: Optional[
+            Callable[[TrackedPosition, Optional[float]], None]
+        ] = None
         self._sl_tp_history_writer: Optional[Callable[[list[tuple]], None]] = None
 
         self._reconcile_thread: Optional[threading.Thread] = None
@@ -139,7 +174,9 @@ class PositionManager:
         self._last_error: Optional[str] = None
         self._last_end_of_day_gate_date: Optional[str] = None
         self._last_end_of_day_close_date: Optional[str] = None
-        self._margin_guard: Any = None  # Optional[MarginGuard], injected via set_margin_guard()
+        self._margin_guard: Any = (
+            None  # Optional[MarginGuard], injected via set_margin_guard()
+        )
 
     def start(self, reconcile_interval: float = 10.0) -> None:
         if self._reconcile_thread is not None and self._reconcile_thread.is_alive():
@@ -150,7 +187,9 @@ class PositionManager:
         try:
             self._reconcile_with_mt5()
         except Exception as exc:
-            logger.warning("PositionManager: initial reconcile on start failed: %s", exc)
+            logger.warning(
+                "PositionManager: initial reconcile on start failed: %s", exc
+            )
         self._reconcile_thread = threading.Thread(
             target=self._reconcile_loop,
             name="position-manager-reconcile",
@@ -194,6 +233,7 @@ class PositionManager:
         lowest_price: Optional[float] = None,
         current_price: Optional[float] = None,
         exit_spec: Optional[dict] = None,
+        strategy_category: str = "",
     ) -> TrackedPosition:
         resolved_entry_price = (
             float(fill_price) if fill_price is not None else float(params.entry_price)
@@ -234,6 +274,8 @@ class PositionManager:
             pos.sl_atr_mult = round(params.sl_distance / params.atr_value, 4)
         if exit_spec:
             pos.exit_spec = dict(exit_spec)
+        if strategy_category:
+            pos.strategy_category = strategy_category
         with self._lock:
             self._positions[ticket] = pos
         if self._on_position_tracked is not None:
@@ -263,8 +305,12 @@ class PositionManager:
                     pos.lowest_price = current_price
                     pos.peak_price = pos.lowest_price
 
-        # Chandelier Exit 检查（锁外执行，可能调 MT5 API）
-        self._check_chandelier_exit(pos, current_price)
+            # Chandelier Exit 判断在锁内完成（纯计算），返回待执行的 SL 修改动作
+            pending_action = self._evaluate_chandelier_exit(pos, current_price)
+
+        # MT5 API 调用在锁外执行，避免持锁期间阻塞
+        if pending_action is not None:
+            self._apply_chandelier_action(pending_action)
 
     def on_signal_event(self, event: Any) -> None:
         """接收 SignalRuntime 的信号事件，更新持仓的 recent_signal_dirs。
@@ -317,7 +363,9 @@ class PositionManager:
         *,
         on_position_tracked: Optional[Callable[[TrackedPosition, str], None]] = None,
         on_position_updated: Optional[Callable[[TrackedPosition, str], None]] = None,
-        on_position_closed: Optional[Callable[[TrackedPosition, Optional[float]], None]] = None,
+        on_position_closed: Optional[
+            Callable[[TrackedPosition, Optional[float]], None]
+        ] = None,
     ) -> None:
         self._on_position_tracked = on_position_tracked
         self._on_position_updated = on_position_updated
@@ -349,7 +397,11 @@ class PositionManager:
                 "current_price": pos.current_price,
                 "peak_price": pos.peak_price,
                 "unrealized_pnl": (
-                    round((pos.current_price - pos.entry_price) * (1 if pos.action == "buy" else -1), 2)
+                    round(
+                        (pos.current_price - pos.entry_price)
+                        * (1 if pos.action == "buy" else -1),
+                        2,
+                    )
                     if pos.current_price is not None
                     else None
                 ),
@@ -374,9 +426,9 @@ class PositionManager:
             "running": self.is_running(),
             "reconcile_interval": self._reconcile_interval,
             "reconcile_count": self._reconcile_count,
-            "last_reconcile_at": self._last_reconcile_at.isoformat()
-            if self._last_reconcile_at
-            else None,
+            "last_reconcile_at": (
+                self._last_reconcile_at.isoformat() if self._last_reconcile_at else None
+            ),
             "last_error": self._last_error,
             "tracked_positions": position_count,
             "config": {
@@ -389,7 +441,9 @@ class PositionManager:
                 "chandelier_signal_exit_bars": cfg.signal_exit_confirmation_bars,
                 "chandelier_timeout_bars": cfg.timeout_bars,
                 "chandelier_enforce_r_floor": cfg.enforce_r_floor,
-                "chandelier_tf_trail_scale": dict(cfg.tf_trail_scale) if cfg.tf_trail_scale else {},
+                "chandelier_tf_trail_scale": (
+                    dict(cfg.tf_trail_scale) if cfg.tf_trail_scale else {}
+                ),
             },
             "last_end_of_day_gate_date": self._last_end_of_day_gate_date,
             "last_end_of_day_close_date": self._last_end_of_day_close_date,
@@ -440,7 +494,9 @@ class PositionManager:
             if not isinstance(opened, datetime):
                 overnight.append(pos)
                 continue
-            opened_utc = opened if opened.tzinfo else opened.replace(tzinfo=timezone.utc)
+            opened_utc = (
+                opened if opened.tzinfo else opened.replace(tzinfo=timezone.utc)
+            )
             if opened_utc.date() < now.date():
                 overnight.append(pos)
 
@@ -489,7 +545,9 @@ class PositionManager:
     @staticmethod
     def _is_restorable_comment(comment: str) -> bool:
         normalized = str(comment or "").strip().lower()
-        return any(normalized.startswith(prefix) for prefix in _RESTORABLE_COMMENT_PREFIXES)
+        return any(
+            normalized.startswith(prefix) for prefix in _RESTORABLE_COMMENT_PREFIXES
+        )
 
     def sync_open_positions(self) -> dict[str, Any]:
         try:
@@ -538,7 +596,9 @@ class PositionManager:
             merged_context = dict(persisted_state or {})
             merged_context.update(dict(context or {}))
             effective_comment = str(merged_context.get("comment") or comment)
-            if not merged_context.get("signal_id") and not self._is_restorable_comment(effective_comment):
+            if not merged_context.get("signal_id") and not self._is_restorable_comment(
+                effective_comment
+            ):
                 skipped += 1
                 continue
 
@@ -596,7 +656,11 @@ class PositionManager:
                     merged_context.get("breakeven_applied")
                     or (
                         (action == "buy" and stop_loss >= entry_price)
-                        or (action == "sell" and stop_loss <= entry_price and stop_loss > 0)
+                        or (
+                            action == "sell"
+                            and stop_loss <= entry_price
+                            and stop_loss > 0
+                        )
                     )
                 ),
                 trailing_active=bool(merged_context.get("trailing_active")),
@@ -604,14 +668,17 @@ class PositionManager:
             # 计算 sl_atr_mult（恢复路径：从 entry/sl/atr 反算）
             if pos.atr_at_entry > 0 and pos.stop_loss > 0:
                 pos.sl_atr_mult = round(
-                    abs(pos.entry_price - pos.stop_loss) / pos.atr_at_entry, 4,
+                    abs(pos.entry_price - pos.stop_loss) / pos.atr_at_entry,
+                    4,
                 )
             with self._lock:
                 self._positions[ticket] = pos
             if self._on_position_tracked is not None:
                 self._on_position_tracked(pos, "recovered")
             synced += 1
-            if self._recovered_position_callback is not None and merged_context.get("signal_id"):
+            if self._recovered_position_callback is not None and merged_context.get(
+                "signal_id"
+            ):
                 try:
                     self._recovered_position_callback(pos)
                     recovered += 1
@@ -641,6 +708,7 @@ class PositionManager:
             try:
                 self._run_end_of_day_closeout()
                 self._reconcile_with_mt5()
+                self._check_regime_changes()
                 self._run_margin_guard()
                 self._reconcile_count += 1
                 self._last_reconcile_at = datetime.now(timezone.utc)
@@ -660,13 +728,17 @@ class PositionManager:
             return
         equity = float(getattr(info, "equity", 0) or 0)
         margin = float(getattr(info, "margin", 0) or 0)
-        free_margin = float(getattr(info, "margin_free", 0) or getattr(info, "free_margin", 0) or 0)
+        free_margin = float(
+            getattr(info, "margin_free", 0) or getattr(info, "free_margin", 0) or 0
+        )
         if equity <= 0:
             return
         snapshot = guard.evaluate(equity, margin, free_margin)
         guard.act(snapshot)
 
-    def _run_end_of_day_closeout(self, now: Optional[datetime] = None) -> Optional[dict]:
+    def _run_end_of_day_closeout(
+        self, now: Optional[datetime] = None
+    ) -> Optional[dict]:
         if not self.end_of_day_close_enabled:
             return None
         current = now or datetime.now(timezone.utc)
@@ -680,7 +752,11 @@ class PositionManager:
         if not eod_triggered:
             return None
 
-        day_key = current.date().isoformat() if current.tzinfo is None else current.astimezone(timezone.utc).date().isoformat()
+        day_key = (
+            current.date().isoformat()
+            if current.tzinfo is None
+            else current.astimezone(timezone.utc).date().isoformat()
+        )
         self._last_end_of_day_gate_date = day_key
 
         closeout_status = self._end_of_day_closeout.execute(
@@ -712,9 +788,13 @@ class PositionManager:
         try:
             recovery = self.sync_open_positions()
             if int(recovery.get("synced", 0) or 0) > 0:
-                logger.info("PositionManager reconcile recovered positions: %s", recovery)
+                logger.info(
+                    "PositionManager reconcile recovered positions: %s", recovery
+                )
         except Exception as exc:
-            logger.debug("PositionManager: sync_open_positions during reconcile failed: %s", exc)
+            logger.debug(
+                "PositionManager: sync_open_positions during reconcile failed: %s", exc
+            )
 
         with self._lock:
             tracked_tickets = dict(self._positions)
@@ -728,13 +808,15 @@ class PositionManager:
         for symbol in symbols:
             try:
                 open_positions = self._trading.get_positions(symbol=symbol)
-                for raw_pos in (open_positions or []):
+                for raw_pos in open_positions or []:
                     ticket = getattr(raw_pos, "ticket", None)
                     if ticket is not None:
                         mt5_positions[int(ticket)] = raw_pos
             except Exception as exc:
                 failed_symbols.add(symbol)
-                logger.debug("PositionManager: get_positions(%s) error: %s", symbol, exc)
+                logger.debug(
+                    "PositionManager: get_positions(%s) error: %s", symbol, exc
+                )
 
         for ticket, pos in tracked_tickets.items():
             # 跳过查询失败的 symbol，防止 MT5 连接闪断时误判持仓已关闭
@@ -767,7 +849,10 @@ class PositionManager:
                 logger.info(
                     "PositionManager: ticket=%d (%s %s) no longer open in MT5, "
                     "removing (close_source=%s)",
-                    ticket, pos.action, pos.symbol, close_source,
+                    ticket,
+                    pos.action,
+                    pos.symbol,
+                    close_source,
                 )
                 self.remove_position(ticket)
                 pos.close_source = close_source
@@ -792,7 +877,9 @@ class PositionManager:
                     if live_vol > 0 and abs(live_vol - pos.volume) > 1e-6:
                         logger.info(
                             "PositionManager: partial close detected ticket=%d volume %.2f→%.2f",
-                            ticket, pos.volume, live_vol,
+                            ticket,
+                            pos.volume,
+                            live_vol,
                         )
                         with self._lock:
                             pos.volume = live_vol
@@ -819,7 +906,9 @@ class PositionManager:
         if self._indicator_source is None:
             return pos.atr_at_entry  # fallback: 用开仓时的 ATR
         atr_data = self._indicator_source.get_indicator(
-            pos.symbol, pos.timeframe, "atr14",
+            pos.symbol,
+            pos.timeframe,
+            "atr14",
         )
         if isinstance(atr_data, dict):
             val = atr_data.get("atr")
@@ -832,7 +921,8 @@ class PositionManager:
         if self._indicator_source is None or self._regime_detector is None:
             return pos.regime or ""
         indicators = self._indicator_source.get_all_indicators(
-            pos.symbol, pos.timeframe,
+            pos.symbol,
+            pos.timeframe,
         )
         if not indicators:
             return pos.regime or ""
@@ -842,23 +932,87 @@ class PositionManager:
         except Exception:
             return pos.regime or ""
 
+    def _check_regime_changes(self) -> None:
+        """检测 regime 切换并动态调整已有仓位的出场 profile。
+
+        当 regime 从入场时变化时，重新计算 aggression：
+        - 如果新 aggression 更低（更保护）→ 立即采用
+        - 如果新 aggression 更高（更放手）→ 部分提升（保守过渡）
+        目的：regime 恶化时快速收紧出场，regime 改善时谨慎放宽。
+        """
+        if self._indicator_source is None or self._regime_detector is None:
+            return
+
+        with self._lock:
+            snapshot = list(self._positions.values())
+
+        for pos in snapshot:
+            if not pos.exit_spec or "aggression" not in pos.exit_spec:
+                continue
+
+            current_regime = self._get_current_regime(pos)
+            if not current_regime or current_regime == (pos.regime or ""):
+                continue
+
+            category = pos.strategy_category or ""
+            if not category:
+                continue
+
+            old_aggression = float(pos.exit_spec["aggression"])
+            new_aggression = resolve_aggression(
+                category,
+                current_regime,
+                self._chandelier_config.aggression_overrides or None,
+            )
+
+            if abs(new_aggression - old_aggression) < 0.05:
+                continue
+
+            if new_aggression < old_aggression:
+                # regime 恶化（逆势化）→ 立即采用更保护的 aggression
+                adjusted = new_aggression
+            else:
+                # regime 改善 → 保守过渡：仅提升差值的 50%
+                adjusted = old_aggression + (new_aggression - old_aggression) * 0.5
+
+            adjusted = round(max(0.0, min(1.0, adjusted)), 4)
+
+            logger.info(
+                "Regime change detected: ticket=%d %s regime=%s→%s "
+                "aggression=%.3f→%.3f (category=%s)",
+                pos.ticket,
+                pos.strategy,
+                pos.regime or "?",
+                current_regime,
+                old_aggression,
+                adjusted,
+                category,
+            )
+
+            with self._lock:
+                if pos.ticket in self._positions:
+                    pos.exit_spec["aggression"] = adjusted
+                    pos.last_exit_regime = current_regime
+
     @staticmethod
     def _compute_bars_held(pos: TrackedPosition) -> int:
         """从持仓时长和 TF 计算已持有 bar 数。"""
-        tf_sec = _TF_SECONDS.get(pos.timeframe.upper(), 3600)
+        tf_sec = timeframe_seconds(pos.timeframe)
         elapsed = (datetime.now(timezone.utc) - pos.opened_at).total_seconds()
         return max(0, int(elapsed / tf_sec))
 
-    def _check_chandelier_exit(self, pos: TrackedPosition, current_price: float) -> None:
-        """Chandelier Exit 持仓检查。
+    def _evaluate_chandelier_exit(
+        self,
+        pos: TrackedPosition,
+        current_price: float,
+    ) -> "Optional[_ChandelierAction]":
+        """Chandelier Exit 纯计算（必须在 _lock 内调用）。
 
-        实盘职责分工：
-        - SL/TP 触发：由 MT5 服务器执行（毫秒级），不在此处检查
-        - Chandelier trailing：计算新 SL 位置，通过 MT5 API 修改服务器端 SL
-        - 信号反转/超时：主动发起平仓请求
+        返回待执行的 SL 修改动作（None = 无需操作）。
+        不包含任何 I/O（MT5 API 调用由 _apply_chandelier_action 执行）。
         """
         if pos.initial_risk <= 0:
-            return
+            return None
 
         pos.bars_held = self._compute_bars_held(pos)
         current_atr = self._get_current_atr(pos)
@@ -904,31 +1058,73 @@ class PositionManager:
                 urgent_sl = current_price + 0.01
             logger.info(
                 "Chandelier urgent exit: ticket=%d reason=%s strategy=%s r=%.2f → sl=%.2f",
-                pos.ticket, result.close_reason, pos.strategy, result.r_multiple, urgent_sl,
+                pos.ticket,
+                result.close_reason,
+                pos.strategy,
+                result.r_multiple,
+                urgent_sl,
             )
-            self._modify_sl(pos, urgent_sl, reason=result.close_reason)
-            return
+            return _ChandelierAction(
+                pos=pos,
+                new_sl=urgent_sl,
+                reason=result.close_reason,
+            )
 
-        # Trailing SL 更新（通过 MT5 API 修改服务器端 SL）
+        # Trailing SL 更新
         if result.new_stop_loss is not None and result.new_stop_loss != pos.stop_loss:
-            if self._modify_sl(pos, result.new_stop_loss, reason="chandelier_trail"):
-                if self._on_position_updated is not None:
-                    self._on_position_updated(pos, "chandelier_trail")
+            return _ChandelierAction(
+                pos=pos,
+                new_sl=result.new_stop_loss,
+                reason="chandelier_trail",
+                notify_update=True,
+            )
 
+        return None
 
-    def _modify_sl(self, pos: TrackedPosition, new_sl: float, reason: str = "trailing_sl") -> bool:
+    def _apply_chandelier_action(self, action: _ChandelierAction) -> None:
+        """锁外执行 Chandelier Exit 产出的 SL 修改动作（含 MT5 API 调用）。"""
+        # 执行前确认仓位仍然存在（防止在锁释放后仓位已被关闭）
+        with self._lock:
+            if action.pos.ticket not in self._positions:
+                logger.debug(
+                    "Chandelier action skipped: ticket=%d already closed",
+                    action.pos.ticket,
+                )
+                return
+        if self._modify_sl(action.pos, action.new_sl, reason=action.reason):
+            if action.notify_update and self._on_position_updated is not None:
+                self._on_position_updated(action.pos, action.reason)
+
+    def _check_chandelier_exit(
+        self, pos: TrackedPosition, current_price: float
+    ) -> None:
+        """Chandelier Exit 持仓检查（用于 reconcile 等无锁上下文）。
+
+        注意：update_price 中已改用 _evaluate_chandelier_exit + _apply_chandelier_action
+        的锁安全拆分模式。此方法保留给 reconcile loop 等单线程调用路径。
+        """
+        action = self._evaluate_chandelier_exit(pos, current_price)
+        if action is not None:
+            self._apply_chandelier_action(action)
+
+    def _modify_sl(
+        self, pos: TrackedPosition, new_sl: float, reason: str = "trailing_sl"
+    ) -> bool:
         old_sl = pos.stop_loss
         target_sl = round(new_sl, 2)
         retcode: int | None = None
         broker_comment: str = ""
         success = False
         try:
-            result = self._trading.modify_positions(ticket=pos.ticket, symbol=pos.symbol, sl=target_sl)
+            result = self._trading.modify_positions(
+                ticket=pos.ticket, symbol=pos.symbol, sl=target_sl
+            )
             if isinstance(result, dict):
                 modified_list = result.get("modified", [])
                 modified_tickets = {
                     int(item["ticket"]) if isinstance(item, dict) else int(item)
-                    for item in modified_list if item is not None
+                    for item in modified_list
+                    if item is not None
                 }
                 if modified_list and isinstance(modified_list[0], dict):
                     retcode = modified_list[0].get("retcode")
@@ -937,8 +1133,16 @@ class PositionManager:
                     raise RuntimeError(f"ticket {pos.ticket} not modified")
                 failed = list(result.get("failed", []) or [])
                 if failed and pos.ticket not in modified_tickets:
-                    retcode = failed[0].get("retcode") if isinstance(failed[0], dict) else None
-                    broker_comment = str(failed[0].get("error", "")) if isinstance(failed[0], dict) else str(failed[0])
+                    retcode = (
+                        failed[0].get("retcode")
+                        if isinstance(failed[0], dict)
+                        else None
+                    )
+                    broker_comment = (
+                        str(failed[0].get("error", ""))
+                        if isinstance(failed[0], dict)
+                        else str(failed[0])
+                    )
                     raise RuntimeError(broker_comment)
             pos.stop_loss = target_sl
             success = True
@@ -950,24 +1154,36 @@ class PositionManager:
             return False
         finally:
             self._record_sl_tp_change(
-                pos, reason=reason, action_type="modify_sl",
-                old_sl=old_sl, new_sl=target_sl, old_tp=None, new_tp=None,
-                success=success, retcode=retcode, broker_comment=broker_comment,
+                pos,
+                reason=reason,
+                action_type="modify_sl",
+                old_sl=old_sl,
+                new_sl=target_sl,
+                old_tp=None,
+                new_tp=None,
+                success=success,
+                retcode=retcode,
+                broker_comment=broker_comment,
             )
 
-    def _modify_tp(self, pos: TrackedPosition, new_tp: float, reason: str = "trailing_tp") -> bool:
+    def _modify_tp(
+        self, pos: TrackedPosition, new_tp: float, reason: str = "trailing_tp"
+    ) -> bool:
         old_tp = pos.take_profit
         target_tp = round(new_tp, 2)
         retcode: int | None = None
         broker_comment: str = ""
         success = False
         try:
-            result = self._trading.modify_positions(ticket=pos.ticket, symbol=pos.symbol, tp=target_tp)
+            result = self._trading.modify_positions(
+                ticket=pos.ticket, symbol=pos.symbol, tp=target_tp
+            )
             if isinstance(result, dict):
                 modified_list = result.get("modified", [])
                 modified_tickets = {
                     int(item["ticket"]) if isinstance(item, dict) else int(item)
-                    for item in modified_list if item is not None
+                    for item in modified_list
+                    if item is not None
                 }
                 if modified_list and isinstance(modified_list[0], dict):
                     retcode = modified_list[0].get("retcode")
@@ -976,8 +1192,16 @@ class PositionManager:
                     raise RuntimeError(f"ticket {pos.ticket} not modified")
                 failed = list(result.get("failed", []) or [])
                 if failed and pos.ticket not in modified_tickets:
-                    retcode = failed[0].get("retcode") if isinstance(failed[0], dict) else None
-                    broker_comment = str(failed[0].get("error", "")) if isinstance(failed[0], dict) else str(failed[0])
+                    retcode = (
+                        failed[0].get("retcode")
+                        if isinstance(failed[0], dict)
+                        else None
+                    )
+                    broker_comment = (
+                        str(failed[0].get("error", ""))
+                        if isinstance(failed[0], dict)
+                        else str(failed[0])
+                    )
                     raise RuntimeError(broker_comment)
             pos.take_profit = target_tp
             success = True
@@ -989,9 +1213,16 @@ class PositionManager:
             return False
         finally:
             self._record_sl_tp_change(
-                pos, reason=reason, action_type="modify_tp",
-                old_sl=None, new_sl=None, old_tp=old_tp, new_tp=target_tp,
-                success=success, retcode=retcode, broker_comment=broker_comment,
+                pos,
+                reason=reason,
+                action_type="modify_tp",
+                old_sl=None,
+                new_sl=None,
+                old_tp=old_tp,
+                new_tp=target_tp,
+                success=success,
+                retcode=retcode,
+                broker_comment=broker_comment,
             )
 
     def _record_sl_tp_change(
@@ -1012,29 +1243,29 @@ class PositionManager:
         if self._sl_tp_history_writer is None:
             return
         from src.utils.timezone import utc_now
+
         try:
             row = (
-                utc_now(),                           # recorded_at
-                "",                                  # account_alias（由 writer 填充）
-                int(pos.ticket),                     # position_ticket
-                pos.signal_id,                       # signal_id
-                pos.symbol,                          # symbol
-                action_type,                         # action_type
-                reason,                              # reason
-                old_sl,                              # old_stop_loss
-                new_sl,                              # new_stop_loss
-                old_tp,                              # old_take_profit
-                new_tp,                              # new_take_profit
-                pos.current_price,                   # current_price
-                pos.highest_price,                   # highest_price
-                pos.lowest_price,                    # lowest_price
-                pos.atr_at_entry,                    # atr_at_entry
-                success,                             # success
-                retcode,                             # retcode
+                utc_now(),  # recorded_at
+                "",  # account_alias（由 writer 填充）
+                int(pos.ticket),  # position_ticket
+                pos.signal_id,  # signal_id
+                pos.symbol,  # symbol
+                action_type,  # action_type
+                reason,  # reason
+                old_sl,  # old_stop_loss
+                new_sl,  # new_stop_loss
+                old_tp,  # old_take_profit
+                new_tp,  # new_take_profit
+                pos.current_price,  # current_price
+                pos.highest_price,  # highest_price
+                pos.lowest_price,  # lowest_price
+                pos.atr_at_entry,  # atr_at_entry
+                success,  # success
+                retcode,  # retcode
                 broker_comment[:200] if broker_comment else None,  # broker_comment
-                "{}",                                # metadata (JSON)
+                "{}",  # metadata (JSON)
             )
             self._sl_tp_history_writer([row])
         except Exception as exc:
             logger.debug("Failed to write SL/TP history: %s", exc)
-

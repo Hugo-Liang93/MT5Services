@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 
@@ -17,11 +17,11 @@ class SignalEvent:
     symbol: str
     timeframe: str
     strategy: str
-    direction: str      # buy / sell / hold
+    direction: str  # buy / sell / hold
     confidence: float
-    signal_state: str   # confirmed_buy, confirmed_sell, confirmed_cancelled,
-                        # armed_buy, armed_sell, preview_buy, preview_sell, cancelled
-    scope: str          # "confirmed" (bar closed) / "intrabar" (in-progress bar)
+    signal_state: str  # confirmed_buy, confirmed_sell, confirmed_cancelled,
+    # armed_buy, armed_sell, preview_buy, preview_sell, cancelled
+    scope: str  # "confirmed" (bar closed) / "intrabar" (in-progress bar)
     indicators: Dict[str, Dict[str, float]]
     metadata: Dict[str, Any]
     generated_at: datetime
@@ -56,6 +56,8 @@ class SignalDecision:
     used_indicators: List[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # 置信度修正审计链：记录每一步 (step_name, value_after) 便于调试
+    confidence_trace: List[Tuple[str, float]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -68,6 +70,7 @@ class SignalDecision:
             "used_indicators": list(self.used_indicators),
             "timestamp": self.timestamp.isoformat(),
             "metadata": dict(self.metadata),
+            "confidence_trace": list(self.confidence_trace),
         }
 
 

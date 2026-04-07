@@ -21,24 +21,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 from src.signals.models import SignalEvent
-from ..execution.sizing import TradeParameters
+from src.utils.common import timeframe_seconds
 
+from ..execution.sizing import TradeParameters
 from ..ports import PendingOrderCancellationPort
 
 logger = logging.getLogger(__name__)
-
-# ── 时间框架 → bar 周期秒数映射 ──────────────────────────────────────────────
-_TF_SECONDS: dict[str, int] = {
-    "M1": 60,
-    "M5": 300,
-    "M15": 900,
-    "M30": 1800,
-    "H1": 3600,
-    "H4": 14400,
-    "D1": 86400,
-    "W1": 604800,
-    "MN": 2592000,
-}
 
 
 @dataclass
@@ -63,7 +51,6 @@ class PendingEntryConfig:
     )
     default_timeout_bars: float = 2.0
 
-
     # 超时降级：超时时如果价格偏离参考价 < 此值×ATR，以市价入场而非丢弃
     # 0 = 禁用降级（超时直接丢弃）
     timeout_fallback_atr: float = 0.5
@@ -71,7 +58,6 @@ class PendingEntryConfig:
     # 信号覆盖行为
     cancel_on_new_signal: bool = True
     cancel_same_direction: bool = False
-
 
 
 @dataclass
@@ -102,8 +88,6 @@ class PendingEntry:
     cancel_reason: str = ""
 
 
-
-
 def _extract_quote_prices(quote: Any) -> Optional[tuple[float, float]]:
     """安全地从 quote 对象提取 (bid, ask)，支持 object 和 dict。"""
     try:
@@ -125,7 +109,9 @@ def compute_timeout(
     """计算超时时长（纯 TF 驱动）。"""
     tf = timeframe.strip().upper() if timeframe else ""
     bars = config.timeout_bars.get(tf, config.default_timeout_bars)
-    bar_seconds = _TF_SECONDS.get(tf, 300)
+    # 未知 TF 保守估计用 M5 (300s)；已知 TF 用统一映射
+    _KNOWN_TFS = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"}
+    bar_seconds = timeframe_seconds(tf) if tf in _KNOWN_TFS else 300
     return timedelta(seconds=bars * bar_seconds)
 
 
@@ -133,6 +119,7 @@ def compute_timeout(
 @dataclass(frozen=True)
 class _FillResult:
     """monitor 线程确认价格后产生的填单指令。"""
+
     signal_event: SignalEvent
     trade_params: TradeParameters  # 已更新 entry_price
     cost_metrics: dict[str, Any]
@@ -154,7 +141,9 @@ class PendingEntryManager:
         cancellation_port: PendingOrderCancellationPort,
         execute_fn: Callable[[SignalEvent, TradeParameters, Dict[str, Any]], Any],
         on_expired_fn: Optional[Callable[[str, str], None]] = None,
-        inspect_mt5_order_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        inspect_mt5_order_fn: Optional[
+            Callable[[Dict[str, Any]], Dict[str, Any]]
+        ] = None,
     ):
         self._config = config
         self._market = market_service
@@ -163,10 +152,18 @@ class PendingEntryManager:
         self._on_expired_fn = on_expired_fn  # (signal_id, reason) 过期回调
         self._inspect_mt5_order_fn = inspect_mt5_order_fn
         self._on_mt5_order_tracked: Optional[Callable[[Dict[str, Any]], None]] = None
-        self._on_mt5_order_filled: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None
-        self._on_mt5_order_expired: Optional[Callable[[Dict[str, Any], str], None]] = None
-        self._on_mt5_order_cancelled: Optional[Callable[[Dict[str, Any], str], None]] = None
-        self._on_mt5_order_missing: Optional[Callable[[Dict[str, Any], str], None]] = None
+        self._on_mt5_order_filled: Optional[
+            Callable[[Dict[str, Any], Dict[str, Any]], None]
+        ] = None
+        self._on_mt5_order_expired: Optional[Callable[[Dict[str, Any], str], None]] = (
+            None
+        )
+        self._on_mt5_order_cancelled: Optional[
+            Callable[[Dict[str, Any], str], None]
+        ] = None
+        self._on_mt5_order_missing: Optional[Callable[[Dict[str, Any], str], None]] = (
+            None
+        )
 
         self._pending: dict[str, PendingEntry] = {}  # signal_id → PendingEntry
         # MT5 挂单追踪：signal_id → {ticket, expires_at, direction, symbol, strategy}
@@ -383,7 +380,9 @@ class PendingEntryManager:
                 logger.warning(
                     "PendingEntry: signal_id=%s already tracked with ticket=%s, "
                     "ignoring duplicate submission with ticket=%d",
-                    signal_id, existing_ticket, order_ticket,
+                    signal_id,
+                    existing_ticket,
+                    order_ticket,
                 )
                 return
             self._mt5_orders[signal_id] = tracked_info
@@ -392,7 +391,10 @@ class PendingEntryManager:
             self._on_mt5_order_tracked(dict(tracked_info))
         logger.info(
             "PendingEntry: tracking MT5 order ticket=%d for %s/%s %s (expires=%s)",
-            order_ticket, symbol, strategy, direction,
+            order_ticket,
+            symbol,
+            strategy,
+            direction,
             expires_at.isoformat(),
         )
 
@@ -403,8 +405,7 @@ class PendingEntryManager:
 
         with self._lock:
             tracked_orders = [
-                (sid, dict(info))
-                for sid, info in self._mt5_orders.items()
+                (sid, dict(info)) for sid, info in self._mt5_orders.items()
             ]
 
         for sid, info in tracked_orders:
@@ -426,7 +427,9 @@ class PendingEntryManager:
                 current = self._mt5_orders.get(sid)
                 if current is None:
                     continue
-                if int(current.get("ticket", 0) or 0) != int(info.get("ticket", 0) or 0):
+                if int(current.get("ticket", 0) or 0) != int(
+                    info.get("ticket", 0) or 0
+                ):
                     continue
                 self._mt5_orders.pop(sid, None)
                 if status == "filled":
@@ -477,21 +480,29 @@ class PendingEntryManager:
             result: Any = None
             try:
                 result = self._cancellation_port.cancel_orders_by_tickets([ticket])
-                cancelled = self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled"))
+                cancelled = self._ticket_in_result(
+                    result, ticket, success_keys=("canceled", "cancelled")
+                )
             except Exception:
                 logger.error(
                     "PendingEntry: failed to cancel MT5 order ticket=%d",
-                    ticket, exc_info=True,
+                    ticket,
+                    exc_info=True,
                 )
             if cancelled:
                 logger.info(
                     "PendingEntry: cancelled expired MT5 order ticket=%d "
                     "for %s/%s (signal=%s)",
-                    ticket, info["symbol"], info["strategy"], sid[:8],
+                    ticket,
+                    info["symbol"],
+                    info["strategy"],
+                    sid[:8],
                 )
                 with self._lock:
                     current = self._mt5_orders.get(sid)
-                    if current is not None and int(current.get("ticket", 0) or 0) == int(ticket):
+                    if current is not None and int(
+                        current.get("ticket", 0) or 0
+                    ) == int(ticket):
                         self._mt5_orders.pop(sid, None)
                         self._stats["mt5_orders_expired"] += 1
                 if self._on_mt5_order_expired is not None:
@@ -524,12 +535,9 @@ class PendingEntryManager:
         to_cancel: list[tuple[str, dict[str, Any]]] = []
         with self._lock:
             for sid, info in list(self._mt5_orders.items()):
-                if (
-                    info["symbol"] == symbol
-                    and (
-                        exclude_direction is None
-                        or str(info.get("direction") or "") != exclude_direction
-                    )
+                if info["symbol"] == symbol and (
+                    exclude_direction is None
+                    or str(info.get("direction") or "") != exclude_direction
                 ):
                     to_cancel.append((sid, dict(info)))
         cancelled_count = 0
@@ -537,20 +545,28 @@ class PendingEntryManager:
             ticket = info["ticket"]
             try:
                 result = self._cancellation_port.cancel_orders_by_tickets([ticket])
-                if self._ticket_in_result(result, ticket, success_keys=("canceled", "cancelled")):
+                if self._ticket_in_result(
+                    result, ticket, success_keys=("canceled", "cancelled")
+                ):
                     with self._lock:
                         current = self._mt5_orders.get(sid)
-                        if current is not None and int(current.get("ticket", 0) or 0) == int(ticket):
+                        if current is not None and int(
+                            current.get("ticket", 0) or 0
+                        ) == int(ticket):
                             self._mt5_orders.pop(sid, None)
                     cancelled_count += 1
                     if self._on_mt5_order_cancelled is not None:
                         self._on_mt5_order_cancelled(dict(info), reason)
             except Exception:
-                logger.error("Failed to cancel MT5 order ticket=%d", ticket, exc_info=True)
+                logger.error(
+                    "Failed to cancel MT5 order ticket=%d", ticket, exc_info=True
+                )
         return cancelled_count
 
     @staticmethod
-    def _ticket_in_result(result: Any, ticket: int, *, success_keys: tuple[str, ...]) -> bool:
+    def _ticket_in_result(
+        result: Any, ticket: int, *, success_keys: tuple[str, ...]
+    ) -> bool:
         if isinstance(result, dict):
             success = set()
             for key in success_keys:
@@ -571,9 +587,7 @@ class PendingEntryManager:
             candidate = item
             if isinstance(item, dict):
                 candidate = (
-                    item.get("ticket")
-                    or item.get("order")
-                    or item.get("order_id")
+                    item.get("ticket") or item.get("order") or item.get("order_id")
                 )
             try:
                 normalized = int(candidate)
@@ -585,8 +599,12 @@ class PendingEntryManager:
 
     def start(self) -> None:
         """启动价格监控线程和填单执行线程。"""
-        monitor_alive = self._monitor_thread is not None and self._monitor_thread.is_alive()
-        fill_alive = self._fill_worker_thread is not None and self._fill_worker_thread.is_alive()
+        monitor_alive = (
+            self._monitor_thread is not None and self._monitor_thread.is_alive()
+        )
+        fill_alive = (
+            self._fill_worker_thread is not None and self._fill_worker_thread.is_alive()
+        )
         if monitor_alive and fill_alive:
             return
         self._stop_event.clear()
@@ -602,11 +620,18 @@ class PendingEntryManager:
             )
             fw.start()
             self._fill_worker_thread = fw
-        logger.info("PendingEntryManager started (check_interval=%.2fs)", self._config.check_interval)
+        logger.info(
+            "PendingEntryManager started (check_interval=%.2fs)",
+            self._config.check_interval,
+        )
 
     def is_running(self) -> bool:
-        monitor_alive = self._monitor_thread is not None and self._monitor_thread.is_alive()
-        fill_alive = self._fill_worker_thread is not None and self._fill_worker_thread.is_alive()
+        monitor_alive = (
+            self._monitor_thread is not None and self._monitor_thread.is_alive()
+        )
+        fill_alive = (
+            self._fill_worker_thread is not None and self._fill_worker_thread.is_alive()
+        )
         return monitor_alive and fill_alive
 
     def shutdown(self) -> None:
@@ -752,9 +777,7 @@ class PendingEntryManager:
     def _check_all_entries(self) -> None:
         now = datetime.now(timezone.utc)
         with self._lock:
-            entries = [
-                e for e in self._pending.values() if e.status == "pending"
-            ]
+            entries = [e for e in self._pending.values() if e.status == "pending"]
 
         for entry in entries:
             # 超时检查
@@ -803,7 +826,10 @@ class PendingEntryManager:
         # 额外 spread 检查
         if self._config.max_spread_points > 0:
             spread_points = self._get_spread_points(bid, ask, entry.signal_event.symbol)
-            if spread_points is not None and spread_points > self._config.max_spread_points:
+            if (
+                spread_points is not None
+                and spread_points > self._config.max_spread_points
+            ):
                 logger.debug(
                     "PendingEntry %s: spread %.1f > max %.1f, skip this check",
                     entry.signal_event.signal_id[:8],
@@ -814,7 +840,9 @@ class PendingEntryManager:
 
         self._fill_entry(entry, check_price)
 
-    def _get_spread_points(self, bid: float, ask: float, symbol: str) -> Optional[float]:
+    def _get_spread_points(
+        self, bid: float, ask: float, symbol: str
+    ) -> Optional[float]:
         try:
             point = self._market.get_symbol_point(symbol)
             if point is None or point <= 0:

@@ -407,9 +407,19 @@ class SignalModule:
                     regime.value,
                 )
 
+        # 追加下游修正步骤到置信度审计链
+        trace = list(decision.confidence_trace)
+        if affinity != 1.0:
+            trace.append(("regime_affinity", round(post_affinity, 4)))
+        if perf_multiplier != 1.0:
+            trace.append(("performance", round(post_performance, 4)))
+        if calibrated != post_performance:
+            trace.append(("calibrator", round(calibrated, 4)))
+
         decision = dataclasses.replace(
             decision,
             confidence=calibrated,
+            confidence_trace=trace,
             metadata={
                 **decision.metadata,
                 "category": getattr(strategy_impl, "category", ""),

@@ -538,6 +538,8 @@ def inspect_pending_mt5_order(
                 comment=resolved_comment,
                 opened_at=opened_at,
                 fill_price=fill_price if fill_price > 0 else None,
+                exit_spec=info.get("exit_spec"),
+                strategy_category=str(info.get("strategy_category") or ""),
             )
         except Exception as exc:
             logger.warning(

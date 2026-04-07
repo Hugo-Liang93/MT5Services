@@ -137,6 +137,15 @@ class StructuredStrategyBase:
         """
         return 0.0, ""
 
+    @staticmethod
+    def _linear_score(value: Optional[float], low: float, high: float) -> float:
+        """线性插值评分：value < low → 0.0, value > high → 1.0, 中间线性。"""
+        if value is None:
+            return 0.0
+        if high <= low:
+            return 1.0 if value >= low else 0.0
+        return min(1.0, max(0.0, (value - low) / (high - low)))
+
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         """量能加分（软门控）。默认 0。
         返回 0.0~1.0 量能确认质量（× _VOL_BUDGET 得到 confidence 贡献）。
@@ -182,13 +191,34 @@ class StructuredStrategyBase:
         vol_score = self._volume_bonus(context, direction)
 
         # 统一评分：base + 各层 score(0~1) × 预算
+        why_s = min(why_score, 1.0)
+        when_s = min(when_score, 1.0)
+        where_s = min(where_score, 1.0)
+        vol_s = min(vol_score, 1.0)
         confidence = (
             self._base_confidence
-            + min(why_score, 1.0) * self._WHY_BUDGET
-            + min(when_score, 1.0) * self._WHEN_BUDGET
-            + min(where_score, 1.0) * self._WHERE_BUDGET
-            + min(vol_score, 1.0) * self._VOL_BUDGET
+            + why_s * self._WHY_BUDGET
+            + when_s * self._WHEN_BUDGET
+            + where_s * self._WHERE_BUDGET
+            + vol_s * self._VOL_BUDGET
         )
+
+        # 置信度修正审计链
+        trace: list[tuple[str, float]] = [
+            ("base", round(self._base_confidence, 4)),
+            ("why", round(self._base_confidence + why_s * self._WHY_BUDGET, 4)),
+            (
+                "when",
+                round(
+                    self._base_confidence
+                    + why_s * self._WHY_BUDGET
+                    + when_s * self._WHEN_BUDGET,
+                    4,
+                ),
+            ),
+            ("where", round(confidence - vol_s * self._VOL_BUDGET, 4)),
+            ("vol", round(confidence, 4)),
+        ]
 
         # 信号等级：A(四层全有) / B(三层) / C(仅硬门控)
         grade = (
@@ -212,14 +242,15 @@ class StructuredStrategyBase:
             metadata={
                 "why": why_reason,
                 "when": when_reason,
-                "why_score": round(min(why_score, 1.0), 3),
-                "when_score": round(min(when_score, 1.0), 3),
-                "where_score": round(min(where_score, 1.0), 3),
-                "vol_score": round(min(vol_score, 1.0), 3),
+                "why_score": round(why_s, 3),
+                "when_score": round(when_s, 3),
+                "where_score": round(where_s, 3),
+                "vol_score": round(vol_s, 3),
                 "signal_grade": grade,
                 "entry_spec": entry_spec,
                 "exit_spec": exit_spec,
             },
+            confidence_trace=trace,
         )
 
     # ── 输出构造 ──
@@ -242,16 +273,22 @@ class StructuredStrategyBase:
         reason: str,
         used: List[str],
         metadata: Optional[Dict[str, Any]] = None,
+        confidence_trace: Optional[List[Tuple[str, float]]] = None,
     ) -> SignalDecision:
+        capped = min(max(confidence, 0.0), 0.90)
+        trace = list(confidence_trace or [])
+        if capped != confidence:
+            trace.append(("cap_0.90", round(capped, 4)))
         return SignalDecision(
             strategy=self.name,
             symbol="",
             timeframe="",
             direction=direction,
-            confidence=min(max(confidence, 0.0), 0.90),
+            confidence=capped,
             reason=reason,
             used_indicators=used,
             metadata=metadata or {},
+            confidence_trace=trace,
         )
 
 

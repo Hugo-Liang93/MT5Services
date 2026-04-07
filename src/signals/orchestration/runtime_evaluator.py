@@ -229,6 +229,54 @@ def _resolve_event_impact_forecast(
     return cache.get("data")
 
 
+def _compute_economic_event_decay(
+    runtime: "SignalRuntime",
+    symbol: str,
+) -> float:
+    """计算经济事件渐进降权因子（0.0~1.0, 1.0=无影响）。
+
+    距离高影响事件越近，置信度衰减越大：
+      >60 min → 1.0（无衰减）
+      30~60 min → 0.85
+      15~30 min → 0.55
+      0~15 min → 0.0（完全压制，由 filter chain 的 block 兜底）
+      事件后 0~5 min → 0.0
+      事件后 5~15 min → 0.70（波动未收敛）
+      事件后 >15 min → 1.0
+    """
+    eco_service = getattr(runtime, "_economic_calendar_service", None)
+    if eco_service is None:
+        return 1.0
+    try:
+        upcoming = eco_service.get_high_impact_events(hours=2, limit=1)
+        if not upcoming:
+            return 1.0
+        event_time = getattr(upcoming[0], "event_time", None)
+        if event_time is None:
+            return 1.0
+        from datetime import timezone
+
+        now = datetime.now(timezone.utc)
+        delta_minutes = (event_time - now).total_seconds() / 60.0
+
+        if delta_minutes > 60:
+            return 1.0
+        elif delta_minutes > 30:
+            return 0.85
+        elif delta_minutes > 15:
+            return 0.55
+        elif delta_minutes > 0:
+            return 0.0  # filter chain 的 block 兜底
+        elif delta_minutes > -5:
+            return 0.0  # 事件刚发布
+        elif delta_minutes > -15:
+            return 0.70  # 波动未收敛
+        else:
+            return 1.0
+    except Exception:
+        return 1.0
+
+
 def apply_confidence_adjustments(
     runtime: "SignalRuntime",
     decision: Any,
@@ -243,6 +291,18 @@ def apply_confidence_adjustments(
             strategy, runtime._intrabar_confidence_factor
         )
         decision = apply_intrabar_decay(decision, scope, decay)
+
+    # 经济事件渐进降权：距离高影响事件越近，置信度衰减越大
+    if decision.confidence > 0 and decision.direction in ("buy", "sell"):
+        event_decay = _compute_economic_event_decay(runtime, symbol)
+        if event_decay < 1.0:
+            adjusted = decision.confidence * event_decay
+            trace = list(decision.confidence_trace)
+            trace.append(("economic_event_decay", round(adjusted, 4)))
+            decision = _dc.replace(
+                decision, confidence=adjusted, confidence_trace=trace,
+            )
+
     if decision.confidence > 0 and decision.direction in ("buy", "sell"):
         floor = (
             runtime._confidence_floor if hasattr(runtime, "_confidence_floor") else 0.10

@@ -85,6 +85,21 @@ DEFAULT_AGGRESSION_MAP: Dict[Tuple[str, str], float] = {
     ("breakout", "ranging"):    0.10,   # 假突破：快退
     ("breakout", "breakout"):   0.85,   # 顺势
     ("breakout", "uncertain"):  0.50,   # 中性
+    # session breakout 策略（类似 breakout，但 ranging 中略宽容）
+    ("session", "trending"):    0.80,
+    ("session", "ranging"):     0.20,
+    ("session", "breakout"):    0.80,
+    ("session", "uncertain"):   0.50,
+    # multi_tf (趋势延续，类似 trend)
+    ("multi_tf", "trending"):   0.85,
+    ("multi_tf", "ranging"):    0.15,
+    ("multi_tf", "breakout"):   0.65,
+    ("multi_tf", "uncertain"):  0.50,
+    # price_action (sweep/反转，类似 reversion 偏保护)
+    ("price_action", "trending"):  0.15,
+    ("price_action", "ranging"):   0.70,
+    ("price_action", "breakout"):  0.15,
+    ("price_action", "uncertain"): 0.45,
 }
 
 DEFAULT_AGGRESSION = 0.50  # fallback
@@ -119,6 +134,24 @@ def resolve_exit_profile(
     if alpha is None:
         alpha = DEFAULT_AGGRESSION_MAP.get(key, DEFAULT_AGGRESSION)
     return profile_from_aggression(alpha)
+
+
+def resolve_aggression(
+    strategy_category: str,
+    current_regime: str,
+    aggression_overrides: Optional[Dict[Tuple[str, str], float]] = None,
+) -> float:
+    """返回 (strategy_category, current_regime) 对应的 aggression 系数。
+
+    与 resolve_exit_profile 逻辑一致，但只返回 α 值而非完整 profile。
+    用于 regime 切换时比较 aggression 变化。
+    """
+    key = (strategy_category.lower(), current_regime.lower())
+    source = aggression_overrides if aggression_overrides else DEFAULT_AGGRESSION_MAP
+    alpha = source.get(key)
+    if alpha is None:
+        alpha = DEFAULT_AGGRESSION_MAP.get(key, DEFAULT_AGGRESSION)
+    return alpha
 
 
 def resolve_tf_trail_scale(

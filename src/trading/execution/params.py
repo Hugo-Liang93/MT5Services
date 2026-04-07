@@ -7,6 +7,7 @@ from .sizing import TradeParameters, compute_trade_params, extract_atr_from_indi
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent
+
     from .executor import TradeExecutor
 
 logger = logging.getLogger(__name__)
@@ -92,17 +93,22 @@ def get_account_balance(executor: "TradeExecutor") -> float | None:
 
 
 def tf_to_seconds(tf: str) -> int:
-    tf = tf.upper().strip()
-    mapping = {
-        "M1": 60,
-        "M5": 300,
-        "M15": 900,
-        "M30": 1800,
-        "H1": 3600,
-        "H4": 14400,
-        "D1": 86400,
-    }
-    return mapping.get(tf, 0)
+    from src.utils.common import timeframe_seconds
+
+    result = timeframe_seconds(tf)
+    # 保持原有语义：未知 TF 返回 0（而非 timeframe_seconds 的 60）
+    if tf.upper().strip() not in (
+        "M1",
+        "M5",
+        "M15",
+        "M30",
+        "H1",
+        "H4",
+        "D1",
+        "W1",
+    ):
+        return 0
+    return result
 
 
 def estimate_price(indicators: dict[str, dict[str, Any]]) -> float | None:
@@ -132,9 +138,7 @@ def estimate_cost_metrics(
 
     raw_symbol_point = event.metadata.get("symbol_point")
     try:
-        symbol_point = (
-            float(raw_symbol_point) if raw_symbol_point is not None else None
-        )
+        symbol_point = float(raw_symbol_point) if raw_symbol_point is not None else None
     except (TypeError, ValueError):
         symbol_point = None
     if symbol_point is not None and symbol_point <= 0:
@@ -142,9 +146,7 @@ def estimate_cost_metrics(
 
     raw_spread_price = event.metadata.get("spread_price")
     try:
-        spread_price = (
-            float(raw_spread_price) if raw_spread_price is not None else None
-        )
+        spread_price = float(raw_spread_price) if raw_spread_price is not None else None
     except (TypeError, ValueError):
         spread_price = None
     if spread_price is None and spread_points is not None and symbol_point is not None:
@@ -185,7 +187,11 @@ def estimate_cost_metrics(
     if spread_points is not None and spread_points > 0:
         if reward_distance_points is not None:
             reward_to_cost_ratio = round(reward_distance_points / spread_points, 4)
-        elif spread_price is not None and spread_price > 0 and reward_distance is not None:
+        elif (
+            spread_price is not None
+            and spread_price > 0
+            and reward_distance is not None
+        ):
             reward_to_cost_ratio = round(reward_distance / spread_price, 4)
 
     return {
@@ -196,11 +202,11 @@ def estimate_cost_metrics(
         "symbol_point": symbol_point,
         "stop_distance": round(stop_distance, 4) if stop_distance is not None else None,
         "stop_distance_points": (
-            round(stop_distance_points, 2)
-            if stop_distance_points is not None
-            else None
+            round(stop_distance_points, 2) if stop_distance_points is not None else None
         ),
-        "reward_distance": round(reward_distance, 4) if reward_distance is not None else None,
+        "reward_distance": (
+            round(reward_distance, 4) if reward_distance is not None else None
+        ),
         "reward_distance_points": (
             round(reward_distance_points, 2)
             if reward_distance_points is not None

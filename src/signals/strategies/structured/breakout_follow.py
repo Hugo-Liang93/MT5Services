@@ -35,17 +35,22 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
         adx, d3 = ad["adx"], ad["adx_d3"]
         plus_di, minus_di = ad["plus_di"], ad["minus_di"]
 
+        tf = ctx.timeframe
         if adx is None:
             return False, None, 0, "no_adx"
-        if adx < self._adx_min:
+        adx_min = get_tf_param(self, "adx_min", tf, self._adx_min)
+        adx_max = get_tf_param(self, "adx_max", tf, self._adx_max)
+        if adx < adx_min:
             return False, None, 0, f"adx_low:{adx:.0f}"
-        if adx > self._adx_max:
+        if adx > adx_max:
             return False, None, 0, f"adx_over:{adx:.0f}"
-        if d3 is None or d3 < self._adx_d3_min:
+        adx_d3_min = get_tf_param(self, "adx_d3_min", tf, self._adx_d3_min)
+        if d3 is None or d3 < adx_d3_min:
             return False, None, 0, f"adx_flat:d3={d3}"
 
+        di_diff_min = get_tf_param(self, "di_diff_min", tf, self._di_diff_min)
         di_spread = (plus_di or 0) - (minus_di or 0)
-        if abs(di_spread) < self._di_diff_min:
+        if abs(di_spread) < di_diff_min:
             return False, None, 0, f"di_flat:{di_spread:.1f}"
 
         direction = "buy" if di_spread > 0 else "sell"
@@ -62,9 +67,11 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
         # RSI 非极端
         rsi, _ = self._rsi(ctx)
         if rsi is not None:
-            if direction == "buy" and rsi > self._rsi_max_buy:
+            rsi_max_buy = get_tf_param(self, "rsi_max_buy", tf, self._rsi_max_buy)
+            rsi_min_sell = get_tf_param(self, "rsi_min_sell", tf, self._rsi_min_sell)
+            if direction == "buy" and rsi > rsi_max_buy:
                 return False, None, 0, f"rsi_hot:{rsi:.0f}"
-            if direction == "sell" and rsi < self._rsi_min_sell:
+            if direction == "sell" and rsi < rsi_min_sell:
                 return False, None, 0, f"rsi_cold:{rsi:.0f}"
 
         score = min(d3 / 6.0, 1.0)
@@ -95,8 +102,7 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
         return 0.0, ""
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
-        vr = self._volume_ratio(ctx)
-        return 1.0 if vr is not None and vr > 1.8 else 0.0
+        return self._linear_score(self._volume_ratio(ctx), low=1.2, high=1.8)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         return {"entry_type": "stop", "entry_price": None, "entry_zone_atr": 0.2}

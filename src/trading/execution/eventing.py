@@ -450,6 +450,7 @@ def execute_market_order(
                             else None
                         ),
                         exit_spec=event.metadata.get("exit_spec"),
+                        strategy_category=event.metadata.get("strategy_category", ""),
                     )
                 except Exception as pm_exc:
                     logger.warning(

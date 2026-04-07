@@ -60,7 +60,9 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
 
         if htf_dir is None:
             return False, None, 0, "no_htf"
-        if htf_adx is not None and float(htf_adx) < self._htf_adx_min:
+        if htf_adx is not None and float(htf_adx) < get_tf_param(
+            self, "htf_adx_min", ctx.timeframe, self._htf_adx_min
+        ):
             return False, None, 0, f"htf_weak:{htf_adx}"
 
         direction_hint = "buy" if int(htf_dir) == 1 else "sell"
@@ -151,8 +153,7 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
         return _structure_bias_bonus(self._ms(ctx), direction)
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
-        vr = self._volume_ratio(ctx)
-        return 1.0 if vr is not None and vr > 1.3 else 0.0
+        return self._linear_score(self._volume_ratio(ctx), low=0.9, high=1.3)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         if self._last_tl is not None:

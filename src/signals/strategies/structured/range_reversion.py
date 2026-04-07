@@ -32,9 +32,11 @@ class StructuredRangeReversion(StructuredStrategyBase):
     _base_confidence: float = 0.48
 
     def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
+        tf = ctx.timeframe
         ad = self._adx_full(ctx)
         adx = ad["adx"]
-        if adx is not None and adx > self._adx_max:
+        adx_max = get_tf_param(self, "adx_max", tf, self._adx_max)
+        if adx is not None and adx > adx_max:
             return False, None, 0, f"trending:{adx:.0f}"
 
         # HTF 不应有强同向趋势
@@ -47,7 +49,12 @@ class StructuredRangeReversion(StructuredStrategyBase):
         if rsi is None:
             return False, None, 0, "no_rsi"
 
-        if rsi <= self._rsi_oversold and (bb_pos is None or bb_pos <= self._bb_low):
+        rsi_os = get_tf_param(self, "rsi_oversold", tf, self._rsi_oversold)
+        rsi_ob = get_tf_param(self, "rsi_overbought", tf, self._rsi_overbought)
+        bb_lo = get_tf_param(self, "bb_low", tf, self._bb_low)
+        bb_hi = get_tf_param(self, "bb_high", tf, self._bb_high)
+
+        if rsi <= rsi_os and (bb_pos is None or bb_pos <= bb_lo):
             if rsi_d3 is not None and rsi_d3 < 0:
                 return False, None, 0, "still_falling"
             # HTF 冲突检查
@@ -57,7 +64,7 @@ class StructuredRangeReversion(StructuredStrategyBase):
             adx_score = 0.7 if adx is not None and adx < 18 else 0.4
             return True, "buy", adx_score, f"oversold:rsi={rsi:.0f},bb={bb_pos}"
 
-        if rsi >= self._rsi_overbought and (bb_pos is None or bb_pos >= self._bb_high):
+        if rsi >= rsi_ob and (bb_pos is None or bb_pos >= bb_hi):
             if rsi_d3 is not None and rsi_d3 > 0:
                 return False, None, 0, "still_rising"
             if htf_adx is not None and float(htf_adx) > 25 and htf_dir is not None:
@@ -94,11 +101,10 @@ class StructuredRangeReversion(StructuredStrategyBase):
         mfi = self._mfi(ctx)
         if mfi is None:
             return 0.0
-        if direction == "buy" and mfi < 25:
-            return 1.0
-        if direction == "sell" and mfi > 75:
-            return 1.0
-        return 0.0
+        # MFI 超卖/超买的连续化评分（买方 MFI 越低越好，卖方 MFI 越高越好）
+        if direction == "buy":
+            return self._linear_score(40.0 - mfi, low=0.0, high=15.0)
+        return self._linear_score(mfi - 60.0, low=0.0, high=15.0)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         return {"entry_type": "limit", "entry_price": None, "entry_zone_atr": 0.4}

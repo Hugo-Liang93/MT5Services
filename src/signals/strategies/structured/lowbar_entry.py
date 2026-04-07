@@ -67,7 +67,9 @@ class StructuredLowbarEntry(StructuredStrategyBase):
             return False, None, 0, "no_close_pos"
         cp_f = float(cp)
 
-        buy_thr = get_tf_param(self, "close_pos_buy", ctx.timeframe, self._close_pos_buy)
+        buy_thr = get_tf_param(
+            self, "close_pos_buy", ctx.timeframe, self._close_pos_buy
+        )
         sell_thr = get_tf_param(
             self, "close_pos_sell", ctx.timeframe, self._close_pos_sell
         )
@@ -126,8 +128,7 @@ class StructuredLowbarEntry(StructuredStrategyBase):
         return score, info
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
-        vr = self._volume_ratio(ctx)
-        return 1.0 if vr is not None and vr > 1.5 else 0.0
+        return self._linear_score(self._volume_ratio(ctx), low=1.0, high=1.5)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
