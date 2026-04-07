@@ -43,11 +43,13 @@ from .runtime_processing import dequeue_event as _runtime_dequeue_event
 from .runtime_processing import detect_regime as _runtime_detect_regime
 from .runtime_processing import is_stale_intrabar as _runtime_is_stale_intrabar
 from .runtime_processing import process_next_event as _runtime_process_next_event
+from .runtime_metadata import build_snapshot_metadata
 from .runtime_recovery import (
     restore_confirmed_state as _runtime_restore_confirmed_state,
 )
 from .runtime_recovery import restore_preview_state as _runtime_restore_preview_state
 from .runtime_recovery import restore_state as _runtime_restore_state
+from .runtime_warmup import check_warmup_barrier
 from .state_machine import build_transition_metadata
 from .state_machine import is_new_snapshot as _sm_is_new_snapshot
 from .state_machine import mark_emitted as _sm_mark_emitted
@@ -367,133 +369,19 @@ class SignalRuntime:
             return
         if scope == "intrabar" and not self.enable_intrabar:
             return
-        # Warmup barrier：只有 warmup 完成后，才允许实时 confirmed/intrabar 事件进入评估。
-        # warmup 未就绪时直接丢弃实时快照，避免冷启动阶段产生伪信号。
-        # 这样可以保证 confirmed 与 intrabar 都建立在已稳定的指标上下文之上。
-        # 首次放行以 (symbol, tf) 为粒度，先看到 confirmed bar 再允许对应 intrabar。
-        # 防止未收盘快照抢先进入状态机，破坏同一交易目标的事件顺序。
-        warmup_ready = (
-            self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
-        )
-        with self._warmup_lock:
-            if not warmup_ready:
-                self._warmup_skipped += 1
-                if self._warmup_skipped <= 5 or self._warmup_skipped % 200 == 0:
-                    logger.info(
-                        "Warmup barrier (backfilling): %s/%s scope=%s bar_time=%s (total_skipped=%d)",
-                        symbol,
-                        timeframe,
-                        scope,
-                        bar_time.isoformat(),
-                        self._warmup_skipped,
-                    )
-                return
-            if scope == "confirmed":
-                st_key = (symbol, timeframe)
-                if st_key not in self._first_realtime_bar_seen:
-                    if self._warmup_ready_fn is not None:
-                        _bt = (
-                            bar_time
-                            if bar_time.tzinfo is not None
-                            else bar_time.replace(tzinfo=timezone.utc)
-                        )
-                        tf_secs = timeframe_seconds(timeframe)
-                        staleness = (
-                            datetime.now(timezone.utc) - _bt.astimezone(timezone.utc)
-                        ).total_seconds()
-                        max_age = tf_secs * 2 + 30
-                        if staleness > max_age:
-                            self._warmup_skipped += 1
-                            if (
-                                self._warmup_skipped <= 10
-                                or self._warmup_skipped % 100 == 0
-                            ):
-                                logger.info(
-                                    "Warmup skip (stale bar_time): %s/%s bar_time=%s staleness=%.0fs max_age=%.0fs (total_skipped=%d)",
-                                    symbol,
-                                    timeframe,
-                                    bar_time.isoformat(),
-                                    staleness,
-                                    max_age,
-                                    self._warmup_skipped,
-                                )
-                            return
-                    self._first_realtime_bar_seen.add(st_key)
-                    logger.info(
-                        "Warmup lifted: first realtime bar for %s/%s at %s",
-                        symbol,
-                        timeframe,
-                        bar_time.isoformat(),
-                    )
-                required = getattr(
-                    self.policy, "warmup_required_indicators", ("atr14",)
-                )
-                if required and any(ind not in indicators for ind in required):
-                    self._warmup_skipped += 1
-                    if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
-                        missing = [ind for ind in required if ind not in indicators]
-                        logger.info(
-                            "Warmup skip (indicators missing: %s): %s/%s (total_skipped=%d)",
-                            missing,
-                            symbol,
-                            timeframe,
-                            self._warmup_skipped,
-                        )
-                    return
-            if scope == "intrabar" and self._warmup_ready_fn is not None:
-                st_key = (symbol, timeframe)
-                if st_key not in self._first_realtime_bar_seen:
-                    return
-                if st_key not in self._first_intrabar_snapshot_seen:
-                    if not self._all_intrabar_strategies_satisfied(indicators):
-                        return
-                    self._first_intrabar_snapshot_seen.add(st_key)
-                    logger.info(
-                        "Intrabar ready: first complete snapshot for %s/%s (%d indicators)",
-                        symbol,
-                        timeframe,
-                        len(indicators),
-                    )
-        # Prefer upstream trace_id from PipelineEventBus (set by bar_event_handler)
-        # so the same ID flows through the entire pipeline for frontend tracing.
+        if not check_warmup_barrier(
+            self, symbol, timeframe, bar_time, indicators, scope
+        ):
+            return
         upstream_trace_id = getattr(self.snapshot_source, "_current_trace_id", None)
-        metadata = {
-            "scope": scope,
-            "bar_time": bar_time.isoformat(),
-            "snapshot_time": datetime.now(timezone.utc).isoformat(),
-            "trigger_source": f"{scope}_snapshot",
-            "signal_trace_id": upstream_trace_id or uuid4().hex,
-        }
-        spread_getter = getattr(self.snapshot_source, "get_current_spread", None)
-        market_service = getattr(self.snapshot_source, "market_service", None)
-        if not callable(spread_getter) and market_service is not None:
-            spread_getter = getattr(market_service, "get_current_spread", None)
-        point_getter = getattr(self.snapshot_source, "get_symbol_point", None)
-        if not callable(point_getter) and market_service is not None:
-            point_getter = getattr(market_service, "get_symbol_point", None)
-        if callable(spread_getter):
-            try:
-                spread_points = float(spread_getter(symbol))
-                metadata[MK.SPREAD_POINTS] = spread_points
-                if callable(point_getter):
-                    point_size = float(point_getter(symbol))
-                    metadata[MK.SYMBOL_POINT] = point_size
-                    metadata[MK.SPREAD_PRICE] = spread_points * point_size
-            except (TypeError, ValueError, AttributeError, KeyError):
-                logger.debug(
-                    "Failed to resolve spread/point for %s",
-                    symbol,
-                    exc_info=True,
-                )
-        if scope == "intrabar":
-            if bar_time.tzinfo is None:
-                bar_time = bar_time.replace(tzinfo=timezone.utc)
-            elapsed = (
-                datetime.now(timezone.utc) - bar_time.astimezone(timezone.utc)
-            ).total_seconds()
-            metadata[MK.BAR_PROGRESS] = max(
-                0.0, min(elapsed / max(timeframe_seconds(timeframe), 1), 1.0)
-            )
+        metadata = build_snapshot_metadata(
+            scope=scope,
+            symbol=symbol,
+            timeframe=timeframe,
+            bar_time=bar_time,
+            snapshot_source=self.snapshot_source,
+            trace_id=upstream_trace_id or uuid4().hex,
+        )
         self._enqueue((scope, symbol, timeframe, indicators, metadata))
 
     def _enqueue(

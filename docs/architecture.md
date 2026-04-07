@@ -211,6 +211,8 @@ pipeline_trace_events + signal/trade → TradingFlowTraceReadModel → /v1/trade
 | `runtime.py` | 门面：生命周期 + 队列管理 | 薄协调器 |
 | `runtime_evaluator.py` | 策略评估 + confidence 调整 + 信号发布 | 核心逻辑 |
 | `runtime_processing.py` | 事件出队 + filter/regime + 单事件处理 | 流程编排 |
+| `runtime_warmup.py` | warmup 屏障：backfilling/staleness/指标完整性检查 | 纯逻辑 |
+| `runtime_metadata.py` | snapshot metadata 组装：spread/bar_progress/trace_id | 纯函数 |
 | `runtime_recovery.py` | confirmed/preview 状态还原 | 启动恢复 |
 | `state_machine.py` | preview → armed → confirmed 状态转换 | 纯逻辑 |
 | `vote_processor.py` | 投票处理：fusion/emit/process_voting | 纯函数 |
