@@ -1,7 +1,9 @@
 from typing import Any, Callable
 
 
-def same_listener_reference(left: Callable[..., Any], right: Callable[..., Any]) -> bool:
+def same_listener_reference(
+    left: Callable[..., Any], right: Callable[..., Any]
+) -> bool:
     """Return True when two listener callables refer to the same target.
 
     Handles both regular functions and bound methods.
@@ -29,11 +31,14 @@ def timeframe_seconds(timeframe: str) -> int:
         "H1": 3600,
         "H4": 14400,
         "D1": 86400,
+        "W1": 604800,
     }
     return mapping.get(tf_upper, 60)
 
 
-def timeframe_interval(timeframe: str, default_interval: float, overrides: dict) -> float:
+def timeframe_interval(
+    timeframe: str, default_interval: float, overrides: dict
+) -> float:
     tf_upper = timeframe.upper()
     if tf_upper in overrides:
         return float(overrides[tf_upper])

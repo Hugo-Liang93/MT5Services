@@ -95,8 +95,7 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
         return 0.0, ""
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
-        vr = self._volume_ratio(ctx)
-        return 1.0 if vr is not None and vr > 1.8 else 0.0
+        return self._linear_score(self._volume_ratio(ctx), low=1.2, high=1.8)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         return {"entry_type": "stop", "entry_price": None, "entry_zone_atr": 0.2}

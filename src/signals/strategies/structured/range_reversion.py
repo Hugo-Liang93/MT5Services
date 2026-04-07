@@ -94,11 +94,10 @@ class StructuredRangeReversion(StructuredStrategyBase):
         mfi = self._mfi(ctx)
         if mfi is None:
             return 0.0
-        if direction == "buy" and mfi < 25:
-            return 1.0
-        if direction == "sell" and mfi > 75:
-            return 1.0
-        return 0.0
+        # MFI 超卖/超买的连续化评分（买方 MFI 越低越好，卖方 MFI 越高越好）
+        if direction == "buy":
+            return self._linear_score(40.0 - mfi, low=0.0, high=15.0)
+        return self._linear_score(mfi - 60.0, low=0.0, high=15.0)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         return {"entry_type": "limit", "entry_price": None, "entry_zone_atr": 0.4}

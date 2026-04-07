@@ -158,6 +158,9 @@ class TradeExecutor:
         self._circuit_open: bool = False
         # 熔断打开时间，用于自动恢复计算。
         self._circuit_open_at: datetime | None = None
+        # 健康检查连续失败计数，防止 auto-reset 死循环。
+        self._health_check_failures: int = 0
+        self._MAX_HEALTH_CHECK_FAILURES: int = 5
         # 同策略同方向再入场冷却：记录上次开仓的 bar_time
         # key = (symbol, strategy, direction), value = bar_time(datetime)
         self._last_entry_bar_time: dict[tuple[str, str, str], datetime] = {}
@@ -350,6 +353,7 @@ class TradeExecutor:
         self._circuit_open = False
         self._consecutive_failures = 0
         self._circuit_open_at = None
+        self._health_check_failures = 0
         logger.info("TradeExecutor: circuit breaker manually reset")
 
     def _check_trading_health(self) -> bool:
@@ -396,15 +400,31 @@ class TradeExecutor:
                             "health check passed, entering half-open",
                             elapsed,
                         )
+                        self._health_check_failures = 0
                         self.reset_circuit()
                     else:
-                        # 健康检查未通过，延长熔断（重置计时器等下一个窗口）
+                        self._health_check_failures += 1
                         self._circuit_open_at = datetime.now(timezone.utc)
-                        logger.warning(
-                            "TradeExecutor: circuit auto-reset deferred, "
-                            "health check failed after %.1f minutes",
-                            elapsed,
-                        )
+                        if (
+                            self._health_check_failures
+                            >= self._MAX_HEALTH_CHECK_FAILURES
+                        ):
+                            logger.critical(
+                                "TradeExecutor: circuit STUCK — %d consecutive health "
+                                "check failures, MT5 connection may be permanently "
+                                "broken. Manual intervention required (reset_circuit "
+                                "or restart).",
+                                self._health_check_failures,
+                            )
+                        else:
+                            logger.warning(
+                                "TradeExecutor: circuit auto-reset deferred, "
+                                "health check failed after %.1f minutes "
+                                "(health_check_failures=%d/%d)",
+                                elapsed,
+                                self._health_check_failures,
+                                self._MAX_HEALTH_CHECK_FAILURES,
+                            )
             if self._circuit_open:
                 logger.warning(
                     "TradeExecutor: circuit open (consecutive_failures=%d), "
@@ -766,6 +786,8 @@ class TradeExecutor:
                     self._circuit_open_at.isoformat() if self._circuit_open_at else None
                 ),
                 "auto_reset_minutes": self.config.circuit_auto_reset_minutes,
+                "health_check_failures": self._health_check_failures,
+                "max_health_check_failures": self._MAX_HEALTH_CHECK_FAILURES,
             },
             "equity_curve_filter": (
                 self._equity_curve_filter.status()

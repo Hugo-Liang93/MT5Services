@@ -151,8 +151,7 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
         return _structure_bias_bonus(self._ms(ctx), direction)
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
-        vr = self._volume_ratio(ctx)
-        return 1.0 if vr is not None and vr > 1.3 else 0.0
+        return self._linear_score(self._volume_ratio(ctx), low=0.9, high=1.3)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         if self._last_tl is not None:
