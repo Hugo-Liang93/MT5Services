@@ -211,9 +211,9 @@ def _resolve_event_impact_forecast(
     cache = runtime._event_impact_cache
     if event_time >= cache.get("expires_at", event_time):
         try:
-            eco_service, _imp = _resolve_eco_provider(runtime)
+            eco_service, importance_min = _resolve_eco_provider(runtime)
             if eco_service is not None:
-                upcoming_events = eco_service.get_high_impact_events(hours=2, limit=1)
+                upcoming_events = _get_upcoming_high_impact(eco_service, importance_min)
                 if upcoming_events:
                     cache["data"] = impact_analyzer.get_impact_forecast(
                         upcoming_events[0].event_name, symbol=symbol
@@ -225,6 +225,34 @@ def _resolve_event_impact_forecast(
             cache["data"] = None
             cache["expires_at"] = event_time + timedelta(minutes=5)
     return cache.get("data")
+
+
+def _get_upcoming_high_impact(provider: Any, importance_min: int) -> list[Any]:
+    """查询最近高影响事件，兼容不同 provider API。
+
+    优先 get_high_impact_events（EconomicCalendarService 提供），
+    回退 get_events（TradeGuardProvider 协议外但常见），
+    再回退返回空列表。
+    """
+    from datetime import timezone
+
+    # 优先：完整日历服务 API
+    fn = getattr(provider, "get_high_impact_events", None)
+    if callable(fn):
+        return fn(hours=2, limit=1)
+
+    # 回退：通用 get_events（decay 路径也使用此 API）
+    fn = getattr(provider, "get_events", None)
+    if callable(fn):
+        now = datetime.now(timezone.utc)
+        return fn(
+            start_time=now,
+            end_time=now + timedelta(hours=2),
+            limit=1,
+            importance_min=importance_min,
+        )
+
+    return []
 
 
 _EVENT_DECAY_TTL_SECONDS: float = 60.0
@@ -308,11 +336,15 @@ def _query_symbol_event_decay(
 
     from src.calendar.economic_calendar.trade_guard import infer_symbol_context
 
+    get_events_fn = getattr(provider, "get_events", None)
+    if not callable(get_events_fn):
+        return 1.0
+
     now = datetime.now(timezone.utc)
     context = infer_symbol_context(symbol)
 
     # 查询前后 2h 窗口内与该 symbol 货币/国家相关的高影响事件
-    events = provider.get_events(
+    events = get_events_fn(
         start_time=now - timedelta(minutes=20),
         end_time=now + timedelta(hours=2),
         limit=5,
