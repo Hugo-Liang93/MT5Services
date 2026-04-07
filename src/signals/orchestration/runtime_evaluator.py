@@ -298,11 +298,16 @@ def _compute_economic_event_decay(
 
     cache[symbol] = {"decay": decay, "expires_at": now_mono + _EVENT_DECAY_TTL_SECONDS}
 
-    # 防止缓存无限增长：超过上限时清除已过期条目
+    # 防止缓存无限增长：先清除已过期条目，仍超限则淘汰最旧条目
     if len(cache) > _EVENT_DECAY_CACHE_MAX:
         expired = [k for k, v in cache.items() if now_mono >= v["expires_at"]]
         for k in expired:
             del cache[k]
+        # 过期清理后仍超限：按 expires_at 升序淘汰，直到回到上限
+        if len(cache) > _EVENT_DECAY_CACHE_MAX:
+            by_age = sorted(cache.items(), key=lambda kv: kv[1]["expires_at"])
+            for k, _ in by_age[: len(cache) - _EVENT_DECAY_CACHE_MAX]:
+                del cache[k]
 
     return decay
 
