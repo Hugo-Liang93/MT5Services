@@ -1,7 +1,7 @@
 # 系统架构参考
 
 > 合并自原 `docs/architecture/` 下 4 个文件（overview / data-flow / module-boundaries / module-layout）。
-> 更新日期：2026-04-05
+> 更新日期：2026-04-07
 
 ---
 
@@ -190,7 +190,7 @@ pipeline_trace_events + signal/trade → TradingFlowTraceReadModel → /v1/trade
 |------|------|
 | `service.py` | SignalModule：策略注册 + `evaluate()` 统一入口 |
 | `models.py` | SignalEvent / SignalContext / SignalDecision 数据类 |
-| `confidence.py` | 置信度管线纯函数（`apply_htf_alignment`、`apply_intrabar_decay`） |
+| `confidence.py` | 置信度管线纯函数（`apply_intrabar_decay`） |
 
 子包：
 
@@ -214,8 +214,8 @@ pipeline_trace_events + signal/trade → TradingFlowTraceReadModel → /v1/trade
 | `runtime_recovery.py` | confirmed/preview 状态还原 | 启动恢复 |
 | `state_machine.py` | preview → armed → confirmed 状态转换 | 纯逻辑 |
 | `vote_processor.py` | 投票处理：fusion/emit/process_voting | 纯函数 |
-| `htf_resolver.py` | HTF 配置解析、指标查询、对齐乘数计算 | 纯函数 |
-| `affinity.py` | Regime 亲和度计算 + 快速拒绝检查 | 纯函数 |
+| `htf_resolver.py` | HTF 配置解析、指标查询 | 纯函数 |
+| `wal_queue.py` | WAL 持久化信号队列 | 持久化 |
 | `policy.py` | SignalPolicy + VotingGroupConfig 配置对象 | 数据类 |
 | `voting.py` | StrategyVotingEngine：多策略加权投票 | 纯逻辑 |
 

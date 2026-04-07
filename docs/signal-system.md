@@ -10,7 +10,7 @@
 src/signals/
 ├── service.py                 # SignalModule (策略注册 + evaluate())
 ├── models.py                  # SignalEvent / SignalContext / SignalDecision
-├── confidence.py              # 置信度管线纯函数
+├── confidence.py              # 置信度管线纯函数 (apply_intrabar_decay)
 ├── orchestration/
 │   ├── runtime.py             # SignalRuntime 协调器 (生命周期 + 队列)
 │   ├── runtime_evaluator.py   # 策略评估 + confidence 调整 + 信号发布
@@ -18,10 +18,10 @@ src/signals/
 │   ├── runtime_recovery.py    # 运行态恢复 (confirmed/preview 状态还原)
 │   ├── policy.py              # SignalPolicy + VotingGroupConfig
 │   ├── voting.py              # StrategyVotingEngine
-│   ├── htf_resolver.py        # HTF 配置解析与对齐乘数 (纯函数)
+│   ├── htf_resolver.py        # HTF 配置解析 (纯函数)
 │   ├── state_machine.py       # 状态机转换 (纯逻辑)
 │   ├── vote_processor.py      # 投票处理 (纯函数)
-│   └── affinity.py            # Regime 亲和度 + 快速拒绝 (纯函数)
+│   └── wal_queue.py           # WAL 持久化信号队列
 ├── strategies/
 │   ├── base.py                # SignalStrategy Protocol + TimeframeScaler + get_tf_param()
 │   ├── catalog.py             # build_named_strategy_catalog() (7 个结构化策略, 8 个注册实例)
@@ -34,7 +34,8 @@ src/signals/
 │   │   ├── session_breakout.py
 │   │   ├── trendline_touch.py
 │   │   ├── lowbar_entry.py
-│   │   └── trendline_utils.py # 趋势线检测纯函数
+│   │   ├── trendline_utils.py # 趋势线检测纯函数
+│   │   └── checks.py         # 通用检查工具函数集 (HTF/ADX/RSI/Bar/Volume 纯函数)
 │   ├── adapters.py            # UnifiedIndicatorSourceAdapter
 │   ├── htf_cache.py           # HTFStateCache
 │   └── tf_params.py           # TFParamResolver
@@ -88,11 +89,10 @@ SignalRuntime._on_snapshot(symbol, timeframe, bar_time, indicators, scope)
 ② timeframe 白名单    → skip if not allowed
 ③ scope 匹配          → skip if scope ∉ preferred_scopes
 ④ 指标完整性          → skip if missing required_indicators
-⑤ Affinity gate       → skip if affinity < 0.15 (不调用 evaluate)
-⑥ Snapshot 去重       → skip if same bar_time + signature
-⑦ service.evaluate()  → raw_confidence × affinity → calibrator → final
-⑧ 状态机转换          → confirmed / intrabar 路径
-⑨ 持久化 + 事件发布   → 仅在状态转换时
+⑤ Snapshot 去重       → skip if same bar_time + signature
+⑥ service.evaluate()  → raw_confidence × effective_affinity → final
+⑦ 状态机转换          → confirmed / intrabar 路径
+⑧ 持久化 + 事件发布   → 仅在状态转换时
 ```
 
 ---
@@ -138,14 +138,16 @@ def evaluate(self, context: SignalContext) -> SignalDecision:
 | 均值回归 | 0.20–0.30 | 1.00 | 0.30–0.40 | 0.60 |
 | 突破/波动率 | 0.30–0.90 | 0.15–0.55 | 1.00 | 0.45–0.65 |
 
-### 3.4 新增步骤
+### 3.4 新增步骤（结构化策略）
 
-1. 在对应策略文件中实现类 (trend.py / mean_reversion.py / breakout.py / ...)
-2. 在 `src/signals/strategies/__init__.py` 中导出
-3. 在 `src/signals/service.py` 默认策略列表中注册
-4. 确认 `config/indicators.json` 包含所需指标
-5. 在 `tests/signals/` 中添加单元测试 (覆盖四种 Regime)
-6. (可选) 在 `config/signal.ini` 配置参数
+1. `src/signals/strategies/structured/` 新建文件，继承 `StructuredStrategyBase`
+2. 实现 `_why()` + `_when()`（硬门控），可选 `_where()` + `_volume_bonus()`（软门控）
+3. 实现 `_entry_spec()`（入场规格：market/limit/stop + 入场价 + zone_atr）
+4. `src/signals/strategies/structured/__init__.py` 导出
+5. `src/signals/strategies/catalog.py` 注册
+6. `signal.ini` + `signal.local.ini` 的 `[strategy_timeframes]` **必须同时添加**
+7. `tests/signals/` 添加测试
+8. 横切关注点（performance/calibrator）通过装饰器接入，**不在策略内部重复实现**
 
 ### 3.5 Intrabar 决策
 
@@ -258,17 +260,18 @@ SoftRegimeResult:
 ## 5. 置信度管线
 
 ```
-raw_confidence (策略输出)
-    × effective_affinity                    (Regime 结构过滤)
-    × session_performance_multiplier        (日内实时状态)
-    → ConfidenceCalibrator                  (长期历史校准)
-    → max(confidence_floor, result)         (底线保护)
-    × intrabar_confidence_factor            (scope=intrabar 时 ×0.85)
-    × htf_alignment_multiplier              (对齐 ×1.10 / 冲突 ×0.70)
+=== 结构化策略管线（统一评分框架） ===
+raw_confidence = base(0.50)
+    + why_score(0~1) × 0.15            (方向确认质量)
+    + when_score(0~1) × 0.15           (时机精度)
+    + where_score(0~1) × 0.10          (结构位质量)
+    + vol_score(0~1) × 0.05            (量能确认)
+    → cap 0.90
+    × effective_affinity               (Regime 结构过滤，SoftRegime 加权)
+    → max(confidence_floor, result)    (底线保护)
     = final_confidence
+    注：PerformanceTracker/Calibrator 待回测通过后通过装饰器接入
 ```
-
-分阶段校准：`<50笔` 不校准, `50-100` alpha=0.10, `100+` alpha=0.15。
 
 ---
 
