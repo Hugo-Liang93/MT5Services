@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.signals.evaluation.indicators_helpers import extract_close_price
+from src.signals.metadata_keys import MetadataKey as MK
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +121,8 @@ class SignalQualityTracker:
         - confirmed_buy / confirmed_sell → 记录待评估信号
         - 后续 confirmed snapshot 到来时 → 推进计数并回填结果
         """
-        signal_state = str(event.metadata.get("signal_state", ""))
-        scope = str(event.metadata.get("scope", ""))
+        signal_state = str(event.metadata.get(MK.SIGNAL_STATE, ""))
+        scope = str(event.metadata.get(MK.SCOPE, ""))
 
         if scope != "confirmed":
             return
@@ -171,7 +172,7 @@ class SignalQualityTracker:
     def _register_signal_for_evaluation(self, event: Any) -> None:
         """注册一个新的待评估信号。"""
         entry_price = extract_close_price(event.indicators, event.metadata)
-        bar_time_raw = event.metadata.get("bar_time", event.generated_at)
+        bar_time_raw = event.metadata.get(MK.BAR_TIME, event.generated_at)
         if isinstance(bar_time_raw, str):
             try:
                 bar_time = datetime.fromisoformat(bar_time_raw.replace("Z", "+00:00"))
@@ -194,7 +195,7 @@ class SignalQualityTracker:
             entry_price=entry_price,
             issued_at=event.generated_at,
             bar_time=bar_time,
-            regime=event.metadata.get("regime"),
+            regime=event.metadata.get(MK.REGIME),
         )
         key = (event.symbol, event.timeframe, event.strategy)
         with self._lock:
@@ -214,7 +215,7 @@ class SignalQualityTracker:
         if exit_price is None:
             return
 
-        bar_time_raw = event.metadata.get("bar_time")
+        bar_time_raw = event.metadata.get(MK.BAR_TIME)
         symbol_tf = (event.symbol, event.timeframe)
         to_evaluate: List[_PendingSignal] = []
 

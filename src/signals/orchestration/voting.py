@@ -54,6 +54,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional
 
+from ..metadata_keys import MetadataKey as MK
 from ..models import SignalDecision
 from ..evaluation.regime import RegimeType
 
@@ -117,7 +118,7 @@ class StrategyVotingEngine:
 
         # ── 过滤复合策略，防止双重计票 ────────────────────────────────
         if exclude_composite:
-            decisions = [d for d in decisions if not d.metadata.get("composite")]
+            decisions = [d for d in decisions if not d.metadata.get(MK.COMPOSITE)]
         if not decisions:
             return None
 

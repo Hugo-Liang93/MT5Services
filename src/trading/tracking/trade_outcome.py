@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from src.signals.metadata_keys import MetadataKey as MK
+
 logger = logging.getLogger(__name__)
 
 
@@ -244,11 +246,11 @@ class TradeOutcomeTracker:
                 "close_source": close_source if close_price_f is not None else "mt5_missing",
             }
             if exit_reason:
-                metadata["exit_reason"] = exit_reason
+                metadata[MK.EXIT_REASON] = exit_reason
             if r_multiple is not None:
-                metadata["r_multiple"] = round(float(r_multiple), 4)
+                metadata[MK.R_MULTIPLE] = round(float(r_multiple), 4)
             if exit_regime:
-                metadata["exit_regime"] = exit_regime
+                metadata[MK.EXIT_REGIME] = exit_regime
             rows: List[Tuple] = [(
                 now,
                 trade.signal_id,

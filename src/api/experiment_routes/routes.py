@@ -42,7 +42,7 @@ def _get_experiment_repo():  # type: ignore[no-untyped-def]
         return None
 
 
-@router.post("", response_model=ApiResponse)
+@router.post("/", response_model=ApiResponse)
 def create_experiment(req: CreateExperimentRequest) -> ApiResponse:
     """创建新实验。"""
     from src.utils.experiment import generate_experiment_id
@@ -60,7 +60,7 @@ def create_experiment(req: CreateExperimentRequest) -> ApiResponse:
     return ApiResponse(success=True, data={"experiment_id": exp_id})
 
 
-@router.get("", response_model=ApiResponse)
+@router.get("/", response_model=ApiResponse)
 def list_experiments(
     status: Optional[str] = Query(None, description="按状态过滤"),
     limit: int = Query(50, ge=1, le=200),

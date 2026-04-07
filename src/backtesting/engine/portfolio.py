@@ -351,6 +351,21 @@ class PortfolioTracker:
 
             pos.bars_held += 1
 
+            # 原始 TP 硬检查（优先于 Chandelier 统一评估）
+            if pos.take_profit > 0:
+                if pos.direction == "buy" and bar.high >= pos.take_profit:
+                    trade = self._close_position(
+                        pos, pos.take_profit, bar.time, bar_index, "take_profit",
+                    )
+                    closed.append(trade)
+                    continue
+                if pos.direction == "sell" and bar.low <= pos.take_profit:
+                    trade = self._close_position(
+                        pos, pos.take_profit, bar.time, bar_index, "take_profit",
+                    )
+                    closed.append(trade)
+                    continue
+
             # 记录策略方向到 recent_signal_dirs
             strategy_dir = sig_dirs.get(pos.strategy, "")
             if strategy_dir:

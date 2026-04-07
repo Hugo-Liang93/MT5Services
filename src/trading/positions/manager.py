@@ -132,10 +132,14 @@ class PositionManager:
         end_of_day_close_enabled: bool = False,
         end_of_day_close_hour_utc: int = 21,
         end_of_day_close_minute_utc: int = 0,
+        trailing_atr_multiplier: float = 3.0,
+        breakeven_atr_threshold: float = 1.0,
     ):
         self._trading = trading_module
         self._end_of_day_closeout = end_of_day_closeout
         self._chandelier_config = chandelier_config or ChandelierConfig()
+        self.trailing_atr_multiplier = trailing_atr_multiplier
+        self.breakeven_atr_threshold = breakeven_atr_threshold
         self._indicator_source = indicator_source
         self._regime_detector = regime_detector
         self.end_of_day_close_enabled = bool(end_of_day_close_enabled)
@@ -410,9 +414,13 @@ class PositionManager:
                 "r_multiple": pos.last_r_multiple,
                 "bars_held": pos.bars_held,
                 "breakeven_activated": pos.breakeven_activated,
+                "breakeven_applied": pos.breakeven_applied or pos.breakeven_activated,
+                "trailing_active": pos.trailing_active or pos.peak_price is not None,
+                "highest_price": pos.highest_price or pos.peak_price,
                 "sl_atr_mult": pos.sl_atr_mult,
                 "last_exit_reason": pos.last_exit_reason or None,
                 "last_exit_regime": pos.last_exit_regime or None,
+                "comment": pos.comment,
                 "opened_at": pos.opened_at.isoformat(),
             }
             for pos in snapshot

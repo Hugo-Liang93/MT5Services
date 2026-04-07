@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
+from ..metadata_keys import MetadataKey as MK
+
 # 默认 LTF → HTF 映射（可在构造时覆盖）
 _DEFAULT_HTF_MAP: Dict[str, str] = {
     "M1": "M5",
@@ -139,7 +141,7 @@ class HTFStateCache:
         """SignalRuntime 信号监听器：缓存 source_strategies 的 confirmed 信号方向。"""
         if event.strategy not in self._source_strategies:
             return
-        signal_state = str(event.metadata.get("signal_state", ""))
+        signal_state = str(event.metadata.get(MK.SIGNAL_STATE, ""))
         if not signal_state.startswith("confirmed_"):
             return
         if signal_state == "confirmed_cancelled":
@@ -154,7 +156,7 @@ class HTFStateCache:
 
         # Extract enriched context from event metadata
         confidence = getattr(event, "confidence", 0.5)
-        regime = str(event.metadata.get("_regime", "uncertain"))
+        regime = str(event.metadata.get(MK.REGIME_HARD, "uncertain"))
 
         with self._lock:
             prev = self._cache.get(key)

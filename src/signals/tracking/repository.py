@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
+from ..metadata_keys import MetadataKey as MK
 from ..models import SignalRecord
 
 if TYPE_CHECKING:
@@ -67,8 +68,8 @@ class TimescaleSignalRepository:
 
     @staticmethod
     def _resolve_scope(metadata: dict[str, Any]) -> str:
-        scope = str(metadata.get("scope", "confirmed")).strip().lower()
-        signal_state = str(metadata.get("signal_state", "")).strip().lower()
+        scope = str(metadata.get(MK.SCOPE, "confirmed")).strip().lower()
+        signal_state = str(metadata.get(MK.SIGNAL_STATE, "")).strip().lower()
         if signal_state.startswith("confirmed_"):
             return "confirmed"
         if signal_state.startswith("preview_") or signal_state.startswith("armed_") or signal_state == "cancelled":
@@ -99,7 +100,7 @@ class TimescaleSignalRepository:
             "used_indicators": row[8] or [],
             "indicators_snapshot": row[9] or {},
             "metadata": metadata,
-            "signal_state": metadata.get("signal_state"),
+            "signal_state": metadata.get(MK.SIGNAL_STATE),
             "scope": scope,
         }
 
