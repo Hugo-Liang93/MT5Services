@@ -103,6 +103,9 @@ class StructuredRangeReversion(StructuredStrategyBase):
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         return {"entry_type": "limit", "entry_price": None, "entry_zone_atr": 0.4}
 
+    _aggression: float = 0.15
+
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         # 均值回归：紧 trail + 快锁利，反转幅度有限
-        return {"aggression": 0.15, "sl_atr": 1.0, "tp_atr": 1.8}
+        aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
+        return {"aggression": aggr, "sl_atr": 1.0, "tp_atr": 1.8}

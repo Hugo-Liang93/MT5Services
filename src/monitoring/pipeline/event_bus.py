@@ -14,6 +14,7 @@ Design constraints:
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -65,15 +66,30 @@ class PipelineEventBus:
     never disrupts the pipeline.
     """
 
-    def __init__(self, *, max_listeners: int = 64) -> None:
+    def __init__(
+        self,
+        *,
+        max_listeners: int = 64,
+        queue_size: int = 4096,
+    ) -> None:
         self._lock = threading.Lock()
         self._listeners: List[PipelineListener] = []
         self._max_listeners = max_listeners
         self._shutdown = False
+        self._queue: queue.Queue[PipelineEvent] = queue.Queue(maxsize=queue_size)
 
         # Lightweight counters for admin / health
         self._total_emitted: int = 0
+        self._total_dropped: int = 0
         self._total_listener_errors: int = 0
+
+        # 后台分发线程：emit() 只入队不阻塞生产者
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_loop,
+            name="pipeline-bus-dispatch",
+            daemon=True,
+        )
+        self._dispatch_thread.start()
 
     # ── Listener management ─────────────────────────────────────
 
@@ -96,24 +112,39 @@ class PipelineEventBus:
     # ── Emit ────────────────────────────────────────────────────
 
     def emit(self, event: PipelineEvent) -> None:
-        """Broadcast *event* to all registered listeners (best-effort)."""
+        """Broadcast *event* to all registered listeners (best-effort, non-blocking).
+
+        生产者只入队，后台线程异步分发。队列满时丢弃事件（L3 best-effort）。
+        """
         if self._shutdown:
             return
-        with self._lock:
-            targets = list(self._listeners)
         self._total_emitted += 1
-        for fn in targets:
+        try:
+            self._queue.put_nowait(event)
+        except queue.Full:
+            self._total_dropped += 1
+
+    def _dispatch_loop(self) -> None:
+        """后台分发线程：从队列消费事件并同步调用所有 listener。"""
+        while not self._shutdown:
             try:
-                fn(event)
-            except Exception:
-                self._total_listener_errors += 1
-                logger.debug(
-                    "PipelineEventBus: listener error for %s/%s trace=%s",
-                    event.symbol,
-                    event.timeframe,
-                    event.trace_id,
-                    exc_info=True,
-                )
+                event = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            with self._lock:
+                targets = list(self._listeners)
+            for fn in targets:
+                try:
+                    fn(event)
+                except Exception:
+                    self._total_listener_errors += 1
+                    logger.debug(
+                        "PipelineEventBus: listener error for %s/%s trace=%s",
+                        event.symbol,
+                        event.timeframe,
+                        event.trace_id,
+                        exc_info=True,
+                    )
 
     # ── Convenience helpers ─────────────────────────────────────
 
@@ -424,11 +455,13 @@ class PipelineEventBus:
         payload: Optional[Dict[str, Any]] = None,
     ) -> None:
         data = dict(payload or {})
-        data.update({
-            "group_name": group_name,
-            "winning_direction": winning_direction,
-            "final_confidence": final_confidence,
-        })
+        data.update(
+            {
+                "group_name": group_name,
+                "winning_direction": winning_direction,
+                "final_confidence": final_confidence,
+            }
+        )
         self.emit(
             PipelineEvent(
                 type=PIPELINE_VOTING_COMPLETED,
@@ -456,13 +489,15 @@ class PipelineEventBus:
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         data = dict(extra or {})
-        data.update({
-            "strategy": strategy,
-            "direction": direction,
-            "skip_reason": skip_reason,
-            "skip_category": skip_category,
-            "confidence": confidence,
-        })
+        data.update(
+            {
+                "strategy": strategy,
+                "direction": direction,
+                "skip_reason": skip_reason,
+                "skip_category": skip_category,
+                "confidence": confidence,
+            }
+        )
         self.emit(
             PipelineEvent(
                 type=PIPELINE_EXECUTION_SKIPPED,
@@ -483,7 +518,9 @@ class PipelineEventBus:
         return {
             "listeners": listener_count,
             "total_emitted": self._total_emitted,
+            "total_dropped": self._total_dropped,
             "total_listener_errors": self._total_listener_errors,
+            "queue_size": self._queue.qsize(),
         }
 
     def shutdown(self) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace as _dc_replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -8,6 +9,7 @@ from src.risk.service import PreTradeRiskBlockedError
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent
+
     from .executor import TradeExecutor
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,11 @@ def notify_skip(
             logger.debug("on_execution_skip callback failed", exc_info=True)
     # 发射 EXECUTION_SKIPPED pipeline 事件
     pipeline_bus = getattr(executor, "_pipeline_bus", None)
-    if pipeline_bus is not None and hasattr(pipeline_bus, "emit_execution_skipped") and event is not None:
+    if (
+        pipeline_bus is not None
+        and hasattr(pipeline_bus, "emit_execution_skipped")
+        and event is not None
+    ):
         tid = str(event.metadata.get("signal_trace_id") or "")
         pipeline_bus.emit_execution_skipped(
             trace_id=tid,
@@ -267,6 +273,53 @@ def record_slippage(
     }
 
 
+def adjust_params_for_fill(
+    params: Any,
+    requested_price: float | None,
+    fill_price: float | None,
+    *,
+    slippage_warn_ratio: float = 0.3,
+    symbol: str = "",
+    direction: str = "",
+) -> Any:
+    """根据实际成交价调整 TradeParameters，维持原始 SL/TP 距离。
+
+    当 fill_price 与 requested_price 存在偏差时，按偏移量平移 SL/TP，
+    确保 PositionManager 跟踪的 risk/reward 与策略设计一致。
+    """
+    if requested_price is None or fill_price is None:
+        return params
+    price_shift = fill_price - requested_price
+    if abs(price_shift) < 1e-10:
+        return params
+    # 滑点显著时发出警告
+    if (
+        params.sl_distance > 0
+        and abs(price_shift) > params.sl_distance * slippage_warn_ratio
+    ):
+        logger.warning(
+            "Significant slippage for %s %s: requested=%.5f fill=%.5f "
+            "shift=%.5f (%.0f%% of SL distance %.5f)",
+            direction,
+            symbol,
+            requested_price,
+            fill_price,
+            price_shift,
+            abs(price_shift) / params.sl_distance * 100,
+            params.sl_distance,
+        )
+    adjusted_sl = params.stop_loss + price_shift
+    adjusted_tp = params.take_profit + price_shift
+    return _dc_replace(
+        params,
+        entry_price=fill_price,
+        stop_loss=adjusted_sl,
+        take_profit=adjusted_tp,
+        sl_distance=abs(fill_price - adjusted_sl),
+        tp_distance=abs(adjusted_tp - fill_price),
+    )
+
+
 def execute_market_order(
     executor: "TradeExecutor",
     event: "SignalEvent",
@@ -319,6 +372,13 @@ def execute_market_order(
             fill_price=fill_price,
             symbol_point=symbol_point,
         )
+        tracking_params = adjust_params_for_fill(
+            params,
+            requested_price,
+            fill_price,
+            symbol=event.symbol,
+            direction=event.direction,
+        )
         log_entry = {
             "at": executor._last_execution_at.isoformat(),
             "signal_id": event.signal_id,
@@ -327,11 +387,15 @@ def execute_market_order(
             "strategy": event.strategy,
             "confidence": event.confidence,
             "params": {
-                "volume": params.position_size,
-                "entry_price": fill_price if fill_price is not None else params.entry_price,
-                "sl": params.stop_loss,
-                "tp": params.take_profit,
-                "rr": params.risk_reward_ratio,
+                "volume": tracking_params.position_size,
+                "entry_price": (
+                    fill_price
+                    if fill_price is not None
+                    else tracking_params.entry_price
+                ),
+                "sl": tracking_params.stop_loss,
+                "tp": tracking_params.take_profit,
+                "rr": tracking_params.risk_reward_ratio,
             },
             "cost": dict(cost_metrics or {}),
             "execution_quality": execution_quality,
@@ -352,10 +416,10 @@ def execute_market_order(
             "TradeExecutor: executed %s %s vol=%.2f sl=%.2f tp=%.2f rr=%.2f (signal=%s)",
             event.direction,
             event.symbol,
-            params.position_size,
-            params.stop_loss,
-            params.take_profit,
-            params.risk_reward_ratio,
+            tracking_params.position_size,
+            tracking_params.stop_loss,
+            tracking_params.take_profit,
+            tracking_params.risk_reward_ratio,
             event.signal_id,
         )
         if executor._persist_execution_fn is not None:
@@ -374,7 +438,7 @@ def execute_market_order(
                         signal_id=event.signal_id,
                         symbol=event.symbol,
                         action=event.direction,
-                        params=params,
+                        params=tracking_params,
                         timeframe=event.timeframe,
                         strategy=event.strategy,
                         confidence=event.confidence,
@@ -493,7 +557,8 @@ def execute_market_order(
         )
         if (
             not executor._circuit_open
-            and executor._consecutive_failures >= executor.config.max_consecutive_failures
+            and executor._consecutive_failures
+            >= executor.config.max_consecutive_failures
         ):
             executor._circuit_open = True
             executor._circuit_open_at = datetime.now(timezone.utc)

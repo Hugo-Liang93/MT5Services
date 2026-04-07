@@ -19,7 +19,9 @@ def _cleanup_components(components: Dict[str, Any]) -> None:
     return build_backtest_components(strategy_params=strategy_params)
 
 
-def _load_strategy_scope_overrides() -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+def _load_strategy_scope_overrides() -> (
+    Tuple[Dict[str, List[str]], Dict[str, List[str]]]
+):
     try:
         from .component_factory import _load_signal_config_snapshot
 
@@ -45,7 +47,7 @@ def _load_strategy_scope_overrides() -> Tuple[Dict[str, List[str]], Dict[str, Li
 def _parse_cli_strategy_params(args: argparse.Namespace) -> Dict[str, Any]:
     """解析 --param KEY=VALUE 命令行参数为 strategy_params dict。"""
     params: Dict[str, Any] = {}
-    for param_str in (getattr(args, "param", None) or []):
+    for param_str in getattr(args, "param", None) or []:
         if "=" in param_str:
             key, val = param_str.split("=", 1)
             try:
@@ -57,10 +59,10 @@ def _parse_cli_strategy_params(args: argparse.Namespace) -> Dict[str, Any]:
 
 def cmd_run(args: argparse.Namespace) -> None:
     # docstring removed during encoding normalization
+    from .analysis import format_summary
     from .config import get_backtest_defaults
     from .engine import BacktestEngine
     from .models import BacktestConfig
-    from .analysis import format_summary
 
     strategies = args.strategies.split(",") if args.strategies else None
     ini_defaults = get_backtest_defaults()
@@ -86,7 +88,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         max_positions=ini_defaults.get("max_positions", 3),
         max_signal_evaluations=ini_defaults.get("max_signal_evaluations", 50000),
         filter_session_enabled=ini_defaults.get("filter_session_enabled", True),
-        filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,new_york"),
+        filter_allowed_sessions=ini_defaults.get(
+            "filter_allowed_sessions", "london,new_york"
+        ),
         filter_session_transition_enabled=ini_defaults.get(
             "filter_session_transition_enabled", True
         ),
@@ -132,7 +136,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     )
 
     _sl_tp_backup: Optional[Dict] = None
-    if getattr(args, "sl_mult", None) is not None or getattr(args, "tp_mult", None) is not None:
+    if (
+        getattr(args, "sl_mult", None) is not None
+        or getattr(args, "tp_mult", None) is not None
+    ):
         import copy
 
         from src.trading.execution import TIMEFRAME_SL_TP
@@ -162,6 +169,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             voting_engine=components.get("voting_engine"),
             voting_group_engines=components.get("voting_group_engines"),
             performance_tracker=components.get("performance_tracker"),
+            htf_cache=components.get("htf_cache"),
         )
 
         result = engine.run()
@@ -184,12 +192,13 @@ def cmd_run(args: argparse.Namespace) -> None:
             TIMEFRAME_SL_TP.update(_sl_tp_backup)
         _cleanup_components(components)
 
+
 def cmd_optimize(args: argparse.Namespace) -> None:
     # docstring removed during encoding normalization
+    from .analysis import format_optimization_summary
     from .config import get_backtest_defaults
     from .models import BacktestConfig, ParameterSpace
     from .optimization import ParameterOptimizer, build_signal_module_with_overrides
-    from .analysis import format_optimization_summary
 
     strategies = args.strategies.split(",") if args.strategies else None
     ini_defaults = get_backtest_defaults()
@@ -261,12 +270,13 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     finally:
         _cleanup_components(components)
 
+
 def cmd_compare_tf(args: argparse.Namespace) -> None:
     # docstring removed during encoding normalization
+    from .analysis import format_timeframe_comparison
     from .config import get_backtest_defaults
     from .engine import BacktestEngine
     from .models import BacktestConfig
-    from .analysis import format_timeframe_comparison
 
     strategies = args.strategies.split(",") if args.strategies else None
     timeframes = [tf.strip().upper() for tf in args.timeframes.split(",") if tf.strip()]
@@ -282,7 +292,9 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
             config = BacktestConfig.from_flat(
                 symbol=args.symbol,
                 timeframe=timeframe,
-                start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
+                start_time=datetime.fromisoformat(args.start).replace(
+                    tzinfo=timezone.utc
+                ),
                 end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
                 strategies=strategies,
                 strategy_timeframes=strategy_timeframes,
@@ -296,16 +308,22 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
                 contract_size=ini_defaults.get("contract_size", 100.0),
                 risk_percent=ini_defaults.get("risk_percent", 1.0),
                 max_positions=ini_defaults.get("max_positions", 3),
-                max_signal_evaluations=ini_defaults.get("max_signal_evaluations", 50000),
+                max_signal_evaluations=ini_defaults.get(
+                    "max_signal_evaluations", 50000
+                ),
                 filter_session_enabled=ini_defaults.get("filter_session_enabled", True),
-                filter_allowed_sessions=ini_defaults.get("filter_allowed_sessions", "london,new_york"),
+                filter_allowed_sessions=ini_defaults.get(
+                    "filter_allowed_sessions", "london,new_york"
+                ),
                 filter_session_transition_enabled=ini_defaults.get(
                     "filter_session_transition_enabled", True
                 ),
                 filter_session_transition_cooldown=ini_defaults.get(
                     "filter_session_transition_cooldown", 15
                 ),
-                filter_volatility_enabled=ini_defaults.get("filter_volatility_enabled", True),
+                filter_volatility_enabled=ini_defaults.get(
+                    "filter_volatility_enabled", True
+                ),
                 filter_volatility_spike_multiplier=ini_defaults.get(
                     "filter_volatility_spike_multiplier", 2.5
                 ),
@@ -335,6 +353,7 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
             _cleanup_components(components)
     print(format_timeframe_comparison(results_by_tf))
 
+
 def main() -> None:
     # docstring removed during encoding normalization
     try:
@@ -362,21 +381,15 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--timeframe", required=True, help=" (?M5)")
     parser.add_argument("--start", required=True, help=" (YYYY-MM-DD)")
     parser.add_argument("--end", required=True, help=" (YYYY-MM-DD)")
-    parser.add_argument(
-        "--strategies", type=str, default=None, help=" ()"
-    )
-    parser.add_argument(
-        "--balance", type=float, default=10000.0, help=" (: 10000)"
-    )
+    parser.add_argument("--strategies", type=str, default=None, help=" ()")
+    parser.add_argument("--balance", type=float, default=10000.0, help=" (: 10000)")
     parser.add_argument(
         "--min-confidence",
         type=float,
         default=0.55,
         help=" (: 0.55)",
     )
-    parser.add_argument(
-        "--warmup", type=int, default=200, help=" bar  (: 200)"
-    )
+    parser.add_argument("--warmup", type=int, default=200, help=" bar  (: 200)")
     parser.add_argument(
         "--no-filters",
         action="store_true",
@@ -393,19 +406,27 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         help="",
     )
     parser.add_argument(
-        "--sl-mult", type=float, default=None,
+        "--sl-mult",
+        type=float,
+        default=None,
         help="Override stop-loss ATR multiplier, e.g. 2.0",
     )
     parser.add_argument(
-        "--tp-mult", type=float, default=None,
+        "--tp-mult",
+        type=float,
+        default=None,
         help="Override take-profit ATR multiplier, e.g. 3.0",
     )
     parser.add_argument(
-        "--trailing", type=float, default=None,
+        "--trailing",
+        type=float,
+        default=None,
         help="Override trailing-stop ATR multiplier, e.g. 0.8",
     )
     parser.add_argument(
-        "--breakeven", type=float, default=None,
+        "--breakeven",
+        type=float,
+        default=None,
         help="Override breakeven ATR threshold, e.g. 0.8",
     )
     parser.add_argument(

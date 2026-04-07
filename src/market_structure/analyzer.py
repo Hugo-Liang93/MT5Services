@@ -485,9 +485,9 @@ class MarketStructureAnalyzer:
         new_york_open_high: float | None,
         new_york_open_low: float | None,
     ) -> tuple[str, str | None]:
-        if close_price is None or len(bars) < 2:
+        if close_price is None or len(bars) < 3:
             return "none", None
-        previous_bar = bars[-1]
+        previous_bar = bars[-2]
         anchor_close = float(previous_bar.close)
 
         bearish_checks = (

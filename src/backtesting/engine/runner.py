@@ -22,31 +22,22 @@ from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
 from src.trading.pending import PendingEntryConfig as TradingPendingEntryConfig
 
+from ..analysis.metrics import compute_metrics, compute_metrics_grouped
 from ..data.loader import HistoricalDataLoader
 from ..filtering.builder import build_filter_simulator as _build_filter_simulator_helper
-from .indicators import (
-    compute_indicators as _compute_indicators_helper,
-    detect_regime as _detect_regime_helper,
-    lookup_htf_at_time as _lookup_htf_at_time_helper,
-    preload_htf_indicators as _preload_htf_indicators_helper,
-    precompute_all_indicators as _precompute_all_indicators_helper,
-)
-from .signals import (
-    backfill_evaluations as _backfill_evaluations_helper,
-    check_pending_entries as _check_pending_entries_helper,
-    evaluate_strategies as _evaluate_strategies_helper,
-    flush_pending_evaluations as _flush_pending_evaluations_helper,
-    process_decision as _process_decision_helper,
-    record_evaluation as _record_evaluation_helper,
-)
-from ..analysis.metrics import compute_metrics, compute_metrics_grouped
-from ..models import (
-    BacktestConfig,
-    BacktestResult,
-    SignalEvaluation,
-    generate_run_id,
-)
+from ..models import BacktestConfig, BacktestResult, SignalEvaluation, generate_run_id
+from .indicators import compute_indicators as _compute_indicators_helper
+from .indicators import detect_regime as _detect_regime_helper
+from .indicators import lookup_htf_at_time as _lookup_htf_at_time_helper
+from .indicators import precompute_all_indicators as _precompute_all_indicators_helper
+from .indicators import preload_htf_indicators as _preload_htf_indicators_helper
 from .portfolio import PortfolioTracker
+from .signals import backfill_evaluations as _backfill_evaluations_helper
+from .signals import check_pending_entries as _check_pending_entries_helper
+from .signals import evaluate_strategies as _evaluate_strategies_helper
+from .signals import flush_pending_evaluations as _flush_pending_evaluations_helper
+from .signals import process_decision as _process_decision_helper
+from .signals import record_evaluation as _record_evaluation_helper
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +45,9 @@ logger = logging.getLogger(__name__)
 class _CircuitBreaker:
     """回测用连败熔断器（基于 bar 计数，非墙钟时间）。"""
 
-    def __init__(self, max_consecutive_losses: int = 5, cooldown_bars: int = 20) -> None:
+    def __init__(
+        self, max_consecutive_losses: int = 5, cooldown_bars: int = 20
+    ) -> None:
         self._max_losses = max_consecutive_losses
         self._cooldown_bars = cooldown_bars
         self._consecutive_losses: int = 0
@@ -75,7 +68,10 @@ class _CircuitBreaker:
     def is_paused(self, bar_index: int) -> bool:
         if not self._paused:
             return False
-        if self._cooldown_bars > 0 and (bar_index - self._paused_at_bar) >= self._cooldown_bars:
+        if (
+            self._cooldown_bars > 0
+            and (bar_index - self._paused_at_bar) >= self._cooldown_bars
+        ):
             self._paused = False
             self._consecutive_losses = 0
             return False
@@ -130,8 +126,11 @@ class BacktestEngine:
         indicator_pipeline: Any,  # OptimizedPipeline
         regime_detector: Optional[MarketRegimeDetector] = None,
         voting_engine: Optional[Any] = None,  # StrategyVotingEngine（单 consensus）
-        voting_group_engines: Optional[List[Any]] = None,  # [(VotingGroupConfig, Engine)]
+        voting_group_engines: Optional[
+            List[Any]
+        ] = None,  # [(VotingGroupConfig, Engine)]
         performance_tracker: Optional[Any] = None,  # StrategyPerformanceTracker
+        htf_cache: Optional[Any] = None,  # HTFStateCache
         # 置信度后处理（复用实盘 SignalRuntime 管线）
         intrabar_confidence_factor: float = 0.85,
         htf_direction_fn: Optional[Callable[[str, str], Optional[str]]] = None,
@@ -150,6 +149,7 @@ class BacktestEngine:
         self._voting_engine = voting_engine
         self._voting_group_engines: List[Any] = voting_group_engines or []
         self._performance_tracker = performance_tracker
+        self._htf_cache = htf_cache
         # 属于 voting group 的策略（不单独 process_decision，只贡献投票）
         self._voting_group_members: frozenset = frozenset(
             name
@@ -165,7 +165,9 @@ class BacktestEngine:
         # HTF 指标：{timeframe: {indicator_name: {field: value}}}（静态快照，向后兼容）
         self._htf_indicator_data = htf_indicator_data or {}
         # HTF 时序数据：{timeframe: [(bar_time, indicators), ...]}，按 bar 时间查找
-        self._htf_timeseries: Dict[str, List[tuple[datetime, Dict[str, Dict[str, Any]]]]] = {}
+        self._htf_timeseries: Dict[
+            str, List[tuple[datetime, Dict[str, Dict[str, Any]]]]
+        ] = {}
         # 预计算的时间索引（避免每次 _lookup_htf_at_time 都生成临时列表）
         self._htf_time_indexes: Dict[str, List[datetime]] = {}
         # 预计算指标快照（按 all_bars 索引对齐，优化器复用场景下跳过 pipeline）
@@ -200,7 +202,8 @@ class BacktestEngine:
                 seen_requested.add(name)
 
             unsupported = [
-                strategy for strategy in requested_strategies
+                strategy
+                for strategy in requested_strategies
                 if strategy not in available_strategies
             ]
             if unsupported:
@@ -209,7 +212,8 @@ class BacktestEngine:
                     ", ".join(sorted(unsupported)),
                 )
             self._target_strategies = [
-                strategy for strategy in requested_strategies
+                strategy
+                for strategy in requested_strategies
                 if strategy in available_strategies
             ]
             if not self._target_strategies:
@@ -226,7 +230,8 @@ class BacktestEngine:
             tf_upper = config.timeframe.upper()
             before_count = len(self._target_strategies)
             self._target_strategies = [
-                s for s in self._target_strategies
+                s
+                for s in self._target_strategies
                 if s not in tf_whitelist
                 or tf_upper in [t.upper() for t in tf_whitelist[s]]
             ]
@@ -234,11 +239,13 @@ class BacktestEngine:
             if filtered > 0:
                 logger.info(
                     "Backtest: filtered %d strategies not allowed on %s by strategy_timeframes",
-                    filtered, config.timeframe,
+                    filtered,
+                    config.timeframe,
                 )
 
         # per-strategy session 限制（与实盘 SignalRuntime.strategy_sessions 行为一致）
         from src.signals.contracts import normalize_session_name
+
         self._strategy_sessions: Dict[str, tuple[str, ...]] = {
             name: tuple(normalize_session_name(s) for s in sessions)
             for name, sessions in config.strategy_sessions.items()
@@ -249,7 +256,10 @@ class BacktestEngine:
         self._session_filter: Optional[Any] = None
         if self._strategy_sessions:
             from src.signals.execution.filters import SessionFilter
-            self._session_filter = SessionFilter(allowed_sessions=("london", "new_york", "asia"))
+
+            self._session_filter = SessionFilter(
+                allowed_sessions=("london", "new_york", "asia")
+            )
 
         # 收集所有目标策略需要的指标名 + regime 检测需要的指标
         self._required_indicators: List[str] = []
@@ -274,18 +284,25 @@ class BacktestEngine:
         # MarketStructureAnalyzer（结构化策略依赖）
         self._market_structure_analyzer: Any = None
         try:
-            from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
+            from src.market_structure import (
+                MarketStructureAnalyzer,
+                MarketStructureConfig,
+            )
+
             self._market_structure_analyzer = MarketStructureAnalyzer(
                 market_service=_BacktestBarService(),
                 config=MarketStructureConfig(lookback_bars=200),
             )
         except Exception:
-            logger.debug("MarketStructureAnalyzer not available for backtest", exc_info=True)
+            logger.debug(
+                "MarketStructureAnalyzer not available for backtest", exc_info=True
+            )
 
         # Chandelier Exit 配置：从 signal.ini 加载（回测与实盘共享同一套出场参数）
+        from src.config.signal import get_signal_config as _get_sc
         from src.trading.positions.exit_rules import ChandelierConfig as _CC
         from src.trading.positions.exit_rules import profile_from_aggression as _pfa
-        from src.config.signal import get_signal_config as _get_sc
+
         try:
             _sc = _get_sc()
             self._chandelier_config = _CC(
@@ -311,6 +328,12 @@ class BacktestEngine:
         pos = config.position
         risk = config.risk
         ttp = config.trailing_tp
+
+        # ── 清理跨 run 状态泄漏 ──────────────────────────────────────
+        if self._performance_tracker is not None:
+            self._performance_tracker.reset()
+        if self._htf_cache is not None:
+            self._htf_cache.reset()
 
         self._signal_states: Dict[str, _BacktestSignalState] = {}
         if config.enable_state_machine:
@@ -374,7 +397,9 @@ class BacktestEngine:
             logger.info(
                 "Backtest: borrowed %d bars from test data for warmup "
                 "(total warmup=%d, remaining test=%d)",
-                borrow, len(warmup_bars), len(test_bars),
+                borrow,
+                len(warmup_bars),
+                len(test_bars),
             )
 
         if not test_bars:
@@ -419,7 +444,8 @@ class BacktestEngine:
             _TF_RANK = {"M1": 1, "M5": 2, "M15": 3, "M30": 4, "H1": 5, "H4": 6, "D1": 7}
             current_rank = _TF_RANK.get(timeframe, 0)
             htf_list = [
-                tf for tf, rank in _TF_RANK.items()
+                tf
+                for tf, rank in _TF_RANK.items()
                 if rank > current_rank and rank <= current_rank + 3
             ]
             if htf_list:
@@ -436,8 +462,7 @@ class BacktestEngine:
             all_indicator_snapshots = self._precomputed_indicators
         else:
             all_indicator_snapshots = _precompute_all_indicators_helper(
-                self,
-                symbol, timeframe, all_bars, warmup_count
+                self, symbol, timeframe, all_bars, warmup_count
             )
 
         # 3. 逐 bar 回放
@@ -461,7 +486,9 @@ class BacktestEngine:
             self._recent_bars_window = all_bars[max(0, i - 80) : i + 1]
 
             # 直接取预计算的指标快照
-            indicators = all_indicator_snapshots[i] if i < len(all_indicator_snapshots) else {}
+            indicators = (
+                all_indicator_snapshots[i] if i < len(all_indicator_snapshots) else {}
+            )
 
             # 4. Regime 检测
             regime: Optional[RegimeType] = None
@@ -477,7 +504,9 @@ class BacktestEngine:
 
             # 5. 检查持仓出场（Chandelier Exit 4 规则，regime-aware）
             closed_trades = self._portfolio.check_exits(
-                bar, bar_index, indicators,
+                bar,
+                bar_index,
+                indicators,
                 current_atr=_current_atr,
                 current_regime=regime.value if regime else "",
                 signal_directions=_last_signal_directions,
@@ -521,7 +550,8 @@ class BacktestEngine:
                 for strategy_name in self._target_strategies:
                     _record_evaluation_helper(
                         self,
-                        bar=bar, bar_index=bar_index,
+                        bar=bar,
+                        bar_index=bar_index,
                         strategy=strategy_name,
                         action="hold",
                         confidence=0.0,
@@ -571,7 +601,8 @@ class BacktestEngine:
                     if self._voting_group_engines:
                         for group_cfg, group_engine in self._voting_group_engines:
                             group_decisions = [
-                                d for d in actionable
+                                d
+                                for d in actionable
                                 if d.strategy in group_cfg.strategies
                             ]
                             if group_decisions:
@@ -584,15 +615,15 @@ class BacktestEngine:
                                 if vote is not None:
                                     _record_evaluation_helper(
                                         self,
-                                        bar=bar, bar_index=bar_index,
+                                        bar=bar,
+                                        bar_index=bar_index,
                                         strategy=vote.strategy,
                                         action=vote.direction,
                                         confidence=vote.confidence,
                                         regime=regime.value,
                                     )
                                     _process_decision_helper(
-                                        self,
-                                        vote, bar, bar_index, indicators, regime
+                                        self, vote, bar, bar_index, indicators, regime
                                     )
                     # 单 consensus 模式
                     elif self._voting_engine is not None:
@@ -602,15 +633,15 @@ class BacktestEngine:
                         if consensus is not None:
                             _record_evaluation_helper(
                                 self,
-                                bar=bar, bar_index=bar_index,
+                                bar=bar,
+                                bar_index=bar_index,
                                 strategy=consensus.strategy,
                                 action=consensus.direction,
                                 confidence=consensus.confidence,
                                 regime=regime.value,
                             )
                             _process_decision_helper(
-                                self,
-                                consensus, bar, bar_index, indicators, regime
+                                self, consensus, bar, bar_index, indicators, regime
                             )
                 except Exception:
                     logger.warning(
@@ -630,7 +661,9 @@ class BacktestEngine:
                     ]
                     if group_decisions:
                         vote = group_engine.vote(
-                            group_decisions, regime=regime, scope="confirmed",
+                            group_decisions,
+                            regime=regime,
+                            scope="confirmed",
                             exclude_composite=False,
                         )
                         if vote is not None and vote.direction in ("buy", "sell"):
@@ -705,14 +738,18 @@ class BacktestEngine:
             if mc_result.get("is_significant"):
                 logger.info(
                     "Backtest %s: Monte Carlo SIGNIFICANT (Sharpe p=%.4f, PF p=%.4f)",
-                    run_id, mc_result["sharpe_p_value"], mc_result["profit_factor_p_value"],
+                    run_id,
+                    mc_result["sharpe_p_value"],
+                    mc_result["profit_factor_p_value"],
                 )
             else:
                 logger.warning(
                     "Backtest %s: Monte Carlo NOT significant (Sharpe p=%.4f, "
                     "real=%.4f vs random 95th=%.4f)",
-                    run_id, mc_result["sharpe_p_value"],
-                    mc_result["real_sharpe"], mc_result["random_sharpe_95th"],
+                    run_id,
+                    mc_result["sharpe_p_value"],
+                    mc_result["real_sharpe"],
+                    mc_result["random_sharpe_95th"],
                 )
 
         return BacktestResult(

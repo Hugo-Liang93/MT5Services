@@ -110,6 +110,9 @@ class StructuredSessionBreakout(StructuredStrategyBase):
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
 
+    _aggression: float = 0.60
+
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         # 时段突破：中等 trail
-        return {"aggression": 0.60, "sl_atr": None, "tp_atr": None}
+        aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
+        return {"aggression": aggr, "sl_atr": None, "tp_atr": None}

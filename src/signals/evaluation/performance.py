@@ -45,6 +45,7 @@ StrategyPerformanceTracker 是纯内存的日内实时反馈层：
 当单策略样本不足（< category_fallback_min_samples）时，
 回退到同类策略的聚合绩效，避免冷启动问题。
 """
+
 from __future__ import annotations
 
 import logging
@@ -128,9 +129,7 @@ class _StrategyStats:
             "win_rate": round(self.win_rate, 4) if self.win_rate is not None else None,
             "total_pnl": round(self.total_pnl, 4),
             "profit_factor": (
-                round(self.profit_factor, 4)
-                if self.profit_factor is not None
-                else None
+                round(self.profit_factor, 4) if self.profit_factor is not None else None
             ),
             "current_streak": self.current_streak,
             "max_streak": self.max_streak,
@@ -212,6 +211,19 @@ class StrategyPerformanceTracker:
         self._global_trade_loss_streak: int = 0
         self._pnl_circuit_paused: bool = False
         self._pnl_circuit_opened_at: float = 0.0  # monotonic
+
+    def reset(self) -> None:
+        """重置所有统计状态（回测跨 run 隔离）。不清除 strategy_categories 注册信息。"""
+        with self._lock:
+            self._stats.clear()
+            self._regime_stats.clear()
+            self._category_stats.clear()
+            self._trade_stats.clear()
+            self._session_start_at = time.monotonic()
+            self._total_recorded = 0
+            self._global_trade_loss_streak = 0
+            self._pnl_circuit_paused = False
+            self._pnl_circuit_opened_at = 0.0
 
     # ------------------------------------------------------------------
     # Configuration
@@ -301,9 +313,7 @@ class StrategyPerformanceTracker:
     # Multiplier calculation
     # ------------------------------------------------------------------
 
-    def get_multiplier(
-        self, strategy: str, *, regime: Optional[str] = None
-    ) -> float:
+    def get_multiplier(self, strategy: str, *, regime: Optional[str] = None) -> float:
         """返回该策略的日内绩效乘数 [min_multiplier, max_multiplier]。
 
         未启用或无数据时返回 1.0（无影响）。
@@ -323,7 +333,10 @@ class StrategyPerformanceTracker:
             # 当有实际交易数据（trade source）时优先使用，因为含真实滑点和成交价
             primary_stats = self._stats.get(strategy)
             trade_stats = self._trade_stats.get(strategy)
-            if trade_stats is not None and trade_stats.total >= self._config.category_fallback_min_samples:
+            if (
+                trade_stats is not None
+                and trade_stats.total >= self._config.category_fallback_min_samples
+            ):
                 # trade 数据充足：trade 0.7 + signal 0.3
                 trade_mult = self._compute_multiplier(trade_stats)
                 if primary_stats is not None and primary_stats.total > 0:
@@ -339,7 +352,9 @@ class StrategyPerformanceTracker:
             if stats.total < self._config.category_fallback_min_samples:
                 individual = self._compute_multiplier(stats)
                 cat_mult = self._category_fallback_multiplier(strategy)
-                weight = (stats.total / self._config.category_fallback_min_samples) ** 0.5
+                weight = (
+                    stats.total / self._config.category_fallback_min_samples
+                ) ** 0.5
                 return individual * weight + cat_mult * (1.0 - weight)
 
             return self._compute_multiplier(stats)
@@ -419,12 +434,12 @@ class StrategyPerformanceTracker:
             win_rate_ratio = win_rate / max(cfg.baseline_win_rate, 0.01)
             # 映射到乘数：使用平方根来减弱极端值的影响
             # win_rate_ratio=0.5 → multiplier≈0.71; =1.5 → ≈1.22; =2.0 → ≈1.41
-            multiplier = win_rate_ratio ** 0.5
+            multiplier = win_rate_ratio**0.5
 
         # 2. Streak penalty (only for losing streaks, capped at 10 excess)
         if stats.current_streak < -cfg.streak_penalty_threshold:
             excess = min(abs(stats.current_streak) - cfg.streak_penalty_threshold, 10)
-            penalty = cfg.streak_penalty_factor ** excess
+            penalty = cfg.streak_penalty_factor**excess
             multiplier *= penalty
 
         # 3. Profit factor adjustment (graduated)
@@ -515,12 +530,15 @@ class StrategyPerformanceTracker:
                 except (TypeError, ValueError):
                     logger.warning(
                         "warm_up_from_db: invalid pnl=%r for strategy=%s, defaulting to 0.0",
-                        row.get("pnl"), strategy,
+                        row.get("pnl"),
+                        strategy,
                     )
                     pnl = 0.0
                 regime = row.get("regime")
                 source = str(row.get("source") or "signal")
-                self.record_outcome(strategy, bool(won), pnl, regime=regime, source=source)
+                self.record_outcome(
+                    strategy, bool(won), pnl, regime=regime, source=source
+                )
                 count += 1
         finally:
             self._config.pnl_circuit_enabled = saved_pnl_enabled

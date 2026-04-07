@@ -199,7 +199,10 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
         runtime, indicators, metadata, active_sessions
     )
 
-    tracker = runtime._regime_trackers.setdefault((symbol, timeframe), RegimeTracker())
+    with runtime._regime_trackers_lock:
+        tracker = runtime._regime_trackers.setdefault(
+            (symbol, timeframe), RegimeTracker()
+        )
     regime_stability = (
         tracker.update(regime)
         if scope == "confirmed"

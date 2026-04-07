@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
 from .analytics import (
-    DiagnosticThresholds,
     DiagnosticsEngine,
+    DiagnosticThresholds,
     SignalDiagnosticsAnalyzer,
 )
 from .evaluation.calibrator import ConfidenceCalibrator
@@ -34,6 +34,7 @@ class SignalModule:
         diagnostics_engine: Optional[DiagnosticsEngine] = None,
         soft_regime_enabled: bool = False,
         confidence_floor: float = 0.10,
+        confidence_floor_min_affinity: float = 0.15,
     ):
         self.indicator_source = indicator_source
         self.repository = repository
@@ -46,6 +47,9 @@ class SignalModule:
         )
         self._soft_regime_enabled = bool(soft_regime_enabled)
         self._confidence_floor = max(0.0, float(confidence_floor))
+        self._confidence_floor_min_affinity = max(
+            0.0, float(confidence_floor_min_affinity)
+        )
         self._diagnostics_analyzer: DiagnosticsEngine = (
             diagnostics_engine or SignalDiagnosticsAnalyzer()
         )
@@ -144,7 +148,9 @@ class SignalModule:
         """
         from src.signals.strategies.tf_params import build_tf_param_resolver
 
-        resolver = build_tf_param_resolver(strategy_params, strategy_params_per_tf or {})
+        resolver = build_tf_param_resolver(
+            strategy_params, strategy_params_per_tf or {}
+        )
         self._tf_param_resolver = resolver  # type: ignore[attr-defined]
         for strategy in self._strategies.values():
             strategy._tf_param_resolver = resolver  # type: ignore[attr-defined]
@@ -175,7 +181,8 @@ class SignalModule:
     def list_intrabar_strategies(self) -> list[str]:
         """返回 preferred_scopes 包含 intrabar 的策略名列表。"""
         return sorted(
-            name for name, s in self._strategies.items()
+            name
+            for name, s in self._strategies.items()
             if "intrabar" in getattr(s, "preferred_scopes", ())
         )
 
@@ -285,7 +292,10 @@ class SignalModule:
         )
         bars_depth = getattr(strategy_impl, "recent_bars_depth", 5)
         context_metadata = self._build_context_metadata(
-            symbol, timeframe, metadata, recent_bars_limit=bars_depth,
+            symbol,
+            timeframe,
+            metadata,
+            recent_bars_limit=bars_depth,
         )
         event_impact = context_metadata.pop("_event_impact_forecast", None)
         context = SignalContext(
@@ -327,7 +337,7 @@ class SignalModule:
         # 复用 runtime 预计算的 affinity（避免重复计算和 getattr 开销）。
         pre_computed_affinity = context_metadata.get("_pre_computed_affinity")
         if pre_computed_affinity is not None:
-            affinity = float(pre_computed_affinity)
+            affinity = max(0.0, min(float(pre_computed_affinity), 1.0))
         else:
             # 回退路径：从策略注册表缓存中读取 affinity_map（无 getattr 开销）
             affinity_map = self._strategy_affinity_cache.get(strategy)
@@ -342,7 +352,10 @@ class SignalModule:
         # 对表现差的策略压制置信度，对表现好的微幅提升。
         # performance_tracker=None（默认）时此步跳过。
         perf_multiplier = 1.0
-        if self._performance_tracker is not None and decision.direction in ("buy", "sell"):
+        if self._performance_tracker is not None and decision.direction in (
+            "buy",
+            "sell",
+        ):
             perf_multiplier = self._performance_tracker.get_multiplier(
                 decision.strategy,
                 regime=regime.value,
@@ -368,7 +381,12 @@ class SignalModule:
         # 置信度被过度压制（如 0.80 × 0.70 × 0.60 × 0.90 = 0.30）。
         # 设置底线，确保原始置信度较高的信号不会被完全淹没。
         # 底线仅在原始 confidence > 0 时生效（hold 信号不受影响）。
-        if decision.confidence > 0 and calibrated < self._confidence_floor:
+        # affinity 低于阈值表示 regime 强烈反对，不应通过 floor 挽救。
+        if (
+            decision.confidence > 0
+            and calibrated < self._confidence_floor
+            and affinity >= self._confidence_floor_min_affinity
+        ):
             calibrated = self._confidence_floor
 
         # ── 置信度管线摘要日志 ──────────────────────────────────────────
@@ -436,7 +454,9 @@ class SignalModule:
 
         end_time = self._parse_optional_datetime(context_metadata.get("bar_time"))
         try:
-            recent_bars = getter(symbol, timeframe, end_time=end_time, limit=recent_bars_limit)
+            recent_bars = getter(
+                symbol, timeframe, end_time=end_time, limit=recent_bars_limit
+            )
         except Exception:
             log_fn = logger.warning if recent_bars_limit > 5 else logger.debug
             log_fn(

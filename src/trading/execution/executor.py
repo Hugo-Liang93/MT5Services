@@ -11,11 +11,11 @@
 
 from __future__ import annotations
 
-from collections import deque
 import logging
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
@@ -23,35 +23,29 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from src.signals.evaluation.performance import StrategyPerformanceTracker
 
-from .sizing import (
-    RegimeSizing,
-    extract_atr_from_indicators,
-)
-from .eventing import (
-    emit_execution_blocked as _emit_execution_blocked_helper,
-    emit_execution_decided as _emit_execution_decided_helper,
-    execute_market_order as _execute_market_order_helper,
-    notify_skip as _notify_skip_helper,
-)
 from src.monitoring.pipeline import PipelineEventBus
 from src.signals.models import SignalEvent
-from .gate import ExecutionGate, ExecutionGateConfig
-from .params import (
-    compute_params as _compute_params_helper,
-    estimate_cost_metrics as _estimate_cost_metrics_helper,
-    estimate_price as _estimate_price_helper,
-    get_account_balance as _get_account_balance_helper,
-    tf_to_seconds as _tf_to_seconds_helper,
-)
-from .pending_orders import (
-    duplicate_execution_reason as _duplicate_execution_reason_helper,
-    reached_position_limit as _reached_position_limit_helper,
-    submit_pending_entry as _submit_pending_entry_helper,
-)
+
 from ..pending.manager import PendingEntryManager
 from ..ports import ExecutorTradingPort
 from ..positions.manager import PositionManager
 from ..tracking.trade_outcome import TradeOutcomeTracker
+from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
+from .eventing import emit_execution_decided as _emit_execution_decided_helper
+from .eventing import execute_market_order as _execute_market_order_helper
+from .eventing import notify_skip as _notify_skip_helper
+from .gate import ExecutionGate, ExecutionGateConfig
+from .params import compute_params as _compute_params_helper
+from .params import estimate_cost_metrics as _estimate_cost_metrics_helper
+from .params import estimate_price as _estimate_price_helper
+from .params import get_account_balance as _get_account_balance_helper
+from .params import tf_to_seconds as _tf_to_seconds_helper
+from .pending_orders import (
+    duplicate_execution_reason as _duplicate_execution_reason_helper,
+)
+from .pending_orders import reached_position_limit as _reached_position_limit_helper
+from .pending_orders import submit_pending_entry as _submit_pending_entry_helper
+from .sizing import RegimeSizing, extract_atr_from_indicators
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +139,9 @@ class TradeExecutor:
         self._skip_lock = threading.Lock()
         # 分时间框架统计接收/放行/拦截原因。
         self._tf_stats: dict[str, dict[str, Any]] = {}
-        self._margin_guard: Any = None  # Optional[MarginGuard], injected via set_margin_guard()
+        self._margin_guard: Any = (
+            None  # Optional[MarginGuard], injected via set_margin_guard()
+        )
         self._execution_quality = {
             "recovered_from_state": 0,
             "risk_blocks": 0,
@@ -165,6 +161,8 @@ class TradeExecutor:
         # 同策略同方向再入场冷却：记录上次开仓的 bar_time
         # key = (symbol, strategy, direction), value = bar_time(datetime)
         self._last_entry_bar_time: dict[tuple[str, str, str], datetime] = {}
+        # signal_id 幂等性保护：已执行的 signal_id 有界缓存，防止重复下单
+        self._executed_signal_ids: deque[str] = deque(maxlen=2000)
 
     # ------------------------------------------------------------------
     # Public listener interface
@@ -192,7 +190,9 @@ class TradeExecutor:
             # Backpressure retry for confirmed signals (extended to 3s)
             logger.warning(
                 "TradeExecutor queue full, backpressure retry for %s/%s/%s",
-                event.symbol, event.timeframe, event.strategy,
+                event.symbol,
+                event.timeframe,
+                event.strategy,
             )
             try:
                 self._exec_queue.put(event, timeout=3.0)
@@ -203,21 +203,48 @@ class TradeExecutor:
                     "TradeExecutor queue full after 3s retry, DROPPING confirmed event "
                     "%s/%s/%s signal_id=%s (overflows=%d). "
                     "Trading opportunity permanently lost!",
-                    event.symbol, event.timeframe, event.strategy,
+                    event.symbol,
+                    event.timeframe,
+                    event.strategy,
                     sig_id,
                     self._execution_quality["queue_overflows"],
                 )
                 # 保留最近一批被丢弃的 confirmed 信号，便于通过 status() 排查。
-                self._dropped_signals.append({
+                dropped_entry = {
                     "signal_id": sig_id,
                     "symbol": event.symbol,
                     "timeframe": event.timeframe,
                     "strategy": event.strategy,
                     "direction": getattr(event, "direction", ""),
+                    "confidence": getattr(event, "confidence", 0.0),
                     "dropped_at": time.time(),
-                })
+                }
+                self._dropped_signals.append(dropped_entry)
                 if len(self._dropped_signals) > self._max_dropped_history:
-                    self._dropped_signals = self._dropped_signals[-self._max_dropped_history:]
+                    self._dropped_signals = self._dropped_signals[
+                        -self._max_dropped_history :
+                    ]
+                # 持久化到执行日志，确保重启后可追溯丢失的信号
+                if self._persist_execution_fn is not None:
+                    try:
+                        self._persist_execution_fn(
+                            [
+                                {
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                    "signal_id": sig_id,
+                                    "symbol": event.symbol,
+                                    "timeframe": event.timeframe,
+                                    "direction": getattr(event, "direction", ""),
+                                    "strategy": event.strategy,
+                                    "confidence": getattr(event, "confidence", 0.0),
+                                    "success": False,
+                                    "dropped": True,
+                                    "reason": "queue_overflow",
+                                }
+                            ]
+                        )
+                    except Exception:
+                        logger.debug("Failed to persist dropped signal", exc_info=True)
 
     def _start_worker(self) -> None:
         """启动后台执行线程。"""
@@ -225,7 +252,9 @@ class TradeExecutor:
         if self._exec_thread is not None and self._exec_thread.is_alive():
             return
         self._stop_event.clear()
-        t = threading.Thread(target=self._exec_worker, name="trade-executor", daemon=True)
+        t = threading.Thread(
+            target=self._exec_worker, name="trade-executor", daemon=True
+        )
         t.start()
         self._exec_thread = t
 
@@ -317,11 +346,20 @@ class TradeExecutor:
         self._margin_guard = guard
 
     def reset_circuit(self) -> None:
-        # Reset the circuit breaker manually.
+        """Reset the circuit breaker manually."""
         self._circuit_open = False
         self._consecutive_failures = 0
         self._circuit_open_at = None
         logger.info("TradeExecutor: circuit breaker manually reset")
+
+    def _check_trading_health(self) -> bool:
+        """熔断器自动恢复前的健康检查：验证 MT5 连接和账户可用。"""
+        try:
+            info = self._trading.account_info()
+            return info is not None
+        except Exception as exc:
+            logger.debug("Trading health check failed: %s", exc)
+            return False
 
     def _handle_confirmed(self, event: SignalEvent) -> dict[str, Any | None]:
         self._signals_received += 1
@@ -335,9 +373,15 @@ class TradeExecutor:
         if not self.config.enabled:
             return None
 
+        # ── signal_id 幂等性：拒绝已执行过的信号 ──────────────────────
+        sig_id = event.signal_id or ""
+        if sig_id and sig_id in self._executed_signal_ids:
+            _notify_skip_helper(self, sig_id, "duplicate_signal_id", tf, event=event)
+            return None
+
         # 技术故障熔断器优先于后续所有交易检查。
         if self._circuit_open:
-            # T-3: 超过自动恢复窗口后，允许先进入 half-open 再尝试一次。
+            # 超过自动恢复窗口后，先做健康检查再决定是否 half-open。
             if (
                 self.config.circuit_auto_reset_minutes > 0
                 and self._circuit_open_at is not None
@@ -346,17 +390,28 @@ class TradeExecutor:
                     datetime.now(timezone.utc) - self._circuit_open_at
                 ).total_seconds() / 60.0
                 if elapsed >= self.config.circuit_auto_reset_minutes:
-                    logger.info(
-                        "TradeExecutor: circuit auto-reset after %.1f minutes, "
-                        "attempting half-open",
-                        elapsed,
-                    )
-                    self.reset_circuit()
+                    if self._check_trading_health():
+                        logger.info(
+                            "TradeExecutor: circuit auto-reset after %.1f minutes, "
+                            "health check passed, entering half-open",
+                            elapsed,
+                        )
+                        self.reset_circuit()
+                    else:
+                        # 健康检查未通过，延长熔断（重置计时器等下一个窗口）
+                        self._circuit_open_at = datetime.now(timezone.utc)
+                        logger.warning(
+                            "TradeExecutor: circuit auto-reset deferred, "
+                            "health check failed after %.1f minutes",
+                            elapsed,
+                        )
             if self._circuit_open:
                 logger.warning(
                     "TradeExecutor: circuit open (consecutive_failures=%d), "
                     "skipping %s/%s. Call reset_circuit() to resume.",
-                    self._consecutive_failures, event.symbol, event.strategy,
+                    self._consecutive_failures,
+                    event.symbol,
+                    event.strategy,
                 )
                 return None
 
@@ -370,7 +425,9 @@ class TradeExecutor:
         ):
             logger.warning(
                 "TradeExecutor: PnL circuit open, skipping %s/%s %s",
-                event.symbol, event.strategy, event.direction,
+                event.symbol,
+                event.strategy,
+                event.direction,
             )
             _emit_execution_blocked_helper(
                 self,
@@ -378,7 +435,9 @@ class TradeExecutor:
                 reason="pnl_circuit_paused",
                 category="performance",
             )
-            _notify_skip_helper(self, event.signal_id, "pnl_circuit_paused", tf, event=event)
+            _notify_skip_helper(
+                self, event.signal_id, "pnl_circuit_paused", tf, event=event
+            )
             return None
 
         # 权益曲线过滤器：账户权益低于 MA 时暂停开仓。
@@ -387,7 +446,9 @@ class TradeExecutor:
             if self._equity_curve_filter.should_block():
                 logger.info(
                     "TradeExecutor: skipping %s/%s %s - equity curve below MA",
-                    event.symbol, event.strategy, event.direction,
+                    event.symbol,
+                    event.strategy,
+                    event.direction,
                 )
                 _emit_execution_blocked_helper(
                     self,
@@ -395,14 +456,21 @@ class TradeExecutor:
                     reason="equity_curve_below_ma",
                     category="equity_filter",
                 )
-                _notify_skip_helper(self, event.signal_id, "equity_curve_below_ma", tf, event=event)
+                _notify_skip_helper(
+                    self, event.signal_id, "equity_curve_below_ma", tf, event=event
+                )
                 return None
 
         # 保证金保护在真正计算仓位前拦截新开仓请求。
-        if self._margin_guard is not None and self._margin_guard.should_block_new_trades():
+        if (
+            self._margin_guard is not None
+            and self._margin_guard.should_block_new_trades()
+        ):
             logger.info(
                 "TradeExecutor: skipping %s/%s %s - margin guard blocked",
-                event.symbol, event.strategy, event.direction,
+                event.symbol,
+                event.strategy,
+                event.direction,
             )
             _emit_execution_blocked_helper(
                 self,
@@ -410,7 +478,9 @@ class TradeExecutor:
                 reason="margin_guard_block",
                 category="risk_guard",
             )
-            _notify_skip_helper(self, event.signal_id, "margin_guard_block", tf, event=event)
+            _notify_skip_helper(
+                self, event.signal_id, "margin_guard_block", tf, event=event
+            )
             return None
 
         # 执行门负责策略级准入规则，例如 voting group 和 armed 检查。
@@ -418,7 +488,10 @@ class TradeExecutor:
         if not gate_allowed:
             logger.info(
                 "TradeExecutor: skipping %s/%s %s - gate blocked: %s",
-                event.symbol, event.strategy, event.direction, gate_reason,
+                event.symbol,
+                event.strategy,
+                event.direction,
+                gate_reason,
             )
             _emit_execution_blocked_helper(
                 self,
@@ -433,7 +506,11 @@ class TradeExecutor:
         if duplicate_reason:
             logger.info(
                 "TradeExecutor: skipping %s/%s/%s %s - duplicate execution context: %s",
-                event.symbol, tf, event.strategy, event.direction, duplicate_reason,
+                event.symbol,
+                tf,
+                event.strategy,
+                event.direction,
+                duplicate_reason,
             )
             self._execution_log.append(
                 {
@@ -453,7 +530,9 @@ class TradeExecutor:
                 reason=duplicate_reason,
                 category="duplicate_guard",
             )
-            _notify_skip_helper(self, event.signal_id, duplicate_reason, tf, event=event)
+            _notify_skip_helper(
+                self, event.signal_id, duplicate_reason, tf, event=event
+            )
             return None
 
         # Per-TF 最小置信度覆盖优先于全局 min_confidence。
@@ -476,7 +555,9 @@ class TradeExecutor:
                 reason="min_confidence",
                 category="confidence",
             )
-            _notify_skip_helper(self, event.signal_id, "min_confidence", tf, event=event)
+            _notify_skip_helper(
+                self, event.signal_id, "min_confidence", tf, event=event
+            )
             return None
 
         # 日终平仓后，当天剩余时间内不再新开仓，避免 EOD 后又被实时信号重新拉起仓位。
@@ -487,7 +568,9 @@ class TradeExecutor:
         ):
             logger.info(
                 "TradeExecutor: BLOCKING %s/%s %s - after EOD closeout, no new positions today",
-                event.symbol, event.strategy, event.direction,
+                event.symbol,
+                event.strategy,
+                event.direction,
             )
             _emit_execution_blocked_helper(
                 self,
@@ -495,7 +578,9 @@ class TradeExecutor:
                 reason="after_eod_block",
                 category="eod_guard",
             )
-            _notify_skip_helper(self, event.signal_id, "after_eod_block", tf, event=event)
+            _notify_skip_helper(
+                self, event.signal_id, "after_eod_block", tf, event=event
+            )
             return None
 
         if _reached_position_limit_helper(self, event.symbol):
@@ -523,7 +608,9 @@ class TradeExecutor:
                 reason="position_limit",
                 category="position_limit",
             )
-            _notify_skip_helper(self, event.signal_id, "position_limit", tf, event=event)
+            _notify_skip_helper(
+                self, event.signal_id, "position_limit", tf, event=event
+            )
             return None
 
         # ── 同策略同方向再入场冷却 ────────────────────────────────
@@ -543,13 +630,19 @@ class TradeExecutor:
             if bar_time and last_bar:
                 tf_seconds = _tf_to_seconds_helper(tf)
                 if tf_seconds > 0:
-                    elapsed_bars = abs((bar_time - last_bar).total_seconds()) / tf_seconds
+                    elapsed_bars = (
+                        abs((bar_time - last_bar).total_seconds()) / tf_seconds
+                    )
                     if elapsed_bars < cooldown_bars:
                         logger.info(
                             "TradeExecutor: skipping %s/%s/%s %s - reentry cooldown "
                             "(%.1f bars < %d required)",
-                            event.symbol, tf, event.strategy, event.direction,
-                            elapsed_bars, cooldown_bars,
+                            event.symbol,
+                            tf,
+                            event.strategy,
+                            event.direction,
+                            elapsed_bars,
+                            cooldown_bars,
                         )
                         _emit_execution_blocked_helper(
                             self,
@@ -572,8 +665,12 @@ class TradeExecutor:
             logger.warning(
                 "TradeExecutor: cannot compute trade params for %s/%s %s "
                 "(atr=%s, balance=%s, close_price=%s, indicators_keys=%s)",
-                event.symbol, event.strategy, event.direction,
-                atr, balance, close_price,
+                event.symbol,
+                event.strategy,
+                event.direction,
+                atr,
+                balance,
+                close_price,
                 list(event.indicators.keys()),
             )
             _emit_execution_blocked_helper(
@@ -625,6 +722,8 @@ class TradeExecutor:
             return None
 
         self._signals_passed += 1
+        if sig_id:
+            self._executed_signal_ids.append(sig_id)
         if tf:
             with self._skip_lock:
                 self._tf_stats.setdefault(
@@ -654,14 +753,18 @@ class TradeExecutor:
             "signals_blocked": self._signals_received - self._signals_passed,
             "skip_reasons": {k: v for k, v in self._skip_reasons.items()},
             "execution_count": self._execution_count,
-            "last_execution_at": self._last_execution_at.isoformat() if self._last_execution_at else None,
+            "last_execution_at": (
+                self._last_execution_at.isoformat() if self._last_execution_at else None
+            ),
             "last_error": self._last_error,
             "last_risk_block": self._last_risk_block,
             "circuit_breaker": {
                 "open": self._circuit_open,
                 "consecutive_failures": self._consecutive_failures,
                 "max_consecutive_failures": self.config.max_consecutive_failures,
-                "circuit_open_at": self._circuit_open_at.isoformat() if self._circuit_open_at else None,
+                "circuit_open_at": (
+                    self._circuit_open_at.isoformat() if self._circuit_open_at else None
+                ),
                 "auto_reset_minutes": self.config.circuit_auto_reset_minutes,
             },
             "equity_curve_filter": (
@@ -682,23 +785,37 @@ class TradeExecutor:
                 "trade_trigger_strategies": list(
                     getattr(self._execution_gate.config, "trade_trigger_strategies", ())
                 ),
-                "voting_group_strategies": sorted(self._execution_gate.config.voting_group_strategies),
-                "standalone_override": sorted(self._execution_gate.config.standalone_override),
+                "voting_group_strategies": sorted(
+                    self._execution_gate.config.voting_group_strategies
+                ),
+                "standalone_override": sorted(
+                    self._execution_gate.config.standalone_override
+                ),
             },
             "execution_quality": {
-                "recovered_from_state": int(self._execution_quality["recovered_from_state"] or 0),
+                "recovered_from_state": int(
+                    self._execution_quality["recovered_from_state"] or 0
+                ),
                 "risk_blocks": int(self._execution_quality["risk_blocks"] or 0),
                 "slippage_samples": slippage_samples,
-                "avg_slippage_price": round(
-                    float(self._execution_quality["slippage_total_price"] or 0.0)
-                    / slippage_samples,
-                    6,
-                ) if slippage_samples else None,
-                "avg_slippage_points": round(
-                    float(self._execution_quality["slippage_total_points"] or 0.0)
-                    / slippage_samples,
-                    4,
-                ) if slippage_samples else None,
+                "avg_slippage_price": (
+                    round(
+                        float(self._execution_quality["slippage_total_price"] or 0.0)
+                        / slippage_samples,
+                        6,
+                    )
+                    if slippage_samples
+                    else None
+                ),
+                "avg_slippage_points": (
+                    round(
+                        float(self._execution_quality["slippage_total_points"] or 0.0)
+                        / slippage_samples,
+                        4,
+                    )
+                    if slippage_samples
+                    else None
+                ),
             },
             "by_timeframe": {
                 tf: {

@@ -28,6 +28,7 @@ HTFStateCache 通过监听 SignalRuntime 的 confirmed 信号事件，
 
 仅当 ``htf_map=None``（standalone/测试场景）时使用 ``_DEFAULT_HTF_MAP`` 兜底。
 """
+
 from __future__ import annotations
 
 import threading
@@ -43,7 +44,6 @@ _DEFAULT_HTF_MAP: Dict[str, str] = {
     "H1": "H4",
     "H4": "D1",
 }
-
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,8 @@ class HTFStateCache:
         self._htf_map = htf_map or dict(_DEFAULT_HTF_MAP)
         self._max_age = timedelta(seconds=max(1.0, max_age_seconds))
         self._source_strategies: frozenset[str] = (
-            source_strategies if source_strategies is not None
+            source_strategies
+            if source_strategies is not None
             else frozenset({"consensus"})
         )
         # key: (symbol, timeframe) → HTFDirectionContext
@@ -94,6 +95,14 @@ class HTFStateCache:
         self._hit_count: int = 0
         self._miss_count: int = 0
         self._expired_count: int = 0
+
+    def reset(self) -> None:
+        """清除所有缓存条目和统计计数（回测跨 run 隔离）。"""
+        with self._lock:
+            self._cache.clear()
+            self._hit_count = 0
+            self._miss_count = 0
+            self._expired_count = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -106,7 +115,9 @@ class HTFStateCache:
         ctx = self.get_htf_context(symbol, ltf_timeframe)
         return ctx.direction if ctx is not None else None
 
-    def get_htf_context(self, symbol: str, ltf_timeframe: str) -> Optional[HTFDirectionContext]:
+    def get_htf_context(
+        self, symbol: str, ltf_timeframe: str
+    ) -> Optional[HTFDirectionContext]:
         """返回 HTF 上的完整方向上下文（含 confidence/regime/stable_bars）。"""
         htf = self._htf_map.get(ltf_timeframe)
         if htf is None:

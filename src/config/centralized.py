@@ -7,6 +7,7 @@ signal-specific loading live in smaller submodules.
 
 from __future__ import annotations
 
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
@@ -64,11 +65,13 @@ class CentralizedConfig:
         self._config_cache: Dict[str, Any] = {}
         self._provenance_cache: Dict[str, Dict[str, str]] = {}
         self._validated = False
+        self._lock = threading.RLock()
 
     def load_all(self) -> Dict[str, Any]:
-        if not self._config_cache:
-            self._load_and_validate()
-        return self._config_cache
+        with self._lock:
+            if not self._config_cache:
+                self._load_and_validate()
+            return self._config_cache
 
     def _load_and_validate(self) -> None:
         self._provenance_cache = {}
@@ -113,11 +116,15 @@ class CentralizedConfig:
         if "timeframes" in trading_raw:
             trading_raw["timeframes"] = _split_csv(trading_raw.get("timeframes"))
         if "modules_enabled" in system_raw:
-            system_raw["modules_enabled"] = _split_csv(system_raw.get("modules_enabled"))
+            system_raw["modules_enabled"] = _split_csv(
+                system_raw.get("modules_enabled")
+            )
 
         shared = {
             "trading": TradingConfig(**trading_raw).model_dump(),
-            "intervals": IntervalConfig(**main_config.get("intervals", {})).model_dump(),
+            "intervals": IntervalConfig(
+                **main_config.get("intervals", {})
+            ).model_dump(),
             "limits": LimitConfig(**main_config.get("limits", {})).model_dump(),
             "system": SystemConfig(**system_raw).model_dump(),
         }
@@ -125,13 +132,17 @@ class CentralizedConfig:
             self._set_provenance(
                 "trading",
                 field,
-                self._option_source(config_name="app.ini", section="trading", key=field),
+                self._option_source(
+                    config_name="app.ini", section="trading", key=field
+                ),
             )
         for field in shared["intervals"]:
             self._set_provenance(
                 "intervals",
                 field,
-                self._option_source(config_name="app.ini", section="intervals", key=field),
+                self._option_source(
+                    config_name="app.ini", section="intervals", key=field
+                ),
             )
         for field in shared["limits"]:
             self._set_provenance(
@@ -217,7 +228,9 @@ class CentralizedConfig:
         # market_impact section 键名需要加前缀
         _market_impact_raw = configs["economic"].get("market_impact", {})
         _market_impact_fields = {
-            f"market_impact_{k}": v for k, v in _market_impact_raw.items() if v is not None
+            f"market_impact_{k}": v
+            for k, v in _market_impact_raw.items()
+            if v is not None
         }
         economic_config = _merge_sections(
             {"local_timezone": shared_config["system"].get("timezone", "UTC")},
@@ -259,7 +272,10 @@ class CentralizedConfig:
                     economic_config[int_list_key] = [
                         int(v.strip()) for v in raw.split(",") if v.strip()
                     ]
-        for optional_int_key in ("curated_importance_min", "trade_guard_importance_min"):
+        for optional_int_key in (
+            "curated_importance_min",
+            "trade_guard_importance_min",
+        ):
             if str(economic_config.get(optional_int_key, "")).strip() == "":
                 economic_config[optional_int_key] = None
         if (
@@ -376,7 +392,9 @@ class CentralizedConfig:
             "alphavantage_api_key": ("alphavantage", "api_key"),
             "alphavantage_tracked_indicators": ("alphavantage", "tracked_indicators"),
         }
-        _MARKET_IMPACT_FIELDS = {f for f in EconomicConfig.model_fields if f.startswith("market_impact_")}
+        _MARKET_IMPACT_FIELDS = {
+            f for f in EconomicConfig.model_fields if f.startswith("market_impact_")
+        }
         for field in EconomicConfig.model_fields:
             if field == "local_timezone":
                 source = self._option_source(
@@ -469,8 +487,9 @@ class CentralizedConfig:
         return self.load_all()["raw"].get(module, {})
 
     def reload(self) -> None:
-        self._config_cache.clear()
-        self._validated = False
+        with self._lock:
+            self._config_cache.clear()
+            self._validated = False
         self.load_all()
 
     def get_effective_config_snapshot(self) -> Dict[str, Any]:
@@ -569,13 +588,13 @@ def reload_configs() -> None:
     get_risk_config.cache_clear()
     get_trading_ops_config.cache_clear()
     get_signal_config.cache_clear()
+    from src.config.database import load_db_settings
+    from src.config.indicator_runtime import load_indicator_settings
+    from src.config.mt5 import load_mt5_settings
     from src.config.runtime import (
         get_runtime_ingest_settings,
         get_runtime_market_settings,
     )
-    from src.config.database import load_db_settings
-    from src.config.indicator_runtime import load_indicator_settings
-    from src.config.mt5 import load_mt5_settings
     from src.config.storage import load_storage_settings
 
     get_runtime_ingest_settings.cache_clear()

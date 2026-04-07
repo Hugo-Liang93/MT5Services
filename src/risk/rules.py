@@ -1,37 +1,31 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Protocol
 
 from src.config import EconomicConfig, RiskConfig
-from src.signals.execution.filters import SessionFilter
 from src.signals.contracts import normalize_session_name
+from src.signals.execution.filters import SessionFilter
 
 from .models import RiskCheckResult, TradeIntent
 
 
 class EconomicCalendarRuleProvider(Protocol):
-    def is_stale(self) -> bool:
-        ...
+    def is_stale(self) -> bool: ...
 
-    def stats(self) -> Dict[str, Any]:
-        ...
+    def stats(self) -> Dict[str, Any]: ...
 
-    def get_trade_guard(self, **kwargs: Any) -> Dict[str, Any]:
-        ...
+    def get_trade_guard(self, **kwargs: Any) -> Dict[str, Any]: ...
 
 
 class AccountStateProvider(Protocol):
-    def account_info(self):
-        ...
+    def account_info(self): ...
 
-    def positions(self, symbol: Optional[str] = None):
-        ...
+    def positions(self, symbol: Optional[str] = None): ...
 
-    def orders(self, symbol: Optional[str] = None):
-        ...
+    def orders(self, symbol: Optional[str] = None): ...
 
 
 @dataclass
@@ -61,7 +55,9 @@ class AccountSnapshotRule(RiskRule):
 
         checks: List[RiskCheckResult] = []
         try:
-            symbol_positions = list(context.account_provider.positions(context.intent.symbol))
+            symbol_positions = list(
+                context.account_provider.positions(context.intent.symbol)
+            )
             all_positions = list(context.account_provider.positions())
             symbol_orders = list(context.account_provider.orders(context.intent.symbol))
         except Exception as exc:
@@ -75,7 +71,10 @@ class AccountSnapshotRule(RiskRule):
             ]
 
         settings = context.risk_settings
-        if settings.max_volume_per_order is not None and context.intent.volume > settings.max_volume_per_order:
+        if (
+            settings.max_volume_per_order is not None
+            and context.intent.volume > settings.max_volume_per_order
+        ):
             checks.append(
                 RiskCheckResult(
                     name="max_volume_per_order",
@@ -88,7 +87,10 @@ class AccountSnapshotRule(RiskRule):
                 )
             )
 
-        if settings.max_positions_per_symbol is not None and len(symbol_positions) >= settings.max_positions_per_symbol:
+        if (
+            settings.max_positions_per_symbol is not None
+            and len(symbol_positions) >= settings.max_positions_per_symbol
+        ):
             checks.append(
                 RiskCheckResult(
                     name="max_positions_per_symbol",
@@ -102,7 +104,10 @@ class AccountSnapshotRule(RiskRule):
                 )
             )
 
-        if settings.max_open_positions_total is not None and len(all_positions) >= settings.max_open_positions_total:
+        if (
+            settings.max_open_positions_total is not None
+            and len(all_positions) >= settings.max_open_positions_total
+        ):
             checks.append(
                 RiskCheckResult(
                     name="max_open_positions_total",
@@ -115,7 +120,10 @@ class AccountSnapshotRule(RiskRule):
                 )
             )
 
-        if settings.max_pending_orders_per_symbol is not None and len(symbol_orders) >= settings.max_pending_orders_per_symbol:
+        if (
+            settings.max_pending_orders_per_symbol is not None
+            and len(symbol_orders) >= settings.max_pending_orders_per_symbol
+        ):
             checks.append(
                 RiskCheckResult(
                     name="max_pending_orders_per_symbol",
@@ -130,7 +138,9 @@ class AccountSnapshotRule(RiskRule):
             )
 
         if settings.max_volume_per_symbol is not None:
-            current_symbol_volume = sum(float(position.volume or 0.0) for position in symbol_positions)
+            current_symbol_volume = sum(
+                float(position.volume or 0.0) for position in symbol_positions
+            )
             projected_volume = current_symbol_volume + context.intent.volume
             if projected_volume > settings.max_volume_per_symbol:
                 checks.append(
@@ -158,8 +168,12 @@ class AccountSnapshotRule(RiskRule):
                     if (intent_side == "buy" and pos_type == 0) or (
                         intent_side == "sell" and pos_type == 1
                     ):
-                        same_side_volume += float(getattr(position, "volume", 0.0) or 0.0)
-                projected_net_lots = same_side_volume + float(context.intent.volume or 0.0)
+                        same_side_volume += float(
+                            getattr(position, "volume", 0.0) or 0.0
+                        )
+                projected_net_lots = same_side_volume + float(
+                    context.intent.volume or 0.0
+                )
                 if projected_net_lots > settings.max_net_lots_per_symbol:
                     checks.append(
                         RiskCheckResult(
@@ -190,7 +204,9 @@ class ProtectionRule(RiskRule):
             return []
 
         checks: List[RiskCheckResult] = []
-        mode = str(context.risk_settings.market_order_protection or "off").strip().lower()
+        mode = (
+            str(context.risk_settings.market_order_protection or "off").strip().lower()
+        )
         if mode == "off":
             return checks
 
@@ -285,7 +301,8 @@ class DailyLossLimitRule(RiskRule):
             balance = self._numeric(account_info.get("balance"))
             equity = self._numeric(account_info.get("equity"))
             start_balance = self._numeric(
-                account_info.get("day_start_balance") or metadata.get("day_start_balance")
+                account_info.get("day_start_balance")
+                or metadata.get("day_start_balance")
             )
             daily_pnl = self._numeric(
                 account_info.get("daily_realized_pnl")
@@ -307,19 +324,40 @@ class DailyLossLimitRule(RiskRule):
                 or metadata.get("daily_pnl")
             )
 
-        if start_balance and daily_pnl is not None and start_balance > 0:
-            loss_pct = max(0.0, (-daily_pnl / start_balance) * 100.0)
+        # 当两个数据源都可用时，取更保守（更高亏损）的估计。
+        # daily_pnl 可能滞后同步，equity 始终反映实时浮动盈亏。
+        pnl_loss: float | None = None
+        equity_loss: float | None = None
+        if start_balance and start_balance > 0:
+            if daily_pnl is not None:
+                pnl_loss = max(0.0, (-daily_pnl / start_balance) * 100.0)
+            if equity is not None:
+                equity_loss = max(
+                    0.0, ((start_balance - equity) / start_balance) * 100.0
+                )
+
+        if pnl_loss is not None and equity_loss is not None:
+            # 交叉验证：取保守值，附带两个数据源供诊断
+            loss_pct = max(pnl_loss, equity_loss)
             return {
                 "loss_pct": round(loss_pct, 4),
+                "source": "cross_validated",
+                "day_start_balance": start_balance,
+                "daily_pnl": daily_pnl,
+                "equity": equity,
+                "pnl_loss_pct": round(pnl_loss, 4),
+                "equity_loss_pct": round(equity_loss, 4),
+            }
+        if pnl_loss is not None:
+            return {
+                "loss_pct": round(pnl_loss, 4),
                 "source": "daily_pnl_vs_day_start_balance",
                 "day_start_balance": start_balance,
                 "daily_pnl": daily_pnl,
             }
-
-        if start_balance and equity is not None and start_balance > 0:
-            loss_pct = max(0.0, ((start_balance - equity) / start_balance) * 100.0)
+        if equity_loss is not None:
             return {
-                "loss_pct": round(loss_pct, 4),
+                "loss_pct": round(equity_loss, 4),
                 "source": "equity_vs_day_start_balance",
                 "day_start_balance": start_balance,
                 "equity": equity,
@@ -581,9 +619,9 @@ class MarketStructureRule(RiskRule):
 
         checks: List[RiskCheckResult] = []
         side = _normalized_side(context.intent.side)
-        sweep_confirmation_state = str(
-            structure.get("sweep_confirmation_state") or "none"
-        ).strip().lower()
+        sweep_confirmation_state = (
+            str(structure.get("sweep_confirmation_state") or "none").strip().lower()
+        )
         confirmation_reference = structure.get("confirmation_reference")
 
         if side == "buy" and sweep_confirmation_state.startswith("bearish_"):

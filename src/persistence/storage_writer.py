@@ -4,10 +4,10 @@ import json
 import logging
 import os
 import queue
-from collections import deque
-from pathlib import Path
 import threading
 import time
+from collections import deque
+from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
 from src.config import StorageSettings
@@ -52,7 +52,9 @@ class StorageWriter:
         # DLQ 目录：刷写失败的批次持久化到此处，下次启动时重放
         self._dlq_dir = self._init_dlq_dir()
         if not self._register_channels_from_config():
-            raise RuntimeError("No storage channels configured; please provide config/storage.ini")
+            raise RuntimeError(
+                "No storage channels configured; please provide config/storage.ini"
+            )
 
     # --- DLQ（Dead Letter Queue）---
     def _init_dlq_dir(self) -> Path:
@@ -74,7 +76,9 @@ class StorageWriter:
                     f.write(json.dumps(row, default=str) + "\n")
             logger.warning(
                 "StorageWriter: dumped %d failed rows for channel '%s' to DLQ: %s",
-                len(rows), channel, path.name,
+                len(rows),
+                channel,
+                path.name,
             )
         except Exception as exc:
             logger.error("StorageWriter: failed to write DLQ file %s: %s", path, exc)
@@ -88,9 +92,13 @@ class StorageWriter:
             try:
                 if path.stat().st_mtime < cutoff:
                     path.unlink(missing_ok=True)
-                    logger.info("StorageWriter: cleaned up stale DLQ file: %s", path.name)
+                    logger.info(
+                        "StorageWriter: cleaned up stale DLQ file: %s", path.name
+                    )
             except Exception as exc:
-                logger.debug("StorageWriter: failed to clean DLQ file %s: %s", path, exc)
+                logger.debug(
+                    "StorageWriter: failed to clean DLQ file %s: %s", path, exc
+                )
 
     def _replay_dlq(self) -> None:
         """启动时扫描 DLQ 目录，将残留的失败批次重新写入对应通道。"""
@@ -105,7 +113,11 @@ class StorageWriter:
             channel = path.stem.rsplit("_", 1)[0]
             ch = self._channels.get(channel)
             if not ch:
-                logger.warning("StorageWriter: DLQ channel '%s' not registered, removing %s", channel, path.name)
+                logger.warning(
+                    "StorageWriter: DLQ channel '%s' not registered, removing %s",
+                    channel,
+                    path.name,
+                )
                 path.unlink(missing_ok=True)
                 continue
             try:
@@ -113,10 +125,18 @@ class StorageWriter:
                     rows = [tuple(json.loads(line)) for line in f if line.strip()]
                 if rows:
                     ch["write_fn"](rows)  # type: ignore[index]
-                    logger.info("StorageWriter: replayed %d rows from DLQ %s", len(rows), path.name)
+                    logger.info(
+                        "StorageWriter: replayed %d rows from DLQ %s",
+                        len(rows),
+                        path.name,
+                    )
                 path.unlink(missing_ok=True)
             except Exception as exc:
-                logger.error("StorageWriter: DLQ replay failed for %s: %s (will retry next start)", path.name, exc)
+                logger.error(
+                    "StorageWriter: DLQ replay failed for %s: %s (will retry next start)",
+                    path.name,
+                    exc,
+                )
 
     # --- 生命周期 ---
     def start(self) -> None:
@@ -125,6 +145,7 @@ class StorageWriter:
         self.db.init_schema()
         try:
             from src.config.database import load_retention_config
+
             enabled, override_days = load_retention_config()
             if enabled:
                 self.db.ensure_retention_policies(override_days=override_days or None)
@@ -132,7 +153,9 @@ class StorageWriter:
             logger.warning("Retention policy setup skipped: %s", exc)
         self._replay_dlq()
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="storage-writer", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="storage-writer", daemon=True
+        )
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -142,8 +165,16 @@ class StorageWriter:
             thread.join(timeout=timeout)
             self._thread = None
             if thread.is_alive():
-                logger.warning("StorageWriter stop timed out; writer thread still alive")
+                logger.warning(
+                    "StorageWriter stop timed out; writer thread still alive"
+                )
                 return
+        with self._lock:
+            for name in list(self._channels.keys()):
+                self._flush_if_due(name, self._channels[name], force=True)
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """强制刷出所有通道的待写数据，不停止后台线程。"""
         with self._lock:
             for name in list(self._channels.keys()):
                 self._flush_if_due(name, self._channels[name], force=True)
@@ -200,12 +231,12 @@ class StorageWriter:
         if not ch:
             logger.warning("Channel %s not registered, dropping data", name)
             return
-        
+
         q = ch["queue"]
-        
+
         # 监控队列使用率
         self._log_queue_pressure(name, q)
-        
+
         try:
             q.put_nowait(item)
         except queue.Full:
@@ -222,7 +253,7 @@ class StorageWriter:
             take = min(batch_size, available)
         else:
             take = batch_size
-        
+
         # 批量获取数据
         drained = []
         for _ in range(take):
@@ -230,12 +261,14 @@ class StorageWriter:
                 drained.append(q.get_nowait())
             except queue.Empty:
                 break
-        
+
         # 批量添加到 pending
         if drained:
             pending.extend(drained)
 
-    def _flush_if_due(self, name: str, ch: Dict[str, object], force: bool = False) -> None:
+    def _flush_if_due(
+        self, name: str, ch: Dict[str, object], force: bool = False
+    ) -> None:
         pending: deque = ch["pending"]  # type: ignore
         if not pending or not ch["enabled_fn"]():  # type: ignore
             return
@@ -256,7 +289,9 @@ class StorageWriter:
                     return
                 except Exception as exc:  # pragma: no cover
                     attempts += 1
-                    logger.warning("Flush %s failed (attempt %s): %s", name, attempts, exc)
+                    logger.warning(
+                        "Flush %s failed (attempt %s): %s", name, attempts, exc
+                    )
                     if attempts >= self.settings.flush_retry_attempts:
                         self._dump_to_dlq(name, batch)
                         pending.clear()
@@ -286,7 +321,11 @@ class StorageWriter:
                 "batch_size": batch_size,
                 "write_fn": write_fn,
                 "enabled_fn": enabled_fn,
-                "overflow_policy": (overflow_policy or self.settings.queue_overflow_policy or "auto").strip().lower(),
+                "overflow_policy": (
+                    overflow_policy or self.settings.queue_overflow_policy or "auto"
+                )
+                .strip()
+                .lower(),
             }
             self._last_flush[name] = time.time()
             self._channel_stats[name] = {
@@ -333,7 +372,9 @@ class StorageWriter:
         return {
             "queues": queues,
             "summary": summary,
-            "threads": {"writer_alive": self._thread.is_alive() if self._thread else False},
+            "threads": {
+                "writer_alive": self._thread.is_alive() if self._thread else False
+            },
         }
 
     def _queue_status(self, utilization: float, size: int, maxsize: int) -> str:
@@ -410,14 +451,21 @@ class StorageWriter:
             batch_size = parser.getint(section, "batch_size", fallback=None)
             page_size = parser.getint(section, "page_size", fallback=None)
             enabled_val = parser.get(section, "enabled", fallback=None)
-            if maxsize is None or flush_interval is None or batch_size is None or page_size is None:
+            if (
+                maxsize is None
+                or flush_interval is None
+                or batch_size is None
+                or page_size is None
+            ):
                 logger.warning("Channel %s missing required params, skipping", section)
                 continue
 
             write_fn = self._resolve_write_fn(ch_type, page_size)
             enabled_fn = self._resolve_enabled_fn(ch_type, enabled_val)
             if write_fn is None:
-                logger.warning("Unknown channel type %s in %s, skipping", ch_type, section)
+                logger.warning(
+                    "Unknown channel type %s in %s, skipping", ch_type, section
+                )
                 continue
 
             self.register_channel(
@@ -435,7 +483,9 @@ class StorageWriter:
         if not registered:
             logger.warning("No channels registered from %s", self.config_path)
         else:
-            logger.info("Registered %s channels from %s", len(self._channels), self.config_path)
+            logger.info(
+                "Registered %s channels from %s", len(self._channels), self.config_path
+            )
         return registered
 
     # 当有新的通道类型时，在此添加映射
@@ -445,12 +495,18 @@ class StorageWriter:
         mapping = {
             "ticks": lambda rows: self.db.write_ticks(rows, page_size=page_size),
             "quotes": lambda rows: self.db.write_quotes(rows, page_size=page_size),
-            "intrabar": lambda rows: self.db.write_ohlc_intrabar(rows, page_size=page_size),
+            "intrabar": lambda rows: self.db.write_ohlc_intrabar(
+                rows, page_size=page_size
+            ),
             "ohlc": lambda rows: self.db.write_ohlc(
                 rows, upsert=self.settings.ohlc_upsert_open_bar, page_size=page_size
             ),
-            "ohlc_indicators": lambda rows: self.db.write_ohlc(rows, upsert=True, page_size=page_size),
-            "economic_calendar": lambda rows: self.db.write_economic_calendar(rows, page_size=page_size),
+            "ohlc_indicators": lambda rows: self.db.write_ohlc(
+                rows, upsert=True, page_size=page_size
+            ),
+            "economic_calendar": lambda rows: self.db.write_economic_calendar(
+                rows, page_size=page_size
+            ),
             "economic_calendar_updates": lambda rows: self.db.write_economic_calendar_updates(
                 rows, page_size=page_size
             ),
@@ -497,7 +553,9 @@ class StorageWriter:
                     self._channel_stats[name]["blocked_puts"] += 1
                     log_state["last_full_warning_at"] = 0.0
                     if warned:
-                        logger.warning("Queue %s recovered after blocking producer writes", name)
+                        logger.warning(
+                            "Queue %s recovered after blocking producer writes", name
+                        )
                     return
                 except queue.Full:
                     now = time.monotonic()
@@ -512,7 +570,9 @@ class StorageWriter:
 
             self._channel_stats[name]["dropped_newest"] += 1
             self._channel_stats[name]["full_errors"] += 1
-            logger.error("Queue %s stopped while blocking, dropped newest item: %s", name, item)
+            logger.error(
+                "Queue %s stopped while blocking, dropped newest item: %s", name, item
+            )
             return
 
         if policy == "drop_oldest":
@@ -567,6 +627,11 @@ class StorageWriter:
         if policy != "auto":
             return policy
         channel_type = str(ch.get("type", "")).strip().lower()
-        if channel_type in {"ohlc", "ohlc_indicators", "economic_calendar", "economic_calendar_updates"}:
+        if channel_type in {
+            "ohlc",
+            "ohlc_indicators",
+            "economic_calendar",
+            "economic_calendar_updates",
+        }:
             return "block"
         return "drop_oldest"

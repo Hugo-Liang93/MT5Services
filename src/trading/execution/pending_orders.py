@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from src.signals.models import SignalEvent
+
+from ..pending.manager import compute_timeout
 from .eventing import (
     build_trade_metadata,
     emit_execution_blocked,
@@ -13,7 +15,6 @@ from .eventing import (
     emit_pending_order_submitted,
     notify_skip,
 )
-from ..pending.manager import compute_timeout
 from .sizing import TradeParameters
 
 if TYPE_CHECKING:
@@ -223,11 +224,32 @@ def open_positions_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
         rows = executor._trading.get_positions(symbol=symbol)
         live_count = len(list(rows or []))
         if tracked_count is None:
-            return live_count
-        return max(tracked_count, live_count)
+            position_count = live_count
+        else:
+            position_count = max(tracked_count, live_count)
     except Exception:
-        pass
-    return tracked_count or 0
+        position_count = tracked_count or 0
+
+    # 计入尚未成交的挂单，防止多个 pending entry 同时成交后突破持仓限制
+    pending_count = _pending_entries_for_symbol(executor, symbol)
+    return position_count + pending_count
+
+
+def _pending_entries_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
+    """统计指定品种的活跃挂单数量。"""
+    if executor._pending_manager is None:
+        return 0
+    try:
+        contexts_fn = getattr(executor._pending_manager, "active_execution_contexts", None)
+        if callable(contexts_fn):
+            entries = list(contexts_fn() or [])
+        else:
+            status = executor._pending_manager.status()
+            entries = list(status.get("entries", []) or [])
+        return sum(1 for e in entries if e.get("symbol") == symbol)
+    except Exception:
+        logger.debug("Failed to count pending entries for %s", symbol, exc_info=True)
+        return 0
 
 
 def duplicate_execution_reason(executor: "TradeExecutor", event: SignalEvent) -> str:

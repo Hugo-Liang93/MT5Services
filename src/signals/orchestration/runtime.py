@@ -2,18 +2,12 @@ from __future__ import annotations
 
 import logging
 import queue
-from collections import deque
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Iterable,
-    Protocol,
-)
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
 from uuid import uuid4
 
 from src.utils.common import timeframe_seconds
@@ -27,45 +21,39 @@ from ..evaluation.regime import (
 from ..execution.filters import SignalFilterChain
 from ..models import SignalEvent
 from ..service import SignalModule
-from .htf_resolver import (
-    parse_htf_config,
-    resolve_htf_indicators,
-)
+from .htf_resolver import parse_htf_config, resolve_htf_indicators
 from .policy import RuntimeSignalState, SignalPolicy
 from .runtime_evaluator import (
     apply_confidence_adjustments as _runtime_apply_confidence_adjustments,
-    evaluate_strategies as _runtime_evaluate_strategies,
-    get_vote_emit_kwargs as _runtime_get_vote_emit_kwargs,
+)
+from .runtime_evaluator import evaluate_strategies as _runtime_evaluate_strategies
+from .runtime_evaluator import get_vote_emit_kwargs as _runtime_get_vote_emit_kwargs
+from .runtime_evaluator import (
     market_structure_lookback_bars as _runtime_market_structure_lookback_bars,
-    process_voting as _runtime_process_voting,
-    publish_signal_event as _runtime_publish_signal_event,
+)
+from .runtime_evaluator import process_voting as _runtime_process_voting
+from .runtime_evaluator import publish_signal_event as _runtime_publish_signal_event
+from .runtime_evaluator import (
     resolve_market_structure_context as _runtime_resolve_market_structure_context,
-    transition_and_publish as _runtime_transition_and_publish,
 )
-from .runtime_processing import (
-    apply_filter_chain as _runtime_apply_filter_chain,
-    dequeue_event as _runtime_dequeue_event,
-    detect_regime as _runtime_detect_regime,
-    is_stale_intrabar as _runtime_is_stale_intrabar,
-    process_next_event as _runtime_process_next_event,
-)
+from .runtime_evaluator import transition_and_publish as _runtime_transition_and_publish
+from .runtime_processing import apply_filter_chain as _runtime_apply_filter_chain
+from .runtime_processing import dequeue_event as _runtime_dequeue_event
+from .runtime_processing import detect_regime as _runtime_detect_regime
+from .runtime_processing import is_stale_intrabar as _runtime_is_stale_intrabar
+from .runtime_processing import process_next_event as _runtime_process_next_event
 from .runtime_recovery import (
     restore_confirmed_state as _runtime_restore_confirmed_state,
-    restore_preview_state as _runtime_restore_preview_state,
-    restore_state as _runtime_restore_state,
 )
-from .vote_processor import (
-    fuse_vote_decisions,
-)
-from .state_machine import (
-    build_transition_metadata,
-    mark_emitted as _sm_mark_emitted,
-    should_emit as _sm_should_emit,
-    is_new_snapshot as _sm_is_new_snapshot,
-    snapshot_signature as _sm_snapshot_signature,
-    transition_confirmed,
-    transition_intrabar,
-)
+from .runtime_recovery import restore_preview_state as _runtime_restore_preview_state
+from .runtime_recovery import restore_state as _runtime_restore_state
+from .state_machine import build_transition_metadata
+from .state_machine import is_new_snapshot as _sm_is_new_snapshot
+from .state_machine import mark_emitted as _sm_mark_emitted
+from .state_machine import should_emit as _sm_should_emit
+from .state_machine import snapshot_signature as _sm_snapshot_signature
+from .state_machine import transition_confirmed, transition_intrabar
+from .vote_processor import fuse_vote_decisions
 from .voting import StrategyVotingEngine
 
 if TYPE_CHECKING:
@@ -151,13 +139,15 @@ class SignalRuntime:
             self._build_group_engines(self.policy)
         )
         # voting group 成员只参与组内投票，不再作为独立策略单独发信号。
-        self._voting_group_members: frozenset[str] = frozenset(
-            name
-            for group in self.policy.voting_groups
-            for name in group.strategies
-        ) - self.policy.standalone_override
+        self._voting_group_members: frozenset[str] = (
+            frozenset(
+                name for group in self.policy.voting_groups for name in group.strategies
+            )
+            - self.policy.standalone_override
+        )
         # RegimeTracker 按 (symbol, timeframe) 建立，维护每个交易目标的状态稳定度。
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
+        self._regime_trackers_lock = threading.Lock()
         self._signal_listeners: list[Callable[[SignalEvent], None]] = []
         self._signal_listeners_lock = threading.Lock()
         # Listener 连续失败计数按 id(listener) 统计，达到阈值后自动摘除。
@@ -228,6 +218,7 @@ class SignalRuntime:
         self._wal_db_path = wal_db_path
         if wal_db_path:
             from .wal_queue import WalSignalQueue
+
             self._confirmed_events: Any = WalSignalQueue(wal_db_path)
         else:
             self._confirmed_events: Any = queue.Queue(maxsize=4096)
@@ -247,7 +238,9 @@ class SignalRuntime:
         self._confirmed_backpressure_waits = 0
         self._confirmed_backpressure_failures = 0
         self._last_drop_log_at: float = 0.0
-        self._dropped_at_last_log: int = 0  # 上次日志快照对应的丢弃计数，用于计算本轮 delta。
+        self._dropped_at_last_log: int = (
+            0  # 上次日志快照对应的丢弃计数，用于计算本轮 delta。
+        )
         self._state_by_target: dict[tuple[str, str, str], RuntimeSignalState] = {}
         # 连续 loop 异常达到阈值后可触发 ERROR/DEGRADED 等运行状态告警。
         # 这里只累计后台主循环故障次数，不把单次策略/监听器异常误判为整体运行故障。
@@ -309,11 +302,12 @@ class SignalRuntime:
         )
         self._voting_group_engines = self._build_group_engines(policy)
         # voting group 成员只参与组内投票，不再作为独立策略单独发信号。
-        self._voting_group_members: frozenset[str] = frozenset(
-            name
-            for group in self.policy.voting_groups
-            for name in group.strategies
-        ) - self.policy.standalone_override
+        self._voting_group_members: frozenset[str] = (
+            frozenset(
+                name for group in self.policy.voting_groups for name in group.strategies
+            )
+            - self.policy.standalone_override
+        )
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -406,7 +400,10 @@ class SignalRuntime:
                         max_age = tf_secs * 2 + 30
                         if staleness > max_age:
                             self._warmup_skipped += 1
-                            if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
+                            if (
+                                self._warmup_skipped <= 10
+                                or self._warmup_skipped % 100 == 0
+                            ):
                                 logger.info(
                                     "Warmup skip (stale bar_time): %s/%s bar_time=%s staleness=%.0fs max_age=%.0fs (total_skipped=%d)",
                                     symbol,
@@ -424,7 +421,9 @@ class SignalRuntime:
                         timeframe,
                         bar_time.isoformat(),
                     )
-                required = getattr(self.policy, "warmup_required_indicators", ("atr14",))
+                required = getattr(
+                    self.policy, "warmup_required_indicators", ("atr14",)
+                )
                 if required and any(ind not in indicators for ind in required):
                     self._warmup_skipped += 1
                     if self._warmup_skipped <= 10 or self._warmup_skipped % 100 == 0:
@@ -447,7 +446,9 @@ class SignalRuntime:
                     self._first_intrabar_snapshot_seen.add(st_key)
                     logger.info(
                         "Intrabar ready: first complete snapshot for %s/%s (%d indicators)",
-                        symbol, timeframe, len(indicators),
+                        symbol,
+                        timeframe,
+                        len(indicators),
                     )
         # Prefer upstream trace_id from PipelineEventBus (set by bar_event_handler)
         # so the same ID flows through the entire pipeline for frontend tracing.
@@ -476,7 +477,9 @@ class SignalRuntime:
                     metadata["spread_price"] = spread_points * point_size
             except (TypeError, ValueError, AttributeError, KeyError):
                 logger.debug(
-                    "Failed to resolve spread/point for %s", symbol, exc_info=True,
+                    "Failed to resolve spread/point for %s",
+                    symbol,
+                    exc_info=True,
                 )
         if scope == "intrabar":
             if bar_time.tzinfo is None:
@@ -636,7 +639,11 @@ class SignalRuntime:
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "last_error": self._last_error,
             "filter_by_scope": {
-                s: {"passed": d["passed"], "blocked": d["blocked"], "blocks": dict(d["blocks"])}
+                s: {
+                    "passed": d["passed"],
+                    "blocked": d["blocked"],
+                    "blocks": dict(d["blocks"]),
+                }
                 for s, d in self._filter_by_scope.items()
             },
             **self._compute_filter_window_stats(),
@@ -645,7 +652,9 @@ class SignalRuntime:
             "warmup_ready": (
                 self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
             ),
-            "warmup_realtime_symbols": len(self._first_realtime_bar_seen),  # atomic read under GIL
+            "warmup_realtime_symbols": len(
+                self._first_realtime_bar_seen
+            ),  # atomic read under GIL
             # 即使 background loop 异常退出，这里也继续暴露当前活跃状态计数。
             **self._count_active_states(),
             "voting_groups": self._voting_groups_summary(),
@@ -663,23 +672,25 @@ class SignalRuntime:
         """返回当前配置的 voting group 摘要。"""
         result: list[dict[str, Any]] = []
         for group_config, _engine in self._voting_group_engines:
-            result.append({
-                "name": group_config.name,
-                "strategies": sorted(group_config.strategies),
-            })
+            result.append(
+                {
+                    "name": group_config.name,
+                    "strategies": sorted(group_config.strategies),
+                }
+            )
         return result
 
     def get_regime_stability(
         self, symbol: str, timeframe: str
     ) -> dict[str, Any] | None:
-        tracker = self._regime_trackers.get((symbol, timeframe))
+        with self._regime_trackers_lock:
+            tracker = self._regime_trackers.get((symbol, timeframe))
         return tracker.describe() if tracker else None
 
     def get_regime_stability_map(self) -> dict[str, dict[str, Any]]:
-        return {
-            f"{sym}/{tf}": tracker.describe()
-            for (sym, tf), tracker in self._regime_trackers.items()
-        }
+        with self._regime_trackers_lock:
+            snapshot = list(self._regime_trackers.items())
+        return {f"{sym}/{tf}": tracker.describe() for (sym, tf), tracker in snapshot}
 
     def get_voting_info(self) -> dict[str, Any]:
         voting_engine = self._voting_engine
@@ -1005,17 +1016,25 @@ class SignalRuntime:
             bar_time,
         )
 
-    _CONFIRMED_BURST_LIMIT = 5  # 连续处理 N 个 confirmed 后，主动让出一次机会给 intrabar。
+    _CONFIRMED_BURST_LIMIT = (
+        5  # 连续处理 N 个 confirmed 后，主动让出一次机会给 intrabar。
+    )
 
     def _dequeue_event(self, timeout: float) -> tuple | None:
         return _runtime_dequeue_event(self, timeout)
 
-    def _is_stale_intrabar(self, scope: str, symbol: str, timeframe: str, metadata: dict[str, Any]) -> bool:
+    def _is_stale_intrabar(
+        self, scope: str, symbol: str, timeframe: str, metadata: dict[str, Any]
+    ) -> bool:
         return _runtime_is_stale_intrabar(scope, symbol, timeframe, metadata)
 
     def _apply_filter_chain(
-        self, symbol: str, scope: str, timeframe: str,
-        event_time: datetime, indicators: dict[str, dict[str, float]],
+        self,
+        symbol: str,
+        scope: str,
+        timeframe: str,
+        event_time: datetime,
+        indicators: dict[str, dict[str, float]],
         active_sessions: list[str],
         metadata: dict[str, Any],
     ) -> bool:

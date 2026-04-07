@@ -126,7 +126,9 @@ def build_pending_entry_config(signal_config) -> PendingEntryConfig:
     )
 
 
-def build_signal_filter_chain(signal_config, economic_calendar_service) -> SignalFilterChain:
+def build_signal_filter_chain(
+    signal_config, economic_calendar_service
+) -> SignalFilterChain:
     return SignalFilterChain(
         session_filter=SessionFilter(
             allowed_sessions=tuple(
@@ -144,7 +146,9 @@ def build_signal_filter_chain(signal_config, economic_calendar_service) -> Signa
         ),
         economic_filter=EconomicEventFilter(
             provider=(
-                economic_calendar_service if signal_config.economic_filter_enabled else None
+                economic_calendar_service
+                if signal_config.economic_filter_enabled
+                else None
             ),
             lookahead_minutes=signal_config.economic_lookahead_minutes,
             lookback_minutes=signal_config.economic_lookback_minutes,
@@ -173,7 +177,8 @@ def build_executor_config(signal_config) -> ExecutorConfig:
             getattr(signal_config, "timeframe_min_confidence", {}) or {}
         ),
         htf_conflict_block_timeframes=frozenset(
-            getattr(signal_config, "htf_conflict_block_timeframes", frozenset()) or frozenset()
+            getattr(signal_config, "htf_conflict_block_timeframes", frozenset())
+            or frozenset()
         ),
         htf_conflict_exempt_categories=frozenset(
             getattr(signal_config, "htf_conflict_exempt_categories", frozenset())
@@ -301,10 +306,12 @@ def build_signal_components(
     )
     # 注入 per-TF 近期窗口配置
     if signal_config.calibrator_recency_hours_by_tf:
-        calibrator._recency_hours_by_tf.update(signal_config.calibrator_recency_hours_by_tf)
-        calibrator._recency_windows = tuple(sorted(set(
-            calibrator._recency_hours_by_tf.values()
-        )))
+        calibrator._recency_hours_by_tf.update(
+            signal_config.calibrator_recency_hours_by_tf
+        )
+        calibrator._recency_windows = tuple(
+            sorted(set(calibrator._recency_hours_by_tf.values()))
+        )
     performance_tracker = StrategyPerformanceTracker(
         config=build_performance_tracker_config(signal_config),
     )
@@ -328,9 +335,7 @@ def build_signal_components(
     htf_source_strategies: frozenset[str] | None = None
     if signal_config.voting_group_configs:
         group_names = frozenset(
-            cfg["name"]
-            for cfg in signal_config.voting_group_configs
-            if cfg.get("name")
+            cfg["name"] for cfg in signal_config.voting_group_configs if cfg.get("name")
         )
         if group_names:
             htf_source_strategies = group_names
@@ -342,11 +347,14 @@ def build_signal_components(
     signal_module = SignalModule(
         indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
         strategies=build_default_strategy_set(htf_cache=htf_cache),
-        repository=TimescaleSignalRepository(storage_writer.db, storage_writer=storage_writer),
+        repository=TimescaleSignalRepository(
+            storage_writer.db, storage_writer=storage_writer
+        ),
         calibrator=calibrator,
         performance_tracker=performance_tracker,
         soft_regime_enabled=signal_config.soft_regime_enabled,
         confidence_floor=signal_config.confidence_floor,
+        confidence_floor_min_affinity=signal_config.confidence_floor_min_affinity,
         regime_detector=regime_detector,
     )
 
@@ -405,6 +413,7 @@ def build_signal_components(
     filter_chain = build_signal_filter_chain(signal_config, economic_calendar_service)
     # WAL-backed persistent queue for confirmed signal events
     from src.config import get_runtime_data_path
+
     wal_db_path = get_runtime_data_path("signal_queue.db")
 
     signal_runtime = SignalRuntime(
@@ -430,6 +439,7 @@ def build_signal_components(
     from src.trading.positions.exit_rules import ChandelierConfig as _ChandelierConfig
     from src.trading.positions.exit_rules import ExitProfile as _EP
     from src.trading.positions.exit_rules import profile_from_aggression as _pfa
+
     _chandelier_cfg = _ChandelierConfig(
         regime_aware=signal_config.chandelier_regime_aware,
         fallback_profile=_pfa(signal_config.chandelier_fallback_alpha),
@@ -454,7 +464,9 @@ def build_signal_components(
         end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
         end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
     )
-    position_manager._sl_tp_history_writer = storage_writer.db.write_position_sl_tp_history
+    position_manager._sl_tp_history_writer = (
+        storage_writer.db.write_position_sl_tp_history
+    )
     # 交易结果追踪器：追踪实际执行的交易盈亏（由 TradeExecutor 登记，PositionManager 关仓评估）
     trade_outcome_tracker = TradeOutcomeTracker(
         write_fn=storage_writer.db.write_trade_outcomes,
@@ -611,7 +623,9 @@ def _get_balance_for_equity_filter(trade_module: Any) -> float | None:
         info = trade_module.account_info()
         if isinstance(info, dict):
             return float(info.get("equity") or info.get("balance") or 0)
-        return float(getattr(info, "equity", None) or getattr(info, "balance", None) or 0)
+        return float(
+            getattr(info, "equity", None) or getattr(info, "balance", None) or 0
+        )
     except Exception:
         return None
 
@@ -626,7 +640,9 @@ def _apply_strategy_hot_reload(signal_module: Any, signal_config: Any) -> None:
         )
         _factory_logger.info("Hot reload: strategy params + regime affinity updated")
     except Exception:
-        _factory_logger.exception("Hot reload: failed to apply strategy param overrides")
+        _factory_logger.exception(
+            "Hot reload: failed to apply strategy param overrides"
+        )
 
 
 def _apply_regime_detector_hot_reload(regime_detector: Any, signal_config: Any) -> None:
@@ -656,10 +672,12 @@ def _apply_calibrator_hot_reload(calibrator: Any, signal_config: Any) -> None:
     try:
         calibrator._recency_hours = int(signal_config.calibrator_recency_hours)
         if signal_config.calibrator_recency_hours_by_tf:
-            calibrator._recency_hours_by_tf.update(signal_config.calibrator_recency_hours_by_tf)
-            calibrator._recency_windows = tuple(sorted(set(
-                calibrator._recency_hours_by_tf.values()
-            )))
+            calibrator._recency_hours_by_tf.update(
+                signal_config.calibrator_recency_hours_by_tf
+            )
+            calibrator._recency_windows = tuple(
+                sorted(set(calibrator._recency_hours_by_tf.values()))
+            )
         _factory_logger.info("Hot reload: calibrator config updated")
     except Exception:
         _factory_logger.exception("Hot reload: failed to update calibrator")
@@ -698,9 +716,13 @@ def register_signal_hot_reload(
             _apply_calibrator_hot_reload(calibrator, signal_config)
         if trade_executor is not None:
             trade_executor.config = build_executor_config(signal_config)
-            trade_executor._execution_gate.config = build_execution_gate_config(signal_config)
+            trade_executor._execution_gate.config = build_execution_gate_config(
+                signal_config
+            )
         if performance_tracker is not None:
-            performance_tracker._config = build_performance_tracker_config(signal_config)
+            performance_tracker._config = build_performance_tracker_config(
+                signal_config
+            )
         if pending_entry_manager is not None:
             pending_entry_manager.config = build_pending_entry_config(signal_config)
         if market_structure_analyzer is not None:

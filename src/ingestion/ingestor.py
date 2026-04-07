@@ -13,11 +13,11 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 _T = TypeVar("_T")
 
-from src.config import IngestSettings
 from src.clients.mt5_market import MT5MarketClient, MT5MarketError
+from src.config import IngestSettings
 from src.market import MarketDataService
 from src.persistence.storage_writer import StorageWriter
-from src.utils.common import ohlc_key, timeframe_seconds, timeframe_interval
+from src.utils.common import ohlc_key, timeframe_interval, timeframe_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -96,13 +96,20 @@ class BackgroundIngestor:
         else:
             # 无回补任务，直接标记完成
             self._backfill_done.set()
-        self._thread = threading.Thread(target=self._run, name="mt5-ingestor", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="mt5-ingestor", daemon=True
+        )
         self._thread.start()
-        windowed = 0 < self.settings.max_concurrent_symbols < len(self.settings.ingest_symbols)
+        windowed = (
+            0 < self.settings.max_concurrent_symbols < len(self.settings.ingest_symbols)
+        )
         logger.info(
             "Background ingestor started%s",
-            f" (symbol window {self.settings.max_concurrent_symbols}/{len(self.settings.ingest_symbols)} per cycle)"
-            if windowed else "",
+            (
+                f" (symbol window {self.settings.max_concurrent_symbols}/{len(self.settings.ingest_symbols)} per cycle)"
+                if windowed
+                else ""
+            ),
         )
 
     def stop(self) -> None:
@@ -112,6 +119,14 @@ class BackgroundIngestor:
         if self._backfill_thread:
             self._backfill_thread.join(timeout=10)
         self._fetch_executor.shutdown(wait=False)
+        # 确保 StorageWriter 队列中的残余数据被刷出，避免关机丢数据
+        if self.storage is not None:
+            try:
+                self.storage.flush(timeout=5.0)
+            except Exception:
+                logger.warning(
+                    "Ingestor: StorageWriter flush failed on stop", exc_info=True
+                )
         logger.info("Background ingestor stopped")
 
     def is_running(self) -> bool:
@@ -154,11 +169,13 @@ class BackgroundIngestor:
                 except MT5MarketError as exc:
                     count = self._symbol_error_counts.get(symbol, 0) + 1
                     self._symbol_error_counts[symbol] = count
-                    logger.warning("Ingest error for %s (consecutive=%d): %s", symbol, count, exc)
+                    logger.warning(
+                        "Ingest error for %s (consecutive=%d): %s", symbol, count, exc
+                    )
                     if count >= self._symbol_error_threshold:
                         backoff_round = self._symbol_backoff_count.get(symbol, 0)
                         cooldown = min(
-                            self._symbol_cooldown_seconds * (2 ** backoff_round),
+                            self._symbol_cooldown_seconds * (2**backoff_round),
                             self._symbol_max_cooldown_seconds,
                         )
                         self._symbol_backoff_until[symbol] = now + cooldown
@@ -190,7 +207,9 @@ class BackgroundIngestor:
             return symbols
 
         start = self._symbol_cursor % len(symbols)
-        selected = [symbols[(start + offset) % len(symbols)] for offset in range(window)]
+        selected = [
+            symbols[(start + offset) % len(symbols)] for offset in range(window)
+        ]
         self._symbol_cursor = (start + window) % len(symbols)
         return selected
 
@@ -200,7 +219,15 @@ class BackgroundIngestor:
         self.service.set_quote(symbol, quote)
         if self.storage.settings.quote_flush_enabled:
             self.storage.enqueue(
-                "quotes", (quote.symbol, quote.bid, quote.ask, quote.last, quote.volume, quote.time.isoformat())
+                "quotes",
+                (
+                    quote.symbol,
+                    quote.bid,
+                    quote.ask,
+                    quote.last,
+                    quote.volume,
+                    quote.time.isoformat(),
+                ),
             )
 
     def _ingest_ticks(self, symbol: str) -> None:
@@ -237,7 +264,9 @@ class BackgroundIngestor:
             key = ohlc_key(symbol, tf)
             # 计算当前周期间隔，决定下次采集时间。
             tf_interval = timeframe_interval(
-                tf, self.settings.ingest_ohlc_interval, self.settings.ingest_ohlc_intervals
+                tf,
+                self.settings.ingest_ohlc_interval,
+                self.settings.ingest_ohlc_intervals,
             )
             # 计算下次采集时间。
             due_at = next_ohlc_at.get(key, 0)
@@ -267,7 +296,9 @@ class BackgroundIngestor:
                     )
                     # 首次拉取从当前位置开始的 K 线数据
                     bars = self._fetch_ohlc_with_timeout(
-                        lambda s=symbol, t=tf, lim=warmup_limit: self.client.get_ohlc(s, t, lim)
+                        lambda s=symbol, t=tf, lim=warmup_limit: self.client.get_ohlc(
+                            s, t, lim
+                        )
                     )
             except MT5MarketError as exc:
                 logger.warning("Fetch OHLC failed for %s %s: %s", symbol, tf, exc)
@@ -370,7 +401,9 @@ class BackgroundIngestor:
 
             # Stagger first fire: spread (symbol, tf) pairs across [0, interval) seconds.
             if key not in next_intrabar_at:
-                jitter = (abs(hash(key)) % max(1, int(interval))) * (interval / max(1, int(interval)))
+                jitter = (abs(hash(key)) % max(1, int(interval))) * (
+                    interval / max(1, int(interval))
+                )
                 next_intrabar_at[key] = now + jitter
                 continue
 
@@ -439,7 +472,11 @@ class BackgroundIngestor:
 
             logger.debug(
                 "Intrabar updated %s %s: close=%.5f high=%.5f low=%.5f",
-                symbol, tf, bar.close, bar.high, bar.low,
+                symbol,
+                tf,
+                bar.close,
+                bar.high,
+                bar.low,
             )
             next_intrabar_at[key] = now + interval
 
@@ -447,8 +484,12 @@ class BackgroundIngestor:
     def queue_stats(self) -> dict:
         """返回各队列长度、上限以及缓冲大小，便于监控。"""
         stats = self.storage.stats()
-        stats["threads"]["ingest_alive"] = self._thread.is_alive() if self._thread else False
-        stats["threads"]["backfill_alive"] = self._backfill_thread.is_alive() if self._backfill_thread else False
+        stats["threads"]["ingest_alive"] = (
+            self._thread.is_alive() if self._thread else False
+        )
+        stats["threads"]["backfill_alive"] = (
+            self._backfill_thread.is_alive() if self._backfill_thread else False
+        )
         with self._intrabar_stats_lock:
             stats["intrabar"] = {
                 "polls": self._intrabar_polls,
@@ -488,7 +529,11 @@ class BackgroundIngestor:
                         logger.warning(
                             "OHLC gap detected for %s %s: last_ts=%s (%.1fh ago), "
                             "exceeds max_gap=%ds. Resetting to fresh init.",
-                            symbol, tf, last_ts, gap_seconds / 3600, max_gap,
+                            symbol,
+                            tf,
+                            last_ts,
+                            gap_seconds / 3600,
+                            max_gap,
                         )
                         continue  # 不设 _last_ohlc_time → 走初次拉取路径
                     self._set_last_ohlc_time_if_newer(key, last_ts)
@@ -534,7 +579,9 @@ class BackgroundIngestor:
                             limit=self.settings.ohlc_backfill_limit,
                         )
                     except MT5MarketError as exc:
-                        logger.warning("Backfill OHLC failed for %s %s: %s", symbol, tf, exc)
+                        logger.warning(
+                            "Backfill OHLC failed for %s %s: %s", symbol, tf, exc
+                        )
                         break
 
                     if not bars:

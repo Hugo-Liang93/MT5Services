@@ -94,8 +94,13 @@ class SignalConfig(BaseModel):
     calibrator_refresh_interval_seconds: int = 3600
     calibrator_recency_hours_by_tf: dict[str, int] = Field(
         default_factory=lambda: {
-            "M1": 4, "M5": 8, "M15": 12, "M30": 16,
-            "H1": 24, "H4": 72, "D1": 168,
+            "M1": 4,
+            "M5": 8,
+            "M15": 12,
+            "M30": 16,
+            "H1": 24,
+            "H4": 72,
+            "D1": 168,
         }
     )
     # ── Equity Curve Filter（权益曲线过滤）──
@@ -104,6 +109,8 @@ class SignalConfig(BaseModel):
     equity_curve_filter_min_samples: int = 5
     # ── 置信度底线 ──
     confidence_floor: float = 0.10
+    # regime affinity 低于此阈值时不应用底线保护（regime 强烈反对时让信号自然衰减）
+    confidence_floor_min_affinity: float = 0.15
     # ── HTF Cache ──
     htf_cache_max_age_seconds: int = 14400
     # ── HTF Indicators（跨时间框架指标注入）──
@@ -127,8 +134,12 @@ class SignalConfig(BaseModel):
     pending_entry_default_timeout_bars: float = 2.0
     pending_entry_timeout_bars: dict[str, float] = Field(
         default_factory=lambda: {
-            "M1": 3.0, "M5": 2.0, "M15": 1.5,
-            "H1": 1.0, "H4": 0.5, "D1": 0.25,
+            "M1": 3.0,
+            "M5": 2.0,
+            "M15": 1.5,
+            "H1": 1.0,
+            "H4": 0.5,
+            "D1": 0.25,
         }
     )
     pending_entry_cancel_on_new_signal: bool = True
@@ -188,7 +199,9 @@ class SignalConfig(BaseModel):
 
     # Aggression 系数覆盖 — [exit_profile] section
     # 键格式: category__regime = alpha（例 trend__trending = 0.85）
-    chandelier_aggression_overrides: dict[tuple[str, str], float] = Field(default_factory=dict)
+    chandelier_aggression_overrides: dict[tuple[str, str], float] = Field(
+        default_factory=dict
+    )
 
     # Per-TF trail 缩放 — [exit_profile.tf_scale] section
     chandelier_tf_trail_scale: dict[str, float] = Field(default_factory=dict)

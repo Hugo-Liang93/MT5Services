@@ -7,8 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
-
+from .base import StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
 from .trendline_utils import (
     _bar_value,
     _detect_swing_highs,
@@ -60,9 +59,9 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
         htf_adx = htf.get("adx14", {}).get("adx")
 
         if htf_dir is None:
-            return True, None, 0, "no_htf"
+            return False, None, 0, "no_htf"
         if htf_adx is not None and float(htf_adx) < self._htf_adx_min:
-            return True, None, 0, f"htf_weak:{htf_adx}"
+            return False, None, 0, f"htf_weak:{htf_adx}"
 
         direction_hint = "buy" if int(htf_dir) == 1 else "sell"
         score = min(float(htf_adx or 20) / 40.0, 1.0) if htf_adx else 0.3
@@ -164,9 +163,12 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
             }
         return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
 
+    _aggression: float = 0.70
+
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         # 趋势线触碰：顺势中等 trail
-        return {"aggression": 0.70, "sl_atr": None, "tp_atr": None}
+        aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
+        return {"aggression": aggr, "sl_atr": None, "tp_atr": None}
 
     def _tl_conf(self, candidate: Any, touch_dist: float, tol: float) -> float:
         """趋势线质量评分，返回 0~1。"""
@@ -189,6 +191,8 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
         self._last_dir: Optional[str] = None
 
         why_ok, direction_hint, why_score, why_reason = self._why(context)
+        if not why_ok:
+            return self._hold(why_reason, used)
 
         when_ok, when_score, when_reason = self._when(context, direction_hint)
         if not when_ok:
@@ -214,7 +218,8 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
         )
 
         grade = (
-            "A" if where_score > 0 and vol_score > 0
+            "A"
+            if where_score > 0 and vol_score > 0
             else "B" if where_score > 0 or vol_score > 0 else "C"
         )
 

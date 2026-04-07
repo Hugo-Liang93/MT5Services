@@ -53,7 +53,11 @@ def build_backtest_components(
     from src.signals.strategies.catalog import build_default_strategy_set
     from src.signals.strategies.htf_cache import HTFStateCache
 
-    from .data.loader import CachingDataLoader, HistoricalDataLoader, get_shared_data_cache
+    from .data.loader import (
+        CachingDataLoader,
+        HistoricalDataLoader,
+        get_shared_data_cache,
+    )
 
     # DB 连接（独立连接池，不争抢生产连接）
     db_config = load_db_settings()
@@ -107,6 +111,7 @@ def build_backtest_components(
             PerformanceTrackerConfig,
             StrategyPerformanceTracker,
         )
+
         performance_tracker = StrategyPerformanceTracker(
             config=PerformanceTrackerConfig(enabled=True),
         )
@@ -166,6 +171,7 @@ def build_backtest_components(
         "voting_engine": voting_engine,
         "voting_group_engines": voting_group_engines,
         "performance_tracker": performance_tracker,
+        "htf_cache": htf_cache,
         "writer": writer,
         "market_repo": market_repo,
     }
@@ -225,11 +231,18 @@ def _build_voting_engines() -> tuple:
             return None, group_engines  # 多组模式禁用全局 consensus
 
         # 单 consensus 模式
-        return StrategyVotingEngine(
-            consensus_threshold=getattr(signal_config, "voting_consensus_threshold", 0.40),
-            min_quorum=getattr(signal_config, "voting_min_quorum", 2),
-            disagreement_penalty=getattr(signal_config, "voting_disagreement_penalty", 0.50),
-        ), []
+        return (
+            StrategyVotingEngine(
+                consensus_threshold=getattr(
+                    signal_config, "voting_consensus_threshold", 0.40
+                ),
+                min_quorum=getattr(signal_config, "voting_min_quorum", 2),
+                disagreement_penalty=getattr(
+                    signal_config, "voting_disagreement_penalty", 0.50
+                ),
+            ),
+            [],
+        )
     except Exception:
         logger.debug("Voting engine not available", exc_info=True)
         return None, []

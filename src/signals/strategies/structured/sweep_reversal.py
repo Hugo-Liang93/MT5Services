@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
 
 
 class StructuredSweepReversal(StructuredStrategyBase):
@@ -63,7 +63,12 @@ class StructuredSweepReversal(StructuredStrategyBase):
                 return False, 0, f"bearish_bar:{cp:.2f}"
             if direction == "sell" and cp > 0.60:
                 return False, 0, f"bullish_bar:{cp:.2f}"
-        # bar 形态确认通过，给基础分
+            # 连续评分：收盘越偏反转方向越好
+            if direction == "buy":
+                score = min(cp / 0.8, 1.0)
+            else:
+                score = min((1.0 - cp) / 0.8, 1.0)
+            return True, score, f"bar:{cp:.2f}"
         return True, 0.5, "bar_ok"
 
     def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
@@ -91,6 +96,9 @@ class StructuredSweepReversal(StructuredStrategyBase):
     def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
 
+    _aggression: float = 0.20
+
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
         # 反转：紧 trail 快速锁利
-        return {"aggression": 0.20, "sl_atr": 1.2, "tp_atr": 2.0}
+        aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
+        return {"aggression": aggr, "sl_atr": 1.2, "tp_atr": 2.0}
