@@ -16,7 +16,7 @@
 4. 输出聚焦决策。只包含影响行动、架构、风险或权衡的信息。
 5. 不优化共识，优化正确性。
 6. 假设必须显式声明并最小化。
-7. **架构改动前先查 ADR**：修改组件设计/模式前，先读 `docs/design/adr.md` 确认是否有已定决策。有则遵守，确需变更须显式说明理由并更新 ADR。
+7. **架构改动前先查 ADR**：修改组件设计/模式前，先读 `docs/design/adr.md` 确认是否有已定决策。评估后确需变更的可以改，但须说明理由并同步更新 ADR。
 
 ---
 
@@ -355,10 +355,10 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 
 ### 已沉淀的设计决策（详见 `docs/design/adr.md`）
 
-以下改进已确定为架构决策，**修改相关组件前必须先读 ADR 文件**：
-- ADR-001: PipelineEventBus 同步 dispatch（禁止改回异步）
+以下改进已沉淀为架构决策，**修改相关组件前先读 ADR 文件，评估后可变更但须更新 ADR**：
+- ADR-001: PipelineEventBus 同步 dispatch
 - ADR-002: SignalRuntime warmup/metadata 纯函数提取
-- ADR-003: MetadataKey 常量化（禁止新增魔法字符串）
+- ADR-003: MetadataKey 常量化
 - ADR-004: 组件生命周期安全契约（8 项防护机制不可移除）
 
 ---
