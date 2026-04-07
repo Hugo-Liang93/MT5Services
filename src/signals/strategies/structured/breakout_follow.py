@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
 
 
 class StructuredBreakoutFollow(StructuredStrategyBase):
@@ -15,6 +15,7 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
 
     name = "structured_breakout_follow"
     category = "breakout"
+    htf_policy = HtfPolicy.SOFT_GATE
     required_indicators = ("adx14", "rsi14", "atr14")
     regime_affinity = {
         RegimeType.TRENDING: 0.70,

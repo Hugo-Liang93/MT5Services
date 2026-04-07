@@ -7,6 +7,7 @@ _where() 和 _volume_bonus() 可选实现。
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...evaluation.regime import RegimeType
@@ -16,10 +17,26 @@ from ..base import get_tf_param
 logger = logging.getLogger(__name__)
 
 
+class HtfPolicy(str, Enum):
+    """HTF（高一级时间框架）校验策略。
+
+    声明式元数据，标注策略对 HTF 方向数据的依赖方式：
+      HARD_GATE  — HTF 方向/ADX 缺失或冲突时拒绝信号（如趋势延续）
+      SOFT_GATE  — HTF 冲突时拒绝，缺失时放行（如突破跟随）
+      SOFT_BONUS — HTF 一致加分，冲突降分但不拒绝（如时段突破、趋势线触碰）
+      NONE       — 不使用 HTF 数据（如反转、极端 bar 策略）
+    """
+
+    HARD_GATE = "hard_gate"
+    SOFT_GATE = "soft_gate"
+    SOFT_BONUS = "soft_bonus"
+    NONE = "none"
+
+
 class StructuredStrategyBase:
     """结构化策略基类。
 
-    子类必须设置类属性：name, category, required_indicators, regime_affinity
+    子类必须设置类属性：name, category, htf_policy, required_indicators, regime_affinity
     子类必须实现：_why(), _when(), _entry_spec(), _exit_spec()
     子类可选实现：_where(), _volume_bonus()
 
@@ -37,6 +54,7 @@ class StructuredStrategyBase:
 
     name: str = ""
     category: str = ""
+    htf_policy: HtfPolicy = HtfPolicy.NONE
     required_indicators: Tuple[str, ...] = ()
     preferred_scopes: Tuple[str, ...] = ("confirmed",)
     regime_affinity: Dict[RegimeType, float] = {}

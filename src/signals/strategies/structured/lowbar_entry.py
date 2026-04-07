@@ -17,7 +17,7 @@ from typing import Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
+from .base import HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
 
 
 class StructuredLowbarEntry(StructuredStrategyBase):
@@ -29,6 +29,7 @@ class StructuredLowbarEntry(StructuredStrategyBase):
 
     name = "structured_lowbar_entry"
     category = "reversion"
+    htf_policy = HtfPolicy.NONE
     required_indicators = ("adx14", "rsi14", "bar_stats20", "atr14")
     preferred_scopes = ("confirmed",)
     regime_affinity = {

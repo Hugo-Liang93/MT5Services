@@ -108,6 +108,18 @@ class SignalModule:
                     f"Valid values: {sorted(valid_values)}"
                 )
 
+        # htf_policy 校验（StructuredStrategyBase 子类必须声明）
+        from .strategies.structured.base import HtfPolicy, StructuredStrategyBase
+
+        if isinstance(strategy, StructuredStrategyBase):
+            htf_policy = getattr(strategy, "htf_policy", None)
+            if htf_policy is None or not isinstance(htf_policy, HtfPolicy):
+                raise AttributeError(
+                    f"Structured strategy '{name}' must declare 'htf_policy' "
+                    f"as HtfPolicy enum (HARD_GATE/SOFT_GATE/SOFT_BONUS/NONE). "
+                    f"See docs/signal-system.md §策略级 HTF 分层."
+                )
+
     def register_strategy(self, strategy: SignalStrategy) -> None:
         self._validate_strategy_attrs(strategy)
         self._strategies[strategy.name] = strategy
@@ -236,10 +248,13 @@ class SignalModule:
     def describe_strategy(self, strategy: str) -> dict[str, Any]:
         if strategy not in self._strategies:
             raise ValueError(f"unsupported signal strategy: {strategy}")
+        impl = self._strategies[strategy]
         affinity_map = self.strategy_affinity_map(strategy)
+        htf_policy = getattr(impl, "htf_policy", None)
         return {
             "name": strategy,
             "category": self.strategy_category(strategy) or None,
+            "htf_policy": htf_policy.value if hasattr(htf_policy, "value") else None,
             "preferred_scopes": list(self.strategy_scopes(strategy)),
             "required_indicators": list(self.strategy_requirements(strategy)),
             "regime_affinity": {

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
 
 
 class StructuredSessionBreakout(StructuredStrategyBase):
@@ -18,6 +18,7 @@ class StructuredSessionBreakout(StructuredStrategyBase):
 
     name = "structured_session_breakout"
     category = "session"
+    htf_policy = HtfPolicy.SOFT_BONUS
     required_indicators = ("atr14", "adx14")
     regime_affinity = {
         RegimeType.TRENDING: 0.60,

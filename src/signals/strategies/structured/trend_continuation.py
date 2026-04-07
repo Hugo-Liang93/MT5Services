@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
 
 
 class StructuredTrendContinuation(StructuredStrategyBase):
@@ -15,6 +15,7 @@ class StructuredTrendContinuation(StructuredStrategyBase):
 
     name = "structured_trend_continuation"
     category = "multi_tf"
+    htf_policy = HtfPolicy.HARD_GATE
     required_indicators = ("rsi14", "atr14")
     regime_affinity = {
         RegimeType.TRENDING: 1.00,

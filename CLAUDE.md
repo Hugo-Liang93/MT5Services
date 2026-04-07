@@ -252,13 +252,14 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 
 ### 新增策略（结构化策略）
 1. `src/signals/strategies/structured/` 新建文件，继承 `StructuredStrategyBase`
-2. 实现 `_why()` + `_when()`（硬门控），可选 `_where()` + `_volume_bonus()`（软门控）
-3. 实现 `_entry_spec()`（入场规格：market/limit/stop + 入场价 + zone_atr）
-4. `src/signals/strategies/structured/__init__.py` 导出
-5. `src/signals/strategies/catalog.py` 注册
-6. `signal.ini` + `signal.local.ini` 的 `[strategy_timeframes]` **必须同时添加**
-7. `tests/signals/` 添加测试
-8. 横切关注点（performance/calibrator）通过装饰器接入，**不在策略内部重复实现**
+2. 声明 `htf_policy = HtfPolicy.XXX`（HARD_GATE/SOFT_GATE/SOFT_BONUS/NONE，注册时校验）
+3. 实现 `_why()` + `_when()`（硬门控），可选 `_where()` + `_volume_bonus()`（软门控）
+4. 实现 `_entry_spec()`（入场规格：market/limit/stop + 入场价 + zone_atr）
+5. `src/signals/strategies/structured/__init__.py` 导出
+6. `src/signals/strategies/catalog.py` 注册
+7. `signal.ini` + `signal.local.ini` 的 `[strategy_timeframes]` **必须同时添加**
+8. `tests/signals/` 添加测试
+9. 横切关注点（performance/calibrator）通过装饰器接入，**不在策略内部重复实现**
 
 ### 策略生命周期管理
 

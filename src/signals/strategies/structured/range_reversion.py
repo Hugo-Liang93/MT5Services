@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
 
 
 class StructuredRangeReversion(StructuredStrategyBase):
@@ -15,6 +15,7 @@ class StructuredRangeReversion(StructuredStrategyBase):
 
     name = "structured_range_reversion"
     category = "reversion"
+    htf_policy = HtfPolicy.SOFT_GATE
     required_indicators = ("rsi14", "atr14", "adx14", "boll20")
     preferred_scopes = ("confirmed", "intrabar")
     regime_affinity = {

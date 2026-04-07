@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
+from .base import HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
 from .trendline_utils import (
     _bar_value,
     _detect_swing_highs,
@@ -26,6 +26,7 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
 
     name = "structured_trendline_touch"
     category = "trend"
+    htf_policy = HtfPolicy.SOFT_BONUS
     required_indicators = ("atr14",)
     preferred_scopes = ("confirmed",)
     regime_affinity = {

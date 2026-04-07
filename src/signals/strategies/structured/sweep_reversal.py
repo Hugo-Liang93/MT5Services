@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
+from .base import HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
 
 
 class StructuredSweepReversal(StructuredStrategyBase):
@@ -15,6 +15,7 @@ class StructuredSweepReversal(StructuredStrategyBase):
 
     name = "structured_sweep_reversal"
     category = "price_action"
+    htf_policy = HtfPolicy.NONE
     required_indicators = ("rsi14", "atr14", "adx14")
     regime_affinity = {
         RegimeType.TRENDING: 0.30,
