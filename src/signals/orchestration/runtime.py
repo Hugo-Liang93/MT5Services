@@ -263,6 +263,9 @@ class SignalRuntime:
             "data": None,
             "expires_at": datetime.now(timezone.utc),
         }
+        # 经济事件 decay 因子缓存：per-symbol 短 TTL，避免每个策略 decision 都查 DB。
+        # key=symbol → {"decay": float, "expires_at": float (monotonic)}
+        self._event_decay_cache: dict[str, dict[str, float]] = {}
         # Anti-starvation 计数器：限制 confirmed 连续独占队列，周期性给 intrabar 让路。
         self._confirmed_burst_count: int = 0
         self._vote_fusion_cache: dict[
