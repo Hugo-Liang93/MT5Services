@@ -457,6 +457,105 @@
         "price_action",
         "momentum"
       ]
+    },
+    {
+      "name": "di_spread14",
+      "func_path": "src.indicators.core.composite.di_spread",
+      "params": {
+        "period": 14,
+        "min_bars": 20
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "方向指数差异 (+DI-−DI)/(+DI+−DI)，值域[-1,1]",
+      "tags": ["trend", "momentum"]
+    },
+    {
+      "name": "squeeze20",
+      "func_path": "src.indicators.core.composite.squeeze_detector",
+      "params": {
+        "bb_period": 20,
+        "kc_period": 20,
+        "bb_std": 2.0,
+        "kc_atr_mult": 1.5,
+        "min_bars": 21
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "波动率挤压检测（BB < KC），squeeze=1.0/0.0 + intensity",
+      "tags": ["volatility"]
+    },
+    {
+      "name": "vwap_dev30",
+      "func_path": "src.indicators.core.composite.vwap_deviation",
+      "params": {
+        "vwap_period": 30,
+        "atr_period": 14,
+        "min_bars": 30
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "VWAP偏离度 (close−VWAP)/ATR，无量纲均值回归指标",
+      "tags": ["mean", "volatility"]
+    },
+    {
+      "name": "momentum_accel14",
+      "func_path": "src.indicators.core.composite.momentum_accel",
+      "params": {
+        "rsi_period": 14,
+        "roc_period": 12,
+        "delta_bars": 3,
+        "min_bars": 20
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "RSI/ROC二阶导（动量加速度），正=加速上行",
+      "tags": ["momentum"]
+    },
+    {
+      "name": "candle_pattern",
+      "func_path": "src.indicators.core.candlestick.candlestick_patterns",
+      "params": {
+        "min_bars": 3
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "K线形态识别（锤子/吞没/十字星/Pin Bar/内包线/连续方向）",
+      "tags": ["price_action"]
+    },
+    {
+      "name": "price_struct20",
+      "func_path": "src.indicators.core.price_structure.price_structure",
+      "params": {
+        "lookback": 20,
+        "swing_window": 5,
+        "atr_period": 14,
+        "min_bars": 25
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "价格结构（HH/HL/LH/LL + Swing Points + ATR归一化距离）",
+      "tags": ["price_action", "trend"]
+    },
+    {
+      "name": "gap14",
+      "func_path": "src.indicators.core.gap.gap_analysis",
+      "params": {
+        "atr_period": 14,
+        "gap_threshold_atr": 0.3,
+        "min_bars": 15
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "enabled": true,
+      "description": "跳空分析（gap/ATR + 回补率 + 跳空检测）",
+      "tags": ["price_action", "volatility"]
     }
   ],
   "pipeline": {
