@@ -110,14 +110,6 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
     _aggression: float = 0.85
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        # 突破追价：宽 trail 让趋势跑 + 梯度 TP
+        # 突破追价：宽 trail 让趋势跑
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {
-            "aggression": aggr,
-            "sl_atr": None,
-            "tp_atr": None,
-            "tp_targets": [
-                {"r": 1.5, "close_pct": 0.33},
-                {"r": 3.0, "close_pct": 0.50},
-            ],
-        }
+        return {"aggression": aggr, "sl_atr": None, "tp_atr": None}

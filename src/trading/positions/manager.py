@@ -73,17 +73,6 @@ class _ChandelierAction:
     notify_update: bool = False  # 是否通知 on_position_updated 回调
 
 
-@dataclass(frozen=True)
-class _ScaledTPAction:
-    """梯度 TP 触发的部分平仓动作。"""
-
-    pos: "TrackedPosition"
-    close_volume: float
-    target_index: int
-    target_r: float
-    reason: str
-
-
 @dataclass
 class TrackedPosition:
     ticket: int
@@ -114,8 +103,6 @@ class TrackedPosition:
     exit_spec: dict = field(default_factory=dict)  # 策略 _exit_spec() 输出
     sl_atr_mult: float = 0.0  # 入场 SL 的 ATR 倍数（用于 Chandelier R 单位保护）
     recent_signal_dirs: list = field(default_factory=list)
-    # 梯度 TP：已触发的目标索引集合（防止重复触发）
-    tp_targets_hit: set = field(default_factory=set)
     # 出场追溯字段（由 _check_chandelier_exit 写入，on_position_closed 读取）
     last_exit_reason: str = (
         ""  # trailing_stop / signal_exit / timeout / stop_loss / take_profit
@@ -303,9 +290,6 @@ class PositionManager:
         return pos
 
     def update_price(self, ticket: int, current_price: float) -> None:
-        chandelier_action: Optional[_ChandelierAction] = None
-        scaled_tp: Optional[_ScaledTPAction] = None
-
         with self._lock:
             pos = self._positions.get(ticket)
             if pos is None:
@@ -321,16 +305,12 @@ class PositionManager:
                     pos.lowest_price = current_price
                     pos.peak_price = pos.lowest_price
 
-            # Chandelier Exit 判断在锁内完成（纯计算），返回待执行的动作
-            chandelier_action, scaled_tp = self._evaluate_chandelier_exit(
-                pos, current_price,
-            )
+            # Chandelier Exit 判断在锁内完成（纯计算），返回待执行的 SL 修改动作
+            pending_action = self._evaluate_chandelier_exit(pos, current_price)
 
         # MT5 API 调用在锁外执行，避免持锁期间阻塞
-        if scaled_tp is not None:
-            self._apply_scaled_tp(scaled_tp)
-        if chandelier_action is not None:
-            self._apply_chandelier_action(chandelier_action)
+        if pending_action is not None:
+            self._apply_chandelier_action(pending_action)
 
     def on_signal_event(self, event: Any) -> None:
         """接收 SignalRuntime 的信号事件，更新持仓的 recent_signal_dirs。
@@ -1021,57 +1001,18 @@ class PositionManager:
         elapsed = (datetime.now(timezone.utc) - pos.opened_at).total_seconds()
         return max(0, int(elapsed / tf_sec))
 
-    @staticmethod
-    def _check_scaled_tp(
-        pos: TrackedPosition,
-        r_multiple: float,
-    ) -> "Optional[_ScaledTPAction]":
-        """检查梯度 TP 目标是否触发（纯计算，必须在 _lock 内调用）。
-
-        exit_spec["tp_targets"] 格式：
-            [{"r": 1.5, "close_pct": 0.50}, {"r": 2.5, "close_pct": 0.30}]
-        close_pct 是对「当前剩余仓位」的百分比（非初始仓位）。
-
-        返回首个新触发的 target 对应的 _ScaledTPAction（一次只触发一个）。
-        """
-        targets = (pos.exit_spec or {}).get("tp_targets")
-        if not targets or not isinstance(targets, list):
-            return None
-        if pos.volume <= 0:
-            return None
-
-        for i, target in enumerate(targets):
-            if i in pos.tp_targets_hit:
-                continue
-            target_r = float(target.get("r", 0))
-            close_pct = float(target.get("close_pct", 0))
-            if target_r <= 0 or close_pct <= 0:
-                continue
-            if r_multiple >= target_r:
-                close_vol = round(pos.volume * min(close_pct, 1.0), 2)
-                if close_vol < 0.01:
-                    continue
-                return _ScaledTPAction(
-                    pos=pos,
-                    close_volume=close_vol,
-                    target_index=i,
-                    target_r=target_r,
-                    reason=f"scaled_tp_{i}@{target_r:.1f}R",
-                )
-        return None
-
     def _evaluate_chandelier_exit(
         self,
         pos: TrackedPosition,
         current_price: float,
-    ) -> "tuple[Optional[_ChandelierAction], Optional[_ScaledTPAction]]":
+    ) -> "Optional[_ChandelierAction]":
         """Chandelier Exit 纯计算（必须在 _lock 内调用）。
 
-        返回 (SL 修改动作, 梯度 TP 动作)，均可为 None。
-        不包含任何 I/O（MT5 API 调用由锁外方法执行）。
+        返回待执行的 SL 修改动作（None = 无需操作）。
+        不包含任何 I/O（MT5 API 调用由 _apply_chandelier_action 执行）。
         """
         if pos.initial_risk <= 0:
-            return None, None
+            return None
 
         pos.bars_held = self._compute_bars_held(pos)
         current_atr = self._get_current_atr(pos)
@@ -1107,9 +1048,6 @@ class PositionManager:
         if result.close_reason:
             pos.last_exit_reason = result.close_reason
 
-        # 梯度 TP 检查（优先级低于全仓退出）
-        scaled_tp = self._check_scaled_tp(pos, result.r_multiple)
-
         # 主动退出（信号反转 / 超时）：把 SL 收紧到当前价附近，
         # 由 MT5 服务器在下一个 tick 触发平仓。
         if result.should_close and result.close_reason in ("signal_exit", "timeout"):
@@ -1130,19 +1068,18 @@ class PositionManager:
                 pos=pos,
                 new_sl=urgent_sl,
                 reason=result.close_reason,
-            ), None  # 全仓退出时不做部分平仓
+            )
 
         # Trailing SL 更新
-        chandelier_action: Optional[_ChandelierAction] = None
         if result.new_stop_loss is not None and result.new_stop_loss != pos.stop_loss:
-            chandelier_action = _ChandelierAction(
+            return _ChandelierAction(
                 pos=pos,
                 new_sl=result.new_stop_loss,
                 reason="chandelier_trail",
                 notify_update=True,
             )
 
-        return chandelier_action, scaled_tp
+        return None
 
     def _apply_chandelier_action(self, action: _ChandelierAction) -> None:
         """锁外执行 Chandelier Exit 产出的 SL 修改动作（含 MT5 API 调用）。"""
@@ -1158,57 +1095,6 @@ class PositionManager:
             if action.notify_update and self._on_position_updated is not None:
                 self._on_position_updated(action.pos, action.reason)
 
-    def _apply_scaled_tp(self, action: _ScaledTPAction) -> None:
-        """锁外执行梯度 TP 部分平仓。"""
-        with self._lock:
-            if action.pos.ticket not in self._positions:
-                return
-            if action.target_index in action.pos.tp_targets_hit:
-                return  # 已被另一线程触发
-
-        try:
-            result = self._trading.close_position(
-                ticket=action.pos.ticket,
-                volume=action.close_volume,
-                comment=action.reason,
-            )
-            success = False
-            if isinstance(result, dict):
-                success = bool(result.get("success", False))
-            elif isinstance(result, bool):
-                success = result
-
-            if success:
-                with self._lock:
-                    action.pos.tp_targets_hit.add(action.target_index)
-                    action.pos.volume = round(
-                        action.pos.volume - action.close_volume, 2,
-                    )
-                logger.info(
-                    "Scaled TP hit: ticket=%d target=%d r=%.1f "
-                    "closed=%.2f remaining=%.2f",
-                    action.pos.ticket,
-                    action.target_index,
-                    action.target_r,
-                    action.close_volume,
-                    action.pos.volume,
-                )
-                if self._on_position_updated is not None:
-                    self._on_position_updated(action.pos, action.reason)
-            else:
-                logger.warning(
-                    "Scaled TP partial close failed: ticket=%d target=%d result=%s",
-                    action.pos.ticket,
-                    action.target_index,
-                    result,
-                )
-        except Exception as exc:
-            logger.warning(
-                "Scaled TP partial close error: ticket=%d: %s",
-                action.pos.ticket,
-                exc,
-            )
-
     def _check_chandelier_exit(
         self, pos: TrackedPosition, current_price: float
     ) -> None:
@@ -1217,13 +1103,9 @@ class PositionManager:
         注意：update_price 中已改用 _evaluate_chandelier_exit + _apply_chandelier_action
         的锁安全拆分模式。此方法保留给 reconcile loop 等单线程调用路径。
         """
-        chandelier_action, scaled_tp = self._evaluate_chandelier_exit(
-            pos, current_price,
-        )
-        if scaled_tp is not None:
-            self._apply_scaled_tp(scaled_tp)
-        if chandelier_action is not None:
-            self._apply_chandelier_action(chandelier_action)
+        action = self._evaluate_chandelier_exit(pos, current_price)
+        if action is not None:
+            self._apply_chandelier_action(action)
 
     def _modify_sl(
         self, pos: TrackedPosition, new_sl: float, reason: str = "trailing_sl"

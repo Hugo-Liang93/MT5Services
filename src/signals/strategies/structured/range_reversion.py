@@ -112,14 +112,6 @@ class StructuredRangeReversion(StructuredStrategyBase):
     _aggression: float = 0.15
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        # 均值回归：紧 trail + 快锁利，反转幅度有限 + 积极梯度 TP
+        # 均值回归：紧 trail + 快锁利，反转幅度有限
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {
-            "aggression": aggr,
-            "sl_atr": 1.0,
-            "tp_atr": 1.8,
-            "tp_targets": [
-                {"r": 1.0, "close_pct": 0.50},  # 1R 平一半（回归策略快锁利）
-                {"r": 1.5, "close_pct": 0.50},  # 1.5R 平剩余一半
-            ],
-        }
+        return {"aggression": aggr, "sl_atr": 1.0, "tp_atr": 1.8}
