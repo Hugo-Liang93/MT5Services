@@ -14,7 +14,9 @@ from .models import (
 class TradingStateStore:
     """交易运行状态事实源访问层。"""
 
-    def __init__(self, db_writer: Any, *, account_alias_getter: Callable[[], str]) -> None:
+    def __init__(
+        self, db_writer: Any, *, account_alias_getter: Callable[[], str]
+    ) -> None:
         self._db = db_writer
         self._account_alias_getter = account_alias_getter
         self._position_cache: dict[int, dict[str, Any]] = {}
@@ -48,7 +50,9 @@ class TradingStateStore:
         return dict(state) if state is not None else None
 
     def load_trade_control_state(self) -> Optional[dict[str, Any]]:
-        return self._db.fetch_trade_control_state(account_alias=self._account_alias_getter())
+        return self._db.fetch_trade_control_state(
+            account_alias=self._account_alias_getter()
+        )
 
     def list_active_pending_orders(self) -> list[dict[str, Any]]:
         return self._db.fetch_pending_order_states(
@@ -98,11 +102,14 @@ class TradingStateStore:
             entry_low=self._float_or_none(info.get("entry_low")),
             entry_high=self._float_or_none(info.get("entry_high")),
             trigger_price=self._float_or_none(info.get("trigger_price")),
-            entry_price_requested=self._float_or_none(info.get("entry_price_requested")),
+            entry_price_requested=self._float_or_none(
+                info.get("entry_price_requested")
+            ),
             stop_loss=self._float_or_none(info.get("stop_loss")),
             take_profit=self._float_or_none(info.get("take_profit")),
             volume=self._float_or_none(info.get("volume")),
-            atr_at_entry=self._params_value(info, "atr_value") or self._float_or_none(info.get("atr_at_entry")),
+            atr_at_entry=self._params_value(info, "atr_value")
+            or self._float_or_none(info.get("atr_at_entry")),
             confidence=self._float_or_none(info.get("confidence")),
             regime=self._str_or_none(info.get("regime")),
             created_at=self._datetime_or_none(info.get("created_at")) or now,
@@ -116,7 +123,9 @@ class TradingStateStore:
         self._db.write_pending_order_states([record.to_row()])
         self._cache_pending_record(record)
 
-    def mark_pending_order_filled(self, info: dict[str, Any], *, state: Optional[dict[str, Any]] = None) -> None:
+    def mark_pending_order_filled(
+        self, info: dict[str, Any], *, state: Optional[dict[str, Any]] = None
+    ) -> None:
         now = self._now()
         state = dict(state or {})
         record = PendingOrderStateRecord(
@@ -137,17 +146,23 @@ class TradingStateStore:
     def mark_pending_order_expired(self, info: dict[str, Any], *, reason: str) -> None:
         now = self._now()
         record = PendingOrderStateRecord(
-            **self._pending_state_from_info(info, status="expired", status_reason=reason, updated_at=now),
+            **self._pending_state_from_info(
+                info, status="expired", status_reason=reason, updated_at=now
+            ),
             cancelled_at=now,
             last_seen_at=now,
         )
         self._db.write_pending_order_states([record.to_row()])
         self._cache_pending_record(record)
 
-    def mark_pending_order_cancelled(self, info: dict[str, Any], *, reason: str) -> None:
+    def mark_pending_order_cancelled(
+        self, info: dict[str, Any], *, reason: str
+    ) -> None:
         now = self._now()
         record = PendingOrderStateRecord(
-            **self._pending_state_from_info(info, status="cancelled", status_reason=reason, updated_at=now),
+            **self._pending_state_from_info(
+                info, status="cancelled", status_reason=reason, updated_at=now
+            ),
             cancelled_at=now,
             last_seen_at=now,
         )
@@ -157,7 +172,9 @@ class TradingStateStore:
     def mark_pending_order_missing(self, info: dict[str, Any], *, reason: str) -> None:
         now = self._now()
         record = PendingOrderStateRecord(
-            **self._pending_state_from_info(info, status="missing", status_reason=reason, updated_at=now),
+            **self._pending_state_from_info(
+                info, status="missing", status_reason=reason, updated_at=now
+            ),
             last_seen_at=now,
         )
         self._db.write_pending_order_states([record.to_row()])
@@ -176,10 +193,16 @@ class TradingStateStore:
             symbol=str(self._row_value(order_row, "symbol", "") or ""),
             direction=self._direction_from_order(order_row),
             comment=str(self._row_value(order_row, "comment", "") or ""),
-            entry_price_requested=self._float_or_none(self._row_value(order_row, "price_open", None)),
-            volume=self._float_or_none(self._row_value(order_row, "volume_current", None))
+            entry_price_requested=self._float_or_none(
+                self._row_value(order_row, "price_open", None)
+            ),
+            volume=self._float_or_none(
+                self._row_value(order_row, "volume_current", None)
+            )
             or self._float_or_none(self._row_value(order_row, "volume_initial", None)),
-            created_at=self._datetime_or_none(self._row_value(order_row, "time_setup", None)),
+            created_at=self._datetime_or_none(
+                self._row_value(order_row, "time_setup", None)
+            ),
             status="orphan",
             status_reason="recovered_from_mt5_without_local_state",
             last_seen_at=now,
@@ -189,7 +212,9 @@ class TradingStateStore:
         self._db.write_pending_order_states([record.to_row()])
         self._cache_pending_record(record)
 
-    def record_position_tracked(self, pos: TrackedPosition, reason: str = "tracked") -> None:
+    def record_position_tracked(
+        self, pos: TrackedPosition, reason: str = "tracked"
+    ) -> None:
         existing = self._position_cache.get(int(pos.ticket)) or {}
         pending_row = self._match_pending_for_position(pos)
         if pending_row is not None:
@@ -202,7 +227,10 @@ class TradingStateStore:
                     "reason": "matched_tracked_position",
                 },
             )
-            pending_row = self._pending_cache.get(int(pending_info.get("ticket") or 0)) or pending_row
+            pending_row = (
+                self._pending_cache.get(int(pending_info.get("ticket") or 0))
+                or pending_row
+            )
         now = self._now()
         record = PositionRuntimeStateRecord(
             account_alias=self._account_alias_getter(),
@@ -218,8 +246,10 @@ class TradingStateStore:
             strategy=pos.strategy,
             comment=pos.comment,
             entry_price=pos.entry_price,
-            initial_stop_loss=self._float_or_none(existing.get("initial_stop_loss")) or pos.stop_loss,
-            initial_take_profit=self._float_or_none(existing.get("initial_take_profit")) or pos.take_profit,
+            initial_stop_loss=self._float_or_none(existing.get("initial_stop_loss"))
+            or pos.stop_loss,
+            initial_take_profit=self._float_or_none(existing.get("initial_take_profit"))
+            or pos.take_profit,
             current_stop_loss=pos.stop_loss,
             current_take_profit=pos.take_profit,
             volume=pos.volume,
@@ -244,7 +274,9 @@ class TradingStateStore:
     def record_position_update(self, pos: TrackedPosition, reason: str) -> None:
         self.record_position_tracked(pos, reason=reason)
 
-    def mark_position_closed(self, pos: TrackedPosition, close_price: Optional[float]) -> None:
+    def mark_position_closed(
+        self, pos: TrackedPosition, close_price: Optional[float]
+    ) -> None:
         existing = self._position_cache.get(int(pos.ticket)) or {}
         now = self._now()
         record = PositionRuntimeStateRecord(
@@ -258,8 +290,10 @@ class TradingStateStore:
             strategy=pos.strategy,
             comment=pos.comment,
             entry_price=pos.entry_price,
-            initial_stop_loss=self._float_or_none(existing.get("initial_stop_loss")) or pos.stop_loss,
-            initial_take_profit=self._float_or_none(existing.get("initial_take_profit")) or pos.take_profit,
+            initial_stop_loss=self._float_or_none(existing.get("initial_stop_loss"))
+            or pos.stop_loss,
+            initial_take_profit=self._float_or_none(existing.get("initial_take_profit"))
+            or pos.take_profit,
             current_stop_loss=pos.stop_loss,
             current_take_profit=pos.take_profit,
             volume=pos.volume,
@@ -295,7 +329,14 @@ class TradingStateStore:
         )
         self._db.write_trade_control_states([record.to_row()])
 
-    def _pending_state_from_info(self, info: dict[str, Any], *, status: str, status_reason: str, updated_at: datetime) -> dict[str, Any]:
+    def _pending_state_from_info(
+        self,
+        info: dict[str, Any],
+        *,
+        status: str,
+        status_reason: str,
+        updated_at: datetime,
+    ) -> dict[str, Any]:
         return dict(
             account_alias=self._account_alias_getter(),
             order_ticket=int(info.get("ticket", 0) or 0),
@@ -311,7 +352,9 @@ class TradingStateStore:
             entry_low=self._float_or_none(info.get("entry_low")),
             entry_high=self._float_or_none(info.get("entry_high")),
             trigger_price=self._float_or_none(info.get("trigger_price")),
-            entry_price_requested=self._float_or_none(info.get("entry_price_requested")),
+            entry_price_requested=self._float_or_none(
+                info.get("entry_price_requested")
+            ),
             stop_loss=self._float_or_none(info.get("stop_loss")),
             take_profit=self._float_or_none(info.get("take_profit")),
             volume=self._float_or_none(info.get("volume")),
@@ -326,7 +369,9 @@ class TradingStateStore:
             updated_at=updated_at,
         )
 
-    def _match_pending_for_position(self, pos: TrackedPosition) -> Optional[dict[str, Any]]:
+    def _match_pending_for_position(
+        self, pos: TrackedPosition
+    ) -> Optional[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         signal_id = self._str_or_none(pos.signal_id)
         if signal_id:
@@ -357,7 +402,8 @@ class TradingStateStore:
             return None
         candidates.sort(
             key=lambda row: (
-                self._datetime_or_none(row.get("updated_at")) or datetime.min.replace(tzinfo=timezone.utc),
+                self._datetime_or_none(row.get("updated_at"))
+                or datetime.min.replace(tzinfo=timezone.utc),
                 int(row.get("order_ticket") or 0),
             )
         )
@@ -460,6 +506,13 @@ class TradingStateStore:
                 "position_size": getattr(params, "position_size", None),
                 "atr_value": getattr(params, "atr_value", None),
             }
+        # 保留出场规格和策略类别，以便重启恢复后 fill 仍能走正确的出场 profile
+        exit_spec = info.get("exit_spec")
+        if exit_spec is not None:
+            metadata["exit_spec"] = dict(exit_spec)
+        strategy_category = info.get("strategy_category")
+        if strategy_category:
+            metadata["strategy_category"] = str(strategy_category)
         return metadata
 
     @staticmethod
