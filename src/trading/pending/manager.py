@@ -349,6 +349,8 @@ class PendingEntryManager:
         volume: Optional[float] = None,
         created_at: Optional[datetime] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        exit_spec: Optional[Dict[str, Any]] = None,
+        strategy_category: str = "",
     ) -> None:
         """注册 MT5 挂单，由 monitor loop 负责超时取消。"""
         tracked_info = {
@@ -373,6 +375,8 @@ class PendingEntryManager:
             "volume": volume,
             "created_at": created_at,
             "metadata": dict(metadata or {}),
+            "exit_spec": dict(exit_spec) if exit_spec else None,
+            "strategy_category": str(strategy_category or ""),
         }
         with self._lock:
             if signal_id in self._mt5_orders:

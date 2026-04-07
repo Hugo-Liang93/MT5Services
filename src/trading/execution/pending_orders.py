@@ -51,7 +51,9 @@ def submit_pending_entry(
     suggested_price = entry_spec.get("entry_price")
     zone_atr = entry_spec.get("entry_zone_atr", 0.3)
 
-    ref_price = float(suggested_price) if suggested_price is not None else params.entry_price
+    ref_price = (
+        float(suggested_price) if suggested_price is not None else params.entry_price
+    )
     half_zone = zone_atr * params.atr_value
     entry_low = ref_price - half_zone
     entry_high = ref_price + half_zone
@@ -122,9 +124,11 @@ def submit_pending_entry(
                 timeframe=tf,
                 confidence=event.confidence,
                 regime=event.metadata.get("regime"),
-                comment=str(result.get("comment") or payload["comment"])
-                if isinstance(result, dict)
-                else payload["comment"],
+                comment=(
+                    str(result.get("comment") or payload["comment"])
+                    if isinstance(result, dict)
+                    else payload["comment"]
+                ),
                 params=params,
                 order_kind=order_kind,
                 entry_low=entry_low,
@@ -139,6 +143,8 @@ def submit_pending_entry(
                     "entry_type": entry_type,
                     "order_kind": order_kind,
                 },
+                exit_spec=event.metadata.get("exit_spec"),
+                strategy_category=event.metadata.get("strategy_category", ""),
             )
             emit_pending_order_submitted(
                 executor, event, order_kind=order_kind, ticket=order_ticket
@@ -240,7 +246,9 @@ def _pending_entries_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
     if executor._pending_manager is None:
         return 0
     try:
-        contexts_fn = getattr(executor._pending_manager, "active_execution_contexts", None)
+        contexts_fn = getattr(
+            executor._pending_manager, "active_execution_contexts", None
+        )
         if callable(contexts_fn):
             entries = list(contexts_fn() or [])
         else:
@@ -260,9 +268,7 @@ def duplicate_execution_reason(executor: "TradeExecutor", event: SignalEvent) ->
     return ""
 
 
-def has_matching_active_position(
-    executor: "TradeExecutor", event: SignalEvent
-) -> bool:
+def has_matching_active_position(executor: "TradeExecutor", event: SignalEvent) -> bool:
     if executor._position_manager is None:
         return False
     try:
@@ -284,13 +290,13 @@ def has_matching_active_position(
     return False
 
 
-def has_matching_pending_entry(
-    executor: "TradeExecutor", event: SignalEvent
-) -> bool:
+def has_matching_pending_entry(executor: "TradeExecutor", event: SignalEvent) -> bool:
     if executor._pending_manager is None:
         return False
     try:
-        contexts_fn = getattr(executor._pending_manager, "active_execution_contexts", None)
+        contexts_fn = getattr(
+            executor._pending_manager, "active_execution_contexts", None
+        )
         if callable(contexts_fn):
             entries = list(contexts_fn() or [])
         else:
