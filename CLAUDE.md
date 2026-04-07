@@ -16,6 +16,7 @@
 4. 输出聚焦决策。只包含影响行动、架构、风险或权衡的信息。
 5. 不优化共识，优化正确性。
 6. 假设必须显式声明并最小化。
+7. **架构改动前先查 ADR**：修改组件设计/模式前，先读 `docs/design/adr.md` 确认是否有已定决策。有则遵守，确需变更须显式说明理由并更新 ADR。
 
 ---
 
@@ -306,6 +307,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | 架构性重构 | `docs/architecture.md`、CLAUDE.md（Known Issues） |
 | 完成 TODO 项 | TODO.md（归档） |
 | 新增设计方案 | `docs/design/` 新建文件 |
+| 变更已有 ADR 涉及的组件 | `docs/design/adr.md`（更新或新增 ADR） |
 
 ---
 
@@ -351,25 +353,13 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 - **generate_report(hours=24)**：内存环形缓冲 ring_size=2400 仅覆盖 ~3.3h，24h 报告窗口内早期数据为空
 - **Flaky 集成测试风险**：`test_signal_trade_chain.py` 中的测试依赖 `deps` 模块全局状态隔离，若新增 API 测试触发 `_ensure_initialized()` 可能污染后续测试
 
-### 代码质量改进（2026-04-07）
+### 已沉淀的设计决策（详见 `docs/design/adr.md`）
 
-- **MetadataKey 中心化**：42 个 metadata 魔法字符串统一为 `MetadataKey` 常量（`src/signals/metadata_keys.py`），覆盖 signals/trading/backtesting 全链路（20+ 文件）
-- **PipelineEventBus 同步化**：`emit()` 从异步队列+后台线程改为同步分发，匹配 docstring 设计意图，消除测试竞态。**⚠ 已确定为架构决策（ADR-001），禁止改回异步**——详见 `docs/architecture.md` §11
-- **SignalRuntime 拆分**：warmup 屏障逻辑提取至 `runtime_warmup.py`（150 行），metadata 组装提取至 `runtime_metadata.py`（96 行），runtime.py 从 1148 → 1036 行
-- **indicators.json 对齐**：mfi14/obv30 标记 enabled=false（无策略依赖），定义 37 / 启用 25
-
-### 长期运行稳定性（2026-04-06 修复）
-
-以下问题已在本轮修复中解决，记录防护机制供后续维护参考：
-
-- **EOD 跨日自动恢复**：`RuntimeModeAutoTransitionPolicy.resolve_session_start()` 检测新交易日自动恢复 `initial_mode`，仅对 EOD 自动降级生效（手动切换不受影响）
-- **apply_mode 异常保护**：`RuntimeComponentRegistry.apply_mode()` 每个组件 start/stop 独立 try/except，部分失败仍更新模式状态，错误记入 `last_error`
-- **TradeExecutor 双线程防护**：`stop()` 超时后保留线程引用，`start()` 等待僵尸线程退出后才 clear `_stop_event`，`_start_worker()` 有存活检查
-- **WAL Queue 重入**：`close()` 后 `reopen()` 重建连接并 reset in-flight 事件；`_get_conn()` 检查 `_closed` 标志防止静默重连
-- **IndicatorManager 线程守卫**：`_any_thread_alive()` 检查全部 4 线程；`stop()` 清引用并记录超时警告
-- **PositionManager 启动同步**：`start()` 中先执行一次 `_reconcile_with_mt5()`，修复 stop 期间 peak_price 等状态断档
-- **DLQ 文件清理**：`_cleanup_stale_dlq()` 在启动时清理超过 7 天的失败文件
-- **listener_fail_counts 清理**：`remove_signal_listener()` 中同步清理对应 key
+以下改进已确定为架构决策，**修改相关组件前必须先读 ADR 文件**：
+- ADR-001: PipelineEventBus 同步 dispatch（禁止改回异步）
+- ADR-002: SignalRuntime warmup/metadata 纯函数提取
+- ADR-003: MetadataKey 常量化（禁止新增魔法字符串）
+- ADR-004: 组件生命周期安全契约（8 项防护机制不可移除）
 
 ---
 
@@ -383,4 +373,4 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 | `docs/design/risk-enhancement.md` | PnL 熔断器 + PerformanceTracker 恢复设计（已实现） | 修改风控逻辑时 |
 | `docs/design/next-plan.md` | 下一阶段开发规划 | 规划新功能时 |
 | `docs/research-system.md` | 挖掘系统：三大分析器、过拟合防护、多 TF 准则、指标三层架构 | 新增/修改挖掘逻辑时 |
-| `docs/architecture.md` §11 | 架构决策记录（ADR）：已确定的设计决策，变更前必须评估 | 修改已有 ADR 涉及的组件时 |
+| `docs/design/adr.md` | 架构决策记录（ADR）：已确定的设计决策，变更前必须评估 | 修改已有 ADR 涉及的组件前 **必读** |
