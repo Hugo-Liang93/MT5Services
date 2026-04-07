@@ -20,6 +20,23 @@ class OverfittingConfig:
     cv_folds: int = 5
     cv_consistency_threshold: float = 0.60
     correction_method: str = "bh_fdr"  # "bonferroni" | "bh_fdr"
+    cv_mode: str = "expanding"  # "expanding" | "sliding"
+
+
+@dataclass(frozen=True)
+class RuleMiningConfig:
+    """规则挖掘配置（从 config.py 统一管理）。"""
+
+    max_depth: int = 3
+    min_samples_leaf: int = 30
+    min_hit_rate: float = 0.55
+    min_test_hit_rate: float = 0.52
+    max_rules: int = 20
+    dimensionless_only: bool = True
+    n_permutations: int = 200
+    permutation_significance: float = 0.05
+    cv_folds: int = 5
+    cv_consistency_threshold: float = 0.40
 
 
 @dataclass(frozen=True)
@@ -62,6 +79,7 @@ class ResearchConfig:
     predictive_power: PredictivePowerConfig = field(
         default_factory=PredictivePowerConfig
     )
+    rule_mining: RuleMiningConfig = field(default_factory=RuleMiningConfig)
     feature_engineering: FeatureEngineeringConfig = field(
         default_factory=FeatureEngineeringConfig
     )
@@ -101,6 +119,8 @@ def load_research_config() -> ResearchConfig:
     if features_str:
         fe_features = [f.strip() for f in features_str.split(",") if f.strip()]
 
+    cv_mode = _get("overfitting", "cv_mode", "expanding")
+
     return ResearchConfig(
         forward_horizons=forward_horizons,
         warmup_bars=_getint("research", "warmup_bars", 200),
@@ -117,6 +137,7 @@ def load_research_config() -> ResearchConfig:
                 "overfitting", "cv_consistency_threshold", 0.60
             ),
             correction_method=correction_method,
+            cv_mode=cv_mode,
         ),
         threshold_sweep=ThresholdSweepConfig(
             sweep_points=_getint("threshold_sweep", "sweep_points", 50),
@@ -139,6 +160,22 @@ def load_research_config() -> ResearchConfig:
                 "predictive_power", "permutation_test_enabled", True
             ),
             n_permutations=_getint("predictive_power", "n_permutations", 1000),
+        ),
+        rule_mining=RuleMiningConfig(
+            max_depth=_getint("rule_mining", "max_depth", 3),
+            min_samples_leaf=_getint("rule_mining", "min_samples_leaf", 30),
+            min_hit_rate=_getfloat("rule_mining", "min_hit_rate", 0.55),
+            min_test_hit_rate=_getfloat("rule_mining", "min_test_hit_rate", 0.52),
+            max_rules=_getint("rule_mining", "max_rules", 20),
+            dimensionless_only=_getbool("rule_mining", "dimensionless_only", True),
+            n_permutations=_getint("rule_mining", "n_permutations", 200),
+            permutation_significance=_getfloat(
+                "rule_mining", "permutation_significance", 0.05
+            ),
+            cv_folds=_getint("rule_mining", "cv_folds", 5),
+            cv_consistency_threshold=_getfloat(
+                "rule_mining", "cv_consistency_threshold", 0.40
+            ),
         ),
         feature_engineering=FeatureEngineeringConfig(
             enabled=_getbool("feature_engineering", "enabled", True),

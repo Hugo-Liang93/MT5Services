@@ -291,6 +291,9 @@ def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persistin
         def get_ohlc(self, symbol, timeframe, count=None):
             return [_bar(2), _bar(3)]
 
+        def get_ohlc_closed(self, symbol, timeframe, limit=None):
+            return [_bar(2), _bar(3)]
+
     manager = object.__new__(UnifiedIndicatorManager)
     manager.market_service = ServiceStub()
     manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 55.0}})

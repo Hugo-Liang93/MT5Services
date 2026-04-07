@@ -213,11 +213,28 @@ class MiningRunner:
         return results
 
     def _run_rule_mining(self, matrix: DataMatrix) -> list:
-        from src.research.analyzers.rule_mining import RuleMiningConfig, mine_rules
+        from src.research.analyzers.rule_mining import (
+            RuleMiningConfig as _RMCfg,
+            mine_rules,
+        )
 
+        # 从 ResearchConfig.rule_mining 构建 RuleMiningConfig
+        rm = self._config.rule_mining
+        cfg = _RMCfg(
+            max_depth=rm.max_depth,
+            min_samples_leaf=rm.min_samples_leaf,
+            min_hit_rate=rm.min_hit_rate,
+            min_test_hit_rate=rm.min_test_hit_rate,
+            max_rules=rm.max_rules,
+            dimensionless_only=rm.dimensionless_only,
+            n_permutations=rm.n_permutations,
+            permutation_significance=rm.permutation_significance,
+            cv_folds=rm.cv_folds,
+            cv_consistency_threshold=rm.cv_consistency_threshold,
+        )
         return mine_rules(
             matrix,
-            config=RuleMiningConfig(),
+            config=cfg,
             overfitting_config=self._config.overfitting,
         )
 
