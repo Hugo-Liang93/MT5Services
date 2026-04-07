@@ -354,7 +354,7 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 ### 代码质量改进（2026-04-07）
 
 - **MetadataKey 中心化**：42 个 metadata 魔法字符串统一为 `MetadataKey` 常量（`src/signals/metadata_keys.py`），覆盖 signals/trading/backtesting 全链路（20+ 文件）
-- **PipelineEventBus 同步化**：`emit()` 从异步队列+后台线程改为同步分发，匹配 docstring 设计意图，消除测试竞态
+- **PipelineEventBus 同步化**：`emit()` 从异步队列+后台线程改为同步分发，匹配 docstring 设计意图，消除测试竞态。**⚠ 已确定为架构决策（ADR-001），禁止改回异步**——详见 `docs/architecture.md` §11
 - **SignalRuntime 拆分**：warmup 屏障逻辑提取至 `runtime_warmup.py`（150 行），metadata 组装提取至 `runtime_metadata.py`（96 行），runtime.py 从 1148 → 1036 行
 - **indicators.json 对齐**：mfi14/obv30 标记 enabled=false（无策略依赖），定义 37 / 启用 25
 
@@ -383,3 +383,4 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 | `docs/design/risk-enhancement.md` | PnL 熔断器 + PerformanceTracker 恢复设计（已实现） | 修改风控逻辑时 |
 | `docs/design/next-plan.md` | 下一阶段开发规划 | 规划新功能时 |
 | `docs/research-system.md` | 挖掘系统：三大分析器、过拟合防护、多 TF 准则、指标三层架构 | 新增/修改挖掘逻辑时 |
+| `docs/architecture.md` §11 | 架构决策记录（ADR）：已确定的设计决策，变更前必须评估 | 修改已有 ADR 涉及的组件时 |
