@@ -47,9 +47,7 @@ def evaluate_strategies(
                 exc_info=True,
             )
 
-    event_impact = _resolve_event_impact_forecast(
-        runtime, symbol, scope, event_time
-    )
+    event_impact = _resolve_event_impact_forecast(runtime, symbol, scope, event_time)
 
     for strategy in strategies:
         allowed_sessions = runtime.policy.strategy_sessions.get(strategy, ())
@@ -213,9 +211,9 @@ def _resolve_event_impact_forecast(
     cache = runtime._event_impact_cache
     if event_time >= cache.get("expires_at", event_time):
         try:
-            eco_service = getattr(runtime, "_economic_calendar_service", None)
+            eco_service, importance_min = _resolve_eco_provider(runtime)
             if eco_service is not None:
-                upcoming_events = eco_service.get_high_impact_events(hours=2, limit=1)
+                upcoming_events = _get_upcoming_high_impact(eco_service, importance_min)
                 if upcoming_events:
                     cache["data"] = impact_analyzer.get_impact_forecast(
                         upcoming_events[0].event_name, symbol=symbol
@@ -229,11 +227,46 @@ def _resolve_event_impact_forecast(
     return cache.get("data")
 
 
+def _get_upcoming_high_impact(provider: Any, importance_min: int) -> list[Any]:
+    """查询最近高影响事件，兼容不同 provider API。
+
+    优先 get_high_impact_events（EconomicCalendarService 提供），
+    回退 get_events（TradeGuardProvider 协议外但常见），
+    再回退返回空列表。
+    """
+    from datetime import timezone
+
+    # 优先：完整日历服务 API
+    fn = getattr(provider, "get_high_impact_events", None)
+    if callable(fn):
+        return fn(hours=2, limit=1)
+
+    # 回退：通用 get_events（decay 路径也使用此 API）
+    fn = getattr(provider, "get_events", None)
+    if callable(fn):
+        now = datetime.now(timezone.utc)
+        return fn(
+            start_time=now,
+            end_time=now + timedelta(hours=2),
+            limit=1,
+            importance_min=importance_min,
+        )
+
+    return []
+
+
+_EVENT_DECAY_TTL_SECONDS: float = 60.0
+_EVENT_DECAY_CACHE_MAX: int = 128
+
+
 def _compute_economic_event_decay(
     runtime: "SignalRuntime",
     symbol: str,
 ) -> float:
     """计算经济事件渐进降权因子（0.0~1.0, 1.0=无影响）。
+
+    使用 filter_chain 的 EconomicEventFilter.provider（已含 symbol-aware 货币/国家
+    过滤），并通过 per-symbol 短 TTL 缓存避免高频 intrabar 评估反复查 DB。
 
     距离高影响事件越近，置信度衰减越大：
       >60 min → 1.0（无衰减）
@@ -244,36 +277,121 @@ def _compute_economic_event_decay(
       事件后 5~15 min → 0.70（波动未收敛）
       事件后 >15 min → 1.0
     """
-    eco_service = getattr(runtime, "_economic_calendar_service", None)
-    if eco_service is None:
+    import time as _time
+
+    # --- 缓存命中检查 ---
+    cache = runtime._event_decay_cache
+    entry = cache.get(symbol)
+    now_mono = _time.monotonic()
+    if entry is not None and now_mono < entry["expires_at"]:
+        return entry["decay"]
+
+    # --- 获取 symbol-aware provider ---
+    provider, importance_min = _resolve_eco_provider(runtime)
+    if provider is None:
         return 1.0
+
     try:
-        upcoming = eco_service.get_high_impact_events(hours=2, limit=1)
-        if not upcoming:
-            return 1.0
-        event_time = getattr(upcoming[0], "event_time", None)
-        if event_time is None:
-            return 1.0
-        from datetime import timezone
-
-        now = datetime.now(timezone.utc)
-        delta_minutes = (event_time - now).total_seconds() / 60.0
-
-        if delta_minutes > 60:
-            return 1.0
-        elif delta_minutes > 30:
-            return 0.85
-        elif delta_minutes > 15:
-            return 0.55
-        elif delta_minutes > 0:
-            return 0.0  # filter chain 的 block 兜底
-        elif delta_minutes > -5:
-            return 0.0  # 事件刚发布
-        elif delta_minutes > -15:
-            return 0.70  # 波动未收敛
-        else:
-            return 1.0
+        decay = _query_symbol_event_decay(provider, symbol, importance_min)
     except Exception:
+        decay = 1.0
+
+    cache[symbol] = {"decay": decay, "expires_at": now_mono + _EVENT_DECAY_TTL_SECONDS}
+
+    # 防止缓存无限增长：先清除已过期条目，仍超限则淘汰最旧条目
+    if len(cache) > _EVENT_DECAY_CACHE_MAX:
+        expired = [k for k, v in cache.items() if now_mono >= v["expires_at"]]
+        for k in expired:
+            del cache[k]
+        # 过期清理后仍超限：按 expires_at 升序淘汰，直到回到上限
+        if len(cache) > _EVENT_DECAY_CACHE_MAX:
+            by_age = sorted(cache.items(), key=lambda kv: kv[1]["expires_at"])
+            for k, _ in by_age[: len(cache) - _EVENT_DECAY_CACHE_MAX]:
+                del cache[k]
+
+    return decay
+
+
+def _resolve_eco_provider(
+    runtime: "SignalRuntime",
+) -> tuple[Any, int]:
+    """从 filter_chain 或旧属性解析经济日历 provider 及 importance 阈值。
+
+    Returns:
+        (provider_or_None, importance_min)
+    """
+    fc = runtime.filter_chain
+    if fc is not None:
+        eco_filter = getattr(fc, "economic_filter", None)
+        if eco_filter is not None:
+            provider = getattr(eco_filter, "provider", None)
+            if provider is not None:
+                importance = getattr(eco_filter, "importance_min", 2)
+                return provider, int(importance)
+    # 向后兼容：若外部直接注入了 _economic_calendar_service
+    fallback = getattr(runtime, "_economic_calendar_service", None)
+    return fallback, 2
+
+
+def _query_symbol_event_decay(
+    provider: Any, symbol: str, importance_min: int = 2
+) -> float:
+    """对单个 symbol 查询最近相关高影响事件并计算 decay 因子。"""
+    from datetime import timezone
+
+    from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+
+    get_events_fn = getattr(provider, "get_events", None)
+    if not callable(get_events_fn):
+        return 1.0
+
+    now = datetime.now(timezone.utc)
+    context = infer_symbol_context(symbol)
+
+    # 查询前后 2h 窗口内与该 symbol 货币/国家相关的高影响事件
+    events = get_events_fn(
+        start_time=now - timedelta(minutes=20),
+        end_time=now + timedelta(hours=2),
+        limit=5,
+        countries=context["countries"] or None,
+        currencies=context["currencies"] or None,
+        statuses=["scheduled", "imminent", "pending_release", "released"],
+        importance_min=importance_min,
+    )
+    if not events:
+        return 1.0
+
+    # 找距当前时间最近的事件（按绝对距离）
+    best_delta: float | None = None
+    for evt in events:
+        event_time = getattr(evt, "event_time", None)
+        if event_time is None:
+            continue
+        delta = (event_time - now).total_seconds() / 60.0
+        if best_delta is None or abs(delta) < abs(best_delta):
+            best_delta = delta
+
+    if best_delta is None:
+        return 1.0
+
+    return _delta_to_decay(best_delta)
+
+
+def _delta_to_decay(delta_minutes: float) -> float:
+    """将距事件的分钟差映射为 decay 因子。"""
+    if delta_minutes > 60:
+        return 1.0
+    elif delta_minutes > 30:
+        return 0.85
+    elif delta_minutes > 15:
+        return 0.55
+    elif delta_minutes > 0:
+        return 0.0  # filter chain 的 block 兜底
+    elif delta_minutes > -5:
+        return 0.0  # 事件刚发布
+    elif delta_minutes > -15:
+        return 0.70  # 波动未收敛
+    else:
         return 1.0
 
 
@@ -300,7 +418,9 @@ def apply_confidence_adjustments(
             trace = list(decision.confidence_trace)
             trace.append(("economic_event_decay", round(adjusted, 4)))
             decision = _dc.replace(
-                decision, confidence=adjusted, confidence_trace=trace,
+                decision,
+                confidence=adjusted,
+                confidence_trace=trace,
             )
 
     if decision.confidence > 0 and decision.direction in ("buy", "sell"):
@@ -346,10 +466,17 @@ def publish_signal_event(
         eval_payload: dict[str, Any] = {}
         meta = decision.metadata or {}
         for key in (
-            "raw_confidence", "regime_affinity", "post_affinity_confidence",
-            "session_performance_multiplier", "post_performance_confidence",
-            "regime", "regime_source", "regime_probabilities",
-            "htf_direction", "htf_alignment", "htf_confidence_multiplier",
+            "raw_confidence",
+            "regime_affinity",
+            "post_affinity_confidence",
+            "session_performance_multiplier",
+            "post_performance_confidence",
+            "regime",
+            "regime_source",
+            "regime_probabilities",
+            "htf_direction",
+            "htf_alignment",
+            "htf_confidence_multiplier",
         ):
             if key in meta:
                 eval_payload[key] = meta[key]
@@ -428,9 +555,7 @@ def transition_and_publish(
 
     strategy_obj = runtime.service.get_strategy(decision.strategy)
     if strategy_obj is not None:
-        transition_metadata["strategy_category"] = getattr(
-            strategy_obj, "category", ""
-        )
+        transition_metadata["strategy_category"] = getattr(strategy_obj, "category", "")
 
     if decision.strategy in runtime._voting_group_members:
         return

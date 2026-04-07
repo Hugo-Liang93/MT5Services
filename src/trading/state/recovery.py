@@ -22,7 +22,9 @@ class TradingStateRecovery:
     def warm_start(self) -> None:
         self._store.warm_start()
 
-    def restore_trade_control(self, trading_module: TradeControlStatePort) -> dict[str, Any]:
+    def restore_trade_control(
+        self, trading_module: TradeControlStatePort
+    ) -> dict[str, Any]:
         state = self._store.load_trade_control_state()
         if not state:
             return {"restored": False}
@@ -86,7 +88,9 @@ class TradingStateRecovery:
                     except Exception:
                         cancelled = False
                     if cancelled:
-                        self._store.mark_pending_order_expired(info, reason="startup_expired")
+                        self._store.mark_pending_order_expired(
+                            info, reason="startup_expired"
+                        )
                         summary["expired"] += 1
                     else:
                         pending_entry_manager.restore_mt5_order(info)
@@ -139,7 +143,9 @@ class TradingStateRecovery:
                 for item in (result.get("canceled") or result.get("cancelled") or [])
                 if item is not None
             }
-            failed = {int(item) for item in (result.get("failed") or []) if item is not None}
+            failed = {
+                int(item) for item in (result.get("failed") or []) if item is not None
+            }
             if ticket in cancelled:
                 return True
             if failed:
@@ -154,18 +160,30 @@ class TradingStateRecovery:
         if params_meta:
             from src.trading.execution import TradeParameters
 
-            entry_price = float(params_meta.get("entry_price") or row.get("trigger_price") or 0.0)
-            stop_loss = float(params_meta.get("stop_loss") or row.get("stop_loss") or entry_price)
-            take_profit = float(params_meta.get("take_profit") or row.get("take_profit") or entry_price)
+            entry_price = float(
+                params_meta.get("entry_price") or row.get("trigger_price") or 0.0
+            )
+            stop_loss = float(
+                params_meta.get("stop_loss") or row.get("stop_loss") or entry_price
+            )
+            take_profit = float(
+                params_meta.get("take_profit") or row.get("take_profit") or entry_price
+            )
             sl_distance = abs(entry_price - stop_loss)
             tp_distance = abs(take_profit - entry_price)
             params = TradeParameters(
                 entry_price=entry_price,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                position_size=float(params_meta.get("position_size") or row.get("volume") or 0.0),
-                risk_reward_ratio=(tp_distance / sl_distance) if sl_distance > 0 else 0.0,
-                atr_value=float(params_meta.get("atr_value") or row.get("atr_at_entry") or 0.0),
+                position_size=float(
+                    params_meta.get("position_size") or row.get("volume") or 0.0
+                ),
+                risk_reward_ratio=(
+                    (tp_distance / sl_distance) if sl_distance > 0 else 0.0
+                ),
+                atr_value=float(
+                    params_meta.get("atr_value") or row.get("atr_at_entry") or 0.0
+                ),
                 sl_distance=sl_distance,
                 tp_distance=tp_distance,
             )
@@ -191,4 +209,7 @@ class TradingStateRecovery:
             "volume": row.get("volume"),
             "created_at": row.get("created_at"),
             "metadata": metadata,
+            # 从 metadata 恢复出场规格（_pending_metadata 序列化时写入）
+            "exit_spec": metadata.get("exit_spec"),
+            "strategy_category": metadata.get("strategy_category") or "",
         }
