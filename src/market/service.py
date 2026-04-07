@@ -310,15 +310,6 @@ class MarketDataService:
         with self._lock:
             return list(self._intrabar_cache.get(key, []))
 
-    def get_ohlc(
-        self,
-        symbol: Optional[str],
-        timeframe: str,
-        count: Optional[int] = None,
-    ) -> List[OHLC]:
-        """Compatibility wrapper for indicator services expecting get_ohlc()."""
-        return self.get_ohlc_closed(symbol, timeframe, limit=count)
-
     def get_ohlc_window(
         self,
         symbol: Optional[str],

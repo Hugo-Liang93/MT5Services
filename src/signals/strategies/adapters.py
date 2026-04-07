@@ -63,6 +63,6 @@ class UnifiedIndicatorSourceAdapter:
                     limit=limit,
                 )
             )
-        if hasattr(market_service, "get_ohlc"):
-            return list(market_service.get_ohlc(symbol, timeframe, count=limit))
+        if hasattr(market_service, "get_ohlc_closed"):
+            return list(market_service.get_ohlc_closed(symbol, timeframe, limit=limit))
         return []
