@@ -28,6 +28,14 @@ class PendingOrderCancellationPort(Protocol):
 class PositionManagementPort(TradingQueryPort, Protocol):
     def close_all_positions(self, **kwargs: Any) -> Any: ...
 
+    def close_position(
+        self,
+        ticket: int,
+        deviation: int = 20,
+        comment: str = "",
+        volume: Optional[float] = None,
+    ) -> Any: ...
+
     def modify_positions(self, **kwargs: Any) -> Any: ...
 
     def account_info(self) -> Any: ...

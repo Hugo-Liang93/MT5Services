@@ -44,12 +44,12 @@ class StructuredSessionBreakout(StructuredStrategyBase):
         if close is None or atr is None or atr <= 0:
             return False, None, 0, "no_data"
 
+        tf = ctx.timeframe
         ah, al = float(asia_high), float(asia_low)
         asia_range = ah - al
-        if (
-            asia_range < atr * self._asia_range_min_atr
-            or asia_range > atr * self._asia_range_max_atr
-        ):
+        range_min = get_tf_param(self, "asia_range_min_atr", tf, self._asia_range_min_atr)
+        range_max = get_tf_param(self, "asia_range_max_atr", tf, self._asia_range_max_atr)
+        if asia_range < atr * range_min or asia_range > atr * range_max:
             return False, None, 0, f"range_bad:{asia_range:.0f}"
 
         # 方向判定
@@ -62,7 +62,8 @@ class StructuredSessionBreakout(StructuredStrategyBase):
         else:
             return False, None, 0, "inside_range"
 
-        if pen < self._penetration_min_atr:
+        pen_min = get_tf_param(self, "penetration_min_atr", tf, self._penetration_min_atr)
+        if pen < pen_min:
             return False, None, 0, f"weak:{pen:.3f}"
 
         # HTF 确认
@@ -87,7 +88,8 @@ class StructuredSessionBreakout(StructuredStrategyBase):
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
         ad = self._adx_full(ctx)
         d3 = ad["adx_d3"]
-        if d3 is not None and d3 < self._adx_d3_min:
+        adx_d3_min = get_tf_param(self, "adx_d3_min", ctx.timeframe, self._adx_d3_min)
+        if d3 is not None and d3 < adx_d3_min:
             return False, 0, f"adx_flat:d3={d3:.1f}"
         # ADX 上升动量越强 score 越高
         score = min(float(d3 or 1.0) / 3.0, 1.0)

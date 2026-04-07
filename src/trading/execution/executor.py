@@ -365,6 +365,236 @@ class TradeExecutor:
             logger.debug("Trading health check failed: %s", exc)
             return False
 
+    # ------------------------------------------------------------------
+    # Pre-trade filter chain
+    # ------------------------------------------------------------------
+
+    def _reject_signal(
+        self,
+        event: SignalEvent,
+        reason: str,
+        category: str,
+        tf: str,
+        *,
+        log_level: str = "info",
+        extra_log: str = "",
+        pipeline_reason: str = "",
+    ) -> None:
+        """统一拒绝信号：日志 + 事件总线 + skip 通知 + 执行日志。
+
+        Args:
+            reason: 写入 execution_log 和 skip 通知的详细拒绝原因。
+            category: 事件总线分类。
+            pipeline_reason: 事件总线的 reason（空则用 reason）。
+        """
+        msg = (
+            f"TradeExecutor: skipping {event.symbol}/{event.strategy} "
+            f"{event.direction} - {reason}"
+        )
+        if extra_log:
+            msg = f"{msg} ({extra_log})"
+        getattr(logger, log_level)(msg)
+        self._execution_log.append(
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "signal_id": event.signal_id,
+                "symbol": event.symbol,
+                "direction": event.direction,
+                "strategy": event.strategy,
+                "success": False,
+                "skipped": True,
+                "reason": reason,
+            }
+        )
+        _emit_execution_blocked_helper(
+            self, event, reason=pipeline_reason or reason, category=category,
+        )
+        _notify_skip_helper(self, event.signal_id, reason, tf, event=event)
+
+    def _check_circuit_breaker(self, event: SignalEvent) -> bool:
+        """检查技术故障熔断器。返回 True = 已熔断，应拒绝。"""
+        if not self._circuit_open:
+            return False
+        # 超过自动恢复窗口后，先做健康检查再决定是否 half-open。
+        if (
+            self.config.circuit_auto_reset_minutes > 0
+            and self._circuit_open_at is not None
+        ):
+            elapsed = (
+                datetime.now(timezone.utc) - self._circuit_open_at
+            ).total_seconds() / 60.0
+            if elapsed >= self.config.circuit_auto_reset_minutes:
+                if self._check_trading_health():
+                    logger.info(
+                        "TradeExecutor: circuit auto-reset after %.1f minutes, "
+                        "health check passed, entering half-open",
+                        elapsed,
+                    )
+                    self._health_check_failures = 0
+                    self.reset_circuit()
+                else:
+                    self._health_check_failures += 1
+                    self._circuit_open_at = datetime.now(timezone.utc)
+                    if (
+                        self._health_check_failures
+                        >= self._MAX_HEALTH_CHECK_FAILURES
+                    ):
+                        logger.critical(
+                            "TradeExecutor: circuit STUCK — %d consecutive health "
+                            "check failures, MT5 connection may be permanently "
+                            "broken. Manual intervention required (reset_circuit "
+                            "or restart).",
+                            self._health_check_failures,
+                        )
+                    else:
+                        logger.warning(
+                            "TradeExecutor: circuit auto-reset deferred, "
+                            "health check failed after %.1f minutes "
+                            "(health_check_failures=%d/%d)",
+                            elapsed,
+                            self._health_check_failures,
+                            self._MAX_HEALTH_CHECK_FAILURES,
+                        )
+        if self._circuit_open:
+            logger.warning(
+                "TradeExecutor: circuit open (consecutive_failures=%d), "
+                "skipping %s/%s. Call reset_circuit() to resume.",
+                self._consecutive_failures,
+                event.symbol,
+                event.strategy,
+            )
+            return True
+        return False
+
+    def _check_reentry_cooldown(
+        self, event: SignalEvent, tf: str
+    ) -> bool:
+        """检查同策略同方向再入场冷却。返回 True = 冷却中，应拒绝。"""
+        cooldown_bars = self.config.reentry_cooldown_bars
+        if cooldown_bars <= 0:
+            return False
+        reentry_key = (event.symbol, event.strategy, event.direction)
+        bar_time_raw = event.metadata.get("bar_time")
+        bar_time: datetime | None = None
+        if isinstance(bar_time_raw, datetime):
+            bar_time = bar_time_raw
+        elif isinstance(bar_time_raw, str):
+            try:
+                bar_time = datetime.fromisoformat(bar_time_raw)
+            except (ValueError, TypeError):
+                pass
+        last_bar = self._last_entry_bar_time.get(reentry_key)
+        if bar_time and last_bar:
+            tf_seconds = _tf_to_seconds_helper(tf)
+            if tf_seconds > 0:
+                elapsed_bars = abs((bar_time - last_bar).total_seconds()) / tf_seconds
+                if elapsed_bars < cooldown_bars:
+                    self._reject_signal(
+                        event, "reentry_cooldown", "cooldown", tf,
+                        extra_log=f"{elapsed_bars:.1f} bars < {cooldown_bars} required",
+                    )
+                    return True
+        return False
+
+    def _run_pre_trade_filters(
+        self, event: SignalEvent, tf: str
+    ) -> str | None:
+        """按顺序运行所有预交易过滤器。
+
+        返回 None = 全部通过；返回 str = 拒绝原因。
+        """
+        sig_id = event.signal_id or ""
+
+        # ① signal_id 幂等性
+        if sig_id and sig_id in self._executed_signal_ids:
+            _notify_skip_helper(self, sig_id, "duplicate_signal_id", tf, event=event)
+            return "duplicate_signal_id"
+
+        # ② 技术故障熔断器
+        if self._check_circuit_breaker(event):
+            return "circuit_open"
+
+        # ③ 方向有效性
+        if event.direction not in ("buy", "sell"):
+            return "invalid_direction"
+
+        # ④ PnL 熔断
+        if (
+            self._performance_tracker is not None
+            and self._performance_tracker.is_trading_paused()
+        ):
+            self._reject_signal(
+                event, "pnl_circuit_paused", "performance", tf, log_level="warning",
+            )
+            return "pnl_circuit_paused"
+
+        # ⑤ 权益曲线过滤器
+        if self._equity_curve_filter is not None:
+            self._equity_curve_filter.record_equity()
+            if self._equity_curve_filter.should_block():
+                self._reject_signal(
+                    event, "equity_curve_below_ma", "equity_filter", tf,
+                )
+                return "equity_curve_below_ma"
+
+        # ⑥ 保证金保护
+        if (
+            self._margin_guard is not None
+            and self._margin_guard.should_block_new_trades()
+        ):
+            self._reject_signal(event, "margin_guard_block", "risk_guard", tf)
+            return "margin_guard_block"
+
+        # ⑦ 执行门（voting group / armed）
+        gate_allowed, gate_reason = self._execution_gate.check(event)
+        if not gate_allowed:
+            self._reject_signal(event, gate_reason, "execution_gate", tf)
+            return gate_reason
+
+        # ⑧ 重复执行上下文
+        duplicate_reason = _duplicate_execution_reason_helper(self, event)
+        if duplicate_reason:
+            self._reject_signal(event, duplicate_reason, "duplicate_guard", tf)
+            return duplicate_reason
+
+        # ⑨ 最小置信度
+        effective_min_conf = self.config.timeframe_min_confidence.get(
+            tf, self.config.min_confidence,
+        )
+        if event.confidence < effective_min_conf:
+            self._reject_signal(
+                event, "min_confidence", "confidence", tf,
+                extra_log=f"{event.confidence:.3f} < {effective_min_conf:.2f}",
+            )
+            return "min_confidence"
+
+        # ⑩ EOD 后禁止新开仓
+        if (
+            self._position_manager is not None
+            and hasattr(self._position_manager, "is_after_eod_today")
+            and self._position_manager.is_after_eod_today()
+        ):
+            self._reject_signal(event, "after_eod_block", "eod_guard", tf)
+            return "after_eod_block"
+
+        # ⑪ 品种持仓数量上限
+        if _reached_position_limit_helper(self, event.symbol):
+            self._reject_signal(
+                event, "max_concurrent_positions_per_symbol", "position_limit", tf,
+                pipeline_reason="position_limit",
+            )
+            return "max_concurrent_positions_per_symbol"
+
+        # ⑫ 再入场冷却
+        if self._check_reentry_cooldown(event, tf):
+            return "reentry_cooldown"
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Core execution dispatch
+    # ------------------------------------------------------------------
+
     def _handle_confirmed(self, event: SignalEvent) -> dict[str, Any | None]:
         self._signals_received += 1
         tf = event.timeframe or ""
@@ -377,304 +607,12 @@ class TradeExecutor:
         if not self.config.enabled:
             return None
 
-        # ── signal_id 幂等性：拒绝已执行过的信号 ──────────────────────
-        sig_id = event.signal_id or ""
-        if sig_id and sig_id in self._executed_signal_ids:
-            _notify_skip_helper(self, sig_id, "duplicate_signal_id", tf, event=event)
+        # ── 预交易过滤链 ──
+        reject_reason = self._run_pre_trade_filters(event, tf)
+        if reject_reason is not None:
             return None
 
-        # 技术故障熔断器优先于后续所有交易检查。
-        if self._circuit_open:
-            # 超过自动恢复窗口后，先做健康检查再决定是否 half-open。
-            if (
-                self.config.circuit_auto_reset_minutes > 0
-                and self._circuit_open_at is not None
-            ):
-                elapsed = (
-                    datetime.now(timezone.utc) - self._circuit_open_at
-                ).total_seconds() / 60.0
-                if elapsed >= self.config.circuit_auto_reset_minutes:
-                    if self._check_trading_health():
-                        logger.info(
-                            "TradeExecutor: circuit auto-reset after %.1f minutes, "
-                            "health check passed, entering half-open",
-                            elapsed,
-                        )
-                        self._health_check_failures = 0
-                        self.reset_circuit()
-                    else:
-                        self._health_check_failures += 1
-                        self._circuit_open_at = datetime.now(timezone.utc)
-                        if (
-                            self._health_check_failures
-                            >= self._MAX_HEALTH_CHECK_FAILURES
-                        ):
-                            logger.critical(
-                                "TradeExecutor: circuit STUCK — %d consecutive health "
-                                "check failures, MT5 connection may be permanently "
-                                "broken. Manual intervention required (reset_circuit "
-                                "or restart).",
-                                self._health_check_failures,
-                            )
-                        else:
-                            logger.warning(
-                                "TradeExecutor: circuit auto-reset deferred, "
-                                "health check failed after %.1f minutes "
-                                "(health_check_failures=%d/%d)",
-                                elapsed,
-                                self._health_check_failures,
-                                self._MAX_HEALTH_CHECK_FAILURES,
-                            )
-            if self._circuit_open:
-                logger.warning(
-                    "TradeExecutor: circuit open (consecutive_failures=%d), "
-                    "skipping %s/%s. Call reset_circuit() to resume.",
-                    self._consecutive_failures,
-                    event.symbol,
-                    event.strategy,
-                )
-                return None
-
-        if event.direction not in ("buy", "sell"):
-            return None
-
-        # PnL 熔断由日内绩效跟踪器维护，独立于技术故障熔断。
-        if (
-            self._performance_tracker is not None
-            and self._performance_tracker.is_trading_paused()
-        ):
-            logger.warning(
-                "TradeExecutor: PnL circuit open, skipping %s/%s %s",
-                event.symbol,
-                event.strategy,
-                event.direction,
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason="pnl_circuit_paused",
-                category="performance",
-            )
-            _notify_skip_helper(
-                self, event.signal_id, "pnl_circuit_paused", tf, event=event
-            )
-            return None
-
-        # 权益曲线过滤器：账户权益低于 MA 时暂停开仓。
-        if self._equity_curve_filter is not None:
-            self._equity_curve_filter.record_equity()
-            if self._equity_curve_filter.should_block():
-                logger.info(
-                    "TradeExecutor: skipping %s/%s %s - equity curve below MA",
-                    event.symbol,
-                    event.strategy,
-                    event.direction,
-                )
-                _emit_execution_blocked_helper(
-                    self,
-                    event,
-                    reason="equity_curve_below_ma",
-                    category="equity_filter",
-                )
-                _notify_skip_helper(
-                    self, event.signal_id, "equity_curve_below_ma", tf, event=event
-                )
-                return None
-
-        # 保证金保护在真正计算仓位前拦截新开仓请求。
-        if (
-            self._margin_guard is not None
-            and self._margin_guard.should_block_new_trades()
-        ):
-            logger.info(
-                "TradeExecutor: skipping %s/%s %s - margin guard blocked",
-                event.symbol,
-                event.strategy,
-                event.direction,
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason="margin_guard_block",
-                category="risk_guard",
-            )
-            _notify_skip_helper(
-                self, event.signal_id, "margin_guard_block", tf, event=event
-            )
-            return None
-
-        # 执行门负责策略级准入规则，例如 voting group 和 armed 检查。
-        gate_allowed, gate_reason = self._execution_gate.check(event)
-        if not gate_allowed:
-            logger.info(
-                "TradeExecutor: skipping %s/%s %s - gate blocked: %s",
-                event.symbol,
-                event.strategy,
-                event.direction,
-                gate_reason,
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason=gate_reason,
-                category="execution_gate",
-            )
-            _notify_skip_helper(self, event.signal_id, gate_reason, tf, event=event)
-            return None
-
-        duplicate_reason = _duplicate_execution_reason_helper(self, event)
-        if duplicate_reason:
-            logger.info(
-                "TradeExecutor: skipping %s/%s/%s %s - duplicate execution context: %s",
-                event.symbol,
-                tf,
-                event.strategy,
-                event.direction,
-                duplicate_reason,
-            )
-            self._execution_log.append(
-                {
-                    "at": datetime.now(timezone.utc).isoformat(),
-                    "signal_id": event.signal_id,
-                    "symbol": event.symbol,
-                    "direction": event.direction,
-                    "strategy": event.strategy,
-                    "success": False,
-                    "skipped": True,
-                    "reason": duplicate_reason,
-                }
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason=duplicate_reason,
-                category="duplicate_guard",
-            )
-            _notify_skip_helper(
-                self, event.signal_id, duplicate_reason, tf, event=event
-            )
-            return None
-
-        # Per-TF 最小置信度覆盖优先于全局 min_confidence。
-        effective_min_conf = self.config.timeframe_min_confidence.get(
-            tf, self.config.min_confidence
-        )
-        if event.confidence < effective_min_conf:
-            logger.info(
-                "TradeExecutor: skipping %s/%s %s - confidence %.3f < min=%.2f (tf=%s)",
-                event.symbol,
-                event.strategy,
-                event.direction,
-                event.confidence,
-                effective_min_conf,
-                tf,
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason="min_confidence",
-                category="confidence",
-            )
-            _notify_skip_helper(
-                self, event.signal_id, "min_confidence", tf, event=event
-            )
-            return None
-
-        # 日终平仓后，当天剩余时间内不再新开仓，避免 EOD 后又被实时信号重新拉起仓位。
-        if (
-            self._position_manager is not None
-            and hasattr(self._position_manager, "is_after_eod_today")
-            and self._position_manager.is_after_eod_today()
-        ):
-            logger.info(
-                "TradeExecutor: BLOCKING %s/%s %s - after EOD closeout, no new positions today",
-                event.symbol,
-                event.strategy,
-                event.direction,
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason="after_eod_block",
-                category="eod_guard",
-            )
-            _notify_skip_helper(
-                self, event.signal_id, "after_eod_block", tf, event=event
-            )
-            return None
-
-        if _reached_position_limit_helper(self, event.symbol):
-            logger.info(
-                "TradeExecutor: skipping %s/%s %s - max_concurrent_positions_per_symbol reached",
-                event.symbol,
-                event.strategy,
-                event.direction,
-            )
-            self._execution_log.append(
-                {
-                    "at": datetime.now(timezone.utc).isoformat(),
-                    "signal_id": event.signal_id,
-                    "symbol": event.symbol,
-                    "direction": event.direction,
-                    "strategy": event.strategy,
-                    "success": False,
-                    "skipped": True,
-                    "reason": "max_concurrent_positions_per_symbol",
-                }
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason="position_limit",
-                category="position_limit",
-            )
-            _notify_skip_helper(
-                self, event.signal_id, "position_limit", tf, event=event
-            )
-            return None
-
-        # ── 同策略同方向再入场冷却 ────────────────────────────────
-        cooldown_bars = self.config.reentry_cooldown_bars
-        if cooldown_bars > 0:
-            reentry_key = (event.symbol, event.strategy, event.direction)
-            bar_time_raw = event.metadata.get("bar_time")
-            bar_time: datetime | None = None
-            if isinstance(bar_time_raw, datetime):
-                bar_time = bar_time_raw
-            elif isinstance(bar_time_raw, str):
-                try:
-                    bar_time = datetime.fromisoformat(bar_time_raw)
-                except (ValueError, TypeError):
-                    pass
-            last_bar = self._last_entry_bar_time.get(reentry_key)
-            if bar_time and last_bar:
-                tf_seconds = _tf_to_seconds_helper(tf)
-                if tf_seconds > 0:
-                    elapsed_bars = (
-                        abs((bar_time - last_bar).total_seconds()) / tf_seconds
-                    )
-                    if elapsed_bars < cooldown_bars:
-                        logger.info(
-                            "TradeExecutor: skipping %s/%s/%s %s - reentry cooldown "
-                            "(%.1f bars < %d required)",
-                            event.symbol,
-                            tf,
-                            event.strategy,
-                            event.direction,
-                            elapsed_bars,
-                            cooldown_bars,
-                        )
-                        _emit_execution_blocked_helper(
-                            self,
-                            event,
-                            reason="reentry_cooldown",
-                            category="cooldown",
-                        )
-                        _notify_skip_helper(
-                            self, event.signal_id, "reentry_cooldown", tf, event=event
-                        )
-                        return None
-
+        # ── 交易参数计算 ──
         trade_params = _compute_params_helper(self, event)
         if trade_params is None:
             atr = extract_atr_from_indicators(event.indicators)
@@ -693,54 +631,26 @@ class TradeExecutor:
                 close_price,
                 list(event.indicators.keys()),
             )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason="trade_params_unavailable",
-                category="trade_params",
-            )
-            _notify_skip_helper(
-                self, event.signal_id, "trade_params_unavailable", tf, event=event
+            self._reject_signal(
+                event, "trade_params_unavailable", "trade_params", tf,
             )
             return None
+
+        # ── Spread-to-stop 比率检查 ──
         cost_metrics = _estimate_cost_metrics_helper(self, event, trade_params)
         spread_to_stop_ratio = cost_metrics.get("spread_to_stop_ratio")
         if (
             spread_to_stop_ratio is not None
             and spread_to_stop_ratio > self.config.max_spread_to_stop_ratio
         ):
-            logger.info(
-                "TradeExecutor: skipping %s/%s %s - spread_to_stop_ratio %.3f > max=%.3f",
-                event.symbol,
-                event.strategy,
-                event.direction,
-                spread_to_stop_ratio,
-                self.config.max_spread_to_stop_ratio,
-            )
-            self._execution_log.append(
-                {
-                    "at": datetime.now(timezone.utc).isoformat(),
-                    "signal_id": event.signal_id,
-                    "symbol": event.symbol,
-                    "direction": event.direction,
-                    "strategy": event.strategy,
-                    "success": False,
-                    "skipped": True,
-                    "reason": "spread_to_stop_ratio_too_high",
-                    "cost": cost_metrics,
-                }
-            )
-            _emit_execution_blocked_helper(
-                self,
-                event,
-                reason="spread_to_stop_ratio_too_high",
-                category="cost_guard",
-            )
-            _notify_skip_helper(
-                self, event.signal_id, "spread_to_stop_ratio_too_high", tf, event=event
+            self._reject_signal(
+                event, "spread_to_stop_ratio_too_high", "cost_guard", tf,
+                extra_log=f"{spread_to_stop_ratio:.3f} > {self.config.max_spread_to_stop_ratio:.3f}",
             )
             return None
 
+        # ── 全部通过，派发执行 ──
+        sig_id = event.signal_id or ""
         self._signals_passed += 1
         if sig_id:
             self._executed_signal_ids.append(sig_id)

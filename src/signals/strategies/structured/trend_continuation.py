@@ -95,6 +95,14 @@ class StructuredTrendContinuation(StructuredStrategyBase):
     _aggression: float = 0.80
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        # 趋势回调：宽 trail 让利润奔跑
+        # 趋势回调：宽 trail 让利润奔跑 + 梯度 TP 锁定部分利润
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {"aggression": aggr, "sl_atr": None, "tp_atr": None}
+        return {
+            "aggression": aggr,
+            "sl_atr": None,
+            "tp_atr": None,
+            "tp_targets": [
+                {"r": 1.5, "close_pct": 0.33},  # 1.5R 平 1/3
+                {"r": 2.5, "close_pct": 0.50},  # 2.5R 平剩余一半
+            ],
+        }

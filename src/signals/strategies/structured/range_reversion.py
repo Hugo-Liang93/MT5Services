@@ -32,9 +32,11 @@ class StructuredRangeReversion(StructuredStrategyBase):
     _base_confidence: float = 0.48
 
     def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
+        tf = ctx.timeframe
         ad = self._adx_full(ctx)
         adx = ad["adx"]
-        if adx is not None and adx > self._adx_max:
+        adx_max = get_tf_param(self, "adx_max", tf, self._adx_max)
+        if adx is not None and adx > adx_max:
             return False, None, 0, f"trending:{adx:.0f}"
 
         # HTF 不应有强同向趋势
@@ -47,7 +49,12 @@ class StructuredRangeReversion(StructuredStrategyBase):
         if rsi is None:
             return False, None, 0, "no_rsi"
 
-        if rsi <= self._rsi_oversold and (bb_pos is None or bb_pos <= self._bb_low):
+        rsi_os = get_tf_param(self, "rsi_oversold", tf, self._rsi_oversold)
+        rsi_ob = get_tf_param(self, "rsi_overbought", tf, self._rsi_overbought)
+        bb_lo = get_tf_param(self, "bb_low", tf, self._bb_low)
+        bb_hi = get_tf_param(self, "bb_high", tf, self._bb_high)
+
+        if rsi <= rsi_os and (bb_pos is None or bb_pos <= bb_lo):
             if rsi_d3 is not None and rsi_d3 < 0:
                 return False, None, 0, "still_falling"
             # HTF 冲突检查
@@ -57,7 +64,7 @@ class StructuredRangeReversion(StructuredStrategyBase):
             adx_score = 0.7 if adx is not None and adx < 18 else 0.4
             return True, "buy", adx_score, f"oversold:rsi={rsi:.0f},bb={bb_pos}"
 
-        if rsi >= self._rsi_overbought and (bb_pos is None or bb_pos >= self._bb_high):
+        if rsi >= rsi_ob and (bb_pos is None or bb_pos >= bb_hi):
             if rsi_d3 is not None and rsi_d3 > 0:
                 return False, None, 0, "still_rising"
             if htf_adx is not None and float(htf_adx) > 25 and htf_dir is not None:
@@ -105,6 +112,14 @@ class StructuredRangeReversion(StructuredStrategyBase):
     _aggression: float = 0.15
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        # 均值回归：紧 trail + 快锁利，反转幅度有限
+        # 均值回归：紧 trail + 快锁利，反转幅度有限 + 积极梯度 TP
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {"aggression": aggr, "sl_atr": 1.0, "tp_atr": 1.8}
+        return {
+            "aggression": aggr,
+            "sl_atr": 1.0,
+            "tp_atr": 1.8,
+            "tp_targets": [
+                {"r": 1.0, "close_pct": 0.50},  # 1R 平一半（回归策略快锁利）
+                {"r": 1.5, "close_pct": 0.50},  # 1.5R 平剩余一半
+            ],
+        }

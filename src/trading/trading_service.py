@@ -510,6 +510,20 @@ class TradingService:
                 "executable": True,
                 "suggested_adjustment": None,
             }
+        # 预计算保证金，注入 metadata 供 MarginAvailabilityRule 使用
+        # （与 execute_trade() 保持一致的风控链路）
+        margin_estimate: Optional[float] = None
+        if volume is not None and side:
+            try:
+                margin_estimate = self.estimate_margin(
+                    symbol=symbol, volume=volume, side=side, price=price,
+                )
+            except Exception:
+                margin_estimate = None
+        enriched_metadata = dict(metadata or {})
+        if margin_estimate is not None:
+            enriched_metadata["estimated_margin"] = margin_estimate
+
         assessment = self.pre_trade_risk_service.assess_trade(
             symbol=symbol,
             volume=volume,
@@ -521,9 +535,9 @@ class TradingService:
             deviation=deviation,
             comment=comment,
             magic=magic,
-            metadata=metadata,
+            metadata=enriched_metadata,
         )
-        assessment["estimated_margin"] = None
+        assessment["estimated_margin"] = margin_estimate
         assessment.setdefault("warnings", [])
         assessment.setdefault("checks", [])
         # 合并前面收集的 broker 约束检查结果和 warnings
@@ -531,23 +545,12 @@ class TradingService:
             assessment["checks"] = checks + assessment["checks"]
         if warnings:
             assessment["warnings"] = warnings + assessment["warnings"]
-        if volume is not None and side:
-            try:
-                assessment["estimated_margin"] = self.estimate_margin(
-                    symbol=symbol,
-                    volume=volume,
-                    side=side,
-                    price=price,
-                )
-            except Exception as exc:
-                assessment.setdefault("warnings", []).append(f"Margin estimate unavailable: {exc}")
-                assessment["margin_error"] = str(exc)
+        if margin_estimate is None and volume is not None and side:
+            assessment.setdefault("warnings", []).append("Margin estimate unavailable")
         assessment["request_id"] = request_id
         assessment["executable"] = str(assessment.get("verdict") or "allow").lower() != "block"
         if not assessment["executable"]:
             assessment["suggested_adjustment"] = {"verdict": "review_risk_windows"}
-        elif assessment.get("margin_error"):
-            assessment["suggested_adjustment"] = {"verdict": "retry_margin_estimate"}
         else:
             assessment["suggested_adjustment"] = None
         return assessment

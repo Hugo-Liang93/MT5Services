@@ -40,16 +40,20 @@ class StructuredSweepReversal(StructuredStrategyBase):
         if rsi is None:
             return False, None, 0, "no_rsi"
 
-        if rsi <= self._rsi_extreme_low:
+        tf = ctx.timeframe
+        ext_low = get_tf_param(self, "rsi_extreme_low", tf, self._rsi_extreme_low)
+        ext_high = get_tf_param(self, "rsi_extreme_high", tf, self._rsi_extreme_high)
+
+        if rsi <= ext_low:
             if rsi_d3 is not None and rsi_d3 < 0:
                 return False, None, 0, "still_falling"
             # RSI 越极端，score 越高
-            score = min((self._rsi_extreme_low - rsi) / 15.0 + 0.5, 1.0)
+            score = min((ext_low - rsi) / 15.0 + 0.5, 1.0)
             return True, "buy", score, f"oversold:{rsi:.0f}"
-        elif rsi >= self._rsi_extreme_high:
+        elif rsi >= ext_high:
             if rsi_d3 is not None and rsi_d3 > 0:
                 return False, None, 0, "still_rising"
-            score = min((rsi - self._rsi_extreme_high) / 15.0 + 0.5, 1.0)
+            score = min((rsi - ext_high) / 15.0 + 0.5, 1.0)
             return True, "sell", score, f"overbought:{rsi:.0f}"
 
         return False, None, 0, f"rsi_mid:{rsi:.0f}"

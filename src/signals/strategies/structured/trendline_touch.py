@@ -60,7 +60,9 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
 
         if htf_dir is None:
             return False, None, 0, "no_htf"
-        if htf_adx is not None and float(htf_adx) < self._htf_adx_min:
+        if htf_adx is not None and float(htf_adx) < get_tf_param(
+            self, "htf_adx_min", ctx.timeframe, self._htf_adx_min
+        ):
             return False, None, 0, f"htf_weak:{htf_adx}"
 
         direction_hint = "buy" if int(htf_dir) == 1 else "sell"
@@ -165,9 +167,17 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
     _aggression: float = 0.70
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        # 趋势线触碰：顺势中等 trail
+        # 趋势线触碰：顺势中等 trail + 梯度 TP
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {"aggression": aggr, "sl_atr": None, "tp_atr": None}
+        return {
+            "aggression": aggr,
+            "sl_atr": None,
+            "tp_atr": None,
+            "tp_targets": [
+                {"r": 1.5, "close_pct": 0.33},
+                {"r": 2.5, "close_pct": 0.50},
+            ],
+        }
 
     def _tl_conf(self, candidate: Any, touch_dist: float, tol: float) -> float:
         """趋势线质量评分，返回 0~1。"""
