@@ -373,3 +373,4 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 | `docs/design/pending-entry.md` | PendingEntry 设计方案（A7 已将入场职责回归策略层） | 修改入场逻辑时 |
 | `docs/design/risk-enhancement.md` | PnL 熔断器 + PerformanceTracker 恢复设计（已实现） | 修改风控逻辑时 |
 | `docs/design/next-plan.md` | 下一阶段开发规划 | 规划新功能时 |
+| `docs/research-system.md` | 挖掘系统：三大分析器、过拟合防护、多 TF 准则、指标三层架构 | 新增/修改挖掘逻辑时 |
