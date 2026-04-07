@@ -114,8 +114,8 @@ raw_confidence = base(0.50)
 ### 10 层风控堆栈（从信号到执行，有序）
 
 1. **SignalFilterChain** — 时段/冷却期/点差/经济事件/波动率异常/趋势衰竭过滤
-2. **Regime 门控** — 结构化策略在 _why() 内部自行判断 regime 适应性（ADX/HTF 方向）；regime_affinity 仅在置信度管线中作为乘数使用
-3. **HTF direction alignment** — 仅记录到 metadata 供诊断，不再乘以 confidence（结构化策略 Why 层内部已处理）
+2. **Regime 门控** — 结构化策略在 _why() 内部自行判断 regime 适应性（ADX）；regime_affinity 仅在置信度管线中作为乘数使用
+3. **HTF direction alignment** — 策略级分层：trend_continuation 硬门控（趋势延续需顺势）；breakout_follow/range_reversion 软门控（冲突时阻止）；session_breakout/trendline_touch 软加分（冲突时降分不拒绝）；sweep_reversal/lowbar_entry 不使用
 4. **ExecutionGate** — voting group 保护、require_armed 门控
 5. **PendingEntry** — 策略输出 entry_spec（market/limit/stop + 入场价），PendingEntryManager 纯执行
 6. **Pre-trade risk service** — DailyLossLimit / AccountSnapshot / MarginAvailability / TradeFrequency

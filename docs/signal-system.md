@@ -411,6 +411,17 @@ h1_adx = h1.get("adx14", {}).get("adx")
 
 未配置时为空 dict，安全跳过。HTF 指标不需额外计算 — IndicatorManager 已为所有配置的 `(symbol, timeframe)` 计算全量指标。
 
+### 策略级 HTF 分层
+
+HTF 校验是策略属性，不是通用要求。小周期有自身的市场形态，往往领先大周期方向。
+
+| 分层 | 策略 | HTF 行为 | 语义理由 |
+|------|------|---------|---------|
+| **硬门控** | trend_continuation | HTF 方向 + ADX 缺失即拒绝 | 趋势延续本身就是"顺大势" |
+| **软门控** | breakout_follow, range_reversion | HTF 冲突时拒绝，缺失时放行 | 冲突时风险高，但不强制 |
+| **软加分** | session_breakout, trendline_touch | HTF 一致加分，冲突降分但不拒绝 | 常是趋势转折起点 / 小周期趋势线自带方向 |
+| **不使用** | sweep_reversal, lowbar_entry | 无 HTF 检查 | 逆势/极端行情信号，HTF 方向不适用 |
+
 ---
 
 ## 9. Signal Listener 架构

@@ -18,10 +18,10 @@ from .trendline_utils import (
 
 
 class StructuredTrendlineTouch(StructuredStrategyBase):
-    """趋势线三点确认 + HTF 方向 + Volume 加分。
+    """趋势线三点确认 + HTF 软加分 + Volume 加分。
 
-    复用 trendline.py 的 swing 检测和趋势线拟合纯函数，
-    在 StructuredStrategyBase 框架中增加 HTF 确认和 Volume 加分。
+    方向由趋势线斜率决定（上升趋势线=buy，下降趋势线=sell），
+    HTF 方向一致时加分，不一致时降分但不拒绝（小周期可领先大周期）。
     """
 
     name = "structured_trendline_touch"
@@ -54,19 +54,28 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
         self.recent_bars_depth: int = lookback_bars
 
     def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
+        # 趋势线三点确认本身提供方向信号，不依赖 HTF 决定方向。
+        # HTF 一致时加分，不一致时降分但不拒绝。
         htf = self._htf_data(ctx)
         htf_dir = htf.get("supertrend14", {}).get("direction")
         htf_adx = htf.get("adx14", {}).get("adx")
 
-        if htf_dir is None:
-            return False, None, 0, "no_htf"
-        if htf_adx is not None and float(htf_adx) < get_tf_param(
-            self, "htf_adx_min", ctx.timeframe, self._htf_adx_min
-        ):
-            return False, None, 0, f"htf_weak:{htf_adx}"
+        # direction_hint=None → _when() 双向探测，由趋势线斜率决定方向
+        direction_hint: Optional[str] = None
 
+        if htf_dir is None:
+            return True, direction_hint, 0.3, "no_htf"
+
+        htf_adx_f = float(htf_adx) if htf_adx is not None else 0.0
+        adx_min = get_tf_param(self, "htf_adx_min", ctx.timeframe, self._htf_adx_min)
+
+        if htf_adx is not None and htf_adx_f < adx_min:
+            # HTF 弱趋势：不提供方向提示，给基础分
+            return True, direction_hint, 0.2, f"htf_weak:{htf_adx}"
+
+        # HTF 有明确方向 → 作为 hint（非强制），加分
         direction_hint = "buy" if int(htf_dir) == 1 else "sell"
-        score = min(float(htf_adx or 20) / 40.0, 1.0) if htf_adx else 0.3
+        score = min(htf_adx_f / 40.0, 1.0) if htf_adx else 0.3
         return True, direction_hint, score, f"htf:{direction_hint}"
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
