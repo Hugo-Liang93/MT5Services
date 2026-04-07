@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from src.signals.metadata_keys import MetadataKey as MK
+
 from ..ports import RecoveryTradingPort, TradeControlStatePort
 from .recovery_policy import TradingStateRecoveryPolicy
 
@@ -155,7 +157,7 @@ class TradingStateRecovery:
     @staticmethod
     def _state_to_pending_info(row: dict[str, Any]) -> dict[str, Any]:
         metadata = dict(row.get("metadata") or {})
-        params_meta = dict(metadata.get("params") or {})
+        params_meta = dict(metadata.get(MK.PARAMS) or {})
         params = None
         if params_meta:
             from src.trading.execution import TradeParameters
@@ -210,6 +212,6 @@ class TradingStateRecovery:
             "created_at": row.get("created_at"),
             "metadata": metadata,
             # 从 metadata 恢复出场规格（_pending_metadata 序列化时写入）
-            "exit_spec": metadata.get("exit_spec"),
-            "strategy_category": metadata.get("strategy_category") or "",
+            "exit_spec": metadata.get(MK.EXIT_SPEC),
+            "strategy_category": metadata.get(MK.STRATEGY_CATEGORY) or "",
         }

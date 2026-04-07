@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..evaluation.indicators_helpers import extract_close_price
 from ..evaluation.regime import RegimeTracker, RegimeType, SoftRegimeResult
+from ..metadata_keys import MetadataKey as MK
 
 if TYPE_CHECKING:
     from .runtime import SignalRuntime
@@ -46,7 +47,7 @@ def is_stale_intrabar(
 ) -> bool:
     if scope != "intrabar":
         return False
-    enqueued_raw = metadata.get("_enqueued_at")
+    enqueued_raw = metadata.get(MK.ENQUEUED_AT)
     if enqueued_raw is None:
         return False
     try:
@@ -80,8 +81,8 @@ def apply_filter_chain(
 ) -> bool:
     if runtime.filter_chain is None:
         return True
-    spread_points = float(metadata.get("spread_points", 0.0))
-    trace_id = str(metadata.get("signal_trace_id") or "").strip()
+    spread_points = float(metadata.get(MK.SPREAD_POINTS, 0.0))
+    trace_id = str(metadata.get(MK.SIGNAL_TRACE_ID) or "").strip()
     allowed, reason = runtime.filter_chain.should_evaluate(
         symbol,
         spread_points=spread_points,
@@ -142,15 +143,15 @@ def detect_regime(
     else:
         regime = runtime._regime_detector.detect(indicators)
     regime_metadata = dict(metadata)
-    regime_metadata["_regime"] = regime.value
+    regime_metadata[MK.REGIME_HARD] = regime.value
     if soft_regime is not None:
-        regime_metadata["_soft_regime"] = soft_regime.to_dict()
-        regime_metadata["regime_probabilities"] = {
+        regime_metadata[MK.REGIME_SOFT] = soft_regime.to_dict()
+        regime_metadata[MK.REGIME_PROBABILITIES] = {
             item.value: soft_regime.probability(item) for item in RegimeType
         }
-    regime_metadata["session_buckets"] = list(active_sessions)
-    if "close_price" not in regime_metadata:
-        regime_metadata["close_price"] = extract_close_price(indicators)
+    regime_metadata[MK.SESSION_BUCKETS] = list(active_sessions)
+    if MK.CLOSE_PRICE not in regime_metadata:
+        regime_metadata[MK.CLOSE_PRICE] = extract_close_price(indicators)
     return regime, regime_metadata
 
 
@@ -161,9 +162,9 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
 
     scope, symbol, timeframe, indicators, metadata = event
     snapshot_time = runtime._parse_event_time(
-        metadata.get("snapshot_time", datetime.now(timezone.utc))
+        metadata.get(MK.SNAPSHOT_TIME, datetime.now(timezone.utc))
     )
-    bar_time = runtime._parse_event_time(metadata.get("bar_time", snapshot_time))
+    bar_time = runtime._parse_event_time(metadata.get(MK.BAR_TIME, snapshot_time))
     event_time = bar_time if scope == "confirmed" else snapshot_time
 
     if is_stale_intrabar(scope, symbol, timeframe, metadata):

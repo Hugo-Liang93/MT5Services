@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
 from src.clients.mt5_account import MT5AccountClient
 from src.risk.service import PreTradeRiskBlockedError, PreTradeRiskService
+from src.signals.metadata_keys import MetadataKey as MK
 
 
 class TradingService:
@@ -265,7 +266,7 @@ class TradingService:
             margin_estimate = None
         enriched_metadata = dict(metadata or {})
         if margin_estimate is not None:
-            enriched_metadata["estimated_margin"] = margin_estimate
+            enriched_metadata[MK.ESTIMATED_MARGIN] = margin_estimate
         if self.pre_trade_risk_service is not None:
             risk_assessment = self.pre_trade_risk_service.enforce_trade_allowed(
                 symbol=symbol,
@@ -522,7 +523,7 @@ class TradingService:
                 margin_estimate = None
         enriched_metadata = dict(metadata or {})
         if margin_estimate is not None:
-            enriched_metadata["estimated_margin"] = margin_estimate
+            enriched_metadata[MK.ESTIMATED_MARGIN] = margin_estimate
 
         assessment = self.pre_trade_risk_service.assess_trade(
             symbol=symbol,

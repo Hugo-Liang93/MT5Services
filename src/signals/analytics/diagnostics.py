@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..contracts import resolve_session_by_hour
+from ..metadata_keys import MetadataKey as MK
 from .plugins import AnalyticsPluginRegistry
 
 
@@ -26,7 +27,7 @@ class SignalDiagnosticsAnalyzer:
     def signal_bar_key(row: dict[str, Any]) -> str:
         metadata = row.get("metadata")
         if isinstance(metadata, dict):
-            bar_time = metadata.get("bar_time")
+            bar_time = metadata.get(MK.BAR_TIME)
             if isinstance(bar_time, str) and bar_time.strip():
                 return bar_time
         generated_at = row.get("generated_at")
@@ -78,7 +79,7 @@ class SignalDiagnosticsAnalyzer:
 
             metadata = row.get("metadata")
             if isinstance(metadata, dict):
-                regime = metadata.get("regime")
+                regime = metadata.get(MK.REGIME)
                 if isinstance(regime, str) and regime.strip():
                     regime_counter[regime] += 1
 

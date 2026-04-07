@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from src.utils.common import timeframe_seconds
 
+from ..metadata_keys import MetadataKey as MK
 from .policy import RuntimeSignalState
 
 if TYPE_CHECKING:
@@ -35,14 +36,14 @@ def restore_state(runtime: "SignalRuntime") -> None:
         if key[0] is None or key[1] is None or key[2] is None:
             continue
         metadata = row.get("metadata") or {}
-        signal_state = str(metadata.get("signal_state", "")).strip().lower()
+        signal_state = str(metadata.get(MK.SIGNAL_STATE, "")).strip().lower()
         scope = (
-            str(row.get("scope") or metadata.get("scope") or "confirmed")
+            str(row.get("scope") or metadata.get(MK.SCOPE) or "confirmed")
             .strip()
             .lower()
         )
-        generated_at_raw = row.get("generated_at") or metadata.get("snapshot_time")
-        bar_time_raw = metadata.get("bar_time") or row.get("generated_at")
+        generated_at_raw = row.get("generated_at") or metadata.get(MK.SNAPSHOT_TIME)
+        bar_time_raw = metadata.get(MK.BAR_TIME) or row.get("generated_at")
         if generated_at_raw is None or bar_time_raw is None:
             continue
         generated_at = runtime._parse_event_time(generated_at_raw)

@@ -13,6 +13,7 @@ from .analytics import (
 from .evaluation.calibrator import ConfidenceCalibrator
 from .evaluation.performance import StrategyPerformanceTracker
 from .evaluation.regime import MarketRegimeDetector, RegimeType, SoftRegimeResult
+from .metadata_keys import MetadataKey as MK
 from .models import SignalContext, SignalDecision, SignalRecord
 from .strategies.adapters import IndicatorSource
 from .strategies.base import SignalStrategy
@@ -93,6 +94,16 @@ class SignalModule:
                 f"(Dict[RegimeType, float] covering TRENDING/RANGING/BREAKOUT/UNCERTAIN). "
                 f"See CLAUDE.md for the Regime affinity design guide."
             )
+        from .evaluation.regime import RegimeType as _RT
+
+        _required_regimes = {_RT.TRENDING, _RT.RANGING, _RT.BREAKOUT, _RT.UNCERTAIN}
+        missing = _required_regimes - set(regime_affinity.keys())
+        if missing:
+            missing_names = sorted(r.value for r in missing)
+            raise AttributeError(
+                f"Strategy '{name}' regime_affinity missing keys: {missing_names}. "
+                f"All 4 RegimeType values must be covered."
+            )
         # category 校验：必须是 StrategyCategory 枚举值或对应的字符串
         from .strategies.base import StrategyCategory
 
@@ -106,6 +117,18 @@ class SignalModule:
                 raise AttributeError(
                     f"Strategy '{name}' has invalid category '{cat_str}'. "
                     f"Valid values: {sorted(valid_values)}"
+                )
+
+        # htf_policy 校验（StructuredStrategyBase 子类必须声明）
+        from .strategies.structured.base import HtfPolicy, StructuredStrategyBase
+
+        if isinstance(strategy, StructuredStrategyBase):
+            htf_policy = getattr(strategy, "htf_policy", None)
+            if htf_policy is None or not isinstance(htf_policy, HtfPolicy):
+                raise AttributeError(
+                    f"Structured strategy '{name}' must declare 'htf_policy' "
+                    f"as HtfPolicy enum (HARD_GATE/SOFT_GATE/SOFT_BONUS/NONE). "
+                    f"See docs/signal-system.md §策略级 HTF 分层."
                 )
 
     def register_strategy(self, strategy: SignalStrategy) -> None:
@@ -236,10 +259,13 @@ class SignalModule:
     def describe_strategy(self, strategy: str) -> dict[str, Any]:
         if strategy not in self._strategies:
             raise ValueError(f"unsupported signal strategy: {strategy}")
+        impl = self._strategies[strategy]
         affinity_map = self.strategy_affinity_map(strategy)
+        htf_policy = getattr(impl, "htf_policy", None)
         return {
             "name": strategy,
             "category": self.strategy_category(strategy) or None,
+            "htf_policy": htf_policy.value if hasattr(htf_policy, "value") else None,
             "preferred_scopes": list(self.strategy_scopes(strategy)),
             "required_indicators": list(self.strategy_requirements(strategy)),
             "regime_affinity": {
@@ -310,7 +336,7 @@ class SignalModule:
         decision = strategy_impl.evaluate(context)
 
         # ── 原始置信度门槛（提前拦截低质量信号，省后续计算）────────────
-        min_raw = context_metadata.get("_min_raw_confidence", 0.45)
+        min_raw = context_metadata.get(MK.MIN_RAW_CONFIDENCE, 0.45)
         if decision.direction in ("buy", "sell") and decision.confidence < min_raw:
             return decision  # 策略本身不够确信，跳过 affinity/perf/calibrator
 
@@ -326,7 +352,7 @@ class SignalModule:
         if soft_regime is not None:
             regime = soft_regime.dominant_regime
         else:
-            pre_computed = context_metadata.get("_regime")
+            pre_computed = context_metadata.get(MK.REGIME_HARD)
             if pre_computed:
                 try:
                     regime = RegimeType(pre_computed)
@@ -335,7 +361,7 @@ class SignalModule:
             else:
                 regime = self._regime_detector.detect(indicator_payload)
         # 复用 runtime 预计算的 affinity（避免重复计算和 getattr 开销）。
-        pre_computed_affinity = context_metadata.get("_pre_computed_affinity")
+        pre_computed_affinity = context_metadata.get(MK.PRE_COMPUTED_AFFINITY)
         if pre_computed_affinity is not None:
             affinity = max(0.0, min(float(pre_computed_affinity), 1.0))
         else:
@@ -455,14 +481,14 @@ class SignalModule:
         recent_bars_limit: int = 5,
     ) -> Dict[str, Any]:
         context_metadata = dict(metadata or {})
-        if "recent_bars" in context_metadata:
+        if MK.RECENT_BARS in context_metadata:
             return context_metadata
 
         getter = getattr(self.indicator_source, "get_recent_bars", None)
         if not callable(getter):
             return context_metadata
 
-        end_time = self._parse_optional_datetime(context_metadata.get("bar_time"))
+        end_time = self._parse_optional_datetime(context_metadata.get(MK.BAR_TIME))
         try:
             recent_bars = getter(
                 symbol, timeframe, end_time=end_time, limit=recent_bars_limit
@@ -479,7 +505,7 @@ class SignalModule:
             return context_metadata
 
         if recent_bars:
-            context_metadata["recent_bars"] = [
+            context_metadata[MK.RECENT_BARS] = [
                 dataclasses.asdict(b) if dataclasses.is_dataclass(b) else b
                 for b in recent_bars
             ]
@@ -491,7 +517,7 @@ class SignalModule:
         metadata: Dict[str, Any],
     ) -> Optional[SoftRegimeResult]:
         # 优先复用 runtime 预计算的 soft regime（避免重复调用 detect_soft）
-        precomputed = metadata.get("_soft_regime")
+        precomputed = metadata.get(MK.REGIME_SOFT)
         if isinstance(precomputed, SoftRegimeResult):
             return precomputed
         if isinstance(precomputed, dict):

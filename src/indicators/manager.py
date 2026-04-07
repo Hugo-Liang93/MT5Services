@@ -544,10 +544,10 @@ class UnifiedIndicatorManager:
     ) -> list[Any]:
         lookback = self._get_max_lookback()
         if bar_time is None:
-            return self.market_service.get_ohlc(
+            return self.market_service.get_ohlc_closed(
                 symbol,
                 timeframe,
-                count=lookback,
+                limit=lookback,
             )
 
         bars = self.market_service.get_ohlc_window(
@@ -667,8 +667,8 @@ class UnifiedIndicatorManager:
     ) -> list[Any]:
         lookback = self._get_max_lookback()
         closed_limit = max(lookback - 1, 1)
-        closed_bars = self.market_service.get_ohlc(
-            symbol, timeframe, count=closed_limit
+        closed_bars = self.market_service.get_ohlc_closed(
+            symbol, timeframe, limit=closed_limit
         )
         preview_bars = [item for item in closed_bars if item.time != bar.time]
         preview_bars.append(bar)
@@ -706,7 +706,7 @@ class UnifiedIndicatorManager:
                         sym, tf, end_time=bt, limit=count
                     )
                 )
-            return list(self.market_service.get_ohlc(sym, tf, count=count))
+            return list(self.market_service.get_ohlc_closed(sym, tf, limit=count))
 
         return _apply_delta_metrics_fn(
             symbol,
@@ -1301,7 +1301,7 @@ class UnifiedIndicatorManager:
             )
             if not persisted:
                 return None
-            latest_bar = self.market_service.get_ohlc(symbol, timeframe, count=1)
+            latest_bar = self.market_service.get_ohlc_closed(symbol, timeframe, limit=1)
             latest_time = latest_bar[-1].time if latest_bar else None
             return IndicatorSnapshot(
                 symbol=symbol,

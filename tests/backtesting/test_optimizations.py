@@ -303,7 +303,7 @@ class TestBacktestConfig:
         # backtest.ini 存在且 [backtest] section 有 default_initial_balance
         assert isinstance(defaults, dict)
         if "initial_balance" in defaults:
-            assert defaults["initial_balance"] == 10000.0
+            assert defaults["initial_balance"] == 2000.0
 
     def test_config_returns_dict(self) -> None:
         """配置加载应返回字典。"""

@@ -311,6 +311,7 @@ class CentralizedConfig:
             "max_volume_per_symbol",
             "max_net_lots_per_symbol",
             "daily_loss_limit_pct",
+            "margin_safety_factor",
         ):
             if str(risk_config.get(optional_float_key, "")).strip() == "":
                 risk_config[optional_float_key] = None

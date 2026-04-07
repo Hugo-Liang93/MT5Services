@@ -208,8 +208,6 @@ API 重启后 → 从 DB 查询历史 WF 结果 list（待做）
 
 | 项目 | 位置 | 优先级 |
 |------|------|--------|
-| `manager.py` ~12 个单行转发包装器 | `src/indicators/manager.py` | 低 |
-| 旧路由无前缀兼容层 | `src/api/__init__.py` | 低 |
-| `get_ohlc()` 别名 | `src/market/service.py` | 低 |
 | WF 结果内存缓存 | `src/backtesting/api.py` | 中（见 2D）|
-| `SignalRuntime` 仍有 1,409 行 | `src/signals/orchestration/runtime.py` | 中 |
+
+> 以下已清理（2026-04-07）：旧路由兼容层（已不存在）、`get_ohlc()` 别名（已移除）、manager.py 转发方法（已精简至合理门面）、SignalRuntime 1409→1036 行（warmup/metadata 提取）

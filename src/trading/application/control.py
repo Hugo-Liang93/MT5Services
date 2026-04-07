@@ -5,6 +5,7 @@ from threading import RLock
 from typing import Any, Callable, Optional
 
 from src.risk.service import PreTradeRiskBlockedError
+from src.signals.metadata_keys import MetadataKey as MK
 
 
 PRECHECK_TRADE_FIELDS = {
@@ -86,7 +87,7 @@ class TradeControlStateService:
     def entry_origin(payload: dict[str, Any]) -> str:
         metadata = payload.get("metadata") if isinstance(payload, dict) else None
         if isinstance(metadata, dict):
-            return str(metadata.get("entry_origin") or "manual").strip().lower()
+            return str(metadata.get(MK.ENTRY_ORIGIN) or "manual").strip().lower()
         return "manual"
 
     def build_block_assessment(

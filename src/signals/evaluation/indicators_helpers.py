@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from ..metadata_keys import MetadataKey as MK
 from ..models import SignalDecision
 
 
@@ -26,7 +27,7 @@ def extract_close_price(
     ``runtime._extract_close_price`` 的逻辑，作为统一入口。
     """
     if metadata is not None:
-        raw = metadata.get("close_price")
+        raw = metadata.get(MK.CLOSE_PRICE)
         if raw is not None:
             try:
                 return float(raw)

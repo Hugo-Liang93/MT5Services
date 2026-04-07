@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,8 @@ class ExecutionGate:
 
         # ── require_armed gate ─────────────────────────────────────────
         if self.config.require_armed:
-            previous_state = event.metadata.get("previous_state", "")
-            preview_at_close = event.metadata.get("preview_state_at_close", "")
+            previous_state = event.metadata.get(MK.PREVIOUS_STATE, "")
+            preview_at_close = event.metadata.get(MK.PREVIEW_STATE_AT_CLOSE, "")
             # 精确匹配 armed 状态后缀，避免 "armed_cancel" 等被误判为 armed
             _armed_states = ("armed_buy", "armed_sell")
             prev_is_armed = previous_state in _armed_states

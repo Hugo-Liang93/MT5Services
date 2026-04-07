@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from src.risk.service import PreTradeRiskBlockedError
+from src.signals.metadata_keys import MetadataKey as MK
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent
@@ -44,12 +45,12 @@ def notify_skip(
         and hasattr(pipeline_bus, "emit_execution_skipped")
         and event is not None
     ):
-        tid = str(event.metadata.get("signal_trace_id") or "")
+        tid = str(event.metadata.get(MK.SIGNAL_TRACE_ID) or "")
         pipeline_bus.emit_execution_skipped(
             trace_id=tid,
             symbol=event.symbol,
             timeframe=timeframe or event.timeframe or "",
-            scope=event.metadata.get("scope", "confirmed"),
+            scope=event.metadata.get(MK.SCOPE, "confirmed"),
             strategy=event.strategy,
             direction=event.direction,
             skip_reason=reason,
@@ -82,7 +83,7 @@ def _skip_reason_category(reason: str) -> str:
 
 
 def trace_id_for_event(event: "SignalEvent") -> str:
-    return str(event.metadata.get("signal_trace_id") or "").strip()
+    return str(event.metadata.get(MK.SIGNAL_TRACE_ID) or "").strip()
 
 
 def emit_execution_decided(
@@ -220,15 +221,15 @@ def build_trade_metadata(event: "SignalEvent") -> dict[str, Any]:
             "confidence": round(float(event.confidence), 4),
         },
     }
-    regime = event.metadata.get("regime")
+    regime = event.metadata.get(MK.REGIME)
     if regime is not None:
-        metadata["regime"] = regime
-    raw_structure = event.metadata.get("market_structure")
+        metadata[MK.REGIME] = regime
+    raw_structure = event.metadata.get(MK.MARKET_STRUCTURE)
     if isinstance(raw_structure, dict):
-        metadata["market_structure"] = dict(raw_structure)
+        metadata[MK.MARKET_STRUCTURE] = dict(raw_structure)
     elif hasattr(raw_structure, "to_dict"):
         try:
-            metadata["market_structure"] = raw_structure.to_dict()
+            metadata[MK.MARKET_STRUCTURE] = raw_structure.to_dict()
         except Exception:
             pass
     return metadata
@@ -402,7 +403,7 @@ def execute_market_order(
             "success": True,
         }
         executor._execution_log.append(log_entry)
-        bar_time = event.metadata.get("bar_time")
+        bar_time = event.metadata.get(MK.BAR_TIME)
         if bar_time is not None:
             executor._last_entry_bar_time[
                 (event.symbol, event.strategy, event.direction)
@@ -442,15 +443,15 @@ def execute_market_order(
                         timeframe=event.timeframe,
                         strategy=event.strategy,
                         confidence=event.confidence,
-                        regime=event.metadata.get("regime"),
+                        regime=event.metadata.get(MK.REGIME),
                         comment=str(result.get("comment") or payload["comment"]),
                         fill_price=(
                             float(result.get("fill_price"))
                             if result.get("fill_price") is not None
                             else None
                         ),
-                        exit_spec=event.metadata.get("exit_spec"),
-                        strategy_category=event.metadata.get("strategy_category", ""),
+                        exit_spec=event.metadata.get(MK.EXIT_SPEC),
+                        strategy_category=event.metadata.get(MK.STRATEGY_CATEGORY, ""),
                     )
                 except Exception as pm_exc:
                     logger.warning(
@@ -473,7 +474,7 @@ def execute_market_order(
                         else params.entry_price
                     ),
                     confidence=event.confidence,
-                    regime=event.metadata.get("regime"),
+                    regime=event.metadata.get(MK.REGIME),
                 )
             except Exception as outcome_exc:
                 logger.warning(

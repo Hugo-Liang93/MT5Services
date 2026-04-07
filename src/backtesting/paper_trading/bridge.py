@@ -16,6 +16,7 @@ import time as time_mod
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
+from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
 from src.trading.execution import extract_atr_from_indicators
 from src.utils.timezone import utc_now
@@ -212,7 +213,7 @@ class PaperTradingBridge:
 
         mid_price = (quote.bid + quote.ask) / 2.0
         regime = str(
-            event.metadata.get("regime") or event.metadata.get("_regime") or "unknown"
+            event.metadata.get(MK.REGIME) or event.metadata.get(MK.REGIME_HARD) or "unknown"
         )
 
         with self._lock:

@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from ..metadata_keys import MetadataKey as MK
+
 from src.utils.common import timeframe_seconds
 
 from .policy import RuntimeSignalState
@@ -135,7 +137,7 @@ def process_and_emit_vote_signal(
     )
     if transition_metadata is not None:
         signal_id = ""
-        if transition_metadata.get("state_changed", True):
+        if transition_metadata.get(MK.STATE_CHANGED, True):
             record = persist_fn(
                 vote_result, indicators=indicators, metadata=transition_metadata
             )

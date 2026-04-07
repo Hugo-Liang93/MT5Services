@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional
 from src.persistence.db import TimescaleWriter
 from src.config import get_trading_config, get_trading_ops_config
 from src.risk.service import PreTradeRiskBlockedError
+from src.signals.metadata_keys import MetadataKey as MK
 
 from .services import TradingCommandService, TradingQueryService
 from .control import TradeControlStateService
@@ -535,7 +536,7 @@ class TradingModule:
             if response_ticket != int(ticket) and (not comment or payload_comment != str(comment).strip()):
                 continue
             metadata = request_payload.get("metadata") or {}
-            signal_meta = metadata.get("signal") or {}
+            signal_meta = metadata.get(MK.SIGNAL) or {}
             request_id = str(request_payload.get("request_id") or "").strip()
             if not request_id:
                 request_id = str(signal_meta.get("signal_id") or f"restored:{ticket}")
@@ -544,7 +545,7 @@ class TradingModule:
                 "timeframe": str(signal_meta.get("timeframe") or ""),
                 "strategy": str(signal_meta.get("strategy") or ""),
                 "confidence": signal_meta.get("confidence"),
-                "regime": metadata.get("regime"),
+                "regime": metadata.get(MK.REGIME),
                 "fill_price": response_payload.get("fill_price") or response_payload.get("price"),
                 "comment": payload_comment or comment,
                 "source": "restored_signal_trade" if signal_meta else "restored_trade",

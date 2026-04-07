@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
+from src.signals.metadata_keys import MetadataKey as MK
+
 from ..positions.manager import TrackedPosition
 from .models import (
     PendingOrderStateRecord,
@@ -499,7 +501,7 @@ class TradingStateStore:
         metadata = dict(info.get("metadata") or {})
         params = info.get("params")
         if params is not None:
-            metadata["params"] = {
+            metadata[MK.PARAMS] = {
                 "entry_price": getattr(params, "entry_price", None),
                 "stop_loss": getattr(params, "stop_loss", None),
                 "take_profit": getattr(params, "take_profit", None),
@@ -509,10 +511,10 @@ class TradingStateStore:
         # 保留出场规格和策略类别，以便重启恢复后 fill 仍能走正确的出场 profile
         exit_spec = info.get("exit_spec")
         if exit_spec is not None:
-            metadata["exit_spec"] = dict(exit_spec)
+            metadata[MK.EXIT_SPEC] = dict(exit_spec)
         strategy_category = info.get("strategy_category")
         if strategy_category:
-            metadata["strategy_category"] = str(strategy_category)
+            metadata[MK.STRATEGY_CATEGORY] = str(strategy_category)
         return metadata
 
     @staticmethod

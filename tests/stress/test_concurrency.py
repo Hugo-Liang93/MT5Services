@@ -257,7 +257,7 @@ class TestMarketDataServiceConcurrency:
             barrier.wait()
             for _ in range(100):
                 try:
-                    service.get_ohlc("XAUUSD", "M1")
+                    service.get_ohlc_closed("XAUUSD", "M1")
                 except Exception as exc:
                     errors.append(f"ohlc-reader-{idx}: {exc}")
 
@@ -305,7 +305,7 @@ class TestMarketDataServiceConcurrency:
                         3000.0, 3005.0, 2995.0, 3002.0,
                     )
                     service.set_ohlc_closed("XAUUSD", "M1", [bar])
-                    service.get_ohlc("XAUUSD", "M1")
+                    service.get_ohlc_closed("XAUUSD", "M1")
                 except Exception as exc:
                     errors.append(f"ohlc: {exc}")
 

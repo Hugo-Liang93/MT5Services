@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from ..metadata_keys import MetadataKey as MK
 from .policy import RuntimeSignalState
 
 
@@ -20,9 +21,9 @@ def build_transition_metadata(
     previous_state: str,
 ) -> Dict[str, Any]:
     enriched = dict(metadata)
-    enriched["signal_state"] = signal_state
-    enriched["state_changed"] = state_changed
-    enriched["previous_state"] = previous_state
+    enriched[MK.SIGNAL_STATE] = signal_state
+    enriched[MK.STATE_CHANGED] = state_changed
+    enriched[MK.PREVIOUS_STATE] = previous_state
     return enriched
 
 
@@ -169,7 +170,7 @@ def transition_intrabar(
         state.preview_action = None
         state.preview_since = None
 
-    bar_progress = float(metadata.get("bar_progress", 0.0) or 0.0)
+    bar_progress = float(metadata.get(MK.BAR_PROGRESS, 0.0) or 0.0)
     actionable = (
         decision_action in {"buy", "sell"}
         and confidence >= min_preview_confidence

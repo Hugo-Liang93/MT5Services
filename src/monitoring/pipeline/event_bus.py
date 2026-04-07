@@ -14,7 +14,6 @@ Design constraints:
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -76,20 +75,10 @@ class PipelineEventBus:
         self._listeners: List[PipelineListener] = []
         self._max_listeners = max_listeners
         self._shutdown = False
-        self._queue: queue.Queue[PipelineEvent] = queue.Queue(maxsize=queue_size)
 
         # Lightweight counters for admin / health
         self._total_emitted: int = 0
-        self._total_dropped: int = 0
         self._total_listener_errors: int = 0
-
-        # 后台分发线程：emit() 只入队不阻塞生产者
-        self._dispatch_thread = threading.Thread(
-            target=self._dispatch_loop,
-            name="pipeline-bus-dispatch",
-            daemon=True,
-        )
-        self._dispatch_thread.start()
 
     # ── Listener management ─────────────────────────────────────
 
@@ -112,39 +101,27 @@ class PipelineEventBus:
     # ── Emit ────────────────────────────────────────────────────
 
     def emit(self, event: PipelineEvent) -> None:
-        """Broadcast *event* to all registered listeners (best-effort, non-blocking).
+        """Broadcast *event* to all registered listeners synchronously.
 
-        生产者只入队，后台线程异步分发。队列满时丢弃事件（L3 best-effort）。
+        每个 listener 包裹在 try/except 中，单个失败不影响其他 listener 和生产者。
         """
         if self._shutdown:
             return
         self._total_emitted += 1
-        try:
-            self._queue.put_nowait(event)
-        except queue.Full:
-            self._total_dropped += 1
-
-    def _dispatch_loop(self) -> None:
-        """后台分发线程：从队列消费事件并同步调用所有 listener。"""
-        while not self._shutdown:
+        with self._lock:
+            targets = list(self._listeners)
+        for fn in targets:
             try:
-                event = self._queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            with self._lock:
-                targets = list(self._listeners)
-            for fn in targets:
-                try:
-                    fn(event)
-                except Exception:
-                    self._total_listener_errors += 1
-                    logger.debug(
-                        "PipelineEventBus: listener error for %s/%s trace=%s",
-                        event.symbol,
-                        event.timeframe,
-                        event.trace_id,
-                        exc_info=True,
-                    )
+                fn(event)
+            except Exception:
+                self._total_listener_errors += 1
+                logger.debug(
+                    "PipelineEventBus: listener error for %s/%s trace=%s",
+                    event.symbol,
+                    event.timeframe,
+                    event.trace_id,
+                    exc_info=True,
+                )
 
     # ── Convenience helpers ─────────────────────────────────────
 
@@ -518,9 +495,7 @@ class PipelineEventBus:
         return {
             "listeners": listener_count,
             "total_emitted": self._total_emitted,
-            "total_dropped": self._total_dropped,
             "total_listener_errors": self._total_listener_errors,
-            "queue_size": self._queue.qsize(),
         }
 
     def shutdown(self) -> None:
