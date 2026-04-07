@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from src.signals.metadata_keys import MetadataKey as MK
+
 from .sizing import TradeParameters, compute_trade_params, extract_atr_from_indicators
 
 if TYPE_CHECKING:
@@ -35,7 +37,7 @@ def compute_params(
         return None
 
     close_price: float | None = None
-    raw_close = event.metadata.get("close_price")
+    raw_close = event.metadata.get(MK.CLOSE_PRICE)
     if raw_close is not None:
         try:
             close_price = float(raw_close)
@@ -50,7 +52,7 @@ def compute_params(
     digits, volume_step = get_symbol_precision(executor, event.symbol)
 
     # 策略 exit_spec 可覆盖全局 SL/TP 倍数
-    _exit_spec = event.metadata.get("exit_spec", {})
+    _exit_spec = event.metadata.get(MK.EXIT_SPEC, {})
     sl_mult = _exit_spec.get("sl_atr") or executor.config.sl_atr_multiplier
     tp_mult = _exit_spec.get("tp_atr") or executor.config.tp_atr_multiplier
 
@@ -67,7 +69,7 @@ def compute_params(
         max_volume=executor.config.max_volume,
         contract_size=contract_size,
         timeframe_risk_overrides=executor.config.timeframe_risk_multipliers or None,
-        regime=str(event.metadata.get("regime") or event.metadata.get("_regime") or ""),
+        regime=str(event.metadata.get(MK.REGIME) or event.metadata.get(MK.REGIME_HARD) or ""),
         regime_sizing=executor.config.regime_sizing,
         digits=digits,
         volume_step=volume_step,
@@ -130,13 +132,13 @@ def estimate_cost_metrics(
     event: "SignalEvent",
     params: TradeParameters,
 ) -> dict[str, float | None]:
-    raw_spread = event.metadata.get("spread_points")
+    raw_spread = event.metadata.get(MK.SPREAD_POINTS)
     try:
         spread_points = float(raw_spread) if raw_spread is not None else None
     except (TypeError, ValueError):
         spread_points = None
 
-    raw_symbol_point = event.metadata.get("symbol_point")
+    raw_symbol_point = event.metadata.get(MK.SYMBOL_POINT)
     try:
         symbol_point = float(raw_symbol_point) if raw_symbol_point is not None else None
     except (TypeError, ValueError):
@@ -144,7 +146,7 @@ def estimate_cost_metrics(
     if symbol_point is not None and symbol_point <= 0:
         symbol_point = None
 
-    raw_spread_price = event.metadata.get("spread_price")
+    raw_spread_price = event.metadata.get(MK.SPREAD_PRICE)
     try:
         spread_price = float(raw_spread_price) if raw_spread_price is not None else None
     except (TypeError, ValueError):
@@ -154,7 +156,7 @@ def estimate_cost_metrics(
     if spread_points is None and spread_price is not None and symbol_point is not None:
         spread_points = spread_price / symbol_point
 
-    raw_close = event.metadata.get("close_price")
+    raw_close = event.metadata.get(MK.CLOSE_PRICE)
     try:
         close_price = float(raw_close) if raw_close is not None else None
     except (TypeError, ValueError):

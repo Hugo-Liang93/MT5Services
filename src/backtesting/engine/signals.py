@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from src.clients.mt5_market import OHLC
 from src.signals.confidence import apply_intrabar_decay
 from src.signals.evaluation.regime import RegimeType
+from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalDecision
 from src.trading.execution import RegimeSizing, compute_trade_params
 
@@ -30,15 +31,15 @@ def evaluate_strategies(
     bar_time: Optional[Any] = None,
 ) -> List[SignalDecision]:
     conf = engine._config.confidence
-    metadata: Dict[str, Any] = {"_regime": regime.value}
+    metadata: Dict[str, Any] = {MK.REGIME_HARD: regime.value}
     if soft_regime_dict is not None:
-        metadata["_soft_regime"] = soft_regime_dict
+        metadata[MK.REGIME_SOFT] = soft_regime_dict
     if not conf.enable_regime_affinity:
-        metadata["_pre_computed_affinity"] = 1.0
+        metadata[MK.PRE_COMPUTED_AFFINITY] = 1.0
     if not conf.enable_performance_tracker:
-        metadata["_skip_performance_tracker"] = True
+        metadata[MK.SKIP_PERFORMANCE_TRACKER] = True
     if not conf.enable_calibrator:
-        metadata["_skip_calibrator"] = True
+        metadata[MK.SKIP_CALIBRATOR] = True
 
     # 注入 MarketStructure 上下文（结构化策略依赖）
     ms_analyzer = getattr(engine, "_market_structure_analyzer", None)
@@ -51,7 +52,7 @@ def evaluate_strategies(
                 or indicators.get("donchian20", {}).get("close"),
             )
             if ms_ctx:
-                metadata["market_structure"] = (
+                metadata[MK.MARKET_STRUCTURE] = (
                     ms_ctx.to_dict() if hasattr(ms_ctx, "to_dict") else ms_ctx
                 )
         except Exception:
@@ -60,7 +61,7 @@ def evaluate_strategies(
     # 注入 recent_bars（TrendlineTouch / PriceActionReversal 等策略依赖）
     recent_bars_window = getattr(engine, "_recent_bars_window", None)
     if recent_bars_window is not None:
-        metadata["recent_bars"] = [
+        metadata[MK.RECENT_BARS] = [
             dataclasses.asdict(b) if dataclasses.is_dataclass(b) else b
             for b in recent_bars_window
         ]
@@ -181,7 +182,7 @@ def process_decision(
         return
 
     if engine._pending_entry_enabled:
-        entry_spec = decision.metadata.get("entry_spec", {})
+        entry_spec = decision.metadata.get(MK.ENTRY_SPEC, {})
         entry_type = entry_spec.get("entry_type", "market")
 
         if entry_type == "market":
@@ -248,7 +249,7 @@ def execute_entry(
     del indicators
     pos = engine._config.position
     # 策略 exit_spec 可覆盖全局 SL/TP 倍数（回测默认 1.5 / 3.0）
-    _exit_spec = decision.metadata.get("exit_spec", {})
+    _exit_spec = decision.metadata.get(MK.EXIT_SPEC, {})
 
     try:
         trade_params = compute_trade_params(

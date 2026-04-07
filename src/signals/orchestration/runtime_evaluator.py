@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from ..confidence import apply_intrabar_decay
 from ..evaluation.regime import RegimeType, SoftRegimeResult
+from ..metadata_keys import MetadataKey as MK
 from ..models import SignalEvent
 from .policy import RuntimeSignalState
 from .vote_processor import process_voting as _do_process_voting
@@ -36,9 +37,9 @@ def evaluate_strategies(
     shard_lock = runtime._get_shard_lock(symbol, timeframe)
 
     soft_parsed: SoftRegimeResult | None = None
-    if runtime._soft_regime_enabled and regime_metadata.get("_soft_regime"):
+    if runtime._soft_regime_enabled and regime_metadata.get(MK.REGIME_SOFT):
         try:
-            soft_parsed = SoftRegimeResult.from_dict(regime_metadata["_soft_regime"])
+            soft_parsed = SoftRegimeResult.from_dict(regime_metadata[MK.REGIME_SOFT])
         except Exception:
             logger.info(
                 "Failed to parse soft regime for %s/%s, falling back to hard regime",
@@ -76,7 +77,7 @@ def evaluate_strategies(
         else:
             scoped_indicators = indicators
 
-        regime_metadata.pop("_pre_computed_affinity", None)
+        regime_metadata.pop(MK.PRE_COMPUTED_AFFINITY, None)
 
         with shard_lock:
             state = runtime._state_by_target.setdefault(
@@ -101,7 +102,7 @@ def evaluate_strategies(
                     scope=scope,
                     event_time=event_time,
                     bar_time=bar_time,
-                    latest_close=regime_metadata.get("close_price"),
+                    latest_close=regime_metadata.get(MK.CLOSE_PRICE),
                 )
             except Exception:
                 logger.warning(
@@ -112,10 +113,10 @@ def evaluate_strategies(
                 )
                 structure_context = {}
             if structure_context:
-                regime_metadata["market_structure"] = structure_context
+                regime_metadata[MK.MARKET_STRUCTURE] = structure_context
 
         if event_impact is not None:
-            regime_metadata["_event_impact_forecast"] = event_impact
+            regime_metadata[MK.EVENT_IMPACT_FORECAST] = event_impact
 
         htf_spec = runtime._strategy_htf_config.get(strategy)
         htf_payload: dict[str, dict[str, dict[str, Any]]] = (
@@ -444,7 +445,7 @@ def publish_signal_event(
         listeners = list(runtime._signal_listeners)
     if not listeners:
         return
-    signal_state = transition_metadata.get("signal_state", "")
+    signal_state = transition_metadata.get(MK.SIGNAL_STATE, "")
     event = SignalEvent(
         symbol=decision.symbol,
         timeframe=decision.timeframe,
@@ -460,7 +461,7 @@ def publish_signal_event(
         reason=decision.reason,
     )
     pipeline_bus = getattr(runtime, "_pipeline_event_bus", None)
-    trace_id = transition_metadata.get("signal_trace_id")
+    trace_id = transition_metadata.get(MK.SIGNAL_TRACE_ID)
     if pipeline_bus is not None and trace_id:
         # 扩展 payload 包含置信度管线中间值 + Regime 快照
         eval_payload: dict[str, Any] = {}
@@ -555,14 +556,14 @@ def transition_and_publish(
 
     strategy_obj = runtime.service.get_strategy(decision.strategy)
     if strategy_obj is not None:
-        transition_metadata["strategy_category"] = getattr(strategy_obj, "category", "")
+        transition_metadata[MK.STRATEGY_CATEGORY] = getattr(strategy_obj, "category", "")
 
     if decision.strategy in runtime._voting_group_members:
         return
 
     signal_id = ""
     is_actionable = decision.direction in ("buy", "sell")
-    if transition_metadata.get("state_changed", True):
+    if transition_metadata.get(MK.STATE_CHANGED, True):
         record = runtime.service.persist_decision(
             decision, indicators=scoped_indicators, metadata=transition_metadata
         )

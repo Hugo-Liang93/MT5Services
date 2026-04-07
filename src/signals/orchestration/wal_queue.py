@@ -13,6 +13,8 @@ import json
 import logging
 import queue
 import sqlite3
+
+from ..metadata_keys import MetadataKey as MK
 import threading
 import time
 from typing import Any, Optional
@@ -161,7 +163,7 @@ class WalSignalQueue:
         indicators = json.loads(indicators_json)
         metadata = json.loads(metadata_json)
         # Inject monotonic enqueue time for staleness detection (compatible)
-        metadata["_enqueued_at"] = time.monotonic()
+        metadata[MK.ENQUEUED_AT] = time.monotonic()
 
         # Delete claimed row (it's now in-memory for processing)
         with self._lock:

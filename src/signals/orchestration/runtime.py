@@ -19,6 +19,7 @@ from ..evaluation.regime import (
     SoftRegimeResult,
 )
 from ..execution.filters import SignalFilterChain
+from ..metadata_keys import MetadataKey as MK
 from ..models import SignalEvent
 from ..service import SignalModule
 from .htf_resolver import parse_htf_config, resolve_htf_indicators
@@ -473,11 +474,11 @@ class SignalRuntime:
         if callable(spread_getter):
             try:
                 spread_points = float(spread_getter(symbol))
-                metadata["spread_points"] = spread_points
+                metadata[MK.SPREAD_POINTS] = spread_points
                 if callable(point_getter):
                     point_size = float(point_getter(symbol))
-                    metadata["symbol_point"] = point_size
-                    metadata["spread_price"] = spread_points * point_size
+                    metadata[MK.SYMBOL_POINT] = point_size
+                    metadata[MK.SPREAD_PRICE] = spread_points * point_size
             except (TypeError, ValueError, AttributeError, KeyError):
                 logger.debug(
                     "Failed to resolve spread/point for %s",
@@ -490,7 +491,7 @@ class SignalRuntime:
             elapsed = (
                 datetime.now(timezone.utc) - bar_time.astimezone(timezone.utc)
             ).total_seconds()
-            metadata["bar_progress"] = max(
+            metadata[MK.BAR_PROGRESS] = max(
                 0.0, min(elapsed / max(timeframe_seconds(timeframe), 1), 1.0)
             )
         self._enqueue((scope, symbol, timeframe, indicators, metadata))

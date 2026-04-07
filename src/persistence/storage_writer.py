@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 from collections import deque
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -15,6 +16,26 @@ from src.config.utils import load_ini_config, resolve_config_path
 from src.persistence.db import TimescaleWriter
 
 logger = logging.getLogger(__name__)
+
+
+class StorageChannel(str, Enum):
+    """持久化通道枚举。
+
+    每个值对应 storage.ini 中的 channel type 和 _resolve_write_fn 的 key。
+    新增通道必须同时：
+      1. 在此枚举中添加值
+      2. 在 _resolve_write_fn 中添加写入函数
+      3. 在 storage.ini 中添加配置节
+    """
+
+    TICKS = "ticks"
+    QUOTES = "quotes"
+    INTRABAR = "intrabar"
+    OHLC = "ohlc"
+    OHLC_INDICATORS = "ohlc_indicators"
+    ECONOMIC_CALENDAR = "economic_calendar"
+    ECONOMIC_CALENDAR_UPDATES = "economic_calendar_updates"
+    SIGNAL_PREVIEW = "signal_preview"
 
 
 class StorageWriter:
@@ -492,29 +513,41 @@ class StorageWriter:
     def _resolve_write_fn(self, ch_type: str, page_size: Optional[int]):
         if page_size is None:
             return None
+        SC = StorageChannel
         mapping = {
-            "ticks": lambda rows: self.db.write_ticks(rows, page_size=page_size),
-            "quotes": lambda rows: self.db.write_quotes(rows, page_size=page_size),
-            "intrabar": lambda rows: self.db.write_ohlc_intrabar(
+            SC.TICKS: lambda rows: self.db.write_ticks(rows, page_size=page_size),
+            SC.QUOTES: lambda rows: self.db.write_quotes(rows, page_size=page_size),
+            SC.INTRABAR: lambda rows: self.db.write_ohlc_intrabar(
                 rows, page_size=page_size
             ),
-            "ohlc": lambda rows: self.db.write_ohlc(
+            SC.OHLC: lambda rows: self.db.write_ohlc(
                 rows, upsert=self.settings.ohlc_upsert_open_bar, page_size=page_size
             ),
-            "ohlc_indicators": lambda rows: self.db.write_ohlc(
+            SC.OHLC_INDICATORS: lambda rows: self.db.write_ohlc(
                 rows, upsert=True, page_size=page_size
             ),
-            "economic_calendar": lambda rows: self.db.write_economic_calendar(
+            SC.ECONOMIC_CALENDAR: lambda rows: self.db.write_economic_calendar(
                 rows, page_size=page_size
             ),
-            "economic_calendar_updates": lambda rows: self.db.write_economic_calendar_updates(
+            SC.ECONOMIC_CALENDAR_UPDATES: lambda rows: self.db.write_economic_calendar_updates(
                 rows, page_size=page_size
             ),
-            "signal_preview": lambda rows: self.db.write_signal_preview_events(
+            SC.SIGNAL_PREVIEW: lambda rows: self.db.write_signal_preview_events(
                 rows, page_size=page_size
             ),
         }
         return mapping.get(ch_type)
+
+    @staticmethod
+    def validate_channel(channel: str) -> None:
+        """校验通道名是否是已注册的 StorageChannel 枚举值。"""
+        try:
+            StorageChannel(channel)
+        except ValueError:
+            raise ValueError(
+                f"Unknown storage channel '{channel}'. "
+                f"Valid channels: {[c.value for c in StorageChannel]}"
+            )
 
     def _resolve_enabled_fn(self, ch_type: str, enabled_val: Optional[str]):
         flag = self._bool(enabled_val, True)

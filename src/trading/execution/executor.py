@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from src.signals.evaluation.performance import StrategyPerformanceTracker
 
 from src.monitoring.pipeline import PipelineEventBus
+from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
 
 from ..pending.manager import PendingEntryManager
@@ -474,7 +475,7 @@ class TradeExecutor:
         if cooldown_bars <= 0:
             return False
         reentry_key = (event.symbol, event.strategy, event.direction)
-        bar_time_raw = event.metadata.get("bar_time")
+        bar_time_raw = event.metadata.get(MK.BAR_TIME)
         bar_time: datetime | None = None
         if isinstance(bar_time_raw, datetime):
             bar_time = bar_time_raw
@@ -617,7 +618,7 @@ class TradeExecutor:
         if trade_params is None:
             atr = extract_atr_from_indicators(event.indicators)
             balance = _get_account_balance_helper(self)
-            close_price = event.metadata.get("close_price") or _estimate_price_helper(
+            close_price = event.metadata.get(MK.CLOSE_PRICE) or _estimate_price_helper(
                 event.indicators
             )
             logger.warning(
@@ -659,7 +660,7 @@ class TradeExecutor:
                 self._tf_stats.setdefault(
                     tf, {"received": 0, "passed": 0, "skip_reasons": {}}
                 )["passed"] += 1
-        entry_spec = event.metadata.get("entry_spec", {})
+        entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
         entry_type = entry_spec.get("entry_type", "market")
         use_market = entry_type == "market" or self._pending_manager is None
 

@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
 
 from ..pending.manager import compute_timeout
@@ -46,7 +47,7 @@ def submit_pending_entry(
     config = executor._pending_manager.config
 
     # 从策略 entry_spec 读取入场意图
-    entry_spec = event.metadata.get("entry_spec", {})
+    entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
     entry_type = entry_spec.get("entry_type", "market")
     suggested_price = entry_spec.get("entry_price")
     zone_atr = entry_spec.get("entry_zone_atr", 0.3)
@@ -123,7 +124,7 @@ def submit_pending_entry(
                 strategy=event.strategy,
                 timeframe=tf,
                 confidence=event.confidence,
-                regime=event.metadata.get("regime"),
+                regime=event.metadata.get(MK.REGIME),
                 comment=(
                     str(result.get("comment") or payload["comment"])
                     if isinstance(result, dict)
@@ -143,8 +144,8 @@ def submit_pending_entry(
                     "entry_type": entry_type,
                     "order_kind": order_kind,
                 },
-                exit_spec=event.metadata.get("exit_spec"),
-                strategy_category=event.metadata.get("strategy_category", ""),
+                exit_spec=event.metadata.get(MK.EXIT_SPEC),
+                strategy_category=event.metadata.get(MK.STRATEGY_CATEGORY, ""),
             )
             emit_pending_order_submitted(
                 executor, event, order_kind=order_kind, ticket=order_ticket
@@ -320,7 +321,7 @@ def has_matching_pending_entry(executor: "TradeExecutor", event: SignalEvent) ->
 
 
 def record_reentry_bar_time(executor: "TradeExecutor", event: SignalEvent) -> None:
-    bar_time = event.metadata.get("bar_time")
+    bar_time = event.metadata.get(MK.BAR_TIME)
     if bar_time is None:
         return
     executor._last_entry_bar_time[(event.symbol, event.strategy, event.direction)] = (

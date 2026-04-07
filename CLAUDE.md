@@ -186,11 +186,12 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | HealthMonitor (内存环形缓冲) | `src/monitoring/health/monitor.py` |
 | MetricsStore | `src/monitoring/health/metrics_store.py` |
 | PipelineEventBus | `src/monitoring/pipeline/event_bus.py` |
-| StorageWriter | `src/persistence/storage_writer.py` |
+| StorageWriter（含 StorageChannel 枚举） | `src/persistence/storage_writer.py` |
 | TimescaleWriter | `src/persistence/db.py` |
 | Retention Policy | `src/persistence/retention.py` |
 | SQLite 连接工厂 | `src/utils/sqlite_conn.py` |
 | 策略目录 | `src/signals/strategies/catalog.py` |
+| MetadataKey 常量 | `src/signals/metadata_keys.py` |
 | 结构化策略基类 | `src/signals/strategies/structured/base.py` |
 | 结构化策略（7 策略） | `src/signals/strategies/structured/` |
 | MarketStructureAnalyzer | `src/market_structure/analyzer.py` |
