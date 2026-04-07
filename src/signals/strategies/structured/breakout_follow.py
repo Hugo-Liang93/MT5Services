@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import EntrySpec, EntryType, ExitSpec, HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
 
 
 class StructuredBreakoutFollow(StructuredStrategyBase):
@@ -105,12 +105,12 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=1.2, high=1.8)
 
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        return {"entry_type": "stop", "entry_price": None, "entry_zone_atr": 0.2}
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
+        return EntrySpec(entry_type=EntryType.STOP, entry_zone_atr=0.2)
 
     _aggression: float = 0.85
 
-    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         # 突破追价：宽 trail 让趋势跑
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {"aggression": aggr, "sl_atr": None, "tp_atr": None}
+        return ExitSpec(aggression=aggr)

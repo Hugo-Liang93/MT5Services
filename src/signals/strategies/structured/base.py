@@ -8,13 +8,109 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+#  策略输出契约（类型安全的 entry/exit 规格）
+# ---------------------------------------------------------------------------
+
+
+class EntryType(str, Enum):
+    """入场方式枚举。"""
+
+    MARKET = "market"
+    LIMIT = "limit"
+    STOP = "stop"
+
+
+class StructureBias(str, Enum):
+    """市场结构偏向枚举（MarketStructureAnalyzer._resolve_structure_bias 输出）。"""
+
+    BULLISH_BREAKOUT = "bullish_breakout"
+    BEARISH_BREAKOUT = "bearish_breakout"
+    BULLISH_PULLBACK = "bullish_pullback"
+    BEARISH_PULLBACK = "bearish_pullback"
+    BULLISH_RECLAIM = "bullish_reclaim"
+    BEARISH_RECLAIM = "bearish_reclaim"
+    BULLISH_SWEEP_CONFIRMED = "bullish_sweep_confirmed"
+    BEARISH_SWEEP_CONFIRMED = "bearish_sweep_confirmed"
+    COMPRESSION = "compression"
+    EXPANSION = "expansion"
+    NEUTRAL = "neutral"
+
+
+# 分组常量，供策略 _where() 使用
+BULLISH_BIASES = frozenset(
+    {
+        StructureBias.BULLISH_BREAKOUT,
+        StructureBias.BULLISH_PULLBACK,
+        StructureBias.BULLISH_RECLAIM,
+        StructureBias.BULLISH_SWEEP_CONFIRMED,
+    }
+)
+BEARISH_BIASES = frozenset(
+    {
+        StructureBias.BEARISH_BREAKOUT,
+        StructureBias.BEARISH_PULLBACK,
+        StructureBias.BEARISH_RECLAIM,
+        StructureBias.BEARISH_SWEEP_CONFIRMED,
+    }
+)
+
+
+class EntrySpec:
+    """策略入场规格（不可变值对象）。"""
+
+    __slots__ = ("entry_type", "entry_price", "entry_zone_atr")
+
+    def __init__(
+        self,
+        entry_type: EntryType = EntryType.MARKET,
+        entry_price: Optional[float] = None,
+        entry_zone_atr: float = 0.3,
+    ) -> None:
+        self.entry_type = EntryType(entry_type)  # 校验合法性
+        self.entry_price = entry_price
+        self.entry_zone_atr = entry_zone_atr
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "entry_type": self.entry_type.value,
+            "entry_price": self.entry_price,
+            "entry_zone_atr": self.entry_zone_atr,
+        }
+
+
+class ExitSpec:
+    """策略出场规格（不可变值对象）。"""
+
+    __slots__ = ("aggression", "sl_atr", "tp_atr")
+
+    def __init__(
+        self,
+        aggression: float = 0.50,
+        sl_atr: Optional[float] = None,
+        tp_atr: Optional[float] = None,
+    ) -> None:
+        if not 0.0 <= aggression <= 1.0:
+            raise ValueError(f"aggression must be 0.0~1.0, got {aggression}")
+        self.aggression = aggression
+        self.sl_atr = sl_atr
+        self.tp_atr = tp_atr
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "aggression": self.aggression,
+            "sl_atr": self.sl_atr,
+            "tp_atr": self.tp_atr,
+        }
 
 
 class HtfPolicy(str, Enum):
@@ -170,26 +266,12 @@ class StructuredStrategyBase:
         """
         return 0.0
 
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        """入场规格（子类必须实现）。
-
-        返回 dict:
-            entry_type: "market" | "limit" | "stop"
-            entry_price: 入场参考价（None = 当前 close）
-            entry_zone_atr: 可接受偏差（ATR 倍数）
-        """
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
+        """入场规格（子类必须实现）。返回 EntrySpec 值对象。"""
         raise NotImplementedError
 
-    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        """出场规格（子类必须实现）。
-
-        返回 dict:
-            aggression: float 0~1，驱动 Chandelier Exit profile
-                        高 → 宽 trail / 低锁利 / 晚 breakeven（顺势）
-                        低 → 紧 trail / 高锁利 / 早 breakeven（逆势）
-            sl_atr: SL 距离 ATR 倍数（None = 用全局 sl_atr_multiplier）
-            tp_atr: TP 距离 ATR 倍数（None = 用全局 tp_atr_multiplier）
-        """
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
+        """出场规格（子类必须实现）。返回 ExitSpec 值对象。"""
         raise NotImplementedError
 
     # ── 评估框架 ──
@@ -265,8 +347,8 @@ class StructuredStrategyBase:
                 "where_score": round(where_s, 3),
                 "vol_score": round(vol_s, 3),
                 "signal_grade": grade,
-                "entry_spec": entry_spec,
-                "exit_spec": exit_spec,
+                "entry_spec": entry_spec.to_dict(),
+                "exit_spec": exit_spec.to_dict(),
             },
             confidence_trace=trace,
         )
@@ -342,23 +424,11 @@ def _near_structure_level(
 
 def _structure_bias_bonus(ms: Dict[str, Any], direction: str) -> Tuple[float, str]:
     """返回 0~1 的结构位质量分。"""
-    bias = ms.get("structure_bias", "neutral")
-    bullish_biases = (
-        "bullish_breakout",
-        "bullish_pullback",
-        "bullish_reclaim",
-        "bullish_sweep_confirmed",
-    )
-    bearish_biases = (
-        "bearish_breakout",
-        "bearish_pullback",
-        "bearish_reclaim",
-        "bearish_sweep_confirmed",
-    )
+    bias = ms.get("structure_bias", StructureBias.NEUTRAL)
 
-    if direction == "buy" and bias in bullish_biases:
+    if direction == "buy" and bias in BULLISH_BIASES:
         return 0.8, f"struct={bias}"
-    if direction == "sell" and bias in bearish_biases:
+    if direction == "sell" and bias in BEARISH_BIASES:
         return 0.8, f"struct={bias}"
 
     fp = ms.get("first_pullback_state", "none")

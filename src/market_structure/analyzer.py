@@ -533,24 +533,26 @@ class MarketStructureAnalyzer:
         first_pullback_state: str,
         compression_state: str,
     ) -> str:
+        from src.signals.strategies.structured.base import StructureBias
+
         if sweep_confirmation_state.startswith("bullish_"):
-            return "bullish_sweep_confirmed"
+            return StructureBias.BULLISH_SWEEP_CONFIRMED
         if sweep_confirmation_state.startswith("bearish_"):
-            return "bearish_sweep_confirmed"
+            return StructureBias.BEARISH_SWEEP_CONFIRMED
         if reclaim_state.startswith("bullish_"):
-            return "bullish_reclaim"
+            return StructureBias.BULLISH_RECLAIM
         if reclaim_state.startswith("bearish_"):
-            return "bearish_reclaim"
+            return StructureBias.BEARISH_RECLAIM
         if first_pullback_state.startswith("bullish_"):
-            return "bullish_pullback"
+            return StructureBias.BULLISH_PULLBACK
         if first_pullback_state.startswith("bearish_"):
-            return "bearish_pullback"
+            return StructureBias.BEARISH_PULLBACK
         if breakout_state.startswith("above_"):
-            return "bullish_breakout"
+            return StructureBias.BULLISH_BREAKOUT
         if breakout_state.startswith("below_"):
-            return "bearish_breakout"
+            return StructureBias.BEARISH_BREAKOUT
         if compression_state == "contracted":
-            return "compression"
+            return StructureBias.COMPRESSION
         if compression_state == "expanded":
-            return "expansion"
-        return "neutral"
+            return StructureBias.EXPANSION
+        return StructureBias.NEUTRAL

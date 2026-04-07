@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
+from .base import EntrySpec, EntryType, ExitSpec, HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
 
 
 class StructuredSweepReversal(StructuredStrategyBase):
@@ -97,12 +97,12 @@ class StructuredSweepReversal(StructuredStrategyBase):
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=1.4, high=2.0)
 
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
+        return EntrySpec()
 
     _aggression: float = 0.20
 
-    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         # 反转：紧 trail 快速锁利
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {"aggression": aggr, "sl_atr": 1.2, "tp_atr": 2.0}
+        return ExitSpec(aggression=aggr, sl_atr=1.2, tp_atr=2.0)

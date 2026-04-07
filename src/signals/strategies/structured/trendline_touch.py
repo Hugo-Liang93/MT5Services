@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
-from .base import HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
+from .base import EntrySpec, EntryType, ExitSpec, HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
 from .trendline_utils import (
     _bar_value,
     _detect_swing_highs,
@@ -165,21 +165,20 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=0.9, high=1.3)
 
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
         if self._last_tl is not None:
-            return {
-                "entry_type": "limit",
-                "entry_price": self._last_tl.trendline_price_at_current,
-                "entry_zone_atr": 0.3,
-            }
-        return {"entry_type": "market", "entry_price": None, "entry_zone_atr": 0.3}
+            return EntrySpec(
+                entry_type=EntryType.LIMIT,
+                entry_price=self._last_tl.trendline_price_at_current,
+            )
+        return EntrySpec()
 
     _aggression: float = 0.70
 
-    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         # 趋势线触碰：顺势中等 trail
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {"aggression": aggr, "sl_atr": None, "tp_atr": None}
+        return ExitSpec(aggression=aggr)
 
     def _tl_conf(self, candidate: Any, touch_dist: float, tol: float) -> float:
         """趋势线质量评分，返回 0~1。"""
@@ -249,8 +248,8 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
             "where_score": round(min(where_score, 1.0), 3),
             "vol_score": round(min(vol_score, 1.0), 3),
             "signal_grade": grade,
-            "entry_spec": entry_spec,
-            "exit_spec": exit_spec,
+            "entry_spec": entry_spec.to_dict(),
+            "exit_spec": exit_spec.to_dict(),
         }
         if self._last_tl is not None:
             tl = self._last_tl

@@ -93,6 +93,16 @@ class SignalModule:
                 f"(Dict[RegimeType, float] covering TRENDING/RANGING/BREAKOUT/UNCERTAIN). "
                 f"See CLAUDE.md for the Regime affinity design guide."
             )
+        from .evaluation.regime import RegimeType as _RT
+
+        _required_regimes = {_RT.TRENDING, _RT.RANGING, _RT.BREAKOUT, _RT.UNCERTAIN}
+        missing = _required_regimes - set(regime_affinity.keys())
+        if missing:
+            missing_names = sorted(r.value for r in missing)
+            raise AttributeError(
+                f"Strategy '{name}' regime_affinity missing keys: {missing_names}. "
+                f"All 4 RegimeType values must be covered."
+            )
         # category 校验：必须是 StrategyCategory 枚举值或对应的字符串
         from .strategies.base import StrategyCategory
 

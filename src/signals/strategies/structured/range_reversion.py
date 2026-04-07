@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import EntrySpec, EntryType, ExitSpec, HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
 
 
 class StructuredRangeReversion(StructuredStrategyBase):
@@ -107,12 +107,12 @@ class StructuredRangeReversion(StructuredStrategyBase):
             return self._linear_score(40.0 - mfi, low=0.0, high=15.0)
         return self._linear_score(mfi - 60.0, low=0.0, high=15.0)
 
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
-        return {"entry_type": "limit", "entry_price": None, "entry_zone_atr": 0.4}
+    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
+        return EntrySpec(entry_type=EntryType.LIMIT, entry_zone_atr=0.4)
 
     _aggression: float = 0.15
 
-    def _exit_spec(self, ctx: SignalContext, direction: str) -> Dict[str, Any]:
+    def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         # 均值回归：紧 trail + 快锁利，反转幅度有限
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)
-        return {"aggression": aggr, "sl_atr": 1.0, "tp_atr": 1.8}
+        return ExitSpec(aggression=aggr, sl_atr=1.0, tp_atr=1.8)
