@@ -78,7 +78,7 @@ class StructuredRangeReversion(StructuredStrategyBase):
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
         # Stoch RSI 交叉加分
-        stoch = self._acc(ctx).get_payload("stoch_rsi14")
+        stoch = ctx.indicators.get("stoch_rsi14", {})
         k, d = stoch.get("k"), stoch.get("d")
         score = 0.0
         if k is not None and d is not None:

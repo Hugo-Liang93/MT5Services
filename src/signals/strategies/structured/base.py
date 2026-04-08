@@ -10,8 +10,6 @@ import logging
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from src.indicators.accessor import IndicatorAccessor
-
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
@@ -171,44 +169,40 @@ class StructuredStrategyBase:
             self.name = name
         self._htf = htf
 
-    # ── 标准数据访问（统一通过 accessor 追踪引用） ──
-
-    def _acc(self, ctx: SignalContext) -> IndicatorAccessor:
-        """获取 IndicatorAccessor。ctx.accessor 未设置时回退构造。"""
-        if ctx.accessor is not None:
-            return ctx.accessor
-        return IndicatorAccessor(ctx.indicators, consumer=self.name)
+    # ── 标准数据访问 ──
 
     def _close(self, ctx: SignalContext) -> Optional[float]:
-        acc = self._acc(ctx)
         for ind in ("boll20", "donchian20"):
-            v = acc.get(ind, "close")
+            v = ctx.indicators.get(ind, {}).get("close")
             if v is not None:
                 return float(v)
         cp = ctx.metadata.get("market_structure", {}).get("close_price")
         return float(cp) if cp is not None else None
 
     def _atr(self, ctx: SignalContext) -> Optional[float]:
-        v = self._acc(ctx).get("atr14", "atr")
+        v = ctx.indicators.get("atr14", {}).get("atr")
         return float(v) if v is not None else None
 
     def _rsi(self, ctx: SignalContext) -> Tuple[Optional[float], Optional[float]]:
-        rsi, d3 = self._acc(ctx).get_many("rsi14", ("rsi", "rsi_d3"))
+        data = ctx.indicators.get("rsi14", {})
+        rsi = data.get("rsi")
+        d3 = data.get("rsi_d3")
         return (
             float(rsi) if rsi is not None else None,
             float(d3) if d3 is not None else None,
         )
 
     def _adx_full(self, ctx: SignalContext) -> Dict[str, Optional[float]]:
-        acc = self._acc(ctx)
-        adx, adx_d3, plus_di, minus_di = acc.get_many(
-            "adx14", ("adx", "adx_d3", "plus_di", "minus_di")
-        )
+        data = ctx.indicators.get("adx14", {})
         return {
-            "adx": float(adx) if adx is not None else None,
-            "adx_d3": float(adx_d3) if adx_d3 is not None else None,
-            "plus_di": float(plus_di) if plus_di is not None else None,
-            "minus_di": float(minus_di) if minus_di is not None else None,
+            "adx": float(data["adx"]) if data.get("adx") is not None else None,
+            "adx_d3": float(data["adx_d3"]) if data.get("adx_d3") is not None else None,
+            "plus_di": (
+                float(data["plus_di"]) if data.get("plus_di") is not None else None
+            ),
+            "minus_di": (
+                float(data["minus_di"]) if data.get("minus_di") is not None else None
+            ),
         }
 
     def _ms(self, ctx: SignalContext) -> Dict[str, Any]:
@@ -218,18 +212,20 @@ class StructuredStrategyBase:
         return ctx.htf_indicators.get(self._htf, {})
 
     def _volume_ratio(self, ctx: SignalContext) -> Optional[float]:
-        v = self._acc(ctx).get("volume_ratio20", "volume_ratio")
+        v = ctx.indicators.get("volume_ratio20", {}).get("volume_ratio")
         return float(v) if v is not None else None
 
     def _mfi(self, ctx: SignalContext) -> Optional[float]:
-        v = self._acc(ctx).get("mfi14", "mfi")
+        v = ctx.indicators.get("mfi14", {}).get("mfi")
         return float(v) if v is not None else None
 
     def _bb_position(self, ctx: SignalContext) -> Optional[float]:
-        acc = self._acc(ctx)
-        upper = acc.get("boll20", "bb_upper")
-        lower = acc.get("boll20", "bb_lower")
-        close = acc.get("boll20", "close")
+        boll = ctx.indicators.get("boll20", {})
+        upper, lower, close = (
+            boll.get("bb_upper"),
+            boll.get("bb_lower"),
+            boll.get("close"),
+        )
         if upper is None or lower is None or close is None:
             return None
         w = float(upper) - float(lower)

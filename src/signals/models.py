@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
-
-if TYPE_CHECKING:
-    from src.indicators.accessor import IndicatorAccessor
 
 
 @dataclass(frozen=True)
@@ -49,8 +46,6 @@ class SignalContext:
     htf_indicators: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
     # 经济事件行情影响预测（来自 MarketImpactAnalyzer）
     event_impact_forecast: Optional[Dict[str, Any]] = None
-    # 统一指标访问代理（访问即注册，自动推导计算集）
-    accessor: Optional["IndicatorAccessor"] = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

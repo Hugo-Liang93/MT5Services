@@ -62,7 +62,7 @@ class StructuredLowbarEntry(StructuredStrategyBase):
             return False, None, 0, f"trending:{adx:.0f}>{adx_max:.0f}"
 
         # close_position 决定方向
-        bs = self._acc(ctx).get_payload("bar_stats20")
+        bs = ctx.indicators.get("bar_stats20", {})
         cp = bs.get("close_position")
         if cp is None:
             return False, None, 0, "no_close_pos"

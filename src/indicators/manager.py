@@ -918,15 +918,12 @@ class UnifiedIndicatorManager:
         *,
         bar_time: datetime,
     ) -> tuple[dict[str, dict[str, Any]], float]:
-        # 首轮全量计算（registry 未收敛），之后按需计算
-        selected = self._get_confirmed_eligible_names()
         results, compute_time = self._compute_results_with_priority_groups(
             symbol,
             timeframe,
             bars,
             bar_time=bar_time,
             scope="confirmed",
-            indicator_names=selected,
         )
         with self._scope_stats_lock:
             self._scope_stats["confirmed"]["computations"] += 1
@@ -976,25 +973,6 @@ class UnifiedIndicatorManager:
             "Intrabar eligible indicators (auto-derived from strategy scopes): %s",
             sorted(self._intrabar_eligible_cache),
         )
-
-    def _get_confirmed_eligible_names(self) -> list[str] | None:
-        """Return indicator names to compute for confirmed scope.
-
-        首轮（registry 未收敛）返回 None → 全量计算。
-        收敛后返回 registry.required_set() ∩ enabled 的列表。
-        若列表为空（无消费者），仍返回 None（安全兜底）。
-        """
-        from src.indicators.accessor import get_registry
-
-        registry = get_registry()
-        if not registry.converged:
-            return None  # 首轮：全量计算
-        required = registry.required_set()
-        if not required:
-            return None  # 无消费者记录，安全兜底
-        enabled = frozenset(cfg.name for cfg in self.config.indicators if cfg.enabled)
-        eligible = list(required & enabled)
-        return eligible if eligible else None
 
     def _get_intrabar_eligible_names(self) -> frozenset:
         """Return the set of indicator names eligible for intrabar computation.

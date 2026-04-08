@@ -60,7 +60,7 @@ class StructuredSweepReversal(StructuredStrategyBase):
         return False, None, 0, f"rsi_mid:{rsi:.0f}"
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
-        bs = self._acc(ctx).get_payload("bar_stats20")
+        bs = ctx.indicators.get("bar_stats20", {})
         close_pos = bs.get("close_position")
         if close_pos is not None:
             cp = float(close_pos)
