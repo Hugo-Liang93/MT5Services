@@ -104,7 +104,6 @@ def map_analyst(perf_stats: dict[str, Any]) -> dict[str, Any]:
 def map_live_analyst(
     perf_stats: dict[str, Any],
     intrabar_bars_by_tf: dict[str, list[Any]] | None = None,
-    intrabar_ingest_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     running = perf_stats.get("event_loop_running", False)
     if not running:
@@ -112,7 +111,6 @@ def map_live_analyst(
 
     scope_stats = perf_stats.get("scope_stats", {})
     intrabar = scope_stats.get("intrabar", {})
-    ing = intrabar_ingest_stats or {}
 
     bars_by_tf: dict[str, dict[str, Any]] = {}
     for tf, bars in (intrabar_bars_by_tf or {}).items():
@@ -137,9 +135,6 @@ def map_live_analyst(
         "indicator_count": intrabar.get("indicators", 0),
         "indicator_names": perf_stats.get("intrabar_indicators", []),
         "bars_by_tf": bars_by_tf,
-        "ingest_polls": ing.get("polls", 0),
-        "ingest_deduped": ing.get("deduped", 0),
-        "ingest_updated": ing.get("updated", 0),
     }
 
     return resolve_status("live_analyst", [

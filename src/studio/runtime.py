@@ -139,7 +139,6 @@ def build_studio_service(container: AppContainer) -> StudioService:
             lambda: studio_mappers.map_live_analyst(
                 indicator_manager.get_performance_stats(),
                 {tf: market_service.get_intrabar_series(None, tf) for tf in timeframes},
-                ingestor.queue_stats().get("intrabar", {}) if ingestor else {},
             ),
         )
 
