@@ -155,6 +155,18 @@ class SignalModule:
                 result.add(str(ind))
         return frozenset(result)
 
+    def confirmed_required_indicators(self) -> frozenset:
+        """从所有策略的 required_indicators 推导 confirmed 计算所需指标。
+
+        与 intrabar 逻辑对称：所有策略都参与 confirmed scope，
+        因此收集全部策略的 required_indicators 并集。
+        """
+        result: set[str] = set()
+        for strategy in self._strategies.values():
+            for ind in getattr(strategy, "required_indicators", ()):
+                result.add(str(ind))
+        return frozenset(result)
+
     def apply_param_overrides(
         self,
         strategy_params: Dict[str, Any],

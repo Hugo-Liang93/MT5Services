@@ -403,8 +403,13 @@ def build_signal_components(
             + ("..." if len(_htf_errors) > 3 else "")
         )
 
-    # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar 指标集合，
-    # 注入到 indicator_manager。
+    # 从策略的 preferred_scopes + required_indicators 自动推导指标计算集合，
+    # 分别注入到 indicator_manager 的 confirmed 和 intrabar 路径。
+    # 基础设施固定依赖：regime(adx14/boll20/keltner20/rsi14) + filter(atr14/adx14/rsi14) + sizing(atr14)
+    _INFRA_INDICATORS = frozenset({"atr14", "adx14", "rsi14", "boll20", "keltner20"})
+    indicator_manager.set_confirmed_eligible_override(
+        signal_module.confirmed_required_indicators() | _INFRA_INDICATORS
+    )
     indicator_manager.set_intrabar_eligible_override(
         signal_module.intrabar_required_indicators()
     )

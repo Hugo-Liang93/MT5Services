@@ -918,12 +918,14 @@ class UnifiedIndicatorManager:
         *,
         bar_time: datetime,
     ) -> tuple[dict[str, dict[str, Any]], float]:
+        eligible = self._get_confirmed_eligible_names()
         results, compute_time = self._compute_results_with_priority_groups(
             symbol,
             timeframe,
             bars,
             bar_time=bar_time,
             scope="confirmed",
+            indicator_names=eligible,
         )
         with self._scope_stats_lock:
             self._scope_stats["confirmed"]["computations"] += 1
@@ -960,6 +962,30 @@ class UnifiedIndicatorManager:
         durable_event: bool,
     ) -> None:
         process_closed_bar_event(self, symbol, timeframe, bar_time, durable_event)
+
+    def set_confirmed_eligible_override(self, names: frozenset) -> None:
+        """设置 confirmed 计算的指标集合。
+
+        由 SignalModule.confirmed_required_indicators() 在启动时自动推导
+        （所有策略的 required_indicators 并集 + 基础设施依赖），注入到这里。
+        未注入时回退到全量计算（向后兼容）。
+        """
+        enabled = frozenset(cfg.name for cfg in self.config.indicators if cfg.enabled)
+        self._confirmed_eligible_cache: frozenset = names & enabled
+        logger.info(
+            "Confirmed eligible indicators (auto-derived from strategies + infra): %s",
+            sorted(self._confirmed_eligible_cache),
+        )
+
+    def _get_confirmed_eligible_names(self) -> list[str] | None:
+        """Return indicator names for confirmed scope.
+
+        有推导集时返回 list；未注入时返回 None → 全量计算（向后兼容）。
+        """
+        cache = getattr(self, "_confirmed_eligible_cache", None)
+        if not cache:
+            return None
+        return list(cache)
 
     def set_intrabar_eligible_override(self, names: frozenset) -> None:
         """设置 intrabar 计算的指标集合。
