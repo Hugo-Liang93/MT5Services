@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from src.config.file_manager import get_file_config_manager
+from src.indicators.accessor import get_registry as get_indicator_registry
 from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
 from src.signals.contracts import normalize_session_name
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
@@ -410,6 +411,20 @@ def build_signal_components(
     )
     indicator_manager.set_priority_indicator_groups(
         signal_module.required_indicator_groups()
+    )
+    # 基础设施指标依赖声明（regime / filter / sizing 固定需要的指标）
+    _registry = get_indicator_registry()
+    _registry.declare_infrastructure(
+        "regime_detector",
+        frozenset({"adx14", "boll20", "keltner20", "rsi14"}),
+    )
+    _registry.declare_infrastructure(
+        "filter_chain",
+        frozenset({"atr14", "adx14", "rsi14"}),
+    )
+    _registry.declare_infrastructure(
+        "sizing",
+        frozenset({"atr14"}),
     )
     runtime_targets = [
         SignalTarget(symbol=symbol, timeframe=timeframe, strategy=strategy)

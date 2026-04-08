@@ -6,6 +6,8 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from src.indicators.accessor import get_registry as _get_indicator_registry
+
 from ..evaluation.indicators_helpers import extract_close_price
 from ..evaluation.regime import RegimeTracker, RegimeType, SoftRegimeResult
 from ..metadata_keys import MetadataKey as MK
@@ -239,4 +241,19 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
     runtime._run_count += 1
     runtime._last_run_at = datetime.now(timezone.utc)
     runtime._last_error = None
+
+    # 首个 confirmed 事件处理完毕后标记 registry 收敛，
+    # 后续 confirmed 指标计算将按需执行（仅计算被引用的指标）。
+    if scope == "confirmed":
+        _indicator_registry = _get_indicator_registry()
+        if not _indicator_registry.converged:
+            _indicator_registry.mark_converged()
+            required = sorted(_indicator_registry.required_set())
+            logger.info(
+                "IndicatorRegistry converged after first confirmed event. "
+                "Required indicators (%d): %s",
+                len(required),
+                required,
+            )
+
     return True

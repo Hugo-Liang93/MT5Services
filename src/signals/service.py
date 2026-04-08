@@ -5,6 +5,8 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
+from src.indicators.accessor import IndicatorAccessor
+
 from .analytics import (
     DiagnosticsEngine,
     DiagnosticThresholds,
@@ -324,6 +326,7 @@ class SignalModule:
             recent_bars_limit=bars_depth,
         )
         event_impact = context_metadata.pop("_event_impact_forecast", None)
+        accessor = IndicatorAccessor(indicator_payload, consumer=strategy)
         context = SignalContext(
             symbol=symbol,
             timeframe=timeframe,
@@ -332,6 +335,7 @@ class SignalModule:
             metadata=context_metadata,
             htf_indicators=htf_indicators or {},
             event_impact_forecast=event_impact,
+            accessor=accessor,
         )
         decision = strategy_impl.evaluate(context)
 

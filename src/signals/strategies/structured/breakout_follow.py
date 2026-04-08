@@ -79,7 +79,7 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
         return True, direction, score, f"adx={adx:.0f},d3={d3:.1f}"
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
-        bs = ctx.indicators.get("bar_stats20", {})
+        bs = self._acc(ctx).get_payload("bar_stats20")
         br = bs.get("body_ratio")
         score = 0.7 if br is not None and float(br) > 1.2 else 0.3
         return True, score, f"body={br}"
