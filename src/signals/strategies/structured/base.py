@@ -153,11 +153,10 @@ class StructuredStrategyBase:
     category: str = ""
     htf_policy: HtfPolicy = HtfPolicy.NONE
     required_indicators: Tuple[str, ...] = ()
-    htf_required_indicators: Tuple[str, ...] = ()
+    htf_required_indicators: Dict[str, str] = {}
     preferred_scopes: Tuple[str, ...] = ("confirmed",)
     regime_affinity: Dict[RegimeType, float] = {}
 
-    _htf: str = "H1"
     _base_confidence: float = 0.50
 
     # 统一评分预算：每层 score 0~1，乘以预算得到 confidence 贡献
@@ -166,10 +165,14 @@ class StructuredStrategyBase:
     _WHERE_BUDGET: float = 0.10
     _VOL_BUDGET: float = 0.05
 
-    def __init__(self, name: Optional[str] = None, htf: str = "H1") -> None:
+    def __init__(self, name: Optional[str] = None, htf: Optional[str] = None) -> None:
         if name:
             self.name = name
-        self._htf = htf
+        if htf and self.__class__.htf_required_indicators:
+            # 批量覆盖所有 HTF 指标的来源 TF（用于策略变体，如 trend_h4）
+            self.htf_required_indicators = {
+                ind: htf for ind in self.__class__.htf_required_indicators
+            }
 
     # ── 标准数据访问 ──
 
@@ -211,7 +214,13 @@ class StructuredStrategyBase:
         return ctx.metadata.get("market_structure", {})
 
     def _htf_data(self, ctx: SignalContext) -> Dict[str, Any]:
-        return ctx.htf_indicators.get(self._htf, {})
+        """跨 TF 聚合 HTF 指标，按 htf_required_indicators 声明从对应 TF 取值。"""
+        result: Dict[str, Any] = {}
+        for ind, tf in self.htf_required_indicators.items():
+            tf_data = ctx.htf_indicators.get(tf, {})
+            if ind in tf_data:
+                result[ind] = tf_data[ind]
+        return result
 
     def _volume_ratio(self, ctx: SignalContext) -> Optional[float]:
         v = ctx.indicators.get("volume_ratio20", {}).get("volume_ratio")

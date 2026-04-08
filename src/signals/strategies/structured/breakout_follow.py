@@ -17,7 +17,7 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
     category = "breakout"
     htf_policy = HtfPolicy.SOFT_GATE
     required_indicators = ("adx14", "rsi14", "atr14", "bar_stats20", "volume_ratio20")
-    htf_required_indicators = ("supertrend14",)
+    htf_required_indicators = {"supertrend14": "H1"}
     regime_affinity = {
         RegimeType.TRENDING: 0.70,
         RegimeType.RANGING: 0.20,

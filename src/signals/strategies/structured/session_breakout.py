@@ -20,7 +20,7 @@ class StructuredSessionBreakout(StructuredStrategyBase):
     category = "session"
     htf_policy = HtfPolicy.SOFT_BONUS
     required_indicators = ("atr14", "adx14", "volume_ratio20")
-    htf_required_indicators = ("supertrend14",)
+    htf_required_indicators = {"supertrend14": "H1"}
     regime_affinity = {
         RegimeType.TRENDING: 0.60,
         RegimeType.RANGING: 0.30,

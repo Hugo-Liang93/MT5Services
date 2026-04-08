@@ -28,7 +28,7 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
     category = "trend"
     htf_policy = HtfPolicy.SOFT_BONUS
     required_indicators = ("atr14", "volume_ratio20")
-    htf_required_indicators = ("supertrend14", "adx14")
+    htf_required_indicators = {"supertrend14": "H1", "adx14": "H1"}
     preferred_scopes = ("confirmed",)
     regime_affinity = {
         RegimeType.TRENDING: 1.00,
