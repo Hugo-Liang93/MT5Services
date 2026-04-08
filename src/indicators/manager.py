@@ -154,7 +154,7 @@ class UnifiedIndicatorManager:
         # Intrabar events are dispatched here from the ingestor thread so that
         # indicator computation never blocks data acquisition.  The dedicated
         # _intrabar_thread drains this queue independently.
-        self._intrabar_queue: queue.Queue = queue.Queue(maxsize=200)
+        self._intrabar_queue: queue.Queue = queue.Queue(maxsize=1024)
         self._intrabar_thread: threading.Thread | None = None
         # Cached set of indicator names eligible for intrabar snapshots.
         # Built once in _register_indicators() and invalidated on _reinitialize().
@@ -426,7 +426,12 @@ class UnifiedIndicatorManager:
         try:
             self._intrabar_queue.put_nowait((symbol, timeframe, bar))
         except queue.Full:
-            pass  # best-effort; the intrabar loop will catch up next cycle
+            logger.debug(
+                "Intrabar indicator queue full, dropped %s/%s at %s",
+                symbol,
+                timeframe,
+                getattr(bar, "time", "?"),
+            )
 
     def _intrabar_loop(self) -> None:
         """Dedicated thread: drains _intrabar_queue and computes live indicators.

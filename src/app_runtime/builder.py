@@ -62,6 +62,42 @@ def _enum_or_raw(value: Any) -> str:
     return getattr(value, "value", value)
 
 
+def _validate_intrabar_trigger_coverage(
+    signal_module: Any,
+    signal_config: Any,
+) -> None:
+    """校验策略声明 intrabar scope 的 TF 是否都有 trigger 配置。
+
+    启动时调用，缺失时 WARNING（不阻断启动），帮助发现配置遗漏。
+    """
+    if signal_module is None:
+        return
+    trigger_map: dict[str, str] = dict(
+        getattr(signal_config, "intrabar_trading_trigger_map", {}) or {}
+    )
+    strategy_timeframes: dict[str, Any] = dict(
+        getattr(signal_config, "strategy_timeframes", {}) or {}
+    )
+    strategies = getattr(signal_module, "_strategies", {})
+    for name, strategy in strategies.items():
+        scopes = getattr(strategy, "preferred_scopes", ())
+        if "intrabar" not in scopes:
+            continue
+        allowed_tfs = strategy_timeframes.get(name, ())
+        if not allowed_tfs:
+            continue
+        for tf in allowed_tfs:
+            tf_upper = str(tf).strip().upper()
+            if tf_upper and tf_upper not in trigger_map:
+                logger.warning(
+                    "Strategy '%s' expects intrabar on %s but no trigger configured "
+                    "in [intrabar_trading.trigger]. Intrabar events for this TF "
+                    "will never arrive.",
+                    name,
+                    tf_upper,
+                )
+
+
 def build_app_container(
     *,
     signal_config_loader: Any = None,
@@ -190,6 +226,8 @@ def build_app_container(
         trigger_map = dict(_sc.intrabar_trading_trigger_map)
         if trigger_map:
             container.ingestor.set_intrabar_trigger_map(trigger_map)
+    # 校验：策略声明 intrabar scope 的 TF 必须有对应 trigger 配置
+    _validate_intrabar_trigger_coverage(container.signal_module, _sc)
     if container.signal_runtime is not None:
         container.signal_runtime._pipeline_event_bus = container.pipeline_event_bus
         if container.ingestor is not None:
