@@ -91,7 +91,7 @@ class IndicatorConfig:
     params: Dict[str, Any]    # 参数，如 {"period": 20, "min_bars": 20}
     dependencies: List[str] = field(default_factory=list)  # 依赖的指标
     compute_mode: ComputeMode = ComputeMode.STANDARD  # 计算模式
-    enabled: bool = True      # 是否启用
+    display: bool = False     # 前端展示标记（不被策略引用但需要在 UI 展示的指标）
     description: str = ""     # 指标描述
     tags: List[str] = field(default_factory=list)  # 标签，如 ["trend", "momentum"]
     delta_bars: List[int] = field(default_factory=list)
@@ -219,7 +219,7 @@ class ConfigLoader:
                 params=indicator_data.get('params', {}),
                 dependencies=indicator_data.get('dependencies', []),
                 compute_mode=ComputeMode(indicator_data.get('compute_mode', 'standard')),
-                enabled=indicator_data.get('enabled', True),
+                display=indicator_data.get('display', False),
                 description=indicator_data.get('description', ''),
                 tags=indicator_data.get('tags', []),
                 delta_bars=[
@@ -475,7 +475,7 @@ class ConfigManager:
                         "params": indicator.params,
                         "dependencies": indicator.dependencies,
                         "compute_mode": indicator.compute_mode.value,
-                        "enabled": indicator.enabled,
+                        "display": indicator.display,
                         "description": indicator.description,
                         "tags": indicator.tags,
                         "delta_bars": list(indicator.delta_bars),

@@ -46,7 +46,7 @@ def resolve_indicator_names(
     """
     if indicator_names is not None:
         return indicator_names
-    return [config.name for config in indicator_configs if config.enabled]
+    return [config.name for config in indicator_configs]
 
 
 def indicator_requirements(
@@ -62,7 +62,7 @@ def indicator_requirements(
         return {name: 2 for name in selected_names}
     requirements: Dict[str, int] = {}
     for config in indicator_configs:
-        if not config.enabled or config.name not in selected_names:
+        if config.name not in selected_names:
             continue
         requirements[config.name] = indicator_history_requirement(config)
     return requirements

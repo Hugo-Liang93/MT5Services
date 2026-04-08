@@ -283,26 +283,26 @@ class TestConfig:
     @patch("src.api.admin_routes.config.load_json_config")
     def test_config_indicators(self, mock_load: MagicMock, client: TestClient) -> None:
         mock_load.return_value = [
-            {"name": "rsi14", "enabled": True},
-            {"name": "wma20", "enabled": False},
+            {"name": "rsi14", "display": True},
+            {"name": "wma20"},
         ]
         resp = client.get("/v1/admin/config/indicators")
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["total_count"] == 2
-        assert data["enabled_count"] == 1
+        assert data["display_count"] == 1
 
     @patch("src.api.admin_routes.config.load_json_config")
-    def test_config_indicators_enabled_only(
+    def test_config_indicators_display_only(
         self, mock_load: MagicMock, client: TestClient
     ) -> None:
         mock_load.return_value = [
-            {"name": "rsi14", "enabled": True},
-            {"name": "wma20", "enabled": False},
+            {"name": "rsi14", "display": True},
+            {"name": "wma20"},
         ]
-        resp = client.get("/v1/admin/config/indicators?enabled_only=true")
+        resp = client.get("/v1/admin/config/indicators?display_only=true")
         data = resp.json()["data"]
-        assert data["total_count"] == 1  # only enabled
+        assert data["total_count"] == 1  # only display
 
 
 

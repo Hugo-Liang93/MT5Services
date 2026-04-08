@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 class IndicatorConfigItem(BaseModel):
     name: str
-    enabled: bool = True
+    display: bool = False
 
     model_config = {"extra": "allow"}
 
@@ -15,7 +15,7 @@ class IndicatorConfigItem(BaseModel):
 class IndicatorsConfigView(BaseModel):
     indicators: List[IndicatorConfigItem] = Field(default_factory=list)
     total_count: int = 0
-    enabled_count: int = 0
+    display_count: int = 0
     intrabar_indicators: List[str] = Field(default_factory=list)
 
 

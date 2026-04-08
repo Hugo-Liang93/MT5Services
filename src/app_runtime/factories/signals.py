@@ -371,8 +371,8 @@ def build_signal_components(
     _apply_strategy_config_overrides(signal_module, signal_config)
 
     # ── HTF INI 配置校验（硬错误，阻止启动）─────────────────────────
-    _enabled_indicators = {
-        cfg.name for cfg in indicator_manager.config.indicators if cfg.enabled
+    _registered_indicators = {
+        cfg.name for cfg in indicator_manager.config.indicators
     }
     _registered_strategies = set(signal_module.list_strategies())
     _htf_errors: list[str] = []
@@ -390,9 +390,9 @@ def build_signal_components(
             _htf_errors.append(
                 f"[strategy_htf] {compound_key} = {tf}: timeframe '{tf}' not in app.ini"
             )
-        if ind_name not in _enabled_indicators:
+        if ind_name not in _registered_indicators:
             _htf_errors.append(
-                f"[strategy_htf] {compound_key} = {tf}: indicator '{ind_name}' not enabled in indicators.json"
+                f"[strategy_htf] {compound_key} = {tf}: indicator '{ind_name}' not registered in indicators.json"
             )
     if _htf_errors:
         for err in _htf_errors:

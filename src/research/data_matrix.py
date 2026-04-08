@@ -149,7 +149,7 @@ def build_data_matrix(
     config_manager = get_global_config_manager()
     indicator_config = config_manager.get_config()
     required_indicators = [
-        ind_cfg.name for ind_cfg in indicator_config.indicators if ind_cfg.enabled
+        ind_cfg.name for ind_cfg in indicator_config.indicators
     ]
 
     # 预计算指标（复用回测的 pipeline.compute）
