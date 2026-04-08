@@ -422,6 +422,24 @@ class BackgroundIngestor:
         # 注入现有 intrabar 管道
         self.service.set_intrabar(symbol, parent_tf, synthesized)
 
+        # 持久化到 TimescaleDB（与轮询路径对齐）
+        if self.settings.intrabar_enabled:
+            recorded_at = datetime.now(timezone.utc).isoformat()
+            self.storage.enqueue(
+                "intrabar",
+                (
+                    synthesized.symbol,
+                    synthesized.timeframe,
+                    synthesized.open,
+                    synthesized.high,
+                    synthesized.low,
+                    synthesized.close,
+                    synthesized.volume,
+                    synthesized.time.isoformat(),
+                    recorded_at,
+                ),
+            )
+
         logger.debug(
             "Ingestor: %s %s close → synthesized %s intrabar "
             "(child_bars=%d, close=%.5f)",
