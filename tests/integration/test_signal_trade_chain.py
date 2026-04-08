@@ -251,7 +251,6 @@ def _build_runtime(
         snapshot_source=snapshot_source,
         targets=targets,
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
         policy=policy,
     )
 

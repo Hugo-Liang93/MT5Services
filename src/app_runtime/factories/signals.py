@@ -413,7 +413,6 @@ def build_signal_components(
         snapshot_source=indicator_manager,
         targets=runtime_targets,
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
         policy=signal_policy,
         filter_chain=filter_chain,
         market_structure_analyzer=market_structure_analyzer,
