@@ -165,7 +165,7 @@ class SignalRuntime:
         self._strategy_scopes: dict[str, frozenset[str]] = {}
         # 策略 regime_affinity 预先缓存，避免在 process_next_event 中重复 getattr/service 调用。
         self._strategy_affinity: dict[str, dict[RegimeType, float]] = {}
-        # HTF 指标配置来自 INI [strategy_htf]，解析后供每个策略按需注入高周期指标。
+        # HTF 指标配置由 SignalModule.htf_target_config() 从策略声明自动推导。
         # 结构为 strategy_name -> {tf: [indicator_names...]}
         self._strategy_htf_config = self._parse_htf_config(htf_target_config or {})
         for target in self._targets:

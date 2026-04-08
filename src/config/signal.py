@@ -104,7 +104,8 @@ def get_signal_config() -> SignalConfig:
     pnl_circuit_section = dict(merged.get("pnl_circuit_breaker", {}))
     htf_cache_section = dict(merged.get("htf_cache", {}))
     htf_indicators_section = dict(merged.get("htf_indicators", {}))
-    strategy_htf_section = dict(merged.get("strategy_htf", {}))
+    # [strategy_htf] 已废弃：HTF 配置改由策略声明自动推导
+    # （htf_required_indicators + _htf 属性 → SignalModule.htf_target_config()）
     signal_quality_section = dict(merged.get("signal_quality", {}))
     htf_alignment_section = dict(merged.get("htf_alignment", {}))
     timeframe_risk_section = dict(merged.get("timeframe_risk", {}))
@@ -395,11 +396,6 @@ def get_signal_config() -> SignalConfig:
             ).split(",")
             if cat.strip()
         ),
-        "strategy_htf_targets": {
-            str(k).strip(): str(v).strip().upper()
-            for k, v in strategy_htf_section.items()
-            if str(k).strip() and str(v).strip()
-        },
         "session_spread_limits": _resolve_spread_limits(
             signal_section, session_spread_limits_section
         ),

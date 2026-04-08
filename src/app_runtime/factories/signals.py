@@ -370,37 +370,12 @@ def build_signal_components(
     # ── 应用配置化参数覆盖 ────────────────────────────────────────────
     _apply_strategy_config_overrides(signal_module, signal_config)
 
-    # ── HTF INI 配置校验（硬错误，阻止启动）─────────────────────────
-    _registered_indicators = {
-        cfg.name for cfg in indicator_manager.config.indicators
-    }
-    _registered_strategies = set(signal_module.list_strategies())
-    _htf_errors: list[str] = []
-    for compound_key, tf_value in signal_config.strategy_htf_targets.items():
-        parts = compound_key.split(".", 1)
-        if len(parts) != 2:
-            continue
-        strategy_name, ind_name = parts[0].strip(), parts[1].strip()
-        tf = tf_value.strip().upper()
-        if strategy_name not in _registered_strategies:
-            _htf_errors.append(
-                f"[strategy_htf] {compound_key}: strategy '{strategy_name}' not registered"
-            )
-        if tf not in configured_tfs:
-            _htf_errors.append(
-                f"[strategy_htf] {compound_key} = {tf}: timeframe '{tf}' not in app.ini"
-            )
-        if ind_name not in _registered_indicators:
-            _htf_errors.append(
-                f"[strategy_htf] {compound_key} = {tf}: indicator '{ind_name}' not registered in indicators.json"
-            )
-    if _htf_errors:
-        for err in _htf_errors:
-            _factory_logger.error(err)
-        raise ValueError(
-            f"signal.ini [strategy_htf] has {len(_htf_errors)} invalid entries: "
-            + "; ".join(_htf_errors[:3])
-            + ("..." if len(_htf_errors) > 3 else "")
+    # ── HTF 配置从策略声明自动推导（替代 INI [strategy_htf]）──────────
+    _htf_target_config = signal_module.htf_target_config()
+    if _htf_target_config:
+        _factory_logger.info(
+            "HTF target config (auto-derived from strategies): %s",
+            _htf_target_config,
         )
 
     # 从策略的 preferred_scopes + required_indicators + htf_required_indicators
@@ -446,7 +421,7 @@ def build_signal_components(
         htf_indicators_enabled=signal_config.htf_indicators_enabled,
         intrabar_confidence_factor=signal_config.intrabar_confidence_factor,
         htf_context_fn=htf_cache.get_htf_context,
-        htf_target_config=dict(signal_config.strategy_htf_targets),
+        htf_target_config=_htf_target_config,
         wal_db_path=wal_db_path,
     )
 

@@ -115,9 +115,6 @@ class SignalConfig(BaseModel):
     htf_cache_max_age_seconds: int = 14400
     # ── HTF Indicators（跨时间框架指标注入）──
     htf_indicators_enabled: bool = True
-    # 策略 HTF 目标 TF 映射：{strategy.running_tf: target_tf}
-    # 例：{"supertrend.M5": "H1", "sma_trend.H1": "D1"}
-    strategy_htf_targets: dict[str, str] = Field(default_factory=dict)
     # ── Intrabar 置信度缩放因子 ──
     intrabar_confidence_factor: float = 0.85
     # ── 波动率异常过滤 ──

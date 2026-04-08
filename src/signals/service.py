@@ -179,6 +179,23 @@ class SignalModule:
                 result.add(str(ind))
         return frozenset(result)
 
+    def htf_target_config(self) -> Dict[str, str]:
+        """从策略声明自动推导 HTF 指标注入配置。
+
+        遍历所有策略的 _htf（目标 TF）和 htf_required_indicators（所需指标），
+        生成 ``{"strategy_name.indicator_name": "TF"}`` 格式的映射。
+        此方法替代 INI ``[strategy_htf]`` 配置。
+        """
+        config: Dict[str, str] = {}
+        for strategy in self._strategies.values():
+            htf = getattr(strategy, "_htf", None)
+            htf_indicators = getattr(strategy, "htf_required_indicators", ())
+            if not htf or not htf_indicators:
+                continue
+            for ind in htf_indicators:
+                config[f"{strategy.name}.{ind}"] = str(htf)
+        return config
+
     def apply_param_overrides(
         self,
         strategy_params: Dict[str, Any],
