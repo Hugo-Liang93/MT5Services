@@ -611,6 +611,7 @@ def _cv_rule_consistency(
         n_samples=len(train_range),
         n_folds=cfg.cv_folds,
         min_train_size=max(of_cfg.min_samples, 50),
+        mode=of_cfg.cv_mode,
     )
 
     if not folds:
