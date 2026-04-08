@@ -65,9 +65,12 @@ def _run_single(
     tf: str,
     start: str,
     end: str,
-    strategy_params: Optional[Dict[str, Any]] = None,
+    strategy_params_per_tf: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> dict:
-    """执行单个回测，返回交易列表和总体指标。"""
+    """执行单个回测，返回交易列表和总体指标。
+
+    使用 strategy_params_per_tf 确保覆盖优先级正确（per-TF > global > default）。
+    """
     from src.backtesting.component_factory import (
         _load_signal_config_snapshot,
         build_backtest_components,
@@ -116,7 +119,9 @@ def _run_single(
         **merged,
     )
 
-    components = build_backtest_components(strategy_params=strategy_params)
+    components = build_backtest_components(
+        strategy_params_per_tf=strategy_params_per_tf,
+    )
     engine = BacktestEngine(
         config=config,
         data_loader=components["data_loader"],
@@ -203,8 +208,8 @@ def run_aggression_search(
             )
             sys.stderr.flush()
 
-            strategy_params = {f"{strat_name}__aggression": aggr}
-            result = _run_single(tf, start, end, strategy_params=strategy_params)
+            per_tf = {tf: {f"{strat_name}__aggression": aggr}}
+            result = _run_single(tf, start, end, strategy_params_per_tf=per_tf)
 
             stats = _extract_strategy_stats(result["trades"], strat_name)
             stats["aggression"] = aggr

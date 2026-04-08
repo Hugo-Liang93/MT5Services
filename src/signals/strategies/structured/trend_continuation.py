@@ -7,7 +7,14 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import EntrySpec, ExitSpec, HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import (
+    EntrySpec,
+    ExitSpec,
+    HtfPolicy,
+    StructuredStrategyBase,
+    _near_structure_level,
+    _structure_bias_bonus,
+)
 
 
 class StructuredTrendContinuation(StructuredStrategyBase):
@@ -20,15 +27,15 @@ class StructuredTrendContinuation(StructuredStrategyBase):
     regime_affinity = {
         RegimeType.TRENDING: 1.00,
         RegimeType.RANGING: 0.05,
-        RegimeType.BREAKOUT: 0.50,
-        RegimeType.UNCERTAIN: 0.25,
+        RegimeType.BREAKOUT: 0.20,
+        RegimeType.UNCERTAIN: 0.10,
     }
 
-    _rsi_buy_low: float = 32.0
-    _rsi_buy_high: float = 55.0
-    _rsi_sell_low: float = 45.0
-    _rsi_sell_high: float = 68.0
-    _htf_adx_min: float = 18.0
+    _rsi_buy_low: float = 30.0
+    _rsi_buy_high: float = 50.0
+    _rsi_sell_low: float = 50.0
+    _rsi_sell_high: float = 70.0
+    _htf_adx_min: float = 20.0
 
     def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
         htf = self._htf_data(ctx)

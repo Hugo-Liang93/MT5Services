@@ -7,7 +7,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
-from .base import EntrySpec, EntryType, ExitSpec, HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
+from .base import (
+    EntrySpec,
+    EntryType,
+    ExitSpec,
+    HtfPolicy,
+    StructuredStrategyBase,
+    _near_structure_level,
+    _structure_bias_bonus,
+)
 from .trendline_utils import (
     _bar_value,
     _detect_swing_highs,
@@ -32,8 +40,8 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
     regime_affinity = {
         RegimeType.TRENDING: 1.00,
         RegimeType.RANGING: 0.15,
-        RegimeType.BREAKOUT: 0.50,
-        RegimeType.UNCERTAIN: 0.40,
+        RegimeType.BREAKOUT: 0.20,
+        RegimeType.UNCERTAIN: 0.25,
     }
 
     _htf_adx_min: float = 16.0
