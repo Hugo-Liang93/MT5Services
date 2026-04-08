@@ -133,6 +133,7 @@ class StructuredStrategyBase:
     """结构化策略基类。
 
     子类必须设置类属性：name, category, htf_policy, required_indicators, regime_affinity
+    使用 HTF 数据的子类须设置：htf_required_indicators（声明跨 TF 引用的指标）
     子类必须实现：_why(), _when(), _entry_spec(), _exit_spec()
     子类可选实现：_where(), _volume_bonus()
 
@@ -152,6 +153,7 @@ class StructuredStrategyBase:
     category: str = ""
     htf_policy: HtfPolicy = HtfPolicy.NONE
     required_indicators: Tuple[str, ...] = ()
+    htf_required_indicators: Tuple[str, ...] = ()
     preferred_scopes: Tuple[str, ...] = ("confirmed",)
     regime_affinity: Dict[RegimeType, float] = {}
 

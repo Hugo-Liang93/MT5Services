@@ -17,6 +17,7 @@ class StructuredTrendContinuation(StructuredStrategyBase):
     category = "multi_tf"
     htf_policy = HtfPolicy.HARD_GATE
     required_indicators = ("rsi14", "atr14", "volume_ratio20")
+    htf_required_indicators = ("supertrend14", "adx14", "ema50")
     regime_affinity = {
         RegimeType.TRENDING: 1.00,
         RegimeType.RANGING: 0.05,

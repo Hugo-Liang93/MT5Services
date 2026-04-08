@@ -167,6 +167,18 @@ class SignalModule:
                 result.add(str(ind))
         return frozenset(result)
 
+    def htf_required_indicators(self) -> frozenset:
+        """从所有策略的 htf_required_indicators 推导 HTF 跨 TF 所需指标。
+
+        HTF 指标在其他 TF 上计算，供策略通过 ctx.htf_indicators 访问。
+        纳入推导集后，对应指标在所有 TF 上都会被计算。
+        """
+        result: set[str] = set()
+        for strategy in self._strategies.values():
+            for ind in getattr(strategy, "htf_required_indicators", ()):
+                result.add(str(ind))
+        return frozenset(result)
+
     def apply_param_overrides(
         self,
         strategy_params: Dict[str, Any],
