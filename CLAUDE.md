@@ -206,6 +206,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | DataMatrix | `src/research/data_matrix.py` |
 | 挖掘分析器（预测力/阈值/规则） | `src/research/analyzers/` |
 | 特征工程框架 | `src/research/feature_engineer.py` |
+| 纯统计原语（ACF/block shuffle/效力分析） | `src/research/statistics.py` |
 | 过拟合防护（BH-FDR/排列检验） | `src/research/overfitting.py` |
 | 跨 TF 一致性分析 | `src/research/cross_tf_analyzer.py` |
 | 实验追踪仓储 | `src/persistence/repositories/experiment_repo.py` |

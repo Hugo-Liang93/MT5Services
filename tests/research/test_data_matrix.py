@@ -60,7 +60,9 @@ def _make_matrix(
         ("adx14", "adx"): [25.0] * n_bars,
     }
 
-    split_idx = int(n_bars * train_ratio)
+    max_horizon = max(forward_horizons) if forward_horizons else 1
+    train_end_idx = max(0, int(n_bars * train_ratio))
+    split_idx = min(train_end_idx + max_horizon, n_bars - 1) if train_end_idx > 0 else 0
 
     return DataMatrix(
         symbol="XAUUSD",
@@ -77,6 +79,7 @@ def _make_matrix(
         soft_regimes=[None] * n_bars,
         forward_returns=forward_returns,
         indicator_series=indicator_series,
+        train_end_idx=train_end_idx,
         split_idx=split_idx,
     )
 
@@ -92,9 +95,12 @@ class TestDataMatrix:
 
     def test_train_test_split(self) -> None:
         m = _make_matrix(100, train_ratio=0.7)
-        assert m.split_idx == 70
+        # train_end_idx=70, split_idx=70+5=75 (gap=max_horizon)
+        assert m.train_end_idx == 70
         assert len(m.train_slice()) == 70
-        assert len(m.test_slice()) == 30
+        # test starts after gap: [75, 100)
+        assert m.split_idx == 75
+        assert len(m.test_slice()) == 25
 
     def test_forward_returns(self) -> None:
         m = _make_matrix(100, forward_horizons=[1, 5])
@@ -133,8 +139,9 @@ class TestDataMatrix:
         assert dist["ranging"] == 33
         assert dist["breakout"] == 33
 
-    def test_zero_bars_raises(self) -> None:
-        """split_idx 为 0 时 train_slice 应为空。"""
+    def test_zero_train_ratio(self) -> None:
+        """train_ratio=0 时 train_slice 应为空。"""
         m = _make_matrix(10, train_ratio=0.0)
         assert len(m.train_slice()) == 0
+        # split_idx=0 when train_end_idx=0, test covers all
         assert len(m.test_slice()) == 10

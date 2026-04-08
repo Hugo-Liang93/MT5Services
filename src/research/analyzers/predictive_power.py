@@ -4,15 +4,18 @@
   - Pearson / Spearman 相关系数
   - Information Coefficient (IC = Spearman rho)
   - 方向命中率（指标 > 中位数时正收益比例）
-  - 统计显著性（BH-FDR 批量校正 或 Bonferroni）
-  - Rolling IC + Information Ratio（时序稳定性）
-  - 排列检验 p-value（null distribution 下的显著性）
+  - 统计显著性（BH-FDR 批量校正，优先使用排列 p-value）
+  - Rolling IC + Information Ratio（时序稳定性，校正重叠窗口偏差）
+  - 排列检验 p-value（自适应 block size）
+  - 统计效力（minimum detectable IC）
 
 两阶段架构：
   Phase 1: 逐个计算 raw result（含 raw p_value，不判断显著性）
   Phase 2: 收集全部 p_values，批量校正，标记 is_significant
+           优先使用排列 p-value（已考虑自相关），参数 p-value 作为回退
 
 纯函数设计，不依赖运行时组件。
+统计原语统一来自 statistics.py，不在本模块重复实现。
 """
 
 from __future__ import annotations
@@ -29,10 +32,12 @@ from src.signals.evaluation.regime import RegimeType
 from ..config import OverfittingConfig, PredictivePowerConfig
 from ..data_matrix import DataMatrix
 from ..models import IndicatorPredictiveResult, RollingICResult
-from ..overfitting import (
-    benjamini_hochberg_fdr,
-    bonferroni_correction,
-    check_significance,
+from ..overfitting import benjamini_hochberg_fdr, check_significance
+from ..statistics import (
+    auto_block_size,
+    block_shuffle,
+    effective_n_for_overlapping_windows,
+    minimum_detectable_ic,
 )
 
 
@@ -48,6 +53,8 @@ def analyze_predictive_power(
     """分析指标字段的预测力。
 
     两阶段架构：先计算 raw results，再批量校正显著性。
+    Phase 2 优先使用排列 p-value 作为 BH-FDR 输入（概念上更一致，
+    因为排列检验不假设独立性，而参数 p-value 假设 i.i.d.）。
     """
     pp_cfg = config or PredictivePowerConfig()
     of_cfg = overfitting_config or OverfittingConfig()
@@ -55,7 +62,6 @@ def analyze_predictive_power(
     if horizons is None:
         horizons = sorted(matrix.forward_returns.keys())
     if indicator_fields is None:
-        # 默认只分析无量纲字段（排除绝对价格字段如 bb_upper, sma, ema 等）
         from src.research.analyzers.rule_mining import _is_dimensionless
 
         indicator_fields = [
@@ -69,6 +75,9 @@ def analyze_predictive_power(
     regime_list: List[Optional[str]] = [None]
     if pp_cfg.per_regime:
         regime_list.extend([r.value for r in RegimeType])
+
+    # 追踪总检验数（含被 min_samples 过滤的，用于准确的 FDR 校正）
+    n_total_attempted = 0
 
     # ── Phase 1: 逐个计算 raw results ──────────────────────────
     raw_results: List[IndicatorPredictiveResult] = []
@@ -84,6 +93,7 @@ def analyze_predictive_power(
                 continue
 
             for regime_filter in regime_list:
+                n_total_attempted += 1
                 result = _compute_single(
                     ind_name=ind_name,
                     field_name=field_name,
@@ -100,7 +110,9 @@ def analyze_predictive_power(
                     raw_results.append(result)
 
     # ── Phase 2: 批量显著性校正 ────────────────────────────────
-    results = _apply_batch_correction(raw_results, of_cfg, pp_cfg.significance_level)
+    results = _apply_batch_correction(
+        raw_results, of_cfg, pp_cfg.significance_level, n_total_attempted
+    )
 
     results.sort(key=lambda r: abs(r.information_coefficient), reverse=True)
     return results
@@ -120,7 +132,6 @@ def _compute_single(
     pp_cfg: PredictivePowerConfig,
 ) -> Optional[IndicatorPredictiveResult]:
     """计算单个 (indicator, horizon, regime) 组合，返回 raw result。"""
-    # 收集对齐的 (indicator_value, forward_return) 对
     ind_vals: List[float] = []
     fwd_vals: List[float] = []
 
@@ -176,19 +187,27 @@ def _compute_single(
     hit_below = below_positive / below_total if below_total > 0 else 0.5
     ic = float(spearman_rho)
 
-    # Rolling IC（可选）
+    # Rolling IC（可选）— 使用校正后的 IR
     rolling_ic: Optional[RollingICResult] = None
     if pp_cfg.rolling_ic_enabled:
         rolling_ic = _compute_rolling_ic(
             ind_vals, fwd_vals, window_size=pp_cfg.rolling_ic_window
         )
 
-    # 排列检验（可选）
+    # 排列检验（可选）— 使用自适应 block size
     permutation_p: Optional[float] = None
     if pp_cfg.permutation_test_enabled:
+        adaptive_bs = auto_block_size(fwd_vals)
         permutation_p = _permutation_test_ic(
-            ind_vals, fwd_vals, ic, n_permutations=pp_cfg.n_permutations
+            ind_vals,
+            fwd_vals,
+            ic,
+            n_permutations=pp_cfg.n_permutations,
+            block_size=adaptive_bs,
         )
+
+    # L6: 统计效力 — 报告给定样本量可检测的最小 IC
+    min_ic = minimum_detectable_ic(n, alpha=pp_cfg.significance_level)
 
     return IndicatorPredictiveResult(
         indicator_name=ind_name,
@@ -205,6 +224,7 @@ def _compute_single(
         is_significant=False,  # Phase 2 会覆盖
         rolling_ic=rolling_ic,
         permutation_p_value=permutation_p,
+        min_detectable_ic=min_ic,
     )
 
 
@@ -212,20 +232,31 @@ def _apply_batch_correction(
     results: List[IndicatorPredictiveResult],
     of_cfg: OverfittingConfig,
     significance_level: float,
+    n_total_attempted: int,
 ) -> List[IndicatorPredictiveResult]:
-    """批量校正显著性：BH-FDR 或 Bonferroni。"""
+    """批量校正显著性。
+
+    核心改进：优先使用排列 p-value 作为 BH-FDR 输入。
+    排列检验不假设独立性（通过 block shuffle 保留自相关），
+    其 p-value 比参数检验（假设 i.i.d.）更可靠。
+    """
     if not results:
         return results
 
-    n_tests = len(results)
-
     if of_cfg.correction_method == "bh_fdr":
-        p_values = [r.p_value for r in results]
-        fdr_results = benjamini_hochberg_fdr(p_values, alpha=significance_level)
+        # 优先用排列 p-value，回退到参数 p-value
+        p_values = [
+            r.permutation_p_value if r.permutation_p_value is not None else r.p_value
+            for r in results
+        ]
+        fdr_results = benjamini_hochberg_fdr(
+            p_values,
+            alpha=significance_level,
+            n_total_tests=n_total_attempted,
+        )
 
         corrected: List[IndicatorPredictiveResult] = []
         for (orig_idx, adj_p, is_sig), r in zip(fdr_results, results):
-            # 额外检查效应量门槛
             hit_dev = max(
                 abs(r.hit_rate_above_median - 0.5),
                 abs(r.hit_rate_below_median - 0.5),
@@ -237,15 +268,22 @@ def _apply_batch_correction(
             corrected.append(replace(r, is_significant=is_sig and passes_effect_size))
         return corrected
     else:
-        # Bonferroni 模式：逐个校正
+        # Bonferroni 模式
+        n_tests = max(n_total_attempted, len(results))
         corrected = []
         for r in results:
             hit_dev = max(
                 abs(r.hit_rate_above_median - 0.5),
                 abs(r.hit_rate_below_median - 0.5),
             )
+            # 同样优先使用排列 p-value
+            effective_p = (
+                r.permutation_p_value
+                if r.permutation_p_value is not None
+                else r.p_value
+            )
             is_sig, _ = check_significance(
-                p_value=r.p_value,
+                p_value=effective_p,
                 n_samples=r.n_samples,
                 correlation=r.information_coefficient,
                 hit_rate_deviation=hit_dev,
@@ -260,7 +298,7 @@ def _apply_batch_correction(
         return corrected
 
 
-# ── Rolling IC ─────────────────────────────────────────────────
+# ── Rolling IC（校正重叠偏差）────────────────────────────────
 
 
 def _compute_rolling_ic(
@@ -269,13 +307,16 @@ def _compute_rolling_ic(
     window_size: int = 60,
     min_window_samples: int = 20,
 ) -> Optional[RollingICResult]:
-    """滑动窗口计算 IC，返回 mean/std/IR。"""
+    """滑动窗口计算 IC，返回 mean/std/IR。
+
+    IR 校正：使用有效独立窗口数替代实际窗口数来计算标准误，
+    避免重叠窗口导致 std 被低估 → IR 被高估。
+    """
     n = len(ind_vals)
     if n < window_size:
         return None
 
     ics: List[float] = []
-    # 步长 = max(1, window_size // 10)，足够细以捕捉 IC 衰减拐点
     step = max(1, window_size // 10)
     for start in range(0, n - window_size + 1, step):
         end = start + window_size
@@ -289,7 +330,9 @@ def _compute_rolling_ic(
             continue
 
         try:
-            rho, _ = scipy_stats.spearmanr([v[0] for v in valid], [v[1] for v in valid])
+            rho, _ = scipy_stats.spearmanr(
+                [v[0] for v in valid], [v[1] for v in valid]
+            )
             ics.append(float(rho))
         except Exception:
             continue
@@ -297,37 +340,34 @@ def _compute_rolling_ic(
     if len(ics) < 3:
         return None
 
-    mean_ic = sum(ics) / len(ics)
-    variance = sum((ic - mean_ic) ** 2 for ic in ics) / (len(ics) - 1)
+    n_windows = len(ics)
+    mean_ic = sum(ics) / n_windows
+    variance = sum((ic - mean_ic) ** 2 for ic in ics) / (n_windows - 1)
     std_ic = math.sqrt(variance) if variance > 0 else 0.0
-    ir = mean_ic / std_ic if std_ic > 1e-12 else 0.0
+
+    # 有效独立窗口数：校正重叠导致的自相关
+    eff_n = effective_n_for_overlapping_windows(n_windows, window_size, step)
+
+    # IR 使用校正后的 std：std_corrected = std × sqrt(n_windows / eff_n)
+    # 这等价于放大 std 来反映真实不确定性
+    if eff_n > 0 and n_windows > 0:
+        std_correction = math.sqrt(n_windows / eff_n)
+        std_corrected = std_ic * std_correction
+    else:
+        std_corrected = std_ic
+
+    ir = mean_ic / std_corrected if std_corrected > 1e-12 else 0.0
 
     return RollingICResult(
         mean_ic=mean_ic,
         std_ic=std_ic,
         information_ratio=ir,
-        n_windows=len(ics),
+        n_windows=n_windows,
+        effective_n_windows=eff_n,
     )
 
 
-# ── 排列检验 ──────────────────────────────────────────────────
-
-
-def _block_shuffle(
-    values: List[float], block_size: int, rng: random.Random
-) -> List[float]:
-    """Block permutation：按块打乱，保留局部自相关结构。"""
-    n = len(values)
-    if block_size <= 0 or block_size >= n:
-        result = list(values)
-        rng.shuffle(result)
-        return result
-    blocks = [values[i : i + block_size] for i in range(0, n, block_size)]
-    rng.shuffle(blocks)
-    result: List[float] = []
-    for b in blocks:
-        result.extend(b)
-    return result[:n]
+# ── 排列检验（自适应 block size）──────────────────────────────
 
 
 def _permutation_test_ic(
@@ -340,6 +380,9 @@ def _permutation_test_ic(
 ) -> float:
     """Block permutation 检验：按块打乱 forward_returns，保留局部自相关。
 
+    block_size 应由 auto_block_size() 根据数据的 ACF 衰减自适应确定，
+    而非硬编码。
+
     Returns:
         p-value: |permuted_ic| >= |observed_ic| 的比例
     """
@@ -348,7 +391,7 @@ def _permutation_test_ic(
     count_ge = 0
 
     for _ in range(n_permutations):
-        shuffled = _block_shuffle(fwd_vals, block_size, rng)
+        shuffled = block_shuffle(fwd_vals, block_size, rng)
         try:
             rho, _ = scipy_stats.spearmanr(ind_vals, shuffled)
             if abs(rho) >= abs_observed:

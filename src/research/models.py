@@ -50,8 +50,10 @@ class RollingICResult:
 
     mean_ic: float
     std_ic: float
-    information_ratio: float  # mean_ic / std_ic, IR > 0.5 = 稳定
+    information_ratio: float  # mean_ic / std_ic_corrected, IR > 0.5 = 稳定
     n_windows: int
+    # 校正后的有效独立窗口数（考虑窗口重叠）
+    effective_n_windows: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -59,6 +61,7 @@ class RollingICResult:
             "std_ic": round(self.std_ic, 4),
             "information_ratio": round(self.information_ratio, 4),
             "n_windows": self.n_windows,
+            "effective_n_windows": round(self.effective_n_windows, 1),
         }
 
 
@@ -85,6 +88,8 @@ class IndicatorPredictiveResult:
     rolling_ic: Optional[RollingICResult] = None
     # 排列检验 p-value（null distribution 下的显著性）
     permutation_p_value: Optional[float] = None
+    # 统计效力（L6）：给定样本量可检测的最小 IC
+    min_detectable_ic: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -104,6 +109,8 @@ class IndicatorPredictiveResult:
             d["rolling_ic"] = self.rolling_ic.to_dict()
         if self.permutation_p_value is not None:
             d["permutation_p_value"] = round(self.permutation_p_value, 4)
+        if self.min_detectable_ic is not None:
+            d["min_detectable_ic"] = round(self.min_detectable_ic, 4)
         return d
 
 
@@ -120,6 +127,10 @@ class ThresholdPoint:
     mean_return: float
     n_signals: int
     sharpe: float
+    # 盈亏比分解（区分胜率型 vs 盈亏比型策略）
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    profit_factor: float = 0.0  # total_wins / total_losses
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -129,6 +140,9 @@ class ThresholdPoint:
             "mean_return": round(self.mean_return, 6),
             "n_signals": self.n_signals,
             "sharpe": round(self.sharpe, 4),
+            "avg_win": round(self.avg_win, 6),
+            "avg_loss": round(self.avg_loss, 6),
+            "profit_factor": round(self.profit_factor, 2),
         }
 
 

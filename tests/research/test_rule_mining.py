@@ -64,7 +64,8 @@ def _make_rule_matrix(
         ("atr14", "atr"): [float(v) for v in atr_vals],
     }
 
-    split_idx = int(n_bars * 0.7)
+    train_end_idx = int(n_bars * 0.7)
+    split_idx = min(train_end_idx + 5, n_bars - 1)
 
     return DataMatrix(
         symbol="XAUUSD",
@@ -81,6 +82,7 @@ def _make_rule_matrix(
         soft_regimes=[None] * n_bars,
         forward_returns={5: forward_vals},
         indicator_series=indicator_series,
+        train_end_idx=train_end_idx,
         split_idx=split_idx,
     )
 
