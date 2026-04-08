@@ -865,7 +865,7 @@ class TradeExecutor:
         entry_type = entry_spec.get("entry_type", "market") if entry_spec else "market"
 
         if entry_type == "market" or self._pending_manager is None:
-            execute_market_order(self, event, trade_params, cost_metrics or {})
+            _execute_market_order_helper(self, event, trade_params, cost_metrics or {})
         else:
             _submit_pending_entry_helper(self, event, trade_params, cost_metrics or {})
 
