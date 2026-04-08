@@ -209,10 +209,19 @@ def build_execution_gate_config(signal_config) -> ExecutionGateConfig:
         for cfg in signal_config.voting_group_configs
         for strategy in cfg.get("strategies", [])
     )
+    intrabar_enabled_strategies = frozenset(
+        s
+        for s in getattr(signal_config, "intrabar_trading_enabled_strategies", [])
+        if s
+    )
     return ExecutionGateConfig(
         require_armed=signal_config.auto_trade_require_armed,
         voting_group_strategies=voting_group_strategies,
         standalone_override=frozenset(signal_config.standalone_override),
+        intrabar_trading_enabled=getattr(
+            signal_config, "intrabar_trading_enabled", False
+        ),
+        intrabar_enabled_strategies=intrabar_enabled_strategies,
     )
 
 
@@ -588,6 +597,40 @@ def build_signal_components(
             on_position_tracked=trading_state_store.record_position_tracked,
             on_position_updated=trading_state_store.record_position_update,
             on_position_closed=trading_state_store.mark_position_closed,
+        )
+
+    # ── IntrabarTradeCoordinator + IntrabarTradeGuard ──
+    # Intrabar trigger 路由由 Ingestor 管理（子 TF close → 合成父 TF bar）。
+    # 这里只构建信号层的 coordinator（稳定性判定）和执行层的 guard（去重/协调）。
+    from src.signals.orchestration.intrabar_trade_coordinator import (
+        IntrabarTradeCoordinator,
+        IntrabarTradingPolicy,
+    )
+    from src.trading.execution.intrabar_guard import IntrabarTradeGuard
+
+    if (
+        signal_config.intrabar_trading_enabled
+        and signal_config.intrabar_trading_enabled_strategies
+    ):
+        intrabar_policy = IntrabarTradingPolicy(
+            min_stable_bars=signal_config.intrabar_trading_min_stable_bars,
+            min_confidence=signal_config.intrabar_trading_min_confidence,
+            enabled_strategies=frozenset(
+                signal_config.intrabar_trading_enabled_strategies
+            ),
+        )
+        intrabar_coordinator = IntrabarTradeCoordinator(policy=intrabar_policy)
+        signal_runtime._intrabar_trade_coordinator = intrabar_coordinator
+        intrabar_guard = IntrabarTradeGuard()
+        trade_executor._intrabar_guard = intrabar_guard
+        # 注册 intrabar 交易信号 listener
+        signal_runtime.add_signal_listener(trade_executor.on_intrabar_trade_signal)
+        _factory_logger.info(
+            "Intrabar trading enabled: strategies=%s, min_stable_bars=%d, "
+            "min_confidence=%.2f",
+            sorted(intrabar_policy.enabled_strategies),
+            intrabar_policy.min_stable_bars,
+            intrabar_policy.min_confidence,
         )
 
     # 信号质量追踪器：N bars 后评估信号预测质量（供 Calibrator 长期统计校准）

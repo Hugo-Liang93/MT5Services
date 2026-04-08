@@ -16,36 +16,36 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from src.config import get_runtime_data_path
 from src.config.indicator_config import (
     IndicatorConfig,
     UnifiedIndicatorConfig,
     get_global_config_manager,
 )
-from src.config import get_runtime_data_path
 from src.market import MarketDataService
 from src.utils.event_store import ClaimedEvent, get_event_store
 
-from .bar_loader import (
-    get_max_lookback as _get_max_lookback_fn,
-    get_min_required_history as _get_min_required_history_fn,
-    indicator_history_requirement as _indicator_history_requirement_fn,
-    indicator_requirements as _indicator_requirements_fn,
-    reconcile_min_bars as _reconcile_min_bars_fn,
-    resolve_indicator_names as _resolve_indicator_names_fn,
-    select_indicator_names_for_history as _select_indicator_names_fn,
-)
-from .delta_metrics import (
-    apply_delta_metrics as _apply_delta_metrics_fn,
-    get_delta_config as _get_delta_config_fn,
-    merge_snapshot_metrics_into_results as _merge_snapshot_metrics_fn,
-)
 from .bar_event_handler import (
     process_closed_bar_event,
     process_closed_bar_events_batch,
     process_intrabar_event,
     process_symbol_timeframe_batch,
 )
+from .bar_loader import get_max_lookback as _get_max_lookback_fn
+from .bar_loader import get_min_required_history as _get_min_required_history_fn
+from .bar_loader import (
+    indicator_history_requirement as _indicator_history_requirement_fn,
+)
+from .bar_loader import indicator_requirements as _indicator_requirements_fn
+from .bar_loader import reconcile_min_bars as _reconcile_min_bars_fn
+from .bar_loader import resolve_indicator_names as _resolve_indicator_names_fn
+from .bar_loader import select_indicator_names_for_history as _select_indicator_names_fn
 from .cache.incremental import IncrementalIndicator
+from .delta_metrics import apply_delta_metrics as _apply_delta_metrics_fn
+from .delta_metrics import get_delta_config as _get_delta_config_fn
+from .delta_metrics import (
+    merge_snapshot_metrics_into_results as _merge_snapshot_metrics_fn,
+)
 from .engine.dependency_manager import get_global_dependency_manager
 from .engine.pipeline import OptimizedPipeline, get_global_pipeline
 from .monitoring.metrics_collector import get_global_collector
@@ -279,7 +279,12 @@ class UnifiedIndicatorManager:
 
     def _any_thread_alive(self) -> bool:
         """任一后台线程存活则返回 True。"""
-        for t in (self._event_thread, self._writer_thread, self._intrabar_thread, self._reload_thread):
+        for t in (
+            self._event_thread,
+            self._writer_thread,
+            self._intrabar_thread,
+            self._reload_thread,
+        ):
             if t is not None and t.is_alive():
                 return True
         return False
@@ -336,7 +341,8 @@ class UnifiedIndicatorManager:
                 if thread.is_alive():
                     logger.warning(
                         "IndicatorManager %s thread did not stop within %.1fs",
-                        name, timeout,
+                        name,
+                        timeout,
                     )
         self._writer_thread = None
         self._event_thread = None

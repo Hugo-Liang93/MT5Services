@@ -74,6 +74,13 @@ class MetadataKey:
     EXIT_REGIME = "exit_regime"
     R_MULTIPLE = "r_multiple"
 
+    # ── Intrabar 交易链路（cross-TF trigger → coordinator → guard） ──
+
+    INTRABAR_TRIGGER_TF = "intrabar_trigger_tf"
+    INTRABAR_PARENT_BAR_TIME = "intrabar_parent_bar_time"
+    INTRABAR_STABLE_BARS = "intrabar_stable_bars"
+    INTRABAR_ATR_SOURCE = "intrabar_atr_source"
+
     # ── 私有 / 回测注入 ──
 
     ENQUEUED_AT = "_enqueued_at"

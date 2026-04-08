@@ -205,3 +205,16 @@ class SignalConfig(BaseModel):
 
     # Per-TF trail 缩放 — [exit_profile.tf_scale] section
     chandelier_tf_trail_scale: dict[str, float] = Field(default_factory=dict)
+
+    # ═══════════════════════════════════════════════════════════════
+    # Intrabar 交易链路 — [intrabar_trading] section
+    # 用低 TF 收盘事件驱动高 TF 策略盘中评估 + bar 计数稳定性入场
+    # ═══════════════════════════════════════════════════════════════
+    intrabar_trading_enabled: bool = False
+    # 跨 TF 触发映射：parent_tf → trigger_tf（例 {"H1": "M5"}）
+    intrabar_trading_trigger_map: dict[str, str] = Field(default_factory=dict)
+    intrabar_trading_min_parent_bar_progress: float = 0.15
+    intrabar_trading_min_stable_bars: int = 3
+    intrabar_trading_min_confidence: float = 0.75
+    intrabar_trading_enabled_strategies: list[str] = Field(default_factory=list)
+    intrabar_trading_atr_source: str = "last_confirmed"

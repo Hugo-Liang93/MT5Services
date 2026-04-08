@@ -38,12 +38,12 @@ from .runtime_evaluator import (
     resolve_market_structure_context as _runtime_resolve_market_structure_context,
 )
 from .runtime_evaluator import transition_and_publish as _runtime_transition_and_publish
+from .runtime_metadata import build_snapshot_metadata
 from .runtime_processing import apply_filter_chain as _runtime_apply_filter_chain
 from .runtime_processing import dequeue_event as _runtime_dequeue_event
 from .runtime_processing import detect_regime as _runtime_detect_regime
 from .runtime_processing import is_stale_intrabar as _runtime_is_stale_intrabar
 from .runtime_processing import process_next_event as _runtime_process_next_event
-from .runtime_metadata import build_snapshot_metadata
 from .runtime_recovery import (
     restore_confirmed_state as _runtime_restore_confirmed_state,
 )
@@ -205,6 +205,9 @@ class SignalRuntime:
         self._first_realtime_bar_seen: set[tuple[str, str]] = set()
         # 记录每个 (symbol, tf) 首个 intrabar 快照，避免在基础上下文尚未建立时放行。
         self._first_intrabar_snapshot_seen: set[tuple[str, str]] = set()
+        # Intrabar 交易协调器：bar 计数稳定性追踪。
+        # 由 factories/signals.py 注入，None 表示未启用 intrabar 交易。
+        self._intrabar_trade_coordinator: Any | None = None
 
         # R-2: 每个 (symbol, timeframe) 独占一把分片锁，避免同目标状态并发竞争。
         # _state_lock 仅保护全局状态容器；_count_active_states() 等读路径不依赖它持锁遍历。

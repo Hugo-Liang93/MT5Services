@@ -32,6 +32,9 @@ class ExecutionGateConfig:
     # Override: strategies in this set may still trigger standalone even if
     # they belong to a voting group.
     standalone_override: frozenset[str] = field(default_factory=frozenset)
+    # Intrabar 交易门控
+    intrabar_trading_enabled: bool = False
+    intrabar_enabled_strategies: frozenset[str] = field(default_factory=frozenset)
 
 
 class ExecutionGate:
@@ -62,4 +65,19 @@ class ExecutionGate:
             if not prev_is_armed and not preview_is_armed:
                 return False, "require_armed"
 
+        return True, ""
+
+    def check_intrabar(self, event: SignalEvent) -> tuple[bool, str]:
+        """Intrabar 交易专用检查。"""
+        if not self.config.intrabar_trading_enabled:
+            return False, "intrabar_trading_disabled"
+        if event.strategy not in self.config.intrabar_enabled_strategies:
+            return False, "strategy_not_intrabar_enabled"
+        # 投票组成员不允许 intrabar 独立交易（防护性代码，当前无投票组）
+        if (
+            self.config.voting_group_strategies
+            and event.strategy in self.config.voting_group_strategies
+            and event.strategy not in self.config.standalone_override
+        ):
+            return False, "voting_group_member"
         return True, ""

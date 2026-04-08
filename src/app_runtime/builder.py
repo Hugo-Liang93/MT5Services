@@ -8,20 +8,6 @@ import os
 from typing import Any, Optional
 
 from src.app_runtime.container import AppContainer
-from src.app_runtime.lifecycle import (
-    FunctionalRuntimeComponent,
-    RuntimeComponentRegistry,
-)
-from src.app_runtime.mode_controller import (
-    RuntimeModeController,
-)
-from src.app_runtime.mode_policy import (
-    RuntimeMode,
-    RuntimeModeAutoTransitionPolicy,
-    RuntimeModeEODAction,
-    RuntimeModePolicy,
-    RuntimeModeTransitionGuard,
-)
 from src.app_runtime.factories import (
     build_signal_components,
     build_trading_components,
@@ -30,6 +16,18 @@ from src.app_runtime.factories import (
     create_market_service,
     create_storage_writer,
     register_signal_hot_reload,
+)
+from src.app_runtime.lifecycle import (
+    FunctionalRuntimeComponent,
+    RuntimeComponentRegistry,
+)
+from src.app_runtime.mode_controller import RuntimeModeController
+from src.app_runtime.mode_policy import (
+    RuntimeMode,
+    RuntimeModeAutoTransitionPolicy,
+    RuntimeModeEODAction,
+    RuntimeModePolicy,
+    RuntimeModeTransitionGuard,
 )
 from src.config import (
     get_economic_config,
@@ -45,18 +43,16 @@ from src.config import (
     load_storage_settings,
 )
 from src.monitoring import get_health_monitor, get_monitoring_manager
-from src.monitoring.pipeline import PipelineEventBus
-from src.monitoring.pipeline import PipelineTraceRecorder
+from src.monitoring.pipeline import PipelineEventBus, PipelineTraceRecorder
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.studio.runtime import build_studio_service
-from src.trading.state import TradingStateAlerts
-from src.trading.state import TradingStateRecovery
-from src.trading.state import TradingStateRecoveryPolicy
-from src.trading.state import TradingStateStore
-from src.trading.closeout import (
-    CloseoutRuntimeModeAction,
-    ExposureCloseoutPolicy,
+from src.trading.closeout import CloseoutRuntimeModeAction, ExposureCloseoutPolicy
+from src.trading.state import (
+    TradingStateAlerts,
+    TradingStateRecovery,
+    TradingStateRecoveryPolicy,
+    TradingStateStore,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,9 +107,7 @@ def build_app_container(
         container.storage_writer,
         get_economic_config(),
     )
-    container.economic_calendar_service = (
-        trading_components.economic_calendar_service
-    )
+    container.economic_calendar_service = trading_components.economic_calendar_service
     container.trade_registry = trading_components.trade_registry
     container.trade_module = trading_components.trade_module
     default_account_alias: Optional[str] = trading_components.default_account_alias
@@ -172,9 +166,7 @@ def build_app_container(
     )
     container.calibrator = signal_components.calibrator
     container.regime_detector = signal_components.regime_detector
-    container.market_structure_analyzer = (
-        signal_components.market_structure_analyzer
-    )
+    container.market_structure_analyzer = signal_components.market_structure_analyzer
     container.signal_module = signal_components.signal_module
     container.signal_runtime = signal_components.signal_runtime
     container.htf_cache = signal_components.htf_cache
@@ -192,6 +184,12 @@ def build_app_container(
     )
     container.performance_tracker = signal_components.performance_tracker
     container.pending_entry_manager = signal_components.pending_entry_manager
+    # Intrabar trigger: 子 TF close → 合成父 TF bar → set_intrabar
+    _sc = signal_config_loader()
+    if container.ingestor is not None and _sc.intrabar_trading_enabled:
+        trigger_map = dict(_sc.intrabar_trading_trigger_map)
+        if trigger_map:
+            container.ingestor.set_intrabar_trigger_map(trigger_map)
     if container.signal_runtime is not None:
         container.signal_runtime._pipeline_event_bus = container.pipeline_event_bus
         if container.ingestor is not None:
@@ -289,7 +287,11 @@ def build_app_container(
         health_monitor=container.health_monitor,
         ingestor=container.ingestor,
         indicator_manager=container.indicator_manager,
-        trading_queries=(container.trade_module.queries if container.trade_module is not None else None),
+        trading_queries=(
+            container.trade_module.queries
+            if container.trade_module is not None
+            else None
+        ),
         signal_runtime=container.signal_runtime,
         trade_executor=container.trade_executor,
         position_manager=container.position_manager,
@@ -540,8 +542,7 @@ def _build_runtime_component_registry(
                     else None
                 ),
                 is_running_fn=lambda: bool(
-                    container.ingestor is not None
-                    and container.ingestor.is_running()
+                    container.ingestor is not None and container.ingestor.is_running()
                 ),
             ),
             FunctionalRuntimeComponent(
@@ -636,8 +637,8 @@ def _build_runtime_component_registry(
 def _build_paper_trading(container: AppContainer) -> None:
     """Construct Paper Trading bridge and tracker if enabled."""
     try:
-        from src.backtesting.paper_trading.config import load_paper_trading_config
         from src.backtesting.paper_trading.bridge import PaperTradingBridge
+        from src.backtesting.paper_trading.config import load_paper_trading_config
         from src.backtesting.paper_trading.tracker import PaperTradeTracker
 
         pt_config = load_paper_trading_config()
@@ -651,7 +652,9 @@ def _build_paper_trading(container: AppContainer) -> None:
 
         # Tracker (持久化钩子)
         db_writer = (
-            container.storage_writer.db if container.storage_writer is not None else None
+            container.storage_writer.db
+            if container.storage_writer is not None
+            else None
         )
         tracker = PaperTradeTracker(
             db_writer=db_writer,

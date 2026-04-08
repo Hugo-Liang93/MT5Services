@@ -29,6 +29,9 @@ class SignalEvent:
     # events that are intentionally not persisted (for example repeated confirms).
     signal_id: str = ""
     reason: str = ""
+    # Intrabar 交易：该信号所属的父 TF bar 时间。
+    # 仅 scope="intrabar" 且由子 TF close 合成触发时填充。
+    parent_bar_time: Optional[datetime] = None
 
 
 @dataclass(frozen=True)

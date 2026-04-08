@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 _T = TypeVar("_T")
 
-from src.clients.mt5_market import MT5MarketClient, MT5MarketError
+from src.clients.mt5_market import OHLC, MT5MarketClient, MT5MarketError
 from src.config import IngestSettings
 from src.market import MarketDataService
 from src.persistence.storage_writer import StorageWriter
@@ -76,6 +76,12 @@ class BackgroundIngestor:
         self._symbol_backoff_count: Dict[str, int] = {}  # 累计退避轮次
         # 回补完成标志：回补线程结束后设为 True，供 SignalRuntime 判断 warmup 状态
         self._backfill_done = threading.Event()
+        # Intrabar trigger: parent_tf → trigger_tf（例 {"H1": "M5"}）。
+        # 当 trigger_tf bar close 时，从已确认的 trigger_tf bars 合成 parent_tf
+        # 当前 bar 并注入 intrabar 管道。已配置的 parent_tf 不再轮询 MT5。
+        self._intrabar_trigger_map: dict[str, str] = {}
+        # 反查表：trigger_tf → [parent_tf, ...]
+        self._intrabar_trigger_reverse: dict[str, list[str]] = {}
 
     @property
     def is_backfilling(self) -> bool:
@@ -354,12 +360,95 @@ class BackgroundIngestor:
                     self.service.enqueue_ohlc_closed_event(symbol, tf, bar.time)
                 newest_closed = closed_bars[-1].time
                 self._set_last_ohlc_time_if_newer(key, newest_closed)
+                # 子 TF close → 合成父 TF intrabar bar
+                if new_events and tf in self._intrabar_trigger_reverse:
+                    for parent_tf in self._intrabar_trigger_reverse[tf]:
+                        self._synthesize_parent_intrabar(
+                            symbol, tf, parent_tf, newest_closed
+                        )
 
             if to_write_closed:
                 for row in to_write_closed:
                     self.storage.enqueue("ohlc", row)
 
             next_ohlc_at[key] = now + tf_interval
+
+    # --- intrabar trigger: synthesize parent TF bar from child TF closes ---
+
+    def _synthesize_parent_intrabar(
+        self,
+        symbol: str,
+        trigger_tf: str,
+        parent_tf: str,
+        trigger_bar_time: datetime,
+    ) -> None:
+        """从子 TF closed bars 合成父 TF 当前未收盘 bar，注入 intrabar 管道。
+
+        在 _ingest_ohlc 检测到子 TF bar close 后立即调用。
+        从 _ohlc_closed_cache 读子 TF bars（纯内存，零 I/O），
+        合成父 TF 当前 bar 后调 set_intrabar() 注入现有管道。
+        """
+        parent_tf_secs = timeframe_seconds(parent_tf)
+        trigger_tf_secs = timeframe_seconds(trigger_tf)
+        if parent_tf_secs <= 0 or trigger_tf_secs <= 0:
+            return
+
+        # 计算父 TF 当前 bar 的开盘时间（向下对齐）
+        trigger_ts = trigger_bar_time.timestamp()
+        parent_bar_open_ts = trigger_ts - (trigger_ts % parent_tf_secs)
+        parent_bar_open = datetime.fromtimestamp(parent_bar_open_ts, tz=timezone.utc)
+
+        # 读取子 TF confirmed bars，筛选当前父 bar 区间内的
+        max_child_bars = parent_tf_secs // trigger_tf_secs + 2
+        child_bars = self.service.get_ohlc_closed(
+            symbol, trigger_tf, limit=max_child_bars
+        )
+        bars_in_range = [b for b in child_bars if b.time >= parent_bar_open]
+        if not bars_in_range:
+            return
+
+        # 合成父 TF 当前未收盘 bar
+        synthesized = OHLC(
+            symbol=symbol,
+            timeframe=parent_tf,
+            time=parent_bar_open,
+            open=bars_in_range[0].open,
+            high=max(b.high for b in bars_in_range),
+            low=min(b.low for b in bars_in_range),
+            close=bars_in_range[-1].close,
+            volume=sum(b.volume for b in bars_in_range),
+        )
+
+        # 注入现有 intrabar 管道
+        self.service.set_intrabar(symbol, parent_tf, synthesized)
+
+        logger.debug(
+            "Ingestor: %s %s close → synthesized %s intrabar "
+            "(child_bars=%d, close=%.5f)",
+            symbol,
+            trigger_tf,
+            parent_tf,
+            len(bars_in_range),
+            synthesized.close,
+        )
+
+    def set_intrabar_trigger_map(self, trigger_map: dict[str, str]) -> None:
+        """设置 intrabar trigger 映射。
+
+        Args:
+            trigger_map: parent_tf → trigger_tf，例 {"H1": "M5", "H4": "M15"}
+        """
+        self._intrabar_trigger_map = dict(trigger_map)
+        reverse: dict[str, list[str]] = {}
+        for parent_tf, trigger_tf in trigger_map.items():
+            reverse.setdefault(trigger_tf, []).append(parent_tf)
+        self._intrabar_trigger_reverse = reverse
+        if trigger_map:
+            logger.info(
+                "Ingestor intrabar trigger configured: %s (reverse: %s)",
+                trigger_map,
+                reverse,
+            )
 
     # --- intrabar independent sampling ---
 
@@ -396,6 +485,10 @@ class BackgroundIngestor:
         tf_seconds_cache: Dict[str, int] = {}
 
         for tf in self.settings.ingest_ohlc_timeframes:
+            # 已配 trigger 的 TF 由子 TF close 合成，跳过轮询
+            if tf in self._intrabar_trigger_map:
+                continue
+
             key = ohlc_key(symbol, tf)
             interval = self._get_intrabar_interval(tf)
 

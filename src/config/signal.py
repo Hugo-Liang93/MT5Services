@@ -96,7 +96,9 @@ def get_signal_config() -> SignalConfig:
     voting_groups_section = dict(merged.get("voting_groups", {}))
     standalone_override_section = dict(merged.get("standalone_override", {}))
     calibrator_section = dict(merged.get("calibrator", {}))
-    calibrator_recency_by_tf_section = dict(merged.get("calibrator.recency_hours_by_tf", {}))
+    calibrator_recency_by_tf_section = dict(
+        merged.get("calibrator.recency_hours_by_tf", {})
+    )
     equity_curve_section = dict(merged.get("equity_curve_filter", {}))
     perf_tracker_section = dict(merged.get("performance_tracker", {}))
     pnl_circuit_section = dict(merged.get("pnl_circuit_breaker", {}))
@@ -140,7 +142,8 @@ def get_signal_config() -> SignalConfig:
             except (TypeError, ValueError):
                 logger.warning(
                     "signal.ini [exit_profile] invalid alpha for '%s': %r",
-                    key, raw_value,
+                    key,
+                    raw_value,
                 )
 
     # 解析 per-TF trail 缩放
@@ -183,9 +186,7 @@ def get_signal_config() -> SignalConfig:
         group_name = str(raw_key).strip()
         if not group_name:
             continue
-        strategies = [
-            s.strip() for s in str(raw_value).split(",") if s.strip()
-        ]
+        strategies = [s.strip() for s in str(raw_value).split(",") if s.strip()]
         if not strategies:
             continue
         # 读取对应的子节参数（如有）
@@ -193,11 +194,14 @@ def get_signal_config() -> SignalConfig:
         group_cfg: dict = {"name": group_name, "strategies": strategies}
         if "consensus_threshold" in subsection:
             try:
-                group_cfg["consensus_threshold"] = float(subsection["consensus_threshold"])
+                group_cfg["consensus_threshold"] = float(
+                    subsection["consensus_threshold"]
+                )
             except (TypeError, ValueError):
                 logger.warning(
                     "signal.ini [voting_group.%s] invalid consensus_threshold: %r",
-                    group_name, subsection["consensus_threshold"],
+                    group_name,
+                    subsection["consensus_threshold"],
                 )
         if "min_quorum" in subsection:
             try:
@@ -205,15 +209,19 @@ def get_signal_config() -> SignalConfig:
             except (TypeError, ValueError):
                 logger.warning(
                     "signal.ini [voting_group.%s] invalid min_quorum: %r",
-                    group_name, subsection["min_quorum"],
+                    group_name,
+                    subsection["min_quorum"],
                 )
         if "disagreement_penalty" in subsection:
             try:
-                group_cfg["disagreement_penalty"] = float(subsection["disagreement_penalty"])
+                group_cfg["disagreement_penalty"] = float(
+                    subsection["disagreement_penalty"]
+                )
             except (TypeError, ValueError):
                 logger.warning(
                     "signal.ini [voting_group.%s] invalid disagreement_penalty: %r",
-                    group_name, subsection["disagreement_penalty"],
+                    group_name,
+                    subsection["disagreement_penalty"],
                 )
         # strategy_weights: strategy_name=weight（对高相关性策略降权）
         weights_section = dict(merged.get(f"voting_group.{group_name}.weights", {}))
@@ -225,7 +233,9 @@ def get_signal_config() -> SignalConfig:
                 except (TypeError, ValueError):
                     logger.warning(
                         "signal.ini [voting_group.%s.weights] invalid weight for %s: %r",
-                        group_name, strat_name, weight_str,
+                        group_name,
+                        strat_name,
+                        weight_str,
                     )
             if parsed_weights:
                 group_cfg["strategy_weights"] = parsed_weights
@@ -253,7 +263,8 @@ def get_signal_config() -> SignalConfig:
             except (TypeError, ValueError):
                 logger.warning(
                     "signal.ini [strategy_params] invalid value for '%s': %r (skipped)",
-                    key, raw_value,
+                    key,
+                    raw_value,
                 )
 
     # Per-TF 策略参数: [strategy_params.M5], [strategy_params.H1] 等
@@ -261,7 +272,7 @@ def get_signal_config() -> SignalConfig:
     for section_name, section_data in merged.items():
         if not section_name.startswith("strategy_params."):
             continue
-        tf = section_name[len("strategy_params."):].strip().upper()
+        tf = section_name[len("strategy_params.") :].strip().upper()
         if not tf:
             continue
         tf_params: dict[str, float] = {}
@@ -273,7 +284,9 @@ def get_signal_config() -> SignalConfig:
                 except (TypeError, ValueError):
                     logger.warning(
                         "signal.ini [strategy_params.%s] invalid value for '%s': %r (skipped)",
-                        tf, key, raw_value,
+                        tf,
+                        key,
+                        raw_value,
                     )
         if tf_params:
             strategy_params_per_tf[tf] = tf_params
@@ -283,7 +296,7 @@ def get_signal_config() -> SignalConfig:
     for section_name, section_data in merged.items():
         if not section_name.startswith("regime_affinity."):
             continue
-        strategy_name = section_name[len("regime_affinity."):]
+        strategy_name = section_name[len("regime_affinity.") :]
         if not strategy_name:
             continue
         affinity_map: dict[str, float] = {}
@@ -303,7 +316,7 @@ def get_signal_config() -> SignalConfig:
         key = str(raw_key).strip()
         # timeout_bars_M5 = 2.0 → timeout_bars["M5"] = 2.0
         if key.startswith("timeout_bars_"):
-            tf = key[len("timeout_bars_"):].strip().upper()
+            tf = key[len("timeout_bars_") :].strip().upper()
             if tf:
                 try:
                     pending_entry_timeout_bars[tf] = float(raw_value)
@@ -317,11 +330,29 @@ def get_signal_config() -> SignalConfig:
                 if strategy_name not in pending_entry_strategy_overrides:
                     pending_entry_strategy_overrides[strategy_name] = {}
                 try:
-                    pending_entry_strategy_overrides[strategy_name][param_name] = float(raw_value)
+                    pending_entry_strategy_overrides[strategy_name][param_name] = float(
+                        raw_value
+                    )
                 except (TypeError, ValueError):
                     pass
         else:
             pending_entry_simple[key] = raw_value
+
+    # ── Intrabar Trading 解析 ────────────────────────────────────────────
+    intrabar_trading_section = dict(merged.get("intrabar_trading", {}))
+    # [intrabar_trading.trigger] 节：parent_tf = trigger_tf
+    intrabar_trigger_section = dict(merged.get("intrabar_trading.trigger", {}))
+    intrabar_trigger_map: dict[str, str] = {}
+    for raw_key, raw_value in intrabar_trigger_section.items():
+        parent_tf = str(raw_key).strip().upper()
+        trigger_tf = str(raw_value).strip().upper()
+        if parent_tf and trigger_tf:
+            intrabar_trigger_map[parent_tf] = trigger_tf
+    intrabar_enabled_strategies = [
+        s.strip()
+        for s in str(intrabar_trading_section.get("enabled_strategies", "")).split(",")
+        if s.strip()
+    ]
 
     combined = {
         **signal_section,
@@ -333,14 +364,8 @@ def get_signal_config() -> SignalConfig:
         **execution_costs_section,
         **market_structure_section,
         **safety_section,
-        **{
-            f"regime_{key}": value
-            for key, value in regime_detector_section.items()
-        },
-        **{
-            f"regime_{key}": value
-            for key, value in regime_sizing_section.items()
-        },
+        **{f"regime_{key}": value for key, value in regime_detector_section.items()},
+        **{f"regime_{key}": value for key, value in regime_sizing_section.items()},
         "strategy_params": strategy_params,
         "strategy_params_per_tf": strategy_params_per_tf,
         "regime_affinity_overrides": regime_affinity_overrides,
@@ -382,30 +407,25 @@ def get_signal_config() -> SignalConfig:
         "strategy_timeframes": _normalize_session_map(strategy_timeframes_section),
         "voting_group_configs": voting_group_configs,
         "standalone_override": standalone_override,
-        **{
-            f"calibrator_{key}": value
-            for key, value in calibrator_section.items()
-        },
-        "calibrator_recency_hours_by_tf": {
-            tf.upper(): int(hours)
-            for tf, hours in calibrator_recency_by_tf_section.items()
-        } if calibrator_recency_by_tf_section else {},
+        **{f"calibrator_{key}": value for key, value in calibrator_section.items()},
+        "calibrator_recency_hours_by_tf": (
+            {
+                tf.upper(): int(hours)
+                for tf, hours in calibrator_recency_by_tf_section.items()
+            }
+            if calibrator_recency_by_tf_section
+            else {}
+        ),
         **{
             f"equity_curve_filter_{key}": value
             for key, value in equity_curve_section.items()
         },
-        **{
-            f"perf_tracker_{key}": value
-            for key, value in perf_tracker_section.items()
-        },
+        **{f"perf_tracker_{key}": value for key, value in perf_tracker_section.items()},
         **{
             f"perf_tracker_pnl_circuit_{key}": value
             for key, value in pnl_circuit_section.items()
         },
-        **{
-            f"htf_cache_{key}": value
-            for key, value in htf_cache_section.items()
-        },
+        **{f"htf_cache_{key}": value for key, value in htf_cache_section.items()},
         **{
             f"signal_quality_{key}": value
             for key, value in signal_quality_section.items()
@@ -416,7 +436,11 @@ def get_signal_config() -> SignalConfig:
             if key != "intrabar_confidence_factor"
         },
         **(
-            {"intrabar_confidence_factor": htf_indicators_section["intrabar_confidence_factor"]}
+            {
+                "intrabar_confidence_factor": htf_indicators_section[
+                    "intrabar_confidence_factor"
+                ]
+            }
             if "intrabar_confidence_factor" in htf_indicators_section
             else {}
         ),
@@ -425,19 +449,59 @@ def get_signal_config() -> SignalConfig:
             for key, value in htf_alignment_section.items()
         },
         **{
-            f"pending_entry_{key}": value
-            for key, value in pending_entry_simple.items()
+            f"pending_entry_{key}": value for key, value in pending_entry_simple.items()
         },
-        **({"pending_entry_timeout_bars": pending_entry_timeout_bars} if pending_entry_timeout_bars else {}),
-        **({"pending_entry_strategy_overrides": pending_entry_strategy_overrides} if pending_entry_strategy_overrides else {}),
-        **({"pending_entry_tf_overrides": pending_entry_tf_overrides} if pending_entry_tf_overrides else {}),
+        **(
+            {"pending_entry_timeout_bars": pending_entry_timeout_bars}
+            if pending_entry_timeout_bars
+            else {}
+        ),
+        **(
+            {"pending_entry_strategy_overrides": pending_entry_strategy_overrides}
+            if pending_entry_strategy_overrides
+            else {}
+        ),
+        **(
+            {"pending_entry_tf_overrides": pending_entry_tf_overrides}
+            if pending_entry_tf_overrides
+            else {}
+        ),
         # ── Chandelier Exit ──
-        **{
-            f"chandelier_{key}": value
-            for key, value in chandelier_section.items()
-        },
-        **({"chandelier_aggression_overrides": chandelier_aggression_overrides} if chandelier_aggression_overrides else {}),
-        **({"chandelier_tf_trail_scale": chandelier_tf_trail_scale} if chandelier_tf_trail_scale else {}),
+        **{f"chandelier_{key}": value for key, value in chandelier_section.items()},
+        **(
+            {"chandelier_aggression_overrides": chandelier_aggression_overrides}
+            if chandelier_aggression_overrides
+            else {}
+        ),
+        **(
+            {"chandelier_tf_trail_scale": chandelier_tf_trail_scale}
+            if chandelier_tf_trail_scale
+            else {}
+        ),
+        # ── Intrabar Trading ──
+        "intrabar_trading_enabled": intrabar_trading_section.get("enabled", "false"),
+        **(
+            {"intrabar_trading_trigger_map": intrabar_trigger_map}
+            if intrabar_trigger_map
+            else {}
+        ),
+        "intrabar_trading_min_parent_bar_progress": intrabar_trading_section.get(
+            "min_parent_bar_progress", 0.15
+        ),
+        "intrabar_trading_min_stable_bars": intrabar_trading_section.get(
+            "min_stable_bars", 3
+        ),
+        "intrabar_trading_min_confidence": intrabar_trading_section.get(
+            "min_confidence", 0.75
+        ),
+        **(
+            {"intrabar_trading_enabled_strategies": intrabar_enabled_strategies}
+            if intrabar_enabled_strategies
+            else {}
+        ),
+        "intrabar_trading_atr_source": intrabar_trading_section.get(
+            "atr_source", "last_confirmed"
+        ),
     }
     # 自动计算 max_spread_points（base > 0 时覆盖手动值）
     auto_max_spread = _resolve_max_spread(signal_section)
