@@ -8,16 +8,22 @@
   - When（硬门控）：时机/振荡类指标 → 入场时机
   - Where（软门控）：价格结构类指标 → 结构位加分
 
+统计防护（与 Predictive Power / Threshold Sweep 对齐）：
+  - 排列检验：打乱 y 后重新训练决策树，统计 null distribution
+  - CV 一致性：5-fold 时序 CV，检查同一规则是否跨 fold 稳定出现
+  - Binomial 检验：test set hit_rate 是否显著优于 50%
+  - Train/Test 分割：标准 70/30
+
 设计原则：
   - 树深度限制（max_depth=3~4）确保规则可解释
   - 每个叶节点最小样本数确保统计可靠
-  - Train/test 分割防过拟合
   - 仅输出 hit_rate > 50% 的"盈利方向"叶节点
 """
 
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,11 +34,9 @@ from src.signals.evaluation.regime import RegimeType
 
 from ..config import OverfittingConfig
 from ..data_matrix import DataMatrix
+from ..statistics import binomial_test_p, block_shuffle, auto_block_size
 
 logger = logging.getLogger(__name__)
-
-
-# ── 结果模型 ────────────────────────────────────────────────────
 
 
 # ── 指标 → Why/When/Where 角色映射 ──────────────────────────────
@@ -127,6 +131,12 @@ class MinedRule:
     tree_depth: int
     feature_importances: Dict[str, float] = field(default_factory=dict)
 
+    # 统计检验（新增）
+    permutation_p_value: Optional[float] = None  # 排列检验 p-value
+    binomial_p_value: Optional[float] = None  # 测试集 hit_rate binomial p-value
+    cv_consistency: float = 0.0  # 跨 fold 出现一致性
+    is_significant: bool = False  # 综合判断
+
     @property
     def why_conditions(self) -> List[RuleCondition]:
         return [c for c in self.conditions if c.role == "why"]
@@ -158,7 +168,7 @@ class MinedRule:
         return "\n".join(parts)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "direction": self.direction,
             "rule": self.rule_string(),
             "structured": {
@@ -194,27 +204,27 @@ class MinedRule:
                     reverse=True,
                 )[:5]
             ),
+            "is_significant": self.is_significant,
         }
+        if self.permutation_p_value is not None:
+            d["permutation_p_value"] = round(self.permutation_p_value, 4)
+        if self.binomial_p_value is not None:
+            d["binomial_p_value"] = round(self.binomial_p_value, 4)
+        if self.cv_consistency > 0:
+            d["cv_consistency"] = round(self.cv_consistency, 2)
+        return d
 
 
 # ── 绝对价格字段过滤 ────────────────────────────────────────────
-# 这些字段的值是绝对价格（随行情变化），决策树会在历史价位上切分，
-# 产出的规则无法泛化到未来。只保留无量纲/归一化的指标字段。
 
 _DIMENSIONLESS_FIELDS = frozenset(
     {
         # RSI 系列 (0-100)
-        "rsi",
-        "rsi_d3",
-        "rsi_d5",
+        "rsi", "rsi_d3", "rsi_d5",
         # ADX 系列 (0-100)
-        "adx",
-        "adx_d3",
-        "plus_di",
-        "minus_di",
+        "adx", "adx_d3", "plus_di", "minus_di",
         # Stoch RSI (0-100)
-        "stoch_rsi_k",
-        "stoch_rsi_d",
+        "stoch_rsi_k", "stoch_rsi_d",
         # CCI (无界但无量纲)
         "cci",
         # Williams %R (-100~0)
@@ -224,11 +234,8 @@ _DIMENSIONLESS_FIELDS = frozenset(
         # MACD 的 histogram（相对值，随 ATR 缩放但可用）
         "hist",
         # Bar Stats (0-1 比率)
-        "body_ratio",
-        "upper_shadow_ratio",
-        "lower_shadow_ratio",
-        "close_position",
-        "range_ratio",
+        "body_ratio", "upper_shadow_ratio", "lower_shadow_ratio",
+        "close_position", "range_ratio",
         # Bollinger 的 BB width 百分比
         "bb_width_pct",
         # Supertrend 方向 (-1/1)
@@ -236,33 +243,18 @@ _DIMENSIONLESS_FIELDS = frozenset(
         # Volume 比率
         "volume_ratio",
         # 复合指标 (composite.py)
-        "di_spread",
-        "squeeze",
-        "squeeze_intensity",
-        "vwap_gap_atr",
-        "rsi_accel",
-        "roc_accel",
+        "di_spread", "squeeze", "squeeze_intensity",
+        "vwap_gap_atr", "rsi_accel", "roc_accel",
         # K 线形态 (candlestick.py)
-        "hammer",
-        "engulfing",
-        "doji",
-        "pin_bar",
-        "inside_bar",
-        "consecutive_dir",
+        "hammer", "engulfing", "doji", "pin_bar",
+        "inside_bar", "consecutive_dir",
         # 价格结构 (price_structure.py)
-        "structure_type",
-        "trend_bars",
-        "dist_to_swing_high_atr",
-        "dist_to_swing_low_atr",
-        "swing_range_atr",
+        "structure_type", "trend_bars",
+        "dist_to_swing_high_atr", "dist_to_swing_low_atr", "swing_range_atr",
         # 跳空 (gap.py)
-        "gap_atr",
-        "gap_fill_pct",
-        "has_gap",
+        "gap_atr", "gap_fill_pct", "has_gap",
         # 研究特征 (feature_engineer.py)
-        "momentum_consensus",
-        "regime_entropy",
-        "bars_in_regime",
+        "momentum_consensus", "regime_entropy", "bars_in_regime",
     }
 )
 
@@ -276,12 +268,18 @@ def _is_dimensionless(indicator: str, field: str) -> bool:
 class RuleMiningConfig:
     """规则挖掘配置。"""
 
-    max_depth: int = 3  # 树最大深度（3=最多3个条件组合）
-    min_samples_leaf: int = 30  # 叶节点最小样本数
-    min_hit_rate: float = 0.55  # 最低命中率才输出规则
-    min_test_hit_rate: float = 0.52  # 测试集最低命中率
-    max_rules: int = 20  # 最多输出规则数
-    dimensionless_only: bool = True  # 仅使用无量纲特征
+    max_depth: int = 3
+    min_samples_leaf: int = 30
+    min_hit_rate: float = 0.55
+    min_test_hit_rate: float = 0.52
+    max_rules: int = 20
+    dimensionless_only: bool = True
+    # 排列检验（新增）
+    n_permutations: int = 200
+    permutation_significance: float = 0.05
+    # CV 一致性（新增）
+    cv_folds: int = 5
+    cv_consistency_threshold: float = 0.40  # 规则至少在 40% 的 fold 中出现
 
 
 # ── 核心分析函数 ─────────────────────────────────────────────────
@@ -297,15 +295,7 @@ def mine_rules(
 ) -> List[MinedRule]:
     """从 DataMatrix 中挖掘多条件交易规则。
 
-    Args:
-        matrix: DataMatrix 实例
-        horizons: 前瞻周期列表（默认用 matrix 中所有可用的）
-        regime_filter: 仅在特定 regime 下挖掘（None = 全部数据）
-        config: 规则挖掘配置
-        overfitting_config: 过拟合防护配置
-
-    Returns:
-        按测试集命中率降序排列的规则列表
+    统计防护：排列检验 + CV 一致性 + binomial 检验。
     """
     cfg = config or RuleMiningConfig()
     of_cfg = overfitting_config or OverfittingConfig()
@@ -332,9 +322,12 @@ def mine_rules(
             )
             all_rules.extend(rules)
 
-    # 按测试集命中率排序，无测试数据的排最后
+    # 按显著性 + 测试集命中率排序
     all_rules.sort(
-        key=lambda r: (r.test_hit_rate if r.test_hit_rate is not None else 0.0),
+        key=lambda r: (
+            r.is_significant,  # 显著的排前面
+            r.test_hit_rate if r.test_hit_rate is not None else 0.0,
+        ),
         reverse=True,
     )
 
@@ -352,7 +345,6 @@ def _mine_single(
     of_cfg: OverfittingConfig,
 ) -> List[MinedRule]:
     """对单个 (horizon, direction) 组合挖掘规则。"""
-    # 构建特征矩阵和标签（过滤绝对价格字段）
     if cfg.dimensionless_only:
         feature_names = [
             (ind, fld)
@@ -365,29 +357,19 @@ def _mine_single(
         return []
 
     train_X, train_y, train_returns = _build_arrays(
-        matrix,
-        forward_returns,
-        feature_names,
-        matrix.train_slice(),
-        direction,
-        regime_filter,
+        matrix, forward_returns, feature_names,
+        matrix.train_slice(), direction, regime_filter,
     )
     test_X, test_y, test_returns = _build_arrays(
-        matrix,
-        forward_returns,
-        feature_names,
-        matrix.test_slice(),
-        direction,
-        regime_filter,
+        matrix, forward_returns, feature_names,
+        matrix.test_slice(), direction, regime_filter,
     )
 
     if len(train_y) < of_cfg.min_samples:
         return []
 
     # 训练决策树
-    # 使用 |forward_return| 作为 sample_weight，让大幅盈亏的样本有更高权重
-    # 这比 class_weight="balanced" 更合理：亏 1R 比错过 1R 严重
-    sample_weights = np.abs(train_returns) + 1e-8  # 避免零权重
+    sample_weights = np.abs(train_returns) + 1e-8
     tree = DecisionTreeClassifier(
         max_depth=cfg.max_depth,
         min_samples_leaf=cfg.min_samples_leaf,
@@ -396,7 +378,7 @@ def _mine_single(
     tree.fit(train_X, train_y, sample_weight=sample_weights)
 
     # 提取规则
-    rules = _extract_rules(
+    raw_rules = _extract_rules(
         tree=tree,
         feature_names=feature_names,
         train_X=train_X,
@@ -411,7 +393,286 @@ def _mine_single(
         cfg=cfg,
     )
 
-    return rules
+    if not raw_rules:
+        return raw_rules
+
+    # ── 统计检验：排列检验 + CV 一致性 + binomial ──────────────
+
+    # 排列检验：打乱 y 后重新训练树，统计 null distribution 下 hit_rate
+    perm_null_hit_rates: Optional[List[float]] = None
+    if cfg.n_permutations > 0:
+        perm_null_hit_rates = _permutation_test_tree(
+            train_X=train_X,
+            train_y=train_y,
+            train_returns=train_returns,
+            cfg=cfg,
+        )
+
+    # CV 一致性：在各 fold 中分别训练，看规则条件是否稳定
+    cv_rule_counts = _cv_rule_consistency(
+        matrix=matrix,
+        forward_returns=forward_returns,
+        feature_names=feature_names,
+        direction=direction,
+        regime_filter=regime_filter,
+        cfg=cfg,
+        of_cfg=of_cfg,
+    )
+
+    # 为每条规则附加统计检验结果
+    enriched_rules: List[MinedRule] = []
+    for rule in raw_rules:
+        # 排列 p-value：训练集 hit_rate 在 null distribution 中的位置
+        perm_p: Optional[float] = None
+        if perm_null_hit_rates is not None:
+            if len(perm_null_hit_rates) == 0:
+                # 排列检验未产生有效结果 → 保守返回非显著
+                perm_p = 1.0
+            else:
+                count_ge = sum(
+                    1 for h in perm_null_hit_rates if h >= rule.train_hit_rate
+                )
+                perm_p = count_ge / len(perm_null_hit_rates)
+
+        # Binomial 检验：测试集 hit_rate 是否显著优于 50%
+        binom_p: Optional[float] = None
+        if rule.test_hit_rate is not None and rule.test_n_samples > 0:
+            hits = int(round(rule.test_hit_rate * rule.test_n_samples))
+            binom_p = binomial_test_p(hits, rule.test_n_samples, 0.5)
+
+        # CV 一致性：规则条件在多少个 fold 中出现
+        rule_key = _rule_condition_key(rule.conditions)
+        cv_score = cv_rule_counts.get(rule_key, 0.0)
+
+        # 综合显著性判断
+        is_sig = _judge_significance(
+            perm_p=perm_p,
+            binom_p=binom_p,
+            cv_score=cv_score,
+            test_hit_rate=rule.test_hit_rate,
+            cfg=cfg,
+        )
+
+        enriched_rules.append(
+            MinedRule(
+                direction=rule.direction,
+                conditions=rule.conditions,
+                regime=rule.regime,
+                train_hit_rate=rule.train_hit_rate,
+                train_mean_return=rule.train_mean_return,
+                train_n_samples=rule.train_n_samples,
+                test_hit_rate=rule.test_hit_rate,
+                test_mean_return=rule.test_mean_return,
+                test_n_samples=rule.test_n_samples,
+                tree_depth=rule.tree_depth,
+                feature_importances=rule.feature_importances,
+                permutation_p_value=perm_p,
+                binomial_p_value=binom_p,
+                cv_consistency=cv_score,
+                is_significant=is_sig,
+            )
+        )
+
+    return enriched_rules
+
+
+def _judge_significance(
+    *,
+    perm_p: Optional[float],
+    binom_p: Optional[float],
+    cv_score: float,
+    test_hit_rate: Optional[float],
+    cfg: RuleMiningConfig,
+) -> bool:
+    """综合三项检验判断规则是否显著。
+
+    至少满足以下两项中的一项（宽松 OR）：
+      A) 排列检验 p ≤ 0.05 + CV 一致性 ≥ threshold
+      B) binomial p ≤ 0.05 + test hit_rate ≥ min_test_hit_rate
+    """
+    path_a = (
+        perm_p is not None
+        and perm_p <= cfg.permutation_significance
+        and cv_score >= cfg.cv_consistency_threshold
+    )
+
+    path_b = (
+        binom_p is not None
+        and binom_p <= 0.05
+        and test_hit_rate is not None
+        and test_hit_rate >= cfg.min_test_hit_rate
+    )
+
+    return path_a or path_b
+
+
+# ── 排列检验 ──────────────────────────────────────────────────
+
+
+def _permutation_test_tree(
+    *,
+    train_X: np.ndarray,
+    train_y: np.ndarray,
+    train_returns: np.ndarray,
+    cfg: RuleMiningConfig,
+    seed: int = 42,
+) -> List[float]:
+    """排列检验：打乱标签后训练树，收集 null distribution 下最优叶节点 hit_rate。
+
+    返回 null distribution 的 hit_rate 列表（每次排列一个最大 hit_rate）。
+    """
+    n = len(train_y)
+    if n < 10:
+        return []
+
+    rng = random.Random(seed)
+    adaptive_bs = auto_block_size(train_y.tolist())
+    null_hit_rates: List[float] = []
+
+    for _ in range(cfg.n_permutations):
+        # Block shuffle 标签（保留局部自相关）
+        shuffled_y = np.array(
+            block_shuffle(train_y.tolist(), adaptive_bs, rng), dtype=train_y.dtype
+        )
+
+        sample_weights = np.abs(train_returns) + 1e-8
+        perm_tree = DecisionTreeClassifier(
+            max_depth=cfg.max_depth,
+            min_samples_leaf=cfg.min_samples_leaf,
+            random_state=None,  # 不固定种子，增加排列多样性
+        )
+        try:
+            perm_tree.fit(train_X, shuffled_y, sample_weight=sample_weights)
+        except Exception:
+            continue
+
+        # 提取 null tree 中最优叶节点 hit_rate
+        best_hr = _best_leaf_hit_rate(perm_tree, train_X, shuffled_y)
+        null_hit_rates.append(best_hr)
+
+    return null_hit_rates
+
+
+def _best_leaf_hit_rate(
+    tree: DecisionTreeClassifier,
+    X: np.ndarray,
+    y: np.ndarray,
+) -> float:
+    """从树中找到预测 class=1 的最高 hit_rate 叶节点。"""
+    tree_ = tree.tree_
+    predictions = tree.apply(X)  # 每个样本的叶节点 ID
+    leaf_ids = set(predictions)
+
+    best_hr = 0.5
+    for leaf_id in leaf_ids:
+        mask = predictions == leaf_id
+        n_leaf = int(np.sum(mask))
+        if n_leaf < 5:
+            continue
+        hits = int(np.sum(y[mask] == 1))
+        hr = hits / n_leaf
+        if hr > best_hr:
+            best_hr = hr
+
+    return best_hr
+
+
+# ── CV 一致性 ──────────────────────────────────────────────────
+
+
+def _rule_condition_key(conditions: List[RuleCondition]) -> str:
+    """生成规则条件的规范化 key（用于跨 fold 匹配）。
+
+    只看指标+方向，不看精确阈值（同一模式在不同 fold 中阈值会略有不同）。
+    """
+    parts = sorted(f"{c.indicator}.{c.field}{c.operator}" for c in conditions)
+    return "|".join(parts)
+
+
+def _cv_rule_consistency(
+    *,
+    matrix: DataMatrix,
+    forward_returns: List[Optional[float]],
+    feature_names: List[Tuple[str, str]],
+    direction: str,
+    regime_filter: Optional[str],
+    cfg: RuleMiningConfig,
+    of_cfg: OverfittingConfig,
+) -> Dict[str, float]:
+    """在时序 CV 各 fold 中训练树，统计规则条件的出现频率。
+
+    Returns:
+        {rule_condition_key: 出现比例 (0.0 ~ 1.0)}
+    """
+    from ..overfitting import time_series_cv_splits
+
+    train_range = matrix.train_slice()
+    folds = time_series_cv_splits(
+        n_samples=len(train_range),
+        n_folds=cfg.cv_folds,
+        min_train_size=max(of_cfg.min_samples, 50),
+        mode=of_cfg.cv_mode,
+    )
+
+    if not folds:
+        return {}
+
+    rule_appearances: Dict[str, int] = {}
+    valid_folds = 0
+    base_start = train_range.start
+
+    for fold in folds:
+        fold_train_range = range(
+            base_start + fold.train_start, base_start + fold.train_end
+        )
+        fold_X, fold_y, fold_returns = _build_arrays(
+            matrix, forward_returns, feature_names,
+            fold_train_range, direction, regime_filter,
+        )
+        if len(fold_y) < of_cfg.min_samples:
+            continue
+
+        valid_folds += 1
+        sample_weights = np.abs(fold_returns) + 1e-8
+        fold_tree = DecisionTreeClassifier(
+            max_depth=cfg.max_depth,
+            min_samples_leaf=cfg.min_samples_leaf,
+            random_state=42,
+        )
+        try:
+            fold_tree.fit(fold_X, fold_y, sample_weight=sample_weights)
+        except Exception:
+            continue
+
+        # 提取此 fold 中的规则条件 key
+        fold_rules = _extract_rules(
+            tree=fold_tree,
+            feature_names=feature_names,
+            train_X=fold_X,
+            train_y=fold_y,
+            train_returns=fold_returns,
+            test_X=np.empty((0, len(feature_names))),
+            test_y=np.empty(0),
+            test_returns=np.empty(0),
+            direction=direction,
+            forward_bars=0,
+            regime_filter=regime_filter,
+            cfg=cfg,
+        )
+        seen_keys: set[str] = set()
+        for r in fold_rules:
+            key = _rule_condition_key(r.conditions)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                rule_appearances[key] = rule_appearances.get(key, 0) + 1
+
+    if valid_folds == 0:
+        return {}
+
+    return {key: count / valid_folds for key, count in rule_appearances.items()}
+
+
+# ── 数组构建 ──────────────────────────────────────────────────
 
 
 def _build_arrays(
@@ -434,7 +695,6 @@ def _build_arrays(
         if regime_filter is not None and matrix.regimes[i].value != regime_filter:
             continue
 
-        # 构建特征行
         row: List[float] = []
         skip = False
         for ind_name, field_name in feature_names:
@@ -446,11 +706,10 @@ def _build_arrays(
         if skip:
             continue
 
-        # 标签：该方向是否盈利
         if direction == "buy":
             label = 1 if fwd > 0 else 0
             ret = fwd
-        else:  # sell
+        else:
             label = 1 if fwd < 0 else 0
             ret = -fwd
 
@@ -466,6 +725,9 @@ def _build_arrays(
         np.array(rows_y, dtype=np.int32),
         np.array(rows_ret, dtype=np.float64),
     )
+
+
+# ── 规则提取 ──────────────────────────────────────────────────
 
 
 def _extract_rules(
@@ -490,7 +752,6 @@ def _extract_rules(
     children_left = tree_.children_left
     children_right = tree_.children_right
 
-    # 特征重要度
     importances = tree.feature_importances_
     feat_imp: Dict[str, float] = {}
     for idx, imp in enumerate(importances):
@@ -500,54 +761,31 @@ def _extract_rules(
 
     rules: List[MinedRule] = []
 
-    # DFS 遍历所有叶节点
     def _traverse(node_id: int, conditions: List[RuleCondition], depth: int) -> None:
-        # 叶节点
         if children_left[node_id] == children_right[node_id]:
             _process_leaf(
-                node_id,
-                conditions,
-                depth,
-                rules,
-                tree_,
-                train_X,
-                train_y,
-                train_returns,
-                test_X,
-                test_y,
-                test_returns,
-                feature_names,
-                direction,
-                forward_bars,
-                regime_filter,
-                cfg,
-                feat_imp,
+                node_id, conditions, depth, rules, tree_,
+                train_X, train_y, train_returns,
+                test_X, test_y, test_returns,
+                feature_names, direction, forward_bars,
+                regime_filter, cfg, feat_imp,
             )
             return
 
-        # 内部节点：左子树 (feature <= threshold)
         feat_idx = feature_idx[node_id]
         thresh = threshold[node_id]
         ind_name, field_name = feature_names[feat_idx]
-
         role = _classify_role(ind_name)
 
         left_cond = RuleCondition(
-            indicator=ind_name,
-            field=field_name,
-            operator="<=",
-            threshold=float(thresh),
-            role=role,
+            indicator=ind_name, field=field_name,
+            operator="<=", threshold=float(thresh), role=role,
         )
         _traverse(children_left[node_id], conditions + [left_cond], depth + 1)
 
-        # 右子树 (feature > threshold)
         right_cond = RuleCondition(
-            indicator=ind_name,
-            field=field_name,
-            operator=">",
-            threshold=float(thresh),
-            role=role,
+            indicator=ind_name, field=field_name,
+            operator=">", threshold=float(thresh), role=role,
         )
         _traverse(children_right[node_id], conditions + [right_cond], depth + 1)
 
@@ -575,18 +813,15 @@ def _process_leaf(
     feat_imp: Dict[str, float],
 ) -> None:
     """处理叶节点：检查是否为有价值的规则。"""
-    # 叶节点预测类别：value[node_id] = [[n_class0, n_class1]]
     values = tree_.value[node_id][0]
     predicted_class = int(np.argmax(values))
 
-    # 只关注预测为"盈利"的叶节点
     if predicted_class != 1:
         return
 
     if not conditions:
         return
 
-    # 在训练集上应用条件，计算表现
     train_mask = _apply_conditions(train_X, conditions, feature_names)
     train_matched = int(np.sum(train_mask))
     if train_matched < cfg.min_samples_leaf:
@@ -599,7 +834,6 @@ def _process_leaf(
     if train_hit_rate < cfg.min_hit_rate:
         return
 
-    # 在测试集上验证
     test_hit_rate: Optional[float] = None
     test_mean_ret: Optional[float] = None
     test_matched = 0
@@ -612,7 +846,6 @@ def _process_leaf(
             test_hit_rate = test_hits / test_matched
             test_mean_ret = float(np.mean(test_returns[test_mask]))
 
-    # 测试集命中率门槛
     if test_hit_rate is not None and test_hit_rate < cfg.min_test_hit_rate:
         return
 
@@ -651,7 +884,7 @@ def _apply_conditions(
         col = X[:, idx]
         if cond.operator == "<=":
             mask &= col <= cond.threshold
-        else:  # ">"
+        else:
             mask &= col > cond.threshold
 
     return mask

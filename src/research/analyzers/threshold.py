@@ -2,18 +2,18 @@
 
 对给定指标字段，网格扫描阈值并计算每个阈值的：
   - 命中率（信号方向正确的比例）
-  - 平均收益
-  - Sharpe ratio
-  - 期望值 (expectancy)
+  - 平均收益、Sharpe ratio
+  - 盈亏比分解：avg_win / avg_loss / profit_factor
+  - 期望值 (expectancy = hit_rate × avg_win - (1-hit_rate) × avg_loss)
 
-包含时序交叉验证和测试集外验证。
+包含时序交叉验证（expanding + sliding 双模式）和测试集外验证。
+统计原语统一来自 statistics.py。
 """
 
 from __future__ import annotations
 
 import math
-import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from src.signals.evaluation.regime import RegimeType
 
@@ -21,6 +21,9 @@ from ..config import OverfittingConfig, ThresholdSweepConfig
 from ..data_matrix import DataMatrix
 from ..models import ThresholdPoint, ThresholdSweepResult
 from ..overfitting import TimeSeriesFold, compute_cv_consistency, time_series_cv_splits
+from ..statistics import auto_block_size, block_shuffle
+
+import random
 
 
 def analyze_thresholds(
@@ -33,20 +36,7 @@ def analyze_thresholds(
     config: Optional[ThresholdSweepConfig] = None,
     overfitting_config: Optional[OverfittingConfig] = None,
 ) -> List[ThresholdSweepResult]:
-    """扫描指标阈值，找到最优买卖点。
-
-    Args:
-        matrix: DataMatrix 实例
-        indicator_name: 指标名 (e.g., "rsi14")
-        field_name: 字段名 (e.g., "rsi")
-        horizons: 前瞻周期列表
-        regime_filter: 仅分析特定 regime（None = 全部）
-        config: 阈值扫描配置
-        overfitting_config: 过拟合防护配置
-
-    Returns:
-        每个 horizon 一个 ThresholdSweepResult
-    """
+    """扫描指标阈值，找到最优买卖点。"""
     ts_cfg = config or ThresholdSweepConfig()
     of_cfg = overfitting_config or OverfittingConfig()
 
@@ -95,7 +85,6 @@ def _sweep_single_horizon(
     train_range = matrix.train_slice()
     test_range = matrix.test_slice()
 
-    # 收集训练集的有效数据点
     train_pairs = _collect_pairs(
         series, forward_returns, matrix.regimes, train_range, regime_filter
     )
@@ -104,7 +93,6 @@ def _sweep_single_horizon(
 
     train_vals = [p[0] for p in train_pairs]
 
-    # 生成阈值网格（基于训练集数据的分位数）
     thresholds = _generate_thresholds(train_vals, ts_cfg.sweep_points)
     if len(thresholds) < 3:
         return None
@@ -129,26 +117,12 @@ def _sweep_single_horizon(
 
     # 交叉验证一致性
     cv_buy = _cv_consistency(
-        series,
-        forward_returns,
-        matrix.regimes,
-        train_range,
-        regime_filter,
-        thresholds,
-        "buy_below",
-        ts_cfg,
-        of_cfg,
+        series, forward_returns, matrix.regimes, train_range,
+        regime_filter, thresholds, "buy_below", ts_cfg, of_cfg,
     )
     cv_sell = _cv_consistency(
-        series,
-        forward_returns,
-        matrix.regimes,
-        train_range,
-        regime_filter,
-        thresholds,
-        "sell_above",
-        ts_cfg,
-        of_cfg,
+        series, forward_returns, matrix.regimes, train_range,
+        regime_filter, thresholds, "sell_above", ts_cfg, of_cfg,
     )
 
     # 测试集验证
@@ -156,34 +130,30 @@ def _sweep_single_horizon(
         series, forward_returns, matrix.regimes, test_range, regime_filter
     )
     test_buy_hr, test_buy_n = _validate_threshold(
-        test_pairs,
-        best_buy.threshold if best_buy else None,
-        "buy_below",
+        test_pairs, best_buy.threshold if best_buy else None, "buy_below",
     )
     test_sell_hr, test_sell_n = _validate_threshold(
-        test_pairs,
-        best_sell.threshold if best_sell else None,
-        "sell_above",
+        test_pairs, best_sell.threshold if best_sell else None, "sell_above",
     )
 
     all_points = buy_points + sell_points
 
-    # 排列检验：验证最优阈值是否显著优于随机
+    # 排列检验 — 自适应 block size
     perm_p_buy: Optional[float] = None
     perm_p_sell: Optional[float] = None
     is_sig_buy = False
     is_sig_sell = False
 
     if ts_cfg.n_permutations > 0:
+        fwd_vals = [p[1] for p in train_pairs]
+        adaptive_bs = auto_block_size(fwd_vals)
+
         if best_buy is not None:
             best_buy_score = _metric_score(best_buy, ts_cfg.target_metric)
             perm_p_buy = _permutation_test_threshold(
-                train_pairs,
-                best_buy_score,
-                "buy_below",
-                thresholds,
-                ts_cfg.target_metric,
-                n_permutations=ts_cfg.n_permutations,
+                train_pairs, best_buy_score, "buy_below", thresholds,
+                ts_cfg.target_metric, n_permutations=ts_cfg.n_permutations,
+                block_size=adaptive_bs,
             )
             is_sig_buy = (
                 perm_p_buy <= ts_cfg.permutation_significance
@@ -193,12 +163,9 @@ def _sweep_single_horizon(
         if best_sell is not None:
             best_sell_score = _metric_score(best_sell, ts_cfg.target_metric)
             perm_p_sell = _permutation_test_threshold(
-                train_pairs,
-                best_sell_score,
-                "sell_above",
-                thresholds,
-                ts_cfg.target_metric,
-                n_permutations=ts_cfg.n_permutations,
+                train_pairs, best_sell_score, "sell_above", thresholds,
+                ts_cfg.target_metric, n_permutations=ts_cfg.n_permutations,
+                block_size=adaptive_bs,
             )
             is_sig_sell = (
                 perm_p_sell <= ts_cfg.permutation_significance
@@ -258,7 +225,6 @@ def _generate_thresholds(values: List[float], n_points: int) -> List[float]:
         return []
     sorted_vals = sorted(values)
     n = len(sorted_vals)
-    # 使用 5th ~ 95th 分位数范围，避免极端值
     lo_idx = max(0, int(n * 0.05))
     hi_idx = min(n - 1, int(n * 0.95))
     lo = sorted_vals[lo_idx]
@@ -275,9 +241,7 @@ def _evaluate_threshold(
     direction: str,
     target_metric: str,
 ) -> Optional[ThresholdPoint]:
-    """评估单个阈值的表现（含信号聚集去重）。"""
-    # 信号聚集去重：连续触发只计第一次
-    # pairs 是按时序排列的 (indicator_value, forward_return)
+    """评估单个阈值的表现（含信号聚集去重 + 盈亏比分解）。"""
     signals: List[Tuple[float, float]] = []
     prev_triggered = False
     for iv, fv in pairs:
@@ -298,6 +262,15 @@ def _evaluate_threshold(
     hit_rate = hits / n
     mean_ret = sum(returns) / n
 
+    # 盈亏比分解
+    wins = [r for r in returns if r > 0]
+    losses = [r for r in returns if r <= 0]
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+    total_wins = sum(wins)
+    total_losses = abs(sum(losses))
+    profit_factor = total_wins / total_losses if total_losses > 1e-12 else 0.0
+
     # Sharpe（简化版：mean / std）
     if n > 1:
         variance = sum((r - mean_ret) ** 2 for r in returns) / (n - 1)
@@ -313,6 +286,9 @@ def _evaluate_threshold(
         mean_return=mean_ret,
         n_signals=n,
         sharpe=sharpe,
+        avg_win=avg_win,
+        avg_loss=avg_loss,
+        profit_factor=profit_factor,
     )
 
 
@@ -326,14 +302,21 @@ def _find_best(
     if not valid:
         return None
 
+    return max(valid, key=lambda p: _metric_score(p, metric))
+
+
+def _metric_score(pt: ThresholdPoint, metric: str) -> float:
+    """提取阈值点的目标 metric 分数。"""
     if metric == "hit_rate":
-        return max(valid, key=lambda p: p.hit_rate)
+        return pt.hit_rate
     elif metric == "mean_return":
-        return max(valid, key=lambda p: p.mean_return)
+        return pt.mean_return
     elif metric == "sharpe":
-        return max(valid, key=lambda p: p.sharpe)
-    else:  # expectancy = mean_return（已含盈亏，不需再乘 hit_rate）
-        return max(valid, key=lambda p: p.mean_return)
+        return pt.sharpe
+    else:
+        # expectancy = hit_rate × avg_win - (1 - hit_rate) × avg_loss
+        # 这比直接用 mean_return 多提供了盈亏比维度的信息
+        return pt.hit_rate * pt.avg_win - (1 - pt.hit_rate) * pt.avg_loss
 
 
 def _cv_consistency(
@@ -352,6 +335,7 @@ def _cv_consistency(
         n_samples=len(train_range),
         n_folds=of_cfg.cv_folds,
         min_train_size=max(of_cfg.min_samples, 50),
+        mode=of_cfg.cv_mode,
     )
     if not folds:
         return 0.0
@@ -364,11 +348,7 @@ def _cv_consistency(
             base_start + fold.train_start, base_start + fold.train_end
         )
         fold_pairs = _collect_pairs(
-            series,
-            forward_returns,
-            regimes,
-            fold_train_range,
-            regime_filter,
+            series, forward_returns, regimes, fold_train_range, regime_filter,
         )
         if len(fold_pairs) < of_cfg.min_samples:
             fold_bests.append(None)
@@ -388,17 +368,6 @@ def _cv_consistency(
         fold_bests.append(best_point.threshold if best_point else None)
 
     return compute_cv_consistency(fold_bests)
-
-
-def _metric_score(pt: ThresholdPoint, metric: str) -> float:
-    if metric == "hit_rate":
-        return pt.hit_rate
-    elif metric == "mean_return":
-        return pt.mean_return
-    elif metric == "sharpe":
-        return pt.sharpe
-    else:  # expectancy = mean_return（已含盈亏）
-        return pt.mean_return
 
 
 def _validate_threshold(
@@ -427,19 +396,6 @@ def _validate_threshold(
     return hits / n, n
 
 
-def _block_shuffle(
-    values: List[float], block_size: int, rng: random.Random
-) -> List[float]:
-    """Block permutation：按块打乱，保留局部自相关。"""
-    n = len(values)
-    blocks = [values[i : i + block_size] for i in range(0, n, block_size)]
-    rng.shuffle(blocks)
-    result: List[float] = []
-    for b in blocks:
-        result.extend(b)
-    return result[:n]
-
-
 def _permutation_test_threshold(
     train_pairs: List[Tuple[float, float]],
     best_metric_score: float,
@@ -448,20 +404,11 @@ def _permutation_test_threshold(
     target_metric: str,
     n_permutations: int = 200,
     seed: int = 42,
+    block_size: int = 10,
 ) -> float:
     """排列检验：打乱 forward_returns，重新扫描取 max，得到 null distribution。
 
-    Args:
-        train_pairs: 原始 (indicator_value, forward_return) 对
-        best_metric_score: 真实最优阈值的 metric score
-        direction: "buy_below" | "sell_above"
-        thresholds: 阈值网格
-        target_metric: 优化目标
-        n_permutations: 排列次数
-        seed: 随机种子
-
-    Returns:
-        p-value: permuted best score >= real best score 的比例
+    block_size 由调用方通过 auto_block_size() 自适应确定。
     """
     if not train_pairs or not thresholds:
         return 1.0
@@ -471,13 +418,10 @@ def _permutation_test_threshold(
     fwd_vals = [p[1] for p in train_pairs]
     count_ge = 0
 
-    block_size = max(5, len(fwd_vals) // 20)  # ~5% 的数据量作为 block
-
     for _ in range(n_permutations):
-        shuffled_fwd = _block_shuffle(fwd_vals, block_size, rng)
+        shuffled_fwd = block_shuffle(fwd_vals, block_size, rng)
         shuffled_pairs = list(zip(ind_vals, shuffled_fwd))
 
-        # 扫描所有阈值，取 max score
         perm_best_score = float("-inf")
         for t in thresholds:
             pt = _evaluate_threshold(shuffled_pairs, t, direction, target_metric)

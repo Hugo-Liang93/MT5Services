@@ -82,35 +82,45 @@
 > 目标：刷新纯结构化架构下的回测基线，优化各策略/TF/Regime 组合的盈利能力。
 > 前置：Legacy 已移除 + A7 入场职责已回归策略层，管线已清洁。
 
-### 回测基线（2026-04-07，3 个月 2025-12-30~2026-03-30）
+### 回测基线（2026-04-08 最终，3 个月 2025-12-30~2026-03-30）
 
-M15 已冻结（PF=0.00）。仅 M30/H1 活跃。
+M15 已冻结。M30/H1 活跃。session_breakout/lowbar_entry 已冻结。
 
-| TF | 笔数 | PnL | PF | 主要问题 |
-|----|------|-----|-----|---------|
-| H1 | 32 | +1 | 1.00 | lowbar_entry ranging 29笔/-160 拖累 |
-| M30 | 39 | -573 | 0.41 | trend_continuation breakout/uncertain 全亏 |
+| TF | 笔数 | WR | PnL | PF | Sharpe | MaxDD | MC p | 策略分布 |
+|----|------|-----|------|-----|--------|-------|------|---------|
+| M30 | 16 | 68.8% | +271.20 | 2.47 | 0.814 | 6.63% | 0.057 | trend_cont+162, sweep+85, range+24 |
+| H1 | 3 | 100% | +276.51 | ∞ | 0.854 | 4.59% | - | trendline_touch only |
+| **合计** | **19** | **73.7%** | **+547.71** | - | - | - | - | |
 
-关键发现：出场全部由 Chandelier trailing（aggression）驱动，初始 SL/TP 几乎不影响结果。
+vs 2026-04-07 原始基线：M30 39笔/-573 → 16笔/+271；H1 32笔/+1 → 3笔/+277。
 
-### 待办
+### 已完成（2026-04-08）
 
-- [ ] **aggression 网格搜索**：per-strategy × per-TF 搜索最优 α（当前核心调参变量）
-- [ ] **lowbar_entry 决策**：收紧 ADX 门控（36→22 仅 ranging）或冻结
-- [ ] **trend_continuation M30 修复**：breakout+uncertain 21笔全亏，_why() 条件需收紧
-- [ ] structured_trendline_touch WR 分析 — 趋势线质量评估是否需要更严格
+- [x] **trend_continuation M30 修复**：HTF ADX min 18→20，RSI buy [32,55]→[30,50] sell [45,68]→[50,70] 消除重叠，breakout/uncertain affinity 0.50/0.25→0.20/0.10。23笔/-163 → 7笔/+162
+- [x] **trendline_touch H1 breakout 过滤**：breakout affinity 0.50→0.20，uncertain 0.40→0.25。8笔/+0.03 → 3笔/+277
+- [x] **aggression 全量网格搜索（M30+H1）**：sweep_reversal 0.80→0.60，range_reversion 0.15→0.20，H1 trendline_touch 移除 0.10 覆盖恢复代码默认 0.70
+- [x] **lowbar_entry 确认冻结**：所有 aggression 值均亏损，入场质量不足
+- [x] **session_breakout 冻结**：M30 全 aggression 0% WR，入场质量不足
+- [x] **Paper Trading 配置**：`paper_trading.ini` 启用，参数对齐回测（balance=2000, commission=7, slippage=5）
+
+### 待观察
+
+- [ ] M30 Monte Carlo p=0.057（接近 0.05 边界但未达显著），需更长回测期或更多交易确认
+- [ ] breakout_follow M30/H1 零交易——条件严格，不产生信号（设计如此）
+- [ ] 频率瓶颈：19 笔/3 个月（~1.5 笔/周），需通过新增策略或放宽条件提频
 
 ---
 
-## P1: Paper Trading 验证（结构化策略回测通过后）
+## P1: Paper Trading 验证（已启用，等待积累数据）
 
 > 目标：在不冒资金风险的情况下验证系统端到端工作。
 
-- [ ] `config/paper_trading.ini` 设 `enabled = true`
+- [x] `config/paper_trading.ini` 设 `enabled = true`，参数对齐回测
 - [ ] OBSERVE 模式运行 1-2 周，验证完整链路：信号接收 → 模拟执行 → 持仓管理 → 持久化
 - [ ] 对比 Paper Trading 实际绩效 vs 回测预期（关注：成交率、滑点假设、信号延迟）
 - [ ] 如果 Paper 结果与回测差距 >30%，排查原因（过拟合？执行假设不成立？）
 - 判定标准：Paper 结果确认后才可进入 P2 实盘阶段
+- 注意：当前频率 ~1.5 笔/周，2 周可能仅积累 3-4 笔
 
 ---
 
@@ -217,7 +227,6 @@ H1 策略盘中入场示例：
 
 - [ ] A5: PendingOrderManager 从 TradeExecutor 提升为独立组件
 - [ ] A2: 关键交易操作改为 Event Sourcing
-- [ ] A6: 品种级配置（多品种扩展前提）
 
 ---
 
