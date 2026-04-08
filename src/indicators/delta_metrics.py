@@ -22,7 +22,7 @@ def get_delta_config(
     config_items = indicator_configs or []
     mapping: Dict[str, tuple[int, ...]] = {}
     for config in config_items:
-        if not config.enabled or not getattr(config, "delta_bars", None):
+        if not getattr(config, "delta_bars", None):
             continue
         mapping[config.name] = tuple(
             sorted({int(item) for item in config.delta_bars if int(item) > 0})

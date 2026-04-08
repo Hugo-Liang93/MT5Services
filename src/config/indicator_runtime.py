@@ -48,5 +48,4 @@ def load_indicator_tasks(config_path: Optional[str] = None) -> list[IndicatorTas
             params=dict(item.params),
         )
         for item in config.indicators
-        if item.enabled
     ]

@@ -49,12 +49,12 @@ def admin_config_risk() -> ApiResponse[Dict[str, Any]]:
 
 @router.get("/config/indicators", response_model=ApiResponse[IndicatorsConfigView])
 def admin_config_indicators(
-    enabled_only: bool = Query(default=False, description="仅返回已启用指标。"),
+    display_only: bool = Query(default=False, description="仅返回 display 标记的指标。"),
     indicator_mgr: UnifiedIndicatorManager = Depends(deps.get_indicator_manager),
 ) -> ApiResponse[IndicatorsConfigView]:
     indicators = _normalize_indicator_items(load_json_config("indicators.json"))
-    if enabled_only:
-        indicators = [item for item in indicators if item.get("enabled", True)]
+    if display_only:
+        indicators = [item for item in indicators if item.get("display", False)]
     intrabar_names: List[str] = []
     try:
         eligible = getattr(indicator_mgr, "_get_intrabar_eligible_names", None)
@@ -66,7 +66,7 @@ def admin_config_indicators(
         IndicatorsConfigView(
             indicators=indicators,
             total_count=len(indicators),
-            enabled_count=sum(1 for item in indicators if item.get("enabled", True)),
+            display_count=sum(1 for item in indicators if item.get("display", False)),
             intrabar_indicators=intrabar_names,
         )
     )

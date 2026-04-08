@@ -30,7 +30,7 @@ class StructuredLowbarEntry(StructuredStrategyBase):
     name = "structured_lowbar_entry"
     category = "reversion"
     htf_policy = HtfPolicy.NONE
-    required_indicators = ("adx14", "rsi14", "bar_stats20", "atr14")
+    required_indicators = ("adx14", "rsi14", "bar_stats20", "atr14", "volume_ratio20")
     preferred_scopes = ("confirmed",)
     regime_affinity = {
         RegimeType.TRENDING: 0.15,

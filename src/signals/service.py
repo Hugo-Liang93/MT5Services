@@ -155,6 +155,47 @@ class SignalModule:
                 result.add(str(ind))
         return frozenset(result)
 
+    def confirmed_required_indicators(self) -> frozenset:
+        """从所有策略的 required_indicators 推导 confirmed 计算所需指标。
+
+        与 intrabar 逻辑对称：所有策略都参与 confirmed scope，
+        因此收集全部策略的 required_indicators 并集。
+        """
+        result: set[str] = set()
+        for strategy in self._strategies.values():
+            for ind in getattr(strategy, "required_indicators", ()):
+                result.add(str(ind))
+        return frozenset(result)
+
+    def htf_required_indicators(self) -> frozenset:
+        """从所有策略的 htf_required_indicators 推导 HTF 跨 TF 所需指标。
+
+        HTF 指标在其他 TF 上计算，供策略通过 ctx.htf_indicators 访问。
+        纳入推导集后，对应指标在所有 TF 上都会被计算。
+        """
+        result: set[str] = set()
+        for strategy in self._strategies.values():
+            htf_inds = getattr(strategy, "htf_required_indicators", {})
+            if isinstance(htf_inds, dict):
+                result.update(htf_inds.keys())
+        return frozenset(result)
+
+    def htf_target_config(self) -> Dict[str, str]:
+        """从策略声明自动推导 HTF 指标注入配置。
+
+        遍历所有策略的 htf_required_indicators（{indicator: TF} 映射），
+        生成 ``{"strategy_name.indicator_name": "TF"}`` 格式的映射。
+        此方法替代 INI ``[strategy_htf]`` 配置。
+        """
+        config: Dict[str, str] = {}
+        for strategy in self._strategies.values():
+            htf_inds = getattr(strategy, "htf_required_indicators", {})
+            if not isinstance(htf_inds, dict) or not htf_inds:
+                continue
+            for ind, tf in htf_inds.items():
+                config[f"{strategy.name}.{ind}"] = str(tf)
+        return config
+
     def apply_param_overrides(
         self,
         strategy_params: Dict[str, Any],

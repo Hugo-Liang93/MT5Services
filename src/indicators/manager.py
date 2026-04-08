@@ -16,36 +16,36 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from src.config import get_runtime_data_path
 from src.config.indicator_config import (
     IndicatorConfig,
     UnifiedIndicatorConfig,
     get_global_config_manager,
 )
-from src.config import get_runtime_data_path
 from src.market import MarketDataService
 from src.utils.event_store import ClaimedEvent, get_event_store
 
-from .bar_loader import (
-    get_max_lookback as _get_max_lookback_fn,
-    get_min_required_history as _get_min_required_history_fn,
-    indicator_history_requirement as _indicator_history_requirement_fn,
-    indicator_requirements as _indicator_requirements_fn,
-    reconcile_min_bars as _reconcile_min_bars_fn,
-    resolve_indicator_names as _resolve_indicator_names_fn,
-    select_indicator_names_for_history as _select_indicator_names_fn,
-)
-from .delta_metrics import (
-    apply_delta_metrics as _apply_delta_metrics_fn,
-    get_delta_config as _get_delta_config_fn,
-    merge_snapshot_metrics_into_results as _merge_snapshot_metrics_fn,
-)
 from .bar_event_handler import (
     process_closed_bar_event,
     process_closed_bar_events_batch,
     process_intrabar_event,
     process_symbol_timeframe_batch,
 )
+from .bar_loader import get_max_lookback as _get_max_lookback_fn
+from .bar_loader import get_min_required_history as _get_min_required_history_fn
+from .bar_loader import (
+    indicator_history_requirement as _indicator_history_requirement_fn,
+)
+from .bar_loader import indicator_requirements as _indicator_requirements_fn
+from .bar_loader import reconcile_min_bars as _reconcile_min_bars_fn
+from .bar_loader import resolve_indicator_names as _resolve_indicator_names_fn
+from .bar_loader import select_indicator_names_for_history as _select_indicator_names_fn
 from .cache.incremental import IncrementalIndicator
+from .delta_metrics import apply_delta_metrics as _apply_delta_metrics_fn
+from .delta_metrics import get_delta_config as _get_delta_config_fn
+from .delta_metrics import (
+    merge_snapshot_metrics_into_results as _merge_snapshot_metrics_fn,
+)
 from .engine.dependency_manager import get_global_dependency_manager
 from .engine.pipeline import OptimizedPipeline, get_global_pipeline
 from .monitoring.metrics_collector import get_global_collector
@@ -196,8 +196,6 @@ class UnifiedIndicatorManager:
         self._indicator_funcs.clear()
         self._intrabar_eligible_cache = None  # invalidate on re-registration
         for indicator_config in self.config.indicators:
-            if not indicator_config.enabled:
-                continue
             func = self._load_indicator_func(indicator_config)
             incremental_class = self._load_incremental_class(indicator_config)
             self.pipeline.register_indicator(
@@ -216,19 +214,14 @@ class UnifiedIndicatorManager:
         # 正常启动路径下由策略的 preferred_scopes + required_indicators 自动推导。
         self._intrabar_eligible_cache = frozenset()
 
-        # Validate that every dependency of every enabled indicator is itself
-        # enabled.  A disabled dependency causes a silent ValueError at runtime
-        # (caught inside _compute_indicator) which surfaces as a missing result.
-        # Surface the problem early as a warning so operators can fix the config.
-        enabled_names = set(self._indicator_funcs)
+        # Validate that every dependency of every indicator is itself registered.
+        registered_names = set(self._indicator_funcs)
         for cfg in self.config.indicators:
-            if not cfg.enabled:
-                continue
             for dep in cfg.dependencies or []:
-                if dep not in enabled_names:
+                if dep not in registered_names:
                     logger.warning(
-                        "Indicator '%s' declares dependency '%s' which is not enabled. "
-                        "Computation of '%s' will fail at runtime until '%s' is enabled.",
+                        "Indicator '%s' declares dependency '%s' which is not registered. "
+                        "Computation of '%s' will fail at runtime until '%s' is registered.",
                         cfg.name,
                         dep,
                         cfg.name,
@@ -279,7 +272,12 @@ class UnifiedIndicatorManager:
 
     def _any_thread_alive(self) -> bool:
         """任一后台线程存活则返回 True。"""
-        for t in (self._event_thread, self._writer_thread, self._intrabar_thread, self._reload_thread):
+        for t in (
+            self._event_thread,
+            self._writer_thread,
+            self._intrabar_thread,
+            self._reload_thread,
+        ):
             if t is not None and t.is_alive():
                 return True
         return False
@@ -336,7 +334,8 @@ class UnifiedIndicatorManager:
                 if thread.is_alive():
                     logger.warning(
                         "IndicatorManager %s thread did not stop within %.1fs",
-                        name, timeout,
+                        name,
+                        timeout,
                     )
         self._writer_thread = None
         self._event_thread = None
@@ -581,7 +580,7 @@ class UnifiedIndicatorManager:
             return {name: 2 for name in selected_names}
         requirements: dict[str, int] = {}
         for config in configs:
-            if not config.enabled or config.name not in selected_names:
+            if config.name not in selected_names:
                 continue
             requirements[config.name] = _indicator_history_requirement_fn(config)
         return requirements
@@ -912,12 +911,14 @@ class UnifiedIndicatorManager:
         *,
         bar_time: datetime,
     ) -> tuple[dict[str, dict[str, Any]], float]:
+        eligible = self._get_confirmed_eligible_names()
         results, compute_time = self._compute_results_with_priority_groups(
             symbol,
             timeframe,
             bars,
             bar_time=bar_time,
             scope="confirmed",
+            indicator_names=eligible,
         )
         with self._scope_stats_lock:
             self._scope_stats["confirmed"]["computations"] += 1
@@ -955,14 +956,38 @@ class UnifiedIndicatorManager:
     ) -> None:
         process_closed_bar_event(self, symbol, timeframe, bar_time, durable_event)
 
+    def set_confirmed_eligible_override(self, names: frozenset) -> None:
+        """设置 confirmed 计算的指标集合。
+
+        由 SignalModule.confirmed_required_indicators() 在启动时自动推导
+        （所有策略的 required_indicators 并集 + 基础设施依赖），注入到这里。
+        未注入时回退到全量计算（向后兼容）。
+        """
+        registered = frozenset(cfg.name for cfg in self.config.indicators)
+        self._confirmed_eligible_cache: frozenset = names & registered
+        logger.info(
+            "Confirmed eligible indicators (auto-derived from strategies + infra): %s",
+            sorted(self._confirmed_eligible_cache),
+        )
+
+    def _get_confirmed_eligible_names(self) -> list[str] | None:
+        """Return indicator names for confirmed scope.
+
+        有推导集时返回 list；未注入时返回 None → 全量计算（向后兼容）。
+        """
+        cache = getattr(self, "_confirmed_eligible_cache", None)
+        if not cache:
+            return None
+        return list(cache)
+
     def set_intrabar_eligible_override(self, names: frozenset) -> None:
         """设置 intrabar 计算的指标集合。
 
         由 SignalModule.intrabar_required_indicators() 在启动时自动推导
         （策略的 preferred_scopes + required_indicators 的并集），注入到这里。
         """
-        enabled = frozenset(cfg.name for cfg in self.config.indicators if cfg.enabled)
-        self._intrabar_eligible_cache = names & enabled
+        registered = frozenset(cfg.name for cfg in self.config.indicators)
+        self._intrabar_eligible_cache = names & registered
         logger.info(
             "Intrabar eligible indicators (auto-derived from strategy scopes): %s",
             sorted(self._intrabar_eligible_cache),
@@ -1125,7 +1150,7 @@ class UnifiedIndicatorManager:
             "dependencies": list(self.dependency_manager.get_dependencies(name)),
             "dependents": list(self.dependency_manager.get_dependents(name)),
             "compute_mode": config.compute_mode.value,
-            "enabled": config.enabled,
+            "display": config.display,
             "description": config.description,
             "tags": config.tags,
         }
@@ -1241,7 +1266,7 @@ class UnifiedIndicatorManager:
             }
         config_stats = {
             "total_indicators": len(self.config.indicators),
-            "enabled_indicators": len([c for c in self.config.indicators if c.enabled]),
+            "display_indicators": len([c for c in self.config.indicators if c.display]),
             "symbols": len(self.config.symbols),
             "timeframes": len(self.config.timeframes),
             "hot_reload": self.config.hot_reload,
@@ -1268,7 +1293,8 @@ class UnifiedIndicatorManager:
             "success_rate": pipeline_stats.get("success_rate", 0),
             "scope_stats": {k: dict(v) for k, v in self._scope_stats.items()},
             "confirmed_indicators": sorted(
-                cfg.name for cfg in self.config.indicators if cfg.enabled
+                getattr(self, "_confirmed_eligible_cache", None) or
+                [cfg.name for cfg in self.config.indicators]
             ),
             "intrabar_indicators": sorted(self._get_intrabar_eligible_names()),
             "event_store": self.event_store.get_stats(),

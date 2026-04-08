@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 _T = TypeVar("_T")
 
-from src.clients.mt5_market import MT5MarketClient, MT5MarketError
+from src.clients.mt5_market import OHLC, MT5MarketClient, MT5MarketError
 from src.config import IngestSettings
 from src.market import MarketDataService
 from src.persistence.storage_writer import StorageWriter
@@ -39,12 +39,6 @@ class BackgroundIngestor:
         self._thread: Optional[threading.Thread] = None
         self._last_tick_time: Dict[str, datetime] = {}
         self._last_ohlc_time: Dict[str, datetime] = {}
-        self._last_intrabar_snapshot: Dict[str, tuple] = {}
-        # intrabar 统计：轮询次数 / 去重跳过 / 实际更新
-        self._intrabar_polls: int = 0
-        self._intrabar_deduped: int = 0
-        self._intrabar_updated: int = 0
-        self._intrabar_stats_lock = threading.Lock()
         self._ohlc_lock = threading.Lock()  # 保护 _last_ohlc_time 的并发读写
         self._backfill_progress: Dict[str, datetime] = {}
         self._backfill_cutoff: Dict[str, datetime] = {}
@@ -76,6 +70,12 @@ class BackgroundIngestor:
         self._symbol_backoff_count: Dict[str, int] = {}  # 累计退避轮次
         # 回补完成标志：回补线程结束后设为 True，供 SignalRuntime 判断 warmup 状态
         self._backfill_done = threading.Event()
+        # Intrabar trigger: parent_tf → trigger_tf（例 {"H1": "M5"}）。
+        # 当 trigger_tf bar close 时，从已确认的 trigger_tf bars 合成 parent_tf
+        # 当前 bar 并注入 intrabar 管道。已配置的 parent_tf 不再轮询 MT5。
+        self._intrabar_trigger_map: dict[str, str] = {}
+        # 反查表：trigger_tf → [parent_tf, ...]
+        self._intrabar_trigger_reverse: dict[str, list[str]] = {}
 
     @property
     def is_backfilling(self) -> bool:
@@ -150,7 +150,6 @@ class BackgroundIngestor:
     def _run(self) -> None:
         poll_interval = self.settings.ingest_poll_interval
         next_ohlc_at: Dict[str, float] = {}
-        next_intrabar_at: Dict[str, float] = {}
         while not self._stop.is_set():
             start_loop = time.time()
             now = time.time()
@@ -162,7 +161,6 @@ class BackgroundIngestor:
                     self._ingest_quote(symbol)
                     self._ingest_ticks(symbol)
                     self._ingest_ohlc(symbol, next_ohlc_at)
-                    self._ingest_intrabar(symbol, next_intrabar_at)
                     # 本轮成功，重置错误计数和退避轮次。
                     self._symbol_error_counts.pop(symbol, None)
                     self._symbol_backoff_count.pop(symbol, None)
@@ -345,7 +343,7 @@ class BackgroundIngestor:
                         )
                     continue
 
-                # 未收盘 bar 由 _ingest_intrabar 以独立频率处理，此处跳过。
+                # 未收盘 bar 由 trigger 模式合成处理，此处跳过。
 
             if closed_bars:
                 # 缓存写入只保留已收盘 K 线。
@@ -354,6 +352,12 @@ class BackgroundIngestor:
                     self.service.enqueue_ohlc_closed_event(symbol, tf, bar.time)
                 newest_closed = closed_bars[-1].time
                 self._set_last_ohlc_time_if_newer(key, newest_closed)
+                # 子 TF close → 合成父 TF intrabar bar
+                if new_events and tf in self._intrabar_trigger_reverse:
+                    for parent_tf in self._intrabar_trigger_reverse[tf]:
+                        self._synthesize_parent_intrabar(
+                            symbol, tf, parent_tf, newest_closed
+                        )
 
             if to_write_closed:
                 for row in to_write_closed:
@@ -361,124 +365,100 @@ class BackgroundIngestor:
 
             next_ohlc_at[key] = now + tf_interval
 
-    # --- intrabar independent sampling ---
+    # --- intrabar trigger: synthesize parent TF bar from child TF closes ---
 
-    def _get_intrabar_interval(self, tf: str) -> float:
-        """Return the sampling interval (seconds) for the given timeframe.
+    def _synthesize_parent_intrabar(
+        self,
+        symbol: str,
+        trigger_tf: str,
+        parent_tf: str,
+        trigger_bar_time: datetime,
+    ) -> None:
+        """从子 TF closed bars 合成父 TF 当前未收盘 bar，注入 intrabar 管道。
 
-        Priority: per-tf config > global intrabar_interval > auto (5% of bar, min 5s).
+        在 _ingest_ohlc 检测到子 TF bar close 后立即调用。
+        从 _ohlc_closed_cache 读子 TF bars（纯内存，零 I/O），
+        合成父 TF 当前 bar 后调 set_intrabar() 注入现有管道。
         """
-        per_tf = self.settings.ingest_intrabar_intervals.get(tf)
-        if per_tf:
-            return max(1.0, float(per_tf))
-        global_cfg = self.settings.ingest_intrabar_interval
-        if global_cfg and global_cfg > 0:
-            return max(1.0, float(global_cfg))
-        return max(5.0, timeframe_seconds(tf) * 0.05)
+        parent_tf_secs = timeframe_seconds(parent_tf)
+        trigger_tf_secs = timeframe_seconds(trigger_tf)
+        if parent_tf_secs <= 0 or trigger_tf_secs <= 0:
+            return
 
-    def _ingest_intrabar(self, symbol: str, next_intrabar_at: Dict[str, float]) -> None:
-        """Fetch the current in-progress bar for each timeframe on its own schedule.
+        # 计算父 TF 当前 bar 的开盘时间（向下对齐）
+        trigger_ts = trigger_bar_time.timestamp()
+        parent_bar_open_ts = trigger_ts - (trigger_ts % parent_tf_secs)
+        parent_bar_open = datetime.fromtimestamp(parent_bar_open_ts, tz=timezone.utc)
 
-        Responsibilities:
-        - Publish set_intrabar() so IndicatorManager computes live indicators.
-        - Enqueue intrabar row to DB when storage is enabled.
-        - Never touch closed bars (those belong to _ingest_ohlc).
+        # 读取子 TF confirmed bars，筛选当前父 bar 区间内的
+        max_child_bars = parent_tf_secs // trigger_tf_secs + 2
+        child_bars = self.service.get_ohlc_closed(
+            symbol, trigger_tf, limit=max_child_bars
+        )
+        bars_in_range = [b for b in child_bars if b.time >= parent_bar_open]
+        if not bars_in_range:
+            return
 
-        Error handling:
-        - MT5MarketError: warn + apply retry backoff, don't raise.
-        - No OHLC history yet (warmup): skip silently.
+        # 合成父 TF 当前未收盘 bar
+        synthesized = OHLC(
+            symbol=symbol,
+            timeframe=parent_tf,
+            time=parent_bar_open,
+            open=bars_in_range[0].open,
+            high=max(b.high for b in bars_in_range),
+            low=min(b.low for b in bars_in_range),
+            close=bars_in_range[-1].close,
+            volume=sum(b.volume for b in bars_in_range),
+        )
 
-        Startup stagger:
-        - First fire for each (symbol, tf) is offset by hash-based jitter so all
-          pairs don't fire simultaneously on the first loop iteration.
-        """
-        now = time.time()
-        tf_seconds_cache: Dict[str, int] = {}
+        # 注入现有 intrabar 管道
+        self.service.set_intrabar(symbol, parent_tf, synthesized)
 
-        for tf in self.settings.ingest_ohlc_timeframes:
-            key = ohlc_key(symbol, tf)
-            interval = self._get_intrabar_interval(tf)
-
-            # Stagger first fire: spread (symbol, tf) pairs across [0, interval) seconds.
-            if key not in next_intrabar_at:
-                jitter = (abs(hash(key)) % max(1, int(interval))) * (
-                    interval / max(1, int(interval))
-                )
-                next_intrabar_at[key] = now + jitter
-                continue
-
-            if now < next_intrabar_at[key]:
-                continue
-
-            # Skip if OHLC not yet warmed up — indicator history would be empty.
-            if self._get_last_ohlc_time(key) is None:
-                next_intrabar_at[key] = now + interval
-                continue
-
-            try:
-                bars = self.client.get_ohlc(symbol, tf, 1)
-            except MT5MarketError as exc:
-                # Back off on MT5 errors to avoid hammering a broken connection.
-                logger.warning("Intrabar fetch failed for %s %s: %s", symbol, tf, exc)
-                next_intrabar_at[key] = now + interval * 2
-                continue
-
-            if not bars:
-                next_intrabar_at[key] = now + interval
-                continue
-
-            bar = bars[-1]
-            tf_sec = tf_seconds_cache.setdefault(tf, timeframe_seconds(tf))
-            closed_cutoff = datetime.now(timezone.utc) - timedelta(seconds=tf_sec)
-            bar_time_utc = (
-                bar.time.replace(tzinfo=timezone.utc)
-                if bar.time.tzinfo is None
-                else bar.time.astimezone(timezone.utc)
+        # 持久化到 TimescaleDB（与轮询路径对齐）
+        if self.settings.intrabar_enabled:
+            recorded_at = datetime.now(timezone.utc).isoformat()
+            self.storage.enqueue(
+                "intrabar",
+                (
+                    synthesized.symbol,
+                    synthesized.timeframe,
+                    synthesized.open,
+                    synthesized.high,
+                    synthesized.low,
+                    synthesized.close,
+                    synthesized.volume,
+                    synthesized.time.isoformat(),
+                    recorded_at,
+                ),
             )
 
-            if bar_time_utc <= closed_cutoff:
-                # Bar already closed — _ingest_ohlc owns it; nothing for us to do.
-                next_intrabar_at[key] = now + interval
-                continue
+        logger.debug(
+            "Ingestor: %s %s close → synthesized %s intrabar "
+            "(child_bars=%d, close=%.5f)",
+            symbol,
+            trigger_tf,
+            parent_tf,
+            len(bars_in_range),
+            synthesized.close,
+        )
 
-            # Dedup: only act when the bar content actually changed.
-            current = (bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
-            with self._intrabar_stats_lock:
-                self._intrabar_polls += 1
-                if self._last_intrabar_snapshot.get(key) == current:
-                    self._intrabar_deduped += 1
-                    next_intrabar_at[key] = now + interval
-                    continue
-                self._intrabar_updated += 1
-                self._last_intrabar_snapshot[key] = current
-            self.service.set_intrabar(symbol, tf, bar)
+    def set_intrabar_trigger_map(self, trigger_map: dict[str, str]) -> None:
+        """设置 intrabar trigger 映射。
 
-            if self.settings.intrabar_enabled:
-                recorded_at = datetime.now(timezone.utc).isoformat()
-                self.storage.enqueue(
-                    "intrabar",
-                    (
-                        bar.symbol,
-                        bar.timeframe,
-                        bar.open,
-                        bar.high,
-                        bar.low,
-                        bar.close,
-                        bar.volume,
-                        bar.time.isoformat(),
-                        recorded_at,
-                    ),
-                )
-
-            logger.debug(
-                "Intrabar updated %s %s: close=%.5f high=%.5f low=%.5f",
-                symbol,
-                tf,
-                bar.close,
-                bar.high,
-                bar.low,
+        Args:
+            trigger_map: parent_tf → trigger_tf，例 {"H1": "M5", "H4": "M15"}
+        """
+        self._intrabar_trigger_map = dict(trigger_map)
+        reverse: dict[str, list[str]] = {}
+        for parent_tf, trigger_tf in trigger_map.items():
+            reverse.setdefault(trigger_tf, []).append(parent_tf)
+        self._intrabar_trigger_reverse = reverse
+        if trigger_map:
+            logger.info(
+                "Ingestor intrabar trigger configured: %s (reverse: %s)",
+                trigger_map,
+                reverse,
             )
-            next_intrabar_at[key] = now + interval
 
     # --- monitoring ---
     def queue_stats(self) -> dict:
@@ -490,12 +470,6 @@ class BackgroundIngestor:
         stats["threads"]["backfill_alive"] = (
             self._backfill_thread.is_alive() if self._backfill_thread else False
         )
-        with self._intrabar_stats_lock:
-            stats["intrabar"] = {
-                "polls": self._intrabar_polls,
-                "deduped": self._intrabar_deduped,
-                "updated": self._intrabar_updated,
-            }
         return stats
 
     def _init_backfill_progress(self) -> None:

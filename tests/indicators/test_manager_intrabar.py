@@ -51,7 +51,7 @@ class _FakeService:
         return self._bars[-count:] if count else list(self._bars)
 
     def get_ohlc_closed(self, symbol, timeframe, limit=None):
-        return self._bars[-(limit or len(self._bars)):] if self._bars else []
+        return self._bars[-limit:] if limit else list(self._bars)
 
     def get_ohlc_window(self, symbol, timeframe, end_time=None, limit=None):
         bars = self._bars

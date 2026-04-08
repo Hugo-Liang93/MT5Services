@@ -83,9 +83,11 @@ MarketDataService → StorageWriter → BackgroundIngestor → UnifiedIndicatorM
 ```text
 MT5 → BackgroundIngestor → MarketDataService(内存缓存)
   ├─ StorageWriter(8通道异步) → TimescaleDB
-  └─ OHLC 收盘事件 → IndicatorManager → 指标快照
-       └─ SignalRuntime(confirmed优先+intrabar) → 策略评估 → VotingEngine
-            └─ TradeExecutor → PendingEntryManager → MT5 下单
+  ├─ OHLC 收盘事件 → IndicatorManager → 指标快照
+  │    └─ SignalRuntime(confirmed优先+intrabar) → 策略评估 → VotingEngine
+  │         └─ TradeExecutor → PendingEntryManager → MT5 下单
+  └─ 子 TF close → 合成父 TF intrabar bar → set_intrabar() (trigger 模式)
+       └─ 同上 intrabar 管道 → IntrabarTradeCoordinator → intrabar_armed → 盘中入场
 ```
 
 ### 3.2 持久化链路
@@ -163,9 +165,10 @@ pipeline_trace_events + signal/trade → TradingFlowTraceReadModel → /v1/trade
 
 | 文件 | 职责 | 边界 |
 |------|------|------|
-| `ingestor.py` | BackgroundIngestor：主轮询循环，从 MT5 拉取 quote/tick/OHLC/intrabar | 只做数据拉取和分发。不做指标计算、不做信号评估 |
+| `ingestor.py` | BackgroundIngestor：主轮询循环，从 MT5 拉取 quote/tick/OHLC；intrabar 支持两种模式：定时轮询 MT5 或子 TF close 事件驱动合成 | 只做数据拉取和分发。不做指标计算、不做信号评估 |
 
 采集节奏：`poll_interval`（tick/quote）、`ohlc_interval`（收盘 bar）、`intrabar_interval`（盘中快照），三者独立节流。
+Intrabar trigger 模式：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → trigger_tf 映射，子 TF bar close 时 `_synthesize_parent_intrabar()` 从内存 confirmed bars 合成父 TF 当前 bar，注入 `set_intrabar()` 管道。已配置 trigger 的父 TF 不再轮询 MT5。
 
 ### 5.3 src/indicators/ — 指标计算
 
@@ -196,7 +199,7 @@ pipeline_trace_events + signal/trade → TradingFlowTraceReadModel → /v1/trade
 
 | 子包 | 职责 | 边界 |
 |------|------|------|
-| `orchestration/` | SignalRuntime 协调器 + 协作者。管理事件队列、状态机、投票、regime 亲和度 | 只做信号流编排。不实现策略逻辑、不下单 |
+| `orchestration/` | SignalRuntime 协调器 + 协作者。管理事件队列、状态机、投票、regime 亲和度、IntrabarTradeCoordinator（bar 计数稳定性 → intrabar_armed 交易信号） | 只做信号流编排。不实现策略逻辑、不下单 |
 | `strategies/` | 全部策略实现 + 策略注册/目录/参数解析 | 只做信号判断（`evaluate() → SignalDecision`）。不访问交易状态 |
 | `evaluation/` | Regime 检测、Calibrator 校准、PerformanceTracker 绩效追踪 | 只做评估和统计。不做信号发布 |
 | `execution/` | SignalFilterChain（时段/点差/经济/波动率过滤） | 只做过滤决策（`should_evaluate() → bool`）。不做评估 |
@@ -228,7 +231,7 @@ pipeline_trace_events + signal/trade → TradingFlowTraceReadModel → /v1/trade
 | 子包 | 职责 | 边界 | 禁止 |
 |------|------|------|------|
 | `application/` | TradingModule 聚合根 + CQRS 命令/查询分离 + 审计 + 信号执行 | 业务编排层。协调下层子包 | 不直接调 MT5 API |
-| `execution/` | TradeExecutor 协调器 + ExecutionGate 准入 + RegimeSizing 仓位 + 挂单提交 + 成本估算 | 下单决策和参数计算 | 不管理持仓生命周期 |
+| `execution/` | TradeExecutor 协调器 + ExecutionGate 准入（含 intrabar 策略白名单）+ RegimeSizing 仓位 + IntrabarTradeGuard（盘中去重 + confirmed 协调）+ 挂单提交 + 成本估算 | 下单决策和参数计算 | 不管理持仓生命周期 |
 | `pending/` | PendingOrderManager：挂单追踪、过期、成交衔接 | 挂单状态管理 | 不做开仓决策 |
 | `positions/` | PositionManager：持仓监控、止损跟踪、breakeven、日终平仓 | 仓位生命周期管理 | 不做开仓 |
 | `closeout/` | ExposureCloseoutService：风险收口（平仓 + 撤单） | 只做紧急/日终平仓 | 不做常规交易 |

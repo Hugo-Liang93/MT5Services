@@ -209,10 +209,19 @@ def build_execution_gate_config(signal_config) -> ExecutionGateConfig:
         for cfg in signal_config.voting_group_configs
         for strategy in cfg.get("strategies", [])
     )
+    intrabar_enabled_strategies = frozenset(
+        s
+        for s in getattr(signal_config, "intrabar_trading_enabled_strategies", [])
+        if s
+    )
     return ExecutionGateConfig(
         require_armed=signal_config.auto_trade_require_armed,
         voting_group_strategies=voting_group_strategies,
         standalone_override=frozenset(signal_config.standalone_override),
+        intrabar_trading_enabled=getattr(
+            signal_config, "intrabar_trading_enabled", False
+        ),
+        intrabar_enabled_strategies=intrabar_enabled_strategies,
     )
 
 
@@ -361,41 +370,24 @@ def build_signal_components(
     # ── 应用配置化参数覆盖 ────────────────────────────────────────────
     _apply_strategy_config_overrides(signal_module, signal_config)
 
-    # ── HTF INI 配置校验（硬错误，阻止启动）─────────────────────────
-    _enabled_indicators = {
-        cfg.name for cfg in indicator_manager.config.indicators if cfg.enabled
-    }
-    _registered_strategies = set(signal_module.list_strategies())
-    _htf_errors: list[str] = []
-    for compound_key, tf_value in signal_config.strategy_htf_targets.items():
-        parts = compound_key.split(".", 1)
-        if len(parts) != 2:
-            continue
-        strategy_name, ind_name = parts[0].strip(), parts[1].strip()
-        tf = tf_value.strip().upper()
-        if strategy_name not in _registered_strategies:
-            _htf_errors.append(
-                f"[strategy_htf] {compound_key}: strategy '{strategy_name}' not registered"
-            )
-        if tf not in configured_tfs:
-            _htf_errors.append(
-                f"[strategy_htf] {compound_key} = {tf}: timeframe '{tf}' not in app.ini"
-            )
-        if ind_name not in _enabled_indicators:
-            _htf_errors.append(
-                f"[strategy_htf] {compound_key} = {tf}: indicator '{ind_name}' not enabled in indicators.json"
-            )
-    if _htf_errors:
-        for err in _htf_errors:
-            _factory_logger.error(err)
-        raise ValueError(
-            f"signal.ini [strategy_htf] has {len(_htf_errors)} invalid entries: "
-            + "; ".join(_htf_errors[:3])
-            + ("..." if len(_htf_errors) > 3 else "")
+    # ── HTF 配置从策略声明自动推导（替代 INI [strategy_htf]）──────────
+    _htf_target_config = signal_module.htf_target_config()
+    if _htf_target_config:
+        _factory_logger.info(
+            "HTF target config (auto-derived from strategies): %s",
+            _htf_target_config,
         )
 
-    # 从策略的 preferred_scopes + required_indicators 自动推导 intrabar 指标集合，
-    # 注入到 indicator_manager。
+    # 从策略的 preferred_scopes + required_indicators + htf_required_indicators
+    # 自动推导指标计算集合，分别注入到 indicator_manager 的 confirmed 和 intrabar 路径。
+    # 三源推导：策略自用指标 ∪ 策略 HTF 跨 TF 指标 ∪ 基础设施固定依赖
+    # 基础设施固定依赖：regime(adx14/boll20/keltner20/rsi14) + filter(atr14/adx14/rsi14) + sizing(atr14)
+    _INFRA_INDICATORS = frozenset({"atr14", "adx14", "rsi14", "boll20", "keltner20"})
+    indicator_manager.set_confirmed_eligible_override(
+        signal_module.confirmed_required_indicators()
+        | signal_module.htf_required_indicators()
+        | _INFRA_INDICATORS
+    )
     indicator_manager.set_intrabar_eligible_override(
         signal_module.intrabar_required_indicators()
     )
@@ -429,7 +421,7 @@ def build_signal_components(
         htf_indicators_enabled=signal_config.htf_indicators_enabled,
         intrabar_confidence_factor=signal_config.intrabar_confidence_factor,
         htf_context_fn=htf_cache.get_htf_context,
-        htf_target_config=dict(signal_config.strategy_htf_targets),
+        htf_target_config=_htf_target_config,
         wal_db_path=wal_db_path,
     )
 
@@ -588,6 +580,40 @@ def build_signal_components(
             on_position_tracked=trading_state_store.record_position_tracked,
             on_position_updated=trading_state_store.record_position_update,
             on_position_closed=trading_state_store.mark_position_closed,
+        )
+
+    # ── IntrabarTradeCoordinator + IntrabarTradeGuard ──
+    # Intrabar trigger 路由由 Ingestor 管理（子 TF close → 合成父 TF bar）。
+    # 这里只构建信号层的 coordinator（稳定性判定）和执行层的 guard（去重/协调）。
+    from src.signals.orchestration.intrabar_trade_coordinator import (
+        IntrabarTradeCoordinator,
+        IntrabarTradingPolicy,
+    )
+    from src.trading.execution.intrabar_guard import IntrabarTradeGuard
+
+    if (
+        signal_config.intrabar_trading_enabled
+        and signal_config.intrabar_trading_enabled_strategies
+    ):
+        intrabar_policy = IntrabarTradingPolicy(
+            min_stable_bars=signal_config.intrabar_trading_min_stable_bars,
+            min_confidence=signal_config.intrabar_trading_min_confidence,
+            enabled_strategies=frozenset(
+                signal_config.intrabar_trading_enabled_strategies
+            ),
+        )
+        intrabar_coordinator = IntrabarTradeCoordinator(policy=intrabar_policy)
+        signal_runtime._intrabar_trade_coordinator = intrabar_coordinator
+        intrabar_guard = IntrabarTradeGuard()
+        trade_executor._intrabar_guard = intrabar_guard
+        # 注册 intrabar 交易信号 listener
+        signal_runtime.add_signal_listener(trade_executor.on_intrabar_trade_signal)
+        _factory_logger.info(
+            "Intrabar trading enabled: strategies=%s, min_stable_bars=%d, "
+            "min_confidence=%.2f",
+            sorted(intrabar_policy.enabled_strategies),
+            intrabar_policy.min_stable_bars,
+            intrabar_policy.min_confidence,
         )
 
     # 信号质量追踪器：N bars 后评估信号预测质量（供 Calibrator 长期统计校准）

@@ -9,12 +9,12 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "20周期简单移动平均线",
       "tags": [
         "trend",
         "mean"
-      ]
+      ],
+      "display": true
     },
     {
       "name": "ema50",
@@ -25,7 +25,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "50周期指数移动平均线",
       "tags": [
         "trend",
@@ -41,7 +40,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": false,
       "description": "21周期指数移动平均线（无策略依赖，ema9/ema50 已覆盖快慢均线）",
       "tags": [
         "trend",
@@ -57,7 +55,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": false,
       "description": "55周期指数移动平均线（无策略依赖，ema50 已覆盖）",
       "tags": [
         "trend",
@@ -73,7 +70,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "delta_bars": [
         3,
         5
@@ -93,7 +89,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": false,
       "description": "5周期相对强弱指数（无策略依赖，rsi14 已覆盖）",
       "tags": [
         "momentum",
@@ -111,12 +106,12 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "标准MACD",
       "tags": [
         "momentum",
         "trend"
-      ]
+      ],
+      "display": true
     },
     {
       "name": "macd_fast",
@@ -129,7 +124,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": false,
       "description": "5-13-5 快速MACD（无策略依赖，原计划 M1 使用但无 M1 策略）",
       "tags": [
         "momentum",
@@ -146,7 +140,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "20周期布林带（函数内部自行计算SMA，无需依赖sma20）",
       "tags": [
         "volatility",
@@ -162,7 +155,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "14周期平均真实波幅",
       "tags": [
         "volatility"
@@ -178,7 +170,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": false,
       "description": "14周期随机指标（无策略依赖，stoch_rsi14 已替代）",
       "tags": [
         "momentum",
@@ -194,7 +185,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": false,
       "description": "14周期威廉指标（策略 williams_r 已禁用，与 RSI 数学等价）",
       "tags": [
         "momentum",
@@ -210,7 +200,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "delta_bars": [
         3,
         5
@@ -230,7 +219,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": false,
       "description": "14周期资金流量指标（当前无策略依赖，停用）",
       "tags": [
         "volume",
@@ -246,12 +234,12 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "20周期唐奇安通道",
       "tags": [
         "trend",
         "channel"
-      ]
+      ],
+      "display": true
     },
     {
       "name": "obv30",
@@ -262,7 +250,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": false,
       "description": "30周期能量潮指标（当前无策略依赖，停用）",
       "tags": [
         "volume",
@@ -278,12 +265,12 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "12周期变动率指标",
       "tags": [
         "momentum",
         "trend"
-      ]
+      ],
+      "display": true
     },
     {
       "name": "cci20",
@@ -294,7 +281,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "delta_bars": [
         3,
         5
@@ -303,7 +289,8 @@
       "tags": [
         "momentum",
         "oscillator"
-      ]
+      ],
+      "display": true
     },
     {
       "name": "keltner20",
@@ -316,7 +303,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "20周期肯特纳通道（函数内部自行计算ATR，无需依赖atr14）",
       "tags": [
         "volatility",
@@ -332,12 +318,12 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "30周期成交量加权均价",
       "tags": [
         "volume",
         "mean"
-      ]
+      ],
+      "display": true
     },
     {
       "name": "volume_ratio20",
@@ -348,7 +334,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "当前bar成交量与近20bar均值的比率（异常放量检测）",
       "tags": [
         "volume"
@@ -363,7 +348,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": false,
       "description": "20周期加权移动平均线（当前无策略依赖，开发阶段直接停用）",
       "tags": [
         "trend",
@@ -380,7 +364,6 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "14周期Supertrend趋势跟踪指标（黄金日内交易核心指标）",
       "tags": [
         "trend",
@@ -399,7 +382,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "delta_bars": [
         3,
         5
@@ -419,12 +401,12 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "20周期Hull移动平均线（低滞后，适合黄金日内趋势判断）",
       "tags": [
         "trend",
         "mean"
-      ]
+      ],
+      "display": true
     },
     {
       "name": "ema9",
@@ -435,12 +417,12 @@
       },
       "dependencies": [],
       "compute_mode": "incremental",
-      "enabled": true,
       "description": "9周期快速EMA，用于短期动量捕捉",
       "tags": [
         "trend",
         "mean"
-      ]
+      ],
+      "display": true
     },
     {
       "name": "bar_stats20",
@@ -451,7 +433,6 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "Bar body/range 滚动统计（20 bar 回望）",
       "tags": [
         "price_action",
@@ -467,9 +448,12 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "方向指数差异 (+DI-−DI)/(+DI+−DI)，值域[-1,1]",
-      "tags": ["trend", "momentum"]
+      "tags": [
+        "trend",
+        "momentum"
+      ],
+      "display": true
     },
     {
       "name": "squeeze20",
@@ -483,9 +467,11 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "波动率挤压检测（BB < KC），squeeze=1.0/0.0 + intensity",
-      "tags": ["volatility"]
+      "tags": [
+        "volatility"
+      ],
+      "display": true
     },
     {
       "name": "vwap_dev30",
@@ -497,9 +483,12 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "VWAP偏离度 (close−VWAP)/ATR，无量纲均值回归指标",
-      "tags": ["mean", "volatility"]
+      "tags": [
+        "mean",
+        "volatility"
+      ],
+      "display": true
     },
     {
       "name": "momentum_accel14",
@@ -512,9 +501,11 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "RSI/ROC二阶导（动量加速度），正=加速上行",
-      "tags": ["momentum"]
+      "tags": [
+        "momentum"
+      ],
+      "display": true
     },
     {
       "name": "candle_pattern",
@@ -524,9 +515,11 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "K线形态识别（锤子/吞没/十字星/Pin Bar/内包线/连续方向）",
-      "tags": ["price_action"]
+      "tags": [
+        "price_action"
+      ],
+      "display": true
     },
     {
       "name": "price_struct20",
@@ -539,9 +532,12 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "价格结构（HH/HL/LH/LL + Swing Points + ATR归一化距离）",
-      "tags": ["price_action", "trend"]
+      "tags": [
+        "price_action",
+        "trend"
+      ],
+      "display": true
     },
     {
       "name": "gap14",
@@ -553,9 +549,12 @@
       },
       "dependencies": [],
       "compute_mode": "standard",
-      "enabled": true,
       "description": "跳空分析（gap/ATR + 回补率 + 跳空检测）",
-      "tags": ["price_action", "volatility"]
+      "tags": [
+        "price_action",
+        "volatility"
+      ],
+      "display": true
     }
   ],
   "pipeline": {

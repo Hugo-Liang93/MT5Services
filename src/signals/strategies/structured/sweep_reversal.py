@@ -16,7 +16,7 @@ class StructuredSweepReversal(StructuredStrategyBase):
     name = "structured_sweep_reversal"
     category = "price_action"
     htf_policy = HtfPolicy.NONE
-    required_indicators = ("rsi14", "atr14", "adx14")
+    required_indicators = ("rsi14", "atr14", "adx14", "bar_stats20", "volume_ratio20")
     regime_affinity = {
         RegimeType.TRENDING: 0.30,
         RegimeType.RANGING: 0.90,

@@ -16,7 +16,8 @@ class StructuredRangeReversion(StructuredStrategyBase):
     name = "structured_range_reversion"
     category = "reversion"
     htf_policy = HtfPolicy.SOFT_GATE
-    required_indicators = ("rsi14", "atr14", "adx14", "boll20")
+    required_indicators = ("rsi14", "atr14", "adx14", "boll20", "stoch_rsi14", "mfi14", "volume_ratio20")
+    htf_required_indicators = {"supertrend14": "H1", "adx14": "H1"}
     preferred_scopes = ("confirmed", "intrabar")
     regime_affinity = {
         RegimeType.TRENDING: 0.05,

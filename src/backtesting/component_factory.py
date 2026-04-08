@@ -74,8 +74,6 @@ def build_backtest_components(
 
     # 注册指标函数
     for ind_cfg in indicator_config.indicators:
-        if not ind_cfg.enabled:
-            continue
         parts = ind_cfg.func_path.rsplit(".", 1)
         mod = importlib.import_module(parts[0])
         func = getattr(mod, parts[1])
