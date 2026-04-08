@@ -131,7 +131,14 @@ intrabar 链路（L3 best-effort）：
 |------|------|---------|------|
 | **L1 (Durable)** | 必须持久化，不可丢失 | confirmed bar close、trade signal、order execution、risk block | SQLite events.db + DB 写入 + backpressure 重试 |
 | **L2 (Recoverable)** | 允许丢失但可回放恢复 | indicator snapshot、reconcile、OHLC 持久化 | StorageWriter 队列（block 策略）+ 定时 reconcile 兜底 |
-| **L3 (Best-effort)** | 最佳努力，丢失可接受 | intrabar preview、调试快照、部分监控指标 | put_nowait 队列满则丢弃 + 丢弃计数器 |
+| **L3 (Best-effort)** | 最佳努力，丢失可接受 | intrabar preview（观测模式）、调试快照、部分监控指标 | put_nowait 队列满则丢弃 + 丢弃计数器 |
+
+> **注意**：`intrabar_trading.enabled = true` 时，intrabar 链路升级为 **L2 语义**——
+> 丢弃不会导致错误交易（fail-safe：coordinator 连续计数断裂 → 不触发），
+> 但会导致交易机会静默丢失。丢弃时日志升级为 WARNING，coordinator 状态
+> 通过 `/v1/signals/runtime/status` 暴露（连续计数、距 armed 差几根、上次重置原因）。
+> 触发源（子 TF confirmed bar close）本身是 L1，进程重启后 coordinator 状态归零，
+> 等待 N 根子 TF bar 后自动恢复。
 
 ### 置信度管线（修正链 — 顺序关键）
 

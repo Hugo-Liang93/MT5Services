@@ -429,6 +429,17 @@ class SignalRuntime:
                 )
             else:
                 self._dropped_intrabar += 1
+                # intrabar_trading 启用时丢弃影响实际交易链路，升级到 WARNING
+                if self._intrabar_trade_coordinator is not None:
+                    symbol, timeframe = item[1], item[2]
+                    logger.warning(
+                        "INTRABAR event DROPPED for %s/%s while intrabar_trading "
+                        "is enabled (total_intrabar_dropped=%d). "
+                        "Coordinator stability counter may be disrupted.",
+                        symbol,
+                        timeframe,
+                        self._dropped_intrabar,
+                    )
             now = time.monotonic()
             # Rate-limit error logs to at most once per 60 s to avoid log spam.
             if now - self._last_drop_log_at >= 60.0:
@@ -560,6 +571,11 @@ class SignalRuntime:
                 if self.filter_chain is not None
                 and hasattr(self.filter_chain, "filter_status")
                 else {}
+            ),
+            "intrabar_trade_coordinator": (
+                self._intrabar_trade_coordinator.status()
+                if self._intrabar_trade_coordinator is not None
+                else None
             ),
         }
 

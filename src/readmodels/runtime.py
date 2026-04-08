@@ -377,6 +377,9 @@ class RuntimeReadModel:
             "regime_map": dict(runtime_status.get("regime_map", {}) or {}),
             "last_run_at": runtime_status.get("last_run_at"),
             "last_error": last_error,
+            "intrabar_trade_coordinator": (
+                runtime_status.get("intrabar_trade_coordinator")
+            ),
         }
 
     @classmethod
