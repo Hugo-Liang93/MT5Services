@@ -425,10 +425,14 @@ def _mine_single(
         # 排列 p-value：训练集 hit_rate 在 null distribution 中的位置
         perm_p: Optional[float] = None
         if perm_null_hit_rates is not None:
-            count_ge = sum(
-                1 for h in perm_null_hit_rates if h >= rule.train_hit_rate
-            )
-            perm_p = count_ge / len(perm_null_hit_rates)
+            if len(perm_null_hit_rates) == 0:
+                # 排列检验未产生有效结果 → 保守返回非显著
+                perm_p = 1.0
+            else:
+                count_ge = sum(
+                    1 for h in perm_null_hit_rates if h >= rule.train_hit_rate
+                )
+                perm_p = count_ge / len(perm_null_hit_rates)
 
         # Binomial 检验：测试集 hit_rate 是否显著优于 50%
         binom_p: Optional[float] = None
