@@ -551,6 +551,26 @@ def transition_and_publish(
             regime_metadata,
         )
     )
+
+    # ── Intrabar 交易协调：每次 intrabar 评估都更新 bar 计数 ──────────
+    # 必须在 transition_metadata 判定前运行，否则非 transition tick
+    # 不会递增 stability counter，导致 min_stable_bars 依赖状态转换
+    # 而非子 TF close 频率，系统性地减少 armed 信号产出。
+    armed_state: str | None = None
+    if (
+        scope == "intrabar"
+        and decision.direction in ("buy", "sell")
+        and runtime._intrabar_trade_coordinator is not None
+    ):
+        armed_state = runtime._intrabar_trade_coordinator.update(
+            symbol=decision.symbol,
+            parent_tf=decision.timeframe,
+            strategy=decision.strategy,
+            direction=decision.direction,
+            confidence=decision.confidence,
+            parent_bar_time=bar_time,
+        )
+
     if transition_metadata is None:
         return
 
@@ -577,42 +597,26 @@ def transition_and_publish(
         runtime, decision, signal_id, scope, full_indicators, transition_metadata
     )
 
-    # ── Intrabar 交易协调：bar 计数稳定性 → intrabar_armed 信号 ──
-    if (
-        scope == "intrabar"
-        and decision.direction in ("buy", "sell")
-        and runtime._intrabar_trade_coordinator is not None
-    ):
-        parent_bar_time = transition_metadata.get(MK.BAR_TIME)
-        if parent_bar_time is not None:
-            armed_state = runtime._intrabar_trade_coordinator.update(
-                symbol=decision.symbol,
-                parent_tf=decision.timeframe,
-                strategy=decision.strategy,
-                direction=decision.direction,
-                confidence=decision.confidence,
-                parent_bar_time=parent_bar_time,
+    # ── Intrabar armed 信号发布（coordinator.update 已在上方完成）──
+    if armed_state is not None:
+        armed_metadata = dict(transition_metadata)
+        armed_metadata[MK.SIGNAL_STATE] = armed_state
+        armed_metadata[MK.STATE_CHANGED] = True
+        armed_metadata[MK.INTRABAR_STABLE_BARS] = (
+            runtime._intrabar_trade_coordinator.policy.get_min_stable_bars(
+                decision.strategy
             )
-            if armed_state is not None:
-                # 发布 intrabar_armed 可交易信号
-                armed_metadata = dict(transition_metadata)
-                armed_metadata[MK.SIGNAL_STATE] = armed_state
-                armed_metadata[MK.STATE_CHANGED] = True
-                armed_metadata[MK.INTRABAR_STABLE_BARS] = (
-                    runtime._intrabar_trade_coordinator.policy.get_min_stable_bars(
-                        decision.strategy
-                    )
-                )
-                armed_metadata[MK.INTRABAR_PARENT_BAR_TIME] = parent_bar_time
-                armed_signal_id = uuid4().hex[:12]
-                publish_signal_event(
-                    runtime,
-                    decision,
-                    armed_signal_id,
-                    scope,
-                    full_indicators,
-                    armed_metadata,
-                )
+        )
+        armed_metadata[MK.INTRABAR_PARENT_BAR_TIME] = bar_time
+        armed_signal_id = uuid4().hex[:12]
+        publish_signal_event(
+            runtime,
+            decision,
+            armed_signal_id,
+            scope,
+            full_indicators,
+            armed_metadata,
+        )
 
 
 def market_structure_lookback_bars(
