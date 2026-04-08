@@ -147,9 +147,9 @@ class UnifiedIndicatorManager:
         self._preview_snapshot_max_entries = 500
         self._priority_indicator_groups: tuple[tuple[str, ...], ...] = ()
         # Throttle guard: minimum wall-clock gap between intrabar computations
-        # per (symbol, timeframe).  The ingestor already controls frequency via
-        # its own next_intrabar_at schedule; this is a defense-in-depth guard
-        # that prevents duplicate runs caused by race conditions or config drift.
+        # per (symbol, timeframe).  The ingestor trigger mode already controls
+        # frequency via child TF bar close events; this is a defense-in-depth
+        # guard that prevents duplicate runs caused by race conditions.
         self._last_intrabar_compute: dict[str, float] = {}
         # Intrabar events are dispatched here from the ingestor thread so that
         # indicator computation never blocks data acquisition.  The dedicated

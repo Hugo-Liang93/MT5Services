@@ -476,7 +476,7 @@ SignalRuntime._publish_signal_event(event)
 
 子 TF confirmed close 驱动的盘中入场管道。默认关闭（`[intrabar_trading] enabled = false`），与既有 intrabar 观测链路（preview/armed 预热）并行运行，互不干扰。
 
-核心设计：用低 TF **完整 K 线收盘事件**（L1 可靠）替代 OHLC 快照轮询，触发高 TF 策略盘中评估 → bar 计数稳定性 → 盘中入场。
+核心设计：用低 TF **完整 K 线收盘事件**（L1 可靠）驱动高 TF 策略盘中评估 → bar 计数稳定性 → 盘中入场。
 
 ### 10.2 数据源：子 TF close → 合成父 TF bar
 
@@ -503,7 +503,7 @@ _ingest_ohlc() 检测子 TF bar close（L1 事件）
       → 注入既有 intrabar 管道
 ```
 
-已配置 trigger 的父 TF 在 `_ingest_intrabar()` 中跳过 MT5 轮询。
+所有 intrabar 数据均通过此 Trigger 合成路径产生，`_ingest_ohlc()` 中未收盘 bar 直接跳过。
 
 ### 10.3 信号稳定性判定：IntrabarTradeCoordinator
 
