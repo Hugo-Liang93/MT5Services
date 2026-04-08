@@ -165,10 +165,10 @@ pipeline_trace_events + signal/trade → TradingFlowTraceReadModel → /v1/trade
 
 | 文件 | 职责 | 边界 |
 |------|------|------|
-| `ingestor.py` | BackgroundIngestor：主轮询循环，从 MT5 拉取 quote/tick/OHLC；intrabar 支持两种模式：定时轮询 MT5 或子 TF close 事件驱动合成 | 只做数据拉取和分发。不做指标计算、不做信号评估 |
+| `ingestor.py` | BackgroundIngestor：主循环从 MT5 拉取 quote/tick/OHLC confirmed bars；intrabar 由子 TF close 事件驱动合成（Trigger 模式，唯一路径） | 只做数据拉取和分发。不做指标计算、不做信号评估 |
 
-采集节奏：`poll_interval`（tick/quote）、`ohlc_interval`（收盘 bar）、`intrabar_interval`（盘中快照），三者独立节流。
-Intrabar trigger 模式：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → trigger_tf 映射，子 TF bar close 时 `_synthesize_parent_intrabar()` 从内存 confirmed bars 合成父 TF 当前 bar，注入 `set_intrabar()` 管道。已配置 trigger 的父 TF 不再轮询 MT5。
+采集节奏：`poll_interval`（tick/quote）、`ohlc_interval`（收盘 bar），两者独立节流。Intrabar 不走轮询，由 Trigger 模式驱动。
+Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → trigger_tf 映射，子 TF bar close 时 `_synthesize_parent_intrabar()` 从内存 confirmed bars 合成父 TF 当前 bar，注入 `set_intrabar()` 管道。`_ingest_ohlc()` 中未收盘 bar 直接跳过。
 
 ### 5.3 src/indicators/ — 指标计算
 

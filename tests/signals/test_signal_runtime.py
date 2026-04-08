@@ -187,7 +187,7 @@ def test_signal_runtime_processes_confirmed_snapshot_event() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
     )
 
     runtime._on_snapshot(
@@ -216,7 +216,7 @@ def test_signal_runtime_assigns_transient_signal_id_for_repeated_confirmed_actio
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
     )
     captured_events = []
     runtime.add_signal_listener(captured_events.append)
@@ -250,14 +250,14 @@ def test_signal_runtime_status_exposes_trigger_mode() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
     )
 
     status = runtime.status()
 
     assert status["target_count"] == 1
     assert status["trigger_mode"]["confirmed_snapshot"] is True
-    assert status["trigger_mode"]["intrabar"] is False
+    assert "intrabar" not in status["trigger_mode"]
     assert "confirmed_backpressure_waits" in status
     assert "confirmed_backpressure_failures" in status
 
@@ -272,7 +272,7 @@ def test_signal_runtime_processes_intrabar_snapshot_when_enabled() -> None:
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
+
         policy=SignalPolicy(
             min_preview_confidence=0.5,
             min_preview_bar_progress=0.0,
@@ -308,7 +308,7 @@ def test_signal_runtime_promotes_preview_signal_to_armed_after_stable_window() -
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
+
         policy=SignalPolicy(
             min_preview_confidence=0.5,
             min_preview_bar_progress=0.0,
@@ -368,7 +368,7 @@ def test_signal_runtime_emits_confirmed_cancelled_when_bias_returns_to_idle() ->
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
     )
 
     runtime._enqueue(
@@ -441,7 +441,7 @@ def test_signal_runtime_restores_recent_confirmed_state() -> None:
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
     )
 
     runtime._restore_state()
@@ -461,7 +461,7 @@ def test_signal_runtime_skips_strategies_when_required_indicators_missing() -> N
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion"),
         ],
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
+
         policy=SignalPolicy(
             min_preview_confidence=0.5,
             min_preview_bar_progress=0.0,
@@ -495,7 +495,7 @@ def test_signal_runtime_deduplicates_same_required_indicator_snapshot_for_same_b
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
+
         policy=SignalPolicy(
             min_preview_confidence=0.5,
             min_preview_bar_progress=0.0,
@@ -534,7 +534,7 @@ def test_signal_runtime_fuses_intrabar_and_confirmed_votes_per_strategy() -> Non
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
+
     )
 
     intrabar_decision = SignalDecision(
@@ -580,7 +580,7 @@ def test_signal_runtime_injects_soft_regime_metadata_when_enabled() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
     )
 
     runtime._on_snapshot(
@@ -618,7 +618,7 @@ def test_signal_runtime_confirmed_queue_is_drained_before_intrabar() -> None:
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
+
         policy=SignalPolicy(
             min_preview_confidence=0.5,
             min_preview_bar_progress=0.0,
@@ -680,7 +680,7 @@ def test_signal_runtime_status_exposes_split_queues() -> None:
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
+
     )
 
     status = runtime.status()
@@ -703,7 +703,7 @@ def test_signal_runtime_injects_spread_points_from_market_service() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
     )
 
     runtime._on_snapshot(
@@ -728,7 +728,7 @@ def test_signal_runtime_status_reflects_market_structure_config_enabled() -> Non
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
         market_structure_analyzer=DummyStructureAnalyzer(enabled=False),
     )
 
@@ -745,7 +745,7 @@ def test_signal_runtime_skips_strategy_outside_strategy_sessions() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
         policy=SignalPolicy(strategy_sessions={"rsi_reversion": ("asia",)}),
     )
 
@@ -777,7 +777,7 @@ def test_signal_runtime_injects_market_structure_context() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
         market_structure_analyzer=analyzer,
     )
 
@@ -805,7 +805,7 @@ def test_signal_runtime_uses_bar_time_for_confirmed_session_context() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
         policy=SignalPolicy(strategy_sessions={"rsi_reversion": ("asia",)}),
         filter_chain=SignalFilterChain(session_filter=SessionFilter(("asia", "london", "new_york"))),
         market_structure_analyzer=analyzer,
@@ -842,7 +842,7 @@ def test_signal_runtime_reuses_cached_market_structure_for_intrabar() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
+
         market_structure_analyzer=analyzer,
     )
     bar_time = datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc)
@@ -897,7 +897,7 @@ def test_signal_runtime_uses_shorter_m1_market_structure_lookback() -> None:
         snapshot_source=source,
         targets=[SignalTarget(symbol="XAUUSD", timeframe="M1", strategy="sma_trend")],
         enable_confirmed_snapshot=True,
-        enable_intrabar=False,
+
         market_structure_analyzer=analyzer,
     )
 

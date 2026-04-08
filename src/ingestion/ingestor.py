@@ -76,6 +76,9 @@ class BackgroundIngestor:
         self._intrabar_trigger_map: dict[str, str] = {}
         # 反查表：trigger_tf → [parent_tf, ...]
         self._intrabar_trigger_reverse: dict[str, list[str]] = {}
+        # 断更检测：每个 (symbol, parent_tf) 最后一次成功合成的单调时钟
+        self._last_synthesis_at: Dict[str, float] = {}
+        self._synthesis_count: Dict[str, int] = {}
 
     @property
     def is_backfilling(self) -> bool:
@@ -432,6 +435,13 @@ class BackgroundIngestor:
                 ),
             )
 
+        # 断更检测：记录成功合成时间和计数
+        synthesis_key = ohlc_key(symbol, parent_tf)
+        self._last_synthesis_at[synthesis_key] = time.monotonic()
+        self._synthesis_count[synthesis_key] = (
+            self._synthesis_count.get(synthesis_key, 0) + 1
+        )
+
         logger.debug(
             "Ingestor: %s %s close → synthesized %s intrabar "
             "(child_bars=%d, close=%.5f)",
@@ -470,7 +480,37 @@ class BackgroundIngestor:
         stats["threads"]["backfill_alive"] = (
             self._backfill_thread.is_alive() if self._backfill_thread else False
         )
+        stats["intrabar_synthesis"] = self._intrabar_synthesis_stats()
         return stats
+
+    def _intrabar_synthesis_stats(self) -> dict:
+        """返回每个 (symbol, parent_tf) 的 intrabar 合成状态。
+
+        包含合成计数、距上次合成的时间间隔、以及是否疑似断更。
+        断更判定：距上次合成超过子 TF 周期的 3 倍。
+        """
+        now = time.monotonic()
+        result: Dict[str, dict] = {}
+        for parent_tf, trigger_tf in self._intrabar_trigger_map.items():
+            expected_interval = timeframe_seconds(trigger_tf)
+            stale_threshold = expected_interval * 3
+            for symbol in self.settings.ingest_symbols:
+                key = ohlc_key(symbol, parent_tf)
+                last_at = self._last_synthesis_at.get(key)
+                count = self._synthesis_count.get(key, 0)
+                if last_at is not None:
+                    age = now - last_at
+                    stale = age > stale_threshold
+                else:
+                    age = -1.0  # 从未合成
+                    stale = True if count == 0 and not self.is_backfilling else False
+                result[key] = {
+                    "trigger_tf": trigger_tf,
+                    "count": count,
+                    "last_age_seconds": round(age, 1),
+                    "stale": stale,
+                }
+        return result
 
     def _init_backfill_progress(self) -> None:
         """启动时从数据库初始化回补起点与截止时间。"""

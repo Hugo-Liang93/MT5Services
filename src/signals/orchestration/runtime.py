@@ -97,7 +97,6 @@ class SignalRuntime:
         snapshot_source: SnapshotSource,
         targets: Iterable[SignalTarget],
         enable_confirmed_snapshot: bool = True,
-        enable_intrabar: bool = False,
         policy: SignalPolicy | None = None,
         filter_chain: SignalFilterChain | None = None,
         regime_detector: MarketRegimeDetector | None = None,
@@ -112,7 +111,6 @@ class SignalRuntime:
         self.service = service
         self.snapshot_source = snapshot_source
         self.enable_confirmed_snapshot = bool(enable_confirmed_snapshot)
-        self.enable_intrabar = bool(enable_intrabar)
         self.policy = policy or SignalPolicy()
         self.filter_chain = filter_chain
         # Regime 检测在 process_next_event 主循环内完成，结果写入 metadata 后再传给 service.evaluate()。
@@ -370,8 +368,6 @@ class SignalRuntime:
     ) -> None:
         if scope == "confirmed" and not self.enable_confirmed_snapshot:
             return
-        if scope == "intrabar" and not self.enable_intrabar:
-            return
         if not check_warmup_barrier(
             self, symbol, timeframe, bar_time, indicators, scope
         ):
@@ -429,6 +425,17 @@ class SignalRuntime:
                 )
             else:
                 self._dropped_intrabar += 1
+                # intrabar_trading 启用时丢弃影响实际交易链路，升级到 WARNING
+                if self._intrabar_trade_coordinator is not None:
+                    symbol, timeframe = item[1], item[2]
+                    logger.warning(
+                        "INTRABAR event DROPPED for %s/%s while intrabar_trading "
+                        "is enabled (total_intrabar_dropped=%d). "
+                        "Coordinator stability counter may be disrupted.",
+                        symbol,
+                        timeframe,
+                        self._dropped_intrabar,
+                    )
             now = time.monotonic()
             # Rate-limit error logs to at most once per 60 s to avoid log spam.
             if now - self._last_drop_log_at >= 60.0:
@@ -505,7 +512,6 @@ class SignalRuntime:
             "target_count": len(self._targets),
             "trigger_mode": {
                 "confirmed_snapshot": self.enable_confirmed_snapshot,
-                "intrabar": self.enable_intrabar,
             },
             "strategy_sessions": {
                 name: list(sessions)
@@ -560,6 +566,11 @@ class SignalRuntime:
                 if self.filter_chain is not None
                 and hasattr(self.filter_chain, "filter_status")
                 else {}
+            ),
+            "intrabar_trade_coordinator": (
+                self._intrabar_trade_coordinator.status()
+                if self._intrabar_trade_coordinator is not None
+                else None
             ),
         }
 

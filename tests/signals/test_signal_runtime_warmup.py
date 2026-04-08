@@ -96,7 +96,6 @@ def _make_runtime(
         snapshot_source=source,
         targets=targets,
         enable_confirmed_snapshot=True,
-        enable_intrabar=True,
         policy=policy,
         warmup_ready_fn=warmup_ready_fn,
     )
