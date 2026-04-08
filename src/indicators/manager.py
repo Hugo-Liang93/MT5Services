@@ -218,10 +218,10 @@ class UnifiedIndicatorManager:
         registered_names = set(self._indicator_funcs)
         for cfg in self.config.indicators:
             for dep in cfg.dependencies or []:
-                if dep not in enabled_names:
+                if dep not in registered_names:
                     logger.warning(
-                        "Indicator '%s' declares dependency '%s' which is not enabled. "
-                        "Computation of '%s' will fail at runtime until '%s' is enabled.",
+                        "Indicator '%s' declares dependency '%s' which is not registered. "
+                        "Computation of '%s' will fail at runtime until '%s' is registered.",
                         cfg.name,
                         dep,
                         cfg.name,
