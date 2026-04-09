@@ -421,12 +421,14 @@ class UnifiedIndicatorManager:
 
         Just enqueue the event; the dedicated _intrabar_thread does the heavy
         lifting so that data acquisition is never stalled by indicator computation.
-        Overflow is silently dropped: intrabar snapshots are best-effort.
+        Overflow dropped: when intrabar_trading is enabled this is L2
+        (recoverable — coordinator fail-safe prevents wrong trades, but
+        trading opportunities are silently lost).
         """
         try:
             self._intrabar_queue.put_nowait((symbol, timeframe, bar))
         except queue.Full:
-            logger.debug(
+            logger.warning(
                 "Intrabar indicator queue full, dropped %s/%s at %s",
                 symbol,
                 timeframe,
