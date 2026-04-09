@@ -156,6 +156,8 @@ class UnifiedIndicatorManager:
         # _intrabar_thread drains this queue independently.
         self._intrabar_queue: queue.Queue = queue.Queue(maxsize=1024)
         self._intrabar_thread: threading.Thread | None = None
+        self._intrabar_no_listener_skips = 0
+        self._intrabar_no_listener_last_log_at = 0.0
         # Cached set of indicator names eligible for intrabar snapshots.
         # Built once in _register_indicators() and invalidated on _reinitialize().
         self._intrabar_eligible_cache: frozenset | None = None
@@ -449,6 +451,20 @@ class UnifiedIndicatorManager:
             # Skip computation entirely when there are no snapshot listeners —
             # nobody would consume the intrabar results, so the CPU cost is pure waste.
             if not self._snapshot_listeners:
+                self._intrabar_no_listener_skips += 1
+                now = time.monotonic()
+                if (
+                    now - self._intrabar_no_listener_last_log_at >= 60.0
+                    and self._intrabar_no_listener_skips > 0
+                ):
+                    logger.warning(
+                        "Intrabar event skipped because no snapshot listeners are registered "
+                        "(skipped_since_last_log=%d, queue_size=%d)",
+                        self._intrabar_no_listener_skips,
+                        self._intrabar_queue.qsize(),
+                    )
+                    self._intrabar_no_listener_last_log_at = now
+                    self._intrabar_no_listener_skips = 0
                 continue
             symbol, timeframe, bar = item
             key = ohlc_key(symbol, timeframe)
