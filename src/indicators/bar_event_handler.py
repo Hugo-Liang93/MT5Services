@@ -274,7 +274,17 @@ def process_intrabar_event(
         )
 
     eligible_names = manager._get_intrabar_eligible_names()
-    eligible = list(eligible_names) if eligible_names else None
+    eligible = list(eligible_names)
+    # Intrabar 仅允许计算策略自动推导出的指标子集。
+    # 当 eligible 为空时，显式跳过（而不是回退到全量计算）。
+    if not eligible:
+        logger.debug(
+            "Skipping intrabar indicator compute for %s/%s at %s: empty eligible set",
+            symbol,
+            timeframe,
+            getattr(bar, "time", None),
+        )
+        return {}
     bars = manager._load_intrabar_bars(symbol, timeframe, bar)
     if not bars:
         return {}

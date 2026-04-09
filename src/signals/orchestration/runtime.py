@@ -239,6 +239,9 @@ class SignalRuntime:
         self._state_lock = threading.Lock()
         self._dropped_confirmed = 0
         self._dropped_intrabar = 0
+        self._intrabar_overflow_wait_success = 0
+        self._intrabar_overflow_replace_success = 0
+        self._intrabar_overflow_failures = 0
         self._confirmed_backpressure_waits = 0
         self._confirmed_backpressure_failures = 0
         self._last_drop_log_at: float = 0.0
@@ -410,6 +413,25 @@ class SignalRuntime:
                     return
                 except queue.Full:
                     self._confirmed_backpressure_failures += 1
+            elif self._intrabar_trade_coordinator is not None:
+                # Intrabar trading enabled:
+                # 1) try short backpressure wait
+                # 2) if still full, replace one oldest intrabar event with latest
+                #    to favor freshness under burst load.
+                try:
+                    target_queue.put(item, timeout=0.02)
+                    self._intrabar_overflow_wait_success += 1
+                    return
+                except queue.Full:
+                    try:
+                        target_queue.get_nowait()
+                        target_queue.put_nowait(item)
+                        self._intrabar_overflow_replace_success += 1
+                        return
+                    except queue.Empty:
+                        self._intrabar_overflow_failures += 1
+                    except queue.Full:
+                        self._intrabar_overflow_failures += 1
             self._dropped_events += 1
             if scope == "confirmed":
                 self._dropped_confirmed += 1
@@ -431,10 +453,14 @@ class SignalRuntime:
                     logger.warning(
                         "INTRABAR event DROPPED for %s/%s while intrabar_trading "
                         "is enabled (total_intrabar_dropped=%d). "
-                        "Coordinator stability counter may be disrupted.",
+                        "Coordinator stability counter may be disrupted. "
+                        "(wait_success=%d, replace_success=%d, overflow_failures=%d)",
                         symbol,
                         timeframe,
                         self._dropped_intrabar,
+                        self._intrabar_overflow_wait_success,
+                        self._intrabar_overflow_replace_success,
+                        self._intrabar_overflow_failures,
                     )
             now = time.monotonic()
             # Rate-limit error logs to at most once per 60 s to avoid log spam.

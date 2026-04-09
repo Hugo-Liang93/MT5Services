@@ -186,6 +186,35 @@ H1 策略盘中入场示例：
 - [ ] 回测支持：用 M5 bar 数据回测高 TF 策略的盘中入场效果
 - [ ] 风控覆盖：intrabar 交易需经过同样的风控堆栈（可精简但不可跳过）
 
+### Intrabar 工程化后续步骤（2026-04-09 新增）
+
+> 目标：把 intrabar 从“best-effort 可用”提升到“可量化、可降级、可审计”的交易级链路。
+
+- [ ] **SLO 与告警基线**
+  - [ ] 定义并落地 3 个核心 SLO：`intrabar_drop_rate_1m`、`intrabar_queue_age_p95`、`intrabar_to_decision_latency_p95`
+  - [ ] 在 `/signals/monitoring` 或健康端点暴露 intrabar 溢出统计（wait_success / replace_success / overflow_failures）
+  - [ ] 设定分级告警阈值（INFO/WARN/CRITICAL）并写入运行文档
+
+- [ ] **调度策略从固定配额升级为自适应配额**
+  - [ ] 将 confirmed:intrabar 固定让路策略（当前 burst 限额）改为基于 backlog/queue_age 的动态配额
+  - [ ] 增加“高拥塞模式”下的自动限流与恢复条件，避免 intrabar 长尾延迟放大
+  - [ ] 补充回放测试：低波动 / 高波动 / 极端爆量 3 组场景对比
+
+- [ ] **链路降级矩阵（Degrade Ladder）**
+  - [ ] 定义 L0-L3 四档降级：全量 intrabar → 白名单策略 → 核心 TF → 仅 confirmed
+  - [ ] 建立降级触发器（queue_age、drop_rate、CPU 负载）与回升条件
+  - [ ] 将当前“随机丢弃”转为“可预期降级”，并在状态接口中可见
+
+- [ ] **启动前置校验与运行态自愈**
+  - [ ] intrabar_trading=true 时，启动阶段校验 listener/策略白名单/trigger 映射完整性
+  - [ ] 当出现“无 listener 跳过”持续超阈值时触发自愈动作（降级或切回 confirmed-only）
+  - [ ] 补充 runbook：排查步骤、指标看板、回滚开关
+
+- [ ] **端到端可审计 Trace**
+  - [ ] 统一 trace_id 贯通：`intrabar_bar -> indicator_snapshot -> strategy_decision -> vote -> gate -> order`
+  - [ ] 在 trade audit 视图增加“本次下单来自哪个 intrabar 快照”的可追踪字段
+  - [ ] 增加 1 条失败链路示例（被 filter/gate 阻断）用于回归测试与演示
+
 **前置条件**：P0-P1 完成，confirmed 链路策略有效性已验证
 
 ### 结构化策略架构适配（路径 B 后续）
