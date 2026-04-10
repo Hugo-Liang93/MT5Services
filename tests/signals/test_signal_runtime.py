@@ -263,6 +263,8 @@ def test_signal_runtime_status_exposes_trigger_mode() -> None:
 
 
 def test_signal_runtime_processes_intrabar_snapshot_when_enabled() -> None:
+    """Intrabar snapshots are evaluated but no longer produce state machine
+    transitions (preview/armed removed). Only the coordinator path is active."""
     source = DummySnapshotSource()
     service = DummySignalService()
     runtime = SignalRuntime(
@@ -272,13 +274,6 @@ def test_signal_runtime_processes_intrabar_snapshot_when_enabled() -> None:
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-
-        policy=SignalPolicy(
-            min_preview_confidence=0.5,
-            min_preview_bar_progress=0.0,
-            min_preview_stable_seconds=0.0,
-            preview_cooldown_seconds=0.0,
-        ),
     )
 
     runtime._on_snapshot(
@@ -295,67 +290,8 @@ def test_signal_runtime_processes_intrabar_snapshot_when_enabled() -> None:
     assert service.evaluate_calls[0]["metadata"]["scope"] == "intrabar"
     assert "signal_trace_id" in service.evaluate_calls[0]["metadata"]
     assert "bar_progress" in service.evaluate_calls[0]["metadata"]
-    assert service.persist_calls[0]["metadata"]["signal_state"] == "preview_buy"
-
-
-def test_signal_runtime_promotes_preview_signal_to_armed_after_stable_window() -> None:
-    source = DummySnapshotSource()
-    service = DummySignalService()
-    runtime = SignalRuntime(
-        service=service,
-        snapshot_source=source,
-        targets=[
-            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
-        ],
-        enable_confirmed_snapshot=True,
-
-        policy=SignalPolicy(
-            min_preview_confidence=0.5,
-            min_preview_bar_progress=0.0,
-            min_preview_stable_seconds=5.0,
-            preview_cooldown_seconds=0.0,
-        ),
-    )
-
-    bar_time = datetime.now(timezone.utc) - timedelta(seconds=180)
-    runtime._enqueue(
-        (
-            "intrabar",
-            "XAUUSD",
-            "M5",
-            {"rsi14": {"rsi": 24.0}},
-            {
-                "scope": "intrabar",
-                "bar_time": bar_time.isoformat(),
-                "snapshot_time": (
-                    datetime.now(timezone.utc) - timedelta(seconds=10)
-                ).isoformat(),
-                "trigger_source": "intrabar_snapshot",
-                "bar_progress": 0.5,
-            },
-        )
-    )
-    runtime.process_next_event(timeout=0.01)
-    runtime._enqueue(
-        (
-            "intrabar",
-            "XAUUSD",
-            "M5",
-            {"rsi14": {"rsi": 24.0}},
-            {
-                "scope": "intrabar",
-                "bar_time": bar_time.isoformat(),
-                "snapshot_time": datetime.now(timezone.utc).isoformat(),
-                "trigger_source": "intrabar_snapshot",
-                "bar_progress": 0.55,
-            },
-        )
-    )
-    runtime.process_next_event(timeout=0.01)
-
-    assert len(service.persist_calls) == 2
-    assert service.persist_calls[0]["metadata"]["signal_state"] == "preview_buy"
-    assert service.persist_calls[1]["metadata"]["signal_state"] == "armed_buy"
+    # No state machine transition for intrabar — persist_calls empty (no coordinator)
+    assert len(service.persist_calls) == 0
 
 
 def test_signal_runtime_emits_confirmed_cancelled_when_bias_returns_to_idle() -> None:
@@ -461,13 +397,6 @@ def test_signal_runtime_skips_strategies_when_required_indicators_missing() -> N
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion"),
         ],
         enable_confirmed_snapshot=True,
-
-        policy=SignalPolicy(
-            min_preview_confidence=0.5,
-            min_preview_bar_progress=0.0,
-            min_preview_stable_seconds=0.0,
-            preview_cooldown_seconds=0.0,
-        ),
     )
 
     runtime._on_snapshot(
@@ -495,13 +424,6 @@ def test_signal_runtime_deduplicates_same_required_indicator_snapshot_for_same_b
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-
-        policy=SignalPolicy(
-            min_preview_confidence=0.5,
-            min_preview_bar_progress=0.0,
-            min_preview_stable_seconds=0.0,
-            preview_cooldown_seconds=0.0,
-        ),
     )
 
     bar_time = datetime.now(timezone.utc) - timedelta(seconds=120)
@@ -523,7 +445,7 @@ def test_signal_runtime_deduplicates_same_required_indicator_snapshot_for_same_b
     runtime.process_next_event(timeout=0.01)
 
     assert len(service.evaluate_calls) == 1
-    assert len(service.persist_calls) == 1
+    assert len(service.persist_calls) == 0
 
 
 def test_signal_runtime_fuses_intrabar_and_confirmed_votes_per_strategy() -> None:
@@ -618,13 +540,6 @@ def test_signal_runtime_confirmed_queue_is_drained_before_intrabar() -> None:
             SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
         ],
         enable_confirmed_snapshot=True,
-
-        policy=SignalPolicy(
-            min_preview_confidence=0.5,
-            min_preview_bar_progress=0.0,
-            min_preview_stable_seconds=0.0,
-            preview_cooldown_seconds=0.0,
-        ),
     )
 
     # Enqueue intrabar first, then confirmed.

@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 class SignalConfig(BaseModel):
     auto_trade_enabled: bool = False
     auto_trade_min_confidence: float = 0.7
-    auto_trade_require_armed: bool = True
     max_concurrent_positions_per_symbol: int | None = 3
     sl_atr_multiplier: float = 1.5
     tp_atr_multiplier: float = 3.0
@@ -32,10 +31,6 @@ class SignalConfig(BaseModel):
     economic_lookahead_minutes: int = 30
     economic_lookback_minutes: int = 15
     economic_importance_min: int = 3
-    min_preview_confidence: float = 0.55
-    min_preview_bar_progress: float = 0.15
-    preview_stable_seconds: float = 15.0
-    preview_cooldown_seconds: float = 30.0
     snapshot_dedupe_window_seconds: float = 0.3
     soft_regime_enabled: bool = True
     voting_enabled: bool = True

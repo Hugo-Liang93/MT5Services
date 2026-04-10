@@ -537,25 +537,15 @@ def transition_and_publish(
     scoped_indicators: dict[str, dict[str, float]],
     full_indicators: dict[str, dict[str, float]],
 ) -> None:
-    transition_metadata = (
-        runtime._transition_confirmed(
+    transition_metadata = None
+    if scope == "confirmed":
+        transition_metadata = runtime._transition_confirmed(
             state, decision.direction, event_time, bar_time, regime_metadata
         )
-        if scope == "confirmed"
-        else runtime._transition_intrabar(
-            state,
-            decision.direction,
-            decision.confidence,
-            event_time,
-            bar_time,
-            regime_metadata,
-        )
-    )
 
     # ── Intrabar 交易协调：每次 intrabar 评估都更新 bar 计数 ──────────
-    # 必须在 transition_metadata 判定前运行，否则非 transition tick
-    # 不会递增 stability counter，导致 min_stable_bars 依赖状态转换
-    # 而非子 TF close 频率，系统性地减少 armed 信号产出。
+    # coordinator 独立运行，在 intrabar 评估时递增 stability counter 并在
+    # 达标时独立发布 intrabar_armed 信号，直接触发盘中交易。
     armed_state: str | None = None
     if (
         scope == "intrabar"
@@ -569,6 +559,38 @@ def transition_and_publish(
             direction=decision.direction,
             confidence=decision.confidence,
             parent_bar_time=bar_time,
+        )
+
+    # ── Coordinator armed 信号独立发布，不受状态机门控 ──────────────
+    # coordinator 的 intrabar_armed 信号直接触发 TradeExecutor，
+    # 不应因状态机无转换（transition_metadata=None）而被丢弃。
+    if armed_state is not None:
+        armed_metadata = dict(regime_metadata)
+        armed_metadata[MK.SIGNAL_STATE] = armed_state
+        armed_metadata[MK.STATE_CHANGED] = True
+        armed_metadata[MK.INTRABAR_STABLE_BARS] = (
+            runtime._intrabar_trade_coordinator.policy.get_min_stable_bars(
+                decision.strategy
+            )
+        )
+        armed_metadata[MK.INTRABAR_PARENT_BAR_TIME] = bar_time
+        strategy_obj = runtime.service.get_strategy(decision.strategy)
+        if strategy_obj is not None:
+            armed_metadata[MK.STRATEGY_CATEGORY] = getattr(
+                strategy_obj, "category", ""
+            )
+        armed_signal_id = uuid4().hex[:12]
+        # 持久化 coordinator armed 决策
+        runtime.service.persist_decision(
+            decision, indicators=scoped_indicators, metadata=armed_metadata
+        )
+        publish_signal_event(
+            runtime,
+            decision,
+            armed_signal_id,
+            scope,
+            full_indicators,
+            armed_metadata,
         )
 
     if transition_metadata is None:
@@ -596,27 +618,6 @@ def transition_and_publish(
     publish_signal_event(
         runtime, decision, signal_id, scope, full_indicators, transition_metadata
     )
-
-    # ── Intrabar armed 信号发布（coordinator.update 已在上方完成）──
-    if armed_state is not None:
-        armed_metadata = dict(transition_metadata)
-        armed_metadata[MK.SIGNAL_STATE] = armed_state
-        armed_metadata[MK.STATE_CHANGED] = True
-        armed_metadata[MK.INTRABAR_STABLE_BARS] = (
-            runtime._intrabar_trade_coordinator.policy.get_min_stable_bars(
-                decision.strategy
-            )
-        )
-        armed_metadata[MK.INTRABAR_PARENT_BAR_TIME] = bar_time
-        armed_signal_id = uuid4().hex[:12]
-        publish_signal_event(
-            runtime,
-            decision,
-            armed_signal_id,
-            scope,
-            full_indicators,
-            armed_metadata,
-        )
 
 
 def market_structure_lookback_bars(
@@ -661,7 +662,6 @@ def get_vote_emit_kwargs(runtime: "SignalRuntime") -> dict[str, Any]:
         state_by_target=runtime._state_by_target,
         get_shard_lock=runtime._get_shard_lock,
         transition_confirmed_fn=runtime._transition_confirmed,
-        transition_intrabar_fn=runtime._transition_intrabar,
         persist_fn=runtime.service.persist_decision,
         publish_fn=runtime._publish_signal_event,
     )

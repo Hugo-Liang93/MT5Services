@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
-
-from src.utils.common import timeframe_seconds
 
 from ..metadata_keys import MetadataKey as MK
 from .policy import RuntimeSignalState
@@ -27,10 +25,7 @@ def restore_state(runtime: "SignalRuntime") -> None:
         logger.exception("Failed to restore signal runtime state from repository")
         return
 
-    now = datetime.now(timezone.utc)
     restored_confirmed: set[tuple[str, str, str]] = set()
-    restored_preview: set[tuple[str, str, str]] = set()
-    restored_confirmed_at: dict[tuple[str, str, str], datetime] = {}
     for row in rows:
         key = (row.get("symbol"), row.get("timeframe"), row.get("strategy"))
         if key[0] is None or key[1] is None or key[2] is None:
@@ -52,18 +47,8 @@ def restore_state(runtime: "SignalRuntime") -> None:
 
         if scope == "confirmed" and key not in restored_confirmed:
             restored_confirmed.add(key)
-            restored_confirmed_at[key] = generated_at
             restore_confirmed_state(state, signal_state, generated_at, bar_time)
             continue
-
-        if scope in {"preview", "intrabar"} and key not in restored_preview:
-            confirmed_at = restored_confirmed_at.get(key)
-            if confirmed_at is not None and generated_at <= confirmed_at:
-                continue
-            restored_preview.add(key)
-            restore_preview_state(
-                key[1], state, signal_state, generated_at, bar_time, now
-            )
 
 
 def restore_confirmed_state(
@@ -88,28 +73,3 @@ def restore_confirmed_state(
     state.last_emitted_bar_time = bar_time
 
 
-def restore_preview_state(
-    timeframe: str,
-    state: RuntimeSignalState,
-    signal_state: str,
-    generated_at: datetime,
-    bar_time: datetime,
-    now: datetime,
-) -> None:
-    if signal_state not in {
-        "preview_buy",
-        "preview_sell",
-        "armed_buy",
-        "armed_sell",
-    }:
-        return
-    if now >= bar_time + timedelta(seconds=max(timeframe_seconds(timeframe), 1)):
-        return
-    action = signal_state.rsplit("_", 1)[-1]
-    state.preview_state = signal_state
-    state.preview_action = action
-    state.preview_bar_time = bar_time
-    state.preview_since = generated_at
-    state.last_emitted_state = signal_state
-    state.last_emitted_at = generated_at
-    state.last_emitted_bar_time = bar_time

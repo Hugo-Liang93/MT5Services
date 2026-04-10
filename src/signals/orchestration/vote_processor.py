@@ -97,7 +97,6 @@ def process_and_emit_vote_signal(
     state_by_target: dict[tuple[str, str, str], RuntimeSignalState],
     get_shard_lock: Callable[[str, str], Any],
     transition_confirmed_fn: Callable[..., Optional[Dict[str, Any]]],
-    transition_intrabar_fn: Callable[..., Optional[Dict[str, Any]]],
     persist_fn: Callable[..., Any],
     publish_fn: Callable[..., None],
 ) -> None:
@@ -126,14 +125,7 @@ def process_and_emit_vote_signal(
             group_state, vote_result.direction, event_time, bar_time, regime_metadata
         )
         if scope == "confirmed"
-        else transition_intrabar_fn(
-            group_state,
-            vote_result.direction,
-            vote_result.confidence,
-            event_time,
-            bar_time,
-            regime_metadata,
-        )
+        else None
     )
     if transition_metadata is not None:
         signal_id = ""
@@ -165,7 +157,6 @@ def process_voting(
     state_by_target: dict[tuple[str, str, str], RuntimeSignalState],
     get_shard_lock: Callable[[str, str], Any],
     transition_confirmed_fn: Callable[..., Optional[Dict[str, Any]]],
-    transition_intrabar_fn: Callable[..., Optional[Dict[str, Any]]],
     persist_fn: Callable[..., Any],
     publish_fn: Callable[..., None],
     pipeline_bus: Optional[Any] = None,
@@ -199,7 +190,6 @@ def process_voting(
         state_by_target=state_by_target,
         get_shard_lock=get_shard_lock,
         transition_confirmed_fn=transition_confirmed_fn,
-        transition_intrabar_fn=transition_intrabar_fn,
         persist_fn=persist_fn,
         publish_fn=publish_fn,
     )

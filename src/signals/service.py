@@ -384,8 +384,6 @@ class SignalModule:
         # ── Regime 亲和度修正 ────────────────────────────────────────────
         # 从策略类属性 regime_affinity 读取当前 Regime 对应的乘数，
         # 压制在当前行情类型下不可靠的策略。
-        # 置信度降低后若低于 min_preview_confidence（默认 0.55），
-        # SignalRuntime 状态机会自然忽略该信号，无需在此处做额外的硬截断。
         #
         # 性能优化：runtime 在 process_next_event 循环开始前会检测一次 Regime，
         # 并将结果写入 metadata["_regime"]。若存在则直接复用，跳过重复检测。

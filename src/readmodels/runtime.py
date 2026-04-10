@@ -368,7 +368,6 @@ class RuntimeReadModel:
                 ),
             },
             "active_states": {
-                "preview": int(runtime_status.get("active_preview_states", 0) or 0),
                 "confirmed": int(
                     runtime_status.get("active_confirmed_states", 0) or 0
                 ),

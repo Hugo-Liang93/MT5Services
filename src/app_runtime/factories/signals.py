@@ -215,7 +215,6 @@ def build_execution_gate_config(signal_config) -> ExecutionGateConfig:
         if s
     )
     return ExecutionGateConfig(
-        require_armed=signal_config.auto_trade_require_armed,
         voting_group_strategies=voting_group_strategies,
         standalone_override=frozenset(signal_config.standalone_override),
         intrabar_trading_enabled=getattr(
@@ -258,10 +257,6 @@ def build_signal_policy(signal_config) -> SignalPolicy:
         if cfg.get("name") and cfg.get("strategies")
     ]
     return SignalPolicy(
-        min_preview_confidence=signal_config.min_preview_confidence,
-        min_preview_bar_progress=signal_config.min_preview_bar_progress,
-        min_preview_stable_seconds=signal_config.preview_stable_seconds,
-        preview_cooldown_seconds=signal_config.preview_cooldown_seconds,
         snapshot_dedupe_window_seconds=signal_config.snapshot_dedupe_window_seconds,
         max_spread_points=signal_config.max_spread_points,
         allowed_sessions=allowed_sessions,

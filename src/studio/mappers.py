@@ -179,7 +179,6 @@ def map_live_strategist(
 ) -> dict[str, Any]:
     buy = sum(1 for s in preview_signals if s.get("direction") == "buy")
     sell = sum(1 for s in preview_signals if s.get("direction") == "sell")
-    active_preview = runtime_status.get("active_preview_states", 0)
 
     metrics: dict[str, Any] = {
         "intrabar_strategy_count": len(intrabar_strategies),
@@ -187,12 +186,10 @@ def map_live_strategist(
         "preview_signal_count": len(preview_signals),
         "buy_count": buy,
         "sell_count": sell,
-        "active_preview": active_preview,
     }
 
     return resolve_status("live_strategist", [
         (not intrabar_strategies, "idle", "无盘中策略", "none"),
-        (active_preview > 0, "thinking", "盘中预览中", "none"),
         (bool(preview_signals), "working", "盘中策略评估中", "none"),
     ], "idle", "等待盘中快照", metrics=metrics)
 
@@ -286,13 +283,11 @@ def map_voter(runtime_status: dict[str, Any]) -> dict[str, Any]:
         "processed_events": runtime_status.get("processed_events", 0),
         "dropped_events": runtime_status.get("dropped_events", 0),
         "active_confirmed": runtime_status.get("active_confirmed_states", 0),
-        "active_preview": runtime_status.get("active_preview_states", 0),
         "voting_groups": voting_groups,
     }
 
     return resolve_status("voter", [
         (metrics["active_confirmed"] > 0, "working", "投票进行中", "none"),
-        (metrics["active_preview"] > 0, "thinking", "预览评估中", "none"),
     ], "idle", "等待策略信号", metrics=metrics)
 
 

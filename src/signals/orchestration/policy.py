@@ -32,10 +32,6 @@ class VotingGroupConfig:
 
 @dataclass
 class SignalPolicy:
-    min_preview_confidence: float = 0.55
-    min_preview_bar_progress: float = 0.15
-    min_preview_stable_seconds: float = 15.0
-    preview_cooldown_seconds: float = 30.0
     # Minimum wall-clock gap to skip duplicate intrabar snapshots with identical
     # indicator signatures.  Has no effect on confirmed (bar-close) snapshots,
     # which are always deduplicated by (bar_time, signature) regardless of this value.
@@ -68,10 +64,6 @@ class SignalPolicy:
 
 @dataclass
 class RuntimeSignalState:
-    preview_state: str = "idle"
-    preview_action: Optional[str] = None
-    preview_bar_time: Optional[datetime] = None
-    preview_since: Optional[datetime] = None
     confirmed_state: str = "idle"
     confirmed_bar_time: Optional[datetime] = None
     last_emitted_state: Optional[str] = None

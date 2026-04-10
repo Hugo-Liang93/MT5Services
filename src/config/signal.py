@@ -153,17 +153,11 @@ def get_signal_config() -> SignalConfig:
         key_transform=lambda value: value.upper(),
     )
 
+    # Only keep snapshot_dedupe_window_seconds from [preview] section
     renamed_preview = {
-        ("min_preview_confidence" if key == "min_confidence" else key): value
+        key: value
         for key, value in preview_section.items()
-    }
-    field_renames = {
-        "stable_seconds": "preview_stable_seconds",
-        "cooldown_seconds": "preview_cooldown_seconds",
-        "min_bar_progress": "min_preview_bar_progress",
-    }
-    renamed_preview = {
-        field_renames.get(key, key): value for key, value in renamed_preview.items()
+        if key == "snapshot_dedupe_window_seconds"
     }
     renamed_position = {
         ("position_reconcile_interval" if key == "reconcile_interval" else key): value

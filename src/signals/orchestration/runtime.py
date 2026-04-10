@@ -47,7 +47,6 @@ from .runtime_processing import process_next_event as _runtime_process_next_even
 from .runtime_recovery import (
     restore_confirmed_state as _runtime_restore_confirmed_state,
 )
-from .runtime_recovery import restore_preview_state as _runtime_restore_preview_state
 from .runtime_recovery import restore_state as _runtime_restore_state
 from .runtime_warmup import check_warmup_barrier
 from .state_machine import build_transition_metadata
@@ -55,7 +54,7 @@ from .state_machine import is_new_snapshot as _sm_is_new_snapshot
 from .state_machine import mark_emitted as _sm_mark_emitted
 from .state_machine import should_emit as _sm_should_emit
 from .state_machine import snapshot_signature as _sm_snapshot_signature
-from .state_machine import transition_confirmed, transition_intrabar
+from .state_machine import transition_confirmed
 from .vote_processor import fuse_vote_decisions
 from .voting import StrategyVotingEngine
 
@@ -511,13 +510,9 @@ class SignalRuntime:
         }
 
     def _count_active_states(self) -> dict:
-        # Restore preview and confirmed state from recent persisted rows.
         with self._state_lock:
             snapshot = list(self._state_by_target.values())
         return {
-            "active_preview_states": sum(
-                1 for s in snapshot if s.preview_state != "idle"
-            ),
             "active_confirmed_states": sum(
                 1 for s in snapshot if s.confirmed_state != "idle"
             ),
@@ -710,19 +705,6 @@ class SignalRuntime:
     ) -> None:
         _runtime_restore_confirmed_state(state, signal_state, generated_at, bar_time)
 
-    def _restore_preview_state(
-        self,
-        timeframe: str,
-        state: RuntimeSignalState,
-        signal_state: str,
-        generated_at: datetime,
-        bar_time: datetime,
-        now: datetime,
-    ) -> None:
-        _runtime_restore_preview_state(
-            timeframe, state, signal_state, generated_at, bar_time, now
-        )
-
     @staticmethod
     def _should_emit(
         state: RuntimeSignalState,
@@ -777,28 +759,6 @@ class SignalRuntime:
     ) -> dict[str, Any] | None:
         return transition_confirmed(
             state, decision_action, event_time, bar_time, metadata
-        )
-
-    def _transition_intrabar(
-        self,
-        state: RuntimeSignalState,
-        decision_action: str,
-        confidence: float,
-        event_time: datetime,
-        bar_time: datetime,
-        metadata: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        return transition_intrabar(
-            state,
-            decision_action,
-            confidence,
-            event_time,
-            bar_time,
-            metadata,
-            min_preview_confidence=self.policy.min_preview_confidence,
-            min_preview_bar_progress=self.policy.min_preview_bar_progress,
-            min_preview_stable_seconds=self.policy.min_preview_stable_seconds,
-            preview_cooldown_seconds=self.policy.preview_cooldown_seconds,
         )
 
     def _all_intrabar_strategies_satisfied(

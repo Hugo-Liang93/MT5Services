@@ -1,8 +1,7 @@
 """IntrabarTradeCoordinator: 用 bar 计数追踪信号稳定性，判定何时可盘中入场。
 
-与 state_machine.py 的 transition_intrabar() 是并行关系：
-  - transition_intrabar() 继续做 preview/armed 观测（不变）
-  - 本组件专门做交易决策的稳定性判定
+独立负责 intrabar 交易的稳定性判定——当连续 N 根子 TF bar 同方向且
+confidence 达标时，发布 intrabar_armed 信号触发盘中入场。
 
 纯状态操作，无 IO。线程安全（RLock）。
 """

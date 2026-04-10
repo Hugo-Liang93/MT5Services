@@ -28,7 +28,6 @@ class MetadataKey:
     CLOSE_PRICE = "close_price"
     STATE_CHANGED = "state_changed"
     PREVIOUS_STATE = "previous_state"
-    PREVIEW_STATE_AT_CLOSE = "preview_state_at_close"
     SESSION_BUCKETS = "session_buckets"
     SPREAD_POINTS = "spread_points"
     SYMBOL_POINT = "symbol_point"

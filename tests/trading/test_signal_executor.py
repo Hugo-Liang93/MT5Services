@@ -140,7 +140,7 @@ def test_trade_executor_skips_when_spread_to_stop_ratio_is_too_high() -> None:
             tp_atr_multiplier=2.0,
             max_spread_to_stop_ratio=0.2,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     # M5 SL = 2.0 ATR × 2.0 = 4.0 points → spread 120 / (4.0 × 100) = 0.30 > 0.2
@@ -164,7 +164,7 @@ def test_trade_executor_records_cost_metrics_on_success() -> None:
             tp_atr_multiplier=4.0,
             max_spread_to_stop_ratio=0.5,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
     )
 
@@ -192,7 +192,7 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
             tp_atr_multiplier=4.0,
             max_spread_to_stop_ratio=0.5,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     _fire(executor, _build_event(
@@ -229,7 +229,7 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
             min_confidence=0.5,
             max_concurrent_positions_per_symbol=2,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
     )
 
@@ -262,7 +262,7 @@ def test_trade_executor_skips_when_same_strategy_direction_position_is_active() 
             min_confidence=0.5,
             max_concurrent_positions_per_symbol=3,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -291,7 +291,7 @@ def test_trade_executor_allows_reentry_after_same_strategy_direction_position_is
             min_confidence=0.5,
             max_concurrent_positions_per_symbol=3,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -329,7 +329,7 @@ def test_trade_executor_skips_when_same_strategy_direction_mt5_pending_order_exi
             enabled=True,
             min_confidence=0.5,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -355,7 +355,7 @@ def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> Non
             min_confidence=0.5,
             reentry_cooldown_bars=3,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     _limit_spec = {"entry_type": "limit", "entry_price": 3000.0, "entry_zone_atr": 0.3}
@@ -406,7 +406,7 @@ def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
             tp_atr_multiplier=3.0,
             max_spread_to_stop_ratio=0.5,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
     event = _build_event(spread_points=20.0, close_price=3000.0)
     event = SignalEvent(**{**event.__dict__, "timeframe": "M5"})
@@ -429,7 +429,7 @@ def test_trade_executor_passes_signal_id_as_request_id() -> None:
             enabled=True,
             min_confidence=0.5,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     _fire(executor, _build_event(spread_points=10.0, close_price=3000.0))
@@ -462,7 +462,7 @@ def test_trade_executor_registers_filled_pending_mt5_order_immediately() -> None
             enabled=True,
             min_confidence=0.5,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     result = inspect_pending_mt5_order(
@@ -524,7 +524,7 @@ def test_trade_executor_matches_filled_pending_order_by_strategy_prefix_when_com
             enabled=True,
             min_confidence=0.5,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     result = inspect_pending_mt5_order(
@@ -569,7 +569,6 @@ def test_trade_executor_voting_group_strategy_blocked() -> None:
         ),
         execution_gate=ExecutionGate(
             ExecutionGateConfig(
-                require_armed=True,
                 voting_group_strategies=frozenset({"sma_trend", "supertrend"}),
             )
         ),
@@ -593,7 +592,6 @@ def test_trade_executor_voting_group_standalone_override_allows() -> None:
         ),
         execution_gate=ExecutionGate(
             ExecutionGateConfig(
-                require_armed=True,
                 voting_group_strategies=frozenset({"sma_trend", "supertrend"}),
                 standalone_override=frozenset({"sma_trend"}),
             )
@@ -618,7 +616,7 @@ def test_trade_executor_circuit_breaker_auto_resets() -> None:
             max_consecutive_failures=1,
             circuit_auto_reset_minutes=10,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
     # 手动设置熔断状态
     executor._circuit_open = True
@@ -645,7 +643,7 @@ def test_trade_executor_uses_live_positions_when_tracking_state_is_stale() -> No
             min_confidence=0.5,
             max_concurrent_positions_per_symbol=2,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
     _fire(executor, _build_event(spread_points=10.0, close_price=3000.0))
@@ -658,20 +656,8 @@ def test_trade_executor_uses_live_positions_when_tracking_state_is_stale() -> No
 
 # ── ExecutionGate 单元测试 ─────────────────────────────────────────────────
 
-def test_execution_gate_blocks_unarmed_signal() -> None:
-    gate = ExecutionGate(ExecutionGateConfig(require_armed=True))
-    event = _build_event(spread_points=10.0, close_price=3000.0)
-    # 覆盖 metadata，移除 armed 状态
-    event = SignalEvent(**{**event.__dict__, "metadata": {"previous_state": "idle"}})
-
-    allowed, reason = gate.check(event)
-
-    assert not allowed
-    assert reason == "require_armed"
-
-
-def test_execution_gate_allows_armed_signal() -> None:
-    gate = ExecutionGate(ExecutionGateConfig(require_armed=True))
+def test_execution_gate_allows_confirmed_signal() -> None:
+    gate = ExecutionGate(ExecutionGateConfig())
     event = _build_event(spread_points=10.0, close_price=3000.0)
 
     allowed, reason = gate.check(event)

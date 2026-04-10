@@ -62,7 +62,6 @@ class DummySignalRuntime:
             "dropped_events": 0,
             "confirmed_backpressure_failures": 0,
             "warmup_ready": True,
-            "active_preview_states": 1,
             "active_confirmed_states": 1,
         }
 

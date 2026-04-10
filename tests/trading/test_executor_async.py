@@ -97,7 +97,7 @@ def _make_executor(
             tp_atr_multiplier=4.0,
             max_spread_to_stop_ratio=0.5,
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=True)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
     # Override queue size for tests that need a small queue
     if maxsize != 64:

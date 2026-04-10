@@ -929,7 +929,6 @@ class TradeExecutor:
                 "tp_atr_multiplier": self.config.tp_atr_multiplier,
             },
             "execution_gate": {
-                "require_armed": self._execution_gate.config.require_armed,
                 "trade_trigger_strategies": list(
                     getattr(self._execution_gate.config, "trade_trigger_strategies", ())
                 ),

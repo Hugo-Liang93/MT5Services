@@ -114,17 +114,12 @@ class TestStrategist:
 
 class TestVoter:
     def test_active_confirmed(self) -> None:
-        status = {"running": True, "active_confirmed_states": 3, "active_preview_states": 0, "processed_events": 100, "dropped_events": 0}
+        status = {"running": True, "active_confirmed_states": 3, "processed_events": 100, "dropped_events": 0}
         agent = map_voter(status)
         assert agent["status"] == "working"
 
-    def test_preview_only(self) -> None:
-        status = {"running": True, "active_confirmed_states": 0, "active_preview_states": 2, "processed_events": 50, "dropped_events": 0}
-        agent = map_voter(status)
-        assert agent["status"] == "thinking"
-
     def test_idle(self) -> None:
-        status = {"running": True, "active_confirmed_states": 0, "active_preview_states": 0, "processed_events": 10, "dropped_events": 0}
+        status = {"running": True, "active_confirmed_states": 0, "processed_events": 10, "dropped_events": 0}
         agent = map_voter(status)
         assert agent["status"] == "idle"
 

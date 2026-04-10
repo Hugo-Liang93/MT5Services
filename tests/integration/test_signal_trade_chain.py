@@ -3,10 +3,9 @@
 测试范围：
   1. 趋势 buy 信号：confirmed snapshot → TradeExecutor 触发下单
   2. RSI 超卖 buy 信号：confirmed snapshot → TradeExecutor 触发下单
-  3. require_armed 完整流程：intrabar(preview) → intrabar(armed) → confirmed → 下单
-  4. 熔断器：连续失败 N 次后暂停，reset 后恢复
-  5. close_position 竞态修复验证：order_send=None 且持仓已消失 → 视为成功
-  6. 会话过滤验证：非允许时段不触发信号
+  3. 熔断器：连续失败 N 次后暂停，reset 后恢复
+  4. close_position 竞态修复验证：order_send=None 且持仓已消失 → 视为成功
+  5. 会话过滤验证：非允许时段不触发信号
 """
 from __future__ import annotations
 
@@ -228,8 +227,6 @@ def _build_runtime(
     snapshot_source: SnapshotSource,
     *,
     allow_all_sessions: bool = True,
-    require_armed: bool = False,
-    min_preview_stable_seconds: float = 0.0,
 ) -> SignalRuntime:
     from src.signals.orchestration.policy import SignalPolicy
     from src.signals.contracts import SESSION_ASIA, SESSION_LONDON, SESSION_NEW_YORK
@@ -237,9 +234,6 @@ def _build_runtime(
     sessions = (SESSION_ASIA, SESSION_LONDON, SESSION_NEW_YORK) if allow_all_sessions else (SESSION_LONDON, SESSION_NEW_YORK)
     policy = SignalPolicy(
         allowed_sessions=sessions,
-        min_preview_confidence=0.3,
-        min_preview_stable_seconds=min_preview_stable_seconds,
-        preview_cooldown_seconds=0.0,
         voting_enabled=False,         # 简化：关闭投票引擎，只测单策略
     )
     targets = [
@@ -258,7 +252,6 @@ def _build_runtime(
 def _build_executor(
     trading_module,
     *,
-    require_armed: bool = False,
     min_confidence: float = 0.3,
     max_consecutive_failures: int = 3,
 ) -> TradeExecutor:
@@ -275,7 +268,7 @@ def _build_executor(
             max_consecutive_failures=max_consecutive_failures,
             circuit_auto_reset_minutes=0,    # 不自动恢复
         ),
-        execution_gate=ExecutionGate(ExecutionGateConfig(require_armed=require_armed)),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
         account_balance_getter=lambda: 10000.0,
     )
 
@@ -294,10 +287,10 @@ def test_confirmed_buy_triggers_trade() -> None:
     indicators = _trending_buy_indicators(close=3000.0, atr=5.0)
     module = _build_signal_module(indicators)
     source = SnapshotSource(spread_points=5.0)
-    runtime = _build_runtime(module, source, require_armed=False)
+    runtime = _build_runtime(module, source)
 
     trading = TradingModuleCapture()
-    executor = _build_executor(trading, require_armed=False)
+    executor = _build_executor(trading)
     runtime.add_signal_listener(executor.on_signal_event)
     runtime.start()
 
@@ -325,10 +318,10 @@ def test_rsi_oversold_triggers_buy_trade() -> None:
     indicators = _ranging_rsi_buy_indicators(close=3000.0, atr=4.0)
     module = _build_signal_module(indicators)
     source = SnapshotSource()
-    runtime = _build_runtime(module, source, require_armed=False)
+    runtime = _build_runtime(module, source)
 
     trading = TradingModuleCapture()
-    executor = _build_executor(trading, require_armed=False)
+    executor = _build_executor(trading)
     runtime.add_signal_listener(executor.on_signal_event)
     runtime.start()
 
@@ -345,62 +338,7 @@ def test_rsi_oversold_triggers_buy_trade() -> None:
 
 
 # ===========================================================================
-# 测试 3：require_armed=True 完整状态机流程
-#   intrabar(preview) → intrabar(armed) → confirmed → 下单
-# ===========================================================================
-
-def test_require_armed_full_state_machine() -> None:
-    """require_armed=True 时，信号须经 preview→armed 阶段才能触发下单。
-
-    使用 StubIntrabarStrategy（preferred_scopes = ("intrabar", "confirmed")）：
-      1. intrabar 快照 (RSI=22 < 30) → preview_buy
-      2. intrabar 快照（微小差异绕过去重）→ armed_buy（stable_seconds=0）
-      3. confirmed 快照 → confirmed_buy，TradeExecutor 检测到 armed → 下单
-
-    注意：confirmed 队列优先于 intrabar 队列，所以需要等待 intrabar 事件
-    全部被消费完，再发布 confirmed 快照，否则 confirmed 会先处理。
-    """
-    # 使用 RANGING + RSI 超卖指标，触发 StubIntrabarStrategy（支持 intrabar）
-    indicators = _ranging_rsi_buy_indicators(close=3000.0, atr=5.0)
-    module = _build_signal_module(indicators)
-    source = SnapshotSource()
-    # min_preview_stable_seconds=0 → 第一次 intrabar 后立即进入 armed
-    runtime = _build_runtime(
-        module, source, require_armed=True, min_preview_stable_seconds=0.0
-    )
-
-    trading = TradingModuleCapture()
-    executor = _build_executor(trading, require_armed=True)
-    runtime.add_signal_listener(executor.on_signal_event)
-    runtime.start()
-
-    bar_time = datetime.now(timezone.utc) - timedelta(seconds=30)
-
-    # Step 1: intrabar 快照 → preview_buy（RSI=22 触发 rsi_reversion buy）
-    source.publish("XAUUSD", "M1", bar_time, indicators, scope="intrabar")
-    # 等待 runtime 消费掉 intrabar 事件（confirmed 队列优先，此时 confirmed 为空）
-    time.sleep(0.3)
-
-    # Step 2: 再次 intrabar 快照（方向一致，stable_seconds=0 → 立即升为 armed_buy）
-    # 微小差异（rsi 从 22.0 → 22.1）绕过 intrabar 去重
-    indicators2 = {**indicators, "rsi14": {"rsi": 22.1}}
-    source.publish("XAUUSD", "M1", bar_time, indicators2, scope="intrabar")
-    time.sleep(0.3)
-
-    # Step 3: confirmed 快照 → confirmed_buy，TradeExecutor 检测到 preview_state_at_close="armed_buy"
-    source.publish("XAUUSD", "M1", bar_time, indicators, scope="confirmed")
-
-    assert _wait_for_calls(trading, expected=1), "require_armed 流程未触发下单"
-
-    op, payload = trading.calls[0]
-    assert op == "trade"
-    assert payload["side"] == "buy"
-
-    runtime.stop()
-
-
-# ===========================================================================
-# 测试 4：熔断器 — 连续失败后暂停，手动 reset 后恢复
+# 测试 3：熔断器 — 连续失败后暂停，手动 reset 后恢复
 # ===========================================================================
 
 def test_circuit_breaker_pauses_and_resets() -> None:
@@ -408,11 +346,11 @@ def test_circuit_breaker_pauses_and_resets() -> None:
     indicators = _trending_buy_indicators(close=3000.0, atr=5.0)
     module = _build_signal_module(indicators)
     source = SnapshotSource()
-    runtime = _build_runtime(module, source, require_armed=False)
+    runtime = _build_runtime(module, source)
 
     # 前 3 次失败，第 4 次成功
     trading = TradingModuleCapture(fail_count=3)
-    executor = _build_executor(trading, require_armed=False, max_consecutive_failures=3)
+    executor = _build_executor(trading, max_consecutive_failures=3)
     runtime.add_signal_listener(executor.on_signal_event)
     runtime.start()
 
@@ -580,10 +518,10 @@ def test_no_duplicate_trade_on_same_bar() -> None:
     indicators = _trending_buy_indicators(close=3000.0, atr=5.0)
     module = _build_signal_module(indicators)
     source = SnapshotSource()
-    runtime = _build_runtime(module, source, require_armed=False)
+    runtime = _build_runtime(module, source)
 
     trading = TradingModuleCapture()
-    executor = _build_executor(trading, require_armed=False)
+    executor = _build_executor(trading)
     runtime.add_signal_listener(executor.on_signal_event)
     runtime.start()
 

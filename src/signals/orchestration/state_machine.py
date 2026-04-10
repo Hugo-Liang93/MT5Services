@@ -1,7 +1,10 @@
-"""Signal state machine transitions — preview / armed / confirmed.
+"""Signal state machine transitions — confirmed scope only.
 
 Extracted from SignalRuntime. All functions are pure state operations
 on RuntimeSignalState. No thread/queue/IO dependencies.
+
+The intrabar preview/armed state machine (transition_intrabar) was removed —
+IntrabarTradeCoordinator handles intrabar trade decisions independently.
 """
 
 from __future__ import annotations
@@ -107,11 +110,6 @@ def transition_confirmed(
     Returns ``None`` when no state transition should be emitted.
     """
     previous_state = state.confirmed_state
-    preview_state_at_close = state.preview_state
-    state.preview_state = "idle"
-    state.preview_action = None
-    state.preview_since = None
-    state.preview_bar_time = None
 
     if decision_action not in {"buy", "sell"}:
         if previous_state != "idle":
@@ -119,14 +117,12 @@ def transition_confirmed(
             state.confirmed_state = "idle"
             state.confirmed_bar_time = bar_time
             mark_emitted(state, signal_state, event_time, bar_time)
-            result = build_transition_metadata(
+            return build_transition_metadata(
                 metadata,
                 signal_state=signal_state,
                 state_changed=True,
                 previous_state=previous_state,
             )
-            result["preview_state_at_close"] = preview_state_at_close
-            return result
         state.confirmed_state = "idle"
         state.confirmed_bar_time = bar_time
         return None
@@ -137,109 +133,9 @@ def transition_confirmed(
     if not should_emit(state, signal_state, event_time, bar_time, cooldown_seconds=0.0):
         return None
     mark_emitted(state, signal_state, event_time, bar_time)
-    result = build_transition_metadata(
+    return build_transition_metadata(
         metadata,
         signal_state=signal_state,
         state_changed=signal_state != previous_state,
         previous_state=previous_state,
     )
-    result["preview_state_at_close"] = preview_state_at_close
-    return result
-
-
-def transition_intrabar(
-    state: RuntimeSignalState,
-    decision_action: str,
-    confidence: float,
-    event_time: datetime,
-    bar_time: datetime,
-    metadata: Dict[str, Any],
-    *,
-    min_preview_confidence: float,
-    min_preview_bar_progress: float,
-    min_preview_stable_seconds: float,
-    preview_cooldown_seconds: float,
-) -> Optional[Dict[str, Any]]:
-    """Process an intrabar-scope signal decision and return transition metadata.
-
-    Returns ``None`` when no state transition should be emitted.
-    """
-    previous_state = state.preview_state
-    if state.preview_bar_time is not None and state.preview_bar_time != bar_time:
-        state.preview_state = "idle"
-        state.preview_action = None
-        state.preview_since = None
-
-    bar_progress = float(metadata.get(MK.BAR_PROGRESS, 0.0) or 0.0)
-    actionable = (
-        decision_action in {"buy", "sell"}
-        and confidence >= min_preview_confidence
-        and bar_progress >= min_preview_bar_progress
-    )
-    state.preview_bar_time = bar_time
-
-    if not actionable:
-        if previous_state == "idle":
-            return None
-        state.preview_state = "idle"
-        state.preview_action = None
-        state.preview_since = None
-        signal_state = "cancelled"
-        if not should_emit(
-            state, signal_state, event_time, bar_time,
-            cooldown_seconds=preview_cooldown_seconds,
-        ):
-            return None
-        mark_emitted(state, signal_state, event_time, bar_time)
-        return build_transition_metadata(
-            metadata,
-            signal_state=signal_state,
-            state_changed=True,
-            previous_state=previous_state,
-        )
-
-    if state.preview_action != decision_action:
-        state.preview_action = decision_action
-        state.preview_since = event_time
-        state.preview_state = f"preview_{decision_action}"
-        signal_state = state.preview_state
-        if not should_emit(
-            state, signal_state, event_time, bar_time,
-            cooldown_seconds=preview_cooldown_seconds,
-        ):
-            return None
-        mark_emitted(state, signal_state, event_time, bar_time)
-        return build_transition_metadata(
-            metadata,
-            signal_state=signal_state,
-            state_changed=signal_state != previous_state,
-            previous_state=previous_state,
-        )
-
-    if state.preview_since is None:
-        state.preview_since = event_time
-        return None
-
-    stable_seconds = (event_time - state.preview_since).total_seconds()
-    if stable_seconds < min_preview_stable_seconds:
-        return None
-
-    signal_state = f"armed_{decision_action}"
-    if state.preview_state == signal_state:
-        return None
-
-    state.preview_state = signal_state
-    if not should_emit(
-        state, signal_state, event_time, bar_time,
-        cooldown_seconds=preview_cooldown_seconds,
-    ):
-        return None
-    mark_emitted(state, signal_state, event_time, bar_time)
-    enriched = build_transition_metadata(
-        metadata,
-        signal_state=signal_state,
-        state_changed=signal_state != previous_state,
-        previous_state=previous_state,
-    )
-    enriched["preview_stable_seconds"] = stable_seconds
-    return enriched
