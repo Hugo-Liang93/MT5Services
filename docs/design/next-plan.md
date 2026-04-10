@@ -2,6 +2,7 @@
 
 > 更新日期：2026-04-05
 > 系统现状与已完成项追踪见 `TODO.md`。本文仅包含待实施方案的技术细节。
+> 当前架构/策略/代码/性能风险台账见 `docs/codebase-review.md`；P0/P1 整改顺序以该审查文档为准。
 
 ---
 
@@ -28,7 +29,7 @@ python tools/backtest_runner.py --timeframe H1 --days 90
 **裁剪规则**：
 - 同投票组内相关性 >0.7 → 保留 Sharpe 最高的，其余 regime_affinity 全设 0.0
 - 蒙特卡洛 p-value >0.1 → 策略收益不显著优于随机，考虑禁用
-- 目标：从 31 基础策略精简到 15-20 个
+- 目标：在当前 8 个结构化策略实例内识别需保留、降权、冻结或拆分验证的策略/TF 组合
 
 **涉及文件**：`signal.local.ini`（affinity 覆盖）
 

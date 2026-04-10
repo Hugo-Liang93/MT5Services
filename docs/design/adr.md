@@ -14,6 +14,7 @@
 | 002 | SignalRuntime | warmup/metadata 提取为纯函数模块 | 已确定 |
 | 003 | MetadataKey | 魔法字符串必须使用 MetadataKey 常量 | 已确定 |
 | 004 | 组件生命周期 | start/stop 安全契约（8 项防护机制） | 已确定 |
+| 005 | 后台线程生命周期 | join 超时后不得清空仍存活线程引用 | 已确定 |
 
 ---
 
@@ -85,6 +86,24 @@
 | PositionManager | `start()` 先执行一次 `_reconcile_with_mt5()` | 修复 stop 期间 peak_price 状态断档 |
 | StorageWriter | `_cleanup_stale_dlq()` 启动时清理 >7 天失败文件 | 防止 DLQ 无限积累 |
 | SignalRuntime | `remove_signal_listener()` 同步清理 `listener_fail_counts` | 防止内存泄漏 |
+
+---
+
+## ADR-005: 后台线程 join 超时后必须保留仍存活线程引用
+
+**状态**：已确定（2026-04-10）
+
+**上下文**：审查发现多个后台组件在 `stop()` / `shutdown()` 中执行 `thread.join(timeout)` 后，无论线程是否仍存活都会把线程引用置为 `None`。如果线程因为 I/O、队列等待、MT5 调用或外部依赖卡住，后续 `start()` 可能创建新线程，造成双线程消费、重复 listener、重复状态恢复或竞态写入。
+
+**决策**：
+- `join(timeout)` 之后必须检查 `thread.is_alive()`。
+- 只有线程已退出时才清空引用。
+- 线程仍存活时必须保留引用、记录 warning，并让 `is_running()` 反映真实存活状态。
+- 新增后台线程组件应优先复用统一 lifecycle helper，避免各组件自行实现不一致的 stop 语义。
+
+**当前待整改对象**：详见 `docs/codebase-review.md` 的生命周期章节，重点检查 `SignalRuntime`、`PositionManager`、`PendingEntryManager`、`UnifiedIndicatorManager`。
+
+**演进方向**：将 `TradeExecutor` 已采用的僵尸线程防护收敛为通用契约，并为每个后台线程组件补 stop 超时回归测试。
 
 ---
 

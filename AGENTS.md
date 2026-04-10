@@ -23,6 +23,7 @@
 - `src/trading/`：交易执行、准入、仓位与结果追踪。
 - `src/persistence/`：数据库写入、队列持久化、仓储层。
 - `src/backtesting/`：回测、优化、前推与参数推荐。
+- `docs/codebase-review.md`：当前代码库审查风险台账；做架构、策略、性能整改前先阅读并更新。
 - `tests/`：测试套件（结构与 `src/` 对齐）。
 
 ## 4) 配置系统硬性规则
@@ -34,6 +35,8 @@
   2. `config/*.ini`
   3. 代码默认值（`src/config/centralized.py`）
 - `.env` 已废弃；新增配置应优先进入 `.ini` 配置体系。
+- `config/*.local.ini` 虽不入库但会优先生效；审查运行问题时必须把 local 覆盖纳入分析，尤其是 `signal.local.ini` 中的策略、投票组、regime affinity 覆盖。
+- local 覆盖不应保留已删除策略名；若发现 `strategy_sessions`、`strategy_timeframes`、`voting_groups`、`regime_affinity.*` 指向未注册策略，应优先视为配置漂移风险，而不是在代码中做兼容分支。
 
 ## 5) 信号参数配置约定
 
@@ -42,6 +45,8 @@
   - `[strategy_params.<TF>]`
   - `[strategy_params]`
   - 策略代码默认值
+- 当前默认策略体系是结构化策略目录 `src/signals/strategies/structured/` 中注册的 8 个实例；不得按旧 README/旧 local 配置假设仍存在 legacy 策略或 composites。
+- 投票组配置必须只引用已注册策略；一旦 `voting_groups` 非空，全局 consensus 会自动关闭，配置错配会导致“没有结构化共识信号”的隐性退化。
 
 ## 6) 代码修改原则
 
@@ -53,6 +58,8 @@
 - 后续修改默认要优先考虑整体工程化与模块化：功能模块之间职责单一、依赖方向清晰、跨模块交互通过正式端口/服务完成，避免隐式能力探测和跨层直连。
 - 优化时优先按职责边界收敛，而不是堆新配置、新开关或新抽象；若抽象不能明显减少耦合、统一语义或提升可审查性，则视为过度设计风险。
 - 禁止为了“先跑起来”把命令、查询、状态持久化、监控投影、运行编排混在同一入口中；应优先拆成独立应用服务、领域服务、读模型或状态服务。
+- 禁止 API、readmodel、studio 或 app_runtime 为了取状态而探测私有属性/方法；若确实需要状态，先补正式公开端口，再迁移调用方。
+- 后台线程组件的 `stop()` 不能在 `join(timeout)` 后无条件清空线程引用；只有确认线程退出后才清引用，仍存活时必须保留引用并让 `is_running()` 反映真实状态。
 - 涉及配置项新增时，需同时更新：
   - 配置加载模型（`src/config/`）
   - 默认配置文件（`config/*.ini`）
@@ -74,7 +81,7 @@
 
 ## 9) 文档同步
 
-- 若改动影响架构、流程或关键配置，需同步更新相关文档（如 `docs/architecture-flow.md`）。
+- 若改动影响架构、流程或关键配置，需同步更新相关文档（如 `docs/architecture.md`、`docs/design/adr.md`、`docs/codebase-review.md`）。
 - 若改动触及“信号生成 → 过滤 → 风控 → 执行交易”主链路，需同步考虑该链路的可视化与可审查性，确保后续能够定位：
   - 当前信号来自哪个策略、哪个阶段被过滤或阻断
   - 当前交易在执行链路的哪个节点失败

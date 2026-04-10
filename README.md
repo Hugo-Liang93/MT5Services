@@ -98,8 +98,7 @@ MT5Services/
 │   ├── ingest.ini            # 后台采集配置
 │   ├── storage.ini           # 持久化队列配置
 │   ├── cache.ini             # 内存缓存覆盖
-│   ├── indicators.json       # 指标定义与计算流水线
-│   └── composites.json       # 复合策略组合定义
+│   └── indicators.json       # 指标定义与计算流水线
 ├── src/
 │   ├── app_runtime/          # 应用运行时 (container/builder/runtime)
 │   ├── api/                  # FastAPI 路由、中间件、Schema、DI 适配层
@@ -195,29 +194,33 @@ Base URL: `http://<host>:8808` | 认证: `X-API-Key` 请求头
 
 ## 信号系统
 
-35 个内置策略（31 基础 + 4 复合），分为 6 类：
+当前默认策略体系是纯结构化策略，代码入口在 `src/signals/strategies/structured/`，注册目录在 `src/signals/strategies/catalog.py`。
 
-| 类型 | 策略数 | Scope | 代表 |
-|------|--------|-------|------|
-| 跨 TF 联动 | 7 | confirmed / intrabar | htf_trend_pullback, dual_tf_momentum, m5_scalp_rsi |
-| 趋势跟踪 | 7 | confirmed | supertrend, roc_momentum, fib_pullback, adx_trend_fade |
-| 均值回归 | 5 | intrabar + confirmed | rsi_reversion, stoch_rsi, cci_reversion, macd_divergence |
-| 突破/波动率 | 6 | 混合 | donchian_breakout, keltner_bb_squeeze |
-| 价格行为 | 3 | confirmed | price_action_reversal, order_block_entry, trendline_3touch |
-| M5 快速标量 | 3 | intrabar + confirmed | m5_scalp_rsi, m5_momentum_burst |
+| 策略实例 | 类别 | 默认 Scope | 说明 |
+|----------|------|------------|------|
+| `structured_trend_continuation` | `multi_tf` | confirmed | HTF 趋势方向 + LTF 回调 |
+| `structured_trend_h4` | `multi_tf` | confirmed | H4 HTF 变体 |
+| `structured_sweep_reversal` | `price_action` | confirmed | 扫流动性后反转 |
+| `structured_breakout_follow` | `breakout` | confirmed | ADX/DI 与结构突破跟随 |
+| `structured_range_reversion` | `reversion` | confirmed + intrabar | RSI/Bollinger 区间回归 |
+| `structured_session_breakout` | `session` | confirmed | 亚盘区间后的时段突破 |
+| `structured_trendline_touch` | `trend` | confirmed | 趋势线触碰与结构位 |
+| `structured_lowbar_entry` | `reversion` | confirmed | 极端收盘位反转 |
 
-另有 4 个声明式复合策略（composites.json）和 4 组方向一致性投票（momentum/breakout/reversion/reversal）。
+结构化策略统一走 Why/When/Where/Volume 评分框架：`_why()` 和 `_when()` 是硬门控，`_where()` 和 `_volume_bonus()` 是软加分，`_entry_spec()` 和 `_exit_spec()` 分别输出入场与出场意图。策略参数优先通过 `config/signal.ini` 或本机 `config/signal.local.ini` 的 `[strategy_params]` / `[strategy_params.<TF>]` 调整。
+
+注意：`config/*.local.ini` 会优先覆盖默认配置。若 `signal.local.ini` 中仍保留已删除 legacy 策略或旧投票组，会改变运行语义；详见 `docs/codebase-review.md`。
 
 ## 风险管理
 
 交易请求经过多层校验（任一失败即拒绝）：
 
 1. **信号过滤** — 时段/点差/经济事件/波动率异常
-2. **Regime 亲和度** — 低亲和度策略直接跳过
-3. **置信度阈值** — `< 0.55` 静默丢弃
-4. **ExecutionGate** — 投票组/白名单/armed 准入
-5. **PendingEntry** — 价格确认入场 (ATR 区间)
-6. **PreTradeRiskService** — 日损失限制/保证金/频率
+2. **策略内部 Regime 判断** — 结构化策略在 `_why()` 中判断是否适合当前市况
+3. **置信度管线** — 结构化评分 × regime affinity × session performance × calibrator
+4. **ExecutionGate** — 投票组/白名单/armed/intrabar 准入
+5. **PendingEntry** — 按策略 `_entry_spec()` 执行市价、limit 或 stop 入场
+6. **PreTradeRiskService** — 日损失限制、保证金、频率、经纪商约束
 7. **TradeExecutor 安全** — 熔断器/持仓预检/成本检查
 8. **PositionManager** — 日终自动平仓
 

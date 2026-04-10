@@ -386,7 +386,9 @@ Confirmed 协调（有 intrabar 仓位时）:
 
 **多 voting group**: `voting_groups` 非空 → 每组独立投票 → 产生 group.name 信号 → **全局 consensus 自动禁用**（`_voting_engine = None`）
 
-当前配置为**投票组清空状态**（2026-04-06 切换到结构化策略后）。结构化策略各自独立评估，内置 Why/When/Where 质量控制，后续按需重建投票组。
+默认 `config/signal.ini` 为**投票组清空状态**（2026-04-06 切换到结构化策略后）。结构化策略各自独立评估，内置 Why/When/Where 质量控制，后续按需重建投票组。
+
+注意：`config/signal.local.ini` 会优先覆盖默认配置。若 local 文件保留旧 voting group，`voting_groups` 非空会自动禁用全局 consensus；如果组内成员又不是当前注册的结构化策略，就会形成“无结构化共识信号”的配置漂移。当前审查结论见 `docs/codebase-review.md`。
 
 ### 组内策略不能独立发信号（三层保护）
 

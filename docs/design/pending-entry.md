@@ -1,5 +1,8 @@
 # Pending Entry 价格确认入场机制 — 详细设计方案
 
+> 状态：历史设计 + 部分实现参考。
+> 当前实现已经在 A7 调整为“策略 `_entry_spec()` 输出入场意图，`PendingEntryManager` 只执行 limit/stop 价格确认”，不再由执行层按策略 category 推导 zone mode。阅读本文件时，以 `docs/architecture.md` 中 `src/trading/` 边界和 `src/trading/pending/manager.py`、`src/trading/execution/executor.py` 的现状为准；涉及 category/zone_mode 的段落仅作为历史背景。
+
 ## 1. 问题陈述
 
 当前系统在 confirmed bar 收盘产生信号后**立即以市价下单**，成交价落在 Bar N+1 开盘附近。
@@ -149,9 +152,9 @@ default_timeout_bars: float = 2.0
 
 ```
 src/trading/
-├── signal_executor.py          # 现有（修改：不直接下单，创建 PendingEntry）
-├── pending_entry.py            # 新增：PendingEntryManager
-├── sizing.py                   # 现有（不变）
+├── execution/executor.py       # TradeExecutor：按策略 entry_spec 决定市价或挂单
+├── pending/manager.py          # PendingEntryManager
+├── execution/sizing.py         # 仓位与 SL/TP 参数计算
 └── ...
 ```
 
@@ -294,7 +297,7 @@ class PendingEntryManager:
 修改 `_handle_confirmed()` 的最后一步——**不再直接调用 `_execute()`，而是创建 PendingEntry 提交给 PendingEntryManager**：
 
 ```python
-# 当前代码（signal_executor.py _handle_confirmed 尾部）:
+# 当前代码（execution/executor.py _handle_confirmed 尾部）:
 #   result = self._execute(event, trade_params, cost_metrics=cost_metrics)
 
 # 修改后:
@@ -526,8 +529,8 @@ PendingEntry 的结果（filled/expired/cancelled）可写入 StorageWriter 的 
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
-| `src/trading/pending_entry.py` | **新增** | PendingEntryManager + PendingEntry + PendingEntryConfig |
-| `src/trading/signal_executor.py` | **修改** | `_handle_confirmed()` 尾部分支 + `_build_pending_entry()` 方法 |
+| `src/trading/pending/manager.py` | **已实现** | PendingEntryManager + PendingEntry + PendingEntryConfig |
+| `src/trading/execution/executor.py` | **已实现** | `_handle_confirmed()` 根据策略 `_entry_spec()` 分流市价、limit、stop |
 | `src/app_runtime/factories/signals.py` | **修改** | 工厂函数创建 PendingEntryManager 并注入 TradeExecutor |
 | `src/app_runtime/runtime.py` | **修改** | shutdown 中加入 PendingEntryManager.shutdown() |
 | `src/app_runtime/container.py` | **修改** | `AppContainer` 新增 `pending_entry_manager` 字段 |

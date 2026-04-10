@@ -102,7 +102,6 @@ intrabar 链路（L3 best-effort）：
   → set_intrabar() → 仅自动推导的指标子集
   → scope="intrabar" → _intrabar_events 队列（8192，confirmed 空时才消费）
   → 仅 preferred_scopes 含 "intrabar" 的策略
-  → preview/armed 状态机预热
   → IntrabarTradeCoordinator bar 计数稳定性 → intrabar_armed 可交易信号（需启用）
 ```
 
@@ -161,7 +160,7 @@ raw_confidence = base(0.50)
 1. **SignalFilterChain** — 时段/冷却期/点差/经济事件/波动率异常/趋势衰竭过滤
 2. **Regime 门控** — 结构化策略在 _why() 内部自行判断 regime 适应性（ADX）；regime_affinity 仅在置信度管线中作为乘数使用
 3. **HTF direction alignment** — 策略级分层：trend_continuation 硬门控（趋势延续需顺势）；breakout_follow/range_reversion 软门控（冲突时阻止）；session_breakout/trendline_touch 软加分（冲突时降分不拒绝）；sweep_reversal/lowbar_entry 不使用
-4. **ExecutionGate** — voting group 保护、require_armed 门控、intrabar 策略白名单
+4. **ExecutionGate** — voting group 保护、intrabar 策略白名单
 5. **PendingEntry** — 策略输出 entry_spec（market/limit/stop + 入场价），PendingEntryManager 纯执行
 6. **Pre-trade risk service** — DailyLossLimit / AccountSnapshot / MarginAvailability / TradeFrequency
 7. **Executor safety** — 技术熔断器 + 持仓数量预检 + spread_to_stop_ratio 检查
