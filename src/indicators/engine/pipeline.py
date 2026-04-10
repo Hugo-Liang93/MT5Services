@@ -38,6 +38,25 @@ class PipelineConfig:
     enable_monitoring: bool = True
 
 
+def _compute_bars_hash(bars: List[Any]) -> int:
+    """从不可变价格字段生成稳定的 bars 哈希。
+
+    包含 high/low 以确保 intrabar 场景下 ATR/Donchian 等依赖 H/L
+    的指标在 close 不变但 high/low 变化时不返回陈旧缓存。
+    """
+    if not bars:
+        return 0
+    last = bars[-1]
+    return hash((
+        len(bars),
+        bars[0].time,
+        last.time,
+        last.high,
+        last.low,
+        last.close,
+    ))
+
+
 @dataclass
 class ComputationContext:
     """计算上下文"""
@@ -49,6 +68,7 @@ class ComputationContext:
     dependencies: Dict[str, Set[str]]
     start_time: float
     scope: str = "confirmed"
+    bars_hash: int = 0
 
 
 class OptimizedPipeline:
@@ -206,128 +226,75 @@ class OptimizedPipeline:
         """
         return f"{indicator}_{symbol}_{timeframe}_{bars_hash}"
     
+    def _run_indicator(
+        self,
+        indicator: str,
+        context: ComputationContext,
+    ) -> Tuple[Any, bool]:
+        """执行单个指标的计算（增量或全量），返回 (result, is_incremental)。"""
+        func = self.dependency_manager.indicator_funcs.get(indicator)
+        if func is None:
+            raise ValueError(f"Indicator function not found: {indicator}")
+
+        if (
+            self.config.enable_incremental
+            and indicator in self.incremental_indicators
+        ):
+            incremental_indicator = self.incremental_indicators[indicator]
+            result = incremental_indicator.compute(
+                context.bars,
+                context.symbol,
+                context.timeframe,
+                use_incremental=True,
+                scope=context.scope,
+            )
+            self.computation_stats["incremental_computations"] += 1
+            return result, True
+
+        params = self.dependency_manager.indicator_params.get(indicator, {})
+        return func(context.bars, params), False
+
     def _compute_indicator(
         self,
         indicator: str,
         context: ComputationContext
     ) -> Any:
-        """
-        计算单个指标
-        
-        Args:
-            indicator: 指标名称
-            context: 计算上下文
-            
-        Returns:
-            计算结果
-        """
+        """计算单个指标（含缓存 + 监控）。"""
         start_time = time.time()
         cache_hit = False
         incremental = False
         success = True
         error_msg = None
         result = None
-        
+
         try:
-            # Generate a stable cache key from immutable price-identity fields only.
-            # Using str(context.bars) is unreliable because OHLC.indicators is a
-            # mutable field that gets populated by _write_back_results; any mutation
-            # changes the hash and causes a permanent cache miss for subsequent calls
-            # with the same price data.
-            #
-            # Bug修复：原哈希仅含 close，intrabar 场景下 high/low 可能在 close 不变
-            # 时发生变化（例如新 tick 创新低但收盘价不变），导致 ATR/Donchian/Stoch/
-            # ADX/Keltner/CCI/WilliamsR/Supertrend 等依赖 H/L 的指标返回陈旧缓存。
-            if context.bars:
-                last = context.bars[-1]
-                bars_hash = hash((
-                    len(context.bars),
-                    context.bars[0].time,
-                    last.time,
-                    last.high,
-                    last.low,
-                    last.close,
-                ))
-            else:
-                bars_hash = 0
-            cache_key = self._generate_cache_key(
-                indicator, context.symbol, context.timeframe, bars_hash
-            )
-            
-            # 检查缓存
+            # 缓存检查
             if self.config.enable_cache:
+                cache_key = self._generate_cache_key(
+                    indicator, context.symbol, context.timeframe, context.bars_hash
+                )
                 cached_result = self.cache.get(cache_key)
                 if cached_result is not None:
                     cache_hit = True
                     result = cached_result
-                    logger.debug(f"Cache hit for {indicator}")
-                else:
-                    cache_hit = False
-                    
-                    # 获取指标函数
-                    func = self.dependency_manager.indicator_funcs.get(indicator)
-                    if func is None:
-                        raise ValueError(f"Indicator function not found: {indicator}")
-                    
-                    # 检查是否支持增量计算
-                    if (self.config.enable_incremental and
-                        indicator in self.incremental_indicators):
 
-                        # 使用增量计算
-                        incremental_indicator = self.incremental_indicators[indicator]
-                        result = incremental_indicator.compute(
-                            context.bars,
-                            context.symbol,
-                            context.timeframe,
-                            use_incremental=True,
-                            scope=context.scope,
-                        )
-                        incremental = True
-                        self.computation_stats["incremental_computations"] += 1
+            # 缓存未命中（或缓存关闭）→ 实际计算
+            if not cache_hit:
+                result, incremental = self._run_indicator(indicator, context)
 
-                    else:
-                        params = self.dependency_manager.indicator_params.get(indicator, {})
-                        result = func(context.bars, params)
+                # NaN/Inf 防护
+                if isinstance(result, dict):
+                    result = sanitize_result(result) or None
 
-                    # 缓存结果（支持 per-indicator TTL）
-                    if self.config.enable_cache and result is not None:
-                        ind_ttl = self.dependency_manager.indicator_cache_ttl.get(indicator)
-                        self.cache.set(cache_key, result, ttl=ind_ttl)
-
-            # Fallback compute path: only runs when caching is disabled entirely.
-            # When cache IS enabled, the block above already computed the result
-            # (even if it came back None due to insufficient bars); re-running the
-            # same computation here would be wasteful and confusing.
-            elif not self.config.enable_cache:
-                func = self.dependency_manager.indicator_funcs.get(indicator)
-                if func is None:
-                    raise ValueError(f"Indicator function not found: {indicator}")
-
-                if self.config.enable_incremental and indicator in self.incremental_indicators:
-                    incremental_indicator = self.incremental_indicators[indicator]
-                    result = incremental_indicator.compute(
-                        context.bars,
-                        context.symbol,
-                        context.timeframe,
-                        use_incremental=True,
-                        scope=context.scope,
-                    )
-                    incremental = True
-                    self.computation_stats["incremental_computations"] += 1
-                else:
-                    params = self.dependency_manager.indicator_params.get(indicator, {})
-                    result = func(context.bars, params)
-
-            # NaN/Inf 防护：在缓存和返回前清除无效值
-            if isinstance(result, dict) and not cache_hit:
-                result = sanitize_result(result) or None
+                # 写入缓存
+                if self.config.enable_cache and result is not None:
+                    ind_ttl = self.dependency_manager.indicator_cache_ttl.get(indicator)
+                    self.cache.set(cache_key, result, ttl=ind_ttl)
 
             compute_time = time.time() - start_time
-
             if cache_hit:
                 self.computation_stats["cached_computations"] += 1
 
-            # 记录性能指标
             if self.config.enable_monitoring:
                 record_indicator_computation(
                     name=indicator,
@@ -338,22 +305,18 @@ class OptimizedPipeline:
                     error_msg=error_msg,
                     symbol=context.symbol,
                     timeframe=context.timeframe,
-                    incremental=incremental
+                    incremental=incremental,
                 )
-            
+
             return result
-            
+
         except Exception as e:
-            # 计算失败
             compute_time = time.time() - start_time
             error_msg = str(e)
             success = False
-            
             self.computation_stats["failed_computations"] += 1
-            
             logger.error(f"Indicator computation failed: {indicator}, error: {error_msg}")
-            
-            # 记录错误指标
+
             if self.config.enable_monitoring:
                 record_indicator_computation(
                     name=indicator,
@@ -364,10 +327,9 @@ class OptimizedPipeline:
                     error_msg=error_msg,
                     symbol=context.symbol,
                     timeframe=context.timeframe,
-                    incremental=incremental
+                    incremental=incremental,
                 )
-            
-            # 返回None表示失败
+
             return None
     
     def _compute_parallel_group(
@@ -405,22 +367,7 @@ class OptimizedPipeline:
             )
             tasks.append(task)
             
-            # Use same stable hash as _compute_indicator so that the parallel
-            # executor's task cache aligns with the SmartCache.
-            # 同样包含 high/low，与 _compute_indicator 保持完全一致。
-            if context.bars:
-                last = context.bars[-1]
-                bars_hash = hash((
-                    len(context.bars),
-                    context.bars[0].time,
-                    last.time,
-                    last.high,
-                    last.low,
-                    last.close,
-                ))
-            else:
-                bars_hash = 0
-            task_id = f"{indicator}_{context.symbol}_{context.timeframe}_{bars_hash}"
+            task_id = f"{indicator}_{context.symbol}_{context.timeframe}_{context.bars_hash}"
             task_indicator_map[task_id] = indicator
         
         # 执行并行任务
@@ -465,6 +412,7 @@ class OptimizedPipeline:
                 dependencies={ind: self.dependency_manager.get_dependencies(ind) for ind in indicators},
                 start_time=start_time,
                 scope=scope,
+                bars_hash=_compute_bars_hash(bars),
             )
             for level_indicators in execution_groups:
                 level_results = self._compute_parallel_group(level_indicators, context)

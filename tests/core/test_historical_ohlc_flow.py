@@ -305,6 +305,7 @@ def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persistin
         )
     ]
     manager._last_preview_snapshot = {}
+    manager._intrabar_eligible_cache = frozenset(["rsi14"])
     _init_scope_stats(manager)
 
     grouped = manager._process_intrabar_event("XAUUSD", "M1", intrabar_bar)
