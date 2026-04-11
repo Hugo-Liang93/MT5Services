@@ -1,6 +1,20 @@
 # 信号系统设计文档
 
 > 面向策略开发者的深度参考。涵盖信号系统的设计原理、完整流程、扩展规范。
+> 文档类型：领域设计参考，不作为启动巡检或运行时事实源。
+> 当前实现的队列语义、health/readiness、线程生命周期与链路验证，以 `docs/design/signals-dataflow-overview.md` 和 `docs/design/full-runtime-dataflow.md` 为准。
+
+---
+
+## 0. 使用边界
+
+| 目标 | 文档 |
+|------|------|
+| 看 signals 运行时真实链路、队列优先级、状态流转、排障点 | `docs/design/signals-dataflow-overview.md` |
+| 看系统启动顺序、日志路径、健康探针、主链路状态 | `docs/design/full-runtime-dataflow.md` |
+| 看策略开发接口、regime、voting、TF 参数和领域规则 | 本文 |
+
+本文不重复展开启动验证、日志位置和 health/readiness 口径。
 
 ---
 

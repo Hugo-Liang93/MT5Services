@@ -1,6 +1,7 @@
 # 运行入口映射
 
-> 更新日期：2026-04-11
+> 更新日期：2026-04-12
+> 本文只回答“从哪里启动”和“启动后先看哪里”；全量运行时链路请对照 `docs/design/full-runtime-dataflow.md`。
 
 该文档用于统一记录当前项目启动/脚本入口，避免新同学与运维在入口上产生歧义。
 
@@ -16,11 +17,20 @@
 - `python -m src.entrypoint.web`
 - `python -m src.entrypoint.web --help`（当前无参数）
 
-## 1.2 直接 ASGI 入口（兼容）
+### 1.2 直接 ASGI 入口（兼容）
 
 - `uvicorn src.api:app --host 0.0.0.0 --port 8808`
 
 该方式不走项目的统一日志/配置加载入口（`src.config.get_system_config` 等），适合调试时使用。
+
+### 1.3 启动后最小验证
+
+- 详细步骤请直接对照：`docs/runbooks/system-startup-and-live-canary.md`
+- 最小检查点仍然固定为：
+  - `data/logs/mt5services.log`
+  - `data/logs/errors.log`
+  - `GET /health`
+  - `GET /v1/monitoring/health/ready`
 
 ## 2. 交易与运维 CLI 入口
 
@@ -64,5 +74,6 @@
 2. `AGENTS.md` 中启动说明已更新为当前真实入口。
 
 3. `tests/smoke/test_launch.py` 新增 `__main__` 执行通路测试，覆盖 `python -m src.entrypoint.web` 的行为。
+4. 启动后日志位置统一锚定项目根目录 `data/`，不再向 `src/` 下写运行期日志。
 
 

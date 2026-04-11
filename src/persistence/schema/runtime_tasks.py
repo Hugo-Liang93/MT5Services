@@ -1,12 +1,20 @@
 """运行时任务状态持久化 Schema。"""
 
-DDL = """
+from src.monitoring.runtime_task_status import (
+    RUNTIME_TASK_STATUS_CHECK_CONSTRAINT,
+    runtime_task_states_sql_literals,
+)
+
+_STATE_SQL = runtime_task_states_sql_literals()
+
+DDL = f"""
 CREATE TABLE IF NOT EXISTS runtime_task_status (
     component TEXT NOT NULL,
     task_name TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     state TEXT NOT NULL
-        CHECK (state IN ('running', 'idle', 'failed', 'completed')),
+        CONSTRAINT {RUNTIME_TASK_STATUS_CHECK_CONSTRAINT}
+        CHECK (state IN ({_STATE_SQL})),
     started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     next_run_at TIMESTAMPTZ,
@@ -21,6 +29,32 @@ CREATE TABLE IF NOT EXISTS runtime_task_status (
 
 CREATE INDEX IF NOT EXISTS idx_runtime_tasks_updated
     ON runtime_task_status(updated_at DESC, component);
+"""
+
+MIGRATION_SQL = f"""
+DO $$
+DECLARE
+    constraint_name text;
+BEGIN
+    IF to_regclass('runtime_task_status') IS NOT NULL THEN
+        FOR constraint_name IN
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'runtime_task_status'::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) ILIKE '%state%'
+        LOOP
+            EXECUTE format(
+                'ALTER TABLE runtime_task_status DROP CONSTRAINT %I',
+                constraint_name
+            );
+        END LOOP;
+
+        ALTER TABLE runtime_task_status
+            ADD CONSTRAINT {RUNTIME_TASK_STATUS_CHECK_CONSTRAINT}
+            CHECK (state IN ({_STATE_SQL}));
+    END IF;
+END $$;
 """
 
 UPSERT_SQL = """

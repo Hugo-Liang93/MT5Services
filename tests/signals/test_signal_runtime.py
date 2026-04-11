@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import src.signals.orchestration.runtime_processing as runtime_processing
 from src.signals.evaluation.regime import RegimeType
 from src.signals.execution.filters import SessionFilter, SignalFilterChain
 from src.signals.models import SignalDecision
@@ -205,6 +206,64 @@ class DummyStructureAnalyzer:
         if scope == "confirmed" and result:
             self._cache[cache_key] = dict(result)
         return result
+
+
+class FilterChainStub:
+    def __init__(self, *, allowed: bool, reason: str = "") -> None:
+        self.session_filter = None
+        self.economic_filter = None
+        self._allowed = allowed
+        self._reason = reason
+
+    def should_evaluate(self, *args, **kwargs):
+        return self._allowed, self._reason
+
+    def filter_status(self) -> dict:
+        return {}
+
+
+def _event_metadata(
+    *,
+    scope: str,
+    bar_time: datetime,
+    snapshot_time: datetime | None = None,
+    **extra,
+) -> dict:
+    metadata = {
+        "scope": scope,
+        "bar_time": bar_time.isoformat(),
+        "snapshot_time": (snapshot_time or bar_time).isoformat(),
+        "trigger_source": f"{scope}_snapshot",
+    }
+    metadata.update(extra)
+    return metadata
+
+
+def _enqueue_runtime_event(
+    runtime: SignalRuntime,
+    *,
+    scope: str,
+    indicators: dict,
+    bar_time: datetime,
+    snapshot_time: datetime | None = None,
+    symbol: str = "XAUUSD",
+    timeframe: str = "M5",
+    **metadata,
+) -> None:
+    runtime._enqueue(
+        (
+            scope,
+            symbol,
+            timeframe,
+            indicators,
+            _event_metadata(
+                scope=scope,
+                bar_time=bar_time,
+                snapshot_time=snapshot_time,
+                **metadata,
+            ),
+        )
+    )
 
 
 def test_signal_runtime_processes_confirmed_snapshot_event() -> None:
@@ -636,6 +695,194 @@ def test_signal_runtime_status_exposes_split_queues() -> None:
     assert status["intrabar_queue_capacity"] == 8192
     assert "dropped_confirmed" in status
     assert "dropped_intrabar" in status
+
+
+def test_signal_runtime_yields_to_intrabar_after_confirmed_burst_limit() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
+        enable_confirmed_snapshot=True,
+    )
+    runtime._CONFIRMED_BURST_LIMIT = 2
+
+    first_bar = datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc)
+    second_bar = datetime(2026, 3, 19, 10, 5, tzinfo=timezone.utc)
+
+    _enqueue_runtime_event(
+        runtime,
+        scope="confirmed",
+        indicators={"rsi14": {"rsi": 22.0}},
+        bar_time=first_bar,
+    )
+    _enqueue_runtime_event(
+        runtime,
+        scope="confirmed",
+        indicators={"rsi14": {"rsi": 24.0}},
+        bar_time=second_bar,
+    )
+    _enqueue_runtime_event(
+        runtime,
+        scope="intrabar",
+        indicators={"rsi14": {"rsi": 25.0}},
+        bar_time=second_bar,
+        snapshot_time=second_bar + timedelta(minutes=1),
+        bar_progress=0.2,
+    )
+
+    assert runtime.process_next_event(timeout=0.01) is True
+    assert runtime.process_next_event(timeout=0.01) is True
+    assert runtime.process_next_event(timeout=0.01) is True
+
+    scopes = [call["metadata"]["scope"] for call in service.evaluate_calls]
+    assert scopes == ["confirmed", "intrabar", "confirmed"]
+
+
+def test_signal_runtime_records_blocked_filter_statistics_in_status() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
+        enable_confirmed_snapshot=True,
+        filter_chain=FilterChainStub(allowed=False, reason="spread:too_wide"),
+    )
+
+    _enqueue_runtime_event(
+        runtime,
+        scope="confirmed",
+        indicators={"rsi14": {"rsi": 22.0}},
+        bar_time=datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc),
+        spread_points=5.0,
+    )
+
+    assert runtime.process_next_event(timeout=0.01) is True
+
+    status = runtime.status()
+    assert service.evaluate_calls == []
+    assert status["filter_by_scope"]["confirmed"]["blocked"] == 1
+    assert status["filter_by_scope"]["confirmed"]["blocks"]["spread:too_wide"] == 1
+    assert status["filter_window_by_scope"]["confirmed"]["blocked"] == 1
+
+
+def test_signal_runtime_records_passed_filter_statistics_in_status() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
+        enable_confirmed_snapshot=True,
+        filter_chain=FilterChainStub(allowed=True),
+    )
+
+    _enqueue_runtime_event(
+        runtime,
+        scope="confirmed",
+        indicators={"rsi14": {"rsi": 22.0}},
+        bar_time=datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc),
+        spread_points=2.0,
+    )
+
+    assert runtime.process_next_event(timeout=0.01) is True
+
+    status = runtime.status()
+    assert len(service.evaluate_calls) == 1
+    assert status["filter_by_scope"]["confirmed"]["passed"] == 1
+    assert status["filter_window_by_scope"]["confirmed"]["passed"] == 1
+
+
+def test_signal_runtime_drops_stale_intrabar_event_before_evaluation(monkeypatch) -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
+        enable_confirmed_snapshot=True,
+    )
+
+    monotonic_values = iter([1000.0, 1401.0])
+    last_monotonic = {"value": 1401.0}
+
+    def _fake_monotonic() -> float:
+        try:
+            last_monotonic["value"] = next(monotonic_values)
+        except StopIteration:
+            pass
+        return last_monotonic["value"]
+
+    monkeypatch.setattr(
+        runtime_processing.time,
+        "monotonic",
+        _fake_monotonic,
+    )
+
+    _enqueue_runtime_event(
+        runtime,
+        scope="intrabar",
+        indicators={"rsi14": {"rsi": 24.0}},
+        bar_time=datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc),
+        snapshot_time=datetime(2026, 3, 19, 10, 1, tzinfo=timezone.utc),
+        bar_progress=0.3,
+    )
+
+    assert runtime.process_next_event(timeout=0.01) is True
+
+    status = runtime.status()
+    assert service.evaluate_calls == []
+    assert status["dropped_intrabar_stale"] == 1
+    assert status["processed_events"] == 1
+
+
+def test_signal_runtime_stop_clears_in_memory_queues() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
+        enable_confirmed_snapshot=True,
+    )
+
+    bar_time = datetime(2026, 3, 19, 10, 0, tzinfo=timezone.utc)
+    _enqueue_runtime_event(
+        runtime,
+        scope="confirmed",
+        indicators={"rsi14": {"rsi": 22.0}},
+        bar_time=bar_time,
+    )
+    _enqueue_runtime_event(
+        runtime,
+        scope="intrabar",
+        indicators={"rsi14": {"rsi": 24.0}},
+        bar_time=bar_time,
+        snapshot_time=bar_time + timedelta(minutes=1),
+        bar_progress=0.2,
+    )
+
+    before = runtime.status()
+    assert before["confirmed_queue_size"] == 1
+    assert before["intrabar_queue_size"] == 1
+
+    runtime.stop()
+
+    after = runtime.status()
+    assert after["confirmed_queue_size"] == 0
+    assert after["intrabar_queue_size"] == 0
 
 
 def test_signal_runtime_injects_spread_points_from_market_service() -> None:

@@ -69,6 +69,8 @@ class RuntimeReadModel:
         queues = dict(queue_stats.get("queues", {}) or {})
         threads = dict(queue_stats.get("threads", {}) or {})
         worst_queue = None
+        writer_alive = threads.get("writer_alive")
+        ingest_alive = threads.get("ingest_alive")
 
         for name, queue in queues.items():
             queue_status = str(queue.get("status", "normal"))
@@ -84,7 +86,9 @@ class RuntimeReadModel:
                     "pending": queue.get("pending", 0),
                 }
 
-        if not threads.get("writer_alive", False):
+        if writer_alive is not True:
+            status = "critical"
+        elif ingest_alive is False:
             status = "critical"
         elif int(summary.get("full", 0) or 0) > 0:
             status = "critical"

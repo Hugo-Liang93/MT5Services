@@ -5,6 +5,13 @@ from datetime import date, datetime, time as dt_time, timedelta, timezone
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Dict, List, Optional
 
+from src.calendar.economic_calendar.contracts import (
+    EVENT_STATUS_IMMINENT,
+    EVENT_STATUS_PENDING_RELEASE,
+    EVENT_STATUS_RELEASED,
+    EVENT_STATUS_SCHEDULED,
+    UPCOMING_EVENT_STATUSES,
+)
 from src.clients.economic_calendar import (
     EconomicCalendarError,
     EconomicCalendarEvent,
@@ -247,15 +254,15 @@ class EconomicCalendarService:
 
     def _derive_status(self, event: EconomicCalendarEvent, observed_at: datetime) -> str:
         if event.actual or event.revised:
-            return "released"
+            return EVENT_STATUS_RELEASED
         if event.all_day and observed_at.date() > event.scheduled_at.date():
-            return "released"
+            return EVENT_STATUS_RELEASED
         imminent_at = event.scheduled_at - timedelta(minutes=max(0, self.settings.pre_event_buffer_minutes))
         if observed_at >= event.scheduled_at:
-            return "pending_release"
+            return EVENT_STATUS_PENDING_RELEASE
         if observed_at >= imminent_at:
-            return "imminent"
-        return "scheduled"
+            return EVENT_STATUS_IMMINENT
+        return EVENT_STATUS_SCHEDULED
 
     def _apply_lifecycle(
         self,
@@ -271,11 +278,11 @@ class EconomicCalendarService:
         event.ingested_at = existing.ingested_at if existing else observed_at
         event.last_updated = observed_at
         event.released_at = existing.released_at if existing else None
-        if event.status == "released" and event.released_at is None:
+        if event.status == EVENT_STATUS_RELEASED and event.released_at is None:
             event.released_at = observed_at
         event.last_value_check_at = (
             observed_at
-            if value_check or event.status in {"pending_release", "released"}
+            if value_check or event.status in {EVENT_STATUS_PENDING_RELEASE, EVENT_STATUS_RELEASED}
             else (existing.last_value_check_at if existing else None)
         )
         return event
@@ -572,7 +579,7 @@ class EconomicCalendarService:
                 start_time=window_start,
                 end_time=window_end,
                 limit=50,
-                statuses=["scheduled", "imminent", "pending_release"],
+                statuses=list(UPCOMING_EVENT_STATUSES),
                 importance_min=imp_min,
             )
         except Exception:

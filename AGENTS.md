@@ -23,7 +23,9 @@
 - `src/trading/`：交易执行、准入、仓位与结果追踪。
 - `src/persistence/`：数据库写入、队列持久化、仓储层。
 - `src/backtesting/`：回测、优化、前推与参数推荐。
+- `docs/README.md`：文档总入口；开始文档审计、结构整理或启动排障前先看。
 - `docs/codebase-review.md`：当前代码库审查风险台账；做架构、策略、性能整改前先阅读并更新。
+- `docs/runbooks/system-startup-and-live-canary.md`：系统启动前检查、启动后巡检、休盘/开盘日志判读、live canary 的唯一 runbook。
 - `tests/`：测试套件（结构与 `src/` 对齐）。
 
 ## 4) 配置系统硬性规则
@@ -103,6 +105,10 @@
   - 当前信号来自哪个策略、哪个阶段被过滤或阻断
   - 当前交易在执行链路的哪个节点失败
   - 当前持仓/挂单/风险控制状态与上游信号之间的关联关系
+- 若改动触及启动入口、日志路径、健康探针、系统巡检步骤或 live canary 流程，必须同步更新：
+  - `docs/runbooks/system-startup-and-live-canary.md`
+  - `docs/design/entrypoint-map.md`
+  - 必要时更新 `docs/README.md` 的导航入口
 
 ## 10) 可观测性与数据流
 
@@ -147,6 +153,12 @@ Rules:
   - 任何代码提交默认要求说明“本次改动如何减少边界泄漏/减少兼容分支”。
   - 必须更新 `docs/codebase-review.md` 的本次变更条目（包括新增职责变化、移除兼容路径、未决项）。
   - 任何保留兼容分支都需给出“移除截止条件与时间窗口”，不得默认长期保留。
+- 若任务属于以下类型，先查文档再行动，禁止在 `AGENTS.md` 中复制第二套流程：
+  - 启动排障
+  - 日志判读
+  - `/health` 或 `/v1/monitoring/health/ready` 巡检
+  - 开盘窗口系统级 live canary
+  - 执行顺序：先看 `docs/README.md`，再看 `docs/runbooks/system-startup-and-live-canary.md`，最后按需回到 `docs/codebase-review.md` 与 `docs/design/full-runtime-dataflow.md`
 - 例外规则：只有用户明确要求“兼容过渡”时，才能引入临时兼容路径；临时路径必须写在对应模块备注/文档中，限定范围和清退时间。
 
 ---

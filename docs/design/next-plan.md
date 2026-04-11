@@ -1,8 +1,9 @@
 # Next Plan — 下一阶段开发规划
 
-> 更新日期：2026-04-05
+> 首版日期：2026-04-05
 > 系统现状与已完成项追踪见 `TODO.md`。本文仅包含待实施方案的技术细节。
 > 当前架构/策略/代码/性能风险台账见 `docs/codebase-review.md`；P0/P1 整改顺序以该审查文档为准。
+> 文档类型：规划文档，不代表当前已实现状态；当前运行时事实源以 `docs/architecture.md` 与 `docs/design/full-runtime-dataflow.md` 为准。
 
 ---
 

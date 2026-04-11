@@ -20,6 +20,7 @@ from .economic_calendar import (
     DDL as ECONOMIC_CALENDAR_DDL,
     DELETE_BY_KEYS_SQL as DELETE_ECONOMIC_CALENDAR_BY_KEYS_SQL,
     INSERT_UPDATE_SQL as INSERT_ECONOMIC_CALENDAR_UPDATE_SQL,
+    MIGRATION_SQL as ECONOMIC_CALENDAR_MIGRATION_SQL,
     UPSERT_SQL as UPSERT_ECONOMIC_CALENDAR_SQL,
 )
 from .market_impact import (
@@ -66,7 +67,11 @@ from .pipeline_trace_events import (
     DDL as PIPELINE_TRACE_EVENTS_DDL,
     INSERT_SQL as INSERT_PIPELINE_TRACE_EVENTS_SQL,
 )
-from .runtime_tasks import DDL as RUNTIME_TASKS_DDL, UPSERT_SQL as UPSERT_RUNTIME_TASK_STATUS_SQL
+from .runtime_tasks import (
+    DDL as RUNTIME_TASKS_DDL,
+    MIGRATION_SQL as RUNTIME_TASKS_MIGRATION_SQL,
+    UPSERT_SQL as UPSERT_RUNTIME_TASK_STATUS_SQL,
+)
 
 # ── Backtest ─────────────────────────────────────────────────────
 from .backtest import (
@@ -113,8 +118,14 @@ DDL_STATEMENTS = [
     PAPER_TRADING_DDL,
 ]
 
+POST_INIT_DDL_STATEMENTS = [
+    ECONOMIC_CALENDAR_MIGRATION_SQL,
+    RUNTIME_TASKS_MIGRATION_SQL,
+]
+
 __all__ = [
     "DDL_STATEMENTS",
+    "POST_INIT_DDL_STATEMENTS",
     # Market data
     "INSERT_TICKS_SQL",
     "INSERT_QUOTES_SQL",

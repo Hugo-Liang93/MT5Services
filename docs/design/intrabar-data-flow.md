@@ -1,5 +1,8 @@
 # Intrabar 数据流图
 
+> 文档类型：当前 intrabar 支链实现图。
+> 启动顺序、持久化全景、日志路径与健康探针请对照 `docs/design/full-runtime-dataflow.md`；本文只展开 intrabar 支链。
+
 ## 1. 全局视角：子 TF close 驱动父 TF Intrabar 合成
 
 ```

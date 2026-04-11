@@ -19,7 +19,7 @@ class DummyIngestor:
                     "pending": 1,
                 }
             },
-            "threads": {"writer_alive": True},
+            "threads": {"writer_alive": True, "ingest_alive": True},
         }
 
 

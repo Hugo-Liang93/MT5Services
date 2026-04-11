@@ -26,7 +26,7 @@ from src.persistence.repositories import (
     TradingStateRepository,
     TradeCommandAuditRepository,
 )
-from src.persistence.schema import DDL_STATEMENTS
+from src.persistence.schema import DDL_STATEMENTS, POST_INIT_DDL_STATEMENTS
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +234,8 @@ class TimescaleWriter:
         ddl = "CREATE EXTENSION IF NOT EXISTS timescaledb;\n" + "\n".join(DDL_STATEMENTS)
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute(ddl)
+            for migration_sql in POST_INIT_DDL_STATEMENTS:
+                cur.execute(migration_sql)
         logger.info("Timescale schema ensured")
 
     def ensure_retention_policies(

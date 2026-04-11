@@ -8,6 +8,7 @@ from threading import Thread
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.clients.economic_calendar import EconomicCalendarError, EconomicCalendarEvent
+from src.monitoring.runtime_task_status import RuntimeTaskState
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,14 @@ def runtime_task_row(service, job_type: str) -> tuple:
         _RUNTIME_COMPONENT,
         job_type,
         updated_at,
-        str(job_state.get("last_status") or ("idle" if job_state["enabled"] else "disabled")),
+        str(
+            job_state.get("last_status")
+            or (
+                RuntimeTaskState.IDLE.value
+                if job_state["enabled"]
+                else RuntimeTaskState.DISABLED.value
+            )
+        ),
         started_at,
         completed_at,
         next_run_at,
@@ -358,7 +366,11 @@ def run_job(
         duration_ms = int((time.monotonic() - fetch_started) * 1000)
         summary = job_summary(
             job_type=job_type,
-            status="ok" if not provider_errors else "partial",
+            status=(
+                RuntimeTaskState.OK.value
+                if not provider_errors
+                else RuntimeTaskState.PARTIAL.value
+            ),
             fetched=len(events),
             written=write_result["written"],
             snapshots_written=write_result["snapshots_written"],
@@ -402,7 +414,7 @@ def run_job(
             job_type,
             started_at=started_at,
             completed_at=completed_at,
-            status="error",
+            status=RuntimeTaskState.ERROR.value,
             fetched=0,
             written=0,
             snapshots_written=0,
@@ -424,9 +436,21 @@ def refresh_service(
     if job_type not in _JOB_LABELS:
         raise EconomicCalendarError(f"Unsupported economic job type: {job_type}")
     if not service.settings.enabled:
-        return {"status": "disabled", "job_type": job_type, "written": 0, "fetched": 0, "snapshots_written": 0}
+        return {
+            "status": RuntimeTaskState.DISABLED.value,
+            "job_type": job_type,
+            "written": 0,
+            "fetched": 0,
+            "snapshots_written": 0,
+        }
     if not service._refresh_lock.acquire(blocking=False):
-        return {"status": "refresh_in_progress", "job_type": job_type, "written": 0, "fetched": 0, "snapshots_written": 0}
+        return {
+            "status": "refresh_in_progress",
+            "job_type": job_type,
+            "written": 0,
+            "fetched": 0,
+            "snapshots_written": 0,
+        }
     service._refresh_in_progress = True
     try:
         default_start_at, default_end_at = service._job_window(job_type)
@@ -544,5 +568,5 @@ def stop_service(service) -> None:
         service._worker.join(timeout=5.0)
     service._worker = None
     for job_type in _JOB_LABELS:
-        service._job_state[job_type]["last_status"] = "stopped"
+        service._job_state[job_type]["last_status"] = RuntimeTaskState.STOPPED.value
         persist_job_state(service, job_type)

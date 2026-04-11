@@ -1,4 +1,15 @@
-DDL = """
+from src.calendar.economic_calendar.contracts import (
+    ECONOMIC_EVENT_STATUSES,
+    ECONOMIC_SESSION_BUCKETS,
+    EVENT_STATUS_CHECK_CONSTRAINT,
+    SESSION_BUCKET_CHECK_CONSTRAINT,
+    sql_string_literals,
+)
+
+_SESSION_BUCKET_SQL = sql_string_literals(ECONOMIC_SESSION_BUCKETS)
+_EVENT_STATUS_SQL = sql_string_literals(ECONOMIC_EVENT_STATUSES)
+
+DDL = f"""
 CREATE TABLE IF NOT EXISTS economic_calendar_events (
     scheduled_at TIMESTAMPTZ NOT NULL,
     event_uid TEXT NOT NULL,
@@ -23,12 +34,14 @@ CREATE TABLE IF NOT EXISTS economic_calendar_events (
     scheduled_at_release TIMESTAMP,
     release_timezone TEXT,
     session_bucket TEXT NOT NULL DEFAULT 'off_hours'
-        CHECK (session_bucket IN ('asia', 'europe', 'us', 'off_hours')),
+        CONSTRAINT {SESSION_BUCKET_CHECK_CONSTRAINT}
+        CHECK (session_bucket IN ({_SESSION_BUCKET_SQL})),
     is_asia_session BOOLEAN NOT NULL DEFAULT FALSE,
     is_europe_session BOOLEAN NOT NULL DEFAULT FALSE,
     is_us_session BOOLEAN NOT NULL DEFAULT FALSE,
     status TEXT NOT NULL DEFAULT 'scheduled'
-        CHECK (status IN ('scheduled', 'released', 'cancelled', 'deleted')),
+        CONSTRAINT {EVENT_STATUS_CHECK_CONSTRAINT}
+        CHECK (status IN ({_EVENT_STATUS_SQL})),
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     released_at TIMESTAMPTZ,
@@ -84,6 +97,49 @@ CREATE INDEX IF NOT EXISTS idx_econ_updates_uid
 
 CREATE INDEX IF NOT EXISTS idx_econ_updates_job
     ON economic_calendar_event_updates (job_type, recorded_at DESC);
+"""
+
+MIGRATION_SQL = f"""
+DO $$
+DECLARE
+    constraint_name text;
+BEGIN
+    IF to_regclass('economic_calendar_events') IS NOT NULL THEN
+        FOR constraint_name IN
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'economic_calendar_events'::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) ILIKE '%session_bucket%'
+        LOOP
+            EXECUTE format(
+                'ALTER TABLE economic_calendar_events DROP CONSTRAINT %I',
+                constraint_name
+            );
+        END LOOP;
+
+        FOR constraint_name IN
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'economic_calendar_events'::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) ILIKE '%status%'
+        LOOP
+            EXECUTE format(
+                'ALTER TABLE economic_calendar_events DROP CONSTRAINT %I',
+                constraint_name
+            );
+        END LOOP;
+
+        ALTER TABLE economic_calendar_events
+            ADD CONSTRAINT {SESSION_BUCKET_CHECK_CONSTRAINT}
+            CHECK (session_bucket IN ({_SESSION_BUCKET_SQL}));
+
+        ALTER TABLE economic_calendar_events
+            ADD CONSTRAINT {EVENT_STATUS_CHECK_CONSTRAINT}
+            CHECK (status IN ({_EVENT_STATUS_SQL}));
+    END IF;
+END $$;
 """
 
 UPSERT_SQL = """

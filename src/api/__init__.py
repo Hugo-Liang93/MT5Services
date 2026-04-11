@@ -61,6 +61,14 @@ def _resolve_provided_api_key(request: Request, header_name: str) -> str:
     return ""
 
 
+def _safe_component_snapshot(label: str, getter) -> dict:
+    try:
+        return getter()
+    except Exception as exc:
+        logger.debug("Health snapshot failed for %s", label, exc_info=True)
+        return {"status": "error", "error": str(exc)}
+
+
 app = FastAPI(
     title="MT5 Market Data Service",
     version="1.0.0",
@@ -139,6 +147,38 @@ def health(
         market_status = {"connected": False, "error": str(exc)}
     trading_status = trading.health()
     queues = deps.get_ingestor().queue_stats()
+    runtime_components = {
+        "ingestor": {"running": bool(queues.get("threads", {}).get("ingest_alive", False))},
+        "storage_writer": {"running": bool(queues.get("threads", {}).get("writer_alive", False))},
+        "indicator_engine": _safe_component_snapshot(
+            "indicator_engine",
+            lambda: {
+                "running": bool(
+                    deps.get_indicator_manager().get_performance_stats().get("event_loop_running", False)
+                )
+            },
+        ),
+        "signal_runtime": _safe_component_snapshot(
+            "signal_runtime",
+            lambda: {"running": deps.get_signal_runtime().is_running()},
+        ),
+        "trade_executor": _safe_component_snapshot(
+            "trade_executor",
+            lambda: {"running": deps.get_trade_executor().is_running()},
+        ),
+        "pending_entry_manager": _safe_component_snapshot(
+            "pending_entry_manager",
+            lambda: {"running": deps.get_pending_entry_manager().is_running()},
+        ),
+        "position_manager": _safe_component_snapshot(
+            "position_manager",
+            lambda: {"running": deps.get_position_manager().is_running()},
+        ),
+        "economic_calendar": _safe_component_snapshot(
+            "economic_calendar",
+            lambda: deps.get_economic_calendar_service().stats(),
+        ),
+    }
 
     return ApiResponse(
         success=True,
@@ -147,6 +187,7 @@ def health(
             "market": market_status,
             "trading": trading_status,
             "ingestor": {"queues": queues},
+            "runtime": {"components": runtime_components},
         },
     )
 

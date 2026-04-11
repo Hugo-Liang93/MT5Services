@@ -41,7 +41,7 @@ def test_trigger_config_reload_raises_when_file_missing(monkeypatch) -> None:
     try:
         asyncio.run(trigger_config_reload("missing.ini"))
     except HTTPException as exc:
-        assert exc.status_code == 500
-        assert exc.detail == "missing.ini"
+        assert exc.status_code == 404
+        assert exc.detail == "config file not found: missing.ini"
     else:
         raise AssertionError("expected trigger_config_reload to fail for missing file")

@@ -12,6 +12,7 @@ from src.config import get_runtime_data_path
 from src.config.file_manager import close_file_config_manager
 from src.monitoring.health import close_health_monitor
 from src.monitoring.manager import close_monitoring_manager
+from src.monitoring.runtime_task_status import RuntimeTaskState
 from src.utils.event_store import close_event_store
 
 logger = logging.getLogger(__name__)
@@ -88,8 +89,12 @@ class AppRuntime:
             if controller is None:
                 raise RuntimeError("Component 'runtime_mode_controller' is None")
             controller.start()
-            self._mark_step(current_step, "ready", current_started)
-            self._record_task_status(current_step, "ready", current_started)
+            self._mark_step(current_step, RuntimeTaskState.READY.value, current_started)
+            self._record_task_status(
+                current_step,
+                RuntimeTaskState.READY.value,
+                current_started,
+            )
 
             self._register_monitoring()
 
@@ -101,8 +106,18 @@ class AppRuntime:
             )
 
         except Exception as exc:
-            self._mark_step(current_step, "failed", current_started, error=str(exc))
-            self._record_task_status(current_step, "failed", current_started, error=str(exc))
+            self._mark_step(
+                current_step,
+                RuntimeTaskState.FAILED.value,
+                current_started,
+                error=str(exc),
+            )
+            self._record_task_status(
+                current_step,
+                RuntimeTaskState.FAILED.value,
+                current_started,
+                error=str(exc),
+            )
             self._status["phase"] = "failed"
             self._status["ready"] = False
             self._status["last_error"] = str(exc)
@@ -253,8 +268,12 @@ class AppRuntime:
                 "pending_entry", c.pending_entry_manager, ["pending_entry"]
             )
         c.monitoring_manager.start()
-        self._mark_step("monitoring", "ready", current_started)
-        self._record_task_status("monitoring", "ready", current_started)
+        self._mark_step("monitoring", RuntimeTaskState.READY.value, current_started)
+        self._record_task_status(
+            "monitoring",
+            RuntimeTaskState.READY.value,
+            current_started,
+        )
 
         if c.health_monitor is not None:
             c.health_monitor.record_metric(
@@ -280,8 +299,8 @@ class AppRuntime:
         if c.storage_writer is None:
             return
         duration_ms = int((time.monotonic() - started_at) * 1000)
-        success_count = 1 if state == "ready" else 0
-        failure_count = 1 if state == "failed" else 0
+        success_count = 1 if state == RuntimeTaskState.READY.value else 0
+        failure_count = 1 if state == RuntimeTaskState.FAILED.value else 0
         try:
             c.storage_writer.db.write_runtime_task_status(
                 [

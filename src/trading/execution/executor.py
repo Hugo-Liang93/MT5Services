@@ -63,6 +63,12 @@ class ExecutorConfig:
     min_confidence: float = 0.7
     # 按时间框架覆盖最低交易置信度，低周期可以设置更严格阈值。
     timeframe_min_confidence: dict[str, float] = field(default_factory=dict)
+    # HTF 冲突阻止规则的适用时间框架集合。
+    htf_conflict_block_timeframes: frozenset[str] = field(default_factory=frozenset)
+    # 豁免 HTF 冲突阻止的策略类别集合。
+    htf_conflict_exempt_categories: frozenset[str] = field(
+        default_factory=lambda: frozenset({"reversion"})
+    )
     max_concurrent_positions_per_symbol: int | None = 3
     risk_percent: float = 1.0
     sl_atr_multiplier: float = 1.5
