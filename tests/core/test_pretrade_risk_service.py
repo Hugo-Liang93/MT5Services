@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 import pytest
@@ -67,11 +68,40 @@ class DummyOrder:
         self.symbol = symbol
 
 
+@dataclass
+class FakeAccountInfo:
+    balance: float
+    equity: float
+    margin: float = 0.0
+    margin_free: float | None = 0.0
+    profit: float = 0.0
+    leverage: int = 100
+    currency: str = "USD"
+    day_start_balance: float | None = None
+    daily_realized_pnl: float | None = None
+    daily_pnl: float | None = None
+
+
 class DummyAccountService:
     def __init__(self, positions=None, orders=None, account_info=None) -> None:
         self._positions = positions or []
         self._orders = orders or []
-        self._account_info = account_info or {"balance": 10000.0, "equity": 10000.0}
+        if account_info is None:
+            self._account_info = FakeAccountInfo(10000.0, 10000.0)
+        elif isinstance(account_info, dict):
+            self._account_info = FakeAccountInfo(
+                balance=account_info.get("balance", 10000.0),
+                equity=account_info.get("equity", 10000.0),
+                margin_free=account_info.get("margin_free"),
+                day_start_balance=account_info.get("day_start_balance"),
+                daily_realized_pnl=account_info.get("daily_realized_pnl"),
+                daily_pnl=account_info.get("daily_pnl"),
+                profit=account_info.get("profit", 0.0),
+                leverage=account_info.get("leverage", 100),
+                currency=account_info.get("currency", "USD"),
+            )
+        else:
+            self._account_info = account_info
 
     def account_info(self):
         return self._account_info

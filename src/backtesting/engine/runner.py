@@ -20,6 +20,8 @@ from src.clients.mt5_market import OHLC
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
+from src.signals.contracts import StrategyCapability
+from src.signals.contracts.execution_plan import build_strategy_capability_summary
 from src.trading.pending import PendingEntryConfig as TradingPendingEntryConfig
 
 from ..analysis.metrics import compute_metrics, compute_metrics_grouped
@@ -191,6 +193,8 @@ class BacktestEngine:
 
         # 确定目标策略列表，并过滤掉回测 SignalModule 不支持的名称。
         available_strategies = set(self._signal_module.list_strategies())
+        requested_strategies: List[str] = []
+        unsupported: List[str] = []
         if config.strategies:
             requested_strategies = []
             seen_requested: Set[str] = set()
@@ -222,20 +226,29 @@ class BacktestEngine:
                     f"{requested_strategies}"
                 )
         else:
-            self._target_strategies = sorted(available_strategies)
+            requested_strategies = sorted(available_strategies)
+            self._target_strategies = list(requested_strategies)
+
+        self._requested_strategies = list(requested_strategies)
+        self._unsupported_requested_strategies = sorted(set(unsupported))
+        self._timeframe_filtered_strategies: List[str] = []
+        self._scope_filtered_strategies: List[str] = []
 
         # 按 strategy_timeframes 白名单过滤（与实盘 SignalRuntime 行为一致）
         tf_whitelist = config.strategy_timeframes
         if tf_whitelist:
             tf_upper = config.timeframe.upper()
-            before_count = len(self._target_strategies)
+            before = list(self._target_strategies)
             self._target_strategies = [
                 s
                 for s in self._target_strategies
                 if s not in tf_whitelist
                 or tf_upper in [t.upper() for t in tf_whitelist[s]]
             ]
-            filtered = before_count - len(self._target_strategies)
+            self._timeframe_filtered_strategies = sorted(
+                set(before) - set(self._target_strategies)
+            )
+            filtered = len(self._timeframe_filtered_strategies)
             if filtered > 0:
                 logger.info(
                     "Backtest: filtered %d strategies not allowed on %s by strategy_timeframes",
@@ -262,10 +275,37 @@ class BacktestEngine:
             )
 
         # 收集所有目标策略需要的指标名 + regime 检测需要的指标
+        self._strategy_capabilities = self._resolve_strategy_capabilities(
+            self._collect_voting_group_policy()
+        )
+        # 仅消费支持 confirmed scope 的策略，避免策略声明变化导致评估路径偏移。
+        pre_scope_filter_strategies = list(self._target_strategies)
+        self._target_strategies = [
+            name
+            for name in self._target_strategies
+            if self._strategy_capabilities.get(name) is not None
+            and "confirmed" in self._strategy_capabilities[name].valid_scopes
+        ]
+        self._scope_filtered_strategies = sorted(
+            {
+                name
+                for name in pre_scope_filter_strategies
+                if self._strategy_capabilities.get(name) is None
+                or "confirmed"
+                not in self._strategy_capabilities[name].valid_scopes
+            }
+        )
+        if not self._target_strategies:
+            raise ValueError(
+                "No supported confirmed strategies remain after capability filtering"
+            )
+
         self._required_indicators: List[str] = []
         seen: Set[str] = set()
-        for s in self._target_strategies:
-            for ind in self._signal_module.strategy_requirements(s):
+        for capability in self._strategy_capabilities.values():
+            if capability.name not in self._target_strategies:
+                continue
+            for ind in capability.needed_indicators:
                 if ind not in seen:
                     seen.add(ind)
                     self._required_indicators.append(ind)
@@ -307,7 +347,7 @@ class BacktestEngine:
             _sc = _get_sc()
             self._chandelier_config = _CC(
                 regime_aware=_sc.chandelier_regime_aware,
-                fallback_profile=_pfa(_sc.chandelier_fallback_alpha),
+                default_profile=_pfa(_sc.chandelier_default_alpha),
                 breakeven_enabled=_sc.chandelier_breakeven_enabled,
                 breakeven_buffer_r=_sc.chandelier_breakeven_buffer_r,
                 min_breakeven_buffer=_sc.chandelier_min_breakeven_buffer,
@@ -320,7 +360,106 @@ class BacktestEngine:
                 tf_trail_scale=dict(_sc.chandelier_tf_trail_scale),
             )
         except Exception:
+            logger.debug("Using default chandelier config for backtest", exc_info=True)
             self._chandelier_config = _CC(regime_aware=True)
+
+    def _collect_voting_group_policy(self) -> Dict[str, str]:
+        policy: Dict[str, str] = {}
+        for group_cfg, _engine in self._voting_group_engines:
+            for strategy_name in group_cfg.strategies:
+                policy[str(strategy_name)] = str(group_cfg.name)
+        return policy
+
+    @staticmethod
+    def _to_strategy_capability(raw: Any) -> StrategyCapability | None:
+        if isinstance(raw, StrategyCapability):
+            return raw
+        if isinstance(raw, dict):
+            cap = StrategyCapability.from_contract(raw)
+            return cap if cap.name else None
+        return None
+
+    def _resolve_strategy_capabilities(
+        self,
+        voting_group_policy: Dict[str, str],
+    ) -> dict[str, StrategyCapability]:
+        catalog_fn = getattr(self._signal_module, "strategy_capability_catalog", None)
+        if not callable(catalog_fn):
+            raise TypeError(
+                "BacktestEngine requires signal_module.strategy_capability_catalog()"
+            )
+        raw_catalog = None
+        raw_catalog = catalog_fn(voting_group_policy=voting_group_policy)
+        if raw_catalog is None:
+            raw_catalog = ()
+        if isinstance(raw_catalog, dict):
+            raw_catalog_items: list[Any] = [raw_catalog]
+        else:
+            try:
+                raw_catalog_items = list(raw_catalog)
+            except TypeError:
+                raw_catalog_items = [raw_catalog]
+
+        # Prefer canonical capability contract when present.
+        capabilities: dict[str, StrategyCapability] = {}
+        invalid_item_types: list[str] = []
+        for raw in raw_catalog_items:
+            cap = self._to_strategy_capability(raw)
+            if cap is None:
+                invalid_item_types.append(type(raw).__name__)
+                continue
+            capabilities[cap.name] = cap
+        if invalid_item_types:
+            raise TypeError(
+                "BacktestEngine capability catalog item must be StrategyCapability or dict: "
+                + ", ".join(sorted(set(invalid_item_types)))
+            )
+        missing_strategies = sorted(
+            strategy
+            for strategy in self._target_strategies
+            if strategy not in capabilities
+        )
+        if missing_strategies:
+            raise ValueError(
+                "BacktestEngine missing strategy capabilities for "
+                + ", ".join(missing_strategies)
+            )
+        return capabilities
+
+    @property
+    def strategy_capabilities(self) -> dict[str, StrategyCapability]:
+        return self._strategy_capabilities
+
+    def strategy_capability_contract(self) -> tuple[dict[str, Any], ...]:
+        """Expose backtest-visible strategy capability contract."""
+        return tuple(cap.as_contract() for cap in self._strategy_capabilities.values())
+
+    def strategy_capability(self, strategy_name: str) -> StrategyCapability | None:
+        return self._strategy_capabilities.get(strategy_name)
+
+    def strategy_capability_execution_plan(self) -> dict[str, Any]:
+        """回测侧策略能力执行计划（与 SignalRuntime status 同语义）。"""
+        active_strategies = list(self._target_strategies)
+        summary = build_strategy_capability_summary(
+            capability_contract=self._strategy_capabilities.values(),
+            configured_strategies=self._requested_strategies,
+            scheduled_strategies=active_strategies,
+            strategy_timeframes_policy=self._config.strategy_timeframes,
+        )
+
+        return {
+            "timeframe": str(self._config.timeframe).upper(),
+            "requested_strategy_count": len(self._requested_strategies),
+            "active_strategy_count": len(active_strategies),
+            "unsupported_requested_strategies": list(
+                self._unsupported_requested_strategies
+            ),
+            "timeframe_filtered_strategies": list(self._timeframe_filtered_strategies),
+            "scope_filtered_strategies": list(self._scope_filtered_strategies),
+            "requested_strategies": list(self._requested_strategies),
+            "active_strategies": active_strategies,
+            **summary,
+        }
 
     def _reset_run_state(self) -> None:
         """重置每次 run() 的运行时状态，确保引擎可复用。"""
@@ -420,6 +559,7 @@ class BacktestEngine:
                 metrics_by_confidence={},
                 param_set=self._config.strategy_params,
                 filter_stats=None,
+                strategy_capability_execution_plan=self.strategy_capability_execution_plan(),
                 signal_evaluations=[],
             )
 
@@ -765,6 +905,7 @@ class BacktestEngine:
             metrics_by_confidence=metrics_by_confidence,
             param_set=self._config.strategy_params,
             filter_stats=filter_stats,
+            strategy_capability_execution_plan=self.strategy_capability_execution_plan(),
             signal_evaluations=self._signal_evaluations,
             monte_carlo_result=mc_result,
         )

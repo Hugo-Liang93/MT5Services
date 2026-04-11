@@ -6,6 +6,7 @@ from typing import Any
 from src.signals.metadata_keys import MetadataKey as MK
 
 from ..ports import RecoveryTradingPort, TradeControlStatePort
+from ..reasons import REASON_STARTUP_EXPIRED
 from .recovery_policy import TradingStateRecoveryPolicy
 
 
@@ -91,7 +92,7 @@ class TradingStateRecovery:
                         cancelled = False
                     if cancelled:
                         self._store.mark_pending_order_expired(
-                            info, reason="startup_expired"
+                            info, reason=REASON_STARTUP_EXPIRED
                         )
                         summary["expired"] += 1
                     else:

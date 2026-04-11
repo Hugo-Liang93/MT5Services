@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import queue
 import threading
@@ -23,8 +22,12 @@ from typing import Any, Callable, Dict, Optional
 from src.signals.models import SignalEvent
 from src.utils.common import timeframe_seconds
 
+from ..reasons import REASON_NEW_SIGNAL_OVERRIDE, REASON_SHUTDOWN
 from ..execution.sizing import TradeParameters
 from ..ports import PendingOrderCancellationPort
+from .lifecycle import PendingOrderLifecycleManager
+from .monitoring import PendingEntryMonitoringService
+from .snapshot import PendingEntrySnapshotService
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +54,9 @@ class PendingEntryConfig:
     )
     default_timeout_bars: float = 2.0
 
-    # 超时降级：超时时如果价格偏离参考价 < 此值×ATR，以市价入场而非丢弃
+    # 超时入场补偿：超时时若价格偏离参考价 < 此值×ATR，则按市价入场而非直接丢弃
     # 0 = 禁用降级（超时直接丢弃）
-    timeout_fallback_atr: float = 0.5
+    timeout_fill_tolerance_atr: float = 0.5
 
     # 信号覆盖行为
     cancel_on_new_signal: bool = True
@@ -187,6 +190,39 @@ class PendingEntryManager:
             "mt5_orders_missing": 0,
         }
 
+        self._lifecycle_manager = PendingOrderLifecycleManager(
+            lock=self._lock,
+            mt5_orders=self._mt5_orders,
+            cancellation_port=self._cancellation_port,
+            inspect_mt5_order_fn=self._inspect_mt5_order_fn,
+            stats=self._stats,
+        )
+        self._monitoring_service = PendingEntryMonitoringService(
+            stop_event=self._stop_event,
+            pending=self._pending,
+            lock=self._lock,
+            fill_queue=self._fill_queue,
+            market_service=self._market,
+            execute_fn=self._execute_fn,
+            on_expired_fn=self._on_expired_fn,
+            extract_quote_prices=_extract_quote_prices,
+            fill_result_factory=lambda signal_event, trade_params, cost_metrics: _FillResult(
+                signal_event=signal_event,
+                trade_params=trade_params,
+                cost_metrics=cost_metrics,
+            ),
+            stats=self._stats,
+            check_interval=self._config.check_interval,
+            max_spread_points=self._config.max_spread_points,
+            timeout_fill_tolerance_atr=self._config.timeout_fill_tolerance_atr,
+        )
+        self._snapshot_service = PendingEntrySnapshotService(
+            pending=self._pending,
+            mt5_orders=self._mt5_orders,
+            lock=self._lock,
+            stats=self._stats,
+        )
+
     @property
     def config(self) -> PendingEntryConfig:
         return self._config
@@ -194,6 +230,11 @@ class PendingEntryManager:
     @config.setter
     def config(self, value: PendingEntryConfig) -> None:
         self._config = value
+        self._monitoring_service.set_runtime_config(
+            check_interval=value.check_interval,
+            max_spread_points=value.max_spread_points,
+            timeout_fill_tolerance_atr=value.timeout_fill_tolerance_atr,
+        )
 
     def submit(self, entry: PendingEntry) -> None:
         """提交一个新的挂起入场。"""
@@ -225,20 +266,19 @@ class PendingEntryManager:
         self._on_mt5_order_expired = on_expired
         self._on_mt5_order_cancelled = on_cancelled
         self._on_mt5_order_missing = on_missing
+        self._lifecycle_manager.set_order_lifecycle_hooks(
+            on_tracked=on_tracked,
+            on_filled=on_filled,
+            on_expired=on_expired,
+            on_cancelled=on_cancelled,
+            on_missing=on_missing,
+        )
 
     def inspect_mt5_order(self, info: Dict[str, Any]) -> Dict[str, Any]:
-        inspector = self._inspect_mt5_order_fn
-        if not callable(inspector):
-            return {"status": "pending"}
-        return inspector(dict(info)) or {"status": "pending"}
+        return self._lifecycle_manager.inspect_mt5_order(info)
 
     def restore_mt5_order(self, info: Dict[str, Any]) -> None:
-        restored = dict(info)
-        signal_id = str(restored.get("signal_id") or "").strip()
-        if not signal_id:
-            return
-        with self._lock:
-            self._mt5_orders[signal_id] = restored
+        self._lifecycle_manager.restore_mt5_order(info)
 
     def cancel(self, signal_id: str, reason: str = "manual") -> bool:
         """取消指定的挂起入场。"""
@@ -270,7 +310,7 @@ class PendingEntryManager:
     def cancel_by_symbol(
         self,
         symbol: str,
-        reason: str = "new_signal_override",
+        reason: str = REASON_NEW_SIGNAL_OVERRIDE,
         *,
         exclude_direction: Optional[str] = None,
     ) -> int:
@@ -353,256 +393,68 @@ class PendingEntryManager:
         strategy_category: str = "",
     ) -> None:
         """注册 MT5 挂单，由 monitor loop 负责超时取消。"""
-        tracked_info = {
-            "ticket": order_ticket,
-            "signal_id": signal_id,
-            "expires_at": expires_at,
-            "direction": direction,
-            "symbol": symbol,
-            "strategy": strategy,
-            "timeframe": timeframe,
-            "confidence": confidence,
-            "regime": regime,
-            "comment": str(comment or ""),
-            "params": params,
-            "order_kind": str(order_kind or ""),
-            "entry_low": entry_low,
-            "entry_high": entry_high,
-            "trigger_price": trigger_price,
-            "entry_price_requested": entry_price_requested,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "volume": volume,
-            "created_at": created_at,
-            "metadata": dict(metadata or {}),
-            "exit_spec": dict(exit_spec) if exit_spec else None,
-            "strategy_category": str(strategy_category or ""),
-        }
-        with self._lock:
-            if signal_id in self._mt5_orders:
-                existing_ticket = self._mt5_orders[signal_id].get("ticket")
-                logger.warning(
-                    "PendingEntry: signal_id=%s already tracked with ticket=%s, "
-                    "ignoring duplicate submission with ticket=%d",
-                    signal_id,
-                    existing_ticket,
-                    order_ticket,
-                )
-                return
-            self._mt5_orders[signal_id] = tracked_info
-            self._stats["mt5_orders_placed"] += 1
-        if self._on_mt5_order_tracked is not None:
-            self._on_mt5_order_tracked(dict(tracked_info))
-        logger.info(
-            "PendingEntry: tracking MT5 order ticket=%d for %s/%s %s (expires=%s)",
-            order_ticket,
-            symbol,
-            strategy,
-            direction,
-            expires_at.isoformat(),
+        self._lifecycle_manager.track_mt5_order(
+            signal_id=signal_id,
+            order_ticket=order_ticket,
+            expires_at=expires_at,
+            direction=direction,
+            symbol=symbol,
+            strategy=strategy,
+            timeframe=timeframe,
+            confidence=confidence,
+            regime=regime,
+            comment=comment,
+            params=params,
+            order_kind=order_kind,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            trigger_price=trigger_price,
+            entry_price_requested=entry_price_requested,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            volume=volume,
+            created_at=created_at,
+            metadata=metadata,
+            exit_spec=exit_spec,
+            strategy_category=strategy_category,
         )
-
-    def _check_mt5_order_state(self) -> None:
-        """检查已追踪 MT5 挂单是否仍在挂单簿，或已经成交转为持仓。"""
-        if not callable(self._inspect_mt5_order_fn):
-            return
-
-        with self._lock:
-            tracked_orders = [
-                (sid, dict(info)) for sid, info in self._mt5_orders.items()
-            ]
-
-        for sid, info in tracked_orders:
-            try:
-                state = self.inspect_mt5_order(dict(info))
-            except Exception:
-                logger.warning(
-                    "PendingEntry: inspect_mt5_order_fn failed for signal %s",
-                    sid,
-                    exc_info=True,
-                )
-                continue
-
-            status = str(state.get("status") or "pending").strip().lower()
-            if status not in {"filled", "missing"}:
-                continue
-
-            with self._lock:
-                current = self._mt5_orders.get(sid)
-                if current is None:
-                    continue
-                if int(current.get("ticket", 0) or 0) != int(
-                    info.get("ticket", 0) or 0
-                ):
-                    continue
-                self._mt5_orders.pop(sid, None)
-                if status == "filled":
-                    self._stats["mt5_orders_filled"] += 1
-                else:
-                    self._stats["mt5_orders_missing"] += 1
-
-            if status == "filled" and self._on_mt5_order_filled is not None:
-                self._on_mt5_order_filled(dict(info), dict(state))
-            if status == "missing" and self._on_mt5_order_missing is not None:
-                self._on_mt5_order_missing(
-                    dict(info),
-                    str(state.get("reason") or "missing_without_fill"),
-                )
-
-            if status == "filled":
-                logger.info(
-                    "PendingEntry: MT5 order ticket=%d filled for %s/%s (signal=%s, position=%s)",
-                    int(info.get("ticket", 0) or 0),
-                    info.get("symbol"),
-                    info.get("strategy"),
-                    sid[:8],
-                    state.get("ticket"),
-                )
-            else:
-                logger.info(
-                    "PendingEntry: MT5 order ticket=%d no longer exists for %s/%s "
-                    "(signal=%s, reason=%s)",
-                    int(info.get("ticket", 0) or 0),
-                    info.get("symbol"),
-                    info.get("strategy"),
-                    sid[:8],
-                    state.get("reason") or "missing_without_fill",
-                )
-
-    def _check_mt5_order_expiry(self) -> None:
-        """检查 MT5 挂单是否超时，超时则通过 MT5 API 取消。"""
-        now = datetime.now(timezone.utc)
-        expired: list[tuple[str, dict[str, Any]]] = []
-        with self._lock:
-            for sid, info in list(self._mt5_orders.items()):
-                if now >= info["expires_at"]:
-                    expired.append((sid, dict(info)))
-
-        for sid, info in expired:
-            ticket = info["ticket"]
-            cancelled = False
-            result: Any = None
-            try:
-                result = self._cancellation_port.cancel_orders_by_tickets([ticket])
-                cancelled = self._ticket_in_result(
-                    result, ticket, success_keys=("canceled", "cancelled")
-                )
-            except Exception:
-                logger.error(
-                    "PendingEntry: failed to cancel MT5 order ticket=%d",
-                    ticket,
-                    exc_info=True,
-                )
-            if cancelled:
-                logger.info(
-                    "PendingEntry: cancelled expired MT5 order ticket=%d "
-                    "for %s/%s (signal=%s)",
-                    ticket,
-                    info["symbol"],
-                    info["strategy"],
-                    sid[:8],
-                )
-                with self._lock:
-                    current = self._mt5_orders.get(sid)
-                    if current is not None and int(
-                        current.get("ticket", 0) or 0
-                    ) == int(ticket):
-                        self._mt5_orders.pop(sid, None)
-                        self._stats["mt5_orders_expired"] += 1
-                if self._on_mt5_order_expired is not None:
-                    self._on_mt5_order_expired(dict(info), "mt5_order_expired")
-            if self._on_expired_fn:
-                try:
-                    if cancelled:
-                        self._on_expired_fn(sid, "mt5_order_expired")
-                except Exception:
-                    pass
-            elif result is not None:
-                logger.warning(
-                    "PendingEntry: expiry cancel not confirmed for MT5 order ticket=%d "
-                    "for %s/%s (signal=%s, result=%s)",
-                    ticket,
-                    info["symbol"],
-                    info["strategy"],
-                    sid[:8],
-                    result,
-                )
 
     def cancel_mt5_orders_by_symbol(
         self,
         symbol: str,
-        reason: str = "new_signal_override",
+        reason: str = REASON_NEW_SIGNAL_OVERRIDE,
         *,
         exclude_direction: Optional[str] = None,
     ) -> int:
         """取消指定品种的所有 MT5 挂单。"""
-        to_cancel: list[tuple[str, dict[str, Any]]] = []
-        with self._lock:
-            for sid, info in list(self._mt5_orders.items()):
-                if info["symbol"] == symbol and (
-                    exclude_direction is None
-                    or str(info.get("direction") or "") != exclude_direction
-                ):
-                    to_cancel.append((sid, dict(info)))
-        cancelled_count = 0
-        for sid, info in to_cancel:
-            ticket = info["ticket"]
-            try:
-                result = self._cancellation_port.cancel_orders_by_tickets([ticket])
-                if self._ticket_in_result(
-                    result, ticket, success_keys=("canceled", "cancelled")
-                ):
-                    with self._lock:
-                        current = self._mt5_orders.get(sid)
-                        if current is not None and int(
-                            current.get("ticket", 0) or 0
-                        ) == int(ticket):
-                            self._mt5_orders.pop(sid, None)
-                    cancelled_count += 1
-                    if self._on_mt5_order_cancelled is not None:
-                        self._on_mt5_order_cancelled(dict(info), reason)
-            except Exception:
-                logger.error(
-                    "Failed to cancel MT5 order ticket=%d", ticket, exc_info=True
-                )
-        return cancelled_count
-
-    @staticmethod
-    def _ticket_in_result(
-        result: Any, ticket: int, *, success_keys: tuple[str, ...]
-    ) -> bool:
-        if isinstance(result, dict):
-            success = set()
-            for key in success_keys:
-                success.update(
-                    PendingEntryManager._extract_tickets(result.get(key, []))
-                )
-            failed = PendingEntryManager._extract_tickets(result.get("failed", []))
-            if ticket in success:
-                return True
-            if failed:
-                return ticket not in failed
-        return bool(result)
-
-    @staticmethod
-    def _extract_tickets(items: Any) -> set[int]:
-        tickets: set[int] = set()
-        for item in list(items or []):
-            candidate = item
-            if isinstance(item, dict):
-                candidate = (
-                    item.get("ticket") or item.get("order") or item.get("order_id")
-                )
-            try:
-                normalized = int(candidate)
-            except (TypeError, ValueError):
-                continue
-            if normalized > 0:
-                tickets.add(normalized)
-        return tickets
+        return self._lifecycle_manager.cancel_mt5_orders_by_symbol(
+            symbol=symbol,
+            reason=reason,
+            exclude_direction=exclude_direction,
+        )
 
     def start(self) -> None:
         """启动价格监控线程和填单执行线程。"""
+        # 等待上一次 shutdown() 超时遗留的僵尸线程退出
+        for attr, label in (
+            ("_monitor_thread", "monitor"),
+            ("_fill_worker_thread", "fill_worker"),
+        ):
+            old = getattr(self, attr)
+            if old is not None and old.is_alive():
+                logger.warning(
+                    "PendingEntryManager: waiting for previous %s thread to finish",
+                    label,
+                )
+                old.join(timeout=5.0)
+                if old.is_alive():
+                    logger.error(
+                        "PendingEntryManager: previous %s thread still alive after re-join",
+                        label,
+                    )
+                    return
+                setattr(self, attr, None)
+
         monitor_alive = (
             self._monitor_thread is not None and self._monitor_thread.is_alive()
         )
@@ -620,7 +472,9 @@ class PendingEntryManager:
             self._monitor_thread = t
         if not fill_alive:
             fw = threading.Thread(
-                target=self._fill_worker, name="pending-entry-fill", daemon=True
+                target=self._monitoring_service.run_fill_worker,
+                name="pending-entry-fill",
+                daemon=True,
             )
             fw.start()
             self._fill_worker_thread = fw
@@ -645,19 +499,28 @@ class PendingEntryManager:
         再清理 _pending，避免线程仍在迭代时并发修改。
         """
         self._stop_event.set()
-        if self._monitor_thread is not None:
-            self._monitor_thread.join(timeout=5.0)
-            self._monitor_thread = None
-        if self._fill_worker_thread is not None:
-            self._fill_worker_thread.join(timeout=5.0)
-            self._fill_worker_thread = None
-        self._clear_fill_queue()
+        for attr, label in (
+            ("_monitor_thread", "monitor"),
+            ("_fill_worker_thread", "fill_worker"),
+        ):
+            thread = getattr(self, attr)
+            if thread is not None:
+                thread.join(timeout=5.0)
+                if thread.is_alive():
+                    logger.warning(
+                        "PendingEntryManager %s thread did not stop within 5.0s, "
+                        "will be cleaned up on next start()",
+                        label,
+                    )
+                else:
+                    setattr(self, attr, None)
+        self._monitoring_service.clear_fill_queue()
         # 线程已退出，安全清理 _pending
         with self._lock:
             for entry in self._pending.values():
                 if entry.status == "pending":
                     entry.status = "cancelled"
-                    entry.cancel_reason = "shutdown"
+                    entry.cancel_reason = REASON_SHUTDOWN
             self._pending.clear()
 
     def active_count(self) -> int:
@@ -666,74 +529,12 @@ class PendingEntryManager:
 
     def status(self) -> dict[str, Any]:
         """返回状态快照（线程安全）。"""
-        with self._lock:
-            entries = [
-                {
-                    "signal_id": e.signal_event.signal_id,
-                    "symbol": e.signal_event.symbol,
-                    "direction": e.signal_event.direction,
-                    "strategy": e.signal_event.strategy,
-                    "zone": [e.entry_low, e.entry_high],
-                    "reference_price": e.reference_price,
-                    "zone_mode": e.zone_mode,
-                    "checks_count": e.checks_count,
-                    "best_price_seen": e.best_price_seen,
-                    "remaining_seconds": max(
-                        0,
-                        (e.expires_at - datetime.now(timezone.utc)).total_seconds(),
-                    ),
-                }
-                for e in self._pending.values()
-                if e.status == "pending"
-            ]
-            stats_copy = dict(self._stats)
-        filled = stats_copy["total_filled"]
-        submitted = stats_copy["total_submitted"]
-        return {
-            "active_count": len(entries),
-            "entries": entries,
-            "stats": {
-                **stats_copy,
-                "fill_rate": round(filled / submitted, 3) if submitted > 0 else None,
-                "avg_price_improvement": (
-                    round(stats_copy["total_price_improvement"] / filled, 4)
-                    if filled > 0
-                    else None
-                ),
-            },
-        }
+        return self._snapshot_service.status()
 
     # ── 内部逻辑 ──────────────────────────────────────────────────────────
 
     def active_execution_contexts(self) -> list[dict[str, Any]]:
-        with self._lock:
-            pending_entries = [
-                {
-                    "signal_id": e.signal_event.signal_id,
-                    "symbol": e.signal_event.symbol,
-                    "timeframe": e.signal_event.timeframe,
-                    "strategy": e.signal_event.strategy,
-                    "direction": e.signal_event.direction,
-                    "source": "pending_entry",
-                    "status": e.status,
-                }
-                for e in self._pending.values()
-                if e.status == "pending"
-            ]
-            mt5_entries = [
-                {
-                    "signal_id": str(info.get("signal_id") or ""),
-                    "symbol": str(info.get("symbol") or ""),
-                    "timeframe": str(info.get("timeframe") or ""),
-                    "strategy": str(info.get("strategy") or ""),
-                    "direction": str(info.get("direction") or ""),
-                    "source": "mt5_order",
-                    "status": "pending",
-                    "ticket": int(info.get("ticket") or 0),
-                }
-                for info in self._mt5_orders.values()
-            ]
-        return pending_entries + mt5_entries
+        return self._snapshot_service.active_execution_contexts()
 
     def _monitor_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -743,239 +544,13 @@ class PendingEntryManager:
                 self._check_mt5_order_expiry()
             except Exception:
                 logger.error("PendingEntryManager monitor error", exc_info=True)
-            self._stop_event.wait(timeout=self._config.check_interval)
-
-    def _fill_worker(self) -> None:
-        """独立线程消费填单结果，调用 execute_fn。
-
-        与 TradeExecutor 的 exec_worker 隔离，避免竞争 TradeExecutor 内部状态。
-        """
-        while not self._stop_event.is_set() or not self._fill_queue.empty():
-            try:
-                result = self._fill_queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            try:
-                self._execute_fn(
-                    result.signal_event,
-                    result.trade_params,
-                    result.cost_metrics,
-                )
-            except Exception:
-                logger.error(
-                    "PendingEntry execute failed after fill: %s",
-                    result.signal_event.signal_id,
-                    exc_info=True,
-                )
-            finally:
-                self._fill_queue.task_done()
-
-    def _clear_fill_queue(self) -> None:
-        while True:
-            try:
-                self._fill_queue.get_nowait()
-                self._fill_queue.task_done()
-            except queue.Empty:
-                break
+            self._stop_event.wait(timeout=self._monitoring_service.monitor_interval())
 
     def _check_all_entries(self) -> None:
-        now = datetime.now(timezone.utc)
-        with self._lock:
-            entries = [e for e in self._pending.values() if e.status == "pending"]
+        self._monitoring_service.check_all_entries()
 
-        for entry in entries:
-            # 超时检查
-            if now >= entry.expires_at:
-                self._expire_entry(entry)
-                continue
+    def _check_mt5_order_state(self) -> None:
+        self._lifecycle_manager.check_mt5_order_state()
 
-            # 获取当前 quote
-            quote = self._market.get_quote(entry.signal_event.symbol)
-            if quote is None:
-                continue
-
-            self._check_price(entry, quote)
-
-    def _check_price(self, entry: PendingEntry, quote: Any) -> None:
-        prices = _extract_quote_prices(quote)
-        if prices is None:
-            return
-
-        bid, ask = prices
-        direction = entry.signal_event.direction
-        # BUY → 用 ask（实际买入价），SELL → 用 bid（实际卖出价）
-        check_price = ask if direction == "buy" else bid
-
-        with self._lock:
-            # 检查 entry 是否仍在 pending 中（可能已被其他线程 cancel）
-            if entry.signal_event.signal_id not in self._pending:
-                return
-            if entry.status != "pending":
-                return
-
-            entry.checks_count += 1
-
-            # 更新 best_price_seen
-            if entry.best_price_seen is None:
-                entry.best_price_seen = check_price
-            elif direction == "buy":
-                entry.best_price_seen = min(entry.best_price_seen, check_price)
-            else:
-                entry.best_price_seen = max(entry.best_price_seen, check_price)
-
-        # 检查是否在入场区间内
-        if not (entry.entry_low <= check_price <= entry.entry_high):
-            return
-
-        # 额外 spread 检查
-        if self._config.max_spread_points > 0:
-            spread_points = self._get_spread_points(bid, ask, entry.signal_event.symbol)
-            if (
-                spread_points is not None
-                and spread_points > self._config.max_spread_points
-            ):
-                logger.debug(
-                    "PendingEntry %s: spread %.1f > max %.1f, skip this check",
-                    entry.signal_event.signal_id[:8],
-                    spread_points,
-                    self._config.max_spread_points,
-                )
-                return
-
-        self._fill_entry(entry, check_price)
-
-    def _get_spread_points(
-        self, bid: float, ask: float, symbol: str
-    ) -> Optional[float]:
-        try:
-            point = self._market.get_symbol_point(symbol)
-            if point is None or point <= 0:
-                return None
-            return abs(ask - bid) / point
-        except Exception:
-            return None
-
-    def _fill_entry(self, entry: PendingEntry, fill_price: float) -> None:
-        with self._lock:
-            # 再次检查 entry 是否仍在 pending 中
-            if self._pending.pop(entry.signal_event.signal_id, None) is None:
-                return
-            entry.status = "filled"
-            entry.fill_price = fill_price
-
-            self._stats["total_filled"] += 1
-            # 价格改善：BUY 时 reference - fill（越低越好），SELL 时 fill - reference（越高越好）
-            if entry.signal_event.direction == "buy":
-                improvement = entry.reference_price - fill_price
-            else:
-                improvement = fill_price - entry.reference_price
-            self._stats["total_price_improvement"] += improvement
-
-        logger.info(
-            "PendingEntry filled: %s/%s %s @ %.2f (ref=%.2f, improve=%.2f, "
-            "waited=%ds, checks=%d)",
-            entry.signal_event.symbol,
-            entry.signal_event.strategy,
-            entry.signal_event.direction,
-            fill_price,
-            entry.reference_price,
-            improvement,
-            (datetime.now(timezone.utc) - entry.created_at).total_seconds(),
-            entry.checks_count,
-        )
-
-        # 用实际成交价更新 TradeParameters（frozen dataclass → replace）
-        # SL/TP 随 fill_price 等距平移，保持原始 ATR 距离不变
-        price_shift = fill_price - entry.trade_params.entry_price
-        updated_params = dataclasses.replace(
-            entry.trade_params,
-            entry_price=fill_price,
-            stop_loss=round(entry.trade_params.stop_loss + price_shift, 2),
-            take_profit=round(entry.trade_params.take_profit + price_shift, 2),
-        )
-
-        # 入队给 fill_worker 执行（不在 monitor 线程中直接调用 execute_fn）
-        fill_result = _FillResult(
-            signal_event=entry.signal_event,
-            trade_params=updated_params,
-            cost_metrics=entry.cost_metrics,
-        )
-        try:
-            self._fill_queue.put_nowait(fill_result)
-        except queue.Full:
-            # 成交结果不可丢弃：阻塞等待最多 5 秒
-            logger.warning(
-                "PendingEntry fill queue full, blocking for %s",
-                entry.signal_event.signal_id,
-            )
-            try:
-                self._fill_queue.put(fill_result, timeout=5.0)
-            except queue.Full:
-                logger.error(
-                    "PendingEntry fill queue still full after 5s, fill LOST for %s. "
-                    "This indicates fill_worker is stuck or too slow.",
-                    entry.signal_event.signal_id,
-                )
-                # 标记为 expired 并从 _pending 移除，避免永久滞留内存
-                with self._lock:
-                    self._pending.pop(entry.signal_event.signal_id, None)
-                    entry.status = "expired"
-                    entry.cancel_reason = "fill_queue_overflow"
-                    self._stats["total_expired"] += 1
-
-    def _expire_entry(self, entry: PendingEntry) -> None:
-        # ── 超时降级：价格离参考价不远时以当前价市价入场 ──
-        fallback_atr = self._config.timeout_fallback_atr
-        if fallback_atr > 0 and entry.trade_params.atr_value > 0:
-            quote = self._market.get_quote(entry.signal_event.symbol)
-            if quote is not None:
-                prices = _extract_quote_prices(quote)
-                if prices is not None:
-                    bid, ask = prices
-                    check_price = ask if entry.signal_event.direction == "buy" else bid
-                    distance = abs(check_price - entry.reference_price)
-                    threshold = entry.trade_params.atr_value * fallback_atr
-
-                    if distance <= threshold:
-                        logger.info(
-                            "PendingEntry timeout fallback: %s/%s %s @ %.2f "
-                            "(ref=%.2f, dist=%.2f < threshold=%.2f)",
-                            entry.signal_event.symbol,
-                            entry.signal_event.strategy,
-                            entry.signal_event.direction,
-                            check_price,
-                            entry.reference_price,
-                            distance,
-                            threshold,
-                        )
-                        self._fill_entry(entry, check_price)
-                        return
-
-        # ── 正常超时：丢弃 ──
-        with self._lock:
-            if self._pending.pop(entry.signal_event.signal_id, None) is None:
-                return
-            entry.status = "expired"
-            entry.cancel_reason = "timeout"
-            self._stats["total_expired"] += 1
-
-        logger.info(
-            "PendingEntry expired: %s/%s %s best_seen=%.2f zone=[%.2f, %.2f] checks=%d",
-            entry.signal_event.symbol,
-            entry.signal_event.strategy,
-            entry.signal_event.direction,
-            entry.best_price_seen or 0.0,
-            entry.entry_low,
-            entry.entry_high,
-            entry.checks_count,
-        )
-
-        if self._on_expired_fn:
-            try:
-                self._on_expired_fn(entry.signal_event.signal_id, "pending_expired")
-            except Exception:
-                logger.warning(
-                    "on_expired_fn callback failed for expired signal %s",
-                    entry.signal_event.signal_id,
-                    exc_info=True,
-                )
+    def _check_mt5_order_expiry(self) -> None:
+        self._lifecycle_manager.check_mt5_order_expiry(self._on_expired_fn)

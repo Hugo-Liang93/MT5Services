@@ -396,6 +396,18 @@ class TestConfidencePipelineFlags:
         signal_module = MagicMock()
         signal_module.list_strategies.return_value = ["test"]
         signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.strategy_capability_catalog.return_value = [
+            {
+                "name": "test",
+                "valid_scopes": ["confirmed"],
+                "needed_indicators": ["rsi14"],
+                "needs_intrabar": False,
+                "needs_htf": False,
+                "voting_group_policy": "standalone",
+                "regime_affinity": {},
+                "htf_requirements": {},
+            }
+        ]
         signal_module.evaluate.return_value = SignalDecision(
             strategy="test", symbol="XAUUSD", timeframe="M5",
             direction="hold", confidence=0.0, reason="test",

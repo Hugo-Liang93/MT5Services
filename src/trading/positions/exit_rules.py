@@ -29,6 +29,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+from ..reasons import (
+    REASON_SIGNAL_EXIT,
+    REASON_STOP_LOSS,
+    REASON_TAKE_PROFIT,
+    REASON_TIMEOUT,
+    REASON_TRAILING_STOP,
+)
 
 # ── 配置 ────────────────────────────────────────────────────────────────────
 
@@ -102,7 +109,7 @@ DEFAULT_AGGRESSION_MAP: Dict[Tuple[str, str], float] = {
     ("price_action", "uncertain"): 0.45,
 }
 
-DEFAULT_AGGRESSION = 0.50  # fallback
+DEFAULT_AGGRESSION = 0.50
 
 # ── Per-TF trail 缩放因子 ─────────────────────────────────────────────────
 # 补偿不同 TF 的 ATR 统计特性差异：
@@ -184,9 +191,9 @@ class ChandelierConfig:
     # 硬上界 TP
     max_tp_r: float = 5.0
 
-    # 是否启用 regime-aware profile（True=按 aggression 查找，False=用 fallback_profile）
+    # 是否启用 regime-aware profile（True=按 aggression 查找，False=使用默认 profile）
     regime_aware: bool = True
-    fallback_profile: ExitProfile = field(default_factory=lambda: ExitProfile())
+    default_profile: ExitProfile = field(default_factory=lambda: ExitProfile())
 
     # Aggression 系数覆盖：(category, regime) → α ∈ [0, 1]
     aggression_overrides: Dict[Tuple[str, str], float] = field(default_factory=dict)
@@ -227,7 +234,7 @@ def check_initial_sl(
     if action == "buy" and bar_low <= current_stop_loss:
         return ExitCheckResult(
             should_close=True,
-            close_reason="stop_loss",
+            close_reason=REASON_STOP_LOSS,
             new_stop_loss=None,
             r_multiple=r_multiple,
             breakeven_activated=False,
@@ -235,7 +242,7 @@ def check_initial_sl(
     if action == "sell" and bar_high >= current_stop_loss:
         return ExitCheckResult(
             should_close=True,
-            close_reason="stop_loss",
+            close_reason=REASON_STOP_LOSS,
             new_stop_loss=None,
             r_multiple=r_multiple,
             breakeven_activated=False,
@@ -263,7 +270,7 @@ def check_hard_tp(
         if bar_high >= entry_price + tp_distance:
             return ExitCheckResult(
                 should_close=True,
-                close_reason="take_profit",
+                close_reason=REASON_TAKE_PROFIT,
                 new_stop_loss=None,
                 r_multiple=max_tp_r,
                 breakeven_activated=True,
@@ -272,7 +279,7 @@ def check_hard_tp(
         if bar_low <= entry_price - tp_distance:
             return ExitCheckResult(
                 should_close=True,
-                close_reason="take_profit",
+                close_reason=REASON_TAKE_PROFIT,
                 new_stop_loss=None,
                 r_multiple=max_tp_r,
                 breakeven_activated=True,
@@ -478,8 +485,8 @@ def evaluate_exit(
 
     出场 profile 来源（优先级从高到低）：
       1. exit_spec["aggression"]（策略 _exit_spec() 输出）
-      2. (strategy_category, current_regime) 映射（legacy 兼容）
-      3. fallback_profile（全局默认 α=0.50）
+      2. (strategy_category, current_regime) 映射（配置缺失时使用默认 α）
+      3. default_profile（全局默认 α=0.50）
     """
     if config is None:
         config = ChandelierConfig()
@@ -492,7 +499,7 @@ def evaluate_exit(
             strategy_category, current_regime, config.aggression_overrides or None,
         )
     else:
-        profile = config.fallback_profile
+        profile = config.default_profile
 
     # ── Per-TF trail 缩放 + R 单位保护 ──
     raw_chandelier_mult = profile.chandelier_atr_multiplier
@@ -542,7 +549,7 @@ def evaluate_exit(
     if action == "buy" and bar_low <= check_sl:
         return ExitCheckResult(
             should_close=True,
-            close_reason="trailing_stop",
+            close_reason=REASON_TRAILING_STOP,
             new_stop_loss=new_sl,
             r_multiple=round(r_multiple, 4),
             breakeven_activated=be_activated,
@@ -550,7 +557,7 @@ def evaluate_exit(
     if action == "sell" and bar_high >= check_sl:
         return ExitCheckResult(
             should_close=True,
-            close_reason="trailing_stop",
+            close_reason=REASON_TRAILING_STOP,
             new_stop_loss=new_sl,
             r_multiple=round(r_multiple, 4),
             breakeven_activated=be_activated,
@@ -561,7 +568,7 @@ def evaluate_exit(
         if check_signal_reversal(action, recent_signal_dirs, config.signal_exit_confirmation_bars):
             return ExitCheckResult(
                 should_close=True,
-                close_reason="signal_exit",
+                close_reason=REASON_SIGNAL_EXIT,
                 new_stop_loss=new_sl,
                 r_multiple=round(r_multiple, 4),
                 breakeven_activated=be_activated,
@@ -575,7 +582,7 @@ def evaluate_exit(
         ):
             return ExitCheckResult(
                 should_close=True,
-                close_reason="timeout",
+                close_reason=REASON_TIMEOUT,
                 new_stop_loss=new_sl,
                 r_multiple=round(r_multiple, 4),
                 breakeven_activated=be_activated,

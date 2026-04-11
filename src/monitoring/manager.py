@@ -128,13 +128,46 @@ class MonitoringManager:
 
                             elif method == "performance_stats" and hasattr(component_obj, "get_performance_stats"):
                                 stats = component_obj.get_performance_stats()
-                                if "success_rate" in stats:
+                                if isinstance(stats, dict) and "success_rate" in stats:
                                     self.health_monitor.record_metric(
                                         name,
                                         "success_rate",
                                         stats["success_rate"],
                                         stats
                                     )
+                                intrabar = stats.get("intrabar") if isinstance(stats, dict) else None
+                                drop_rates = stats.get("drop_rates") if isinstance(stats, dict) else None
+
+                                if isinstance(intrabar, dict):
+                                    if isinstance(intrabar.get("queue_age_ms_p95"), (int, float)):
+                                        self.health_monitor.record_metric(
+                                            name,
+                                            "intrabar_queue_age_p95_ms",
+                                            float(intrabar["queue_age_ms_p95"]),
+                                            stats,
+                                        )
+                                    if isinstance(
+                                        intrabar.get("processing_latency_ms_p95"),
+                                        (int, float),
+                                    ):
+                                        self.health_monitor.record_metric(
+                                            name,
+                                            "intrabar_to_decision_latency_p95_ms",
+                                            float(intrabar["processing_latency_ms_p95"]),
+                                            stats,
+                                        )
+
+                                if isinstance(drop_rates, dict):
+                                    drop_rate = drop_rates.get(
+                                        "intrabar_queue_drop_vs_arrived_pct"
+                                    )
+                                    if isinstance(drop_rate, (int, float)):
+                                        self.health_monitor.record_metric(
+                                            name,
+                                            "intrabar_drop_rate_1m",
+                                            float(drop_rate),
+                                            stats,
+                                        )
 
                             elif method == "economic_calendar" and hasattr(component_obj, "stats"):
                                 self.health_monitor.check_economic_calendar(name, component_obj)

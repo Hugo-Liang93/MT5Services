@@ -101,7 +101,7 @@ def get_tf_param(
 
     查找顺序: per-TF 覆盖 → 全局 INI 值 → default（策略代码硬编码）。
     """
-    resolver = getattr(strategy, "_tf_param_resolver", None)
+    resolver = getattr(strategy, "tf_param_resolver", None)
     if resolver is None:
         return default
     return resolver.get(getattr(strategy, "name", ""), param, tf, default=default)

@@ -12,6 +12,7 @@ from src.api.deps import (
     get_market_structure_analyzer,
     get_performance_tracker,
     get_runtime_read_model,
+    get_health_monitor_instance,
     get_signal_runtime,
     get_signal_service,
 )
@@ -24,8 +25,11 @@ from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.strategies.htf_cache import HTFStateCache
+from src.monitoring.health.monitor import HealthMonitor
 from .view_models import (
     CalibratorStatusView,
+    IntrabarSLOPoint,
+    IntrabarSLOWindowView,
     HTFCacheStatusView,
     MarketStructureView,
     RegimeReportView,
@@ -180,18 +184,53 @@ async def get_performance_tracker_status(
 async def get_voting_describe(
     runtime: SignalRuntime = Depends(get_signal_runtime),
 ) -> ApiResponse[list]:
-    groups = []
-    if hasattr(runtime, "_voting_group_engines"):
-        for group_config, engine in runtime._voting_group_engines:
-            groups.append({
-                "name": group_config.name,
-                "strategies": sorted(group_config.strategies),
-                "engine": engine.describe(),
-            })
-    if hasattr(runtime, "_voting_engine") and runtime._voting_engine is not None:
-        groups.append({
-            "name": "consensus",
-            "strategies": [],
-            "engine": runtime._voting_engine.describe(),
-        })
+    groups = runtime.describe_voting()
     return ApiResponse.success_response(data=groups)
+
+
+@router.get(
+    "/runtime/intrabar-slos",
+    response_model=ApiResponse[IntrabarSLOWindowView],
+    summary="获取 intrabar SLO 指标时间窗口",
+)
+def get_intrabar_slos_timeseries(
+    component: str = Query(default="indicator_calculation"),
+    limit: int = Query(default=120, ge=1, le=5000),
+    health_monitor: HealthMonitor = Depends(get_health_monitor_instance),
+) -> ApiResponse[IntrabarSLOWindowView]:
+    def _normalize_samples(metric_name: str) -> list[IntrabarSLOPoint]:
+        points: list[IntrabarSLOPoint] = []
+        for sample in health_monitor.get_recent_metrics(
+            component=component,
+            metric_name=metric_name,
+            limit=limit,
+        ):
+            if not isinstance(sample, dict):
+                continue
+            if sample.get("timestamp") is None or sample.get("value") is None:
+                continue
+            try:
+                alert_level = sample.get("alert_level")
+                points.append(
+                    IntrabarSLOPoint(
+                        timestamp=str(sample["timestamp"]),
+                        value=float(sample["value"]),
+                        alert_level=alert_level if isinstance(alert_level, str) else None,
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+        return points
+
+    return ApiResponse.success_response(
+        data=IntrabarSLOWindowView(
+            component=component,
+            limit=limit,
+            drop_rate=_normalize_samples("intrabar_drop_rate_1m"),
+            queue_age_ms_p95=_normalize_samples("intrabar_queue_age_p95_ms"),
+            to_decision_latency_ms_p95=_normalize_samples(
+                "intrabar_to_decision_latency_p95_ms"
+            ),
+        ).model_dump(),
+        metadata={"component": component, "metric_count": 3},
+    )

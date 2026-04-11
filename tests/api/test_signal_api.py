@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.api.signal import (
+    get_intrabar_slos_timeseries,
     evaluate_signal,
     get_tracked_positions,
     get_market_structure,
@@ -142,6 +143,16 @@ class DummyPositionManager:
 
     def active_positions(self):
         return [{"ticket": 1, "symbol": "XAUUSD"}]
+
+
+class DummyHealthMonitor:
+    def __init__(self, samples: dict[tuple[str, str], list[dict]]) -> None:
+        self._samples = samples
+
+    def get_recent_metrics(
+        self, component: str, metric_name: str, limit: int
+    ) -> list[dict]:
+        return self._samples.get((component, metric_name), [])[:limit]
 
 
 def test_signal_strategies_endpoint() -> None:
@@ -289,3 +300,33 @@ def test_signal_positions_endpoint_uses_runtime_projection() -> None:
     assert response.data["count"] == 1
     assert response.data["items"][0]["symbol"] == "XAUUSD"
     assert response.metadata["position_manager_status"] == "healthy"
+
+
+def test_signal_intrabar_slos_timeseries_endpoint() -> None:
+    health_monitor = DummyHealthMonitor(
+        {
+            ("indicator_calculation", "intrabar_drop_rate_1m"): [
+                {"timestamp": "t1", "value": 0.8, "alert_level": "healthy"},
+                {"timestamp": "t2", "value": 1.2, "alert_level": "warning"},
+            ],
+            ("indicator_calculation", "intrabar_queue_age_p95_ms"): [
+                {"timestamp": "t2", "value": 2400.0, "alert_level": "warning"},
+            ],
+            ("indicator_calculation", "intrabar_to_decision_latency_p95_ms"): [
+                {"timestamp": "t2", "value": 8000.0, "alert_level": "critical"},
+            ],
+        }
+    )
+
+    response = get_intrabar_slos_timeseries(
+        component="indicator_calculation",
+        limit=10,
+        health_monitor=health_monitor,
+    )
+
+    assert response.success is True
+    assert response.data["component"] == "indicator_calculation"
+    assert response.data["limit"] == 10
+    assert response.data["drop_rate"][1]["alert_level"] == "warning"
+    assert response.data["queue_age_ms_p95"][0]["value"] == 2400.0
+    assert response.data["to_decision_latency_ms_p95"][0]["alert_level"] == "critical"

@@ -539,13 +539,9 @@ def build_signal_module_with_overrides(
         regime_affinity_overrides: Regime 亲和度覆盖（可选）
     """
     # 创建新的 SignalModule，复用相同的 indicator_source 和组件
-    htf_cache = None
     module = SignalModule(
         indicator_source=base_module.indicator_source,
-        strategies=clone_registered_strategies(
-            base_module.list_strategies(),
-            htf_cache=htf_cache,
-        ),
+        strategies=clone_registered_strategies(base_module.list_strategies()),
         repository=None,  # 回测不写入 DB
         regime_detector=base_module._regime_detector,
         calibrator=base_module._calibrator,

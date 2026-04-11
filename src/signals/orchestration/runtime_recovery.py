@@ -14,13 +14,9 @@ logger = logging.getLogger(__name__)
 
 
 def restore_state(runtime: "SignalRuntime") -> None:
-    recent_signals = getattr(runtime.service, "recent_signals", None)
-    if not callable(recent_signals):
-        return
-
     limit = max(len(runtime._targets) * 6, 200)
     try:
-        rows = recent_signals(scope="all", limit=limit)
+        rows = runtime.service.recent_signals(scope="all", limit=limit)
     except Exception:
         logger.exception("Failed to restore signal runtime state from repository")
         return
@@ -71,5 +67,4 @@ def restore_confirmed_state(
     state.last_emitted_state = signal_state
     state.last_emitted_at = generated_at
     state.last_emitted_bar_time = bar_time
-
 

@@ -126,9 +126,9 @@ class ConfidenceCalibrator:
         self._cache: Dict[_WinRateKey, Tuple[float, int]] = {}
         # 近期窗口缓存：{ hours: { (strategy, action, regime_value): (win_rate, sample_count) } }
         self._recent_caches: Dict[int, Dict[_WinRateKey, Tuple[float, int]]] = {}
-        # 向后兼容属性（describe() 等读取）
-        self._recent_cache: Dict[_WinRateKey, Tuple[float, int]] = {}
-        # 写锁：仅用于 refresh/dump/load 等写操作，保护 _cache/_recent_cache 的整体替换
+        # 作为默认窗口回退的基准缓存，服务 describe() 和默认路径读取。
+        self._default_recent_cache: Dict[_WinRateKey, Tuple[float, int]] = {}
+        # 写锁：仅用于 refresh/dump/load 等写操作，保护 _cache/_default_recent_cache 的整体替换
         self._cache_lock = threading.Lock()
         # 统计锁：轻量级，仅保护计数器更新，避免与写锁竞争
         self._stats_lock = threading.Lock()
@@ -147,6 +147,20 @@ class ConfidenceCalibrator:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def update_recency_config(
+        self,
+        recency_hours: int | None = None,
+        hours_by_tf: dict[str, int] | None = None,
+    ) -> None:
+        """热更新近期窗口配置（供装配层和热重载使用）。"""
+        if recency_hours is not None:
+            self._recency_hours = max(1, recency_hours)
+        if hours_by_tf:
+            self._recency_hours_by_tf.update(hours_by_tf)
+        self._recency_windows = tuple(
+            sorted(set(self._recency_hours_by_tf.values()))
+        )
 
     def start_background_refresh(self, *, symbol: Optional[str] = None) -> None:
         """启动后台刷新线程，定期更新胜率缓存（非阻塞）。
@@ -193,7 +207,7 @@ class ConfidenceCalibrator:
             return raw_confidence  # alpha=0：完全不校准
 
         # C-1: 热路径中不再调用 _auto_refresh()（已由后台线程接管）。
-        # 若未启动后台线程，则保留原有兜底逻辑（首次调用时单次刷新）。
+        # 若未启动后台线程，在首次调用时执行一次前台刷新，确保采样可用。
         if self._bg_thread is None or not self._bg_thread.is_alive():
             self._auto_refresh()
         factor, sample_count = self._get_calibration_factor(strategy, action, regime, timeframe=timeframe)
@@ -263,14 +277,14 @@ class ConfidenceCalibrator:
                 )
             new_recent_caches[window_hours] = window_cache
 
-        # 默认窗口用于向后兼容（describe() 等）
+        # 默认窗口用于 describe() 与 _get_calibration_factor 的回退读取
         default_recent = new_recent_caches.get(self._recency_hours, {})
         total_recent = sum(len(c) for c in new_recent_caches.values())
 
         with self._cache_lock:
             self._cache = new_cache
             self._recent_caches = new_recent_caches
-            self._recent_cache = default_recent
+            self._default_recent_cache = default_recent
             self._last_refresh = time.monotonic()
 
         logger.info(
@@ -283,7 +297,7 @@ class ConfidenceCalibrator:
         """返回当前状态，用于监控端点。"""
         # 快照读取：无需加写锁，len() 和属性读取在 CPython 中是原子的
         cache_size = len(self._cache)
-        recent_cache_size = len(self._recent_cache)
+        recent_cache_size = len(self._default_recent_cache)
         last_refresh = self._last_refresh
         age_seconds = time.monotonic() - last_refresh if last_refresh else None
         with self._stats_lock:
@@ -391,7 +405,7 @@ class ConfidenceCalibrator:
         recency_hours = self._recency_hours_by_tf.get(
             timeframe or "", self._recency_hours
         )
-        recent_cache = self._recent_caches.get(recency_hours, self._recent_cache)
+        recent_cache = self._recent_caches.get(recency_hours, self._default_recent_cache)
 
         entry = cache.get((strategy, action, regime_val))
         if entry is None:
@@ -431,7 +445,7 @@ class ConfidenceCalibrator:
             self._bg_stop.wait(timeout=self._refresh_interval)
 
     def _auto_refresh(self) -> None:
-        """若缓存已过期则在调用线程中自动刷新（兜底，后台线程启动后不再调用）。"""
+        """若缓存已过期则在调用线程中前台刷新。"""
         now = time.monotonic()
         if now - self._last_refresh >= self._refresh_interval:
             self.refresh()

@@ -15,6 +15,8 @@ import threading
 from datetime import datetime
 from typing import Any
 
+from ..reasons import REASON_TRADED_THIS_BAR
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +47,7 @@ class IntrabarTradeGuard:
             key = (symbol, parent_tf, strategy, direction, parent_bar_time)
             if key in self._traded:
                 self._blocks_traded_this_bar += 1
-                return False, "traded_this_bar"
+                return False, REASON_TRADED_THIS_BAR
         return True, ""
 
     def record_trade(

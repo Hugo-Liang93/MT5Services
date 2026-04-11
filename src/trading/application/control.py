@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Callable, Optional
 
+from src.trading.reasons import REASON_AUTO_ENTRY_PAUSED, REASON_CLOSE_ONLY_MODE_ENABLED
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.metadata_keys import MetadataKey as MK
 
@@ -127,7 +128,7 @@ class TradeControlStateService:
             raise PreTradeRiskBlockedError(
                 "trade entry disabled: close_only_mode_enabled",
                 assessment=self.build_block_assessment(
-                    reason="close_only_mode_enabled",
+                    reason=REASON_CLOSE_ONLY_MODE_ENABLED,
                     payload=payload,
                 ),
             )
@@ -135,7 +136,7 @@ class TradeControlStateService:
             raise PreTradeRiskBlockedError(
                 "trade entry disabled: auto_entry_paused",
                 assessment=self.build_block_assessment(
-                    reason="auto_entry_paused",
+                    reason=REASON_AUTO_ENTRY_PAUSED,
                     payload=payload,
                 ),
             )

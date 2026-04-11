@@ -45,10 +45,14 @@ pip install -e ".[dev,test]"
 ### 3. 启动
 
 ```bash
-python app.py
+mt5services
+# 或
+python -m src.entrypoint.web
 # 或
 uvicorn src.api:app --host 0.0.0.0 --port 8808
 ```
+
+启动入口统一说明见：`docs/design/entrypoint-map.md`
 
 启动后访问：
 
@@ -84,7 +88,6 @@ curl "http://localhost:8808/monitoring/config/effective"
 
 ```
 MT5Services/
-├── app.py                    # 启动入口
 ├── config/                   # 所有配置文件
 │   ├── app.ini               # 品种/时间框架/采集间隔（全局单一来源）
 │   ├── market.ini            # API 服务配置
@@ -115,6 +118,8 @@ MT5Services/
 │   ├── signals/              # 信号生成 (策略/运行时/投票/过滤)
 │   ├── trading/              # 交易执行与持仓管理
 │   ├── backtesting/          # 回测与参数优化
+│   ├── ops/                  # CLI 与脚本执行入口（按领域分组）
+│   ├── entrypoint/           # 服务启动入口（src.entrypoint.web）
 │   └── utils/                # 通用工具
 ├── tests/                    # 测试套件
 └── docs/                     # 技术文档

@@ -18,6 +18,7 @@ def _make_runtime(**overrides) -> SignalRuntime:
     """Create a minimal SignalRuntime with stubs."""
     service = MagicMock()
     service.list_strategies.return_value = []
+    service.strategy_capability_catalog.return_value = []
     source = MagicMock()
     defaults = dict(
         service=service,
@@ -61,7 +62,7 @@ def test_stop_clears_runtime_queues_and_thread_reference() -> None:
     rt = _make_runtime()
     rt._confirmed_events.put(("confirmed", "XAUUSD", "M5", {}, {}))
     rt._intrabar_events.put(("intrabar", "XAUUSD", "M5", {}, {}))
-    rt._thread = SimpleNamespace(join=lambda timeout=None: None)
+    rt._thread = SimpleNamespace(join=lambda timeout=None: None, is_alive=lambda: False)
 
     rt.stop()
 
@@ -125,8 +126,8 @@ def test_missing_enqueued_at_not_stale() -> None:
 
 def test_detect_regime_hard_classification() -> None:
     rt = _make_runtime()
-    rt._soft_regime_enabled = False
-    rt._regime_detector = MagicMock()
+    rt.service.soft_regime_enabled = False
+    rt.service.regime_detector = rt._regime_detector = MagicMock()
     rt._regime_detector.detect.return_value = RegimeType.TRENDING
     indicators = {"adx14": {"adx": 30.0}, "boll20": {"bb_width": 0.02}}
 
@@ -139,12 +140,12 @@ def test_detect_regime_hard_classification() -> None:
 
 def test_detect_regime_soft_classification() -> None:
     rt = _make_runtime()
-    rt._soft_regime_enabled = True
+    rt.service.soft_regime_enabled = True
     soft_result = MagicMock()
     soft_result.dominant_regime = RegimeType.BREAKOUT
     soft_result.to_dict.return_value = {"trending": 0.2, "breakout": 0.6, "ranging": 0.1, "uncertain": 0.1}
     soft_result.probability.side_effect = lambda r: {"TRENDING": 0.2, "BREAKOUT": 0.6, "RANGING": 0.1, "UNCERTAIN": 0.1}.get(r.value.upper(), 0.0)
-    rt._regime_detector = MagicMock()
+    rt.service.regime_detector = rt._regime_detector = MagicMock()
     rt._regime_detector.detect_soft.return_value = soft_result
     indicators = {"adx14": {"adx": 25.0}}
 
@@ -157,8 +158,8 @@ def test_detect_regime_soft_classification() -> None:
 
 def test_detect_regime_injects_close_price() -> None:
     rt = _make_runtime()
-    rt._soft_regime_enabled = False
-    rt._regime_detector = MagicMock()
+    rt.service.soft_regime_enabled = False
+    rt.service.regime_detector = rt._regime_detector = MagicMock()
     rt._regime_detector.detect.return_value = RegimeType.UNCERTAIN
     indicators = {"sma20": {"close": 3050.0}}
 

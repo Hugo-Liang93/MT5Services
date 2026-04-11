@@ -13,6 +13,7 @@ class DummySnapshotSource:
     def __init__(self, indicator_data=None):
         self.snapshot_listeners: list = []
         self._indicator_data = indicator_data or {}
+        self.current_trace_id: str | None = None
 
     def add_snapshot_listener(self, listener):
         self.snapshot_listeners.append(listener)
@@ -21,6 +22,9 @@ class DummySnapshotSource:
         self.snapshot_listeners = [
             item for item in self.snapshot_listeners if item is not listener
         ]
+
+    def get_current_trace_id(self) -> str | None:
+        return self.current_trace_id
 
     def get_indicator(self, symbol, timeframe, indicator_name):
         return self._indicator_data.get((symbol, timeframe, indicator_name))
@@ -32,6 +36,20 @@ def _make_runtime(source=None, htf_target_config=None):
     class DummyService:
         def __init__(self):
             self.evaluate_calls = []
+
+        def strategy_capability_catalog(self, voting_group_policy=None):
+            return [
+                {
+                    "name": "strat_a",
+                    "valid_scopes": ["confirmed"],
+                    "needed_indicators": ["ema50"],
+                    "needs_intrabar": False,
+                    "needs_htf": True,
+                    "voting_group_policy": "standalone",
+                    "regime_affinity": {},
+                    "htf_requirements": {"adx14": "H1"},
+                }
+            ]
 
         def strategy_requirements(self, strategy):
             return ("ema50",)

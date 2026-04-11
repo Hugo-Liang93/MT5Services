@@ -51,10 +51,8 @@ class UnifiedIndicatorSourceAdapter:
         end_time: Optional[datetime] = None,
         limit: int = 5,
     ) -> List[Any]:
-        market_service = getattr(self._manager, "market_service", None)
-        if market_service is None:
-            return []
-        if end_time is not None and hasattr(market_service, "get_ohlc_window"):
+        market_service = self._manager.market_service
+        if end_time is not None:
             return list(
                 market_service.get_ohlc_window(
                     symbol,
@@ -63,6 +61,4 @@ class UnifiedIndicatorSourceAdapter:
                     limit=limit,
                 )
             )
-        if hasattr(market_service, "get_ohlc_closed"):
-            return list(market_service.get_ohlc_closed(symbol, timeframe, limit=limit))
-        return []
+        return list(market_service.get_ohlc_closed(symbol, timeframe, limit=limit))

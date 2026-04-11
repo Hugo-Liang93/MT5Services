@@ -6,6 +6,11 @@ from .sessions import (
     normalize_session_name,
     resolve_session_by_hour,
 )
+from .capability import StrategyCapability
+from .execution_plan import (
+    build_strategy_capability_summary,
+    normalize_capability_contract,
+)
 
 __all__ = [
     "SESSION_ASIA",
@@ -14,4 +19,7 @@ __all__ = [
     "SESSION_OFF_HOURS",
     "normalize_session_name",
     "resolve_session_by_hour",
+    "StrategyCapability",
+    "build_strategy_capability_summary",
+    "normalize_capability_contract",
 ]

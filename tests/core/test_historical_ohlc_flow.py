@@ -1,8 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import sys
 import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -62,16 +63,53 @@ def _bar(minute: int) -> OHLC:
     )
 
 
-def _init_scope_stats(manager: UnifiedIndicatorManager) -> None:
-    """Inject _scope_stats into a stub manager created via object.__new__."""
-    import threading
+def _init_indicator_state(manager: UnifiedIndicatorManager) -> None:
+    manager.state = SimpleNamespace(
+        scope_stats={
+            "confirmed": {"computations": 0, "indicators": 0},
+            "intrabar": {"computations": 0, "indicators": 0},
+            "reconcile": {"computations": 0, "indicators": 0},
+        },
+        scope_stats_lock=threading.Lock(),
+        results=OrderedDict(),
+        results_lock=threading.RLock(),
+        results_max=2000,
+        last_preview_snapshot=OrderedDict(),
+        preview_snapshot_max_entries=500,
+        snapshot_listeners=[],
+        snapshot_listeners_lock=threading.Lock(),
+        pipeline_event_bus=None,
+        event_thread=None,
+        last_reconcile_at=None,
+        confirmed_eligible_cache=frozenset(),
+        intrabar_eligible_cache=frozenset(),
+        priority_indicator_groups=(),
+    )
 
-    manager._scope_stats = {
+
+def _new_manager_stub() -> UnifiedIndicatorManager:
+    manager = object.__new__(UnifiedIndicatorManager)
+    _init_indicator_state(manager)
+    return manager
+
+
+def _init_scope_stats(manager: UnifiedIndicatorManager) -> None:
+    """Inject scope_stats into a stub manager created via object.__new__."""
+    manager.state.scope_stats = {
         "confirmed": {"computations": 0, "indicators": 0},
         "intrabar": {"computations": 0, "indicators": 0},
         "reconcile": {"computations": 0, "indicators": 0},
     }
-    manager._scope_stats_lock = threading.Lock()
+    manager.state.scope_stats_lock = threading.Lock()
+
+
+def _set_min_bars_config(manager: UnifiedIndicatorManager, names: list[str], min_bars: int = 1) -> None:
+    manager.config = SimpleNamespace(
+        indicators=[
+            SimpleNamespace(name=name, enabled=True, params={"min_bars": min_bars})
+            for name in names
+        ]
+    )
 
 
 def test_market_service_loads_historical_window_from_storage() -> None:
@@ -113,7 +151,7 @@ def test_indicator_manager_loads_bar_time_window_from_market_service() -> None:
             calls["window"] += 1
             return [_bar(2), _bar(3), target_bar]
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.market_service = ServiceStub()
     manager._get_max_lookback = lambda: 10
 
@@ -199,7 +237,7 @@ def test_write_back_results_persists_grouped_indicator_payload() -> None:
             if latest_bar.time == bar_time:
                 latest_bar.indicators = indicators
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.market_service = ServiceStub()
     manager.storage_writer = SimpleNamespace(
         enqueue=lambda channel, row: stored_rows.append((channel, row)),
@@ -240,7 +278,7 @@ def test_write_back_results_publishes_confirmed_snapshot_for_m15() -> None:
             if latest_bar.time == bar_time and timeframe == "M15":
                 latest_bar.indicators = indicators
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.market_service = ServiceStub()
     manager.storage_writer = None
     manager._store_results = lambda *args, **kwargs: None
@@ -294,18 +332,18 @@ def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persistin
         def get_ohlc_closed(self, symbol, timeframe, limit=None):
             return [_bar(2), _bar(3)]
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.market_service = ServiceStub()
     manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 55.0}})
     manager._get_max_lookback = lambda: 5
     manager._select_indicator_names_for_history = lambda available_bars, indicator_names=None: ["rsi14"]
-    manager._snapshot_listeners = [
+    manager.state.snapshot_listeners = [
         lambda symbol, timeframe, bar_time, indicators, scope: preview_events.append(
             (symbol, timeframe, bar_time, indicators, scope)
         )
     ]
-    manager._last_preview_snapshot = {}
-    manager._intrabar_eligible_cache = frozenset(["rsi14"])
+    manager.state.last_preview_snapshot = {}
+    manager.state.intrabar_eligible_cache = frozenset(["rsi14"])
     _init_scope_stats(manager)
 
     grouped = manager._process_intrabar_event("XAUUSD", "M1", intrabar_bar)
@@ -323,15 +361,15 @@ def test_indicator_manager_publishes_intrabar_preview_snapshot_without_persistin
 
 
 def test_indicator_manager_priority_indicator_names_are_deduplicated() -> None:
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
 
     manager.set_priority_indicator_names(["rsi14", "sma20", "rsi14"])
 
-    assert manager._priority_indicator_groups == (("rsi14", "sma20"),)
+    assert manager.state.priority_indicator_groups == (("rsi14", "sma20"),)
 
 
 def test_indicator_manager_priority_indicator_groups_are_deduplicated_and_ordered() -> None:
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
 
     manager.set_priority_indicator_groups(
         [
@@ -342,7 +380,7 @@ def test_indicator_manager_priority_indicator_groups_are_deduplicated_and_ordere
         ]
     )
 
-    assert manager._priority_indicator_groups == (
+    assert manager.state.priority_indicator_groups == (
         ("rsi14",),
         ("sma20", "ema50"),
         ("ema50", "sma20"),
@@ -370,9 +408,9 @@ def test_indicator_manager_publishes_priority_confirmed_snapshots_per_group() ->
             "ema50": {"ema": 200.0},
         }
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.pipeline = SimpleNamespace(compute_staged=compute_staged)
-    manager._priority_indicator_groups = (("rsi14",), ("sma20", "ema50"))
+    manager.state.priority_indicator_groups = (("rsi14",), ("sma20", "ema50"))
     manager._select_indicator_names_for_history = (
         lambda available_bars, indicator_names=None: list(indicator_names) if indicator_names else ["rsi14", "sma20", "ema50"]
     )
@@ -430,9 +468,9 @@ def test_indicator_manager_avoids_recomputing_priority_indicators_in_full_confir
             on_level_complete({"ema50": {"ema": 200.0}}, payload)
         return payload
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.pipeline = SimpleNamespace(compute_staged=compute_staged)
-    manager._priority_indicator_groups = (("rsi14",),)
+    manager.state.priority_indicator_groups = (("rsi14",),)
     manager._load_confirmed_bars = lambda symbol, timeframe, bar_time=None: [_bar(3), _bar(4)]
     manager._select_indicator_names_for_history = (
         lambda available_bars, indicator_names=None: list(indicator_names) if indicator_names else ["rsi14", "ema50"]
@@ -456,15 +494,17 @@ def test_indicator_manager_batches_same_scope_events_into_single_window_load() -
             window_calls.append((symbol, timeframe, end_time, limit))
             return bars
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
         mark_event_completed_by_id=lambda event_id: completed.append(event_id),
+        mark_event_skipped_by_id=lambda event_id, reason: completed.append(("skipped", event_id, reason)),
         mark_event_failed_by_id=lambda *args, **kwargs: None,
     )
     manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
     manager._get_max_lookback = lambda: 5
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
+    _set_min_bars_config(manager, ["rsi14"], min_bars=1)
     manager._write_back_results = lambda *args, **kwargs: None
     _init_scope_stats(manager)
 
@@ -488,15 +528,17 @@ def test_indicator_manager_prefers_event_id_completion_for_claimed_events() -> N
         def get_ohlc_window(self, symbol, timeframe, end_time, limit):
             return bars
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
         mark_event_completed_by_id=lambda event_id: completed_ids.append(event_id),
+        mark_event_skipped_by_id=lambda event_id, reason: completed_ids.append(("skipped", event_id, reason)),
         mark_event_failed_by_id=lambda *args, **kwargs: None,
     )
     manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
     manager._get_max_lookback = lambda: 5
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
+    _set_min_bars_config(manager, ["rsi14"], min_bars=1)
     manager._write_back_results = lambda *args, **kwargs: None
     _init_scope_stats(manager)
 
@@ -517,7 +559,7 @@ def test_indicator_manager_completes_early_history_event_without_retry() -> None
         def get_ohlc_window(self, symbol, timeframe, end_time, limit):
             return [early_bar]
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
         mark_event_completed_by_id=lambda event_id: completed.append(event_id),
@@ -554,15 +596,17 @@ def test_indicator_manager_falls_back_to_per_event_window_when_batch_window_miss
                 return [_bar(1), _bar(2), missing_from_batch]
             return []
 
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.market_service = ServiceStub()
     manager.event_store = SimpleNamespace(
         mark_event_completed_by_id=lambda event_id: completed.append(event_id),
+        mark_event_skipped_by_id=lambda event_id, reason: completed.append(("skipped", event_id, reason)),
         mark_event_failed_by_id=lambda event_id, error: failed.append((event_id, error)),
     )
     manager.pipeline = SimpleNamespace(compute=lambda *args, **kwargs: {"rsi14": {"rsi": 50.0}})
     manager._get_max_lookback = lambda: 3
     manager._resolve_indicator_names = lambda indicator_names=None: ["rsi14"]
+    _set_min_bars_config(manager, ["rsi14"], min_bars=1)
     manager._write_back_results = lambda *args, **kwargs: None
     _init_scope_stats(manager)
 
@@ -642,7 +686,7 @@ def test_pipeline_logs_regular_completions_at_debug(caplog) -> None:
 
 
 def test_indicator_manager_computes_only_eligible_indicators_for_short_history() -> None:
-    manager = object.__new__(UnifiedIndicatorManager)
+    manager = _new_manager_stub()
     manager.config = SimpleNamespace(
         indicators=[
             SimpleNamespace(name="rsi14", enabled=True, params={"min_bars": 15}),
@@ -653,3 +697,6 @@ def test_indicator_manager_computes_only_eligible_indicators_for_short_history()
     selected = manager._select_indicator_names_for_history(available_bars=20)
 
     assert selected == ["rsi14"]
+
+
+

@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
 from src.clients.mt5_account import MT5AccountClient
 from src.risk.service import PreTradeRiskBlockedError, PreTradeRiskService
+from .reasons import REASON_XAUUSD_TRADE_GUARD_BLOCKED
 from src.signals.metadata_keys import MetadataKey as MK
 
 
@@ -50,6 +51,19 @@ class TradingService:
         trimmed = base[: max(0, 27 - len(suffix))]
         return f"{trimmed}{suffix}"
 
+    def health(self) -> dict[str, Any]:
+        """暴露交易服务运行状态，供应用层统一读取。
+
+        不再通过外部访问 client 属性后再反射调用，职责收敛到服务内部端口。
+        """
+        try:
+            status = self.client.health()
+            if isinstance(status, dict):
+                return status
+            return {"status": str(status), "connected": True}
+        except Exception as exc:
+            return {"status": "failed", "connected": False, "error": str(exc)}
+
     def _recover_trade_from_state(
         self,
         *,
@@ -64,17 +78,17 @@ class TradingService:
 
         side_value = str(side or "").strip().lower()
         for position in self.get_positions(symbol=symbol):
-            if str(getattr(position, "comment", "") or "").strip() != target_comment:
+            if str(position.comment or "").strip() != target_comment:
                 continue
             return {
-                "ticket": int(getattr(position, "ticket", 0) or 0),
+                "ticket": int(position.ticket or 0),
                 "order": 0,
                 "deal": 0,
-                "fill_price": float(getattr(position, "price_open", 0.0) or 0.0),
-                "price": float(getattr(position, "price_open", 0.0) or 0.0),
+                "fill_price": float(position.price_open or 0.0),
+                "price": float(position.price_open or 0.0),
                 "requested_price": None,
                 "symbol": symbol,
-                "volume": float(getattr(position, "volume", 0.0) or 0.0),
+                "volume": float(position.volume or 0.0),
                 "side": side_value,
                 "comment": target_comment,
                 "request_id": request_id,
@@ -82,17 +96,17 @@ class TradingService:
                 "state_source": "positions",
             }
         for order in self.get_orders(symbol=symbol):
-            if str(getattr(order, "comment", "") or "").strip() != target_comment:
+            if str(order.comment or "").strip() != target_comment:
                 continue
             return {
-                "ticket": int(getattr(order, "ticket", 0) or 0),
-                "order": int(getattr(order, "ticket", 0) or 0),
+                "ticket": int(order.ticket or 0),
+                "order": int(order.ticket or 0),
                 "deal": 0,
-                "fill_price": float(getattr(order, "price_open", 0.0) or 0.0),
-                "price": float(getattr(order, "price_open", 0.0) or 0.0),
-                "requested_price": float(getattr(order, "price_open", 0.0) or 0.0),
+                "fill_price": float(order.price_open or 0.0),
+                "price": float(order.price_open or 0.0),
+                "requested_price": float(order.price_open or 0.0),
                 "symbol": symbol,
-                "volume": float(getattr(order, "volume", 0.0) or 0.0),
+                "volume": float(order.volume or 0.0),
                 "side": side_value,
                 "comment": target_comment,
                 "request_id": request_id,
@@ -223,18 +237,7 @@ class TradingService:
         return self.client.modify_positions(ticket=ticket, symbol=symbol, magic=magic, sl=sl, tp=tp)
 
     def _side_to_order_type(self, side: str, order_kind: str = "market") -> int:
-        if hasattr(self.client, "side_and_kind_to_order_type"):
-            return self.client.side_and_kind_to_order_type(side, order_kind)
-        if not hasattr(self.client, "connect"):
-            raise MT5TradingClientError("Trading client not initialized")
-        side_lower = side.lower()
-        if order_kind.lower() != "market":
-            raise MT5TradingClientError(f"Unsupported order kind without native client support: {order_kind}")
-        if side_lower in ("buy", "long"):
-            return __import__("MetaTrader5").ORDER_TYPE_BUY
-        if side_lower in ("sell", "short"):
-            return __import__("MetaTrader5").ORDER_TYPE_SELL
-        raise MT5TradingClientError(f"Unsupported side: {side}")
+        return self.client.side_and_kind_to_order_type(side, order_kind=order_kind)
 
     # --- 交易执行核心 API ---
     def execute_trade(
@@ -298,7 +301,7 @@ class TradingService:
         if self._is_gold_symbol(symbol) and bool(precheck_snapshot.get("event_blocked")):
             blocked_snapshot = self._coerce_trade_guard_block(
                 precheck_snapshot,
-                reason="xauusd_trade_guard_blocked",
+                reason=REASON_XAUUSD_TRADE_GUARD_BLOCKED,
             )
             raise PreTradeRiskBlockedError(
                 blocked_snapshot["reason"],
@@ -323,63 +326,41 @@ class TradingService:
         if not bool(precheck_snapshot.get("executable", True)):
             raise MT5TradingClientError(str(precheck_snapshot.get("reason") or "Trade precheck failed"))
 
-        if hasattr(self.client, "open_trade_details"):
-            last_error: Optional[Exception] = None
-            max_attempts = max(int(retry_attempts), 1)
-            result: Dict[str, Any] | None = None
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    result = self.client.open_trade_details(
-                        symbol=symbol,
-                        volume=volume,
-                        order_type=self._side_to_order_type(side, order_kind=order_kind),
-                        price=price,
-                        sl=sl,
-                        tp=tp,
-                        deviation=deviation,
-                        comment=tagged_comment,
-                        magic=magic,
-                    )
-                    result["execution_attempts"] = attempt
+        last_error: Optional[Exception] = None
+        max_attempts = max(int(retry_attempts), 1)
+        result: Dict[str, Any] | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = self.client.open_trade_details(
+                    symbol=symbol,
+                    volume=volume,
+                    order_type=self._side_to_order_type(side, order_kind=order_kind),
+                    price=price,
+                    sl=sl,
+                    tp=tp,
+                    deviation=deviation,
+                    comment=tagged_comment,
+                    magic=magic,
+                )
+                result["execution_attempts"] = attempt
+                break
+            except Exception as exc:
+                recovered = self._recover_trade_from_state(
+                    symbol=symbol,
+                    side=side,
+                    tagged_comment=tagged_comment,
+                    request_id=request_id,
+                )
+                if recovered is not None:
+                    recovered["execution_attempts"] = attempt
+                    result = recovered
                     break
-                except Exception as exc:
-                    recovered = self._recover_trade_from_state(
-                        symbol=symbol,
-                        side=side,
-                        tagged_comment=tagged_comment,
-                        request_id=request_id,
-                    )
-                    if recovered is not None:
-                        recovered["execution_attempts"] = attempt
-                        result = recovered
-                        break
-                    last_error = exc
-                    if attempt >= max_attempts:
-                        raise
-                    time.sleep(max(float(retry_backoff_ms), 0.0) / 1000.0)
-            if result is None and last_error is not None:
-                raise last_error
-        else:
-            ticket = self.open(
-                symbol=symbol,
-                volume=volume,
-                side=side,
-                order_kind=order_kind,
-                price=price,
-                sl=sl,
-                tp=tp,
-                deviation=deviation,
-                comment=tagged_comment,
-                magic=magic,
-            )
-            result = {
-                "ticket": ticket,
-                "price": price,
-                "requested_price": price,
-                "fill_price": price,
-                "execution_attempts": 1,
-                "comment": tagged_comment,
-            }
+                last_error = exc
+                if attempt >= max_attempts:
+                    raise
+                time.sleep(max(float(retry_backoff_ms), 0.0) / 1000.0)
+        if result is None and last_error is not None:
+            raise last_error
 
         # 记录交易频率（供 TradeFrequencyRule 使用）
         if self.pre_trade_risk_service is not None:
@@ -447,9 +428,10 @@ class TradingService:
                 suggested_adjustment={"volume": 0.01},
             )
         # ── Broker 约束检查（独立于 validate_trade_request，提供结构化结果）──
-        if side and hasattr(self.client, "check_broker_constraints"):
+        check_broker_constraints = self.client.check_broker_constraints
+        if side:
             try:
-                broker_checks = self.client.check_broker_constraints(
+                broker_checks = check_broker_constraints(
                     symbol=symbol,
                     side=side,
                     request_price=price,
@@ -474,9 +456,10 @@ class TradingService:
                         warnings.append(c["message"])
             except Exception as exc:
                 warnings.append(f"Broker constraint check unavailable: {exc}")
-        if volume is not None and side and hasattr(self.client, "validate_trade_request"):
+        validate_trade_request = self.client.validate_trade_request
+        if volume is not None and side:
             try:
-                self.client.validate_trade_request(
+                validate_trade_request(
                     symbol=symbol,
                     volume=volume,
                     side=side,
@@ -563,8 +546,6 @@ class TradingService:
         symbol: Optional[str] = None,
         lookback_days: int = 7,
     ) -> Optional[Dict[str, Any]]:
-        if not hasattr(self.client, "get_position_close_details"):
-            return None
         return self.client.get_position_close_details(
             ticket=ticket,
             symbol=symbol,
@@ -600,8 +581,9 @@ class TradingService:
 
     def _invalidate_account_cache(self) -> None:
         """下单/平仓后使账户/持仓短 TTL 缓存失效。"""
-        if self.account_client is not None and hasattr(self.account_client, "invalidate_cache"):
-            self.account_client.invalidate_cache()
+        if self.account_client is None:
+            return
+        self.account_client.invalidate_cache()
 
     def get_positions(self, symbol: Optional[str] = None, magic: Optional[int] = None):
         if self.account_client is None:
@@ -646,22 +628,11 @@ class TradingService:
         deviation: int = 20,
         comment: str = "close_batch",
     ) -> dict:
-        if hasattr(self.client, "close_positions_by_tickets"):
-            return self.client.close_positions_by_tickets(
-                tickets=tickets,
-                deviation=deviation,
-                comment=comment,
-            )
-        closed, failed = [], []
-        for ticket in tickets:
-            try:
-                self.close(ticket=ticket, deviation=deviation, comment=comment)
-                closed.append(ticket)
-            except Exception as exc:
-                failed.append({"ticket": ticket, "error": str(exc)})
-        return {"closed": closed, "failed": failed}
+        return self.client.close_positions_by_tickets(
+            tickets=tickets,
+            deviation=deviation,
+            comment=comment,
+        )
 
     def cancel_orders_by_tickets(self, tickets: list[int]) -> dict:
-        if hasattr(self.client, "cancel_orders_by_tickets"):
-            return self.client.cancel_orders_by_tickets(tickets)
-        return {"canceled": [], "failed": [{"ticket": int(ticket), "error": "unsupported"} for ticket in tickets]}
+        return self.client.cancel_orders_by_tickets(tickets)

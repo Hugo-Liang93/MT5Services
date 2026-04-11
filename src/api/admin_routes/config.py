@@ -55,13 +55,7 @@ def admin_config_indicators(
     indicators = _normalize_indicator_items(load_json_config("indicators.json"))
     if display_only:
         indicators = [item for item in indicators if item.get("display", False)]
-    intrabar_names: List[str] = []
-    try:
-        eligible = getattr(indicator_mgr, "_get_intrabar_eligible_names", None)
-        if callable(eligible):
-            intrabar_names = sorted(eligible())
-    except Exception:
-        pass
+    intrabar_names = sorted(indicator_mgr.get_intrabar_eligible_names())
     return ApiResponse.success_response(
         IndicatorsConfigView(
             indicators=indicators,

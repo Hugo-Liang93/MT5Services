@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from src.api.schemas import ApiResponse, DecisionBriefModel, DecisionBriefRequest
-from src.decision import build_decision_brief
+from src.readmodels import build_decision_brief
 
 router = APIRouter(prefix="/decision", tags=["decision"])
 

@@ -407,6 +407,8 @@ class BacktestResult:
     param_set: Dict[str, Any]
     # 过滤器统计
     filter_stats: Optional[Dict[str, Any]] = None
+    # 策略能力执行计划（与实盘 runtime status 同语义）
+    strategy_capability_execution_plan: Optional[Dict[str, Any]] = None
     # 信号评估明细（用于回测质量分析）
     signal_evaluations: Optional[List[SignalEvaluation]] = None
     # 蒙特卡洛排列检验结果

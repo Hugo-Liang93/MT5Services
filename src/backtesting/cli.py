@@ -10,13 +10,44 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+def _cast_number_or_text(value: str) -> Any:
+    """解析 CLI 字符串参数，优先按数字转换。"""
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    try:
+        return float(normalized) if "." in normalized else int(normalized)
+    except ValueError:
+        return normalized
+
+
+def _parse_param(raw: str) -> tuple[str, list[Any]]:
+    if "=" not in raw:
+        raise ValueError(f"Invalid --param value: {raw}")
+    name, values = raw.split("=", 1)
+    key = name.strip()
+    if not key:
+        raise ValueError(f"Invalid --param value: {raw}")
+    parts = [item.strip() for item in values.split(",") if item.strip()]
+    if not parts:
+        raise ValueError(f"Invalid --param value: {raw}")
+    return key, [_cast_number_or_text(part) for part in parts]
+
+
+def _build_components(args: argparse.Namespace) -> Dict[str, Any]:
+    from .component_factory import build_backtest_components
+
+    strategy_params = _parse_cli_strategy_params(args)
+    return build_backtest_components(strategy_params=strategy_params)
+
 
 def _cleanup_components(components: Dict[str, Any]) -> None:
     # docstring removed during encoding normalization
-    from .component_factory import build_backtest_components
-
-    strategy_params = getattr(args, "strategy_params", None) or None
-    return build_backtest_components(strategy_params=strategy_params)
+    writer = components.get("writer")
+    if writer is not None:
+        close_writer = getattr(writer, "close", None)
+        if callable(close_writer):
+            close_writer()
 
 
 def _load_strategy_scope_overrides() -> (
@@ -55,6 +86,73 @@ def _parse_cli_strategy_params(args: argparse.Namespace) -> Dict[str, Any]:
             except ValueError:
                 params[key.strip()] = val.strip()
     return params
+
+
+def _persist_result(result: Any, writer: Any = None) -> None:
+    # docstring removed during encoding normalization
+    try:
+        from src.persistence.repositories.backtest_repo import BacktestRepository
+        from src.config.database import load_db_settings
+        from src.persistence.db import TimescaleWriter
+
+        if writer is None:
+            db_config = load_db_settings()
+            writer = TimescaleWriter(settings=db_config)
+
+        repo = BacktestRepository(writer)
+        repo.ensure_schema()
+        repo.save_result(result)
+    except Exception as exc:
+        logger.warning("Persist backtest result failed: %s", exc, exc_info=True)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="MT5 backtest CLI")
+    parser.set_defaults(command="run")
+    parser.set_defaults(func=cmd_run)
+
+    _add_common_args(parser)
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Write JSON summary to file",
+    )
+
+    subparsers = parser.add_subparsers(dest="subcommand")
+    optimize_parser = subparsers.add_parser("optimize")
+    _add_common_args(optimize_parser)
+    optimize_parser.add_argument(
+        "--mode",
+        default="grid",
+        choices=["grid", "random", "bayesian"],
+        help="Optimization mode",
+    )
+    optimize_parser.add_argument(
+        "--max-combos",
+        type=int,
+        default=1200,
+        help="Maximum candidate combinations",
+    )
+    optimize_parser.add_argument(
+        "--sort",
+        type=str,
+        default="sharpe_ratio",
+        help="Sort metric for optimization",
+    )
+    optimize_parser.set_defaults(func=cmd_optimize)
+
+    compare_parser = subparsers.add_parser("compare")
+    _add_common_args(compare_parser)
+    compare_parser.add_argument(
+        "--timeframes",
+        required=True,
+        type=str,
+        help="Compare timeframes, e.g. M1,M5,M15",
+    )
+    compare_parser.set_defaults(func=cmd_compare_tf)
+
+    return parser
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -356,23 +454,18 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
 
 def main() -> None:
     # docstring removed during encoding normalization
+    parser = _build_parser()
     try:
-        from src.persistence.repositories.backtest_repo import BacktestRepository
-
-        if writer is None:
-            from src.config.database import load_db_settings
-            from src.persistence.db import TimescaleWriter
-
-            db_config = load_db_settings()
-            writer = TimescaleWriter(settings=db_config)
-
-        repo = BacktestRepository(writer)
-        repo.ensure_schema()
-        repo.save_result(result)
-        print(f": {result.run_id}")
-    except Exception as e:
-        logger.warning("? %s", e, exc_info=True)
-        print(f": ?- {e}")
+        args = parser.parse_args()
+        handler = getattr(args, "func", None)
+        if handler is None:
+            parser.print_help()
+            sys.exit(2)
+        handler(args)
+    except Exception as exc:
+        logger.exception("Backtest CLI failed: %s", exc)
+        print(f"backtest cli failed: {exc}")
+        sys.exit(1)
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:

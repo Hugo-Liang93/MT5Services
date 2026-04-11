@@ -77,8 +77,15 @@ def evaluate_strategies(
             if allowed_sessions and current_sessions:
                 if not any(s in allowed_sessions for s in current_sessions):
                     continue
-
-            required = engine._signal_module.strategy_requirements(strategy_name)
+            capability = engine.strategy_capability(strategy_name)
+            if capability is None:
+                logger.warning("Strategy capability missing for %s", strategy_name)
+                continue
+            if scope not in capability.valid_scopes:
+                continue
+            required = (
+                capability.needed_indicators
+            )
             missing = [ind for ind in required if ind not in indicators]
             if missing:
                 continue

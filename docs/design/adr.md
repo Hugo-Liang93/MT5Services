@@ -15,6 +15,7 @@
 | 003 | MetadataKey | 魔法字符串必须使用 MetadataKey 常量 | 已确定 |
 | 004 | 组件生命周期 | start/stop 安全契约（8 项防护机制） | 已确定 |
 | 005 | 后台线程生命周期 | join 超时后不得清空仍存活线程引用 | 已确定 |
+| 006 | 跨模块边界 | 装配/API 层禁止读写组件私有属性，必须通过公开端口 | 已确定 |
 
 ---
 
@@ -104,6 +105,60 @@
 **当前待整改对象**：详见 `docs/codebase-review.md` 的生命周期章节，重点检查 `SignalRuntime`、`PositionManager`、`PendingEntryManager`、`UnifiedIndicatorManager`。
 
 **演进方向**：将 `TradeExecutor` 已采用的僵尸线程防护收敛为通用契约，并为每个后台线程组件补 stop 超时回归测试。
+
+---
+
+## ADR-006: 跨模块边界禁止读写私有属性
+
+**状态**：已确定（2026-04-10）
+
+**上下文**：审查发现装配层（`builder.py`、`factories/signals.py`）和 API 层大量直接读写组件内部的 `_` 私有属性。这使得组件的内部实现细节泄漏到外部，后续重构（如重命名内部字段、修改初始化顺序）极易引发隐性 breakage。
+
+典型反模式：
+```python
+# ❌ 装配层直接写入私有属性
+signal_runtime._pipeline_event_bus = bus
+calibrator._recency_hours_by_tf.update(config)
+trade_executor._intrabar_guard = guard
+
+# ❌ API 层直接读取私有属性
+runtime._voting_group_engines
+read_model._storage_writer.db
+```
+
+**决策**：
+
+1. **装配层（builder / factories）不得读写组件的 `_` 前缀属性。** 需要后置注入的依赖，组件必须提供以下公开端口之一：
+   - 构造函数参数（首选）
+   - `set_xxx()` setter 方法（后置注入）
+   - 公开属性（`self.xxx`，无下划线，在 `__init__` 中初始化为 `None`）
+
+2. **API 层不得读取组件的 `_` 前缀属性。** 诊断/监控数据通过以下方式暴露：
+   - `describe_xxx()` 方法（返回结构化字典）
+   - `status()` 方法（已有模式）
+   - 公开只读 property
+
+3. **热重载（hot reload）不得直接修改组件私有字段。** 必须通过 `update_xxx()` 公开方法，由组件自行处理内部状态一致性。
+
+4. **同包内部模块**（如 `indicators/bar_event_handler.py` 访问 `IndicatorManager`）允许通过公开属性交互，但仍禁止 `_` 前缀访问。公开属性以 `getattr(obj, "attr", None)` 模式兼容可选依赖。
+
+**已整改组件清单**：
+
+| 组件 | 新增公开端口 |
+|------|------------|
+| SignalRuntime | `pipeline_event_bus` 属性, `set_warmup_ready_fn()`, `set_intrabar_trade_coordinator()`, `describe_voting()` |
+| UnifiedIndicatorManager | `pipeline_event_bus` 属性, `current_trace_id` 属性 |
+| SignalModule | `strategies` property, `set_tf_param_resolver()` |
+| ConfidenceCalibrator | `update_recency_config()` |
+| MarketRegimeDetector | `update_thresholds()` |
+| StrategyPerformanceTracker | `update_config()` |
+| PositionManager | `set_sl_tp_history_writer()` |
+| TradeExecutor | `set_intrabar_guard()`, `update_execution_gate_config()` |
+| PaperTradingBridge | `session` property |
+| RuntimeReadModel | `db_writer` 构造参数 |
+| ConfigFileWatcher | `iter_config_files()` (renamed), `is_running()` |
+
+**演进方向**：新增组件如需后置注入，优先在构造函数中声明 Optional 参数。`set_xxx()` 仅用于真正的循环依赖或生命周期时序约束。长期目标：收敛到纯构造函数注入，消除所有 setter。
 
 ---
 

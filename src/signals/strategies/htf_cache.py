@@ -26,7 +26,7 @@ HTFStateCache 通过监听 SignalRuntime 的 confirmed 信号事件，
 自动构建映射（每个 TF → 链条中下一个已配置的更高 TF）。
 例如 configured = {M5,M15,M30,H1,H4,D1} → M5→M15, M15→M30, M30→H1, H1→H4, H4→D1。
 
-仅当 ``htf_map=None``（standalone/测试场景）时使用 ``_DEFAULT_HTF_MAP`` 兜底。
+standalone/测试场景下若未提供 ``htf_map``，则使用 ``_DEFAULT_HTF_MAP``。
 """
 
 from __future__ import annotations

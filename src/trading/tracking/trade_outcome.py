@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.signals.metadata_keys import MetadataKey as MK
+from src.trading.trade_events import POSITION_CLOSE_SOURCE_MT5_MISSING
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +244,7 @@ class TradeOutcomeTracker:
             exit_regime = getattr(pos, "last_exit_regime", "") or ""
             metadata: Dict[str, Any] = {
                 "opened_at": trade.opened_at.isoformat(),
-                "close_source": close_source if close_price_f is not None else "mt5_missing",
+                "close_source": close_source if close_price_f is not None else POSITION_CLOSE_SOURCE_MT5_MISSING,
             }
             if exit_reason:
                 metadata[MK.EXIT_REASON] = exit_reason

@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
+from . import service_diagnostics as _svc_diag
 from .analytics import (
     DiagnosticsEngine,
     DiagnosticThresholds,
@@ -19,6 +20,7 @@ from .strategies.adapters import IndicatorSource
 from .strategies.base import SignalStrategy
 from .strategies.catalog import build_default_strategy_set
 from .tracking.repository import SignalRepository
+from .contracts import StrategyCapability
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,40 @@ class SignalModule:
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)
+
+    @property
+    def regime_detector(self) -> MarketRegimeDetector:
+        """Return the active regime detector as an explicit module interface."""
+        return self._regime_detector
+
+    @property
+    def performance_tracker(self) -> Optional[StrategyPerformanceTracker]:
+        """Return the optional performance tracker as an explicit module interface."""
+        return self._performance_tracker
+
+    @property
+    def diagnostics_engine(self) -> DiagnosticsEngine:
+        """Return the diagnostics engine as an explicit module interface."""
+        return self._diagnostics_analyzer
+
+    @property
+    def confidence_floor(self) -> float:
+        """Return configured confidence floor used by runtime confidence hardening."""
+        return self._confidence_floor
+
+    @property
+    def confidence_floor_min_affinity(self) -> float:
+        """Return the affinity threshold below which confidence floor will not be applied."""
+        return self._confidence_floor_min_affinity
+
+    def reset_performance_session(self) -> None:
+        """Rotate performance tracker session counters if tracking is enabled."""
+        if self._performance_tracker is not None:
+            self._performance_tracker.check_session_reset()
+
+    def has_performance_tracker(self) -> bool:
+        """Return whether strategy performance tracker is active."""
+        return self._performance_tracker is not None
 
     @staticmethod
     def _validate_strategy_attrs(strategy: SignalStrategy) -> None:
@@ -140,60 +176,38 @@ class SignalModule:
             self._performance_tracker.register_strategy(strategy.name, category)
 
     def intrabar_required_indicators(self) -> frozenset:
-        """从策略的 preferred_scopes 自动推导哪些指标需要 intrabar 计算。
-
-        遍历所有已注册策略，收集 preferred_scopes 包含 "intrabar" 的策略的
-        required_indicators 并集。返回值注入到 UnifiedIndicatorManager，
-        后者据此决定 intrabar pipeline 计算哪些指标。
-        """
+        """按能力快照计算 intrabar 必需指标集合。"""
         result: set[str] = set()
-        for strategy in self._strategies.values():
-            scopes = getattr(strategy, "preferred_scopes", ("intrabar", "confirmed"))
-            if "intrabar" not in scopes:
+        for capability in self.strategy_capability_catalog():
+            if not capability.needs_intrabar:
                 continue
-            for ind in getattr(strategy, "required_indicators", ()):
+            for ind in capability.needed_indicators:
                 result.add(str(ind))
         return frozenset(result)
 
     def confirmed_required_indicators(self) -> frozenset:
-        """从所有策略的 required_indicators 推导 confirmed 计算所需指标。
-
-        与 intrabar 逻辑对称：所有策略都参与 confirmed scope，
-        因此收集全部策略的 required_indicators 并集。
-        """
+        """按能力快照计算 confirmed 运行所需指标并集。"""
         result: set[str] = set()
-        for strategy in self._strategies.values():
-            for ind in getattr(strategy, "required_indicators", ()):
+        for capability in self.strategy_capability_catalog():
+            for ind in capability.needed_indicators:
                 result.add(str(ind))
         return frozenset(result)
 
     def htf_required_indicators(self) -> frozenset:
-        """从所有策略的 htf_required_indicators 推导 HTF 跨 TF 所需指标。
-
-        HTF 指标在其他 TF 上计算，供策略通过 ctx.htf_indicators 访问。
-        纳入推导集后，对应指标在所有 TF 上都会被计算。
-        """
+        """按能力快照推导 HTF 跨 TF 所需指标。"""
         result: set[str] = set()
-        for strategy in self._strategies.values():
-            htf_inds = getattr(strategy, "htf_required_indicators", {})
-            if isinstance(htf_inds, dict):
-                result.update(htf_inds.keys())
+        for capability in self.strategy_capability_catalog():
+            result.update(str(name) for name in capability.htf_requirements.keys())
         return frozenset(result)
 
     def htf_target_config(self) -> Dict[str, str]:
-        """从策略声明自动推导 HTF 指标注入配置。
-
-        遍历所有策略的 htf_required_indicators（{indicator: TF} 映射），
-        生成 ``{"strategy_name.indicator_name": "TF"}`` 格式的映射。
-        此方法替代 INI ``[strategy_htf]`` 配置。
-        """
+        """从能力快照自动推导 HTF 指标注入配置。"""
         config: Dict[str, str] = {}
-        for strategy in self._strategies.values():
-            htf_inds = getattr(strategy, "htf_required_indicators", {})
-            if not isinstance(htf_inds, dict) or not htf_inds:
+        for capability in self.strategy_capability_catalog():
+            if not capability.htf_requirements:
                 continue
-            for ind, tf in htf_inds.items():
-                config[f"{strategy.name}.{ind}"] = str(tf)
+            for ind, tf in capability.htf_requirements.items():
+                config[f"{capability.name}.{ind}"] = str(tf)
         return config
 
     def apply_param_overrides(
@@ -215,9 +229,7 @@ class SignalModule:
         resolver = build_tf_param_resolver(
             strategy_params, strategy_params_per_tf or {}
         )
-        self._tf_param_resolver = resolver  # type: ignore[attr-defined]
-        for strategy in self._strategies.values():
-            strategy._tf_param_resolver = resolver  # type: ignore[attr-defined]
+        self.set_tf_param_resolver(resolver)
 
         if regime_affinity_overrides:
             _regime_map = {
@@ -235,6 +247,17 @@ class SignalModule:
                     if regime_type is not None and hasattr(strategy, "regime_affinity"):
                         strategy.regime_affinity[regime_type] = weight
 
+    @property
+    def strategies(self) -> dict[str, "SignalStrategy"]:
+        """只读访问已注册策略字典（供装配层使用）。"""
+        return self._strategies
+
+    def set_tf_param_resolver(self, resolver: Any) -> None:
+        """注入 per-TF 参数查表器到模块及所有已注册策略。"""
+        self._tf_param_resolver = resolver  # type: ignore[attr-defined]
+        for strategy in self._strategies.values():
+            strategy.tf_param_resolver = resolver
+
     def get_strategy(self, name: str) -> Optional["SignalStrategy"]:
         """Return strategy instance by name, or None if not registered."""
         return self._strategies.get(name)
@@ -242,20 +265,108 @@ class SignalModule:
     def list_strategies(self) -> list[str]:
         return sorted(self._strategies.keys())
 
-    def list_intrabar_strategies(self) -> list[str]:
-        """返回 preferred_scopes 包含 intrabar 的策略名列表。"""
-        return sorted(
-            name
-            for name, s in self._strategies.items()
-            if "intrabar" in getattr(s, "preferred_scopes", ())
+    def strategy_capability_index(
+        self,
+        *,
+        voting_group_policy: Optional[Dict[str, str]] = None,
+    ) -> tuple[StrategyCapability, ...]:
+        """返回所有已注册策略的能力快照（只读，供运行时/回测共享）。
+
+        返回值是可持久化/可序列化的能力摘要，字段含义：
+        - needs_intrabar：是否声明了 "intrabar" scope
+        - needed_indicators：评估所需指标名（有序）
+        - valid_scopes：支持的 scope 列表
+        - voting_group_policy：voting_group 名称或 "standalone"
+        - regime_affinity：按 regime 名称序列化后的 affinity 映射
+        - htf_requirements：HTF 指标需求映射
+        """
+        policy_map = {k.lower(): v for k, v in (voting_group_policy or {}).items()}
+        capabilities: list[StrategyCapability] = []
+        for name in self.list_strategies():
+            impl = self._strategies[name]
+            affinity_map = self.strategy_affinity_map(name) or {}
+            needed_indicators = tuple(
+                str(item) for item in impl.required_indicators
+            )
+            valid_scopes = tuple(
+                str(scope) for scope in impl.preferred_scopes
+            )
+            raw_htf_requirements = getattr(impl, "htf_required_indicators", {})
+            if isinstance(raw_htf_requirements, dict):
+                htf_requirements = {str(k): str(v) for k, v in raw_htf_requirements.items()}
+            else:
+                htf_requirements = {}
+            affinity_payload = {
+                (key.value if hasattr(key, "value") else str(key)): float(
+                    affinity_map[key]
+                )
+                for key in affinity_map
+            }
+            capabilities.append(
+                StrategyCapability(
+                    name=name,
+                    valid_scopes=valid_scopes,
+                    needed_indicators=needed_indicators,
+                    needs_intrabar=("intrabar" in valid_scopes),
+                    needs_htf=bool(htf_requirements),
+                    voting_group_policy=policy_map.get(name.lower(), "standalone"),
+                    regime_affinity=affinity_payload,
+                    htf_requirements=htf_requirements,
+                )
+            )
+        return tuple(capabilities)
+
+    def strategy_capability_contract(
+        self,
+        *,
+        voting_group_policy: Optional[Dict[str, str]] = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """标准化能力清单字典口，module 与 policy 对账的统一视图。"""
+        return tuple(
+            capability.as_contract()
+            for capability in self.strategy_capability_catalog(
+                voting_group_policy=voting_group_policy
+            )
         )
 
+    def strategy_capability_catalog(
+        self,
+        *,
+        voting_group_policy: Optional[Dict[str, str]] = None,
+    ) -> tuple[StrategyCapability, ...]:
+        """标准化能力快照口，供运行时与回测共享同一输入契约。"""
+        return self.strategy_capability_index(voting_group_policy=voting_group_policy)
+
+    def strategy_capability_matrix(self) -> list[dict[str, Any]]:
+        """返回策略能力能力快照的只读摘要，用于调度与可观测链路共享。
+
+        返回字段为策略能力规范的最小公共形态：
+        - name: 策略名称
+        - valid_scopes: 支持的 scope 列表
+        - needed_indicators: 齐套判定指标
+        - needs_intrabar: 是否需要 intrabar scope
+        - needs_htf: 是否声明 HTF 需求
+        - voting_group_policy: voting 归属策略
+        """
+        return list(self.strategy_capability_contract())
+
+    def list_intrabar_strategies(self) -> list[str]:
+        """返回 needs_intrabar 的策略名列表。"""
+        return sorted(
+            capability.name
+            for capability in self.strategy_capability_catalog()
+            if capability.needs_intrabar
+        )
+
+    def strategy_capability(self, strategy: str) -> StrategyCapability:
+        normalized = str(strategy)
+        for capability in self.strategy_capability_catalog():
+            if capability.name == normalized:
+                return capability
+        raise ValueError(f"unsupported signal strategy: {strategy}")
+
     def strategy_requirements(self, strategy: str) -> tuple[str, ...]:
-        strategy_impl = self._strategies.get(strategy)
-        if strategy_impl is None:
-            raise ValueError(f"unsupported signal strategy: {strategy}")
-        requirements = getattr(strategy_impl, "required_indicators", ())
-        return tuple(str(item) for item in requirements)
+        return self.strategy_capability(strategy).needed_indicators
 
     def strategy_category(self, strategy: str) -> str:
         impl = self._strategies.get(strategy)
@@ -287,15 +398,9 @@ class SignalModule:
     def strategy_scopes(self, strategy: str) -> tuple[str, ...]:
         """Return the snapshot scopes this strategy wants to receive.
 
-        Reads ``preferred_scopes`` from the strategy class.  Falls back to
-        ``("intrabar", "confirmed")`` for strategies that pre-date this field
-        so that existing behaviour is preserved by default.
+        Reads the declared strategy capability.
         """
-        strategy_impl = self._strategies.get(strategy)
-        if strategy_impl is None:
-            raise ValueError(f"unsupported signal strategy: {strategy}")
-        scopes = getattr(strategy_impl, "preferred_scopes", ("intrabar", "confirmed"))
-        return tuple(str(s) for s in scopes)
+        return self.strategy_capability(strategy).valid_scopes
 
     def describe_strategy(self, strategy: str) -> dict[str, Any]:
         if strategy not in self._strategies:
@@ -404,7 +509,7 @@ class SignalModule:
         if pre_computed_affinity is not None:
             affinity = max(0.0, min(float(pre_computed_affinity), 1.0))
         else:
-            # 回退路径：从策略注册表缓存中读取 affinity_map（无 getattr 开销）
+            # 默认路径：从策略注册表缓存中读取 affinity_map（无 getattr 开销）
             affinity_map = self._strategy_affinity_cache.get(strategy)
             if affinity_map is None:
                 affinity_map = getattr(strategy_impl, "regime_affinity", {})
@@ -669,322 +774,37 @@ class SignalModule:
             return []
         return self.repository.summary(hours=hours, scope=scope)
 
-    def strategy_diagnostics(
-        self,
-        *,
-        symbol: Optional[str] = None,
-        timeframe: Optional[str] = None,
-        scope: str = "confirmed",
-        limit: int = 2000,
-        conflict_warn_threshold: float = 0.35,
-        hold_warn_threshold: float = 0.75,
-        confidence_warn_threshold: float = 0.45,
-    ) -> dict[str, Any]:
-        """聚合最近信号，输出策略冲突与质量诊断。
+    def strategy_diagnostics(self, **kwargs: Any) -> dict[str, Any]:
+        return _svc_diag.strategy_diagnostics(self, **kwargs)
 
-        该诊断用于排查「策略之间互相打架」及「指标缺失导致频繁 hold」问题，
-        为后续工程化治理（下线策略、调参、补指标）提供量化依据。
-        """
-        rows = self.recent_signals(
-            symbol=symbol,
-            timeframe=timeframe,
-            scope=scope,
-            limit=limit,
-        )
-        thresholds = DiagnosticThresholds(
-            conflict_warn_threshold=conflict_warn_threshold,
-            hold_warn_threshold=hold_warn_threshold,
-            confidence_warn_threshold=confidence_warn_threshold,
-        )
-        report = self._diagnostics_analyzer.build_report(
-            rows,
-            symbol=symbol,
-            timeframe=timeframe,
-            scope=scope,
-            thresholds=thresholds,
-        )
-        return self._attach_expectancy_profile(report, symbol=symbol)
+    def daily_quality_report(self, **kwargs: Any) -> dict[str, Any]:
+        return _svc_diag.daily_quality_report(self, **kwargs)
 
-    def daily_quality_report(
-        self,
-        *,
-        symbol: Optional[str] = None,
-        timeframe: Optional[str] = None,
-        scope: str = "confirmed",
-        limit: int = 5000,
-        conflict_warn_threshold: float = 0.35,
-        hold_warn_threshold: float = 0.75,
-        confidence_warn_threshold: float = 0.45,
-        now: Optional[datetime] = None,
-    ) -> dict[str, Any]:
-        rows = self.recent_signals(
-            symbol=symbol,
-            timeframe=timeframe,
-            scope=scope,
-            limit=limit,
-        )
-        thresholds = DiagnosticThresholds(
-            conflict_warn_threshold=conflict_warn_threshold,
-            hold_warn_threshold=hold_warn_threshold,
-            confidence_warn_threshold=confidence_warn_threshold,
-        )
-        report = self._diagnostics_analyzer.build_daily_quality_report(
-            rows,
-            symbol=symbol,
-            timeframe=timeframe,
-            scope=scope,
-            thresholds=thresholds,
-            now=now,
-        )
-        return self._attach_expectancy_profile(report, symbol=symbol)
+    def diagnostics_aggregate_summary(self, **kwargs: Any) -> dict[str, Any]:
+        return _svc_diag.diagnostics_aggregate_summary(self, **kwargs)
 
-    def diagnostics_aggregate_summary(
-        self,
-        *,
-        hours: int = 24,
-        scope: str = "confirmed",
-    ) -> dict[str, Any]:
-        rows = self.summary(hours=hours, scope=scope)
-        direction_totals: dict[str, int] = {}
-        strategy_totals: dict[str, int] = {}
-        for row in rows:
-            direction = str(row.get("direction") or "unknown")
-            strategy = str(row.get("strategy") or "unknown")
-            count = int(row.get("count") or 0)
-            direction_totals[direction] = direction_totals.get(direction, 0) + count
-            strategy_totals[strategy] = strategy_totals.get(strategy, 0) + count
-        top_strategies = sorted(
-            (
-                {"strategy": strategy, "count": count}
-                for strategy, count in strategy_totals.items()
-            ),
-            key=lambda item: item["count"],
-            reverse=True,
-        )[:10]
-        return {
-            "hours": hours,
-            "scope": scope,
-            "rows_analyzed": len(rows),
-            "direction_totals": direction_totals,
-            "strategy_totals": strategy_totals,
-            "top_strategies": top_strategies,
-            "source": "repository.summary",
-        }
+    def regime_report(self, **kwargs: Any) -> dict[str, Any]:
+        return _svc_diag.regime_report(self, **kwargs)
 
-    def regime_report(
-        self,
-        *,
-        symbol: str,
-        timeframe: str,
-        runtime: Optional[Any] = None,
-    ) -> dict[str, Any]:
-        indicators = self.indicator_source.get_all_indicators(symbol, timeframe)
-        detail = self._regime_detector.detect_with_detail(indicators)
-        stability = None
-        if runtime is not None and hasattr(runtime, "get_regime_stability"):
-            stability = runtime.get_regime_stability(symbol, timeframe)
-        return {
-            **detail,
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "stability": stability,
-        }
+    def recent_consensus_signals(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return _svc_diag.recent_consensus_signals(self, **kwargs)
 
-    def recent_consensus_signals(
-        self,
-        *,
-        symbol: Optional[str] = None,
-        timeframe: Optional[str] = None,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        return self.recent_signals(
-            symbol=symbol,
-            timeframe=timeframe,
-            strategy="consensus",
-            scope="confirmed",
-            limit=limit,
-        )
+    def strategy_winrates(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return _svc_diag.strategy_winrates(self, **kwargs)
 
-    def strategy_winrates(
-        self,
-        *,
-        hours: int = 168,
-        symbol: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        if self.repository is None or not hasattr(self.repository, "fetch_winrates"):
-            return []
-        return self.repository.fetch_winrates(hours=hours, symbol=symbol)
-
-    def strategy_expectancy(
-        self,
-        *,
-        hours: int = 168,
-        symbol: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        if self.repository is None or not hasattr(
-            self.repository, "fetch_expectancy_stats"
-        ):
-            return []
-        return self.repository.fetch_expectancy_stats(hours=hours, symbol=symbol)
-
-    def _attach_expectancy_profile(
-        self,
-        report: dict[str, Any],
-        *,
-        symbol: Optional[str],
-    ) -> dict[str, Any]:
-        expectancy_rows = self.strategy_expectancy(symbol=symbol)
-        if not expectancy_rows:
-            report.setdefault("performance_profile", [])
-            return report
-
-        expectancy_by_strategy: dict[str, list[dict[str, Any]]] = {}
-        for row in expectancy_rows:
-            expectancy_by_strategy.setdefault(
-                str(row.get("strategy") or "unknown"), []
-            ).append(row)
-
-        strategy_breakdown = report.get("strategy_breakdown")
-        if isinstance(strategy_breakdown, list):
-            for item in strategy_breakdown:
-                strategy_name = str(item.get("strategy") or "unknown")
-                candidates = expectancy_by_strategy.get(strategy_name, [])
-                if not candidates:
-                    item["expectancy"] = None
-                    item["payoff_ratio"] = None
-                    continue
-                best = max(
-                    candidates,
-                    key=lambda row: abs(float(row.get("expectancy") or 0.0)),
-                )
-                item["expectancy"] = best.get("expectancy")
-                item["payoff_ratio"] = best.get("payoff_ratio")
-
-        negative_rows = [
-            row for row in expectancy_rows if float(row.get("expectancy") or 0.0) < 0.0
-        ]
-        recommendations = report.setdefault("recommendations", [])
-        if negative_rows:
-            recommendations.append(
-                "negative_expectancy_detected: cut or retune strategies with negative net expectancy before expanding auto-trade"
-            )
-        report["performance_profile"] = expectancy_rows
-        return report
+    def strategy_expectancy(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return _svc_diag.strategy_expectancy(self, **kwargs)
 
     def session_performance(self) -> dict[str, Any]:
-        """返回日内策略绩效追踪器的状态快照。"""
-        if self._performance_tracker is None:
-            return {"enabled": False}
-        return self._performance_tracker.describe()
+        return _svc_diag.session_performance(self)
 
     def session_performance_ranking(self) -> list[dict[str, Any]]:
-        """返回按绩效乘数排序的策略排名。"""
-        if self._performance_tracker is None:
-            return []
-        return self._performance_tracker.strategy_ranking()
+        return _svc_diag.session_performance_ranking(self)
 
-    def recent_by_trace_id(
-        self,
-        *,
-        trace_id: str,
-        scope: str = "all",
-        limit: int = 2000,
-    ) -> list[dict[str, Any]]:
-        rows = self.recent_signals(scope=scope, limit=limit)
-        return [
-            row
-            for row in rows
-            if str((row.get("metadata") or {}).get("signal_trace_id", "")).strip()
-            == trace_id
-        ]
+    def recent_by_trace_id(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return _svc_diag.recent_by_trace_id(self, **kwargs)
 
     def dispatch_operation(
         self, operation: str, payload: Optional[Dict[str, Any]] = None
     ) -> Any:
-        payload = payload or {}
-        handlers = {
-            "evaluate": lambda: self.evaluate(
-                symbol=payload["symbol"],
-                timeframe=payload["timeframe"],
-                strategy=payload["strategy"],
-                indicators=payload.get("indicators"),
-                metadata=payload.get("metadata"),
-                persist=payload.get("persist", True),
-            ).to_dict(),
-            "strategies": self.list_strategies,
-            "strategy_requirements": lambda: {
-                name: list(self.strategy_requirements(name))
-                for name in self.list_strategies()
-            },
-            "required_indicator_groups": lambda: [
-                list(group) for group in self.required_indicator_groups()
-            ],
-            "available_indicators": lambda: [
-                item.get("name") for item in self.indicator_source.list_indicators()
-            ],
-            "recent": lambda: self.recent_signals(
-                symbol=payload.get("symbol"),
-                timeframe=payload.get("timeframe"),
-                strategy=payload.get("strategy"),
-                direction=payload.get("direction"),
-                scope=payload.get("scope", "confirmed"),
-                limit=payload.get("limit", 200),
-            ),
-            "summary": lambda: self.summary(
-                hours=payload.get("hours", 24), scope=payload.get("scope", "confirmed")
-            ),
-            "strategy_diagnostics": lambda: self.strategy_diagnostics(
-                symbol=payload.get("symbol"),
-                timeframe=payload.get("timeframe"),
-                scope=payload.get("scope", "confirmed"),
-                limit=payload.get("limit", 2000),
-                conflict_warn_threshold=payload.get("conflict_warn_threshold", 0.35),
-                hold_warn_threshold=payload.get("hold_warn_threshold", 0.75),
-                confidence_warn_threshold=payload.get(
-                    "confidence_warn_threshold", 0.45
-                ),
-            ),
-            "daily_quality_report": lambda: self.daily_quality_report(
-                symbol=payload.get("symbol"),
-                timeframe=payload.get("timeframe"),
-                scope=payload.get("scope", "confirmed"),
-                limit=payload.get("limit", 5000),
-                conflict_warn_threshold=payload.get("conflict_warn_threshold", 0.35),
-                hold_warn_threshold=payload.get("hold_warn_threshold", 0.75),
-                confidence_warn_threshold=payload.get(
-                    "confidence_warn_threshold", 0.45
-                ),
-            ),
-            "diagnostics_aggregate_summary": lambda: self.diagnostics_aggregate_summary(
-                hours=payload.get("hours", 24),
-                scope=payload.get("scope", "confirmed"),
-            ),
-            "regime_report": lambda: self.regime_report(
-                symbol=payload["symbol"],
-                timeframe=payload["timeframe"],
-                runtime=payload.get("runtime"),
-            ),
-            "recent_consensus": lambda: self.recent_consensus_signals(
-                symbol=payload.get("symbol"),
-                timeframe=payload.get("timeframe"),
-                limit=payload.get("limit", 50),
-            ),
-            "strategy_winrates": lambda: self.strategy_winrates(
-                hours=payload.get("hours", 168),
-                symbol=payload.get("symbol"),
-            ),
-            "strategy_expectancy": lambda: self.strategy_expectancy(
-                hours=payload.get("hours", 168),
-                symbol=payload.get("symbol"),
-            ),
-            "session_performance": self.session_performance,
-            "session_performance_ranking": self.session_performance_ranking,
-            "recent_by_trace_id": lambda: self.recent_by_trace_id(
-                trace_id=payload["trace_id"],
-                scope=payload.get("scope", "all"),
-                limit=payload.get("limit", 2000),
-            ),
-        }
-        if operation not in handlers:
-            raise ValueError(f"unsupported signal operation: {operation}")
-        return handlers[operation]()
+        return _svc_diag.dispatch_operation(self, operation, payload)

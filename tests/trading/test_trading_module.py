@@ -34,6 +34,9 @@ class DummyTradingService:
         self.execute_calls = []
         self.modify_calls = []
 
+    def health(self):
+        return {"connected": True, "login": 1001, "server": "Broker-Live"}
+
     def execute_trade(self, **kwargs):
         self.execute_calls.append(dict(kwargs))
         return {

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional
 
@@ -218,10 +218,7 @@ class MarginGuard:
         # Update snapshot with actions taken
         if actions:
             self._last_snapshot = MarginGuardSnapshot(
-                **{
-                    **{f.name: getattr(snapshot, f.name) for f in snapshot.__dataclass_fields__.values()},
-                    "actions_taken": tuple(actions),
-                }
+                **asdict(snapshot) | {"actions_taken": tuple(actions)}
             )
         return actions
 

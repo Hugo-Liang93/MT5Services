@@ -179,7 +179,7 @@ class SignalConfig(BaseModel):
     # Chandelier Exit 出场系统 — [chandelier] section
     # ═══════════════════════════════════════════════════════════════
     chandelier_regime_aware: bool = True
-    chandelier_fallback_alpha: float = 0.50
+    chandelier_default_alpha: float = 0.50
     chandelier_breakeven_enabled: bool = True
     chandelier_breakeven_buffer_r: float = 0.1
     chandelier_min_breakeven_buffer: float = 1.0

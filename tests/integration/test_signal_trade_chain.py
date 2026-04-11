@@ -141,6 +141,7 @@ class SnapshotSource:
 
     def __init__(self, spread_points: float = 5.0, symbol_point: float = 0.01):
         self._listeners: list = []
+        self.current_trace_id: str | None = None
         self.market_service = type(
             "MS", (),
             {
@@ -154,6 +155,9 @@ class SnapshotSource:
 
     def remove_snapshot_listener(self, fn):
         self._listeners = [l for l in self._listeners if l is not fn]
+
+    def get_current_trace_id(self) -> str | None:
+        return self.current_trace_id
 
     def publish(self, symbol: str, timeframe: str, bar_time: datetime,
                 indicators: dict, scope: str = "confirmed") -> None:

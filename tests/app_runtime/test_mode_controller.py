@@ -380,3 +380,42 @@ def test_apply_mode_partial_failure_still_updates_mode() -> None:
     assert "partial failure" in str(snap["last_error"])
     # 其他组件仍正常运行
     assert container.signal_runtime.is_running()  # type: ignore[union-attr]
+
+
+def test_stop_preserves_live_monitor_thread_then_releases_after_dead() -> None:
+    class _DummyMonitorThread:
+        def __init__(self, state: dict[str, bool]) -> None:
+            self._state = state
+            self.join_calls = 0
+            self.name = "dummy-runtime-monitor"
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_calls += 1
+
+        def is_alive(self) -> bool:
+            return self._state.get("alive", False)
+
+    alive_state = {"alive": True}
+    container = _build_container()
+    controller = RuntimeModeController(
+        container,
+        policy=RuntimeModePolicy(initial_mode=RuntimeMode.FULL),
+        guard=RuntimeModeTransitionGuard(
+            trading_module_getter=lambda: container.trade_module
+        ),
+        auto_transition_policy=RuntimeModeAutoTransitionPolicy(),
+    )
+    thread = _DummyMonitorThread(alive_state)
+    controller._monitor_thread = thread
+
+    controller.stop()
+
+    # 超时 join 后应保留存活线程引用，is_running 应反映真实状态。
+    assert controller._monitor_thread is thread
+    assert thread.join_calls == 1
+
+    alive_state["alive"] = False
+    controller.stop()
+
+    # 线程退出后，引用应该清空。
+    assert controller._monitor_thread is None

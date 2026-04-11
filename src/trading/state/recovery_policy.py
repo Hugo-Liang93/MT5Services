@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from src.trading.reasons import REASON_STARTUP_MISSING, REASON_STARTUP_ORPHAN_CANCELLED
 from src.trading.ports import PendingOrderCancellationPort
 
 
@@ -33,7 +34,7 @@ class TradingStateRecoveryPolicy:
             return "ignored_missing"
         self._store.mark_pending_order_missing(
             info,
-            reason=str((state or {}).get("reason") or "startup_missing"),
+            reason=str((state or {}).get("reason") or REASON_STARTUP_MISSING),
         )
         return "missing"
 
@@ -61,7 +62,7 @@ class TradingStateRecoveryPolicy:
 
         self._store.mark_pending_order_cancelled(
             self._pending_info_from_order_row(order_row),
-            reason="startup_orphan_cancelled",
+            reason=REASON_STARTUP_ORPHAN_CANCELLED,
         )
         return "orphan_cancelled"
 

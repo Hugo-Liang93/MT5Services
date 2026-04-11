@@ -1,7 +1,7 @@
 """复合指标 — 从已有指标逻辑派生的二级指标。
 
 从 feature_engineer 提升为正式指标，实盘/回测/研究三路可用。
-所有输出均为无量纲，兼容 rule_mining。
+所有输出均为无量纲，遵循 rule_mining 的无量纲语义。
 """
 
 from typing import Any, Dict, Iterable

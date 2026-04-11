@@ -18,6 +18,27 @@
 6. 假设必须显式声明并最小化。
 7. **架构改动前先查 ADR**：修改组件设计/模式前，先读 `docs/design/adr.md` 确认是否有已定决策。评估后确需变更的可以改，但须说明理由并同步更新 ADR。
 
+## 0) 规则文档单一事实源（codex 会读）
+
+- `AGENTS.md` 为执行约束的硬性源（默认优先级最高，除了更深层 AGENTS）。
+- `CLAUDE.md` 为会话协作执行约束与操作流程源（本节与 `AGENTS.md` 中“协作执行纪律”保持一致）。
+- `docs/codebase-review.md` 为每次变更后的风险与边界收口“状态台账”（凡涉及职责边界、兼容分支、可观测性改造必须落到此文档）。
+- 任何新修改前，默认按三份文档联动检查后再进入实现；若出现冲突，以 `AGENTS.md` 与更高优先级规则为准。
+
+## 12) 后续协作执行纪律（强制）
+
+- 每个新任务默认先执行“四步门禁”：
+  1. 范围确认：确认是否触及高风险链路（`indicators`、`signals/orchestration`、`trading`、`risk`、运行时主链路）。
+  2. 边界对齐：确认输入/输出/状态归属定义，禁止新的跨域隐式依赖。
+  3. 异常边界：明确每个异常分支是“必须失败”还是“可降级”，禁止无差别 `except Exception`。
+  4. 契约优先：优先补充正式端口与契约，再迁移调用方，不以兼容分支作为主路径。
+- 若与既有原则冲突，默认执行顺序：先收口边界，再清理重复实现，再考虑临时兼容（并设置移除条件）。
+- 默认不允许新增“兼容补丁/双轨运行路径/历史别名”；如必须临时兼容，必须写入移除时限与验证条件。
+- 所有有影响架构/边界的改动都要求：
+  - 在 `docs/codebase-review.md` 记录职责变化与清理清单
+  - 提供一句“本次改动如何减少边界泄漏”的说明
+  - 标注未决兼容项及移除时间点
+
 ---
 
 ## 项目概览
@@ -25,7 +46,7 @@
 FastAPI 量化交易平台，连接 MetaTrader 5 终端。实时行情 → 技术指标 → 信号生成 → 风控 → 自动交易，TimescaleDB 持久化。
 
 - **Python** 3.9–3.12 | **FastAPI** + uvicorn | **TimescaleDB** | **MT5** (Windows-only)
-- **入口**: `python app.py` 或 `uvicorn src.api:app`
+- **入口**: `python -m src.entrypoint.web` 或 `uvicorn src.api:app`
 - **8 个策略**（7 结构化策略 + 1 HTF 变体，其中 2 个冻结）| **25 个启用指标**（37 个定义，12 个停用）| **16 个 Studio Agent**
 
 ---
@@ -290,6 +311,14 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 4. `src/app_runtime/runtime.py` 的 `AppRuntime.stop()` 注册关闭
 5. `src/api/deps.py` 添加 getter 函数
 
+### 跨模块边界（ADR-006）
+- **装配层（builder / factories）和 API 层禁止读写组件的 `_` 前缀私有属性**
+- 后置注入依赖 → 组件提供 `set_xxx()` setter 或公开属性（`self.xxx`，无下划线）
+- 热重载修改 → 组件提供 `update_xxx()` 方法
+- API 诊断读取 → 组件提供 `describe_xxx()` / `status()` / 只读 property
+- 同包内部模块可用公开属性交互，但同样禁止 `_` 前缀
+- 详见 `docs/design/adr.md` ADR-006
+
 ---
 
 ## SOP：常见操作
@@ -333,7 +362,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
    - **Divergent**（2+ TF 方向翻转）：各 TF 含义不同，需独立评估
    - **TF-specific**（仅 1 TF）：需谨慎，可能是统计噪音
 3. **最佳 TF 推荐公式**：`score = |IC| × (1 + IR_bonus) × perm_bonus × sample_bonus`
-4. **CLI 用法**：`python tools/mining_runner.py --tf M15,M30,H1 --compare`
+4. **CLI 用法**：`python -m src.ops.cli.mining_runner --tf M15,M30,H1 --compare`
 5. **跨 TF 分析器**：`src/research/cross_tf_analyzer.py`
 
 ### 回测调参写入

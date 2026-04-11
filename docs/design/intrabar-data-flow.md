@@ -78,7 +78,7 @@
  │  _process_intrabar_event()                               │
  │  src/indicators/bar_event_handler.py:261                 │
  │    │                                                     │
- │    ├─ _get_intrabar_eligible_names()                     │
+ │    ├─ get_intrabar_eligible_names()                      │
  │    │    启动时由策略 preferred_scopes 自动推导            │
  │    │                                                     │
  │    ├─ _load_intrabar_bars()                              │
@@ -92,7 +92,7 @@
  │    │                                                     │
  │    └─ publish_intrabar_snapshot()                        │
  │         src/indicators/snapshot_publisher.py:86          │
- │         ┌─ store_preview_snapshot()                      │
+ │         ┌─ store_preview_snapshot()（函数名沿用历史实现）     │
  │         │   去重: (bar_time, indicators) 完全相同 → 跳过 │
  │         └─ publish_snapshot(scope="intrabar")            │
  │              通知所有 _snapshot_listeners                 │
@@ -145,7 +145,7 @@
  │       → strategy.evaluate(context) → SignalDecision                 │
  │  ⑤ _process_voting()                                                │
  │  ⑥ transition_and_publish()                                         │
- │       ├─ transition_intrabar() → preview/armed 状态机（观测用）     │
+ │       ├─ confirmed scope：confirmed 状态机转换 + 可发 signal event   │
  │       ├─ publish_signal_event()                                     │
  │       └─ IntrabarTradeCoordinator.update() ──────────┐              │
  │            (仅 coordinator != None 且 buy/sell 时)    │              │

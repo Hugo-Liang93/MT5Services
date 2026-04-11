@@ -68,14 +68,14 @@ class WalSignalQueue:
     Thread-safe: uses a single persistent connection protected by a lock.
     On startup, any in-flight (processed=1) events are reset to pending.
 
-    Interface contract (compatible with SignalRuntime._enqueue / dequeue_event):
+    Interface contract aligned with SignalRuntime enqueue/dequeue call sites:
     - ``put_nowait(item)`` — non-blocking insert
     - ``put(item, timeout)`` — same (SQLite write is near-instant)
     - ``get_nowait()`` → item or raises ``queue.Empty``
     - ``get(timeout)`` → item or raises ``queue.Empty`` after timeout
     - ``qsize()`` → int
     - ``empty()`` → bool
-    - ``maxsize`` attribute (for compatibility, always returns 0 = unbounded)
+    - ``maxsize`` attribute is fixed at 0 (unbounded)
     """
 
     maxsize: int = 0  # Unbounded (disk-backed)
@@ -162,7 +162,7 @@ class WalSignalQueue:
         row_id, scope, symbol, timeframe, indicators_json, metadata_json = row
         indicators = json.loads(indicators_json)
         metadata = json.loads(metadata_json)
-        # Inject monotonic enqueue time for staleness detection (compatible)
+        # Inject monotonic enqueue time for staleness detection.
         metadata[MK.ENQUEUED_AT] = time.monotonic()
 
         # Delete claimed row (it's now in-memory for processing)

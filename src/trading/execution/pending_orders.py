@@ -17,6 +17,20 @@ from .eventing import (
     notify_skip,
 )
 from .sizing import TradeParameters
+from .reasons import (
+    REASON_MISSING_SIGNAL_ID,
+    REASON_NEW_SIGNAL_OVERRIDE,
+    REASON_ORDER_ORDERS_LOOKUP_FAILED,
+    REASON_ORDER_POSITIONS_LOOKUP_FAILED,
+    REASON_DUPLICATE_POSITION_SAME_STRATEGY,
+    REASON_DUPLICATE_PENDING_SAME_STRATEGY,
+    REASON_PENDING_ORDER_FAILED,
+    REASON_ORDER_MISSING_WITHOUT_POSITION,
+)
+from .reasons import (
+    SKIP_CATEGORY_PENDING_SUBMIT,
+    SKIP_CATEGORY_EXECUTION_INPUT,
+)
 
 if TYPE_CHECKING:
     from .executor import TradeExecutor
@@ -37,14 +51,17 @@ def submit_pending_entry(
             event.strategy,
         )
         emit_execution_blocked(
-            executor, event, reason="missing_signal_id", category="execution_input"
+            executor,
+            event,
+            reason=REASON_MISSING_SIGNAL_ID,
+            category=SKIP_CATEGORY_EXECUTION_INPUT,
         )
         notify_skip(
-            executor, event.signal_id, "missing_signal_id", event.timeframe or ""
+            executor, event.signal_id, REASON_MISSING_SIGNAL_ID, event.timeframe or ""
         )
         return None
 
-    config = executor._pending_manager.config
+    config = executor.pending_manager.config
 
     # 从策略 entry_spec 读取入场意图
     entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
@@ -74,9 +91,9 @@ def submit_pending_entry(
 
     if config.cancel_on_new_signal:
         exclude = event.direction if not config.cancel_same_direction else None
-        executor._pending_manager.cancel_by_symbol(
+        executor.pending_manager.cancel_by_symbol(
             event.symbol,
-            reason="new_signal_override",
+            reason=REASON_NEW_SIGNAL_OVERRIDE,
             exclude_direction=exclude,
         )
 
@@ -95,7 +112,7 @@ def submit_pending_entry(
     }
 
     try:
-        result = executor._trading.dispatch_operation("trade", payload)
+        result = executor.trading.dispatch_operation("trade", payload)
         order_ticket = None
         if isinstance(result, dict):
             order_ticket = result.get("order") or result.get("ticket")
@@ -115,7 +132,7 @@ def submit_pending_entry(
         )
 
         if order_ticket is not None:
-            executor._pending_manager.track_mt5_order(
+            executor.pending_manager.track_mt5_order(
                 signal_id=event.signal_id,
                 order_ticket=order_ticket,
                 expires_at=datetime.now(timezone.utc) + timeout,
@@ -151,7 +168,7 @@ def submit_pending_entry(
                 executor, event, order_kind=order_kind, ticket=order_ticket
             )
 
-        executor._execution_log.append(
+        executor.execution_log.append(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
@@ -181,9 +198,11 @@ def submit_pending_entry(
             event,
             order_kind=order_kind,
             reason=str(exc),
-            category="pending_submit",
+            category=SKIP_CATEGORY_PENDING_SUBMIT,
         )
-        notify_skip(executor, event.signal_id, f"pending_order_failed:{exc}", tf)
+        notify_skip(
+            executor, event.signal_id, f"{REASON_PENDING_ORDER_FAILED}:{exc}", tf
+        )
         return None
 
 
@@ -215,11 +234,11 @@ def reached_position_limit(executor: "TradeExecutor", symbol: str) -> bool:
 
 def open_positions_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
     tracked_count: int | None = None
-    if executor._position_manager is not None:
+    if executor.position_manager is not None:
         try:
             tracked = [
                 row
-                for row in executor._position_manager.active_positions()
+                for row in executor.position_manager.active_positions()
                 if row.get("symbol") == symbol
             ]
             tracked_count = len(tracked)
@@ -228,7 +247,7 @@ def open_positions_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
             tracked_count = None
 
     try:
-        rows = executor._trading.get_positions(symbol=symbol)
+        rows = executor.trading.get_positions(symbol=symbol)
         live_count = len(list(rows or []))
         if tracked_count is None:
             position_count = live_count
@@ -244,16 +263,16 @@ def open_positions_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
 
 def _pending_entries_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
     """统计指定品种的活跃挂单数量。"""
-    if executor._pending_manager is None:
+    if executor.pending_manager is None:
         return 0
     try:
         contexts_fn = getattr(
-            executor._pending_manager, "active_execution_contexts", None
+            executor.pending_manager, "active_execution_contexts", None
         )
         if callable(contexts_fn):
             entries = list(contexts_fn() or [])
         else:
-            status = executor._pending_manager.status()
+            status = executor.pending_manager.status()
             entries = list(status.get("entries", []) or [])
         return sum(1 for e in entries if e.get("symbol") == symbol)
     except Exception:
@@ -263,17 +282,17 @@ def _pending_entries_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
 
 def duplicate_execution_reason(executor: "TradeExecutor", event: SignalEvent) -> str:
     if has_matching_active_position(executor, event):
-        return "position_same_strategy_direction"
+        return REASON_DUPLICATE_POSITION_SAME_STRATEGY
     if has_matching_pending_entry(executor, event):
-        return "pending_entry_same_strategy_direction"
+        return REASON_DUPLICATE_PENDING_SAME_STRATEGY
     return ""
 
 
 def has_matching_active_position(executor: "TradeExecutor", event: SignalEvent) -> bool:
-    if executor._position_manager is None:
+    if executor.position_manager is None:
         return False
     try:
-        active_positions = executor._position_manager.active_positions()
+        active_positions = executor.position_manager.active_positions()
     except Exception:
         logger.debug(
             "Failed to inspect active positions for duplicate guard",
@@ -292,16 +311,16 @@ def has_matching_active_position(executor: "TradeExecutor", event: SignalEvent) 
 
 
 def has_matching_pending_entry(executor: "TradeExecutor", event: SignalEvent) -> bool:
-    if executor._pending_manager is None:
+    if executor.pending_manager is None:
         return False
     try:
         contexts_fn = getattr(
-            executor._pending_manager, "active_execution_contexts", None
+            executor.pending_manager, "active_execution_contexts", None
         )
         if callable(contexts_fn):
             entries = list(contexts_fn() or [])
         else:
-            status = executor._pending_manager.status()
+            status = executor.pending_manager.status()
             entries = list(status.get("entries", []) or [])
     except Exception:
         logger.debug(
@@ -324,7 +343,7 @@ def record_reentry_bar_time(executor: "TradeExecutor", event: SignalEvent) -> No
     bar_time = event.metadata.get(MK.BAR_TIME)
     if bar_time is None:
         return
-    executor._last_entry_bar_time[(event.symbol, event.strategy, event.direction)] = (
+    executor.last_entry_bar_time[(event.symbol, event.strategy, event.direction)] = (
         bar_time
     )
 
@@ -335,7 +354,7 @@ def row_value(row: Any, key: str, default: Any = None) -> Any:
     return getattr(row, key, default)
 
 
-def position_direction(row: Any, fallback: str = "") -> str:
+def position_direction(row: Any, default_direction: str = "") -> str:
     direction = str(row_value(row, "action", "") or "").strip().lower()
     if direction in {"buy", "sell"}:
         return direction
@@ -343,7 +362,7 @@ def position_direction(row: Any, fallback: str = "") -> str:
         position_type = int(row_value(row, "type", 0) or 0)
         return "sell" if position_type == 1 else "buy"
     except (TypeError, ValueError):
-        return str(fallback or "").strip().lower()
+        return str(default_direction or "").strip().lower()
 
 
 def find_live_position_for_pending_order(
@@ -366,7 +385,7 @@ def find_live_position_for_pending_order(
         row_symbol = str(row_value(row, "symbol", "") or "").strip()
         if target_symbol and row_symbol != target_symbol:
             continue
-        row_direction = position_direction(row, fallback=target_direction)
+        row_direction = position_direction(row, default_direction=target_direction)
         if target_direction and row_direction and row_direction != target_direction:
             continue
         row_comment = str(row_value(row, "comment", "") or "").strip()
@@ -405,10 +424,10 @@ def comment_prefix(timeframe: str, strategy: str) -> str:
 
 
 def tracked_position_tickets(executor: "TradeExecutor") -> set[int]:
-    if executor._position_manager is None:
+    if executor.position_manager is None:
         return set()
     try:
-        active_positions = executor._position_manager.active_positions()
+        active_positions = executor.position_manager.active_positions()
     except Exception as exc:
         logger.debug("Failed to inspect tracked position tickets: %s", exc)
         return set()
@@ -472,7 +491,7 @@ def inspect_pending_mt5_order(
     signal_id = str(info.get("signal_id") or "").strip()
 
     try:
-        open_orders = list(executor._trading.get_orders(symbol=symbol))
+        open_orders = list(executor.trading.get_orders(symbol=symbol))
     except Exception as exc:
         logger.debug(
             "TradeExecutor: get_orders(%s) failed while inspecting pending MT5 order %s: %s",
@@ -480,7 +499,7 @@ def inspect_pending_mt5_order(
             order_ticket,
             exc,
         )
-        return {"status": "pending", "reason": "orders_lookup_failed"}
+        return {"status": "pending", "reason": REASON_ORDER_ORDERS_LOOKUP_FAILED}
     for row in open_orders or []:
         try:
             live_order_ticket = int(row_value(row, "ticket", 0) or 0)
@@ -490,7 +509,7 @@ def inspect_pending_mt5_order(
             return {"status": "pending"}
 
     try:
-        open_positions = list(executor._trading.get_positions(symbol=symbol))
+        open_positions = list(executor.trading.get_positions(symbol=symbol))
     except Exception as exc:
         logger.debug(
             "TradeExecutor: get_positions(%s) failed while inspecting pending MT5 order %s: %s",
@@ -498,7 +517,7 @@ def inspect_pending_mt5_order(
             order_ticket,
             exc,
         )
-        return {"status": "pending", "reason": "positions_lookup_failed"}
+        return {"status": "pending", "reason": REASON_ORDER_POSITIONS_LOOKUP_FAILED}
 
     raw_position = find_live_position_for_pending_order(
         open_positions,
@@ -509,7 +528,7 @@ def inspect_pending_mt5_order(
         strategy=str(info.get("strategy") or ""),
     )
     if raw_position is None:
-        return {"status": "missing", "reason": "order_missing_without_position"}
+        return {"status": "missing", "reason": REASON_ORDER_MISSING_WITHOUT_POSITION}
 
     position_ticket = int(row_value(raw_position, "ticket", 0) or 0)
     fill_price = float(row_value(raw_position, "price_open", 0.0) or 0.0)
@@ -527,12 +546,12 @@ def inspect_pending_mt5_order(
     )
 
     if (
-        executor._position_manager is not None
+        executor.position_manager is not None
         and position_ticket > 0
         and position_ticket not in tracked_position_tickets(executor)
     ):
         try:
-            executor._position_manager.track_position(
+            executor.position_manager.track_position(
                 ticket=position_ticket,
                 signal_id=signal_id or f"restored:{position_ticket}",
                 symbol=symbol,
@@ -556,9 +575,9 @@ def inspect_pending_mt5_order(
                 exc,
             )
 
-    if executor._trade_outcome_tracker is not None and signal_id:
+    if executor.trade_outcome_tracker is not None and signal_id:
         try:
-            executor._trade_outcome_tracker.on_trade_opened(
+            executor.trade_outcome_tracker.on_trade_opened(
                 signal_id=signal_id,
                 symbol=symbol,
                 timeframe=str(info.get("timeframe") or ""),

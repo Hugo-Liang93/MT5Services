@@ -15,7 +15,7 @@ src/signals/
 │   ├── runtime.py             # SignalRuntime 协调器 (生命周期 + 队列)
 │   ├── runtime_evaluator.py   # 策略评估 + confidence 调整 + 信号发布
 │   ├── runtime_processing.py  # 事件出队 + filter/regime + 单事件处理
-│   ├── runtime_recovery.py    # 运行态恢复 (confirmed/preview 状态还原)
+│   ├── runtime_recovery.py    # 运行态恢复 (confirmed 状态还原)
 │   ├── intrabar_trade_coordinator.py  # bar 计数稳定性 → intrabar_armed 交易信号
 │   ├── policy.py              # SignalPolicy + VotingGroupConfig
 │   ├── voting.py              # StrategyVotingEngine
@@ -92,8 +92,8 @@ SignalRuntime._on_snapshot(symbol, timeframe, bar_time, indicators, scope)
 ④ 指标完整性          → skip if missing required_indicators
 ⑤ Snapshot 去重       → skip if same bar_time + signature
 ⑥ service.evaluate()  → raw_confidence × effective_affinity → final
-⑦ 状态机转换          → confirmed / intrabar 路径
-⑧ 持久化 + 事件发布   → 仅在状态转换时
+⑦ 状态机转换          → confirmed scope 走 confirmed 状态机；intrabar 仅触发 coordinator
+⑧ 持久化 + 事件发布   → 状态切换/可交易事件时
 ⑨ IntrabarTradeCoordinator → intrabar scope + buy/sell 时追踪 bar 计数稳定性
                               达标后发布 intrabar_armed 可交易信号
 ```
@@ -345,35 +345,18 @@ is_trading_paused()           ← TradeExecutor._handle_confirmed() 中调用
 
 每个 `(symbol, timeframe, strategy)` 独立维护状态：
 
-**Intrabar 观测路径**（state_machine.py，不触发交易）:
+**Confirmed 路径**（state_machine.py，收盘态信号发射门槛）:
 ```
-idle → preview_buy/sell (方向改变 + conf≥0.55 + bar_progress≥0.2)
-     → armed_buy/sell   (方向稳定 ≥ 15s)
-     → idle             (置信度降低 → cancelled)
-```
-
-**Intrabar 交易路径**（IntrabarTradeCoordinator，可触发交易，需启用）:
-```
-与观测路径并行运行。每次策略评估后：
-  方向不变 → stable_count += 1
-  方向改变 → stable_count = 1
-  新 bar    → 重置
-
-stable_count ≥ min_stable_bars(3) AND confidence ≥ min_confidence(0.75)
-  → 发布 intrabar_armed_buy/sell → TradeExecutor 盘中入场
-  → 同 bar 同策略同方向只 arm 一次
+idle → confirmed_buy/confirmed_sell      (bar 收盘方向为 buy/sell)
+     → confirmed_cancelled (上根有信号且本根 hold)
+     → idle               (无信号)
 ```
 
-**Confirmed 路径**:
+**Intrabar 路径**（state_machine.py 不再维护 preview/armed）:
 ```
-任意 → confirmed_buy/sell      (bar close 时方向为 buy/sell)
-     → confirmed_cancelled     (上一根有信号, 本根转 hold)
-     → idle                    (无信号)
-
-Confirmed 协调（有 intrabar 仓位时）:
-  同向 → skip（不重复开仓）
-  hold → 不动（交给出场规则）
-  反向 → 正常处理（PositionManager 的 Chandelier Exit / 信号反转处理平仓）
+confirmed 状态机不直接管理 intrabar 观测
+每次 intrabar 决策后走 IntrabarTradeCoordinator 稳定性计数
+稳定计数满足阈值时发布 intrabar_armed 信号，由 TradeExecutor 入场
 ```
 
 ---
@@ -414,7 +397,8 @@ buy_score  = Σ conf(buy)  / Σ conf(all)
 sell_score = Σ conf(sell) / Σ conf(all)
 
 score ≥ consensus_threshold (0.40) → emit signal
-confidence = score × (1.0 - disagreement_factor) × regime_stability
+confidence = (avg_confidence + consensus_bonus) × (1.0 - disagreement_factor)
+（regime_stability 仅写入 runtime metadata 与观测，不再作为 confidence 因子乘法）
 ```
 
 ---
@@ -476,7 +460,7 @@ SignalRuntime._publish_signal_event(event)
 
 ### 10.1 概述
 
-子 TF confirmed close 驱动的盘中入场管道。默认关闭（`[intrabar_trading] enabled = false`），与既有 intrabar 观测链路（preview/armed 预热）并行运行，互不干扰。
+子 TF confirmed close 驱动的盘中入场管道。默认关闭（`[intrabar_trading] enabled = false`），与 intrabar 决策观测并行运行，互不干扰。
 
 核心设计：用低 TF **完整 K 线收盘事件**（L1 可靠）驱动高 TF 策略盘中评估 → bar 计数稳定性 → 盘中入场。
 

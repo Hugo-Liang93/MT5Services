@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 
 from src.utils.common import timeframe_seconds
 
@@ -53,23 +53,30 @@ def _inject_spread(
     snapshot_source: Any,
 ) -> None:
     """尝试获取 spread 和 symbol point 并注入 metadata。"""
-    spread_getter = getattr(snapshot_source, "get_current_spread", None)
-    market_service = getattr(snapshot_source, "market_service", None)
-    if not callable(spread_getter) and market_service is not None:
-        spread_getter = getattr(market_service, "get_current_spread", None)
-
-    point_getter = getattr(snapshot_source, "get_symbol_point", None)
-    if not callable(point_getter) and market_service is not None:
-        point_getter = getattr(market_service, "get_symbol_point", None)
-
-    if not callable(spread_getter):
-        return
-
     try:
-        spread_points = float(spread_getter(symbol))
+        source_get_spread = getattr(snapshot_source, "get_current_spread", None)
+        if source_get_spread is None and getattr(
+            snapshot_source, "market_service", None
+        ) is not None:
+            source_get_spread = getattr(snapshot_source.market_service, "get_current_spread")
+        if source_get_spread is None:
+            return
+        spread_points = float(source_get_spread(symbol))
         metadata[MK.SPREAD_POINTS] = spread_points
-        if callable(point_getter):
-            point_size = float(point_getter(symbol))
+
+        source_get_symbol_point = getattr(snapshot_source, "get_symbol_point", None)
+        if source_get_symbol_point is None and getattr(
+            snapshot_source, "market_service", None
+        ) is not None:
+            source_get_symbol_point = getattr(
+                snapshot_source.market_service, "get_symbol_point", None
+            )
+        if source_get_symbol_point is None:
+            return
+
+        point_size_value = source_get_symbol_point(symbol)
+        if point_size_value is not None:
+            point_size = float(point_size_value)
             metadata[MK.SYMBOL_POINT] = point_size
             metadata[MK.SPREAD_PRICE] = spread_points * point_size
     except (TypeError, ValueError, AttributeError, KeyError):

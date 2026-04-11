@@ -212,6 +212,11 @@ class StrategyPerformanceTracker:
         self._pnl_circuit_paused: bool = False
         self._pnl_circuit_opened_at: float = 0.0  # monotonic
 
+    def update_config(self, config: "PerformanceTrackerConfig") -> None:
+        """热更新配置（供装配层和热重载使用）。"""
+        with self._lock:
+            self._config = config
+
     def reset(self) -> None:
         """重置所有统计状态（回测跨 run 隔离）。不清除 strategy_categories 注册信息。"""
         with self._lock:

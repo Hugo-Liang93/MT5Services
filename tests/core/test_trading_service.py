@@ -53,6 +53,9 @@ class DummyTradingClient:
             "pending": False,
         }
 
+    def check_broker_constraints(self, **kwargs):
+        return []
+
     def close_position(self, ticket: int, deviation: int = 20, comment: str = "", volume=None):
         return True
 
@@ -116,6 +119,9 @@ class DummyAccountClient:
         if symbol is None:
             return list(self._orders)
         return [row for row in self._orders if getattr(row, "symbol", None) == symbol]
+
+    def invalidate_cache(self) -> None:
+        return None
 
 
 def test_precheck_trade_uses_full_trade_context():

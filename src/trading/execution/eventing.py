@@ -4,6 +4,8 @@ import logging
 from dataclasses import replace as _dc_replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from .reasons import reason_category
+from .reasons import SKIP_CATEGORY_DISPATCH, SKIP_CATEGORY_RISK_SERVICE
 
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.metadata_keys import MetadataKey as MK
@@ -24,62 +26,43 @@ def notify_skip(
     *,
     event: "SignalEvent | None" = None,
 ) -> None:
-    with executor._skip_lock:
-        executor._skip_reasons[reason] = executor._skip_reasons.get(reason, 0) + 1
+    with executor.skip_lock:
+        executor.skip_reasons[reason] = executor.skip_reasons.get(reason, 0) + 1
         if timeframe:
-            tf_entry = executor._tf_stats.setdefault(
+            tf_entry = executor.tf_stats.setdefault(
                 timeframe, {"received": 0, "passed": 0, "skip_reasons": {}}
             )
             tf_entry["skip_reasons"][reason] = (
                 tf_entry["skip_reasons"].get(reason, 0) + 1
             )
-    if executor._on_execution_skip is not None and signal_id:
+    if executor.on_execution_skip is not None and signal_id:
         try:
-            executor._on_execution_skip(signal_id, reason)
+            executor.on_execution_skip(signal_id, reason)
         except Exception:
             logger.debug("on_execution_skip callback failed", exc_info=True)
     # 发射 EXECUTION_SKIPPED pipeline 事件
-    pipeline_bus = getattr(executor, "_pipeline_bus", None)
-    if (
-        pipeline_bus is not None
-        and hasattr(pipeline_bus, "emit_execution_skipped")
-        and event is not None
-    ):
-        tid = str(event.metadata.get(MK.SIGNAL_TRACE_ID) or "")
-        pipeline_bus.emit_execution_skipped(
-            trace_id=tid,
-            symbol=event.symbol,
-            timeframe=timeframe or event.timeframe or "",
-            scope=event.metadata.get(MK.SCOPE, "confirmed"),
-            strategy=event.strategy,
-            direction=event.direction,
-            skip_reason=reason,
-            skip_category=_skip_reason_category(reason),
-            confidence=event.confidence,
-        )
+    if event is None:
+        return
+    tid = str(event.metadata.get(MK.SIGNAL_TRACE_ID) or "")
+    pipeline_bus = executor.get_pipeline_event_bus()
+    if pipeline_bus is None:
+        return
+    pipeline_bus.emit_execution_skipped(
+        trace_id=tid,
+        symbol=event.symbol,
+        timeframe=timeframe or event.timeframe or "",
+        scope=event.metadata.get(MK.SCOPE, "confirmed"),
+        strategy=event.strategy,
+        direction=event.direction,
+        skip_reason=reason,
+        skip_category=_skip_reason_category(reason),
+        confidence=event.confidence,
+    )
 
 
 def _skip_reason_category(reason: str) -> str:
-    """将 skip reason 映射到类别。"""
-    categories = {
-        "min_confidence": "confidence",
-        "position_limit": "position",
-        "pnl_circuit_paused": "circuit",
-        "margin_guard_block": "risk_guard",
-        "htf_conflict_block": "htf_alignment",
-        "after_eod_block": "eod_guard",
-        "reentry_cooldown": "cooldown",
-        "spread_to_stop_ratio_too_high": "cost_guard",
-        "trade_params_unavailable": "trade_params",
-    }
-    for key, cat in categories.items():
-        if key in reason:
-            return cat
-    if "duplicate" in reason or "same_strategy" in reason:
-        return "duplicate_guard"
-    if "gate" in reason or "voting_group" in reason or "armed" in reason:
-        return "execution_gate"
-    return "other"
+    """将 skip reason 映射到分类。"""
+    return reason_category(reason)
 
 
 def trace_id_for_event(event: "SignalEvent") -> str:
@@ -89,7 +72,7 @@ def trace_id_for_event(event: "SignalEvent") -> str:
 def emit_execution_decided(
     executor: "TradeExecutor", event: "SignalEvent", *, order_kind: str
 ) -> None:
-    pipeline_bus = executor._pipeline_event_bus
+    pipeline_bus = executor.get_pipeline_event_bus()
     trace_id = trace_id_for_event(event)
     if pipeline_bus is None or not trace_id:
         return
@@ -111,7 +94,7 @@ def emit_execution_blocked(
     reason: str,
     category: str,
 ) -> None:
-    pipeline_bus = executor._pipeline_event_bus
+    pipeline_bus = executor.get_pipeline_event_bus()
     trace_id = trace_id_for_event(event)
     if pipeline_bus is None or not trace_id:
         return
@@ -134,7 +117,7 @@ def emit_execution_submitted(
     order_kind: str,
     ticket: Any = None,
 ) -> None:
-    pipeline_bus = executor._pipeline_event_bus
+    pipeline_bus = executor.get_pipeline_event_bus()
     trace_id = trace_id_for_event(event)
     if pipeline_bus is None or not trace_id:
         return
@@ -163,7 +146,7 @@ def emit_pending_order_submitted(
     order_kind: str,
     ticket: Any = None,
 ) -> None:
-    pipeline_bus = executor._pipeline_event_bus
+    pipeline_bus = executor.get_pipeline_event_bus()
     trace_id = trace_id_for_event(event)
     if pipeline_bus is None or not trace_id:
         return
@@ -193,7 +176,7 @@ def emit_execution_failed(
     reason: str,
     category: str,
 ) -> None:
-    pipeline_bus = executor._pipeline_event_bus
+    pipeline_bus = executor.get_pipeline_event_bus()
     trace_id = trace_id_for_event(event)
     if pipeline_bus is None or not trace_id:
         return
@@ -227,9 +210,9 @@ def build_trade_metadata(event: "SignalEvent") -> dict[str, Any]:
     raw_structure = event.metadata.get(MK.MARKET_STRUCTURE)
     if isinstance(raw_structure, dict):
         metadata[MK.MARKET_STRUCTURE] = dict(raw_structure)
-    elif hasattr(raw_structure, "to_dict"):
+    else:
         try:
-            metadata[MK.MARKET_STRUCTURE] = raw_structure.to_dict()
+            metadata[MK.MARKET_STRUCTURE] = raw_structure.to_dict()  # type: ignore[attr-defined]
         except Exception:
             pass
     return metadata
@@ -262,10 +245,10 @@ def record_slippage(
     slippage_points = None
     if symbol_point is not None and symbol_point > 0:
         slippage_points = round(slippage_price / symbol_point, 2)
-    executor._execution_quality["slippage_samples"] += 1
-    executor._execution_quality["slippage_total_price"] += slippage_price
+    executor.execution_quality["slippage_samples"] += 1
+    executor.execution_quality["slippage_total_price"] += slippage_price
     if slippage_points is not None:
-        executor._execution_quality["slippage_total_points"] += slippage_points
+        executor.execution_quality["slippage_total_points"] += slippage_points
     return {
         "requested_price": requested,
         "fill_price": filled,
@@ -341,12 +324,12 @@ def execute_market_order(
     }
 
     try:
-        result = executor._trading.dispatch_operation("trade", payload)
-        executor._execution_count += 1
-        executor._last_execution_at = datetime.now(timezone.utc)
-        executor._last_error = None
-        executor._last_risk_block = None
-        executor._consecutive_failures = 0
+        result = executor.trading.dispatch_operation("trade", payload)
+        executor.execution_count += 1
+        executor.last_execution_at = datetime.now(timezone.utc)
+        executor.last_error = None
+        executor.last_risk_block = None
+        executor.consecutive_failures = 0
         requested_price = None
         fill_price = None
         symbol_point = None
@@ -360,7 +343,7 @@ def execute_market_order(
             except (TypeError, ValueError):
                 symbol_point = None
             if result.get("recovered_from_state"):
-                executor._execution_quality["recovered_from_state"] += 1
+                executor.execution_quality["recovered_from_state"] += 1
             emit_execution_submitted(
                 executor,
                 event,
@@ -381,7 +364,7 @@ def execute_market_order(
             direction=event.direction,
         )
         log_entry = {
-            "at": executor._last_execution_at.isoformat(),
+            "at": executor.last_execution_at.isoformat(),
             "signal_id": event.signal_id,
             "symbol": event.symbol,
             "direction": event.direction,
@@ -402,13 +385,13 @@ def execute_market_order(
             "execution_quality": execution_quality,
             "success": True,
         }
-        executor._execution_log.append(log_entry)
+        executor.execution_log.append(log_entry)
         bar_time = event.metadata.get(MK.BAR_TIME)
         if bar_time is not None:
-            executor._last_entry_bar_time[
+            executor.last_entry_bar_time[
                 (event.symbol, event.strategy, event.direction)
             ] = bar_time
-        for fn in executor._on_trade_executed:
+        for fn in executor.on_trade_executed:
             try:
                 fn(log_entry)
             except Exception:
@@ -423,18 +406,18 @@ def execute_market_order(
             tracking_params.risk_reward_ratio,
             event.signal_id,
         )
-        if executor._persist_execution_fn is not None:
+        if executor.persist_execution_fn is not None:
             try:
-                executor._persist_execution_fn([log_entry])
+                executor.persist_execution_fn([log_entry])
             except Exception as persist_exc:
                 logger.warning(
                     "TradeExecutor: persist execution failed: %s", persist_exc
                 )
-        if executor._position_manager is not None and isinstance(result, dict):
+        if executor.position_manager is not None and isinstance(result, dict):
             ticket = result.get("ticket") or result.get("order")
             if ticket:
                 try:
-                    executor._position_manager.track_position(
+                    executor.position_manager.track_position(
                         ticket=int(ticket),
                         signal_id=event.signal_id,
                         symbol=event.symbol,
@@ -459,9 +442,9 @@ def execute_market_order(
                         ticket,
                         pm_exc,
                     )
-        if executor._trade_outcome_tracker is not None:
+        if executor.trade_outcome_tracker is not None:
             try:
-                executor._trade_outcome_tracker.on_trade_opened(
+                executor.trade_outcome_tracker.on_trade_opened(
                     signal_id=event.signal_id,
                     symbol=event.symbol,
                     timeframe=event.timeframe,
@@ -485,17 +468,17 @@ def execute_market_order(
             result.setdefault("execution_quality", execution_quality)
         return result
     except PreTradeRiskBlockedError as exc:
-        executor._last_risk_block = str(exc)
-        executor._execution_quality["risk_blocks"] += 1
+        executor.last_risk_block = str(exc)
+        executor.execution_quality["risk_blocks"] += 1
         assessment = dict(exc.assessment or {})
         reason = str(assessment.get("reason") or exc)
         emit_execution_blocked(
             executor,
             event,
             reason=reason,
-            category="risk_service",
+            category=SKIP_CATEGORY_RISK_SERVICE,
         )
-        executor._execution_log.append(
+        executor.execution_log.append(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
@@ -509,9 +492,9 @@ def execute_market_order(
             }
         )
         notify_skip(executor, event.signal_id, reason, event.timeframe or "")
-        if executor._persist_execution_fn is not None:
+        if executor.persist_execution_fn is not None:
             try:
-                executor._persist_execution_fn(
+                executor.persist_execution_fn(
                     [
                         {
                             "at": datetime.now(timezone.utc).isoformat(),
@@ -531,16 +514,16 @@ def execute_market_order(
                 )
         return None
     except Exception as exc:
-        executor._last_error = str(exc)
-        executor._consecutive_failures += 1
+        executor.last_error = str(exc)
+        executor.consecutive_failures += 1
         emit_execution_failed(
             executor,
             event,
             order_kind="market",
             reason=str(exc),
-            category="dispatch",
+            category=SKIP_CATEGORY_DISPATCH,
         )
-        executor._execution_log.append(
+        executor.execution_log.append(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
@@ -558,16 +541,16 @@ def execute_market_order(
             exc,
         )
         if (
-            not executor._circuit_open
-            and executor._consecutive_failures
+            not executor.circuit_open
+            and executor.consecutive_failures
             >= executor.config.max_consecutive_failures
         ):
-            executor._circuit_open = True
-            executor._circuit_open_at = datetime.now(timezone.utc)
+            executor.circuit_open = True
+            executor.circuit_open_at = datetime.now(timezone.utc)
             logger.error(
                 "TradeExecutor: circuit breaker OPENED after %d consecutive failures. "
                 "Auto-trading suspended. Will auto-reset in %d minutes or call reset_circuit().",
-                executor._consecutive_failures,
+                executor.consecutive_failures,
                 executor.config.circuit_auto_reset_minutes,
             )
         fail_entry = {
@@ -579,9 +562,9 @@ def execute_market_order(
             "success": False,
             "error": str(exc),
         }
-        if executor._persist_execution_fn is not None:
+        if executor.persist_execution_fn is not None:
             try:
-                executor._persist_execution_fn([fail_entry])
+                executor.persist_execution_fn([fail_entry])
             except Exception as persist_exc:
                 logger.warning(
                     "TradeExecutor: persist fail-entry failed: %s", persist_exc

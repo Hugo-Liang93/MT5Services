@@ -28,7 +28,7 @@ _display_tz_name: str = "UTC"
 def configure(tz_name: str = "UTC") -> None:
     """Set the application-wide display timezone.
 
-    Call this **once** during startup (from ``app.py`` or ``AppBuilder``).
+    Call this **once** during startup (from ``src.entrypoint.web`` or ``AppBuilder``).
     Subsequent calls are allowed but will log a warning.
     """
     global _display_tz, _display_tz_name
@@ -83,7 +83,7 @@ def get_display_tz() -> tzinfo:
 class LocalTimeFormatter(logging.Formatter):
     """A logging formatter that converts timestamps to the display timezone.
 
-    Usage in ``app.py``::
+    Usage in ``src.entrypoint.web``::
 
         from src.utils.timezone import LocalTimeFormatter
         handler = logging.StreamHandler()

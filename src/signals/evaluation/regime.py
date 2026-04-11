@@ -30,7 +30,7 @@
        a. BB 宽度 < bb_tight_pct（默认 0.8%）→ BREAKOUT（价格盘整蓄力）
        b. 否则 → RANGING
   4. 18 ≤ ADX < 23 → UNCERTAIN
-  5. 无 ADX 数据 → UNCERTAIN（兜底）
+  5. 无 ADX 数据 → UNCERTAIN（返回保守状态）
 """
 from __future__ import annotations
 
@@ -144,6 +144,21 @@ class MarketRegimeDetector:
         self._adx_trending = adx_trending_threshold
         self._adx_ranging = adx_ranging_threshold
         self._bb_tight_pct = bb_tight_pct
+
+    def update_thresholds(
+        self,
+        *,
+        adx_trending: float | None = None,
+        adx_ranging: float | None = None,
+        bb_tight_pct: float | None = None,
+    ) -> None:
+        """热更新检测阈值（供装配层和热重载使用）。"""
+        if adx_trending is not None:
+            self._adx_trending = float(adx_trending)
+        if adx_ranging is not None:
+            self._adx_ranging = float(adx_ranging)
+        if bb_tight_pct is not None:
+            self._bb_tight_pct = float(bb_tight_pct)
 
     # ------------------------------------------------------------------
     # Public API
@@ -340,7 +355,7 @@ class MarketRegimeDetector:
 
         total = sum(scores.values())
         if total < 1e-6:
-            # 所有分数极小时回退到均匀分布——这表示指标数据异常或全部 clamped
+            # 所有分数极小时返回均匀分布；标记为指标异常/全部 clamped 情形
             logger.warning(
                 "Soft regime scores near zero (total=%.2e, clamped=%s), "
                 "falling back to uniform distribution",

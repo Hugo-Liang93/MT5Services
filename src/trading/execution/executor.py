@@ -30,23 +30,29 @@ from src.signals.models import SignalEvent
 from ..pending.manager import PendingEntryManager
 from ..ports import ExecutorTradingPort
 from ..positions.manager import PositionManager
+from ..runtime_lifecycle import OwnedThreadLifecycle
 from ..tracking.trade_outcome import TradeOutcomeTracker
 from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
 from .eventing import emit_execution_decided as _emit_execution_decided_helper
-from .eventing import execute_market_order as _execute_market_order_helper
 from .eventing import notify_skip as _notify_skip_helper
+from .decision_engine import ExecutionDecisionEngine
+from .pre_trade_pipeline import PreTradePipeline
 from .gate import ExecutionGate, ExecutionGateConfig
-from .params import compute_params as _compute_params_helper
-from .params import estimate_cost_metrics as _estimate_cost_metrics_helper
 from .params import estimate_price as _estimate_price_helper
 from .params import get_account_balance as _get_account_balance_helper
-from .params import tf_to_seconds as _tf_to_seconds_helper
-from .pending_orders import (
-    duplicate_execution_reason as _duplicate_execution_reason_helper,
-)
-from .pending_orders import reached_position_limit as _reached_position_limit_helper
-from .pending_orders import submit_pending_entry as _submit_pending_entry_helper
+from .result_recorder import ExecutionResultRecorder
+from . import pre_trade_checks as _ptc
 from .sizing import RegimeSizing, extract_atr_from_indicators
+from .reasons import (
+    REASON_INTRABAR_GUARD_MISSING,
+    REASON_INTRABAR_PARENT_BAR_MISSING,
+    REASON_INTRABAR_GUARD_BLOCKED,
+    REASON_INTRABAR_GATE_BLOCKED,
+    REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH,
+    REASON_TRADE_PARAMS_UNAVAILABLE,
+    SKIP_CATEGORY_TRADE_PARAMS,
+    SKIP_CATEGORY_COST_GUARD,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +84,7 @@ class ExecutorConfig:
     # 同策略同方向再入场冷却 bar 数（0=禁止同向再入场，N=间隔 N 根 bar 后允许加仓）
     reentry_cooldown_bars: int = 3
     regime_sizing: RegimeSizing = field(default_factory=RegimeSizing)
+    exec_queue_size: int = 256
 
 
 class TradeExecutor:
@@ -128,10 +135,16 @@ class TradeExecutor:
         self._last_error: str | None = None
         self._last_risk_block: str | None = None
         self._execution_log: deque[dict] = deque(maxlen=100)
+        self._pre_trade_pipeline = PreTradePipeline(self)
+        self._decision_engine = ExecutionDecisionEngine(self)
+        self._result_recorder = ExecutionResultRecorder(self)
         # Async execution: decouple listener callback from MT5 API calls
-        exec_queue_size = int(getattr(config, "exec_queue_size", 0) or 0) or 256
+        exec_queue_size = int(self.config.exec_queue_size)
         self._exec_queue: queue.Queue = queue.Queue(maxsize=exec_queue_size)
         self._exec_thread: threading.Thread | None = None
+        self._exec_lifecycle = OwnedThreadLifecycle(
+            self, "_exec_thread", label="TradeExecutor"
+        )
         self._stop_event = threading.Event()
         # 统计收到的 confirmed 事件总数。
         self._signals_received: int = 0
@@ -168,10 +181,180 @@ class TradeExecutor:
         # signal_id 幂等性保护：已执行的 signal_id 有界缓存，防止重复下单
         self._executed_signal_ids: deque[str] = deque(maxlen=2000)
         # Intrabar 交易去重 + confirmed 协调
-        self._intrabar_guard: Any | None = None  # IntrabarTradeGuard, injected
+        self._intrabar_guard: Any | None = None  # set via set_intrabar_guard()
         # Intrabar 执行统计
         self._intrabar_signals_received: int = 0
         self._intrabar_signals_executed: int = 0
+
+    @property
+    def pipeline_event_bus(self) -> PipelineEventBus | None:
+        return self._pipeline_event_bus
+
+    def get_pipeline_event_bus(self) -> PipelineEventBus | None:
+        return self._pipeline_event_bus
+
+    def set_pipeline_event_bus(self, bus: PipelineEventBus | None) -> None:
+        self._pipeline_event_bus = bus
+
+    @property
+    def trading(self):
+        return self._trading
+
+    @property
+    def account_balance_getter(self) -> Any | None:
+        return self._account_balance_getter
+
+    @property
+    def position_manager(self):
+        return self._position_manager
+
+    @property
+    def persist_execution_fn(self) -> Callable[[list], None] | None:
+        return self._persist_execution_fn
+
+    @property
+    def on_execution_skip(self) -> Callable[[str, str], None] | None:
+        return self._on_execution_skip
+
+    @property
+    def on_trade_executed(self) -> list[Callable[[dict], None]]:
+        return self._on_trade_executed
+
+    @property
+    def execution_gate(self) -> "ExecutionGate":
+        return self._execution_gate
+
+    @property
+    def pending_manager(self) -> PendingEntryManager | None:
+        return self._pending_manager
+
+    @property
+    def performance_tracker(self):
+        return self._performance_tracker
+
+    @property
+    def equity_curve_filter(self):
+        return self._equity_curve_filter
+
+    @property
+    def execution_quality(self) -> dict[str, float | int]:
+        return self._execution_quality
+
+    @property
+    def dropped_signals(self) -> list[dict[str, Any]]:
+        return self._dropped_signals
+
+    @dropped_signals.setter
+    def dropped_signals(self, value: list[dict[str, Any]]) -> None:
+        self._dropped_signals = value
+
+    @property
+    def max_dropped_history(self) -> int:
+        return self._max_dropped_history
+
+    @property
+    def intrabar_guard(self):
+        return self._intrabar_guard
+
+    @property
+    def margin_guard(self):
+        return self._margin_guard
+
+    @property
+    def skip_lock(self):
+        return self._skip_lock
+
+    @property
+    def skip_reasons(self):
+        return self._skip_reasons
+
+    @property
+    def tf_stats(self):
+        return self._tf_stats
+
+    @property
+    def execution_count(self) -> int:
+        return self._execution_count
+
+    @execution_count.setter
+    def execution_count(self, value: int) -> None:
+        self._execution_count = value
+
+    @property
+    def last_execution_at(self) -> datetime | None:
+        return self._last_execution_at
+
+    @last_execution_at.setter
+    def last_execution_at(self, value: datetime | None) -> None:
+        self._last_execution_at = value
+
+    @property
+    def last_error(self) -> str | None:
+        return self._last_error
+
+    @last_error.setter
+    def last_error(self, value: str | None) -> None:
+        self._last_error = value
+
+    @property
+    def last_risk_block(self) -> str | None:
+        return self._last_risk_block
+
+    @last_risk_block.setter
+    def last_risk_block(self, value: str | None) -> None:
+        self._last_risk_block = value
+
+    @property
+    def execution_log(self) -> deque[dict]:
+        return self._execution_log
+
+    @property
+    def trade_outcome_tracker(self) -> TradeOutcomeTracker | None:
+        return self._trade_outcome_tracker
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self._consecutive_failures
+
+    @consecutive_failures.setter
+    def consecutive_failures(self, value: int) -> None:
+        self._consecutive_failures = value
+
+    @property
+    def circuit_open(self) -> bool:
+        return self._circuit_open
+
+    @circuit_open.setter
+    def circuit_open(self, value: bool) -> None:
+        self._circuit_open = value
+
+    @property
+    def circuit_open_at(self) -> datetime | None:
+        return self._circuit_open_at
+
+    @circuit_open_at.setter
+    def circuit_open_at(self, value: datetime | None) -> None:
+        self._circuit_open_at = value
+
+    @property
+    def health_check_failures(self) -> int:
+        return self._health_check_failures
+
+    @health_check_failures.setter
+    def health_check_failures(self, value: int) -> None:
+        self._health_check_failures = value
+
+    @property
+    def max_health_check_failures(self) -> int:
+        return self._MAX_HEALTH_CHECK_FAILURES
+
+    @property
+    def last_entry_bar_time(self) -> dict[tuple[str, str, str], datetime]:
+        return self._last_entry_bar_time
+
+    @property
+    def executed_signal_ids(self) -> deque[str]:
+        return self._executed_signal_ids
 
     # ------------------------------------------------------------------
     # Public listener interface
@@ -191,7 +374,7 @@ class TradeExecutor:
         if not event.signal_id:
             return
         # Ensure worker thread is running (lazy start)
-        if self._exec_thread is None or not self._exec_thread.is_alive():
+        if not self._exec_lifecycle.is_running():
             self._start_worker()
         try:
             self._exec_queue.put_nowait(event)
@@ -206,54 +389,17 @@ class TradeExecutor:
             try:
                 self._exec_queue.put(event, timeout=3.0)
             except queue.Full:
-                self._execution_quality["queue_overflows"] += 1
-                sig_id = getattr(event, "signal_id", "") or ""
                 logger.error(
-                    "TradeExecutor queue full after 3s retry, DROPPING confirmed event "
-                    "%s/%s/%s signal_id=%s (overflows=%d). "
-                    "Trading opportunity permanently lost!",
+                    "TradeExecutor queue full after 3s retry, DROPPING confirmed "
+                    "event %s/%s/%s signal_id=%s (overflows=%d). Trading "
+                    "opportunity permanently lost!",
                     event.symbol,
                     event.timeframe,
                     event.strategy,
-                    sig_id,
-                    self._execution_quality["queue_overflows"],
+                    event.signal_id,
+                    self._execution_quality["queue_overflows"] + 1,
                 )
-                # 保留最近一批被丢弃的 confirmed 信号，便于通过 status() 排查。
-                dropped_entry = {
-                    "signal_id": sig_id,
-                    "symbol": event.symbol,
-                    "timeframe": event.timeframe,
-                    "strategy": event.strategy,
-                    "direction": getattr(event, "direction", ""),
-                    "confidence": getattr(event, "confidence", 0.0),
-                    "dropped_at": time.time(),
-                }
-                self._dropped_signals.append(dropped_entry)
-                if len(self._dropped_signals) > self._max_dropped_history:
-                    self._dropped_signals = self._dropped_signals[
-                        -self._max_dropped_history :
-                    ]
-                # 持久化到执行日志，确保重启后可追溯丢失的信号
-                if self._persist_execution_fn is not None:
-                    try:
-                        self._persist_execution_fn(
-                            [
-                                {
-                                    "at": datetime.now(timezone.utc).isoformat(),
-                                    "signal_id": sig_id,
-                                    "symbol": event.symbol,
-                                    "timeframe": event.timeframe,
-                                    "direction": getattr(event, "direction", ""),
-                                    "strategy": event.strategy,
-                                    "confidence": getattr(event, "confidence", 0.0),
-                                    "success": False,
-                                    "dropped": True,
-                                    "reason": "queue_overflow",
-                                }
-                            ]
-                        )
-                    except Exception:
-                        logger.debug("Failed to persist dropped signal", exc_info=True)
+                self._result_recorder.record_overflow(event)
 
     def on_intrabar_trade_signal(self, event: SignalEvent) -> None:
         """Intrabar 交易信号入口。仅接受 intrabar_armed_* 状态。
@@ -268,7 +414,7 @@ class TradeExecutor:
         if not event.signal_id:
             return
         self._intrabar_signals_received += 1
-        if self._exec_thread is None or not self._exec_thread.is_alive():
+        if not self._exec_lifecycle.is_running():
             self._start_worker()
         try:
             self._exec_queue.put_nowait(event)
@@ -284,31 +430,35 @@ class TradeExecutor:
     def _start_worker(self) -> None:
         """启动后台执行线程。"""
         # 防止双线程：旧线程仍活着时复用，不创建新线程
-        if self._exec_thread is not None and self._exec_thread.is_alive():
+        if self._exec_lifecycle.is_running():
             return
         self._stop_event.clear()
-        t = threading.Thread(
-            target=self._exec_worker, name="trade-executor", daemon=True
+        self._exec_lifecycle.ensure_running(
+            lambda: threading.Thread(
+                target=self._exec_worker, name="trade-executor", daemon=True
+            )
         )
-        t.start()
-        self._exec_thread = t
 
     def start(self) -> None:
         """启用执行器，允许后续 confirmed 事件重新拉起执行线程。"""
         # 等待上一次 stop() 超时遗留的僵尸线程退出
-        old = self._exec_thread
-        if old is not None and old.is_alive():
-            logger.warning("TradeExecutor: waiting for previous worker to finish")
-            old.join(timeout=5.0)
-            if old.is_alive():
-                logger.error(
-                    "TradeExecutor: previous worker still alive after re-join, "
-                    "new signals will reuse it instead of creating a new thread"
-                )
+        if not self._exec_lifecycle.wait_previous():
+            logger.error(
+                "TradeExecutor: previous worker still alive after re-join, "
+                "new signals will reuse it instead of creating a new thread"
+            )
         self._stop_event.clear()
 
     def is_running(self) -> bool:
-        return self._exec_thread is not None and self._exec_thread.is_alive()
+        return self._exec_lifecycle.is_running()
+
+    def set_intrabar_guard(self, guard: Any) -> None:
+        """注入 IntrabarTradeGuard（供运行时初始化入口使用）。"""
+        self._intrabar_guard = guard
+
+    def update_execution_gate_config(self, config: Any) -> None:
+        """热更新 ExecutionGate 配置。"""
+        self._execution_gate.config = config
 
     def _exec_worker(self) -> None:
         """后台消费执行队列，串行处理 confirmed 和 intrabar 交易事件。"""
@@ -337,18 +487,7 @@ class TradeExecutor:
 
     def stop(self, timeout: float = 5.0) -> None:
         """停止执行线程并清空待执行事件，不联动关闭挂单管理。"""
-        self._stop_event.set()
-        if self._exec_thread is not None:
-            self._exec_thread.join(timeout=timeout)
-            if self._exec_thread.is_alive():
-                logger.warning(
-                    "TradeExecutor worker did not stop within %.1fs, "
-                    "will be cleaned up on next start()",
-                    timeout,
-                )
-                # 保留引用，start() 会检测并等待
-            else:
-                self._exec_thread = None
+        self._exec_lifecycle.stop(self._stop_event, timeout=timeout)
         self._clear_exec_queue()
 
     def shutdown(self, timeout: float = 5.0) -> None:
@@ -392,17 +531,7 @@ class TradeExecutor:
         logger.info("TradeExecutor: circuit breaker manually reset")
 
     def _check_trading_health(self) -> bool:
-        """熔断器自动恢复前的健康检查：验证 MT5 连接和账户可用。"""
-        try:
-            info = self._trading.account_info()
-            return info is not None
-        except Exception as exc:
-            logger.debug("Trading health check failed: %s", exc)
-            return False
-
-    # ------------------------------------------------------------------
-    # Pre-trade filter chain
-    # ------------------------------------------------------------------
+        return _ptc.check_trading_health(self)
 
     def _reject_signal(
         self,
@@ -415,229 +544,20 @@ class TradeExecutor:
         extra_log: str = "",
         pipeline_reason: str = "",
     ) -> None:
-        """统一拒绝信号：日志 + 事件总线 + skip 通知 + 执行日志。
-
-        Args:
-            reason: 写入 execution_log 和 skip 通知的详细拒绝原因。
-            category: 事件总线分类。
-            pipeline_reason: 事件总线的 reason（空则用 reason）。
-        """
-        msg = (
-            f"TradeExecutor: skipping {event.symbol}/{event.strategy} "
-            f"{event.direction} - {reason}"
+        _ptc.reject_signal(
+            self, event, reason, category, tf,
+            log_level=log_level, extra_log=extra_log,
+            pipeline_reason=pipeline_reason,
         )
-        if extra_log:
-            msg = f"{msg} ({extra_log})"
-        getattr(logger, log_level)(msg)
-        self._execution_log.append(
-            {
-                "at": datetime.now(timezone.utc).isoformat(),
-                "signal_id": event.signal_id,
-                "symbol": event.symbol,
-                "direction": event.direction,
-                "strategy": event.strategy,
-                "success": False,
-                "skipped": True,
-                "reason": reason,
-            }
-        )
-        _emit_execution_blocked_helper(
-            self,
-            event,
-            reason=pipeline_reason or reason,
-            category=category,
-        )
-        _notify_skip_helper(self, event.signal_id, reason, tf, event=event)
 
     def _check_circuit_breaker(self, event: SignalEvent) -> bool:
-        """检查技术故障熔断器。返回 True = 已熔断，应拒绝。"""
-        if not self._circuit_open:
-            return False
-        # 超过自动恢复窗口后，先做健康检查再决定是否 half-open。
-        if (
-            self.config.circuit_auto_reset_minutes > 0
-            and self._circuit_open_at is not None
-        ):
-            elapsed = (
-                datetime.now(timezone.utc) - self._circuit_open_at
-            ).total_seconds() / 60.0
-            if elapsed >= self.config.circuit_auto_reset_minutes:
-                if self._check_trading_health():
-                    logger.info(
-                        "TradeExecutor: circuit auto-reset after %.1f minutes, "
-                        "health check passed, entering half-open",
-                        elapsed,
-                    )
-                    self._health_check_failures = 0
-                    self.reset_circuit()
-                else:
-                    self._health_check_failures += 1
-                    self._circuit_open_at = datetime.now(timezone.utc)
-                    if self._health_check_failures >= self._MAX_HEALTH_CHECK_FAILURES:
-                        logger.critical(
-                            "TradeExecutor: circuit STUCK — %d consecutive health "
-                            "check failures, MT5 connection may be permanently "
-                            "broken. Manual intervention required (reset_circuit "
-                            "or restart).",
-                            self._health_check_failures,
-                        )
-                    else:
-                        logger.warning(
-                            "TradeExecutor: circuit auto-reset deferred, "
-                            "health check failed after %.1f minutes "
-                            "(health_check_failures=%d/%d)",
-                            elapsed,
-                            self._health_check_failures,
-                            self._MAX_HEALTH_CHECK_FAILURES,
-                        )
-        if self._circuit_open:
-            logger.warning(
-                "TradeExecutor: circuit open (consecutive_failures=%d), "
-                "skipping %s/%s. Call reset_circuit() to resume.",
-                self._consecutive_failures,
-                event.symbol,
-                event.strategy,
-            )
-            return True
-        return False
+        return _ptc.check_circuit_breaker(self, event)
 
     def _check_reentry_cooldown(self, event: SignalEvent, tf: str) -> bool:
-        """检查同策略同方向再入场冷却。返回 True = 冷却中，应拒绝。"""
-        cooldown_bars = self.config.reentry_cooldown_bars
-        if cooldown_bars <= 0:
-            return False
-        reentry_key = (event.symbol, event.strategy, event.direction)
-        bar_time_raw = event.metadata.get(MK.BAR_TIME)
-        bar_time: datetime | None = None
-        if isinstance(bar_time_raw, datetime):
-            bar_time = bar_time_raw
-        elif isinstance(bar_time_raw, str):
-            try:
-                bar_time = datetime.fromisoformat(bar_time_raw)
-            except (ValueError, TypeError):
-                pass
-        last_bar = self._last_entry_bar_time.get(reentry_key)
-        if bar_time and last_bar:
-            tf_seconds = _tf_to_seconds_helper(tf)
-            if tf_seconds > 0:
-                elapsed_bars = abs((bar_time - last_bar).total_seconds()) / tf_seconds
-                if elapsed_bars < cooldown_bars:
-                    self._reject_signal(
-                        event,
-                        "reentry_cooldown",
-                        "cooldown",
-                        tf,
-                        extra_log=f"{elapsed_bars:.1f} bars < {cooldown_bars} required",
-                    )
-                    return True
-        return False
+        return _ptc.check_reentry_cooldown(self, event, tf)
 
     def _run_pre_trade_filters(self, event: SignalEvent, tf: str) -> str | None:
-        """按顺序运行所有预交易过滤器。
-
-        返回 None = 全部通过；返回 str = 拒绝原因。
-        """
-        sig_id = event.signal_id or ""
-
-        # ① signal_id 幂等性
-        if sig_id and sig_id in self._executed_signal_ids:
-            _notify_skip_helper(self, sig_id, "duplicate_signal_id", tf, event=event)
-            return "duplicate_signal_id"
-
-        # ② 技术故障熔断器
-        if self._check_circuit_breaker(event):
-            return "circuit_open"
-
-        # ③ 方向有效性
-        if event.direction not in ("buy", "sell"):
-            return "invalid_direction"
-
-        # ④ PnL 熔断
-        if (
-            self._performance_tracker is not None
-            and self._performance_tracker.is_trading_paused()
-        ):
-            self._reject_signal(
-                event,
-                "pnl_circuit_paused",
-                "performance",
-                tf,
-                log_level="warning",
-            )
-            return "pnl_circuit_paused"
-
-        # ⑤ 权益曲线过滤器
-        if self._equity_curve_filter is not None:
-            self._equity_curve_filter.record_equity()
-            if self._equity_curve_filter.should_block():
-                self._reject_signal(
-                    event,
-                    "equity_curve_below_ma",
-                    "equity_filter",
-                    tf,
-                )
-                return "equity_curve_below_ma"
-
-        # ⑥ 保证金保护
-        if (
-            self._margin_guard is not None
-            and self._margin_guard.should_block_new_trades()
-        ):
-            self._reject_signal(event, "margin_guard_block", "risk_guard", tf)
-            return "margin_guard_block"
-
-        # ⑦ 执行门（voting group / armed）
-        gate_allowed, gate_reason = self._execution_gate.check(event)
-        if not gate_allowed:
-            self._reject_signal(event, gate_reason, "execution_gate", tf)
-            return gate_reason
-
-        # ⑧ 重复执行上下文
-        duplicate_reason = _duplicate_execution_reason_helper(self, event)
-        if duplicate_reason:
-            self._reject_signal(event, duplicate_reason, "duplicate_guard", tf)
-            return duplicate_reason
-
-        # ⑨ 最小置信度
-        effective_min_conf = self.config.timeframe_min_confidence.get(
-            tf,
-            self.config.min_confidence,
-        )
-        if event.confidence < effective_min_conf:
-            self._reject_signal(
-                event,
-                "min_confidence",
-                "confidence",
-                tf,
-                extra_log=f"{event.confidence:.3f} < {effective_min_conf:.2f}",
-            )
-            return "min_confidence"
-
-        # ⑩ EOD 后禁止新开仓
-        if (
-            self._position_manager is not None
-            and hasattr(self._position_manager, "is_after_eod_today")
-            and self._position_manager.is_after_eod_today()
-        ):
-            self._reject_signal(event, "after_eod_block", "eod_guard", tf)
-            return "after_eod_block"
-
-        # ⑪ 品种持仓数量上限
-        if _reached_position_limit_helper(self, event.symbol):
-            self._reject_signal(
-                event,
-                "max_concurrent_positions_per_symbol",
-                "position_limit",
-                tf,
-                pipeline_reason="position_limit",
-            )
-            return "max_concurrent_positions_per_symbol"
-
-        # ⑫ 再入场冷却
-        if self._check_reentry_cooldown(event, tf):
-            return "reentry_cooldown"
-
-        return None
+        return self._pre_trade_pipeline.run_confirmed(event, tf)
 
     # ------------------------------------------------------------------
     # Core execution dispatch
@@ -706,13 +626,13 @@ class TradeExecutor:
             return None
 
         # ── 预交易过滤链 ──
-        reject_reason = self._run_pre_trade_filters(event, tf)
+        reject_reason = self._pre_trade_pipeline.run_confirmed(event, tf)
         if reject_reason is not None:
             return None
 
         # ── 交易参数计算 ──
-        trade_params = _compute_params_helper(self, event)
-        if trade_params is None:
+        decision = self._decision_engine.build_confirmed_decision(event)
+        if decision.trade_params is None:
             atr = extract_atr_from_indicators(event.indicators)
             balance = _get_account_balance_helper(self)
             close_price = event.metadata.get(MK.CLOSE_PRICE) or _estimate_price_helper(
@@ -731,14 +651,14 @@ class TradeExecutor:
             )
             self._reject_signal(
                 event,
-                "trade_params_unavailable",
-                "trade_params",
+                decision.reject_reason or REASON_TRADE_PARAMS_UNAVAILABLE,
+                SKIP_CATEGORY_TRADE_PARAMS,
                 tf,
             )
             return None
 
         # ── Spread-to-stop 比率检查 ──
-        cost_metrics = _estimate_cost_metrics_helper(self, event, trade_params)
+        cost_metrics = decision.cost_metrics or {}
         spread_to_stop_ratio = cost_metrics.get("spread_to_stop_ratio")
         if (
             spread_to_stop_ratio is not None
@@ -746,8 +666,8 @@ class TradeExecutor:
         ):
             self._reject_signal(
                 event,
-                "spread_to_stop_ratio_too_high",
-                "cost_guard",
+                REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH,
+                SKIP_CATEGORY_COST_GUARD,
                 tf,
                 extra_log=f"{spread_to_stop_ratio:.3f} > {self.config.max_spread_to_stop_ratio:.3f}",
             )
@@ -764,19 +684,15 @@ class TradeExecutor:
                     tf, {"received": 0, "passed": 0, "skip_reasons": {}}
                 )["passed"] += 1
         entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
-        entry_type = entry_spec.get("entry_type", "market")
-        use_market = entry_type == "market" or self._pending_manager is None
+        entry_type = entry_spec.get("entry_type", decision.entry_type or "market")
+        use_market = decision.use_market or self._pending_manager is None
 
         _emit_execution_decided_helper(
             self,
             event,
             order_kind="market" if use_market else entry_type,
         )
-        if use_market:
-            return _execute_market_order_helper(
-                self, event, trade_params, cost_metrics=cost_metrics
-            )
-        return _submit_pending_entry_helper(self, event, trade_params, cost_metrics)
+        return self._decision_engine.execute(event, decision)
 
     # ------------------------------------------------------------------
     # Intrabar 交易执行
@@ -786,61 +702,41 @@ class TradeExecutor:
         """Intrabar armed 信号执行。复用完整 pre-trade filter chain。"""
         if not self.config.enabled:
             return
-        if self._intrabar_guard is None:
-            logger.warning(
-                "TradeExecutor: intrabar guard not injected, "
-                "dropping intrabar signal %s/%s/%s",
-                event.symbol,
-                event.timeframe,
-                event.strategy,
-            )
-            return
-
-        # 1. 去重检查
-        parent_bar_time = event.parent_bar_time or event.metadata.get(
-            MK.INTRABAR_PARENT_BAR_TIME
-        )
-        if parent_bar_time is None:
-            logger.warning("TradeExecutor: no parent_bar_time in intrabar event, skip")
-            return
-        allowed, reason = self._intrabar_guard.can_trade(
-            event.symbol,
-            event.timeframe,
-            event.strategy,
-            event.direction,
-            parent_bar_time,
-        )
-        if not allowed:
-            logger.debug(
-                "IntrabarTradeGuard blocked: %s/%s/%s reason=%s",
-                event.symbol,
-                event.timeframe,
-                event.strategy,
-                reason,
-            )
-            return
-
-        # 2. ExecutionGate intrabar 检查
-        gate_ok, gate_reason = self._execution_gate.check_intrabar(event)
-        if not gate_ok:
-            logger.debug(
-                "ExecutionGate.check_intrabar blocked: %s/%s/%s reason=%s",
-                event.symbol,
-                event.timeframe,
-                event.strategy,
-                gate_reason,
-            )
-            return
-
-        # 3. Pre-trade filter chain（复用完整 12 层）
         tf = event.timeframe or ""
-        reject_reason = self._run_pre_trade_filters(event, tf)
-        if reject_reason is not None:
+        intrabar_pre_trade = self._pre_trade_pipeline.run_intrabar(event, tf)
+        if not intrabar_pre_trade.can_execute:
+            if intrabar_pre_trade.reject_reason == REASON_INTRABAR_GUARD_MISSING:
+                logger.warning(
+                    "TradeExecutor: intrabar guard not injected, "
+                    "dropping intrabar signal %s/%s/%s",
+                    event.symbol,
+                    event.timeframe,
+                    event.strategy,
+                )
+            elif intrabar_pre_trade.reject_reason == REASON_INTRABAR_PARENT_BAR_MISSING:
+                logger.warning("TradeExecutor: no parent_bar_time in intrabar event, skip")
+            elif intrabar_pre_trade.reject_reason == REASON_INTRABAR_GUARD_BLOCKED:
+                logger.debug(
+                    "IntrabarTradeGuard blocked: %s/%s/%s reason=%s",
+                    event.symbol,
+                    event.timeframe,
+                    event.strategy,
+                    intrabar_pre_trade.detail,
+                )
+            elif intrabar_pre_trade.reject_reason == REASON_INTRABAR_GATE_BLOCKED:
+                logger.debug(
+                    "ExecutionGate.check_intrabar blocked: %s/%s/%s reason=%s",
+                    event.symbol,
+                    event.timeframe,
+                    event.strategy,
+                    intrabar_pre_trade.detail,
+                )
             return
+        parent_bar_time = intrabar_pre_trade.parent_bar_time
 
         # 4. 交易参数计算（ATR 用上一根确认 bar 的）
-        trade_params = _compute_params_helper(self, event)
-        if trade_params is None:
+        decision = self._decision_engine.build_intrabar_decision(event)
+        if decision.trade_params is None:
             logger.warning(
                 "TradeExecutor: cannot compute params for intrabar entry " "%s/%s/%s",
                 event.symbol,
@@ -850,7 +746,7 @@ class TradeExecutor:
             return
 
         # 5. 成本检查
-        cost_metrics = _estimate_cost_metrics_helper(self, event, trade_params)
+        cost_metrics = decision.cost_metrics
         if cost_metrics is not None and cost_metrics.get("blocked"):
             logger.info(
                 "Intrabar entry blocked by cost check: %s/%s/%s",
@@ -861,14 +757,7 @@ class TradeExecutor:
             return
 
         # 6. 执行（复用现有 market/pending 逻辑）
-        entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
-        entry_type = entry_spec.get("entry_type", "market") if entry_spec else "market"
-
-        if entry_type == "market" or self._pending_manager is None:
-            result = _execute_market_order_helper(self, event, trade_params, cost_metrics or {})
-        else:
-            result = _submit_pending_entry_helper(self, event, trade_params, cost_metrics or {})
-
+        result = self._decision_engine.execute(event, decision)
         if result is None:
             return
 
@@ -929,9 +818,7 @@ class TradeExecutor:
                 "tp_atr_multiplier": self.config.tp_atr_multiplier,
             },
             "execution_gate": {
-                "trade_trigger_strategies": list(
-                    getattr(self._execution_gate.config, "trade_trigger_strategies", ())
-                ),
+                "trade_trigger_strategies": [],
                 "voting_group_strategies": sorted(
                     self._execution_gate.config.voting_group_strategies
                 ),

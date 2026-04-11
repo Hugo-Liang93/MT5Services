@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging as _logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -51,14 +52,12 @@ def _apply_strategy_config_overrides(module: SignalModule, signal_config) -> Non
     from src.signals.evaluation.regime import RegimeType
     from src.signals.strategies.tf_params import build_tf_param_resolver
 
-    strategies = module._strategies
+    strategies = module.strategies
 
     # ── 构建 per-TF 参数查表器并注入 ─────────────────────────────────
     per_tf = getattr(signal_config, "strategy_params_per_tf", {})
     resolver = build_tf_param_resolver(signal_config.strategy_params, per_tf)
-    module._tf_param_resolver = resolver  # type: ignore[attr-defined]
-    for strategy in strategies.values():
-        strategy._tf_param_resolver = resolver  # type: ignore[attr-defined]
+    module.set_tf_param_resolver(resolver)
     _factory_logger.info("TFParamResolver built: %s", resolver)
 
     # ── regime_affinity_overrides 覆盖 ────────────────────────────────
@@ -72,10 +71,17 @@ def _apply_strategy_config_overrides(module: SignalModule, signal_config) -> Non
         strategy = strategies.get(strategy_name)
         if strategy is None:
             continue
+        regime_affinity = getattr(strategy, "regime_affinity", None)
+        if not isinstance(regime_affinity, Mapping):
+            _factory_logger.debug(
+                "strategy %s does not expose mutable regime_affinity; skip overrides",
+                strategy_name,
+            )
+            continue
         for regime_key, weight in affinity_dict.items():
             regime_type = _regime_map.get(regime_key.lower())
-            if regime_type is not None and hasattr(strategy, "regime_affinity"):
-                strategy.regime_affinity[regime_type] = weight
+            if regime_type is not None:
+                regime_affinity[regime_type] = weight
         _factory_logger.debug(
             "regime_affinity override: %s → %s", strategy_name, strategy.regime_affinity
         )
@@ -310,11 +316,8 @@ def build_signal_components(
     )
     # 注入 per-TF 近期窗口配置
     if signal_config.calibrator_recency_hours_by_tf:
-        calibrator._recency_hours_by_tf.update(
-            signal_config.calibrator_recency_hours_by_tf
-        )
-        calibrator._recency_windows = tuple(
-            sorted(set(calibrator._recency_hours_by_tf.values()))
+        calibrator.update_recency_config(
+            hours_by_tf=signal_config.calibrator_recency_hours_by_tf,
         )
     performance_tracker = StrategyPerformanceTracker(
         config=build_performance_tracker_config(signal_config),
@@ -350,7 +353,7 @@ def build_signal_components(
     )
     signal_module = SignalModule(
         indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
-        strategies=build_default_strategy_set(htf_cache=htf_cache),
+        strategies=build_default_strategy_set(),
         repository=TimescaleSignalRepository(
             storage_writer.db, storage_writer=storage_writer
         ),
@@ -418,6 +421,7 @@ def build_signal_components(
         htf_target_config=_htf_target_config,
         wal_db_path=wal_db_path,
     )
+    signal_runtime.set_economic_calendar_service(economic_calendar_service)
 
     end_of_day_closeout = ExposureCloseoutController(
         ExposureCloseoutService(trade_module)
@@ -428,7 +432,7 @@ def build_signal_components(
 
     _chandelier_cfg = _ChandelierConfig(
         regime_aware=signal_config.chandelier_regime_aware,
-        fallback_profile=_pfa(signal_config.chandelier_fallback_alpha),
+        default_profile=_pfa(signal_config.chandelier_default_alpha),
         breakeven_enabled=signal_config.chandelier_breakeven_enabled,
         breakeven_buffer_r=signal_config.chandelier_breakeven_buffer_r,
         min_breakeven_buffer=signal_config.chandelier_min_breakeven_buffer,
@@ -450,7 +454,7 @@ def build_signal_components(
         end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
         end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
     )
-    position_manager._sl_tp_history_writer = (
+    position_manager.set_sl_tp_history_writer(
         storage_writer.db.write_position_sl_tp_history
     )
     # 交易结果追踪器：追踪实际执行的交易盈亏（由 TradeExecutor 登记，PositionManager 关仓评估）
@@ -597,9 +601,9 @@ def build_signal_components(
             ),
         )
         intrabar_coordinator = IntrabarTradeCoordinator(policy=intrabar_policy)
-        signal_runtime._intrabar_trade_coordinator = intrabar_coordinator
+        signal_runtime.set_intrabar_trade_coordinator(intrabar_coordinator)
         intrabar_guard = IntrabarTradeGuard()
-        trade_executor._intrabar_guard = intrabar_guard
+        trade_executor.set_intrabar_guard(intrabar_guard)
         # 注册 intrabar 交易信号 listener
         signal_runtime.add_signal_listener(trade_executor.on_intrabar_trade_signal)
         _factory_logger.info(
@@ -668,21 +672,12 @@ def _apply_strategy_hot_reload(signal_module: Any, signal_config: Any) -> None:
 def _apply_regime_detector_hot_reload(regime_detector: Any, signal_config: Any) -> None:
     """热更新 Regime 检测器阈值。"""
     try:
-        adx_trending = getattr(signal_config, "regime_adx_trending_threshold", None)
-        adx_ranging = getattr(signal_config, "regime_adx_ranging_threshold", None)
-        bb_tight = getattr(signal_config, "regime_bb_tight_pct", None)
-        updated = False
-        if adx_trending is not None:
-            regime_detector._adx_trending_threshold = float(adx_trending)
-            updated = True
-        if adx_ranging is not None:
-            regime_detector._adx_ranging_threshold = float(adx_ranging)
-            updated = True
-        if bb_tight is not None:
-            regime_detector._bb_tight_pct = float(bb_tight)
-            updated = True
-        if updated:
-            _factory_logger.info("Hot reload: regime detector thresholds updated")
+        regime_detector.update_thresholds(
+            adx_trending=getattr(signal_config, "regime_adx_trending_threshold", None),
+            adx_ranging=getattr(signal_config, "regime_adx_ranging_threshold", None),
+            bb_tight_pct=getattr(signal_config, "regime_bb_tight_pct", None),
+        )
+        _factory_logger.info("Hot reload: regime detector thresholds updated")
     except Exception:
         _factory_logger.exception("Hot reload: failed to update regime detector")
 
@@ -690,14 +685,14 @@ def _apply_regime_detector_hot_reload(regime_detector: Any, signal_config: Any) 
 def _apply_calibrator_hot_reload(calibrator: Any, signal_config: Any) -> None:
     """热更新 Calibrator 参数。"""
     try:
-        calibrator._recency_hours = int(signal_config.calibrator_recency_hours)
-        if signal_config.calibrator_recency_hours_by_tf:
-            calibrator._recency_hours_by_tf.update(
+        calibrator.update_recency_config(
+            recency_hours=int(signal_config.calibrator_recency_hours),
+            hours_by_tf=(
                 signal_config.calibrator_recency_hours_by_tf
-            )
-            calibrator._recency_windows = tuple(
-                sorted(set(calibrator._recency_hours_by_tf.values()))
-            )
+                if signal_config.calibrator_recency_hours_by_tf
+                else None
+            ),
+        )
         _factory_logger.info("Hot reload: calibrator config updated")
     except Exception:
         _factory_logger.exception("Hot reload: failed to update calibrator")
@@ -736,12 +731,12 @@ def register_signal_hot_reload(
             _apply_calibrator_hot_reload(calibrator, signal_config)
         if trade_executor is not None:
             trade_executor.config = build_executor_config(signal_config)
-            trade_executor._execution_gate.config = build_execution_gate_config(
-                signal_config
+            trade_executor.update_execution_gate_config(
+                build_execution_gate_config(signal_config)
             )
         if performance_tracker is not None:
-            performance_tracker._config = build_performance_tracker_config(
-                signal_config
+            performance_tracker.update_config(
+                build_performance_tracker_config(signal_config)
             )
         if pending_entry_manager is not None:
             pending_entry_manager.config = build_pending_entry_config(signal_config)

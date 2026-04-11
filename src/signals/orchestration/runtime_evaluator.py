@@ -33,11 +33,11 @@ def evaluate_strategies(
 ) -> list:
     snapshot_decisions: list = []
     structure_resolved = False
-    strategies = runtime._target_index.get((symbol, timeframe), [])
+    strategies = runtime._target_index.get((symbol, timeframe.upper()), [])
     shard_lock = runtime._get_shard_lock(symbol, timeframe)
 
     soft_parsed: SoftRegimeResult | None = None
-    if runtime._soft_regime_enabled and regime_metadata.get(MK.REGIME_SOFT):
+    if runtime.soft_regime_enabled and regime_metadata.get(MK.REGIME_SOFT):
         try:
             soft_parsed = SoftRegimeResult.from_dict(regime_metadata[MK.REGIME_SOFT])
         except Exception:
@@ -57,17 +57,14 @@ def evaluate_strategies(
         ):
             continue
 
-        allowed_timeframes = runtime.policy.strategy_timeframes.get(strategy, ())
-        if allowed_timeframes and timeframe not in allowed_timeframes:
+        capability = runtime.policy.get_strategy_capability(strategy)
+        if capability is None:
+            logger.warning("Strategy capability missing for %s; skip evaluation", strategy)
+            continue
+        if scope not in capability.valid_scopes:
             continue
 
-        allowed_scopes = runtime._strategy_scopes.get(
-            strategy, frozenset(("intrabar", "confirmed"))
-        )
-        if scope not in allowed_scopes:
-            continue
-
-        required_indicators = runtime._strategy_requirements.get(strategy, ())
+        required_indicators = capability.needed_indicators
         if required_indicators:
             missing = [ind for ind in required_indicators if ind not in indicators]
             if missing:
@@ -206,14 +203,14 @@ def _resolve_event_impact_forecast(
     scope: str,
     event_time: datetime,
 ) -> dict[str, Any] | None:
-    impact_analyzer = getattr(runtime, "_market_impact_analyzer", None)
-    if impact_analyzer is None or scope != "confirmed":
+    if scope != "confirmed":
         return None
     cache = runtime._event_impact_cache
     if event_time >= cache.get("expires_at", event_time):
         try:
             eco_service, importance_min = _resolve_eco_provider(runtime)
-            if eco_service is not None:
+            impact_analyzer = runtime.market_impact_analyzer
+            if eco_service is not None and impact_analyzer is not None:
                 upcoming_events = _get_upcoming_high_impact(eco_service, importance_min)
                 if upcoming_events:
                     cache["data"] = impact_analyzer.get_impact_forecast(
@@ -221,6 +218,8 @@ def _resolve_event_impact_forecast(
                     )
                 else:
                     cache["data"] = None
+            else:
+                cache["data"] = None
             cache["expires_at"] = event_time + timedelta(minutes=5)
         except Exception:
             cache["data"] = None
@@ -229,31 +228,12 @@ def _resolve_event_impact_forecast(
 
 
 def _get_upcoming_high_impact(provider: Any, importance_min: int) -> list[Any]:
-    """查询最近高影响事件，兼容不同 provider API。
-
-    优先 get_high_impact_events（EconomicCalendarService 提供），
-    回退 get_events（TradeGuardProvider 协议外但常见），
-    再回退返回空列表。
-    """
-    from datetime import timezone
-
-    # 优先：完整日历服务 API
-    fn = getattr(provider, "get_high_impact_events", None)
-    if callable(fn):
-        return fn(hours=2, limit=1)
-
-    # 回退：通用 get_events（decay 路径也使用此 API）
-    fn = getattr(provider, "get_events", None)
-    if callable(fn):
-        now = datetime.now(timezone.utc)
-        return fn(
-            start_time=now,
-            end_time=now + timedelta(hours=2),
-            limit=1,
-            importance_min=importance_min,
-        )
-
-    return []
+    """查询未来 2 小时内高影响事件。"""
+    return provider.get_high_impact_events(
+        hours=2,
+        limit=1,
+        importance_min=importance_min,
+    )
 
 
 _EVENT_DECAY_TTL_SECONDS: float = 60.0
@@ -273,7 +253,7 @@ def _compute_economic_event_decay(
       >60 min → 1.0（无衰减）
       30~60 min → 0.85
       15~30 min → 0.55
-      0~15 min → 0.0（完全压制，由 filter chain 的 block 兜底）
+      0~15 min → 0.0（完全压制，由 filter chain 的 block 通道控制）
       事件后 0~5 min → 0.0
       事件后 5~15 min → 0.70（波动未收敛）
       事件后 >15 min → 1.0
@@ -315,23 +295,21 @@ def _compute_economic_event_decay(
 
 def _resolve_eco_provider(
     runtime: "SignalRuntime",
-) -> tuple[Any, int]:
-    """从 filter_chain 或旧属性解析经济日历 provider 及 importance 阈值。
+) -> tuple[Any | None, int]:
+    """从 filter_chain 与 runtime 显式注入的经济日历服务解析 provider 和 importance 阈值。
 
     Returns:
         (provider_or_None, importance_min)
     """
     fc = runtime.filter_chain
-    if fc is not None:
-        eco_filter = getattr(fc, "economic_filter", None)
-        if eco_filter is not None:
-            provider = getattr(eco_filter, "provider", None)
-            if provider is not None:
-                importance = getattr(eco_filter, "importance_min", 2)
-                return provider, int(importance)
-    # 向后兼容：若外部直接注入了 _economic_calendar_service
-    fallback = getattr(runtime, "_economic_calendar_service", None)
-    return fallback, 2
+    if fc is not None and fc.economic_filter is not None:
+        eco_filter = fc.economic_filter
+        if eco_filter.provider is not None:
+            return eco_filter.provider, int(eco_filter.importance_min)
+    injected = runtime.economic_calendar_service
+    if injected is not None:
+        return injected, 2
+    return None, 2
 
 
 def _query_symbol_event_decay(
@@ -341,16 +319,11 @@ def _query_symbol_event_decay(
     from datetime import timezone
 
     from src.calendar.economic_calendar.trade_guard import infer_symbol_context
-
-    get_events_fn = getattr(provider, "get_events", None)
-    if not callable(get_events_fn):
-        return 1.0
-
     now = datetime.now(timezone.utc)
     context = infer_symbol_context(symbol)
 
     # 查询前后 2h 窗口内与该 symbol 货币/国家相关的高影响事件
-    events = get_events_fn(
+    events = provider.get_events(
         start_time=now - timedelta(minutes=20),
         end_time=now + timedelta(hours=2),
         limit=5,
@@ -387,7 +360,7 @@ def _delta_to_decay(delta_minutes: float) -> float:
     elif delta_minutes > 15:
         return 0.55
     elif delta_minutes > 0:
-        return 0.0  # filter chain 的 block 兜底
+        return 0.0  # filter chain 的 block 通道直接截断该时段信号
     elif delta_minutes > -5:
         return 0.0  # 事件刚发布
     elif delta_minutes > -15:
@@ -425,9 +398,7 @@ def apply_confidence_adjustments(
             )
 
     if decision.confidence > 0 and decision.direction in ("buy", "sell"):
-        floor = (
-            runtime._confidence_floor if hasattr(runtime, "_confidence_floor") else 0.10
-        )
+        floor = runtime.confidence_floor
         if decision.confidence < floor:
             decision = _dc.replace(decision, confidence=floor)
     return decision
@@ -460,7 +431,7 @@ def publish_signal_event(
         signal_id=signal_id,
         reason=decision.reason,
     )
-    pipeline_bus = getattr(runtime, "_pipeline_event_bus", None)
+    pipeline_bus = runtime.get_pipeline_event_bus()
     trace_id = transition_metadata.get(MK.SIGNAL_TRACE_ID)
     if pipeline_bus is not None and trace_id:
         # 扩展 payload 包含置信度管线中间值 + Regime 快照
@@ -626,10 +597,10 @@ def market_structure_lookback_bars(
     analyzer = runtime._market_structure_analyzer
     if analyzer is None:
         return None
-    analyzer_config = getattr(analyzer, "config", None)
-    default_lookback = int(getattr(analyzer_config, "lookback_bars", 400))
+    analyzer_config = analyzer.config
+    default_lookback = int(analyzer_config.lookback_bars)
     if str(timeframe).strip().upper() in ("M1", "M5"):
-        return max(2, int(getattr(analyzer_config, "m1_lookback_bars", 120) or 120))
+        return max(2, int(analyzer_config.m1_lookback_bars or 120))
     return default_lookback
 
 
@@ -664,6 +635,7 @@ def get_vote_emit_kwargs(runtime: "SignalRuntime") -> dict[str, Any]:
         transition_confirmed_fn=runtime._transition_confirmed,
         persist_fn=runtime.service.persist_decision,
         publish_fn=runtime._publish_signal_event,
+        emit_voting_completed_fn=runtime._emit_voting_completed,
     )
 
 
@@ -680,11 +652,7 @@ def process_voting(
     event_time: datetime,
     bar_time: datetime,
 ) -> None:
-    # 获取当前事件的 trace_id 用于 pipeline 事件关联
-    trace_id = ""
-    if hasattr(runtime, "_current_trace_id"):
-        trace_id = getattr(runtime, "_current_trace_id", "") or ""
-    pipeline_bus = getattr(runtime, "_pipeline_bus", None)
+    trace_id = str(regime_metadata.get(MK.SIGNAL_TRACE_ID) or "")
     _do_process_voting(
         snapshot_decisions,
         symbol,
@@ -699,7 +667,7 @@ def process_voting(
         voting_engine=runtime._voting_engine,
         voting_group_engines=runtime._voting_group_engines,
         fusion_cache=runtime._vote_fusion_cache,
-        pipeline_bus=pipeline_bus,
+        voting_stats=runtime._voting_stats,
         trace_id=trace_id,
         **get_vote_emit_kwargs(runtime),
     )

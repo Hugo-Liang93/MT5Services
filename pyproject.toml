@@ -83,7 +83,7 @@ Repository = "https://github.com/Hugo-Liang93/MT5Services.git"
 Issues = "https://github.com/Hugo-Liang93/MT5Services/issues"
 
 [project.scripts]
-mt5services = "app:launch"
+mt5services = "src.entrypoint.web:launch"
 
 [tool.black]
 line-length = 88

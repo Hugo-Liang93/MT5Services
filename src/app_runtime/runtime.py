@@ -17,6 +17,21 @@ from src.utils.event_store import close_event_store
 logger = logging.getLogger(__name__)
 
 
+def _call_component_method(component: Any, method_name: str, *args, **kwargs) -> Any:
+    method = getattr(component, method_name, None)
+    if callable(method):
+        try:
+            return method(*args, **kwargs)
+        except Exception:
+            logger.debug(
+                "Failed to invoke %s on component %s",
+                method_name,
+                type(component).__name__,
+            )
+            raise
+    return None
+
+
 class AppRuntime:
     """Manages the lifecycle of components held by an :class:`AppContainer`.
 
@@ -66,21 +81,10 @@ class AppRuntime:
         current_started = time.monotonic()
 
         try:
-            current_step = "storage"
-            storage = c.storage_writer
-            if storage is None:
-                raise RuntimeError("Component 'storage' is None — build_app_container() failed")
-            current_started = time.monotonic()
-            storage.start()
-            self._mark_step(current_step, "ready", current_started)
-            self._record_task_status(current_step, "ready", current_started)
-
-            self._start_performance_tracker()
-            self._restore_trading_state()
-
             current_step = "runtime_mode"
+            self._restore_trading_state()
             current_started = time.monotonic()
-            controller = getattr(c, "runtime_mode_controller", None)
+            controller = c.runtime_mode_controller
             if controller is None:
                 raise RuntimeError("Component 'runtime_mode_controller' is None")
             controller.start()
@@ -111,7 +115,7 @@ class AppRuntime:
         self._status["phase"] = "stopping"
         c = self.container
 
-        controller = getattr(c, "runtime_mode_controller", None)
+        controller = c.runtime_mode_controller
         if controller is not None:
             try:
                 controller.stop()
@@ -144,9 +148,13 @@ class AppRuntime:
             if component is None:
                 continue
             try:
-                getattr(component, method)()
+                _call_component_method(component, method)
             except Exception:
-                logger.debug("Failed to stop %s during shutdown", label, exc_info=True)
+                logger.debug(
+                    "Failed to stop %s during shutdown",
+                    label,
+                    exc_info=True,
+                )
 
         if c.health_monitor is not None:
             try:
@@ -154,13 +162,13 @@ class AppRuntime:
                     "system", "shutdown", 1.0, {"timestamp": "now"}
                 )
             except Exception:
-                pass
+                logger.debug("Failed to record shutdown metric to health monitor", exc_info=True)
 
-        pipeline_bus = getattr(c, "pipeline_event_bus", None)
+        pipeline_bus = c.pipeline_event_bus
         if pipeline_bus is not None:
-            pipeline_bus.shutdown()
+            _call_component_method(pipeline_bus, "shutdown")
 
-        for callback in reversed(list(getattr(c, "shutdown_callbacks", []))):
+        for callback in reversed(list(c.shutdown_callbacks)):
             try:
                 callback()
             except Exception:
@@ -169,7 +177,7 @@ class AppRuntime:
 
         indicator_manager = c.indicator_manager
         if indicator_manager is not None:
-            event_store = getattr(indicator_manager, "event_store", None)
+            event_store = indicator_manager.event_store
             if event_store is not None:
                 try:
                     close_event_store(instance=event_store)
@@ -198,28 +206,8 @@ class AppRuntime:
 
     # ── Internal helpers ────────────────────────────────────────
 
-    def _start_performance_tracker(self) -> None:
-        """从 DB 恢复 PerformanceTracker 的日内统计，防止重启导致学习归零。
-
-        查询过去 24 小时的 signal_outcomes + trade_outcomes，按时间升序重放。
-        非致命：DB 不可用时仅记录 debug 日志，不影响启动流程。
-        """
-        perf = self.container.performance_tracker
-        if perf is None:
-            return
-        sw = self.container.storage_writer
-        if sw is None:
-            return
-        try:
-            rows = sw.db.signal_repo.fetch_recent_outcomes(hours=24)
-            perf.warm_up_from_db(rows)
-        except Exception:
-            logger.debug(
-                "PerformanceTracker: warm-up from DB failed (non-fatal)", exc_info=True
-            )
-
     def _restore_trading_state(self) -> None:
-        recovery = getattr(self.container, "trading_state_recovery", None)
+        recovery = self.container.trading_state_recovery
         trade_module = self.container.trade_module
         if recovery is None:
             return

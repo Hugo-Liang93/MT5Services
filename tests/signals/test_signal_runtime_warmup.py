@@ -19,6 +19,7 @@ from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 class DummySnapshotSource:
     def __init__(self) -> None:
         self.snapshot_listeners: list = []
+        self.current_trace_id: str | None = None
 
     def add_snapshot_listener(self, listener):  # type: ignore[no-untyped-def]
         self.snapshot_listeners.append(listener)
@@ -28,11 +29,28 @@ class DummySnapshotSource:
             item for item in self.snapshot_listeners if item is not listener
         ]
 
+    def get_current_trace_id(self) -> str | None:
+        return self.current_trace_id
+
 
 class DummySignalService:
     def __init__(self) -> None:
         self.evaluate_calls: list = []
         self.persist_calls: list = []
+
+    def strategy_capability_catalog(self, voting_group_policy=None):
+        return [
+            {
+                "name": "rsi_reversion",
+                "valid_scopes": ["confirmed", "intrabar"],
+                "needed_indicators": ["rsi14"],
+                "needs_intrabar": True,
+                "needs_htf": False,
+                "voting_group_policy": "standalone",
+                "regime_affinity": {},
+                "htf_requirements": {},
+            }
+        ]
 
     def strategy_requirements(self, strategy: str):  # type: ignore[no-untyped-def]
         return ("rsi14",)

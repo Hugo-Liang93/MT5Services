@@ -63,6 +63,13 @@ class DummySignalRuntime:
             "confirmed_backpressure_failures": 0,
             "warmup_ready": True,
             "active_confirmed_states": 1,
+            "intrabar_runtime_slos": {
+                "drop_rates": {"intrabar_queue_drop_vs_arrived_pct": 0.4},
+                "queue": {"size": 0, "capacity": 16, "dropped_total": 2},
+                "slo_ms": {"queue_age_p95": 120.0, "processing_latency_p95": 45.0},
+                "sample_counts": {"queue_age_sample_count": 20, "processing_latency_sample_count": 20},
+                "latest": {"queue_age_ms": 80.0, "processing_latency_ms": 35.0},
+            },
         }
 
 
@@ -255,6 +262,7 @@ def test_runtime_trade_and_position_projections_are_normalized() -> None:
     pending = read_model.pending_entries_summary()
 
     assert signal_runtime["queues"]["confirmed"]["size"] == 1
+    assert signal_runtime["intrabar_runtime_slos"]["queue"]["dropped_total"] == 2
     assert executor["signals"]["blocked"] == 1
     assert positions["manager"]["reconcile"]["count"] == 5
     assert pending["entries"][0]["signal_id"] == "sig_1"

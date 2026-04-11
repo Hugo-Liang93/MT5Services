@@ -10,14 +10,14 @@
 
 ### 0.1 各 TF 基线回测
 
-**执行方式**：`tools/backtest_runner.py` 本地执行，不走 API
+**执行方式**：`src.ops.cli.backtest_runner` 本地执行，不走 API
 
 ```bash
 # 各 TF 分别跑，近 3 个月数据
-python tools/backtest_runner.py --timeframe M5 --days 90
-python tools/backtest_runner.py --timeframe M15 --days 90
-python tools/backtest_runner.py --timeframe M30 --days 90
-python tools/backtest_runner.py --timeframe H1 --days 90
+python -m src.ops.cli.backtest_runner --timeframe M5 --days 90
+python -m src.ops.cli.backtest_runner --timeframe M15 --days 90
+python -m src.ops.cli.backtest_runner --timeframe M30 --days 90
+python -m src.ops.cli.backtest_runner --timeframe H1 --days 90
 ```
 
 **产出要求**：每个 TF 记录 PnL / WR / Sharpe / Sortino / MaxDD / 总交易数。汇总为对比表判断哪些 TF 可行。
@@ -210,5 +210,107 @@ API 重启后 → 从 DB 查询历史 WF 结果 list（待做）
 | 项目 | 位置 | 优先级 |
 |------|------|--------|
 | WF 结果内存缓存 | `src/backtesting/api.py` | 中（见 2D）|
+
+## 60/20/20 模块化执行（进行中）
+
+### P6: SignalRuntime 职责收敛（2026-04-10）
+
+已完成：
+
+- 在 `src/signals/orchestration/runtime.py` 引入 `QueueRunner / RuntimeStatusBuilder / SignalLifecyclePolicy`，职责切到 `runtime_components.py`。
+- 清理 `SignalRuntime.start()/stop()` 队列生命周期，`stop()` 对 WAL 队列保留重放语义，不做 in-memory 清理。
+- `runtime.py` 中的队列入队、出队、状态快照、状态机更新入口已走组件化端口。
+
+验收前置（本里程碑）：
+
+- 私有属性越界访问：`SignalRuntime._on_snapshot`、`_enqueue` 等不再直接承担队列与状态分拆逻辑，改为组件调用。
+- 已消除已知 `SignalRuntime` 内部收口残留（`@staticmethod` 引用 `self`、`else` 缩进/清队列语义错误）。
+
+下一步（本阶段收尾）：
+
+- 对 `TradeExecutor` 做同级别拆分（`PreTradePipeline / ExecutionDecisionEngine / ExecutionResultRecorder`）
+- 与 `backtesting` 对齐 `capability` 语义前，补齐 `SignalModule` 能力索引只读视图，进入 60/20/20 阶段 B。
+
+### P6A: TradeExecutor 预拆分（2026-04-10）
+
+已落地：
+
+- 新增 `src/trading/execution/pre_trade_pipeline.py`
+- 新增 `src/trading/execution/decision_engine.py`
+- 新增 `src/trading/execution/result_recorder.py`
+- `executor.py` 已继续收口：
+  - `confirmed` 过滤改走 `PreTradePipeline.run_confirmed`
+  - `intrabar` 前置门禁改走 `PreTradePipeline.run_intrabar`
+  - 执行动作（市价/挂单）改走 `ExecutionDecisionEngine.execute`
+- confirmed 溢出事件由 `ExecutionResultRecorder.record_overflow` 统一记录，状态统计与持久化失败策略集中管理。
+
+收尾目标（本阶段）：
+
+- 将 `_handle_confirmed` 与 `_handle_intrabar_entry` 中剩余“参数构建后状态分发”职责再下沉，减少 `executor.py` 逻辑体量。
+
+### P6A 收尾（2026-04-10）
+
+- 已补齐 `SignalModule` 策略能力索引（`strategy_capability_catalog` / `strategy_capability_contract`），形成只读能力快照：`needs_intrabar`、`valid_scopes`、`needed_indicators`、`needs_htf`、`voting_group_policy`、`regime_affinity`、`htf_requirements`。  
+- `SignalRuntime` 已接入 `SignalPolicy.set_strategy_capability_contract()`，运行时从 `SignalPolicy` 查询能力快照进行 scope/指标门控。
+- 回测层已改为消费能力快照：
+  - `src/backtesting/engine/runner.py`：基于能力索引构建 `confirmed` 目标策略、指标需求集合；
+  - `src/backtesting/engine/signals.py`：基于能力索引补齐 scope/needed-indicators 门控。
+- 继续收口：`SignalRuntime` 已将能力快照绑定到 `SignalPolicy`，下一步补齐 status/策略治理口径对齐和回归验证。
+
+### P6B: 可扩展声明化路径（进行中）
+
+- 先决：能力快照已落地，回测与策略管理共享同一能力语义。
+- 已完成（2026-04-10）：
+  - `SignalRuntime` 已接入 `SignalModule.strategy_capability_catalog()`：启动时构建策略能力索引；
+  - `evaluate_strategies` 运行时门控改用能力快照（`valid_scopes`、`needed_indicators`），与回测确认路径语义对齐。
+- 新增 `SignalModule.strategy_capability_matrix()`：提供只读能力清单视图（`valid_scopes/needed_indicators/needs_*`）；
+  `SignalRuntime` status 与回测评估均使用该能力视图，不再走分散的 `required_indicators` 推断路径。
+- 当前下一步补齐：
+- 已完成（2026-04-10）：能力清单统一口收口，`SignalPolicy` 新增 `strategy_capability_contract()` 与 `get_warmup_required_indicators()`，`runtime_warmup` 与 `runtime_status` 全链路改走能力口；`dispatch_operation` 已补齐能力清单视图。
+- `SignalRuntime` 状态快照已包含 `strategy_capability_reconciliation`，形成 `SignalModule` 与 `SignalPolicy` 能力对账入口。
+- 这一阶段补齐：`/admin/strategies/capability-contract` 提供 module/runtime 完整能力快照；对账已覆盖 `voting_group_policy / regime_affinity / htf_requirements`。
+- 已完成（2026-04-11）：新增 `strategy_capability_execution_plan` 统一快照（runtime/readmodel），显式输出 `configured/scheduled/filtered` 目标计数、scope 覆盖、`needed_indicators` 汇总与 `strategy_timeframes` 过滤原因。
+- 已完成（2026-04-11）：`BacktestEngine` 增加同语义 `strategy_capability_execution_plan()`，并写入 `BacktestResult.strategy_capability_execution_plan`，回测与实盘可直接对齐能力调度计划。
+- 已完成（2026-04-11）：新增 `GET /admin/strategies/capability-execution-plan`，提供 `module/runtime/backtest` 三方执行计划快照与差异对账（支持可选 `run_id`）。
+- 下一步：把能力快照治理点做成 12 点可观测项（`voting`、`intrabar`、`scope`、`丢弃率`、`回放一致性`）并形成统一回归检查用例，继续推进“新增扩展路径 = 改声明 + 改配置”。
+
+### P6B.1: 能力清单标准化（完成）
+
+- 新增 `SignalModule.strategy_capability_catalog()`，作为标准输入契约，替代零散的能力构造路径。
+- `SignalRuntime` 与 `BacktestEngine` 初始化均改为只读该口：
+  - `src/signals/orchestration/runtime.py`：`_refresh_strategy_capabilities` 改走 `strategy_capability_catalog`。
+  - `src/backtesting/engine/runner.py`：能力索引改走 `strategy_capability_catalog`。
+- 产物约束：新增策略改 `SignalStrategy` 声明（`preferred_scopes`、`required_indicators`、`htf_required_indicators`、`regime_affinity`）即可，无需额外 runtime 分支。
+
+#### 下一步建议
+
+- 补一条“能力快照对账”检查点（`SignalModule.strategy_capability_contract()` ↔ `SignalPolicy.strategy_capability_contract()`）已放入 `service_diagnostics` 与 admin 诊断视图（`/admin/strategies/capability-reconciliation`、`/admin/strategies/capability-contract`），作为回放一致性的最小回归。
+
+### P5: PendingEntry 职责收敛
+
+已完成（进行中）：把 `src/trading/pending/manager.py` 的大块私有逻辑切到子模块，目标是让 `PendingEntryManager` 保持门面职责：  
+
+- `src/trading/pending/lifecycle.py`：MT5 挂单生命周期（track/check state/check expiry/cancel）  
+- `src/trading/pending/monitoring.py`：监控循环、价格检查、入场填单、超时降级、队列消费  
+
+当前状态图（关键节点）：
+
+```text
+TradeExecutor.submit_pending_entry
+  → PendingEntryManager.submit
+  → [monitor_thread] PendingEntryMonitoringService.check_all_entries
+      ├─ check_price / get_spread_points
+      ├─ fill_entry（入队 _FillResult）
+      └─ expire_entry（支持 timeout_fallback_atr）
+  → [fill_worker] PendingEntryMonitoringService.run_fill_worker
+      → execute_fn(TradeExecutor)
+  → [lifecycle] PendingOrderLifecycleManager.check_mt5_order_state
+  → [lifecycle] PendingOrderLifecycleManager.check_mt5_order_expiry
+  → [snapshot] PendingEntrySnapshotService (status / active_execution_contexts)
+```
+
+> 采用“状态流可观测”原则：`status()` 与 `active_execution_contexts()` 只读聚合 `_pending` 与 `_mt5_orders`，不再直接承载执行算法。
+
+> 2026-04-10 已继续：将状态快照聚合下沉到 `src/trading/pending/snapshot.py`，`PendingEntryManager` 不再保留 status 投影计算路径。
 
 > 以下已清理（2026-04-07）：旧路由兼容层（已不存在）、`get_ohlc()` 别名（已移除）、manager.py 转发方法（已精简至合理门面）、SignalRuntime 1409→1036 行（warmup/metadata 提取）

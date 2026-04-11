@@ -5,7 +5,14 @@ from typing import Any, Callable, Dict, Optional
 
 from src.signals.metadata_keys import MetadataKey as MK
 
+from ..reasons import (
+    REASON_MATCHED_LIVE_POSITION,
+    REASON_MATCHED_TRACKED_POSITION,
+    REASON_PLACED_BY_EXECUTOR,
+    REASON_RECOVERED_FROM_MT5_WITHOUT_LOCAL_STATE,
+)
 from ..positions.manager import TrackedPosition
+from ..trade_events import POSITION_TRACKED
 from .models import (
     PendingOrderStateRecord,
     PositionRuntimeStateRecord,
@@ -117,7 +124,7 @@ class TradingStateStore:
             created_at=self._datetime_or_none(info.get("created_at")) or now,
             expires_at=self._datetime_or_none(info.get("expires_at")),
             status="placed",
-            status_reason="placed_by_executor",
+            status_reason=REASON_PLACED_BY_EXECUTOR,
             last_seen_at=now,
             metadata=self._pending_metadata(info),
             updated_at=now,
@@ -134,7 +141,7 @@ class TradingStateStore:
             **self._pending_state_from_info(
                 info,
                 status="filled",
-                status_reason=str(state.get("reason") or "matched_live_position"),
+                status_reason=str(state.get("reason") or REASON_MATCHED_LIVE_POSITION),
                 updated_at=now,
             ),
             filled_at=now,
@@ -206,7 +213,7 @@ class TradingStateStore:
                 self._row_value(order_row, "time_setup", None)
             ),
             status="orphan",
-            status_reason="recovered_from_mt5_without_local_state",
+            status_reason=REASON_RECOVERED_FROM_MT5_WITHOUT_LOCAL_STATE,
             last_seen_at=now,
             metadata={},
             updated_at=now,
@@ -215,7 +222,7 @@ class TradingStateStore:
         self._cache_pending_record(record)
 
     def record_position_tracked(
-        self, pos: TrackedPosition, reason: str = "tracked"
+        self, pos: TrackedPosition, reason: str = POSITION_TRACKED
     ) -> None:
         existing = self._position_cache.get(int(pos.ticket)) or {}
         pending_row = self._match_pending_for_position(pos)
@@ -226,7 +233,7 @@ class TradingStateStore:
                 state={
                     "ticket": int(pos.ticket),
                     "fill_price": pos.entry_price,
-                    "reason": "matched_tracked_position",
+                    "reason": REASON_MATCHED_TRACKED_POSITION,
                 },
             )
             pending_row = (
@@ -260,7 +267,7 @@ class TradingStateStore:
             regime=pos.regime,
             opened_at=pos.opened_at,
             last_seen_at=now,
-            last_managed_at=now if reason != "tracked" else None,
+            last_managed_at=now if reason != POSITION_TRACKED else None,
             highest_price=pos.highest_price,
             lowest_price=pos.lowest_price,
             current_price=pos.current_price,
@@ -386,12 +393,12 @@ class TradingStateStore:
             if row is not None:
                 candidates.append(row)
         if not candidates and signal_id:
-            fallback = [
+            signal_id_matches = [
                 row
                 for row in self._pending_cache.values()
                 if self._str_or_none(row.get("signal_id")) == signal_id
             ]
-            candidates.extend(fallback)
+            candidates.extend(signal_id_matches)
         if not candidates:
             return None
         statuses = {"placed", "missing"}

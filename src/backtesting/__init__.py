@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import data
 from .component_factory import build_backtest_components
 from .data import CachedDataLoader
 from .engine import BacktestEngine, PortfolioTracker
@@ -24,6 +25,7 @@ __all__ = [
     "BacktestEngine",
     "BacktestFilterConfig",
     "build_backtest_components",
+    "data",
     "CachedDataLoader",
     "BacktestFilterSimulator",
     "BacktestFilterStats",

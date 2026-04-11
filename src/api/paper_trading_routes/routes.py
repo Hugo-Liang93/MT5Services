@@ -111,8 +111,8 @@ def paper_trading_stop() -> ApiResponse:
     bridge.stop()
     # 保存 session
     tracker = deps._container.paper_trade_tracker if deps._container else None  # type: ignore[union-attr]
-    if tracker is not None and bridge._session is not None:
-        tracker.save_session(bridge._session)
+    if tracker is not None and bridge.session is not None:
+        tracker.save_session(bridge.session)
     return ApiResponse(success=True, data=bridge.status())
 
 

@@ -23,6 +23,10 @@ from .policy import RuntimeSignalState
 logger = logging.getLogger(__name__)
 
 
+def _inc_counter(target: dict[str, Any], key: str, delta: int = 1) -> None:
+    target[key] = int(target.get(key, 0)) + delta
+
+
 def fuse_vote_decisions(
     symbol: str,
     timeframe: str,
@@ -159,8 +163,9 @@ def process_voting(
     transition_confirmed_fn: Callable[..., Optional[Dict[str, Any]]],
     persist_fn: Callable[..., Any],
     publish_fn: Callable[..., None],
-    pipeline_bus: Optional[Any] = None,
+    emit_voting_completed_fn: Optional[Callable[..., None]] = None,
     trace_id: str = "",
+    voting_stats: dict[str, Any] | None = None,
 ) -> None:
     """Cross-strategy voting: dispatch to named voting groups or global consensus.
 
@@ -173,8 +178,11 @@ def process_voting(
         All independent strategies participate in voting,
         producing a strategy="consensus" signal.
     """
+    if voting_stats is not None:
+        _inc_counter(voting_stats, "calls")
     if not snapshot_decisions:
         return
+    _inc_counter(voting_stats, "input_decisions", len(snapshot_decisions))
     snapshot_decisions = fuse_vote_decisions(
         symbol,
         timeframe,
@@ -183,6 +191,8 @@ def process_voting(
         snapshot_decisions,
         fusion_cache,
     )
+    if voting_stats is not None:
+        _inc_counter(voting_stats, "fused_decisions", len(snapshot_decisions))
     if not snapshot_decisions:
         return
 
@@ -196,12 +206,24 @@ def process_voting(
 
     # Multi-group mode
     if voting_group_engines:
+        if voting_stats is not None:
+            voting_stats["mode"] = "group"
+            voting_stats["last_path"] = "group"
         for group_config, group_engine in voting_group_engines:
+            if voting_stats is not None:
+                group_stats = voting_stats.setdefault(
+                    "groups", {}
+                ).setdefault(
+                    group_config.name,
+                    {"attempts": 0, "produced": 0, "no_decision": 0},
+                )
             group_decisions = [
                 d for d in snapshot_decisions if d.strategy in group_config.strategies
             ]
             if not group_decisions:
                 continue
+            if voting_stats is not None:
+                _inc_counter(group_stats, "attempts")
             vote_result = group_engine.vote(
                 group_decisions,
                 regime=regime,
@@ -209,8 +231,8 @@ def process_voting(
                 exclude_composite=False,
             )
             # 发射投票完成事件（无论是否产生信号）
-            if pipeline_bus is not None and hasattr(pipeline_bus, "emit_voting_completed"):
-                pipeline_bus.emit_voting_completed(
+            if emit_voting_completed_fn is not None:
+                emit_voting_completed_fn(
                     trace_id=trace_id,
                     symbol=symbol,
                     timeframe=timeframe,
@@ -227,7 +249,11 @@ def process_voting(
                     },
                 )
             if vote_result is None:
+                if voting_stats is not None:
+                    _inc_counter(group_stats, "no_decision")
                 continue
+            if voting_stats is not None:
+                _inc_counter(group_stats, "produced")
             process_and_emit_vote_signal(
                 vote_result,
                 group_config.name,
@@ -246,9 +272,17 @@ def process_voting(
     # Single consensus mode
     if voting_engine is None:
         return
+    if voting_stats is not None:
+        voting_stats["mode"] = "single"
+        voting_stats["last_path"] = "consensus"
+        consensus_stats = voting_stats.setdefault(
+            "consensus",
+            {"attempts": 0, "produced": 0, "no_decision": 0},
+        )
+        _inc_counter(consensus_stats, "attempts")
     consensus = voting_engine.vote(snapshot_decisions, regime=regime, scope=scope)
-    if pipeline_bus is not None and hasattr(pipeline_bus, "emit_voting_completed"):
-        pipeline_bus.emit_voting_completed(
+    if emit_voting_completed_fn is not None:
+        emit_voting_completed_fn(
             trace_id=trace_id,
             symbol=symbol,
             timeframe=timeframe,
@@ -265,7 +299,11 @@ def process_voting(
             },
         )
     if consensus is None:
+        if voting_stats is not None:
+            _inc_counter(consensus_stats, "no_decision")
         return
+    if voting_stats is not None:
+        _inc_counter(consensus_stats, "produced")
     process_and_emit_vote_signal(
         consensus,
         voting_engine.CONSENSUS_STRATEGY_NAME,

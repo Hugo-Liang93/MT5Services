@@ -300,8 +300,7 @@ class TradingModule:
                 trading_service,
                 _account_service,
             ):
-                client = getattr(trading_service, "client", None)
-                status = client.health() if client and hasattr(client, "health") else {}
+                status = trading_service.health()
                 if not isinstance(status, dict):
                     status = {"status": str(status)}
                 return {

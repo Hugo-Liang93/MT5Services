@@ -328,7 +328,7 @@ async def get_sl_tp_history(
     read_model: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[list]:
     try:
-        db = read_model._storage_writer.db
+        db = read_model.db_writer
         rows = db.fetch_position_sl_tp_history(
             position_ticket=ticket, limit=limit, offset=offset,
         )

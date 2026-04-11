@@ -276,7 +276,7 @@ Layer 3: 分析器输出 → MiningResult → top_findings
 **必须多 TF 挖掘**，不得在单 TF 上得出结论：
 
 ```bash
-python tools/mining_runner.py --tf M15,M30,H1 --compare
+python -m src.ops.cli.mining_runner --tf M15,M30,H1 --compare
 ```
 
 ### 信号分类
@@ -368,5 +368,5 @@ features =                         # 空=全部内置特征
 | `src/research/cross_tf_analyzer.py` | 跨 TF 一致性分析 |
 | `src/research/config.py` | 配置加载（含 RuleMiningConfig） |
 | `src/research/models.py` | 结果数据模型 |
-| `tools/mining_runner.py` | CLI 工具 |
+| `src/ops/cli/mining_runner.py` | CLI 工具 |
 | `config/research.ini` | 配置文件 |

@@ -41,14 +41,14 @@ class ConfigWatcher:
         self._thread: Optional[threading.Thread] = None
         self._init_file_mtimes()
 
-    def _iter_config_files(self):
+    def iter_config_files(self):
         yield from self.config_dir.glob("*.ini")
         indicators_json = self.config_dir / "indicators.json"
         if indicators_json.exists():
             yield indicators_json
 
     def _init_file_mtimes(self):
-        for config_file in self._iter_config_files():
+        for config_file in self.iter_config_files():
             try:
                 self.file_mtimes[str(config_file)] = config_file.stat().st_mtime
             except OSError:
@@ -56,6 +56,9 @@ class ConfigWatcher:
 
     def register_callback(self, callback: Callable[[ConfigChangeEvent], None]):
         self.callbacks.append(callback)
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -85,7 +88,7 @@ class ConfigWatcher:
             self._stop.wait(self.check_interval)
 
     def _check_for_changes(self):
-        for config_file in self._iter_config_files():
+        for config_file in self.iter_config_files():
             file_path = str(config_file)
             try:
                 current_mtime = config_file.stat().st_mtime
@@ -198,7 +201,7 @@ class FileConfigManager:
             self._change_callbacks.remove(callback)
 
     def _load_all_configs(self):
-        for config_file in self.watcher._iter_config_files():
+        for config_file in self.watcher.iter_config_files():
             self._load_config(config_file.name)
 
     def _load_config(self, filename: str):
@@ -415,7 +418,7 @@ class FileConfigManager:
     def get_stats(self) -> Dict[str, Any]:
         return {
             "config_files": list(self.configs.keys()),
-            "watcher_running": self.watcher._thread.is_alive() if self.watcher._thread else False,
+            "watcher_running": self.watcher.is_running(),
             "validation_errors": self.validate_all(),
         }
 

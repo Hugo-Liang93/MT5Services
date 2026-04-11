@@ -61,7 +61,7 @@ class TimescaleSignalRepository:
             if self._storage_writer is not None:
                 self._storage_writer.enqueue("signal_preview", record.to_row())
             else:
-                # fallback: 无 StorageWriter 时同步写入（standalone/测试模式）
+                # 无 StorageWriter 时改为同步写入（standalone/测试模式）
                 self._db.write_signal_preview_events([record.to_row()])
             return
         self._db.write_signal_events([record.to_row()])

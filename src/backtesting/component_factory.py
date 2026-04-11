@@ -118,7 +118,7 @@ def build_backtest_components(
 
     signal_module = SignalModule(
         indicator_source=_NullIndicatorSource(),
-        strategies=build_default_strategy_set(htf_cache=htf_cache),
+        strategies=build_default_strategy_set(),
         regime_detector=regime_detector,
         soft_regime_enabled=True,
         performance_tracker=performance_tracker,

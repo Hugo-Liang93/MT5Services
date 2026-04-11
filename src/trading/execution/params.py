@@ -77,13 +77,13 @@ def compute_params(
 
 
 def get_account_balance(executor: "TradeExecutor") -> float | None:
-    if executor._account_balance_getter is not None:
+    if executor.account_balance_getter is not None:
         try:
-            return float(executor._account_balance_getter())
+            return float(executor.account_balance_getter())
         except (TypeError, ValueError, AttributeError):
             logger.debug("account_balance_getter failed", exc_info=True)
     try:
-        info = executor._trading.account_info()
+        info = executor.trading.account_info()
         if isinstance(info, dict):
             return float(info.get("equity") or info.get("balance") or 0)
         return float(

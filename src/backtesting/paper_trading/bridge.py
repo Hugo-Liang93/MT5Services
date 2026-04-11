@@ -65,7 +65,7 @@ class PaperTradingBridge:
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
 
-        # Session
+        # Session（公开只读访问供装配层 stop 流程使用）
         self._session: Optional[PaperSession] = None
         self._portfolio: Optional[PaperPortfolio] = None
         self._active_symbols: set[str] = set()
@@ -90,6 +90,11 @@ class PaperTradingBridge:
         """设置实验追踪上下文（需在 start() 之前调用）。"""
         self._experiment_id = experiment_id
         self._source_backtest_run_id = source_backtest_run_id
+
+    @property
+    def session(self) -> Optional["PaperSession"]:
+        """当前 session（只读，供装配层 stop 流程访问）。"""
+        return self._session
 
     def start(self) -> None:
         """启动 Paper Trading session 和价格监控线程。"""

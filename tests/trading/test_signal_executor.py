@@ -15,6 +15,7 @@ from src.trading.execution import ExecutionGate, ExecutionGateConfig
 from src.trading.execution import TradeParameters
 from src.trading.execution import ExecutorConfig, TradeExecutor
 from src.trading.execution.pending_orders import inspect_pending_mt5_order
+from src.trading.execution.reasons import REASON_LIMIT_REACHED
 
 
 def _fire(executor: TradeExecutor, event: SignalEvent) -> None:
@@ -66,6 +67,9 @@ class DummyPositionManager:
         }
         self._positions.append(tracked)
         return tracked
+
+    def is_after_eod_today(self) -> bool:
+        return False
 
 
 class DummyTradeOutcomeTracker:
@@ -240,7 +244,7 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
         "max_concurrent_positions_per_symbol"
     )
     assert received[-1].type == PIPELINE_EXECUTION_BLOCKED
-    assert received[-1].payload["reason"] == "position_limit"
+    assert received[-1].payload["reason"] == REASON_LIMIT_REACHED
 
 
 def test_trade_executor_skips_when_same_strategy_direction_position_is_active() -> None:

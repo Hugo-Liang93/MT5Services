@@ -282,7 +282,7 @@ class IncrementalIndicator(ABC):
         """
         增量计算（子类可以重写）
         
-        默认实现回退到完整计算
+        默认实现切换为完整计算路径
         
         Args:
             bars: 新的K线数据

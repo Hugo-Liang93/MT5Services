@@ -21,11 +21,27 @@ class EconomicCalendarRuleProvider(Protocol):
 
 
 class AccountStateProvider(Protocol):
-    def account_info(self): ...
+    def account_info(self) -> AccountSnapshot: ...
 
-    def positions(self, symbol: Optional[str] = None): ...
+    def positions(self, symbol: Optional[str] = None) -> List[PositionSnapshot]:
+        ...
 
-    def orders(self, symbol: Optional[str] = None): ...
+    def orders(self, symbol: Optional[str] = None) -> List[PositionSnapshot]:
+        ...
+
+
+class PositionSnapshot(Protocol):
+    type: int
+    volume: float
+
+
+class AccountSnapshot(Protocol):
+    balance: float
+    equity: float
+    margin_free: float | None
+    day_start_balance: float | None
+    daily_realized_pnl: float | None
+    daily_pnl: float | None
 
 
 @dataclass
@@ -164,12 +180,12 @@ class AccountSnapshotRule(RiskRule):
                 same_side_volume = 0.0
                 for position in symbol_positions:
                     # 单品种 MT5 持仓方向：type 0=buy, 1=sell
-                    pos_type = int(getattr(position, "type", -1))
+                    pos_type = int(position.type)
                     if (intent_side == "buy" and pos_type == 0) or (
                         intent_side == "sell" and pos_type == 1
                     ):
                         same_side_volume += float(
-                            getattr(position, "volume", 0.0) or 0.0
+                            position.volume or 0.0
                         )
                 projected_net_lots = same_side_volume + float(
                     context.intent.volume or 0.0
@@ -297,31 +313,23 @@ class DailyLossLimitRule(RiskRule):
                 "source": "intent_metadata.daily_loss_pct",
             }
 
-        if isinstance(account_info, dict):
-            balance = self._numeric(account_info.get("balance"))
-            equity = self._numeric(account_info.get("equity"))
-            start_balance = self._numeric(
-                account_info.get("day_start_balance")
-                or metadata.get("day_start_balance")
-            )
+        balance = self._numeric(account_info.balance)
+        equity = self._numeric(account_info.equity)
+        start_balance = self._numeric(
+            metadata.get("day_start_balance")
+            if "day_start_balance" in metadata
+            else account_info.day_start_balance
+        )
+        daily_pnl = self._numeric(
+            metadata.get("daily_realized_pnl")
+            if "daily_realized_pnl" in metadata
+            else account_info.daily_realized_pnl
+        )
+        if daily_pnl is None:
             daily_pnl = self._numeric(
-                account_info.get("daily_realized_pnl")
-                or account_info.get("daily_pnl")
-                or metadata.get("daily_realized_pnl")
-                or metadata.get("daily_pnl")
-            )
-        else:
-            balance = self._numeric(getattr(account_info, "balance", None))
-            equity = self._numeric(getattr(account_info, "equity", None))
-            start_balance = self._numeric(
-                getattr(account_info, "day_start_balance", None)
-                or metadata.get("day_start_balance")
-            )
-            daily_pnl = self._numeric(
-                getattr(account_info, "daily_realized_pnl", None)
-                or getattr(account_info, "daily_pnl", None)
-                or metadata.get("daily_realized_pnl")
-                or metadata.get("daily_pnl")
+                metadata.get("daily_pnl")
+                if "daily_pnl" in metadata
+                else account_info.daily_pnl
             )
 
         # 当两个数据源都可用时，取更保守（更高亏损）的估计。
@@ -414,10 +422,7 @@ class MarginAvailabilityRule(RiskRule):
                 )
             ]
 
-        if isinstance(account_info, dict):
-            free_margin = self._numeric(account_info.get("margin_free"))
-        else:
-            free_margin = self._numeric(getattr(account_info, "margin_free", None))
+        free_margin = self._numeric(account_info.margin_free)
 
         if free_margin is None:
             return [

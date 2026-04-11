@@ -54,8 +54,19 @@ class RuntimeModeController:
     def stop(self) -> None:
         self._stop_event.set()
         if self._monitor_thread is not None:
-            self._monitor_thread.join(timeout=5.0)
-            self._monitor_thread = None
+            thread = self._monitor_thread
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                logger.warning(
+                    "Runtime mode monitor thread did not exit within timeout: %s",
+                    thread.name,
+                )
+            else:
+                self._monitor_thread = None
+
+    @property
+    def is_running(self) -> bool:
+        return bool(self._monitor_thread and self._monitor_thread.is_alive())
 
     def apply_mode(self, mode: RuntimeMode | str, *, reason: str) -> dict[str, object]:
         target = mode if isinstance(mode, RuntimeMode) else RuntimeMode(str(mode).strip().lower())
@@ -69,6 +80,7 @@ class RuntimeModeController:
             return {
                 "current_mode": self._current_mode.value if self._current_mode else None,
                 "configured_mode": self._policy.initial_mode.value,
+                "monitor_running": self.is_running,
                 "after_eod_action": self._policy.after_eod_action.value,
                 "auto_check_interval_seconds": self._policy.auto_check_interval_seconds,
                 "is_auto_transitioned": self._is_auto_transitioned,

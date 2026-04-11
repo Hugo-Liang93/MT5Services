@@ -8,9 +8,6 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
-from uuid import uuid4
-
-from src.utils.common import timeframe_seconds
 
 from ..evaluation.regime import (
     MarketRegimeDetector,
@@ -21,7 +18,7 @@ from ..evaluation.regime import (
 from ..execution.filters import SignalFilterChain
 from ..metadata_keys import MetadataKey as MK
 from ..models import SignalEvent
-from ..service import SignalModule
+from ..service import SignalModule, StrategyCapability
 from .htf_resolver import parse_htf_config, resolve_htf_indicators
 from .policy import RuntimeSignalState, SignalPolicy
 from .runtime_evaluator import (
@@ -38,23 +35,17 @@ from .runtime_evaluator import (
     resolve_market_structure_context as _runtime_resolve_market_structure_context,
 )
 from .runtime_evaluator import transition_and_publish as _runtime_transition_and_publish
-from .runtime_metadata import build_snapshot_metadata
-from .runtime_processing import apply_filter_chain as _runtime_apply_filter_chain
-from .runtime_processing import dequeue_event as _runtime_dequeue_event
 from .runtime_processing import detect_regime as _runtime_detect_regime
 from .runtime_processing import is_stale_intrabar as _runtime_is_stale_intrabar
 from .runtime_processing import process_next_event as _runtime_process_next_event
-from .runtime_recovery import (
-    restore_confirmed_state as _runtime_restore_confirmed_state,
+from .runtime_processing import apply_filter_chain as _runtime_apply_filter_chain
+from .runtime_components import (
+    QueueRunner,
+    RuntimePolicyCoordinator,
+    RuntimeLifecycleManager,
+    RuntimeStatusBuilder,
+    SignalLifecyclePolicy,
 )
-from .runtime_recovery import restore_state as _runtime_restore_state
-from .runtime_warmup import check_warmup_barrier
-from .state_machine import build_transition_metadata
-from .state_machine import is_new_snapshot as _sm_is_new_snapshot
-from .state_machine import mark_emitted as _sm_mark_emitted
-from .state_machine import should_emit as _sm_should_emit
-from .state_machine import snapshot_signature as _sm_snapshot_signature
-from .state_machine import transition_confirmed
 from .vote_processor import fuse_vote_decisions
 from .voting import StrategyVotingEngine
 
@@ -72,12 +63,20 @@ class SnapshotSource(Protocol):
         ],
     ) -> None: ...
 
+    def get_current_trace_id(self) -> str | None: ...
+
     def remove_snapshot_listener(
         self,
         listener: Callable[
             [str, str, datetime, dict[str, dict[str, float]], str], None
         ],
     ) -> None: ...
+    def get_indicator(
+        self, symbol: str, timeframe: str, indicator_name: str
+    ) -> dict[str, float] | None: ...
+    def get_performance_stats(self) -> dict[str, Any]: ...
+    def get_current_spread(self, symbol: str) -> float: ...
+    def get_symbol_point(self, symbol: str) -> float | None: ...
 
 
 @dataclass(frozen=True)
@@ -111,40 +110,32 @@ class SignalRuntime:
         self.snapshot_source = snapshot_source
         self.enable_confirmed_snapshot = bool(enable_confirmed_snapshot)
         self.policy = policy or SignalPolicy()
+        self._policy_coordinator = RuntimePolicyCoordinator(self)
         self.filter_chain = filter_chain
         # Regime 检测在 process_next_event 主循环内完成，结果写入 metadata 后再传给 service.evaluate()。
-        # 若外部未显式注入 detector，则优先复用 service 上挂载的 detector。
+        # 若外部未显式注入 detector，则优先复用 service 的公开端口 regime_detector。
         # 这样每个快照只做一次 regime 判定，避免重复计算。
         self._regime_detector: MarketRegimeDetector = (
-            regime_detector
-            or getattr(service, "_regime_detector", None)
-            or MarketRegimeDetector()
+            regime_detector or self._resolve_regime_detector(service)
         )
-        self._soft_regime_enabled = bool(getattr(service, "soft_regime_enabled", False))
+        self._confidence_floor: float = self._resolve_float_value(
+            service, "confidence_floor", 0.10
+        )
+        self._confidence_floor_min_affinity: float = self._resolve_float_value(
+            service, "confidence_floor_min_affinity", 0.15
+        )
+        self._soft_regime_enabled: bool = self._resolve_bool_value(
+            service, "soft_regime_enabled", False
+        )
+        self._has_service_session_reset: bool = hasattr(service, "reset_performance_session")
         self._market_structure_analyzer = market_structure_analyzer
         # policy 在未配置 voting_groups 时，使用单层 consensus 投票引擎。
         # voting_groups 会为每个分组创建独立 engine，并在组内汇总策略投票。
-        # 一旦启用 voting_groups，全局 consensus engine 就不再参与。
-        self._voting_engine: StrategyVotingEngine | None = (
-            StrategyVotingEngine(
-                consensus_threshold=self.policy.voting_consensus_threshold,
-                min_quorum=self.policy.voting_min_quorum,
-                disagreement_penalty=self.policy.voting_disagreement_penalty,
-            )
-            if self.policy.voting_enabled and not self.policy.voting_groups
-            else None
-        )
+        self._voting_engine: StrategyVotingEngine | None = None
         # 分组投票路径维护 (group_config, engine) 对，逐组完成 vote fusion。
-        self._voting_group_engines: list[tuple[Any, StrategyVotingEngine]] = (
-            self._build_group_engines(self.policy)
-        )
+        self._voting_group_engines: list[tuple[Any, StrategyVotingEngine]] = []
         # voting group 成员只参与组内投票，不再作为独立策略单独发信号。
-        self._voting_group_members: frozenset[str] = (
-            frozenset(
-                name for group in self.policy.voting_groups for name in group.strategies
-            )
-            - self.policy.standalone_override
-        )
+        self._voting_group_members: frozenset[str] = frozenset()
         # RegimeTracker 按 (symbol, timeframe) 建立，维护每个交易目标的状态稳定度。
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._regime_trackers_lock = threading.Lock()
@@ -155,32 +146,10 @@ class SignalRuntime:
         self._LISTENER_MAX_CONSECUTIVE_FAILURES = 10
         self._targets = list(targets)
         self._target_index: dict[tuple[str, str], list[str]] = {}
-        self._strategy_requirements: dict[str, tuple[str, ...]] = {}
-        # 记录每个策略希望接收的 scope 集合。
-        # 优先读取 strategy_impl.preferred_scopes，
-        # 未声明偏好时默认同时接收 confirmed 与 intrabar。
-        self._strategy_scopes: dict[str, frozenset[str]] = {}
-        # 策略 regime_affinity 预先缓存，避免在 process_next_event 中重复 getattr/service 调用。
-        self._strategy_affinity: dict[str, dict[RegimeType, float]] = {}
+        self._apply_policy(self.policy)
         # HTF 指标配置由 SignalModule.htf_target_config() 从策略声明自动推导。
         # 结构为 strategy_name -> {tf: [indicator_names...]}
         self._strategy_htf_config = self._parse_htf_config(htf_target_config or {})
-        for target in self._targets:
-            self._target_index.setdefault((target.symbol, target.timeframe), []).append(
-                target.strategy
-            )
-            if target.strategy not in self._strategy_requirements:
-                self._strategy_requirements[target.strategy] = tuple(
-                    self.service.strategy_requirements(target.strategy)
-                )
-            if target.strategy not in self._strategy_scopes:
-                self._strategy_scopes[target.strategy] = frozenset(
-                    self.service.strategy_scopes(target.strategy)
-                )
-            if target.strategy not in self._strategy_affinity:
-                self._strategy_affinity[target.strategy] = (
-                    self.service.strategy_affinity_map(target.strategy)
-                )
         # 所有 target 中显式声明的 timeframe 集合，供 HTF 解析与运行时约束复用。
         self._configured_timeframes: frozenset[str] = frozenset(
             target.timeframe.upper() for target in self._targets
@@ -203,8 +172,12 @@ class SignalRuntime:
         # 记录每个 (symbol, tf) 首个 intrabar 快照，避免在基础上下文尚未建立时放行。
         self._first_intrabar_snapshot_seen: set[tuple[str, str]] = set()
         # Intrabar 交易协调器：bar 计数稳定性追踪。
-        # 由 factories/signals.py 注入，None 表示未启用 intrabar 交易。
+        # 由 factories/signals.py 通过 set_intrabar_trade_coordinator() 注入。
         self._intrabar_trade_coordinator: Any | None = None
+        # Pipeline tracing（由装配层注入，内部模块通过公开端口读取）。
+        self._pipeline_event_bus: Any | None = None
+        # 经济日历服务：由装配层通过 set_economic_calendar_service() 显式注入。
+        self._economic_calendar_service: Any | None = None
 
         # R-2: 每个 (symbol, timeframe) 独占一把分片锁，避免同目标状态并发竞争。
         # _state_lock 仅保护全局状态容器；_count_active_states() 等读路径不依赖它持锁遍历。
@@ -226,6 +199,10 @@ class SignalRuntime:
         else:
             self._confirmed_events: Any = queue.Queue(maxsize=4096)
         self._intrabar_events: queue.Queue = queue.Queue(maxsize=8192)
+        self._queue_runner = QueueRunner(self)
+        self._status_builder = RuntimeStatusBuilder(self)
+        self._lifecycle_policy = SignalLifecyclePolicy(self)
+        self._lifecycle_manager = RuntimeLifecycleManager(self)
         self._last_run_at: datetime | None = None
         self._last_error: str | None = None
         self._run_count = 0
@@ -238,6 +215,7 @@ class SignalRuntime:
         self._state_lock = threading.Lock()
         self._dropped_confirmed = 0
         self._dropped_intrabar = 0
+        self._intrabar_stale_drops = 0
         self._intrabar_overflow_wait_success = 0
         self._intrabar_overflow_replace_success = 0
         self._intrabar_overflow_failures = 0
@@ -264,7 +242,7 @@ class SignalRuntime:
         self._filter_window_seconds: float = 3600.0  # 1 hour
         self._filter_started_at: float = time.monotonic()
         self._htf_stale_counter: list[int] = [0]
-        # 经济事件影响预测结果做短 TTL 缓存，避免每个 confirmed 快照都重复 getattr/service 查询。
+        # 经济事件影响预测结果做短 TTL 缓存，避免每个 confirmed 快照都重复外部服务查询。
         self._event_impact_cache: dict[str, Any] = {
             "data": None,
             "expires_at": datetime.now(timezone.utc),
@@ -277,88 +255,147 @@ class SignalRuntime:
         self._vote_fusion_cache: dict[
             tuple[str, str, datetime], dict[str, tuple[str, Any]]
         ] = {}
+        self._voting_stats: dict[str, Any] = {
+            "mode": "single",
+            "calls": 0,
+            "input_decisions": 0,
+            "fused_decisions": 0,
+            "groups": {},
+            "consensus": {"attempts": 0, "produced": 0, "no_decision": 0},
+            "last_path": None,
+        }
 
     @staticmethod
-    def _build_group_engines(
-        policy: SignalPolicy,
-    ) -> "list[tuple[Any, StrategyVotingEngine]]":
-        # Build voting engines from policy.voting_groups.
-        return [
-            (
-                group,
-                StrategyVotingEngine(
-                    group_name=group.name,
-                    consensus_threshold=group.consensus_threshold,
-                    min_quorum=group.min_quorum,
-                    min_quorum_ratio=group.min_quorum_ratio,
-                    disagreement_penalty=group.disagreement_penalty,
-                    strategy_weights=group.strategy_weights,
-                ),
-            )
-            for group in policy.voting_groups
-        ]
+    def _empty_voting_stats(is_group_mode: bool) -> dict[str, Any]:
+        return {
+            "mode": "group" if is_group_mode else "single",
+            "calls": 0,
+            "input_decisions": 0,
+            "fused_decisions": 0,
+            "groups": {},
+            "consensus": {"attempts": 0, "produced": 0, "no_decision": 0},
+            "last_path": None,
+        }
+
+    @property
+    def strategy_capabilities(self) -> dict[str, StrategyCapability]:
+        return self.policy.strategy_capabilities
+
+    @property
+    def regime_detector(self) -> MarketRegimeDetector:
+        """Expose regime detector as a runtime read port."""
+        return self._regime_detector
+
+    @property
+    def confidence_floor(self) -> float:
+        """Expose confidence floor used by downstream confidence adjustments."""
+        value = getattr(self.service, "confidence_floor", self._confidence_floor)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return self._confidence_floor
+
+    @property
+    def confidence_floor_min_affinity(self) -> float:
+        """Expose confidence-floor affinity threshold."""
+        value = getattr(
+            self.service, "confidence_floor_min_affinity", self._confidence_floor_min_affinity
+        )
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return self._confidence_floor_min_affinity
+
+    @property
+    def soft_regime_enabled(self) -> bool:
+        """Expose whether soft regime mode is active."""
+        return bool(
+            getattr(self.service, "soft_regime_enabled", self._soft_regime_enabled)
+        )
+
+    @property
+    def economic_calendar_service(self) -> Any | None:
+        """Expose explicitly injected economic calendar service."""
+        return self._economic_calendar_service
+
+    def set_economic_calendar_service(self, service: Any | None) -> None:
+        """Inject economic calendar service for forecast and decay resolution."""
+        self._economic_calendar_service = service
+
+    def strategy_capability_contract(self) -> tuple[dict[str, Any], ...]:
+        """Expose runtime-visible strategy capability contract."""
+        return self.policy.strategy_capability_contract()
+
+    def strategy_capability_reconciliation(self) -> dict[str, Any]:
+        """Compare module contract vs runtime policy contract and return a unified diff."""
+        from src.signals import service_diagnostics as _svc_diag
+
+        return _svc_diag.strategy_capability_reconciliation(
+            self.service,
+            runtime_policy=self.policy,
+        )
+
+    def _apply_policy(self, policy: SignalPolicy) -> None:
+        self._policy_coordinator.apply(policy)
+        self._voting_stats = self._empty_voting_stats(bool(self._voting_group_engines))
 
     def update_policy(self, policy: SignalPolicy) -> None:
-        self.policy = policy
-        self._voting_engine = (
-            StrategyVotingEngine(
-                consensus_threshold=self.policy.voting_consensus_threshold,
-                min_quorum=self.policy.voting_min_quorum,
-                disagreement_penalty=self.policy.voting_disagreement_penalty,
-            )
-            if self.policy.voting_enabled and not self.policy.voting_groups
-            else None
-        )
-        self._voting_group_engines = self._build_group_engines(policy)
-        # voting group 成员只参与组内投票，不再作为独立策略单独发信号。
-        self._voting_group_members: frozenset[str] = (
-            frozenset(
-                name for group in self.policy.voting_groups for name in group.strategies
-            )
-            - self.policy.standalone_override
-        )
+        self._apply_policy(policy)
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if not self._lifecycle_manager.wait_previous_loop(timeout=5.0):
             return
-        self._stop.clear()
-        # WAL queue: close() 后需要 reopen 以重建连接并 reset in-flight 事件
-        if self._wal_db_path and hasattr(self._confirmed_events, "reopen"):
-            self._confirmed_events.reopen()
-        self._restore_state()
-        self.snapshot_source.add_snapshot_listener(self._on_snapshot)
-        self._thread = threading.Thread(
-            target=self._loop, name="signal-runtime", daemon=True
-        )
-        self._thread.start()
+        self._lifecycle_manager.prepare_startup()
+        self._lifecycle_manager.start_loop(self._loop, name="signal-runtime")
 
     def stop(self, timeout: float = 5.0) -> None:
-        self._stop.set()
-        self.snapshot_source.remove_snapshot_listener(self._on_snapshot)
-        if self._thread:
-            self._thread.join(timeout=timeout)
-            self._thread = None
+        self._lifecycle_manager.stop_loop(timeout)
         # WAL queue: don't clear — events persist for restart recovery.
         # In-memory queues: clear as before.
         if not self._wal_db_path:
-            self._clear_queue(self._confirmed_events)
+            self._queue_runner.clear_queues()
         else:
             # Close WAL connection cleanly
-            if hasattr(self._confirmed_events, "close"):
-                self._confirmed_events.close()
-        self._clear_queue(self._intrabar_events)
+            self._confirmed_events.close()
         self._confirmed_burst_count = 0
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
-    @staticmethod
-    def _clear_queue(q: queue.Queue) -> None:
-        while True:
-            try:
-                q.get_nowait()
-            except queue.Empty:
-                break
+    # ------------------------------------------------------------------
+    # Post-construction injection (public ports for assembly layer)
+    # ------------------------------------------------------------------
+
+    def set_warmup_ready_fn(self, fn: Callable[[], bool] | None) -> None:
+        self._warmup_ready_fn = fn
+
+    def set_pipeline_event_bus(self, bus: Any | None) -> None:
+        self._pipeline_event_bus = bus
+
+    def get_pipeline_event_bus(self) -> Any | None:
+        return self._pipeline_event_bus
+
+    @property
+    def pipeline_event_bus(self) -> Any | None:
+        return self._pipeline_event_bus
+
+    def _emit_voting_completed(self, **kwargs: Any) -> None:
+        if self.pipeline_event_bus is None:
+            return
+        self.pipeline_event_bus.emit_voting_completed(**kwargs)
+
+    @property
+    def market_impact_analyzer(self) -> Any | None:
+        service = self.economic_calendar_service
+        if service is None:
+            return None
+        return service.market_impact_analyzer
+
+    def set_intrabar_trade_coordinator(self, coordinator: Any) -> None:
+        self._intrabar_trade_coordinator = coordinator
+
+    def describe_voting(self) -> list[dict[str, Any]]:
+        return self._status_builder.describe_voting()
 
     def _on_snapshot(
         self,
@@ -368,263 +405,50 @@ class SignalRuntime:
         indicators: dict[str, dict[str, float]],
         scope: str,
     ) -> None:
-        if scope == "confirmed" and not self.enable_confirmed_snapshot:
-            return
-        if not check_warmup_barrier(
-            self, symbol, timeframe, bar_time, indicators, scope
-        ):
-            return
-        upstream_trace_id = getattr(self.snapshot_source, "_current_trace_id", None)
-        metadata = build_snapshot_metadata(
-            scope=scope,
-            symbol=symbol,
-            timeframe=timeframe,
-            bar_time=bar_time,
-            snapshot_source=self.snapshot_source,
-            trace_id=upstream_trace_id or uuid4().hex,
-        )
-        self._enqueue((scope, symbol, timeframe, indicators, metadata))
+        self._queue_runner.on_snapshot(symbol, timeframe, bar_time, indicators, scope)
 
     def _enqueue(
         self,
         item: tuple[str, str, str, dict[str, dict[str, float]], dict[str, Any]],
     ) -> None:
-        # 记录单调时钟入队时间，供后续判断队列等待时长与 stale intrabar。
-        item[4]["_enqueued_at"] = time.monotonic()
-        scope = item[0]
-        target_queue = (
-            self._confirmed_events if scope == "confirmed" else self._intrabar_events
-        )
-        try:
-            target_queue.put_nowait(item)
-        except queue.Full:
-            if scope == "confirmed":
-                try:
-                    # confirmed 事件允许一次带超时的回压等待，尽量避免关键信号被瞬时挤掉。
-                    self._confirmed_backpressure_waits += 1
-                    target_queue.put(
-                        item,
-                        timeout=max(
-                            self.policy.confirmed_queue_backpressure_timeout_seconds,
-                            0.0,
-                        ),
-                    )
-                    return
-                except queue.Full:
-                    self._confirmed_backpressure_failures += 1
-            elif self._intrabar_trade_coordinator is not None:
-                # Intrabar trading enabled:
-                # 1) try short backpressure wait
-                # 2) if still full, replace one oldest intrabar event with latest
-                #    to favor freshness under burst load.
-                try:
-                    target_queue.put(item, timeout=0.02)
-                    self._intrabar_overflow_wait_success += 1
-                    return
-                except queue.Full:
-                    try:
-                        target_queue.get_nowait()
-                        target_queue.put_nowait(item)
-                        self._intrabar_overflow_replace_success += 1
-                        return
-                    except queue.Empty:
-                        self._intrabar_overflow_failures += 1
-                    except queue.Full:
-                        self._intrabar_overflow_failures += 1
-            self._dropped_events += 1
-            if scope == "confirmed":
-                self._dropped_confirmed += 1
-                # confirmed 事件最终仍被丢弃时提升到 WARNING，便于排查实时链路拥塞。
-                symbol, timeframe = item[1], item[2]
-                logger.warning(
-                    "CONFIRMED event DROPPED for %s/%s (backpressure_failures=%d, "
-                    "total_confirmed_dropped=%d). Bar-close signal permanently lost!",
-                    symbol,
-                    timeframe,
-                    self._confirmed_backpressure_failures,
-                    self._dropped_confirmed,
-                )
-            else:
-                self._dropped_intrabar += 1
-                # intrabar_trading 启用时丢弃影响实际交易链路，升级到 WARNING
-                if self._intrabar_trade_coordinator is not None:
-                    symbol, timeframe = item[1], item[2]
-                    logger.warning(
-                        "INTRABAR event DROPPED for %s/%s while intrabar_trading "
-                        "is enabled (total_intrabar_dropped=%d). "
-                        "Coordinator stability counter may be disrupted. "
-                        "(wait_success=%d, replace_success=%d, overflow_failures=%d)",
-                        symbol,
-                        timeframe,
-                        self._dropped_intrabar,
-                        self._intrabar_overflow_wait_success,
-                        self._intrabar_overflow_replace_success,
-                        self._intrabar_overflow_failures,
-                    )
-            now = time.monotonic()
-            # Rate-limit error logs to at most once per 60 s to avoid log spam.
-            if now - self._last_drop_log_at >= 60.0:
-                delta = self._dropped_events - self._dropped_at_last_log
-                self._last_drop_log_at = now
-                self._dropped_at_last_log = self._dropped_events
-                symbol, timeframe = item[1], item[2]
-                logger.error(
-                    "Signal runtime %s queue is full - indicator snapshot dropped "
-                    "(dropped_since_last_log=%d, total_dropped=%d, "
-                    "scope=%s, symbol=%s, timeframe=%s, maxsize=%d). "
-                    "Consider increasing queue capacity or reducing event frequency.",
-                    scope,
-                    delta,
-                    self._dropped_events,
-                    scope,
-                    symbol,
-                    timeframe,
-                    target_queue.maxsize,
-                )
+        self._queue_runner.enqueue(item)
 
     def _compute_filter_window_stats(self) -> dict:
-        # Compute rolling 1h filter pass/block stats grouped by scope.
-        now = time.monotonic()
-        cutoff = now - self._filter_window_seconds
-        while self._filter_window and self._filter_window[0][0] < cutoff:
-            self._filter_window.popleft()
-
-        by_scope: dict[str, dict[str, Any]] = {}
-        for _, scope, cat in self._filter_window:
-            if scope not in by_scope:
-                by_scope[scope] = {"passed": 0, "blocked": 0, "blocks": {}}
-            s = by_scope[scope]
-            if cat == "_pass":
-                s["passed"] += 1
-            else:
-                s["blocked"] += 1
-                s["blocks"][cat] = s["blocks"].get(cat, 0) + 1
-
-        elapsed = now - self._filter_started_at
-        window_secs = min(elapsed, self._filter_window_seconds)
-
-        return {
-            "filter_window_seconds": self._filter_window_seconds,
-            "filter_window_elapsed": round(window_secs, 0),
-            "filter_window_by_scope": by_scope,
-        }
+        return self._status_builder.compute_filter_window_stats()
 
     def _count_active_states(self) -> dict:
-        with self._state_lock:
-            snapshot = list(self._state_by_target.values())
-        return {
-            "active_confirmed_states": sum(
-                1 for s in snapshot if s.confirmed_state != "idle"
-            ),
-        }
+        return self._status_builder.count_active_states()
 
     def status(self) -> dict:
-        market_structure_enabled = False
-        if self._market_structure_analyzer is not None:
-            market_structure_enabled = bool(
-                getattr(
-                    getattr(self._market_structure_analyzer, "config", None),
-                    "enabled",
-                    True,
-                )
-            )
-        return {
-            "running": bool(self._thread and self._thread.is_alive()),
-            "target_count": len(self._targets),
-            "trigger_mode": {
-                "confirmed_snapshot": self.enable_confirmed_snapshot,
-            },
-            "strategy_sessions": {
-                name: list(sessions)
-                for name, sessions in self.policy.strategy_sessions.items()
-            },
-            "market_structure_enabled": market_structure_enabled,
-            "market_structure_cache_entries": (
-                self._market_structure_analyzer.cache_entries
-                if self._market_structure_analyzer is not None
-                else 0
-            ),
-            "strategy_scopes": {
-                name: sorted(scopes) for name, scopes in self._strategy_scopes.items()
-            },
-            "run_count": self._run_count,
-            "processed_events": self._processed_events,
-            "dropped_events": self._dropped_events,
-            "dropped_confirmed": self._dropped_confirmed,
-            "dropped_intrabar": self._dropped_intrabar,
-            "confirmed_backpressure_waits": self._confirmed_backpressure_waits,
-            "confirmed_backpressure_failures": self._confirmed_backpressure_failures,
-            "confirmed_queue_size": self._confirmed_events.qsize(),
-            "confirmed_queue_capacity": self._confirmed_events.maxsize,
-            "intrabar_queue_size": self._intrabar_events.qsize(),
-            "intrabar_queue_capacity": self._intrabar_events.maxsize,
-            "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
-            "last_error": self._last_error,
-            "filter_by_scope": {
-                s: {
-                    "passed": d["passed"],
-                    "blocked": d["blocked"],
-                    "blocks": dict(d["blocks"]),
-                }
-                for s, d in self._filter_by_scope.items()
-            },
-            **self._compute_filter_window_stats(),
-            "htf_stale_warnings": self._htf_stale_counter[0],
-            "warmup_skipped": self._warmup_skipped,  # atomic read under GIL
-            "warmup_ready": (
-                self._warmup_ready_fn() if self._warmup_ready_fn is not None else True
-            ),
-            "warmup_realtime_symbols": len(
-                self._first_realtime_bar_seen
-            ),  # atomic read under GIL
-            # 即使 background loop 异常退出，这里也继续暴露当前活跃状态计数。
-            **self._count_active_states(),
-            "voting_groups": self._voting_groups_summary(),
-            "regime_map": self.get_regime_stability_map(),
-            "per_tf_eval_stats": dict(self._per_tf_eval_stats),
-            "filter_realtime_status": (
-                self.filter_chain.filter_status()
-                if self.filter_chain is not None
-                and hasattr(self.filter_chain, "filter_status")
-                else {}
-            ),
-            "intrabar_trade_coordinator": (
-                self._intrabar_trade_coordinator.status()
-                if self._intrabar_trade_coordinator is not None
-                else None
-            ),
-        }
-
-    def _voting_groups_summary(self) -> list[dict[str, Any]]:
-        """返回当前配置的 voting group 摘要。"""
-        result: list[dict[str, Any]] = []
-        for group_config, _engine in self._voting_group_engines:
-            result.append(
-                {
-                    "name": group_config.name,
-                    "strategies": sorted(group_config.strategies),
-                }
-            )
-        return result
+        return self._status_builder.status()
 
     def get_regime_stability(
         self, symbol: str, timeframe: str
     ) -> dict[str, Any] | None:
-        with self._regime_trackers_lock:
-            tracker = self._regime_trackers.get((symbol, timeframe))
-        return tracker.describe() if tracker else None
+        return self._lifecycle_policy.get_regime_stability(symbol, timeframe)
 
     def get_regime_stability_map(self) -> dict[str, dict[str, Any]]:
-        with self._regime_trackers_lock:
-            snapshot = list(self._regime_trackers.items())
-        return {f"{sym}/{tf}": tracker.describe() for (sym, tf), tracker in snapshot}
+        return self._status_builder.get_regime_stability_map()
 
     def get_voting_info(self) -> dict[str, Any]:
-        voting_engine = self._voting_engine
-        return {
-            "voting_enabled": voting_engine is not None,
-            "voting_config": voting_engine.describe() if voting_engine else None,
-        }
+        return self._status_builder.get_voting_info()
+
+    @staticmethod
+    def _resolve_regime_detector(service: SignalModule) -> MarketRegimeDetector:
+        candidate = getattr(service, "regime_detector", None)
+        return candidate if candidate is not None else MarketRegimeDetector()
+
+    @staticmethod
+    def _resolve_float_value(service: SignalModule, name: str, default: float) -> float:
+        value = getattr(service, name, default)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _resolve_bool_value(service: SignalModule, name: str, default: bool) -> bool:
+        return bool(getattr(service, name, default))
 
     def set_strategy_intrabar_decay(self, overrides: dict[str, float]) -> None:
         """按策略设置 intrabar 置信度衰减覆盖。"""
@@ -664,29 +488,18 @@ class SignalRuntime:
             self, decision, signal_id, scope, indicators, transition_metadata
         )
 
-    @staticmethod
-    def _parse_event_time(value: Any) -> datetime:
-        if isinstance(value, datetime):
-            return (
-                value
-                if value.tzinfo is not None
-                else value.replace(tzinfo=timezone.utc)
-            )
-        text = str(value)
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return (
-            parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
-        )
+    def _parse_event_time(self, value: Any) -> datetime:
+        return SignalLifecyclePolicy.parse_event_time(value)
 
-    @staticmethod
     def _build_transition_metadata(
+        self,
         metadata: dict[str, Any],
         *,
         signal_state: str,
         state_changed: bool,
         previous_state: str,
     ) -> dict[str, Any]:
-        return build_transition_metadata(
+        return self._lifecycle_policy.build_transition_metadata(
             metadata,
             signal_state=signal_state,
             state_changed=state_changed,
@@ -694,7 +507,7 @@ class SignalRuntime:
         )
 
     def _restore_state(self) -> None:
-        _runtime_restore_state(self)
+        self._lifecycle_policy.restore_state()
 
     def _restore_confirmed_state(
         self,
@@ -703,10 +516,12 @@ class SignalRuntime:
         generated_at: datetime,
         bar_time: datetime,
     ) -> None:
-        _runtime_restore_confirmed_state(state, signal_state, generated_at, bar_time)
+        self._lifecycle_policy.restore_confirmed_state(
+            state, signal_state, generated_at, bar_time
+        )
 
-    @staticmethod
     def _should_emit(
+        self,
         state: RuntimeSignalState,
         signal_state: str,
         event_time: datetime,
@@ -714,22 +529,24 @@ class SignalRuntime:
         *,
         cooldown_seconds: float,
     ) -> bool:
-        return _sm_should_emit(
+        return self._lifecycle_policy.should_emit(
             state, signal_state, event_time, bar_time, cooldown_seconds=cooldown_seconds
         )
 
-    @staticmethod
     def _mark_emitted(
+        self,
         state: RuntimeSignalState,
         signal_state: str,
         event_time: datetime,
         bar_time: datetime,
     ) -> None:
-        _sm_mark_emitted(state, signal_state, event_time, bar_time)
+        self._lifecycle_policy.mark_emitted(
+            state, signal_state, event_time, bar_time
+        )
 
     @staticmethod
     def _snapshot_signature(indicators: dict[str, dict[str, float]]) -> int:
-        return _sm_snapshot_signature(indicators)
+        return SignalLifecyclePolicy.snapshot_signature(indicators)
 
     def _is_new_snapshot(
         self,
@@ -740,59 +557,33 @@ class SignalRuntime:
         bar_time: datetime,
         indicators: dict[str, dict[str, float]],
     ) -> bool:
-        return _sm_is_new_snapshot(
+        return self._lifecycle_policy.is_new_snapshot(
             state,
             scope=scope,
             event_time=event_time,
             bar_time=bar_time,
             indicators=indicators,
-            dedupe_window_seconds=self.policy.snapshot_dedupe_window_seconds,
         )
 
-    @staticmethod
     def _transition_confirmed(
+        self,
         state: RuntimeSignalState,
         decision_action: str,
         event_time: datetime,
         bar_time: datetime,
         metadata: dict[str, Any],
     ) -> dict[str, Any] | None:
-        return transition_confirmed(
+        return self._lifecycle_policy.transition_confirmed(
             state, decision_action, event_time, bar_time, metadata
         )
 
     def _all_intrabar_strategies_satisfied(
         self, indicators: dict[str, dict[str, float]]
     ) -> bool:
-        """检查所有 intrabar 策略所需指标是否已就绪。
-
-        warmup 阶段只有在 intrabar pipeline 已具备全部 required_indicators 时才允许继续，
-        这样可以避免策略在缺失关键指标的首批快照上被错误评估。
-        若任一 intrabar 策略仍缺指标，则返回 False，由上游继续等待。
-        """
-        if not indicators:
-            return False
-        indicator_names = set(indicators.keys())
-        for strategy, scopes in self._strategy_scopes.items():
-            if "intrabar" not in scopes:
-                continue
-            required = self._strategy_requirements.get(strategy, ())
-            if required and any(ind not in indicator_names for ind in required):
-                return False
-        return True
+        return self._lifecycle_policy.all_intrabar_strategies_satisfied(indicators)
 
     def _get_shard_lock(self, symbol: str, timeframe: str) -> threading.Lock:
-        """按 (symbol, timeframe) 获取分片锁。
-
-        不能直接用 dict.setdefault 在无锁路径创建 Lock，否则同一 key 可能被并发初始化多次。
-        这里用 meta_lock 包住懒加载，形成轻量的 double-checked locking。
-        """
-        key = (symbol, timeframe)
-        lock = self._shard_locks.get(key)
-        if lock is not None:
-            return lock
-        with self._meta_lock:
-            return self._shard_locks.setdefault(key, threading.Lock())
+        return self._lifecycle_policy.get_shard_lock(symbol, timeframe)
 
     def _evaluate_strategies(
         self,
@@ -913,7 +704,7 @@ class SignalRuntime:
     )
 
     def _dequeue_event(self, timeout: float) -> tuple | None:
-        return _runtime_dequeue_event(self, timeout)
+        return self._queue_runner.dequeue(timeout)
 
     def _is_stale_intrabar(
         self, scope: str, symbol: str, timeframe: str, metadata: dict[str, Any]
@@ -980,10 +771,7 @@ class SignalRuntime:
         indicator_name: str,
     ) -> dict[str, Any] | None:
         # Subscribe to snapshot_source and wire HTF snapshot listeners.
-        getter = getattr(self.snapshot_source, "get_indicator", None)
-        if callable(getter):
-            return getter(symbol, timeframe, indicator_name)
-        return None
+        return self.snapshot_source.get_indicator(symbol, timeframe, indicator_name)
 
     def _loop(self) -> None:
         """后台主循环。
@@ -1002,9 +790,8 @@ class SignalRuntime:
                 _session_check_counter += 1
                 if _session_check_counter >= 200:
                     _session_check_counter = 0
-                    perf_tracker = getattr(self.service, "_performance_tracker", None)
-                    if perf_tracker is not None:
-                        perf_tracker.check_session_reset()
+                    if self._has_service_session_reset:
+                        self.service.reset_performance_session()
                     # 定期收缩 indicator miss 统计，避免长期运行时键数量无限膨胀。
                     # 这里只保留最常见的 miss key，既保留诊断价值，也控制内存占用。
                     _MAX_MISS_KEYS = 500

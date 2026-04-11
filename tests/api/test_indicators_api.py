@@ -15,7 +15,18 @@ class _IndicatorManager:
         return [{"name": "ema20"}, {"name": "atr14"}]
 
     def get_performance_stats(self):
-        return {"events": 1}
+        return {
+            "events": 1,
+            "intrabar": {
+                "queue": {"current_size": 0, "maxsize": 1024, "dropped_total": 0},
+                "queue_age_ms_p95": 0.0,
+                "processing_latency_ms_p95": 0.0,
+                "queue_age_sample_count": 0,
+                "processing_latency_sample_count": 0,
+                "queue_age_ms_latest": 0.0,
+                "processing_latency_ms_latest": 0.0,
+            },
+        }
 
     def get_dependency_graph(self, format):
         return f"graph:{format}"
@@ -48,6 +59,7 @@ def test_indicator_static_routes_are_not_shadowed_by_dynamic_routes() -> None:
     assert perf.status_code == 200
     assert perf.json()["success"] is True
     assert perf.json()["data"]["events"] == 1
+    assert perf.json()["data"]["intrabar"]["queue"]["dropped_total"] == 0
     assert graph.status_code == 200
     assert graph.json()["success"] is True
     assert graph.json()["data"]["graph"] == "graph:mermaid"

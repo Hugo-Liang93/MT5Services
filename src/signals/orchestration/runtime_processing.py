@@ -5,6 +5,7 @@ import queue
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from ..evaluation.indicators_helpers import extract_close_price
 from ..evaluation.regime import RegimeTracker, RegimeType, SoftRegimeResult
@@ -90,7 +91,7 @@ def apply_filter_chain(
         active_sessions=active_sessions,
         indicators=indicators,
     )
-    pipeline_bus = getattr(runtime, "_pipeline_event_bus", None)
+    pipeline_bus = runtime.get_pipeline_event_bus()
     category = reason.split(":")[0] if reason else "_pass"
     if pipeline_bus is not None and trace_id:
         pipeline_bus.emit_signal_filter_decided(
@@ -137,11 +138,11 @@ def detect_regime(
     active_sessions: list[str],
 ) -> tuple[RegimeType, dict[str, Any]]:
     soft_regime: SoftRegimeResult | None = None
-    if runtime._soft_regime_enabled:
-        soft_regime = runtime._regime_detector.detect_soft(indicators)
+    if runtime.soft_regime_enabled:
+        soft_regime = runtime.regime_detector.detect_soft(indicators)
         regime = soft_regime.dominant_regime
     else:
-        regime = runtime._regime_detector.detect(indicators)
+        regime = runtime.regime_detector.detect(indicators)
     regime_metadata = dict(metadata)
     regime_metadata[MK.REGIME_HARD] = regime.value
     if soft_regime is not None:
@@ -168,6 +169,8 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
     event_time = bar_time if scope == "confirmed" else snapshot_time
 
     if is_stale_intrabar(scope, symbol, timeframe, metadata):
+        runtime._dropped_events += 1
+        runtime._intrabar_stale_drops += 1
         runtime._processed_events += 1
         return True
 
@@ -240,3 +243,120 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
     runtime._last_run_at = datetime.now(timezone.utc)
     runtime._last_error = None
     return True
+
+
+def on_snapshot(
+    runtime: "SignalRuntime",
+    symbol: str,
+    timeframe: str,
+    bar_time: datetime,
+    indicators: dict[str, dict[str, float]],
+    scope: str,
+    warmup_checker: Any,
+    metadata_builder: Any,
+) -> tuple[str, str, str, dict[str, dict[str, float]], dict[str, Any]] | None:
+    if scope == "confirmed" and not runtime.enable_confirmed_snapshot:
+        return None
+    if not warmup_checker(runtime, symbol, timeframe, bar_time, indicators, scope):
+        return None
+
+    upstream_trace_id = runtime.snapshot_source.get_current_trace_id()
+    metadata = metadata_builder(
+        scope=scope,
+        symbol=symbol,
+        timeframe=timeframe,
+        bar_time=bar_time,
+        snapshot_source=runtime.snapshot_source,
+        trace_id=upstream_trace_id or uuid4().hex,
+    )
+    return (scope, symbol, timeframe, indicators, metadata)
+
+
+def enqueue_event(
+    runtime: "SignalRuntime",
+    item: tuple[str, str, str, dict[str, dict[str, float]], dict[str, Any]],
+) -> None:
+    item[4]["_enqueued_at"] = time.monotonic()
+    scope = item[0]
+    target_queue = (
+        runtime._confirmed_events if scope == "confirmed" else runtime._intrabar_events
+    )
+    try:
+        target_queue.put_nowait(item)
+    except queue.Full:
+        if scope == "confirmed":
+            try:
+                runtime._confirmed_backpressure_waits += 1
+                target_queue.put(
+                    item,
+                    timeout=max(
+                        runtime.policy.confirmed_queue_backpressure_timeout_seconds,
+                        0.0,
+                    ),
+                )
+                return
+            except queue.Full:
+                runtime._confirmed_backpressure_failures += 1
+        elif runtime._intrabar_trade_coordinator is not None:
+            try:
+                target_queue.put(item, timeout=0.02)
+                runtime._intrabar_overflow_wait_success += 1
+                return
+            except queue.Full:
+                try:
+                    target_queue.get_nowait()
+                    target_queue.put_nowait(item)
+                    runtime._intrabar_overflow_replace_success += 1
+                    return
+                except queue.Empty:
+                    runtime._intrabar_overflow_failures += 1
+                except queue.Full:
+                    runtime._intrabar_overflow_failures += 1
+
+        runtime._dropped_events += 1
+        if scope == "confirmed":
+            runtime._dropped_confirmed += 1
+            symbol, timeframe = item[1], item[2]
+            logger.warning(
+                "CONFIRMED event DROPPED for %s/%s (backpressure_failures=%d, "
+                "total_confirmed_dropped=%d). Bar-close signal permanently lost!",
+                symbol,
+                timeframe,
+                runtime._confirmed_backpressure_failures,
+                runtime._dropped_confirmed,
+            )
+        else:
+            runtime._dropped_intrabar += 1
+            if runtime._intrabar_trade_coordinator is not None:
+                symbol, timeframe = item[1], item[2]
+                logger.warning(
+                    "INTRABAR event DROPPED for %s/%s while intrabar_trading "
+                    "is enabled (total_intrabar_dropped=%d). "
+                    "Coordinator stability counter may be disrupted. "
+                    "(wait_success=%d, replace_success=%d, overflow_failures=%d)",
+                    symbol,
+                    timeframe,
+                    runtime._dropped_intrabar,
+                    runtime._intrabar_overflow_wait_success,
+                    runtime._intrabar_overflow_replace_success,
+                    runtime._intrabar_overflow_failures,
+                )
+        now = time.monotonic()
+        if now - runtime._last_drop_log_at >= 60.0:
+            delta = runtime._dropped_events - runtime._dropped_at_last_log
+            runtime._last_drop_log_at = now
+            runtime._dropped_at_last_log = runtime._dropped_events
+            symbol, timeframe = item[1], item[2]
+            logger.error(
+                "Signal runtime %s queue is full - indicator snapshot dropped "
+                "(dropped_since_last_log=%d, total_dropped=%d, "
+                "scope=%s, symbol=%s, timeframe=%s, maxsize=%d). "
+                "Consider increasing queue capacity or reducing event frequency.",
+                scope,
+                delta,
+                runtime._dropped_events,
+                scope,
+                symbol,
+                timeframe,
+                target_queue.maxsize,
+            )

@@ -2,14 +2,22 @@
 from __future__ import annotations
 
 import threading
+import time
+import queue
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config.indicator_config import ConfigLoader
 from src.indicators.manager import UnifiedIndicatorManager
+from src.indicators.runtime import event_loops
+from src.indicators.runtime import intrabar_queue
+from src.indicators.runtime.intrabar_metrics import (
+    get_intrabar_metrics_snapshot,
+    record_intrabar_drop,
+    record_intrabar_queue_age_ms,
+    record_intrabar_processing_latency_ms,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +106,7 @@ def _make_manager(bars, storage_writer=None):
 def test_intrabar_eligible_empty_without_override():
     """未注入 override 时（standalone 模式），intrabar eligible 为空集。"""
     mgr, _ = _make_manager(_make_bars())
-    eligible = mgr._get_intrabar_eligible_names()
+    eligible = mgr.get_intrabar_eligible_names()
     assert eligible == frozenset()
 
 
@@ -106,7 +114,7 @@ def test_intrabar_eligible_uses_strategy_override():
     """set_intrabar_eligible_override() 注入策略推导集合后，只有该集合里的指标 eligible。"""
     mgr, _ = _make_manager(_make_bars())
     mgr.set_intrabar_eligible_override(frozenset(["rsi14", "boll20"]))
-    eligible = mgr._get_intrabar_eligible_names()
+    eligible = mgr.get_intrabar_eligible_names()
     assert eligible == frozenset(["rsi14", "boll20"])
     assert "sma20" not in eligible
     assert "ema50" not in eligible
@@ -115,7 +123,7 @@ def test_intrabar_eligible_uses_strategy_override():
 
 def test_intrabar_eligible_is_frozenset():
     mgr, _ = _make_manager(_make_bars())
-    eligible = mgr._get_intrabar_eligible_names()
+    eligible = mgr.get_intrabar_eligible_names()
     assert isinstance(eligible, frozenset)
 
 
@@ -189,7 +197,7 @@ def test_apply_delta_metrics_skips_missing_history_gracefully():
 
 def test_intrabar_loop_skips_when_no_listeners(monkeypatch):
     bars = _make_bars(60)
-    mgr, svc = _make_manager(bars)
+    mgr, _ = _make_manager(bars)
 
     call_count = {"n": 0}
 
@@ -199,20 +207,106 @@ def test_intrabar_loop_skips_when_no_listeners(monkeypatch):
     monkeypatch.setattr(mgr, "_process_intrabar_event", spy_process)
 
     # No listeners → loop should drain queue without computing
-    assert len(mgr._snapshot_listeners) == 0
-    mgr._intrabar_queue.put(("XAUUSD", "M5", bars[-1]))
+    assert len(mgr.state.snapshot_listeners) == 0
+    mgr.state.intrabar_queue.put(
+        intrabar_queue.IntrabarQueueItem(
+            symbol="XAUUSD",
+            timeframe="M5",
+            bar=bars[-1],
+            enqueued_at_monotonic=time.monotonic() - 0.05,
+        )
+    )
 
     # Run one iteration of the loop manually
-    import queue as q_module
     try:
-        item = mgr._intrabar_queue.get(timeout=0.1)
-    except q_module.Empty:
+        item = mgr.state.intrabar_queue.get(timeout=0.1)
+    except queue.Empty:
         pytest.fail("queue was not populated")
 
     # Simulate the guard inside _intrabar_loop
-    if not mgr._snapshot_listeners:
+    if not mgr.state.snapshot_listeners:
         pass  # guard fires → no compute
     else:
-        mgr._process_intrabar_event(*item)
+        mgr._process_intrabar_event(item.symbol, item.timeframe, item.bar)
 
     assert call_count["n"] == 0, "_process_intrabar_event must not be called with no listeners"
+
+
+def test_enqueue_intrabar_event_records_dropped_count():
+    bars = _make_bars(60)
+    mgr, _ = _make_manager(bars)
+    mgr.state.intrabar_queue = queue.Queue(maxsize=1)
+
+    intrabar_queue.enqueue_intrabar_event(mgr, "XAUUSD", "M5", bars[-1])
+    intrabar_queue.enqueue_intrabar_event(mgr, "XAUUSD", "M5", bars[-1])
+
+    assert mgr.state.intrabar_dropped_count == 1
+
+
+def test_high_pressure_intrabar_queue_reports_drops_and_metrics():
+    bars = _make_bars(60)
+    mgr, _ = _make_manager(bars)
+    mgr.state.intrabar_queue = queue.Queue(maxsize=1)
+
+    for _ in range(30):
+        intrabar_queue.enqueue_intrabar_event(mgr, "XAUUSD", "M5", bars[-1])
+
+    assert mgr.state.intrabar_queue.qsize() == 1
+    assert mgr.state.intrabar_dropped_count >= 29
+
+    perf = mgr.get_performance_stats()
+    intrabar = perf["intrabar"]
+    assert intrabar["queue"]["dropped_total"] == mgr.state.intrabar_dropped_count
+    assert intrabar["queue"]["current_size"] == 1
+    assert intrabar["queue"]["maxsize"] == 1
+
+
+def test_intrabar_loop_records_queue_age_and_latency(monkeypatch):
+    bars = _make_bars(60)
+    mgr, _ = _make_manager(bars)
+    mgr.state.snapshot_listeners.append(lambda *args: None)
+
+    def _fast_process(_manager, symbol, timeframe, bar):
+        time.sleep(0.01)
+
+    monkeypatch.setattr(event_loops, "process_intrabar_event", _fast_process)
+
+    now = time.monotonic()
+    item = intrabar_queue.IntrabarQueueItem(
+        symbol="XAUUSD",
+        timeframe="M5",
+        bar=bars[-1],
+        enqueued_at_monotonic=now - 0.123,
+    )
+    mgr.state.intrabar_queue.put(item)
+    mgr.state.stop_event.clear()
+    worker = threading.Thread(
+        target=event_loops.run_intrabar_loop,
+        args=(mgr,),
+        daemon=True,
+    )
+    worker.start()
+
+    time.sleep(0.2)
+    mgr.state.stop_event.set()
+    worker.join(timeout=2.0)
+
+    metrics = get_intrabar_metrics_snapshot(mgr)
+    assert metrics["queue_age_sample_count"] >= 1
+    assert metrics["processing_latency_sample_count"] >= 1
+    assert metrics["queue_age_ms_latest"] >= 110.0
+    assert metrics["processing_latency_ms_latest"] >= 9.0
+
+
+def test_get_performance_stats_exposes_intrabar_metrics_snapshot():
+    mgr, _ = _make_manager(_make_bars(60))
+
+    record_intrabar_drop(mgr)
+    record_intrabar_queue_age_ms(mgr, 123.4)
+    record_intrabar_processing_latency_ms(mgr, 45.6)
+
+    perf = mgr.get_performance_stats()
+    intrabar = perf["intrabar"]
+    assert intrabar["queue"]["dropped_total"] == 1
+    assert intrabar["queue_age_sample_count"] == 1
+    assert intrabar["processing_latency_sample_count"] == 1

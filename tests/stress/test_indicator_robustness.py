@@ -74,14 +74,16 @@ class TestPreviewSnapshotConcurrency:
 
     def test_concurrent_store_and_read(self):
         """多线程并发写入和读取 preview snapshot 不崩溃。"""
-        from src.indicators.snapshot_publisher import store_preview_snapshot
+        from src.indicators.query_services.runtime import store_preview_snapshot
 
         # 模拟 manager 结构
         lock = threading.RLock()
         manager = SimpleNamespace(
-            _last_preview_snapshot=OrderedDict(),
-            _preview_snapshot_max_entries=50,
-            _results_lock=lock,
+            state=SimpleNamespace(
+                last_preview_snapshot=OrderedDict(),
+                preview_snapshot_max_entries=50,
+                results_lock=lock,
+            ),
         )
 
         errors: list[Exception] = []
@@ -109,7 +111,7 @@ class TestPreviewSnapshotConcurrency:
                     break
                 try:
                     with lock:
-                        list(manager._last_preview_snapshot.items())
+                        list(manager.state.last_preview_snapshot.items())
                 except Exception as exc:
                     errors.append(exc)
                     stop.set()
@@ -139,11 +141,28 @@ class TestHTFInjectionPerformance:
             snapshot_listeners = []
             def add_snapshot_listener(self, l): pass
             def remove_snapshot_listener(self, l): pass
+            current_trace_id = None
+
+            def get_current_trace_id(self): return self.current_trace_id
+
             def get_indicator(self, s, tf, name):
                 return {"ema": 2650.0} if name == "ema50" else None
 
         class DummyService:
             soft_regime_enabled = False
+            def strategy_capability_catalog(self, voting_group_policy=None):
+                return [
+                    {
+                        "name": "s",
+                        "valid_scopes": ["confirmed"],
+                        "needed_indicators": ["ema50"],
+                        "needs_intrabar": False,
+                        "needs_htf": True,
+                        "voting_group_policy": "standalone",
+                        "regime_affinity": {},
+                        "htf_requirements": {"ema50": "H1", "adx14": "H1"},
+                    }
+                ]
             def strategy_requirements(self, s): return ("ema50",)
             def strategy_scopes(self, s): return ("confirmed",)
             def strategy_affinity_map(self, s): return {}
@@ -184,9 +203,25 @@ class TestIntrabarDecay:
             snapshot_listeners = []
             def add_snapshot_listener(self, l): pass
             def remove_snapshot_listener(self, l): pass
+            current_trace_id = None
+
+            def get_current_trace_id(self): return self.current_trace_id
 
         class DummyService:
             soft_regime_enabled = False
+            def strategy_capability_catalog(self, voting_group_policy=None):
+                return [
+                    {
+                        "name": "s",
+                        "valid_scopes": ["confirmed"],
+                        "needed_indicators": [],
+                        "needs_intrabar": False,
+                        "needs_htf": False,
+                        "voting_group_policy": "standalone",
+                        "regime_affinity": {},
+                        "htf_requirements": {},
+                    }
+                ]
             def strategy_requirements(self, s): return ()
             def strategy_scopes(self, s): return ("confirmed",)
             def strategy_affinity_map(self, s): return {}

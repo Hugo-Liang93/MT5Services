@@ -15,6 +15,11 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.signals.models import SignalEvent
+from .reasons import (
+    REASON_INTRABAR_TRADING_DISABLED,
+    REASON_STRATEGY_NOT_INTRABAR_ENABLED,
+    REASON_VOTING_GROUP_MEMBER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,21 +53,21 @@ class ExecutionGate:
             and event.strategy in self.config.voting_group_strategies
             and event.strategy not in self.config.standalone_override
         ):
-            return False, "voting_group_member"
+            return False, REASON_VOTING_GROUP_MEMBER
 
         return True, ""
 
     def check_intrabar(self, event: SignalEvent) -> tuple[bool, str]:
         """Intrabar 交易专用检查。"""
         if not self.config.intrabar_trading_enabled:
-            return False, "intrabar_trading_disabled"
+            return False, REASON_INTRABAR_TRADING_DISABLED
         if event.strategy not in self.config.intrabar_enabled_strategies:
-            return False, "strategy_not_intrabar_enabled"
+            return False, REASON_STRATEGY_NOT_INTRABAR_ENABLED
         # 投票组成员不允许 intrabar 独立交易（防护性代码，当前无投票组）
         if (
             self.config.voting_group_strategies
             and event.strategy in self.config.voting_group_strategies
             and event.strategy not in self.config.standalone_override
         ):
-            return False, "voting_group_member"
+            return False, REASON_VOTING_GROUP_MEMBER
         return True, ""

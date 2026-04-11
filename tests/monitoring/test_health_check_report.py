@@ -42,6 +42,20 @@ def test_indicator_compute_p99_triggers_warning(tmp_path: Path) -> None:
     assert metric["status"] == "warning"
 
 
+def test_indicator_intrabar_slo_metrics_trigger_alerts(tmp_path: Path) -> None:
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+
+    monitor.record_metric("indicator_calculation", "intrabar_drop_rate_1m", 7.5)
+    monitor.record_metric("indicator_calculation", "intrabar_queue_age_p95_ms", 2600.0)
+    monitor.record_metric("indicator_calculation", "intrabar_to_decision_latency_p95_ms", 8000.0)
+
+    report = monitor.generate_report(hours=1)
+
+    assert report["components"]["indicator_calculation"]["intrabar_drop_rate_1m"]["status"] == "critical"
+    assert report["components"]["indicator_calculation"]["intrabar_queue_age_p95_ms"]["status"] == "warning"
+    assert report["components"]["indicator_calculation"]["intrabar_to_decision_latency_p95_ms"]["status"] == "critical"
+
+
 def test_health_report_uses_blocking_metrics_for_critical_status(tmp_path: Path) -> None:
     monitor = HealthMonitor(str(tmp_path / "health.db"))
 

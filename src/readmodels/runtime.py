@@ -22,6 +22,7 @@ class RuntimeReadModel:
         trading_state_alerts: Any = None,
         exposure_closeout_controller: Any = None,
         runtime_mode_controller: Any = None,
+        db_writer: Any = None,
     ) -> None:
         self._health_monitor = health_monitor
         self._ingestor = ingestor
@@ -35,6 +36,7 @@ class RuntimeReadModel:
         self._trading_state_alerts = trading_state_alerts
         self._exposure_closeout_controller = exposure_closeout_controller
         self._runtime_mode_controller = runtime_mode_controller
+        self.db_writer = db_writer
 
     def _current_runtime_mode(self) -> str | None:
         controller = self._runtime_mode_controller
@@ -346,6 +348,9 @@ class RuntimeReadModel:
                 "processed_events": int(
                     runtime_status.get("processed_events", 0) or 0
                 ),
+                "intrabar_stale_drops": int(
+                    runtime_status.get("dropped_intrabar_stale", 0) or 0
+                ),
                 "dropped_events": dropped_events,
                 "dropped_confirmed": int(
                     runtime_status.get("dropped_confirmed", 0) or 0
@@ -354,6 +359,8 @@ class RuntimeReadModel:
                     runtime_status.get("dropped_intrabar", 0) or 0
                 ),
             },
+            "drop_rates": dict(runtime_status.get("drop_rates", {}) or {}),
+            "voting_stats": dict(runtime_status.get("voting_stats", {}) or {}),
             "filters": {
                 "by_scope": dict(runtime_status.get("filter_by_scope", {}) or {}),
                 "affinity_gates_skipped": int(
@@ -378,6 +385,15 @@ class RuntimeReadModel:
             "last_error": last_error,
             "intrabar_trade_coordinator": (
                 runtime_status.get("intrabar_trade_coordinator")
+            ),
+            "intrabar_runtime_slos": dict(
+                runtime_status.get("intrabar_runtime_slos", {}) or {}
+            ),
+            "strategy_capability_reconciliation": dict(
+                runtime_status.get("strategy_capability_reconciliation", {})
+            ),
+            "strategy_capability_execution_plan": dict(
+                runtime_status.get("strategy_capability_execution_plan", {})
             ),
         }
 
@@ -503,6 +519,33 @@ class RuntimeReadModel:
                 "queues": {},
                 "processing": {},
                 "filters": {},
+                "strategy_capability_reconciliation": {
+                    "reconciled": False,
+                    "module_count": 0,
+                    "runtime_count": 0,
+                    "module_only": [],
+                    "runtime_only": [],
+                    "drift_items": [],
+                    "drift_count": 0,
+                },
+                "strategy_capability_execution_plan": {
+                    "configured_target_count": 0,
+                    "scheduled_target_count": 0,
+                    "filtered_target_count": 0,
+                    "strategy_capability_count": 0,
+                    "configured_strategies": [],
+                    "scheduled_strategies": [],
+                    "filtered_strategies": [],
+                    "scope_strategies": {"confirmed": [], "intrabar": []},
+                    "needs_intrabar_strategies": [],
+                    "needs_htf_strategies": [],
+                    "required_indicators_by_strategy": {},
+                    "required_indicators_union": [],
+                    "strategy_timeframes_policy": {},
+                    "filtered_reason_counts": {},
+                    "filtered_target_samples": [],
+                    "filtered_target_sample_overflow": 0,
+                },
                 "warmup": {},
                 "active_states": {},
                 "voting_groups": [],

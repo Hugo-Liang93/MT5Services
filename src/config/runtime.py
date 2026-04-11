@@ -38,6 +38,12 @@ class IngestSettings(BaseModel):
     symbol_error_threshold: int = 5
     symbol_cooldown_seconds: float = 60.0
     symbol_max_cooldown_seconds: float = 300.0
+    intrabar_drop_rate_1m_warning: float = 1.0
+    intrabar_drop_rate_1m_critical: float = 5.0
+    intrabar_queue_age_p95_ms_warning: float = 2500.0
+    intrabar_queue_age_p95_ms_critical: float = 5000.0
+    intrabar_to_decision_latency_p95_ms_warning: float = 3500.0
+    intrabar_to_decision_latency_p95_ms_critical: float = 7000.0
 
 
 class MarketSettings(BaseModel):
@@ -99,6 +105,12 @@ def get_runtime_ingest_settings() -> IngestSettings:
         symbol_error_threshold=ingest.symbol_error_threshold,
         symbol_cooldown_seconds=ingest.symbol_cooldown_seconds,
         symbol_max_cooldown_seconds=ingest.symbol_max_cooldown_seconds,
+        intrabar_drop_rate_1m_warning=ingest.intrabar_drop_rate_1m_warning,
+        intrabar_drop_rate_1m_critical=ingest.intrabar_drop_rate_1m_critical,
+        intrabar_queue_age_p95_ms_warning=ingest.intrabar_queue_age_p95_ms_warning,
+        intrabar_queue_age_p95_ms_critical=ingest.intrabar_queue_age_p95_ms_critical,
+        intrabar_to_decision_latency_p95_ms_warning=ingest.intrabar_to_decision_latency_p95_ms_warning,
+        intrabar_to_decision_latency_p95_ms_critical=ingest.intrabar_to_decision_latency_p95_ms_critical,
     )
 
 

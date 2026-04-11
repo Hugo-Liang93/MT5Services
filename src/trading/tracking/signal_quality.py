@@ -221,8 +221,12 @@ class SignalQualityTracker:
 
         with self._lock:
             # 同一 (symbol, timeframe) 同一 bar_time 只推进一次
-            # bar_time_raw 为 None 时用 fallback 避免多个无 bar_time 事件被误去重
-            dedup_key = bar_time_raw if bar_time_raw is not None else f"_fallback_{time.monotonic()}"
+            # bar_time_raw 为空时用瞬时标识符避免多个无 bar_time 事件重复推进
+            dedup_key = (
+                bar_time_raw
+                if bar_time_raw is not None
+                else f"_bar_time_missing_{time.monotonic()}"
+            )
             if self._last_advanced_bar_time.get(symbol_tf) == dedup_key:
                 return
             self._last_advanced_bar_time[symbol_tf] = dedup_key

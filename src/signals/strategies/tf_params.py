@@ -3,7 +3,7 @@
 将策略参数从全局单一值扩展为 per-TF 可配置：
 - 查找优先级：per-TF 值 → 全局默认值 → 策略代码硬编码默认值
 - INI 格式：[strategy_params.M5] rsi_reversion__overbought = 72
-- 全局格式：[strategy_params] rsi_reversion__overbought = 78（兜底）
+- 全局格式：[strategy_params] rsi_reversion__overbought = 78（可作为缺省值）
 
 设计原则：
 - 策略单例不变，参数通过 resolver 查表而非 setattr

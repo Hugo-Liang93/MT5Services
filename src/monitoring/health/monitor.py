@@ -69,6 +69,12 @@ class HealthMonitor:
             "indicator_freshness": {"warning": 60.0, "critical": 300.0},
             "queue_depth": {"warning": 1000, "critical": 5000},
             "indicator_compute_p99_ms": {"warning": 500.0, "critical": 2000.0},
+            "intrabar_drop_rate_1m": {"warning": 1.0, "critical": 5.0},
+            "intrabar_queue_age_p95_ms": {"warning": 2500.0, "critical": 5000.0},
+            "intrabar_to_decision_latency_p95_ms": {
+                "warning": 3500.0,
+                "critical": 7000.0,
+            },
             "cache_hit_rate": {"warning": 0.0, "critical": 0.0},
         }
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
@@ -91,11 +97,41 @@ class HealthMonitor:
         *,
         data_latency_warning: Optional[float] = None,
         data_latency_critical: Optional[float] = None,
+        intrabar_drop_rate_1m_warning: Optional[float] = None,
+        intrabar_drop_rate_1m_critical: Optional[float] = None,
+        intrabar_queue_age_p95_ms_warning: Optional[float] = None,
+        intrabar_queue_age_p95_ms_critical: Optional[float] = None,
+        intrabar_to_decision_latency_p95_ms_warning: Optional[float] = None,
+        intrabar_to_decision_latency_p95_ms_critical: Optional[float] = None,
     ) -> None:
         if data_latency_warning is not None:
             self.alerts["data_latency"]["warning"] = float(data_latency_warning)
         if data_latency_critical is not None:
             self.alerts["data_latency"]["critical"] = float(data_latency_critical)
+        if intrabar_drop_rate_1m_warning is not None:
+            self.alerts["intrabar_drop_rate_1m"][
+                "warning"
+            ] = float(intrabar_drop_rate_1m_warning)
+        if intrabar_drop_rate_1m_critical is not None:
+            self.alerts["intrabar_drop_rate_1m"][
+                "critical"
+            ] = float(intrabar_drop_rate_1m_critical)
+        if intrabar_queue_age_p95_ms_warning is not None:
+            self.alerts["intrabar_queue_age_p95_ms"][
+                "warning"
+            ] = float(intrabar_queue_age_p95_ms_warning)
+        if intrabar_queue_age_p95_ms_critical is not None:
+            self.alerts["intrabar_queue_age_p95_ms"][
+                "critical"
+            ] = float(intrabar_queue_age_p95_ms_critical)
+        if intrabar_to_decision_latency_p95_ms_warning is not None:
+            self.alerts["intrabar_to_decision_latency_p95_ms"][
+                "warning"
+            ] = float(intrabar_to_decision_latency_p95_ms_warning)
+        if intrabar_to_decision_latency_p95_ms_critical is not None:
+            self.alerts["intrabar_to_decision_latency_p95_ms"][
+                "critical"
+            ] = float(intrabar_to_decision_latency_p95_ms_critical)
 
     # ─── 核心写入 ────────────────────────────────────────────────────────────
 
@@ -208,6 +244,15 @@ class HealthMonitor:
                 return "critical"
             if value >= thresholds["warning"] > 0:
                 return "warning"
+        elif metric_name in {
+            "intrabar_drop_rate_1m",
+            "intrabar_queue_age_p95_ms",
+            "intrabar_to_decision_latency_p95_ms",
+        }:
+            if value >= thresholds["critical"]:
+                return "critical"
+            if value >= thresholds["warning"]:
+                return "warning"
         elif metric_name == "cache_hit_rate":
             pass
         return None
@@ -238,6 +283,21 @@ class HealthMonitor:
         if metric_name == "indicator_compute_p99_ms":
             return (
                 f"{component}: compute P99 {alert_level} - "
+                f"current={value:.0f}ms threshold={threshold:.0f}ms"
+            )
+        if metric_name == "intrabar_drop_rate_1m":
+            return (
+                f"{component}: intrabar drop rate {alert_level} - "
+                f"current={value:.2f}% threshold={threshold:.2f}% (1m)"
+            )
+        if metric_name == "intrabar_queue_age_p95_ms":
+            return (
+                f"{component}: intrabar queue age P95 {alert_level} - "
+                f"current={value:.0f}ms threshold={threshold:.0f}ms"
+            )
+        if metric_name == "intrabar_to_decision_latency_p95_ms":
+            return (
+                f"{component}: intrabar to-decision latency P95 {alert_level} - "
                 f"current={value:.0f}ms threshold={threshold:.0f}ms"
             )
         if metric_name == "cache_hit_rate":

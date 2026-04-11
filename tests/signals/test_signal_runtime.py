@@ -12,6 +12,7 @@ from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
 class DummySnapshotSource:
     def __init__(self):
         self.snapshot_listeners = []
+        self.current_trace_id: str | None = None
 
     def add_snapshot_listener(self, listener):
         self.snapshot_listeners.append(listener)
@@ -20,6 +21,9 @@ class DummySnapshotSource:
         self.snapshot_listeners = [
             item for item in self.snapshot_listeners if item is not listener
         ]
+
+    def get_current_trace_id(self) -> str | None:
+        return self.current_trace_id
 
     def publish(
         self,
@@ -51,6 +55,30 @@ class DummySignalService:
         self.evaluate_calls = []
         self.persist_calls = []
         self.recent_rows = []
+
+    def strategy_capability_catalog(self, voting_group_policy=None):
+        return [
+            {
+                "name": "sma_trend",
+                "valid_scopes": ["confirmed", "intrabar"],
+                "needed_indicators": ["sma20", "ema50"],
+                "needs_intrabar": True,
+                "needs_htf": False,
+                "voting_group_policy": "standalone",
+                "regime_affinity": {},
+                "htf_requirements": {},
+            },
+            {
+                "name": "rsi_reversion",
+                "valid_scopes": ["confirmed", "intrabar"],
+                "needed_indicators": ["rsi14"],
+                "needs_intrabar": True,
+                "needs_htf": False,
+                "voting_group_policy": "standalone",
+                "regime_affinity": {},
+                "htf_requirements": {},
+            },
+        ]
 
     def strategy_requirements(self, strategy: str):
         mapping = {

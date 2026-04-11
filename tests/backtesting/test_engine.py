@@ -34,6 +34,24 @@ def _make_bars(count: int, base_price: float = 2000.0) -> List[OHLC]:
     return bars
 
 
+def _capability(
+    name: str,
+    indicators: list[str] | tuple[str, ...] = ("rsi14",),
+    scopes: tuple[str, ...] = ("confirmed",),
+    needs_intrabar: bool = False,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "valid_scopes": list(scopes),
+        "needed_indicators": list(indicators),
+        "needs_intrabar": bool(needs_intrabar),
+        "needs_htf": False,
+        "voting_group_policy": "standalone",
+        "regime_affinity": {},
+        "htf_requirements": {},
+    }
+
+
 class TestBacktestEngine:
     def _make_config(self, **kwargs: Any) -> BacktestConfig:
         defaults = {
@@ -58,6 +76,9 @@ class TestBacktestEngine:
         signal_module = MagicMock()
         signal_module.list_strategies.return_value = ["rsi_reversion"]
         signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("rsi_reversion", ("rsi14",), ("confirmed", "intrabar"), True),
+        )
 
         pipeline = MagicMock()
 
@@ -87,6 +108,9 @@ class TestBacktestEngine:
         signal_module = MagicMock()
         signal_module.list_strategies.return_value = ["rsi_reversion"]
         signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("rsi_reversion", ("rsi14",), ("confirmed", "intrabar"), True),
+        )
 
         # 交替生成 buy/hold 信号
         call_count = 0
@@ -147,6 +171,10 @@ class TestBacktestEngine:
             "rsi_reversion": ("rsi14",),
             "multi_timeframe_confirm": ("sma20", "ema50"),
         }[name]
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("rsi_reversion", ("rsi14",), ("confirmed",)),
+            _capability("multi_timeframe_confirm", ("sma20", "ema50"), ("confirmed",)),
+        )
         pipeline = MagicMock()
 
         engine = BacktestEngine(
@@ -176,6 +204,9 @@ class TestBacktestEngine:
         signal_module = MagicMock()
         signal_module.list_strategies.return_value = ["rsi_reversion"]
         signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("rsi_reversion", ("rsi14",), ("confirmed",)),
+        )
 
         pipeline = MagicMock()
         pipeline.compute.side_effect = Exception("compute failed")
@@ -205,6 +236,9 @@ class TestBacktestEngine:
         signal_module = MagicMock()
         signal_module.list_strategies.return_value = ["rsi_reversion"]
         signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("rsi_reversion", ("rsi14",), ("confirmed",), True),
+        )
         signal_module.evaluate.return_value = SignalDecision(
             strategy="rsi_reversion", symbol="XAUUSD", timeframe="M5",
             direction="hold", confidence=0.0, reason="test",
@@ -247,6 +281,9 @@ class TestBacktestEngine:
         signal_module = MagicMock()
         signal_module.list_strategies.return_value = ["rsi_reversion"]
         signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("rsi_reversion", ("rsi14",), ("confirmed",)),
+        )
 
         call_count = 0
         def mock_evaluate(**kwargs: Any) -> SignalDecision:

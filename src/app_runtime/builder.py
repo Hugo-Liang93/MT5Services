@@ -4,98 +4,35 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Optional
 
 from src.app_runtime.container import AppContainer
-from src.app_runtime.factories import (
-    build_signal_components,
-    build_trading_components,
-    create_indicator_manager,
-    create_ingestor,
-    create_market_service,
-    create_storage_writer,
-    register_signal_hot_reload,
-)
-from src.app_runtime.lifecycle import (
-    FunctionalRuntimeComponent,
-    RuntimeComponentRegistry,
-)
-from src.app_runtime.mode_controller import RuntimeModeController
-from src.app_runtime.mode_policy import (
-    RuntimeMode,
-    RuntimeModeAutoTransitionPolicy,
-    RuntimeModeEODAction,
-    RuntimeModePolicy,
-    RuntimeModeTransitionGuard,
+from src.app_runtime.builder_phases import (
+    build_market_layer,
+    build_monitoring_layer,
+    build_paper_trading_layer,
+    build_runtime_controls,
+    build_runtime_read_models,
+    build_signal_layer,
+    build_studio_service_layer,
+    build_trading_layer,
 )
 from src.config import (
-    get_economic_config,
     get_effective_config_snapshot,
     get_risk_config,
-    get_runtime_data_path,
     get_runtime_ingest_settings,
     get_runtime_market_settings,
     get_signal_config,
-    get_trading_ops_config,
-    load_db_settings,
-    load_mt5_settings,
-    load_storage_settings,
 )
-from src.monitoring import get_health_monitor, get_monitoring_manager
-from src.monitoring.pipeline import PipelineEventBus, PipelineTraceRecorder
-from src.readmodels.runtime import RuntimeReadModel
-from src.readmodels.trade_trace import TradingFlowTraceReadModel
-from src.studio.runtime import build_studio_service
-from src.trading.closeout import CloseoutRuntimeModeAction, ExposureCloseoutPolicy
-from src.trading.state import (
-    TradingStateAlerts,
-    TradingStateRecovery,
-    TradingStateRecoveryPolicy,
-    TradingStateStore,
-)
+from src.config import get_economic_config
 
 logger = logging.getLogger(__name__)
 
 
 def _enum_or_raw(value: Any) -> str:
+    if value is None:
+        return ""
     return getattr(value, "value", value)
-
-
-def _validate_intrabar_trigger_coverage(
-    signal_module: Any,
-    signal_config: Any,
-) -> None:
-    """校验策略声明 intrabar scope 的 TF 是否都有 trigger 配置。
-
-    启动时调用，缺失时 WARNING（不阻断启动），帮助发现配置遗漏。
-    """
-    if signal_module is None:
-        return
-    trigger_map: dict[str, str] = dict(
-        getattr(signal_config, "intrabar_trading_trigger_map", {}) or {}
-    )
-    strategy_timeframes: dict[str, Any] = dict(
-        getattr(signal_config, "strategy_timeframes", {}) or {}
-    )
-    strategies = getattr(signal_module, "_strategies", {})
-    for name, strategy in strategies.items():
-        scopes = getattr(strategy, "preferred_scopes", ())
-        if "intrabar" not in scopes:
-            continue
-        allowed_tfs = strategy_timeframes.get(name, ())
-        if not allowed_tfs:
-            continue
-        for tf in allowed_tfs:
-            tf_upper = str(tf).strip().upper()
-            if tf_upper and tf_upper not in trigger_map:
-                logger.warning(
-                    "Strategy '%s' expects intrabar on %s but no trigger configured "
-                    "in [intrabar_trading.trigger]. Intrabar events for this TF "
-                    "will never arrive.",
-                    name,
-                    tf_upper,
-                )
 
 
 def build_app_container(
@@ -109,250 +46,50 @@ def build_app_container(
     container = AppContainer()
     ingest_settings = get_runtime_ingest_settings()
     market_settings = get_runtime_market_settings()
+    signal_config = signal_config_loader()
 
-    # Phase 1: market data
-    container.market_service = create_market_service(
-        load_mt5_settings(), market_settings
+    # Phase 1: market data / storage / indicators
+    build_market_layer(
+        container,
+        ingest_settings=ingest_settings,
+        market_settings=market_settings,
     )
-    container.storage_writer = create_storage_writer(
-        load_db_settings(), load_storage_settings()
-    )
-    container.market_service.attach_storage(container.storage_writer)
-    container.ingestor = create_ingestor(
-        container.market_service,
-        container.storage_writer,
-        ingest_settings,
-    )
-    container.indicator_manager = create_indicator_manager(
-        container.market_service,
-        container.storage_writer,
-    )
-
-    # Pipeline tracing
-    container.pipeline_event_bus = PipelineEventBus()
-    container.indicator_manager._pipeline_event_bus = container.pipeline_event_bus
-    container.indicator_manager._current_trace_id = None
-    if container.storage_writer is not None:
-        container.pipeline_trace_recorder = PipelineTraceRecorder(
-            pipeline_bus=container.pipeline_event_bus,
-            db_writer=container.storage_writer.db,
-        )
 
     # Phase 2: trading and economic calendar
-    trading_components = build_trading_components(
-        container.storage_writer,
-        get_economic_config(),
-    )
-    container.economic_calendar_service = trading_components.economic_calendar_service
-    container.trade_registry = trading_components.trade_registry
-    container.trade_module = trading_components.trade_module
-    default_account_alias: Optional[str] = trading_components.default_account_alias
-    if container.trade_module is not None and container.storage_writer is not None:
-        trading_ops_config = get_trading_ops_config()
-        container.trading_state_store = TradingStateStore(
-            container.storage_writer.db,
-            account_alias_getter=lambda: container.trade_module.active_account_alias,
-        )
-        container.trading_state_alerts = TradingStateAlerts(
-            state_store=container.trading_state_store,
-            trading_module=container.trade_module,
-            account_alias_getter=lambda: container.trade_module.active_account_alias,
-        )
-        container.trading_state_recovery_policy = TradingStateRecoveryPolicy(
-            container.trading_state_store,
-            orphan_action=trading_ops_config.pending_recovery_orphan_action,
-            missing_action=trading_ops_config.pending_recovery_missing_action,
-        )
-        container.trading_state_recovery = TradingStateRecovery(
-            container.trading_state_store,
-            policy=container.trading_state_recovery_policy,
-        )
-        container.trade_module.set_trade_control_update_hook(
-            container.trading_state_store.sync_trade_control
-        )
-
     economic_settings = get_economic_config()
-    if economic_settings.market_impact_enabled:
-        from src.calendar.economic_calendar.market_impact import MarketImpactAnalyzer
-
-        ingestor_ref = container.ingestor
-        container.market_impact_analyzer = MarketImpactAnalyzer(
-            db_writer=container.storage_writer.db,
-            market_repo=container.storage_writer.db.market_repo,
-            settings=economic_settings,
-            warmup_ready_fn=(
-                (lambda: not ingestor_ref.is_backfilling)
-                if ingestor_ref is not None
-                else None
-            ),
-        )
-        container.economic_calendar_service.market_impact_analyzer = (
-            container.market_impact_analyzer
-        )
+    default_account_alias: Optional[str] = build_trading_layer(
+        container,
+        economic_settings=economic_settings,
+    )
 
     # Phase 3: signal system
-    signal_components = build_signal_components(
-        indicator_manager=container.indicator_manager,
-        storage_writer=container.storage_writer,
-        trade_module=container.trade_module,
-        economic_calendar_service=container.economic_calendar_service,
-        signal_config=signal_config_loader(),
-        trading_state_store=container.trading_state_store,
-        pipeline_event_bus=container.pipeline_event_bus,
+    build_signal_layer(
+        container,
+        signal_config_loader=signal_config_loader,
+        signal_config=signal_config,
     )
-    container.calibrator = signal_components.calibrator
-    container.regime_detector = signal_components.regime_detector
-    container.market_structure_analyzer = signal_components.market_structure_analyzer
-    container.signal_module = signal_components.signal_module
-    container.signal_runtime = signal_components.signal_runtime
-    container.htf_cache = signal_components.htf_cache
-    container.signal_quality_tracker = signal_components.signal_quality_tracker
-    container.trade_outcome_tracker = signal_components.trade_outcome_tracker
-    container.exposure_closeout_controller = (
-        signal_components.exposure_closeout_controller
-    )
-    container.position_manager = signal_components.position_manager
-    container.trade_executor = signal_components.trade_executor
-    _wire_margin_guard(
-        container.position_manager,
-        container.trade_module,
-        container.trade_executor,
-    )
-    container.performance_tracker = signal_components.performance_tracker
-    container.pending_entry_manager = signal_components.pending_entry_manager
-    # Intrabar trigger: 子 TF close → 合成父 TF bar → set_intrabar
-    _sc = signal_config_loader()
-    if container.ingestor is not None and _sc.intrabar_trading_enabled:
-        trigger_map = dict(_sc.intrabar_trading_trigger_map)
-        if trigger_map:
-            container.ingestor.set_intrabar_trigger_map(trigger_map)
-    # 校验：策略声明 intrabar scope 的 TF 必须有对应 trigger 配置
-    _validate_intrabar_trigger_coverage(container.signal_module, _sc)
-    if container.signal_runtime is not None:
-        container.signal_runtime._pipeline_event_bus = container.pipeline_event_bus
-        if container.ingestor is not None:
-            ingestor = container.ingestor
-            container.signal_runtime._warmup_ready_fn = (
-                lambda: not ingestor.is_backfilling
-            )
-    signal_hot_reload_cleanup = register_signal_hot_reload(
-        container.signal_runtime,
-        signal_config_loader,
-        signal_module=container.signal_module,
-        regime_detector=container.regime_detector,
-        calibrator=container.calibrator,
-        trade_executor=container.trade_executor,
-        economic_calendar_service=container.economic_calendar_service,
-        market_structure_analyzer=container.market_structure_analyzer,
-        performance_tracker=container.performance_tracker,
-        pending_entry_manager=container.pending_entry_manager,
-    )
-    container.shutdown_callbacks.append(signal_hot_reload_cleanup)
+    build_paper_trading_layer(container)
 
-    # Paper Trading (between signal system and runtime mode controller)
-    _build_paper_trading(container)
-
-    if container.trade_module is not None:
-        trading_ops_config = get_trading_ops_config()
-        container.runtime_component_registry = _build_runtime_component_registry(
-            container,
-            signal_config_loader=signal_config_loader,
-        )
-        container.runtime_mode_guard = RuntimeModeTransitionGuard(
-            trading_module_getter=lambda: container.trade_module,
-        )
-        container.runtime_mode_auto_policy = RuntimeModeAutoTransitionPolicy(
-            after_eod_action=RuntimeModeEODAction(
-                trading_ops_config.runtime_mode_after_eod
-            ),
-        )
-        container.runtime_mode_controller = RuntimeModeController(
-            container,
-            policy=RuntimeModePolicy(
-                initial_mode=RuntimeMode(trading_ops_config.runtime_mode),
-                after_eod_action=container.runtime_mode_auto_policy.after_eod_action,
-                auto_check_interval_seconds=(
-                    trading_ops_config.runtime_mode_auto_check_interval_seconds
-                ),
-            ),
-            guard=container.runtime_mode_guard,
-            auto_transition_policy=container.runtime_mode_auto_policy,
-        )
-        if container.exposure_closeout_controller is not None:
-            container.exposure_closeout_controller.configure_runtime_mode_transition(
-                policy=ExposureCloseoutPolicy(
-                    after_manual_closeout_action=CloseoutRuntimeModeAction(
-                        trading_ops_config.runtime_mode_after_manual_closeout
-                    )
-                ),
-                apply_mode=container.runtime_mode_controller.apply_mode,
-            )
+    # Runtime control plane
+    build_runtime_controls(
+        container,
+        signal_config_loader=signal_config_loader,
+    )
 
     # Phase 4: monitoring
-    container.health_monitor = get_health_monitor(
-        get_runtime_data_path("health_monitor.db")
+    build_monitoring_layer(
+        container,
+        ingest_settings=ingest_settings,
+        economic_settings=economic_settings,
     )
-    container.health_monitor.configure_alerts(
-        data_latency_warning=max(1.0, ingest_settings.max_allowed_delay / 2.0),
-        data_latency_critical=max(1.0, ingest_settings.max_allowed_delay),
-    )
-    container.health_monitor.alerts["economic_calendar_staleness"] = {
-        "warning": max(1.0, economic_settings.stale_after_seconds / 2.0),
-        "critical": max(1.0, economic_settings.stale_after_seconds),
-    }
-    container.health_monitor.alerts["economic_provider_failures"] = {
-        "warning": 1.0,
-        "critical": float(max(2, economic_settings.request_retries)),
-    }
-    monitoring_interval = max(
-        1,
-        int(
-            min(
-                ingest_settings.health_check_interval,
-                ingest_settings.queue_monitor_interval,
-            )
-        ),
-    )
-    container.monitoring_manager = get_monitoring_manager(
-        container.health_monitor,
-        check_interval=monitoring_interval,
-    )
-    container.health_monitor.cleanup_old_data(days_to_keep=30)
-    container.indicator_manager.cleanup_old_events(days_to_keep=7)
 
     # Phase 5: runtime read-models
-    container.runtime_read_model = RuntimeReadModel(
-        health_monitor=container.health_monitor,
-        ingestor=container.ingestor,
-        indicator_manager=container.indicator_manager,
-        trading_queries=(
-            container.trade_module.queries
-            if container.trade_module is not None
-            else None
-        ),
-        signal_runtime=container.signal_runtime,
-        trade_executor=container.trade_executor,
-        position_manager=container.position_manager,
-        pending_entry_manager=container.pending_entry_manager,
-        trading_state_store=container.trading_state_store,
-        trading_state_alerts=container.trading_state_alerts,
-        exposure_closeout_controller=container.exposure_closeout_controller,
-        runtime_mode_controller=container.runtime_mode_controller,
-    )
-    if container.storage_writer is not None and container.trade_module is not None:
-        container.trade_trace_read_model = TradingFlowTraceReadModel(
-            signal_repo=container.storage_writer.db.signal_repo,
-            command_audit_repo=container.storage_writer.db.trade_command_repo,
-            pipeline_trace_repo=container.storage_writer.db.pipeline_trace_repo,
-            trading_state_repo=container.storage_writer.db.trading_state_repo,
-            account_alias_getter=lambda: container.trade_module.active_account_alias,
-        )
+    build_runtime_read_models(container)
 
     # Phase 6: frontend observability
-    container.studio_service = build_studio_service(container)
+    build_studio_service_layer(container)
 
     # Spread / cost sanity check
-    signal_config = signal_config_loader()
     if signal_config.base_spread_points > 0:
         min_plausible_sl = signal_config.base_spread_points * 3
         implied_ratio = signal_config.base_spread_points / min_plausible_sl
@@ -404,353 +141,3 @@ def build_app_container(
     )
 
     return container
-
-
-def _build_runtime_component_registry(
-    container: AppContainer,
-    *,
-    signal_config_loader,
-) -> RuntimeComponentRegistry:
-    all_modes = frozenset(mode.value for mode in RuntimeMode)
-    signal_modes = frozenset({RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value})
-    risk_modes = frozenset(
-        {
-            RuntimeMode.FULL.value,
-            RuntimeMode.OBSERVE.value,
-            RuntimeMode.RISK_OFF.value,
-        }
-    )
-    listener_state = {"attached": False}
-
-    def _start_indicator_stack() -> None:
-        indicators = container.indicator_manager
-        if indicators is not None:
-            indicators.start()
-        calibrator = container.calibrator
-        if calibrator is not None:
-            try:
-                calibrator_cache_path = get_runtime_data_path("calibrator_cache.json")
-                os.makedirs(os.path.dirname(calibrator_cache_path), exist_ok=True)
-                calibrator.load(calibrator_cache_path)
-            except Exception:
-                logger.debug("Calibrator warm-start load failed", exc_info=True)
-            try:
-                calibrator.start_background_refresh()
-            except Exception:
-                logger.debug("Calibrator start failed", exc_info=True)
-        calendar = container.economic_calendar_service
-        if calendar is not None:
-            calendar.start()
-
-    def _stop_indicator_stack() -> None:
-        calibrator = container.calibrator
-        if calibrator is not None:
-            try:
-                calibrator.stop_background_refresh()
-            except Exception:
-                logger.debug("Calibrator stop failed", exc_info=True)
-        calendar = container.economic_calendar_service
-        if calendar is not None:
-            calendar.stop()
-        indicators = container.indicator_manager
-        if indicators is not None:
-            indicators.shutdown()
-
-    def _start_signals() -> None:
-        runtime = container.signal_runtime
-        if runtime is not None:
-            runtime.start()
-
-    def _stop_signals() -> None:
-        runtime = container.signal_runtime
-        if runtime is not None:
-            runtime.stop()
-
-    def _start_trade_execution() -> None:
-        runtime = container.signal_runtime
-        executor = container.trade_executor
-        if runtime is None or executor is None:
-            return
-        executor.start()
-        if not listener_state["attached"]:
-            runtime.add_signal_listener(executor.on_signal_event)
-            listener_state["attached"] = True
-
-    def _stop_trade_execution() -> None:
-        runtime = container.signal_runtime
-        executor = container.trade_executor
-        if runtime is None or executor is None:
-            return
-        if listener_state["attached"]:
-            runtime.remove_signal_listener(executor.on_signal_event)
-            listener_state["attached"] = False
-        executor.stop()
-
-    def _start_pending_entry() -> None:
-        pending = container.pending_entry_manager
-        if pending is None:
-            return
-        was_running = pending.is_running()
-        pending.start()
-        recovery = container.trading_state_recovery
-        trading = container.trade_module
-        if not was_running and recovery is not None and trading is not None:
-            try:
-                result = recovery.restore_pending_orders(
-                    pending_entry_manager=pending,
-                    trading_module=trading,
-                )
-                logger.info("Pending order recovery: %s", result)
-            except Exception:
-                logger.warning("Pending order restore failed", exc_info=True)
-
-    def _start_position_manager() -> None:
-        position_manager = container.position_manager
-        if position_manager is None:
-            return
-        was_running = position_manager.is_running()
-        reconcile_interval = float(signal_config_loader().position_reconcile_interval)
-        position_manager.start(reconcile_interval=reconcile_interval)
-        if not was_running:
-            try:
-                recovery_result = position_manager.sync_open_positions()
-                logger.info("PositionManager mode sync: %s", recovery_result)
-            except Exception:
-                logger.warning("PositionManager mode sync failed", exc_info=True)
-            try:
-                overnight_result = position_manager.force_close_overnight()
-                if overnight_result is not None:
-                    logger.warning(
-                        "Overnight force close on mode start: %s",
-                        overnight_result,
-                    )
-            except Exception:
-                logger.warning("Overnight force close failed", exc_info=True)
-
-    def _start_paper_trading(c: AppContainer) -> None:
-        bridge = c.paper_trading_bridge
-        tracker = c.paper_trade_tracker
-        if bridge is None:
-            return
-        if tracker is not None:
-            tracker.start()
-        bridge.start()
-
-    def _stop_paper_trading(c: AppContainer) -> None:
-        bridge = c.paper_trading_bridge
-        tracker = c.paper_trade_tracker
-        if bridge is not None:
-            bridge.stop()
-            # 保存 session 信息
-            if tracker is not None and bridge._session is not None:
-                tracker.save_session(bridge._session)
-                tracker.stop()
-
-    return RuntimeComponentRegistry(
-        [
-            FunctionalRuntimeComponent(
-                name="storage",
-                supported_modes=all_modes,
-                start_fn=lambda: (
-                    container.storage_writer.start()
-                    if container.storage_writer is not None
-                    else None
-                ),
-                stop_fn=lambda: (
-                    container.storage_writer.stop()
-                    if container.storage_writer is not None
-                    else None
-                ),
-                is_running_fn=lambda: bool(
-                    container.storage_writer is not None
-                    and container.storage_writer.is_running()
-                ),
-            ),
-            FunctionalRuntimeComponent(
-                name="ingestion",
-                supported_modes=all_modes,
-                start_fn=lambda: (
-                    container.ingestor.start()
-                    if container.ingestor is not None
-                    else None
-                ),
-                stop_fn=lambda: (
-                    container.ingestor.stop()
-                    if container.ingestor is not None
-                    else None
-                ),
-                is_running_fn=lambda: bool(
-                    container.ingestor is not None and container.ingestor.is_running()
-                ),
-            ),
-            FunctionalRuntimeComponent(
-                name="pipeline_trace",
-                supported_modes=signal_modes,
-                start_fn=lambda: (
-                    container.pipeline_trace_recorder.start()
-                    if container.pipeline_trace_recorder is not None
-                    else None
-                ),
-                stop_fn=lambda: (
-                    container.pipeline_trace_recorder.stop()
-                    if container.pipeline_trace_recorder is not None
-                    else None
-                ),
-                is_running_fn=lambda: bool(
-                    container.pipeline_trace_recorder is not None
-                    and container.pipeline_trace_recorder.is_running()
-                ),
-            ),
-            FunctionalRuntimeComponent(
-                name="indicators",
-                supported_modes=signal_modes,
-                start_fn=_start_indicator_stack,
-                stop_fn=_stop_indicator_stack,
-                is_running_fn=lambda: bool(
-                    container.indicator_manager is not None
-                    and container.indicator_manager.is_running()
-                ),
-            ),
-            FunctionalRuntimeComponent(
-                name="signals",
-                supported_modes=signal_modes,
-                start_fn=_start_signals,
-                stop_fn=_stop_signals,
-                is_running_fn=lambda: bool(
-                    container.signal_runtime is not None
-                    and container.signal_runtime.is_running()
-                ),
-            ),
-            FunctionalRuntimeComponent(
-                name="trade_execution",
-                supported_modes=frozenset({RuntimeMode.FULL.value}),
-                start_fn=_start_trade_execution,
-                stop_fn=_stop_trade_execution,
-                is_running_fn=lambda: bool(listener_state["attached"]),
-            ),
-            FunctionalRuntimeComponent(
-                name="pending_entry",
-                supported_modes=risk_modes,
-                start_fn=_start_pending_entry,
-                stop_fn=lambda: (
-                    container.pending_entry_manager.shutdown()
-                    if container.pending_entry_manager is not None
-                    else None
-                ),
-                is_running_fn=lambda: bool(
-                    container.pending_entry_manager is not None
-                    and container.pending_entry_manager.is_running()
-                ),
-            ),
-            FunctionalRuntimeComponent(
-                name="position_manager",
-                supported_modes=risk_modes,
-                start_fn=_start_position_manager,
-                stop_fn=lambda: (
-                    container.position_manager.stop()
-                    if container.position_manager is not None
-                    else None
-                ),
-                is_running_fn=lambda: bool(
-                    container.position_manager is not None
-                    and container.position_manager.is_running()
-                ),
-            ),
-            FunctionalRuntimeComponent(
-                name="paper_trading",
-                supported_modes=frozenset(
-                    {RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value}
-                ),
-                start_fn=lambda: _start_paper_trading(container),
-                stop_fn=lambda: _stop_paper_trading(container),
-                is_running_fn=lambda: bool(
-                    container.paper_trading_bridge is not None
-                    and container.paper_trading_bridge.is_running()
-                ),
-            ),
-        ]
-    )
-
-
-def _build_paper_trading(container: AppContainer) -> None:
-    """Construct Paper Trading bridge and tracker if enabled."""
-    try:
-        from src.backtesting.paper_trading.bridge import PaperTradingBridge
-        from src.backtesting.paper_trading.config import load_paper_trading_config
-        from src.backtesting.paper_trading.tracker import PaperTradeTracker
-
-        pt_config = load_paper_trading_config()
-        if not pt_config.enabled:
-            logger.debug("Paper trading disabled (enabled=false)")
-            return
-
-        if container.market_service is None:
-            logger.warning("Paper trading: no market_service, skipping")
-            return
-
-        # Tracker (持久化钩子)
-        db_writer = (
-            container.storage_writer.db
-            if container.storage_writer is not None
-            else None
-        )
-        tracker = PaperTradeTracker(
-            db_writer=db_writer,
-            flush_interval=pt_config.persist_flush_interval,
-        )
-        container.paper_trade_tracker = tracker
-
-        # Bridge (核心)
-        market_service = container.market_service
-        bridge = PaperTradingBridge(
-            config=pt_config,
-            market_quote_fn=market_service.get_quote,
-            on_trade_closed=tracker.on_trade_closed,
-            on_trade_opened=tracker.on_trade_opened,
-        )
-        container.paper_trading_bridge = bridge
-
-        # 注册为 signal listener
-        if container.signal_runtime is not None:
-            container.signal_runtime.add_signal_listener(bridge.on_signal_event)
-
-        logger.info(
-            "Paper trading wired: balance=%.0f, max_pos=%d, min_conf=%.2f",
-            pt_config.initial_balance,
-            pt_config.max_positions,
-            pt_config.min_confidence,
-        )
-    except Exception:
-        logger.warning("Paper trading setup failed", exc_info=True)
-
-
-def _wire_margin_guard(
-    position_manager: Any,
-    trade_module: Any,
-    trade_executor: Any = None,
-) -> None:
-    """Construct and inject MarginGuard into PositionManager and TradeExecutor."""
-    try:
-        from src.risk.runtime import wire_margin_guard
-
-        guard = wire_margin_guard(
-            position_manager=position_manager,
-            trade_module=trade_module,
-            trade_executor=trade_executor,
-        )
-        if guard is None:
-            return
-        logger.info(
-            "MarginGuard wired: warn=%.0f%% danger=%.0f%% critical=%.0f%% "
-            "block=%.0f%% emergency=%.0f%%",
-            guard.config.warn_level,
-            guard.config.danger_level,
-            guard.config.critical_level,
-            guard.config.block_new_trades_level,
-            guard.config.emergency_close_level,
-        )
-    except Exception:
-        logger.warning(
-            "MarginGuard setup failed, continuing without margin monitoring",
-            exc_info=True,
-        )

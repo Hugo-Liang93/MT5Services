@@ -22,6 +22,7 @@ from src.config import EconomicConfig, RiskConfig, get_economic_config, get_risk
 from .models import RiskAssessment, RiskCheckResult, TradeIntent
 from .rules import (
     AccountSnapshotRule,
+    AccountStateProvider,
     CalendarHealthRule,
     DailyLossLimitRule,
     EconomicEventRule,
@@ -64,6 +65,13 @@ class PreTradeRiskBlockedError(RuntimeError):
 
 def resolve_risk_failure_key(assessment: Dict[str, Any] | None) -> str | None:
     checks = list((assessment or {}).get("checks") or [])
+    for item in checks:
+        verdict = str(item.get("verdict") or "").strip().lower()
+        if verdict != "block":
+            continue
+        rule_name = str(item.get("name") or "").strip()
+        if rule_name:
+            return rule_name
     for item in checks:
         rule_name = str(item.get("name") or "").strip()
         if rule_name:
@@ -266,7 +274,9 @@ class PreTradeRiskService:
 
         base_assessment: Dict[str, Any]
         if self._economic_guard_enabled():
-            base_assessment = self.economic_calendar_service.get_trade_guard(  # type: ignore[union-attr]
+            economic_calendar_service = self.economic_calendar_service
+            assert economic_calendar_service is not None
+            base_assessment = economic_calendar_service.get_trade_guard(
                 symbol=intent_obj.symbol,
                 at_time=intent_obj.at_time,
                 lookahead_minutes=lookahead_minutes if lookahead_minutes is not None else self.settings.trade_guard_lookahead_minutes,

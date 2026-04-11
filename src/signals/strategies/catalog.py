@@ -1,7 +1,9 @@
+"""Signals 策略目录入口。"""
+
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Iterable, Optional
+from typing import Iterable
 
 from .base import SignalStrategy
 from .structured import (
@@ -15,14 +17,9 @@ from .structured import (
 )
 
 
-def build_named_strategy_catalog(
-    *,
-    htf_cache: Optional[Any] = None,
-    include_composites: bool = True,
-) -> "OrderedDict[str, SignalStrategy]":
-    strategies: "OrderedDict[str, SignalStrategy]" = OrderedDict()
-
-    for strategy in (
+def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
+    """返回当前激活结构化策略的 fresh 实例，避免跨运行时共享 stateful 对象。"""
+    return (
         StructuredTrendContinuation(),
         StructuredTrendContinuation(name="structured_trend_h4", htf="H4"),
         StructuredSweepReversal(),
@@ -31,35 +28,26 @@ def build_named_strategy_catalog(
         StructuredSessionBreakout(),
         StructuredTrendlineTouch(),
         StructuredLowbarEntry(),
-    ):
+    )
+
+
+def build_named_strategy_catalog() -> "OrderedDict[str, SignalStrategy]":
+    # Structured strategies are the only active strategy source in the current runtime.
+    strategies: "OrderedDict[str, SignalStrategy]" = OrderedDict()
+
+    for strategy in _build_structured_strategies():
         strategies[strategy.name] = strategy
 
     return strategies
 
 
-def build_default_strategy_set(
-    *,
-    htf_cache: Optional[Any] = None,
-    include_composites: bool = True,
-) -> list[SignalStrategy]:
-    return list(
-        build_named_strategy_catalog(
-            htf_cache=htf_cache,
-            include_composites=include_composites,
-        ).values()
-    )
+def build_default_strategy_set() -> list[SignalStrategy]:
+    catalog = build_named_strategy_catalog()
+    return list(catalog.values())
 
 
-def clone_registered_strategies(
-    strategy_names: Iterable[str],
-    *,
-    htf_cache: Optional[Any] = None,
-    include_composites: bool = True,
-) -> list[SignalStrategy]:
-    catalog = build_named_strategy_catalog(
-        htf_cache=htf_cache,
-        include_composites=include_composites,
-    )
+def clone_registered_strategies(strategy_names: Iterable[str]) -> list[SignalStrategy]:
+    catalog = build_named_strategy_catalog()
     cloned: list[SignalStrategy] = []
     missing: list[str] = []
     for name in strategy_names:

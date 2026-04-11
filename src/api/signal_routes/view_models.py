@@ -19,6 +19,8 @@ class SignalRuntimeSummaryView(FlexibleSignalView):
     market_structure: Dict[str, Any] = Field(default_factory=dict)
     queues: Dict[str, Any] = Field(default_factory=dict)
     last_error: Optional[str] = None
+    strategy_capability_reconciliation: Dict[str, Any] = Field(default_factory=dict)
+    strategy_capability_execution_plan: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TrackedPositionsView(FlexibleSignalView):
@@ -64,3 +66,17 @@ class SignalMonitoringQualityView(FlexibleSignalView):
 
 class StrategyWinrateView(FlexibleSignalView):
     pass
+
+
+class IntrabarSLOPoint(BaseModel):
+    timestamp: str
+    value: float
+    alert_level: str | None = None
+
+
+class IntrabarSLOWindowView(FlexibleSignalView):
+    component: str
+    limit: int
+    drop_rate: list[IntrabarSLOPoint]
+    queue_age_ms_p95: list[IntrabarSLOPoint]
+    to_decision_latency_ms_p95: list[IntrabarSLOPoint]

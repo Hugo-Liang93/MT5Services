@@ -110,7 +110,7 @@ def _check_confirmed_warmup(
             bar_time.isoformat(),
         )
 
-    required = getattr(runtime.policy, "warmup_required_indicators", ("atr14",))
+    required = runtime.policy.get_warmup_required_indicators()
     if required and any(ind not in indicators for ind in required):
         runtime._warmup_skipped += 1
         if runtime._warmup_skipped <= 10 or runtime._warmup_skipped % 100 == 0:

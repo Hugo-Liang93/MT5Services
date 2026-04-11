@@ -16,6 +16,21 @@ from src.risk.rules import (
     RuleContext,
     TradeFrequencyRule,
 )
+from src.risk.service import resolve_risk_failure_key
+
+
+@dataclass
+class FakeAccountInfo:
+    balance: float
+    equity: float
+    margin: float
+    margin_free: float | None
+    profit: float
+    leverage: int
+    currency: str
+    day_start_balance: float | None = None
+    daily_realized_pnl: float | None = None
+    daily_pnl: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -27,10 +42,18 @@ class FakeAccountProvider:
     def __init__(self, *, margin_free: Optional[float] = 5000.0, balance: float = 10000.0):
         self._margin_free = margin_free
         self._balance = balance
+        self._info = FakeAccountInfo(
+            balance=self._balance,
+            equity=self._balance,
+            margin=0.0,
+            margin_free=self._margin_free,
+            profit=0.0,
+            leverage=100,
+            currency="USD",
+        )
 
     def account_info(self):
-        info = {"balance": self._balance, "equity": self._balance, "margin_free": self._margin_free}
-        return info
+        return self._info
 
     def positions(self, symbol=None):
         return []
@@ -274,3 +297,26 @@ class TestTradeFrequencyRule:
         ctx.risk_settings = RiskConfig(enabled=False)
         checks = rule.evaluate(ctx)
         assert checks == []
+
+
+class TestResolveRiskFailureKey:
+    def test_prefers_block_check_over_warning(self):
+        assert (
+            resolve_risk_failure_key(
+                {
+                    "checks": [
+                        {"name": "session_window", "verdict": "warn"},
+                        {"name": "margin_availability", "verdict": "block"},
+                    ]
+                }
+            )
+            == "margin_availability"
+        )
+
+    def test_fallback_to_first_available_check_name(self):
+        assert (
+            resolve_risk_failure_key(
+                {"checks": [{"name": "session_window", "verdict": "warn"}]}
+            )
+            == "session_window"
+        )
