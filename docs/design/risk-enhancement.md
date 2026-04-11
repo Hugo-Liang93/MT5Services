@@ -2,6 +2,8 @@
 
 > 状态：**已实现（2026-03-27）**
 > 对应 commit：`e85e988`
+> 文档类型：已实现功能的设计记录，不用于判断当前启动链路是否健康。
+> 当前运行时探针、日志位置和主链路状态以 `docs/architecture.md`、`docs/codebase-review.md`、`docs/design/full-runtime-dataflow.md` 为准。
 
 ---
 

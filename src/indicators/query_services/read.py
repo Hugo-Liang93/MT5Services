@@ -261,6 +261,8 @@ def get_snapshot(
     symbol: str,
     timeframe: str,
 ) -> "Any":
+    from ..manager import IndicatorSnapshot
+
     prefix = f"{symbol}_{timeframe}_"
     with _state_get(manager, "results_lock"):
         results = _state_get(manager, "results", {})
@@ -270,8 +272,6 @@ def get_snapshot(
             if key.startswith(prefix)
         ]
     if not matches:
-        from ..manager import IndicatorSnapshot
-
         persisted = normalize_persisted_indicator_snapshot(
             manager,
             manager.market_service.latest_indicators(symbol, timeframe),

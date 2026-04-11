@@ -184,12 +184,12 @@ class StorageWriter:
         if self._thread:
             thread = self._thread
             thread.join(timeout=timeout)
-            self._thread = None
             if thread.is_alive():
                 logger.warning(
                     "StorageWriter stop timed out; writer thread still alive"
                 )
                 return
+            self._thread = None
         with self._lock:
             for name in list(self._channels.keys()):
                 self._flush_if_due(name, self._channels[name], force=True)

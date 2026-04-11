@@ -1,6 +1,9 @@
 # Signals 策略模块数据流总览（当前实现版）
 
 用于后续设计会话的运行时“真相”快照。按职责边界展开，便于你快速判断修改会影响哪些链路。
+> 文档类型：当前实现真相（signals 域）。
+> 信号域之外的启动顺序、日志路径、健康探针与持久化全景，请对照 `docs/design/full-runtime-dataflow.md`。
+> 策略开发规范、regime 亲和度、voting 规则和 TF 参数不在本文重复展开，请对照 `docs/signal-system.md`。
 
 ## 0. 总体目标
 

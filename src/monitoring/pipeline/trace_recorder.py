@@ -40,7 +40,11 @@ class PipelineTraceRecorder:
             return
         self._stop.clear()
         if not self._listener_attached:
-            self._pipeline_bus.add_listener(self._on_event)
+            attached = self._pipeline_bus.add_listener(self._on_event)
+            if attached is False:
+                raise RuntimeError(
+                    "PipelineTraceRecorder failed to attach listener to PipelineEventBus"
+                )
             self._listener_attached = True
         self._thread = threading.Thread(
             target=self._run,
@@ -55,12 +59,18 @@ class PipelineTraceRecorder:
             self._pipeline_bus.remove_listener(self._on_event)
             self._listener_attached = False
         if self._thread:
-            self._thread.join(timeout=5.0)
+            thread = self._thread
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                logger.warning(
+                    "PipelineTraceRecorder stop timed out; recorder thread still alive"
+                )
+                return
             self._thread = None
         self._flush(force=True)
 
     def is_running(self) -> bool:
-        return bool(self._thread and self._thread.is_alive() and self._listener_attached)
+        return bool(self._thread and self._thread.is_alive())
 
     def snapshot(self) -> dict[str, Any]:
         return {

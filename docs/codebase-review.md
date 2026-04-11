@@ -1,10 +1,76 @@
 # 代码库审查报告
 
-> 审查日期：2026-04-10
+> 首次审查日期：2026-04-10
+> 最近更新：2026-04-12
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
 
 ---
+
+## 0. 2026-04-11 ~ 2026-04-12 修复更新
+
+本轮已直接处理并验证以下启动阻塞项：
+
+1. **指标 durable event 消费断链已修复**  
+   `IndicatorEventLoop` 已改为调用 `event_store.claim_next_events(...)`，真实启动时事件循环线程可正常存活，不再因接口名不匹配崩溃。
+
+2. **`runtime_task_status` 持久化契约已统一并补库表迁移**  
+   新增统一状态集合，覆盖 `ready / failed / idle / disabled / ok / partial / error / stopped` 等当前真实生产者语义；`TimescaleWriter.init_schema()` 现在会在启动时重建相关 check constraint，现有数据库不需要手工删表。
+
+3. **经济日历 `session_bucket/status` 与 schema 漂移已修复并补库表迁移**  
+   现已允许 `all_day / asia_europe_overlap / europe_us_overlap`，同时允许 `imminent / pending_release` 状态；真实启动后不再出现该表 check constraint 失败和因此进入 DLQ 的问题。
+
+4. **`StorageWriter.stop()` 生命周期语义已修正**  
+   线程 `join(timeout)` 后若仍存活，将保留线程引用并保持 `is_running()` 为真，避免误判组件已停止。
+
+5. **`/health` 已扩展为链路级组件视图**  
+   除市场与交易摘要外，现在还会返回 `storage_writer / indicator_engine / signal_runtime / trade_executor / pending_entry_manager / position_manager / economic_calendar` 运行状态，便于直接判断“采集 → 指标 → 信号 → 执行”链路是否在线。
+
+6. **日志目录已统一回到项目根目录 `data/`**  
+   `src.entrypoint.web` 的相对 `log_dir` 解析现已锚定仓库根目录，不再向 `src/entrypoint/data/logs` 写入；本轮也已把历史遗留日志迁移到根目录 `data/logs/` 下的 `legacy-src-entrypoint-*.log`。
+
+7. **系统 readiness 盲区已补齐：采集线程现在纳入就绪探针**  
+   `/monitoring/health/ready` 过去只看 `storage_writer` 与 `indicator_engine`，即使 `BackgroundIngestor` 已退出也可能误报 `ready`。本轮已把 `ingestion` 纳入同一探针，`RuntimeReadModel.build_storage_summary()` 也同步把 `ingest_alive=false` 视为 `critical`。
+
+8. **`PipelineTraceRecorder` 生命周期语义已修正**  
+   该组件此前在 `stop()` 的 `join(timeout)` 后会无条件清空线程引用，且监听器注册失败时仍会假装启动成功。本轮已改为：监听器挂接失败立即抛错；线程未退出时保留引用并维持真实运行态，避免 observability 组件假死但状态看起来正常。
+
+9. **`calendar` 包顶层导入导致的循环依赖已修复**  
+   `src.persistence.schema.economic_calendar` 引入 contract 时会先执行 `src.calendar.__init__`，此前这里立即导入 `service`，从而形成 `db -> schema -> calendar -> service -> db` 的循环。现已改为懒加载导出，不再阻塞采集/持久化相关测试与运行时装配。
+
+10. **测试资产已做一轮去噪和契约收口**  
+   已删除 7 个只有 `pytest.mark.skip`、实际不产生任何覆盖的历史空文件；同时移除了 2 个“打印 + 吞异常”的脚本式伪测试。`tests/data/test_data_layer.py` 也已改造成无外部 DB 依赖的真实单元测试，`tests/api/test_monitoring_config_reload.py` 则同步对齐当前 404 契约，避免旧口径误报失败。
+
+11. **`SignalRuntime` 测试已从私有子方法绑定收口到行为契约**  
+   原 `tests/signals/test_runtime_submethods.py` 直接断言 `_dequeue_event / _is_stale_intrabar / _apply_filter_chain / _detect_regime` 等私有实现细节，重构成本高而行为保护有限。本轮已删除该文件，并把仍有价值的覆盖迁移为 `tests/signals/test_signal_runtime.py` 中的行为测试，直接校验队列反饥饿、stale intrabar 丢弃、filter 统计和 stop 后队列清理。
+
+12. **`docs/` 已完成一次“运行时真相 / 审计治理 / 方案规划”分层审计，并新增单一导航入口**  
+   已新增 `docs/README.md` 作为文档入口，`architecture / full-runtime-dataflow / signals-dataflow-overview / intrabar-data-flow / entrypoint-map` 已明确标注为当前实现真相文档；`signal-system / research-system / next-plan / r-based-position-management` 等文档已补充“设计参考/规划”定位说明，避免再把方案稿直接当作当前运行结论。`architecture.md` 也已把本应属于专题设计的参数表和方案细节收口到对应专题文档。与此同时，`docs/` 下运行时流图已统一为 Claude 风格 ASCII，不再保留 Mermaid 图。
+
+13. **系统启动巡检与 live canary 已收口成独立 runbook**  
+   已新增 `docs/runbooks/system-startup-and-live-canary.md`，把 `live_preflight`、启动后 5 分钟巡检、休盘/开盘日志判读、以及开盘窗口的系统级 live canary 步骤统一成一套固定流程。`entrypoint-map.md` 与 `docs/README.md` 已同步改为链接到该 runbook，避免启动入口文档和运行时文档再各自维护一套巡检说明。
+
+本轮验证结果：
+
+- `pytest` 相关回归测试已通过，新增了事件循环接口、schema 初始化迁移、StorageWriter 生命周期、日志路径、经济日历时间上下文等测试。
+- 测试资产清理后，全量测试树已移除 skip-only 僵尸文件、脚本式伪测试，以及一组过度绑定 `SignalRuntime` 私有子方法的低价值测试，`passed` 数字更接近真实覆盖。
+- 真实运行时启动已验证 `startup_ready=True`，指标事件循环、信号运行时、经济日历后台线程和存储写线程均能启动。
+- 系统链路专项回归已通过 `56` 项，覆盖 `采集 -> 缓存 -> closed-bar 事件 -> durable event store -> readiness/health/readmodel -> trace recorder`。
+- `docs/` 已完成一次分层审计，核心文档已明确“当前实现真相”与“规划/历史方案”的边界。
+- 已新增系统启动与 live canary runbook，文档入口、启动入口和巡检流程现在有统一落点。
+- 真实启动后的系统探针已验证返回：
+  - `storage_writer=ok`
+  - `ingestion=ok`
+  - `indicator_engine=ok`
+- 当前休盘场景下，系统线程存活与探针状态正常；仍存在 `market_data data latency critical` 告警，这属于休盘/无新鲜行情环境下的预期观测，不应与链路断裂混淆。
+
+仍需单独关注但不属于本轮代码阻塞项：
+
+1. **外部经济数据源仍可能超时**  
+   真实启动时 Jin10 请求出现过 `read operation timed out`，这是外部依赖可用性问题，不是当前 schema/线程契约问题。
+
+2. **市场数据延迟告警需要结合交易时段判断**  
+   当前环境在监控中仍会报 `data latency critical`，更像是运行时没有收到足够新鲜行情或目标市场不活跃，需要结合 MT5 连接状态和交易时段继续看，不建议把它和本轮启动故障混为一类。
 
 ## 1. 总体结论
 
@@ -478,6 +544,13 @@ domain 组件
 - [x] `ops/scripts` 历史重复入口清理。  
 - [x] 命令入口文档与实现对齐。  
 
+### 6.I 启动阻塞修复记录（2026-04-11）
+
+- 发现问题：`src/app_runtime/factories/signals.py` 的 `build_executor_config()` 已透传 `htf_conflict_block_timeframes` / `htf_conflict_exempt_categories`，但 `src/trading/execution/executor.py` 的 `ExecutorConfig` 未同步声明同名字段，导致 `deps._ensure_initialized()` 在真实容器初始化阶段直接抛 `TypeError`，服务无法进入 lifespan。  
+- 本次修复：恢复装配层与执行层配置契约一致性，`ExecutorConfig` 正式补齐上述两个字段；未新增兼容分支，也未改变现有调用边界。  
+- 验证补强：新增 `tests/app_runtime/test_signal_factory.py`，直接覆盖 `SignalConfig -> build_executor_config() -> ExecutorConfig` 的字段对账，避免未来再次出现“入口 smoke 通过，但真实容器初始化失败”的装配断裂。  
+- 未决项：这两个 HTF conflict 字段当前已恢复配置契约，但预交易流水线尚未消费它们；如果后续确认该能力需要生效，应在 `pre_trade_pipeline / pre_trade_checks` 中补正式门禁，而不是继续停留在“可配置但未落地”的状态。  
+
 ## 7. 验证记录
 
 本次包含 Indicators 收口与测试同步，已执行：
@@ -492,6 +565,6 @@ domain 组件
 #### 全量回归（2026-04-11）
 
 - 执行命令：`pytest -q tests`
-- 结果：`1211 passed in 61.60s (0:01:01)`
+- 结果：`1214 passed in 61.95s (0:01:01)`
 - 说明：全量测试套件已通过，当前审查结果无阻断级回归。
 - 语法复核：`python -m py_compile src/api/monitoring_routes/health.py src/api/monitoring_routes/runtime.py`

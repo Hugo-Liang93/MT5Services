@@ -25,6 +25,17 @@ def _resolve_port() -> int:
         return DEFAULT_PORT
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _resolve_log_dir(log_dir_value: str) -> Path:
+    log_dir = Path(log_dir_value).expanduser()
+    if not log_dir.is_absolute():
+        log_dir = _project_root() / log_dir
+    return log_dir
+
+
 def resolve_runtime_target() -> tuple[str, str, int]:
     target = APP_TARGET
     host = _resolve_host()
@@ -41,9 +52,7 @@ def _setup_file_logging(
     if not system_config.log_file_enabled:
         return
 
-    log_dir = Path(system_config.log_dir)
-    if not log_dir.is_absolute():
-        log_dir = Path(__file__).resolve().parent / log_dir
+    log_dir = _resolve_log_dir(system_config.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     max_bytes = system_config.log_file_max_mb * 1024 * 1024

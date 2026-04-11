@@ -14,7 +14,7 @@ def test_health_ready_raises_when_critical_component_is_degraded(monkeypatch) ->
         lambda: type(
             "Ingestor",
             (),
-            {"queue_stats": lambda self: {"threads": {"writer_alive": False}}},
+            {"queue_stats": lambda self: {"threads": {"writer_alive": True, "ingest_alive": False}}},
         )(),
     )
     monkeypatch.setattr(
@@ -31,7 +31,7 @@ def test_health_ready_raises_when_critical_component_is_degraded(monkeypatch) ->
     except HTTPException as exc:
         assert exc.status_code == 503
         assert exc.detail["status"] == "not_ready"
-        assert "storage_writer" in exc.detail["failed_checks"]
+        assert "ingestion" in exc.detail["failed_checks"]
     else:
         raise AssertionError("expected readiness probe to fail on degraded storage writer")
 
@@ -43,7 +43,7 @@ def test_health_ready_returns_ready_when_checks_pass(monkeypatch) -> None:
         lambda: type(
             "Ingestor",
             (),
-            {"queue_stats": lambda self: {"threads": {"writer_alive": True}}},
+            {"queue_stats": lambda self: {"threads": {"writer_alive": True, "ingest_alive": True}}},
         )(),
     )
     monkeypatch.setattr(
@@ -60,5 +60,6 @@ def test_health_ready_returns_ready_when_checks_pass(monkeypatch) -> None:
     assert payload["status"] == "ready"
     assert payload["checks"] == {
         "storage_writer": "ok",
+        "ingestion": "ok",
         "indicator_engine": "ok",
     }

@@ -43,7 +43,7 @@ def run_event_loop(manager: UnifiedIndicatorManager) -> None:
     while not manager.state.stop_event.is_set():
         now = time.monotonic()
 
-        events = manager.event_store.claim_events(limit=32)
+        events = manager.event_store.claim_next_events(limit=32)
         if events:
             process_closed_bar_events_batch(manager, events, durable_event=True)
 

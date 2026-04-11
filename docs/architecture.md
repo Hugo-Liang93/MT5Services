@@ -1,7 +1,7 @@
 # 系统架构参考
 
 > 合并自原 `docs/architecture/` 下 4 个文件（overview / data-flow / module-boundaries / module-layout）。
-> 更新日期：2026-04-11
+> 更新日期：2026-04-12
 
 ---
 
@@ -9,6 +9,8 @@
 
 当前代码库风险台账集中在 **`docs/codebase-review.md`**。涉及架构、策略、性能、生命周期、配置漂移的整改，应先对照该文档确认：
 
+- 全量文档导航与分层规则见：**`docs/README.md`**。
+- 全量运行时数据流与当前项目状态总览见：**`docs/design/full-runtime-dataflow.md`**。
 - 信号链路的职责边界与真实数据流详见：**`docs/design/signals-dataflow-overview.md`**。
 - 统一启动入口与 CLI 映射详见：**`docs/design/entrypoint-map.md`**。
 
@@ -16,6 +18,21 @@
 - 是否会触碰信号 → 风控 → 交易主链路；
 - 是否需要同步 ADR 或运行文档；
 - 是否会增加 API/Studio/readmodel 对私有实现的依赖。
+
+### 0.1 本文边界
+
+`architecture.md` 只负责：
+
+1. 系统分层
+2. 模块边界
+3. 依赖方向
+4. 文档入口
+
+运行时验证、启动结论、日志路径、健康探针、链路状态不在本文重复展开，统一以下列文档为准：
+
+1. `docs/codebase-review.md`
+2. `docs/design/full-runtime-dataflow.md`
+3. `docs/design/entrypoint-map.md`
 
 ---
 
@@ -75,18 +92,22 @@ MarketDataService → StorageWriter → BackgroundIngestor → UnifiedIndicatorM
 ### 运行阶段 — `AppRuntime.start()`
 
 ```text
-1. StorageWriter（含 init_schema + retention_policies）
-2. UnifiedIndicatorManager
-3. BackgroundIngestor
-4. EconomicCalendarService
-5. SignalRuntime
-6. ConfidenceCalibrator + PerformanceTracker warmup
-7. PendingEntryManager
-8. PositionManager
-9. MonitoringManager
+AppRuntime.start()
+  -> RuntimeModeController.start()
+  -> RuntimeComponentRegistry.apply_mode(FULL)
+     1. storage
+     2. performance_warmup
+     3. ingestion
+     4. pipeline_trace
+     5. indicators（内部同时启动 EconomicCalendarService）
+     6. signals
+     7. trade_execution
+     8. pending_entry
+     9. position_manager
+    10. paper_trading
 ```
 
-关闭顺序反向执行。
+关闭顺序按 registry 反向执行，详见 `docs/design/full-runtime-dataflow.md`。
 
 ---
 
@@ -346,84 +367,31 @@ Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → 
 
 ---
 
-## 7. 策略 Category 分类与执行影响
+## 7. 专题文档入口
 
-策略通过 `category` 属性分为三类，影响多个下游行为：
+下列主题已经从系统总览中收口到专题文档，避免同一语义在 `architecture.md`、设计稿和运行时文档中重复维护：
 
-| Category | 代表策略 | PendingEntry 入场模式 | HTF 冲突阻止 |
-|----------|---------|-------------------|-----------:|
-| `trend` | sma_trend, supertrend, macd_momentum | pullback（回调入场，参考价=均线支撑） | **阻止**（逆大周期不下单） |
-| `reversion` | rsi_reversion, cci_reversion, bollinger_breakout | symmetric（对称入场，参考价=BB middle） | **豁免**（反转本身就是逆势） |
-| `breakout` | donchian_breakout, asian_range_breakout | momentum（追涨入场，参考价=Donchian 关键位） | **阻止** |
-
-HTF 冲突阻止配置：`signal.ini [htf_conflict_block]`，M5/M15/M30 趋势策略逆大周期方向直接拒绝。
-
----
-
-## 8. RegimeSizing — 时间框架差异化参数
-
-### SL/TP ATR 倍数（按 TF）
-
-| TF | SL (ATR倍数) | TP (ATR倍数) |
-|----|:-----------:|:-----------:|
-| M5 | 1.8 | 2.5 |
-| M15 | 1.8 | 2.5 |
-| M30 | 2.0 | 2.5 |
-| H1 | 2.0 | 2.5 |
-| H4 | 2.2 | 3.0 |
-| D1 | 2.5 | 3.5 |
-
-### 风险百分比缩放
-
-| TF | 风险乘数 | 含义 |
-|----|:-------:|------|
-| M5 | ×0.50 | 短周期仓位减半 |
-| M15 | ×0.75 | |
-| M30 | ×0.90 | |
-| H1 | ×1.00 | 基准 |
-| H4 | ×1.20 | |
-| D1 | ×1.50 | 长周期仓位放大 |
-
-### Per-TF min_confidence
-
-`signal.ini [timeframe_min_confidence]`：M5=0.78, H1=0.70, D1=0.60（短周期要求更高置信度）。
-
----
-
-## 9. Indicator Delta 机制
-
-核心动量指标自动计算 N-bar 变化率（一阶导数），通过 `indicators.json` 的 `delta_bars` 字段配置：
-
-- 覆盖指标：`rsi14`, `macd`, `cci20`, `stochrsi`, `adx14`
-- 输出格式：`{"rsi": 28.5, "rsi_d3": -8.2, "rsi_d5": -12.0}`（`_d3`/`_d5` 后缀）
-- 实现：`src/indicators/result_store.py`
-
----
-
-## 10. 回测安全约束
-
-`RecommendationEngine` 自动拒绝不可信的参数建议：
-
-| 约束 | 阈值 | 说明 |
+| 主题 | 当前边界 | 详细文档 |
 |------|------|------|
-| 过拟合比率 | > 1.5 拒绝 | avg(IS_sharpe) / avg(OOS_sharpe) |
-| 一致性率 | < 50% 拒绝 | OOS 盈利窗口占比 |
-| OOS 样本量 | < 10 笔拒绝 | 样本不足无法判断 |
-| 单参数变更 | 裁剪到 ±30% | 防止极端跳跃 |
-| 亲和度调整 | 步幅 ±15% | 渐进调整 |
-| 胜率优先级 | Regime-specific > 全局 | 按市况分层评估 |
+| signals 运行时链路、状态流转、观测点 | 由 signals 域运行时真相文档维护 | `docs/design/signals-dataflow-overview.md` |
+| intrabar 子链路 | 由 intrabar 专题维护 | `docs/design/intrabar-data-flow.md` |
+| 策略开发规范、regime、voting、TF 参数 | 由 signals 领域设计文档维护 | `docs/signal-system.md` |
+| PendingEntry、仓位管理、风控增强方案 | 由 trading/risk 设计文档维护 | `docs/design/pending-entry.md`、`docs/design/r-based-position-management.md`、`docs/design/risk-enhancement.md` |
+| 回测、研究、参数规划 | 由研究/规划文档维护 | `docs/research-system.md`、`docs/design/next-plan.md` |
+
+本文只保留跨模块视角，不再重复展开这些专题内部的参数表、算法细节和历史方案。
 
 ---
 
-## 11. 架构决策记录（ADR）
+## 8. 架构决策记录（ADR）
 
 已确定的设计决策集中管理在 **`docs/design/adr.md`**。
 
 **规则**：修改涉及 ADR 的组件前，先读 `docs/design/adr.md` 对应条目了解上下文。评估后可变更，但须更新 ADR。
 
-当前 ADR 索引：ADR-001（PipelineEventBus 同步 dispatch）、ADR-002（SignalRuntime 纯函数提取）、ADR-003（MetadataKey 常量化）、ADR-004（组件生命周期安全契约）。
+当前 ADR 索引：ADR-001（PipelineEventBus 同步 dispatch）、ADR-002（SignalRuntime 纯函数提取）、ADR-003（MetadataKey 常量化）、ADR-004（组件生命周期安全契约）、ADR-005（后台线程 join 超时后的线程引用保留）、ADR-006（跨模块边界禁止读写私有属性）。
 
-## 12. 扩展契约（新增组件必须满足 5 个公共端口）
+## 9. 扩展契约（新增组件必须满足 5 个公共端口）
 
 新增策略/指标/回测模块进入主链路前，必须同时满足以下 5 个公共端口，否则不允许上线：
 

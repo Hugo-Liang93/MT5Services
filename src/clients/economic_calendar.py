@@ -12,6 +12,11 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from src.calendar.economic_calendar.contracts import (
+    EVENT_STATUS_SCHEDULED,
+    SESSION_BUCKET_ALL_DAY,
+    SESSION_BUCKET_OFF_HOURS,
+)
 from src.config import EconomicConfig
 
 logger = logging.getLogger(__name__)
@@ -152,7 +157,7 @@ def _classify_market_session(value: datetime) -> tuple[str, bool, bool, bool]:
 
     active = [name for name, enabled in (("asia", is_asia), ("europe", is_europe), ("us", is_us)) if enabled]
     if not active:
-        return "off_hours", False, False, False
+        return SESSION_BUCKET_OFF_HOURS, False, False, False
     if len(active) == 1:
         return active[0], is_asia, is_europe, is_us
     return "_".join(active) + "_overlap", is_asia, is_europe, is_us
@@ -182,11 +187,11 @@ class EconomicCalendarEvent:
     local_timezone: Optional[str] = None
     scheduled_at_release: Optional[datetime] = None
     release_timezone: Optional[str] = None
-    session_bucket: str = "off_hours"
+    session_bucket: str = SESSION_BUCKET_OFF_HOURS
     is_asia_session: bool = False
     is_europe_session: bool = False
     is_us_session: bool = False
-    status: str = "scheduled"
+    status: str = EVENT_STATUS_SCHEDULED
     first_seen_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_seen_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     released_at: Optional[datetime] = None
@@ -207,7 +212,7 @@ class EconomicCalendarEvent:
             midnight = datetime.combine(release_day, time.min)
             self.scheduled_at_local = midnight
             self.scheduled_at_release = midnight
-            self.session_bucket = "all_day"
+            self.session_bucket = SESSION_BUCKET_ALL_DAY
             self.is_asia_session = False
             self.is_europe_session = False
             self.is_us_session = False
@@ -311,11 +316,11 @@ class EconomicCalendarEvent:
             local_timezone=row[19],
             scheduled_at_release=row[20],
             release_timezone=row[21],
-            session_bucket=row[22] or "off_hours",
+            session_bucket=row[22] or SESSION_BUCKET_OFF_HOURS,
             is_asia_session=bool(row[23]),
             is_europe_session=bool(row[24]),
             is_us_session=bool(row[25]),
-            status=row[26] or "scheduled",
+            status=row[26] or EVENT_STATUS_SCHEDULED,
             first_seen_at=_coerce_datetime(row[27]),
             last_seen_at=_coerce_datetime(row[28]),
             released_at=_coerce_datetime(row[29]) if row[29] is not None else None,

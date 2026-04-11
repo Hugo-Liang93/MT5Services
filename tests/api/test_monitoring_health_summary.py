@@ -78,6 +78,20 @@ def test_build_storage_runtime_summary_marks_warning_for_high_queue() -> None:
     assert summary["worst_queue"]["status"] == "high"
 
 
+def test_build_storage_runtime_summary_marks_critical_when_ingestor_thread_stops() -> None:
+    summary = RuntimeReadModel.build_storage_summary(
+        {
+            "threads": {"writer_alive": True, "ingest_alive": False},
+            "summary": {"total": 2, "high": 0, "critical": 0, "full": 0},
+            "queues": {
+                "ticks": {"status": "normal", "utilization_pct": 12.0, "pending": 0},
+            },
+        }
+    )
+
+    assert summary["status"] == "critical"
+
+
 def test_build_runtime_trading_summary_includes_risk_and_coordination_issues() -> None:
     summary = RuntimeReadModel.build_trading_summary(
         {

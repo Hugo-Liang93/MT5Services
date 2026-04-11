@@ -103,11 +103,15 @@ async def health_ready() -> Dict[str, Any]:
     checks: Dict[str, str] = {}
 
     queue_stats, queue_err = _safe_check_call("storage_writer", get_ingestor().queue_stats)
-    if queue_err is None:
-        writer_alive = queue_stats.get("threads", {}).get("writer_alive", False) if isinstance(queue_stats, dict) else False
+    if queue_err is None and isinstance(queue_stats, dict):
+        thread_stats = dict(queue_stats.get("threads", {}) or {})
+        writer_alive = thread_stats.get("writer_alive", False)
+        ingest_alive = thread_stats.get("ingest_alive", False)
         checks["storage_writer"] = "ok" if writer_alive else "degraded"
+        checks["ingestion"] = "ok" if ingest_alive else "degraded"
     else:
         checks["storage_writer"] = "error"
+        checks["ingestion"] = "error"
 
     perf, perf_err = _safe_check_call("indicator_engine", get_indicator_manager().get_performance_stats)
     if perf_err is None and isinstance(perf, dict):

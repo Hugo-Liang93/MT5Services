@@ -1,182 +1,165 @@
-#!/usr/bin/env python3
-"""
-测试数据层改进：连接池、数据验证、错误处理
-"""
+from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
-import pytest
-from src.persistence.validator import DataValidator
+from datetime import datetime, timedelta, timezone
+
+import src.persistence.db as db_module
 from src.config import DBSettings
+from src.persistence.db import TimescaleWriter
+from src.persistence.validator import DataValidator
 
 
-def test_data_validator():
-    """测试数据验证器"""
-    print("=== 测试数据验证器 ===")
-    
-    # 测试有效的 tick 数据
-    valid_tick = ("EURUSD", 1.12345, 1000.0, datetime.now(timezone.utc).isoformat())
-    is_valid, msg = DataValidator.validate_tick(*valid_tick)
-    print(f"有效 tick 数据: {is_valid} - {msg}")
-    assert is_valid
-    
-    # 测试无效的 tick 数据（负价格）
-    invalid_tick = ("EURUSD", -1.12345, 1000.0, datetime.now(timezone.utc).isoformat())
-    is_valid, msg = DataValidator.validate_tick(*invalid_tick)
-    print(f"无效 tick 数据（负价格）: {is_valid} - {msg}")
-    assert not is_valid
-    
-    # 测试有效的报价数据
-    valid_quote = ("EURUSD", 1.1234, 1.1235, 1.12345, 1000.0, 
-                   datetime.now(timezone.utc).isoformat())
-    is_valid, msg = DataValidator.validate_quote(*valid_quote)
-    print(f"有效报价数据: {is_valid} - {msg}")
-    assert is_valid
-    
-    # 测试无效的报价数据（bid > ask）
-    invalid_quote = ("EURUSD", 1.1236, 1.1235, 1.12345, 1000.0,
-                     datetime.now(timezone.utc).isoformat())
-    is_valid, msg = DataValidator.validate_quote(*invalid_quote)
-    print(f"无效报价数据（bid > ask）: {is_valid} - {msg}")
-    assert not is_valid
-    
-    # 测试有效的 OHLC 数据
-    valid_ohlc = ("EURUSD", "M1", 1.1234, 1.1240, 1.1230, 1.1238, 
-                  1000.0, datetime.now(timezone.utc).isoformat(), {})
-    is_valid, msg = DataValidator.validate_ohlc(*valid_ohlc)
-    print(f"有效 OHLC 数据: {is_valid} - {msg}")
-    assert is_valid
-    
-    # 测试无效的 OHLC 数据（high < low）
-    invalid_ohlc = ("EURUSD", "M1", 1.1234, 1.1220, 1.1230, 1.1238,
-                    1000.0, datetime.now(timezone.utc).isoformat(), {})
-    is_valid, msg = DataValidator.validate_ohlc(*invalid_ohlc)
-    print(f"无效 OHLC 数据（high < low）: {is_valid} - {msg}")
-    assert not is_valid
-    
-    print("数据验证器测试通过！\n")
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def test_batch_filtering():
-    """测试批量数据过滤"""
-    print("=== 测试批量数据过滤 ===")
-    
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
-    
-    # 创建混合有效和无效的数据
-    ticks = [
-        ("EURUSD", 1.12345, 1000.0, now_iso),  # 有效
-        ("EURUSD", -1.12345, 1000.0, now_iso),  # 无效：负价格
-        ("EURUSD", 1.12345, -1000.0, now_iso),  # 无效：负交易量
-        ("USDJPY", 150.123, 2000.0, now_iso),   # 有效
-    ]
-    
-    valid_ticks = DataValidator.filter_valid_ticks(ticks)
-    print(f"原始 tick 数据: {len(ticks)} 条")
-    print(f"有效 tick 数据: {len(valid_ticks)} 条")
-    assert len(valid_ticks) == 2
-    
-    # 测试报价数据过滤
-    quotes = [
-        ("EURUSD", 1.1234, 1.1235, 1.12345, 1000.0, now_iso),  # 有效
-        ("EURUSD", 1.1236, 1.1235, 1.12345, 1000.0, now_iso),  # 无效：bid > ask
-        ("USDJPY", 150.123, 150.124, 150.1235, 2000.0, now_iso),  # 有效
-    ]
-    
-    valid_quotes = DataValidator.filter_valid_quotes(quotes)
-    print(f"原始报价数据: {len(quotes)} 条")
-    print(f"有效报价数据: {len(valid_quotes)} 条")
-    assert len(valid_quotes) == 2
-    
-    print("批量数据过滤测试通过！\n")
-
-
-def test_timescale_writer_config():
-    """测试 TimescaleWriter 配置"""
-    print("=== 测试 TimescaleWriter 配置 ===")
-    pytest.importorskip("psycopg2")
-    from src.persistence.db import TimescaleWriter
-    
-    # 创建测试配置
-    settings = DBSettings(
+def _db_settings() -> DBSettings:
+    return DBSettings(
         pg_host="localhost",
         pg_port=5432,
         pg_user="postgres",
         pg_password="postgres",
         pg_database="mt5",
-        pg_schema="public"
+        pg_schema="public",
     )
-    
-    # 测试连接池初始化
-    try:
-        writer = TimescaleWriter(settings, min_conn=1, max_conn=5)
-        print("TimescaleWriter 初始化成功")
-        
-        # 测试连接池统计
-        stats = writer.get_pool_stats()
-        print(f"连接池状态: {stats}")
-        
-        # 测试关闭
-        writer.close()
-        print("TimescaleWriter 关闭成功")
-        
-    except Exception as e:
-        print(f"TimescaleWriter 测试失败（可能数据库未运行）: {e}")
-        print("这可能是预期的，如果数据库未运行")
-    
-    print("TimescaleWriter 配置测试完成！\n")
 
 
-def test_error_handling():
-    """测试错误处理"""
-    print("=== 测试错误处理 ===")
-    
-    # 测试未来时间检测
+class _FakePool:
+    def __init__(self, min_conn: int, max_conn: int, **kwargs) -> None:
+        self.min_conn = min_conn
+        self.max_conn = max_conn
+        self.kwargs = kwargs
+        self.closed = False
+        self._used = 0
+        self._rused = 0
+
+    def closeall(self) -> None:
+        self.closed = True
+
+
+def test_validator_accepts_valid_market_rows() -> None:
+    valid_tick = ("EURUSD", 1.12345, 1000.0, _now_iso())
+    valid_quote = ("EURUSD", 1.1234, 1.1235, 1.12345, 1000.0, _now_iso())
+    valid_ohlc = ("EURUSD", "M1", 1.1234, 1.1240, 1.1230, 1.1238, 1000.0, _now_iso(), {})
+    valid_intrabar = (
+        "EURUSD",
+        "M1",
+        1.1234,
+        1.1240,
+        1.1230,
+        1.1238,
+        1000.0,
+        _now_iso(),
+        _now_iso(),
+    )
+
+    assert DataValidator.validate_tick(*valid_tick) == (True, "")
+    assert DataValidator.validate_quote(*valid_quote) == (True, "")
+    assert DataValidator.validate_ohlc(*valid_ohlc) == (True, "")
+    assert DataValidator.validate_intrabar(*valid_intrabar) == (True, "")
+
+
+def test_validator_rejects_invalid_market_rows() -> None:
     future_time = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-    is_valid, msg = DataValidator.validate_tick("EURUSD", 1.12345, 1000.0, future_time)
-    print(f"未来时间检测: {is_valid} - {msg}")
-    assert not is_valid
-    
-    # 测试无效时间格式
-    is_valid, msg = DataValidator.validate_tick("EURUSD", 1.12345, 1000.0, "invalid-time")
-    print(f"无效时间格式检测: {is_valid} - {msg}")
-    assert not is_valid
-    
-    # 测试超大数值
-    is_valid, msg = DataValidator.validate_tick("EURUSD", 1e9, 1e15, 
-                                                datetime.now(timezone.utc).isoformat())
-    print(f"超大数值检测: {is_valid} - {msg}")
-    assert not is_valid
-    
-    print("错误处理测试通过！\n")
+
+    tick_valid, tick_msg = DataValidator.validate_tick("EURUSD", -1.0, 1000.0, _now_iso())
+    future_valid, future_msg = DataValidator.validate_tick("EURUSD", 1.12345, 1000.0, future_time)
+    quote_valid, quote_msg = DataValidator.validate_quote("EURUSD", 1.1236, 1.1235, 1.12345, 1000.0, _now_iso())
+    ohlc_valid, ohlc_msg = DataValidator.validate_ohlc(
+        "EURUSD",
+        "M1",
+        1.1234,
+        1.1220,
+        1.1230,
+        1.1238,
+        1000.0,
+        _now_iso(),
+        {},
+    )
+    intrabar_valid, intrabar_msg = DataValidator.validate_intrabar(
+        "EURUSD",
+        "M1",
+        1.1234,
+        1.1240,
+        1.1230,
+        1.1238,
+        1000.0,
+        _now_iso(),
+        (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+    )
+
+    assert tick_valid is False
+    assert "Invalid price" in tick_msg
+    assert future_valid is False
+    assert "Future time detected" in future_msg
+    assert quote_valid is False
+    assert "Bid > Ask" in quote_msg
+    assert ohlc_valid is False
+    assert "Price relationship invalid" in ohlc_msg
+    assert intrabar_valid is False
+    assert "Recorded time before bar time" in intrabar_msg
 
 
-def main():
-    """主测试函数"""
-    print("开始测试数据层改进...\n")
-    
-    try:
-        test_data_validator()
-        test_batch_filtering()
-        test_timescale_writer_config()
-        test_error_handling()
-        
-        print("所有测试完成！")
-        print("\n改进总结：")
-        print("1. ✓ 数据验证器实现完成")
-        print("2. ✓ 批量数据过滤功能")
-        print("3. ✓ 连接池支持（需要数据库运行）")
-        print("4. ✓ 错误处理和重试机制")
-        print("5. ✓ 队列监控和改进")
-        
-    except Exception as e:
-        print(f"测试失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-    
-    return 0
+def test_filtering_keeps_only_valid_rows() -> None:
+    now_iso = _now_iso()
+
+    ticks = [
+        ("EURUSD", 1.12345, 1000.0, now_iso),
+        ("EURUSD", -1.12345, 1000.0, now_iso),
+        ("USDJPY", 150.123, 2000.0, now_iso),
+        ("BROKEN",),
+    ]
+    quotes = [
+        ("EURUSD", 1.1234, 1.1235, 1.12345, 1000.0, now_iso),
+        ("EURUSD", 1.1236, 1.1235, 1.12345, 1000.0, now_iso),
+        ("USDJPY", 150.123, 150.124, 150.1235, 2000.0, now_iso),
+    ]
+    ohlc_rows = [
+        ("EURUSD", "M1", 1.1234, 1.1240, 1.1230, 1.1238, 1000.0, now_iso, {}),
+        ("EURUSD", "M1", 1.1234, 1.1220, 1.1230, 1.1238, 1000.0, now_iso, {}),
+    ]
+
+    assert DataValidator.filter_valid_ticks(ticks) == [
+        ("EURUSD", 1.12345, 1000.0, now_iso),
+        ("USDJPY", 150.123, 2000.0, now_iso),
+    ]
+    assert DataValidator.filter_valid_quotes(quotes) == [
+        ("EURUSD", 1.1234, 1.1235, 1.12345, 1000.0, now_iso),
+        ("USDJPY", 150.123, 150.124, 150.1235, 2000.0, now_iso),
+    ]
+    assert DataValidator.filter_valid_ohlc(ohlc_rows) == [
+        ("EURUSD", "M1", 1.1234, 1.1240, 1.1230, 1.1238, 1000.0, now_iso, {}),
+    ]
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_timescale_writer_initializes_connection_pool_from_settings(monkeypatch) -> None:
+    created: dict[str, _FakePool] = {}
+
+    def _fake_pool_factory(min_conn: int, max_conn: int, **kwargs) -> _FakePool:
+        pool = _FakePool(min_conn, max_conn, **kwargs)
+        created["pool"] = pool
+        return pool
+
+    monkeypatch.setattr(db_module, "SimpleConnectionPool", _fake_pool_factory)
+
+    writer = TimescaleWriter(_db_settings(), min_conn=2, max_conn=4)
+    stats = writer.get_pool_stats()
+
+    assert created["pool"].min_conn == 2
+    assert created["pool"].max_conn == 4
+    assert created["pool"].kwargs["host"] == "localhost"
+    assert created["pool"].kwargs["port"] == 5432
+    assert created["pool"].kwargs["dbname"] == "mt5"
+    assert stats["status"] == "healthy"
+    assert stats["min_connections"] == 2
+    assert stats["max_connections"] == 4
+
+    writer.close()
+
+    assert created["pool"].closed is True
+
+
+def test_timescale_writer_pool_stats_report_uninitialized_pool() -> None:
+    writer = TimescaleWriter.__new__(TimescaleWriter)
+    writer._pool = None
+
+    assert writer.get_pool_stats() == {"status": "pool_not_initialized"}

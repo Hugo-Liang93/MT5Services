@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
+
+import pytest
 
 from src.monitoring.pipeline import PipelineEvent, PipelineEventBus
 from src.monitoring.pipeline import PipelineTraceRecorder
@@ -12,6 +15,18 @@ class _DBWriter:
 
     def write_pipeline_trace_events(self, rows, page_size: int = 200) -> None:
         self.rows.extend(list(rows))
+
+
+class _FakeThread:
+    def __init__(self, *, alive_after_join: bool = False) -> None:
+        self._alive = True
+        self._alive_after_join = alive_after_join
+
+    def join(self, timeout: float | None = None) -> None:
+        self._alive = self._alive_after_join
+
+    def is_alive(self) -> bool:
+        return self._alive
 
 
 def test_pipeline_trace_recorder_persists_bus_events() -> None:
@@ -48,3 +63,44 @@ def test_pipeline_trace_recorder_persists_bus_events() -> None:
     assert row[1] == "XAUUSD"
     assert row[4] == "bar_closed"
     assert row[6]["bar_time"] == "2026-01-01T08:00:00+00:00"
+
+
+def test_pipeline_trace_recorder_stop_keeps_thread_reference_when_join_times_out() -> None:
+    removed = []
+    flushed = []
+
+    class _Bus:
+        def remove_listener(self, listener) -> None:
+            removed.append(listener)
+
+    recorder = PipelineTraceRecorder.__new__(PipelineTraceRecorder)
+    recorder._pipeline_bus = _Bus()
+    recorder._db_writer = _DBWriter()
+    recorder._batch_size = 1
+    recorder._flush_interval_seconds = 0.1
+    recorder._queue = None
+    recorder._pending = []
+    recorder._stop = threading.Event()
+    recorder._thread = _FakeThread(alive_after_join=True)
+    recorder._listener_attached = True
+    recorder._dropped_events = 0
+    recorder._flush = lambda force=False: flushed.append(force)  # type: ignore[assignment]
+
+    recorder.stop()
+
+    assert recorder._thread is not None
+    assert recorder.is_running() is True
+    assert removed
+    assert flushed == []
+
+
+def test_pipeline_trace_recorder_start_fails_when_bus_rejects_listener() -> None:
+    recorder = PipelineTraceRecorder(
+        pipeline_bus=PipelineEventBus(max_listeners=0),
+        db_writer=_DBWriter(),
+    )
+
+    with pytest.raises(RuntimeError):
+        recorder.start()
+
+    assert recorder.is_running() is False
