@@ -370,11 +370,13 @@ Indicator snapshot
 | `data/events.db` | 指标 durable event queue |
 | `data/health_monitor.db` | 监控/告警轻量状态 |
 | `data/calibrator_cache.json` | calibrator warm start 缓存 |
+| `data/artifacts/*` | 手工回测、压测、启动排查等运行产物（非主链路状态） |
 
 关键约束：
 
 1. `src/` 下不应再落任何运行日志或运行时临时文件；
-2. 当前日志路径已修正为锚定项目根目录 `data/`。
+2. 当前日志路径已修正为锚定项目根目录 `data/`；
+3. 仓库根目录不再保留平级 `runtime/`，手工执行产物统一收口到 `data/artifacts/`。
 
 ---
 

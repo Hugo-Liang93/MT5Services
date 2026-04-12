@@ -1,16 +1,39 @@
-"""信号挖掘 / 研究模块。
+"""研究模块公共入口。
 
-纯数据驱动的信号发现，位于回测的上游：
-  数据挖掘(发现) → 候选规则 → 回测(验证) → 生产策略
-
-职责边界：只看 指标值 → 未来收益 的统计关系。
-不评估现有策略，不涉及 SignalModule。
-
-核心能力：
-  - Predictive Power: 指标预测力分析（IC / 命中率 / 显著性）
-  - Threshold Sweep: 阈值扫描优化（最优买卖阈值 + CV 验证）
+包边界：
+  - core: 公共基础能力与契约
+  - analyzers: 共享统计证据引擎
+  - features: research feature / indicator candidate 路径
+  - strategies: strategy candidate 路径
+  - orchestration: MiningRunner 编排入口
 """
 
-from src.research.runner import MiningRunner
+from src.research.core.contracts import (
+    CandidateDiscoveryResult,
+    FeatureCandidateDiscoveryResult,
+    FeatureCandidateSpec,
+    FeaturePromotionReport,
+    IndicatorPromotionDecision,
+    PromotionDecision,
+    RobustnessTier,
+    StrategyCandidateSpec,
+)
+from src.research.features.candidates import discover_feature_candidates
+from src.research.features.promotion import build_feature_promotion_report
+from src.research.orchestration.runner import MiningRunner
+from src.research.strategies.candidates import discover_strategy_candidates
 
-__all__ = ["MiningRunner"]
+__all__ = [
+    "CandidateDiscoveryResult",
+    "FeatureCandidateDiscoveryResult",
+    "FeatureCandidateSpec",
+    "FeaturePromotionReport",
+    "IndicatorPromotionDecision",
+    "build_feature_promotion_report",
+    "discover_feature_candidates",
+    "discover_strategy_candidates",
+    "MiningRunner",
+    "PromotionDecision",
+    "RobustnessTier",
+    "StrategyCandidateSpec",
+]

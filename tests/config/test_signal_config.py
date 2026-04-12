@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import src.config.signal as signal_config
+from src.signals.contracts import StrategyDeploymentStatus
 
 
 def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
@@ -41,6 +42,18 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
             "squeeze_release": "M5,M15",
             "price_action_reversal": "M5,M15",
             "multi_timeframe_confirm": "M15,H1",
+            "structured_session_breakout": "M30",
+        },
+        "strategy_deployment.structured_session_breakout": {
+            "status": "active_guarded",
+            "locked_timeframes": "M30",
+            "locked_sessions": "london",
+            "min_final_confidence": "0.58",
+            "max_live_positions": "1",
+            "require_pending_entry": "true",
+            "paper_shadow_required": "true",
+            "robustness_tier": "tf_specific",
+            "research_provenance": "cand_abc123",
         },
         "voting_groups": {
             "trend_vote": "supertrend,ema_ribbon,macd_momentum,hma_cross,session_momentum",
@@ -96,6 +109,7 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     assert cfg.strategy_timeframes["squeeze_release"] == ["m5", "m15"]
     assert cfg.strategy_timeframes["price_action_reversal"] == ["m5", "m15"]
     assert cfg.strategy_timeframes["multi_timeframe_confirm"] == ["m15", "h1"]
+    assert cfg.strategy_timeframes["structured_session_breakout"] == ["m30"]
     assert len(cfg.voting_group_configs) == 3
     trend_vote = next(
         item for item in cfg.voting_group_configs if item["name"] == "trend_vote"
@@ -111,3 +125,13 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     assert cfg.end_of_day_close_hour_utc == 21
     assert cfg.end_of_day_close_minute_utc == 0
     assert cfg.max_spread_to_stop_ratio == 0.25
+    deployment = cfg.strategy_deployments["structured_session_breakout"]
+    assert deployment.status is StrategyDeploymentStatus.ACTIVE_GUARDED
+    assert deployment.locked_timeframes == ("M30",)
+    assert deployment.locked_sessions == ("london",)
+    assert deployment.min_final_confidence == 0.58
+    assert deployment.max_live_positions == 1
+    assert deployment.require_pending_entry is True
+    assert deployment.paper_shadow_required is True
+    assert deployment.robustness_tier == "tf_specific"
+    assert deployment.research_provenance == "cand_abc123"

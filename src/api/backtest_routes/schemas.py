@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 CONFIG_OVERRIDE_FIELDS = (
     "initial_balance",
+    "simulation_mode",
     "min_confidence",
     "warmup_bars",
     "max_positions",
@@ -83,6 +84,7 @@ class BacktestRequestBase(BaseModel):
     strategies: Optional[List[str]] = None
 
     initial_balance: Optional[float] = None
+    simulation_mode: Optional[str] = None
     min_confidence: Optional[float] = None
     warmup_bars: Optional[int] = None
     max_positions: Optional[int] = None

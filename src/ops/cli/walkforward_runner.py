@@ -17,8 +17,11 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import warnings
 
@@ -41,6 +44,7 @@ def _run_walkforward(
     train_ratio: float = 0.70,
     anchored: bool = False,
     metric: str = "sharpe_ratio",
+    strategy_names: Optional[List[str]] = None,
 ) -> Any:
     """执行 Walk-Forward 验证。"""
     from src.backtesting.component_factory import (
@@ -102,11 +106,14 @@ def _run_walkforward(
         optimization_metric=metric,
     )
 
-    components = build_backtest_components()
+    components = build_backtest_components(strategy_names=strategy_names)
 
     def signal_module_factory(params: Dict[str, Any]):
         """重新构建 SignalModule 带参数覆盖。"""
-        c = build_backtest_components(strategy_params=params)
+        c = build_backtest_components(
+            strategy_params=params,
+            strategy_names=strategy_names,
+        )
         return c["signal_module"]
 
     validator = WalkForwardValidator(
@@ -119,7 +126,7 @@ def _run_walkforward(
     )
 
     def progress_cb(split_idx: int, total: int, phase: str) -> None:
-        sys.stderr.write(f"  [{split_idx+1}/{total}] {phase}\n")
+        sys.stderr.write(f"  [{split_idx}/{total}] {phase}\n")
         sys.stderr.flush()
 
     return validator.run(progress_callback=progress_cb)
@@ -144,11 +151,11 @@ def _render_result(result: Any, tf: str) -> str:
     lines.append("-" * 85)
 
     for i, split in enumerate(result.splits):
-        is_m = split.is_result.metrics
-        oos_m = split.oos_result.metrics
+        is_m = split.in_sample_result.metrics
+        oos_m = split.out_of_sample_result.metrics
         period = (
-            f"{split.oos_result.config.start_time.strftime('%m-%d')}"
-            f"~{split.oos_result.config.end_time.strftime('%m-%d')}"
+            f"{split.out_of_sample_result.config.start_time.strftime('%m-%d')}"
+            f"~{split.out_of_sample_result.config.end_time.strftime('%m-%d')}"
         )
         oos_pnl_marker = "+" if oos_m.total_pnl > 0 else ""
         lines.append(
@@ -197,9 +204,38 @@ def main() -> None:
     parser.add_argument("--train-ratio", type=float, default=0.70, help="Train ratio")
     parser.add_argument("--anchored", action="store_true", help="Use anchored (expanding) windows")
     parser.add_argument("--metric", default="sharpe_ratio", help="Optimization metric")
+    parser.add_argument(
+        "--strategies",
+        default=None,
+        help="Only run these registered strategies, comma-separated",
+    )
+    parser.add_argument(
+        "--json-output",
+        default=None,
+        help="Write walk-forward summary to JSON file",
+    )
+    parser.add_argument(
+        "--no-auto-backfill",
+        action="store_true",
+        help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
+    )
     args = parser.parse_args()
 
     tf = args.tf.strip().upper()
+    strategy_names = (
+        [name.strip() for name in args.strategies.split(",") if name.strip()]
+        if args.strategies
+        else None
+    )
+    from src.ops.cli._coverage import ensure_ohlc_data_coverage
+
+    coverage = ensure_ohlc_data_coverage(
+        symbol="XAUUSD",
+        timeframes=[tf],
+        start=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
+        end=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
+        auto_backfill=not args.no_auto_backfill,
+    )
     sys.stderr.write(f"Walk-Forward: {tf} ({args.start} ~ {args.end}), {args.splits} splits\n")
 
     result = _run_walkforward(
@@ -210,9 +246,64 @@ def main() -> None:
         train_ratio=args.train_ratio,
         anchored=args.anchored,
         metric=args.metric,
+        strategy_names=strategy_names,
     )
 
     print(_render_result(result, tf))
+    if args.json_output:
+        import json
+
+        output_path = Path(args.json_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "symbol": "XAUUSD",
+            "timeframe": tf,
+            "strategies": strategy_names or [],
+            "coverage": {name: info.to_dict() for name, info in coverage.items()},
+            "summary": {
+                "aggregate_metrics": {
+                    "total_trades": result.aggregate_metrics.total_trades,
+                    "win_rate": result.aggregate_metrics.win_rate,
+                    "profit_factor": result.aggregate_metrics.profit_factor,
+                    "sharpe_ratio": result.aggregate_metrics.sharpe_ratio,
+                    "sortino_ratio": result.aggregate_metrics.sortino_ratio,
+                    "max_drawdown": result.aggregate_metrics.max_drawdown,
+                    "total_pnl": result.aggregate_metrics.total_pnl,
+                },
+                "overfitting_ratio": result.overfitting_ratio,
+                "consistency_rate": result.consistency_rate,
+                "n_splits": len(result.splits),
+            },
+            "splits": [
+                {
+                    "split_index": split.split_index,
+                    "train_start": split.train_start.isoformat(),
+                    "train_end": split.train_end.isoformat(),
+                    "test_start": split.test_start.isoformat(),
+                    "test_end": split.test_end.isoformat(),
+                    "best_params": dict(split.best_params),
+                    "in_sample": {
+                        "total_trades": split.in_sample_result.metrics.total_trades,
+                        "win_rate": split.in_sample_result.metrics.win_rate,
+                        "profit_factor": split.in_sample_result.metrics.profit_factor,
+                        "sharpe_ratio": split.in_sample_result.metrics.sharpe_ratio,
+                        "max_drawdown": split.in_sample_result.metrics.max_drawdown,
+                        "total_pnl": split.in_sample_result.metrics.total_pnl,
+                    },
+                    "out_of_sample": {
+                        "total_trades": split.out_of_sample_result.metrics.total_trades,
+                        "win_rate": split.out_of_sample_result.metrics.win_rate,
+                        "profit_factor": split.out_of_sample_result.metrics.profit_factor,
+                        "sharpe_ratio": split.out_of_sample_result.metrics.sharpe_ratio,
+                        "max_drawdown": split.out_of_sample_result.metrics.max_drawdown,
+                        "total_pnl": split.out_of_sample_result.metrics.total_pnl,
+                    },
+                }
+                for split in result.splits
+            ],
+        }
+        with output_path.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
     sys.stderr.write("Done.\n")
 
 

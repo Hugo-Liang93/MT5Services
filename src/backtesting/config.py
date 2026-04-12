@@ -42,6 +42,7 @@ def get_backtest_defaults() -> Dict[str, Any]:
     # [backtest] section
     if parser.has_section("backtest"):
         _set_float(result, parser, "backtest", "default_initial_balance", "initial_balance")
+        _set_str(result, parser, "backtest", "simulation_mode", "simulation_mode")
         _set_int(result, parser, "backtest", "default_warmup_bars", "warmup_bars")
         _set_int(result, parser, "backtest", "max_positions_per_symbol", "max_positions")
         _set_float(result, parser, "backtest", "commission_per_lot", "commission_per_lot")

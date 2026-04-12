@@ -5,7 +5,12 @@ from datetime import datetime
 from typing import Any, Optional, Mapping
 from collections.abc import Iterable
 
-from ..contracts import SESSION_LONDON, SESSION_NEW_YORK, StrategyCapability
+from ..contracts import (
+    SESSION_LONDON,
+    SESSION_NEW_YORK,
+    StrategyCapability,
+    StrategyDeployment,
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,7 @@ class SignalPolicy:
     # 每个策略允许运行的时间框架白名单（空 = 允许所有时间框架）。
     # 用于防止为短周期的 M1 分钟级噪声注入周期更长的策略（如 SMA/MACD）。
     strategy_timeframes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    strategy_deployments: dict[str, StrategyDeployment] = field(default_factory=dict)
     # 当 confirmed 队列满时，允许短时阻塞等待消费者腾挪队列。
     confirmed_queue_backpressure_timeout_seconds: float = 0.2
     # ── 多组 Voting 配置 ──────────────────────────────────────────────
@@ -110,6 +116,15 @@ class SignalPolicy:
     def get_warmup_required_indicators(self) -> tuple[str, ...]:
         """公开读取 warmup 基线指标。"""
         return tuple(self.warmup_required_indicators)
+
+    def get_strategy_deployment(
+        self, strategy: str
+    ) -> StrategyDeployment | None:
+        return self.strategy_deployments.get(strategy)
+
+    def allows_runtime_evaluation(self, strategy: str) -> bool:
+        deployment = self.get_strategy_deployment(strategy)
+        return deployment.allows_runtime_evaluation() if deployment else True
 
     def needs_scope(self, strategy: str, scope: str) -> bool:
         capability = self.get_strategy_capability(strategy)

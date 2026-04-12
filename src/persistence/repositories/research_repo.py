@@ -15,7 +15,7 @@ from src.persistence.schema.research import (
 
 if TYPE_CHECKING:
     from src.persistence.db import TimescaleWriter
-    from src.research.models import MiningResult
+from src.research.core.contracts import MiningResult
 
 logger = logging.getLogger(__name__)
 

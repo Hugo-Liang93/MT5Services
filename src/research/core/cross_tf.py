@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .models import IndicatorPredictiveResult, MiningResult
+from .contracts import IndicatorPredictiveResult, MiningResult, RobustnessTier
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ class CrossTFSignal:
     avg_ir: float
     direction_consistent: bool  # 所有 TF 的 IC 符号一致
     recommended_tf: str  # 推荐的最佳 TF
-    robustness: str  # "robust" | "tf_divergent" | "tf_specific"
+    robustness: RobustnessTier
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -54,7 +54,7 @@ class CrossTFSignal:
             "avg_ir": round(self.avg_ir, 2),
             "direction_consistent": self.direction_consistent,
             "recommended_tf": self.recommended_tf,
-            "robustness": self.robustness,
+            "robustness": self.robustness.value,
             "tf_scores": [
                 {
                     "tf": s.timeframe,
@@ -176,11 +176,11 @@ def analyze_cross_tf(
         regime = first_entry.regime
 
         if n_tfs >= min_tfs_for_robust and direction_consistent:
-            robustness = "robust"
+            robustness = RobustnessTier.ROBUST
         elif n_tfs >= min_tfs_for_robust:
-            robustness = "tf_divergent"
+            robustness = RobustnessTier.DIVERGENT
         else:
-            robustness = "tf_specific"
+            robustness = RobustnessTier.TF_SPECIFIC
 
         signal = CrossTFSignal(
             indicator=indicator,
@@ -194,9 +194,9 @@ def analyze_cross_tf(
             robustness=robustness,
         )
 
-        if robustness == "robust":
+        if robustness is RobustnessTier.ROBUST:
             robust.append(signal)
-        elif robustness == "tf_divergent":
+        elif robustness is RobustnessTier.DIVERGENT:
             divergent.append(signal)
         else:
             tf_specific.append(signal)

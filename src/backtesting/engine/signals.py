@@ -12,6 +12,7 @@ from src.signals.models import SignalDecision
 from src.trading.execution import RegimeSizing, compute_trade_params
 
 from ..models import SignalEvaluation
+from .execution_semantics import resolve_trade_parameters
 
 if TYPE_CHECKING:
     from .runner import BacktestEngine, _BacktestSignalState
@@ -284,14 +285,31 @@ def execute_entry(
             ),
         )
     except ValueError as exc:
+        engine.record_execution_rejection("trade_params_error")
         logger.debug(
             "Trade params computation failed for %s %s: %s",
             decision.strategy, decision.direction, exc,
         )
         return
 
+    execution_resolution = resolve_trade_parameters(
+        engine._config,
+        trade_params,
+        account_balance=engine._portfolio.current_balance,
+    )
+    if not execution_resolution.accepted or execution_resolution.trade_params is None:
+        engine.record_execution_rejection(execution_resolution.reason)
+        logger.debug(
+            "Entry blocked by execution semantics for %s: %s",
+            decision.strategy,
+            execution_resolution.reason,
+        )
+        return
+    trade_params = execution_resolution.trade_params
+
     allowed, reason = engine._portfolio.can_open_position(bar, trade_params)
     if not allowed:
+        engine.record_execution_rejection(reason)
         logger.debug(
             "Entry blocked by portfolio risk guard for %s: %s",
             decision.strategy,
@@ -303,7 +321,7 @@ def execute_entry(
     strategy_obj = engine._signal_module.get_strategy(decision.strategy)
     strategy_category = getattr(strategy_obj, "category", "") if strategy_obj else ""
 
-    engine._portfolio.open_position(
+    opened = engine._portfolio.open_position(
         strategy=decision.strategy,
         action=decision.direction,
         bar=bar,
@@ -316,6 +334,10 @@ def execute_entry(
         timeframe=engine._config.timeframe,
         exit_spec=_exit_spec or None,
     )
+    if opened:
+        engine.record_entry_acceptance()
+    else:
+        engine.record_execution_rejection("portfolio_open_failed")
 
 
 def record_evaluation(

@@ -16,8 +16,17 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
     name = "structured_breakout_follow"
     category = "breakout"
     htf_policy = HtfPolicy.SOFT_GATE
-    required_indicators = ("adx14", "rsi14", "atr14", "bar_stats20", "volume_ratio20")
+    required_indicators = (
+        "adx14",
+        "rsi14",
+        "atr14",
+        "bar_stats20",
+        "volume_ratio20",
+        "momentum_consensus14",
+    )
     htf_required_indicators = {"supertrend14": "H1"}
+    promoted_indicator_lineage = ("momentum_consensus14",)
+    research_provenance_refs = ("derived.momentum_consensus",)
     regime_affinity = {
         RegimeType.TRENDING: 0.70,
         RegimeType.RANGING: 0.20,
@@ -31,6 +40,8 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
     _di_diff_min: float = 3.0
     _rsi_max_buy: float = 74.0
     _rsi_min_sell: float = 26.0
+    _momentum_consensus_buy_min: float = 0.34
+    _momentum_consensus_sell_max: float = -0.34
 
     def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
         ad = self._adx_full(ctx)
@@ -56,6 +67,29 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
             return False, None, 0, f"di_flat:{di_spread:.1f}"
 
         direction = "buy" if di_spread > 0 else "sell"
+        momentum = ctx.indicators.get("momentum_consensus14", {})
+        consensus = momentum.get("momentum_consensus")
+        if consensus is None:
+            return False, None, 0, "no_momentum_consensus"
+        consensus_value = float(consensus)
+        if direction == "buy":
+            buy_min = get_tf_param(
+                self,
+                "momentum_consensus_buy_min",
+                tf,
+                self._momentum_consensus_buy_min,
+            )
+            if consensus_value < buy_min:
+                return False, None, 0, f"momentum_conflict:{consensus_value:.2f}"
+        else:
+            sell_max = get_tf_param(
+                self,
+                "momentum_consensus_sell_max",
+                tf,
+                self._momentum_consensus_sell_max,
+            )
+            if consensus_value > sell_max:
+                return False, None, 0, f"momentum_conflict:{consensus_value:.2f}"
 
         # HTF 确认
         htf = self._htf_data(ctx)
@@ -76,8 +110,12 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
             if direction == "sell" and rsi < rsi_min_sell:
                 return False, None, 0, f"rsi_cold:{rsi:.0f}"
 
-        score = min(d3 / 6.0, 1.0)
-        return True, direction, score, f"adx={adx:.0f},d3={d3:.1f}"
+        trend_score = min(d3 / 6.0, 1.0)
+        consensus_score = min(1.0, abs(consensus_value))
+        score = min(1.0, trend_score * 0.6 + consensus_score * 0.4)
+        return True, direction, score, (
+            f"adx={adx:.0f},d3={d3:.1f},consensus={consensus_value:+.2f}"
+        )
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
         bs = ctx.indicators.get("bar_stats20", {})

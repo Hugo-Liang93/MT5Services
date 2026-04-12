@@ -48,6 +48,9 @@ class MetadataKey:
     EXIT_SPEC = "exit_spec"
     SIGNAL_GRADE = "signal_grade"
     STRATEGY_CATEGORY = "strategy_category"
+    STRATEGY_DEPLOYMENT = "strategy_deployment"
+    PROMOTED_INDICATORS = "promoted_indicators"
+    RESEARCH_PROVENANCE = "research_provenance"
     COMPOSITE = "composite"
 
     # ── 策略评估明细（strategy → 诊断 / 日志） ──

@@ -9,6 +9,7 @@ from ...models import SignalContext
 from ..base import get_tf_param
 from .base import (
     EntrySpec,
+    EntryType,
     ExitSpec,
     HtfPolicy,
     StructuredStrategyBase,
@@ -37,6 +38,35 @@ class StructuredTrendContinuation(StructuredStrategyBase):
     _rsi_sell_low: float = 50.0
     _rsi_sell_high: float = 70.0
     _htf_adx_min: float = 20.0
+    _momentum_consensus_buy_min: float = 0.0
+    _momentum_consensus_sell_max: float = 0.0
+    _momentum_consensus_score_bonus: float = 0.20
+    _pending_entry_zone_atr: float = 0.20
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        htf: Optional[str] = None,
+        *,
+        use_momentum_consensus: bool = False,
+        direction_lock: Optional[str] = None,
+    ) -> None:
+        super().__init__(name=name, htf=htf)
+        self._use_momentum_consensus = bool(use_momentum_consensus)
+        self._direction_lock = (
+            str(direction_lock).strip().lower() if direction_lock else None
+        )
+        if self._use_momentum_consensus:
+            required = list(self.required_indicators)
+            if "momentum_consensus14" not in required:
+                required.append("momentum_consensus14")
+            self.required_indicators = tuple(required)
+            self.promoted_indicator_lineage = ("momentum_consensus14",)
+            self.research_provenance_refs = ("derived.momentum_consensus",)
+
+    def _momentum_consensus(self, ctx: SignalContext) -> Optional[float]:
+        value = ctx.indicators.get("momentum_consensus14", {}).get("momentum_consensus")
+        return float(value) if value is not None else None
 
     def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
         htf = self._htf_data(ctx)
@@ -55,6 +85,8 @@ class StructuredTrendContinuation(StructuredStrategyBase):
             return False, None, 0, f"htf_adx_low:{htf_adx_f:.0f}"
 
         direction = "buy" if htf_dir_i == 1 else "sell"
+        if self._direction_lock and direction != self._direction_lock:
+            return False, None, 0, f"direction_locked:{self._direction_lock}"
 
         # EMA 顺势检查
         close = self._close(ctx)
@@ -65,7 +97,39 @@ class StructuredTrendContinuation(StructuredStrategyBase):
                 return False, None, 0, "above_ema"
 
         score = min(htf_adx_f / 40.0, 1.0)
-        return True, direction, score, f"htf:{direction},adx={htf_adx_f:.0f}"
+        reason = f"htf:{direction},adx={htf_adx_f:.0f}"
+
+        if self._use_momentum_consensus:
+            tf = ctx.timeframe
+            consensus = self._momentum_consensus(ctx)
+            if consensus is None:
+                return False, None, 0, "no_momentum_consensus"
+
+            if direction == "buy":
+                buy_min = get_tf_param(
+                    self,
+                    "momentum_consensus_buy_min",
+                    tf,
+                    self._momentum_consensus_buy_min,
+                )
+                if consensus < buy_min:
+                    return False, None, 0, f"mom={consensus:.2f}<{buy_min:.2f}"
+                score = min(
+                    1.0,
+                    score
+                    + min(max(consensus, 0.0), 1.0)
+                    * self._momentum_consensus_score_bonus,
+                )
+            else:
+                score = min(
+                    1.0,
+                    score
+                    + min(max(-consensus, 0.0), 1.0)
+                    * (self._momentum_consensus_score_bonus * 0.5),
+                )
+            reason = f"{reason},mom={consensus:.2f}"
+
+        return True, direction, score, reason
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
         tf = ctx.timeframe
@@ -99,6 +163,17 @@ class StructuredTrendContinuation(StructuredStrategyBase):
         return self._linear_score(self._volume_ratio(ctx), low=1.0, high=1.5)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
+        if self._use_momentum_consensus:
+            zone = get_tf_param(
+                self,
+                "pending_entry_zone_atr",
+                ctx.timeframe,
+                self._pending_entry_zone_atr,
+            )
+            return EntrySpec(
+                entry_type=EntryType.LIMIT,
+                entry_zone_atr=zone,
+            )
         return EntrySpec()
 
     _aggression: float = 0.80

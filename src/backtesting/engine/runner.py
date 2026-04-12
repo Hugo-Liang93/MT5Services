@@ -27,7 +27,13 @@ from src.trading.pending import PendingEntryConfig as TradingPendingEntryConfig
 from ..analysis.metrics import compute_metrics, compute_metrics_grouped
 from ..data.loader import HistoricalDataLoader
 from ..filtering.builder import build_filter_simulator as _build_filter_simulator_helper
-from ..models import BacktestConfig, BacktestResult, SignalEvaluation, generate_run_id
+from ..models import (
+    BacktestConfig,
+    BacktestResult,
+    SignalEvaluation,
+    SimulationMode,
+    generate_run_id,
+)
 from .indicators import compute_indicators as _compute_indicators_helper
 from .indicators import detect_regime as _detect_regime_helper
 from .indicators import lookup_htf_at_time as _lookup_htf_at_time_helper
@@ -461,6 +467,21 @@ class BacktestEngine:
             **summary,
         }
 
+    def record_execution_rejection(self, reason: str) -> None:
+        key = str(reason or "unspecified")
+        self._execution_rejections[key] = self._execution_rejections.get(key, 0) + 1
+
+    def record_entry_acceptance(self) -> None:
+        self._accepted_entries += 1
+
+    def execution_summary(self) -> dict[str, Any]:
+        return {
+            "simulation_mode": self._config.simulation_mode.value,
+            "accepted_entries": self._accepted_entries,
+            "rejected_entries": sum(self._execution_rejections.values()),
+            "rejection_reasons": dict(sorted(self._execution_rejections.items())),
+        }
+
     def _reset_run_state(self) -> None:
         """重置每次 run() 的运行时状态，确保引擎可复用。"""
         config = self._config
@@ -481,13 +502,19 @@ class BacktestEngine:
         self._signal_evaluations: List[SignalEvaluation] = []
         self._pending_evaluations: Dict[int, List[SignalEvaluation]] = {}
         self._recorded_evals: Set[Tuple[int, str]] = set()
+        self._accepted_entries = 0
+        self._execution_rejections: Dict[str, int] = {}
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
             max_positions=risk.max_positions,
             commission_per_lot=risk.commission_per_lot,
             slippage_points=risk.slippage_points,
             contract_size=pos.contract_size,
-            min_volume=pos.min_volume,
+            min_volume=(
+                0.0
+                if config.simulation_mode is SimulationMode.RESEARCH
+                else pos.min_volume
+            ),
             max_volume=pos.max_volume,
             max_volume_per_order=risk.max_volume_per_order,
             max_volume_per_symbol=risk.max_volume_per_symbol,
@@ -560,6 +587,7 @@ class BacktestEngine:
                 param_set=self._config.strategy_params,
                 filter_stats=None,
                 strategy_capability_execution_plan=self.strategy_capability_execution_plan(),
+                execution_summary=self.execution_summary(),
                 signal_evaluations=[],
             )
 
@@ -848,13 +876,15 @@ class BacktestEngine:
         filter_stats = self._filter_simulator.stats.to_dict()
 
         logger.info(
-            "Backtest %s completed: %d trades, win_rate=%.2f%%, PnL=%.2f, "
-            "filter_pass_rate=%.1f%%, elapsed=%dms",
+            "Backtest %s completed [%s]: %d trades, win_rate=%.2f%%, PnL=%.2f, "
+            "filter_pass_rate=%.1f%%, execution_rejections=%d, elapsed=%dms",
             run_id,
+            self._config.simulation_mode.value,
             metrics.total_trades,
             metrics.win_rate * 100,
             metrics.total_pnl,
             self._filter_simulator.stats.pass_rate * 100,
+            sum(self._execution_rejections.values()),
             elapsed_ms,
         )
 
@@ -906,6 +936,7 @@ class BacktestEngine:
             param_set=self._config.strategy_params,
             filter_stats=filter_stats,
             strategy_capability_execution_plan=self.strategy_capability_execution_plan(),
+            execution_summary=self.execution_summary(),
             signal_evaluations=self._signal_evaluations,
             monte_carlo_result=mc_result,
         )

@@ -10,12 +10,19 @@ from src.monitoring.pipeline import (
     PIPELINE_EXECUTION_SUBMITTED,
     PipelineEventBus,
 )
+from src.signals.contracts import StrategyDeployment, StrategyDeploymentStatus
 from src.signals.models import SignalEvent
 from src.trading.execution import ExecutionGate, ExecutionGateConfig
 from src.trading.execution import TradeParameters
 from src.trading.execution import ExecutorConfig, TradeExecutor
 from src.trading.execution.pending_orders import inspect_pending_mt5_order
-from src.trading.execution.reasons import REASON_LIMIT_REACHED
+from src.trading.execution.reasons import (
+    REASON_LIMIT_REACHED,
+    REASON_STRATEGY_CANDIDATE_ONLY,
+    REASON_STRATEGY_MAX_LIVE_POSITIONS,
+    REASON_STRATEGY_PAPER_ONLY,
+    REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
+)
 
 
 def _fire(executor: TradeExecutor, event: SignalEvent) -> None:
@@ -341,6 +348,128 @@ def test_trade_executor_skips_when_same_strategy_direction_mt5_pending_order_exi
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == (
         "pending_entry_same_strategy_direction"
+    )
+
+
+def test_trade_executor_blocks_candidate_strategy_live_execution() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.CANDIDATE,
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_STRATEGY_CANDIDATE_ONLY
+    )
+
+
+def test_trade_executor_blocks_paper_only_strategy_live_execution() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.PAPER_ONLY,
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_STRATEGY_PAPER_ONLY
+    )
+
+
+def test_trade_executor_enforces_guarded_strategy_pending_entry_requirement() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.4,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.ACTIVE_GUARDED,
+                    locked_timeframes=("M5",),
+                    locked_sessions=("london",),
+                    max_live_positions=1,
+                    require_pending_entry=True,
+                    paper_shadow_required=True,
+                    robustness_tier="tf_specific",
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_STRATEGY_REQUIRES_PENDING_ENTRY
+    )
+
+
+def test_trade_executor_enforces_guarded_strategy_live_position_cap() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=DummyPositionManager(
+            [
+                {
+                    "symbol": "XAUUSD",
+                    "timeframe": "M5",
+                    "strategy": "sma_trend",
+                    "action": "buy",
+                }
+            ]
+        ),
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.4,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.ACTIVE_GUARDED,
+                    locked_timeframes=("M5",),
+                    locked_sessions=("london",),
+                    max_live_positions=1,
+                    require_pending_entry=False,
+                    paper_shadow_required=True,
+                    robustness_tier="tf_specific",
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_STRATEGY_MAX_LIVE_POSITIONS
     )
 
 

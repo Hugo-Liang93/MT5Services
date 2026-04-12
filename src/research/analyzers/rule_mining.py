@@ -32,9 +32,9 @@ from sklearn.tree import DecisionTreeClassifier
 
 from src.signals.evaluation.regime import RegimeType
 
-from ..config import OverfittingConfig
-from ..data_matrix import DataMatrix
-from ..statistics import binomial_test_p, block_shuffle, auto_block_size
+from ..core.config import OverfittingConfig
+from ..core.data_matrix import DataMatrix
+from ..core.statistics import binomial_test_p, block_shuffle, auto_block_size
 
 logger = logging.getLogger(__name__)
 
@@ -604,7 +604,7 @@ def _cv_rule_consistency(
     Returns:
         {rule_condition_key: 出现比例 (0.0 ~ 1.0)}
     """
-    from ..overfitting import time_series_cv_splits
+    from ..core.overfitting import time_series_cv_splits
 
     train_range = matrix.train_slice()
     folds = time_series_cv_splits(

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.research.data_matrix import DataMatrix
+from src.research.core.data_matrix import DataMatrix
 
 
 def _make_matrix(

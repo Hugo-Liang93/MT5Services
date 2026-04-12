@@ -22,6 +22,10 @@ from .reasons import (
     REASON_MIN_CONFIDENCE,
     REASON_PERFORMANCE_PAUSED,
     REASON_REENTRY_COOLDOWN,
+    REASON_STRATEGY_CANDIDATE_ONLY,
+    REASON_STRATEGY_MAX_LIVE_POSITIONS,
+    REASON_STRATEGY_PAPER_ONLY,
+    REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
     SKIP_CATEGORY_COOLDOWN,
     SKIP_CATEGORY_PERFORMANCE,
     SKIP_CATEGORY_EQUITY_FILTER,
@@ -30,6 +34,7 @@ from .reasons import (
     SKIP_CATEGORY_DUPLICATE_GUARD,
     SKIP_CATEGORY_CONFIDENCE,
     SKIP_CATEGORY_EOD_GUARD,
+    SKIP_CATEGORY_GOVERNANCE,
     SKIP_CATEGORY_POSITION,
 )
 
@@ -40,6 +45,7 @@ from .pending_orders import (
     duplicate_execution_reason as _duplicate_execution_reason_helper,
 )
 from .pending_orders import reached_position_limit as _reached_position_limit_helper
+from .pending_orders import open_positions_for_strategy as _open_positions_for_strategy_helper
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent
@@ -221,6 +227,63 @@ def run_pre_trade_filters(
     if event.direction not in ("buy", "sell"):
         return REASON_INVALID_DIRECTION
 
+    # ③.5 策略部署合同
+    deployment = executor.config.strategy_deployments.get(event.strategy)
+    if deployment is not None:
+        if not deployment.allows_runtime_evaluation():
+            reject_signal(
+                executor,
+                event,
+                REASON_STRATEGY_CANDIDATE_ONLY,
+                SKIP_CATEGORY_GOVERNANCE,
+                tf,
+            )
+            return REASON_STRATEGY_CANDIDATE_ONLY
+        if not deployment.allows_live_execution():
+            reject_signal(
+                executor,
+                event,
+                REASON_STRATEGY_PAPER_ONLY,
+                SKIP_CATEGORY_GOVERNANCE,
+                tf,
+            )
+            return REASON_STRATEGY_PAPER_ONLY
+        if deployment.max_live_positions is not None:
+            current_live_positions = _open_positions_for_strategy_helper(
+                executor,
+                symbol=event.symbol,
+                strategy=event.strategy,
+            )
+            if current_live_positions >= deployment.max_live_positions:
+                reject_signal(
+                    executor,
+                    event,
+                    REASON_STRATEGY_MAX_LIVE_POSITIONS,
+                    SKIP_CATEGORY_POSITION,
+                    tf,
+                    extra_log=(
+                        f"{current_live_positions} >= "
+                        f"{deployment.max_live_positions}"
+                    ),
+                )
+                return REASON_STRATEGY_MAX_LIVE_POSITIONS
+        if deployment.require_pending_entry:
+            entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
+            entry_type = (
+                entry_spec.get("entry_type", "market")
+                if isinstance(entry_spec, dict)
+                else "market"
+            )
+            if entry_type == "market" or executor.pending_manager is None:
+                reject_signal(
+                    executor,
+                    event,
+                    REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
+                    SKIP_CATEGORY_EXECUTION_GATE,
+                    tf,
+                )
+                return REASON_STRATEGY_REQUIRES_PENDING_ENTRY
+
     # ④ PnL 熔断
     if (
         executor.performance_tracker is not None
@@ -288,6 +351,13 @@ def run_pre_trade_filters(
         tf,
         executor.config.min_confidence,
     )
+    if deployment is not None:
+        effective_deployment_min = deployment.effective_min_confidence(
+            timeframe_baseline=executor.config.timeframe_min_confidence.get(tf),
+            global_min_confidence=executor.config.min_confidence,
+        )
+        if effective_deployment_min is not None:
+            effective_min_conf = max(effective_min_conf, effective_deployment_min)
     if event.confidence < effective_min_conf:
         reject_signal(
             executor,

@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from ...evaluation.regime import RegimeType
+from ...metadata_keys import MetadataKey as MK
 from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
 
@@ -156,6 +157,8 @@ class StructuredStrategyBase:
     htf_required_indicators: Dict[str, str] = {}
     preferred_scopes: Tuple[str, ...] = ("confirmed",)
     regime_affinity: Dict[RegimeType, float] = {}
+    promoted_indicator_lineage: Tuple[str, ...] = ()
+    research_provenance_refs: Tuple[str, ...] = ()
 
     _base_confidence: float = 0.50
 
@@ -360,6 +363,8 @@ class StructuredStrategyBase:
                 "signal_grade": grade,
                 "entry_spec": entry_spec.to_dict(),
                 "exit_spec": exit_spec.to_dict(),
+                MK.PROMOTED_INDICATORS: list(self.promoted_indicator_lineage),
+                MK.RESEARCH_PROVENANCE: list(self.research_provenance_refs),
             },
             confidence_trace=trace,
         )

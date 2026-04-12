@@ -10,8 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pytest
 
 from src.research.analyzers.predictive_power import analyze_predictive_power
-from src.research.config import OverfittingConfig, PredictivePowerConfig
-from src.research.data_matrix import DataMatrix
+from src.research.core.config import OverfittingConfig, PredictivePowerConfig
+from src.research.core.data_matrix import DataMatrix
 from src.signals.evaluation.regime import RegimeType
 
 

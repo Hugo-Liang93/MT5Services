@@ -5,6 +5,7 @@
     python -m src.ops.cli.mining_runner --tf H1 --analysis predictive_power
     python -m src.ops.cli.mining_runner --tf H1 --analysis threshold --indicator rsi14
     python -m src.ops.cli.mining_runner --tf H1,M30 --compare
+    python -m src.ops.cli.mining_runner --tf H1,M30 --compare --emit-candidates
     python -m src.ops.cli.mining_runner --tf H1 --template minimal
 
 分析类型（纯数据驱动，不涉及现有策略）：
@@ -20,9 +21,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 # 确保项目根目录在 sys.path 中
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import warnings
 
@@ -46,16 +50,16 @@ def _run_single(
 ) -> dict:
     """执行单个 TF 信号挖掘，返回结构化结果 dict。"""
     from src.backtesting.component_factory import build_backtest_components
-    from src.research.config import load_research_config
-    from src.research.runner import MiningRunner
+    from src.research.core import load_research_config
+    from src.research.orchestration import MiningRunner
 
     config = load_research_config()
     components = build_backtest_components()
 
     runner = MiningRunner(config=config, components=components)
 
-    start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    end_dt = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    start_dt = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+    end_dt = datetime.fromisoformat(end).replace(tzinfo=timezone.utc)
 
     result = runner.run(
         symbol="XAUUSD",
@@ -347,7 +351,7 @@ def _render_compare(results: List[dict]) -> str:
 
 def _render_cross_tf(raw_results: Dict[str, Any]) -> str:
     """跨 TF 一致性分析。"""
-    from src.research.cross_tf_analyzer import analyze_cross_tf
+    from src.research.core import analyze_cross_tf
 
     analysis = analyze_cross_tf(raw_results)
     lines: List[str] = []
@@ -390,6 +394,79 @@ def _render_cross_tf(raw_results: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _render_candidates(discovery: dict) -> str:
+    candidates = discovery.get("candidate_specs", []) or []
+    if not candidates:
+        return "\n--- Candidate Specs ---\n  No promotable candidates."
+
+    lines = ["\n--- Candidate Specs ---"]
+    for item in candidates:
+        evidence_types = ",".join(item.get("evidence_types", []))
+        lines.append(
+            "  "
+            f"{item.get('candidate_id')} "
+            f"[{item.get('robustness_tier')}] "
+            f"{item.get('key_indicator')} -> {item.get('target_timeframe')} "
+            f"decision={item.get('promotion_decision')}"
+        )
+        lines.append(
+            "    "
+            f"allowed={','.join(item.get('allowed_timeframes', []))} "
+            f"direction={item.get('direction')} "
+            f"evidence={evidence_types or '-'}"
+        )
+        lines.append(f"    {item.get('decision_reason', '')}")
+    return "\n".join(lines)
+
+
+def _render_feature_candidates(
+    discovery: dict,
+    *,
+    promotable_only: bool = False,
+) -> str:
+    candidates = discovery.get("feature_candidates", []) or []
+    if promotable_only:
+        candidates = [
+            item
+            for item in candidates
+            if str(item.get("promotion_decision", "")).startswith("promote_indicator")
+        ]
+    if not candidates:
+        return "\n--- Feature Candidates ---\n  No feature candidates matched the current filters."
+
+    lines = ["\n--- Feature Candidates ---"]
+    for item in candidates:
+        evidence_types = ",".join(
+            sorted(
+                {
+                    str(evidence.get("evidence_type", "")).strip()
+                    for evidence in item.get("evidence", [])
+                    if evidence.get("evidence_type")
+                }
+            )
+        )
+        lines.append(
+            "  "
+            f"{item.get('candidate_id')} "
+            f"[{item.get('robustness_tier')}] "
+            f"{item.get('feature_name')} -> {item.get('target_timeframe')} "
+            f"decision={item.get('promotion_decision')}"
+        )
+        lines.append(
+            "    "
+            f"allowed={','.join(item.get('allowed_timeframes', []))} "
+            f"direction={item.get('direction_hint')} "
+            f"live={item.get('live_computable')} "
+            f"scope={item.get('compute_scope')}"
+        )
+        lines.append(
+            "    "
+            f"roles={','.join(item.get('strategy_roles', [])) or '-'} "
+            f"evidence={evidence_types or '-'}"
+        )
+    return "\n".join(lines)
+
+
 TEMPLATES = {
     "default": _render_default,
     "minimal": _render_minimal,
@@ -424,6 +501,36 @@ def main() -> None:
         action="store_true",
         help="Output multi-TF comparison table",
     )
+    parser.add_argument(
+        "--emit-candidates",
+        action="store_true",
+        help="Generate structured candidate specs from cross-TF findings",
+    )
+    parser.add_argument(
+        "--emit-feature-candidates",
+        action="store_true",
+        help="Generate feature candidate specs from research features",
+    )
+    parser.add_argument(
+        "--feature-candidates-only",
+        action="store_true",
+        help="Only render feature candidate summary to stdout",
+    )
+    parser.add_argument(
+        "--promotable-features-only",
+        action="store_true",
+        help="Only render feature candidates whose decision starts with promote_indicator",
+    )
+    parser.add_argument(
+        "--no-auto-backfill",
+        action="store_true",
+        help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
+    )
+    parser.add_argument(
+        "--json-output",
+        default=None,
+        help="Write JSON payload (results + optional candidates) to file",
+    )
     args = parser.parse_args()
 
     tfs = [t.strip() for t in args.tf.split(",") if t.strip()]
@@ -436,6 +543,18 @@ def main() -> None:
         [i.strip() for i in args.indicator.split(",") if i.strip()]
         if args.indicator
         else None
+    )
+    start_dt = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+    end_dt = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+
+    from src.ops.cli._coverage import ensure_ohlc_data_coverage
+
+    coverage = ensure_ohlc_data_coverage(
+        symbol="XAUUSD",
+        timeframes=tfs,
+        start=start_dt,
+        end=end_dt,
+        auto_backfill=not args.no_auto_backfill,
     )
 
     results = []
@@ -453,15 +572,75 @@ def main() -> None:
         if "_raw_result" in data:
             raw_results[tf] = data.pop("_raw_result")
 
+    output_payload: Dict[str, Any] = {
+        "symbol": "XAUUSD",
+        "results": results,
+        "coverage": {tf: info.to_dict() for tf, info in coverage.items()},
+    }
+    feature_discovery_payload: Dict[str, Any] | None = None
+
     if args.compare and len(results) > 1:
-        print(_render_compare(results))
-        # 跨 TF 一致性分析
+        compare_text = _render_compare(results)
+        if not args.feature_candidates_only:
+            print(compare_text)
         if raw_results:
-            print(_render_cross_tf(raw_results))
+            cross_tf_text = _render_cross_tf(raw_results)
+            if not args.feature_candidates_only:
+                print(cross_tf_text)
+            from src.research.core import analyze_cross_tf
+
+            output_payload["cross_tf_analysis"] = analyze_cross_tf(raw_results).to_dict()
+        if args.emit_candidates and raw_results:
+            from src.research.strategies import discover_strategy_candidates
+
+            discovery = discover_strategy_candidates(raw_results, symbol="XAUUSD")
+            output_payload["candidate_discovery"] = discovery.to_dict()
+            if not args.feature_candidates_only:
+                print(_render_candidates(discovery.to_dict()))
+        if args.emit_feature_candidates and raw_results:
+            from src.research.features import discover_feature_candidates
+
+            feature_discovery = discover_feature_candidates(raw_results, symbol="XAUUSD")
+            feature_discovery_payload = feature_discovery.to_dict()
+            output_payload["feature_candidate_discovery"] = feature_discovery_payload
+            print(
+                _render_feature_candidates(
+                    feature_discovery_payload,
+                    promotable_only=args.promotable_features_only,
+                )
+            )
     else:
         render_fn = TEMPLATES[args.template]
-        for data in results:
-            print(render_fn(data))
+        if not args.feature_candidates_only:
+            for data in results:
+                print(render_fn(data))
+        if args.emit_candidates and raw_results:
+            from src.research.strategies import discover_strategy_candidates
+
+            discovery = discover_strategy_candidates(raw_results, symbol="XAUUSD")
+            output_payload["candidate_discovery"] = discovery.to_dict()
+            if not args.feature_candidates_only:
+                print(_render_candidates(discovery.to_dict()))
+        if args.emit_feature_candidates and raw_results:
+            from src.research.features import discover_feature_candidates
+
+            feature_discovery = discover_feature_candidates(raw_results, symbol="XAUUSD")
+            feature_discovery_payload = feature_discovery.to_dict()
+            output_payload["feature_candidate_discovery"] = feature_discovery_payload
+            print(
+                _render_feature_candidates(
+                    feature_discovery_payload,
+                    promotable_only=args.promotable_features_only,
+                )
+            )
+
+    if args.json_output:
+        import json
+
+        output_path = Path(args.json_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as fh:
+            json.dump(output_payload, fh, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":

@@ -75,6 +75,7 @@ class BacktestRepository:
         config_dict = asdict(result.config)
         config_dict["start_time"] = result.config.start_time.isoformat()
         config_dict["end_time"] = result.config.end_time.isoformat()
+        config_dict["simulation_mode"] = result.config.simulation_mode.value
 
         metrics_dict = asdict(result.metrics)
         metrics_by_regime = {k: asdict(v) for k, v in result.metrics_by_regime.items()}

@@ -57,7 +57,7 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
         "started_at": datetime.utcnow().isoformat(),
     }
     try:
-        from src.research.runner import MiningRunner
+        from src.research.orchestration import MiningRunner
 
         runner = MiningRunner()
         result = runner.run(

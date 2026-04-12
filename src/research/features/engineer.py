@@ -13,7 +13,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .data_matrix import DataMatrix
+from ..core.data_matrix import DataMatrix
 
 # 特征计算函数类型：(matrix, bar_index) -> Optional[float]
 FeatureFunc = Callable[[DataMatrix, int], Optional[float]]
@@ -28,6 +28,34 @@ class FeatureDefinition:
     func: FeatureFunc
     dependencies: Tuple[Tuple[str, str], ...]  # 需要的 indicator_series key
     is_dimensionless: bool = True
+    formula_summary: str = ""
+    source_inputs: Tuple[str, ...] = ()
+    runtime_state_inputs: Tuple[str, ...] = ()
+    live_computable: bool = True
+    compute_scope: str = "bar_close"
+    bounded_lookback: bool = True
+    strategy_roles: Tuple[str, ...] = ()
+    promotion_target_default: str = "research_only"
+    no_lookahead: bool = True
+    interpretable: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "group": self.group,
+            "dependencies": [f"{ind}.{field}" for ind, field in self.dependencies],
+            "is_dimensionless": self.is_dimensionless,
+            "formula_summary": self.formula_summary,
+            "source_inputs": list(self.source_inputs),
+            "runtime_state_inputs": list(self.runtime_state_inputs),
+            "live_computable": self.live_computable,
+            "compute_scope": self.compute_scope,
+            "bounded_lookback": self.bounded_lookback,
+            "strategy_roles": list(self.strategy_roles),
+            "promotion_target_default": self.promotion_target_default,
+            "no_lookahead": self.no_lookahead,
+            "interpretable": self.interpretable,
+        }
 
 
 class FeatureEngineer:
@@ -41,6 +69,20 @@ class FeatureEngineer:
 
     def available_features(self) -> List[str]:
         return list(self._features.keys())
+
+    def definition(self, name: str) -> Optional[FeatureDefinition]:
+        return self._features.get(name)
+
+    def definitions(self) -> Dict[str, FeatureDefinition]:
+        return dict(self._features)
+
+    def inventory(self) -> Dict[str, Any]:
+        return {
+            "active_features": {
+                name: defn.to_dict() for name, defn in sorted(self._features.items())
+            },
+            "promoted_indicator_precedents": list(PROMOTED_INDICATOR_PRECEDENTS),
+        }
 
     def enrich(
         self,
@@ -185,7 +227,7 @@ def _bars_in_regime(matrix: DataMatrix, i: int) -> Optional[float]:
 
 # 注意：di_spread, squeeze_score, vwap_gap_atr, rsi_accel 已提升为正式指标
 # （src/indicators/core/composite.py），不再作为研究特征。
-# 以下仅保留依赖运行时状态的研究特征。
+# 其余条目保留在 research feature registry 中，用于继续做候选发现与晋升审计。
 
 _BUILTIN_FEATURES: List[FeatureDefinition] = [
     FeatureDefinition(
@@ -197,20 +239,81 @@ _BUILTIN_FEATURES: List[FeatureDefinition] = [
             ("rsi14", "rsi"),
             ("stoch_rsi14", "stoch_rsi_k"),
         ),
+        formula_summary=(
+            "(sign(macd.hist) + sign(rsi14.rsi-50) + "
+            "sign(stoch_rsi14.stoch_rsi_k-50)) / 3"
+        ),
+        source_inputs=("macd.hist", "rsi14.rsi", "stoch_rsi14.stoch_rsi_k"),
+        runtime_state_inputs=(),
+        live_computable=True,
+        compute_scope="bar_close",
+        bounded_lookback=True,
+        strategy_roles=("why", "when"),
+        promotion_target_default="indicator_and_strategy_candidate",
     ),
     FeatureDefinition(
         name="regime_entropy",
         group="derived",
         func=_regime_entropy,
         dependencies=(),  # 使用 soft_regimes，不是 indicator_series
+        formula_summary="-Σ(p·ln(p)) from soft regime probabilities",
+        source_inputs=(),
+        runtime_state_inputs=("soft_regimes",),
+        live_computable=False,
+        compute_scope="runtime_state",
+        bounded_lookback=True,
+        strategy_roles=("why",),
+        promotion_target_default="research_only",
     ),
     FeatureDefinition(
         name="bars_in_regime",
         group="derived",
         func=_bars_in_regime,
         dependencies=(),  # 使用 regimes 列表
+        formula_summary="count consecutive bars staying in the current hard regime",
+        source_inputs=(),
+        runtime_state_inputs=("regimes",),
+        live_computable=False,
+        compute_scope="runtime_state",
+        bounded_lookback=True,
+        strategy_roles=("when", "where"),
+        promotion_target_default="strategy_helper",
     ),
 ]
+
+
+PROMOTED_INDICATOR_PRECEDENTS: Tuple[Dict[str, Any], ...] = (
+    {
+        "feature_name": "di_spread",
+        "promoted_indicator_name": "di_spread14",
+        "status": "promoted_indicator",
+        "note": "已晋升为共享趋势方向复合指标",
+    },
+    {
+        "feature_name": "squeeze_score",
+        "promoted_indicator_name": "squeeze20",
+        "status": "promoted_indicator",
+        "note": "已晋升为共享波动率挤压指标",
+    },
+    {
+        "feature_name": "vwap_gap_atr",
+        "promoted_indicator_name": "vwap_dev30",
+        "status": "promoted_indicator",
+        "note": "已晋升为共享均值偏离指标",
+    },
+    {
+        "feature_name": "rsi_accel",
+        "promoted_indicator_name": "momentum_accel14",
+        "status": "promoted_indicator",
+        "note": "已晋升为共享动量加速度指标",
+    },
+    {
+        "feature_name": "momentum_consensus",
+        "promoted_indicator_name": "momentum_consensus14",
+        "status": "promoted_indicator",
+        "note": "首轮 feature promotion 交付的新共享动量一致性指标",
+    },
+)
 
 
 def build_default_engineer() -> FeatureEngineer:
@@ -219,3 +322,11 @@ def build_default_engineer() -> FeatureEngineer:
     for defn in _BUILTIN_FEATURES:
         eng.register(defn)
     return eng
+
+
+def get_feature_definition(name: str) -> Optional[FeatureDefinition]:
+    return build_default_engineer().definition(name)
+
+
+def get_feature_inventory() -> Dict[str, Any]:
+    return build_default_engineer().inventory()

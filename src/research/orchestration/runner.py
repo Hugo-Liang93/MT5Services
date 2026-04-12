@@ -14,9 +14,9 @@ from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from src.research.config import ResearchConfig, load_research_config
-from src.research.data_matrix import DataMatrix, build_data_matrix
-from src.research.models import DataSummary, Finding, MiningResult
+from src.research.core.config import ResearchConfig, load_research_config
+from src.research.core.contracts import DataSummary, Finding, MiningResult
+from src.research.core.data_matrix import DataMatrix, build_data_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ class MiningRunner:
 
         # 特征工程：在分析器运行前增强 DataMatrix
         if self._config.feature_engineering.enabled:
-            from src.research.feature_engineer import build_default_engineer
+            from src.research.features.engineer import build_default_engineer
 
             engineer = build_default_engineer()
             original_count = len(matrix.indicator_series)

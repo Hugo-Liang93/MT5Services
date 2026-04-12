@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from src.signals.evaluation.performance import StrategyPerformanceTracker
 
 from src.monitoring.pipeline import PipelineEventBus
+from src.signals.contracts import StrategyDeployment
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
 
@@ -91,6 +92,7 @@ class ExecutorConfig:
     reentry_cooldown_bars: int = 3
     regime_sizing: RegimeSizing = field(default_factory=RegimeSizing)
     exec_queue_size: int = 256
+    strategy_deployments: dict[str, StrategyDeployment] = field(default_factory=dict)
 
 
 class TradeExecutor:
@@ -831,6 +833,10 @@ class TradeExecutor:
                 "standalone_override": sorted(
                     self._execution_gate.config.standalone_override
                 ),
+            },
+            "strategy_deployments": {
+                name: deployment.to_dict()
+                for name, deployment in self.config.strategy_deployments.items()
             },
             "execution_quality": {
                 "recovered_from_state": int(
