@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.signals.contracts import StrategyDeployment
+
 
 class SignalConfig(BaseModel):
     auto_trade_enabled: bool = False
@@ -55,6 +57,7 @@ class SignalConfig(BaseModel):
     session_spread_limits: dict[str, float] = Field(default_factory=dict)
     strategy_sessions: dict[str, list[str]] = Field(default_factory=dict)
     strategy_timeframes: dict[str, list[str]] = Field(default_factory=dict)
+    strategy_deployments: dict[str, StrategyDeployment] = Field(default_factory=dict)
     max_spread_to_stop_ratio: float = 0.33
     # 同策略同方向再入场冷却 bar 数（0=不冷却每根 bar 都可以，N=间隔 N 根后允许加仓）
     reentry_cooldown_bars: int = 3

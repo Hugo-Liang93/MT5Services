@@ -322,3 +322,139 @@ class TestBacktestEngine:
         for ev in buy_evals:
             assert ev.won is not None
             assert ev.pnl_pct is not None
+
+    def test_research_mode_allows_theoretical_sub_min_volume(self) -> None:
+        config = self._make_config(
+            warmup_bars=5,
+            filters_enabled=False,
+            initial_balance=3.7,
+            simulation_mode="research",
+        )
+        warmup = _make_bars(5)
+        test_data = _make_bars(10)
+        for i, bar in enumerate(test_data):
+            bar.time = warmup[-1].time + timedelta(minutes=5 * (i + 1))
+
+        data_loader = MagicMock()
+        data_loader.preload_warmup_bars.return_value = warmup
+        data_loader.load_all_bars.return_value = test_data
+
+        signal_module = MagicMock()
+        signal_module.list_strategies.return_value = ["rsi_reversion"]
+        signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("rsi_reversion", ("rsi14",), ("confirmed",)),
+        )
+        signal_module.get_strategy.return_value = None
+
+        call_count = 0
+
+        def mock_evaluate(**kwargs: Any) -> SignalDecision:
+            nonlocal call_count
+            call_count += 1
+            action = "buy" if call_count == 1 else "hold"
+            confidence = 0.7 if action == "buy" else 0.0
+            return SignalDecision(
+                strategy="rsi_reversion",
+                symbol="XAUUSD",
+                timeframe="M5",
+                direction=action,
+                confidence=confidence,
+                reason="test",
+                used_indicators=["rsi14"],
+                timestamp=datetime.now(timezone.utc),
+                metadata={},
+            )
+
+        signal_module.evaluate.side_effect = mock_evaluate
+
+        pipeline = MagicMock()
+        pipeline.compute.return_value = {
+            "rsi14": {"rsi": 30.0},
+            "atr14": {"atr": 5.0},
+        }
+
+        engine = BacktestEngine(
+            config=config,
+            data_loader=data_loader,
+            signal_module=signal_module,
+            indicator_pipeline=pipeline,
+        )
+        result = engine.run()
+
+        assert result.execution_summary is not None
+        assert result.execution_summary["simulation_mode"] == "research"
+        assert result.execution_summary["accepted_entries"] == 1
+        assert result.execution_summary["rejected_entries"] == 0
+        assert result.metrics.total_trades == 1
+        assert result.trades[0].position_size < config.position.min_volume
+
+    def test_execution_feasibility_mode_rejects_sub_min_volume(self) -> None:
+        config = self._make_config(
+            warmup_bars=5,
+            filters_enabled=False,
+            initial_balance=3.7,
+            simulation_mode="execution_feasibility",
+        )
+        warmup = _make_bars(5)
+        test_data = _make_bars(10)
+        for i, bar in enumerate(test_data):
+            bar.time = warmup[-1].time + timedelta(minutes=5 * (i + 1))
+
+        data_loader = MagicMock()
+        data_loader.preload_warmup_bars.return_value = warmup
+        data_loader.load_all_bars.return_value = test_data
+
+        signal_module = MagicMock()
+        signal_module.list_strategies.return_value = ["rsi_reversion"]
+        signal_module.strategy_requirements.return_value = ["rsi14"]
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("rsi_reversion", ("rsi14",), ("confirmed",)),
+        )
+
+        call_count = 0
+
+        def mock_evaluate(**kwargs: Any) -> SignalDecision:
+            nonlocal call_count
+            call_count += 1
+            action = "buy" if call_count == 1 else "hold"
+            confidence = 0.7 if action == "buy" else 0.0
+            return SignalDecision(
+                strategy="rsi_reversion",
+                symbol="XAUUSD",
+                timeframe="M5",
+                direction=action,
+                confidence=confidence,
+                reason="test",
+                used_indicators=["rsi14"],
+                timestamp=datetime.now(timezone.utc),
+                metadata={},
+            )
+
+        signal_module.evaluate.side_effect = mock_evaluate
+
+        pipeline = MagicMock()
+        pipeline.compute.return_value = {
+            "rsi14": {"rsi": 30.0},
+            "atr14": {"atr": 5.0},
+        }
+
+        engine = BacktestEngine(
+            config=config,
+            data_loader=data_loader,
+            signal_module=signal_module,
+            indicator_pipeline=pipeline,
+        )
+        result = engine.run()
+
+        assert result.execution_summary is not None
+        assert result.execution_summary["simulation_mode"] == "execution_feasibility"
+        assert result.execution_summary["accepted_entries"] == 0
+        assert result.execution_summary["rejected_entries"] == 1
+        assert (
+            result.execution_summary["rejection_reasons"][
+                "below_min_volume_for_execution_feasibility"
+            ]
+            == 1
+        )
+        assert result.metrics.total_trades == 0

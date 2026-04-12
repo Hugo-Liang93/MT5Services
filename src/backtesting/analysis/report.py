@@ -42,6 +42,12 @@ def format_summary(result: BacktestResult) -> str:
     if result.filter_stats:
         lines.extend(_format_filter_stats(result.filter_stats))
 
+    if result.execution_summary:
+        lines.extend(_format_execution_summary(result))
+
+    if result.validation_decision is not None:
+        lines.extend(_format_validation_decision(result))
+
     # 按策略分组
     if result.metrics_by_strategy:
         lines.append("  按策略分组:")
@@ -113,6 +119,56 @@ def _format_filter_stats(stats: Dict[str, Any]) -> List[str]:
             rejections.items(), key=lambda x: x[1], reverse=True
         ):
             lines.append(f"      {filter_name:<25} {count:>6} 次")
+    lines.append(f"{'─' * 60}")
+    return lines
+
+
+def _format_execution_summary(result: BacktestResult) -> List[str]:
+    summary = result.execution_summary or {}
+    lines = [
+        "  执行语义:",
+        f"    simulation_mode: {summary.get('simulation_mode', result.config.simulation_mode.value)}",
+        f"    accepted_entries: {summary.get('accepted_entries', 0)}",
+        f"    rejected_entries: {summary.get('rejected_entries', 0)}",
+    ]
+    rejection_reasons = summary.get("rejection_reasons", {}) or {}
+    if rejection_reasons:
+        lines.append("    拒单原因:")
+        for reason, count in sorted(
+            rejection_reasons.items(),
+            key=lambda item: (-item[1], item[0]),
+        ):
+            lines.append(f"      {reason:<40} {count:>4}")
+    lines.append(f"{'─' * 60}")
+    return lines
+
+
+def _format_validation_decision(result: BacktestResult) -> List[str]:
+    report = result.validation_decision
+    if report is None:
+        return []
+    lines = [
+        "  晋升裁决:",
+        f"    decision: {report.decision.value}",
+        f"    robustness_tier: {report.robustness_tier or '-'}",
+    ]
+    if report.reasons:
+        lines.append("    reasons:")
+        for reason in report.reasons:
+            lines.append(f"      - {reason}")
+    failed_checks = [
+        (name, detail)
+        for name, detail in report.checks.items()
+        if not bool(detail.get("passed"))
+    ]
+    if failed_checks:
+        lines.append("    failed_checks:")
+        for name, detail in failed_checks:
+            reason = detail.get("reason")
+            if reason:
+                lines.append(f"      {name}: {reason}")
+            else:
+                lines.append(f"      {name}: gate_failed")
     lines.append(f"{'─' * 60}")
     return lines
 

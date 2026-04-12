@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 from src.config.models.signal import SignalConfig
 from src.config.utils import get_merged_config
+from src.signals.contracts import normalize_strategy_deployments
 
 
 def _resolve_spread_limits(
@@ -303,6 +304,19 @@ def get_signal_config() -> SignalConfig:
         if affinity_map:
             regime_affinity_overrides[strategy_name] = affinity_map
 
+    # ── 策略部署合同 [strategy_deployment.<strategy>] ────────────────────
+    strategy_deployments_raw: dict[str, dict[str, object]] = {}
+    for section_name, section_data in merged.items():
+        if not str(section_name).startswith("strategy_deployment."):
+            continue
+        strategy_name = str(section_name)[len("strategy_deployment.") :].strip()
+        if not strategy_name:
+            continue
+        strategy_deployments_raw[strategy_name] = {
+            str(key).strip(): value for key, value in dict(section_data).items()
+        }
+    strategy_deployments = normalize_strategy_deployments(strategy_deployments_raw)
+
     # ── Pending Entry 解析 ─────────────────────────────────────────────
     pending_entry_timeout_bars: dict[str, float] = {}
     pending_entry_strategy_overrides: dict[str, dict[str, float]] = {}
@@ -364,6 +378,7 @@ def get_signal_config() -> SignalConfig:
         "strategy_params": strategy_params,
         "strategy_params_per_tf": strategy_params_per_tf,
         "regime_affinity_overrides": regime_affinity_overrides,
+        "strategy_deployments": strategy_deployments,
         "contract_size_map": _normalize_float_map(
             contract_sizes_section,
             key_transform=lambda value: value.upper(),

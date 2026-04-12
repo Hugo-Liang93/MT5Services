@@ -16,6 +16,13 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _resolve_job_simulation_mode(request: api_config.BacktestRequestBase) -> str:
+    if request.simulation_mode:
+        return str(request.simulation_mode)
+    defaults = api_config.load_backtest_defaults()
+    return str(defaults.get("simulation_mode", "research"))
+
+
 def _create_job(
     *,
     run_id: str,
@@ -47,6 +54,7 @@ async def run_backtest(
             "timeframe": request.timeframe,
             "start_time": request.start_time,
             "end_time": request.end_time,
+            "simulation_mode": _resolve_job_simulation_mode(request),
         },
     )
     background_tasks.add_task(api_execution.execute_backtest, run_id, request)
@@ -68,6 +76,7 @@ async def run_optimization(
             "timeframe": request.timeframe,
             "start_time": request.start_time,
             "end_time": request.end_time,
+            "simulation_mode": _resolve_job_simulation_mode(request),
             "search_mode": optimizer_settings["search_mode"],
             "max_combinations": optimizer_settings["max_combinations"],
         },
@@ -91,6 +100,7 @@ async def run_walk_forward(
             "timeframe": request.timeframe,
             "start_time": request.start_time,
             "end_time": request.end_time,
+            "simulation_mode": _resolve_job_simulation_mode(request),
             "n_splits": request.n_splits,
             "train_ratio": request.train_ratio,
             "search_mode": optimizer_settings["search_mode"],

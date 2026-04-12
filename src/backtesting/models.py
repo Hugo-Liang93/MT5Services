@@ -18,6 +18,30 @@ class BacktestJobStatus(str, Enum):
     FAILED = "failed"
 
 
+class SimulationMode(str, Enum):
+    """回测执行语义。
+
+    research:
+        研究模式。共享实盘指标/策略/过滤链路，但不强制执行最小手数可成交性；
+        允许理论上的小数仓位，用于策略研究、挖掘和参数搜索。
+
+    execution_feasibility:
+        可执行性模拟。共享同一套信号内核，但会校验最小手数等执行约束，
+        用于回答“按当前资金规模/执行约束，这个信号是否能成交”。
+    """
+
+    RESEARCH = "research"
+    EXECUTION_FEASIBILITY = "execution_feasibility"
+
+
+class ValidationDecision(str, Enum):
+    REJECT = "reject"
+    REFIT = "refit"
+    PAPER_ONLY = "paper_only"
+    ACTIVE_GUARDED = "active_guarded"
+    ACTIVE = "active"
+
+
 @dataclass
 class BacktestJob:
     """回测任务元数据（submit/query job 模式的核心数据结构）。
@@ -272,6 +296,7 @@ class BacktestConfig:
     end_time: datetime
     strategies: Optional[List[str]] = None
     initial_balance: float = 10000.0
+    simulation_mode: SimulationMode = SimulationMode.RESEARCH
     strategy_params: Dict[str, Any] = field(default_factory=dict)
     strategy_params_per_tf: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     regime_affinity_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
@@ -309,6 +334,12 @@ class BacktestConfig:
                 sub_buckets.setdefault(sub_name, {})[nested_key] = value
             else:
                 core_kwargs[key] = value
+
+        simulation_mode = core_kwargs.get("simulation_mode")
+        if simulation_mode is not None and not isinstance(
+            simulation_mode, SimulationMode
+        ):
+            core_kwargs["simulation_mode"] = SimulationMode(str(simulation_mode))
 
         for sub_name, sub_kwargs in sub_buckets.items():
             core_kwargs[sub_name] = _SUB_CONFIG_CLASSES[sub_name](**sub_kwargs)
@@ -390,6 +421,30 @@ class BacktestMetrics:
     max_consecutive_losses: int = 0
 
 
+@dataclass(frozen=True)
+class ValidationDecisionReport:
+    decision: ValidationDecision
+    robustness_tier: Optional[str]
+    checks: Dict[str, Dict[str, Any]]
+    reasons: List[str]
+    feature_candidate_id: Optional[str] = None
+    promoted_indicator_name: Optional[str] = None
+    strategy_candidate_id: Optional[str] = None
+    research_provenance: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "decision": self.decision.value,
+            "robustness_tier": self.robustness_tier,
+            "checks": self.checks,
+            "reasons": list(self.reasons),
+            "feature_candidate_id": self.feature_candidate_id,
+            "promoted_indicator_name": self.promoted_indicator_name,
+            "strategy_candidate_id": self.strategy_candidate_id,
+            "research_provenance": self.research_provenance,
+        }
+
+
 @dataclass
 class BacktestResult:
     """单次回测运行结果。"""
@@ -409,10 +464,14 @@ class BacktestResult:
     filter_stats: Optional[Dict[str, Any]] = None
     # 策略能力执行计划（与实盘 runtime status 同语义）
     strategy_capability_execution_plan: Optional[Dict[str, Any]] = None
+    # 执行语义摘要（用于区分 research 与 execution_feasibility）
+    execution_summary: Optional[Dict[str, Any]] = None
     # 信号评估明细（用于回测质量分析）
     signal_evaluations: Optional[List[SignalEvaluation]] = None
     # 蒙特卡洛排列检验结果
     monte_carlo_result: Optional[Dict[str, Any]] = None
+    # 晋升验证裁决（由独立 validation 组合回测/WF/paper 结果后填充）
+    validation_decision: Optional[ValidationDecisionReport] = None
     # 实验追踪 ID（跨 Research/Backtest/PaperTrading 关联）
     experiment_id: Optional[str] = None
 
@@ -426,6 +485,7 @@ class BacktestResult:
         result["completed_at"] = self.completed_at.isoformat()
         result["config"]["start_time"] = self.config.start_time.isoformat()
         result["config"]["end_time"] = self.config.end_time.isoformat()
+        result["config"]["simulation_mode"] = self.config.simulation_mode.value
         result["equity_curve"] = [(t.isoformat(), v) for t, v in self.equity_curve]
         for trade in result["trades"]:
             trade["entry_time"] = (
@@ -443,6 +503,8 @@ class BacktestResult:
             for ev in result["signal_evaluations"]:
                 if isinstance(ev.get("bar_time"), datetime):
                     ev["bar_time"] = ev["bar_time"].isoformat()
+        if self.validation_decision is not None:
+            result["validation_decision"] = self.validation_decision.to_dict()
         return result
 
 

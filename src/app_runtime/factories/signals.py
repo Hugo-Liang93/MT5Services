@@ -7,7 +7,12 @@ from typing import Any, Callable
 
 from src.config.file_manager import get_file_config_manager
 from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
-from src.signals.contracts import normalize_session_name
+from src.signals.contracts import (
+    StrategyDeployment,
+    StrategyDeploymentStatus,
+    normalize_session_name,
+    validate_strategy_deployments,
+)
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import (
     PerformanceTrackerConfig,
@@ -168,6 +173,9 @@ def build_signal_filter_chain(
 
 
 def build_executor_config(signal_config) -> ExecutorConfig:
+    strategy_deployments = dict(
+        getattr(signal_config, "strategy_deployments", {}) or {}
+    )
     return ExecutorConfig(
         enabled=signal_config.auto_trade_enabled,
         min_confidence=signal_config.auto_trade_min_confidence,
@@ -206,6 +214,7 @@ def build_executor_config(signal_config) -> ExecutorConfig:
             sl_breakout=signal_config.regime_sl_breakout,
             sl_uncertain=signal_config.regime_sl_uncertain,
         ),
+        strategy_deployments=strategy_deployments,
     )
 
 
@@ -236,6 +245,9 @@ def build_signal_policy(signal_config) -> SignalPolicy:
         for session in signal_config.allowed_sessions.split(",")
         if session.strip()
     )
+    strategy_deployments = dict(
+        getattr(signal_config, "strategy_deployments", {}) or {}
+    )
     strategy_sessions = {
         strategy_name: tuple(
             normalize_session_name(session)
@@ -248,6 +260,11 @@ def build_signal_policy(signal_config) -> SignalPolicy:
         strategy_name: tuple(str(tf).strip().upper() for tf in tfs if str(tf).strip())
         for strategy_name, tfs in signal_config.strategy_timeframes.items()
     }
+    for strategy_name, deployment in strategy_deployments.items():
+        if deployment.locked_sessions:
+            strategy_sessions[strategy_name] = tuple(deployment.locked_sessions)
+        if deployment.locked_timeframes:
+            strategy_timeframes[strategy_name] = tuple(deployment.locked_timeframes)
     # 将 voting_group_configs（raw dicts）转换为 VotingGroupConfig 对象
     voting_groups = [
         VotingGroupConfig(
@@ -272,9 +289,35 @@ def build_signal_policy(signal_config) -> SignalPolicy:
         voting_disagreement_penalty=signal_config.voting_disagreement_penalty,
         strategy_sessions=strategy_sessions,
         strategy_timeframes=strategy_timeframes,
+        strategy_deployments=strategy_deployments,
         voting_groups=voting_groups,
         standalone_override=frozenset(signal_config.standalone_override),
     )
+
+
+def _validate_strategy_deployment_contracts(
+    signal_config: Any,
+    strategies: Mapping[str, Any],
+) -> dict[str, StrategyDeployment]:
+    deployments = validate_strategy_deployments(
+        deployments=getattr(signal_config, "strategy_deployments", {}) or {},
+        known_strategies=tuple(strategies.keys()),
+        strategy_timeframes_policy=getattr(signal_config, "strategy_timeframes", {}) or {},
+        strategy_sessions_policy=getattr(signal_config, "strategy_sessions", {}) or {},
+        regime_affinity_overrides=(
+            getattr(signal_config, "regime_affinity_overrides", {}) or {}
+        ),
+    )
+    # legacy default: 未声明部署合同的策略继续按 active 处理
+    for strategy_name in strategies:
+        deployments.setdefault(
+            strategy_name,
+            StrategyDeployment(
+                name=strategy_name,
+                status=StrategyDeploymentStatus.ACTIVE,
+            ),
+        )
+    return deployments
 
 
 def build_signal_components(
@@ -367,6 +410,11 @@ def build_signal_components(
 
     # ── 应用配置化参数覆盖 ────────────────────────────────────────────
     _apply_strategy_config_overrides(signal_module, signal_config)
+    validated_deployments = _validate_strategy_deployment_contracts(
+        signal_config,
+        signal_module.strategies,
+    )
+    signal_config.strategy_deployments = validated_deployments
 
     # ── HTF 配置从策略声明自动推导（替代 INI [strategy_htf]）──────────
     _htf_target_config = signal_module.htf_target_config()

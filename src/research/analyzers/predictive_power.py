@@ -29,11 +29,11 @@ from scipy import stats as scipy_stats
 
 from src.signals.evaluation.regime import RegimeType
 
-from ..config import OverfittingConfig, PredictivePowerConfig
-from ..data_matrix import DataMatrix
-from ..models import IndicatorPredictiveResult, RollingICResult
-from ..overfitting import benjamini_hochberg_fdr, check_significance
-from ..statistics import (
+from ..core.config import OverfittingConfig, PredictivePowerConfig
+from ..core.data_matrix import DataMatrix
+from ..core.contracts import IndicatorPredictiveResult, RollingICResult
+from ..core.overfitting import benjamini_hochberg_fdr, check_significance
+from ..core.statistics import (
     auto_block_size,
     block_shuffle,
     effective_n_for_overlapping_windows,

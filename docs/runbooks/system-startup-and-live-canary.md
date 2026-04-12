@@ -101,6 +101,7 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 | 信号运行时 | `/health` | `signal_runtime.running=true` |
 | 入口日志 | `data/logs/*.log` | 日志文件创建在根目录 `data/logs/`，而不是 `src/` 下 |
 | 运行期本地文件 | `data/` | `events.db`、`signal_queue.db`、`health_monitor.db`、`health_alerts.db` 落在根目录 `data/`；其中部分文件可能在组件首轮写入后创建 |
+| 手工运行产物 | `data/artifacts/` | 回测 JSON、压测日志、启动排查输出统一放这里，不再使用根目录 `runtime/` |
 
 ### 4.2 失败条件
 
@@ -110,7 +111,8 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 2. `ingest_alive=false`、`writer_alive=false` 或 `event_loop_running=false`。
 3. 日志持续出现 schema/check constraint 错误、启动 `TypeError`、线程崩溃、事件循环接口错误。
 4. 运行期日志或 SQLite 文件重新落到 `src/` 下。
-5. `events.db` 视图长期不推进，同时 confirmed OHLC 已经在更新。
+5. 手工排障/压测/回测产物重新落到仓库根目录 `runtime/`。
+6. `events.db` 视图长期不推进，同时 confirmed OHLC 已经在更新。
 
 ### 4.3 PowerShell 版快速判读顺序
 

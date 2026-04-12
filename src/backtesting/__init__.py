@@ -16,9 +16,13 @@ from .models import (
     Recommendation,
     RecommendationStatus,
     SignalEvaluation,
+    SimulationMode,
     TradeRecord,
+    ValidationDecision,
+    ValidationDecisionReport,
 )
 from .optimization import ConfigApplicator, RecommendationEngine
+from .validation import attach_validation_decision, evaluate_promotion_validation
 
 __all__ = [
     "BacktestConfig",
@@ -32,6 +36,7 @@ __all__ = [
     "BacktestMetrics",
     "BacktestResult",
     "ConfigApplicator",
+    "SimulationMode",
     "ParamChange",
     "PortfolioTracker",
     "ParameterSpace",
@@ -40,4 +45,8 @@ __all__ = [
     "RecommendationStatus",
     "SignalEvaluation",
     "TradeRecord",
+    "ValidationDecision",
+    "ValidationDecisionReport",
+    "attach_validation_decision",
+    "evaluate_promotion_validation",
 ]

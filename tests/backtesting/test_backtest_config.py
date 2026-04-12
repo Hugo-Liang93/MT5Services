@@ -18,6 +18,7 @@ from src.backtesting.models import (
     FilterConfig,
     PositionConfig,
     RiskConfig,
+    SimulationMode,
 )
 
 
@@ -45,6 +46,7 @@ class TestGetBacktestDefaults:
         ini_content = """
 [backtest]
 default_initial_balance = 50000.0
+simulation_mode = execution_feasibility
 min_confidence = 0.70
 
 [filters]
@@ -64,6 +66,7 @@ bars_to_evaluate = 8
             result = get_backtest_defaults()
 
         assert result["initial_balance"] == 50000.0
+        assert result["simulation_mode"] == "execution_feasibility"
         assert result["min_confidence"] == 0.70
         assert result["filters_enabled"] is False
         assert result["filter_allowed_sessions"] == "asia,london"
@@ -84,6 +87,16 @@ class TestBacktestConfigFromFlat:
         )
         assert config.symbol == "XAUUSD"
         assert config.initial_balance == 20000.0
+
+    def test_simulation_mode_string_is_converted(self) -> None:
+        config = BacktestConfig.from_flat(
+            symbol="XAUUSD",
+            timeframe="M5",
+            start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2025, 2, 1, tzinfo=timezone.utc),
+            simulation_mode="execution_feasibility",
+        )
+        assert config.simulation_mode is SimulationMode.EXECUTION_FEASIBILITY
 
     def test_filter_fields_mapped(self) -> None:
         config = BacktestConfig.from_flat(

@@ -321,6 +321,13 @@ class RuntimePolicyCoordinator:
             if capability is None:
                 raise ValueError(f"unsupported signal strategy: {strategy}")
 
+            deployment = self._runtime.policy.get_strategy_deployment(strategy)
+            if deployment is not None and not deployment.allows_runtime_evaluation():
+                dropped_targets += 1
+                if len(dropped_samples) < 20:
+                    dropped_samples.append(f"{symbol}/{timeframe}:{strategy}")
+                continue
+
             allowed_timeframes = self._runtime.policy.strategy_timeframes.get(strategy, ())
             if allowed_timeframes:
                 allowed_set = {

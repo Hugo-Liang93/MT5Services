@@ -50,6 +50,24 @@
 13. **系统启动巡检与 live canary 已收口成独立 runbook**  
    已新增 `docs/runbooks/system-startup-and-live-canary.md`，把 `live_preflight`、启动后 5 分钟巡检、休盘/开盘日志判读、以及开盘窗口的系统级 live canary 步骤统一成一套固定流程。`entrypoint-map.md` 与 `docs/README.md` 已同步改为链接到该 runbook，避免启动入口文档和运行时文档再各自维护一套巡检说明。
 
+14. **回测已正式区分 `research` 与 `execution_feasibility` 两种执行语义**  
+   本轮没有拆分指标、策略、过滤或 regime/voting 内核，仍然复用同一套生产数据指标流；变化只发生在“信号如何转成可成交动作”这一层。`BacktestConfig` 新增 `simulation_mode`，CLI / API / `config/backtest.ini` 已能显式指定；`BacktestResult` 新增 `execution_summary`，会输出当前模式、accepted entries、rejected entries 与 rejection reasons。`research` 模式允许理论子最小手数仓位继续用于策略研究，`execution_feasibility` 模式则会在最小手数不可成交时明确拒单，避免再把研究回测误当成上线可执行性结论。
+
+15. **手工运行产物目录已收口到 `data/artifacts/`**  
+   根目录平级 `runtime/` 过去混放了回测 JSON、压测日志、启动排查 stdout/stderr 等人工执行产物，语义上与正式运行期目录 `data/` 并行，容易形成第二套“事实源”。本轮已把这类文件迁到 `data/artifacts/`，并在运行时流图/runbook 中明确：`data/` 是唯一运行期根目录，`data/artifacts/` 只承载手工回测、压测、排障输出，仓库根目录不再保留 `runtime/`。
+
+16. **Research feature → shared indicator 的半自动晋升链路已落地第一版**  
+   本轮新增了 `FeatureCandidateSpec / IndicatorPromotionDecision / FeaturePromotionReport`，并把 research feature registry 的元数据扩展为 `formula_summary / source_inputs / runtime_state_inputs / live_computable / compute_scope / bounded_lookback / strategy_roles / promotion_target_default`。`MiningRunner` 现在可直接输出 feature candidate 工件与 promotable 过滤结果；首个真实晋升指标 `momentum_consensus14` 已注册进 `config/indicators.json`，并接入 `structured_breakout_follow` 作为共享动量一致性确认因子。与此同时，回测验证报告已能携带 `feature_candidate_id / promoted_indicator_name / strategy_candidate_id / research_provenance`，用于把 research → indicator → strategy 的证据链真正串起来。
+
+17. **`src/research` 已按职责边界重组为 `core / analyzers / features / strategies / orchestration`**  
+   过去 `src/research` 顶层同时平铺 `runner.py`、`data_matrix.py`、`feature_candidates.py`、`candidates.py`、`models.py` 等文件，公共基础、feature 路径和 strategy 路径混在同一层，包边界不清晰。本轮已把公共基础能力收口到 `src/research/core/`，将 research feature / indicator promotion 路径收口到 `src/research/features/`，将 strategy candidate 发现收口到 `src/research/strategies/`，并把编排入口迁到 `src/research/orchestration/runner.py`。共享统计分析器仍保留在 `src/research/analyzers/`，避免按“指标版/策略版”复制两套证据引擎。
+
+18. **`docs/research-system.md` 已补齐 research 模块职责、流程和关键文件作用说明**  
+   在目录重组之后，`research-system.md` 已同步新增“模块职责总览”和“关键文件职责表”，明确写清 `orchestration / core / analyzers / features / strategies` 五层的输入、输出和边界，并把 research 的两条正式分支整理为“feature/indicator 晋升路径”和“strategy candidate 晋升路径”。这样后续再看 `src/research/*` 时，不需要再从代码倒推“谁负责编排、谁负责证据、谁负责候选工件”，减少继续演化时的边界漂移风险。
+
+19. **首个真实 promoted indicator 已接入受限 consumer strategy，并补齐 research / execution / WF 证据链**  
+   本轮没有继续把 `momentum_consensus14` 硬塞到休眠策略里，而是新增了 `structured_trend_h4_momentum` 作为 `StructuredTrendContinuation` 的受限变体：复用同一套结构化策略骨架，只在 `why` 层接入 `momentum_consensus14`，并通过 `strategy_deployment` 明确收口为 `paper_only + tf_specific + locked_timeframes=H1 + locked_sessions=london,new_york`。同时，`ValidationDecision` 已修正为支持 `research backtest result + execution_feasibility result` 双结果输入，不再混用一份回测结果承担两种语义；`walkforward_runner` 也已修复对旧字段 `is_result/oos_result` 的错误引用，并把 split 详情落盘。当前真实产物表明：该指标的 promotion 成立，但首个 downstream strategy consumer 结论仍为 `refit`，主因是研究回测样本不足、执行可行性下最小手数全部拒单，以及 WF 一致性仅 40%。
+
 本轮验证结果：
 
 - `pytest` 相关回归测试已通过，新增了事件循环接口、schema 初始化迁移、StorageWriter 生命周期、日志路径、经济日历时间上下文等测试。
@@ -63,6 +81,7 @@
   - `ingestion=ok`
   - `indicator_engine=ok`
 - 当前休盘场景下，系统线程存活与探针状态正常；仍存在 `market_data data latency critical` 告警，这属于休盘/无新鲜行情环境下的预期观测，不应与链路断裂混淆。
+- 回测结果口径已开始从单一“是否成交”改为显式区分“研究型回测”和“可执行性模拟”，后续 Paper Trading / Live Shadow 应继续沿用这套结果语义，而不是回到隐式兼容路径。
 
 仍需单独关注但不属于本轮代码阻塞项：
 
@@ -86,22 +105,22 @@
 
 ## 2. P0 风险
 
-### 2.1 `signal.local.ini` 仍是高优先级事实源，当前会冻结部分结构化策略
+### 2.1 `signal.local.ini` 仍是高优先级事实源，但结构化策略冻结方式已切换到正式部署合同
 
-**证据**：
-- 当前代码注册策略：`structured_trend_continuation`、`structured_trend_h4`、`structured_sweep_reversal`、`structured_breakout_follow`、`structured_range_reversion`、`structured_session_breakout`、`structured_trendline_touch`、`structured_lowbar_entry`。
-- 当前工作区存在被 `.gitignore` 忽略但会生效的 `config/signal.local.ini`。
-- 当前 local 文件已显式注明 `[voting_groups]` 清空，运行时 `cfg.voting_group_configs == []`。
-- 同时，`[regime_affinity.structured_session_breakout]` 与 `[regime_affinity.structured_lowbar_entry]` 被全部覆盖为 `0.0`，实际等同冻结。
+**当前状态**：
+- 当前代码注册策略仍是 8 个结构化策略实例。
+- `config/signal.local.ini` 依旧是高优先级事实源，仍可能改变本机有效策略集合。
+- 但“全部 `regime_affinity = 0` 即冻结”的隐式语义已退役，当前要求通过 `[strategy_deployment.<strategy>]` 显式声明 `candidate / paper_only / active_guarded / active`。
+- `structured_session_breakout` 与 `structured_lowbar_entry` 这类单 TF 候选，现已迁移为 `strategy_deployment` 合同，带 `locked_timeframes / locked_sessions / require_pending_entry / max_live_positions` 等护栏。
 
 **影响**：
 - local 覆盖不会出现在仓库默认配置中，但会直接改变本机运行时的有效策略集合。
 - 当前缺少“启动摘要/状态端点”来明确标出哪些策略被 local 配置冻结，人工排查时容易把“无交易”误判成策略逻辑问题。
 
-**建议**：
-- 在启动阶段输出 effective strategy summary：启用 TF、effective affinity、是否被冻结、是否支持 intrabar。
+**剩余建议**：
+- 在启动阶段输出 effective strategy summary：启用 TF、部署状态、是否 guarded、是否支持 intrabar。
 - 对 ignored local 配置提供只读诊断端点或 preflight 检查，避免“本机覆盖改变行为但 API 不可见”。
-- 若冻结是长期决策，应把结果同步进运行文档，而不是只留在本机 local 文件里。
+- 若策略长期停留在 `candidate / paper_only`，需要补对应的研究 provenance、回测与 paper 证据，而不是把状态长期留在 local 文件里。
 
 ### 2.2 生命周期防护已有改进，但仍是分散实现，缺统一约束
 
@@ -202,13 +221,18 @@
 - H1 只有 3 笔，不能支持任何稳健结论。
 - 当前最重要的策略任务不是继续堆功能，而是扩大样本、做 WF、跑 Paper Trading 对比。
 
-### 4.2 local 配置会冻结结构化策略，但运行时可见性不足
+### 4.2 单 TF 策略已进入正式 guarded 轨道，但研究闭环仍需继续补齐
 
-`config/signal.local.ini` 中对 `structured_session_breakout`、`structured_lowbar_entry` 有全 `0.0` affinity 覆盖，实际等同冻结。这可能是有意实验结果，但目前没有运行前摘要把“哪些策略被 local 覆盖冻结”暴露出来。
+当前 `tf_specific` 策略已经有正式部署合同与 live 护栏，避免了过去依赖 zero-affinity freeze 的隐式语义；但 research → candidate → structured strategy → backtest/WF/paper/live 的闭环仍处于第一阶段，尤其还缺：
+
+- 候选结果到正式结构化策略实现的批量晋升流程
+- 启动摘要中对 `candidate / paper_only / active_guarded` 的显式可视化
+- 基于真实 paper session 的自动晋升/降级台账
 
 **建议**：
-- 增加策略运行态摘要：`enabled_timeframes`、`effective_affinity`、`is_frozen_by_affinity`、`in_voting_group`。
-- Paper Trading/Backtest 输出中记录 active strategy set 的配置快照。
+- 增加策略运行态摘要：`enabled_timeframes`、`deployment_status`、`locked_sessions`、`is_guarded`、`in_voting_group`。
+- Paper Trading/Backtest 输出中记录 active strategy set 和 `research_provenance` 配置快照。
+- 继续把单 TF 候选的纸面证据转成可执行策略，而不是长期停留在“被识别但未落地”的状态。
 
 ---
 

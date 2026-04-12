@@ -158,6 +158,7 @@ def test_build_backtest_config_uses_defaults_and_overrides(
         "load_backtest_defaults",
         lambda: {
             "initial_balance": 15000.0,
+            "simulation_mode": "research",
             "max_positions": 4,
             "risk_percent": 2.5,
             "min_volume": 0.02,
@@ -184,6 +185,7 @@ def test_build_backtest_config_uses_defaults_and_overrides(
         timeframe="M5",
         start_time="2025-01-01",
         end_time="2025-01-31",
+        simulation_mode="execution_feasibility",
         risk_percent=1.2,
         max_volume_per_day=0.5,
         strategy_params={"ema_cross_fast": 12},
@@ -194,6 +196,7 @@ def test_build_backtest_config_uses_defaults_and_overrides(
     config = backtest_api.api_config.build_backtest_config(request)
 
     assert config.initial_balance == 15000.0
+    assert config.simulation_mode.value == "execution_feasibility"
     assert config.risk.max_positions == 4
     assert config.position.risk_percent == 1.2
     assert config.position.min_volume == 0.02
@@ -246,6 +249,35 @@ def test_run_optimization_job_summary_uses_default_optimizer_settings(
         summary = response.data["config_summary"]
         assert summary["search_mode"] == "random"
         assert summary["max_combinations"] == 77
+    finally:
+        _restore_state(store, orig_jobs, orig_results)
+
+
+def test_run_backtest_job_summary_uses_effective_simulation_mode(
+    backtest_api,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        backtest_api.api_config,
+        "load_backtest_defaults",
+        lambda: {"simulation_mode": "execution_feasibility"},
+    )
+    store = backtest_api.store
+    orig_jobs, orig_results = _snapshot_state(store)
+    try:
+        store.reset()
+        request = backtest_api.api_config.BacktestRunRequest(
+            symbol="XAUUSD",
+            timeframe="M5",
+            start_time="2025-01-01",
+            end_time="2025-01-31",
+        )
+
+        response = _run(backtest_api.jobs_routes.run_backtest(request, BackgroundTasks()))
+
+        assert response.success is True
+        summary = response.data["config_summary"]
+        assert summary["simulation_mode"] == "execution_feasibility"
     finally:
         _restore_state(store, orig_jobs, orig_results)
 

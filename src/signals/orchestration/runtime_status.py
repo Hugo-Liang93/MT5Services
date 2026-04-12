@@ -134,8 +134,11 @@ def _build_strategy_capability_execution_plan(
         if capability is None:
             reason = "capability_missing"
         else:
+            deployment = runtime.policy.get_strategy_deployment(strategy)
+            if deployment is not None and not deployment.allows_runtime_evaluation():
+                reason = "deployment_candidate"
             allowed = strategy_timeframes_policy.get(strategy, ())
-            if allowed and row["timeframe"] not in allowed:
+            if reason == "prefilter_excluded" and allowed and row["timeframe"] not in allowed:
                 reason = "strategy_timeframes_filtered"
         filtered_reason_counts[reason] = filtered_reason_counts.get(reason, 0) + 1
         filtered_targets.append(
@@ -361,6 +364,10 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
         for entry in capability_contract
         if entry.get("name")
     }
+    strategy_deployments = {
+        name: deployment.to_dict()
+        for name, deployment in runtime.policy.strategy_deployments.items()
+    }
     scheduled_target_count = sum(len(strategies) for strategies in runtime._target_index.values())
 
     return {
@@ -377,6 +384,7 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
             name: list(sessions)
             for name, sessions in runtime.policy.strategy_sessions.items()
         },
+        "strategy_deployments": strategy_deployments,
         "market_structure_enabled": market_structure_enabled,
         "market_structure_cache_entries": (
             runtime._market_structure_analyzer.cache_entries

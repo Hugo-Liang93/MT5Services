@@ -22,6 +22,11 @@ def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
     return (
         StructuredTrendContinuation(),
         StructuredTrendContinuation(name="structured_trend_h4", htf="H4"),
+        StructuredTrendContinuation(
+            name="structured_trend_h4_momentum",
+            htf="H4",
+            use_momentum_consensus=True,
+        ),
         StructuredSweepReversal(),
         StructuredBreakoutFollow(),
         StructuredRangeReversion(),

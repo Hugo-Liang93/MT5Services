@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable
 import numpy as np
 
 from .base import get_float, get_int, sanitize_result, tail_bars
+from .momentum import macd, rsi, stoch_rsi
 
 
 def di_spread(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
@@ -187,6 +188,64 @@ def momentum_accel(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
             result["roc_accel"] = round(roc_d1_cur - roc_d1_prev, 4)
 
     return sanitize_result(result) if result else {}
+
+
+def momentum_consensus(bars: Iterable, params: Dict[str, Any]) -> Dict[str, float]:
+    """动量一致性：融合 MACD / RSI / Stoch RSI 的方向投票。
+
+    输出：
+      momentum_consensus: [-1, 1]，3 个子信号方向投票的平均值
+      bullish_votes: 0~3
+      bearish_votes: 0~3
+    """
+    fast = get_int(params, "macd_fast", default=12)
+    slow = get_int(params, "macd_slow", default=26)
+    signal = get_int(params, "macd_signal", default=9)
+    rsi_period = get_int(params, "rsi_period", default=14)
+    stoch_period = get_int(params, "stoch_period", default=14)
+    smooth_k = get_int(params, "smooth_k", default=3)
+    smooth_d = get_int(params, "smooth_d", default=3)
+    min_bars = get_int(params, "min_bars", default=50)
+
+    window = tail_bars(bars, max(min_bars, slow + signal + 15, rsi_period * 3 + stoch_period + smooth_k + smooth_d))
+    if len(window) < min_bars:
+        return {}
+
+    macd_result = macd(
+        window,
+        {"fast": fast, "slow": slow, "signal": signal},
+    )
+    rsi_result = rsi(window, {"period": rsi_period})
+    stoch_result = stoch_rsi(
+        window,
+        {
+            "rsi_period": rsi_period,
+            "stoch_period": stoch_period,
+            "smooth_k": smooth_k,
+            "smooth_d": smooth_d,
+        },
+    )
+    hist = macd_result.get("hist")
+    rsi_value = rsi_result.get("rsi")
+    stoch_value = stoch_result.get("stoch_rsi_k")
+    if hist is None or rsi_value is None or stoch_value is None:
+        return {}
+
+    votes = [
+        1.0 if float(hist) > 0 else -1.0 if float(hist) < 0 else 0.0,
+        1.0 if float(rsi_value) > 50.0 else -1.0 if float(rsi_value) < 50.0 else 0.0,
+        1.0 if float(stoch_value) > 50.0 else -1.0 if float(stoch_value) < 50.0 else 0.0,
+    ]
+    consensus = sum(votes) / 3.0
+    bullish_votes = sum(1 for vote in votes if vote > 0)
+    bearish_votes = sum(1 for vote in votes if vote < 0)
+    return sanitize_result(
+        {
+            "momentum_consensus": round(consensus, 4),
+            "bullish_votes": float(bullish_votes),
+            "bearish_votes": float(bearish_votes),
+        }
+    )
 
 
 def _compute_rsi_series(closes: list, period: int) -> list:

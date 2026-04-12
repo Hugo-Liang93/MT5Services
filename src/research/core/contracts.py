@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 # ── 通用 ────────────────────────────────────────────────────────
@@ -250,6 +251,222 @@ class Finding:
             "confidence": self.confidence_level,
             "significance_score": round(self.significance_score, 4),
             "action": self.action,
+        }
+
+
+class RobustnessTier(str, Enum):
+    ROBUST = "robust"
+    TF_SPECIFIC = "tf_specific"
+    DIVERGENT = "divergent"
+
+
+class PromotionDecision(str, Enum):
+    REJECT = "reject"
+    REFIT = "refit"
+    PAPER_ONLY = "paper_only"
+    ACTIVE_GUARDED = "active_guarded"
+    ACTIVE = "active"
+
+
+class IndicatorPromotionDecision(str, Enum):
+    REJECT = "reject"
+    REFIT = "refit"
+    RESEARCH_ONLY = "research_only"
+    PROMOTE_INDICATOR = "promote_indicator"
+    PROMOTE_INDICATOR_AND_STRATEGY_CANDIDATE = (
+        "promote_indicator_and_strategy_candidate"
+    )
+
+
+@dataclass(frozen=True)
+class CandidateRuleCondition:
+    role: str  # why | when | where
+    indicator: str
+    field: str
+    operator: str
+    threshold: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "role": self.role,
+            "indicator": self.indicator,
+            "field": self.field,
+            "operator": self.operator,
+            "threshold": round(self.threshold, 4),
+        }
+
+
+@dataclass(frozen=True)
+class CandidateEvidence:
+    evidence_type: str  # predictive_power | threshold | rule_mining
+    timeframe: str
+    summary: str
+    direction: Optional[str] = None
+    regime: Optional[str] = None
+    detail: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "evidence_type": self.evidence_type,
+            "timeframe": self.timeframe,
+            "summary": self.summary,
+            "direction": self.direction,
+            "regime": self.regime,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class FeatureCandidateSpec:
+    candidate_id: str
+    symbol: str
+    target_timeframe: str
+    allowed_timeframes: Tuple[str, ...]
+    feature_name: str
+    formula_summary: str
+    dependencies: Tuple[str, ...]
+    runtime_state_inputs: Tuple[str, ...]
+    live_computable: bool
+    compute_scope: str
+    robustness_tier: RobustnessTier
+    direction_hint: Optional[str]
+    strategy_roles: Tuple[str, ...]
+    evidence: Tuple[CandidateEvidence, ...] = field(default_factory=tuple)
+    validation_gates: Dict[str, Any] = field(default_factory=dict)
+    promotion_decision: IndicatorPromotionDecision = (
+        IndicatorPromotionDecision.RESEARCH_ONLY
+    )
+    research_provenance: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "symbol": self.symbol,
+            "target_timeframe": self.target_timeframe,
+            "allowed_timeframes": list(self.allowed_timeframes),
+            "feature_name": self.feature_name,
+            "formula_summary": self.formula_summary,
+            "dependencies": list(self.dependencies),
+            "runtime_state_inputs": list(self.runtime_state_inputs),
+            "live_computable": self.live_computable,
+            "compute_scope": self.compute_scope,
+            "robustness_tier": self.robustness_tier.value,
+            "direction_hint": self.direction_hint,
+            "strategy_roles": list(self.strategy_roles),
+            "evidence": [item.to_dict() for item in self.evidence],
+            "validation_gates": dict(self.validation_gates),
+            "promotion_decision": self.promotion_decision.value,
+            "research_provenance": self.research_provenance,
+        }
+
+
+@dataclass(frozen=True)
+class StrategyCandidateSpec:
+    candidate_id: str
+    symbol: str
+    target_timeframe: str
+    allowed_timeframes: Tuple[str, ...]
+    source_run_ids: Tuple[str, ...]
+    robustness_tier: RobustnessTier
+    promotion_decision: PromotionDecision
+    key_indicator: str
+    regime: Optional[str]
+    direction: Optional[str]
+    why_conditions: Tuple[CandidateRuleCondition, ...] = field(default_factory=tuple)
+    when_conditions: Tuple[CandidateRuleCondition, ...] = field(default_factory=tuple)
+    where_conditions: Tuple[CandidateRuleCondition, ...] = field(default_factory=tuple)
+    thresholds: Dict[str, float] = field(default_factory=dict)
+    dominant_sessions: Tuple[str, ...] = field(default_factory=tuple)
+    evidence_types: Tuple[str, ...] = field(default_factory=tuple)
+    evidence: Tuple[CandidateEvidence, ...] = field(default_factory=tuple)
+    validation_gates: Dict[str, Any] = field(default_factory=dict)
+    decision_reason: str = ""
+    research_provenance: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "symbol": self.symbol,
+            "target_timeframe": self.target_timeframe,
+            "allowed_timeframes": list(self.allowed_timeframes),
+            "source_run_ids": list(self.source_run_ids),
+            "robustness_tier": self.robustness_tier.value,
+            "promotion_decision": self.promotion_decision.value,
+            "key_indicator": self.key_indicator,
+            "regime": self.regime,
+            "direction": self.direction,
+            "why_conditions": [item.to_dict() for item in self.why_conditions],
+            "when_conditions": [item.to_dict() for item in self.when_conditions],
+            "where_conditions": [item.to_dict() for item in self.where_conditions],
+            "thresholds": {
+                key: round(value, 4) for key, value in self.thresholds.items()
+            },
+            "dominant_sessions": list(self.dominant_sessions),
+            "evidence_types": list(self.evidence_types),
+            "evidence": [item.to_dict() for item in self.evidence],
+            "validation_gates": dict(self.validation_gates),
+            "decision_reason": self.decision_reason,
+            "research_provenance": self.research_provenance,
+        }
+
+
+@dataclass(frozen=True)
+class CandidateDiscoveryResult:
+    symbol: str
+    timeframes: Tuple[str, ...]
+    candidate_specs: Tuple[StrategyCandidateSpec, ...]
+    cross_tf_analysis: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "timeframes": list(self.timeframes),
+            "candidate_specs": [spec.to_dict() for spec in self.candidate_specs],
+            "cross_tf_analysis": dict(self.cross_tf_analysis),
+        }
+
+
+@dataclass(frozen=True)
+class FeatureCandidateDiscoveryResult:
+    symbol: str
+    timeframes: Tuple[str, ...]
+    feature_candidates: Tuple[FeatureCandidateSpec, ...]
+    cross_tf_analysis: Dict[str, Any] = field(default_factory=dict)
+    registry_inventory: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "timeframes": list(self.timeframes),
+            "feature_candidates": [
+                spec.to_dict() for spec in self.feature_candidates
+            ],
+            "cross_tf_analysis": dict(self.cross_tf_analysis),
+            "registry_inventory": dict(self.registry_inventory),
+        }
+
+
+@dataclass(frozen=True)
+class FeaturePromotionReport:
+    candidate_id: str
+    feature_name: str
+    promoted_indicator_name: Optional[str]
+    promotion_decision: IndicatorPromotionDecision
+    strategy_candidates: Tuple[str, ...] = field(default_factory=tuple)
+    validation_summary: Dict[str, Any] = field(default_factory=dict)
+    research_provenance: Optional[str] = None
+    lineage: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "feature_name": self.feature_name,
+            "promoted_indicator_name": self.promoted_indicator_name,
+            "promotion_decision": self.promotion_decision.value,
+            "strategy_candidates": list(self.strategy_candidates),
+            "validation_summary": dict(self.validation_summary),
+            "research_provenance": self.research_provenance,
+            "lineage": dict(self.lineage),
         }
 
 

@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pytest
 
 from src.research.analyzers.threshold import analyze_thresholds
-from src.research.config import OverfittingConfig, ThresholdSweepConfig
-from src.research.data_matrix import DataMatrix
+from src.research.core.config import OverfittingConfig, ThresholdSweepConfig
+from src.research.core.data_matrix import DataMatrix
 from src.signals.evaluation.regime import RegimeType
 
 

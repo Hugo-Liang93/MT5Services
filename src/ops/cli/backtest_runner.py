@@ -23,9 +23,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 # 确保项目根目录在 sys.path 中
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import warnings
 
@@ -46,6 +49,7 @@ def _run_single(
     end: str,
     *,
     config_overrides: Optional[Dict[str, Any]] = None,
+    strategy_names: Optional[List[str]] = None,
 ) -> dict:
     """执行单个 TF 回测，返回结构化结果 dict。
 
@@ -108,7 +112,7 @@ def _run_single(
     )
 
     # 5. 构建组件并运行
-    components = build_backtest_components()
+    components = build_backtest_components(strategy_names=strategy_names)
     engine = BacktestEngine(
         config=config,
         data_loader=components["data_loader"],
@@ -193,6 +197,7 @@ def _run_single(
         "tf": tf,
         "start": start,
         "end": end,
+        "run_id": result.run_id,
         "config_summary": config_summary,
         "metrics": {
             "trades": m.total_trades,
@@ -220,6 +225,13 @@ def _run_single(
         "regime_strategy": regime_strategy,
         "monte_carlo": result.monte_carlo_result,
         "filter_stats": result.filter_stats,
+        "execution_summary": result.execution_summary,
+        "validation_decision": (
+            result.validation_decision.to_dict()
+            if result.validation_decision is not None
+            else None
+        ),
+        "_raw_result": result,
     }
 
 
@@ -475,6 +487,27 @@ def main() -> None:
     parser.add_argument("--commission", type=float, default=None, help="Override commission_per_lot")
     parser.add_argument("--slippage", type=float, default=None, help="Override slippage_points")
     parser.add_argument("--show-config", action="store_true", help="Show config summary for each TF")
+    parser.add_argument(
+        "--strategies",
+        default=None,
+        help="Only run these registered strategies, comma-separated",
+    )
+    parser.add_argument(
+        "--simulation-mode",
+        default=None,
+        choices=["research", "execution_feasibility"],
+        help="Backtest execution semantics",
+    )
+    parser.add_argument(
+        "--json-output",
+        default=None,
+        help="Write structured result payload to JSON file",
+    )
+    parser.add_argument(
+        "--no-auto-backfill",
+        action="store_true",
+        help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
+    )
     args = parser.parse_args()
 
     # 构建 CLI overrides（仅覆盖显式传入的参数）
@@ -494,15 +527,41 @@ def main() -> None:
         overrides["slippage_points"] = args.slippage
     if args.monte_carlo:
         overrides["monte_carlo_enabled"] = True
+    if args.simulation_mode is not None:
+        overrides["simulation_mode"] = args.simulation_mode
 
     timeframes = [t.strip().upper() for t in args.tf.split(",")]
+    strategy_names = (
+        [name.strip() for name in args.strategies.split(",") if name.strip()]
+        if args.strategies
+        else None
+    )
+    from src.ops.cli._coverage import ensure_ohlc_data_coverage
+
+    coverage = ensure_ohlc_data_coverage(
+        symbol="XAUUSD",
+        timeframes=timeframes,
+        start=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
+        end=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
+        auto_backfill=not args.no_auto_backfill,
+    )
     render_fn = TEMPLATES.get(args.template, _render_default)
 
     all_results: List[dict] = []
+    raw_results: List[dict] = []
     for tf in timeframes:
         sys.stderr.write(f"Running {tf}...\n")
         sys.stderr.flush()
-        data = _run_single(tf, args.start, args.end, config_overrides=overrides)
+        data = _run_single(
+            tf,
+            args.start,
+            args.end,
+            config_overrides=overrides,
+            strategy_names=strategy_names,
+        )
+        raw_result = data.pop("_raw_result", None)
+        if raw_result is not None:
+            raw_results.append(raw_result.to_dict())
         all_results.append(data)
 
         if not args.compare:
@@ -516,6 +575,21 @@ def main() -> None:
         print(_render_compare(all_results))
     elif args.compare and len(all_results) == 1:
         print(render_fn(all_results[0]))
+
+    if args.json_output:
+        import json
+
+        output_path = Path(args.json_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "symbol": "XAUUSD",
+            "coverage": {tf: info.to_dict() for tf, info in coverage.items()},
+            "strategies": strategy_names or [],
+            "results": all_results,
+            "raw_results": raw_results,
+        }
+        with output_path.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
 
     sys.stderr.write("Done.\n")
 

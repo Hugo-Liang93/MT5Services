@@ -90,6 +90,7 @@ logs/
 *.prof
 *.line_profiler
 .codex-run/
+.codex-tree.json
 
 # Local databases and runtime state
 *.sqlite

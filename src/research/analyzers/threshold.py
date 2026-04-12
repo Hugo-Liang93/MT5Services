@@ -17,11 +17,15 @@ from typing import List, Optional, Tuple
 
 from src.signals.evaluation.regime import RegimeType
 
-from ..config import OverfittingConfig, ThresholdSweepConfig
-from ..data_matrix import DataMatrix
-from ..models import ThresholdPoint, ThresholdSweepResult
-from ..overfitting import TimeSeriesFold, compute_cv_consistency, time_series_cv_splits
-from ..statistics import auto_block_size, block_shuffle
+from ..core.config import OverfittingConfig, ThresholdSweepConfig
+from ..core.data_matrix import DataMatrix
+from ..core.contracts import ThresholdPoint, ThresholdSweepResult
+from ..core.overfitting import (
+    TimeSeriesFold,
+    compute_cv_consistency,
+    time_series_cv_splits,
+)
+from ..core.statistics import auto_block_size, block_shuffle
 
 import random
 

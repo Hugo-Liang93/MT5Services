@@ -508,6 +508,29 @@
       "display": true
     },
     {
+      "name": "momentum_consensus14",
+      "func_path": "src.indicators.core.composite.momentum_consensus",
+      "params": {
+        "macd_fast": 12,
+        "macd_slow": 26,
+        "macd_signal": 9,
+        "rsi_period": 14,
+        "stoch_period": 14,
+        "smooth_k": 3,
+        "smooth_d": 3,
+        "min_bars": 50
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "description": "动量一致性投票指标，融合 MACD/RSI/Stoch RSI 的 bar-close 方向共识",
+      "tags": [
+        "momentum",
+        "trend",
+        "composite"
+      ],
+      "display": true
+    },
+    {
       "name": "candle_pattern",
       "func_path": "src.indicators.core.candlestick.candlestick_patterns",
       "params": {

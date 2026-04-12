@@ -28,6 +28,7 @@ def build_backtest_components(
     strategy_params: Optional[Dict[str, Any]] = None,
     regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
     strategy_params_per_tf: Optional[Dict[str, Dict[str, Any]]] = None,
+    strategy_names: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     """构建回测所需的全部组件。
 
@@ -37,6 +38,7 @@ def build_backtest_components(
         strategy_params: 策略参数覆盖（signal.ini [strategy_params] 格式）
         regime_affinity_overrides: Regime 亲和度覆盖
         strategy_params_per_tf: Per-TF 策略参数覆盖（signal.ini [strategy_params.<TF>] 格式）
+        strategy_names: 仅注册这些策略；None = 默认全量策略目录
 
     Returns:
         包含 data_loader / signal_module / pipeline / regime_detector /
@@ -50,7 +52,10 @@ def build_backtest_components(
     from src.persistence.repositories.market_repo import MarketRepository
     from src.signals.evaluation.regime import MarketRegimeDetector
     from src.signals.service import SignalModule
-    from src.signals.strategies.catalog import build_default_strategy_set
+    from src.signals.strategies.catalog import (
+        build_default_strategy_set,
+        clone_registered_strategies,
+    )
     from src.signals.strategies.htf_cache import HTFStateCache
 
     from .data.loader import (
@@ -118,7 +123,11 @@ def build_backtest_components(
 
     signal_module = SignalModule(
         indicator_source=_NullIndicatorSource(),
-        strategies=build_default_strategy_set(),
+        strategies=(
+            clone_registered_strategies(strategy_names)
+            if strategy_names
+            else build_default_strategy_set()
+        ),
         regime_detector=regime_detector,
         soft_regime_enabled=True,
         performance_tracker=performance_tracker,

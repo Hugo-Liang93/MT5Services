@@ -176,6 +176,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         strategy_timeframes=strategy_timeframes,
         strategy_sessions=strategy_sessions,
         initial_balance=args.balance,
+        simulation_mode=(
+            args.simulation_mode or ini_defaults.get("simulation_mode", "research")
+        ),
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
         filters_enabled=not args.no_filters,
@@ -310,6 +313,9 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         strategy_timeframes=strategy_timeframes,
         strategy_sessions=strategy_sessions,
         initial_balance=args.balance,
+        simulation_mode=(
+            args.simulation_mode or ini_defaults.get("simulation_mode", "research")
+        ),
         min_confidence=args.min_confidence,
         warmup_bars=args.warmup,
         commission_per_lot=ini_defaults.get("commission_per_lot", 0.0),
@@ -398,6 +404,10 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
                 strategy_timeframes=strategy_timeframes,
                 strategy_sessions=strategy_sessions,
                 initial_balance=args.balance,
+                simulation_mode=(
+                    args.simulation_mode
+                    or ini_defaults.get("simulation_mode", "research")
+                ),
                 min_confidence=args.min_confidence,
                 warmup_bars=args.warmup,
                 filters_enabled=not args.no_filters,
@@ -470,6 +480,8 @@ def main() -> None:
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     # docstring removed during encoding normalization
+    from .models import SimulationMode
+
     parser.add_argument("--symbol", required=True, help=" (?XAUUSD)")
     parser.add_argument("--timeframe", required=True, help=" (?M5)")
     parser.add_argument("--start", required=True, help=" (YYYY-MM-DD)")
@@ -481,6 +493,13 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=0.55,
         help=" (: 0.55)",
+    )
+    parser.add_argument(
+        "--simulation-mode",
+        type=str,
+        default=None,
+        choices=[mode.value for mode in SimulationMode],
+        help="Execution semantics: research or execution_feasibility",
     )
     parser.add_argument("--warmup", type=int, default=200, help=" bar  (: 200)")
     parser.add_argument(

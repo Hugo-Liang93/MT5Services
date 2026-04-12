@@ -550,6 +550,9 @@ def transition_and_publish(
             armed_metadata[MK.STRATEGY_CATEGORY] = getattr(
                 strategy_obj, "category", ""
             )
+        deployment = runtime.policy.get_strategy_deployment(decision.strategy)
+        if deployment is not None:
+            armed_metadata[MK.STRATEGY_DEPLOYMENT] = deployment.to_dict()
         armed_signal_id = uuid4().hex[:12]
         # 持久化 coordinator armed 决策
         runtime.service.persist_decision(
@@ -572,6 +575,9 @@ def transition_and_publish(
         transition_metadata[MK.STRATEGY_CATEGORY] = getattr(
             strategy_obj, "category", ""
         )
+    deployment = runtime.policy.get_strategy_deployment(decision.strategy)
+    if deployment is not None:
+        transition_metadata[MK.STRATEGY_DEPLOYMENT] = deployment.to_dict()
 
     if decision.strategy in runtime._voting_group_members:
         return

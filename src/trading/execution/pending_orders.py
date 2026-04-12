@@ -261,6 +261,68 @@ def open_positions_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
     return position_count + pending_count
 
 
+def open_positions_for_strategy(
+    executor: "TradeExecutor",
+    *,
+    symbol: str,
+    strategy: str,
+) -> int:
+    tracked_count = 0
+    if executor.position_manager is not None:
+        try:
+            tracked = [
+                row
+                for row in executor.position_manager.active_positions()
+                if row.get("symbol") == symbol and row.get("strategy") == strategy
+            ]
+            tracked_count = len(tracked)
+        except (TypeError, AttributeError):
+            logger.debug(
+                "Failed to count tracked strategy positions for %s/%s",
+                symbol,
+                strategy,
+                exc_info=True,
+            )
+
+    live_count = 0
+    try:
+        rows = executor.trading.get_positions(symbol=symbol)
+        live_count = sum(
+            1
+            for row in list(rows or [])
+            if str(row_value(row, "strategy", "") or "").strip() == strategy
+        )
+    except Exception:
+        live_count = 0
+
+    pending_count = 0
+    if executor.pending_manager is not None:
+        try:
+            contexts_fn = getattr(
+                executor.pending_manager, "active_execution_contexts", None
+            )
+            if callable(contexts_fn):
+                entries = list(contexts_fn() or [])
+            else:
+                status = executor.pending_manager.status()
+                entries = list(status.get("entries", []) or [])
+            pending_count = sum(
+                1
+                for row in entries
+                if row.get("symbol") == symbol and row.get("strategy") == strategy
+            )
+        except Exception:
+            pending_count = 0
+            logger.debug(
+                "Failed to count pending strategy entries for %s/%s",
+                symbol,
+                strategy,
+                exc_info=True,
+            )
+
+    return max(tracked_count, live_count) + pending_count
+
+
 def _pending_entries_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
     """统计指定品种的活跃挂单数量。"""
     if executor.pending_manager is None:
