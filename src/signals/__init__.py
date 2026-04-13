@@ -1,20 +1,6 @@
-from .evaluation.regime import RegimeType
-from .models import SignalContext, SignalDecision, SignalEvent, SignalRecord
-from .orchestration import RuntimeSignalState, SignalPolicy, SignalRuntime, SignalTarget
-from .service import SignalModule
-from .tracking.repository import SignalRepository, TimescaleSignalRepository
+"""Signals package.
 
-__all__ = [
-    "RegimeType",
-    "RuntimeSignalState",
-    "SignalContext",
-    "SignalDecision",
-    "SignalEvent",
-    "SignalModule",
-    "SignalPolicy",
-    "SignalRecord",
-    "SignalRepository",
-    "SignalRuntime",
-    "SignalTarget",
-    "TimescaleSignalRepository",
-]
+内部调用方应直接从具体子模块导入，避免顶层包继续聚合运行时与编排依赖。
+"""
+
+__all__: list[str] = []

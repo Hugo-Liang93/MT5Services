@@ -21,7 +21,7 @@ from src.market import MarketDataService
 from src.market_structure import MarketStructureAnalyzer
 from src.readmodels.runtime import RuntimeReadModel
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
-from src.signals.orchestration import SignalRuntime
+from src.signals.orchestration.runtime import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.strategies.htf_cache import HTFStateCache
@@ -35,7 +35,6 @@ from .view_models import (
     RegimeReportView,
     SignalRuntimeSummaryView,
     TrackedPositionsView,
-    VotingStatsView,
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -123,21 +122,6 @@ def get_market_structure(
     )
 
 
-@router.get("/voting/stats", response_model=ApiResponse[VotingStatsView])
-def voting_stats(
-    runtime: SignalRuntime = Depends(get_signal_runtime),
-) -> ApiResponse[Dict[str, object]]:
-    voting_info = runtime.get_voting_info()
-    regime_stability = runtime.get_regime_stability_map()
-    return ApiResponse.success_response(
-        data={
-            "voting_enabled": voting_info.get("voting_enabled", False),
-            "voting_config": voting_info.get("voting_config"),
-            "regime_stability": regime_stability,
-        }
-    )
-
-
 @router.get("/htf/cache", response_model=ApiResponse[HTFCacheStatusView])
 def htf_cache_status(
     htf_cache: HTFStateCache = Depends(get_htf_cache),
@@ -174,18 +158,6 @@ async def get_performance_tracker_status(
     perf: StrategyPerformanceTracker = Depends(get_performance_tracker),
 ) -> ApiResponse[dict]:
     return ApiResponse.success_response(data=perf.describe())
-
-
-@router.get(
-    "/voting/describe",
-    response_model=ApiResponse[list],
-    summary="当前投票组配置和状态",
-)
-async def get_voting_describe(
-    runtime: SignalRuntime = Depends(get_signal_runtime),
-) -> ApiResponse[list]:
-    groups = runtime.describe_voting()
-    return ApiResponse.success_response(data=groups)
 
 
 @router.get(

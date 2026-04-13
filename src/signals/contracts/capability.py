@@ -19,7 +19,6 @@ class StrategyCapability:
     needed_indicators: tuple[str, ...]
     needs_intrabar: bool
     needs_htf: bool
-    voting_group_policy: str
     regime_affinity: dict[str, float]
     htf_requirements: dict[str, str]
 
@@ -32,7 +31,6 @@ class StrategyCapability:
             needed_indicators=tuple(str(item) for item in raw.get("needed_indicators", ())),
             needs_intrabar=bool(raw.get("needs_intrabar")),
             needs_htf=bool(raw.get("needs_htf")),
-            voting_group_policy=str(raw.get("voting_group_policy") or "standalone"),
             regime_affinity=dict(raw.get("regime_affinity") or {}),
             htf_requirements=dict(raw.get("htf_requirements") or {}),
         )
@@ -49,7 +47,6 @@ class StrategyCapability:
             "needed_indicators": list(self.needed_indicators),
             "needs_intrabar": bool(self.needs_intrabar),
             "needs_htf": bool(self.needs_htf),
-            "voting_group_policy": self.voting_group_policy,
             "regime_affinity": dict(self.regime_affinity),
             "htf_requirements": dict(self.htf_requirements),
         }

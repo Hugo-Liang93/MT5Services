@@ -665,14 +665,24 @@ class TradingFlowTraceReadModel:
     ) -> str | None:
         if last_event is not None:
             details = last_event.get("details") or {}
-            for key in ("reason", "skip_reason", "category"):
-                value = str(details.get(key) or "").strip()
-                if value:
-                    return value
+            if extracted := TradingFlowTraceReadModel._extract_reason_from_mapping(details):
+                return extracted
         for row in reversed(list(pipeline_events)):
             payload = row.get("payload") or {}
-            for key in ("reason", "skip_reason", "category"):
-                value = str(payload.get(key) or "").strip()
+            if extracted := TradingFlowTraceReadModel._extract_reason_from_mapping(payload):
+                return extracted
+        return None
+
+    @staticmethod
+    def _extract_reason_from_mapping(payload: dict[str, Any]) -> str | None:
+        for key in ("reason", "skip_reason", "category", "skip_category"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        nested = payload.get("result")
+        if isinstance(nested, dict):
+            for key in ("reason", "skip_reason", "category", "skip_category"):
+                value = str(nested.get(key) or "").strip()
                 if value:
                     return value
         return None

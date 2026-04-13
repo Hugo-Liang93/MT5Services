@@ -269,29 +269,7 @@ def map_regime_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
     ], "approved", "Regime 研判中", metrics=metrics)
 
 
-# ── 4. voter ← SignalRuntime ──────────────────────────────────
-
-
-def map_voter(runtime_status: dict[str, Any]) -> dict[str, Any]:
-    running = runtime_status.get("running", False)
-    if not running:
-        return build_agent("voter", "disconnected", "运行时未启动", alert_level="error")
-
-    voting_groups: list[dict[str, Any]] = runtime_status.get("voting_groups", [])
-
-    metrics: dict[str, Any] = {
-        "processed_events": runtime_status.get("processed_events", 0),
-        "dropped_events": runtime_status.get("dropped_events", 0),
-        "active_confirmed": runtime_status.get("active_confirmed_states", 0),
-        "voting_groups": voting_groups,
-    }
-
-    return resolve_status("voter", [
-        (metrics["active_confirmed"] > 0, "working", "投票进行中", "none"),
-    ], "idle", "等待策略信号", metrics=metrics)
-
-
-# ── 5. risk_officer ← TradeExecutor ────────────────────────────
+# ── 4. risk_officer ← TradeExecutor ────────────────────────────
 
 
 def map_risk_officer(
@@ -328,7 +306,7 @@ def map_risk_officer(
     ], "idle", "等待信号", metrics=metrics)
 
 
-# ── 6. trader ← TradeExecutor ─────────────────────────────────
+# ── 5. trader ← TradeExecutor ─────────────────────────────────
 
 
 def map_trader(
@@ -380,7 +358,7 @@ def map_trader(
     return build_agent("trader", "idle", "等待信号", metrics=metrics)
 
 
-# ── 7. position_manager ← PositionManager ─────────────────────
+# ── 6. position_manager ← PositionManager ─────────────────────
 
 
 def map_position_manager(
@@ -410,7 +388,7 @@ def map_position_manager(
     return build_agent("position_manager", "working", "持仓监控中", metrics=metrics, alert_level=alert)
 
 
-# ── 8. accountant ← TradingModule ─────────────────────────────
+# ── 7. accountant ← TradingModule ─────────────────────────────
 
 
 def map_accountant(
@@ -448,7 +426,7 @@ def map_accountant(
     ], "working", "账务正常", metrics=metrics)
 
 
-# ── 9. calendar_reporter ← EconomicCalendarService ────────────
+# ── 8. calendar_reporter ← EconomicCalendarService ────────────
 
 
 def map_calendar_reporter(
@@ -482,7 +460,7 @@ def map_calendar_reporter(
     ], "working", "日历监控中", metrics=metrics)
 
 
-# ── 10. inspector ← HealthMonitor ─────────────────────────────
+# ── 9. inspector ← HealthMonitor ─────────────────────────────
 
 
 def map_backtester(backtest_status: dict[str, Any]) -> dict[str, Any]:

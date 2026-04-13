@@ -12,7 +12,8 @@ from src.clients.economic_calendar import (
 )
 from src.clients.economic_calendar_registry import ProviderRegistry
 from src.config import EconomicConfig, load_mt5_settings
-from src.trading import TradingAccountRegistry, TradingModule
+from src.trading.application.module import TradingModule
+from src.trading.runtime.registry import TradingAccountRegistry
 
 logger = logging.getLogger(__name__)
 

@@ -14,7 +14,7 @@ from src.api.schemas import (
     TradingAccountModel,
 )
 from src.clients.base import MT5TradeError
-from src.trading.application import TradingQueryService
+from src.trading.application.services import TradingQueryService
 
 from .common import order_model_from_dataclass, position_model_from_dataclass
 

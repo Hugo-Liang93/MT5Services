@@ -19,12 +19,13 @@ import pytest
 
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext, SignalDecision, SignalEvent
-from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
+from src.signals.orchestration.policy import SignalPolicy
+from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 from src.signals.evaluation.indicators_helpers import extract_close_price
 from src.signals.service import SignalModule
 from src.signals.strategies.adapters import IndicatorSource
 from src.signals.strategies.base import SignalStrategy, StrategyCategory
-from src.trading.execution import ExecutorConfig, TradeExecutor
+from src.trading.execution.executor import ExecutorConfig, TradeExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +239,6 @@ def _build_runtime(
     sessions = (SESSION_ASIA, SESSION_LONDON, SESSION_NEW_YORK) if allow_all_sessions else (SESSION_LONDON, SESSION_NEW_YORK)
     policy = SignalPolicy(
         allowed_sessions=sessions,
-        voting_enabled=False,         # 简化：关闭投票引擎，只测单策略
     )
     targets = [
         SignalTarget("XAUUSD", "M1", "stub_trend_buy"),
@@ -259,7 +259,7 @@ def _build_executor(
     min_confidence: float = 0.3,
     max_consecutive_failures: int = 3,
 ) -> TradeExecutor:
-    from src.trading.execution import ExecutionGate, ExecutionGateConfig
+    from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
 
     return TradeExecutor(
         trading_module=trading_module,

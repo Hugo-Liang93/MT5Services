@@ -20,7 +20,7 @@ from src.trading.positions.exit_rules import (
     evaluate_exit,
     check_end_of_day,
 )
-from src.trading.execution import TradeParameters
+from src.trading.execution.sizing import TradeParameters
 
 from ..models import TradeRecord
 

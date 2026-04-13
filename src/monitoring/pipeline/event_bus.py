@@ -251,7 +251,21 @@ class PipelineEventBus:
         category: str,
         spread_points: float,
         active_sessions: list[str] | None = None,
+        evaluation_time: datetime | None = None,
     ) -> None:
+        payload: Dict[str, Any] = {
+            "allowed": bool(allowed),
+            "reason": reason,
+            "category": category,
+            "spread_points": round(float(spread_points), 4),
+            "active_sessions": list(active_sessions or []),
+        }
+        if evaluation_time is not None:
+            if evaluation_time.tzinfo is None:
+                evaluation_time = evaluation_time.replace(tzinfo=timezone.utc)
+            else:
+                evaluation_time = evaluation_time.astimezone(timezone.utc)
+            payload["evaluation_time"] = evaluation_time.isoformat()
         self.emit(
             PipelineEvent(
                 type=PIPELINE_SIGNAL_FILTER_DECIDED,
@@ -260,13 +274,7 @@ class PipelineEventBus:
                 timeframe=timeframe,
                 scope=scope,
                 ts=datetime.now(timezone.utc).isoformat(),
-                payload={
-                    "allowed": bool(allowed),
-                    "reason": reason,
-                    "category": category,
-                    "spread_points": round(float(spread_points), 4),
-                    "active_sessions": list(active_sessions or []),
-                },
+                payload=payload,
             )
         )
 

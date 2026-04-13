@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 from src.persistence.db import TimescaleWriter
 
 from ..models import TradeCommandAuditRecord
+from .results import build_idempotent_trade_replay
 
 
 class TradeCommandAuditService:
@@ -86,11 +87,11 @@ class TradeCommandAuditService:
                 continue
             if not isinstance(response_payload, dict):
                 continue
-            replayed = dict(response_payload)
-            replayed.setdefault("operation_id", row[1])
-            replayed["idempotent_replay"] = True
-            replayed["idempotent_source"] = "audit"
-            return replayed
+            return build_idempotent_trade_replay(
+                response_payload,
+                source="audit",
+                operation_id=row[1],
+            )
         return None
 
     def fetch_recorded_operator_action(

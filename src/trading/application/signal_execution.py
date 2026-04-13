@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from src.signals.service import SignalModule
-from src.trading.execution import compute_trade_params, extract_atr_from_indicators
+from src.trading.execution.sizing import (
+    compute_trade_params,
+    extract_atr_from_indicators,
+)
 
 from .services import TradingCommandService, TradingQueryService
 

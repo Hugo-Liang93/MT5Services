@@ -7,7 +7,6 @@ from .signal_routes.catalog import (
     best_signals_per_timeframe,
     evaluate_signal,
     list_signal_strategies,
-    recent_consensus_signals,
     recent_signals,
     signal_summary,
 )
@@ -28,7 +27,6 @@ from .signal_routes.runtime import (
     get_tracked_positions,
     htf_cache_status,
     signal_runtime_status,
-    voting_stats,
 )
 
 router = APIRouter(tags=["signals"])
@@ -46,7 +44,6 @@ __all__ = [
     "get_tracked_positions",
     "htf_cache_status",
     "list_signal_strategies",
-    "recent_consensus_signals",
     "recent_signals",
     "router",
     "signal_daily_quality_report",
@@ -58,5 +55,4 @@ __all__ = [
     "signal_summary",
     "signal_trace_events",
     "strategy_conflict_diagnostics",
-    "voting_stats",
 ]

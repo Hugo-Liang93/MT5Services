@@ -4,6 +4,7 @@ import pytest
 
 from src.app_runtime.factories.signals import build_executor_config
 from src.app_runtime.factories.signals import (
+    _should_attach_local_account_runtime,
     _validate_execution_contracts,
     _validate_strategy_deployment_contracts,
     build_signal_filter_chain,
@@ -15,7 +16,7 @@ from src.signals.contracts import (
     StrategyDeployment,
     StrategyDeploymentStatus,
 )
-from src.trading.execution import ExecutorConfig
+from src.trading.execution.executor import ExecutorConfig
 
 
 def test_build_executor_config_preserves_htf_conflict_contract() -> None:
@@ -127,6 +128,76 @@ def test_validate_execution_contracts_requires_explicit_binding_for_live_strateg
             deployments=signal_config.strategy_deployments,
             runtime_identity=runtime_identity,
         )
+
+
+def test_multi_account_main_skips_local_account_runtime_without_explicit_live_binding() -> None:
+    runtime_identity = RuntimeIdentity(
+        instance_name="live-main",
+        environment="live",
+        instance_id="main-live-main",
+        instance_role="main",
+        live_topology_mode="multi_account",
+        account_alias="live_main",
+        account_label="Live Main",
+        account_key=build_account_key("live", "Broker-Live", 1001),
+        mt5_server="Broker-Live",
+        mt5_login=1001,
+        mt5_path="C:/MT5/live_main/terminal64.exe",
+    )
+    deployments = {
+        "structured_breakout_follow": StrategyDeployment(
+            name="structured_breakout_follow",
+            status=StrategyDeploymentStatus.ACTIVE_GUARDED,
+        )
+    }
+    signal_config = SignalConfig(
+        account_bindings={"live_exec_a": ["structured_breakout_follow"]},
+        strategy_deployments=deployments,
+    )
+
+    assert (
+        _should_attach_local_account_runtime(
+            signal_config=signal_config,
+            deployments=deployments,
+            runtime_identity=runtime_identity,
+        )
+        is False
+    )
+
+
+def test_multi_account_main_keeps_local_account_runtime_when_explicitly_bound() -> None:
+    runtime_identity = RuntimeIdentity(
+        instance_name="live-main",
+        environment="live",
+        instance_id="main-live-main",
+        instance_role="main",
+        live_topology_mode="multi_account",
+        account_alias="live_main",
+        account_label="Live Main",
+        account_key=build_account_key("live", "Broker-Live", 1001),
+        mt5_server="Broker-Live",
+        mt5_login=1001,
+        mt5_path="C:/MT5/live_main/terminal64.exe",
+    )
+    deployments = {
+        "structured_breakout_follow": StrategyDeployment(
+            name="structured_breakout_follow",
+            status=StrategyDeploymentStatus.ACTIVE_GUARDED,
+        )
+    }
+    signal_config = SignalConfig(
+        account_bindings={"live_main": ["structured_breakout_follow"]},
+        strategy_deployments=deployments,
+    )
+
+    assert (
+        _should_attach_local_account_runtime(
+            signal_config=signal_config,
+            deployments=deployments,
+            runtime_identity=runtime_identity,
+        )
+        is True
+    )
 
 
 def test_build_signal_filter_chain_uses_economic_config_as_ssot() -> None:

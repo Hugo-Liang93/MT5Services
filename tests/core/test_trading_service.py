@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from src.risk.service import PreTradeRiskBlockedError
-from src.trading.trading_service import TradingService
+from src.trading.broker.comment_codec import build_trade_comment
+from src.trading.models import TradeExecutionDetails
+from src.trading.application.trading_service import TradingService
 
 
 class DummyTradingClient:
@@ -33,7 +35,22 @@ class DummyTradingClient:
             self.fail_open_times -= 1
             raise RuntimeError("transient execution error")
         self.open_trade_details_calls.append(kwargs)
-        return {"ticket": 12345, "price": kwargs.get("price") or 2345.6}
+        return TradeExecutionDetails(
+            ticket=12345,
+            order_id=12345,
+            deal_id=12345,
+            retcode=10009,
+            broker_comment="Done",
+            symbol=kwargs["symbol"],
+            volume=float(kwargs["volume"]),
+            requested_price=kwargs.get("price") or 2345.6,
+            fill_price=kwargs.get("price") or 2345.6,
+            sl=kwargs.get("sl"),
+            tp=kwargs.get("tp"),
+            deviation=int(kwargs.get("deviation", 20)),
+            magic=int(kwargs.get("magic", 0)),
+            pending=False,
+        )
 
     def open_trade(self, **kwargs):
         return 12345
@@ -184,6 +201,9 @@ def test_execute_trade_returns_structured_execution_details():
     assert client.open_trade_details_calls[0]["sl"] == 2340.0
     assert result["state_consistency"]["positions_count"] == 0
     assert result["state_consistency"]["orders_count"] == 0
+    assert result["precheck"]["request_id"]
+    assert result["precheck"]["calendar_health_mode"] == "warn_only"
+    assert result["precheck"]["calendar_health"] == {}
 
 
 def test_injected_trading_client_does_not_create_real_account_client():
@@ -228,8 +248,10 @@ def test_execute_trade_dry_run_returns_precheck_without_sending_order():
 
     assert result["dry_run"] is True
     assert result["execution_attempts"] == 0
+    assert result["execution_state"] == "skipped"
     assert client.open_trade_details_calls == []
     assert result["precheck"]["verdict"] == "allow"
+    assert result["state_consistency"] == {}
 
 
 def test_execute_trade_retries_on_transient_failure():
@@ -250,7 +272,7 @@ def test_execute_trade_retries_on_transient_failure():
     assert result["execution_attempts"] == 2
 
 
-def test_execute_trade_tags_comment_with_request_id() -> None:
+def test_execute_trade_builds_compact_mt5_comment() -> None:
     client = DummyTradingClient()
     service = TradingService(client=client, pre_trade_risk_service=DummyRiskService())
 
@@ -262,13 +284,25 @@ def test_execute_trade_tags_comment_with_request_id() -> None:
         request_id="REQ-ABC12345-TAIL",
     )
 
-    assert client.open_trade_details_calls[0]["comment"] == "auto:sma:buy_rreqabc12"
-    assert result["comment"] == "auto:sma:buy_rreqabc12"
+    expected = build_trade_comment(
+        request_id="REQ-ABC12345-TAIL",
+        side="buy",
+        order_kind="market",
+        comment="auto:sma:buy",
+    )
+    assert client.open_trade_details_calls[0]["comment"] == expected
+    assert result["comment"] == expected
 
 
 def test_execute_trade_recovers_from_existing_position_state() -> None:
     client = DummyTradingClient()
     client.fail_open_times = 1
+    existing_comment = build_trade_comment(
+        request_id="recover-1",
+        side="buy",
+        order_kind="market",
+        comment="auto:sma:buy",
+    )
     account_client = DummyAccountClient(
         positions=[
             SimpleNamespace(
@@ -276,7 +310,7 @@ def test_execute_trade_recovers_from_existing_position_state() -> None:
                 symbol="XAUUSD",
                 volume=0.2,
                 price_open=2351.5,
-                comment="auto:sma:buy_rrecover1",
+                comment=existing_comment,
             )
         ]
     )
@@ -301,6 +335,41 @@ def test_execute_trade_recovers_from_existing_position_state() -> None:
     assert result["state_source"] == "positions"
     assert result["execution_attempts"] == 1
     assert client.open_trade_details_calls == []
+
+
+def test_execute_trade_recovers_from_existing_position_by_request_tag() -> None:
+    client = DummyTradingClient()
+    client.fail_open_times = 1
+    account_client = DummyAccountClient(
+        positions=[
+            SimpleNamespace(
+                ticket=9876,
+                symbol="XAUUSD",
+                volume=0.2,
+                price_open=2351.5,
+                comment="TR_legacy_bm_recover1",
+            )
+        ]
+    )
+    service = TradingService(
+        client=client,
+        account_client=account_client,
+        pre_trade_risk_service=DummyRiskService(),
+    )
+
+    result = service.execute_trade(
+        symbol="XAUUSD",
+        volume=0.2,
+        side="buy",
+        comment="auto:sma:buy",
+        request_id="recover-1",
+        retry_attempts=2,
+        retry_backoff_ms=0,
+    )
+
+    assert result["ticket"] == 9876
+    assert result["recovered_from_state"] is True
+    assert result["state_source"] == "positions"
 
 
 def test_execute_trade_blocks_xauusd_when_trade_guard_detects_active_window() -> None:
@@ -351,6 +420,24 @@ def test_precheck_trade_blocks_invalid_trade_parameters_before_execution():
     assert result["reason"] == "Stop loss must be below entry price for buy orders"
     assert result["checks"][0]["name"] == "trade_parameters"
     assert result["suggested_adjustment"] == {"verdict": "review_trade_parameters"}
+
+
+def test_precheck_trade_without_risk_service_returns_formal_disabled_contract():
+    client = DummyTradingClient()
+    service = TradingService(client=client, pre_trade_risk_service=None)
+
+    result = service.precheck_trade(symbol="XAUUSD", volume=0.1, side="buy")
+
+    assert result["enabled"] is False
+    assert result["mode"] == "off"
+    assert result["verdict"] == "allow"
+    assert result["blocked"] is False
+    assert result["executable"] is True
+    assert result["calendar_health_mode"] == "warn_only"
+    assert result["calendar_health"] == {}
+    assert result["intent"] == {}
+    assert result["estimated_margin"] is None
+    assert result["margin_error"] is None
 
 
 def test_execute_trade_stops_when_precheck_is_not_executable():

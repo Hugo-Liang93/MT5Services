@@ -8,6 +8,8 @@ from src.config.mt5 import MT5Settings, load_group_mt5_settings
 from src.config.runtime_identity import RuntimeIdentity, build_account_key
 from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
 from src.trading.application.idempotency import TradeOperatorActionReplayConflictError
+from src.trading.commands.results import build_existing_command_result
+from src.trading.commands.results import build_operator_command_result
 
 
 class OperatorCommandService:
@@ -132,25 +134,25 @@ class OperatorCommandService:
             target_account_alias=resolved_account.account_alias,
             recorded_at=created_at,
         )
-        return {
-            "accepted": True,
-            "status": "pending",
-            "action_id": normalized_action_id,
-            "command_id": command_id,
-            "audit_id": None,
-            "actor": normalized_actor,
-            "reason": normalized_reason,
-            "idempotency_key": normalized_idempotency_key,
-            "request_context": normalized_request_context,
-            "message": "operator command accepted",
-            "error_code": None,
-            "recorded_at": created_at.isoformat(),
-            "effective_state": {
+        return build_operator_command_result(
+            accepted=True,
+            status="pending",
+            action_id=normalized_action_id,
+            command_id=command_id,
+            audit_id=None,
+            actor=normalized_actor,
+            reason=normalized_reason,
+            idempotency_key=normalized_idempotency_key,
+            request_context=normalized_request_context,
+            message="operator command accepted",
+            error_code=None,
+            recorded_at=created_at,
+            effective_state={
                 "command_type": normalized_command_type,
                 "target_account_alias": resolved_account.account_alias,
                 "target_account_key": target_account_key,
             },
-        }
+        )
 
     def _find_existing(
         self,
@@ -193,36 +195,7 @@ class OperatorCommandService:
 
     @staticmethod
     def _build_existing_response(row: dict[str, Any]) -> dict[str, Any]:
-        response_payload = dict(row.get("response_payload") or {})
-        if response_payload:
-            response_payload.setdefault("command_id", row.get("command_id"))
-            response_payload.setdefault("action_id", row.get("action_id"))
-            response_payload.setdefault("audit_id", row.get("audit_id"))
-            response_payload.setdefault("status", row.get("status"))
-            response_payload.setdefault("accepted", row.get("status") != "failed")
-            response_payload.setdefault("replayed", True)
-            return response_payload
-        created_at = row.get("created_at")
-        return {
-            "accepted": True,
-            "status": row.get("status") or "pending",
-            "action_id": row.get("action_id"),
-            "command_id": row.get("command_id"),
-            "audit_id": row.get("audit_id"),
-            "actor": row.get("actor"),
-            "reason": row.get("reason"),
-            "idempotency_key": row.get("idempotency_key"),
-            "request_context": dict(row.get("request_context") or {}),
-            "message": "operator command already queued",
-            "error_code": row.get("last_error_code"),
-            "recorded_at": created_at.isoformat() if created_at else None,
-            "effective_state": {
-                "command_type": row.get("command_type"),
-                "target_account_alias": row.get("target_account_alias"),
-                "target_account_key": row.get("target_account_key"),
-            },
-            "replayed": True,
-        }
+        return build_existing_command_result(row)
 
     def _emit_command_submitted(
         self,

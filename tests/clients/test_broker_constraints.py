@@ -16,7 +16,8 @@ from unittest.mock import patch
 import pytest
 
 from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
-from src.trading.trading_service import TradingService
+from src.trading.application.trading_service import TradingService
+from src.trading.models import TradeExecutionDetails
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +303,48 @@ class TestValidateTradeRequestBrokerIntegration:
             )
             assert result["pending"] is False
             assert any(c["name"] == "trade_mode" for c in result["broker_checks"])
+
+
+class TestOpenTradeDetailsContract:
+
+    def test_open_trade_details_returns_structured_execution_details(self):
+        client = MT5TradingClient.__new__(MT5TradingClient)
+        client.connect = lambda: None
+        client._validate_volume = lambda symbol, volume: None
+        client._send_order_with_supported_fillings = lambda request: SimpleNamespace(
+            retcode=10009,
+            comment="Done",
+            order=123456,
+            deal=654321,
+            price=2000.75,
+        )
+
+        with patch("src.clients.mt5_trading.mt5") as mock_mt5:
+            mock_mt5.ORDER_TYPE_BUY = 0
+            mock_mt5.ORDER_TYPE_SELL = 1
+            mock_mt5.TRADE_ACTION_DEAL = 1
+            mock_mt5.TRADE_RETCODE_DONE = 10009
+            mock_mt5.ORDER_FILLING_RETURN = 2
+            mock_mt5.last_error.return_value = (0, "ok")
+            mock_mt5.symbol_info_tick.return_value = _make_tick(bid=2000.0, ask=2000.50)
+
+            result = client.open_trade_details(
+                symbol="XAUUSD",
+                volume=0.1,
+                order_type=mock_mt5.ORDER_TYPE_BUY,
+                sl=1999.5,
+                tp=2001.5,
+                comment="alpha",
+            )
+
+        assert isinstance(result, TradeExecutionDetails)
+        assert result.ticket == 123456
+        assert result.order_id == 123456
+        assert result.deal_id == 654321
+        assert result.requested_price == 2000.50
+        assert result.fill_price == 2000.75
+        assert result.broker_comment == "Done"
+        assert result.pending is False
 
 
 # ---------------------------------------------------------------------------

@@ -5,10 +5,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from src.trading.application import TradingCommandService, TradingQueryService
 from src.trading.application.idempotency import TradeOperatorActionReplayConflictError
+from src.trading.application.module import TradingModule
+from src.trading.application.services import TradingCommandService, TradingQueryService
+from src.trading.broker.comment_codec import build_trade_comment
 from src.risk.service import PreTradeRiskBlockedError
-from src.trading.application import TradingModule
 
 
 @dataclass
@@ -388,6 +389,43 @@ def test_trading_module_can_apply_persisted_trade_control_state() -> None:
     assert state["auto_entry_enabled"] is False
     assert state["close_only_mode"] is True
     assert state["reason"] == "restored"
+
+
+def test_trading_module_resolve_position_context_matches_by_comment_request_tag() -> None:
+    db = DummyDBWriter()
+    module = TradingModule(registry=DummyRegistry(), db_writer=db)
+    request_comment = build_trade_comment(
+        request_id="sig-h4-pullback",
+        timeframe="M30",
+        strategy="htf_h4_pullback",
+        side="buy",
+        order_kind="limit",
+    )
+    module.execute_trade(
+        symbol="XAUUSD",
+        volume=0.1,
+        side="buy",
+        order_kind="limit",
+        request_id="sig-h4-pullback",
+        comment=request_comment,
+        metadata={
+            "signal": {
+                "signal_id": "sig-h4-pullback",
+                "timeframe": "M30",
+                "strategy": "htf_h4_pullback",
+                "confidence": 0.53,
+            }
+        },
+    )
+
+    context = module.resolve_position_context(
+        ticket=999999,
+        comment="TR_legacy_bl_sigh4pul",
+    )
+
+    assert context is not None
+    assert context["signal_id"] == "sig-h4-pullback"
+    assert context["strategy"] == "htf_h4_pullback"
 
 
 def test_trading_module_replays_successful_trade_when_request_id_reused() -> None:

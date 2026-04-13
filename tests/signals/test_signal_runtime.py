@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from src.monitoring.pipeline import PipelineEventBus
 import src.signals.orchestration.runtime_processing as runtime_processing
 from src.signals.evaluation.regime import RegimeType
 from src.signals.execution.filters import SessionFilter, SignalFilterChain
 from src.signals.models import SignalDecision
-from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
+from src.signals.orchestration.policy import SignalPolicy
+from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
 
 class DummySnapshotSource:
@@ -57,7 +59,7 @@ class DummySignalService:
         self.persist_calls = []
         self.recent_rows = []
 
-    def strategy_capability_catalog(self, voting_group_policy=None):
+    def strategy_capability_catalog(self):
         return [
             {
                 "name": "sma_trend",
@@ -65,7 +67,6 @@ class DummySignalService:
                 "needed_indicators": ["sma20", "ema50"],
                 "needs_intrabar": True,
                 "needs_htf": False,
-                "voting_group_policy": "standalone",
                 "regime_affinity": {},
                 "htf_requirements": {},
             },
@@ -75,7 +76,6 @@ class DummySignalService:
                 "needed_indicators": ["rsi14"],
                 "needs_intrabar": True,
                 "needs_htf": False,
-                "voting_group_policy": "standalone",
                 "regime_affinity": {},
                 "htf_requirements": {},
             },
@@ -535,7 +535,7 @@ def test_signal_runtime_deduplicates_same_required_indicator_snapshot_for_same_b
     assert len(service.persist_calls) == 0
 
 
-def test_signal_runtime_fuses_intrabar_and_confirmed_votes_per_strategy() -> None:
+def test_signal_runtime_status_no_longer_exposes_vote_state() -> None:
     source = DummySnapshotSource()
     service = DummySignalService()
     runtime = SignalRuntime(
@@ -546,38 +546,11 @@ def test_signal_runtime_fuses_intrabar_and_confirmed_votes_per_strategy() -> Non
 
     )
 
-    intrabar_decision = SignalDecision(
-        strategy="rsi_reversion",
-        symbol="XAUUSD",
-        timeframe="M5",
-        direction="buy",
-        confidence=0.6,
-        reason="intrabar",
-    )
-    confirmed_decision = SignalDecision(
-        strategy="rsi_reversion",
-        symbol="XAUUSD",
-        timeframe="M5",
-        direction="buy",
-        confidence=0.9,
-        reason="confirmed",
-    )
-    bar_time = datetime.now(timezone.utc)
+    status = runtime.status()
 
-    from src.signals.orchestration.vote_processor import fuse_vote_decisions
-
-    first = fuse_vote_decisions(
-        "XAUUSD", "M5", bar_time, "intrabar", [intrabar_decision],
-        runtime._vote_fusion_cache,
-    )
-    second = fuse_vote_decisions(
-        "XAUUSD", "M5", bar_time, "confirmed", [confirmed_decision],
-        runtime._vote_fusion_cache,
-    )
-
-    assert len(first) == 1
-    assert len(second) == 1
-    assert second[0].reason == "confirmed"
+    assert "voting_stats" not in status
+    assert "voting_groups" not in status
+    assert not hasattr(runtime, "_vote_fusion_cache")
 
 
 def test_signal_runtime_injects_soft_regime_metadata_when_enabled() -> None:
@@ -770,6 +743,44 @@ def test_signal_runtime_records_blocked_filter_statistics_in_status() -> None:
     assert status["filter_by_scope"]["confirmed"]["blocked"] == 1
     assert status["filter_by_scope"]["confirmed"]["blocks"]["spread:too_wide"] == 1
     assert status["filter_window_by_scope"]["confirmed"]["blocked"] == 1
+
+
+def test_signal_runtime_emits_filter_evaluation_time_to_pipeline_trace() -> None:
+    source = DummySnapshotSource()
+    service = DummySignalService()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    runtime = SignalRuntime(
+        service=service,
+        snapshot_source=source,
+        targets=[
+            SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")
+        ],
+        enable_confirmed_snapshot=True,
+        filter_chain=FilterChainStub(
+            allowed=False,
+            reason="session_transition_cooldown:london_to_new_york",
+        ),
+    )
+    runtime.set_pipeline_event_bus(pipeline_bus)
+
+    bar_time = datetime(2026, 4, 13, 13, 5, tzinfo=timezone.utc)
+    _enqueue_runtime_event(
+        runtime,
+        scope="confirmed",
+        indicators={"rsi14": {"rsi": 22.0}},
+        bar_time=bar_time,
+        spread_points=35.0,
+        signal_trace_id="trace-filter-time",
+    )
+
+    assert runtime.process_next_event(timeout=0.01) is True
+
+    filter_events = [event for event in received if event.type == "signal_filter_decided"]
+    assert len(filter_events) == 1
+    assert filter_events[0].payload["evaluation_time"] == bar_time.isoformat()
+    assert filter_events[0].payload["reason"] == "session_transition_cooldown:london_to_new_york"
 
 
 def test_signal_runtime_records_passed_filter_statistics_in_status() -> None:

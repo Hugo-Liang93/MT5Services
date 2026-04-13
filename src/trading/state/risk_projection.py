@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from src.config import get_shared_default_symbol
-from src.trading.runtime_lifecycle import OwnedThreadLifecycle
+from src.trading.execution.reasons import REASON_QUOTE_STALE
+from src.trading.execution.quote_health import build_execution_quote_health
+from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 
 from .models import AccountRiskStateRecord
 
@@ -45,79 +47,6 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return default
-
-
-def _execution_quote_staleness_snapshot(
-    market_service: Any,
-    symbol: str | None,
-) -> dict[str, Any]:
-    """为账户执行风控计算 quote 新鲜度。
-
-    API 级 ``quote_stale_seconds`` 用于“展示级 stale 提示”，阈值通常很紧。
-    账户执行侧的 ``quote_stale`` 语义更接近“执行实例是否已经失去有效行情”；
-    若直接复用 1s 阈值，开盘时也会长期误报，导致风险投影失真。
-
-    这里显式收口为更宽的执行阈值：
-    - 至少 3 秒；
-    - 同时参考 API stale 阈值与流式刷新间隔的 3 倍。
-    """
-    if market_service is None or not symbol:
-        return {
-            "quote_stale": False,
-            "quote_age_seconds": None,
-            "stale_threshold_seconds": None,
-        }
-    try:
-        quote = market_service.get_quote(symbol)
-    except Exception:
-        logger.debug("AccountRiskStateProjector: quote check failed", exc_info=True)
-        return {
-            "quote_stale": True,
-            "quote_age_seconds": None,
-            "stale_threshold_seconds": None,
-        }
-    if quote is None:
-        return {
-            "quote_stale": True,
-            "quote_age_seconds": None,
-            "stale_threshold_seconds": None,
-        }
-    quote_time = getattr(quote, "time", None)
-    if quote_time is None and isinstance(quote, dict):
-        quote_time = quote.get("time")
-    if quote_time is None:
-        return {
-            "quote_stale": True,
-            "quote_age_seconds": None,
-            "stale_threshold_seconds": None,
-        }
-    if not isinstance(quote_time, datetime):
-        return {
-            "quote_stale": False,
-            "quote_age_seconds": None,
-            "stale_threshold_seconds": None,
-        }
-    normalized = (
-        quote_time
-        if quote_time.tzinfo is not None
-        else quote_time.replace(tzinfo=timezone.utc)
-    )
-    settings = getattr(market_service, "market_settings", None)
-    api_stale_seconds = float(getattr(settings, "quote_stale_seconds", 1.0) or 1.0)
-    stream_interval_seconds = float(
-        getattr(settings, "stream_interval_seconds", api_stale_seconds) or api_stale_seconds
-    )
-    execution_stale_seconds = max(
-        3.0,
-        api_stale_seconds * 3.0,
-        stream_interval_seconds * 3.0,
-    )
-    age_seconds = max(0.0, (datetime.now(timezone.utc) - normalized).total_seconds())
-    return {
-        "quote_stale": age_seconds > execution_stale_seconds,
-        "quote_age_seconds": round(age_seconds, 3),
-        "stale_threshold_seconds": round(execution_stale_seconds, 3),
-    }
 
 
 class AccountRiskStateProjector:
@@ -232,12 +161,13 @@ class AccountRiskStateProjector:
 
         open_positions_count = _coerce_int(position_status.get("tracked_positions"))
         pending_orders_count = _coerce_int(pending_status.get("active_count"))
-        quote_health = _execution_quote_staleness_snapshot(
+        quote_health = build_execution_quote_health(
             self._market_service,
             self._representative_symbol(),
         )
-        quote_stale = bool(quote_health.get("quote_stale", False))
+        quote_stale = bool(quote_health.get("stale", False))
         indicator_degraded = bool(position_status.get("last_error"))
+        last_risk_block = str(executor_status.get("last_risk_block") or "").strip() or None
 
         active_flags: list[str] = []
         if runtime_mode in {"risk_off", "ingest_only"}:
@@ -264,8 +194,11 @@ class AccountRiskStateProjector:
                 bool(control.get("close_only_mode")),
                 bool(circuit_breaker.get("open")),
                 bool(margin_guard.get("should_block_new_trades")),
+                quote_stale,
             )
         )
+        if quote_stale and not last_risk_block:
+            last_risk_block = REASON_QUOTE_STALE
 
         updated_at = datetime.now(timezone.utc).isoformat()
         return {
@@ -280,7 +213,7 @@ class AccountRiskStateProjector:
             "consecutive_failures": _coerce_int(
                 circuit_breaker.get("consecutive_failures")
             ),
-            "last_risk_block": executor_status.get("last_risk_block"),
+            "last_risk_block": last_risk_block,
             "margin_level": margin_level,
             "margin_guard_state": str(margin_guard.get("state") or "").strip() or None,
             "should_block_new_trades": should_block_new_trades,
@@ -310,10 +243,8 @@ class AccountRiskStateProjector:
                     "active_count": pending_orders_count,
                 },
                 "quote_health": {
-                    "age_seconds": quote_health.get("quote_age_seconds"),
-                    "stale_threshold_seconds": quote_health.get(
-                        "stale_threshold_seconds"
-                    ),
+                    "age_seconds": quote_health.get("age_seconds"),
+                    "stale_threshold_seconds": quote_health.get("stale_threshold_seconds"),
                 },
             },
         }

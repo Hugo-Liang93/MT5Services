@@ -42,7 +42,7 @@ def build_backtest_components(
 
     Returns:
         包含 data_loader / signal_module / pipeline / regime_detector /
-        voting_engine / writer / market_repo 的字典
+        writer / market_repo 的字典
     """
     from src.config.database import load_db_settings
     from src.config.indicator_config import get_global_config_manager
@@ -167,16 +167,11 @@ def build_backtest_components(
         strategy_params_per_tf=merged_strategy_params_per_tf or None,
     )
 
-    # 构建 Voting Engine（单 consensus + 多组）
-    voting_engine, voting_group_engines = _build_voting_engines()
-
     return {
         "data_loader": data_loader,
         "signal_module": signal_module,
         "pipeline": pipeline,
         "regime_detector": regime_detector,
-        "voting_engine": voting_engine,
-        "voting_group_engines": voting_group_engines,
         "performance_tracker": performance_tracker,
         "htf_cache": htf_cache,
         "writer": writer,
@@ -197,59 +192,3 @@ def _apply_overrides(
         regime_affinity_overrides,
         strategy_params_per_tf=strategy_params_per_tf,
     )
-
-
-def _build_voting_engines() -> tuple:
-    """从 signal.ini 构建 VotingEngine（单 consensus + 多组）。
-
-    Returns:
-        (voting_engine, voting_group_engines) — 与实盘 SignalRuntime 一致的双模式。
-        多组模式启用时 voting_engine=None，单 consensus 反之。
-    """
-    try:
-        from src.signals.orchestration.policy import VotingGroupConfig
-        from src.signals.orchestration.voting import StrategyVotingEngine
-
-        signal_config = _load_signal_config_snapshot()
-        if not getattr(signal_config, "voting_enabled", False):
-            return None, []
-
-        # 多组模式：从 voting_group_configs 构建
-        group_configs = getattr(signal_config, "voting_group_configs", []) or []
-        if group_configs:
-            group_engines: list = []
-            for gcfg in group_configs:
-                vgc = VotingGroupConfig(
-                    name=gcfg["name"],
-                    strategies=frozenset(gcfg["strategies"]),
-                    consensus_threshold=gcfg.get("consensus_threshold", 0.40),
-                    min_quorum=gcfg.get("min_quorum", 2),
-                    disagreement_penalty=gcfg.get("disagreement_penalty", 0.50),
-                    strategy_weights=gcfg.get("strategy_weights", {}),
-                )
-                engine = StrategyVotingEngine(
-                    group_name=vgc.name,
-                    consensus_threshold=vgc.consensus_threshold,
-                    min_quorum=vgc.min_quorum,
-                    disagreement_penalty=vgc.disagreement_penalty,
-                    strategy_weights=vgc.strategy_weights,
-                )
-                group_engines.append((vgc, engine))
-            return None, group_engines  # 多组模式禁用全局 consensus
-
-        # 单 consensus 模式
-        return (
-            StrategyVotingEngine(
-                consensus_threshold=getattr(
-                    signal_config, "voting_consensus_threshold", 0.40
-                ),
-                min_quorum=getattr(signal_config, "voting_min_quorum", 2),
-                disagreement_penalty=getattr(
-                    signal_config, "voting_disagreement_penalty", 0.50
-                ),
-            ),
-            [],
-        )
-    except Exception:
-        logger.debug("Voting engine not available", exc_info=True)
-        return None, []

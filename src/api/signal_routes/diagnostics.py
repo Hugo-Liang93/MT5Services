@@ -4,9 +4,10 @@ from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from src.api.deps import get_signal_quality_tracker, get_signal_runtime, get_signal_service, get_trade_outcome_tracker
+from src.api import deps
+from src.api.deps import get_signal_runtime, get_signal_service
 from src.api.schemas import ApiResponse, SignalEventModel
-from src.signals.orchestration import SignalRuntime
+from src.signals.orchestration.runtime import SignalRuntime
 from src.signals.service import SignalModule
 from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 from .view_models import (
@@ -121,20 +122,23 @@ def signal_trace_events(
 def signal_outcomes_winrate(
     hours: int = Query(default=168, ge=1, le=24 * 90),
     symbol: Optional[str] = Query(default=None),
-    quality_tracker: SignalQualityTracker = Depends(get_signal_quality_tracker),
-    trade_tracker: TradeOutcomeTracker = Depends(get_trade_outcome_tracker),
+    quality_tracker: SignalQualityTracker | None = Depends(deps.get_optional_signal_quality_tracker),
+    trade_tracker: TradeOutcomeTracker | None = Depends(deps.get_optional_trade_outcome_tracker),
     service: SignalModule = Depends(get_signal_service),
 ) -> ApiResponse[list[Dict[str, object]]]:
     rows = service.strategy_winrates(hours=hours, symbol=symbol)
+    metadata: Dict[str, object] = {
+        "hours": hours,
+        "symbol": symbol,
+        "count": len(rows),
+    }
+    if quality_tracker is not None:
+        metadata["signal_quality_stats"] = quality_tracker.winrate_summary()
+    if trade_tracker is not None:
+        metadata["trade_outcome_stats"] = trade_tracker.summary()
     return ApiResponse.success_response(
         data=rows,
-        metadata={
-            "hours": hours,
-            "symbol": symbol,
-            "count": len(rows),
-            "signal_quality_stats": quality_tracker.winrate_summary(),
-            "trade_outcome_stats": trade_tracker.summary(),
-        },
+        metadata=metadata,
     )
 
 

@@ -5,7 +5,7 @@ pipeline.  These are strategy-domain routing decisions — they do NOT overlap
 with account-level risk controls (which live in ``src.risk.service``).
 
 Responsibilities (moved here from TradeExecutor to enforce clean boundaries):
-  1. Voting-group protection — member strategies cannot trigger trades alone.
+  1. Intrabar 路由门控。
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from src.signals.models import SignalEvent
 from .reasons import (
     REASON_INTRABAR_TRADING_DISABLED,
     REASON_STRATEGY_NOT_INTRABAR_ENABLED,
-    REASON_VOTING_GROUP_MEMBER,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,13 +25,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ExecutionGateConfig:
-    # Voting-group protection: strategies belonging to any voting group.
-    # Non-empty ⇒ these strategies are blocked from standalone execution;
-    # only the vote-group result signal (strategy = group_name) may trigger.
-    voting_group_strategies: frozenset[str] = field(default_factory=frozenset)
-    # Override: strategies in this set may still trigger standalone even if
-    # they belong to a voting group.
-    standalone_override: frozenset[str] = field(default_factory=frozenset)
     # Intrabar 交易门控
     intrabar_trading_enabled: bool = False
     intrabar_enabled_strategies: frozenset[str] = field(default_factory=frozenset)
@@ -46,15 +38,6 @@ class ExecutionGate:
 
     def check(self, event: SignalEvent) -> tuple[bool, str]:
         """Return (allowed, reason).  *reason* is non-empty when blocked."""
-
-        # ── Voting Group protection ────────────────────────────────────
-        if (
-            self.config.voting_group_strategies
-            and event.strategy in self.config.voting_group_strategies
-            and event.strategy not in self.config.standalone_override
-        ):
-            return False, REASON_VOTING_GROUP_MEMBER
-
         return True, ""
 
     def check_intrabar(self, event: SignalEvent) -> tuple[bool, str]:
@@ -63,11 +46,4 @@ class ExecutionGate:
             return False, REASON_INTRABAR_TRADING_DISABLED
         if event.strategy not in self.config.intrabar_enabled_strategies:
             return False, REASON_STRATEGY_NOT_INTRABAR_ENABLED
-        # 投票组成员不允许 intrabar 独立交易（防护性代码，当前无投票组）
-        if (
-            self.config.voting_group_strategies
-            and event.strategy in self.config.voting_group_strategies
-            and event.strategy not in self.config.standalone_override
-        ):
-            return False, REASON_VOTING_GROUP_MEMBER
         return True, ""

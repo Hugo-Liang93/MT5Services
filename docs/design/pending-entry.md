@@ -66,7 +66,7 @@ class PendingEntry:
 | `mean_reversion` | **symmetric** | 以 close 为中心对称区间 | 均值回归已在极值，给宽容度 |
 | `breakout` | **momentum** | 允许顺势追一段，区间偏向信号方向 | 突破类追动量，但设上限 |
 | `session` / `price_action` | **pullback** | 同趋势 | 基于收盘确认的策略 |
-| `composite` / `consensus`（投票结果） | **symmetric** | 综合方向，对称区间 | 多策略投票，无单一偏好 |
+| 历史 `composite` / `consensus` 方案（已退役） | **symmetric** | 综合方向，对称区间 | 仅保留为历史设计记录，当前 runtime 不再产出这类策略 |
 
 ### 4.2 区间计算公式
 
@@ -106,7 +106,7 @@ SELL 信号:
     entry_low  = close - momentum_atr × ATR
 ```
 
-#### Symmetric 模式（均值回归 / 投票结果）
+#### Symmetric 模式（均值回归 / 历史组合方案）
 
 ```
 BUY/SELL 信号:
@@ -325,7 +325,9 @@ else:
 ```
 SignalRuntime → publish_signal_event(confirmed_buy/sell)
     ↓
-TradeExecutor.on_signal_event()
+ExecutionIntentPublisher / ExecutionIntentConsumer
+    ↓
+TradeExecutor.process_event(confirmed)
     ↓ 入队
 _handle_confirmed()
     │

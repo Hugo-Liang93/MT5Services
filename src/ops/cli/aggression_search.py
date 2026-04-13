@@ -128,8 +128,6 @@ def _run_single(
         signal_module=components["signal_module"],
         indicator_pipeline=components["pipeline"],
         regime_detector=components["regime_detector"],
-        voting_engine=components.get("voting_engine"),
-        voting_group_engines=components.get("voting_group_engines"),
         performance_tracker=components.get("performance_tracker"),
     )
     result = engine.run()
@@ -346,4 +344,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

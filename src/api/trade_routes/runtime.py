@@ -12,11 +12,9 @@ from src.api.error_codes import AIErrorAction, AIErrorCode
 from src.api.schemas import ApiResponse, RuntimeModeRequest
 from src.app_runtime.mode_controller import RuntimeModeController
 from src.readmodels.runtime import RuntimeReadModel
-from src.trading.application import (
-    TradeOperatorActionReplayConflictError,
-    TradingCommandService,
-)
-from src.trading.commands import OperatorCommandService
+from src.trading.application.idempotency import TradeOperatorActionReplayConflictError
+from src.trading.application.services import TradingCommandService
+from src.trading.commands.service import OperatorCommandService
 
 from .common import (
     build_control_action_error_payload,

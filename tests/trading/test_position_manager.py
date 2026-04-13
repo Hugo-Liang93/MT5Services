@@ -8,7 +8,7 @@ from src.trading.closeout import (
     ExposureCloseoutService,
 )
 from src.trading.positions import PositionManager
-from src.trading.execution import TradeParameters
+from src.trading.execution.sizing import TradeParameters
 
 
 class DummyTradingModule:

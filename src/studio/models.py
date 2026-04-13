@@ -43,11 +43,6 @@ AGENT_META: dict[str, dict[str, str]] = {
         "module": "SignalModule(intrabar)",
         "zone": "strategy",
     },
-    "voter": {
-        "name": "投票主席",
-        "module": "VotingEngine",
-        "zone": "decision",
-    },
     "risk_officer": {
         "name": "风控官",
         "module": "PreTradeRiskService",

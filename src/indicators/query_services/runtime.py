@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from ..runtime.bar_loader import (
     get_max_lookback as _get_max_lookback_fn,
@@ -569,6 +570,18 @@ def publish_snapshot(
         trace_id = manager.get_current_trace_id()
     except Exception:
         trace_id = None
+    owns_trace_id = not bool(str(trace_id or "").strip())
+    if owns_trace_id:
+        trace_id = uuid4().hex
+        try:
+            manager.set_current_trace_id(trace_id)
+        except Exception:
+            logger.debug(
+                "Failed to set fallback snapshot trace_id for %s/%s",
+                symbol,
+                timeframe,
+                exc_info=True,
+            )
     pipeline_bus = _get_pipeline_bus(manager)
     if pipeline_bus is not None and trace_id is not None:
         pipeline_bus.emit_snapshot_published(
@@ -591,6 +604,16 @@ def publish_snapshot(
                 symbol,
                 timeframe,
                 bar_time,
+            )
+    if owns_trace_id:
+        try:
+            manager.set_current_trace_id(None)
+        except Exception:
+            logger.debug(
+                "Failed to clear fallback snapshot trace_id for %s/%s",
+                symbol,
+                timeframe,
+                exc_info=True,
             )
 
 

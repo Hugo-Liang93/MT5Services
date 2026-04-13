@@ -14,6 +14,8 @@ from src.clients.base import MT5BaseClient, mt5
 from src.config import MT5Settings
 from src.clients.mt5_account import Position
 from src.clients.base import MT5TradeError
+from src.trading.broker.comment_codec import MAX_MT5_COMMENT_LENGTH
+from src.trading.models import TradeExecutionDetails
 
 
 class MT5TradingClientError(MT5TradeError):
@@ -31,7 +33,7 @@ class MT5TradingClient(MT5BaseClient):
             raw = default
         normalized = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw)
         normalized = normalized.strip() or default
-        return normalized[:27]
+        return normalized[:MAX_MT5_COMMENT_LENGTH]
 
     @staticmethod
     def _pending_order_types() -> set[int]:
@@ -142,7 +144,7 @@ class MT5TradingClient(MT5BaseClient):
         deviation: int = 20,
         comment: str = "",
         magic: int = 0,
-    ) -> dict:
+    ) -> TradeExecutionDetails:
         self.connect()
         self._validate_volume(symbol, volume)
         is_pending = order_type in self._pending_order_types()
@@ -185,23 +187,22 @@ class MT5TradingClient(MT5BaseClient):
             fill_price = float(raw_fill_price) if raw_fill_price is not None else float(request_price)
         except (TypeError, ValueError):
             fill_price = float(request_price)
-        return {
-            "ticket": ticket,
-            "order": int(getattr(result, "order", 0) or 0),
-            "deal": int(getattr(result, "deal", 0) or 0),
-            "retcode": int(result.retcode),
-            "comment": getattr(result, "comment", ""),
-            "symbol": symbol,
-            "volume": volume,
-            "price": request_price,
-            "requested_price": request_price,
-            "fill_price": fill_price,
-            "sl": sl,
-            "tp": tp,
-            "deviation": deviation,
-            "magic": magic,
-            "pending": is_pending,
-        }
+        return TradeExecutionDetails(
+            ticket=ticket,
+            order_id=int(getattr(result, "order", 0) or 0),
+            deal_id=int(getattr(result, "deal", 0) or 0),
+            retcode=int(result.retcode),
+            broker_comment=str(getattr(result, "comment", "") or ""),
+            symbol=symbol,
+            volume=volume,
+            requested_price=float(request_price) if request_price is not None else None,
+            fill_price=fill_price,
+            sl=sl,
+            tp=tp,
+            deviation=deviation,
+            magic=magic,
+            pending=is_pending,
+        )
 
     def open_trade(
         self,
@@ -226,7 +227,7 @@ class MT5TradingClient(MT5BaseClient):
             comment=comment,
             magic=magic,
         )
-        return int(details["ticket"])
+        return int(details.ticket)
 
     def cancel_orders(self, symbol: Optional[str] = None, magic: Optional[int] = None) -> dict:
         """

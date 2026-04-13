@@ -104,6 +104,7 @@ def apply_filter_chain(
             category=category,
             spread_points=spread_points,
             active_sessions=active_sessions,
+            evaluation_time=event_time,
         )
     if allowed:
         scope_stats = runtime._filter_by_scope.setdefault(
@@ -213,7 +214,7 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
         else tracker.stability_multiplier()
     )
 
-    snapshot_decisions = runtime._evaluate_strategies(
+    runtime._evaluate_strategies(
         symbol,
         timeframe,
         scope,
@@ -223,19 +224,6 @@ def process_next_event(runtime: "SignalRuntime", timeout: float = 0.5) -> bool:
         event_time,
         bar_time,
         active_sessions,
-    )
-
-    runtime._process_voting(
-        snapshot_decisions,
-        symbol,
-        timeframe,
-        scope,
-        regime,
-        regime_stability,
-        regime_metadata,
-        indicators,
-        event_time,
-        bar_time,
     )
 
     runtime._processed_events += 1

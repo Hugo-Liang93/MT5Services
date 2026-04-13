@@ -353,3 +353,24 @@ def test_trade_trace_directory_projection_exposes_trace_summary_list() -> None:
     assert result["items"][0]["last_stage"] == "pipeline.execution_submitted"
     assert result["items"][0]["admission"]["decision"] == "allow"
     assert result["items"][0]["admission"]["stage"] == "account_risk"
+
+
+def test_trade_trace_reason_extractor_reads_nested_execution_skip_result() -> None:
+    reason = TradingFlowTraceReadModel._extract_reason(
+        None,
+        [
+            {
+                "event_type": "execution_skipped",
+                "payload": {
+                    "status": "skipped",
+                    "result": {
+                        "status": "skipped",
+                        "reason": "trade_params_unavailable",
+                        "skip_category": "trade_params",
+                    },
+                },
+            }
+        ],
+    )
+
+    assert reason == "trade_params_unavailable"

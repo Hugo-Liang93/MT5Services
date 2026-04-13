@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
-from src.trading.execution import extract_atr_from_indicators
+from src.trading.execution.sizing import extract_atr_from_indicators
 from src.utils.timezone import utc_now
 
 from .config import PaperTradingConfig

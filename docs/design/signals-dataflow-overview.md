@@ -3,7 +3,7 @@
 用于后续设计会话的运行时“真相”快照。按职责边界展开，便于你快速判断修改会影响哪些链路。
 > 文档类型：当前实现真相（signals 域）。
 > 信号域之外的启动顺序、日志路径、健康探针与持久化全景，请对照 `docs/design/full-runtime-dataflow.md`。
-> 策略开发规范、regime 亲和度、voting 规则和 TF 参数不在本文重复展开，请对照 `docs/signal-system.md`。
+> 策略开发规范、regime 亲和度、单策略运行规则和 TF 参数不在本文重复展开，请对照 `docs/signal-system.md`。
 
 ## 0. 总体目标
 
@@ -62,8 +62,7 @@
                                             │ 2. 过滤/退市窗口               │
                                             │ 3. regime 检测                 │
                                             │ 4. 策略评估 evaluate_strategies │
-                                            │ 5. voting                     │
-                                            │ 6. transition_and_publish     │
+                                            │ 5. transition_and_publish     │
                                             └───────────────┬──────────────┘
                                                             │
                                                             ▼
@@ -84,18 +83,19 @@
                                               └─────────────┬───────────┘
                                                             ▼
                                            ┌────────────────────────────────┐
-                                           │ Signal Runtime Listeners        │
-                                           │ - TradeExecutor                │
-                                           │ - SignalQualityTracker         │
-                                           │ - HTFStateCache                │
+                                            │ Signal Runtime Listeners        │
+                                            │ - ExecutionIntentPublisher     │
+                                            │ - SignalQualityTracker         │
+                                            │ - HTFStateCache                │
                                            └────────────────────────────────┘
                                                             │
                                                             ▼
                                       ┌─────────────────────────────────────┐
-                                      │ confirmed: on_signal_event           │
-                                      │ intrabar: on_intrabar_trade_signal   │
-                                      │ - IntrabarTradeGuard                │
-                                      │ - ExecutionGate                     │
+                                        │ confirmed / intrabar_armed          │
+                                        │ → ExecutionIntentPublisher          │
+                                        │ → execution_intents                 │
+                                        │ → ExecutionIntentConsumer           │
+                                        │ → TradeExecutor.process_event       │
                                       └─────────────────────────────────────┘
 ```
 
@@ -168,9 +168,9 @@ intrabar scope:
       publish SignalEvent
                │
                ▼
-      TradeExecutor.on_signal_event
-               │
-               └─继续执行 confirmed 交易路径
+      ExecutionIntentPublisher.on_signal_event
+                │
+                └─写入 execution_intents，交由目标账户 worker claim
 ```
 
 ## 0.4 看板图：Intrabar 主链路（仅盘中态）
@@ -215,9 +215,10 @@ intrabar scope:
           ├─发 intrabar_armed_buy/sell
           ├─persist 决策（snapshot trace）
           ├─通知 listeners
-          │   └─ TradeExecutor.on_intrabar_trade_signal
-          │      ├─IntrabarTradeGuard 去重
-          │      ├─ExecutionGate 校验
+          │   └─ ExecutionIntentPublisher.on_signal_event
+          │      ├─只接 confirmed_* / intrabar_armed_* 可执行信号
+          │      ├─写入 execution_intents
+          │      └─由 ExecutionIntentConsumer → TradeExecutor 处理
           │      └─下单（同 bar 同策略同方向仅一次）
           └─进入等待下个父 bar
 ```
@@ -246,7 +247,7 @@ intrabar scope:
 
 4) 策略门控失败
    scope / session / strategy_timeframes 预过滤 / needed_indicators 不满足
-   结果: 该策略当前 snapshot 不参与 voting
+   结果: 该策略当前 snapshot 直接结束，不进入单策略状态流转
 
 5) 运行态恢复
    runtime start -> runtime_recovery.restore_state()
@@ -331,7 +332,7 @@ confirmed 与 intrabar 的快照发布路径：
             ├─block: block reason 统计
             └─pass:
                 ├─confirmed: detect_regime + tracker update
-                └─evaluate_strategies + voting + transition/publish
+                └─evaluate_strategies + transition/publish
                    ├─confirmed -> SignalEvent(scope=confirmed, state=confirmed_*)
                    └─intrabar armed -> SignalEvent(scope=intrabar_armed_*)
 ```
@@ -359,8 +360,7 @@ confirmed 与 intrabar 的快照发布路径：
 3. `SignalFilterChain` 过滤（时段/点差/经济事件/波动率）；
 4. regime 检测（confirmed 更新 tracker，intrabar 只读 stability）；
 5. `evaluate_strategies()`；
-6. `process_voting()`；
-7. `transition_and_publish()`（confirmed 状态变更/事件发布 + intrabar armed）。
+6. `transition_and_publish()`（confirmed 状态变更/事件发布 + intrabar armed）。
 
 ### 2.3 任务分拆（重要）
 
@@ -368,11 +368,10 @@ confirmed 与 intrabar 的快照发布路径：
 
 - `runtime_processing.py`：`on_snapshot` + 入队与预检查；
 - `runtime_processing.py`：队列与过滤主流程；
-- `runtime_evaluator.py`：策略评估、置信度调整、投票、发布；
+- `runtime_evaluator.py`：策略评估、置信度调整、发布；
 - `runtime_recovery.py`：confirmed 运行态恢复；
 - `state_machine.py`：confirmed 状态转换；
 - `intrabar_trade_coordinator.py`：intrabar 稳定计数与 armed 触发；
-- `vote_processor.py`：投票结果合成。
 
 ## 3. 策略评估路径（`evaluate_strategies`）
 
@@ -400,7 +399,7 @@ confirmed 与 intrabar 的快照发布路径：
 ### 2.X 策略能力清单统一契约（新增）
 
 - 标准输入口：`SignalModule.strategy_capability_catalog()` → `SignalPolicy.strategy_capability_contract()`
-- 输出最小字段：`name / valid_scopes / needed_indicators / needs_intrabar / needs_htf / voting_group_policy / regime_affinity / htf_requirements`
+- 输出最小字段：`name / valid_scopes / needed_indicators / needs_intrabar / needs_htf / regime_affinity / htf_requirements`
 - 回测与实盘运行时都消费同一份能力快照；`/admin/strategies/capability-reconciliation` 提供 module/policy 对账视图（`module_only` / `runtime_only` / `drift_items`），
   `/admin/strategies/capability-contract` 提供两端完整能力清单及对账结果，支持新增/回归时一眼确认入链一致性。
 
@@ -469,22 +468,16 @@ snapshot event
                                          └─ 命中则 publish intrabar_armed_*，否则终止本轮
 ```
 
-## 4. 投票路径（Consensus）
+## 4. 单策略结果收口
 
-`voting_enabled=True` 时：
+当前运行时不再做 vote/consensus 聚合：
 
-- 默认 `voting_groups=[]` → 全局 consensus；
-- 非空 `voting_groups` → 组内投票，组内策略不再作为独立策略事件发出；
-- voting 产物策略名为 `consensus`（或分组名）。
+- 每个策略独立产出 `SignalDecision`；
+- `buy/sell` 直接进入 `transition_and_publish()`；
+- `hold` 或无方向结果直接在 trace 中记为 `no_signal`；
+- 历史库中遗留的 `voting_completed` 仅在读侧归一化展示，不再有新的生产路径。
 
-共识置信度公式：
-
-- 基础置信度为获胜方向策略平均置信度；
-- 加入 `consensus_bonus`（加法）；
-- 乘以 `(1 - disagreement_factor)`；
-- 不再与 regime_stability 相乘，稳定度仅用于 metadata 观测。
-
-### 4.1 投票与状态更新（状态角度）
+### 4.1 单策略与状态更新（状态角度）
 
 ```text
 confirmed 状态机
@@ -527,14 +520,14 @@ IB_Armed
 发布路径：
 
 - `SignalRuntime._publish_signal_event()` → 注册监听器
-  - `TradeExecutor.on_signal_event()`（confirmed）
-  - `TradeExecutor.on_intrabar_trade_signal()`（intrabar_armed）
+  - `ExecutionIntentPublisher.on_signal_event()`（confirmed / intrabar_armed）
   - `SignalQualityTracker`
   - `HTFStateCache`
 
 intrabar 入口流程：
 
-- `intrabar_armed_buy/sell` 进入 `TradeExecutor._handle_intrabar_entry()`
+- `intrabar_armed_buy/sell` 进入 `ExecutionIntentPublisher`
+- worker claim 后由 `TradeExecutor._handle_intrabar_entry()` 处理
 - 经 `IntrabarTradeGuard`/`ExecutionGate`/完整前置 filters；
 - 执行下单；
 - `IntrabarTradeGuard` 记录同 bar 同策略同方向去重；
@@ -559,14 +552,12 @@ confirmed 与 intrabar 协同：
 ## 7. 观测与排障建议（模块化前提）
 
 1. 优先看 `SignalRuntime.status()`：确认 `queue/drop/stale/filter`；
-2. 看 `vote fusion` 与 `pipeline trace`，确认是否是评分/过滤导致“没交易”；
+2. 看 `single-strategy trace` 与 `pipeline trace`，确认是否是评分/过滤导致“没交易”；
 3. 确认 `strategy_scope/session/timeframe` 白名单是否误收紧；
 4. 看 `indicator requirement` 与 `_indicator_miss_counts`，避免首个 bar 指标不全；
 5. 关注以下可观测字段（可直接用于回溯决策漂移）：
    - `drop_rates`：总丢弃率、`intrabar` 过期丢弃率、confirmed/intrabar 丢弃占比；
    - `dropped_intrabar_stale`：`intrabar` 入队后超过 300s 的过期丢弃计数；
-   - `voting_stats`：`votes.calls/input_decisions/fused_decisions`、单/多组投票产出统计；
-   - `voting_stats.last_path`：本次是否走 `"group"` 或 `"consensus"`；
 6. 看 `runtime_recovery` 恢复记录与 `confirmed_cancelled` 频次，识别重启漂移。
 
 ## 8. 设计约束（用于后续会话）

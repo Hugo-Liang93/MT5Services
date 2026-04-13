@@ -292,6 +292,7 @@ class ModifyOrdersRequest(BaseModel):
 
 
 class ModifyPositionsRequest(BaseModel):
+    ticket: Optional[int] = None
     symbol: Optional[str] = None
     magic: Optional[int] = None
     sl: Optional[float] = None

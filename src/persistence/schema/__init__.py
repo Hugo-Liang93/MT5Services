@@ -44,6 +44,7 @@ from .signal_outcomes import (
 )
 from .auto_executions import DDL as AUTO_EXECUTIONS_DDL, INSERT_SQL as INSERT_AUTO_EXECUTIONS_SQL
 from .execution_intents import DDL as EXECUTION_INTENTS_DDL, INSERT_SQL as INSERT_EXECUTION_INTENTS_SQL
+from .execution_intents import MIGRATION_SQL as EXECUTION_INTENTS_MIGRATION_SQL
 from .trade_outcomes import DDL as TRADE_OUTCOMES_DDL, INSERT_SQL as INSERT_TRADE_OUTCOMES_SQL
 
 # ── Trading State ────────────────────────────────────────────────
@@ -54,6 +55,7 @@ from .trade_command_audits import (
 from .operator_commands import (
     DDL as OPERATOR_COMMANDS_DDL,
     INSERT_SQL as INSERT_OPERATOR_COMMANDS_SQL,
+    MIGRATION_SQL as OPERATOR_COMMANDS_MIGRATION_SQL,
 )
 from .pending_order_states import DDL as PENDING_ORDER_STATES_DDL, UPSERT_SQL as UPSERT_PENDING_ORDER_STATES_SQL
 from .position_runtime_states import DDL as POSITION_RUNTIME_STATES_DDL, UPSERT_SQL as UPSERT_POSITION_RUNTIME_STATES_SQL
@@ -132,6 +134,8 @@ DDL_STATEMENTS = [
 
 POST_INIT_DDL_STATEMENTS = [
     ECONOMIC_CALENDAR_MIGRATION_SQL,
+    EXECUTION_INTENTS_MIGRATION_SQL,
+    OPERATOR_COMMANDS_MIGRATION_SQL,
     RUNTIME_TASKS_MIGRATION_SQL,
 ]
 

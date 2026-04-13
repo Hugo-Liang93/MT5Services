@@ -56,11 +56,7 @@ class ExecutionIntentPublisher:
     def on_signal_event(self, event: SignalEvent) -> None:
         if not self._auto_trade_enabled or self._runtime_identity.instance_role != "main":
             return
-        if event.scope != "confirmed":
-            return
-        if "confirmed" not in str(event.signal_state or ""):
-            return
-        if event.direction not in {"buy", "sell"}:
+        if not self._is_actionable_signal_event(event):
             return
         if not event.signal_id:
             return
@@ -119,6 +115,19 @@ class ExecutionIntentPublisher:
 
         self._write_fn(target_rows)
 
+    @staticmethod
+    def _is_actionable_signal_event(event: SignalEvent) -> bool:
+        scope = str(event.scope or "").strip().lower()
+        signal_state = str(event.signal_state or "").strip().lower()
+        direction = str(event.direction or "").strip().lower()
+        if direction not in {"buy", "sell"}:
+            return False
+        if scope == "confirmed":
+            return "confirmed" in signal_state
+        if scope == "intrabar":
+            return signal_state.startswith("intrabar_armed_")
+        return False
+
     def _resolve_target_accounts(self, strategy: str) -> Iterable[MT5Settings]:
         deployment = self._strategy_deployments.get(strategy)
         if deployment is None or not deployment.allows_live_execution():
@@ -175,6 +184,8 @@ class ExecutionIntentPublisher:
                     "trace_id": trace_id,
                     "strategy": event.strategy,
                     "direction": event.direction,
+                    "signal_scope": event.scope,
+                    "signal_state": event.signal_state,
                     "target_account_key": target_account_key,
                     "target_account_alias": target_account_alias,
                     "published_by_instance_id": self._runtime_identity.instance_id,

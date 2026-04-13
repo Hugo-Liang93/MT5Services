@@ -92,6 +92,77 @@ def test_build_storage_runtime_summary_marks_critical_when_ingestor_thread_stops
     assert summary["status"] == "critical"
 
 
+def test_build_storage_runtime_summary_includes_intrabar_synthesis_health() -> None:
+    summary = RuntimeReadModel.build_storage_summary(
+        {
+            "threads": {"writer_alive": True, "ingest_alive": True},
+            "summary": {"total": 1, "high": 0, "critical": 0, "full": 0},
+            "queues": {
+                "ticks": {"status": "normal", "utilization_pct": 10.0, "pending": 0},
+            },
+            "intrabar_synthesis": {
+                "XAUUSD_M5": {
+                    "trigger_tf": "M1",
+                    "count": 10,
+                    "expected_interval_seconds": 60,
+                    "stale_threshold_seconds": 180,
+                    "last_age_seconds": 12.0,
+                    "stale": False,
+                    "status": "healthy",
+                },
+                "XAUUSD_H1": {
+                    "trigger_tf": "M5",
+                    "count": 3,
+                    "expected_interval_seconds": 300,
+                    "stale_threshold_seconds": 900,
+                    "last_age_seconds": 1200.0,
+                    "stale": True,
+                    "status": "stale",
+                },
+            },
+        }
+    )
+
+    synthesis = summary["intrabar_synthesis"]
+    assert synthesis["configured"] is True
+    assert synthesis["status"] == "warning"
+    assert synthesis["total"] == 2
+    assert synthesis["stale"] == 1
+    assert synthesis["warming_up"] == 0
+    assert synthesis["worst_age_seconds"] == 1200.0
+
+
+def test_build_storage_runtime_summary_marks_intrabar_synthesis_warming_up() -> None:
+    summary = RuntimeReadModel.build_storage_summary(
+        {
+            "threads": {"writer_alive": True, "ingest_alive": True},
+            "summary": {"total": 1, "high": 0, "critical": 0, "full": 0},
+            "queues": {
+                "ticks": {"status": "normal", "utilization_pct": 10.0, "pending": 0},
+            },
+            "intrabar_synthesis": {
+                "XAUUSD_H1": {
+                    "trigger_tf": "M5",
+                    "count": 0,
+                    "expected_interval_seconds": 300,
+                    "stale_threshold_seconds": 900,
+                    "last_age_seconds": None,
+                    "stale": False,
+                    "status": "warming_up",
+                },
+            },
+        }
+    )
+
+    synthesis = summary["intrabar_synthesis"]
+    assert synthesis["configured"] is True
+    assert synthesis["status"] == "warming_up"
+    assert synthesis["warming_up"] == 1
+    assert synthesis["healthy"] == 0
+    assert synthesis["stale"] == 0
+    assert synthesis["worst_age_seconds"] is None
+
+
 def test_build_runtime_trading_summary_includes_risk_and_coordination_issues() -> None:
     summary = RuntimeReadModel.build_trading_summary(
         {

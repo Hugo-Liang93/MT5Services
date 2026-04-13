@@ -1,12 +1,9 @@
-"""TradeExecutor：消费确认信号并执行自动下单。
+"""TradeExecutor：消费 execution-intent 或本地适配事件并执行自动下单。
 
 职责边界保持清晰：
 - 信号模块只负责生成并发布 `SignalEvent`
-- `TradeExecutor` 通过 `SignalRuntime.add_signal_listener()` 订阅事件并执行交易
-
-在 `deps.py` 中的典型接入方式：
-    executor = TradeExecutor(trading_module=_c.trade_module, config=cfg)
-    signal_runtime.add_signal_listener(executor.on_signal_event)
+- live/runtime 正式主链由 `ExecutionIntentConsumer -> TradeExecutor.process_event()`
+- `on_signal_event()` / `on_intrabar_trade_signal()` 仅保留为本地适配入口
 """
 
 from __future__ import annotations
@@ -31,12 +28,13 @@ from src.signals.models import SignalEvent
 from ..pending.manager import PendingEntryManager
 from ..ports import ExecutorTradingPort
 from ..positions.manager import PositionManager
-from ..runtime_lifecycle import OwnedThreadLifecycle
+from ..runtime.lifecycle import OwnedThreadLifecycle
 from ..tracking.trade_outcome import TradeOutcomeTracker
 from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
 from .eventing import emit_execution_decided as _emit_execution_decided_helper
 from .eventing import emit_admission_report as _emit_admission_report_helper
 from .eventing import emit_blocked_admission_report as _emit_blocked_admission_report_helper
+from .eventing import emit_terminal_execution_event as _emit_terminal_execution_event_helper
 from .eventing import notify_skip as _notify_skip_helper
 from .decision_engine import ExecutionDecisionEngine
 from .pre_trade_pipeline import PreTradePipeline
@@ -47,7 +45,10 @@ from .result_recorder import ExecutionResultRecorder
 from . import pre_trade_checks as _ptc
 from .sizing import RegimeSizing, extract_atr_from_indicators
 from .reasons import (
+    REASON_AUTO_TRADE_DISABLED,
     REASON_INTRABAR_GUARD_MISSING,
+    REASON_INTRABAR_POSITION_ALREADY_VALIDATED,
+    REASON_INTRABAR_POSITION_HOLD,
     REASON_INTRABAR_PARENT_BAR_MISSING,
     REASON_INTRABAR_GUARD_BLOCKED,
     REASON_INTRABAR_GATE_BLOCKED,
@@ -55,6 +56,8 @@ from .reasons import (
     REASON_TRADE_PARAMS_UNAVAILABLE,
     SKIP_CATEGORY_TRADE_PARAMS,
     SKIP_CATEGORY_COST_GUARD,
+    SKIP_CATEGORY_DISPATCH,
+    reason_category,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,6 +122,7 @@ class TradeExecutor:
         performance_tracker: "StrategyPerformanceTracker | None" = None,
         pipeline_event_bus: PipelineEventBus | None = None,
         equity_curve_filter: Any | None = None,
+        quote_health_fn: Callable[[str | None], dict[str, Any]] | None = None,
         runtime_identity: Any | None = None,
         circuit_breaker_history_fn: Callable[[list], None] | None = None,
     ):
@@ -141,6 +145,7 @@ class TradeExecutor:
         self._performance_tracker = performance_tracker
         # 权益曲线过滤器。
         self._equity_curve_filter = equity_curve_filter
+        self._quote_health_fn = quote_health_fn
         self._pipeline_event_bus = pipeline_event_bus
         self._runtime_identity = runtime_identity
         self._circuit_breaker_history_fn = circuit_breaker_history_fn
@@ -249,6 +254,10 @@ class TradeExecutor:
     @property
     def equity_curve_filter(self):
         return self._equity_curve_filter
+
+    @property
+    def quote_health_fn(self) -> Callable[[str | None], dict[str, Any]] | None:
+        return self._quote_health_fn
 
     @property
     def runtime_identity(self):
@@ -374,15 +383,47 @@ class TradeExecutor:
     def executed_signal_ids(self) -> deque[str]:
         return self._executed_signal_ids
 
+    def quote_health(self, symbol: str | None) -> dict[str, Any]:
+        if self._quote_health_fn is None:
+            return {
+                "stale": False,
+                "age_seconds": None,
+                "stale_threshold_seconds": None,
+            }
+        try:
+            snapshot = self._quote_health_fn(symbol)
+        except Exception:
+            logger.debug(
+                "TradeExecutor: quote health probe failed for %s",
+                symbol,
+                exc_info=True,
+            )
+            return {
+                "stale": True,
+                "age_seconds": None,
+                "stale_threshold_seconds": None,
+            }
+        if not isinstance(snapshot, dict):
+            return {
+                "stale": False,
+                "age_seconds": None,
+                "stale_threshold_seconds": None,
+            }
+        return {
+            "stale": bool(snapshot.get("stale", False)),
+            "age_seconds": snapshot.get("age_seconds"),
+            "stale_threshold_seconds": snapshot.get("stale_threshold_seconds"),
+        }
+
     # ------------------------------------------------------------------
     # Public listener interface
     # ------------------------------------------------------------------
 
     def on_signal_event(self, event: SignalEvent) -> None:
-        """Called by SignalRuntime for every signal state transition.
+        """本地适配入口：把 confirmed 事件送入执行队列。
 
-        Non-blocking: enqueues the event for the background worker thread.
-        Only acts on scope=confirmed, state-changing transitions with a buy/sell action.
+        正式 live 主链通常由 ExecutionIntentConsumer 直接调用 process_event()。
+        这里保留为单进程/测试场景的非阻塞适配层。
         """
         if event.scope != "confirmed":
             return
@@ -420,10 +461,10 @@ class TradeExecutor:
                 self._result_recorder.record_overflow(event)
 
     def on_intrabar_trade_signal(self, event: SignalEvent) -> None:
-        """Intrabar 交易信号入口。仅接受 intrabar_armed_* 状态。
+        """本地适配入口：把 intrabar_armed_* 事件送入执行队列。
 
-        与 on_signal_event() 并行注册为 signal listener。
-        intrabar 是 best-effort，队列满时直接丢弃。
+        正式 live 主链通常由 ExecutionIntentConsumer 直接调用 process_event()。
+        这里保留为单进程/测试场景的 best-effort 适配层。
         """
         if event.scope != "intrabar":
             return
@@ -486,9 +527,27 @@ class TradeExecutor:
             except queue.Empty:
                 continue
             try:
-                self.process_event(event)
-            except Exception:
+                result = self.process_event(event)
+                _emit_terminal_execution_event_helper(
+                    pipeline_event_bus=self.get_pipeline_event_bus(),
+                    event=event,
+                    result=result,
+                    extra_payload=self._build_local_terminal_payload(event),
+                )
+            except Exception as exc:
                 logger.error("TradeExecutor worker error", exc_info=True)
+                _emit_terminal_execution_event_helper(
+                    pipeline_event_bus=self.get_pipeline_event_bus(),
+                    event=event,
+                    result={
+                        "status": "failed",
+                        "reason": str(exc),
+                        "category": SKIP_CATEGORY_DISPATCH,
+                        "error_code": type(exc).__name__,
+                        "details": {"error": str(exc)},
+                    },
+                    extra_payload=self._build_local_terminal_payload(event),
+                )
             finally:
                 self._exec_queue.task_done()
 
@@ -539,8 +598,7 @@ class TradeExecutor:
 
     def process_event(self, event: SignalEvent) -> dict[str, Any] | None:
         if event.scope == "intrabar":
-            self._handle_intrabar_entry(event)
-            return {"status": "intrabar_processed", "signal_id": event.signal_id}
+            return self._handle_intrabar_entry(event)
         return self._handle_confirmed(event)
 
     def record_circuit_breaker_event(
@@ -628,6 +686,102 @@ class TradeExecutor:
     def _run_pre_trade_filters(self, event: SignalEvent, tf: str) -> str | None:
         return self._pre_trade_pipeline.run_confirmed(event, tf)
 
+    def _build_local_terminal_payload(self, event: SignalEvent) -> dict[str, Any]:
+        metadata = dict(event.metadata or {})
+        payload: dict[str, Any] = {}
+        runtime_identity = self._runtime_identity
+        if runtime_identity is not None:
+            payload.update(
+                {
+                    "account_key": getattr(runtime_identity, "account_key", None),
+                    "account_alias": getattr(runtime_identity, "account_alias", None),
+                    "instance_id": getattr(runtime_identity, "instance_id", None),
+                    "instance_role": getattr(runtime_identity, "instance_role", None),
+                }
+            )
+        for key in (
+            "intent_id",
+            "intent_key",
+            "target_account_key",
+            "target_account_alias",
+            "action_id",
+        ):
+            value = metadata.get(key)
+            if value not in (None, ""):
+                payload[key] = value
+        return {key: value for key, value in payload.items() if value not in (None, "")}
+
+    def _build_skipped_result(
+        self,
+        reason: str,
+        *,
+        category: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_reason = str(reason or "skipped").strip() or "skipped"
+        normalized_category = str(
+            category or reason_category(normalized_reason)
+        ).strip() or reason_category(normalized_reason)
+        result: dict[str, Any] = {
+            "status": "skipped",
+            "reason": normalized_reason,
+            "skip_reason": normalized_reason,
+            "category": normalized_category,
+            "skip_category": normalized_category,
+        }
+        if details:
+            result["details"] = dict(details)
+        return result
+
+    def _record_skip_result(
+        self,
+        event: SignalEvent,
+        reason: str,
+        tf: str,
+        *,
+        category: str | None = None,
+        details: dict[str, Any] | None = None,
+        log_level: str = "info",
+        message: str | None = None,
+        set_last_risk_block: bool = False,
+    ) -> dict[str, Any]:
+        normalized_reason = str(reason or "skipped").strip() or "skipped"
+        normalized_category = str(
+            category or reason_category(normalized_reason)
+        ).strip() or reason_category(normalized_reason)
+        if set_last_risk_block:
+            self.last_risk_block = normalized_reason
+        log_message = message or (
+            f"TradeExecutor: skipping {event.symbol}/{event.strategy} "
+            f"{event.direction} - {normalized_reason}"
+        )
+        if log_level == "error":
+            logger.error(log_message)
+        elif log_level == "warning":
+            logger.warning(log_message)
+        elif log_level == "debug":
+            logger.debug(log_message)
+        else:
+            logger.info(log_message)
+        self.execution_log.append(
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "signal_id": event.signal_id,
+                "symbol": event.symbol,
+                "direction": event.direction,
+                "strategy": event.strategy,
+                "success": False,
+                "skipped": True,
+                "reason": normalized_reason,
+            }
+        )
+        _notify_skip_helper(self, event.signal_id, normalized_reason, tf)
+        return self._build_skipped_result(
+            normalized_reason,
+            category=normalized_category,
+            details=details,
+        )
+
     # ------------------------------------------------------------------
     # Core execution dispatch
     # ------------------------------------------------------------------
@@ -654,24 +808,42 @@ class TradeExecutor:
             if has_pos:
                 if event.direction == intra_dir:
                     # 同方向 → 仓位继续，跳过
-                    logger.info(
-                        "Intrabar position validated by confirmed signal: "
-                        "%s/%s/%s %s",
-                        event.symbol,
-                        event.timeframe,
-                        event.strategy,
-                        intra_dir,
+                    return self._record_skip_result(
+                        event,
+                        REASON_INTRABAR_POSITION_ALREADY_VALIDATED,
+                        tf,
+                        details={
+                            "intrabar_direction": intra_dir,
+                            "bar_time": (
+                                bar_time.isoformat()
+                                if isinstance(bar_time, datetime)
+                                else bar_time
+                            ),
+                        },
+                        message=(
+                            "Intrabar position validated by confirmed signal: "
+                            f"{event.symbol}/{event.timeframe}/{event.strategy} {intra_dir}"
+                        ),
                     )
-                    return None
                 elif event.direction not in ("buy", "sell"):
                     # hold → 不动，交给出场规则
-                    logger.info(
-                        "Confirmed hold with intrabar position, keeping: " "%s/%s/%s",
-                        event.symbol,
-                        event.timeframe,
-                        event.strategy,
+                    return self._record_skip_result(
+                        event,
+                        REASON_INTRABAR_POSITION_HOLD,
+                        tf,
+                        details={
+                            "intrabar_direction": intra_dir,
+                            "bar_time": (
+                                bar_time.isoformat()
+                                if isinstance(bar_time, datetime)
+                                else bar_time
+                            ),
+                        },
+                        message=(
+                            "Confirmed hold with intrabar position, keeping: "
+                            f"{event.symbol}/{event.timeframe}/{event.strategy}"
+                        ),
                     )
-                    return None
                 # 反转 → fall through 到正常 confirmed 流程（开反向仓）
                 # PositionManager 的 Chandelier Exit / 信号反转确认会处理平仓
                 logger.info(
@@ -692,12 +864,20 @@ class TradeExecutor:
                 )
 
         if not self.config.enabled:
-            return None
+            return self._record_skip_result(
+                event,
+                REASON_AUTO_TRADE_DISABLED,
+                tf,
+                set_last_risk_block=True,
+            )
 
         # ── 预交易过滤链 ──
         reject_reason = self._pre_trade_pipeline.run_confirmed(event, tf)
         if reject_reason is not None:
-            return None
+            return self._build_skipped_result(
+                reject_reason,
+                category=reason_category(reject_reason),
+            )
 
         # ── 交易参数计算 ──
         decision = self._decision_engine.build_confirmed_decision(event)
@@ -724,7 +904,15 @@ class TradeExecutor:
                 SKIP_CATEGORY_TRADE_PARAMS,
                 tf,
             )
-            return None
+            return self._build_skipped_result(
+                decision.reject_reason or REASON_TRADE_PARAMS_UNAVAILABLE,
+                category=SKIP_CATEGORY_TRADE_PARAMS,
+                details={
+                    "atr": atr,
+                    "balance": balance,
+                    "close_price": close_price,
+                },
+            )
 
         # ── Spread-to-stop 比率检查 ──
         cost_metrics = decision.cost_metrics or {}
@@ -740,7 +928,11 @@ class TradeExecutor:
                 tf,
                 extra_log=f"{spread_to_stop_ratio:.3f} > {self.config.max_spread_to_stop_ratio:.3f}",
             )
-            return None
+            return self._build_skipped_result(
+                REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH,
+                category=SKIP_CATEGORY_COST_GUARD,
+                details=dict(cost_metrics),
+            )
 
         # ── 全部通过，派发执行 ──
         _emit_admission_report_helper(
@@ -785,14 +977,20 @@ class TradeExecutor:
     # Intrabar 交易执行
     # ------------------------------------------------------------------
 
-    def _handle_intrabar_entry(self, event: SignalEvent) -> None:
+    def _handle_intrabar_entry(self, event: SignalEvent) -> dict[str, Any] | None:
         """Intrabar armed 信号执行。复用完整 pre-trade filter chain。"""
-        if not self.config.enabled:
-            return
         tf = event.timeframe or ""
+        if not self.config.enabled:
+            return self._record_skip_result(
+                event,
+                REASON_AUTO_TRADE_DISABLED,
+                tf,
+                set_last_risk_block=True,
+            )
         intrabar_pre_trade = self._pre_trade_pipeline.run_intrabar(event, tf)
         if not intrabar_pre_trade.can_execute:
-            if intrabar_pre_trade.reject_reason == REASON_INTRABAR_GUARD_MISSING:
+            reject_reason = intrabar_pre_trade.reject_reason
+            if reject_reason == REASON_INTRABAR_GUARD_MISSING:
                 logger.warning(
                     "TradeExecutor: intrabar guard not injected, "
                     "dropping intrabar signal %s/%s/%s",
@@ -800,9 +998,9 @@ class TradeExecutor:
                     event.timeframe,
                     event.strategy,
                 )
-            elif intrabar_pre_trade.reject_reason == REASON_INTRABAR_PARENT_BAR_MISSING:
+            elif reject_reason == REASON_INTRABAR_PARENT_BAR_MISSING:
                 logger.warning("TradeExecutor: no parent_bar_time in intrabar event, skip")
-            elif intrabar_pre_trade.reject_reason == REASON_INTRABAR_GUARD_BLOCKED:
+            elif reject_reason == REASON_INTRABAR_GUARD_BLOCKED:
                 logger.debug(
                     "IntrabarTradeGuard blocked: %s/%s/%s reason=%s",
                     event.symbol,
@@ -810,7 +1008,7 @@ class TradeExecutor:
                     event.strategy,
                     intrabar_pre_trade.detail,
                 )
-            elif intrabar_pre_trade.reject_reason == REASON_INTRABAR_GATE_BLOCKED:
+            elif reject_reason == REASON_INTRABAR_GATE_BLOCKED:
                 logger.debug(
                     "ExecutionGate.check_intrabar blocked: %s/%s/%s reason=%s",
                     event.symbol,
@@ -818,23 +1016,60 @@ class TradeExecutor:
                     event.strategy,
                     intrabar_pre_trade.detail,
                 )
-            _emit_blocked_admission_report_helper(
-                self,
-                event,
-                code=intrabar_pre_trade.reject_reason or "intrabar_blocked",
-                category="execution_gate",
-                message=str(intrabar_pre_trade.detail or intrabar_pre_trade.reject_reason or "intrabar blocked"),
-                details={
-                    "parent_bar_time": (
-                        parent_bar_time.isoformat()
-                        if isinstance((parent_bar_time := intrabar_pre_trade.parent_bar_time), datetime)
-                        else parent_bar_time
-                    ),
-                    "reject_reason": intrabar_pre_trade.reject_reason,
-                },
-                requested_operation="intrabar_execution",
+            else:
+                logger.debug(
+                    "Intrabar pre-trade blocked: %s/%s/%s reason=%s detail=%s",
+                    event.symbol,
+                    event.timeframe,
+                    event.strategy,
+                    reject_reason,
+                    intrabar_pre_trade.detail,
+                )
+            blocked_category = (
+                "execution_gate"
+                if reject_reason in {
+                    REASON_INTRABAR_GUARD_MISSING,
+                    REASON_INTRABAR_PARENT_BAR_MISSING,
+                    REASON_INTRABAR_GUARD_BLOCKED,
+                    REASON_INTRABAR_GATE_BLOCKED,
+                }
+                else reason_category(str(reject_reason or ""))
             )
-            return
+            blocked_details = {
+                "parent_bar_time": (
+                    parent_bar_time.isoformat()
+                    if isinstance(
+                        (parent_bar_time := intrabar_pre_trade.parent_bar_time),
+                        datetime,
+                    )
+                    else parent_bar_time
+                ),
+                "reject_reason": reject_reason,
+            }
+            if reject_reason in {
+                REASON_INTRABAR_GUARD_MISSING,
+                REASON_INTRABAR_PARENT_BAR_MISSING,
+                REASON_INTRABAR_GUARD_BLOCKED,
+                REASON_INTRABAR_GATE_BLOCKED,
+            }:
+                _emit_blocked_admission_report_helper(
+                    self,
+                    event,
+                    code=reject_reason or "intrabar_blocked",
+                    category=blocked_category,
+                    message=str(
+                        intrabar_pre_trade.detail
+                        or reject_reason
+                        or "intrabar blocked"
+                    ),
+                    details=blocked_details,
+                    requested_operation="intrabar_execution",
+                )
+            return self._build_skipped_result(
+                reject_reason or "intrabar_blocked",
+                category=blocked_category,
+                details=blocked_details,
+            )
         parent_bar_time = intrabar_pre_trade.parent_bar_time
 
         # 4. 交易参数计算（ATR 用上一根确认 bar 的）
@@ -846,11 +1081,40 @@ class TradeExecutor:
                 event.timeframe,
                 event.strategy,
             )
-            return
+            _emit_blocked_admission_report_helper(
+                self,
+                event,
+                code=decision.reject_reason or REASON_TRADE_PARAMS_UNAVAILABLE,
+                category=SKIP_CATEGORY_TRADE_PARAMS,
+                message="intrabar trade parameters unavailable",
+                details={
+                    "parent_bar_time": (
+                        parent_bar_time.isoformat()
+                        if isinstance(parent_bar_time, datetime)
+                        else parent_bar_time
+                    ),
+                },
+                requested_operation="intrabar_execution",
+            )
+            return self._build_skipped_result(
+                decision.reject_reason or REASON_TRADE_PARAMS_UNAVAILABLE,
+                category=SKIP_CATEGORY_TRADE_PARAMS,
+                details={
+                    "parent_bar_time": (
+                        parent_bar_time.isoformat()
+                        if isinstance(parent_bar_time, datetime)
+                        else parent_bar_time
+                    ),
+                },
+            )
 
         # 5. 成本检查
         cost_metrics = decision.cost_metrics
         if cost_metrics is not None and cost_metrics.get("blocked"):
+            reject_reason = str(
+                cost_metrics.get("reason")
+                or REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH
+            ).strip() or REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH
             logger.info(
                 "Intrabar entry blocked by cost check: %s/%s/%s",
                 event.symbol,
@@ -860,13 +1124,17 @@ class TradeExecutor:
             _emit_blocked_admission_report_helper(
                 self,
                 event,
-                code="intrabar_cost_blocked",
+                code=reject_reason,
                 category=SKIP_CATEGORY_COST_GUARD,
                 message="intrabar entry blocked by cost check",
                 details=dict(cost_metrics),
                 requested_operation="intrabar_execution",
             )
-            return
+            return self._build_skipped_result(
+                reject_reason,
+                category=SKIP_CATEGORY_COST_GUARD,
+                details=dict(cost_metrics),
+            )
 
         # 6. 执行（复用现有 market/pending 逻辑）
         _emit_admission_report_helper(
@@ -890,7 +1158,10 @@ class TradeExecutor:
         )
         result = self._decision_engine.execute(event, decision)
         if result is None:
-            return
+            return self._build_skipped_result(
+                "execution_result_unavailable",
+                category=SKIP_CATEGORY_DISPATCH,
+            )
 
         # 7. 记录到 guard
         self._intrabar_guard.record_trade(
@@ -909,6 +1180,7 @@ class TradeExecutor:
             event.direction,
             event.confidence,
         )
+        return result
 
     def status(self) -> dict[str, Any]:
         slippage_samples = int(self._execution_quality["slippage_samples"] or 0)
@@ -950,11 +1222,11 @@ class TradeExecutor:
             },
             "execution_gate": {
                 "trade_trigger_strategies": [],
-                "voting_group_strategies": sorted(
-                    self._execution_gate.config.voting_group_strategies
+                "intrabar_trading_enabled": bool(
+                    self._execution_gate.config.intrabar_trading_enabled
                 ),
-                "standalone_override": sorted(
-                    self._execution_gate.config.standalone_override
+                "intrabar_enabled_strategies": sorted(
+                    self._execution_gate.config.intrabar_enabled_strategies
                 ),
             },
             "strategy_deployments": {

@@ -9,7 +9,7 @@ from src.signals.confidence import apply_intrabar_decay
 from src.signals.evaluation.regime import RegimeType
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalDecision
-from src.trading.execution import RegimeSizing, compute_trade_params
+from src.trading.execution.sizing import RegimeSizing, compute_trade_params
 
 from ..models import SignalEvaluation
 from .execution_semantics import resolve_trade_parameters

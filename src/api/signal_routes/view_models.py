@@ -39,12 +39,6 @@ class MarketStructureView(FlexibleSignalView):
     timeframe: str
 
 
-class VotingStatsView(FlexibleSignalView):
-    voting_enabled: bool = False
-    voting_config: Optional[Dict[str, Any]] = None
-    regime_stability: Dict[str, Any] = Field(default_factory=dict)
-
-
 class HTFCacheStatusView(FlexibleSignalView):
     pass
 

@@ -1,8 +1,9 @@
 ﻿"""实盘上线前预检工具 — 验证配置、连接、风控参数一致性。
 
 用法：
-    python -m src.ops.cli.live_preflight
-    python -m src.ops.cli.live_preflight --check-api    # 同时检查 API 是否在运行
+    python -m src.ops.cli.live_preflight --environment live
+    python -m src.ops.cli.live_preflight --environment demo
+    python -m src.ops.cli.live_preflight --environment live --check-api    # 同时检查 API 是否在运行
 
 功能：
     1. MT5 连接验证（终端、账户、品种可用性）
@@ -23,98 +24,152 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import warnings
 
-warnings.filterwarnings("ignore")
-
 import logging
-
-# 只抑制 DEBUG/INFO，保留 WARNING 以便检查告警
-logging.basicConfig(level=logging.WARNING, format="%(message)s")
-logging.getLogger("src").setLevel(logging.WARNING)
 
 from typing import Any, Dict, List, Tuple
 
+from src.ops.mt5_session_gate import (
+    ensure_mt5_session_gate_or_raise,
+    ensure_topology_group_mt5_session_gate_or_raise,
+    probe_mt5_session_gate,
+)
 
-def _check_mt5() -> List[Tuple[str, str, str]]:
-    """检查 MT5 连接和账户。返回 [(check_name, status, detail)]。"""
+
+def _configure_cli_logging() -> None:
+    warnings.filterwarnings("ignore")
+    # 只抑制 DEBUG/INFO，保留 WARNING 以便检查告警
+    logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    logging.getLogger("src").setLevel(logging.WARNING)
+
+
+def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str, str]]:
+    """检查单个实例的 MT5 会话门禁和账户。返回 [(check_name, status, detail)]。"""
     results: List[Tuple[str, str, str]] = []
+    label_prefix = f"[{instance_name}] " if instance_name else ""
 
     try:
         from src.config.mt5 import load_mt5_settings
 
-        mt5_cfg = load_mt5_settings()
-        results.append(("MT5 config loaded", "OK", f"server={mt5_cfg.mt5_server}"))
+        mt5_cfg = load_mt5_settings(instance_name=instance_name)
+        results.append((f"{label_prefix}MT5 config loaded", "OK", f"server={mt5_cfg.mt5_server}"))
     except Exception as e:
-        results.append(("MT5 config loaded", "FAIL", str(e)))
+        results.append((f"{label_prefix}MT5 config loaded", "FAIL", str(e)))
         return results
 
     try:
-        import MetaTrader5 as mt5
+        from src.clients.base import MT5BaseClient, mt5
 
-        # 与实盘 src/clients/base.py 一致：initialize 时直接传入全部凭据
-        init_kwargs: dict = {}
-        if mt5_cfg.mt5_path:
-            init_kwargs["path"] = mt5_cfg.mt5_path
-        if mt5_cfg.mt5_login is not None:
-            init_kwargs["login"] = mt5_cfg.mt5_login
-        if mt5_cfg.mt5_password:
-            init_kwargs["password"] = mt5_cfg.mt5_password
-        if mt5_cfg.mt5_server:
-            init_kwargs["server"] = mt5_cfg.mt5_server
+        client = MT5BaseClient(settings=mt5_cfg)
+        state = client.inspect_session_state(
+            require_terminal_process=True,
+            attempt_initialize=True,
+            attempt_login=True,
+            shutdown_after_probe=False,
+        )
 
-        if not mt5.initialize(**init_kwargs):
-            results.append(("MT5 terminal", "FAIL", f"initialize() failed: {mt5.last_error()}"))
-            return results
-        results.append(("MT5 terminal", "OK", f"path={mt5_cfg.mt5_path}"))
+        path_status = "OK" if state.terminal_reachable else "FAIL"
+        path_detail = f"path={mt5_cfg.mt5_path}" if state.terminal_reachable else (
+            f"{state.error_code or 'terminal_not_found'}: {state.error_message}"
+        )
+        results.append((f"{label_prefix}MT5 terminal path", path_status, path_detail))
 
-        # 验证登录账户是否匹配配置
-        acct_info = mt5.account_info()
-        if acct_info and mt5_cfg.mt5_login and acct_info.login != mt5_cfg.mt5_login:
-            # initialize 后账户不匹配，显式 login 切换
-            logged_in = mt5.login(
-                login=mt5_cfg.mt5_login,
-                password=mt5_cfg.mt5_password,
-                server=mt5_cfg.mt5_server,
-            )
-            if not logged_in:
-                results.append(("MT5 login", "FAIL", f"{mt5.last_error()}"))
-                mt5.shutdown()
-                return results
+        process_status = "OK" if state.terminal_process_ready else "FAIL"
+        process_detail = (
+            f"path={mt5_cfg.mt5_path}"
+            if state.terminal_process_ready
+            else f"{state.error_code or 'terminal_not_running'}: {state.error_message}"
+        )
+        results.append((f"{label_prefix}MT5 terminal process", process_status, process_detail))
 
-        # 账户信息
-        acct = mt5.account_info()
-        if acct:
-            account_type = "DEMO" if acct.trade_mode == 0 else "LIVE"
+        ipc_status = "OK" if state.ipc_ready else "FAIL"
+        ipc_detail = (
+            f"terminal={state.terminal_name or 'attached'}"
+            if state.ipc_ready
+            else f"{state.error_code or 'ipc_timeout'}: {state.error_message}"
+        )
+        results.append((f"{label_prefix}MT5 IPC", ipc_status, ipc_detail))
+
+        auth_status = "OK" if state.authorized else "FAIL"
+        auth_detail = (
+            f"login={state.login} server={state.server}"
+            if state.authorized
+            else f"{state.error_code or 'login_failed'}: {state.error_message}"
+        )
+        results.append((f"{label_prefix}MT5 authorization", auth_status, auth_detail))
+
+        account_status = "OK" if state.account_match else "FAIL"
+        account_detail = (
+            f"login={state.login} server={state.server}"
+            if state.account_match
+            else f"{state.error_code or 'account_mismatch'}: {state.error_message}"
+        )
+        results.append((f"{label_prefix}MT5 account match", account_status, account_detail))
+
+        session_status = "OK" if state.session_ready else "FAIL"
+        session_detail = (
+            f"ready login={state.login} server={state.server}"
+            if state.session_ready
+            else f"{state.error_code or 'session_not_ready'}: {state.error_message}"
+        )
+        results.append((f"{label_prefix}MT5 session gate", session_status, session_detail))
+
+        if state.interactive_login_required:
             results.append((
-                "MT5 account",
-                "OK",
-                f"login={acct.login} type={account_type} "
-                f"balance={acct.balance:.2f} equity={acct.equity:.2f} "
-                f"leverage=1:{acct.leverage} currency={acct.currency}",
+                f"{label_prefix}MT5 interactive login",
+                "FAIL",
+                "interactive_login_required: terminal needs manual unlock/login",
             ))
-            if account_type == "DEMO":
-                results.append(("Account type", "WARN", "Still on DEMO — switch to LIVE for real trading"))
-        else:
-            results.append(("MT5 account", "FAIL", "account_info() returned None"))
 
-        # XAUUSD 品种
-        symbol_info = mt5.symbol_info("XAUUSD")
-        if symbol_info:
-            results.append((
-                "XAUUSD symbol",
-                "OK",
-                f"spread={symbol_info.spread} point={symbol_info.point} "
-                f"volume_min={symbol_info.volume_min} volume_max={symbol_info.volume_max}",
-            ))
-        else:
-            results.append(("XAUUSD symbol", "FAIL", "Symbol not found or not visible"))
+        if state.session_ready and mt5 is not None:
+            acct = mt5.account_info()
+            if acct:
+                account_type = "DEMO" if acct.trade_mode == 0 else "LIVE"
+                results.append((
+                    f"{label_prefix}MT5 account",
+                    "OK",
+                    f"login={acct.login} type={account_type} "
+                    f"balance={acct.balance:.2f} equity={acct.equity:.2f} "
+                    f"leverage=1:{acct.leverage} currency={acct.currency}",
+                ))
+                if account_type == "DEMO":
+                    results.append((f"{label_prefix}Account type", "WARN", "Still on DEMO — switch to LIVE for real trading"))
+            else:
+                results.append((f"{label_prefix}MT5 account", "FAIL", "account_info() returned None"))
 
-        mt5.shutdown()
+            symbol_info = mt5.symbol_info("XAUUSD")
+            if symbol_info:
+                results.append((
+                    f"{label_prefix}XAUUSD symbol",
+                    "OK",
+                    f"spread={symbol_info.spread} point={symbol_info.point} "
+                    f"volume_min={symbol_info.volume_min} volume_max={symbol_info.volume_max}",
+                ))
+            else:
+                results.append((f"{label_prefix}XAUUSD symbol", "FAIL", "Symbol not found or not visible"))
+
+            mt5.shutdown()
     except ImportError:
-        results.append(("MT5 terminal", "SKIP", "MetaTrader5 package not installed"))
+        results.append((f"{label_prefix}MT5 terminal", "SKIP", "MetaTrader5 package not installed"))
     except Exception as e:
-        results.append(("MT5 terminal", "FAIL", str(e)))
+        results.append((f"{label_prefix}MT5 terminal", "FAIL", str(e)))
 
     return results
+
+
+def _check_mt5(environment: str | None = None) -> List[Tuple[str, str, str]]:
+    try:
+        from src.config.topology import load_topology_group
+
+        group_name = str(environment or "").strip()
+        if group_name:
+            group = load_topology_group(group_name)
+            results: List[Tuple[str, str, str]] = []
+            for instance_name in [group.main, *group.workers]:
+                results.extend(_check_mt5_instance(instance_name))
+            return results
+    except Exception:
+        pass
+    return _check_mt5_instance()
 
 
 def _check_database() -> List[Tuple[str, str, str]]:
@@ -340,6 +395,7 @@ def _render_results(
 def main() -> None:
     from src.config.instance_context import set_current_environment
 
+    _configure_cli_logging()
     parser = argparse.ArgumentParser(description="Live trading pre-flight check")
     parser.add_argument(
         "--environment",
@@ -354,7 +410,7 @@ def main() -> None:
     all_checks: List[Tuple[str, str, str]] = []
 
     sys.stderr.write("Checking MT5 connection...\n")
-    all_checks.extend(_check_mt5())
+    all_checks.extend(_check_mt5(args.environment))
 
     sys.stderr.write("Checking database...\n")
     all_checks.extend(_check_database())
@@ -370,9 +426,11 @@ def main() -> None:
         sys.stderr.write("Checking API service...\n")
         all_checks.extend(_check_api())
 
-    print(_render_results(all_checks, diff_table))
+    output = _render_results(all_checks, diff_table)
+    print(output)
+    if any(status == "FAIL" for _, status, _ in all_checks):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
     main()
-

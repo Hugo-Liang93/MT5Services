@@ -11,6 +11,7 @@ from src.entrypoint.logging_context import (
     inject_logging_context,
     install_log_record_context,
 )
+from src.ops.mt5_session_gate import ensure_mt5_session_gate_or_raise
 
 logger = logging.getLogger("mt5services.launcher")
 
@@ -118,6 +119,13 @@ def launch() -> None:
 
     # 日志文件持久化
     _setup_file_logging(system_config, formatter, logging.getLogger())
+
+    instance_name = get_current_instance_name()
+    ensure_mt5_session_gate_or_raise(instance_name=instance_name)
+    logger.info(
+        "MT5 session gate passed for instance=%s",
+        instance_name or "default",
+    )
 
     app_target, host, port = resolve_runtime_target()
     logger.info(

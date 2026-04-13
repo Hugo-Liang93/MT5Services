@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 import pytest
 
 from src.signals.models import SignalContext, SignalDecision
-from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
+from src.signals.orchestration.policy import SignalPolicy
+from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
 
 # ─── Test Helpers ──────────────────────────────────────────────────────
@@ -47,7 +48,7 @@ class DummySignalService:
     def __init__(self):
         self.evaluate_calls: list[dict] = []
 
-    def strategy_capability_catalog(self, voting_group_policy=None):
+    def strategy_capability_catalog(self):
         return [
             {
                 "name": "s",
@@ -55,7 +56,6 @@ class DummySignalService:
                 "needed_indicators": ["ema50"],
                 "needs_intrabar": False,
                 "needs_htf": False,
-                "voting_group_policy": "standalone",
                 "regime_affinity": {},
                 "htf_requirements": {},
             },
@@ -65,7 +65,6 @@ class DummySignalService:
                 "needed_indicators": ["ema50"],
                 "needs_intrabar": False,
                 "needs_htf": False,
-                "voting_group_policy": "standalone",
                 "regime_affinity": {},
                 "htf_requirements": {},
             },
@@ -75,7 +74,6 @@ class DummySignalService:
                 "needed_indicators": ["ema50"],
                 "needs_intrabar": False,
                 "needs_htf": True,
-                "voting_group_policy": "standalone",
                 "regime_affinity": {},
                 "htf_requirements": {"adx14": "H1", "ema50": "H1"},
             },
@@ -85,7 +83,6 @@ class DummySignalService:
                 "needed_indicators": ["ema50"],
                 "needs_intrabar": False,
                 "needs_htf": False,
-                "voting_group_policy": "standalone",
                 "regime_affinity": {},
                 "htf_requirements": {},
             },

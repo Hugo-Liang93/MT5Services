@@ -232,11 +232,12 @@ def build_signal_layer(
     container.exposure_closeout_controller = signal_components.exposure_closeout_controller
     container.position_manager = signal_components.position_manager
     container.trade_executor = signal_components.trade_executor
-    _wire_margin_guard(
-        container.position_manager,
-        container.trade_module,
-        container.trade_executor,
-    )
+    if container.position_manager is not None:
+        _wire_margin_guard(
+            container.position_manager,
+            container.trade_module,
+            container.trade_executor,
+        )
     container.performance_tracker = signal_components.performance_tracker
     container.signal_performance_tracker = (
         signal_components.signal_performance_tracker

@@ -69,6 +69,50 @@ def _safe_component_snapshot(label: str, getter) -> dict:
         return {"status": "error", "error": str(exc)}
 
 
+def _default_paper_trading_summary() -> dict:
+    return {
+        "kind": "validation_sidecar",
+        "configured": False,
+        "running": False,
+        "status": "disabled",
+        "session_id": None,
+        "signals_received": 0,
+        "signals_executed": 0,
+        "signals_rejected": 0,
+        "reject_reasons": {},
+        "active_symbols": [],
+    }
+
+
+def _default_mt5_session_summary() -> dict:
+    return {
+        "kind": "external_dependency",
+        "status": "unavailable",
+        "connected": False,
+        "terminal_reachable": False,
+        "terminal_process_ready": False,
+        "ipc_ready": False,
+        "authorized": False,
+        "account_match": False,
+        "session_ready": False,
+        "interactive_login_required": False,
+        "error_code": "runtime_read_model_unavailable",
+        "error_message": "runtime read model does not expose mt5_session_summary",
+        "last_error": {"code": None, "message": None},
+    }
+
+
+def _safe_optional_snapshot(target, attr: str, *, fallback: dict) -> dict:
+    getter = getattr(target, attr, None)
+    if not callable(getter):
+        return dict(fallback)
+    try:
+        return getter()
+    except Exception:
+        logger.debug("Health snapshot failed for %s", attr, exc_info=True)
+        return dict(fallback)
+
+
 app = FastAPI(
     title="MT5 Market Data Service",
     version="1.0.0",
@@ -168,10 +212,23 @@ def health(
     executor_summary = runtime_read_model.trade_executor_summary()
     pending_summary = runtime_read_model.pending_entries_summary()
     position_summary = runtime_read_model.position_manager_summary()
+    trade_executor_running = bool(
+        executor_summary.get("running", executor_summary.get("enabled", False))
+    )
+    pending_running = bool(
+        pending_summary.get(
+            "running",
+            pending_summary.get("status") not in {"critical", "disabled", "unavailable"},
+        )
+    )
+    position_running = bool(position_summary.get("running", False))
     runtime_components = {
         "ingestor": {
             "running": bool(queues.get("threads", {}).get("ingest_alive", False)),
             "status": "disabled" if is_executor else "enabled",
+            "intrabar_synthesis": dict(
+                storage_summary.get("intrabar_synthesis", {}) or {}
+            ),
         },
         "storage_writer": {
             "running": bool(queues.get("threads", {}).get("writer_alive", False)),
@@ -186,15 +243,21 @@ def health(
             "status": signal_summary.get("status"),
         },
         "trade_executor": {
-            "running": bool(executor_summary.get("enabled", False)),
+            "configured": bool(executor_summary.get("configured", False)),
+            "armed": bool(
+                executor_summary.get("armed", executor_summary.get("enabled", False))
+            ),
+            "running": trade_executor_running,
             "status": executor_summary.get("status"),
         },
         "pending_entry_manager": {
-            "running": pending_summary.get("status") != "critical",
+            "configured": bool(pending_summary.get("configured", False)),
+            "running": pending_running,
             "status": pending_summary.get("status"),
         },
         "position_manager": {
-            "running": bool(position_summary.get("running", False)),
+            "configured": bool(position_summary.get("configured", False)),
+            "running": position_running,
             "status": position_summary.get("status"),
         },
         "economic_calendar": _safe_component_snapshot(
@@ -203,7 +266,33 @@ def health(
         ),
     }
     validation_sidecars = {
-        "paper_trading": runtime_read_model.paper_trading_summary(),
+        "paper_trading": _safe_optional_snapshot(
+            runtime_read_model,
+            "paper_trading_summary",
+            fallback=_default_paper_trading_summary(),
+        ),
+    }
+    market_mt5_session = None
+    if isinstance(market_status, dict):
+        session_payload = market_status.get("mt5_session")
+        if isinstance(session_payload, dict):
+            market_mt5_session = dict(session_payload)
+            market_mt5_session.setdefault("kind", "external_dependency")
+            market_mt5_session.setdefault(
+                "status",
+                "healthy" if market_mt5_session.get("session_ready") else "critical",
+            )
+            market_mt5_session.setdefault(
+                "connected",
+                bool(market_mt5_session.get("session_ready")),
+            )
+    external_dependencies = {
+        "mt5_session": market_mt5_session
+        or _safe_optional_snapshot(
+            runtime_read_model,
+            "mt5_session_summary",
+            fallback=_default_mt5_session_summary(),
+        ),
     }
 
     return ApiResponse(
@@ -216,6 +305,7 @@ def health(
             "runtime": {
                 "components": runtime_components,
                 "validation_sidecars": validation_sidecars,
+                "external_dependencies": external_dependencies,
             },
         },
     )

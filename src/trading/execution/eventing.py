@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
-from .reasons import reason_category
-from .reasons import SKIP_CATEGORY_DISPATCH, SKIP_CATEGORY_RISK_SERVICE
 
+from src.monitoring.pipeline import PipelineEvent
+from src.monitoring.pipeline.events import (
+    PIPELINE_EXECUTION_FAILED,
+    PIPELINE_EXECUTION_SKIPPED,
+    PIPELINE_EXECUTION_SUCCEEDED,
+)
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.metadata_keys import MetadataKey as MK
+from src.trading.broker.comment_codec import build_trade_comment
 from src.trading.admission.service import append_admission_report_event
+
+from .reasons import SKIP_CATEGORY_DISPATCH, SKIP_CATEGORY_RISK_SERVICE
+from .reasons import reason_category
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent
@@ -19,13 +28,154 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class TerminalExecutionOutcome:
+    status: str
+    reason: str | None = None
+    category: str | None = None
+    error_code: str | None = None
+    details: dict[str, Any] | None = None
+
+
+def _build_terminal_result(
+    *,
+    status: str,
+    reason: str,
+    category: str,
+    details: dict[str, Any] | None = None,
+    error_code: str | None = None,
+) -> dict[str, Any]:
+    normalized_status = str(status or "").strip().lower() or "failed"
+    normalized_reason = str(reason or normalized_status).strip() or normalized_status
+    normalized_category = str(category or reason_category(normalized_reason)).strip() or reason_category(normalized_reason)
+    result: dict[str, Any] = {
+        "status": normalized_status,
+        "reason": normalized_reason,
+        "category": normalized_category,
+    }
+    if normalized_status == "skipped":
+        result["skip_reason"] = normalized_reason
+        result["skip_category"] = normalized_category
+    if error_code:
+        result["error_code"] = str(error_code)
+    if details:
+        result["details"] = dict(details)
+    return result
+
+
+def interpret_terminal_result(result: Any) -> TerminalExecutionOutcome:
+    if result is None:
+        return TerminalExecutionOutcome(
+            status="skipped",
+            reason="execution_result_unavailable",
+            category=SKIP_CATEGORY_DISPATCH,
+        )
+
+    if not isinstance(result, dict):
+        return TerminalExecutionOutcome(status="completed")
+
+    normalized_status = str(result.get("status") or "").strip().lower()
+    if normalized_status in {"blocked", "skipped"}:
+        reason = (
+            str(result.get("reason") or result.get("skip_reason") or "skipped").strip()
+            or "skipped"
+        )
+        category = (
+            str(
+                result.get("category")
+                or result.get("skip_category")
+                or reason_category(reason)
+            ).strip()
+            or reason_category(reason)
+        )
+        details = result.get("details")
+        return TerminalExecutionOutcome(
+            status="skipped",
+            reason=reason,
+            category=category,
+            error_code=str(result.get("error_code") or "").strip() or None,
+            details=dict(details) if isinstance(details, dict) and details else None,
+        )
+
+    if normalized_status == "failed":
+        reason = str(result.get("reason") or "failed").strip() or "failed"
+        category = (
+            str(result.get("category") or reason_category(reason)).strip()
+            or reason_category(reason)
+        )
+        details = result.get("details")
+        return TerminalExecutionOutcome(
+            status="failed",
+            reason=reason,
+            category=category,
+            error_code=str(result.get("error_code") or "").strip() or None,
+            details=dict(details) if isinstance(details, dict) and details else None,
+        )
+
+    return TerminalExecutionOutcome(status="completed")
+
+
+def emit_terminal_execution_event(
+    *,
+    pipeline_event_bus,
+    event: "SignalEvent",
+    result: Any,
+    extra_payload: dict[str, Any] | None = None,
+) -> TerminalExecutionOutcome:
+    outcome = interpret_terminal_result(result)
+    trace_id = trace_id_for_event(event)
+    if pipeline_event_bus is None or not trace_id:
+        return outcome
+
+    payload = dict(extra_payload or {})
+    payload.setdefault("status", outcome.status)
+    payload.setdefault("signal_id", event.signal_id)
+    payload.setdefault("signal_scope", event.scope)
+    payload.setdefault("strategy", event.strategy)
+    payload.setdefault("direction", event.direction)
+    payload.setdefault("confidence", event.confidence)
+    if outcome.reason:
+        payload.setdefault("reason", outcome.reason)
+    if outcome.category:
+        payload.setdefault("category", outcome.category)
+    if outcome.status == "skipped":
+        if outcome.reason:
+            payload.setdefault("skip_reason", outcome.reason)
+        if outcome.category:
+            payload.setdefault("skip_category", outcome.category)
+    if outcome.error_code:
+        payload.setdefault("error_code", outcome.error_code)
+    if outcome.details:
+        payload.setdefault("details", dict(outcome.details))
+    if result is not None:
+        payload.setdefault(
+            "result", dict(result) if isinstance(result, dict) else result
+        )
+
+    event_type = {
+        "completed": PIPELINE_EXECUTION_SUCCEEDED,
+        "skipped": PIPELINE_EXECUTION_SKIPPED,
+        "failed": PIPELINE_EXECUTION_FAILED,
+    }[outcome.status]
+    pipeline_event_bus.emit(
+        PipelineEvent(
+            type=event_type,
+            trace_id=trace_id,
+            symbol=event.symbol,
+            timeframe=event.timeframe or "",
+            scope=event.scope,
+            ts=datetime.now(timezone.utc).isoformat(),
+            payload=payload,
+        )
+    )
+    return outcome
+
+
 def notify_skip(
     executor: "TradeExecutor",
     signal_id: str,
     reason: str,
     timeframe: str = "",
-    *,
-    event: "SignalEvent | None" = None,
 ) -> None:
     with executor.skip_lock:
         executor.skip_reasons[reason] = executor.skip_reasons.get(reason, 0) + 1
@@ -41,30 +191,6 @@ def notify_skip(
             executor.on_execution_skip(signal_id, reason)
         except Exception:
             logger.debug("on_execution_skip callback failed", exc_info=True)
-    # 发射 EXECUTION_SKIPPED pipeline 事件
-    if event is None:
-        return
-    tid = str(event.metadata.get(MK.SIGNAL_TRACE_ID) or "")
-    pipeline_bus = executor.get_pipeline_event_bus()
-    if pipeline_bus is None:
-        return
-    pipeline_bus.emit_execution_skipped(
-        trace_id=tid,
-        symbol=event.symbol,
-        timeframe=timeframe or event.timeframe or "",
-        scope=event.metadata.get(MK.SCOPE, "confirmed"),
-        strategy=event.strategy,
-        direction=event.direction,
-        skip_reason=reason,
-        skip_category=_skip_reason_category(reason),
-        confidence=event.confidence,
-    )
-
-
-def _skip_reason_category(reason: str) -> str:
-    """将 skip reason 映射到分类。"""
-    return reason_category(reason)
-
 
 def trace_id_for_event(event: "SignalEvent") -> str:
     return str(event.metadata.get(MK.SIGNAL_TRACE_ID) or "").strip()
@@ -86,7 +212,7 @@ def _admission_stage_from_category(category: str) -> str:
     normalized = str(category or "").strip().lower()
     if normalized in {"risk_guard", "risk_service"}:
         return "account_risk"
-    if normalized in {"cost_guard", "trade_params"}:
+    if normalized in {"cost_guard", "trade_params", "market_data"}:
         return "market_tradability"
     if normalized in {"execution_gate", "governance", "position", "duplicate_guard", "confidence", "cooldown"}:
         return "execution_gate"
@@ -415,7 +541,13 @@ def execute_market_order(
         "order_kind": "market",
         "sl": params.stop_loss,
         "tp": params.take_profit,
-        "comment": f"{event.timeframe}:{event.strategy}:{event.direction}"[:31],
+        "comment": build_trade_comment(
+            request_id=event.signal_id,
+            timeframe=event.timeframe,
+            strategy=event.strategy,
+            side=event.direction,
+            order_kind="market",
+        ),
         "request_id": event.signal_id,
         "metadata": build_trade_metadata(event),
     }
@@ -622,17 +754,15 @@ def execute_market_order(
                 logger.warning(
                     "TradeExecutor: persist blocked-entry failed: %s", persist_exc
                 )
-        return None
+        return _build_terminal_result(
+            status="skipped",
+            reason=reason,
+            category=SKIP_CATEGORY_RISK_SERVICE,
+            details={"assessment": assessment},
+        )
     except Exception as exc:
         executor.last_error = str(exc)
         executor.consecutive_failures += 1
-        emit_execution_failed(
-            executor,
-            event,
-            order_kind="market",
-            reason=str(exc),
-            category=SKIP_CATEGORY_DISPATCH,
-        )
         executor.execution_log.append(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
@@ -698,4 +828,9 @@ def execute_market_order(
                 logger.warning(
                     "TradeExecutor: persist fail-entry failed: %s", persist_exc
                 )
-        return None
+        return _build_terminal_result(
+            status="failed",
+            reason=str(exc),
+            category=SKIP_CATEGORY_DISPATCH,
+            error_code=type(exc).__name__,
+        )

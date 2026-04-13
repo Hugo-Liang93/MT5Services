@@ -153,7 +153,6 @@ def execute_backtest(run_id: str, request: config_service.BacktestRunRequest) ->
             signal_module=components["signal_module"],
             indicator_pipeline=components["pipeline"],
             regime_detector=components["regime_detector"],
-            voting_engine=components.get("voting_engine"),
         )
         result = engine.run()
         result.experiment_id = request.experiment_id
@@ -211,7 +210,6 @@ def execute_optimization(
             indicator_pipeline=components["pipeline"],
             signal_module_factory=module_factory,
             regime_detector=components["regime_detector"],
-            voting_engine=components.get("voting_engine"),
             sort_metric=optimizer_settings["sort_metric"],
         )
         results = optimizer.run()
@@ -282,7 +280,6 @@ def execute_walk_forward(
             signal_module_factory=module_factory,
             indicator_pipeline=components["pipeline"],
             regime_detector=components["regime_detector"],
-            voting_engine=components.get("voting_engine"),
         )
         wf_result = validator.run()
         backtest_runtime_store.store_walk_forward_result(run_id, wf_result)

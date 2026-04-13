@@ -15,7 +15,7 @@ from src.config import (
     resolve_current_environment,
 )
 from src.risk.service import PreTradeRiskService
-from src.trading.trading_service import TradingService
+from src.trading.application.trading_service import TradingService
 
 
 class TradingAccountRegistry:

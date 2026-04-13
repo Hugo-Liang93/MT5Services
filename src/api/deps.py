@@ -26,21 +26,18 @@ from src.persistence.storage_writer import StorageWriter
 from src.risk.service import PreTradeRiskService
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
-from src.signals.orchestration import SignalRuntime
+from src.signals.orchestration.runtime import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
-from src.trading import (
-    TradingAccountRegistry,
-    TradingCommandService,
-    TradingModule,
-    TradingQueryService,
-)
+from src.trading.application.module import TradingModule
+from src.trading.application.services import TradingCommandService, TradingQueryService
 from src.trading.admission import TradeAdmissionService
-from src.trading.commands import OperatorCommandService
+from src.trading.commands.service import OperatorCommandService
 from src.trading.closeout import ExposureCloseoutController
 from src.trading.pending import PendingEntryManager
 from src.trading.positions import PositionManager
-from src.trading.execution import TradeExecutor
+from src.trading.execution.executor import TradeExecutor
+from src.trading.runtime.registry import TradingAccountRegistry
 from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 from src.monitoring.pipeline import PipelineEventBus
 from src.readmodels.runtime import RuntimeReadModel
@@ -351,9 +348,21 @@ def get_signal_quality_tracker() -> SignalQualityTracker:
     return _container.signal_quality_tracker
 
 
+def get_optional_signal_quality_tracker() -> SignalQualityTracker | None:
+    _ensure_initialized()
+    assert _container is not None
+    return _container.signal_quality_tracker
+
+
 def get_trade_outcome_tracker() -> TradeOutcomeTracker:
     _ensure_initialized()
     assert _container is not None and _container.trade_outcome_tracker is not None
+    return _container.trade_outcome_tracker
+
+
+def get_optional_trade_outcome_tracker() -> TradeOutcomeTracker | None:
+    _ensure_initialized()
+    assert _container is not None
     return _container.trade_outcome_tracker
 
 

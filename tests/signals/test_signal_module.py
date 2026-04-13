@@ -654,8 +654,8 @@ def test_signal_module_strategy_expectancy_uses_repository() -> None:
     assert rows[0]["expectancy"] == 12.25
 
 
-def test_signal_module_recent_consensus_signals_filters_consensus_strategy() -> None:
-    class ConsensusRepository(DummyDiagnosticRepository):
+def test_signal_module_recent_signals_passes_explicit_strategy_filter() -> None:
+    class FilteredRepository(DummyDiagnosticRepository):
         def recent(self, **kwargs):
             return [
                 {
@@ -666,7 +666,7 @@ def test_signal_module_recent_consensus_signals_filters_consensus_strategy() -> 
                     "strategy": kwargs.get("strategy"),
                     "direction": "buy",
                     "confidence": 0.8,
-                    "reason": "consensus",
+                    "reason": "structured_filter",
                     "used_indicators": ["sma20"],
                     "indicators_snapshot": {},
                     "metadata": {},
@@ -676,13 +676,18 @@ def test_signal_module_recent_consensus_signals_filters_consensus_strategy() -> 
 
     module = SignalModule(
         indicator_source=DummyIndicatorSource(),
-        repository=ConsensusRepository([]),
+        repository=FilteredRepository([]),
     )
 
-    rows = module.recent_consensus_signals(symbol="XAUUSD", timeframe="M5", limit=10)
+    rows = module.recent_signals(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="structured_breakout_follow",
+        limit=10,
+    )
 
     assert len(rows) == 1
-    assert rows[0]["strategy"] == "consensus"
+    assert rows[0]["strategy"] == "structured_breakout_follow"
 
 
 def test_intrabar_required_indicators_derives_from_strategy_scopes() -> None:

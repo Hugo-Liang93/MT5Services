@@ -10,8 +10,10 @@ from src.config.runtime_identity import RuntimeIdentity
 from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
+from src.trading.execution.eventing import emit_terminal_execution_event
+from src.trading.execution.eventing import interpret_terminal_result
 from src.trading.intents.codec import signal_event_from_payload
-from src.trading.runtime_lifecycle import OwnedThreadLifecycle
+from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -107,12 +109,14 @@ class ExecutionIntentConsumer:
 
     def _process_intent(self, item: dict[str, Any]) -> None:
         intent_id = str(item.get("intent_id") or "")
+        event: SignalEvent | None = None
         try:
             self._heartbeat(intent_id)
             event = signal_event_from_payload(dict(item.get("payload") or {}))
             event = self._with_intent_context(event, item)
             result = self._trade_executor.process_event(event)
-            status = "completed" if result is not None else "skipped"
+            outcome = interpret_terminal_result(result)
+            status = outcome.status
             self._complete_fn(
                 intent_id=intent_id,
                 status=status,
@@ -121,14 +125,26 @@ class ExecutionIntentConsumer:
                     "claimed_by_run_id": self._runtime_identity.instance_id,
                     "result": result,
                 },
-                last_error_code=None,
+                last_error_code=outcome.error_code if status == "failed" else None,
             )
-            self._emit_intent_event(
-                "execution_succeeded" if status == "completed" else "execution_skipped",
-                item,
+            emit_terminal_execution_event(
+                pipeline_event_bus=self._pipeline_event_bus,
+                event=event,
+                result=result,
                 extra_payload={
-                    "result": result,
-                    "status": status,
+                    "intent_id": item.get("intent_id"),
+                    "intent_key": item.get("intent_key"),
+                    "target_account_key": item.get("target_account_key"),
+                    "target_account_alias": item.get("target_account_alias"),
+                    "action_id": item.get("action_id"),
+                    "trace_id": self._trace_id_for_item(item),
+                    "account_key": self._runtime_identity.account_key,
+                    "account_alias": self._runtime_identity.account_alias,
+                    "claimed_by_instance_id": self._runtime_identity.instance_id,
+                    "claimed_by_run_id": self._runtime_identity.instance_id,
+                    "instance_id": self._runtime_identity.instance_id,
+                    "instance_role": self._runtime_identity.instance_role,
+                    "source_metadata": dict(event.metadata or {}),
                 },
             )
         except Exception as exc:
@@ -143,12 +159,30 @@ class ExecutionIntentConsumer:
                 },
                 last_error_code=type(exc).__name__,
             )
-            self._emit_intent_event(
-                "execution_failed",
-                item,
-                extra_payload={
-                    "error": str(exc),
+            failed_event = event or self._fallback_event_for_item(item)
+            emit_terminal_execution_event(
+                pipeline_event_bus=self._pipeline_event_bus,
+                event=failed_event,
+                result={
+                    "status": "failed",
+                    "reason": str(exc),
+                    "category": "dispatch",
                     "error_code": type(exc).__name__,
+                    "details": {"error": str(exc)},
+                },
+                extra_payload={
+                    "intent_id": item.get("intent_id"),
+                    "intent_key": item.get("intent_key"),
+                    "target_account_key": item.get("target_account_key"),
+                    "target_account_alias": item.get("target_account_alias"),
+                    "action_id": item.get("action_id"),
+                    "trace_id": self._trace_id_for_item(item),
+                    "account_key": self._runtime_identity.account_key,
+                    "account_alias": self._runtime_identity.account_alias,
+                    "claimed_by_instance_id": self._runtime_identity.instance_id,
+                    "claimed_by_run_id": self._runtime_identity.instance_id,
+                    "instance_id": self._runtime_identity.instance_id,
+                    "instance_role": self._runtime_identity.instance_role,
                 },
             )
 
@@ -232,6 +266,34 @@ class ExecutionIntentConsumer:
             signal_id=event.signal_id,
             reason=event.reason,
             parent_bar_time=event.parent_bar_time,
+        )
+
+    @staticmethod
+    def _fallback_event_for_item(item: dict[str, Any]) -> SignalEvent:
+        payload_row = dict(item.get("payload") or {})
+        metadata = dict(payload_row.get("metadata") or {})
+        metadata.setdefault("intent_id", item.get("intent_id"))
+        metadata.setdefault("intent_key", item.get("intent_key"))
+        metadata.setdefault("target_account_key", item.get("target_account_key"))
+        metadata.setdefault("target_account_alias", item.get("target_account_alias"))
+        metadata.setdefault(
+            MK.SIGNAL_TRACE_ID,
+            ExecutionIntentConsumer._trace_id_for_item(item),
+        )
+        return SignalEvent(
+            symbol=str(item.get("symbol") or payload_row.get("symbol") or ""),
+            timeframe=str(item.get("timeframe") or payload_row.get("timeframe") or ""),
+            strategy=str(item.get("strategy") or payload_row.get("strategy") or ""),
+            direction=str(payload_row.get("direction") or ""),
+            confidence=0.0,
+            signal_state=str(payload_row.get("signal_state") or ""),
+            scope=str(payload_row.get("scope") or "confirmed"),
+            indicators={},
+            metadata=metadata,
+            generated_at=datetime.now(timezone.utc),
+            signal_id=str(item.get("signal_id") or payload_row.get("signal_id") or ""),
+            reason=str(payload_row.get("reason") or ""),
+            parent_bar_time=None,
         )
 
     @staticmethod

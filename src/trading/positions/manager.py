@@ -15,11 +15,12 @@ from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from src.utils.common import timeframe_seconds
 
+from ..broker.comment_codec import looks_like_system_trade_comment
 from ..closeout.service import ExposureCloseoutController
 from ..reasons import REASON_END_OF_DAY, REASON_SIGNAL_EXIT, REASON_TIMEOUT
 from ..execution.sizing import TradeParameters
 from ..ports import PositionManagementPort
-from ..runtime_lifecycle import OwnedThreadLifecycle
+from ..runtime.lifecycle import OwnedThreadLifecycle
 from ..trade_events import (
     POSITION_TRACKED,
     POSITION_UPDATE_REASON_CHANDELIER_TRAIL,
@@ -54,23 +55,6 @@ class IndicatorSource(Protocol):
 
 
 logger = logging.getLogger(__name__)
-
-# Comment prefixes that identify positions opened by this system.
-# "auto:" is historical format; timeframe prefixes (e.g. "m5:", "h1:") are
-# the current format since comments use "{tf}:{strategy}:{direction}".
-_RESTORABLE_COMMENT_PREFIXES = (
-    "auto:",
-    "agent:",
-    "m1:",
-    "m5:",
-    "m15:",
-    "m30:",
-    "h1:",
-    "h4:",
-    "d1:",
-    "w1:",
-    "mn1:",
-)
 
 
 @dataclass(frozen=True)
@@ -511,10 +495,7 @@ class PositionManager:
 
     @staticmethod
     def _is_restorable_comment(comment: str) -> bool:
-        normalized = str(comment or "").strip().lower()
-        return any(
-            normalized.startswith(prefix) for prefix in _RESTORABLE_COMMENT_PREFIXES
-        )
+        return looks_like_system_trade_comment(comment)
 
     def sync_open_positions(self) -> dict[str, Any]:
         return _reconciliation.sync_open_positions(self)

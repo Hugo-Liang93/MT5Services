@@ -247,6 +247,128 @@ label = Live Main
     assert settings.timezone == "UTC"
 
 
+def test_load_mt5_settings_inherits_root_defaults_under_instance_context(tmp_path) -> None:
+    _write(
+        tmp_path / "config" / "mt5.local.ini",
+        """
+[mt5]
+timezone = UTC
+server_time_offset_hours = 3
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "instances" / "live-exec-a" / "mt5.ini",
+        """
+[mt5]
+account_alias = live_exec_a
+label = Live Exec A
+server_time_offset_hours =
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "instances" / "live-exec-a" / "mt5.local.ini",
+        """
+[mt5]
+login = 1002
+server = Broker-Live
+path = C:/MT5/live_exec_a/terminal64.exe
+""".strip(),
+    )
+
+    set_current_instance_name("live-exec-a")
+    load_mt5_settings.cache_clear()
+    try:
+        settings = load_mt5_settings(base_dir=str(tmp_path))
+    finally:
+        load_mt5_settings.cache_clear()
+        set_current_instance_name(None)
+
+    assert settings.instance_name == "live-exec-a"
+    assert settings.account_alias == "live_exec_a"
+    assert settings.server_time_offset_hours == 3
+
+
+def test_instance_scoped_market_and_risk_configs_match_context_and_explicit_instance(
+    tmp_path,
+) -> None:
+    _write(
+        tmp_path / "config" / "app.ini",
+        """
+[system]
+api_host = 0.0.0.0
+api_port = 8808
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "market.ini",
+        """
+[api]
+host = 0.0.0.0
+port = 8808
+docs_enabled = true
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "risk.ini",
+        """
+[risk]
+max_trades_per_day = 5
+daily_loss_limit_pct = 2.5
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "instances" / "live-exec-a" / "market.ini",
+        """
+[api]
+host = 127.0.0.1
+port = 8809
+docs_enabled = false
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "instances" / "live-exec-a" / "risk.ini",
+        """
+[risk]
+max_trades_per_day = 2
+""".strip(),
+    )
+
+    _, explicit_market = load_config_with_base(
+        "market.ini",
+        base_dir=str(tmp_path),
+        instance_name="live-exec-a",
+    )
+    _, explicit_risk = load_config_with_base(
+        "risk.ini",
+        base_dir=str(tmp_path),
+        instance_name="live-exec-a",
+    )
+
+    set_current_instance_name("live-exec-a")
+    try:
+        _, context_market = load_config_with_base(
+            "market.ini",
+            base_dir=str(tmp_path),
+        )
+        _, context_risk = load_config_with_base(
+            "risk.ini",
+            base_dir=str(tmp_path),
+        )
+    finally:
+        set_current_instance_name(None)
+
+    assert explicit_market is not None
+    assert explicit_risk is not None
+    assert context_market is not None
+    assert context_risk is not None
+    assert dict(explicit_market.items("api")) == dict(context_market.items("api"))
+    assert dict(explicit_risk.items("risk")) == dict(context_risk.items("risk"))
+    assert context_market["api"]["host"] == "127.0.0.1"
+    assert context_market["api"]["port"] == "8809"
+    assert context_risk["risk"]["max_trades_per_day"] == "2"
+    assert context_risk["risk"]["daily_loss_limit_pct"] == "2.5"
+
+
 def test_resolve_instance_scoped_dir_appends_instance_name() -> None:
     set_current_instance_name("live-main")
     try:

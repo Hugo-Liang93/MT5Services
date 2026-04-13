@@ -38,7 +38,7 @@
 
 ## 1. 系统定位与分层
 
-FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 → 信号评估 → 风控准入 → 交易执行 → 持仓管理。
+FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 → 单策略信号评估 → execution intent 交付 → 风控准入 → 交易执行 → 持仓管理。
 
 ### 1.1 领域层
 
@@ -47,8 +47,8 @@ FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 →
 | `src/market/` | 运行时内存行情缓存（唯一事实源）|
 | `src/ingestion/` | 从 MT5 拉取 quote/tick/OHLC/intrabar，写入缓存 + 持久化队列 |
 | `src/indicators/` | 收盘与盘中事件处理，生成指标快照 |
-| `src/signals/` | 策略注册、信号评估、投票、状态机、信号持久化 |
-| `src/trading/` | 下单执行、价格确认入场、持仓跟踪、结果追踪 |
+| `src/signals/` | 策略注册、单策略评估、状态机、信号持久化、execution intent 发布 |
+| `src/trading/` | execution intent 消费、下单执行、价格确认入场、持仓跟踪、结果追踪 |
 | `src/calendar/` | 经济日历同步与交易窗口保护 |
 | `src/persistence/` | 8 通道异步 StorageWriter + TimescaleDB 仓储 + Retention Policy |
 | `src/monitoring/` | 内存环形缓冲健康指标 + SQLite 告警 + Pipeline Trace |
@@ -57,6 +57,13 @@ FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 →
 | `src/market_structure/` | 市场结构分析 |
 | `src/backtesting/` | 回测引擎 + 参数优化 + Paper Trading |
 | `src/research/` | 信号挖掘：指标预测力分析 + 阈值扫描 + Regime 亲和度调优 |
+
+`src/trading/` 当前再细分为 4 条主子域：
+
+- `src/trading/application/`：交易应用服务、审计、幂等回放、MT5 交易业务服务
+- `src/trading/commands/`：operator command 提交、消费、结果合同
+- `src/trading/execution/`：执行器、pre-trade pipeline、执行门禁、执行健康
+- `src/trading/runtime/`：账户注册表与后台线程生命周期基础设施
 
 ### 1.2 运行时装配层（src/app_runtime/）
 
@@ -85,7 +92,8 @@ FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 →
 
 ```text
 MarketDataService → StorageWriter → BackgroundIngestor → UnifiedIndicatorManager
-→ EconomicCalendarService → TradingModule → SignalModule + SignalRuntime + TradeExecutor
+→ EconomicCalendarService → TradingModule → SignalModule + SignalRuntime + ExecutionIntent delivery
+→ TradeExecutor + PendingEntryManager + PositionManager
 → HealthMonitor + MonitoringManager → RuntimeReadModel → StudioService
 ```
 
@@ -119,10 +127,13 @@ AppRuntime.start()
 MT5 → BackgroundIngestor → MarketDataService(内存缓存)
   ├─ StorageWriter(8通道异步) → TimescaleDB
   ├─ OHLC 收盘事件 → IndicatorManager → 指标快照
-  │    └─ SignalRuntime(confirmed优先+intrabar) → 策略评估 → VotingEngine
-  │         └─ TradeExecutor → PendingEntryManager → MT5 下单
+  │    └─ SignalRuntime(confirmed优先+intrabar) → 单策略评估 → 状态机/发布
+  │         └─ ExecutionIntentPublisher → execution_intents
+  │              → ExecutionIntentConsumer → TradeExecutor
+  │              → PendingEntryManager → MT5 下单
   └─ 子 TF close → 合成父 TF intrabar bar → set_intrabar() (trigger 模式)
-       └─ 同上 intrabar 管道 → IntrabarTradeCoordinator → intrabar_armed → 盘中入场
+       └─ 同上 intrabar 管道 → IntrabarTradeCoordinator → intrabar_armed
+            → ExecutionIntentPublisher → execution_intents → worker 执行
 ```
 
 ### 3.2 持久化链路
@@ -253,11 +264,9 @@ Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → 
 | `runtime_metadata.py` | snapshot metadata 组装：spread/bar_progress/trace_id | 纯函数 |
 | `runtime_recovery.py` | confirmed 状态还原 | 启动恢复 |
 | `state_machine.py` | confirmed 状态转换（idle / confirmed_* / confirmed_cancelled） | 纯逻辑 |
-| `vote_processor.py` | 投票处理：fusion/emit/process_voting | 纯函数 |
 | `htf_resolver.py` | HTF 配置解析、指标查询 | 纯函数 |
 | `wal_queue.py` | WAL 持久化信号队列 | 持久化 |
-| `policy.py` | SignalPolicy + VotingGroupConfig 配置对象 | 数据类 |
-| `voting.py` | StrategyVotingEngine：多策略加权投票 | 纯逻辑 |
+| `policy.py` | SignalPolicy + RuntimeSignalState 配置对象 | 数据类 |
 
 ### 5.5 src/trading/ — 交易执行与持仓管理
 
@@ -375,7 +384,7 @@ Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → 
 |------|------|------|
 | signals 运行时链路、状态流转、观测点 | 由 signals 域运行时真相文档维护 | `docs/design/signals-dataflow-overview.md` |
 | intrabar 子链路 | 由 intrabar 专题维护 | `docs/design/intrabar-data-flow.md` |
-| 策略开发规范、regime、voting、TF 参数 | 由 signals 领域设计文档维护 | `docs/signal-system.md` |
+| 策略开发规范、regime、单策略主线、TF 参数 | 由 signals 领域设计文档维护 | `docs/signal-system.md` |
 | PendingEntry、仓位管理、风控增强方案 | 由 trading/risk 设计文档维护 | `docs/design/pending-entry.md`、`docs/design/r-based-position-management.md`、`docs/design/risk-enhancement.md` |
 | 回测、研究、参数规划 | 由研究/规划文档维护 | `docs/research-system.md`、`docs/design/next-plan.md` |
 
@@ -397,10 +406,10 @@ Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → 
 
 1. **能力声明端口**  
    - 以 `SignalModule.strategy_capability_catalog()` 与 `SignalPolicy.strategy_capability_contract()` 为统一输入口。  
-   - `SignalRuntime` 与 `BacktestEngine` 必须直接消费 `strategy_capability_catalog(voting_group_policy=...)`，禁止 `getattr` 探测、禁止 legacy 能力回退。  
+   - `SignalRuntime` 与 `BacktestEngine` 必须直接消费 `strategy_capability_catalog()`，禁止 `getattr` 探测、禁止 legacy 能力回退。  
    - 至少提供：  
    - 需能被 `SignalRuntime` / 回测读取同一份：  
-     `name / valid_scopes / needed_indicators / needs_intrabar / needs_htf / voting_group_policy / regime_affinity / htf_requirements`。
+     `name / valid_scopes / needed_indicators / needs_intrabar / needs_htf / regime_affinity / htf_requirements`。
    - 扩展项：`SignalPolicy.get_warmup_required_indicators()` 作为统一 warmup 指标口，禁止运行时使用兜底兼容回退。
    - 强制对账：新增 `admin/strategies/capability-reconciliation` 与 service 的对账口，确保 module/policy 入链前一致。
 2. **状态快照端口**  
@@ -417,5 +426,3 @@ Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → 
    - 回测与实盘必须消费同一能力声明（`strategy_capability_catalog`）并共享同类策略筛选语义，避免行为分歧。
 
 该章节是阶段 B 的验收红线：新增能力只改声明与配置，新增逻辑应从公开端口接入，不新增私有分支。
-
-

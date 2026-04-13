@@ -17,6 +17,7 @@ from src.monitoring.pipeline import (
     PIPELINE_INDICATOR_COMPUTED,
     PIPELINE_PENDING_ORDER_SUBMITTED,
     PIPELINE_SIGNAL_EVALUATED,
+    PIPELINE_SIGNAL_FILTER_DECIDED,
     PIPELINE_SNAPSHOT_PUBLISHED,
     PipelineEvent,
     PipelineEventBus,
@@ -214,6 +215,31 @@ class TestConvenienceEmitters:
         assert ev.payload["direction"] == "buy"
         assert ev.payload["confidence"] == 0.8765  # rounded to 4 dp
         assert ev.payload["signal_state"] == "confirmed_buy"
+
+    def test_emit_signal_filter_decided_includes_evaluation_time(
+        self, bus: PipelineEventBus
+    ) -> None:
+        received: list[PipelineEvent] = []
+        bus.add_listener(received.append)
+
+        evaluation_time = datetime(2026, 4, 13, 13, 5, tzinfo=timezone.utc)
+        bus.emit_signal_filter_decided(
+            "t-filter",
+            "XAUUSD",
+            "M5",
+            "confirmed",
+            allowed=False,
+            reason="session_transition_cooldown:london_to_new_york",
+            category="session_transition_cooldown",
+            spread_points=35.0,
+            active_sessions=["new_york"],
+            evaluation_time=evaluation_time,
+        )
+
+        ev = received[0]
+        assert ev.type == PIPELINE_SIGNAL_FILTER_DECIDED
+        assert ev.payload["evaluation_time"] == evaluation_time.isoformat()
+        assert ev.payload["active_sessions"] == ["new_york"]
 
     def test_emit_execution_events(self, bus: PipelineEventBus) -> None:
         received: list[PipelineEvent] = []

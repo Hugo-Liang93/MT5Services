@@ -46,7 +46,6 @@ def _capability(
         "needed_indicators": list(indicators),
         "needs_intrabar": bool(needs_intrabar),
         "needs_htf": False,
-        "voting_group_policy": "standalone",
         "regime_affinity": {},
         "htf_requirements": {},
     }

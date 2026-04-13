@@ -76,7 +76,7 @@
 - 装配层不能代替领域改造：`factory` 只能作为端口装配入口，字段映射/默认策略需回写到领域层契约或服务端口实现。
 
 ### 最小整改建议
-1. 已抽取 `src/trading/runtime_lifecycle.py`，用 `OwnedThreadLifecycle` 统一 `TradeExecutor` 与 `PositionManager` 的线程启停行为（启动、wait、stop、is_running）。
+1. 已抽取 `src/trading/runtime/lifecycle.py`，用 `OwnedThreadLifecycle` 统一 `TradeExecutor` 与 `PositionManager` 的线程启停行为（启动、wait、stop、is_running）。
 2. 先对 `executor.py` 与 `positions/manager.py` 的生命周期、状态快照、事件发布三个方向做职责“收缩线”：把状态查询类接口固定为只读快照返回值。
 3. 在 `execution` 与 `positions` 之间补充“交易状态转移契约”（状态枚举 + 事件名），并已同步到 `src/trading/trade_events.py`（2026-04-11）。
 

@@ -37,6 +37,79 @@ def _enum_or_raw(value: Any) -> str:
     return getattr(value, "value", value)
 
 
+def _iter_spread_cost_sanity_issues(signal_config: Any) -> list[str]:
+    base_spread = float(getattr(signal_config, "base_spread_points", 0.0) or 0.0)
+    if base_spread <= 0:
+        return []
+
+    issues: list[str] = []
+    max_spread_points = getattr(signal_config, "max_spread_points", None)
+    if max_spread_points is not None:
+        global_cap = float(max_spread_points or 0.0)
+        if global_cap > 0 and global_cap < base_spread:
+            issues.append(
+                "global spread cap is below baseline spread "
+                f"(max_spread_points={global_cap:.1f} < base_spread_points={base_spread:.1f})"
+            )
+
+    session_limits = getattr(signal_config, "session_spread_limits", {}) or {}
+    if isinstance(session_limits, dict):
+        too_tight_sessions = {
+            session: float(limit)
+            for session, limit in session_limits.items()
+            if limit is not None and float(limit) > 0 and float(limit) < base_spread
+        }
+        if too_tight_sessions:
+            details = ", ".join(
+                f"{session}={limit:.1f}"
+                for session, limit in sorted(too_tight_sessions.items())
+            )
+            issues.append(
+                "session spread cap is below baseline spread "
+                f"(base_spread_points={base_spread:.1f}; {details})"
+            )
+
+    return issues
+
+
+def _log_spread_cost_sanity(signal_config: Any) -> None:
+    base_spread = float(getattr(signal_config, "base_spread_points", 0.0) or 0.0)
+    if base_spread <= 0:
+        return
+
+    max_spread_to_stop_ratio = float(
+        getattr(signal_config, "max_spread_to_stop_ratio", 0.0) or 0.0
+    )
+    max_spread_points = getattr(signal_config, "max_spread_points", None)
+    min_stop_from_base = None
+    min_stop_from_cap = None
+    if max_spread_to_stop_ratio > 0:
+        min_stop_from_base = round(base_spread / max_spread_to_stop_ratio, 1)
+        if max_spread_points is not None and float(max_spread_points or 0.0) > 0:
+            min_stop_from_cap = round(
+                float(max_spread_points) / max_spread_to_stop_ratio,
+                1,
+            )
+
+    logger.info(
+        "Execution cost gates: base_spread=%.1f, max_spread_points=%s, "
+        "max_spread_to_stop_ratio=%.2f, min_stop_points_from_base=%s, "
+        "min_stop_points_from_cap=%s",
+        base_spread,
+        (
+            f"{float(max_spread_points):.1f}"
+            if max_spread_points is not None and float(max_spread_points or 0.0) > 0
+            else "n/a"
+        ),
+        max_spread_to_stop_ratio,
+        f"{min_stop_from_base:.1f}" if min_stop_from_base is not None else "n/a",
+        f"{min_stop_from_cap:.1f}" if min_stop_from_cap is not None else "n/a",
+    )
+
+    for issue in _iter_spread_cost_sanity_issues(signal_config):
+        logger.warning("Spread/cost config is internally inconsistent: %s", issue)
+
+
 def build_app_container(
     *,
     signal_config_loader: Any = None,
@@ -105,17 +178,7 @@ def build_app_container(
     build_studio_service_layer(container)
 
     # Spread / cost sanity check
-    if signal_config.base_spread_points > 0:
-        min_plausible_sl = signal_config.base_spread_points * 3
-        implied_ratio = signal_config.base_spread_points / min_plausible_sl
-        if implied_ratio > signal_config.max_spread_to_stop_ratio * 0.8:
-            logger.warning(
-                "Spread/cost config may be too tight: base_spread=%.0f, "
-                "max_spread_to_stop_ratio=%.2f. Low-ATR timeframes "
-                "might reject most trades. Consider raising the ratio.",
-                signal_config.base_spread_points,
-                signal_config.max_spread_to_stop_ratio,
-            )
+    _log_spread_cost_sanity(signal_config)
 
     logger.info(
         "Effective runtime config: %s",

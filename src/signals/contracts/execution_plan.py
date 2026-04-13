@@ -50,7 +50,6 @@ def _normalize_capability_row(
         "needed_indicators": list(needed_indicators),
         "needs_intrabar": bool(raw.get("needs_intrabar")),
         "needs_htf": bool(raw.get("needs_htf")),
-        "voting_group_policy": str(raw.get("voting_group_policy") or "standalone"),
         "regime_affinity": regime_affinity,
         "htf_requirements": htf_requirements,
     }

@@ -11,6 +11,7 @@ def build_runtime_read_models(container: AppContainer) -> None:
     """Build runtime read-model projections."""
     container.runtime_read_model = RuntimeReadModel(
         health_monitor=container.health_monitor,
+        market_service=container.market_service,
         storage_writer=container.storage_writer,
         ingestor=container.ingestor,
         indicator_manager=container.indicator_manager,

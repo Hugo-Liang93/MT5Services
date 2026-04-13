@@ -82,6 +82,7 @@ class MetadataKey:
     INTRABAR_PARENT_BAR_TIME = "intrabar_parent_bar_time"
     INTRABAR_STABLE_BARS = "intrabar_stable_bars"
     INTRABAR_ATR_SOURCE = "intrabar_atr_source"
+    INTRABAR_SYNTHESIS = "intrabar_synthesis"
 
     # ── 私有 / 回测注入 ──
 

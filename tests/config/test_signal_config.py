@@ -18,12 +18,6 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
         "regime": {
             "soft_regime_enabled": "true",
         },
-        "voting": {
-            "enabled": "true",
-            "consensus_threshold": "0.45",
-            "min_quorum": "3",
-            "disagreement_penalty": "0.4",
-        },
         "circuit_breaker": {
             "max_consecutive_failures": "5",
             "circuit_auto_reset_minutes": "20",
@@ -57,16 +51,6 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
             "robustness_tier": "tf_specific",
             "research_provenance": "cand_abc123",
         },
-        "voting_groups": {
-            "trend_vote": "supertrend,ema_ribbon,macd_momentum,hma_cross,session_momentum",
-            "reversion_vote": "rsi_reversion,stoch_rsi,williams_r,cci_reversion,price_action_reversal",
-            "breakout_vote": "bollinger_breakout,donchian_breakout,keltner_bb_squeeze,squeeze_release,fake_breakout",
-        },
-        "voting_group.trend_vote": {
-            "consensus_threshold": "0.45",
-            "min_quorum": "2",
-            "disagreement_penalty": "0.50",
-        },
         "market_structure": {
             "market_structure_enabled": "true",
             "market_structure_lookback_bars": "500",
@@ -93,9 +77,6 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
         signal_config.get_signal_config.cache_clear()
 
     assert cfg.soft_regime_enabled is True
-    assert cfg.voting_enabled is True
-    assert cfg.voting_consensus_threshold == 0.45
-    assert cfg.voting_min_quorum == 3
     assert cfg.max_consecutive_failures == 5
     assert cfg.circuit_auto_reset_minutes == 20
     assert cfg.max_concurrent_positions_per_symbol == 3
@@ -112,11 +93,6 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     assert cfg.strategy_timeframes["price_action_reversal"] == ["m5", "m15"]
     assert cfg.strategy_timeframes["multi_timeframe_confirm"] == ["m15", "h1"]
     assert cfg.strategy_timeframes["structured_session_breakout"] == ["m30"]
-    assert len(cfg.voting_group_configs) == 3
-    trend_vote = next(
-        item for item in cfg.voting_group_configs if item["name"] == "trend_vote"
-    )
-    assert "session_momentum" in trend_vote["strategies"]
     assert cfg.market_structure_enabled is True
     assert cfg.market_structure_lookback_bars == 500
     assert cfg.market_structure_m1_lookback_bars == 120
@@ -137,6 +113,29 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     assert deployment.paper_shadow_required is True
     assert deployment.robustness_tier == "tf_specific"
     assert deployment.research_provenance == "cand_abc123"
+
+
+def test_signal_config_rejects_deprecated_vote_sections(monkeypatch):
+    merged = {
+        "signal": {
+            "auto_trade_enabled": "false",
+            "consensus_threshold": "0.45",
+        },
+        "voting": {
+            "enabled": "true",
+        },
+        "voting_groups": {
+            "trend_vote": "structured_trend_continuation,structured_breakout_follow",
+        },
+    }
+
+    monkeypatch.setattr(signal_config, "get_merged_config", lambda name: merged)
+    signal_config.get_signal_config.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="vote/consensus"):
+            signal_config.get_signal_config()
+    finally:
+        signal_config.get_signal_config.cache_clear()
 
 
 def test_signal_config_rejects_deprecated_economic_signal_keys(monkeypatch):

@@ -8,7 +8,9 @@ from typing import Any
 
 from src.config.runtime_identity import RuntimeIdentity
 from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
-from src.trading.runtime_lifecycle import OwnedThreadLifecycle
+from src.trading.commands.results import bind_command_item_result
+from src.trading.commands.results import build_operator_command_result
+from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -252,9 +254,9 @@ class OperatorCommandConsumer:
             return response_payload
 
         if command_type == "close_position":
-            return self._normalize_existing_action(
-                item,
-                self._command_service.close_position(
+            return bind_command_item_result(
+                item=item,
+                result=self._command_service.close_position(
                     ticket=payload.get("ticket"),
                     volume=payload.get("volume"),
                     deviation=int(payload.get("deviation") or 20),
@@ -269,9 +271,9 @@ class OperatorCommandConsumer:
             )
 
         if command_type == "close_positions_batch":
-            return self._normalize_existing_action(
-                item,
-                self._command_service.close_positions_by_tickets(
+            return bind_command_item_result(
+                item=item,
+                result=self._command_service.close_positions_by_tickets(
                     tickets=list(payload.get("tickets") or []),
                     deviation=int(payload.get("deviation") or 20),
                     comment=str(payload.get("comment") or "close_batch"),
@@ -285,9 +287,9 @@ class OperatorCommandConsumer:
             )
 
         if command_type == "close_all_positions":
-            return self._normalize_existing_action(
-                item,
-                self._command_service.close_all_positions(
+            return bind_command_item_result(
+                item=item,
+                result=self._command_service.close_all_positions(
                     symbol=payload.get("symbol"),
                     magic=payload.get("magic"),
                     side=payload.get("side"),
@@ -303,9 +305,9 @@ class OperatorCommandConsumer:
             )
 
         if command_type == "cancel_orders":
-            return self._normalize_existing_action(
-                item,
-                self._command_service.cancel_orders(
+            return bind_command_item_result(
+                item=item,
+                result=self._command_service.cancel_orders(
                     symbol=payload.get("symbol"),
                     magic=payload.get("magic"),
                     actor=actor,
@@ -318,9 +320,9 @@ class OperatorCommandConsumer:
             )
 
         if command_type == "cancel_orders_batch":
-            return self._normalize_existing_action(
-                item,
-                self._command_service.cancel_orders_by_tickets(
+            return bind_command_item_result(
+                item=item,
+                result=self._command_service.cancel_orders_by_tickets(
                     tickets=list(payload.get("tickets") or []),
                     actor=actor,
                     reason=reason,
@@ -418,21 +420,6 @@ class OperatorCommandConsumer:
 
         raise ValueError(f"unsupported operator command: {command_type}")
 
-    def _normalize_existing_action(
-        self,
-        item: dict[str, Any],
-        result: Any,
-    ) -> dict[str, Any]:
-        payload = dict(result or {}) if isinstance(result, dict) else {"result": result}
-        payload.setdefault("accepted", payload.get("status") != "failed")
-        payload.setdefault("command_id", item.get("command_id"))
-        payload.setdefault("action_id", item.get("action_id"))
-        payload.setdefault("reason", item.get("reason"))
-        payload.setdefault("actor", item.get("actor"))
-        payload.setdefault("idempotency_key", item.get("idempotency_key"))
-        payload.setdefault("request_context", dict(item.get("request_context") or {}))
-        return payload
-
     def _wrap_operator_result(
         self,
         *,
@@ -442,46 +429,42 @@ class OperatorCommandConsumer:
         effective_state: dict[str, Any],
         extra_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload = {
-            "accepted": status not in {"failed"},
-            "status": status,
-            "action_id": item.get("action_id"),
-            "command_id": item.get("command_id"),
-            "audit_id": item.get("audit_id"),
-            "actor": item.get("actor"),
-            "reason": item.get("reason"),
-            "idempotency_key": item.get("idempotency_key"),
-            "request_context": dict(item.get("request_context") or {}),
-            "message": message,
-            "error_code": None,
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
-            "effective_state": effective_state,
-        }
-        if extra_fields:
-            payload.update(extra_fields)
-        return payload
+        return build_operator_command_result(
+            accepted=status not in {"failed"},
+            status=status,
+            action_id=item.get("action_id"),
+            command_id=item.get("command_id"),
+            audit_id=item.get("audit_id"),
+            actor=item.get("actor"),
+            reason=item.get("reason"),
+            idempotency_key=item.get("idempotency_key"),
+            request_context=dict(item.get("request_context") or {}),
+            message=message,
+            error_code=None,
+            effective_state=effective_state,
+            extra_fields=extra_fields,
+        )
 
     def _build_failed_response(
         self,
         item: dict[str, Any],
         exc: Exception,
     ) -> dict[str, Any]:
-        return {
-            "accepted": False,
-            "status": "failed",
-            "action_id": item.get("action_id"),
-            "command_id": item.get("command_id"),
-            "audit_id": item.get("audit_id"),
-            "actor": item.get("actor"),
-            "reason": item.get("reason"),
-            "idempotency_key": item.get("idempotency_key"),
-            "request_context": dict(item.get("request_context") or {}),
-            "message": str(exc),
-            "error_code": type(exc).__name__,
-            "error_message": str(exc),
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
-            "effective_state": {},
-        }
+        return build_operator_command_result(
+            accepted=False,
+            status="failed",
+            action_id=item.get("action_id"),
+            command_id=item.get("command_id"),
+            audit_id=item.get("audit_id"),
+            actor=item.get("actor"),
+            reason=item.get("reason"),
+            idempotency_key=item.get("idempotency_key"),
+            request_context=dict(item.get("request_context") or {}),
+            message=str(exc),
+            error_code=type(exc).__name__,
+            effective_state={},
+            error_message=str(exc),
+        )
 
     @staticmethod
     def _request_payload(item: dict[str, Any]) -> dict[str, Any]:

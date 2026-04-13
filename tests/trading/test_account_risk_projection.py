@@ -80,6 +80,63 @@ class _RuntimeModeController:
         return {"current_mode": "risk_off"}
 
 
+class _HealthyTradeModule:
+    def trade_control_status(self) -> dict[str, object]:
+        return {
+            "auto_entry_enabled": True,
+            "close_only_mode": False,
+            "reason": None,
+            "actor": None,
+            "updated_at": "2026-04-12T12:00:00+00:00",
+        }
+
+    def account_info(self) -> dict[str, object]:
+        return {"equity": 12000.0, "margin": 100.0, "margin_level": 12000.0}
+
+
+class _HealthyTradeExecutor:
+    def status(self) -> dict[str, object]:
+        return {
+            "last_risk_block": None,
+            "circuit_breaker": {
+                "open": False,
+                "consecutive_failures": 0,
+            },
+        }
+
+
+class _HealthyPositionManager:
+    def status(self) -> dict[str, object]:
+        return {
+            "tracked_positions": 0,
+            "reconcile_count": 1,
+            "last_reconcile_at": "2026-04-12T12:00:05+00:00",
+            "margin_guard": {
+                "margin_level": 320.0,
+                "state": "safe",
+                "should_block_new_trades": False,
+                "should_tighten_stops": False,
+                "should_emergency_close": False,
+            },
+        }
+
+    def active_positions(self) -> list[dict[str, object]]:
+        return []
+
+
+class _HealthyPendingEntryManager:
+    def status(self) -> dict[str, object]:
+        return {"active_count": 0}
+
+    def active_execution_contexts(self) -> list[dict[str, object]]:
+        return []
+
+
+class _HealthyRuntimeModeController:
+    def snapshot(self) -> dict[str, object]:
+        return {"current_mode": "full"}
+
+
 class _MarketService:
     def __init__(self, *, quote_age_seconds: float = 5.0) -> None:
         self.market_settings = SimpleNamespace(
@@ -148,3 +205,23 @@ def test_account_risk_state_projector_does_not_flag_open_market_quote_as_stale()
     assert "quote_stale" not in snapshot["active_risk_flags"]
     assert snapshot["metadata"]["quote_health"]["age_seconds"] is not None
     assert snapshot["metadata"]["quote_health"]["stale_threshold_seconds"] == 3.0
+
+
+def test_account_risk_state_projector_promotes_quote_stale_to_hard_block() -> None:
+    projector = AccountRiskStateProjector(
+        write_fn=lambda batch: None,
+        runtime_identity=_runtime_identity(),
+        trade_module=_HealthyTradeModule(),
+        trade_executor=_HealthyTradeExecutor(),
+        position_manager=_HealthyPositionManager(),
+        pending_entry_manager=_HealthyPendingEntryManager(),
+        runtime_mode_controller=_HealthyRuntimeModeController(),
+        market_service=_MarketService(quote_age_seconds=4.2),
+    )
+
+    snapshot = projector.build_snapshot()
+
+    assert snapshot["quote_stale"] is True
+    assert snapshot["should_block_new_trades"] is True
+    assert snapshot["last_risk_block"] == "quote_stale"
+    assert "quote_stale" in snapshot["active_risk_flags"]

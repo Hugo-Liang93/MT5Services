@@ -251,7 +251,7 @@ API 重启后 → 从 DB 查询历史 WF 结果 list（待做）
 
 ### P6A 收尾（2026-04-10）
 
-- 已补齐 `SignalModule` 策略能力索引（`strategy_capability_catalog` / `strategy_capability_contract`），形成只读能力快照：`needs_intrabar`、`valid_scopes`、`needed_indicators`、`needs_htf`、`voting_group_policy`、`regime_affinity`、`htf_requirements`。  
+- 已补齐 `SignalModule` 策略能力索引（`strategy_capability_catalog` / `strategy_capability_contract`），形成只读能力快照：`needs_intrabar`、`valid_scopes`、`needed_indicators`、`needs_htf`、`regime_affinity`、`htf_requirements`。  
 - `SignalRuntime` 已接入 `SignalPolicy.set_strategy_capability_contract()`，运行时从 `SignalPolicy` 查询能力快照进行 scope/指标门控。
 - 回测层已改为消费能力快照：
   - `src/backtesting/engine/runner.py`：基于能力索引构建 `confirmed` 目标策略、指标需求集合；
@@ -269,11 +269,11 @@ API 重启后 → 从 DB 查询历史 WF 结果 list（待做）
 - 当前下一步补齐：
 - 已完成（2026-04-10）：能力清单统一口收口，`SignalPolicy` 新增 `strategy_capability_contract()` 与 `get_warmup_required_indicators()`，`runtime_warmup` 与 `runtime_status` 全链路改走能力口；`dispatch_operation` 已补齐能力清单视图。
 - `SignalRuntime` 状态快照已包含 `strategy_capability_reconciliation`，形成 `SignalModule` 与 `SignalPolicy` 能力对账入口。
-- 这一阶段补齐：`/admin/strategies/capability-contract` 提供 module/runtime 完整能力快照；对账已覆盖 `voting_group_policy / regime_affinity / htf_requirements`。
+- 这一阶段补齐：`/admin/strategies/capability-contract` 提供 module/runtime 完整能力快照；对账已覆盖 `regime_affinity / htf_requirements`。
 - 已完成（2026-04-11）：新增 `strategy_capability_execution_plan` 统一快照（runtime/readmodel），显式输出 `configured/scheduled/filtered` 目标计数、scope 覆盖、`needed_indicators` 汇总与 `strategy_timeframes` 过滤原因。
 - 已完成（2026-04-11）：`BacktestEngine` 增加同语义 `strategy_capability_execution_plan()`，并写入 `BacktestResult.strategy_capability_execution_plan`，回测与实盘可直接对齐能力调度计划。
 - 已完成（2026-04-11）：新增 `GET /admin/strategies/capability-execution-plan`，提供 `module/runtime/backtest` 三方执行计划快照与差异对账（支持可选 `run_id`）。
-- 下一步：把能力快照治理点做成 12 点可观测项（`voting`、`intrabar`、`scope`、`丢弃率`、`回放一致性`）并形成统一回归检查用例，继续推进“新增扩展路径 = 改声明 + 改配置”。
+- 下一步：把能力快照治理点做成 12 点可观测项（`intrabar`、`scope`、`丢弃率`、`回放一致性`）并形成统一回归检查用例，继续推进“新增扩展路径 = 改声明 + 改配置”。
 
 ### P6B.1: 能力清单标准化（完成）
 

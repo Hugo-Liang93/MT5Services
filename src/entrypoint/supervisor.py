@@ -19,6 +19,10 @@ from src.entrypoint.logging_context import (
     inject_logging_context,
     install_log_record_context,
 )
+from src.ops.mt5_session_gate import (
+    ensure_mt5_session_gate_or_raise,
+    ensure_topology_group_mt5_session_gate_or_raise,
+)
 
 logger = logging.getLogger("mt5services.supervisor")
 
@@ -111,6 +115,8 @@ class Supervisor:
 
     def _start_initial(self) -> None:
         logger.info("Starting topology group=%s", self._group.name)
+        ensure_topology_group_mt5_session_gate_or_raise(self._group.name)
+        logger.info("MT5 session gate passed for topology group=%s", self._group.name)
         self._managed[self._group.main] = self._spawn(self._group.main)
         _wait_for_ready(self._group.main, self._ready_timeout_seconds)
         for worker in self._group.workers:
@@ -139,6 +145,7 @@ class Supervisor:
             time.sleep(1.0)
 
     def _spawn(self, instance_name: str, *, restart_count: int = 0) -> ManagedProcess:
+        ensure_mt5_session_gate_or_raise(instance_name=instance_name)
         command = [sys.executable, "-m", "src.entrypoint.instance", "--instance", instance_name]
         env = dict(os.environ)
         env["MT5_INSTANCE"] = instance_name

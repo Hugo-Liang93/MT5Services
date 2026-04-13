@@ -161,7 +161,7 @@ class TradingStateRecovery:
         params_meta = dict(metadata.get(MK.PARAMS) or {})
         params = None
         if params_meta:
-            from src.trading.execution import TradeParameters
+            from src.trading.execution.sizing import TradeParameters
 
             entry_price = float(
                 params_meta.get("entry_price") or row.get("trigger_price") or 0.0

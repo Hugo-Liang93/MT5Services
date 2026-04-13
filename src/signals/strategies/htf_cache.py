@@ -16,9 +16,8 @@ HTFStateCache 通过监听 SignalRuntime 的 confirmed 信号事件，
 
 ## 数据来源
 
-缓存 ``source_strategies`` 指定的策略的 confirmed 信号。
-单 consensus 模式下默认 ``{"consensus"}``；多组投票模式下自动
-使用各 voting group 名称（如 ``{"trend_vote", "breakout_vote"}``）。
+缓存 confirmed 信号方向。若设置 ``source_strategies``，则只缓存指定策略。
+默认不过滤策略名，直接缓存所有 confirmed 信号。
 
 ## 时间框架映射
 
@@ -71,9 +70,7 @@ class HTFStateCache:
         默认 4 小时（14400 秒）。
     source_strategies:
         从哪些策略名的 confirmed 信号中缓存方向。
-        默认 ``{"consensus"}``（单 consensus 模式）；多组投票模式下
-        应传入各 voting group 的名称（如 ``{"trend_vote", "breakout_vote"}``），
-        否则 HTF 对齐检查将静默失效。
+        默认不过滤策略名；若传入非空集合，则只缓存这些策略。
     """
 
     def __init__(
@@ -85,10 +82,8 @@ class HTFStateCache:
     ) -> None:
         self._htf_map = htf_map or dict(_DEFAULT_HTF_MAP)
         self._max_age = timedelta(seconds=max(1.0, max_age_seconds))
-        self._source_strategies: frozenset[str] = (
-            source_strategies
-            if source_strategies is not None
-            else frozenset({"consensus"})
+        self._source_strategies: frozenset[str] | None = (
+            frozenset(source_strategies) if source_strategies else None
         )
         # key: (symbol, timeframe) → HTFDirectionContext
         self._cache: Dict[Tuple[str, str], HTFDirectionContext] = {}
@@ -139,7 +134,7 @@ class HTFStateCache:
 
     def on_signal_event(self, event: Any) -> None:
         """SignalRuntime 信号监听器：缓存 source_strategies 的 confirmed 信号方向。"""
-        if event.strategy not in self._source_strategies:
+        if self._source_strategies is not None and event.strategy not in self._source_strategies:
             return
         signal_state = str(event.metadata.get(MK.SIGNAL_STATE, ""))
         if not signal_state.startswith("confirmed_"):

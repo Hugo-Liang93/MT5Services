@@ -7,7 +7,7 @@ from src.api.risk_adapter import risk_error_code_from_assessment
 from src.api.schemas import ApiResponse, TradeRequest
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.admission import TradeAdmissionService
-from src.trading.application import TradingCommandService
+from src.trading.application.services import TradingCommandService
 
 _OPERATION_ALIASES: dict[str, str] = {
     "trade": "trade",

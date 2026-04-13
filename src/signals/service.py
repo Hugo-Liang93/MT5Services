@@ -265,22 +265,16 @@ class SignalModule:
     def list_strategies(self) -> list[str]:
         return sorted(self._strategies.keys())
 
-    def strategy_capability_index(
-        self,
-        *,
-        voting_group_policy: Optional[Dict[str, str]] = None,
-    ) -> tuple[StrategyCapability, ...]:
+    def strategy_capability_index(self) -> tuple[StrategyCapability, ...]:
         """返回所有已注册策略的能力快照（只读，供运行时/回测共享）。
 
         返回值是可持久化/可序列化的能力摘要，字段含义：
         - needs_intrabar：是否声明了 "intrabar" scope
         - needed_indicators：评估所需指标名（有序）
         - valid_scopes：支持的 scope 列表
-        - voting_group_policy：voting_group 名称或 "standalone"
         - regime_affinity：按 regime 名称序列化后的 affinity 映射
         - htf_requirements：HTF 指标需求映射
         """
-        policy_map = {k.lower(): v for k, v in (voting_group_policy or {}).items()}
         capabilities: list[StrategyCapability] = []
         for name in self.list_strategies():
             impl = self._strategies[name]
@@ -309,33 +303,22 @@ class SignalModule:
                     needed_indicators=needed_indicators,
                     needs_intrabar=("intrabar" in valid_scopes),
                     needs_htf=bool(htf_requirements),
-                    voting_group_policy=policy_map.get(name.lower(), "standalone"),
                     regime_affinity=affinity_payload,
                     htf_requirements=htf_requirements,
                 )
             )
         return tuple(capabilities)
 
-    def strategy_capability_contract(
-        self,
-        *,
-        voting_group_policy: Optional[Dict[str, str]] = None,
-    ) -> tuple[dict[str, Any], ...]:
+    def strategy_capability_contract(self) -> tuple[dict[str, Any], ...]:
         """标准化能力清单字典口，module 与 policy 对账的统一视图。"""
         return tuple(
             capability.as_contract()
-            for capability in self.strategy_capability_catalog(
-                voting_group_policy=voting_group_policy
-            )
+            for capability in self.strategy_capability_catalog()
         )
 
-    def strategy_capability_catalog(
-        self,
-        *,
-        voting_group_policy: Optional[Dict[str, str]] = None,
-    ) -> tuple[StrategyCapability, ...]:
+    def strategy_capability_catalog(self) -> tuple[StrategyCapability, ...]:
         """标准化能力快照口，供运行时与回测共享同一输入契约。"""
-        return self.strategy_capability_index(voting_group_policy=voting_group_policy)
+        return self.strategy_capability_index()
 
     def strategy_capability_matrix(self) -> list[dict[str, Any]]:
         """返回策略能力能力快照的只读摘要，用于调度与可观测链路共享。
@@ -346,7 +329,6 @@ class SignalModule:
         - needed_indicators: 齐套判定指标
         - needs_intrabar: 是否需要 intrabar scope
         - needs_htf: 是否声明 HTF 需求
-        - voting_group_policy: voting 归属策略
         """
         return list(self.strategy_capability_contract())
 
@@ -847,9 +829,6 @@ class SignalModule:
 
     def regime_report(self, **kwargs: Any) -> dict[str, Any]:
         return _svc_diag.regime_report(self, **kwargs)
-
-    def recent_consensus_signals(self, **kwargs: Any) -> list[dict[str, Any]]:
-        return _svc_diag.recent_consensus_signals(self, **kwargs)
 
     def strategy_winrates(self, **kwargs: Any) -> list[dict[str, Any]]:
         return _svc_diag.strategy_winrates(self, **kwargs)

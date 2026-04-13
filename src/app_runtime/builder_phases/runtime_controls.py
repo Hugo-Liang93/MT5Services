@@ -17,7 +17,8 @@ from src.app_runtime.mode_policy import (
 )
 from src.config import get_trading_ops_config
 from src.config import get_runtime_data_path
-from src.trading.commands import OperatorCommandConsumer, OperatorCommandService
+from src.trading.commands.consumer import OperatorCommandConsumer
+from src.trading.commands.service import OperatorCommandService
 from src.trading.closeout import CloseoutRuntimeModeAction, ExposureCloseoutPolicy
 from src.trading.state import AccountRiskStateProjector
 import os

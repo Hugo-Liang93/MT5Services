@@ -31,26 +31,23 @@ from src.signals.execution.filters import (
     TrendExhaustionFilter,
     VolatilitySpikeFilter,
 )
-from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
-from src.signals.orchestration.policy import VotingGroupConfig
+from src.signals.orchestration.policy import SignalPolicy
+from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 from src.signals.service import SignalModule
 from src.signals.strategies.adapters import UnifiedIndicatorSourceAdapter
 from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.tracking.repository import TimescaleSignalRepository
 from src.trading.closeout import ExposureCloseoutController, ExposureCloseoutService
-from src.trading.execution import (
-    ExecutionGate,
-    ExecutionGateConfig,
-    ExecutorConfig,
-    RegimeSizing,
-    TradeExecutor,
-)
+from src.trading.execution.executor import ExecutorConfig, TradeExecutor
+from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
+from src.trading.execution.sizing import RegimeSizing
 from src.trading.execution.eventing import execute_market_order
 from src.trading.execution.pending_orders import inspect_pending_mt5_order
 from src.trading.pending import PendingEntryConfig, PendingEntryManager
 from src.trading.positions import ConfirmedIndicatorSource, PositionManager
 from src.trading.intents import ExecutionIntentConsumer, ExecutionIntentPublisher
+from src.trading.execution.quote_health import build_execution_quote_health
 from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 
 _factory_logger = _logging.getLogger(__name__)
@@ -122,14 +119,14 @@ class SignalComponents:
     signal_runtime: SignalRuntime
     htf_cache: HTFStateCache
     signal_quality_tracker: SignalQualityTracker
-    trade_outcome_tracker: TradeOutcomeTracker
-    exposure_closeout_controller: ExposureCloseoutController
-    position_manager: PositionManager
-    trade_executor: TradeExecutor
+    trade_outcome_tracker: TradeOutcomeTracker | None
+    exposure_closeout_controller: ExposureCloseoutController | None
+    position_manager: PositionManager | None
+    trade_executor: TradeExecutor | None
     performance_tracker: StrategyPerformanceTracker
     signal_performance_tracker: StrategyPerformanceTracker
     execution_performance_tracker: StrategyPerformanceTracker
-    pending_entry_manager: PendingEntryManager
+    pending_entry_manager: PendingEntryManager | None
     execution_intent_publisher: ExecutionIntentPublisher | None
     execution_intent_consumer: ExecutionIntentConsumer | None
 
@@ -234,19 +231,12 @@ def build_executor_config(signal_config) -> ExecutorConfig:
 
 
 def build_execution_gate_config(signal_config) -> ExecutionGateConfig:
-    voting_group_strategies: frozenset[str] = frozenset(
-        strategy
-        for cfg in signal_config.voting_group_configs
-        for strategy in cfg.get("strategies", [])
-    )
     intrabar_enabled_strategies = frozenset(
         s
         for s in getattr(signal_config, "intrabar_trading_enabled_strategies", [])
         if s
     )
     return ExecutionGateConfig(
-        voting_group_strategies=voting_group_strategies,
-        standalone_override=frozenset(signal_config.standalone_override),
         intrabar_trading_enabled=getattr(
             signal_config, "intrabar_trading_enabled", False
         ),
@@ -280,33 +270,13 @@ def build_signal_policy(signal_config) -> SignalPolicy:
             strategy_sessions[strategy_name] = tuple(deployment.locked_sessions)
         if deployment.locked_timeframes:
             strategy_timeframes[strategy_name] = tuple(deployment.locked_timeframes)
-    # 将 voting_group_configs（raw dicts）转换为 VotingGroupConfig 对象
-    voting_groups = [
-        VotingGroupConfig(
-            name=cfg["name"],
-            strategies=frozenset(cfg["strategies"]),
-            consensus_threshold=cfg.get("consensus_threshold", 0.40),
-            min_quorum=cfg.get("min_quorum", 2),
-            min_quorum_ratio=cfg.get("min_quorum_ratio", 0.0),
-            disagreement_penalty=cfg.get("disagreement_penalty", 0.50),
-            strategy_weights=cfg.get("strategy_weights", {}),
-        )
-        for cfg in signal_config.voting_group_configs
-        if cfg.get("name") and cfg.get("strategies")
-    ]
     return SignalPolicy(
         snapshot_dedupe_window_seconds=signal_config.snapshot_dedupe_window_seconds,
         max_spread_points=signal_config.max_spread_points,
         allowed_sessions=allowed_sessions,
-        voting_enabled=signal_config.voting_enabled,
-        voting_consensus_threshold=signal_config.voting_consensus_threshold,
-        voting_min_quorum=signal_config.voting_min_quorum,
-        voting_disagreement_penalty=signal_config.voting_disagreement_penalty,
         strategy_sessions=strategy_sessions,
         strategy_timeframes=strategy_timeframes,
         strategy_deployments=strategy_deployments,
-        voting_groups=voting_groups,
-        standalone_override=frozenset(signal_config.standalone_override),
     )
 
 
@@ -354,17 +324,7 @@ def _validate_execution_contracts(
     configured_accounts = load_group_mt5_settings(
         instance_name=runtime_identity.instance_name,
     )
-    normalized_bindings = {
-        str(alias).strip(): {
-            str(strategy).strip()
-            for strategy in (strategies or [])
-            if str(strategy).strip()
-        }
-        for alias, strategies in (
-            getattr(signal_config, "account_bindings", {}) or {}
-        ).items()
-        if str(alias).strip()
-    }
+    normalized_bindings = _normalized_account_bindings(signal_config)
 
     unknown_aliases = sorted(
         alias for alias in normalized_bindings if alias not in configured_accounts
@@ -391,6 +351,53 @@ def _validate_execution_contracts(
             "live-executable strategy; missing bindings for: "
             + ", ".join(unbound_live_strategies)
         )
+
+
+def _normalized_account_bindings(signal_config: Any) -> dict[str, set[str]]:
+    return {
+        str(alias).strip(): {
+            str(strategy).strip()
+            for strategy in (strategies or [])
+            if str(strategy).strip()
+        }
+        for alias, strategies in (
+            getattr(signal_config, "account_bindings", {}) or {}
+        ).items()
+        if str(alias).strip()
+    }
+
+def _should_attach_local_account_runtime(
+    *,
+    signal_config: Any,
+    deployments: Mapping[str, StrategyDeployment],
+    runtime_identity: Any | None,
+) -> bool:
+    if runtime_identity is None:
+        return True
+
+    if getattr(runtime_identity, "instance_role", None) != "main":
+        return True
+
+    if getattr(runtime_identity, "live_topology_mode", None) != "multi_account":
+        return True
+
+    account_alias = str(getattr(runtime_identity, "account_alias", "") or "").strip()
+    if not account_alias:
+        return False
+
+    bound_strategies = _normalized_account_bindings(signal_config).get(
+        account_alias, set()
+    )
+    if not bound_strategies:
+        return False
+
+    return any(
+        deployment is not None and deployment.allows_live_execution()
+        for deployment in (
+            deployments.get(strategy_name)
+            for strategy_name in bound_strategies
+        )
+    )
 
 
 def build_account_runtime_components(
@@ -529,6 +536,10 @@ def build_account_runtime_components(
         performance_tracker=execution_performance_tracker,
         pipeline_event_bus=pipeline_event_bus,
         equity_curve_filter=equity_filter,
+        quote_health_fn=lambda symbol: build_execution_quote_health(
+            market_service,
+            symbol,
+        ),
         runtime_identity=runtime_identity,
     )
     _executor_holder.append(trade_executor)
@@ -657,19 +668,9 @@ def build_signal_components(
             if _tf_chain[j] in configured_tfs:
                 htf_map[tf] = _tf_chain[j]
                 break
-    # 多组投票模式下，HTFStateCache 需监听 voting group 信号而非 consensus。
-    # 自动推导 source_strategies：有 voting_groups 时用 group name，否则用 "consensus"。
-    htf_source_strategies: frozenset[str] | None = None
-    if signal_config.voting_group_configs:
-        group_names = frozenset(
-            cfg["name"] for cfg in signal_config.voting_group_configs if cfg.get("name")
-        )
-        if group_names:
-            htf_source_strategies = group_names
     htf_cache = HTFStateCache(
         htf_map=htf_map if htf_map else None,
         max_age_seconds=signal_config.htf_cache_max_age_seconds,
-        source_strategies=htf_source_strategies,
     )
     signal_module = SignalModule(
         indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
@@ -693,6 +694,11 @@ def build_signal_components(
     )
     signal_config.strategy_deployments = validated_deployments
     _validate_execution_contracts(
+        signal_config=signal_config,
+        deployments=validated_deployments,
+        runtime_identity=runtime_identity,
+    )
+    attach_local_account_runtime = _should_attach_local_account_runtime(
         signal_config=signal_config,
         deployments=validated_deployments,
         runtime_identity=runtime_identity,
@@ -753,29 +759,41 @@ def build_signal_components(
     )
     signal_runtime.set_economic_calendar_service(economic_calendar_service)
     _skip_callback_holder: list[Callable[[str, str], None]] = []
-    account_runtime = build_account_runtime_components(
-        market_service=indicator_manager.market_service,
-        storage_writer=storage_writer,
-        trade_module=trade_module,
-        signal_config=signal_config,
-        execution_performance_tracker=execution_performance_tracker,
-        runtime_identity=runtime_identity,
-        trading_state_store=trading_state_store,
-        pipeline_event_bus=pipeline_event_bus,
-        regime_detector=regime_detector,
-        on_execution_skip=lambda sid, reason: (
-            _skip_callback_holder[0](sid, reason)
-            if _skip_callback_holder
-            else None
-        ),
-    )
-    trade_outcome_tracker = account_runtime.trade_outcome_tracker
-    end_of_day_closeout = account_runtime.exposure_closeout_controller
-    position_manager = account_runtime.position_manager
-    trade_executor = account_runtime.trade_executor
-    pending_entry_manager = account_runtime.pending_entry_manager
-    execution_intent_consumer = account_runtime.execution_intent_consumer
-    signal_runtime.add_signal_listener(position_manager.on_signal_event)
+    trade_outcome_tracker = None
+    end_of_day_closeout = None
+    position_manager = None
+    trade_executor = None
+    pending_entry_manager = None
+    execution_intent_consumer = None
+    if attach_local_account_runtime:
+        account_runtime = build_account_runtime_components(
+            market_service=indicator_manager.market_service,
+            storage_writer=storage_writer,
+            trade_module=trade_module,
+            signal_config=signal_config,
+            execution_performance_tracker=execution_performance_tracker,
+            runtime_identity=runtime_identity,
+            trading_state_store=trading_state_store,
+            pipeline_event_bus=pipeline_event_bus,
+            regime_detector=regime_detector,
+            on_execution_skip=lambda sid, reason: (
+                _skip_callback_holder[0](sid, reason)
+                if _skip_callback_holder
+                else None
+            ),
+        )
+        trade_outcome_tracker = account_runtime.trade_outcome_tracker
+        end_of_day_closeout = account_runtime.exposure_closeout_controller
+        position_manager = account_runtime.position_manager
+        trade_executor = account_runtime.trade_executor
+        pending_entry_manager = account_runtime.pending_entry_manager
+        execution_intent_consumer = account_runtime.execution_intent_consumer
+        signal_runtime.add_signal_listener(position_manager.on_signal_event)
+    else:
+        _factory_logger.info(
+            "Signal runtime %s will publish intents only; local account runtime disabled",
+            getattr(runtime_identity, "instance_id", "shared-main"),
+        )
     htf_cache.attach(signal_runtime)
 
     # 策略级 intrabar 置信度衰减覆盖（从 strategy_params *__intrabar_decay 提取）
@@ -791,20 +809,21 @@ def build_signal_components(
         signal_runtime.set_strategy_intrabar_decay(_decay_overrides)
 
     # 接线：PositionManager 关仓时通知 TradeOutcomeTracker
-    position_manager.add_close_callback(trade_outcome_tracker.on_position_closed)
-    position_manager.set_recovery_hooks(
-        position_context_resolver=lambda ticket, comment: trade_module.resolve_position_context(
-            ticket=ticket,
-            comment=comment,
-        ),
-        position_state_resolver=(
-            trading_state_store.resolve_position_state
-            if trading_state_store is not None
-            else None
-        ),
-        recovered_position_callback=trade_outcome_tracker.restore_tracked_position,
-    )
-    if trading_state_store is not None:
+    if position_manager is not None and trade_outcome_tracker is not None:
+        position_manager.add_close_callback(trade_outcome_tracker.on_position_closed)
+        position_manager.set_recovery_hooks(
+            position_context_resolver=lambda ticket, comment: trade_module.resolve_position_context(
+                ticket=ticket,
+                comment=comment,
+            ),
+            position_state_resolver=(
+                trading_state_store.resolve_position_state
+                if trading_state_store is not None
+                else None
+            ),
+            recovered_position_callback=trade_outcome_tracker.restore_tracked_position,
+        )
+    if trading_state_store is not None and pending_entry_manager is not None:
         pending_entry_manager.set_mt5_order_lifecycle_hooks(
             on_tracked=trading_state_store.record_pending_order_placed,
             on_filled=lambda info, state: trading_state_store.mark_pending_order_filled(
@@ -824,6 +843,7 @@ def build_signal_components(
                 reason=reason,
             ),
         )
+    if trading_state_store is not None and position_manager is not None:
         position_manager.set_state_hooks(
             on_position_tracked=trading_state_store.record_position_tracked,
             on_position_updated=trading_state_store.record_position_update,
@@ -852,10 +872,9 @@ def build_signal_components(
         )
         intrabar_coordinator = IntrabarTradeCoordinator(policy=intrabar_policy)
         signal_runtime.set_intrabar_trade_coordinator(intrabar_coordinator)
-        intrabar_guard = IntrabarTradeGuard()
-        trade_executor.set_intrabar_guard(intrabar_guard)
-        # 注册 intrabar 交易信号 listener
-        signal_runtime.add_signal_listener(trade_executor.on_intrabar_trade_signal)
+        if trade_executor is not None:
+            intrabar_guard = IntrabarTradeGuard()
+            trade_executor.set_intrabar_guard(intrabar_guard)
         _factory_logger.info(
             "Intrabar trading enabled: strategies=%s, min_stable_bars=%d, "
             "min_confidence=%.2f",

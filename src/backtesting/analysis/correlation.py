@@ -1,13 +1,13 @@
-"""策略信号相关性分析 — 从回测结果计算投票组内策略的方向一致性。
+"""策略信号相关性分析 — 从回测结果计算策略间方向一致性。
 
-当两个策略在同一时间频繁发出相同方向信号时，它们在投票组内的投票
-相当于"重复计票"。此模块计算相关性矩阵，并输出 strategy_weights
-建议，可直接写入 signal.ini [voting_group.<name>.weights]。
+当两个策略在同一时间频繁发出相同方向信号时，它们提供的边际信息会下降。
+此模块计算相关性矩阵，并输出 strategy_weights 建议，供 research/backtest
+阶段做组合研究参考，不再对应 runtime 的 vote 配置。
 
 设计原则：
 - 纯函数，不依赖任何运行时组件
 - 输入来自回测的 signal_evaluations 或 trades
-- 输出可直接用于 VotingEngine 的 strategy_weights 配置
+- 输出用于研究态组合分析，不进入当前 runtime 单策略主链路
 """
 
 from __future__ import annotations

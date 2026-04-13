@@ -43,6 +43,13 @@ def build_snapshot_metadata(
 
     if scope == "intrabar":
         _inject_bar_progress(metadata, bar_time, timeframe)
+        _inject_intrabar_synthesis(
+            metadata,
+            symbol=symbol,
+            timeframe=timeframe,
+            bar_time=bar_time,
+            snapshot_source=snapshot_source,
+        )
 
     return metadata
 
@@ -101,3 +108,49 @@ def _inject_bar_progress(
     metadata[MK.BAR_PROGRESS] = max(
         0.0, min(elapsed / max(timeframe_seconds(timeframe), 1), 1.0)
     )
+
+
+def _inject_intrabar_synthesis(
+    metadata: dict[str, Any],
+    *,
+    symbol: str,
+    timeframe: str,
+    bar_time: datetime,
+    snapshot_source: Any,
+) -> None:
+    try:
+        source_get_intrabar_metadata = getattr(
+            snapshot_source,
+            "get_intrabar_metadata",
+            None,
+        )
+        if source_get_intrabar_metadata is None and getattr(
+            snapshot_source,
+            "market_service",
+            None,
+        ) is not None:
+            source_get_intrabar_metadata = getattr(
+                snapshot_source.market_service,
+                "get_intrabar_metadata",
+                None,
+            )
+        if source_get_intrabar_metadata is None:
+            return
+        payload = source_get_intrabar_metadata(
+            symbol,
+            timeframe,
+            bar_time=bar_time,
+        )
+        if not isinstance(payload, dict) or not payload:
+            return
+        metadata[MK.INTRABAR_SYNTHESIS] = dict(payload)
+        trigger_tf = str(payload.get("trigger_tf") or "").strip().upper()
+        if trigger_tf:
+            metadata[MK.INTRABAR_TRIGGER_TF] = trigger_tf
+    except (TypeError, ValueError, AttributeError, KeyError):
+        logger.debug(
+            "Failed to resolve intrabar synthesis metadata for %s/%s",
+            symbol,
+            timeframe,
+            exc_info=True,
+        )

@@ -172,10 +172,6 @@ def build_studio_service(container: AppContainer) -> StudioService:
             "regime_guard",
             lambda: studio_mappers.map_regime_guard(signal_runtime.status()),
         )
-        studio.register_agent(
-            "voter",
-            lambda: studio_mappers.map_voter(signal_runtime.status()),
-        )
 
     if container.trade_executor is not None:
         trade_executor = container.trade_executor
@@ -278,21 +274,6 @@ def _register_studio_signal_listener(
     if container.signal_runtime is None:
         return None
 
-    def _is_vote_result_strategy(strategy_name: str) -> bool:
-        policy = container.signal_runtime.policy
-        voting_group_names = {
-            group.name
-            for group in getattr(policy, "voting_groups", []) or []
-            if getattr(group, "name", "")
-        }
-        if strategy_name in voting_group_names:
-            return True
-        return bool(
-            getattr(policy, "voting_enabled", False)
-            and not getattr(policy, "voting_groups", [])
-            and strategy_name == "consensus"
-        )
-
     def _on_signal(event: Any) -> None:
         signal_state = getattr(event, "signal_state", "")
         symbol = getattr(event, "symbol", "")
@@ -300,7 +281,7 @@ def _register_studio_signal_listener(
         direction = getattr(event, "direction", "")
         confidence = getattr(event, "confidence", 0.0)
         timeframe = getattr(event, "timeframe", "")
-        source = "voter" if _is_vote_result_strategy(strategy) else "strategist"
+        source = "strategist"
         target = "risk_officer"
 
         if signal_state in ("confirmed_buy", "confirmed_sell"):

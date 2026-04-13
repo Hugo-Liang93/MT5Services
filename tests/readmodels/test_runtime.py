@@ -50,6 +50,32 @@ class DummyTradingService:
         }
 
 
+class DummyMT5SessionState:
+    def to_dict(self):
+        return {
+            "terminal_reachable": True,
+            "terminal_process_ready": True,
+            "ipc_ready": True,
+            "authorized": True,
+            "account_match": True,
+            "session_ready": True,
+            "interactive_login_required": False,
+            "error_code": None,
+            "error_message": None,
+            "last_error": {"code": None, "message": None},
+        }
+
+
+class DummyMarketClient:
+    def inspect_session_state(self, **kwargs):
+        return DummyMT5SessionState()
+
+
+class DummyMarketService:
+    def __init__(self) -> None:
+        self.client = DummyMarketClient()
+
+
 class DummyPaperTradingBridge:
     def status(self):
         return {
@@ -117,7 +143,10 @@ class DummyTradeExecutor:
             "execution_quality": {"risk_blocks": 1},
             "circuit_breaker": {"open": False, "consecutive_failures": 0},
             "pending_entries": {"active_count": 1},
-            "execution_gate": {"voting_group_strategies": ["structured_breakout_follow"]},
+            "execution_gate": {
+                "intrabar_trading_enabled": True,
+                "intrabar_enabled_strategies": ["structured_breakout_follow"],
+            },
         }
 
 
@@ -253,10 +282,12 @@ class DummyRuntimeIdentity:
         *,
         instance_id: str = "live-main",
         account_key: str = "live_main",
+        live_topology_mode: str = "single_account",
     ) -> None:
         self.instance_role = instance_role
         self.instance_id = instance_id
         self.account_key = account_key
+        self.live_topology_mode = live_topology_mode
 
 
 class DummyPipelineTraceWriter:
@@ -342,6 +373,7 @@ class DummyStorageWriter:
 def test_health_report_contains_unified_runtime_sections() -> None:
     read_model = RuntimeReadModel(
         health_monitor=DummyHealthMonitor(),
+        market_service=DummyMarketService(),
         ingestor=DummyIngestor(),
         indicator_manager=DummyIndicatorManager(),
         trading_queries=DummyTradingService(),
@@ -354,6 +386,7 @@ def test_health_report_contains_unified_runtime_sections() -> None:
     assert report["runtime"]["storage"]["status"] == "healthy"
     assert report["runtime"]["indicators"]["status"] == "healthy"
     assert report["runtime"]["trading"]["active_account_alias"] == "live"
+    assert report["runtime"]["external_dependencies"]["mt5_session"]["status"] == "healthy"
 
 
 def test_persisted_trade_control_payload_normalizes_datetime_values() -> None:
@@ -370,6 +403,7 @@ def test_persisted_trade_control_payload_normalizes_datetime_values() -> None:
 
 def test_dashboard_overview_uses_unified_projection_shape() -> None:
     read_model = RuntimeReadModel(
+        market_service=DummyMarketService(),
         ingestor=DummyIngestor(),
         indicator_manager=DummyIndicatorManager(),
         trading_queries=DummyTradingService(),
@@ -398,6 +432,7 @@ def test_dashboard_overview_uses_unified_projection_shape() -> None:
     assert overview["validation"]["paper_trading"]["kind"] == "validation_sidecar"
     assert overview["validation"]["paper_trading"]["running"] is True
     assert overview["validation"]["paper_trading"]["signals_received"] == 7
+    assert overview["external_dependencies"]["mt5_session"]["connected"] is True
 
 
 def test_runtime_trade_and_position_projections_are_normalized() -> None:
@@ -416,9 +451,10 @@ def test_runtime_trade_and_position_projections_are_normalized() -> None:
     assert signal_runtime["queues"]["confirmed"]["size"] == 1
     assert signal_runtime["intrabar_runtime_slos"]["queue"]["dropped_total"] == 2
     assert signal_runtime["executor_enabled"] is True
-    assert signal_runtime["execution_gate"]["voting_group_strategies"] == [
+    assert signal_runtime["execution_gate"]["intrabar_enabled_strategies"] == [
         "structured_breakout_follow"
     ]
+    assert signal_runtime["execution_gate"]["intrabar_trading_enabled"] is True
     assert signal_runtime["active_filters"] == ["session", "spread"]
     assert signal_runtime["filter_stats"]["totals"]["confirmed"]["blocked"] == 1
     assert executor["signals"]["blocked"] == 1
@@ -509,6 +545,28 @@ def test_executor_runtime_health_views_mark_shared_compute_as_disabled() -> None
     assert indicators["status"] == "disabled"
     assert signals["status"] == "disabled"
     assert signals["role"] == "executor"
+
+
+def test_main_multi_account_runtime_views_mark_remote_execution_as_disabled() -> None:
+    read_model = RuntimeReadModel(
+        runtime_identity=DummyRuntimeIdentity(
+            instance_role="main",
+            live_topology_mode="multi_account",
+        ),
+    )
+
+    executor = read_model.trade_executor_summary()
+    pending = read_model.pending_entries_summary()
+    positions = read_model.position_manager_summary()
+
+    assert executor["status"] == "disabled"
+    assert executor["execution_scope"] == "remote_executor"
+    assert executor["configured"] is False
+    assert pending["status"] == "disabled"
+    assert pending["execution_scope"] == "remote_executor"
+    assert pending["running"] is False
+    assert positions["status"] == "disabled"
+    assert positions["execution_scope"] == "remote_executor"
 
 
 def test_recent_trade_pipeline_events_payload_scopes_to_runtime_identity() -> None:

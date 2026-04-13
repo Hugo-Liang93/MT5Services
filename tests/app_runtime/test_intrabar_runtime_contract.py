@@ -22,7 +22,6 @@ def test_validate_intrabar_runtime_contract_rejects_missing_child_timeframe() ->
             needed_indicators=("rsi14", "atr14"),
             needs_intrabar=True,
             needs_htf=True,
-            voting_group_policy="standalone",
             regime_affinity={},
             htf_requirements={"supertrend14": "H1"},
         )
@@ -50,7 +49,6 @@ def test_validate_intrabar_runtime_contract_accepts_closed_trigger_loop() -> Non
             needed_indicators=("rsi14", "atr14"),
             needs_intrabar=True,
             needs_htf=True,
-            voting_group_policy="standalone",
             regime_affinity={},
             htf_requirements={"supertrend14": "H1"},
         )
@@ -77,7 +75,6 @@ def test_validate_intrabar_runtime_contract_rejects_non_intrabar_enabled_strateg
             needed_indicators=("adx14", "atr14"),
             needs_intrabar=False,
             needs_htf=True,
-            voting_group_policy="standalone",
             regime_affinity={},
             htf_requirements={"supertrend14": "H1"},
         )

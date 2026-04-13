@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -8,17 +9,30 @@ from src.monitoring.pipeline import (
     PIPELINE_ADMISSION_REPORT_APPENDED,
     PIPELINE_EXECUTION_BLOCKED,
     PIPELINE_EXECUTION_DECIDED,
+    PIPELINE_EXECUTION_SKIPPED,
     PIPELINE_EXECUTION_SUBMITTED,
+    PIPELINE_EXECUTION_SUCCEEDED,
     PipelineEventBus,
 )
 from src.signals.contracts import StrategyDeployment, StrategyDeploymentStatus
 from src.signals.models import SignalEvent
-from src.trading.execution import ExecutionGate, ExecutionGateConfig
-from src.trading.execution import TradeParameters
-from src.trading.execution import ExecutorConfig, TradeExecutor
+from src.trading.execution.executor import ExecutorConfig, TradeExecutor
+from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
+from src.trading.execution.sizing import TradeParameters
+from src.trading.execution.intrabar_guard import IntrabarTradeGuard
 from src.trading.execution.pending_orders import inspect_pending_mt5_order
 from src.trading.execution.reasons import (
+    REASON_AUTO_TRADE_DISABLED,
+    REASON_DUPLICATE_SIGNAL_ID,
+    REASON_INTRABAR_SYNTHESIS_STALE,
+    REASON_INTRABAR_SYNTHESIS_UNAVAILABLE,
+    REASON_INTRABAR_POSITION_ALREADY_VALIDATED,
+    REASON_INTRABAR_POSITION_HOLD,
+    REASON_INTRABAR_TRADING_DISABLED,
     REASON_LIMIT_REACHED,
+    REASON_QUOTE_STALE,
+    REASON_TRADE_PARAMS_UNAVAILABLE,
+    REASON_STRATEGY_NOT_INTRABAR_ENABLED,
     REASON_STRATEGY_CANDIDATE_ONLY,
     REASON_STRATEGY_LOCKED_SESSION,
     REASON_STRATEGY_LOCKED_TIMEFRAME,
@@ -32,6 +46,46 @@ def _fire(executor: TradeExecutor, event: SignalEvent) -> None:
     """Send event and wait for async worker to process it."""
     executor.on_signal_event(event)
     executor.flush()
+
+
+def _fire_intrabar(executor: TradeExecutor, event: SignalEvent) -> None:
+    """Send intrabar event through local async adapter and wait for worker."""
+    executor.on_intrabar_trade_signal(event)
+    executor.flush()
+
+
+def _find_last_event(received, event_type: str):
+    for event in reversed(received):
+        if event.type == event_type:
+            return event
+    raise AssertionError(f"event {event_type!r} not found in {[item.type for item in received]}")
+
+
+def _find_last_admission_with_reason(received, reason_code: str):
+    for event in reversed(received):
+        if event.type != PIPELINE_ADMISSION_REPORT_APPENDED:
+            continue
+        reasons = list(event.payload.get("reasons") or [])
+        if any(reason.get("code") == reason_code for reason in reasons):
+            return event
+    raise AssertionError(
+        f"admission report with reason {reason_code!r} not found in {[item.type for item in received]}"
+    )
+
+
+def _find_last_admission_with_reason_detail(received, reason_code: str, detail_key: str):
+    for event in reversed(received):
+        if event.type != PIPELINE_ADMISSION_REPORT_APPENDED:
+            continue
+        reasons = list(event.payload.get("reasons") or [])
+        for reason in reasons:
+            details = dict(reason.get("details") or {})
+            if reason.get("code") == reason_code and detail_key in details:
+                return event, details
+    raise AssertionError(
+        f"admission report with reason {reason_code!r} and detail {detail_key!r} not found "
+        f"in {[item.type for item in received]}"
+    )
 
 
 class DummyTradingModule:
@@ -143,13 +197,19 @@ def _build_event(
     )
 
 
-def _build_intrabar_event(*, parent_bar_time: datetime | None = None) -> SignalEvent:
+def _build_intrabar_event(
+    *,
+    parent_bar_time: datetime | None = None,
+    metadata_overrides: dict | None = None,
+) -> SignalEvent:
     metadata = {
         "previous_state": "preview_buy",
         "signal_trace_id": "trace_intrabar_1",
     }
     if parent_bar_time is not None:
         metadata["intrabar_parent_bar_time"] = parent_bar_time
+    if metadata_overrides:
+        metadata.update(metadata_overrides)
     return SignalEvent(
         symbol="XAUUSD",
         timeframe="M5",
@@ -216,13 +276,200 @@ def test_trade_executor_records_cost_metrics_on_success() -> None:
     assert cost["estimated_cost_points"] == 50.0
     assert cost["estimated_cost_price"] == 0.5
     assert cost["spread_to_stop_ratio"] is not None
-    assert [event.type for event in received][-3:] == [
+    assert [event.type for event in received][-4:] == [
         PIPELINE_ADMISSION_REPORT_APPENDED,
         PIPELINE_EXECUTION_DECIDED,
         PIPELINE_EXECUTION_SUBMITTED,
+        PIPELINE_EXECUTION_SUCCEEDED,
     ]
-    assert received[-3].payload["decision"] == "allow"
-    assert received[-3].payload["requested_operation"] == "signal_execution"
+    assert received[-4].payload["decision"] == "allow"
+    assert received[-4].payload["requested_operation"] == "signal_execution"
+    assert received[-1].payload["status"] == "completed"
+
+
+def test_trade_executor_blocks_when_quote_health_is_stale() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            sl_atr_multiplier=2.0,
+            tp_atr_multiplier=4.0,
+            max_spread_to_stop_ratio=0.5,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        pipeline_event_bus=pipeline_bus,
+        quote_health_fn=lambda symbol: {
+            "stale": symbol == "XAUUSD",
+            "age_seconds": 5.2,
+            "stale_threshold_seconds": 3.0,
+        },
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    assert module.calls == []
+    assert executor.last_risk_block == REASON_QUOTE_STALE
+    assert executor.status()["recent_executions"][-1]["reason"] == REASON_QUOTE_STALE
+    blocked = _find_last_event(received, PIPELINE_EXECUTION_BLOCKED)
+    admission = _find_last_admission_with_reason(received, REASON_QUOTE_STALE)
+    skipped = _find_last_event(received, PIPELINE_EXECUTION_SKIPPED)
+    assert blocked.payload["reason"] == REASON_QUOTE_STALE
+    assert admission.payload["decision"] == "block"
+    assert admission.payload["stage"] == "market_tradability"
+    assert admission.payload["reasons"][0]["code"] == REASON_QUOTE_STALE
+    assert skipped.payload["skip_reason"] == REASON_QUOTE_STALE
+
+
+def test_trade_executor_returns_structured_skip_when_auto_trade_is_disabled() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=False, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+
+    result = executor.process_event(_build_event(spread_points=20.0, close_price=3000.0))
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_AUTO_TRADE_DISABLED
+    assert executor.last_risk_block == REASON_AUTO_TRADE_DISABLED
+    assert executor.status()["recent_executions"][-1]["reason"] == REASON_AUTO_TRADE_DISABLED
+    assert module.calls == []
+
+
+def test_trade_executor_returns_pre_trade_reason_for_confirmed_skip() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.PAPER_ONLY,
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+
+    result = executor.process_event(_build_event(spread_points=20.0, close_price=3000.0))
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_STRATEGY_PAPER_ONLY
+    assert module.calls == []
+
+
+def test_trade_executor_duplicate_signal_id_uses_unified_reject_contract() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        pipeline_event_bus=pipeline_bus,
+    )
+    executor.executed_signal_ids.append("sig_1")
+
+    result = executor.process_event(_build_event(spread_points=20.0, close_price=3000.0))
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_DUPLICATE_SIGNAL_ID
+    blocked = _find_last_event(received, PIPELINE_EXECUTION_BLOCKED)
+    admission = _find_last_admission_with_reason(received, REASON_DUPLICATE_SIGNAL_ID)
+    assert blocked.payload["reason"] == REASON_DUPLICATE_SIGNAL_ID
+    assert admission.payload["decision"] == "block"
+    assert admission.payload["reasons"][0]["code"] == REASON_DUPLICATE_SIGNAL_ID
+
+
+def test_trade_executor_returns_trade_params_reason_for_confirmed_skip() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+    event = replace(
+        _build_event(spread_points=20.0, close_price=3000.0),
+        indicators={"sma20": {"sma": 3000.0}},
+    )
+
+    result = executor.process_event(event)
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_TRADE_PARAMS_UNAVAILABLE
+    assert result["category"] == "trade_params"
+    assert module.calls == []
+
+
+def test_trade_executor_returns_cost_reason_for_confirmed_skip() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            sl_atr_multiplier=1.0,
+            tp_atr_multiplier=2.0,
+            max_spread_to_stop_ratio=0.2,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+
+    result = executor.process_event(_build_event(spread_points=120.0, close_price=3000.0))
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == "spread_to_stop_ratio_too_high"
+    assert result["category"] == "cost_guard"
+    assert module.calls == []
+
+
+def test_trade_executor_returns_failed_result_when_market_dispatch_raises() -> None:
+    class _FailingTradingModule(DummyTradingModule):
+        def dispatch_operation(self, operation, payload):
+            raise RuntimeError("broker timeout")
+
+    module = _FailingTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            sl_atr_multiplier=2.0,
+            tp_atr_multiplier=4.0,
+            max_spread_to_stop_ratio=0.5,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        pipeline_event_bus=pipeline_bus,
+    )
+
+    result = executor.process_event(_build_event(spread_points=20.0, close_price=3000.0))
+
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["reason"] == "broker timeout"
+    assert result["category"] == "dispatch"
+    assert result["error_code"] == "RuntimeError"
+    assert [event.type for event in received] == [
+        PIPELINE_ADMISSION_REPORT_APPENDED,
+        PIPELINE_EXECUTION_DECIDED,
+    ]
 
 
 def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None:
@@ -283,12 +530,14 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
     assert executor.status()["recent_executions"][-1]["reason"] == (
         "max_concurrent_positions_per_symbol"
     )
-    assert received[-2].type == PIPELINE_EXECUTION_BLOCKED
-    assert received[-2].payload["reason"] == REASON_LIMIT_REACHED
-    assert received[-1].type == PIPELINE_ADMISSION_REPORT_APPENDED
-    assert received[-1].payload["decision"] == "block"
-    assert received[-1].payload["requested_operation"] == "signal_execution"
-    assert received[-1].payload["reasons"][0]["code"] == REASON_LIMIT_REACHED
+    blocked = _find_last_event(received, PIPELINE_EXECUTION_BLOCKED)
+    admission = _find_last_admission_with_reason(received, REASON_LIMIT_REACHED)
+    skipped = _find_last_event(received, PIPELINE_EXECUTION_SKIPPED)
+    assert blocked.payload["reason"] == REASON_LIMIT_REACHED
+    assert admission.payload["decision"] == "block"
+    assert admission.payload["requested_operation"] == "signal_execution"
+    assert admission.payload["reasons"][0]["code"] == REASON_LIMIT_REACHED
+    assert skipped.payload["skip_reason"] == REASON_LIMIT_REACHED
 
 
 def test_trade_executor_emits_intrabar_blocked_admission_when_guard_missing() -> None:
@@ -312,6 +561,293 @@ def test_trade_executor_emits_intrabar_blocked_admission_when_guard_missing() ->
     assert received[0].payload["decision"] == "block"
     assert received[0].payload["requested_operation"] == "intrabar_execution"
     assert received[0].payload["reasons"][0]["code"] == "intrabar_guard_missing"
+
+
+def test_trade_executor_local_worker_emits_terminal_skip_for_confirmed() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=False, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        pipeline_event_bus=pipeline_bus,
+    )
+
+    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+
+    skipped = _find_last_event(received, PIPELINE_EXECUTION_SKIPPED)
+    assert skipped.payload["skip_reason"] == REASON_AUTO_TRADE_DISABLED
+    assert skipped.payload["status"] == "skipped"
+    assert skipped.payload["signal_id"] == "sig_1"
+
+
+def test_trade_executor_local_worker_emits_terminal_skip_for_intrabar() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=False, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        pipeline_event_bus=pipeline_bus,
+    )
+
+    _fire_intrabar(
+        executor,
+        replace(
+            _build_intrabar_event(parent_bar_time=datetime.now(timezone.utc)),
+            signal_state="intrabar_armed_buy",
+        ),
+    )
+
+    skipped = _find_last_event(received, PIPELINE_EXECUTION_SKIPPED)
+    assert skipped.payload["skip_reason"] == REASON_AUTO_TRADE_DISABLED
+    assert skipped.payload["signal_scope"] == "intrabar"
+
+
+def test_trade_executor_blocks_intrabar_when_synthesis_metadata_is_missing() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(
+            ExecutionGateConfig(
+                intrabar_trading_enabled=True,
+                intrabar_enabled_strategies=frozenset({"sma_trend"}),
+            )
+        ),
+        pipeline_event_bus=pipeline_bus,
+    )
+    executor.set_intrabar_guard(IntrabarTradeGuard())
+
+    executor.process_event(
+        _build_intrabar_event(parent_bar_time=datetime.now(timezone.utc))
+    )
+
+    assert module.calls == []
+    assert executor.last_risk_block == REASON_INTRABAR_SYNTHESIS_UNAVAILABLE
+    blocked = _find_last_event(received, PIPELINE_EXECUTION_BLOCKED)
+    admission, _ = _find_last_admission_with_reason_detail(
+        received,
+        REASON_INTRABAR_SYNTHESIS_UNAVAILABLE,
+        "intrabar_synthesis",
+    )
+    assert blocked.payload["reason"] == REASON_INTRABAR_SYNTHESIS_UNAVAILABLE
+    assert sum(
+        1 for event in received if event.type == PIPELINE_ADMISSION_REPORT_APPENDED
+    ) == 1
+    assert admission.payload["reasons"][0]["code"] == (
+        REASON_INTRABAR_SYNTHESIS_UNAVAILABLE
+    )
+
+
+def test_trade_executor_blocks_intrabar_when_synthesis_is_stale() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    parent_bar_time = datetime.now(timezone.utc)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(
+            ExecutionGateConfig(
+                intrabar_trading_enabled=True,
+                intrabar_enabled_strategies=frozenset({"sma_trend"}),
+            )
+        ),
+        pipeline_event_bus=pipeline_bus,
+    )
+    executor.set_intrabar_guard(IntrabarTradeGuard())
+
+    executor.process_event(
+        _build_intrabar_event(
+            parent_bar_time=parent_bar_time,
+            metadata_overrides={
+                "intrabar_synthesis": {
+                    "trigger_tf": "M1",
+                    "synthesized_at": "2026-04-13T00:00:00+00:00",
+                    "stale_threshold_seconds": 180.0,
+                    "expected_interval_seconds": 60.0,
+                    "last_child_bar_time": "2026-04-13T00:00:00+00:00",
+                    "child_bar_count": 3,
+                    "count": 9,
+                }
+            },
+        )
+    )
+
+    assert module.calls == []
+    assert executor.last_risk_block == REASON_INTRABAR_SYNTHESIS_STALE
+    blocked = _find_last_event(received, PIPELINE_EXECUTION_BLOCKED)
+    admission, details = _find_last_admission_with_reason_detail(
+        received,
+        REASON_INTRABAR_SYNTHESIS_STALE,
+        "intrabar_synthesis",
+    )
+    assert blocked.payload["reason"] == REASON_INTRABAR_SYNTHESIS_STALE
+    assert sum(
+        1 for event in received if event.type == PIPELINE_ADMISSION_REPORT_APPENDED
+    ) == 1
+    assert admission.payload["reasons"][0]["code"] == (
+        REASON_INTRABAR_SYNTHESIS_STALE
+    )
+    details = details["intrabar_synthesis"]
+    assert details["trigger_tf"] == "M1"
+    assert details["stale"] is True
+
+
+def test_trade_executor_process_event_returns_structured_skip_when_intrabar_is_blocked() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(
+            ExecutionGateConfig(
+                intrabar_trading_enabled=True,
+                intrabar_enabled_strategies=frozenset({"sma_trend"}),
+            )
+        ),
+    )
+    executor.set_intrabar_guard(IntrabarTradeGuard())
+
+    result = executor.process_event(
+        _build_intrabar_event(parent_bar_time=datetime.now(timezone.utc))
+    )
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_INTRABAR_SYNTHESIS_UNAVAILABLE
+    assert module.calls == []
+
+
+def test_trade_executor_returns_structured_skip_when_intrabar_auto_trade_is_disabled() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=False, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+
+    result = executor.process_event(
+        _build_intrabar_event(parent_bar_time=datetime.now(timezone.utc))
+    )
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_AUTO_TRADE_DISABLED
+    assert executor.last_risk_block == REASON_AUTO_TRADE_DISABLED
+    assert module.calls == []
+
+
+def test_trade_executor_returns_trade_params_reason_for_intrabar_skip() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    parent_bar_time = datetime.now(timezone.utc)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(
+            ExecutionGateConfig(
+                intrabar_trading_enabled=True,
+                intrabar_enabled_strategies=frozenset({"sma_trend"}),
+            )
+        ),
+        pipeline_event_bus=pipeline_bus,
+    )
+    executor.set_intrabar_guard(IntrabarTradeGuard())
+
+    event = _build_intrabar_event(
+        parent_bar_time=parent_bar_time,
+        metadata_overrides={
+            "intrabar_synthesis": {
+                "trigger_tf": "M1",
+                "synthesized_at": datetime.now(timezone.utc).isoformat(),
+                "stale_threshold_seconds": 180.0,
+                "expected_interval_seconds": 60.0,
+                "last_child_bar_time": parent_bar_time.isoformat(),
+                "child_bar_count": 1,
+                "count": 1,
+                "status": "healthy",
+                "stale": False,
+            }
+        },
+    )
+    event = replace(event, indicators={"sma20": {"sma": 3000.0}})
+
+    result = executor.process_event(event)
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_TRADE_PARAMS_UNAVAILABLE
+    admission = _find_last_admission_with_reason(received, REASON_TRADE_PARAMS_UNAVAILABLE)
+    assert admission.payload["requested_operation"] == "intrabar_execution"
+    assert module.calls == []
+
+
+def test_trade_executor_returns_structured_skip_when_intrabar_position_is_already_validated() -> None:
+    module = DummyTradingModule()
+    guard = IntrabarTradeGuard()
+    parent_bar_time = datetime.now(timezone.utc)
+    guard.record_trade("XAUUSD", "M5", "sma_trend", "buy", parent_bar_time)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+    executor.set_intrabar_guard(guard)
+    event = replace(
+        _build_event(spread_points=20.0, close_price=3000.0),
+        metadata={
+            **_build_event(spread_points=20.0, close_price=3000.0).metadata,
+            "bar_time": parent_bar_time,
+        },
+    )
+
+    result = executor.process_event(event)
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_INTRABAR_POSITION_ALREADY_VALIDATED
+    assert module.calls == []
+
+
+def test_trade_executor_returns_structured_skip_when_confirmed_hold_keeps_intrabar_position() -> None:
+    module = DummyTradingModule()
+    guard = IntrabarTradeGuard()
+    parent_bar_time = datetime.now(timezone.utc)
+    guard.record_trade("XAUUSD", "M5", "sma_trend", "buy", parent_bar_time)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+    executor.set_intrabar_guard(guard)
+    base_event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = replace(
+        base_event,
+        direction="hold",
+        signal_state="confirmed_hold",
+        metadata={
+            **base_event.metadata,
+            "bar_time": parent_bar_time,
+        },
+    )
+
+    result = executor.process_event(event)
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_INTRABAR_POSITION_HOLD
+    assert module.calls == []
 
 
 def test_trade_executor_skips_when_same_strategy_direction_position_is_active() -> None:
@@ -847,49 +1383,31 @@ def test_trade_executor_matches_filled_pending_order_by_strategy_prefix_when_com
     assert outcome_tracker.opened[0]["signal_id"] == "sig_h4_pullback"
 
 
-def test_trade_executor_voting_group_strategy_blocked() -> None:
-    """属于 voting group 的策略不能单独触发交易。"""
-    module = DummyTradingModule()
-    executor = TradeExecutor(
-        trading_module=module,
-        config=ExecutorConfig(
-            enabled=True,
-            min_confidence=0.5,
-        ),
-        execution_gate=ExecutionGate(
-            ExecutionGateConfig(
-                voting_group_strategies=frozenset({"sma_trend", "supertrend"}),
-            )
-        ),
+def test_execution_gate_blocks_intrabar_when_disabled() -> None:
+    gate = ExecutionGate(ExecutionGateConfig(intrabar_trading_enabled=False))
+
+    allowed, reason = gate.check_intrabar(
+        _build_intrabar_event(parent_bar_time=datetime.now(timezone.utc))
     )
 
-    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+    assert not allowed
+    assert reason == REASON_INTRABAR_TRADING_DISABLED
 
-    assert module.calls == []
 
-
-def test_trade_executor_voting_group_standalone_override_allows() -> None:
-    """standalone_override 中的策略即使在 voting group 中也可以单独触发。"""
-    module = DummyTradingModule()
-    executor = TradeExecutor(
-        trading_module=module,
-        config=ExecutorConfig(
-            enabled=True,
-            min_confidence=0.5,
-            sl_atr_multiplier=2.0,
-            tp_atr_multiplier=4.0,
-        ),
-        execution_gate=ExecutionGate(
-            ExecutionGateConfig(
-                voting_group_strategies=frozenset({"sma_trend", "supertrend"}),
-                standalone_override=frozenset({"sma_trend"}),
-            )
-        ),
+def test_execution_gate_blocks_intrabar_when_strategy_not_enabled() -> None:
+    gate = ExecutionGate(
+        ExecutionGateConfig(
+            intrabar_trading_enabled=True,
+            intrabar_enabled_strategies=frozenset({"structured_breakout_follow"}),
+        )
     )
 
-    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+    allowed, reason = gate.check_intrabar(
+        _build_intrabar_event(parent_bar_time=datetime.now(timezone.utc))
+    )
 
-    assert module.calls  # sma_trend 在 override 中，允许执行
+    assert not allowed
+    assert reason == REASON_STRATEGY_NOT_INTRABAR_ENABLED
 
 
 def test_trade_executor_circuit_breaker_auto_resets() -> None:

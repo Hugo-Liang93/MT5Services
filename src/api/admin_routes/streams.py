@@ -12,7 +12,7 @@ from src.api import deps
 from src.api.schemas import ApiResponse
 from src.monitoring.pipeline import PipelineEvent, PipelineEventBus
 from src.signals.models import SignalEvent
-from src.signals.orchestration import SignalRuntime
+from src.signals.orchestration.runtime import SignalRuntime
 from .view_models import PipelineStatsView
 
 router = APIRouter(prefix="/admin", tags=["admin"])

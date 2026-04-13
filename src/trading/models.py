@@ -7,6 +7,50 @@ from uuid import uuid4
 
 
 @dataclass(frozen=True)
+class TradeExecutionDetails:
+    ticket: int
+    symbol: str
+    volume: float
+    requested_price: Optional[float]
+    fill_price: float
+    order_id: int = 0
+    deal_id: int = 0
+    retcode: Optional[int] = None
+    broker_comment: Optional[str] = None
+    sl: Optional[float] = None
+    tp: Optional[float] = None
+    deviation: int = 20
+    magic: int = 0
+    pending: bool = False
+    recovered_from_state: bool = False
+    state_source: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "ticket": int(self.ticket),
+            "order": int(self.order_id),
+            "deal": int(self.deal_id),
+            "retcode": int(self.retcode) if self.retcode is not None else None,
+            "broker_comment": self.broker_comment,
+            "symbol": self.symbol,
+            "volume": float(self.volume),
+            "price": self.requested_price,
+            "requested_price": self.requested_price,
+            "fill_price": float(self.fill_price),
+            "sl": self.sl,
+            "tp": self.tp,
+            "deviation": int(self.deviation),
+            "magic": int(self.magic),
+            "pending": bool(self.pending),
+        }
+        if self.recovered_from_state:
+            payload["recovered_from_state"] = True
+        if self.state_source:
+            payload["state_source"] = self.state_source
+        return payload
+
+
+@dataclass(frozen=True)
 class TradeCommandAuditRecord:
     account_alias: str
     command_type: str

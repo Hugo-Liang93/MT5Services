@@ -48,6 +48,7 @@ class MarketDataService:
         self._quote_prune_counter = 0
         self._ohlc_closed_cache: Dict[str, List[OHLC]] = {}
         self._intrabar_cache: Dict[str, List[OHLC]] = {}
+        self._intrabar_metadata_cache: Dict[str, Dict[str, Any]] = {}
         self._intrabar_max_points = self.market_settings.intrabar_max_points
         self._storage_writer: Optional["StorageWriter"] = None
         self.event_bus = MarketEventBus(
@@ -441,7 +442,14 @@ class MarketDataService:
             keep_limit = max(self.market_settings.ohlc_limit, self.market_settings.ohlc_cache_limit)
             self._ohlc_closed_cache[key] = sorted_bars[-keep_limit:]
 
-    def set_intrabar(self, symbol: str, timeframe: str, bar: OHLC) -> None:
+    def set_intrabar(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar: OHLC,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Store intrabar snapshot for API access / debugging.
 
         Accumulates successive snapshots of the *same* bar_time so
@@ -459,7 +467,29 @@ class MarketDataService:
                 existing.append(bar)
                 if len(existing) > self._intrabar_max_points:
                     del existing[:-self._intrabar_max_points]
+            if metadata is not None:
+                payload = dict(metadata)
+                payload.setdefault("bar_time", self._as_utc(bar.time).isoformat())
+                self._intrabar_metadata_cache[key] = payload
         self.event_bus.dispatch_intrabar(symbol, timeframe, bar)
+
+    def get_intrabar_metadata(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        bar_time: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        key = ohlc_key(symbol, timeframe)
+        with self._lock:
+            payload = dict(self._intrabar_metadata_cache.get(key) or {})
+        if not payload:
+            return {}
+        if bar_time is not None:
+            expected_bar_time = self._as_utc(bar_time).isoformat()
+            if str(payload.get("bar_time") or "").strip() != expected_bar_time:
+                return {}
+        return payload
 
     def attach_storage(self, storage_writer: Optional["StorageWriter"]) -> None:
         self._storage_writer = storage_writer

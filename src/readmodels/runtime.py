@@ -16,6 +16,7 @@ from src.monitoring.pipeline.events import (
     PIPELINE_RISK_STATE_CHANGED,
     PIPELINE_UNMANAGED_POSITION_DETECTED,
 )
+from src.trading.broker.comment_codec import looks_like_system_trade_comment
 
 
 class RuntimeReadModel:
@@ -25,6 +26,7 @@ class RuntimeReadModel:
         self,
         *,
         health_monitor: Any = None,
+        market_service: Any = None,
         storage_writer: Any = None,
         ingestor: Any = None,
         indicator_manager: Any = None,
@@ -42,6 +44,7 @@ class RuntimeReadModel:
         db_writer: Any = None,
     ) -> None:
         self._health_monitor = health_monitor
+        self._market_service = market_service
         self._storage_writer = storage_writer
         self._ingestor = ingestor
         self._indicator_manager = indicator_manager
@@ -65,6 +68,27 @@ class RuntimeReadModel:
     def _is_executor(self) -> bool:
         identity = self._runtime_identity
         return bool(identity is not None and identity.instance_role == "executor")
+
+    def _runtime_identity_attr(self, attr: str, default: Any = None) -> Any:
+        identity = self._runtime_identity
+        if identity is None:
+            return default
+        return getattr(identity, attr, default)
+
+    def _is_shared_compute_main(self) -> bool:
+        return bool(
+            self._runtime_identity is not None
+            and self._runtime_identity_attr("instance_role") == "main"
+            and self._runtime_identity_attr("live_topology_mode") == "multi_account"
+        )
+
+    def _shared_compute_main_without_local_execution(self) -> bool:
+        return bool(
+            self._is_shared_compute_main()
+            and self._trade_executor is None
+            and self._position_manager is None
+            and self._pending_entry_manager is None
+        )
 
     def _current_runtime_mode(self) -> str | None:
         controller = self._runtime_mode_controller
@@ -91,6 +115,18 @@ class RuntimeReadModel:
         if isinstance(value, (list, tuple, set)):
             return [RuntimeReadModel._json_safe_value(item) for item in value]
         return value
+
+    @staticmethod
+    def _component_running(component: Any, *, fallback: bool = False) -> bool:
+        if component is None:
+            return fallback
+        is_running = getattr(component, "is_running", None)
+        if not callable(is_running):
+            return fallback
+        try:
+            return bool(is_running())
+        except Exception:
+            return fallback
 
     @classmethod
     def _position_dict(cls, item: Any) -> dict[str, Any]:
@@ -121,6 +157,7 @@ class RuntimeReadModel:
         summary = dict(queue_stats.get("summary", {}) or {})
         queues = dict(queue_stats.get("queues", {}) or {})
         threads = dict(queue_stats.get("threads", {}) or {})
+        intrabar_synthesis = dict(queue_stats.get("intrabar_synthesis", {}) or {})
         worst_queue = None
         writer_alive = threads.get("writer_alive")
         ingest_alive = threads.get("ingest_alive")
@@ -157,6 +194,56 @@ class RuntimeReadModel:
             "threads": threads,
             "summary": summary,
             "worst_queue": worst_queue,
+            "intrabar_synthesis": RuntimeReadModel._build_intrabar_synthesis_summary(
+                intrabar_synthesis
+            ),
+        }
+
+    @staticmethod
+    def _build_intrabar_synthesis_summary(
+        entries: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        items = {
+            str(key): dict(value)
+            for key, value in dict(entries or {}).items()
+            if isinstance(value, Mapping)
+        }
+        if not items:
+            return {
+                "configured": False,
+                "status": "unavailable",
+                "total": 0,
+                "stale": 0,
+                "healthy": 0,
+                "warming_up": 0,
+                "worst_age_seconds": None,
+                "items": {},
+            }
+        stale_count = sum(1 for item in items.values() if bool(item.get("stale", False)))
+        warming_up_count = sum(
+            1 for item in items.values() if str(item.get("status") or "").strip() == "warming_up"
+        )
+        ages = [
+            float(item.get("last_age_seconds"))
+            for item in items.values()
+            if isinstance(item.get("last_age_seconds"), (int, float))
+            and float(item.get("last_age_seconds")) >= 0.0
+        ]
+        if stale_count > 0:
+            status = "warning"
+        elif warming_up_count > 0:
+            status = "warming_up"
+        else:
+            status = "healthy"
+        return {
+            "configured": True,
+            "status": status,
+            "total": len(items),
+            "stale": stale_count,
+            "healthy": max(len(items) - stale_count - warming_up_count, 0),
+            "warming_up": warming_up_count,
+            "worst_age_seconds": max(ages) if ages else None,
+            "items": items,
         }
 
     @classmethod
@@ -417,7 +504,6 @@ class RuntimeReadModel:
                 ),
             },
             "drop_rates": dict(runtime_status.get("drop_rates", {}) or {}),
-            "voting_stats": dict(runtime_status.get("voting_stats", {}) or {}),
             "filters": {
                 "by_scope": dict(runtime_status.get("filter_by_scope", {}) or {}),
                 "affinity_gates_skipped": int(
@@ -436,7 +522,6 @@ class RuntimeReadModel:
                     runtime_status.get("active_confirmed_states", 0) or 0
                 ),
             },
-            "voting_groups": list(runtime_status.get("voting_groups", []) or []),
             "regime_map": dict(runtime_status.get("regime_map", {}) or {}),
             "last_run_at": runtime_status.get("last_run_at"),
             "last_error": last_error,
@@ -614,6 +699,9 @@ class RuntimeReadModel:
             "storage": self.storage_summary(),
             "indicators": self.indicator_summary(),
             "trading": self.trading_summary(hours=hours),
+            "external_dependencies": {
+                "mt5_session": self.mt5_session_summary(),
+            },
         }
         return report
 
@@ -670,7 +758,6 @@ class RuntimeReadModel:
                     "window_seconds": 0,
                     "window_elapsed": 0,
                 },
-                "voting_groups": [],
                 "regime_map": {},
                 "last_run_at": None,
                 "last_error": None,
@@ -727,7 +814,6 @@ class RuntimeReadModel:
                     "window_seconds": 0,
                     "window_elapsed": 0,
                 },
-                "voting_groups": [],
                 "regime_map": {},
                 "last_run_at": None,
                 "last_error": "signal_runtime_unavailable",
@@ -757,21 +843,62 @@ class RuntimeReadModel:
 
     def pending_entries_summary(self) -> dict[str, Any]:
         if self._pending_entry_manager is None:
+            if self._shared_compute_main_without_local_execution():
+                return {
+                    "status": "disabled",
+                    "configured": False,
+                    "running": False,
+                    "active_count": 0,
+                    "entries": [],
+                    "stats": {},
+                    "execution_scope": "remote_executor",
+                }
             return {
                 "status": "critical",
+                "configured": False,
+                "running": False,
                 "active_count": 0,
                 "entries": [],
                 "stats": {},
             }
         summary = self.build_pending_entries_summary(self._pending_entry_manager.status())
+        summary["configured"] = True
+        summary["running"] = self._component_running(self._pending_entry_manager)
+        summary.setdefault("execution_scope", "local")
         if self._current_runtime_mode() == "ingest_only":
             summary["status"] = "disabled"
+            summary["running"] = False
         return summary
 
     def trade_executor_summary(self) -> dict[str, Any]:
         if self._trade_executor is None:
+            if self._shared_compute_main_without_local_execution():
+                return {
+                    "status": "disabled",
+                    "configured": False,
+                    "armed": False,
+                    "running": False,
+                    "enabled": False,
+                    "circuit_open": False,
+                    "consecutive_failures": 0,
+                    "execution_count": 0,
+                    "last_execution_at": None,
+                    "last_error": None,
+                    "last_risk_block": None,
+                    "signals": {},
+                    "execution_quality": {},
+                    "config": {},
+                    "execution_gate": {},
+                    "pending_entries_count": 0,
+                    "pending_entries": self.pending_entries_summary(),
+                    "recent_executions": [],
+                    "execution_scope": "remote_executor",
+                }
             return {
                 "status": "critical",
+                "configured": False,
+                "armed": False,
+                "running": False,
                 "enabled": False,
                 "circuit_open": False,
                 "consecutive_failures": 0,
@@ -787,12 +914,35 @@ class RuntimeReadModel:
                 "pending_entries": self.pending_entries_summary(),
                 "recent_executions": [],
             }
-        return self.build_executor_snapshot(self._trade_executor.status())
+        summary = self.build_executor_snapshot(self._trade_executor.status())
+        summary["configured"] = True
+        summary["armed"] = bool(summary.get("enabled", False))
+        summary["running"] = self._component_running(
+            self._trade_executor,
+            fallback=summary["armed"],
+        )
+        summary.setdefault("execution_scope", "local")
+        return summary
 
     def position_manager_summary(self) -> dict[str, Any]:
         if self._position_manager is None:
+            if self._shared_compute_main_without_local_execution():
+                return {
+                    "status": "disabled",
+                    "configured": False,
+                    "running": False,
+                    "tracked_positions": 0,
+                    "reconcile": {},
+                    "last_error": None,
+                    "config": {},
+                    "last_end_of_day_close_date": None,
+                    "margin_guard": None,
+                    "positions": {"count": 0, "items": []},
+                    "execution_scope": "remote_executor",
+                }
             return {
                 "status": "critical",
+                "configured": False,
                 "running": False,
                 "tracked_positions": 0,
                 "reconcile": {},
@@ -807,6 +957,8 @@ class RuntimeReadModel:
             self._position_manager.status(),
             positions,
         )
+        summary["configured"] = True
+        summary.setdefault("execution_scope", "local")
         if (
             self._current_runtime_mode() == "ingest_only"
             and not summary.get("running", False)
@@ -879,6 +1031,78 @@ class RuntimeReadModel:
             "equity": payload.get("equity"),
             "open_positions": payload.get("open_positions"),
             "closed_trades": payload.get("closed_trades"),
+        }
+
+    def mt5_session_summary(self) -> dict[str, Any]:
+        market_service = self._market_service
+        if market_service is None:
+            return {
+                "kind": "external_dependency",
+                "status": "unavailable",
+                "connected": False,
+                "terminal_reachable": False,
+                "terminal_process_ready": False,
+                "ipc_ready": False,
+                "authorized": False,
+                "account_match": False,
+                "session_ready": False,
+                "interactive_login_required": False,
+                "error_code": "market_service_unavailable",
+                "error_message": "market service is not configured",
+                "last_error": {"code": None, "message": None},
+            }
+
+        client = getattr(market_service, "client", None)
+        inspect = getattr(client, "inspect_session_state", None)
+        if callable(inspect):
+            try:
+                state = inspect(
+                    require_terminal_process=True,
+                    attempt_initialize=True,
+                    attempt_login=True,
+                )
+                payload = (
+                    state.to_dict()
+                    if hasattr(state, "to_dict")
+                    else dict(state or {})
+                )
+                return {
+                    "kind": "external_dependency",
+                    "status": "healthy" if bool(payload.get("session_ready")) else "critical",
+                    "connected": bool(payload.get("session_ready")),
+                    **payload,
+                }
+            except Exception as exc:
+                return {
+                    "kind": "external_dependency",
+                    "status": "critical",
+                    "connected": False,
+                    "terminal_reachable": False,
+                    "terminal_process_ready": False,
+                    "ipc_ready": False,
+                    "authorized": False,
+                    "account_match": False,
+                    "session_ready": False,
+                    "interactive_login_required": False,
+                    "error_code": "probe_failed",
+                    "error_message": str(exc),
+                    "last_error": {"code": None, "message": None},
+                }
+
+        return {
+            "kind": "external_dependency",
+            "status": "unavailable",
+            "connected": False,
+            "terminal_reachable": False,
+            "terminal_process_ready": False,
+            "ipc_ready": False,
+            "authorized": False,
+            "account_match": False,
+            "session_ready": False,
+            "interactive_login_required": False,
+            "error_code": "mt5_client_unavailable",
+            "error_message": "market service does not expose MT5 session inspection",
+            "last_error": {"code": None, "message": None},
         }
 
     def exposure_closeout_summary(self) -> dict[str, Any]:
@@ -1093,7 +1317,7 @@ class RuntimeReadModel:
                     context = None
             if not comment and int(magic or 0) == 0:
                 reason = "manual_position"
-            elif context is None:
+            elif context is None and not looks_like_system_trade_comment(comment):
                 reason = "unsupported_comment"
             else:
                 reason = "missing_context"
@@ -1283,6 +1507,9 @@ class RuntimeReadModel:
             "signals": self.signal_runtime_summary(),
             "executor": self.trade_executor_summary(),
             "validation": {"paper_trading": self.paper_trading_summary()},
+            "external_dependencies": {
+                "mt5_session": self.mt5_session_summary(),
+            },
             "storage": storage,
             "indicators": indicators,
         }

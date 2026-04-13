@@ -20,7 +20,7 @@ class ExecutionIntentRepository:
     ) -> None:
         batch = []
         for row in rows:
-            payload = row[8] if len(row) > 8 and row[8] is not None else {}
+            payload = row[9] if len(row) > 9 and row[9] is not None else {}
             decision_metadata = row[20] if len(row) > 20 and row[20] is not None else {}
             batch.append(
                 (
@@ -32,10 +32,10 @@ class ExecutionIntentRepository:
                     row[5],
                     row[6],
                     row[7],
+                    row[8],
                     self._writer._json(payload),
-                    row[9],
-                    int(row[10] or 0),
-                    row[11],
+                    row[10],
+                    int(row[11] or 0),
                     row[12],
                     row[13],
                     row[14],

@@ -32,6 +32,8 @@ from src.persistence.schema import DDL_STATEMENTS, POST_INIT_DDL_STATEMENTS
 
 logger = logging.getLogger(__name__)
 
+_SCHEMA_INIT_LOCK_KEY = 7_254_031_901
+
 
 class TimescaleWriter:
     """TimescaleDB writer with connection pooling and repository-backed facade methods."""
@@ -253,9 +255,13 @@ class TimescaleWriter:
     def init_schema(self) -> None:
         ddl = "CREATE EXTENSION IF NOT EXISTS timescaledb;\n" + "\n".join(DDL_STATEMENTS)
         with self.connection() as conn, conn.cursor() as cur:
-            cur.execute(ddl)
-            for migration_sql in POST_INIT_DDL_STATEMENTS:
-                cur.execute(migration_sql)
+            cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_INIT_LOCK_KEY,))
+            try:
+                cur.execute(ddl)
+                for migration_sql in POST_INIT_DDL_STATEMENTS:
+                    cur.execute(migration_sql)
+            finally:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_INIT_LOCK_KEY,))
         logger.info("Timescale schema ensured")
 
     def ensure_retention_policies(

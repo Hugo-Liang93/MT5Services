@@ -1,29 +1,13 @@
-from .audit import TradeCommandAuditService, TradeDailyStatsService
-from .control import TradeControlStateService
-from .idempotency import (
-    TradeExecutionReplayService,
-    TradeOperatorActionReplayConflictError,
-    TradeOperatorActionReplayService,
-)
-from .module import TradingModule
-from .signal_execution import (
-    PreparedSignalTrade,
-    SignalTradeCommandService,
-    SignalTradePreparationError,
-)
-from .services import TradingCommandService, TradingQueryService
+"""Trading application subpackage.
 
-__all__ = [
-    "PreparedSignalTrade",
-    "SignalTradeCommandService",
-    "SignalTradePreparationError",
-    "TradeCommandAuditService",
-    "TradeControlStateService",
-    "TradeDailyStatsService",
-    "TradeExecutionReplayService",
-    "TradeOperatorActionReplayConflictError",
-    "TradeOperatorActionReplayService",
-    "TradingCommandService",
-    "TradingModule",
-    "TradingQueryService",
-]
+公开能力请直接从具体模块导入：
+- ``src.trading.application.module``
+- ``src.trading.application.services``
+- ``src.trading.application.control``
+- ``src.trading.application.audit``
+- ``src.trading.application.idempotency``
+- ``src.trading.application.signal_execution``
+- ``src.trading.application.trading_service``
+"""
+
+__all__: list[str] = []

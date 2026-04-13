@@ -279,18 +279,28 @@ def test_mt5_base_client_initializes_session_with_credentials() -> None:
     captured = {}
 
     class FakeMT5:
+        def __init__(self) -> None:
+            self._initialized = False
+            self._authorized = False
+
         def initialize(self, **kwargs):
             captured["initialize"] = kwargs
+            self._initialized = True
             return True
 
         def terminal_info(self):
-            return None
+            if not self._initialized:
+                return None
+            return SimpleNamespace(name="TradeMax Global MT5 Terminal")
 
         def account_info(self):
+            if not self._authorized:
+                return SimpleNamespace(login=12345678, server="Wrong-Server")
             return SimpleNamespace(login=60067107, server="TradeMaxGlobal-Demo")
 
         def login(self, **kwargs):
             captured["login"] = kwargs
+            self._authorized = True
             return True
 
         def last_error(self):
@@ -308,15 +318,18 @@ def test_mt5_base_client_initializes_session_with_credentials() -> None:
     )
 
     with patch("src.clients.base.mt5", FakeMT5()):
-        client.connect()
+        with patch.object(MT5BaseClient, "_terminal_path_exists", return_value=True):
+            with patch.object(MT5BaseClient, "_terminal_process_running", return_value=True):
+                client.connect()
 
     assert captured["initialize"] == {
         "path": "C:/Program Files/TradeMax Global MT5 Terminal/terminal64.exe",
+    }
+    assert captured["login"] == {
         "login": 60067107,
         "password": "secret",
         "server": "TradeMaxGlobal-Demo",
     }
-    assert "login" not in captured
 
 
 def test_mt5_base_client_reuses_matching_existing_session_without_reinitialize() -> None:
@@ -357,6 +370,72 @@ def test_mt5_base_client_reuses_matching_existing_session_without_reinitialize()
     assert calls["initialize"] == 0
     assert calls["login"] == 0
     assert client._connected is True
+
+
+def test_mt5_base_client_classifies_interactive_login_required() -> None:
+    client = MT5BaseClient(
+        settings=SimpleNamespace(
+            timezone="UTC",
+            mt5_path="C:/Program Files/TradeMax Global MT5 Terminal/terminal64.exe",
+            mt5_login=60067107,
+            mt5_password="secret",
+            mt5_server="TradeMaxGlobal-Demo",
+            server_time_offset_hours=None,
+        )
+    )
+
+    class FakeMT5:
+        def initialize(self, **kwargs):
+            return False
+
+        def terminal_info(self):
+            return None
+
+        def account_info(self):
+            return None
+
+        def last_error(self):
+            return (-10005, "IPC timeout")
+
+    with patch("src.clients.base.mt5", FakeMT5()):
+        with patch.object(MT5BaseClient, "_terminal_path_exists", return_value=True):
+            with patch.object(MT5BaseClient, "_terminal_process_running", return_value=True):
+                state = client.inspect_session_state()
+
+    assert state.session_ready is False
+    assert state.interactive_login_required is True
+    assert state.error_code == "interactive_login_required"
+
+
+def test_mt5_base_client_blocks_when_terminal_process_not_running() -> None:
+    client = MT5BaseClient(
+        settings=SimpleNamespace(
+            timezone="UTC",
+            mt5_path="C:/Program Files/TradeMax Global MT5 Terminal/terminal64.exe",
+            mt5_login=60067107,
+            mt5_password="secret",
+            mt5_server="TradeMaxGlobal-Demo",
+            server_time_offset_hours=None,
+        )
+    )
+
+    class FakeMT5:
+        def terminal_info(self):
+            return None
+
+        def account_info(self):
+            return None
+
+        def last_error(self):
+            return (0, "ok")
+
+    with patch("src.clients.base.mt5", FakeMT5()):
+        with patch.object(MT5BaseClient, "_terminal_path_exists", return_value=True):
+            with patch.object(MT5BaseClient, "_terminal_process_running", return_value=False):
+                state = client.inspect_session_state()
+
+    assert state.session_ready is False
+    assert state.error_code == "terminal_not_running"
 
 
 def test_mt5_market_client_uses_default_tick_lookback_without_ingest_settings() -> None:

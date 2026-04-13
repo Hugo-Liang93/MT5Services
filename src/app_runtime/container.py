@@ -12,15 +12,17 @@ from src.market_structure import MarketStructureAnalyzer
 from src.persistence.storage_writer import StorageWriter
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
-from src.signals.orchestration import SignalRuntime
+from src.signals.orchestration.runtime import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
-from src.trading import TradingAccountRegistry, TradingModule
-from src.trading.commands import OperatorCommandConsumer, OperatorCommandService
+from src.trading.application.module import TradingModule
+from src.trading.commands.consumer import OperatorCommandConsumer
+from src.trading.commands.service import OperatorCommandService
 from src.trading.pending import PendingEntryManager
 from src.trading.positions import PositionManager
 from src.trading.closeout import ExposureCloseoutController
-from src.trading.execution import TradeExecutor
+from src.trading.execution.executor import TradeExecutor
+from src.trading.runtime.registry import TradingAccountRegistry
 from src.trading.tracking import SignalQualityTracker
 from src.trading.state import TradingStateAlerts
 from src.trading.state import TradingStateRecovery

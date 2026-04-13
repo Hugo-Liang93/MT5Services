@@ -43,7 +43,6 @@ class ParameterOptimizer:
         indicator_pipeline: Any,  # OptimizedPipeline
         signal_module_factory: Callable[[Dict[str, Any]], SignalModule],
         regime_detector: Optional[MarketRegimeDetector] = None,
-        voting_engine: Optional[Any] = None,
         sort_metric: str = "sharpe_ratio",
     ) -> None:
         self._base_config = base_config
@@ -52,7 +51,6 @@ class ParameterOptimizer:
         self._pipeline = indicator_pipeline
         self._signal_module_factory = signal_module_factory
         self._regime_detector = regime_detector or MarketRegimeDetector()
-        self._voting_engine = voting_engine
         self._sort_metric = sort_metric
 
     def run(
@@ -166,7 +164,6 @@ class ParameterOptimizer:
                 signal_module=signal_module,
                 indicator_pipeline=self._pipeline,
                 regime_detector=self._regime_detector,
-                voting_engine=self._voting_engine,
                 precomputed_indicators=precomputed,
             )
             result = engine.run()
@@ -363,7 +360,6 @@ class ParameterOptimizer:
             signal_module=base_module,
             indicator_pipeline=self._pipeline,
             regime_detector=self._regime_detector,
-            voting_engine=self._voting_engine,
             precomputed_indicators=precomputed,
         )
         base_result = base_engine.run()
@@ -399,7 +395,6 @@ class ParameterOptimizer:
                     signal_module=module,
                     indicator_pipeline=self._pipeline,
                     regime_detector=self._regime_detector,
-                    voting_engine=self._voting_engine,
                     precomputed_indicators=precomputed,
                 )
                 result = engine.run()

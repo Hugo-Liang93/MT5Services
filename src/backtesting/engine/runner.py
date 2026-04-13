@@ -133,10 +133,6 @@ class BacktestEngine:
         signal_module: SignalModule,
         indicator_pipeline: Any,  # OptimizedPipeline
         regime_detector: Optional[MarketRegimeDetector] = None,
-        voting_engine: Optional[Any] = None,  # StrategyVotingEngine（单 consensus）
-        voting_group_engines: Optional[
-            List[Any]
-        ] = None,  # [(VotingGroupConfig, Engine)]
         performance_tracker: Optional[Any] = None,  # StrategyPerformanceTracker
         htf_cache: Optional[Any] = None,  # HTFStateCache
         # 置信度后处理（复用实盘 SignalRuntime 管线）
@@ -154,16 +150,8 @@ class BacktestEngine:
         self._signal_module = signal_module
         self._pipeline = indicator_pipeline
         self._regime_detector = regime_detector or MarketRegimeDetector()
-        self._voting_engine = voting_engine
-        self._voting_group_engines: List[Any] = voting_group_engines or []
         self._performance_tracker = performance_tracker
         self._htf_cache = htf_cache
-        # 属于 voting group 的策略（不单独 process_decision，只贡献投票）
-        self._voting_group_members: frozenset = frozenset(
-            name
-            for group_cfg, _eng in self._voting_group_engines
-            for name in group_cfg.strategies
-        )
 
         # 置信度后处理参数（与实盘 SignalRuntime 相同）
         self._intrabar_confidence_factor = intrabar_confidence_factor
@@ -281,9 +269,7 @@ class BacktestEngine:
             )
 
         # 收集所有目标策略需要的指标名 + regime 检测需要的指标
-        self._strategy_capabilities = self._resolve_strategy_capabilities(
-            self._collect_voting_group_policy()
-        )
+        self._strategy_capabilities = self._resolve_strategy_capabilities()
         # 仅消费支持 confirmed scope 的策略，避免策略声明变化导致评估路径偏移。
         pre_scope_filter_strategies = list(self._target_strategies)
         self._target_strategies = [
@@ -369,13 +355,6 @@ class BacktestEngine:
             logger.debug("Using default chandelier config for backtest", exc_info=True)
             self._chandelier_config = _CC(regime_aware=True)
 
-    def _collect_voting_group_policy(self) -> Dict[str, str]:
-        policy: Dict[str, str] = {}
-        for group_cfg, _engine in self._voting_group_engines:
-            for strategy_name in group_cfg.strategies:
-                policy[str(strategy_name)] = str(group_cfg.name)
-        return policy
-
     @staticmethod
     def _to_strategy_capability(raw: Any) -> StrategyCapability | None:
         if isinstance(raw, StrategyCapability):
@@ -385,17 +364,13 @@ class BacktestEngine:
             return cap if cap.name else None
         return None
 
-    def _resolve_strategy_capabilities(
-        self,
-        voting_group_policy: Dict[str, str],
-    ) -> dict[str, StrategyCapability]:
+    def _resolve_strategy_capabilities(self) -> dict[str, StrategyCapability]:
         catalog_fn = getattr(self._signal_module, "strategy_capability_catalog", None)
         if not callable(catalog_fn):
             raise TypeError(
                 "BacktestEngine requires signal_module.strategy_capability_catalog()"
             )
-        raw_catalog = None
-        raw_catalog = catalog_fn(voting_group_policy=voting_group_policy)
+        raw_catalog = catalog_fn()
         if raw_catalog is None:
             raw_catalog = ()
         if isinstance(raw_catalog, dict):
@@ -744,8 +719,7 @@ class BacktestEngine:
                 bar_time=bar.time,
             )
 
-            # 8. 记录信号评估 + 处理独立策略信号
-            #    属于 voting group 的策略不单独 process_decision（与实盘一致）
+            # 8. 记录信号评估并处理单策略信号
             for decision in decisions:
                 _record_evaluation_helper(
                     self,
@@ -756,86 +730,15 @@ class BacktestEngine:
                     confidence=decision.confidence,
                     regime=regime.value,
                 )
-                if decision.strategy not in self._voting_group_members:
-                    _process_decision_helper(
-                        self, decision, bar, bar_index, indicators, regime
-                    )
+                _process_decision_helper(
+                    self, decision, bar, bar_index, indicators, regime
+                )
 
-            # 9. 投票引擎（多组模式 + 单 consensus 模式）
-            actionable = [d for d in decisions if d.direction in ("buy", "sell")]
-            if actionable:
-                try:
-                    # 多组模式：每组独立投票，产生独立信号
-                    if self._voting_group_engines:
-                        for group_cfg, group_engine in self._voting_group_engines:
-                            group_decisions = [
-                                d
-                                for d in actionable
-                                if d.strategy in group_cfg.strategies
-                            ]
-                            if group_decisions:
-                                vote = group_engine.vote(
-                                    group_decisions,
-                                    regime=regime,
-                                    scope="confirmed",
-                                    exclude_composite=False,
-                                )
-                                if vote is not None:
-                                    _record_evaluation_helper(
-                                        self,
-                                        bar=bar,
-                                        bar_index=bar_index,
-                                        strategy=vote.strategy,
-                                        action=vote.direction,
-                                        confidence=vote.confidence,
-                                        regime=regime.value,
-                                    )
-                                    _process_decision_helper(
-                                        self, vote, bar, bar_index, indicators, regime
-                                    )
-                    # 单 consensus 模式
-                    elif self._voting_engine is not None:
-                        consensus = self._voting_engine.vote(
-                            actionable, regime=regime, scope="confirmed"
-                        )
-                        if consensus is not None:
-                            _record_evaluation_helper(
-                                self,
-                                bar=bar,
-                                bar_index=bar_index,
-                                strategy=consensus.strategy,
-                                action=consensus.direction,
-                                confidence=consensus.confidence,
-                                regime=regime.value,
-                            )
-                            _process_decision_helper(
-                                self, consensus, bar, bar_index, indicators, regime
-                            )
-                except Exception:
-                    logger.warning(
-                        "VotingEngine failed at bar %d", bar_index, exc_info=True
-                    )
-
-            # 9.5 收集本 bar 的策略/投票方向（供下一 bar 的 Chandelier 信号反转检查）
+            # 9. 收集本 bar 的策略方向（供下一 bar 的 Chandelier 信号反转检查）
             _last_signal_directions = {}
             for d in decisions:
                 if d.direction in ("buy", "sell"):
                     _last_signal_directions[d.strategy] = d.direction
-            # 投票组结果也记录（持仓策略名是投票组名，如 "momentum_vote"）
-            if actionable and self._voting_group_engines:
-                for group_cfg, group_engine in self._voting_group_engines:
-                    group_decisions = [
-                        dd for dd in actionable if dd.strategy in group_cfg.strategies
-                    ]
-                    if group_decisions:
-                        vote = group_engine.vote(
-                            group_decisions,
-                            regime=regime,
-                            scope="confirmed",
-                            exclude_composite=False,
-                        )
-                        if vote is not None and vote.direction in ("buy", "sell"):
-                            _last_signal_directions[vote.strategy] = vote.direction
 
             # 10. 记录资金曲线（采样）
             if bar_index % equity_sample_interval == 0:

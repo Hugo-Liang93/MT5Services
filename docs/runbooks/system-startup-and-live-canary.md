@@ -1,6 +1,6 @@
 # 系统启动巡检与 Live Canary Runbook
 
-> 更新日期：2026-04-12
+> 更新日期：2026-04-13
 > 目标：把“服务能否正常启动、系统主链路是否真实打通、日志里哪些算真实问题”收口成一套可执行流程。
 > 范围：只覆盖系统管线本身，不以真实交易下单是否成功作为本 runbook 的验收条件。
 
@@ -33,6 +33,14 @@
 python -m src.ops.cli.live_preflight --environment live
 ```
 
+若预检返回以下任一错误码，先处理 MT5 会话，不要继续启动：
+
+- `terminal_not_running`
+- `ipc_timeout`
+- `interactive_login_required`
+- `login_failed`
+- `account_mismatch`
+
 2. 确认运行期目录只落在项目根目录 `data/`，而不是 `src/`：
 
 ```powershell
@@ -62,6 +70,14 @@ Get-ChildItem -Path .\src -Recurse -Directory | Where-Object { $_.FullName -matc
 ## 3. 标准启动步骤
 
 ### 3.1 启动服务
+
+说明：
+
+- `python -m src.entrypoint.web`
+- `python -m src.entrypoint.instance --instance ...`
+- `python -m src.entrypoint.supervisor --environment ...`
+
+现在都会先执行正式 MT5 session gate。若终端未预热、IPC 未就绪、账户不匹配，或 MT5 仍在等人工密码框，入口会直接失败退出，而不是进入半启动状态。
 
 单实例：
 
@@ -124,6 +140,9 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 | 落库线程 | `/health` 或 `/v1/monitoring/queues` | `writer_alive=true` |
 | 指标事件循环 | `/health` 或 `/v1/monitoring/performance` | `event_loop_running=true` |
 | 信号运行时 | `/health` | `signal_runtime.running=true` |
+| MT5 会话 | `/health` | `runtime.external_dependencies.mt5_session.session_ready=true`，且 `interactive_login_required=false` |
+| 执行行情门禁 | `/v1/trade/state` | 若本次准备做 live canary，则目标 executor 应满足 `tradability.quote_health.stale=false`、`account_risk.should_block_new_trades=false`；若本次准备验证 `intrabar` trigger，还应同时确认 admission/trace 中不存在 `intrabar_synthesis_stale` 或 `intrabar_synthesis_unavailable` |
+| Intrabar 合成时效 | `/health` | 若主实例启用了 intrabar，则 `runtime.components.ingestor.intrabar_synthesis.status` 不应长期为 `warning`，`stale` 数量应可解释 |
 | 入口日志 | `data/logs/<instance>/*.log` | 日志文件创建在实例隔离目录，而不是 `src/` 下或共享日志目录 |
 | 运行期本地文件 | `data/runtime/<instance>/` | `events.db`、`signal_queue.db`、`health_monitor.db`、`health_alerts.db` 落在实例隔离目录；其中部分文件可能在组件首轮写入后创建 |
 | 手工运行产物 | `data/artifacts/` | 回测 JSON、压测日志、启动排查输出统一放这里，不再使用根目录 `runtime/` |
@@ -138,6 +157,8 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 4. 运行期日志或 SQLite 文件重新落到 `src/` 下，或落回共享 `data/logs/`、`data/runtime/` 根目录。
 5. 手工排障/压测/回测产物重新落到仓库根目录 `runtime/`。
 6. `events.db` 视图长期不推进，同时 confirmed OHLC 已经在更新。
+7. `/health.runtime.external_dependencies.mt5_session.session_ready=false`，或 `error_code` 为 `interactive_login_required / account_mismatch / login_failed`。
+8. 准备执行 live canary 时，`/v1/trade/state` 显示 `tradability.quote_health.stale=true` 或 `account_risk.should_block_new_trades=true`。
 
 ### 4.3 PowerShell 版快速判读顺序
 
@@ -145,6 +166,7 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 2. 再看 `/v1/monitoring/health/ready` 是否稳定返回 `status=ready`，且 `checks.*=ok`。
 3. 再看 `/health` 里的 `ingestor / storage_writer / indicator_engine / signal_runtime`。
 4. 最后才看更细的 `queues / performance / events`。
+5. 若 `ready=ok` 但仍怀疑 MT5 侧异常，直接看 `/health.runtime.external_dependencies.mt5_session`，不要把 `ready` 误读成“账户已可交易”。
 
 多实例补充：
 
@@ -160,7 +182,11 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 | 现象 | 判定 | 原因 |
 |------|------|------|
 | `ready` 探针 503 | 阻塞问题 | 主链路关键组件未达到 ready |
+| 启动直接报 `interactive_login_required` | 阻塞问题 | MT5 终端需要人工解锁/输密码，当前不支持无人值守自动越过 |
+| 启动直接报 `account_mismatch` | 阻塞问题 | 终端当前登录账户与实例配置不一致 |
 | `writer_alive=false` / `ingest_alive=false` / `event_loop_running=false` | 阻塞问题 | 采集、落库或指标 durable 消费已断 |
+| `trade_state.quote_stale=true` 且新交易被挡 | 阻塞问题 | 执行侧报价已过期；当前系统会把 stale quote 作为正式开仓门禁，而不再只是观测 flag |
+| `intrabar_synthesis_stale` / `intrabar_synthesis_unavailable` 持续出现 | 阻塞问题 | 盘中 trigger 对应的子 TF 合成事实已断更或根本未带出；当前系统会把它作为 intrabar 开仓正式门禁 |
 | 重复出现 DB check constraint 失败 | 阻塞问题 | 持久化契约已漂移，系统会持续报错或进入 DLQ |
 | 启动阶段出现 `TypeError` / 组件装配失败 | 阻塞问题 | 说明装配层与运行态契约未对齐 |
 | `src/` 下再次出现运行期 `data`/`logs` | 配置回归 | 运行期文件锚点被写坏 |
@@ -250,6 +276,31 @@ MT5 行情 -> BackgroundIngestor -> MarketDataService
 7. 如果在开盘窗口，再继续做 15 到 30 分钟 live canary
 
 这套顺序的目标很明确：先判断“系统是否活着”，再判断“链路是否推进”，最后才讨论“策略和交易是否合理”。
+
+## 7.1 运行数天后的延后门禁审计
+
+以下统计**不要在刚上线、样本不足时就做结论**。建议至少运行 3 到 5 天，再执行：
+
+```powershell
+python -m src.ops.cli.pipeline_gate_audit --environment live --days 5
+```
+
+常用变体：
+
+```powershell
+python -m src.ops.cli.pipeline_gate_audit --environment live --days 7 --focus session_transition_cooldown,quote_stale,intrabar_synthesis_stale,intrabar_synthesis_unavailable
+```
+
+```powershell
+python -m src.ops.cli.pipeline_gate_audit --environment live --days 7 --json
+```
+
+该 CLI 的目标不是判“策略好坏”，而是回答：
+
+- 最近 N 天哪些 gate family 拦截最多
+- `session_transition_cooldown / quote_stale / intrabar_synthesis_*` 各自拦了多少真实事件
+- 拦截主要集中在哪些 timeframe / source（`signal_filter` vs `execution`）
+- 每天的门禁分布是否稳定，还是只集中在某一两次启动窗口
 
 ## 8. 多实例部署补充说明
 

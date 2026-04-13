@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from src.trading.execution import (
+from src.trading.execution.sizing import (
     RegimeSizing,
     TradeParameters,
     compute_trade_params,

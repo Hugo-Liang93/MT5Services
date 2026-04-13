@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 import pytest
 
 from src.risk.service import PreTradeRiskBlockedError
-from src.trading.application import TradeControlStateService
+from src.trading.application.audit import TradeDailyStatsService
+from src.trading.application.control import TradeControlStateService
 from src.trading.models import TradeCommandAuditRecord
-from src.trading.application import TradeDailyStatsService
 
 
 def test_trade_control_state_blocks_auto_entry_when_paused() -> None:

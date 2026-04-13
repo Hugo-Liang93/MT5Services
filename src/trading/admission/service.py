@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
+from src.trading.execution.intrabar_health import build_execution_intrabar_health
+from src.trading.execution.reasons import REASON_QUOTE_STALE
 
 
 def _utc_now_iso() -> str:
@@ -152,6 +154,16 @@ class TradeAdmissionService:
         trade_control = _safe_dict(self._runtime_views.trade_control_summary())
         quote_health = _safe_dict(tradability.get("quote_health"))
         margin_guard = _safe_dict(tradability.get("margin_guard"))
+        last_risk_block = str(account_risk.get("last_risk_block") or "").strip()
+        payload_scope = str(
+            payload.get("scope")
+            or _safe_dict(payload.get("metadata")).get("scope")
+            or "confirmed"
+        ).strip().lower()
+        intrabar_health = build_execution_intrabar_health(
+            _safe_dict(payload.get("metadata")),
+            scope=payload_scope,
+        )
         economic_guard = {
             "event_blocked": bool(assessment_dict.get("event_blocked", False)),
             "calendar_health_degraded": bool(
@@ -247,12 +259,29 @@ class TradeAdmissionService:
                     details=quote_health,
                 )
             )
-        if bool(account_risk.get("should_block_new_trades", False)):
+        if bool(intrabar_health.get("stale", False)):
+            reasons.append(
+                _build_reason(
+                    code=(
+                        "intrabar_synthesis_stale"
+                        if bool(intrabar_health.get("configured", False))
+                        else "intrabar_synthesis_unavailable"
+                    ),
+                    stage="market_tradability",
+                    message=(
+                        "intrabar synthesis is stale"
+                        if bool(intrabar_health.get("configured", False))
+                        else "intrabar synthesis metadata is unavailable"
+                    ),
+                    details=intrabar_health,
+                )
+            )
+        if bool(account_risk.get("should_block_new_trades", False)) and last_risk_block != REASON_QUOTE_STALE:
             reasons.append(
                 _build_reason(
                     code="risk_block_new_trades",
                     stage="account_risk",
-                    message=str(account_risk.get("last_risk_block") or "account risk blocked new trades"),
+                    message=str(last_risk_block or "account risk blocked new trades"),
                     details={
                         "margin_guard": margin_guard,
                         "account_risk": account_risk,

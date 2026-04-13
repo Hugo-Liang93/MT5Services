@@ -1,7 +1,6 @@
-from .consumer import OperatorCommandConsumer
-from .service import OperatorCommandService
+"""Operator command package.
 
-__all__ = [
-    "OperatorCommandConsumer",
-    "OperatorCommandService",
-]
+内部调用方应直接从具体子模块导入，避免包入口继续承担聚合依赖职责。
+"""
+
+__all__: list[str] = []

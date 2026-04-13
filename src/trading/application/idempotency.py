@@ -5,6 +5,7 @@ from threading import RLock
 from typing import Any, Optional
 
 from .audit import TradeCommandAuditService
+from .results import build_idempotent_trade_replay
 
 
 class TradeExecutionReplayService:
@@ -51,10 +52,11 @@ class TradeExecutionReplayService:
         with self._lock:
             cached = self._successful_trade_cache.get(normalized)
         if cached is not None:
-            replayed = dict(cached)
-            replayed["idempotent_replay"] = True
-            replayed["idempotent_source"] = "memory"
-            return replayed
+            return build_idempotent_trade_replay(
+                cached,
+                source="memory",
+                operation_id=str(cached.get("operation_id") or "").strip() or None,
+            )
         replayed = self._audit_service.fetch_successful_trade_result(
             request_id=normalized,
             limit=self._audit_lookback_limit,

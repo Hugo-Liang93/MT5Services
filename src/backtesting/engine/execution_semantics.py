@@ -16,7 +16,10 @@ import math
 from dataclasses import dataclass, replace
 
 from src.backtesting.models import BacktestConfig, SimulationMode
-from src.trading.execution import TradeParameters, resolve_timeframe_risk_multiplier
+from src.trading.execution.sizing import (
+    TradeParameters,
+    resolve_timeframe_risk_multiplier,
+)
 
 _DEFAULT_VOLUME_STEP = 0.01
 

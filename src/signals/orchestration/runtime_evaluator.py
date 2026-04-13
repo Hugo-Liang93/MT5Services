@@ -12,7 +12,6 @@ from ..evaluation.regime import RegimeType, SoftRegimeResult
 from ..metadata_keys import MetadataKey as MK
 from ..models import SignalEvent
 from .policy import RuntimeSignalState
-from .vote_processor import process_voting as _do_process_voting
 
 if TYPE_CHECKING:
     from .runtime import SignalRuntime
@@ -549,6 +548,37 @@ def transition_and_publish(
         )
 
     if transition_metadata is None:
+        pipeline_bus = runtime.get_pipeline_event_bus()
+        trace_id = str(regime_metadata.get(MK.SIGNAL_TRACE_ID) or "").strip()
+        if pipeline_bus is not None and trace_id:
+            meta = decision.metadata or {}
+            eval_payload: dict[str, Any] = {}
+            for key in (
+                "raw_confidence",
+                "regime_affinity",
+                "post_affinity_confidence",
+                "session_performance_multiplier",
+                "post_performance_confidence",
+                "regime",
+                "regime_source",
+                "regime_probabilities",
+                "htf_direction",
+                "htf_alignment",
+                "htf_confidence_multiplier",
+            ):
+                if key in meta:
+                    eval_payload[key] = meta[key]
+            pipeline_bus.emit_signal_evaluated(
+                trace_id=trace_id,
+                symbol=decision.symbol,
+                timeframe=decision.timeframe,
+                scope=scope,
+                strategy=decision.strategy,
+                direction=decision.direction,
+                confidence=decision.confidence,
+                signal_state="no_signal" if decision.direction not in ("buy", "sell") else "",
+                **eval_payload,
+            )
         return
 
     strategy_obj = runtime.service.get_strategy(decision.strategy)
@@ -559,9 +589,6 @@ def transition_and_publish(
     deployment = runtime.policy.get_strategy_deployment(decision.strategy)
     if deployment is not None:
         transition_metadata[MK.STRATEGY_DEPLOYMENT] = deployment.to_dict()
-
-    if decision.strategy in runtime._voting_group_members:
-        return
 
     signal_id = ""
     is_actionable = decision.direction in ("buy", "sell")
@@ -612,49 +639,4 @@ def resolve_market_structure_context(
         event_time=event_time,
         latest_close=latest_close,
         lookback_bars_override=market_structure_lookback_bars(runtime, timeframe),
-    )
-
-
-def get_vote_emit_kwargs(runtime: "SignalRuntime") -> dict[str, Any]:
-    return dict(
-        state_by_target=runtime._state_by_target,
-        get_shard_lock=runtime._get_shard_lock,
-        transition_confirmed_fn=runtime._transition_confirmed,
-        persist_fn=runtime.service.persist_decision,
-        publish_fn=runtime._publish_signal_event,
-        emit_voting_completed_fn=runtime._emit_voting_completed,
-    )
-
-
-def process_voting(
-    runtime: "SignalRuntime",
-    snapshot_decisions: list,
-    symbol: str,
-    timeframe: str,
-    scope: str,
-    regime: RegimeType,
-    regime_stability: float,
-    regime_metadata: dict[str, Any],
-    indicators: dict[str, dict[str, float]],
-    event_time: datetime,
-    bar_time: datetime,
-) -> None:
-    trace_id = str(regime_metadata.get(MK.SIGNAL_TRACE_ID) or "")
-    _do_process_voting(
-        snapshot_decisions,
-        symbol,
-        timeframe,
-        scope,
-        regime,
-        regime_stability,
-        regime_metadata,
-        indicators,
-        event_time,
-        bar_time,
-        voting_engine=runtime._voting_engine,
-        voting_group_engines=runtime._voting_group_engines,
-        fusion_cache=runtime._vote_fusion_cache,
-        voting_stats=runtime._voting_stats,
-        trace_id=trace_id,
-        **get_vote_emit_kwargs(runtime),
     )

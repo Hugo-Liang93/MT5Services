@@ -8,11 +8,24 @@ import time
 from uuid import uuid4
 from typing import Any, Dict, Optional
 
-from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
 from src.clients.mt5_account import MT5AccountClient
+from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError
 from src.risk.service import PreTradeRiskBlockedError, PreTradeRiskService
-from .reasons import REASON_XAUUSD_TRADE_GUARD_BLOCKED
 from src.signals.metadata_keys import MetadataKey as MK
+from src.trading.broker.comment_codec import (
+    build_trade_comment,
+    comment_matches_request_id,
+    comments_share_request_tag,
+)
+from src.trading.models import TradeExecutionDetails
+from src.trading.reasons import REASON_XAUUSD_TRADE_GUARD_BLOCKED
+
+from .results import (
+    build_blocked_trade_precheck_result,
+    build_disabled_trade_precheck_result,
+    build_trade_execution_result,
+    build_trade_precheck_result,
+)
 
 
 class TradingService:
@@ -36,20 +49,25 @@ class TradingService:
         return normalized.startswith("XAUUSD")
 
     @staticmethod
-    def _request_tag(request_id: str) -> str:
-        normalized = "".join(ch for ch in str(request_id or "") if ch.isalnum())
-        return normalized[:8].lower()
-
-    def _tagged_comment(self, comment: str, request_id: str) -> str:
-        tag = self._request_tag(request_id)
-        base = str(comment or "").strip() or "trade"
-        if not tag:
-            return base
-        suffix = f"_r{tag}"
-        if base.endswith(suffix):
-            return base
-        trimmed = base[: max(0, 27 - len(suffix))]
-        return f"{trimmed}{suffix}"
+    def _build_mt5_comment(
+        *,
+        comment: str,
+        request_id: str,
+        metadata: Optional[Dict[str, Any]],
+        side: str,
+        order_kind: str,
+    ) -> str:
+        signal_meta = {}
+        if isinstance(metadata, dict):
+            signal_meta = dict(metadata.get(MK.SIGNAL) or {})
+        return build_trade_comment(
+            request_id=request_id,
+            timeframe=str(signal_meta.get("timeframe") or ""),
+            strategy=str(signal_meta.get("strategy") or ""),
+            side=side,
+            order_kind=order_kind,
+            comment=comment,
+        )
 
     def health(self) -> dict[str, Any]:
         """暴露交易服务运行状态，供应用层统一读取。
@@ -68,52 +86,64 @@ class TradingService:
         self,
         *,
         symbol: str,
-        side: str,
-        tagged_comment: str,
+        submitted_comment: str,
         request_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        target_comment = str(tagged_comment or "").strip()
-        if not target_comment or self.account_client is None:
+    ) -> Optional[TradeExecutionDetails]:
+        target_comment = str(submitted_comment or "").strip()
+        if self.account_client is None or (not target_comment and not request_id):
             return None
 
-        side_value = str(side or "").strip().lower()
         for position in self.get_positions(symbol=symbol):
-            if str(position.comment or "").strip() != target_comment:
+            position_comment = str(position.comment or "").strip()
+            matches_comment = bool(
+                target_comment
+                and (
+                    position_comment == target_comment
+                    or comments_share_request_tag(position_comment, target_comment)
+                )
+            )
+            matches_request = bool(
+                request_id and comment_matches_request_id(position_comment, request_id)
+            )
+            if not matches_comment and not matches_request:
                 continue
-            return {
-                "ticket": int(position.ticket or 0),
-                "order": 0,
-                "deal": 0,
-                "fill_price": float(position.price_open or 0.0),
-                "price": float(position.price_open or 0.0),
-                "requested_price": None,
-                "symbol": symbol,
-                "volume": float(position.volume or 0.0),
-                "side": side_value,
-                "comment": target_comment,
-                "request_id": request_id,
-                "recovered_from_state": True,
-                "state_source": "positions",
-            }
+            return TradeExecutionDetails(
+                ticket=int(position.ticket or 0),
+                order_id=0,
+                deal_id=0,
+                symbol=symbol,
+                volume=float(position.volume or 0.0),
+                requested_price=None,
+                fill_price=float(position.price_open or 0.0),
+                recovered_from_state=True,
+                state_source="positions",
+            )
         for order in self.get_orders(symbol=symbol):
-            if str(order.comment or "").strip() != target_comment:
+            order_comment = str(order.comment or "").strip()
+            matches_comment = bool(
+                target_comment
+                and (
+                    order_comment == target_comment
+                    or comments_share_request_tag(order_comment, target_comment)
+                )
+            )
+            matches_request = bool(
+                request_id and comment_matches_request_id(order_comment, request_id)
+            )
+            if not matches_comment and not matches_request:
                 continue
-            return {
-                "ticket": int(order.ticket or 0),
-                "order": int(order.ticket or 0),
-                "deal": 0,
-                "fill_price": float(order.price_open or 0.0),
-                "price": float(order.price_open or 0.0),
-                "requested_price": float(order.price_open or 0.0),
-                "symbol": symbol,
-                "volume": float(order.volume or 0.0),
-                "side": side_value,
-                "comment": target_comment,
-                "request_id": request_id,
-                "recovered_from_state": True,
-                "state_source": "orders",
-                "pending": True,
-            }
+            return TradeExecutionDetails(
+                ticket=int(order.ticket or 0),
+                order_id=int(order.ticket or 0),
+                deal_id=0,
+                symbol=symbol,
+                volume=float(order.volume or 0.0),
+                requested_price=float(order.price_open or 0.0),
+                fill_price=float(order.price_open or 0.0),
+                pending=True,
+                recovered_from_state=True,
+                state_source="orders",
+            )
         return None
 
     @staticmethod
@@ -131,34 +161,6 @@ class TradingService:
             warnings.append(reason)
         updated["warnings"] = warnings
         return updated
-
-    @staticmethod
-    def _blocked_precheck_response(
-        *,
-        symbol: str,
-        request_id: str,
-        reason: str,
-        checks: list[dict[str, Any]],
-        warnings: Optional[list[str]] = None,
-        suggested_adjustment: Optional[dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        return {
-            "enabled": True,
-            "mode": "strict",
-            "blocked": True,
-            "verdict": "block",
-            "reason": reason,
-            "symbol": symbol,
-            "active_windows": [],
-            "upcoming_windows": [],
-            "checks": checks,
-            "warnings": warnings or [],
-            "estimated_margin": None,
-            "margin_error": None,
-            "request_id": request_id,
-            "executable": False,
-            "suggested_adjustment": suggested_adjustment,
-        }
 
     def open(
         self,
@@ -260,7 +262,13 @@ class TradingService:
     ) -> dict:
         request_id = request_id or uuid4().hex
         risk_assessment: Optional[Dict[str, Any]] = None
-        tagged_comment = self._tagged_comment(comment, request_id)
+        submitted_comment = self._build_mt5_comment(
+            comment=comment,
+            request_id=request_id,
+            metadata=metadata,
+            side=side,
+            order_kind=order_kind,
+        )
         # 先估算保证金，注入 metadata 供 MarginAvailabilityRule 使用
         margin_estimate: Optional[float] = None
         try:
@@ -280,7 +288,7 @@ class TradingService:
                 sl=sl,
                 tp=tp,
                 deviation=deviation,
-                comment=tagged_comment,
+                comment=submitted_comment,
                 magic=magic,
                 metadata=enriched_metadata,
             )
@@ -294,7 +302,7 @@ class TradingService:
             sl=sl,
             tp=tp,
             deviation=deviation,
-            comment=tagged_comment,
+            comment=submitted_comment,
             magic=magic,
             metadata=metadata,
         )
@@ -308,27 +316,29 @@ class TradingService:
                 assessment=blocked_snapshot,
             )
         if dry_run:
-            return {
-                "request_id": request_id,
-                "dry_run": True,
-                "symbol": symbol,
-                "volume": volume,
-                "side": side,
-                "order_kind": order_kind,
-                "requested_price": price,
-                "comment": tagged_comment,
-                "estimated_margin": margin_estimate,
-                "pre_trade_risk": risk_assessment,
-                "precheck": precheck_snapshot,
-                "execution_attempts": 0,
-                "execution_state": "skipped",
-            }
+            return build_trade_execution_result(
+                {},
+                request_id=request_id,
+                dry_run=True,
+                symbol=symbol,
+                volume=volume,
+                side=side,
+                order_kind=order_kind,
+                requested_price=price,
+                comment=submitted_comment,
+                estimated_margin=margin_estimate,
+                pre_trade_risk=risk_assessment,
+                precheck=precheck_snapshot,
+                execution_attempts=0,
+                execution_state="skipped",
+            )
         if not bool(precheck_snapshot.get("executable", True)):
             raise MT5TradingClientError(str(precheck_snapshot.get("reason") or "Trade precheck failed"))
 
         last_error: Optional[Exception] = None
         max_attempts = max(int(retry_attempts), 1)
-        result: Dict[str, Any] | None = None
+        result: TradeExecutionDetails | Dict[str, Any] | None = None
+        execution_attempts: Optional[int] = None
         for attempt in range(1, max_attempts + 1):
             try:
                 result = self.client.open_trade_details(
@@ -339,21 +349,20 @@ class TradingService:
                     sl=sl,
                     tp=tp,
                     deviation=deviation,
-                    comment=tagged_comment,
+                    comment=submitted_comment,
                     magic=magic,
                 )
-                result["execution_attempts"] = attempt
+                execution_attempts = attempt
                 break
             except Exception as exc:
                 recovered = self._recover_trade_from_state(
                     symbol=symbol,
-                    side=side,
-                    tagged_comment=tagged_comment,
+                    submitted_comment=submitted_comment,
                     request_id=request_id,
                 )
                 if recovered is not None:
-                    recovered["execution_attempts"] = attempt
                     result = recovered
+                    execution_attempts = attempt
                     break
                 last_error = exc
                 if attempt >= max_attempts:
@@ -382,23 +391,22 @@ class TradingService:
             "orders_count": orders_count,
         }
 
-        result.update(
-            {
-                "request_id": request_id,
-                "dry_run": False,
-                "symbol": symbol,
-                "volume": volume,
-                "side": side,
-                "order_kind": order_kind,
-                "requested_price": price,
-                "comment": tagged_comment,
-                "estimated_margin": margin_estimate,
-                "pre_trade_risk": risk_assessment,
-                "precheck": precheck_snapshot,
-                "state_consistency": state_consistency,
-            }
+        return build_trade_execution_result(
+            result,
+            request_id=request_id,
+            dry_run=False,
+            symbol=symbol,
+            volume=volume,
+            side=side,
+            order_kind=order_kind,
+            requested_price=price,
+            comment=submitted_comment,
+            estimated_margin=margin_estimate,
+            pre_trade_risk=risk_assessment,
+            precheck=precheck_snapshot,
+            state_consistency=state_consistency,
+            execution_attempts=execution_attempts,
         )
-        return result
 
     def precheck_trade(
         self,
@@ -419,7 +427,7 @@ class TradingService:
         warnings: list[str] = []
         if volume is not None and volume <= 0:
             checks.append({"name": "volume_positive", "passed": False, "message": "volume must be > 0"})
-            return self._blocked_precheck_response(
+            return build_blocked_trade_precheck_result(
                 symbol=symbol,
                 request_id=request_id,
                 reason="volume must be > 0",
@@ -442,7 +450,7 @@ class TradingService:
                 broker_failures = [c for c in broker_checks if not c["passed"]]
                 if broker_failures:
                     reason = "; ".join(c["message"] for c in broker_failures)
-                    return self._blocked_precheck_response(
+                    return build_blocked_trade_precheck_result(
                         symbol=symbol,
                         request_id=request_id,
                         reason=reason,
@@ -470,7 +478,7 @@ class TradingService:
                 )
             except Exception as exc:
                 checks.append({"name": "trade_parameters", "passed": False, "message": str(exc)})
-                return self._blocked_precheck_response(
+                return build_blocked_trade_precheck_result(
                     symbol=symbol,
                     request_id=request_id,
                     reason=str(exc),
@@ -479,21 +487,10 @@ class TradingService:
                     suggested_adjustment={"verdict": "review_trade_parameters"},
                 )
         if self.pre_trade_risk_service is None:
-            return {
-                "enabled": False,
-                "mode": "off",
-                "blocked": False,
-                "verdict": "allow",
-                "reason": None,
-                "symbol": symbol,
-                "active_windows": [],
-                "upcoming_windows": [],
-                "checks": [],
-                "warnings": [],
-                "request_id": request_id,
-                "executable": True,
-                "suggested_adjustment": None,
-            }
+            return build_disabled_trade_precheck_result(
+                symbol=symbol,
+                request_id=request_id,
+            )
         # 预计算保证金，注入 metadata 供 MarginAvailabilityRule 使用
         # （与 execute_trade() 保持一致的风控链路）
         margin_estimate: Optional[float] = None
@@ -521,23 +518,13 @@ class TradingService:
             magic=magic,
             metadata=enriched_metadata,
         )
-        assessment["estimated_margin"] = margin_estimate
-        assessment.setdefault("warnings", [])
-        assessment.setdefault("checks", [])
-        # 合并前面收集的 broker 约束检查结果和 warnings
-        if checks:
-            assessment["checks"] = checks + assessment["checks"]
-        if warnings:
-            assessment["warnings"] = warnings + assessment["warnings"]
-        if margin_estimate is None and volume is not None and side:
-            assessment.setdefault("warnings", []).append("Margin estimate unavailable")
-        assessment["request_id"] = request_id
-        assessment["executable"] = str(assessment.get("verdict") or "allow").lower() != "block"
-        if not assessment["executable"]:
-            assessment["suggested_adjustment"] = {"verdict": "review_risk_windows"}
-        else:
-            assessment["suggested_adjustment"] = None
-        return assessment
+        return build_trade_precheck_result(
+            assessment,
+            request_id=request_id,
+            checks=checks,
+            warnings=warnings,
+            estimated_margin=margin_estimate,
+        )
 
     def get_position_close_details(
         self,

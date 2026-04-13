@@ -17,11 +17,8 @@ from .runtime_status import (
     build_runtime_status,
     compute_filter_window_stats,
     count_active_states,
-    describe_voting,
     get_regime_stability,
     get_regime_stability_map,
-    get_voting_info,
-    voting_groups_summary,
 )
 from .runtime_warmup import check_warmup_barrier
 from .runtime_metadata import build_snapshot_metadata
@@ -34,7 +31,6 @@ from .state_machine import should_emit as _sm_should_emit
 from .state_machine import snapshot_signature as _sm_snapshot_signature
 from .state_machine import transition_confirmed
 from .policy import SignalPolicy
-from .voting import StrategyVotingEngine
 
 logger = logging.getLogger(__name__)
 
@@ -186,20 +182,11 @@ class RuntimeStatusBuilder:
     def status(self) -> dict:
         return build_runtime_status(self._runtime)
 
-    def describe_voting(self) -> list[dict[str, Any]]:
-        return describe_voting(self._runtime)
-
-    def voting_groups_summary(self) -> list[dict[str, Any]]:
-        return voting_groups_summary(self._runtime)
-
     def compute_filter_window_stats(self) -> dict:
         return compute_filter_window_stats(self._runtime)
 
     def count_active_states(self) -> dict:
         return count_active_states(self._runtime)
-
-    def get_voting_info(self) -> dict[str, Any]:
-        return get_voting_info(self._runtime)
 
     def get_regime_stability(self, symbol: str, timeframe: str) -> dict[str, Any] | None:
         return get_regime_stability(self._runtime, symbol, timeframe)
@@ -212,7 +199,7 @@ class RuntimeStatusBuilder:
 
 
 class RuntimePolicyCoordinator:
-    """运行时策略能力、voting 引擎与目标映射同步入口。"""
+    """运行时策略能力与目标映射同步入口。"""
 
     def __init__(self, runtime: "SignalRuntime"):
         self._runtime = runtime
@@ -221,48 +208,8 @@ class RuntimePolicyCoordinator:
     def _normalize_timeframe(timeframe: str) -> str:
         return str(timeframe).strip().upper()
 
-    @staticmethod
-    def _build_group_engines(
-        policy: SignalPolicy,
-    ) -> "list[tuple[Any, StrategyVotingEngine]]":
-        return [
-            (
-                group,
-                StrategyVotingEngine(
-                    group_name=group.name,
-                    consensus_threshold=group.consensus_threshold,
-                    min_quorum=group.min_quorum,
-                    min_quorum_ratio=group.min_quorum_ratio,
-                    disagreement_penalty=group.disagreement_penalty,
-                    strategy_weights=group.strategy_weights,
-                ),
-            )
-            for group in policy.voting_groups
-        ]
-
-    @staticmethod
-    def _build_voting_engine(policy: SignalPolicy) -> StrategyVotingEngine | None:
-        if policy.voting_enabled and not policy.voting_groups:
-            return StrategyVotingEngine(
-                consensus_threshold=policy.voting_consensus_threshold,
-                min_quorum=policy.voting_min_quorum,
-                disagreement_penalty=policy.voting_disagreement_penalty,
-            )
-        return None
-
-    @staticmethod
-    def _build_group_members(policy: SignalPolicy) -> frozenset[str]:
-        return frozenset(
-            name for group in policy.voting_groups for name in group.strategies
-        ) - policy.standalone_override
-
-    def _resolve_strategy_capabilities(
-        self,
-        group_policy: dict[str, str],
-    ) -> tuple[StrategyCapability, ...] | list[dict[str, Any]] | None:
-        raw_catalog = self._runtime.service.strategy_capability_catalog(
-            voting_group_policy=group_policy
-        )
+    def _resolve_strategy_capabilities(self) -> tuple[StrategyCapability, ...] | list[dict[str, Any]] | None:
+        raw_catalog = self._runtime.service.strategy_capability_catalog()
         if raw_catalog is None:
             return None
         if isinstance(raw_catalog, dict):
@@ -277,12 +224,7 @@ class RuntimePolicyCoordinator:
         return tuple(raw_items)
 
     def _refresh_strategy_capabilities(self) -> None:
-        group_policy = {
-            strategy_name: group.name
-            for group in self._runtime.policy.voting_groups
-            for strategy_name in group.strategies
-        }
-        raw_catalog = self._resolve_strategy_capabilities(group_policy)
+        raw_catalog = self._resolve_strategy_capabilities()
         if raw_catalog is None:
             raw_catalog = ()
         if not self._runtime._targets and not raw_catalog:
@@ -358,9 +300,6 @@ class RuntimePolicyCoordinator:
 
     def apply(self, policy: SignalPolicy) -> None:
         self._runtime.policy = policy
-        self._runtime._voting_engine = self._build_voting_engine(policy)
-        self._runtime._voting_group_engines = self._build_group_engines(policy)
-        self._runtime._voting_group_members = self._build_group_members(policy)
         self._refresh_strategy_capabilities()
         self._runtime._target_index = self._build_target_index()
 
@@ -422,10 +361,6 @@ class RuntimeLifecycleManager:
         runtime._last_drop_log_at = 0.0
         runtime._filter_window = deque()
         runtime._filter_started_at = monotonic()
-        runtime._vote_fusion_cache = {}
-        runtime._voting_stats = runtime._empty_voting_stats(
-            bool(runtime._voting_group_engines)
-        )
 
     def start_loop(self, target, *, name: str = "signal-runtime") -> None:
         self._runtime._queue_runner.attach()

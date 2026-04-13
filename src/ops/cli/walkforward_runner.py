@@ -122,7 +122,6 @@ def _run_walkforward(
         signal_module_factory=signal_module_factory,
         indicator_pipeline=components["pipeline"],
         regime_detector=components["regime_detector"],
-        voting_engine=components.get("voting_engine"),
     )
 
     def progress_cb(split_idx: int, total: int, phase: str) -> None:
@@ -318,4 +317,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

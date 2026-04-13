@@ -255,20 +255,3 @@ def best_signals_per_timeframe(
         },
     )
 
-
-@router.get("/consensus/recent", response_model=ApiResponse[list[SignalEventModel]])
-def recent_consensus_signals(
-    symbol: Optional[str] = Query(default=None),
-    timeframe: Optional[str] = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=500),
-    service: SignalModule = Depends(get_signal_service),
-) -> ApiResponse[list[SignalEventModel]]:
-    rows = service.recent_consensus_signals(
-        symbol=symbol,
-        timeframe=timeframe,
-        limit=limit,
-    )
-    return ApiResponse.success_response(
-        data=[SignalEventModel(**row) for row in rows],
-        metadata={"count": len(rows)},
-    )

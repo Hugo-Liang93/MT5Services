@@ -9,9 +9,13 @@ from src.api.trade import (
     close,
     close_all,
     close_batch,
+    estimate_margin,
+    modify_orders,
+    modify_positions,
     orders,
     positions,
     trade,
+    trade_batch,
     trade_command_audits,
     trade_closeout_exposure,
     trade_state_stream,
@@ -40,10 +44,14 @@ from src.api.schemas import (
     AdmissionReportModel,
     BatchCancelOrdersRequest,
     BatchCloseRequest,
+    BatchTradeRequest,
     CancelOrdersRequest,
     CloseAllRequest,
     CloseRequest,
+    EstimateMarginRequest,
     ExposureCloseoutRequest,
+    ModifyOrdersRequest,
+    ModifyPositionsRequest,
     RuntimeModeRequest,
     SignalExecuteTradeRequest,
     TradeDispatchRequest,
@@ -84,6 +92,7 @@ class _DispatchService:
         }
         self.last_dispatch = None
         self.last_recorded_action = None
+        self.last_modify_positions = None
         self.update_trade_control_calls = 0
         self.close_position_calls = 0
         self.close_all_calls = 0
@@ -238,6 +247,32 @@ class _DispatchService:
             "trace_id": "trace_1",
             "operation_id": "op_1",
         }
+
+    def execute_trade_batch(self, trades, stop_on_error=False):
+        if any(str(trade.get("symbol") or "") == "XAUUSD_BATCH_FAIL" for trade in trades):
+            raise MT5TradeError("market closed")
+        return {
+            "results": [{"index": idx, "success": True, "result": trade} for idx, trade in enumerate(trades)],
+            "success_count": len(trades),
+            "failure_count": 0,
+            "stop_on_error": stop_on_error,
+        }
+
+    def estimate_margin(self, **kwargs):
+        if kwargs.get("symbol") == "XAUUSD_MARGIN_FAIL":
+            raise MT5TradeError("market closed")
+        return {"margin": 512.5}
+
+    def modify_orders(self, **kwargs):
+        if kwargs.get("symbol") == "XAUUSD_ORDER_FAIL":
+            raise MT5TradeError("order_not_found")
+        return {"modified": [11], "failed": []}
+
+    def modify_positions(self, **kwargs):
+        self.last_modify_positions = dict(kwargs)
+        if kwargs.get("ticket") == 404:
+            raise MT5TradeError("position_not_found")
+        return {"modified": [kwargs.get("ticket") or 1], "failed": []}
 
     def _wrap_operator_action_result(self, *, command_type: str, request_payload, raw_result):
         action_id = str(request_payload.get("action_id") or f"act_{command_type}_1")
@@ -1291,7 +1326,7 @@ def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
 
 
 def test_trading_accounts_endpoint_reads_runtime_identity_via_public_port(monkeypatch) -> None:
-    import src.api.trade_routes.state as trade_state_module
+    import src.api.trade_routes.state_routes.overview as trade_state_module
     from src.config.mt5 import MT5Settings
 
     monkeypatch.setattr(
@@ -1631,7 +1666,7 @@ def test_trade_dispatch_normalizes_trade_alias_and_direction() -> None:
 
 
 def test_trade_state_stream_emits_snapshot_then_position_change() -> None:
-    import src.api.trade_routes.state as trade_state_module
+    import src.api.trade_routes.state_routes.stream as trade_state_module
 
     trade_state_module._TRADE_STATE_STREAM_POLL_SECONDS = 0.01
     runtime_views = RuntimeReadModel(
@@ -1665,7 +1700,7 @@ def test_trade_state_stream_emits_snapshot_then_position_change() -> None:
 
 
 def test_trade_state_stream_emits_trade_control_change_with_action_ids() -> None:
-    import src.api.trade_routes.state as trade_state_module
+    import src.api.trade_routes.state_routes.stream as trade_state_module
 
     trade_state_module._TRADE_STATE_STREAM_POLL_SECONDS = 0.01
     runtime_views = RuntimeReadModel(
@@ -1700,7 +1735,7 @@ def test_trade_state_stream_emits_trade_control_change_with_action_ids() -> None
 
 
 def test_trade_state_stream_emits_pipeline_event_from_formal_trace_source() -> None:
-    import src.api.trade_routes.state as trade_state_module
+    import src.api.trade_routes.state_routes.stream as trade_state_module
 
     trade_state_module._TRADE_STATE_STREAM_POLL_SECONDS = 0.01
     runtime_views = RuntimeReadModel(
@@ -1774,6 +1809,98 @@ def test_trade_from_signal_is_executed_by_trade_module_api() -> None:
     assert service.last_dispatch[1]["request_id"] == "sig_1"
     assert service.last_dispatch[1]["metadata"]["entry_origin"] == "auto"
     assert service.last_dispatch[1]["metadata"]["signal"]["timeframe"] == "M5"
+
+
+def test_trade_from_signal_maps_risk_blocked_error() -> None:
+    class _BlockedDispatchService(_DispatchService):
+        def dispatch_operation(self, operation, payload):
+            self.last_dispatch = (operation, payload)
+            raise PreTradeRiskBlockedError(
+                "blocked by risk",
+                assessment={"verdict": "block", "checks": [{"name": "daily_loss_limit"}]},
+            )
+
+    service = _BlockedDispatchService()
+    response = trade_from_signal(
+        SignalExecuteTradeRequest(signal_id="sig_1"),
+        signal_service=_SignalService(),
+        command_service=service,
+        query_service=service,
+    )
+
+    assert response.success is False
+    assert response.error["code"] == "daily_loss_limit"
+    assert response.error["details"]["account_alias"] == "live"
+    assert response.error["details"]["symbol"] == "XAUUSD"
+
+
+def test_trade_from_signal_maps_mt5_trade_error() -> None:
+    class _FailingDispatchService(_DispatchService):
+        def dispatch_operation(self, operation, payload):
+            self.last_dispatch = (operation, payload)
+            raise MT5TradeError("market closed")
+
+    service = _FailingDispatchService()
+    response = trade_from_signal(
+        SignalExecuteTradeRequest(signal_id="sig_1"),
+        signal_service=_SignalService(),
+        command_service=service,
+        query_service=service,
+    )
+
+    assert response.success is False
+    assert response.error["code"] == "market_closed"
+    assert response.error["details"]["account_alias"] == "live"
+    assert response.error["details"]["symbol"] == "XAUUSD"
+
+
+def test_trade_batch_maps_mt5_error() -> None:
+    response = trade_batch(
+        BatchTradeRequest(
+            trades=[TradeRequest(symbol="XAUUSD_BATCH_FAIL", volume=0.1, side="buy")],
+            stop_on_error=True,
+        ),
+        service=_DispatchService(),
+    )
+
+    assert response.success is False
+    assert response.error["code"] == "market_closed"
+    assert response.error["details"]["count"] == 1
+
+
+def test_estimate_margin_maps_mt5_error() -> None:
+    response = estimate_margin(
+        EstimateMarginRequest(symbol="XAUUSD_MARGIN_FAIL", volume=0.1, side="buy"),
+        service=_DispatchService(),
+    )
+
+    assert response.success is False
+    assert response.error["code"] == "market_closed"
+    assert response.error["details"]["symbol"] == "XAUUSD_MARGIN_FAIL"
+
+
+def test_modify_orders_maps_order_not_found() -> None:
+    response = modify_orders(
+        ModifyOrdersRequest(symbol="XAUUSD_ORDER_FAIL", magic=7, sl=1.0, tp=2.0),
+        service=_DispatchService(),
+    )
+
+    assert response.success is False
+    assert response.error["code"] == "order_not_found"
+    assert response.error["details"]["magic"] == 7
+
+
+def test_modify_positions_forwards_ticket_and_maps_position_not_found() -> None:
+    service = _DispatchService()
+    response = modify_positions(
+        ModifyPositionsRequest(ticket=404, symbol="XAUUSD", magic=7, sl=1.0, tp=2.0),
+        service=service,
+    )
+
+    assert service.last_modify_positions["ticket"] == 404
+    assert response.success is False
+    assert response.error["code"] == "position_not_found"
+    assert response.error["details"]["ticket"] == 404
 
 
 def test_positions_endpoint_serializes_dataclass_time_without_duplicate_keyword() -> None:

@@ -36,10 +36,8 @@ from src.api.schemas import (
 from src.config import get_effective_config_snapshot, reload_configs
 from src.config.file_manager import get_file_config_manager
 from src.readmodels.runtime import RuntimeReadModel
-from src.trading.application import (
-    TradeOperatorActionReplayConflictError,
-    TradingCommandService,
-)
+from src.trading.application.idempotency import TradeOperatorActionReplayConflictError
+from src.trading.application.services import TradingCommandService
 
 from .health import TRADE_TRIGGER_METHODS
 from .view_models import (

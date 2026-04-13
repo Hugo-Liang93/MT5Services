@@ -1,29 +1,7 @@
-from .sizing import (
-    RegimeSizing,
-    TIMEFRAME_RISK_MULTIPLIER,
-    TIMEFRAME_SL_TP,
-    TradeParameters,
-    compute_trade_params,
-    extract_atr_from_indicators,
-    resolve_regime_sl_tp_multiplier,
-    resolve_timeframe_risk_multiplier,
-    resolve_timeframe_sl_tp,
-)
-from .gate import ExecutionGate, ExecutionGateConfig
-from .executor import ExecutorConfig, TradeExecutor
+"""Trading execution package.
 
-__all__ = [
-    "ExecutionGate",
-    "ExecutionGateConfig",
-    "ExecutorConfig",
-    "RegimeSizing",
-    "TIMEFRAME_RISK_MULTIPLIER",
-    "TIMEFRAME_SL_TP",
-    "TradeExecutor",
-    "TradeParameters",
-    "compute_trade_params",
-    "extract_atr_from_indicators",
-    "resolve_regime_sl_tp_multiplier",
-    "resolve_timeframe_risk_multiplier",
-    "resolve_timeframe_sl_tp",
-]
+保持为空壳，避免导入 `execution.sizing` 时先拉起 `executor` 造成循环依赖。
+调用方应直接引用具体子模块。
+"""
+
+__all__: list[str] = []

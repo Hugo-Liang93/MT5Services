@@ -402,6 +402,9 @@ class BackgroundIngestor:
         if not bars_in_range:
             return
 
+        synthesis_count = self._synthesis_count.get(ohlc_key(symbol, parent_tf), 0) + 1
+        synthesized_at = datetime.now(timezone.utc)
+
         # 合成父 TF 当前未收盘 bar
         synthesized = OHLC(
             symbol=symbol,
@@ -415,7 +418,21 @@ class BackgroundIngestor:
         )
 
         # 注入现有 intrabar 管道
-        self.service.set_intrabar(symbol, parent_tf, synthesized)
+        self.service.set_intrabar(
+            symbol,
+            parent_tf,
+            synthesized,
+            metadata={
+                "trigger_tf": trigger_tf,
+                "bar_time": parent_bar_open.isoformat(),
+                "synthesized_at": synthesized_at.isoformat(),
+                "expected_interval_seconds": trigger_tf_secs,
+                "stale_threshold_seconds": trigger_tf_secs * 3,
+                "last_child_bar_time": trigger_bar_time.isoformat(),
+                "child_bar_count": len(bars_in_range),
+                "count": synthesis_count,
+            },
+        )
 
         # 持久化到 TimescaleDB（与轮询路径对齐）
         if self.settings.intrabar_enabled:
@@ -438,9 +455,7 @@ class BackgroundIngestor:
         # 断更检测：记录成功合成时间和计数
         synthesis_key = ohlc_key(symbol, parent_tf)
         self._last_synthesis_at[synthesis_key] = time.monotonic()
-        self._synthesis_count[synthesis_key] = (
-            self._synthesis_count.get(synthesis_key, 0) + 1
-        )
+        self._synthesis_count[synthesis_key] = synthesis_count
 
         logger.debug(
             "Ingestor: %s %s close → synthesized %s intrabar "
@@ -501,16 +516,24 @@ class BackgroundIngestor:
                 if last_at is not None:
                     age = now - last_at
                     stale = age > stale_threshold
+                    status = "stale" if stale else "healthy"
                 else:
-                    age = -1.0  # 从未合成
-                    stale = True if count == 0 and not self.is_backfilling else False
+                    age = None
+                    stale = False
+                    status = "warming_up"
                 result[key] = {
                     "trigger_tf": trigger_tf,
                     "count": count,
-                    "last_age_seconds": round(age, 1),
+                    "expected_interval_seconds": expected_interval,
+                    "stale_threshold_seconds": stale_threshold,
+                    "last_age_seconds": round(age, 1) if age is not None else None,
                     "stale": stale,
+                    "status": status,
                 }
         return result
+
+    def intrabar_synthesis_summary(self) -> dict[str, dict[str, Any]]:
+        return self._intrabar_synthesis_stats()
 
     def _init_backfill_progress(self) -> None:
         """启动时从数据库初始化回补起点与截止时间。"""

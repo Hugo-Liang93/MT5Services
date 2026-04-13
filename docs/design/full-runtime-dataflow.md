@@ -1,9 +1,9 @@
 # 全量运行时数据流图（当前实现版）
 
-> 更新日期：2026-04-12  
+> 更新日期：2026-04-13  
 > 目的：给当前代码库一份“可审查、可对照实现、可映射真实运行结果”的完整数据流图。  
 > 本文不是理想架构图，而是基于当前仓库与真实启动结果整理的运行时真相。
-> 策略开发规范、regime/voting 细节、规划类方案不在本文重复展开，统一由各专题文档维护。
+> 策略开发规范、regime、单策略契约与规划类方案不在本文重复展开，统一由各专题文档维护。
 
 ---
 
@@ -31,6 +31,12 @@
 | 信号运行时 | 运行中 | `signal_runtime.is_running()=true` |
 | 经济日历 | 运行中 | 最近一轮刷新成功 |
 | TradeExecutor | `is_running=false` | 这是当前实现的“懒启动 worker”语义，不代表组件未装配；只有收到首个交易信号才拉起执行线程 |
+
+补充约束：
+
+1. `TradeExecutor`、`pending_orders`、`pre_trade_checks` 只负责阶段性执行事实和正式结果对象，不再各自补发 terminal pipeline 事件。
+2. `ExecutionIntentConsumer` 是 execution intent 主链唯一的 terminal 事件发射者，统一落 `execution_succeeded / execution_skipped / execution_failed`。
+3. 单账户/本地 queue worker 不再吞掉 `process_event()` 的正式结果，而是复用同一 terminal 结果解释服务发出终态；因此单账户与 worker 主链的 terminal 语义一致。
 
 需要单独解释的运行态现象：
 
@@ -63,11 +69,28 @@
                                            [PipelineTraceRecorder] --> [TimescaleDB]
 
   [SignalRuntime]
-      |--> SignalEvent -------------------------> [TradeExecutor]
+      |--> confirmed_buy/sell ------------------> [ExecutionIntentPublisher(main)]
+      |--> intrabar_armed_* --------------------> [ExecutionIntentPublisher(main)]
+      |                                             |
+      |                                             v
+      |                                      [execution_intents]
+      |                                             |
+      |                                             v
+      |                                   [ExecutionIntentConsumer(target account)]
+      |                                             |
+      |                                             v
+      |                                        [TradeExecutor]
       |                                             |--> [PendingEntryManager] --> [StorageWriter]
       |                                             |--> [PositionManager] -----> [StorageWriter]
-      |                                             `--> 执行审计 / 结果 ---------> [StorageWriter]
+      |                                             `--> 执行阶段事实 -----------> [StorageWriter]
       `--> Paper signal ------------------------> [PaperTradingBridge] ----------> [StorageWriter]
+
+  [FastAPI / Operator APIs]
+      -> [OperatorCommandService]
+      -> [operator_commands]
+      -> [OperatorCommandConsumer(target account)]
+      -> [TradingModule / RuntimeModeController / PendingEntryManager / Closeout]
+      -> [trade_command_audits + PipelineEventBus]
 
   [EconomicCalendarService]
       |--> 日历事实 / 更新 ----------------------> [StorageWriter]
@@ -145,6 +168,8 @@ AppRuntime.start()
 
 1. `EconomicCalendarService` 当前不是独立 runtime component，而是挂在 `indicators` 启动栈内部。
 2. `TradeExecutor.start()` 只清理生命周期状态，不主动起 worker 线程；真正收到首个信号后才 `_start_worker()`。
+3. `executor` 角色实例当前不装配 `SignalRuntime`，只装配本地账户执行栈与 `ExecutionIntentConsumer`。
+4. 即使走单账户/本地 listener 适配路径，terminal pipeline 事件也不再是“本地特例”；它们复用与 intent consumer 相同的结果解释合同。
 
 ---
 
@@ -250,7 +275,7 @@ Indicator snapshot
   -> confirmed queue (WAL) / intrabar queue (memory)
   -> process_next_event()
   -> SignalFilterChain
-  -> regime / strategy evaluate / voting
+  -> regime / strategy evaluate
   -> publish SignalEvent
 ```
 
@@ -258,13 +283,16 @@ Indicator snapshot
 
 1. confirmed 队列与 intrabar 队列；
 2. confirmed state machine；
-3. voting / filter / warmup / drop rate 统计；
+3. filter / no_signal / warmup / drop rate 统计；
 4. snapshot listener 广播。
 
 ## 4.2 执行、挂单、持仓
 
 ```text
 [SignalRuntime]
+  -> [ExecutionIntentPublisher(main or single-account main)]
+  -> [execution_intents]
+  -> [ExecutionIntentConsumer(target account)]
   -> [TradeExecutor]
        |--> market / pending decision ---------> [PendingEntryManager] --> [StorageWriter]
        |--> position lifecycle follow-up ------> [PositionManager] -----> [StorageWriter]
@@ -273,8 +301,10 @@ Indicator snapshot
 
 需要特别说明的一点：
 
-1. `TradeExecutor` 当前是 lazy worker 设计。也就是说，组件已装配、listener 已挂接，但内部执行线程只会在收到首个可执行信号后启动。
-2. 因此 `/health` 里 `trade_executor.running=false`，当前更接近“worker 线程未被唤起”，不等于“执行器未装配”。
+1. 当前 `confirmed` 与 `intrabar_armed_*` 都已经统一收口到 `execution_intents`，不再保留 “SignalRuntime 直接调用 TradeExecutor” 作为正式 live 主链。
+2. `executor` 实例只消费 intent，不生产信号；`main` 实例只生产 signal / intent，不直接持有多账户执行职责。
+3. `TradeExecutor` 当前仍是 lazy worker 设计。也就是说，组件已装配、consumer 已可 claim intent，但内部执行线程只会在收到首个可执行事件后启动。
+4. 因此 `/health` 里 `trade_executor.running=false`，当前更接近“worker 线程未被唤起”，不等于“执行器未装配”。
 
 这不是系统主链路阻塞项，但它会影响你阅读运行态时的直觉，后续可以单独把 health 语义改成：
 
@@ -294,6 +324,25 @@ Indicator snapshot
 ```
 
 这条链路与真实交易链路并行，不接管真实账户状态，适合做下一阶段“开盘窗口影子验证”。
+
+## 4.4 Operator Command 控制链
+
+```text
+[FastAPI / Trade APIs]
+  -> [OperatorCommandService.enqueue()]
+  -> [operator_commands]
+  -> [OperatorCommandConsumer(target account)]
+       |--> RuntimeModeController / TradeControl / Closeout / PendingEntry
+       `--> TradingModule operator actions
+              -> [trade_command_audits]
+              -> [PipelineEventBus(command_submitted / command_completed / command_failed)]
+```
+
+当前正式约束：
+
+1. `OperatorCommandService`、`OperatorCommandConsumer` 与 `TradingModule` 现在共用单一 `operator command result` 合同，不再各自补字段或在 consumer 侧做历史结果归一化。
+2. `command_submitted / command_completed / command_failed` 三类事件都以同一结果对象为事实源，`response_payload` 的 `accepted / status / action_id / command_id / audit_id / message / effective_state` 语义一致。
+3. 这条链路当前仍与 `execute_trade` 普通交易返回值是两套结果合同；后者尚未完成同级别收口，审查时不要把二者混为同一契约。
 
 ---
 
@@ -326,7 +375,9 @@ Indicator snapshot
 [EconomicCalendarService] -----------/
 
 [IndicatorManager] ------------------\
-[SignalRuntime] ----------------------> [PipelineEventBus] --> [PipelineTraceRecorder] --> [pipeline_trace_events]
+[SignalRuntime] ----------------------\
+[ExecutionIntentPublisher] -----------+--> [PipelineEventBus] --> [PipelineTraceRecorder] --> [pipeline_trace_events]
+[ExecutionIntentConsumer] -----------/
 [TradeExecutor] ---------------------/
 ```
 
@@ -390,7 +441,7 @@ Indicator snapshot
 | `StorageWriter` | 各通道 queue/pending/DLQ 状态 | 上游各模块 enqueue | health/readmodel |
 | `LocalEventStore(events.db)` | indicator durable events | indicator writer loop | indicator event loop / monitoring |
 | `UnifiedIndicatorManager.state` | event/intrabar queue、results、listeners、scope stats | indicator runtime | readmodel/monitoring |
-| `SignalRuntime` | confirmed/intrabar queues、state machine、drop/filter/voting 统计 | signal orchestration | readmodel / monitoring |
+| `SignalRuntime` | confirmed/intrabar queues、state machine、drop/filter/no_signal 统计 | signal orchestration | readmodel / monitoring |
 | `TradeExecutor` | execution queue、circuit breaker、execution stats | executor | readmodel / monitoring |
 | `PendingEntryManager` | active pending entries | pending manager | readmodel / API |
 | `PositionManager` | tracked positions / reconcile state | position manager | readmodel / API |
@@ -416,9 +467,10 @@ Indicator snapshot
 2. MT5 采集 -> `MarketDataService` 缓存；
 3. confirmed OHLC -> closed-bar event -> `events.db` durable queue；
 4. indicator event loop -> 指标结果回写；
-5. `/health` 与 `/v1/monitoring/health/ready` 能反映系统主链路；
-6. 日志、DLQ、health DB 都已落在根目录 `data/`；
-7. 经济日历刷新与状态投影可工作。
+5. `confirmed_buy/sell` 与 `intrabar_armed_*` -> `execution_intents` -> `ExecutionIntentConsumer` -> `TradeExecutor` 已形成统一执行主链；
+6. `/health` 与 `/v1/monitoring/health/ready` 能反映系统主链路；
+7. 日志、DLQ、health DB 都已落在根目录 `data/`；
+8. 经济日历刷新与状态投影可工作。
 
 ### 8.2 当前不是阻塞，但要带着看的点
 

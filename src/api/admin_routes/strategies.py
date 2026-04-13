@@ -9,7 +9,7 @@ from src.api.admin_schemas import StrategyDetail, StrategyPerformanceReport
 from src.api.schemas import ApiResponse
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
-from src.signals.orchestration import SignalRuntime
+from src.signals.orchestration.runtime import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals import service_diagnostics as svc_diag
 from src.signals.contracts.execution_plan import build_strategy_capability_summary

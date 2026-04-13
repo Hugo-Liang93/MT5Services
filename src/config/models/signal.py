@@ -31,10 +31,6 @@ class SignalConfig(BaseModel):
     session_transition_cooldown_minutes: int = 15
     snapshot_dedupe_window_seconds: float = 0.3
     soft_regime_enabled: bool = True
-    voting_enabled: bool = True
-    voting_consensus_threshold: float = 0.40
-    voting_min_quorum: int = 2
-    voting_disagreement_penalty: float = 0.50
     trailing_atr_multiplier: float = 1.0
     breakeven_atr_threshold: float = 1.0
     position_reconcile_interval: float = 10.0
@@ -58,11 +54,6 @@ class SignalConfig(BaseModel):
     max_spread_to_stop_ratio: float = 0.33
     # 同策略同方向再入场冷却 bar 数（0=不冷却每根 bar 都可以，N=间隔 N 根后允许加仓）
     reentry_cooldown_bars: int = 3
-    # 多组 Voting 配置：原始 dict 列表，在工厂层转换为 VotingGroupConfig 对象
-    # 每个 dict 包含: name, strategies(list), consensus_threshold, min_quorum, disagreement_penalty
-    voting_group_configs: list[dict] = Field(default_factory=list)
-    # 即使属于 voting group，仍允许单独触发交易的策略名单（standalone_override 覆盖）
-    standalone_override: list[str] = Field(default_factory=list)
     # ── Performance Tracker（日内策略绩效追踪）──
     perf_tracker_enabled: bool = True
     perf_tracker_baseline_win_rate: float = 0.50

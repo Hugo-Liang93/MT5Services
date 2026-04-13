@@ -30,6 +30,7 @@ from .trade_routes.runtime import trade_runtime_mode_status, trade_runtime_mode_
 from .trade_routes.state import (
     orders,
     positions,
+    get_sl_tp_history,
     trade_active_pending_state_list,
     trade_command_audits,
     trade_control_status,
@@ -59,6 +60,7 @@ __all__ = [
     "close_all",
     "close_batch",
     "estimate_margin",
+    "get_sl_tp_history",
     "modify_orders",
     "modify_positions",
     "orders",

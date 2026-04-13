@@ -8,7 +8,9 @@ from src.monitoring.pipeline import (
     PIPELINE_COMMAND_SUBMITTED,
     PipelineEventBus,
 )
-from src.trading.commands import OperatorCommandConsumer, OperatorCommandService
+from src.trading.commands.results import build_operator_command_result
+from src.trading.commands.consumer import OperatorCommandConsumer
+from src.trading.commands.service import OperatorCommandService
 
 
 def _runtime_identity(
@@ -241,7 +243,18 @@ def test_operator_command_consumer_close_position_forwards_volume():
     class _CommandService:
         def close_position(self, **kwargs):
             captured.update(kwargs)
-            return {"accepted": True, "status": "applied", "action_id": kwargs["action_id"]}
+            return build_operator_command_result(
+                accepted=True,
+                status="completed",
+                action_id=kwargs["action_id"],
+                audit_id=kwargs["audit_id"],
+                actor=kwargs["actor"],
+                reason=kwargs["reason"],
+                idempotency_key=kwargs["idempotency_key"],
+                request_context=kwargs["request_context"],
+                message="position close completed",
+                effective_state={"result": {"success": True}},
+            )
 
     consumer = OperatorCommandConsumer(
         claim_fn=lambda **kwargs: [],
@@ -277,7 +290,18 @@ def test_operator_command_consumer_cancel_orders_forwards_magic():
     class _CommandService:
         def cancel_orders(self, **kwargs):
             captured.update(kwargs)
-            return {"accepted": True, "status": "applied", "action_id": kwargs["action_id"]}
+            return build_operator_command_result(
+                accepted=True,
+                status="completed",
+                action_id=kwargs["action_id"],
+                audit_id=kwargs["audit_id"],
+                actor=kwargs["actor"],
+                reason=kwargs["reason"],
+                idempotency_key=kwargs["idempotency_key"],
+                request_context=kwargs["request_context"],
+                message="cancel orders completed",
+                effective_state={"result": {"canceled": []}},
+            )
 
     consumer = OperatorCommandConsumer(
         claim_fn=lambda **kwargs: [],

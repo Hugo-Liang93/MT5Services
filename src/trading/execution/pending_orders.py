@@ -8,11 +8,17 @@ from typing import TYPE_CHECKING, Any
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
 
+from ..broker.comment_codec import (
+    build_trade_comment,
+    comment_matches_request_id,
+    comment_matches_semantics,
+    comments_share_request_tag,
+)
 from ..pending.manager import compute_timeout
 from .eventing import (
+    _build_terminal_result,
     build_trade_metadata,
     emit_execution_blocked,
-    emit_execution_failed,
     emit_pending_order_submitted,
     notify_skip,
 )
@@ -59,7 +65,11 @@ def submit_pending_entry(
         notify_skip(
             executor, event.signal_id, REASON_MISSING_SIGNAL_ID, event.timeframe or ""
         )
-        return None
+        return _build_terminal_result(
+            status="skipped",
+            reason=REASON_MISSING_SIGNAL_ID,
+            category=SKIP_CATEGORY_EXECUTION_INPUT,
+        )
 
     config = executor.pending_manager.config
 
@@ -106,7 +116,13 @@ def submit_pending_entry(
         "price": trigger_price,
         "sl": adjusted_sl,
         "tp": adjusted_tp,
-        "comment": f"{tf}:{event.strategy}:{order_kind}"[:31],
+        "comment": build_trade_comment(
+            request_id=event.signal_id,
+            timeframe=tf,
+            strategy=event.strategy,
+            side=event.direction,
+            order_kind=order_kind,
+        ),
         "request_id": event.signal_id,
         "metadata": build_trade_metadata(event),
     }
@@ -193,17 +209,13 @@ def submit_pending_entry(
             event.strategy,
             exc,
         )
-        emit_execution_failed(
-            executor,
-            event,
-            order_kind=order_kind,
-            reason=str(exc),
+        return _build_terminal_result(
+            status="failed",
+            reason=REASON_PENDING_ORDER_FAILED,
             category=SKIP_CATEGORY_PENDING_SUBMIT,
+            error_code=type(exc).__name__,
+            details={"error": str(exc)},
         )
-        notify_skip(
-            executor, event.signal_id, f"{REASON_PENDING_ORDER_FAILED}:{exc}", tf
-        )
-        return None
 
 
 def resolve_pending_order(
@@ -433,15 +445,16 @@ def find_live_position_for_pending_order(
     symbol: str,
     direction: str,
     comment: str,
+    signal_id: str = "",
     timeframe: str = "",
     strategy: str = "",
 ) -> Any | None:
     target_symbol = str(symbol or "").strip()
     target_direction = str(direction or "").strip().lower()
     target_comment = str(comment or "").strip()
-    target_prefix = comment_prefix(timeframe, strategy)
     exact_matches: list[Any] = []
-    prefix_matches: list[Any] = []
+    request_tag_matches: list[Any] = []
+    semantic_matches: list[Any] = []
     directional_matches: list[Any] = []
     for row in positions or []:
         row_symbol = str(row_value(row, "symbol", "") or "").strip()
@@ -454,11 +467,17 @@ def find_live_position_for_pending_order(
         if target_comment and row_comment == target_comment:
             exact_matches.append(row)
             continue
-        if target_prefix and row_comment.lower().startswith(target_prefix):
-            prefix_matches.append(row)
+        if (
+            target_comment
+            and comments_share_request_tag(row_comment, target_comment)
+        ) or (signal_id and comment_matches_request_id(row_comment, signal_id)):
+            request_tag_matches.append(row)
+            continue
+        if comment_matches_semantics(row_comment, timeframe, strategy):
+            semantic_matches.append(row)
             continue
         directional_matches.append(row)
-    matches = exact_matches or prefix_matches
+    matches = exact_matches or request_tag_matches or semantic_matches
     if not matches and len(directional_matches) == 1:
         matches = directional_matches
     if not matches:
@@ -475,16 +494,6 @@ def find_live_position_for_pending_order(
         )
     )
     return matches[-1]
-
-
-def comment_prefix(timeframe: str, strategy: str) -> str:
-    tf = str(timeframe or "").strip().lower()
-    strat = str(strategy or "").strip().lower()
-    if not tf or not strat:
-        return ""
-    return f"{tf}:{strat}:"
-
-
 def tracked_position_tickets(executor: "TradeExecutor") -> set[int]:
     if executor.position_manager is None:
         return set()
@@ -586,6 +595,7 @@ def inspect_pending_mt5_order(
         symbol=symbol,
         direction=direction,
         comment=comment,
+        signal_id=signal_id,
         timeframe=str(info.get("timeframe") or ""),
         strategy=str(info.get("strategy") or ""),
     )

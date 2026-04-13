@@ -113,7 +113,6 @@ class WalkForwardValidator:
         signal_module_factory: Callable[[Dict[str, Any]], SignalModule],
         indicator_pipeline: Any,  # OptimizedPipeline
         regime_detector: Optional[MarketRegimeDetector] = None,
-        voting_engine: Optional[Any] = None,
     ) -> None:
         """初始化 Walk-Forward 验证器。
 
@@ -123,14 +122,12 @@ class WalkForwardValidator:
             signal_module_factory: 接收策略参数覆盖、返回独立 SignalModule 的工厂函数
             indicator_pipeline: 指标计算管线
             regime_detector: Regime 检测器（可选）
-            voting_engine: 投票引擎（可选）
         """
         self._config = config
         self._data_loader = data_loader
         self._signal_module_factory = signal_module_factory
         self._pipeline = indicator_pipeline
         self._regime_detector = regime_detector or MarketRegimeDetector()
-        self._voting_engine = voting_engine
 
     def run(
         self,
@@ -186,7 +183,6 @@ class WalkForwardValidator:
                     indicator_pipeline=self._pipeline,
                     signal_module_factory=self._signal_module_factory,
                     regime_detector=self._regime_detector,
-                    voting_engine=self._voting_engine,
                     sort_metric=self._config.optimization_metric,
                 )
                 opt_results = optimizer.run()
@@ -354,7 +350,6 @@ class WalkForwardValidator:
             signal_module=signal_module,
             indicator_pipeline=self._pipeline,
             regime_detector=self._regime_detector,
-            voting_engine=self._voting_engine,
         )
         return engine.run()
 

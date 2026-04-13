@@ -25,11 +25,9 @@ from .runtime_evaluator import (
     apply_confidence_adjustments as _runtime_apply_confidence_adjustments,
 )
 from .runtime_evaluator import evaluate_strategies as _runtime_evaluate_strategies
-from .runtime_evaluator import get_vote_emit_kwargs as _runtime_get_vote_emit_kwargs
 from .runtime_evaluator import (
     market_structure_lookback_bars as _runtime_market_structure_lookback_bars,
 )
-from .runtime_evaluator import process_voting as _runtime_process_voting
 from .runtime_evaluator import publish_signal_event as _runtime_publish_signal_event
 from .runtime_evaluator import (
     resolve_market_structure_context as _runtime_resolve_market_structure_context,
@@ -46,8 +44,6 @@ from .runtime_components import (
     RuntimeStatusBuilder,
     SignalLifecyclePolicy,
 )
-from .vote_processor import fuse_vote_decisions
-from .voting import StrategyVotingEngine
 
 if TYPE_CHECKING:
     from src.indicators.manager import UnifiedIndicatorManager
@@ -129,13 +125,6 @@ class SignalRuntime:
         )
         self._has_service_session_reset: bool = hasattr(service, "reset_performance_session")
         self._market_structure_analyzer = market_structure_analyzer
-        # policy 在未配置 voting_groups 时，使用单层 consensus 投票引擎。
-        # voting_groups 会为每个分组创建独立 engine，并在组内汇总策略投票。
-        self._voting_engine: StrategyVotingEngine | None = None
-        # 分组投票路径维护 (group_config, engine) 对，逐组完成 vote fusion。
-        self._voting_group_engines: list[tuple[Any, StrategyVotingEngine]] = []
-        # voting group 成员只参与组内投票，不再作为独立策略单独发信号。
-        self._voting_group_members: frozenset[str] = frozenset()
         # RegimeTracker 按 (symbol, timeframe) 建立，维护每个交易目标的状态稳定度。
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
         self._regime_trackers_lock = threading.Lock()
@@ -252,30 +241,6 @@ class SignalRuntime:
         self._event_decay_cache: dict[str, dict[str, float]] = {}
         # Anti-starvation 计数器：限制 confirmed 连续独占队列，周期性给 intrabar 让路。
         self._confirmed_burst_count: int = 0
-        self._vote_fusion_cache: dict[
-            tuple[str, str, datetime], dict[str, tuple[str, Any]]
-        ] = {}
-        self._voting_stats: dict[str, Any] = {
-            "mode": "single",
-            "calls": 0,
-            "input_decisions": 0,
-            "fused_decisions": 0,
-            "groups": {},
-            "consensus": {"attempts": 0, "produced": 0, "no_decision": 0},
-            "last_path": None,
-        }
-
-    @staticmethod
-    def _empty_voting_stats(is_group_mode: bool) -> dict[str, Any]:
-        return {
-            "mode": "group" if is_group_mode else "single",
-            "calls": 0,
-            "input_decisions": 0,
-            "fused_decisions": 0,
-            "groups": {},
-            "consensus": {"attempts": 0, "produced": 0, "no_decision": 0},
-            "last_path": None,
-        }
 
     @property
     def strategy_capabilities(self) -> dict[str, StrategyCapability]:
@@ -337,7 +302,6 @@ class SignalRuntime:
 
     def _apply_policy(self, policy: SignalPolicy) -> None:
         self._policy_coordinator.apply(policy)
-        self._voting_stats = self._empty_voting_stats(bool(self._voting_group_engines))
 
     def update_policy(self, policy: SignalPolicy) -> None:
         self._apply_policy(policy)
@@ -379,11 +343,6 @@ class SignalRuntime:
     def pipeline_event_bus(self) -> Any | None:
         return self._pipeline_event_bus
 
-    def _emit_voting_completed(self, **kwargs: Any) -> None:
-        if self.pipeline_event_bus is None:
-            return
-        self.pipeline_event_bus.emit_voting_completed(**kwargs)
-
     @property
     def market_impact_analyzer(self) -> Any | None:
         service = self.economic_calendar_service
@@ -393,9 +352,6 @@ class SignalRuntime:
 
     def set_intrabar_trade_coordinator(self, coordinator: Any) -> None:
         self._intrabar_trade_coordinator = coordinator
-
-    def describe_voting(self) -> list[dict[str, Any]]:
-        return self._status_builder.describe_voting()
 
     def _on_snapshot(
         self,
@@ -429,9 +385,6 @@ class SignalRuntime:
 
     def get_regime_stability_map(self) -> dict[str, dict[str, Any]]:
         return self._status_builder.get_regime_stability_map()
-
-    def get_voting_info(self) -> dict[str, Any]:
-        return self._status_builder.get_voting_info()
 
     @staticmethod
     def _resolve_regime_detector(service: SignalModule) -> MarketRegimeDetector:
@@ -667,36 +620,6 @@ class SignalRuntime:
             event_time=event_time,
             bar_time=bar_time,
             latest_close=latest_close,
-        )
-
-    def _get_vote_emit_kwargs(self) -> dict:
-        return _runtime_get_vote_emit_kwargs(self)
-
-    def _process_voting(
-        self,
-        snapshot_decisions: list,
-        symbol: str,
-        timeframe: str,
-        scope: str,
-        regime: RegimeType,
-        regime_stability: float,
-        regime_metadata: dict[str, Any],
-        indicators: dict[str, dict[str, float]],
-        event_time: datetime,
-        bar_time: datetime,
-    ) -> None:
-        _runtime_process_voting(
-            self,
-            snapshot_decisions,
-            symbol,
-            timeframe,
-            scope,
-            regime,
-            regime_stability,
-            regime_metadata,
-            indicators,
-            event_time,
-            bar_time,
         )
 
     _CONFIRMED_BURST_LIMIT = (

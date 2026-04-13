@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
+from src.signals.orchestration.policy import SignalPolicy
+from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
 
 class DummySnapshotSource:
@@ -37,7 +38,7 @@ def _make_runtime(source=None, htf_target_config=None):
         def __init__(self):
             self.evaluate_calls = []
 
-        def strategy_capability_catalog(self, voting_group_policy=None):
+        def strategy_capability_catalog(self):
             return [
                 {
                     "name": "strat_a",
@@ -45,7 +46,6 @@ def _make_runtime(source=None, htf_target_config=None):
                     "needed_indicators": ["ema50"],
                     "needs_intrabar": False,
                     "needs_htf": True,
-                    "voting_group_policy": "standalone",
                     "regime_affinity": {},
                     "htf_requirements": {"adx14": "H1"},
                 }

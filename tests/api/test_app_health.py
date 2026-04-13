@@ -73,6 +73,37 @@ class DummyRuntimeReadModel:
     def position_manager_summary(self):
         return {"status": "healthy", "running": True}
 
+    def paper_trading_summary(self):
+        return {
+            "kind": "validation_sidecar",
+            "configured": False,
+            "running": False,
+            "status": "disabled",
+            "session_id": None,
+            "signals_received": 0,
+            "signals_executed": 0,
+            "signals_rejected": 0,
+            "reject_reasons": {},
+            "active_symbols": [],
+        }
+
+    def mt5_session_summary(self):
+        return {
+            "kind": "external_dependency",
+            "status": "healthy",
+            "connected": True,
+            "terminal_reachable": True,
+            "terminal_process_ready": True,
+            "ipc_ready": True,
+            "authorized": True,
+            "account_match": True,
+            "session_ready": True,
+            "interactive_login_required": False,
+            "error_code": None,
+            "error_message": None,
+            "last_error": {"code": None, "message": None},
+        }
+
 
 class DummyCalendarService:
     def stats(self):
@@ -101,6 +132,14 @@ def test_health_uses_trading_module_health(monkeypatch):
     assert response.data["runtime"]["components"]["indicator_engine"]["running"] is True
     assert response.data["runtime"]["components"]["signal_runtime"]["running"] is True
     assert response.data["runtime"]["components"]["economic_calendar"]["running"] is True
+    assert (
+        response.data["runtime"]["validation_sidecars"]["paper_trading"]["kind"]
+        == "validation_sidecar"
+    )
+    assert (
+        response.data["runtime"]["external_dependencies"]["mt5_session"]["status"]
+        == "healthy"
+    )
 
 
 def test_health_executor_uses_runtime_read_model_without_ingestor(monkeypatch):
@@ -117,3 +156,11 @@ def test_health_executor_uses_runtime_read_model_without_ingestor(monkeypatch):
     assert response.data["ingestor"]["queues"]["role"] == "executor"
     assert response.data["runtime"]["components"]["ingestor"]["status"] == "disabled"
     assert response.data["runtime"]["components"]["indicator_engine"]["status"] == "healthy"
+    assert (
+        response.data["runtime"]["validation_sidecars"]["paper_trading"]["status"]
+        == "disabled"
+    )
+    assert (
+        response.data["runtime"]["external_dependencies"]["mt5_session"]["connected"]
+        is True
+    )

@@ -10,16 +10,19 @@ from src.persistence.db import TimescaleWriter
 from src.config import get_trading_config, get_trading_ops_config
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.metadata_keys import MetadataKey as MK
+from src.trading.broker.comment_codec import comments_share_request_tag
+from src.trading.commands.results import build_operator_command_result
 
 from .services import TradingCommandService, TradingQueryService
 from .control import TradeControlStateService
 from ..models import TradeCommandAuditRecord
 from .audit import TradeCommandAuditService, TradeDailyStatsService
+from .results import attach_dispatch_precheck, build_trade_operation_result
 from .idempotency import (
     TradeExecutionReplayService,
     TradeOperatorActionReplayService,
 )
-from ..registry import TradingAccountRegistry
+from ..runtime.registry import TradingAccountRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -280,43 +283,75 @@ class TradingModule:
             if isinstance(payload.get("request_context"), dict)
             else {}
         )
-        base_payload = {
-            "accepted": error_message is None,
-            "status": "failed",
-            "action_id": action_id,
-            "audit_id": audit_id,
-            "actor": actor,
-            "reason": reason,
-            "idempotency_key": idempotency_key,
-            "request_context": request_context,
-            "message": None,
-            "error_code": None,
-            "recorded_at": recorded_at.isoformat(),
-            "effective_state": {},
-            "result": raw_result if isinstance(raw_result, dict) else raw_result,
-        }
+        extra_fields = {"result": raw_result if isinstance(raw_result, dict) else raw_result}
         if error_message is not None:
-            base_payload["message"] = error_message
-            base_payload["error_message"] = error_message
-            base_payload["details"] = {"operation": operation_type}
-            return base_payload, "failed"
+            return (
+                build_operator_command_result(
+                    accepted=False,
+                    status="failed",
+                    action_id=action_id,
+                    audit_id=audit_id,
+                    actor=actor,
+                    reason=reason,
+                    idempotency_key=idempotency_key,
+                    request_context=request_context,
+                    message=error_message,
+                    error_code=None,
+                    recorded_at=recorded_at,
+                    effective_state={},
+                    error_message=error_message,
+                    details={"operation": operation_type},
+                    extra_fields=extra_fields,
+                ),
+                "failed",
+            )
 
         if operation_type == "close_position":
             result_payload = dict(raw_result or {}) if isinstance(raw_result, dict) else {}
             success = bool(result_payload.get("success", True)) and raw_result is not None
-            base_payload["accepted"] = success
-            base_payload["status"] = "completed" if success else "failed"
-            base_payload["message"] = (
+            message = (
                 "position close completed"
                 if success
                 else "position close reported failure"
             )
-            base_payload["effective_state"] = {"result": result_payload}
+            details = {"operation": operation_type} if not success else None
             if not success:
-                base_payload["error_message"] = base_payload["message"]
-                base_payload["details"] = {"operation": operation_type}
-                return base_payload, "failed"
-            return base_payload, "success"
+                return (
+                    build_operator_command_result(
+                        accepted=False,
+                        status="failed",
+                        action_id=action_id,
+                        audit_id=audit_id,
+                        actor=actor,
+                        reason=reason,
+                        idempotency_key=idempotency_key,
+                        request_context=request_context,
+                        message=message,
+                        recorded_at=recorded_at,
+                        effective_state={"result": result_payload},
+                        error_message=message,
+                        details=details,
+                        extra_fields=extra_fields,
+                    ),
+                    "failed",
+                )
+            return (
+                build_operator_command_result(
+                    accepted=True,
+                    status="completed",
+                    action_id=action_id,
+                    audit_id=audit_id,
+                    actor=actor,
+                    reason=reason,
+                    idempotency_key=idempotency_key,
+                    request_context=request_context,
+                    message=message,
+                    recorded_at=recorded_at,
+                    effective_state={"result": result_payload},
+                    extra_fields=extra_fields,
+                ),
+                "success",
+            )
 
         result_payload = dict(raw_result or {}) if isinstance(raw_result, dict) else {}
         success_key = "closed" if operation_type in {
@@ -345,14 +380,25 @@ class TradingModule:
             "partial_failure": f"{label} finished with partial failure",
             "failed": f"{label} failed",
         }[status]
-        base_payload["accepted"] = status != "failed"
-        base_payload["status"] = status
-        base_payload["message"] = message
-        base_payload["effective_state"] = {"result": result_payload}
-        if status == "failed":
-            base_payload["error_message"] = message
-            base_payload["details"] = {"operation": operation_type}
-        return base_payload, audit_status
+        return (
+            build_operator_command_result(
+                accepted=status != "failed",
+                status=status,
+                action_id=action_id,
+                audit_id=audit_id,
+                actor=actor,
+                reason=reason,
+                idempotency_key=idempotency_key,
+                request_context=request_context,
+                message=message,
+                recorded_at=recorded_at,
+                effective_state={"result": result_payload},
+                error_message=message if status == "failed" else None,
+                details={"operation": operation_type} if status == "failed" else None,
+                extra_fields=extra_fields,
+            ),
+            audit_status,
+        )
 
     def _enforce_trade_control(self, payload: Dict[str, Any]) -> None:
         self._trade_control.enforce(payload)
@@ -383,9 +429,7 @@ class TradingModule:
                 assessment=precheck,
             )
         result = self.execute_trade(**payload)
-        if isinstance(result, dict):
-            result.setdefault("dispatch_precheck", precheck)
-        return result
+        return attach_dispatch_precheck(result, precheck=precheck)
 
     def _execute_command(
         self,
@@ -422,14 +466,20 @@ class TradingModule:
                     trace_id = str(raw_result.get("request_id") or "")
                 if not trace_id:
                     trace_id = f"{operation_type}_{int(started * 1000)}"
-                result.setdefault("trace_id", trace_id)
-                result.setdefault("account_alias", resolved_alias)
+            duration_ms = int((time.monotonic() - started) * 1000)
+            record_operation_id = resolved_operation_id or uuid4().hex
+            if isinstance(result, dict):
+                result = build_trade_operation_result(
+                    result,
+                    trace_id=trace_id,
+                    account_alias=resolved_alias,
+                    operation_id=record_operation_id,
+                )
                 if operation_type == "execute_trade":
                     self._cache_successful_trade_result(
                         str(payload.get("request_id") or result.get("request_id") or ""),
                         result,
                     )
-            duration_ms = int((time.monotonic() - started) * 1000)
             record = TradeCommandAuditRecord(
                 account_alias=resolved_alias,
                 account_key=self._account_key_for(resolved_alias),
@@ -444,10 +494,8 @@ class TradingModule:
                 duration_ms=duration_ms,
                 request_payload=payload,
                 response_payload=result if isinstance(result, dict) else {"result": result},
-                operation_id=resolved_operation_id or uuid4().hex,
+                operation_id=record_operation_id,
             )
-            if isinstance(result, dict):
-                result.setdefault("operation_id", record.operation_id)
             self._record_command_audit(record)
             if operator_action_requested and isinstance(result, dict):
                 self._operator_action_replay.cache_recorded_action(
@@ -909,7 +957,17 @@ class TradingModule:
             request_payload = row.get("request_payload") or {}
             payload_comment = str(request_payload.get("comment") or "").strip()
             response_ticket = int(response_payload.get("ticket") or 0)
-            if response_ticket != int(ticket) and (not comment or payload_comment != str(comment).strip()):
+            live_comment = str(comment or "").strip()
+            if (
+                response_ticket != int(ticket)
+                and (
+                    not live_comment
+                    or (
+                        payload_comment != live_comment
+                        and not comments_share_request_tag(payload_comment, live_comment)
+                    )
+                )
+            ):
                 continue
             metadata = request_payload.get("metadata") or {}
             signal_meta = metadata.get(MK.SIGNAL) or {}

@@ -34,12 +34,15 @@
              │  同时：子 TF 的 confirmed
              │  事件走正常 confirmed 链路
              │
-             │ service.set_intrabar(symbol, parent_tf, bar)
+             │ service.set_intrabar(symbol, parent_tf, bar, metadata=...)
              ▼
               ┌─────────────────────────────────────┐
               │  MarketDataService.set_intrabar()    │
               │  src/market/service.py:444           │
               │  ┌─ 写入 _intrabar_cache (API 用)   │
+              │  ├─ 写入 _intrabar_metadata_cache   │
+              │  │   (trigger_tf / synthesized_at / │
+              │  │    stale_threshold / child count)│
               │  └─ event_bus.dispatch_intrabar()    │
               └──────────────┬──────────────────────┘
                              │ ThreadPoolExecutor(2) 异步
@@ -122,6 +125,7 @@
  │  ├─ check_warmup_barrier()                                          │
  │  │    回补未完成 / staleness / 指标不全 → 跳过                      │
  │  ├─ build_snapshot_metadata()                                       │
+ │  │    注入 spread + intrabar_synthesis 元数据                       │
  │  └─ _enqueue() → _intrabar_events                                  │
  │                   Queue(maxsize=8192)                                │
  │                   put_nowait, 满则丢弃 + 计数                       │
@@ -146,8 +150,8 @@
  │       scope ∉ strategy.preferred_scopes → 跳过                      │
  │       required_indicators 不全 → 跳过                               │
  │       → strategy.evaluate(context) → SignalDecision                 │
- │  ⑤ _process_voting()                                                │
- │  ⑥ transition_and_publish()                                         │
+│  ⑤ transition_and_publish()                                         │
+│  ⑥ no_signal / intrabar_armed 收口                                  │
  │       ├─ confirmed scope：confirmed 状态机转换 + 可发 signal event   │
  │       ├─ publish_signal_event()                                     │
  │       └─ IntrabarTradeCoordinator.update() ──────────┐              │
@@ -162,25 +166,33 @@
  ┌──────────────────────────────────────────────────────────────────────┐
  │  Signal Listeners                                                    │
  │                                                                      │
- │  ├─→ TradeExecutor.on_signal_event()          (confirmed 交易)      │
- │  ├─→ TradeExecutor.on_intrabar_trade_signal() (intrabar 盘中入场)   │
+ │  ├─→ ExecutionIntentPublisher.on_signal_event()                     │
+ │  │     (confirmed / intrabar_armed 统一发布 intent)                 │
  │  ├─→ SignalQualityTracker                                           │
  │  └─→ HTFStateCache                                                  │
  └──────────────────────────────┬───────────────────────────────────────┘
                                 │ intrabar_armed_* 事件
                                 ▼
  ┌──────────────────────────────────────────────────────────────────────┐
- │  TradeExecutor._handle_intrabar_entry()                             │
- │  src/trading/execution/executor.py:785                              │
+ │  execution_intents                                                  │
+ │  main 写入 → executor claim                                         │
+ └──────────────────────────────┬───────────────────────────────────────┘
+                                ▼
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │  ExecutionIntentConsumer._process_intent()                          │
+ │    └─ TradeExecutor.process_event(scope="intrabar")                 │
+ │        └─ _handle_intrabar_entry()                                  │
  │                                                                      │
  │  1. IntrabarTradeGuard.can_trade()                                  │
  │     同 bar / 同策略 / 同方向 → 只允许一次                           │
  │                                                                      │
  │  2. ExecutionGate.check_intrabar()                                  │
- │     intrabar_trading_enabled? + 策略白名单 + 投票组保护             │
+ │     intrabar_trading_enabled? + 策略白名单                          │
  │                                                                      │
  │  3. _run_pre_trade_filters()                                        │
  │     复用完整 pre-trade filter chain                                 │
+ │     + quote freshness                                               │
+ │     + intrabar_synthesis freshness                                  │
  │                                                                      │
  │  4. _compute_params_helper()                                        │
  │     ATR 来自上一根 confirmed bar                                    │

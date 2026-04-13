@@ -8,7 +8,7 @@ import pytest
 
 from src.backtesting.engine.portfolio import PortfolioTracker
 from src.clients.mt5_market import OHLC
-from src.trading.execution import TradeParameters
+from src.trading.execution.sizing import TradeParameters
 
 
 def _bar(

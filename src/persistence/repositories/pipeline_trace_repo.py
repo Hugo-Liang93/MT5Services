@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Iterable, List, Sequence, Tuple
 
 from src.persistence.schema import INSERT_PIPELINE_TRACE_EVENTS_SQL
@@ -155,6 +156,9 @@ summary AS (
            COUNT(*)::bigint AS event_count,
            MAX(CASE WHEN rn_desc = 1 THEN event_type END) AS last_event_type,
            MAX(CASE WHEN rn_desc = 1 THEN COALESCE(payload->>'reason', payload->>'skip_reason', payload->>'category', '') END) AS reason,
+           MAX(CASE WHEN rn_desc = 1 THEN COALESCE(payload->>'signal_state', '') END) AS last_signal_state,
+           MAX(CASE WHEN rn_desc = 1 THEN COALESCE(payload->>'direction', '') END) AS last_direction,
+           MAX(CASE WHEN rn_desc = 1 THEN COALESCE(payload->>'winning_direction', '') END) AS last_winning_direction,
            MAX(NULLIF(payload->>'strategy', '')) AS strategy,
            MAX(COALESCE(NULLIF(signal_id, ''), NULLIF(payload->>'signal_id', ''), NULLIF(payload->>'request_id', ''))) AS signal_id,
            MAX(NULLIF(intent_id, '')) AS intent_id,
@@ -189,6 +193,9 @@ SELECT trace_id,
        event_count,
        last_event_type,
        reason,
+       NULLIF(last_signal_state, '') AS last_signal_state,
+       NULLIF(last_direction, '') AS last_direction,
+       NULLIF(last_winning_direction, '') AS last_winning_direction,
        NULLIF(last_admission_decision, '') AS last_admission_decision,
        NULLIF(last_admission_stage, '') AS last_admission_stage,
        CASE
@@ -200,6 +207,13 @@ SELECT trace_id,
            WHEN last_event_type IN ('intent_claimed', 'command_claimed') THEN 'claimed'
            WHEN last_event_type = 'admission_report_appended' THEN 'admission'
            WHEN last_event_type = 'execution_decided' THEN 'execution_ready'
+           WHEN last_event_type = 'voting_completed'
+                AND NULLIF(last_winning_direction, '') IS NULL THEN 'no_signal'
+           WHEN last_event_type = 'signal_evaluated'
+                AND (
+                    COALESCE(last_signal_state, '') = 'no_signal'
+                    OR COALESCE(last_direction, '') NOT IN ('buy', 'sell')
+                ) THEN 'no_signal'
            WHEN last_event_type = 'signal_evaluated' THEN 'signal_evaluated'
            WHEN last_event_type = 'signal_filter_decided' AND last_allowed = 'false' THEN 'blocked'
            WHEN last_event_type = 'signal_filter_decided' AND last_allowed = 'true' THEN 'filtered_pass'
@@ -226,6 +240,13 @@ WHERE 1=1
          WHEN last_event_type IN ('intent_claimed', 'command_claimed') THEN 'claimed'
          WHEN last_event_type = 'admission_report_appended' THEN 'admission'
          WHEN last_event_type = 'execution_decided' THEN 'execution_ready'
+         WHEN last_event_type = 'voting_completed'
+              AND NULLIF(last_winning_direction, '') IS NULL THEN 'no_signal'
+         WHEN last_event_type = 'signal_evaluated'
+              AND (
+                  COALESCE(last_signal_state, '') = 'no_signal'
+                  OR COALESCE(last_direction, '') NOT IN ('buy', 'sell')
+              ) THEN 'no_signal'
          WHEN last_event_type = 'signal_evaluated' THEN 'signal_evaluated'
          WHEN last_event_type = 'signal_filter_decided' AND last_allowed = 'false' THEN 'blocked'
          WHEN last_event_type = 'signal_filter_decided' AND last_allowed = 'true' THEN 'filtered_pass'
@@ -303,6 +324,85 @@ WHERE 1=1
             "ORDER BY recorded_at DESC, id DESC LIMIT %s OFFSET %s"
         )
         params.extend([max(1, int(limit)), max(0, int(offset))])
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in rows]
+
+    def fetch_gate_events(
+        self,
+        *,
+        from_time: datetime,
+        to_time: datetime,
+        symbol: str | None = None,
+        timeframes: Sequence[str] | None = None,
+        limit: int = 50000,
+    ) -> list[dict[str, Any]]:
+        normalized_timeframes = [
+            str(item).strip()
+            for item in (timeframes or [])
+            if str(item or "").strip()
+        ]
+        sql = """
+SELECT trace_id,
+       symbol,
+       timeframe,
+       scope,
+       event_type,
+       recorded_at,
+       COALESCE(
+           NULLIF(payload->>'reason', ''),
+           NULLIF(payload->>'skip_reason', ''),
+           NULLIF(payload->>'category', ''),
+           NULLIF(payload->>'skip_category', '')
+       ) AS gate_reason,
+       COALESCE(
+           NULLIF(payload->>'category', ''),
+           NULLIF(payload->>'skip_category', '')
+       ) AS gate_category,
+       CASE
+           WHEN event_type = 'signal_filter_decided' THEN 'signal_filter'
+           WHEN event_type IN ('execution_blocked', 'execution_skipped') THEN 'execution'
+           ELSE event_type
+       END AS gate_source,
+       COALESCE(
+           CASE
+               WHEN NULLIF(payload->>'evaluation_time', '') IS NOT NULL
+               THEN (payload->>'evaluation_time')::timestamptz
+           END,
+           CASE
+               WHEN NULLIF(payload->>'bar_time', '') IS NOT NULL
+               THEN (payload->>'bar_time')::timestamptz
+           END,
+           recorded_at
+       ) AS evaluation_time
+FROM pipeline_trace_events
+WHERE recorded_at >= %s
+  AND recorded_at <= %s
+  AND (
+        (event_type = 'signal_filter_decided' AND COALESCE(payload->>'allowed', '') = 'false')
+        OR event_type IN ('execution_blocked', 'execution_skipped')
+      )
+  AND COALESCE(
+        NULLIF(payload->>'reason', ''),
+        NULLIF(payload->>'skip_reason', ''),
+        NULLIF(payload->>'category', ''),
+        NULLIF(payload->>'skip_category', '')
+      ) IS NOT NULL
+"""
+        params: list[Any] = [from_time, to_time]
+        if symbol:
+            sql += " AND symbol = %s"
+            params.append(symbol)
+        if normalized_timeframes:
+            sql += " AND timeframe = ANY(%s)"
+            params.append(normalized_timeframes)
+        sql += """
+ORDER BY recorded_at DESC, trace_id DESC
+LIMIT %s
+"""
+        params.append(max(1, int(limit)))
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()

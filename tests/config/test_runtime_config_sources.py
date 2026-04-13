@@ -40,7 +40,14 @@ def test_runtime_loaders_use_merged_ini(monkeypatch):
     def fake_load_config_with_base(config_name: str, base_config: str = "app.ini", base_dir=None):
         return config_name, parsers.get(config_name)
 
-    monkeypatch.setattr(mt5_config, "load_config_with_base", fake_load_config_with_base)
+    monkeypatch.setattr(
+        mt5_config,
+        "_load_mt5_sections",
+        lambda *, instance_name=None, base_dir=None: (
+            parsers["mt5.ini"]["mt5"],
+            None,
+        ),
+    )
     monkeypatch.setattr(runtime_views, "load_config_with_base", fake_load_config_with_base)
 
     mt5_config.load_mt5_settings.cache_clear()
@@ -68,7 +75,14 @@ def test_reload_configs_clears_runtime_loader_caches(monkeypatch):
             return config_name, _parser_with_section("cache", {"tick_cache_size": state["tick_cache_size"]})
         return config_name, None
 
-    monkeypatch.setattr(mt5_config, "load_config_with_base", fake_load_config_with_base)
+    monkeypatch.setattr(
+        mt5_config,
+        "_load_mt5_sections",
+        lambda *, instance_name=None, base_dir=None: (
+            _parser_with_section("mt5", {"login": state["login"]})["mt5"],
+            None,
+        ),
+    )
     monkeypatch.setattr(runtime_views, "load_config_with_base", fake_load_config_with_base)
 
     mt5_config.load_mt5_settings.cache_clear()
@@ -102,10 +116,8 @@ def test_mt5_loader_strips_wrapping_quotes_from_ini_values(monkeypatch):
 
     monkeypatch.setattr(
         mt5_config,
-        "load_config_with_base",
-        lambda config_name, base_config="app.ini", base_dir=None: (config_name, parser)
-        if config_name == "mt5.ini"
-        else (config_name, None),
+        "_load_mt5_sections",
+        lambda *, instance_name=None, base_dir=None: (parser["mt5"], None),
     )
 
     mt5_config.load_mt5_settings.cache_clear()

@@ -108,7 +108,14 @@ def _load_mt5_layer(
     *,
     base_dir: Optional[str] = None,
     instance_name: Optional[str] = None,
+    root_only: bool = False,
 ) -> configparser.SectionProxy | None:
+    if root_only:
+        parser = _read_optional_ini(_config_root(base_dir) / filename)
+        if parser is None or not parser.has_section("mt5"):
+            return None
+        return parser["mt5"]
+
     normalized_instance = normalize_instance_name(get_current_instance_name(instance_name))
     if normalized_instance is None:
         parser = _read_optional_ini(_config_root(base_dir) / filename)
@@ -134,8 +141,8 @@ def _load_mt5_sections(
     base_dir: Optional[str] = None,
 ) -> tuple[configparser.SectionProxy | None, configparser.SectionProxy | None]:
     root_section = _merge_sections(
-        _load_mt5_layer("mt5.ini", base_dir=base_dir),
-        _load_mt5_layer(_local_name("mt5.ini"), base_dir=base_dir),
+        _load_mt5_layer("mt5.ini", base_dir=base_dir, root_only=True),
+        _load_mt5_layer(_local_name("mt5.ini"), base_dir=base_dir, root_only=True),
     )
     root_sec = root_section["mt5"] if root_section and root_section.has_section("mt5") else None
 

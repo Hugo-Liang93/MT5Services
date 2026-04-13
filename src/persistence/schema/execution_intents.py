@@ -51,9 +51,15 @@ ALTER TABLE execution_intents ADD COLUMN IF NOT EXISTS last_error_code TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_intents_id
 ON execution_intents (intent_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_intents_key
-ON execution_intents (intent_key);
+ON execution_intents (intent_key, created_at);
 CREATE INDEX IF NOT EXISTS idx_execution_intents_target_status
 ON execution_intents (target_account_key, status, created_at DESC);
+"""
+
+MIGRATION_SQL = """
+DROP INDEX IF EXISTS idx_execution_intents_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_intents_key
+ON execution_intents (intent_key, created_at);
 """
 
 INSERT_SQL = """

@@ -33,7 +33,7 @@
 | signals 运行时链路、状态流转、可观测性 | `docs/design/signals-dataflow-overview.md` |
 | intrabar 支链 | `docs/design/intrabar-data-flow.md` |
 | QuantX 执行页实时流与轮询优化 | `docs/design/quantx-trade-state-stream.md` |
-| 策略开发规范、regime、voting、TF 参数 | `docs/signal-system.md` |
+| 策略开发规范、regime、单策略契约、TF 参数 | `docs/signal-system.md` |
 | 审计规则、生命周期、私有属性边界 | `docs/design/adr.md` |
 | signals / indicators / trading 模块化风险 | `docs/design/modular-audit-signals-indicators-trading.md` |
 
@@ -68,7 +68,7 @@
 1. `architecture.md` 只保留系统分层、边界、依赖方向和文档入口，不重复展开信号策略、回测参数、运行时验证细节。
 2. `full-runtime-dataflow.md` 只保留运行时事实、启动顺序、日志路径、健康探针和当前验证结论，不重复讲策略开发规范。
 3. `signals-dataflow-overview.md` 只保留 signals 域的运行时链路、状态流转和观测点，不重复展开策略开发规范与长篇配置说明。
-4. `signal-system.md` 只保留策略开发、regime、voting、TF 参数和领域规则，不承担启动排障职责。
+4. `signal-system.md` 只保留策略开发、regime、单策略执行契约、TF 参数和领域规则，不承担启动排障职责。
 5. 规划类文档只能描述目标方案、未决设计和演进路线，不能混入“当前已经验证”的口径。
 
 ---

@@ -48,8 +48,15 @@ CREATE INDEX IF NOT EXISTS idx_operator_commands_target_status
 ON operator_commands (target_account_key, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_operator_commands_action_id
 ON operator_commands (action_id, created_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_operator_commands_idempotency
-ON operator_commands (target_account_key, command_type, idempotency_key)
+CREATE INDEX IF NOT EXISTS idx_operator_commands_idempotency
+ON operator_commands (target_account_key, command_type, idempotency_key, created_at DESC)
+WHERE idempotency_key IS NOT NULL;
+"""
+
+MIGRATION_SQL = """
+DROP INDEX IF EXISTS idx_operator_commands_idempotency;
+CREATE INDEX IF NOT EXISTS idx_operator_commands_idempotency
+ON operator_commands (target_account_key, command_type, idempotency_key, created_at DESC)
 WHERE idempotency_key IS NOT NULL;
 """
 

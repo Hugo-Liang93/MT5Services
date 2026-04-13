@@ -122,7 +122,7 @@ calibrator._recency_hours_by_tf.update(config)
 trade_executor._intrabar_guard = guard
 
 # ❌ API 层直接读取私有属性
-runtime._voting_group_engines
+runtime._confirmed_events
 read_model._storage_writer.db
 ```
 
@@ -146,7 +146,7 @@ read_model._storage_writer.db
 
 | 组件 | 新增公开端口 |
 |------|------------|
-| SignalRuntime | `pipeline_event_bus` 属性, `set_warmup_ready_fn()`, `set_intrabar_trade_coordinator()`, `describe_voting()` |
+| SignalRuntime | `pipeline_event_bus` 属性, `set_warmup_ready_fn()`, `set_intrabar_trade_coordinator()` |
 | UnifiedIndicatorManager | `pipeline_event_bus` 属性, `current_trace_id` 属性 |
 | SignalModule | `strategies` property, `set_tf_param_resolver()` |
 | ConfidenceCalibrator | `update_recency_config()` |

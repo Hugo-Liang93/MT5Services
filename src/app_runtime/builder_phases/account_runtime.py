@@ -12,6 +12,7 @@ from src.app_runtime.factories import (
 )
 from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.evaluation.regime import MarketRegimeDetector
+from src.trading.execution.intrabar_guard import IntrabarTradeGuard
 
 
 def build_account_runtime_layer(
@@ -51,6 +52,13 @@ def build_account_runtime_layer(
     container.execution_performance_tracker = execution_performance_tracker
     container.pending_entry_manager = account_runtime.pending_entry_manager
     container.execution_intent_consumer = account_runtime.execution_intent_consumer
+
+    if (
+        container.trade_executor is not None
+        and signal_config.intrabar_trading_enabled
+        and signal_config.intrabar_trading_enabled_strategies
+    ):
+        container.trade_executor.set_intrabar_guard(IntrabarTradeGuard())
 
     from src.risk.runtime import wire_margin_guard
 

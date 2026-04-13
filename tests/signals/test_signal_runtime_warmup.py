@@ -10,7 +10,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.signals.models import SignalDecision
-from src.signals.orchestration import SignalPolicy, SignalRuntime, SignalTarget
+from src.signals.orchestration.policy import SignalPolicy
+from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
 
 # ── Dummy 对象 ────────────────────────────────────────────────
@@ -38,7 +39,7 @@ class DummySignalService:
         self.evaluate_calls: list = []
         self.persist_calls: list = []
 
-    def strategy_capability_catalog(self, voting_group_policy=None):
+    def strategy_capability_catalog(self):
         return [
             {
                 "name": "rsi_reversion",
@@ -46,7 +47,6 @@ class DummySignalService:
                 "needed_indicators": ["rsi14"],
                 "needs_intrabar": True,
                 "needs_htf": False,
-                "voting_group_policy": "standalone",
                 "regime_affinity": {},
                 "htf_requirements": {},
             }
@@ -106,7 +106,6 @@ def _make_runtime(
         targets = [SignalTarget(symbol="XAUUSD", timeframe="M5", strategy="rsi_reversion")]
 
     policy = SignalPolicy(
-        voting_enabled=False,
         warmup_required_indicators=("atr14",),
     )
     return SignalRuntime(

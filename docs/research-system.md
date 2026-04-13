@@ -20,6 +20,8 @@ Live Trading
 
 Research 是整条链路的源头——从历史数据中挖掘"指标值 → 未来收益"的统计关系，输出可操作的发现供策略开发使用。
 
+当前 research/mining 默认只产出 `FeatureCandidateSpec` 与 `StrategyCandidateSpec` 这类单策略候选工件，不生成 voting group / ensemble / `strategy="consensus"` 运行时合同。若未来需要组合策略，必须单独定义新工件类型，而不是复用当前单策略主线。
+
 ---
 
 ## Research → Indicator / Signal 闭环

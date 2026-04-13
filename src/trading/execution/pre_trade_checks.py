@@ -1,6 +1,6 @@
 """预交易过滤链（从 TradeExecutor 提取的纯函数模块）。
 
-12 层串联检查，按顺序决定信号是否应执行交易。
+13 层串联检查，按顺序决定信号是否应执行交易。
 所有函数接收 executor 引用作为显式参数（ADR-002 模式）。
 """
 
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from src.signals.contracts import normalize_session_name, resolve_session_by_hour
 from src.signals.metadata_keys import MetadataKey as MK
+from src.trading.execution.intrabar_health import build_execution_intrabar_health
 from .reasons import (
     REASON_CIRCUIT_OPEN,
     REASON_DUPLICATE_SIGNAL_ID,
@@ -23,6 +24,9 @@ from .reasons import (
     REASON_MIN_CONFIDENCE,
     REASON_PERFORMANCE_PAUSED,
     REASON_REENTRY_COOLDOWN,
+    REASON_INTRABAR_SYNTHESIS_STALE,
+    REASON_INTRABAR_SYNTHESIS_UNAVAILABLE,
+    REASON_QUOTE_STALE,
     REASON_STRATEGY_CANDIDATE_ONLY,
     REASON_STRATEGY_LOCKED_SESSION,
     REASON_STRATEGY_LOCKED_TIMEFRAME,
@@ -39,11 +43,12 @@ from .reasons import (
     SKIP_CATEGORY_EOD_GUARD,
     SKIP_CATEGORY_GOVERNANCE,
     SKIP_CATEGORY_POSITION,
+    SKIP_CATEGORY_MARKET_DATA,
 )
 
 from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
-from .eventing import emit_blocked_admission_report as _emit_blocked_admission_report
 from .eventing import notify_skip as _notify_skip_helper
+from .eventing import emit_blocked_admission_report as _emit_blocked_admission_report
 from .params import tf_to_seconds as _tf_to_seconds_helper
 from .pending_orders import (
     duplicate_execution_reason as _duplicate_execution_reason_helper,
@@ -105,6 +110,7 @@ def reject_signal(
     log_level: str = "info",
     extra_log: str = "",
     pipeline_reason: str = "",
+    admission_details: dict[str, object] | None = None,
 ) -> None:
     """统一拒绝信号：日志 + 事件总线 + skip 通知 + 执行日志。"""
     msg = (
@@ -133,7 +139,7 @@ def reject_signal(
             "reason": reason,
         }
     )
-    _notify_skip_helper(executor, event.signal_id, reason, tf, event=event)
+    _notify_skip_helper(executor, event.signal_id, reason, tf)
     _emit_execution_blocked_helper(
         executor,
         event,
@@ -149,6 +155,7 @@ def reject_signal(
         details={
             "timeframe": tf,
             "category": category,
+            **dict(admission_details or {}),
         },
         requested_operation=(
             "intrabar_execution" if event.scope == "intrabar" else "signal_execution"
@@ -260,6 +267,85 @@ def check_reentry_cooldown(
     return False
 
 
+def check_quote_health(
+    executor: TradeExecutor,
+    event: SignalEvent,
+    tf: str,
+) -> bool:
+    """检查执行侧 quote freshness。返回 True = quote stale，应拒绝。"""
+    quote_health = executor.quote_health(event.symbol)
+    if not bool(quote_health.get("stale", False)):
+        return False
+    executor.last_risk_block = REASON_QUOTE_STALE
+    age_seconds = quote_health.get("age_seconds")
+    stale_threshold_seconds = quote_health.get("stale_threshold_seconds")
+    extra_log = ""
+    if age_seconds is not None and stale_threshold_seconds is not None:
+        extra_log = f"age={age_seconds}s > threshold={stale_threshold_seconds}s"
+    reject_signal(
+        executor,
+        event,
+        REASON_QUOTE_STALE,
+        SKIP_CATEGORY_MARKET_DATA,
+        tf,
+        log_level="warning",
+        extra_log=extra_log,
+        admission_details={
+            "quote_health": {
+                "age_seconds": age_seconds,
+                "stale_threshold_seconds": stale_threshold_seconds,
+            }
+        },
+    )
+    return True
+
+
+def check_intrabar_synthesis_health(
+    executor: TradeExecutor,
+    event: SignalEvent,
+    tf: str,
+) -> str | None:
+    if event.scope != "intrabar":
+        return None
+    intrabar_health = build_execution_intrabar_health(
+        event.metadata,
+        scope=event.scope,
+    )
+    if not bool(intrabar_health.get("stale", False)):
+        return None
+
+    configured = bool(intrabar_health.get("configured", False))
+    reason = (
+        REASON_INTRABAR_SYNTHESIS_STALE
+        if configured
+        else REASON_INTRABAR_SYNTHESIS_UNAVAILABLE
+    )
+    executor.last_risk_block = reason
+    trigger_tf = intrabar_health.get("trigger_tf")
+    age_seconds = intrabar_health.get("age_seconds")
+    stale_threshold_seconds = intrabar_health.get("stale_threshold_seconds")
+    extra_parts: list[str] = []
+    if trigger_tf:
+        extra_parts.append(f"trigger_tf={trigger_tf}")
+    if age_seconds is not None and stale_threshold_seconds is not None:
+        extra_parts.append(
+            f"age={age_seconds}s > threshold={stale_threshold_seconds}s"
+        )
+    elif intrabar_health.get("error_code"):
+        extra_parts.append(str(intrabar_health.get("error_code")))
+    reject_signal(
+        executor,
+        event,
+        reason,
+        SKIP_CATEGORY_MARKET_DATA,
+        tf,
+        log_level="warning",
+        extra_log=", ".join(extra_parts),
+        admission_details={"intrabar_synthesis": intrabar_health},
+    )
+    return reason
+
+
 def run_pre_trade_filters(
     executor: TradeExecutor, event: SignalEvent, tf: str
 ) -> str | None:
@@ -271,8 +357,12 @@ def run_pre_trade_filters(
 
     # ① signal_id 幂等性
     if sig_id and sig_id in executor.executed_signal_ids:
-        _notify_skip_helper(
-            executor, sig_id, REASON_DUPLICATE_SIGNAL_ID, tf, event=event
+        reject_signal(
+            executor,
+            event,
+            REASON_DUPLICATE_SIGNAL_ID,
+            SKIP_CATEGORY_DUPLICATE_GUARD,
+            tf,
         )
         return REASON_DUPLICATE_SIGNAL_ID
 
@@ -371,7 +461,16 @@ def run_pre_trade_filters(
                 )
                 return REASON_STRATEGY_REQUIRES_PENDING_ENTRY
 
-    # ④ PnL 熔断
+    # ④ 行情 freshness
+    if check_quote_health(executor, event, tf):
+        return REASON_QUOTE_STALE
+
+    # ④.5 intrabar 合成 freshness
+    intrabar_reason = check_intrabar_synthesis_health(executor, event, tf)
+    if intrabar_reason:
+        return intrabar_reason
+
+    # ⑤ PnL 熔断
     if (
         executor.performance_tracker is not None
         and executor.performance_tracker.is_trading_paused()
@@ -386,7 +485,7 @@ def run_pre_trade_filters(
         )
         return REASON_PERFORMANCE_PAUSED
 
-    # ⑤ 权益曲线过滤器
+    # ⑥ 权益曲线过滤器
     if executor.equity_curve_filter is not None:
         executor.equity_curve_filter.record_equity()
         if executor.equity_curve_filter.should_block():
@@ -399,7 +498,7 @@ def run_pre_trade_filters(
             )
             return REASON_EQUITY_CURVE_BELOW_MA
 
-    # ⑥ 保证金保护
+    # ⑦ 保证金保护
     if (
         executor.margin_guard is not None
         and executor.margin_guard.should_block_new_trades()
@@ -413,7 +512,7 @@ def run_pre_trade_filters(
         )
         return REASON_MARGIN_GUARD_BLOCK
 
-    # ⑦ 执行门（voting group / armed）
+    # ⑧ 执行门（armed / intrabar strategy）
     gate_allowed, gate_reason = executor.execution_gate.check(event)
     if not gate_allowed:
         reject_signal(
@@ -425,7 +524,7 @@ def run_pre_trade_filters(
         )
         return gate_reason
 
-    # ⑧ 重复执行上下文
+    # ⑨ 重复执行上下文
     duplicate_reason = _duplicate_execution_reason_helper(executor, event)
     if duplicate_reason:
         reject_signal(
@@ -433,7 +532,7 @@ def run_pre_trade_filters(
         )
         return duplicate_reason
 
-    # ⑨ 最小置信度
+    # ⑩ 最小置信度
     effective_min_conf = executor.config.timeframe_min_confidence.get(
         tf,
         executor.config.min_confidence,
@@ -456,7 +555,7 @@ def run_pre_trade_filters(
         )
         return REASON_MIN_CONFIDENCE
 
-    # ⑩ EOD 后禁止新开仓
+    # ⑪ EOD 后禁止新开仓
     if (
         executor.position_manager is not None
         and executor.position_manager.is_after_eod_today()
@@ -466,7 +565,7 @@ def run_pre_trade_filters(
         )
         return REASON_EOD_BLOCK
 
-    # ⑪ 品种持仓数量上限
+    # ⑫ 品种持仓数量上限
     if _reached_position_limit_helper(executor, event.symbol):
         reject_signal(
             executor,
@@ -478,7 +577,7 @@ def run_pre_trade_filters(
         )
         return REASON_LIMIT_REACHED
 
-    # ⑫ 再入场冷却
+    # ⑬ 再入场冷却
     if check_reentry_cooldown(executor, event, tf):
         return REASON_REENTRY_COOLDOWN
 

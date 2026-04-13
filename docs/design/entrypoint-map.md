@@ -12,6 +12,16 @@
 - `mt5services`  
   指向：`src.entrypoint.web:launch`
 
+正式启动门禁：
+
+- `web.launch()`、`instance`、`supervisor` 现在都会先执行 MT5 session gate，再进入 `uvicorn` 或拉起子实例。
+- gate 统一要求当前实例的 `mt5.local.ini` 满足：
+  - terminal path 可达
+  - terminal 进程已预热
+  - IPC 已就绪
+  - 登录账户与配置账户一致
+- 若终端弹密码框或需要人工解锁，入口会直接 fail-fast，并暴露 `interactive_login_required`，而不是继续等待 `IPC timeout`。
+
 对应等价命令：
 
 - `python -m src.entrypoint.web`
@@ -28,6 +38,9 @@
 - `uvicorn src.api:app --host 0.0.0.0 --port 8808`
 
 该方式不走项目的统一日志/配置加载入口（`src.config.get_system_config` 等），适合调试时使用。
+若要做正式 live 启动，仍应先执行：
+
+- `python -m src.ops.cli.live_preflight --environment <live|demo>`
 
 ### 1.3 多实例配置目录
 
@@ -89,13 +102,13 @@ config/
 - `python -m src.ops.cli.diagnose_no_trades`
 - `python -m src.ops.cli.aggression_search`
 - `python -m src.ops.cli.exit_experiment`
-- `python -m src.ops.cli.live_preflight`
+- `python -m src.ops.cli.live_preflight --environment live`
 
 ## 3. 入口职责边界（高层）
 
-- `src/entrypoint/web.py`：只负责日志初始化 + `uvicorn.run(target, host, port)`。
+- `src/entrypoint/web.py`：日志初始化 + 当前实例 MT5 session gate + `uvicorn.run(target, host, port)`。
 - `src/entrypoint/instance.py`：绑定实例名、解析当前环境、刷新实例配置上下文，再进入 `web.launch()`。
-- `src/entrypoint/supervisor.py`：读取 `topology.ini`，按环境/组启动并重启 `main + workers` 进程。
+- `src/entrypoint/supervisor.py`：读取 `topology.ini`，先做 group/session gate，再按环境/组启动并重启 `main + workers` 进程；每次 child restart 前也会重新检查对应实例的 MT5 gate。
 - `src/backtesting/cli.py` 与 `src/ops/cli/*`：命令参数解析 + 任务编排入口，不承载业务核心算法。
 - `src/api/*`：HTTP 适配层，不承担运行时装配与启动职责。
   - 其中交易入口已开始按正式合同收口：
@@ -105,7 +118,7 @@ config/
     - `/v1/trade/state/stream` 已开始直接消费正式 `pipeline_trace_events` 事实源，向前端推送 admission / command / risk / unmanaged-position 关键事件，而不再只依赖本地状态 diff
     - 后台消费链也开始复用同一份 trace 合同：`ExecutionIntentConsumer` 与 `OperatorCommandConsumer` 现在会为 `claim / reclaim / dead-letter / complete / fail` 等生命周期节点补齐统一的 `trace_id / instance / account` 标识，避免 trace 与 SSE 在后台执行阶段丢失业务链上下文
 - `src/app_runtime/*`：运行时装配与生命周期。当前已按角色收口为：
-  - `main`：构造 `SharedComputeRuntime`（市场采集、指标、信号、calendar sync）以及可选主账户 `AccountRuntime`；`paper_trading` 作为策略验证 sidecar 也只装配在 `main`
+  - `main`：构造 `SharedComputeRuntime`（市场采集、指标、信号、calendar sync），并只在显式把 `live_main` 绑定为执行账户时才附带本地 `AccountRuntime`；`paper_trading` 作为策略验证 sidecar 也只装配在 `main`
   - `executor`：只构造 `AccountRuntime`，不再在 build 阶段创建 `UnifiedIndicatorManager / SignalRuntime / economic calendar sync / paper_trading`
 
 ## 4. 本次同步点

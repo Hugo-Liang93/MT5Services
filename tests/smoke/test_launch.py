@@ -46,10 +46,26 @@ def test_launch_invokes_uvicorn(monkeypatch):
     import uvicorn
 
     monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(
+        "src.entrypoint.web.ensure_mt5_session_gate_or_raise",
+        lambda instance_name=None: None,
+    )
     launch()
 
     assert calls["target"] == APP_TARGET
     assert calls["reload"] is False
+
+
+def test_launch_fails_fast_when_mt5_session_gate_fails(monkeypatch):
+    pytest.importorskip("uvicorn")
+
+    monkeypatch.setattr(
+        "src.entrypoint.web.ensure_mt5_session_gate_or_raise",
+        lambda instance_name=None: (_ for _ in ()).throw(RuntimeError("interactive_login_required")),
+    )
+
+    with pytest.raises(RuntimeError, match="interactive_login_required"):
+        launch()
 
 
 def test_main_block_invoke_launch(monkeypatch):
@@ -91,6 +107,10 @@ def test_main_block_invoke_launch(monkeypatch):
         ),
     )
     monkeypatch.setattr(timezone_mod, "configure", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "src.ops.mt5_session_gate.ensure_mt5_session_gate_or_raise",
+        lambda instance_name=None: None,
+    )
 
     # 通过 run_module 执行时会触发 __main__ 分支，间接验证入口脚本行为
     # 清理已加载模块，避免运行测试时触发 runpy 的 sys.modules 缓存告警

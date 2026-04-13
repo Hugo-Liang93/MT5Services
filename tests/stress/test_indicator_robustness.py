@@ -135,7 +135,7 @@ class TestHTFInjectionPerformance:
 
     def test_resolve_htf_1000_iterations(self):
         """1000 次 HTF 解析应在 100ms 内完成。"""
-        from src.signals.orchestration import SignalRuntime, SignalTarget
+from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
         class DummySource:
             snapshot_listeners = []
@@ -150,7 +150,7 @@ class TestHTFInjectionPerformance:
 
         class DummyService:
             soft_regime_enabled = False
-            def strategy_capability_catalog(self, voting_group_policy=None):
+            def strategy_capability_catalog(self):
                 return [
                     {
                         "name": "s",
@@ -158,7 +158,6 @@ class TestHTFInjectionPerformance:
                         "needed_indicators": ["ema50"],
                         "needs_intrabar": False,
                         "needs_htf": True,
-                        "voting_group_policy": "standalone",
                         "regime_affinity": {},
                         "htf_requirements": {"ema50": "H1", "adx14": "H1"},
                     }
@@ -197,7 +196,7 @@ class TestIntrabarDecay:
 
     def test_decay_factor_clamped(self):
         """衰减因子不应大于 1.0。"""
-        from src.signals.orchestration import SignalRuntime, SignalTarget
+from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
         class DummySource:
             snapshot_listeners = []
@@ -209,7 +208,7 @@ class TestIntrabarDecay:
 
         class DummyService:
             soft_regime_enabled = False
-            def strategy_capability_catalog(self, voting_group_policy=None):
+            def strategy_capability_catalog(self):
                 return [
                     {
                         "name": "s",
@@ -217,7 +216,6 @@ class TestIntrabarDecay:
                         "needed_indicators": [],
                         "needs_intrabar": False,
                         "needs_htf": False,
-                        "voting_group_policy": "standalone",
                         "regime_affinity": {},
                         "htf_requirements": {},
                     }

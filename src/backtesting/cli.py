@@ -243,7 +243,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     ):
         import copy
 
-        from src.trading.execution import TIMEFRAME_SL_TP
+        from src.trading.execution.sizing import TIMEFRAME_SL_TP
 
         tf = args.timeframe.upper()
         if tf in TIMEFRAME_SL_TP:
@@ -267,8 +267,6 @@ def cmd_run(args: argparse.Namespace) -> None:
             signal_module=components["signal_module"],
             indicator_pipeline=components["pipeline"],
             regime_detector=components["regime_detector"],
-            voting_engine=components.get("voting_engine"),
-            voting_group_engines=components.get("voting_group_engines"),
             performance_tracker=components.get("performance_tracker"),
             htf_cache=components.get("htf_cache"),
         )
@@ -287,7 +285,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             print(f": {args.output}")
     finally:
         if _sl_tp_backup is not None:
-            from src.trading.execution import TIMEFRAME_SL_TP
+            from src.trading.execution.sizing import TIMEFRAME_SL_TP
 
             TIMEFRAME_SL_TP.clear()
             TIMEFRAME_SL_TP.update(_sl_tp_backup)
@@ -450,8 +448,6 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
                 signal_module=components["signal_module"],
                 indicator_pipeline=components["pipeline"],
                 regime_detector=components["regime_detector"],
-                voting_engine=components.get("voting_engine"),
-                voting_group_engines=components.get("voting_group_engines"),
                 performance_tracker=components.get("performance_tracker"),
             )
             logger.info("Running baseline backtest for timeframe=%s", timeframe)

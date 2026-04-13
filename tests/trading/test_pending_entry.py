@@ -20,7 +20,7 @@ from src.trading.pending import (
     _extract_quote_prices,
     compute_timeout,
 )
-from src.trading.execution import TradeParameters
+from src.trading.execution.sizing import TradeParameters
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────

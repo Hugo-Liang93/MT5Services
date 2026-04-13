@@ -160,37 +160,6 @@ def _build_strategy_capability_execution_plan(
     return result
 
 
-def describe_voting(runtime: SignalRuntime) -> list[dict[str, Any]]:
-    """返回投票引擎描述，供 API 诊断端点使用。"""
-    groups: list[dict[str, Any]] = []
-    for group_config, engine in runtime._voting_group_engines:
-        groups.append({
-            "name": group_config.name,
-            "strategies": sorted(group_config.strategies),
-            "engine": engine.describe(),
-        })
-    if runtime._voting_engine is not None:
-        groups.append({
-            "name": "consensus",
-            "strategies": [],
-            "engine": runtime._voting_engine.describe(),
-        })
-    return groups
-
-
-def voting_groups_summary(runtime: SignalRuntime) -> list[dict[str, Any]]:
-    """返回当前配置的 voting group 摘要。"""
-    result: list[dict[str, Any]] = []
-    for group_config, _engine in runtime._voting_group_engines:
-        result.append(
-            {
-                "name": group_config.name,
-                "strategies": sorted(group_config.strategies),
-            }
-        )
-    return result
-
-
 def get_regime_stability(
     runtime: SignalRuntime, symbol: str, timeframe: str
 ) -> dict[str, Any] | None:
@@ -204,14 +173,6 @@ def get_regime_stability_map(runtime: SignalRuntime) -> dict[str, dict[str, Any]
         snapshot = list(runtime._regime_trackers.items())
     return {
         f"{sym}/{tf}": tracker.describe() for (sym, tf), tracker in snapshot
-    }
-
-
-def get_voting_info(runtime: SignalRuntime) -> dict[str, Any]:
-    voting_engine = runtime._voting_engine
-    return {
-        "voting_enabled": voting_engine is not None,
-        "voting_config": voting_engine.describe() if voting_engine else None,
     }
 
 
@@ -278,22 +239,6 @@ def _compute_drop_rates(runtime: SignalRuntime) -> dict[str, float]:
             dropped_confirmed / total_arrived * 100, 2
         ),
     }
-
-
-def _snapshot_voting_stats(runtime: SignalRuntime) -> dict[str, Any]:
-    src = runtime._voting_stats
-    if not isinstance(src, dict):
-        return {}
-    snapshot: dict[str, Any] = {
-        "mode": src.get("mode"),
-        "calls": int(src.get("calls", 0)),
-        "input_decisions": int(src.get("input_decisions", 0)),
-        "fused_decisions": int(src.get("fused_decisions", 0)),
-        "last_path": src.get("last_path"),
-        "consensus": _normalize_number(src.get("consensus", {})),
-        "groups": _normalize_number(src.get("groups", {})),
-    }
-    return snapshot
 
 
 def _snapshot_intrabar_indicator_slos(runtime: SignalRuntime) -> dict[str, Any]:
@@ -406,7 +351,6 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
         "dropped_confirmed": runtime._dropped_confirmed,
         "dropped_intrabar": runtime._dropped_intrabar,
         "drop_rates": _compute_drop_rates(runtime),
-        "voting_stats": _snapshot_voting_stats(runtime),
         "confirmed_backpressure_waits": runtime._confirmed_backpressure_waits,
         "confirmed_backpressure_failures": runtime._confirmed_backpressure_failures,
         "confirmed_queue_size": runtime._confirmed_events.qsize(),
@@ -435,7 +379,6 @@ def build_runtime_status(runtime: SignalRuntime) -> dict:
         ),
         "warmup_realtime_symbols": len(runtime._first_realtime_bar_seen),
         **count_active_states(runtime),
-        "voting_groups": voting_groups_summary(runtime),
         "regime_map": get_regime_stability_map(runtime),
         "per_tf_eval_stats": dict(runtime._per_tf_eval_stats),
         "filter_realtime_status": (

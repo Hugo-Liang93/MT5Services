@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from src.trading.broker.comment_codec import looks_like_system_trade_comment
 from src.trading.ports import TradingQueryPort
 
 
@@ -198,7 +199,7 @@ class TradingStateAlerts:
                     context = None
             if not comment and int(magic or 0) == 0:
                 reason = "manual_position"
-            elif context is None:
+            elif context is None and not looks_like_system_trade_comment(comment):
                 reason = "unsupported_comment"
             else:
                 reason = "missing_context"

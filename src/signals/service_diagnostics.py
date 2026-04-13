@@ -123,19 +123,6 @@ def regime_report(
     return {**detail, "symbol": symbol, "timeframe": timeframe, "stability": stability}
 
 
-def recent_consensus_signals(
-    module: SignalModule,
-    *,
-    symbol: Optional[str] = None,
-    timeframe: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict[str, Any]]:
-    return module.recent_signals(
-        symbol=symbol, timeframe=timeframe,
-        strategy="consensus", scope="confirmed", limit=limit,
-    )
-
-
 def strategy_capability_reconciliation(
     module: SignalModule,
     *,
@@ -164,7 +151,6 @@ def strategy_capability_reconciliation(
         "needed_indicators",
         "needs_intrabar",
         "needs_htf",
-        "voting_group_policy",
         "regime_affinity",
         "htf_requirements",
     )
@@ -381,12 +367,6 @@ def dispatch_operation(
             symbol=payload["symbol"],
             timeframe=payload["timeframe"],
             runtime=payload.get("runtime"),
-        ),
-        "recent_consensus": lambda: recent_consensus_signals(
-            module,
-            symbol=payload.get("symbol"),
-            timeframe=payload.get("timeframe"),
-            limit=payload.get("limit", 50),
         ),
         "strategy_winrates": lambda: strategy_winrates(
             module,

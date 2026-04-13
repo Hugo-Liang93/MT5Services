@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 from src.app_runtime.builder import build_app_container
@@ -8,7 +9,9 @@ from src.app_runtime.builder import build_app_container
 def _signal_config():
     return SimpleNamespace(
         base_spread_points=0.0,
+        max_spread_points=0.0,
         max_spread_to_stop_ratio=0.5,
+        session_spread_limits={},
     )
 
 
@@ -144,3 +147,41 @@ def test_build_app_container_live_main_builds_paper_trading(monkeypatch) -> None
 
     trading_kwargs = next(kwargs for name, kwargs in calls if name == "trading")
     assert trading_kwargs["enable_calendar_sync"] is True
+
+
+def test_build_app_container_does_not_warn_for_consistent_spread_config(
+    monkeypatch, caplog
+) -> None:
+    calls: list[tuple[str, dict]] = []
+    _patch_builder_dependencies(monkeypatch, role="main", environment="live", calls=calls)
+    signal_config = SimpleNamespace(
+        base_spread_points=30.0,
+        max_spread_points=81.0,
+        max_spread_to_stop_ratio=0.33,
+        session_spread_limits={},
+    )
+
+    with caplog.at_level(logging.INFO, logger="src.app_runtime.builder"):
+        build_app_container(signal_config_loader=lambda: signal_config)
+
+    assert "Spread/cost config is internally inconsistent" not in caplog.text
+    assert "Execution cost gates:" in caplog.text
+
+
+def test_build_app_container_warns_for_session_spread_cap_below_base(
+    monkeypatch, caplog
+) -> None:
+    calls: list[tuple[str, dict]] = []
+    _patch_builder_dependencies(monkeypatch, role="main", environment="live", calls=calls)
+    signal_config = SimpleNamespace(
+        base_spread_points=30.0,
+        max_spread_points=81.0,
+        max_spread_to_stop_ratio=0.33,
+        session_spread_limits={"london": 24.0},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.app_runtime.builder"):
+        build_app_container(signal_config_loader=lambda: signal_config)
+
+    assert "Spread/cost config is internally inconsistent" in caplog.text
+    assert "london=24.0" in caplog.text

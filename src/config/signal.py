@@ -19,6 +19,29 @@ _DEPRECATED_ECONOMIC_SIGNAL_KEYS = frozenset(
     }
 )
 
+_DEPRECATED_VOTE_SECTIONS = (
+    "voting",
+    "voting_groups",
+    "standalone_override",
+)
+
+_DEPRECATED_VOTE_PREFIXES = (
+    "voting_group.",
+)
+
+_DEPRECATED_VOTE_SIGNAL_KEYS = frozenset(
+    {
+        "voting_enabled",
+        "voting_consensus_threshold",
+        "voting_min_quorum",
+        "voting_disagreement_penalty",
+        "consensus_threshold",
+        "min_quorum",
+        "disagreement_penalty",
+        "max_consensus_bonus",
+    }
+)
+
 
 def _assert_no_deprecated_signal_keys(signal_section: dict[str, object]) -> None:
     deprecated = sorted(key for key in signal_section if key in _DEPRECATED_ECONOMIC_SIGNAL_KEYS)
@@ -27,6 +50,53 @@ def _assert_no_deprecated_signal_keys(signal_section: dict[str, object]) -> None
             "signal.ini no longer owns economic-event windows. "
             "Move these keys to economic.ini / EconomicConfig: "
             + ", ".join(deprecated)
+        )
+
+
+def _section_has_non_blank_values(section: dict[str, object]) -> bool:
+    for value in section.values():
+        if isinstance(value, str):
+            if value.strip():
+                return True
+            continue
+        if value is not None:
+            return True
+    return False
+
+
+def _assert_no_vote_configuration(
+    merged: dict[str, object],
+    signal_section: dict[str, object],
+) -> None:
+    deprecated_signal_keys = sorted(
+        key for key in signal_section if key in _DEPRECATED_VOTE_SIGNAL_KEYS
+    )
+    if deprecated_signal_keys:
+        raise ValueError(
+            "signal.ini no longer supports vote/consensus settings. "
+            "Remove deprecated signal keys: "
+            + ", ".join(deprecated_signal_keys)
+        )
+
+    deprecated_sections = [
+        section_name
+        for section_name in _DEPRECATED_VOTE_SECTIONS
+        if _section_has_non_blank_values(dict(merged.get(section_name, {})))
+    ]
+    deprecated_sections.extend(
+        section_name
+        for section_name in merged
+        if any(
+            str(section_name).startswith(prefix)
+            for prefix in _DEPRECATED_VOTE_PREFIXES
+        )
+        and _section_has_non_blank_values(dict(merged.get(section_name, {})))
+    )
+    if deprecated_sections:
+        raise ValueError(
+            "signal.ini no longer supports vote/consensus sections. "
+            "Remove deprecated sections: "
+            + ", ".join(sorted(set(str(name) for name in deprecated_sections)))
         )
 
 
@@ -128,6 +198,7 @@ def get_signal_config() -> SignalConfig:
     merged = get_merged_config("signal.ini")
     signal_section = dict(merged.get("signal", {}))
     _assert_no_deprecated_signal_keys(signal_section)
+    _assert_no_vote_configuration(merged, signal_section)
     # 空值 → None，遵循 INI 约定：留空 = 不限制（与 risk.ini 加载一致）
     for _optional_key in ("max_concurrent_positions_per_symbol",):
         if str(signal_section.get(_optional_key, "")).strip() == "":
@@ -135,7 +206,6 @@ def get_signal_config() -> SignalConfig:
     signal_section = _drop_blank_values(signal_section)
     preview_section = dict(merged.get("preview", {}))
     regime_section = dict(merged.get("regime", {}))
-    voting_section = dict(merged.get("voting", {}))
     position_section = dict(merged.get("position_management", {}))
     circuit_breaker_section = dict(merged.get("circuit_breaker", {}))
     contract_sizes_section = dict(merged.get("contract_sizes", {}))
@@ -146,8 +216,6 @@ def get_signal_config() -> SignalConfig:
     execution_costs_section = dict(merged.get("execution_costs", {}))
     market_structure_section = dict(merged.get("market_structure", {}))
     safety_section = dict(merged.get("safety", {}))
-    voting_groups_section = dict(merged.get("voting_groups", {}))
-    standalone_override_section = dict(merged.get("standalone_override", {}))
     calibrator_section = dict(merged.get("calibrator", {}))
     calibrator_recency_by_tf_section = dict(
         merged.get("calibrator.recency_hours_by_tf", {})
@@ -224,86 +292,6 @@ def get_signal_config() -> SignalConfig:
         ("position_reconcile_interval" if key == "reconcile_interval" else key): value
         for key, value in position_section.items()
     }
-    voting_field_renames = {
-        "enabled": "voting_enabled",
-        "consensus_threshold": "voting_consensus_threshold",
-        "min_quorum": "voting_min_quorum",
-        "disagreement_penalty": "voting_disagreement_penalty",
-    }
-    renamed_voting = {
-        voting_field_renames.get(key, key): value
-        for key, value in voting_section.items()
-    }
-    # ── Voting Groups 解析 ──────────────────────────────────────────────
-    # [voting_groups] 节：group_name = strategy1,strategy2,...
-    # 每个 group 可有对应的 [voting_group.<name>] 子节覆盖参数
-    voting_group_configs: list[dict] = []
-    for raw_key, raw_value in voting_groups_section.items():
-        group_name = str(raw_key).strip()
-        if not group_name:
-            continue
-        strategies = [s.strip() for s in str(raw_value).split(",") if s.strip()]
-        if not strategies:
-            continue
-        # 读取对应的子节参数（如有）
-        subsection = dict(merged.get(f"voting_group.{group_name}", {}))
-        group_cfg: dict = {"name": group_name, "strategies": strategies}
-        if "consensus_threshold" in subsection:
-            try:
-                group_cfg["consensus_threshold"] = float(
-                    subsection["consensus_threshold"]
-                )
-            except (TypeError, ValueError):
-                logger.warning(
-                    "signal.ini [voting_group.%s] invalid consensus_threshold: %r",
-                    group_name,
-                    subsection["consensus_threshold"],
-                )
-        if "min_quorum" in subsection:
-            try:
-                group_cfg["min_quorum"] = int(subsection["min_quorum"])
-            except (TypeError, ValueError):
-                logger.warning(
-                    "signal.ini [voting_group.%s] invalid min_quorum: %r",
-                    group_name,
-                    subsection["min_quorum"],
-                )
-        if "disagreement_penalty" in subsection:
-            try:
-                group_cfg["disagreement_penalty"] = float(
-                    subsection["disagreement_penalty"]
-                )
-            except (TypeError, ValueError):
-                logger.warning(
-                    "signal.ini [voting_group.%s] invalid disagreement_penalty: %r",
-                    group_name,
-                    subsection["disagreement_penalty"],
-                )
-        # strategy_weights: strategy_name=weight（对高相关性策略降权）
-        weights_section = dict(merged.get(f"voting_group.{group_name}.weights", {}))
-        if weights_section:
-            parsed_weights: dict[str, float] = {}
-            for strat_name, weight_str in weights_section.items():
-                try:
-                    parsed_weights[str(strat_name).strip()] = float(weight_str)
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "signal.ini [voting_group.%s.weights] invalid weight for %s: %r",
-                        group_name,
-                        strat_name,
-                        weight_str,
-                    )
-            if parsed_weights:
-                group_cfg["strategy_weights"] = parsed_weights
-        voting_group_configs.append(group_cfg)
-
-    # ── Standalone Override 解析 ────────────────────────────────────────
-    standalone_override = [
-        s.strip()
-        for s in str(standalone_override_section.get("strategies", "")).split(",")
-        if s.strip()
-    ]
-
     # ── Regime 检测阈值 ──────────────────────────────────────────────────
     regime_detector_section = dict(merged.get("regime_detector", {}))
     regime_sizing_section = dict(merged.get("regime_sizing", {}))
@@ -443,7 +431,6 @@ def get_signal_config() -> SignalConfig:
         **signal_section,
         **renamed_preview,
         **regime_section,
-        **renamed_voting,
         **renamed_position,
         **circuit_breaker_section,
         **execution_costs_section,
@@ -487,8 +474,6 @@ def get_signal_config() -> SignalConfig:
         "strategy_sessions": _normalize_session_map(strategy_sessions_section),
         "strategy_timeframes": _normalize_session_map(strategy_timeframes_section),
         "account_bindings": account_bindings,
-        "voting_group_configs": voting_group_configs,
-        "standalone_override": standalone_override,
         **{f"calibrator_{key}": value for key, value in calibrator_section.items()},
         "calibrator_recency_hours_by_tf": _normalize_int_map(
             calibrator_recency_by_tf_section, key_transform=lambda tf: tf.upper()
