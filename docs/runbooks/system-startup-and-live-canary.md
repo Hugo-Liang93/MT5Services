@@ -12,14 +12,14 @@
 
 | 观测面 | 位置 | 用途 |
 |------|------|------|
-| 主运行日志 | `data/logs/mt5services.log` | 看启动顺序、线程存活、外部依赖异常 |
-| 错误日志 | `data/logs/errors.log` | 快速筛 WARNING / ERROR / EXCEPTION |
+| 主运行日志 | `data/logs/<instance>/mt5services.log` | 看启动顺序、线程存活、外部依赖异常 |
+| 错误日志 | `data/logs/<instance>/errors.log` | 快速筛 WARNING / ERROR / EXCEPTION |
 | 根健康探针 | `GET /health` | 看运行时组件快照和市场/交易摘要 |
-| 就绪探针 | `GET /v1/monitoring/health/ready` | 看 `storage_writer / ingestion / indicator_engine` 是否达到 ready |
+| 就绪探针 | `GET /v1/monitoring/health/ready` | 看 `status=ready` 以及 `checks.storage_writer / ingestion / indicator_engine` 是否达到 ready |
 | 队列视图 | `GET /v1/monitoring/queues` | 看 `writer_alive / ingest_alive` 与队列压力 |
 | 指标性能视图 | `GET /v1/monitoring/performance` | 看 `event_loop_running` 等指标链路状态 |
 | 事件存储视图 | `GET /v1/monitoring/events` | 看 indicator durable event queue 是否推进 |
-| 预检 CLI | `python -m src.ops.cli.live_preflight` | 启动前检查 MT5 / DB / 配置一致性 |
+| 预检 CLI | `python -m src.ops.cli.live_preflight --environment live` | 启动前检查 MT5 / DB / 配置一致性 |
 
 ---
 
@@ -30,7 +30,7 @@
 1. 先运行只读预检：
 
 ```powershell
-python -m src.ops.cli.live_preflight
+python -m src.ops.cli.live_preflight --environment live
 ```
 
 2. 确认运行期目录只落在项目根目录 `data/`，而不是 `src/`：
@@ -44,6 +44,9 @@ Get-ChildItem -Path .\src -Recurse -Directory | Where-Object { $_.FullName -matc
    - `signal.local.ini`
    - `risk.local.ini`
    - 任何会冻结策略、改变运行模式、关闭模块的本机覆盖
+4. 如果本次要打开自动交易，先确认两件事都已经显式配置：
+   - 每个注册策略都有 `[strategy_deployment.<name>]`
+   - 每个允许 live execution 的策略都在 `signal.ini` / `signal.local.ini` 里显式绑定到真实 `account_alias`
 
 ### 2.2 启动前必须明确的判断
 
@@ -52,6 +55,7 @@ Get-ChildItem -Path .\src -Recurse -Directory | Where-Object { $_.FullName -matc
 | 本次目标是不是“只验系统” | 如果是，只看采集/缓存/落库/事件消费/观测，不把“没有交易”判成失败 |
 | 当前是否休盘 | 休盘时 `market_data data latency critical` 可能是预期现象 |
 | 当前是否准备做开盘 canary | 如果是，至少预留 15 到 30 分钟观察窗口 |
+| 当前是否打开自动交易 | 只有当 live 策略已显式 deployment + 显式 account binding 时才允许打开；否则应视为配置不完整 |
 
 ---
 
@@ -59,8 +63,28 @@ Get-ChildItem -Path .\src -Recurse -Directory | Where-Object { $_.FullName -matc
 
 ### 3.1 启动服务
 
+单实例：
+
 ```powershell
 python -m src.entrypoint.web
+```
+
+命名实例（推荐多账户/多进程部署时使用）：
+
+```powershell
+python -m src.entrypoint.instance --instance live-main
+```
+
+按环境启动整组实例（推荐）：
+
+```powershell
+python -m src.entrypoint.supervisor --environment live
+```
+
+按拓扑组启动 `main + workers`：
+
+```powershell
+python -m src.entrypoint.supervisor --group live
 ```
 
 ### 3.2 并行观察日志
@@ -68,11 +92,11 @@ python -m src.entrypoint.web
 另开两个窗口：
 
 ```powershell
-Get-Content -Path .\data\logs\mt5services.log -Encoding utf8 -Wait
+Get-Content -Path .\data\logs\<instance>\mt5services.log -Encoding utf8 -Wait
 ```
 
 ```powershell
-Get-Content -Path .\data\logs\errors.log -Encoding utf8 -Wait
+Get-Content -Path .\data\logs\<instance>\errors.log -Encoding utf8 -Wait
 ```
 
 ### 3.3 并行观察探针
@@ -94,32 +118,38 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 | 模块 | 看哪里 | 通过条件 |
 |------|------|------|
 | Web 入口 | `/health` | 返回 200 |
-| 主链路 ready | `/v1/monitoring/health/ready` | 返回 `ready`，且 `storage_writer=ok`、`ingestion=ok`、`indicator_engine=ok` |
+| 主实例 ready | `/v1/monitoring/health/ready` | `main` 实例返回 `{"status":"ready"}`，且 `checks.storage_writer=ok`、`checks.ingestion=ok`、`checks.indicator_engine=ok` |
+| 执行实例 ready | `/v1/monitoring/health/ready` | `executor` 实例返回 `{"status":"ready"}`，且 `checks.storage_writer=ok`、`checks.pending_entry=ok`、`checks.position_manager=ok`、`checks.account_risk_state=ok` |
 | 采集线程 | `/health` 或 `/v1/monitoring/queues` | `ingest_alive=true` |
 | 落库线程 | `/health` 或 `/v1/monitoring/queues` | `writer_alive=true` |
 | 指标事件循环 | `/health` 或 `/v1/monitoring/performance` | `event_loop_running=true` |
 | 信号运行时 | `/health` | `signal_runtime.running=true` |
-| 入口日志 | `data/logs/*.log` | 日志文件创建在根目录 `data/logs/`，而不是 `src/` 下 |
-| 运行期本地文件 | `data/` | `events.db`、`signal_queue.db`、`health_monitor.db`、`health_alerts.db` 落在根目录 `data/`；其中部分文件可能在组件首轮写入后创建 |
+| 入口日志 | `data/logs/<instance>/*.log` | 日志文件创建在实例隔离目录，而不是 `src/` 下或共享日志目录 |
+| 运行期本地文件 | `data/runtime/<instance>/` | `events.db`、`signal_queue.db`、`health_monitor.db`、`health_alerts.db` 落在实例隔离目录；其中部分文件可能在组件首轮写入后创建 |
 | 手工运行产物 | `data/artifacts/` | 回测 JSON、压测日志、启动排查输出统一放这里，不再使用根目录 `runtime/` |
 
 ### 4.2 失败条件
 
 以下任一项出现，都按“真实系统问题”处理：
 
-1. `/v1/monitoring/health/ready` 返回 503。
+1. `/v1/monitoring/health/ready` 返回 503，或返回体中 `status != ready`。
 2. `ingest_alive=false`、`writer_alive=false` 或 `event_loop_running=false`。
 3. 日志持续出现 schema/check constraint 错误、启动 `TypeError`、线程崩溃、事件循环接口错误。
-4. 运行期日志或 SQLite 文件重新落到 `src/` 下。
+4. 运行期日志或 SQLite 文件重新落到 `src/` 下，或落回共享 `data/logs/`、`data/runtime/` 根目录。
 5. 手工排障/压测/回测产物重新落到仓库根目录 `runtime/`。
 6. `events.db` 视图长期不推进，同时 confirmed OHLC 已经在更新。
 
 ### 4.3 PowerShell 版快速判读顺序
 
 1. 先看 `errors.log` 有没有连续异常。
-2. 再看 `/v1/monitoring/health/ready` 是否稳定为 `ready`。
+2. 再看 `/v1/monitoring/health/ready` 是否稳定返回 `status=ready`，且 `checks.*=ok`。
 3. 再看 `/health` 里的 `ingestor / storage_writer / indicator_engine / signal_runtime`。
 4. 最后才看更细的 `queues / performance / events`。
+
+多实例补充：
+
+- `main` 和 `executor` 的 `/ready` 检查项不同，不能再用主实例口径去判定 worker。
+- `executor` 的 `/health` 中 `ingestor.running=false`、`indicator_engine.running=false`、`signal_runtime.running=false` 是当前设计下的预期现象；如果其 `pending_entry / position_manager / account_risk_state` 正常，就不应判为启动失败。
 
 ---
 
@@ -141,6 +171,8 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 |------|------|------|
 | 休盘窗口出现 `market_data data latency critical` | 时段相关现象 | 先确认是否休盘；休盘时这不等于链路断裂 |
 | 经济日历外部源偶发 `read operation timed out` | 外部依赖退化 | 如果核心 ready/health 正常，可记为外部依赖风险，不单独判系统失败 |
+| `economic calendar` 在启动早期显示 `warming_up=true`、`stale=false` | 启动引导期现象 | 表示服务尚未完成首次正式刷新窗口，不应按 stale 告警处理；只有超过 bootstrap deadline 仍无成功刷新才算真实 stale |
+| `economic calendar` 重启后短时间显示 `health_state=refreshing`，但 `last_refresh_at` 已有值 | 正常恢复现象 | 表示上一轮成功刷新已从持久化状态恢复，本轮 `release_watch` 正在继续执行；这不是 stale，也不是恢复失败 |
 | `/health` 中 `trade_executor.running=false` | 当前实现语义 | `TradeExecutor` 是懒启动 worker，未收到交易信号前不代表未装配 |
 | 启动后短时间没有信号或没有交易 | 不足以判失败 | 本 runbook 验的是系统链路，不是策略一定出信号 |
 
@@ -191,7 +223,7 @@ MT5 行情 -> BackgroundIngestor -> MarketDataService
 2. `ingest_alive / writer_alive / event_loop_running` 全程未掉。
 3. 没有重复的 schema/contract/type error。
 4. `events.db` 与监控事件视图能体现事件持续推进。
-5. 运行期日志和 SQLite 文件全部落在根目录 `data/`。
+5. 运行期日志和 SQLite 文件全部落在 `data/logs/<instance>/` 与 `data/runtime/<instance>/`。
 
 ### 6.5 Canary 失败后如何归类
 
@@ -209,7 +241,7 @@ MT5 行情 -> BackgroundIngestor -> MarketDataService
 
 每次准备验证系统时，固定走下面的序列，不要跳步：
 
-1. `python -m src.ops.cli.live_preflight`
+1. `python -m src.ops.cli.live_preflight --environment live`
 2. `python -m src.entrypoint.web`
 3. 盯 `data/logs/errors.log`
 4. 查 `/v1/monitoring/health/ready`
@@ -218,3 +250,18 @@ MT5 行情 -> BackgroundIngestor -> MarketDataService
 7. 如果在开盘窗口，再继续做 15 到 30 分钟 live canary
 
 这套顺序的目标很明确：先判断“系统是否活着”，再判断“链路是否推进”，最后才讨论“策略和交易是否合理”。
+
+## 8. 多实例部署补充说明
+
+- 共享基线配置放在 `config/*.ini`。
+- 实例覆盖配置放在 `config/instances/<instance>/*.ini` 与同目录 `.local.ini`。
+- 实例目录只允许承载实例级配置：`mt5.ini`、`market.ini`、`risk.ini`。
+- 当前环境由 `topology group` 唯一决定，`mt5.ini` 只描述账户连接参数。
+- `app.ini`、`db.ini`、`signal.ini`、`topology.ini` 等共享配置不会从实例目录加载。
+- `main` 实例只负责共享计算与统一观测；`worker` 只负责单账户执行与本地风控。
+- 若主账户也交易，应让该实例同时具备共享计算面和本地 `AccountRuntime`，但它仍只对自己的账户负责。
+- 若启用 `intrabar_trading.enabled=true`，必须保证 `signal.ini[intrabar_trading.trigger]` 中实际会用到的 parent TF，其 child TF 已包含在 `app.ini[trading].timeframes` 里；当前系统已对这条合同做 fail-fast 校验，不能再通过 `config/instances/<instance>/app.local.ini` 之类的实例级覆盖去补 `app.ini` 共享时间框架。
+补充约束：
+
+- 当前每条日志都会自动带 `environment / instance / role` 前缀，控制台与文件日志口径一致。
+- `main` 与 `worker` 即使由 supervisor 同时拉起，也必须优先按 `data/logs/<instance>/` 分实例判读，不应再把混合控制台输出当成唯一事实源。

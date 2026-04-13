@@ -67,24 +67,34 @@ def _run(coro):  # type: ignore[no-untyped-def]
         loop.close()
 
 
-def _snapshot_state(store) -> tuple[dict[str, BacktestJob], dict[str, object]]:
+def _snapshot_state(
+    store,
+) -> tuple[dict[str, BacktestJob], dict[str, object], dict[str, dict]]:
     jobs = {job.run_id: job for job in store.list_jobs()}
     results = {run_id: store.get_result(run_id) for run_id in jobs}
-    return jobs, results
+    actions = dict(getattr(store, "submitted_actions", {}))
+    return jobs, results, actions
 
 
-def _restore_state(store, jobs: dict[str, BacktestJob], results: dict[str, object]) -> None:
+def _restore_state(
+    store,
+    jobs: dict[str, BacktestJob],
+    results: dict[str, object],
+    actions: dict[str, dict],
+) -> None:
     store.reset()
     for job in jobs.values():
         store.register_job(job)
     for run_id, result in results.items():
         if result is not None:
             store.set_result(run_id, result)
+    if hasattr(store, "submitted_actions"):
+        store.submitted_actions.update(actions)
 
 
 def test_list_results_returns_result_summaries(backtest_api) -> None:
     store = backtest_api.store
-    orig_jobs, orig_results = _snapshot_state(store)
+    orig_jobs, orig_results, orig_actions = _snapshot_state(store)
     try:
         store.reset()
         store.register_job(_make_job("bt_1", job_type="backtest"))
@@ -104,12 +114,12 @@ def test_list_results_returns_result_summaries(backtest_api) -> None:
         assert "job_type" not in entry
         assert "progress" not in entry
     finally:
-        _restore_state(store, orig_jobs, orig_results)
+        _restore_state(store, orig_jobs, orig_results, orig_actions)
 
 
 def test_list_results_optimization_includes_count(backtest_api) -> None:
     store = backtest_api.store
-    orig_jobs, orig_results = _snapshot_state(store)
+    orig_jobs, orig_results, orig_actions = _snapshot_state(store)
     try:
         store.reset()
         store.register_job(_make_job("opt_1", job_type="optimization"))
@@ -129,12 +139,12 @@ def test_list_results_optimization_includes_count(backtest_api) -> None:
         assert entry["metrics"]["optimization_count"] == 2
         assert entry["metrics"]["best"]["total_trades"] == 42
     finally:
-        _restore_state(store, orig_jobs, orig_results)
+        _restore_state(store, orig_jobs, orig_results, orig_actions)
 
 
 def test_list_results_pending_job_has_no_metrics(backtest_api) -> None:
     store = backtest_api.store
-    orig_jobs, orig_results = _snapshot_state(store)
+    orig_jobs, orig_results, orig_actions = _snapshot_state(store)
     try:
         store.reset()
         store.register_job(_make_job("bt_2", status=BacktestJobStatus.PENDING))
@@ -146,7 +156,7 @@ def test_list_results_pending_job_has_no_metrics(backtest_api) -> None:
         assert entry["status"] == "pending"
         assert "metrics" not in entry
     finally:
-        _restore_state(store, orig_jobs, orig_results)
+        _restore_state(store, orig_jobs, orig_results, orig_actions)
 
 
 def test_build_backtest_config_uses_defaults_and_overrides(
@@ -230,7 +240,7 @@ def test_run_optimization_job_summary_uses_default_optimizer_settings(
         },
     )
     store = backtest_api.store
-    orig_jobs, orig_results = _snapshot_state(store)
+    orig_jobs, orig_results, orig_actions = _snapshot_state(store)
     try:
         store.reset()
         request = backtest_api.api_config.BacktestOptimizeRequest(
@@ -250,7 +260,7 @@ def test_run_optimization_job_summary_uses_default_optimizer_settings(
         assert summary["search_mode"] == "random"
         assert summary["max_combinations"] == 77
     finally:
-        _restore_state(store, orig_jobs, orig_results)
+        _restore_state(store, orig_jobs, orig_results, orig_actions)
 
 
 def test_run_backtest_job_summary_uses_effective_simulation_mode(
@@ -263,7 +273,7 @@ def test_run_backtest_job_summary_uses_effective_simulation_mode(
         lambda: {"simulation_mode": "execution_feasibility"},
     )
     store = backtest_api.store
-    orig_jobs, orig_results = _snapshot_state(store)
+    orig_jobs, orig_results, orig_actions = _snapshot_state(store)
     try:
         store.reset()
         request = backtest_api.api_config.BacktestRunRequest(
@@ -271,15 +281,91 @@ def test_run_backtest_job_summary_uses_effective_simulation_mode(
             timeframe="M5",
             start_time="2025-01-01",
             end_time="2025-01-31",
+            actor="operator",
+            idempotency_key="idem_backtest_run_1",
+            request_context={"panel": "backtest"},
         )
 
         response = _run(backtest_api.jobs_routes.run_backtest(request, BackgroundTasks()))
 
         assert response.success is True
-        summary = response.data["config_summary"]
+        assert response.data["accepted"] is True
+        assert response.data["status"] == "submitted"
+        assert response.data["run_id"] == response.data["action_id"]
+        summary = response.data["job"]["config_summary"]
         assert summary["simulation_mode"] == "execution_feasibility"
     finally:
-        _restore_state(store, orig_jobs, orig_results)
+        _restore_state(store, orig_jobs, orig_results, orig_actions)
+
+
+def test_run_backtest_replays_same_idempotency_key(backtest_api) -> None:
+    store = backtest_api.store
+    orig_jobs, orig_results, orig_actions = _snapshot_state(store)
+    try:
+        store.reset()
+        request = backtest_api.api_config.BacktestRunRequest(
+            symbol="XAUUSD",
+            timeframe="M5",
+            start_time="2025-01-01",
+            end_time="2025-01-31",
+            actor="operator",
+            idempotency_key="idem_backtest_run_replay",
+            request_context={"panel": "backtest"},
+        )
+
+        first = _run(backtest_api.jobs_routes.run_backtest(request, BackgroundTasks()))
+        second = _run(backtest_api.jobs_routes.run_backtest(request, BackgroundTasks()))
+
+        assert first.success is True
+        assert second.success is True
+        assert second.metadata["replayed"] is True
+        assert second.data["run_id"] == first.data["run_id"]
+        assert len(store.list_jobs()) == 1
+    finally:
+        _restore_state(store, orig_jobs, orig_results, orig_actions)
+
+
+def test_run_backtest_rejects_conflicting_idempotency_reuse(backtest_api) -> None:
+    store = backtest_api.store
+    orig_jobs, orig_results, orig_actions = _snapshot_state(store)
+    try:
+        store.reset()
+        first = _run(
+            backtest_api.jobs_routes.run_backtest(
+                backtest_api.api_config.BacktestRunRequest(
+                    symbol="XAUUSD",
+                    timeframe="M5",
+                    start_time="2025-01-01",
+                    end_time="2025-01-31",
+                    actor="operator",
+                    idempotency_key="idem_backtest_run_conflict",
+                    request_context={"panel": "backtest"},
+                ),
+                BackgroundTasks(),
+            )
+        )
+        second = _run(
+            backtest_api.jobs_routes.run_backtest(
+                backtest_api.api_config.BacktestRunRequest(
+                    symbol="EURUSD",
+                    timeframe="M15",
+                    start_time="2025-01-01",
+                    end_time="2025-01-31",
+                    actor="operator",
+                    idempotency_key="idem_backtest_run_conflict",
+                    request_context={"panel": "backtest"},
+                ),
+                BackgroundTasks(),
+            )
+        )
+
+        assert first.success is True
+        assert second.success is False
+        assert second.error["code"] == "invalid_request"
+        assert second.error["details"]["existing_action_id"] == first.data["action_id"]
+        assert len(store.list_jobs()) == 1
+    finally:
+        _restore_state(store, orig_jobs, orig_results, orig_actions)
 
 
 def test_get_backtest_config_defaults_exposes_supported_fields(
@@ -297,6 +383,8 @@ def test_get_backtest_config_defaults_exposes_supported_fields(
     assert response.success is True
     assert response.data["defaults"]["risk_percent"] == 2.0
     supported = response.data["supported"]
+    assert "idempotency_key" in supported["run_fields"]
+    assert "request_context" in supported["run_fields"]
     assert "regime_affinity_overrides" in supported["run_fields"]
     assert "sort_metric" in supported["optimize_fields"]
     assert "anchored" in supported["walk_forward_fields"]

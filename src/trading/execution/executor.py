@@ -35,6 +35,8 @@ from ..runtime_lifecycle import OwnedThreadLifecycle
 from ..tracking.trade_outcome import TradeOutcomeTracker
 from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
 from .eventing import emit_execution_decided as _emit_execution_decided_helper
+from .eventing import emit_admission_report as _emit_admission_report_helper
+from .eventing import emit_blocked_admission_report as _emit_blocked_admission_report_helper
 from .eventing import notify_skip as _notify_skip_helper
 from .decision_engine import ExecutionDecisionEngine
 from .pre_trade_pipeline import PreTradePipeline
@@ -117,6 +119,8 @@ class TradeExecutor:
         performance_tracker: "StrategyPerformanceTracker | None" = None,
         pipeline_event_bus: PipelineEventBus | None = None,
         equity_curve_filter: Any | None = None,
+        runtime_identity: Any | None = None,
+        circuit_breaker_history_fn: Callable[[list], None] | None = None,
     ):
         self._trading = trading_module
         self.config = config or ExecutorConfig()
@@ -138,6 +142,8 @@ class TradeExecutor:
         # 权益曲线过滤器。
         self._equity_curve_filter = equity_curve_filter
         self._pipeline_event_bus = pipeline_event_bus
+        self._runtime_identity = runtime_identity
+        self._circuit_breaker_history_fn = circuit_breaker_history_fn
         self._execution_count = 0
         self._last_execution_at: datetime | None = None
         self._last_error: str | None = None
@@ -243,6 +249,10 @@ class TradeExecutor:
     @property
     def equity_curve_filter(self):
         return self._equity_curve_filter
+
+    @property
+    def runtime_identity(self):
+        return self._runtime_identity
 
     @property
     def execution_quality(self) -> dict[str, float | int]:
@@ -476,10 +486,7 @@ class TradeExecutor:
             except queue.Empty:
                 continue
             try:
-                if event.scope == "intrabar":
-                    self._handle_intrabar_entry(event)
-                else:
-                    self._handle_confirmed(event)
+                self.process_event(event)
             except Exception:
                 logger.error("TradeExecutor worker error", exc_info=True)
             finally:
@@ -530,12 +537,66 @@ class TradeExecutor:
         """注入保证金保护器。"""
         self._margin_guard = guard
 
-    def reset_circuit(self) -> None:
+    def process_event(self, event: SignalEvent) -> dict[str, Any] | None:
+        if event.scope == "intrabar":
+            self._handle_intrabar_entry(event)
+            return {"status": "intrabar_processed", "signal_id": event.signal_id}
+        return self._handle_confirmed(event)
+
+    def record_circuit_breaker_event(
+        self,
+        *,
+        event: str,
+        breaker_type: str = "executor",
+        reason: str | None = None,
+        consecutive_failures: int | None = None,
+        account_alias: str | None = None,
+        account_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if self._circuit_breaker_history_fn is None:
+            return
+        identity = self._runtime_identity
+        payload = dict(metadata or {})
+        if identity is not None:
+            payload.setdefault("instance_id", getattr(identity, "instance_id", None))
+            payload.setdefault("instance_role", getattr(identity, "instance_role", None))
+        self._circuit_breaker_history_fn(
+            [
+                (
+                    datetime.now(timezone.utc),
+                    account_alias or getattr(identity, "account_alias", ""),
+                    account_key or getattr(identity, "account_key", None),
+                    breaker_type,
+                    event,
+                    (
+                        self._consecutive_failures
+                        if consecutive_failures is None
+                        else int(consecutive_failures)
+                    ),
+                    reason,
+                    payload,
+                )
+            ]
+        )
+
+    def reset_circuit(
+        self,
+        *,
+        event: str = "reset",
+        reason: str | None = "manual_reset",
+    ) -> None:
         """Reset the circuit breaker manually."""
+        previous_failures = self._consecutive_failures
         self._circuit_open = False
         self._consecutive_failures = 0
         self._circuit_open_at = None
         self._health_check_failures = 0
+        self.record_circuit_breaker_event(
+            event=event,
+            reason=reason,
+            consecutive_failures=previous_failures,
+        )
         logger.info("TradeExecutor: circuit breaker manually reset")
 
     def _check_trading_health(self) -> bool:
@@ -682,6 +743,24 @@ class TradeExecutor:
             return None
 
         # ── 全部通过，派发执行 ──
+        _emit_admission_report_helper(
+            self,
+            event,
+            decision="allow",
+            stage="account_risk",
+            requested_operation="signal_execution",
+            reasons=[
+                {
+                    "code": "checks_passed",
+                    "stage": "account_risk",
+                    "message": "confirmed pre-trade checks passed",
+                    "details": {
+                        "timeframe": tf,
+                        "strategy": event.strategy,
+                    },
+                }
+            ],
+        )
         sig_id = event.signal_id or ""
         self._signals_passed += 1
         if sig_id:
@@ -739,6 +818,22 @@ class TradeExecutor:
                     event.strategy,
                     intrabar_pre_trade.detail,
                 )
+            _emit_blocked_admission_report_helper(
+                self,
+                event,
+                code=intrabar_pre_trade.reject_reason or "intrabar_blocked",
+                category="execution_gate",
+                message=str(intrabar_pre_trade.detail or intrabar_pre_trade.reject_reason or "intrabar blocked"),
+                details={
+                    "parent_bar_time": (
+                        parent_bar_time.isoformat()
+                        if isinstance((parent_bar_time := intrabar_pre_trade.parent_bar_time), datetime)
+                        else parent_bar_time
+                    ),
+                    "reject_reason": intrabar_pre_trade.reject_reason,
+                },
+                requested_operation="intrabar_execution",
+            )
             return
         parent_bar_time = intrabar_pre_trade.parent_bar_time
 
@@ -762,9 +857,37 @@ class TradeExecutor:
                 event.timeframe,
                 event.strategy,
             )
+            _emit_blocked_admission_report_helper(
+                self,
+                event,
+                code="intrabar_cost_blocked",
+                category=SKIP_CATEGORY_COST_GUARD,
+                message="intrabar entry blocked by cost check",
+                details=dict(cost_metrics),
+                requested_operation="intrabar_execution",
+            )
             return
 
         # 6. 执行（复用现有 market/pending 逻辑）
+        _emit_admission_report_helper(
+            self,
+            event,
+            decision="allow",
+            stage="account_risk",
+            requested_operation="intrabar_execution",
+            reasons=[
+                {
+                    "code": "checks_passed",
+                    "stage": "account_risk",
+                    "message": "intrabar pre-trade checks passed",
+                    "details": {
+                        "parent_bar_time": (
+                            parent_bar_time.isoformat() if isinstance(parent_bar_time, datetime) else parent_bar_time
+                        ),
+                    },
+                }
+            ],
+        )
         result = self._decision_engine.execute(event, decision)
         if result is None:
             return

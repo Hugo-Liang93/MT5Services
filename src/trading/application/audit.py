@@ -19,9 +19,11 @@ class TradeCommandAuditService:
         db_writer: Optional[TimescaleWriter],
         *,
         account_alias_getter: Callable[[], str],
+        account_key_getter: Callable[[], str] | None = None,
     ) -> None:
         self._db_writer = db_writer
         self._account_alias_getter = account_alias_getter
+        self._account_key_getter = account_key_getter or (lambda: "")
 
     def _json_safe(self, value: Any) -> Any:
         if value is None or isinstance(value, (str, int, float, bool)):
@@ -41,6 +43,7 @@ class TradeCommandAuditService:
             return
         normalized = TradeCommandAuditRecord(
             account_alias=record.account_alias,
+            account_key=record.account_key or self._account_key_getter(),
             command_type=record.command_type,
             status=record.status,
             symbol=record.symbol,
@@ -70,6 +73,7 @@ class TradeCommandAuditService:
             return None
         rows = self._db_writer.fetch_trade_command_audits(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             command_type="execute_trade",
             status="success",
             limit=limit,
@@ -89,6 +93,40 @@ class TradeCommandAuditService:
             return replayed
         return None
 
+    def fetch_recorded_operator_action(
+        self,
+        *,
+        command_type: str,
+        idempotency_key: str,
+        limit: int,
+    ) -> Optional[dict[str, Any]]:
+        if self._db_writer is None:
+            return None
+        rows = self._db_writer.fetch_trade_command_audits(
+            account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
+            command_type=command_type,
+            limit=limit,
+        )
+        normalized_idempotency_key = str(idempotency_key or "").strip()
+        for row in rows:
+            request_payload = row[15] or {}
+            response_payload = row[16] or {}
+            if str(request_payload.get("idempotency_key") or "").strip() != normalized_idempotency_key:
+                continue
+            return {
+                "recorded_at": row[0].isoformat() if row[0] else None,
+                "operation_id": row[1],
+                "account_alias": row[2],
+                "account_key": row[17] if len(row) > 17 else None,
+                "command_type": row[3],
+                "status": row[4],
+                "error_message": row[14],
+                "request_payload": request_payload if isinstance(request_payload, dict) else {},
+                "response_payload": response_payload if isinstance(response_payload, dict) else {},
+            }
+        return None
+
     def recent_command_audits(
         self,
         *,
@@ -100,6 +138,7 @@ class TradeCommandAuditService:
             return []
         rows = self._db_writer.fetch_trade_command_audits(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             command_type=command_type,
             status=status,
             limit=limit,
@@ -109,6 +148,7 @@ class TradeCommandAuditService:
                 "recorded_at": row[0].isoformat() if row[0] else None,
                 "operation_id": row[1],
                 "account_alias": row[2],
+                "account_key": row[17] if len(row) > 17 else None,
                 "command_type": row[3],
                 "status": row[4],
                 "symbol": row[5],
@@ -127,12 +167,51 @@ class TradeCommandAuditService:
             for row in rows
         ]
 
+    def command_audit_page(
+        self,
+        *,
+        command_type: Optional[str] = None,
+        status: Optional[str] = None,
+        symbol: Optional[str] = None,
+        signal_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None,
+        page: int = 1,
+        page_size: int = 100,
+        sort: str = "recorded_at_desc",
+    ) -> dict[str, Any]:
+        if self._db_writer is None:
+            return {
+                "items": [],
+                "total": 0,
+                "page": max(1, int(page)),
+                "page_size": max(1, int(page_size)),
+            }
+        return self._db_writer.query_trade_command_audits(
+            account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
+            command_type=command_type,
+            status=status,
+            symbol=symbol,
+            signal_id=signal_id,
+            trace_id=trace_id,
+            actor=actor,
+            from_time=from_time,
+            to_time=to_time,
+            page=page,
+            page_size=page_size,
+            sort=sort,
+        )
+
     def summarize_operations(self, *, hours: int = 24) -> list[dict[str, Any]]:
         if self._db_writer is None:
             return []
         rows = self._db_writer.summarize_trade_command_audits(
             hours=hours,
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
         )
         return [
             {

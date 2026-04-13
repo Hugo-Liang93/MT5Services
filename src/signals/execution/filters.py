@@ -14,10 +14,12 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 from typing import Any, Dict, List, Optional, Protocol
+
+from src.calendar.policy import SignalEconomicPolicy
 
 from ..contracts import (
     SESSION_ASIA,
@@ -28,9 +30,33 @@ from ..contracts import (
     resolve_session_by_hour,
 )
 
+_SIGNAL_EVENT_STATUSES = (
+    "scheduled",
+    "imminent",
+    "pending_release",
+    "released",
+)
 
-class TradeGuardProvider(Protocol):
-    def get_trade_guard(self, **kwargs: Any) -> Dict[str, Any]: ...
+
+def _symbol_context(symbol: str) -> dict[str, list[str]]:
+    from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+
+    return infer_symbol_context(symbol)
+
+
+class EconomicEventsProvider(Protocol):
+    def get_events(
+        self,
+        start_time: Optional[datetime],
+        end_time: Optional[datetime],
+        limit: int = 1000,
+        sources: Optional[List[str]] = None,
+        countries: Optional[List[str]] = None,
+        currencies: Optional[List[str]] = None,
+        session_buckets: Optional[List[str]] = None,
+        statuses: Optional[List[str]] = None,
+        importance_min: Optional[int] = None,
+    ) -> List[Any]: ...
 
 
 @dataclass
@@ -107,40 +133,40 @@ class SpreadFilter:
 
 @dataclass
 class EconomicEventFilter:
-    """分级经济事件过滤器。
+    """Signal-domain economic event filter.
 
-    - importance >= block_importance_min（默认3）→ 阻断交易
-    - importance < block_importance_min           → 仅警告，不阻断
+    The signal layer only owns pre-evaluation filtering for high-impact events.
+    Final trade blocking remains account-domain responsibility.
     """
 
-    provider: Optional[TradeGuardProvider] = None
-    lookahead_minutes: int = 30
-    lookback_minutes: int = 15
-    importance_min: int = 2
+    provider: Optional[EconomicEventsProvider] = None
+    policy: SignalEconomicPolicy | None = None
 
     def check_trade_guard(
         self, symbol: str, utc_now: Optional[datetime] = None
     ) -> tuple[bool, str]:
         """返回 (safe, reason)。safe=True 时可交易。"""
-        if self.provider is None:
+        if self.provider is None or self.policy is None or not self.policy.enabled:
             return True, ""
         at_time = utc_now or datetime.now(timezone.utc)
         try:
-            guard = self.provider.get_trade_guard(
-                symbol=symbol,
-                at_time=at_time,
-                lookahead_minutes=self.lookahead_minutes,
-                lookback_minutes=self.lookback_minutes,
-                importance_min=self.importance_min,
+            context = _symbol_context(symbol)
+            events = self.provider.get_events(
+                start_time=at_time
+                - timedelta(minutes=self.policy.filter_window.lookback_minutes),
+                end_time=at_time
+                + timedelta(minutes=self.policy.filter_window.lookahead_minutes),
+                limit=50,
+                countries=context["countries"] or None,
+                currencies=context["currencies"] or None,
+                statuses=list(_SIGNAL_EVENT_STATUSES),
+                importance_min=self.policy.filter_window.importance_min,
             )
-            severity = guard.get("severity", "none")
-            if severity == "block":
+            if events:
                 return False, "economic_event_block"
-            if severity == "warn":
-                return True, "economic_event_warn"
             return True, ""
         except Exception as exc:
-            logger.warning("Trade guard check failed for %s: %s", symbol, exc)
+            logger.warning("Economic event filter check failed for %s: %s", symbol, exc)
             return True, ""
 
     def is_safe_to_trade(self, symbol: str, utc_now: Optional[datetime] = None) -> bool:
@@ -365,6 +391,17 @@ class SignalFilterChain:
                 "active": safe,
                 "blocked": not safe,
                 "reason": reason if not safe else "",
+                "policy": (
+                    {
+                        "lookahead_minutes": self.economic_filter.policy.filter_window.lookahead_minutes,
+                        "lookback_minutes": self.economic_filter.policy.filter_window.lookback_minutes,
+                        "importance_min": self.economic_filter.policy.filter_window.importance_min,
+                        "decay_pre_minutes": self.economic_filter.policy.decay_pre_minutes,
+                        "decay_post_minutes": self.economic_filter.policy.decay_post_minutes,
+                    }
+                    if self.economic_filter.policy is not None
+                    else None
+                ),
             }
 
         if self.trend_exhaustion_filter:

@@ -464,9 +464,12 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
 
 def main() -> None:
     # docstring removed during encoding normalization
+    from src.config.instance_context import set_current_environment
+
     parser = _build_parser()
     try:
         args = parser.parse_args()
+        set_current_environment(getattr(args, "environment", None))
         handler = getattr(args, "func", None)
         if handler is None:
             parser.print_help()
@@ -484,6 +487,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 
     parser.add_argument("--symbol", required=True, help=" (?XAUUSD)")
     parser.add_argument("--timeframe", required=True, help=" (?M5)")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        default=None,
+        help="显式指定回测/研究使用的环境数据库",
+    )
     parser.add_argument("--start", required=True, help=" (YYYY-MM-DD)")
     parser.add_argument("--end", required=True, help=" (YYYY-MM-DD)")
     parser.add_argument("--strategies", type=str, default=None, help=" ()")

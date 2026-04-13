@@ -9,6 +9,9 @@ DDL = """
 CREATE TABLE IF NOT EXISTS trade_outcomes (
     recorded_at   timestamptz NOT NULL,
     signal_id     text NOT NULL,
+    account_key   text,
+    account_alias text,
+    intent_id     text,
     symbol        text NOT NULL,
     timeframe     text NOT NULL,
     strategy      text NOT NULL,
@@ -25,6 +28,9 @@ CREATE TABLE IF NOT EXISTS trade_outcomes (
 );
 SELECT create_hypertable('trade_outcomes', 'recorded_at',
                           if_not_exists => TRUE, migrate_data => TRUE);
+ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS account_key text;
+ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS account_alias text;
+ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS intent_id text;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_outcomes_upsert
 ON trade_outcomes (signal_id, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_trade_outcomes_symbol
@@ -33,12 +39,17 @@ CREATE INDEX IF NOT EXISTS idx_trade_outcomes_won
 ON trade_outcomes (won, strategy, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_outcomes_recent
 ON trade_outcomes (recorded_at DESC) WHERE won IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_trade_outcomes_account
+ON trade_outcomes (account_key, recorded_at DESC);
 """
 
 INSERT_SQL = """
 INSERT INTO trade_outcomes (
     recorded_at,
     signal_id,
+    account_key,
+    account_alias,
+    intent_id,
     symbol,
     timeframe,
     strategy,
@@ -51,7 +62,7 @@ INSERT INTO trade_outcomes (
     regime,
     metadata
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (signal_id, recorded_at) DO UPDATE SET
     close_price   = EXCLUDED.close_price,
     price_change  = EXCLUDED.price_change,

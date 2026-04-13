@@ -16,6 +16,12 @@
 
 - `python -m src.entrypoint.web`
 - `python -m src.entrypoint.web --help`（当前无参数）
+- `python -m src.entrypoint.instance --instance live-main`  
+  用于同一代码目录下按 `config/instances/<instance>` 启动指定实例。
+- `python -m src.entrypoint.supervisor --environment live`  
+  用于按环境显式启动一整组实例；当前 `environment` 与 `topology group` 等价。
+- `python -m src.entrypoint.supervisor --group live`  
+  用于按 `config/topology.ini` 拉起一个进程组（`main + workers`）。
 
 ### 1.2 直接 ASGI 入口（兼容）
 
@@ -23,12 +29,39 @@
 
 该方式不走项目的统一日志/配置加载入口（`src.config.get_system_config` 等），适合调试时使用。
 
-### 1.3 启动后最小验证
+### 1.3 多实例配置目录
+
+- 共享基线配置：`config/*.ini`
+- 实例覆盖配置：`config/instances/<instance>/*.ini`
+- 实例本地覆盖：`config/instances/<instance>/*.local.ini`
+- 当前实例由 `MT5_INSTANCE` 或 `src.entrypoint.instance --instance <name>` 指定
+- 当前环境由 `topology group` 决定，并在 supervisor/instance 启动时写入 `MT5_ENVIRONMENT`
+- 实例目录只允许承载实例级配置：
+  - `mt5.ini`
+  - `market.ini`
+  - `risk.ini`
+- `app.ini`、`db.ini`、`signal.ini`、`topology.ini` 等共享配置不会从实例目录加载
+- `mt5.ini` 只描述账户连接信息；环境不再由 MT5 配置反推
+- `intrabar_trading.trigger` 与 `app.ini[trading].timeframes` 当前按共享配置统一校验；若 child timeframe 不在全局有效时间框架集合里，`instance/supervisor` 启动会 fail-fast，而不会再允许某些父级 intrabar 运行时永久无数据
+
+推荐形态：
+
+```text
+config/
+  topology.ini
+  instances/
+    live-main/
+    live-exec-a/
+    live-exec-b/
+```
+
+### 1.4 启动后最小验证
 
 - 详细步骤请直接对照：`docs/runbooks/system-startup-and-live-canary.md`
 - 最小检查点仍然固定为：
-  - `data/logs/mt5services.log`
-  - `data/logs/errors.log`
+  - `data/logs/<instance>/mt5services.log`
+  - `data/logs/<instance>/errors.log`
+  - `data/runtime/<instance>/`
   - `GET /health`
   - `GET /v1/monitoring/health/ready`
 
@@ -61,9 +94,19 @@
 ## 3. 入口职责边界（高层）
 
 - `src/entrypoint/web.py`：只负责日志初始化 + `uvicorn.run(target, host, port)`。
+- `src/entrypoint/instance.py`：绑定实例名、解析当前环境、刷新实例配置上下文，再进入 `web.launch()`。
+- `src/entrypoint/supervisor.py`：读取 `topology.ini`，按环境/组启动并重启 `main + workers` 进程。
 - `src/backtesting/cli.py` 与 `src/ops/cli/*`：命令参数解析 + 任务编排入口，不承载业务核心算法。
 - `src/api/*`：HTTP 适配层，不承担运行时装配与启动职责。
-- `src/app_runtime/*`：运行时装配与生命周期。  
+  - 其中交易入口已开始按正式合同收口：
+    - `/v1/trade/precheck` 统一返回 `AdmissionReport`
+    - `/v1/trade/dispatch` 返回 `ActionResult` 主体及附属 `admission_report`
+    - `/v1/trade/traces` 现在会把 `admission_report_appended` 提升成业务解释视图，而不只是裸 pipeline 事件时间线
+    - `/v1/trade/state/stream` 已开始直接消费正式 `pipeline_trace_events` 事实源，向前端推送 admission / command / risk / unmanaged-position 关键事件，而不再只依赖本地状态 diff
+    - 后台消费链也开始复用同一份 trace 合同：`ExecutionIntentConsumer` 与 `OperatorCommandConsumer` 现在会为 `claim / reclaim / dead-letter / complete / fail` 等生命周期节点补齐统一的 `trace_id / instance / account` 标识，避免 trace 与 SSE 在后台执行阶段丢失业务链上下文
+- `src/app_runtime/*`：运行时装配与生命周期。当前已按角色收口为：
+  - `main`：构造 `SharedComputeRuntime`（市场采集、指标、信号、calendar sync）以及可选主账户 `AccountRuntime`；`paper_trading` 作为策略验证 sidecar 也只装配在 `main`
+  - `executor`：只构造 `AccountRuntime`，不再在 build 阶段创建 `UnifiedIndicatorManager / SignalRuntime / economic calendar sync / paper_trading`
 
 ## 4. 本次同步点
 
@@ -74,6 +117,7 @@
 2. `AGENTS.md` 中启动说明已更新为当前真实入口。
 
 3. `tests/smoke/test_launch.py` 新增 `__main__` 执行通路测试，覆盖 `python -m src.entrypoint.web` 的行为。
-4. 启动后日志位置统一锚定项目根目录 `data/`，不再向 `src/` 下写运行期日志。
-
-
+4. 启动后日志位置统一锚定项目根目录 `data/logs/<instance>/`，运行期 SQLite/WAL 统一落到 `data/runtime/<instance>/`。
+5. 当前正式多账户部署建议改为“单代码目录 + 多实例配置 + supervisor”，而不是复制多份代码目录。
+6. `web` 与 `supervisor` 入口现已统一给每条日志注入 `environment / instance / role`，多实例并行时控制台与文件日志均可直接区分来源。
+7. 交易主链路的准入、trace 与状态流已开始收口为正式合同：`AdmissionReport` 负责统一解释“为什么没进交易”，`/v1/trade/traces` 负责把 admission、intent、command、execution 等事件串成业务因果链，`/v1/trade/state/stream` 则开始消费同一份正式 pipeline 事实源；后续执行入口与 worker 自消费链将继续复用同一套 admission/trace 模型。

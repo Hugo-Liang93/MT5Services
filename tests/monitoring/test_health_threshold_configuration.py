@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.app_runtime.builder_phases.monitoring import (
+    _economic_calendar_staleness_thresholds,
+)
 from src.config import get_ingest_config, get_runtime_ingest_settings
+from src.config.models.runtime import EconomicConfig
 from src.monitoring.health import HealthMonitor
 
 
@@ -64,3 +68,31 @@ def test_intrabar_metrics_respect_threshold_order(tmp_path: Path) -> None:
     assert report["components"]["indicator_calculation"]["intrabar_drop_rate_1m"]["status"] == "warning"
     assert report["components"]["indicator_calculation"]["intrabar_queue_age_p95_ms"]["status"] == "critical"
     assert report["components"]["indicator_calculation"]["intrabar_to_decision_latency_p95_ms"]["status"] == "critical"
+
+
+def test_economic_calendar_staleness_thresholds_follow_release_watch_idle_gap() -> None:
+    settings = EconomicConfig(
+        stale_after_seconds=1800.0,
+        calendar_sync_interval_seconds=21600.0,
+        near_term_refresh_interval_seconds=0.0,
+        release_watch_interval_seconds=120.0,
+        release_watch_idle_interval_seconds=1800.0,
+    )
+
+    thresholds = _economic_calendar_staleness_thresholds(settings)
+
+    assert thresholds == {"warning": 1800.0, "critical": 1800.0}
+
+
+def test_economic_calendar_staleness_thresholds_follow_fastest_enabled_refresh_path() -> None:
+    settings = EconomicConfig(
+        stale_after_seconds=1800.0,
+        calendar_sync_interval_seconds=21600.0,
+        near_term_refresh_interval_seconds=900.0,
+        release_watch_interval_seconds=120.0,
+        release_watch_idle_interval_seconds=1800.0,
+    )
+
+    thresholds = _economic_calendar_staleness_thresholds(settings)
+
+    assert thresholds == {"warning": 900.0, "critical": 1800.0}

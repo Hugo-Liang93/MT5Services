@@ -196,6 +196,78 @@ def test_signal_module_persists_and_can_query_recent() -> None:
     assert recent[0]["scope"] == "confirmed"
 
 
+def test_signal_module_persistence_serializes_datetime_metadata() -> None:
+    db = DummySignalRepository()
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        strategies=[AffinityProbeStrategy()],
+        repository=db,
+    )
+    bar_time = datetime(2026, 4, 12, 16, 0, tzinfo=timezone.utc)
+
+    module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="affinity_probe",
+        metadata={
+            "bar_time": bar_time,
+            "recent_bars": [
+                {
+                    "time": bar_time,
+                    "close": 3000.0,
+                }
+            ],
+        },
+    )
+
+    stored_metadata = db.confirmed_rows[0][10]
+    assert stored_metadata["bar_time"] == bar_time.isoformat()
+    assert stored_metadata["recent_bars"][0]["time"] == bar_time.isoformat()
+
+
+class BlankIdentityStrategy:
+    name = "blank_identity"
+    required_indicators = ()
+    preferred_scopes = ("confirmed",)
+    regime_affinity = {
+        RegimeType.TRENDING: 1.0,
+        RegimeType.RANGING: 1.0,
+        RegimeType.BREAKOUT: 1.0,
+        RegimeType.UNCERTAIN: 1.0,
+    }
+
+    def evaluate(self, context: SignalContext) -> SignalDecision:
+        return SignalDecision(
+            strategy=self.name,
+            symbol="",
+            timeframe="",
+            direction="hold",
+            confidence=0.0,
+            reason="noop",
+        )
+
+
+def test_signal_module_normalizes_decision_identity_fields_before_persist() -> None:
+    db = DummySignalRepository()
+    module = SignalModule(
+        indicator_source=DummyIndicatorSource(),
+        strategies=[BlankIdentityStrategy()],
+        repository=db,
+    )
+
+    decision = module.evaluate(
+        symbol="XAUUSD",
+        timeframe="M15",
+        strategy="blank_identity",
+    )
+
+    assert decision.symbol == "XAUUSD"
+    assert decision.timeframe == "M15"
+    assert decision.strategy == "blank_identity"
+    assert db.confirmed_rows[0][2] == "XAUUSD"
+    assert db.confirmed_rows[0][3] == "M15"
+
+
 def test_signal_module_dispatch_lists_available_indicators() -> None:
     module = SignalModule(indicator_source=DummyIndicatorSource())
 

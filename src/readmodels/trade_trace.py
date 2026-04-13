@@ -161,6 +161,42 @@ class TradingFlowTraceReadModel:
             trade_outcomes=trade_outcomes,
         )
 
+    def list_traces(
+        self,
+        *,
+        trace_id: str | None = None,
+        signal_id: str | None = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        strategy: str | None = None,
+        status: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+        page: int = 1,
+        page_size: int = 100,
+        sort: str = "last_event_at_desc",
+    ) -> dict[str, Any]:
+        query_result = self._pipeline_trace_repo.query_trace_summaries(
+            trace_id=trace_id,
+            signal_id=signal_id,
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy=strategy,
+            status=status,
+            from_time=from_time,
+            to_time=to_time,
+            page=page,
+            page_size=page_size,
+            sort=sort,
+        )
+        items = [self._build_trace_summary_item(row) for row in query_result.get("items", [])]
+        return {
+            "items": items,
+            "total": int(query_result.get("total") or 0),
+            "page": int(query_result.get("page") or page),
+            "page_size": int(query_result.get("page_size") or page_size),
+        }
+
     def _build_trace_response(
         self,
         *,
@@ -190,11 +226,13 @@ class TradingFlowTraceReadModel:
             confirmed_signals=confirmed_signals,
             operations=operations,
         )
+        admission_reports = self._extract_admission_reports(pipeline_events)
         facts = {
             "signal_preview": preview_signal,
             "signal_confirmed": confirmed_signal,
             "signal_preview_events": list(preview_signals),
             "signal_confirmed_events": list(confirmed_signals),
+            "admission_reports": admission_reports,
             "pipeline_trace_events": list(pipeline_events),
             "auto_executions": list(auto_executions),
             "trade_command_audits": list(operations),
@@ -223,6 +261,10 @@ class TradingFlowTraceReadModel:
             signal_outcomes=signal_outcomes,
             trade_outcomes=trade_outcomes,
         )
+        trace_status = self._derive_trace_status(
+            timeline=timeline,
+            pipeline_events=pipeline_events,
+        )
         return {
             "signal_id": normalized_signal_id,
             "trace_id": normalized_trace_id,
@@ -240,17 +282,47 @@ class TradingFlowTraceReadModel:
                 ]
             ),
             "identifiers": identifiers,
-            "summary": self._build_summary(facts=facts),
+            "summary": self._build_summary(
+                facts=facts,
+                timeline=timeline,
+                status=trace_status["status"],
+                started_at=trace_status["started_at"],
+                last_event_at=trace_status["last_event_at"],
+                event_count=trace_status["event_count"],
+                last_stage=trace_status["last_stage"],
+                reason=trace_status["reason"],
+            ),
             "timeline": timeline,
             "graph": self._build_graph(timeline),
             "facts": facts,
+            "related_signals": {
+                "preview": list(preview_signals),
+                "confirmed": list(confirmed_signals),
+                "signal_outcomes": list(signal_outcomes),
+                "trade_outcomes": list(trade_outcomes),
+            },
+            "related_trade_audits": list(operations),
+            "related_pipeline_events": list(pipeline_events),
         }
 
-    def _build_summary(self, *, facts: dict[str, Any]) -> dict[str, Any]:
+    def _build_summary(
+        self,
+        *,
+        facts: dict[str, Any],
+        timeline: Sequence[dict[str, Any]],
+        status: str,
+        started_at: str | None,
+        last_event_at: str | None,
+        event_count: int,
+        last_stage: str | None,
+        reason: str | None,
+    ) -> dict[str, Any]:
         operations = list(facts.get("trade_command_audits") or [])
         pipeline_events = list(facts.get("pipeline_trace_events") or [])
         pending_orders = list(facts.get("pending_orders") or [])
         positions = list(facts.get("positions") or [])
+        admission_reports = list(facts.get("admission_reports") or [])
+        latest_admission = admission_reports[-1] if admission_reports else None
         return {
             "stages": {
                 **{
@@ -285,6 +357,13 @@ class TradingFlowTraceReadModel:
             "command_counts": self._count_by_key(operations, "command_type"),
             "pending_status_counts": self._count_by_key(pending_orders, "status"),
             "position_status_counts": self._count_by_key(positions, "status"),
+            "admission": self._build_admission_summary(latest_admission),
+            "status": status,
+            "started_at": started_at,
+            "last_event_at": last_event_at,
+            "event_count": event_count or len(timeline),
+            "last_stage": last_stage,
+            "reason": reason,
         }
 
     def _build_identifiers(
@@ -523,6 +602,81 @@ class TradingFlowTraceReadModel:
             )
         return {"nodes": nodes, "edges": edges}
 
+    def _build_trace_summary_item(self, row: dict[str, Any]) -> dict[str, Any]:
+        last_event_type = str(row.get("last_event_type") or "")
+        return {
+            "trace_id": str(row.get("trace_id") or ""),
+            "signal_id": self._str_or_none(row.get("signal_id")),
+            "symbol": self._str_or_none(row.get("symbol")),
+            "timeframe": self._str_or_none(row.get("timeframe")),
+            "strategy": self._str_or_none(row.get("strategy")),
+            "status": self._str_or_none(row.get("status")) or "in_progress",
+            "started_at": self._normalize_datetime(row.get("started_at")),
+            "last_event_at": self._normalize_datetime(row.get("last_event_at")),
+            "event_count": int(row.get("event_count") or 0),
+            "last_stage": pipeline_stage_name(last_event_type) if last_event_type else None,
+            "reason": self._str_or_none(row.get("reason")),
+            "admission": self._build_admission_summary(
+                {
+                    "decision": row.get("last_admission_decision"),
+                    "stage": row.get("last_admission_stage"),
+                    "trace_id": row.get("trace_id"),
+                    "signal_id": row.get("signal_id"),
+                }
+            ),
+        }
+
+    def _derive_trace_status(
+        self,
+        *,
+        timeline: Sequence[dict[str, Any]],
+        pipeline_events: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        last_event = timeline[-1] if timeline else None
+        last_stage = str(last_event.get("stage") or "") if last_event else None
+        last_status = str(last_event.get("status") or "") if last_event else ""
+        if last_status in {"failed", "blocked", "skipped"}:
+            status = last_status
+        elif last_status == "block":
+            status = "blocked"
+        elif last_stage == "pipeline.admission_report":
+            status = "admission"
+        elif last_stage in {"outcome.trade", "position.closed"}:
+            status = "completed"
+        elif last_stage in {"trade.execute_trade", "pipeline.execution_submitted", "pending.filled"}:
+            status = "submitted"
+        elif last_stage == "signal.confirmed":
+            status = "signal_confirmed"
+        else:
+            status = "in_progress"
+        return {
+            "status": status,
+            "started_at": timeline[0]["at"] if timeline else None,
+            "last_event_at": last_event.get("at") if last_event else None,
+            "event_count": len(timeline),
+            "last_stage": last_stage,
+            "reason": self._extract_reason(last_event, pipeline_events),
+        }
+
+    @staticmethod
+    def _extract_reason(
+        last_event: dict[str, Any] | None,
+        pipeline_events: Sequence[dict[str, Any]],
+    ) -> str | None:
+        if last_event is not None:
+            details = last_event.get("details") or {}
+            for key in ("reason", "skip_reason", "category"):
+                value = str(details.get(key) or "").strip()
+                if value:
+                    return value
+        for row in reversed(list(pipeline_events)):
+            payload = row.get("payload") or {}
+            for key in ("reason", "skip_reason", "category"):
+                value = str(payload.get(key) or "").strip()
+                if value:
+                    return value
+        return None
+
     def _collect_trace_ids(
         self,
         *,
@@ -568,6 +722,56 @@ class TradingFlowTraceReadModel:
                 if direct:
                     signal_ids.add(direct)
         return sorted(signal_ids)
+
+    @staticmethod
+    def _extract_admission_reports(
+        pipeline_events: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        reports: list[dict[str, Any]] = []
+        for row in pipeline_events:
+            if str(row.get("event_type") or "").strip() != "admission_report_appended":
+                continue
+            payload = dict(row.get("payload") or {})
+            reports.append(
+                {
+                    **payload,
+                    "recorded_at": TradingFlowTraceReadModel._normalize_datetime(
+                        row.get("recorded_at")
+                    ),
+                    "trace_id": str(row.get("trace_id") or payload.get("trace_id") or "").strip()
+                    or None,
+                    "signal_id": str(row.get("signal_id") or payload.get("signal_id") or "").strip()
+                    or None,
+                    "intent_id": str(row.get("intent_id") or payload.get("intent_id") or "").strip()
+                    or None,
+                    "command_id": str(row.get("command_id") or payload.get("command_id") or "").strip()
+                    or None,
+                    "action_id": str(row.get("action_id") or payload.get("action_id") or "").strip()
+                    or None,
+                }
+            )
+        return reports
+
+    @staticmethod
+    def _build_admission_summary(
+        report: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(report, dict) or not report:
+            return None
+        reasons = list(report.get("reasons") or [])
+        return {
+            "decision": str(report.get("decision") or "").strip() or None,
+            "stage": str(report.get("stage") or "").strip() or None,
+            "generated_at": TradingFlowTraceReadModel._normalize_datetime(
+                report.get("generated_at") or report.get("recorded_at")
+            ),
+            "reason_count": len(reasons),
+            "trace_id": str(report.get("trace_id") or "").strip() or None,
+            "signal_id": str(report.get("signal_id") or "").strip() or None,
+            "intent_id": str(report.get("intent_id") or "").strip() or None,
+            "command_id": str(report.get("command_id") or "").strip() or None,
+            "action_id": str(report.get("action_id") or "").strip() or None,
+        }
 
     @staticmethod
     def _fetch_by_signal_ids(
@@ -698,3 +902,8 @@ class TradingFlowTraceReadModel:
         except (TypeError, ValueError):
             return None
         return normalized if normalized > 0 else None
+
+    @staticmethod
+    def _str_or_none(value: Any) -> Optional[str]:
+        text = str(value or "").strip()
+        return text or None

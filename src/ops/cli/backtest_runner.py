@@ -458,7 +458,15 @@ TEMPLATES = {
 
 
 def main() -> None:
+    from src.config.instance_context import set_current_environment
+
     parser = argparse.ArgumentParser(description="MT5Services backtest runner")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定回测使用哪个环境数据库",
+    )
     parser.add_argument(
         "--tf", required=True, help="Timeframe(s), comma-separated: H1,M30,M15,M5"
     )
@@ -509,6 +517,7 @@ def main() -> None:
         help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
     )
     args = parser.parse_args()
+    set_current_environment(args.environment)
 
     # 构建 CLI overrides（仅覆盖显式传入的参数）
     overrides: Dict[str, Any] = {}

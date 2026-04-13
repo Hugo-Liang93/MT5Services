@@ -29,10 +29,6 @@ class SignalConfig(BaseModel):
     max_spread_points: float = 50.0
     allowed_sessions: str = "london,new_york"
     session_transition_cooldown_minutes: int = 15
-    economic_filter_enabled: bool = True
-    economic_lookahead_minutes: int = 30
-    economic_lookback_minutes: int = 15
-    economic_importance_min: int = 3
     snapshot_dedupe_window_seconds: float = 0.3
     soft_regime_enabled: bool = True
     voting_enabled: bool = True
@@ -58,6 +54,7 @@ class SignalConfig(BaseModel):
     strategy_sessions: dict[str, list[str]] = Field(default_factory=dict)
     strategy_timeframes: dict[str, list[str]] = Field(default_factory=dict)
     strategy_deployments: dict[str, StrategyDeployment] = Field(default_factory=dict)
+    account_bindings: dict[str, list[str]] = Field(default_factory=dict)
     max_spread_to_stop_ratio: float = 0.33
     # 同策略同方向再入场冷却 bar 数（0=不冷却每根 bar 都可以，N=间隔 N 根后允许加仓）
     reentry_cooldown_bars: int = 3

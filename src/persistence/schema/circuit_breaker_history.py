@@ -7,6 +7,7 @@ DDL = """
 CREATE TABLE IF NOT EXISTS circuit_breaker_history (
     recorded_at TIMESTAMPTZ NOT NULL,
     account_alias TEXT NOT NULL,
+    account_key TEXT,
     breaker_type TEXT NOT NULL
         CHECK (breaker_type IN ('executor', 'pnl', 'frequency', 'margin')),
     event TEXT NOT NULL
@@ -16,20 +17,24 @@ CREATE TABLE IF NOT EXISTS circuit_breaker_history (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     PRIMARY KEY (recorded_at, account_alias, breaker_type)
 );
+ALTER TABLE circuit_breaker_history
+    ADD COLUMN IF NOT EXISTS account_key TEXT;
 
 SELECT create_hypertable('circuit_breaker_history', 'recorded_at',
        if_not_exists => TRUE, migrate_data => TRUE);
 
 CREATE INDEX IF NOT EXISTS idx_cb_history_account
     ON circuit_breaker_history(account_alias, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cb_history_account_key
+    ON circuit_breaker_history(account_key, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cb_history_type_event
     ON circuit_breaker_history(breaker_type, event, recorded_at DESC);
 """
 
 INSERT_SQL = """
 INSERT INTO circuit_breaker_history (
-    recorded_at, account_alias, breaker_type, event,
+    recorded_at, account_alias, account_key, breaker_type, event,
     consecutive_failures, reason, metadata
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 """

@@ -475,7 +475,15 @@ TEMPLATES = {
 
 
 def main() -> None:
+    from src.config.instance_context import set_current_environment
+
     parser = argparse.ArgumentParser(description="MT5Services signal mining runner")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定 research 使用哪个环境数据库",
+    )
     parser.add_argument(
         "--tf", required=True, help="Timeframe(s), comma-separated: H1,M30,M15"
     )
@@ -532,6 +540,7 @@ def main() -> None:
         help="Write JSON payload (results + optional candidates) to file",
     )
     args = parser.parse_args()
+    set_current_environment(args.environment)
 
     tfs = [t.strip() for t in args.tf.split(",") if t.strip()]
     analyses = (

@@ -125,36 +125,105 @@ class TradePrecheckModel(BaseModel):
     intent: Dict[str, Any] = Field(default_factory=dict)
 
 
+class AdmissionReasonModel(BaseModel):
+    code: str
+    stage: str
+    message: str
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AdmissionReportModel(BaseModel):
+    decision: str
+    stage: str
+    reasons: List[AdmissionReasonModel] = Field(default_factory=list)
+    deployment_contract: Dict[str, Any] = Field(default_factory=dict)
+    economic_guard: Dict[str, Any] = Field(default_factory=dict)
+    quote_health: Dict[str, Any] = Field(default_factory=dict)
+    trade_control: Dict[str, Any] = Field(default_factory=dict)
+    margin_guard: Dict[str, Any] = Field(default_factory=dict)
+    position_limits: Dict[str, Any] = Field(default_factory=dict)
+    generated_at: str
+    requested_operation: Optional[str] = None
+    account_alias: Optional[str] = None
+    account_key: Optional[str] = None
+    trace_id: Optional[str] = None
+    signal_id: Optional[str] = None
+    intent_id: Optional[str] = None
+    action_id: Optional[str] = None
+    scope: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
 class CloseRequest(BaseModel):
     ticket: int
     volume: Optional[float] = None
+    account_alias: Optional[str] = None
     deviation: int = 20
     comment: str = ""
+    reason: str = ""
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CloseAllRequest(BaseModel):
     symbol: Optional[str] = None
     magic: Optional[int] = None
     side: Optional[str] = None
+    account_alias: Optional[str] = None
     deviation: int = 20
     comment: str = "close_all"
+    reason: str = ""
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TradeControlRequest(BaseModel):
     auto_entry_enabled: Optional[bool] = None
     close_only_mode: Optional[bool] = None
+    account_alias: Optional[str] = None
     reason: str = ""
     reset_circuit: bool = False
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RuntimeModeRequest(BaseModel):
     mode: Literal["full", "observe", "risk_off", "ingest_only"]
+    account_alias: Optional[str] = None
     reason: str = ""
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ExposureCloseoutRequest(BaseModel):
+    account_alias: Optional[str] = None
     reason: str = "manual_risk_off"
     comment: str = "manual_exposure_closeout"
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PendingEntryCancelRequest(BaseModel):
+    account_alias: Optional[str] = None
+    reason: str = "api"
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PendingEntriesBySymbolCancelRequest(BaseModel):
+    symbol: str
+    account_alias: Optional[str] = None
+    reason: str = "api"
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TradeReconcileRequest(BaseModel):
@@ -163,6 +232,11 @@ class TradeReconcileRequest(BaseModel):
 class CancelOrdersRequest(BaseModel):
     symbol: Optional[str] = None
     magic: Optional[int] = None
+    account_alias: Optional[str] = None
+    reason: str = ""
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchTradeRequest(BaseModel):
@@ -172,12 +246,22 @@ class BatchTradeRequest(BaseModel):
 
 class BatchCloseRequest(BaseModel):
     tickets: List[int] = Field(default_factory=list)
+    account_alias: Optional[str] = None
     deviation: int = 20
     comment: str = ""
+    reason: str = ""
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchCancelOrdersRequest(BaseModel):
     tickets: List[int] = Field(default_factory=list)
+    account_alias: Optional[str] = None
+    reason: str = ""
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TradeDispatchRequest(BaseModel):
@@ -232,12 +316,17 @@ class SymbolInfoModel(BaseModel):
 class TradingAccountModel(BaseModel):
     alias: str
     label: str
+    account_key: Optional[str] = None
     login: Optional[int] = None
     server: Optional[str] = None
+    environment: Optional[str] = None
     timezone: str
     enabled: bool = True
     default: bool = False
     active: bool = False
+    risk_state: Optional[Dict[str, Any]] = None
+    tradability: Optional[Dict[str, Any]] = None
+    unmanaged_live_positions: Optional[Dict[str, Any]] = None
 
 
 class EconomicCalendarEventModel(BaseModel):
@@ -295,8 +384,12 @@ class EconomicCalendarRefreshModel(BaseModel):
 class EconomicCalendarStatusModel(BaseModel):
     enabled: str
     running: str
+    health_state: Optional[str] = None
+    warming_up: Optional[str] = None
     local_timezone: Optional[str] = None
     refresh_interval_seconds: Optional[str] = None
+    bootstrap_started_at: Optional[str] = None
+    bootstrap_deadline_at: Optional[str] = None
     last_refresh_at: Optional[str] = None
     last_refresh_started_at: Optional[str] = None
     last_refresh_completed_at: Optional[str] = None
@@ -305,6 +398,7 @@ class EconomicCalendarStatusModel(BaseModel):
     refresh_in_progress: Optional[str] = None
     last_refresh_duration_ms: Optional[str] = None
     consecutive_failures: Optional[str] = None
+    staleness_seconds: Optional[str] = None
     stale: Optional[str] = None
     default_countries: Optional[str] = None
     provider_status: Optional[Dict[str, Any]] = None

@@ -79,16 +79,29 @@ class RuntimeTasksView(BaseModel):
     filters: Dict[str, Optional[str]] = Field(default_factory=dict)
 
 
-class PendingEntryCancellationView(BaseModel):
+class RuntimeActionResultView(BaseModel):
+    accepted: bool
+    status: str
+    action_id: str
+    audit_id: Optional[str] = None
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    recorded_at: Optional[str] = None
+    effective_state: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PendingEntryCancellationView(RuntimeActionResultView):
     cancelled: bool
     signal_id: str
-    reason: str
 
 
-class PendingEntriesBySymbolCancellationView(BaseModel):
+class PendingEntriesBySymbolCancellationView(RuntimeActionResultView):
     cancelled_count: int
     symbol: str
-    reason: str
 
 
 class EffectiveRuntimeConfigView(BaseModel):

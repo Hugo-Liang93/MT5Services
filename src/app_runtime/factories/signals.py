@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from src.config.file_manager import get_file_config_manager
+from src.config import get_economic_config
+from src.config.mt5 import load_group_mt5_settings
+from src.calendar.policy import build_signal_economic_policy
 from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
 from src.signals.contracts import (
     StrategyDeployment,
@@ -46,7 +49,8 @@ from src.trading.execution import (
 from src.trading.execution.eventing import execute_market_order
 from src.trading.execution.pending_orders import inspect_pending_mt5_order
 from src.trading.pending import PendingEntryConfig, PendingEntryManager
-from src.trading.positions import PositionManager
+from src.trading.positions import ConfirmedIndicatorSource, PositionManager
+from src.trading.intents import ExecutionIntentConsumer, ExecutionIntentPublisher
 from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 
 _factory_logger = _logging.getLogger(__name__)
@@ -123,7 +127,21 @@ class SignalComponents:
     position_manager: PositionManager
     trade_executor: TradeExecutor
     performance_tracker: StrategyPerformanceTracker
+    signal_performance_tracker: StrategyPerformanceTracker
+    execution_performance_tracker: StrategyPerformanceTracker
     pending_entry_manager: PendingEntryManager
+    execution_intent_publisher: ExecutionIntentPublisher | None
+    execution_intent_consumer: ExecutionIntentConsumer | None
+
+
+@dataclass(frozen=True)
+class AccountRuntimeComponents:
+    trade_outcome_tracker: TradeOutcomeTracker
+    exposure_closeout_controller: ExposureCloseoutController
+    position_manager: PositionManager
+    trade_executor: TradeExecutor
+    pending_entry_manager: PendingEntryManager
+    execution_intent_consumer: ExecutionIntentConsumer | None
 
 
 def build_pending_entry_config(signal_config) -> PendingEntryConfig:
@@ -138,8 +156,11 @@ def build_pending_entry_config(signal_config) -> PendingEntryConfig:
 
 
 def build_signal_filter_chain(
-    signal_config, economic_calendar_service
+    signal_config,
+    economic_calendar_service,
+    economic_config=None,
 ) -> SignalFilterChain:
+    policy = build_signal_economic_policy(economic_config or get_economic_config())
     return SignalFilterChain(
         session_filter=SessionFilter(
             allowed_sessions=tuple(
@@ -156,14 +177,8 @@ def build_signal_filter_chain(
             session_max_spread_points=dict(signal_config.session_spread_limits),
         ),
         economic_filter=EconomicEventFilter(
-            provider=(
-                economic_calendar_service
-                if signal_config.economic_filter_enabled
-                else None
-            ),
-            lookahead_minutes=signal_config.economic_lookahead_minutes,
-            lookback_minutes=signal_config.economic_lookback_minutes,
-            importance_min=signal_config.economic_importance_min,
+            provider=economic_calendar_service,
+            policy=policy,
         ),
         volatility_filter=VolatilitySpikeFilter(
             spike_multiplier=signal_config.volatility_atr_spike_multiplier,
@@ -308,16 +323,274 @@ def _validate_strategy_deployment_contracts(
             getattr(signal_config, "regime_affinity_overrides", {}) or {}
         ),
     )
-    # legacy default: 未声明部署合同的策略继续按 active 处理
-    for strategy_name in strategies:
-        deployments.setdefault(
-            strategy_name,
-            StrategyDeployment(
-                name=strategy_name,
-                status=StrategyDeploymentStatus.ACTIVE,
-            ),
+    missing_contracts = sorted(
+        strategy_name for strategy_name in strategies if strategy_name not in deployments
+    )
+    if missing_contracts:
+        raise ValueError(
+            "Explicit strategy deployment contracts are required for all registered "
+            "strategies; missing: " + ", ".join(missing_contracts)
         )
     return deployments
+
+
+def _validate_execution_contracts(
+    *,
+    signal_config: Any,
+    deployments: Mapping[str, StrategyDeployment],
+    runtime_identity: Any | None,
+) -> None:
+    if runtime_identity is None or not bool(getattr(signal_config, "auto_trade_enabled", False)):
+        return
+
+    live_executable_strategies = sorted(
+        strategy_name
+        for strategy_name, deployment in deployments.items()
+        if deployment.allows_live_execution()
+    )
+    if not live_executable_strategies:
+        return
+
+    configured_accounts = load_group_mt5_settings(
+        instance_name=runtime_identity.instance_name,
+    )
+    normalized_bindings = {
+        str(alias).strip(): {
+            str(strategy).strip()
+            for strategy in (strategies or [])
+            if str(strategy).strip()
+        }
+        for alias, strategies in (
+            getattr(signal_config, "account_bindings", {}) or {}
+        ).items()
+        if str(alias).strip()
+    }
+
+    unknown_aliases = sorted(
+        alias for alias in normalized_bindings if alias not in configured_accounts
+    )
+    if unknown_aliases:
+        raise ValueError(
+            "account_bindings reference unconfigured MT5 accounts: "
+            + ", ".join(unknown_aliases)
+        )
+
+    bound_live_strategies = {
+        strategy_name
+        for strategies in normalized_bindings.values()
+        for strategy_name in strategies
+    }
+    unbound_live_strategies = sorted(
+        strategy_name
+        for strategy_name in live_executable_strategies
+        if strategy_name not in bound_live_strategies
+    )
+    if unbound_live_strategies:
+        raise ValueError(
+            "auto_trade_enabled requires explicit account_bindings for every "
+            "live-executable strategy; missing bindings for: "
+            + ", ".join(unbound_live_strategies)
+        )
+
+
+def build_account_runtime_components(
+    *,
+    market_service,
+    storage_writer,
+    trade_module,
+    signal_config,
+    execution_performance_tracker,
+    runtime_identity=None,
+    trading_state_store=None,
+    pipeline_event_bus=None,
+    regime_detector=None,
+    on_execution_skip: Callable[[str, str], None] | None = None,
+) -> AccountRuntimeComponents:
+    end_of_day_closeout = ExposureCloseoutController(
+        ExposureCloseoutService(trade_module)
+    )
+    from src.trading.positions.exit_rules import ChandelierConfig as _ChandelierConfig
+    from src.trading.positions.exit_rules import profile_from_aggression as _pfa
+
+    _chandelier_cfg = _ChandelierConfig(
+        regime_aware=signal_config.chandelier_regime_aware,
+        default_profile=_pfa(signal_config.chandelier_default_alpha),
+        breakeven_enabled=signal_config.chandelier_breakeven_enabled,
+        breakeven_buffer_r=signal_config.chandelier_breakeven_buffer_r,
+        min_breakeven_buffer=signal_config.chandelier_min_breakeven_buffer,
+        signal_exit_enabled=signal_config.chandelier_signal_exit_enabled,
+        signal_exit_confirmation_bars=signal_config.chandelier_signal_exit_confirmation_bars,
+        timeout_bars=signal_config.chandelier_timeout_bars,
+        max_tp_r=signal_config.chandelier_max_tp_r,
+        enforce_r_floor=signal_config.chandelier_enforce_r_floor,
+        aggression_overrides=dict(signal_config.chandelier_aggression_overrides),
+        tf_trail_scale=dict(signal_config.chandelier_tf_trail_scale),
+    )
+    position_manager = PositionManager(
+        trading_module=trade_module,
+        end_of_day_closeout=end_of_day_closeout,
+        chandelier_config=_chandelier_cfg,
+        indicator_source=ConfirmedIndicatorSource(market_service),
+        regime_detector=regime_detector,
+        end_of_day_close_enabled=signal_config.end_of_day_close_enabled,
+        end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
+        end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
+    )
+
+    def _write_position_sl_tp_history(rows: list[tuple]) -> None:
+        account_alias = (
+            runtime_identity.account_alias if runtime_identity is not None else ""
+        )
+        account_key = (
+            runtime_identity.account_key if runtime_identity is not None else None
+        )
+        normalized_rows = []
+        for row in rows:
+            normalized_rows.append(
+                (
+                    row[0],
+                    account_alias,
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                    row[6],
+                    row[7],
+                    row[8],
+                    row[9],
+                    row[10],
+                    row[11],
+                    row[12],
+                    row[13],
+                    row[14],
+                    row[15],
+                    row[16],
+                    row[17],
+                    row[18],
+                    account_key,
+                )
+            )
+
+        storage_writer.db.write_position_sl_tp_history(normalized_rows)
+
+    position_manager.set_sl_tp_history_writer(_write_position_sl_tp_history)
+
+    trade_outcome_tracker = TradeOutcomeTracker(
+        write_fn=storage_writer.db.write_trade_outcomes,
+        on_outcome_fn=execution_performance_tracker.record_outcome,
+    )
+
+    persist_execution_fn = getattr(storage_writer.db, "write_auto_executions", None)
+    execution_gate = ExecutionGate(config=build_execution_gate_config(signal_config))
+    _executor_holder: list[TradeExecutor] = []
+    pending_entry_manager = PendingEntryManager(
+        config=build_pending_entry_config(signal_config),
+        market_service=market_service,
+        cancellation_port=trade_module,
+        execute_fn=lambda event, params, cost: (
+            execute_market_order(_executor_holder[0], event, params, cost_metrics=cost)
+            if _executor_holder
+            else None
+        ),
+        on_expired_fn=on_execution_skip,
+        inspect_mt5_order_fn=lambda info: (
+            inspect_pending_mt5_order(_executor_holder[0], info)
+            if _executor_holder
+            else {"status": "pending"}
+        ),
+    )
+
+    from src.trading.execution.equity_filter import (
+        EquityCurveFilter,
+        EquityCurveFilterConfig,
+    )
+
+    equity_filter: EquityCurveFilter | None = None
+    if signal_config.equity_curve_filter_enabled:
+        equity_filter = EquityCurveFilter(
+            balance_getter=lambda: _get_balance_for_equity_filter(trade_module),
+            config=EquityCurveFilterConfig(
+                enabled=True,
+                ma_period=signal_config.equity_curve_filter_ma_period,
+                min_samples=signal_config.equity_curve_filter_min_samples,
+            ),
+        )
+
+    trade_executor = TradeExecutor(
+        trading_module=trade_module,
+        config=build_executor_config(signal_config),
+        position_manager=position_manager,
+        persist_execution_fn=persist_execution_fn,
+        trade_outcome_tracker=trade_outcome_tracker,
+        circuit_breaker_history_fn=storage_writer.db.write_circuit_breaker_history,
+        on_execution_skip=on_execution_skip,
+        execution_gate=execution_gate,
+        pending_entry_manager=pending_entry_manager,
+        performance_tracker=execution_performance_tracker,
+        pipeline_event_bus=pipeline_event_bus,
+        equity_curve_filter=equity_filter,
+        runtime_identity=runtime_identity,
+    )
+    _executor_holder.append(trade_executor)
+
+    position_manager.add_close_callback(trade_outcome_tracker.on_position_closed)
+    position_manager.set_recovery_hooks(
+        position_context_resolver=lambda ticket, comment: trade_module.resolve_position_context(
+            ticket=ticket,
+            comment=comment,
+        ),
+        position_state_resolver=(
+            trading_state_store.resolve_position_state
+            if trading_state_store is not None
+            else None
+        ),
+        recovered_position_callback=trade_outcome_tracker.restore_tracked_position,
+    )
+    if trading_state_store is not None:
+        pending_entry_manager.set_mt5_order_lifecycle_hooks(
+            on_tracked=trading_state_store.record_pending_order_placed,
+            on_filled=lambda info, state: trading_state_store.mark_pending_order_filled(
+                info,
+                state=state,
+            ),
+            on_expired=lambda info, reason: trading_state_store.mark_pending_order_expired(
+                info,
+                reason=reason,
+            ),
+            on_cancelled=lambda info, reason: trading_state_store.mark_pending_order_cancelled(
+                info,
+                reason=reason,
+            ),
+            on_missing=lambda info, reason: trading_state_store.mark_pending_order_missing(
+                info,
+                reason=reason,
+            ),
+        )
+        position_manager.set_state_hooks(
+            on_position_tracked=trading_state_store.record_position_tracked,
+            on_position_updated=trading_state_store.record_position_update,
+            on_position_closed=trading_state_store.mark_position_closed,
+        )
+
+    execution_intent_consumer = None
+    if runtime_identity is not None:
+        execution_intent_consumer = ExecutionIntentConsumer(
+            claim_fn=storage_writer.db.claim_execution_intents,
+            complete_fn=storage_writer.db.complete_execution_intent,
+            heartbeat_fn=storage_writer.db.heartbeat_execution_intent,
+            runtime_identity=runtime_identity,
+            trade_executor=trade_executor,
+            pipeline_event_bus=pipeline_event_bus,
+        )
+
+    return AccountRuntimeComponents(
+        trade_outcome_tracker=trade_outcome_tracker,
+        exposure_closeout_controller=end_of_day_closeout,
+        position_manager=position_manager,
+        trade_executor=trade_executor,
+        pending_entry_manager=pending_entry_manager,
+        execution_intent_consumer=execution_intent_consumer,
+    )
 
 
 def build_signal_components(
@@ -327,6 +600,7 @@ def build_signal_components(
     trade_module,
     economic_calendar_service,
     signal_config,
+    runtime_identity=None,
     trading_state_store=None,
     pipeline_event_bus=None,
 ) -> SignalComponents:
@@ -362,7 +636,10 @@ def build_signal_components(
         calibrator.update_recency_config(
             hours_by_tf=signal_config.calibrator_recency_hours_by_tf,
         )
-    performance_tracker = StrategyPerformanceTracker(
+    signal_performance_tracker = StrategyPerformanceTracker(
+        config=build_performance_tracker_config(signal_config),
+    )
+    execution_performance_tracker = StrategyPerformanceTracker(
         config=build_performance_tracker_config(signal_config),
     )
 
@@ -401,7 +678,7 @@ def build_signal_components(
             storage_writer.db, storage_writer=storage_writer
         ),
         calibrator=calibrator,
-        performance_tracker=performance_tracker,
+        performance_tracker=signal_performance_tracker,
         soft_regime_enabled=signal_config.soft_regime_enabled,
         confidence_floor=signal_config.confidence_floor,
         confidence_floor_min_affinity=signal_config.confidence_floor_min_affinity,
@@ -415,6 +692,11 @@ def build_signal_components(
         signal_module.strategies,
     )
     signal_config.strategy_deployments = validated_deployments
+    _validate_execution_contracts(
+        signal_config=signal_config,
+        deployments=validated_deployments,
+        runtime_identity=runtime_identity,
+    )
 
     # ── HTF 配置从策略声明自动推导（替代 INI [strategy_htf]）──────────
     _htf_target_config = signal_module.htf_target_config()
@@ -470,109 +752,29 @@ def build_signal_components(
         wal_db_path=wal_db_path,
     )
     signal_runtime.set_economic_calendar_service(economic_calendar_service)
-
-    end_of_day_closeout = ExposureCloseoutController(
-        ExposureCloseoutService(trade_module)
-    )
-    from src.trading.positions.exit_rules import ChandelierConfig as _ChandelierConfig
-    from src.trading.positions.exit_rules import ExitProfile as _EP
-    from src.trading.positions.exit_rules import profile_from_aggression as _pfa
-
-    _chandelier_cfg = _ChandelierConfig(
-        regime_aware=signal_config.chandelier_regime_aware,
-        default_profile=_pfa(signal_config.chandelier_default_alpha),
-        breakeven_enabled=signal_config.chandelier_breakeven_enabled,
-        breakeven_buffer_r=signal_config.chandelier_breakeven_buffer_r,
-        min_breakeven_buffer=signal_config.chandelier_min_breakeven_buffer,
-        signal_exit_enabled=signal_config.chandelier_signal_exit_enabled,
-        signal_exit_confirmation_bars=signal_config.chandelier_signal_exit_confirmation_bars,
-        timeout_bars=signal_config.chandelier_timeout_bars,
-        max_tp_r=signal_config.chandelier_max_tp_r,
-        enforce_r_floor=signal_config.chandelier_enforce_r_floor,
-        aggression_overrides=dict(signal_config.chandelier_aggression_overrides),
-        tf_trail_scale=dict(signal_config.chandelier_tf_trail_scale),
-    )
-    position_manager = PositionManager(
-        trading_module=trade_module,
-        end_of_day_closeout=end_of_day_closeout,
-        chandelier_config=_chandelier_cfg,
-        indicator_source=indicator_manager,
-        regime_detector=regime_detector,
-        end_of_day_close_enabled=signal_config.end_of_day_close_enabled,
-        end_of_day_close_hour_utc=signal_config.end_of_day_close_hour_utc,
-        end_of_day_close_minute_utc=signal_config.end_of_day_close_minute_utc,
-    )
-    position_manager.set_sl_tp_history_writer(
-        storage_writer.db.write_position_sl_tp_history
-    )
-    # 交易结果追踪器：追踪实际执行的交易盈亏（由 TradeExecutor 登记，PositionManager 关仓评估）
-    trade_outcome_tracker = TradeOutcomeTracker(
-        write_fn=storage_writer.db.write_trade_outcomes,
-        on_outcome_fn=performance_tracker.record_outcome,
-    )
-
-    persist_execution_fn = getattr(storage_writer.db, "write_auto_executions", None)
-    # signal_quality_tracker 在 trade_executor 之后创建，
-    # 使用延迟绑定 lambda 确保引用正确。
-    _skip_callback_holder: list = []
-
-    execution_gate = ExecutionGate(config=build_execution_gate_config(signal_config))
-    # PendingEntryManager: 价格确认入场
-    pending_entry_config = build_pending_entry_config(signal_config)
-    # execute_fn 延迟绑定：TradeExecutor._execute 在创建后才可引用
-    _executor_holder: list = []
-    pending_entry_manager = PendingEntryManager(
-        config=pending_entry_config,
+    _skip_callback_holder: list[Callable[[str, str], None]] = []
+    account_runtime = build_account_runtime_components(
         market_service=indicator_manager.market_service,
-        cancellation_port=trade_module,
-        execute_fn=lambda event, params, cost: (
-            execute_market_order(_executor_holder[0], event, params, cost_metrics=cost)
-            if _executor_holder
+        storage_writer=storage_writer,
+        trade_module=trade_module,
+        signal_config=signal_config,
+        execution_performance_tracker=execution_performance_tracker,
+        runtime_identity=runtime_identity,
+        trading_state_store=trading_state_store,
+        pipeline_event_bus=pipeline_event_bus,
+        regime_detector=regime_detector,
+        on_execution_skip=lambda sid, reason: (
+            _skip_callback_holder[0](sid, reason)
+            if _skip_callback_holder
             else None
         ),
-        on_expired_fn=lambda sid, reason: (
-            _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
-        ),
-        inspect_mt5_order_fn=lambda info: (
-            inspect_pending_mt5_order(_executor_holder[0], info)
-            if _executor_holder
-            else {"status": "pending"}
-        ),
     )
-    # 权益曲线过滤器
-    from src.trading.execution.equity_filter import (
-        EquityCurveFilter,
-        EquityCurveFilterConfig,
-    )
-
-    equity_filter: EquityCurveFilter | None = None
-    if signal_config.equity_curve_filter_enabled:
-        equity_filter = EquityCurveFilter(
-            balance_getter=lambda: _get_balance_for_equity_filter(trade_module),
-            config=EquityCurveFilterConfig(
-                enabled=True,
-                ma_period=signal_config.equity_curve_filter_ma_period,
-                min_samples=signal_config.equity_curve_filter_min_samples,
-            ),
-        )
-
-    trade_executor = TradeExecutor(
-        trading_module=trade_module,
-        config=build_executor_config(signal_config),
-        position_manager=position_manager,
-        persist_execution_fn=persist_execution_fn,
-        trade_outcome_tracker=trade_outcome_tracker,
-        on_execution_skip=lambda sid, reason: (
-            _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
-        ),
-        execution_gate=execution_gate,
-        pending_entry_manager=pending_entry_manager,
-        performance_tracker=performance_tracker,
-        pipeline_event_bus=pipeline_event_bus,
-        equity_curve_filter=equity_filter,
-    )
-    _executor_holder.append(trade_executor)
-    signal_runtime.add_signal_listener(trade_executor.on_signal_event)
+    trade_outcome_tracker = account_runtime.trade_outcome_tracker
+    end_of_day_closeout = account_runtime.exposure_closeout_controller
+    position_manager = account_runtime.position_manager
+    trade_executor = account_runtime.trade_executor
+    pending_entry_manager = account_runtime.pending_entry_manager
+    execution_intent_consumer = account_runtime.execution_intent_consumer
     signal_runtime.add_signal_listener(position_manager.on_signal_event)
     htf_cache.attach(signal_runtime)
 
@@ -667,11 +869,23 @@ def build_signal_components(
         write_fn=storage_writer.db.write_outcome_events,
         bars_to_evaluate=signal_config.signal_quality_bars_to_evaluate,
         max_pending=signal_config.signal_quality_max_pending,
-        on_quality_fn=performance_tracker.record_outcome,
+        on_quality_fn=signal_performance_tracker.record_outcome,
     )
     signal_quality_tracker.attach(signal_runtime)
     # 绑定延迟引用：TradeExecutor skip → SignalQualityTracker.on_execution_skip
     _skip_callback_holder.append(signal_quality_tracker.on_execution_skip)
+
+    execution_intent_publisher = None
+    if runtime_identity is not None:
+        execution_intent_publisher = ExecutionIntentPublisher(
+            write_fn=storage_writer.db.write_execution_intents,
+            runtime_identity=runtime_identity,
+            account_bindings=dict(getattr(signal_config, "account_bindings", {}) or {}),
+            strategy_deployments=dict(validated_deployments),
+            auto_trade_enabled=signal_config.auto_trade_enabled,
+            pipeline_event_bus=pipeline_event_bus,
+        )
+        signal_runtime.add_signal_listener(execution_intent_publisher.on_signal_event)
 
     return SignalComponents(
         calibrator=calibrator,
@@ -685,8 +899,12 @@ def build_signal_components(
         exposure_closeout_controller=end_of_day_closeout,
         position_manager=position_manager,
         trade_executor=trade_executor,
-        performance_tracker=performance_tracker,
+        performance_tracker=signal_performance_tracker,
+        signal_performance_tracker=signal_performance_tracker,
+        execution_performance_tracker=execution_performance_tracker,
         pending_entry_manager=pending_entry_manager,
+        execution_intent_publisher=execution_intent_publisher,
+        execution_intent_consumer=execution_intent_consumer,
     )
 
 
@@ -750,24 +968,48 @@ def register_signal_hot_reload(
     signal_runtime,
     signal_config_loader,
     *,
+    economic_config_loader=None,
+    runtime_timeframes=None,
     signal_module=None,
     regime_detector=None,
     trade_executor=None,
     economic_calendar_service=None,
     market_structure_analyzer=None,
     performance_tracker=None,
+    signal_performance_tracker=None,
+    execution_performance_tracker=None,
+    execution_intent_publisher=None,
     pending_entry_manager=None,
     calibrator=None,
 ) -> Callable[[], None]:
+    if economic_config_loader is None:
+        economic_config_loader = get_economic_config
+
     def _on_signal_config_change(filename: str) -> None:
-        if filename != "signal.ini":
+        if filename not in {"signal.ini", "economic.ini"}:
             return
         signal_config = signal_config_loader()
-        signal_runtime.update_policy(build_signal_policy(signal_config))
-        signal_runtime.filter_chain = build_signal_filter_chain(
-            signal_config,
-            economic_calendar_service,
-        )
+        economic_config = economic_config_loader()
+        if filename == "signal.ini" and signal_module is not None and runtime_timeframes is not None:
+            from src.app_runtime.builder_phases.signal import (
+                _validate_intrabar_trigger_coverage,
+            )
+
+            _validate_intrabar_trigger_coverage(
+                signal_module,
+                signal_config,
+                effective_timeframes=tuple(runtime_timeframes),
+            )
+        if signal_runtime is not None:
+            signal_runtime.update_policy(build_signal_policy(signal_config))
+            signal_runtime.filter_chain = build_signal_filter_chain(
+                signal_config,
+                economic_calendar_service,
+                economic_config,
+            )
+        if filename == "economic.ini":
+            _factory_logger.info("economic.ini hot reload complete")
+            return
         # 策略参数 + Regime 亲和度热更新
         if signal_module is not None:
             _apply_strategy_hot_reload(signal_module, signal_config)
@@ -782,9 +1024,28 @@ def register_signal_hot_reload(
             trade_executor.update_execution_gate_config(
                 build_execution_gate_config(signal_config)
             )
-        if performance_tracker is not None:
-            performance_tracker.update_config(
+        trackers = [
+            tracker
+            for tracker in (
+                signal_performance_tracker,
+                execution_performance_tracker,
+                performance_tracker,
+            )
+            if tracker is not None
+        ]
+        for tracker in trackers:
+            tracker.update_config(
                 build_performance_tracker_config(signal_config)
+            )
+        if execution_intent_publisher is not None:
+            execution_intent_publisher.update_bindings(
+                account_bindings=dict(
+                    getattr(signal_config, "account_bindings", {}) or {}
+                ),
+                strategy_deployments=dict(
+                    getattr(signal_config, "strategy_deployments", {}) or {}
+                ),
+                auto_trade_enabled=signal_config.auto_trade_enabled,
             )
         if pending_entry_manager is not None:
             pending_entry_manager.config = build_pending_entry_config(signal_config)

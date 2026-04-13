@@ -14,6 +14,11 @@ class TradeControlStateView(FlexibleModel):
     close_only_mode: Optional[bool] = None
     updated_at: Optional[str] = None
     reason: Optional[str] = None
+    actor: Optional[str] = None
+    action_id: Optional[str] = None
+    audit_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class RuntimeModeSummaryView(FlexibleModel):
@@ -22,6 +27,14 @@ class RuntimeModeSummaryView(FlexibleModel):
     configured_mode: Optional[str] = None
     after_eod_action: Optional[str] = None
     auto_check_interval_seconds: Optional[float] = None
+    last_transition_at: Optional[str] = None
+    last_transition_reason: Optional[str] = None
+    last_error: Optional[str] = None
+    last_actor: Optional[str] = None
+    last_action_id: Optional[str] = None
+    last_audit_id: Optional[str] = None
+    last_idempotency_key: Optional[str] = None
+    last_request_context: dict[str, Any] = Field(default_factory=dict)
     components: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -55,6 +68,11 @@ class ExposureCloseoutSummaryView(FlexibleModel):
     last_comment: Optional[str] = None
     last_requested_at: Optional[str] = None
     last_completed_at: Optional[str] = None
+    actor: Optional[str] = None
+    action_id: Optional[str] = None
+    audit_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
     result: Optional[ExposureCloseoutResultView] = None
     runtime_mode_transition: Optional[RuntimeModeTransitionView] = None
 
@@ -139,6 +157,7 @@ class TradeStateSummaryView(FlexibleModel):
     pending: TradePendingStateView
     positions: PositionRuntimeStateListView
     alerts: TradeStateAlertsView
+    validation: dict[str, Any] = Field(default_factory=dict)
 
 
 class TradeControlStatusView(FlexibleModel):
@@ -160,14 +179,74 @@ class TradeCommandAuditView(FlexibleModel):
     pass
 
 
+class TradeMutationResultView(FlexibleModel):
+    accepted: bool
+    status: str
+    action_id: str
+    command_id: Optional[str] = None
+    audit_id: Optional[str] = None
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    recorded_at: Optional[str] = None
+    effective_state: dict[str, Any] = Field(default_factory=dict)
+
+
 class TradeControlUpdateView(FlexibleModel):
+    accepted: bool
+    status: str
+    action_id: str
+    command_id: Optional[str] = None
+    audit_id: Optional[str] = None
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    recorded_at: Optional[str] = None
+    effective_state: dict[str, Any] = Field(default_factory=dict)
     trade_control: dict[str, Any] = Field(default_factory=dict)
     executor: dict[str, Any] = Field(default_factory=dict)
 
 
 class RuntimeModeUpdateView(FlexibleModel):
+    accepted: bool
+    status: str
+    action_id: str
+    command_id: Optional[str] = None
+    audit_id: Optional[str] = None
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    recorded_at: Optional[str] = None
+    effective_state: dict[str, Any] = Field(default_factory=dict)
     runtime_mode: RuntimeModeSummaryView
     trading_state: TradeStateSummaryView
+
+
+class ExposureCloseoutActionView(FlexibleModel):
+    accepted: bool
+    status: str
+    action_id: str
+    command_id: Optional[str] = None
+    audit_id: Optional[str] = None
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    recorded_at: Optional[str] = None
+    effective_state: dict[str, Any] = Field(default_factory=dict)
+    closeout: dict[str, Any] = Field(default_factory=dict)
+    trading_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class TradeTraceIdentifiersView(FlexibleModel):
@@ -180,12 +259,31 @@ class TradeTraceIdentifiersView(FlexibleModel):
     position_tickets: list[int] = Field(default_factory=list)
 
 
+class TradeTraceAdmissionView(FlexibleModel):
+    decision: Optional[str] = None
+    stage: Optional[str] = None
+    generated_at: Optional[str] = None
+    reason_count: int = 0
+    trace_id: Optional[str] = None
+    signal_id: Optional[str] = None
+    intent_id: Optional[str] = None
+    command_id: Optional[str] = None
+    action_id: Optional[str] = None
+
+
 class TradeTraceSummaryView(FlexibleModel):
     stages: dict[str, str] = Field(default_factory=dict)
     pipeline_event_counts: dict[str, int] = Field(default_factory=dict)
     command_counts: dict[str, int] = Field(default_factory=dict)
     pending_status_counts: dict[str, int] = Field(default_factory=dict)
     position_status_counts: dict[str, int] = Field(default_factory=dict)
+    admission: Optional[TradeTraceAdmissionView] = None
+    status: Optional[str] = None
+    started_at: Optional[str] = None
+    last_event_at: Optional[str] = None
+    event_count: Optional[int] = None
+    last_stage: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class TradeTraceTimelineEventView(FlexibleModel):
@@ -213,6 +311,21 @@ class TradeTraceGraphView(FlexibleModel):
     edges: list[TradeTraceGraphEdgeView] = Field(default_factory=list)
 
 
+class TradeTraceListItemView(FlexibleModel):
+    trace_id: str
+    signal_id: Optional[str] = None
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+    strategy: Optional[str] = None
+    status: Optional[str] = None
+    started_at: Optional[str] = None
+    last_event_at: Optional[str] = None
+    event_count: int = 0
+    last_stage: Optional[str] = None
+    reason: Optional[str] = None
+    admission: Optional[TradeTraceAdmissionView] = None
+
+
 class TradeTraceView(FlexibleModel):
     signal_id: Optional[str] = None
     trace_id: Optional[str] = None
@@ -222,3 +335,6 @@ class TradeTraceView(FlexibleModel):
     timeline: list[TradeTraceTimelineEventView] = Field(default_factory=list)
     graph: TradeTraceGraphView
     facts: dict[str, Any] = Field(default_factory=dict)
+    related_signals: dict[str, Any] = Field(default_factory=dict)
+    related_trade_audits: list[dict[str, Any]] = Field(default_factory=list)
+    related_pipeline_events: list[dict[str, Any]] = Field(default_factory=list)

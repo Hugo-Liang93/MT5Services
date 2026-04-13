@@ -101,8 +101,8 @@ def build_studio_service(container: AppContainer) -> StudioService:
             },
             "performance_tracker": {
                 "pnl_circuit_paused": (
-                    container.performance_tracker.is_trading_paused()
-                    if container.performance_tracker is not None
+                    container.execution_performance_tracker.is_trading_paused()
+                    if container.execution_performance_tracker is not None
                     else False
                 ),
             },
@@ -211,7 +211,12 @@ def build_studio_service(container: AppContainer) -> StudioService:
         def _summary_provider() -> dict[str, Any]:
             account_info = _account_info_payload() or {}
             login = account_info.get("login", "")
-            return {"account": str(login), "environment": "live"}
+            environment = (
+                container.runtime_identity.environment
+                if container.runtime_identity is not None
+                else "unknown"
+            )
+            return {"account": str(login), "environment": environment}
 
         studio.register_agent(
             "accountant",

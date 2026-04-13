@@ -31,7 +31,7 @@ class SystemConfig(BaseModel):
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
     api_port: int = 8808
-    runtime_data_dir: str = "data"
+    runtime_data_dir: str = "data/runtime"
     modules_enabled: List[str] = Field(
         default_factory=lambda: ["ingest", "api", "indicators", "storage"]
     )

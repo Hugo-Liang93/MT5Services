@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import src.config.signal as signal_config
 from src.signals.contracts import StrategyDeploymentStatus
 
@@ -135,3 +137,20 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     assert deployment.paper_shadow_required is True
     assert deployment.robustness_tier == "tf_specific"
     assert deployment.research_provenance == "cand_abc123"
+
+
+def test_signal_config_rejects_deprecated_economic_signal_keys(monkeypatch):
+    merged = {
+        "signal": {
+            "auto_trade_enabled": "false",
+            "economic_lookahead_minutes": "30",
+        }
+    }
+
+    monkeypatch.setattr(signal_config, "get_merged_config", lambda name: merged)
+    signal_config.get_signal_config.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="economic-event windows"):
+            signal_config.get_signal_config()
+    finally:
+        signal_config.get_signal_config.cache_clear()

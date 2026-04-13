@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS trade_command_audits (
     recorded_at      timestamptz NOT NULL,
     operation_id     text NOT NULL,
     account_alias    text NOT NULL,
+    account_key      text,
     command_type     text NOT NULL,
     status           text NOT NULL
                      CHECK (status IN ('success', 'failed', 'timeout', 'error')),
@@ -28,12 +29,16 @@ CREATE TABLE IF NOT EXISTS trade_command_audits (
     response_payload jsonb,
     PRIMARY KEY (recorded_at, operation_id)
 );
+ALTER TABLE trade_command_audits
+    ADD COLUMN IF NOT EXISTS account_key text;
 SELECT create_hypertable('trade_command_audits', 'recorded_at',
                           if_not_exists => TRUE, migrate_data => TRUE);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_audits_operation_id
 ON trade_command_audits (operation_id, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_trade_audits_recorded
 ON trade_command_audits (recorded_at DESC, account_alias, command_type);
+CREATE INDEX IF NOT EXISTS idx_trade_audits_account_key
+ON trade_command_audits (account_key, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_audits_status
 ON trade_command_audits (status, recorded_at DESC);
 """
@@ -43,6 +48,7 @@ INSERT INTO trade_command_audits (
     recorded_at,
     operation_id,
     account_alias,
+    account_key,
     command_type,
     status,
     symbol,
@@ -58,9 +64,10 @@ INSERT INTO trade_command_audits (
     request_payload,
     response_payload
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (operation_id, recorded_at) DO UPDATE SET
     account_alias    = EXCLUDED.account_alias,
+    account_key      = EXCLUDED.account_key,
     command_type     = EXCLUDED.command_type,
     status           = EXCLUDED.status,
     symbol           = EXCLUDED.symbol,

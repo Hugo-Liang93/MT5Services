@@ -7,10 +7,24 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, BackgroundTasks
 
+from src.api.action_contracts import (
+    build_action_error_details,
+    build_action_error_payload,
+    build_action_result,
+    build_idempotency_conflict_response,
+    build_replayed_action_response,
+    normalize_action_actor,
+    normalize_idempotency_key,
+    normalize_request_context,
+)
+from src.api.error_codes import AIErrorAction, AIErrorCode
 from src.api.schemas import ApiResponse
 from src.api.backtest_routes import schemas as api_config, execution as api_execution
 from src.backtesting.models import BacktestJob, BacktestJobStatus
-from src.backtesting.data import backtest_runtime_store
+from src.backtesting.data import (
+    BacktestActionReplayConflictError,
+    backtest_runtime_store,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -40,25 +54,127 @@ def _create_job(
     return job
 
 
-@router.post("/run", response_model=ApiResponse)
+@router.post("/run", response_model=ApiResponse[api_config.BacktestRunActionView])
 async def run_backtest(
     request: api_config.BacktestRunRequest,
     background_tasks: BackgroundTasks,
 ) -> ApiResponse:
+    command_type = "backtest_run"
+    actor = normalize_action_actor(request.actor)
+    idempotency_key = normalize_idempotency_key(request.idempotency_key)
+    reason = str(request.reason or "").strip() or "manual_backtest_run"
+    request_context = normalize_request_context(request.request_context)
+    request_payload = {
+        **request.model_dump(),
+        "actor": actor,
+        "reason": reason,
+        "idempotency_key": idempotency_key,
+        "request_context": request_context,
+    }
+    if idempotency_key:
+        try:
+            replayed = backtest_runtime_store.find_submitted_action(
+                command_type=command_type,
+                idempotency_key=idempotency_key,
+                request_payload=request_payload,
+            )
+        except BacktestActionReplayConflictError as exc:
+            return build_idempotency_conflict_response(
+                operation="backtest_run",
+                command_type=command_type,
+                idempotency_key=idempotency_key,
+                existing_record=exc.existing_record,
+                extra_metadata={"symbol": request.symbol, "timeframe": request.timeframe},
+            )
+        if replayed is not None:
+            return build_replayed_action_response(
+                operation="backtest_run",
+                replayed=replayed,
+                extra_metadata={"symbol": request.symbol, "timeframe": request.timeframe},
+                default_error_code=AIErrorCode.UNKNOWN_ERROR,
+                default_suggested_action=AIErrorAction.CONTACT_SUPPORT,
+            )
     run_id = f"bt_{uuid.uuid4().hex[:12]}"
-    job = _create_job(
-        run_id=run_id,
-        job_type="backtest",
-        config_summary={
-            "symbol": request.symbol,
-            "timeframe": request.timeframe,
-            "start_time": request.start_time,
-            "end_time": request.end_time,
-            "simulation_mode": _resolve_job_simulation_mode(request),
-        },
-    )
-    background_tasks.add_task(api_execution.execute_backtest, run_id, request)
-    return ApiResponse(success=True, data=job.to_dict())
+    try:
+        job = _create_job(
+            run_id=run_id,
+            job_type="backtest",
+            config_summary={
+                "symbol": request.symbol,
+                "timeframe": request.timeframe,
+                "start_time": request.start_time,
+                "end_time": request.end_time,
+                "simulation_mode": _resolve_job_simulation_mode(request),
+            },
+        )
+        background_tasks.add_task(api_execution.execute_backtest, run_id, request)
+        job_payload = job.to_dict()
+        runtime_status = backtest_runtime_store.get_runtime_status()
+        response_payload = build_action_result(
+            action_id=run_id,
+            audit_id=run_id,
+            actor=actor,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            request_context=request_context,
+            status="submitted",
+            message="backtest job submitted",
+            recorded_at=job_payload.get("submitted_at"),
+            effective_state={
+                "job": job_payload,
+                "runtime_status": runtime_status,
+            },
+            extra_fields={
+                "run_id": run_id,
+                "job": job_payload,
+            },
+        )
+        backtest_runtime_store.cache_submitted_action(
+            command_type=command_type,
+            request_payload=request_payload,
+            response_payload=response_payload,
+        )
+        return ApiResponse.success_response(
+            data=response_payload,
+            metadata={
+                "operation": "backtest_run",
+                "run_id": run_id,
+                "action_id": run_id,
+                "audit_id": run_id,
+                "actor": actor,
+            },
+        )
+    except Exception as exc:
+        backtest_runtime_store.fail_job(run_id, str(exc))
+        error_payload = build_action_error_payload(
+            action_id=run_id,
+            audit_id=run_id,
+            actor=actor,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            request_context=request_context,
+            error_code=AIErrorCode.UNKNOWN_ERROR,
+            error_message=f"Backtest submission failed: {str(exc)}",
+            suggested_action=AIErrorAction.CONTACT_SUPPORT,
+            operation="backtest_run",
+            extra_details={
+                "symbol": request.symbol,
+                "timeframe": request.timeframe,
+            },
+        )
+        if idempotency_key:
+            backtest_runtime_store.cache_submitted_action(
+                command_type=command_type,
+                request_payload=request_payload,
+                response_payload=error_payload,
+            )
+        details = dict(error_payload.get("details") or {})
+        return ApiResponse.error_response(
+            error_code=AIErrorCode.UNKNOWN_ERROR,
+            error_message=f"Backtest submission failed: {str(exc)}",
+            suggested_action=AIErrorAction.CONTACT_SUPPORT,
+            details=details,
+        )
 
 
 @router.post("/optimize", response_model=ApiResponse)

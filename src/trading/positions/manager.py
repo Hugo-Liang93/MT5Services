@@ -37,7 +37,7 @@ from .exit_rules import (
 
 
 class IndicatorSource(Protocol):
-    """读取已计算好的指标快照（由 IndicatorManager 实现）。"""
+    """读取已计算好的指标快照。"""
 
     def get_indicator(
         self,

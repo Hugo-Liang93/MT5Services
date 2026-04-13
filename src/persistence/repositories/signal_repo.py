@@ -156,6 +156,110 @@ class SignalEventRepository:
             cur.execute(sql, params)
             return cur.fetchall()
 
+    def query_signal_events(
+        self,
+        *,
+        scope: str = "confirmed",
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        direction: Optional[str] = None,
+        status: Optional[str] = None,
+        from_time: Optional[_dt] = None,
+        to_time: Optional[_dt] = None,
+        page: int = 1,
+        page_size: int = 200,
+        sort: str = "generated_at_desc",
+    ) -> dict[str, Any]:
+        normalized_scope = str(scope or "confirmed").strip().lower()
+        if normalized_scope not in {"confirmed", "preview", "all"}:
+            raise ValueError(f"unsupported signal scope: {scope}")
+
+        sort_token = str(sort or "generated_at_desc").strip().lower()
+        sort_direction = "ASC" if sort_token in {"generated_at_asc", "asc"} else "DESC"
+        effective_page = max(1, int(page))
+        effective_page_size = max(1, int(page_size))
+        offset = (effective_page - 1) * effective_page_size
+
+        if normalized_scope == "confirmed":
+            source_sql = (
+                "SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason, "
+                "used_indicators, indicators_snapshot, metadata, 'confirmed'::text AS scope "
+                "FROM signal_events"
+            )
+        elif normalized_scope == "preview":
+            source_sql = (
+                "SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason, "
+                "used_indicators, indicators_snapshot, metadata, 'preview'::text AS scope "
+                "FROM signal_preview_events"
+            )
+        else:
+            source_sql = """
+SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason,
+       used_indicators, indicators_snapshot, metadata, 'confirmed'::text AS scope
+FROM signal_events
+UNION ALL
+SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason,
+       used_indicators, indicators_snapshot, metadata, 'preview'::text AS scope
+FROM signal_preview_events
+"""
+
+        sql = f"""
+SELECT generated_at,
+       signal_id,
+       symbol,
+       timeframe,
+       strategy,
+       direction,
+       confidence,
+       reason,
+       used_indicators,
+       indicators_snapshot,
+       metadata,
+       scope,
+       COUNT(*) OVER() AS total_count
+FROM ({source_sql}) AS signal_rows
+WHERE 1=1
+"""
+        params: list[Any] = []
+        if symbol is not None:
+            sql += " AND symbol = %s"
+            params.append(symbol)
+        if timeframe is not None:
+            sql += " AND timeframe = %s"
+            params.append(timeframe)
+        if strategy is not None:
+            sql += " AND strategy = %s"
+            params.append(strategy)
+        if direction is not None:
+            sql += " AND direction = %s"
+            params.append(direction)
+        if status is not None:
+            sql += " AND COALESCE(metadata->>'signal_state', '') = %s"
+            params.append(status)
+        if from_time is not None:
+            sql += " AND generated_at >= %s"
+            params.append(from_time)
+        if to_time is not None:
+            sql += " AND generated_at <= %s"
+            params.append(to_time)
+        sql += (
+            f" ORDER BY generated_at {sort_direction}, signal_id {sort_direction} "
+            "LIMIT %s OFFSET %s"
+        )
+        params.extend([effective_page_size, offset])
+
+        rows = self._fetch_dict_rows(sql, params)
+        total = int(rows[0].get("total_count") or 0) if rows else 0
+        items = [self._dict_row_to_event(row) for row in rows]
+        return {
+            "items": items,
+            "total": total,
+            "page": effective_page,
+            "page_size": effective_page_size,
+            "scope": normalized_scope,
+        }
+
     def summarize_signal_events(self, *, hours: int = 24) -> List[Tuple]:
         return self._summarize_signal_rows(table_name="signal_events", hours=hours)
 
@@ -196,6 +300,9 @@ class SignalEventRepository:
                 (
                     executed_at,
                     entry.get("signal_id") or "",
+                    entry.get("account_key"),
+                    entry.get("account_alias"),
+                    entry.get("intent_id"),
                     entry.get("symbol") or "",
                     entry.get("direction") or "",
                     entry.get("strategy") or "",
@@ -233,8 +340,8 @@ class SignalEventRepository:
     def write_trade_outcomes(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
         batch = []
         for row in rows:
-            metadata = row[12] if len(row) > 12 and row[12] is not None else {}
-            batch.append((*row[:12], self._writer._json(metadata)))
+            metadata = row[15] if len(row) > 15 and row[15] is not None else {}
+            batch.append((*row[:15], self._writer._json(metadata)))
         if not batch:
             return
         self._writer._batch(INSERT_TRADE_OUTCOMES_SQL, batch, page_size=page_size)
@@ -252,15 +359,48 @@ class SignalEventRepository:
             )
             return cur.fetchall()
 
+    def fetch_recent_signal_outcomes(self, *, hours: int = 24) -> List[dict]:
+        return self._fetch_recent_outcomes(
+            """
+SELECT strategy,
+       won,
+       COALESCE(price_change, 0.0) AS pnl,
+       regime,
+       'signal'                    AS source,
+       recorded_at
+FROM signal_outcomes
+WHERE recorded_at >= NOW() - (%s * INTERVAL '1 hour')
+  AND won IS NOT NULL
+ORDER BY recorded_at ASC
+""",
+            [max(1, int(hours))],
+        )
+
+    def fetch_recent_trade_outcomes(
+        self,
+        *,
+        hours: int = 24,
+        account_key: str | None = None,
+    ) -> List[dict]:
+        sql = """
+SELECT strategy,
+       won,
+       COALESCE(price_change, 0.0) AS pnl,
+       regime,
+       'trade'                     AS source,
+       recorded_at
+FROM trade_outcomes
+WHERE recorded_at >= NOW() - (%s * INTERVAL '1 hour')
+  AND won IS NOT NULL
+"""
+        params: list[Any] = [max(1, int(hours))]
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        sql += " ORDER BY recorded_at ASC"
+        return self._fetch_recent_outcomes(sql, params)
+
     def fetch_recent_outcomes(self, *, hours: int = 24) -> List[dict]:
-        """查询最近 N 小时内的信号和交易结果，按时间升序排列。
-
-        用于 PerformanceTracker 重启后的 warm-up：将历史结果重放
-        进内存统计，恢复 wins/losses/streak 状态。
-
-        返回 list of dict，每条记录包含：
-            strategy, won, pnl, regime, source, recorded_at
-        """
         sql = """
 SELECT strategy,
        won,
@@ -284,20 +424,7 @@ WHERE recorded_at >= NOW() - (%s * INTERVAL '1 hour')
 ORDER BY recorded_at ASC
 """
         h = max(1, int(hours))
-        with self._writer.connection() as conn, conn.cursor() as cur:
-            cur.execute(sql, [h, h])
-            rows = cur.fetchall()
-        return [
-            {
-                "strategy": r[0],
-                "won": r[1],
-                "pnl": float(r[2]) if r[2] is not None else 0.0,
-                "regime": r[3],
-                "source": r[4],
-                "recorded_at": r[5],
-            }
-            for r in rows
-        ]
+        return self._fetch_recent_outcomes(sql, [h, h])
 
     def fetch_auto_executions(
         self,
@@ -308,7 +435,7 @@ ORDER BY recorded_at ASC
         return self._fetch_dict_rows(
             """
 SELECT executed_at, signal_id, symbol, direction, strategy, confidence,
-       volume, entry_price, stop_loss, take_profit, risk_reward,
+       account_key, account_alias, intent_id, volume, entry_price, stop_loss, take_profit, risk_reward,
        success, error_message, metadata
 FROM auto_executions
 WHERE signal_id = %s
@@ -345,7 +472,7 @@ LIMIT %s
         return self._fetch_dict_rows(
             """
 SELECT recorded_at, signal_id, symbol, timeframe, strategy, direction, confidence,
-       fill_price, close_price, price_change, won, regime, metadata
+       account_key, account_alias, intent_id, fill_price, close_price, price_change, won, regime, metadata
 FROM trade_outcomes
 WHERE signal_id = %s
 ORDER BY recorded_at ASC
@@ -360,3 +487,39 @@ LIMIT %s
             rows = cur.fetchall()
             columns = [desc[0] for desc in cur.description]
         return [dict(zip(columns, row)) for row in rows]
+
+    def _fetch_recent_outcomes(self, sql: str, params: list[Any]) -> List[dict]:
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        return [
+            {
+                "strategy": r[0],
+                "won": r[1],
+                "pnl": float(r[2]) if r[2] is not None else 0.0,
+                "regime": r[3],
+                "source": r[4],
+                "recorded_at": r[5],
+            }
+            for r in rows
+        ]
+
+    @staticmethod
+    def _dict_row_to_event(row: dict[str, Any]) -> dict[str, Any]:
+        metadata = row.get("metadata") or {}
+        generated_at = row.get("generated_at")
+        return {
+            "generated_at": generated_at.isoformat() if hasattr(generated_at, "isoformat") else generated_at,
+            "signal_id": row.get("signal_id"),
+            "symbol": row.get("symbol"),
+            "timeframe": row.get("timeframe"),
+            "strategy": row.get("strategy"),
+            "direction": row.get("direction"),
+            "confidence": row.get("confidence"),
+            "reason": row.get("reason"),
+            "used_indicators": row.get("used_indicators") or [],
+            "indicators_snapshot": row.get("indicators_snapshot") or {},
+            "metadata": metadata,
+            "signal_state": metadata.get("signal_state"),
+            "scope": row.get("scope") or "confirmed",
+        }

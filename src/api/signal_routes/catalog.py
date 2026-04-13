@@ -4,12 +4,46 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.params import Param
 
 from src.api.deps import get_signal_service
 from src.api.schemas import ApiResponse, SignalDecisionModel, SignalEvaluateRequest, SignalEventModel, SignalSummaryModel
 from src.signals.service import SignalModule
 
 router = APIRouter(prefix="/signals", tags=["signals"])
+
+
+def _resolve_param(value: Any) -> Any:
+    if isinstance(value, Param):
+        default = value.default
+        return None if default is ... else default
+    return value
+
+
+def _normalize_optional_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    value = _resolve_param(value)
+    if not isinstance(value, datetime):
+        return None
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _normalize_optional_string(value: Any) -> Optional[str]:
+    value = _resolve_param(value)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_int(value: Any, *, default: int) -> int:
+    value = _resolve_param(value)
+    if value is None:
+        return default
+    return int(value)
 
 
 @router.get("/strategies", response_model=ApiResponse[list[Dict[str, Any]]])
@@ -84,21 +118,81 @@ def recent_signals(
     timeframe: Optional[str] = Query(default=None),
     strategy: Optional[str] = Query(default=None),
     action: Optional[str] = Query(default=None),
+    direction: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
     scope: str = Query(default="confirmed", pattern="^(confirmed|preview|all)$"),
+    from_time: Optional[datetime] = Query(default=None, alias="from"),
+    to_time: Optional[datetime] = Query(default=None, alias="to"),
+    page: int = Query(default=1, ge=1),
+    page_size: Optional[int] = Query(default=None, ge=1, le=2000),
+    sort: str = Query(
+        default="generated_at_desc",
+        pattern="^(generated_at_desc|generated_at_asc|asc|desc)$",
+    ),
     limit: int = Query(default=200, ge=1, le=2000),
     service: SignalModule = Depends(get_signal_service),
 ) -> ApiResponse[list[SignalEventModel]]:
-    rows = service.recent_signals(
-        symbol=symbol,
-        timeframe=timeframe,
-        strategy=strategy,
-        direction=action,
-        scope=scope,
-        limit=limit,
+    symbol = _normalize_optional_string(symbol)
+    timeframe = _normalize_optional_string(timeframe)
+    strategy = _normalize_optional_string(strategy)
+    action = _normalize_optional_string(action)
+    direction = _normalize_optional_string(direction)
+    status = _normalize_optional_string(status)
+    scope = _normalize_optional_string(scope) or "confirmed"
+    page = _normalize_int(page, default=1)
+    sort = _normalize_optional_string(sort) or "generated_at_desc"
+    effective_page_size = _normalize_int(
+        page_size,
+        default=_normalize_int(limit, default=200),
     )
+    resolved_direction = direction or action
+    normalized_from_time = _normalize_optional_datetime(from_time)
+    normalized_to_time = _normalize_optional_datetime(to_time)
+    page_result_fn = getattr(service, "recent_signal_page", None)
+    if callable(page_result_fn):
+        page_result = page_result_fn(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy=strategy,
+            direction=resolved_direction,
+            status=status,
+            scope=scope,
+            from_time=normalized_from_time,
+            to_time=normalized_to_time,
+            page=page,
+            page_size=effective_page_size,
+            sort=sort,
+        )
+        rows = list(page_result.get("items") or [])
+        total = int(page_result.get("total") or 0)
+    else:
+        rows = service.recent_signals(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy=strategy,
+            direction=resolved_direction,
+            scope=scope,
+            limit=effective_page_size,
+        )
+        total = len(rows)
+
     return ApiResponse.success_response(
         data=[SignalEventModel(**row) for row in rows],
-        metadata={"count": len(rows), "scope": scope},
+        metadata={
+            "count": len(rows),
+            "total": total,
+            "page": page,
+            "page_size": effective_page_size,
+            "scope": scope,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "strategy": strategy,
+            "direction": resolved_direction,
+            "status": status,
+            "from": normalized_from_time.isoformat() if normalized_from_time else None,
+            "to": normalized_to_time.isoformat() if normalized_to_time else None,
+            "sort": sort,
+        },
     )
 
 
@@ -178,5 +272,3 @@ def recent_consensus_signals(
         data=[SignalEventModel(**row) for row in rows],
         metadata={"count": len(rows)},
     )
-
-

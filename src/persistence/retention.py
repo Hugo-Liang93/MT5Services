@@ -54,8 +54,8 @@ DEFAULT_POLICIES: list[RetentionSpec] = [
 
     # ── L1: 交易审计（长保留，晚压缩） ──
     RetentionSpec("trade_outcomes",         retention_days=730, compress_after_days=30, segment_by="symbol, strategy",        order_by="recorded_at DESC"),
-    RetentionSpec("trade_command_audits",   retention_days=730, compress_after_days=30, segment_by="account_alias",           order_by="recorded_at DESC"),
-    RetentionSpec("circuit_breaker_history", retention_days=365, compress_after_days=30, segment_by="account_alias",          order_by="recorded_at DESC"),
+    RetentionSpec("trade_command_audits",   retention_days=730, compress_after_days=30, segment_by="account_key",             order_by="recorded_at DESC"),
+    RetentionSpec("circuit_breaker_history", retention_days=365, compress_after_days=30, segment_by="account_key",            order_by="recorded_at DESC"),
     RetentionSpec("position_sl_tp_history", retention_days=365, compress_after_days=30, segment_by="symbol",                  order_by="recorded_at DESC"),
 ]
 

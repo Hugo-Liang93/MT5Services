@@ -153,7 +153,10 @@ class BacktestRequestBase(BaseModel):
 
 
 class BacktestRunRequest(BacktestRequestBase):
-    pass
+    reason: str = "manual_backtest_run"
+    actor: str = "operator"
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BacktestOptimizeRequest(BacktestRequestBase):
@@ -180,6 +183,23 @@ class BacktestJobResponse(BaseModel):
     completed_at: Optional[str] = None
     progress: float = 0.0
     error: Optional[str] = None
+
+
+class BacktestRunActionView(BaseModel):
+    accepted: bool
+    status: str
+    action_id: str
+    audit_id: Optional[str] = None
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    recorded_at: Optional[str] = None
+    effective_state: Dict[str, Any] = Field(default_factory=dict)
+    run_id: str
+    job: Dict[str, Any] = Field(default_factory=dict)
 
 
 def load_backtest_defaults() -> Dict[str, Any]:

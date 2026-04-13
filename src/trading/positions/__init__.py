@@ -1,4 +1,5 @@
 from .manager import PositionManager, TrackedPosition
+from .confirmed_indicator_source import ConfirmedIndicatorSource
 from .exit_rules import (
     ChandelierConfig,
     ExitProfile,
@@ -11,6 +12,7 @@ from .exit_rules import (
 __all__ = [
     "PositionManager",
     "TrackedPosition",
+    "ConfirmedIndicatorSource",
     "ChandelierConfig",
     "ExitProfile",
     "ExitCheckResult",

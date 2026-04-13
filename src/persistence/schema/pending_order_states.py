@@ -1,6 +1,7 @@
 DDL = """
 CREATE TABLE IF NOT EXISTS pending_order_states (
     account_alias TEXT NOT NULL,
+    account_key TEXT,
     order_ticket BIGINT PRIMARY KEY,
     signal_id TEXT,
     request_id TEXT,
@@ -36,9 +37,14 @@ CREATE TABLE IF NOT EXISTS pending_order_states (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE pending_order_states
+    ADD COLUMN IF NOT EXISTS account_key TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_pending_orders_account_status
     ON pending_order_states (account_alias, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pending_orders_account_key
+    ON pending_order_states (account_key, status, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_pending_orders_signal
     ON pending_order_states (signal_id, updated_at DESC);
@@ -58,7 +64,7 @@ INSERT INTO pending_order_states (
     stop_loss, take_profit, volume, atr_at_entry, confidence, regime,
     created_at, expires_at, filled_at, cancelled_at,
     position_ticket, deal_id, fill_price,
-    status, status_reason, last_seen_at, metadata, updated_at
+    status, status_reason, last_seen_at, metadata, updated_at, account_key
 ) VALUES (
     %s, %s, %s, %s, %s, %s,
     %s, %s, %s, %s, %s,
@@ -66,10 +72,11 @@ INSERT INTO pending_order_states (
     %s, %s, %s, %s, %s, %s,
     %s, %s, %s, %s,
     %s, %s, %s,
-    %s, %s, %s, %s, %s
+    %s, %s, %s, %s, %s, %s
 )
 ON CONFLICT (order_ticket) DO UPDATE SET
     account_alias = EXCLUDED.account_alias,
+    account_key = EXCLUDED.account_key,
     signal_id = EXCLUDED.signal_id,
     request_id = EXCLUDED.request_id,
     symbol = EXCLUDED.symbol,

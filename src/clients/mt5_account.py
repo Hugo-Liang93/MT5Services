@@ -23,6 +23,9 @@ class AccountInfo:
     profit: float
     leverage: int
     currency: str
+    day_start_balance: float | None = None
+    daily_realized_pnl: float | None = None
+    daily_pnl: float | None = None
 
 
 @dataclass

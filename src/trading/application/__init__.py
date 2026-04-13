@@ -1,6 +1,10 @@
 from .audit import TradeCommandAuditService, TradeDailyStatsService
 from .control import TradeControlStateService
-from .idempotency import TradeExecutionReplayService
+from .idempotency import (
+    TradeExecutionReplayService,
+    TradeOperatorActionReplayConflictError,
+    TradeOperatorActionReplayService,
+)
 from .module import TradingModule
 from .signal_execution import (
     PreparedSignalTrade,
@@ -17,6 +21,8 @@ __all__ = [
     "TradeControlStateService",
     "TradeDailyStatsService",
     "TradeExecutionReplayService",
+    "TradeOperatorActionReplayConflictError",
+    "TradeOperatorActionReplayService",
     "TradingCommandService",
     "TradingModule",
     "TradingQueryService",

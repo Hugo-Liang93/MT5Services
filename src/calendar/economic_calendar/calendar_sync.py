@@ -215,6 +215,7 @@ def runtime_task_details(service, job_type: str) -> Dict[str, Any]:
     return {
         "enabled": bool(job_state["enabled"]),
         "interval_seconds": service._job_interval(job_type),
+        "last_result_status": job_state.get("last_result_status"),
         "last_fetched": int(job_state["last_fetched"]),
         "last_written": int(job_state["last_written"]),
         "last_snapshots": int(job_state["last_snapshots"]),
@@ -232,6 +233,7 @@ def runtime_task_row(service, job_type: str) -> tuple:
         else None
     )
     next_run_at = service._next_run_at.get(job_type)
+    runtime_identity = getattr(service, "_runtime_identity", None)
     return (
         _RUNTIME_COMPONENT,
         job_type,
@@ -253,6 +255,10 @@ def runtime_task_row(service, job_type: str) -> tuple:
         int(job_state.get("consecutive_failures", 0)),
         job_state.get("last_error"),
         runtime_task_details(service, job_type),
+        runtime_identity.instance_id if runtime_identity is not None else "legacy",
+        runtime_identity.instance_role if runtime_identity is not None else None,
+        runtime_identity.account_key if runtime_identity is not None else None,
+        runtime_identity.account_alias if runtime_identity is not None else None,
     )
 
 
@@ -281,6 +287,7 @@ def update_job_state(
     job_state["last_completed_at"] = completed_at.isoformat()
     job_state["last_error"] = error
     job_state["last_status"] = status
+    job_state["last_result_status"] = status
     job_state["last_duration_ms"] = duration_ms
     job_state["last_fetched"] = fetched
     job_state["last_written"] = written
@@ -296,11 +303,23 @@ def update_job_state(
 
 
 def restore_job_state(service) -> None:
+    runtime_identity = getattr(service, "_runtime_identity", None)
     try:
-        rows = service.db.fetch_runtime_task_status(component=_RUNTIME_COMPONENT)
+        rows = service.db.fetch_runtime_task_status(
+            component=_RUNTIME_COMPONENT,
+            instance_role=(
+                runtime_identity.instance_role if runtime_identity is not None else None
+            ),
+            account_key=(
+                runtime_identity.account_key if runtime_identity is not None else None
+            ),
+        )
     except Exception as exc:  # pragma: no cover
         logger.debug("Failed to restore economic runtime task state: %s", exc)
         return
+    latest_success: Optional[Dict[str, Any]] = None
+    latest_attempt: Optional[Dict[str, Any]] = None
+    max_consecutive_failures = 0
     for row in rows:
         _, task_name, _, state, started_at, completed_at, next_run_at, duration_ms, success_count, failure_count, consecutive_failures, last_error, details = row
         if task_name not in service._job_state:
@@ -314,12 +333,49 @@ def restore_job_state(service) -> None:
         job_state["failure_count"] = int(failure_count or 0)
         job_state["consecutive_failures"] = int(consecutive_failures or 0)
         job_state["last_error"] = last_error
+        max_consecutive_failures = max(max_consecutive_failures, job_state["consecutive_failures"])
         if isinstance(details, dict):
+            effective_result_status = details.get("last_result_status") or state
+            job_state["last_result_status"] = effective_result_status
             job_state["last_fetched"] = int(details.get("last_fetched", job_state["last_fetched"]))
             job_state["last_written"] = int(details.get("last_written", job_state["last_written"]))
             job_state["last_snapshots"] = int(details.get("last_snapshots", job_state["last_snapshots"]))
+        else:
+            effective_result_status = state
         if next_run_at is not None:
             service._next_run_at[task_name] = next_run_at
+        if completed_at is not None:
+            candidate = {
+                "job_type": task_name,
+                "status": effective_result_status,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "duration_ms": duration_ms,
+                "last_error": last_error,
+            }
+            if latest_attempt is None or completed_at > latest_attempt["completed_at"]:
+                latest_attempt = candidate
+            if effective_result_status in {
+                RuntimeTaskState.OK.value,
+                RuntimeTaskState.PARTIAL.value,
+                RuntimeTaskState.COMPLETED.value,
+                RuntimeTaskState.READY.value,
+                RuntimeTaskState.IDLE.value,
+            } or int(success_count or 0) > 0:
+                if latest_success is None or completed_at > latest_success["completed_at"]:
+                    latest_success = candidate
+    service._consecutive_failures = max_consecutive_failures
+    if latest_success is not None:
+        service._last_refresh_at = latest_success["completed_at"]
+    if latest_attempt is not None:
+        service._last_refresh_started_at = latest_attempt["started_at"]
+        service._last_refresh_completed_at = latest_attempt["completed_at"]
+        service._last_refresh_duration_ms = latest_attempt["duration_ms"]
+        service._last_refresh_error = latest_attempt["last_error"]
+        service._last_refresh_summary = {
+            "job_type": latest_attempt["job_type"],
+            "status": latest_attempt["status"],
+        }
 
 
 def startup_schedule_time(service, job_type: str, now: datetime) -> Optional[datetime]:
@@ -399,6 +455,18 @@ def run_job(
             snapshots_written=summary["snapshots_written"],
             duration_ms=duration_ms,
             error=None,
+        )
+        logger.info(
+            "Economic calendar %s completed: status=%s fetched=%s written=%s snapshots=%s deleted=%s duration_ms=%s provider_counts=%s provider_errors=%s",
+            job_type,
+            summary["status"],
+            summary["fetched"],
+            summary["written"],
+            summary["snapshots_written"],
+            summary["deleted"],
+            summary["duration_ms"],
+            provider_counts,
+            provider_errors or {},
         )
         return summary
     except Exception as exc:
@@ -530,12 +598,15 @@ def start_service(service) -> None:
         return
     service._stop_event.clear()
     now = _utc_now()
+    service._scheduler_started_at = now
     startup_immediate_jobs = (
         {"near_term_sync", "release_watch"} if service.settings.startup_refresh else set()
     )
+    startup_schedule: Dict[str, Optional[datetime]] = {}
     for job_type in _JOB_LABELS:
         interval = service._job_interval(job_type)
         scheduled_at = startup_schedule_time(service, job_type, now)
+        startup_schedule[job_type] = scheduled_at
         restored_next_run = service._next_run_at.get(job_type)
         if interval <= 0:
             service._next_run_at[job_type] = None
@@ -546,6 +617,22 @@ def start_service(service) -> None:
         elif job_type == "calendar_sync" and service.settings.startup_refresh and scheduled_at is not None:
             service._next_run_at[job_type] = max(restored_next_run, scheduled_at)
         persist_job_state(service, job_type)
+    bootstrap_anchor = None
+    if service._last_refresh_at is None:
+        if service._job_interval("calendar_sync") > 0:
+            bootstrap_anchor = startup_schedule.get("calendar_sync") or now
+        else:
+            enabled_startups = [
+                startup_schedule.get(job_type) or now
+                for job_type in _JOB_LABELS
+                if service._job_interval(job_type) > 0
+            ]
+            bootstrap_anchor = min(enabled_startups) if enabled_startups else None
+    service._bootstrap_deadline_at = (
+        bootstrap_anchor + timedelta(seconds=service._bootstrap_grace_seconds())
+        if bootstrap_anchor is not None
+        else None
+    )
     service._worker = Thread(
         target=lambda: run_scheduler(service),
         name="economic-calendar-refresh",
@@ -566,7 +653,8 @@ def stop_service(service) -> None:
     service._stop_event.set()
     if service._worker and service._worker.is_alive():
         service._worker.join(timeout=5.0)
-    service._worker = None
+    if service._worker and not service._worker.is_alive():
+        service._worker = None
     for job_type in _JOB_LABELS:
         service._job_state[job_type]["last_status"] = RuntimeTaskState.STOPPED.value
         persist_job_state(service, job_type)

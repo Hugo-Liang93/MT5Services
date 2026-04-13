@@ -19,22 +19,26 @@ def build_trading_layer(
     container: AppContainer,
     *,
     economic_settings: Any,
+    enable_calendar_sync: bool = True,
 ) -> Optional[str]:
     """Build trading module and optional trading-state helpers."""
     trading_components = build_trading_components(
         container.storage_writer,
         economic_settings,
+        runtime_identity=container.runtime_identity,
+        enable_calendar_sync=enable_calendar_sync,
     )
     container.economic_calendar_service = trading_components.economic_calendar_service
     container.trade_registry = trading_components.trade_registry
     container.trade_module = trading_components.trade_module
-    default_account_alias: Optional[str] = trading_components.default_account_alias
+    active_account_alias: Optional[str] = trading_components.active_account_alias
 
     if container.trade_module is not None and container.storage_writer is not None:
         trading_ops_config = get_trading_ops_config()
         container.trading_state_store = TradingStateStore(
             container.storage_writer.db,
             account_alias_getter=lambda: container.trade_module.active_account_alias,
+            account_key_getter=lambda: container.trade_module.active_account_key,
         )
         container.trading_state_alerts = TradingStateAlerts(
             state_store=container.trading_state_store,
@@ -54,7 +58,7 @@ def build_trading_layer(
             container.trading_state_store.sync_trade_control
         )
 
-    if economic_settings.market_impact_enabled:
+    if enable_calendar_sync and economic_settings.market_impact_enabled:
         from src.calendar.economic_calendar.market_impact import MarketImpactAnalyzer
 
         ingestor_ref = container.ingestor
@@ -72,4 +76,4 @@ def build_trading_layer(
             container.market_impact_analyzer
         )
 
-    return default_account_alias
+    return active_account_alias

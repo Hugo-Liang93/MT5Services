@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 
 def build_paper_trading_layer(container: AppContainer) -> None:
     """Construct Paper Trading bridge and tracker if enabled."""
+    runtime_identity = container.runtime_identity
+    if runtime_identity is not None and runtime_identity.instance_role == "executor":
+        logger.info("Paper trading skipped for executor instance: %s", runtime_identity.instance_name)
+        return
     try:
         from src.backtesting.paper_trading.bridge import PaperTradingBridge
         from src.backtesting.paper_trading.config import load_paper_trading_config

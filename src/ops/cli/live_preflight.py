@@ -338,9 +338,18 @@ def _render_results(
 
 
 def main() -> None:
+    from src.config.instance_context import set_current_environment
+
     parser = argparse.ArgumentParser(description="Live trading pre-flight check")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定预检环境",
+    )
     parser.add_argument("--check-api", action="store_true", help="Also check API service")
     args = parser.parse_args()
+    set_current_environment(args.environment)
 
     all_checks: List[Tuple[str, str, str]] = []
 

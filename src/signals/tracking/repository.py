@@ -28,6 +28,23 @@ class SignalRepository(Protocol):
     def summary(self, *, hours: int = 24, scope: str = "confirmed") -> list[dict]:
         ...
 
+    def recent_page(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        direction: Optional[str] = None,
+        status: Optional[str] = None,
+        scope: str = "confirmed",
+        from_time: Optional[Any] = None,
+        to_time: Optional[Any] = None,
+        page: int = 1,
+        page_size: int = 200,
+        sort: str = "generated_at_desc",
+    ) -> dict[str, Any]:
+        ...
+
     def fetch_winrates(
         self,
         *,
@@ -186,6 +203,36 @@ class TimescaleSignalRepository:
             *[self._row_to_summary(row, scope="confirmed") for row in self._db.summarize_signal_events(hours=hours)],
             *[self._row_to_summary(row, scope="preview") for row in self._db.summarize_signal_preview_events(hours=hours)],
         ]
+
+    def recent_page(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        direction: Optional[str] = None,
+        status: Optional[str] = None,
+        scope: str = "confirmed",
+        from_time: Optional[Any] = None,
+        to_time: Optional[Any] = None,
+        page: int = 1,
+        page_size: int = 200,
+        sort: str = "generated_at_desc",
+    ) -> dict[str, Any]:
+        scope = self._normalize_scope(scope)
+        return self._db.query_signal_events(
+            scope=scope,
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy=strategy,
+            direction=direction,
+            status=status,
+            from_time=from_time,
+            to_time=to_time,
+            page=page,
+            page_size=page_size,
+            sort=sort,
+        )
 
     def fetch_winrates(
         self,

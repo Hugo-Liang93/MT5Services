@@ -24,6 +24,7 @@ from src.config.models import (
     TradingConfig,
     TradingOpsConfig,
 )
+from src.config.instance_context import resolve_instance_scoped_dir
 from src.config.signal import get_signal_config
 from src.config.utils import (
     ConfigValidator,
@@ -604,6 +605,9 @@ def reload_configs() -> None:
     load_db_settings.cache_clear()
     load_storage_settings.cache_clear()
     load_indicator_settings.cache_clear()
+    from src.config.runtime_identity import get_runtime_identity
+
+    get_runtime_identity.cache_clear()
     _config_manager.reload()
 
 
@@ -639,5 +643,6 @@ def get_runtime_data_path(filename: str) -> str:
     runtime_data_dir = Path(get_system_config().runtime_data_dir).expanduser()
     if not runtime_data_dir.is_absolute():
         runtime_data_dir = Path(__file__).resolve().parents[2] / runtime_data_dir
+    runtime_data_dir = resolve_instance_scoped_dir(runtime_data_dir)
     runtime_data_dir.mkdir(parents=True, exist_ok=True)
     return str(runtime_data_dir / filename)

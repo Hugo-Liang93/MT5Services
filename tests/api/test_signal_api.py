@@ -117,6 +117,35 @@ class DummySignalService:
         }
 
 
+class PagedSignalService(DummySignalService):
+    def __init__(self) -> None:
+        self.last_kwargs = {}
+
+    def recent_signal_page(self, **kwargs):
+        self.last_kwargs = dict(kwargs)
+        return {
+            "items": [
+                {
+                    "generated_at": "2026-01-02T00:00:00+00:00",
+                    "signal_id": "page_1",
+                    "symbol": kwargs.get("symbol") or "XAUUSD",
+                    "timeframe": kwargs.get("timeframe") or "M5",
+                    "strategy": kwargs.get("strategy") or "rsi_reversion",
+                    "direction": kwargs.get("direction") or "sell",
+                    "confidence": 0.77,
+                    "reason": "paged",
+                    "scope": kwargs.get("scope") or "confirmed",
+                    "used_indicators": ["rsi"],
+                    "indicators_snapshot": {"rsi": {"value": 72}},
+                    "metadata": {"signal_state": kwargs.get("status") or "confirmed_ready"},
+                }
+            ],
+            "total": 42,
+            "page": kwargs.get("page") or 1,
+            "page_size": kwargs.get("page_size") or 10,
+        }
+
+
 class DummySignalRuntime:
     def status(self):
         return {
@@ -184,6 +213,33 @@ def test_signal_recent_endpoint() -> None:
     assert response.success is True
     assert response.data[0].signal_id == "abc"
     assert response.data[0].scope == "preview"
+
+
+def test_signal_recent_endpoint_exposes_pagination_filters() -> None:
+    service = PagedSignalService()
+    response = recent_signals(
+        symbol="XAUUSD",
+        timeframe="M15",
+        strategy="rsi_reversion",
+        direction="sell",
+        status="confirmed_ready",
+        scope="confirmed",
+        page=2,
+        page_size=25,
+        sort="generated_at_asc",
+        service=service,
+    )
+
+    assert response.success is True
+    assert response.data[0].signal_id == "page_1"
+    assert response.metadata["page"] == 2
+    assert response.metadata["page_size"] == 25
+    assert response.metadata["total"] == 42
+    assert response.metadata["direction"] == "sell"
+    assert response.metadata["status"] == "confirmed_ready"
+    assert response.metadata["sort"] == "generated_at_asc"
+    assert service.last_kwargs["page"] == 2
+    assert service.last_kwargs["page_size"] == 25
 
 
 def test_signal_summary_endpoint() -> None:

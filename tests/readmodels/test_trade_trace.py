@@ -171,6 +171,22 @@ class _PipelineTraceRepo:
                 "symbol": "XAUUSD",
                 "timeframe": "M15",
                 "scope": "confirmed",
+                "event_type": "admission_report_appended",
+                "recorded_at": datetime(2026, 1, 1, 8, 15, 20, tzinfo=timezone.utc),
+                "payload": {
+                    "decision": "allow",
+                    "stage": "account_risk",
+                    "trace_id": "trace-1",
+                    "signal_id": "sig-1",
+                    "reasons": [{"code": "checks_passed", "message": "ok"}],
+                },
+            },
+            {
+                "id": 7,
+                "trace_id": "trace-1",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "scope": "confirmed",
                 "event_type": "execution_decided",
                 "recorded_at": datetime(2026, 1, 1, 8, 15, 30, tzinfo=timezone.utc),
                 "payload": {
@@ -180,7 +196,7 @@ class _PipelineTraceRepo:
                 },
             },
             {
-                "id": 7,
+                "id": 8,
                 "trace_id": "trace-1",
                 "symbol": "XAUUSD",
                 "timeframe": "M15",
@@ -196,6 +212,30 @@ class _PipelineTraceRepo:
                 },
             },
         ]
+
+    def query_trace_summaries(self, **kwargs):
+        return {
+            "items": [
+                {
+                    "trace_id": kwargs.get("trace_id") or "trace-1",
+                    "signal_id": kwargs.get("signal_id") or "sig-1",
+                    "symbol": kwargs.get("symbol") or "XAUUSD",
+                    "timeframe": kwargs.get("timeframe") or "M15",
+                    "strategy": kwargs.get("strategy") or "trendline",
+                    "status": kwargs.get("status") or "submitted",
+                    "last_admission_decision": "allow",
+                    "last_admission_stage": "account_risk",
+                    "started_at": datetime(2026, 1, 1, 7, 59, tzinfo=timezone.utc),
+                    "last_event_at": datetime(2026, 1, 1, 8, 16, tzinfo=timezone.utc),
+                    "event_count": 8,
+                    "last_event_type": "execution_submitted",
+                    "reason": "ok",
+                }
+            ],
+            "total": 3,
+            "page": kwargs.get("page") or 1,
+            "page_size": kwargs.get("page_size") or 100,
+        }
 
 
 class _TradingStateRepo:
@@ -241,16 +281,25 @@ def test_trade_trace_projection_aggregates_signal_to_outcome_chain() -> None:
     assert trace["identifiers"]["position_tickets"] == [8001]
     assert trace["summary"]["stages"]["pipeline_bar_closed"] == "present"
     assert trace["summary"]["stages"]["pipeline_signal_filter"] == "present"
+    assert trace["summary"]["stages"]["pipeline_admission"] == "present"
     assert trace["summary"]["stages"]["pipeline_execution_decision"] == "present"
     assert trace["summary"]["stages"]["pipeline_execution_submission"] == "present"
     assert trace["summary"]["pipeline_event_counts"]["signal_filter_decided"] == 1
+    assert trace["summary"]["pipeline_event_counts"]["admission_report_appended"] == 1
     assert trace["summary"]["pipeline_event_counts"]["execution_submitted"] == 1
+    assert trace["summary"]["admission"]["decision"] == "allow"
+    assert trace["summary"]["admission"]["stage"] == "account_risk"
     assert trace["summary"]["stages"]["confirmed_signal"] == "present"
     assert trace["summary"]["pending_status_counts"]["filled"] == 1
     assert trace["summary"]["position_status_counts"]["closed"] == 1
     assert trace["summary"]["command_counts"]["execute_trade"] == 1
+    assert trace["summary"]["status"] == "completed"
+    assert trace["summary"]["last_stage"] == "outcome.trade"
+    assert trace["facts"]["admission_reports"][0]["decision"] == "allow"
     assert trace["timeline"][0]["stage"] == "pipeline.bar_closed"
     assert trace["timeline"][-1]["stage"] == "outcome.trade"
+    assert trace["related_trade_audits"][0]["operation_id"] == "op-1"
+    assert trace["related_pipeline_events"][0]["trace_id"] == "trace-1"
     assert len(trace["graph"]["nodes"]) == len(trace["timeline"])
     assert len(trace["graph"]["edges"]) == len(trace["timeline"]) - 1
 
@@ -273,4 +322,34 @@ def test_trade_trace_projection_supports_trace_id_only_chain() -> None:
     assert trace["identifiers"]["signal_ids"] == ["sig-1"]
     assert trace["timeline"][0]["stage"] == "pipeline.bar_closed"
     assert trace["summary"]["stages"]["pipeline_signal_filter"] == "present"
+    assert trace["summary"]["stages"]["pipeline_admission"] == "present"
     assert trace["summary"]["stages"]["pipeline_execution_decision"] == "present"
+    assert trace["summary"]["status"] == "completed"
+    assert trace["summary"]["admission"]["decision"] == "allow"
+
+
+def test_trade_trace_directory_projection_exposes_trace_summary_list() -> None:
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_SignalRepo(),
+        command_audit_repo=_TradeRepo(),
+        pipeline_trace_repo=_PipelineTraceRepo(),
+        trading_state_repo=_TradingStateRepo(),
+        account_alias_getter=lambda: "live",
+    )
+
+    result = read_model.list_traces(
+        symbol="XAUUSD",
+        timeframe="M15",
+        status="submitted",
+        page=2,
+        page_size=20,
+    )
+
+    assert result["total"] == 3
+    assert result["page"] == 2
+    assert result["page_size"] == 20
+    assert result["items"][0]["trace_id"] == "trace-1"
+    assert result["items"][0]["status"] == "submitted"
+    assert result["items"][0]["last_stage"] == "pipeline.execution_submitted"
+    assert result["items"][0]["admission"]["decision"] == "allow"
+    assert result["items"][0]["admission"]["stage"] == "account_risk"

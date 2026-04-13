@@ -7,6 +7,8 @@ from collections import deque
 from datetime import datetime
 from typing import Any
 
+from src.config.runtime_identity import RuntimeIdentity
+
 from .event_bus import PipelineEvent, PipelineEventBus
 
 logger = logging.getLogger(__name__)
@@ -20,12 +22,14 @@ class PipelineTraceRecorder:
         *,
         pipeline_bus: PipelineEventBus,
         db_writer: Any,
+        runtime_identity: RuntimeIdentity | None = None,
         batch_size: int = 100,
         flush_interval_seconds: float = 1.0,
         queue_size: int = 2048,
     ) -> None:
         self._pipeline_bus = pipeline_bus
         self._db_writer = db_writer
+        self._runtime_identity = runtime_identity
         self._batch_size = max(1, int(batch_size))
         self._flush_interval_seconds = max(0.1, float(flush_interval_seconds))
         self._queue: queue.Queue[tuple] = queue.Queue(maxsize=max(1, int(queue_size)))
@@ -118,8 +122,14 @@ class PipelineTraceRecorder:
         self._db_writer.write_pipeline_trace_events(batch, page_size=self._batch_size)
         self._pending.clear()
 
-    @staticmethod
-    def _to_row(event: PipelineEvent) -> tuple:
+    def _to_row(self, event: PipelineEvent) -> tuple:
+        payload = dict(event.payload or {})
+        runtime_identity = self._runtime_identity
+        account_key = (
+            payload.get("target_account_key")
+            or payload.get("account_key")
+            or (runtime_identity.account_key if runtime_identity is not None else None)
+        )
         return (
             str(event.trace_id),
             str(event.symbol),
@@ -127,5 +137,12 @@ class PipelineTraceRecorder:
             str(event.scope),
             str(event.type),
             datetime.fromisoformat(str(event.ts)),
-            dict(event.payload or {}),
+            payload,
+            runtime_identity.instance_id if runtime_identity is not None else None,
+            runtime_identity.instance_role if runtime_identity is not None else None,
+            account_key,
+            payload.get("signal_id"),
+            payload.get("intent_id"),
+            payload.get("command_id"),
+            payload.get("action_id"),
         )

@@ -42,6 +42,15 @@ class TradingStateAlerts:
         persisted_open_count = len(open_positions)
         live_order_count = len(live_orders)
         live_position_count = len(live_positions)
+        unmanaged_positions = self._unmanaged_live_positions(
+            live_positions=live_positions,
+            managed_rows=open_positions,
+        )
+        unmanaged_tickets = [
+            int(item.get("ticket"))
+            for item in unmanaged_positions
+            if item.get("ticket") is not None
+        ]
 
         alerts: list[dict[str, Any]] = []
         if missing_count > 0:
@@ -74,15 +83,16 @@ class TradingStateAlerts:
                     },
                 )
             )
-        if persisted_open_count != live_position_count:
+        if unmanaged_positions:
             alerts.append(
                 self._alert(
-                    code="position_open_mismatch",
-                    severity="critical",
-                    message="持仓状态与 MT5 实时持仓数量不一致",
+                    code="unmanaged_live_positions",
+                    severity="warning",
+                    message=f"存在 {len(unmanaged_positions)} 笔未纳管实时持仓",
                     details={
-                        "persisted_open_count": persisted_open_count,
+                        "managed_open_count": persisted_open_count,
                         "live_position_count": live_position_count,
+                        "unmanaged_tickets": unmanaged_tickets,
                     },
                 )
             )
@@ -113,6 +123,8 @@ class TradingStateAlerts:
                 "open_position_count": persisted_open_count,
                 "live_order_count": live_order_count,
                 "live_position_count": live_position_count,
+                "unmanaged_live_position_count": len(unmanaged_positions),
+                "unmanaged_live_position_tickets": unmanaged_tickets,
             },
         }
 
@@ -153,6 +165,51 @@ class TradingStateAlerts:
             return list(self._trading.get_positions())
         except Exception:
             return []
+
+    def _unmanaged_live_positions(
+        self,
+        *,
+        live_positions: list[Any],
+        managed_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        managed_tickets = {
+            int(ticket)
+            for ticket in (
+                row.get("position_ticket")
+                for row in managed_rows
+            )
+            if ticket is not None
+        }
+        resolver = getattr(self._trading, "resolve_position_context", None)
+        unmanaged: list[dict[str, Any]] = []
+        for position in live_positions:
+            ticket = self._attr(position, "ticket")
+            if ticket is None:
+                continue
+            if int(ticket) in managed_tickets:
+                continue
+            comment = str(self._attr(position, "comment") or "").strip()
+            magic = self._attr(position, "magic")
+            context = None
+            if callable(resolver):
+                try:
+                    context = resolver(ticket=int(ticket), comment=comment, limit=200)
+                except Exception:
+                    context = None
+            if not comment and int(magic or 0) == 0:
+                reason = "manual_position"
+            elif context is None:
+                reason = "unsupported_comment"
+            else:
+                reason = "missing_context"
+            unmanaged.append({"ticket": int(ticket), "reason": reason})
+        return unmanaged
+
+    @staticmethod
+    def _attr(item: Any, key: str) -> Any:
+        if isinstance(item, dict):
+            return item.get(key)
+        return getattr(item, key, None)
 
     @staticmethod
     def _state_counts(rows: list[dict[str, Any]]) -> dict[str, int]:

@@ -15,13 +15,26 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import logging
+import argparse
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    skip_confirm = "--yes" in sys.argv
+    from src.config.instance_context import set_current_environment
+
+    parser = argparse.ArgumentParser(description="Reset database schema for a target environment")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定要重置的环境数据库",
+    )
+    parser.add_argument("--yes", action="store_true", help="跳过确认提示")
+    args = parser.parse_args()
+    set_current_environment(args.environment)
+    skip_confirm = args.yes
 
     if not skip_confirm:
         answer = input(

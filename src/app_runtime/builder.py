@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from src.app_runtime.container import AppContainer
 from src.app_runtime.builder_phases import (
+    build_account_runtime_layer,
     build_market_layer,
     build_monitoring_layer,
     build_paper_trading_layer,
@@ -20,6 +21,7 @@ from src.app_runtime.builder_phases import (
 from src.config import (
     get_effective_config_snapshot,
     get_risk_config,
+    get_runtime_identity,
     get_runtime_ingest_settings,
     get_runtime_market_settings,
     get_signal_config,
@@ -44,31 +46,44 @@ def build_app_container(
         signal_config_loader = get_signal_config
 
     container = AppContainer()
+    container.runtime_identity = get_runtime_identity()
     ingest_settings = get_runtime_ingest_settings()
     market_settings = get_runtime_market_settings()
     signal_config = signal_config_loader()
+    runtime_identity = container.runtime_identity
+    is_executor = runtime_identity.instance_role == "executor"
 
     # Phase 1: market data / storage / indicators
     build_market_layer(
         container,
         ingest_settings=ingest_settings,
         market_settings=market_settings,
+        include_ingestion=not is_executor,
+        include_indicators=not is_executor,
     )
 
     # Phase 2: trading and economic calendar
     economic_settings = get_economic_config()
-    default_account_alias: Optional[str] = build_trading_layer(
+    active_account_alias: Optional[str] = build_trading_layer(
         container,
         economic_settings=economic_settings,
+        enable_calendar_sync=not is_executor,
     )
 
-    # Phase 3: signal system
-    build_signal_layer(
-        container,
-        signal_config_loader=signal_config_loader,
-        signal_config=signal_config,
-    )
-    build_paper_trading_layer(container)
+    # Phase 3: role-aware runtime assembly
+    if is_executor:
+        build_account_runtime_layer(
+            container,
+            signal_config_loader=signal_config_loader,
+            signal_config=signal_config,
+        )
+    else:
+        build_signal_layer(
+            container,
+            signal_config_loader=signal_config_loader,
+            signal_config=signal_config,
+        )
+        build_paper_trading_layer(container)
 
     # Runtime control plane
     build_runtime_controls(
@@ -108,32 +123,43 @@ def build_app_container(
             {
                 **get_effective_config_snapshot(),
                 "risk": get_risk_config().model_dump(),
-                "active_trading_account": default_account_alias,
+                "active_trading_account": active_account_alias,
+                "runtime_identity": (
+                    container.runtime_identity.__dict__
+                    if container.runtime_identity is not None
+                    else None
+                ),
                 "trading_account": (
                     container.trade_module.list_accounts()[0]
                     if container.trade_module
                     else None
                 ),
-                "indicator_scope": {
-                    "symbols": list(container.indicator_manager.config.symbols),
-                    "timeframes": list(container.indicator_manager.config.timeframes),
-                    "inherit_symbols": container.indicator_manager.config.inherit_symbols,
-                    "inherit_timeframes": (
-                        container.indicator_manager.config.inherit_timeframes
-                    ),
-                    "indicator_reload_interval": (
-                        container.indicator_manager.config.reload_interval
-                    ),
-                    "indicator_poll_interval": (
-                        container.indicator_manager.config.pipeline.poll_interval
-                    ),
-                    "indicator_cache_maxsize": (
-                        container.indicator_manager.config.pipeline.cache_maxsize
-                    ),
-                    "indicator_cache_strategy": _enum_or_raw(
-                        container.indicator_manager.config.pipeline.cache_strategy
-                    ),
-                },
+                "indicator_scope": (
+                    {
+                        "symbols": list(container.indicator_manager.config.symbols),
+                        "timeframes": list(container.indicator_manager.config.timeframes),
+                        "inherit_symbols": (
+                            container.indicator_manager.config.inherit_symbols
+                        ),
+                        "inherit_timeframes": (
+                            container.indicator_manager.config.inherit_timeframes
+                        ),
+                        "indicator_reload_interval": (
+                            container.indicator_manager.config.reload_interval
+                        ),
+                        "indicator_poll_interval": (
+                            container.indicator_manager.config.pipeline.poll_interval
+                        ),
+                        "indicator_cache_maxsize": (
+                            container.indicator_manager.config.pipeline.cache_maxsize
+                        ),
+                        "indicator_cache_strategy": _enum_or_raw(
+                            container.indicator_manager.config.pipeline.cache_strategy
+                        ),
+                    }
+                    if container.indicator_manager is not None
+                    else None
+                ),
             },
             ensure_ascii=False,
             sort_keys=True,

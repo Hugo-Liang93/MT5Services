@@ -112,11 +112,20 @@ def _run(
 
 
 def main() -> None:
+    from src.config.instance_context import set_current_environment
+
     parser = argparse.ArgumentParser(description="Exit mechanism A/B experiment")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定实验使用哪个环境数据库",
+    )
     parser.add_argument("tf", nargs="?", default="M30", help="Timeframe (default M30)")
     parser.add_argument("--start", default="2025-12-30")
     parser.add_argument("--end", default="2026-03-30")
     args = parser.parse_args()
+    set_current_environment(args.environment)
 
     tf = args.tf.upper()
     start = args.start

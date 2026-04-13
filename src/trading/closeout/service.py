@@ -191,6 +191,11 @@ class ExposureCloseoutController:
             "last_comment": None,
             "last_requested_at": None,
             "last_completed_at": None,
+            "actor": None,
+            "action_id": None,
+            "audit_id": None,
+            "idempotency_key": None,
+            "request_context": {},
             "result": None,
             "runtime_mode_transition": {
                 "configured_action": self._post_closeout_policy.after_manual_closeout_action.value,
@@ -221,11 +226,37 @@ class ExposureCloseoutController:
             }
 
     def execute(self, *, reason: str, comment: str) -> dict[str, Any]:
+        return self.execute_with_action(
+            reason=reason,
+            comment=comment,
+            actor=None,
+            action_id=None,
+            audit_id=None,
+            idempotency_key=None,
+            request_context=None,
+        )
+
+    def execute_with_action(
+        self,
+        *,
+        reason: str,
+        comment: str,
+        actor: str | None,
+        action_id: str | None,
+        audit_id: str | None,
+        idempotency_key: str | None,
+        request_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         requested_at = datetime.now(timezone.utc)
         result = self._service.execute(comment=comment).as_dict()
         runtime_mode_transition = self._apply_post_closeout_transition(
             reason=reason,
             completed=bool(result.get("completed")),
+            actor=actor,
+            action_id=action_id,
+            audit_id=audit_id,
+            idempotency_key=idempotency_key,
+            request_context=request_context,
         )
         status = {
             "status": "completed" if result.get("completed") else "incomplete",
@@ -233,6 +264,15 @@ class ExposureCloseoutController:
             "last_comment": comment,
             "last_requested_at": requested_at.isoformat(),
             "last_completed_at": requested_at.isoformat() if result.get("completed") else None,
+            "actor": (str(actor).strip() or None) if actor is not None else None,
+            "action_id": (str(action_id).strip() or None) if action_id is not None else None,
+            "audit_id": (str(audit_id).strip() or None) if audit_id is not None else None,
+            "idempotency_key": (
+                str(idempotency_key).strip() or None
+                if idempotency_key is not None
+                else None
+            ),
+            "request_context": dict(request_context) if isinstance(request_context, dict) else {},
             "result": result,
             "runtime_mode_transition": runtime_mode_transition,
         }
@@ -249,6 +289,11 @@ class ExposureCloseoutController:
         *,
         reason: str,
         completed: bool,
+        actor: str | None,
+        action_id: str | None,
+        audit_id: str | None,
+        idempotency_key: str | None,
+        request_context: dict[str, Any] | None,
     ) -> dict[str, Any]:
         target_mode = self._post_closeout_policy.resolve_runtime_mode_target(
             reason=reason,
@@ -269,7 +314,15 @@ class ExposureCloseoutController:
             return transition
         transition_reason = f"closeout:{reason}"
         try:
-            snapshot = self._apply_runtime_mode(target_mode, reason=transition_reason)
+            snapshot = self._apply_runtime_mode(
+                target_mode,
+                reason=transition_reason,
+                actor=actor,
+                action_id=action_id,
+                audit_id=audit_id,
+                idempotency_key=idempotency_key,
+                request_context=request_context,
+            )
         except Exception as exc:
             transition["error"] = str(exc)
             transition["reason"] = transition_reason

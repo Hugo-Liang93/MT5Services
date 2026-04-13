@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.monitoring.pipeline import (
+    PIPELINE_ADMISSION_REPORT_APPENDED,
     PIPELINE_EXECUTION_BLOCKED,
     PIPELINE_EXECUTION_DECIDED,
     PIPELINE_EXECUTION_SUBMITTED,
@@ -19,6 +20,8 @@ from src.trading.execution.pending_orders import inspect_pending_mt5_order
 from src.trading.execution.reasons import (
     REASON_LIMIT_REACHED,
     REASON_STRATEGY_CANDIDATE_ONLY,
+    REASON_STRATEGY_LOCKED_SESSION,
+    REASON_STRATEGY_LOCKED_TIMEFRAME,
     REASON_STRATEGY_MAX_LIVE_POSITIONS,
     REASON_STRATEGY_PAPER_ONLY,
     REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
@@ -140,6 +143,33 @@ def _build_event(
     )
 
 
+def _build_intrabar_event(*, parent_bar_time: datetime | None = None) -> SignalEvent:
+    metadata = {
+        "previous_state": "preview_buy",
+        "signal_trace_id": "trace_intrabar_1",
+    }
+    if parent_bar_time is not None:
+        metadata["intrabar_parent_bar_time"] = parent_bar_time
+    return SignalEvent(
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="sma_trend",
+        direction="buy",
+        confidence=0.8,
+        signal_state="preview_buy",
+        scope="intrabar",
+        indicators={
+            "atr14": {"atr": 2.0},
+            "sma20": {"sma": 3000.0},
+        },
+        metadata=metadata,
+        generated_at=datetime.now(timezone.utc),
+        signal_id="sig_intrabar_1",
+        reason="intrabar_test",
+        parent_bar_time=parent_bar_time,
+    )
+
+
 def test_trade_executor_skips_when_spread_to_stop_ratio_is_too_high() -> None:
     module = DummyTradingModule()
     executor = TradeExecutor(
@@ -186,10 +216,13 @@ def test_trade_executor_records_cost_metrics_on_success() -> None:
     assert cost["estimated_cost_points"] == 50.0
     assert cost["estimated_cost_price"] == 0.5
     assert cost["spread_to_stop_ratio"] is not None
-    assert [event.type for event in received][-2:] == [
+    assert [event.type for event in received][-3:] == [
+        PIPELINE_ADMISSION_REPORT_APPENDED,
         PIPELINE_EXECUTION_DECIDED,
         PIPELINE_EXECUTION_SUBMITTED,
     ]
+    assert received[-3].payload["decision"] == "allow"
+    assert received[-3].payload["requested_operation"] == "signal_execution"
 
 
 def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None:
@@ -250,8 +283,35 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
     assert executor.status()["recent_executions"][-1]["reason"] == (
         "max_concurrent_positions_per_symbol"
     )
-    assert received[-1].type == PIPELINE_EXECUTION_BLOCKED
-    assert received[-1].payload["reason"] == REASON_LIMIT_REACHED
+    assert received[-2].type == PIPELINE_EXECUTION_BLOCKED
+    assert received[-2].payload["reason"] == REASON_LIMIT_REACHED
+    assert received[-1].type == PIPELINE_ADMISSION_REPORT_APPENDED
+    assert received[-1].payload["decision"] == "block"
+    assert received[-1].payload["requested_operation"] == "signal_execution"
+    assert received[-1].payload["reasons"][0]["code"] == REASON_LIMIT_REACHED
+
+
+def test_trade_executor_emits_intrabar_blocked_admission_when_guard_missing() -> None:
+    module = DummyTradingModule()
+    pipeline_bus = PipelineEventBus()
+    received = []
+    pipeline_bus.add_listener(received.append)
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(enabled=True, min_confidence=0.5),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        pipeline_event_bus=pipeline_bus,
+    )
+
+    executor.process_event(
+        _build_intrabar_event(parent_bar_time=datetime.now(timezone.utc))
+    )
+
+    assert module.calls == []
+    assert [event.type for event in received] == [PIPELINE_ADMISSION_REPORT_APPENDED]
+    assert received[0].payload["decision"] == "block"
+    assert received[0].payload["requested_operation"] == "intrabar_execution"
+    assert received[0].payload["reasons"][0]["code"] == "intrabar_guard_missing"
 
 
 def test_trade_executor_skips_when_same_strategy_direction_position_is_active() -> None:
@@ -424,11 +484,96 @@ def test_trade_executor_enforces_guarded_strategy_pending_entry_requirement() ->
         execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
-    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = SignalEvent(
+        **{
+            **event.__dict__,
+            "metadata": {
+                **event.metadata,
+                "session_buckets": ["london"],
+            },
+        }
+    )
+
+    _fire(executor, event)
 
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == (
         REASON_STRATEGY_REQUIRES_PENDING_ENTRY
+    )
+
+
+def test_trade_executor_blocks_timeframe_outside_deployment_contract() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.4,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.ACTIVE_GUARDED,
+                    locked_timeframes=("M30",),
+                    locked_sessions=("london",),
+                    max_live_positions=1,
+                    require_pending_entry=False,
+                    paper_shadow_required=True,
+                    robustness_tier="tf_specific",
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = SignalEvent(**{**event.__dict__, "timeframe": "M5"})
+
+    _fire(executor, event)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_STRATEGY_LOCKED_TIMEFRAME
+    )
+
+
+def test_trade_executor_blocks_session_outside_deployment_contract() -> None:
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.4,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.ACTIVE_GUARDED,
+                    locked_timeframes=("M5",),
+                    locked_sessions=("london",),
+                    max_live_positions=1,
+                    require_pending_entry=False,
+                    paper_shadow_required=True,
+                    robustness_tier="tf_specific",
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+    )
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = SignalEvent(
+        **{
+            **event.__dict__,
+            "metadata": {
+                **event.metadata,
+                "session_buckets": ["asia"],
+            },
+        }
+    )
+
+    _fire(executor, event)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        REASON_STRATEGY_LOCKED_SESSION
     )
 
 
@@ -465,7 +610,18 @@ def test_trade_executor_enforces_guarded_strategy_live_position_cap() -> None:
         execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
-    _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
+    event = _build_event(spread_points=20.0, close_price=3000.0)
+    event = SignalEvent(
+        **{
+            **event.__dict__,
+            "metadata": {
+                **event.metadata,
+                "session_buckets": ["london"],
+            },
+        }
+    )
+
+    _fire(executor, event)
 
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == (

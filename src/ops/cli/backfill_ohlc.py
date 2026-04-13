@@ -218,7 +218,15 @@ def backfill(
 
 
 def main() -> None:
+    from src.config.instance_context import set_current_environment
+
     parser = argparse.ArgumentParser(description="MT5 → TimescaleDB OHLC backfill")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定写入哪个环境数据库",
+    )
     parser.add_argument("--symbol", default="XAUUSD", help="Trading symbol (default: XAUUSD)")
     parser.add_argument(
         "--tf",
@@ -232,6 +240,7 @@ def main() -> None:
     parser.add_argument("--incremental", action="store_true", help="Continue from last bar in DB")
     parser.add_argument("--status", action="store_true", help="Show current DB coverage and exit")
     args = parser.parse_args()
+    set_current_environment(args.environment)
 
     timeframes = [tf.strip().upper() for tf in args.tf.split(",")]
 

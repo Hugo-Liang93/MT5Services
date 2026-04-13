@@ -16,6 +16,7 @@ from src.signals.orchestration import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.trading import TradingAccountRegistry, TradingModule
+from src.trading.commands import OperatorCommandConsumer, OperatorCommandService
 from src.trading.pending import PendingEntryManager
 from src.trading.positions import PositionManager
 from src.trading.closeout import ExposureCloseoutController
@@ -39,6 +40,7 @@ from src.app_runtime.mode_policy import (
     RuntimeModeAutoTransitionPolicy,
     RuntimeModeTransitionGuard,
 )
+from src.config.runtime_identity import RuntimeIdentity
 
 
 class AppContainer:
@@ -62,6 +64,8 @@ class AppContainer:
         "calibrator",
         "regime_detector",
         "performance_tracker",
+        "signal_performance_tracker",
+        "execution_performance_tracker",
         "market_structure_analyzer",
         # Trading
         "trade_registry",
@@ -71,6 +75,10 @@ class AppContainer:
         "position_manager",
         "trade_outcome_tracker",
         "pending_entry_manager",
+        "execution_intent_publisher",
+        "execution_intent_consumer",
+        "operator_command_service",
+        "operator_command_consumer",
         "trading_state_store",
         "trading_state_alerts",
         "trading_state_recovery",
@@ -89,11 +97,14 @@ class AppContainer:
         "runtime_mode_guard",
         "runtime_mode_auto_policy",
         "runtime_mode_controller",
+        "account_risk_state_projector",
         # Paper Trading
         "paper_trading_bridge",
         "paper_trade_tracker",
         # Studio
         "studio_service",
+        # Runtime identity
+        "runtime_identity",
         # Runtime cleanup
         "shutdown_callbacks",
     )
@@ -111,6 +122,8 @@ class AppContainer:
         self.calibrator: Optional[ConfidenceCalibrator] = None
         self.regime_detector: Optional[Any] = None
         self.performance_tracker: Optional[StrategyPerformanceTracker] = None
+        self.signal_performance_tracker: Optional[StrategyPerformanceTracker] = None
+        self.execution_performance_tracker: Optional[StrategyPerformanceTracker] = None
         self.market_structure_analyzer: Optional[MarketStructureAnalyzer] = None
 
         self.trade_registry: Optional[TradingAccountRegistry] = None
@@ -120,6 +133,10 @@ class AppContainer:
         self.position_manager: Optional[PositionManager] = None
         self.trade_outcome_tracker: Optional[TradeOutcomeTracker] = None
         self.pending_entry_manager: Optional[PendingEntryManager] = None
+        self.execution_intent_publisher: Optional[Any] = None
+        self.execution_intent_consumer: Optional[Any] = None
+        self.operator_command_service: Optional[OperatorCommandService] = None
+        self.operator_command_consumer: Optional[OperatorCommandConsumer] = None
         self.trading_state_store: Optional[TradingStateStore] = None
         self.trading_state_alerts: Optional[TradingStateAlerts] = None
         self.trading_state_recovery: Optional[TradingStateRecovery] = None
@@ -138,9 +155,11 @@ class AppContainer:
         self.runtime_mode_guard: Optional[RuntimeModeTransitionGuard] = None
         self.runtime_mode_auto_policy: Optional[RuntimeModeAutoTransitionPolicy] = None
         self.runtime_mode_controller: Optional[RuntimeModeController] = None
+        self.account_risk_state_projector: Optional[Any] = None
 
         self.paper_trading_bridge: Optional[PaperTradingBridge] = None
         self.paper_trade_tracker: Optional[PaperTradeTracker] = None
 
         self.studio_service: Optional[StudioService] = None
+        self.runtime_identity: Optional[RuntimeIdentity] = None
         self.shutdown_callbacks: list[Callable[[], None]] = []
