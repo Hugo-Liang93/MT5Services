@@ -4,8 +4,17 @@ import logging
 from collections.abc import Callable
 from typing import Any, Dict, TypeVar
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from src.api.action_contracts import (
+    build_action_result,
+    build_idempotency_conflict_response,
+    build_replayed_action_response,
+    next_action_id,
+    normalize_action_actor,
+    normalize_idempotency_key,
+    normalize_request_context,
+)
 from src.api.deps import (
     get_economic_calendar_service,
     get_health_monitor_instance,
@@ -15,11 +24,22 @@ from src.api.deps import (
     get_pending_entry_manager,
     get_runtime_read_model,
     get_runtime_task_status,
+    resolve_runtime_task_scope,
     get_startup_status,
+    get_trading_command_service,
 )
-from src.api.schemas import ApiResponse
+from src.api.schemas import (
+    ApiResponse,
+    PendingEntriesBySymbolCancelRequest,
+    PendingEntryCancelRequest,
+)
 from src.config import get_effective_config_snapshot, reload_configs
 from src.config.file_manager import get_file_config_manager
+from src.readmodels.runtime import RuntimeReadModel
+from src.trading.application import (
+    TradeOperatorActionReplayConflictError,
+    TradingCommandService,
+)
 
 from .health import TRADE_TRIGGER_METHODS
 from .view_models import (
@@ -65,6 +85,16 @@ def _execute_monitored_call(
 
 def _enum_or_raw(value: Any) -> str:
     return getattr(value, "value", value)
+
+
+def _pending_entries_effective_state(runtime_views: RuntimeReadModel) -> dict[str, Any]:
+    summary = _execute_monitored_call(
+        "runtime pending entries summary",
+        runtime_views.pending_entries_summary,
+        fallback={},
+        allow_fallback=True,
+    )
+    return summary if isinstance(summary, dict) else {}
 
 
 @router.get("/config/effective", response_model=ApiResponse[EffectiveRuntimeConfigView], summary="获取当前有效运行配置")
@@ -189,16 +219,43 @@ async def trigger_config_reload(filename: str = "signal.ini") -> ApiResponse[Con
 
 
 @router.get("/runtime-tasks", summary="获取运行时任务状态")
-async def get_runtime_tasks(component: str | None = None, task_name: str | None = None) -> ApiResponse[RuntimeTasksView]:
+async def get_runtime_tasks(
+    component: str | None = None,
+    task_name: str | None = None,
+    instance_id: str | None = None,
+    instance_role: str | None = None,
+    account_key: str | None = None,
+    account_alias: str | None = None,
+) -> ApiResponse[RuntimeTasksView]:
+    scope = resolve_runtime_task_scope(
+        instance_id=instance_id,
+        instance_role=instance_role,
+        account_key=account_key,
+        account_alias=account_alias,
+    )
     return ApiResponse.success_response(
         {
             "items": _execute_monitored_call(
                 "runtime task status",
-                lambda: get_runtime_task_status(component=component, task_name=task_name),
+                lambda: get_runtime_task_status(
+                    component=component,
+                    task_name=task_name,
+                    instance_id=scope["instance_id"],
+                    instance_role=scope["instance_role"],
+                    account_key=scope["account_key"],
+                    account_alias=scope["account_alias"],
+                ),
                 fallback=[],
                 allow_fallback=True,
             ),
-            "filters": {"component": component, "task_name": task_name},
+            "filters": {
+                "component": component,
+                "task_name": task_name,
+                "instance_id": scope["instance_id"],
+                "instance_role": scope["instance_role"],
+                "account_key": scope["account_key"],
+                "account_alias": scope["account_alias"],
+            },
         }
     )
 
@@ -216,24 +273,180 @@ async def get_pending_entries() -> ApiResponse[Dict[str, Any]]:
 
 
 @router.post("/pending-entries/{signal_id}/cancel", response_model=ApiResponse[PendingEntryCancellationView], summary="取消指定挂起入场")
-async def cancel_pending_entry(signal_id: str, reason: str = "api") -> ApiResponse[PendingEntryCancellationView]:
+async def cancel_pending_entry(
+    signal_id: str,
+    request: PendingEntryCancelRequest,
+    pending_entry_manager=Depends(get_pending_entry_manager),
+    command_service: TradingCommandService = Depends(get_trading_command_service),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[PendingEntryCancellationView]:
+    command_type = "cancel_pending_entry"
+    actor = normalize_action_actor(request.actor)
+    idempotency_key = normalize_idempotency_key(request.idempotency_key)
+    reason = str(request.reason or "").strip() or "api"
+    request_context = normalize_request_context(request.request_context)
+    request_payload = {
+        "signal_id": signal_id,
+        "reason": reason,
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+        "request_context": request_context,
+    }
+    if idempotency_key:
+        try:
+            replayed = command_service.find_operator_action_replay(
+                command_type=command_type,
+                idempotency_key=idempotency_key,
+                request_payload=request_payload,
+            )
+        except TradeOperatorActionReplayConflictError as exc:
+            return build_idempotency_conflict_response(
+                operation="cancel_pending_entry",
+                command_type=command_type,
+                idempotency_key=idempotency_key,
+                existing_record=exc.existing_record,
+                extra_metadata={"signal_id": signal_id},
+            )
+        if replayed is not None:
+            return build_replayed_action_response(
+                operation="cancel_pending_entry",
+                replayed=replayed,
+                extra_metadata={"signal_id": signal_id},
+            )
+    action_id = next_action_id()
+    request_payload = {"action_id": action_id, **request_payload}
     cancelled = _execute_monitored_call(
         f"cancel pending entry {signal_id}",
-        lambda: get_pending_entry_manager().cancel(signal_id, reason=reason),
+        lambda: pending_entry_manager.cancel(signal_id, reason=reason),
         fallback=False,
     )
+    pending_entries = _pending_entries_effective_state(runtime_views)
+    message = "pending entry cancelled" if cancelled else "pending entry already absent"
+    status = "completed" if cancelled else "noop"
+    response_payload = build_action_result(
+        action_id=action_id,
+        audit_id=action_id,
+        actor=actor,
+        reason=reason,
+        idempotency_key=idempotency_key,
+        request_context=request_context,
+        status=status,
+        message=message,
+        recorded_at=None,
+        effective_state={"pending_entries": pending_entries},
+        extra_fields={
+            "signal_id": signal_id,
+            "cancelled": cancelled,
+            "pending_entries": pending_entries,
+        },
+    )
+    audit_info = command_service.record_operator_action(
+        command_type=command_type,
+        request_payload=request_payload,
+        response_payload=response_payload,
+        operation_id=action_id,
+    )
+    response_payload["audit_id"] = str(audit_info.get("operation_id") or action_id)
+    response_payload["recorded_at"] = audit_info.get("recorded_at")
     return ApiResponse.success_response(
-        PendingEntryCancellationView(cancelled=cancelled, signal_id=signal_id, reason=reason)
+        data=response_payload,
+        metadata={
+            "operation": "cancel_pending_entry",
+            "signal_id": signal_id,
+            "action_id": action_id,
+            "audit_id": str(audit_info.get("operation_id") or action_id),
+            "actor": actor,
+        },
     )
 
 
 @router.post("/pending-entries/cancel-by-symbol", response_model=ApiResponse[PendingEntriesBySymbolCancellationView], summary="按品种取消全部挂起入场")
-async def cancel_pending_entries_by_symbol(symbol: str, reason: str = "api") -> ApiResponse[PendingEntriesBySymbolCancellationView]:
+async def cancel_pending_entries_by_symbol(
+    request: PendingEntriesBySymbolCancelRequest,
+    pending_entry_manager=Depends(get_pending_entry_manager),
+    command_service: TradingCommandService = Depends(get_trading_command_service),
+    runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
+) -> ApiResponse[PendingEntriesBySymbolCancellationView]:
+    command_type = "cancel_pending_entries_by_symbol"
+    actor = normalize_action_actor(request.actor)
+    idempotency_key = normalize_idempotency_key(request.idempotency_key)
+    reason = str(request.reason or "").strip() or "api"
+    request_context = normalize_request_context(request.request_context)
+    request_payload = {
+        "symbol": request.symbol,
+        "reason": reason,
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+        "request_context": request_context,
+    }
+    if idempotency_key:
+        try:
+            replayed = command_service.find_operator_action_replay(
+                command_type=command_type,
+                idempotency_key=idempotency_key,
+                request_payload=request_payload,
+            )
+        except TradeOperatorActionReplayConflictError as exc:
+            return build_idempotency_conflict_response(
+                operation="cancel_pending_entries_by_symbol",
+                command_type=command_type,
+                idempotency_key=idempotency_key,
+                existing_record=exc.existing_record,
+                extra_metadata={"symbol": request.symbol},
+            )
+        if replayed is not None:
+            return build_replayed_action_response(
+                operation="cancel_pending_entries_by_symbol",
+                replayed=replayed,
+                extra_metadata={"symbol": request.symbol},
+            )
+    action_id = next_action_id()
+    request_payload = {"action_id": action_id, **request_payload}
     count = _execute_monitored_call(
-        f"cancel pending entries for {symbol}",
-        lambda: get_pending_entry_manager().cancel_by_symbol(symbol, reason=reason),
+        f"cancel pending entries for {request.symbol}",
+        lambda: pending_entry_manager.cancel_by_symbol(request.symbol, reason=reason),
         fallback=0,
     )
+    pending_entries = _pending_entries_effective_state(runtime_views)
+    status = "completed" if count > 0 else "noop"
+    message = (
+        f"cancelled {count} pending entries for symbol"
+        if count > 0
+        else "no pending entries matched symbol"
+    )
+    response_payload = build_action_result(
+        action_id=action_id,
+        audit_id=action_id,
+        actor=actor,
+        reason=reason,
+        idempotency_key=idempotency_key,
+        request_context=request_context,
+        status=status,
+        message=message,
+        recorded_at=None,
+        effective_state={"pending_entries": pending_entries},
+        extra_fields={
+            "symbol": request.symbol,
+            "cancelled_count": count,
+            "pending_entries": pending_entries,
+        },
+    )
+    audit_info = command_service.record_operator_action(
+        command_type=command_type,
+        request_payload=request_payload,
+        response_payload=response_payload,
+        operation_id=action_id,
+        symbol=request.symbol,
+    )
+    response_payload["audit_id"] = str(audit_info.get("operation_id") or action_id)
+    response_payload["recorded_at"] = audit_info.get("recorded_at")
     return ApiResponse.success_response(
-        PendingEntriesBySymbolCancellationView(cancelled_count=count, symbol=symbol, reason=reason)
+        data=response_payload,
+        metadata={
+            "operation": "cancel_pending_entries_by_symbol",
+            "symbol": request.symbol,
+            "action_id": action_id,
+            "audit_id": str(audit_info.get("operation_id") or action_id),
+            "actor": actor,
+        },
     )

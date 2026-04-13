@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.app_runtime.builder_phases.account_runtime import build_account_runtime_layer
 from src.app_runtime.builder_phases.market import build_market_layer
 from src.app_runtime.builder_phases.monitoring import build_monitoring_layer
 from src.app_runtime.builder_phases.read_models import build_runtime_read_models
@@ -18,6 +19,7 @@ __all__ = [
     "build_market_layer",
     "build_trading_layer",
     "build_signal_layer",
+    "build_account_runtime_layer",
     "build_paper_trading_layer",
     "build_runtime_controls",
     "build_runtime_component_registry",

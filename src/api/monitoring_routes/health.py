@@ -13,6 +13,8 @@ from src.api.deps import (
     get_indicator_manager,
     get_ingestor,
     get_monitoring_manager_instance,
+    get_pending_entry_manager,
+    get_position_manager,
     get_runtime_read_model,
     get_startup_status,
 )
@@ -101,23 +103,62 @@ async def health_ready() -> Dict[str, Any]:
         )
 
     checks: Dict[str, str] = {}
+    runtime_read_model = get_runtime_read_model()
+    runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
+    is_executor = bool(
+        runtime_identity is not None
+        and getattr(runtime_identity, "instance_role", None) == "executor"
+    )
 
-    queue_stats, queue_err = _safe_check_call("storage_writer", get_ingestor().queue_stats)
-    if queue_err is None and isinstance(queue_stats, dict):
-        thread_stats = dict(queue_stats.get("threads", {}) or {})
+    storage_summary, queue_err = _safe_check_call(
+        "storage_writer",
+        runtime_read_model.storage_summary,
+    )
+    if queue_err is None and isinstance(storage_summary, dict):
+        thread_stats = dict(storage_summary.get("threads", {}) or {})
         writer_alive = thread_stats.get("writer_alive", False)
         ingest_alive = thread_stats.get("ingest_alive", False)
         checks["storage_writer"] = "ok" if writer_alive else "degraded"
-        checks["ingestion"] = "ok" if ingest_alive else "degraded"
+        if not is_executor:
+            checks["ingestion"] = "ok" if ingest_alive else "degraded"
     else:
         checks["storage_writer"] = "error"
-        checks["ingestion"] = "error"
+        if not is_executor:
+            checks["ingestion"] = "error"
 
-    perf, perf_err = _safe_check_call("indicator_engine", get_indicator_manager().get_performance_stats)
-    if perf_err is None and isinstance(perf, dict):
-        checks["indicator_engine"] = "ok" if perf.get("event_loop_running") else "degraded"
+    if is_executor:
+        pending_manager, pending_err = _safe_check_call(
+            "pending_entry",
+            lambda: get_pending_entry_manager().is_running(),
+        )
+        checks["pending_entry"] = "ok" if pending_err is None and bool(pending_manager) else "degraded"
+
+        position_manager, position_err = _safe_check_call(
+            "position_manager",
+            lambda: get_position_manager().is_running(),
+        )
+        checks["position_manager"] = (
+            "ok" if position_err is None and bool(position_manager) else "degraded"
+        )
+
+        account_risk_state, risk_err = _safe_check_call(
+            "account_risk_state",
+            runtime_read_model.account_risk_state_summary,
+        )
+        checks["account_risk_state"] = (
+            "ok"
+            if risk_err is None and isinstance(account_risk_state, dict) and bool(account_risk_state)
+            else "degraded"
+        )
     else:
-        checks["indicator_engine"] = "error"
+        perf, perf_err = _safe_check_call(
+            "indicator_engine",
+            get_indicator_manager().get_performance_stats,
+        )
+        if perf_err is None and isinstance(perf, dict):
+            checks["indicator_engine"] = "ok" if perf.get("event_loop_running") else "degraded"
+        else:
+            checks["indicator_engine"] = "error"
 
     failed_checks = [name for name, status in checks.items() if status in {"degraded", "error"}]
     if failed_checks:
@@ -148,6 +189,10 @@ async def get_health_status(hours: int = 24) -> ApiResponse[Dict[str, Any]]:
 
 @router.get("/performance", summary="获取指标性能统计")
 async def get_performance_stats() -> ApiResponse[Dict[str, Any]]:
+    runtime_read_model = get_runtime_read_model()
+    runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
+    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+        return ApiResponse.success_response({"status": "disabled", "role": "executor"})
     return ApiResponse.success_response(
         _execute_health_call("indicator performance stats", get_indicator_manager().get_performance_stats, fallback={})
     )
@@ -155,6 +200,10 @@ async def get_performance_stats() -> ApiResponse[Dict[str, Any]]:
 
 @router.get("/events", summary="获取事件存储统计")
 async def get_event_stats() -> ApiResponse[Dict[str, Any]]:
+    runtime_read_model = get_runtime_read_model()
+    runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
+    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+        return ApiResponse.success_response({"status": "disabled", "role": "executor"})
     return ApiResponse.success_response(
         _execute_health_call(
             "indicator event store stats",
@@ -166,6 +215,10 @@ async def get_event_stats() -> ApiResponse[Dict[str, Any]]:
 
 @router.get("/queues", summary="获取队列状态")
 async def get_queue_stats() -> ApiResponse[Dict[str, Any]]:
+    runtime_read_model = get_runtime_read_model()
+    runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
+    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+        return ApiResponse.success_response(runtime_read_model.storage_summary())
     return ApiResponse.success_response(
         _execute_health_call("queue stats", lambda: get_ingestor().queue_stats() or {}, fallback={})
     )
@@ -183,6 +236,10 @@ async def get_metrics(component: str, metric_name: str, limit: int = 100) -> Api
 
 @router.post("/consistency/check", summary="手动触发一致性检查")
 async def trigger_consistency_check() -> ApiResponse[RuntimeActionView]:
+    runtime_read_model = get_runtime_read_model()
+    runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
+    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+        raise HTTPException(status_code=409, detail="indicator consistency check is disabled for executor")
     _execute_health_call(
         "consistency check trigger",
         get_indicator_manager().trigger_consistency_check,
@@ -195,6 +252,16 @@ async def trigger_consistency_check() -> ApiResponse[RuntimeActionView]:
 
 @router.post("/events/reset-failed", summary="重置失败事件")
 async def reset_failed_events() -> ApiResponse[FailedEventsResetView]:
+    runtime_read_model = get_runtime_read_model()
+    runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
+    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+        return ApiResponse.success_response(
+            FailedEventsResetView(
+                status="disabled",
+                message="Indicator failed-event reset is disabled for executor",
+                reset_count=0,
+            ).model_dump()
+        )
     reset_count = _execute_health_call(
         "failed events reset",
         get_indicator_manager().reset_failed_events,
@@ -212,6 +279,15 @@ async def reset_failed_events() -> ApiResponse[FailedEventsResetView]:
 
 @router.post("/events/cleanup", summary="清理旧事件")
 async def cleanup_old_events(days_to_keep: int = 7) -> ApiResponse[RuntimeActionView]:
+    runtime_read_model = get_runtime_read_model()
+    runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
+    if runtime_identity is not None and getattr(runtime_identity, "instance_role", None) == "executor":
+        return ApiResponse.success_response(
+            RuntimeActionView(
+                status="disabled",
+                message="Indicator event cleanup is disabled for executor",
+            ).model_dump()
+        )
     _execute_health_call(
         "event cleanup",
         lambda: get_indicator_manager().cleanup_old_events(days_to_keep),

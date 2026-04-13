@@ -83,6 +83,8 @@ class AppRuntime:
 
         try:
             current_step = "runtime_mode"
+            if c.storage_writer is not None:
+                c.storage_writer.ensure_schema_ready()
             self._restore_trading_state()
             current_started = time.monotonic()
             controller = c.runtime_mode_controller
@@ -154,6 +156,7 @@ class AppRuntime:
             ("trade_executor", c.trade_executor, "shutdown"),
             ("pending_entry_manager", c.pending_entry_manager, "shutdown"),
             ("position_manager", c.position_manager, "stop"),
+            ("account_risk_state_projector", c.account_risk_state_projector, "stop"),
             ("ingestor", c.ingestor, "stop"),
             ("market_service", c.market_service, "shutdown"),
             ("indicator_manager", c.indicator_manager, "shutdown"),
@@ -243,17 +246,22 @@ class AppRuntime:
         if c.monitoring_manager is None:
             return
         current_started = time.monotonic()
-        c.monitoring_manager.register_component("data_ingestion", c.ingestor, ["queue_stats"])
-        c.monitoring_manager.register_component(
-            "indicator_calculation",
-            c.indicator_manager,
-            ["indicator_freshness", "cache_stats", "performance_stats"],
+        runtime_identity = c.runtime_identity
+        is_executor = bool(
+            runtime_identity is not None and runtime_identity.instance_role == "executor"
         )
-        c.monitoring_manager.register_component("market_data", c.market_service, ["data_latency"])
-        c.monitoring_manager.register_component(
-            "economic_calendar", c.economic_calendar_service, ["economic_calendar"]
-        )
-        c.monitoring_manager.register_component("signals", c.signal_runtime, ["status"])
+        if not is_executor:
+            c.monitoring_manager.register_component("data_ingestion", c.ingestor, ["queue_stats"])
+            c.monitoring_manager.register_component(
+                "indicator_calculation",
+                c.indicator_manager,
+                ["indicator_freshness", "cache_stats", "performance_stats"],
+            )
+            c.monitoring_manager.register_component("market_data", c.market_service, ["data_latency"])
+            c.monitoring_manager.register_component(
+                "economic_calendar", c.economic_calendar_service, ["economic_calendar"]
+            )
+            c.monitoring_manager.register_component("signals", c.signal_runtime, ["status"])
         c.monitoring_manager.register_component(
             "trading", c.trade_module, ["monitoring_summary"]
         )
@@ -266,6 +274,12 @@ class AppRuntime:
         if c.pending_entry_manager is not None:
             c.monitoring_manager.register_component(
                 "pending_entry", c.pending_entry_manager, ["pending_entry"]
+            )
+        if c.account_risk_state_projector is not None:
+            c.monitoring_manager.register_component(
+                "account_risk_state_projection",
+                c.account_risk_state_projector,
+                ["status"],
             )
         c.monitoring_manager.start()
         self._mark_step("monitoring", RuntimeTaskState.READY.value, current_started)
@@ -301,6 +315,7 @@ class AppRuntime:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         success_count = 1 if state == RuntimeTaskState.READY.value else 0
         failure_count = 1 if state == RuntimeTaskState.FAILED.value else 0
+        runtime_identity = c.runtime_identity
         try:
             c.storage_writer.db.write_runtime_task_status(
                 [
@@ -318,6 +333,26 @@ class AppRuntime:
                         failure_count,
                         error,
                         {"startup": True},
+                        (
+                            runtime_identity.instance_id
+                            if runtime_identity is not None
+                            else "legacy"
+                        ),
+                        (
+                            runtime_identity.instance_role
+                            if runtime_identity is not None
+                            else None
+                        ),
+                        (
+                            runtime_identity.account_key
+                            if runtime_identity is not None
+                            else None
+                        ),
+                        (
+                            runtime_identity.account_alias
+                            if runtime_identity is not None
+                            else None
+                        ),
                     )
                 ]
             )

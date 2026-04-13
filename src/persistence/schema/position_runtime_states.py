@@ -1,6 +1,7 @@
 DDL = """
 CREATE TABLE IF NOT EXISTS position_runtime_states (
     account_alias TEXT NOT NULL,
+    account_key TEXT,
     position_ticket BIGINT PRIMARY KEY,
     signal_id TEXT,
     order_ticket BIGINT,
@@ -35,9 +36,14 @@ CREATE TABLE IF NOT EXISTS position_runtime_states (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE position_runtime_states
+    ADD COLUMN IF NOT EXISTS account_key TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_pos_states_account_status
     ON position_runtime_states (account_alias, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pos_states_account_key
+    ON position_runtime_states (account_key, status, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_pos_states_signal
     ON position_runtime_states (signal_id, updated_at DESC);
@@ -56,7 +62,7 @@ INSERT INTO position_runtime_states (
     highest_price, lowest_price, current_price,
     breakeven_applied, trailing_active,
     status, closed_at, close_source, close_price,
-    metadata, updated_at
+    metadata, updated_at, account_key
 ) VALUES (
     %s, %s, %s, %s, %s, %s,
     %s, %s, %s, %s,
@@ -66,10 +72,11 @@ INSERT INTO position_runtime_states (
     %s, %s, %s,
     %s, %s,
     %s, %s, %s, %s,
-    %s, %s
+    %s, %s, %s
 )
 ON CONFLICT (position_ticket) DO UPDATE SET
     account_alias = EXCLUDED.account_alias,
+    account_key = EXCLUDED.account_key,
     signal_id = EXCLUDED.signal_id,
     order_ticket = EXCLUDED.order_ticket,
     symbol = EXCLUDED.symbol,

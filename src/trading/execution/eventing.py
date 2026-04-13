@@ -9,6 +9,7 @@ from .reasons import SKIP_CATEGORY_DISPATCH, SKIP_CATEGORY_RISK_SERVICE
 
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.metadata_keys import MetadataKey as MK
+from src.trading.admission.service import append_admission_report_event
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent
@@ -67,6 +68,102 @@ def _skip_reason_category(reason: str) -> str:
 
 def trace_id_for_event(event: "SignalEvent") -> str:
     return str(event.metadata.get(MK.SIGNAL_TRACE_ID) or "").strip()
+
+
+def _account_context(executor: "TradeExecutor", event: "SignalEvent") -> dict[str, Any]:
+    runtime_identity = getattr(executor, "runtime_identity", None)
+    metadata = dict(event.metadata or {})
+    return {
+        "account_key": metadata.get("target_account_key")
+        or getattr(runtime_identity, "account_key", None),
+        "account_alias": metadata.get("target_account_alias")
+        or getattr(runtime_identity, "account_alias", None),
+        "intent_id": metadata.get("intent_id"),
+    }
+
+
+def _admission_stage_from_category(category: str) -> str:
+    normalized = str(category or "").strip().lower()
+    if normalized in {"risk_guard", "risk_service"}:
+        return "account_risk"
+    if normalized in {"cost_guard", "trade_params"}:
+        return "market_tradability"
+    if normalized in {"execution_gate", "governance", "position", "duplicate_guard", "confidence", "cooldown"}:
+        return "execution_gate"
+    if normalized in {"eod_guard", "performance", "equity_filter"}:
+        return "market_tradability"
+    return "account_risk"
+
+
+def emit_admission_report(
+    executor: "TradeExecutor",
+    event: "SignalEvent",
+    *,
+    decision: str,
+    stage: str,
+    reasons: list[dict[str, Any]] | None = None,
+    requested_operation: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    trace_id = trace_id_for_event(event)
+    if not trace_id:
+        return
+    context = _account_context(executor, event)
+    payload = {
+        "decision": str(decision or "allow"),
+        "stage": str(stage or "account_risk"),
+        "reasons": list(reasons or []),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "requested_operation": requested_operation
+        or ("intrabar_execution" if event.scope == "intrabar" else "signal_execution"),
+        "scope": event.scope,
+        "trace_id": trace_id,
+        "signal_id": event.signal_id,
+        "intent_id": context.get("intent_id"),
+        "account_key": context.get("account_key"),
+        "account_alias": context.get("account_alias"),
+        "deployment_contract": {
+            "strategy": event.strategy,
+            "timeframe": event.timeframe,
+        },
+    }
+    if extra:
+        payload.update(extra)
+    append_admission_report_event(
+        pipeline_event_bus=executor.get_pipeline_event_bus(),
+        trace_id=trace_id,
+        symbol=event.symbol,
+        timeframe=event.timeframe or "",
+        scope=event.scope,
+        report=payload,
+    )
+
+
+def emit_blocked_admission_report(
+    executor: "TradeExecutor",
+    event: "SignalEvent",
+    *,
+    code: str,
+    category: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+    requested_operation: str | None = None,
+) -> None:
+    emit_admission_report(
+        executor,
+        event,
+        decision="block",
+        stage=_admission_stage_from_category(category),
+        requested_operation=requested_operation,
+        reasons=[
+            {
+                "code": str(code or "blocked"),
+                "stage": _admission_stage_from_category(category),
+                "message": str(message or code or "blocked"),
+                "details": dict(details or {}),
+            }
+        ],
+    )
 
 
 def emit_execution_decided(
@@ -363,9 +460,13 @@ def execute_market_order(
             symbol=event.symbol,
             direction=event.direction,
         )
+        account_context = _account_context(executor, event)
         log_entry = {
             "at": executor.last_execution_at.isoformat(),
             "signal_id": event.signal_id,
+            "account_key": account_context["account_key"],
+            "account_alias": account_context["account_alias"],
+            "intent_id": account_context["intent_id"],
             "symbol": event.symbol,
             "direction": event.direction,
             "strategy": event.strategy,
@@ -458,6 +559,9 @@ def execute_market_order(
                     ),
                     confidence=event.confidence,
                     regime=event.metadata.get(MK.REGIME),
+                    account_key=account_context["account_key"],
+                    account_alias=account_context["account_alias"],
+                    intent_id=account_context["intent_id"],
                 )
             except Exception as outcome_exc:
                 logger.warning(
@@ -482,6 +586,9 @@ def execute_market_order(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
+                "account_key": _account_context(executor, event)["account_key"],
+                "account_alias": _account_context(executor, event)["account_alias"],
+                "intent_id": _account_context(executor, event)["intent_id"],
                 "symbol": event.symbol,
                 "direction": event.direction,
                 "strategy": event.strategy,
@@ -499,6 +606,9 @@ def execute_market_order(
                         {
                             "at": datetime.now(timezone.utc).isoformat(),
                             "signal_id": event.signal_id,
+                            "account_key": _account_context(executor, event)["account_key"],
+                            "account_alias": _account_context(executor, event)["account_alias"],
+                            "intent_id": _account_context(executor, event)["intent_id"],
                             "symbol": event.symbol,
                             "direction": event.direction,
                             "strategy": event.strategy,
@@ -527,6 +637,9 @@ def execute_market_order(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
                 "signal_id": event.signal_id,
+                "account_key": _account_context(executor, event)["account_key"],
+                "account_alias": _account_context(executor, event)["account_alias"],
+                "intent_id": _account_context(executor, event)["intent_id"],
                 "symbol": event.symbol,
                 "direction": event.direction,
                 "strategy": event.strategy,
@@ -547,6 +660,19 @@ def execute_market_order(
         ):
             executor.circuit_open = True
             executor.circuit_open_at = datetime.now(timezone.utc)
+            account_context = _account_context(executor, event)
+            executor.record_circuit_breaker_event(
+                event="tripped",
+                reason="max_consecutive_failures",
+                consecutive_failures=executor.consecutive_failures,
+                account_alias=account_context["account_alias"],
+                account_key=account_context["account_key"],
+                metadata={
+                    "signal_id": event.signal_id,
+                    "symbol": event.symbol,
+                    "strategy": event.strategy,
+                },
+            )
             logger.error(
                 "TradeExecutor: circuit breaker OPENED after %d consecutive failures. "
                 "Auto-trading suspended. Will auto-reset in %d minutes or call reset_circuit().",
@@ -556,6 +682,9 @@ def execute_market_order(
         fail_entry = {
             "at": datetime.now(timezone.utc).isoformat(),
             "signal_id": event.signal_id,
+            "account_key": _account_context(executor, event)["account_key"],
+            "account_alias": _account_context(executor, event)["account_alias"],
+            "intent_id": _account_context(executor, event)["intent_id"],
             "symbol": event.symbol,
             "direction": event.direction,
             "strategy": event.strategy,

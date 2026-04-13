@@ -5,7 +5,12 @@ import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from src.config import get_api_config, get_system_config
+from src.config import get_api_config, get_system_config, reload_configs
+from src.config.instance_context import get_current_instance_name, resolve_instance_scoped_dir
+from src.entrypoint.logging_context import (
+    inject_logging_context,
+    install_log_record_context,
+)
 
 logger = logging.getLogger("mt5services.launcher")
 
@@ -33,7 +38,7 @@ def _resolve_log_dir(log_dir_value: str) -> Path:
     log_dir = Path(log_dir_value).expanduser()
     if not log_dir.is_absolute():
         log_dir = _project_root() / log_dir
-    return log_dir
+    return resolve_instance_scoped_dir(log_dir)
 
 
 def resolve_runtime_target() -> tuple[str, str, int]:
@@ -94,12 +99,15 @@ def launch() -> None:
     import uvicorn
     from src.utils.timezone import LocalTimeFormatter, configure as configure_tz
 
+    reload_configs()
     api_config = get_api_config()
     system_config = get_system_config()
+    instance_name = get_current_instance_name()
+    install_log_record_context(instance_name=instance_name)
 
     # 统一时区：所有日志时间戳使用配置的显示时区
     configure_tz(system_config.timezone)
-    formatter = LocalTimeFormatter(api_config.log_format)
+    formatter = LocalTimeFormatter(inject_logging_context(api_config.log_format))
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
@@ -112,7 +120,13 @@ def launch() -> None:
     _setup_file_logging(system_config, formatter, logging.getLogger())
 
     app_target, host, port = resolve_runtime_target()
-    logger.info("Starting API target=%s host=%s port=%s", app_target, host, port)
+    logger.info(
+        "Starting API target=%s host=%s port=%s instance=%s",
+        app_target,
+        host,
+        port,
+        instance_name or "default",
+    )
     uvicorn.run(app_target, host=host, port=port, reload=False, access_log=api_config.access_log_enabled)
 
 

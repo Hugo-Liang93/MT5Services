@@ -37,6 +37,11 @@ class TradeControlStateService:
             "close_only_mode": False,
             "updated_at": None,
             "reason": None,
+            "actor": None,
+            "action_id": None,
+            "audit_id": None,
+            "idempotency_key": None,
+            "request_context": {},
         }
         self._update_hook: Optional[Callable[[dict[str, Any]], None]] = None
 
@@ -59,6 +64,16 @@ class TradeControlStateService:
                 state.get("close_only_mode", False)
             )
             self._state["reason"] = str(state.get("reason") or "").strip() or None
+            self._state["actor"] = str(state.get("actor") or "").strip() or None
+            self._state["action_id"] = str(state.get("action_id") or "").strip() or None
+            self._state["audit_id"] = str(state.get("audit_id") or "").strip() or None
+            self._state["idempotency_key"] = (
+                str(state.get("idempotency_key") or "").strip() or None
+            )
+            request_context = state.get("request_context")
+            self._state["request_context"] = (
+                dict(request_context) if isinstance(request_context, dict) else {}
+            )
             updated_at = state.get("updated_at")
             self._state["updated_at"] = (
                 updated_at.isoformat() if isinstance(updated_at, datetime) else updated_at
@@ -71,13 +86,33 @@ class TradeControlStateService:
         auto_entry_enabled: Optional[bool] = None,
         close_only_mode: Optional[bool] = None,
         reason: Optional[str] = None,
+        actor: Optional[str] = None,
+        action_id: Optional[str] = None,
+        audit_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        request_context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         with self._lock:
             if auto_entry_enabled is not None:
                 self._state["auto_entry_enabled"] = bool(auto_entry_enabled)
             if close_only_mode is not None:
                 self._state["close_only_mode"] = bool(close_only_mode)
-            self._state["reason"] = str(reason).strip() or None
+            self._state["reason"] = (str(reason).strip() or None) if reason is not None else None
+            self._state["actor"] = (str(actor).strip() or None) if actor is not None else None
+            self._state["action_id"] = (
+                str(action_id).strip() or None if action_id is not None else None
+            )
+            self._state["audit_id"] = (
+                str(audit_id).strip() or None if audit_id is not None else None
+            )
+            self._state["idempotency_key"] = (
+                str(idempotency_key).strip() or None
+                if idempotency_key is not None
+                else None
+            )
+            self._state["request_context"] = (
+                dict(request_context) if isinstance(request_context, dict) else {}
+            )
             self._state["updated_at"] = datetime.now(timezone.utc).isoformat()
             snapshot = dict(self._state)
         if self._update_hook is not None:

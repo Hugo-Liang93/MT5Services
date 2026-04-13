@@ -35,6 +35,8 @@ from src.trading import (
     TradingModule,
     TradingQueryService,
 )
+from src.trading.admission import TradeAdmissionService
+from src.trading.commands import OperatorCommandService
 from src.trading.closeout import ExposureCloseoutController
 from src.trading.pending import PendingEntryManager
 from src.trading.positions import PositionManager
@@ -107,30 +109,72 @@ def get_startup_status() -> dict:
     return _runtime.status
 
 
+def resolve_runtime_task_scope(
+    *,
+    instance_id: Optional[str] = None,
+    instance_role: Optional[str] = None,
+    account_key: Optional[str] = None,
+    account_alias: Optional[str] = None,
+) -> dict[str, Optional[str]]:
+    _ensure_initialized()
+    resolved = {
+        "instance_id": instance_id,
+        "instance_role": instance_role,
+        "account_key": account_key,
+        "account_alias": account_alias,
+    }
+    if any(value is not None for value in resolved.values()):
+        return resolved
+    runtime_identity = getattr(_container, "runtime_identity", None)
+    if runtime_identity is None:
+        return resolved
+    resolved["instance_id"] = runtime_identity.instance_id
+    return resolved
+
+
 def get_runtime_task_status(
-    component: Optional[str] = None, task_name: Optional[str] = None
+    component: Optional[str] = None,
+    task_name: Optional[str] = None,
+    instance_id: Optional[str] = None,
+    instance_role: Optional[str] = None,
+    account_key: Optional[str] = None,
+    account_alias: Optional[str] = None,
 ) -> list[dict]:
     _ensure_initialized()
     assert _container is not None and _container.storage_writer is not None
-    rows = _container.storage_writer.db.fetch_runtime_task_status(
+    scope = resolve_runtime_task_scope(
+        instance_id=instance_id,
+        instance_role=instance_role,
+        account_key=account_key,
+        account_alias=account_alias,
+    )
+    rows = _container.storage_writer.db.fetch_runtime_task_status_records(
         component=component,
         task_name=task_name,
+        instance_id=scope["instance_id"],
+        instance_role=scope["instance_role"],
+        account_key=scope["account_key"],
+        account_alias=scope["account_alias"],
     )
     return [
         {
-            "component": row[0],
-            "task_name": row[1],
-            "updated_at": row[2].isoformat() if row[2] else None,
-            "state": row[3],
-            "started_at": row[4].isoformat() if row[4] else None,
-            "completed_at": row[5].isoformat() if row[5] else None,
-            "next_run_at": row[6].isoformat() if row[6] else None,
-            "duration_ms": row[7],
-            "success_count": int(row[8] or 0),
-            "failure_count": int(row[9] or 0),
-            "consecutive_failures": int(row[10] or 0),
-            "last_error": row[11],
-            "details": row[12] or {},
+            "component": row["component"],
+            "task_name": row["task_name"],
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            "state": row["state"],
+            "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+            "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+            "next_run_at": row["next_run_at"].isoformat() if row["next_run_at"] else None,
+            "duration_ms": row["duration_ms"],
+            "success_count": int(row["success_count"] or 0),
+            "failure_count": int(row["failure_count"] or 0),
+            "consecutive_failures": int(row["consecutive_failures"] or 0),
+            "last_error": row["last_error"],
+            "details": row["details"] or {},
+            "instance_id": row["instance_id"],
+            "instance_role": row["instance_role"],
+            "account_key": row["account_key"],
+            "account_alias": row["account_alias"],
         }
         for row in rows
     ]
@@ -197,6 +241,23 @@ def get_trading_query_service() -> TradingQueryService:
     _ensure_initialized()
     assert _container is not None and _container.trade_module is not None
     return _container.trade_module.queries
+
+
+def get_operator_command_service() -> OperatorCommandService:
+    _ensure_initialized()
+    assert _container is not None and _container.operator_command_service is not None
+    return _container.operator_command_service
+
+
+def get_trade_admission_service() -> TradeAdmissionService:
+    _ensure_initialized()
+    assert _container is not None and _container.trade_module is not None
+    assert _container.runtime_read_model is not None
+    return TradeAdmissionService(
+        command_service=_container.trade_module.commands,
+        runtime_views=_container.runtime_read_model,
+        pipeline_event_bus=_container.pipeline_event_bus,
+    )
 
 
 def get_pre_trade_risk_service() -> PreTradeRiskService:

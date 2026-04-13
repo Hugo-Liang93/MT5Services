@@ -11,6 +11,7 @@ class TradeCommandAuditRecord:
     account_alias: str
     command_type: str
     status: str
+    account_key: str = ""
     symbol: Optional[str] = None
     side: Optional[str] = None
     order_kind: Optional[str] = None
@@ -45,4 +46,5 @@ class TradeCommandAuditRecord:
             self.error_message,
             dict(self.request_payload),
             dict(self.response_payload),
+            self.account_key,
         )

@@ -24,11 +24,17 @@ CREATE TABLE IF NOT EXISTS runtime_task_status (
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     details JSONB,
-    PRIMARY KEY (component, task_name)
+    instance_id TEXT NOT NULL DEFAULT 'legacy',
+    instance_role TEXT,
+    account_key TEXT,
+    account_alias TEXT,
+    PRIMARY KEY (instance_id, component, task_name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_runtime_tasks_updated
     ON runtime_task_status(updated_at DESC, component);
+CREATE INDEX IF NOT EXISTS idx_runtime_tasks_instance
+    ON runtime_task_status(instance_id, updated_at DESC);
 """
 
 MIGRATION_SQL = f"""
@@ -37,6 +43,21 @@ DECLARE
     constraint_name text;
 BEGIN
     IF to_regclass('runtime_task_status') IS NOT NULL THEN
+        ALTER TABLE runtime_task_status ADD COLUMN IF NOT EXISTS instance_id TEXT;
+        ALTER TABLE runtime_task_status ADD COLUMN IF NOT EXISTS instance_role TEXT;
+        ALTER TABLE runtime_task_status ADD COLUMN IF NOT EXISTS account_key TEXT;
+        ALTER TABLE runtime_task_status ADD COLUMN IF NOT EXISTS account_alias TEXT;
+        UPDATE runtime_task_status
+        SET instance_id = 'legacy'
+        WHERE instance_id IS NULL OR btrim(instance_id) = '';
+        ALTER TABLE runtime_task_status
+            ALTER COLUMN instance_id SET DEFAULT 'legacy';
+        ALTER TABLE runtime_task_status
+            ALTER COLUMN instance_id SET NOT NULL;
+        ALTER TABLE runtime_task_status
+            DROP CONSTRAINT IF EXISTS runtime_task_status_pkey;
+        ALTER TABLE runtime_task_status
+            ADD PRIMARY KEY (instance_id, component, task_name);
         FOR constraint_name IN
             SELECT conname
             FROM pg_constraint
@@ -71,10 +92,14 @@ INSERT INTO runtime_task_status (
     failure_count,
     consecutive_failures,
     last_error,
-    details
+    details,
+    instance_id,
+    instance_role,
+    account_key,
+    account_alias
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (component, task_name) DO UPDATE SET
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (instance_id, component, task_name) DO UPDATE SET
     updated_at = EXCLUDED.updated_at,
     state = EXCLUDED.state,
     started_at = EXCLUDED.started_at,
@@ -85,5 +110,8 @@ ON CONFLICT (component, task_name) DO UPDATE SET
     failure_count = EXCLUDED.failure_count,
     consecutive_failures = EXCLUDED.consecutive_failures,
     last_error = EXCLUDED.last_error,
-    details = EXCLUDED.details
+    details = EXCLUDED.details,
+    instance_role = EXCLUDED.instance_role,
+    account_key = EXCLUDED.account_key,
+    account_alias = EXCLUDED.account_alias
 """

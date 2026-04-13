@@ -160,9 +160,7 @@ class StorageWriter:
                 )
 
     # --- 生命周期 ---
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
+    def ensure_schema_ready(self) -> None:
         self.db.init_schema()
         try:
             from src.config.database import load_retention_config
@@ -172,6 +170,11 @@ class StorageWriter:
                 self.db.ensure_retention_policies(override_days=override_days or None)
         except Exception as exc:
             logger.warning("Retention policy setup skipped: %s", exc)
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self.ensure_schema_ready()
         self._replay_dlq()
         self._stop.clear()
         self._thread = threading.Thread(

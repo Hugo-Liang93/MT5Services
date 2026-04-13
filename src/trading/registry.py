@@ -2,67 +2,84 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from typing import Dict, Optional
+from typing import Optional
 
 from src.clients.mt5_account import MT5AccountClient
 from src.clients.mt5_trading import MT5TradingClient
-from src.config import MT5Settings, get_economic_config, get_risk_config, load_mt5_accounts
+from src.config import (
+    MT5Settings,
+    build_account_key,
+    get_economic_config,
+    get_risk_config,
+    load_mt5_settings,
+    resolve_current_environment,
+)
 from src.risk.service import PreTradeRiskService
 from src.trading.trading_service import TradingService
 
 
 class TradingAccountRegistry:
-    def __init__(self, accounts: Optional[Dict[str, MT5Settings]] = None, economic_calendar_service=None):
-        self._accounts = accounts or load_mt5_accounts()
+    def __init__(
+        self,
+        settings: Optional[MT5Settings] = None,
+        economic_calendar_service=None,
+    ):
+        self._settings = settings or load_mt5_settings()
         self._economic_calendar_service = economic_calendar_service
         self._lock = threading.RLock()
-        self._account_clients: Dict[str, MT5AccountClient] = {}
-        self._trading_services: Dict[str, TradingService] = {}
+        self._account_client: MT5AccountClient | None = None
+        self._trading_service: TradingService | None = None
+
+    @property
+    def account_alias(self) -> str:
+        return self._settings.account_alias
 
     def list_accounts(self) -> list[dict]:
-        default_alias = self.default_account_alias()
+        environment = resolve_current_environment(instance_name=self._settings.instance_name)
+        if environment is None:
+            raise ValueError("runtime environment is not configured for trading account registry")
         return [
             {
-                "alias": alias,
-                "label": settings.account_label or alias,
-                "login": settings.mt5_login,
-                "server": settings.mt5_server,
-                "timezone": settings.timezone,
-                "enabled": settings.enabled,
-                "default": alias == default_alias,
+                "alias": self._settings.account_alias,
+                "label": self._settings.account_label or self._settings.account_alias,
+                "account_key": build_account_key(
+                    environment,
+                    self._settings.mt5_server,
+                    self._settings.mt5_login,
+                ),
+                "login": self._settings.mt5_login,
+                "server": self._settings.mt5_server,
+                "environment": environment,
+                "timezone": self._settings.timezone,
+                "enabled": self._settings.enabled,
+                "default": True,
             }
-            for alias, settings in self._accounts.items()
         ]
 
-    def default_account_alias(self) -> str:
-        return next(iter(self._accounts.keys()), "default")
-
     def resolve_alias(self, account_alias: Optional[str] = None) -> str:
-        alias = account_alias or self.default_account_alias()
-        if alias not in self._accounts:
-            raise KeyError(f"MT5 account alias not configured: {alias}")
+        alias = str(account_alias or self._settings.account_alias).strip()
+        if alias != self._settings.account_alias:
+            raise KeyError(f"MT5 account alias not configured for this instance: {alias}")
         return alias
 
     def get_settings(self, account_alias: Optional[str] = None) -> MT5Settings:
-        return self._accounts[self.resolve_alias(account_alias)]
+        self.resolve_alias(account_alias)
+        return self._settings
 
     def get_account_service(self, account_alias: Optional[str] = None) -> MT5AccountClient:
-        alias = self.resolve_alias(account_alias)
+        self.resolve_alias(account_alias)
         with self._lock:
-            client = self._account_clients.get(alias)
-            if client is None:
-                client = MT5AccountClient(self.get_settings(alias))
-                self._account_clients[alias] = client
-            return client
+            if self._account_client is None:
+                self._account_client = MT5AccountClient(self._settings)
+            return self._account_client
 
     def get_trading_service(self, account_alias: Optional[str] = None) -> TradingService:
-        alias = self.resolve_alias(account_alias)
+        self.resolve_alias(account_alias)
         with self._lock:
-            service = self._trading_services.get(alias)
-            if service is None:
-                account_client = self.get_account_service(alias)
-                service = TradingService(
-                    client=MT5TradingClient(self.get_settings(alias)),
+            if self._trading_service is None:
+                account_client = self.get_account_service(self._settings.account_alias)
+                self._trading_service = TradingService(
+                    client=MT5TradingClient(self._settings),
                     account_client=account_client,
                     pre_trade_risk_service=PreTradeRiskService(
                         economic_calendar_service=self._economic_calendar_service,
@@ -71,8 +88,7 @@ class TradingAccountRegistry:
                         risk_settings=get_risk_config(),
                     ),
                 )
-                self._trading_services[alias] = service
-            return service
+            return self._trading_service
 
     @contextmanager
     def operation_scope(self, account_alias: Optional[str] = None):

@@ -17,7 +17,9 @@ from src.app_runtime.mode_policy import (
 )
 from src.config import get_trading_ops_config
 from src.config import get_runtime_data_path
+from src.trading.commands import OperatorCommandConsumer, OperatorCommandService
 from src.trading.closeout import CloseoutRuntimeModeAction, ExposureCloseoutPolicy
+from src.trading.state import AccountRiskStateProjector
 import os
 
 
@@ -31,10 +33,6 @@ def build_runtime_controls(
         return
 
     trading_ops_config = get_trading_ops_config()
-    container.runtime_component_registry = build_runtime_component_registry(
-        container,
-        signal_config_loader=signal_config_loader,
-    )
     container.runtime_mode_guard = RuntimeModeTransitionGuard(
         trading_module_getter=lambda: container.trade_module,
     )
@@ -64,6 +62,63 @@ def build_runtime_controls(
             ),
             apply_mode=container.runtime_mode_controller.apply_mode,
         )
+    if (
+        container.storage_writer is not None
+        and container.runtime_identity is not None
+        and container.operator_command_service is None
+        and hasattr(container.storage_writer.db, "write_operator_commands")
+        and hasattr(container.storage_writer.db, "fetch_operator_commands")
+    ):
+        container.operator_command_service = OperatorCommandService(
+            write_fn=container.storage_writer.db.write_operator_commands,
+            fetch_fn=container.storage_writer.db.fetch_operator_commands,
+            runtime_identity=container.runtime_identity,
+            pipeline_event_bus=container.pipeline_event_bus,
+        )
+    if (
+        container.storage_writer is not None
+        and container.runtime_identity is not None
+        and container.trade_module is not None
+        and container.trade_executor is not None
+        and container.position_manager is not None
+    ):
+        container.account_risk_state_projector = AccountRiskStateProjector(
+            write_fn=container.storage_writer.db.write_account_risk_states,
+            runtime_identity=container.runtime_identity,
+            trade_module=container.trade_module,
+            trade_executor=container.trade_executor,
+            position_manager=container.position_manager,
+            pending_entry_manager=container.pending_entry_manager,
+            runtime_mode_controller=container.runtime_mode_controller,
+            market_service=container.market_service,
+        )
+        _wire_trade_state_projection(container)
+    if (
+        container.storage_writer is not None
+        and container.runtime_identity is not None
+        and container.trade_module is not None
+        and container.operator_command_consumer is None
+        and hasattr(container.storage_writer.db, "claim_operator_commands")
+        and hasattr(container.storage_writer.db, "complete_operator_command")
+        and hasattr(container.storage_writer.db, "heartbeat_operator_command")
+    ):
+        container.operator_command_consumer = OperatorCommandConsumer(
+            claim_fn=container.storage_writer.db.claim_operator_commands,
+            complete_fn=container.storage_writer.db.complete_operator_command,
+            heartbeat_fn=container.storage_writer.db.heartbeat_operator_command,
+            runtime_identity=container.runtime_identity,
+            command_service=container.trade_module.commands,
+            runtime_mode_controller=container.runtime_mode_controller,
+            exposure_closeout_controller=container.exposure_closeout_controller,
+            pending_entry_manager=container.pending_entry_manager,
+            trade_executor=container.trade_executor,
+            account_risk_state_projector=container.account_risk_state_projector,
+            pipeline_event_bus=container.pipeline_event_bus,
+        )
+    container.runtime_component_registry = build_runtime_component_registry(
+        container,
+        signal_config_loader=signal_config_loader,
+    )
 
 
 def build_runtime_component_registry(
@@ -73,7 +128,11 @@ def build_runtime_component_registry(
 ) -> RuntimeComponentRegistry:
     """Build component lifecycle registry."""
     all_modes = frozenset(mode.value for mode in RuntimeMode)
-    signal_modes = frozenset({RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value})
+    signal_modes = (
+        frozenset({RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value})
+        if container.indicator_manager is not None and container.signal_runtime is not None
+        else frozenset()
+    )
     risk_modes = frozenset(
         {
             RuntimeMode.FULL.value,
@@ -117,13 +176,22 @@ def build_runtime_component_registry(
     def _start_performance_warmup() -> None:
         if warmup_state["done"]:
             return
-        perf = container.performance_tracker
         sw = container.storage_writer
-        if perf is None or sw is None:
+        signal_perf = container.signal_performance_tracker
+        execution_perf = container.execution_performance_tracker
+        runtime_identity = container.runtime_identity
+        if sw is None:
             return
         try:
-            rows = sw.db.signal_repo.fetch_recent_outcomes(hours=24)
-            perf.warm_up_from_db(rows)
+            if signal_perf is not None and container.signal_runtime is not None:
+                signal_rows = sw.db.signal_repo.fetch_recent_signal_outcomes(hours=24)
+                signal_perf.warm_up_from_db(signal_rows)
+            if execution_perf is not None and runtime_identity is not None:
+                trade_rows = sw.db.signal_repo.fetch_recent_trade_outcomes(
+                    hours=24,
+                    account_key=runtime_identity.account_key,
+                )
+                execution_perf.warm_up_from_db(trade_rows)
             warmup_state["done"] = True
         except Exception:
             import logging
@@ -163,22 +231,28 @@ def build_runtime_component_registry(
             runtime.stop()
 
     def _start_trade_execution() -> None:
-        runtime = container.signal_runtime
         executor = container.trade_executor
-        if runtime is None or executor is None:
+        intent_consumer = container.execution_intent_consumer
+        command_consumer = container.operator_command_consumer
+        if executor is None:
             return
         executor.start()
-        if not listener_state["attached"]:
-            runtime.add_signal_listener(executor.on_signal_event)
+        if intent_consumer is not None and not listener_state["attached"]:
+            intent_consumer.start()
+            if command_consumer is not None:
+                command_consumer.start()
             listener_state["attached"] = True
 
     def _stop_trade_execution() -> None:
-        runtime = container.signal_runtime
         executor = container.trade_executor
-        if runtime is None or executor is None:
+        intent_consumer = container.execution_intent_consumer
+        command_consumer = container.operator_command_consumer
+        if executor is None:
             return
-        if listener_state["attached"]:
-            runtime.remove_signal_listener(executor.on_signal_event)
+        if intent_consumer is not None and listener_state["attached"]:
+            if command_consumer is not None:
+                command_consumer.stop()
+            intent_consumer.stop()
             listener_state["attached"] = False
         executor.stop()
 
@@ -301,7 +375,7 @@ def build_runtime_component_registry(
             ),
             FunctionalRuntimeComponent(
                 name="ingestion",
-                supported_modes=all_modes,
+                supported_modes=all_modes if container.ingestor is not None else frozenset(),
                 start_fn=lambda: (
                     container.ingestor.start() if container.ingestor is not None else None
                 ),
@@ -314,7 +388,7 @@ def build_runtime_component_registry(
             ),
             FunctionalRuntimeComponent(
                 name="pipeline_trace",
-                supported_modes=signal_modes,
+                supported_modes=all_modes,
                 start_fn=lambda: (
                     container.pipeline_trace_recorder.start()
                     if container.pipeline_trace_recorder is not None
@@ -352,14 +426,33 @@ def build_runtime_component_registry(
             ),
             FunctionalRuntimeComponent(
                 name="trade_execution",
-                supported_modes=frozenset({RuntimeMode.FULL.value}),
+                supported_modes=(
+                    frozenset({RuntimeMode.FULL.value})
+                    if container.trade_executor is not None
+                    else frozenset()
+                ),
                 start_fn=_start_trade_execution,
                 stop_fn=_stop_trade_execution,
-                is_running_fn=lambda: bool(listener_state["attached"]),
+                is_running_fn=lambda: bool(
+                    container.trade_executor is not None
+                    and container.trade_executor.is_running()
+                    and (
+                        container.execution_intent_consumer is None
+                        or container.execution_intent_consumer.is_running()
+                    )
+                    and (
+                        container.operator_command_consumer is None
+                        or container.operator_command_consumer.is_running()
+                    )
+                ),
             ),
             FunctionalRuntimeComponent(
                 name="pending_entry",
-                supported_modes=risk_modes,
+                supported_modes=(
+                    risk_modes
+                    if container.pending_entry_manager is not None
+                    else frozenset()
+                ),
                 start_fn=_start_pending_entry,
                 stop_fn=lambda: (
                     container.pending_entry_manager.shutdown()
@@ -373,7 +466,11 @@ def build_runtime_component_registry(
             ),
             FunctionalRuntimeComponent(
                 name="position_manager",
-                supported_modes=risk_modes,
+                supported_modes=(
+                    risk_modes
+                    if container.position_manager is not None
+                    else frozenset()
+                ),
                 start_fn=_start_position_manager,
                 stop_fn=lambda: (
                     container.position_manager.stop()
@@ -387,7 +484,11 @@ def build_runtime_component_registry(
             ),
             FunctionalRuntimeComponent(
                 name="paper_trading",
-                supported_modes=frozenset({RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value}),
+                supported_modes=(
+                    frozenset({RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value})
+                    if container.paper_trading_bridge is not None
+                    else frozenset()
+                ),
                 start_fn=lambda: _start_paper_trading(container),
                 stop_fn=lambda: _stop_paper_trading(container),
                 is_running_fn=lambda: bool(
@@ -395,5 +496,40 @@ def build_runtime_component_registry(
                     and container.paper_trading_bridge.is_running()
                 ),
             ),
+            FunctionalRuntimeComponent(
+                name="account_risk_state_projection",
+                supported_modes=(
+                    risk_modes
+                    if container.account_risk_state_projector is not None
+                    else frozenset()
+                ),
+                start_fn=lambda: (
+                    container.account_risk_state_projector.start()
+                    if container.account_risk_state_projector is not None
+                    else None
+                ),
+                stop_fn=lambda: (
+                    container.account_risk_state_projector.stop()
+                    if container.account_risk_state_projector is not None
+                    else None
+                ),
+                is_running_fn=lambda: bool(
+                    container.account_risk_state_projector is not None
+                    and container.account_risk_state_projector.is_running()
+                ),
+            ),
         ]
     )
+
+
+def _wire_trade_state_projection(container: AppContainer) -> None:
+    if container.trade_module is None or container.trading_state_store is None:
+        return
+
+    def _projection_hook(state: dict[str, object]) -> None:
+        container.trading_state_store.sync_trade_control(state)
+        projector = container.account_risk_state_projector
+        if projector is not None:
+            projector.project_now()
+
+    container.trade_module.set_trade_control_update_hook(_projection_hook)

@@ -17,6 +17,7 @@ class PendingOrderStateRecord:
     request_id: Optional[str]
     symbol: str
     direction: str
+    account_key: str = ""
     strategy: str = ""
     timeframe: str = ""
     category: str = ""
@@ -80,6 +81,7 @@ class PendingOrderStateRecord:
             self.last_seen_at,
             dict(self.metadata),
             self.updated_at,
+            self.account_key,
         )
 
 
@@ -91,6 +93,7 @@ class PositionRuntimeStateRecord:
     order_ticket: Optional[int]
     symbol: str
     direction: str
+    account_key: str = ""
     timeframe: str = ""
     strategy: str = ""
     comment: str = ""
@@ -152,6 +155,7 @@ class PositionRuntimeStateRecord:
             self.close_price,
             dict(self.metadata),
             self.updated_at,
+            self.account_key,
         )
 
 
@@ -162,6 +166,7 @@ class TradeControlStateRecord:
     close_only_mode: bool
     updated_at: Optional[datetime]
     reason: Optional[str]
+    account_key: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_row(self) -> tuple:
@@ -172,4 +177,59 @@ class TradeControlStateRecord:
             self.updated_at,
             self.reason,
             dict(self.metadata),
+            self.account_key,
+        )
+
+
+@dataclass(frozen=True)
+class AccountRiskStateRecord:
+    account_key: str
+    account_alias: str
+    instance_id: str
+    instance_role: str
+    runtime_mode: str | None
+    auto_entry_enabled: bool
+    close_only_mode: bool
+    circuit_open: bool
+    consecutive_failures: int
+    last_risk_block: Optional[str]
+    margin_level: Optional[float]
+    margin_guard_state: Optional[str]
+    should_block_new_trades: bool
+    should_tighten_stops: bool
+    should_emergency_close: bool
+    open_positions_count: int
+    pending_orders_count: int
+    quote_stale: bool
+    indicator_degraded: bool
+    db_degraded: bool
+    active_risk_flags: list[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    updated_at: datetime = field(default_factory=_utcnow)
+
+    def to_row(self) -> tuple:
+        return (
+            self.account_key,
+            self.account_alias,
+            self.instance_id,
+            self.instance_role,
+            self.runtime_mode,
+            self.auto_entry_enabled,
+            self.close_only_mode,
+            self.circuit_open,
+            self.consecutive_failures,
+            self.last_risk_block,
+            self.margin_level,
+            self.margin_guard_state,
+            self.should_block_new_trades,
+            self.should_tighten_stops,
+            self.should_emergency_close,
+            self.open_positions_count,
+            self.pending_orders_count,
+            self.quote_stale,
+            self.indicator_degraded,
+            self.db_degraded,
+            list(self.active_risk_flags),
+            dict(self.metadata),
+            self.updated_at,
         )

@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from pydantic import BaseModel
 
+from src.config.topology import resolve_current_environment
 from src.config.utils import load_config_with_base
 
 
@@ -44,9 +45,19 @@ def _cfg_int(sec, key: str, default=None):
         return default
 
 
+def _normalize_db_section(environment: str | None) -> str:
+    normalized = resolve_current_environment(environment)
+    if normalized is None:
+        raise ValueError("database environment is required")
+    return f"db.{normalized}"
+
+
 @lru_cache
-def load_db_settings() -> DBSettings:
-    sec = _load_ini_section("db.ini", "db")
+def _load_db_settings_cached(resolved_environment: str) -> DBSettings:
+    section_name = _normalize_db_section(resolved_environment)
+    sec = _load_ini_section("db.ini", section_name)
+    if sec is None:
+        raise ValueError(f"database section not configured: {section_name}")
     settings = DBSettings(
         pg_host=_cfg_str(sec, "host", "localhost"),
         pg_port=_cfg_int(sec, "port", 5432),
@@ -66,11 +77,25 @@ def load_db_settings() -> DBSettings:
         import logging
 
         logging.getLogger(__name__).error(
-            "Database credentials missing: %s. "
+            "Database credentials missing for environment '%s': %s. "
             "Please configure in config/db.local.ini (gitignored).",
+            resolved_environment,
             ", ".join(missing),
         )
     return settings
+
+
+def load_db_settings(environment: str | None = None) -> DBSettings:
+    resolved_environment = resolve_current_environment(environment)
+    if resolved_environment is None:
+        raise ValueError(
+            "database environment is required; unable to infer from current topology context"
+        )
+    return _load_db_settings_cached(resolved_environment)
+
+
+load_db_settings.cache_clear = _load_db_settings_cached.cache_clear  # type: ignore[attr-defined]
+load_db_settings.cache_info = _load_db_settings_cached.cache_info  # type: ignore[attr-defined]
 
 
 def load_retention_config() -> tuple[bool, dict[str, int]]:

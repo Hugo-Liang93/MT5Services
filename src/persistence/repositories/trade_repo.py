@@ -17,7 +17,28 @@ class TradeCommandAuditRepository:
         for row in rows:
             request_payload = row[15] if row[15] is not None else {}
             response_payload = row[16] if row[16] is not None else {}
-            batch.append((*row[:15], self._writer._json(request_payload), self._writer._json(response_payload)))
+            batch.append(
+                (
+                    row[0],
+                    row[1],
+                    row[2],
+                    row[17],
+                    row[3],
+                    row[4],
+                    row[5],
+                    row[6],
+                    row[7],
+                    row[8],
+                    row[9],
+                    row[10],
+                    row[11],
+                    row[12],
+                    row[13],
+                    row[14],
+                    self._writer._json(request_payload),
+                    self._writer._json(response_payload),
+                )
+            )
         if not batch:
             return
         self._writer._batch(INSERT_TRADE_COMMAND_AUDITS_SQL, batch, page_size=page_size)
@@ -26,6 +47,7 @@ class TradeCommandAuditRepository:
         self,
         *,
         account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
         command_type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
@@ -33,11 +55,14 @@ class TradeCommandAuditRepository:
         sql = (
             "SELECT recorded_at, operation_id, account_alias, command_type, status, "
             "symbol, side, order_kind, volume, ticket, order_id, deal_id, magic, "
-            "duration_ms, error_message, request_payload, response_payload "
+            "duration_ms, error_message, request_payload, response_payload, account_key "
             "FROM trade_command_audits WHERE 1=1"
         )
         params: List = []
-        if account_alias is not None:
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
             sql += " AND account_alias = %s"
             params.append(account_alias)
         if command_type is not None:
@@ -57,6 +82,7 @@ class TradeCommandAuditRepository:
         *,
         hours: int = 24,
         account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
     ) -> List[Tuple]:
         sql = (
             "SELECT account_alias, command_type, status, COUNT(*) AS count, "
@@ -65,13 +91,134 @@ class TradeCommandAuditRepository:
             "WHERE recorded_at >= NOW() - (%s * INTERVAL '1 hour')"
         )
         params: List = [max(1, int(hours))]
-        if account_alias is not None:
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
             sql += " AND account_alias = %s"
             params.append(account_alias)
         sql += " GROUP BY account_alias, command_type, status ORDER BY account_alias, command_type, status"
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+
+    def query_trade_command_audits(
+        self,
+        *,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
+        command_type: Optional[str] = None,
+        status: Optional[str] = None,
+        symbol: Optional[str] = None,
+        signal_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        from_time: Optional[Any] = None,
+        to_time: Optional[Any] = None,
+        page: int = 1,
+        page_size: int = 100,
+        sort: str = "recorded_at_desc",
+    ) -> dict[str, Any]:
+        sort_token = str(sort or "recorded_at_desc").strip().lower()
+        sort_direction = "ASC" if sort_token in {"recorded_at_asc", "asc"} else "DESC"
+        effective_page = max(1, int(page))
+        effective_page_size = max(1, int(page_size))
+        offset = (effective_page - 1) * effective_page_size
+
+        trace_expr = (
+            "COALESCE(NULLIF(request_payload->>'trace_id', ''), "
+            "NULLIF(response_payload->>'trace_id', ''))"
+        )
+        signal_expr = (
+            "COALESCE(NULLIF(request_payload #>> '{metadata,signal,signal_id}', ''), "
+            "NULLIF(response_payload #>> '{metadata,signal,signal_id}', ''), "
+            "NULLIF(request_payload->>'request_id', ''), "
+            "NULLIF(response_payload->>'request_id', ''))"
+        )
+        actor_expr = (
+            "COALESCE(NULLIF(request_payload->>'actor', ''), "
+            "NULLIF(response_payload->>'actor', ''), "
+            "NULLIF(request_payload #>> '{metadata,actor}', ''), "
+            "NULLIF(response_payload #>> '{metadata,actor}', ''))"
+        )
+        request_id_expr = (
+            "COALESCE(NULLIF(request_payload->>'request_id', ''), "
+            "NULLIF(response_payload->>'request_id', ''))"
+        )
+
+        sql = f"""
+SELECT recorded_at,
+       operation_id,
+       account_alias,
+       account_key,
+       command_type,
+       status,
+       symbol,
+       side,
+       order_kind,
+       volume,
+       ticket,
+       order_id,
+       deal_id,
+       magic,
+       duration_ms,
+       error_message,
+       request_payload,
+       response_payload,
+       {trace_expr} AS trace_id,
+       {signal_expr} AS signal_id,
+       {actor_expr} AS actor,
+       {request_id_expr} AS request_id,
+       COUNT(*) OVER() AS total_count
+FROM trade_command_audits
+WHERE 1=1
+"""
+        params: list[Any] = []
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        if command_type is not None:
+            sql += " AND command_type = %s"
+            params.append(command_type)
+        if status is not None:
+            sql += " AND status = %s"
+            params.append(status)
+        if symbol is not None:
+            sql += " AND symbol = %s"
+            params.append(symbol)
+        if signal_id is not None:
+            sql += f" AND {signal_expr} = %s"
+            params.append(signal_id)
+        if trace_id is not None:
+            sql += f" AND {trace_expr} = %s"
+            params.append(trace_id)
+        if actor is not None:
+            sql += f" AND {actor_expr} = %s"
+            params.append(actor)
+        if from_time is not None:
+            sql += " AND recorded_at >= %s"
+            params.append(from_time)
+        if to_time is not None:
+            sql += " AND recorded_at <= %s"
+            params.append(to_time)
+        sql += (
+            f" ORDER BY recorded_at {sort_direction}, operation_id {sort_direction} "
+            "LIMIT %s OFFSET %s"
+        )
+        params.extend([effective_page_size, offset])
+
+        rows = self._fetch_dicts(sql, params)
+        total = int(rows[0].get("total_count") or 0) if rows else 0
+        items = [self._normalize_audit_row(row) for row in rows]
+        return {
+            "items": items,
+            "total": total,
+            "page": effective_page,
+            "page_size": effective_page_size,
+        }
 
     def fetch_trace_operations(
         self,
@@ -83,7 +230,7 @@ class TradeCommandAuditRepository:
         sql = """
 SELECT recorded_at, operation_id, account_alias, command_type, status,
        symbol, side, order_kind, volume, ticket, order_id, deal_id, magic,
-       duration_ms, error_message, request_payload, response_payload
+       duration_ms, error_message, request_payload, response_payload, account_key
 FROM trade_command_audits
 WHERE account_alias = %s
   AND (
@@ -117,7 +264,7 @@ LIMIT %s
         sql = """
 SELECT recorded_at, operation_id, account_alias, command_type, status,
        symbol, side, order_kind, volume, ticket, order_id, deal_id, magic,
-       duration_ms, error_message, request_payload, response_payload
+       duration_ms, error_message, request_payload, response_payload, account_key
 FROM trade_command_audits
 WHERE account_alias = %s
   AND (
@@ -143,3 +290,40 @@ LIMIT %s
             rows = cur.fetchall()
             columns = [desc[0] for desc in cur.description]
         return [dict(zip(columns, row)) for row in rows]
+
+    @staticmethod
+    def _normalize_audit_row(row: dict[str, Any]) -> dict[str, Any]:
+        recorded_at = row.get("recorded_at")
+        request_payload = row.get("request_payload") or {}
+        response_payload = row.get("response_payload") or {}
+        operation_id = row.get("operation_id")
+        return {
+            "recorded_at": recorded_at.isoformat() if hasattr(recorded_at, "isoformat") else recorded_at,
+            "operation_id": operation_id,
+            "audit_id": operation_id,
+            "account_alias": row.get("account_alias"),
+            "account_key": row.get("account_key"),
+            "command_type": row.get("command_type"),
+            "status": row.get("status"),
+            "symbol": row.get("symbol"),
+            "side": row.get("side"),
+            "order_kind": row.get("order_kind"),
+            "volume": row.get("volume"),
+            "ticket": row.get("ticket"),
+            "order_id": row.get("order_id"),
+            "deal_id": row.get("deal_id"),
+            "magic": row.get("magic"),
+            "duration_ms": row.get("duration_ms"),
+            "error_message": row.get("error_message"),
+            "request_payload": request_payload,
+            "response_payload": response_payload,
+            "trace_id": row.get("trace_id"),
+            "signal_id": row.get("signal_id"),
+            "actor": row.get("actor"),
+            "request_id": row.get("request_id"),
+            "message": (
+                response_payload.get("message")
+                or response_payload.get("status")
+                or row.get("error_message")
+            ),
+        }

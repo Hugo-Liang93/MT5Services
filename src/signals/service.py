@@ -480,6 +480,15 @@ class SignalModule:
             event_impact_forecast=event_impact,
         )
         decision = strategy_impl.evaluate(context)
+        # 策略实现只负责方向/置信度/原因，不应污染事件身份字段。
+        # 在信号编排边界统一收口 symbol/timeframe/strategy 契约，
+        # 避免 recent/summary/persistence 被空串或错配字段污染。
+        decision = dataclasses.replace(
+            decision,
+            strategy=strategy,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
 
         # ── 原始置信度门槛（提前拦截低质量信号，省后续计算）────────────
         min_raw = context_metadata.get(MK.MIN_RAW_CONFIDENCE, 0.45)
@@ -766,6 +775,59 @@ class SignalModule:
             scope=scope,
             limit=limit,
         )
+
+    def recent_signal_page(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        direction: Optional[str] = None,
+        status: Optional[str] = None,
+        scope: str = "confirmed",
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None,
+        page: int = 1,
+        page_size: int = 200,
+        sort: str = "generated_at_desc",
+    ) -> dict[str, Any]:
+        if self.repository is None:
+            return {"items": [], "total": 0, "page": max(1, int(page)), "page_size": max(1, int(page_size))}
+
+        pager = getattr(self.repository, "recent_page", None)
+        if callable(pager):
+            return pager(
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy=strategy,
+                direction=direction,
+                status=status,
+                scope=scope,
+                from_time=from_time,
+                to_time=to_time,
+                page=page,
+                page_size=page_size,
+                sort=sort,
+            )
+
+        effective_page = max(1, int(page))
+        effective_page_size = max(1, int(page_size))
+        rows = self.recent_signals(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy=strategy,
+            direction=direction,
+            scope=scope,
+            limit=effective_page * effective_page_size,
+        )
+        start = (effective_page - 1) * effective_page_size
+        end = start + effective_page_size
+        return {
+            "items": rows[start:end],
+            "total": len(rows),
+            "page": effective_page,
+            "page_size": effective_page_size,
+        }
 
     def summary(
         self, *, hours: int = 24, scope: str = "confirmed"

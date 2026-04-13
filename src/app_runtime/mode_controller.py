@@ -38,6 +38,11 @@ class RuntimeModeController:
         self._last_transition_at: datetime | None = None
         self._last_transition_reason: str | None = None
         self._last_error: str | None = None
+        self._last_actor: str | None = None
+        self._last_action_id: str | None = None
+        self._last_audit_id: str | None = None
+        self._last_idempotency_key: str | None = None
+        self._last_request_context: dict[str, object] = {}
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._monitor_thread: threading.Thread | None = None
@@ -68,11 +73,29 @@ class RuntimeModeController:
     def is_running(self) -> bool:
         return bool(self._monitor_thread and self._monitor_thread.is_alive())
 
-    def apply_mode(self, mode: RuntimeMode | str, *, reason: str) -> dict[str, object]:
+    def apply_mode(
+        self,
+        mode: RuntimeMode | str,
+        *,
+        reason: str,
+        actor: str | None = None,
+        action_id: str | None = None,
+        audit_id: str | None = None,
+        idempotency_key: str | None = None,
+        request_context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         target = mode if isinstance(mode, RuntimeMode) else RuntimeMode(str(mode).strip().lower())
         with self._lock:
             self._is_auto_transitioned = False
-            self._apply_mode_locked(target, reason=reason)
+            self._apply_mode_locked(
+                target,
+                reason=reason,
+                actor=actor,
+                action_id=action_id,
+                audit_id=audit_id,
+                idempotency_key=idempotency_key,
+                request_context=request_context,
+            )
             return self.snapshot()
 
     def snapshot(self) -> dict[str, object]:
@@ -89,10 +112,25 @@ class RuntimeModeController:
                 ),
                 "last_transition_reason": self._last_transition_reason,
                 "last_error": self._last_error,
+                "last_actor": self._last_actor,
+                "last_action_id": self._last_action_id,
+                "last_audit_id": self._last_audit_id,
+                "last_idempotency_key": self._last_idempotency_key,
+                "last_request_context": dict(self._last_request_context),
                 "components": self._component_status_snapshot(),
             }
 
-    def _apply_mode_locked(self, target: RuntimeMode, *, reason: str) -> None:
+    def _apply_mode_locked(
+        self,
+        target: RuntimeMode,
+        *,
+        reason: str,
+        actor: str | None = None,
+        action_id: str | None = None,
+        audit_id: str | None = None,
+        idempotency_key: str | None = None,
+        request_context: dict[str, object] | None = None,
+    ) -> None:
         self._guard.ensure_can_enter(target)
         registry = self._container.runtime_component_registry
         if registry is None:
@@ -110,6 +148,21 @@ class RuntimeModeController:
         self._last_transition_at = datetime.now(timezone.utc)
         self._last_transition_reason = reason
         self._last_error = partial_error
+        self._last_actor = (str(actor).strip() or None) if actor is not None else None
+        self._last_action_id = (
+            str(action_id).strip() or None
+        ) if action_id is not None else None
+        self._last_audit_id = (
+            str(audit_id).strip() or None
+        ) if audit_id is not None else None
+        self._last_idempotency_key = (
+            str(idempotency_key).strip() or None
+            if idempotency_key is not None
+            else None
+        )
+        self._last_request_context = (
+            dict(request_context) if isinstance(request_context, dict) else {}
+        )
         if partial_error is None:
             logger.info("Runtime mode applied: mode=%s reason=%s", target.value, reason)
 

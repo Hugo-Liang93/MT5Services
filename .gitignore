@@ -61,9 +61,13 @@ test-results/
 config/secrets.ini
 config/production.ini
 config/*.local.ini
+config/**/*.local.ini
 config/*.local.json
+config/**/*.local.json
 config/*.local.yaml
+config/**/*.local.yaml
 config/*.local.yml
+config/**/*.local.yml
 config/backups/
 
 # Editors and OS files

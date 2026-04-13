@@ -40,10 +40,11 @@ from .trade_routes.state import (
     trade_position_state_list,
     trade_state_alerts_summary,
     trade_state_closeout_summary,
+    trade_state_stream,
     trade_state_summary,
     trading_accounts,
 )
-from .trade_routes.trace import trade_trace_by_signal_id, trade_trace_by_trace_id
+from .trade_routes.trace import trade_trace_by_signal_id, trade_trace_by_trace_id, trade_traces
 
 router = APIRouter(tags=["trade"])
 router.include_router(commands_router)
@@ -83,8 +84,10 @@ __all__ = [
     "trade_runtime_mode_update",
     "trade_state_alerts_summary",
     "trade_state_closeout_summary",
+    "trade_state_stream",
     "trade_state_summary",
     "trade_trace_by_signal_id",
     "trade_trace_by_trace_id",
+    "trade_traces",
     "trading_accounts",
 ]

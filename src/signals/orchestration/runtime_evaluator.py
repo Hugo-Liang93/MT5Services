@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from src.calendar.policy import SignalEconomicPolicy
 from ..confidence import apply_intrabar_decay
 from ..evaluation.regime import RegimeType, SoftRegimeResult
 from ..metadata_keys import MetadataKey as MK
@@ -208,10 +209,13 @@ def _resolve_event_impact_forecast(
     cache = runtime._event_impact_cache
     if event_time >= cache.get("expires_at", event_time):
         try:
-            eco_service, importance_min = _resolve_eco_provider(runtime)
+            eco_service, policy = _resolve_eco_context(runtime)
             impact_analyzer = runtime.market_impact_analyzer
-            if eco_service is not None and impact_analyzer is not None:
-                upcoming_events = _get_upcoming_high_impact(eco_service, importance_min)
+            if eco_service is not None and impact_analyzer is not None and policy is not None:
+                upcoming_events = _get_upcoming_high_impact(
+                    eco_service,
+                    policy.filter_window.importance_min,
+                )
                 if upcoming_events:
                     cache["data"] = impact_analyzer.get_impact_forecast(
                         upcoming_events[0].event_name, symbol=symbol
@@ -238,26 +242,19 @@ def _get_upcoming_high_impact(provider: Any, importance_min: int) -> list[Any]:
 
 _EVENT_DECAY_TTL_SECONDS: float = 60.0
 _EVENT_DECAY_CACHE_MAX: int = 128
+_SIGNAL_EVENT_STATUSES = (
+    "scheduled",
+    "imminent",
+    "pending_release",
+    "released",
+)
 
 
 def _compute_economic_event_decay(
     runtime: "SignalRuntime",
     symbol: str,
 ) -> float:
-    """计算经济事件渐进降权因子（0.0~1.0, 1.0=无影响）。
-
-    使用 filter_chain 的 EconomicEventFilter.provider（已含 symbol-aware 货币/国家
-    过滤），并通过 per-symbol 短 TTL 缓存避免高频 intrabar 评估反复查 DB。
-
-    距离高影响事件越近，置信度衰减越大：
-      >60 min → 1.0（无衰减）
-      30~60 min → 0.85
-      15~30 min → 0.55
-      0~15 min → 0.0（完全压制，由 filter chain 的 block 通道控制）
-      事件后 0~5 min → 0.0
-      事件后 5~15 min → 0.70（波动未收敛）
-      事件后 >15 min → 1.0
-    """
+    """计算经济事件渐进降权因子（0.0~1.0, 1.0=无影响）。"""
     import time as _time
 
     # --- 缓存命中检查 ---
@@ -268,12 +265,12 @@ def _compute_economic_event_decay(
         return entry["decay"]
 
     # --- 获取 symbol-aware provider ---
-    provider, importance_min = _resolve_eco_provider(runtime)
-    if provider is None:
+    provider, policy = _resolve_eco_context(runtime)
+    if provider is None or policy is None or not policy.enabled:
         return 1.0
 
     try:
-        decay = _query_symbol_event_decay(provider, symbol, importance_min)
+        decay = _query_symbol_event_decay(provider, symbol, policy)
     except Exception:
         decay = 1.0
 
@@ -293,49 +290,45 @@ def _compute_economic_event_decay(
     return decay
 
 
-def _resolve_eco_provider(
+def _resolve_eco_context(
     runtime: "SignalRuntime",
-) -> tuple[Any | None, int]:
-    """从 filter_chain 与 runtime 显式注入的经济日历服务解析 provider 和 importance 阈值。
+) -> tuple[Any | None, SignalEconomicPolicy | None]:
+    """从 filter_chain 解析 signal-domain 经济事件 provider 与 policy。
 
-    Returns:
-        (provider_or_None, importance_min)
+    SignalRuntime 只应依赖 signal-domain filter 上已构造好的 policy，
+    避免再从其他配置源推导第二套窗口语义。
     """
     fc = runtime.filter_chain
     if fc is not None and fc.economic_filter is not None:
         eco_filter = fc.economic_filter
-        if eco_filter.provider is not None:
-            return eco_filter.provider, int(eco_filter.importance_min)
-    injected = runtime.economic_calendar_service
-    if injected is not None:
-        return injected, 2
-    return None, 2
+        if eco_filter.provider is not None and eco_filter.policy is not None:
+            return eco_filter.provider, eco_filter.policy
+    return None, None
 
 
 def _query_symbol_event_decay(
-    provider: Any, symbol: str, importance_min: int = 2
+    provider: Any,
+    symbol: str,
+    policy: SignalEconomicPolicy,
 ) -> float:
     """对单个 symbol 查询最近相关高影响事件并计算 decay 因子。"""
-    from datetime import timezone
-
     from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+
     now = datetime.now(timezone.utc)
     context = infer_symbol_context(symbol)
 
-    # 查询前后 2h 窗口内与该 symbol 货币/国家相关的高影响事件
     events = provider.get_events(
-        start_time=now - timedelta(minutes=20),
-        end_time=now + timedelta(hours=2),
+        start_time=now - timedelta(minutes=policy.query_window.lookback_minutes),
+        end_time=now + timedelta(minutes=policy.query_window.lookahead_minutes),
         limit=5,
         countries=context["countries"] or None,
         currencies=context["currencies"] or None,
-        statuses=["scheduled", "imminent", "pending_release", "released"],
-        importance_min=importance_min,
+        statuses=list(_SIGNAL_EVENT_STATUSES),
+        importance_min=policy.query_window.importance_min,
     )
     if not events:
         return 1.0
 
-    # 找距当前时间最近的事件（按绝对距离）
     best_delta: float | None = None
     for evt in events:
         event_time = getattr(evt, "event_time", None)
@@ -348,25 +341,7 @@ def _query_symbol_event_decay(
     if best_delta is None:
         return 1.0
 
-    return _delta_to_decay(best_delta)
-
-
-def _delta_to_decay(delta_minutes: float) -> float:
-    """将距事件的分钟差映射为 decay 因子。"""
-    if delta_minutes > 60:
-        return 1.0
-    elif delta_minutes > 30:
-        return 0.85
-    elif delta_minutes > 15:
-        return 0.55
-    elif delta_minutes > 0:
-        return 0.0  # filter chain 的 block 通道直接截断该时段信号
-    elif delta_minutes > -5:
-        return 0.0  # 事件刚发布
-    elif delta_minutes > -15:
-        return 0.70  # 波动未收敛
-    else:
-        return 1.0
+    return policy.decay_for_delta(best_delta)
 
 
 def apply_confidence_adjustments(
@@ -378,6 +353,7 @@ def apply_confidence_adjustments(
     scope: str,
     regime_metadata: dict[str, Any],
 ) -> Any:
+    economic_decay_applied = False
     if scope == "intrabar":
         decay = runtime._strategy_intrabar_decay.get(
             strategy, runtime._intrabar_confidence_factor
@@ -388,6 +364,7 @@ def apply_confidence_adjustments(
     if decision.confidence > 0 and decision.direction in ("buy", "sell"):
         event_decay = _compute_economic_event_decay(runtime, symbol)
         if event_decay < 1.0:
+            economic_decay_applied = True
             adjusted = decision.confidence * event_decay
             trace = list(decision.confidence_trace)
             trace.append(("economic_event_decay", round(adjusted, 4)))
@@ -397,7 +374,11 @@ def apply_confidence_adjustments(
                 confidence_trace=trace,
             )
 
-    if decision.confidence > 0 and decision.direction in ("buy", "sell"):
+    if (
+        decision.confidence > 0
+        and decision.direction in ("buy", "sell")
+        and not economic_decay_applied
+    ):
         floor = runtime.confidence_floor
         if decision.confidence < floor:
             decision = _dc.replace(decision, confidence=floor)

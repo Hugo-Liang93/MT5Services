@@ -18,7 +18,9 @@ from psycopg2.pool import SimpleConnectionPool
 from src.config import DBSettings
 from src.persistence.repositories import (
     EconomicCalendarRepository,
+    ExecutionIntentRepository,
     MarketRepository,
+    OperatorCommandRepository,
     PaperTradingRepository,
     PipelineTraceRepository,
     RuntimeStatusRepository,
@@ -44,7 +46,9 @@ class TimescaleWriter:
         self._reconnect_lock = threading.Lock()
         self._market_repo: Optional[MarketRepository] = None
         self._signal_repo: Optional[SignalEventRepository] = None
+        self._execution_intent_repo: Optional[ExecutionIntentRepository] = None
         self._trade_command_repo: Optional[TradeCommandAuditRepository] = None
+        self._operator_command_repo: Optional[OperatorCommandRepository] = None
         self._trading_state_repo: Optional[TradingStateRepository] = None
         self._economic_repo: Optional[EconomicCalendarRepository] = None
         self._pipeline_trace_repo: Optional[PipelineTraceRepository] = None
@@ -69,11 +73,27 @@ class TimescaleWriter:
         return repo
 
     @property
+    def execution_intent_repo(self) -> ExecutionIntentRepository:
+        repo = getattr(self, "_execution_intent_repo", None)
+        if repo is None:
+            repo = ExecutionIntentRepository(self)
+            self._execution_intent_repo = repo
+        return repo
+
+    @property
     def trade_command_repo(self) -> TradeCommandAuditRepository:
         repo = getattr(self, "_trade_command_repo", None)
         if repo is None:
             repo = TradeCommandAuditRepository(self)
             self._trade_command_repo = repo
+        return repo
+
+    @property
+    def operator_command_repo(self) -> OperatorCommandRepository:
+        repo = getattr(self, "_operator_command_repo", None)
+        if repo is None:
+            repo = OperatorCommandRepository(self)
+            self._operator_command_repo = repo
         return repo
 
     @property
@@ -378,8 +398,41 @@ class TimescaleWriter:
     def write_runtime_task_status(self, rows, page_size: int = 200) -> None:
         self.runtime_repo.write_runtime_task_status(rows, page_size=page_size)
 
-    def fetch_runtime_task_status(self, component=None, task_name=None):
-        return self.runtime_repo.fetch_runtime_task_status(component=component, task_name=task_name)
+    def fetch_runtime_task_status(
+        self,
+        component=None,
+        task_name=None,
+        instance_id=None,
+        instance_role=None,
+        account_key=None,
+        account_alias=None,
+    ):
+        return self.runtime_repo.fetch_runtime_task_status(
+            component=component,
+            task_name=task_name,
+            instance_id=instance_id,
+            instance_role=instance_role,
+            account_key=account_key,
+            account_alias=account_alias,
+        )
+
+    def fetch_runtime_task_status_records(
+        self,
+        component=None,
+        task_name=None,
+        instance_id=None,
+        instance_role=None,
+        account_key=None,
+        account_alias=None,
+    ):
+        return self.runtime_repo.fetch_runtime_task_status_records(
+            component=component,
+            task_name=task_name,
+            instance_id=instance_id,
+            instance_role=instance_role,
+            account_key=account_key,
+            account_alias=account_alias,
+        )
 
     def write_trade_command_audits(self, rows, page_size: int = 200) -> None:
         self.trade_command_repo.write_trade_command_audits(rows, page_size=page_size)
@@ -396,6 +449,9 @@ class TimescaleWriter:
     def fetch_trade_command_audits(self, **kwargs):
         return self.trade_command_repo.fetch_trade_command_audits(**kwargs)
 
+    def query_trade_command_audits(self, **kwargs):
+        return self.trade_command_repo.query_trade_command_audits(**kwargs)
+
     def summarize_trade_command_audits(self, **kwargs):
         return self.trade_command_repo.summarize_trade_command_audits(**kwargs)
 
@@ -411,7 +467,35 @@ class TimescaleWriter:
     def write_position_sl_tp_history(self, rows, page_size: int = 200) -> None:
         from src.persistence.schema.position_sl_tp_history import INSERT_SQL
 
-        self._batch(INSERT_SQL, rows, page_size=page_size)
+        batch = []
+        for row in rows:
+            metadata = row[18] if row[18] is not None else {}
+            batch.append(
+                (
+                    row[0],
+                    row[1],
+                    row[19],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                    row[6],
+                    row[7],
+                    row[8],
+                    row[9],
+                    row[10],
+                    row[11],
+                    row[12],
+                    row[13],
+                    row[14],
+                    row[15],
+                    row[16],
+                    row[17],
+                    self._json(metadata),
+                )
+            )
+
+        self._batch(INSERT_SQL, batch, page_size=page_size)
 
     def fetch_position_sl_tp_history(
         self,
@@ -431,7 +515,7 @@ class TimescaleWriter:
             params.append(str(symbol))
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         sql = (
-            f"SELECT recorded_at, account_alias, position_ticket, signal_id, symbol, "
+            f"SELECT recorded_at, account_alias, account_key, position_ticket, signal_id, symbol, "
             f"action_type, reason, old_stop_loss, new_stop_loss, old_take_profit, "
             f"new_take_profit, current_price, highest_price, lowest_price, "
             f"atr_at_entry, success, retcode, broker_comment, metadata "
@@ -450,8 +534,43 @@ class TimescaleWriter:
     def write_trade_control_states(self, rows, page_size: int = 50) -> None:
         self.trading_state_repo.write_trade_control_states(rows, page_size=page_size)
 
-    def fetch_trade_control_state(self, *, account_alias: str):
-        return self.trading_state_repo.fetch_trade_control_state(account_alias=account_alias)
+    def fetch_trade_control_state(
+        self,
+        *,
+        account_alias: str | None = None,
+        account_key: str | None = None,
+    ):
+        return self.trading_state_repo.fetch_trade_control_state(
+            account_alias=account_alias,
+            account_key=account_key,
+        )
+
+    def write_account_risk_states(self, rows, page_size: int = 50) -> None:
+        self.trading_state_repo.write_account_risk_states(rows, page_size=page_size)
+
+    def fetch_account_risk_state(
+        self,
+        *,
+        account_alias: str | None = None,
+        account_key: str | None = None,
+    ):
+        return self.trading_state_repo.fetch_account_risk_state(
+            account_alias=account_alias,
+            account_key=account_key,
+        )
+
+    def fetch_account_risk_states(self, **kwargs):
+        return self.trading_state_repo.fetch_account_risk_states(**kwargs)
+
+    def write_circuit_breaker_history(self, rows, page_size: int = 200) -> None:
+        from src.persistence.schema.circuit_breaker_history import INSERT_SQL
+
+        batch = []
+        for row in rows:
+            metadata = row[7] if row[7] is not None else {}
+            batch.append((*row[:7], self._json(metadata)))
+
+        self._batch(INSERT_SQL, batch, page_size=page_size)
 
     def write_signal_events(self, rows, page_size: int = 200) -> None:
         self.signal_repo.write_signal_events(rows, page_size=page_size)
@@ -461,6 +580,9 @@ class TimescaleWriter:
 
     def fetch_signal_events(self, **kwargs):
         return self.signal_repo.fetch_signal_events(**kwargs)
+
+    def query_signal_events(self, **kwargs):
+        return self.signal_repo.query_signal_events(**kwargs)
 
     def fetch_signal_preview_events(self, **kwargs):
         return self.signal_repo.fetch_signal_preview_events(**kwargs)
@@ -476,6 +598,33 @@ class TimescaleWriter:
 
     def write_auto_executions(self, rows, page_size: int = 200) -> None:
         self.signal_repo.write_auto_executions(rows, page_size=page_size)
+
+    def write_execution_intents(self, rows, page_size: int = 200) -> None:
+        self.execution_intent_repo.write_execution_intents(rows, page_size=page_size)
+
+    def claim_execution_intents(self, **kwargs):
+        return self.execution_intent_repo.claim_execution_intents(**kwargs)
+
+    def heartbeat_execution_intent(self, **kwargs) -> None:
+        self.execution_intent_repo.heartbeat_execution_intent(**kwargs)
+
+    def complete_execution_intent(self, **kwargs) -> None:
+        self.execution_intent_repo.complete_execution_intent(**kwargs)
+
+    def write_operator_commands(self, rows, page_size: int = 200) -> None:
+        self.operator_command_repo.write_operator_commands(rows, page_size=page_size)
+
+    def claim_operator_commands(self, **kwargs):
+        return self.operator_command_repo.claim_operator_commands(**kwargs)
+
+    def heartbeat_operator_command(self, **kwargs) -> None:
+        self.operator_command_repo.heartbeat_operator_command(**kwargs)
+
+    def complete_operator_command(self, **kwargs) -> None:
+        self.operator_command_repo.complete_operator_command(**kwargs)
+
+    def fetch_operator_commands(self, **kwargs):
+        return self.operator_command_repo.fetch_operator_commands(**kwargs)
 
     def fetch_winrates(self, **kwargs):
         return self.signal_repo.fetch_winrates(**kwargs)

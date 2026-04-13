@@ -153,12 +153,12 @@ def check_cache_stats(monitor, component: str, worker: Any) -> Dict[str, Any]:
 def check_economic_calendar(monitor, component: str, service: Any) -> Dict[str, Any]:
     try:
         stats = service.stats()
-        last_refresh_at = stats.get("last_refresh_at")
-        if last_refresh_at:
-            refresh_time = monitor._as_utc(datetime.fromisoformat(last_refresh_at))
-            stale_seconds = (monitor._utc_now() - refresh_time).total_seconds()
+        warming_up = str(stats.get("warming_up", "false")).lower() == "true"
+        staleness_raw = stats.get("staleness_seconds")
+        if staleness_raw is None:
+            stale_seconds = 0.0 if warming_up else float("inf")
         else:
-            stale_seconds = float("inf")
+            stale_seconds = float(staleness_raw)
 
         provider_status = stats.get("provider_status") or {}
         if isinstance(provider_status, dict):

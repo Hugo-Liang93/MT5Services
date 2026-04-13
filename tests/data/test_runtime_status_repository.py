@@ -66,6 +66,10 @@ def test_write_runtime_task_status_normalizes_missing_details() -> None:
         0,
         None,
         None,
+        "main-live",
+        "main",
+        "live:broker-live:1001",
+        "live",
     )
 
     repo.write_runtime_task_status([row], page_size=50)
@@ -87,6 +91,10 @@ def test_write_runtime_task_status_normalizes_missing_details() -> None:
             0,
             None,
             {"wrapped": {}},
+            "main-live",
+            "main",
+            "live:broker-live:1001",
+            "live",
         )
     ]
 
@@ -100,7 +108,12 @@ def test_fetch_runtime_task_status_applies_filters_and_ordering() -> None:
 
     repo = RuntimeStatusRepository(_Writer())
 
-    rows = repo.fetch_runtime_task_status(component="startup", task_name="monitoring")
+    rows = repo.fetch_runtime_task_status(
+        component="startup",
+        task_name="monitoring",
+        instance_role="main",
+        account_key="live:broker-live:1001",
+    )
 
     assert rows == [("startup", "monitoring", "ts", "ready", None, None, None, 123, 1, 0, 0, None, {})]
     assert len(cursor.executed) == 1
@@ -108,5 +121,66 @@ def test_fetch_runtime_task_status_applies_filters_and_ordering() -> None:
     assert "FROM runtime_task_status WHERE 1=1" in sql
     assert "AND component = %s" in sql
     assert "AND task_name = %s" in sql
-    assert "ORDER BY component ASC, task_name ASC" in sql
-    assert params == ["startup", "monitoring"]
+    assert "AND instance_role = %s" in sql
+    assert "AND account_key = %s" in sql
+    assert "ORDER BY updated_at DESC, component ASC, task_name ASC" in sql
+    assert params == ["startup", "monitoring", "main", "live:broker-live:1001"]
+
+
+def test_fetch_runtime_task_status_records_returns_instance_metadata() -> None:
+    cursor = _Cursor(
+        rows=[
+            (
+                "startup",
+                "monitoring",
+                "ts",
+                "ready",
+                None,
+                None,
+                None,
+                123,
+                1,
+                0,
+                0,
+                None,
+                {},
+                "executor-live-exec-a-run-001",
+                "executor",
+                "live:broker-live:1002",
+                "live_exec_a",
+            )
+        ]
+    )
+
+    class _Writer:
+        def connection(self):
+            return _Connection(cursor)
+
+    repo = RuntimeStatusRepository(_Writer())
+
+    rows = repo.fetch_runtime_task_status_records(account_alias="live_exec_a")
+
+    assert rows == [
+        {
+            "component": "startup",
+            "task_name": "monitoring",
+            "updated_at": "ts",
+            "state": "ready",
+            "started_at": None,
+            "completed_at": None,
+            "next_run_at": None,
+            "duration_ms": 123,
+            "success_count": 1,
+            "failure_count": 0,
+            "consecutive_failures": 0,
+            "last_error": None,
+            "details": {},
+            "instance_id": "executor-live-exec-a-run-001",
+            "instance_role": "executor",
+            "account_key": "live:broker-live:1002",
+            "account_alias": "live_exec_a",
+        }
+    ]
+    sql, params = cursor.executed[0]
+    assert "instance_id, instance_role, account_key, account_alias" in sql
+    assert params == ["live_exec_a"]

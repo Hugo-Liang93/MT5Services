@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from src.calendar.policy import build_signal_economic_policy
+from src.config import EconomicConfig
 from src.signals.execution.filters import (
+    EconomicEventFilter,
     SessionFilter,
     SessionTransitionFilter,
     SignalFilterChain,
@@ -10,6 +13,16 @@ from src.signals.execution.filters import (
     TrendExhaustionFilter,
     VolatilitySpikeFilter,
 )
+
+
+class _EconomicProviderStub:
+    def __init__(self, events):
+        self._events = list(events)
+        self.calls = []
+
+    def get_events(self, **kwargs):
+        self.calls.append(kwargs)
+        return list(self._events)
 
 
 def test_session_filter_accepts_canonical_names() -> None:
@@ -177,3 +190,41 @@ def test_trend_exhaustion_filter_silent_when_no_exhaustion() -> None:
     )
     assert allowed is True
     assert reason == ""
+
+
+def test_economic_event_filter_uses_economic_policy_window() -> None:
+    provider = _EconomicProviderStub(events=[object()])
+    policy = build_signal_economic_policy(
+        EconomicConfig(
+            enabled=True,
+            pre_event_buffer_minutes=45,
+            post_event_buffer_minutes=20,
+            high_importance_threshold=3,
+            release_watch_approaching_minutes=120,
+            release_watch_post_event_minutes=15,
+        )
+    )
+    chain = SignalFilterChain(
+        economic_filter=EconomicEventFilter(
+            provider=provider,
+            policy=policy,
+        )
+    )
+
+    allowed, reason = chain.should_evaluate(
+        "XAUUSD",
+        utc_now=datetime(2026, 4, 13, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert allowed is False
+    assert reason == "economic_event_block"
+    call = provider.calls[0]
+    assert call["importance_min"] == 3
+    assert call["statuses"] == [
+        "scheduled",
+        "imminent",
+        "pending_release",
+        "released",
+    ]
+    assert call["start_time"] == datetime(2026, 4, 13, 7, 40, tzinfo=timezone.utc)
+    assert call["end_time"] == datetime(2026, 4, 13, 8, 45, tzinfo=timezone.utc)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from src.trading.application import TradingCommandService, TradingQueryService
+from src.trading.application.idempotency import TradeOperatorActionReplayConflictError
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.application import TradingModule
 
@@ -121,8 +122,28 @@ class DummyRegistry:
 
     def list_accounts(self):
         return [
-            {"alias": "live", "label": "Live", "login": 1001, "server": "Broker-Live", "timezone": "UTC", "enabled": True, "default": True},
-            {"alias": "demo", "label": "Demo", "login": 2002, "server": "Broker-Demo", "timezone": "UTC", "enabled": True, "default": False},
+            {
+                "alias": "live",
+                "label": "Live",
+                "account_key": "live:broker-live:1001",
+                "login": 1001,
+                "server": "Broker-Live",
+                "environment": "live",
+                "timezone": "UTC",
+                "enabled": True,
+                "default": True,
+            },
+            {
+                "alias": "demo",
+                "label": "Demo",
+                "account_key": "demo:broker-demo:2002",
+                "login": 2002,
+                "server": "Broker-Demo",
+                "environment": "demo",
+                "timezone": "UTC",
+                "enabled": True,
+                "default": False,
+            },
         ]
 
 
@@ -155,6 +176,7 @@ class DummyDBWriter:
                 self.rows[-1][14],
                 self.rows[-1][15],
                 self.rows[-1][16],
+                self.rows[-1][17],
             )
         ]
 
@@ -172,6 +194,7 @@ def test_trading_module_records_account_aware_trade_operations():
     assert result["operation_id"]
     assert module.db_writer.rows[-1][2] == "live"
     assert module.db_writer.rows[-1][3] == "execute_trade"
+    assert module.db_writer.rows[-1][17] == "live:broker-live:1001"
 
 
 def test_trading_module_account_info_does_not_write_command_audit():
@@ -389,6 +412,180 @@ def test_trading_module_replays_successful_trade_when_request_id_reused() -> Non
     assert second["idempotent_replay"] is True
     assert second["idempotent_source"] == "memory"
     assert len(registry.trading_service.execute_calls) == 1
+
+
+def test_trading_module_replays_operator_action_by_idempotency_key_after_restart() -> None:
+    db = DummyDBWriter()
+    module = TradingModule(registry=DummyRegistry(), db_writer=db)
+    request_payload = {
+        "auto_entry_enabled": False,
+        "close_only_mode": True,
+        "reason": "nfp_window",
+        "actor": "operator",
+        "idempotency_key": "idem_trade_control_restart",
+        "request_context": {"panel": "execution"},
+    }
+    response_payload = {
+        "accepted": True,
+        "status": "applied",
+        "action_id": "act_trade_control_restart",
+        "audit_id": "act_trade_control_restart",
+        "actor": "operator",
+        "reason": "nfp_window",
+        "idempotency_key": "idem_trade_control_restart",
+        "request_context": {"panel": "execution"},
+        "message": "trade control updated",
+        "effective_state": {"trade_control": {"auto_entry_enabled": False}},
+    }
+
+    module.record_operator_action(
+        command_type="update_trade_control",
+        request_payload=request_payload,
+        response_payload=response_payload,
+        operation_id="act_trade_control_restart",
+    )
+
+    restarted = TradingModule(registry=DummyRegistry(), db_writer=db)
+    replayed = restarted.find_operator_action_replay(
+        command_type="update_trade_control",
+        idempotency_key="idem_trade_control_restart",
+        request_payload=request_payload,
+    )
+
+    assert replayed is not None
+    assert replayed["source"] == "audit"
+    assert replayed["response_payload"]["action_id"] == "act_trade_control_restart"
+
+
+def test_trading_module_rejects_conflicting_operator_action_idempotency_reuse() -> None:
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+    module.record_operator_action(
+        command_type="update_runtime_mode",
+        request_payload={
+            "mode": "risk_off",
+            "reason": "after_hours",
+            "actor": "operator",
+            "idempotency_key": "idem_runtime_mode_conflict",
+            "request_context": {"panel": "overview"},
+        },
+        response_payload={
+            "accepted": True,
+            "status": "applied",
+            "action_id": "act_runtime_mode_conflict",
+            "audit_id": "act_runtime_mode_conflict",
+            "actor": "operator",
+            "reason": "after_hours",
+            "idempotency_key": "idem_runtime_mode_conflict",
+            "request_context": {"panel": "overview"},
+            "message": "runtime mode updated",
+            "effective_state": {"runtime_mode": {"current_mode": "risk_off"}},
+        },
+        operation_id="act_runtime_mode_conflict",
+    )
+
+    with pytest.raises(TradeOperatorActionReplayConflictError) as exc_info:
+        module.find_operator_action_replay(
+            command_type="update_runtime_mode",
+            idempotency_key="idem_runtime_mode_conflict",
+            request_payload={
+                "mode": "observe",
+                "reason": "manual",
+                "actor": "operator",
+                "idempotency_key": "idem_runtime_mode_conflict",
+                "request_context": {"panel": "overview"},
+            },
+        )
+
+    assert "different update_runtime_mode request" in str(exc_info.value)
+
+
+def test_trading_module_logs_operator_action_record(caplog: pytest.LogCaptureFixture) -> None:
+    module = TradingModule(registry=DummyRegistry(), db_writer=DummyDBWriter())
+
+    with caplog.at_level("INFO"):
+        module.record_operator_action(
+            command_type="update_trade_control",
+            request_payload={
+                "actor": "operator",
+                "reason": "smoke",
+                "idempotency_key": "idem_log_1",
+            },
+            response_payload={
+                "accepted": True,
+                "status": "applied",
+                "action_id": "act_log_1",
+                "audit_id": "act_log_1",
+            },
+            operation_id="act_log_1",
+        )
+
+    assert "Operator action recorded" in caplog.text
+    assert "command=update_trade_control" in caplog.text
+    assert "action_id=act_log_1" in caplog.text
+
+
+def test_trading_module_caches_close_position_operator_action_for_memory_replay() -> None:
+    module = TradingModule(registry=DummyRegistry(), db_writer=None)
+
+    result = module.close_position(
+        ticket=88,
+        actor="operator",
+        reason="manual_close",
+        action_id="act_close_replay",
+        audit_id="act_close_replay",
+        idempotency_key="idem_close_replay",
+        request_context={"panel": "positions"},
+    )
+    replayed = module.find_operator_action_replay(
+        command_type="close_position",
+        idempotency_key="idem_close_replay",
+        request_payload={
+            "ticket": 88,
+            "actor": "operator",
+            "reason": "manual_close",
+            "idempotency_key": "idem_close_replay",
+            "request_context": {"panel": "positions"},
+        },
+    )
+
+    assert result["status"] == "completed"
+    assert replayed is not None
+    assert replayed["source"] == "memory"
+    assert replayed["response_payload"]["action_id"] == "act_close_replay"
+
+
+def test_trading_module_replays_cancel_orders_operator_action_after_restart() -> None:
+    db = DummyDBWriter()
+    module = TradingModule(registry=DummyRegistry(), db_writer=db)
+
+    result = module.cancel_orders(
+        symbol="XAUUSD",
+        magic=7,
+        actor="operator",
+        reason="manual_cancel_orders",
+        action_id="act_cancel_orders_restart",
+        audit_id="act_cancel_orders_restart",
+        idempotency_key="idem_cancel_orders_restart",
+        request_context={"panel": "orders"},
+    )
+    restarted = TradingModule(registry=DummyRegistry(), db_writer=db)
+    replayed = restarted.find_operator_action_replay(
+        command_type="cancel_orders",
+        idempotency_key="idem_cancel_orders_restart",
+        request_payload={
+            "symbol": "XAUUSD",
+            "magic": 7,
+            "actor": "operator",
+            "reason": "manual_cancel_orders",
+            "idempotency_key": "idem_cancel_orders_restart",
+            "request_context": {"panel": "orders"},
+        },
+    )
+
+    assert result["status"] == "completed"
+    assert replayed is not None
+    assert replayed["source"] == "audit"
+    assert replayed["response_payload"]["effective_state"]["result"]["canceled"] == [11]
 
 
 def test_trading_module_modify_positions_preserves_ticket_scope() -> None:

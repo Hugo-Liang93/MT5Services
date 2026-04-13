@@ -4,16 +4,16 @@
 """
 
 from .filters import (
+    EconomicEventsProvider,
     EconomicEventFilter,
     SessionFilter,
     SignalFilterChain,
     SpreadFilter,
-    TradeGuardProvider,
 )
 __all__ = [
+    "EconomicEventsProvider",
     "EconomicEventFilter",
     "SessionFilter",
     "SignalFilterChain",
     "SpreadFilter",
-    "TradeGuardProvider",
 ]

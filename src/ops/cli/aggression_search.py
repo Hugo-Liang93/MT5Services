@@ -303,7 +303,15 @@ def _render_results(
 
 
 def main() -> None:
+    from src.config.instance_context import set_current_environment
+
     parser = argparse.ArgumentParser(description="Aggression grid search")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定使用哪个环境数据库",
+    )
     parser.add_argument(
         "--tf", required=True, help="Timeframe(s), comma-separated: H1,M30"
     )
@@ -318,6 +326,7 @@ def main() -> None:
         help="Comma-separated strategy names (default: all active)",
     )
     args = parser.parse_args()
+    set_current_environment(args.environment)
 
     timeframes = [t.strip().upper() for t in args.tf.split(",")]
     strategies = (

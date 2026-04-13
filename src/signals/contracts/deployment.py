@@ -57,7 +57,12 @@ class StrategyDeployment:
         payload: Mapping[str, Any] | None,
     ) -> "StrategyDeployment":
         raw = dict(payload or {})
-        status = raw.get("status", StrategyDeploymentStatus.ACTIVE.value)
+        if "status" not in raw:
+            raise ValueError(
+                f"strategy_deployment.{name}.status is required; "
+                "live eligibility must be declared explicitly"
+            )
+        status = raw.get("status")
         return cls(
             name=str(name).strip(),
             status=(

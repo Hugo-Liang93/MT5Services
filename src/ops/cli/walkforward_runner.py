@@ -196,7 +196,15 @@ def _render_result(result: Any, tf: str) -> str:
 
 
 def main() -> None:
+    from src.config.instance_context import set_current_environment
+
     parser = argparse.ArgumentParser(description="Walk-Forward validation runner")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定 WF 使用哪个环境数据库",
+    )
     parser.add_argument("--tf", required=True, help="Timeframe")
     parser.add_argument("--start", default="2025-09-01", help="Start date (longer for WF)")
     parser.add_argument("--end", default="2026-03-30", help="End date")
@@ -220,6 +228,7 @@ def main() -> None:
         help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
     )
     args = parser.parse_args()
+    set_current_environment(args.environment)
 
     tf = args.tf.strip().upper()
     strategy_names = (

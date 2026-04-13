@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from src.signals.contracts import normalize_session_name, resolve_session_by_hour
 from src.signals.metadata_keys import MetadataKey as MK
 from .reasons import (
     REASON_CIRCUIT_OPEN,
@@ -23,6 +24,8 @@ from .reasons import (
     REASON_PERFORMANCE_PAUSED,
     REASON_REENTRY_COOLDOWN,
     REASON_STRATEGY_CANDIDATE_ONLY,
+    REASON_STRATEGY_LOCKED_SESSION,
+    REASON_STRATEGY_LOCKED_TIMEFRAME,
     REASON_STRATEGY_MAX_LIVE_POSITIONS,
     REASON_STRATEGY_PAPER_ONLY,
     REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
@@ -39,6 +42,7 @@ from .reasons import (
 )
 
 from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
+from .eventing import emit_blocked_admission_report as _emit_blocked_admission_report
 from .eventing import notify_skip as _notify_skip_helper
 from .params import tf_to_seconds as _tf_to_seconds_helper
 from .pending_orders import (
@@ -53,6 +57,42 @@ if TYPE_CHECKING:
     from .executor import TradeExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_event_sessions(event: "SignalEvent") -> tuple[str, ...]:
+    raw_sessions = event.metadata.get(MK.SESSION_BUCKETS)
+    sessions: list[str] = []
+    if isinstance(raw_sessions, str):
+        candidates = raw_sessions.split(",")
+    elif isinstance(raw_sessions, (list, tuple, set, frozenset)):
+        candidates = list(raw_sessions)
+    else:
+        candidates = []
+
+    seen: set[str] = set()
+    for raw in candidates:
+        session = normalize_session_name(str(raw).strip())
+        if not session or session in seen:
+            continue
+        seen.add(session)
+        sessions.append(session)
+
+    if sessions:
+        return tuple(sessions)
+
+    anchor = event.metadata.get(MK.BAR_TIME)
+    if isinstance(anchor, str):
+        try:
+            anchor = datetime.fromisoformat(anchor)
+        except ValueError:
+            anchor = None
+    if not isinstance(anchor, datetime):
+        anchor = event.generated_at
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+    else:
+        anchor = anchor.astimezone(timezone.utc)
+    return (resolve_session_by_hour(anchor.hour),)
 
 
 def reject_signal(
@@ -100,6 +140,20 @@ def reject_signal(
         reason=pipeline_reason or reason,
         category=category,
     )
+    _emit_blocked_admission_report(
+        executor,
+        event,
+        code=reason,
+        category=category,
+        message=pipeline_reason or reason,
+        details={
+            "timeframe": tf,
+            "category": category,
+        },
+        requested_operation=(
+            "intrabar_execution" if event.scope == "intrabar" else "signal_execution"
+        ),
+    )
 
 
 def check_trading_health(executor: TradeExecutor) -> bool:
@@ -132,7 +186,10 @@ def check_circuit_breaker(executor: TradeExecutor, event: SignalEvent) -> bool:
                     elapsed,
                 )
                 executor.health_check_failures = 0
-                executor.reset_circuit()
+                executor.reset_circuit(
+                    event="auto_reset",
+                    reason="health_check_passed",
+                )
             else:
                 executor.health_check_failures += 1
                 executor.circuit_open_at = datetime.now(timezone.utc)
@@ -248,6 +305,36 @@ def run_pre_trade_filters(
                 tf,
             )
             return REASON_STRATEGY_PAPER_ONLY
+        if deployment.locked_timeframes:
+            event_tf = str(event.timeframe).strip().upper()
+            if event_tf not in deployment.locked_timeframes:
+                reject_signal(
+                    executor,
+                    event,
+                    REASON_STRATEGY_LOCKED_TIMEFRAME,
+                    SKIP_CATEGORY_GOVERNANCE,
+                    tf,
+                    extra_log=(
+                        f"{event_tf or 'unknown'} not in "
+                        f"{list(deployment.locked_timeframes)}"
+                    ),
+                )
+                return REASON_STRATEGY_LOCKED_TIMEFRAME
+        if deployment.locked_sessions:
+            event_sessions = _normalize_event_sessions(event)
+            if not set(event_sessions).intersection(deployment.locked_sessions):
+                reject_signal(
+                    executor,
+                    event,
+                    REASON_STRATEGY_LOCKED_SESSION,
+                    SKIP_CATEGORY_GOVERNANCE,
+                    tf,
+                    extra_log=(
+                        f"{list(event_sessions)} not in "
+                        f"{list(deployment.locked_sessions)}"
+                    ),
+                )
+                return REASON_STRATEGY_LOCKED_SESSION
         if deployment.max_live_positions is not None:
             current_live_positions = _open_positions_for_strategy_helper(
                 executor,

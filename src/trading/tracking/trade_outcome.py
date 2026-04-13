@@ -45,6 +45,9 @@ class _ActiveTrade:
     confidence: float
     fill_price: float
     regime: Optional[str]
+    account_key: Optional[str]
+    account_alias: Optional[str]
+    intent_id: Optional[str]
     opened_at: datetime
 
 
@@ -94,6 +97,9 @@ class TradeOutcomeTracker:
         fill_price: float,
         confidence: float,
         regime: Optional[str] = None,
+        account_key: Optional[str] = None,
+        account_alias: Optional[str] = None,
+        intent_id: Optional[str] = None,
         *,
         opened_at: Optional[datetime] = None,
     ) -> None:
@@ -107,6 +113,9 @@ class TradeOutcomeTracker:
             confidence=confidence,
             fill_price=fill_price,
             regime=regime,
+            account_key=account_key,
+            account_alias=account_alias,
+            intent_id=intent_id,
             opened_at=opened_at or datetime.now(timezone.utc),
         )
         with self._lock:
@@ -156,6 +165,9 @@ class TradeOutcomeTracker:
             fill_price=float(getattr(pos, "entry_price", 0.0) or 0.0),
             confidence=float(getattr(pos, "confidence", 0.0) or 0.0),
             regime=getattr(pos, "regime", None),
+            account_key=getattr(pos, "account_key", None),
+            account_alias=getattr(pos, "account_alias", None),
+            intent_id=getattr(pos, "intent_id", None),
             opened_at=getattr(pos, "opened_at", None),
         )
 
@@ -255,6 +267,9 @@ class TradeOutcomeTracker:
             rows: List[Tuple] = [(
                 now,
                 trade.signal_id,
+                trade.account_key,
+                trade.account_alias,
+                trade.intent_id,
                 trade.symbol,
                 trade.timeframe,
                 trade.strategy,

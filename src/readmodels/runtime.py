@@ -3,6 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
+from src.monitoring.pipeline.events import (
+    PIPELINE_ADMISSION_REPORT_APPENDED,
+    PIPELINE_COMMAND_CLAIMED,
+    PIPELINE_COMMAND_COMPLETED,
+    PIPELINE_COMMAND_FAILED,
+    PIPELINE_COMMAND_SUBMITTED,
+    PIPELINE_INTENT_CLAIMED,
+    PIPELINE_INTENT_DEAD_LETTERED,
+    PIPELINE_INTENT_PUBLISHED,
+    PIPELINE_INTENT_RECLAIMED,
+    PIPELINE_RISK_STATE_CHANGED,
+    PIPELINE_UNMANAGED_POSITION_DETECTED,
+)
+
 
 class RuntimeReadModel:
     """统一运行时读模型，供 admin、monitoring 与前端投影视图复用。"""
@@ -11,6 +25,7 @@ class RuntimeReadModel:
         self,
         *,
         health_monitor: Any = None,
+        storage_writer: Any = None,
         ingestor: Any = None,
         indicator_manager: Any = None,
         trading_queries: Any = None,
@@ -22,9 +37,12 @@ class RuntimeReadModel:
         trading_state_alerts: Any = None,
         exposure_closeout_controller: Any = None,
         runtime_mode_controller: Any = None,
+        runtime_identity: Any = None,
+        paper_trading_bridge: Any = None,
         db_writer: Any = None,
     ) -> None:
         self._health_monitor = health_monitor
+        self._storage_writer = storage_writer
         self._ingestor = ingestor
         self._indicator_manager = indicator_manager
         self._trading_queries = trading_queries
@@ -36,7 +54,17 @@ class RuntimeReadModel:
         self._trading_state_alerts = trading_state_alerts
         self._exposure_closeout_controller = exposure_closeout_controller
         self._runtime_mode_controller = runtime_mode_controller
+        self._runtime_identity = runtime_identity
+        self._paper_trading_bridge = paper_trading_bridge
         self.db_writer = db_writer
+
+    @property
+    def runtime_identity(self) -> Any:
+        return self._runtime_identity
+
+    def _is_executor(self) -> bool:
+        identity = self._runtime_identity
+        return bool(identity is not None and identity.instance_role == "executor")
 
     def _current_runtime_mode(self) -> str | None:
         controller = self._runtime_mode_controller
@@ -48,6 +76,31 @@ class RuntimeReadModel:
             return None
         mode = snapshot.get("current_mode")
         return str(mode) if mode else None
+
+    @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.astimezone(timezone.utc).isoformat()
+        if isinstance(value, Mapping):
+            return {
+                str(key): RuntimeReadModel._json_safe_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [RuntimeReadModel._json_safe_value(item) for item in value]
+        return value
+
+    @classmethod
+    def _position_dict(cls, item: Any) -> dict[str, Any]:
+        if isinstance(item, dict):
+            payload = dict(item)
+        else:
+            payload = dict(getattr(item, "__dict__", {}) or {})
+        if hasattr(payload.get("time"), "isoformat"):
+            payload["time"] = payload["time"].isoformat()
+        return cls._json_safe_value(payload)
 
     @staticmethod
     def _runtime_indicator_status(
@@ -449,6 +502,46 @@ class RuntimeReadModel:
         return {"value": value}
 
     def storage_summary(self) -> dict[str, Any]:
+        if self._is_executor():
+            writer_alive = bool(
+                self._storage_writer is not None
+                and getattr(self._storage_writer, "is_running", lambda: False)()
+            )
+            queue_stats = (
+                self._storage_writer.stats()
+                if self._storage_writer is not None
+                and hasattr(self._storage_writer, "stats")
+                else {"queues": {}, "summary": {}, "threads": {}}
+            )
+            sanitized_stats = {
+                **dict(queue_stats or {}),
+                "threads": {
+                    **dict((queue_stats or {}).get("threads", {}) or {}),
+                    "writer_alive": writer_alive,
+                    # executor 没有共享 ingestion 线程，这里只用于复用 worst_queue 计算，
+                    # 真正状态判定会在后面单独覆盖。
+                    "ingest_alive": True,
+                },
+            }
+            summary = self.build_storage_summary(sanitized_stats)
+            threads = dict(summary.get("threads", {}) or {})
+            threads["writer_alive"] = writer_alive
+            threads["ingest_alive"] = False
+            queue_totals = dict(summary.get("summary", {}) or {})
+            if writer_alive is not True:
+                summary["status"] = "critical"
+            elif int(queue_totals.get("full", 0) or 0) > 0 or int(
+                queue_totals.get("critical", 0) or 0
+            ) > 0:
+                summary["status"] = "critical"
+            elif int(queue_totals.get("high", 0) or 0) > 0:
+                summary["status"] = "warning"
+            else:
+                summary["status"] = "healthy"
+            summary["threads"] = threads
+            summary["ingestion"] = "disabled"
+            summary["role"] = "executor"
+            return summary
         if self._ingestor is None:
             return {
                 "status": "critical",
@@ -456,9 +549,23 @@ class RuntimeReadModel:
                 "summary": {},
                 "worst_queue": None,
             }
-        return self.build_storage_summary(self._ingestor.queue_stats())
+        summary = self.build_storage_summary(self._ingestor.queue_stats())
+        return summary
 
     def indicator_summary(self) -> dict[str, Any]:
+        if self._is_executor():
+            return {
+                "status": "disabled",
+                "mode": None,
+                "event_loop_running": False,
+                "computations": {},
+                "events": {},
+                "cache": {},
+                "results": {},
+                "config": {},
+                "timestamp": None,
+                "role": "executor",
+            }
         if self._indicator_manager is None:
             return {
                 "status": "critical",
@@ -511,6 +618,64 @@ class RuntimeReadModel:
         return report
 
     def signal_runtime_summary(self) -> dict[str, Any]:
+        if self._is_executor():
+            executor_summary = self.trade_executor_summary()
+            return {
+                "status": "disabled",
+                "running": False,
+                "target_count": 0,
+                "trigger_mode": {},
+                "strategy_sessions": {},
+                "strategy_scopes": {},
+                "market_structure": {},
+                "queues": {},
+                "processing": {},
+                "filters": {},
+                "strategy_capability_reconciliation": {
+                    "reconciled": False,
+                    "module_count": 0,
+                    "runtime_count": 0,
+                    "module_only": [],
+                    "runtime_only": [],
+                    "drift_items": [],
+                    "drift_count": 0,
+                },
+                "strategy_capability_execution_plan": {
+                    "configured_target_count": 0,
+                    "scheduled_target_count": 0,
+                    "filtered_target_count": 0,
+                    "strategy_capability_count": 0,
+                    "configured_strategies": [],
+                    "scheduled_strategies": [],
+                    "filtered_strategies": [],
+                    "scope_strategies": {"confirmed": [], "intrabar": []},
+                    "needs_intrabar_strategies": [],
+                    "needs_htf_strategies": [],
+                    "required_indicators_by_strategy": {},
+                    "required_indicators_union": [],
+                    "strategy_timeframes_policy": {},
+                    "filtered_reason_counts": {},
+                    "filtered_target_samples": [],
+                    "filtered_target_sample_overflow": 0,
+                },
+                "warmup": {},
+                "active_states": {},
+                "executor_enabled": bool(executor_summary.get("enabled", False)),
+                "execution_gate": dict(executor_summary.get("execution_gate", {}) or {}),
+                "active_filters": [],
+                "filter_stats": {
+                    "configured": {},
+                    "totals": {},
+                    "window": {},
+                    "window_seconds": 0,
+                    "window_elapsed": 0,
+                },
+                "voting_groups": [],
+                "regime_map": {},
+                "last_run_at": None,
+                "last_error": None,
+                "role": "executor",
+            }
         if self._signal_runtime is None:
             return {
                 "status": "critical",
@@ -552,12 +717,37 @@ class RuntimeReadModel:
                 },
                 "warmup": {},
                 "active_states": {},
+                "executor_enabled": False,
+                "execution_gate": {},
+                "active_filters": [],
+                "filter_stats": {
+                    "configured": {},
+                    "totals": {},
+                    "window": {},
+                    "window_seconds": 0,
+                    "window_elapsed": 0,
+                },
                 "voting_groups": [],
                 "regime_map": {},
                 "last_run_at": None,
                 "last_error": "signal_runtime_unavailable",
             }
-        summary = self.build_signal_runtime_summary(self._signal_runtime.status())
+        runtime_status = self._signal_runtime.status()
+        summary = self.build_signal_runtime_summary(runtime_status)
+        executor_summary = self.trade_executor_summary()
+        filter_realtime_status = dict(
+            runtime_status.get("filter_realtime_status", {}) or {}
+        )
+        summary["executor_enabled"] = bool(executor_summary.get("enabled", False))
+        summary["execution_gate"] = dict(executor_summary.get("execution_gate", {}) or {})
+        summary["active_filters"] = sorted(filter_realtime_status.keys())
+        summary["filter_stats"] = {
+            "configured": filter_realtime_status,
+            "totals": dict(runtime_status.get("filter_by_scope", {}) or {}),
+            "window": dict(runtime_status.get("filter_window_by_scope", {}) or {}),
+            "window_seconds": int(runtime_status.get("filter_window_seconds", 0) or 0),
+            "window_elapsed": int(runtime_status.get("filter_window_elapsed", 0) or 0),
+        }
         if (
             self._current_runtime_mode() in {"risk_off", "ingest_only"}
             and not summary.get("running", False)
@@ -630,7 +820,66 @@ class RuntimeReadModel:
             return {"status": "unavailable", "current_mode": None}
         snapshot = dict(controller.snapshot() or {})
         snapshot["status"] = "healthy"
+        snapshot["validation_sidecars"] = {
+            "paper_trading": self.paper_trading_summary()
+        }
         return snapshot
+
+    def paper_trading_summary(self) -> dict[str, Any]:
+        bridge = self._paper_trading_bridge
+        if bridge is None:
+            return {
+                "kind": "validation_sidecar",
+                "configured": False,
+                "running": False,
+                "status": "disabled",
+                "session_id": None,
+                "signals_received": 0,
+                "signals_executed": 0,
+                "signals_rejected": 0,
+                "reject_reasons": {},
+                "active_symbols": [],
+            }
+
+        try:
+            payload = dict(bridge.status() or {})
+        except Exception as exc:
+            return {
+                "kind": "validation_sidecar",
+                "configured": True,
+                "running": False,
+                "status": "warning",
+                "last_error": str(exc),
+                "session_id": None,
+                "signals_received": 0,
+                "signals_executed": 0,
+                "signals_rejected": 0,
+                "reject_reasons": {},
+                "active_symbols": [],
+            }
+
+        running = bool(payload.get("running", False))
+        session_id = payload.get("session_id") or payload.get("session")
+        configured = True
+        status = "healthy" if running else "idle"
+        return {
+            "kind": "validation_sidecar",
+            "configured": configured,
+            "running": running,
+            "status": status,
+            "session_id": session_id,
+            "started_at": payload.get("started_at"),
+            "signals_received": int(payload.get("signals_received", 0) or 0),
+            "signals_executed": int(payload.get("signals_executed", 0) or 0),
+            "signals_rejected": int(payload.get("signals_rejected", 0) or 0),
+            "reject_reasons": dict(payload.get("reject_reasons", {}) or {}),
+            "active_symbols": list(payload.get("active_symbols", []) or []),
+            "current_balance": payload.get("current_balance"),
+            "floating_pnl": payload.get("floating_pnl"),
+            "equity": payload.get("equity"),
+            "open_positions": payload.get("open_positions"),
+            "closed_trades": payload.get("closed_trades"),
+        }
 
     def exposure_closeout_summary(self) -> dict[str, Any]:
         controller = self._exposure_closeout_controller
@@ -756,7 +1005,221 @@ class RuntimeReadModel:
     def persisted_trade_control_payload(self) -> dict[str, Any] | None:
         if self._trading_state_store is None:
             return None
-        return self._trading_state_store.load_trade_control_state()
+        payload = self._trading_state_store.load_trade_control_state()
+        if not isinstance(payload, dict):
+            return payload
+        return self._json_safe_value(payload)
+
+    def account_risk_state_summary(self) -> dict[str, Any] | None:
+        if self._trading_state_store is not None:
+            try:
+                state = self._trading_state_store.load_account_risk_state()
+            except Exception:
+                state = None
+            if isinstance(state, dict) and state:
+                return state
+        if self.db_writer is None or self._runtime_identity is None:
+            return None
+        try:
+            return self.db_writer.fetch_account_risk_state(
+                account_key=self._runtime_identity.account_key,
+            )
+        except Exception:
+            return None
+
+    def account_risk_states_payload(self, *, limit: int = 100) -> dict[str, Any]:
+        if self.db_writer is None:
+            return {"count": 0, "items": []}
+        try:
+            items = list(self.db_writer.fetch_account_risk_states(limit=limit) or [])
+        except Exception:
+            return {"count": 0, "items": []}
+        return {"count": len(items), "items": items}
+
+    def trade_control_summary(self) -> dict[str, Any] | None:
+        if self._trading_queries is not None:
+            try:
+                state = self._trading_queries.trade_control_status()
+            except Exception:
+                state = None
+            if isinstance(state, dict) and state:
+                return state
+        return self.persisted_trade_control_payload()
+
+    def _live_positions_payload(self) -> list[dict[str, Any]]:
+        if self._trading_queries is None:
+            return []
+        try:
+            rows = list(self._trading_queries.get_positions(None, None) or [])
+        except Exception:
+            return []
+        return [self._position_dict(item) for item in rows]
+
+    def unmanaged_live_positions_payload(self, *, limit: int = 20) -> dict[str, Any]:
+        live_positions = self._live_positions_payload()
+        managed_items = list(
+            self.position_runtime_state_payload(statuses=["open"], limit=max(limit * 5, 100)).get("items")
+            or []
+        )
+        managed_tickets = {
+            int(ticket)
+            for ticket in (
+                item.get("position_ticket")
+                for item in managed_items
+            )
+            if ticket is not None
+        }
+        context_resolver = (
+            getattr(self._trading_queries, "resolve_position_context", None)
+            if self._trading_queries is not None
+            else None
+        )
+        unmanaged_items: list[dict[str, Any]] = []
+        for position in live_positions:
+            ticket = position.get("ticket")
+            try:
+                normalized_ticket = int(ticket)
+            except (TypeError, ValueError):
+                normalized_ticket = None
+            if normalized_ticket is not None and normalized_ticket in managed_tickets:
+                continue
+            comment = str(position.get("comment") or "").strip()
+            magic = position.get("magic")
+            context = None
+            if callable(context_resolver) and normalized_ticket is not None:
+                try:
+                    context = context_resolver(ticket=normalized_ticket, comment=comment, limit=200)
+                except Exception:
+                    context = None
+            if not comment and int(magic or 0) == 0:
+                reason = "manual_position"
+            elif context is None:
+                reason = "unsupported_comment"
+            else:
+                reason = "missing_context"
+            unmanaged_items.append(
+                {
+                    "ticket": normalized_ticket,
+                    "symbol": position.get("symbol"),
+                    "volume": position.get("volume"),
+                    "type": position.get("type"),
+                    "magic": magic,
+                    "comment": comment,
+                    "reason": reason,
+                    "context": context,
+                }
+            )
+        reason_counts: dict[str, int] = {}
+        for item in unmanaged_items:
+            reason = str(item.get("reason") or "unknown")
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        return {
+            "count": len(unmanaged_items),
+            "managed_count": len(managed_tickets),
+            "live_count": len(live_positions),
+            "reason_counts": reason_counts,
+            "items": unmanaged_items[:limit],
+        }
+
+    def tradability_state_summary(self) -> dict[str, Any]:
+        account_risk = dict(self.account_risk_state_summary() or {})
+        trade_control = dict(self.trade_control_summary() or {})
+        runtime_mode = dict(self.runtime_mode_summary() or {})
+        quote_health = dict(account_risk.get("metadata", {}).get("quote_health", {}) or {})
+        margin_guard = dict(account_risk.get("metadata", {}).get("margin_guard", {}) or {})
+        auto_entry_enabled = bool(account_risk.get("auto_entry_enabled", trade_control.get("auto_entry_enabled", True)))
+        close_only_mode = bool(account_risk.get("close_only_mode", trade_control.get("close_only_mode", False)))
+        circuit_open = bool(account_risk.get("circuit_open", False))
+        quote_stale = bool(account_risk.get("quote_stale", False))
+        should_block_new_trades = bool(account_risk.get("should_block_new_trades", False))
+        runtime_present = self._trade_executor is not None
+        admission_enabled = bool(
+            runtime_present
+            and auto_entry_enabled
+            and not close_only_mode
+            and str(runtime_mode.get("current_mode") or "full") == "full"
+        )
+        return {
+            "runtime_present": runtime_present,
+            "admission_enabled": admission_enabled,
+            "market_data_fresh": not quote_stale,
+            "quote_health": {
+                "stale": quote_stale,
+                "age_seconds": quote_health.get("age_seconds"),
+                "stale_threshold_seconds": quote_health.get("stale_threshold_seconds"),
+            },
+            "session_allowed": {
+                "status": "unknown",
+                "reason": None,
+            },
+            "economic_guard": {
+                "status": "warn_only",
+                "degraded": bool(account_risk.get("indicator_degraded", False) or account_risk.get("db_degraded", False)),
+            },
+            "auto_entry_enabled": auto_entry_enabled,
+            "close_only_mode": close_only_mode,
+            "margin_guard": margin_guard,
+            "circuit_open": circuit_open,
+            "tradable": bool(
+                admission_enabled
+                and not circuit_open
+                and not should_block_new_trades
+                and not quote_stale
+            ),
+        }
+
+    def recent_trade_pipeline_events_payload(self, *, limit: int = 50) -> dict[str, Any]:
+        if self.db_writer is None or self._runtime_identity is None:
+            return {"count": 0, "items": []}
+        rows = list(
+            self.db_writer.fetch_pipeline_trace_filtered(
+                instance_id=getattr(self._runtime_identity, "instance_id", None),
+                account_key=getattr(self._runtime_identity, "account_key", None),
+                event_types=[
+                    PIPELINE_ADMISSION_REPORT_APPENDED,
+                    PIPELINE_INTENT_PUBLISHED,
+                    PIPELINE_INTENT_CLAIMED,
+                    PIPELINE_INTENT_RECLAIMED,
+                    PIPELINE_INTENT_DEAD_LETTERED,
+                    PIPELINE_COMMAND_SUBMITTED,
+                    PIPELINE_COMMAND_CLAIMED,
+                    PIPELINE_COMMAND_COMPLETED,
+                    PIPELINE_COMMAND_FAILED,
+                    PIPELINE_RISK_STATE_CHANGED,
+                    PIPELINE_UNMANAGED_POSITION_DETECTED,
+                ],
+                limit=limit,
+                offset=0,
+            )
+            or []
+        )
+        items = [
+            {
+                "id": row.get("id"),
+                "trace_id": row.get("trace_id"),
+                "symbol": row.get("symbol"),
+                "timeframe": row.get("timeframe"),
+                "scope": row.get("scope"),
+                "event_type": row.get("event_type"),
+                "recorded_at": self._json_safe_value(row.get("recorded_at")),
+                "payload": self._json_safe_value(row.get("payload") or {}),
+                "instance_id": row.get("instance_id"),
+                "instance_role": row.get("instance_role"),
+                "account_key": row.get("account_key"),
+                "signal_id": row.get("signal_id"),
+                "intent_id": row.get("intent_id"),
+                "command_id": row.get("command_id"),
+                "action_id": row.get("action_id"),
+            }
+            for row in rows
+        ]
+        items.sort(
+            key=lambda item: (
+                str(item.get("recorded_at") or ""),
+                int(item.get("id") or 0),
+            )
+        )
+        return {"count": len(items), "items": items}
 
     def trading_state_summary(
         self,
@@ -767,7 +1230,9 @@ class RuntimeReadModel:
         active_pending = self.active_pending_order_payload(limit=pending_limit)
         lifecycle_pending = self.pending_order_lifecycle_payload(limit=pending_limit)
         return {
-            "trade_control": self.persisted_trade_control_payload(),
+            "trade_control": self.trade_control_summary(),
+            "account_risk": self.account_risk_state_summary(),
+            "tradability": self.tradability_state_summary(),
             "runtime_mode": self.runtime_mode_summary(),
             "closeout": self.exposure_closeout_summary(),
             "pending": {
@@ -776,7 +1241,18 @@ class RuntimeReadModel:
                 "execution_contexts": self.pending_execution_context_payload(),
             },
             "positions": self.position_runtime_state_payload(limit=position_limit),
+            "managed_positions": {
+                "count": int(
+                    self.position_runtime_state_payload(statuses=["open"], limit=max(position_limit, 100)).get("count")
+                    or 0
+                ),
+            },
+            "unmanaged_live_positions": self.unmanaged_live_positions_payload(limit=position_limit),
+            "pipeline_events": self.recent_trade_pipeline_events_payload(limit=position_limit),
             "alerts": self.trading_state_alerts_summary(),
+            "validation": {
+                "paper_trading": self.paper_trading_summary(),
+            },
         }
 
     def trading_state_alerts_summary(self) -> dict[str, Any]:
@@ -803,8 +1279,10 @@ class RuntimeReadModel:
             "account": account,
             "positions": self.tracked_positions_payload(),
             "trading_state": self.trading_state_summary(),
+            "account_risk": self.account_risk_state_summary(),
             "signals": self.signal_runtime_summary(),
             "executor": self.trade_executor_summary(),
+            "validation": {"paper_trading": self.paper_trading_summary()},
             "storage": storage,
             "indicators": indicators,
         }

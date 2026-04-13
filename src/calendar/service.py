@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from threading import Event, Lock, RLock, Thread
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.calendar.economic_calendar.contracts import (
     EVENT_STATUS_IMMINENT,
@@ -55,6 +55,9 @@ from src.calendar.economic_calendar.trade_guard import (
 from src.persistence.db import TimescaleWriter
 from src.persistence.storage_writer import StorageWriter
 
+if TYPE_CHECKING:
+    from src.config.runtime_identity import RuntimeIdentity
+
 logger = logging.getLogger(__name__)
 
 _JOB_LABELS = {
@@ -83,16 +86,20 @@ class EconomicCalendarService:
         settings: Optional[EconomicConfig] = None,
         storage_writer: Optional[StorageWriter] = None,
         provider_registry: Optional[ProviderRegistry] = None,
+        runtime_identity: Optional["RuntimeIdentity"] = None,
     ):
         self.db = db_writer
         self.settings = settings or get_economic_config()
         self.storage_writer = storage_writer
+        self._runtime_identity = runtime_identity
         self._lock = RLock()
         self.registry = provider_registry or ProviderRegistry()
         self.market_impact_analyzer: Optional[Any] = None
         self._last_refresh_at: Optional[datetime] = None
         self._last_refresh_error: Optional[str] = None
         self._last_refresh_summary: Optional[Dict[str, Any]] = None
+        self._scheduler_started_at: Optional[datetime] = None
+        self._bootstrap_deadline_at: Optional[datetime] = None
         self._stop_event = Event()
         self._worker: Optional[Thread] = None
         self._refresh_lock = Lock()
@@ -109,6 +116,7 @@ class EconomicCalendarService:
                 "last_completed_at": None,
                 "last_error": None,
                 "last_status": None,
+                "last_result_status": None,
                 "last_duration_ms": None,
                 "last_fetched": 0,
                 "last_written": 0,
@@ -612,10 +620,60 @@ class EconomicCalendarService:
         # 事件已过 post_min 以上，回到空闲
         return idle
 
-    def is_stale(self) -> bool:
-        if self._last_refresh_at is None:
+    def _bootstrap_grace_seconds(self) -> float:
+        timeout_seconds = max(1.0, float(self.settings.request_timeout_seconds))
+        attempts = max(1, int(self.settings.request_retries))
+        retry_backoff = max(0.0, float(self.settings.retry_backoff_seconds))
+        jitter_seconds = max(0.0, float(self.settings.refresh_jitter_seconds))
+        retry_budget = sum(retry_backoff * (2 ** step) for step in range(max(0, attempts - 1)))
+        request_budget = timeout_seconds * attempts
+        # 首次全量同步会串行抓取多个日期与端点，不能只按单次 request timeout 估算。
+        # 这里给出一个保守但受 stale_after 限制的启动缓冲，避免服务刚启动就被误判为 stale。
+        return min(
+            float(self.settings.stale_after_seconds),
+            max(60.0, request_budget + retry_budget + jitter_seconds + 30.0),
+        )
+
+    def is_warming_up(self) -> bool:
+        if self._last_refresh_at is not None:
+            return False
+        if self._scheduler_started_at is None or self._bootstrap_deadline_at is None:
+            return False
+        if self._refresh_in_progress:
             return True
-        return (_utc_now() - self._last_refresh_at).total_seconds() > float(self.settings.stale_after_seconds)
+        worker_alive = bool(self._worker and self._worker.is_alive())
+        if not worker_alive:
+            return False
+        return _utc_now() < self._bootstrap_deadline_at
+
+    def staleness_seconds(self) -> Optional[float]:
+        if self._last_refresh_at is None:
+            return None if self.is_warming_up() else float("inf")
+        return max(0.0, (_utc_now() - self._last_refresh_at).total_seconds())
+
+    def health_state(self) -> str:
+        if not self.settings.enabled:
+            return "disabled"
+        if self.is_warming_up():
+            return "warming_up"
+        if self._refresh_in_progress:
+            return "refreshing"
+        if self.is_stale():
+            return "stale"
+        failure_threshold = max(0, int(self.settings.trade_guard_provider_failure_threshold))
+        if failure_threshold > 0:
+            for state in self._provider_status.values():
+                if not bool(state.get("enabled", True)):
+                    continue
+                if int(state.get("consecutive_failures") or 0) >= failure_threshold:
+                    return "degraded"
+        return "ok"
+
+    def is_stale(self) -> bool:
+        stale_seconds = self.staleness_seconds()
+        if stale_seconds is None:
+            return False
+        return stale_seconds > float(self.settings.stale_after_seconds)
 
     def stats(self) -> Dict[str, Any]:
         return build_stats(self)

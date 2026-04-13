@@ -24,10 +24,15 @@ class TradingStateStore:
     """交易运行状态事实源访问层。"""
 
     def __init__(
-        self, db_writer: Any, *, account_alias_getter: Callable[[], str]
+        self,
+        db_writer: Any,
+        *,
+        account_alias_getter: Callable[[], str],
+        account_key_getter: Callable[[], str] | None = None,
     ) -> None:
         self._db = db_writer
         self._account_alias_getter = account_alias_getter
+        self._account_key_getter = account_key_getter or (lambda: "")
         self._position_cache: dict[int, dict[str, Any]] = {}
         self._pending_cache: dict[int, dict[str, Any]] = {}
         self._pending_by_signal: dict[str, set[int]] = {}
@@ -36,6 +41,7 @@ class TradingStateStore:
         account_alias = self._account_alias_getter()
         rows = self._db.fetch_position_runtime_states(
             account_alias=account_alias,
+            account_key=self._account_key_getter(),
             statuses=["open"],
             limit=5000,
         )
@@ -46,6 +52,7 @@ class TradingStateStore:
         }
         pending_rows = self._db.fetch_pending_order_states(
             account_alias=account_alias,
+            account_key=self._account_key_getter(),
             statuses=["placed", "missing"],
             limit=5000,
         )
@@ -60,12 +67,20 @@ class TradingStateStore:
 
     def load_trade_control_state(self) -> Optional[dict[str, Any]]:
         return self._db.fetch_trade_control_state(
-            account_alias=self._account_alias_getter()
+            account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
+        )
+
+    def load_account_risk_state(self) -> Optional[dict[str, Any]]:
+        return self._db.fetch_account_risk_state(
+            account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
         )
 
     def list_active_pending_orders(self) -> list[dict[str, Any]]:
         return self._db.fetch_pending_order_states(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             statuses=["placed"],
             limit=5000,
         )
@@ -78,6 +93,7 @@ class TradingStateStore:
     ) -> list[dict[str, Any]]:
         return self._db.fetch_pending_order_states(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             statuses=statuses,
             limit=limit,
         )
@@ -90,6 +106,7 @@ class TradingStateStore:
     ) -> list[dict[str, Any]]:
         return self._db.fetch_position_runtime_states(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             statuses=statuses,
             limit=limit,
         )
@@ -98,6 +115,7 @@ class TradingStateStore:
         now = self._now()
         record = PendingOrderStateRecord(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             order_ticket=int(info.get("ticket", 0) or 0),
             signal_id=self._str_or_none(info.get("signal_id")),
             request_id=self._str_or_none(info.get("signal_id")),
@@ -196,6 +214,7 @@ class TradingStateStore:
             return
         record = PendingOrderStateRecord(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             order_ticket=order_ticket,
             signal_id=None,
             request_id=None,
@@ -243,6 +262,7 @@ class TradingStateStore:
         now = self._now()
         record = PositionRuntimeStateRecord(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             position_ticket=int(pos.ticket),
             signal_id=self._str_or_none(pos.signal_id),
             order_ticket=(
@@ -290,6 +310,7 @@ class TradingStateStore:
         now = self._now()
         record = PositionRuntimeStateRecord(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             position_ticket=int(pos.ticket),
             signal_id=self._str_or_none(pos.signal_id),
             order_ticket=self._int_or_none(existing.get("order_ticket")),
@@ -328,13 +349,25 @@ class TradingStateStore:
         self._position_cache.pop(int(pos.ticket), None)
 
     def sync_trade_control(self, state: dict[str, Any]) -> None:
+        metadata = {
+            "actor": self._str_or_none(state.get("actor")),
+            "action_id": self._str_or_none(state.get("action_id")),
+            "audit_id": self._str_or_none(state.get("audit_id")),
+            "idempotency_key": self._str_or_none(state.get("idempotency_key")),
+            "request_context": (
+                dict(state.get("request_context"))
+                if isinstance(state.get("request_context"), dict)
+                else {}
+            ),
+        }
         record = TradeControlStateRecord(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             auto_entry_enabled=bool(state.get("auto_entry_enabled", True)),
             close_only_mode=bool(state.get("close_only_mode", False)),
             updated_at=self._datetime_or_none(state.get("updated_at")) or self._now(),
             reason=self._str_or_none(state.get("reason")),
-            metadata={},
+            metadata=metadata,
         )
         self._db.write_trade_control_states([record.to_row()])
 
@@ -348,6 +381,7 @@ class TradingStateStore:
     ) -> dict[str, Any]:
         return dict(
             account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
             order_ticket=int(info.get("ticket", 0) or 0),
             signal_id=self._str_or_none(info.get("signal_id")),
             request_id=self._str_or_none(info.get("signal_id")),
@@ -421,6 +455,7 @@ class TradingStateStore:
     def _cache_pending_record(self, record: PendingOrderStateRecord) -> None:
         self._cache_pending_row(
             {
+                "account_key": record.account_key,
                 "order_ticket": record.order_ticket,
                 "signal_id": record.signal_id,
                 "request_id": record.request_id,
@@ -527,6 +562,7 @@ class TradingStateStore:
     @staticmethod
     def _row_from_position_record(record: PositionRuntimeStateRecord) -> dict[str, Any]:
         return {
+            "account_key": record.account_key,
             "position_ticket": record.position_ticket,
             "signal_id": record.signal_id,
             "order_ticket": record.order_ticket,

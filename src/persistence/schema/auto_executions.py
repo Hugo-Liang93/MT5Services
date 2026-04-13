@@ -11,6 +11,9 @@ DDL = """
 CREATE TABLE IF NOT EXISTS auto_executions (
     executed_at     timestamptz NOT NULL,
     signal_id       text NOT NULL,
+    account_key     text,
+    account_alias   text,
+    intent_id       text,
     symbol          text NOT NULL,
     direction       text NOT NULL
                     CHECK (direction IN ('buy', 'sell')),
@@ -28,18 +31,26 @@ CREATE TABLE IF NOT EXISTS auto_executions (
 );
 SELECT create_hypertable('auto_executions', 'executed_at',
                           if_not_exists => TRUE, migrate_data => TRUE);
+ALTER TABLE auto_executions ADD COLUMN IF NOT EXISTS account_key text;
+ALTER TABLE auto_executions ADD COLUMN IF NOT EXISTS account_alias text;
+ALTER TABLE auto_executions ADD COLUMN IF NOT EXISTS intent_id text;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_exec_signal
 ON auto_executions (signal_id, executed_at ASC);
 CREATE INDEX IF NOT EXISTS idx_auto_exec_symbol
 ON auto_executions (symbol, executed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_auto_exec_success
 ON auto_executions (success, executed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_auto_exec_account
+ON auto_executions (account_key, executed_at DESC);
 """
 
 INSERT_SQL = """
 INSERT INTO auto_executions (
     executed_at,
     signal_id,
+    account_key,
+    account_alias,
+    intent_id,
     symbol,
     direction,
     strategy,
@@ -53,6 +64,6 @@ INSERT INTO auto_executions (
     error_message,
     metadata
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (signal_id, executed_at) DO NOTHING
 """

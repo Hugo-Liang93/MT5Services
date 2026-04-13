@@ -10,6 +10,25 @@ from src.config.models.signal import SignalConfig
 from src.config.utils import get_merged_config
 from src.signals.contracts import normalize_strategy_deployments
 
+_DEPRECATED_ECONOMIC_SIGNAL_KEYS = frozenset(
+    {
+        "economic_filter_enabled",
+        "economic_lookahead_minutes",
+        "economic_lookback_minutes",
+        "economic_importance_min",
+    }
+)
+
+
+def _assert_no_deprecated_signal_keys(signal_section: dict[str, object]) -> None:
+    deprecated = sorted(key for key in signal_section if key in _DEPRECATED_ECONOMIC_SIGNAL_KEYS)
+    if deprecated:
+        raise ValueError(
+            "signal.ini no longer owns economic-event windows. "
+            "Move these keys to economic.ini / EconomicConfig: "
+            + ", ".join(deprecated)
+        )
+
 
 def _resolve_spread_limits(
     signal_section: dict[str, object],
@@ -60,6 +79,36 @@ def _normalize_float_map(
     return normalized
 
 
+def _normalize_int_map(
+    section: dict[str, object],
+    *,
+    key_transform: "Callable[[str], str] | None" = None,
+) -> dict[str, int]:
+    _transform = key_transform if key_transform is not None else (lambda v: v)
+    normalized: dict[str, int] = {}
+    for raw_key, raw_value in section.items():
+        key = str(_transform(str(raw_key).strip()))
+        if not key:
+            continue
+        try:
+            normalized[key] = int(str(raw_value))
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+def _drop_blank_values(section: dict[str, object]) -> dict[str, object]:
+    normalized: dict[str, object] = {}
+    for raw_key, raw_value in section.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        if isinstance(raw_value, str) and raw_value.strip() == "":
+            continue
+        normalized[key] = raw_value
+    return normalized
+
+
 def _normalize_session_map(section: dict[str, object]) -> dict[str, list[str]]:
     normalized: dict[str, list[str]] = {}
     for raw_key, raw_value in section.items():
@@ -78,10 +127,12 @@ def _normalize_session_map(section: dict[str, object]) -> dict[str, list[str]]:
 def get_signal_config() -> SignalConfig:
     merged = get_merged_config("signal.ini")
     signal_section = dict(merged.get("signal", {}))
+    _assert_no_deprecated_signal_keys(signal_section)
     # 空值 → None，遵循 INI 约定：留空 = 不限制（与 risk.ini 加载一致）
     for _optional_key in ("max_concurrent_positions_per_symbol",):
         if str(signal_section.get(_optional_key, "")).strip() == "":
             signal_section[_optional_key] = None
+    signal_section = _drop_blank_values(signal_section)
     preview_section = dict(merged.get("preview", {}))
     regime_section = dict(merged.get("regime", {}))
     voting_section = dict(merged.get("voting", {}))
@@ -91,6 +142,7 @@ def get_signal_config() -> SignalConfig:
     session_spread_limits_section = dict(merged.get("session_spread_limits", {}))
     strategy_sessions_section = dict(merged.get("strategy_sessions", {}))
     strategy_timeframes_section = dict(merged.get("strategy_timeframes", {}))
+    account_bindings: dict[str, list[str]] = {}
     execution_costs_section = dict(merged.get("execution_costs", {}))
     market_structure_section = dict(merged.get("market_structure", {}))
     safety_section = dict(merged.get("safety", {}))
@@ -129,6 +181,14 @@ def get_signal_config() -> SignalConfig:
     chandelier_section = dict(merged.get("chandelier", {}))
     exit_profile_section = dict(merged.get("exit_profile", {}))
     exit_profile_tf_scale_section = dict(merged.get("exit_profile.tf_scale", {}))
+    calibrator_section = _drop_blank_values(calibrator_section)
+    equity_curve_section = _drop_blank_values(equity_curve_section)
+    perf_tracker_section = _drop_blank_values(perf_tracker_section)
+    pnl_circuit_section = _drop_blank_values(pnl_circuit_section)
+    htf_cache_section = _drop_blank_values(htf_cache_section)
+    signal_quality_section = _drop_blank_values(signal_quality_section)
+    htf_alignment_section = _drop_blank_values(htf_alignment_section)
+    chandelier_section = _drop_blank_values(chandelier_section)
 
     # 解析 aggression 覆盖：category__regime = alpha
     chandelier_aggression_overrides: dict[tuple[str, str], float] = {}
@@ -247,6 +307,7 @@ def get_signal_config() -> SignalConfig:
     # ── Regime 检测阈值 ──────────────────────────────────────────────────
     regime_detector_section = dict(merged.get("regime_detector", {}))
     regime_sizing_section = dict(merged.get("regime_sizing", {}))
+    regime_sizing_section = _drop_blank_values(regime_sizing_section)
 
     # ── 策略级可调参数 [strategy_params] + [strategy_params.<TF>] ─────────
     strategy_params_section = dict(merged.get("strategy_params", {}))
@@ -266,6 +327,18 @@ def get_signal_config() -> SignalConfig:
     # Per-TF 策略参数: [strategy_params.M5], [strategy_params.H1] 等
     strategy_params_per_tf: dict[str, dict[str, float]] = {}
     for section_name, section_data in merged.items():
+        if str(section_name).startswith("account_bindings."):
+            account_alias = str(section_name).split(".", 1)[1].strip()
+            if not account_alias:
+                continue
+            strategies = [
+                item.strip()
+                for item in str(dict(section_data).get("strategies", "")).split(",")
+                if item.strip()
+            ]
+            if strategies:
+                account_bindings[account_alias] = strategies
+            continue
         if not section_name.startswith("strategy_params."):
             continue
         tf = section_name[len("strategy_params.") :].strip().upper()
@@ -347,8 +420,11 @@ def get_signal_config() -> SignalConfig:
         else:
             pending_entry_simple[key] = raw_value
 
+    pending_entry_simple = _drop_blank_values(pending_entry_simple)
+
     # ── Intrabar Trading 解析 ────────────────────────────────────────────
     intrabar_trading_section = dict(merged.get("intrabar_trading", {}))
+    intrabar_trading_section = _drop_blank_values(intrabar_trading_section)
     # [intrabar_trading.trigger] 节：parent_tf = trigger_tf
     intrabar_trigger_section = dict(merged.get("intrabar_trading.trigger", {}))
     intrabar_trigger_map: dict[str, str] = {}
@@ -410,16 +486,12 @@ def get_signal_config() -> SignalConfig:
         ),
         "strategy_sessions": _normalize_session_map(strategy_sessions_section),
         "strategy_timeframes": _normalize_session_map(strategy_timeframes_section),
+        "account_bindings": account_bindings,
         "voting_group_configs": voting_group_configs,
         "standalone_override": standalone_override,
         **{f"calibrator_{key}": value for key, value in calibrator_section.items()},
-        "calibrator_recency_hours_by_tf": (
-            {
-                tf.upper(): int(hours)
-                for tf, hours in calibrator_recency_by_tf_section.items()
-            }
-            if calibrator_recency_by_tf_section
-            else {}
+        "calibrator_recency_hours_by_tf": _normalize_int_map(
+            calibrator_recency_by_tf_section, key_transform=lambda tf: tf.upper()
         ),
         **{
             f"equity_curve_filter_{key}": value

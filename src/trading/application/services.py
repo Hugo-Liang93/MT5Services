@@ -29,15 +29,59 @@ class TradingCommandService:
         auto_entry_enabled: Optional[bool] = None,
         close_only_mode: Optional[bool] = None,
         reason: Optional[str] = None,
+        actor: Optional[str] = None,
+        action_id: Optional[str] = None,
+        audit_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        request_context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         return self._module.update_trade_control(
             auto_entry_enabled=auto_entry_enabled,
             close_only_mode=close_only_mode,
             reason=reason,
+            actor=actor,
+            action_id=action_id,
+            audit_id=audit_id,
+            idempotency_key=idempotency_key,
+            request_context=request_context,
         )
 
     def apply_trade_control_state(self, state: dict[str, Any]) -> dict[str, Any]:
         return self._module.apply_trade_control_state(state)
+
+    def record_operator_action(
+        self,
+        *,
+        command_type: str,
+        request_payload: dict[str, Any],
+        response_payload: dict[str, Any],
+        status: str = "success",
+        error_message: Optional[str] = None,
+        operation_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+    ) -> dict[str, Any]:
+        return self._module.record_operator_action(
+            command_type=command_type,
+            request_payload=request_payload,
+            response_payload=response_payload,
+            status=status,
+            error_message=error_message,
+            operation_id=operation_id,
+            symbol=symbol,
+        )
+
+    def find_operator_action_replay(
+        self,
+        *,
+        command_type: str,
+        idempotency_key: Optional[str],
+        request_payload: Optional[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        return self._module.find_operator_action_replay(
+            command_type=command_type,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
 
     def execute_trade(self, **kwargs: Any) -> Any:
         return self._module.execute_trade(**kwargs)
@@ -59,18 +103,49 @@ class TradingCommandService:
         tickets: list[int],
         deviation: int = 20,
         comment: str = "close_batch",
+        *,
+        actor: Optional[str] = None,
+        reason: Optional[str] = None,
+        action_id: Optional[str] = None,
+        audit_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        request_context: Optional[dict[str, Any]] = None,
     ) -> Any:
         return self._module.close_positions_by_tickets(
             tickets=tickets,
             deviation=deviation,
             comment=comment,
+            actor=actor,
+            reason=reason,
+            action_id=action_id,
+            audit_id=audit_id,
+            idempotency_key=idempotency_key,
+            request_context=request_context,
         )
 
     def cancel_orders(self, **kwargs: Any) -> Any:
         return self._module.cancel_orders(**kwargs)
 
-    def cancel_orders_by_tickets(self, tickets: list[int]) -> Any:
-        return self._module.cancel_orders_by_tickets(tickets)
+    def cancel_orders_by_tickets(
+        self,
+        tickets: list[int],
+        *,
+        actor: Optional[str] = None,
+        reason: Optional[str] = None,
+        action_id: Optional[str] = None,
+        audit_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        request_context: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        return self._module.cancel_orders_by_tickets(
+            tickets,
+            actor=actor,
+            reason=reason,
+            action_id=action_id,
+            audit_id=audit_id,
+            idempotency_key=idempotency_key,
+            request_context=request_context,
+        )
 
     def estimate_margin(self, **kwargs: Any) -> Any:
         return self._module.estimate_margin(**kwargs)
@@ -173,6 +248,35 @@ class TradingQueryService:
             command_type=command_type,
             status=status,
             limit=limit,
+        )
+
+    def command_audit_page(
+        self,
+        *,
+        command_type: Optional[str] = None,
+        status: Optional[str] = None,
+        symbol: Optional[str] = None,
+        signal_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        from_time: Optional[Any] = None,
+        to_time: Optional[Any] = None,
+        page: int = 1,
+        page_size: int = 100,
+        sort: str = "recorded_at_desc",
+    ) -> dict[str, Any]:
+        return self._module.command_audit_page(
+            command_type=command_type,
+            status=status,
+            symbol=symbol,
+            signal_id=signal_id,
+            trace_id=trace_id,
+            actor=actor,
+            from_time=from_time,
+            to_time=to_time,
+            page=page,
+            page_size=page_size,
+            sort=sort,
         )
 
     def monitoring_summary(self, *, hours: int = 24) -> dict[str, Any]:

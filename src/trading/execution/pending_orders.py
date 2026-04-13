@@ -639,6 +639,8 @@ def inspect_pending_mt5_order(
 
     if executor.trade_outcome_tracker is not None and signal_id:
         try:
+            runtime_identity = getattr(executor, "runtime_identity", None)
+            metadata = dict(info.get("metadata") or {})
             executor.trade_outcome_tracker.on_trade_opened(
                 signal_id=signal_id,
                 symbol=symbol,
@@ -648,6 +650,11 @@ def inspect_pending_mt5_order(
                 fill_price=fill_price if fill_price > 0 else params.entry_price,
                 confidence=float(info.get("confidence") or 0.0),
                 regime=info.get("regime"),
+                account_key=metadata.get("target_account_key")
+                or getattr(runtime_identity, "account_key", None),
+                account_alias=metadata.get("target_account_alias")
+                or getattr(runtime_identity, "account_alias", None),
+                intent_id=metadata.get("intent_id"),
                 opened_at=opened_at,
             )
         except Exception as exc:

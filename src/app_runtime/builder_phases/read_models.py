@@ -11,6 +11,7 @@ def build_runtime_read_models(container: AppContainer) -> None:
     """Build runtime read-model projections."""
     container.runtime_read_model = RuntimeReadModel(
         health_monitor=container.health_monitor,
+        storage_writer=container.storage_writer,
         ingestor=container.ingestor,
         indicator_manager=container.indicator_manager,
         trading_queries=(
@@ -24,6 +25,8 @@ def build_runtime_read_models(container: AppContainer) -> None:
         trading_state_alerts=container.trading_state_alerts,
         exposure_closeout_controller=container.exposure_closeout_controller,
         runtime_mode_controller=container.runtime_mode_controller,
+        runtime_identity=container.runtime_identity,
+        paper_trading_bridge=container.paper_trading_bridge,
         db_writer=(container.storage_writer.db if container.storage_writer is not None else None),
     )
     if container.storage_writer is not None and container.trade_module is not None:

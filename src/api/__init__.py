@@ -140,44 +140,70 @@ async def api_key_authentication(request: Request, call_next):
 def health(
     service: MarketDataService = Depends(deps.get_market_service),
     trading=Depends(deps.get_trading_query_service),
+    runtime_read_model=Depends(deps.get_runtime_read_model),
 ) -> ApiResponse[dict]:
     try:
         market_status = service.health()
     except MT5MarketError as exc:
         market_status = {"connected": False, "error": str(exc)}
     trading_status = trading.health()
-    queues = deps.get_ingestor().queue_stats()
+    runtime_identity = getattr(runtime_read_model, "runtime_identity", None)
+    is_executor = bool(
+        runtime_identity is not None
+        and getattr(runtime_identity, "instance_role", None) == "executor"
+    )
+    storage_summary = runtime_read_model.storage_summary()
+    queues = (
+        {
+            "summary": storage_summary.get("summary", {}),
+            "threads": storage_summary.get("threads", {}),
+            "role": "executor",
+            "ingestion": "disabled",
+        }
+        if is_executor
+        else deps.get_ingestor().queue_stats()
+    )
+    indicator_summary = runtime_read_model.indicator_summary()
+    signal_summary = runtime_read_model.signal_runtime_summary()
+    executor_summary = runtime_read_model.trade_executor_summary()
+    pending_summary = runtime_read_model.pending_entries_summary()
+    position_summary = runtime_read_model.position_manager_summary()
     runtime_components = {
-        "ingestor": {"running": bool(queues.get("threads", {}).get("ingest_alive", False))},
-        "storage_writer": {"running": bool(queues.get("threads", {}).get("writer_alive", False))},
-        "indicator_engine": _safe_component_snapshot(
-            "indicator_engine",
-            lambda: {
-                "running": bool(
-                    deps.get_indicator_manager().get_performance_stats().get("event_loop_running", False)
-                )
-            },
-        ),
-        "signal_runtime": _safe_component_snapshot(
-            "signal_runtime",
-            lambda: {"running": deps.get_signal_runtime().is_running()},
-        ),
-        "trade_executor": _safe_component_snapshot(
-            "trade_executor",
-            lambda: {"running": deps.get_trade_executor().is_running()},
-        ),
-        "pending_entry_manager": _safe_component_snapshot(
-            "pending_entry_manager",
-            lambda: {"running": deps.get_pending_entry_manager().is_running()},
-        ),
-        "position_manager": _safe_component_snapshot(
-            "position_manager",
-            lambda: {"running": deps.get_position_manager().is_running()},
-        ),
+        "ingestor": {
+            "running": bool(queues.get("threads", {}).get("ingest_alive", False)),
+            "status": "disabled" if is_executor else "enabled",
+        },
+        "storage_writer": {
+            "running": bool(queues.get("threads", {}).get("writer_alive", False)),
+            "status": storage_summary.get("status"),
+        },
+        "indicator_engine": {
+            "running": bool(indicator_summary.get("event_loop_running", False)),
+            "status": indicator_summary.get("status"),
+        },
+        "signal_runtime": {
+            "running": bool(signal_summary.get("running", False)),
+            "status": signal_summary.get("status"),
+        },
+        "trade_executor": {
+            "running": bool(executor_summary.get("enabled", False)),
+            "status": executor_summary.get("status"),
+        },
+        "pending_entry_manager": {
+            "running": pending_summary.get("status") != "critical",
+            "status": pending_summary.get("status"),
+        },
+        "position_manager": {
+            "running": bool(position_summary.get("running", False)),
+            "status": position_summary.get("status"),
+        },
         "economic_calendar": _safe_component_snapshot(
             "economic_calendar",
             lambda: deps.get_economic_calendar_service().stats(),
         ),
+    }
+    validation_sidecars = {
+        "paper_trading": runtime_read_model.paper_trading_summary(),
     }
 
     return ApiResponse(
@@ -187,7 +213,10 @@ def health(
             "market": market_status,
             "trading": trading_status,
             "ingestor": {"queues": queues},
-            "runtime": {"components": runtime_components},
+            "runtime": {
+                "components": runtime_components,
+                "validation_sidecars": validation_sidecars,
+            },
         },
     )
 

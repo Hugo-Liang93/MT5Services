@@ -2,8 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import math
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return normalized.isoformat()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -123,6 +139,6 @@ class SignalRecord:
             self.confidence,
             self.reason,
             list(self.used_indicators),
-            dict(self.indicators_snapshot),
-            dict(self.metadata),
+            _json_safe(dict(self.indicators_snapshot)),
+            _json_safe(dict(self.metadata)),
         )

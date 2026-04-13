@@ -189,7 +189,15 @@ def _render_correlation_result(
 
 
 def main() -> None:
+    from src.config.instance_context import set_current_environment
+
     parser = argparse.ArgumentParser(description="Strategy correlation analysis")
+    parser.add_argument(
+        "--environment",
+        choices=["live", "demo"],
+        required=True,
+        help="显式指定分析使用哪个环境数据库",
+    )
     parser.add_argument(
         "--tf", required=True, help="Timeframe(s), comma-separated"
     )
@@ -208,6 +216,7 @@ def main() -> None:
         help="Weight penalty for correlated strategies (default 0.50)",
     )
     args = parser.parse_args()
+    set_current_environment(args.environment)
 
     from src.backtesting.analysis.correlation import analyze_strategy_correlation
 

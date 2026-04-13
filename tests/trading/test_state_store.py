@@ -12,6 +12,7 @@ class DummyDB:
         self.pending_rows = [
             {
                 "account_alias": "default",
+                "account_key": "live:broker-live:1001",
                 "order_ticket": 7001,
                 "signal_id": "sig-1",
                 "request_id": "sig-1",
@@ -74,7 +75,11 @@ class DummyDB:
 
 def test_trading_state_store_closes_missing_pending_state_when_position_is_recovered() -> None:
     db = DummyDB()
-    store = TradingStateStore(db, account_alias_getter=lambda: "default")
+    store = TradingStateStore(
+        db,
+        account_alias_getter=lambda: "default",
+        account_key_getter=lambda: "live:broker-live:1001",
+    )
     store.warm_start()
 
     pos = TrackedPosition(
@@ -101,8 +106,10 @@ def test_trading_state_store_closes_missing_pending_state_when_position_is_recov
     assert pending_row[1] == 7001
     assert pending_row[25] == 237986634
     assert pending_row[28] == "filled"
+    assert pending_row[33] == "live:broker-live:1001"
 
     assert len(db.position_writes) == 1
     position_row = db.position_writes[0]
     assert position_row[1] == 237986634
     assert position_row[3] == 7001
+    assert position_row[32] == "live:broker-live:1001"
