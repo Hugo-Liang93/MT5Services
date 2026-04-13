@@ -256,6 +256,7 @@ class OperatorCommandConsumer:
                 item,
                 self._command_service.close_position(
                     ticket=payload.get("ticket"),
+                    volume=payload.get("volume"),
                     deviation=int(payload.get("deviation") or 20),
                     comment=str(payload.get("comment") or "close_position"),
                     actor=actor,
@@ -306,6 +307,7 @@ class OperatorCommandConsumer:
                 item,
                 self._command_service.cancel_orders(
                     symbol=payload.get("symbol"),
+                    magic=payload.get("magic"),
                     actor=actor,
                     reason=reason,
                     action_id=action_id,

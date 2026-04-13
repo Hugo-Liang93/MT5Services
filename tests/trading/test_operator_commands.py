@@ -233,3 +233,73 @@ def test_operator_command_consumer_worker_emits_dead_lettered_failure(monkeypatc
     assert received[0].trace_id == "trace-command-dead"
     assert received[0].payload["status"] == "dead_lettered"
     assert received[0].payload["error_code"] == "command_attempts_exhausted"
+
+
+def test_operator_command_consumer_close_position_forwards_volume():
+    captured: dict[str, object] = {}
+
+    class _CommandService:
+        def close_position(self, **kwargs):
+            captured.update(kwargs)
+            return {"accepted": True, "status": "applied", "action_id": kwargs["action_id"]}
+
+    consumer = OperatorCommandConsumer(
+        claim_fn=lambda **kwargs: [],
+        complete_fn=lambda **kwargs: None,
+        runtime_identity=_runtime_identity(),
+        command_service=_CommandService(),
+    )
+
+    response = consumer._execute_command(
+        {
+            "command_id": "command-close-volume",
+            "command_type": "close_position",
+            "action_id": "action-close-volume",
+            "actor": "tester",
+            "reason": "reduce_only",
+            "payload": {
+                "ticket": 101,
+                "volume": 0.12,
+                "deviation": 15,
+                "comment": "partial_close",
+            },
+        }
+    )
+
+    assert captured["ticket"] == 101
+    assert captured["volume"] == 0.12
+    assert response["accepted"] is True
+
+
+def test_operator_command_consumer_cancel_orders_forwards_magic():
+    captured: dict[str, object] = {}
+
+    class _CommandService:
+        def cancel_orders(self, **kwargs):
+            captured.update(kwargs)
+            return {"accepted": True, "status": "applied", "action_id": kwargs["action_id"]}
+
+    consumer = OperatorCommandConsumer(
+        claim_fn=lambda **kwargs: [],
+        complete_fn=lambda **kwargs: None,
+        runtime_identity=_runtime_identity(),
+        command_service=_CommandService(),
+    )
+
+    response = consumer._execute_command(
+        {
+            "command_id": "command-cancel-magic",
+            "command_type": "cancel_orders",
+            "action_id": "action-cancel-magic",
+            "actor": "tester",
+            "reason": "manual_cancel",
+            "payload": {
+                "symbol": "XAUUSD",
+                "magic": 987654,
+            },
+        }
+    )
+
+    assert captured["symbol"] == "XAUUSD"
+    assert captured["magic"] == 987654
+    assert response["accepted"] is True

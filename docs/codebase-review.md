@@ -13,6 +13,9 @@
 
 补充更新（2026-04-13）：
 
+- **交易命令消费者已修复 `close_position.volume` 与 `cancel_orders.magic` 转发缺失**  
+  `OperatorCommandConsumer` 执行 `close_position` 时现已把队列 payload 的 `volume` 原样透传到 `command_service.close_position(...)`，避免“部分平仓请求退化为全平仓”；执行 `cancel_orders` 时也已补传 `magic` 过滤条件，避免“限定策略撤单退化为同品种全撤”。本轮同时新增消费者级回归测试，直接断言上述两个字段会被正确转发，防止后续重构再次回归。
+
 - **`economic_calendar_staleness` 监控阈值已按最快启用的经济日历刷新路径收口**  
   之前 health monitor 固定把 warning 阈值设成 `stale_after_seconds / 2`，在 `release_watch_idle_interval_seconds = 1800`、`stale_after_seconds = 1800` 的配置下，会在服务仍然 `health_state=ok / stale=false` 时提前持续刷 warning。现已改为按“最快启用刷新路径的最大预期间隔”计算 warning 阈值：当前 `calendar_sync=21600 / near_term=0 / release_watch_idle=1800` 时，warning 与 critical 都对齐到 `1800s`，避免 idle release_watch 期间的误报型日志噪音；若未来重新启用 `near_term_sync=900`，warning 也会自动回落到 `900s`。
 
