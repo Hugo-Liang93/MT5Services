@@ -36,12 +36,21 @@
 3. **任何候选必须先过"回测胜率≥挖掘胜率 -10pp"的门槛**才能进 Paper
 4. `--no-filters` 只能诊断过滤链影响，**不能诊断 exit 模型差异**
 
-### 待整改（F-12 跟踪）
+### 待整改（F-12 跟踪）— 2026-04-15 状态
 
-详见 `docs/codebase-review.md #2026-04-15 F-12`：
-- **F-12a**：`DataMatrix.forward_return` 增加 trailing-exit simulated variant
-- **F-12b**：`StrategyCandidateSpec` 加 `exit_model_alignment_score` 字段
-- **F-12c**：回测 CLI 加 `--exit-mode fixed_bars=N` 诊断开关
+- **F-12a** ✅ **已闭环**（commit `cf838d5`）：`DataMatrix` 新增 Triple-Barrier forward_return
+  * `barrier_returns_long` / `barrier_returns_short` 字段，9 组默认 RR 网格
+  * 见 `src/research/core/barrier.py` + `tests/research/test_barrier.py`
+- **F-12b** ✅ **已闭环**（commit `c0c0387`）：策略可声明 `ExitSpec(mode=BARRIER, ...)` 与挖掘 exit 语义对齐
+  * 见 `src/trading/positions/exit_rules.py` `evaluate_barrier_exit()`
+- **F-12c** ⏸️ **推迟至 P3**：Plan B 完成后诊断价值被实质覆盖
+
+### 下次挖掘推荐流程
+
+1. `MiningRunner.run()` 现在会自动填充 `DataMatrix.barrier_returns_*`
+2. 产出 Top Rules 时**同时报告**朴素 forward_return 胜率 + barrier_returns 胜率（选 top-3 RR 组合）
+3. Top candidate 选择时挑"两者都高"的规则 → 天然避开本次 C-1/I-1 这类 exit 不兼容陷阱
+4. 候选编码策略时在 `_exit_spec()` 声明挖掘产出的最优 barrier 参数，回测自动走 barrier 路径
 
 ---
 

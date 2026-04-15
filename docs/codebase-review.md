@@ -1133,23 +1133,58 @@ domain 组件
 - **B 方案 执行**：丢弃 `weak_momentum_sell` + `roc_accel_sell`（回测不成立）；保留 `squeeze_breakout_buy` 进 Paper Trading 实时验证
 - **D 方案 沉淀**（本条目 + `docs/research-system.md` 追加警告）
 
-### 未决工作（Follow-ups）
+### 未决工作（Follow-ups）— 2026-04-15 追踪状态
 
-**F-12a**：`DataMatrix.forward_return` 增加 trailing-exit simulated variant
-- 输入：同样的入场条件 + ATR + 简化 Chandelier（aggression α）
-- 输出：`simulated_exit_return`，与 `forward_return` 并列
-- 预估：1 天
-- 触发条件：下次挖掘前必做，避免再踩此坑
+**F-12a** ✅ **已闭环**（commit `cf838d5`）
+- 新模块 `src/research/core/barrier.py`：BarrierConfig / BarrierOutcome / `compute_barrier_returns()` 三件套，Triple-Barrier (AFML) 实现
+- `DataMatrix` 新增 `barrier_returns_long/short` + `barrier_configs` 字段；9 组默认 RR 网格
+- `build_data_matrix()` 同时填充朴素 forward_return 和 barrier_returns（并列，不替换）
+- 12 个单元测试覆盖 TP/SL/Time 三条 barrier × LONG/SHORT × 边界条件
 
-**F-12b**：`StrategyCandidateSpec` 加字段 `exit_model_alignment_score`
-- 若 `simulated_exit_return` 方向与 forward_return 翻转 → 警告
-- 促使 promotion 决策不依赖单一度量
+**F-12b** ✅ **已闭环**（commit `c0c0387`）
+- `ExitSpec` 新增 `mode` 枚举（CHANDELIER/BARRIER）+ `time_bars` 字段
+- BARRIER 模式构造时硬校验 sl_atr/tp_atr/time_bars 齐全 >0
+- 新增 `evaluate_barrier_exit()` 纯 TP/SL/Time 分派（不走 trailing/breakeven/signal reversal）
+- `evaluate_exit()` 入口按 `exit_spec["mode"]` 分派；`atr_at_entry` 参数传通
+- `PositionManager._evaluate_chandelier_exit()` 透传 `pos.atr_at_entry` 给引擎
+- 14 个测试覆盖 ExitSpec 校验 + 分派正确性 + 向后兼容
 
-**F-12c**：回测 CLI 加 `--exit-mode fixed_bars=N` 选项作为诊断工具
-- 允许关闭 Chandelier 用固定 N bar 强平对齐挖掘
-- 单次开发，复用
+**F-12c** ⏸️ **推迟**
+- 原设想：回测 CLI 加 `--exit-mode fixed_bars=N` 诊断开关
+- 重新评估：Plan B 完成后策略可在 `_exit_spec()` 直接声明 `ExitSpec(mode=BARRIER, ...)`，回测会自动走 barrier 路径——**F-12c 的诊断价值被 Plan B 实质覆盖**
+- 保留标记但优先级降为 P3：仅在未来需要"同一策略用两套 exit 对比"时再实现
+
+### 与下次挖掘接入
+
+挖掘侧（`MiningRunner` 产出）应**同时报告**：
+- 朴素 forward_return[h] 胜率（现状）
+- barrier_returns[(sl, tp, time)] 胜率（新增，选 top-3 组合）
+
+Top candidate 选择时应挑**两者都高**的规则——这就是本条目最初建议的 `exit_model_alignment_score` 的实操化表达（不需要单独存 score，直接在 candidate 产出里并列两组数据供决策）。
 
 ### 边界泄漏角度
 
-本次改动**删除了失败策略**（不打补丁保留）+ **保留幸存策略 + 记 3 项 follow-up**。未决兼容项：F-12a/b/c 建议下次挖掘前优先完成。
+- 本次改动**不打补丁**：barrier 是独立分派分支，Chandelier 代码零改动
+- **向后兼容**：老策略不声明 mode = 默认 CHANDELIER，行为 0 变化
+- **职责清晰**：挖掘只负责给出"多种 exit 假设下的候选"；策略自行在 `_exit_spec()` 声明实际使用的 exit；exit 引擎按 mode 分派
+- 未决兼容项：无（F-12c 可选）
+
+---
+
+## 2026-04-15 Plan C 管理层提醒：squeeze_breakout_buy Paper Trading 观察窗口
+
+**状态**：`squeeze_breakout_buy` 策略已 paper_only 部署（commit `1dc33bd`），绑定 live-exec-a + demo-main。
+
+**数据累积目标**：1-2 周运行，累计 ≥20 笔 paper 交易
+
+**判定标准**（达成后决策是否晋升 active_guarded）：
+- Paper WR ≥ 挖掘预期 - 10pp（即 ≥ 50%）
+- Paper PF ≥ 1.15（与回测 PF=1.23 一致性）
+- MaxDD < 账户 5%
+
+**到时行动**：
+- 达标 → `signal.ini [strategy_deployment.structured_squeeze_breakout_buy] status = active_guarded`
+- 不达标 → 复用 Plan A barrier_returns 重新挖 H1 BUY ranging 信号，换规则
+
+**不需要**本会话处理，等时间到 + 用户发起检视即可。
 
