@@ -1093,3 +1093,63 @@ domain 组件
 
 本次改动**仅新增工作流纪律**，不触碰代码与架构；作用是降低"凭片段下结论"导致的误导成本（用户时间 / 不必要的改动 / 产生补丁式修复）。未决兼容项：无。
 
+---
+
+## 2026-04-15 F-12：挖掘 forward_return 与回测 Chandelier Exit 的语义鸿沟
+
+### 事件经过
+
+按用户要求做首轮策略挖掘。挖掘工具（`src/ops/cli/mining_runner.py`）对 6 个月 XAUUSD/4TF 数据跑出 15 条 top rules。挑选 3 条 top candidates 编码为 `StructuredStrategyBase` 子类并回测：
+
+| 策略 | 挖掘训练集 | 挖掘测试集 | 回测（原）| 回测（--no-filters）|
+|---|---|---|---|---|
+| weak_momentum_sell (M15 SELL) | 63.5% / n=7286 | 62.3% / n=2829 | 4 / 75% / PF 0.98 | **94 / 17% / PF 0.04** |
+| roc_accel_sell (M30 SELL) | 58.4% / n=1823 | 60.8% / n=561 | 8 / 12.5% / PF 0.08 | **45 / 24% / PF 0.09** |
+| squeeze_breakout_buy (H1 BUY) | 72.0% / n=164 | 60.4% / n=53 | 12 / 75% / PF 1.15 | 12 / 75% / PF 1.23 |
+
+### 根因
+
+`MiningRunner` 的 `DataMatrix.forward_return` 定义为"入场后 **N bar** (3/5/10) 的收盘价相对入场价收益"——**短期定点观测**。
+
+回测引擎（`src/backtesting/engine/runner.py`）用 `PositionManager + Chandelier Exit`：
+- trailing stop
+- regime-based exit
+- signal reversal exit
+- EOD close
+- 平均持仓周期 20-50 bar
+
+同一入场条件下，**短期 forward_return 胜率与长期 trailing-exit 胜率几乎无相关性**。这解释了为什么 M15/M30 两个挖掘预期 60%+ 的规则在真实 exit 下胜率只剩 17% / 24%。
+
+唯一幸存的 squeeze_breakout_buy 是因为"盘整末期→趋势突破"的信号类型**天然契合 trailing exit**——突破起爆后趋势延续，trail 跟随；没翻转则 trail 持续收紧至 SL。
+
+### 暴露的真实问题
+
+1. **Research 模块的 forward_return 太朴素**：只测"等 N bar 再看"，不测"假设用实际 exit 模型退出的 return"
+2. **候选晋升路径缺验证关**：`StrategyCandidateSpec.promotion_decision` 只看 IC/hit_rate/robustness_tier，没有内建"跟实盘 exit 对齐"的检查
+3. **`--no-filters` 不是完整诊断开关**：过滤链可关，但 exit 模型无法在回测 CLI 里关掉
+
+### 本次处置
+
+- **B 方案 执行**：丢弃 `weak_momentum_sell` + `roc_accel_sell`（回测不成立）；保留 `squeeze_breakout_buy` 进 Paper Trading 实时验证
+- **D 方案 沉淀**（本条目 + `docs/research-system.md` 追加警告）
+
+### 未决工作（Follow-ups）
+
+**F-12a**：`DataMatrix.forward_return` 增加 trailing-exit simulated variant
+- 输入：同样的入场条件 + ATR + 简化 Chandelier（aggression α）
+- 输出：`simulated_exit_return`，与 `forward_return` 并列
+- 预估：1 天
+- 触发条件：下次挖掘前必做，避免再踩此坑
+
+**F-12b**：`StrategyCandidateSpec` 加字段 `exit_model_alignment_score`
+- 若 `simulated_exit_return` 方向与 forward_return 翻转 → 警告
+- 促使 promotion 决策不依赖单一度量
+
+**F-12c**：回测 CLI 加 `--exit-mode fixed_bars=N` 选项作为诊断工具
+- 允许关闭 Chandelier 用固定 N bar 强平对齐挖掘
+- 单次开发，复用
+
+### 边界泄漏角度
+
+本次改动**删除了失败策略**（不打补丁保留）+ **保留幸存策略 + 记 3 项 follow-up**。未决兼容项：F-12a/b/c 建议下次挖掘前优先完成。
+

@@ -6,6 +6,45 @@
 
 ---
 
+## ⚠️ 重要警告（2026-04-15 教训）：forward_return 与实盘 exit 的鸿沟
+
+**MiningRunner 的 `DataMatrix.forward_return` 只测"入场后 N bar (3/5/10) 收盘价相对入场价收益"——短期定点观测**。
+
+**回测引擎和实盘用 Chandelier Exit + trailing + regime exit + signal reversal + EOD close，平均持仓周期 20-50 bar**。
+
+**同一入场条件下，短期 forward_return 胜率与长期 trailing-exit 胜率几乎无相关性**。
+
+### 血的教训
+
+2026-04-15 首轮挖掘，选 3 条 top rules 编码为策略回测：
+
+| 策略 | 挖掘预期 | 回测实际 |
+|---|---|---|
+| weak_momentum_sell M15 | 63% / n=2829 | **17% / PF 0.04** |
+| roc_accel_sell M30 | 61% / n=561 | **24% / PF 0.09** |
+| squeeze_breakout_buy H1 | 60% / n=53 | **75% / PF 1.23** ✅ |
+
+前两条完全失败，只有"盘整末期→趋势突破"类型（天然契合 trailing）幸存。
+
+### 挖掘候选的正确使用姿势
+
+1. **挖掘分数只是"入场条件质量"的粗筛**，不是策略质量保证
+2. 候选规则必须**匹配 exit 模型才考虑编码**：
+   - 反转/回吐类（短持仓）→ 挖掘短 forward_return 可近似成立
+   - 突破/趋势类（长持仓）→ 挖掘与 trailing exit 天然契合
+   - 情境类（条件持续几 bar 就失效）→ 挖掘评分无参考价值
+3. **任何候选必须先过"回测胜率≥挖掘胜率 -10pp"的门槛**才能进 Paper
+4. `--no-filters` 只能诊断过滤链影响，**不能诊断 exit 模型差异**
+
+### 待整改（F-12 跟踪）
+
+详见 `docs/codebase-review.md #2026-04-15 F-12`：
+- **F-12a**：`DataMatrix.forward_return` 增加 trailing-exit simulated variant
+- **F-12b**：`StrategyCandidateSpec` 加 `exit_model_alignment_score` 字段
+- **F-12c**：回测 CLI 加 `--exit-mode fixed_bars=N` 诊断开关
+
+---
+
 ## 系统定位
 
 ```

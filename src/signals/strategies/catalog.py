@@ -11,6 +11,7 @@ from .structured import (
     StructuredLowbarEntry,
     StructuredRangeReversion,
     StructuredSessionBreakout,
+    StructuredSqueezeBreakoutBuy,
     StructuredSweepReversal,
     StructuredTrendContinuation,
     StructuredTrendlineTouch,
@@ -33,6 +34,9 @@ def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
         StructuredSessionBreakout(),
         StructuredTrendlineTouch(),
         StructuredLowbarEntry(),
+        # 2026-04-15 mining: squeeze_breakout_buy 通过回测验证（PF=1.23/WR=75%），paper_only
+        # 同批的 weak_momentum_sell / roc_accel_sell 回测失败（exit 模型与挖掘不兼容），已删除
+        StructuredSqueezeBreakoutBuy(),
     )
 
 
