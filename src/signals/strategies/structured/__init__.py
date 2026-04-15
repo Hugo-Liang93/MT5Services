@@ -15,7 +15,6 @@ from .range_reversion import StructuredRangeReversion
 from .session_breakout import StructuredSessionBreakout
 from .trendline_touch import StructuredTrendlineTouch
 from .lowbar_entry import StructuredLowbarEntry
-from .squeeze_breakout_buy import StructuredSqueezeBreakoutBuy
 
 __all__ = [
     "BEARISH_BIASES",
@@ -33,5 +32,4 @@ __all__ = [
     "StructuredSessionBreakout",
     "StructuredTrendlineTouch",
     "StructuredLowbarEntry",
-    "StructuredSqueezeBreakoutBuy",
 ]
