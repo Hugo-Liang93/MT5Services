@@ -40,6 +40,20 @@
   - 提供一句“本次改动如何减少边界泄漏”的说明
   - 标注未决兼容项及移除时间点
 
+### 断言核验协议（P0/FATAL 断言的硬门槛）
+
+任何 "X 默认禁用 / 未接入 / 从未被调用 / 是 bug" 的断言，**写下前必须完成 3 步追查**：
+
+1. **追模型默认值**：`grep <field> src/config/models/` — Pydantic/dataclass 默认值是 Source of Truth，**不是 ini 字面值**。ini 里 `key=` 空白常被 `_drop_blank_values()` 剥离，Pydantic 默认生效。
+2. **追 loader normalize 逻辑**：`grep "_drop_blank_values\|_normalize" src/config/` — 确认空值/缺失如何被处理。
+3. **追全 src 调用点**：`grep -rn <method_name> src/` — 不能只看单个模块的片段，必须确认是否存在跨模块调用链。
+
+**任一步未完成 → 只能写"疑似"，不得标 P0/FATAL**。
+
+子代理（Agent/Explore）返回的 "FATAL/P0" 结论**同样需本主线完成 3 步核验后才能采纳**。历史教训：子代理单次扫描常在文件片段停步，跨模块保护（Pydantic 默认、normalize、setter 注入）看不到，由此产生的误报会误导用户。
+
+任何"反常/存在 bug"的代码片段，先读相邻 ADR（`docs/design/adr.md`）——若该片段对应已定决策（如 ADR-005 超时保留引用），不是 bug 而是契约。
+
 ---
 
 ## 项目概览

@@ -1051,3 +1051,45 @@ domain 组件
 **待整改**：改为 `def create_app() → FastAPI` 工厂函数，路由动态注册。
 
 **预估**：1-2 天。**触发条件**：API 层下次重构或启动性能优化时做。
+
+---
+
+## 2026-04-15 断言核验协议确立 + 累计误报教训
+
+### 背景
+
+2026-04-13~15 在 "架构审计 + 数据流/风控量化评审" 两轮审查中，累计识别 **9 处误报**（前轮 6 处 + 本轮 3 处自生 surface-read 误读），其中多条被初次标记为 "P0/FATAL" 的断言经核验后完全不成立。为避免未来重蹈覆辙，沉淀为硬纪律写入 `CLAUDE.md §12`。
+
+### 9 处误报清单
+
+| # | 误报断言 | 真实情况 | 识别途径 |
+|---|---|---|---|
+| 1 | `compute_breakeven_sl` 分母为零 | 外部零调用，内部入口守卫 | grep 全 src 无外部调用 |
+| 2 | PendingEntryManager 双线程竞态 | shutdown 用 stop_event 协调，设计正确 | 读完整 lifecycle 代码 |
+| 3 | `OwnedThreadLifecycle.wait_previous` 线程泄漏 | **反向理解 ADR-005**：超时保留引用是契约 | 读 ADR-005 |
+| 4 | `modify_sl` 先赋值后调用 | 实际顺序是 API 调用 + 校验通过后才赋值 | 细读函数体 |
+| 5 | `_INSTANCE_SCOPED_CONFIGS` 漏加 topology.ini | topology.ini 是全局拓扑不应实例级覆盖 | 理解语义边界 |
+| 6 | supervisor 'restart_count 临时累加' 是补丁 | 合法的指数回退累加 | 完整读循环逻辑 |
+| 7 | **DailyLossLimit 未接入 auto-trade** | `trading_service.open_trade()` 内调用 `enforce_trade_allowed` | grep 调用链 |
+| 8 | **`TradeFrequency.record_trade()` 从未被调用** | `trading_service.py:377` 调用 `record_trade_execution` → rule.record_trade | grep 全 src |
+| 9 | **PnL 熔断器 `enabled=` 空→默认禁用** | `_drop_blank_values` 剥离空值，Pydantic 默认 enabled=True | 追 config loader |
+
+### 共同模式
+
+**停在"看到代码片段像有 bug"就下结论，没走完追查闭环**：
+- Agent 子代理：单文件片段扫描，看不到跨模块保护（Pydantic 默认 / normalize / setter 注入）
+- 主线（我）：看 ini 字面值就判断默认，没追 config loader 的 normalize
+
+### 硬纪律（已写入 `CLAUDE.md §12`）
+
+断言核验协议：任何 "X 默认禁用 / 未接入 / 从未被调用 / 是 bug" 的断言，写下前必须完成 3 步：
+1. 追 Pydantic/dataclass 模型默认值（`src/config/models/`）
+2. 追 loader normalize 逻辑（`_drop_blank_values` / `_normalize_*`）
+3. 追全 src 调用点（`grep -rn <name> src/`）
+
+任一步未完成 → 只能写"疑似"，不得标 P0/FATAL。子代理返回的"FATAL"结论同样需主线 3 步核验后采纳。
+
+### 边界泄漏角度
+
+本次改动**仅新增工作流纪律**，不触碰代码与架构；作用是降低"凭片段下结论"导致的误导成本（用户时间 / 不必要的改动 / 产生补丁式修复）。未决兼容项：无。
+
