@@ -272,6 +272,11 @@ class PositionManager:
             ),
             current_price=current_price,
         )
+        # Chandelier Exit 基线：initial_stop_loss 与 initial_risk 必须在开仓时确定，
+        # 后续 trailing / breakeven / lock profit / signal reversal 等规则都依赖此基线。
+        # 缺失时 _evaluate_chandelier_exit() 会直接 return None，监控将完全失效。
+        pos.initial_stop_loss = float(params.stop_loss)
+        pos.initial_risk = abs(pos.entry_price - pos.initial_stop_loss)
         # 计算入场 SL ATR 倍数（用于 Chandelier R 单位保护约束）
         if params.atr_value > 0 and params.sl_distance > 0:
             pos.sl_atr_mult = round(params.sl_distance / params.atr_value, 4)

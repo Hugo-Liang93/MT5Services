@@ -135,7 +135,7 @@ class TestHTFInjectionPerformance:
 
     def test_resolve_htf_1000_iterations(self):
         """1000 次 HTF 解析应在 100ms 内完成。"""
-from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
+        from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
         class DummySource:
             snapshot_listeners = []
@@ -196,7 +196,7 @@ class TestIntrabarDecay:
 
     def test_decay_factor_clamped(self):
         """衰减因子不应大于 1.0。"""
-from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
+        from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
         class DummySource:
             snapshot_listeners = []

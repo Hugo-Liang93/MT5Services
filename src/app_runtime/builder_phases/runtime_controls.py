@@ -330,9 +330,13 @@ def build_runtime_component_registry(
         tracker = c.paper_trade_tracker
         if bridge is None:
             return
+        # 顺序关键：先 bridge.start() 创建 session，再 tracker.start() 触发
+        # 立即 flush 把初始 session 写 DB，避免 30s flush 窗口内崩溃丢失起始记录。
+        # bridge 构造时已注入 on_trade_opened/closed 回调，tracker 未启动前产生的 trade
+        # 会先入 tracker 内部 pending 队列，等 tracker.start() 后由 flush loop 刷出。
+        bridge.start()
         if tracker is not None:
             tracker.start()
-        bridge.start()
 
     def _stop_paper_trading(c: AppContainer) -> None:
         bridge = c.paper_trading_bridge

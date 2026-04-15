@@ -13,6 +13,7 @@ _INSTANCE_SCOPED_CONFIGS = {
     "market.ini",
     "mt5.ini",
     "risk.ini",
+    "exit.ini",
 }
 
 

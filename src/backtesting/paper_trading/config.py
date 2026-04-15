@@ -58,6 +58,10 @@ class PaperTradingConfig:
     persist_enabled: bool = True
     persist_flush_interval: float = 30.0
 
+    # 进程重启恢复：启用后 bridge.start() 检测到上次未 stop 的 session 会复用 session_id
+    # 并从 DB 恢复 open trades。保持默认关闭以免测试环境意外 inherit 老数据。
+    resume_active_session: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（用于 session config snapshot）。"""
         return {
@@ -85,7 +89,7 @@ def load_paper_trading_config() -> PaperTradingConfig:
 
     _BOOL_FIELDS = {
         "enabled", "end_of_day_close_enabled", "trailing_tp_enabled",
-        "persist_enabled",
+        "persist_enabled", "resume_active_session",
     }
     _INT_FIELDS = {"max_positions", "end_of_day_close_hour_utc"}
     _FLOAT_FIELDS = {

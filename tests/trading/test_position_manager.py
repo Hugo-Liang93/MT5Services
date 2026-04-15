@@ -393,3 +393,137 @@ def test_position_manager_keeps_eod_gate_and_retries_when_orders_remain() -> Non
     assert manager.status()["last_end_of_day_gate_date"] == "2026-03-20"
     assert manager.status()["last_end_of_day_close_date"] is None
     assert trading.cancel_calls == [[77], [77]]
+
+
+def test_track_position_initializes_chandelier_baseline() -> None:
+    """track_position() 必须在入场时设定 initial_stop_loss 与 initial_risk。
+
+    这是 Chandelier Exit 的硬前置：_evaluate_chandelier_exit() 在 initial_risk <= 0
+    时直接 return None，导致 trailing / breakeven / lock profit / signal reversal /
+    timeout / hard TP cap 全部失效。禁止这些字段回归为默认 0.0。
+    """
+    trading = DummyTradingModule(positions=[])
+    manager = _manager(trading)
+    pos = manager.track_position(
+        ticket=501,
+        signal_id="sig-baseline",
+        symbol="XAUUSD",
+        action="buy",
+        params=TradeParameters(
+            entry_price=3000.0,
+            stop_loss=2988.0,
+            take_profit=3024.0,
+            position_size=0.1,
+            atr_value=6.0,
+            risk_reward_ratio=2.0,
+            sl_distance=12.0,
+            tp_distance=24.0,
+        ),
+    )
+
+    assert pos.initial_stop_loss == 2988.0
+    assert pos.initial_risk == 12.0
+    # fill_price 优先于 params.entry_price
+    pos_fill = manager.track_position(
+        ticket=502,
+        signal_id="sig-baseline-fill",
+        symbol="XAUUSD",
+        action="sell",
+        params=TradeParameters(
+            entry_price=3000.0,
+            stop_loss=3012.0,
+            take_profit=2976.0,
+            position_size=0.1,
+            atr_value=6.0,
+            risk_reward_ratio=2.0,
+            sl_distance=12.0,
+            tp_distance=24.0,
+        ),
+        fill_price=3001.5,
+    )
+    assert pos_fill.initial_stop_loss == 3012.0
+    assert pos_fill.initial_risk == 10.5
+
+
+def test_sync_open_positions_restores_initial_risk_from_persisted_state() -> None:
+    """恢复路径：优先使用持久化的 initial_stop_loss，否则 fallback 当前 SL。"""
+    trading = DummyTradingModule(
+        positions=[
+            SimpleNamespace(
+                ticket=601,
+                symbol="XAUUSD",
+                volume=0.1,
+                price_open=3000.0,
+                sl=2995.0,  # 当前 SL 已经 trail 过
+                tp=3020.0,
+                time=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                type=0,
+                comment="auto:sma:buy",
+            )
+        ]
+    )
+    manager = _manager(trading)
+    manager.set_recovery_hooks(
+        position_context_resolver=lambda ticket, comment: {
+            "signal_id": "sig-restored",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "confidence": 0.8,
+            "regime": "trend",
+            "fill_price": 3000.0,
+            "atr_at_entry": 4.0,
+            "comment": comment,
+            "source": "audit_recovery",
+        },
+        position_state_resolver=lambda ticket: {
+            "initial_stop_loss": 2988.0,  # 持久化的入场 SL
+        },
+    )
+
+    result = manager.sync_open_positions()
+    assert result["synced"] == 1
+
+    pos = manager._positions[601]
+    # initial_stop_loss 用持久化值（不是当前已 trail 过的 2995.0）
+    assert pos.initial_stop_loss == 2988.0
+    assert pos.initial_risk == 12.0  # 3000 - 2988
+
+
+def test_sync_open_positions_falls_back_to_current_sl_when_unpersisted() -> None:
+    """恢复路径 fallback：没有持久化 initial_stop_loss 时用当前 SL 近似。"""
+    trading = DummyTradingModule(
+        positions=[
+            SimpleNamespace(
+                ticket=602,
+                symbol="XAUUSD",
+                volume=0.1,
+                price_open=3000.0,
+                sl=2992.0,
+                tp=3020.0,
+                time=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                type=0,
+                comment="auto:sma:buy",
+            )
+        ]
+    )
+    manager = _manager(trading)
+    manager.set_recovery_hooks(
+        position_context_resolver=lambda ticket, comment: {
+            "signal_id": "sig-legacy",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "fill_price": 3000.0,
+            "atr_at_entry": 4.0,
+            "comment": comment,
+            "source": "audit_recovery",
+        },
+        # 没有 position_state_resolver → 模拟历史持仓未持久化
+    )
+
+    result = manager.sync_open_positions()
+    assert result["synced"] == 1
+
+    pos = manager._positions[602]
+    # fallback 到当前 SL 作为近似 baseline
+    assert pos.initial_stop_loss == 2992.0
+    assert pos.initial_risk == 8.0  # 3000 - 2992

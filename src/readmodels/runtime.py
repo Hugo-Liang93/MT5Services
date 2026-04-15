@@ -844,8 +844,12 @@ class RuntimeReadModel:
     def pending_entries_summary(self) -> dict[str, Any]:
         if self._pending_entry_manager is None:
             if self._shared_compute_main_without_local_execution():
+                # multi_account main 不本地执行，委托给 workers。
+                # status="disabled" 保留是为了兼容旧前端；state="delegated" 明确语义，
+                # 告诉 dashboard/监控这不是故障而是拓扑正确行为。
                 return {
                     "status": "disabled",
+                    "state": "delegated",
                     "configured": False,
                     "running": False,
                     "active_count": 0,
@@ -873,8 +877,10 @@ class RuntimeReadModel:
     def trade_executor_summary(self) -> dict[str, Any]:
         if self._trade_executor is None:
             if self._shared_compute_main_without_local_execution():
+                # 见 pending_entries_summary 注释
                 return {
                     "status": "disabled",
+                    "state": "delegated",
                     "configured": False,
                     "armed": False,
                     "running": False,
@@ -927,8 +933,10 @@ class RuntimeReadModel:
     def position_manager_summary(self) -> dict[str, Any]:
         if self._position_manager is None:
             if self._shared_compute_main_without_local_execution():
+                # 见 pending_entries_summary 注释
                 return {
                     "status": "disabled",
+                    "state": "delegated",
                     "configured": False,
                     "running": False,
                     "tracked_positions": 0,

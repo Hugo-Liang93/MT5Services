@@ -193,12 +193,37 @@ def _normalize_session_map(section: dict[str, object]) -> dict[str, list[str]]:
     return normalized
 
 
+_EXIT_SECTIONS_MOVED_TO_EXIT_INI = (
+    "chandelier",
+    "exit_profile",
+    "exit_profile.tf_scale",
+)
+
+
+def _assert_exit_sections_moved(merged: dict[str, object]) -> None:
+    """Chandelier / exit_profile 配置已拆出到 config/exit.ini（支持实例级覆盖）。
+
+    若 signal.ini 仍残留这些 section，必须 fail-fast 要求迁移，避免运行时
+    读到半份配置且下游无感知的隐性故障。
+    """
+    stray = [name for name in _EXIT_SECTIONS_MOVED_TO_EXIT_INI if name in merged]
+    if stray:
+        raise ValueError(
+            "signal.ini no longer owns Chandelier/exit-profile sections. "
+            "Move these sections to config/exit.ini (now in _INSTANCE_SCOPED_CONFIGS, "
+            "supports instance-level overrides via config/instances/<name>/exit.ini): "
+            + ", ".join(stray)
+        )
+
+
 @lru_cache
 def get_signal_config() -> SignalConfig:
     merged = get_merged_config("signal.ini")
+    exit_merged = get_merged_config("exit.ini")
     signal_section = dict(merged.get("signal", {}))
     _assert_no_deprecated_signal_keys(signal_section)
     _assert_no_vote_configuration(merged, signal_section)
+    _assert_exit_sections_moved(merged)
     # 空值 → None，遵循 INI 约定：留空 = 不限制（与 risk.ini 加载一致）
     for _optional_key in ("max_concurrent_positions_per_symbol",):
         if str(signal_section.get(_optional_key, "")).strip() == "":
@@ -246,9 +271,10 @@ def get_signal_config() -> SignalConfig:
                 }
 
     # ── Chandelier Exit 配置 ──────────────────────────────────────────────
-    chandelier_section = dict(merged.get("chandelier", {}))
-    exit_profile_section = dict(merged.get("exit_profile", {}))
-    exit_profile_tf_scale_section = dict(merged.get("exit_profile.tf_scale", {}))
+    # 读取来源：config/exit.ini（支持 config/instances/<name>/exit.ini 实例级覆盖）
+    chandelier_section = dict(exit_merged.get("chandelier", {}))
+    exit_profile_section = dict(exit_merged.get("exit_profile", {}))
+    exit_profile_tf_scale_section = dict(exit_merged.get("exit_profile.tf_scale", {}))
     calibrator_section = _drop_blank_values(calibrator_section)
     equity_curve_section = _drop_blank_values(equity_curve_section)
     perf_tracker_section = _drop_blank_values(perf_tracker_section)

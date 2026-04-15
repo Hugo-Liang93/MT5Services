@@ -376,3 +376,100 @@ def test_resolve_instance_scoped_dir_appends_instance_name() -> None:
         assert resolve_instance_scoped_dir(Path("data") / "logs") == Path("data") / "logs" / "live-main"
     finally:
         set_current_instance_name(None)
+
+
+def test_load_config_with_base_applies_instance_exit_overrides(tmp_path) -> None:
+    """exit.ini 支持实例级覆盖：允许不同实例使用不同 Chandelier/出场参数。"""
+    _write(
+        tmp_path / "config" / "exit.ini",
+        """
+[chandelier]
+regime_aware = true
+default_alpha = 0.50
+max_tp_r = 5.0
+
+[exit_profile]
+trend__trending = 0.85
+reversion__ranging = 0.80
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "instances" / "live-exec-a" / "exit.ini",
+        """
+[chandelier]
+default_alpha = 0.70
+
+[exit_profile]
+trend__trending = 0.90
+""".strip(),
+    )
+
+    path, parser = load_config_with_base(
+        "exit.ini",
+        base_dir=str(tmp_path),
+        instance_name="live-exec-a",
+    )
+
+    assert path is not None
+    assert parser is not None
+    # 实例级覆盖生效
+    assert parser["chandelier"]["default_alpha"] == "0.70"
+    assert parser["exit_profile"]["trend__trending"] == "0.90"
+    # 未覆盖的 key 继承全局值
+    assert parser["chandelier"]["regime_aware"] == "true"
+    assert parser["chandelier"]["max_tp_r"] == "5.0"
+    assert parser["exit_profile"]["reversion__ranging"] == "0.80"
+    # provenance 正确指向实例级 exit.ini
+    assert (
+        get_merged_option_source(
+            "exit.ini",
+            "chandelier",
+            "default_alpha",
+            base_dir=str(tmp_path),
+            instance_name="live-exec-a",
+        )
+        == "instances/live-exec-a/exit.ini[chandelier].default_alpha"
+    )
+    # 未覆盖的 key provenance 指向全局文件
+    assert (
+        get_merged_option_source(
+            "exit.ini",
+            "chandelier",
+            "regime_aware",
+            base_dir=str(tmp_path),
+            instance_name="live-exec-a",
+        )
+        == "exit.ini[chandelier].regime_aware"
+    )
+
+
+def test_load_config_with_base_instance_exit_local_has_highest_priority(tmp_path) -> None:
+    """exit.local.ini（实例级）覆盖优先级最高。"""
+    _write(
+        tmp_path / "config" / "exit.ini",
+        """
+[chandelier]
+default_alpha = 0.50
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "instances" / "live-exec-a" / "exit.ini",
+        """
+[chandelier]
+default_alpha = 0.70
+""".strip(),
+    )
+    _write(
+        tmp_path / "config" / "instances" / "live-exec-a" / "exit.local.ini",
+        """
+[chandelier]
+default_alpha = 0.85
+""".strip(),
+    )
+
+    _, parser = load_config_with_base(
+        "exit.ini",
+        base_dir=str(tmp_path),
+        instance_name="live-exec-a",
+    )
+    assert parser["chandelier"]["default_alpha"] == "0.85"

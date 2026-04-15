@@ -153,3 +153,91 @@ def test_signal_config_rejects_deprecated_economic_signal_keys(monkeypatch):
             signal_config.get_signal_config()
     finally:
         signal_config.get_signal_config.cache_clear()
+
+
+def test_signal_config_loads_chandelier_from_exit_ini(monkeypatch):
+    """Chandelier/exit_profile 配置从 exit.ini 读取（而非 signal.ini）。"""
+    configs = {
+        "signal.ini": {
+            "signal": {"auto_trade_enabled": "false"},
+        },
+        "exit.ini": {
+            "chandelier": {
+                "regime_aware": "true",
+                "default_alpha": "0.70",
+                "max_tp_r": "4.5",
+                "timeout_bars": "12",
+            },
+            "exit_profile": {
+                "trend__trending": "0.90",
+                "reversion__ranging": "0.75",
+            },
+            "exit_profile.tf_scale": {
+                "M15": "1.15",
+                "H1": "0.95",
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        signal_config, "get_merged_config", lambda name: configs.get(name, {})
+    )
+    signal_config.get_signal_config.cache_clear()
+    try:
+        cfg = signal_config.get_signal_config()
+    finally:
+        signal_config.get_signal_config.cache_clear()
+
+    # 来自 exit.ini [chandelier]
+    assert cfg.chandelier_regime_aware is True
+    assert cfg.chandelier_default_alpha == 0.70
+    assert cfg.chandelier_max_tp_r == 4.5
+    assert cfg.chandelier_timeout_bars == 12
+    # 来自 exit.ini [exit_profile] → aggression_overrides
+    assert cfg.chandelier_aggression_overrides[("trend", "trending")] == 0.90
+    assert cfg.chandelier_aggression_overrides[("reversion", "ranging")] == 0.75
+    # 来自 exit.ini [exit_profile.tf_scale]
+    assert cfg.chandelier_tf_trail_scale["M15"] == 1.15
+    assert cfg.chandelier_tf_trail_scale["H1"] == 0.95
+
+
+def test_signal_config_rejects_chandelier_in_signal_ini(monkeypatch):
+    """signal.ini 残留 [chandelier] 段时必须 fail-fast，要求迁移到 exit.ini。"""
+    configs = {
+        "signal.ini": {
+            "signal": {"auto_trade_enabled": "false"},
+            "chandelier": {"default_alpha": "0.50"},  # 残留段
+        },
+        "exit.ini": {},
+    }
+
+    monkeypatch.setattr(
+        signal_config, "get_merged_config", lambda name: configs.get(name, {})
+    )
+    signal_config.get_signal_config.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="exit.ini"):
+            signal_config.get_signal_config()
+    finally:
+        signal_config.get_signal_config.cache_clear()
+
+
+def test_signal_config_rejects_exit_profile_in_signal_ini(monkeypatch):
+    """signal.ini 残留 [exit_profile] 段时同样必须 fail-fast。"""
+    configs = {
+        "signal.ini": {
+            "signal": {"auto_trade_enabled": "false"},
+            "exit_profile": {"trend__trending": "0.80"},  # 残留段
+        },
+        "exit.ini": {},
+    }
+
+    monkeypatch.setattr(
+        signal_config, "get_merged_config", lambda name: configs.get(name, {})
+    )
+    signal_config.get_signal_config.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="exit.ini"):
+            signal_config.get_signal_config()
+    finally:
+        signal_config.get_signal_config.cache_clear()

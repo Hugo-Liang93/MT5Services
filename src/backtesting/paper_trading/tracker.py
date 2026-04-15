@@ -36,6 +36,30 @@ class PaperTradeTracker:
         self._lock = threading.Lock()
         self._running = False
         self._flush_thread: Optional[threading.Thread] = None
+        # session_snapshot_provider: 由 builder 注入；flush 前主动拉取当前 session 最新元数据。
+        # 这样 tracker 不需要持有 bridge 引用即可定期持久化运行中的 session。
+        self._session_snapshot_provider: Optional[Callable[[], Optional[PaperSession]]] = None
+        # open_trades_snapshot_provider: flush 前主动拉取所有 open trades 的最新字段
+        # （MFE/MAE/current_sl/bars_held），周期性 upsert 到 DB。
+        self._open_trades_snapshot_provider: Optional[
+            Callable[[], List[PaperTradeRecord]]
+        ] = None
+
+    def set_session_snapshot_provider(
+        self, provider: Optional[Callable[[], Optional[PaperSession]]]
+    ) -> None:
+        """注入一个回调，flush 时主动拉取当前 session 元数据。"""
+        self._session_snapshot_provider = provider
+
+    def set_open_trades_snapshot_provider(
+        self, provider: Optional[Callable[[], List[PaperTradeRecord]]]
+    ) -> None:
+        """注入一个回调，flush 时主动拉取所有 open trades 的最新快照。
+
+        用于让 DB 里的 open trade 字段（SL/TP/MFE/MAE 等）随价格变动同步刷新，
+        而不是只保留入场时的 snapshot。
+        """
+        self._open_trades_snapshot_provider = provider
 
     def start(self) -> None:
         if self._running or self._db is None:
@@ -47,6 +71,9 @@ class PaperTradeTracker:
             daemon=True,
         )
         self._flush_thread.start()
+        # 立即触发一次 flush：拉取 bridge 的初始 session 元数据入库，
+        # 避免 flush_interval（默认 30s）内进程崩溃丢失 session 起始记录。
+        self._flush_now()
 
     def stop(self) -> None:
         self._running = False
@@ -61,8 +88,14 @@ class PaperTradeTracker:
             self._pending_trades.append(trade)
 
     def on_trade_opened(self, trade: PaperTradeRecord) -> None:
-        """交易开仓回调（当前仅日志，可扩展为写入 open positions 表）。"""
-        pass
+        """交易开仓回调：入队等待刷写。
+
+        upsert 由 INSERT_TRADE_SQL 的 ON CONFLICT (trade_id) DO UPDATE 保证：
+        first flush 写入 open record（exit_time=NULL），后续 close 再 update 同一行。
+        这样进程意外退出也能从 DB 恢复 open positions。
+        """
+        with self._lock:
+            self._pending_trades.append(trade)
 
     def save_session(self, session: PaperSession) -> None:
         """保存/更新 session 记录。"""
@@ -78,6 +111,28 @@ class PaperTradeTracker:
         """将缓冲区数据写入 DB。"""
         if self._db is None:
             return
+
+        # 主动拉取当前 session 最新元数据。
+        # 即使 pending 队列为空，只要 session 还在 active，也会刷一次最新 metrics
+        # （balance/total_pnl/total_trades 等），保证 DB 与运行时一致。
+        if self._session_snapshot_provider is not None:
+            try:
+                snapshot = self._session_snapshot_provider()
+                if snapshot is not None:
+                    with self._lock:
+                        self._pending_sessions.append(snapshot.to_dict())
+            except Exception:
+                logger.debug("paper_trading: session snapshot provider failed", exc_info=True)
+
+        # 主动拉取 open trades 最新字段，配合 upsert 让 DB 里 open position 数据保持 fresh。
+        if self._open_trades_snapshot_provider is not None:
+            try:
+                open_trades = self._open_trades_snapshot_provider()
+                if open_trades:
+                    with self._lock:
+                        self._pending_trades.extend(open_trades)
+            except Exception:
+                logger.debug("paper_trading: open trades snapshot provider failed", exc_info=True)
 
         with self._lock:
             trades = list(self._pending_trades)

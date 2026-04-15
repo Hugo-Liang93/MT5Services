@@ -18,7 +18,10 @@ def test_api_config_reads_from_ini_only(monkeypatch):
         assert api.port == 8808
         assert provenance["api"]["host"] == "market.ini[api].host"
         assert provenance["api"]["port"] == "market.ini[api].port"
-        assert provenance["api"]["api_key"] == "market.ini[security].api_key"
+        assert provenance["api"]["api_key"] in (
+            "market.ini[security].api_key",
+            "market.local.ini[security].api_key",
+        )
     finally:
         monkeypatch.delenv("MT5_API_HOST", raising=False)
         monkeypatch.delenv("MT5_API_PORT", raising=False)

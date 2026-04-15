@@ -276,16 +276,26 @@ def test_mt5_base_client_shutdown_resets_inferred_market_time_offset() -> None:
 
 
 def test_mt5_base_client_initializes_session_with_credentials() -> None:
+    """initialize 必须一次性带 path + login + password + server + timeout。
+
+    设计原则：mt5.initialize() 是 MT5 库的"完整 session 建立"接口，
+    传入完整凭据后会自动完成"拉起 terminal + 自动登录 + 建立 IPC"，
+    避免"terminal 拉起来停在登录界面等人工"的中间不一致状态。
+    initialize 已带正确凭据时，后续 mt5.login() 单独调用应不再触发。
+    """
     captured = {}
 
     class FakeMT5:
         def __init__(self) -> None:
             self._initialized = False
-            self._authorized = False
+            self._logged_in = False
 
         def initialize(self, **kwargs):
             captured["initialize"] = kwargs
             self._initialized = True
+            # 模拟 MT5 库真实行为：initialize 带凭据 → 自动登录到该账户
+            if "login" in kwargs and "password" in kwargs and "server" in kwargs:
+                self._logged_in = True
             return True
 
         def terminal_info(self):
@@ -294,13 +304,13 @@ def test_mt5_base_client_initializes_session_with_credentials() -> None:
             return SimpleNamespace(name="TradeMax Global MT5 Terminal")
 
         def account_info(self):
-            if not self._authorized:
-                return SimpleNamespace(login=12345678, server="Wrong-Server")
-            return SimpleNamespace(login=60067107, server="TradeMaxGlobal-Demo")
+            if self._logged_in:
+                return SimpleNamespace(login=60067107, server="TradeMaxGlobal-Demo")
+            return SimpleNamespace(login=12345678, server="Wrong-Server")
 
         def login(self, **kwargs):
             captured["login"] = kwargs
-            self._authorized = True
+            self._logged_in = True
             return True
 
         def last_error(self):
@@ -322,14 +332,16 @@ def test_mt5_base_client_initializes_session_with_credentials() -> None:
             with patch.object(MT5BaseClient, "_terminal_process_running", return_value=True):
                 client.connect()
 
+    # initialize 必须包含完整凭据（path + login + password + server + timeout）
     assert captured["initialize"] == {
         "path": "C:/Program Files/TradeMax Global MT5 Terminal/terminal64.exe",
-    }
-    assert captured["login"] == {
         "login": 60067107,
         "password": "secret",
         "server": "TradeMaxGlobal-Demo",
+        "timeout": 60000,
     }
+    # initialize 时已带正确凭据，account_match 通过 → mt5.login() 不应被调用
+    assert "login" not in captured
 
 
 def test_mt5_base_client_reuses_matching_existing_session_without_reinitialize() -> None:
@@ -558,7 +570,7 @@ def test_mt5_trading_client_retries_open_with_supported_filling_mode() -> None:
             tp=3045.6,
         )
 
-    assert result["ticket"] == 123456
+    assert result.ticket == 123456
     assert requests[-1]["type_filling"] == 2
 
 

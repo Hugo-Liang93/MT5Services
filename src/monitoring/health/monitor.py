@@ -53,6 +53,21 @@ class HealthMonitor:
         self._alert_db_path = os.path.join(alert_dir, "health_alerts.db")
 
         self._lock = threading.Lock()
+        # 启动时间戳：用于抑制"数据尚未补齐"的瞬态 alert。
+        # 场景：启动瞬间 economic_calendar / indicator_freshness 可能因为数据还在拉回
+        # 而显示 staleness 很大，但系统会在启动后几秒内自动 refresh。
+        # 若在这段 grace 期触发 alert，会污染告警历史并产生假阳性。
+        self._started_at_monotonic = time.monotonic()
+        # Grace 期内被豁免的 alert metric 名称（启动 60 秒内不触发）。
+        # 仅包含"启动瞬态"指标 —— 启动瞬间因数据尚未刷回导致看起来异常，
+        # refresh 完成后会自然回归。
+        # 不包含 data_latency / queue_depth / intrabar_* 等"运行时数据流"指标，
+        # 这些即使在启动期异常也应立即告警。
+        self._startup_grace_seconds = 60.0
+        self._startup_grace_metrics = frozenset({
+            "economic_calendar_staleness",
+            "indicator_freshness",
+        })
 
         # 核心数据存储（纯内存）
         self._store = MetricsStore(
@@ -226,6 +241,13 @@ class HealthMonitor:
     ) -> Optional[str]:
         del component
         if metric_name not in self.alerts:
+            return None
+        # 启动 grace 期：启动不足 _startup_grace_seconds 秒时，
+        # 豁免 "启动瞬态" 类指标的 alert（等 refresh 完成后自然回归正常）。
+        # 仅影响 alert 生成，metric 本身仍正常记录到 ring buffer（便于事后审计）。
+        if metric_name in self._startup_grace_metrics and (
+            time.monotonic() - self._started_at_monotonic < self._startup_grace_seconds
+        ):
             return None
         thresholds = self.alerts[metric_name]
         if metric_name in {

@@ -16,14 +16,19 @@ class TestBuildBacktestComponents:
     @patch("src.backtesting.data.loader.HistoricalDataLoader")
     @patch("src.persistence.db.TimescaleWriter")
     @patch("src.persistence.repositories.market_repo.MarketRepository")
+    @patch("src.config.database.load_db_settings")
     def test_returns_required_keys(
         self,
+        mock_db_settings: MagicMock,
         mock_market_repo: MagicMock,
         mock_writer: MagicMock,
         mock_loader: MagicMock,
         mock_signal_config: MagicMock,
     ) -> None:
         """build_backtest_components 应返回 signal_module, pipeline 等核心组件。"""
+        mock_db_settings.return_value = SimpleNamespace(
+            host="localhost", port=5432, dbname="test", user="test", password="test",
+        )
         mock_signal_config.return_value = SimpleNamespace(
             strategy_params={},
             strategy_params_per_tf={},
@@ -49,14 +54,19 @@ class TestBuildBacktestComponents:
     @patch("src.backtesting.data.loader.HistoricalDataLoader")
     @patch("src.persistence.db.TimescaleWriter")
     @patch("src.persistence.repositories.market_repo.MarketRepository")
+    @patch("src.config.database.load_db_settings")
     def test_strategy_params_override(
         self,
+        mock_db_settings: MagicMock,
         mock_market_repo: MagicMock,
         mock_writer: MagicMock,
         mock_loader: MagicMock,
         mock_signal_config: MagicMock,
     ) -> None:
         """strategy_params 覆盖应传递到 SignalModule。"""
+        mock_db_settings.return_value = SimpleNamespace(
+            host="localhost", port=5432, dbname="test", user="test", password="test",
+        )
         mock_signal_config.return_value = SimpleNamespace(
             strategy_params={"rsi_reversion__overbought": 75},
             strategy_params_per_tf={},

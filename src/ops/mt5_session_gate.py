@@ -6,14 +6,24 @@ from typing import Any
 def probe_mt5_session_gate(
     *,
     instance_name: str | None = None,
+    auto_launch_terminal: bool = True,
 ):
+    """探测 MT5 session 是否可用。
+
+    auto_launch_terminal=True（默认）：利用 MT5 库 `mt5.initialize(path=...)` 的自带能力，
+    如果 terminal 进程未运行，由 initialize 自动拉起。这符合"启动服务 = 自动启动依赖"
+    的运维直觉，不需要用户先手动打开 MT5 terminal。
+
+    auto_launch_terminal=False：严格模式，仅检查已运行的 terminal 会话。
+    适用于 dry-run preflight / runtime health 等不应有副作用的诊断场景。
+    """
     from src.clients.base import MT5BaseClient
     from src.config.mt5 import load_mt5_settings
 
     mt5_cfg = load_mt5_settings(instance_name=instance_name)
     client = MT5BaseClient(settings=mt5_cfg)
     state = client.inspect_session_state(
-        require_terminal_process=True,
+        require_terminal_process=not auto_launch_terminal,
         attempt_initialize=True,
         attempt_login=True,
         shutdown_after_probe=True,
@@ -24,8 +34,13 @@ def probe_mt5_session_gate(
 def ensure_mt5_session_gate_or_raise(
     *,
     instance_name: str | None = None,
+    auto_launch_terminal: bool = True,
 ):
-    mt5_cfg, state = probe_mt5_session_gate(instance_name=instance_name)
+    """启动前置 gate。默认允许自动拉起 terminal（见 probe_mt5_session_gate 注释）。"""
+    mt5_cfg, state = probe_mt5_session_gate(
+        instance_name=instance_name,
+        auto_launch_terminal=auto_launch_terminal,
+    )
     if not state.session_ready:
         instance_label = instance_name or mt5_cfg.instance_name or "default"
         raise RuntimeError(

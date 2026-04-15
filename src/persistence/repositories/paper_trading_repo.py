@@ -166,6 +166,50 @@ class PaperTradingRepository:
 
         return [self._trade_row_to_dict(r) for r in rows]
 
+    def fetch_open_trades(self, session_id: str) -> List[Dict[str, Any]]:
+        """返回指定 session 下所有 exit_time IS NULL 的 open trades。
+
+        用于进程重启后的 PaperPortfolio 状态恢复：
+        取回之前持久化的 open position 快照，重建内存 portfolio。
+        """
+        sql = """
+        SELECT trade_id, session_id, strategy, direction, symbol, timeframe,
+               entry_time, entry_price, exit_time, exit_price,
+               stop_loss, take_profit, position_size, confidence, regime,
+               signal_id, pnl, pnl_pct, exit_reason, bars_held,
+               slippage_cost, commission_cost,
+               max_favorable_excursion, max_adverse_excursion,
+               breakeven_activated, trailing_activated
+        FROM paper_trade_outcomes
+        WHERE session_id = %s AND exit_time IS NULL
+        ORDER BY entry_time ASC
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (session_id,))
+            rows = cur.fetchall()
+        return [self._trade_row_to_dict(r) for r in rows]
+
+    def fetch_latest_active_session(self) -> Optional[Dict[str, Any]]:
+        """返回最近一个未正常 stop 的 session（stopped_at IS NULL）。
+
+        进程重启 recovery 的入口点：如果上次进程没干净 stop（崩溃/kill），
+        session 表里会留下 stopped_at=NULL 的记录，此时可选择 resume 该 session
+        以保持 session_id 连续、open trades 可继续监控。
+        """
+        sql = """
+        SELECT session_id, started_at, stopped_at, initial_balance, final_balance,
+               config_snapshot, total_trades, winning_trades, losing_trades,
+               total_pnl, max_drawdown_pct, sharpe_ratio
+        FROM paper_trading_sessions
+        WHERE stopped_at IS NULL
+        ORDER BY started_at DESC
+        LIMIT 1
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+        return self._session_row_to_dict(row) if row else None
+
     def fetch_performance_summary(
         self, session_id: Optional[str] = None
     ) -> Dict[str, Any]:

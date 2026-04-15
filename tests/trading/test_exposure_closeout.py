@@ -74,7 +74,7 @@ def test_manual_closeout_controller_switches_runtime_mode_after_success() -> Non
         policy=ExposureCloseoutPolicy(
             after_manual_closeout_action=CloseoutRuntimeModeAction.INGEST_ONLY
         ),
-        apply_mode=lambda mode, *, reason: (
+        apply_mode=lambda mode, *, reason, **kwargs: (
             calls.append((mode, reason)) or {"current_mode": mode}
         ),
     )
@@ -96,7 +96,7 @@ def test_eod_closeout_controller_does_not_switch_runtime_mode() -> None:
         policy=ExposureCloseoutPolicy(
             after_manual_closeout_action=CloseoutRuntimeModeAction.INGEST_ONLY
         ),
-        apply_mode=lambda mode, *, reason: (
+        apply_mode=lambda mode, *, reason, **kwargs: (
             calls.append((mode, reason)) or {"current_mode": mode}
         ),
     )

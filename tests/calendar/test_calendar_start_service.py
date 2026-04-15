@@ -57,6 +57,13 @@ def test_start_service_schedules_startup_jobs_without_blocking(monkeypatch) -> N
         ),
         _worker=None,
         _stop_event=Event(),
+        _last_refresh_at=None,
+        _last_refresh_started_at=None,
+        _last_refresh_completed_at=None,
+        _consecutive_failures=0,
+        _bootstrap_deadline_at=None,
+        _bootstrap_grace_seconds=lambda: 300.0,
+        _scheduler_started_at=None,
         _next_run_at={job: None for job in calendar_sync._JOB_LABELS},
         _job_interval=lambda job_type: {
             "calendar_sync": 21600.0,

@@ -89,5 +89,19 @@ INSERT INTO paper_trade_outcomes (
     max_favorable_excursion, max_adverse_excursion,
     breakeven_activated, trailing_activated
 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (trade_id) DO NOTHING
+ON CONFLICT (trade_id) DO UPDATE SET
+    exit_time = EXCLUDED.exit_time,
+    exit_price = EXCLUDED.exit_price,
+    stop_loss = EXCLUDED.stop_loss,
+    take_profit = EXCLUDED.take_profit,
+    pnl = EXCLUDED.pnl,
+    pnl_pct = EXCLUDED.pnl_pct,
+    exit_reason = EXCLUDED.exit_reason,
+    bars_held = EXCLUDED.bars_held,
+    slippage_cost = EXCLUDED.slippage_cost,
+    commission_cost = EXCLUDED.commission_cost,
+    max_favorable_excursion = EXCLUDED.max_favorable_excursion,
+    max_adverse_excursion = EXCLUDED.max_adverse_excursion,
+    breakeven_activated = EXCLUDED.breakeven_activated,
+    trailing_activated = EXCLUDED.trailing_activated
 """

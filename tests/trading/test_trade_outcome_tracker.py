@@ -61,8 +61,8 @@ class TestNormalClose:
         # DB 写入
         assert len(written) == 1
         row = written[0]
-        assert row[10] is True  # won
-        assert row[9] == pytest.approx(10.0)  # price_change
+        assert row[13] is True  # won
+        assert row[12] == pytest.approx(10.0)  # price_change
 
     def test_sell_win(self):
         tracker = TradeOutcomeTracker()
@@ -116,10 +116,10 @@ class TestUnresolvedClose:
         # DB 仍写入（便于事后审计）
         assert len(written) == 1
         row = written[0]
-        assert row[8] is None  # close_price
-        assert row[9] is None  # price_change
-        assert row[10] is None  # won
-        meta = row[12]
+        assert row[11] is None  # close_price
+        assert row[12] is None  # price_change
+        assert row[13] is None  # won
+        meta = row[15]
         assert meta["close_source"] == "mt5_missing"
 
     def test_invalid_close_price_records_unresolved(self):
@@ -149,7 +149,7 @@ class TestCloseSource:
             _make_pos(close_source="history_deals"), close_price=2005.0,
         )
 
-        meta = written[0][12]
+        meta = written[0][15]
         assert meta["close_source"] == "history_deals"
 
     def test_manual_reconcile_source(self):
@@ -163,7 +163,7 @@ class TestCloseSource:
             _make_pos(close_source="manual_reconcile"), close_price=2005.0,
         )
 
-        meta = written[0][12]
+        meta = written[0][15]
         assert meta["close_source"] == "manual_reconcile"
 
     def test_default_source_when_not_set(self):
@@ -176,7 +176,7 @@ class TestCloseSource:
         # pos 没有 _close_source 属性
         tracker.on_position_closed(_make_pos(), close_price=2005.0)
 
-        meta = written[0][12]
+        meta = written[0][15]
         assert meta["close_source"] == "position_closed"
 
     def test_unresolved_always_uses_mt5_missing(self):
@@ -191,7 +191,7 @@ class TestCloseSource:
             _make_pos(close_source="history_deals"), close_price=None,
         )
 
-        meta = written[0][12]
+        meta = written[0][15]
         assert meta["close_source"] == "mt5_missing"
 
 

@@ -822,4 +822,128 @@ domain 组件
 79. 2026-04-14：`ModifyPositionsRequest` 已补上正式 `ticket` 合同，API 层不再截断下游已有的单持仓改单能力。此前 `TradingService.modify_positions()` 与 `MT5TradingClient.modify_positions()` 已支持按 `ticket` 精准改单，但 FastAPI schema 与路由完全没有暴露该字段，导致上层只能做“按 symbol/magic 批量改单”，无法使用底层已存在的正式能力。本轮已把 `ticket` 加入 `ModifyPositionsRequest`，并在 `/modify_positions` 路由中显式透传到应用服务与响应 metadata，同时新增 API 回归，直接验证 `ticket=404` 会进入底层并映射成 `POSITION_NOT_FOUND`。这样上层合同与下游端口重新对齐，不再依赖隐式能力或后门调用。
 80. 2026-04-14：`src.api.trade_routes.commands` 已从“单文件聚合所有写接口实现”收口为纯路由组合入口，写接口按职责拆入正式子模块。此前 `commands.py` 同时承载了直达交易执行、signal trade、operator command、批量写操作和共用错误辅助函数，单文件体量已超过 800 行，后续任何新交易接口都容易继续堆回这个模块，重新形成 API 层的隐式耦合。本轮已将其拆为：`direct_commands.py`（直达交易/预检/批量/改单/对账）、`signal_commands.py`（signal->trade 执行）、`operator_commands.py`（close/cancel/trade_control/closeout 等 operator queue），`execution_common.py` 只保留跨直达交易入口共享的错误映射与 signal trade 构造。`commands.py` 本身现在仅负责 include 子路由，不再承担实现职责；`src.api.trade` 也已改为直接从对应子模块导出函数。这样 API 写接口边界重新和应用层职责对齐，避免 `commands.py` 继续演化成新的重型兼容模块。
 81. 2026-04-14：`trade_routes` 的写路由目录已继续按“类型”归类，不再在根目录平铺实现文件。此前虽然 `commands.py` 已拆出 `direct_commands.py / signal_commands.py / operator_commands.py / execution_common.py`，但这些实现仍直接散落在 `trade_routes/` 根目录，目录层级本身无法表达“这是写入命令域”的边界。本轮已将其统一下沉到 `src.api.trade_routes.command_routes/`：`direct.py`、`signal.py`、`operator.py`、`common.py` 各自只负责一类写接口或共享错误映射；`commands.py` 保留为唯一组合入口，负责 include 与对外导出。旧的根目录实现文件已删除，没有保留双轨路径。这样 `trade_routes/` 根目录只留下顶层命名空间入口（`commands/runtime/state/trace`），实际实现则按命令类型进入子包，目录结构与职责边界一致。
-82. 2026-04-14：`src.api.trade_routes.state` 已从重型读路由模块收口为“总览/列表/审计/流”四类正式子模块，读侧根入口只保留组合职责。此前 `state.py` 在单文件内同时承载账户总览、positions/orders 查询、pending/position runtime 列表、command audits、SL/TP 历史以及 SSE state stream，混合了多个读模型视图和一整套流式 diff helper，已经演化成读侧的第二个重型聚合点。本轮已将其拆入 `src.api.trade_routes.state_routes/`：`overview.py` 负责总览和账户视图，`lists.py` 负责 runtime 状态列表，`audit.py` 负责命令审计与 SL/TP 历史，`stream.py` 负责 `trade_state_stream` 及其 snapshot/diff 逻辑，`state.py` 只负责组合这些读路由并对外导出正式入口。对应测试也已迁移到新子模块路径，不再依赖对旧重型模块的私有 monkeypatch。这样 `trade_routes` 目录现在在结构上明确区分“写命令组合入口”和“读状态组合入口”，后续继续扩展 API 时不需要再把不同类型的路由平铺回根目录。
+82. 2026-04-14：`src.api.trade_routes.state` 已从重型读路由模块收口为”总览/列表/审计/流”四类正式子模块，读侧根入口只保留组合职责。此前 `state.py` 在单文件内同时承载账户总览、positions/orders 查询、pending/position runtime 列表、command audits、SL/TP 历史以及 SSE state stream，混合了多个读模型视图和一整套流式 diff helper，已经演化成读侧的第二个重型聚合点。本轮已将其拆入 `src.api.trade_routes.state_routes/`：`overview.py` 负责总览和账户视图，`lists.py` 负责 runtime 状态列表，`audit.py` 负责命令审计与 SL/TP 历史，`stream.py` 负责 `trade_state_stream` 及其 snapshot/diff 逻辑，`state.py` 只负责组合这些读路由并对外导出正式入口。对应测试也已迁移到新子模块路径，不再依赖对旧重型模块的私有 monkeypatch。这样 `trade_routes` 目录现在在结构上明确区分”写命令组合入口”和”读状态组合入口”，后续继续扩展 API 时不需要再把不同类型的路由平铺回根目录。
+
+---
+
+83. 2026-04-14：**P0 修复：`TrackedPosition.initial_risk` 永不初始化导致 Chandelier Exit 运行时完全失效**。
+    审查发现 `PositionManager.track_position()`（`src/trading/positions/manager.py`）构造 `TrackedPosition` 时从未写入 `initial_risk` 或 `initial_stop_loss`，两者持续为默认 0.0；`sync_open_positions()` 恢复路径同样没有写入这两个字段；全 `src/` 目录对 `.initial_risk = ...` 的赋值点为零。而 `_evaluate_chandelier_exit()` 的第一条守卫 `if pos.initial_risk <= 0: return None`（manager.py:698）会直接短路返回，导致 trailing stop、breakeven、锁利梯度、信号反转 N-bar 退出、超时退出、硬上界 TP 等所有实盘监控规则都从未被触发。实盘/Paper 持仓实际仅依赖 broker 端静态 SL/TP 与日终平仓。回测侧 `BacktestPortfolio` 正确计算了 `initial_risk = abs(entry_price - stop_loss)`，所以回测结果看似正常，但这等于"回测结论无法迁移到实盘"。
+    本轮修复：
+    - `track_position()` 入场时显式写入 `pos.initial_stop_loss = params.stop_loss` 与 `pos.initial_risk = abs(entry_price - initial_stop_loss)`。
+    - `sync_open_positions()` 恢复时优先从持久化的 `merged_context["initial_stop_loss"]`（已存在于 `position_runtime_states` schema 与 `TradingStateStore`）读取，只有在从未持久化过的历史持仓上才 fallback 到当前 MT5 SL 作为近似 baseline；随后统一推导 `initial_risk` 与 `sl_atr_mult`。
+    - 因 DB schema 已有 `initial_stop_loss` 列，无需扩 schema；`initial_risk` 可从 `initial_stop_loss` 与 `entry_price` 在运行时纯算，不需要独立持久化列。
+    - 新增 3 个回归测试守住入场与恢复两条路径（`tests/trading/test_position_manager.py` 末尾）：`test_track_position_initializes_chandelier_baseline`、`test_sync_open_positions_restores_initial_risk_from_persisted_state`、`test_sync_open_positions_falls_back_to_current_sl_when_unpersisted`，防止未来再次潜伏。
+    影响范围判定：这是一个长期潜伏 bug，不是重构引入，但直接决定 Paper Trading / 实盘上线前的核心监控是否生效。修复前 Paper Trading 的任何数据都不能等同于回测结果，修复后两侧的 Chandelier Exit 终于走的是同一套状态机。
+
+---
+
+84. 2026-04-14：**Chandelier / exit_profile 配置已从 signal.ini 拆出到 config/exit.ini，支持实例级覆盖**。
+    多实例架构评估发现：虽然 `risk.ini` 早已在 `_INSTANCE_SCOPED_CONFIGS`（支持 `config/instances/<name>/risk.ini` 覆盖），但持仓出场参数（`[chandelier]` / `[exit_profile]` / `[exit_profile.tf_scale]`）全部挤在全局 `signal.ini` 里，`signal.ini` 不在 scoped 列表中，实例目录下也没有 `signal.ini` —— 这意味着 main 和 workers 必然共用同一套 Chandelier trail / breakeven / aggression 矩阵，"不同实例走不同 trail 激进度"的诉求在代码层面不可配置。
+    本轮按"最小侵入"原则拆分：
+    - 新建 `config/exit.ini`，把 `[chandelier]` / `[exit_profile]` / `[exit_profile.tf_scale]` 三段完整迁移过去；`signal.ini` 对应三段一次性删除，不保留双轨兼容。
+    - `exit.ini` 加入 `_INSTANCE_SCOPED_CONFIGS`（`src/config/utils.py:11-16`），自动继承已有的 8 层合并机制：全局 `exit.ini` → `exit.local.ini` → `instances/<name>/exit.ini` → `instances/<name>/exit.local.ini`，后者优先。
+    - `get_signal_config()` 内部新增一次 `get_merged_config("exit.ini")` 调用，chandelier/exit_profile/tf_scale 三段从 `exit_merged` 读取；`SignalConfig.chandelier_*` 字段与下游 `ChandelierConfig` 构建路径（`factories/signals.py`、`backtesting/engine/runner.py`）完全不动，避免牵连面扩散。
+    - 增加启动期 fail-fast 检查 `_assert_exit_sections_moved()`：若 `signal.ini` 仍残留 `[chandelier]` / `[exit_profile]` / `[exit_profile.tf_scale]` 任一 section，直接 raise `ValueError` 并提示迁移到 `exit.ini`，避免"半份配置无感知"的隐性故障。
+    - 每个 `config/instances/<name>/` 目录新增 `exit.ini` 和 `exit.local.ini` 模板（全为注释示例，保持默认继承）；`.gitignore` 已有 `config/**/*.local.ini` 递归规则覆盖新增 local 文件。
+    - 测试覆盖：`tests/config/test_instance_config_overlay.py` 新增两个用例验证 `exit.ini` 实例级覆盖生效 + `exit.local.ini` 优先级最高；`tests/config/test_signal_config.py` 新增三个用例验证 chandelier 从 exit.ini 读取 + signal.ini 残留段会 fail-fast。
+    职责边界改进：出场参数在职责上本就不属于"信号"域，长期在 signal.ini 里是历史遗留。拆出后 `signal.ini` 的语义更收敛（只管信号评估/策略部署/信号过滤链）。后续若进一步把 `ChandelierConfig` 构建从 `factories/signals.py` 搬到 `factories/trading.py` 或独立 `factories/position.py`，边界会更干净，这是 F-3。
+
+---
+
+85. 2026-04-15：**5 分钟实战观察 + 批量运行期问题修复**。
+    首次启动 live-main 实例观察 5 分钟（MT5 gate 通过、ingestor/indicator/signal 链路全部健康、Paper Trading 真实开仓 2 持仓浮盈 +12.93），暴露出运行期的一批可观测性与韧性问题：
+    (1) **P1.2 Paper Trading 状态不持久化**：虽然 `paper_trading_repo` 的 `upsert_session` 和 `write_trades` 实现完整，但 `PaperTradeTracker.on_trade_opened` 是 `pass`（入场不入队），`save_session` 只在进程 `_stop_paper_trading` 时被调用，`INSERT_TRADE_SQL` 用 `ON CONFLICT DO NOTHING`（后续 close 无法 update 已有 open 记录）。后果：运行中 DB 表始终 0 条，进程崩溃 → 所有 open positions + session metrics 丢失，Paper 对比回测的 P1 验证失去基础。本轮修复：
+    - `INSERT_TRADE_SQL` 改为 `ON CONFLICT (trade_id) DO UPDATE SET ...`，支持 open → close 的 upsert。
+    - `PaperTradeTracker.on_trade_opened` 入队（不再 pass），利用 upsert 让 open 记录先落库，close 时更新同一行。
+    - `PaperTradeTracker` 增加 `set_session_snapshot_provider()` setter，flush 循环主动从 bridge 拉取当前 session 最新 metrics（balance/total_pnl/total_trades），让运行中的 session 也周期性持久化；进程崩溃时至少保留最近一次 flush 的快照。
+    - `PaperTradingBridge.snapshot_active_session()` 新端口暴露实时 session 对象（更新 metrics 字段但保持 stopped_at/final_balance=None）。
+    - `builder_phases/paper_trading.py` 注入 provider 回调，完成闭环。
+    (2) **P2.3 Supervisor 组内韧性**：之前 `_start_initial` 调 `ensure_topology_group_mt5_session_gate_or_raise` 对整组做原子预检，任一 worker MT5 terminal 缺失 → 整组拒绝启动（连 main 都起不来）。生产中 worker terminal 偶发崩了就不能用了。改为 per-instance gate：main 必须通过（fail-fast），workers 失败仅 warn 跳过不阻断 main；`_monitor_loop` 重启路径同样区分 main（不可恢复则终止）与 worker（gate 失败延迟下次 loop 重试）；`_spawn` 不再内部 gate（由调用方负责）。新增 3 个定向回归测试守住 main fail-fast、worker skip、spawn 无副作用。
+    (3) **P2.5 economic_calendar 启动瞬态 alert**：HealthMonitor 启动后 service 的 calendar staleness 可能 > critical 阈值（因为上次 refresh 是进程重启前），但 5 秒内 refresh 会让它回归，告警历史仍被污染。加启动 grace 期（60s），仅豁免"启动瞬态类"指标 `economic_calendar_staleness` / `indicator_freshness`；`data_latency` 等运行时数据流指标不豁免。补 3 个回归测试。
+    (4) **P2.6 HTF stale warning 洪水降级**：`htf_resolver.py` 里 HTF bar > max_age 时的 log 级别从 WARNING 降到 INFO，前 3 次打 + 每 200 次打（原前 5 + 每 50）。HTF stale 时的实际行为是 skip injection 让策略 fallback / regime 兜底，不是 error。周末市场休市时 H4 自然过时，不应污染 errors.log。
+    (5) **P2.4 Windows 乱码**：核实后发现 log 文件本身是正确 UTF-8（RotatingFileHandler 已 `encoding='utf-8'`），乱码只出现在 **Python 进程 stdout**（Windows 默认 cp936/GBK）。`web.py` / `supervisor.py` 启动时调用新增的 `_force_utf8_stdio()`（`sys.stdout/stderr.reconfigure(encoding='utf-8', errors='backslashreplace')`），彻底消除 stdout 乱码，不依赖用户 Windows 系统设置。
+    (6) **P3.7 信号质量端点文档漂移**：TODO.md 中 `/signals/monitoring/quality` 缺路径参数，实际端点是 `/signals/monitoring/quality/{symbol}/{timeframe}`。更新 TODO.md。
+    (7) **P3.8 multi_account main 状态语义**：`RuntimeReadModel.trade_executor_summary()` / `pending_entries_summary()` / `position_manager_summary()` 在 `_shared_compute_main_without_local_execution()` 下返回 `status="disabled"` 让 dashboard 误以为故障，实际是拓扑正确"委托给 workers"。新增 `state="delegated"` 字段明确语义（保留 `status="disabled"` 兼容旧前端）。
+    (8) **P1.1 trade/state/overview 为端点名误写**：5 分钟观察报告中的 "`/v1/trade/state/overview` 返空" 属于我写错端点名，实际 overview 职责由 `/trade/state` 端点承担（`overview.py` 注册的是多个端点 `/trade/state` / `/trade/accounts` / `/positions` 等）。非 bug，无代码变更。
+    本轮所有改动 1362 测试通过（原 1357 + 新增 5：3 supervisor 弹性 + 2 monitoring grace）。F-3（ChandelierConfig 职责迁移）仍未解，新增 F-4 / F-5 见下。
+
+---
+
+86. 2026-04-15：**F-4 / F-5 关闭：Paper 持久化完整性 + Supervisor worker 自动补齐**。#85 修了 Paper 持久化主路径后仍遗留两个韧性缺口，本轮一次性收口：
+    (1) **F-4.1 首次 flush 窗口**：`PaperTradingBridge.start()` 创建 session 后要等 30s flush_interval 才入库，这段窗口里崩溃会丢起始记录。`PaperTradeTracker.start()` 增加末尾 `_flush_now()` 立即刷一次；同时调整装配顺序 `_start_paper_trading`：bridge 先 start（session 创建）、tracker 后 start（立即 flush 能拉到 session）。
+    (2) **F-4.2 open trade 运行时字段同步**：之前 tracker 只在 `on_trade_opened` / `on_trade_closed` 事件点入队，open 期间的 `MFE / MAE / current_sl / bars_held` 变化不进 DB。新增 `PaperTradeTracker.set_open_trades_snapshot_provider()`，flush 前主动从 bridge 拉所有 open records 追加到 pending 队列；`PaperTradingBridge.snapshot_open_trades()` 返回 `dataclasses.replace` 副本避免锁外并发修改。配合 #85 的 `INSERT_TRADE_SQL ON CONFLICT DO UPDATE` 语义，DB 里 open 行的出场相关字段随价格推进定期刷新。
+    (3) **F-4.3 进程重启 recovery**：之前进程崩溃后所有 open trades 和 session metrics 内存丢失。新增 `PaperTradingConfig.resume_active_session`（默认 False，兼容现有行为）；开启后 `PaperTradingBridge.__init__` 接受 `recover_fn` 注入，`start()` 先调 `_attempt_resume()`，从 `paper_trading_repo.fetch_latest_active_session()` + `fetch_open_trades()` 读 DB，session_id 复用、`PaperPortfolio.restore_baseline(balance=initial + total_pnl)` + `restore_open_trade(record)` 把老持仓放回 `_open_positions`，active_symbols 随 symbols 重建。`builder_phases/paper_trading.py` 里当 flag 启用且 db_writer 可用时封装 recover_fn 交给 bridge；失败走 fresh start（异常被吞且记 warning）。
+    (4) **F-5 Supervisor 未启动 worker 周期重试**：启动期 gate 失败的 workers 之前需要用户手动重启 supervisor 才能补齐。`Supervisor` 新增 `_pending_workers: set[str]` 和 `_PENDING_WORKER_RETRY_INTERVAL_SECONDS = 30`，`_start_initial` 中 worker gate 失败时加入 pending；`_monitor_loop` 每轮末调用 `_retry_pending_workers()`，用 monotonic 节流，gate 通过就 spawn 并从 pending 移除。现在用户启动 MT5 terminal 后 30s 内 supervisor 会自动补启 worker，无需介入。
+    测试覆盖：
+    - 新增 `tests/backtesting/test_paper_trading_persistence.py` 9 个用例（start 立即 flush / open trades provider / provider 异常容错 / 副本独立性 / resume flag 关闭 / resume 复用 session+open / recover None fresh start / recover 异常 fresh start）
+    - 扩展 `tests/entrypoint/test_supervisor.py` 2 个用例（pending worker 重试 spawn / 节流行为）
+    全量 1373 通过（原 1362 + 11）。F-4 / F-5 在 Follow-ups 中标记 closed。
+
+---
+
+87. 2026-04-15：**MT5 session 自动建立的设计缺陷修复 — initialize 必须一次性带完整凭据**。
+    用户反馈"启动应该自动拉起 MT5 terminal，不应该要求人工开"。审查发现两个层叠问题：
+    (1) **gate 层**：`probe_mt5_session_gate` / `MT5BaseClient.connect()` 用 `require_terminal_process=True` 提前在 terminal 未跑时就拒绝，**让 `mt5.initialize(path=...)` 自带的"自动拉起 terminal"能力根本跑不到**。改为默认 `auto_launch_terminal=True` → `require_terminal_process=False`，让 initialize 自己处理 terminal 启动；为 dry-run preflight / runtime health 等不应有副作用的诊断场景保留 `auto_launch_terminal=False` 严格模式。
+    (2) **initialize 凭据缺失**（更深层的设计缺陷）：`_initialize_kwargs()` **只传 `path`**，不传 `login/password/server/timeout`。MT5 库的 `mt5.initialize(path, login, password, server, timeout)` 是"完整 session 建立"接口，传入完整凭据会自动完成"拉起 terminal + 自动登录 + 建立 IPC"。当前代码把它**人为拆成两步**：`initialize(path)` → `login(login, password, server)`，结果 terminal 拉起来后**停在登录界面等人工**，IPC 建立不了 → `ipc_timeout`，login 根本走不到。这是补丁式拆分，非单一职责。本轮把 `_initialize_kwargs` 收口为返回完整凭据集 `{path, login, password, server, timeout=60000}`，让 initialize 一次性建立 session；`_login_kwargs` 保留但**职责收窄**为"账户切换"语义（仅当 IPC 已就绪但当前账户不匹配时调用）。
+    实战验证（5 分钟跑 supervisor --group live）：
+    - **零人工介入**：用户关闭所有 MT5 terminal 进程，supervisor 启动后两个 terminal（TradeMax + TMGM）均被 mt5.initialize 自动拉起 + 自动登录
+    - 启动时序：`08:38:19` supervisor → `08:38:22` main gate passed (3s) → `08:38:40` worker gate passed (21s) → 完整双实例就绪
+    - F-4.1 立即 flush 验证：Paper session 在启动 14 秒内入库（`paper_trading_sessions` 1 条 active session）
+    - F-4.2 open trades 字段同步验证：3 个 OPEN 持仓在 DB，MFE 从 0.21 持续累积到 1.10（运行时持续推送 DB）
+    - P0 initial_risk 修复验证：MFE/MAE 持续累积证明 Chandelier 评估在跑（修复前 `initial_risk=0` 直接 return None）
+    - P2.5 / P2.6 验证：errors.log 自启动后**仅 1 条 WARNING**（合理 OHLC gap reset），HTF stale 0 条 / economic_calendar critical 0 条（vs 修复前 50+ HTF stale + 1 economic critical）
+    - P2.4 验证：日志正确显示 `max=100MB×10`（vs 修复前 `max=100MB��10` 乱码）
+    测试覆盖：
+    - 新增 `tests/ops/test_mt5_session_gate.py` 4 个用例（默认 auto_launch / strict mode / initialize 失败 fail-fast / auto_launch 参数传递）
+    - 新增 `tests/clients/test_mt5_initialize_kwargs.py` 4 个用例（initialize 完整凭据 / login int 强制 / 缺失字段优雅处理 / login_kwargs 仅切换账户）
+    - 修正 `tests/core/test_data_integrity_fixes.py::test_mt5_base_client_initializes_session_with_credentials`：旧测试把 "initialize 不带凭据 + 单独 login" 这个有缺陷的旧设计冻结为契约，更新为反映新设计（initialize 一次性带凭据，login 不再被多余调用）
+    全量 1381 通过（原 1373 + 8）。F-2 已隐式关闭（auto-launch 让 worker 启动失败的常见路径消失，pending 重试退化为异常路径）。
+
+---
+
+## Follow-ups（未决项）
+
+### F-1：ADR-006 对齐 —— 风控/经济日历配置改为构造函数注入
+
+**现状**：`src/trading/runtime/registry.py:88` 中 `TradingAccountRegistry.get_trading_service()` 内部直接调用 `get_risk_config()` 与 `get_economic_config()` 两个全局函数来构造 `PreTradeRiskService`。这违反 ADR-006（装配层/组件内不应读全局配置函数），也让测试需要 monkeypatch 全局函数而不能直接注入 mock。
+
+**风控隔离现状**：当前 supervisor 多进程架构下，每个实例进程有独立的 `MT5_INSTANCE` 环境变量，`get_merged_config(“risk.ini”)` 通过 `_INSTANCE_SCOPED_CONFIGS` 机制已能正确加载 `config/instances/<name>/risk.ini` 和 `risk.local.ini`。因此**不同实例能配置不同风控参数**，机制已就绪——但目前所有实例目录下的 `risk.ini` 仍是空模板（全注释），实际未利用这个能力。
+
+**待整改**：
+1. `TradingAccountRegistry.__init__()` 增加 `risk_config: RiskConfig` 与 `economic_config: EconomicConfig` 构造参数
+2. `src/app_runtime/factories/trading.py` 构建时加载并注入
+3. 移除 registry 内的全局函数调用
+4. 补一个隔离验证测试：模拟两个不同实例名，验证加载出不同的 `RiskConfig`
+
+**触发条件**：下一轮为实例差异化风控写入真实参数时（如 live vs demo 不同的 `daily_loss_limit_pct`）顺手完成。或同进程多实例需求出现时必须完成。
+
+**相关 ADR**：ADR-006（跨模块边界禁止读写私有属性，构造函数注入优先）
+
+### F-2：`account_bindings` 空配置导致 worker 空转（P0 业务决策）
+
+**现状**：`signal.ini` / `signal.local.ini` 中所有 `[account_bindings.*]` section 的 `strategies =` 都是空的。`ExecutionIntentPublisher._resolve_target_accounts(strategy)` 在 `_account_bindings` 为空时对任何策略都返回空 iterable，意味着 **`execution_intents` 表不会写入任何行**，所有 worker 实例启动后只能 claim 到空集，处于长期空转。
+
+**待整改**：填写 `signal.local.ini` 的 `[account_bindings.<alias>]`，决定策略如何在 main / workers 间分配。两种方案：
+- 方案 A（main 只做共享计算）：`live_main.strategies =` 留空，workers 承接所有策略。
+- 方案 B（main 也执行部分策略）：main 承接一部分，workers 承接另一部分。
+
+**触发条件**：Paper Trading 即将开跑或上 live canary 前必须完成。否则 workers 是僵尸进程。
+
+**为什么不在本轮代码变更中完成**：策略→账户分配是**业务决策**，不是代码决策，需用户根据策略相关性、风险承担能力等决定。代码架构已经支持。
+
+### F-3：`ChandelierConfig` 构建应从 `factories/signals.py` 挪到 `factories/trading.py` 或 `factories/position.py`
+
+**现状**：`src/app_runtime/factories/signals.py:419-445` 中仍在构建 `ChandelierConfig` 并注入 `PositionManager`。但 Chandelier 是持仓出场参数，职责上与"信号评估/策略注册"完全正交，只是历史上 `chandelier_*` 字段挂在 `SignalConfig` 上所以构建在了 signal 工厂里。本轮（#84）把配置文件拆到 `exit.ini` 后，SignalConfig 仅作为数据传递结构，不再有语义绑定。
+
+**待整改**：
+1. 可选：把 `SignalConfig.chandelier_*` 字段和 `aggression_overrides` / `tf_trail_scale` 单独抽成 `ExitConfig` pydantic 模型，由独立的 `get_exit_config()` 加载。
+2. `factories/signals.py` 中 `_ChandelierConfig` 构建代码块挪到 `factories/trading.py` 或新增 `factories/position.py`。
+3. `build_account_runtime_layer` 不再通过 `signal_config` 拿 chandelier 字段，改为直接接收 `ExitConfig` / `ChandelierConfig`。
+
+**触发条件**：下次修改持仓出场逻辑（如新增 exit rule）时顺手做；或 F-1 一起做（都是构造函数注入的重构）。
+
+**相关**：#84（本轮 exit.ini 拆分），F-1（ADR-006 对齐）
+
+### ~~F-4：Paper Trading session 持久化的完整性审计~~（2026-04-15 由 #86 解决）
+
+### ~~F-5：Supervisor worker gate 失败后的自动恢复~~（2026-04-15 由 #86 解决）

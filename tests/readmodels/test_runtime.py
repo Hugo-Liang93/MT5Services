@@ -560,12 +560,15 @@ def test_main_multi_account_runtime_views_mark_remote_execution_as_disabled() ->
     positions = read_model.position_manager_summary()
 
     assert executor["status"] == "disabled"
+    assert executor["state"] == "delegated"
     assert executor["execution_scope"] == "remote_executor"
     assert executor["configured"] is False
     assert pending["status"] == "disabled"
+    assert pending["state"] == "delegated"
     assert pending["execution_scope"] == "remote_executor"
     assert pending["running"] is False
     assert positions["status"] == "disabled"
+    assert positions["state"] == "delegated"
     assert positions["execution_scope"] == "remote_executor"
 
 

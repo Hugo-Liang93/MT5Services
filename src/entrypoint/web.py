@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -14,6 +15,29 @@ from src.entrypoint.logging_context import (
 from src.ops.mt5_session_gate import ensure_mt5_session_gate_or_raise
 
 logger = logging.getLogger("mt5services.launcher")
+
+
+def _force_utf8_stdio() -> None:
+    """强制 stdout/stderr 使用 UTF-8 编码。
+
+    Windows 默认 stdout/stderr 编码跟随系统 locale（中文 Windows 是 cp936/GBK），
+    当日志/print 输出含非 ASCII 字符时：
+      - 若 console 代码页与 Python 编码不一致 → 终端显示乱码
+      - 若 stdout 被管道/工具捕获为字节流 → 下游 UTF-8 解析失败
+    本函数在启动最早期把 stdout/stderr reconfigure 为 UTF-8（Python 3.7+ 支持），
+    并对不可写字符使用 backslash escape 回退而非抛异常。
+    RotatingFileHandler 已独立指定 encoding='utf-8'，不受此影响。
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            # 少数终端不支持 reconfigure，静默降级
+            pass
 
 APP_TARGET = "src.api:app"
 DEFAULT_PORT = 8808
@@ -100,6 +124,7 @@ def launch() -> None:
     import uvicorn
     from src.utils.timezone import LocalTimeFormatter, configure as configure_tz
 
+    _force_utf8_stdio()
     reload_configs()
     api_config = get_api_config()
     system_config = get_system_config()

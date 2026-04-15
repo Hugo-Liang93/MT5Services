@@ -227,15 +227,37 @@ class MT5BaseClient:
         return state.session_ready
 
     def _initialize_kwargs(self) -> dict[str, Any]:
-        initialize_kwargs: dict[str, Any] = {}
+        """完整 session 建立参数：terminal 路径 + 凭据 + IPC 超时。
+
+        MT5 库的 `mt5.initialize(path, login, password, server, timeout)` 是
+        "一次性建立完整 session" 的官方接口：拉起 terminal（如未跑）+ 自动登录 +
+        建立 IPC。本方法返回所有可用参数，让 initialize 一步到位完成全部工作，
+        避免"terminal 拉起来停在登录界面等人工"的中间不一致状态。
+
+        timeout 单位毫秒；默认 60000 (60s) 覆盖 terminal 冷启动 + 登录握手时长。
+        """
+        initialize_kwargs: dict[str, Any] = {"timeout": 60000}
         if self.settings.mt5_path:
             initialize_kwargs["path"] = self.settings.mt5_path
+        if self.settings.mt5_login is not None:
+            initialize_kwargs["login"] = int(self.settings.mt5_login)
+        if self.settings.mt5_password:
+            initialize_kwargs["password"] = self.settings.mt5_password
+        if self.settings.mt5_server:
+            initialize_kwargs["server"] = self.settings.mt5_server
         return initialize_kwargs
 
     def _login_kwargs(self) -> dict[str, Any]:
+        """账户切换参数：仅在 initialize 已建立 session 但需切换到另一账户时使用。
+
+        与 _initialize_kwargs 合并凭据后，本方法剩余唯一职责是：
+        当 inspect_session_state 检测到 IPC 已就绪、但当前登录账户与
+        settings 配置不匹配（_matches_requested_account 失败），调用
+        mt5.login(**_login_kwargs) 显式切换。
+        """
         login_kwargs: dict[str, Any] = {}
         if self.settings.mt5_login is not None:
-            login_kwargs["login"] = self.settings.mt5_login
+            login_kwargs["login"] = int(self.settings.mt5_login)
         if self.settings.mt5_password:
             login_kwargs["password"] = self.settings.mt5_password
         if self.settings.mt5_server:
@@ -595,7 +617,9 @@ class MT5BaseClient:
                 return
 
             state = self.inspect_session_state(
-                require_terminal_process=True,
+                # 允许 mt5.initialize(path=...) 自动拉起 terminal；
+                # terminal path 无效 / 凭据错 → initialize 失败会在 state 里返回清晰 error_code。
+                require_terminal_process=False,
                 attempt_initialize=True,
                 attempt_login=True,
             )

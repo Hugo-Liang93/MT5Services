@@ -199,7 +199,28 @@ def sync_open_positions(manager: PositionManager) -> dict[str, Any]:
             ),
             trailing_active=bool(merged_context.get("trailing_active")),
         )
-        if pos.atr_at_entry > 0 and pos.stop_loss > 0:
+        # Chandelier Exit 基线恢复：
+        # 优先使用 DB 持久化的 initial_stop_loss（开仓时记录，不随 trailing 漂移），
+        # 只有在从未持久化过的历史持仓（如首次启动扫描到 broker-side 遗留单）时
+        # 才 fallback 到当前 SL 作为近似 baseline。
+        persisted_initial_sl = None
+        raw_initial_sl = merged_context.get("initial_stop_loss")
+        if raw_initial_sl is not None:
+            try:
+                coerced = float(raw_initial_sl)
+            except (TypeError, ValueError):
+                coerced = 0.0
+            if coerced > 0:
+                persisted_initial_sl = coerced
+        effective_initial_sl = (
+            persisted_initial_sl if persisted_initial_sl is not None else stop_loss
+        )
+        if effective_initial_sl > 0:
+            pos.initial_stop_loss = float(effective_initial_sl)
+            pos.initial_risk = abs(pos.entry_price - pos.initial_stop_loss)
+        if pos.atr_at_entry > 0 and pos.initial_risk > 0:
+            pos.sl_atr_mult = round(pos.initial_risk / pos.atr_at_entry, 4)
+        elif pos.atr_at_entry > 0 and pos.stop_loss > 0:
             pos.sl_atr_mult = round(
                 abs(pos.entry_price - pos.stop_loss) / pos.atr_at_entry,
                 4,

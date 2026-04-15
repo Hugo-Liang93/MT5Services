@@ -19,7 +19,7 @@ def test_ensure_mt5_session_gate_or_raise_surfaces_error_code(monkeypatch) -> No
     monkeypatch.setattr(
         mt5_session_gate,
         "probe_mt5_session_gate",
-        lambda instance_name=None: (settings, state),
+        lambda instance_name=None, auto_launch_terminal=True: (settings, state),
     )
 
     with pytest.raises(RuntimeError, match="interactive_login_required"):
@@ -40,7 +40,7 @@ def test_ensure_topology_group_mt5_session_gate_or_raise_validates_all_instances
     monkeypatch.setattr(
         mt5_session_gate,
         "ensure_mt5_session_gate_or_raise",
-        lambda instance_name=None: (
+        lambda instance_name=None, auto_launch_terminal=True: (
             SimpleNamespace(account_alias=instance_name, instance_name=instance_name),
             SimpleNamespace(to_dict=lambda: {"session_ready": True, "error_code": None}),
         ),

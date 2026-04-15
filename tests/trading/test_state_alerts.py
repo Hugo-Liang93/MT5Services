@@ -47,6 +47,6 @@ def test_trading_state_alerts_reports_state_gaps_and_count_mismatches() -> None:
     assert "pending_missing" in codes
     assert "pending_orphan" in codes
     assert "pending_active_mismatch" in codes
-    assert "position_open_mismatch" in codes
+    assert "unmanaged_live_positions" in codes
     assert summary["observed"]["active_pending_count"] == 2
     assert summary["observed"]["live_position_count"] == 2

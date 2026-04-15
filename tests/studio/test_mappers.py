@@ -8,7 +8,6 @@ from src.studio.mappers import (
     map_collector,
     map_analyst,
     map_strategist,
-    map_voter,
     map_risk_officer,
     map_trader,
     map_position_manager,
@@ -107,25 +106,6 @@ class TestStrategist:
     def test_no_strategies(self) -> None:
         agent = map_strategist(0, [])
         assert agent["status"] == "error"
-
-
-# ── voter ──────────────────────────────────────────────────────
-
-
-class TestVoter:
-    def test_active_confirmed(self) -> None:
-        status = {"running": True, "active_confirmed_states": 3, "processed_events": 100, "dropped_events": 0}
-        agent = map_voter(status)
-        assert agent["status"] == "working"
-
-    def test_idle(self) -> None:
-        status = {"running": True, "active_confirmed_states": 0, "processed_events": 10, "dropped_events": 0}
-        agent = map_voter(status)
-        assert agent["status"] == "idle"
-
-    def test_not_running(self) -> None:
-        agent = map_voter({"running": False})
-        assert agent["status"] == "disconnected"
 
 
 # ── risk_officer ───────────────────────────────────────────────

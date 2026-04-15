@@ -94,3 +94,53 @@ def test_monitoring_manager_factory_is_scoped_by_health_monitor(tmp_path: Path) 
     close_monitoring_manager(instance=manager_b)
     close_health_monitor(instance=monitor_a)
     close_health_monitor(instance=monitor_b)
+
+
+def test_startup_grace_suppresses_transient_staleness_alert(tmp_path: Path) -> None:
+    """启动 grace 期内，economic_calendar_staleness 不应触发 alert。
+
+    场景：启动瞬间 economic_calendar 尚未 refresh，staleness 可能 > critical 阈值，
+    但几秒内 refresh 会让它回归正常。grace 期抑制这类瞬态 alert 避免告警历史污染。
+    """
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+    # builder_phases/monitoring.py 会在生产构建时注入这个阈值；测试需显式配置
+    monitor.alerts["economic_calendar_staleness"] = {"warning": 900.0, "critical": 1800.0}
+
+    # 启动瞬间 record 一个超高 staleness 值（77041s，真实观察到的启动瞬态）
+    monitor.record_metric(
+        "economic_calendar", "economic_calendar_staleness", 77041.0
+    )
+
+    # 未触发 alert（被 grace 抑制）
+    assert monitor.active_alerts == {}
+    # 但 metric 仍被正常记录（供事后审计）
+    report = monitor.generate_report(hours=1)
+    assert "economic_calendar" in report["components"]
+
+
+def test_startup_grace_does_not_mask_runtime_data_latency(tmp_path: Path) -> None:
+    """data_latency 是运行时数据流问题，不应被 grace 豁免。"""
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+
+    # data_latency 超 critical 阈值（30.0），启动瞬间也应触发 alert
+    monitor.record_metric("market_data", "data_latency", 999.0)
+
+    assert "market_data.data_latency" in monitor.active_alerts
+
+
+def test_startup_grace_expires_after_threshold(tmp_path: Path, monkeypatch) -> None:
+    """grace 期过后，豁免的 metric 应正常触发 alert。"""
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+    monitor.alerts["economic_calendar_staleness"] = {"warning": 900.0, "critical": 1800.0}
+
+    # 人工把启动时间往前推 70 秒，超出 60s grace 期
+    import time as _time
+    monkeypatch.setattr(
+        monitor, "_started_at_monotonic", _time.monotonic() - 70.0
+    )
+
+    monitor.record_metric(
+        "economic_calendar", "economic_calendar_staleness", 77041.0
+    )
+
+    assert "economic_calendar.economic_calendar_staleness" in monitor.active_alerts

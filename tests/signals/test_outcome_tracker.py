@@ -405,10 +405,10 @@ class TestTradeOutcomeTrackerBasic:
         assert len(rows_written) == 1
         row = rows_written[0]
         assert row[1] == "t-001"         # signal_id
-        assert row[7] == 2000.0          # fill_price
-        assert row[8] == 2010.0          # close_price
-        assert row[9] == pytest.approx(10.0)  # price_change
-        assert row[10] is True           # won
+        assert row[10] == 2000.0         # fill_price
+        assert row[11] == 2010.0         # close_price
+        assert row[12] == pytest.approx(10.0)  # price_change
+        assert row[13] is True           # won
 
     def test_sell_loss(self):
         """卖出后价格上涨 → won=False"""
@@ -431,7 +431,7 @@ class TestTradeOutcomeTrackerBasic:
         tracker.on_position_closed(pos, close_price=2005.0)
 
         assert len(rows_written) == 1
-        assert rows_written[0][10] is False
+        assert rows_written[0][13] is False
 
 
 class TestTradeOutcomeTrackerEdgeCases:
@@ -467,9 +467,9 @@ class TestTradeOutcomeTrackerEdgeCases:
         # 写入 DB（unresolved 记录，便于事后审计）
         assert len(rows_written) == 1
         row = rows_written[0]
-        assert row[8] is None  # close_price
-        assert row[10] is None  # won
-        assert row[12]["close_source"] == "mt5_missing"
+        assert row[11] is None  # close_price
+        assert row[13] is None  # won
+        assert row[15]["close_source"] == "mt5_missing"
         # 交易已从 active 移除
         assert "t-003" not in tracker._active
         # unresolved 计数增加

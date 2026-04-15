@@ -130,6 +130,29 @@ class PaperPortfolio:
         self._open_positions[trade_id] = record
         return record
 
+    def restore_open_trade(self, record: PaperTradeRecord) -> None:
+        """从 DB 恢复一个 open trade 到 portfolio（进程重启 recovery 用）。
+
+        不做任何仓位限制/风险校验，信任 DB 数据来自之前同一 session 的合法状态。
+        仅在启动阶段调用，保持与 open_position() 的仓位规则分离。
+        """
+        self._open_positions[record.trade_id] = record
+
+    def restore_baseline(
+        self, *, balance: float, closed_trades: Optional[List[PaperTradeRecord]] = None
+    ) -> None:
+        """从 DB 恢复账户基线（balance / peak / 已 closed trades）。
+
+        进程重启 recovery 用：用 session.initial_balance + total_pnl 作为 balance
+        近似（floating pnl 会在 _check_all_positions 第一次循环时重新计算）。
+        closed_trades 可选；不恢复也不影响 open position 监控，但 metrics 会失去历史。
+        """
+        self._balance = float(balance)
+        if self._balance > self._peak_balance:
+            self._peak_balance = self._balance
+        if closed_trades:
+            self._closed_trades.extend(closed_trades)
+
     def check_exits(
         self,
         bid: float,

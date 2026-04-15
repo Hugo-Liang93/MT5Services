@@ -79,9 +79,12 @@ def resolve_htf_indicators(
                     if age > max_age:
                         stale_counter[0] += 1
                         count = stale_counter[0]
-                        # Rate-limit: log first 5, then every 50th
-                        if count <= 5 or count % 50 == 0:
-                            logger.warning(
+                        # HTF stale 的行为是 skip injection（让策略走 fallback 或被 regime 门控兜底），
+                        # 不是 error。常见于周末/市场休市时 H4/D1 的 HTF bar 自然过时。
+                        # 用 INFO 级别避免污染 errors.log，同时保持可审计性。
+                        # Rate-limit: log first 3, then every 200th.
+                        if count <= 3 or count % 200 == 0:
+                            logger.info(
                                 "HTF indicator %s/%s/%s stale: bar_time=%s age=%s > max=%s, skipping (total=%d)",
                                 symbol, tf, ind_name, bar_time_str, age, max_age,
                                 count,
