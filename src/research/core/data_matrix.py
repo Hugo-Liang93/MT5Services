@@ -13,6 +13,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.clients.mt5_market import OHLC
+from src.research.core.barrier import (
+    DEFAULT_BARRIER_CONFIGS,
+    BarrierConfig,
+    BarrierOutcome,
+    compute_barrier_returns,
+)
 from src.signals.evaluation.regime import RegimeType, SoftRegimeResult
 
 logger = logging.getLogger(__name__)
@@ -67,6 +73,17 @@ class DataMatrix:
     # Session 标签: [n_bars]，"asia" / "london" / "new_york" / "off_hours"
     sessions: List[str] = field(default_factory=list)
 
+    # Triple-Barrier forward_return（F-12a）——替代朴素 N-bar forward_return。
+    # key = (sl_atr, tp_atr, time_bars) 元组；value = 对齐 bar 的 outcome 序列。
+    # 同时提供 long 和 short 两个方向，供分析器按信号方向消费。
+    barrier_returns_long: Dict[tuple, List[Optional[BarrierOutcome]]] = field(
+        default_factory=dict
+    )
+    barrier_returns_short: Dict[tuple, List[Optional[BarrierOutcome]]] = field(
+        default_factory=dict
+    )
+    barrier_configs: tuple[BarrierConfig, ...] = ()
+
     def train_slice(self) -> range:
         """训练集索引范围（不含 gap）。"""
         return range(0, self.train_end_idx)
@@ -90,6 +107,7 @@ def build_data_matrix(
     train_ratio: float = 0.70,
     round_trip_cost_pct: float = 0.0,
     components: Optional[Dict[str, Any]] = None,
+    barrier_configs: Optional[tuple[BarrierConfig, ...]] = None,
 ) -> DataMatrix:
     """构建 DataMatrix。
 
@@ -280,16 +298,45 @@ def build_data_matrix(
         else:
             sessions.append("off_hours")
 
+    # Triple-Barrier forward_return（F-12a）：对每个 bar 同时计算 long/short 两方向。
+    effective_barriers: tuple[BarrierConfig, ...] = (
+        barrier_configs if barrier_configs is not None else DEFAULT_BARRIER_CONFIGS
+    )
+    opens_list = [bar.open for bar in test_bars]
+    highs_list = [bar.high for bar in test_bars]
+    lows_list = [bar.low for bar in test_bars]
+    barrier_returns_long = compute_barrier_returns(
+        opens=opens_list,
+        highs=highs_list,
+        lows=lows_list,
+        closes=closes,
+        indicators=test_indicators,
+        configs=effective_barriers,
+        direction="long",
+        round_trip_cost_pct=round_trip_cost_pct,
+    )
+    barrier_returns_short = compute_barrier_returns(
+        opens=opens_list,
+        highs=highs_list,
+        lows=lows_list,
+        closes=closes,
+        indicators=test_indicators,
+        configs=effective_barriers,
+        direction="short",
+        round_trip_cost_pct=round_trip_cost_pct,
+    )
+
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "DataMatrix built: %d bars, %d indicators, %d fields, "
-        "split=%d/gap=%d/test=%d, %dms",
+        "split=%d/gap=%d/test=%d, barrier_configs=%d, %dms",
         n,
         len(required_indicators),
         len(indicator_series),
         train_end_idx,
         split_idx - train_end_idx,
         n - split_idx,
+        len(effective_barriers),
         elapsed_ms,
     )
 
@@ -298,9 +345,9 @@ def build_data_matrix(
         timeframe=timeframe,
         n_bars=n,
         bar_times=[bar.time for bar in test_bars],
-        opens=[bar.open for bar in test_bars],
-        highs=[bar.high for bar in test_bars],
-        lows=[bar.low for bar in test_bars],
+        opens=opens_list,
+        highs=highs_list,
+        lows=lows_list,
         closes=closes,
         volumes=[bar.volume for bar in test_bars],
         indicators=test_indicators,
@@ -312,4 +359,7 @@ def build_data_matrix(
         split_idx=split_idx,
         forward_mfe_mae=forward_mfe_mae,
         sessions=sessions,
+        barrier_returns_long=barrier_returns_long,
+        barrier_returns_short=barrier_returns_short,
+        barrier_configs=effective_barriers,
     )
