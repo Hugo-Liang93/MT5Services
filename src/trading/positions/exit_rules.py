@@ -206,6 +206,39 @@ class ChandelierConfig:
     enforce_r_floor: bool = True
 
 
+def build_chandelier_config(source: object) -> ChandelierConfig:
+    """从带 chandelier_* 字段的配置对象构建 ChandelierConfig。
+
+    单一构建入口 — 替代之前 factories/signals.py 与 backtesting/runner.py
+    两处重复构造代码（DRY + 职责边界：出场参数构建归 exit_rules 模块）。
+
+    source 不需要是特定类型，只要带以下属性即可（duck typing 而非强类型 Protocol，
+    避免对调用方强加 import 依赖）：
+      chandelier_regime_aware, chandelier_default_alpha,
+      chandelier_breakeven_enabled, chandelier_breakeven_buffer_r,
+      chandelier_min_breakeven_buffer, chandelier_signal_exit_enabled,
+      chandelier_signal_exit_confirmation_bars, chandelier_timeout_bars,
+      chandelier_max_tp_r, chandelier_enforce_r_floor,
+      chandelier_aggression_overrides (Mapping), chandelier_tf_trail_scale (Mapping)
+
+    SignalConfig 当前满足；将来若拆出独立 ExitConfig 也可满足此接口而无需改本函数。
+    """
+    return ChandelierConfig(
+        regime_aware=source.chandelier_regime_aware,
+        default_profile=profile_from_aggression(source.chandelier_default_alpha),
+        breakeven_enabled=source.chandelier_breakeven_enabled,
+        breakeven_buffer_r=source.chandelier_breakeven_buffer_r,
+        min_breakeven_buffer=source.chandelier_min_breakeven_buffer,
+        signal_exit_enabled=source.chandelier_signal_exit_enabled,
+        signal_exit_confirmation_bars=source.chandelier_signal_exit_confirmation_bars,
+        timeout_bars=source.chandelier_timeout_bars,
+        max_tp_r=source.chandelier_max_tp_r,
+        enforce_r_floor=source.chandelier_enforce_r_floor,
+        aggression_overrides=dict(source.chandelier_aggression_overrides),
+        tf_trail_scale=dict(source.chandelier_tf_trail_scale),
+    )
+
+
 # ── 结果 ────────────────────────────────────────────────────────────────────
 
 

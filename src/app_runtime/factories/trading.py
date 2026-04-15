@@ -11,7 +11,7 @@ from src.clients.economic_calendar import (
     TradingEconomicsCalendarClient,
 )
 from src.clients.economic_calendar_registry import ProviderRegistry
-from src.config import EconomicConfig, load_mt5_settings
+from src.config import EconomicConfig, RiskConfig, load_mt5_settings
 from src.trading.application.module import TradingModule
 from src.trading.runtime.registry import TradingAccountRegistry
 
@@ -62,11 +62,17 @@ def build_provider_registry(settings: EconomicConfig) -> ProviderRegistry:
 
 def build_trading_components(
     storage_writer,
-    economic_settings,
+    economic_settings: EconomicConfig,
+    risk_config: RiskConfig,
     runtime_identity=None,
     *,
     enable_calendar_sync: bool = True,
 ) -> TradingComponents:
+    """构建交易域组件。
+
+    risk_config 必需 — 由 builder 显式注入到 TradingAccountRegistry，
+    替代之前在 registry 内部直接调 get_risk_config() 的全局耦合（ADR-006）。
+    """
     if enable_calendar_sync:
         registry = build_provider_registry(economic_settings)
         economic_calendar_service = EconomicCalendarService(
@@ -85,7 +91,9 @@ def build_trading_components(
     mt5_settings = load_mt5_settings()
     trade_registry = TradingAccountRegistry(
         settings=mt5_settings,
-        economic_calendar_service=economic_calendar_service
+        economic_calendar_service=economic_calendar_service,
+        risk_config=risk_config,
+        economic_config=economic_settings,
     )
     trade_module = TradingModule(
         registry=trade_registry,

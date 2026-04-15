@@ -7,10 +7,10 @@ from typing import Optional
 from src.clients.mt5_account import MT5AccountClient
 from src.clients.mt5_trading import MT5TradingClient
 from src.config import (
+    EconomicConfig,
     MT5Settings,
+    RiskConfig,
     build_account_key,
-    get_economic_config,
-    get_risk_config,
     load_mt5_settings,
     resolve_current_environment,
 )
@@ -21,10 +21,21 @@ from src.trading.application.trading_service import TradingService
 class TradingAccountRegistry:
     def __init__(
         self,
+        *,
+        risk_config: RiskConfig,
+        economic_config: EconomicConfig,
         settings: Optional[MT5Settings] = None,
         economic_calendar_service=None,
     ):
+        """ADR-006: 配置必须由装配层显式注入，不在组件内调用全局加载函数。
+
+        risk_config / economic_config 是必需的命名参数：让构造点一目了然组件
+        依赖了哪些配置；测试可直接传 stub，避免 monkeypatch 全局函数；同进程
+        多实例场景下每个 registry 持有的配置可独立。
+        """
         self._settings = settings or load_mt5_settings()
+        self._risk_config = risk_config
+        self._economic_config = economic_config
         self._economic_calendar_service = economic_calendar_service
         self._lock = threading.RLock()
         self._account_client: MT5AccountClient | None = None
@@ -84,8 +95,8 @@ class TradingAccountRegistry:
                     pre_trade_risk_service=PreTradeRiskService(
                         economic_calendar_service=self._economic_calendar_service,
                         account_service=account_client,
-                        settings=get_economic_config(),
-                        risk_settings=get_risk_config(),
+                        settings=self._economic_config,
+                        risk_settings=self._risk_config,
                     ),
                 )
             return self._trading_service

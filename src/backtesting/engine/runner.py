@@ -332,25 +332,15 @@ class BacktestEngine:
 
         # Chandelier Exit 配置：从 signal.ini 加载（回测与实盘共享同一套出场参数）
         from src.config.signal import get_signal_config as _get_sc
-        from src.trading.positions.exit_rules import ChandelierConfig as _CC
-        from src.trading.positions.exit_rules import profile_from_aggression as _pfa
+        # 复用与实盘同一构建入口（exit_rules.build_chandelier_config），
+        # 避免回测/实盘 Chandelier 参数构造逻辑漂移。
+        from src.trading.positions.exit_rules import (
+            ChandelierConfig as _CC,
+            build_chandelier_config,
+        )
 
         try:
-            _sc = _get_sc()
-            self._chandelier_config = _CC(
-                regime_aware=_sc.chandelier_regime_aware,
-                default_profile=_pfa(_sc.chandelier_default_alpha),
-                breakeven_enabled=_sc.chandelier_breakeven_enabled,
-                breakeven_buffer_r=_sc.chandelier_breakeven_buffer_r,
-                min_breakeven_buffer=_sc.chandelier_min_breakeven_buffer,
-                signal_exit_enabled=_sc.chandelier_signal_exit_enabled,
-                signal_exit_confirmation_bars=_sc.chandelier_signal_exit_confirmation_bars,
-                timeout_bars=_sc.chandelier_timeout_bars,
-                max_tp_r=_sc.chandelier_max_tp_r,
-                enforce_r_floor=_sc.chandelier_enforce_r_floor,
-                aggression_overrides=dict(_sc.chandelier_aggression_overrides),
-                tf_trail_scale=dict(_sc.chandelier_tf_trail_scale),
-            )
+            self._chandelier_config = build_chandelier_config(_get_sc())
         except Exception:
             logger.debug("Using default chandelier config for backtest", exc_info=True)
             self._chandelier_config = _CC(regime_aware=True)

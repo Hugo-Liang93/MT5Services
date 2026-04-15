@@ -901,9 +901,28 @@ domain 组件
 
 ---
 
+88. 2026-04-15：**F-1 + F-3 一并关闭：DI 重构与 ChandelierConfig 构建职责迁出**。两件事都是"装配层显式注入 / 组件不调全局"的同一原则，合并做避免反复改触动同一区域。
+    (1) **F-1 ADR-006 对齐**：`TradingAccountRegistry.__init__()` 增加必需 kwargs `risk_config: RiskConfig` 与 `economic_config: EconomicConfig`；`get_trading_service()` 用 `self._risk_config / self._economic_config` 构造 `PreTradeRiskService`，移除内部 `get_risk_config()` / `get_economic_config()` 全局调用。`build_trading_components()` 工厂签名增加 `risk_config: RiskConfig` 必需参数，`build_trading_layer()` 在装配层显式 `get_risk_config()` 一次性传入。这样：
+    - 测试可直接传 stub config（不必 monkeypatch 全局 cache）
+    - 两个 registry 实例可持有不同 config 而互不影响（同进程多账户铺路）
+    - ADR-006 违规闭环
+    (2) **F-3 ChandelierConfig 构建职责迁出**：`factories/signals.py:419-445` 与 `backtesting/engine/runner.py:340-353` 两处重复构造 ChandelierConfig 的代码块抽出为单一构建入口 `src/trading/positions/exit_rules.py:build_chandelier_config(source)`。该函数接受任何带 `chandelier_*` 字段的对象（duck typing；当前 SignalConfig 满足，将来若拆出独立 ExitConfig 也满足）。两处调用点改为单行调用 `build_chandelier_config(signal_config)`。这样：
+    - DRY：去掉 ~30 行重复代码
+    - 单一职责：出场参数构建归 `exit_rules` 模块（与 `ChandelierConfig` / `profile_from_aggression` 同位）
+    - 防漂移：未来改 chandelier_* 字段映射只需改一处，不会出现"实盘改了回测忘改"
+    测试覆盖：
+    - 新增 `tests/trading/test_account_registry_di.py` 4 个用例（必需 kwargs / 注入对象持有 / 多实例隔离 / 透传到 PreTradeRiskService）
+    - 新增 `tests/trading/test_chandelier_config_builder.py` 4 个用例（全字段映射 / mapping 副本独立 / alpha 派生 default_profile / duck typing 接受）
+    全量 1389 通过（原 1381 + 8）。F-1 / F-3 在 Follow-ups 中标记 closed。
+
+---
+
 ## Follow-ups（未决项）
 
-### F-1：ADR-006 对齐 —— 风控/经济日历配置改为构造函数注入
+### ~~F-1：ADR-006 对齐 —— 风控/经济日历配置改为构造函数注入~~（2026-04-15 由 #88 解决）
+
+<details>
+<summary>原 F-1 备份（已解决）</summary>
 
 **现状**：`src/trading/runtime/registry.py:88` 中 `TradingAccountRegistry.get_trading_service()` 内部直接调用 `get_risk_config()` 与 `get_economic_config()` 两个全局函数来构造 `PreTradeRiskService`。这违反 ADR-006（装配层/组件内不应读全局配置函数），也让测试需要 monkeypatch 全局函数而不能直接注入 mock。
 
@@ -919,6 +938,8 @@ domain 组件
 
 **相关 ADR**：ADR-006（跨模块边界禁止读写私有属性，构造函数注入优先）
 
+</details>
+
 ### F-2：`account_bindings` 空配置导致 worker 空转（P0 业务决策）
 
 **现状**：`signal.ini` / `signal.local.ini` 中所有 `[account_bindings.*]` section 的 `strategies =` 都是空的。`ExecutionIntentPublisher._resolve_target_accounts(strategy)` 在 `_account_bindings` 为空时对任何策略都返回空 iterable，意味着 **`execution_intents` 表不会写入任何行**，所有 worker 实例启动后只能 claim 到空集，处于长期空转。
@@ -931,7 +952,10 @@ domain 组件
 
 **为什么不在本轮代码变更中完成**：策略→账户分配是**业务决策**，不是代码决策，需用户根据策略相关性、风险承担能力等决定。代码架构已经支持。
 
-### F-3：`ChandelierConfig` 构建应从 `factories/signals.py` 挪到 `factories/trading.py` 或 `factories/position.py`
+### ~~F-3：`ChandelierConfig` 构建应从 `factories/signals.py` 挪到 `factories/trading.py` 或 `factories/position.py`~~（2026-04-15 由 #88 解决：抽 `build_chandelier_config()` 到 `exit_rules.py`，与 ChandelierConfig 同模块更符合职责边界，且回测/实盘共用单一入口）
+
+<details>
+<summary>原 F-3 备份（已解决）</summary>
 
 **现状**：`src/app_runtime/factories/signals.py:419-445` 中仍在构建 `ChandelierConfig` 并注入 `PositionManager`。但 Chandelier 是持仓出场参数，职责上与"信号评估/策略注册"完全正交，只是历史上 `chandelier_*` 字段挂在 `SignalConfig` 上所以构建在了 signal 工厂里。本轮（#84）把配置文件拆到 `exit.ini` 后，SignalConfig 仅作为数据传递结构，不再有语义绑定。
 
@@ -943,6 +967,8 @@ domain 组件
 **触发条件**：下次修改持仓出场逻辑（如新增 exit rule）时顺手做；或 F-1 一起做（都是构造函数注入的重构）。
 
 **相关**：#84（本轮 exit.ini 拆分），F-1（ADR-006 对齐）
+
+</details>
 
 ### ~~F-4：Paper Trading session 持久化的完整性审计~~（2026-04-15 由 #86 解决）
 

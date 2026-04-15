@@ -416,23 +416,11 @@ def build_account_runtime_components(
     end_of_day_closeout = ExposureCloseoutController(
         ExposureCloseoutService(trade_module)
     )
-    from src.trading.positions.exit_rules import ChandelierConfig as _ChandelierConfig
-    from src.trading.positions.exit_rules import profile_from_aggression as _pfa
+    # ChandelierConfig 构建职责归 exit_rules 模块（出场参数域）；
+    # signals 工厂只负责把 signal_config 喂进单一构建入口。
+    from src.trading.positions.exit_rules import build_chandelier_config
 
-    _chandelier_cfg = _ChandelierConfig(
-        regime_aware=signal_config.chandelier_regime_aware,
-        default_profile=_pfa(signal_config.chandelier_default_alpha),
-        breakeven_enabled=signal_config.chandelier_breakeven_enabled,
-        breakeven_buffer_r=signal_config.chandelier_breakeven_buffer_r,
-        min_breakeven_buffer=signal_config.chandelier_min_breakeven_buffer,
-        signal_exit_enabled=signal_config.chandelier_signal_exit_enabled,
-        signal_exit_confirmation_bars=signal_config.chandelier_signal_exit_confirmation_bars,
-        timeout_bars=signal_config.chandelier_timeout_bars,
-        max_tp_r=signal_config.chandelier_max_tp_r,
-        enforce_r_floor=signal_config.chandelier_enforce_r_floor,
-        aggression_overrides=dict(signal_config.chandelier_aggression_overrides),
-        tf_trail_scale=dict(signal_config.chandelier_tf_trail_scale),
-    )
+    _chandelier_cfg = build_chandelier_config(signal_config)
     position_manager = PositionManager(
         trading_module=trade_module,
         end_of_day_closeout=end_of_day_closeout,

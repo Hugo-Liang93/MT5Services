@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from src.app_runtime.container import AppContainer
 from src.app_runtime.factories import build_trading_components
-from src.config import get_trading_ops_config
+from src.config import get_risk_config, get_trading_ops_config
 from src.trading.state import (
     TradingStateAlerts,
     TradingStateRecovery,
@@ -22,9 +22,13 @@ def build_trading_layer(
     enable_calendar_sync: bool = True,
 ) -> Optional[str]:
     """Build trading module and optional trading-state helpers."""
+    # 显式加载 risk_config 注入给 TradingAccountRegistry（ADR-006 对齐：
+    # 配置由装配层统一加载并注入，组件不再调全局函数）。
+    risk_config = get_risk_config()
     trading_components = build_trading_components(
         container.storage_writer,
         economic_settings,
+        risk_config=risk_config,
         runtime_identity=container.runtime_identity,
         enable_calendar_sync=enable_calendar_sync,
     )
