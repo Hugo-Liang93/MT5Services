@@ -1,82 +1,85 @@
 # 高风险整改里程碑（P0 / P1）
 
-> 更新日期：2026-04-11  
+> 创建日期：2026-04-11
+> 状态对账：2026-04-15
 > 目标：针对 `signals / indicators / trading` 主链路，给出可执行的最小化 P0/P1 序列（不做兼容回退式迭代）。
 
-## P0（不可延后）
+## 进度汇总（2026-04-15 对账）
 
-### M0.1 启动与入口单一真值源
-- 范围：`src.entrypoint.web`、`pyproject.toml`、启动文档、相关 smoke 测试
-- 目标：
-  - 统一 `mt5services` console script 指向 `src.entrypoint.web:launch`
-  - `python -m src.entrypoint.web` 与 `mt5services` 行为一致
-  - `AGENTS.md`/`docs/architecture` 启动说明与事实一致
-- 验收：
-  - 安装后命令能直接启动（dry-run）
-  - `tests/smoke/test_launch.py::test_main_block_invoke_launch` 通过
+| 里程碑 | 状态 | 证据 / 残留工作 |
+|---|---|---|
+| M0.1 入口单一真值源 | ✅ **已闭环** | `pyproject.toml:86` + `web.py:123 launch()` + `tests/smoke/test_launch.py` 3 测试 |
+| M0.2 启动配置摘要 | ❌ **未闭环** | `launch()` 只打印 api target/host/port/instance；无策略启用/冻结/intrabar/auto_trade 摘要 |
+| M1.1 signals runtime 职责缩口 | ✅ **已闭环** | runtime.py 746 行稳定，方法按 `_apply_policy / _publish / _detect_regime / _apply_filter_chain` 清晰分层 |
+| M1.2 indicators 端口化 | ❌ **未闭环** | `bar_event_handler.py` 13 处 `manager._xxx` 私有调用跨文件，明确违反 ADR-006 |
+| M1.3 trading 生命周期一致性 | ✅ **已闭环** | intents/commands/execution/positions/pending 全部用 `OwnedThreadLifecycle + is_running()`；ADR-005 由 12 个测试守护 |
+| M1.4 观测能力闭环 | ✅ **已闭环** | `intrabar_drop_rate_1m / queue_age_p95_ms / to_decision_latency_p95_ms` 三指标接入告警 + API；`pipeline_trace` + `trade_trace` read model 存在 |
+| M1.5 代码体量风控 | ⚠️ **部分** | runtime.py 746 稳定；executor.py 1276 / positions 865 / readmodels/runtime 1523 → 已由 F-6 ~ F-11 覆盖 |
 
-### M0.2 配置与运行状态可追踪基线
-- 范围：`src/signals`, `src/trading`, 运行时只读视图
-- 目标：
-  - 启动后主入口输出中的关键配置摘要可定位：启用策略、冻结状态、运行模式、intrabar 开关
-- 验收：
-  - API `admin/strategies`、交易状态 trace 与运行状态三方可交叉对账
+**结论**：原 7 项里程碑 5 项已完成、1 项部分（F-6~F-11 接管）、**2 项仍需收尾**（M0.2 + M1.2）。
 
-## P1（可并行推进）
+---
 
-### M1.1 signals 运行时职责缩口
-- 范围：`src/signals/orchestration`
-- 目标：
-  - `runtime.py` 不再混入持久化/投票与状态构建以外的新职责；
-  - status、capability、warmup、recovery 都有单一入口方法。
-- 里程验收：
-  - 文件新增逻辑行数控制在既有子组件内，`runtime.py` 主体逻辑不再膨胀；
-  - 事件链路仍维持相同功能（backtest 与 runtime capability 一致性不变）。
+## 仍需收尾的两项
 
-### M1.2 indicators 私有状态端口化
-- 范围：`src/indicators/query_*`, `snapshot_publisher.py`, `registry_runtime.py`
-- 目标：
-  - `UnifiedIndicatorManager` 对外状态读取和状态变更仅通过正式方法访问；
-  - 避免子模块通过 `manager._xxx` 跨模块读状态。
-- 里程验收：
-  - 在 `query_read.py`/`query_runtime.py` 中无新增 `._xxx` 直接依赖写法；
-  - 添加最小单测验证关键端口读写行为。
+### M0.2 启动配置摘要（估 0.5 天）
 
-### M1.3 trading 生命周期一致性
-- 范围：`src/trading/{execution,positions,pending}`
-- 目标：
-  - `stop/join` 语义统一：线程未结束不清引用；
-  - `is_running()` 与真实运行态一致。
-- 里程验收：
-  - 重入启动/停止场景下无重复启动幽灵线程；
-  - shutdown 路径日志可见失败和超时原因。
+**目的**：让启动日志能一眼回答"这个实例究竟在干什么"——减少"跑着跑着不知道自己跑的是什么配置"的排障成本。
 
-### M1.4 观测能力闭环
-- 范围：`src/indicators/monitoring`, `src/monitoring`, API trace 接口
-- 目标：
-  - 为 intrabar 路径补齐 `drop_rate_1m`、`queue_age_p95`、`decision_latency_p95`；
-  - trade runtime trace 可回放 `signal -> filter -> execution -> result`。
-- 里程验收：
-  - 3 个核心指标在 5 分钟滑动窗口有观测值；
-  - trace 接口对齐 3 条关键阻断场景（过滤、降级、超时）。
+**最小实现**：
+- 在 `AppRuntime.start()` 完成后输出一条结构化 INFO：
+  ```
+  startup_summary: instance=... role=... group=... mode=...
+                   auto_trade=true active_strategies=[...] frozen_strategies=[...]
+                   intrabar_enabled=... intrabar_strategies=[...]
+                   account_bindings={alias: [strategies...]}
+  ```
+- 数据源：AppContainer 中已有的 `signal_config` / `runtime_identity` / `runtime_mode_controller`，无需新建聚合
 
-### M1.5 代码体量风控（不加新功能）
-- 范围：`src/signals/orchestration/runtime.py`, `src/trading/execution/executor.py`, `src/trading/positions/manager.py`
-- 目标：
-  - 禁止在现有类中新增新逻辑路径，不做“兼容补丁”分支；
-  - 每个里程碑只做职责收口 + 端口清理。
-- 里程验收：
-  - 每次修改附带 `before/after` 文件体量增减说明；
-  - 关键行为依赖测试未下降（现有 smoke + 新增入口测试）。
+**验收**：
+- 启动时日志中出现此行
+- `admin/strategies` / runtime mode / 该行**三方对账一致**
 
-## 阶段交付顺序
+### M1.2 indicators 端口化（估 1-2 天）
 
-1. 先完成 P0（1-2 天）：入口、启动一致性与可观测基线，避免误判。
-2. 立刻启动 M1.2、M1.3 并行（约 5 天）：减少主链路耦合风险。
-3. 完成 M1.1 后补 M1.4、M1.5（约 7 天）：把监控闭环与职责收口同步。
+**目的**：ADR-006 合规。`src/indicators/runtime/bar_event_handler.py` 目前对 `UnifiedIndicatorManager` 有 13 处 `manager._xxx` 访问：
+
+```
+manager._mark_event_skipped / _mark_event_completed / _mark_event_failed
+manager._select_indicator_names_for_history
+manager._compute_confirmed_results_for_bars / _compute_intrabar_results_for_bars
+manager._write_back_results / _load_confirmed_bars / _group_indicator_values
+manager._publish_intrabar_snapshot
+```
+
+这些是"handler 函数被 manager 调用，但又反过来回调 manager 私有方法"的循环依赖。不是 ADR-002 允许的"函数化提取 + manager 显式传参"模式。
+
+**方案**：
+1. 在 `UnifiedIndicatorManager` 定义 `BarEventPort` Protocol（或直接加 public 方法 `mark_event_skipped / compute_confirmed_results / ...`）
+2. bar_event_handler 改为接收该 port 而非 manager
+3. 保留现有行为——只是端口重命名 + 去私有下划线
+4. 新增测试验证端口稳定性
+
+**验收**：
+- `grep "manager\._" src/indicators/runtime/` 返回空
+- 指标事件循环仍通过现有 snapshot/event 测试
+
+---
+
+## 后续选择
+
+M0.2 / M1.2 之外的架构演进由 `docs/codebase-review.md` 的 F-6 ~ F-11 跟踪：
+- F-6 RuntimeReadModel 1523 行拆分
+- F-7 TradeExecutor 1276 行拆分
+- F-8 factories/signals.py 1076 行重组
+- F-9 TradingModule 1051 行拆分
+- F-10 Config 模块职责分离
+- F-11 API root `__init__.py` 工厂化
+
+---
 
 ## 风险和回退
 
-- 任何阶段若出现行为回归（信号生成率异常、交易下单丢失），先回退到“上一个完整可观测里程碑”；
+- 任何阶段若出现行为回归（信号生成率异常、交易下单丢失），先回退到"上一个完整可观测里程碑"；
 - 回退标准：入口 smoke + 关键链路 trace（至少 signal/filter/execution）一致。
 
