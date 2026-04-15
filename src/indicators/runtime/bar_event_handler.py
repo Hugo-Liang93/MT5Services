@@ -129,12 +129,12 @@ def process_symbol_timeframe_batch(
                     )
                     skipped_bar_missing += 1
                     if durable_event:
-                        manager._mark_event_skipped(event_id, "bar_missing")
+                        mark_event_skipped(manager, event_id, "bar_missing")
                     continue
             else:
                 prefix = bars[: end_idx + 1]
                 prefix = prefix[-lookback:]
-            selected_names = manager._select_indicator_names_for_history(len(prefix))
+            selected_names = select_indicator_names_for_history(manager, len(prefix))
             if not selected_names:
                 logger.debug(
                     "Skipping indicator computation for %s/%s at %s due to insufficient history (%s bars)",
@@ -145,10 +145,11 @@ def process_symbol_timeframe_batch(
                 )
                 skipped_insufficient_history += 1
                 if durable_event:
-                    manager._mark_event_skipped(event_id, "insufficient_history")
+                    mark_event_skipped(manager, event_id, "insufficient_history")
                 continue
 
-            results, compute_time_ms = manager._compute_confirmed_results_for_bars(
+            results, compute_time_ms = compute_confirmed_results_for_bars(
+                manager,
                 symbol,
                 timeframe,
                 prefix,
@@ -157,7 +158,7 @@ def process_symbol_timeframe_batch(
             if not results:
                 skipped_insufficient_history += 1
                 if durable_event:
-                    manager._mark_event_skipped(event_id, "insufficient_history")
+                    mark_event_skipped(manager, event_id, "insufficient_history")
                 continue
 
             # Broadcast: indicator computation completed
@@ -169,11 +170,12 @@ def process_symbol_timeframe_batch(
                 )
 
             # Attach trace_id so downstream snapshot_publisher can forward it.
-            # Use try/finally to guarantee cleanup — if _write_back_results
+            # Use try/finally to guarantee cleanup — if write_back_results
             # raises, a stale trace_id must not leak into later events.
             manager.set_current_trace_id(trace_id)
             try:
-                manager._write_back_results(
+                write_back_results(
+                    manager,
                     symbol,
                     timeframe,
                     prefix,
@@ -186,7 +188,7 @@ def process_symbol_timeframe_batch(
 
             computed += 1
             if durable_event:
-                manager._mark_event_completed(event_id)
+                mark_event_completed(manager, event_id)
         except Exception as exc:
             failed += 1
             logger.exception(
@@ -196,7 +198,7 @@ def process_symbol_timeframe_batch(
                 bar_time,
             )
             if durable_event:
-                manager._mark_event_failed(event_id, str(exc))
+                mark_event_failed(manager, event_id, str(exc))
 
     logger.info(
         "Processed closed-bar batch for %s/%s: events=%s computed=%s skipped_history=%s skipped_bar_missing=%s failed=%s durable=%s",
@@ -221,7 +223,7 @@ def process_closed_bar_event(
     pipeline_bus = _runtime_get_pipeline_bus(manager)
     trace_id = uuid4().hex
     try:
-        bars = manager._load_confirmed_bars(symbol, timeframe, bar_time=bar_time)
+        bars = load_confirmed_bars(manager, symbol, timeframe, bar_time=bar_time)
 
         if pipeline_bus is not None:
             ohlc = _extract_ohlc(bars[-1]) if bars else None
@@ -231,7 +233,8 @@ def process_closed_bar_event(
 
         if not bars:
             return
-        results, compute_time_ms = manager._compute_confirmed_results_for_bars(
+        results, compute_time_ms = compute_confirmed_results_for_bars(
+            manager,
             symbol,
             timeframe,
             bars,
@@ -249,7 +252,8 @@ def process_closed_bar_event(
 
         manager.set_current_trace_id(trace_id)
         try:
-            manager._write_back_results(
+            write_back_results(
+                manager,
                 symbol,
                 timeframe,
                 bars,
@@ -305,7 +309,8 @@ def process_intrabar_event(
     bars = load_intrabar_bars(manager, symbol, timeframe, bar)
     if not bars:
         return {}
-    results, _compute_time_ms = manager._compute_intrabar_results_for_bars(
+    results, _compute_time_ms = compute_intrabar_results_for_bars(
+        manager,
         symbol,
         timeframe,
         bars,
@@ -322,13 +327,14 @@ def process_intrabar_event(
             indicator_names=sorted(results.keys()),
         )
 
-    grouped = manager._group_indicator_values(results)
+    grouped = group_indicator_values(manager, results)
     if not grouped:
         return {}
 
     manager.set_current_trace_id(trace_id)
     try:
-        result = manager._publish_intrabar_snapshot(
+        result = publish_intrabar_snapshot(
+            manager,
             symbol,
             timeframe,
             bar.time,

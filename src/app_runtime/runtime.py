@@ -107,6 +107,9 @@ class AppRuntime:
                 step.get("duration_ms", 0) for step in self._status["steps"].values()
             )
 
+            # M0.2: 启动配置摘要 —— 让排障不用翻 8 个 ini + 3 个 API 端点
+            self._log_startup_summary()
+
         except Exception as exc:
             self._mark_step(
                 current_step,
@@ -126,6 +129,68 @@ class AppRuntime:
             logger.exception("Failed to start runtime: %s", exc)
             self.stop()
             raise
+
+    def _log_startup_summary(self) -> None:
+        """输出一行结构化启动摘要，供排障时替代翻 ini + API 三方对账。
+
+        故意使用惰性字段读取 + 失败降级为 N/A，不能因为摘要输出本身炸掉启动。
+        """
+        c = self.container
+        identity = c.runtime_identity
+        instance = getattr(identity, "instance_name", "?")
+        environment = getattr(identity, "environment", "?")
+        role = getattr(identity, "instance_role", "?")
+
+        mode = "?"
+        if c.runtime_mode_controller is not None:
+            try:
+                current = c.runtime_mode_controller.current_mode()
+                mode = getattr(current, "value", str(current)) if current else "?"
+            except Exception:
+                mode = "error"
+
+        signal_config: Any | None = None
+        if self._signal_config_loader is not None:
+            try:
+                signal_config = self._signal_config_loader()
+            except Exception:
+                signal_config = None
+
+        auto_trade = "?"
+        intrabar_enabled = "?"
+        active_strategies: list[str] = []
+        intrabar_strategies: list[str] = []
+        bindings: dict[str, list[str]] = {}
+        if signal_config is not None:
+            auto_trade = str(getattr(signal_config, "auto_trade_enabled", "?"))
+            intrabar_enabled = str(
+                getattr(signal_config, "intrabar_trading_enabled", "?")
+            )
+            tf_map = getattr(signal_config, "strategy_timeframes", {}) or {}
+            active_strategies = sorted(tf_map.keys())
+            intrabar_strategies = sorted(
+                getattr(signal_config, "intrabar_trading_enabled_strategies", []) or []
+            )
+            raw_bindings = getattr(signal_config, "account_bindings", {}) or {}
+            bindings = {
+                alias: sorted(strategies or [])
+                for alias, strategies in raw_bindings.items()
+            }
+
+        logger.info(
+            "startup_summary instance=%s env=%s role=%s mode=%s "
+            "auto_trade=%s intrabar_enabled=%s "
+            "active_strategies=%s intrabar_strategies=%s account_bindings=%s",
+            instance,
+            environment,
+            role,
+            mode,
+            auto_trade,
+            intrabar_enabled,
+            active_strategies,
+            intrabar_strategies,
+            bindings,
+        )
 
     def stop(self) -> None:
         """Gracefully stop all components in reverse order."""

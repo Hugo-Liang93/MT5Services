@@ -9,60 +9,34 @@
 | 里程碑 | 状态 | 证据 / 残留工作 |
 |---|---|---|
 | M0.1 入口单一真值源 | ✅ **已闭环** | `pyproject.toml:86` + `web.py:123 launch()` + `tests/smoke/test_launch.py` 3 测试 |
-| M0.2 启动配置摘要 | ❌ **未闭环** | `launch()` 只打印 api target/host/port/instance；无策略启用/冻结/intrabar/auto_trade 摘要 |
+| M0.2 启动配置摘要 | ✅ **已闭环 2026-04-15** | `AppRuntime._log_startup_summary()` 输出 instance/env/role/mode/auto_trade/intrabar/strategies/bindings；`tests/app_runtime/test_startup_summary.py` 4 测试守护 |
 | M1.1 signals runtime 职责缩口 | ✅ **已闭环** | runtime.py 746 行稳定，方法按 `_apply_policy / _publish / _detect_regime / _apply_filter_chain` 清晰分层 |
-| M1.2 indicators 端口化 | ❌ **未闭环** | `bar_event_handler.py` 13 处 `manager._xxx` 私有调用跨文件，明确违反 ADR-006 |
+| M1.2 indicators 端口化 | ✅ **已闭环 2026-04-15** | `bar_event_handler.py` 10 处 `manager._xxx` 全部改用 `query_services/runtime.py` 模块级函数；`tests/indicators/test_adr_006_boundary.py` 防回归 guard |
 | M1.3 trading 生命周期一致性 | ✅ **已闭环** | intents/commands/execution/positions/pending 全部用 `OwnedThreadLifecycle + is_running()`；ADR-005 由 12 个测试守护 |
 | M1.4 观测能力闭环 | ✅ **已闭环** | `intrabar_drop_rate_1m / queue_age_p95_ms / to_decision_latency_p95_ms` 三指标接入告警 + API；`pipeline_trace` + `trade_trace` read model 存在 |
 | M1.5 代码体量风控 | ⚠️ **部分** | runtime.py 746 稳定；executor.py 1276 / positions 865 / readmodels/runtime 1523 → 已由 F-6 ~ F-11 覆盖 |
 
-**结论**：原 7 项里程碑 5 项已完成、1 项部分（F-6~F-11 接管）、**2 项仍需收尾**（M0.2 + M1.2）。
+**结论**：原 7 项里程碑 **6 项已完成、1 项部分**（F-6~F-11 接管）。2026-04-11 P0/P1 里程碑**全部闭环**。
 
 ---
 
-## 仍需收尾的两项
+## 收尾记录
 
-### M0.2 启动配置摘要（估 0.5 天）
+### M0.2 启动配置摘要（2026-04-15 完成）
 
-**目的**：让启动日志能一眼回答"这个实例究竟在干什么"——减少"跑着跑着不知道自己跑的是什么配置"的排障成本。
+- 实现：[`src/app_runtime/runtime.py`](../../src/app_runtime/runtime.py) `_log_startup_summary()`，在 `start()` 完成后输出单行 `startup_summary`
+- 数据源：`container.runtime_identity` + `runtime_mode_controller.current_mode()` + `signal_config_loader()`
+- 输出字段：`instance` / `env` / `role` / `mode` / `auto_trade` / `intrabar_enabled` / `active_strategies` / `intrabar_strategies` / `account_bindings`
+- 错误降级：loader 抛异常 → 字段降为 `?`/`[]`/`{}`，不炸启动
+- 测试：[`tests/app_runtime/test_startup_summary.py`](../../tests/app_runtime/test_startup_summary.py) 4 用例（正常 / signal_config / loader 失败 / mode 失败）
 
-**最小实现**：
-- 在 `AppRuntime.start()` 完成后输出一条结构化 INFO：
-  ```
-  startup_summary: instance=... role=... group=... mode=...
-                   auto_trade=true active_strategies=[...] frozen_strategies=[...]
-                   intrabar_enabled=... intrabar_strategies=[...]
-                   account_bindings={alias: [strategies...]}
-  ```
-- 数据源：AppContainer 中已有的 `signal_config` / `runtime_identity` / `runtime_mode_controller`，无需新建聚合
+### M1.2 indicators 端口化（2026-04-15 完成）
 
-**验收**：
-- 启动时日志中出现此行
-- `admin/strategies` / runtime mode / 该行**三方对账一致**
-
-### M1.2 indicators 端口化（估 1-2 天）
-
-**目的**：ADR-006 合规。`src/indicators/runtime/bar_event_handler.py` 目前对 `UnifiedIndicatorManager` 有 13 处 `manager._xxx` 访问：
-
-```
-manager._mark_event_skipped / _mark_event_completed / _mark_event_failed
-manager._select_indicator_names_for_history
-manager._compute_confirmed_results_for_bars / _compute_intrabar_results_for_bars
-manager._write_back_results / _load_confirmed_bars / _group_indicator_values
-manager._publish_intrabar_snapshot
-```
-
-这些是"handler 函数被 manager 调用，但又反过来回调 manager 私有方法"的循环依赖。不是 ADR-002 允许的"函数化提取 + manager 显式传参"模式。
-
-**方案**：
-1. 在 `UnifiedIndicatorManager` 定义 `BarEventPort` Protocol（或直接加 public 方法 `mark_event_skipped / compute_confirmed_results / ...`）
-2. bar_event_handler 改为接收该 port 而非 manager
-3. 保留现有行为——只是端口重命名 + 去私有下划线
-4. 新增测试验证端口稳定性
-
-**验收**：
-- `grep "manager\._" src/indicators/runtime/` 返回空
-- 指标事件循环仍通过现有 snapshot/event 测试
+- 问题：`bar_event_handler.py` 10 处 `manager._xxx` 跨模块私有访问，通过 `QueryBindingMixin` 动态绑定生效但绕过 ADR-006
+- 修复：全部替换为 `query_services/runtime.py` 已存在的模块级函数（`mark_event_skipped` / `mark_event_completed` / `mark_event_failed` / `select_indicator_names_for_history` / `compute_confirmed_results_for_bars` / `compute_intrabar_results_for_bars` / `load_confirmed_bars` / `write_back_results` / `group_indicator_values` / `publish_intrabar_snapshot`）
+- 零行为改变：模块级函数本身就是 mixin 动态绑定的内部实现，只是显式调用它而不是绕 manager 一圈
+- 防回归：[`tests/indicators/test_adr_006_boundary.py`](../../tests/indicators/test_adr_006_boundary.py) 源码扫描测试，下次有人写 `manager._xxx` 就红
+- 验证：`tests/indicators/ 118/118 + 更广 676/676 全通过`
 
 ---
 
