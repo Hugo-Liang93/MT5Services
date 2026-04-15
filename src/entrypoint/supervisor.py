@@ -177,7 +177,10 @@ class Supervisor:
                         instance_name,
                         exc,
                     )
-                    # 临时把 restart_count 累加，下次仍按指数回退
+                    # Worker gate 失败：累加 restart_count 让下次重试用更大的指数回退
+                    # 间隔（与正常 worker 退出后的重试延迟逻辑一致，复用 line 158 的
+                    # 2^min(count, 4) 公式）。保留旧 process 引用，避免下次循环误入
+                    # "新进程"路径。
                     self._managed[instance_name] = ManagedProcess(
                         instance_name=instance_name,
                         process=managed.process,

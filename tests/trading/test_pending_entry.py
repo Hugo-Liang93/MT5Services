@@ -614,3 +614,90 @@ class TestPendingEntryManager:
         assert cancellation_port.cancel_orders_by_tickets.call_args_list[0].args[0] == [7005]
         assert "sig-buy" in mgr._mt5_orders
         assert "sig-sell" not in mgr._mt5_orders
+
+
+# ── B2: OwnedThreadLifecycle 集成测试 ─────────────────────────────────────
+
+
+class TestPendingEntryLifecycleIntegration:
+    """验证 PendingEntryManager 改用 OwnedThreadLifecycle 后线程行为正确。
+
+    重点守护：start() / shutdown() 通过 lifecycle 工具达成与之前手写代码同等
+    语义（is_running 双线程联检 / shutdown 后引用清空 / 重启可成功）。
+    """
+
+    def _make_manager(self) -> PendingEntryManager:
+        return PendingEntryManager(
+            config=PendingEntryConfig(check_interval=0.05),
+            market_service=FakeMarketService(),
+            cancellation_port=FakeCancellationPort(),
+            execute_fn=MagicMock(),
+        )
+
+    def test_start_spawns_both_lifecycles_to_running_state(self) -> None:
+        mgr = self._make_manager()
+        try:
+            mgr.start()
+            # 等待两个 lifecycle 都进入 running
+            for _ in range(50):
+                if mgr.is_running():
+                    break
+                time.sleep(0.01)
+            assert mgr.is_running() is True
+            # 双线程引用都已设置
+            assert mgr._monitor_thread is not None
+            assert mgr._fill_worker_thread is not None
+        finally:
+            mgr.shutdown()
+
+    def test_shutdown_terminates_both_threads_and_clears_references(self) -> None:
+        mgr = self._make_manager()
+        mgr.start()
+        # 等线程起来再 shutdown
+        for _ in range(50):
+            if mgr.is_running():
+                break
+            time.sleep(0.01)
+        mgr.shutdown()
+        # 线程引用清空（OwnedThreadLifecycle.wait_previous 干净退出后清引用）
+        assert mgr._monitor_thread is None
+        assert mgr._fill_worker_thread is None
+        assert mgr.is_running() is False
+
+    def test_restart_after_shutdown_works(self) -> None:
+        """shutdown 后再 start 应该能重新拉起两个线程。"""
+        mgr = self._make_manager()
+        mgr.start()
+        for _ in range(50):
+            if mgr.is_running():
+                break
+            time.sleep(0.01)
+        mgr.shutdown()
+
+        # 重启
+        mgr.start()
+        try:
+            for _ in range(50):
+                if mgr.is_running():
+                    break
+                time.sleep(0.01)
+            assert mgr.is_running() is True
+        finally:
+            mgr.shutdown()
+
+    def test_double_start_is_idempotent(self) -> None:
+        """重复 start 不应再 spawn（lifecycle.ensure_running 跳过 alive 线程）。"""
+        mgr = self._make_manager()
+        mgr.start()
+        try:
+            for _ in range(50):
+                if mgr.is_running():
+                    break
+                time.sleep(0.01)
+            first_monitor = mgr._monitor_thread
+            first_fill = mgr._fill_worker_thread
+            mgr.start()  # 第二次 start
+            assert mgr._monitor_thread is first_monitor
+            assert mgr._fill_worker_thread is first_fill
+        finally:
+            mgr.shutdown()

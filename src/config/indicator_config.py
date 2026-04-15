@@ -289,89 +289,47 @@ class ConfigLoader:
         return unified_config
     
     @staticmethod
-    def from_yaml(filepath: str) -> UnifiedIndicatorConfig:
-        """
-        从YAML文件加载配置
-        
-        Args:
-            filepath: YAML文件路径
-            
-        Returns:
-            统一配置对象
-        """
-        try:
-            import yaml
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = yaml.safe_load(f)
-            
-            # 转换为JSON格式处理
-            import tempfile
-            import os
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp:
-                json.dump(data, tmp)
-                tmp_path = tmp.name
-            
-            try:
-                config = ConfigLoader.from_json(tmp_path)
-            finally:
-                os.unlink(tmp_path)
-            
-            return config
-            
-        except ImportError:
-            logger.warning("PyYAML not installed, falling back to JSON")
-            # 尝试将YAML文件重命名为JSON
-            json_path = filepath.replace('.yaml', '.json').replace('.yml', '.json')
-            if Path(json_path).exists():
-                return ConfigLoader.from_json(json_path)
-            else:
-                raise ImportError("PyYAML is required for YAML config files")
-    
-    @staticmethod
     def load(config_file: Optional[str] = None) -> UnifiedIndicatorConfig:
-        """
-        自动检测并加载配置文件
-        
+        """加载指标配置（仅支持 JSON 格式）。
+
+        历史上曾支持 YAML，配合 PyYAML 缺失时静默回退到 JSON 的双轨路径
+        — 这是典型的"隐式补丁式兼容"，调用方无法预知 source of truth 切换。
+        现已收口为单一 JSON 入口；YAML/YML 路径会 fail-fast。
+
         Args:
-            config_file: 配置文件路径，如果为None则自动检测
-            
+            config_file: 配置文件路径，None 时自动用 config/indicators.json
+
         Returns:
             统一配置对象
         """
         if config_file is None:
-            # 自动检测配置文件
-            possible_paths = [
-                "config/indicators.json",
-                "config/indicators.yaml",
-                "config/indicators.yml",
-            ]
-            
-            for path in possible_paths:
-                if Path(path).exists():
-                    config_file = path
-                    break
-            
-            if config_file is None:
-                # 使用默认配置
+            default_path = "config/indicators.json"
+            if Path(default_path).exists():
+                config_file = default_path
+            else:
                 logger.warning("No config file found, using default configuration")
-                shared_symbols, shared_timeframes, shared_reload_interval = _shared_indicator_defaults()
+                shared_symbols, shared_timeframes, shared_reload_interval = (
+                    _shared_indicator_defaults()
+                )
                 return UnifiedIndicatorConfig(
                     symbols=shared_symbols,
                     timeframes=shared_timeframes,
                     reload_interval=shared_reload_interval,
                 )
-        
-        # 根据文件扩展名选择加载器
+
         config_file = str(config_file)
-        
-        if config_file.endswith('.json'):
+
+        if config_file.endswith(".json"):
             return ConfigLoader.from_json(config_file)
-        elif config_file.endswith('.yaml') or config_file.endswith('.yml'):
-            return ConfigLoader.from_yaml(config_file)
-        elif config_file.endswith('.ini'):
+        if config_file.endswith((".yaml", ".yml")):
+            raise NotImplementedError(
+                "YAML indicator config is no longer supported. "
+                f"Convert to JSON: {config_file} → "
+                f"{config_file.rsplit('.', 1)[0]}.json"
+            )
+        if config_file.endswith(".ini"):
             return ConfigLoader.from_ini(config_file)
-        else:
-            raise ValueError(f"Unsupported config file format: {config_file}")
+        raise ValueError(f"Unsupported config file format: {config_file}")
 
 
 class ConfigManager:

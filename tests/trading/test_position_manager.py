@@ -527,3 +527,92 @@ def test_sync_open_positions_falls_back_to_current_sl_when_unpersisted() -> None
     # fallback 到当前 SL 作为近似 baseline
     assert pos.initial_stop_loss == 2992.0
     assert pos.initial_risk == 8.0  # 3000 - 2992
+
+
+def test_sync_open_positions_syncs_breakeven_activated_from_persisted_flag() -> None:
+    """B8 修复：DB 持久化 breakeven_applied=True 时，恢复必须同步
+    breakeven_activated=True，否则 _evaluate_chandelier_exit 会重复触发 breakeven。
+    """
+    trading = DummyTradingModule(
+        positions=[
+            SimpleNamespace(
+                ticket=701,
+                symbol="XAUUSD",
+                volume=0.1,
+                price_open=3000.0,
+                sl=3005.0,  # SL 已被 trail 到 entry 之上（曾激活 breakeven）
+                tp=3020.0,
+                time=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                type=0,
+                comment="auto:sma:buy",
+            )
+        ]
+    )
+    manager = _manager(trading)
+    manager.set_recovery_hooks(
+        position_context_resolver=lambda ticket, comment: {
+            "signal_id": "sig-be",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "fill_price": 3000.0,
+            "atr_at_entry": 4.0,
+            "comment": comment,
+            "source": "audit_recovery",
+        },
+        position_state_resolver=lambda ticket: {
+            "initial_stop_loss": 2992.0,
+            "breakeven_applied": True,  # DB 中持久化的"曾激活"标志
+        },
+    )
+
+    result = manager.sync_open_positions()
+    assert result["synced"] == 1
+
+    pos = manager._positions[701]
+    # 持久化标志保留
+    assert pos.breakeven_applied is True
+    # 关键：运行时活跃标志同步置 True，避免 _evaluate_chandelier_exit
+    # 误以为 breakeven 还没激活而重复触发
+    assert pos.breakeven_activated is True
+
+
+def test_sync_open_positions_keeps_breakeven_activated_false_when_not_persisted() -> None:
+    """没有持久化 breakeven_applied 标志时，breakeven_activated 应保持 False（默认值）。"""
+    trading = DummyTradingModule(
+        positions=[
+            SimpleNamespace(
+                ticket=702,
+                symbol="XAUUSD",
+                volume=0.1,
+                price_open=3000.0,
+                sl=2990.0,  # SL 仍在 entry 之下，未触发过 breakeven
+                tp=3020.0,
+                time=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                type=0,
+                comment="auto:sma:buy",
+            )
+        ]
+    )
+    manager = _manager(trading)
+    manager.set_recovery_hooks(
+        position_context_resolver=lambda ticket, comment: {
+            "signal_id": "sig-no-be",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "fill_price": 3000.0,
+            "atr_at_entry": 4.0,
+            "comment": comment,
+            "source": "audit_recovery",
+        },
+        position_state_resolver=lambda ticket: {
+            "initial_stop_loss": 2990.0,
+            # 不带 breakeven_applied
+        },
+    )
+
+    result = manager.sync_open_positions()
+    assert result["synced"] == 1
+
+    pos = manager._positions[702]
+    assert pos.breakeven_applied is False
+    assert pos.breakeven_activated is False

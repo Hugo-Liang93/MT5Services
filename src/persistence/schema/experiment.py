@@ -43,6 +43,13 @@ SET status = 'backtest',
 WHERE experiment_id = %s;
 """
 
+LINK_MINING_RUN_SQL = """
+UPDATE experiments
+SET mining_run_id = %s,
+    updated_at = NOW()
+WHERE experiment_id = %s;
+"""
+
 ADVANCE_TO_PAPER_SQL = """
 UPDATE experiments
 SET status = 'paper_trading',

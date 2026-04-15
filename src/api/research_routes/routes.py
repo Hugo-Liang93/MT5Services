@@ -75,7 +75,7 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
         if repo is not None:
             repo.save_mining_result(result)
 
-        # 更新 experiment
+        # 更新 experiment：通过仓储公开端口（ADR-006），不再访问 _writer/_execute 私有
         if request.experiment_id:
             try:
                 from src.persistence.repositories.experiment_repo import (
@@ -83,13 +83,9 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
                 )
 
                 if repo is not None:
-                    exp_repo = ExperimentRepository(repo._writer)
+                    exp_repo = ExperimentRepository(repo.writer)
                     exp_repo.ensure_schema()
-                    exp_repo._execute(
-                        "UPDATE experiments SET mining_run_id = %s, updated_at = NOW() "
-                        "WHERE experiment_id = %s",
-                        (run_id, request.experiment_id),
-                    )
+                    exp_repo.link_to_mining_run(request.experiment_id, run_id)
             except Exception:
                 logger.debug("Failed to update experiment", exc_info=True)
 

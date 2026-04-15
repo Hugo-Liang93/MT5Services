@@ -199,6 +199,13 @@ def sync_open_positions(manager: PositionManager) -> dict[str, Any]:
             ),
             trailing_active=bool(merged_context.get("trailing_active")),
         )
+        # 关键恢复一致性：breakeven_applied（DB 持久化标志）必须同步到
+        # breakeven_activated（运行时活跃标志），否则 _evaluate_chandelier_exit
+        # 会以为 breakeven 还没激活，可能重复触发 breakeven 移动逻辑。
+        # SL 已在 entry 之上时虽然 max(new_sl, current_sl) 不会真的回退，
+        # 但状态语义错乱会让后续判断（如 lock_ratio 计算）基于错误的"未激活"前提。
+        if pos.breakeven_applied:
+            pos.breakeven_activated = True
         # Chandelier Exit 基线恢复：
         # 优先使用 DB 持久化的 initial_stop_loss（开仓时记录，不随 trailing 漂移），
         # 只有在从未持久化过的历史持仓（如首次启动扫描到 broker-side 遗留单）时

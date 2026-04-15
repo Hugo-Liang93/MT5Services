@@ -103,7 +103,11 @@ class TrackedPosition:
     )
     last_r_multiple: float = 0.0  # 退出时的 R 倍数
     last_exit_regime: str = ""  # 退出时的 regime
-    # 保留字段（历史用途，现用于 peak 跟踪）
+    # DB 持久化字段（recovery 标志）：
+    # - breakeven_applied：DB 行 `position_runtime_states.breakeven_applied`，
+    #   表示"该持仓在历史上是否曾触发过 breakeven 移动"。reconciliation 恢复时
+    #   从 DB 读，并同步 breakeven_activated 让运行时知道已激活，避免重复触发。
+    # - trailing_active：同上，trailing 是否曾激活过的持久化标志（recovery 用）。
     breakeven_applied: bool = False
     trailing_active: bool = False
     highest_price: Optional[float] = None

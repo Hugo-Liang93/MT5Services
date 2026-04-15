@@ -47,6 +47,16 @@ class BacktestRepository:
     def __init__(self, writer: "TimescaleWriter") -> None:
         self._writer = writer
 
+    @property
+    def writer(self) -> "TimescaleWriter":
+        """公开 writer 端口（ADR-006）。
+
+        允许同进程内其它 repository（如 ExperimentRepository）通过同一个 writer
+        共享 DB 连接池，避免装配方持有 BacktestRepository 还要再单独构造 writer。
+        消费方应只用此 property，禁止访问 `_writer` 私有属性。
+        """
+        return self._writer
+
     def ensure_schema(self) -> None:
         """确保回测相关表结构已创建（含推荐表）。"""
         try:

@@ -11,6 +11,7 @@ from src.persistence.schema.experiment import (
     DDL,
     FETCH_EXPERIMENT_SQL,
     INSERT_EXPERIMENT_SQL,
+    LINK_MINING_RUN_SQL,
     LIST_EXPERIMENTS_SQL,
     MARK_ABANDONED_SQL,
     RECORD_BACKTEST_METRICS_SQL,
@@ -91,6 +92,14 @@ class ExperimentRepository:
     ) -> None:
         """创建新实验记录。"""
         self._execute(INSERT_EXPERIMENT_SQL, (experiment_id, status, symbol, timeframe))
+
+    def link_to_mining_run(self, experiment_id: str, mining_run_id: str) -> None:
+        """关联实验到挖掘运行（更新 mining_run_id 字段）。
+
+        与 advance_to_backtest / advance_to_paper 同语义：实验生命周期状态推进的
+        唯一公开入口。API 层不应再用 _execute() 直接写 SQL。
+        """
+        self._execute(LINK_MINING_RUN_SQL, (mining_run_id, experiment_id))
 
     def advance_to_backtest(self, experiment_id: str, backtest_run_id: str) -> None:
         """记录回测关联并推进状态。"""

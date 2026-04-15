@@ -925,6 +925,34 @@ domain 组件
 
 ---
 
+90. 2026-04-15：**架构师全项目审查 — 5 个真问题修复 + 6 项误报识别 + 6 项大重构记 follow-up**。
+    用 3 个并行 Explore agent 扫描 + 关键事实核验后修复以下：
+    (1) **B1 ADR-006 违反**：`api/research_routes/routes.py:86` 用 `repo._writer` 私有访问；`exp_repo._execute(...)` 直接写 SQL 也是越权。修复：`BacktestRepository` 加公开 `writer` property；`ExperimentRepository` 加 `link_to_mining_run()` 公开方法（与已有 `advance_to_backtest` / `advance_to_paper` 同语义）+ 配套 `LINK_MINING_RUN_SQL` schema 常量；API 路由改为 `repo.writer` + `exp_repo.link_to_mining_run(...)`。
+    (2) **B2 PendingEntryManager DRY 违反**：手写两份 50 行线程启停代码（`_monitor_thread` + `_fill_worker_thread`），与 `OwnedThreadLifecycle` 工具类的 ADR-005 contract 重复实现。修复：双 lifecycle 实例（共享 `_stop_event`），`start()` / `shutdown()` 改为调 lifecycle.wait_previous / ensure_running / stop；删除 ~50 行重复的 join/timeout/僵尸清理代码。新增 4 个 lifecycle 集成测试（启停/重启/idempotent/引用清理）。
+    (3) **B7 双轨配置补丁**：`indicator_config.py` 的 `ConfigLoader.load()` 自动检测 yaml/yml/json 三种路径 + `from_yaml()` 在 PyYAML 缺失时静默 fallback 到 JSON。这是典型"补丁式兼容"——调用方无法预知 source of truth 切换。grep 全 src 确认 `from_yaml` 无外部调用 + 实际配置只有 `config/indicators.json`。修复：删除 `from_yaml()` 方法；`load()` 收口为单一 JSON 入口；遇 yaml/yml 路径 `raise NotImplementedError` fail-fast。
+    (4) **B8 真 Bug 揭示**：审计 `breakeven_applied` 字段时发现它**不是简单冗余**（DB schema `position_runtime_states.breakeven_applied` 列 + TradingStateStore 写入），而是与运行时 `breakeven_activated` 字段语义不同（DB 持久化历史标志 vs 运行时活跃状态）。**真 bug**：`reconciliation.sync_open_positions()` 恢复持仓时只设 `breakeven_applied`，未同步 `breakeven_activated`。后果：`_evaluate_chandelier_exit` 误以为 breakeven 还没激活，可能基于"未激活"前提重复触发 breakeven 移动逻辑（SL 的 max() 会保护实际位置不回退，但 lock_ratio 等下游计算前提错乱）。修复：reconciliation 恢复时若 `breakeven_applied=True` → 同步 `breakeven_activated=True`；`TrackedPosition` 字段加注释明确两者语义差异；新增 2 个回归测试守住"持久化标志同步到运行时活跃状态"+"未持久化时保持默认 False"。
+    (5) **supervisor.py:180 注释清理**：将"临时把 restart_count 累加"改为详细说明（与现有指数回退公式一致），避免后续审查再误判为补丁。
+    
+    **核验后识别的 6 项 Agent 误报**（不修，记录避免重复审）：
+    - F1 "compute_breakeven_sl 分母为零"：grep 全 src 零外部调用，全在 `evaluate_exit` 入口 `initial_risk > 0` 守卫内
+    - F2 "PendingEntryManager 双线程竞态"：shutdown 用 stop_event 协调，两线程独立 join 设计正确
+    - F3 "OwnedThreadLifecycle 线程泄漏"：Agent **反向理解 ADR-005**——实际代码超时**保留**引用（防双线程消费），Agent 误读为"清空导致泄漏"。新增的 12 个测试已守护
+    - F4 "modify_sl 先赋值后调用"：实际顺序是 MT5 API + 校验通过后才赋值 `pos.stop_loss`，设计正确
+    - F5 "_INSTANCE_SCOPED_CONFIGS 应加 topology.ini"：topology 是全局拓扑定义，实例级覆盖会破坏 group 一致性
+    - F6 "supervisor restart_count 'temp' 是补丁"：实际是合法指数回退累加，仅注释措辞问题（B5 已优化）
+    
+    **本会话不实施 — 记 follow-up F-6 ~ F-11**：
+    - F-6 拆分 RuntimeReadModel（1523 行 → 4 facade）
+    - F-7 拆分 TradeExecutor（1276 行 → 3 职责类）
+    - F-8 factories/signals.py Factory 重组（1076 行 18 函数）
+    - F-9 TradingModule 拆分（1051 行）
+    - F-10 Config 模块职责分离（centralized.py + signal.py 共 1246 行）
+    - F-11 API root `__init__.py` 工厂化（24 子路由 import 重型）
+    
+    全量 1442 通过（原 1436 + 6：4 lifecycle + 2 breakeven sync）。
+
+---
+
 ## Follow-ups（未决项）
 
 ### ~~F-1：ADR-006 对齐 —— 风控/经济日历配置改为构造函数注入~~（2026-04-15 由 #88 解决）
@@ -981,3 +1009,45 @@ domain 组件
 ### ~~F-4：Paper Trading session 持久化的完整性审计~~（2026-04-15 由 #86 解决）
 
 ### ~~F-5：Supervisor worker gate 失败后的自动恢复~~（2026-04-15 由 #86 解决）
+
+### F-6：拆分 RuntimeReadModel（1523 行上帝类）
+
+**现状**：`src/readmodels/runtime.py` 单文件混合 4 个域读模型（health / signal / execution / storage）。
+
+**待整改**：拆为 `runtime_health.py` / `runtime_signals.py` / `runtime_execution.py` / `runtime_storage.py`；`RuntimeReadModel` 退化为 facade 仅做组合；API 层按需直接 import 子 facade。
+
+**预估**：3-5 天。**触发条件**：下次新增 read model 字段或测试层重构时一并做。
+
+### F-7：拆分 TradeExecutor（1276 行 76 方法）
+
+**现状**：决策 / 执行 / 结果记录 / 生命周期 / 熔断 / intrabar guard 全混在一个类。
+
+**待整改**：提取 `ExecutionDecisionEngine`（`_check_*` / `_decide_*`）+ `ExecutionLifecycle`（start/stop/熔断状态机）；TradeExecutor 退化为协调器。
+
+**预估**：4-6 天（实时交易核心，需严格回归）。**触发条件**：下次修改执行逻辑时拆出来。
+
+### F-8：factories/signals.py Factory 重组（1076 行 18 函数）
+
+**待整改**：合并为 2-3 个高阶函数 `build_signal_layer` / `build_account_runtime_layer`；内部细节函数加 `_` 前缀；可拆为 `factories/signals/builder.py` + `strategies.py` + `runtime.py`。
+
+**预估**：2-3 天。**触发条件**：下次新增信号工厂步骤时一并重组。
+
+### F-9：TradingModule 拆分（1051 行 47 方法）
+
+**待整改**：已有 `TradingCommandService` / `TradingAuditService` / `TradingQueryService` 子组件；TradingModule 退化为 facade，47 个方法按归属下沉。
+
+**预估**：3-4 天。**触发条件**：与 F-7 同期做（trading 域重构）。
+
+### F-10：Config 模块职责分离（centralized.py 648 + signal.py 598 行）
+
+**待整改**：从 `centralized.py` 抽 `ConfigValidator` 到 `config/validator.py`；从 `signal.py` 抽 `_apply_overrides` 到 `config/signal_override_resolver.py`；centralized.py 退化为纯聚合 + 缓存。
+
+**预估**：2-3 天。**触发条件**：下次新增配置 section 时一并做。
+
+### F-11：API root `__init__.py` 工厂化（332 行，24 子路由 import）
+
+**现状**：API 包 `__init__.py` 在 import 时就 import 24 个子路由模块，启动慢 + 循环风险。
+
+**待整改**：改为 `def create_app() → FastAPI` 工厂函数，路由动态注册。
+
+**预估**：1-2 天。**触发条件**：API 层下次重构或启动性能优化时做。

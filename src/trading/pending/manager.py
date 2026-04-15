@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 from src.signals.models import SignalEvent
+from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 from src.utils.common import timeframe_seconds
 
 from ..reasons import REASON_NEW_SIGNAL_OVERRIDE, REASON_SHUTDOWN
@@ -174,6 +175,14 @@ class PendingEntryManager:
         self._lock = threading.RLock()  # RLock: 回调链可能重入 submit/cancel
         self._monitor_thread: Optional[threading.Thread] = None
         self._fill_worker_thread: Optional[threading.Thread] = None
+        # 复用 OwnedThreadLifecycle 工具统一线程生命周期管理（DRY + ADR-005 contract），
+        # 不再手写 join/timeout/僵尸清理逻辑。
+        self._monitor_lifecycle = OwnedThreadLifecycle(
+            self, "_monitor_thread", label="PendingEntryMonitor"
+        )
+        self._fill_lifecycle = OwnedThreadLifecycle(
+            self, "_fill_worker_thread", label="PendingEntryFill"
+        )
         self._fill_queue: queue.Queue[_FillResult] = queue.Queue(maxsize=128)
         self._stop_event = threading.Event()
 
@@ -434,88 +443,62 @@ class PendingEntryManager:
         )
 
     def start(self) -> None:
-        """启动价格监控线程和填单执行线程。"""
-        # 等待上一次 shutdown() 超时遗留的僵尸线程退出
-        for attr, label in (
-            ("_monitor_thread", "monitor"),
-            ("_fill_worker_thread", "fill_worker"),
-        ):
-            old = getattr(self, attr)
-            if old is not None and old.is_alive():
-                logger.warning(
-                    "PendingEntryManager: waiting for previous %s thread to finish",
-                    label,
-                )
-                old.join(timeout=5.0)
-                if old.is_alive():
-                    logger.error(
-                        "PendingEntryManager: previous %s thread still alive after re-join",
-                        label,
-                    )
-                    return
-                setattr(self, attr, None)
+        """启动价格监控线程和填单执行线程。
 
-        monitor_alive = (
-            self._monitor_thread is not None and self._monitor_thread.is_alive()
-        )
-        fill_alive = (
-            self._fill_worker_thread is not None and self._fill_worker_thread.is_alive()
-        )
-        if monitor_alive and fill_alive:
+        线程生命周期由 OwnedThreadLifecycle 统一管理（ADR-005 contract）：
+          - wait_previous: 等待上次 shutdown() 超时遗留的僵尸线程退出再启动
+          - ensure_running: 仅在未运行时创建新线程，避免重复 spawn
+        """
+        # 清理上次 shutdown 超时残留的僵尸引用（如有）
+        if not self._monitor_lifecycle.wait_previous(timeout=5.0):
             return
+        if not self._fill_lifecycle.wait_previous(timeout=5.0):
+            return
+
+        if self.is_running():
+            return
+
         self._stop_event.clear()
-        if not monitor_alive:
-            t = threading.Thread(
-                target=self._monitor_loop, name="pending-entry-monitor", daemon=True
+        self._monitor_lifecycle.ensure_running(
+            lambda: threading.Thread(
+                target=self._monitor_loop,
+                name="pending-entry-monitor",
+                daemon=True,
             )
-            t.start()
-            self._monitor_thread = t
-        if not fill_alive:
-            fw = threading.Thread(
+        )
+        self._fill_lifecycle.ensure_running(
+            lambda: threading.Thread(
                 target=self._monitoring_service.run_fill_worker,
                 name="pending-entry-fill",
                 daemon=True,
             )
-            fw.start()
-            self._fill_worker_thread = fw
+        )
         logger.info(
             "PendingEntryManager started (check_interval=%.2fs)",
             self._config.check_interval,
         )
 
     def is_running(self) -> bool:
-        monitor_alive = (
-            self._monitor_thread is not None and self._monitor_thread.is_alive()
+        return (
+            self._monitor_lifecycle.is_running()
+            and self._fill_lifecycle.is_running()
         )
-        fill_alive = (
-            self._fill_worker_thread is not None and self._fill_worker_thread.is_alive()
-        )
-        return monitor_alive and fill_alive
 
     def shutdown(self) -> None:
         """停止监控并清理。
 
         先等待 monitor 和 fill_worker 线程完全退出，
         再清理 _pending，避免线程仍在迭代时并发修改。
+
+        两个 lifecycle 共享同一个 _stop_event：第一次 stop() 调用 set 后，
+        两个线程都会收到信号自然退出；第二次 stop() 的 set 是幂等无副作用。
+        若任一线程超时，其 lifecycle 会保留引用（不清空），下次 start()
+        通过 wait_previous 处理（ADR-005）。
         """
-        self._stop_event.set()
-        for attr, label in (
-            ("_monitor_thread", "monitor"),
-            ("_fill_worker_thread", "fill_worker"),
-        ):
-            thread = getattr(self, attr)
-            if thread is not None:
-                thread.join(timeout=5.0)
-                if thread.is_alive():
-                    logger.warning(
-                        "PendingEntryManager %s thread did not stop within 5.0s, "
-                        "will be cleaned up on next start()",
-                        label,
-                    )
-                else:
-                    setattr(self, attr, None)
+        self._monitor_lifecycle.stop(self._stop_event, timeout=5.0)
+        self._fill_lifecycle.stop(self._stop_event, timeout=5.0)
         self._monitoring_service.clear_fill_queue()
-        # 线程已退出，安全清理 _pending
+        # 线程已退出（或超时被 lifecycle 标记），安全清理 _pending
         with self._lock:
             for entry in self._pending.values():
                 if entry.status == "pending":
