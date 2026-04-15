@@ -261,6 +261,34 @@ def _render_default(data: dict) -> str:
                 f"  ret={train['mean_return']*100:+.3f}%"
                 f"{test_str}"
             )
+            # F-12d: barrier_stats — 显示 top 3 最优 RR 组合，供策略 _exit_spec 声明
+            barrier_train = r.get("barrier_stats_train") or []
+            barrier_test = r.get("barrier_stats_test") or []
+            if barrier_train:
+                lines.append(
+                    "    Barrier exits (top 3 by train hit_rate, → strategy _exit_spec):"
+                )
+                # 构建 test lookup 以便同表呈现
+                test_by_key = {
+                    (t["sl_atr"], t["tp_atr"], t["time_bars"]): t
+                    for t in barrier_test
+                }
+                for b in barrier_train[:3]:
+                    key = (b["sl_atr"], b["tp_atr"], b["time_bars"])
+                    test_b = test_by_key.get(key)
+                    test_hit = (
+                        f" test={test_b['hit_rate']*100:.1f}%/n={test_b['n']}"
+                        if test_b
+                        else ""
+                    )
+                    lines.append(
+                        f"      SL={b['sl_atr']:.1f}×ATR TP={b['tp_atr']:.1f}×ATR "
+                        f"Time={b['time_bars']:>3}b | "
+                        f"train={b['hit_rate']*100:.1f}%/n={b['n']} "
+                        f"tp/sl/time={b['tp_rate']*100:.0f}/"
+                        f"{b['sl_rate']*100:.0f}/{b['time_rate']*100:.0f}% "
+                        f"ret={b['mean_return']*100:+.3f}%{test_hit}"
+                    )
 
     # Top Findings
     findings = data.get("top_findings", [])
