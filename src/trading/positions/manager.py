@@ -730,6 +730,7 @@ class PositionManager:
             current_regime=current_regime,
             timeframe=pos.timeframe,
             initial_sl_atr_mult=pos.sl_atr_mult,
+            atr_at_entry=pos.atr_at_entry,
             config=self._chandelier_config,
             exit_spec=pos.exit_spec or None,
         )

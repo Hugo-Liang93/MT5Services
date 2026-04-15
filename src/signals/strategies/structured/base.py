@@ -89,28 +89,61 @@ class EntrySpec:
         }
 
 
-class ExitSpec:
-    """策略出场规格（不可变值对象）。"""
+class ExitMode(str, Enum):
+    """Exit 模型分派枚举。
 
-    __slots__ = ("aggression", "sl_atr", "tp_atr")
+    CHANDELIER — 传统路径：ATR trailing + breakeven + signal reversal + timeout
+                 由 aggression α 驱动；未声明或未知值时默认。
+    BARRIER    — Triple-Barrier 路径（F-12a/b）：固定 SL/TP/Time 三条 barrier
+                 先碰哪个就退出。要求同时声明 sl_atr / tp_atr / time_bars。
+                 用于挖掘产出的"固定 RR"类规则，保持实盘 exit 与挖掘
+                 forward_return 的语义一致。
+    """
+
+    CHANDELIER = "chandelier"
+    BARRIER = "barrier"
+
+
+class ExitSpec:
+    """策略出场规格（不可变值对象）。
+
+    mode=CHANDELIER 时 aggression 驱动 trailing 参数，sl_atr/tp_atr 为 None。
+    mode=BARRIER 时必须声明 sl_atr / tp_atr / time_bars 三者，aggression 被忽略。
+    """
+
+    __slots__ = ("mode", "aggression", "sl_atr", "tp_atr", "time_bars")
 
     def __init__(
         self,
         aggression: float = 0.50,
         sl_atr: Optional[float] = None,
         tp_atr: Optional[float] = None,
+        *,
+        mode: ExitMode | str = ExitMode.CHANDELIER,
+        time_bars: Optional[int] = None,
     ) -> None:
         if not 0.0 <= aggression <= 1.0:
             raise ValueError(f"aggression must be 0.0~1.0, got {aggression}")
+        self.mode = ExitMode(mode)  # 校验合法性
+        if self.mode is ExitMode.BARRIER:
+            if sl_atr is None or sl_atr <= 0:
+                raise ValueError("BARRIER mode requires sl_atr > 0")
+            if tp_atr is None or tp_atr <= 0:
+                raise ValueError("BARRIER mode requires tp_atr > 0")
+            if time_bars is None or time_bars < 1:
+                raise ValueError("BARRIER mode requires time_bars >= 1")
         self.aggression = aggression
         self.sl_atr = sl_atr
         self.tp_atr = tp_atr
+        self.time_bars = time_bars
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "mode": self.mode.value,
             "aggression": self.aggression,
             "sl_atr": self.sl_atr,
             "tp_atr": self.tp_atr,
+            "time_bars": self.time_bars,
         }
 
 

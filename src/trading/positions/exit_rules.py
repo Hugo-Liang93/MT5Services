@@ -493,6 +493,94 @@ def check_timeout(
 # ── 统一入口 ────────────────────────────────────────────────────────────────
 
 
+def evaluate_barrier_exit(
+    action: str,
+    entry_price: float,
+    bar_high: float,
+    bar_low: float,
+    bar_close: float,
+    atr_at_entry: float,
+    *,
+    sl_atr: float,
+    tp_atr: float,
+    time_bars: int,
+    bars_held: int,
+    initial_risk: float,
+) -> ExitCheckResult:
+    """Triple-Barrier 纯 TP/SL/Time 出场判定（F-12b）。
+
+    与 Chandelier 的区别：
+      - barrier 距离固定（基于 atr_at_entry），不随新 bar 的 ATR 漂移
+      - 不做 trailing / breakeven / signal reversal / regime-aware profile
+      - 时间 barrier 硬超时（bars_held >= time_bars → TIMEOUT）
+      - 同一 bar 同时触 SL+TP 时保守取 SL
+
+    配套挖掘层的 compute_barrier_returns()，确保实盘 exit 语义与挖掘
+    forward_return 一致；为挖掘产出的"固定 RR"类规则提供可落地的 exit 模型。
+    """
+    if atr_at_entry <= 0 or sl_atr <= 0 or tp_atr <= 0 or time_bars < 1:
+        # 参数退化 → 回退为"不 close"，由 Chandelier 路径接管
+        return ExitCheckResult(
+            should_close=False,
+            close_reason="",
+            new_stop_loss=None,
+            r_multiple=0.0,
+            breakeven_activated=False,
+        )
+
+    # R 倍数（用 bar_close 近似）
+    r_multiple = 0.0
+    if initial_risk > 0:
+        if action == "buy":
+            r_multiple = (bar_close - entry_price) / initial_risk
+        else:
+            r_multiple = (entry_price - bar_close) / initial_risk
+
+    if action == "buy":
+        tp_price = entry_price + tp_atr * atr_at_entry
+        sl_price = entry_price - sl_atr * atr_at_entry
+        hit_sl = bar_low <= sl_price
+        hit_tp = bar_high >= tp_price
+    else:
+        tp_price = entry_price - tp_atr * atr_at_entry
+        sl_price = entry_price + sl_atr * atr_at_entry
+        hit_sl = bar_high >= sl_price
+        hit_tp = bar_low <= tp_price
+
+    if hit_sl:  # SL 优先（同 bar 双触时保守取损）
+        return ExitCheckResult(
+            should_close=True,
+            close_reason=REASON_STOP_LOSS,
+            new_stop_loss=sl_price,
+            r_multiple=round(r_multiple, 4),
+            breakeven_activated=False,
+        )
+    if hit_tp:
+        return ExitCheckResult(
+            should_close=True,
+            close_reason=REASON_TAKE_PROFIT,
+            new_stop_loss=tp_price,
+            r_multiple=round(r_multiple, 4),
+            breakeven_activated=False,
+        )
+    if bars_held >= time_bars:
+        return ExitCheckResult(
+            should_close=True,
+            close_reason=REASON_TIMEOUT,
+            new_stop_loss=None,
+            r_multiple=round(r_multiple, 4),
+            breakeven_activated=False,
+        )
+
+    return ExitCheckResult(
+        should_close=False,
+        close_reason="",
+        new_stop_loss=None,
+        r_multiple=round(r_multiple, 4),
+        breakeven_activated=False,
+    )
+
+
 def evaluate_exit(
     action: str,
     entry_price: float,
@@ -511,18 +599,37 @@ def evaluate_exit(
     current_regime: str = "",
     timeframe: str = "",
     initial_sl_atr_mult: float = 0.0,
+    atr_at_entry: float = 0.0,
     config: Optional[ChandelierConfig] = None,
     exit_spec: Optional[Dict[str, Any]] = None,
 ) -> ExitCheckResult:
-    """统一出场评估入口。按顺序执行 6 条规则。
+    """统一出场评估入口。按 exit_spec.mode 分派：
+      mode=="barrier"   → evaluate_barrier_exit（固定 TP/SL/Time）
+      mode=="chandelier"（默认）→ 现有 Chandelier 流程（6 条规则）
 
-    出场 profile 来源（优先级从高到低）：
+    Chandelier profile 来源（优先级从高到低）：
       1. exit_spec["aggression"]（策略 _exit_spec() 输出）
       2. (strategy_category, current_regime) 映射（配置缺失时使用默认 α）
       3. default_profile（全局默认 α=0.50）
     """
     if config is None:
         config = ChandelierConfig()
+
+    # Barrier 模式分派（F-12b）
+    if exit_spec and str(exit_spec.get("mode") or "").lower() == "barrier":
+        return evaluate_barrier_exit(
+            action=action,
+            entry_price=entry_price,
+            bar_high=bar_high,
+            bar_low=bar_low,
+            bar_close=bar_close,
+            atr_at_entry=atr_at_entry if atr_at_entry > 0 else current_atr,
+            sl_atr=float(exit_spec.get("sl_atr") or 0.0),
+            tp_atr=float(exit_spec.get("tp_atr") or 0.0),
+            time_bars=int(exit_spec.get("time_bars") or 0),
+            bars_held=bars_held,
+            initial_risk=initial_risk,
+        )
 
     # 策略 exit_spec 优先
     if exit_spec and "aggression" in exit_spec:
