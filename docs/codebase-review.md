@@ -917,6 +917,14 @@ domain 组件
 
 ---
 
+89. 2026-04-15：**T3 + T4 + T5 测试覆盖打包补齐**：之前重构后的覆盖盲区一次性清理。
+    - **T3 AdmissionService 零单测 → 18 用例**：之前 `TradeAdmissionService` 仅靠集成测试隐式覆盖，关键决策路径（reasons 形成 / decision allow|warn|block / stage 优先级 / trace_id 兜底链 / pipeline_event_bus emit / deployment_contract / position_limits 字段填充）一旦改动无回归保护。新增 `tests/trading/test_admission_service.py` 18 个用例，每条决策分支（precheck pass/fail / runtime_absent / circuit_open / quote_stale / event_blocked / calendar_health_degraded / account_risk + quote_stale 去重边界）独立验证。
+    - **T4 OperatorCommandConsumer 测试 5 → 22 用例**：原 `tests/trading/test_operator_commands.py` 仅覆盖 enqueue / 单条命令 trace / dead-lettered / close_position / cancel_orders 5 个用例，缺失线程生命周期 / 异常恢复 / 命令分支依赖缺失等高频运维场景。新增 `tests/trading/test_operator_command_consumer_lifecycle.py` 17 用例：start/stop/restart 线程 idempotency、_process_command 异常 → command_failed、各种依赖缺失（runtime_mode_controller / trade_executor / exposure_closeout_controller / pending_entry_manager）报错、未知 command_type ValueError、reset_circuit_breaker 状态快照、set_trade_control + reset_circuit 复合调用、runtime_mode partial_failure 路径、heartbeat_fn 调用契约、_worker batch 中途 stop_event 打断。
+    - **T5 OwnedThreadLifecycle 零独立测试 → 12 用例**：lifecycle 工具类之前只在 consumer 测试中隐式覆盖，ADR-005 关键 contract（"join 超时后必须保留仍存活线程引用，防止双线程消费"）没有专门守护。新增 `tests/trading/test_owned_thread_lifecycle.py` 12 用例覆盖 is_running 三态 / ensure_running 三场景（idle/alive/dead）/ wait_previous 引用清理 + ADR-005 超时保留 / stop 干净退出 + ADR-005 contract / idempotency。
+    本轮纯增量测试，零产线代码改动，零回归风险。全量 1436 通过（原 1389 + 47）。
+
+---
+
 ## Follow-ups（未决项）
 
 ### ~~F-1：ADR-006 对齐 —— 风控/经济日历配置改为构造函数注入~~（2026-04-15 由 #88 解决）
