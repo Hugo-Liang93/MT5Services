@@ -110,6 +110,37 @@ class RuleCondition:
 
 
 @dataclass(frozen=True)
+class BarrierStats:
+    """F-12d：单个 barrier config 下规则触发样本的退出分布统计。
+
+    为挖掘产出提供"在某 (SL, TP, Time) 参数组合下该规则的真实胜率"，
+    与朴素 forward_return 胜率并列呈现。训练/测试集分开计算。
+    """
+
+    barrier_key: Tuple[float, float, int]  # (sl_atr, tp_atr, time_bars)
+    n_samples: int  # 有 outcome 的触发样本数
+    tp_rate: float  # 先命中 TP 的比例
+    sl_rate: float  # 先命中 SL 的比例
+    time_rate: float  # 因超时退出的比例
+    mean_return: float  # 平均退出 return（已扣成本）
+    hit_rate: float  # return > 0 的样本比例
+
+    def to_dict(self) -> Dict[str, Any]:
+        sl, tp, time_bars = self.barrier_key
+        return {
+            "sl_atr": sl,
+            "tp_atr": tp,
+            "time_bars": time_bars,
+            "n": self.n_samples,
+            "tp_rate": round(self.tp_rate, 4),
+            "sl_rate": round(self.sl_rate, 4),
+            "time_rate": round(self.time_rate, 4),
+            "mean_return": round(self.mean_return, 6),
+            "hit_rate": round(self.hit_rate, 4),
+        }
+
+
+@dataclass(frozen=True)
 class MinedRule:
     """从决策树中提取的一条交易规则。"""
 
@@ -136,6 +167,11 @@ class MinedRule:
     binomial_p_value: Optional[float] = None  # 测试集 hit_rate binomial p-value
     cv_consistency: float = 0.0  # 跨 fold 出现一致性
     is_significant: bool = False  # 综合判断
+
+    # F-12d：barrier 统计（train/test 分开，每组 barrier config 一条）
+    # 为空 = matrix 未计算 barrier_returns（老数据向后兼容）
+    barrier_stats_train: Tuple["BarrierStats", ...] = ()
+    barrier_stats_test: Tuple["BarrierStats", ...] = ()
 
     @property
     def why_conditions(self) -> List[RuleCondition]:
@@ -212,6 +248,10 @@ class MinedRule:
             d["binomial_p_value"] = round(self.binomial_p_value, 4)
         if self.cv_consistency > 0:
             d["cv_consistency"] = round(self.cv_consistency, 2)
+        if self.barrier_stats_train:
+            d["barrier_stats_train"] = [s.to_dict() for s in self.barrier_stats_train]
+        if self.barrier_stats_test:
+            d["barrier_stats_test"] = [s.to_dict() for s in self.barrier_stats_test]
         return d
 
 
@@ -356,11 +396,11 @@ def _mine_single(
     if not feature_names:
         return []
 
-    train_X, train_y, train_returns = _build_arrays(
+    train_X, train_y, train_returns, train_idx = _build_arrays(
         matrix, forward_returns, feature_names,
         matrix.train_slice(), direction, regime_filter,
     )
-    test_X, test_y, test_returns = _build_arrays(
+    test_X, test_y, test_returns, test_idx = _build_arrays(
         matrix, forward_returns, feature_names,
         matrix.test_slice(), direction, regime_filter,
     )
@@ -384,13 +424,16 @@ def _mine_single(
         train_X=train_X,
         train_y=train_y,
         train_returns=train_returns,
+        train_idx=train_idx,
         test_X=test_X,
         test_y=test_y,
         test_returns=test_returns,
+        test_idx=test_idx,
         direction=direction,
         forward_bars=forward_bars,
         regime_filter=regime_filter,
         cfg=cfg,
+        matrix=matrix,
     )
 
     if not raw_rules:
@@ -470,6 +513,9 @@ def _mine_single(
                 binomial_p_value=binom_p,
                 cv_consistency=cv_score,
                 is_significant=is_sig,
+                # F-12d：不要在统计检验环节丢 barrier_stats（raw rule 已经计算完）
+                barrier_stats_train=rule.barrier_stats_train,
+                barrier_stats_test=rule.barrier_stats_test,
             )
         )
 
@@ -625,7 +671,7 @@ def _cv_rule_consistency(
         fold_train_range = range(
             base_start + fold.train_start, base_start + fold.train_end
         )
-        fold_X, fold_y, fold_returns = _build_arrays(
+        fold_X, fold_y, fold_returns, fold_idx = _build_arrays(
             matrix, forward_returns, feature_names,
             fold_train_range, direction, regime_filter,
         )
@@ -645,19 +691,23 @@ def _cv_rule_consistency(
             continue
 
         # 提取此 fold 中的规则条件 key
+        # CV 一致性只关心 rule condition key，不需要 barrier 统计 → matrix=None
         fold_rules = _extract_rules(
             tree=fold_tree,
             feature_names=feature_names,
             train_X=fold_X,
             train_y=fold_y,
             train_returns=fold_returns,
+            train_idx=fold_idx,
             test_X=np.empty((0, len(feature_names))),
             test_y=np.empty(0),
             test_returns=np.empty(0),
+            test_idx=np.empty(0, dtype=np.int64),
             direction=direction,
             forward_bars=0,
             regime_filter=regime_filter,
             cfg=cfg,
+            matrix=None,
         )
         seen_keys: set[str] = set()
         for r in fold_rules:
@@ -682,11 +732,16 @@ def _build_arrays(
     idx_range: range,
     direction: str,
     regime_filter: Optional[str],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """构建 sklearn 需要的特征矩阵 X 和标签 y。"""
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """构建 sklearn 需要的特征矩阵 X / 标签 y / return / bar_indices。
+
+    bar_indices 保留过滤后样本在原始 matrix 里的 bar 索引，用于后续
+    barrier_returns 查表（F-12d）。
+    """
     rows_X: List[List[float]] = []
     rows_y: List[int] = []
     rows_ret: List[float] = []
+    rows_idx: List[int] = []
 
     for i in idx_range:
         fwd = forward_returns[i]
@@ -716,15 +771,82 @@ def _build_arrays(
         rows_X.append(row)
         rows_y.append(label)
         rows_ret.append(ret)
+        rows_idx.append(i)
 
     if not rows_X:
-        return np.empty((0, len(feature_names))), np.empty(0), np.empty(0)
+        return (
+            np.empty((0, len(feature_names))),
+            np.empty(0),
+            np.empty(0),
+            np.empty(0, dtype=np.int64),
+        )
 
     return (
         np.array(rows_X, dtype=np.float64),
         np.array(rows_y, dtype=np.int32),
         np.array(rows_ret, dtype=np.float64),
+        np.array(rows_idx, dtype=np.int64),
     )
+
+
+def _compute_barrier_stats_for_rule(
+    matrix: DataMatrix,
+    direction: str,
+    bar_indices: np.ndarray,
+) -> Tuple[BarrierStats, ...]:
+    """F-12d：给定规则触发的 bar 索引集合，对每组 barrier config 汇总退出分布。
+
+    若 matrix 未填充 barrier_returns（老数据）返回空元组。
+    若 bar_indices 空返回空元组。
+    """
+    source = (
+        matrix.barrier_returns_long
+        if direction == "buy"
+        else matrix.barrier_returns_short
+    )
+    if not source or bar_indices.size == 0:
+        return ()
+
+    results: List[BarrierStats] = []
+    for key, outcomes in source.items():
+        tp_count = 0
+        sl_count = 0
+        time_count = 0
+        returns: List[float] = []
+        hits = 0
+        for idx in bar_indices:
+            if idx < 0 or idx >= len(outcomes):
+                continue
+            outcome = outcomes[idx]
+            if outcome is None:
+                continue
+            if outcome.barrier == "tp":
+                tp_count += 1
+            elif outcome.barrier == "sl":
+                sl_count += 1
+            else:
+                time_count += 1
+            returns.append(outcome.return_pct)
+            if outcome.return_pct > 0:
+                hits += 1
+
+        n = len(returns)
+        if n == 0:
+            continue
+        results.append(
+            BarrierStats(
+                barrier_key=key,
+                n_samples=n,
+                tp_rate=tp_count / n,
+                sl_rate=sl_count / n,
+                time_rate=time_count / n,
+                mean_return=float(np.mean(returns)),
+                hit_rate=hits / n,
+            )
+        )
+    # 按 hit_rate 降序，便于下游 "找最优 barrier 组合"
+    results.sort(key=lambda s: s.hit_rate, reverse=True)
+    return tuple(results)
 
 
 # ── 规则提取 ──────────────────────────────────────────────────
@@ -737,15 +859,22 @@ def _extract_rules(
     train_X: np.ndarray,
     train_y: np.ndarray,
     train_returns: np.ndarray,
+    train_idx: np.ndarray,
     test_X: np.ndarray,
     test_y: np.ndarray,
     test_returns: np.ndarray,
+    test_idx: np.ndarray,
     direction: str,
     forward_bars: int,
     regime_filter: Optional[str],
     cfg: RuleMiningConfig,
+    matrix: Optional[DataMatrix] = None,
 ) -> List[MinedRule]:
-    """从训练好的决策树中提取可解释规则。"""
+    """从训练好的决策树中提取可解释规则。
+
+    matrix 传入用于在叶节点查 barrier_returns 算 barrier_stats（F-12d）。
+    向后兼容：传 None 等同于跳过 barrier 统计。
+    """
     tree_ = tree.tree_
     feature_idx = tree_.feature
     threshold = tree_.threshold
@@ -765,10 +894,10 @@ def _extract_rules(
         if children_left[node_id] == children_right[node_id]:
             _process_leaf(
                 node_id, conditions, depth, rules, tree_,
-                train_X, train_y, train_returns,
-                test_X, test_y, test_returns,
+                train_X, train_y, train_returns, train_idx,
+                test_X, test_y, test_returns, test_idx,
                 feature_names, direction, forward_bars,
-                regime_filter, cfg, feat_imp,
+                regime_filter, cfg, feat_imp, matrix,
             )
             return
 
@@ -802,15 +931,18 @@ def _process_leaf(
     train_X: np.ndarray,
     train_y: np.ndarray,
     train_returns: np.ndarray,
+    train_idx: np.ndarray,
     test_X: np.ndarray,
     test_y: np.ndarray,
     test_returns: np.ndarray,
+    test_idx: np.ndarray,
     feature_names: List[Tuple[str, str]],
     direction: str,
     forward_bars: int,
     regime_filter: Optional[str],
     cfg: RuleMiningConfig,
     feat_imp: Dict[str, float],
+    matrix: Optional[DataMatrix] = None,
 ) -> None:
     """处理叶节点：检查是否为有价值的规则。"""
     values = tree_.value[node_id][0]
@@ -837,6 +969,7 @@ def _process_leaf(
     test_hit_rate: Optional[float] = None
     test_mean_ret: Optional[float] = None
     test_matched = 0
+    test_mask: Optional[np.ndarray] = None
 
     if len(test_y) > 0:
         test_mask = _apply_conditions(test_X, conditions, feature_names)
@@ -848,6 +981,20 @@ def _process_leaf(
 
     if test_hit_rate is not None and test_hit_rate < cfg.min_test_hit_rate:
         return
+
+    # F-12d：在该规则触发的 bar 集合上计算各 barrier config 的退出分布
+    barrier_stats_train: Tuple[BarrierStats, ...] = ()
+    barrier_stats_test: Tuple[BarrierStats, ...] = ()
+    if matrix is not None:
+        train_rule_indices = train_idx[train_mask]
+        barrier_stats_train = _compute_barrier_stats_for_rule(
+            matrix, direction, train_rule_indices
+        )
+        if test_mask is not None and test_matched > 0:
+            test_rule_indices = test_idx[test_mask]
+            barrier_stats_test = _compute_barrier_stats_for_rule(
+                matrix, direction, test_rule_indices
+            )
 
     rules.append(
         MinedRule(
@@ -862,6 +1009,8 @@ def _process_leaf(
             test_n_samples=test_matched,
             tree_depth=depth,
             feature_importances=feat_imp,
+            barrier_stats_train=barrier_stats_train,
+            barrier_stats_test=barrier_stats_test,
         )
     )
 

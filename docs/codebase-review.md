@@ -1154,6 +1154,30 @@ domain 组件
 - 重新评估：Plan B 完成后策略可在 `_exit_spec()` 直接声明 `ExitSpec(mode=BARRIER, ...)`，回测会自动走 barrier 路径——**F-12c 的诊断价值被 Plan B 实质覆盖**
 - 保留标记但优先级降为 P3：仅在未来需要"同一策略用两套 exit 对比"时再实现
 
+**F-12d** ✅ **已闭环**（commit `<pending>`）
+- `MinedRule` 新增 `barrier_stats_train` / `barrier_stats_test` 字段（Tuple[BarrierStats, ...]）
+- `BarrierStats` dataclass：barrier_key / n_samples / tp_rate / sl_rate / time_rate / mean_return / hit_rate
+- `_build_arrays()` 新增返回 `bar_indices`（原 matrix bar index），传递到 `_extract_rules` → `_process_leaf`
+- `_process_leaf` 在叶节点规则上调用 `_compute_barrier_stats_for_rule()`：对每组 `DataMatrix.barrier_configs` 汇总该规则触发样本的退出分布
+- 按方向分派：buy 规则读 `barrier_returns_long`，sell 读 `barrier_returns_short`
+- 统计后按 hit_rate 降序，下游可直接取 top-1 barrier 组合作为策略 `_exit_spec()` 声明参数
+- `to_dict()` 输出含 `barrier_stats_train` / `barrier_stats_test` 列表（非空时）
+- 向后兼容：matrix 无 barrier_returns → 字段为空 tuple，`to_dict()` 不输出字段
+- CV consistency 路径传 matrix=None 跳过 barrier 计算（其只关心 rule condition key）
+- 4 个集成测试守护（`tests/research/test_rule_mining_barrier.py`）
+
+### 挖掘 → 策略 的完整闭环
+
+经 F-12a + F-12b + F-12d 三件套，挖掘产出现在可以端到端落地：
+
+```
+1. MiningRunner.run() → MinedRule（含 barrier_stats_train[0..n]）
+2. 选 hit_rate 最高那组 → (sl_atr, tp_atr, time_bars)
+3. 策略 _exit_spec() 声明 ExitSpec(mode=BARRIER, sl_atr=..., tp_atr=..., time_bars=...)
+4. 实盘 evaluate_exit() 按 mode=barrier 分派走 evaluate_barrier_exit
+5. Exit 语义与挖掘 forward_return 完全一致 → 避免 C-1/I-1 那类失败
+```
+
 ### 与下次挖掘接入
 
 挖掘侧（`MiningRunner` 产出）应**同时报告**：
