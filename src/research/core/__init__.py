@@ -1,7 +1,6 @@
 """Research 公共基础层。"""
 
 from src.research.core.config import (
-    FeatureEngineeringConfig,
     OverfittingConfig,
     PredictivePowerConfig,
     ResearchConfig,
@@ -41,7 +40,6 @@ __all__ = [
     "DataSummary",
     "FeatureCandidateDiscoveryResult",
     "FeatureCandidateSpec",
-    "FeatureEngineeringConfig",
     "FeaturePromotionReport",
     "Finding",
     "IndicatorPredictiveResult",

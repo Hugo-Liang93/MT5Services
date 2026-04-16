@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from src.clients.mt5_market import OHLC
 from src.config.indicator_config import ConfigLoader
 from src.indicators.core.composite import momentum_consensus
-from src.research.features import get_feature_inventory
+from src.research.features.protocol import PROMOTED_INDICATOR_PRECEDENTS
 
 
 def _make_bars() -> list[OHLC]:
@@ -39,10 +39,9 @@ def test_momentum_consensus_indicator_emits_bullish_vote_on_monotonic_trend() ->
 def test_promoted_indicator_is_visible_in_config_and_research_inventory() -> None:
     config = ConfigLoader.load("config/indicators.json")
     indicators = {indicator.name for indicator in config.indicators}
-    inventory = get_feature_inventory()
     precedent_names = {
         item["promoted_indicator_name"]
-        for item in inventory["promoted_indicator_precedents"]
+        for item in PROMOTED_INDICATOR_PRECEDENTS
     }
 
     assert "momentum_consensus14" in indicators

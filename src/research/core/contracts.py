@@ -489,6 +489,11 @@ class MiningResult:
 
     top_findings: List[Finding] = field(default_factory=list)
 
+    # FeatureHub 集成（Task 12）
+    feature_compute_summary: Optional[Dict[str, Any]] = None
+    findings_by_provider: Dict[str, List[Finding]] = field(default_factory=dict)
+    cross_provider_rules: List[Any] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {
             "run_id": self.run_id,
@@ -508,4 +513,15 @@ class MiningResult:
             result["mined_rules"] = [r.to_dict() for r in self.mined_rules]
         if self.top_findings:
             result["top_findings"] = [f.to_dict() for f in self.top_findings]
+        if self.feature_compute_summary:
+            result["feature_compute_summary"] = self.feature_compute_summary
+        if self.findings_by_provider:
+            result["findings_by_provider"] = {
+                prov: [f.to_dict() for f in findings]
+                for prov, findings in self.findings_by_provider.items()
+            }
+        if self.cross_provider_rules:
+            result["cross_provider_rules"] = [
+                r.to_dict() for r in self.cross_provider_rules
+            ]
         return result

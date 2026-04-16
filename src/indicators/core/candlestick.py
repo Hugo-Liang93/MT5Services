@@ -6,6 +6,8 @@
   doji:           1.0 (十字星) / 0.0
   pin_bar:        1.0 (多头 pin bar) / -1.0 (空头 pin bar) / 0.0
   inside_bar:     1.0 (内包线) / 0.0
+  three_method:   1.0 (三兵) / -1.0 (三鸦) / 0.0
+  rejection:      1.0 (多头拒绝) / -1.0 (空头拒绝) / 0.0
   consecutive_dir: 正=连续阳线数 / 负=连续阴线数
 """
 
@@ -72,6 +74,40 @@ def candlestick_patterns(bars: Iterable, params: Dict[str, Any]) -> Dict[str, fl
     if cur.high < prev.high and cur.low > prev.low:
         inside_bar = 1.0
 
+    # ── Three White Soldiers / Three Black Crows ─────────────────
+    three_method = 0.0
+    if len(window) >= 3:
+        b1, b2, b3 = window[-3], window[-2], window[-1]
+        b1_bull = b1.close > b1.open
+        b2_bull = b2.close > b2.open
+        b3_bull = b3.close > b3.open
+        # 三兵：连续 3 根阳线，每根收盘高于前一根
+        if (
+            b1_bull
+            and b2_bull
+            and b3_bull
+            and b2.close > b1.close
+            and b3.close > b2.close
+        ):
+            three_method = 1.0
+        # 三鸦：连续 3 根阴线，每根收盘低于前一根
+        elif (
+            not b1_bull
+            and not b2_bull
+            and not b3_bull
+            and b2.close < b1.close
+            and b3.close < b2.close
+        ):
+            three_method = -1.0
+
+    # ── Rejection candle（宽泛 pin bar：影线 > 1.5x body）────────
+    rejection = 0.0
+    if body > 0:
+        if lower_shadow > 1.5 * body and lower_shadow > upper_shadow * 1.5:
+            rejection = 1.0  # 多头拒绝（下影长、相对上影更长）
+        elif upper_shadow > 1.5 * body and upper_shadow > lower_shadow * 1.5:
+            rejection = -1.0  # 空头拒绝
+
     # ── Consecutive Direction ──────────────────────────────────
     consecutive = 0
     if len(window) >= 2:
@@ -92,6 +128,8 @@ def candlestick_patterns(bars: Iterable, params: Dict[str, Any]) -> Dict[str, fl
             "doji": doji,
             "pin_bar": pin_bar,
             "inside_bar": inside_bar,
+            "three_method": three_method,
+            "rejection": rejection,
             "consecutive_dir": float(consecutive),
         }
     )

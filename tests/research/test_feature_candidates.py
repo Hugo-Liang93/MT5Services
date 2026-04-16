@@ -11,21 +11,19 @@ from src.research.core.contracts import (
     RollingICResult,
     ThresholdSweepResult,
 )
-from src.research.features import (
-    FeatureDefinition,
-    FeatureEngineer,
-    discover_feature_candidates,
-)
+from src.research.features import discover_feature_candidates
+from src.research.features.candidates import _FeatureMeta, _FEATURE_META_REGISTRY
 
 
 def _predictive_result(
     *,
     feature_name: str,
     ic: float,
+    indicator_name: str = "derived",
     regime: str | None = "breakout",
 ) -> IndicatorPredictiveResult:
     return IndicatorPredictiveResult(
-        indicator_name="derived",
+        indicator_name=indicator_name,
         field_name=feature_name,
         forward_bars=10,
         regime=regime,
@@ -51,10 +49,11 @@ def _predictive_result(
 def _threshold_result(
     *,
     feature_name: str,
+    indicator_name: str = "derived",
     regime: str | None = "breakout",
 ) -> ThresholdSweepResult:
     return ThresholdSweepResult(
-        indicator_name="derived",
+        indicator_name=indicator_name,
         field_name=feature_name,
         forward_bars=10,
         regime=regime,
@@ -207,28 +206,22 @@ def test_discover_feature_candidates_marks_insufficient_evidence_as_refit() -> N
 def test_discover_feature_candidates_rejects_non_interpretable_or_unbounded_feature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engineer = FeatureEngineer()
-    engineer.register(
-        FeatureDefinition(
-            name="opaque_alpha",
-            group="derived",
-            func=lambda matrix, i: 0.5,
-            dependencies=(),
-            formula_summary="opaque",
-            source_inputs=(),
-            runtime_state_inputs=(),
-            live_computable=True,
-            compute_scope="bar_close",
-            bounded_lookback=False,
-            strategy_roles=("why",),
-            promotion_target_default="shared_indicator",
-            no_lookahead=False,
-            interpretable=False,
-        )
+    opaque_meta = _FeatureMeta(
+        formula_summary="opaque",
+        source_inputs=(),
+        runtime_state_inputs=(),
+        live_computable=True,
+        compute_scope="bar_close",
+        bounded_lookback=False,
+        strategy_roles=("why",),
+        promotion_target_default="shared_indicator",
+        no_lookahead=False,
+        interpretable=False,
     )
+    patched_registry = {**_FEATURE_META_REGISTRY, "opaque_alpha": opaque_meta}
     monkeypatch.setattr(
-        "src.research.features.candidates.build_default_engineer",
-        lambda: engineer,
+        "src.research.features.candidates._FEATURE_META_REGISTRY",
+        patched_registry,
     )
     results = {
         "H1": _mining_result(
@@ -242,3 +235,29 @@ def test_discover_feature_candidates_rejects_non_interpretable_or_unbounded_feat
     discovery = discover_feature_candidates(results, symbol="XAUUSD")
     assert len(discovery.feature_candidates) == 1
     assert discovery.feature_candidates[0].promotion_decision.value == "reject"
+
+
+def test_discover_feature_candidates_accepts_provider_prefixed_features() -> None:
+    results = {
+        "H1": _mining_result(
+            "run_h1",
+            [
+                _predictive_result(
+                    feature_name="momentum_consensus",
+                    ic=0.13,
+                    indicator_name="temporal",
+                )
+            ],
+            [
+                _threshold_result(
+                    feature_name="momentum_consensus",
+                    indicator_name="temporal",
+                )
+            ],
+            "momentum_consensus",
+        )
+    }
+
+    discovery = discover_feature_candidates(results, symbol="XAUUSD")
+    assert len(discovery.feature_candidates) == 1
+    assert discovery.feature_candidates[0].feature_name == "momentum_consensus"
