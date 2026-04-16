@@ -3,9 +3,10 @@
 协调多个组件的健康检查任务，定期执行巡检并记录结果。
 """
 
-import time
-import threading
 import logging
+import threading
+import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import get_shared_symbols, get_shared_timeframes
@@ -29,7 +30,9 @@ class MonitoringManager:
         self.health_retention_days = 30
         self.event_retention_days = 7
 
-        logger.info(f"MonitoringManager initialized with check interval: {check_interval}s")
+        logger.info(
+            f"MonitoringManager initialized with check interval: {check_interval}s"
+        )
 
     def register_component(self, name: str, component_obj, check_methods: List[str]):
         """
@@ -42,7 +45,7 @@ class MonitoringManager:
         """
         self._monitored_components[name] = {
             "obj": component_obj,
-            "methods": check_methods
+            "methods": check_methods,
         }
         logger.info(f"Registered component for monitoring: {name}")
 
@@ -75,9 +78,7 @@ class MonitoringManager:
 
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._monitoring_loop,
-            name="monitoring-manager",
-            daemon=True
+            target=self._monitoring_loop, name="monitoring-manager", daemon=True
         )
         self._thread.start()
         logger.info("MonitoringManager started")
@@ -114,32 +115,56 @@ class MonitoringManager:
 
                     for method in methods:
                         try:
-                            if method == "data_latency" and hasattr(component_obj, "get_latest_ohlc"):
+                            if method == "data_latency" and hasattr(
+                                component_obj, "get_latest_ohlc"
+                            ):
                                 self._check_data_latency(component_obj, name)
 
-                            elif method == "indicator_freshness" and hasattr(component_obj, "get_snapshot"):
+                            elif method == "indicator_freshness" and hasattr(
+                                component_obj, "get_snapshot"
+                            ):
                                 self._check_indicator_freshness(component_obj, name)
 
-                            elif method == "queue_stats" and hasattr(component_obj, "queue_stats"):
-                                self.health_monitor.check_queue_stats(name, component_obj)
+                            elif method == "queue_stats" and hasattr(
+                                component_obj, "queue_stats"
+                            ):
+                                self.health_monitor.check_queue_stats(
+                                    name, component_obj
+                                )
 
-                            elif method == "cache_stats" and hasattr(component_obj, "stats"):
-                                self.health_monitor.check_cache_stats(name, component_obj)
+                            elif method == "cache_stats" and hasattr(
+                                component_obj, "stats"
+                            ):
+                                self.health_monitor.check_cache_stats(
+                                    name, component_obj
+                                )
 
-                            elif method == "performance_stats" and hasattr(component_obj, "get_performance_stats"):
+                            elif method == "performance_stats" and hasattr(
+                                component_obj, "get_performance_stats"
+                            ):
                                 stats = component_obj.get_performance_stats()
                                 if isinstance(stats, dict) and "success_rate" in stats:
                                     self.health_monitor.record_metric(
                                         name,
                                         "success_rate",
                                         stats["success_rate"],
-                                        stats
+                                        stats,
                                     )
-                                intrabar = stats.get("intrabar") if isinstance(stats, dict) else None
-                                drop_rates = stats.get("drop_rates") if isinstance(stats, dict) else None
+                                intrabar = (
+                                    stats.get("intrabar")
+                                    if isinstance(stats, dict)
+                                    else None
+                                )
+                                drop_rates = (
+                                    stats.get("drop_rates")
+                                    if isinstance(stats, dict)
+                                    else None
+                                )
 
                                 if isinstance(intrabar, dict):
-                                    if isinstance(intrabar.get("queue_age_ms_p95"), (int, float)):
+                                    if isinstance(
+                                        intrabar.get("queue_age_ms_p95"), (int, float)
+                                    ):
                                         self.health_monitor.record_metric(
                                             name,
                                             "intrabar_queue_age_p95_ms",
@@ -153,7 +178,9 @@ class MonitoringManager:
                                         self.health_monitor.record_metric(
                                             name,
                                             "intrabar_to_decision_latency_p95_ms",
-                                            float(intrabar["processing_latency_ms_p95"]),
+                                            float(
+                                                intrabar["processing_latency_ms_p95"]
+                                            ),
                                             stats,
                                         )
 
@@ -169,23 +196,67 @@ class MonitoringManager:
                                             stats,
                                         )
 
-                            elif method == "economic_calendar" and hasattr(component_obj, "stats"):
-                                self.health_monitor.check_economic_calendar(name, component_obj)
+                            elif method == "economic_calendar" and hasattr(
+                                component_obj, "stats"
+                            ):
+                                self.health_monitor.check_economic_calendar(
+                                    name, component_obj
+                                )
 
-                            elif method == "pending_entry" and hasattr(component_obj, "status"):
+                            elif method == "reconciliation_lag" and hasattr(
+                                component_obj, "status"
+                            ):
+                                self._check_reconciliation_lag(component_obj, name)
+
+                            elif method == "circuit_breaker" and hasattr(
+                                component_obj, "status"
+                            ):
+                                self._check_circuit_breaker(component_obj, name)
+
+                            elif method == "execution_quality" and hasattr(
+                                component_obj, "status"
+                            ):
+                                self._check_execution_quality(component_obj, name)
+
+                            elif method == "position_count" and hasattr(
+                                component_obj, "status"
+                            ):
+                                pm_status = component_obj.status()
+                                count = int(pm_status.get("tracked_positions", 0) or 0)
+                                self.health_monitor.record_metric(
+                                    name,
+                                    "tracked_position_count",
+                                    float(count),
+                                    pm_status,
+                                    check_alert=False,
+                                )
+
+                            elif method == "pending_entry" and hasattr(
+                                component_obj, "status"
+                            ):
                                 self._check_pending_entry(component_obj, name)
 
-                            elif method == "status" and hasattr(component_obj, "status"):
+                            elif method == "status" and hasattr(
+                                component_obj, "status"
+                            ):
                                 status_payload = component_obj.status()
                                 self.health_monitor.record_metric(
                                     name,
                                     "runtime_status",
                                     1.0,
-                                    status_payload if isinstance(status_payload, dict) else {"value": status_payload},
+                                    (
+                                        status_payload
+                                        if isinstance(status_payload, dict)
+                                        else {"value": status_payload}
+                                    ),
                                 )
 
-                            elif method == "monitoring_summary" and hasattr(component_obj, "monitoring_summary"):
-                                summary_payload = component_obj.monitoring_summary(hours=24)
+                            elif method == "monitoring_summary" and hasattr(
+                                component_obj, "monitoring_summary"
+                            ):
+                                summary_payload = component_obj.monitoring_summary(
+                                    hours=24
+                                )
                                 self.health_monitor.record_metric(
                                     name,
                                     "monitoring_summary",
@@ -194,15 +265,20 @@ class MonitoringManager:
                                 )
 
                         except Exception as e:
-                            logger.error(f"Failed to execute monitoring method {method} for {name}: {e}")
+                            logger.error(
+                                f"Failed to execute monitoring method {method} for {name}: {e}"
+                            )
 
                 report = self.health_monitor.generate_report(hours=1)
                 self.health_monitor.record_metric(
                     "system",
                     "overall_status",
-                    1.0 if report["overall_status"] == "healthy" else
-                    0.5 if report["overall_status"] == "warning" else 0.0,
-                    report
+                    (
+                        1.0
+                        if report["overall_status"] == "healthy"
+                        else 0.5 if report["overall_status"] == "warning" else 0.0
+                    ),
+                    report,
                 )
                 self._run_retention_if_due()
 
@@ -223,7 +299,9 @@ class MonitoringManager:
         except Exception as exc:
             logger.error("Failed to cleanup health monitor data: %s", exc)
 
-        indicator_component = self._monitored_components.get("indicator_calculation", {})
+        indicator_component = self._monitored_components.get(
+            "indicator_calculation", {}
+        )
         indicator_obj = indicator_component.get("obj")
         if indicator_obj is not None and hasattr(indicator_obj, "cleanup_old_events"):
             try:
@@ -238,10 +316,16 @@ class MonitoringManager:
         for symbol in symbols:
             for timeframe in timeframes:
                 try:
-                    latency = self.health_monitor.check_data_latency(component_name, service, symbol, timeframe)
-                    logger.debug(f"Data latency for {symbol}/{timeframe}: {latency:.1f}s")
+                    latency = self.health_monitor.check_data_latency(
+                        component_name, service, symbol, timeframe
+                    )
+                    logger.debug(
+                        f"Data latency for {symbol}/{timeframe}: {latency:.1f}s"
+                    )
                 except Exception as e:
-                    logger.error(f"Failed to check data latency for {symbol}/{timeframe}: {e}")
+                    logger.error(
+                        f"Failed to check data latency for {symbol}/{timeframe}: {e}"
+                    )
 
     def _check_indicator_freshness(self, worker, component_name: str):
         """检查指标新鲜度（针对多个品种和时间框架）"""
@@ -250,10 +334,99 @@ class MonitoringManager:
         for symbol in symbols:
             for timeframe in timeframes:
                 try:
-                    freshness = self.health_monitor.check_indicator_freshness(component_name, worker, symbol, timeframe)
-                    logger.debug(f"Indicator freshness for {symbol}/{timeframe}: {freshness:.1f}s")
+                    freshness = self.health_monitor.check_indicator_freshness(
+                        component_name, worker, symbol, timeframe
+                    )
+                    logger.debug(
+                        f"Indicator freshness for {symbol}/{timeframe}: {freshness:.1f}s"
+                    )
                 except Exception as e:
-                    logger.error(f"Failed to check indicator freshness for {symbol}/{timeframe}: {e}")
+                    logger.error(
+                        f"Failed to check indicator freshness for {symbol}/{timeframe}: {e}"
+                    )
+
+    def _check_reconciliation_lag(
+        self, component_obj: Any, component_name: str
+    ) -> None:
+        """检查持仓对账延迟。"""
+        try:
+            pm_status = component_obj.status()
+            last_at = pm_status.get("last_reconcile_at")
+            if last_at is None:
+                return
+            last_dt = datetime.fromisoformat(str(last_at))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            lag = (datetime.now(timezone.utc) - last_dt).total_seconds()
+            self.health_monitor.record_metric(
+                component_name,
+                "reconciliation_lag",
+                lag,
+                {
+                    "last_reconcile_at": str(last_at),
+                    "reconcile_count": pm_status.get("reconcile_count"),
+                    "tracked_positions": pm_status.get("tracked_positions"),
+                    "dirty_positions": pm_status.get("dirty_positions"),
+                    "last_error": pm_status.get("last_error"),
+                },
+            )
+        except Exception as exc:
+            logger.debug("Failed to check reconciliation lag: %s", exc)
+
+    def _check_circuit_breaker(self, component_obj: Any, component_name: str) -> None:
+        """检查交易熔断器状态。"""
+        try:
+            exec_status = component_obj.status()
+            cb = exec_status.get("circuit_breaker", {})
+            is_open = 1.0 if cb.get("open") else 0.0
+            self.health_monitor.record_metric(
+                component_name,
+                "circuit_breaker_open",
+                is_open,
+                {
+                    "consecutive_failures": cb.get("consecutive_failures"),
+                    "circuit_open_at": cb.get("circuit_open_at"),
+                    "health_check_failures": cb.get("health_check_failures"),
+                    "max_consecutive_failures": cb.get("max_consecutive_failures"),
+                },
+            )
+        except Exception as exc:
+            logger.debug("Failed to check circuit breaker: %s", exc)
+
+    def _check_execution_quality(self, component_obj: Any, component_name: str) -> None:
+        """检查交易执行质量指标。"""
+        try:
+            exec_status = component_obj.status()
+            eq = exec_status.get("execution_quality", {})
+
+            total = int(exec_status.get("execution_count", 0) or 0)
+            # 从 skip_reasons 中提取失败数
+            skip_reasons = exec_status.get("skip_reasons", {})
+            failed = int(skip_reasons.get("execution_failed", 0) or 0)
+            if total > 0:
+                failure_rate = failed / total
+                self.health_monitor.record_metric(
+                    component_name,
+                    "execution_failure_rate",
+                    failure_rate,
+                    {
+                        "total_executed": total,
+                        "failed": failed,
+                        "signals_received": exec_status.get("signals_received"),
+                        "signals_passed": exec_status.get("signals_passed"),
+                    },
+                )
+
+            overflows = int(eq.get("queue_overflows", 0) or 0)
+            if overflows > 0:
+                self.health_monitor.record_metric(
+                    component_name,
+                    "execution_queue_overflows",
+                    float(overflows),
+                    eq,
+                )
+        except Exception as exc:
+            logger.debug("Failed to check execution quality: %s", exc)
 
     def _check_pending_entry(self, pending_mgr, component_name: str):
         """检查 PendingEntryManager 健康状态。"""
@@ -305,8 +478,7 @@ _monitoring_manager_instances: Dict[tuple[int, int], MonitoringManager] = {}
 
 
 def get_monitoring_manager(
-    health_monitor: HealthMonitor = None,
-    check_interval: int = 60
+    health_monitor: HealthMonitor = None, check_interval: int = 60
 ) -> MonitoringManager:
     """获取与指定监控器绑定的 MonitoringManager 实例。"""
     if health_monitor is None:
@@ -328,12 +500,16 @@ def close_monitoring_manager(
     keys_to_close: list[tuple[int, int]] = []
     if instance is not None:
         keys_to_close.extend(
-            key for key, value in _monitoring_manager_instances.items() if value is instance
+            key
+            for key, value in _monitoring_manager_instances.items()
+            if value is instance
         )
     elif health_monitor is not None:
         if check_interval is None:
             keys_to_close.extend(
-                key for key in _monitoring_manager_instances if key[0] == id(health_monitor)
+                key
+                for key in _monitoring_manager_instances
+                if key[0] == id(health_monitor)
             )
         else:
             keys_to_close.append((id(health_monitor), int(check_interval)))

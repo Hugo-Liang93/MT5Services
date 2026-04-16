@@ -70,6 +70,12 @@ class StorageWriter:
         self._drop_alert_last_at: Dict[str, float] = {}
         # 60 秒内丢弃超过此数则触发 ERROR 告警
         self._drop_alert_rate_threshold = 50
+        # 通道级熔断：连续刷写失败超过阈值后暂停该通道一段时间，
+        # 防止 DB 故障时无限生成 DLQ 文件填满磁盘。
+        self._flush_consecutive_failures: Dict[str, int] = {}
+        self._flush_circuit_open_until: Dict[str, float] = {}
+        self._flush_circuit_threshold: int = 3  # 连续失败次数触发熔断
+        self._flush_circuit_cooldown: float = 30.0  # 熔断冷却期（秒）
         # DLQ 目录：刷写失败的批次持久化到此处，下次启动时重放
         self._dlq_dir = self._init_dlq_dir()
         if not self._register_channels_from_config():
@@ -297,6 +303,12 @@ class StorageWriter:
         if not pending or not ch["enabled_fn"]():  # type: ignore
             return
         now = time.time()
+
+        # 通道熔断检查：冷却期内跳过刷写，防止 DB 故障时 DLQ 文件洪泛
+        circuit_until = self._flush_circuit_open_until.get(name, 0.0)
+        if circuit_until > now and not force:
+            return
+
         last = self._last_flush.get(name, 0)
         interval = ch["flush_interval"]  # type: ignore
         batch_size = ch["batch_size"]  # type: ignore
@@ -310,6 +322,8 @@ class StorageWriter:
                     ch["write_fn"](batch)  # type: ignore
                     pending.clear()
                     self._last_flush[name] = now
+                    # 刷写成功，重置连续失败计数
+                    self._flush_consecutive_failures[name] = 0
                     return
                 except Exception as exc:  # pragma: no cover
                     attempts += 1
@@ -320,6 +334,21 @@ class StorageWriter:
                         self._dump_to_dlq(name, batch)
                         pending.clear()
                         self._last_flush[name] = now
+                        # 累计连续失败，达到阈值后触发熔断
+                        failures = self._flush_consecutive_failures.get(name, 0) + 1
+                        self._flush_consecutive_failures[name] = failures
+                        if failures >= self._flush_circuit_threshold:
+                            self._flush_circuit_open_until[name] = (
+                                now + self._flush_circuit_cooldown
+                            )
+                            logger.error(
+                                "StorageWriter: channel '%s' circuit OPEN after %d "
+                                "consecutive flush failures, pausing for %.0fs. "
+                                "Data will accumulate in pending buffer.",
+                                name,
+                                failures,
+                                self._flush_circuit_cooldown,
+                            )
                         return
                     time.sleep(self.settings.flush_retry_backoff)
 

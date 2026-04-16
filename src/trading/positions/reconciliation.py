@@ -48,9 +48,7 @@ def force_close_overnight(manager: PositionManager) -> Optional[Dict[str, Any]]:
         if not isinstance(opened, datetime):
             overnight.append(pos)
             continue
-        opened_utc = (
-            opened if opened.tzinfo else opened.replace(tzinfo=timezone.utc)
-        )
+        opened_utc = opened if opened.tzinfo else opened.replace(tzinfo=timezone.utc)
         if opened_utc.date() < now.date():
             overnight.append(pos)
 
@@ -62,14 +60,77 @@ def force_close_overnight(manager: PositionManager) -> Optional[Dict[str, Any]]:
         len(overnight),
     )
     try:
-        result = manager._trading.close_all_positions(
-            comment="overnight_force_close"
-        )
+        result = manager._trading.close_all_positions(comment="overnight_force_close")
         logger.info("Overnight force close result: %s", result)
         return result if isinstance(result, dict) else {"result": result}
     except Exception as exc:
         logger.error("Overnight force close failed: %s", exc)
         return {"error": str(exc)}
+
+
+def _resolve_position_context(
+    manager: PositionManager,
+    ticket: int,
+    comment: str,
+) -> dict[str, Any]:
+    """从 DB state + comment 解码合并持仓恢复上下文。
+
+    合并策略：DB（position_state_resolver）是权威源，comment 解码
+    （position_context_resolver）仅填补 DB 中缺失的字段。关键字段不一致时
+    记录 WARNING 以便排查。
+    """
+    db_state: dict[str, Any] = {}
+    if manager._position_state_resolver is not None:
+        try:
+            db_state = dict(manager._position_state_resolver(ticket) or {})
+        except Exception:
+            logger.debug(
+                "Position state resolver failed for ticket=%s",
+                ticket,
+                exc_info=True,
+            )
+
+    comment_context: dict[str, Any] = {}
+    if manager._position_context_resolver is not None:
+        try:
+            comment_context = dict(
+                manager._position_context_resolver(ticket, comment) or {}
+            )
+        except Exception:
+            logger.debug(
+                "Position context resolver failed for ticket=%s",
+                ticket,
+                exc_info=True,
+            )
+
+    # comment 作为底层，DB 非 None 字段覆盖
+    merged = dict(comment_context)
+    merged.update({k: v for k, v in db_state.items() if v is not None})
+
+    # 冲突检测：关键字段偏差 >1% 时记录 WARNING
+    _CONFLICT_CHECK_KEYS = ("entry_price", "initial_stop_loss", "atr_at_entry")
+    for key in _CONFLICT_CHECK_KEYS:
+        db_val = db_state.get(key)
+        ctx_val = comment_context.get(key)
+        if db_val is None or ctx_val is None:
+            continue
+        try:
+            fdb = float(db_val)
+            fctx = float(ctx_val)
+            denom = max(abs(fdb), 1e-9)
+            if abs(fdb - fctx) / denom > 0.01:
+                logger.warning(
+                    "Position ticket=%d resolver conflict on '%s': "
+                    "db=%.5f vs comment=%.5f — using DB value",
+                    ticket,
+                    key,
+                    fdb,
+                    fctx,
+                )
+        except (TypeError, ValueError):
+            pass
+
+    return merged
 
 
 def sync_open_positions(manager: PositionManager) -> dict[str, Any]:
@@ -97,44 +158,17 @@ def sync_open_positions(manager: PositionManager) -> dict[str, Any]:
                 continue
 
         comment = str(getattr(raw_pos, "comment", "") or "")
-        persisted_state = None
-        if manager._position_state_resolver is not None:
-            try:
-                persisted_state = dict(
-                    manager._position_state_resolver(ticket) or {}
-                )
-            except Exception:
-                logger.debug(
-                    "Position state resolver failed for ticket=%s",
-                    ticket,
-                    exc_info=True,
-                )
-                persisted_state = None
-        context = None
-        if manager._position_context_resolver is not None:
-            try:
-                context = manager._position_context_resolver(ticket, comment)
-            except Exception:
-                logger.debug(
-                    "Position context resolver failed for ticket=%s",
-                    ticket,
-                    exc_info=True,
-                )
-                context = None
-        merged_context = dict(persisted_state or {})
-        merged_context.update(dict(context or {}))
+        merged_context = _resolve_position_context(manager, ticket, comment)
         effective_comment = str(merged_context.get("comment") or comment)
-        if not merged_context.get(
-            "signal_id"
-        ) and not manager._is_restorable_comment(effective_comment):
+        if not merged_context.get("signal_id") and not manager._is_restorable_comment(
+            effective_comment
+        ):
             skipped += 1
             continue
 
         action = str(
             merged_context.get("action")
-            or manager._action_from_position_type(
-                getattr(raw_pos, "type", None)
-            )
+            or manager._action_from_position_type(getattr(raw_pos, "type", None))
         )
         entry_price = float(
             merged_context.get("entry_price")
@@ -153,14 +187,10 @@ def sync_open_positions(manager: PositionManager) -> dict[str, Any]:
 
         pos = TrackedPosition(
             ticket=ticket,
-            signal_id=str(
-                merged_context.get("signal_id") or f"restored:{ticket}"
-            ),
+            signal_id=str(merged_context.get("signal_id") or f"restored:{ticket}"),
             symbol=symbol_str,
             action=action,
-            entry_price=float(
-                merged_context.get("fill_price") or entry_price
-            ),
+            entry_price=float(merged_context.get("fill_price") or entry_price),
             stop_loss=stop_loss,
             take_profit=take_profit,
             volume=volume,
@@ -190,11 +220,7 @@ def sync_open_positions(manager: PositionManager) -> dict[str, Any]:
                 merged_context.get("breakeven_applied")
                 or (
                     (action == "buy" and stop_loss >= entry_price)
-                    or (
-                        action == "sell"
-                        and stop_loss <= entry_price
-                        and stop_loss > 0
-                    )
+                    or (action == "sell" and stop_loss <= entry_price and stop_loss > 0)
                 )
             ),
             trailing_active=bool(merged_context.get("trailing_active")),
@@ -225,6 +251,32 @@ def sync_open_positions(manager: PositionManager) -> dict[str, Any]:
         if effective_initial_sl > 0:
             pos.initial_stop_loss = float(effective_initial_sl)
             pos.initial_risk = abs(pos.entry_price - pos.initial_stop_loss)
+
+            # 校验：initial_risk 过小（< 0.1 ATR）通常意味着 fallback 到了已 trail
+            # 过的 SL，而非真正的初始 SL。此时用 ATR 倍数估算更准确。
+            if (
+                pos.atr_at_entry > 0
+                and pos.initial_risk < 0.1 * pos.atr_at_entry
+                and persisted_initial_sl is None  # 仅在 DB 无记录 fallback 时校验
+            ):
+                estimated_mult = max(pos.sl_atr_mult, 1.5)
+                estimated_risk = pos.atr_at_entry * estimated_mult
+                logger.warning(
+                    "Position ticket=%d recovered with suspiciously small "
+                    "initial_risk=%.4f (< 0.1 ATR=%.4f, persisted_initial_sl absent). "
+                    "Using ATR-based estimate: %.4f (%.2f × ATR)",
+                    ticket,
+                    pos.initial_risk,
+                    pos.atr_at_entry,
+                    estimated_risk,
+                    estimated_mult,
+                )
+                pos.initial_risk = estimated_risk
+                if pos.action == "buy":
+                    pos.initial_stop_loss = pos.entry_price - estimated_risk
+                else:
+                    pos.initial_stop_loss = pos.entry_price + estimated_risk
+
         if pos.atr_at_entry > 0 and pos.initial_risk > 0:
             pos.sl_atr_mult = round(pos.initial_risk / pos.atr_at_entry, 4)
         elif pos.atr_at_entry > 0 and pos.stop_loss > 0:
@@ -237,9 +289,8 @@ def sync_open_positions(manager: PositionManager) -> dict[str, Any]:
         if manager._on_position_tracked is not None:
             manager._on_position_tracked(pos, POSITION_RECOVERED)
         synced += 1
-        if (
-            manager._recovered_position_callback is not None
-            and merged_context.get("signal_id")
+        if manager._recovered_position_callback is not None and merged_context.get(
+            "signal_id"
         ):
             try:
                 manager._recovered_position_callback(pos)
@@ -259,9 +310,7 @@ def reconcile_with_mt5(manager: PositionManager) -> None:
     try:
         recovery = sync_open_positions(manager)
         if int(recovery.get("synced", 0) or 0) > 0:
-            logger.info(
-                "PositionManager reconcile recovered positions: %s", recovery
-            )
+            logger.info("PositionManager reconcile recovered positions: %s", recovery)
     except Exception as exc:
         logger.debug(
             "PositionManager: sync_open_positions during reconcile failed: %s",
@@ -286,9 +335,7 @@ def reconcile_with_mt5(manager: PositionManager) -> None:
                     mt5_positions[int(ticket)] = raw_pos
         except Exception as exc:
             failed_symbols.add(symbol)
-            logger.debug(
-                "PositionManager: get_positions(%s) error: %s", symbol, exc
-            )
+            logger.debug("PositionManager: get_positions(%s) error: %s", symbol, exc)
 
     for ticket, pos in tracked_tickets.items():
         if pos.symbol in failed_symbols:

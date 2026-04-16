@@ -6,6 +6,7 @@ from src.api.deps import (
     get_position_manager,
     get_runtime_read_model,
     get_trade_admission_service,
+    get_trade_executor,
     get_trading_command_service,
 )
 from src.api.error_codes import AIErrorAction, AIErrorCode
@@ -26,6 +27,7 @@ from src.readmodels.runtime import RuntimeReadModel
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.admission import TradeAdmissionService
 from src.trading.application.services import TradingCommandService
+from src.trading.execution.executor import TradeExecutor
 from src.trading.positions import PositionManager
 
 from ..common import trade_request_details
@@ -55,7 +57,9 @@ def trade_reconcile(
     runtime_views: RuntimeReadModel = Depends(get_runtime_read_model),
 ) -> ApiResponse[dict]:
     reconcile_result = (
-        manager.sync_open_positions() if request.sync_open_positions else {"skipped": True}
+        manager.sync_open_positions()
+        if request.sync_open_positions
+        else {"skipped": True}
     )
     return ApiResponse.success_response(
         data={
@@ -159,7 +163,9 @@ def trade(
                 "price": result.get("price") if result else None,
                 "ticket": result.get("ticket") if result else None,
                 "dry_run": request.dry_run,
-                "request_id": result.get("request_id") if result else request.request_id,
+                "request_id": (
+                    result.get("request_id") if result else request.request_id
+                ),
                 "trace_id": result.get("trace_id") if result else None,
                 "operation_id": result.get("operation_id") if result else None,
             },
@@ -312,6 +318,23 @@ def modify_orders(
             account_alias=active_alias,
             suggested_action=AIErrorAction.MODIFY_POSITION,
         )
+
+
+@router.post("/trade/circuit/reset", response_model=ApiResponse[dict])
+def reset_circuit_breaker(
+    executor: TradeExecutor = Depends(get_trade_executor),
+) -> ApiResponse[dict]:
+    """手动重置交易熔断器，恢复自动交易。"""
+    was_open = executor.circuit_open
+    executor.reset_circuit(event="manual_reset", reason="operator_api_call")
+    return ApiResponse.success_response(
+        data={
+            "was_open": was_open,
+            "circuit_open": executor.circuit_open,
+            "consecutive_failures": executor.consecutive_failures,
+        },
+        metadata={"operation": "circuit_breaker_reset"},
+    )
 
 
 @router.put("/modify_positions", response_model=ApiResponse[dict])

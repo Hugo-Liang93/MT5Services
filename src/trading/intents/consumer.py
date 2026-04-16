@@ -10,8 +10,10 @@ from src.config.runtime_identity import RuntimeIdentity
 from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
-from src.trading.execution.eventing import emit_terminal_execution_event
-from src.trading.execution.eventing import interpret_terminal_result
+from src.trading.execution.eventing import (
+    emit_terminal_execution_event,
+    interpret_terminal_result,
+)
 from src.trading.intents.codec import signal_event_from_payload
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 
@@ -50,6 +52,12 @@ class ExecutionIntentConsumer:
             "_worker_thread",
             label="ExecutionIntentConsumer",
         )
+        # 在途意图追踪：记录当前正在执行的 intent_id，用于崩溃诊断和
+        # 监控端判断 consumer 是否卡在某个 intent 上。
+        self._in_flight_intent_id: str | None = None
+        self._in_flight_since: float | None = None
+        self._total_processed: int = 0
+        self._total_failed: int = 0
 
     def start(self) -> None:
         if self._lifecycle.is_running():
@@ -109,6 +117,8 @@ class ExecutionIntentConsumer:
 
     def _process_intent(self, item: dict[str, Any]) -> None:
         intent_id = str(item.get("intent_id") or "")
+        self._in_flight_intent_id = intent_id
+        self._in_flight_since = time.monotonic()
         event: SignalEvent | None = None
         try:
             self._heartbeat(intent_id)
@@ -117,6 +127,7 @@ class ExecutionIntentConsumer:
             result = self._trade_executor.process_event(event)
             outcome = interpret_terminal_result(result)
             status = outcome.status
+            self._total_processed += 1
             self._complete_fn(
                 intent_id=intent_id,
                 status=status,
@@ -149,6 +160,8 @@ class ExecutionIntentConsumer:
             )
         except Exception as exc:
             logger.exception("Execution intent processing failed: %s", intent_id)
+            self._total_processed += 1
+            self._total_failed += 1
             self._complete_fn(
                 intent_id=intent_id,
                 status="failed",
@@ -185,6 +198,26 @@ class ExecutionIntentConsumer:
                     "instance_role": self._runtime_identity.instance_role,
                 },
             )
+        finally:
+            self._in_flight_intent_id = None
+            self._in_flight_since = None
+
+    def status(self) -> dict[str, Any]:
+        """返回消费者运行状态，供监控使用。"""
+        in_flight_duration: float | None = None
+        if self._in_flight_since is not None:
+            in_flight_duration = round(time.monotonic() - self._in_flight_since, 2)
+        return {
+            "running": self.is_running(),
+            "total_processed": self._total_processed,
+            "total_failed": self._total_failed,
+            "in_flight_intent_id": self._in_flight_intent_id,
+            "in_flight_duration_seconds": in_flight_duration,
+            "poll_interval_seconds": self._poll_interval_seconds,
+            "batch_size": self._batch_size,
+            "lease_seconds": self._lease_seconds,
+            "max_attempts": self._max_attempts,
+        }
 
     def _heartbeat(self, intent_id: str) -> None:
         if self._heartbeat_fn is None:
@@ -234,7 +267,9 @@ class ExecutionIntentConsumer:
                 type=event_type,
                 trace_id=trace_id,
                 symbol=str(item.get("symbol") or payload_row.get("symbol") or ""),
-                timeframe=str(item.get("timeframe") or payload_row.get("timeframe") or ""),
+                timeframe=str(
+                    item.get("timeframe") or payload_row.get("timeframe") or ""
+                ),
                 scope=str(payload_row.get("scope") or "confirmed"),
                 ts=datetime.now(timezone.utc).isoformat(),
                 payload=payload,
@@ -300,14 +335,12 @@ class ExecutionIntentConsumer:
     def _trace_id_for_item(item: dict[str, Any]) -> str:
         payload_row = dict(item.get("payload") or {})
         metadata = dict(payload_row.get("metadata") or {})
-        return (
-            str(
-                metadata.get(MK.SIGNAL_TRACE_ID)
-                or metadata.get("trace_id")
-                or payload_row.get("trace_id")
-                or item.get("trace_id")
-                or item.get("signal_id")
-                or item.get("intent_id")
-                or ""
-            ).strip()
-        )
+        return str(
+            metadata.get(MK.SIGNAL_TRACE_ID)
+            or metadata.get("trace_id")
+            or payload_row.get("trace_id")
+            or item.get("trace_id")
+            or item.get("signal_id")
+            or item.get("intent_id")
+            or ""
+        ).strip()

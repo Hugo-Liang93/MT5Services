@@ -30,11 +30,7 @@ from .checks import (
 )
 from .common import is_finite_metric_value
 from .metrics_store import MetricsStore
-from .reporting import (
-    generate_report,
-    get_recent_metrics,
-    get_system_status,
-)
+from .reporting import generate_report, get_recent_metrics, get_system_status
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +42,9 @@ class HealthMonitor:
     Only ``alert_history`` is persisted to a lightweight SQLite file.
     """
 
-    def __init__(self, db_path: str = "health_monitor.db", ring_size: int = 2400) -> None:
+    def __init__(
+        self, db_path: str = "health_monitor.db", ring_size: int = 2400
+    ) -> None:
         # db_path 现在仅用于 alert_history SQLite
         # 文件名改为 health_alerts.db 以反映实际用途
         alert_dir = os.path.dirname(os.path.abspath(db_path))
@@ -64,10 +62,12 @@ class HealthMonitor:
         # 不包含 data_latency / queue_depth / intrabar_* 等"运行时数据流"指标，
         # 这些即使在启动期异常也应立即告警。
         self._startup_grace_seconds = 60.0
-        self._startup_grace_metrics = frozenset({
-            "economic_calendar_staleness",
-            "indicator_freshness",
-        })
+        self._startup_grace_metrics = frozenset(
+            {
+                "economic_calendar_staleness",
+                "indicator_freshness",
+            }
+        )
 
         # 核心数据存储（纯内存）
         self._store = MetricsStore(
@@ -91,6 +91,11 @@ class HealthMonitor:
                 "critical": 7000.0,
             },
             "cache_hit_rate": {"warning": 0.0, "critical": 0.0},
+            # 交易域指标
+            "reconciliation_lag": {"warning": 30.0, "critical": 120.0},
+            "circuit_breaker_open": {"warning": 0.5, "critical": 0.5},
+            "execution_failure_rate": {"warning": 0.1, "critical": 0.3},
+            "execution_queue_overflows": {"warning": 1.0, "critical": 5.0},
         }
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
 
@@ -124,29 +129,29 @@ class HealthMonitor:
         if data_latency_critical is not None:
             self.alerts["data_latency"]["critical"] = float(data_latency_critical)
         if intrabar_drop_rate_1m_warning is not None:
-            self.alerts["intrabar_drop_rate_1m"][
-                "warning"
-            ] = float(intrabar_drop_rate_1m_warning)
+            self.alerts["intrabar_drop_rate_1m"]["warning"] = float(
+                intrabar_drop_rate_1m_warning
+            )
         if intrabar_drop_rate_1m_critical is not None:
-            self.alerts["intrabar_drop_rate_1m"][
-                "critical"
-            ] = float(intrabar_drop_rate_1m_critical)
+            self.alerts["intrabar_drop_rate_1m"]["critical"] = float(
+                intrabar_drop_rate_1m_critical
+            )
         if intrabar_queue_age_p95_ms_warning is not None:
-            self.alerts["intrabar_queue_age_p95_ms"][
-                "warning"
-            ] = float(intrabar_queue_age_p95_ms_warning)
+            self.alerts["intrabar_queue_age_p95_ms"]["warning"] = float(
+                intrabar_queue_age_p95_ms_warning
+            )
         if intrabar_queue_age_p95_ms_critical is not None:
-            self.alerts["intrabar_queue_age_p95_ms"][
-                "critical"
-            ] = float(intrabar_queue_age_p95_ms_critical)
+            self.alerts["intrabar_queue_age_p95_ms"]["critical"] = float(
+                intrabar_queue_age_p95_ms_critical
+            )
         if intrabar_to_decision_latency_p95_ms_warning is not None:
-            self.alerts["intrabar_to_decision_latency_p95_ms"][
-                "warning"
-            ] = float(intrabar_to_decision_latency_p95_ms_warning)
+            self.alerts["intrabar_to_decision_latency_p95_ms"]["warning"] = float(
+                intrabar_to_decision_latency_p95_ms_warning
+            )
         if intrabar_to_decision_latency_p95_ms_critical is not None:
-            self.alerts["intrabar_to_decision_latency_p95_ms"][
-                "critical"
-            ] = float(intrabar_to_decision_latency_p95_ms_critical)
+            self.alerts["intrabar_to_decision_latency_p95_ms"]["critical"] = float(
+                intrabar_to_decision_latency_p95_ms_critical
+            )
 
     # ─── 核心写入 ────────────────────────────────────────────────────────────
 
@@ -159,7 +164,9 @@ class HealthMonitor:
         check_alert: bool = True,
     ) -> None:
         if not is_finite_metric_value(value):
-            logger.debug("Skipping non-finite metric: %s.%s=%r", component, metric_name, value)
+            logger.debug(
+                "Skipping non-finite metric: %s.%s=%r", component, metric_name, value
+            )
             return
 
         timestamp = self._utc_now().isoformat()
@@ -198,7 +205,11 @@ class HealthMonitor:
         if alert_level in {"warning", "critical"}:
             threshold = self.alerts[metric_name][alert_level]
             message = self._generate_alert_message(
-                component, metric_name, alert_level, metric_value, threshold,
+                component,
+                metric_name,
+                alert_level,
+                metric_value,
+                threshold,
             )
             self._store.write_alert(
                 timestamp=timestamp,
@@ -275,6 +286,16 @@ class HealthMonitor:
                 return "critical"
             if value >= thresholds["warning"]:
                 return "warning"
+        elif metric_name in {
+            "reconciliation_lag",
+            "circuit_breaker_open",
+            "execution_failure_rate",
+            "execution_queue_overflows",
+        }:
+            if value >= thresholds["critical"]:
+                return "critical"
+            if value >= thresholds["warning"]:
+                return "warning"
         elif metric_name == "cache_hit_rate":
             pass
         return None
@@ -327,6 +348,27 @@ class HealthMonitor:
                 f"{component}: cache hit rate {alert_level} - "
                 f"current={value:.1%} threshold={threshold:.1%}"
             )
+        if metric_name == "reconciliation_lag":
+            return (
+                f"{component}: reconciliation lag {alert_level} - "
+                f"current={value:.1f}s threshold={threshold:.0f}s"
+            )
+        if metric_name == "circuit_breaker_open":
+            return (
+                f"{component}: circuit breaker OPEN {alert_level} - "
+                f"auto-trading suspended, manual reset required"
+            )
+        if metric_name == "execution_failure_rate":
+            return (
+                f"{component}: execution failure rate {alert_level} - "
+                f"current={value:.1%} threshold={threshold:.1%}"
+            )
+        if metric_name == "execution_queue_overflows":
+            return (
+                f"{component}: execution queue overflows {alert_level} - "
+                f"current={value:.0f} threshold={threshold:.0f} "
+                f"(signals may be permanently lost)"
+            )
         return (
             f"{component}.{metric_name}: {alert_level} - "
             f"current={value} threshold={threshold}"
@@ -348,7 +390,9 @@ class HealthMonitor:
 
     # ─── 代理检查方法（委托给 health_checks 模块） ─────────────────────────
 
-    def check_data_latency(self, component: str, service: Any, symbol: str, timeframe: str) -> float:
+    def check_data_latency(
+        self, component: str, service: Any, symbol: str, timeframe: str
+    ) -> float:
         return check_data_latency(self, component, service, symbol, timeframe)
 
     def check_indicator_freshness(
@@ -433,7 +477,9 @@ class NullHealthMonitor:
     ) -> None:
         pass
 
-    def resolve_alert(self, component: str, metric_name: str, resolved_by: str = "system") -> bool:
+    def resolve_alert(
+        self, component: str, metric_name: str, resolved_by: str = "system"
+    ) -> bool:
         return False
 
     def check_data_latency(self, *args: Any, **kwargs: Any) -> float:

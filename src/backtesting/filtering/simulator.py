@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.calendar.policy import EconomicEventWindow, SignalEconomicPolicy
 from src.signals.contracts import normalize_session_name
 from src.signals.execution.filters import (
     EconomicEventFilter,
@@ -55,13 +56,10 @@ class BacktestFilterStats:
         if self.total_bars_evaluated == 0:
             return 0.0
         return (
-            (self.total_bars_evaluated - self.total_bars_rejected)
-            / self.total_bars_evaluated
-        )
+            self.total_bars_evaluated - self.total_bars_rejected
+        ) / self.total_bars_evaluated
 
-    def record_rejection(
-        self, bar_time: datetime, reason: str
-    ) -> None:
+    def record_rejection(self, bar_time: datetime, reason: str) -> None:
         self.total_bars_rejected += 1
         # 从 reason 提取过滤器名称（格式：filter_type:details）
         filter_name = reason.split(":")[0] if ":" in reason else reason
@@ -192,9 +190,23 @@ class BacktestFilterSimulator:
             economic_filter=(
                 EconomicEventFilter(
                     provider=config.economic_provider,
-                    lookahead_minutes=config.economic_lookahead_minutes,
-                    lookback_minutes=config.economic_lookback_minutes,
-                    importance_min=config.economic_importance_min,
+                    policy=SignalEconomicPolicy(
+                        enabled=True,
+                        filter_window=EconomicEventWindow(
+                            lookahead_minutes=config.economic_lookahead_minutes,
+                            lookback_minutes=config.economic_lookback_minutes,
+                            importance_min=config.economic_importance_min,
+                        ),
+                        query_window=EconomicEventWindow(
+                            lookahead_minutes=config.economic_lookahead_minutes,
+                            lookback_minutes=config.economic_lookback_minutes,
+                            importance_min=config.economic_importance_min,
+                        ),
+                        hard_block_pre_minutes=config.economic_lookahead_minutes,
+                        hard_block_post_minutes=config.economic_lookback_minutes,
+                        decay_pre_minutes=0,
+                        decay_post_minutes=0,
+                    ),
                 )
                 if config.economic_filter_enabled and config.economic_provider
                 else None

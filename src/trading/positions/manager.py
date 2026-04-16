@@ -17,9 +17,9 @@ from src.utils.common import timeframe_seconds
 
 from ..broker.comment_codec import looks_like_system_trade_comment
 from ..closeout.service import ExposureCloseoutController
-from ..reasons import REASON_END_OF_DAY, REASON_SIGNAL_EXIT, REASON_TIMEOUT
 from ..execution.sizing import TradeParameters
 from ..ports import PositionManagementPort
+from ..reasons import REASON_END_OF_DAY, REASON_SIGNAL_EXIT, REASON_TIMEOUT
 from ..runtime.lifecycle import OwnedThreadLifecycle
 from ..trade_events import (
     POSITION_TRACKED,
@@ -114,6 +114,10 @@ class TrackedPosition:
     lowest_price: Optional[float] = None
     current_price: Optional[float] = None
     close_source: Optional[str] = None
+    # 脏标记 + 版本控制（增量 flush 到 DB，减少 peak_price 丢失窗口）
+    _dirty: bool = field(default=False, repr=False, compare=False)
+    _version: int = field(default=0, repr=False, compare=False)
+    _flushed_version: int = field(default=0, repr=False, compare=False)
 
 
 class PositionManager:
@@ -182,7 +186,9 @@ class PositionManager:
             None  # Optional[MarginGuard], injected via set_margin_guard()
         )
 
-    def set_sl_tp_history_writer(self, writer_fn: Callable[[list[tuple]], None]) -> None:
+    def set_sl_tp_history_writer(
+        self, writer_fn: Callable[[list[tuple]], None]
+    ) -> None:
         """注入 SL/TP 历史写入回调（供运行时初始化入口使用）。"""
         self._sl_tp_history_writer = writer_fn
 
@@ -308,14 +314,21 @@ class PositionManager:
                 return
             # 更新价格跟踪
             pos.current_price = current_price
+            peak_changed = False
             if pos.action == "buy":
                 if pos.highest_price is None or current_price > pos.highest_price:
                     pos.highest_price = current_price
                     pos.peak_price = pos.highest_price
+                    peak_changed = True
             elif pos.action == "sell":
                 if pos.lowest_price is None or current_price < pos.lowest_price:
                     pos.lowest_price = current_price
                     pos.peak_price = pos.lowest_price
+                    peak_changed = True
+
+            if peak_changed:
+                pos._version += 1
+                pos._dirty = True
 
             # Chandelier Exit 判断在锁内完成（纯计算），返回待执行的 SL 修改动作
             pending_action = self._evaluate_chandelier_exit(pos, current_price)
@@ -437,9 +450,11 @@ class PositionManager:
     def status(self) -> Dict[str, Any]:
         with self._lock:
             position_count = len(self._positions)
+            dirty_count = sum(1 for p in self._positions.values() if p._dirty)
         cfg = self._chandelier_config
         return {
             "running": self.is_running(),
+            "dirty_positions": dirty_count,
             "reconcile_interval": self._reconcile_interval,
             "reconcile_count": self._reconcile_count,
             "last_reconcile_at": (
@@ -524,18 +539,61 @@ class PositionManager:
 
     def _reconcile_loop(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                self._run_end_of_day_closeout()
-                self._reconcile_with_mt5()
-                self._check_regime_changes()
-                self._run_margin_guard()
-                self._reconcile_count += 1
-                self._last_reconcile_at = datetime.now(timezone.utc)
-                self._last_error = None
-            except Exception as exc:
-                self._last_error = str(exc)
-                logger.warning("PositionManager reconcile error: %s", exc)
+            step_errors: list[str] = []
+            for step_name, step_fn in (
+                ("flush_dirty", self._flush_dirty_positions),
+                ("end_of_day", self._run_end_of_day_closeout),
+                ("reconcile_mt5", self._reconcile_with_mt5),
+                ("regime_changes", self._check_regime_changes),
+                ("margin_guard", self._run_margin_guard),
+            ):
+                try:
+                    step_fn()
+                except Exception as exc:
+                    step_errors.append(f"{step_name}: {exc}")
+                    logger.warning(
+                        "PositionManager reconcile step '%s' failed: %s",
+                        step_name,
+                        exc,
+                    )
+            # 即使部分步骤失败，仍更新计数和时间戳（部分成功 > 全部跳过）
+            self._reconcile_count += 1
+            self._last_reconcile_at = datetime.now(timezone.utc)
+            self._last_error = "; ".join(step_errors) if step_errors else None
             self._stop_event.wait(timeout=self._reconcile_interval)
+
+    def _flush_dirty_positions(self) -> None:
+        """增量 flush：仅持久化 _dirty 标记的持仓的关键字段到 DB。
+
+        在 reconcile 周期开头调用，将 peak_price 等高频更新字段的 DB 丢失窗口
+        从 0~10s 缩短到单个 reconcile 周期内。
+        """
+        if self._on_position_updated is None:
+            return
+        with self._lock:
+            dirty_snapshot = [
+                pos
+                for pos in self._positions.values()
+                if pos._dirty and pos._version > pos._flushed_version
+            ]
+        if not dirty_snapshot:
+            return
+        flushed = 0
+        for pos in dirty_snapshot:
+            try:
+                self._on_position_updated(pos, "dirty_flush")
+                with self._lock:
+                    pos._flushed_version = pos._version
+                    pos._dirty = False
+                flushed += 1
+            except Exception as exc:
+                logger.debug(
+                    "PositionManager: dirty flush ticket=%d failed: %s",
+                    pos.ticket,
+                    exc,
+                )
+        if flushed > 0:
+            logger.debug("PositionManager: flushed %d dirty positions", flushed)
 
     def _run_margin_guard(self) -> None:
         guard = self._margin_guard
@@ -735,6 +793,9 @@ class PositionManager:
             exit_spec=pos.exit_spec or None,
         )
 
+        if result.breakeven_activated and not pos.breakeven_activated:
+            pos._version += 1
+            pos._dirty = True
         pos.breakeven_activated = result.breakeven_activated
         # 持续更新追溯字段（每次检查都写入最新值，平仓时读取）
         pos.last_r_multiple = result.r_multiple

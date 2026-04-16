@@ -102,7 +102,9 @@ class AppRuntime:
 
             self._status["phase"] = "running"
             self._status["ready"] = True
-            self._status["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            self._status["completed_at"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            )
             self._status["duration_ms"] = sum(
                 step.get("duration_ms", 0) for step in self._status["steps"].values()
             )
@@ -202,7 +204,10 @@ class AppRuntime:
             try:
                 controller.stop()
             except Exception:
-                logger.debug("Failed to stop runtime mode controller during shutdown", exc_info=True)
+                logger.debug(
+                    "Failed to stop runtime mode controller during shutdown",
+                    exc_info=True,
+                )
 
         # Calibrator: persist cache before stopping
         if c.calibrator is not None:
@@ -212,7 +217,9 @@ class AppRuntime:
                 c.calibrator.dump(calibrator_cache_path)
                 c.calibrator.stop_background_refresh()
             except Exception:
-                logger.debug("Failed to dump calibrator cache during shutdown", exc_info=True)
+                logger.debug(
+                    "Failed to dump calibrator cache during shutdown", exc_info=True
+                )
 
         # Shutdown order: signal source → execution → data
         for label, component, method in [
@@ -245,7 +252,9 @@ class AppRuntime:
                     "system", "shutdown", 1.0, {"timestamp": "now"}
                 )
             except Exception:
-                logger.debug("Failed to record shutdown metric to health monitor", exc_info=True)
+                logger.debug(
+                    "Failed to record shutdown metric to health monitor", exc_info=True
+                )
 
         pipeline_bus = c.pipeline_event_bus
         if pipeline_bus is not None:
@@ -265,24 +274,33 @@ class AppRuntime:
                 try:
                     close_event_store(instance=event_store)
                 except Exception:
-                    logger.debug("Failed to close indicator event store during shutdown", exc_info=True)
+                    logger.debug(
+                        "Failed to close indicator event store during shutdown",
+                        exc_info=True,
+                    )
 
         if c.monitoring_manager is not None:
             try:
                 close_monitoring_manager(instance=c.monitoring_manager)
             except Exception:
-                logger.debug("Failed to close monitoring manager during shutdown", exc_info=True)
+                logger.debug(
+                    "Failed to close monitoring manager during shutdown", exc_info=True
+                )
 
         if c.health_monitor is not None:
             try:
                 close_health_monitor(instance=c.health_monitor)
             except Exception:
-                logger.debug("Failed to close health monitor during shutdown", exc_info=True)
+                logger.debug(
+                    "Failed to close health monitor during shutdown", exc_info=True
+                )
 
         try:
             close_file_config_manager()
         except Exception:
-            logger.debug("Failed to close file config manager during shutdown", exc_info=True)
+            logger.debug(
+                "Failed to close file config manager during shutdown", exc_info=True
+            )
 
         self._status["phase"] = "stopped"
         self._status["ready"] = False
@@ -313,23 +331,43 @@ class AppRuntime:
         current_started = time.monotonic()
         runtime_identity = c.runtime_identity
         is_executor = bool(
-            runtime_identity is not None and runtime_identity.instance_role == "executor"
+            runtime_identity is not None
+            and runtime_identity.instance_role == "executor"
         )
         if not is_executor:
-            c.monitoring_manager.register_component("data_ingestion", c.ingestor, ["queue_stats"])
+            c.monitoring_manager.register_component(
+                "data_ingestion", c.ingestor, ["queue_stats"]
+            )
             c.monitoring_manager.register_component(
                 "indicator_calculation",
                 c.indicator_manager,
                 ["indicator_freshness", "cache_stats", "performance_stats"],
             )
-            c.monitoring_manager.register_component("market_data", c.market_service, ["data_latency"])
+            c.monitoring_manager.register_component(
+                "market_data", c.market_service, ["data_latency"]
+            )
             c.monitoring_manager.register_component(
                 "economic_calendar", c.economic_calendar_service, ["economic_calendar"]
             )
-            c.monitoring_manager.register_component("signals", c.signal_runtime, ["status"])
+            c.monitoring_manager.register_component(
+                "signals", c.signal_runtime, ["status"]
+            )
         c.monitoring_manager.register_component(
             "trading", c.trade_module, ["monitoring_summary"]
         )
+        # 交易域可观测性指标
+        if c.position_manager is not None:
+            c.monitoring_manager.register_component(
+                "position_manager",
+                c.position_manager,
+                ["reconciliation_lag", "position_count"],
+            )
+        if c.trade_executor is not None:
+            c.monitoring_manager.register_component(
+                "trade_executor",
+                c.trade_executor,
+                ["circuit_breaker", "execution_quality"],
+            )
         if c.trading_state_alerts is not None:
             c.monitoring_manager.register_component(
                 "trading_state",
@@ -370,7 +408,12 @@ class AppRuntime:
         }
 
     def _record_task_status(
-        self, step_name: str, state: str, started_at: float, *, error: Optional[str] = None
+        self,
+        step_name: str,
+        state: str,
+        started_at: float,
+        *,
+        error: Optional[str] = None,
     ) -> None:
         from datetime import datetime, timezone
 

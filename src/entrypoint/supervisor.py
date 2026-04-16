@@ -29,10 +29,14 @@ def _project_root() -> Path:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run MT5Services supervisor for a topology group")
+    parser = argparse.ArgumentParser(
+        description="Run MT5Services supervisor for a topology group"
+    )
     group_selector = parser.add_mutually_exclusive_group(required=True)
     group_selector.add_argument("--group", help="topology group name, e.g. live")
-    group_selector.add_argument("--environment", help="运行环境，当前等价于 topology group（live/demo）")
+    group_selector.add_argument(
+        "--environment", help="运行环境，当前等价于 topology group（live/demo）"
+    )
     parser.add_argument(
         "--ready-timeout-seconds",
         type=float,
@@ -73,6 +77,27 @@ def _wait_for_ready(instance_name: str, timeout_seconds: float) -> None:
         f"instance {instance_name} did not become ready within {timeout_seconds:.0f}s"
         + (f": {last_error}" if last_error else "")
     )
+
+
+def _classify_exit_code(exit_code: int | None) -> str:
+    """将进程退出码分类为重启策略类型。
+
+    Returns:
+        "transient" — 临时故障（网络/MT5 断连），适合快速重试
+        "fatal"     — 致命错误（段错误/OOM），适合等待 gate 检查
+        "normal"    — 正常退出，不应重启
+        "unknown"   — 无法分类
+    """
+    if exit_code is None:
+        return "unknown"
+    if exit_code == 0:
+        return "normal"
+    # Windows: 负退出码 = 未处理异常信号（如 -1073741819 = ACCESS_VIOLATION）
+    # Linux: 128+N = 被信号 N 终止（137=SIGKILL, 139=SIGSEGV, 134=SIGABRT）
+    if exit_code < 0 or exit_code >= 128:
+        return "fatal"
+    # 1~127: 普通错误退出（初始化失败、运行时异常等）
+    return "transient"
 
 
 @dataclass
@@ -122,9 +147,7 @@ class Supervisor:
         logger.info("Starting topology group=%s", self._group.name)
         # Main gate 必须通过：main 是数据源/信号源，没有 main 整个链路无法工作。
         ensure_mt5_session_gate_or_raise(instance_name=self._group.main)
-        logger.info(
-            "MT5 session gate passed for main instance=%s", self._group.main
-        )
+        logger.info("MT5 session gate passed for main instance=%s", self._group.main)
         self._managed[self._group.main] = self._spawn(self._group.main)
         _wait_for_ready(self._group.main, self._ready_timeout_seconds)
 
@@ -156,13 +179,33 @@ class Supervisor:
                     continue
                 if self._stopping:
                     return
-                logger.warning(
-                    "Instance exited unexpectedly: instance=%s code=%s restart_count=%s",
+                exit_class = _classify_exit_code(exit_code)
+                if exit_class == "normal":
+                    logger.info(
+                        "Instance exited normally: instance=%s code=0",
+                        instance_name,
+                    )
+                    continue
+                log_fn = logger.error if exit_class == "fatal" else logger.warning
+                log_fn(
+                    "Instance exited unexpectedly: instance=%s code=%s "
+                    "class=%s restart_count=%s",
                     instance_name,
                     exit_code,
+                    exit_class,
                     managed.restart_count,
                 )
-                delay_seconds = min(30.0, max(1.0, float(2 ** min(managed.restart_count, 4))))
+                # fatal 错误（段错误/OOM）使用更长的冷却期
+                if exit_class == "fatal":
+                    delay_seconds = min(
+                        60.0,
+                        max(5.0, float(2 ** min(managed.restart_count + 1, 5))),
+                    )
+                else:
+                    delay_seconds = min(
+                        30.0,
+                        max(1.0, float(2 ** min(managed.restart_count, 4))),
+                    )
                 time.sleep(delay_seconds)
                 # 重启前先做 gate 检查；非 main 实例 gate 失败时仅记 warning 等下次重试。
                 try:
@@ -170,7 +213,9 @@ class Supervisor:
                 except RuntimeError as exc:
                     if instance_name == self._group.main:
                         # main 不可恢复 → 终止整组
-                        logger.error("Main instance gate failed during restart: %s", exc)
+                        logger.error(
+                            "Main instance gate failed during restart: %s", exc
+                        )
                         raise
                     logger.warning(
                         "Worker %s gate failed during restart, will retry next loop: %s",
@@ -187,7 +232,9 @@ class Supervisor:
                         restart_count=managed.restart_count + 1,
                     )
                     continue
-                restarted = self._spawn(instance_name, restart_count=managed.restart_count + 1)
+                restarted = self._spawn(
+                    instance_name, restart_count=managed.restart_count + 1
+                )
                 self._managed[instance_name] = restarted
                 if instance_name == self._group.main:
                     _wait_for_ready(instance_name, self._ready_timeout_seconds)
@@ -204,7 +251,10 @@ class Supervisor:
         if not self._pending_workers:
             return
         now = time.monotonic()
-        if now - self._last_pending_retry_at < self._PENDING_WORKER_RETRY_INTERVAL_SECONDS:
+        if (
+            now - self._last_pending_retry_at
+            < self._PENDING_WORKER_RETRY_INTERVAL_SECONDS
+        ):
             return
         self._last_pending_retry_at = now
         for worker in list(self._pending_workers):
@@ -213,13 +263,9 @@ class Supervisor:
             try:
                 ensure_mt5_session_gate_or_raise(instance_name=worker)
             except RuntimeError as exc:
-                logger.debug(
-                    "Pending worker %s still unreachable: %s", worker, exc
-                )
+                logger.debug("Pending worker %s still unreachable: %s", worker, exc)
                 continue
-            logger.info(
-                "Pending worker %s gate now passes, spawning", worker
-            )
+            logger.info("Pending worker %s gate now passes, spawning", worker)
             try:
                 self._managed[worker] = self._spawn(worker)
                 self._pending_workers.discard(worker)
@@ -233,7 +279,13 @@ class Supervisor:
     def _spawn(self, instance_name: str, *, restart_count: int = 0) -> ManagedProcess:
         # gate 检查由调用方负责（_start_initial / _monitor_loop），
         # 这里只负责进程创建，避免重复检查 + 提高弹性（worker 缺失 terminal 不阻断 main）。
-        command = [sys.executable, "-m", "src.entrypoint.instance", "--instance", instance_name]
+        command = [
+            sys.executable,
+            "-m",
+            "src.entrypoint.instance",
+            "--instance",
+            instance_name,
+        ]
         env = dict(os.environ)
         env["MT5_INSTANCE"] = instance_name
         env["MT5_ENVIRONMENT"] = self._group.environment
