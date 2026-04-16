@@ -373,7 +373,9 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | 挖掘 Runner | `src/research/orchestration/runner.py` |
 | DataMatrix | `src/research/core/data_matrix.py` |
 | 挖掘分析器（预测力/阈值/规则） | `src/research/analyzers/` |
-| 特征工程 / 特征候选 / 特征提升 | `src/research/features/engineer.py` / `candidates.py` / `promotion.py` |
+| FeatureHub（特征编排入口） | `src/research/features/hub.py` |
+| Feature Providers（6 模块） | `src/research/features/{temporal,microstructure,cross_tf,regime_transition,session_event,intrabar}/` |
+| 特征候选 / 特征提升 | `src/research/features/candidates.py` / `promotion.py` |
 | 策略候选 | `src/research/strategies/candidates.py` |
 | 纯统计原语（ACF/block shuffle/效力分析） | `src/research/core/statistics.py` |
 | 过拟合防护（BH-FDR/排列检验） | `src/research/core/overfitting.py` |
@@ -473,6 +475,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
    - **TF-specific**（仅 1 TF）：需谨慎，可能是统计噪音
 3. **最佳 TF 推荐公式**：`score = |IC| × (1 + IR_bonus) × perm_bonus × sample_bonus`
 4. **CLI 用法**：`python -m src.ops.cli.mining_runner --tf M15,M30,H1 --compare`
+   - `--providers temporal,microstructure` 可指定只运行特定 Feature Provider（默认全部启用）
 5. **跨 TF 分析器**：`src/research/core/cross_tf.py`
 
 ### 回测调参写入

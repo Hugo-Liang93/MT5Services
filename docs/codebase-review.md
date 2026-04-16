@@ -1,7 +1,7 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-04-13
+> 最近更新：2026-04-16
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
 
@@ -206,6 +206,13 @@
 - 手动平仓/撤单扩展后的定向回归已通过 `74` 项，新增覆盖 `/close`、`/close_all`、`/close/batch`、`/cancel_orders`、`/cancel_orders/batch` 的统一动作结果契约、同键回放、冲突复用拒绝，以及 `TradingModule` 对手动平仓/撤单动作的内存回放与重启后审计回放。
 - monitoring/backtest/trade 联合定向回归已通过 `90` 项，新增覆盖 `pending-entry cancel` 两条 mutation 的统一动作结果与冲突拒绝，以及 `/backtest/run` 的统一提交动作结果、同键回放、冲突复用拒绝与 `run_fields` 契约同步。
 - `/v1/monitoring/runtime-tasks` 已收口为“默认当前实例作用域”，不再在 worker 侧混入其他实例或历史轮次的任务状态；当显式传入 `instance_id / instance_role / account_key / account_alias` 时，才切换到跨实例查询口径。
+
+39. **Research 特征层已从单文件 God class 重构为 FeatureHub + 6 个模块化 Provider（feat/research-feature-providers）**  
+    原 `src/research/features/engineer.py`（~1250 行，~21 个特征）承载了所有特征定义与计算逻辑，职责边界模糊且扩展成本高。本轮把它拆分为：`FeatureHub`（`hub.py`，纯编排入口）+ 6 个独立 Feature Provider（`temporal` ~33 / `microstructure` ~21 / `cross_tf` ~8 / `regime_transition` ~11 / `session_event` ~7 / `intrabar` ~5），总特征数从 ~31 扩展至 ~85，全部 numpy 向量化。  
+    **本次改动如何减少边界泄漏**：特征计算从单文件 God class 拆分为 6 个职责清晰的 Provider，通过 `FeatureProviderProtocol` 接口解耦，`FeatureHub` 与各 Provider 之间不存在隐式状态共享；各 Provider 只依赖 `DataMatrix` 输入，不访问其他 Provider 的输出，从根本上消除了原 God class 中跨特征隐式依赖的边界泄漏风险。  
+    **配置**：新增 `research.ini [feature_providers] enabled_providers` 控制 Provider 子集；BH-FDR 新增 `fdr_group_by = provider` 支持按 Provider 分组校正，避免跨维度特征稀释显著性阈值。  
+    **CLI 扩展**：`--providers temporal,microstructure` 可指定只运行部分 Provider，便于调试和对比实验。  
+    **未决兼容项**：无——旧 `engineer.py` 已被 `hub.py` 完整替代，不保留兼容别名或双轨入口。
 
 仍需单独关注但不属于本轮代码阻塞项：
 

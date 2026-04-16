@@ -391,10 +391,10 @@ Layer 1: 正式指标 (29 个, indicators.json)
   · 实盘/回测/研究全系统共享
   · 趋势/动量/波动/量能/价格行为/复合
 
-Layer 2: 研究特征 (3 个, features/engineer.py)
+Layer 2: 研究特征 (~85 个, features/hub.py + 6 Providers)
   · 仅 DataMatrix 生命周期内存在
   · 可以依赖 Layer 1 指标，也可以依赖 regime / soft_regime 等研究态上下文
-  · momentum_consensus / regime_entropy / bars_in_regime
+  · 由 FeatureHub 聚合 6 个 Provider 的输出，全部 numpy 向量化
 
 Layer 3: 分析器输出 → MiningResult → top_findings
 ```
@@ -548,6 +548,10 @@ cv_consistency_threshold = 0.40
 [feature_engineering]
 enabled = true
 features =                         # 空=全部内置特征
+
+[feature_providers]
+enabled_providers = temporal,microstructure,cross_tf,regime_transition,session_event,intrabar
+                                   # 逗号分隔；空=全部启用
 ```
 
 ---
@@ -562,7 +566,8 @@ features =                         # 空=全部内置特征
 | `src/research/analyzers/predictive_power.py` | IC + Rolling IC + 排列检验 + BH-FDR + 效力分析 |
 | `src/research/analyzers/threshold.py` | 阈值扫描 + expectancy + 排列检验 + 信号去重 |
 | `src/research/analyzers/rule_mining.py` | 决策树规则挖掘 + 排列检验 + CV 一致性 + binomial 检验 |
-| `src/research/features/engineer.py` | 研究特征工程框架 |
+| `src/research/features/hub.py` | FeatureHub：特征编排入口，聚合 6 个 Provider 的输出 |
+| `src/research/features/{temporal,microstructure,...}/` | Feature Providers：6 个模块化特征生产者 |
 | `src/research/core/overfitting.py` | BH-FDR + 排列检验 + CV 工具（expanding/sliding） |
 | `src/research/core/cross_tf.py` | 跨 TF 一致性分析 |
 | `src/research/core/config.py` | 配置加载（含 RuleMiningConfig） |
@@ -574,9 +579,59 @@ features =                         # 空=全部内置特征
 
 - `src/research/core/`：公共基础层，承载配置、DataMatrix、统计工具、跨 TF 分析与研究契约。
 - `src/research/analyzers/`：共享证据引擎，只负责统计分析，不区分指标路径或策略路径。
-- `src/research/features/`：research feature、feature candidate、indicator promotion 路径。
+- `src/research/features/`：FeatureHub + 6 Feature Providers + feature candidate + indicator promotion 路径。
 - `src/research/strategies/`：strategy candidate 发现路径。
 - `src/research/orchestration/`：MiningRunner 编排入口。
+
+---
+
+## Feature Providers（模块化特征层）
+
+原 `FeatureEngineer`（单文件 God class，~1250 行，~21 个特征）已重构为 **FeatureHub + 6 个独立 Provider**，总特征数从 ~31 扩展至 ~85，全部 numpy 向量化。
+
+### FeatureHub
+
+`src/research/features/hub.py` — 唯一入口，替代原 `FeatureEngineer.enrich()`。
+
+- 聚合所有启用的 Provider 输出，注入 `DataMatrix`
+- 通过 `FeatureProviderProtocol` 接口与各 Provider 解耦
+- 支持按 `[feature_providers] enabled_providers` 配置启用子集
+
+### 6 个 Provider 一览
+
+| Provider | 路径 | 特征数 | 覆盖维度 |
+|----------|------|--------|---------|
+| `TemporalProvider` | `features/temporal/` | ~33 | 时间周期、动量演化、趋势持续性 |
+| `MicrostructureProvider` | `features/microstructure/` | ~21 | K 线形态、蜡烛体比率、价格位置 |
+| `CrossTFProvider` | `features/cross_tf/` | ~8 | 跨周期趋势一致性、HTF 对齐 |
+| `RegimeTransitionProvider` | `features/regime_transition/` | ~11 | Regime 切换速度、稳定性、熵 |
+| `SessionEventProvider` | `features/session_event/` | ~7 | 亚欧美时段、开盘区间突破 |
+| `IntrabarProvider` | `features/intrabar/` | ~5 | 盘中 bar 进度、成交量分布 |
+
+### CLI 用法
+
+```bash
+# 默认：全部 6 个 Provider
+python -m src.ops.cli.mining_runner --tf M15,M30,H1 --compare
+
+# 指定部分 Provider（用于快速调试或对比实验）
+python -m src.ops.cli.mining_runner --tf H1 --providers temporal,microstructure
+```
+
+### 分组 FDR 校正（by_provider）
+
+BH-FDR 校正现支持按 Provider 分组：每个 Provider 内部独立校正，避免跨维度特征数量稀释显著性阈值。可在 `[overfitting]` 中配置：
+
+```ini
+[overfitting]
+fdr_group_by = provider   # none | provider（默认 none=全局统一校正）
+```
+
+### 边界约束
+
+- `FeatureHub` 不承载特征计算逻辑，只负责编排和聚合
+- 每个 Provider 只依赖 `DataMatrix` 输入，不访问其他 Provider 的输出（无隐式跨 Provider 依赖）
+- Provider 新增不需要修改 `FeatureHub` 核心——只需实现 `FeatureProviderProtocol` 并在配置中启用
 
 ### 模块职责总览
 
@@ -634,7 +689,8 @@ CLI / API
 | `src/research/analyzers/predictive_power.py` | `DataMatrix`、配置 | `IndicatorPredictiveResult` 列表 | 评估特征/指标对未来收益的预测力 | 不做候选晋升 |
 | `src/research/analyzers/threshold.py` | `DataMatrix`、配置 | `ThresholdSweepResult` 列表 | 扫描阈值，评估 expectancy 和一致性 | 不做候选晋升 |
 | `src/research/analyzers/rule_mining.py` | `DataMatrix`、配置 | 规则挖掘结果 | 从条件组合中提取 IF-THEN 规则证据 | 不做策略实现 |
-| `src/research/features/engineer.py` | `DataMatrix`、feature definitions | enriched `DataMatrix`、feature inventory | 管理 research feature 定义和批量注入 | 不注册正式 indicator |
+| `src/research/features/hub.py` | `DataMatrix`、Provider 列表 | enriched `DataMatrix` | FeatureHub：聚合 6 个 Provider 输出并注入 DataMatrix | 不注册正式 indicator |
+| `src/research/features/{temporal,...}/` | `DataMatrix` | 各维度特征列 | 6 个 Feature Provider：各自负责一个特征维度的计算 | 不访问其他 Provider 输出 |
 | `src/research/features/candidates.py` | 多 TF `MiningResult` | `FeatureCandidateDiscoveryResult` / `FeatureCandidateSpec` | 发现 feature candidate，并给出 `IndicatorPromotionDecision` | 不自动写正式 indicator 代码 |
 | `src/research/features/promotion.py` | `FeatureCandidateSpec`、下游验证摘要 | `FeaturePromotionReport` | 串联 feature -> indicator -> strategy 的 lineage | 不执行回测 |
 | `src/research/strategies/candidates.py` | 多 TF `MiningResult` | `CandidateDiscoveryResult` / `StrategyCandidateSpec` | 发现 strategy candidate，附带 `why / when / where` 骨架与 validation gates | 不直接生成 structured strategy 代码 |
