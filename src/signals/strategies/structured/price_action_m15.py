@@ -79,7 +79,7 @@ class StructuredPriceAction(StructuredStrategyBase):
     # ── When 参数 ──
     _min_body_ratio: float = 0.8  # 非形态信号的最低 body_ratio
     _big_bar_body_ratio: float = 1.5  # 大 bar 动量入场阈值
-    _adx_floor: float = 15.0  # ADX 最低门槛（M15 用更低阈值）
+    _adx_floor: float = 12.0  # ADX 最低门槛（M15 更宽松，靠形态质量过滤）
 
     # ── Where 参数 ──
     _bb_extreme_buy: float = 0.25  # buy 时 BB position 上限（下轨区域）
@@ -158,6 +158,8 @@ class StructuredPriceAction(StructuredStrategyBase):
         pin = candle.get("pin_bar", 0.0)
         eng = candle.get("engulfing", 0.0)
         ham = candle.get("hammer", 0.0)
+        three = candle.get("three_method", 0.0)
+        rej = candle.get("rejection", 0.0)
         body_ratio = stats.get("body_ratio", 0.0)
         close_pos = stats.get("close_position", 0.5)
 
@@ -175,11 +177,23 @@ class StructuredPriceAction(StructuredStrategyBase):
         elif direction == "sell" and eng < 0:
             signals.append((0.85, "engulfing_sell"))
 
+        # Three soldiers / crows：连续动量
+        if direction == "buy" and three > 0:
+            signals.append((0.8, "three_soldiers"))
+        elif direction == "sell" and three < 0:
+            signals.append((0.8, "three_crows"))
+
         # Hammer：经典反转信号
         if direction == "buy" and ham > 0:
             signals.append((0.7, "hammer_bull"))
         elif direction == "sell" and ham < 0:
             signals.append((0.7, "hammer_bear"))
+
+        # Rejection candle（宽泛 pin bar）：比严格 pin bar 更容易触发
+        if direction == "buy" and rej > 0 and pin == 0:
+            signals.append((0.65, "rejection_bull"))
+        elif direction == "sell" and rej < 0 and pin == 0:
+            signals.append((0.65, "rejection_bear"))
 
         # 大 bar 动量确认：body > 1.5x 均值且方向一致
         big_bar = get_tf_param(
