@@ -16,6 +16,7 @@ _T = TypeVar("_T")
 from src.clients.mt5_market import OHLC, MT5MarketClient, MT5MarketError
 from src.config import IngestSettings
 from src.market import MarketDataService
+from src.market.synthesis import synthesize_parent_bar
 from src.persistence.storage_writer import StorageWriter
 from src.utils.common import ohlc_key, timeframe_interval, timeframe_seconds
 
@@ -399,16 +400,12 @@ class BackgroundIngestor:
         synthesis_count = self._synthesis_count.get(ohlc_key(symbol, parent_tf), 0) + 1
         synthesized_at = datetime.now(timezone.utc)
 
-        # 合成父 TF 当前未收盘 bar
-        synthesized = OHLC(
-            symbol=symbol,
-            timeframe=parent_tf,
-            time=parent_bar_open,
-            open=bars_in_range[0].open,
-            high=max(b.high for b in bars_in_range),
-            low=min(b.low for b in bars_in_range),
-            close=bars_in_range[-1].close,
-            volume=sum(b.volume for b in bars_in_range),
+        # 合成父 TF 当前未收盘 bar（复用共享纯函数）
+        synthesized = synthesize_parent_bar(
+            bars_in_range,
+            symbol,
+            parent_tf,
+            parent_bar_open,
         )
 
         # 注入现有 intrabar 管道

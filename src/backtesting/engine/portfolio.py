@@ -19,6 +19,7 @@ from src.trading.execution.equity_filter import (
     EquityCurveFilter,
     EquityCurveFilterConfig,
 )
+from src.trading.execution.sizing import TradeParameters
 from src.trading.positions.exit_rules import (
     ChandelierConfig,
     WeekendFlatPolicy,
@@ -26,7 +27,6 @@ from src.trading.positions.exit_rules import (
     check_weekend_flat,
     evaluate_exit,
 )
-from src.trading.execution.sizing import TradeParameters
 
 from ..models import TradeRecord
 
@@ -48,6 +48,7 @@ class _Position:
     regime: str
     confidence: float
     entry_bar_index: int  # 开仓时的 bar 索引（用于计算 bars_held）
+    entry_scope: str = "confirmed"  # "confirmed" | "intrabar"
     atr_at_entry: float = 0.0
     # Chandelier Exit 状态
     initial_risk: float = 0.0  # R = |entry - initial_sl|，开仓时计算，不变
@@ -102,9 +103,7 @@ class CostModel:
             return self.spread_ny_mult
         return self.spread_asia_mult
 
-    def effective_spread_points(
-        self, bar_time: datetime, atr_ratio: float
-    ) -> float:
+    def effective_spread_points(self, bar_time: datetime, atr_ratio: float) -> float:
         """返回有效 spread 点数（总值；开平仓各扣一半）。"""
         if not self.dynamic_spread_enabled:
             return 0.0
@@ -244,9 +243,8 @@ class PortfolioTracker:
         # Equity Curve Filter（和实盘同一个类）：权益跌破 MA 线时阻止开仓
         # balance_getter 闭包到 self，每次采样读当前 equity
         self._equity_curve_filter = EquityCurveFilter(
-            balance_getter=lambda: self.current_balance + self._floating_pnl(
-                self._last_bar_close_for_equity
-            ),
+            balance_getter=lambda: self.current_balance
+            + self._floating_pnl(self._last_bar_close_for_equity),
             config=equity_curve_filter_config or EquityCurveFilterConfig(),
         )
         # 最新 bar close 缓存（record_equity 调用时用，避免 can_open_position 查不到价格）
@@ -349,16 +347,25 @@ class PortfolioTracker:
             return False, "min_volume"
         if volume > self._max_volume:
             return False, "max_volume"
-        if self._max_volume_per_order is not None and volume > self._max_volume_per_order:
+        if (
+            self._max_volume_per_order is not None
+            and volume > self._max_volume_per_order
+        ):
             return False, "max_volume_per_order"
 
         open_volume = sum(pos.position_size for pos in self._open_positions)
-        if self._max_volume_per_symbol is not None and open_volume + volume > self._max_volume_per_symbol:
+        if (
+            self._max_volume_per_symbol is not None
+            and open_volume + volume > self._max_volume_per_symbol
+        ):
             return False, "max_volume_per_symbol"
 
         day_key = bar.time.date().isoformat()
         day_opened_volume = self._daily_opened_volume.get(day_key, 0.0)
-        if self._max_volume_per_day is not None and day_opened_volume + volume > self._max_volume_per_day:
+        if (
+            self._max_volume_per_day is not None
+            and day_opened_volume + volume > self._max_volume_per_day
+        ):
             return False, "max_volume_per_day"
 
         if self._max_trades_per_day is not None and self._max_trades_per_day > 0:
@@ -383,7 +390,9 @@ class PortfolioTracker:
             and start_equity is not None
             and start_equity > 0
         ):
-            loss_pct = max(0.0, ((start_equity - current_close_equity) / start_equity) * 100.0)
+            loss_pct = max(
+                0.0, ((start_equity - current_close_equity) / start_equity) * 100.0
+            )
             if loss_pct >= self._daily_loss_limit_pct:
                 return False, "daily_loss_limit_pct"
 
@@ -407,6 +416,7 @@ class PortfolioTracker:
         timeframe: str = "",
         exit_spec: Optional[dict] = None,
         fill_price: Optional[float] = None,
+        entry_scope: str = "confirmed",
     ) -> bool:
         """尝试开仓。
 
@@ -456,16 +466,23 @@ class PortfolioTracker:
             strategy_category=strategy_category,
             exit_spec=dict(exit_spec) if exit_spec else {},
             timeframe=timeframe,
-            sl_atr_mult=round(trade_params.sl_distance / atr_at_entry, 4) if atr_at_entry > 0 else 0.0,
+            sl_atr_mult=(
+                round(trade_params.sl_distance / atr_at_entry, 4)
+                if atr_at_entry > 0
+                else 0.0
+            ),
             highest_price=entry_price if action == "buy" else None,
             lowest_price=entry_price if action == "sell" else None,
             entry_spread_points=entry_half_spread,
+            entry_scope=entry_scope,
         )
         self._open_positions.append(pos)
         day_key = bar.time.date().isoformat()
         self._daily_trade_counts[day_key] = self._daily_trade_counts.get(day_key, 0) + 1
         self._hourly_window.append(bar.time)
-        self._daily_opened_volume[day_key] = self._daily_opened_volume.get(day_key, 0.0) + trade_params.position_size
+        self._daily_opened_volume[day_key] = (
+            self._daily_opened_volume.get(day_key, 0.0) + trade_params.position_size
+        )
         # 交易事件自动记录资金快照（精确捕捉开仓时刻的资金变化）
         self._equity_curve.append(
             (bar.time, self.current_balance + self._floating_pnl(bar.close))
@@ -503,11 +520,14 @@ class PortfolioTracker:
                 {"momentum_vote": "buy", "trend_triple_confirm": "sell", ...}
         """
         # 先检查周末强平（防周一跳空）—— 优先级高于每日 EOD
-        if check_weekend_flat(
-            current_time=bar.time,
-            policy=self._weekend_flat_policy,
-            last_flat_date=self._last_weekend_flat_date,
-        ) and self._open_positions:
+        if (
+            check_weekend_flat(
+                current_time=bar.time,
+                policy=self._weekend_flat_policy,
+                last_flat_date=self._last_weekend_flat_date,
+            )
+            and self._open_positions
+        ):
             self._last_weekend_flat_date = bar.time.date().isoformat()
             return self._close_all_with_reason(bar, bar_index, "weekend_flat")
 
@@ -560,7 +580,11 @@ class PortfolioTracker:
             if hard_exit is not None:
                 exit_price, hard_reason = hard_exit
                 trade = self._close_position(
-                    pos, exit_price, bar.time, bar_index, hard_reason,
+                    pos,
+                    exit_price,
+                    bar.time,
+                    bar_index,
+                    hard_reason,
                 )
                 closed.append(trade)
                 continue
@@ -619,7 +643,11 @@ class PortfolioTracker:
                     exit_price = bar.close
 
                 trade = self._close_position(
-                    pos, exit_price, bar.time, bar_index, result.close_reason,
+                    pos,
+                    exit_price,
+                    bar.time,
+                    bar_index,
+                    result.close_reason,
                 )
                 closed.append(trade)
             else:
@@ -660,9 +688,7 @@ class PortfolioTracker:
         """按指定原因平仓所有持仓。"""
         closed: List[TradeRecord] = []
         for pos in self._open_positions:
-            trade = self._close_position(
-                pos, bar.close, bar.time, bar_index, reason
-            )
+            trade = self._close_position(pos, bar.close, bar.time, bar_index, reason)
             closed.append(trade)
         self._open_positions = []
         return closed
@@ -705,14 +731,14 @@ class PortfolioTracker:
 
         # 总点数级成本 = 固定滑点 ×2 + 开/平 spread
         total_cost_points = (
-            self._slippage_points * 2
-            + pos.entry_spread_points
-            + exit_half_spread
+            self._slippage_points * 2 + pos.entry_spread_points + exit_half_spread
         )
         slippage_cost = total_cost_points * pos.position_size * self._contract_size
 
         # 使用初始资金作为分母，避免资金耗尽时结果失真
-        pnl_pct = (pnl / self.initial_balance * 100.0) if self.initial_balance > 0 else 0.0
+        pnl_pct = (
+            (pnl / self.initial_balance * 100.0) if self.initial_balance > 0 else 0.0
+        )
 
         self.current_balance += pnl
         if self.current_balance > self.peak_balance:
@@ -739,6 +765,7 @@ class PortfolioTracker:
             regime=pos.regime,
             confidence=pos.confidence,
             exit_reason=exit_reason,
+            entry_scope=pos.entry_scope,
             slippage_cost=round(slippage_cost, 2),
             commission_cost=round(total_commission, 2),
             swap_cost=round(swap_cost_total, 2),

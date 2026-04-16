@@ -209,6 +209,27 @@ class ConfidenceConfig:
     bars_to_evaluate: int = 5
 
 
+@dataclass(frozen=True)
+class IntrabarConfig:
+    """Intrabar 回测配置（双 TF 联合回放）。
+
+    与生产 signal.ini [intrabar_trading] 对齐，复用同一语义：
+    - trigger_map: 父 TF → 子 TF（e.g. {"H1": "M5", "M30": "M1"}）
+    - min_stable_bars / min_confidence: 直接传给 IntrabarTradeCoordinator
+    - enabled_strategies: 策略白名单（空=全部支持 intrabar scope 的策略）
+    - confidence_factor: intrabar 置信度衰减系数（与生产 intrabar_confidence_factor 相同）
+    """
+
+    enabled: bool = False
+    trigger_map: Dict[str, str] = field(default_factory=dict)
+    min_stable_bars: int = 3
+    min_confidence: float = 0.75
+    enabled_strategies: List[str] = field(default_factory=list)
+    confidence_factor: float = 0.85
+    # 子 TF 数据覆盖率低于此阈值时跳过该父 bar 的 intrabar 评估
+    min_coverage_ratio: float = 0.80
+
+
 # ── 字段名映射（flat key -> (sub_config_field, nested_key)）──────────
 
 
@@ -299,6 +320,12 @@ _FLAT_FIELD_MAP: Dict[str, Tuple[str, str]] = {
     "htf_alignment_boost": ("confidence", "htf_alignment_boost"),
     "htf_conflict_penalty": ("confidence", "htf_conflict_penalty"),
     "bars_to_evaluate": ("confidence", "bars_to_evaluate"),
+    # IntrabarConfig
+    "intrabar_enabled": ("intrabar", "enabled"),
+    "intrabar_min_stable_bars": ("intrabar", "min_stable_bars"),
+    "intrabar_min_confidence": ("intrabar", "min_confidence"),
+    "intrabar_confidence_factor": ("intrabar", "confidence_factor"),
+    "intrabar_min_coverage_ratio": ("intrabar", "min_coverage_ratio"),
 }
 
 _SUB_CONFIG_CLASSES: Dict[str, type] = {
@@ -310,6 +337,7 @@ _SUB_CONFIG_CLASSES: Dict[str, type] = {
     "circuit_breaker": CircuitBreakerConfig,
     "monte_carlo": MonteCarloConfig,
     "confidence": ConfidenceConfig,
+    "intrabar": IntrabarConfig,
 }
 
 
@@ -344,6 +372,7 @@ class BacktestConfig:
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     monte_carlo: MonteCarloConfig = field(default_factory=MonteCarloConfig)
     confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
+    intrabar: IntrabarConfig = field(default_factory=IntrabarConfig)
 
     @classmethod
     def from_flat(cls, **kwargs: Any) -> "BacktestConfig":
@@ -395,6 +424,7 @@ class TradeRecord:
     regime: str
     confidence: float
     exit_reason: str  # "take_profit" | "stop_loss" | "signal_exit" | "end_of_test"
+    entry_scope: str = "confirmed"  # "confirmed" | "intrabar"
     slippage_cost: float = 0.0  # 开仓+平仓滑点/spread 总成本（USD）
     commission_cost: float = 0.0  # 手续费总成本
     swap_cost: float = 0.0  # 过夜利息累计（USD，负数表示支付）

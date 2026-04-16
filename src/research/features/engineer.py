@@ -119,6 +119,9 @@ class FeatureEngineer:
             # 检查依赖是否存在
             if not all(dep in matrix.indicator_series for dep in defn.dependencies):
                 continue
+            # Intrabar 特征需要 child_bars 数据，缺失时跳过（避免全 None 无效计算）
+            if defn.group == "derived_intrabar" and not matrix.child_bars:
+                continue
             # 优先使用向量化批量实现；否则退化到逐 bar 解释循环
             if defn.batch_func is not None:
                 series = defn.batch_func(matrix)
@@ -290,9 +293,7 @@ def _close_to_close_3(matrix: DataMatrix, i: int) -> Optional[float]:
     return (matrix.closes[i] - prev) / prev
 
 
-def _bars_to_next_high_impact_event(
-    matrix: DataMatrix, i: int
-) -> Optional[float]:
+def _bars_to_next_high_impact_event(matrix: DataMatrix, i: int) -> Optional[float]:
     """距离下一个高影响事件的 bar 数（timeframe 粒度粗略换算）。
 
     找不到下一个事件 → None；找到则返回"到事件的分钟数 / 每 bar 分钟数"。
@@ -312,9 +313,7 @@ def _bars_to_next_high_impact_event(
     return None
 
 
-def _bars_since_last_high_impact_event(
-    matrix: DataMatrix, i: int
-) -> Optional[float]:
+def _bars_since_last_high_impact_event(matrix: DataMatrix, i: int) -> Optional[float]:
     """距离上一个高影响事件的 bar 数。"""
     events = matrix.high_impact_event_times
     if not events:
@@ -393,7 +392,8 @@ def _series_to_float_array(values: Optional[List[Optional[float]]], n: int):
     if values is None:
         return np.full(n, np.nan, dtype=np.float64)
     return np.asarray(
-        [v if v is not None else float("nan") for v in values], dtype=np.float64,
+        [v if v is not None else float("nan") for v in values],
+        dtype=np.float64,
     )
 
 
@@ -405,7 +405,8 @@ def _batch_momentum_consensus(matrix: DataMatrix) -> List[Optional[float]]:
     hist = _series_to_float_array(matrix.indicator_series.get(("macd", "hist")), n)
     rsi = _series_to_float_array(matrix.indicator_series.get(("rsi14", "rsi")), n)
     stoch = _series_to_float_array(
-        matrix.indicator_series.get(("stoch_rsi14", "stoch_rsi_k")), n,
+        matrix.indicator_series.get(("stoch_rsi14", "stoch_rsi_k")),
+        n,
     )
     valid = np.isfinite(hist) & np.isfinite(rsi) & np.isfinite(stoch)
     score = (np.sign(hist) + np.sign(rsi - 50.0) + np.sign(stoch - 50.0)) / 3.0
@@ -434,7 +435,9 @@ def _batch_body_ratio(matrix: DataMatrix) -> List[Optional[float]]:
     opens = np.asarray(matrix.opens, dtype=np.float64)
     closes = np.asarray(matrix.closes, dtype=np.float64)
     rng = highs - lows
-    out = np.where(rng < 1e-9, 0.0, np.abs(closes - opens) / np.where(rng < 1e-9, 1.0, rng))
+    out = np.where(
+        rng < 1e-9, 0.0, np.abs(closes - opens) / np.where(rng < 1e-9, 1.0, rng)
+    )
     return out.tolist()
 
 
@@ -487,7 +490,8 @@ def _batch_range_expansion(matrix: DataMatrix) -> List[Optional[float]]:
         return [None] * matrix.n_bars
     # atr 可能含 None，先转为 ndarray（None → nan），逐项判断
     atr_arr = np.asarray(
-        [v if v is not None else float("nan") for v in atr_series], dtype=np.float64,
+        [v if v is not None else float("nan") for v in atr_series],
+        dtype=np.float64,
     )
     rng = highs - lows
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -742,6 +746,160 @@ def _bars_in_regime(matrix: DataMatrix, i: int) -> Optional[float]:
 # （src/indicators/core/composite.py），不再作为研究特征。
 # 其余条目保留在 research feature registry 中，用于继续做候选发现与晋升审计。
 
+
+# ── Intrabar 派生特征函数 ──────────────────────────────────────────────
+# 需要 DataMatrix.child_bars 数据（build_data_matrix(child_tf=...) 加载）。
+# 未加载子 TF 数据时返回 None（安全降级）。
+
+
+def _child_bar_consensus(matrix: DataMatrix, i: int) -> Optional[float]:
+    """子 TF 同色比例：子 bars 中与父 bar 同色（涨/跌）的占比。"""
+    children = matrix.child_bars.get(i)
+    if not children or len(children) < 2:
+        return None
+    parent_bullish = matrix.closes[i] > matrix.opens[i]
+    same = sum(1 for b in children if (b.close > b.open) == parent_bullish)
+    return same / len(children)
+
+
+def _batch_child_bar_consensus(matrix: DataMatrix) -> List[Optional[float]]:
+    """子 TF 同色比例（batch）。"""
+    out: List[Optional[float]] = []
+    for i in range(matrix.n_bars):
+        children = matrix.child_bars.get(i)
+        if not children or len(children) < 2:
+            out.append(None)
+            continue
+        parent_bullish = matrix.closes[i] > matrix.opens[i]
+        same = sum(1 for b in children if (b.close > b.open) == parent_bullish)
+        out.append(same / len(children))
+    return out
+
+
+def _child_range_acceleration(matrix: DataMatrix, i: int) -> Optional[float]:
+    """前半段 vs 后半段 range 扩张比：second_half_avg_range / first_half_avg_range - 1。"""
+    children = matrix.child_bars.get(i)
+    if not children or len(children) < 4:
+        return None
+    mid = len(children) // 2
+    first_half = children[:mid]
+    second_half = children[mid:]
+    avg_first = sum(b.high - b.low for b in first_half) / len(first_half)
+    avg_second = sum(b.high - b.low for b in second_half) / len(second_half)
+    if avg_first < 1e-9:
+        return None
+    return avg_second / avg_first - 1.0
+
+
+def _batch_child_range_acceleration(matrix: DataMatrix) -> List[Optional[float]]:
+    """前半段 vs 后半段 range 扩张比（batch）。"""
+    out: List[Optional[float]] = []
+    for i in range(matrix.n_bars):
+        children = matrix.child_bars.get(i)
+        if not children or len(children) < 4:
+            out.append(None)
+            continue
+        mid = len(children) // 2
+        first_half = children[:mid]
+        second_half = children[mid:]
+        avg_first = sum(b.high - b.low for b in first_half) / len(first_half)
+        avg_second = sum(b.high - b.low for b in second_half) / len(second_half)
+        if avg_first < 1e-9:
+            out.append(None)
+        else:
+            out.append(avg_second / avg_first - 1.0)
+    return out
+
+
+def _intrabar_momentum_shift(matrix: DataMatrix, i: int) -> Optional[float]:
+    """子 TF close-to-close 方向切换比：sign_changes / (n_children - 1)。"""
+    children = matrix.child_bars.get(i)
+    if not children or len(children) < 3:
+        return None
+    changes = 0
+    prev_dir = 0
+    for j in range(1, len(children)):
+        diff = children[j].close - children[j - 1].close
+        cur_dir = 1 if diff > 0 else (-1 if diff < 0 else 0)
+        if cur_dir != 0 and prev_dir != 0 and cur_dir != prev_dir:
+            changes += 1
+        if cur_dir != 0:
+            prev_dir = cur_dir
+    return changes / (len(children) - 1)
+
+
+def _batch_intrabar_momentum_shift(matrix: DataMatrix) -> List[Optional[float]]:
+    """子 TF 动量方向切换比（batch）。"""
+    out: List[Optional[float]] = []
+    for i in range(matrix.n_bars):
+        out.append(_intrabar_momentum_shift(matrix, i))
+    return out
+
+
+def _child_volume_front_weight(matrix: DataMatrix, i: int) -> Optional[float]:
+    """前半 volume / 总 volume。"""
+    children = matrix.child_bars.get(i)
+    if not children or len(children) < 4:
+        return None
+    mid = len(children) // 2
+    total = sum(b.volume for b in children)
+    if total < 1e-9:
+        return None
+    front = sum(b.volume for b in children[:mid])
+    return front / total
+
+
+def _batch_child_volume_front_weight(matrix: DataMatrix) -> List[Optional[float]]:
+    """前半 volume / 总 volume（batch）。"""
+    out: List[Optional[float]] = []
+    for i in range(matrix.n_bars):
+        out.append(_child_volume_front_weight(matrix, i))
+    return out
+
+
+def _child_bar_count_ratio(matrix: DataMatrix, i: int) -> Optional[float]:
+    """实际子 bar 数 / 期望子 bar 数（gap 检测）。缺少期望值时返回 None。"""
+    children = matrix.child_bars.get(i)
+    if children is None:
+        return None
+    if not matrix.child_tf:
+        return None
+    from src.utils.common import timeframe_seconds
+
+    parent_secs = timeframe_seconds(matrix.timeframe)
+    child_secs = timeframe_seconds(matrix.child_tf)
+    if child_secs <= 0 or parent_secs <= 0:
+        return None
+    expected = parent_secs // child_secs
+    if expected <= 0:
+        return None
+    return len(children) / expected
+
+
+def _batch_child_bar_count_ratio(matrix: DataMatrix) -> List[Optional[float]]:
+    """子 bar 数量比（batch）。"""
+    if not matrix.child_tf:
+        return [None] * matrix.n_bars
+    from src.utils.common import timeframe_seconds
+
+    parent_secs = timeframe_seconds(matrix.timeframe)
+    child_secs = timeframe_seconds(matrix.child_tf)
+    if child_secs <= 0 or parent_secs <= 0:
+        return [None] * matrix.n_bars
+    expected = parent_secs // child_secs
+    if expected <= 0:
+        return [None] * matrix.n_bars
+
+    out: List[Optional[float]] = []
+    for i in range(matrix.n_bars):
+        children = matrix.child_bars.get(i)
+        if children is None:
+            out.append(None)
+        else:
+            out.append(len(children) / expected)
+    return out
+
+
 _BUILTIN_FEATURES: List[FeatureDefinition] = [
     FeatureDefinition(
         name="momentum_consensus",
@@ -966,6 +1124,72 @@ _BUILTIN_FEATURES: List[FeatureDefinition] = [
         source_inputs=("bar.open", "bar.close"),
         compute_scope="bar_close",
         strategy_roles=("why",),
+    ),
+    # ── Intrabar 派生特征（需 child_bars 数据） ─────────────────────
+    FeatureDefinition(
+        name="child_bar_consensus",
+        group="derived_intrabar",
+        func=_child_bar_consensus,
+        batch_func=_batch_child_bar_consensus,
+        dependencies=(),
+        formula_summary="proportion of child bars with same color as parent bar",
+        source_inputs=("child_bars", "bar.open", "bar.close"),
+        runtime_state_inputs=("child_bars",),
+        compute_scope="bar_close",
+        live_computable=False,
+        strategy_roles=("why",),
+    ),
+    FeatureDefinition(
+        name="child_range_acceleration",
+        group="derived_intrabar",
+        func=_child_range_acceleration,
+        batch_func=_batch_child_range_acceleration,
+        dependencies=(),
+        formula_summary="second_half_avg_range / first_half_avg_range - 1",
+        source_inputs=("child_bars",),
+        runtime_state_inputs=("child_bars",),
+        compute_scope="bar_close",
+        live_computable=False,
+        strategy_roles=("when",),
+    ),
+    FeatureDefinition(
+        name="intrabar_momentum_shift",
+        group="derived_intrabar",
+        func=_intrabar_momentum_shift,
+        batch_func=_batch_intrabar_momentum_shift,
+        dependencies=(),
+        formula_summary="sign changes in child bar close-to-close / total child bars",
+        source_inputs=("child_bars",),
+        runtime_state_inputs=("child_bars",),
+        compute_scope="bar_close",
+        live_computable=False,
+        strategy_roles=("why",),
+    ),
+    FeatureDefinition(
+        name="child_volume_front_weight",
+        group="derived_intrabar",
+        func=_child_volume_front_weight,
+        batch_func=_batch_child_volume_front_weight,
+        dependencies=(),
+        formula_summary="first_half_volume / total_volume",
+        source_inputs=("child_bars",),
+        runtime_state_inputs=("child_bars",),
+        compute_scope="bar_close",
+        live_computable=False,
+        strategy_roles=("when",),
+    ),
+    FeatureDefinition(
+        name="child_bar_count_ratio",
+        group="derived_intrabar",
+        func=_child_bar_count_ratio,
+        batch_func=_batch_child_bar_count_ratio,
+        dependencies=(),
+        formula_summary="actual_child_bars / expected_child_bars (gap detection)",
+        source_inputs=("child_bars",),
+        runtime_state_inputs=("child_bars",),
+        compute_scope="bar_close",
+        live_computable=False,
+        strategy_roles=("where",),
     ),
 ]
 

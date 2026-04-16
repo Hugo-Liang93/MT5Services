@@ -17,12 +17,13 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from src.clients.mt5_market import OHLC
-from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
-from src.signals.models import SignalDecision
-from src.signals.service import SignalModule
 from src.signals.contracts import StrategyCapability
 from src.signals.contracts.deployment import StrategyDeployment
 from src.signals.contracts.execution_plan import build_strategy_capability_summary
+from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
+from src.signals.models import SignalDecision
+from src.signals.service import SignalModule
+from src.trading.execution.equity_filter import EquityCurveFilterConfig
 from src.trading.pending import PendingEntryConfig as TradingPendingEntryConfig
 
 from ..analysis.metrics import compute_metrics, compute_metrics_grouped
@@ -40,8 +41,6 @@ from .indicators import detect_regime as _detect_regime_helper
 from .indicators import lookup_htf_at_time as _lookup_htf_at_time_helper
 from .indicators import precompute_all_indicators as _precompute_all_indicators_helper
 from .indicators import preload_htf_indicators as _preload_htf_indicators_helper
-from src.trading.execution.equity_filter import EquityCurveFilterConfig
-
 from .portfolio import CostModel, PortfolioTracker
 
 
@@ -79,6 +78,8 @@ def _build_equity_curve_filter_config() -> EquityCurveFilterConfig:
         ma_period=getattr(signal_config, "equity_curve_filter_ma_period", 20),
         min_samples=getattr(signal_config, "equity_curve_filter_min_samples", 5),
     )
+
+
 from .signals import backfill_evaluations as _backfill_evaluations_helper
 from .signals import check_pending_entries as _check_pending_entries_helper
 from .signals import evaluate_strategies as _evaluate_strategies_helper
@@ -378,8 +379,7 @@ class BacktestEngine:
                 name
                 for name in pre_scope_filter_strategies
                 if self._strategy_capabilities.get(name) is None
-                or "confirmed"
-                not in self._strategy_capabilities[name].valid_scopes
+                or "confirmed" not in self._strategy_capabilities[name].valid_scopes
             }
         )
         if not self._target_strategies:
@@ -427,18 +427,71 @@ class BacktestEngine:
 
         # Chandelier Exit 配置：从 signal.ini 加载（回测与实盘共享同一套出场参数）
         from src.config.signal import get_signal_config as _get_sc
+
         # 复用与实盘同一构建入口（exit_rules.build_chandelier_config），
         # 避免回测/实盘 Chandelier 参数构造逻辑漂移。
-        from src.trading.positions.exit_rules import (
-            ChandelierConfig as _CC,
-            build_chandelier_config,
-        )
+        from src.trading.positions.exit_rules import ChandelierConfig as _CC
+        from src.trading.positions.exit_rules import build_chandelier_config
 
         try:
             self._chandelier_config = build_chandelier_config(_get_sc())
         except Exception:
             logger.debug("Using default chandelier config for backtest", exc_info=True)
             self._chandelier_config = _CC(regime_aware=True)
+
+        # Intrabar 子循环上下文（双 TF 联合回放）
+        from .intrabar import IntrabarContext, build_intrabar_context
+
+        self._intrabar_ctx: Optional[IntrabarContext] = None
+        if config.intrabar.enabled and config.intrabar.trigger_map:
+            intrabar_strategies = [
+                name
+                for name, cap in self._strategy_capabilities.items()
+                if cap is not None and "intrabar" in cap.valid_scopes
+            ]
+            if intrabar_strategies:
+                # 收集 intrabar scope 所需的指标子集（与生产对齐）
+                intrabar_ind_names: List[str] = []
+                _seen_intra: Set[str] = set()
+                for s_name in intrabar_strategies:
+                    cap = self._strategy_capabilities.get(s_name)
+                    if cap is None:
+                        continue
+                    for ind in cap.needed_indicators:
+                        if ind not in _seen_intra:
+                            _seen_intra.add(ind)
+                            intrabar_ind_names.append(ind)
+                # regime 检测指标也必须包含
+                for regime_ind in ("adx14", "boll20", "keltner20"):
+                    if regime_ind not in _seen_intra:
+                        _seen_intra.add(regime_ind)
+                        intrabar_ind_names.append(regime_ind)
+
+                try:
+                    self._intrabar_ctx = build_intrabar_context(
+                        config.intrabar,
+                        config.timeframe,
+                        intrabar_strategies,
+                    )
+                    self._intrabar_ctx.intrabar_indicator_names = intrabar_ind_names
+                    logger.info(
+                        "Intrabar backtest enabled: %s → %s, strategies=%s, "
+                        "indicators=%d (vs %d confirmed)",
+                        config.timeframe,
+                        self._intrabar_ctx.child_tf,
+                        sorted(
+                            self._intrabar_ctx.coordinator.policy.enabled_strategies
+                        ),
+                        len(intrabar_ind_names),
+                        len(self._required_indicators),
+                    )
+                except ValueError as exc:
+                    logger.warning("Intrabar setup failed: %s", exc)
+            else:
+                logger.warning(
+                    "Intrabar enabled but no strategies declare intrabar scope; "
+                    "intrabar sub-loop will not execute"
+                )
 
     @staticmethod
     def _to_strategy_capability(raw: Any) -> StrategyCapability | None:
@@ -535,12 +588,17 @@ class BacktestEngine:
         self._accepted_entries += 1
 
     def execution_summary(self) -> dict[str, Any]:
-        return {
+        summary: dict[str, Any] = {
             "simulation_mode": self._config.simulation_mode.value,
             "accepted_entries": self._accepted_entries,
             "rejected_entries": sum(self._execution_rejections.values()),
             "rejection_reasons": dict(sorted(self._execution_rejections.items())),
         }
+        if self._intrabar_ctx is not None:
+            from .intrabar import intrabar_stats
+
+            summary["intrabar"] = intrabar_stats(self._intrabar_ctx)
+        return summary
 
     def _reset_run_state(self) -> None:
         """重置每次 run() 的运行时状态，确保引擎可复用。"""
@@ -687,6 +745,22 @@ class BacktestEngine:
                     self._config.end_time,
                 )
 
+        # 1.6 预加载 Intrabar 子 TF bars（如果启用了 intrabar 回测）
+        if self._intrabar_ctx is not None:
+            from .intrabar import preload_child_bars
+
+            preload_child_bars(
+                self,
+                self._intrabar_ctx,
+                symbol,
+                timeframe,
+                self._config.start_time,
+                self._config.end_time,
+            )
+            if not self._intrabar_ctx.child_bar_index:
+                logger.warning("Intrabar: no child data available, disabling intrabar")
+                self._intrabar_ctx = None
+
         # 2. 如果没有预计算指标，一次性预计算全部（避免主循环内重复 pipeline 调用）
         if self._precomputed_indicators is not None:
             all_indicator_snapshots = self._precomputed_indicators
@@ -798,7 +872,23 @@ class BacktestEngine:
             if self._htf_timeseries:
                 self._htf_indicator_data = _lookup_htf_at_time_helper(self, bar.time)
 
-            # 7. 策略评估
+            # 6.8. Intrabar 子循环（在 confirmed 评估之前执行）
+            if self._intrabar_ctx is not None:
+                from .intrabar import run_intrabar_sub_loop
+
+                run_intrabar_sub_loop(
+                    self,
+                    self._intrabar_ctx,
+                    parent_bar=bar,
+                    parent_bar_index=bar_index,
+                    parent_indicators=indicators,
+                    regime=regime,
+                    soft_regime_dict=soft_regime_dict,
+                    all_bars=all_bars,
+                    warmup_count=warmup_count,
+                )
+
+            # 7. 策略评估（confirmed scope）
             decisions = _evaluate_strategies_helper(
                 self,
                 symbol,
@@ -809,7 +899,7 @@ class BacktestEngine:
                 bar_time=bar.time,
             )
 
-            # 8. 记录信号评估并处理单策略信号
+            # 8. 记录信号评估并处理单策略信号（含 intrabar 协调检查）
             for decision in decisions:
                 _record_evaluation_helper(
                     self,
@@ -820,6 +910,22 @@ class BacktestEngine:
                     confidence=decision.confidence,
                     regime=regime.value,
                 )
+                # Confirmed 协调：已有同方向 intrabar 仓位 → 跳过
+                if self._intrabar_ctx is not None and decision.direction in (
+                    "buy",
+                    "sell",
+                ):
+                    from .intrabar import check_confirmed_coordination
+
+                    if check_confirmed_coordination(
+                        self._intrabar_ctx,
+                        decision.strategy,
+                        decision.direction,
+                        symbol,
+                        timeframe,
+                        bar.time,
+                    ):
+                        continue
                 _process_decision_helper(
                     self, decision, bar, bar_index, indicators, regime
                 )
@@ -868,12 +974,24 @@ class BacktestEngine:
         # 过滤器统计
         filter_stats = self._filter_simulator.stats.to_dict()
 
+        # Intrabar 统计
+        intrabar_summary: Optional[Dict[str, Any]] = None
+        if self._intrabar_ctx is not None:
+            from .intrabar import intrabar_stats
+
+            intrabar_summary = intrabar_stats(self._intrabar_ctx)
+            intrabar_entries = self._intrabar_ctx.total_intrabar_entries
+        else:
+            intrabar_entries = 0
+
         logger.info(
-            "Backtest %s completed [%s]: %d trades, win_rate=%.2f%%, PnL=%.2f, "
+            "Backtest %s completed [%s]: %d trades (%d intrabar), "
+            "win_rate=%.2f%%, PnL=%.2f, "
             "filter_pass_rate=%.1f%%, execution_rejections=%d, elapsed=%dms",
             run_id,
             self._config.simulation_mode.value,
             metrics.total_trades,
+            intrabar_entries,
             metrics.win_rate * 100,
             metrics.total_pnl,
             self._filter_simulator.stats.pass_rate * 100,

@@ -92,6 +92,13 @@ class DataMatrix:
     # key = horizon_bars；value = auto_block_size(forward_returns[horizon]) 结果。
     forward_return_block_sizes: Dict[int, int] = field(default_factory=dict)
 
+    # Intrabar 子 TF bars：{bar_index: [该父 bar 区间内的子 TF bars]}
+    # 供 intrabar 派生特征使用（child_bar_consensus / range_acceleration 等）。
+    # 空 dict 表示未加载子 TF 数据。
+    child_bars: Dict[int, List[Any]] = field(default_factory=dict)
+    # 子 TF 名称（如 "M5"），空字符串表示无子 TF 数据
+    child_tf: str = ""
+
     def train_slice(self) -> range:
         """训练集索引范围（不含 gap）。"""
         return range(0, self.train_end_idx)
@@ -117,6 +124,8 @@ def build_data_matrix(
     components: Optional[Dict[str, Any]] = None,
     barrier_configs: Optional[tuple[BarrierConfig, ...]] = None,
     high_impact_event_times: Optional[Tuple[datetime, ...]] = None,
+    child_tf: str = "",
+    child_coverage_min: float = 0.80,
 ) -> DataMatrix:
     """构建 DataMatrix。
 
@@ -175,9 +184,7 @@ def build_data_matrix(
 
     config_manager = get_global_config_manager()
     indicator_config = config_manager.get_config()
-    required_indicators = [
-        ind_cfg.name for ind_cfg in indicator_config.indicators
-    ]
+    required_indicators = [ind_cfg.name for ind_cfg in indicator_config.indicators]
 
     # 预计算指标（复用回测的 pipeline.compute）
     indicator_snapshots: List[Dict[str, Dict[str, Any]]] = []
@@ -360,6 +367,41 @@ def build_data_matrix(
         if valid:
             forward_return_block_sizes[h] = _auto_block_size(valid)
 
+    # 加载子 TF bars（供 intrabar 派生特征使用）
+    child_bars_map: Dict[int, List[Any]] = {}
+    effective_child_tf = ""
+    if child_tf:
+        try:
+            from src.market.synthesis import build_child_bar_index
+            from src.utils.common import timeframe_seconds
+
+            all_child = data_loader.load_child_bars(
+                symbol, child_tf, start_time, end_time
+            )
+            if all_child:
+                child_index = build_child_bar_index(all_child, timeframe)
+                parent_secs = timeframe_seconds(timeframe)
+                child_secs = timeframe_seconds(child_tf)
+                expected = parent_secs // child_secs if child_secs > 0 else 0
+                for i, bar in enumerate(test_bars):
+                    children = child_index.get(bar.time, [])
+                    if expected > 0 and len(children) / expected < child_coverage_min:
+                        continue
+                    child_bars_map[i] = children
+                effective_child_tf = child_tf
+                logger.info(
+                    "DataMatrix: loaded %d child bars (%s), "
+                    "%d/%d parent bars with sufficient coverage",
+                    len(all_child),
+                    child_tf,
+                    len(child_bars_map),
+                    n,
+                )
+        except Exception:
+            logger.warning(
+                "DataMatrix: child TF %s loading failed", child_tf, exc_info=True
+            )
+
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "DataMatrix built: %d bars, %d indicators, %d fields, "
@@ -398,4 +440,6 @@ def build_data_matrix(
         barrier_configs=effective_barriers,
         high_impact_event_times=tuple(high_impact_event_times or ()),
         forward_return_block_sizes=forward_return_block_sizes,
+        child_bars=child_bars_map,
+        child_tf=effective_child_tf,
     )

@@ -138,6 +138,7 @@ class MiningRunner:
         *,
         analyses: Optional[List[str]] = None,
         indicator_filter: Optional[List[str]] = None,
+        child_tf: str = "",
     ) -> MiningResult:
         """执行信号挖掘。
 
@@ -150,6 +151,7 @@ class MiningRunner:
                       ["predictive_power", "threshold"]
                       None = 全部
             indicator_filter: 仅分析这些指标（用于 threshold 分析）
+            child_tf: 子 TF（如 "M5"），非空时加载子 TF bars 供 intrabar 特征使用
 
         Returns:
             MiningResult
@@ -185,6 +187,7 @@ class MiningRunner:
             round_trip_cost_pct=self._config.round_trip_cost_pct,
             components=self._components,
             high_impact_event_times=high_impact_events,
+            child_tf=child_tf,
         )
 
         # 特征工程：在分析器运行前增强 DataMatrix
@@ -314,10 +317,8 @@ class MiningRunner:
         return results
 
     def _run_rule_mining(self, matrix: DataMatrix) -> list:
-        from src.research.analyzers.rule_mining import (
-            RuleMiningConfig as _RMCfg,
-            mine_rules,
-        )
+        from src.research.analyzers.rule_mining import RuleMiningConfig as _RMCfg
+        from src.research.analyzers.rule_mining import mine_rules
 
         # 从 ResearchConfig.rule_mining 构建 RuleMiningConfig
         rm = self._config.rule_mining

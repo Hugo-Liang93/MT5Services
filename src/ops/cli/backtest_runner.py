@@ -18,6 +18,7 @@
 
 所有日志静默，仅输出摘要到 stdout。供 Claude Code 通过单次 Bash 调用获取结果。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -68,7 +69,9 @@ def _run_single(
     #    过滤掉 optimizer 专用字段（不属于 BacktestConfig）
     _OPTIMIZER_ONLY_KEYS = {"search_mode", "max_combinations", "sort_metric"}
     defaults = {
-        k: v for k, v in get_backtest_defaults().items() if k not in _OPTIMIZER_ONLY_KEYS
+        k: v
+        for k, v in get_backtest_defaults().items()
+        if k not in _OPTIMIZER_ONLY_KEYS
     }
 
     # 2. 从 signal.ini 加载 per-strategy session/timeframe 配置
@@ -100,6 +103,30 @@ def _run_single(
     if config_overrides:
         merged.update(config_overrides)
 
+    # 3.5 从 signal.ini 读取 intrabar 配置，构建 IntrabarConfig
+    from src.backtesting.models import IntrabarConfig
+
+    intrabar_cfg = IntrabarConfig()
+    if getattr(signal_config, "intrabar_trading_enabled", False):
+        intrabar_cfg = IntrabarConfig(
+            enabled=True,
+            trigger_map=dict(
+                getattr(signal_config, "intrabar_trading_trigger_map", {})
+            ),
+            min_stable_bars=int(
+                getattr(signal_config, "intrabar_trading_min_stable_bars", 3)
+            ),
+            min_confidence=float(
+                getattr(signal_config, "intrabar_trading_min_confidence", 0.75)
+            ),
+            enabled_strategies=list(
+                getattr(signal_config, "intrabar_trading_enabled_strategies", [])
+            ),
+            confidence_factor=float(
+                getattr(signal_config, "intrabar_confidence_factor", 0.85)
+            ),
+        )
+
     # 4. 构建 BacktestConfig（from_flat 自动路由到嵌套子配置）
     config = BacktestConfig.from_flat(
         symbol="XAUUSD",
@@ -108,6 +135,7 @@ def _run_single(
         end_time=datetime.fromisoformat(end).replace(tzinfo=timezone.utc),
         strategy_sessions=strategy_sessions,
         strategy_timeframes=strategy_timeframes,
+        intrabar=intrabar_cfg,
         **merged,
     )
 
@@ -120,6 +148,7 @@ def _run_single(
         indicator_pipeline=components["pipeline"],
         regime_detector=components["regime_detector"],
         performance_tracker=components.get("performance_tracker"),
+        intrabar_confidence_factor=intrabar_cfg.confidence_factor,
     )
     result = engine.run()
     m = result.metrics
@@ -283,9 +312,7 @@ def _render_default(data: dict) -> str:
         data["regime_stats"].items(), key=lambda x: x[1]["n"], reverse=True
     ):
         wr = d["w"] / d["n"] * 100 if d["n"] > 0 else 0
-        lines.append(
-            f"  {r:<15} {d['n']:>4}  WR:{wr:>5.1f}%  PnL:{d['pnl']:>+10.2f}"
-        )
+        lines.append(f"  {r:<15} {d['n']:>4}  WR:{wr:>5.1f}%  PnL:{d['pnl']:>+10.2f}")
 
     # Monte Carlo 结果
     mc = data.get("monte_carlo")
@@ -350,9 +377,7 @@ def _render_regime_detail(data: dict) -> str:
     ]
     for regime, strategies in sorted(data["regime_strategy"].items()):
         r_data = data["regime_stats"].get(regime, {})
-        r_wr = (
-            r_data["w"] / r_data["n"] * 100 if r_data.get("n", 0) > 0 else 0
-        )
+        r_wr = r_data["w"] / r_data["n"] * 100 if r_data.get("n", 0) > 0 else 0
         lines.append(
             f"  [{regime}] {r_data.get('n',0)} trades  WR:{r_wr:.1f}%"
             f"  PnL:{r_data.get('pnl',0):>+.2f}"
@@ -475,7 +500,9 @@ def main() -> None:
         default="default",
         choices=list(TEMPLATES.keys()) + ["custom"],
     )
-    parser.add_argument("--custom-template", default=None, help="Custom Python format string")
+    parser.add_argument(
+        "--custom-template", default=None, help="Custom Python format string"
+    )
     parser.add_argument(
         "--compare",
         action="store_true",
@@ -490,9 +517,15 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=None)
     parser.add_argument("--no-filters", action="store_true")
     parser.add_argument("--sessions", default=None)
-    parser.add_argument("--commission", type=float, default=None, help="Override commission_per_lot")
-    parser.add_argument("--slippage", type=float, default=None, help="Override slippage_points")
-    parser.add_argument("--show-config", action="store_true", help="Show config summary for each TF")
+    parser.add_argument(
+        "--commission", type=float, default=None, help="Override commission_per_lot"
+    )
+    parser.add_argument(
+        "--slippage", type=float, default=None, help="Override slippage_points"
+    )
+    parser.add_argument(
+        "--show-config", action="store_true", help="Show config summary for each TF"
+    )
     parser.add_argument(
         "--strategies",
         default=None,

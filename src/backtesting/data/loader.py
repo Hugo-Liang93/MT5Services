@@ -58,6 +58,19 @@ class CachedDataLoader:
         """返回缓存的 test bars 副本。"""
         return list(self._test_bars)
 
+    def load_child_bars(
+        self,
+        symbol: str,
+        child_tf: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> List[OHLC]:
+        """CachedDataLoader 不缓存子 TF 数据——回测 intrabar 场景应使用 CachingDataLoader。"""
+        raise NotImplementedError(
+            "CachedDataLoader does not support load_child_bars; "
+            "use CachingDataLoader for intrabar backtests"
+        )
+
 
 class HistoricalDataLoader:
     """从 TimescaleDB 加载历史 OHLC 数据。
@@ -167,6 +180,19 @@ class HistoricalDataLoader:
         )
         return bars
 
+    def load_child_bars(
+        self,
+        symbol: str,
+        child_tf: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> List[OHLC]:
+        """加载子 TF 的全部 bar（用于 intrabar 回测的双 TF 联合回放）。
+
+        与 load_all_bars 语义相同，单独命名以明确调用意图。
+        """
+        return self.load_all_bars(symbol, child_tf, start_time, end_time)
+
     @staticmethod
     def _ensure_sorted(bars: List[OHLC]) -> List[OHLC]:
         """确保 bars 按时间升序排列，乱序时自动排序并去重。"""
@@ -200,7 +226,11 @@ class HistoricalDataLoader:
         return OHLC(
             symbol=str(symbol),
             timeframe=str(timeframe),
-            time=time_val if isinstance(time_val, datetime) else datetime.fromisoformat(str(time_val)),
+            time=(
+                time_val
+                if isinstance(time_val, datetime)
+                else datetime.fromisoformat(str(time_val))
+            ),
             open=float(open_),
             high=float(high),
             low=float(low),
@@ -247,11 +277,18 @@ class DataCache:
         with self._lock:
             if key in self._warmup:
                 self._hits += 1
-                logger.debug("DataCache warmup HIT  %s/%s warmup=%d", symbol, timeframe, warmup_bars)
+                logger.debug(
+                    "DataCache warmup HIT  %s/%s warmup=%d",
+                    symbol,
+                    timeframe,
+                    warmup_bars,
+                )
                 return list(self._warmup[key])
         # Cache miss — load outside lock
         self._misses += 1
-        logger.debug("DataCache warmup MISS %s/%s warmup=%d", symbol, timeframe, warmup_bars)
+        logger.debug(
+            "DataCache warmup MISS %s/%s warmup=%d", symbol, timeframe, warmup_bars
+        )
         bars = loader.preload_warmup_bars(symbol, timeframe, start_time, warmup_bars)
         with self._lock:
             self._evict(self._warmup)
@@ -273,14 +310,20 @@ class DataCache:
                 self._hits += 1
                 logger.debug(
                     "DataCache test HIT  %s/%s [%s ~ %s]",
-                    symbol, timeframe, start_time.date(), end_time.date(),
+                    symbol,
+                    timeframe,
+                    start_time.date(),
+                    end_time.date(),
                 )
                 return list(self._test[key])
         # Cache miss — load outside lock
         self._misses += 1
         logger.debug(
             "DataCache test MISS %s/%s [%s ~ %s]",
-            symbol, timeframe, start_time.date(), end_time.date(),
+            symbol,
+            timeframe,
+            start_time.date(),
+            end_time.date(),
         )
         bars = loader.load_all_bars(symbol, timeframe, start_time, end_time)
         with self._lock:
@@ -306,10 +349,12 @@ class DataCache:
                 self._warmup.clear()
                 self._test.clear()
                 return n
+
             def _match(k: Tuple) -> bool:
                 return (symbol is None or k[0] == symbol) and (
                     timeframe is None or k[1] == timeframe
                 )
+
             w_keys = [k for k in self._warmup if _match(k)]
             t_keys = [k for k in self._test if _match(k)]
             for k in w_keys:
@@ -369,6 +414,18 @@ class CachingDataLoader:
             self._inner, symbol, timeframe, start_time, end_time
         )
 
+    def load_child_bars(
+        self,
+        symbol: str,
+        child_tf: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> List[OHLC]:
+        """加载子 TF bars（经由 DataCache 缓存）。"""
+        return self._cache.get_or_load_test(
+            self._inner, symbol, child_tf, start_time, end_time
+        )
+
     def load_bars(
         self,
         symbol: str,
@@ -378,7 +435,9 @@ class CachingDataLoader:
         chunk_size: int = 1000,
     ) -> Iterator[List[OHLC]]:
         """流式分块加载（不经过缓存，适合单次大量数据场景）。"""
-        yield from self._inner.load_bars(symbol, timeframe, start_time, end_time, chunk_size)
+        yield from self._inner.load_bars(
+            symbol, timeframe, start_time, end_time, chunk_size
+        )
 
     @property
     def cache(self) -> "DataCache":

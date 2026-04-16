@@ -47,7 +47,8 @@ def evaluate_strategies(
     if ms_analyzer is not None:
         try:
             ms_ctx = ms_analyzer.analyze(
-                symbol, timeframe,
+                symbol,
+                timeframe,
                 event_time=bar_time,
                 latest_close=indicators.get("boll20", {}).get("close")
                 or indicators.get("donchian20", {}).get("close"),
@@ -101,9 +102,7 @@ def evaluate_strategies(
                 continue
             if scope not in capability.valid_scopes:
                 continue
-            required = (
-                capability.needed_indicators
-            )
+            required = capability.needed_indicators
             missing = [ind for ind in required if ind not in indicators]
             if missing:
                 continue
@@ -181,7 +180,9 @@ def process_decision(
     if decision.confidence < engine._config.confidence.min_confidence:
         return
 
-    if engine._circuit_breaker is not None and engine._circuit_breaker.is_paused(bar_index):
+    if engine._circuit_breaker is not None and engine._circuit_breaker.is_paused(
+        bar_index
+    ):
         return
 
     if engine._config.enable_state_machine:
@@ -233,15 +234,20 @@ def process_decision(
 
         if entry_type == "market":
             # 市价策略：跳过 pending，直接在 bar.close 入场
-            execute_entry(engine, decision, bar, bar_index, atr_value, regime, indicators)
+            execute_entry(
+                engine, decision, bar, bar_index, atr_value, regime, indicators
+            )
             return
 
         if entry_type not in ("limit", "stop"):
             logger.warning(
                 "Unknown entry_type %s for %s, fallback to market",
-                entry_type, decision.strategy,
+                entry_type,
+                decision.strategy,
             )
-            execute_entry(engine, decision, bar, bar_index, atr_value, regime, indicators)
+            execute_entry(
+                engine, decision, bar, bar_index, atr_value, regime, indicators
+            )
             return
 
         suggested_price = entry_spec.get("entry_price")
@@ -255,7 +261,11 @@ def process_decision(
         expiry_bar = bar_index + engine._config.pending_entry.expiry_bars
         key = f"{decision.strategy}_{decision.direction}"
         engine._pending_entries[key] = (
-            decision, entry_type, entry_low, entry_high, expiry_bar,
+            decision,
+            entry_type,
+            entry_low,
+            entry_high,
+            expiry_bar,
         )
         return
 
@@ -315,25 +325,42 @@ def check_pending_entries(
 
     filled_keys: List[str] = []
     for key, (
-        decision, entry_type, entry_low, entry_high, expiry_bar,
+        decision,
+        entry_type,
+        entry_low,
+        entry_high,
+        expiry_bar,
     ) in engine._pending_entries.items():
         if bar_index > expiry_bar:
             logger.debug(
                 "Pending entry expired: %s %s at bar %d (expiry=%d)",
-                decision.strategy, decision.direction, bar_index, expiry_bar,
+                decision.strategy,
+                decision.direction,
+                bar_index,
+                expiry_bar,
             )
             filled_keys.append(key)
             continue
 
         fill_price = _resolve_pending_fill(
-            decision.direction, entry_type, entry_low, entry_high, bar,
+            decision.direction,
+            entry_type,
+            entry_low,
+            entry_high,
+            bar,
         )
         if fill_price is not None:
             atr_value = indicators.get("atr14", {}).get("atr", 0.0)
             if atr_value > 0:
                 execute_entry(
-                    engine, decision, bar, bar_index, atr_value, regime,
-                    indicators, fill_price=fill_price,
+                    engine,
+                    decision,
+                    bar,
+                    bar_index,
+                    atr_value,
+                    regime,
+                    indicators,
+                    fill_price=fill_price,
                 )
             filled_keys.append(key)
 
@@ -350,6 +377,7 @@ def execute_entry(
     regime: RegimeType,
     indicators: Dict[str, Dict[str, Any]] | None = None,
     fill_price: Optional[float] = None,
+    entry_scope: str = "confirmed",
 ) -> None:
     del indicators
     pos = engine._config.position
@@ -388,7 +416,9 @@ def execute_entry(
         engine.record_execution_rejection("trade_params_error")
         logger.debug(
             "Trade params computation failed for %s %s: %s",
-            decision.strategy, decision.direction, exc,
+            decision.strategy,
+            decision.direction,
+            exc,
         )
         return
 
@@ -434,6 +464,7 @@ def execute_entry(
         timeframe=engine._config.timeframe,
         exit_spec=_exit_spec or None,
         fill_price=fill_price,
+        entry_scope=entry_scope,
     )
     if opened:
         engine.record_entry_acceptance()

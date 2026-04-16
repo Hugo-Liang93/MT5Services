@@ -34,7 +34,7 @@ from src.signals.evaluation.regime import RegimeType
 
 from ..core.config import OverfittingConfig
 from ..core.data_matrix import DataMatrix
-from ..core.statistics import binomial_test_p, block_shuffle, auto_block_size
+from ..core.statistics import auto_block_size, binomial_test_p, block_shuffle
 
 logger = logging.getLogger(__name__)
 
@@ -260,11 +260,17 @@ class MinedRule:
 _DIMENSIONLESS_FIELDS = frozenset(
     {
         # RSI 系列 (0-100)
-        "rsi", "rsi_d3", "rsi_d5",
+        "rsi",
+        "rsi_d3",
+        "rsi_d5",
         # ADX 系列 (0-100)
-        "adx", "adx_d3", "plus_di", "minus_di",
+        "adx",
+        "adx_d3",
+        "plus_di",
+        "minus_di",
         # Stoch RSI (0-100)
-        "stoch_rsi_k", "stoch_rsi_d",
+        "stoch_rsi_k",
+        "stoch_rsi_d",
         # CCI (无界但无量纲)
         "cci",
         # Williams %R (-100~0)
@@ -274,8 +280,11 @@ _DIMENSIONLESS_FIELDS = frozenset(
         # MACD 的 histogram（相对值，随 ATR 缩放但可用）
         "hist",
         # Bar Stats (0-1 比率)
-        "body_ratio", "upper_shadow_ratio", "lower_shadow_ratio",
-        "close_position", "range_ratio",
+        "body_ratio",
+        "upper_shadow_ratio",
+        "lower_shadow_ratio",
+        "close_position",
+        "range_ratio",
         # Bollinger 的 BB width 百分比
         "bb_width_pct",
         # Supertrend 方向 (-1/1)
@@ -283,18 +292,39 @@ _DIMENSIONLESS_FIELDS = frozenset(
         # Volume 比率
         "volume_ratio",
         # 复合指标 (composite.py)
-        "di_spread", "squeeze", "squeeze_intensity",
-        "vwap_gap_atr", "rsi_accel", "roc_accel",
+        "di_spread",
+        "squeeze",
+        "squeeze_intensity",
+        "vwap_gap_atr",
+        "rsi_accel",
+        "roc_accel",
         # K 线形态 (candlestick.py)
-        "hammer", "engulfing", "doji", "pin_bar",
-        "inside_bar", "consecutive_dir",
+        "hammer",
+        "engulfing",
+        "doji",
+        "pin_bar",
+        "inside_bar",
+        "consecutive_dir",
         # 价格结构 (price_structure.py)
-        "structure_type", "trend_bars",
-        "dist_to_swing_high_atr", "dist_to_swing_low_atr", "swing_range_atr",
+        "structure_type",
+        "trend_bars",
+        "dist_to_swing_high_atr",
+        "dist_to_swing_low_atr",
+        "swing_range_atr",
         # 跳空 (gap.py)
-        "gap_atr", "gap_fill_pct", "has_gap",
+        "gap_atr",
+        "gap_fill_pct",
+        "has_gap",
         # 研究特征 (feature_engineer.py)
-        "momentum_consensus", "regime_entropy", "bars_in_regime",
+        "momentum_consensus",
+        "regime_entropy",
+        "bars_in_regime",
+        # Intrabar 派生特征 (feature_engineer.py, group=derived_intrabar)
+        "child_bar_consensus",
+        "child_range_acceleration",
+        "intrabar_momentum_shift",
+        "child_volume_front_weight",
+        "child_bar_count_ratio",
     }
 )
 
@@ -397,12 +427,20 @@ def _mine_single(
         return []
 
     train_X, train_y, train_returns, train_idx = _build_arrays(
-        matrix, forward_returns, feature_names,
-        matrix.train_slice(), direction, regime_filter,
+        matrix,
+        forward_returns,
+        feature_names,
+        matrix.train_slice(),
+        direction,
+        regime_filter,
     )
     test_X, test_y, test_returns, test_idx = _build_arrays(
-        matrix, forward_returns, feature_names,
-        matrix.test_slice(), direction, regime_filter,
+        matrix,
+        forward_returns,
+        feature_names,
+        matrix.test_slice(),
+        direction,
+        regime_filter,
     )
 
     if len(train_y) < of_cfg.min_samples:
@@ -672,8 +710,12 @@ def _cv_rule_consistency(
             base_start + fold.train_start, base_start + fold.train_end
         )
         fold_X, fold_y, fold_returns, fold_idx = _build_arrays(
-            matrix, forward_returns, feature_names,
-            fold_train_range, direction, regime_filter,
+            matrix,
+            forward_returns,
+            feature_names,
+            fold_train_range,
+            direction,
+            regime_filter,
         )
         if len(fold_y) < of_cfg.min_samples:
             continue
@@ -893,11 +935,26 @@ def _extract_rules(
     def _traverse(node_id: int, conditions: List[RuleCondition], depth: int) -> None:
         if children_left[node_id] == children_right[node_id]:
             _process_leaf(
-                node_id, conditions, depth, rules, tree_,
-                train_X, train_y, train_returns, train_idx,
-                test_X, test_y, test_returns, test_idx,
-                feature_names, direction, forward_bars,
-                regime_filter, cfg, feat_imp, matrix,
+                node_id,
+                conditions,
+                depth,
+                rules,
+                tree_,
+                train_X,
+                train_y,
+                train_returns,
+                train_idx,
+                test_X,
+                test_y,
+                test_returns,
+                test_idx,
+                feature_names,
+                direction,
+                forward_bars,
+                regime_filter,
+                cfg,
+                feat_imp,
+                matrix,
             )
             return
 
@@ -907,14 +964,20 @@ def _extract_rules(
         role = _classify_role(ind_name)
 
         left_cond = RuleCondition(
-            indicator=ind_name, field=field_name,
-            operator="<=", threshold=float(thresh), role=role,
+            indicator=ind_name,
+            field=field_name,
+            operator="<=",
+            threshold=float(thresh),
+            role=role,
         )
         _traverse(children_left[node_id], conditions + [left_cond], depth + 1)
 
         right_cond = RuleCondition(
-            indicator=ind_name, field=field_name,
-            operator=">", threshold=float(thresh), role=role,
+            indicator=ind_name,
+            field=field_name,
+            operator=">",
+            threshold=float(thresh),
+            role=role,
         )
         _traverse(children_right[node_id], conditions + [right_cond], depth + 1)
 

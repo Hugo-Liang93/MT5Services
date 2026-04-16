@@ -47,12 +47,17 @@ def _run_single_packed(
 
     子进程中必须重新调用 set_current_environment，因为环境状态是 module-level 全局。
     """
-    tf, start, end, analyses, indicator_filter, environment = args
+    tf, start, end, analyses, indicator_filter, environment, child_tf = args
     from src.config.instance_context import set_current_environment
 
     set_current_environment(environment)
     return _run_single(
-        tf, start, end, analyses=analyses, indicator_filter=indicator_filter,
+        tf,
+        start,
+        end,
+        analyses=analyses,
+        indicator_filter=indicator_filter,
+        child_tf=child_tf,
     )
 
 
@@ -63,6 +68,7 @@ def _run_single(
     *,
     analyses: Optional[List[str]] = None,
     indicator_filter: Optional[List[str]] = None,
+    child_tf: str = "",
 ) -> dict:
     """执行单个 TF 信号挖掘，返回结构化结果 dict。"""
     from src.backtesting.component_factory import build_backtest_components
@@ -84,6 +90,7 @@ def _run_single(
         end_time=end_dt,
         analyses=analyses,
         indicator_filter=indicator_filter,
+        child_tf=child_tf,
     )
 
     # 构建结构化输出
@@ -286,8 +293,7 @@ def _render_default(data: dict) -> str:
                 )
                 # 构建 test lookup 以便同表呈现
                 test_by_key = {
-                    (t["sl_atr"], t["tp_atr"], t["time_bars"]): t
-                    for t in barrier_test
+                    (t["sl_atr"], t["tp_atr"], t["time_bars"]): t for t in barrier_test
                 }
                 for b in barrier_train[:3]:
                     key = (b["sl_atr"], b["tp_atr"], b["time_bars"])
@@ -574,6 +580,11 @@ def main() -> None:
         help="Only render feature candidates whose decision starts with promote_indicator",
     )
     parser.add_argument(
+        "--child-tf",
+        default="",
+        help="Child TF for intrabar features (e.g. M5 for H1 parent). Empty = disabled.",
+    )
+    parser.add_argument(
         "--no-auto-backfill",
         action="store_true",
         help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
@@ -633,6 +644,7 @@ def main() -> None:
                 args.end,
                 analyses=analyses,
                 indicator_filter=indicator_filter,
+                child_tf=args.child_tf,
             )
             results.append(data)
             if "_raw_result" in data:
@@ -645,7 +657,15 @@ def main() -> None:
         max_workers = min(args.workers, len(tfs))
         ctx = _mp.get_context("spawn")
         tasks = [
-            (tf, args.start, args.end, analyses, indicator_filter, args.environment)
+            (
+                tf,
+                args.start,
+                args.end,
+                analyses,
+                indicator_filter,
+                args.environment,
+                args.child_tf,
+            )
             for tf in tfs
         ]
         with _Pool(max_workers=max_workers, mp_context=ctx) as pool:
@@ -672,7 +692,9 @@ def main() -> None:
                 print(cross_tf_text)
             from src.research.core import analyze_cross_tf
 
-            output_payload["cross_tf_analysis"] = analyze_cross_tf(raw_results).to_dict()
+            output_payload["cross_tf_analysis"] = analyze_cross_tf(
+                raw_results
+            ).to_dict()
         if args.emit_candidates and raw_results:
             from src.research.strategies import discover_strategy_candidates
 
@@ -683,7 +705,9 @@ def main() -> None:
         if args.emit_feature_candidates and raw_results:
             from src.research.features import discover_feature_candidates
 
-            feature_discovery = discover_feature_candidates(raw_results, symbol="XAUUSD")
+            feature_discovery = discover_feature_candidates(
+                raw_results, symbol="XAUUSD"
+            )
             feature_discovery_payload = feature_discovery.to_dict()
             output_payload["feature_candidate_discovery"] = feature_discovery_payload
             print(
@@ -707,7 +731,9 @@ def main() -> None:
         if args.emit_feature_candidates and raw_results:
             from src.research.features import discover_feature_candidates
 
-            feature_discovery = discover_feature_candidates(raw_results, symbol="XAUUSD")
+            feature_discovery = discover_feature_candidates(
+                raw_results, symbol="XAUUSD"
+            )
             feature_discovery_payload = feature_discovery.to_dict()
             output_payload["feature_candidate_discovery"] = feature_discovery_payload
             print(
@@ -728,4 +754,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
