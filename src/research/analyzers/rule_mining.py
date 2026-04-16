@@ -404,6 +404,42 @@ def mine_rules(
     return all_rules[: cfg.max_rules]
 
 
+def tag_cross_provider_rules(
+    rules: list,
+    provider_groups: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+) -> list:
+    """从规则列表中提取涉及 2+ 个 Provider 的规则。
+
+    跨 Provider 规则意味着规则同时依赖来自不同特征域的条件，
+    这类规则更可能具备真实预测力（不太可能因单一数据源的偶然性产生）。
+
+    Args:
+        rules:           MinedRule 列表
+        provider_groups: {provider_name: [(indicator, field), ...]}
+
+    Returns:
+        涉及 2+ 个 Provider 的规则子列表
+    """
+    if not provider_groups:
+        return []
+
+    key_to_provider: Dict[Tuple[str, str], str] = {}
+    for prov, keys in provider_groups.items():
+        for k in keys:
+            key_to_provider[k] = prov
+
+    cross_rules: list = []
+    for rule in rules:
+        providers_used: set = set()
+        for cond in rule.conditions:
+            key = (cond.indicator, cond.field)
+            prov = key_to_provider.get(key, "base")
+            providers_used.add(prov)
+        if len(providers_used) >= 2:
+            cross_rules.append(rule)
+    return cross_rules
+
+
 def _mine_single(
     *,
     matrix: DataMatrix,

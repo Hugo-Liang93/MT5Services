@@ -129,6 +129,10 @@ class MiningRunner:
         self._config = config or load_research_config()
         self._components = components
 
+        from src.research.features.hub import FeatureHub
+
+        self._feature_hub = FeatureHub(self._config)
+
     def run(
         self,
         symbol: str,
@@ -190,21 +194,23 @@ class MiningRunner:
             child_tf=child_tf,
         )
 
-        # 特征工程：在分析器运行前增强 DataMatrix
-        if self._config.feature_engineering.enabled:
-            from src.research.features.engineer import build_default_engineer
+        # 特征计算（FeatureHub 统一调度所有 Provider）
+        extra_data = None
+        extra_reqs = self._feature_hub.required_extra_data()
+        if extra_reqs:
+            extra_data = self._prepare_extra_data(
+                symbol, timeframe, start_time, end_time, extra_reqs
+            )
 
-            engineer = build_default_engineer()
-            original_count = len(matrix.indicator_series)
-            matrix = engineer.enrich(
-                matrix, feature_names=self._config.feature_engineering.features
-            )
-            derived_count = len(matrix.indicator_series) - original_count
-            logger.info(
-                "Feature engineering: %d derived features added (total %d)",
-                derived_count,
-                len(matrix.indicator_series),
-            )
+        compute_result = self._feature_hub.compute_all(matrix, extra_data)
+        logger.info(
+            "FeatureHub: %d features across %d providers",
+            compute_result.total_features,
+            len(compute_result.provider_summaries),
+        )
+
+        # provider_groups 供分析器分组 FDR
+        provider_groups = self._feature_hub.feature_names_by_provider()
 
         # 数据摘要
         regime_dist = Counter(r.value for r in matrix.regimes)
@@ -230,7 +236,9 @@ class MiningRunner:
 
         # 执行分析器
         if "predictive_power" in analyses:
-            result.predictive_power = self._run_predictive_power(matrix)
+            result.predictive_power = self._run_predictive_power(
+                matrix, provider_groups
+            )
 
         if "threshold" in analyses:
             result.threshold_sweeps = self._run_threshold_sweep(
@@ -239,10 +247,27 @@ class MiningRunner:
             )
 
         if "rule_mining" in analyses:
-            result.mined_rules = self._run_rule_mining(matrix)
+            result.mined_rules = self._run_rule_mining(matrix, provider_groups)
 
         # 汇总 Top Findings
         result.top_findings = self._rank_findings(result)
+
+        # 按 Provider 分组 Findings
+        result.findings_by_provider = self._group_findings_by_provider(
+            result.top_findings, provider_groups
+        )
+
+        # 跨 Provider 规则
+        if result.mined_rules and provider_groups:
+            from src.research.analyzers.rule_mining import tag_cross_provider_rules
+
+            result.cross_provider_rules = tag_cross_provider_rules(
+                result.mined_rules, provider_groups
+            )
+
+        # 特征计算摘要
+        result.feature_compute_summary = compute_result.to_dict()
+
         result.completed_at = datetime.utcnow()
 
         return result
@@ -250,6 +275,7 @@ class MiningRunner:
     def _run_predictive_power(
         self,
         matrix: DataMatrix,
+        provider_groups: Optional[Dict[str, List[Tuple[str, str]]]] = None,
     ) -> list:
         from src.research.analyzers.predictive_power import analyze_predictive_power
 
@@ -257,6 +283,8 @@ class MiningRunner:
             matrix,
             config=self._config.predictive_power,
             overfitting_config=self._config.overfitting,
+            provider_groups=provider_groups,
+            fdr_grouping=self._config.feature_providers.fdr_grouping,
         )
 
     def _run_threshold_sweep(
@@ -316,7 +344,11 @@ class MiningRunner:
 
         return results
 
-    def _run_rule_mining(self, matrix: DataMatrix) -> list:
+    def _run_rule_mining(
+        self,
+        matrix: DataMatrix,
+        provider_groups: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+    ) -> list:
         from src.research.analyzers.rule_mining import RuleMiningConfig as _RMCfg
         from src.research.analyzers.rule_mining import mine_rules
 
@@ -339,6 +371,50 @@ class MiningRunner:
             config=cfg,
             overfitting_config=self._config.overfitting,
         )
+
+    def _prepare_extra_data(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        end_time: datetime,
+        extra_reqs: list,
+    ) -> None:
+        """准备跨 TF 数据。当前 CrossTF 默认关闭，此方法为扩展预留。"""
+        logger.warning(
+            "CrossTF extra_data preparation not yet implemented; "
+            "cross_tf provider will produce no features"
+        )
+        return None
+
+    def _group_findings_by_provider(
+        self,
+        findings: List[Finding],
+        provider_groups: Dict[str, List[Tuple[str, str]]],
+    ) -> Dict[str, List[Finding]]:
+        """按 Provider 分组 Findings。"""
+        if not provider_groups:
+            return {}
+
+        # 构建 (indicator, field) → provider 映射
+        key_to_provider: Dict[Tuple[str, str], str] = {}
+        for prov, keys in provider_groups.items():
+            for k in keys:
+                key_to_provider[k] = prov
+
+        grouped: Dict[str, List[Finding]] = {}
+        for f in findings:
+            # 从 summary 中提取 indicator.field（格式：indicator.field IC=...）
+            indicator_part = f.summary.split()[0] if f.summary else ""
+            if "." in indicator_part:
+                parts = indicator_part.split(".", 1)
+                key = (parts[0], parts[1])
+                prov = key_to_provider.get(key, "base")
+            else:
+                prov = "base"
+            grouped.setdefault(prov, []).append(f)
+
+        return grouped
 
     def _rank_findings(self, result: MiningResult) -> List[Finding]:
         """从各分析器结果中提取 Top Findings，按显著性排名。"""

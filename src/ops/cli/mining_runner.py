@@ -47,7 +47,7 @@ def _run_single_packed(
 
     子进程中必须重新调用 set_current_environment，因为环境状态是 module-level 全局。
     """
-    tf, start, end, analyses, indicator_filter, environment, child_tf = args
+    tf, start, end, analyses, indicator_filter, environment, child_tf, providers = args
     from src.config.instance_context import set_current_environment
 
     set_current_environment(environment)
@@ -58,6 +58,7 @@ def _run_single_packed(
         analyses=analyses,
         indicator_filter=indicator_filter,
         child_tf=child_tf,
+        providers=providers,
     )
 
 
@@ -69,13 +70,34 @@ def _run_single(
     analyses: Optional[List[str]] = None,
     indicator_filter: Optional[List[str]] = None,
     child_tf: str = "",
+    providers: Optional[List[str]] = None,
 ) -> dict:
     """执行单个 TF 信号挖掘，返回结构化结果 dict。"""
+    from dataclasses import replace as _replace
+
     from src.backtesting.component_factory import build_backtest_components
     from src.research.core import load_research_config
     from src.research.orchestration import MiningRunner
 
     config = load_research_config()
+
+    # --providers 覆盖：选择性启用 Provider
+    if providers is not None:
+        _ALL_PROVIDERS = [
+            "temporal", "microstructure", "cross_tf",
+            "regime_transition", "session_event", "intrabar",
+        ]
+        if providers == ["all"]:
+            enabled = _ALL_PROVIDERS
+        else:
+            enabled = providers
+
+        fp = config.feature_providers
+        overrides = {}
+        for name in _ALL_PROVIDERS:
+            overrides[f"{name}_enabled"] = name in enabled
+        config = _replace(config, feature_providers=_replace(fp, **overrides))
+
     components = build_backtest_components()
 
     runner = MiningRunner(config=config, components=components)
@@ -110,6 +132,18 @@ def _run_single(
             "regime_distribution": ds.regime_distribution,
             "n_indicator_fields": len(ds.available_indicators),
         }
+
+    if result.feature_compute_summary:
+        output["feature_compute_summary"] = result.feature_compute_summary
+
+    if result.findings_by_provider:
+        output["findings_by_provider"] = {
+            prov: len(findings)
+            for prov, findings in result.findings_by_provider.items()
+        }
+
+    if result.cross_provider_rules:
+        output["cross_provider_rules_count"] = len(result.cross_provider_rules)
 
     if result.predictive_power:
         sig = [r for r in result.predictive_power if r.is_significant]
@@ -162,6 +196,33 @@ def _render_default(data: dict) -> str:
     if regime:
         parts = [f"{k}={v}" for k, v in sorted(regime.items())]
         lines.append(f"  Regime: {', '.join(parts)}")
+
+    # Feature Providers
+    fcs = data.get("feature_compute_summary")
+    if fcs:
+        providers_info = fcs.get("providers", {})
+        total_feat = fcs.get("total_features", 0)
+        prov_parts = []
+        for pname, pinfo in providers_info.items():
+            fc = pinfo.get("feature_count", 0)
+            elapsed = pinfo.get("elapsed_sec", 0.0)
+            prov_parts.append(f"{pname}={fc} ({elapsed:.2f}s)")
+        lines.append(
+            f"  Providers: {len(providers_info)} enabled, "
+            f"{total_feat} features total"
+        )
+        if prov_parts:
+            lines.append(f"    {', '.join(prov_parts)}")
+
+    # Findings by Provider
+    fbp = data.get("findings_by_provider")
+    if fbp:
+        fbp_parts = [f"{prov}={count}" for prov, count in sorted(fbp.items())]
+        lines.append(f"  Findings by provider: {', '.join(fbp_parts)}")
+
+    cross_count = data.get("cross_provider_rules_count")
+    if cross_count:
+        lines.append(f"  Cross-provider rules: {cross_count}")
 
     # Predictive Power
     pp = data.get("predictive_power")
@@ -580,6 +641,15 @@ def main() -> None:
         help="Only render feature candidates whose decision starts with promote_indicator",
     )
     parser.add_argument(
+        "--providers",
+        type=str,
+        default=None,
+        help=(
+            "Feature Providers to enable (comma-separated). "
+            "'all' for all providers. Default: from config."
+        ),
+    )
+    parser.add_argument(
         "--child-tf",
         default="",
         help="Child TF for intrabar features (e.g. M5 for H1 parent). Empty = disabled.",
@@ -618,6 +688,9 @@ def main() -> None:
         if args.indicator
         else None
     )
+    providers_list: Optional[List[str]] = None
+    if args.providers is not None:
+        providers_list = [p.strip() for p in args.providers.split(",") if p.strip()]
     start_dt = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
     end_dt = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
 
@@ -645,6 +718,7 @@ def main() -> None:
                 analyses=analyses,
                 indicator_filter=indicator_filter,
                 child_tf=args.child_tf,
+                providers=providers_list,
             )
             results.append(data)
             if "_raw_result" in data:
@@ -665,6 +739,7 @@ def main() -> None:
                 indicator_filter,
                 args.environment,
                 args.child_tf,
+                providers_list,
             )
             for tf in tfs
         ]

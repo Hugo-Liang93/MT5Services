@@ -49,6 +49,8 @@ def analyze_predictive_power(
     config: Optional[PredictivePowerConfig] = None,
     overfitting_config: Optional[OverfittingConfig] = None,
     use_train_only: bool = True,
+    provider_groups: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+    fdr_grouping: str = "global",
 ) -> List[IndicatorPredictiveResult]:
     """分析指标字段的预测力。
 
@@ -112,7 +114,12 @@ def analyze_predictive_power(
 
     # ── Phase 2: 批量显著性校正 ────────────────────────────────
     results = _apply_batch_correction(
-        raw_results, of_cfg, pp_cfg.significance_level, n_total_attempted
+        raw_results,
+        of_cfg,
+        pp_cfg.significance_level,
+        n_total_attempted,
+        provider_groups=provider_groups,
+        fdr_grouping=fdr_grouping,
     )
 
     results.sort(key=lambda r: abs(r.information_coefficient), reverse=True)
@@ -246,17 +253,34 @@ def _apply_batch_correction(
     of_cfg: OverfittingConfig,
     significance_level: float,
     n_total_attempted: int,
+    *,
+    provider_groups: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+    fdr_grouping: str = "global",
 ) -> List[IndicatorPredictiveResult]:
     """批量校正显著性。
 
     核心改进：优先使用排列 p-value 作为 BH-FDR 输入。
     排列检验不假设独立性（通过 block shuffle 保留自相关），
     其 p-value 比参数检验（假设 i.i.d.）更可靠。
+
+    fdr_grouping == "by_provider" 时，按 Provider 分组独立执行 BH-FDR，
+    避免不同特征域的检验互相稀释统计功效。
     """
     if not results:
         return results
 
     if of_cfg.correction_method == "bh_fdr":
+        if (
+            fdr_grouping == "by_provider"
+            and provider_groups is not None
+            and provider_groups
+        ):
+            return _apply_grouped_fdr(
+                results, of_cfg, significance_level, n_total_attempted,
+                provider_groups,
+            )
+
+        # 全局 FDR（默认）
         # 优先用排列 p-value，回退到参数 p-value
         p_values = [
             r.permutation_p_value if r.permutation_p_value is not None else r.p_value
@@ -309,6 +333,68 @@ def _apply_batch_correction(
             )
             corrected.append(replace(r, is_significant=is_sig))
         return corrected
+
+
+def _apply_grouped_fdr(
+    results: List[IndicatorPredictiveResult],
+    of_cfg: "OverfittingConfig",
+    significance_level: float,
+    n_total_attempted: int,
+    provider_groups: Dict[str, List[Tuple[str, str]]],
+) -> List[IndicatorPredictiveResult]:
+    """按 Provider 分组独立执行 BH-FDR 校正。
+
+    每个 Provider 内部的特征共享同一统计假设域，
+    分组 FDR 避免不同特征域的检验互相稀释统计功效。
+    未归入任何 Provider 的结果归为 "base" 组。
+    """
+    # 构建 (indicator_name, field_name) → provider 映射
+    key_to_provider: Dict[Tuple[str, str], str] = {}
+    for prov, keys in provider_groups.items():
+        for k in keys:
+            key_to_provider[k] = prov
+
+    # 分组：保留原始索引以便重组
+    groups: Dict[str, List[int]] = {}  # provider → [result index]
+    for i, r in enumerate(results):
+        key = (r.indicator_name, r.field_name)
+        prov = key_to_provider.get(key, "base")
+        groups.setdefault(prov, []).append(i)
+
+    corrected = list(results)  # 浅拷贝，逐个替换
+
+    for prov, indices in groups.items():
+        group_results = [results[i] for i in indices]
+        p_values = [
+            r.permutation_p_value if r.permutation_p_value is not None else r.p_value
+            for r in group_results
+        ]
+        # n_total_tests 按组内检验数比例缩放
+        group_n_total = max(
+            len(p_values),
+            int(n_total_attempted * len(p_values) / max(len(results), 1)),
+        )
+        fdr_results = benjamini_hochberg_fdr(
+            p_values,
+            alpha=significance_level,
+            n_total_tests=group_n_total,
+        )
+
+        for (_, adj_p, is_sig), orig_idx in zip(fdr_results, indices):
+            r = results[orig_idx]
+            hit_dev = max(
+                abs(r.hit_rate_above_median - 0.5),
+                abs(r.hit_rate_below_median - 0.5),
+            )
+            passes_effect_size = (
+                abs(r.information_coefficient) >= of_cfg.min_correlation
+                or hit_dev >= of_cfg.min_hit_rate_deviation
+            )
+            corrected[orig_idx] = replace(
+                r, is_significant=is_sig and passes_effect_size
+            )
+
+    return corrected
 
 
 # ── Rolling IC（校正重叠偏差）────────────────────────────────
