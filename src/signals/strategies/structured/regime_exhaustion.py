@@ -41,13 +41,13 @@ class StructuredRegimeExhaustion(StructuredStrategyBase):
     research_provenance_refs = ("2026-04-17-H1-regime-transition-rules",)
 
     # ── 可调参数 ──
-    _adx_extreme: float = 55.0
-    _stoch_overbought: float = 70.0
-    _stoch_oversold: float = 30.0
-    _rsi_sell_low: float = 45.0
-    _rsi_sell_high: float = 65.0
-    _rsi_buy_low: float = 35.0
-    _rsi_buy_high: float = 55.0
+    _adx_extreme: float = 40.0
+    _stoch_overbought: float = 60.0
+    _stoch_oversold: float = 40.0
+    _rsi_sell_low: float = 40.0
+    _rsi_sell_high: float = 70.0
+    _rsi_buy_low: float = 30.0
+    _rsi_buy_high: float = 60.0
     _sl_atr: float = 1.5
     _tp_atr: float = 2.0
     _time_bars: int = 20
