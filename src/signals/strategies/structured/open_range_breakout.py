@@ -54,6 +54,7 @@ class StructuredOpenRangeBreakout(StructuredStrategyBase):
     name = "structured_open_range_breakout"
     category = "breakout"
     htf_policy = HtfPolicy.SOFT_BONUS
+    preferred_scopes = ("confirmed", "intrabar")
     required_indicators = ("atr14", "adx14", "donchian20", "volume_ratio20")
     regime_affinity = {
         RegimeType.TRENDING: 1.00,  # 趋势中的亚盘突破最可靠

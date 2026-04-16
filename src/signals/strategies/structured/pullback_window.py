@@ -52,6 +52,7 @@ class StructuredPullbackWindow(StructuredStrategyBase):
     name = "structured_pullback_window"
     category = "trend"
     htf_policy = HtfPolicy.SOFT_BONUS
+    preferred_scopes = ("confirmed", "intrabar")
     required_indicators = (
         "ema9",
         "ema21",

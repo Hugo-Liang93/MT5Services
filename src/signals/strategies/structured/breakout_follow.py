@@ -16,6 +16,7 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
     name = "structured_breakout_follow"
     category = "breakout"
     htf_policy = HtfPolicy.SOFT_GATE
+    preferred_scopes = ("confirmed", "intrabar")
     required_indicators = (
         "adx14",
         "rsi14",
