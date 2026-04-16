@@ -5,7 +5,7 @@ from __future__ import annotations
 import configparser
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 _CONFIG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config"
@@ -68,6 +68,71 @@ class FeatureEngineeringConfig:
 
 
 @dataclass(frozen=True)
+class TemporalProviderConfig:
+    core_indicators: List[str] = field(default_factory=lambda: ["rsi14", "adx14"])
+    aux_indicators: List[str] = field(
+        default_factory=lambda: ["macd_histogram", "cci20", "roc12", "stoch_k"]
+    )
+    windows: List[int] = field(default_factory=lambda: [3, 5, 10])
+    cross_levels_rsi: List[float] = field(default_factory=lambda: [30.0, 50.0, 70.0])
+    cross_levels_adx: List[float] = field(default_factory=lambda: [20.0, 25.0])
+
+
+@dataclass(frozen=True)
+class MicrostructureProviderConfig:
+    lookback: int = 5
+
+
+@dataclass(frozen=True)
+class CrossTFProviderConfig:
+    parent_tf_map: Dict[str, str] = field(
+        default_factory=lambda: {"M15": "H1", "M30": "H4", "H1": "H4", "H4": "D1"}
+    )
+    parent_indicators: List[str] = field(
+        default_factory=lambda: [
+            "supertrend_direction",
+            "rsi14",
+            "adx14",
+            "ema50",
+            "bb_position",
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class RegimeTransitionProviderConfig:
+    history_window: int = 50
+    prob_delta_window: int = 5
+
+
+@dataclass(frozen=True)
+class FeatureProviderConfig:
+    """所有 Provider 的启用开关和子配置。"""
+
+    temporal_enabled: bool = True
+    microstructure_enabled: bool = True
+    cross_tf_enabled: bool = False  # 默认关闭（需额外加载父 TF 数据）
+    regime_transition_enabled: bool = True
+    session_event_enabled: bool = True
+    intrabar_enabled: bool = True
+    fdr_grouping: str = "by_provider"  # "by_provider" | "global" | "none"
+
+    temporal: TemporalProviderConfig = field(default_factory=TemporalProviderConfig)
+    microstructure: MicrostructureProviderConfig = field(
+        default_factory=MicrostructureProviderConfig
+    )
+    cross_tf: CrossTFProviderConfig = field(default_factory=CrossTFProviderConfig)
+    regime_transition: RegimeTransitionProviderConfig = field(
+        default_factory=RegimeTransitionProviderConfig
+    )
+
+    def is_enabled(self, provider_name: str) -> bool:
+        """查询指定 Provider 是否启用。未知 provider 名默认返回 True。"""
+        attr = f"{provider_name}_enabled"
+        return bool(getattr(self, attr, True))
+
+
+@dataclass(frozen=True)
 class ResearchConfig:
     forward_horizons: List[int] = field(default_factory=lambda: [1, 3, 5, 10])
     warmup_bars: int = 200
@@ -84,6 +149,104 @@ class ResearchConfig:
     rule_mining: RuleMiningConfig = field(default_factory=RuleMiningConfig)
     feature_engineering: FeatureEngineeringConfig = field(
         default_factory=FeatureEngineeringConfig
+    )
+    feature_providers: FeatureProviderConfig = field(
+        default_factory=FeatureProviderConfig
+    )
+
+
+def _load_feature_providers(parser: configparser.ConfigParser) -> FeatureProviderConfig:
+    """从 INI 的 [feature_providers] 及子节解析 FeatureProviderConfig。"""
+
+    def _get(section: str, key: str, fallback: str) -> str:
+        return parser.get(section, key, fallback=fallback)
+
+    def _getint(section: str, key: str, fallback: int) -> int:
+        return parser.getint(section, key, fallback=fallback)
+
+    def _getfloat(section: str, key: str, fallback: float) -> float:
+        return parser.getfloat(section, key, fallback=fallback)
+
+    def _getbool(section: str, key: str, fallback: bool) -> bool:
+        return parser.getboolean(section, key, fallback=fallback)
+
+    def _parse_str_list(raw: str) -> List[str]:
+        return [v.strip() for v in raw.split(",") if v.strip()]
+
+    def _parse_int_list(raw: str) -> List[int]:
+        return [int(v.strip()) for v in raw.split(",") if v.strip()]
+
+    def _parse_float_list(raw: str) -> List[float]:
+        return [float(v.strip()) for v in raw.split(",") if v.strip()]
+
+    def _parse_kv_map(raw: str) -> Dict[str, str]:
+        """解析 'K1:V1,K2:V2' 格式为字典。"""
+        result: Dict[str, str] = {}
+        for pair in raw.split(","):
+            pair = pair.strip()
+            if ":" in pair:
+                k, v = pair.split(":", 1)
+                result[k.strip()] = v.strip()
+        return result
+
+    sec = "feature_providers"
+
+    # --- [feature_providers.temporal] ---
+    t_sec = "feature_providers.temporal"
+    temporal = TemporalProviderConfig(
+        core_indicators=_parse_str_list(
+            _get(t_sec, "core_indicators", "rsi14,adx14")
+        ),
+        aux_indicators=_parse_str_list(
+            _get(t_sec, "aux_indicators", "macd_histogram,cci20,roc12,stoch_k")
+        ),
+        windows=_parse_int_list(_get(t_sec, "windows", "3,5,10")),
+        cross_levels_rsi=_parse_float_list(
+            _get(t_sec, "cross_levels_rsi", "30,50,70")
+        ),
+        cross_levels_adx=_parse_float_list(_get(t_sec, "cross_levels_adx", "20,25")),
+    )
+
+    # --- [feature_providers.microstructure] ---
+    m_sec = "feature_providers.microstructure"
+    microstructure = MicrostructureProviderConfig(
+        lookback=_getint(m_sec, "lookback", 5),
+    )
+
+    # --- [feature_providers.cross_tf] ---
+    c_sec = "feature_providers.cross_tf"
+    cross_tf = CrossTFProviderConfig(
+        parent_tf_map=_parse_kv_map(
+            _get(c_sec, "parent_tf_map", "M15:H1,M30:H4,H1:H4,H4:D1")
+        ),
+        parent_indicators=_parse_str_list(
+            _get(
+                c_sec,
+                "parent_indicators",
+                "supertrend_direction,rsi14,adx14,ema50,bb_position",
+            )
+        ),
+    )
+
+    # --- [feature_providers.regime_transition] ---
+    r_sec = "feature_providers.regime_transition"
+    regime_transition = RegimeTransitionProviderConfig(
+        history_window=_getint(r_sec, "history_window", 50),
+        prob_delta_window=_getint(r_sec, "prob_delta_window", 5),
+    )
+
+    return FeatureProviderConfig(
+        temporal_enabled=_getbool(sec, "temporal", True),
+        microstructure_enabled=_getbool(sec, "microstructure", True),
+        cross_tf_enabled=_getbool(sec, "cross_tf", False),
+        regime_transition_enabled=_getbool(sec, "regime_transition", True),
+        session_event_enabled=_getbool(sec, "session_event", True),
+        intrabar_enabled=_getbool(sec, "intrabar", True),
+        fdr_grouping=_get(sec, "fdr_grouping", "by_provider"),
+        temporal=temporal,
+        microstructure=microstructure,
+        cross_tf=cross_tf,
+        regime_transition=regime_transition,
     )
 
 
@@ -184,4 +347,5 @@ def load_research_config() -> ResearchConfig:
             enabled=_getbool("feature_engineering", "enabled", True),
             features=fe_features,
         ),
+        feature_providers=_load_feature_providers(parser),
     )
