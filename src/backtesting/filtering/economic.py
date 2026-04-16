@@ -25,6 +25,7 @@ class _SimpleSettings:
     trade_guard_warn_post_buffer_minutes: int = 10
     trade_guard_relevance_filter_enabled: bool = False
     gold_impact_keywords: str = ""
+    gold_impact_categories: str = ""
     high_importance_threshold: int = 3
     # MarketImpact 相关（回测中不使用，保持默认）
     market_impact_high_spike_threshold: float = 3.0
@@ -48,6 +49,7 @@ class _SimpleEvent:
     scheduled_at_release: Optional[datetime] = None
     status: str = "released"
     session_bucket: str = ""
+    category: str = ""
 
 
 class BacktestTradeGuardProvider:
@@ -159,6 +161,7 @@ def load_backtest_economic_events(
                 source=str(row[2] or ""),
                 event_name=str(row[4] or ""),
                 country=str(row[5] or ""),
+                category=str(row[6] or ""),
                 currency=str(row[7] or ""),
                 importance=int(row[13] or 0),
                 scheduled_at=scheduled_at,

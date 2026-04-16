@@ -225,12 +225,8 @@ def strategy_scope_overrides(signal_config: Any) -> Dict[str, Dict[str, list[str
         return normalized
 
     return {
-        "strategy_timeframes": _normalize(
-            getattr(signal_config, "strategy_timeframes", {}) or {}
-        ),
-        "strategy_sessions": _normalize(
-            getattr(signal_config, "strategy_sessions", {}) or {}
-        ),
+        "strategy_timeframes": _normalize(signal_config.strategy_timeframes),
+        "strategy_sessions": _normalize(signal_config.strategy_sessions),
     }
 
 

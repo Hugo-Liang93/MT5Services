@@ -37,6 +37,11 @@ class SignalConfig(BaseModel):
     end_of_day_close_enabled: bool = False
     end_of_day_close_hour_utc: int = 21
     end_of_day_close_minute_utc: int = 0
+    # 周末持仓强平（防周一跳空）：独立于 end_of_day，周五 UTC 指定时刻全平
+    weekend_flat_enabled: bool = False
+    weekend_flat_weekday: int = 4  # 0=Monday..4=Friday..6=Sunday
+    weekend_flat_hour_utc: int = 20
+    weekend_flat_minute_utc: int = 0
     # ── Trailing Take Profit ──
     trailing_tp_enabled: bool = False
     trailing_tp_activation_atr: float = 1.5
@@ -54,6 +59,10 @@ class SignalConfig(BaseModel):
     max_spread_to_stop_ratio: float = 0.33
     # 同策略同方向再入场冷却 bar 数（0=不冷却每根 bar 都可以，N=间隔 N 根后允许加仓）
     reentry_cooldown_bars: int = 3
+    # 单笔交易绝对亏损 hard cap（USD）。None = 不启用（不推荐实盘）。
+    # 该 cap 独立于 risk_percent_per_trade：risk% 是相对账户比例，cap 是绝对金额底线，
+    # 防止配置 bug / 账户膨胀时单笔意外放大亏损。
+    max_single_trade_loss_usd: float | None = None
     # ── Performance Tracker（日内策略绩效追踪）──
     perf_tracker_enabled: bool = True
     perf_tracker_baseline_win_rate: float = 0.50

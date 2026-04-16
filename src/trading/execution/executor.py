@@ -43,6 +43,7 @@ from .params import estimate_price as _estimate_price_helper
 from .params import get_account_balance as _get_account_balance_helper
 from .result_recorder import ExecutionResultRecorder
 from . import pre_trade_checks as _ptc
+from .risk_caps import MaxSingleTradeLossPolicy
 from .sizing import RegimeSizing, extract_atr_from_indicators
 from .reasons import (
     REASON_AUTO_TRADE_DISABLED,
@@ -98,6 +99,10 @@ class ExecutorConfig:
     regime_sizing: RegimeSizing = field(default_factory=RegimeSizing)
     exec_queue_size: int = 256
     strategy_deployments: dict[str, StrategyDeployment] = field(default_factory=dict)
+    # 单笔交易绝对亏损 hard cap（USD），None = 不启用（需调用方显式声明）
+    max_single_trade_loss_policy: MaxSingleTradeLossPolicy = field(
+        default_factory=lambda: MaxSingleTradeLossPolicy(max_loss_usd=None)
+    )
 
 
 class TradeExecutor:

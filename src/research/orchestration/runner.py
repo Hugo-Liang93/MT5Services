@@ -12,13 +12,106 @@ import logging
 import uuid
 from collections import Counter
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from src.backtesting.filtering.economic import load_backtest_economic_events
+from src.calendar.economic_calendar.gold_relevance import (
+    EventRelevanceMatcher,
+    EventSummary,
+    GoldRelevancePolicy,
+    build_relevance_matcher,
+)
+from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+from src.config.centralized import get_economic_config
+from src.config.database import load_db_settings
+from src.config.models.runtime import EconomicConfig
+from src.persistence.db import TimescaleWriter
+from src.persistence.repositories.economic_repo import EconomicCalendarRepository
 from src.research.core.config import ResearchConfig, load_research_config
 from src.research.core.contracts import DataSummary, Finding, MiningResult
 from src.research.core.data_matrix import DataMatrix, build_data_matrix
 
 logger = logging.getLogger(__name__)
+
+
+def _build_relevance_matcher(
+    settings: EconomicConfig,
+) -> Optional[EventRelevanceMatcher]:
+    """从 EconomicConfig 显式构造相关性匹配器。
+
+    契约：
+      - `trade_guard_relevance_filter_enabled = False` → 返回 None（不过滤）
+      - 启用 + keywords/categories 至少一项非空 → 返回 matcher
+      - 启用但两项均空 → `build_relevance_matcher` raise ValueError（配置矛盾）
+    """
+    if not settings.trade_guard_relevance_filter_enabled:
+        return None
+    policy = GoldRelevancePolicy.from_csv(
+        keywords_csv=settings.gold_impact_keywords,
+        categories_csv=settings.gold_impact_categories,
+    )
+    return build_relevance_matcher(policy)
+
+
+def _load_high_impact_event_times(
+    *,
+    symbol: str,
+    start_time: datetime,
+    end_time: datetime,
+) -> Tuple[datetime, ...]:
+    """加载回测窗口的高影响经济事件时间戳（供事件距离特征使用）。
+
+    流程（失败即抛出，不兜底）：
+      1. 读 EconomicConfig 拿 importance 阈值 + 构造相关性 matcher
+      2. 按 symbol 推导相关货币，从 DB 拉 importance ≥ 阈值的事件
+      3. 若启用相关性过滤，对事件走 matcher；未命中者剔除
+      4. 返回排序后的 UTC 时间戳元组
+
+    失败模式（均直接抛出，不静默兜底）：
+      - DB 连接失败 → psycopg2 错误直抛
+      - EconomicConfig 缺字段 → AttributeError 直抛（配置 bug 应尽早暴露）
+      - relevance_filter_enabled=True 但 keyword/category 都为空 → ValueError（配置矛盾）
+    """
+    settings = get_economic_config()
+    importance_min = int(settings.high_importance_threshold)
+    matcher = _build_relevance_matcher(settings)
+
+    db_settings = load_db_settings()
+    writer = TimescaleWriter(db_settings, min_conn=1, max_conn=2)
+    try:
+        repo = EconomicCalendarRepository(writer)
+        context = infer_symbol_context(symbol)
+        events = load_backtest_economic_events(
+            economic_repo=repo,
+            start_time=start_time,
+            end_time=end_time,
+            currencies=context["currencies"] or None,
+            importance_min=importance_min,
+        )
+    finally:
+        writer.close()
+
+    if matcher is not None:
+        events = [ev for ev in events if matcher.is_relevant(_event_to_summary(ev))]
+
+    times = tuple(sorted(ev.scheduled_at for ev in events))
+    logger.info(
+        "Research mining: loaded %d high-impact events "
+        "(symbol=%s, imp>=%d, relevance_filter=%s)",
+        len(times),
+        symbol,
+        importance_min,
+        matcher is not None,
+    )
+    return times
+
+
+def _event_to_summary(ev: Any) -> EventSummary:
+    """_SimpleEvent → EventSummary 契约转换（单一职责）。"""
+    return EventSummary(
+        name=ev.event_name,
+        category=ev.category if ev.category else None,
+    )
 
 
 class MiningRunner:
@@ -73,6 +166,13 @@ class MiningRunner:
 
             self._components = build_backtest_components()
 
+        # 加载回测期间的高影响经济事件（供派生事件特征使用）
+        high_impact_events = _load_high_impact_event_times(
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
         # 构建 DataMatrix
         matrix = build_data_matrix(
             symbol=symbol,
@@ -84,6 +184,7 @@ class MiningRunner:
             train_ratio=self._config.train_ratio,
             round_trip_cost_pct=self._config.round_trip_cost_pct,
             components=self._components,
+            high_impact_event_times=high_impact_events,
         )
 
         # 特征工程：在分析器运行前增强 DataMatrix

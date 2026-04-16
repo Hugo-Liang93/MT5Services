@@ -21,6 +21,7 @@ from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
 from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
 from src.signals.contracts import StrategyCapability
+from src.signals.contracts.deployment import StrategyDeployment
 from src.signals.contracts.execution_plan import build_strategy_capability_summary
 from src.trading.pending import PendingEntryConfig as TradingPendingEntryConfig
 
@@ -39,7 +40,45 @@ from .indicators import detect_regime as _detect_regime_helper
 from .indicators import lookup_htf_at_time as _lookup_htf_at_time_helper
 from .indicators import precompute_all_indicators as _precompute_all_indicators_helper
 from .indicators import preload_htf_indicators as _preload_htf_indicators_helper
-from .portfolio import PortfolioTracker
+from src.trading.execution.equity_filter import EquityCurveFilterConfig
+
+from .portfolio import CostModel, PortfolioTracker
+
+
+def _build_cost_model(risk: Any) -> CostModel:
+    return CostModel(
+        dynamic_spread_enabled=getattr(risk, "dynamic_spread_enabled", False),
+        spread_base_points=getattr(risk, "spread_base_points", 15.0),
+        spread_london_mult=getattr(risk, "spread_london_mult", 1.2),
+        spread_ny_mult=getattr(risk, "spread_ny_mult", 1.3),
+        spread_asia_mult=getattr(risk, "spread_asia_mult", 1.0),
+        spread_volatility_threshold=getattr(risk, "spread_volatility_threshold", 1.8),
+        spread_volatility_mult=getattr(risk, "spread_volatility_mult", 2.0),
+        swap_enabled=getattr(risk, "swap_enabled", False),
+        swap_long_per_lot=getattr(risk, "swap_long_per_lot", -0.3),
+        swap_short_per_lot=getattr(risk, "swap_short_per_lot", 0.15),
+        swap_wednesday_triple=getattr(risk, "swap_wednesday_triple", True),
+        swap_charge_hour_utc=getattr(risk, "swap_charge_hour_utc", 21),
+    )
+
+
+def _build_equity_curve_filter_config() -> EquityCurveFilterConfig:
+    """从 signal_config 读取 equity_curve_filter 配置。
+
+    与实盘使用同一 dataclass，确保阈值一致。signal_config 未声明字段时
+    回退为 disabled（保持旧回测行为兼容）。
+    """
+    try:
+        from src.backtesting.component_factory import _load_signal_config_snapshot
+
+        signal_config = _load_signal_config_snapshot()
+    except Exception:
+        return EquityCurveFilterConfig()
+    return EquityCurveFilterConfig(
+        enabled=getattr(signal_config, "equity_curve_filter_enabled", False),
+        ma_period=getattr(signal_config, "equity_curve_filter_ma_period", 20),
+        min_samples=getattr(signal_config, "equity_curve_filter_min_samples", 5),
+    )
 from .signals import backfill_evaluations as _backfill_evaluations_helper
 from .signals import check_pending_entries as _check_pending_entries_helper
 from .signals import evaluate_strategies as _evaluate_strategies_helper
@@ -114,6 +153,27 @@ class _BacktestSignalState:
     armed: bool = False
 
 
+def _load_deployments_from_signal_config() -> Dict[str, StrategyDeployment]:
+    """从 signal_config 加载当前所有策略的部署合同。
+
+    失败时返回空 dict —— 表示"无 deployment gate"，等价于旧行为。
+    这种自动回退是契约的一部分（调用方未显式传时的默认）。
+    """
+    try:
+        from src.backtesting.component_factory import _load_signal_config_snapshot
+
+        signal_config = _load_signal_config_snapshot()
+    except Exception:
+        logger.debug(
+            "BacktestEngine: signal_config unavailable, deployment gate disabled",
+        )
+        return {}
+    deployments = getattr(signal_config, "strategy_deployments", None)
+    if not deployments:
+        return {}
+    return dict(deployments)
+
+
 class BacktestEngine:
     """回测引擎：逐 bar 回放历史数据，复用生产指标和策略组件。
 
@@ -144,6 +204,10 @@ class BacktestEngine:
         htf_indicator_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
         # 性能优化：预计算指标快照（优化器复用时避免重复计算）
         precomputed_indicators: Optional[List[Dict[str, Dict[str, Any]]]] = None,
+        # StrategyDeployment 契约：回测与实盘同一套部署合同，保证两条链路
+        # 对 CANDIDATE / PAPER_ONLY / locked_timeframes / max_live_positions 的
+        # 处理完全一致。None 表示"未显式注入"，将在构造期从 signal_config 读取。
+        strategy_deployments: Optional[Dict[str, StrategyDeployment]] = None,
     ) -> None:
         self._config = config
         self._data_loader = data_loader
@@ -158,6 +222,13 @@ class BacktestEngine:
         self._htf_direction_fn = htf_direction_fn
         self._htf_alignment_boost = htf_alignment_boost
         self._htf_conflict_penalty = htf_conflict_penalty
+        # StrategyDeployment 契约：优先使用显式传入；否则自动从 signal_config 加载
+        # 这保证所有 BacktestEngine 调用点默认获得与实盘一致的 deployment gate 行为，
+        # 无需每个调用方手动传参。调用方可显式传空 dict 显式声明"不走 deployment gate"。
+        if strategy_deployments is None:
+            self._strategy_deployments = _load_deployments_from_signal_config()
+        else:
+            self._strategy_deployments = dict(strategy_deployments)
         # HTF 指标：{timeframe: {indicator_name: {field: value}}}（静态快照，向后兼容）
         self._htf_indicator_data = htf_indicator_data or {}
         # HTF 时序数据：{timeframe: [(bar_time, indicators), ...]}，按 bar 时间查找
@@ -182,13 +253,19 @@ class BacktestEngine:
         pe = config.pending_entry
         self._pending_entry_enabled = pe.enabled
         self._pending_entry_config = TradingPendingEntryConfig()
-        # 挂起的入场意图：{signal_key: (decision, entry_low, entry_high, expiry_bar)}
-        self._pending_entries: Dict[str, Tuple[SignalDecision, float, float, int]] = {}
+        # 挂起的入场意图：{signal_key: (decision, entry_type, entry_low, entry_high, expiry_bar)}
+        # entry_type ∈ {"limit", "stop"}，决定触发边界与成交价语义
+        self._pending_entries: Dict[
+            str, Tuple[SignalDecision, str, float, float, int]
+        ] = {}
 
         # 确定目标策略列表，并过滤掉回测 SignalModule 不支持的名称。
+        # 与实盘保持一致：CANDIDATE 策略（deployment.allows_runtime_evaluation()=False）
+        # 不参与评估——否则"回测指标"会含实盘永远不执行的信号。
         available_strategies = set(self._signal_module.list_strategies())
         requested_strategies: List[str] = []
         unsupported: List[str] = []
+        deployment_filtered: List[str] = []
         if config.strategies:
             requested_strategies = []
             seen_requested: Set[str] = set()
@@ -209,19 +286,37 @@ class BacktestEngine:
                     "BacktestEngine: ignoring unsupported strategies: %s",
                     ", ".join(sorted(unsupported)),
                 )
-            self._target_strategies = [
+            candidates = [
                 strategy
                 for strategy in requested_strategies
                 if strategy in available_strategies
             ]
-            if not self._target_strategies:
-                raise ValueError(
-                    "No supported strategies remain after filtering requested strategies: "
-                    f"{requested_strategies}"
-                )
         else:
             requested_strategies = sorted(available_strategies)
-            self._target_strategies = list(requested_strategies)
+            candidates = list(requested_strategies)
+
+        # Deployment gate：允许的策略才进入 _target_strategies
+        self._target_strategies = []
+        for strategy in candidates:
+            deployment = self._strategy_deployments.get(strategy)
+            if deployment is not None and not deployment.allows_runtime_evaluation():
+                deployment_filtered.append(strategy)
+                continue
+            self._target_strategies.append(strategy)
+
+        if deployment_filtered:
+            logger.info(
+                "BacktestEngine: filtered by deployment status (CANDIDATE): %s",
+                ", ".join(sorted(deployment_filtered)),
+            )
+
+        if config.strategies and not self._target_strategies:
+            raise ValueError(
+                "No supported strategies remain after filtering requested strategies: "
+                f"requested={requested_strategies}, "
+                f"deployment_filtered={deployment_filtered}"
+            )
+        self._deployment_filtered_strategies: List[str] = sorted(deployment_filtered)
 
         self._requested_strategies = list(requested_strategies)
         self._unsupported_requested_strategies = sorted(set(unsupported))
@@ -491,6 +586,8 @@ class BacktestEngine:
             end_of_day_close_enabled=pos.end_of_day_close_enabled,
             end_of_day_close_hour_utc=pos.end_of_day_close_hour_utc,
             end_of_day_close_minute_utc=pos.end_of_day_close_minute_utc,
+            cost_model=_build_cost_model(risk),
+            equity_curve_filter_config=_build_equity_curve_filter_config(),
         )
 
     def run(self) -> BacktestResult:
@@ -608,6 +705,8 @@ class BacktestEngine:
             bar = all_bars[i]
             bar_index = i - warmup_end
             self._portfolio.observe_bar(bar)
+            # 过夜 swap 扣款（仅在跨过夜时刻时触发）
+            self._portfolio.apply_overnight_swap(bar)
 
             # 更新 MarketStructure bar 窗口（结构化策略依赖）
             if self._market_structure_analyzer is not None:
@@ -629,11 +728,12 @@ class BacktestEngine:
             if indicators:
                 regime, soft_regime_dict = _detect_regime_helper(self, indicators)
 
-            # 提取当前 ATR 供 Chandelier Exit 使用
+            # 提取当前 ATR 供 Chandelier Exit + 动态 spread 使用
             _current_atr = 0.0
             atr_data = indicators.get("atr14") if indicators else None
             if isinstance(atr_data, dict):
                 _current_atr = float(atr_data.get("atr", 0.0) or 0.0)
+            self._portfolio.update_atr_reference(_current_atr)
 
             # 5. 检查持仓出场（Chandelier Exit 4 规则，regime-aware）
             closed_trades = self._portfolio.check_exits(

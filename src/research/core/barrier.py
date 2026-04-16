@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional, Sequence
 
+import numpy as np
+
 
 class BarrierOutcome(NamedTuple):
     """三重 barrier 退出结果。
@@ -187,7 +189,7 @@ def compute_barrier_returns(
     atr_indicator: str = "atr14",
     atr_field: str = "atr",
 ) -> dict[tuple, List[Optional[BarrierOutcome]]]:
-    """对每个 bar 计算多组 barrier 下的 outcome。
+    """对每个 bar 计算多组 barrier 下的 outcome（向量化 NumPy 实现）。
 
     Args:
         opens/highs/lows/closes: 对齐 bar 序列
@@ -201,6 +203,10 @@ def compute_barrier_returns(
         {barrier_key: [n_bars 个 Optional[BarrierOutcome]]}
         barrier_key = (sl_atr, tp_atr, time_bars)
         入场价按 "next-bar open" 模型（与 forward_return 一致）。
+
+    实现说明：
+        每个 config 用一次 vectorized 扫描替代 Python 内层循环。同 bar 同时触发
+        SL/TP 时保守取 SL（与 per-bar 旧实现一致）。
     """
     if direction not in ("long", "short"):
         raise ValueError(f"direction must be 'long' or 'short', got {direction}")
@@ -209,36 +215,141 @@ def compute_barrier_returns(
     if not (n == len(highs) == len(lows) == len(closes) == len(indicators)):
         raise ValueError("opens/highs/lows/closes/indicators length mismatch")
 
-    atrs = _compute_entry_atrs(indicators, atr_indicator=atr_indicator, atr_field=atr_field)
-    simulate = _simulate_single_long if direction == "long" else _simulate_single_short
+    atrs = _compute_entry_atrs(
+        indicators, atr_indicator=atr_indicator, atr_field=atr_field
+    )
+
+    # 将所有输入转为 ndarray，一次性完成
+    opens_arr = np.asarray(opens, dtype=np.float64)
+    highs_arr = np.asarray(highs, dtype=np.float64)
+    lows_arr = np.asarray(lows, dtype=np.float64)
+    closes_arr = np.asarray(closes, dtype=np.float64)
+    atrs_arr = np.asarray(
+        [a if a is not None else np.nan for a in atrs], dtype=np.float64,
+    )
 
     result: dict[tuple, List[Optional[BarrierOutcome]]] = {
         cfg.key(): [None] * n for cfg in configs
     }
 
-    for i in range(n):
-        if i + 1 >= n:
-            continue
-        entry_price = opens[i + 1]
-        if entry_price <= 0:
-            continue
-        # 在信号 bar（i）收盘时读 ATR（与 next-bar open 入场假设相符：
-        # 信号在 bar i 产生→bar i+1 开盘入场→ATR 取 i 收盘时的值）
-        atr = atrs[i]
-        if atr is None:
-            continue
-
-        for cfg in configs:
-            outcome = simulate(
-                entry_price=entry_price,
-                atr=atr,
-                config=cfg,
-                highs=highs,
-                lows=lows,
-                closes=closes,
-                entry_idx=i + 1,  # 入场后第一根 bar 才能被检测
-                round_trip_cost_pct=round_trip_cost_pct,
-            )
-            result[cfg.key()][i] = outcome
+    for cfg in configs:
+        outcomes = _vectorized_barrier_scan(
+            opens=opens_arr,
+            highs=highs_arr,
+            lows=lows_arr,
+            closes=closes_arr,
+            atrs=atrs_arr,
+            config=cfg,
+            direction=direction,
+            round_trip_cost_pct=round_trip_cost_pct,
+        )
+        result[cfg.key()] = outcomes
 
     return result
+
+
+def _vectorized_barrier_scan(
+    *,
+    opens: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    atrs: np.ndarray,
+    config: BarrierConfig,
+    direction: str,
+    round_trip_cost_pct: float,
+) -> List[Optional[BarrierOutcome]]:
+    """向量化单 config 的三 barrier 扫描。
+
+    对每个有效 entry 构建 time_bars 宽的窗口矩阵，用 np.argmax 找首次触发。
+
+    算法：
+        1. 对每个 i，entry_idx = i+1, entry_price = opens[i+1]
+        2. 窗口 = highs[i+1 : i+1+time_bars]（类似 lows/closes）
+        3. tp_hit[j] = (高点 >= tp_price)，sl_hit[j] = (低点 <= sl_price)
+        4. first_tp / first_sl = argmax(hit) 若 any(hit) else inf
+        5. 比较先后：sl 优先（同 tick 保守）
+
+    时间复杂度：O(n × time_bars)，内存 O(n × time_bars)。
+    """
+    n = len(opens)
+    out: List[Optional[BarrierOutcome]] = [None] * n
+    if n < 2:
+        return out
+
+    cost = round_trip_cost_pct / 100.0 if round_trip_cost_pct > 0 else 0.0
+    time_bars = int(config.time_bars)
+
+    # entry_idx = i+1（入场 bar）；扫描范围 [entry_idx+1, entry_idx+time_bars] = [i+2, i+1+time_bars]
+    # 为保持索引一致，对 highs/lows/closes 末尾 pad (time_bars+1) 个 NaN。
+    pad_h = np.concatenate([highs, np.full(time_bars + 1, np.nan)])
+    pad_l = np.concatenate([lows, np.full(time_bars + 1, np.nan)])
+    pad_c = np.concatenate([closes, np.full(time_bars + 1, np.nan)])
+
+    # 窗口矩阵：shape (n-1, time_bars)。row i 对应扫描 bar [i+2 .. i+1+time_bars]
+    idx_matrix = (np.arange(n - 1)[:, None] + 2 + np.arange(time_bars)[None, :])
+    # 越界位置由 pad 的 NaN 填充
+    win_h = pad_h[idx_matrix]
+    win_l = pad_l[idx_matrix]
+    win_c = pad_c[idx_matrix]
+
+    entry_prices = opens[1:]  # shape (n-1,)
+    entry_atrs = atrs[:-1]    # 信号 bar 的 ATR（与 per-bar 实现一致）
+
+    valid = (entry_prices > 0) & np.isfinite(entry_atrs)
+
+    if direction == "long":
+        tp_prices = entry_prices + config.tp_atr * entry_atrs
+        sl_prices = entry_prices - config.sl_atr * entry_atrs
+        tp_hit = win_h >= tp_prices[:, None]
+        sl_hit = win_l <= sl_prices[:, None]
+    else:  # short
+        tp_prices = entry_prices - config.tp_atr * entry_atrs
+        sl_prices = entry_prices + config.sl_atr * entry_atrs
+        tp_hit = win_l <= tp_prices[:, None]
+        sl_hit = win_h >= sl_prices[:, None]
+
+    # NaN 位置（越界）既不算 tp 也不算 sl（broadcast 下 NaN 比较结果为 False）
+    # 但需防止 argmax 在全 False 时返回 0 误判为"首 bar 命中"
+    any_tp = tp_hit.any(axis=1)
+    any_sl = sl_hit.any(axis=1)
+    first_tp = np.where(any_tp, tp_hit.argmax(axis=1), time_bars)
+    first_sl = np.where(any_sl, sl_hit.argmax(axis=1), time_bars)
+
+    # 同 bar 双触 → SL 获胜（保守）；sl 严格先 → SL；tp 严格先 → TP；都没命中 → TIME
+    # time_bars 是"哨兵"值（未命中）
+    sl_wins = any_sl & (first_sl <= first_tp)
+    tp_wins = any_tp & (first_tp < first_sl)
+    time_exit = (~any_sl) & (~any_tp)
+
+    # 构造 outcome（Python 层，因为要实例化 NamedTuple 和处理 None）
+    for i in range(n - 1):
+        if not valid[i]:
+            continue
+
+        if sl_wins[i]:
+            if direction == "long":
+                ret = -config.sl_atr * entry_atrs[i] / entry_prices[i] - cost
+            else:
+                ret = -config.sl_atr * entry_atrs[i] / entry_prices[i] - cost
+            out[i] = BarrierOutcome("sl", float(ret), int(first_sl[i] + 1))
+        elif tp_wins[i]:
+            tp_price = tp_prices[i]
+            if direction == "long":
+                ret = (tp_price - entry_prices[i]) / entry_prices[i] - cost
+            else:
+                ret = (entry_prices[i] - tp_price) / entry_prices[i] - cost
+            out[i] = BarrierOutcome("tp", float(ret), int(first_tp[i] + 1))
+        elif time_exit[i]:
+            # 时间 barrier：按 last_idx 的 close 退出（如 NaN 则无效）
+            last_idx_offset = time_bars - 1
+            last_close = win_c[i, last_idx_offset]
+            if not np.isfinite(last_close):
+                # 窗口不足 time_bars 根 → 数据边界，无有效 outcome
+                continue
+            if direction == "long":
+                ret = (last_close - entry_prices[i]) / entry_prices[i] - cost
+            else:
+                ret = (entry_prices[i] - last_close) / entry_prices[i] - cost
+            out[i] = BarrierOutcome("time", float(ret), int(time_bars))
+    return out

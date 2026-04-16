@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging as _logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.config.models.signal import SignalConfig
 
 from src.config.file_manager import get_file_config_manager
 from src.config import get_economic_config
@@ -40,6 +43,7 @@ from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.tracking.repository import TimescaleSignalRepository
 from src.trading.closeout import ExposureCloseoutController, ExposureCloseoutService
 from src.trading.execution.executor import ExecutorConfig, TradeExecutor
+from src.trading.execution.risk_caps import MaxSingleTradeLossPolicy
 from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
 from src.trading.execution.sizing import RegimeSizing
 from src.trading.execution.eventing import execute_market_order
@@ -61,8 +65,9 @@ def _apply_strategy_config_overrides(module: SignalModule, signal_config) -> Non
     strategies = module.strategies
 
     # ── 构建 per-TF 参数查表器并注入 ─────────────────────────────────
-    per_tf = getattr(signal_config, "strategy_params_per_tf", {})
-    resolver = build_tf_param_resolver(signal_config.strategy_params, per_tf)
+    resolver = build_tf_param_resolver(
+        signal_config.strategy_params, signal_config.strategy_params_per_tf,
+    )
     module.set_tf_param_resolver(resolver)
     _factory_logger.info("TFParamResolver built: %s", resolver)
 
@@ -184,10 +189,7 @@ def build_signal_filter_chain(
     )
 
 
-def build_executor_config(signal_config) -> ExecutorConfig:
-    strategy_deployments = dict(
-        getattr(signal_config, "strategy_deployments", {}) or {}
-    )
+def build_executor_config(signal_config: "SignalConfig") -> ExecutorConfig:
     return ExecutorConfig(
         enabled=signal_config.auto_trade_enabled,
         min_confidence=signal_config.auto_trade_min_confidence,
@@ -199,23 +201,17 @@ def build_executor_config(signal_config) -> ExecutorConfig:
         max_volume=signal_config.max_volume,
         contract_size_map=dict(signal_config.contract_size_map),
         timeframe_risk_multipliers=dict(signal_config.timeframe_risk_multipliers),
-        timeframe_min_confidence=dict(
-            getattr(signal_config, "timeframe_min_confidence", {}) or {}
-        ),
+        timeframe_min_confidence=dict(signal_config.timeframe_min_confidence),
         htf_conflict_block_timeframes=frozenset(
-            getattr(signal_config, "htf_conflict_block_timeframes", frozenset())
-            or frozenset()
+            signal_config.htf_conflict_block_timeframes
         ),
         htf_conflict_exempt_categories=frozenset(
-            getattr(signal_config, "htf_conflict_exempt_categories", frozenset())
-            or frozenset({"reversion"})
+            signal_config.htf_conflict_exempt_categories
         ),
         max_consecutive_failures=signal_config.max_consecutive_failures,
         circuit_auto_reset_minutes=signal_config.circuit_auto_reset_minutes,
         max_spread_to_stop_ratio=signal_config.max_spread_to_stop_ratio,
-        reentry_cooldown_bars=int(
-            getattr(signal_config, "reentry_cooldown_bars", 3) or 3
-        ),
+        reentry_cooldown_bars=signal_config.reentry_cooldown_bars,
         regime_sizing=RegimeSizing(
             tp_trending=signal_config.regime_tp_trending,
             tp_ranging=signal_config.regime_tp_ranging,
@@ -226,33 +222,29 @@ def build_executor_config(signal_config) -> ExecutorConfig:
             sl_breakout=signal_config.regime_sl_breakout,
             sl_uncertain=signal_config.regime_sl_uncertain,
         ),
-        strategy_deployments=strategy_deployments,
-    )
-
-
-def build_execution_gate_config(signal_config) -> ExecutionGateConfig:
-    intrabar_enabled_strategies = frozenset(
-        s
-        for s in getattr(signal_config, "intrabar_trading_enabled_strategies", [])
-        if s
-    )
-    return ExecutionGateConfig(
-        intrabar_trading_enabled=getattr(
-            signal_config, "intrabar_trading_enabled", False
+        strategy_deployments=dict(signal_config.strategy_deployments),
+        max_single_trade_loss_policy=MaxSingleTradeLossPolicy(
+            max_loss_usd=signal_config.max_single_trade_loss_usd,
         ),
-        intrabar_enabled_strategies=intrabar_enabled_strategies,
     )
 
 
-def build_signal_policy(signal_config) -> SignalPolicy:
+def build_execution_gate_config(signal_config: "SignalConfig") -> ExecutionGateConfig:
+    return ExecutionGateConfig(
+        intrabar_trading_enabled=signal_config.intrabar_trading_enabled,
+        intrabar_enabled_strategies=frozenset(
+            s for s in signal_config.intrabar_trading_enabled_strategies if s
+        ),
+    )
+
+
+def build_signal_policy(signal_config: "SignalConfig") -> SignalPolicy:
     allowed_sessions = tuple(
         normalize_session_name(session)
         for session in signal_config.allowed_sessions.split(",")
         if session.strip()
     )
-    strategy_deployments = dict(
-        getattr(signal_config, "strategy_deployments", {}) or {}
-    )
+    strategy_deployments = dict(signal_config.strategy_deployments)
     strategy_sessions = {
         strategy_name: tuple(
             normalize_session_name(session)
@@ -281,17 +273,15 @@ def build_signal_policy(signal_config) -> SignalPolicy:
 
 
 def _validate_strategy_deployment_contracts(
-    signal_config: Any,
+    signal_config: "SignalConfig",
     strategies: Mapping[str, Any],
 ) -> dict[str, StrategyDeployment]:
     deployments = validate_strategy_deployments(
-        deployments=getattr(signal_config, "strategy_deployments", {}) or {},
+        deployments=dict(signal_config.strategy_deployments),
         known_strategies=tuple(strategies.keys()),
-        strategy_timeframes_policy=getattr(signal_config, "strategy_timeframes", {}) or {},
-        strategy_sessions_policy=getattr(signal_config, "strategy_sessions", {}) or {},
-        regime_affinity_overrides=(
-            getattr(signal_config, "regime_affinity_overrides", {}) or {}
-        ),
+        strategy_timeframes_policy=dict(signal_config.strategy_timeframes),
+        strategy_sessions_policy=dict(signal_config.strategy_sessions),
+        regime_affinity_overrides=dict(signal_config.regime_affinity_overrides),
     )
     missing_contracts = sorted(
         strategy_name for strategy_name in strategies if strategy_name not in deployments
@@ -310,7 +300,7 @@ def _validate_execution_contracts(
     deployments: Mapping[str, StrategyDeployment],
     runtime_identity: Any | None,
 ) -> None:
-    if runtime_identity is None or not bool(getattr(signal_config, "auto_trade_enabled", False)):
+    if runtime_identity is None or not signal_config.auto_trade_enabled:
         return
 
     live_executable_strategies = sorted(
@@ -353,16 +343,16 @@ def _validate_execution_contracts(
         )
 
 
-def _normalized_account_bindings(signal_config: Any) -> dict[str, set[str]]:
+def _normalized_account_bindings(
+    signal_config: "SignalConfig",
+) -> dict[str, set[str]]:
     return {
         str(alias).strip(): {
             str(strategy).strip()
             for strategy in (strategies or [])
             if str(strategy).strip()
         }
-        for alias, strategies in (
-            getattr(signal_config, "account_bindings", {}) or {}
-        ).items()
+        for alias, strategies in signal_config.account_bindings.items()
         if str(alias).strip()
     }
 
@@ -887,7 +877,7 @@ def build_signal_components(
         execution_intent_publisher = ExecutionIntentPublisher(
             write_fn=storage_writer.db.write_execution_intents,
             runtime_identity=runtime_identity,
-            account_bindings=dict(getattr(signal_config, "account_bindings", {}) or {}),
+            account_bindings=dict(signal_config.account_bindings),
             strategy_deployments=dict(validated_deployments),
             auto_trade_enabled=signal_config.auto_trade_enabled,
             pipeline_event_bus=pipeline_event_bus,
@@ -942,13 +932,15 @@ def _apply_strategy_hot_reload(signal_module: Any, signal_config: Any) -> None:
         )
 
 
-def _apply_regime_detector_hot_reload(regime_detector: Any, signal_config: Any) -> None:
+def _apply_regime_detector_hot_reload(
+    regime_detector: Any, signal_config: "SignalConfig"
+) -> None:
     """热更新 Regime 检测器阈值。"""
     try:
         regime_detector.update_thresholds(
-            adx_trending=getattr(signal_config, "regime_adx_trending_threshold", None),
-            adx_ranging=getattr(signal_config, "regime_adx_ranging_threshold", None),
-            bb_tight_pct=getattr(signal_config, "regime_bb_tight_pct", None),
+            adx_trending=signal_config.regime_adx_trending_threshold,
+            adx_ranging=signal_config.regime_adx_ranging_threshold,
+            bb_tight_pct=signal_config.regime_bb_tight_pct,
         )
         _factory_logger.info("Hot reload: regime detector thresholds updated")
     except Exception:
@@ -1046,12 +1038,8 @@ def register_signal_hot_reload(
             )
         if execution_intent_publisher is not None:
             execution_intent_publisher.update_bindings(
-                account_bindings=dict(
-                    getattr(signal_config, "account_bindings", {}) or {}
-                ),
-                strategy_deployments=dict(
-                    getattr(signal_config, "strategy_deployments", {}) or {}
-                ),
+                account_bindings=dict(signal_config.account_bindings),
+                strategy_deployments=dict(signal_config.strategy_deployments),
                 auto_trade_enabled=signal_config.auto_trade_enabled,
             )
         if pending_entry_manager is not None:

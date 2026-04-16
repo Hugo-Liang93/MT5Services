@@ -602,6 +602,7 @@ def evaluate_exit(
     atr_at_entry: float = 0.0,
     config: Optional[ChandelierConfig] = None,
     exit_spec: Optional[Dict[str, Any]] = None,
+    peak_price_at_bar_open: Optional[float] = None,
 ) -> ExitCheckResult:
     """统一出场评估入口。按 exit_spec.mode 分派：
       mode=="barrier"   → evaluate_barrier_exit（固定 TP/SL/Time）
@@ -670,38 +671,58 @@ def evaluate_exit(
     if result is not None:
         return result
 
-    # ③ Chandelier trailing + Breakeven（参数来自 regime-aware profile + TF 缩放）
+    # ③ Chandelier trailing + Breakeven
+    # Look-ahead 防护：exit 判定用 bar 开盘时已存在的 peak（peak_price_at_bar_open）
+    # 避免"本 bar 刚冲出的新高触发的 trailing SL 反手被本 bar 低点打到"假出场。
+    # new_stop_loss 返回值用当前 peak_price（含本 bar 更新）供下一 bar 使用。
+    exit_check_peak = (
+        peak_price_at_bar_open if peak_price_at_bar_open is not None else peak_price
+    )
+
+    # 用"bar 开盘前 peak"计算本 bar 实际生效的 trailing SL
+    chandelier_sl_for_check = compute_chandelier_sl(
+        action, exit_check_peak, current_atr, effective_chandelier_mult,
+    )
+    breakeven_sl_for_check, be_activated_for_check = compute_breakeven_sl(
+        action, entry_price, exit_check_peak, initial_risk,
+        profile.breakeven_r, config.breakeven_buffer_r,
+        config.min_breakeven_buffer, breakeven_already_activated,
+        lock_ratio=profile.lock_ratio,
+    )
+    sl_for_check = merge_trailing_sl(
+        action, current_stop_loss, chandelier_sl_for_check, breakeven_sl_for_check,
+    )
+
+    # 本 bar 低点/高点 vs 实际生效 SL
+    check_sl = sl_for_check if sl_for_check is not None else current_stop_loss
+    if action == "buy" and bar_low <= check_sl:
+        return ExitCheckResult(
+            should_close=True,
+            close_reason=REASON_TRAILING_STOP,
+            new_stop_loss=sl_for_check,
+            r_multiple=round(r_multiple, 4),
+            breakeven_activated=be_activated_for_check,
+        )
+    if action == "sell" and bar_high >= check_sl:
+        return ExitCheckResult(
+            should_close=True,
+            close_reason=REASON_TRAILING_STOP,
+            new_stop_loss=sl_for_check,
+            r_multiple=round(r_multiple, 4),
+            breakeven_activated=be_activated_for_check,
+        )
+
+    # 未出场 → 用"含本 bar 更新的 peak"计算下一 bar 将生效的 SL
     chandelier_sl = compute_chandelier_sl(
         action, peak_price, current_atr, effective_chandelier_mult,
     )
-
     breakeven_sl, be_activated = compute_breakeven_sl(
         action, entry_price, peak_price, initial_risk,
         profile.breakeven_r, config.breakeven_buffer_r,
         config.min_breakeven_buffer, breakeven_already_activated,
         lock_ratio=profile.lock_ratio,
     )
-
     new_sl = merge_trailing_sl(action, current_stop_loss, chandelier_sl, breakeven_sl)
-
-    # 合并后 SL 是否被当前 bar 触发？
-    check_sl = new_sl if new_sl is not None else current_stop_loss
-    if action == "buy" and bar_low <= check_sl:
-        return ExitCheckResult(
-            should_close=True,
-            close_reason=REASON_TRAILING_STOP,
-            new_stop_loss=new_sl,
-            r_multiple=round(r_multiple, 4),
-            breakeven_activated=be_activated,
-        )
-    if action == "sell" and bar_high >= check_sl:
-        return ExitCheckResult(
-            should_close=True,
-            close_reason=REASON_TRAILING_STOP,
-            new_stop_loss=new_sl,
-            r_multiple=round(r_multiple, 4),
-            breakeven_activated=be_activated,
-        )
 
     # ④ 信号反转
     if config.signal_exit_enabled and recent_signal_dirs:
@@ -739,6 +760,80 @@ def evaluate_exit(
 
 
 # ── 规则 6: 日终平仓 ────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class WeekendFlatPolicy:
+    """周末持仓强平策略契约（防周一跳空风险）。
+
+    与 `check_end_of_day` 正交：EOD 是每日固定时段平仓，WeekendFlat 是每周一次
+    在周五 UTC 指定时刻全平。两者可独立启用。
+
+    Attributes:
+        enabled: 是否启用
+        weekday: 触发工作日（0=Monday, ..., 4=Friday, 6=Sunday）。默认 Friday
+        hour_utc: UTC 小时（0-23）。默认 20（XAUUSD 尾盘流动性变薄前）
+        minute_utc: UTC 分钟（0-59）
+
+    Raises:
+        ValueError: weekday / hour / minute 越界
+    """
+
+    enabled: bool
+    weekday: int = 4
+    hour_utc: int = 20
+    minute_utc: int = 0
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.weekday <= 6:
+            raise ValueError(f"weekday must be 0-6, got {self.weekday}")
+        if not 0 <= self.hour_utc < 24:
+            raise ValueError(f"hour_utc must be 0-23, got {self.hour_utc}")
+        if not 0 <= self.minute_utc < 60:
+            raise ValueError(f"minute_utc must be 0-59, got {self.minute_utc}")
+
+
+def check_weekend_flat(
+    current_time: datetime,
+    policy: WeekendFlatPolicy,
+    last_flat_date: Optional[str],
+) -> bool:
+    """判断是否到达周末强平时刻。
+
+    触发条件（全部成立）：
+      1. policy.enabled
+      2. current_time.weekday() == policy.weekday
+      3. current_time >= policy.hour_utc:policy.minute_utc
+      4. last_flat_date != 当前日期（防重复触发）
+
+    Args:
+        current_time: 当前时刻
+        policy: 策略契约
+        last_flat_date: 上次执行周末强平的日期 ISO 字符串（None = 从未）
+
+    Returns:
+        True = 应平仓所有持仓
+    """
+    if not policy.enabled:
+        return False
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    else:
+        current_time = current_time.astimezone(timezone.utc)
+    if current_time.weekday() != policy.weekday:
+        return False
+    trigger = current_time.replace(
+        hour=policy.hour_utc,
+        minute=policy.minute_utc,
+        second=0,
+        microsecond=0,
+    )
+    if current_time < trigger:
+        return False
+    day_key = current_time.date().isoformat()
+    if last_flat_date == day_key:
+        return False
+    return True
 
 
 def check_end_of_day(

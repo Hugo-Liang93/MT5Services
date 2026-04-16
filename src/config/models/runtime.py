@@ -140,6 +140,10 @@ class EconomicConfig(BaseModel):
     # 品种相关性过滤：非直接相关事件 importance 自动降 1 级
     trade_guard_relevance_filter_enabled: bool = False
     gold_impact_keywords: str = ""
+    # DB 事件 category 字段白名单（逗号分隔）。事件 category 命中任一值 →
+    # 直接视为与黄金相关（无需关键词匹配，大小写不敏感）。用于补齐关键词
+    # 易漏的长尾事件类型（如"Central Bank Speech"/"Monetary Policy"）。
+    gold_impact_categories: str = ""
     tradingeconomics_enabled: bool = True
     tradingeconomics_api_key: str | None = None
     fred_enabled: bool = True

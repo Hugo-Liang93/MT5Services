@@ -46,9 +46,7 @@ class BackgroundIngestor:
         self._symbol_cursor = 0
         # MT5 调用可能因连接冻结而无限期阻塞；用单线程 executor 提交并设置超时，
         # 超时后主循环继续，abandoned future 的底层线程最终自行结束。
-        self._fetch_timeout: float = float(
-            getattr(ingest_settings, "connection_timeout", 10.0) or 10.0
-        )
+        self._fetch_timeout: float = float(ingest_settings.connection_timeout)
         self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
         )
@@ -56,14 +54,10 @@ class BackgroundIngestor:
         # 进入指数退避冷却期，防止 MT5 网络抖动时日志被刷爆。
         # 退避公式：cooldown = base × 2^(retry_count - 1)，上限 max_cooldown
         # 参数从 ingest.ini [error_recovery] 或 [ingest] section 加载。
-        self._symbol_error_threshold = int(
-            getattr(ingest_settings, "symbol_error_threshold", 5) or 5
-        )
-        self._symbol_cooldown_seconds = float(
-            getattr(ingest_settings, "symbol_cooldown_seconds", 60.0) or 60.0
-        )
+        self._symbol_error_threshold = int(ingest_settings.symbol_error_threshold)
+        self._symbol_cooldown_seconds = float(ingest_settings.symbol_cooldown_seconds)
         self._symbol_max_cooldown_seconds = float(
-            getattr(ingest_settings, "symbol_max_cooldown_seconds", 300.0) or 300.0
+            ingest_settings.symbol_max_cooldown_seconds
         )
         self._symbol_error_counts: Dict[str, int] = {}
         self._symbol_backoff_until: Dict[str, float] = {}

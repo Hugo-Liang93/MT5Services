@@ -57,6 +57,8 @@ class PredictivePowerConfig:
     min_ir_threshold: float = 0.5
     permutation_test_enabled: bool = True
     n_permutations: int = 1000
+    # 并行进程数：1 = 串行；>1 = multiprocessing。典型值为 cpu_count - 1
+    permutation_workers: int = 1
 
 
 @dataclass(frozen=True)
@@ -160,6 +162,7 @@ def load_research_config() -> ResearchConfig:
                 "predictive_power", "permutation_test_enabled", True
             ),
             n_permutations=_getint("predictive_power", "n_permutations", 1000),
+            permutation_workers=_getint("predictive_power", "permutation_workers", 1),
         ),
         rule_mining=RuleMiningConfig(
             max_depth=_getint("rule_mining", "max_depth", 3),

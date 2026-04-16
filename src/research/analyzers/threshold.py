@@ -150,7 +150,10 @@ def _sweep_single_horizon(
 
     if ts_cfg.n_permutations > 0:
         fwd_vals = [p[1] for p in train_pairs]
-        adaptive_bs = auto_block_size(fwd_vals)
+        # 优先复用 DataMatrix 预计算的 block_size，避免重复 ACF 计算
+        adaptive_bs = matrix.forward_return_block_sizes.get(forward_bars)
+        if adaptive_bs is None:
+            adaptive_bs = auto_block_size(fwd_vals)
 
         if best_buy is not None:
             best_buy_score = _metric_score(best_buy, ts_cfg.target_metric)

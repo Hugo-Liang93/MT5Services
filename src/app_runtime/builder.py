@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from src.app_runtime.container import AppContainer
+
+if TYPE_CHECKING:
+    from src.config.models.signal import SignalConfig
 from src.app_runtime.builder_phases import (
     build_account_runtime_layer,
     build_market_layer,
@@ -37,70 +40,59 @@ def _enum_or_raw(value: Any) -> str:
     return getattr(value, "value", value)
 
 
-def _iter_spread_cost_sanity_issues(signal_config: Any) -> list[str]:
-    base_spread = float(getattr(signal_config, "base_spread_points", 0.0) or 0.0)
+def _iter_spread_cost_sanity_issues(signal_config: "SignalConfig") -> list[str]:
+    """检查 spread/cost 配置一致性。base_spread=0 视为未启用检查。"""
+    base_spread = signal_config.base_spread_points
     if base_spread <= 0:
         return []
 
     issues: list[str] = []
-    max_spread_points = getattr(signal_config, "max_spread_points", None)
-    if max_spread_points is not None:
-        global_cap = float(max_spread_points or 0.0)
-        if global_cap > 0 and global_cap < base_spread:
-            issues.append(
-                "global spread cap is below baseline spread "
-                f"(max_spread_points={global_cap:.1f} < base_spread_points={base_spread:.1f})"
-            )
+    global_cap = signal_config.max_spread_points
+    if global_cap > 0 and global_cap < base_spread:
+        issues.append(
+            "global spread cap is below baseline spread "
+            f"(max_spread_points={global_cap:.1f} < base_spread_points={base_spread:.1f})"
+        )
 
-    session_limits = getattr(signal_config, "session_spread_limits", {}) or {}
-    if isinstance(session_limits, dict):
-        too_tight_sessions = {
-            session: float(limit)
-            for session, limit in session_limits.items()
-            if limit is not None and float(limit) > 0 and float(limit) < base_spread
-        }
-        if too_tight_sessions:
-            details = ", ".join(
-                f"{session}={limit:.1f}"
-                for session, limit in sorted(too_tight_sessions.items())
-            )
-            issues.append(
-                "session spread cap is below baseline spread "
-                f"(base_spread_points={base_spread:.1f}; {details})"
-            )
+    too_tight_sessions = {
+        session: limit
+        for session, limit in signal_config.session_spread_limits.items()
+        if limit > 0 and limit < base_spread
+    }
+    if too_tight_sessions:
+        details = ", ".join(
+            f"{session}={limit:.1f}"
+            for session, limit in sorted(too_tight_sessions.items())
+        )
+        issues.append(
+            "session spread cap is below baseline spread "
+            f"(base_spread_points={base_spread:.1f}; {details})"
+        )
 
     return issues
 
 
-def _log_spread_cost_sanity(signal_config: Any) -> None:
-    base_spread = float(getattr(signal_config, "base_spread_points", 0.0) or 0.0)
+def _log_spread_cost_sanity(signal_config: "SignalConfig") -> None:
+    """对入口成本门槛做一致性检查。base_spread=0 视为未启用该检查。"""
+    base_spread = signal_config.base_spread_points
     if base_spread <= 0:
         return
 
-    max_spread_to_stop_ratio = float(
-        getattr(signal_config, "max_spread_to_stop_ratio", 0.0) or 0.0
-    )
-    max_spread_points = getattr(signal_config, "max_spread_points", None)
-    min_stop_from_base = None
-    min_stop_from_cap = None
+    max_spread_to_stop_ratio = signal_config.max_spread_to_stop_ratio
+    global_cap = signal_config.max_spread_points
+    min_stop_from_base: float | None = None
+    min_stop_from_cap: float | None = None
     if max_spread_to_stop_ratio > 0:
         min_stop_from_base = round(base_spread / max_spread_to_stop_ratio, 1)
-        if max_spread_points is not None and float(max_spread_points or 0.0) > 0:
-            min_stop_from_cap = round(
-                float(max_spread_points) / max_spread_to_stop_ratio,
-                1,
-            )
+        if global_cap > 0:
+            min_stop_from_cap = round(global_cap / max_spread_to_stop_ratio, 1)
 
     logger.info(
         "Execution cost gates: base_spread=%.1f, max_spread_points=%s, "
         "max_spread_to_stop_ratio=%.2f, min_stop_points_from_base=%s, "
         "min_stop_points_from_cap=%s",
         base_spread,
-        (
-            f"{float(max_spread_points):.1f}"
-            if max_spread_points is not None and float(max_spread_points or 0.0) > 0
-            else "n/a"
-        ),
+        f"{global_cap:.1f}" if global_cap > 0 else "n/a",
         max_spread_to_stop_ratio,
         f"{min_stop_from_base:.1f}" if min_stop_from_base is not None else "n/a",
         f"{min_stop_from_cap:.1f}" if min_stop_from_cap is not None else "n/a",

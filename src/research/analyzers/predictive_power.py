@@ -33,9 +33,9 @@ from ..core.config import OverfittingConfig, PredictivePowerConfig
 from ..core.data_matrix import DataMatrix
 from ..core.contracts import IndicatorPredictiveResult, RollingICResult
 from ..core.overfitting import benjamini_hochberg_fdr, check_significance
+from ..core.permutation import PermutationTestSpec, run_permutation_test
 from ..core.statistics import (
     auto_block_size,
-    block_shuffle,
     effective_n_for_overlapping_windows,
     minimum_detectable_ic,
 )
@@ -101,6 +101,7 @@ def analyze_predictive_power(
                     regime_filter=regime_filter,
                     indicator_values=series,
                     forward_returns=fwd,
+                    block_size_override=matrix.forward_return_block_sizes.get(horizon),
                     regimes=matrix.regimes,
                     idx_range=idx_range,
                     of_cfg=of_cfg,
@@ -126,6 +127,7 @@ def _compute_single(
     regime_filter: Optional[str],
     indicator_values: List[Optional[float]],
     forward_returns: List[Optional[float]],
+    block_size_override: Optional[int],
     regimes: List[RegimeType],
     idx_range: range,
     of_cfg: OverfittingConfig,
@@ -164,8 +166,11 @@ def _compute_single(
     except Exception:
         spearman_rho, spearman_p = 0.0, 1.0
 
-    # 取两个检验中较小的 p-value，× 2 校正多重检验（Bonferroni on 2 tests）
-    p_value = min(min(pearson_p, spearman_p) * 2.0, 1.0)
+    # raw p-value（取 pearson / spearman 较小者）
+    # 不在此处做 Bonferroni 预校正——多重检验由下游 _apply_batch_correction 统一
+    # 处理（BH-FDR 或 Bonferroni 二选一）。预先 ×2 会导致"启用排列检验时无害、
+    # 禁用排列检验时 double correction"的语义歧义。
+    p_value = min(pearson_p, spearman_p)
 
     # 方向命中率
     median_ind = _median(ind_vals)
@@ -194,17 +199,25 @@ def _compute_single(
             ind_vals, fwd_vals, window_size=pp_cfg.rolling_ic_window
         )
 
-    # 排列检验（可选）— 使用自适应 block size
+    # 排列检验（可选）— block size 优先复用 DataMatrix 预计算缓存，缺失才重算
     permutation_p: Optional[float] = None
     if pp_cfg.permutation_test_enabled:
-        adaptive_bs = auto_block_size(fwd_vals)
-        permutation_p = _permutation_test_ic(
-            ind_vals,
-            fwd_vals,
-            ic,
+        adaptive_bs = (
+            block_size_override
+            if block_size_override is not None
+            else auto_block_size(fwd_vals)
+        )
+        spec = PermutationTestSpec(
+            ind_vals=tuple(ind_vals),
+            fwd_vals=tuple(fwd_vals),
+            observed_ic=ic,
             n_permutations=pp_cfg.n_permutations,
             block_size=adaptive_bs,
+            seed=42,
         )
+        permutation_p = run_permutation_test(
+            spec, workers=pp_cfg.permutation_workers,
+        ).p_value
 
     # L6: 统计效力 — 报告给定样本量可检测的最小 IC
     min_ic = minimum_detectable_ic(n, alpha=pp_cfg.significance_level)
@@ -368,38 +381,6 @@ def _compute_rolling_ic(
 
 
 # ── 排列检验（自适应 block size）──────────────────────────────
-
-
-def _permutation_test_ic(
-    ind_vals: List[float],
-    fwd_vals: List[float],
-    observed_ic: float,
-    n_permutations: int = 1000,
-    seed: int = 42,
-    block_size: int = 10,
-) -> float:
-    """Block permutation 检验：按块打乱 forward_returns，保留局部自相关。
-
-    block_size 应由 auto_block_size() 根据数据的 ACF 衰减自适应确定，
-    而非硬编码。
-
-    Returns:
-        p-value: |permuted_ic| >= |observed_ic| 的比例
-    """
-    rng = random.Random(seed)
-    abs_observed = abs(observed_ic)
-    count_ge = 0
-
-    for _ in range(n_permutations):
-        shuffled = block_shuffle(fwd_vals, block_size, rng)
-        try:
-            rho, _ = scipy_stats.spearmanr(ind_vals, shuffled)
-            if abs(rho) >= abs_observed:
-                count_ge += 1
-        except Exception:
-            continue
-
-    return count_ge / max(n_permutations, 1)
 
 
 # ── 工具函数 ──────────────────────────────────────────────────

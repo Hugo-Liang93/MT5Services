@@ -186,10 +186,15 @@ def test_backfill_writes_closed_bars_into_cache_and_event_flow() -> None:
             write_ohlc=lambda rows, upsert=True: writes.append((list(rows), upsert)),
         )
     )
+    # 使用完整契约字段（IngestSettings Pydantic 模型）。测试桩不得省略契约必填项。
     settings = SimpleNamespace(
         ingest_symbols=["XAUUSD"],
         ingest_ohlc_timeframes=["M1"],
         ohlc_backfill_limit=10,
+        connection_timeout=10.0,
+        symbol_error_threshold=5,
+        symbol_cooldown_seconds=60.0,
+        symbol_max_cooldown_seconds=300.0,
     )
 
     psycopg2_stub = SimpleNamespace(
@@ -468,10 +473,19 @@ def test_indicator_manager_avoids_recomputing_priority_indicators_in_full_confir
             on_level_complete({"ema50": {"ema": 200.0}}, payload)
         return payload
 
+    class _BarService:
+        """Stub 模拟 MarketDataService.get_ohlc_window 返回指定 bar 序列。"""
+
+        def get_ohlc_window(self, symbol, timeframe, end_time, limit):
+            return [_bar(3), _bar(4)]
+
+        def get_ohlc_closed(self, symbol, timeframe, limit):
+            return [_bar(3), _bar(4)]
+
     manager = _new_manager_stub()
     manager.pipeline = SimpleNamespace(compute_staged=compute_staged)
     manager.state.priority_indicator_groups = (("rsi14",),)
-    manager._load_confirmed_bars = lambda symbol, timeframe, bar_time=None: [_bar(3), _bar(4)]
+    manager.market_service = _BarService()
     manager._select_indicator_names_for_history = (
         lambda available_bars, indicator_names=None: list(indicator_names) if indicator_names else ["rsi14", "ema50"]
     )

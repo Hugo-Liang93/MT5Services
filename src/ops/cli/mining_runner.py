@@ -40,6 +40,22 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
+def _run_single_packed(
+    args: tuple,
+) -> dict:
+    """ProcessPool 友好的 _run_single 包装（参数解包 + 环境重设）。
+
+    子进程中必须重新调用 set_current_environment，因为环境状态是 module-level 全局。
+    """
+    tf, start, end, analyses, indicator_filter, environment = args
+    from src.config.instance_context import set_current_environment
+
+    set_current_environment(environment)
+    return _run_single(
+        tf, start, end, analyses=analyses, indicator_filter=indicator_filter,
+    )
+
+
 def _run_single(
     tf: str,
     start: str,
@@ -563,6 +579,16 @@ def main() -> None:
         help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help=(
+            "Parallel TF workers (ProcessPool). 1 = serial (default). "
+            "N > 1 spawns N processes, one MiningRunner per TF. "
+            "Typical: set to min(len(tfs), cpu_count-1) for full utilization."
+        ),
+    )
+    parser.add_argument(
         "--json-output",
         default=None,
         help="Write JSON payload (results + optional candidates) to file",
@@ -594,20 +620,40 @@ def main() -> None:
         auto_backfill=not args.no_auto_backfill,
     )
 
+    if args.workers < 1:
+        raise ValueError(f"--workers must be >= 1, got {args.workers}")
+
     results = []
     raw_results = {}  # tf → MiningResult（用于跨 TF 分析）
-    for tf in tfs:
-        data = _run_single(
-            tf,
-            args.start,
-            args.end,
-            analyses=analyses,
-            indicator_filter=indicator_filter,
-        )
-        results.append(data)
-        # 保存原始 MiningResult 用于跨 TF 分析
-        if "_raw_result" in data:
-            raw_results[tf] = data.pop("_raw_result")
+    if args.workers == 1 or len(tfs) == 1:
+        for tf in tfs:
+            data = _run_single(
+                tf,
+                args.start,
+                args.end,
+                analyses=analyses,
+                indicator_filter=indicator_filter,
+            )
+            results.append(data)
+            if "_raw_result" in data:
+                raw_results[tf] = data.pop("_raw_result")
+    else:
+        # 并行：每个 TF 一个进程。ProcessPool 自动 pickle MiningResult 回传。
+        import multiprocessing as _mp
+        from concurrent.futures import ProcessPoolExecutor as _Pool
+
+        max_workers = min(args.workers, len(tfs))
+        ctx = _mp.get_context("spawn")
+        tasks = [
+            (tf, args.start, args.end, analyses, indicator_filter, args.environment)
+            for tf in tfs
+        ]
+        with _Pool(max_workers=max_workers, mp_context=ctx) as pool:
+            # 保持 tf 顺序：按 tfs 列表顺序收集
+            for tf, data in zip(tfs, pool.map(_run_single_packed, tasks)):
+                results.append(data)
+                if "_raw_result" in data:
+                    raw_results[tf] = data.pop("_raw_result")
 
     output_payload: Dict[str, Any] = {
         "symbol": "XAUUSD",

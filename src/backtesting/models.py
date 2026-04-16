@@ -118,6 +118,22 @@ class RiskConfig:
     daily_loss_limit_pct: Optional[float] = None
     max_trades_per_day: Optional[int] = None
     max_trades_per_hour: Optional[int] = None
+    # 动态 spread 建模（XAUUSD 时段差异大：亚盘 ~15pt / 欧盘 ~18pt / 美盘 ~22pt / 高波动 ×2+）
+    # 启用后，开平仓各扣一半 spread，并可叠加 slippage_points 作为非 spread 类滑点
+    dynamic_spread_enabled: bool = False
+    spread_base_points: float = 15.0
+    spread_london_mult: float = 1.2
+    spread_ny_mult: float = 1.3
+    spread_asia_mult: float = 1.0
+    # 高波动放大：当前 ATR / 参考 ATR 超阈值则 spread × spread_volatility_mult
+    spread_volatility_threshold: float = 1.8
+    spread_volatility_mult: float = 2.0
+    # Overnight swap（XAUUSD 每 lot 每日 USD，过夜日 UTC 21:00 触发）
+    swap_enabled: bool = False
+    swap_long_per_lot: float = -0.3
+    swap_short_per_lot: float = 0.15
+    swap_wednesday_triple: bool = True
+    swap_charge_hour_utc: int = 21
 
 
 @dataclass(frozen=True)
@@ -225,6 +241,18 @@ _FLAT_FIELD_MAP: Dict[str, Tuple[str, str]] = {
     "daily_loss_limit_pct": ("risk", "daily_loss_limit_pct"),
     "max_trades_per_day": ("risk", "max_trades_per_day"),
     "max_trades_per_hour": ("risk", "max_trades_per_hour"),
+    "dynamic_spread_enabled": ("risk", "dynamic_spread_enabled"),
+    "spread_base_points": ("risk", "spread_base_points"),
+    "spread_london_mult": ("risk", "spread_london_mult"),
+    "spread_ny_mult": ("risk", "spread_ny_mult"),
+    "spread_asia_mult": ("risk", "spread_asia_mult"),
+    "spread_volatility_threshold": ("risk", "spread_volatility_threshold"),
+    "spread_volatility_mult": ("risk", "spread_volatility_mult"),
+    "swap_enabled": ("risk", "swap_enabled"),
+    "swap_long_per_lot": ("risk", "swap_long_per_lot"),
+    "swap_short_per_lot": ("risk", "swap_short_per_lot"),
+    "swap_wednesday_triple": ("risk", "swap_wednesday_triple"),
+    "swap_charge_hour_utc": ("risk", "swap_charge_hour_utc"),
     # FilterConfig
     "filters_enabled": ("filters", "enabled"),
     "filter_session_enabled": ("filters", "session_enabled"),
@@ -367,8 +395,9 @@ class TradeRecord:
     regime: str
     confidence: float
     exit_reason: str  # "take_profit" | "stop_loss" | "signal_exit" | "end_of_test"
-    slippage_cost: float = 0.0  # 开仓+平仓滑点总成本
+    slippage_cost: float = 0.0  # 开仓+平仓滑点/spread 总成本（USD）
     commission_cost: float = 0.0  # 手续费总成本
+    swap_cost: float = 0.0  # 过夜利息累计（USD，负数表示支付）
 
 
 @dataclass(frozen=True)

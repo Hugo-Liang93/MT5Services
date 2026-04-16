@@ -74,6 +74,23 @@ def evaluate_strategies(
     decisions: List[SignalDecision] = []
     for strategy_name in engine._target_strategies:
         try:
+            # ── Deployment gate：与实盘 PreTradePipeline 同契约 ─────────
+            deployment = engine._strategy_deployments.get(strategy_name)
+            if deployment is not None:
+                # CANDIDATE 已在 _target_strategies 过滤；此处复查兜底 + 处理
+                # locked_timeframes / locked_sessions 这类运行期约束
+                if not deployment.allows_runtime_evaluation():
+                    continue
+                if deployment.locked_timeframes:
+                    tf_upper = (timeframe or "").strip().upper()
+                    if tf_upper not in deployment.locked_timeframes:
+                        continue
+                if deployment.locked_sessions and current_sessions:
+                    if not any(
+                        s in deployment.locked_sessions for s in current_sessions
+                    ):
+                        continue
+
             allowed_sessions = engine._strategy_sessions.get(strategy_name, ())
             if allowed_sessions and current_sessions:
                 if not any(s in allowed_sessions for s in current_sessions):
@@ -185,6 +202,18 @@ def process_decision(
         if pos.strategy == decision.strategy and pos.direction == decision.direction:
             return
 
+    # ── Deployment gate：max_live_positions / require_pending_entry ─
+    deployment = engine._strategy_deployments.get(decision.strategy)
+    if deployment is not None and deployment.max_live_positions is not None:
+        strategy_open = sum(
+            1
+            for pos in engine._portfolio._open_positions
+            if pos.strategy == decision.strategy
+        )
+        if strategy_open >= deployment.max_live_positions:
+            engine.record_execution_rejection("deployment_max_live_positions")
+            return
+
     atr_value = indicators.get("atr14", {}).get("atr", 0.0)
     if atr_value <= 0:
         return
@@ -193,8 +222,25 @@ def process_decision(
         entry_spec = decision.metadata.get(MK.ENTRY_SPEC, {})
         entry_type = entry_spec.get("entry_type", "market")
 
+        # require_pending_entry：部署要求 pending 但策略输出 market → 拒绝
+        if (
+            deployment is not None
+            and deployment.require_pending_entry
+            and entry_type == "market"
+        ):
+            engine.record_execution_rejection("deployment_requires_pending_entry")
+            return
+
         if entry_type == "market":
             # 市价策略：跳过 pending，直接在 bar.close 入场
+            execute_entry(engine, decision, bar, bar_index, atr_value, regime, indicators)
+            return
+
+        if entry_type not in ("limit", "stop"):
+            logger.warning(
+                "Unknown entry_type %s for %s, fallback to market",
+                entry_type, decision.strategy,
+            )
             execute_entry(engine, decision, bar, bar_index, atr_value, regime, indicators)
             return
 
@@ -208,10 +254,53 @@ def process_decision(
 
         expiry_bar = bar_index + engine._config.pending_entry.expiry_bars
         key = f"{decision.strategy}_{decision.direction}"
-        engine._pending_entries[key] = (decision, entry_low, entry_high, expiry_bar)
+        engine._pending_entries[key] = (
+            decision, entry_type, entry_low, entry_high, expiry_bar,
+        )
         return
 
     execute_entry(engine, decision, bar, bar_index, atr_value, regime, indicators)
+
+
+def _resolve_pending_fill(
+    direction: str,
+    entry_type: str,
+    entry_low: float,
+    entry_high: float,
+    bar: OHLC,
+) -> Optional[float]:
+    """按 direction + entry_type 判触发方向并返回真实可成交价格。
+
+    避免用 bar.close 成交造成的 look-ahead：pending 必须按其挂单语义在
+    "第一次触及触发边界"的价格成交；若 bar 开盘已越过该边界（跳空），
+    则按 bar.open 成交（realistic broker fill）。
+
+    返回 None 表示本 bar 未触发。
+
+    | direction | entry_type | 触发边界        | 触发条件             | 成交价            |
+    |-----------|------------|-----------------|----------------------|-------------------|
+    | buy       | limit      | entry_high (上) | bar.low  <= entry_high | min(open, high-edge) |
+    | buy       | stop       | entry_low  (下) | bar.high >= entry_low  | max(open, low-edge)  |
+    | sell      | limit      | entry_low  (下) | bar.high >= entry_low  | max(open, low-edge)  |
+    | sell      | stop       | entry_high (上) | bar.low  <= entry_high | min(open, high-edge) |
+    """
+    # buy-limit / sell-stop 共享"从上方下穿 entry_high"的触发语义
+    if (direction == "buy" and entry_type == "limit") or (
+        direction == "sell" and entry_type == "stop"
+    ):
+        if bar.low > entry_high:
+            return None
+        return min(bar.open, entry_high)
+
+    # buy-stop / sell-limit 共享"从下方上穿 entry_low"的触发语义
+    if (direction == "buy" and entry_type == "stop") or (
+        direction == "sell" and entry_type == "limit"
+    ):
+        if bar.high < entry_low:
+            return None
+        return max(bar.open, entry_low)
+
+    return None
 
 
 def check_pending_entries(
@@ -225,7 +314,9 @@ def check_pending_entries(
         return
 
     filled_keys: List[str] = []
-    for key, (decision, entry_low, entry_high, expiry_bar) in engine._pending_entries.items():
+    for key, (
+        decision, entry_type, entry_low, entry_high, expiry_bar,
+    ) in engine._pending_entries.items():
         if bar_index > expiry_bar:
             logger.debug(
                 "Pending entry expired: %s %s at bar %d (expiry=%d)",
@@ -234,11 +325,16 @@ def check_pending_entries(
             filled_keys.append(key)
             continue
 
-        price_in_zone = bar.low <= entry_high and bar.high >= entry_low
-        if price_in_zone:
+        fill_price = _resolve_pending_fill(
+            decision.direction, entry_type, entry_low, entry_high, bar,
+        )
+        if fill_price is not None:
             atr_value = indicators.get("atr14", {}).get("atr", 0.0)
             if atr_value > 0:
-                execute_entry(engine, decision, bar, bar_index, atr_value, regime, indicators)
+                execute_entry(
+                    engine, decision, bar, bar_index, atr_value, regime,
+                    indicators, fill_price=fill_price,
+                )
             filled_keys.append(key)
 
     for key in filled_keys:
@@ -253,16 +349,20 @@ def execute_entry(
     atr_value: float,
     regime: RegimeType,
     indicators: Dict[str, Dict[str, Any]] | None = None,
+    fill_price: Optional[float] = None,
 ) -> None:
     del indicators
     pos = engine._config.position
     # 策略 exit_spec 可覆盖全局 SL/TP 倍数（回测默认 1.5 / 3.0）
     _exit_spec = decision.metadata.get(MK.EXIT_SPEC, {})
 
+    # Pending 单按挂单触发边界成交，market 单仍用 bar.close
+    effective_price = float(fill_price) if fill_price is not None else bar.close
+
     try:
         trade_params = compute_trade_params(
             action=decision.direction,
-            current_price=bar.close,
+            current_price=effective_price,
             atr_value=atr_value,
             account_balance=engine._portfolio.current_balance,
             timeframe=engine._config.timeframe,
@@ -333,6 +433,7 @@ def execute_entry(
         strategy_category=strategy_category,
         timeframe=engine._config.timeframe,
         exit_spec=_exit_spec or None,
+        fill_price=fill_price,
     )
     if opened:
         engine.record_entry_acceptance()

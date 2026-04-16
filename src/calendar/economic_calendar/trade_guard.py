@@ -5,6 +5,35 @@ from typing import Any, Dict, List, Optional
 
 from src.clients.economic_calendar import EconomicCalendarEvent
 
+from .gold_relevance import (
+    EventRelevanceMatcher,
+    EventSummary,
+    GoldRelevancePolicy,
+    build_relevance_matcher,
+)
+
+
+def _build_relevance_matcher_from_settings(settings: Any) -> Optional[EventRelevanceMatcher]:
+    """从 settings 契约构造相关性匹配器。
+
+    settings 必须提供三个字段：
+      - trade_guard_relevance_filter_enabled: bool
+      - gold_impact_keywords: str (CSV)
+      - gold_impact_categories: str (CSV)
+
+    设计：
+      - relevance_filter 未启用 → 返回 None（不过滤）
+      - 启用但 policy 为空 → raise ValueError（配置矛盾，调用方应修复配置）
+      - 启用且 policy 非空 → 返回 matcher
+    """
+    if not settings.trade_guard_relevance_filter_enabled:
+        return None
+    policy = GoldRelevancePolicy.from_csv(
+        keywords_csv=settings.gold_impact_keywords,
+        categories_csv=settings.gold_impact_categories,
+    )
+    return build_relevance_matcher(policy)
+
 _CURRENCY_TO_COUNTRY = {
     "AUD": "Australia",
     "CAD": "Canada",
@@ -73,6 +102,7 @@ def build_window(service, event: EconomicCalendarEvent) -> Dict[str, Any]:
         "source": event.source,
         "country": event.country,
         "currency": event.currency,
+        "category": getattr(event, "category", None),
         "importance": event.importance,
         "session_bucket": event.session_bucket,
         "window_start": window_start.isoformat(),
@@ -138,6 +168,9 @@ def merge_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "sources": sorted({window["source"]} if window["source"] else set()),
                     "countries": sorted({window["country"]} if window["country"] else set()),
                     "currencies": sorted({window["currency"]} if window["currency"] else set()),
+                    "categories": sorted(
+                        {window.get("category")} if window.get("category") else set()
+                    ),
                     "sessions": sorted({window["session_bucket"]} if window["session_bucket"] else set()),
                     "max_importance": window["importance"],
                 }
@@ -154,6 +187,10 @@ def merge_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             current["countries"] = sorted(set(current["countries"]) | {window["country"]})
         if window["currency"]:
             current["currencies"] = sorted(set(current["currencies"]) | {window["currency"]})
+        if window.get("category"):
+            current["categories"] = sorted(
+                set(current.get("categories", [])) | {window["category"]}
+            )
         if window["session_bucket"]:
             current["sessions"] = sorted(set(current["sessions"]) | {window["session_bucket"]})
         if window["importance"] is not None:
@@ -172,6 +209,7 @@ def merge_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "sources": item["sources"],
             "countries": item["countries"],
             "currencies": item["currencies"],
+            "categories": item.get("categories", []),
             "sessions": item["sessions"],
             "max_importance": item["max_importance"],
         }
@@ -244,27 +282,33 @@ def get_trade_guard(
         if evaluation_time < datetime.fromisoformat(window["window_start"])
     ]
     # 品种相关性过滤：非直接相关事件 importance 降 1 级
-    relevance_enabled = getattr(
-        service.settings, "trade_guard_relevance_filter_enabled", False
-    )
-    gold_keywords: list[str] = []
-    if relevance_enabled:
-        raw_kw = getattr(service.settings, "gold_impact_keywords", "")
-        gold_keywords = [k.strip().lower() for k in str(raw_kw).split(",") if k.strip()]
+    matcher = _build_relevance_matcher_from_settings(service.settings)
 
     def _effective_importance(window: Dict[str, Any]) -> int:
         raw_imp = window.get("max_importance") or 0
-        if not relevance_enabled or not gold_keywords:
+        if matcher is None:
             return raw_imp
-        # 合并窗口可能包含多个事件名（event_names 列表）
-        names = window.get("event_names") or []
+        # merge_windows 已聚合 event_names + categories（多事件合并窗口）；
+        # 任一 (name, category) 组合被判定相关即视为相关窗口。
+        names: List[str] = list(window.get("event_names") or [])
         if not names:
-            single = window.get("event_name") or ""
-            names = [single] if single else []
-        combined = " ".join(str(n) for n in names).lower()
-        if any(kw in combined for kw in gold_keywords):
-            return raw_imp  # 匹配 → 保持原始 importance
-        return max(0, raw_imp - 1)  # 不匹配 → 降 1 级
+            single = window.get("event_name")
+            if single:
+                names = [str(single)]
+        categories: List[Optional[str]] = [
+            str(c) for c in (window.get("categories") or [])
+        ]
+        if not categories:
+            categories = [None]
+        for name in names:
+            for cat in categories:
+                try:
+                    event = EventSummary(name=name, category=cat)
+                except ValueError:
+                    continue  # name 空串等非法输入不算相关
+                if matcher.is_relevant(event):
+                    return raw_imp
+        return max(0, raw_imp - 1)
 
     # 分级压制：区分 block 和 warn
     block_min: int = service.settings.trade_guard_block_importance_min

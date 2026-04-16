@@ -84,6 +84,14 @@ class DataMatrix:
     )
     barrier_configs: tuple[BarrierConfig, ...] = ()
 
+    # 经济事件时间线（UTC datetime 升序），供 bars_to/since_high_impact 特征使用。
+    # 仅包含 importance >= high_impact_threshold 的事件。
+    high_impact_event_times: Tuple[datetime, ...] = ()
+
+    # 每个 forward_horizon 对应的 ACF 自适应 block_size（供排列检验复用，避免重算）。
+    # key = horizon_bars；value = auto_block_size(forward_returns[horizon]) 结果。
+    forward_return_block_sizes: Dict[int, int] = field(default_factory=dict)
+
     def train_slice(self) -> range:
         """训练集索引范围（不含 gap）。"""
         return range(0, self.train_end_idx)
@@ -108,6 +116,7 @@ def build_data_matrix(
     round_trip_cost_pct: float = 0.0,
     components: Optional[Dict[str, Any]] = None,
     barrier_configs: Optional[tuple[BarrierConfig, ...]] = None,
+    high_impact_event_times: Optional[Tuple[datetime, ...]] = None,
 ) -> DataMatrix:
     """构建 DataMatrix。
 
@@ -279,8 +288,26 @@ def build_data_matrix(
                 series.append(None)
         indicator_series[key] = series
 
-    # Train/test 分割（加 gap 防止 forward_return 信息泄露）
-    max_horizon = max(forward_horizons) if forward_horizons else 1
+    # Train/test 分割（加 gap 防止 forward_return + barrier outcome 信息泄露）
+    #
+    # 泄漏分析（train 最后一个样本 i = train_end_idx - 1）：
+    #   forward_return[h]: 用到 closes[i + h] = closes[train_end_idx - 1 + h]
+    #     → 需 split_idx > train_end_idx - 1 + max_forward
+    #     → split_idx >= train_end_idx + max_forward
+    #   barrier_return: entry_idx = i + 1, 扫描 [i+2, i+1+time_bars]
+    #     → 最远访问 closes[train_end_idx + time_bars]
+    #     → 需 split_idx > train_end_idx + max_barrier_time
+    #     → split_idx >= train_end_idx + max_barrier_time + 1  (barrier 的 +1 偏移)
+    #
+    # 因此 gap 必须 ≥ max(max_forward, max_barrier_time + 1)。
+    max_forward = max(forward_horizons) if forward_horizons else 1
+    effective_barriers_for_gap: tuple[BarrierConfig, ...] = (
+        barrier_configs if barrier_configs is not None else DEFAULT_BARRIER_CONFIGS
+    )
+    max_barrier_time = max(
+        (cfg.time_bars for cfg in effective_barriers_for_gap), default=0
+    )
+    max_horizon = max(max_forward, max_barrier_time + 1)
     train_end_idx = max(1, int(n * train_ratio))
     # train: [0, train_end_idx), gap: [train_end_idx, split_idx), test: [split_idx, n)
     split_idx = min(train_end_idx + max_horizon, n - 1)
@@ -299,9 +326,7 @@ def build_data_matrix(
             sessions.append("off_hours")
 
     # Triple-Barrier forward_return（F-12a）：对每个 bar 同时计算 long/short 两方向。
-    effective_barriers: tuple[BarrierConfig, ...] = (
-        barrier_configs if barrier_configs is not None else DEFAULT_BARRIER_CONFIGS
-    )
+    effective_barriers: tuple[BarrierConfig, ...] = effective_barriers_for_gap
     opens_list = [bar.open for bar in test_bars]
     highs_list = [bar.high for bar in test_bars]
     lows_list = [bar.low for bar in test_bars]
@@ -325,6 +350,15 @@ def build_data_matrix(
         direction="short",
         round_trip_cost_pct=round_trip_cost_pct,
     )
+
+    # 预计算 ACF 自适应 block_size：每 forward_horizon 算一次，避免分析器重算
+    from .statistics import auto_block_size as _auto_block_size
+
+    forward_return_block_sizes: Dict[int, int] = {}
+    for h, returns in forward_returns.items():
+        valid = [r for r in returns if r is not None]
+        if valid:
+            forward_return_block_sizes[h] = _auto_block_size(valid)
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -362,4 +396,6 @@ def build_data_matrix(
         barrier_returns_long=barrier_returns_long,
         barrier_returns_short=barrier_returns_short,
         barrier_configs=effective_barriers,
+        high_impact_event_times=tuple(high_impact_event_times or ()),
+        forward_return_block_sizes=forward_return_block_sizes,
     )

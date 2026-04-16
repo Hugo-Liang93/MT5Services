@@ -83,28 +83,16 @@ def get_market_structure(
     event_time = datetime.now(timezone.utc)
     latest_close: float | None = None
     price_source = "latest_closed_bar"
-    try:
-        quote = market_service.get_quote(symbol)
-    except Exception:
-        quote = None
+    # Quote 契约（src/clients/mt5_market.py:Quote）：bid/ask/last 为 float 必填字段。
+    # 只有 market_service 尚未拿到 quote（首次请求 / MT5 断线）才会返回 None。
+    quote = market_service.get_quote(symbol)
     if quote is not None:
-        raw_last = getattr(quote, "last", None)
-        try:
-            latest_close = float(raw_last) if raw_last is not None else None
-        except (TypeError, ValueError):
-            latest_close = None
-        if latest_close is not None and latest_close > 0:
+        if quote.last > 0:
+            latest_close = quote.last
             price_source = "live_quote_last"
-        else:
-            try:
-                bid = float(getattr(quote, "bid", 0.0) or 0.0)
-                ask = float(getattr(quote, "ask", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                bid = 0.0
-                ask = 0.0
-            if bid > 0 and ask > 0:
-                latest_close = (bid + ask) / 2.0
-                price_source = "live_quote_mid"
+        elif quote.bid > 0 and quote.ask > 0:
+            latest_close = (quote.bid + quote.ask) / 2.0
+            price_source = "live_quote_mid"
     return ApiResponse.success_response(
         data=analyzer.analyze(
             symbol,
