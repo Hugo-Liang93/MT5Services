@@ -11,11 +11,8 @@ from src.research.core.contracts import (
     RollingICResult,
     ThresholdSweepResult,
 )
-from src.research.features import (
-    FeatureDefinition,
-    FeatureEngineer,
-    discover_feature_candidates,
-)
+from src.research.features import discover_feature_candidates
+from src.research.features.candidates import _FeatureMeta, _FEATURE_META_REGISTRY
 
 
 def _predictive_result(
@@ -207,28 +204,22 @@ def test_discover_feature_candidates_marks_insufficient_evidence_as_refit() -> N
 def test_discover_feature_candidates_rejects_non_interpretable_or_unbounded_feature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engineer = FeatureEngineer()
-    engineer.register(
-        FeatureDefinition(
-            name="opaque_alpha",
-            group="derived",
-            func=lambda matrix, i: 0.5,
-            dependencies=(),
-            formula_summary="opaque",
-            source_inputs=(),
-            runtime_state_inputs=(),
-            live_computable=True,
-            compute_scope="bar_close",
-            bounded_lookback=False,
-            strategy_roles=("why",),
-            promotion_target_default="shared_indicator",
-            no_lookahead=False,
-            interpretable=False,
-        )
+    opaque_meta = _FeatureMeta(
+        formula_summary="opaque",
+        source_inputs=(),
+        runtime_state_inputs=(),
+        live_computable=True,
+        compute_scope="bar_close",
+        bounded_lookback=False,
+        strategy_roles=("why",),
+        promotion_target_default="shared_indicator",
+        no_lookahead=False,
+        interpretable=False,
     )
+    patched_registry = {**_FEATURE_META_REGISTRY, "opaque_alpha": opaque_meta}
     monkeypatch.setattr(
-        "src.research.features.candidates.build_default_engineer",
-        lambda: engineer,
+        "src.research.features.candidates._FEATURE_META_REGISTRY",
+        patched_registry,
     )
     results = {
         "H1": _mining_result(

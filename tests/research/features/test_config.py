@@ -220,14 +220,6 @@ class TestResearchConfigIntegration:
         assert hasattr(cfg, "feature_providers")
         assert isinstance(cfg.feature_providers, FeatureProviderConfig)
 
-    def test_research_config_still_has_feature_engineering(self) -> None:
-        """向后兼容：feature_engineering 字段保留（Task 13 再移除）。"""
-        from src.research.core.config import FeatureEngineeringConfig
-
-        cfg = ResearchConfig()
-        assert hasattr(cfg, "feature_engineering")
-        assert isinstance(cfg.feature_engineering, FeatureEngineeringConfig)
-
 
 # ---------------------------------------------------------------------------
 # load_research_config() — INI 加载

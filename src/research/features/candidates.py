@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from ..core.contracts import (
     CandidateEvidence,
@@ -12,7 +13,212 @@ from ..core.contracts import (
     RobustnessTier,
 )
 from ..core.cross_tf import analyze_cross_tf
-from .engineer import build_default_engineer
+from .protocol import PROMOTED_INDICATOR_PRECEDENTS
+
+
+# ---------------------------------------------------------------------------
+# 特征元数据（轻量描述，不含计算函数）
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _FeatureMeta:
+    """candidates.py 所需的特征描述性元数据（无计算函数）。"""
+
+    formula_summary: str = ""
+    source_inputs: Tuple[str, ...] = ()
+    runtime_state_inputs: Tuple[str, ...] = ()
+    live_computable: bool = True
+    compute_scope: str = "bar_close"
+    bounded_lookback: bool = True
+    strategy_roles: Tuple[str, ...] = ()
+    promotion_target_default: str = "research_only"
+    no_lookahead: bool = True
+    interpretable: bool = True
+
+
+# 特征名 → 元数据注册表（迁移自 engineer._BUILTIN_FEATURES）
+_FEATURE_META_REGISTRY: Dict[str, _FeatureMeta] = {
+    "momentum_consensus": _FeatureMeta(
+        formula_summary="(sign(macd.hist) + sign(rsi14.rsi-50) + sign(stoch_rsi14.stoch_rsi_k-50)) / 3",
+        source_inputs=("macd.hist", "rsi14.rsi", "stoch_rsi14.stoch_rsi_k"),
+        live_computable=True,
+        compute_scope="bar_close",
+        bounded_lookback=True,
+        strategy_roles=("why", "when"),
+        promotion_target_default="indicator_and_strategy_candidate",
+    ),
+    "regime_entropy": _FeatureMeta(
+        formula_summary="-Σ(p·ln(p)) from soft regime probabilities",
+        runtime_state_inputs=("soft_regimes",),
+        live_computable=False,
+        compute_scope="runtime_state",
+        strategy_roles=("why",),
+        promotion_target_default="research_only",
+    ),
+    "bars_in_regime": _FeatureMeta(
+        formula_summary="count consecutive bars staying in the current hard regime",
+        runtime_state_inputs=("regimes",),
+        live_computable=False,
+        compute_scope="runtime_state",
+        strategy_roles=("when", "where"),
+        promotion_target_default="strategy_helper",
+    ),
+    "close_in_range": _FeatureMeta(
+        formula_summary="(close - low) / (high - low)",
+        source_inputs=("bar.high", "bar.low", "bar.close"),
+        strategy_roles=("why", "when"),
+    ),
+    "body_ratio": _FeatureMeta(
+        formula_summary="|close - open| / (high - low)",
+        source_inputs=("bar.open", "bar.high", "bar.low", "bar.close"),
+        strategy_roles=("when",),
+    ),
+    "upper_wick_ratio": _FeatureMeta(
+        formula_summary="(high - max(open,close)) / (high - low)",
+        source_inputs=("bar.open", "bar.high", "bar.low", "bar.close"),
+        strategy_roles=("why", "where"),
+    ),
+    "lower_wick_ratio": _FeatureMeta(
+        formula_summary="(min(open,close) - low) / (high - low)",
+        source_inputs=("bar.open", "bar.high", "bar.low", "bar.close"),
+        strategy_roles=("why", "where"),
+    ),
+    "range_expansion": _FeatureMeta(
+        formula_summary="(high - low) / atr14",
+        source_inputs=("bar.high", "bar.low", "atr14.atr"),
+        strategy_roles=("when",),
+    ),
+    "oc_imbalance": _FeatureMeta(
+        formula_summary="(close - open) / (high - low)",
+        source_inputs=("bar.open", "bar.high", "bar.low", "bar.close"),
+        strategy_roles=("why",),
+    ),
+    "session_phase": _FeatureMeta(
+        formula_summary="0=Asia / 1=London / 2=NY / 3=Close",
+        source_inputs=("bar.time",),
+        strategy_roles=("when",),
+    ),
+    "london_session": _FeatureMeta(
+        formula_summary="flag: bar_time.hour ∈ [7, 16) UTC",
+        source_inputs=("bar.time",),
+        strategy_roles=("when",),
+    ),
+    "ny_session": _FeatureMeta(
+        formula_summary="flag: bar_time.hour ∈ [12, 21) UTC",
+        source_inputs=("bar.time",),
+        strategy_roles=("when",),
+    ),
+    "day_progress": _FeatureMeta(
+        formula_summary="UTC intraday progress ∈ [0, 1]",
+        source_inputs=("bar.time",),
+        strategy_roles=("when",),
+    ),
+    "bars_to_next_high_impact_event": _FeatureMeta(
+        formula_summary="minutes to next high-impact event / tf_minutes",
+        source_inputs=("bar.time",),
+        runtime_state_inputs=("high_impact_event_times",),
+        strategy_roles=("when", "why"),
+    ),
+    "bars_since_last_high_impact_event": _FeatureMeta(
+        formula_summary="minutes since last high-impact event / tf_minutes",
+        source_inputs=("bar.time",),
+        runtime_state_inputs=("high_impact_event_times",),
+        strategy_roles=("when",),
+    ),
+    "in_news_window": _FeatureMeta(
+        formula_summary="flag: |bar_time - event| <= 30 minutes",
+        source_inputs=("bar.time",),
+        runtime_state_inputs=("high_impact_event_times",),
+        strategy_roles=("when",),
+    ),
+    "close_to_close_3": _FeatureMeta(
+        formula_summary="(close[i] - close[i-3]) / close[i-3]",
+        source_inputs=("bar.close",),
+        strategy_roles=("why",),
+    ),
+    "consecutive_same_color": _FeatureMeta(
+        formula_summary="signed count of consecutive same-color bars (capped at 10)",
+        source_inputs=("bar.open", "bar.close"),
+        strategy_roles=("why",),
+    ),
+    "child_bar_consensus": _FeatureMeta(
+        formula_summary="proportion of child bars with same color as parent bar",
+        source_inputs=("child_bars", "bar.open", "bar.close"),
+        runtime_state_inputs=("child_bars",),
+        live_computable=False,
+        strategy_roles=("why",),
+    ),
+    "child_range_acceleration": _FeatureMeta(
+        formula_summary="second_half_avg_range / first_half_avg_range - 1",
+        source_inputs=("child_bars",),
+        runtime_state_inputs=("child_bars",),
+        live_computable=False,
+        strategy_roles=("when",),
+    ),
+    "intrabar_momentum_shift": _FeatureMeta(
+        formula_summary="sign changes in child bar close-to-close / total child bars",
+        source_inputs=("child_bars",),
+        runtime_state_inputs=("child_bars",),
+        live_computable=False,
+        strategy_roles=("why",),
+    ),
+    "child_volume_front_weight": _FeatureMeta(
+        formula_summary="first_half_volume / total_volume",
+        source_inputs=("child_bars",),
+        runtime_state_inputs=("child_bars",),
+        live_computable=False,
+        strategy_roles=("when",),
+    ),
+    "child_bar_count_ratio": _FeatureMeta(
+        formula_summary="actual_child_bars / expected_child_bars (gap detection)",
+        source_inputs=("child_bars",),
+        runtime_state_inputs=("child_bars",),
+        live_computable=False,
+        strategy_roles=("where",),
+    ),
+    # Regime transition features（迁移自 RegimeTransitionProvider）
+    "bars_since_change": _FeatureMeta(
+        formula_summary="bars since last regime change (0 on change bar)",
+        runtime_state_inputs=("regimes",),
+        live_computable=False,
+        compute_scope="runtime_state",
+        strategy_roles=("when",),
+    ),
+    "dominant_strength": _FeatureMeta(
+        formula_summary="max(soft_probs) per bar",
+        runtime_state_inputs=("soft_regimes",),
+        live_computable=False,
+        compute_scope="runtime_state",
+        strategy_roles=("why",),
+    ),
+}
+
+
+def _get_feature_meta(name: str) -> Optional[_FeatureMeta]:
+    """按特征名查询元数据；未注册特征返回 None。"""
+    return _FEATURE_META_REGISTRY.get(name)
+
+
+def _build_registry_inventory() -> Dict[str, Any]:
+    """构造注册表摘要（等价于旧 FeatureEngineer.inventory()）。"""
+    return {
+        "active_features": {
+            name: {
+                "formula_summary": meta.formula_summary,
+                "source_inputs": list(meta.source_inputs),
+                "runtime_state_inputs": list(meta.runtime_state_inputs),
+                "live_computable": meta.live_computable,
+                "compute_scope": meta.compute_scope,
+                "bounded_lookback": meta.bounded_lookback,
+                "strategy_roles": list(meta.strategy_roles),
+                "promotion_target_default": meta.promotion_target_default,
+                "no_lookahead": meta.no_lookahead,
+                "interpretable": meta.interpretable,
+            }
+            for name, meta in sorted(_FEATURE_META_REGISTRY.items())
+        },
+        "promoted_indicator_precedents": list(PROMOTED_INDICATOR_PRECEDENTS),
+    }
 
 
 _FEATURE_VALIDATION_GATES: dict[str, Any] = {
@@ -41,12 +247,11 @@ def discover_feature_candidates(
         dict(results_by_timeframe),
         min_tfs_for_robust=min_tfs_for_robust,
     )
-    engineer = build_default_engineer()
     seed_map = _collect_feature_seed_map(results_by_timeframe)
     candidates: list[FeatureCandidateSpec] = []
 
     for (feature_name, regime), seed in seed_map.items():
-        definition = engineer.definition(feature_name)
+        definition = _get_feature_meta(feature_name)
         if definition is None:
             continue
 
@@ -116,7 +321,7 @@ def discover_feature_candidates(
         timeframes=tuple(sorted(results_by_timeframe.keys())),
         feature_candidates=tuple(candidates[:candidate_limit]),
         cross_tf_analysis=analysis.to_dict(),
-        registry_inventory=engineer.inventory(),
+        registry_inventory=_build_registry_inventory(),
     )
 
 

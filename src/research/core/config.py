@@ -62,12 +62,6 @@ class PredictivePowerConfig:
 
 
 @dataclass(frozen=True)
-class FeatureEngineeringConfig:
-    enabled: bool = True
-    features: Optional[List[str]] = None  # None = 全部内置特征
-
-
-@dataclass(frozen=True)
 class TemporalProviderConfig:
     core_indicators: List[str] = field(default_factory=lambda: ["rsi14", "adx14"])
     aux_indicators: List[str] = field(
@@ -147,9 +141,6 @@ class ResearchConfig:
         default_factory=PredictivePowerConfig
     )
     rule_mining: RuleMiningConfig = field(default_factory=RuleMiningConfig)
-    feature_engineering: FeatureEngineeringConfig = field(
-        default_factory=FeatureEngineeringConfig
-    )
     feature_providers: FeatureProviderConfig = field(
         default_factory=FeatureProviderConfig
     )
@@ -278,12 +269,6 @@ def load_research_config() -> ResearchConfig:
         legacy_bonf = _getbool("overfitting", "bonferroni_correction", True)
         correction_method = "bonferroni" if legacy_bonf else "bh_fdr"
 
-    # feature_engineering.features: 逗号分隔字符串 → Optional[List[str]]
-    features_str = _get("feature_engineering", "features", "").strip()
-    fe_features: Optional[List[str]] = None
-    if features_str:
-        fe_features = [f.strip() for f in features_str.split(",") if f.strip()]
-
     cv_mode = _get("overfitting", "cv_mode", "expanding")
 
     return ResearchConfig(
@@ -342,10 +327,6 @@ def load_research_config() -> ResearchConfig:
             cv_consistency_threshold=_getfloat(
                 "rule_mining", "cv_consistency_threshold", 0.40
             ),
-        ),
-        feature_engineering=FeatureEngineeringConfig(
-            enabled=_getbool("feature_engineering", "enabled", True),
-            features=fe_features,
         ),
         feature_providers=_load_feature_providers(parser),
     )
