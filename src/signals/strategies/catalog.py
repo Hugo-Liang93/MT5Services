@@ -9,6 +9,7 @@ from .base import SignalStrategy
 from .structured import (
     StructuredBreakoutFollow,
     StructuredLowbarEntry,
+    StructuredPullbackWindow,
     StructuredRangeReversion,
     StructuredSessionBreakout,
     StructuredSweepReversal,
@@ -33,6 +34,7 @@ def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
         StructuredSessionBreakout(),
         StructuredTrendlineTouch(),
         StructuredLowbarEntry(),
+        StructuredPullbackWindow(),
     )
 
 
