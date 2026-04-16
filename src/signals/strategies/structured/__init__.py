@@ -10,6 +10,7 @@ from .base import (
 )
 from .breakout_follow import StructuredBreakoutFollow
 from .lowbar_entry import StructuredLowbarEntry
+from .open_range_breakout import StructuredOpenRangeBreakout
 from .pullback_window import StructuredPullbackWindow
 from .range_reversion import StructuredRangeReversion
 from .session_breakout import StructuredSessionBreakout
@@ -34,4 +35,5 @@ __all__ = [
     "StructuredTrendlineTouch",
     "StructuredLowbarEntry",
     "StructuredPullbackWindow",
+    "StructuredOpenRangeBreakout",
 ]
