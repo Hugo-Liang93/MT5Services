@@ -379,13 +379,74 @@ class MiningRunner:
         start_time: datetime,
         end_time: datetime,
         extra_reqs: list,
-    ) -> None:
-        """准备跨 TF 数据。当前 CrossTF 默认关闭，此方法为扩展预留。"""
-        logger.warning(
-            "CrossTF extra_data preparation not yet implemented; "
-            "cross_tf provider will produce no features"
+    ) -> Optional[Dict[str, Any]]:
+        """准备 Provider 所需跨 TF 数据。"""
+        from src.research.core.data_matrix import build_data_matrix
+
+        if not extra_reqs:
+            return None
+
+        merged_tf_map: Dict[str, str] = {}
+        required_indicators: set[str] = set()
+        for req in extra_reqs:
+            parent_tf_mapping = getattr(req, "parent_tf_mapping", None) or {}
+            parent_indicators = getattr(req, "parent_indicators", None) or []
+            merged_tf_map.update(dict(parent_tf_mapping))
+            required_indicators.update(str(name) for name in parent_indicators if name)
+
+        parent_tf = merged_tf_map.get(timeframe)
+        if not parent_tf:
+            logger.warning(
+                "FeatureHub extra_data requested but no parent TF mapping for %s",
+                timeframe,
+            )
+            return None
+
+        parent_matrix = build_data_matrix(
+            symbol=symbol,
+            timeframe=parent_tf,
+            start_time=start_time,
+            end_time=end_time,
+            forward_horizons=self._config.forward_horizons,
+            warmup_bars=self._config.warmup_bars,
+            train_ratio=self._config.train_ratio,
+            round_trip_cost_pct=self._config.round_trip_cost_pct,
+            components=self._components,
         )
-        return None
+
+        alias_map: Dict[str, Tuple[str, str]] = {
+            "supertrend_direction": ("supertrend", "direction"),
+            "rsi14": ("rsi14", "rsi"),
+            "adx14": ("adx14", "adx"),
+            "ema50": ("ema50", "ema"),
+            "bb_position": ("bollinger_bands20", "position"),
+        }
+        parent_indicators: Dict[str, List[Optional[float]]] = {}
+        for indicator_name in sorted(required_indicators):
+            key = alias_map.get(indicator_name)
+            series: Optional[List[Optional[float]]] = None
+            if key is not None:
+                series = parent_matrix.indicator_series.get(key)
+            if series is None:
+                series = parent_matrix.indicator_series.get((indicator_name, indicator_name))
+            if series is None:
+                series = parent_matrix.indicator_series.get((indicator_name, "value"))
+            if series is None:
+                continue
+            parent_indicators[indicator_name] = list(series)
+
+        logger.info(
+            "Prepared extra_data for TF=%s -> parent TF=%s, bars=%d, indicators=%d",
+            timeframe,
+            parent_tf,
+            len(parent_matrix.bar_times),
+            len(parent_indicators),
+        )
+        return {
+            "parent_timeframe": parent_tf,
+            "parent_bar_times": list(parent_matrix.bar_times),
+            "parent_indicators": parent_indicators,
+        }
 
     def _group_findings_by_provider(
         self,

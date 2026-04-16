@@ -19,10 +19,11 @@ def _predictive_result(
     *,
     feature_name: str,
     ic: float,
+    indicator_name: str = "derived",
     regime: str | None = "breakout",
 ) -> IndicatorPredictiveResult:
     return IndicatorPredictiveResult(
-        indicator_name="derived",
+        indicator_name=indicator_name,
         field_name=feature_name,
         forward_bars=10,
         regime=regime,
@@ -48,10 +49,11 @@ def _predictive_result(
 def _threshold_result(
     *,
     feature_name: str,
+    indicator_name: str = "derived",
     regime: str | None = "breakout",
 ) -> ThresholdSweepResult:
     return ThresholdSweepResult(
-        indicator_name="derived",
+        indicator_name=indicator_name,
         field_name=feature_name,
         forward_bars=10,
         regime=regime,
@@ -233,3 +235,29 @@ def test_discover_feature_candidates_rejects_non_interpretable_or_unbounded_feat
     discovery = discover_feature_candidates(results, symbol="XAUUSD")
     assert len(discovery.feature_candidates) == 1
     assert discovery.feature_candidates[0].promotion_decision.value == "reject"
+
+
+def test_discover_feature_candidates_accepts_provider_prefixed_features() -> None:
+    results = {
+        "H1": _mining_result(
+            "run_h1",
+            [
+                _predictive_result(
+                    feature_name="momentum_consensus",
+                    ic=0.13,
+                    indicator_name="temporal",
+                )
+            ],
+            [
+                _threshold_result(
+                    feature_name="momentum_consensus",
+                    indicator_name="temporal",
+                )
+            ],
+            "momentum_consensus",
+        )
+    }
+
+    discovery = discover_feature_candidates(results, symbol="XAUUSD")
+    assert len(discovery.feature_candidates) == 1
+    assert discovery.feature_candidates[0].feature_name == "momentum_consensus"

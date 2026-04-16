@@ -338,8 +338,7 @@ def _collect_candidate_evidence(
     predictive = [
         item
         for item in target_result.predictive_power
-        if item.indicator_name == "derived"
-        and item.field_name == feature_name
+        if item.field_name == feature_name
         and item.regime == regime
         and (item.is_significant or item.p_value <= 0.05)
     ]
@@ -354,7 +353,7 @@ def _collect_candidate_evidence(
                 evidence_type="predictive_power",
                 timeframe=target_timeframe,
                 summary=(
-                    f"derived.{feature_name} IC={best.information_coefficient:+.3f} "
+                    f"{best.indicator_name}.{feature_name} IC={best.information_coefficient:+.3f} "
                     f"n={best.n_samples} horizon={best.forward_bars}"
                 ),
                 direction=("buy" if best.information_coefficient > 0 else "sell"),
@@ -364,7 +363,7 @@ def _collect_candidate_evidence(
         )
 
     for sweep in target_result.threshold_sweeps:
-        if sweep.indicator_name != "derived" or sweep.field_name != feature_name:
+        if sweep.field_name != feature_name:
             continue
         if sweep.regime != regime:
             continue
@@ -428,8 +427,6 @@ def _collect_feature_seed_map(
     seed_map: dict[tuple[str, str | None], dict[str, dict[str, Any]]] = {}
     for timeframe, result in results_by_timeframe.items():
         for item in result.predictive_power:
-            if item.indicator_name != "derived":
-                continue
             if not (item.is_significant or item.p_value <= 0.05):
                 continue
             direction = "buy" if item.information_coefficient > 0 else "sell"
@@ -443,8 +440,6 @@ def _collect_feature_seed_map(
                 source="predictive_power",
             )
         for sweep in result.threshold_sweeps:
-            if sweep.indicator_name != "derived":
-                continue
             if sweep.is_significant_buy and sweep.optimal_buy_threshold is not None:
                 _register_seed(
                     seed_map,

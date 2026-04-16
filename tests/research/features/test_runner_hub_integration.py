@@ -247,3 +247,56 @@ def test_grouped_fdr_does_not_break_existing():
 
     assert len(corrected_global) == len(corrected_default) == 1
     assert corrected_global[0].is_significant == corrected_default[0].is_significant
+
+
+def test_prepare_extra_data_loads_parent_tf_matrix(monkeypatch: pytest.MonkeyPatch):
+    """_prepare_extra_data 应加载父 TF 数据并返回 cross_tf 所需结构。"""
+    import datetime as _dt
+
+    from src.research.features.protocol import ProviderDataRequirement
+    from src.research.orchestration.runner import MiningRunner
+
+    runner = MiningRunner(config=ResearchConfig())
+    runner._components = {"sentinel": object()}
+
+    fake_matrix = MagicMock()
+    fake_matrix.bar_times = [
+        _dt.datetime(2026, 1, 1, 0, 0),
+        _dt.datetime(2026, 1, 1, 1, 0),
+    ]
+    fake_matrix.indicator_series = {
+        ("supertrend", "direction"): [1.0, -1.0],
+        ("rsi14", "rsi"): [55.0, 45.0],
+    }
+
+    captured: Dict[str, Any] = {}
+
+    def _fake_build_data_matrix(**kwargs):
+        captured.update(kwargs)
+        return fake_matrix
+
+    monkeypatch.setattr(
+        "src.research.core.data_matrix.build_data_matrix",
+        _fake_build_data_matrix,
+    )
+
+    payload = runner._prepare_extra_data(
+        symbol="XAUUSD",
+        timeframe="M30",
+        start_time=_dt.datetime(2026, 1, 1, 0, 0),
+        end_time=_dt.datetime(2026, 1, 1, 4, 0),
+        extra_reqs=[
+            ProviderDataRequirement(
+                parent_tf_mapping={"M30": "H4"},
+                parent_indicators=["supertrend_direction", "rsi14"],
+            )
+        ],
+    )
+
+    assert captured["timeframe"] == "H4"
+    assert captured["components"] == runner._components
+    assert payload is not None
+    assert payload["parent_timeframe"] == "H4"
+    assert payload["parent_bar_times"] == fake_matrix.bar_times
+    assert payload["parent_indicators"]["supertrend_direction"] == [1.0, -1.0]
+    assert payload["parent_indicators"]["rsi14"] == [55.0, 45.0]
