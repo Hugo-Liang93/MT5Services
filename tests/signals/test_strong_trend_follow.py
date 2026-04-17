@@ -128,14 +128,14 @@ class TestWhyGate:
         assert decision.direction == "hold"
 
     def test_adx_d3_zero_rejected_mutex_with_exhaustion(self) -> None:
-        """adx_d3=0 → hold（临界点归 regime_exhaustion）。"""
+        """adx_d3=0（非 None）→ hold（临界点归 regime_exhaustion）。"""
         ctx = _make_context(adx_d3=0.0)
         decision = self.strategy.evaluate(ctx)
         assert decision.direction == "hold"
         assert "adx_not_rising" in decision.reason
 
     def test_adx_d3_negative_rejected(self) -> None:
-        """adx_d3=-1 → hold（趋势在减弱，让给 regime_exhaustion）。"""
+        """adx_d3=-1（非 None）→ hold（趋势在减弱，让给 regime_exhaustion）。"""
         ctx = _make_context(adx_d3=-1.0)
         decision = self.strategy.evaluate(ctx)
         assert decision.direction == "hold"
@@ -147,6 +147,22 @@ class TestWhyGate:
         decision = self.strategy.evaluate(ctx)
         assert decision.direction == "hold"
         assert "no_adx_data" in decision.reason
+
+    def test_adx_d3_none_passes_why(self) -> None:
+        """adx_d3=None（回测管线未计算 delta metrics）→ 不阻止信号。
+
+        实盘中 adx_d3 由 apply_delta_metrics 提供，严格互斥 regime_exhaustion；
+        回测中 adx_d3 总是 None，此门控放行，互斥靠 _when 分化。
+        """
+        ctx = _make_context()
+        # 显式移除 adx_d3
+        ctx.indicators["adx14"] = {
+            "adx": 50.0, "plus_di": 35.0, "minus_di": 15.0,
+            # adx_d3 not set → None
+        }
+        ok, direction, score, reason = self.strategy._why(ctx)
+        assert ok is True
+        assert direction == "buy"
 
     def test_why_passes_all_bullish_strong_trend(self) -> None:
         """ADX=50 + plus_di>minus_di + adx_d3=1 + MACD/ROC pending → 先不 hold 于 why。

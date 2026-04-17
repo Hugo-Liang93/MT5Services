@@ -73,11 +73,13 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
                 f"di_not_bullish:+{plus_di:.0f}/-{minus_di:.0f}"
             )
 
-        # adx_d3 必须严格为正（与 regime_exhaustion 在 adx_d3<=0 时互斥）
+        # adx_d3 严格互斥：实盘中与 regime_exhaustion 在 adx_d3<=0 时互斥。
+        # 回测管线不计算 delta metrics（adx_d3=None），此时不阻止信号；
+        # 实际互斥由 _when 层分化（MACD 温和 vs StochRSI 极端）自然保证。
         d3_min = get_tf_param(
             self, "adx_d3_min_strict", ctx.timeframe, self._adx_d3_min_strict
         )
-        if adx_d3 is None or adx_d3 <= d3_min:
+        if adx_d3 is not None and adx_d3 <= d3_min:
             return False, None, 0.0, f"adx_not_rising:d3={adx_d3}"
 
         score = self._linear_score(adx, low=threshold, high=threshold + 15.0)
