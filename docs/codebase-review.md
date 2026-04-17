@@ -1344,3 +1344,40 @@ Regime 分布（两 TF 高度一致，detector 语义跨 TF 稳定）：
 ### 边界泄漏角度
 
 本次为研究型审查，**零代码改动**：仅新增 `.gitignore` 条目（`scratch/`）+ 本文档小节。未引入任何跨模块依赖或兼容分支；scratch 脚本是只读外部调用，不触及 src/。未决兼容项：无。
+
+## 2026-04-17 架构缺口：特征晋升通道未闭环（Step 2.1 派生发现）
+
+### 触发事件
+
+Step 2.1 M15/M30 基线挖掘 Gate FAIL（Robust=0，Top 10 规则全 sell 方向）。结合 XAUUSD 12 月 +45.5% 牛市背景，诊断 sell-only bias 是"算法捕捉到强牛市中的短期回调规律"——**是 exit timing 信号，不是 entry 信号**。该诊断引出更深的职责边界问题。
+
+### 核查结果（见 ADR-007 上下文）
+
+| 发现 | 证据 |
+|------|------|
+| `src/research/features/promotion.py` 只生成报告对象 | 全文件 37 行，无 file I/O、无 `indicators.json` 写入、无 registry 调用 |
+| `mining_runner` 的 `promote_indicator` decision 只用于显示 | `grep "promote_indicator"` → 终端打印 + `--promotable-features-only` 过滤 + JSON 输出 |
+| 写入 `indicators.json` 的代码**不存在** | `grep "write.*indicators.json"` → 0 个写入点 |
+| 当前"晋升"语义等同于"给人看的 TODO 标签" | 没有任何 CLI / 函数会执行晋升动作 |
+
+### 影响
+
+- Research 输出的 descriptive findings 没有明确"可交易性验证"关卡就进入策略开发入口——Step 2.1 的 sell-only rules 若直接做策略会牛市中爆仓
+- 计算型特征（需新增 Python 函数的指标）没有半自动化晋升路径，每次都需 4 步手工（写 core/ / 加 indicators.json / 写测试 / 触发 pipeline）
+- 晋升历史无审计记录，一个特征最终走哪条策略是开放问题
+
+### 职责边界（已写入 ADR-007）
+
+- Research：**发现**（新策略候选 A1 / 新特征 A2 / 特征晋升 A3 / 市场特性描绘 A4）——全部 descriptive
+- Backtesting：**验证**（参数优化 B1 / 整体验证 B2 / 组合一致性 B3 / 可执行性模拟 B4）——全部 actionable
+- 协作契约：Research 终点 = 结构完整的策略 spec（含 exit/filter），Backtesting 起点 = 该 spec + 参数网格
+
+### 修复优先级（非紧急，建议短期启动）
+
+- **短期（1 周内）**：在 `FeatureCandidateSpec` 加 `feature_kind: "derived" | "computed"` 字段；补 `docs/sop/feature-to-indicator-promotion.md`
+- **中期（1-2 月）**：实现 `src/ops/cli/promote_feature.py`，半自动化指标代码骨架 + PR 草稿
+- **长期**：端到端管线（挖掘 → 策略 spec → 自动回测 → CI 合并）
+
+### 边界泄漏角度
+
+本次**零代码改动**，仅新增 ADR-007（拟定中）+ 本小节。修复该缺口需要新增 CLI 与 SOP 文档，不涉及现有组件私有字段或跨域依赖，是安全的增量扩展。未决兼容项：无（当前手工流程会继续工作，半自动化是优化而非替代）。
