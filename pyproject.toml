@@ -133,6 +133,7 @@ module = [
     "pandas.*",
     "numpy.*",
     "sqlalchemy.*",
+    "requests.*",
 ]
 ignore_missing_imports = true
 

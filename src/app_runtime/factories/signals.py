@@ -3,15 +3,15 @@ from __future__ import annotations
 import logging as _logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from src.config.models.signal import SignalConfig
 
-from src.config.file_manager import get_file_config_manager
-from src.config import get_economic_config
-from src.config.mt5 import load_group_mt5_settings
 from src.calendar.policy import build_signal_economic_policy
+from src.config import get_economic_config
+from src.config.file_manager import get_file_config_manager
+from src.config.mt5 import load_group_mt5_settings
 from src.market_structure import MarketStructureAnalyzer, MarketStructureConfig
 from src.signals.contracts import (
     StrategyDeployment,
@@ -42,16 +42,16 @@ from src.signals.strategies.catalog import build_default_strategy_set
 from src.signals.strategies.htf_cache import HTFStateCache
 from src.signals.tracking.repository import TimescaleSignalRepository
 from src.trading.closeout import ExposureCloseoutController, ExposureCloseoutService
-from src.trading.execution.executor import ExecutorConfig, TradeExecutor
-from src.trading.execution.risk_caps import MaxSingleTradeLossPolicy
-from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
-from src.trading.execution.sizing import RegimeSizing
 from src.trading.execution.eventing import execute_market_order
+from src.trading.execution.executor import ExecutorConfig, TradeExecutor
+from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
 from src.trading.execution.pending_orders import inspect_pending_mt5_order
+from src.trading.execution.quote_health import build_execution_quote_health
+from src.trading.execution.risk_caps import MaxSingleTradeLossPolicy
+from src.trading.execution.sizing import RegimeSizing
+from src.trading.intents import ExecutionIntentConsumer, ExecutionIntentPublisher
 from src.trading.pending import PendingEntryConfig, PendingEntryManager
 from src.trading.positions import ConfirmedIndicatorSource, PositionManager
-from src.trading.intents import ExecutionIntentConsumer, ExecutionIntentPublisher
-from src.trading.execution.quote_health import build_execution_quote_health
 from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 
 _factory_logger = _logging.getLogger(__name__)
@@ -66,7 +66,8 @@ def _apply_strategy_config_overrides(module: SignalModule, signal_config) -> Non
 
     # ── 构建 per-TF 参数查表器并注入 ─────────────────────────────────
     resolver = build_tf_param_resolver(
-        signal_config.strategy_params, signal_config.strategy_params_per_tf,
+        signal_config.strategy_params,
+        signal_config.strategy_params_per_tf,
     )
     module.set_tf_param_resolver(resolver)
     _factory_logger.info("TFParamResolver built: %s", resolver)
@@ -284,7 +285,9 @@ def _validate_strategy_deployment_contracts(
         regime_affinity_overrides=dict(signal_config.regime_affinity_overrides),
     )
     missing_contracts = sorted(
-        strategy_name for strategy_name in strategies if strategy_name not in deployments
+        strategy_name
+        for strategy_name in strategies
+        if strategy_name not in deployments
     )
     if missing_contracts:
         raise ValueError(
@@ -356,6 +359,7 @@ def _normalized_account_bindings(
         if str(alias).strip()
     }
 
+
 def _should_attach_local_account_runtime(
     *,
     signal_config: Any,
@@ -384,8 +388,7 @@ def _should_attach_local_account_runtime(
     return any(
         deployment is not None and deployment.allows_live_execution()
         for deployment in (
-            deployments.get(strategy_name)
-            for strategy_name in bound_strategies
+            deployments.get(strategy_name) for strategy_name in bound_strategies
         )
     )
 
@@ -755,9 +758,7 @@ def build_signal_components(
             pipeline_event_bus=pipeline_event_bus,
             regime_detector=regime_detector,
             on_execution_skip=lambda sid, reason: (
-                _skip_callback_holder[0](sid, reason)
-                if _skip_callback_holder
-                else None
+                _skip_callback_holder[0](sid, reason) if _skip_callback_holder else None
             ),
         )
         trade_outcome_tracker = account_runtime.trade_outcome_tracker
@@ -989,7 +990,11 @@ def register_signal_hot_reload(
             return
         signal_config = signal_config_loader()
         economic_config = economic_config_loader()
-        if filename == "signal.ini" and signal_module is not None and runtime_timeframes is not None:
+        if (
+            filename == "signal.ini"
+            and signal_module is not None
+            and runtime_timeframes is not None
+        ):
             from src.app_runtime.builder_phases.signal import (
                 _validate_intrabar_trigger_coverage,
             )
@@ -1033,9 +1038,7 @@ def register_signal_hot_reload(
             if tracker is not None
         ]
         for tracker in trackers:
-            tracker.update_config(
-                build_performance_tracker_config(signal_config)
-            )
+            tracker.update_config(build_performance_tracker_config(signal_config))
         if execution_intent_publisher is not None:
             execution_intent_publisher.update_bindings(
                 account_bindings=dict(signal_config.account_bindings),

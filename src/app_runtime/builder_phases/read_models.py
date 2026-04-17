@@ -16,7 +16,9 @@ def build_runtime_read_models(container: AppContainer) -> None:
         ingestor=container.ingestor,
         indicator_manager=container.indicator_manager,
         trading_queries=(
-            container.trade_module.queries if container.trade_module is not None else None
+            container.trade_module.queries
+            if container.trade_module is not None
+            else None
         ),
         signal_runtime=container.signal_runtime,
         trade_executor=container.trade_executor,
@@ -28,7 +30,11 @@ def build_runtime_read_models(container: AppContainer) -> None:
         runtime_mode_controller=container.runtime_mode_controller,
         runtime_identity=container.runtime_identity,
         paper_trading_bridge=container.paper_trading_bridge,
-        db_writer=(container.storage_writer.db if container.storage_writer is not None else None),
+        db_writer=(
+            container.storage_writer.db
+            if container.storage_writer is not None
+            else None
+        ),
     )
     if container.storage_writer is not None and container.trade_module is not None:
         container.trade_trace_read_model = TradingFlowTraceReadModel(

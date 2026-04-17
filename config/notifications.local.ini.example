@@ -1,0 +1,30 @@
+; 拷贝为 config/notifications.local.ini 并填入真实凭据。
+; 此文件示例已在 git 中；真实 *.local.ini 已被 gitignore 忽略。
+;
+; 推荐工作流：
+;   1. cp config/notifications.local.ini.example config/notifications.local.ini
+;   2. 在下方填好 bot_token / default_chat_id（其它字段暂不动）
+;   3. 用 CLI 验证链路通：python -m src.ops.cli.test_notification
+;   4. 验证成功后再把 [runtime] enabled 改成 true，重启服务
+
+[runtime]
+; 先留 false，让 CLI 可以测试 token/chat_id 但不启动实际推送链路。
+; CLI 测试成功后改成 true。
+enabled = false
+inbound_enabled = false
+; 从 @BotFather 获取的 Bot Token（形如 1234567890:AAE_xxxxxxxxxxxxxxx）
+bot_token = 1234567890:AAE_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+; 国内机器通常需要代理访问 Telegram API，按需取消注释并改成你的代理
+; http_proxy_url = http://127.0.0.1:7890
+
+[chats]
+; Bot 推送目标 chat_id（单 chat 基线），用户私聊或群组均可
+; 获取方式：在 Telegram 搜 @userinfobot → /start → 用返回的数字 id
+default_chat_id = 123456789
+
+[inbound]
+enabled = false
+; 允许发起查询/命令的 chat_id 列表
+allowed_chat_ids = 123456789
+; 能执行 /halt /resume /reload-config 的 chat_id（必须是 allowed_chat_ids 的子集）
+admin_chat_ids = 123456789

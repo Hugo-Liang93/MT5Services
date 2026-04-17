@@ -46,6 +46,7 @@ class FunctionalRuntimeComponent:
             **dict(self.metadata),
         }
 
+
 class RuntimeComponentRegistry:
     def __init__(self, components: Iterable[RuntimeManagedComponent] = ()) -> None:
         self._components: "OrderedDict[str, RuntimeManagedComponent]" = OrderedDict()
@@ -85,12 +86,10 @@ class RuntimeComponentRegistry:
 
     def status_snapshot(self) -> dict[str, Any]:
         return {
-            name: component.is_running()
-            for name, component in self._components.items()
+            name: component.is_running() for name, component in self._components.items()
         }
 
     def detailed_snapshot(self) -> dict[str, dict[str, Any]]:
         return {
-            name: component.snapshot()
-            for name, component in self._components.items()
+            name: component.snapshot() for name, component in self._components.items()
         }

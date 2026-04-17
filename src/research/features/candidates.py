@@ -8,6 +8,7 @@ from ..core.contracts import (
     CandidateEvidence,
     FeatureCandidateDiscoveryResult,
     FeatureCandidateSpec,
+    FeatureKind,
     IndicatorPromotionDecision,
     MiningResult,
     RobustnessTier,
@@ -15,10 +16,10 @@ from ..core.contracts import (
 from ..core.cross_tf import analyze_cross_tf
 from .protocol import PROMOTED_INDICATOR_PRECEDENTS
 
-
 # ---------------------------------------------------------------------------
 # 特征元数据（轻量描述，不含计算函数）
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class _FeatureMeta:
@@ -302,6 +303,7 @@ def discover_feature_candidates(
                 evidence=tuple(evidence),
                 validation_gates=_validation_gates_for(tier),
                 promotion_decision=decision,
+                feature_kind=_infer_feature_kind(definition),
                 research_provenance=",".join(
                     sorted(result.run_id for result in results_by_timeframe.values())
                 ),
@@ -447,7 +449,9 @@ def _collect_feature_seed_map(
                     regime=sweep.regime,
                     timeframe=timeframe,
                     direction="buy",
-                    score=max(abs(float(sweep.buy_mean_return)), float(sweep.buy_hit_rate)),
+                    score=max(
+                        abs(float(sweep.buy_mean_return)), float(sweep.buy_hit_rate)
+                    ),
                     source="threshold_sweep",
                 )
             if sweep.is_significant_sell and sweep.optimal_sell_threshold is not None:
@@ -457,7 +461,9 @@ def _collect_feature_seed_map(
                     regime=sweep.regime,
                     timeframe=timeframe,
                     direction="sell",
-                    score=max(abs(float(sweep.sell_mean_return)), float(sweep.sell_hit_rate)),
+                    score=max(
+                        abs(float(sweep.sell_mean_return)), float(sweep.sell_hit_rate)
+                    ),
                     source="threshold_sweep",
                 )
         for rule in result.mined_rules:
@@ -514,10 +520,7 @@ def _features_mentioned_by_rule(structured: Mapping[str, Any]) -> set[str]:
 def _resolve_seed_tier(seed: Mapping[str, Mapping[str, Any]]) -> RobustnessTier:
     directions = [
         direction
-        for direction in (
-            _resolve_seed_direction(entry)
-            for entry in seed.values()
-        )
+        for direction in (_resolve_seed_direction(entry) for entry in seed.values())
         if direction is not None
     ]
     if len(directions) >= 2 and len(set(directions)) == 1:
@@ -538,6 +541,23 @@ def _recommend_seed_timeframe(seed: Mapping[str, Mapping[str, Any]]) -> str:
         reverse=True,
     )
     return ranked[0][0]
+
+
+def _infer_feature_kind(meta: _FeatureMeta) -> FeatureKind:
+    """根据特征元数据自动推断 derived / computed 类型（ADR-007）。
+
+    DERIVED（组合型）：bar_close scope + live_computable + 无 runtime_state 依赖
+                       → 策略可通过现有指标字段直接引用，无需晋升
+    COMPUTED（计算型）：任一条件不满足
+                       → 需独立 Python 函数，晋升需 4 步手工
+    """
+    if meta.runtime_state_inputs:
+        return FeatureKind.COMPUTED
+    if not meta.live_computable:
+        return FeatureKind.COMPUTED
+    if meta.compute_scope != "bar_close":
+        return FeatureKind.COMPUTED
+    return FeatureKind.DERIVED
 
 
 def _resolve_indicator_promotion_decision(

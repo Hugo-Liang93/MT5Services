@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from src.app_runtime.container import AppContainer
 from src.app_runtime.lifecycle import (
     FunctionalRuntimeComponent,
@@ -15,13 +17,11 @@ from src.app_runtime.mode_policy import (
     RuntimeModePolicy,
     RuntimeModeTransitionGuard,
 )
-from src.config import get_trading_ops_config
-from src.config import get_runtime_data_path
+from src.config import get_runtime_data_path, get_trading_ops_config
+from src.trading.closeout import CloseoutRuntimeModeAction, ExposureCloseoutPolicy
 from src.trading.commands.consumer import OperatorCommandConsumer
 from src.trading.commands.service import OperatorCommandService
-from src.trading.closeout import CloseoutRuntimeModeAction, ExposureCloseoutPolicy
 from src.trading.state import AccountRiskStateProjector
-import os
 
 
 def build_runtime_controls(
@@ -131,7 +131,8 @@ def build_runtime_component_registry(
     all_modes = frozenset(mode.value for mode in RuntimeMode)
     signal_modes = (
         frozenset({RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value})
-        if container.indicator_manager is not None and container.signal_runtime is not None
+        if container.indicator_manager is not None
+        and container.signal_runtime is not None
         else frozenset()
     )
     risk_modes = frozenset(
@@ -380,12 +381,18 @@ def build_runtime_component_registry(
             ),
             FunctionalRuntimeComponent(
                 name="ingestion",
-                supported_modes=all_modes if container.ingestor is not None else frozenset(),
+                supported_modes=(
+                    all_modes if container.ingestor is not None else frozenset()
+                ),
                 start_fn=lambda: (
-                    container.ingestor.start() if container.ingestor is not None else None
+                    container.ingestor.start()
+                    if container.ingestor is not None
+                    else None
                 ),
                 stop_fn=lambda: (
-                    container.ingestor.stop() if container.ingestor is not None else None
+                    container.ingestor.stop()
+                    if container.ingestor is not None
+                    else None
                 ),
                 is_running_fn=lambda: bool(
                     container.ingestor is not None and container.ingestor.is_running()

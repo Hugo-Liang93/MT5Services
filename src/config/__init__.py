@@ -60,7 +60,12 @@ from src.config.instance_context import (
     set_current_environment,
     set_current_instance_name,
 )
+from src.config.models.notifications import NotificationConfig
 from src.config.mt5 import MT5Settings, load_group_mt5_settings, load_mt5_settings
+from src.config.notifications import (
+    get_notification_config,
+    reset_notification_config_cache,
+)
 from src.config.runtime_identity import (
     RuntimeIdentity,
     build_account_key,
@@ -112,6 +117,7 @@ __all__ = [
     "LimitConfig",
     "MT5Settings",
     "MarketSettings",
+    "NotificationConfig",
     "RiskConfig",
     "RuntimeIdentity",
     "SignalConfig",
@@ -134,6 +140,7 @@ __all__ = [
     "get_current_environment",
     "get_merged_config",
     "get_merged_option_source",
+    "get_notification_config",
     "get_risk_config",
     "get_runtime_identity",
     "get_runtime_data_path",
@@ -162,6 +169,7 @@ __all__ = [
     "normalize_environment",
     "normalize_indicator_func_path",
     "reload_configs",
+    "reset_notification_config_cache",
     "resolve_current_environment",
     "resolve_instance_config_dir",
     "resolve_config_path",

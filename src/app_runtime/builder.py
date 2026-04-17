@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 from src.app_runtime.container import AppContainer
 
 if TYPE_CHECKING:
     from src.config.models.signal import SignalConfig
+
 from src.app_runtime.builder_phases import (
     build_account_runtime_layer,
     build_market_layer,
     build_monitoring_layer,
+    build_notifications_layer,
     build_paper_trading_layer,
     build_runtime_controls,
     build_runtime_read_models,
@@ -22,6 +24,7 @@ from src.app_runtime.builder_phases import (
     build_trading_layer,
 )
 from src.config import (
+    get_economic_config,
     get_effective_config_snapshot,
     get_risk_config,
     get_runtime_identity,
@@ -29,7 +32,6 @@ from src.config import (
     get_runtime_market_settings,
     get_signal_config,
 )
-from src.config import get_economic_config
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +168,10 @@ def build_app_container(
     # Phase 5: runtime read-models
     build_runtime_read_models(container)
 
+    # Phase 5.5: notifications (subscribes to pipeline bus + health monitor
+    # that are now wired up)
+    build_notifications_layer(container)
+
     # Phase 6: frontend observability
     build_studio_service_layer(container)
 
@@ -192,7 +198,9 @@ def build_app_container(
                 "indicator_scope": (
                     {
                         "symbols": list(container.indicator_manager.config.symbols),
-                        "timeframes": list(container.indicator_manager.config.timeframes),
+                        "timeframes": list(
+                            container.indicator_manager.config.timeframes
+                        ),
                         "inherit_symbols": (
                             container.indicator_manager.config.inherit_symbols
                         ),

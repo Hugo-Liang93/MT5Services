@@ -16,6 +16,7 @@
 | 004 | 组件生命周期 | start/stop 安全契约（8 项防护机制） | 已确定 |
 | 005 | 后台线程生命周期 | join 超时后不得清空仍存活线程引用 | 已确定 |
 | 006 | 跨模块边界 | 装配/API 层禁止读写组件私有属性，必须通过公开端口 | 已确定 |
+| 007 | Research / Backtesting 边界 | Research 负责发现（含特征晋升），Backtesting 负责验证，晋升通道待补齐 | 拟定中 |
 
 ---
 
@@ -159,6 +160,80 @@ read_model._storage_writer.db
 | ConfigFileWatcher | `iter_config_files()` (renamed), `is_running()` |
 
 **演进方向**：新增组件如需后置注入，优先在构造函数中声明 Optional 参数。`set_xxx()` 仅用于真正的循环依赖或生命周期时序约束。长期目标：收敛到纯构造函数注入，消除所有 setter。
+
+---
+
+## ADR-007: Research 与 Backtesting 的职责边界 + 特征晋升通道
+
+**状态**：拟定中（2026-04-17）
+
+**上下文**：Step 2.1 M15/M30 基线挖掘暴露出一个结构性问题——挖掘输出的"高胜率 sell rules"在 XAUUSD 12 个月 +45% 牛市中不能直接作为入场策略使用（会系统性做空趋势）。深入核查发现两类边界不清：
+
+1. **Research 与 Backtesting 的职责没有明文划分**。挖掘产出的 descriptive findings 被错当成 actionable 策略候选，跳过了"可交易性验证"环节。
+2. **特征晋升通道（`decision=promote_indicator`）只生成建议报告，没有执行路径**：
+   - `src/research/features/promotion.py` 只构建 `FeaturePromotionReport` dataclass，不触及文件系统
+   - `mining_runner` 只打印 decision，不调用任何晋升动作
+   - 没有写入 `indicators.json` / 生成指标代码 / 注册 registry 的任何代码路径
+
+**决策**：固化两大模块的职责边界，并明确特征晋升通道的设计意图（即使部分能力尚未实现）。
+
+### Research（挖掘）模块职责
+
+| 代号 | 职责 | 输出 |
+|------|------|------|
+| A1 | 发现新策略候选 | 结构完整的策略 spec 雏形（entry + exit + filter + HTF policy），非裸"特征 → 方向" |
+| A2 | 发现新特征 | Feature Providers 原始产物 |
+| A3 | 特征晋升为指标 | 将 Robust + 多窗口稳定特征推入 indicator 管道 |
+| A4 | 市场统计特性描绘 | Regime 分布、session 特性、尾部事件等"市场地图" |
+
+共同特征：全部是 **descriptive + exploratory**，产出未经实盘/Paper 验证的候选。
+
+### Backtesting（回测）模块职责
+
+| 代号 | 职责 | 输出 |
+|------|------|------|
+| B1 | 已知策略参数优化 | Grid/Bayesian 最优参数组合 |
+| B2 | 策略整体验证 | PF / Sharpe / Walk-Forward 稳定性 |
+| B3 | 策略组合一致性 | 多策略相关性、叠加效应 |
+| B4 | 实盘可执行性模拟 | execution_feasibility mode + 动态点差/滑点 |
+
+共同特征：全部是 **actionable + validation**，输入"策略 spec"，输出"是否值得上 Paper"。
+
+### 模块间协作契约
+
+```
+Research 终点 = 未验证但结构完整的策略 spec（含 exit/filter/HTF policy）
+Backtesting 起点 = 该 spec + 参数网格
+```
+
+**禁止的跨界模式**：
+- ❌ Research 输出 descriptive finding 直接当 actionable 策略上 Paper（Step 2.1 教训）
+- ❌ Backtesting 硬编码只能由 Research 发现的特征组合
+- ❌ 晋升决策（promote_indicator）靠人记忆跟踪，不形成可审计记录
+
+### 特征晋升通道（A3 展开）
+
+**两类特征必须区分对待**：
+
+| 类型 | 定义 | 晋升成本 | 当前支持 |
+|------|------|---------|---------|
+| **组合型** | 现有指标字段的条件组合（如 `body_ratio > 0.5 AND adx > 23`） | 零——策略直接引用字段 | ✅ 可用 |
+| **计算型** | 需要独立 Python 计算函数的新指标（如动态 z-score、复合统计量） | 四步：写 `src/indicators/core/`、加 `indicators.json`、写测试、触发 pipeline 重算 | ❌ 仅手工 |
+
+`mining_runner --emit-feature-candidates` 输出应标注特征类型——`promote_indicator` 决策对计算型有意义，对组合型是冗余标签。
+
+### 当前实现缺口
+
+1. `promotion.py` 只生成 `FeaturePromotionReport`，**没有晋升执行器**
+2. 没有 `src/ops/cli/promote_feature.py` 之类的半自动化工具
+3. `FeatureCandidateSpec` **未标注"组合型 vs 计算型"**，决策语义模糊
+4. 没有晋升历史记录持久化机制
+
+**演进方向**：
+
+- **短期（1 周内）**：在 `FeatureCandidateSpec` 加 `feature_kind: "derived" | "computed"` 字段；补充 `docs/sop/feature-to-indicator-promotion.md` 手工流程文档
+- **中期（1-2 月）**：实现 `src/ops/cli/promote_feature.py`，半自动生成指标代码骨架 + 配置 diff，由人审 PR
+- **长期**：挖掘 → 策略 spec → 自动回测 → CI 合并的端到端管线
 
 ---
 

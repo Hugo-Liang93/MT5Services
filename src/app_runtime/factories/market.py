@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from src.clients.mt5_market import MT5MarketClient
-from src.market import MarketDataService
 from src.ingestion.ingestor import BackgroundIngestor
+from src.market import MarketDataService
 
 
 def create_market_service(mt5_settings, market_settings) -> MarketDataService:

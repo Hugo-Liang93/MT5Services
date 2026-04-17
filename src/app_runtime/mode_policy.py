@@ -38,7 +38,9 @@ class RuntimeModeTransitionGuard:
 
     def ensure_can_enter(self, mode: RuntimeMode) -> None:
         if not self.can_enter(mode):
-            raise RuntimeError("ingest_only requires no open positions and no pending orders")
+            raise RuntimeError(
+                "ingest_only requires no open positions and no pending orders"
+            )
 
     def can_enter_ingest_only(self) -> bool:
         trading = self.trading_module_getter()

@@ -16,34 +16,35 @@ from src.app_runtime.builder import build_app_container
 from src.app_runtime.container import AppContainer
 from src.app_runtime.mode_controller import RuntimeModeController
 from src.app_runtime.runtime import AppRuntime
+from src.backtesting.paper_trading.bridge import PaperTradingBridge
 from src.calendar import EconomicCalendarService
 from src.config import get_signal_config
 from src.indicators.manager import UnifiedIndicatorManager
 from src.ingestion.ingestor import BackgroundIngestor
 from src.market import MarketDataService
 from src.market_structure import MarketStructureAnalyzer
+from src.monitoring.pipeline import PipelineEventBus
+from src.notifications.module import NotificationModule
 from src.persistence.storage_writer import StorageWriter
+from src.readmodels.runtime import RuntimeReadModel
+from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.risk.service import PreTradeRiskService
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.orchestration.runtime import SignalRuntime
 from src.signals.service import SignalModule
 from src.signals.strategies.htf_cache import HTFStateCache
+from src.studio.service import StudioService
+from src.trading.admission import TradeAdmissionService
 from src.trading.application.module import TradingModule
 from src.trading.application.services import TradingCommandService, TradingQueryService
-from src.trading.admission import TradeAdmissionService
-from src.trading.commands.service import OperatorCommandService
 from src.trading.closeout import ExposureCloseoutController
+from src.trading.commands.service import OperatorCommandService
+from src.trading.execution.executor import TradeExecutor
 from src.trading.pending import PendingEntryManager
 from src.trading.positions import PositionManager
-from src.trading.execution.executor import TradeExecutor
 from src.trading.runtime.registry import TradingAccountRegistry
 from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
-from src.monitoring.pipeline import PipelineEventBus
-from src.readmodels.runtime import RuntimeReadModel
-from src.readmodels.trade_trace import TradingFlowTraceReadModel
-from src.backtesting.paper_trading.bridge import PaperTradingBridge
-from src.studio.service import StudioService
 
 logger = logging.getLogger(__name__)
 _init_lock = threading.Lock()
@@ -60,9 +61,7 @@ def _ensure_initialized() -> None:
     if _container is not None:
         return
     if _init_failed:
-        raise RuntimeError(
-            f"Container initialization previously failed: {_init_error}"
-        )
+        raise RuntimeError(f"Container initialization previously failed: {_init_error}")
     with _init_lock:
         if _container is not None:  # double-check under lock (thread safety)
             return  # type: ignore[unreachable]
@@ -160,8 +159,12 @@ def get_runtime_task_status(
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
             "state": row["state"],
             "started_at": row["started_at"].isoformat() if row["started_at"] else None,
-            "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
-            "next_run_at": row["next_run_at"].isoformat() if row["next_run_at"] else None,
+            "completed_at": (
+                row["completed_at"].isoformat() if row["completed_at"] else None
+            ),
+            "next_run_at": (
+                row["next_run_at"].isoformat() if row["next_run_at"] else None
+            ),
             "duration_ms": row["duration_ms"],
             "success_count": int(row["success_count"] or 0),
             "failure_count": int(row["failure_count"] or 0),
@@ -246,6 +249,19 @@ def get_operator_command_service() -> OperatorCommandService:
     return _container.operator_command_service
 
 
+def get_notification_module() -> Optional[NotificationModule]:
+    """Return the NotificationModule or ``None`` if notifications are disabled.
+
+    Unlike most deps getters, this one returns ``Optional`` because the
+    module may legitimately be absent (no bot_token configured). Callers
+    must handle ``None`` and return a friendly 503/disabled response.
+    """
+    _ensure_initialized()
+    if _container is None:
+        return None
+    return _container.notification_module
+
+
 def get_trade_admission_service() -> TradeAdmissionService:
     _ensure_initialized()
     assert _container is not None and _container.trade_module is not None
@@ -326,7 +342,9 @@ def get_position_manager() -> PositionManager:
 
 def get_exposure_closeout_controller() -> ExposureCloseoutController:
     _ensure_initialized()
-    assert _container is not None and _container.exposure_closeout_controller is not None
+    assert (
+        _container is not None and _container.exposure_closeout_controller is not None
+    )
     return _container.exposure_closeout_controller
 
 

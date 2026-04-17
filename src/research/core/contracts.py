@@ -278,6 +278,19 @@ class IndicatorPromotionDecision(str, Enum):
     )
 
 
+class FeatureKind(str, Enum):
+    """特征类型分类（ADR-007）。
+
+    DERIVED  — 组合型：现有指标字段的条件组合（如 body_ratio、momentum_consensus）
+               策略可通过现有指标字段直接引用，无需晋升
+    COMPUTED — 计算型：需独立 Python 函数实现的新指标（如 regime_entropy、intrabar 衍生量）
+               晋升需 4 步：写 src/indicators/core/、加 indicators.json、写测试、触发 pipeline
+    """
+
+    DERIVED = "derived"
+    COMPUTED = "computed"
+
+
 @dataclass(frozen=True)
 class CandidateRuleCondition:
     role: str  # why | when | where
@@ -336,6 +349,7 @@ class FeatureCandidateSpec:
     promotion_decision: IndicatorPromotionDecision = (
         IndicatorPromotionDecision.RESEARCH_ONLY
     )
+    feature_kind: FeatureKind = FeatureKind.DERIVED
     research_provenance: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -356,6 +370,7 @@ class FeatureCandidateSpec:
             "evidence": [item.to_dict() for item in self.evidence],
             "validation_gates": dict(self.validation_gates),
             "promotion_decision": self.promotion_decision.value,
+            "feature_kind": self.feature_kind.value,
             "research_provenance": self.research_provenance,
         }
 
@@ -438,9 +453,7 @@ class FeatureCandidateDiscoveryResult:
         return {
             "symbol": self.symbol,
             "timeframes": list(self.timeframes),
-            "feature_candidates": [
-                spec.to_dict() for spec in self.feature_candidates
-            ],
+            "feature_candidates": [spec.to_dict() for spec in self.feature_candidates],
             "cross_tf_analysis": dict(self.cross_tf_analysis),
             "registry_inventory": dict(self.registry_inventory),
         }

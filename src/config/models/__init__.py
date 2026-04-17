@@ -1,3 +1,4 @@
+from .notifications import NotificationConfig, Severity
 from .runtime import (
     APIConfig,
     EconomicConfig,
@@ -17,7 +18,9 @@ __all__ = [
     "IngestConfig",
     "IntervalConfig",
     "LimitConfig",
+    "NotificationConfig",
     "RiskConfig",
+    "Severity",
     "SignalConfig",
     "SystemConfig",
     "TradingConfig",
