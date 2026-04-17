@@ -1,6 +1,6 @@
 # Telegram 通知模块设计
 
-> 实现状态：**Phase 1 已完成**（核心骨架 + 单向推送 + DI 接入 + 可观测性）
+> 实现状态：**Phase 1 + Phase 2 已完成**（核心骨架 + 单向推送 + DI 接入 + 定时调度 + TradingState 适配 + 可观测性）
 > 范围：`src/notifications/`、`config/notifications.ini`、`config/notifications/templates/`
 > 测试：`tests/notifications/`（206 条）
 
@@ -257,12 +257,19 @@ required_vars: var1, var2, var3
 
 ## 后续 Phase 规划
 
-### Phase 2（进行中）
+### Phase 2 已完成（2026-04-17）
 
-- **定时日报调度器**：每天 UTC HH:MM 触发 `/v1/trade/daily_summary` → `info_daily_report` 推送
-- **TradingStateAlerts 适配器**：轮询 `summary()`，把 `pending_missing` / `pending_orphan` / `unmanaged_live_positions` 映射成 NotificationEvent（零侵入）
-- **outbox 清理定时器**：`purge_sent_older_than(7 days)` 每 6h 跑一次
+- ✅ **NotificationScheduler**：轻量 DailyAt + Interval 调度器（`src/notifications/scheduler.py`），1 秒 tick，job 异常隔离，ADR-005 合规
+- ✅ **TradingStateAlerts 轮询适配**：`make_trading_state_poll_job()` 默认 60s 轮询，3 种 code 映射（`pending_missing` → critical / `pending_orphan`+`pending_active_mismatch` → warn / `unmanaged_live_positions` → critical），未知 code 日志告知不崩
+- ✅ **outbox 清理定时器**：每 6h 调用 `purge_sent_older_than(7 days)`
+- ✅ **daily_report 调度占位**：注册 scheduler job，Phase 2.5 注入 PnL 内容生成器
+- ✅ **NotificationModule.status() 增强**：暴露 `scheduler_running` + `scheduler_jobs` 列表
+
+### Phase 2.5（下一步细化）
+
+- **daily_report 内容生成器**：复用 `RuntimeReadModel` 组装 health + positions + executor 摘要
 - **INFO 模板补齐**：`info_daily_report`、`info_mode_changed`、`info_startup_ready`、`info_position_closed`
+- **CLI 测试工具**：`python -m src.ops.cli.test_notification --event <type>`
 
 ### Phase 3（入站查询）
 

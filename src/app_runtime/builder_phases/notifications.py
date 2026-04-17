@@ -50,6 +50,7 @@ def build_notifications_layer(container: AppContainer) -> None:
             outbox_path=outbox_path,
             pipeline_event_bus=container.pipeline_event_bus,
             health_monitor=container.health_monitor,
+            trading_state_alerts=container.trading_state_alerts,
         )
     except Exception:
         logger.exception("failed to build notification module; continuing without it")

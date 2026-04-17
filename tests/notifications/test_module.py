@@ -270,6 +270,85 @@ class TestStatus:
             assert status["started"] is True
             assert status["pipeline_listener_registered"] is True
             assert status["health_listener_registered"] is True
+            assert status["scheduler_running"] is True
+            # outbox_purge always registered; daily_report registered when
+            # daily_report_utc is set (not in the default test config).
+            assert "outbox_purge" in status["scheduler_jobs"]
             assert "dispatcher" in status
+        finally:
+            module.stop()
+
+
+class FakeTradingStateAlerts:
+    def __init__(self, alerts: list[dict] | None = None) -> None:
+        self.alerts = alerts or []
+        self.call_count = 0
+
+    def summary(self, **_: Any) -> dict:
+        self.call_count += 1
+        return {"alerts": list(self.alerts)}
+
+
+class TestSchedulerIntegration:
+    def test_trading_state_job_registered_when_alerts_provided(self, tmp_path: Path):
+        transport = FakeTransport()
+        tsa = FakeTradingStateAlerts()
+        cfg = _make_config(
+            events={
+                "execution_failed": "critical",
+                "pending_missing": "critical",
+                "unmanaged_position": "critical",
+                "trading_state_warning": "warning",
+            }
+        )
+        templates = TemplateRegistry.from_directory(TEMPLATES, strict=True)
+        outbox = OutboxStore(tmp_path / "outbox.db")
+        classifier = PipelineEventClassifier(config=cfg, instance="live-main")
+        current = [datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)]
+        dispatcher = NotificationDispatcher(
+            config=cfg,
+            templates=templates,
+            transport=transport,
+            outbox=outbox,
+            default_chat_id="123",
+            clock=lambda: current[0],
+        )
+        module = NotificationModule(
+            config=cfg,
+            instance="live-main",
+            dispatcher=dispatcher,
+            classifier=classifier,
+            templates=templates,
+            transport=transport,
+            outbox=outbox,
+            trading_state_alerts=tsa,
+        )
+        module.start()
+        try:
+            jobs = module.status()["scheduler_jobs"]
+            assert "trading_state_poll" in jobs
+            assert "outbox_purge" in jobs
+        finally:
+            module.stop()
+
+    def test_daily_report_job_registered_when_schedule_set(self, tmp_path: Path):
+        transport = FakeTransport()
+        cfg = _make_config(schedules={"daily_report_utc": "21:00"})
+        module = _build_module(tmp_path, transport=transport, config=cfg)
+        module.start()
+        try:
+            jobs = module.status()["scheduler_jobs"]
+            assert "daily_report" in jobs
+        finally:
+            module.stop()
+
+    def test_no_trading_state_job_when_alerts_absent(self, tmp_path: Path):
+        transport = FakeTransport()
+        module = _build_module(tmp_path, transport=transport)
+        module.start()
+        try:
+            jobs = module.status()["scheduler_jobs"]
+            assert "trading_state_poll" not in jobs
+            assert "outbox_purge" in jobs
         finally:
             module.stop()

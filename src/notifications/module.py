@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from src.config.models.notifications import NotificationConfig
@@ -21,8 +22,13 @@ from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
 from src.notifications.classifier import PipelineEventClassifier
 from src.notifications.dispatcher import NotificationDispatcher
 from src.notifications.events import NotificationEvent
-from src.notifications.hooks import make_health_alert_listener, make_pipeline_listener
+from src.notifications.hooks import (
+    make_health_alert_listener,
+    make_pipeline_listener,
+    make_trading_state_poll_job,
+)
 from src.notifications.persistence.outbox import OutboxStore
+from src.notifications.scheduler import NotificationScheduler
 from src.notifications.templates.loader import TemplateRegistry
 from src.notifications.transport.base import NotificationTransport
 
@@ -44,6 +50,10 @@ class NotificationModule:
         outbox: OutboxStore,
         pipeline_event_bus: Optional[PipelineEventBus] = None,
         health_monitor: Optional[Any] = None,
+        trading_state_alerts: Optional[Any] = None,
+        trading_state_poll_interval_seconds: float = 60.0,
+        outbox_purge_interval_hours: float = 6.0,
+        outbox_retention_days: float = 7.0,
     ) -> None:
         self._config = config
         self._instance = instance
@@ -54,6 +64,11 @@ class NotificationModule:
         self._outbox = outbox
         self._pipeline_event_bus = pipeline_event_bus
         self._health_monitor = health_monitor
+        self._trading_state_alerts = trading_state_alerts
+        self._trading_state_poll_interval = float(trading_state_poll_interval_seconds)
+        self._outbox_purge_interval_hours = float(outbox_purge_interval_hours)
+        self._outbox_retention_days = float(outbox_retention_days)
+        self._scheduler: Optional[NotificationScheduler] = None
         self._pipeline_listener: Optional[Callable[[PipelineEvent], None]] = None
         self._health_listener: Optional[Callable[..., None]] = None
         self._started = False
@@ -77,6 +92,7 @@ class NotificationModule:
                 return
             self._register_pipeline_listener()
             self._register_health_listener()
+            self._start_scheduler()
             self._dispatcher.start()
             self._started = True
             logger.info(
@@ -98,6 +114,7 @@ class NotificationModule:
                 return
             self._unregister_health_listener()
             self._unregister_pipeline_listener()
+            self._stop_scheduler()
             try:
                 self._dispatcher.stop()
             except Exception:
@@ -116,12 +133,19 @@ class NotificationModule:
     # ── public observability ──
 
     def status(self) -> dict[str, Any]:
+        scheduler_running = False
+        scheduler_jobs: list[str] = []
+        if self._scheduler is not None:
+            scheduler_running = self._scheduler.is_running()
+            scheduler_jobs = self._scheduler.job_names()
         return {
             "enabled": self._runtime_enabled_override,
             "started": self._started,
             "instance": self._instance,
             "pipeline_listener_registered": self._pipeline_listener is not None,
             "health_listener_registered": self._health_listener is not None,
+            "scheduler_running": scheduler_running,
+            "scheduler_jobs": scheduler_jobs,
             "dispatcher": self._dispatcher.status(),
         }
 
@@ -186,6 +210,102 @@ class NotificationModule:
             except Exception:
                 logger.debug("health set_alert_listener(None) failed", exc_info=True)
         self._health_listener = None
+
+    # ── internal: scheduler wiring ──
+
+    def _start_scheduler(self) -> None:
+        """Build and start the scheduler with Phase 2 periodic jobs.
+
+        Jobs registered:
+        - ``trading_state_poll`` (if ``trading_state_alerts`` is provided):
+          pulls summary() every ~60s and dispatches per-code notifications.
+        - ``outbox_purge``: deletes ``status=sent`` rows older than
+          ``outbox_retention_days`` every ``outbox_purge_interval_hours``.
+        - ``daily_report`` (if ``schedules.daily_report_utc`` is set):
+          placeholder callback logs; Phase 2.5 will plug in the PnL summary.
+        """
+        if self._scheduler is not None:
+            return
+        scheduler = NotificationScheduler(tick_seconds=1.0)
+        if self._trading_state_alerts is not None:
+            scheduler.add_interval(
+                name="trading_state_poll",
+                interval_seconds=self._trading_state_poll_interval,
+                job=make_trading_state_poll_job(
+                    trading_state_alerts=self._trading_state_alerts,
+                    dispatcher=self._dispatcher,
+                    instance=self._instance,
+                ),
+            )
+        scheduler.add_interval(
+            name="outbox_purge",
+            interval_seconds=self._outbox_purge_interval_hours * 3600.0,
+            job=self._make_outbox_purge_job(),
+        )
+        daily_spec = self._config.schedules.daily_report_utc
+        if daily_spec:
+            try:
+                hour_str, minute_str = daily_spec.split(":")
+                scheduler.add_daily(
+                    name="daily_report",
+                    hour_utc=int(hour_str),
+                    minute_utc=int(minute_str),
+                    job=self._make_daily_report_job_placeholder(),
+                )
+            except Exception:
+                logger.exception(
+                    "invalid daily_report_utc=%r; scheduler job not registered",
+                    daily_spec,
+                )
+        try:
+            scheduler.start()
+        except Exception:
+            logger.exception("notification scheduler failed to start")
+            return
+        self._scheduler = scheduler
+
+    def _stop_scheduler(self) -> None:
+        if self._scheduler is None:
+            return
+        try:
+            self._scheduler.stop()
+        except Exception:
+            logger.debug("scheduler stop failed", exc_info=True)
+        self._scheduler = None
+
+    def _make_outbox_purge_job(self) -> Callable[[], None]:
+        outbox = self._outbox
+        retention = timedelta(days=self._outbox_retention_days)
+
+        def _purge() -> None:
+            cutoff = datetime.now(timezone.utc) - retention
+            try:
+                deleted = outbox.purge_sent_older_than(cutoff)
+                if deleted > 0:
+                    logger.info(
+                        "notification outbox purged %d sent rows older than %s",
+                        deleted,
+                        cutoff.isoformat(),
+                    )
+            except Exception:
+                logger.exception("outbox purge failed")
+
+        return _purge
+
+    def _make_daily_report_job_placeholder(self) -> Callable[[], None]:
+        # Phase 2.5 will inject a daily_report generator (RuntimeReadModel +
+        # PnL summary → NotificationEvent). Keep the slot alive so the
+        # scheduler + config + observability surface are correct today.
+        instance = self._instance
+
+        def _noop() -> None:
+            logger.info(
+                "daily_report scheduler tick for instance=%s "
+                "(Phase 2.5 will plug in content generator)",
+                instance,
+            )
+
+        return _noop
 
     # ── runtime toggle (used by /v1/admin/notifications/toggle) ──
 

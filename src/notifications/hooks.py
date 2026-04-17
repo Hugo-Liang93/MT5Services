@@ -29,6 +29,30 @@ _HEALTH_LEVEL_TO_SEVERITY: dict[str, Severity] = {
 }
 
 
+# TradingStateAlerts code → (notification event_type, template_key).
+# Only codes present here are converted — unknown codes from new alerts are
+# logged but not notified (fail-safe: prefer silence over malformed dispatch).
+_TRADING_STATE_CODE_MAP: dict[str, tuple[str, str]] = {
+    "pending_missing": ("pending_missing", "critical_pending_missing"),
+    # pending_orphan / pending_active_mismatch don't have dedicated templates
+    # in Phase 1 — they fold into a generic "trading_state_warning" bucket.
+    # See Phase 2 design: warn_trading_state template covers them.
+    "pending_orphan": ("trading_state_warning", "warn_trading_state"),
+    "pending_active_mismatch": ("trading_state_warning", "warn_trading_state"),
+    "unmanaged_live_positions": (
+        "unmanaged_position",
+        "critical_unmanaged_position",
+    ),
+}
+
+
+_SEVERITY_STRING_MAP: dict[str, Severity] = {
+    "critical": Severity.CRITICAL,
+    "warning": Severity.WARNING,
+    "info": Severity.INFO,
+}
+
+
 def make_pipeline_listener(
     *,
     classifier: PipelineEventClassifier,
@@ -126,3 +150,104 @@ def severity_from_alert_level(level: str) -> Severity | None:
         return severity_from_str(level)
     except ValueError:
         return None
+
+
+def make_trading_state_poll_job(
+    *,
+    trading_state_alerts: Any,
+    dispatcher: NotificationDispatcher,
+    instance: str,
+) -> Callable[[], None]:
+    """Build a scheduler job that polls TradingStateAlerts.summary() and submits
+    one NotificationEvent per active alert code.
+
+    Design choice — **poll vs push**:
+    TradingStateAlerts has no event stream; its ``summary()`` is a pull-based
+    snapshot of DB + broker state. Polling every 60s with dedup TTL (default
+    300s for CRITICAL) gives a clean signal: the same unresolved condition
+    collapses to one notification per window, while a new ticket or code
+    surfaces promptly.
+
+    Only codes in ``_TRADING_STATE_CODE_MAP`` are converted; unknown codes
+    are logged (DEBUG) to surface when adapter + alerts class drift.
+    """
+
+    def _poll() -> None:
+        summary_fn = getattr(trading_state_alerts, "summary", None)
+        if not callable(summary_fn):
+            logger.debug("trading_state_alerts has no summary(); skipping poll")
+            return
+        try:
+            snapshot = summary_fn()
+        except Exception:
+            logger.exception("trading_state_alerts.summary() raised")
+            return
+        alerts = (snapshot or {}).get("alerts") or []
+        for alert in alerts:
+            _submit_trading_state_alert(
+                alert,
+                dispatcher=dispatcher,
+                instance=instance,
+            )
+
+    return _poll
+
+
+def _submit_trading_state_alert(
+    alert: Mapping[str, Any],
+    *,
+    dispatcher: NotificationDispatcher,
+    instance: str,
+) -> None:
+    code = str(alert.get("code") or "").strip()
+    if not code:
+        return
+    mapping = _TRADING_STATE_CODE_MAP.get(code)
+    if mapping is None:
+        logger.debug("trading_state alert code not in map: %s", code)
+        return
+    event_type, template_key = mapping
+    severity_str = str(alert.get("severity") or "warning").lower()
+    severity = _SEVERITY_STRING_MAP.get(severity_str, Severity.WARNING)
+    details = alert.get("details") or {}
+    payload: dict[str, Any] = {
+        "instance": instance,
+        "code": code,
+        "message": str(alert.get("message") or ""),
+    }
+    dedup_parts: tuple[str, ...] = (code,)
+    # Per-code payload enrichment so templates render richly.
+    if code == "pending_missing":
+        payload["missing_count"] = details.get("missing_count", 0)
+    elif code == "unmanaged_live_positions":
+        tickets = details.get("unmanaged_tickets") or []
+        payload["ticket"] = ",".join(str(t) for t in tickets) or "-"
+        payload["reason"] = "unmanaged"
+        # Dedup per ticket set — a newly-appearing ticket breaks the dedup and
+        # surfaces immediately, while the same set recurring collapses.
+        dedup_parts = (code, payload["ticket"])
+    else:
+        # Generic warn_trading_state template: show the message verbatim.
+        payload["metric"] = code
+        payload["level"] = severity_str
+        payload["value"] = details.get("orphan_count") or details.get(
+            "persisted_active_count", "-"
+        )
+        payload["threshold"] = "-"
+    try:
+        event = NotificationEvent.build(
+            event_type=event_type,
+            severity=severity,
+            template_key=template_key,
+            source="trading_state_alerts",
+            instance=instance,
+            payload=payload,
+            dedup_parts=dedup_parts,
+        )
+    except ValueError:
+        logger.exception("failed to build trading_state notification event")
+        return
+    try:
+        dispatcher.submit(event)
+    except Exception:
+        logger.exception("trading_state alert submit failed")
