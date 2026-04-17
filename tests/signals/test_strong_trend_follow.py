@@ -93,3 +93,70 @@ class TestClassAttributes:
         assert self.strategy.regime_affinity[RegimeType.BREAKOUT] == 0.60
         assert self.strategy.regime_affinity[RegimeType.RANGING] == 0.00
         assert self.strategy.regime_affinity[RegimeType.UNCERTAIN] == 0.20
+
+
+class TestWhyGate:
+    """_why() 硬门控测试。"""
+
+    def setup_method(self) -> None:
+        self.strategy = StructuredStrongTrendFollow()
+
+    def test_adx_below_threshold_rejected(self) -> None:
+        """ADX=30 < 40 → hold。"""
+        ctx = _make_context(adx=30.0)
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "hold"
+        assert "adx_low" in decision.reason
+
+    def test_adx_at_threshold_rejected(self) -> None:
+        """ADX=40 (=threshold) → hold（需严格 >）。"""
+        ctx = _make_context(adx=40.0)
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "hold"
+
+    def test_di_not_bullish_rejected(self) -> None:
+        """plus_di=20 <= minus_di=30 → hold（空头结构）。"""
+        ctx = _make_context(plus_di=20.0, minus_di=30.0)
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "hold"
+        assert "di_not_bullish" in decision.reason
+
+    def test_di_equal_rejected(self) -> None:
+        """plus_di = minus_di → hold（需严格 >）。"""
+        ctx = _make_context(plus_di=25.0, minus_di=25.0)
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "hold"
+
+    def test_adx_d3_zero_rejected_mutex_with_exhaustion(self) -> None:
+        """adx_d3=0 → hold（临界点归 regime_exhaustion）。"""
+        ctx = _make_context(adx_d3=0.0)
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "hold"
+        assert "adx_not_rising" in decision.reason
+
+    def test_adx_d3_negative_rejected(self) -> None:
+        """adx_d3=-1 → hold（趋势在减弱，让给 regime_exhaustion）。"""
+        ctx = _make_context(adx_d3=-1.0)
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "hold"
+
+    def test_no_adx_data_rejected(self) -> None:
+        """缺失 ADX 数据 → hold。"""
+        ctx = _make_context()
+        ctx.indicators["adx14"] = {}
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "hold"
+        assert "no_adx_data" in decision.reason
+
+    def test_why_passes_all_bullish_strong_trend(self) -> None:
+        """ADX=50 + plus_di>minus_di + adx_d3=1 + MACD/ROC pending → 先不 hold 于 why。
+
+        但因 _when/_entry/_exit 还未实现，evaluate 会抛 NotImplementedError。
+        仅验证 _why 本身逻辑：直接调用 _why() 方法。
+        """
+        ctx = _make_context(adx=50.0, plus_di=35.0, minus_di=15.0, adx_d3=1.0)
+        ok, direction, score, reason = self.strategy._why(ctx)
+        assert ok is True
+        assert direction == "buy"
+        assert 0.4 <= score <= 1.0
+        assert "strong_trend" in reason

@@ -53,7 +53,42 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
     def _why(
         self, ctx: SignalContext
     ) -> Tuple[bool, Optional[str], float, str]:
-        raise NotImplementedError  # Task 2 实现
+        adx_data = self._adx_full(ctx)
+        adx = adx_data["adx"]
+        adx_d3 = adx_data["adx_d3"]
+        plus_di = adx_data["plus_di"]
+        minus_di = adx_data["minus_di"]
+
+        if adx is None or plus_di is None or minus_di is None:
+            return False, None, 0.0, "no_adx_data"
+
+        threshold = get_tf_param(
+            self, "adx_extreme", ctx.timeframe, self._adx_extreme
+        )
+        if adx <= threshold:
+            return False, None, 0.0, f"adx_low:{adx:.0f}"
+
+        if plus_di <= minus_di:
+            return False, None, 0.0, (
+                f"di_not_bullish:+{plus_di:.0f}/-{minus_di:.0f}"
+            )
+
+        # adx_d3 必须严格为正（与 regime_exhaustion 在 adx_d3<=0 时互斥）
+        d3_min = get_tf_param(
+            self, "adx_d3_min_strict", ctx.timeframe, self._adx_d3_min_strict
+        )
+        if adx_d3 is None or adx_d3 <= d3_min:
+            return False, None, 0.0, f"adx_not_rising:d3={adx_d3}"
+
+        score = self._linear_score(adx, low=threshold, high=threshold + 15.0)
+        score = max(score, 0.4)
+
+        return (
+            True,
+            "buy",
+            score,
+            f"strong_trend:adx={adx:.0f},di_diff={plus_di - minus_di:.0f}",
+        )
 
     def _when(
         self, ctx: SignalContext, direction: str
