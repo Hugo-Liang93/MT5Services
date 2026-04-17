@@ -112,6 +112,7 @@ health_monitor.db
 /models/
 tmp/
 temp/
+scratch/
 *.tmp
 *.temp
 *.parquet
