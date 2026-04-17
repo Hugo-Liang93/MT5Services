@@ -143,7 +143,16 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
         return self._linear_score(self._volume_ratio(ctx), low=1.2, high=1.5)
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        raise NotImplementedError  # Task 5 实现
+        # 强趋势延续是追单性质，使用市价入场（不等待回调）
+        return EntrySpec()
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
-        raise NotImplementedError  # Task 5 实现
+        """BARRIER 模式：与挖掘 forward_return 评估语义一致。"""
+        sl = get_tf_param(self, "sl_atr", ctx.timeframe, self._sl_atr)
+        tp = get_tf_param(self, "tp_atr", ctx.timeframe, self._tp_atr)
+        tb = int(
+            get_tf_param(self, "time_bars", ctx.timeframe, self._time_bars)
+        )
+        return ExitSpec(
+            sl_atr=sl, tp_atr=tp, mode=ExitMode.BARRIER, time_bars=tb
+        )

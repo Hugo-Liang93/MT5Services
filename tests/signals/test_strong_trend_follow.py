@@ -272,3 +272,68 @@ class TestWhereAndVolume:
         ctx = _make_context(volume_ratio=1.35)
         bonus = self.strategy._volume_bonus(ctx, "buy")
         assert bonus == pytest.approx(0.5, abs=0.01)
+
+
+class TestEntryExitAndEvaluate:
+    """入场/出场规格 + 端到端 evaluate 测试。"""
+
+    def setup_method(self) -> None:
+        self.strategy = StructuredStrongTrendFollow()
+
+    def test_entry_spec_market(self) -> None:
+        """入场：市价。"""
+        ctx = _make_context()
+        spec = self.strategy._entry_spec(ctx, "buy")
+        assert spec.entry_type.value == "market"
+
+    def test_exit_spec_barrier_mode(self) -> None:
+        """出场：BARRIER (sl=1.5, tp=2.5, time=20)。"""
+        ctx = _make_context()
+        spec = self.strategy._exit_spec(ctx, "buy")
+        assert spec.mode == ExitMode.BARRIER
+        assert spec.sl_atr == 1.5
+        assert spec.tp_atr == 2.5
+        assert spec.time_bars == 20
+
+    def test_evaluate_all_pass_returns_buy(self) -> None:
+        """完整评估：所有门控通过 → buy 决策，confidence ≥ 0.56。"""
+        ctx = _make_context(
+            adx=50.0, adx_d3=1.0, plus_di=35.0, minus_di=15.0,
+            macd_hist=0.5, roc=0.5, volume_ratio=1.3,
+        )
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "buy"
+        # base 0.50 + why ≥ 0.4×0.15=0.06 + when ≥ 0.3×0.15=0.045 → ≥ 0.605
+        assert decision.confidence >= 0.56
+        # meta 上应包含 entry_spec / exit_spec
+        assert "entry_spec" in decision.metadata
+        assert decision.metadata["exit_spec"]["mode"] == "barrier"
+
+    def test_evaluate_signal_grade_a_with_all_bonus(self) -> None:
+        """compression + high volume → where/vol 都加分 → grade=A。"""
+        ctx = _make_context(
+            adx=55.0, adx_d3=2.0, plus_di=40.0, minus_di=15.0,
+            macd_hist=0.2, roc=0.8, volume_ratio=1.5,
+            compression_state="active",
+        )
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "buy"
+        assert decision.metadata["signal_grade"] == "A"
+
+    def test_evaluate_confidence_capped_at_090(self) -> None:
+        """极端强信号不超过 0.90 上限。"""
+        ctx = _make_context(
+            adx=80.0, adx_d3=5.0, plus_di=60.0, minus_di=10.0,
+            macd_hist=0.0, roc=2.0, volume_ratio=2.0,
+            compression_state="active",
+        )
+        decision = self.strategy.evaluate(ctx)
+        assert decision.confidence <= 0.90
+
+    def test_evaluate_records_provenance(self) -> None:
+        """metadata 记录 research_provenance。"""
+        ctx = _make_context()
+        decision = self.strategy.evaluate(ctx)
+        assert decision.direction == "buy"
+        provenance = decision.metadata.get("research_provenance", [])
+        assert "2026-04-17-H1-rule-mining-#5" in provenance
