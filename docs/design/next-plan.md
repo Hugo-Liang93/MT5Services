@@ -7,6 +7,103 @@
 
 ---
 
+## Phase FP：Feature Providers 后续优化（2026-04-17 新增）
+
+> 上下文：已完成 Research Feature Providers 架构（6 个 Provider，~85 特征），
+> 首次挖掘发现 `regime_transition.bars_in_regime` 成为 H1 决策树根节点，
+> 基于挖掘结果创建 `structured_regime_exhaustion` 策略（12 个月回测 Sharpe=2.51，PF=5.50）。
+
+### FP.1 — 长窗口挖掘验证 (P0，30min)
+
+**目标**：用 12 个月完整数据重跑挖掘，验证 H1 的 `bars_in_regime` 规则是否跨时间段稳定。
+
+```bash
+python -m src.ops.cli.mining_runner \
+    --environment live --tf M30,H1,H4 \
+    --providers temporal,microstructure,regime_transition \
+    --start 2025-04-10 --end 2026-04-15 \
+    --compare --emit-candidates
+```
+
+**成功标准**：
+- `bars_in_regime` 在 12 个月窗口中仍是 H1 决策树关键节点
+- 至少在 2 个 TF 上找到 robust 跨 TF 规则
+- 生成 2+ 个 StrategyCandidateSpec
+
+**决策点**：若规则不稳定 → 3 个月数据的巧合，重新评估 regime_exhaustion 部署
+
+### FP.2 — CrossTFProvider 数据加载实现 (P1，代码)
+
+**当前状态**：`src/research/orchestration/runner.py:_prepare_extra_data()` 是存根，CrossTF 默认关闭。
+
+**需实现**：
+- 在 Runner 中加载父 TF 历史 bars（通过 `components.data_loader`）
+- 在父 TF bars 上计算所需指标（通过 `components.indicator_manager`）
+- 构造 `extra_data` dict 传给 Hub
+
+**关键文件**：`src/research/orchestration/runner.py` 的 `_prepare_extra_data()` 方法
+
+**验证**：启用 cross_tf 后挖掘，观察 `ctf_parent_trend_dir`、`ctf_tf_trend_align` 是否进入 Top Findings
+
+**预期价值**：跨 TF 共振/冲突是经典交易信号，应有显著预测力
+
+### FP.3 — 诊断新特征未进入决策树 (P2)
+
+**疑问**：首次挖掘中 temporal (34) + microstructure (21) 特征都未进入 Top 规则，需确认是：
+- (A) 这些特征的 IC 确实弱
+- (B) IC 有价值但被决策树 max_depth=3 限制（base 指标先占分裂位）
+
+**执行**：
+```bash
+python -m src.ops.cli.mining_runner --environment live --tf H1,M30 \
+    --providers temporal,microstructure \
+    --analysis predictive_power --template default \
+    --json-output data/research/mining_new_features_only.json
+```
+
+**决策**：
+- 若 (A) → 调整窗口（temporal 用 `20` 代替 `3,5,10`）或增加新派生公式
+- 若 (B) → 增加 `max_depth=4`，或实现序列模式分析器（P4）
+
+### FP.4 — Paper Trading 验证 regime_exhaustion (P3，观察)
+
+**当前状态**：策略已绑定 `live_exec_a` 和 `demo_main`，deployment=`paper_only`
+
+**观察指标**（Paper 运行 1-2 周）：
+- 实际触发次数 vs 回测预期（回测 53 笔/年 ≈ 每周 1 笔）
+- Paper WR 是否接近 49%
+- SL/TP 触发分布（回测：25 TP / 26 SL / 2 timeout）
+
+**决策**：
+- 与回测一致 → 升级 `active_guarded` 加入 live 路径
+- 显著偏离 → 排查 slippage / spread / 时序 gap
+
+### FP.5 — 序列模式分析器 (P4，新能力)
+
+**场景**：temporal/microstructure 真正价值可能在**序列模式**（N 根 bar 演化），非单点值。决策树捕捉不到。
+
+**设计**：实现 `SequencePatternAnalyzer` — 查找 "条件 A 在 bar[t-k] 满足 AND 条件 B 在 bar[t] 满足" 这类规则。
+
+**接入点**：已预留 `MiningAnalyzer` 协议（`src/research/orchestration/runner.py`），只需实现协议 + 注册到 `_analyzers` 列表。
+
+**难度**：高（1-2 会话）。
+
+### FP.6 — 推荐执行顺序
+
+```
+下一 session:
+  ① FP.1 长窗口挖掘验证 (30min)  ← 快速、高价值
+  ② 若挖掘发现新的好规则 → 创建第 2 个挖掘驱动策略
+     否则 → 做 FP.2 CrossTF 数据加载实现
+
+后续 sessions:
+  Paper 观察 1-2 周（FP.4） → regime_exhaustion 实盘数据
+  FP.3 诊断 temporal/micro 特征价值
+  视情况实现 FP.5 序列模式分析器
+```
+
+---
+
 ## Phase 0：策略验证闭环（最高优先）
 
 ### 0.1 各 TF 基线回测

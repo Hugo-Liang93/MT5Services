@@ -16,6 +16,7 @@ from .pullback_window import StructuredPullbackWindow
 from .range_reversion import StructuredRangeReversion
 from .regime_exhaustion import StructuredRegimeExhaustion
 from .session_breakout import StructuredSessionBreakout
+from .strong_trend_follow import StructuredStrongTrendFollow
 from .sweep_reversal import StructuredSweepReversal
 from .trend_continuation import StructuredTrendContinuation
 from .trendline_touch import StructuredTrendlineTouch
@@ -40,4 +41,5 @@ __all__ = [
     "StructuredOpenRangeBreakout",
     "StructuredPriceAction",
     "StructuredRegimeExhaustion",
+    "StructuredStrongTrendFollow",
 ]
