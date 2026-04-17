@@ -100,6 +100,8 @@ class AppRuntime:
 
             self._register_monitoring()
 
+            self._start_notifications()
+
             self._status["phase"] = "running"
             self._status["ready"] = True
             self._status["completed_at"] = time.strftime(
@@ -221,6 +223,18 @@ class AppRuntime:
                     "Failed to dump calibrator cache during shutdown", exc_info=True
                 )
 
+        # Notifications first so its pipeline/health listeners unsubscribe
+        # before we tear down the bus and health monitor below. Use close()
+        # (not stop()) on app shutdown so the SQLite outbox is released too.
+        if c.notification_module is not None:
+            try:
+                c.notification_module.close()
+            except Exception:
+                logger.debug(
+                    "Failed to stop notification_module during shutdown",
+                    exc_info=True,
+                )
+
         # Shutdown order: signal source → execution → data
         for label, component, method in [
             ("monitoring_manager", c.monitoring_manager, "stop"),
@@ -323,6 +337,35 @@ class AppRuntime:
                     logger.info("Trade control restored from persistence")
             except Exception:
                 logger.warning("Trade control restore failed", exc_info=True)
+
+    def _start_notifications(self) -> None:
+        module = self.container.notification_module
+        if module is None:
+            return
+        current_started = time.monotonic()
+        try:
+            module.start()
+        except Exception as exc:
+            logger.exception("Failed to start notification module: %s", exc)
+            self._mark_step(
+                "notifications",
+                RuntimeTaskState.FAILED.value,
+                current_started,
+                error=str(exc),
+            )
+            self._record_task_status(
+                "notifications",
+                RuntimeTaskState.FAILED.value,
+                current_started,
+                error=str(exc),
+            )
+            return
+        self._mark_step("notifications", RuntimeTaskState.READY.value, current_started)
+        self._record_task_status(
+            "notifications",
+            RuntimeTaskState.READY.value,
+            current_started,
+        )
 
     def _register_monitoring(self) -> None:
         c = self.container

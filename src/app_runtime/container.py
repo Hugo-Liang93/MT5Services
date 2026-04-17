@@ -4,45 +4,46 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from src.calendar import EconomicCalendarService
-from src.indicators.manager import UnifiedIndicatorManager
-from src.ingestion.ingestor import BackgroundIngestor
-from src.market import MarketDataService
-from src.market_structure import MarketStructureAnalyzer
-from src.persistence.storage_writer import StorageWriter
-from src.signals.evaluation.calibrator import ConfidenceCalibrator
-from src.signals.evaluation.performance import StrategyPerformanceTracker
-from src.signals.orchestration.runtime import SignalRuntime
-from src.signals.service import SignalModule
-from src.signals.strategies.htf_cache import HTFStateCache
-from src.trading.application.module import TradingModule
-from src.trading.commands.consumer import OperatorCommandConsumer
-from src.trading.commands.service import OperatorCommandService
-from src.trading.pending import PendingEntryManager
-from src.trading.positions import PositionManager
-from src.trading.closeout import ExposureCloseoutController
-from src.trading.execution.executor import TradeExecutor
-from src.trading.runtime.registry import TradingAccountRegistry
-from src.trading.tracking import SignalQualityTracker
-from src.trading.state import TradingStateAlerts
-from src.trading.state import TradingStateRecovery
-from src.trading.state import TradingStateRecoveryPolicy
-from src.trading.state import TradingStateStore
-from src.monitoring.pipeline import PipelineEventBus
-from src.monitoring.pipeline import PipelineTraceRecorder
-from src.readmodels.runtime import RuntimeReadModel
-from src.readmodels.trade_trace import TradingFlowTraceReadModel
-from src.trading.tracking import TradeOutcomeTracker
-from src.backtesting.paper_trading.bridge import PaperTradingBridge
-from src.backtesting.paper_trading.tracker import PaperTradeTracker
-from src.studio.service import StudioService
 from src.app_runtime.lifecycle import RuntimeComponentRegistry
 from src.app_runtime.mode_controller import RuntimeModeController
 from src.app_runtime.mode_policy import (
     RuntimeModeAutoTransitionPolicy,
     RuntimeModeTransitionGuard,
 )
+from src.backtesting.paper_trading.bridge import PaperTradingBridge
+from src.backtesting.paper_trading.tracker import PaperTradeTracker
+from src.calendar import EconomicCalendarService
 from src.config.runtime_identity import RuntimeIdentity
+from src.indicators.manager import UnifiedIndicatorManager
+from src.ingestion.ingestor import BackgroundIngestor
+from src.market import MarketDataService
+from src.market_structure import MarketStructureAnalyzer
+from src.monitoring.pipeline import PipelineEventBus, PipelineTraceRecorder
+from src.notifications.module import NotificationModule
+from src.persistence.storage_writer import StorageWriter
+from src.readmodels.runtime import RuntimeReadModel
+from src.readmodels.trade_trace import TradingFlowTraceReadModel
+from src.signals.evaluation.calibrator import ConfidenceCalibrator
+from src.signals.evaluation.performance import StrategyPerformanceTracker
+from src.signals.orchestration.runtime import SignalRuntime
+from src.signals.service import SignalModule
+from src.signals.strategies.htf_cache import HTFStateCache
+from src.studio.service import StudioService
+from src.trading.application.module import TradingModule
+from src.trading.closeout import ExposureCloseoutController
+from src.trading.commands.consumer import OperatorCommandConsumer
+from src.trading.commands.service import OperatorCommandService
+from src.trading.execution.executor import TradeExecutor
+from src.trading.pending import PendingEntryManager
+from src.trading.positions import PositionManager
+from src.trading.runtime.registry import TradingAccountRegistry
+from src.trading.state import (
+    TradingStateAlerts,
+    TradingStateRecovery,
+    TradingStateRecoveryPolicy,
+    TradingStateStore,
+)
+from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 
 
 class AppContainer:
@@ -103,6 +104,8 @@ class AppContainer:
         # Paper Trading
         "paper_trading_bridge",
         "paper_trade_tracker",
+        # Notifications
+        "notification_module",
         # Studio
         "studio_service",
         # Runtime identity
@@ -161,6 +164,8 @@ class AppContainer:
 
         self.paper_trading_bridge: Optional[PaperTradingBridge] = None
         self.paper_trade_tracker: Optional[PaperTradeTracker] = None
+
+        self.notification_module: Optional[NotificationModule] = None
 
         self.studio_service: Optional[StudioService] = None
         self.runtime_identity: Optional[RuntimeIdentity] = None

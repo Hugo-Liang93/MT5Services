@@ -19,7 +19,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .checks import (
     check_cache_stats,
@@ -99,6 +99,11 @@ class HealthMonitor:
         }
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
 
+        # Optional external listener invoked when a warning/critical alert
+        # transitions into active_alerts. Set via set_alert_listener(). Kept
+        # minimal so this module stays independent of notifications/.
+        self._alert_listener: Optional[Callable[[Dict[str, Any]], None]] = None
+
         # Report cache: avoid repeated full-ring scans from SSE polling
         self._report_cache: Optional[Dict[str, Any]] = None
         self._report_cache_at: float = 0.0
@@ -152,6 +157,17 @@ class HealthMonitor:
             self.alerts["intrabar_to_decision_latency_p95_ms"]["critical"] = float(
                 intrabar_to_decision_latency_p95_ms_critical
             )
+
+    def set_alert_listener(
+        self, listener: Optional[Callable[[Dict[str, Any]], None]]
+    ) -> None:
+        """Register (or clear with ``None``) a callback for warning/critical alerts.
+
+        Intended for downstream notification sinks. Called synchronously from
+        :meth:`record_metric` with a copy of the alert payload dict; the
+        callback MUST be non-blocking. Exceptions are caught and logged.
+        """
+        self._alert_listener = listener
 
     # ─── 核心写入 ────────────────────────────────────────────────────────────
 
@@ -221,7 +237,7 @@ class HealthMonitor:
                 message=message,
             )
             alert_key = f"{component}.{metric_name}"
-            self.active_alerts[alert_key] = {
+            alert_payload = {
                 "timestamp": timestamp,
                 "component": component,
                 "metric_name": metric_name,
@@ -230,7 +246,16 @@ class HealthMonitor:
                 "threshold": threshold,
                 "message": message,
             }
+            self.active_alerts[alert_key] = alert_payload
             logger.warning("New alert: %s", message)
+            listener = self._alert_listener
+            if listener is not None:
+                try:
+                    listener(dict(alert_payload))
+                except Exception:
+                    # Isolate listener failure — losing a notification must
+                    # never corrupt the health monitor's own state.
+                    logger.exception("health alert listener failed")
 
     # ─── 内部辅助 ────────────────────────────────────────────────────────────
 
@@ -465,6 +490,11 @@ class NullHealthMonitor:
         self.active_alerts: Dict[str, Any] = {}
 
     def configure_alerts(self, **kwargs: Any) -> None:
+        pass
+
+    def set_alert_listener(
+        self, listener: Optional[Callable[[Dict[str, Any]], None]]
+    ) -> None:
         pass
 
     def record_metric(

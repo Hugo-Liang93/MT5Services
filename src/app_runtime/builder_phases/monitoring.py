@@ -87,7 +87,12 @@ def build_monitoring_layer(
     }
     monitoring_interval = max(
         1,
-        int(min(ingest_settings.health_check_interval, ingest_settings.queue_monitor_interval)),
+        int(
+            min(
+                ingest_settings.health_check_interval,
+                ingest_settings.queue_monitor_interval,
+            )
+        ),
     )
     container.monitoring_manager = get_monitoring_manager(
         container.health_monitor,

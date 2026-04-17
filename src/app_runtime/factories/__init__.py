@@ -1,5 +1,6 @@
 from .indicators import create_indicator_manager
 from .market import create_ingestor, create_market_service
+from .notifications import create_notification_module
 from .signals import (
     AccountRuntimeComponents,
     SignalComponents,
@@ -24,6 +25,7 @@ __all__ = [
     "create_indicator_manager",
     "create_ingestor",
     "create_market_service",
+    "create_notification_module",
     "create_storage_writer",
     "create_timescale_writer",
     "register_signal_hot_reload",

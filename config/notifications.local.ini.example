@@ -1,0 +1,22 @@
+; 拷贝为 config/notifications.local.ini 并填入真实凭据。
+; 此文件示例已在 git 中；真实 *.local.ini 已被 gitignore 忽略。
+
+[runtime]
+enabled = true
+inbound_enabled = true
+; 如需 HTTP 代理访问 Telegram API（国内机器常见）
+; http_proxy_url = http://127.0.0.1:7890
+
+[chats]
+; Bot 推送目标 chat_id（单 chat 基线），用户级 chat 或群组均可
+default_chat_id = 123456789
+
+[inbound]
+enabled = true
+; 允许发起查询/命令的 chat_id 列表
+allowed_chat_ids = 123456789
+; 能执行 /halt /resume /reload-config 的 chat_id（必须是 allowed_chat_ids 的子集）
+admin_chat_ids = 123456789
+
+; 从 @BotFather 获取的 Bot Token
+bot_token = 1234567890:AAE_xxxxxxxxxxxxxxxxxxxxxxxxxxxx

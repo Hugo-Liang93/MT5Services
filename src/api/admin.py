@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from .admin_routes import config_router, dashboard_router, strategies_router, streams_router
+from .admin_routes import (
+    config_router,
+    dashboard_router,
+    notifications_router,
+    strategies_router,
+    streams_router,
+)
 from .admin_routes.common import build_strategy_detail as _build_strategy_detail
 from .admin_routes.common import load_json_config as _load_json_config
 from .admin_routes.config import (
@@ -25,6 +31,7 @@ router.include_router(dashboard_router)
 router.include_router(config_router)
 router.include_router(strategies_router)
 router.include_router(streams_router)
+router.include_router(notifications_router)
 
 __all__ = [
     "_build_strategy_detail",

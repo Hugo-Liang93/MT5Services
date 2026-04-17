@@ -27,7 +27,9 @@ def _validate_intrabar_trigger_coverage(
     """Validate intrabar trigger coverage against the effective runtime timeframe set."""
     if signal_module is None:
         return
-    if not bool(_resolve_optional_getter(signal_config, "intrabar_trading_enabled", False)):
+    if not bool(
+        _resolve_optional_getter(signal_config, "intrabar_trading_enabled", False)
+    ):
         return
 
     catalog_fn = _resolve_optional_getter(signal_module, "strategy_capability_catalog")
@@ -63,7 +65,8 @@ def _validate_intrabar_trigger_coverage(
             str(trigger_tf).strip().upper(),
         )
         for parent_tf, trigger_tf in (
-            _resolve_optional_getter(signal_config, "intrabar_trading_trigger_map", {}) or {}
+            _resolve_optional_getter(signal_config, "intrabar_trading_trigger_map", {})
+            or {}
         ).items()
         if str(parent_tf).strip() and str(trigger_tf).strip()
     )
@@ -84,9 +87,7 @@ def _validate_intrabar_trigger_coverage(
     )
 
     capabilities_by_name = {
-        capability.name: capability
-        for capability in catalog
-        if capability.name
+        capability.name: capability for capability in catalog if capability.name
     }
     intrabar_capabilities = {
         capability.name: capability
@@ -113,8 +114,7 @@ def _validate_intrabar_trigger_coverage(
     if unsupported_enabled:
         raise ValueError(
             "intrabar_trading.enabled_strategies contains strategies that do not "
-            "declare intrabar capability: "
-            + ", ".join(unsupported_enabled)
+            "declare intrabar capability: " + ", ".join(unsupported_enabled)
         )
 
     active_intrabar_strategies = (
@@ -138,7 +138,9 @@ def _validate_intrabar_trigger_coverage(
             if str(tf).strip()
         )
         candidate_parent_tfs = (
-            configured_parent_tfs if configured_parent_tfs else tuple(sorted(configured_timeframes))
+            configured_parent_tfs
+            if configured_parent_tfs
+            else tuple(sorted(configured_timeframes))
         )
         active_parent_tfs = tuple(
             tf for tf in candidate_parent_tfs if tf in configured_timeframes
@@ -229,7 +231,9 @@ def build_signal_layer(
     container.htf_cache = signal_components.htf_cache
     container.signal_quality_tracker = signal_components.signal_quality_tracker
     container.trade_outcome_tracker = signal_components.trade_outcome_tracker
-    container.exposure_closeout_controller = signal_components.exposure_closeout_controller
+    container.exposure_closeout_controller = (
+        signal_components.exposure_closeout_controller
+    )
     container.position_manager = signal_components.position_manager
     container.trade_executor = signal_components.trade_executor
     if container.position_manager is not None:
@@ -239,19 +243,13 @@ def build_signal_layer(
             container.trade_executor,
         )
     container.performance_tracker = signal_components.performance_tracker
-    container.signal_performance_tracker = (
-        signal_components.signal_performance_tracker
-    )
+    container.signal_performance_tracker = signal_components.signal_performance_tracker
     container.execution_performance_tracker = (
         signal_components.execution_performance_tracker
     )
     container.pending_entry_manager = signal_components.pending_entry_manager
-    container.execution_intent_publisher = (
-        signal_components.execution_intent_publisher
-    )
-    container.execution_intent_consumer = (
-        signal_components.execution_intent_consumer
-    )
+    container.execution_intent_publisher = signal_components.execution_intent_publisher
+    container.execution_intent_consumer = signal_components.execution_intent_consumer
 
     if container.ingestor is not None and signal_config.intrabar_trading_enabled:
         trigger_map = dict(signal_config.intrabar_trading_trigger_map)

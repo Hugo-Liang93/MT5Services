@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from src.app_runtime.container import AppContainer
 import logging
 
+from src.app_runtime.container import AppContainer
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,10 @@ def build_paper_trading_layer(container: AppContainer) -> None:
     """Construct Paper Trading bridge and tracker if enabled."""
     runtime_identity = container.runtime_identity
     if runtime_identity is not None and runtime_identity.instance_role == "executor":
-        logger.info("Paper trading skipped for executor instance: %s", runtime_identity.instance_name)
+        logger.info(
+            "Paper trading skipped for executor instance: %s",
+            runtime_identity.instance_name,
+        )
         return
     try:
         from src.backtesting.paper_trading.bridge import PaperTradingBridge
@@ -44,6 +47,7 @@ def build_paper_trading_layer(container: AppContainer) -> None:
         # bridge.start() 会在 config flag 开启时尝试调用，返回 None 走 fresh start。
         recover_fn = None
         if pt_config.resume_active_session and db_writer is not None:
+
             def _recover() -> dict | None:
                 try:
                     repo = db_writer.paper_trading_repo
@@ -53,7 +57,9 @@ def build_paper_trading_layer(container: AppContainer) -> None:
                     session_id = str(session_row["session_id"])
                     # 把 DB 的 trade dict 转回 PaperTradeRecord，供 portfolio.restore_open_trade 使用
                     from datetime import datetime as _dt
+
                     from src.backtesting.paper_trading.models import PaperTradeRecord
+
                     open_rows = repo.fetch_open_trades(session_id)
                     open_records = []
                     for row in open_rows:
@@ -63,32 +69,38 @@ def build_paper_trading_layer(container: AppContainer) -> None:
                                 entry_time = _dt.fromisoformat(entry_time)
                             except Exception:
                                 entry_time = _dt.utcnow()
-                        open_records.append(PaperTradeRecord(
-                            trade_id=str(row["trade_id"]),
-                            session_id=str(row["session_id"]),
-                            strategy=str(row.get("strategy") or ""),
-                            direction=str(row.get("direction") or ""),
-                            symbol=str(row.get("symbol") or ""),
-                            timeframe=str(row.get("timeframe") or ""),
-                            entry_time=entry_time,
-                            entry_price=float(row.get("entry_price") or 0.0),
-                            stop_loss=float(row.get("stop_loss") or 0.0),
-                            take_profit=float(row.get("take_profit") or 0.0),
-                            position_size=float(row.get("position_size") or 0.0),
-                            confidence=float(row.get("confidence") or 0.0),
-                            regime=str(row.get("regime") or ""),
-                            signal_id=str(row.get("signal_id") or ""),
-                            current_sl=row.get("stop_loss"),
-                            current_tp=row.get("take_profit"),
-                            breakeven_activated=bool(row.get("breakeven_activated") or False),
-                            trailing_activated=bool(row.get("trailing_activated") or False),
-                            max_favorable_excursion=float(
-                                row.get("max_favorable_excursion") or 0.0
-                            ),
-                            max_adverse_excursion=float(
-                                row.get("max_adverse_excursion") or 0.0
-                            ),
-                        ))
+                        open_records.append(
+                            PaperTradeRecord(
+                                trade_id=str(row["trade_id"]),
+                                session_id=str(row["session_id"]),
+                                strategy=str(row.get("strategy") or ""),
+                                direction=str(row.get("direction") or ""),
+                                symbol=str(row.get("symbol") or ""),
+                                timeframe=str(row.get("timeframe") or ""),
+                                entry_time=entry_time,
+                                entry_price=float(row.get("entry_price") or 0.0),
+                                stop_loss=float(row.get("stop_loss") or 0.0),
+                                take_profit=float(row.get("take_profit") or 0.0),
+                                position_size=float(row.get("position_size") or 0.0),
+                                confidence=float(row.get("confidence") or 0.0),
+                                regime=str(row.get("regime") or ""),
+                                signal_id=str(row.get("signal_id") or ""),
+                                current_sl=row.get("stop_loss"),
+                                current_tp=row.get("take_profit"),
+                                breakeven_activated=bool(
+                                    row.get("breakeven_activated") or False
+                                ),
+                                trailing_activated=bool(
+                                    row.get("trailing_activated") or False
+                                ),
+                                max_favorable_excursion=float(
+                                    row.get("max_favorable_excursion") or 0.0
+                                ),
+                                max_adverse_excursion=float(
+                                    row.get("max_adverse_excursion") or 0.0
+                                ),
+                            )
+                        )
                     return {"session": session_row, "open_trades": open_records}
                 except Exception:
                     logger.warning(
@@ -96,6 +108,7 @@ def build_paper_trading_layer(container: AppContainer) -> None:
                         exc_info=True,
                     )
                     return None
+
             recover_fn = _recover
 
         market_service = container.market_service

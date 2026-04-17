@@ -11,6 +11,17 @@
 
 本轮已直接处理并验证以下启动阻塞项：
 
+补充更新（2026-04-17）：Telegram 通知模块 Phase 1
+
+- **HealthMonitor 新增 `set_alert_listener` 外部订阅端口，仅在 warning/critical 转换为 active_alerts 时同步回调，listener 异常被 try/except 隔离（不污染 monitor 自身状态）；NullHealthMonitor 同步实现为 no-op 保持接口兼容**  
+  `record_metric()` 路径原本只把告警写入 `self.active_alerts` 与 SQLite 历史表，没有对外通知机制。本轮最小侵入加入 `_alert_listener: Optional[Callable]` + `set_alert_listener()` 方法（约 15 行），在告警升级点同步调用 listener，由通知模块负责将 alert dict 映射成 NotificationEvent 并分发。listener 异常被捕获后仅记日志，不回退 active_alerts 的写入。该改动只扩展公开端口、不更改 monitor 内部告警判定逻辑，符合 ADR-006（不读私有属性、只通过公开 setter 接入）。
+
+- **AppContainer 新增 `notification_module` 字段（Optional[NotificationModule]）；AppRuntime 在启动尾段 `_start_notifications()`，关闭顺序中先于 monitoring/ingestor 拆除以确保 bus/health listener 及时解绑，防止僵尸回调**  
+  `builder_phases/notifications.py` 作为独立 Phase 5.5 在 read_models 之后、studio 之前执行。工厂 `create_notification_module()` 会在缺少 `bot_token` 或 `default_chat_id` 时返回 `None`，`NotificationModule` 不被构建，container 字段保留为 `None`，运行时路径全量跳过通知链路——不会影响未配置推送的实例。`NotificationModule.stop()` 只停 worker + 解 listener，`close()` 额外关闭 outbox SQLite 句柄；运行时 toggle 调 `stop/start` 即可在线切换而不丢失 outbox 内容。
+
+- **`src/notifications/` 引入 6 层开关控制但不改任何业务模块：物理（无 token → 不构建）/ 全局（[runtime] enabled）/ 运行时（`/v1/admin/notifications/toggle` API）/ 事件级（[events] `<name>` = off）/ 实例级（[event_filters] suppress_info_on_instances）/ 最终防刷（dedup TTL + rate limit）**  
+  模块自身遵守 L2 持久化（SQLite outbox + DLQ 崩溃恢复）与 ADR-005（worker 线程 join 超时后保留引用），与 StorageWriter 的线程模式对齐。详见 `docs/design/notifications.md`。
+
 补充更新（2026-04-13）：
 
 - **本地单账户执行适配路径已并入同一 terminal 结果发射职责，不再由 queue worker 悄悄吞掉正式结果**  

@@ -84,7 +84,11 @@ class RuntimeModeController:
         idempotency_key: str | None = None,
         request_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        target = mode if isinstance(mode, RuntimeMode) else RuntimeMode(str(mode).strip().lower())
+        target = (
+            mode
+            if isinstance(mode, RuntimeMode)
+            else RuntimeMode(str(mode).strip().lower())
+        )
         with self._lock:
             self._is_auto_transitioned = False
             self._apply_mode_locked(
@@ -101,14 +105,18 @@ class RuntimeModeController:
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             return {
-                "current_mode": self._current_mode.value if self._current_mode else None,
+                "current_mode": (
+                    self._current_mode.value if self._current_mode else None
+                ),
                 "configured_mode": self._policy.initial_mode.value,
                 "monitor_running": self.is_running,
                 "after_eod_action": self._policy.after_eod_action.value,
                 "auto_check_interval_seconds": self._policy.auto_check_interval_seconds,
                 "is_auto_transitioned": self._is_auto_transitioned,
                 "last_transition_at": (
-                    self._last_transition_at.isoformat() if self._last_transition_at else None
+                    self._last_transition_at.isoformat()
+                    if self._last_transition_at
+                    else None
                 ),
                 "last_transition_reason": self._last_transition_reason,
                 "last_error": self._last_error,
@@ -150,11 +158,11 @@ class RuntimeModeController:
         self._last_error = partial_error
         self._last_actor = (str(actor).strip() or None) if actor is not None else None
         self._last_action_id = (
-            str(action_id).strip() or None
-        ) if action_id is not None else None
+            (str(action_id).strip() or None) if action_id is not None else None
+        )
         self._last_audit_id = (
-            str(audit_id).strip() or None
-        ) if audit_id is not None else None
+            (str(audit_id).strip() or None) if audit_id is not None else None
+        )
         self._last_idempotency_key = (
             str(idempotency_key).strip() or None
             if idempotency_key is not None
@@ -180,7 +188,9 @@ class RuntimeModeController:
         self._monitor_thread.start()
 
     def _monitor_loop(self) -> None:
-        while not self._stop_event.wait(timeout=max(1.0, self._policy.auto_check_interval_seconds)):
+        while not self._stop_event.wait(
+            timeout=max(1.0, self._policy.auto_check_interval_seconds)
+        ):
             try:
                 self._evaluate_auto_transition()
             except Exception as exc:
