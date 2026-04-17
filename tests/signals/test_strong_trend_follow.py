@@ -337,3 +337,23 @@ class TestEntryExitAndEvaluate:
         assert decision.direction == "buy"
         provenance = decision.metadata.get("research_provenance", [])
         assert "2026-04-17-H1-rule-mining-#5" in provenance
+
+
+class TestCatalogRegistration:
+    """策略目录注册验证。"""
+
+    def test_strategy_in_catalog(self) -> None:
+        """catalog 中能找到 structured_strong_trend_follow。"""
+        from src.signals.strategies.catalog import build_named_strategy_catalog
+
+        catalog = build_named_strategy_catalog()
+        assert "structured_strong_trend_follow" in catalog
+        strategy = catalog["structured_strong_trend_follow"]
+        assert isinstance(strategy, StructuredStrongTrendFollow)
+
+    def test_strategy_exported_from_structured_module(self) -> None:
+        """从 structured 模块能导入。"""
+        from src.signals.strategies.structured import (
+            StructuredStrongTrendFollow as ImportedClass,
+        )
+        assert ImportedClass is StructuredStrongTrendFollow
