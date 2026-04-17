@@ -84,8 +84,12 @@ def _run_single(
     # --providers 覆盖：选择性启用 Provider
     if providers is not None:
         _ALL_PROVIDERS = [
-            "temporal", "microstructure", "cross_tf",
-            "regime_transition", "session_event", "intrabar",
+            "temporal",
+            "microstructure",
+            "cross_tf",
+            "regime_transition",
+            "session_event",
+            "intrabar",
         ]
         if providers == ["all"]:
             enabled = _ALL_PROVIDERS
@@ -560,6 +564,7 @@ def _render_feature_candidates(
             "  "
             f"{item.get('candidate_id')} "
             f"[{item.get('robustness_tier')}] "
+            f"[{item.get('feature_kind', 'derived')}] "
             f"{item.get('feature_name')} -> {item.get('target_timeframe')} "
             f"decision={item.get('promotion_decision')}"
         )
