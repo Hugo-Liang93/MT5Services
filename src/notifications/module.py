@@ -51,6 +51,7 @@ class NotificationModule:
         pipeline_event_bus: Optional[PipelineEventBus] = None,
         health_monitor: Optional[Any] = None,
         trading_state_alerts: Optional[Any] = None,
+        runtime_read_model: Optional[Any] = None,
         trading_state_poll_interval_seconds: float = 60.0,
         outbox_purge_interval_hours: float = 6.0,
         outbox_retention_days: float = 7.0,
@@ -65,6 +66,7 @@ class NotificationModule:
         self._pipeline_event_bus = pipeline_event_bus
         self._health_monitor = health_monitor
         self._trading_state_alerts = trading_state_alerts
+        self._runtime_read_model = runtime_read_model
         self._trading_state_poll_interval = float(trading_state_poll_interval_seconds)
         self._outbox_purge_interval_hours = float(outbox_purge_interval_hours)
         self._outbox_retention_days = float(outbox_retention_days)
@@ -148,6 +150,34 @@ class NotificationModule:
             "scheduler_jobs": scheduler_jobs,
             "dispatcher": self._dispatcher.status(),
         }
+
+    # ── public observability: DLQ inspection ──
+
+    def dlq_entries(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return most recent DLQ rows as plain dicts for API serialization.
+
+        Intentionally a pass-through around ``OutboxStore.dlq_entries``; we
+        convert the dataclass into a shallow dict so the admin route doesn't
+        reach into ``OutboxEntry`` internals (ADR-006 port boundary).
+        """
+        entries = self._outbox.dlq_entries(limit=limit)
+        return [
+            {
+                "id": e.id,
+                "event_id": e.event_id,
+                "event_type": e.event_type,
+                "severity": e.severity,
+                "chat_id": e.chat_id,
+                "dedup_key": e.dedup_key,
+                "created_at": e.created_at.isoformat(),
+                "attempt_count": e.attempt_count,
+                "last_error": e.last_error,
+                "rendered_text_preview": (
+                    e.rendered_text[:200] + ("…" if len(e.rendered_text) > 200 else "")
+                ),
+            }
+            for e in entries
+        ]
 
     # ── public submission path (used by scheduler, tests) ──
 
@@ -250,7 +280,7 @@ class NotificationModule:
                     name="daily_report",
                     hour_utc=int(hour_str),
                     minute_utc=int(minute_str),
-                    job=self._make_daily_report_job_placeholder(),
+                    job=self._make_daily_report_job(),
                 )
             except Exception:
                 logger.exception(
@@ -292,20 +322,44 @@ class NotificationModule:
 
         return _purge
 
-    def _make_daily_report_job_placeholder(self) -> Callable[[], None]:
-        # Phase 2.5 will inject a daily_report generator (RuntimeReadModel +
-        # PnL summary → NotificationEvent). Keep the slot alive so the
-        # scheduler + config + observability surface are correct today.
+    def _make_daily_report_job(self) -> Callable[[], None]:
+        """Build the daily_report scheduler job.
+
+        If ``runtime_read_model`` was injected, generate a real snapshot.
+        Otherwise fall back to a heartbeat log — keeps the slot observable
+        (``scheduler_jobs`` shows ``daily_report``) but emits nothing.
+        """
+        from src.notifications.daily_report import DailyReportGenerator
+
         instance = self._instance
+        dispatcher = self._dispatcher
+        rrm = self._runtime_read_model
 
-        def _noop() -> None:
-            logger.info(
-                "daily_report scheduler tick for instance=%s "
-                "(Phase 2.5 will plug in content generator)",
-                instance,
-            )
+        if rrm is None:
 
-        return _noop
+            def _heartbeat() -> None:
+                logger.info(
+                    "daily_report scheduler tick for instance=%s — "
+                    "runtime_read_model not injected, skipping send",
+                    instance,
+                )
+
+            return _heartbeat
+
+        generator = DailyReportGenerator(runtime_read_model=rrm, instance=instance)
+
+        def _emit() -> None:
+            try:
+                event = generator.build_event()
+            except Exception:
+                logger.exception("daily_report generator raised")
+                return
+            try:
+                dispatcher.submit(event)
+            except Exception:
+                logger.exception("daily_report submit failed")
+
+        return _emit
 
     # ── runtime toggle (used by /v1/admin/notifications/toggle) ──
 

@@ -9,9 +9,9 @@ Kept intentionally small; deeper inbox/DLQ inspection lives in a future
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.api import deps
@@ -59,4 +59,29 @@ def notifications_toggle(
         raise HTTPException(status_code=500, detail=f"toggle failed: {exc}") from exc
     return ApiResponse.success_response(
         {"requested_enabled": request.enabled, **module.status()}
+    )
+
+
+@router.get("/dlq", response_model=ApiResponse[Dict[str, Any]])
+def notifications_dlq(
+    limit: int = Query(default=50, ge=1, le=500, description="最多返回条数"),
+    module: NotificationModule | None = Depends(deps.get_notification_module),
+) -> ApiResponse[Dict[str, Any]]:
+    """查询通知 outbox 的 DLQ（死信）记录。
+
+    DLQ 条目是重试次数耗尽或收到终态错误（4xx 非 429）后无法再投递的消息。
+    用于故障排查：哪些 severity 被扔、最后错误是什么、失败于哪个 chat_id。
+    """
+    if module is None:
+        raise HTTPException(
+            status_code=503,
+            detail="notification module not configured",
+        )
+    entries = module.dlq_entries(limit=limit)
+    return ApiResponse.success_response(
+        {
+            "count": len(entries),
+            "limit": limit,
+            "entries": entries,
+        }
     )

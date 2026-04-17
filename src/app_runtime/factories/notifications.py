@@ -33,6 +33,7 @@ def create_notification_module(
     pipeline_event_bus: Optional[PipelineEventBus] = None,
     health_monitor: Optional[Any] = None,
     trading_state_alerts: Optional[Any] = None,
+    runtime_read_model: Optional[Any] = None,
     transport: Optional[NotificationTransport] = None,
     templates_dir: Optional[str | Path] = None,
 ) -> Optional[NotificationModule]:
@@ -114,4 +115,5 @@ def create_notification_module(
         pipeline_event_bus=pipeline_event_bus,
         health_monitor=health_monitor,
         trading_state_alerts=trading_state_alerts,
+        runtime_read_model=runtime_read_model,
     )

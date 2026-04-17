@@ -89,6 +89,23 @@ _EVENT_PREVIEWS: dict[str, tuple[str, dict[str, object]]] = {
             "threshold": 30.0,
         },
     ),
+    "daily_report": (
+        "info_daily_report",
+        {
+            "instance": "live-main",
+            "report_date_utc": "2026-04-18",
+            "report_time_utc": "21:00 UTC",
+            "health_status": "ok",
+            "active_alerts_count": "0",
+            "mode": "full",
+            "executor_enabled": "是",
+            "circuit_open": "否",
+            "signals_running": "是",
+            "open_positions": "2",
+            "pending_entries": "1",
+            "read_model_ok": True,
+        },
+    ),
 }
 
 

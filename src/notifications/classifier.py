@@ -51,6 +51,15 @@ _TEMPLATE_KEY = {
     NOTIF_UNMANAGED_POSITION: "critical_unmanaged_position",
     NOTIF_CIRCUIT_OPEN: "critical_circuit_open",
     NOTIF_RISK_REJECTION: "warn_risk_rejection",
+    # Non-pipeline event types (scheduler / hooks) — the classifier itself
+    # doesn't dispatch these, but listing their template keys here keeps
+    # the factory's boot-time ``ensure_keys`` check complete. Drift between
+    # config.events and templates/ is caught at startup, not at send time.
+    "daily_report": "info_daily_report",
+    "health_degraded": "warn_health_alert",
+    "pending_missing": "critical_pending_missing",
+    "queue_overflow": "critical_queue_overflow",
+    "trading_state_warning": "warn_trading_state",
 }
 
 

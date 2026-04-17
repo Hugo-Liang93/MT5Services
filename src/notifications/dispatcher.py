@@ -78,6 +78,11 @@ class NotificationDispatcher:
         self._stop_event = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
         self._started = False
+        # Liveness probe: lets /status answer "is the end-to-end send path
+        # still working?" without needing to peek at Telegram. If this stays
+        # None or grows stale, the operator knows DLQ / network is wrong
+        # before waiting for the next actual alert.
+        self._last_successful_send_at: Optional[datetime] = None
 
     # ── public: submit path (called from bus listeners, hooks, scheduler) ──
 
@@ -182,12 +187,22 @@ class NotificationDispatcher:
 
     def status(self) -> dict[str, object]:
         outbox_counts = self._outbox.count_by_status()
+        pending_count = int(outbox_counts.get("pending", 0))
+        dlq_count = int(outbox_counts.get("dlq", 0))
+        last_ok = (
+            self._last_successful_send_at.isoformat()
+            if self._last_successful_send_at is not None
+            else None
+        )
         return {
             "enabled": self._config.runtime.enabled,
             "worker_running": bool(
                 self._worker_thread and self._worker_thread.is_alive()
             ),
             "outbox_counts": outbox_counts,
+            "outbox_pending": pending_count,
+            "dlq_count": dlq_count,
+            "last_successful_send_at": last_ok,
             "metrics": self._metrics.snapshot(),
             "rate_limit": self._rate_limiter.snapshot(),
             "pending_suppressions": self._deduper.pending_suppressions(),
@@ -219,6 +234,7 @@ class NotificationDispatcher:
             self._metrics.incr(
                 key_with_severity(NotificationMetrics.SEND_SUCCESS, entry.severity)
             )
+            self._last_successful_send_at = now
             return
         next_attempt = entry.attempt_count + 1
         if not result.retryable or next_attempt >= self._max_attempts:
