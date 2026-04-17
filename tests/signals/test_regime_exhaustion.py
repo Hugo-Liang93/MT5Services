@@ -178,9 +178,12 @@ class TestStructuredRegimeExhaustion:
     # ── 评分梯度 ──
 
     def test_higher_adx_higher_confidence(self) -> None:
-        """ADX=70 比 ADX=56 信号更强（why_score 更高）。"""
-        ctx_high = _make_context(adx=70.0, adx_d3=-2.0, stoch_k=85.0, rsi=55.0)
-        ctx_low = _make_context(adx=56.0, adx_d3=-2.0, stoch_k=85.0, rsi=55.0)
+        """ADX=54 比 ADX=42 信号更强（why_score 更高，linear 未饱和）。
+
+        _linear_score(low=40, high=55) 在 ADX>=55 饱和；用 42 vs 54 观察梯度。
+        """
+        ctx_high = _make_context(adx=54.0, adx_d3=-2.0, stoch_k=85.0, rsi=55.0)
+        ctx_low = _make_context(adx=42.0, adx_d3=-2.0, stoch_k=85.0, rsi=55.0)
         d_high = self.strategy.evaluate(ctx_high)
         d_low = self.strategy.evaluate(ctx_low)
         assert d_high.direction == "sell"
