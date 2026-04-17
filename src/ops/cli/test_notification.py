@@ -30,11 +30,9 @@ from src.notifications.transport.telegram import TelegramTransport
 logger = logging.getLogger("test_notification")
 
 _DEFAULT_MESSAGE = (
-    "🤖 *Telegram 推送自检*\n\n"
-    "• 配置加载：✓\n"
-    "• Bot API 可达：✓\n"
-    "• 消息格式：`Markdown` 正常\n\n"
-    "_来自 MT5Services `test_notification` CLI_"
+    "🤖 *Telegram 推送自检成功*\n\n"
+    "配置加载、Bot API 可达、Markdown 渲染正常。\n\n"
+    "来自 MT5Services 通知模块。"
 )
 
 
