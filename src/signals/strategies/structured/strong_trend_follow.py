@@ -129,6 +129,19 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
 
         return True, score, f"timing:macd_hist={macd_hist:.2f},roc={roc:.2f}"
 
+    def _where(
+        self, ctx: SignalContext, direction: str
+    ) -> Tuple[float, str]:
+        ms = self._ms(ctx)
+        if str(ms.get("compression_state", "none")) != "none":
+            return 0.8, f"compression={ms.get('compression_state')}"
+        if str(ms.get("breakout_state", "none")) != "none":
+            return 0.8, f"breakout={ms.get('breakout_state')}"
+        return 0.0, ""
+
+    def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
+        return self._linear_score(self._volume_ratio(ctx), low=1.2, high=1.5)
+
     def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
         raise NotImplementedError  # Task 5 实现
 

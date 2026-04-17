@@ -227,3 +227,48 @@ class TestWhenGate:
         assert ok is True
         assert 0.3 <= score <= 1.0
         assert "timing" in reason
+
+
+class TestWhereAndVolume:
+    """软加分层测试。"""
+
+    def setup_method(self) -> None:
+        self.strategy = StructuredStrongTrendFollow()
+
+    def test_where_default_zero(self) -> None:
+        """无 compression/breakout → 0.0。"""
+        ctx = _make_context()
+        score, reason = self.strategy._where(ctx, "buy")
+        assert score == 0.0
+
+    def test_where_compression_bonus(self) -> None:
+        """compression_state=active → 0.8 加分。"""
+        ctx = _make_context(compression_state="active")
+        score, reason = self.strategy._where(ctx, "buy")
+        assert score == 0.8
+        assert "compression" in reason
+
+    def test_where_breakout_bonus(self) -> None:
+        """breakout_state=bullish → 0.8 加分。"""
+        ctx = _make_context(breakout_state="bullish")
+        score, reason = self.strategy._where(ctx, "buy")
+        assert score == 0.8
+        assert "breakout" in reason
+
+    def test_volume_bonus_low_volume_zero(self) -> None:
+        """volume_ratio=0.9 < 1.2 → 0.0。"""
+        ctx = _make_context(volume_ratio=0.9)
+        bonus = self.strategy._volume_bonus(ctx, "buy")
+        assert bonus == 0.0
+
+    def test_volume_bonus_high_volume_full(self) -> None:
+        """volume_ratio=1.5 >= 1.5 → 1.0。"""
+        ctx = _make_context(volume_ratio=1.5)
+        bonus = self.strategy._volume_bonus(ctx, "buy")
+        assert bonus == pytest.approx(1.0, abs=0.01)
+
+    def test_volume_bonus_mid_volume_partial(self) -> None:
+        """volume_ratio=1.35（1.2 与 1.5 中间）→ 0.5。"""
+        ctx = _make_context(volume_ratio=1.35)
+        bonus = self.strategy._volume_bonus(ctx, "buy")
+        assert bonus == pytest.approx(0.5, abs=0.01)
