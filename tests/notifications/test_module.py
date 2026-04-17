@@ -163,7 +163,8 @@ class TestPipelineWiring:
             assert len(transport.sent) == 1
             chat_id, text = transport.sent[0]
             assert chat_id == "123"
-            assert "XAUUSD" in text and "trend_h1" in text
+            # Escaped form — "trend_h1" renders as "trend\_h1" under Markdown safety.
+            assert "XAUUSD" in text and "trend\\_h1" in text
         finally:
             module.stop()
 
@@ -209,7 +210,8 @@ class TestHealthWiring:
             )
             module._dispatcher.drain_once()
             assert len(transport.sent) == 1
-            assert "data.data_latency" in transport.sent[0][1]
+            # "data.data_latency" renders as "data.data\_latency" post-escape
+            assert "data.data\\_latency" in transport.sent[0][1]
         finally:
             module.stop()
 

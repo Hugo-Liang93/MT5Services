@@ -7,6 +7,7 @@ import pytest
 from src.notifications.templates.renderer import (
     TELEGRAM_MAX_MESSAGE_LENGTH,
     TemplateRenderError,
+    escape_markdown,
     extract_required_vars,
     render_template,
     truncate_for_telegram,
@@ -85,6 +86,48 @@ class TestLengthClamping:
     def test_truncate_returns_as_is_when_within_limit(self):
         result = truncate_for_telegram("abc", max_length=10)
         assert result == "abc"
+
+
+class TestMarkdownEscape:
+    """These tests lock in the escape-by-default policy. Breaking them means
+    dynamic values could leak unescaped into Telegram and trigger
+    ``Bad Request: can't parse entities`` (400) in production — a class of
+    bug that silently routes CRITICAL alerts to DLQ."""
+
+    def test_escape_underscore(self):
+        assert escape_markdown("trend_h1") == r"trend\_h1"
+
+    def test_escape_asterisk(self):
+        assert escape_markdown("foo*bar") == r"foo\*bar"
+
+    def test_escape_backtick(self):
+        assert escape_markdown("code`block") == "code\\`block"
+
+    def test_escape_bracket(self):
+        assert escape_markdown("[tag]") == r"\[tag]"
+
+    def test_escape_all_meta_chars(self):
+        assert escape_markdown("a_b*c`d[e") == r"a\_b\*c\`d\[e"
+
+    def test_plain_text_unchanged(self):
+        assert escape_markdown("XAUUSD") == "XAUUSD"
+        assert escape_markdown("hello world 123") == "hello world 123"
+
+    def test_render_template_escapes_vars_by_default(self):
+        result = render_template("strategy={{ name }}", {"name": "trend_h1"})
+        assert result == r"strategy=trend\_h1"
+
+    def test_render_template_preserves_template_meta_chars(self):
+        # Template's literal *bold* must survive — the escape only targets
+        # substituted values, not the template body.
+        result = render_template("*bold* {{ x }}", {"x": "safe"})
+        assert result == "*bold* safe"
+
+    def test_render_template_escape_false_passthrough(self):
+        result = render_template(
+            "strategy={{ name }}", {"name": "trend_h1"}, escape_values=False
+        )
+        assert result == "strategy=trend_h1"
 
 
 class TestExtractRequiredVars:

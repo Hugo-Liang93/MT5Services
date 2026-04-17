@@ -25,6 +25,7 @@ import sys
 from typing import Optional
 
 from src.config import get_notification_config
+from src.notifications.templates.loader import TemplateRegistry
 from src.notifications.transport.telegram import TelegramTransport
 
 logger = logging.getLogger("test_notification")
@@ -36,28 +37,57 @@ _DEFAULT_MESSAGE = (
 )
 
 
-_EVENT_SAMPLES: dict[str, str] = {
+# Event preview samples — rendered through the real template registry so the
+# Markdown auto-escape path is exercised end-to-end (catches regressions where
+# e.g. `strategy = trend_h1` leaks an unescaped underscore).
+_EVENT_PREVIEWS: dict[str, tuple[str, dict[str, object]]] = {
     "execution_failed": (
-        "🚨 *执行失败*\n\n"
-        "• 策略: `trend_h1` (long)\n"
-        "• 品种: `XAUUSD`\n"
-        "• 原因: broker_reject\n"
-        "• 实例: live-main\n"
-        "• Trace: `abc-123`"
+        "critical_execution_failed",
+        {
+            "strategy": "trend_h1",
+            "symbol": "XAUUSD",
+            "direction": "long",
+            "reason": "broker_reject",
+            "trace_id": "abc-123",
+            "instance": "live-main",
+        },
     ),
     "circuit_open": (
-        "🔒 *熔断器打开，自动交易停止*\n\n"
-        "• 实例: live-main\n"
-        "• 连续失败: 3 次\n"
-        "• 最近原因: timeout\n"
-        "• 自动恢复: 30 分钟后"
+        "critical_circuit_open",
+        {
+            "instance": "live-main",
+            "consecutive_failures": 3,
+            "last_reason": "timeout",
+            "auto_reset_minutes": 30,
+        },
     ),
-    "startup_ready": (
-        "✅ *系统就绪*\n\n"
-        "• 实例: live-main\n"
-        "• 环境: live\n"
-        "• 模式: full\n"
-        "• 版本: unified"
+    "unmanaged_position": (
+        "critical_unmanaged_position",
+        {
+            "instance": "live-main",
+            "ticket": "555",
+            "reason": "manual_position",
+        },
+    ),
+    "risk_rejection": (
+        "warn_risk_rejection",
+        {
+            "strategy": "trend_h4_momentum",
+            "symbol": "XAUUSD",
+            "direction": "long",
+            "reason": "margin_guard_block",
+            "instance": "live-main",
+        },
+    ),
+    "health_degraded": (
+        "warn_health_alert",
+        {
+            "instance": "live-main",
+            "metric": "data.data_latency",
+            "level": "critical",
+            "value": 45.0,
+            "threshold": 30.0,
+        },
     ),
 }
 
@@ -83,8 +113,8 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--event-preview",
-        choices=sorted(_EVENT_SAMPLES.keys()),
-        help="发送一条预置事件样本消息（模拟 execution_failed / circuit_open / startup_ready）",
+        choices=sorted(_EVENT_PREVIEWS.keys()),
+        help="通过真实模板渲染发送预置事件样本（覆盖 Markdown 转义路径）",
     )
     parser.add_argument(
         "--verbose",
@@ -129,8 +159,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     if args.event_preview:
-        message = _EVENT_SAMPLES[args.event_preview]
-        message = f"[TEST] {message}"
+        template_key, context = _EVENT_PREVIEWS[args.event_preview]
+        try:
+            registry = TemplateRegistry.from_directory(
+                config.templates.directory,
+                strict=config.templates.strict_validation,
+            )
+            message = "[TEST] " + registry.render(template_key, context)
+        except Exception as exc:  # noqa: BLE001
+            print(f"✗ 模板渲染失败：{exc}", file=sys.stderr)
+            return 2
     elif args.message:
         message = args.message
     else:
@@ -173,7 +211,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     print()
     print("常见排查：")
     print("  - 401/Unauthorized → bot_token 错误或已吊销，重新找 @BotFather")
-    print("  - 400/chat_id      → chat_id 错误，或没先给 bot 发过消息（bot 无法主动对陌生用户说话）")
+    print(
+        "  - 400/chat_id      → chat_id 错误，或没先给 bot 发过消息（bot 无法主动对陌生用户说话）"
+    )
     print("  - timeout/conn err → 网络不通，国内机器考虑 http_proxy_url")
     print("  - 429              → 被 Telegram 限流，等 retry_after 秒后重试")
     return 1

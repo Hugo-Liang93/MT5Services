@@ -151,11 +151,19 @@ class TestLoader:
 
         notif_loader.get_notification_config.cache_clear()
         config = notif_loader.get_notification_config()
-        # Bundled ini ships with enabled=false (safe default) and a canonical
-        # event catalog.
-        assert config.runtime.enabled is False
+        # Event catalog + schedule come from the shared base ini, which is NOT
+        # overridable by *.local.ini at the [events] level (they're set there
+        # explicitly to `off`/severity values). ``runtime.enabled`` is
+        # intentionally omitted because user local.ini may legitimately
+        # toggle it on for real deployment — the catalog invariants are
+        # what we lock in here.
         assert config.events.get("execution_failed") == "critical"
-        assert config.events.get("daily_report") == "info"
+        # Events without real source hooks default to `off` to avoid drift
+        # (daily_report waits on Phase 2.5 content generator).
+        assert config.events.get("daily_report") == "off"
+        assert config.events.get("mode_changed") == "off"
+        # execution_submitted is "off" by default to avoid per-order flooding.
+        assert config.events.get("execution_submitted") == "off"
         assert config.schedules.daily_report_utc == "21:00"
         notif_loader.get_notification_config.cache_clear()
 

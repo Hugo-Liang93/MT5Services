@@ -9,10 +9,13 @@ notification templates:
 Design goals:
 - **Strict**: missing required variables raise. Silent fallbacks would ship
   half-rendered alerts to operators.
-- **Safe defaults**: Telegram ``MarkdownV2`` metacharacters are NOT auto-escaped —
-  templates are authored deliberately. Payload values that could contain user
-  text (symbol tickers, strategy names) are safe; free-form messages should be
-  escaped at the classifier layer before handoff.
+- **Auto-escape by default**: dynamic values rendered via ``{{ var }}`` are
+  escaped for Telegram's *legacy* ``Markdown`` parse mode (``_ * ` [``) so
+  strategy names like ``trend_h1`` or reason strings containing brackets
+  don't corrupt the message and trigger ``Bad Request: can't parse entities``
+  (400) — which silently pushes CRITICAL alerts to DLQ.
+  Template authors use ``*`` / ``_`` / backticks literally in the template
+  body; those are NOT escaped because they're the authoring intent.
 - **Length-aware**: renderer truncates to Telegram's 4096 char limit with an
   explicit ellipsis marker, rather than failing silently.
 """
@@ -30,6 +33,20 @@ _IF_BLOCK_PATTERN = re.compile(
     r"\{\%\s*if\s+([a-zA-Z_][a-zA-Z0-9_\.]*)\s*\%\}(.*?)\{\%\s*endif\s*\%\}",
     flags=re.DOTALL,
 )
+
+# Telegram legacy ``Markdown`` parse mode escapes. ``parse_mode=MarkdownV2``
+# would need a larger set (``_ * [ ] ( ) ~ ` > # + - = | { } . !``), but our
+# transport uses legacy Markdown which has a smaller blast radius.
+_MARKDOWN_META_CHARS = re.compile(r"([_*`\[])")
+
+
+def escape_markdown(value: str) -> str:
+    """Escape Telegram legacy-Markdown meta-characters so a dynamic value
+    won't accidentally close or open a formatting region in the surrounding
+    template. Idempotent only for values that don't already contain
+    backslashes in these positions (we accept the edge case — payloads
+    don't carry backslash-escaped markdown)."""
+    return _MARKDOWN_META_CHARS.sub(r"\\\1", value)
 
 
 class TemplateRenderError(Exception):
@@ -67,11 +84,16 @@ def _render_if_blocks(template: str, context: Mapping[str, Any]) -> str:
     return result
 
 
-def _render_variables(template: str, context: Mapping[str, Any]) -> str:
+def _render_variables(
+    template: str, context: Mapping[str, Any], *, escape: bool = True
+) -> str:
     def _replace(match: "re.Match[str]") -> str:
         path = match.group(1)
         value = _resolve_dotted(context, path)
-        return "" if value is None else str(value)
+        if value is None:
+            return ""
+        text = str(value)
+        return escape_markdown(text) if escape else text
 
     return _VAR_PATTERN.sub(_replace, template)
 
@@ -106,12 +128,19 @@ def render_template(
     context: Mapping[str, Any],
     *,
     max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH,
+    escape_values: bool = True,
 ) -> str:
-    """Render ``template`` against ``context`` and clamp to Telegram's length limit.
+    r"""Render ``template`` against ``context`` and clamp to Telegram's length limit.
+
+    Values substituted via ``{{ var }}`` are Markdown-escaped by default
+    (meta-chars ``_``, ``*``, backtick, ``[`` → backslash-escaped). Pass
+    ``escape_values=False`` only for values that are *intentionally*
+    pre-formatted Markdown (e.g. a pre-rendered code block with embedded
+    special chars).
 
     Raises ``TemplateRenderError`` if a required ``{{ var }}`` is missing
     from context (the guardrail against half-rendered alerts).
     """
     expanded = _render_if_blocks(template, context)
-    rendered = _render_variables(expanded, context)
+    rendered = _render_variables(expanded, context, escape=escape_values)
     return truncate_for_telegram(rendered, max_length=max_length)

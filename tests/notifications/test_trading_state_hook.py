@@ -95,10 +95,10 @@ class TestTradingStatePoll:
         poll()
         dispatcher.drain_once()
         assert len(transport.sent) == 1
-        assert (
-            "pending_missing" in transport.sent[0][1]
-            or "挂单丢失" in transport.sent[0][1]
-        )
+        # `pending_missing` template renders the payload with Markdown escape;
+        # the Chinese literal "挂单丢失" comes from the template body and is
+        # NOT a dynamic value, so it passes through unescaped.
+        assert "挂单丢失" in transport.sent[0][1]
 
     def test_unmanaged_tickets_dispatched_with_tickets(self, tmp_path: Path):
         transport, dispatcher = _dispatch_fixture(tmp_path)
@@ -139,7 +139,8 @@ class TestTradingStatePoll:
         poll()
         dispatcher.drain_once()
         assert len(transport.sent) == 1
-        assert "pending_orphan" in transport.sent[0][1]
+        # Escaped: "pending_orphan" → "pending\_orphan"
+        assert "pending\\_orphan" in transport.sent[0][1]
 
     def test_unknown_code_ignored(self, tmp_path: Path):
         transport, dispatcher = _dispatch_fixture(tmp_path)

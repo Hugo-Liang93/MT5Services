@@ -158,6 +158,10 @@ class TestRendering:
         )
         message = registry.render_event(event)
         assert "[CRITICAL]" in message
-        assert "trend_h1" in message
-        assert "XAUUSD" in message
+        # Dynamic values are Markdown-escaped: `trend_h1` → `trend\_h1`.
+        # We check the escaped form — safer, as it also verifies the escape
+        # happened (a regression back to raw would flood DLQ on real traffic).
+        assert "trend\\_h1" in message
+        assert "broker\\_reject" in message
+        assert "XAUUSD" in message  # no meta-chars → unchanged
         assert "abc123" in message
