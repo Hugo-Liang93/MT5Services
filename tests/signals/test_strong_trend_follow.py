@@ -160,3 +160,70 @@ class TestWhyGate:
         assert direction == "buy"
         assert 0.4 <= score <= 1.0
         assert "strong_trend" in reason
+
+
+class TestWhenGate:
+    """_when() 硬门控测试。"""
+
+    def setup_method(self) -> None:
+        self.strategy = StructuredStrongTrendFollow()
+
+    def test_macd_hist_too_high_rejected(self) -> None:
+        """macd_hist=2.0 > 1.61 → hold（动量过强，不符合回归中性条件）。"""
+        ctx = _make_context(macd_hist=2.0)
+        ok, score, reason = self.strategy._when(ctx, "buy")
+        assert ok is False
+        assert "macd_hist_too_high" in reason
+
+    def test_macd_hist_too_low_rejected(self) -> None:
+        """macd_hist=-3.0 < -2.0 → hold（深度崩盘保护）。"""
+        ctx = _make_context(macd_hist=-3.0)
+        ok, score, reason = self.strategy._when(ctx, "buy")
+        assert ok is False
+        assert "macd_hist_too_low" in reason
+
+    def test_roc_too_low_rejected(self) -> None:
+        """roc=-2.0 <= -1.17 → hold（动量已崩溃）。"""
+        ctx = _make_context(roc=-2.0)
+        ok, score, reason = self.strategy._when(ctx, "buy")
+        assert ok is False
+        assert "roc_too_low" in reason
+
+    def test_no_macd_data_rejected(self) -> None:
+        """缺失 macd_fast 数据 → hold。"""
+        ctx = _make_context()
+        ctx.indicators["macd_fast"] = {}
+        ok, score, reason = self.strategy._when(ctx, "buy")
+        assert ok is False
+        assert "no_macd_or_roc" in reason
+
+    def test_no_roc_data_rejected(self) -> None:
+        """缺失 roc12 数据 → hold。"""
+        ctx = _make_context()
+        ctx.indicators["roc12"] = {}
+        ok, score, reason = self.strategy._when(ctx, "buy")
+        assert ok is False
+
+    def test_macd_hist_zero_highest_score(self) -> None:
+        """macd_hist=0 最接近中心 → score 最大（1.0）。"""
+        ctx = _make_context(macd_hist=0.0, roc=0.5)
+        ok, score, reason = self.strategy._when(ctx, "buy")
+        assert ok is True
+        assert score == pytest.approx(1.0, abs=0.05)
+
+    def test_macd_hist_at_upper_bound_lowest_score(self) -> None:
+        """macd_hist=1.61（上限）→ score 最低。"""
+        ctx = _make_context(macd_hist=1.61, roc=0.5)
+        ok, score, reason = self.strategy._when(ctx, "buy")
+        assert ok is True
+        # 距离 0 为 1.61，half_range=max(1.61, 2.0)=2.0，score = max(0, 1 - 1.61/2.0) = 0.195
+        # 但下限 0.3，所以实际 0.3
+        assert score >= 0.3
+
+    def test_when_passes_typical_case(self) -> None:
+        """典型入场：macd_hist=0.5, roc=0.5 → 通过。"""
+        ctx = _make_context(macd_hist=0.5, roc=0.5)
+        ok, score, reason = self.strategy._when(ctx, "buy")
+        assert ok is True
+        assert 0.3 <= score <= 1.0
+        assert "timing" in reason

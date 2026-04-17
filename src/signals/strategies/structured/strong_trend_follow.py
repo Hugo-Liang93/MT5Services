@@ -93,7 +93,41 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
     def _when(
         self, ctx: SignalContext, direction: str
     ) -> Tuple[bool, float, str]:
-        raise NotImplementedError  # Task 3 实现
+        macd = ctx.indicators.get("macd_fast", {})
+        roc_data = ctx.indicators.get("roc12", {})
+
+        macd_hist = macd.get("hist")
+        roc = roc_data.get("roc")
+
+        if macd_hist is None or roc is None:
+            return False, 0.0, "no_macd_or_roc"
+
+        tf = ctx.timeframe
+        hist_hi = get_tf_param(
+            self, "macd_hist_upper", tf, self._macd_hist_upper
+        )
+        hist_lo = get_tf_param(
+            self, "macd_hist_lower", tf, self._macd_hist_lower
+        )
+        roc_lo = get_tf_param(self, "roc_lower", tf, self._roc_lower)
+
+        if macd_hist > hist_hi:
+            return False, 0.0, f"macd_hist_too_high:{macd_hist:.2f}"
+        if macd_hist < hist_lo:
+            return False, 0.0, f"macd_hist_too_low:{macd_hist:.2f}"
+        if roc <= roc_lo:
+            return False, 0.0, f"roc_too_low:{roc:.2f}"
+
+        # 评分：macd_hist 越接近 0 越"温和"，score 越高
+        center = 0.0
+        half_range = max(abs(hist_hi - center), abs(hist_lo - center))
+        distance = abs(macd_hist - center)
+        score = (
+            max(0.0, 1.0 - distance / half_range) if half_range > 0 else 0.0
+        )
+        score = max(score, 0.3)
+
+        return True, score, f"timing:macd_hist={macd_hist:.2f},roc={roc:.2f}"
 
     def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
         raise NotImplementedError  # Task 5 实现
