@@ -71,7 +71,7 @@ class TestClassAttributes:
         assert self.strategy.name == "structured_strong_trend_follow"
 
     def test_category(self) -> None:
-        assert self.strategy.category == "trend_continuation"
+        assert self.strategy.category == "trend"
 
     def test_htf_policy_none(self) -> None:
         assert self.strategy.htf_policy == HtfPolicy.NONE

@@ -22,7 +22,7 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
     """ADX 极端 + DI 多头 + MACD 温和 + ROC 稳 → 顺势延续入场。"""
 
     name = "structured_strong_trend_follow"
-    category = "trend_continuation"
+    category = "trend"
     htf_policy = HtfPolicy.NONE
     required_indicators = (
         "atr14",
