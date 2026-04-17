@@ -97,6 +97,40 @@ class TelegramTransport(NotificationTransport):
             )
         return _interpret_response(response)
 
+    def get_updates(
+        self,
+        *,
+        offset: int,
+        timeout_seconds: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Long-poll Telegram for new updates.
+
+        Returns the list of ``update`` objects (possibly empty). Raises on
+        network/HTTP errors — the caller (poller) retries with backoff.
+
+        ``offset`` is the ``update_id`` water mark: pass ``last_update_id + 1``
+        so already-processed updates are implicitly acknowledged and not
+        redelivered. ``timeout_seconds`` is a *server-side* long-poll wait;
+        the HTTP client gets ``timeout_seconds + 5`` to account for network
+        jitter. This matches Telegram's recommended long-polling pattern.
+        """
+        url = f"{self._api_base}/bot{self._token}/getUpdates"
+        params = {"offset": int(offset), "timeout": int(timeout_seconds)}
+        response = self._session.get(
+            url,
+            params=params,
+            timeout=float(timeout_seconds) + 5.0,
+            proxies=self._proxies,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict) or not body.get("ok"):
+            raise RuntimeError(f"getUpdates non-ok response: {body}")
+        result = body.get("result") or []
+        if not isinstance(result, list):
+            raise RuntimeError(f"getUpdates result malformed: {result!r}")
+        return [item for item in result if isinstance(item, dict)]
+
 
 def _interpret_response(response: requests.Response) -> TransportResult:
     status = response.status_code

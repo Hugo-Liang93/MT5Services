@@ -187,3 +187,73 @@ class TestSend:
             TelegramTransport(bot_token="")
         with pytest.raises(ValueError, match="bot_token"):
             TelegramTransport(bot_token=SecretStr(""))
+
+
+class TestGetUpdates:
+    def test_success_returns_result_list(self):
+        session = MagicMock(spec=requests.Session)
+        session.get.return_value = _mock_response(
+            200,
+            {
+                "ok": True,
+                "result": [
+                    {"update_id": 1, "message": {"text": "hi"}},
+                    {"update_id": 2, "message": {"text": "bye"}},
+                ],
+            },
+        )
+        transport = _make_transport(session)
+        updates = transport.get_updates(offset=0, timeout_seconds=30)
+        assert len(updates) == 2
+        assert updates[0]["update_id"] == 1
+
+    def test_ok_false_raises(self):
+        session = MagicMock(spec=requests.Session)
+        session.get.return_value = _mock_response(
+            200, {"ok": False, "description": "bad"}
+        )
+        transport = _make_transport(session)
+        with pytest.raises(RuntimeError, match="non-ok"):
+            transport.get_updates(offset=0, timeout_seconds=30)
+
+    def test_http_error_raises(self):
+        session = MagicMock(spec=requests.Session)
+        bad_response = MagicMock(spec=requests.Response)
+        bad_response.status_code = 500
+        bad_response.raise_for_status.side_effect = requests.HTTPError("server error")
+        session.get.return_value = bad_response
+        transport = _make_transport(session)
+        with pytest.raises(requests.HTTPError):
+            transport.get_updates(offset=0, timeout_seconds=30)
+
+    def test_offset_and_timeout_passed_through(self):
+        session = MagicMock(spec=requests.Session)
+        session.get.return_value = _mock_response(200, {"ok": True, "result": []})
+        transport = _make_transport(session)
+        transport.get_updates(offset=42, timeout_seconds=25)
+        kwargs = session.get.call_args.kwargs
+        assert kwargs["params"] == {"offset": 42, "timeout": 25}
+        # HTTP client timeout is server timeout + 5s buffer.
+        assert kwargs["timeout"] == 30.0
+
+    def test_malformed_result_raises(self):
+        session = MagicMock(spec=requests.Session)
+        session.get.return_value = _mock_response(
+            200, {"ok": True, "result": "not-a-list"}
+        )
+        transport = _make_transport(session)
+        with pytest.raises(RuntimeError, match="malformed"):
+            transport.get_updates(offset=0, timeout_seconds=30)
+
+    def test_non_dict_items_filtered(self):
+        session = MagicMock(spec=requests.Session)
+        session.get.return_value = _mock_response(
+            200,
+            {
+                "ok": True,
+                "result": [{"update_id": 1}, "garbage", None, {"update_id": 2}],
+            },
+        )
+        transport = _make_transport(session)
+        updates = transport.get_updates(offset=0, timeout_seconds=30)
+        assert len(updates) == 2

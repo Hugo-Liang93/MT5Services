@@ -27,10 +27,16 @@ from src.notifications.hooks import (
     make_pipeline_listener,
     make_trading_state_poll_job,
 )
+from src.notifications.inbound.authz import Authorizer
+from src.notifications.inbound.handlers import QueryHandlers
+from src.notifications.inbound.poller import TelegramPoller
+from src.notifications.inbound.router import CommandRouter
 from src.notifications.persistence.outbox import OutboxStore
+from src.notifications.rate_limit import RateLimiter
 from src.notifications.scheduler import NotificationScheduler
 from src.notifications.templates.loader import TemplateRegistry
 from src.notifications.transport.base import NotificationTransport
+from src.notifications.transport.telegram import TelegramTransport
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +77,8 @@ class NotificationModule:
         self._outbox_purge_interval_hours = float(outbox_purge_interval_hours)
         self._outbox_retention_days = float(outbox_retention_days)
         self._scheduler: Optional[NotificationScheduler] = None
+        self._poller: Optional[TelegramPoller] = None
+        self._router: Optional[CommandRouter] = None
         self._pipeline_listener: Optional[Callable[[PipelineEvent], None]] = None
         self._health_listener: Optional[Callable[..., None]] = None
         self._started = False
@@ -95,6 +103,7 @@ class NotificationModule:
             self._register_pipeline_listener()
             self._register_health_listener()
             self._start_scheduler()
+            self._start_inbound_poller()
             self._dispatcher.start()
             self._started = True
             logger.info(
@@ -116,6 +125,7 @@ class NotificationModule:
                 return
             self._unregister_health_listener()
             self._unregister_pipeline_listener()
+            self._stop_inbound_poller()
             self._stop_scheduler()
             try:
                 self._dispatcher.stop()
@@ -140,6 +150,11 @@ class NotificationModule:
         if self._scheduler is not None:
             scheduler_running = self._scheduler.is_running()
             scheduler_jobs = self._scheduler.job_names()
+        inbound: dict[str, Any] = {"enabled": self._config.runtime.inbound_enabled}
+        if self._poller is not None:
+            inbound.update(self._poller.status())
+        if self._router is not None:
+            inbound["commands"] = self._router.registered_commands()
         return {
             "enabled": self._runtime_enabled_override,
             "started": self._started,
@@ -148,6 +163,7 @@ class NotificationModule:
             "health_listener_registered": self._health_listener is not None,
             "scheduler_running": scheduler_running,
             "scheduler_jobs": scheduler_jobs,
+            "inbound": inbound,
             "dispatcher": self._dispatcher.status(),
         }
 
@@ -302,6 +318,99 @@ class NotificationModule:
         except Exception:
             logger.debug("scheduler stop failed", exc_info=True)
         self._scheduler = None
+
+    # ── internal: inbound poller wiring ──
+
+    def _start_inbound_poller(self) -> None:
+        """Spin up the long-polling inbound command pipeline if configured.
+
+        Requirements:
+        - ``runtime.inbound_enabled`` true
+        - transport is a real TelegramTransport (has ``get_updates``)
+        - inbound.allowed_chat_ids non-empty (Pydantic validator enforces
+          this when inbound_enabled=true, so failure here is defensive)
+        """
+        if not self._config.runtime.inbound_enabled:
+            return
+        if not isinstance(self._transport, TelegramTransport):
+            logger.info("inbound enabled but transport has no get_updates; skipping")
+            return
+        authorizer = Authorizer(
+            allowed_chat_ids=self._config.inbound.allowed_chat_ids,
+            admin_chat_ids=self._config.inbound.admin_chat_ids,
+        )
+        # Inbound uses its own RateLimiter instance (separate from outbound
+        # so command bombs don't eat outbound send budget).
+        inbound_rl = RateLimiter(
+            global_per_minute=self._config.rate_limit.global_per_minute,
+            per_chat_per_minute=self._config.rate_limit.inbound_per_chat_per_minute,
+        )
+        whitelist = tuple(self._config.inbound.command_whitelist)
+        router = CommandRouter(
+            authorizer=authorizer,
+            transport=self._transport,
+            rate_limiter=inbound_rl,
+            command_whitelist=whitelist or None,
+        )
+        handlers = QueryHandlers(
+            runtime_read_model=self._runtime_read_model,
+            instance=self._instance,
+            daily_report_submit=self._make_manual_daily_report_submit(),
+        )
+        # Map command names to their implementations. Keeping the map local
+        # (not in router) makes it trivial to add Phase 4 control handlers
+        # without touching router logic.
+        router.register("help", handlers.handle_help)
+        router.register("health", handlers.handle_health)
+        router.register("positions", handlers.handle_positions)
+        router.register("signals", handlers.handle_signals)
+        router.register("executor", handlers.handle_executor)
+        router.register("pending", handlers.handle_pending)
+        router.register("mode", handlers.handle_mode)
+        router.register("daily-report", handlers.handle_daily_report)
+        self._router = router
+        self._poller = TelegramPoller(transport=self._transport, router=router)
+        try:
+            self._poller.start()
+        except Exception:
+            logger.exception("inbound poller failed to start")
+            self._poller = None
+            self._router = None
+
+    def _stop_inbound_poller(self) -> None:
+        if self._poller is None:
+            return
+        try:
+            self._poller.stop()
+        except Exception:
+            logger.debug("inbound poller stop failed", exc_info=True)
+        self._poller = None
+        self._router = None
+
+    def _make_manual_daily_report_submit(self) -> Optional[Callable[[], bool]]:
+        """Build a closure the handler uses to trigger daily_report on demand.
+
+        None if ``runtime_read_model`` isn't injected — avoids a misleading
+        "success" message when there's nothing to report about.
+        """
+        if self._runtime_read_model is None:
+            return None
+        from src.notifications.daily_report import DailyReportGenerator
+
+        generator = DailyReportGenerator(
+            runtime_read_model=self._runtime_read_model, instance=self._instance
+        )
+        dispatcher = self._dispatcher
+
+        def _submit() -> bool:
+            try:
+                event = generator.build_event()
+            except Exception:
+                logger.exception("manual daily_report generator failed")
+                return False
+            return dispatcher.submit(event)
+
+        return _submit
 
     def _make_outbox_purge_job(self) -> Callable[[], None]:
         outbox = self._outbox
