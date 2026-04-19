@@ -67,10 +67,13 @@ def _build_delta_config() -> Dict[str, Tuple[int, ...]]:
 
 
 def _apply_delta_to_snapshots(
-    snapshots: List[Dict[str, Dict[str, Any]]],
+    snapshots: List[Dict[str, Any]],
     delta_config: Dict[str, Tuple[int, ...]],
 ) -> None:
     """In-place 给每个 snapshot 添加 `{metric}_d{N}` 字段。
+
+    payload 类型故意宽松为 Any：pipeline 的 per-indicator 失败会返回 None，
+    payload 可能不是 dict，必须 guard 后再 iterate（生产 delta 路径同样处理）。
 
     与 src/indicators/runtime/delta_metrics.py 的 apply_delta_metrics 逻辑等价，
     但数据源来自 snapshots 列表而非 MarketService 历史。
@@ -78,14 +81,14 @@ def _apply_delta_to_snapshots(
     for i, indicators in enumerate(snapshots):
         for ind_name, payload in indicators.items():
             deltas = delta_config.get(ind_name)
-            if not deltas:
+            if not deltas or not isinstance(payload, dict):
                 continue
             for delta in deltas:
                 prev_idx = i - delta
                 if prev_idx < 0:
                     continue
                 prev_payload = snapshots[prev_idx].get(ind_name)
-                if prev_payload is None:
+                if not isinstance(prev_payload, dict):
                     continue
                 for metric, cur_val in list(payload.items()):
                     if not isinstance(cur_val, (int, float)):

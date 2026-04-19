@@ -135,3 +135,41 @@ def test_apply_delta_empty_snapshots_is_noop() -> None:
     snapshots: list = []
     _apply_delta_to_snapshots(snapshots, {"rsi14": (3,)})
     assert snapshots == []
+
+
+def test_apply_delta_skips_non_dict_payload() -> None:
+    """pipeline per-indicator 失败时 payload 可能是 None 或非 dict，必须跳过不崩。
+
+    回归：之前的实现假设 payload 永远是 dict，一次 indicator 失败会
+    AttributeError 炸掉整个 precompute 步骤。
+    """
+    snapshots = [
+        _mk_snapshot(rsi14={"rsi": 50.0}, adx14={"adx": 20.0}),
+        # 第 2 根 adx14 payload 是 None（模拟 pipeline 失败）
+        {"rsi14": {"rsi": 52.0}, "adx14": None},
+        _mk_snapshot(rsi14={"rsi": 55.0}, adx14={"adx": 25.0}),
+        _mk_snapshot(rsi14={"rsi": 58.0}, adx14={"adx": 28.0}),
+    ]
+
+    # 不应抛异常
+    _apply_delta_to_snapshots(snapshots, {"rsi14": (3,), "adx14": (3,)})
+
+    # rsi14 正常（所有 snapshot 都是 dict）
+    assert snapshots[3]["rsi14"]["rsi_d3"] == pytest.approx(8.0)
+    # adx14 在 i=3 回看 i=0 → 前值存在 → 应有 d3（跳过中间的 None snapshot 不影响）
+    assert snapshots[3]["adx14"]["adx_d3"] == pytest.approx(8.0)
+    # 中间 None payload 原样保留
+    assert snapshots[1]["adx14"] is None
+
+
+def test_apply_delta_skips_when_prev_payload_not_dict() -> None:
+    """前值 snapshot 中该 indicator 是 None（非 dict）时跳过，不崩。"""
+    snapshots = [
+        {"adx14": None},  # i=0 失败
+        _mk_snapshot(adx14={"adx": 22.0}),
+        _mk_snapshot(adx14={"adx": 25.0}),
+        _mk_snapshot(adx14={"adx": 28.0}),  # i=3 回看 i=0 → 前值非 dict
+    ]
+    _apply_delta_to_snapshots(snapshots, {"adx14": (3,)})
+    # i=3 跳过（前值是 None），不报错
+    assert "adx_d3" not in snapshots[3]["adx14"]
