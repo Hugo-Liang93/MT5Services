@@ -1521,3 +1521,73 @@ for ind, htf_tf in capability.htf_requirements.items():
 ### 边界泄漏角度
 
 修改仅涉及 BacktestEngine 的内部指标聚合逻辑，**无跨模块依赖变化**；新增 1 条 conditional append 在已有循环体内；未引入新的私有属性访问或兼容分支。未决兼容项：无。
+
+## 2026-04-19 修复后 baseline 验证 + P2/P3 策略级诊断 + P4 trend_continuation 冻结
+
+### 新 baseline（H1，12 个月，全策略，research mode）
+
+| 维度 | 修复前（2026-04-17 5 策略 Intrabar 回测） | 修复后（全策略） | **冻结 trend_continuation 后** |
+|------|---------|---------|---------|
+| Trades | 88 | 254 | 201 |
+| WR | 39.8% | 45.3% | 44.3% |
+| PnL | -$215 | +$4,821 | +$4,575 |
+| **PF** | **0.757** | **2.352** | **2.595** |
+| Sharpe | -0.771 | +2.041 | **+2.168** |
+| Calmar | -0.255 | 4.606 | **5.845** |
+| MaxDD | 17.21% | 13.88% | **11.69%** |
+| W/L ratio | 1.15 | 2.84 | **3.27** |
+| Monte Carlo p | 0.898（无显著性）| 0.0（显著）| 0.0（显著）|
+
+**baseline 反转的本质**：infra bug 修复让 3 个 HTF alignment 策略（`trend_continuation` / `trend_h4` / `trend_h4_momentum`）+ 依赖 supertrend14 的 `breakout_follow` 能被正确评估。其中 `regime_exhaustion`（48 → 52 trades, +$3,316 → +$3,442）和 `strong_trend_follow`（60 → 61 trades, +$1,295 → +$1,216）成为主要盈利来源。
+
+### P2 诊断：trend_continuation 置信度校准反向
+
+| 单策略回测 | Trades | WR | PnL | PF |
+|-----------|-------|-----|-----|-----|
+| min_conf=0.10 | 33 | 54.5% | +$67 | 1.22 |
+| **min_conf=0.45** | **16** | **37.5%** | **-$75** | **0.61** |
+
+**反直觉**：提高 confidence 阈值反而让 WR 从 54.5% → 37.5%（-17 pp），PF 从 1.22 → 0.61。说明策略内部 `raw_confidence = base(0.50) + why×0.15 + when×0.15 + where×0.10 + vol×0.05` 的评分加权**与真实胜率不相关甚至负相关**——高 raw_confidence 的 bar 恰好是过拟合模式的触发点。
+
+**决策**：通过 `signal.local.ini [regime_affinity.structured_trend_continuation]` 全设 0.0 **冻结**该策略。保留代码资产（`strategy_timeframes` 仍注册），便于未来重设计（重新评分或加入 in-sample 校准）后解冻。
+
+### P3 诊断：breakout_follow 参数过严
+
+修复后 `_required_indicators` 已正确包含 `supertrend14`，但 breakout_follow 仍 0 trades。根因是策略 `_why()` 硬条件链过严：
+
+```
+adx ∈ [18, 38]       ← 区间窄（trending 但不过强）
+adx_d3 >= 1.0        ← ADX 必须上升
+|di_diff| >= 3.0
+momentum_consensus >= 0.34 (buy) / <= -0.34 (sell)
+HTF supertrend14 方向一致
+```
+
+在 12 个月牛市数据中，多硬条件 AND 合取罕能同时满足 → 策略设计与当前市场不匹配。**不是 infra bug**。
+
+**未决**：参数调优（放宽 adx 区间、momentum 阈值、di_diff）留作 P5 独立工作。
+
+### 未决工作与决策分级
+
+| 优先级 | 工作 | 说明 |
+|-------|------|------|
+| **P5**（中）| breakout_follow 参数网格搜索 | 目标找到 PF > 1.3 的参数组合 |
+| **P6**（低，长期）| trend_continuation 重新设计 | 可能需要重写 Why/When/Where 评分或加入 in-sample confidence 再校准 |
+| **完成**（本次）| P0 bug 修复 + baseline 反转 + trend_continuation 冻结 | 见 git log fix/backtest-htf-required-indicators 分支 |
+
+### signal.local.ini 冻结条目
+
+本机 override（不入 git）：
+```ini
+[regime_affinity.structured_trend_continuation]
+trending = 0.0
+ranging = 0.0
+breakout = 0.0
+uncertain = 0.0
+```
+
+runtime 将在 confidence 管线里把该策略所有信号乘 0 → direction 变成 hold。实盘 / Paper 都不会产生 trend_continuation 的入场信号。
+
+### 边界泄漏角度
+
+P4 仅修改 signal.local.ini（gitignored），不涉及正式代码或 signal.ini 基线。保留完整可复原性：未来只需删除 `[regime_affinity.structured_trend_continuation]` section 即可解冻。无新跨模块依赖、无兼容补丁。未决兼容项：无。
