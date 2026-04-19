@@ -352,6 +352,7 @@ Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → 
 | `src/monitoring/` | `health/`（HealthMonitor + MetricsStore 环形缓冲 + checks + reporting）`pipeline/`（PipelineEventBus + 12 种事件 + TraceRecorder） | 只做观测。不影响业务链路 |
 | `src/utils/` | 通用工具（timezone/sqlite_conn/event_store/memory_manager） | 无状态工具。不依赖领域模块 |
 | `src/api/` | 12 个子域路由包，每个：`<domain>.py`（组合根）+ `<domain>_routes/`（路由+view_models）| 只做 HTTP 协议适配。业务逻辑下沉到服务层或 readmodels |
+| `src/ops/` | `cli/`（22 个运维 CLI：backtest_runner / diagnose_no_trades / mining_runner / aggression_search / walkforward_runner / health_check 等）+ `stress/`（压测：intent_latency_probe / replay_intrabar / storage_saturation）+ `mt5_session_gate.py` | 运维工具入口。调用领域包但不被领域包调用（终态工具）。**动手写 scratch/ 诊断脚本前先查 `ls src/ops/cli/`，避免重复造轮子**——详见 CLAUDE.md §SOP "工具使用准则" |
 
 ---
 

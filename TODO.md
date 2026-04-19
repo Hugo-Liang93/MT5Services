@@ -4,7 +4,49 @@
 
 ---
 
-## 📍 2026-04-19 状态快照（新 session 先读此节）
+## 📍 2026-04-20 状态快照（新 session 先读此节）
+
+### 本日产出
+
+三 TF baseline 回归（P7 delta 修复后）：
+
+| TF | Trades | WR | PF | Sharpe | MaxDD | 投产价值 |
+|----|--------|-----|-----|--------|-------|---------|
+| **H1** | 346 | 46.2% | **2.041** | **2.508** | 6.93% | ✅ 唯一可投产 |
+| M30（干净）| 206 | 39.8% | 1.019 | 0.108 | 13.57% (228 bars) | ❌ break-even |
+| H4 | 16 | 43.8% | 1.048 | 0.076 | 3.22% | ⚠️ 频率过低 |
+
+**关键发现**：M30 原始回测（含 `structured_price_action`）= 1,463 笔 / PnL $1.38M / Calmar 118 —— 完全假象。真实原因：
+- `price_action` deployment = `paper_only`，且 `signal.local.ini [account_bindings.*]` 里**没绑定任何账户** → 生产中不跑
+- 但回测按 `signal.ini [strategy_timeframes]` 全量注册 → 触发 1,258 笔 / 5 笔/天
+- 统计被它绑架，Calmar 118 是 compound 假象 ($10k → $1.4M，12 月 139×)
+
+剔除 price_action 后 M30 真实 baseline 只有 206 笔 / PF 1.019 / Sharpe 0.108 —— 几乎 break-even。
+
+**生产可投产结论**：
+- H1 是**唯一真正有 alpha 的 TF**。Paper Trading 应聚焦 H1
+- M30 breakout_follow 203 笔 / per-trade avg $1.28 覆盖不了 spread 成本
+- M30 sweep_reversal / range_reversion 各 1-2 笔（几乎不触发）
+- H4 trendline_touch 16 笔 / 月 1-2 笔（低频辅助信号，保留但非主力）
+
+### 🔴 新增未决工作
+
+#### P8：回测注册与账户绑定对齐（架构性，中优先）
+
+**问题**：`build_backtest_components()` 按 `signal.ini [strategy_timeframes]` 全量注册策略，不读 `signal.local.ini [account_bindings.*]`。后果：deployment=`paper_only` 且未绑定账户的策略（如 `structured_price_action`）在回测中被评估并计入统计，但生产中不跑。
+
+**影响**：回测数据误导决策。M30 baseline 1,463 笔对应 M30 真实生产 206 笔，差 7×。
+
+**候选方向**：
+- [ ] 方案 A：`BacktestConfig` 增加 `respect_account_bindings: bool = False` 选项，True 时只注册至少被一个 account_binding 引用的策略
+- [ ] 方案 B：工具层（`scratch/full_strategy_tf_baseline.py`）固定传入 exclude 列表，明示哪些策略被排除
+- [ ] 方案 C：在 `strategy_deployment.<name>` 合同里加 `visible_in_backtest: bool = true`，`false` 的策略默认跳过
+
+**前置**：次优先级。H1 baseline 已不受影响（price_action 只绑 M15/M30），生产决策不依赖 M30 数据。
+
+---
+
+## 📍 2026-04-19 状态快照
 
 ### 今日产出
 
