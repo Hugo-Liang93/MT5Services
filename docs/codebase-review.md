@@ -1666,3 +1666,63 @@ breakout_follow 自身 solo PF 1.23 低于 TODO P5 目标 1.3，拉低了整体 
 ### 架构性发现（未决，独立 TODO）
 
 **回测管线缺失 delta metrics**：`adx_d3` / `rsi_d3` 等三阶 delta metric 在 `src/indicators/` 完全没有实现。所有依赖它们的策略（至少 7 处）在回测中相关门控条件**被默默跳过**（通过 `is not None` 短路放行）。生产 vs 回测存在系统性行为差异，具体影响幅度未量化。建议：a) 在 indicator 核心补 delta 计算；或 b) 在文档里显式声明"回测跳过 delta 条件"语义。
+
+---
+
+## 2026-04-19 修复：回测管线缺失 delta metrics（P7）
+
+### 根因（接续上条）
+
+上一条 bugfix 发现 `adx_d3` / `rsi_d3` 等 delta metric 在回测中恒 None。进一步诊断：
+
+- `src/indicators/runtime/delta_metrics.py` **已实现** delta 计算逻辑（`apply_delta_metrics`）
+- 但 `UnifiedIndicatorManager.query_services/runtime.py` 是生产路径的入口，依赖 `manager.market_service.get_ohlc_window()` 加载历史 bar
+- 回测管线走另一条路：`BacktestEngine._pipeline.compute()` → `OptimizedPipeline.compute()`，**不经过 UnifiedIndicatorManager**，因此 delta 注入点被绕过
+- 上一条我在 codebase-review 里写的"delta metric 在 `src/indicators/` 完全没有实现"是核验失败——实际上**是回测路径跳过了已有的 delta 层**，不是 delta 逻辑不存在
+
+### 修复
+
+`src/backtesting/engine/indicators.py`：
+
+- 新增 `_build_delta_config()`：从 `get_global_config_manager()` 读取每个 indicator 的 `delta_bars` 配置，构建 `{name: (delta_offsets)}` 映射
+- 新增 `_apply_delta_to_snapshots(snapshots, delta_config)`：snapshot-based delta 注入。数据源是 `snapshots` 列表自身，按 `i - delta` 索引回看前 N 根，就地给 payload 添加 `{metric}_d{N}` 字段。复用 `src/indicators/runtime/delta_metrics.py` 的字段命名约定与 round 精度（6 位），但解耦 MarketService 依赖
+- 修改 `precompute_all_indicators()`：在产出全量 snapshots 后一次性应用 delta，单次遍历 O(N × indicators × deltas)，不影响主回测循环性能
+
+### 全策略 baseline 对比（H1 12 个月 2025-04-17 ~ 2026-04-15）
+
+| 指标 | delta 接入前（上一条 bugfix 后） | delta 接入后 | 含义 |
+|------|---------|---------|------|
+| Trades | 473 | **346** (-27%) | 门控真正生效，减少虚假交易 |
+| WR | 46.1% | 46.2% | 整体 WR 持平 |
+| PF | 2.361 | 2.041 (-0.32) | 优质 setup 数量减少 |
+| Sharpe | 2.74 | 2.508 (-0.23) | 合理下降 |
+| MaxDD | 8.0% | **6.93%** (-1.07pp) | 风险更低 |
+| MaxDD duration | 75 bars | 61 bars | 恢复更快 |
+
+### 策略级影响（关键质量证据）
+
+| 策略 | delta 接入前 (n/WR/PnL) | delta 接入后 (n/WR/PnL) | 说明 |
+|------|------|------|------|
+| **regime_exhaustion** | 52/57.7%/+$47k | **15/80.0%/+$14k** | **WR +22.3pp**：`adx_d3 > 0` 门控筛出真正耗竭反转 |
+| strong_trend_follow | 62/50%/+$26k | **45/55.6%/+$16k** | WR +5.6pp，`adx_d3_min_strict > 0` 筛出真趋势 |
+| breakout_follow | 163/44.2%/+$6k | 115/43.5%/+$2k | 减 48 笔，门控生效 |
+| pullback_window | 46/41.3%/+$3k | 20/40.0%/+$0.3k | 减 26 笔（rsi_d3 门控） |
+| open_range_breakout | 72/40.3% | 72/40.3% | 不依赖 delta，无变化 |
+| trendline_touch | 78/47.4% | 79/46.8% | 不依赖 delta，基本一致 |
+
+### 方法论意义
+
+delta 接入前的 473 笔回测是**假象膨胀**——门控失效放行了非目标场景（例如"ADX 耗竭且下降"以外的场景也被 regime_exhaustion 触发）。delta 接入后的 346 笔是**回测首次与生产行为对齐的真实 baseline**。regime_exhaustion 的 WR 从 57.7% 跳到 80%，直接证明 delta 门控的选择价值。
+
+### 边界泄漏角度
+
+- 修改限定在 `src/backtesting/engine/indicators.py`，无其他模块签名变更
+- 策略代码 / indicator 核心 / runtime delta 路径 **零改动**
+- 字段命名与生产 `{metric}_d{N}` 完全一致，数值精度对齐（round(6)）
+- 新增 8 个单元测试覆盖：基础差值 / 多 delta 共存 / 非数字字段跳过 / 已有 _dN 不递归 / 前值缺失 / 空配置 / 空 snapshots
+- 运行时开销：12 个月 H1（~6K bar）delta 注入耗时 < 50ms，相对 indicator 计算主流程可忽略
+
+### 未决项
+
+- **M5/M30 等其他 TF 未回测验证**——当前只对 H1 baseline 做了对比。P5 残留的 breakout_follow 参数调优、FP.2 strong_trend_follow 的 Paper 观察都需要重跑
+- **旧 baseline 数据失效**：所有 2026-04-19 之前的回测结果（包括 PR #48 修复后的 201 trades / PF 2.595）都是 delta 门控失效下的数据，不应作为未来参考。TODO 中"新 H1 baseline"栏需更新
