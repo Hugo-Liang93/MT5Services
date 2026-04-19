@@ -497,6 +497,37 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 - **只写 `signal.local.ini`**，不修改 `signal.ini`
 - `ConfigApplicator.apply()` 自动备份 + 原子写入 + 内存热更新
 
+### 工具使用准则（scratch/ vs src/ops/）
+
+**动手前先查 `src/ops/cli/`**（22 个正式 CLI），不要在 `scratch/` 重写已有能力。
+
+**职责分工**：
+
+| 维度 | `src/ops/cli/` | `scratch/` |
+|------|--------------|-----------|
+| 入 git | ✅ 团队共享 | ❌ gitignored，本地实验 |
+| 生命周期 | 长期维护 | 一次性 / 短期 |
+| 质量 | 正式产品 + 测试 | 探索性，无测试 |
+| 场景 | 标准工作流（回测 / 诊断 / 挖掘 / 健康检查 / 压测） | monkey-patch / 参数网格 / snapshot 内省（CLI 覆盖不了的）|
+
+**`src/ops/` 分类**：
+- `cli/` — 22 个 CLI（`backtest_runner` / `diagnose_no_trades` / `mining_runner` / `aggression_search` / `walkforward_runner` / `correlation_runner` / `backfill_ohlc` / `confidence_check` / `health_check` / `live_preflight` / `paper_vs_backtest` / `pipeline_gate_audit` / `sltp_grid_search` / `exit_experiment` / `reset_database` / `nightly_wf` / `mining_walk_forward` / `daily_report` / `aggression_scan` / `test_notification` + `_coverage` 辅助）
+- `stress/` — 压测脚本（`intent_latency_probe` / `replay_intrabar` / `storage_saturation`）
+- `mt5_session_gate.py` — MT5 会话门
+
+**SOP**：
+1. `ls src/ops/cli/` + `python -m src.ops.cli.<name> --help` 先查有没有覆盖需求的工具
+2. 覆盖 → 直接用（`--environment live --tf H1 --strategies X,Y` 等参数组合足够灵活）
+3. 不覆盖（需 monkey-patch / 参数循环 / 内部 state 检查）→ 写 `scratch/`
+4. 若 `scratch/` 实验成熟且有团队价值 → **晋升到 `src/ops/cli/`**（补 `--help` / 测试 / 文档）
+
+**何时用 scratch/ 合法**：
+- monkey-patch 策略方法统计 block reason 频次
+- 参数网格搜索（循环 `strategy_params_per_tf` 多组）
+- 验证 engine 内部状态（resolver / snapshot 字段存在性）
+
+**反例**（本 session 犯过）：看到顶层 `tools/` 不存在就假设全没了，**没查 `src/ops/cli/`** 就在 scratch/ 重写了 4 个脚本（`backtest_runner --strategies X` 完全可以替代）。核验失败的代价是浪费 session 时间。
+
 ---
 
 ## 文档同步准则
