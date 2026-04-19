@@ -389,10 +389,22 @@ class BacktestEngine:
 
         self._required_indicators: List[str] = []
         seen: Set[str] = set()
+        main_tf = str(config.timeframe).upper()
         for capability in self._strategy_capabilities.values():
             if capability.name not in self._target_strategies:
                 continue
             for ind in capability.needed_indicators:
+                if ind not in seen:
+                    seen.add(ind)
+                    self._required_indicators.append(ind)
+            # HTF 需求：当策略声明的 HTF tf 恰好等于主 TF（自循环 fallback 场景）时，
+            # 必须把 HTF 指标名合入主 TF 的 pipeline required 集合，否则 evaluate_strategies
+            # 里 htf_data[timeframe]=indicators 的 fallback 会拿不到 supertrend14/ema50 等
+            # htf_required_indicators 指标，导致策略 _why() 返回 "no_htf"。
+            # HTF tf ≠ 主 TF 的场景由 preload_htf_indicators 独立计算全量指标，不受此影响。
+            for ind, htf_tf in capability.htf_requirements.items():
+                if str(htf_tf).upper() != main_tf:
+                    continue
                 if ind not in seen:
                     seen.add(ind)
                     self._required_indicators.append(ind)

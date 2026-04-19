@@ -4,6 +4,88 @@
 
 ---
 
+## 📍 2026-04-19 状态快照（新 session 先读此节）
+
+### 今日产出（分支 `fix/backtest-htf-required-indicators` 待合入 main）
+
+| commit | 内容 |
+|--------|------|
+| `840ae74` | docs(research): 2026-04-18 挖掘 vs 回测 Gap 系统分析 |
+| `84dd9b8` | **fix(backtest)**: `_required_indicators` 聚合丢失 `htf_requirements` 导致 HTF alignment 策略 0 交易 |
+| `42c37bb` | docs(backtest): 2026-04-19 baseline 验证 + P2/P3 策略诊断 + trend_continuation 冻结 |
+
+**PR URL**（待手动开）：`https://github.com/Hugo-Liang93/MT5Services/pull/new/fix/backtest-htf-required-indicators`
+
+### 新 H1 Baseline（12 个月 2025-04-17~2026-04-15，全策略，冻结 trend_continuation 后）
+
+| 维度 | 值 | 对比历史 |
+|------|-----|---------|
+| Trades | 201 | vs 2026-04-08 的 19 笔（3 月）/ 2026-04-17 Intrabar 88 笔 |
+| PF | **2.595** | vs 修复前 0.757 / 2026-04-08 M30 2.47 |
+| Sharpe | 2.168 | vs 修复前 -0.771 |
+| Calmar | 5.845 | vs 修复前 -0.255 |
+| MaxDD | 11.69% | vs 17.21% |
+| **Monte Carlo** | **Significant (p=0.0)** | vs 不显著 (p=0.898) |
+| 核心盈利 | `regime_exhaustion` +$3442 / `strong_trend_follow` +$1216 | |
+
+### signal.local.ini 本机 override（不入 git）
+
+```ini
+[regime_affinity.structured_trend_continuation]
+trending = 0.0
+ranging = 0.0
+breakout = 0.0
+uncertain = 0.0
+```
+
+冻结原因：solo min_conf=0.10 时 33 trades PF 1.22；solo min_conf=0.45 时 **16 trades PF 0.61** —— 高 raw_confidence 反而 WR 更低，置信度校准反向。保留代码资产，未来可重设计后解冻。
+
+### 🔴 新增未决工作
+
+#### P5：breakout_follow 参数调优（中，1-2 小时）
+
+**前置条件**：本 PR 合入 main
+
+**问题**：bug 修复后 `supertrend14` 已可取到，但策略 `_why()` 多硬条件在牛市罕能同时满足 → 仍 0 trades。
+
+**工作**：
+- [ ] 用 scratch/ 脚本做阈值网格搜索：
+  - `_adx_min` ∈ {12, 15, 18}（放宽下限）
+  - `_di_diff_min` ∈ {1.0, 2.0, 3.0}
+  - `_momentum_consensus_buy_min` ∈ {0.20, 0.34}
+  - `_adx_d3_min` ∈ {0.0, 0.5, 1.0}
+- [ ] 目标：找到单策略 PF > 1.3 的参数组合
+- [ ] 写入 `signal.local.ini [strategy_params.H1]`
+- [ ] 全策略回测验证整体 baseline 是否进一步提升
+
+#### P6：trend_continuation 置信度重设计（长，跨多 session）
+
+**问题**：`raw_confidence = base + why×0.15 + when×0.15 + where×0.10 + vol×0.05` 与实盘胜率**负相关**——高 confidence 反而触发过拟合场景。
+
+**候选方向**：
+- [ ] 分析哪些 (regime, direction) 组合的高 confidence 对应低 WR
+- [ ] 考虑加入 **in-sample confidence 再校准**（基于历史 bucket 的 calibration）
+- [ ] 或重写 Why/When/Where 评分逻辑（当前 pullback setup 设计可能本身过拟合）
+- [ ] 目标：solo min_conf=0.45 时 PF > 1.2（当前 0.61）
+
+### ⚠️ 旧 TODO 条目**已过期或证伪**
+
+新 session 读到下列条目时**请忽略或以本节为准**：
+
+| 位置 | 过期原因 |
+|------|---------|
+| Line 85-95 "回测基线（2026-04-08 3 个月，合计 19 笔）" | 已由本节的 12 个月 201 笔取代 |
+| Line 109 "breakout_follow 零交易——设计如此" | **已证伪**：是 infra bug（已修）+ 参数过严（留 P5）|
+| Line 110 "频率瓶颈 19 笔/3 个月" | 修复后 ~16 笔/周，已非瓶颈 |
+| Line 220 "用 M5 bar 数据回测高 TF 策略盘中入场" | 已跑过但数据是 bug 未修复前（PF 0.757），修复后应重跑 |
+
+### 📝 补记：挖掘驱动策略的现有状态
+
+- `regime_exhaustion`（挖掘驱动，已部署 paper_only，未在 TODO 中）— 回测主要盈利贡献（+$3442 / H1 PnL 75%）。**建议 Paper 观察独立跟踪**。
+- `strong_trend_follow`（FP.2，已在 TODO Line 131-142）— 观察项已在。
+
+---
+
 ## 已完成归档（2026-04-05）
 
 - ~~P0: BacktestConfig 拆分为 8 个嵌套子配置 + `from_flat()` 向后兼容~~
