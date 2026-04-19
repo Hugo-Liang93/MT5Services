@@ -6,27 +6,47 @@
 
 ## 📍 2026-04-19 状态快照（新 session 先读此节）
 
-### 今日产出（分支 `fix/backtest-htf-required-indicators` 待合入 main）
+### 今日产出
+
+**上一 session（分支 `fix/backtest-htf-required-indicators`，PR #48 已合入 main）**：
 
 | commit | 内容 |
 |--------|------|
 | `840ae74` | docs(research): 2026-04-18 挖掘 vs 回测 Gap 系统分析 |
 | `84dd9b8` | **fix(backtest)**: `_required_indicators` 聚合丢失 `htf_requirements` 导致 HTF alignment 策略 0 交易 |
 | `42c37bb` | docs(backtest): 2026-04-19 baseline 验证 + P2/P3 策略诊断 + trend_continuation 冻结 |
+| `eae0ab8` | docs(todo): 新 session 前置状态快照 |
+| `63454b2` | Merge PR #48 |
 
-**PR URL**（待手动开）：`https://github.com/Hugo-Liang93/MT5Services/pull/new/fix/backtest-htf-required-indicators`
+**本 session（待提交）**：
 
-### 新 H1 Baseline（12 个月 2025-04-17~2026-04-15，全策略，冻结 trend_continuation 后）
+| 内容 | 说明 |
+|------|------|
+| **fix(signals)**: `breakout_follow` 对 `adx_d3=None` 硬拒 | 诊断 P5 参数调优时发现：回测中 `adx_d3` 恒 None（`src/indicators/` 未实现 delta metric），`breakout_follow._why:62` 用 `if d3 is None or ...` 硬拒 → 100% 拦截。与 strong_trend_follow / session_breakout / regime_exhaustion 对齐 `is not None and` 模式修复 |
 
-| 维度 | 值 | 对比历史 |
-|------|-----|---------|
-| Trades | 201 | vs 2026-04-08 的 19 笔（3 月）/ 2026-04-17 Intrabar 88 笔 |
-| PF | **2.595** | vs 修复前 0.757 / 2026-04-08 M30 2.47 |
-| Sharpe | 2.168 | vs 修复前 -0.771 |
-| Calmar | 5.845 | vs 修复前 -0.255 |
-| MaxDD | 11.69% | vs 17.21% |
-| **Monte Carlo** | **Significant (p=0.0)** | vs 不显著 (p=0.898) |
-| 核心盈利 | `regime_exhaustion` +$3442 / `strong_trend_follow` +$1216 | |
+### 新 H1 Baseline（bugfix 后，12 个月 2025-04-17~2026-04-15，全策略）
+
+| 维度 | bug 存在时 | **bugfix 后** | 变化 |
+|------|---------|---------|------|
+| Trades | 201 | **473** | +135% |
+| WR | 44.3% | 46.1% | +1.8 pp |
+| PF | 2.595 | 2.361 | -0.23（breakout_follow solo PF 1.23 拉低） |
+| Sharpe | 2.168 | **2.74** | **+0.57** |
+| Calmar | 5.845 | 21.77 | compound 放大 |
+| MaxDD | 11.69% | **8.0%** | **-3.7 pp** |
+| MaxDD duration | — | 75 bars | — |
+
+策略分布（新 baseline）：
+| 策略 | n | WR | PnL（$10k→$95k compound） |
+|------|---|-----|------|
+| regime_exhaustion | 52 | 57.7% | +$47,391 |
+| strong_trend_follow | 62 | 50.0% | +$25,549 |
+| **breakout_follow** | **163** | 44.2% | +$6,491 |
+| pullback_window | 46 | 41.3% | +$3,136 |
+| open_range_breakout | 72 | 40.3% | +$2,167 |
+| trendline_touch | 78 | 47.4% | +$365 |
+
+> PnL $85k vs 旧 $4,575 差异来自 compound：bugfix 新增 163 笔正收益 → balance 更快膨胀 → 后续 regime_exhaustion / strong_trend_follow 每笔 position_size 按 `current_balance × risk_pct / stop_distance` 放大。per-trade `pnl_pct` 与旧 baseline 基本一致（每笔 ±1%）。
 
 ### signal.local.ini 本机 override（不入 git）
 
@@ -42,21 +62,16 @@ uncertain = 0.0
 
 ### 🔴 新增未决工作
 
-#### P5：breakout_follow 参数调优（中，1-2 小时）
+#### P5：breakout_follow 参数调优（可选，低优先级）
 
-**前置条件**：本 PR 合入 main
+**状态**：原"参数调优"目标已被 bugfix 替代大部分效果（从 0 trades → 163 trades / PF 1.23）。
 
-**问题**：bug 修复后 `supertrend14` 已可取到，但策略 `_why()` 多硬条件在牛市罕能同时满足 → 仍 0 trades。
+**仍可做**（非阻塞）：
+- [ ] 如需让 breakout_follow solo PF 从 1.23 → 1.3+（减轻对整体 PF 的拖累），可做参数网格。ADX 参数覆盖机制已验证可用（`strategy_params_per_tf` 通过 `build_backtest_components` 传入）。
+- [ ] 原 TODO 网格维度（`_di_diff_min` / `_momentum_consensus_buy_min` / `_rsi_max_buy` / `_rsi_min_sell`）可扫。
+- [ ] 注意：breakout_follow 的 `_adx_d3_min=1.0` 门槛在回测**不生效**（None 放行），在生产**生效**——参数调优结果在 live 行为可能更严。
 
-**工作**：
-- [ ] 用 scratch/ 脚本做阈值网格搜索：
-  - `_adx_min` ∈ {12, 15, 18}（放宽下限）
-  - `_di_diff_min` ∈ {1.0, 2.0, 3.0}
-  - `_momentum_consensus_buy_min` ∈ {0.20, 0.34}
-  - `_adx_d3_min` ∈ {0.0, 0.5, 1.0}
-- [ ] 目标：找到单策略 PF > 1.3 的参数组合
-- [ ] 写入 `signal.local.ini [strategy_params.H1]`
-- [ ] 全策略回测验证整体 baseline 是否进一步提升
+**前置**：建议先 1-2 周 Paper Trading 观察，对比回测 vs 实盘差异，再决定是否调优。
 
 #### P6：trend_continuation 置信度重设计（长，跨多 session）
 
@@ -68,21 +83,31 @@ uncertain = 0.0
 - [ ] 或重写 Why/When/Where 评分逻辑（当前 pullback setup 设计可能本身过拟合）
 - [ ] 目标：solo min_conf=0.45 时 PF > 1.2（当前 0.61）
 
+#### P7：回测管线缺失 delta metrics（架构性，新增）
+
+**问题**：`adx_d3` / `rsi_d3` 等三阶 delta metric 在 `src/indicators/` **完全未实现**。所有依赖它们的策略（至少 7 处：breakout_follow / strong_trend_follow / session_breakout / regime_exhaustion / sweep_reversal / range_reversion / trend_continuation / pullback_window / lowbar_entry）在回测中相关门控条件**被默默跳过**（通过 `is not None` 短路放行）。
+
+**影响**：生产 vs 回测存在系统性行为差异，具体影响幅度**未量化**。
+
+**候选方向**：
+- [ ] 方案 A：在 `src/indicators/core/` 补 `adx_d3` / `rsi_d3` 增量计算（前值缓存 + 滚动差分）
+- [ ] 方案 B：在文档里显式声明"回测跳过 delta 条件"，承认行为差异
+- [ ] 方案 C：为 delta metric 提供回测专用降级近似（例如用 ADX 的 EMA 做 proxy）
+
 ### ⚠️ 旧 TODO 条目**已过期或证伪**
 
 新 session 读到下列条目时**请忽略或以本节为准**：
 
 | 位置 | 过期原因 |
 |------|---------|
-| Line 85-95 "回测基线（2026-04-08 3 个月，合计 19 笔）" | 已由本节的 12 个月 201 笔取代 |
-| Line 109 "breakout_follow 零交易——设计如此" | **已证伪**：是 infra bug（已修）+ 参数过严（留 P5）|
-| Line 110 "频率瓶颈 19 笔/3 个月" | 修复后 ~16 笔/周，已非瓶颈 |
-| Line 220 "用 M5 bar 数据回测高 TF 策略盘中入场" | 已跑过但数据是 bug 未修复前（PF 0.757），修复后应重跑 |
+| Line 85-95 "回测基线（2026-04-08 3 个月，合计 19 笔）" | 已由本节 473 笔（12 个月，bugfix 后）取代 |
+| "breakout_follow 零交易——设计如此" | **二次证伪**：不仅是 HTF infra bug（2026-04-19 上午已修），还有 adx_d3=None 硬拒 bug（下午已修） |
+| "用 M5 bar 数据回测高 TF 策略盘中入场" | 应用 bugfix 后新 baseline 重跑 |
 
 ### 📝 补记：挖掘驱动策略的现有状态
 
-- `regime_exhaustion`（挖掘驱动，已部署 paper_only，未在 TODO 中）— 回测主要盈利贡献（+$3442 / H1 PnL 75%）。**建议 Paper 观察独立跟踪**。
-- `strong_trend_follow`（FP.2，已在 TODO Line 131-142）— 观察项已在。
+- `regime_exhaustion`（已部署 paper_only）— **新 baseline 主要盈利贡献**：52 trades / 57.7% WR / +$47,391（compound 后）。**建议 Paper 观察独立跟踪**。
+- `strong_trend_follow`（FP.2，已部署 paper_only）— 新 baseline 次主要贡献：62 trades / 50% WR / +$25,549。
 
 ---
 
