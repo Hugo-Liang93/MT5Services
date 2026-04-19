@@ -24,29 +24,28 @@
 |------|------|
 | **fix(signals)**: `breakout_follow` 对 `adx_d3=None` 硬拒 | 诊断 P5 参数调优时发现：回测中 `adx_d3` 恒 None（`src/indicators/` 未实现 delta metric），`breakout_follow._why:62` 用 `if d3 is None or ...` 硬拒 → 100% 拦截。与 strong_trend_follow / session_breakout / regime_exhaustion 对齐 `is not None and` 模式修复 |
 
-### 新 H1 Baseline（bugfix 后，12 个月 2025-04-17~2026-04-15，全策略）
+### 新 H1 Baseline（P7 delta 修复后，12 个月 2025-04-17~2026-04-15，全策略）
 
-| 维度 | bug 存在时 | **bugfix 后** | 变化 |
-|------|---------|---------|------|
-| Trades | 201 | **473** | +135% |
-| WR | 44.3% | 46.1% | +1.8 pp |
-| PF | 2.595 | 2.361 | -0.23（breakout_follow solo PF 1.23 拉低） |
-| Sharpe | 2.168 | **2.74** | **+0.57** |
-| Calmar | 5.845 | 21.77 | compound 放大 |
-| MaxDD | 11.69% | **8.0%** | **-3.7 pp** |
-| MaxDD duration | — | 75 bars | — |
+| 维度 | 原 baseline | P5 bugfix 后 | **P7 delta 修复后（当前真实值）** |
+|------|---------|---------|---------|
+| Trades | 201 | 473 | **346** |
+| WR | 44.3% | 46.1% | **46.2%** |
+| PF | 2.595 | 2.361 | **2.041** |
+| Sharpe | 2.168 | 2.74 | **2.508** |
+| MaxDD | 11.69% | 8.0% | **6.93%** |
+| MaxDD duration | — | 75 bars | **61 bars** |
 
-策略分布（新 baseline）：
-| 策略 | n | WR | PnL（$10k→$95k compound） |
-|------|---|-----|------|
-| regime_exhaustion | 52 | 57.7% | +$47,391 |
-| strong_trend_follow | 62 | 50.0% | +$25,549 |
-| **breakout_follow** | **163** | 44.2% | +$6,491 |
-| pullback_window | 46 | 41.3% | +$3,136 |
-| open_range_breakout | 72 | 40.3% | +$2,167 |
-| trendline_touch | 78 | 47.4% | +$365 |
+策略分布（**P7 delta 修复后真实 baseline**）：
+| 策略 | n | WR | PnL（$10k→$44k compound） | 备注 |
+|------|---|-----|------|------|
+| strong_trend_follow | 45 | **55.6%** | +$16,494 | `adx_d3_min_strict > 0` 门控生效 |
+| regime_exhaustion | 15 | **80.0%** | +$13,947 | `adx_d3 > 0` 门控选出真耗竭 |
+| breakout_follow | 115 | 43.5% | +$2,233 | |
+| open_range_breakout | 72 | 38.9% | +$745 | 不依赖 delta |
+| trendline_touch | 79 | 46.8% | +$414 | 不依赖 delta |
+| pullback_window | 20 | 40.0% | +$323 | rsi_d3 门控生效 |
 
-> PnL $85k vs 旧 $4,575 差异来自 compound：bugfix 新增 163 笔正收益 → balance 更快膨胀 → 后续 regime_exhaustion / strong_trend_follow 每笔 position_size 按 `current_balance × risk_pct / stop_distance` 放大。per-trade `pnl_pct` 与旧 baseline 基本一致（每笔 ±1%）。
+> **重要**：P5 bugfix 后的 473 笔 baseline 是 delta 门控失效下的**假象膨胀**。P7 修复后首次让回测与生产行为对齐，346 笔才是可投产参考。旧 baseline 数据（201 笔、473 笔）均不应作为未来参数调优 / 策略评估的参考。
 
 ### signal.local.ini 本机 override（不入 git）
 
@@ -83,16 +82,22 @@ uncertain = 0.0
 - [ ] 或重写 Why/When/Where 评分逻辑（当前 pullback setup 设计可能本身过拟合）
 - [ ] 目标：solo min_conf=0.45 时 PF > 1.2（当前 0.61）
 
-#### P7：回测管线缺失 delta metrics（架构性，新增）
+#### ~~P7：回测管线缺失 delta metrics（已修复 2026-04-19）~~
 
-**问题**：`adx_d3` / `rsi_d3` 等三阶 delta metric 在 `src/indicators/` **完全未实现**。所有依赖它们的策略（至少 7 处：breakout_follow / strong_trend_follow / session_breakout / regime_exhaustion / sweep_reversal / range_reversion / trend_continuation / pullback_window / lowbar_entry）在回测中相关门控条件**被默默跳过**（通过 `is not None` 短路放行）。
+**修复思路**：不是 delta metric 未实现（`src/indicators/runtime/delta_metrics.py` 已有），而是回测管线 `BacktestEngine._pipeline.compute()` 绕过了 `UnifiedIndicatorManager.query_services.apply_delta_metrics_query`（该路径依赖 MarketService 历史）。解决方案：在 `src/backtesting/engine/indicators.py::precompute_all_indicators` 末尾新增 snapshot-based delta 注入（`_apply_delta_to_snapshots`），数据源为 snapshots 自身，不依赖 MarketService，字段命名 / 精度与生产完全一致。
 
-**影响**：生产 vs 回测存在系统性行为差异，具体影响幅度**未量化**。
+**量化影响**（H1 12 个月 baseline 对比）：
+- Trades 473 → **346** (-27%)：门控生效消除虚假交易
+- Sharpe 2.74 → 2.508：合理下降
+- MaxDD 8.0% → **6.93%**：风险更低
+- **regime_exhaustion WR 57.7% → 80.0%**（+22.3pp）：`adx_d3 > 0` 门控选出真耗竭反转
+- **strong_trend_follow WR 50% → 55.6%**：`adx_d3_min_strict > 0` 选出真趋势
+- open_range_breakout / trendline_touch 不依赖 delta，无变化 → 修复无 side effect
 
-**候选方向**：
-- [ ] 方案 A：在 `src/indicators/core/` 补 `adx_d3` / `rsi_d3` 增量计算（前值缓存 + 滚动差分）
-- [ ] 方案 B：在文档里显式声明"回测跳过 delta 条件"，承认行为差异
-- [ ] 方案 C：为 delta metric 提供回测专用降级近似（例如用 ADX 的 EMA 做 proxy）
+**未决跟进**：
+- [ ] M5/M30/M15 等其他 TF baseline 重跑（当前只对 H1 做了对比）
+- [ ] P5 残留的 breakout_follow 参数调优需基于新 baseline 重新评估
+- [ ] FP.2 `strong_trend_follow` Paper 观察数据可能偏离当前回测值（Paper 数据在 bugfix 前记录）
 
 ### ⚠️ 旧 TODO 条目**已过期或证伪**
 

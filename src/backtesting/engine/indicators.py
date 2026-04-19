@@ -21,7 +21,7 @@ def precompute_all_indicators(
     all_bars: List[OHLC],
     warmup_count: int,
 ) -> List[Dict[str, Dict[str, Any]]]:
-    """一次性预计算所有 bar 位置的指标快照。"""
+    """一次性预计算所有 bar 位置的指标快照，并注入 delta metrics。"""
     t0 = time.monotonic()
     snapshots: List[Dict[str, Dict[str, Any]]] = []
     for i in range(len(all_bars)):
@@ -29,11 +29,79 @@ def precompute_all_indicators(
         window = all_bars[window_start : i + 1]
         indicators = compute_indicators(engine, symbol, timeframe, window)
         snapshots.append(indicators)
-    elapsed = int((time.monotonic() - t0) * 1000)
+    compute_elapsed = int((time.monotonic() - t0) * 1000)
+
+    # 注入 delta metrics（与生产 UnifiedIndicatorManager 的行为对齐）
+    # 生产路径：query_services/runtime.apply_delta_metrics_query 依赖 MarketService 历史
+    # 回测路径：snapshots 自身就是完整历史，直接按索引回看前 N 根
+    t1 = time.monotonic()
+    delta_config = _build_delta_config()
+    if delta_config:
+        _apply_delta_to_snapshots(snapshots, delta_config)
+    delta_elapsed = int((time.monotonic() - t1) * 1000)
+
     logger.info(
-        "Pre-computed indicators for %d bars in %dms", len(all_bars), elapsed
+        "Pre-computed indicators for %d bars in %dms (delta metrics %dms, %d configs)",
+        len(all_bars),
+        compute_elapsed,
+        delta_elapsed,
+        len(delta_config),
     )
     return snapshots
+
+
+def _build_delta_config() -> Dict[str, Tuple[int, ...]]:
+    """从 global indicator config 读 delta_bars，构建 {indicator_name: (deltas)}。"""
+    from src.config.indicator_config import get_global_config_manager
+
+    configs = get_global_config_manager().get_config().indicators
+    mapping: Dict[str, Tuple[int, ...]] = {}
+    for cfg in configs or []:
+        bars = getattr(cfg, "delta_bars", None)
+        if not bars:
+            continue
+        values = tuple(sorted({int(item) for item in bars if int(item) > 0}))
+        if values:
+            mapping[cfg.name] = values
+    return mapping
+
+
+def _apply_delta_to_snapshots(
+    snapshots: List[Dict[str, Any]],
+    delta_config: Dict[str, Tuple[int, ...]],
+) -> None:
+    """In-place 给每个 snapshot 添加 `{metric}_d{N}` 字段。
+
+    payload 类型故意宽松为 Any：pipeline 的 per-indicator 失败会返回 None，
+    payload 可能不是 dict，必须 guard 后再 iterate（生产 delta 路径同样处理）。
+
+    与 src/indicators/runtime/delta_metrics.py 的 apply_delta_metrics 逻辑等价，
+    但数据源来自 snapshots 列表而非 MarketService 历史。
+    """
+    for i, indicators in enumerate(snapshots):
+        for ind_name, payload in indicators.items():
+            deltas = delta_config.get(ind_name)
+            if not deltas or not isinstance(payload, dict):
+                continue
+            for delta in deltas:
+                prev_idx = i - delta
+                if prev_idx < 0:
+                    continue
+                prev_payload = snapshots[prev_idx].get(ind_name)
+                if not isinstance(prev_payload, dict):
+                    continue
+                for metric, cur_val in list(payload.items()):
+                    if not isinstance(cur_val, (int, float)):
+                        continue
+                    # 跳过已计算的 delta key，避免 rsi_d3_d3 这种递归
+                    if "_d" in metric and metric.rsplit("_d", 1)[-1].isdigit():
+                        continue
+                    prev_val = prev_payload.get(metric)
+                    if not isinstance(prev_val, (int, float)):
+                        continue
+                    payload[f"{metric}_d{delta}"] = round(
+                        float(cur_val) - float(prev_val), 6
+                    )
 
 
 def compute_indicators(
@@ -94,18 +162,22 @@ def preload_htf_indicators(
             warmup = engine._data_loader.preload_warmup_bars(
                 symbol, tf, start_time, warmup_bars
             )
-            htf_bars = engine._data_loader.load_all_bars(symbol, tf, start_time, end_time)
+            htf_bars = engine._data_loader.load_all_bars(
+                symbol, tf, start_time, end_time
+            )
             all_htf = warmup + htf_bars
             if len(all_htf) < 2:
                 logger.warning(
                     "Backtest HTF: insufficient bars for %s/%s (%d)",
-                    symbol, tf, len(all_htf),
+                    symbol,
+                    tf,
+                    len(all_htf),
                 )
                 continue
             ts_list: List[tuple[datetime, Dict[str, Dict[str, Any]]]] = []
             window_size = min(warmup_bars, len(all_htf))
             for end_idx in range(window_size, len(all_htf) + 1):
-                window = all_htf[max(0, end_idx - window_size):end_idx]
+                window = all_htf[max(0, end_idx - window_size) : end_idx]
                 snap = compute_indicators(
                     engine,
                     symbol,
@@ -122,7 +194,10 @@ def preload_htf_indicators(
                 htf_data[tf] = ts_list[-1][1]
                 logger.info(
                     "Backtest HTF: loaded %d bars for %s/%s, %d indicators",
-                    len(all_htf), symbol, tf, len(ts_list[-1][1]),
+                    len(all_htf),
+                    symbol,
+                    tf,
+                    len(ts_list[-1][1]),
                 )
         except Exception:
             logger.warning(
