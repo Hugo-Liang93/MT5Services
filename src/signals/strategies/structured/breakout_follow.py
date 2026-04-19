@@ -7,7 +7,15 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import EntrySpec, EntryType, ExitSpec, HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import (
+    EntrySpec,
+    EntryType,
+    ExitSpec,
+    HtfPolicy,
+    StructuredStrategyBase,
+    _near_structure_level,
+    _structure_bias_bonus,
+)
 
 
 class StructuredBreakoutFollow(StructuredStrategyBase):
@@ -58,9 +66,11 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
             return False, None, 0, f"adx_low:{adx:.0f}"
         if adx > adx_max:
             return False, None, 0, f"adx_over:{adx:.0f}"
+        # adx_d3 是 delta metric，回测管线不计算（恒 None），生产有值时才校验
+        # 与 strong_trend_follow / session_breakout / regime_exhaustion 对齐：None 放行
         adx_d3_min = get_tf_param(self, "adx_d3_min", tf, self._adx_d3_min)
-        if d3 is None or d3 < adx_d3_min:
-            return False, None, 0, f"adx_flat:d3={d3}"
+        if d3 is not None and d3 < adx_d3_min:
+            return False, None, 0, f"adx_flat:d3={d3:.1f}"
 
         di_diff_min = get_tf_param(self, "di_diff_min", tf, self._di_diff_min)
         di_spread = (plus_di or 0) - (minus_di or 0)
@@ -111,11 +121,22 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
             if direction == "sell" and rsi < rsi_min_sell:
                 return False, None, 0, f"rsi_cold:{rsi:.0f}"
 
-        trend_score = min(d3 / 6.0, 1.0)
+        # d3 可能为 None（回测管线不计算 delta metric），此时趋势分退化为 ADX 幅度分
+        if d3 is not None:
+            trend_score = min(d3 / 6.0, 1.0)
+            d3_desc = f"{d3:.1f}"
+        else:
+            trend_score = min(
+                max((adx - adx_min) / max(adx_max - adx_min, 1.0), 0.0), 1.0
+            )
+            d3_desc = "n/a"
         consensus_score = min(1.0, abs(consensus_value))
         score = min(1.0, trend_score * 0.6 + consensus_score * 0.4)
-        return True, direction, score, (
-            f"adx={adx:.0f},d3={d3:.1f},consensus={consensus_value:+.2f}"
+        return (
+            True,
+            direction,
+            score,
+            (f"adx={adx:.0f},d3={d3_desc},consensus={consensus_value:+.2f}"),
         )
 
     def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
