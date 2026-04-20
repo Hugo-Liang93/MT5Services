@@ -16,6 +16,7 @@ from src.api import (
     decision,
     deps,
     economic,
+    execution,
     experiment,
     indicators,
     market,
@@ -218,7 +219,8 @@ def health(
     pending_running = bool(
         pending_summary.get(
             "running",
-            pending_summary.get("status") not in {"critical", "disabled", "unavailable"},
+            pending_summary.get("status")
+            not in {"critical", "disabled", "unavailable"},
         )
     )
     position_running = bool(position_summary.get("running", False))
@@ -317,6 +319,7 @@ v1.include_router(decision.router)
 v1.include_router(economic.router)
 v1.include_router(account.router)
 v1.include_router(trade.router)
+v1.include_router(execution.router)
 v1.include_router(monitoring.router)
 v1.include_router(indicators.router)
 v1.include_router(signal.router)

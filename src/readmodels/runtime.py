@@ -17,6 +17,62 @@ from src.monitoring.pipeline.events import (
     PIPELINE_UNMANAGED_POSITION_DETECTED,
 )
 from src.trading.broker.comment_codec import looks_like_system_trade_comment
+from src.trading.execution.reasons import (
+    REASON_AUTO_TRADE_DISABLED,
+    REASON_CIRCUIT_OPEN,
+    REASON_QUOTE_STALE,
+)
+
+
+# ── Tradability verdict 原生计算（P9 freshness tiering，T0 数据） ──
+# 仅 readmodel 层使用的 reason_code（不属于执行链 skip reason 枚举）：
+TRADABILITY_REASON_RUNTIME_NOT_READY = "runtime_not_ready"
+TRADABILITY_REASON_CLOSE_ONLY = "close_only_mode"
+TRADABILITY_REASON_RISK_BLOCK = "risk_block"
+
+
+def compute_tradability_verdict(
+    *,
+    runtime_present: bool,
+    circuit_open: bool,
+    quote_stale: bool,
+    should_block_new_trades: bool,
+    last_risk_block: Optional[str],
+    close_only_mode: bool,
+    auto_entry_enabled: bool,
+    current_mode: str,
+) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+    """计算 tradability 原生 verdict。
+
+    返回 ``(verdict, reason_code, reason, recommended_action)``。
+    优先级：blocked > degraded > tradable，按严重度排序。
+
+    reason_code 规则：
+    - 执行链已知阻断：使用 ``src.trading.execution.reasons`` 中的常量
+    - readmodel 层独有状态：使用本模块 ``TRADABILITY_REASON_*`` 常量
+    """
+    if not runtime_present:
+        return ("blocked", TRADABILITY_REASON_RUNTIME_NOT_READY,
+                "交易运行时未就绪", None)
+    if circuit_open:
+        return ("blocked", REASON_CIRCUIT_OPEN,
+                "熔断器已触发", "acknowledge")
+    if quote_stale:
+        return ("blocked", REASON_QUOTE_STALE,
+                "行情数据过期，等待恢复", "wait_quote")
+    if should_block_new_trades:
+        return ("blocked", last_risk_block or TRADABILITY_REASON_RISK_BLOCK,
+                "风控阻断新交易", "acknowledge")
+    if close_only_mode:
+        return ("degraded", TRADABILITY_REASON_CLOSE_ONLY,
+                "仅平仓模式", "resume")
+    if not auto_entry_enabled:
+        return ("degraded", REASON_AUTO_TRADE_DISABLED,
+                "自动入场已关闭", "resume")
+    if current_mode != "full":
+        return ("degraded", f"runtime_mode_{current_mode}",
+                f"运行模式: {current_mode}", "resume")
+    return ("tradable", None, None, None)
 
 
 class RuntimeReadModel:
@@ -1364,14 +1420,34 @@ class RuntimeReadModel:
         circuit_open = bool(account_risk.get("circuit_open", False))
         quote_stale = bool(account_risk.get("quote_stale", False))
         should_block_new_trades = bool(account_risk.get("should_block_new_trades", False))
+        last_risk_block = str(account_risk.get("last_risk_block") or "").strip() or None
         runtime_present = self._trade_executor is not None
+        current_mode = str(runtime_mode.get("current_mode") or "full")
         admission_enabled = bool(
             runtime_present
             and auto_entry_enabled
             and not close_only_mode
-            and str(runtime_mode.get("current_mode") or "full") == "full"
+            and current_mode == "full"
+        )
+        verdict, reason_code, reason, recommended_action = compute_tradability_verdict(
+            runtime_present=runtime_present,
+            circuit_open=circuit_open,
+            quote_stale=quote_stale,
+            should_block_new_trades=should_block_new_trades,
+            last_risk_block=last_risk_block,
+            close_only_mode=close_only_mode,
+            auto_entry_enabled=auto_entry_enabled,
+            current_mode=current_mode,
         )
         return {
+            "verdict": verdict,
+            "reason_code": reason_code,
+            "reason": reason,
+            "recommended_action": recommended_action,
+            "source_kind": "native",
+            "tier": "T0",
+            "state_updated_at": account_risk.get("updated_at"),
+            "tradable": verdict == "tradable",
             "runtime_present": runtime_present,
             "admission_enabled": admission_enabled,
             "market_data_fresh": not quote_stale,
@@ -1392,12 +1468,6 @@ class RuntimeReadModel:
             "close_only_mode": close_only_mode,
             "margin_guard": margin_guard,
             "circuit_open": circuit_open,
-            "tradable": bool(
-                admission_enabled
-                and not circuit_open
-                and not should_block_new_trades
-                and not quote_stale
-            ),
         }
 
     def recent_trade_pipeline_events_payload(self, *, limit: int = 50) -> dict[str, Any]:

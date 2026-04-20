@@ -3,43 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-from src.api.trade import (
-    cancel_orders,
-    cancel_orders_batch,
-    close,
-    close_all,
-    close_batch,
-    estimate_margin,
-    modify_orders,
-    modify_positions,
-    orders,
-    positions,
-    trade,
-    trade_batch,
-    trade_command_audits,
-    trade_closeout_exposure,
-    trade_state_stream,
-    trade_trace_by_trace_id,
-    trade_trace_by_signal_id,
-    trade_traces,
-    trade_state_closeout_summary,
-    trade_active_pending_state_list,
-    trade_pending_execution_context_list,
-    trade_runtime_mode_status,
-    trade_runtime_mode_update,
-    trade_state_alerts_summary,
-    trade_control_status,
-    trade_control_update,
-    trade_daily_summary,
-    trade_dispatch,
-    trade_from_signal,
-    trading_accounts,
-    trade_pending_lifecycle_state_list,
-    trade_position_state_list,
-    trade_precheck,
-    trade_reconcile,
-    trade_state_summary,
-)
+from starlette.requests import Request
+
 from src.api.schemas import (
     AdmissionReportModel,
     BatchCancelOrdersRequest,
@@ -54,18 +19,54 @@ from src.api.schemas import (
     ModifyPositionsRequest,
     RuntimeModeRequest,
     SignalExecuteTradeRequest,
+    TradeControlRequest,
     TradeDispatchRequest,
     TradeReconcileRequest,
-    TradeControlRequest,
     TradeRequest,
 )
-from src.clients.mt5_account import Order, Position
+from src.api.trade import (
+    cancel_orders,
+    cancel_orders_batch,
+    close,
+    close_all,
+    close_batch,
+    estimate_margin,
+    modify_orders,
+    modify_positions,
+    orders,
+    positions,
+    trade,
+    trade_active_pending_state_list,
+    trade_batch,
+    trade_closeout_exposure,
+    trade_command_audits,
+    trade_control_status,
+    trade_control_update,
+    trade_daily_summary,
+    trade_dispatch,
+    trade_from_signal,
+    trade_pending_execution_context_list,
+    trade_pending_lifecycle_state_list,
+    trade_position_state_list,
+    trade_precheck,
+    trade_reconcile,
+    trade_runtime_mode_status,
+    trade_runtime_mode_update,
+    trade_state_alerts_summary,
+    trade_state_closeout_summary,
+    trade_state_stream,
+    trade_state_summary,
+    trade_trace_by_signal_id,
+    trade_trace_by_trace_id,
+    trade_traces,
+    trading_accounts,
+)
 from src.clients.base import MT5TradeError
+from src.clients.mt5_account import Order, Position
 from src.readmodels.runtime import RuntimeReadModel
 from src.risk.service import PreTradeRiskBlockedError
 from src.trading.admission import TradeAdmissionService
 from src.trading.application.idempotency import TradeOperatorActionReplayConflictError
-from starlette.requests import Request
 
 
 class _FailingTradeService:
@@ -106,11 +107,16 @@ class _DispatchService:
         if operation == "trade":
             return {"ticket": 1, "payload": payload}
         if operation == "blocked_trade":
-            raise PreTradeRiskBlockedError("blocked by risk", assessment={"verdict": "block"})
+            raise PreTradeRiskBlockedError(
+                "blocked by risk", assessment={"verdict": "block"}
+            )
         if operation == "blocked_daily_loss_trade":
             raise PreTradeRiskBlockedError(
                 "blocked by risk",
-                assessment={"verdict": "block", "checks": [{"name": "daily_loss_limit"}]},
+                assessment={
+                    "verdict": "block",
+                    "checks": [{"name": "daily_loss_limit"}],
+                },
             )
         raise ValueError("unsupported trading operation")
 
@@ -199,7 +205,9 @@ class _DispatchService:
         replay = self._operator_action_replays.get((command_type, idempotency_key))
         if replay is None:
             return None
-        request_payload = self._normalize_replay_payload(kwargs.get("request_payload") or {})
+        request_payload = self._normalize_replay_payload(
+            kwargs.get("request_payload") or {}
+        )
         if replay["request_payload"] != request_payload:
             response_payload = dict(replay.get("response_payload") or {})
             raise TradeOperatorActionReplayConflictError(
@@ -238,7 +246,10 @@ class _DispatchService:
         if kwargs.get("symbol") == "XAUUSD_DAILY_LOSS":
             raise PreTradeRiskBlockedError(
                 "blocked by risk",
-                assessment={"verdict": "block", "checks": [{"name": "daily_loss_limit"}]},
+                assessment={
+                    "verdict": "block",
+                    "checks": [{"name": "daily_loss_limit"}],
+                },
             )
         return {
             "ticket": 1,
@@ -249,10 +260,15 @@ class _DispatchService:
         }
 
     def execute_trade_batch(self, trades, stop_on_error=False):
-        if any(str(trade.get("symbol") or "") == "XAUUSD_BATCH_FAIL" for trade in trades):
+        if any(
+            str(trade.get("symbol") or "") == "XAUUSD_BATCH_FAIL" for trade in trades
+        ):
             raise MT5TradeError("market closed")
         return {
-            "results": [{"index": idx, "success": True, "result": trade} for idx, trade in enumerate(trades)],
+            "results": [
+                {"index": idx, "success": True, "result": trade}
+                for idx, trade in enumerate(trades)
+            ],
             "success_count": len(trades),
             "failure_count": 0,
             "stop_on_error": stop_on_error,
@@ -274,7 +290,9 @@ class _DispatchService:
             raise MT5TradeError("position_not_found")
         return {"modified": [kwargs.get("ticket") or 1], "failed": []}
 
-    def _wrap_operator_action_result(self, *, command_type: str, request_payload, raw_result):
+    def _wrap_operator_action_result(
+        self, *, command_type: str, request_payload, raw_result
+    ):
         action_id = str(request_payload.get("action_id") or f"act_{command_type}_1")
         result_payload = dict(raw_result or {}) if isinstance(raw_result, dict) else {}
         payload = {
@@ -293,7 +311,9 @@ class _DispatchService:
             "result": result_payload,
         }
         if command_type == "close_position":
-            success = bool(result_payload.get("success", True)) and raw_result is not None
+            success = (
+                bool(result_payload.get("success", True)) and raw_result is not None
+            )
             payload["accepted"] = success
             payload["status"] = "completed" if success else "failed"
             payload["message"] = (
@@ -342,7 +362,11 @@ class _DispatchService:
     def close_position(self, **kwargs):
         self.close_position_calls += 1
         raw_result = {"ticket": kwargs["ticket"], "success": True}
-        if kwargs.get("action_id") or kwargs.get("idempotency_key") or kwargs.get("actor"):
+        if (
+            kwargs.get("action_id")
+            or kwargs.get("idempotency_key")
+            or kwargs.get("actor")
+        ):
             return self._wrap_operator_action_result(
                 command_type="close_position",
                 request_payload=kwargs,
@@ -353,7 +377,11 @@ class _DispatchService:
     def close_all_positions(self, **kwargs):
         self.close_all_calls += 1
         raw_result = {"closed": [1], "failed": []}
-        if kwargs.get("action_id") or kwargs.get("idempotency_key") or kwargs.get("actor"):
+        if (
+            kwargs.get("action_id")
+            or kwargs.get("idempotency_key")
+            or kwargs.get("actor")
+        ):
             return self._wrap_operator_action_result(
                 command_type="close_all_positions",
                 request_payload=kwargs,
@@ -364,7 +392,11 @@ class _DispatchService:
     def close_positions_by_tickets(self, **kwargs):
         self.close_batch_calls += 1
         raw_result = {"closed": list(kwargs.get("tickets") or []), "failed": []}
-        if kwargs.get("action_id") or kwargs.get("idempotency_key") or kwargs.get("actor"):
+        if (
+            kwargs.get("action_id")
+            or kwargs.get("idempotency_key")
+            or kwargs.get("actor")
+        ):
             return self._wrap_operator_action_result(
                 command_type="close_positions_by_tickets",
                 request_payload=kwargs,
@@ -375,7 +407,11 @@ class _DispatchService:
     def cancel_orders(self, **kwargs):
         self.cancel_orders_calls += 1
         raw_result = {"canceled": [11], "failed": []}
-        if kwargs.get("action_id") or kwargs.get("idempotency_key") or kwargs.get("actor"):
+        if (
+            kwargs.get("action_id")
+            or kwargs.get("idempotency_key")
+            or kwargs.get("actor")
+        ):
             return self._wrap_operator_action_result(
                 command_type="cancel_orders",
                 request_payload=kwargs,
@@ -387,7 +423,11 @@ class _DispatchService:
         self.cancel_batch_calls += 1
         request_payload = {"tickets": list(tickets), **kwargs}
         raw_result = {"canceled": list(tickets), "failed": []}
-        if kwargs.get("action_id") or kwargs.get("idempotency_key") or kwargs.get("actor"):
+        if (
+            kwargs.get("action_id")
+            or kwargs.get("idempotency_key")
+            or kwargs.get("actor")
+        ):
             return self._wrap_operator_action_result(
                 command_type="cancel_orders_by_tickets",
                 request_payload=request_payload,
@@ -686,27 +726,37 @@ class _ExposureCloseoutController:
             "last_comment": comment,
             "last_requested_at": "2026-01-01T00:00:00+00:00",
             "last_completed_at": "2026-01-01T00:00:00+00:00",
-                "actor": self.last_actor,
-                "action_id": self.last_action_id,
-                "audit_id": self.last_audit_id,
-                "idempotency_key": self.last_idempotency_key,
-                "request_context": dict(self.last_request_context),
-                "result": {
-                    "completed": True,
-                    "positions": {"requested": [1], "completed": [1], "failed": [], "error": None},
-                    "orders": {"requested": [2], "completed": [2], "failed": [], "error": None},
-                    "remaining_positions": [],
-                    "remaining_orders": [],
-                },
-                "runtime_mode_transition": {
-                    "configured_action": "ingest_only",
-                    "target_mode": "ingest_only",
-                    "applied": True,
-                    "reason": "closeout:manual_risk_off",
+            "actor": self.last_actor,
+            "action_id": self.last_action_id,
+            "audit_id": self.last_audit_id,
+            "idempotency_key": self.last_idempotency_key,
+            "request_context": dict(self.last_request_context),
+            "result": {
+                "completed": True,
+                "positions": {
+                    "requested": [1],
+                    "completed": [1],
+                    "failed": [],
                     "error": None,
-                    "snapshot": {"current_mode": "ingest_only"},
                 },
-            }
+                "orders": {
+                    "requested": [2],
+                    "completed": [2],
+                    "failed": [],
+                    "error": None,
+                },
+                "remaining_positions": [],
+                "remaining_orders": [],
+            },
+            "runtime_mode_transition": {
+                "configured_action": "ingest_only",
+                "target_mode": "ingest_only",
+                "applied": True,
+                "reason": "closeout:manual_risk_off",
+                "error": None,
+                "snapshot": {"current_mode": "ingest_only"},
+            },
+        }
         return dict(self._status)
 
     def status(self):
@@ -801,7 +851,9 @@ class _TradeTraceReadModel:
                         "stage": "account_risk",
                         "trace_id": trace_id,
                         "signal_id": None,
-                        "reasons": [{"code": "margin_insufficient", "message": "blocked"}],
+                        "reasons": [
+                            {"code": "margin_insufficient", "message": "blocked"}
+                        ],
                     }
                 ]
             },
@@ -937,7 +989,10 @@ def test_trade_precheck_wraps_mt5_errors() -> None:
 def test_trade_dispatch_uses_unified_dispatcher() -> None:
     service = _DispatchService()
     response = trade_dispatch(
-        TradeDispatchRequest(operation="trade", payload={"symbol": "XAUUSD", "volume": 0.1, "side": "buy"}),
+        TradeDispatchRequest(
+            operation="trade",
+            payload={"symbol": "XAUUSD", "volume": 0.1, "side": "buy"},
+        ),
         service=service,
         admission_service=_admission_service(service),
     )
@@ -1072,7 +1127,9 @@ def test_trade_control_update_endpoint_rejects_conflicting_idempotency_reuse() -
     assert queue.enqueue_calls == 1
 
 
-def test_close_endpoint_returns_unified_action_result_and_replays_same_idempotency_key() -> None:
+def test_close_endpoint_returns_unified_action_result_and_replays_same_idempotency_key() -> (
+    None
+):
     queue = _OperatorCommandQueueService()
     request = CloseRequest(
         ticket=1001,
@@ -1148,7 +1205,9 @@ def test_close_batch_endpoint_rejects_conflicting_idempotency_reuse() -> None:
     assert queue.enqueue_calls == 1
 
 
-def test_cancel_orders_endpoint_returns_unified_action_result_and_replays_same_idempotency_key() -> None:
+def test_cancel_orders_endpoint_returns_unified_action_result_and_replays_same_idempotency_key() -> (
+    None
+):
     queue = _OperatorCommandQueueService()
     request = CancelOrdersRequest(
         symbol="XAUUSD",
@@ -1325,7 +1384,9 @@ def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
     assert response.data["validation"]["paper_trading"]["signals_rejected"] == 3
 
 
-def test_trading_accounts_endpoint_reads_runtime_identity_via_public_port(monkeypatch) -> None:
+def test_trading_accounts_endpoint_reads_runtime_identity_via_public_port(
+    monkeypatch,
+) -> None:
     import src.api.trade_routes.state_routes.overview as trade_state_module
     from src.config.mt5 import MT5Settings
 
@@ -1585,7 +1646,9 @@ def test_trade_active_pending_state_list_endpoint_returns_active_projection() ->
     assert response.metadata["operation"] == "trade_active_pending_state_list"
 
 
-def test_trade_pending_execution_context_list_endpoint_returns_runtime_projection() -> None:
+def test_trade_pending_execution_context_list_endpoint_returns_runtime_projection() -> (
+    None
+):
     response = trade_pending_execution_context_list(
         runtime_views=RuntimeReadModel(pending_entry_manager=_PendingEntryManager()),
     )
@@ -1692,7 +1755,9 @@ def test_trade_state_stream_emits_snapshot_then_position_change() -> None:
             await body_iterator.__anext__(),
         ]
         await body_iterator.aclose()
-        return [chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks]
+        return [
+            chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks
+        ]
 
     chunks = asyncio.run(_consume())
     assert "event: state_snapshot" in chunks[0]
@@ -1726,12 +1791,14 @@ def test_trade_state_stream_emits_trade_control_change_with_action_ids() -> None
             await body_iterator.__anext__(),
         ]
         await body_iterator.aclose()
-        return [chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks]
+        return [
+            chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks
+        ]
 
     chunks = asyncio.run(_consume())
     assert "event: state_snapshot" in chunks[0]
     assert "event: trade_control_changed" in chunks[1]
-    assert '\"action_id\": \"act_trade_control_1\"' in chunks[1]
+    assert '"action_id": "act_trade_control_1"' in chunks[1]
 
 
 def test_trade_state_stream_emits_pipeline_event_from_formal_trace_source() -> None:
@@ -1763,7 +1830,9 @@ def test_trade_state_stream_emits_pipeline_event_from_formal_trace_source() -> N
             await body_iterator.__anext__(),
         ]
         await body_iterator.aclose()
-        return [chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks]
+        return [
+            chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks
+        ]
 
     chunks = asyncio.run(_consume())
     assert "event: state_snapshot" in chunks[0]
@@ -1774,7 +1843,9 @@ def test_trade_state_stream_emits_pipeline_event_from_formal_trace_source() -> N
 
 def test_trade_endpoint_exposes_standardized_observability_metadata() -> None:
     response = trade(
-        TradeRequest(symbol="XAUUSD", volume=0.1, side="buy", dry_run=True, request_id="req_x"),
+        TradeRequest(
+            symbol="XAUUSD", volume=0.1, side="buy", dry_run=True, request_id="req_x"
+        ),
         service=_DispatchService(),
     )
 
@@ -1817,7 +1888,10 @@ def test_trade_from_signal_maps_risk_blocked_error() -> None:
             self.last_dispatch = (operation, payload)
             raise PreTradeRiskBlockedError(
                 "blocked by risk",
-                assessment={"verdict": "block", "checks": [{"name": "daily_loss_limit"}]},
+                assessment={
+                    "verdict": "block",
+                    "checks": [{"name": "daily_loss_limit"}],
+                },
             )
 
     service = _BlockedDispatchService()
@@ -1903,7 +1977,9 @@ def test_modify_positions_forwards_ticket_and_maps_position_not_found() -> None:
     assert response.error["details"]["ticket"] == 404
 
 
-def test_positions_endpoint_serializes_dataclass_time_without_duplicate_keyword() -> None:
+def test_positions_endpoint_serializes_dataclass_time_without_duplicate_keyword() -> (
+    None
+):
     response = positions(symbol="XAUUSD", magic=7, service=_DispatchService())
 
     assert response.success is True
@@ -1915,3 +1991,47 @@ def test_orders_endpoint_serializes_dataclass_time_without_duplicate_keyword() -
 
     assert response.success is True
     assert response.data[0].time == "2026-01-01T00:00:00+00:00"
+
+
+# ── 废弃端点 metadata 标记 ────────────────────────────────────────
+
+
+def test_positions_endpoint_metadata_marks_deprecation_with_workbench_successor() -> (
+    None
+):
+    response = positions(symbol="XAUUSD", magic=7, service=_DispatchService())
+
+    assert response.success is True
+    assert response.metadata.get("deprecated") is True
+    deprecation = response.metadata.get("deprecation") or {}
+    assert deprecation.get("successor") == "/v1/execution/workbench"
+    assert deprecation.get("successor_query") == "include=positions"
+    assert deprecation.get("sunset") == "2026-06-01"
+    assert deprecation.get("reason") == "duplicate_of_workbench_block"
+
+
+def test_orders_endpoint_metadata_marks_deprecation_with_workbench_successor() -> None:
+    response = orders(symbol="XAUUSD", magic=7, service=_DispatchService())
+
+    assert response.success is True
+    assert response.metadata.get("deprecated") is True
+    deprecation = response.metadata.get("deprecation") or {}
+    assert deprecation.get("successor") == "/v1/execution/workbench"
+    assert deprecation.get("successor_query") == "include=orders"
+
+
+def test_positions_endpoint_marked_deprecated_in_openapi() -> None:
+    """FastAPI deprecated=True → OpenAPI 文档可让前端 codegen 自动告警。"""
+    from src.api import app
+
+    schema = app.openapi()
+    op = schema["paths"]["/v1/positions"]["get"]
+    assert op.get("deprecated") is True
+
+
+def test_orders_endpoint_marked_deprecated_in_openapi() -> None:
+    from src.api import app
+
+    schema = app.openapi()
+    op = schema["paths"]["/v1/orders"]["get"]
+    assert op.get("deprecated") is True

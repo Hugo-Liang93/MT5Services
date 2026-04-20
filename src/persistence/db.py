@@ -25,8 +25,8 @@ from src.persistence.repositories import (
     PipelineTraceRepository,
     RuntimeStatusRepository,
     SignalEventRepository,
-    TradingStateRepository,
     TradeCommandAuditRepository,
+    TradingStateRepository,
 )
 from src.persistence.schema import DDL_STATEMENTS, POST_INIT_DDL_STATEMENTS
 
@@ -253,7 +253,9 @@ class TimescaleWriter:
                         pass
 
     def init_schema(self) -> None:
-        ddl = "CREATE EXTENSION IF NOT EXISTS timescaledb;\n" + "\n".join(DDL_STATEMENTS)
+        ddl = "CREATE EXTENSION IF NOT EXISTS timescaledb;\n" + "\n".join(
+            DDL_STATEMENTS
+        )
         with self.connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_INIT_LOCK_KEY,))
             try:
@@ -330,8 +332,12 @@ class TimescaleWriter:
     def fetch_quotes(self, symbol: str, start_time, end_time, limit: int):
         return self.market_repo.fetch_quotes(symbol, start_time, end_time, limit)
 
-    def fetch_ohlc_range(self, symbol: str, timeframe: str, start_time, end_time, limit: int):
-        return self.market_repo.fetch_ohlc_range(symbol, timeframe, start_time, end_time, limit)
+    def fetch_ohlc_range(
+        self, symbol: str, timeframe: str, start_time, end_time, limit: int
+    ):
+        return self.market_repo.fetch_ohlc_range(
+            symbol, timeframe, start_time, end_time, limit
+        )
 
     def write_economic_calendar(self, rows, page_size: int = 500) -> None:
         self.economic_repo.write_economic_calendar(rows, page_size=page_size)
@@ -396,7 +402,9 @@ class TimescaleWriter:
     def fetch_market_impact_stats(self, **kwargs):
         return self.economic_repo.fetch_market_impact_stats(**kwargs)
 
-    def fetch_released_events_without_impact(self, symbols, since, importance_min=2, limit=500):
+    def fetch_released_events_without_impact(
+        self, symbols, since, importance_min=2, limit=500
+    ):
         return self.economic_repo.fetch_released_events_without_impact(
             symbols, since, importance_min=importance_min, limit=limit
         )
@@ -590,6 +598,12 @@ class TimescaleWriter:
     def query_signal_events(self, **kwargs):
         return self.signal_repo.query_signal_events(**kwargs)
 
+    def update_signal_admission(self, **kwargs) -> bool:
+        return self.signal_repo.update_signal_admission(**kwargs)
+
+    def fetch_signal_confidence(self, **kwargs):
+        return self.signal_repo.fetch_signal_confidence(**kwargs)
+
     def fetch_signal_preview_events(self, **kwargs):
         return self.signal_repo.fetch_signal_preview_events(**kwargs)
 
@@ -673,7 +687,7 @@ class TimescaleWriter:
             page_size = len(batch)
 
         for i in range(0, len(batch), page_size):
-            chunk = batch[i:i + page_size]
+            chunk = batch[i : i + page_size]
             self._write_chunk_with_retry(sql, chunk, page_size)
 
         logger.debug("Inserted %s rows", len(batch))
@@ -689,7 +703,11 @@ class TimescaleWriter:
             try:
                 with self.connection() as conn, conn.cursor() as cur:
                     execute_batch(cur, sql, chunk, page_size=min(page_size, len(chunk)))
-                logger.debug("Successfully inserted %s rows (attempt %s)", len(chunk), attempt + 1)
+                logger.debug(
+                    "Successfully inserted %s rows (attempt %s)",
+                    len(chunk),
+                    attempt + 1,
+                )
                 return
             except psycopg2.OperationalError as exc:
                 if attempt == max_retries - 1:
@@ -701,7 +719,7 @@ class TimescaleWriter:
                     )
                     raise
 
-                wait_time = 2 ** attempt
+                wait_time = 2**attempt
                 logger.warning(
                     "Insert failed (attempt %s), retrying in %s seconds: %s",
                     attempt + 1,
@@ -715,4 +733,4 @@ class TimescaleWriter:
                 logger.error("Unexpected error inserting %s rows: %s", len(chunk), exc)
                 if attempt == max_retries - 1:
                     raise
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)

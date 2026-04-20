@@ -120,7 +120,19 @@ def trade_entry_status(
     )
 
 
-@router.get("/positions", response_model=ApiResponse[List[PositionModel]])
+@router.get(
+    "/positions",
+    response_model=ApiResponse[List[PositionModel]],
+    deprecated=True,
+    summary="[已弃用] 改用 GET /v1/execution/workbench (positions 块)",
+    description=(
+        "**已弃用** — 与 `/v1/execution/workbench?include=positions` 重复。"
+        "新代码统一调用 workbench；保留兼容期 1 个月（2026-06-01 后下线）。\n\n"
+        "差异：本端点仅返回 service 缓存的扁平列表；workbench.positions 块带 "
+        "`status_counts` / `positions_updated_at` / source_kind。\n\n"
+        "若需直查 MT5 实时数据（绕过 service），改用 `/v1/account/positions`。"
+    ),
+)
 def positions(
     symbol: Optional[str] = Query(default=None, description="trading symbol"),
     magic: Optional[int] = Query(default=None, description="magic id"),
@@ -144,6 +156,13 @@ def positions(
                     if rows and hasattr(rows[0], "profit")
                     else None
                 ),
+                "deprecated": True,
+                "deprecation": {
+                    "successor": "/v1/execution/workbench",
+                    "successor_query": "include=positions",
+                    "sunset": "2026-06-01",
+                    "reason": "duplicate_of_workbench_block",
+                },
             },
         )
     except MT5TradeError as exc:
@@ -160,7 +179,17 @@ def positions(
         )
 
 
-@router.get("/orders", response_model=ApiResponse[List[OrderModel]])
+@router.get(
+    "/orders",
+    response_model=ApiResponse[List[OrderModel]],
+    deprecated=True,
+    summary="[已弃用] 改用 GET /v1/execution/workbench (orders 块)",
+    description=(
+        "**已弃用** — 与 `/v1/execution/workbench?include=orders` 重复。"
+        "新代码统一调用 workbench；保留兼容期 1 个月（2026-06-01 后下线）。\n\n"
+        "若需直查 MT5 实时挂单（绕过 service），改用 `/v1/account/orders`。"
+    ),
+)
 def orders(
     symbol: Optional[str] = Query(default=None, description="trading symbol"),
     magic: Optional[int] = Query(default=None, description="magic id"),
@@ -179,6 +208,13 @@ def orders(
                 "magic": magic,
                 "count": len(items),
                 "total_volume": sum(o.volume for o in rows),
+                "deprecated": True,
+                "deprecation": {
+                    "successor": "/v1/execution/workbench",
+                    "successor_query": "include=orders",
+                    "sunset": "2026-06-01",
+                    "reason": "duplicate_of_workbench_block",
+                },
             },
         )
     except MT5TradeError as exc:
@@ -214,7 +250,9 @@ def trading_accounts(
         else resolve_current_environment()
     )
     if environment is None:
-        raise HTTPException(status_code=500, detail="runtime environment is not configured")
+        raise HTTPException(
+            status_code=500, detail="runtime environment is not configured"
+        )
     for settings in list_mt5_accounts():
         account_key = build_account_key(
             environment,
@@ -231,7 +269,9 @@ def trading_accounts(
             auto_entry_enabled = bool(risk_state.get("auto_entry_enabled", True))
             close_only_mode = bool(risk_state.get("close_only_mode", False))
             circuit_open = bool(risk_state.get("circuit_open", False))
-            should_block_new_trades = bool(risk_state.get("should_block_new_trades", False))
+            should_block_new_trades = bool(
+                risk_state.get("should_block_new_trades", False)
+            )
             quote_stale = bool(risk_state.get("quote_stale", False))
             tradability = {
                 "runtime_present": True,
@@ -239,18 +279,20 @@ def trading_accounts(
                 "market_data_fresh": not quote_stale,
                 "quote_health": {
                     "stale": quote_stale,
-                    "age_seconds": (
-                        risk_state.get("metadata", {}) or {}
-                    ).get("quote_health", {}).get("age_seconds"),
-                    "stale_threshold_seconds": (
-                        risk_state.get("metadata", {}) or {}
-                    ).get("quote_health", {}).get("stale_threshold_seconds"),
+                    "age_seconds": (risk_state.get("metadata", {}) or {})
+                    .get("quote_health", {})
+                    .get("age_seconds"),
+                    "stale_threshold_seconds": (risk_state.get("metadata", {}) or {})
+                    .get("quote_health", {})
+                    .get("stale_threshold_seconds"),
                 },
                 "session_allowed": {"status": "unknown", "reason": None},
                 "economic_guard": {"status": "warn_only", "degraded": False},
                 "auto_entry_enabled": auto_entry_enabled,
                 "close_only_mode": close_only_mode,
-                "margin_guard": (risk_state.get("metadata", {}) or {}).get("margin_guard", {}),
+                "margin_guard": (risk_state.get("metadata", {}) or {}).get(
+                    "margin_guard", {}
+                ),
                 "circuit_open": circuit_open,
                 "tradable": bool(
                     auto_entry_enabled

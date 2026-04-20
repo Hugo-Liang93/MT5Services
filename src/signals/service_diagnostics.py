@@ -28,7 +28,10 @@ def strategy_diagnostics(
     from .analytics.diagnostics import DiagnosticThresholds
 
     rows = module.recent_signals(
-        symbol=symbol, timeframe=timeframe, scope=scope, limit=limit,
+        symbol=symbol,
+        timeframe=timeframe,
+        scope=scope,
+        limit=limit,
     )
     thresholds = DiagnosticThresholds(
         conflict_warn_threshold=conflict_warn_threshold,
@@ -36,7 +39,11 @@ def strategy_diagnostics(
         confidence_warn_threshold=confidence_warn_threshold,
     )
     report = module.diagnostics_engine.build_report(
-        rows, symbol=symbol, timeframe=timeframe, scope=scope, thresholds=thresholds,
+        rows,
+        symbol=symbol,
+        timeframe=timeframe,
+        scope=scope,
+        thresholds=thresholds,
     )
     return attach_expectancy_profile(module, report, symbol=symbol)
 
@@ -56,7 +63,10 @@ def daily_quality_report(
     from .analytics.diagnostics import DiagnosticThresholds
 
     rows = module.recent_signals(
-        symbol=symbol, timeframe=timeframe, scope=scope, limit=limit,
+        symbol=symbol,
+        timeframe=timeframe,
+        scope=scope,
+        limit=limit,
     )
     thresholds = DiagnosticThresholds(
         conflict_warn_threshold=conflict_warn_threshold,
@@ -65,8 +75,11 @@ def daily_quality_report(
     )
     report = module.diagnostics_engine.build_daily_quality_report(
         rows,
-        symbol=symbol, timeframe=timeframe, scope=scope,
-        thresholds=thresholds, now=now,
+        symbol=symbol,
+        timeframe=timeframe,
+        scope=scope,
+        thresholds=thresholds,
+        now=now,
     )
     return attach_expectancy_profile(module, report, symbol=symbol)
 
@@ -87,10 +100,7 @@ def diagnostics_aggregate_summary(
         direction_totals[direction] = direction_totals.get(direction, 0) + count
         strategy_totals[strategy] = strategy_totals.get(strategy, 0) + count
     top_strategies = sorted(
-        (
-            {"strategy": s, "count": c}
-            for s, c in strategy_totals.items()
-        ),
+        ({"strategy": s, "count": c} for s, c in strategy_totals.items()),
         key=lambda item: item["count"],
         reverse=True,
     )[:10]
@@ -129,7 +139,9 @@ def strategy_capability_reconciliation(
     runtime_policy: Optional[Any] = None,
 ) -> dict[str, Any]:
     """对齐 module 与 policy 的能力快照并返回可观测对账结果。"""
-    module_rows = list(normalize_capability_contract(module.strategy_capability_contract()))
+    module_rows = list(
+        normalize_capability_contract(module.strategy_capability_contract())
+    )
     module_by_name = {row["name"]: row for row in module_rows if row.get("name")}
 
     runtime_rows: list[dict[str, Any]] = []
@@ -208,6 +220,53 @@ def strategy_expectancy(
         return repository.fetch_expectancy_stats(hours=hours, symbol=symbol)
     except AttributeError:
         return []
+
+
+def strategy_audit(
+    module: SignalModule,
+    *,
+    symbol: Optional[str] = None,
+    timeframe: Optional[str] = None,
+    strategy: Optional[str] = None,
+    scope: str = "confirmed",
+    limit: int = 5000,
+    hours: int = 168,
+    conflict_warn_threshold: float = 0.35,
+    hold_warn_threshold: float = 0.75,
+    confidence_warn_threshold: float = 0.45,
+) -> dict[str, Any]:
+    """单端点聚合诊断（backlog P0.3 strategy-audit）。
+
+    数据源：
+    - SignalModule.recent_signals(scope, limit) — 含 actionability/guard_*
+    - SignalModule.strategy_winrates(hours, symbol) — 按 strategy+direction 行
+    - SignalModule.strategy_category(name) — category 元数据
+    """
+    from .analytics.diagnostics import DiagnosticThresholds
+
+    rows = module.recent_signals(
+        symbol=symbol, timeframe=timeframe, scope=scope, limit=limit
+    )
+    # strategy 过滤（端点级）
+    if strategy:
+        rows = [r for r in rows if str(r.get("strategy") or "") == strategy]
+    winrate_rows = strategy_winrates(module, hours=hours, symbol=symbol)
+    categories = {
+        name: module.strategy_category(name) for name in module.list_strategies()
+    }
+    return module.diagnostics_engine.build_strategy_audit_report(
+        rows,
+        scope=scope,
+        symbol=symbol,
+        timeframe=timeframe,
+        winrate_rows=winrate_rows,
+        strategy_categories=categories,
+        thresholds=DiagnosticThresholds(
+            conflict_warn_threshold=conflict_warn_threshold,
+            hold_warn_threshold=hold_warn_threshold,
+            confidence_warn_threshold=confidence_warn_threshold,
+        ),
+    )
 
 
 def attach_expectancy_profile(
@@ -341,9 +400,7 @@ def dispatch_operation(
             limit=payload.get("limit", 2000),
             conflict_warn_threshold=payload.get("conflict_warn_threshold", 0.35),
             hold_warn_threshold=payload.get("hold_warn_threshold", 0.75),
-            confidence_warn_threshold=payload.get(
-                "confidence_warn_threshold", 0.45
-            ),
+            confidence_warn_threshold=payload.get("confidence_warn_threshold", 0.45),
         ),
         "daily_quality_report": lambda: daily_quality_report(
             module,
@@ -353,9 +410,7 @@ def dispatch_operation(
             limit=payload.get("limit", 5000),
             conflict_warn_threshold=payload.get("conflict_warn_threshold", 0.35),
             hold_warn_threshold=payload.get("hold_warn_threshold", 0.75),
-            confidence_warn_threshold=payload.get(
-                "confidence_warn_threshold", 0.45
-            ),
+            confidence_warn_threshold=payload.get("confidence_warn_threshold", 0.45),
         ),
         "diagnostics_aggregate_summary": lambda: diagnostics_aggregate_summary(
             module,

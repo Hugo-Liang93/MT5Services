@@ -21,6 +21,62 @@ router = APIRouter(tags=["trade"])
 _TRADE_STATE_STREAM_POLL_SECONDS = 1.0
 _TRADE_STATE_STREAM_SNAPSHOT_LIMIT = 500
 
+# ── P9 Phase 2.1: event metadata 表（tier / entity_scope / changed_blocks） ──
+# Tier 与 docs/design/quantx-data-freshness-tiering.md §6.2 对齐：
+#   T0 = critical realtime（< 1s，禁用按钮 if stale）
+#   T1 = operational realtime（1-5s）
+# changed_blocks 与 /v1/execution/workbench 9 块名称对齐，前端按此精确重拉。
+_EVENT_METADATA: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "runtime_mode_changed": ("T0", "system", ("execution",)),
+    "trade_control_changed": ("T0", "account", ("execution",)),
+    "risk_state_changed": ("T0", "account", ("execution", "risk")),
+    "closeout_started": ("T1", "account", ("execution", "positions", "orders")),
+    "closeout_finished": (
+        "T1",
+        "account",
+        ("execution", "positions", "orders", "exposure"),
+    ),
+    "position_changed": ("T1", "symbol", ("positions", "exposure")),
+    "order_changed": ("T1", "symbol", ("orders",)),
+    "pending_entry_changed": ("T1", "symbol", ("pending",)),
+    "alert_raised": ("T1", "account", ("execution",)),
+    "alert_resolved": ("T1", "account", ("execution",)),
+    "unmanaged_position_detected": ("T1", "symbol", ("positions",)),
+    "unmanaged_position_resolved": ("T1", "symbol", ("positions",)),
+    "command_audit_appended": ("T1", "account", ("events", "relatedObjects")),
+    "state_snapshot": (
+        "T0",
+        "account",
+        (
+            "execution",
+            "risk",
+            "positions",
+            "orders",
+            "pending",
+            "exposure",
+            "events",
+            "relatedObjects",
+            "marketContext",
+            "stream",
+        ),
+    ),
+    # resync_required: 前端必须全量重拉，changed_blocks 留空表示"无法精确指明"
+    "resync_required": ("T0", "account", ()),
+    "heartbeat": ("static", "system", ()),
+}
+
+# Pipeline 透传事件（command_* / intent_*）的默认元数据
+_PIPELINE_DEFAULT_METADATA: tuple[str, str, tuple[str, ...]] = (
+    "T3",
+    "account",
+    ("events",),
+)
+
+
+def _resolve_event_metadata(event_type: str) -> tuple[str, str, tuple[str, ...]]:
+    """按 event_type 查 metadata；未知类型走 pipeline 透传默认。"""
+    return _EVENT_METADATA.get(event_type, _PIPELINE_DEFAULT_METADATA)
+
 
 def stream_account_alias(service: TradingQueryService) -> str:
     return str(getattr(service, "active_account_alias", "") or "primary")
@@ -55,7 +111,9 @@ def filter_pending_entries(
     *,
     symbol: Optional[str],
 ) -> list[dict[str, Any]]:
-    payload = runtime_views.active_pending_order_payload(limit=_TRADE_STATE_STREAM_SNAPSHOT_LIMIT)
+    payload = runtime_views.active_pending_order_payload(
+        limit=_TRADE_STATE_STREAM_SNAPSHOT_LIMIT
+    )
     items = list(payload.get("items") or [])
     if symbol:
         items = [item for item in items if str(item.get("symbol") or "") == symbol]
@@ -92,7 +150,9 @@ def build_trade_state_stream_snapshot(
     include_orders: bool,
     include_pending: bool,
 ) -> dict[str, Any]:
-    alerts_payload = runtime_views.trading_state_alerts_summary() if include_alerts else {}
+    alerts_payload = (
+        runtime_views.trading_state_alerts_summary() if include_alerts else {}
+    )
     return {
         "account": stream_account_alias(service),
         "runtime_mode": runtime_views.runtime_mode_summary(),
@@ -100,9 +160,15 @@ def build_trade_state_stream_snapshot(
         or runtime_views.persisted_trade_control_payload(),
         "tradability": runtime_views.tradability_state_summary(),
         "closeout": runtime_views.exposure_closeout_summary(),
-        "positions": safe_live_positions(service, symbol=symbol) if include_positions else [],
+        "positions": (
+            safe_live_positions(service, symbol=symbol) if include_positions else []
+        ),
         "orders": safe_live_orders(service, symbol=symbol) if include_orders else [],
-        "pending_entries": filter_pending_entries(runtime_views, symbol=symbol) if include_pending else [],
+        "pending_entries": (
+            filter_pending_entries(runtime_views, symbol=symbol)
+            if include_pending
+            else []
+        ),
         "unmanaged_live_positions": runtime_views.unmanaged_live_positions_payload(
             limit=_TRADE_STATE_STREAM_SNAPSHOT_LIMIT
         ),
@@ -179,19 +245,46 @@ def next_stream_envelope(
     action_id: Optional[str] = None,
     audit_id: Optional[str] = None,
     state_change: bool = True,
+    tier: Optional[str] = None,
+    entity_scope: Optional[str] = None,
+    changed_blocks: Optional[list[str]] = None,
 ) -> dict[str, Any]:
+    """构造 SSE envelope（schema 1.1）。
+
+    P9 Phase 2.1: 新增 ``tier`` / ``entity_scope`` / ``changed_blocks`` 字段，
+    前端按 tier 决定刷新优先级、按 changed_blocks 精确局部重拉、按
+    snapshot_version 与 ``/v1/execution/workbench`` 对账。
+
+    显式传入的 tier/entity_scope/changed_blocks 优先于 ``_EVENT_METADATA``
+    查表默认值，用于 pipeline 透传等需要覆盖默认的特殊场景。
+    """
     counters["sequence"] += 1
     if state_change:
         counters["state_version"] += 1
     event_id = f"trade_state_{counters['sequence']:08d}"
+
+    default_tier, default_scope, default_blocks = _resolve_event_metadata(event_type)
+    resolved_tier = tier if tier is not None else default_tier
+    resolved_scope = entity_scope if entity_scope is not None else default_scope
+    resolved_blocks = (
+        list(changed_blocks) if changed_blocks is not None else list(default_blocks)
+    )
+
     return {
         "event_id": event_id,
         "stream": "trade_state",
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "event_type": event_type,
+        # P9 Phase 2.1 新增字段：
+        "tier": resolved_tier,
+        "entity_scope": resolved_scope,
+        "changed_blocks": resolved_blocks,
+        # snapshot_version 与 /v1/execution/workbench 的 state_version 同名同值；
+        # state_version 保留作向后兼容字段。
+        "snapshot_version": counters["state_version"],
+        "state_version": counters["state_version"],
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "sequence": counters["sequence"],
-        "state_version": counters["state_version"],
         "account": account,
         "symbol": symbol,
         "trace_id": trace_id,
@@ -278,7 +371,10 @@ def append_change_events(
     current_closeout = dict(current_snapshot.get("closeout") or {})
     previous_closeout_status = str(previous_closeout.get("status") or "idle")
     current_closeout_status = str(current_closeout.get("status") or "idle")
-    if previous_closeout_status in {"idle", "unavailable"} and current_closeout_status not in {"idle", "unavailable"}:
+    if previous_closeout_status in {
+        "idle",
+        "unavailable",
+    } and current_closeout_status not in {"idle", "unavailable"}:
         events.append(
             next_stream_envelope(
                 counters,
@@ -290,11 +386,15 @@ def append_change_events(
                 or current_closeout.get("action_id"),
             )
         )
-    if previous_closeout_status != current_closeout_status and current_closeout_status in {
-        "completed",
-        "failed",
-        "partial_failure",
-    }:
+    if (
+        previous_closeout_status != current_closeout_status
+        and current_closeout_status
+        in {
+            "completed",
+            "failed",
+            "partial_failure",
+        }
+    ):
         events.append(
             next_stream_envelope(
                 counters,
@@ -307,8 +407,12 @@ def append_change_events(
             )
         )
 
-    previous_positions = index_rows(list(previous_snapshot.get("positions") or []), "ticket")
-    current_positions = index_rows(list(current_snapshot.get("positions") or []), "ticket")
+    previous_positions = index_rows(
+        list(previous_snapshot.get("positions") or []), "ticket"
+    )
+    current_positions = index_rows(
+        list(current_snapshot.get("positions") or []), "ticket"
+    )
     for ticket in sorted(set(previous_positions) | set(current_positions)):
         previous_item = previous_positions.get(ticket)
         current_item = current_positions.get(ticket)
@@ -356,8 +460,12 @@ def append_change_events(
             )
         )
 
-    previous_pending = index_rows(list(previous_snapshot.get("pending_entries") or []), "order_ticket")
-    current_pending = index_rows(list(current_snapshot.get("pending_entries") or []), "order_ticket")
+    previous_pending = index_rows(
+        list(previous_snapshot.get("pending_entries") or []), "order_ticket"
+    )
+    current_pending = index_rows(
+        list(current_snapshot.get("pending_entries") or []), "order_ticket"
+    )
     for order_ticket in sorted(set(previous_pending) | set(current_pending)):
         previous_item = previous_pending.get(order_ticket)
         current_item = current_pending.get(order_ticket)
@@ -423,15 +531,23 @@ def append_change_events(
             )
         )
 
-    previous_unmanaged = index_rows(snapshot_items(previous_snapshot, "unmanaged_live_positions"), "ticket")
-    current_unmanaged = index_rows(snapshot_items(current_snapshot, "unmanaged_live_positions"), "ticket")
+    previous_unmanaged = index_rows(
+        snapshot_items(previous_snapshot, "unmanaged_live_positions"), "ticket"
+    )
+    current_unmanaged = index_rows(
+        snapshot_items(current_snapshot, "unmanaged_live_positions"), "ticket"
+    )
     for ticket in sorted(set(previous_unmanaged) | set(current_unmanaged)):
         previous_item = previous_unmanaged.get(ticket)
         current_item = current_unmanaged.get(ticket)
         if previous_item == current_item:
             continue
         payload_item = dict(current_item or previous_item or {})
-        event_type = "unmanaged_position_detected" if current_item is not None else "unmanaged_position_resolved"
+        event_type = (
+            "unmanaged_position_detected"
+            if current_item is not None
+            else "unmanaged_position_resolved"
+        )
         events.append(
             next_stream_envelope(
                 counters,
@@ -442,9 +558,15 @@ def append_change_events(
             )
         )
 
-    previous_pipeline = index_rows(snapshot_items(previous_snapshot, "pipeline_events"), "id")
-    current_pipeline = index_rows(snapshot_items(current_snapshot, "pipeline_events"), "id")
-    new_pipeline_ids = [key for key in current_pipeline.keys() if key not in previous_pipeline]
+    previous_pipeline = index_rows(
+        snapshot_items(previous_snapshot, "pipeline_events"), "id"
+    )
+    current_pipeline = index_rows(
+        snapshot_items(current_snapshot, "pipeline_events"), "id"
+    )
+    new_pipeline_ids = [
+        key for key in current_pipeline.keys() if key not in previous_pipeline
+    ]
     new_pipeline_ids.sort(
         key=lambda item: (
             str((current_pipeline.get(item) or {}).get("recorded_at") or ""),
@@ -469,8 +591,12 @@ def append_change_events(
             )
         )
 
-    previous_audits = index_rows(list(previous_snapshot.get("recent_command_audits") or []), "operation_id")
-    current_audits = index_rows(list(current_snapshot.get("recent_command_audits") or []), "operation_id")
+    previous_audits = index_rows(
+        list(previous_snapshot.get("recent_command_audits") or []), "operation_id"
+    )
+    current_audits = index_rows(
+        list(current_snapshot.get("recent_command_audits") or []), "operation_id"
+    )
     new_audit_ids = [key for key in current_audits.keys() if key not in previous_audits]
     new_audit_ids.sort(
         key=lambda item: str((current_audits.get(item) or {}).get("recorded_at") or "")
@@ -516,7 +642,9 @@ async def trade_state_stream(
     heartbeat_seconds = normalize_int(heartbeat_seconds, default=15)
     active_account = stream_account_alias(service)
     if account and account != active_account:
-        raise HTTPException(status_code=404, detail=f"unknown trading account: {account}")
+        raise HTTPException(
+            status_code=404, detail=f"unknown trading account: {account}"
+        )
 
     async def event_generator():  # type: ignore[no-untyped-def]
         counters = {"sequence": 0, "state_version": 0}
@@ -532,7 +660,9 @@ async def trade_state_stream(
             include_pending=include_pending,
         )
 
-        last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
+        last_event_id = request.headers.get("last-event-id") or request.headers.get(
+            "Last-Event-ID"
+        )
         if last_event_id:
             yield format_trade_state_sse(
                 next_stream_envelope(
@@ -560,11 +690,13 @@ async def trade_state_stream(
                         "closeout": previous_snapshot.get("closeout") or {},
                         "positions": previous_snapshot.get("positions") or [],
                         "orders": previous_snapshot.get("orders") or [],
-                        "pending_entries": previous_snapshot.get("pending_entries") or [],
+                        "pending_entries": previous_snapshot.get("pending_entries")
+                        or [],
                         "unmanaged_live_positions": (
                             previous_snapshot.get("unmanaged_live_positions") or {}
                         ),
-                        "pipeline_events": previous_snapshot.get("pipeline_events") or {},
+                        "pipeline_events": previous_snapshot.get("pipeline_events")
+                        or {},
                         "alerts": previous_snapshot.get("alerts") or [],
                     },
                     symbol=symbol,

@@ -235,6 +235,120 @@ class SignalDiagnosticsAnalyzer:
         )
         return report
 
+    def build_strategy_audit_report(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        scope: str = "confirmed",
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        winrate_rows: list[dict[str, Any]] | None = None,
+        strategy_categories: dict[str, str] | None = None,
+        thresholds: DiagnosticThresholds | None = None,
+    ) -> dict[str, Any]:
+        """单端点回答 backlog P0.3：每策略 admission/conflict/winrate/状态聚合。
+
+        字段对齐 docs/quantx-backend-backlog.md §P0.3：
+            strategy / category / signals / actionable_signals / hold_count /
+            blocked_count / conflict_count / hold_rate / blocked_rate /
+            conflict_rate / avg_confidence / win_rate / last_signal_at /
+            recent_issue / status
+        """
+        thresholds = thresholds or DiagnosticThresholds()
+        winrate_by_strategy = _aggregate_winrates_by_strategy(winrate_rows or [])
+        categories = strategy_categories or {}
+
+        # 按 strategy 分组
+        strategy_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            strategy = str(row.get("strategy") or "unknown")
+            strategy_rows[strategy].append(row)
+
+        # 计算每个 bar 的 strategy 集合（用于 conflict 检测：同一 bar 上 buy/sell 双向）
+        bar_actions: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
+        for row in rows:
+            bar_key = self.signal_bar_key(row)
+            strategy = str(row.get("strategy") or "unknown")
+            direction = str(row.get("direction") or "").lower()
+            if direction in ("buy", "sell"):
+                bar_actions[bar_key][strategy].add(direction)
+
+        strategies_payload: list[dict[str, Any]] = []
+        for strategy in sorted(strategy_rows.keys()):
+            items = strategy_rows[strategy]
+            total = len(items)
+            actionable = sum(1 for r in items if r.get("actionability") == "actionable")
+            blocked = sum(1 for r in items if r.get("actionability") == "blocked")
+            # hold = 显式 hold + 旧记录 actionability=None（未到 executor）
+            hold = total - actionable - blocked
+            conflict_count = sum(
+                1
+                for bar, by_strategy in bar_actions.items()
+                if "buy" in by_strategy.get(strategy, set())
+                and "sell" in by_strategy.get(strategy, set())
+            )
+            confidence_sum = sum(_safe_float(r.get("confidence")) for r in items)
+            avg_confidence = confidence_sum / total if total else 0.0
+            last_signal_at = (
+                max(
+                    (str(r.get("generated_at") or "") for r in items),
+                    default="",
+                )
+                or None
+            )
+            hold_rate = hold / total if total else 0.0
+            blocked_rate = blocked / total if total else 0.0
+            conflict_rate = conflict_count / total if total else 0.0
+
+            warnings: list[str] = []
+            if hold_rate >= thresholds.hold_warn_threshold:
+                warnings.append("high_hold_ratio")
+            if blocked_rate >= 0.5:
+                warnings.append("high_blocked_ratio")
+            if avg_confidence <= thresholds.confidence_warn_threshold:
+                warnings.append("low_avg_confidence")
+            if conflict_rate >= thresholds.conflict_warn_threshold:
+                warnings.append("high_conflict_ratio")
+
+            recent_issue = warnings[0] if warnings else None
+            status = "warn" if warnings else "ok"
+
+            strategies_payload.append(
+                {
+                    "strategy": strategy,
+                    "category": categories.get(strategy),
+                    "signals": total,
+                    "actionable_signals": actionable,
+                    "hold_count": hold,
+                    "blocked_count": blocked,
+                    "conflict_count": conflict_count,
+                    "hold_rate": round(hold_rate, 4),
+                    "blocked_rate": round(blocked_rate, 4),
+                    "conflict_rate": round(conflict_rate, 4),
+                    "avg_confidence": round(avg_confidence, 4),
+                    "win_rate": winrate_by_strategy.get(strategy),
+                    "last_signal_at": last_signal_at,
+                    "recent_issue": recent_issue,
+                    "status": status,
+                    "warnings": list(warnings),
+                }
+            )
+
+        return {
+            "rows_analyzed": len(rows),
+            "scope": scope,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "thresholds": {
+                "conflict_warn_threshold": thresholds.conflict_warn_threshold,
+                "hold_warn_threshold": thresholds.hold_warn_threshold,
+                "confidence_warn_threshold": thresholds.confidence_warn_threshold,
+            },
+            "strategies": strategies_payload,
+        }
+
     @staticmethod
     def _resolve_session(row: dict[str, Any]) -> str:
         timestamp = SignalDiagnosticsAnalyzer.signal_bar_key(row)
@@ -258,3 +372,42 @@ class SignalDiagnosticsAnalyzer:
             return dt.astimezone(timezone.utc)
         except Exception:
             return None
+
+
+# ── Helpers for build_strategy_audit_report ─────────────────────
+
+
+def _safe_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _aggregate_winrates_by_strategy(
+    winrate_rows: list[dict[str, Any]],
+) -> dict[str, float | None]:
+    """把 strategy_winrates() 的 (strategy, direction) 行按 strategy 加权平均。
+
+    strategy_winrates 返回 list[{strategy, direction, total, wins, win_rate, ...}]，
+    需要按 strategy 聚合：sum(wins) / sum(total)。total=0 时返回 None。
+    """
+    by_strategy: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"total": 0.0, "wins": 0.0}
+    )
+    for row in winrate_rows:
+        strategy = str(row.get("strategy") or "")
+        if not strategy:
+            continue
+        bucket = by_strategy[strategy]
+        bucket["total"] += _safe_float(row.get("total"))
+        bucket["wins"] += _safe_float(row.get("wins"))
+    out: dict[str, float | None] = {}
+    for strategy, bucket in by_strategy.items():
+        if bucket["total"] <= 0:
+            out[strategy] = None
+        else:
+            out[strategy] = round(bucket["wins"] / bucket["total"], 4)
+    return out

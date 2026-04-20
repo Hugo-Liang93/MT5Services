@@ -179,72 +179,24 @@ class TradeCommandAuditView(FlexibleModel):
     pass
 
 
-class TradeMutationResultView(FlexibleModel):
-    accepted: bool
-    status: str
-    action_id: str
-    command_id: Optional[str] = None
-    audit_id: Optional[str] = None
-    actor: Optional[str] = None
-    reason: Optional[str] = None
-    idempotency_key: Optional[str] = None
-    request_context: dict[str, Any] = Field(default_factory=dict)
-    message: Optional[str] = None
-    error_code: Optional[str] = None
-    recorded_at: Optional[str] = None
-    effective_state: dict[str, Any] = Field(default_factory=dict)
+from src.api.schemas import MutationActionResultBase
 
 
-class TradeControlUpdateView(FlexibleModel):
-    accepted: bool
-    status: str
-    action_id: str
-    command_id: Optional[str] = None
-    audit_id: Optional[str] = None
-    actor: Optional[str] = None
-    reason: Optional[str] = None
-    idempotency_key: Optional[str] = None
-    request_context: dict[str, Any] = Field(default_factory=dict)
-    message: Optional[str] = None
-    error_code: Optional[str] = None
-    recorded_at: Optional[str] = None
-    effective_state: dict[str, Any] = Field(default_factory=dict)
+class TradeMutationResultView(MutationActionResultBase):
+    """trade/close/cancel/cancel-batch 等通用返回（无额外领域字段）。"""
+
+
+class TradeControlUpdateView(MutationActionResultBase):
     trade_control: dict[str, Any] = Field(default_factory=dict)
     executor: dict[str, Any] = Field(default_factory=dict)
 
 
-class RuntimeModeUpdateView(FlexibleModel):
-    accepted: bool
-    status: str
-    action_id: str
-    command_id: Optional[str] = None
-    audit_id: Optional[str] = None
-    actor: Optional[str] = None
-    reason: Optional[str] = None
-    idempotency_key: Optional[str] = None
-    request_context: dict[str, Any] = Field(default_factory=dict)
-    message: Optional[str] = None
-    error_code: Optional[str] = None
-    recorded_at: Optional[str] = None
-    effective_state: dict[str, Any] = Field(default_factory=dict)
+class RuntimeModeUpdateView(MutationActionResultBase):
     runtime_mode: RuntimeModeSummaryView
     trading_state: TradeStateSummaryView
 
 
-class ExposureCloseoutActionView(FlexibleModel):
-    accepted: bool
-    status: str
-    action_id: str
-    command_id: Optional[str] = None
-    audit_id: Optional[str] = None
-    actor: Optional[str] = None
-    reason: Optional[str] = None
-    idempotency_key: Optional[str] = None
-    request_context: dict[str, Any] = Field(default_factory=dict)
-    message: Optional[str] = None
-    error_code: Optional[str] = None
-    recorded_at: Optional[str] = None
-    effective_state: dict[str, Any] = Field(default_factory=dict)
+class ExposureCloseoutActionView(MutationActionResultBase):
     closeout: dict[str, Any] = Field(default_factory=dict)
     trading_state: dict[str, Any] = Field(default_factory=dict)
 

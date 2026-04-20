@@ -1,3 +1,4 @@
+from .freshness import FreshnessConfig, default_freshness_config
 from .notifications import NotificationConfig, Severity
 from .runtime import (
     APIConfig,
@@ -15,6 +16,7 @@ from .signal import SignalConfig
 __all__ = [
     "APIConfig",
     "EconomicConfig",
+    "FreshnessConfig",
     "IngestConfig",
     "IntervalConfig",
     "LimitConfig",
@@ -25,4 +27,5 @@ __all__ = [
     "SystemConfig",
     "TradingConfig",
     "TradingOpsConfig",
+    "default_freshness_config",
 ]

@@ -8,6 +8,11 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from src.config.models.signal import SignalConfig
 
+from src.app_runtime.factories.admission_writeback import (
+    make_intent_published_listener,
+    make_skip_listener,
+    multicast,
+)
 from src.calendar.policy import build_signal_economic_policy
 from src.config import get_economic_config
 from src.config.file_manager import get_file_config_manager
@@ -870,8 +875,21 @@ def build_signal_components(
         on_quality_fn=signal_performance_tracker.record_outcome,
     )
     signal_quality_tracker.attach(signal_runtime)
-    # 绑定延迟引用：TradeExecutor skip → SignalQualityTracker.on_execution_skip
-    _skip_callback_holder.append(signal_quality_tracker.on_execution_skip)
+    # 绑定延迟引用：TradeExecutor skip → multicast(SignalQualityTracker, AdmissionWriteback)
+    # P9 Phase 1.5: admission writeback listener 与 quality tracker 并行触发，
+    # 任一失败不影响另一方（multicast 内部 try/except）。
+    _admission_skip_listener = make_skip_listener(signal_module.repository)
+    _skip_callback_holder.append(
+        multicast(signal_quality_tracker.on_execution_skip, _admission_skip_listener)
+    )
+
+    # P9 Phase 1.5: 接受路径回填 — 监听 PipelineEventBus 所有事件，
+    # listener 内部按 event.type == "intent_published" 过滤（add_listener 接口语义）。
+    # publisher.py:172-194 emit 该事件，payload.signal_id 必填。
+    if pipeline_event_bus is not None:
+        pipeline_event_bus.add_listener(
+            make_intent_published_listener(signal_module.repository)
+        )
 
     execution_intent_publisher = None
     if runtime_identity is not None:

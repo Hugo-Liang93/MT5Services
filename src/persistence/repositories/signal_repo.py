@@ -1,17 +1,29 @@
 from __future__ import annotations
 
-from datetime import datetime as _dt, timezone as _tz
+from datetime import datetime as _dt
+from datetime import timezone as _tz
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Tuple
 
 from src.persistence.schema import (
     INSERT_AUTO_EXECUTIONS_SQL,
     INSERT_SIGNAL_EVENTS_SQL,
-    INSERT_TRADE_OUTCOMES_SQL,
-    SIGNAL_OUTCOMES_EXPECTANCY_SQL,
     INSERT_SIGNAL_OUTCOMES_SQL,
     INSERT_SIGNAL_PREVIEW_EVENTS_SQL,
+    INSERT_TRADE_OUTCOMES_SQL,
+    SIGNAL_OUTCOMES_EXPECTANCY_SQL,
     SIGNAL_OUTCOMES_WINRATE_SQL,
+    UPDATE_SIGNAL_ADMISSION_SQL,
 )
+
+# 用于 query_signal_events 的合法 sort token，与 /v1/signals/recent 对齐
+_SIGNAL_SORT_TOKENS: dict[str, str] = {
+    "generated_at_desc": "generated_at DESC",
+    "generated_at_asc": "generated_at ASC",
+    "priority_desc": "priority DESC NULLS LAST, generated_at DESC",
+    "priority_asc": "priority ASC NULLS LAST, generated_at DESC",
+    "desc": "generated_at DESC",
+    "asc": "generated_at ASC",
+}
 
 if TYPE_CHECKING:
     from src.persistence.db import TimescaleWriter
@@ -24,10 +36,16 @@ class SignalEventRepository:
     def write_signal_events(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
         self._write_signal_rows(INSERT_SIGNAL_EVENTS_SQL, rows, page_size=page_size)
 
-    def write_signal_preview_events(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
-        self._write_signal_rows(INSERT_SIGNAL_PREVIEW_EVENTS_SQL, rows, page_size=page_size)
+    def write_signal_preview_events(
+        self, rows: Iterable[Tuple], page_size: int = 200
+    ) -> None:
+        self._write_signal_rows(
+            INSERT_SIGNAL_PREVIEW_EVENTS_SQL, rows, page_size=page_size
+        )
 
-    def _write_signal_rows(self, sql: str, rows: Iterable[Tuple], page_size: int = 200) -> None:
+    def _write_signal_rows(
+        self, sql: str, rows: Iterable[Tuple], page_size: int = 200
+    ) -> None:
         batch = []
         for row in rows:
             used_indicators = row[8] if row[8] is not None else []
@@ -165,6 +183,7 @@ class SignalEventRepository:
         strategy: Optional[str] = None,
         direction: Optional[str] = None,
         status: Optional[str] = None,
+        actionability: Optional[str] = None,
         from_time: Optional[_dt] = None,
         to_time: Optional[_dt] = None,
         page: int = 1,
@@ -176,7 +195,19 @@ class SignalEventRepository:
             raise ValueError(f"unsupported signal scope: {scope}")
 
         sort_token = str(sort or "generated_at_desc").strip().lower()
-        sort_direction = "ASC" if sort_token in {"generated_at_asc", "asc"} else "DESC"
+        order_clause = _SIGNAL_SORT_TOKENS.get(sort_token, "generated_at DESC")
+        # signal_id 作为 tiebreaker；priority 排序时不附加（因为已在 order_clause 内已含 generated_at）
+        if "priority" not in order_clause:
+            order_clause = f"{order_clause}, signal_id DESC"
+        # preview / all scope 不带 admission 字段（preview 信号永远不进 executor）
+        scope_supports_admission = normalized_scope == "confirmed"
+        admission_columns = (
+            "actionability, guard_reason_code, guard_category, priority, rank_source"
+            if scope_supports_admission
+            else "NULL::text AS actionability, NULL::text AS guard_reason_code, "
+            "NULL::text AS guard_category, NULL::double precision AS priority, "
+            "NULL::text AS rank_source"
+        )
         effective_page = max(1, int(page))
         effective_page_size = max(1, int(page_size))
         offset = (effective_page - 1) * effective_page_size
@@ -184,23 +215,29 @@ class SignalEventRepository:
         if normalized_scope == "confirmed":
             source_sql = (
                 "SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason, "
-                "used_indicators, indicators_snapshot, metadata, 'confirmed'::text AS scope "
+                "used_indicators, indicators_snapshot, metadata, 'confirmed'::text AS scope, "
+                f"{admission_columns} "
                 "FROM signal_events"
             )
         elif normalized_scope == "preview":
             source_sql = (
                 "SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason, "
-                "used_indicators, indicators_snapshot, metadata, 'preview'::text AS scope "
+                "used_indicators, indicators_snapshot, metadata, 'preview'::text AS scope, "
+                f"{admission_columns} "
                 "FROM signal_preview_events"
             )
         else:
-            source_sql = """
+            source_sql = f"""
 SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason,
-       used_indicators, indicators_snapshot, metadata, 'confirmed'::text AS scope
+       used_indicators, indicators_snapshot, metadata, 'confirmed'::text AS scope,
+       actionability, guard_reason_code, guard_category, priority, rank_source
 FROM signal_events
 UNION ALL
 SELECT generated_at, signal_id, symbol, timeframe, strategy, direction, confidence, reason,
-       used_indicators, indicators_snapshot, metadata, 'preview'::text AS scope
+       used_indicators, indicators_snapshot, metadata, 'preview'::text AS scope,
+       NULL::text AS actionability, NULL::text AS guard_reason_code,
+       NULL::text AS guard_category, NULL::double precision AS priority,
+       NULL::text AS rank_source
 FROM signal_preview_events
 """
 
@@ -217,6 +254,11 @@ SELECT generated_at,
        indicators_snapshot,
        metadata,
        scope,
+       actionability,
+       guard_reason_code,
+       guard_category,
+       priority,
+       rank_source,
        COUNT(*) OVER() AS total_count
 FROM ({source_sql}) AS signal_rows
 WHERE 1=1
@@ -237,16 +279,16 @@ WHERE 1=1
         if status is not None:
             sql += " AND COALESCE(metadata->>'signal_state', '') = %s"
             params.append(status)
+        if actionability is not None:
+            sql += " AND actionability = %s"
+            params.append(actionability)
         if from_time is not None:
             sql += " AND generated_at >= %s"
             params.append(from_time)
         if to_time is not None:
             sql += " AND generated_at <= %s"
             params.append(to_time)
-        sql += (
-            f" ORDER BY generated_at {sort_direction}, signal_id {sort_direction} "
-            "LIMIT %s OFFSET %s"
-        )
+        sql += f" ORDER BY {order_clause} LIMIT %s OFFSET %s"
         params.extend([effective_page_size, offset])
 
         rows = self._fetch_dict_rows(sql, params)
@@ -260,13 +302,64 @@ WHERE 1=1
             "scope": normalized_scope,
         }
 
+    def update_signal_admission(
+        self,
+        *,
+        signal_id: str,
+        actionability: str,
+        guard_reason_code: Optional[str],
+        guard_category: Optional[str],
+        priority: Optional[float],
+        rank_source: str = "native",
+    ) -> bool:
+        """回填 executor admission 结果到 signal_events。
+
+        返回 True 表示更新生效（rowcount > 0）；False 表示 signal_id 不存在。
+        异常向上抛出（由 listener 层 try/except 隔离），不在此处吞错。
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                UPDATE_SIGNAL_ADMISSION_SQL,
+                [
+                    actionability,
+                    guard_reason_code,
+                    guard_category,
+                    priority,
+                    rank_source,
+                    signal_id,
+                ],
+            )
+            return cur.rowcount > 0
+
+    def fetch_signal_confidence(self, *, signal_id: str) -> Optional[float]:
+        """读取已持久化 signal 的 confidence，用于 listener 计算 priority。
+
+        若 signal_id 不存在返回 None。signal_events 表中查找。
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT confidence FROM signal_events WHERE signal_id = %s LIMIT 1",
+                [signal_id],
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            return float(row[0]) if row[0] is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def summarize_signal_events(self, *, hours: int = 24) -> List[Tuple]:
         return self._summarize_signal_rows(table_name="signal_events", hours=hours)
 
     def summarize_signal_preview_events(self, *, hours: int = 24) -> List[Tuple]:
-        return self._summarize_signal_rows(table_name="signal_preview_events", hours=hours)
+        return self._summarize_signal_rows(
+            table_name="signal_preview_events", hours=hours
+        )
 
-    def _summarize_signal_rows(self, *, table_name: str, hours: int = 24) -> List[Tuple]:
+    def _summarize_signal_rows(
+        self, *, table_name: str, hours: int = 24
+    ) -> List[Tuple]:
         sql = (
             "SELECT symbol, timeframe, strategy, direction, COUNT(*)::bigint AS count, "
             "AVG(confidence)::double precision AS avg_confidence, MAX(generated_at) AS last_seen_at "
@@ -293,7 +386,9 @@ WHERE 1=1
         for entry in rows:
             params = entry.get("params") or {}
             try:
-                executed_at = _dt.fromisoformat(str(entry.get("at") or "")).replace(tzinfo=_tz.utc)
+                executed_at = _dt.fromisoformat(str(entry.get("at") or "")).replace(
+                    tzinfo=_tz.utc
+                )
             except (ValueError, TypeError):
                 executed_at = _dt.now(_tz.utc)
             batch.append(
@@ -509,7 +604,11 @@ LIMIT %s
         metadata = row.get("metadata") or {}
         generated_at = row.get("generated_at")
         return {
-            "generated_at": generated_at.isoformat() if hasattr(generated_at, "isoformat") else generated_at,
+            "generated_at": (
+                generated_at.isoformat()
+                if hasattr(generated_at, "isoformat")
+                else generated_at
+            ),
             "signal_id": row.get("signal_id"),
             "symbol": row.get("symbol"),
             "timeframe": row.get("timeframe"),
@@ -522,4 +621,10 @@ LIMIT %s
             "metadata": metadata,
             "signal_state": metadata.get("signal_state"),
             "scope": row.get("scope") or "confirmed",
+            # P9 Phase 1.5: admission writeback 字段（旧记录可能为 NULL）
+            "actionability": row.get("actionability"),
+            "guard_reason_code": row.get("guard_reason_code"),
+            "guard_category": row.get("guard_category"),
+            "priority": row.get("priority"),
+            "rank_source": row.get("rank_source"),
         }

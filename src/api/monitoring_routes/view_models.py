@@ -79,27 +79,18 @@ class RuntimeTasksView(BaseModel):
     filters: Dict[str, Optional[str]] = Field(default_factory=dict)
 
 
-class RuntimeActionResultView(BaseModel):
-    accepted: bool
-    status: str
-    action_id: str
-    audit_id: Optional[str] = None
-    actor: Optional[str] = None
-    reason: Optional[str] = None
-    idempotency_key: Optional[str] = None
-    request_context: Dict[str, Any] = Field(default_factory=dict)
-    message: Optional[str] = None
-    error_code: Optional[str] = None
-    recorded_at: Optional[str] = None
-    effective_state: Dict[str, Any] = Field(default_factory=dict)
+from src.api.schemas import MutationActionResultBase
+
+# 历史名称保留（非破坏性别名，旧导入仍可用）
+RuntimeActionResultView = MutationActionResultBase
 
 
-class PendingEntryCancellationView(RuntimeActionResultView):
+class PendingEntryCancellationView(MutationActionResultBase):
     cancelled: bool
     signal_id: str
 
 
-class PendingEntriesBySymbolCancellationView(RuntimeActionResultView):
+class PendingEntriesBySymbolCancellationView(MutationActionResultBase):
     cancelled_count: int
     symbol: str
 

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.params import Param
 
 from src.api.deps import get_signal_service
-from src.api.schemas import ApiResponse, SignalDecisionModel, SignalEvaluateRequest, SignalEventModel, SignalSummaryModel
+from src.api.schemas import (
+    ApiResponse,
+    SignalDecisionModel,
+    SignalEvaluateRequest,
+    SignalEventModel,
+    SignalSummaryModel,
+)
 from src.signals.service import SignalModule
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -120,6 +126,11 @@ def recent_signals(
     action: Optional[str] = Query(default=None),
     direction: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
+    actionability: Optional[str] = Query(
+        default=None,
+        pattern="^(actionable|hold|blocked)$",
+        description="P9 Phase 1.5: 按 admission 结果过滤",
+    ),
     scope: str = Query(default="confirmed", pattern="^(confirmed|preview|all)$"),
     from_time: Optional[datetime] = Query(default=None, alias="from"),
     to_time: Optional[datetime] = Query(default=None, alias="to"),
@@ -127,7 +138,7 @@ def recent_signals(
     page_size: Optional[int] = Query(default=None, ge=1, le=2000),
     sort: str = Query(
         default="generated_at_desc",
-        pattern="^(generated_at_desc|generated_at_asc|asc|desc)$",
+        pattern="^(generated_at_desc|generated_at_asc|priority_desc|priority_asc|asc|desc)$",
     ),
     limit: int = Query(default=200, ge=1, le=2000),
     service: SignalModule = Depends(get_signal_service),
@@ -138,6 +149,7 @@ def recent_signals(
     action = _normalize_optional_string(action)
     direction = _normalize_optional_string(direction)
     status = _normalize_optional_string(status)
+    actionability = _normalize_optional_string(actionability)
     scope = _normalize_optional_string(scope) or "confirmed"
     page = _normalize_int(page, default=1)
     sort = _normalize_optional_string(sort) or "generated_at_desc"
@@ -156,6 +168,7 @@ def recent_signals(
             strategy=strategy,
             direction=resolved_direction,
             status=status,
+            actionability=actionability,
             scope=scope,
             from_time=normalized_from_time,
             to_time=normalized_to_time,
@@ -189,6 +202,7 @@ def recent_signals(
             "strategy": strategy,
             "direction": resolved_direction,
             "status": status,
+            "actionability": actionability,
             "from": normalized_from_time.isoformat() if normalized_from_time else None,
             "to": normalized_to_time.isoformat() if normalized_to_time else None,
             "sort": sort,
@@ -244,7 +258,9 @@ def best_signals_per_timeframe(
         existing = buckets.get(key)
         if existing is None or confidence > (existing.get("confidence") or 0.0):
             buckets[key] = row
-    result = sorted(buckets.values(), key=lambda x: x.get("confidence", 0.0), reverse=True)
+    result = sorted(
+        buckets.values(), key=lambda x: x.get("confidence", 0.0), reverse=True
+    )
     return ApiResponse.success_response(
         data=result,
         metadata={
@@ -254,4 +270,3 @@ def best_signals_per_timeframe(
             "count": len(result),
         },
     )
-

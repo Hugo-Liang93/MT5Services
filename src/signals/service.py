@@ -11,6 +11,7 @@ from .analytics import (
     DiagnosticThresholds,
     SignalDiagnosticsAnalyzer,
 )
+from .contracts import StrategyCapability
 from .evaluation.calibrator import ConfidenceCalibrator
 from .evaluation.performance import StrategyPerformanceTracker
 from .evaluation.regime import MarketRegimeDetector, RegimeType, SoftRegimeResult
@@ -20,7 +21,6 @@ from .strategies.adapters import IndicatorSource
 from .strategies.base import SignalStrategy
 from .strategies.catalog import build_default_strategy_set
 from .tracking.repository import SignalRepository
-from .contracts import StrategyCapability
 
 logger = logging.getLogger(__name__)
 
@@ -279,15 +279,13 @@ class SignalModule:
         for name in self.list_strategies():
             impl = self._strategies[name]
             affinity_map = self.strategy_affinity_map(name) or {}
-            needed_indicators = tuple(
-                str(item) for item in impl.required_indicators
-            )
-            valid_scopes = tuple(
-                str(scope) for scope in impl.preferred_scopes
-            )
+            needed_indicators = tuple(str(item) for item in impl.required_indicators)
+            valid_scopes = tuple(str(scope) for scope in impl.preferred_scopes)
             raw_htf_requirements = getattr(impl, "htf_required_indicators", {})
             if isinstance(raw_htf_requirements, dict):
-                htf_requirements = {str(k): str(v) for k, v in raw_htf_requirements.items()}
+                htf_requirements = {
+                    str(k): str(v) for k, v in raw_htf_requirements.items()
+                }
             else:
                 htf_requirements = {}
             affinity_payload = {
@@ -766,6 +764,7 @@ class SignalModule:
         strategy: Optional[str] = None,
         direction: Optional[str] = None,
         status: Optional[str] = None,
+        actionability: Optional[str] = None,
         scope: str = "confirmed",
         from_time: Optional[datetime] = None,
         to_time: Optional[datetime] = None,
@@ -774,7 +773,12 @@ class SignalModule:
         sort: str = "generated_at_desc",
     ) -> dict[str, Any]:
         if self.repository is None:
-            return {"items": [], "total": 0, "page": max(1, int(page)), "page_size": max(1, int(page_size))}
+            return {
+                "items": [],
+                "total": 0,
+                "page": max(1, int(page)),
+                "page_size": max(1, int(page_size)),
+            }
 
         pager = getattr(self.repository, "recent_page", None)
         if callable(pager):
@@ -784,6 +788,7 @@ class SignalModule:
                 strategy=strategy,
                 direction=direction,
                 status=status,
+                actionability=actionability,
                 scope=scope,
                 from_time=from_time,
                 to_time=to_time,
@@ -835,6 +840,9 @@ class SignalModule:
 
     def strategy_expectancy(self, **kwargs: Any) -> list[dict[str, Any]]:
         return _svc_diag.strategy_expectancy(self, **kwargs)
+
+    def strategy_audit(self, **kwargs: Any) -> dict[str, Any]:
+        return _svc_diag.strategy_audit(self, **kwargs)
 
     def session_performance(self) -> dict[str, Any]:
         return _svc_diag.session_performance(self)

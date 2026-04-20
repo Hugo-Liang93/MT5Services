@@ -10,8 +10,7 @@ if TYPE_CHECKING:
 
 
 class SignalRepository(Protocol):
-    def append(self, record: SignalRecord) -> None:
-        ...
+    def append(self, record: SignalRecord) -> None: ...
 
     def recent(
         self,
@@ -22,11 +21,9 @@ class SignalRepository(Protocol):
         direction: Optional[str] = None,
         scope: str = "confirmed",
         limit: int = 200,
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
-    def summary(self, *, hours: int = 24, scope: str = "confirmed") -> list[dict]:
-        ...
+    def summary(self, *, hours: int = 24, scope: str = "confirmed") -> list[dict]: ...
 
     def recent_page(
         self,
@@ -36,13 +33,29 @@ class SignalRepository(Protocol):
         strategy: Optional[str] = None,
         direction: Optional[str] = None,
         status: Optional[str] = None,
+        actionability: Optional[str] = None,
         scope: str = "confirmed",
         from_time: Optional[Any] = None,
         to_time: Optional[Any] = None,
         page: int = 1,
         page_size: int = 200,
         sort: str = "generated_at_desc",
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any]: ...
+
+    def update_admission_result(
+        self,
+        *,
+        signal_id: str,
+        actionability: str,
+        guard_reason_code: Optional[str],
+        rank_source: str = "native",
+    ) -> bool:
+        """回写 executor admission 结果（actionable / hold / blocked）。
+
+        priority 与 guard_category 由实现内部按 confidence 与 reason 自动计算，
+        listener 仅传 actionability + guard_reason_code + rank_source。
+        signal_id 不存在时返回 False（不抛）。
+        """
         ...
 
     def fetch_winrates(
@@ -50,16 +63,14 @@ class SignalRepository(Protocol):
         *,
         hours: int = 168,
         symbol: Optional[str] = None,
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
     def fetch_expectancy_stats(
         self,
         *,
         hours: int = 168,
         symbol: Optional[str] = None,
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
 
 class TimescaleSignalRepository:
@@ -89,7 +100,11 @@ class TimescaleSignalRepository:
         signal_state = str(metadata.get(MK.SIGNAL_STATE, "")).strip().lower()
         if signal_state.startswith("confirmed_"):
             return "confirmed"
-        if signal_state.startswith("preview_") or signal_state.startswith("armed_") or signal_state == "cancelled":
+        if (
+            signal_state.startswith("preview_")
+            or signal_state.startswith("armed_")
+            or signal_state == "cancelled"
+        ):
             return "preview"
         if scope in {"intrabar", "preview"}:
             return "preview"
@@ -119,6 +134,14 @@ class TimescaleSignalRepository:
             "metadata": metadata,
             "signal_state": metadata.get(MK.SIGNAL_STATE),
             "scope": scope,
+            # P9 Phase 1.5: admission 字段在 fetch_signal_events 路径下不带回（仅 11 列），
+            # query_signal_events 路径已通过 _dict_row_to_event 输出。该方法用于 recent()
+            # 的简单列表场景，admission 字段保持 None；如需 admission 排序请用 recent_page。
+            "actionability": None,
+            "guard_reason_code": None,
+            "guard_category": None,
+            "priority": None,
+            "rank_source": None,
         }
 
     @staticmethod
@@ -200,8 +223,14 @@ class TimescaleSignalRepository:
             rows = self._db.summarize_signal_preview_events(hours=hours)
             return [self._row_to_summary(row, scope="preview") for row in rows]
         return [
-            *[self._row_to_summary(row, scope="confirmed") for row in self._db.summarize_signal_events(hours=hours)],
-            *[self._row_to_summary(row, scope="preview") for row in self._db.summarize_signal_preview_events(hours=hours)],
+            *[
+                self._row_to_summary(row, scope="confirmed")
+                for row in self._db.summarize_signal_events(hours=hours)
+            ],
+            *[
+                self._row_to_summary(row, scope="preview")
+                for row in self._db.summarize_signal_preview_events(hours=hours)
+            ],
         ]
 
     def recent_page(
@@ -212,6 +241,7 @@ class TimescaleSignalRepository:
         strategy: Optional[str] = None,
         direction: Optional[str] = None,
         status: Optional[str] = None,
+        actionability: Optional[str] = None,
         scope: str = "confirmed",
         from_time: Optional[Any] = None,
         to_time: Optional[Any] = None,
@@ -227,11 +257,58 @@ class TimescaleSignalRepository:
             strategy=strategy,
             direction=direction,
             status=status,
+            actionability=actionability,
             from_time=from_time,
             to_time=to_time,
             page=page,
             page_size=page_size,
             sort=sort,
+        )
+
+    # P9 Phase 1.5: Admission writeback —————————————————————————————————
+
+    # actionability → priority 系数（与 docs/design/quantx-data-freshness-tiering.md
+    # §6.2 + plan §1.5.1 字段设计一致）：
+    # - actionable: 满分（priority = confidence）
+    # - hold:       半折（未到 executor / paper_only）
+    # - blocked:    一折（被 guard 拒）
+    _PRIORITY_WEIGHTS: dict[str, float] = {
+        "actionable": 1.0,
+        "hold": 0.5,
+        "blocked": 0.1,
+    }
+
+    def update_admission_result(
+        self,
+        *,
+        signal_id: str,
+        actionability: str,
+        guard_reason_code: Optional[str],
+        rank_source: str = "native",
+    ) -> bool:
+        from src.trading.execution.reasons import reason_category
+
+        if actionability not in self._PRIORITY_WEIGHTS:
+            raise ValueError(
+                f"unsupported actionability: {actionability!r}; "
+                f"expected one of {sorted(self._PRIORITY_WEIGHTS)}"
+            )
+        weight = self._PRIORITY_WEIGHTS[actionability]
+        confidence = self._db.fetch_signal_confidence(signal_id=signal_id)
+        if confidence is None:
+            # 信号不存在或尚未持久化 — 跳过，保持幂等
+            return False
+        priority = confidence * weight
+        guard_category = (
+            reason_category(guard_reason_code) if guard_reason_code else None
+        )
+        return self._db.update_signal_admission(
+            signal_id=signal_id,
+            actionability=actionability,
+            guard_reason_code=guard_reason_code,
+            guard_category=guard_category,
+            priority=priority,
+            rank_source=rank_source,
         )
 
     def fetch_winrates(

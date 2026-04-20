@@ -6,7 +6,7 @@ AI友好接口优化 - 扩展ApiResponse模型
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, TypeVar, Generic, List, Dict, Any, Literal
+from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -114,8 +114,12 @@ class TradePrecheckModel(BaseModel):
     verdict: str
     reason: Optional[str] = None
     symbol: str
-    active_windows: List[EconomicCalendarMergedRiskWindowModel] = Field(default_factory=list)
-    upcoming_windows: List[EconomicCalendarMergedRiskWindowModel] = Field(default_factory=list)
+    active_windows: List[EconomicCalendarMergedRiskWindowModel] = Field(
+        default_factory=list
+    )
+    upcoming_windows: List[EconomicCalendarMergedRiskWindowModel] = Field(
+        default_factory=list
+    )
     warnings: List[str] = Field(default_factory=list)
     calendar_health_mode: str = "warn_only"
     calendar_health: Dict[str, Any] = Field(default_factory=dict)
@@ -229,6 +233,7 @@ class PendingEntriesBySymbolCancelRequest(BaseModel):
 class TradeReconcileRequest(BaseModel):
     sync_open_positions: bool = True
 
+
 class CancelOrdersRequest(BaseModel):
     symbol: Optional[str] = None
     magic: Optional[int] = None
@@ -267,6 +272,7 @@ class BatchCancelOrdersRequest(BaseModel):
 class TradeDispatchRequest(BaseModel):
     operation: str
     payload: Dict[str, Any] = Field(default_factory=dict)
+
 
 class EstimateMarginRequest(BaseModel):
     symbol: str
@@ -599,55 +605,55 @@ T = TypeVar("T")
 
 class ApiResponse(BaseModel, Generic[T]):
     """AI友好的API响应格式
-    
+
     扩展原有ApiResponse，添加错误信息和元数据字段
     便于AI agent解析和处理
     """
+
     success: bool = True
     data: Optional[T] = None
     error: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
-    
+
     @classmethod
-    def success_response(cls, data: T, metadata: Optional[Dict[str, Any]] = None) -> "ApiResponse[T]":
+    def success_response(
+        cls, data: T, metadata: Optional[Dict[str, Any]] = None
+    ) -> "ApiResponse[T]":
         """创建成功响应
-        
+
         Args:
             data: 响应数据
             metadata: 元数据，可包含时间戳、数据来源等信息
-            
+
         Returns:
             ApiResponse实例
         """
         default_metadata = {
             "timestamp": datetime.now().isoformat(),
             "data_source": "mt5_realtime",
-            "data_freshness": "fresh"
+            "data_freshness": "fresh",
         }
         if metadata:
             default_metadata.update(metadata)
-        
-        return cls(
-            success=True,
-            data=data,
-            error=None,
-            metadata=default_metadata
-        )
-    
+
+        return cls(success=True, data=data, error=None, metadata=default_metadata)
+
     @classmethod
-    def error_response(cls, 
-                      error_code: str, 
-                      error_message: str, 
-                      suggested_action: Optional[str] = None,
-                      details: Optional[Dict[str, Any]] = None) -> "ApiResponse[None]":
+    def error_response(
+        cls,
+        error_code: str,
+        error_message: str,
+        suggested_action: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> "ApiResponse[None]":
         """创建错误响应
-        
+
         Args:
             error_code: 错误代码，AI可识别的标识
             error_message: 错误描述，人类可读
             suggested_action: 建议AI执行的动作
             details: 错误详情，用于调试
-            
+
         Returns:
             ApiResponse实例
         """
@@ -660,12 +666,9 @@ class ApiResponse(BaseModel, Generic[T]):
                 "code": normalized_error_code,
                 "message": error_message,
                 "suggested_action": normalized_action,
-                "details": details or {}
+                "details": details or {},
             },
-            metadata={
-                "timestamp": datetime.now().isoformat(),
-                "data_source": "error"
-            }
+            metadata={"timestamp": datetime.now().isoformat(), "data_source": "error"},
         )
 
 
@@ -702,6 +705,14 @@ class SignalEventModel(BaseModel):
     used_indicators: List[str] = Field(default_factory=list)
     indicators_snapshot: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    # P9 Phase 1.5: admission writeback 字段（旧记录为 NULL/None）
+    actionability: Optional[Literal["actionable", "hold", "blocked"]] = None
+    guard_reason_code: Optional[str] = None
+    guard_category: Optional[str] = None
+    priority: Optional[float] = None
+    rank_source: Optional[str] = None
+
+    model_config = {"extra": "ignore"}
 
 
 class SignalSummaryModel(BaseModel):
@@ -728,3 +739,56 @@ class SignalExecuteTradeRequest(BaseModel):
     account_alias: Optional[str] = None
     volume_override: Optional[float] = Field(default=None, gt=0, le=100.0)
     dry_run: bool = False
+
+
+# ── Mutation 通用返回基类（backlog P1.1）────────────────────────
+# 所有 mutation 端点（close/cancel/control/runtime-mode/closeout/pending-cancel...）
+# 共用此字段集，前端按这套字段写一次 handler 即可处理所有"已提交"回显。
+# 各域子类按需追加领域字段（trade_control / runtime_mode / closeout 等）。
+
+
+class MutationActionResultBase(BaseModel):
+    accepted: bool
+    status: str
+    action_id: str
+    command_id: Optional[str] = None
+    audit_id: Optional[str] = None
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    recorded_at: Optional[str] = None
+    effective_state: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+
+# ── Execution Workbench (P9 Phase 1) ─────────────────────────────
+# 9 块 contract 详见 docs/design/quantx-data-freshness-tiering.md。
+# 各 block 内部结构按 readmodel 输出原样透传，前端按 tier/state_updated_at 处理。
+
+
+class WorkbenchSourceModel(BaseModel):
+    kind: Literal["live", "hybrid", "mock", "fallback_applied"] = "live"
+    fallback_applied: bool = False
+    fallback_reason: Optional[str] = None
+
+
+class WorkbenchPayload(BaseModel):
+    account_alias: str
+    observed_at: str
+    state_version: Optional[int] = None
+    source: WorkbenchSourceModel = Field(default_factory=WorkbenchSourceModel)
+    freshness_hints: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    execution: Optional[Dict[str, Any]] = None
+    risk: Optional[Dict[str, Any]] = None
+    positions: Optional[Dict[str, Any]] = None
+    orders: Optional[Dict[str, Any]] = None
+    pending: Optional[Dict[str, Any]] = None
+    exposure: Optional[Dict[str, Any]] = None
+    events: Optional[Dict[str, Any]] = None
+    relatedObjects: Optional[Dict[str, Any]] = None
+    marketContext: Optional[Dict[str, Any]] = None
+    stream: Optional[Dict[str, Any]] = None

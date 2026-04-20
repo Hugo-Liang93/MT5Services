@@ -28,6 +28,7 @@ from src.notifications.module import NotificationModule
 from src.persistence.storage_writer import StorageWriter
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
+from src.readmodels.workbench import WorkbenchReadModel
 from src.risk.service import PreTradeRiskService
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
@@ -418,6 +419,21 @@ def get_runtime_read_model() -> RuntimeReadModel:
     _ensure_initialized()
     assert _container is not None and _container.runtime_read_model is not None
     return _container.runtime_read_model
+
+
+def get_workbench_read_model() -> WorkbenchReadModel:
+    """单账户执行工作台聚合读模型（P9 Phase 1）。
+
+    纯组合层，每请求构造一个轻量 WorkbenchReadModel 实例。
+    实际数据源仍走 RuntimeReadModel + MarketDataService 单例。
+    """
+    _ensure_initialized()
+    assert _container is not None and _container.runtime_read_model is not None
+    return WorkbenchReadModel(
+        runtime_read_model=_container.runtime_read_model,
+        market_service=_container.market_service,
+        runtime_identity=_container.runtime_identity,
+    )
 
 
 def get_trade_trace_read_model() -> TradingFlowTraceReadModel:

@@ -62,6 +62,38 @@ class StrategyWinrateView(FlexibleSignalView):
     pass
 
 
+class StrategyAuditEntryView(FlexibleSignalView):
+    """单个策略的 admission/conflict/winrate 聚合（backlog P0.3）。"""
+
+    strategy: str
+    category: Optional[str] = None
+    signals: int = 0
+    actionable_signals: int = 0
+    hold_count: int = 0
+    blocked_count: int = 0
+    conflict_count: int = 0
+    hold_rate: float = 0.0
+    blocked_rate: float = 0.0
+    conflict_rate: float = 0.0
+    avg_confidence: float = 0.0
+    win_rate: Optional[float] = None
+    last_signal_at: Optional[str] = None
+    recent_issue: Optional[str] = None
+    status: str = "ok"
+    warnings: List[str] = Field(default_factory=list)
+
+
+class StrategyAuditView(FlexibleSignalView):
+    """/v1/signals/diagnostics/strategy-audit 响应。"""
+
+    rows_analyzed: int = 0
+    scope: str = "confirmed"
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+    thresholds: Dict[str, float] = Field(default_factory=dict)
+    strategies: List[StrategyAuditEntryView] = Field(default_factory=list)
+
+
 class IntrabarSLOPoint(BaseModel):
     timestamp: str
     value: float

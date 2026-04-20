@@ -2,7 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.readmodels.runtime import RuntimeReadModel
+from src.readmodels.runtime import (
+    TRADABILITY_REASON_CLOSE_ONLY,
+    TRADABILITY_REASON_RISK_BLOCK,
+    TRADABILITY_REASON_RUNTIME_NOT_READY,
+    RuntimeReadModel,
+    compute_tradability_verdict,
+)
+from src.trading.execution.reasons import (
+    REASON_AUTO_TRADE_DISABLED,
+    REASON_CIRCUIT_OPEN,
+    REASON_MARGIN_GUARD_BLOCK,
+    REASON_QUOTE_STALE,
+)
 
 
 class DummyHealthMonitor:
@@ -125,7 +137,10 @@ class DummySignalRuntime:
                 "drop_rates": {"intrabar_queue_drop_vs_arrived_pct": 0.4},
                 "queue": {"size": 0, "capacity": 16, "dropped_total": 2},
                 "slo_ms": {"queue_age_p95": 120.0, "processing_latency_p95": 45.0},
-                "sample_counts": {"queue_age_sample_count": 20, "processing_latency_sample_count": 20},
+                "sample_counts": {
+                    "queue_age_sample_count": 20,
+                    "processing_latency_sample_count": 20,
+                },
                 "latest": {"queue_age_ms": 80.0, "processing_latency_ms": 35.0},
             },
         }
@@ -267,8 +282,18 @@ class DummyExposureCloseoutController:
             "last_completed_at": "2026-01-01T00:00:00+00:00",
             "result": {
                 "completed": True,
-                "positions": {"completed": [101], "failed": [], "requested": [101], "error": None},
-                "orders": {"completed": [201], "failed": [], "requested": [201], "error": None},
+                "positions": {
+                    "completed": [101],
+                    "failed": [],
+                    "requested": [101],
+                    "error": None,
+                },
+                "orders": {
+                    "completed": [201],
+                    "failed": [],
+                    "requested": [201],
+                    "error": None,
+                },
                 "remaining_positions": [],
                 "remaining_orders": [],
             },
@@ -386,7 +411,9 @@ def test_health_report_contains_unified_runtime_sections() -> None:
     assert report["runtime"]["storage"]["status"] == "healthy"
     assert report["runtime"]["indicators"]["status"] == "healthy"
     assert report["runtime"]["trading"]["active_account_alias"] == "live"
-    assert report["runtime"]["external_dependencies"]["mt5_session"]["status"] == "healthy"
+    assert (
+        report["runtime"]["external_dependencies"]["mt5_session"]["status"] == "healthy"
+    )
 
 
 def test_persisted_trade_control_payload_normalizes_datetime_values() -> None:
@@ -482,7 +509,9 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
     assert summary["pending"]["active"]["status_counts"]["orphan"] == 1
     assert summary["pending"]["lifecycle"]["status_counts"]["filled"] == 1
     assert summary["pending"]["lifecycle"]["status_counts"]["expired"] == 1
-    assert summary["pending"]["execution_contexts"]["source_counts"]["pending_entry"] == 1
+    assert (
+        summary["pending"]["execution_contexts"]["source_counts"]["pending_entry"] == 1
+    )
     assert summary["pending"]["execution_contexts"]["source_counts"]["mt5_order"] == 1
     assert summary["positions"]["status_counts"]["open"] == 1
     assert summary["alerts"]["status"] == "warning"
@@ -499,11 +528,15 @@ def test_runtime_mode_summary_exposes_validation_sidecars() -> None:
     summary = read_model.runtime_mode_summary()
 
     assert summary["components"]["trade_execution"] is True
-    assert summary["validation_sidecars"]["paper_trading"]["kind"] == "validation_sidecar"
+    assert (
+        summary["validation_sidecars"]["paper_trading"]["kind"] == "validation_sidecar"
+    )
     assert summary["validation_sidecars"]["paper_trading"]["status"] == "healthy"
 
 
-def test_runtime_indicator_summary_marks_disabled_when_mode_intentionally_stopped() -> None:
+def test_runtime_indicator_summary_marks_disabled_when_mode_intentionally_stopped() -> (
+    None
+):
     read_model = RuntimeReadModel(
         indicator_manager=type(
             "IndicatorManager",
@@ -570,6 +603,225 @@ def test_main_multi_account_runtime_views_mark_remote_execution_as_disabled() ->
     assert positions["status"] == "disabled"
     assert positions["state"] == "delegated"
     assert positions["execution_scope"] == "remote_executor"
+
+
+class _DummyAccountRiskStore:
+    """提供 load_account_risk_state 的最小化 store；其他方法按需打桩。"""
+
+    def __init__(
+        self, account_risk: dict | None = None, trade_control: dict | None = None
+    ) -> None:
+        self._account_risk = account_risk or {}
+        self._trade_control = trade_control or {}
+
+    def load_account_risk_state(self) -> dict:
+        return dict(self._account_risk)
+
+    def load_trade_control_state(self) -> dict:
+        return dict(self._trade_control)
+
+
+def _verdict_kwargs(**overrides):
+    base = dict(
+        runtime_present=True,
+        circuit_open=False,
+        quote_stale=False,
+        should_block_new_trades=False,
+        last_risk_block=None,
+        close_only_mode=False,
+        auto_entry_enabled=True,
+        current_mode="full",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_compute_tradability_verdict_runtime_missing() -> None:
+    verdict, code, reason, action = compute_tradability_verdict(
+        **_verdict_kwargs(runtime_present=False)
+    )
+    assert verdict == "blocked"
+    assert code == TRADABILITY_REASON_RUNTIME_NOT_READY
+    assert reason
+    assert action is None
+
+
+def test_compute_tradability_verdict_circuit_open_takes_precedence_over_quote() -> None:
+    verdict, code, reason, action = compute_tradability_verdict(
+        **_verdict_kwargs(circuit_open=True, quote_stale=True)
+    )
+    assert verdict == "blocked"
+    assert code == REASON_CIRCUIT_OPEN
+    assert action == "acknowledge"
+
+
+def test_compute_tradability_verdict_quote_stale() -> None:
+    verdict, code, reason, action = compute_tradability_verdict(
+        **_verdict_kwargs(quote_stale=True)
+    )
+    assert verdict == "blocked"
+    assert code == REASON_QUOTE_STALE
+    assert action == "wait_quote"
+
+
+def test_compute_tradability_verdict_should_block_uses_last_risk_block() -> None:
+    verdict, code, reason, action = compute_tradability_verdict(
+        **_verdict_kwargs(
+            should_block_new_trades=True,
+            last_risk_block=REASON_MARGIN_GUARD_BLOCK,
+        )
+    )
+    assert verdict == "blocked"
+    assert code == REASON_MARGIN_GUARD_BLOCK
+    assert action == "acknowledge"
+
+
+def test_compute_tradability_verdict_should_block_falls_back_when_last_risk_block_missing() -> (
+    None
+):
+    verdict, code, _, _ = compute_tradability_verdict(
+        **_verdict_kwargs(should_block_new_trades=True, last_risk_block=None)
+    )
+    assert verdict == "blocked"
+    assert code == TRADABILITY_REASON_RISK_BLOCK
+
+
+def test_compute_tradability_verdict_close_only_is_degraded() -> None:
+    verdict, code, _, action = compute_tradability_verdict(
+        **_verdict_kwargs(close_only_mode=True)
+    )
+    assert verdict == "degraded"
+    assert code == TRADABILITY_REASON_CLOSE_ONLY
+    assert action == "resume"
+
+
+def test_compute_tradability_verdict_auto_entry_off_is_degraded() -> None:
+    verdict, code, _, action = compute_tradability_verdict(
+        **_verdict_kwargs(auto_entry_enabled=False)
+    )
+    assert verdict == "degraded"
+    assert code == REASON_AUTO_TRADE_DISABLED
+    assert action == "resume"
+
+
+def test_compute_tradability_verdict_non_full_mode_is_degraded() -> None:
+    verdict, code, _, action = compute_tradability_verdict(
+        **_verdict_kwargs(current_mode="observe")
+    )
+    assert verdict == "degraded"
+    assert code == "runtime_mode_observe"
+    assert action == "resume"
+
+
+def test_compute_tradability_verdict_tradable_when_all_clear() -> None:
+    verdict, code, reason, action = compute_tradability_verdict(**_verdict_kwargs())
+    assert verdict == "tradable"
+    assert code is None
+    assert reason is None
+    assert action is None
+
+
+def test_tradability_state_summary_emits_native_fields_when_tradable() -> None:
+    store = _DummyAccountRiskStore(
+        account_risk={
+            "auto_entry_enabled": True,
+            "close_only_mode": False,
+            "circuit_open": False,
+            "quote_stale": False,
+            "should_block_new_trades": False,
+            "last_risk_block": None,
+            "updated_at": "2026-04-20T10:00:00+00:00",
+            "metadata": {
+                "quote_health": {"age_seconds": 1.2, "stale_threshold_seconds": 30},
+                "margin_guard": {"state": "ok"},
+            },
+        },
+        trade_control={"auto_entry_enabled": True, "close_only_mode": False},
+    )
+    read_model = RuntimeReadModel(
+        trade_executor=DummyTradeExecutor(),
+        trading_state_store=store,
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="full"),
+    )
+
+    payload = read_model.tradability_state_summary()
+
+    assert payload["verdict"] == "tradable"
+    assert payload["reason_code"] is None
+    assert payload["reason"] is None
+    assert payload["recommended_action"] is None
+    assert payload["source_kind"] == "native"
+    assert payload["tier"] == "T0"
+    assert payload["state_updated_at"] == "2026-04-20T10:00:00+00:00"
+    assert payload["tradable"] is True
+
+
+def test_tradability_state_summary_blocks_on_quote_stale() -> None:
+    store = _DummyAccountRiskStore(
+        account_risk={
+            "auto_entry_enabled": True,
+            "close_only_mode": False,
+            "circuit_open": False,
+            "quote_stale": True,
+            "should_block_new_trades": False,
+            "updated_at": "2026-04-20T10:00:00+00:00",
+            "metadata": {
+                "quote_health": {"age_seconds": 45.0, "stale_threshold_seconds": 30}
+            },
+        }
+    )
+    read_model = RuntimeReadModel(
+        trade_executor=DummyTradeExecutor(),
+        trading_state_store=store,
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="full"),
+    )
+
+    payload = read_model.tradability_state_summary()
+
+    assert payload["verdict"] == "blocked"
+    assert payload["reason_code"] == REASON_QUOTE_STALE
+    assert payload["recommended_action"] == "wait_quote"
+    assert payload["tradable"] is False
+    assert payload["quote_health"]["stale"] is True
+
+
+def test_tradability_state_summary_blocks_on_risk_with_last_risk_block() -> None:
+    store = _DummyAccountRiskStore(
+        account_risk={
+            "auto_entry_enabled": True,
+            "close_only_mode": False,
+            "circuit_open": False,
+            "quote_stale": False,
+            "should_block_new_trades": True,
+            "last_risk_block": REASON_MARGIN_GUARD_BLOCK,
+            "updated_at": "2026-04-20T10:00:00+00:00",
+        }
+    )
+    read_model = RuntimeReadModel(
+        trade_executor=DummyTradeExecutor(),
+        trading_state_store=store,
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="full"),
+    )
+
+    payload = read_model.tradability_state_summary()
+
+    assert payload["verdict"] == "blocked"
+    assert payload["reason_code"] == REASON_MARGIN_GUARD_BLOCK
+    assert payload["recommended_action"] == "acknowledge"
+
+
+def test_tradability_state_summary_marks_runtime_missing_when_no_executor() -> None:
+    store = _DummyAccountRiskStore()
+    read_model = RuntimeReadModel(
+        trading_state_store=store,
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="full"),
+    )
+
+    payload = read_model.tradability_state_summary()
+
+    assert payload["verdict"] == "blocked"
+    assert payload["reason_code"] == TRADABILITY_REASON_RUNTIME_NOT_READY
+    assert payload["runtime_present"] is False
 
 
 def test_recent_trade_pipeline_events_payload_scopes_to_runtime_identity() -> None:
