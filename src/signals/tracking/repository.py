@@ -278,6 +278,13 @@ class TimescaleSignalRepository:
         "blocked": 0.1,
     }
 
+    # P9 bug #3 修复：signal 持久化（StorageWriter 异步队列）与 admission writeback
+    # （PipelineEventBus 同步分发）存在 race —— executor 先发 intent_published，
+    # 此时 signal 还在 storage queue 里没落 PG → fetch_signal_confidence 返回 None。
+    # 用退避重试给 storage_writer 时间 flush；总耗时 ~150ms，listener 已在异常隔离
+    # multicast 内运行，不影响其他 listener。
+    _ADMISSION_RETRY_DELAYS_MS: tuple[int, ...] = (50, 100)
+
     def update_admission_result(
         self,
         *,
@@ -286,6 +293,8 @@ class TimescaleSignalRepository:
         guard_reason_code: Optional[str],
         rank_source: str = "native",
     ) -> bool:
+        import time
+
         from src.trading.execution.reasons import reason_category
 
         if actionability not in self._PRIORITY_WEIGHTS:
@@ -295,8 +304,14 @@ class TimescaleSignalRepository:
             )
         weight = self._PRIORITY_WEIGHTS[actionability]
         confidence = self._db.fetch_signal_confidence(signal_id=signal_id)
+        # P9 bug #3: signal 持久化是异步的，给 storage_writer ~150ms flush 窗口
+        for delay_ms in self._ADMISSION_RETRY_DELAYS_MS:
+            if confidence is not None:
+                break
+            time.sleep(delay_ms / 1000.0)
+            confidence = self._db.fetch_signal_confidence(signal_id=signal_id)
         if confidence is None:
-            # 信号不存在或尚未持久化 — 跳过，保持幂等
+            # 信号不存在或重试后仍未持久化 — 跳过，保持幂等
             return False
         priority = confidence * weight
         guard_category = (

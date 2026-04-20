@@ -118,7 +118,41 @@ def test_update_admission_returns_false_when_signal_id_missing() -> None:
 
     assert ok is False
     assert db.update_calls == []  # 不发起 UPDATE
-    assert db.confidence_calls == ["not_found"]
+    # P9 bug #3: storage_writer 异步 race，初始 + 2 次重试（50ms + 100ms）
+    # 都返回 None，最终 fetch_confidence 调用 3 次
+    assert db.confidence_calls == ["not_found"] * 3
+
+
+def test_update_admission_succeeds_after_retry_when_storage_catches_up() -> None:
+    """Race 修复：fetch_confidence 第一次 None，第二次返回值 → UPDATE 应成功。"""
+    db = _StubSignalDB(confidence=0.7)
+
+    # 模拟前两次返回 None，第三次返回 confidence
+    confidence_returns = iter([None, 0.7])
+
+    def _flaky_fetch(*, signal_id):
+        db.confidence_calls.append(signal_id)
+        try:
+            return next(confidence_returns)
+        except StopIteration:
+            return 0.7
+
+    db.fetch_signal_confidence = _flaky_fetch  # type: ignore[method-assign]
+
+    repo = TimescaleSignalRepository.__new__(TimescaleSignalRepository)
+    repo._db = db  # noqa: SLF001
+    repo._storage_writer = None
+
+    ok = repo.update_admission_result(
+        signal_id="sig_late",
+        actionability="actionable",
+        guard_reason_code=None,
+    )
+
+    assert ok is True
+    assert len(db.confidence_calls) >= 2
+    assert db.update_calls[0]["actionability"] == "actionable"
+    assert db.update_calls[0]["priority"] == pytest.approx(0.7)
 
 
 def test_update_admission_quote_stale_resolves_market_data_category() -> None:

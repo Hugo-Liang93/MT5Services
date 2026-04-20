@@ -7,14 +7,15 @@ from typing import TYPE_CHECKING, Any
 
 from src.utils.common import same_listener_reference
 
+from ..runtime.intrabar_metrics import get_intrabar_metrics_snapshot
 from .runtime import (
     get_intrabar_eligible_names,
     normalize_indicator_group,
     normalize_persisted_indicator_snapshot,
     reconcile_all,
 )
-from ..runtime.intrabar_metrics import get_intrabar_metrics_snapshot
-from .state_view import state_get as _state_get, state_set as _state_set
+from .state_view import state_get as _state_get
+from .state_view import state_set as _state_set
 
 if TYPE_CHECKING:
     from ..manager import UnifiedIndicatorManager
@@ -176,6 +177,25 @@ def set_priority_indicator_groups(
     _state_set(manager, "priority_indicator_groups", tuple(ordered))
 
 
+def _snapshot_scope_stats(scope_stats: Any) -> dict[str, Any]:
+    """对 scope_stats 做 GIL-atomic 快照后再迭代，避免并发修改。
+
+    scope_stats 是一个嵌套 dict，外层在 hot path 被并发添加 keys。CPython 下
+    `dict(d)` 是 atomic 操作（持有 GIL 时不会被打断），快照内容稳定后即可安全迭代。
+    """
+    try:
+        snapshot = dict(scope_stats) if isinstance(scope_stats, dict) else {}
+    except Exception:
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in snapshot.items():
+        try:
+            out[key] = dict(value) if isinstance(value, dict) else value
+        except Exception:
+            out[key] = value
+    return out
+
+
 def get_performance_stats(manager: "UnifiedIndicatorManager") -> dict[str, Any]:
     pipeline_stats = manager.pipeline.get_stats()
     cache_stats = pipeline_stats.get("cache", {})
@@ -188,9 +208,7 @@ def get_performance_stats(manager: "UnifiedIndicatorManager") -> dict[str, Any]:
     config_auto_start = bool(getattr(config, "auto_start", False)) if config else False
     pipeline_cfg = getattr(config, "pipeline", None) if config else None
     config_reconcile_interval = (
-        getattr(pipeline_cfg, "poll_interval", 0.0)
-        if pipeline_cfg is not None
-        else 0.0
+        getattr(pipeline_cfg, "poll_interval", 0.0) if pipeline_cfg is not None else 0.0
     )
     with _state_get(manager, "results_lock"):
         result_stats = {
@@ -228,9 +246,10 @@ def get_performance_stats(manager: "UnifiedIndicatorManager") -> dict[str, Any]:
         "cache_hits": cache_stats.get("hits", 0),
         "cache_misses": cache_stats.get("misses", 0),
         "success_rate": pipeline_stats.get("success_rate", 0),
-        "scope_stats": {
-            k: dict(v) for k, v in _state_get(manager, "scope_stats", {}).items()
-        },
+        # P9 bug #5 fix: scope_stats 在没有 lock 保护下被并发更新（hot path），
+        # 用 dict(...) 一次性快照（CPython GIL 保证 atomic）后再迭代，避免
+        # "dictionary changed size during iteration" race。
+        "scope_stats": _snapshot_scope_stats(_state_get(manager, "scope_stats", {})),
         "confirmed_indicators": sorted(
             _state_get(manager, "confirmed_eligible_cache")
             or [cfg.name for cfg in config_indicators]
@@ -252,7 +271,9 @@ def clear_cache(manager: "UnifiedIndicatorManager") -> int:
     return cleared
 
 
-def get_dependency_graph(manager: "UnifiedIndicatorManager", format: str = "mermaid") -> str:
+def get_dependency_graph(
+    manager: "UnifiedIndicatorManager", format: str = "mermaid"
+) -> str:
     return manager.dependency_manager.visualize(format)
 
 
@@ -266,11 +287,7 @@ def get_snapshot(
     prefix = f"{symbol}_{timeframe}_"
     with _state_get(manager, "results_lock"):
         results = _state_get(manager, "results", {})
-        matches = [
-            result
-            for key, result in results.items()
-            if key.startswith(prefix)
-        ]
+        matches = [result for key, result in results.items() if key.startswith(prefix)]
     if not matches:
         persisted = normalize_persisted_indicator_snapshot(
             manager,
@@ -307,7 +324,9 @@ def reset_failed_events(manager: "UnifiedIndicatorManager") -> int:
     return manager.event_store.reset_failed_events()
 
 
-def cleanup_old_events(manager: "UnifiedIndicatorManager", days_to_keep: int = 7) -> None:
+def cleanup_old_events(
+    manager: "UnifiedIndicatorManager", days_to_keep: int = 7
+) -> None:
     manager.event_store.cleanup_old_events(days_to_keep)
 
 

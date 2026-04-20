@@ -112,12 +112,32 @@ def build_paper_trading_layer(container: AppContainer) -> None:
             recover_fn = _recover
 
         market_service = container.market_service
+        # P9 bug #3: paper signal 不走 ExecutionIntentPublisher，直接通过 bridge
+        # 回填 admission 字段到 signal_events 表，让 paper signal 也参与 priority 排序。
+        admission_writer = None
+        if (
+            container.signal_module is not None
+            and container.signal_module.repository is not None
+        ):
+            _signal_repo = container.signal_module.repository
+
+            def admission_writer(
+                signal_id: str, actionability: str, guard_reason_code
+            ) -> None:
+                _signal_repo.update_admission_result(
+                    signal_id=signal_id,
+                    actionability=actionability,
+                    guard_reason_code=guard_reason_code,
+                    rank_source="paper_bridge",
+                )
+
         bridge = PaperTradingBridge(
             config=pt_config,
             market_quote_fn=market_service.get_quote,
             on_trade_closed=tracker.on_trade_closed,
             on_trade_opened=tracker.on_trade_opened,
             recover_fn=recover_fn,
+            admission_writer=admission_writer,
         )
         container.paper_trading_bridge = bridge
 

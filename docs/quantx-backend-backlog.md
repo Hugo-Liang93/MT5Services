@@ -10,9 +10,11 @@
 
 按场景选 **唯一推荐端点**。重叠的旧端点已标 `deprecated=true`（OpenAPI + metadata.deprecation），保留 1 个月兼容期（2026-06-01 后下线）。
 
+> **`account_alias` 取值约束**：必须用 `/v1/account/list` 返回的 `alias` 字段（如 `live_main` / `live_exec_a`，下划线分隔），**不是** instance 名（连字符 `live-main`）。alias 来自 `mt5.ini` 的 `account_alias` 配置。
+
 | 场景 | 推荐端点 | 替代/废弃端点 | 备注 |
 |------|---------|------------|------|
-| Execution 工作台一站读 | `GET /v1/execution/workbench?account_alias=X` | — | 9 块 contract（execution/risk/positions/orders/pending/exposure/events/relatedObjects/marketContext/stream） |
+| Execution 工作台一站读 | `GET /v1/execution/workbench?account_alias=live_main` | — | 9 块 contract（execution/risk/positions/orders/pending/exposure/events/relatedObjects/marketContext/stream） |
 | 持仓快照 | `workbench.positions` 块 | ⚠️ `/v1/positions`（已弃用） | workbench 块带 status_counts / positions_updated_at / source_kind |
 | 挂单快照 | `workbench.orders` 块 | ⚠️ `/v1/orders`（已弃用） | 同上 |
 | 直查 MT5 实时持仓（绕过 service 缓存） | `/v1/account/positions` | — | 与上面数据视角不同，**保留**用于运维直查 |

@@ -861,3 +861,62 @@ def test_recent_trade_pipeline_events_payload_scopes_to_runtime_identity() -> No
     assert payload["items"][0]["event_type"] == "admission_report_appended"
     assert payload["items"][0]["payload"]["decision"] == "allow"
     assert payload["items"][1]["event_type"] == "command_completed"
+
+
+# ── P9 bug #2: tradability not_applicable for main role ──────────
+
+
+def test_tradability_state_summary_not_applicable_for_main_role_without_executor() -> (
+    None
+):
+    """multi_account 拓扑下 main role 不挂 trade_executor，不应误报 blocked。"""
+    from src.readmodels.runtime import (
+        TRADABILITY_REASON_NOT_EXECUTOR_ROLE,
+        TRADABILITY_VERDICT_NOT_APPLICABLE,
+    )
+
+    store = _DummyAccountRiskStore(
+        account_risk={"updated_at": "2026-04-20T10:00:00+00:00"}
+    )
+    read_model = RuntimeReadModel(
+        # 无 trade_executor → runtime_present=False
+        trading_state_store=store,
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="full"),
+        runtime_identity=DummyRuntimeIdentity(
+            instance_role="main",
+            live_topology_mode="multi_account",
+        ),
+    )
+
+    payload = read_model.tradability_state_summary()
+
+    # 不再误报 blocked，明示 not_applicable
+    assert payload["verdict"] == TRADABILITY_VERDICT_NOT_APPLICABLE
+    assert payload["reason_code"] == TRADABILITY_REASON_NOT_EXECUTOR_ROLE
+    assert payload["recommended_action"] is None
+    assert payload["tradable"] is False  # 仍然 false，前端不会误开按钮
+    assert payload["runtime_present"] is False
+
+
+def test_tradability_state_summary_still_blocks_when_single_account_main_without_executor() -> (
+    None
+):
+    """非 multi_account 拓扑下 main 没 executor 仍是异常 → blocked / runtime_not_ready。"""
+    from src.readmodels.runtime import TRADABILITY_REASON_RUNTIME_NOT_READY
+
+    store = _DummyAccountRiskStore(
+        account_risk={"updated_at": "2026-04-20T10:00:00+00:00"}
+    )
+    read_model = RuntimeReadModel(
+        trading_state_store=store,
+        runtime_mode_controller=DummyRuntimeModeController(current_mode="full"),
+        runtime_identity=DummyRuntimeIdentity(
+            instance_role="main",
+            live_topology_mode="single_account",  # 单账户模式不豁免
+        ),
+    )
+
+    payload = read_model.tradability_state_summary()
+
+    assert payload["verdict"] == "blocked"
+    assert payload["reason_code"] == TRADABILITY_REASON_RUNTIME_NOT_READY

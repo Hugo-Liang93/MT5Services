@@ -57,6 +57,7 @@ class PaperTradingBridge:
         on_trade_closed: Optional[Callable[[PaperTradeRecord], None]] = None,
         on_trade_opened: Optional[Callable[[PaperTradeRecord], None]] = None,
         recover_fn: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+        admission_writer: Optional[Callable[[str, str, Optional[str]], None]] = None,
     ) -> None:
         self._config = config
         self._market_quote_fn = market_quote_fn
@@ -65,6 +66,11 @@ class PaperTradingBridge:
         # recover_fn: 可选 — 由 builder 注入，返回 {session, open_trades} dict 让 start() 复用。
         # 如果 config.resume_active_session=True 且该函数返回非 None，则 start() 恢复老 session。
         self._recover_fn = recover_fn
+        # P9 bug #3: paper bridge 直接消费 signal 不走 ExecutionIntentPublisher 链路，
+        # admission writeback listener 收不到 paper signal。在此回调中回填 signal_events
+        # 的 actionability/guard_reason_code 字段，让 paper signal 也参与 priority 排序。
+        # 签名: (signal_id, actionability, guard_reason_code) -> None
+        self._admission_writer = admission_writer
         self._lock = threading.Lock()
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
@@ -205,6 +211,8 @@ class PaperTradingBridge:
         self._signals_received += 1
 
         if event.signal_state not in ("confirmed_buy", "confirmed_sell"):
+            # P9 bug #3: hold/preview 信号也回填 admission（hold actionability）
+            self._writeback_admission(event.signal_id, "hold", "non_confirmed_state")
             return
 
         if event.confidence < self._config.min_confidence:
@@ -212,12 +220,16 @@ class PaperTradingBridge:
             self._reject_reasons["low_confidence"] = (
                 self._reject_reasons.get("low_confidence", 0) + 1
             )
+            self._writeback_admission(event.signal_id, "blocked", "min_confidence")
             return
 
         atr_value = extract_atr_from_indicators(event.indicators)
         if atr_value is None or atr_value <= 0:
             self._signals_rejected += 1
             self._reject_reasons["no_atr"] = self._reject_reasons.get("no_atr", 0) + 1
+            self._writeback_admission(
+                event.signal_id, "blocked", "trade_params_unavailable"
+            )
             return
 
         direction = "buy" if event.signal_state == "confirmed_buy" else "sell"
@@ -229,11 +241,14 @@ class PaperTradingBridge:
             self._reject_reasons["no_quote"] = (
                 self._reject_reasons.get("no_quote", 0) + 1
             )
+            self._writeback_admission(event.signal_id, "blocked", "quote_stale")
             return
 
         mid_price = (quote.bid + quote.ask) / 2.0
         regime = str(
-            event.metadata.get(MK.REGIME) or event.metadata.get(MK.REGIME_HARD) or "unknown"
+            event.metadata.get(MK.REGIME)
+            or event.metadata.get(MK.REGIME_HARD)
+            or "unknown"
         )
 
         with self._lock:
@@ -268,10 +283,36 @@ class PaperTradingBridge:
             )
             if self._on_trade_opened:
                 self._on_trade_opened(record)
+            self._writeback_admission(event.signal_id, "actionable", None)
         else:
             self._signals_rejected += 1
             self._reject_reasons["max_positions"] = (
                 self._reject_reasons.get("max_positions", 0) + 1
+            )
+            self._writeback_admission(
+                event.signal_id, "blocked", "max_concurrent_positions_per_symbol"
+            )
+
+    def _writeback_admission(
+        self,
+        signal_id: Optional[str],
+        actionability: str,
+        guard_reason_code: Optional[str],
+    ) -> None:
+        """P9 bug #3: paper signal admission 回填到 signal_events 表。
+
+        签名匹配 admission_writer 协议；缺失 writer 时静默跳过。
+        异常不向上抛 — paper bridge 不该因 DB 写失败而中断信号处理。
+        """
+        if self._admission_writer is None or not signal_id:
+            return
+        try:
+            self._admission_writer(signal_id, actionability, guard_reason_code)
+        except Exception:
+            logger.debug(
+                "paper admission writeback failed for signal_id=%s",
+                signal_id,
+                exc_info=True,
             )
 
     # ── 查询接口 ───────────────────────────────────────────────────
@@ -353,7 +394,9 @@ class PaperTradingBridge:
             session.losing_trades = metrics.losing_trades
             session.total_pnl = metrics.total_pnl
             session.max_drawdown_pct = metrics.max_drawdown_pct
-            session.sharpe_ratio = metrics.profit_factor if metrics.profit_factor > 0 else None
+            session.sharpe_ratio = (
+                metrics.profit_factor if metrics.profit_factor > 0 else None
+            )
             return session
 
     def _attempt_resume(self) -> bool:
@@ -376,7 +419,9 @@ class PaperTradingBridge:
         try:
             payload = self._recover_fn()
         except Exception:
-            logger.warning("paper_trading: recover_fn 失败，走 fresh start", exc_info=True)
+            logger.warning(
+                "paper_trading: recover_fn 失败，走 fresh start", exc_info=True
+            )
             return False
         if not payload:
             return False
@@ -386,6 +431,7 @@ class PaperTradingBridge:
             return False
 
         from datetime import datetime as _dt
+
         session_id = str(session_row["session_id"])
         started_at_raw = session_row.get("started_at") or utc_now()
         if isinstance(started_at_raw, str):
@@ -442,6 +488,7 @@ class PaperTradingBridge:
                 return []
             # shallow copy via dataclasses.replace 或直接构造——PaperTradeRecord 是 dataclass
             from dataclasses import replace as _dc_replace
+
             return [_dc_replace(t) for t in self._portfolio._open_positions.values()]
 
     def reset(self) -> None:

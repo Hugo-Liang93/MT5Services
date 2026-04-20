@@ -95,7 +95,8 @@ class EconomicConfig(BaseModel):
     startup_refresh: bool = True
     request_retries: int = 3
     retry_backoff_seconds: float = 1.0
-    stale_after_seconds: float = 1800.0
+    # P9 bug #7: 1800→2400，避免 jin10 抖动贴边误报（详见 economic.ini 注释）
+    stale_after_seconds: float = 2400.0
     high_importance_threshold: int = 3
     pre_event_buffer_minutes: int = 30
     post_event_buffer_minutes: int = 30
@@ -164,7 +165,9 @@ class EconomicConfig(BaseModel):
     market_impact_timeframes: List[str] = Field(default_factory=lambda: ["M1", "M5"])
     market_impact_importance_min: int = 2
     market_impact_pre_windows: List[int] = Field(default_factory=lambda: [30, 60, 120])
-    market_impact_post_windows: List[int] = Field(default_factory=lambda: [5, 15, 30, 60, 120])
+    market_impact_post_windows: List[int] = Field(
+        default_factory=lambda: [5, 15, 30, 60, 120]
+    )
     market_impact_final_collection_delay_minutes: int = 130
     market_impact_backfill_enabled: bool = True
     market_impact_backfill_days: int = 30
@@ -200,8 +203,12 @@ class TradingOpsConfig(BaseModel):
     dispatch_timeout_ms: int = 5000
     daily_summary_recent_limit: int = 1000
     runtime_mode: Literal["full", "observe", "risk_off", "ingest_only"] = "full"
-    runtime_mode_after_eod: Literal["disabled", "risk_off", "ingest_only"] = "ingest_only"
-    runtime_mode_after_manual_closeout: Literal["disabled", "risk_off", "ingest_only"] = "ingest_only"
+    runtime_mode_after_eod: Literal["disabled", "risk_off", "ingest_only"] = (
+        "ingest_only"
+    )
+    runtime_mode_after_manual_closeout: Literal[
+        "disabled", "risk_off", "ingest_only"
+    ] = "ingest_only"
     runtime_mode_auto_check_interval_seconds: float = 15.0
     pending_recovery_orphan_action: Literal["record_only", "cancel"] = "record_only"
     pending_recovery_missing_action: Literal["mark_missing", "ignore"] = "mark_missing"

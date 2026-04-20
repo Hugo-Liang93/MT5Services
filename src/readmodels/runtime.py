@@ -23,12 +23,15 @@ from src.trading.execution.reasons import (
     REASON_QUOTE_STALE,
 )
 
-
 # ── Tradability verdict 原生计算（P9 freshness tiering，T0 数据） ──
 # 仅 readmodel 层使用的 reason_code（不属于执行链 skip reason 枚举）：
 TRADABILITY_REASON_RUNTIME_NOT_READY = "runtime_not_ready"
 TRADABILITY_REASON_CLOSE_ONLY = "close_only_mode"
 TRADABILITY_REASON_RISK_BLOCK = "risk_block"
+# multi_account 拓扑下的 main role 不挂 trade_executor，本身就不参与执行 →
+# 不应误报 blocked，前端应识别 not_applicable 跳过 tradability 显示。
+TRADABILITY_VERDICT_NOT_APPLICABLE = "not_applicable"
+TRADABILITY_REASON_NOT_EXECUTOR_ROLE = "not_executor_role"
 
 
 def compute_tradability_verdict(
@@ -52,26 +55,34 @@ def compute_tradability_verdict(
     - readmodel 层独有状态：使用本模块 ``TRADABILITY_REASON_*`` 常量
     """
     if not runtime_present:
-        return ("blocked", TRADABILITY_REASON_RUNTIME_NOT_READY,
-                "交易运行时未就绪", None)
+        return (
+            "blocked",
+            TRADABILITY_REASON_RUNTIME_NOT_READY,
+            "交易运行时未就绪",
+            None,
+        )
     if circuit_open:
-        return ("blocked", REASON_CIRCUIT_OPEN,
-                "熔断器已触发", "acknowledge")
+        return ("blocked", REASON_CIRCUIT_OPEN, "熔断器已触发", "acknowledge")
     if quote_stale:
-        return ("blocked", REASON_QUOTE_STALE,
-                "行情数据过期，等待恢复", "wait_quote")
+        return ("blocked", REASON_QUOTE_STALE, "行情数据过期，等待恢复", "wait_quote")
     if should_block_new_trades:
-        return ("blocked", last_risk_block or TRADABILITY_REASON_RISK_BLOCK,
-                "风控阻断新交易", "acknowledge")
+        return (
+            "blocked",
+            last_risk_block or TRADABILITY_REASON_RISK_BLOCK,
+            "风控阻断新交易",
+            "acknowledge",
+        )
     if close_only_mode:
-        return ("degraded", TRADABILITY_REASON_CLOSE_ONLY,
-                "仅平仓模式", "resume")
+        return ("degraded", TRADABILITY_REASON_CLOSE_ONLY, "仅平仓模式", "resume")
     if not auto_entry_enabled:
-        return ("degraded", REASON_AUTO_TRADE_DISABLED,
-                "自动入场已关闭", "resume")
+        return ("degraded", REASON_AUTO_TRADE_DISABLED, "自动入场已关闭", "resume")
     if current_mode != "full":
-        return ("degraded", f"runtime_mode_{current_mode}",
-                f"运行模式: {current_mode}", "resume")
+        return (
+            "degraded",
+            f"runtime_mode_{current_mode}",
+            f"运行模式: {current_mode}",
+            "resume",
+        )
     return ("tradable", None, None, None)
 
 
@@ -238,9 +249,10 @@ class RuntimeReadModel:
             status = "critical"
         elif int(summary.get("full", 0) or 0) > 0:
             status = "critical"
-        elif int(summary.get("critical", 0) or 0) > 0 or int(
-            summary.get("high", 0) or 0
-        ) > 0:
+        elif (
+            int(summary.get("critical", 0) or 0) > 0
+            or int(summary.get("high", 0) or 0) > 0
+        ):
             status = "warning"
         else:
             status = "healthy"
@@ -275,9 +287,13 @@ class RuntimeReadModel:
                 "worst_age_seconds": None,
                 "items": {},
             }
-        stale_count = sum(1 for item in items.values() if bool(item.get("stale", False)))
+        stale_count = sum(
+            1 for item in items.values() if bool(item.get("stale", False))
+        )
         warming_up_count = sum(
-            1 for item in items.values() if str(item.get("status") or "").strip() == "warming_up"
+            1
+            for item in items.values()
+            if str(item.get("status") or "").strip() == "warming_up"
         )
         ages = [
             float(item.get("last_age_seconds"))
@@ -371,9 +387,10 @@ class RuntimeReadModel:
         risk_summary = dict(daily.get("risk", {}) or {})
 
         coordination_issues: list[str] = []
-        if int(daily.get("failed", 0) or 0) > 0 and int(
-            daily.get("success", 0) or 0
-        ) == 0:
+        if (
+            int(daily.get("failed", 0) or 0) > 0
+            and int(daily.get("success", 0) or 0) == 0
+        ):
             coordination_issues.append(
                 "当日交易全部失败，建议检查风控结果与交易连接状态。"
             )
@@ -432,7 +449,9 @@ class RuntimeReadModel:
         }
 
     @classmethod
-    def build_executor_snapshot(cls, executor_status: Mapping[str, Any]) -> dict[str, Any]:
+    def build_executor_snapshot(
+        cls, executor_status: Mapping[str, Any]
+    ) -> dict[str, Any]:
         circuit_breaker = dict(executor_status.get("circuit_breaker", {}) or {})
         pending_entries = cls.build_pending_entries_summary(
             executor_status.get("pending_entries", {})
@@ -454,9 +473,7 @@ class RuntimeReadModel:
             "status": (
                 "disabled"
                 if not enabled
-                else "warning"
-                if circuit_open or last_error
-                else "healthy"
+                else "warning" if circuit_open or last_error else "healthy"
             ),
             "enabled": enabled,
             "circuit_open": circuit_open,
@@ -479,7 +496,9 @@ class RuntimeReadModel:
             "execution_gate": dict(executor_status.get("execution_gate", {}) or {}),
             "pending_entries_count": pending_entries["active_count"],
             "pending_entries": pending_entries,
-            "recent_executions": list(executor_status.get("recent_executions", []) or []),
+            "recent_executions": list(
+                executor_status.get("recent_executions", []) or []
+            ),
         }
 
     @staticmethod
@@ -507,9 +526,7 @@ class RuntimeReadModel:
 
         confirmed_size = int(runtime_status.get("confirmed_queue_size", 0) or 0)
         intrabar_size = int(runtime_status.get("intrabar_queue_size", 0) or 0)
-        confirmed_capacity = int(
-            runtime_status.get("confirmed_queue_capacity", 0) or 0
-        )
+        confirmed_capacity = int(runtime_status.get("confirmed_queue_capacity", 0) or 0)
         intrabar_capacity = int(runtime_status.get("intrabar_queue_capacity", 0) or 0)
 
         return {
@@ -545,9 +562,7 @@ class RuntimeReadModel:
             },
             "processing": {
                 "run_count": int(runtime_status.get("run_count", 0) or 0),
-                "processed_events": int(
-                    runtime_status.get("processed_events", 0) or 0
-                ),
+                "processed_events": int(runtime_status.get("processed_events", 0) or 0),
                 "intrabar_stale_drops": int(
                     runtime_status.get("dropped_intrabar_stale", 0) or 0
                 ),
@@ -555,9 +570,7 @@ class RuntimeReadModel:
                 "dropped_confirmed": int(
                     runtime_status.get("dropped_confirmed", 0) or 0
                 ),
-                "dropped_intrabar": int(
-                    runtime_status.get("dropped_intrabar", 0) or 0
-                ),
+                "dropped_intrabar": int(runtime_status.get("dropped_intrabar", 0) or 0),
             },
             "drop_rates": dict(runtime_status.get("drop_rates", {}) or {}),
             "filters": {
@@ -574,9 +587,7 @@ class RuntimeReadModel:
                 ),
             },
             "active_states": {
-                "confirmed": int(
-                    runtime_status.get("active_confirmed_states", 0) or 0
-                ),
+                "confirmed": int(runtime_status.get("active_confirmed_states", 0) or 0),
             },
             "regime_map": dict(runtime_status.get("regime_map", {}) or {}),
             "last_run_at": runtime_status.get("last_run_at"),
@@ -605,11 +616,7 @@ class RuntimeReadModel:
         last_error = manager_status.get("last_error")
         return {
             "status": (
-                "critical"
-                if not running
-                else "warning"
-                if last_error
-                else "healthy"
+                "critical" if not running else "warning" if last_error else "healthy"
             ),
             "running": running,
             "tracked_positions": int(
@@ -671,9 +678,10 @@ class RuntimeReadModel:
             queue_totals = dict(summary.get("summary", {}) or {})
             if writer_alive is not True:
                 summary["status"] = "critical"
-            elif int(queue_totals.get("full", 0) or 0) > 0 or int(
-                queue_totals.get("critical", 0) or 0
-            ) > 0:
+            elif (
+                int(queue_totals.get("full", 0) or 0) > 0
+                or int(queue_totals.get("critical", 0) or 0) > 0
+            ):
                 summary["status"] = "critical"
             elif int(queue_totals.get("high", 0) or 0) > 0:
                 summary["status"] = "warning"
@@ -722,10 +730,10 @@ class RuntimeReadModel:
         summary = self.build_indicator_summary(
             self._indicator_manager.get_performance_stats()
         )
-        if (
-            self._current_runtime_mode() in {"risk_off", "ingest_only"}
-            and not summary.get("event_loop_running", False)
-        ):
+        if self._current_runtime_mode() in {
+            "risk_off",
+            "ingest_only",
+        } and not summary.get("event_loop_running", False):
             summary["status"] = "disabled"
         return summary
 
@@ -805,7 +813,9 @@ class RuntimeReadModel:
                 "warmup": {},
                 "active_states": {},
                 "executor_enabled": bool(executor_summary.get("enabled", False)),
-                "execution_gate": dict(executor_summary.get("execution_gate", {}) or {}),
+                "execution_gate": dict(
+                    executor_summary.get("execution_gate", {}) or {}
+                ),
                 "active_filters": [],
                 "filter_stats": {
                     "configured": {},
@@ -881,7 +891,9 @@ class RuntimeReadModel:
             runtime_status.get("filter_realtime_status", {}) or {}
         )
         summary["executor_enabled"] = bool(executor_summary.get("enabled", False))
-        summary["execution_gate"] = dict(executor_summary.get("execution_gate", {}) or {})
+        summary["execution_gate"] = dict(
+            executor_summary.get("execution_gate", {}) or {}
+        )
         summary["active_filters"] = sorted(filter_realtime_status.keys())
         summary["filter_stats"] = {
             "configured": filter_realtime_status,
@@ -890,10 +902,10 @@ class RuntimeReadModel:
             "window_seconds": int(runtime_status.get("filter_window_seconds", 0) or 0),
             "window_elapsed": int(runtime_status.get("filter_window_elapsed", 0) or 0),
         }
-        if (
-            self._current_runtime_mode() in {"risk_off", "ingest_only"}
-            and not summary.get("running", False)
-        ):
+        if self._current_runtime_mode() in {
+            "risk_off",
+            "ingest_only",
+        } and not summary.get("running", False):
             summary["status"] = "disabled"
         return summary
 
@@ -921,7 +933,9 @@ class RuntimeReadModel:
                 "entries": [],
                 "stats": {},
             }
-        summary = self.build_pending_entries_summary(self._pending_entry_manager.status())
+        summary = self.build_pending_entries_summary(
+            self._pending_entry_manager.status()
+        )
         summary["configured"] = True
         summary["running"] = self._component_running(self._pending_entry_manager)
         summary.setdefault("execution_scope", "local")
@@ -1023,9 +1037,8 @@ class RuntimeReadModel:
         )
         summary["configured"] = True
         summary.setdefault("execution_scope", "local")
-        if (
-            self._current_runtime_mode() == "ingest_only"
-            and not summary.get("running", False)
+        if self._current_runtime_mode() == "ingest_only" and not summary.get(
+            "running", False
         ):
             summary["status"] = "disabled"
         return summary
@@ -1126,13 +1139,13 @@ class RuntimeReadModel:
                     attempt_login=True,
                 )
                 payload = (
-                    state.to_dict()
-                    if hasattr(state, "to_dict")
-                    else dict(state or {})
+                    state.to_dict() if hasattr(state, "to_dict") else dict(state or {})
                 )
                 return {
                     "kind": "external_dependency",
-                    "status": "healthy" if bool(payload.get("session_ready")) else "critical",
+                    "status": (
+                        "healthy" if bool(payload.get("session_ready")) else "critical"
+                    ),
                     "connected": bool(payload.get("session_ready")),
                     **payload,
                 }
@@ -1253,7 +1266,9 @@ class RuntimeReadModel:
     def pending_execution_context_payload(self) -> dict[str, Any]:
         if self._pending_entry_manager is None:
             return {"count": 0, "source_counts": {}, "items": []}
-        contexts_fn = getattr(self._pending_entry_manager, "active_execution_contexts", None)
+        contexts_fn = getattr(
+            self._pending_entry_manager, "active_execution_contexts", None
+        )
         if callable(contexts_fn):
             items = list(contexts_fn() or [])
         else:
@@ -1346,15 +1361,14 @@ class RuntimeReadModel:
     def unmanaged_live_positions_payload(self, *, limit: int = 20) -> dict[str, Any]:
         live_positions = self._live_positions_payload()
         managed_items = list(
-            self.position_runtime_state_payload(statuses=["open"], limit=max(limit * 5, 100)).get("items")
+            self.position_runtime_state_payload(
+                statuses=["open"], limit=max(limit * 5, 100)
+            ).get("items")
             or []
         )
         managed_tickets = {
             int(ticket)
-            for ticket in (
-                item.get("position_ticket")
-                for item in managed_items
-            )
+            for ticket in (item.get("position_ticket") for item in managed_items)
             if ticket is not None
         }
         context_resolver = (
@@ -1376,7 +1390,9 @@ class RuntimeReadModel:
             context = None
             if callable(context_resolver) and normalized_ticket is not None:
                 try:
-                    context = context_resolver(ticket=normalized_ticket, comment=comment, limit=200)
+                    context = context_resolver(
+                        ticket=normalized_ticket, comment=comment, limit=200
+                    )
                 except Exception:
                     context = None
             if not comment and int(magic or 0) == 0:
@@ -1413,13 +1429,27 @@ class RuntimeReadModel:
         account_risk = dict(self.account_risk_state_summary() or {})
         trade_control = dict(self.trade_control_summary() or {})
         runtime_mode = dict(self.runtime_mode_summary() or {})
-        quote_health = dict(account_risk.get("metadata", {}).get("quote_health", {}) or {})
-        margin_guard = dict(account_risk.get("metadata", {}).get("margin_guard", {}) or {})
-        auto_entry_enabled = bool(account_risk.get("auto_entry_enabled", trade_control.get("auto_entry_enabled", True)))
-        close_only_mode = bool(account_risk.get("close_only_mode", trade_control.get("close_only_mode", False)))
+        quote_health = dict(
+            account_risk.get("metadata", {}).get("quote_health", {}) or {}
+        )
+        margin_guard = dict(
+            account_risk.get("metadata", {}).get("margin_guard", {}) or {}
+        )
+        auto_entry_enabled = bool(
+            account_risk.get(
+                "auto_entry_enabled", trade_control.get("auto_entry_enabled", True)
+            )
+        )
+        close_only_mode = bool(
+            account_risk.get(
+                "close_only_mode", trade_control.get("close_only_mode", False)
+            )
+        )
         circuit_open = bool(account_risk.get("circuit_open", False))
         quote_stale = bool(account_risk.get("quote_stale", False))
-        should_block_new_trades = bool(account_risk.get("should_block_new_trades", False))
+        should_block_new_trades = bool(
+            account_risk.get("should_block_new_trades", False)
+        )
         last_risk_block = str(account_risk.get("last_risk_block") or "").strip() or None
         runtime_present = self._trade_executor is not None
         current_mode = str(runtime_mode.get("current_mode") or "full")
@@ -1429,16 +1459,28 @@ class RuntimeReadModel:
             and not close_only_mode
             and current_mode == "full"
         )
-        verdict, reason_code, reason, recommended_action = compute_tradability_verdict(
-            runtime_present=runtime_present,
-            circuit_open=circuit_open,
-            quote_stale=quote_stale,
-            should_block_new_trades=should_block_new_trades,
-            last_risk_block=last_risk_block,
-            close_only_mode=close_only_mode,
-            auto_entry_enabled=auto_entry_enabled,
-            current_mode=current_mode,
-        )
+        # P9 bug #2: multi_account 拓扑下 main role 不挂 executor，
+        # 不应误报 blocked/runtime_not_ready，应明示 not_applicable。
+        if self._shared_compute_main_without_local_execution():
+            verdict = TRADABILITY_VERDICT_NOT_APPLICABLE
+            reason_code = TRADABILITY_REASON_NOT_EXECUTOR_ROLE
+            reason = (
+                "本实例为 main role，不直接执行交易；请查询 executor 实例的 tradability"
+            )
+            recommended_action = None
+        else:
+            verdict, reason_code, reason, recommended_action = (
+                compute_tradability_verdict(
+                    runtime_present=runtime_present,
+                    circuit_open=circuit_open,
+                    quote_stale=quote_stale,
+                    should_block_new_trades=should_block_new_trades,
+                    last_risk_block=last_risk_block,
+                    close_only_mode=close_only_mode,
+                    auto_entry_enabled=auto_entry_enabled,
+                    current_mode=current_mode,
+                )
+            )
         return {
             "verdict": verdict,
             "reason_code": reason_code,
@@ -1462,7 +1504,10 @@ class RuntimeReadModel:
             },
             "economic_guard": {
                 "status": "warn_only",
-                "degraded": bool(account_risk.get("indicator_degraded", False) or account_risk.get("db_degraded", False)),
+                "degraded": bool(
+                    account_risk.get("indicator_degraded", False)
+                    or account_risk.get("db_degraded", False)
+                ),
             },
             "auto_entry_enabled": auto_entry_enabled,
             "close_only_mode": close_only_mode,
@@ -1470,7 +1515,9 @@ class RuntimeReadModel:
             "circuit_open": circuit_open,
         }
 
-    def recent_trade_pipeline_events_payload(self, *, limit: int = 50) -> dict[str, Any]:
+    def recent_trade_pipeline_events_payload(
+        self, *, limit: int = 50
+    ) -> dict[str, Any]:
         if self.db_writer is None or self._runtime_identity is None:
             return {"count": 0, "items": []}
         rows = list(
@@ -1545,12 +1592,18 @@ class RuntimeReadModel:
             "positions": self.position_runtime_state_payload(limit=position_limit),
             "managed_positions": {
                 "count": int(
-                    self.position_runtime_state_payload(statuses=["open"], limit=max(position_limit, 100)).get("count")
+                    self.position_runtime_state_payload(
+                        statuses=["open"], limit=max(position_limit, 100)
+                    ).get("count")
                     or 0
                 ),
             },
-            "unmanaged_live_positions": self.unmanaged_live_positions_payload(limit=position_limit),
-            "pipeline_events": self.recent_trade_pipeline_events_payload(limit=position_limit),
+            "unmanaged_live_positions": self.unmanaged_live_positions_payload(
+                limit=position_limit
+            ),
+            "pipeline_events": self.recent_trade_pipeline_events_payload(
+                limit=position_limit
+            ),
             "alerts": self.trading_state_alerts_summary(),
             "validation": {
                 "paper_trading": self.paper_trading_summary(),
@@ -1559,7 +1612,12 @@ class RuntimeReadModel:
 
     def trading_state_alerts_summary(self) -> dict[str, Any]:
         if self._trading_state_alerts is None:
-            return {"status": "unavailable", "alerts": [], "summary": [], "observed": {}}
+            return {
+                "status": "unavailable",
+                "alerts": [],
+                "summary": [],
+                "observed": {},
+            }
         return self._trading_state_alerts.summary()
 
     def dashboard_overview(self, startup_status: Mapping[str, Any]) -> dict[str, Any]:

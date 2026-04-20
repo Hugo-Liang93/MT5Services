@@ -289,6 +289,9 @@ class Supervisor:
         env = dict(os.environ)
         env["MT5_INSTANCE"] = instance_name
         env["MT5_ENVIRONMENT"] = self._group.environment
+        # P9 bug #4: child instance watchdog parent pid，supervisor 被外部 /F 强杀
+        # 时 child 自动退出释放 SQLite 锁 + 端口，避免孤儿进程持锁。
+        env["MT5_SUPERVISOR_PID"] = str(os.getpid())
         process = subprocess.Popen(
             command,
             cwd=str(_project_root()),
