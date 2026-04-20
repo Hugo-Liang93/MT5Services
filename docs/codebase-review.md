@@ -1,13 +1,48 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-04-18
+> 最近更新：2026-04-20
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
 
 ---
 
-## 0. 2026-04-11 ~ 2026-04-12 修复更新
+## 0. 2026-04-20 修复更新（P9 全套 + API 治理 4 项）
+
+本轮新增前端读侧支撑能力，**未引入任何边界泄漏**，所有跨域调用走公开端口（ADR-006 合规）。详见 [TODO.md](../TODO.md) "P9 完成快照"。
+
+**新增组件 / 公开端口**：
+
+- **WorkbenchReadModel**（`src/readmodels/workbench.py`）— 单账户执行工作台聚合读模型（10 块：execution / risk / positions / orders / pending / exposure / events / relatedObjects / marketContext / stream）。仅依赖 RuntimeReadModel 公开方法 + MarketDataService.get_quote()，不读任何 `_` 私有属性。`compute_source_kind()` 是纯函数（可被其他端点复用做 source 聚合）。每次 build() 入口 reset `_build_cache`，6 个 builder 共享 3 个底层调用（扇出减半），WorkbenchReadModel 在 `deps.py` 是 per-request 构造（无并发风险）。
+
+- **MutationActionResultBase**（`src/api/schemas.py`）— 13 字段共享基类（accepted/status/action_id/command_id/audit_id/actor/reason/idempotency_key/request_context/message/error_code/recorded_at/effective_state）。`src/api/trade_routes/view_models.py` 与 `src/api/monitoring_routes/view_models.py` 都从 schemas 导入，旧 `RuntimeActionResultView` 保留为别名向后兼容。
+
+- **AdmissionWriteback Listener**（`src/app_runtime/factories/admission_writeback.py`）— `make_skip_listener` / `make_intent_published_listener` / `multicast` 三个工厂函数。listener 在 `factories/signals.py` 通过 multicast 链入 `on_execution_skip`（不取代 SignalQualityTracker），通过 `pipeline_event_bus.add_listener()` 监听全部事件后内部按 `event.type == "intent_published"` 过滤。**listener 内部 try/except 异常隔离**——DB 写失败不影响执行链。executor 接口（`on_execution_skip(signal_id, reason)`）签名不变，**未读取 SignalRepository 私有属性**。
+
+- **FreshnessConfig**（`src/config/models/freshness.py`）— Pydantic 模型集中管理 8 块阈值。WorkbenchReadModel 接受可选 `freshness_config` 注入覆盖，未传则用 `default_freshness_config()`。`DEFAULT_FRESHNESS_HINTS` module-level 常量保留作为派生值（向后兼容旧导入）。
+
+- **SSE envelope schema 1.1**（`src/api/trade_routes/state_routes/stream.py`）— `_EVENT_METADATA` 表为 13 个事件类型注册 `(tier, entity_scope, changed_blocks)` 元数据；未知事件 fallback 到 `_PIPELINE_DEFAULT_METADATA`。`next_stream_envelope()` 加 3 个可选覆盖参数（tier / entity_scope / changed_blocks），调用方可显式覆盖默认值（用于 pipeline 透传等特殊场景）。**`state_version` 字段保留向后兼容**，新增 `snapshot_version` 与之同值。
+
+**关键边界变化**：
+
+- **signal_events 表新增 5 列**（actionability / guard_reason_code / guard_category / priority / rank_source）+ 2 索引（priority DESC NULLS LAST + actionability partial）。通过 `POST_INIT_DDL_STATEMENTS` 启动期 `ALTER TABLE IF NOT EXISTS` 自动迁移，PG 11+ instant operation 不锁表。INSERT_SQL 不变（新字段 NULL 默认），UPDATE 由独立 `UPDATE_SIGNAL_ADMISSION_SQL` 处理。**旧记录 NULL 字段 API 返回 null**，向后兼容前端。
+
+- **`/v1/positions` `/v1/orders` 标 FastAPI `deprecated=True`**（OpenAPI schema 自动告警）+ metadata 含 `deprecation` 块（successor / sunset 2026-06-01 / reason）。**端点未删除**（兼容期 1 个月），消费者可继续调用，但前端 codegen 会显示 deprecation。
+
+- **新增 `/v1/execution/workbench` 端点**——单账户聚合，9 块 contract。`account_alias` 不匹配返回 404 `ACCOUNT_NOT_FOUND`（保持单实例=单账户语义，跨账户聚合是 BFF 职责）。
+
+- **新增 `/v1/signals/diagnostics/strategy-audit` 端点**——backlog P0.3 单端点替代 4 路拼接（strategy-conflicts + outcomes/winrate + aggregate-summary + admin/performance/strategies）。
+
+**测试覆盖**：2374/2374 全套测试全过（+~100 个本轮新增）。无回归。
+
+**未决跟进**（不阻塞前端）：
+- 多账户 `contributors[]` 聚合：BFF 职责，后端不实现
+- SSE 事件缓冲 + Last-Event-ID 续传：前端有 `state_snapshot` 兜底，性价比低，留给 Phase 4+
+- `/v1/positions` `/v1/orders` 实际下线：2026-06-01 后
+
+---
+
+## 1. 2026-04-11 ~ 2026-04-12 修复更新
 
 本轮已直接处理并验证以下启动阻塞项：
 

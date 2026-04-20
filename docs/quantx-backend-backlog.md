@@ -1,8 +1,29 @@
 # QuantX 对接后端 Backlog
 
-> 更新日期：2026-04-12
+> 更新日期：2026-04-20
 > 目标：为 `QuantX` 前端交易管理控制台提供稳定、可审计、可检索、可控制的后端能力。
 > 约束：前端允许降级，但不应长期依赖 mock 近似数据替代核心审计事实。
+
+---
+
+## 0. 推荐端点选用顺序（前端必读，避免重叠困扰）
+
+按场景选 **唯一推荐端点**。重叠的旧端点已标 `deprecated=true`（OpenAPI + metadata.deprecation），保留 1 个月兼容期（2026-06-01 后下线）。
+
+| 场景 | 推荐端点 | 替代/废弃端点 | 备注 |
+|------|---------|------------|------|
+| Execution 工作台一站读 | `GET /v1/execution/workbench?account_alias=X` | — | 9 块 contract（execution/risk/positions/orders/pending/exposure/events/relatedObjects/marketContext/stream） |
+| 持仓快照 | `workbench.positions` 块 | ⚠️ `/v1/positions`（已弃用） | workbench 块带 status_counts / positions_updated_at / source_kind |
+| 挂单快照 | `workbench.orders` 块 | ⚠️ `/v1/orders`（已弃用） | 同上 |
+| 直查 MT5 实时持仓（绕过 service 缓存） | `/v1/account/positions` | — | 与上面数据视角不同，**保留**用于运维直查 |
+| 直查 MT5 实时挂单 | `/v1/account/orders` | — | 同上保留 |
+| 实时事件订阅 | `GET /v1/trade/state/stream` | — | SSE，按 envelope.changed_blocks 局部刷 workbench |
+| 历史信号查询 + admission 排序 | `GET /v1/signals/recent?sort=priority_desc&actionability=blocked` | — | actionability/guard_reason_code/priority 字段（P9 Phase 1.5） |
+| 策略级聚合诊断 | `GET /v1/signals/diagnostics/strategy-audit` | ⚠️ 拼接 `/strategy-conflicts` + `/outcomes/winrate` + `/aggregate-summary`（旧做法） | P0.3 单端点交付（2026-04-20） |
+| Trace 详情抽屉 | `GET /v1/trade/trace/{signal_id}` | — | TradeTraceView 含 timeline / facts / related_signals / related_trade_audits / related_pipeline_events |
+| Mutation 已提交回显 | 任意 mutation 端点（统一 `MutationActionResultBase` 字段） | — | accepted/status/action_id/audit_id/effective_state... 共 13 字段 |
+
+---
 
 ---
 
@@ -177,7 +198,17 @@
 
 ---
 
-### P0.3 策略审计聚合接口
+### P0.3 策略审计聚合接口 — ✅ 已交付（2026-04-20）
+
+**端点**：`GET /v1/signals/diagnostics/strategy-audit`
+- 参数：`symbol / timeframe / strategy / scope / hours / limit / *_warn_threshold`
+- 返回字段（每策略）：`strategy / category / signals / actionable_signals / hold_count / blocked_count / conflict_count / hold_rate / blocked_rate / conflict_rate / avg_confidence / win_rate / last_signal_at / recent_issue / status / warnings`
+- 实现：[src/signals/analytics/diagnostics.py](src/signals/analytics/diagnostics.py) `build_strategy_audit_report()`
+- 测试：14 单元测试 + 3 路由测试
+
+---
+
+### P0.3 策略审计聚合接口（历史描述）
 
 #### 当前已有
 
@@ -253,7 +284,18 @@
 
 > 目标：让执行控制页不是“发命令按钮集合”，而是安全的操作台。
 
-### P1.1 统一危险操作返回模型
+### P1.1 统一危险操作返回模型 — ✅ 已交付（2026-04-20）
+
+**基类**：[src/api/schemas.py](src/api/schemas.py) `MutationActionResultBase`（13 字段）
+- 字段：`accepted / status / action_id / command_id / audit_id / actor / reason / idempotency_key / request_context / message / error_code / recorded_at / effective_state`
+- 子类按需追加领域字段（如 `TradeControlUpdateView` 加 `trade_control` + `executor`；`RuntimeModeUpdateView` 加 `runtime_mode` + `trading_state`）
+- 跨域统一：trade_routes / monitoring_routes 都从 schemas 导入，不再两份定义
+
+**前端建议**：写一套通用 mutation handler 解析 13 字段；按 `error_code` 决定 toast/重试。
+
+---
+
+### P1.1 历史描述
 
 #### 适用接口
 
@@ -324,7 +366,24 @@
 
 ---
 
-### P1.3 Trace 详情字段标准化
+### P1.3 Trace 详情字段标准化 — ✅ 已交付
+
+**端点**：`GET /v1/trade/trace/{signal_id}` / `GET /v1/trade/trace/by-trace/{trace_id}`
+
+返回 [src/api/trade_routes/view_models.py](src/api/trade_routes/view_models.py) `TradeTraceView`，含：
+- `signal_id / trace_id / found`
+- `identifiers`（signal_ids / request_ids / trace_ids / operation_ids / order_tickets / position_tickets 索引）
+- `summary`（stages / pipeline_event_counts / command_counts / pending_status_counts / position_status_counts / admission）
+- `timeline[]`（按时间序的 stage 事件）
+- `graph`（nodes + edges 的关联图）
+- `facts`（聚合事实）
+- `related_signals` / `related_trade_audits[]` / `related_pipeline_events[]`
+
+前端一次请求拿全 trace 上下文，无需多端点拼接。
+
+---
+
+### P1.3 历史描述
 
 #### 当前问题
 

@@ -33,6 +33,7 @@
 | signals 运行时链路、状态流转、可观测性 | `docs/design/signals-dataflow-overview.md` |
 | intrabar 支链 | `docs/design/intrabar-data-flow.md` |
 | QuantX 执行页实时流与轮询优化 | `docs/design/quantx-trade-state-stream.md` |
+| QuantX 数据时效性分级与推送通道契约 | `docs/design/quantx-data-freshness-tiering.md` |
 | 策略开发规范、regime、单策略契约、TF 参数 | `docs/signal-system.md` |
 | 审计规则、生命周期、私有属性边界 | `docs/design/adr.md` |
 | signals / indicators / trading 模块化风险 | `docs/design/modular-audit-signals-indicators-trading.md` |
@@ -53,7 +54,7 @@
 
 | 类别 | 文档 | 约束 |
 |------|------|------|
-| 当前实现真相 | `architecture.md`、`codebase-review.md`、`design/full-runtime-dataflow.md`、`design/signals-dataflow-overview.md`、`design/intrabar-data-flow.md`、`design/entrypoint-map.md`、`design/quantx-trade-state-stream.md` | 用于判断当前代码与真实启动状态；涉及运行时结论必须与代码和验证结果一致 |
+| 当前实现真相 | `architecture.md`、`codebase-review.md`、`design/full-runtime-dataflow.md`、`design/signals-dataflow-overview.md`、`design/intrabar-data-flow.md`、`design/entrypoint-map.md`、`design/quantx-trade-state-stream.md`、`design/quantx-data-freshness-tiering.md` | 用于判断当前代码与真实启动状态；涉及运行时结论必须与代码和验证结果一致 |
 | 运维 Runbook | `runbooks/system-startup-and-live-canary.md` | 用于执行启动前检查、启动后巡检和开盘 canary，不重复定义新的事实源 |
 | 审计与治理 | `design/adr.md`、`design/modular-audit-signals-indicators-trading.md`、`design/high-risk-remediation-milestones.md` | 用于说明约束、边界、整改顺序，不承担运行时状态播报 |
 | 领域设计参考 | `signal-system.md` | 用于说明模块内部设计、策略接口、参数语义；不负责启动排障 |

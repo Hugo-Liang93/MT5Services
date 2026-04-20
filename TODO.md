@@ -6,6 +6,38 @@
 
 ## 📍 2026-04-20 状态快照（新 session 先读此节）
 
+### P9 完成快照（前端 API 全套交付）
+
+QuantX 前端读侧支撑 P9 全部 5 个 Phase + API 治理 4 项已交付。**2374/2374 测试全过**。
+
+**新增文件**（完整清单）：
+- `src/readmodels/workbench.py` — WorkbenchReadModel（10 块组装）+ `compute_source_kind`
+- `src/api/execution.py` + `src/api/execution_routes/workbench.py` — `GET /v1/execution/workbench` 端点
+- `src/app_runtime/factories/admission_writeback.py` — admission writeback listener（multicast / skip / intent_published）
+- `src/config/models/freshness.py` — `FreshnessConfig` Pydantic
+- `docs/design/quantx-data-freshness-tiering.md` — 5 级 Tier 契约文档（前端必读）
+
+**关键扩展**：
+- `src/persistence/schema/signals.py` — `MIGRATION_SQL`（5 ALTER COLUMN + 2 INDEX）+ `UPDATE_ADMISSION_SQL`
+- `src/readmodels/runtime.py` — `compute_tradability_verdict()` + tradability 加 verdict/reason_code/recommended_action/source_kind/tier
+- `src/api/trade_routes/state_routes/stream.py` — SSE envelope schema 1.1（`_EVENT_METADATA` + tier/entity_scope/changed_blocks/snapshot_version）
+- `src/api/schemas.py` — `MutationActionResultBase`（13 字段共享） + `WorkbenchPayload`
+- `src/signals/analytics/diagnostics.py` — `build_strategy_audit_report()`（backlog P0.3）
+
+**前端可立即对接**（按 [docs/quantx-backend-backlog.md](docs/quantx-backend-backlog.md) §0 表）：
+1. 工作台读口：`GET /v1/execution/workbench?account_alias=X`
+2. 实时事件：`GET /v1/trade/state/stream`（按 envelope.changed_blocks 局部刷新）
+3. 信号查询：`GET /v1/signals/recent?sort=priority_desc&actionability=blocked`
+4. 策略诊断：`GET /v1/signals/diagnostics/strategy-audit`
+5. Trace 详情：`GET /v1/trade/trace/{signal_id}`
+6. Mutation 回显：13 字段统一基类（accepted/action_id/audit_id/...）
+
+**部署提示**：实例启动会自动跑 `ALTER TABLE signal_events ADD COLUMN IF NOT EXISTS`（PG 11+ instant op，不锁表）。无停机维护窗口需求。
+
+**下一步建议**：本节"接下来"区域已说明——回主线 P1 Paper Trading 数据积累，**不再做后端 API 工程**。
+
+---
+
 ### 本日产出
 
 三 TF baseline 回归（P7 delta 修复后）：
@@ -43,6 +75,115 @@
 - [ ] 方案 C：在 `strategy_deployment.<name>` 合同里加 `visible_in_backtest: bool = true`，`false` 的策略默认跳过
 
 **前置**：次优先级。H1 baseline 已不受影响（price_action 只绑 M15/M30），生产决策不依赖 M30 数据。
+
+#### P9：QuantX 前端读侧实时性支撑 — ✅ 全部完成（2026-04-20）
+
+**交付概览**：5 个 Phase 全部完成（1.4 tradability native / 1.1-1.3 workbench 9 块 / 1.5 admission writeback / 2.1 SSE envelope schema 1.1 / 2.3 source 聚合 / 3.1 扇出收敛 / 3.2 freshness 配置化）+ API 治理 4 项（strategy-audit 聚合 / mutation 基类统一 / 重叠端点 deprecated / 文档同步）。**2374/2374 测试全过**。
+
+详情见末尾 §"2026-04-20 P9 完成快照"。下面保留原 backlog 描述作为历史参考。
+
+---
+
+**背景**：当前 QuantX 前端已重构为 `Cockpit / Accounts / Trades / Execution` 工作台，但后端对实时性、freshness 和原生读模型的支撑仍不完整。现状可以支撑 15s 级轮询展示，但不足以支撑“高可信盘中主控”。
+
+**目标**：先补齐前端最缺的原生 contract，让前端不再把 BFF 组包时间误当成源数据时间，也不再长期依赖启发式 derived 结论。
+
+**契约文档**：
+- `docs/design/quantx-data-freshness-tiering.md`（2026-04-20 新增）— 数据 5 级时效性分级（T0-T4）+ 推送通道矩阵 + 工作台映射 + 降级矩阵 + 调用频率预算。本节所有任务的优先级和实现选型必须对照该文档执行。
+- `docs/design/quantx-trade-state-stream.md` — SSE 通道协议
+- `docs/quantx-backend-backlog.md` — 跨仓 backlog 总览
+
+**P0：先补前端最缺的 contract**
+
+- [ ] 新增单账户聚合读口：`GET /api/execution/workbench?account_alias=...`
+  目标：让前端单账户执行页从多路细碎查询切到单一 read model。
+  最低返回块：
+  - `execution`
+  - `risk`
+  - `positions`
+  - `orders`
+  - `exposure`
+  - `events`
+  - `relatedObjects`
+  - `marketContext`
+  - `stream`
+
+- [ ] 为关键读口补原生 freshness 字段，而不是只返回 BFF 组包时间
+  需要的时间字段至少包括：
+  - `state_updated_at`
+  - `positions_updated_at`
+  - `orders_updated_at`
+  - `quote_updated_at`
+  - `decision_generated_at`
+  - `source_observed_at`
+
+- [ ] 为 `tradeability / anomaly / recommended_action` 提供原生字段
+  当前前端很多结论仍是 derived。
+  需要补齐：
+  - `verdict`
+  - `reason_code`
+  - `reason`
+  - `recommended_action`
+  - `source_kind`（`native` / `derived`）
+
+- [ ] 为 `actionable signals` 提供 guard-aware 原生排序结果
+  前端当前只能根据账户状态和市场护栏做启发式降级。
+  需要后端明确返回：
+  - `actionability`
+  - `guard_reason_code`
+  - `priority`
+  - `rank_source`
+
+**P1：补齐高价值解释能力**
+
+- [ ] 为 `exposure hotspots` 补跨账户贡献映射
+  不只告诉前端哪个 symbol 暴露高，还要能回答“主要由哪些账户贡献”。
+  最低需要：
+  - `symbol`
+  - `direction`
+  - `gross_exposure`
+  - `contributors[]`
+  - `contributors[].account_alias`
+  - `contributors[].weight`
+
+- [ ] 为 SSE 明确事件类型与失效语义
+  当前前端只能把 message 当成“有变化，全部刷新”。
+  需要后端补清楚：
+  - `event_type`
+  - `account_alias`
+  - `entity_scope`
+  - `changed_blocks[]`
+  - `event_ts`
+  - `snapshot_version`
+
+- [ ] 给 `Cockpit / Accounts / Trades` 的 workbench 面板统一 `source` 语义
+  需要稳定区分：
+  - `live`
+  - `hybrid`
+  - `mock`
+  - `fallback_applied`
+  - `fallback_reason`
+
+**P2：收敛后端扇出与阈值语义**
+
+- [ ] 合并重复的账户执行态构建链路
+  当前多个 execution 相关 route 会重复构建同一账户上下文，导致一个刷新周期内后端扇出过多。
+  目标：
+  - 单次请求内复用同一账户快照
+  - 避免 `positions / orders / exposure / events / relatedObjects` 各自重复向上游取数
+
+- [ ] 为前端补可见性友好的 freshness 阈值建议
+  例如：
+  - `stale_after_seconds`
+  - `warn_after_seconds`
+  这样前端不需要自己硬编码所有陈旧阈值
+
+**协作边界**：
+- 前端只负责 UI 和 query 协调层改造，不在 QuantX 仓库内实现这些后端 contract。
+- 后端 contract 到位前，前端会继续显式展示：
+  - `derived/native`
+  - `freshness` 或“freshness 未提供”
+  - `degraded/mock/hybrid`
 
 ---
 
