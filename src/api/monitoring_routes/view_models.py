@@ -81,9 +81,6 @@ class RuntimeTasksView(BaseModel):
 
 from src.api.schemas import MutationActionResultBase
 
-# 历史名称保留（非破坏性别名，旧导入仍可用）
-RuntimeActionResultView = MutationActionResultBase
-
 
 class PendingEntryCancellationView(MutationActionResultBase):
     cancelled: bool
