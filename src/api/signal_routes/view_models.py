@@ -63,19 +63,30 @@ class StrategyWinrateView(FlexibleSignalView):
 
 
 class StrategyAuditEntryView(FlexibleSignalView):
-    """单个策略的 admission/conflict/winrate 聚合（backlog P0.3）。"""
+    """单个策略的 admission/conflict/winrate 聚合（backlog P0.3）。
+
+    **重要语义**（参考 docs/signal-system.md 'Signal 持久化语义'）：
+    计数字段（signals/hold_count/blocked_count/...）基于 signal_events 表，
+    该表只记录 state-transition signal（状态发生变化的 bar），不是每 bar 的评估。
+    因此绝对值低估总评估次数，但各比例字段（hold_rate/blocked_rate/conflict_rate）
+    反映**策略对新入场机会的决策分布**，是准确的。
+    win_rate 来自 signal_outcomes 表，独立于该过滤，反映真实预测力。
+    """
 
     strategy: str
     category: Optional[str] = None
+    # state-transition signal 数（首次 buy/sell 或方向翻转），不是评估总次数
     signals: int = 0
     actionable_signals: int = 0
     hold_count: int = 0
     blocked_count: int = 0
     conflict_count: int = 0
+    # 比例字段，反映新入场机会的决策分布（准确）
     hold_rate: float = 0.0
     blocked_rate: float = 0.0
     conflict_rate: float = 0.0
     avg_confidence: float = 0.0
+    # win_rate 来自 signal_outcomes（N-bar 后实际价差），不受 state-transition 过滤影响
     win_rate: Optional[float] = None
     last_signal_at: Optional[str] = None
     recent_issue: Optional[str] = None

@@ -90,6 +90,21 @@ def signal_diagnostics_aggregate_summary(
     "/diagnostics/strategy-audit",
     response_model=ApiResponse[StrategyAuditView],
     summary="Per-strategy admission/conflict/winrate 聚合（backlog P0.3）",
+    description=(
+        "按策略聚合 signal / actionable / hold / blocked / conflict 计数。\n\n"
+        "**重要字段语义**（参考 docs/signal-system.md 'Signal 持久化语义'）：\n\n"
+        "- `signals`：**state-transition signal 数**，不是"
+        "评估总次数。signal_events 表只记录信号状态发生变化的 bar（如 hold→buy、"
+        "buy→hold、首次触发），状态不变的连续同向 signal 不持久化。"
+        "因此本字段反映**新入场机会数**，而非策略被评估的总 bar 数。\n"
+        "- `actionable_signals / hold_count / blocked_count / conflict_count`：均"
+        "基于同一 state-transition 基数，比例关系（hold_rate / blocked_rate 等）"
+        "**是准确的**；绝对值低估总评估次数但准确反映决策分布。\n"
+        "- `win_rate`：来自 signal_outcomes 表（N-bar 后实际 price change），"
+        "独立于 signal_events 过滤，**反映真实预测力**。\n"
+        "- `status`：warn 当 hold_rate ≥ 75% / blocked_rate ≥ 50% / conflict_rate ≥ 35% / "
+        "avg_confidence ≤ 45% 任一触发。"
+    ),
 )
 def signal_strategy_audit(
     symbol: Optional[str] = Query(default=None),

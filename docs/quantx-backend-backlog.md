@@ -208,6 +208,15 @@
 - 实现：[src/signals/analytics/diagnostics.py](src/signals/analytics/diagnostics.py) `build_strategy_audit_report()`
 - 测试：14 单元测试 + 3 路由测试
 
+**⚠️ 前端必读：字段语义**（基于 signal_events 表的 state-transition 过滤）：
+- **`signals` 字段含义**：state-transition signal 数（状态变化的 bar，如 hold→buy、方向翻转），**不是策略评估总次数**。signal_events 表只记录状态切换点，连续同向信号不持久化。
+- **绝对值低估**：`signals / actionable_signals / hold_count / blocked_count / conflict_count` 都是"入场机会数"口径，比真实评估总次数少。
+- **比例值准确**：`hold_rate / blocked_rate / conflict_rate` 是准确的策略决策分布。
+- **win_rate 不受影响**：来自 signal_outcomes 表，独立统计。
+- **不要**用 signals 字段估算信号频率或策略活跃度。要看活跃度用 `paper_trade_outcomes` 表的 entry_time 分布。
+
+详细语义：[docs/signal-system.md §2.4 "Signal 持久化语义"](../docs/signal-system.md#24-signal-持久化语义重要--影响下游消费者计数)。
+
 ---
 
 ### P0.3 策略审计聚合接口（历史描述）

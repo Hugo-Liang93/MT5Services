@@ -110,6 +110,52 @@ SignalRuntime._on_snapshot(symbol, timeframe, bar_time, indicators, scope)
                               达标后发布 intrabar_armed 可交易信号
 ```
 
+### 2.4 Signal 持久化语义（重要 — 影响下游消费者计数）
+
+**核心规则**：`signal_events` 表**只记录 state-transition signal**（信号状态发生变化的 bar），**不是每 bar 的评估**。
+
+**触发持久化的条件**（[runtime_evaluator.py:595](../src/signals/orchestration/runtime_evaluator.py#L595)）：
+
+```python
+if transition_metadata.get(MK.STATE_CHANGED, True):
+    record = runtime.service.persist_decision(...)  # 写 signal_events
+    signal_id = record.signal_id
+elif is_actionable:
+    signal_id = uuid4().hex[:12]  # 状态未变但 actionable → 新 signal_id 但不写 DB
+```
+
+**典型场景**：
+- bar_1: hold → bar_2: **confirmed_buy**（state 变化）→ **写入 signal_events**，signal_id=X
+- bar_3: confirmed_buy（连续同向，state 不变）→ 生成新 signal_id=Y 但**不写入 signal_events**
+- bar_4: confirmed_buy（连续同向）→ 生成新 signal_id=Z **不写入**
+- bar_5: **hold**（方向翻转）→ **写入**，signal_id=W
+
+**为什么这样设计**：避免 signal_events 表被"同一趋势的连续同向信号"刷爆。state-transition 才代表新的决策边界。
+
+**对下游消费者的影响**：
+
+| 消费者 | 影响 | 原因 |
+|-------|------|------|
+| `paper_trade_outcomes` | **无影响** | Paper bridge 每 bar 试开仓，独立写表，带完整 signal_id |
+| `trade_outcomes` / `auto_executions` | **无影响** | Executor 产生 intent 后独立持久化 |
+| `signal_outcomes` (N-bar 预测力) | **无影响** | 只对 persist 的 signal 做 outcome 评估，样本少但质量对 |
+| 策略胜率 / PnL / Sharpe | **无影响** | 基于 trade_outcomes（实际交易），不读 signal_events |
+| Risk / admission 11 层决策 | **无影响** | 运行时内存判断，不依赖 signal_events |
+| `/v1/signals/recent` 列表 | **计数偏少** | 只看到 state-transition 信号，反映"入场机会" |
+| `/v1/signals/summary` 聚合 | **计数偏少** | 同上 |
+| `/v1/signals/diagnostics/strategy-audit` | **signals 字段偏少** | 比例（hold_rate/blocked_rate）准确，绝对值是入场机会数 |
+| admission writeback | **state-transition signal 100% 覆盖** | repeat signal 无 PG 记录 → `update_admission_result` 跳过（返回 False） |
+| `/v1/trade/trace/{signal_id}` | **repeat signal 无记录 → 返回空** | paper bridge 的连续 buy signal_id 在 PG 查不到 |
+
+**何时要修**（未来触发条件）：
+- 前端 trace 断点影响审计（repeat signal 溯源失败率 > 10%）
+- admission writeback 覆盖率低（`actionability IS NOT NULL` 的 signal 比例 < 50%）
+- strategy-audit 误导运营决策（基于 signals 字段做错误判断）
+
+**修复选项**（若要改）：
+- 无条件 `persist_decision`：行数 ×5-10，淡化入场点
+- paper bridge 兜底 INSERT：跨表 race + 边界污染
+
 ---
 
 ## 3. 策略开发规范
