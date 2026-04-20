@@ -576,6 +576,201 @@ LIMIT %s
             [signal_id, max(1, int(limit))],
         )
 
+    def query_trade_outcomes_page(
+        self,
+        *,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        direction: Optional[str] = None,
+        won: Optional[bool] = None,
+        from_time: Optional[Any] = None,
+        to_time: Optional[Any] = None,
+        page: int = 1,
+        page_size: int = 100,
+        sort: str = "recorded_at_desc",
+    ) -> dict[str, Any]:
+        """P10.3: trades/workbench 列表数据源——分页 + 过滤聚合。"""
+        sort_token = str(sort or "recorded_at_desc").strip().lower()
+        sort_direction = "ASC" if sort_token in {"recorded_at_asc", "asc"} else "DESC"
+        effective_page = max(1, int(page))
+        effective_page_size = max(1, int(page_size))
+        offset = (effective_page - 1) * effective_page_size
+
+        sql = """
+SELECT recorded_at,
+       signal_id,
+       symbol,
+       timeframe,
+       strategy,
+       direction,
+       confidence,
+       account_key,
+       account_alias,
+       intent_id,
+       fill_price,
+       close_price,
+       price_change,
+       won,
+       regime,
+       metadata,
+       COUNT(*) OVER() AS total_count
+FROM trade_outcomes
+WHERE 1=1
+"""
+        params: list[Any] = []
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        if symbol is not None:
+            sql += " AND symbol = %s"
+            params.append(symbol)
+        if timeframe is not None:
+            sql += " AND timeframe = %s"
+            params.append(timeframe)
+        if strategy is not None:
+            sql += " AND strategy = %s"
+            params.append(strategy)
+        if direction is not None:
+            sql += " AND direction = %s"
+            params.append(direction)
+        if won is not None:
+            sql += " AND won = %s"
+            params.append(bool(won))
+        if from_time is not None:
+            sql += " AND recorded_at >= %s"
+            params.append(from_time)
+        if to_time is not None:
+            sql += " AND recorded_at <= %s"
+            params.append(to_time)
+        sql += (
+            f" ORDER BY recorded_at {sort_direction}, signal_id {sort_direction} "
+            "LIMIT %s OFFSET %s"
+        )
+        params.extend([effective_page_size, offset])
+
+        rows = self._fetch_dict_rows(sql, params)
+        total = int(rows[0].get("total_count") or 0) if rows else 0
+        items = [self._normalize_trade_outcome_row(row) for row in rows]
+        return {
+            "items": items,
+            "total": total,
+            "page": effective_page,
+            "page_size": effective_page_size,
+        }
+
+    def fetch_trade_outcomes_summary(
+        self,
+        *,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy: Optional[str] = None,
+        direction: Optional[str] = None,
+        from_time: Optional[Any] = None,
+        to_time: Optional[Any] = None,
+    ) -> dict[str, Any]:
+        """trades/workbench summary 聚合：total/win/loss/win_rate/gross_pnl."""
+        sql = """
+SELECT COUNT(*) AS total_count,
+       SUM(CASE WHEN won = TRUE THEN 1 ELSE 0 END) AS win_count,
+       SUM(CASE WHEN won = FALSE THEN 1 ELSE 0 END) AS loss_count,
+       COALESCE(SUM(price_change), 0.0) AS gross_price_change,
+       COALESCE(AVG(price_change), 0.0) AS avg_price_change,
+       MAX(recorded_at) AS last_recorded_at
+FROM trade_outcomes
+WHERE 1=1
+"""
+        params: list[Any] = []
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        if symbol is not None:
+            sql += " AND symbol = %s"
+            params.append(symbol)
+        if timeframe is not None:
+            sql += " AND timeframe = %s"
+            params.append(timeframe)
+        if strategy is not None:
+            sql += " AND strategy = %s"
+            params.append(strategy)
+        if direction is not None:
+            sql += " AND direction = %s"
+            params.append(direction)
+        if from_time is not None:
+            sql += " AND recorded_at >= %s"
+            params.append(from_time)
+        if to_time is not None:
+            sql += " AND recorded_at <= %s"
+            params.append(to_time)
+        rows = self._fetch_dict_rows(sql, params)
+        row = rows[0] if rows else {}
+        total = int(row.get("total_count") or 0)
+        wins = int(row.get("win_count") or 0)
+        losses = int(row.get("loss_count") or 0)
+        decided = wins + losses
+        last_recorded_at = row.get("last_recorded_at")
+        return {
+            "total_count": total,
+            "win_count": wins,
+            "loss_count": losses,
+            "win_rate": (wins / decided) if decided > 0 else None,
+            "gross_price_change": float(row.get("gross_price_change") or 0.0),
+            "avg_price_change": float(row.get("avg_price_change") or 0.0),
+            "last_recorded_at": (
+                last_recorded_at.isoformat()
+                if hasattr(last_recorded_at, "isoformat")
+                else last_recorded_at
+            ),
+        }
+
+    @staticmethod
+    def _normalize_trade_outcome_row(row: dict[str, Any]) -> dict[str, Any]:
+        recorded_at = row.get("recorded_at")
+        return {
+            "recorded_at": (
+                recorded_at.isoformat()
+                if hasattr(recorded_at, "isoformat")
+                else recorded_at
+            ),
+            "signal_id": row.get("signal_id"),
+            "symbol": row.get("symbol"),
+            "timeframe": row.get("timeframe"),
+            "strategy": row.get("strategy"),
+            "direction": row.get("direction"),
+            "confidence": (
+                float(row["confidence"]) if row.get("confidence") is not None else None
+            ),
+            "account_key": row.get("account_key"),
+            "account_alias": row.get("account_alias"),
+            "intent_id": row.get("intent_id"),
+            "fill_price": (
+                float(row["fill_price"]) if row.get("fill_price") is not None else None
+            ),
+            "close_price": (
+                float(row["close_price"])
+                if row.get("close_price") is not None
+                else None
+            ),
+            "price_change": (
+                float(row["price_change"])
+                if row.get("price_change") is not None
+                else None
+            ),
+            "won": row.get("won"),
+            "regime": row.get("regime"),
+            "metadata": row.get("metadata") or {},
+        }
+
     def _fetch_dict_rows(self, sql: str, params: list[Any]) -> List[dict[str, Any]]:
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)

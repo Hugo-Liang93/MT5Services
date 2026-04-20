@@ -402,8 +402,16 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 |------|------|
 | 交易命令路由（直接/操作员/信号） | `src/api/trade_routes/command_routes/` (direct/operator/signal) |
 | 交易状态路由（概览/列表/审计/流） | `src/api/trade_routes/state_routes/` (overview/lists/audit/stream) |
+| Trades workbench + detail（P10.3） | `src/api/trade_routes/trades_workbench.py` |
+| Execution workbench 单账户读端点（P9） | `src/api/execution_routes/workbench.py` |
+| Cockpit 跨账户总控台（P10.1） | `src/api/cockpit_routes/overview.py` |
+| Intel 行动队列（P10.2） | `src/api/intel_routes/action_queue.py` |
+| Lab impact 贯通读端点（P10.5） | `src/api/lab_routes/impact.py` |
 | Action 契约（API 公共请求/响应模型） | `src/api/action_contracts.py` |
 | ReadModels（运行时/交易追踪/管道审计） | `src/readmodels/runtime.py` / `trade_trace.py` / `pipeline_gate_audit.py` |
+| ReadModels（Workbench 单账户 / Cockpit 跨账户 / Intel 行动队列） | `src/readmodels/workbench.py` / `cockpit.py` / `intel.py` |
+| ReadModels（Trades 列表+detail / Lab impact） | `src/readmodels/trades_workbench.py` / `lab_impact.py` |
+| ReadModels 公用 freshness helper | `src/readmodels/freshness.py` |
 
 ---
 
@@ -624,6 +632,7 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 | `docs/design/intrabar-data-flow.md` | Intrabar 支链：子 TF→父 TF 合成、trigger 配置、coordinator 判定 | 修改 intrabar 链路时 |
 | `docs/design/entrypoint-map.md` | 统一启动入口映射：web/instance/supervisor、MT5 session gate | 修改启动流程时 |
 | `docs/design/quantx-trade-state-stream.md` | QuantX 前端交易态 SSE 流设计：12 种事件类型、分阶段落地 | 开发前端对接时 |
+| `docs/design/quantx-canonical-ia.md` | P10 canonical IA 闭环：7 个新端点契约、职责边界、跨账户聚合、公用 helper | 修改任意 canonical 读模型时 |
 
 ### 运维 Runbook
 

@@ -179,6 +179,54 @@ class TradeCommandAuditView(FlexibleModel):
     pass
 
 
+class TradesWorkbenchRecordView(FlexibleModel):
+    """P10.3: trades/workbench 单笔交易摘要。"""
+
+    trade_id: Optional[str] = None
+    signal_id: Optional[str] = None
+    recorded_at: Optional[str] = None
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+    strategy: Optional[str] = None
+    direction: Optional[str] = None
+    confidence: Optional[float] = None
+    account_alias: Optional[str] = None
+    fill_price: Optional[float] = None
+    close_price: Optional[float] = None
+    price_change: Optional[float] = None
+    pnl_percent: Optional[float] = None
+    won: Optional[bool] = None
+
+
+class TradesWorkbenchView(FlexibleModel):
+    """P10.3: trades/workbench canonical payload。"""
+
+    account_alias: Optional[str] = None
+    observed_at: Optional[str] = None
+    records: list[TradesWorkbenchRecordView] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    pagination: dict[str, Any] = Field(default_factory=dict)
+    freshness: dict[str, Any] = Field(default_factory=dict)
+
+
+class TradeDetailView(FlexibleModel):
+    """P10.3: trade detail 6 维视图。"""
+
+    trade_id: Optional[str] = None
+    signal_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    observed_at: Optional[str] = None
+    identifiers: dict[str, Any] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    plan_vs_live: dict[str, Any] = Field(default_factory=dict)
+    lifecycle: dict[str, Any] = Field(default_factory=dict)
+    risk_review: dict[str, Any] = Field(default_factory=dict)
+    receipts: dict[str, Any] = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    linked_account_state: dict[str, Any] = Field(default_factory=dict)
+    freshness: dict[str, Any] = Field(default_factory=dict)
+
+
 from src.api.schemas import MutationActionResultBase
 
 

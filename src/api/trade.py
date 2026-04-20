@@ -7,6 +7,7 @@ from .trade_routes import (
     runtime_router,
     state_router,
     trace_router,
+    trades_workbench_router,
 )
 from .trade_routes.commands import (
     cancel_orders,
@@ -32,6 +33,7 @@ from .trade_routes.state import (
     positions,
     get_sl_tp_history,
     trade_active_pending_state_list,
+    trade_command_audit_detail,
     trade_command_audits,
     trade_control_status,
     trade_daily_summary,
@@ -46,12 +48,14 @@ from .trade_routes.state import (
     trading_accounts,
 )
 from .trade_routes.trace import trade_trace_by_signal_id, trade_trace_by_trace_id, trade_traces
+from .trade_routes.trades_workbench import trade_detail, trades_workbench
 
 router = APIRouter(tags=["trade"])
 router.include_router(commands_router)
 router.include_router(runtime_router)
 router.include_router(state_router)
 router.include_router(trace_router)
+router.include_router(trades_workbench_router)
 
 __all__ = [
     "cancel_orders",
@@ -70,6 +74,7 @@ __all__ = [
     "trade_active_pending_state_list",
     "trade_batch",
     "trade_closeout_exposure",
+    "trade_command_audit_detail",
     "trade_command_audits",
     "trade_control_status",
     "trade_control_update",
@@ -88,8 +93,11 @@ __all__ = [
     "trade_state_closeout_summary",
     "trade_state_stream",
     "trade_state_summary",
+    "trade_detail",
     "trade_trace_by_signal_id",
     "trade_trace_by_trace_id",
     "trade_traces",
+    "trades_workbench",
+    "trades_workbench_router",
     "trading_accounts",
 ]

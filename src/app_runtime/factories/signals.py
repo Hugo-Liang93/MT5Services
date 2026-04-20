@@ -674,6 +674,8 @@ def build_signal_components(
 
     # ── 应用配置化参数覆盖 ────────────────────────────────────────────
     _apply_strategy_config_overrides(signal_module, signal_config)
+    # P10.2: 注入 account_bindings 供 Intel/Cockpit 读模型反向索引使用
+    signal_module.set_account_bindings(signal_config.account_bindings)
     validated_deployments = _validate_strategy_deployment_contracts(
         signal_config,
         signal_module.strategies,

@@ -177,6 +177,9 @@ class TradeCommandAuditService:
         signal_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         actor: Optional[str] = None,
+        audit_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
         from_time: Optional[datetime] = None,
         to_time: Optional[datetime] = None,
         page: int = 1,
@@ -199,12 +202,34 @@ class TradeCommandAuditService:
             signal_id=signal_id,
             trace_id=trace_id,
             actor=actor,
+            audit_id=audit_id,
+            action_id=action_id,
+            idempotency_key=idempotency_key,
             from_time=from_time,
             to_time=to_time,
             page=page,
             page_size=page_size,
             sort=sort,
         )
+
+    def command_audit_detail(
+        self,
+        *,
+        audit_id: str,
+    ) -> Optional[dict[str, Any]]:
+        """单条 audit 详情 + linked operator_command（回执可反查）。"""
+        if self._db_writer is None:
+            return None
+        audit = self._db_writer.fetch_trade_command_audit_by_id(
+            audit_id=audit_id,
+            account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
+        )
+        if audit is None:
+            return None
+        linked = self._db_writer.fetch_linked_operator_command(audit_id=audit_id)
+        audit["linked_operator_command"] = linked
+        return audit
 
     def summarize_operations(self, *, hours: int = 24) -> list[dict[str, Any]]:
         if self._db_writer is None:

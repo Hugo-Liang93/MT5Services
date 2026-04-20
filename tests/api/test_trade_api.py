@@ -39,6 +39,7 @@ from src.api.trade import (
     trade_active_pending_state_list,
     trade_batch,
     trade_closeout_exposure,
+    trade_command_audit_detail,
     trade_command_audits,
     trade_control_status,
     trade_control_update,
@@ -1510,6 +1511,111 @@ def test_trade_command_audits_endpoint_exposes_pagination_filters() -> None:
     assert response.metadata["page_size"] == 25
     assert response.metadata["total"] == 9
     assert response.metadata["trace_id"] == "trace_1"
+
+
+class _AuditReceiptLookupService(_DispatchService):
+    """P10.4: 验证 audit_id / action_id / idempotency_key 透传 + detail 调用。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.page_kwargs: dict | None = None
+        self.detail_audit_id: str | None = None
+
+    def command_audit_page(self, **kwargs):
+        self.page_kwargs = kwargs
+        return {
+            "items": [
+                {
+                    "recorded_at": "2026-04-20T12:00:00+00:00",
+                    "operation_id": "op_42",
+                    "audit_id": "op_42",
+                    "command_type": "set_trade_control",
+                    "status": "success",
+                    "action_id": kwargs.get("action_id") or "act_42",
+                    "idempotency_key": kwargs.get("idempotency_key") or "idem_42",
+                }
+            ],
+            "total": 1,
+            "page": kwargs.get("page") or 1,
+            "page_size": kwargs.get("page_size") or 100,
+        }
+
+    def command_audit_detail(self, *, audit_id: str):
+        self.detail_audit_id = audit_id
+        if audit_id == "missing":
+            return None
+        return {
+            "recorded_at": "2026-04-20T12:00:00+00:00",
+            "operation_id": audit_id,
+            "audit_id": audit_id,
+            "command_type": "set_trade_control",
+            "status": "success",
+            "action_id": "act_42",
+            "idempotency_key": "idem_42",
+            "reason": "after_hours",
+            "linked_operator_command": {
+                "command_id": "cmd_42",
+                "status": "completed",
+                "action_id": "act_42",
+                "idempotency_key": "idem_42",
+                "reason": "after_hours",
+                "attempt_count": 1,
+                "audit_id": audit_id,
+            },
+        }
+
+
+def test_trade_command_audits_endpoint_passes_receipt_filters() -> None:
+    service = _AuditReceiptLookupService()
+
+    response = trade_command_audits(
+        audit_id="op_42",
+        action_id="act_42",
+        idempotency_key="idem_42",
+        service=service,
+    )
+
+    assert response.success is True
+    assert service.page_kwargs is not None
+    assert service.page_kwargs["audit_id"] == "op_42"
+    assert service.page_kwargs["action_id"] == "act_42"
+    assert service.page_kwargs["idempotency_key"] == "idem_42"
+    assert response.metadata["audit_id"] == "op_42"
+    assert response.metadata["action_id"] == "act_42"
+    assert response.metadata["idempotency_key"] == "idem_42"
+
+
+def test_trade_command_audit_detail_returns_linked_operator_command() -> None:
+    service = _AuditReceiptLookupService()
+
+    response = trade_command_audit_detail(audit_id="op_42", service=service)
+
+    assert response.success is True
+    assert response.data["audit_id"] == "op_42"
+    assert response.data["linked_operator_command"]["command_id"] == "cmd_42"
+    assert response.metadata["has_linked_command"] is True
+    assert service.detail_audit_id == "op_42"
+
+
+def test_trade_command_audit_detail_returns_not_found_for_missing_audit() -> None:
+    service = _AuditReceiptLookupService()
+
+    response = trade_command_audit_detail(audit_id="missing", service=service)
+
+    assert response.success is False
+    assert response.error is not None
+    assert response.error["code"] == "not_found"
+
+
+def test_trade_command_audit_detail_rejects_blank_audit_id() -> None:
+    service = _AuditReceiptLookupService()
+
+    response = trade_command_audit_detail(audit_id="   ", service=service)
+
+    assert response.success is False
+    assert response.error is not None
+    assert response.error["code"] == "validation_error"
+    assert service.detail_audit_id is None
 
 
 def test_trade_runtime_mode_status_endpoint_returns_projection() -> None:

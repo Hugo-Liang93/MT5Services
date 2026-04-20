@@ -113,6 +113,9 @@ class TradeCommandAuditRepository:
         signal_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         actor: Optional[str] = None,
+        audit_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
         from_time: Optional[Any] = None,
         to_time: Optional[Any] = None,
         page: int = 1,
@@ -145,6 +148,18 @@ class TradeCommandAuditRepository:
             "COALESCE(NULLIF(request_payload->>'request_id', ''), "
             "NULLIF(response_payload->>'request_id', ''))"
         )
+        action_expr = (
+            "COALESCE(NULLIF(request_payload->>'action_id', ''), "
+            "NULLIF(response_payload->>'action_id', ''))"
+        )
+        idempotency_expr = (
+            "COALESCE(NULLIF(request_payload->>'idempotency_key', ''), "
+            "NULLIF(response_payload->>'idempotency_key', ''))"
+        )
+        reason_expr = (
+            "COALESCE(NULLIF(request_payload->>'reason', ''), "
+            "NULLIF(response_payload->>'reason', ''))"
+        )
 
         sql = f"""
 SELECT recorded_at,
@@ -169,6 +184,9 @@ SELECT recorded_at,
        {signal_expr} AS signal_id,
        {actor_expr} AS actor,
        {request_id_expr} AS request_id,
+       {action_expr} AS action_id,
+       {idempotency_expr} AS idempotency_key,
+       {reason_expr} AS reason,
        COUNT(*) OVER() AS total_count
 FROM trade_command_audits
 WHERE 1=1
@@ -198,6 +216,15 @@ WHERE 1=1
         if actor is not None:
             sql += f" AND {actor_expr} = %s"
             params.append(actor)
+        if audit_id is not None:
+            sql += " AND operation_id = %s"
+            params.append(audit_id)
+        if action_id is not None:
+            sql += f" AND {action_expr} = %s"
+            params.append(action_id)
+        if idempotency_key is not None:
+            sql += f" AND {idempotency_expr} = %s"
+            params.append(idempotency_key)
         if from_time is not None:
             sql += " AND recorded_at >= %s"
             params.append(from_time)
@@ -218,6 +245,137 @@ WHERE 1=1
             "total": total,
             "page": effective_page,
             "page_size": effective_page_size,
+        }
+
+    def fetch_trade_command_audit_by_id(
+        self,
+        *,
+        audit_id: str,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """按 audit_id（operation_id）单条查询 + 派生 action_id/idempotency_key/actor/reason。"""
+        trace_expr = (
+            "COALESCE(NULLIF(request_payload->>'trace_id', ''), "
+            "NULLIF(response_payload->>'trace_id', ''))"
+        )
+        signal_expr = (
+            "COALESCE(NULLIF(request_payload #>> '{metadata,signal,signal_id}', ''), "
+            "NULLIF(response_payload #>> '{metadata,signal,signal_id}', ''), "
+            "NULLIF(request_payload->>'request_id', ''), "
+            "NULLIF(response_payload->>'request_id', ''))"
+        )
+        actor_expr = (
+            "COALESCE(NULLIF(request_payload->>'actor', ''), "
+            "NULLIF(response_payload->>'actor', ''), "
+            "NULLIF(request_payload #>> '{metadata,actor}', ''), "
+            "NULLIF(response_payload #>> '{metadata,actor}', ''))"
+        )
+        request_id_expr = (
+            "COALESCE(NULLIF(request_payload->>'request_id', ''), "
+            "NULLIF(response_payload->>'request_id', ''))"
+        )
+        action_expr = (
+            "COALESCE(NULLIF(request_payload->>'action_id', ''), "
+            "NULLIF(response_payload->>'action_id', ''))"
+        )
+        idempotency_expr = (
+            "COALESCE(NULLIF(request_payload->>'idempotency_key', ''), "
+            "NULLIF(response_payload->>'idempotency_key', ''))"
+        )
+        reason_expr = (
+            "COALESCE(NULLIF(request_payload->>'reason', ''), "
+            "NULLIF(response_payload->>'reason', ''))"
+        )
+        sql = f"""
+SELECT recorded_at,
+       operation_id,
+       account_alias,
+       account_key,
+       command_type,
+       status,
+       symbol,
+       side,
+       order_kind,
+       volume,
+       ticket,
+       order_id,
+       deal_id,
+       magic,
+       duration_ms,
+       error_message,
+       request_payload,
+       response_payload,
+       {trace_expr} AS trace_id,
+       {signal_expr} AS signal_id,
+       {actor_expr} AS actor,
+       {request_id_expr} AS request_id,
+       {action_expr} AS action_id,
+       {idempotency_expr} AS idempotency_key,
+       {reason_expr} AS reason
+FROM trade_command_audits
+WHERE operation_id = %s
+"""
+        params: list[Any] = [audit_id]
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        sql += " ORDER BY recorded_at DESC LIMIT 1"
+        rows = self._fetch_dicts(sql, params)
+        if not rows:
+            return None
+        return self._normalize_audit_row(rows[0])
+
+    def fetch_linked_operator_command(
+        self,
+        *,
+        audit_id: str,
+    ) -> Optional[dict[str, Any]]:
+        """通过 audit_id 反查 operator_commands 记录（回执链路闭环关键）。"""
+        sql = """
+SELECT created_at,
+       command_id,
+       command_type,
+       target_account_key,
+       target_account_alias,
+       status,
+       action_id,
+       actor,
+       reason,
+       idempotency_key,
+       attempt_count,
+       last_error_code,
+       completed_at,
+       audit_id
+FROM operator_commands
+WHERE audit_id = %s
+ORDER BY created_at DESC
+LIMIT 1
+"""
+        rows = self._fetch_dicts(sql, [audit_id])
+        if not rows:
+            return None
+        row = rows[0]
+        created_at = row.get("created_at")
+        completed_at = row.get("completed_at")
+        return {
+            "command_id": row.get("command_id"),
+            "command_type": row.get("command_type"),
+            "target_account_key": row.get("target_account_key"),
+            "target_account_alias": row.get("target_account_alias"),
+            "status": row.get("status"),
+            "action_id": row.get("action_id"),
+            "actor": row.get("actor"),
+            "reason": row.get("reason"),
+            "idempotency_key": row.get("idempotency_key"),
+            "attempt_count": row.get("attempt_count"),
+            "last_error_code": row.get("last_error_code"),
+            "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
+            "completed_at": completed_at.isoformat() if hasattr(completed_at, "isoformat") else completed_at,
+            "audit_id": row.get("audit_id"),
         }
 
     def fetch_trace_operations(
@@ -319,8 +477,15 @@ LIMIT %s
             "response_payload": response_payload,
             "trace_id": row.get("trace_id"),
             "signal_id": row.get("signal_id"),
-            "actor": row.get("actor"),
+            "actor": row.get("actor") or request_payload.get("actor"),
             "request_id": row.get("request_id"),
+            "action_id": row.get("action_id")
+                or request_payload.get("action_id")
+                or response_payload.get("action_id"),
+            "idempotency_key": row.get("idempotency_key")
+                or request_payload.get("idempotency_key")
+                or response_payload.get("idempotency_key"),
+            "reason": row.get("reason") or request_payload.get("reason"),
             "message": (
                 response_payload.get("message")
                 or response_payload.get("status")

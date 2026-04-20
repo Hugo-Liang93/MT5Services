@@ -34,7 +34,7 @@ QuantX 前端读侧支撑 P9 全部 5 个 Phase + API 治理 4 项已交付。**
 
 **部署提示**：实例启动会自动跑 `ALTER TABLE signal_events ADD COLUMN IF NOT EXISTS`（PG 11+ instant op，不锁表）。无停机维护窗口需求。
 
-**下一步建议**：本节"接下来"区域已说明——回主线 P1 Paper Trading 数据积累，**不再做后端 API 工程**。
+**下一步建议**：默认回主线 P1 Paper Trading 数据积累；若 QuantX 前端 canonical IA 切换后暴露新的读模型闭环缺口，则按下方 `P10` 补齐。
 
 ---
 
@@ -184,6 +184,184 @@ QuantX 前端读侧支撑 P9 全部 5 个 Phase + API 治理 4 项已交付。**
   - `derived/native`
   - `freshness` 或“freshness 未提供”
   - `degraded/mock/hybrid`
+
+#### P10：QuantX 交易员主控台闭环补齐（2026-04-20 新增，中高优先）✅ 落地
+
+**落地端点**（本 session）：
+- `GET /v1/cockpit/overview`（P10.1：7 块 + 跨账户 contributors + triage_queue 原生派生）
+- `GET /v1/intel/action-queue`（P10.2：guard-aware 队列 + account_candidates 反向索引）
+- `GET /v1/trades/workbench` + `GET /v1/trades/{trade_id}`（P10.3：canonical 列表 + 6 维详情）
+- `GET /v1/trade/command-audits` 扩 `audit_id/action_id/idempotency_key` 过滤（P10.4）
+- `GET /v1/trade/command-audits/{audit_id}`（P10.4：含 linked_operator_command）
+- `GET /v1/lab/impact`（P10.5：WF 分阶段 + recommendation lifecycle + paper session 贯通）
+
+**Schema 迁移**：
+- `paper_trading_sessions` 加 `source_backtest_run_id / recommendation_id / experiment_id` 列 + 3 索引（PAPER_TRADING_MIGRATION_SQL）
+
+**P10.6 字段契约**：所有新增端点全 snake_case + ISO8601，无 camelCase 同义词（grep 0 hit）。
+
+**背景**：QuantX 前端已切到新的 canonical IA：
+- `Cockpit / Accounts / Trades / Intel / System`
+- 二级工作区：`Lab / Audit`
+
+其中：
+- `Accounts` 已对齐 `GET /v1/execution/workbench`
+- mutation 基类 `MutationActionResultBase` 已统一
+- `TradeTraceView` 已可支撑单次 trace 详情抽屉
+
+但按 [docs/quantx-backend-backlog.md](docs/quantx-backend-backlog.md) §8 的前端验收口径，仍未完全闭环。当前前端剩余缺口主要集中在：`Cockpit / Intel / Trades / Lab` 仍依赖本地聚合或摘要级数据，尚未完全落到后端 canonical fact。
+
+**目标**：让 QuantX 前端从“结构已收平”升级为“交易员日常可用”，减少前端本地启发式聚合，补齐总控页、机会队列、交易复盘、研究链路的后端一等读模型。
+
+**约束**：
+- 不回退到零散接口堆叠；优先交付**单端点读模型**。
+- 新端点必须携带统一的 freshness / provenance 元信息，不允许前端再把组包时间误当作源事实时间。
+- `account_alias` 继续使用 `/v1/account/list` 的 alias 字段，不允许 instance 名混用。
+
+##### P10.1 Cockpit canonical read model
+
+- [ ] 新增 `GET /v1/cockpit/overview`
+  目标：替代 QuantX 前端当前对 `overview capital + directive + context + market + signals` 的本地聚合。
+  最低返回块：
+  - `decision`
+  - `triage_queue`
+  - `market_guard`
+  - `data_health`
+  - `exposure_map`
+  - `opportunity_queue`
+  - `safe_actions`
+- [ ] `triage_queue` 后端原生化
+  最低字段：
+  - `account_alias`
+  - `account_label`
+  - `priority_layer`
+  - `risk_score`
+  - `reason_code`
+  - `reason`
+  - `recommended_action`
+  - `metrics`
+- [ ] `exposure_map` 补账户贡献映射
+  最低字段：
+  - `symbol`
+  - `direction`
+  - `gross_exposure`
+  - `contributors[]`
+  - `contributors[].account_alias`
+  - `contributors[].weight`
+- [ ] 所有块统一 freshness / provenance
+  最低字段：
+  - `generated_at`
+  - `data_updated_at`
+  - `age_seconds`
+  - `max_age_seconds`
+  - `freshness_state`
+  - `source_kind`
+  - `fallback_applied`
+  - `fallback_reason`
+
+**验收标准**：
+- QuantX 首页不再需要本地拼接 `/api/overview/* + /api/signals/summary + /api/market/context`
+- 首页一请求内即可回答：`能否继续交易 / 先处理谁 / 风险集中处 / 当前机会 / 数据是否新鲜`
+- 前端不再用启发式账户排序伪装成原生 triage
+
+##### P10.2 Intel canonical action queue
+
+- [ ] 新增 `GET /v1/intel/action-queue`
+  目标：替代 QuantX 当前对 `signals/recent + market/context` 的前端 guard-aware 启发式排序。
+  最低返回字段：
+  - `id`
+  - `signal_id`
+  - `trace_id`
+  - `symbol`
+  - `timeframe`
+  - `strategy`
+  - `direction`
+  - `actionability`
+  - `guard_reason_code`
+  - `priority`
+  - `rank_source`
+  - `account_candidates[]`
+  - `recommended_action`
+  - `freshness`
+- [ ] `symbol_briefs / market_windows / strategy_guard` 一并原生化
+  避免前端再从多个 summary 接口推导“当前可行动机会”。
+
+**验收标准**：
+- QuantX `Intel` 页面不再本地拼接 `recentSignals`
+- 被 `close_only / quote_stale / circuit_open / worker_not_ready / block_new_trades` 阻断的机会不会进入可行动队列
+- `priority` 与 `rank_source` 由后端明确给出，前端只负责展示
+
+##### P10.3 Trades / Audit 读模型闭环
+
+- [ ] 完成 backlog `P0.1`
+  - `GET /v1/signals/recent` 时间范围 + 分页 + 过滤稳定化
+  - `GET /v1/trade/command-audits` 时间范围 + 分页 + 过滤稳定化
+- [ ] 完成 backlog `P0.2`
+  - 新增 `GET /v1/trade/traces`
+  - 支持 `from / to / page / page_size / symbol / timeframe / strategy / status / signal_id / trace_id`
+- [ ] 新增 `GET /v1/trades/workbench`
+  目标：为 QuantX `Trades` 页面提供 canonical 列表，不再依赖前端本地 `AuditTradesAggregate` 聚合。
+  最低字段：
+  - `records[]`
+  - `pagination`
+  - `summary`
+  - `freshness`
+- [ ] 新增 `GET /v1/trades/{trade_id}`
+  目标：为 QuantX `Trade Detail` 提供单次读取的 `plan_vs_live / lifecycle / risk_review / receipts / evidence / linked_account_state`
+
+**验收标准**：
+- QuantX `Trades / Audit` 可以稳定查看 `24h / 7d / 30d` 的信号、交易、trace
+- 前端可从任意 trade / signal / trace 之间稳定跳转，不依赖本地近似拼链
+- `trade detail` 不再需要前端自己把 analysis、audit、trace 事实再拼一层
+
+##### P10.4 Mutation 回执可追链化
+
+- [ ] 在已统一 `MutationActionResultBase` 的基础上，补齐“回执可反查”能力
+  建议至少满足其一：
+  - `GET /v1/trade/command-audits` 支持 `audit_id / action_id / idempotency_key` 过滤
+  - 或新增 `GET /v1/trade/command-audits/{audit_id}`
+- [ ] 确保 QuantX 当前会调用的危险操作端点都稳定回传：
+  - `accepted`
+  - `status`
+  - `action_id`
+  - `audit_id`
+  - `command_id`
+  - `message`
+  - `error_code`
+  - `effective_state`
+  - `recorded_at`
+
+**验收标准**：
+- 前端账户动作台提交后，可立即展示 receipt，并跳转或反查到对应审计记录
+- 不再只有“请求已发送”提示，而是能回答“后端是否接收、审计 ID 是什么、最终生效状态是什么”
+
+##### P10.5 Lab / Paper / Recommendation 链路补齐
+
+- [ ] 完成 backlog `P2.1`
+  - walk-forward 分阶段结果
+  - evaluation summary
+  - recommendation 生命周期明细
+  - recommendation 与 backtest run / paper session 关联
+- [ ] 完成 backlog `P2.2`
+  - `paper session` 明确关联 `backtest_run_id`
+  - `paper trade / paper session` 能反查 `recommendation_id / source_signal_id / strategy`
+- [ ] 如现有 `/v1/backtest/*` 与 `/v1/paper-*` 无法直供前端工作台，可新增聚合只读口
+  - 推荐：`GET /v1/lab/impact`
+  - 或保持既有路由但提供等价 canonical read model
+
+**验收标准**：
+- QuantX `Lab` 不再只是摘要面板，而能回答“这轮 paper trading 来源于哪次回测建议”
+- `run_id / recommendation_id / session_id / signal_id` 在研究链路内可贯通跳转
+
+##### P10.6 新增端点的统一字段契约
+
+- [ ] 所有新增 canonical read model 统一命名，遵守 [docs/quantx-backend-backlog.md](docs/quantx-backend-backlog.md) §6
+- [ ] 时间字段统一 ISO8601
+- [ ] 不允许同义词并存（如 `recordedAt / recorded_at`、`traceId / trace_id` 混用）
+
+**验收标准**：
+- 前端 adapter 层只做字段映射，不再需要补大量“兼容同义词”的清洗代码
+- `Cockpit / Accounts / Trades / Intel / Lab` 的 canonical 数据流可以稳定扩展，不会再次退回页面层散拼装
 
 ---
 

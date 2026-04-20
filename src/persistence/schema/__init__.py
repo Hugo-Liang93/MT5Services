@@ -43,6 +43,7 @@ from .operator_commands import MIGRATION_SQL as OPERATOR_COMMANDS_MIGRATION_SQL
 
 # ── Paper Trading ────────────────────────────────────────────────
 from .paper_trading import DDL as PAPER_TRADING_DDL
+from .paper_trading import MIGRATION_SQL as PAPER_TRADING_MIGRATION_SQL
 from .pending_order_states import DDL as PENDING_ORDER_STATES_DDL
 from .pending_order_states import UPSERT_SQL as UPSERT_PENDING_ORDER_STATES_SQL
 
@@ -125,6 +126,7 @@ POST_INIT_DDL_STATEMENTS = [
     OPERATOR_COMMANDS_MIGRATION_SQL,
     RUNTIME_TASKS_MIGRATION_SQL,
     SIGNAL_EVENTS_MIGRATION_SQL,
+    PAPER_TRADING_MIGRATION_SQL,
 ]
 
 __all__ = [

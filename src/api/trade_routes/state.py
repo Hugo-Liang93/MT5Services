@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from .state_routes import audit_router, list_router, overview_router, stream_router
-from .state_routes.audit import get_sl_tp_history, trade_command_audits
+from .state_routes.audit import get_sl_tp_history, trade_command_audit_detail, trade_command_audits
 from .state_routes.lists import (
     trade_active_pending_state_list,
     trade_pending_execution_context_list,
@@ -35,6 +35,7 @@ __all__ = [
     "positions",
     "router",
     "trade_active_pending_state_list",
+    "trade_command_audit_detail",
     "trade_command_audits",
     "trade_control_status",
     "trade_daily_summary",

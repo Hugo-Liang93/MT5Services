@@ -204,6 +204,51 @@ class TradingStateRepository:
         params.append(limit)
         return self._fetch_dicts(sql, params)
 
+    def fetch_latest_risk_state_per_account(self) -> List[dict]:
+        """P10.1: 所有账户最新 account_risk_state 快照（单条/账户）。"""
+        sql = (
+            "SELECT DISTINCT ON (account_key) "
+            "account_key, account_alias, instance_id, instance_role, runtime_mode, "
+            "auto_entry_enabled, close_only_mode, circuit_open, consecutive_failures, "
+            "last_risk_block, margin_level, margin_guard_state, should_block_new_trades, "
+            "should_tighten_stops, should_emergency_close, open_positions_count, "
+            "pending_orders_count, quote_stale, indicator_degraded, db_degraded, "
+            "active_risk_flags, metadata, updated_at "
+            "FROM account_risk_state "
+            "ORDER BY account_key, updated_at DESC"
+        )
+        return self._fetch_dicts(sql, [])
+
+    def aggregate_open_positions_by_account_symbol(self) -> List[dict]:
+        """P10.1: 跨账户持仓聚合（latest-per-ticket → sum per account-symbol-direction）。"""
+        sql = """
+WITH latest AS (
+    SELECT DISTINCT ON (account_key, position_ticket)
+        account_key,
+        account_alias,
+        position_ticket,
+        symbol,
+        direction,
+        volume,
+        status,
+        entry_price,
+        current_price
+    FROM position_runtime_states
+    ORDER BY account_key, position_ticket, updated_at DESC
+)
+SELECT account_alias,
+       account_key,
+       symbol,
+       direction,
+       SUM(volume)::double precision AS gross_volume,
+       COUNT(*)::bigint AS position_count
+FROM latest
+WHERE status = 'open'
+GROUP BY account_alias, account_key, symbol, direction
+ORDER BY SUM(volume) DESC
+"""
+        return self._fetch_dicts(sql, [])
+
     def _fetch_dicts(self, sql: str, params: Sequence) -> List[dict]:
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)

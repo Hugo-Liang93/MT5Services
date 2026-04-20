@@ -466,6 +466,12 @@ class TimescaleWriter:
     def query_trade_command_audits(self, **kwargs):
         return self.trade_command_repo.query_trade_command_audits(**kwargs)
 
+    def fetch_trade_command_audit_by_id(self, **kwargs):
+        return self.trade_command_repo.fetch_trade_command_audit_by_id(**kwargs)
+
+    def fetch_linked_operator_command(self, **kwargs):
+        return self.trade_command_repo.fetch_linked_operator_command(**kwargs)
+
     def summarize_trade_command_audits(self, **kwargs):
         return self.trade_command_repo.summarize_trade_command_audits(**kwargs)
 
@@ -576,6 +582,12 @@ class TimescaleWriter:
     def fetch_account_risk_states(self, **kwargs):
         return self.trading_state_repo.fetch_account_risk_states(**kwargs)
 
+    def fetch_latest_risk_state_per_account(self):
+        return self.trading_state_repo.fetch_latest_risk_state_per_account()
+
+    def aggregate_open_positions_by_account_symbol(self):
+        return self.trading_state_repo.aggregate_open_positions_by_account_symbol()
+
     def write_circuit_breaker_history(self, rows, page_size: int = 200) -> None:
         from src.persistence.schema.circuit_breaker_history import INSERT_SQL
 
@@ -651,6 +663,15 @@ class TimescaleWriter:
 
     def write_trade_outcomes(self, rows, page_size: int = 200) -> None:
         self.signal_repo.write_trade_outcomes(rows, page_size=page_size)
+
+    def query_trade_outcomes_page(self, **kwargs):
+        return self.signal_repo.query_trade_outcomes_page(**kwargs)
+
+    def fetch_trade_outcomes_summary(self, **kwargs):
+        return self.signal_repo.fetch_trade_outcomes_summary(**kwargs)
+
+    def fetch_trade_outcomes(self, **kwargs):
+        return self.signal_repo.fetch_trade_outcomes(**kwargs)
 
     def fetch_expectancy_stats(self, **kwargs):
         return self.signal_repo.fetch_expectancy_stats(**kwargs)

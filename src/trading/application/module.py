@@ -1012,6 +1012,9 @@ class TradingModule:
         signal_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         actor: Optional[str] = None,
+        audit_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
         from_time: Optional[datetime] = None,
         to_time: Optional[datetime] = None,
         page: int = 1,
@@ -1025,12 +1028,22 @@ class TradingModule:
             signal_id=signal_id,
             trace_id=trace_id,
             actor=actor,
+            audit_id=audit_id,
+            action_id=action_id,
+            idempotency_key=idempotency_key,
             from_time=from_time,
             to_time=to_time,
             page=page,
             page_size=page_size,
             sort=sort,
         )
+
+    def command_audit_detail(
+        self,
+        *,
+        audit_id: str,
+    ) -> Optional[dict[str, Any]]:
+        return self._command_audit.command_audit_detail(audit_id=audit_id)
 
     def monitoring_summary(self, *, hours: int = 24) -> dict:
         if self.db_writer is None:

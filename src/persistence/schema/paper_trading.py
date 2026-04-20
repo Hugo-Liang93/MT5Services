@@ -62,12 +62,31 @@ CREATE INDEX IF NOT EXISTS idx_paper_trades_symbol
     ON paper_trade_outcomes(symbol, entry_time DESC);
 """
 
+# P10.5: paper session ↔ recommendation / backtest_run 关联字段
+# （物理持久化，避免只塞 JSONB 无法高效过滤）
+MIGRATION_SQL = """
+ALTER TABLE paper_trading_sessions
+    ADD COLUMN IF NOT EXISTS source_backtest_run_id TEXT;
+ALTER TABLE paper_trading_sessions
+    ADD COLUMN IF NOT EXISTS recommendation_id TEXT;
+ALTER TABLE paper_trading_sessions
+    ADD COLUMN IF NOT EXISTS experiment_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_paper_sessions_backtest_run
+    ON paper_trading_sessions(source_backtest_run_id);
+CREATE INDEX IF NOT EXISTS idx_paper_sessions_recommendation
+    ON paper_trading_sessions(recommendation_id);
+CREATE INDEX IF NOT EXISTS idx_paper_sessions_experiment
+    ON paper_trading_sessions(experiment_id);
+"""
+
 UPSERT_SESSION_SQL = """
 INSERT INTO paper_trading_sessions (
     session_id, started_at, stopped_at, initial_balance, final_balance,
     config_snapshot, total_trades, winning_trades, losing_trades,
-    total_pnl, max_drawdown_pct, sharpe_ratio
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    total_pnl, max_drawdown_pct, sharpe_ratio,
+    source_backtest_run_id, recommendation_id, experiment_id
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (session_id) DO UPDATE SET
     stopped_at = EXCLUDED.stopped_at,
     final_balance = EXCLUDED.final_balance,
@@ -76,7 +95,10 @@ ON CONFLICT (session_id) DO UPDATE SET
     losing_trades = EXCLUDED.losing_trades,
     total_pnl = EXCLUDED.total_pnl,
     max_drawdown_pct = EXCLUDED.max_drawdown_pct,
-    sharpe_ratio = EXCLUDED.sharpe_ratio
+    sharpe_ratio = EXCLUDED.sharpe_ratio,
+    source_backtest_run_id = COALESCE(EXCLUDED.source_backtest_run_id, paper_trading_sessions.source_backtest_run_id),
+    recommendation_id = COALESCE(EXCLUDED.recommendation_id, paper_trading_sessions.recommendation_id),
+    experiment_id = COALESCE(EXCLUDED.experiment_id, paper_trading_sessions.experiment_id)
 """
 
 INSERT_TRADE_SQL = """

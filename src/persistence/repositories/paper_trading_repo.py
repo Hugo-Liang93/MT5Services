@@ -49,6 +49,9 @@ class PaperTradingRepository:
             session.get("total_pnl", 0.0),
             session.get("max_drawdown_pct", 0.0),
             session.get("sharpe_ratio"),
+            session.get("source_backtest_run_id"),
+            session.get("recommendation_id"),
+            session.get("experiment_id"),
         )
         self._writer._batch(UPSERT_SESSION_SQL, [row])
 
@@ -97,7 +100,8 @@ class PaperTradingRepository:
         sql = """
         SELECT session_id, started_at, stopped_at, initial_balance, final_balance,
                config_snapshot, total_trades, winning_trades, losing_trades,
-               total_pnl, max_drawdown_pct, sharpe_ratio
+               total_pnl, max_drawdown_pct, sharpe_ratio,
+               source_backtest_run_id, recommendation_id, experiment_id
         FROM paper_trading_sessions
         ORDER BY started_at DESC
         LIMIT %s OFFSET %s
@@ -107,12 +111,55 @@ class PaperTradingRepository:
             rows = cur.fetchall()
         return [self._session_row_to_dict(r) for r in rows]
 
+    def fetch_sessions_by_recommendation(
+        self,
+        recommendation_id: str,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """P10.5: 按 recommendation_id 反查 paper sessions。"""
+        sql = """
+        SELECT session_id, started_at, stopped_at, initial_balance, final_balance,
+               config_snapshot, total_trades, winning_trades, losing_trades,
+               total_pnl, max_drawdown_pct, sharpe_ratio,
+               source_backtest_run_id, recommendation_id, experiment_id
+        FROM paper_trading_sessions
+        WHERE recommendation_id = %s
+        ORDER BY started_at DESC
+        LIMIT %s
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (recommendation_id, limit))
+            rows = cur.fetchall()
+        return [self._session_row_to_dict(r) for r in rows]
+
+    def fetch_sessions_by_backtest_run(
+        self,
+        backtest_run_id: str,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """P10.5: 按 source_backtest_run_id 反查 paper sessions。"""
+        sql = """
+        SELECT session_id, started_at, stopped_at, initial_balance, final_balance,
+               config_snapshot, total_trades, winning_trades, losing_trades,
+               total_pnl, max_drawdown_pct, sharpe_ratio,
+               source_backtest_run_id, recommendation_id, experiment_id
+        FROM paper_trading_sessions
+        WHERE source_backtest_run_id = %s
+        ORDER BY started_at DESC
+        LIMIT %s
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (backtest_run_id, limit))
+            rows = cur.fetchall()
+        return [self._session_row_to_dict(r) for r in rows]
+
     def fetch_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """查询单个 session。"""
         sql = """
         SELECT session_id, started_at, stopped_at, initial_balance, final_balance,
                config_snapshot, total_trades, winning_trades, losing_trades,
-               total_pnl, max_drawdown_pct, sharpe_ratio
+               total_pnl, max_drawdown_pct, sharpe_ratio,
+               source_backtest_run_id, recommendation_id, experiment_id
         FROM paper_trading_sessions
         WHERE session_id = %s
         """
@@ -199,7 +246,8 @@ class PaperTradingRepository:
         sql = """
         SELECT session_id, started_at, stopped_at, initial_balance, final_balance,
                config_snapshot, total_trades, winning_trades, losing_trades,
-               total_pnl, max_drawdown_pct, sharpe_ratio
+               total_pnl, max_drawdown_pct, sharpe_ratio,
+               source_backtest_run_id, recommendation_id, experiment_id
         FROM paper_trading_sessions
         WHERE stopped_at IS NULL
         ORDER BY started_at DESC
@@ -266,6 +314,9 @@ class PaperTradingRepository:
             "total_pnl": round(float(row[9] or 0), 2),
             "max_drawdown_pct": round(float(row[10] or 0), 4),
             "sharpe_ratio": round(float(row[11]), 4) if row[11] is not None else None,
+            "source_backtest_run_id": row[12] if len(row) > 12 else None,
+            "recommendation_id": row[13] if len(row) > 13 else None,
+            "experiment_id": row[14] if len(row) > 14 else None,
         }
 
     @staticmethod

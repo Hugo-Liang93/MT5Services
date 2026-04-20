@@ -13,12 +13,15 @@ from src.api import (
     account,
     admin,
     backtest,
+    cockpit,
     decision,
     deps,
     economic,
     execution,
     experiment,
     indicators,
+    intel,
+    lab,
     market,
     monitoring,
     paper_trading,
@@ -320,6 +323,9 @@ v1.include_router(economic.router)
 v1.include_router(account.router)
 v1.include_router(trade.router)
 v1.include_router(execution.router)
+v1.include_router(cockpit.router)
+v1.include_router(intel.router)
+v1.include_router(lab.router)
 v1.include_router(monitoring.router)
 v1.include_router(indicators.router)
 v1.include_router(signal.router)

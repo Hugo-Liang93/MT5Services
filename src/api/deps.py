@@ -26,8 +26,12 @@ from src.market_structure import MarketStructureAnalyzer
 from src.monitoring.pipeline import PipelineEventBus
 from src.notifications.module import NotificationModule
 from src.persistence.storage_writer import StorageWriter
+from src.readmodels.cockpit import CockpitReadModel
+from src.readmodels.intel import IntelReadModel
+from src.readmodels.lab_impact import LabImpactReadModel
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
+from src.readmodels.trades_workbench import TradesWorkbenchReadModel
 from src.readmodels.workbench import WorkbenchReadModel
 from src.risk.service import PreTradeRiskService
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
@@ -440,6 +444,81 @@ def get_trade_trace_read_model() -> TradingFlowTraceReadModel:
     _ensure_initialized()
     assert _container is not None and _container.trade_trace_read_model is not None
     return _container.trade_trace_read_model
+
+
+def get_cockpit_read_model() -> CockpitReadModel:
+    """P10.1：Cockpit 跨账户总控台读模型。
+
+    每请求构造一个新实例；底层 repo / signal module 均为单例。
+    数据源跨账户 → 前提：同 environment 的所有实例共享 db.live 或 db.demo。
+
+    P1.3: 注入 IntelReadModel 供 opportunity_queue 块委托调用，消除重复查询。
+    """
+    _ensure_initialized()
+    assert _container is not None
+    assert _container.storage_writer is not None
+    assert _container.signal_module is not None
+    assert _container.runtime_read_model is not None
+    intel = IntelReadModel(signal_module=_container.signal_module)
+    return CockpitReadModel(
+        trading_state_repo=_container.storage_writer.db.trading_state_repo,
+        signal_module=_container.signal_module,
+        runtime_read_model=_container.runtime_read_model,
+        intel_read_model=intel,
+    )
+
+
+def get_lab_impact_read_model() -> LabImpactReadModel:
+    """P10.5: Lab Impact 贯通读模型（每请求构造）。
+
+    - backtest_runtime_store 为模块级全局单例（WF / recommendations 内存缓存）
+    - paper_trading_repo 走 storage_writer.db
+    - backtest_repo 走 api.backtest_routes.execution.get_backtest_repo()（现有工厂，
+      模块级缓存的 BacktestRepository 实例，专用连接池，ensure_schema 已执行）
+    """
+    from src.api.backtest_routes.execution import get_backtest_repo
+    from src.backtesting.data import backtest_runtime_store
+
+    _ensure_initialized()
+    assert _container is not None
+    paper_trading_repo = None
+    if _container.storage_writer is not None:
+        db = _container.storage_writer.db
+        paper_trading_repo = getattr(db, "paper_trading_repo", None)
+    return LabImpactReadModel(
+        backtest_store=backtest_runtime_store,
+        paper_trading_repo=paper_trading_repo,
+        backtest_repo=get_backtest_repo(),
+    )
+
+
+def get_intel_read_model() -> IntelReadModel:
+    """P10.2: Intel 行动队列读模型（每请求构造）。
+
+    依赖单条：signal_module 提供 recent_signal_page + strategy_account_bindings。
+    """
+    _ensure_initialized()
+    assert _container is not None
+    assert _container.signal_module is not None
+    return IntelReadModel(signal_module=_container.signal_module)
+
+
+def get_trades_workbench_read_model() -> TradesWorkbenchReadModel:
+    """P10.3：trades/workbench canonical 读模型（每请求构造）。
+
+    signal_repo / trace_read_model 均为单例复用，不持有独立状态。
+    """
+    _ensure_initialized()
+    assert _container is not None
+    assert _container.storage_writer is not None
+    assert _container.trade_module is not None
+    assert _container.trade_trace_read_model is not None
+    trade_module = _container.trade_module
+    return TradesWorkbenchReadModel(
+        signal_repo=_container.storage_writer.db.signal_repo,
+        trace_read_model=_container.trade_trace_read_model,
+        account_alias_getter=lambda: trade_module.active_account_alias,
+    )
 
 
 def get_runtime_mode_controller() -> RuntimeModeController:

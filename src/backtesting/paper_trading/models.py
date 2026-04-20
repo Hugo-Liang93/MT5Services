@@ -90,6 +90,8 @@ class PaperSession:
     experiment_id: Optional[str] = None
     # 关联的回测 run_id（从 Recommendation 启动时填充）
     source_backtest_run_id: Optional[str] = None
+    # 关联的 recommendation_id（P10.5：paper session ↔ recommendation 反查链路）
+    recommendation_id: Optional[str] = None
     final_balance: Optional[float] = None
     total_trades: int = 0
     winning_trades: int = 0
@@ -107,6 +109,7 @@ class PaperSession:
             "session_id": self.session_id,
             "experiment_id": self.experiment_id,
             "source_backtest_run_id": self.source_backtest_run_id,
+            "recommendation_id": self.recommendation_id,
             "started_at": self.started_at.isoformat(),
             "stopped_at": self.stopped_at.isoformat() if self.stopped_at else None,
             "initial_balance": self.initial_balance,

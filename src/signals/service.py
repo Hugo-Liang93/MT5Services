@@ -59,11 +59,38 @@ class SignalModule:
         self._strategies: dict[str, SignalStrategy] = {}
         # Cache strategy regime affinity metadata to avoid repeated getattr in hot paths.
         self._strategy_affinity_cache: dict[str, dict] = {}
+        # P10.2 修复：account_bindings 反向索引（strategy → [account_alias]）。
+        # 由 factory 在构建完成后通过 set_account_bindings() 注入；空 dict = 未配置。
+        self._strategy_to_accounts: dict[str, list[str]] = {}
         default_strategies: Iterable[SignalStrategy] = (
             list(strategies) if strategies is not None else build_default_strategy_set()
         )
         for strategy in default_strategies:
             self.register_strategy(strategy)
+
+    def set_account_bindings(
+        self, bindings: Optional[dict[str, Iterable[str]]]
+    ) -> None:
+        """P10.2: 注入 {account_alias: [strategy]} 配置并建立反向索引。
+
+        Intel / Cockpit 等跨账户读模型通过 strategy_account_bindings() 访问，
+        不再各自读 signal_config。
+        """
+        index: dict[str, list[str]] = {}
+        for account_alias, strategy_list in (bindings or {}).items():
+            alias = str(account_alias or "").strip()
+            if not alias or not strategy_list:
+                continue
+            for strategy_name in strategy_list:
+                name = str(strategy_name or "").strip()
+                if not name:
+                    continue
+                index.setdefault(name, []).append(alias)
+        self._strategy_to_accounts = index
+
+    def strategy_account_bindings(self) -> dict[str, list[str]]:
+        """P10.2: 返回 strategy → [account_alias] 反向索引（防御性拷贝）。"""
+        return {k: list(v) for k, v in self._strategy_to_accounts.items()}
 
     @property
     def regime_detector(self) -> MarketRegimeDetector:
