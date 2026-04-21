@@ -168,6 +168,12 @@ class StorageWriter:
     # --- 生命周期 ---
     def ensure_schema_ready(self) -> None:
         self.db.init_schema()
+        # Research/Experiment/Backtest 表结构一次性在启动时初始化——
+        # 历史教训（2026-04-20 生产事故）：API 路由内每请求 new TimescaleWriter +
+        # ensure_schema 导致 pg 连接池耗尽和 DDL 风暴，从而诱发 consumer 线程死亡。
+        self.db.backtest_repo.ensure_schema()
+        self.db.research_repo.ensure_schema()
+        self.db.experiment_repo.ensure_schema()
         try:
             from src.config.database import load_retention_config
 

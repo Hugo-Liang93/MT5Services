@@ -12,6 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
+from src.api import deps
 from src.api.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -26,17 +27,12 @@ class CreateExperimentRequest(BaseModel):
 
 
 def _get_experiment_repo():  # type: ignore[no-untyped-def]
-    """延迟获取 ExperimentRepository。"""
-    try:
-        from src.config.database import load_db_settings
-        from src.persistence.db import TimescaleWriter
-        from src.persistence.repositories.experiment_repo import ExperimentRepository
+    """获取共享的 ExperimentRepository（来自 container.storage_writer）。
 
-        db_config = load_db_settings()
-        writer = TimescaleWriter(settings=db_config, min_conn=1, max_conn=2)
-        repo = ExperimentRepository(writer)
-        repo.ensure_schema()
-        return repo
+    禁止在此构造独立 TimescaleWriter——历史教训见 `deps.get_experiment_repo` 注释。
+    """
+    try:
+        return deps.get_experiment_repo()
     except Exception:
         logger.debug("ExperimentRepository not available", exc_info=True)
         return None

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 
+from src.api import deps
 from src.api.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -35,16 +36,12 @@ class MiningRunRequest(BaseModel):
 
 
 def _get_research_repo():  # type: ignore[no-untyped-def]
-    try:
-        from src.config.database import load_db_settings
-        from src.persistence.db import TimescaleWriter
-        from src.persistence.repositories.research_repo import ResearchRepository
+    """获取共享的 ResearchRepository（来自 container.storage_writer）。
 
-        db_config = load_db_settings()
-        writer = TimescaleWriter(settings=db_config, min_conn=1, max_conn=2)
-        repo = ResearchRepository(writer)
-        repo.ensure_schema()
-        return repo
+    禁止在此构造独立 TimescaleWriter——历史教训见 `deps.get_research_repo` 注释。
+    """
+    try:
+        return deps.get_research_repo()
     except Exception:
         logger.debug("ResearchRepository not available", exc_info=True)
         return None
@@ -75,16 +72,11 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
         if repo is not None:
             repo.save_mining_result(result)
 
-        # 更新 experiment：通过仓储公开端口（ADR-006），不再访问 _writer/_execute 私有
+        # 更新 experiment：走 deps 取共享 repo 即可（ADR-006 + 避免每请求 new writer）
         if request.experiment_id:
             try:
-                from src.persistence.repositories.experiment_repo import (
-                    ExperimentRepository,
-                )
-
-                if repo is not None:
-                    exp_repo = ExperimentRepository(repo.writer)
-                    exp_repo.ensure_schema()
+                exp_repo = deps.get_experiment_repo()
+                if exp_repo is not None:
                     exp_repo.link_to_mining_run(request.experiment_id, run_id)
             except Exception:
                 logger.debug("Failed to update experiment", exc_info=True)

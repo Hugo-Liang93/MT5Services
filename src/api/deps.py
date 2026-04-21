@@ -425,6 +425,31 @@ def get_runtime_read_model() -> RuntimeReadModel:
     return _container.runtime_read_model
 
 
+def get_research_repo():  # type: ignore[no-untyped-def]
+    """共享 container.storage_writer 上的 ResearchRepository。
+
+    历史教训（2026-04-20 事故）：禁止在 API 路由内 `new TimescaleWriter`，
+    那会每请求触发独立 pg 连接池和 DDL，吃光连接后诱发 consumer 线程死亡。
+    """
+    _ensure_initialized()
+    assert _container is not None and _container.storage_writer is not None
+    return _container.storage_writer.db.research_repo
+
+
+def get_experiment_repo():  # type: ignore[no-untyped-def]
+    """共享 container.storage_writer 上的 ExperimentRepository（同上教训）。"""
+    _ensure_initialized()
+    assert _container is not None and _container.storage_writer is not None
+    return _container.storage_writer.db.experiment_repo
+
+
+def get_backtest_repo():  # type: ignore[no-untyped-def]
+    """共享 container.storage_writer 上的 BacktestRepository（同上教训）。"""
+    _ensure_initialized()
+    assert _container is not None and _container.storage_writer is not None
+    return _container.storage_writer.db.backtest_repo
+
+
 def get_workbench_read_model() -> WorkbenchReadModel:
     """单账户执行工作台聚合读模型（P9 Phase 1）。
 

@@ -3,13 +3,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from src.api import deps
 from src.backtesting.data import backtest_runtime_store
 
 from . import schemas as config_service
 
 logger = logging.getLogger(__name__)
-
-_cached_backtest_repo: Optional[Any] = None
 
 
 def cleanup_components(components: Optional[Dict[str, Any]]) -> None:
@@ -46,13 +45,9 @@ def _update_experiment_on_backtest(result: Any) -> None:
     if not exp_id:
         return
     try:
-        from src.persistence.repositories.experiment_repo import ExperimentRepository
-
-        repo = get_backtest_repo()
-        if repo is None:
+        exp_repo = deps.get_experiment_repo()
+        if exp_repo is None:
             return
-        exp_repo = ExperimentRepository(repo._writer)
-        exp_repo.ensure_schema()
         exp_repo.advance_to_backtest(exp_id, result.run_id)
         metrics = getattr(result, "metrics", None)
         if metrics is not None:
@@ -66,20 +61,12 @@ def _update_experiment_on_backtest(result: Any) -> None:
 
 
 def get_backtest_repo() -> Optional[Any]:
-    global _cached_backtest_repo
-    if _cached_backtest_repo is not None:
-        return _cached_backtest_repo
-    try:
-        from src.config.database import load_db_settings
-        from src.persistence.db import TimescaleWriter
-        from src.persistence.repositories.backtest_repo import BacktestRepository
+    """获取共享的 BacktestRepository（来自 container.storage_writer）。
 
-        db_config = load_db_settings()
-        writer = TimescaleWriter(settings=db_config, min_conn=1, max_conn=2)
-        repo = BacktestRepository(writer)
-        repo.ensure_schema()
-        _cached_backtest_repo = repo
-        return repo
+    禁止在此构造独立 TimescaleWriter——历史教训见 `deps.get_backtest_repo` 注释。
+    """
+    try:
+        return deps.get_backtest_repo()
     except Exception:
         logger.debug("BacktestRepository not available", exc_info=True)
         return None

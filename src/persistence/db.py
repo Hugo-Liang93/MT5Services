@@ -17,6 +17,7 @@ from psycopg2.pool import SimpleConnectionPool
 
 from src.config import DBSettings
 from src.persistence.repositories import (
+    BacktestRepository,
     EconomicCalendarRepository,
     ExecutionIntentRepository,
     MarketRepository,
@@ -28,6 +29,10 @@ from src.persistence.repositories import (
     TradeCommandAuditRepository,
     TradingStateRepository,
 )
+
+# 延迟 import：src.research / src.persistence.repositories.experiment_repo
+# 反向依赖 TimescaleWriter，顶层 import 会死循环。TimescaleWriter
+# 的 research_repo / experiment_repo @property 会懒加载 import。
 from src.persistence.schema import DDL_STATEMENTS, POST_INIT_DDL_STATEMENTS
 
 logger = logging.getLogger(__name__)
@@ -56,6 +61,10 @@ class TimescaleWriter:
         self._pipeline_trace_repo: Optional[PipelineTraceRepository] = None
         self._runtime_repo: Optional[RuntimeStatusRepository] = None
         self._paper_trading_repo: Optional[PaperTradingRepository] = None
+        self._backtest_repo: Optional[BacktestRepository] = None
+        # research_repo / experiment_repo 是延迟类型（循环依赖原因，见模块顶部注释）
+        self._research_repo = None  # type: ignore[var-annotated]
+        self._experiment_repo = None  # type: ignore[var-annotated]
         self._init_pool()
 
     @property
@@ -136,6 +145,39 @@ class TimescaleWriter:
         if repo is None:
             repo = PaperTradingRepository(self)
             self._paper_trading_repo = repo
+        return repo
+
+    @property
+    def backtest_repo(self) -> BacktestRepository:
+        repo = getattr(self, "_backtest_repo", None)
+        if repo is None:
+            repo = BacktestRepository(self)
+            self._backtest_repo = repo
+        return repo
+
+    @property
+    def research_repo(self):  # type: ignore[no-untyped-def]
+        """延迟 import：research_repo.py 间接依赖 src.research → TimescaleWriter，
+        顶层 import 会死循环。"""
+        repo = getattr(self, "_research_repo", None)
+        if repo is None:
+            from src.persistence.repositories.research_repo import ResearchRepository
+
+            repo = ResearchRepository(self)
+            self._research_repo = repo
+        return repo
+
+    @property
+    def experiment_repo(self):  # type: ignore[no-untyped-def]
+        """延迟 import：同 research_repo 的循环依赖。"""
+        repo = getattr(self, "_experiment_repo", None)
+        if repo is None:
+            from src.persistence.repositories.experiment_repo import (
+                ExperimentRepository,
+            )
+
+            repo = ExperimentRepository(self)
+            self._experiment_repo = repo
         return repo
 
     def _json(self, value):

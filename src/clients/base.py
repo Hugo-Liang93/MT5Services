@@ -5,8 +5,8 @@ MT5 客户端基类：统一初始化/登录、时区转换、字段提取等通
 from __future__ import annotations
 
 import logging
-import time
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -114,11 +114,17 @@ class MT5BaseClient:
         self._connected = False
         self._last_session_state: MT5SessionState | None = None
         self.metrics = MetricsRecorder()
-        configured_offset_hours = getattr(self.settings, "server_time_offset_hours", None)
-        self._configured_market_time_offset_seconds: Optional[int] = (
-            int(configured_offset_hours) * 3600 if configured_offset_hours is not None else None
+        configured_offset_hours = getattr(
+            self.settings, "server_time_offset_hours", None
         )
-        self._market_time_offset_seconds: Optional[int] = self._configured_market_time_offset_seconds
+        self._configured_market_time_offset_seconds: Optional[int] = (
+            int(configured_offset_hours) * 3600
+            if configured_offset_hours is not None
+            else None
+        )
+        self._market_time_offset_seconds: Optional[int] = (
+            self._configured_market_time_offset_seconds
+        )
 
     @staticmethod
     def _normalize_fs_path(path: str | None) -> str:
@@ -145,7 +151,11 @@ class MT5BaseClient:
                     name = str(proc.info.get("name") or "").strip().lower()
                     if name and name == basename and not exe:
                         return True
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                except (
+                    psutil.NoSuchProcess,
+                    psutil.AccessDenied,
+                    psutil.ZombieProcess,
+                ):
                     continue
         except Exception:
             logger.debug("Failed to inspect MT5 terminal process state", exc_info=True)
@@ -182,9 +192,7 @@ class MT5BaseClient:
             normalized_code = int(code) if code is not None else None
         except (TypeError, ValueError):
             normalized_code = None
-        normalized_message = (
-            str(message).strip() if message not in (None, "") else None
-        )
+        normalized_message = str(message).strip() if message not in (None, "") else None
         return normalized_code, normalized_message
 
     @staticmethod
@@ -206,7 +214,9 @@ class MT5BaseClient:
             return None
 
     def _matches_requested_account(self, account_info: Any = None) -> bool:
-        account_info = account_info if account_info is not None else self._safe_account_info()
+        account_info = (
+            account_info if account_info is not None else self._safe_account_info()
+        )
         if account_info is None:
             return not self._login_required()
 
@@ -265,7 +275,9 @@ class MT5BaseClient:
         return login_kwargs
 
     @staticmethod
-    def _is_ipc_timeout(last_error_code: int | None, last_error_message: str | None) -> bool:
+    def _is_ipc_timeout(
+        last_error_code: int | None, last_error_message: str | None
+    ) -> bool:
         message = str(last_error_message or "").strip().lower()
         return bool(
             last_error_code == -10005
@@ -315,9 +327,7 @@ class MT5BaseClient:
         if error_code == "terminal_not_running":
             return f"MT5 terminal process is not running: {self.settings.mt5_path}"
         if error_code == "interactive_login_required":
-            return (
-                "MT5 terminal requires interactive login/unlock before startup"
-            )
+            return "MT5 terminal requires interactive login/unlock before startup"
         if error_code == "ipc_timeout":
             return f"MT5 IPC is not ready: {last_error_message or 'timeout'}"
         if error_code == "initialize_failed":
@@ -373,7 +383,11 @@ class MT5BaseClient:
             interactive_login_required=interactive_login_required,
             error_code=error_code,
             error_message=error_message,
-            terminal_name=getattr(terminal_info, "name", None) if terminal_info is not None else None,
+            terminal_name=(
+                getattr(terminal_info, "name", None)
+                if terminal_info is not None
+                else None
+            ),
             terminal_path=self.settings.mt5_path,
             login=actual_login,
             server=actual_server,
@@ -414,9 +428,12 @@ class MT5BaseClient:
 
         terminal_info = self._safe_terminal_info()
         account_info = self._safe_account_info()
-        terminal_reachable = bool(terminal_info is not None or self._terminal_path_exists())
+        terminal_reachable = bool(
+            terminal_info is not None or self._terminal_path_exists()
+        )
         terminal_process_ready = bool(
-            terminal_info is not None or self._terminal_process_running(self.settings.mt5_path)
+            terminal_info is not None
+            or self._terminal_process_running(self.settings.mt5_path)
         )
         ipc_ready = bool(terminal_info is not None)
         initialized_here = False
@@ -430,13 +447,17 @@ class MT5BaseClient:
                     account_info=account_info,
                     terminal_info=terminal_info,
                     interactive_login_required=False,
-                    error_code="terminal_not_found"
-                    if self.settings.mt5_path
-                    else "terminal_path_missing",
-                    error_message=self._session_error_message(
-                        error_code="terminal_not_found"
+                    error_code=(
+                        "terminal_not_found"
                         if self.settings.mt5_path
-                        else "terminal_path_missing",
+                        else "terminal_path_missing"
+                    ),
+                    error_message=self._session_error_message(
+                        error_code=(
+                            "terminal_not_found"
+                            if self.settings.mt5_path
+                            else "terminal_path_missing"
+                        ),
                         actual_login=None,
                         actual_server=None,
                         last_error_message=None,
@@ -445,7 +466,11 @@ class MT5BaseClient:
                     last_error_message=None,
                 )
 
-            if require_terminal_process and not terminal_process_ready and terminal_info is None:
+            if (
+                require_terminal_process
+                and not terminal_process_ready
+                and terminal_info is None
+            ):
                 return self._build_session_state(
                     terminal_reachable=terminal_reachable,
                     terminal_process_ready=False,
@@ -475,9 +500,11 @@ class MT5BaseClient:
                     error_code = (
                         "interactive_login_required"
                         if interactive_login_required
-                        else "ipc_timeout"
-                        if self._is_ipc_timeout(last_error_code, last_error_message)
-                        else "initialize_failed"
+                        else (
+                            "ipc_timeout"
+                            if self._is_ipc_timeout(last_error_code, last_error_message)
+                            else "initialize_failed"
+                        )
                     )
                     return self._build_session_state(
                         terminal_reachable=terminal_reachable,
@@ -528,7 +555,11 @@ class MT5BaseClient:
                     last_error_message=last_error_message,
                 )
 
-            if attempt_login and self._login_required() and not self._matches_requested_account(account_info):
+            if (
+                attempt_login
+                and self._login_required()
+                and not self._matches_requested_account(account_info)
+            ):
                 if not mt5.login(**self._login_kwargs()):
                     last_error_code, last_error_message = self._safe_last_error()
                     interactive_login_required = self._is_interactive_login_required(
@@ -562,7 +593,9 @@ class MT5BaseClient:
                 account_info = self._safe_account_info()
 
             actual_login, actual_server = self._account_snapshot(account_info)
-            if self._login_required() and not self._matches_requested_account(account_info):
+            if self._login_required() and not self._matches_requested_account(
+                account_info
+            ):
                 return self._build_session_state(
                     terminal_reachable=terminal_reachable,
                     terminal_process_ready=terminal_process_ready,
@@ -608,10 +641,16 @@ class MT5BaseClient:
             raise MT5BaseError("MetaTrader5 package is not installed")
         # 快速路径：已连接且近期（5s 内）已验证过会话，直接返回，无需争用类级锁。
         now = time.monotonic()
-        if self._connected and (now - MT5BaseClient._last_session_check) < MT5BaseClient._SESSION_CHECK_TTL:
+        if (
+            self._connected
+            and (now - MT5BaseClient._last_session_check)
+            < MT5BaseClient._SESSION_CHECK_TTL
+        ):
             return
         with self._session_lock:
-            self._market_time_offset_seconds = self._configured_market_time_offset_seconds
+            self._market_time_offset_seconds = (
+                self._configured_market_time_offset_seconds
+            )
             if self._connected and self._session_ready():
                 MT5BaseClient._last_session_check = time.monotonic()
                 return
@@ -640,12 +679,18 @@ class MT5BaseClient:
         self._last_session_state = None
         self._market_time_offset_seconds = self._configured_market_time_offset_seconds
 
-    def health(self) -> dict:
-        """基础健康检查：连接状态、账户/终端信息。"""
+    def health(self, attempt_mt5_reconnect: bool = False) -> dict:
+        """基础健康检查：连接状态、账户/终端信息。
+
+        默认 attempt_mt5_reconnect=False —— HTTP 健康端点（/health、/v1/admin/dashboard、
+        /v1/monitoring/health 等）走此路径时**必须不触发 mt5.initialize/login**，
+        否则 terminal 假死会阻塞整个 HTTP 线程池（2026-04-20 生产事故根因）。
+        重连职责由 BackgroundIngestor 的错误恢复逻辑或 ops tooling 显式驱动。
+        """
         state = self.inspect_session_state(
             require_terminal_process=True,
-            attempt_initialize=True,
-            attempt_login=True,
+            attempt_initialize=attempt_mt5_reconnect,
+            attempt_login=attempt_mt5_reconnect,
         )
         payload = {
             "connected": state.session_ready,
@@ -714,10 +759,14 @@ class MT5BaseClient:
         return self._market_time_to_request(datetime.now(timezone.utc))
 
     def _request_time_range(
-        self, start_utc: datetime, end_utc: datetime,
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
     ) -> tuple[datetime, datetime]:
         """Convert a UTC time range to server time for MT5 API requests."""
-        return self._market_time_to_request(start_utc), self._market_time_to_request(end_utc)
+        return self._market_time_to_request(start_utc), self._market_time_to_request(
+            end_utc
+        )
 
     def _parse_server_timestamp(self, epoch_seconds: float) -> datetime:
         """Convert an MT5 server-time epoch to a normalized UTC datetime.

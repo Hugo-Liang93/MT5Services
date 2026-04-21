@@ -1,13 +1,56 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-04-20
+> 最近更新：2026-04-21
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
 
 ---
 
-## 0. 2026-04-20 修复更新（P9 全套 + API 治理 4 项）
+## 0. 2026-04-21 生产事故根因修复（ADR-008）
+
+**事件**：2026-04-20 20:19 启动的 live supervisor 进程组在次日 08 点被观察到 HTTP 000、indicator pipeline 死 8.5 小时、live-exec-a reconciliation 滞后 3 小时。根因链：
+
+1. `src/api/{research,experiment,backtest}_routes/*.py` 在请求处理路径 `new TimescaleWriter(min_conn=1, max_conn=2)` + `repo.ensure_schema()`。22:44 pg `connection pool exhausted` 后 11 秒内连接池被 8 次重建（日志 `Database connection pool initialized: 1-2 connections × 8`）。
+2. 23:07 `indicator writer thread` 在 pool 异常后静默死亡（daemon thread 无顶层 try/except），主进程继续跑但完全不处理任何 bar close，supervisor 无感知。
+3. `client.health()` 默认 `attempt_initialize=True, attempt_login=True` —— MT5 假死时 HTTP 线程池（40）全部堵在 `mt5.initialize()`，观测性完全失效。
+
+**本次修复（无任何兼容分支）**：
+
+- **持久化 repo 单例化**（`src/persistence/db.py`、`storage_writer.py`、`repositories/__init__.py`）：
+  - `TimescaleWriter` 新增 `research_repo / experiment_repo / backtest_repo` lazy `@property`（research/experiment 为消除循环依赖采用延迟 import）
+  - `StorageWriter.ensure_schema_ready()` 启动时一次性调 3 个 repo 的 `ensure_schema()`
+  - `src/api/deps.py` 新增 `get_research_repo / get_experiment_repo / get_backtest_repo` 3 个 getter，走 `container.storage_writer.db.<repo>`
+  - 3 个 API routes 的 `_get_xxx_repo()` / `get_backtest_repo()` 函数改为转发到 `deps`，**完全删除请求路径里的 `new TimescaleWriter` 与 `ensure_schema` 调用**，同时去掉 `backtest_routes/execution.py` 多余的 `_cached_backtest_repo` 全局缓存
+  - `research_routes/routes.py` 中 `ExperimentRepository(repo.writer)` 的手工构造也改为 `deps.get_experiment_repo()` —— 完全收敛到单一 writer
+
+- **indicator 运行时线程 fail-fast**（`src/indicators/runtime/event_loops.py`）：
+  - 新增模块级 `_on_thread_crash(thread_name, exc)`：生产调 `logger.critical + os._exit(1)`，测试 monkeypatch 替换为收集 stub
+  - 四个主循环（`run_event_loop / run_intrabar_loop / run_event_writer_loop / run_reload_loop`）拆成 `run_*_loop` 外壳 + `_run_*_loop_body` 实现体，外壳顶层 `try/except BaseException` → `_on_thread_crash`
+  - 禁止"except 后重入循环"——静默吞异常是事故核心成因
+  - ADR-004 的 `_any_thread_alive()` 保留不变（stop 流程用），不再做冗余 runtime liveness check（fail-fast + supervisor 足矣）
+
+- **`/health` 切换为只读**（`src/clients/base.py`、`src/readmodels/runtime.py`）：
+  - `MT5BaseClient.health()` 签名 `(self, attempt_mt5_reconnect: bool = False)`，默认透传 `attempt_initialize=False, attempt_login=False`
+  - `RuntimeReadModel` 的 `inspect_session_state(...)` 也改 `False`
+  - 重连职责明确归还给 `BackgroundIngestor` 错误恢复（它本来就有）与 `src/ops/mt5_session_gate.py` / `live_preflight.py` 启动 preflight（这两处保留 `attempt_initialize=True`）
+
+**测试覆盖**（3 个新测试文件，10 个测试用例全绿）：
+- `tests/clients/test_health_readonly.py` —— 验证 `health()` 默认不触发 MT5 重连，显式 `attempt_mt5_reconnect=True` 才 opt-in
+- `tests/persistence/test_writer_repo_singletons.py` —— 验证 3 个 repo @property lazy 单例 + `ensure_schema_ready` 调所有 repo
+- `tests/indicators/test_event_loops_failfast.py` —— 验证 4 个主循环异常被正确转发到 `_on_thread_crash`
+
+**附带检查**：tests/clients + tests/persistence + tests/indicators + tests/readmodels + tests/api + tests/trading + tests/app_runtime **共 837 个测试全绿**，无回归。
+
+**未动的相关问题**（分析后确认非本次必修）：
+- 风控拒绝死循环 —— 追踪发现 `PreTradeRiskBlockedError` 已在 `src/trading/execution/eventing.py:706` 被 `trade_executor.process_event` 捕获转成 `status='skipped'`，intent 已正确进入终态不会 re-claim。日志"循环"实为上游策略每 bar 都在产生新的 entry intent（所有新 intent 被同理由拒）。真正的修复在信号产出侧（策略冷却），超出本次故障根因修复范围。
+- pool size 配置化（`max_conn=10` 默认值配置化）—— 本次根因是"每请求各自起小 pool"而非"单一主 pool 不够大"，配置化无必要；主 pool 默认 10 足够。
+
+详见 `docs/design/adr.md` ADR-008。
+
+---
+
+## 1. 2026-04-20 修复更新（P9 全套 + API 治理 4 项）
 
 本轮新增前端读侧支撑能力，**未引入任何边界泄漏**，所有跨域调用走公开端口（ADR-006 合规）。详见 [TODO.md](../TODO.md) "P9 完成快照"。
 

@@ -237,6 +237,38 @@ Backtesting 起点 = 该 spec + 参数网格
 
 ---
 
+## ADR-008: 持久化 pool 单例 + 关键运行时线程 fail-fast + /health 只读契约
+
+**状态**：已确定（2026-04-21）
+
+**上下文**：2026-04-20 生产事故：服务启动约 1h20m 后 `connection pool exhausted`，22:44 短时间内连接池被 8 次重建（每次 1-2 连接）。约 23 分钟后（23:07）`indicator writer thread` 在 DB 异常中静默死亡，主进程继续跑 8.5 小时"僵尸状态"——ingestor 在推，但 confirmed bar 完全不处理，supervisor 无感知。早晨重新流量回来时 intrabar queue 秒满，/health 因同步调 `mt5.initialize/login` 被堵 → 所有 HTTP 端点 2s 超时返回 HTTP 000。追根溯源有 3 个独立 bug：
+
+1. **API 路由每请求 `new TimescaleWriter(1,2)` + `ensure_schema()`**——`src/api/{research,experiment,backtest}_routes/*.py` 里 `_get_xxx_repo()` 函数为每个请求独立起 pg 连接池和 DDL，吃光 pg 连接后诱发连锁故障。
+2. **indicator runtime 4 个主循环无顶层异常捕获**——`src/indicators/runtime/event_loops.py` 的 `run_event_loop / run_intrabar_loop / run_event_writer_loop / run_reload_loop` 一旦抛未捕获异常，daemon thread 静默退出，主进程继续跑（ADR-004 的 `_any_thread_alive()` 检查只在 stop 流程里调，运行时不检测）。
+3. **`client.health()` 默认 `attempt_initialize=True, attempt_login=True`**——MT5 假死时 HTTP 线程池（40）会被全部堵在 `mt5.initialize()`（timeout 60s），观测性完全失效。
+
+**决策**：
+
+1. **持久化 repo 必须走 TimescaleWriter @property 单例**：`research_repo / experiment_repo / backtest_repo` 在 `src/persistence/db.py` 暴露为 lazy `@property`（等同既有 `market_repo / signal_repo` 等）。`StorageWriter.ensure_schema_ready()` 启动时一次性调所有 repo `ensure_schema()`。API 路由通过 `deps.get_research_repo / get_experiment_repo / get_backtest_repo` 复用 `container.storage_writer.db.<repo>`。**禁止在请求路径 `new TimescaleWriter`**，禁止在请求路径触发 `ensure_schema` DDL。违反此规则的 PR 必须被 block。
+2. **关键运行时主循环必须顶层 fail-fast**：`event_loops.py` 四个 run_*_loop 函数体必须 `try: _body(manager) except BaseException as exc: _on_thread_crash(name, exc)`；`_on_thread_crash` 生产下 `os._exit(1)` 让 supervisor 拉起整个进程。**守恒式"except 后重入循环"是禁止的**——静默吞异常 + 不可观测破坏是此次事故的核心成因。测试通过 `monkeypatch` 替换 `_on_thread_crash` 收集异常，避免 pytest 被 `os._exit` 杀掉。
+3. **`/health` 调用链禁止触发 MT5 重连**：`src/clients/base.py` 的 `health()` 默认参数 `attempt_mt5_reconnect=False` → `inspect_session_state(attempt_initialize=False, attempt_login=False)`。`readmodels/runtime.py` 的 `inspect(...)` 同步改 `False`。重连职责归还给 `BackgroundIngestor` 的错误恢复循环（它本来就有）和 `src/ops/mt5_session_gate.py` 启动 preflight（这两处保留 `True`）。
+
+**覆盖文件**：
+- `src/persistence/db.py`：新增 3 个 repo @property（research/experiment 延迟 import 以避免循环依赖）
+- `src/persistence/storage_writer.py`：`ensure_schema_ready()` 追加调用 3 个 repo `ensure_schema()`
+- `src/persistence/repositories/__init__.py`：`BacktestRepository` re-export；research/experiment 故意不 re-export（循环依赖）
+- `src/api/deps.py`：+3 getter（`get_research_repo / get_experiment_repo / get_backtest_repo`）
+- `src/api/{research,experiment,backtest}_routes/*.py`：`_get_xxx_repo` / `get_backtest_repo` 改为转发到 deps，不再 `new TimescaleWriter`
+- `src/indicators/runtime/event_loops.py`：新增 `_on_thread_crash` + 4 个主循环拆成 `run_*_loop` 外壳 + `_run_*_loop_body` 实现
+- `src/clients/base.py`：`health()` 加 `attempt_mt5_reconnect=False` 默认
+- `src/readmodels/runtime.py`：`inspect_session_state(...)` 改 False
+
+**演进方向**：
+- 如果未来 fail-fast 的 `os._exit(1)` 在 SIGTERM/graceful shutdown 里误触发（例如 `stop_event.set()` 后残余异常），应改成"先检查 `manager.state.stop_event.is_set()` → 如为 True 则 return（正常退出），否则 crash"。
+- 关键线程 liveness check（ADR-004 的 `_any_thread_alive`）目前只在 stop 流程用；若 fail-fast 路径被证明不够（比如进程不退出只是线程死），可补 monitor 运行时 liveness check + 主动升级告警。
+
+---
+
 ## ADR 模板
 
 ```markdown

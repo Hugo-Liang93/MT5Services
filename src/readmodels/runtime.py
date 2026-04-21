@@ -1135,8 +1135,8 @@ class RuntimeReadModel:
             try:
                 state = inspect(
                     require_terminal_process=True,
-                    attempt_initialize=True,
-                    attempt_login=True,
+                    attempt_initialize=False,
+                    attempt_login=False,
                 )
                 payload = (
                     state.to_dict() if hasattr(state, "to_dict") else dict(state or {})
