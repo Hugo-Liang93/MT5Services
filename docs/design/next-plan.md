@@ -608,20 +608,19 @@ TradeExecutor.submit_pending_entry
 **工作量**：3 天
 **风险**：中（merge 语义复杂）—— 加 merge 单元测试 + 等价性测试（incremental + merge ≡ full rerun）
 
-### R.4 — Numba JIT 热路径（P4）
+### R.4 — Numba JIT 热路径（P4，**2026-04-22 实测后下调**）
 
-**问题**：`_vectorized_barrier_scan`（已 NumPy 向量化）、threshold sweep 内层循环、decision tree 数据预处理仍是纯 Python/NumPy，Numba JIT 后能再快 2-5x。
+**初版估计（已下调）**：单 run 5-15%
+**实测重估**：**< 3%（不值做）**
 
-**实现**：
-- `src/research/core/barrier.py` 的 `_vectorized_barrier_scan` 加 `@njit(cache=True, fastmath=True)`
-- `src/research/analyzers/threshold.py` 内层循环 JIT
-- `src/research/analyzers/rule_mining.py` 数据预处理 JIT
-- requirements 加 `numba>=0.59.0`
+**实测结论**（2026-04-22 阅码后）：
+- `_vectorized_barrier_scan` 前段（窗口矩阵 + tp/sl 命中判断 + argmax）已经是**完全 NumPy 向量化在 C 层执行**，JIT 不会带来加速
+- 后段是 `for i in range(n-1)` Python 循环构造 `BarrierOutcome` NamedTuple list —— Numba 对 `Optional[NamedTuple]` list 支持差，强行 JIT 需要重构 BarrierOutcome 为 numpy structured array（高侵入）
+- threshold sweep 的 `_evaluate_threshold` 内层循环占 mining 总耗时 < 5%，即使 JIT 达成 5x 加速，整体收益 < 1%
+- predictive_power 的 bootstrap permutation 已用 NumPy + scipy 在 C 层
+- **真正 Python 层瓶颈在 temporal/microstructure provider 的 pandas `rolling().apply()`** —— 这是 R.2 (Polars) 的目标
 
-**收益**：单 run **5-15%**（barrier + threshold 阶段）
-
-**工作量**：1-2 天
-**风险**：低（JIT fallback 到 numpy 版本，加 `parallel=False` 保安全）
+**最终决策**：**搁置 R.4**。如果未来要做，必须先把 `BarrierOutcome` 重构为 numpy structured dtype（脱离 NamedTuple），工作量从 1-2 天升到 4-5 天，ROI 反不如优先做 R.2。
 
 ### R.5 — 多进程共享内存 base data（P5）
 
@@ -655,40 +654,53 @@ TradeExecutor.submit_pending_entry
 
 ### R.7 — SQL 查询优化（P7）
 
-**问题**：mining 启动加载 OHLC + indicator_series。可能存在：
-- hypertable chunk pruning 失效
-- 索引未覆盖 `(symbol, timeframe, time)` 全 range scan
+**问题**：mining 启动加载 OHLC + indicator_series。可能存在 chunk pruning 失效或索引未覆盖。
 
-**实现**：
-- `EXPLAIN ANALYZE` 检查 mining 启动 SQL
-- 必要时 `CREATE INDEX CONCURRENTLY` 加覆盖索引
-- 调整查询写法（用 `time >= ... AND time <= ...` 而非 `BETWEEN` 等）
+**初版估计（已下调）**：单 run 3-5%
+**实测重估（2026-04-22）**：**0%（DB 层已最优，无可优化空间）**
 
-**收益**：单 run **3-5%**（data load 阶段）
+**EXPLAIN ANALYZE 实测结果**（M5 12mo 70K bars）：
+```
+Custom Scan (ChunkAppend) on ohlc - actual time=3.519..266.622 rows=70293
+  ├─ ColumnarScan + Vectorized Filter on _hyper_3_53_chunk
+  ├─ Index Scan Backward using compress_hyper_..._symbol_timeframe__ts_meta_min_1_idx
+  └─ Buffers: shared hit=3694（全部 cache hit，零 disk I/O）
+```
 
-**工作量**：0.5 天
-**风险**：极低
+**已具备的优化**（无需新增）：
+- ✅ TimescaleDB hypertable chunk pruning 完美生效
+- ✅ Columnar 压缩 + Vectorized Filter
+- ✅ 现有索引 `idx_ohlc_symbol_tf_time` 完全覆盖 `(symbol, timeframe, time)` 范围查询
+- ✅ Buffer cache 命中率 100%（无 disk I/O）
+
+**最终决策**：**搁置 R.7**。SQL 总加载耗时仅 266ms（占 mining 25min < 0.02%），不是瓶颈。
 
 ---
 
-### Phase R 综合估算
+### Phase R 综合估算（**2026-04-22 实测后修订**）
 
-| 实施组合 | 单 run 加速 | 跨 run 加速 | 总工作量 |
-|---|---|---|---|
-| R.1 + R.4 + R.7 | 8-20% | **30-50%** | 3-4 天 |
-| + R.2 | **35-55%** | 30-50% | +1 周 |
-| + R.3 | 35-55% | **80-90%** | +3 天 |
-| 全做（+R.5+R.6）| **60-75%** | 90%+ | 3.5 周 |
+| 实施组合 | 单 run 加速 | 跨 run 加速 | 总工作量 | 状态 |
+|---|---|---|---|---|
+| **R.1 已完成** | 0% | **30-50%** | 0（已交付） | ✅ commit a74beb0 |
+| ~~R.4 + R.7~~ | ~~8-20%~~ → **<3%** | 0% | ~~3 天~~ | ❌ 实测搁置（详见各节）|
+| **R.2 (Polars)** | **25-40%** | 0% | 1 周 | 🔥 真正的 quick win |
+| **R.3 (incremental)** | 0% | **80-90%** | 3 天 | 大改造，收益巨大 |
+| R.5 (共享内存) | 5-10% | 0% | 1-2 天 | 可选 |
+| R.6 (Pipeline) | 20-30% | 0% | 3-5 天 | 复杂度高 |
 
-### 实施顺序建议
+**修订后实施顺序**：
 
-1. **R.1 DataMatrix 缓存**（首先做，跨 run 立竿见影）
-2. **R.4 Numba JIT**（工作量小，单 run 快赢）
-3. **R.7 SQL 优化**（半天搞定）
-4. **R.3 incremental 模式**（日常场景巨大收益）
-5. **R.2 Polars 重写**（最大单 run 加速但工作量大）
-6. **R.5 共享内存**（边际收益，可选）
-7. **R.6 Pipeline 化**（复杂度高，最后做）
+1. ~~R.1~~ ✅ **已完成**（跨 run 30-50% 已实现）
+2. **R.2 Polars 重写**（次轮重点，单 run 25-40%）
+3. **R.3 increment**（+3 天，日常场景 80-90%）
+4. R.5 / R.6 视情况
+5. ~~R.4 / R.7~~ ❌ **搁置**（实测 ROI < 3% 或 = 0%）
+
+### 实施顺序原版（保留作为方案演进证据）
+
+原序为 R.1 → R.4 → R.7 → R.3 → R.2 → R.5 → R.6（"快赢优先"）。
+2026-04-22 R.1 完成后实测 R.4/R.7：发现两者在当前代码 + DB 状态下 ROI < 3%，
+原"快赢"假设不成立。修订序为 R.1 → R.2 → R.3。
 
 ### 验收标准
 
