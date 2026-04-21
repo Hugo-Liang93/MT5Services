@@ -7,6 +7,50 @@
 
 ---
 
+## 0d. 2026-04-21 文档审查 + md 规范 + 历史挖掘导入
+
+**背景**：用户提出两个问题，连带第三件事：
+1. 当前挖掘是不是还用 N-bar 端点判断？→ 触发 research 代码审查
+2. 希望清理与代码不符的 md + 建立 md 管理规范防止乱加
+3. 把磁盘上的历史 mining JSON 落 DB（延续 §0c 打通的入库管线）
+
+**Research 代码现状核实**（审查结论，重要事实）：
+- Triple-Barrier target labeling 已完整落地（cf838d5 / e64a8e7 / 5b651a2）
+  - `src/research/core/barrier.py` 向量化 SL/TP/Time 三分支先触，SL 与 TP 同 bar 保守取 SL
+  - `data_matrix.py:335-359` 自动填充 `barrier_returns_long/short`，9 组默认 RR 网格
+  - `rule_mining.py:870-927` `_compute_barrier_stats_for_rule()` 每条规则产 BarrierStats
+- Feature Providers 6 个全部就位（temporal / microstructure / regime_transition / session_event / intrabar / cross_tf）
+- `FeatureCandidateSpec.feature_kind` 已区分 `derived`（组合型）vs `computed`（计算型，4ead09a）
+
+**文档清理**（4 处偏差修正）：
+- `docs/design/adr.md` ADR-007：状态"拟定中"→"已确定（2026-04-17）; 特征晋升自动化仍未实现"，"当前实现缺口"章节重写为"已落地 4 项 + 仍未实现 4 项"
+- `docs/research-system.md` F-12b：补充"研究层在 `barrier.py`+`data_matrix.py`，执行层在 `exit_rules.py`"的双层实现位置对照
+- `docs/research/2026-04-18-mining-vs-backtest-gap.md`：加"时点快照不回改"头注 + "后续演进"注释链到 F-12a/b/d 的 commit（"端点判断"现等价 Triple-Barrier 的 Time 分支）
+- `docs/README.md`：补充 `docs/research/` 和 `docs/superpowers/` 导航；重写 §2 分层（5 类：事实源 / 审计 / Runbook / 领域设计 / 研究快照）
+
+**md 管理规范**（新增，`docs/README.md §3` + `CLAUDE.md §13`）：
+- 新建 md 前必须回答 4 问：WHERE 归哪层 / WHY 不能并入现有 / WHEN 生命周期 / WHO 维护
+- 禁止：根目录业务 md（仅 CLAUDE/AGENTS/README/TODO）、`-old`/`-v2` 版本后缀、事故写进事实源文档、同主题平行 md
+- 时点快照"正确保鲜方式"：不回改正文，加"后续演进"头注链到最新 commit/ADR
+- commit 触发 SOP：架构改 → architecture+adr，策略数变 → CLAUDE §概览+signal-system，Research 变 → research-system+本文件，事故 → 本文件新段落（不删旧），API 契约 → quantx-canonical-ia
+
+**历史挖掘导入**（`src/ops/cli/import_historical_mining.py`）：
+- 扫 `data/artifacts/mining_*.json` + `data/research/mining_*.json`
+- 解析 `{"results": [{"tf","run_id","data_summary",...}, ...]}` 格式
+- 用文件 mtime 推 `experiment_id`（`historical_<YYYYMMDD>`）便于按批次追溯
+- dry-run 默认，`--execute` 才真写；`INSERT ... ON CONFLICT DO UPDATE` 自身幂等，重导不会重复
+- **已执行**：3 份 JSON → 8 行落 `research_mining_runs` 表（historical_20260415: 5 runs，historical_20260417: 3 runs，共 41,239 bars 样本量）
+
+**测试**（8 新用例）：`tests/ops/test_import_historical_mining.py` 覆盖 JSON→row 转换 / dry-run 不写 / execute 写 batch / 部分 malformed 跳过 / 空 results 安全。
+
+**附带检查**：`tests/{ops,monitoring,config,persistence,clients,indicators,readmodels}` **共 429 测试全绿**。mypy 干净。
+
+**下一步推荐**：
+1. 通过 `/v1/research/mining` API 前端能看到 8 条历史挖掘（验证过），前端 Research 页可以直接对接
+2. 未来真正跑一次带 `--experiment` 的端到端闭环（mining → backtest → paper → 前端审计），让 `experiments` 表首次写入
+
+---
+
 ## 0c. 2026-04-21 CLI 实验管线打通（`--persist` / `--experiment`）
 
 **背景**：调查当前 mining / backtest 结果从未入 DB 的原因时发现：`src/ops/cli/mining_runner.py` 和 `backtest_runner.py` 的设计定位是"快速诊断，供 AI 助手拿摘要"，只输出 stdout / JSON 文件，**完全不调 `repo.save_*`**。而 `src/api/*_routes/routes.py` 配合 BackgroundTask 的正式端点才入库——但从未被使用，导致 `research_mining_runs / backtest_runs / experiments` 表长期 0 行、ADR-007 声称的"Research→Backtest→Paper→Live experiment 追踪"管线**从未真正启用**。
