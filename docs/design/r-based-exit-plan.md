@@ -1,9 +1,16 @@
 # R-Based 分阶段仓位管理设计
 
-> 文档类型：设计方案/策略讨论稿，不作为当前交易执行实现的事实源。
-> 当前持仓管理、执行链路和运行时状态请以 `docs/architecture.md`、`docs/design/full-runtime-dataflow.md` 以及 `src/trading/*` 代码为准。
-
-> 替换当前 breakeven + trailing_SL + trailing_TP 三套独立机制，统一为 R 尺度的分阶段出场系统。
+> **📐 状态：规划方案（未落地到代码）**
+>
+> 本文件是**出场机制的未来方案**——将 breakeven + trailing_SL + trailing_TP 三套独立机制
+> 统一为 R 尺度的分阶段系统。**尚未实现**，代码中仍是三套独立机制。
+>
+> **当前实际出场逻辑权威引用**：
+> - 执行代码：[`src/trading/positions/exit_rules.py`](../../src/trading/positions/exit_rules.py)
+> - 已实现的出场一致性：[`position-state-consistency.md`](position-state-consistency.md)
+> - 研究层 Triple-Barrier：[`../research-system.md`](../research-system.md) §F-12a/b
+>
+> 落地前路计划：见 [`next-plan.md`](next-plan.md)（若有）或 TODO 中 P3+ 阶段。
 
 ## 问题
 

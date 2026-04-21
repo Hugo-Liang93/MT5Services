@@ -25,6 +25,9 @@
 | intrabar 支链 | `docs/design/intrabar-data-flow.md` |
 | 策略开发规范 / regime / 单策略契约 / TF 参数 | `docs/signal-system.md` |
 | Research 挖掘 / Feature Providers / 晋升通道 | `docs/research-system.md` |
+| **持仓管理**（peak/reconcile/出场一致性）| `docs/design/position-state-consistency.md`（已实现）+ `r-based-exit-plan.md`（规划）+ `pending-entry.md`（历史）|
+| **风控**（PnL 熔断 / 11 层堆栈）| `docs/signal-system.md §5.5`（当前权威）+ `design/risk-enhancement.md`（设计演进）|
+| 回测 vs 实盘差异 / 挖掘 gap | `docs/design/backtest-vs-live-divergence.md` + `docs/research/2026-04-18-mining-vs-backtest-gap.md` |
 | QuantX 执行页 SSE 流 | `docs/design/quantx-trade-state-stream.md` |
 | QuantX 数据时效性分级与推送通道 | `docs/design/quantx-data-freshness-tiering.md` |
 | QuantX 规范 IA 模型 | `docs/design/quantx-canonical-ia.md` |

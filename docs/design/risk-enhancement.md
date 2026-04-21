@@ -1,9 +1,12 @@
 # 风控增强设计文档 — PnL 熔断器 + PerformanceTracker 持久化恢复
 
-> 状态：**已实现（2026-03-27）**
-> 对应 commit：`e85e988`
-> 文档类型：已实现功能的设计记录，不用于判断当前启动链路是否健康。
-> 当前运行时探针、日志位置和主链路状态以 `docs/architecture.md`、`docs/codebase-review.md`、`docs/design/full-runtime-dataflow.md` 为准。
+> **✅ 状态：已实现（2026-03-27，commit `e85e988`）**
+>
+> 本文件仅记录**设计演进与决策背景**（为什么需要 PnL 熔断、为什么 PerformanceTracker 要从 DB 热启动）。
+>
+> **当前实现与配置的权威描述见** [`docs/signal-system.md §5.5 StrategyPerformanceTracker`](../signal-system.md)
+> —— 含完整字段、配置矩阵、与 TradeExecutor 技术熔断的对比表。
+> 不回改下方正文，仅头注指引。
 
 ---
 

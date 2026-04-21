@@ -1,7 +1,20 @@
 # Pending Entry 价格确认入场机制 — 详细设计方案
 
-> 状态：历史设计 + 部分实现参考。
-> 当前实现已经在 A7 调整为“策略 `_entry_spec()` 输出入场意图，`PendingEntryManager` 只执行 limit/stop 价格确认”，不再由执行层按策略 category 推导 zone mode。阅读本文件时，以 `docs/architecture.md` 中 `src/trading/` 边界和 `src/trading/pending/manager.py`、`src/trading/execution/executor.py` 的现状为准；涉及 category/zone_mode 的段落仅作为历史背景。
+> **⚠️ 状态：历史方案（2026-03-xx 时点）**
+>
+> 本文件记录 Pending Entry 机制的**原始设计**（含 category → zone_mode 推导）。
+> **当前实现已在 A7 重构**——入场规格由**策略层 `_entry_spec()` 输出**
+> （`entry_type` ∈ {market, limit, stop} + `entry_price` + `zone_atr`），
+> `PendingEntryManager` 退化为纯执行层，不再按 category 推算。
+>
+> **当前实现权威引用**：
+> - 策略侧：[`src/signals/strategies/structured/base.py`](../../src/signals/strategies/structured/base.py) `_entry_spec()`
+> - 执行侧：[`src/trading/pending/manager.py`](../../src/trading/pending/manager.py)
+>   + [`src/trading/execution/executor.py`](../../src/trading/execution/executor.py)
+> - 状态快照：[`docs/codebase-review.md`](../codebase-review.md) A7 段落
+>
+> 本文**不回改正文**（规范 docs/README.md §3.3 时点快照保鲜方式），仅头注指引。
+> 下方"category / zone_mode"描述应视为**历史背景**，不代表当前代码。
 
 ## 1. 问题陈述
 

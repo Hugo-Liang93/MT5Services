@@ -1,9 +1,17 @@
 # Next Plan — 下一阶段开发规划
 
-> 首版日期：2026-04-05
-> 系统现状与已完成项追踪见 `TODO.md`。本文仅包含待实施方案的技术细节。
-> 当前架构/策略/代码/性能风险台账见 `docs/codebase-review.md`；P0/P1 整改顺序以该审查文档为准。
-> 文档类型：规划文档，不代表当前已实现状态；当前运行时事实源以 `docs/architecture.md` 与 `docs/design/full-runtime-dataflow.md` 为准。
+> **📐 文档类型：长期技术方案（Phase 级规划）**
+>
+> 首版：2026-04-05 · 最近维护：见 git log
+>
+> **职责分工**（和兄弟文档的边界，严禁重复）：
+> - 本文 → **长期技术路线 + 方案细节**（Phase FP / 架构演进 / 跨 sprint 工作）
+> - `TODO.md` → **当前 sprint 活跃待办 + 本期系统现状快照**
+> - `docs/codebase-review.md` → **已完成项归档 + 风险台账 + 历史整改记录**
+> - `docs/architecture.md` / `design/full-runtime-dataflow.md` → **当前运行时事实源**
+>
+> 涉及"已实现"结论必须给 commit hash + 代码位置；本文的任何内容都不代表当前代码状态——
+> 以 `codebase-review.md` 为准。
 
 ---
 

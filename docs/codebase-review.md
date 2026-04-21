@@ -7,6 +7,53 @@
 
 ---
 
+## 0e. 2026-04-21 md 二轮深度审查 + 职责固化
+
+**背景**：§0d 建立 md 管理规范后，用户要求对 32 份 md **再做一次完整审查**，找冗余 / 重复 / 界限不清，并把 `TODO.md` 一并纳入审查，确定和 `CLAUDE.md` + `docs/` 的职责分工。
+
+**审查结果**（子代理并行盘点 + 交叉扫描）：
+
+所有 32 份 md **开头职责声明覆盖率 100%**（§0d 建立的规范有效）。发现 3 处高严重度问题 + 3 处中等：
+
+- 🔴 **PnL 熔断双处描述**：`signal-system.md §5.5` + `design/risk-enhancement.md §2.1` 讲同一特性
+- 🔴 **持仓管理 3 份文档状态不清**：`pending-entry.md`（历史方案）/ `position-state-consistency.md`（已实现）/ `r-based-position-management.md`（规划未落地）—— 头注未明确区分
+- 🔴 **Exit rules 3 处相关文档缺互链**：`research-system.md F-12b` / `position-state-consistency.md` / `codebase-review.md §P0-83`
+- ⚠️ `high-risk-remediation-milestones.md` 已闭环未标"归档"
+- ⚠️ `docs/README.md §1.2` 导航表缺持仓 / 风控 / 回测差异三行
+- ⚠️ `TODO.md` vs `design/next-plan.md` 职责边界未声明
+
+**TODO.md 审查**：发现它承载了 4 类内容（活跃待办 35% / 已完成归档 30% / 时点快照 15% / 长期路线 20%），违反"每 md 一职责"原则。
+
+**本次修复**（温和方案，不搬动大段内容，只加头注 + 引用）：
+
+**A. doc 偏差 (5 处)**：
+- `design/pending-entry.md` — 头部加 ⚠️ 历史方案状态栏 + 当前实现位置（base.py `_entry_spec()`）
+- `design/risk-enhancement.md` — 头部改为"设计演进背景"+ 指向 signal-system §5.5
+- `design/position-state-consistency.md` — 头部加 ✅ IMPLEMENTED + 出场主题地图（研究/执行/bug/规划 4 条链接）
+- `design/r-based-position-management.md` → **改名 `r-based-exit-plan.md`** + 头部加 📐 规划方案（未落地）
+- `research-system.md` F-12b — 补"相关"链接到 position-state-consistency / codebase-review §P0-83/84 / r-based-exit-plan
+
+**B. 导航与状态核对 (3 处)**：
+- `docs/README.md §1.2` 表格补 3 行：持仓管理 / 风控 / 回测 vs 实盘差异
+- `design/high-risk-remediation-milestones.md` 头部加 📦 归档状态（6 项闭环 + F-6~F-11 接管）
+- `design/next-plan.md` 头部加**职责分工表**（本文 vs TODO / codebase-review / architecture）
+
+**C. TODO.md 职责固化（温和方案，不搬内容，仅加顶部声明）**：
+- `TODO.md` 顶部加**职责分工表** + 内容迁移规则（baseline 该去 research/、长期规划该去 next-plan、完成归档该去 codebase-review）
+- `CLAUDE.md §项目概览` 尾部加**文档路线表**，清晰标注"读哪个文档回答什么问题"
+
+**结果**：
+- 所有 32 份 md 现在都有清晰的"我是什么、不是什么、相关文档在哪"头注
+- 持仓管理 / 风控两个主题的文档地图首次完整（从 position-state-consistency.md 可一键跳转到所有相关文档）
+- TODO.md / next-plan.md / codebase-review.md 三份核心文档职责**互不重叠**，未来新内容有明确归属
+- 重命名的 `r-based-exit-plan.md` 名字更精确（不和已实现的 position-state-consistency 混淆）
+
+**未执行的激进选项**（以后可按需做）：
+- 搬 ~500 行从 TODO.md 到 codebase-review + research/ —— 会破坏 session-start 读 TODO 的现有习惯，先不动
+- 新建 `docs/design/exit-rules-overview.md` 作为出场规则统一入口 —— 现在通过 `position-state-consistency.md` 头部地图已能导航，不急
+
+---
+
 ## 0d. 2026-04-21 文档审查 + md 规范 + 历史挖掘导入
 
 **背景**：用户提出两个问题，连带第三件事：

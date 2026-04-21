@@ -45,6 +45,9 @@
 - **F-12b** ✅ **已闭环**（commit `c0c0387`）：策略可声明 `ExitSpec(mode=BARRIER, ...)` 与挖掘 exit 语义对齐
   * **执行层实现**：`src/trading/positions/exit_rules.py` `evaluate_barrier_exit()`（回测与实盘复用）
   * ⚠️ 两层实现位置不同，互为契约：研究层用于 labeling / gap 诊断，执行层用于真实退出决策
+  * **相关**：执行层一致性修复见 [`design/position-state-consistency.md`](design/position-state-consistency.md)；
+    已修 bug 记录见 [`codebase-review.md §P0-83/84`](codebase-review.md)；
+    未来 R-based 规划见 [`design/r-based-exit-plan.md`](design/r-based-exit-plan.md)
 - **F-12c** ⏸️ **推迟至 P3**：Plan B 完成后诊断价值被实质覆盖
 
 ### 下次挖掘推荐流程

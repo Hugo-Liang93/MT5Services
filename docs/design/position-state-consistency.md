@@ -1,8 +1,14 @@
 # 持仓状态一致性优化设计
 
-> 状态：**IMPLEMENTED**  
-> 创建：2026-04-16  
-> 关联：`src/trading/positions/manager.py`, `reconciliation.py`, `src/trading/state/store.py`
+> **✅ 状态：IMPLEMENTED（2026-04-16）**
+>
+> **代码位置**：`src/trading/positions/manager.py` · `reconciliation.py` · `src/trading/state/store.py`
+>
+> **相关文档**（出场规则主题地图）：
+> - 研究层 Triple-Barrier labeling → [`research-system.md`](../research-system.md) §F-12a/b
+> - 执行层 Chandelier Exit / exit_rules → [`../../src/trading/positions/exit_rules.py`](../../src/trading/positions/exit_rules.py)
+> - 已修复 bug 记录 → [`codebase-review.md`](../codebase-review.md) §P0-83（`initial_stop_loss` 恢复）+ §P0-84（Chandelier profile 配置）
+> - R-based 分阶段出场（规划未落地）→ [`r-based-exit-plan.md`](r-based-exit-plan.md)
 
 ---
 

@@ -1,6 +1,21 @@
 # TODO
 
-按优先级分组。核心原则：**先验证再优化再上线**。
+> **📋 文档职责**（和兄弟文档的分工，新 session 开读前需理解）：
+>
+> | 文档 | 职责 |
+> |---|---|
+> | **本文（TODO.md）** | **当前 sprint 活跃待办** + 本期系统现状快照（P1-P5 任务清单）|
+> | `docs/design/next-plan.md` | **长期技术方案**（Phase 级规划，跨 sprint）|
+> | `docs/codebase-review.md` | **已完成归档** + 风险台账 + 历史整改记录 |
+> | `docs/research/<日期>-*.md` | **时点数据快照**（baseline 表、gap 分析等）|
+> | `CLAUDE.md` | AI 操作规则 + 配置 / 策略 / SOP 速查 |
+>
+> **内容迁移规则**（防止再次混乱）：
+> - 任务完成 → 本文条目打勾；大块阶段完成后**整段移**到 `codebase-review.md §N` 归档
+> - baseline / 回测快照 → **不写本文**，写 `docs/research/<日期>-<主题>.md`
+> - Phase 级长期规划 → 写 `docs/design/next-plan.md`，本文只列出"本 sprint 要推进的子任务"
+>
+> 按优先级分组。核心原则：**先验证再优化再上线**。
 
 ---
 
