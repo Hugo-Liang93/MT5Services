@@ -679,6 +679,9 @@ def main() -> None:
         default=None,
         help="Write JSON payload (results + optional candidates) to file",
     )
+    from src.ops.cli._persistence import add_persist_arguments
+
+    add_persist_arguments(parser)
     args = parser.parse_args()
     set_current_environment(args.environment)
 
@@ -822,6 +825,19 @@ def main() -> None:
                     promotable_only=args.promotable_features_only,
                 )
             )
+
+    if args.persist and raw_results:
+        from src.ops.cli._persistence import persist_mining_results
+
+        saved = persist_mining_results(
+            raw_results,
+            environment=args.environment,
+            experiment_id=args.experiment,
+        )
+        print(
+            f"[persist] saved {saved}/{len(raw_results)} mining_runs to DB "
+            f"(env={args.environment}, experiment={args.experiment or '-'})"
+        )
 
     if args.json_output:
         import json

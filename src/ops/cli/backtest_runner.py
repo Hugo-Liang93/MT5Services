@@ -547,6 +547,9 @@ def main() -> None:
         action="store_true",
         help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
     )
+    from src.ops.cli._persistence import add_persist_arguments
+
+    add_persist_arguments(parser)
     args = parser.parse_args()
     set_current_environment(args.environment)
 
@@ -589,6 +592,7 @@ def main() -> None:
 
     all_results: List[dict] = []
     raw_results: List[dict] = []
+    raw_objects: List[Any] = []  # BacktestResult 列表——给 --persist 用
     for tf in timeframes:
         sys.stderr.write(f"Running {tf}...\n")
         sys.stderr.flush()
@@ -602,6 +606,7 @@ def main() -> None:
         raw_result = data.pop("_raw_result", None)
         if raw_result is not None:
             raw_results.append(raw_result.to_dict())
+            raw_objects.append(raw_result)
         all_results.append(data)
 
         if not args.compare:
@@ -615,6 +620,19 @@ def main() -> None:
         print(_render_compare(all_results))
     elif args.compare and len(all_results) == 1:
         print(render_fn(all_results[0]))
+
+    if args.persist and raw_objects:
+        from src.ops.cli._persistence import persist_backtest_results_many
+
+        saved = persist_backtest_results_many(
+            raw_objects,
+            environment=args.environment,
+            experiment_id=args.experiment,
+        )
+        print(
+            f"[persist] saved {saved}/{len(raw_objects)} backtest_runs to DB "
+            f"(env={args.environment}, experiment={args.experiment or '-'})"
+        )
 
     if args.json_output:
         import json

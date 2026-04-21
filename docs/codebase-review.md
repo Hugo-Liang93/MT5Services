@@ -7,6 +7,52 @@
 
 ---
 
+## 0c. 2026-04-21 CLI 实验管线打通（`--persist` / `--experiment`）
+
+**背景**：调查当前 mining / backtest 结果从未入 DB 的原因时发现：`src/ops/cli/mining_runner.py` 和 `backtest_runner.py` 的设计定位是"快速诊断，供 AI 助手拿摘要"，只输出 stdout / JSON 文件，**完全不调 `repo.save_*`**。而 `src/api/*_routes/routes.py` 配合 BackgroundTask 的正式端点才入库——但从未被使用，导致 `research_mining_runs / backtest_runs / experiments` 表长期 0 行、ADR-007 声称的"Research→Backtest→Paper→Live experiment 追踪"管线**从未真正启用**。
+
+**本次打通**（方案 A：最小侵入，opt-in flag）：
+
+- **新增 `src/ops/cli/_persistence.py`** helper 模块（统一 3 个 CLI 使用）：
+  - `_writer_scope(environment)` context manager：CLI 短生命周期场景下打开 `TimescaleWriter` 并在退出时 `pool.closeall()`（符合 ADR-008 精神——禁令针对长期运行 API 路由，不针对一次性 CLI）
+  - `persist_mining_results({tf: MiningResult}, env, experiment_id=None)` 批量入库
+  - `persist_backtest_result(BacktestResult, env, exp_id)` / `persist_backtest_results_many(...)`
+  - `add_persist_arguments(parser)` 统一 `--persist` / `--experiment <id>` 两个 flag 的注册
+  - 所有失败 warning 日志，不 raise——CLI 结果已在 stdout/JSON 输出，不该阻塞退出
+
+- **`src/ops/cli/mining_runner.py`**：`main()` 尾端收到 `raw_results: {tf: MiningResult}` 后，`--persist` 时调 `persist_mining_results`
+- **`src/ops/cli/backtest_runner.py`**：`_run_single` 返回的 `_raw_result` 保留为 `raw_objects: List[BacktestResult]`，`--persist` 时调 `persist_backtest_results_many`
+
+**使用方式（不改已有工作流）**：
+
+```bash
+# 原行为不变（默认不入库，AI 助手快速诊断）
+python -m src.ops.cli.backtest_runner --environment live --tf H1
+
+# 正式 baseline（入库 + 关联实验）
+python -m src.ops.cli.backtest_runner --environment live --tf H1 \
+    --persist --experiment exp_20260421_h1_baseline
+
+# 跨 TF baseline 一次性入库
+python -m src.ops.cli.mining_runner --environment live --tf H1,M30,M15 \
+    --compare --emit-candidates --persist --experiment exp_20260421_cross_tf
+```
+
+**测试覆盖**（1 新文件 7 用例全绿）：
+- `tests/ops/test_cli_persistence.py` —— helper 契约：writer 生命周期 / experiment_id 透传 / 部分失败继续 / writer open 失败 warning 不 raise / `add_persist_arguments` flag 注册
+
+**附带检查**：`tests/{ops,monitoring,config,persistence,clients,indicators,readmodels}` **406 测试全绿**。mypy 干净。
+
+**未完成（已知）**：
+- `src/ops/cli/walkforward_runner.py` **本次未加 `--persist`**：`WalkForwardResult` 目前只在 `BacktestRuntimeStore` 内存缓存（上限 50，重启丢；CLAUDE.md Known Issues 已记录），尚无对应 `walk_forward_repo` DDL / save 方法。需要先新增 `src/persistence/repositories/walk_forward_repo.py` + schema 才能接入——留待下一轮
+- `src/backtesting/cli.py`（legacy）的 `_persist_result` 仍在（双入库路径共存）——后续可标 `@deprecated` 或迁移到 `_persistence.py`
+
+**下一步推荐**：
+1. 真正跑一次带 `--experiment` 的 H1 baseline + mining + paper_trading `--from-backtest-run-id`，让 `experiment_id` 贯穿 4 张表（目前 `experiments` 表仍是 0 行——管线打通但没走过闭环）
+2. 修 CLAUDE.md Known Issues 的 "WF 结果内存缓存" + "回测 BackgroundTask 结果丢"
+
+---
+
 ## 0b. 2026-04-21 事故后跟进优化（pool 容量 + monitor race defense）
 
 **背景**：ADR-008 修复部署后观察 6h，指标仍有两类"瘙痒"：
