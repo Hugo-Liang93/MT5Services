@@ -16,6 +16,32 @@ from .health.monitor import HealthMonitor, get_health_monitor
 logger = logging.getLogger(__name__)
 
 
+def _safe_get_performance_stats(component_obj: Any) -> Optional[Dict[str, Any]]:
+    """调 component_obj.get_performance_stats() 并处理瞬时 race。
+
+    indicator manager 内部有 50+ 个 dict 在 hot path 被并发 mutate，罕见快照路径
+    可能与写路径在一个调度周期内竞争。race 是瞬时的，1 次重试后通常稳定。重试
+    仍失败则返回 None，让调用方跳过此次指标采集——ERROR 日志降级为 DEBUG。
+    """
+    getter = component_obj.get_performance_stats
+    try:
+        return getter()
+    except RuntimeError as exc:
+        if "dictionary changed size" not in str(exc):
+            raise
+        try:
+            return getter()
+        except RuntimeError as exc2:
+            if "dictionary changed size" in str(exc2):
+                logger.debug(
+                    "get_performance_stats race persisted for %s: %s",
+                    getattr(component_obj, "__class__", type(component_obj)).__name__,
+                    exc2,
+                )
+                return None
+            raise
+
+
 class MonitoringManager:
     """监控管理器，协调多个监控任务"""
 
@@ -142,7 +168,9 @@ class MonitoringManager:
                             elif method == "performance_stats" and hasattr(
                                 component_obj, "get_performance_stats"
                             ):
-                                stats = component_obj.get_performance_stats()
+                                stats = _safe_get_performance_stats(component_obj)
+                                if stats is None:
+                                    continue
                                 if isinstance(stats, dict) and "success_rate" in stats:
                                     self.health_monitor.record_metric(
                                         name,

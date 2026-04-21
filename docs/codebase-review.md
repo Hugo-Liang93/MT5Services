@@ -7,6 +7,37 @@
 
 ---
 
+## 0b. 2026-04-21 事故后跟进优化（pool 容量 + monitor race defense）
+
+**背景**：ADR-008 修复部署后观察 6h，指标仍有两类"瘙痒"：
+1. warm-up 期 5-15 分钟 + 偶发突发时 `connection pool exhausted` 15 次（不再连锁故障，但说明 10 连接在峰值不够）
+2. `Failed to check cache stats: dictionary changed size during iteration` 极低频发生（6h 共 2 次）——indicator manager 内部 50+ dict hot path 与 monitor 快照 iteration 的瞬时 race
+
+**本次优化**：
+
+- **pool 容量配置化** (`src/config/database.py`、`src/persistence/db.py`、`config/db.ini`)
+  - `DBSettings` 新增 `pool_min_conn / pool_max_conn` 字段（默认 **1-20**，从事故前的隐式 1-10 提升）
+  - `TimescaleWriter.__init__(settings, min_conn=None, max_conn=None)`：显式传参仍优先（保留 ops CLI / 单元测试使用小 pool），未传则从 settings 读取
+  - `db.ini [db.live]` / `[db.demo]` 新增 `pool_min_conn` / `pool_max_conn` 注释条目，本地可覆盖
+
+- **monitor race defense** (`src/monitoring/health/checks.py`、`src/monitoring/manager.py`)
+  - `check_cache_stats` 提取 `_collect_worker_stats` helper：对 `RuntimeError: dictionary changed size during iteration` 做 1 次重试（race 瞬时，通常成功）
+  - `_safe_get_performance_stats` 在 `monitoring/manager.py` 同样对 `performance_stats` 路径做 1 次重试
+  - 重试仍失败 → 降级为 DEBUG 日志 + 返回 `{}` / `None`，不再污染 errors.log、不中断当轮监控
+  - **非 race 的 RuntimeError 仍会 ERROR 上报**（通过 `"dictionary changed size" in str(exc)` 精准匹配），不吞有意义错误
+
+**测试覆盖**（2 个新测试文件，10 个测试用例全绿）：
+- `tests/config/test_db_pool_config.py` —— 默认 1-20 / 显式覆盖 / ini 读取 / settings 字段传递
+- `tests/monitoring/test_checks_race_defense.py` —— race 重试成功 / 持续 race 降级 / 非 race 错误仍 ERROR
+
+**附带检查**：`tests/{monitoring,config,persistence,clients,indicators,readmodels}` **共 399 个测试全绿**。
+
+**未做**（分析后确认非代码修复必需）：
+- 深挖每个可能的 dict iteration race 源头 —— monitor 层 defense-in-depth 已经把影响降到 DEBUG 层级（不影响业务、不污染日志），而每个 hot-path dict 加锁会牺牲吞吐，收益小
+- 业务层「Risk BLOCK 日志刷」—— live 账户保证金 + 策略 entry_spec 缺 SL 的业务决策，不属代码修复范围
+
+---
+
 ## 0. 2026-04-21 生产事故根因修复（ADR-008）
 
 **事件**：2026-04-20 20:19 启动的 live supervisor 进程组在次日 08 点被观察到 HTTP 000、indicator pipeline 死 8.5 小时、live-exec-a reconciliation 滞后 3 小时。根因链：

@@ -15,6 +15,11 @@ class DBSettings(BaseModel):
     pg_password: str = ""
     pg_database: str = ""
     pg_schema: str = "public"
+    # 连接池容量。默认 1-20 覆盖 live-main 启动 warm-up 期的并发峰值
+    # （指标回补 + signal 评估 + risk check + 10+ repo 写）。
+    # 2026-04-21 事故后从 10 提升到 20（见 ADR-008 演进方向）。
+    pool_min_conn: int = 1
+    pool_max_conn: int = 20
 
 
 def _load_ini_section(filename: str, section: str):
@@ -31,7 +36,11 @@ def _cfg_str(sec, key: str, default=None):
     if not isinstance(value, str):
         return value
     normalized = value.strip()
-    if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+    if (
+        len(normalized) >= 2
+        and normalized[0] == normalized[-1]
+        and normalized[0] in {"'", '"'}
+    ):
         normalized = normalized[1:-1].strip()
     return normalized
 
@@ -65,6 +74,8 @@ def _load_db_settings_cached(resolved_environment: str) -> DBSettings:
         pg_password=_cfg_str(sec, "password", ""),
         pg_database=_cfg_str(sec, "database", ""),
         pg_schema=_cfg_str(sec, "schema", "public"),
+        pool_min_conn=_cfg_int(sec, "pool_min_conn", 1) or 1,
+        pool_max_conn=_cfg_int(sec, "pool_max_conn", 20) or 20,
     )
     missing = []
     if not settings.pg_user:

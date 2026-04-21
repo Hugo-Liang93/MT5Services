@@ -43,11 +43,31 @@ _SCHEMA_INIT_LOCK_KEY = 7_254_031_901
 class TimescaleWriter:
     """TimescaleDB writer with connection pooling and repository-backed facade methods."""
 
-    def __init__(self, settings: DBSettings, min_conn: int = 1, max_conn: int = 10):
+    def __init__(
+        self,
+        settings: DBSettings,
+        min_conn: int | None = None,
+        max_conn: int | None = None,
+    ):
+        """构造 pg 连接池。
+
+        显式传 min_conn/max_conn 覆盖 settings 上的 `pool_min_conn/pool_max_conn`，
+        便于单元测试和 ops 脚本指定小 pool（避免挤占 live 资源）。默认走 settings
+        读取的值（db.ini 可配置）。2026-04-21 事故后默认 1-20 而非 1-10，以便
+        容纳启动 warm-up 期的并发峰值。
+        """
         self.settings = settings
         self._pool: Optional[SimpleConnectionPool] = None
-        self._min_conn = min_conn
-        self._max_conn = max_conn
+        self._min_conn = (
+            int(min_conn)
+            if min_conn is not None
+            else int(getattr(settings, "pool_min_conn", 1) or 1)
+        )
+        self._max_conn = (
+            int(max_conn)
+            if max_conn is not None
+            else int(getattr(settings, "pool_max_conn", 20) or 20)
+        )
         self._last_health_check = 0
         self._health_check_interval = 60
         self._reconnect_lock = threading.Lock()
