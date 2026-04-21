@@ -99,6 +99,12 @@ class BacktestRepository:
             (result.completed_at - result.started_at).total_seconds() * 1000
         )
 
+        # P11 Phase 4a: execution_realism / trade_structure 字段
+        # - execution_realism：Phase 4b 敏感性分析填充，当前留 NULL
+        # - trade_structure：派生自 trades，由 ReadModel 按需计算；不在 save 时预存
+        execution_realism_payload = getattr(result, "execution_realism", None)
+        trade_structure_payload = getattr(result, "trade_structure", None)
+
         row = (
             result.run_id,
             result.started_at,
@@ -111,6 +117,16 @@ class BacktestRepository:
             "completed",
             duration_ms,
             self._writer._json(result.filter_stats),
+            (
+                self._writer._json(execution_realism_payload)
+                if execution_realism_payload is not None
+                else None
+            ),
+            (
+                self._writer._json(trade_structure_payload)
+                if trade_structure_payload is not None
+                else None
+            ),
         )
         self._writer._batch(INSERT_RUN_SQL, [row])
 
@@ -140,6 +156,10 @@ class BacktestRepository:
                     t.exit_reason,
                     getattr(t, "slippage_cost", 0.0),
                     getattr(t, "commission_cost", 0.0),
+                    # P11 Phase 4a: 交易结构字段
+                    getattr(t, "mfe_pct", None),
+                    getattr(t, "mae_pct", None),
+                    getattr(t, "hold_minutes", None),
                 )
             )
         self._writer._batch(INSERT_TRADE_SQL, rows, page_size=200)
@@ -183,7 +203,8 @@ class BacktestRepository:
         sql = """
         SELECT run_id, created_at, config, param_set, metrics,
                metrics_by_regime, metrics_by_strategy, equity_curve,
-               status, duration_ms, filter_stats
+               status, duration_ms, filter_stats,
+               execution_realism, trade_structure
         FROM backtest_runs WHERE run_id = %s
         """
         rows = self._query(sql, (run_id,))
@@ -200,7 +221,8 @@ class BacktestRepository:
         sql = """
         SELECT run_id, created_at, config, param_set, metrics,
                metrics_by_regime, metrics_by_strategy, equity_curve,
-               status, duration_ms, filter_stats
+               status, duration_ms, filter_stats,
+               execution_realism, trade_structure
         FROM backtest_runs
         ORDER BY created_at DESC
         LIMIT %s OFFSET %s
@@ -214,7 +236,8 @@ class BacktestRepository:
         SELECT id, run_id, strategy, direction, entry_time, entry_price,
                exit_time, exit_price, stop_loss, take_profit,
                position_size, pnl, pnl_pct, bars_held, regime,
-               confidence, exit_reason
+               confidence, exit_reason,
+               mfe_pct, mae_pct, hold_minutes
         FROM backtest_trades
         WHERE run_id = %s
         ORDER BY entry_time
@@ -245,6 +268,10 @@ class BacktestRepository:
                     "regime": r[14],
                     "confidence": r[15],
                     "exit_reason": r[16],
+                    # P11 Phase 4a
+                    "mfe_pct": float(r[17]) if r[17] is not None else None,
+                    "mae_pct": float(r[18]) if r[18] is not None else None,
+                    "hold_minutes": int(r[19]) if r[19] is not None else None,
                 }
             )
         return result
@@ -353,6 +380,9 @@ class BacktestRepository:
             "status": row[8],
             "duration_ms": row[9],
             "filter_stats": row[10] if len(row) > 10 else None,
+            # P11 Phase 4a 字段（SELECT 中包含则读取；旧回测为 NULL）
+            "execution_realism": row[11] if len(row) > 11 else None,
+            "trade_structure": row[12] if len(row) > 12 else None,
         }
 
     # ── 参数推荐 CRUD ─────────────────────────────────────────────────

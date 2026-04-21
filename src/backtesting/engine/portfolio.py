@@ -69,6 +69,11 @@ class _Position:
     # 动态成本累计（非 PnL 单位的原始点数 / USD）
     entry_spread_points: float = 0.0  # 开仓扣的半 spread 点数（USD/lot 侧）
     swap_cost: float = 0.0  # 持仓期间累计 swap（USD，负为亏损）
+    # P11 Phase 4a: MFE/MAE 追踪（逐 bar 更新）
+    # buy: mfe_price = max(high during holding), mae_price = min(low during holding)
+    # sell: mfe_price = min(low during holding), mae_price = max(high during holding)
+    mfe_price: Optional[float] = None
+    mae_price: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -475,6 +480,8 @@ class PortfolioTracker:
             lowest_price=entry_price if action == "sell" else None,
             entry_spread_points=entry_half_spread,
             entry_scope=entry_scope,
+            mfe_price=entry_price,
+            mae_price=entry_price,
         )
         self._open_positions.append(pos)
         day_key = bar.time.date().isoformat()
@@ -559,6 +566,9 @@ class PortfolioTracker:
                 else:
                     pos.bars_since_peak += 1
                 pos.highest_price = pos.peak_price
+                # P11 Phase 4a: MFE (max high) / MAE (min low) 更新
+                pos.mfe_price = max(pos.mfe_price or pos.entry_price, bar.high)
+                pos.mae_price = min(pos.mae_price or pos.entry_price, bar.low)
             else:
                 new_peak = min(peak_at_bar_open, bar.low)
                 if new_peak < peak_at_bar_open:
@@ -567,6 +577,9 @@ class PortfolioTracker:
                 else:
                     pos.bars_since_peak += 1
                 pos.lowest_price = pos.peak_price
+                # sell: MFE (min low) / MAE (max high)
+                pos.mfe_price = min(pos.mfe_price or pos.entry_price, bar.low)
+                pos.mae_price = max(pos.mae_price or pos.entry_price, bar.high)
 
             pos.bars_held += 1
 
@@ -748,6 +761,26 @@ class PortfolioTracker:
 
         bars_held = bar_index - pos.entry_bar_index
 
+        # P11 Phase 4a: 派生 MFE/MAE（百分比，>=0）+ hold_minutes
+        mfe_pct: Optional[float] = None
+        mae_pct: Optional[float] = None
+        if (
+            pos.entry_price > 0
+            and pos.mfe_price is not None
+            and pos.mae_price is not None
+        ):
+            if pos.direction == "buy":
+                mfe_raw = (pos.mfe_price - pos.entry_price) / pos.entry_price * 100.0
+                mae_raw = (pos.entry_price - pos.mae_price) / pos.entry_price * 100.0
+            else:
+                mfe_raw = (pos.entry_price - pos.mfe_price) / pos.entry_price * 100.0
+                mae_raw = (pos.mae_price - pos.entry_price) / pos.entry_price * 100.0
+            mfe_pct = round(max(0.0, mfe_raw), 4)
+            mae_pct = round(max(0.0, mae_raw), 4)
+
+        hold_seconds = (exit_time - pos.entry_time).total_seconds()
+        hold_minutes = int(hold_seconds / 60) if hold_seconds > 0 else 0
+
         trade = TradeRecord(
             signal_id=pos.signal_id,
             strategy=pos.strategy,
@@ -769,6 +802,9 @@ class PortfolioTracker:
             slippage_cost=round(slippage_cost, 2),
             commission_cost=round(total_commission, 2),
             swap_cost=round(swap_cost_total, 2),
+            mfe_pct=mfe_pct,
+            mae_pct=mae_pct,
+            hold_minutes=hold_minutes,
         )
         self._closed_trades.append(trade)
         return trade

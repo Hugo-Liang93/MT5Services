@@ -17,6 +17,13 @@ from .backtest import INSERT_TRADE_SQL as INSERT_BACKTEST_TRADE_SQL
 from .circuit_breaker_history import DDL as CIRCUIT_BREAKER_HISTORY_DDL
 from .circuit_breaker_history import INSERT_SQL as INSERT_CIRCUIT_BREAKER_HISTORY_SQL
 
+# ── Correlation Analysis (P11 Phase 3) ───────────────────────────
+from .correlation import DDL as CORRELATION_DDL
+from .correlation import FETCH_BY_ID_SQL as FETCH_CORRELATION_BY_ID_SQL
+from .correlation import FETCH_LATEST_BY_RUN_SQL as FETCH_CORRELATION_LATEST_SQL
+from .correlation import INSERT_SQL as INSERT_CORRELATION_SQL
+from .correlation import LIST_BY_RUN_SQL as LIST_CORRELATION_BY_RUN_SQL
+
 # ── Economic Calendar ────────────────────────────────────────────
 from .economic_calendar import DDL as ECONOMIC_CALENDAR_DDL
 from .economic_calendar import (
@@ -84,6 +91,15 @@ from .trade_control_state import UPSERT_SQL as UPSERT_TRADE_CONTROL_STATE_SQL
 from .trade_outcomes import DDL as TRADE_OUTCOMES_DDL
 from .trade_outcomes import INSERT_SQL as INSERT_TRADE_OUTCOMES_SQL
 
+# ── Walk-Forward (P11 Phase 2) ───────────────────────────────────
+from .walk_forward import DDL as WALK_FORWARD_DDL
+from .walk_forward import FETCH_LATEST_BY_BACKTEST_RUN_SQL as FETCH_WF_LATEST_SQL
+from .walk_forward import FETCH_RUN_SQL as FETCH_WF_RUN_SQL
+from .walk_forward import FETCH_WINDOWS_SQL as FETCH_WF_WINDOWS_SQL
+from .walk_forward import INSERT_RUN_SQL as INSERT_WF_RUN_SQL
+from .walk_forward import INSERT_WINDOW_SQL as INSERT_WF_WINDOW_SQL
+from .walk_forward import LIST_RUNS_SQL as LIST_WF_RUNS_SQL
+
 # ── Centralized DDL execution order ─────────────────────────────
 # Tables with foreign keys must come after their referenced tables.
 DDL_STATEMENTS = [
@@ -116,6 +132,10 @@ DDL_STATEMENTS = [
     # Backtest (backtest_trades FK → backtest_runs)
     BACKTEST_DDL,
     RECOMMENDATION_DDL,
+    # Walk-Forward 依赖 backtest_runs（外键），必须在其后
+    WALK_FORWARD_DDL,
+    # Correlation 分析结果（不设 FK，允许独立历史保留）
+    CORRELATION_DDL,
     # Paper trading (paper_trade_outcomes FK → paper_trading_sessions)
     PAPER_TRADING_DDL,
 ]
@@ -167,4 +187,16 @@ __all__ = [
     # Monitoring
     "INSERT_PIPELINE_TRACE_EVENTS_SQL",
     "UPSERT_RUNTIME_TASK_STATUS_SQL",
+    # Walk-Forward
+    "INSERT_WF_RUN_SQL",
+    "INSERT_WF_WINDOW_SQL",
+    "FETCH_WF_RUN_SQL",
+    "FETCH_WF_LATEST_SQL",
+    "FETCH_WF_WINDOWS_SQL",
+    "LIST_WF_RUNS_SQL",
+    # Correlation Analysis
+    "INSERT_CORRELATION_SQL",
+    "FETCH_CORRELATION_BY_ID_SQL",
+    "FETCH_CORRELATION_LATEST_SQL",
+    "LIST_CORRELATION_BY_RUN_SQL",
 ]

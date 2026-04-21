@@ -428,6 +428,12 @@ class TradeRecord:
     slippage_cost: float = 0.0  # 开仓+平仓滑点/spread 总成本（USD）
     commission_cost: float = 0.0  # 手续费总成本
     swap_cost: float = 0.0  # 过夜利息累计（USD，负数表示支付）
+    # P11 Phase 4a: 交易结构字段
+    # MFE (Maximum Favorable Excursion) — 持仓期间最大顺势浮盈（百分比）
+    # MAE (Maximum Adverse Excursion) — 持仓期间最大逆势浮亏（百分比，正数）
+    mfe_pct: Optional[float] = None
+    mae_pct: Optional[float] = None
+    hold_minutes: Optional[int] = None  # 持仓分钟数（exit_time - entry_time）
 
 
 @dataclass(frozen=True)

@@ -26,12 +26,16 @@ from src.market_structure import MarketStructureAnalyzer
 from src.monitoring.pipeline import PipelineEventBus
 from src.notifications.module import NotificationModule
 from src.persistence.storage_writer import StorageWriter
+from src.readmodels.backtest_detail import BacktestDetailReadModel
 from src.readmodels.cockpit import CockpitReadModel
+from src.readmodels.correlation_read import CorrelationAnalysisReadModel
 from src.readmodels.intel import IntelReadModel
+from src.readmodels.lab_evaluation import LabEvaluationReadModel
 from src.readmodels.lab_impact import LabImpactReadModel
 from src.readmodels.runtime import RuntimeReadModel
 from src.readmodels.trade_trace import TradingFlowTraceReadModel
 from src.readmodels.trades_workbench import TradesWorkbenchReadModel
+from src.readmodels.walk_forward_read import WalkForwardReadModel
 from src.readmodels.workbench import WorkbenchReadModel
 from src.risk.service import PreTradeRiskService
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
@@ -450,6 +454,23 @@ def get_backtest_repo():  # type: ignore[no-untyped-def]
     return _container.storage_writer.db.backtest_repo
 
 
+def get_walk_forward_repo():  # type: ignore[no-untyped-def]
+    """共享 container.storage_writer 上的 WalkForwardRepository（P11 Phase 2）。
+
+    同 BacktestRepository 连接池，禁止在此构造独立 TimescaleWriter（ADR-006）。
+    """
+    _ensure_initialized()
+    assert _container is not None and _container.storage_writer is not None
+    return _container.storage_writer.db.walk_forward_repo
+
+
+def get_correlation_repo():  # type: ignore[no-untyped-def]
+    """共享 container.storage_writer 上的 CorrelationAnalysisRepository（P11 Phase 3）。"""
+    _ensure_initialized()
+    assert _container is not None and _container.storage_writer is not None
+    return _container.storage_writer.db.correlation_repo
+
+
 def get_workbench_read_model() -> WorkbenchReadModel:
     """单账户执行工作台聚合读模型（P9 Phase 1）。
 
@@ -490,6 +511,53 @@ def get_cockpit_read_model() -> CockpitReadModel:
         signal_module=_container.signal_module,
         runtime_read_model=_container.runtime_read_model,
         intel_read_model=intel,
+    )
+
+
+def get_backtest_detail_read_model() -> BacktestDetailReadModel:
+    """P11 Phase 1：回测 detail 读模型（每请求构造）。
+
+    底层复用共享 BacktestRepository（来自 container.storage_writer.db），禁止每请求
+    new TimescaleWriter —— ADR-006 + 2026-04-20 事故教训。
+    """
+    from src.api.backtest_routes.execution import get_backtest_repo
+
+    _ensure_initialized()
+    assert _container is not None
+    return BacktestDetailReadModel(backtest_repo=get_backtest_repo())
+
+
+def get_walk_forward_read_model() -> WalkForwardReadModel:
+    """P11 Phase 2：Walk-Forward detail 读模型（每请求构造）。
+
+    底层复用共享 WalkForwardRepository（来自 container.storage_writer.db）。
+    """
+    from src.api.backtest_routes.execution import get_walk_forward_repo
+
+    _ensure_initialized()
+    assert _container is not None
+    return WalkForwardReadModel(walk_forward_repo=get_walk_forward_repo())
+
+
+def get_correlation_read_model() -> CorrelationAnalysisReadModel:
+    """P11 Phase 3：策略相关性 detail 读模型（每请求构造）。"""
+    from src.api.backtest_routes.execution import get_correlation_repo
+
+    _ensure_initialized()
+    assert _container is not None
+    return CorrelationAnalysisReadModel(correlation_repo=get_correlation_repo())
+
+
+def get_lab_evaluation_read_model() -> LabEvaluationReadModel:
+    """P11 Phase 5：Lab 评估页单端点聚合读模型（每请求构造）。
+
+    组合 4 个子 ReadModel（BacktestDetail / WalkForward / Correlation）。
+    子 ReadModel 均为每请求构造的轻量层，此处直接复用。
+    """
+    return LabEvaluationReadModel(
+        backtest_detail=get_backtest_detail_read_model(),
+        walk_forward=get_walk_forward_read_model(),
+        correlation=get_correlation_read_model(),
     )
 
 

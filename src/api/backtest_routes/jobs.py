@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 from fastapi import APIRouter, BackgroundTasks
 
@@ -17,14 +17,15 @@ from src.api.action_contracts import (
     normalize_idempotency_key,
     normalize_request_context,
 )
+from src.api.backtest_routes import execution as api_execution
+from src.api.backtest_routes import schemas as api_config
 from src.api.error_codes import AIErrorAction, AIErrorCode
 from src.api.schemas import ApiResponse
-from src.api.backtest_routes import schemas as api_config, execution as api_execution
-from src.backtesting.models import BacktestJob, BacktestJobStatus
 from src.backtesting.data import (
     BacktestActionReplayConflictError,
     backtest_runtime_store,
 )
+from src.backtesting.models import BacktestJob, BacktestJobStatus
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -84,13 +85,19 @@ async def run_backtest(
                 command_type=command_type,
                 idempotency_key=idempotency_key,
                 existing_record=exc.existing_record,
-                extra_metadata={"symbol": request.symbol, "timeframe": request.timeframe},
+                extra_metadata={
+                    "symbol": request.symbol,
+                    "timeframe": request.timeframe,
+                },
             )
         if replayed is not None:
             return build_replayed_action_response(
                 operation="backtest_run",
                 replayed=replayed,
-                extra_metadata={"symbol": request.symbol, "timeframe": request.timeframe},
+                extra_metadata={
+                    "symbol": request.symbol,
+                    "timeframe": request.timeframe,
+                },
                 default_error_code=AIErrorCode.UNKNOWN_ERROR,
                 default_suggested_action=AIErrorAction.CONTACT_SUPPORT,
             )
@@ -268,7 +275,9 @@ async def get_result(run_id: str) -> ApiResponse:
         if job.status == BacktestJobStatus.FAILED:
             return ApiResponse(success=False, error=job.error or "Unknown error")
         if job.status == BacktestJobStatus.PENDING:
-            return ApiResponse(success=True, data={"run_id": run_id, "status": "pending"})
+            return ApiResponse(
+                success=True, data={"run_id": run_id, "status": "pending"}
+            )
 
     return ApiResponse(success=False, error=f"Run {run_id} not found")
 
@@ -287,7 +296,9 @@ async def list_results() -> ApiResponse:
         }
         cached = backtest_runtime_store.get_result(job.run_id)
         if cached is not None:
-            entry["metrics"] = api_execution.extract_result_metrics(cached, job.job_type)
+            entry["metrics"] = api_execution.extract_result_metrics(
+                cached, job.job_type
+            )
         summaries.append(entry)
     return ApiResponse(success=True, data=summaries)
 
@@ -352,41 +363,101 @@ async def get_evaluation_summary(run_id: str) -> ApiResponse:
 @router.post(
     "/results/{run_id}/correlation-analysis",
     response_model=ApiResponse[dict],
-    summary="对回测结果运行策略相关性分析",
+    summary="对回测结果运行策略相关性分析（P11 Phase 3：结果持久化）",
 )
 async def run_correlation_analysis(
     run_id: str,
     correlation_threshold: float = 0.80,
     penalty_weight: float = 0.50,
 ) -> ApiResponse[dict]:
-    result = backtest_runtime_store.get_result(run_id)
-    if result is None:
-        return ApiResponse.error_response(
-            f"Result {run_id} not found", error_code="NOT_FOUND",
-        )
-    evaluations = getattr(result, "signal_evaluations", None)
-    if not evaluations:
-        return ApiResponse.error_response(
-            "No signal evaluations in this result (run with max_signal_evaluations > 0)",
-            error_code="NO_DATA",
-        )
+    """计算 + 持久化到 `backtest_correlation_analyses` 表。
+
+    数据源优先级：内存 cache → DB `backtest_signal_evaluations` fallback。
+    返回体含 `analysis_id`，前端可用该 ID 或 backtest_run_id 稳定回查 detail。
+    """
+    from src.api.backtest_routes.execution import get_correlation_repo
     from src.backtesting.analysis.correlation import (
         analyze_strategy_correlation,
         extract_signal_directions_from_evaluations,
     )
 
+    # 1) 读取 evaluations（内存优先，DB fallback）
+    evaluations: Any = None
+    result = backtest_runtime_store.get_result(run_id)
+    if result is not None:
+        evaluations = getattr(result, "signal_evaluations", None)
+    if not evaluations:
+        repo = api_execution.get_backtest_repo()
+        if repo is not None:
+            try:
+                # limit=100000 覆盖绝大多数回测规模；超过此限应通过 backtest 时限减少评估量
+                evaluations = repo.fetch_evaluations(run_id, limit=100_000)
+            except Exception:
+                logger.warning(
+                    "fetch_evaluations fallback failed for %s", run_id, exc_info=True
+                )
+                evaluations = None
+    if not evaluations:
+        return cast(
+            ApiResponse[dict],
+            ApiResponse.error_response(
+                error_code=AIErrorCode.NOT_FOUND,
+                error_message=(
+                    f"No signal evaluations available for run {run_id} "
+                    "(neither in memory nor backtest_signal_evaluations table)"
+                ),
+                suggested_action=AIErrorAction.CONTACT_SUPPORT,
+                details={"run_id": run_id},
+            ),
+        )
+
     directions = extract_signal_directions_from_evaluations(evaluations)
     if len(directions) < 2:
-        return ApiResponse.error_response(
-            "Need at least 2 strategies with signals for correlation analysis",
-            error_code="INSUFFICIENT_DATA",
+        return cast(
+            ApiResponse[dict],
+            ApiResponse.error_response(
+                error_code=AIErrorCode.NOT_FOUND,
+                error_message=(
+                    "Need at least 2 strategies with signals for correlation analysis"
+                ),
+                suggested_action=AIErrorAction.CONTACT_SUPPORT,
+                details={"run_id": run_id, "strategies_found": len(directions)},
+            ),
         )
+
+    # 2) 计算
     analysis = analyze_strategy_correlation(
         directions,
         correlation_threshold=correlation_threshold,
         penalty_weight=penalty_weight,
     )
+
+    # 3) 持久化（失败不阻塞返回，但 log warning）
+    analysis_id: str = ""
+    repo = get_correlation_repo()
+    if repo is not None:
+        try:
+            repo.ensure_schema()
+            analysis_id = repo.save(
+                analysis,
+                backtest_run_id=run_id,
+                penalty_weight=penalty_weight,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist correlation analysis for %s", run_id, exc_info=True
+            )
+
+    # 4) 返回（含 analysis_id 供前端查 detail）
+    payload = analysis.to_dict()
+    payload["analysis_id"] = analysis_id or None
+    payload["backtest_run_id"] = run_id
+    payload["penalty_weight"] = penalty_weight
     return ApiResponse.success_response(
-        data=analysis.to_dict(),
-        metadata={"run_id": run_id, "strategies_analyzed": len(directions)},
+        data=payload,
+        metadata={
+            "run_id": run_id,
+            "strategies_analyzed": len(directions),
+            "persisted": bool(analysis_id),
+        },
     )

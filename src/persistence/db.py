@@ -18,6 +18,7 @@ from psycopg2.pool import SimpleConnectionPool
 from src.config import DBSettings
 from src.persistence.repositories import (
     BacktestRepository,
+    CorrelationAnalysisRepository,
     EconomicCalendarRepository,
     ExecutionIntentRepository,
     MarketRepository,
@@ -28,6 +29,7 @@ from src.persistence.repositories import (
     SignalEventRepository,
     TradeCommandAuditRepository,
     TradingStateRepository,
+    WalkForwardRepository,
 )
 
 # 延迟 import：src.research / src.persistence.repositories.experiment_repo
@@ -82,6 +84,8 @@ class TimescaleWriter:
         self._runtime_repo: Optional[RuntimeStatusRepository] = None
         self._paper_trading_repo: Optional[PaperTradingRepository] = None
         self._backtest_repo: Optional[BacktestRepository] = None
+        self._walk_forward_repo: Optional[WalkForwardRepository] = None
+        self._correlation_repo: Optional[CorrelationAnalysisRepository] = None
         # research_repo / experiment_repo 是延迟类型（循环依赖原因，见模块顶部注释）
         self._research_repo = None  # type: ignore[var-annotated]
         self._experiment_repo = None  # type: ignore[var-annotated]
@@ -173,6 +177,22 @@ class TimescaleWriter:
         if repo is None:
             repo = BacktestRepository(self)
             self._backtest_repo = repo
+        return repo
+
+    @property
+    def walk_forward_repo(self) -> WalkForwardRepository:
+        repo = getattr(self, "_walk_forward_repo", None)
+        if repo is None:
+            repo = WalkForwardRepository(self)
+            self._walk_forward_repo = repo
+        return repo
+
+    @property
+    def correlation_repo(self) -> CorrelationAnalysisRepository:
+        repo = getattr(self, "_correlation_repo", None)
+        if repo is None:
+            repo = CorrelationAnalysisRepository(self)
+            self._correlation_repo = repo
         return repo
 
     @property

@@ -72,6 +72,82 @@ def get_backtest_repo() -> Optional[Any]:
         return None
 
 
+def get_walk_forward_repo() -> Optional[Any]:
+    """获取共享的 WalkForwardRepository（来自 container.storage_writer）。
+
+    与 BacktestRepository 同一连接池，ADR-006 禁止独立构造 writer。
+    """
+    try:
+        return deps.get_walk_forward_repo()
+    except Exception:
+        logger.debug("WalkForwardRepository not available", exc_info=True)
+        return None
+
+
+def get_correlation_repo() -> Optional[Any]:
+    """获取共享的 CorrelationAnalysisRepository（P11 Phase 3）。"""
+    try:
+        return deps.get_correlation_repo()
+    except Exception:
+        logger.debug("CorrelationAnalysisRepository not available", exc_info=True)
+        return None
+
+
+def _persist_walk_forward_result(
+    *,
+    wf_run_id: str,
+    wf_result: Any,
+    experiment_id: Optional[str],
+    started_at: Any,
+    completed_at: Any,
+) -> None:
+    """落库 WF 结果到 backtest_walk_forward_runs/_windows。
+
+    失败不阻塞 WF 完成（内存 store 已有 hot cache），仅记 warning。
+    """
+    repo = get_walk_forward_repo()
+    if repo is None:
+        return
+    try:
+        repo.ensure_schema()
+        repo.save(
+            wf_result,
+            wf_run_id=wf_run_id,
+            backtest_run_id=None,
+            started_at=started_at,
+            completed_at=completed_at,
+            experiment_id=experiment_id,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to persist walk-forward result %s", wf_run_id, exc_info=True
+        )
+
+
+def _persist_walk_forward_failed(
+    *,
+    wf_run_id: str,
+    error: str,
+    experiment_id: Optional[str],
+) -> None:
+    """WF 失败时记录失败快照，方便事后回查。"""
+    repo = get_walk_forward_repo()
+    if repo is None:
+        return
+    try:
+        repo.ensure_schema()
+        repo.save_failed(
+            wf_run_id=wf_run_id,
+            error=error,
+            backtest_run_id=None,
+            experiment_id=experiment_id,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to persist failed walk-forward %s", wf_run_id, exc_info=True
+        )
+
+
 def build_api_components(
     strategy_params: Optional[Dict[str, Any]] = None,
     strategy_params_per_tf: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -217,6 +293,8 @@ def execute_optimization(
 def execute_walk_forward(
     run_id: str, request: config_service.WalkForwardRequest
 ) -> None:
+    from datetime import datetime, timezone
+
     acquired = backtest_runtime_store.semaphore.acquire(timeout=5)
     if not acquired:
         backtest_runtime_store.fail_job(
@@ -226,6 +304,7 @@ def execute_walk_forward(
 
     backtest_runtime_store.start_job(run_id)
     components: Optional[Dict[str, Any]] = None
+    started_at = datetime.now(timezone.utc)
     try:
         from src.backtesting.models import ParameterSpace
         from src.backtesting.optimization import (
@@ -269,6 +348,15 @@ def execute_walk_forward(
             regime_detector=components["regime_detector"],
         )
         wf_result = validator.run()
+        completed_at = datetime.now(timezone.utc)
+        # 先落库（失败不阻塞），再写内存 hot cache
+        _persist_walk_forward_result(
+            wf_run_id=run_id,
+            wf_result=wf_result,
+            experiment_id=request.experiment_id,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
         backtest_runtime_store.store_walk_forward_result(run_id, wf_result)
         for split in wf_result.splits:
             split.out_of_sample_result.experiment_id = request.experiment_id
@@ -299,6 +387,11 @@ def execute_walk_forward(
         backtest_runtime_store.complete_job(run_id, summary)
     except Exception as exc:
         logger.exception("Walk-Forward %s failed", run_id)
+        _persist_walk_forward_failed(
+            wf_run_id=run_id,
+            error=str(exc),
+            experiment_id=request.experiment_id,
+        )
         backtest_runtime_store.fail_job(run_id, str(exc))
     finally:
         cleanup_components(components)
