@@ -541,3 +541,158 @@ TradeExecutor.submit_pending_entry
 - [ ] 核心监控页面（行情/信号/持仓/绩效）
 - [ ] 接入后端 API（交易 trace / SL TP 历史 / 投票详情 / 绩效追踪 / 相关性分析）
 - [ ] Studio 模块暂保留，新 dashboard 不依赖 Studio 的 agent 模型
+
+
+---
+
+## Phase R：Research/Mining 模块性能优化（2026-04-21 立项）
+
+> **背景**：当前 `src/ops/cli/mining_runner` 单 run 12mo M5/M15/M30 with workers=3 约 25-30 min。
+> 用户需求：在**功能完整、结果一致**前提下加速（不接受减少 provider/analyzer 的做法）。
+>
+> **总目标**：
+> - 单 run 加速 **40-60%**（25min → 12-15min）
+> - 跨 run / 增量场景加速 **80-90%**（25min → 30s-5min）
+> - 所有 6 provider × 3 analyzer × 全特征全规则保持完整
+
+### R.1 — DataMatrix + Feature 缓存（P1，最高 ROI）
+
+**问题**：每次 mining 都重建 DataMatrix + 重算 feature。即使 `(symbol, tf, window, providers, barrier_configs)` 完全相同的相邻 run 也不复用。占总耗时 50-65%。
+
+**实现**：
+- `src/research/core/cache.py` 新模块：`DataMatrixCache` 类
+- cache key = `sha256(symbol|tf|start|end|sorted(providers)|barrier_configs_hash|indicator_set_hash)`
+- cache 路径：`data/research/cache/datamatrix_<key>.pkl`
+- 失效规则：`max(ohlc.updated_at, indicator_series.updated_at) > cache_mtime` 即重建
+- `build_data_matrix()` 入口加 `use_cache: bool = True` 参数（测试可禁用）
+- LRU 上限：100 文件 / 总大小 5GB（满了 evict 最旧）
+
+**收益**：
+- 跨 run **30-50%**（A1 跑完，A2 重叠 close 部分直接复用）
+- 单 run 0%（首次仍需算）
+
+**工作量**：1-2 天
+**风险**：低（cache miss fallback 到原逻辑）
+**测试**：cache hit/miss/失效/size eviction 4 类测试
+
+### R.2 — Polars 替换 Pandas 重热点 provider（P2）
+
+**问题**：`temporal` / `microstructure` / `cross_tf` provider 大量 `df.rolling().apply()`、`df.shift()`，Pandas 实现因 GIL + Python 循环慢。
+
+**实现**：
+- 重写 `src/research/features/temporal/provider.py`、`microstructure/provider.py`、`cross_tf/provider.py` 用 Polars 替换 Pandas
+- 接口签名不变（输入 `DataMatrix`，输出 `Dict[Tuple[str,str], List[Optional[float]]]`）
+- 加 `tests/research/test_polars_equivalence.py`：固定输入下 Polars 输出与 Pandas 输出 numerical equivalence（容差 1e-9）
+- `requirements.txt` 加 `polars>=1.0.0`
+
+**收益**：单 run **25-40%**
+
+**工作量**：1 周（3 个 provider × ~200 行 + 测试）
+**风险**：中（浮点精度差异）—— 必须 equivalence 测试守护
+
+### R.3 — 增量挖掘 `--incremental`（P3）
+
+**问题**：日常增量场景下，每次都从 12 个月起点重新跑。
+
+**实现**：
+- mining_runner CLI 加 `--incremental` flag
+- 启动时查 `research_mining_runs` 表找同 `(symbol, tf, experiment_prefix)` 最新 run 的 `end_time`
+- 新 run 仅挖 `[last_end, today]` 数据
+- 历史 finding 与新 finding 在 `MiningResult.merge_with_historical()` 合并（重排 IC、滚动稳定性更新）
+- DataMatrix 用 R.1 cache，only compute 新增段
+
+**收益**：
+- 首次跑无变化
+- 日常增量 **80-90%**（25min → 30s-5min）
+
+**工作量**：3 天
+**风险**：中（merge 语义复杂）—— 加 merge 单元测试 + 等价性测试（incremental + merge ≡ full rerun）
+
+### R.4 — Numba JIT 热路径（P4）
+
+**问题**：`_vectorized_barrier_scan`（已 NumPy 向量化）、threshold sweep 内层循环、decision tree 数据预处理仍是纯 Python/NumPy，Numba JIT 后能再快 2-5x。
+
+**实现**：
+- `src/research/core/barrier.py` 的 `_vectorized_barrier_scan` 加 `@njit(cache=True, fastmath=True)`
+- `src/research/analyzers/threshold.py` 内层循环 JIT
+- `src/research/analyzers/rule_mining.py` 数据预处理 JIT
+- requirements 加 `numba>=0.59.0`
+
+**收益**：单 run **5-15%**（barrier + threshold 阶段）
+
+**工作量**：1-2 天
+**风险**：低（JIT fallback 到 numpy 版本，加 `parallel=False` 保安全）
+
+### R.5 — 多进程共享内存 base data（P5）
+
+**问题**：3 个 worker 各自从 PG 加载 OHLC + indicators —— 重复 3x I/O + 反序列化（M5 12mo 单 worker 50-100MB）。
+
+**实现**：
+- 主进程预加载 base data 到 `multiprocessing.shared_memory`
+- worker fork 时通过 shm name attach（零拷贝读）
+- `mining_runner.py` 主进程逻辑：先 load → 构造 shm → fork workers
+- worker 入口：`shared_memory.SharedMemory(name=...)` attach
+
+**收益**：单 run **5-10%**（I/O 时间减 70%）
+
+**工作量**：1-2 天
+**风险**：中（Windows shm 行为差异，要 cross-platform 测试；进程异常退出后 shm 泄漏需 cleanup hook）
+
+### R.6 — Pipeline 流水线化（P6）
+
+**问题**：当前 4 阶段顺序执行：data load → feature compute → barrier → analyzer。analyzer 等 feature 全跑完才启动。
+
+**实现**：
+- 把 4 阶段改成生产者-消费者模型
+- `feature compute` 完成一个 provider → 立即送 queue → analyzer 消费
+- 注意：rule_mining 需要多 provider 特征同时在场，要等 feature 全到齐才能启动；但 predictive_power 可以 per-provider 独立跑
+- 用 `concurrent.futures.ThreadPoolExecutor` 协调
+
+**收益**：单 run **20-30%**（消除阶段间等待）
+
+**工作量**：3-5 天
+**风险**：中高（数据依赖图复杂，rule_mining 与 feature dependency）—— 必须详细设计 + e2e 测试
+
+### R.7 — SQL 查询优化（P7）
+
+**问题**：mining 启动加载 OHLC + indicator_series。可能存在：
+- hypertable chunk pruning 失效
+- 索引未覆盖 `(symbol, timeframe, time)` 全 range scan
+
+**实现**：
+- `EXPLAIN ANALYZE` 检查 mining 启动 SQL
+- 必要时 `CREATE INDEX CONCURRENTLY` 加覆盖索引
+- 调整查询写法（用 `time >= ... AND time <= ...` 而非 `BETWEEN` 等）
+
+**收益**：单 run **3-5%**（data load 阶段）
+
+**工作量**：0.5 天
+**风险**：极低
+
+---
+
+### Phase R 综合估算
+
+| 实施组合 | 单 run 加速 | 跨 run 加速 | 总工作量 |
+|---|---|---|---|
+| R.1 + R.4 + R.7 | 8-20% | **30-50%** | 3-4 天 |
+| + R.2 | **35-55%** | 30-50% | +1 周 |
+| + R.3 | 35-55% | **80-90%** | +3 天 |
+| 全做（+R.5+R.6）| **60-75%** | 90%+ | 3.5 周 |
+
+### 实施顺序建议
+
+1. **R.1 DataMatrix 缓存**（首先做，跨 run 立竿见影）
+2. **R.4 Numba JIT**（工作量小，单 run 快赢）
+3. **R.7 SQL 优化**（半天搞定）
+4. **R.3 incremental 模式**（日常场景巨大收益）
+5. **R.2 Polars 重写**（最大单 run 加速但工作量大）
+6. **R.5 共享内存**（边际收益，可选）
+7. **R.6 Pipeline 化**（复杂度高，最后做）
+
+### 验收标准
+
+- 每个 R.x 独立 PR + 独立测试
+- 加 `tests/research/test_mining_perf.py` 性能基准（固定 12mo M5 单 TF 跑 3 次取平均）
+- benchmark 报告进 `docs/research/<日期>-mining-perf-baseline.md` 时点快照
+- 整体跑通后更新 `codebase-review.md §F` 归档
