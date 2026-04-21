@@ -54,6 +54,28 @@
 
 任何"反常/存在 bug"的代码片段，先读相邻 ADR（`docs/design/adr.md`）——若该片段对应已定决策（如 ADR-005 超时保留引用），不是 bug 而是契约。
 
+## 13) md 文档管理规范（强制；规范全文见 `docs/README.md`）
+
+**新建 md 前必须回答 4 问**（来源 `docs/README.md` §3.1）：
+
+```
+1. WHERE 归哪一层？     （事实源 / 审计 / Runbook / 领域设计 / 研究快照）
+2. WHY 为什么不能写进现有 md？（先搜 docs/，避免零碎）
+3. WHEN 生命周期？       （长期维护 / 时点快照 / 临时过渡）
+4. WHO 维护？            （作者 + 下次更新触发条件）
+```
+
+任一答不出来就 **不要建新文件**——时点分析追加 `codebase-review.md §N` 或 `research/<日期>-<主题>.md`；架构决策追加 `design/adr.md`。
+
+**禁止清单**（`docs/README.md` §3.2）：
+- ❌ 项目根目录新建业务 md（仅 `CLAUDE.md / AGENTS.md / README.md / TODO.md`）
+- ❌ `docs/` 顶层新建非 5 类归属的 md
+- ❌ 文件名带 `-old / -legacy / -draft / -wip / -v2`
+- ❌ 事故/时点分析写进事实源文档（应追加 `codebase-review.md §N` 或 `research/<日期>-*.md`）
+- ❌ 创建平行同主题 md（`design/<topic>.md` vs `design/<topic>-v2.md`）
+
+**维护错 md 的预防**：时点快照不回改正文，仅加"后续演进"头注链到最新 commit/ADR（示例 `docs/research/2026-04-18-mining-vs-backtest-gap.md`）。
+
 ---
 
 ## 项目概览

@@ -165,7 +165,7 @@ read_model._storage_writer.db
 
 ## ADR-007: Research 与 Backtesting 的职责边界 + 特征晋升通道
 
-**状态**：拟定中（2026-04-17）
+**状态**：已确定（2026-04-17）；**特征晋升自动化仍未实现**（见"当前实现缺口"）
 
 **上下文**：Step 2.1 M15/M30 基线挖掘暴露出一个结构性问题——挖掘输出的"高胜率 sell rules"在 XAUUSD 12 个月 +45% 牛市中不能直接作为入场策略使用（会系统性做空趋势）。深入核查发现两类边界不清：
 
@@ -222,17 +222,24 @@ Backtesting 起点 = 该 spec + 参数网格
 
 `mining_runner --emit-feature-candidates` 输出应标注特征类型——`promote_indicator` 决策对计算型有意义，对组合型是冗余标签。
 
-### 当前实现缺口
+### 已落地部分（2026-04 陆续合入）
 
-1. `promotion.py` 只生成 `FeaturePromotionReport`，**没有晋升执行器**
+1. **Triple-Barrier target labeling**（cf838d5 / e64a8e7）—— `src/research/core/barrier.py` 向量化实现 SL/TP/Time 三分支先触；`build_data_matrix()` 自动填充 `barrier_returns_long/short`；`rule_mining` 每条规则产 `BarrierStats`（TP/SL/Time 触发分布 + 命中率）。取代了朴素"N-bar close 方向"端点判断。
+2. **Feature Providers 6 个就位**（5b68167）—— `src/research/features/` 下 `temporal / microstructure / regime_transition / session_event / intrabar / cross_tf` 全部实现（见 CLAUDE.md §项目概览）。
+3. **`FeatureCandidateSpec.feature_kind`**（4ead09a）—— `"derived"`（组合型，零晋升成本）vs `"computed"`（计算型，需写指标函数）已区分。
+4. **`ops/cli/mining_runner --persist / --experiment`**（41b4916）—— 研究结果可落 `research_mining_runs` 表 + 关联 experiment_id。
+
+### 仍未实现的缺口
+
+1. `promotion.py` 只生成 `FeaturePromotionReport`，**没有晋升执行器**（不写 `indicators.json`、不生成代码骨架）
 2. 没有 `src/ops/cli/promote_feature.py` 之类的半自动化工具
-3. `FeatureCandidateSpec` **未标注"组合型 vs 计算型"**，决策语义模糊
-4. 没有晋升历史记录持久化机制
+3. 没有晋升历史记录持久化（`feature_promotions` 表未建）
+4. `experiments` 表从未被用过（0 行）—— `Research→Backtest→Paper→Live` 完整闭环从未跑通一次
 
 **演进方向**：
 
-- **短期（1 周内）**：在 `FeatureCandidateSpec` 加 `feature_kind: "derived" | "computed"` 字段；补充 `docs/sop/feature-to-indicator-promotion.md` 手工流程文档
-- **中期（1-2 月）**：实现 `src/ops/cli/promote_feature.py`，半自动生成指标代码骨架 + 配置 diff，由人审 PR
+- **短期**：真正跑一次端到端闭环（mining → backtest → paper_trading `--from-backtest-run-id`），让 `experiment_id` 贯穿 4 张表，验证管线工作
+- **中期**：实现 `src/ops/cli/promote_feature.py`，半自动生成指标代码骨架 + 配置 diff，由人审 PR
 - **长期**：挖掘 → 策略 spec → 自动回测 → CI 合并的端到端管线
 
 ---

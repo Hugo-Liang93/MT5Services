@@ -1,8 +1,18 @@
 # 2026-04-18 挖掘 vs 回测 Gap 系统分析
 
+> **⚠️ 时点快照**：本文件记录 **2026-04-18 当日** 的诊断分析，之后代码已改进（见下方"后续演进"），**不再回改正文**。
+>
 > 关联：[ADR-007 Research 与 Backtesting 的职责边界](../design/adr.md#adr-007)
 > 触发：Step 2.2 Top 1 规则 test hit rate 73.6%，真实回测 -1.71R/笔（零点差）。差距 60+ 个百分点。
 > 本文档系统化"挖掘输出为什么不能直接当策略用"的根本原因。
+>
+> ## 后续演进（不改正文，仅补注）
+>
+> - **2026-04-19 前后** commit `cf838d5` F-12a：`DataMatrix` 已加 Triple-Barrier forward_return，挖掘的"命中"不再是朴素 N-bar 端点判断，而是 SL/TP/Time 三分支先触（见 `src/research/core/barrier.py`）。下文"Gap 1 语义 Gap"描述的"端点判断"现等价于 Triple-Barrier 的 Time 分支。
+> - **2026-04-19** commit `e64a8e7` F-12d：`rule_mining` 每条规则产 `BarrierStats`（TP/SL/Time 触发分布 + 命中率），直接可读"这个规则先触 SL 多少比例"。下文分析的 Gap 1 从此在挖掘阶段就能看到。
+> - 执行层对应契约见 `src/trading/positions/exit_rules.py` `evaluate_barrier_exit()`（F-12b，commit `c0c0387`）。
+>
+> 正文以下保留 2026-04-18 当日诊断原貌。
 
 ---
 

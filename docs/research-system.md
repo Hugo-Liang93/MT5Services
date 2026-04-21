@@ -40,9 +40,11 @@
 
 - **F-12a** ✅ **已闭环**（commit `cf838d5`）：`DataMatrix` 新增 Triple-Barrier forward_return
   * `barrier_returns_long` / `barrier_returns_short` 字段，9 组默认 RR 网格
-  * 见 `src/research/core/barrier.py` + `tests/research/test_barrier.py`
+  * **研究层实现**：`src/research/core/barrier.py`（向量化 SL/TP/Time 先触，SL 与 TP 同 bar 保守取 SL）+ `src/research/core/data_matrix.py` 自动填充 + `tests/research/test_barrier.py`
+  * 规则统计：`src/research/analyzers/rule_mining.py:_compute_barrier_stats_for_rule()` 每条 MinedRule 产 `BarrierStats`（TP/SL/Time 触发分布 + 命中率 + 平均收益）
 - **F-12b** ✅ **已闭环**（commit `c0c0387`）：策略可声明 `ExitSpec(mode=BARRIER, ...)` 与挖掘 exit 语义对齐
-  * 见 `src/trading/positions/exit_rules.py` `evaluate_barrier_exit()`
+  * **执行层实现**：`src/trading/positions/exit_rules.py` `evaluate_barrier_exit()`（回测与实盘复用）
+  * ⚠️ 两层实现位置不同，互为契约：研究层用于 labeling / gap 诊断，执行层用于真实退出决策
 - **F-12c** ⏸️ **推迟至 P3**：Plan B 完成后诊断价值被实质覆盖
 
 ### 下次挖掘推荐流程
