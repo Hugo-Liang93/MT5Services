@@ -126,6 +126,7 @@ def build_data_matrix(
     high_impact_event_times: Optional[Tuple[datetime, ...]] = None,
     child_tf: str = "",
     child_coverage_min: float = 0.80,
+    use_cache: bool = True,
 ) -> DataMatrix:
     """构建 DataMatrix。
 
@@ -139,11 +140,56 @@ def build_data_matrix(
         train_ratio: 训练集比例
         components: 预构建的组件字典（来自 build_backtest_components），
                     为 None 则自动构建
+        use_cache: 启用 DataMatrixCache（Phase R.1）。命中时直接返回 pickle 反序列化对象，
+                   miss 时正常构建后写入。失败 fallback 到原逻辑（cache 永不阻塞）。
+                   测试或想强制重算可传 False。
 
     Returns:
         DataMatrix 实例
     """
     t0 = time.monotonic()
+
+    # Phase R.1 — Cache lookup
+    cache_key: Optional[str] = None
+    cache = None
+    if use_cache:
+        try:
+            from src.research.core.cache import default_cache, hash_indicator_set
+
+            cache = default_cache()
+            cache_key = cache.make_key(
+                symbol=symbol,
+                timeframe=timeframe,
+                start_time=start_time,
+                end_time=end_time,
+                forward_horizons=tuple(sorted(forward_horizons)),
+                warmup_bars=warmup_bars,
+                train_ratio=train_ratio,
+                round_trip_cost_pct=round_trip_cost_pct,
+                barrier_configs=barrier_configs,
+                high_impact_event_times=high_impact_event_times,
+                child_tf=child_tf,
+                child_coverage_min=child_coverage_min,
+                indicators_hash=hash_indicator_set(),
+            )
+            cached = cache.get(cache_key)
+            if cached is not None:
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "DataMatrix CACHE HIT for %s/%s key=%s n_bars=%d (%dms vs ~10000-30000ms full build)",
+                    symbol,
+                    timeframe,
+                    cache_key[:8],
+                    cached.n_bars,
+                    elapsed_ms,
+                )
+                return cached
+        except Exception:
+            logger.debug(
+                "DataMatrix cache lookup failed, fallback to full build", exc_info=True
+            )
+            cache = None
+            cache_key = None
 
     if components is None:
         from src.backtesting.component_factory import build_backtest_components
@@ -416,7 +462,7 @@ def build_data_matrix(
         elapsed_ms,
     )
 
-    return DataMatrix(
+    matrix = DataMatrix(
         symbol=symbol,
         timeframe=timeframe,
         n_bars=n,
@@ -443,3 +489,19 @@ def build_data_matrix(
         child_bars=child_bars_map,
         child_tf=effective_child_tf,
     )
+
+    # Phase R.1 — 写入 cache（cache miss 之后；cache hit 不会到这里）
+    if cache is not None and cache_key is not None:
+        try:
+            cache.set(cache_key, matrix)
+            logger.info(
+                "DataMatrix CACHE WRITE for %s/%s key=%s n_bars=%d",
+                symbol,
+                timeframe,
+                cache_key[:8],
+                matrix.n_bars,
+            )
+        except Exception:
+            logger.debug("DataMatrix cache write failed", exc_info=True)
+
+    return matrix
