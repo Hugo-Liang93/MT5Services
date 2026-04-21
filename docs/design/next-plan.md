@@ -420,3 +420,124 @@ TradeExecutor.submit_pending_entry
 > 2026-04-10 已继续：将状态快照聚合下沉到 `src/trading/pending/snapshot.py`，`PendingEntryManager` 不再保留 status 投影计算路径。
 
 > 以下已清理（2026-04-07）：旧路由兼容层（已不存在）、`get_ohlc()` 别名（已移除）、manager.py 转发方法（已精简至合理门面）、SignalRuntime 1409→1036 行（warmup/metadata 提取）
+
+
+---
+
+## Phase P4：架构演进（从 TODO.md 迁入，2026-04-21）
+
+> 这些任务跨 sprint，属于"实盘稳定后"阶段。从 TODO.md 搬迁到此，统一长期规划视角。
+> 完成后按规范搬到 `docs/codebase-review.md §F` 归档。
+
+### P4.1 配置热重载
+
+- [ ] `signal.ini` 交易成本阈值偏紧（base_spread_points=30, max_spread_to_stop_ratio=0.33）启动持续警告
+- [ ] `[regime_detector]` / `[strategy_params]` 热重载支持（当前需重启）
+- [ ] `market.ini` 应用壳层配置热重载决策
+
+### P4.2 Intrabar 工程化后续（2026-04-09 提出）
+
+> 目标：把 intrabar 从"best-effort 可用"提升到"可量化、可降级、可审计"的交易级链路。
+
+- [ ] **SLO 与告警基线**
+  - 定义并落地 3 个核心 SLO：`intrabar_drop_rate_1m`、`intrabar_queue_age_p95`、`intrabar_to_decision_latency_p95`
+  - 在 `/signals/monitoring` 或健康端点暴露 intrabar 溢出统计（wait_success / replace_success / overflow_failures）
+  - 设定分级告警阈值（INFO/WARN/CRITICAL）并写入运行文档
+- [ ] **调度策略从固定配额升级为自适应配额**
+  - 将 confirmed:intrabar 固定让路策略改为基于 backlog/queue_age 的动态配额
+  - 增加"高拥塞模式"下的自动限流与恢复条件
+  - 补充回放测试：低波动 / 高波动 / 极端爆量 3 组场景对比
+- [ ] **链路降级矩阵（Degrade Ladder）**
+  - 定义 L0-L3 四档降级：全量 intrabar → 白名单策略 → 核心 TF → 仅 confirmed
+  - 建立降级触发器（queue_age、drop_rate、CPU 负载）与回升条件
+  - 将"随机丢弃"转为"可预期降级"，并在状态接口中可见
+- [ ] **启动前置校验与运行态自愈**
+  - intrabar_trading=true 时，启动阶段校验 listener/策略白名单/trigger 映射完整性
+  - "无 listener 跳过"持续超阈值时触发自愈动作
+  - 补充 runbook：排查步骤、指标看板、回滚开关
+- [ ] **端到端可审计 Trace**
+  - 统一 trace_id 贯通：`intrabar_bar → indicator_snapshot → strategy_decision → vote → gate → order`
+  - 在 trade audit 视图增加"本次下单来自哪个 intrabar 快照"的可追踪字段
+  - 增加 1 条失败链路示例（被 filter/gate 阻断）用于回归测试与演示
+
+### P4.3 结构化策略架构适配
+
+> 策略变聪明后，管线应变简单。横切关注点（performance/calibrator）通过**装饰器**接入，不在各模块重复。
+
+#### A8: PerformanceTracker 按信号等级追踪（装饰器接入）
+
+- [ ] 回测验证结构化策略有效后，通过装饰器接入 PerformanceTracker
+- [ ] PerformanceTracker key 从 `strategy_name` 改为 `(strategy_name, signal_grade)`
+- [ ] 乘数按 grade 分别计算：A 级信号可获更高 multiplier，C 级被压制
+- [ ] `signal_grade A/B/C` 已在 `StructuredStrategyBase.evaluate()` 中自动计算
+
+#### A11: regime_affinity 乘数审视（待回测数据验证）
+
+> `_why()` 已用 ADX/HTF 做 regime 检查（硬门控），regime_affinity 在 `service.py` 再乘一次（软门控）。
+> 两者对同一件事做了两次判断，可能需要移除或简化。
+
+- [ ] 对比 `regime_affinity=1.0`（禁用）vs 当前值的回测差异
+- [ ] 如果差异不大，移除 regime_affinity 乘法，管线简化为纯策略评分
+
+### P4.4 架构解耦
+
+- [ ] A5: PendingOrderManager 从 TradeExecutor 提升为独立组件
+- [ ] A2: 关键交易操作改为 Event Sourcing
+
+---
+
+## Telegram 通知模块 Phase 2.5+（从 TODO.md 迁入，2026-04-21）
+
+> Phase 1 + Phase 2（scheduler + alerts 适配）已完成，见 `codebase-review.md §F`。
+
+### Phase 2.5：daily_report 内容 + 运维工具
+
+- [ ] **daily_report 内容生成器**：复用 RuntimeReadModel 组装 health/positions/executor 摘要 → `info_daily_report` 模板
+- [ ] **INFO 模板补齐**：`info_daily_report`、`info_mode_changed`、`info_startup_ready`、`info_position_closed`
+- [ ] **CLI 测试工具**：`python -m src.ops.cli.test_notification --event <type>` 支持本地触发样本事件验证部署
+
+### Phase 3：入站查询命令
+
+- [ ] `TelegramPoller`（long polling getUpdates，独立线程）
+- [ ] `CommandRouter` + chat_id allowlist + 命令白名单
+- [ ] 查询 handlers（调用 `RuntimeReadModel`，只读）：
+  - `/health` → 3 行摘要
+  - `/positions` → 仓位一览（symbol/direction/R/unrealized_pnl）
+  - `/signals` → 信号引擎 running + queue depth + drop rate
+  - `/executor` → enabled + circuit_open + 今日统计
+  - `/pending` → 待执行信号列表
+  - `/mode` → FULL/OBSERVE/RISK_OFF/INGEST_ONLY 当前状态
+  - `/daily-report` → 手动触发日报
+
+### Phase 4：入站控制命令（仅低风险）
+
+- [ ] `/halt [reason]` / `/resume [reason]` → `OperatorCommandService.enqueue(command_type=set_trade_control)`
+- [ ] `/reload-config` → `reload_configs()`
+- [ ] 审计链：actor=`telegram:{username}:{chat_id}`，回执含 `action_id` + `audit_id`
+- [ ] 入站速率限制（`inbound_per_chat_per_minute`）防命令轰炸
+
+### Phase 5（可选）
+
+- [ ] `/trace <signal_id>` 深度链路（多段分块，处理 4096 字节限制）
+- [ ] `/v1/admin/notifications/dlq` DLQ 查询端点
+- [ ] `/v1/admin/notifications/reload-templates` 模板热重载
+- [ ] `/v1/admin/notifications/test` 手动触发事件端点
+
+---
+
+## Phase P5：前端 Dashboard（从 TODO.md 迁入，2026-04-21）
+
+- [ ] 技术栈选型（React/Vue/Svelte + 实时更新方案）
+- [ ] 总览控制塔读模型补齐（为 QuantX 首页提供一等交易指导数据）
+  - [ ] 账户级资金快照：`balance / equity / free_margin / margin / margin_level / floating_pnl / daily_realized_pnl / currency / updated_at`
+  - [ ] 组合级资金聚合：`total_equity / total_free_margin / total_margin / accounts_with_funding / margin_blocked_accounts`
+  - [ ] 多币种聚合语义：明确 `base_currency` 或 `fx_normalized_totals`，否则返回 `aggregation_mode = mixed_currency`
+  - [ ] 当前交易条件摘要：`risk_action / risk_reason / primary_blocker / margin_check_details / order_protection_requirements`
+  - [ ] 总览焦点账户：`focus_account_alias / focus_account_label / focus_basis(active|default|selected)`
+  - [ ] 数据节奏元信息：`recommended_poll_interval_seconds / supports_stream / last_quote_at / last_account_risk_at / last_trade_state_at`
+  - [ ] 模块级刷新语义：区分 `capital_snapshot` 与 `analysis_context` 的 cadence
+  - [ ] 行情快照原生读模型：`symbol / bid / ask / spread / quote_updated_at / quote_freshness_state / recommended_poll_interval_seconds`
+  - [ ] 建议下沉为原生总览读模型，避免前端再从 `trade/accounts + trade/state + entry_status` 拼装
+- [ ] 核心监控页面（行情/信号/持仓/绩效）
+- [ ] 接入后端 API（交易 trace / SL TP 历史 / 投票详情 / 绩效追踪 / 相关性分析）
+- [ ] Studio 模块暂保留，新 dashboard 不依赖 Studio 的 agent 模型

@@ -7,6 +7,163 @@
 
 ---
 
+## §F. 历史已完成归档（2026-04-21 从 TODO.md 迁入）
+
+> 原本在 `TODO.md` 里的已完成段落，按规范应归档到审计台账。迁入时保留原文结构。
+> 时点数据（baseline 表）已移到 `docs/research/<日期>-*.md`，本段只保留"做了什么 + 证据"。
+
+### 2026-04-20 P9 前端读侧 API 全套交付 ✅
+
+QuantX 前端读侧支撑 P9 全部 5 个 Phase + API 治理 4 项已交付。**2374/2374 测试全过**。
+
+**新增文件**：
+- `src/readmodels/workbench.py` — WorkbenchReadModel（10 块组装）+ `compute_source_kind`
+- `src/api/execution.py` + `src/api/execution_routes/workbench.py` — `GET /v1/execution/workbench`
+- `src/app_runtime/factories/admission_writeback.py` — admission writeback listener（multicast / skip / intent_published）
+- `src/config/models/freshness.py` — `FreshnessConfig` Pydantic
+- `docs/design/quantx-data-freshness-tiering.md` — 5 级 Tier 契约文档
+
+**关键扩展**：
+- `src/persistence/schema/signals.py` — `MIGRATION_SQL`（5 ALTER COLUMN + 2 INDEX）+ `UPDATE_ADMISSION_SQL`
+- `src/readmodels/runtime.py` — `compute_tradability_verdict()` + tradability 加 verdict/reason_code/recommended_action/source_kind/tier
+- `src/api/trade_routes/state_routes/stream.py` — SSE envelope schema 1.1（tier/entity_scope/changed_blocks/snapshot_version）
+- `src/api/schemas.py` — `MutationActionResultBase`（13 字段共享） + `WorkbenchPayload`
+- `src/signals/analytics/diagnostics.py` — `build_strategy_audit_report()`
+
+**前端可对接端点**（按 `docs/quantx-backend-backlog.md` §0 表）：
+1. 工作台读口：`GET /v1/execution/workbench?account_alias=X`
+2. 实时事件：`GET /v1/trade/state/stream`（按 envelope.changed_blocks 局部刷新）
+3. 信号查询：`GET /v1/signals/recent?sort=priority_desc&actionability=blocked`
+4. 策略诊断：`GET /v1/signals/diagnostics/strategy-audit`
+5. Trace 详情：`GET /v1/trade/trace/{signal_id}`
+6. Mutation 回显：13 字段统一基类（accepted/action_id/audit_id/...）
+
+**部署提示**：实例启动自动跑 `ALTER TABLE signal_events ADD COLUMN IF NOT EXISTS`（PG 11+ instant op，不锁表）。
+
+### 2026-04-20 P10 QuantX 交易员主控台闭环 ✅
+
+新增 canonical read model 端点（详见 commit 7aedd70）：
+
+- `GET /v1/cockpit/overview`（P10.1：7 块 + 跨账户 contributors + triage_queue 原生派生）
+- `GET /v1/intel/action-queue`（P10.2：guard-aware 队列 + account_candidates 反向索引）
+- `GET /v1/trades/workbench` + `GET /v1/trades/{trade_id}`（P10.3：canonical 列表 + 6 维详情）
+- `GET /v1/trade/command-audits` 扩 `audit_id/action_id/idempotency_key` 过滤（P10.4）
+- `GET /v1/trade/command-audits/{audit_id}`（P10.4：含 linked_operator_command）
+- `GET /v1/lab/impact`（P10.5：WF 分阶段 + recommendation lifecycle + paper session 贯通）
+
+**Schema 迁移**：
+- `paper_trading_sessions` 加 `source_backtest_run_id / recommendation_id / experiment_id` 列 + 3 索引（PAPER_TRADING_MIGRATION_SQL）
+
+**P10.6 字段契约**：所有新端点 snake_case + ISO8601，无 camelCase 同义词（grep 0 hit）。
+
+### 2026-04-17 Telegram 通知模块 Phase 1 ✅
+
+插拔式、模板化、分级过滤的运行时事件推送。详见 `docs/design/notifications.md`。
+
+- Pydantic 配置模型 + 分层 ini 加载器
+- 核心类型：`NotificationEvent` / `Severity` / `build_dedup_key`
+- 轻量模板引擎（`{{ var }}` + `{% if %}`）+ 启动期严格校验
+- 5 CRITICAL + 3 WARNING + 1 INFO 起步模板
+- `Deduper`（LRU + TTL）+ `RateLimiter`（令牌桶 global + per-chat）
+- `OutboxStore`（L2 SQLite + 指数退避 + DLQ + 崩溃恢复）
+- `TelegramTransport`（requests + 429 retry_after + 5xx 可重试 / 4xx 终态 + proxy）
+- `PipelineEventClassifier`（6 个事件 mapper + 异常隔离）
+- `NotificationDispatcher` + worker 线程（CRITICAL 限流不丢 + ADR-005 防双线程）
+- DI 接入 Phase 5.5，`HealthMonitor.set_alert_listener()` 钩子
+- `/v1/admin/notifications/{status,toggle}` API
+- **206 条测试**
+
+### 2026-04-17 Telegram 通知模块 Phase 2 ✅
+
+- `NotificationScheduler`：DailyAt + Interval job，1 秒 tick，ADR-005 合规
+- `TradingStateAlerts` 轮询适配（60s 轮询 `summary()`，3 种 code 映射）
+- Outbox 清理定时器（`purge_sent_older_than(7 days)` 每 6h）
+- daily_report 调度占位
+- `scheduler_running` + `scheduler_jobs` 进 status()
+
+### 2026-04-17 FP.2 strong_trend_follow ✅
+
+基于 FP.1 长窗口挖掘（12 个月）H1 rule_mining #5：
+`adx>40.12 AND macd_fast.hist<=1.61 AND roc12.roc>-1.17 → buy`（test 60.1%/n=143）
+
+- 设计 + 实现 `structured_strong_trend_follow`（与 regime_exhaustion 在 adx_d3 互斥）
+- 12 个月回测 Round 0（`_adx_extreme=40`）：Sharpe 1.446 未达 1.5 最低线
+- C2 Round 1（`_adx_extreme=38` 放宽，signal.local.ini 覆盖）：**Sharpe 1.546 达标**
+- 全量：Trades 64 / WR 46.9% / PnL +873 / PF 2.15 / MaxDD 6.97% / MC p=0.019
+- `deployment = paper_only` 部署（locked_timeframes=H1，locked_sessions=london,new_york）
+
+### 2026-04-14 Intrabar 交易链路已实现 ✅
+
+> IntrabarTradeCoordinator 独立负责 bar 计数稳定性判定。
+> 连续 N 根同方向子 TF bar 达标时直接发布 `intrabar_armed` 信号触发盘中入场。
+
+- bar 内去重机制：IntrabarTradeGuard（同 bar/策略/方向只允许入场一次）
+- confirmed 协调：盘中已开仓 → confirmed 同向 skip / 反向放行
+- 盘中入场条件：coordinator min_stable_bars + min_confidence 阈值
+- 风控覆盖：复用完整 pre-trade filter chain
+
+### 2026-04-06 架构清理归档 ✅
+
+**P0 策略验证闭环**
+- 各 TF 基线回测 → 全部亏损，确认问题在出场结构
+- 策略相关性分析 + 裁剪 + 投票组重组
+- 新增 5 个 legacy 策略（range_box_breakout/bar_momentum_surge/atr_regime_shift/swing_structure_break/range_mean_reversion）
+- 出场参数配置化（Chandelier Exit aggression α 驱动）
+
+**路径 B 策略体系架构重构**
+- 结构化策略框架：StructuredStrategyBase + Where(软)/When(硬)/Why(硬) 三层评估
+- 6 个结构化策略：TrendContinuation/SweepReversal/BreakoutFollow/RangeReversion/SessionBreakout/TrendlineTouch
+- 策略目录子包化：structured/（活跃）+ legacy/（冻结/待定）
+- Volume 指标启用：vwap30/obv30/mfi14 + 新增 volume_ratio20
+- 回测基础设施修复：MarketStructure 注入 + recent_bars 注入 + HTF fallback
+- 信号质量优化：冻结 4 个亏损策略 + regime 门控收紧 + reversion trending=0.0
+- 计算优化：regime fast-reject + signal_grade A/B/C 自动计算
+
+**长期运行稳定性修复**
+- EOD 跨日自动恢复 + apply_mode 异常保护 + TradeExecutor 双线程防护
+- WAL Queue 重入 + IndicatorManager 线程守卫 + PositionManager 启动同步
+- DLQ 文件清理 + listener_fail_counts 清理
+
+**Legacy 策略全面移除**
+- 35 个 legacy 策略 + 4 个复合策略代码删除
+- 切换到纯结构化策略架构：7 个策略（8 个注册实例含 trend_h4 变体）
+- 清理 signal.ini：移除 legacy strategy_timeframes/regime_affinity/strategy_params/voting_groups
+- 清理 composites.json / registry.py / composite.py
+
+**A7 入场职责回归策略层**
+- 策略 `_entry_spec()` 输出入场意图（entry_type/entry_price/entry_zone_atr）
+- PendingEntryManager 退化为纯执行层：读取策略入场规格，不再按 category 推算
+- 移除 `_CATEGORY_ZONE_MODE` / `_compute_reference_price()` / `category_timeout_multiplier`
+- TradeExecutor 分支简化：entry_type=market → 直接市价，limit/stop → 挂单
+
+**Regime 预检清理 + A9 + 死代码清理**
+- 移除三层冗余 regime affinity 预检
+- `htf_alignment` 完全移除（不再计算/记录/乘 confidence）
+- Executor HTF 冲突检查移除（执行层不做信号质量决策）
+- 统一评分框架：每层 score 0~1 × budget（why=0.15, when=0.15, where=0.10, vol=0.05）
+- 策略必须实现 6 个接口：_why / _when / _entry_spec / _exit_spec（强制）+ _where / _volume_bonus（可选）
+
+### 2026-04-05 配置 & 基础设施清理 ✅
+
+- BacktestConfig 拆分为 8 个嵌套子配置 + `from_flat()` 向后兼容
+- 回测子包化（5 个子包：engine/filtering/analysis/optimization/data）+ API 迁移到 `src/api/backtest*`
+- 硬编码魔数配置化（htf_alignment_boost/conflict_penalty/bars_to_evaluate）
+- 补全缺失测试（+24 用例）
+- API 响应格式统一（15 个端点 → ApiResponse[T] 包装）
+- Paper Trading 模块：完整子包（6 文件 + 独立 DB 表 + API + Studio agent）
+- A4: 信号队列持久化（WalSignalQueue，SQLite WAL 模式）
+- A3: 增量指标扩展（9→15 incremental）+ 孤儿指标禁用（21→15 启用）
+- 数据库 schema 全面重建：26 表，14 hypertable，统一索引命名，CHECK 约束
+- 持久化架构审查：health_monitor.db → 内存环形缓冲（3.3GB→0）
+- TimescaleDB retention + compression policy：16 表三级保留策略
+- 日志文件持久化：RotatingFileHandler 100MB×10 + WARNING 独立 errors.log
+- signal_preview_events 异步化：同步直写 PG → StorageWriter 异步队列
+- 配置隐私分层：signal.ini/risk.ini 私域值置空，新建 risk.local.ini
+- 统一 SQLite 连接工厂
+- 文档架构重组：CLAUDE.md 1710→248 行，docs/ 11→5 个文件
+
+---
+
 ## 0e. 2026-04-21 md 二轮深度审查 + 职责固化
 
 **背景**：§0d 建立 md 管理规范后，用户要求对 32 份 md **再做一次完整审查**，找冗余 / 重复 / 界限不清，并把 `TODO.md` 一并纳入审查，确定和 `CLAUDE.md` + `docs/` 的职责分工。

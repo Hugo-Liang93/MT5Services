@@ -8,15 +8,16 @@
 
 ## ADR 索引
 
-| 编号 | 组件 | 决策摘要 | 状态 |
-|------|------|---------|------|
-| 001 | PipelineEventBus | 保持同步 dispatch，禁止改回异步 | 已确定 |
-| 002 | SignalRuntime | warmup/metadata 提取为纯函数模块 | 已确定 |
-| 003 | MetadataKey | 魔法字符串必须使用 MetadataKey 常量 | 已确定 |
-| 004 | 组件生命周期 | start/stop 安全契约（8 项防护机制） | 已确定 |
-| 005 | 后台线程生命周期 | join 超时后不得清空仍存活线程引用 | 已确定 |
-| 006 | 跨模块边界 | 装配/API 层禁止读写组件私有属性，必须通过公开端口 | 已确定 |
-| 007 | Research / Backtesting 边界 | Research 负责发现（含特征晋升），Backtesting 负责验证，晋升通道待补齐 | 拟定中 |
+| 编号 | 日期 | 组件 | 决策摘要 | 状态 |
+|------|------|------|---------|------|
+| 001 | 2026-04-07 | PipelineEventBus | 保持同步 dispatch，禁止改回异步 | ✅ 已确定 |
+| 002 | 2026-04-07 | SignalRuntime | warmup/metadata 提取为纯函数模块 | ✅ 已确定 |
+| 003 | 2026-04-07 | MetadataKey | 魔法字符串必须使用 MetadataKey 常量 | ✅ 已确定 |
+| 004 | 2026-04-06 | 组件生命周期 | start/stop 安全契约（8 项防护机制） | ✅ 已确定 |
+| 005 | 2026-04-10 | 后台线程生命周期 | join 超时后不得清空仍存活线程引用 | ✅ 已确定 |
+| 006 | 2026-04-10 | 跨模块边界 | 装配/API 层禁止读写组件私有属性，必须通过公开端口 | ✅ 已确定 |
+| 007 | 2026-04-17 | Research / Backtesting 边界 | Research 负责发现（含特征晋升），Backtesting 负责验证 | ✅ 已确定（特征晋升自动化仍未实现）|
+| 008 | 2026-04-21 | 持久化 pool + indicator fail-fast + /health 只读 | API 路由禁 `new TimescaleWriter`；event_loops 顶层 fail-fast；`client.health()` 默认不重连 MT5 | ✅ 已确定 |
 
 ---
 

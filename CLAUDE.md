@@ -76,6 +76,55 @@
 
 **维护错 md 的预防**：时点快照不回改正文，仅加"后续演进"头注链到最新 commit/ADR（示例 `docs/research/2026-04-18-mining-vs-backtest-gap.md`）。
 
+## 14) scratch/ 实验脚本管理规范（强制）
+
+**scratch/ 是 gitignored 的本地实验目录**，但仍需纪律避免"僵尸脚本堆积"。
+
+### 新建 scratch/ 脚本前必查
+
+1. **先查 `src/ops/cli/`**：23 个正式 CLI，大概率已覆盖你的需求（历史教训：曾经"没查就在 scratch/ 重写 4 个脚本"浪费 session 时间）
+2. **`python -m src.ops.cli.<name> --help`** 看参数组合够不够（如 `backtest_runner --strategies X,Y --tf H1 --persist`）
+3. 覆盖不了（需 monkey-patch / 参数循环 / 内部 state 检查）→ 才写 scratch/
+
+### scratch/ 脚本顶部**必须**带状态注释
+
+```python
+"""<脚本用途一句话>
+
+STATUS: WIP                      # 或 PROMOTED-TO src/ops/cli/xxx.py（已晋升）
+                                 # 或 DEPRECATED-<date>（过期，待删）
+CREATED: 2026-04-21
+OWNER: <username>                # 下次更新触发条件
+"""
+```
+
+三种状态的含义：
+- **WIP**：正在迭代的实验；超过 30 天未改要 commit 前审查
+- **PROMOTED-TO <path>**：已晋升到 `src/ops/cli/`，scratch 保留作历史参考（或直接删）
+- **DEPRECATED-<date>**：过期标记；下次看到请删
+
+### 晋升到 `src/ops/cli/` 的触发条件
+
+scratch/ 脚本满足下列任一项 → 应该晋升：
+1. 团队有第二个人要用（复用价值）
+2. 定期跑（已进入工作流）
+3. 跑过 3+ 次且参数稳定
+
+晋升 SOP：
+```
+1. 搬到 src/ops/cli/<name>.py，改成 argparse + --help
+2. 复用 src/ops/cli/_persistence.py / _coverage.py 等现有 helper
+3. 加 tests/ops/test_<name>.py 覆盖关键路径
+4. 更新 CLAUDE.md §0（CLI 清单行 23 → N）
+5. 删除 scratch/ 版本或留一个 "PROMOTED-TO" 文件指向新位置
+```
+
+### 禁止
+
+- ❌ 在 scratch/ 写无 status 注释的脚本（commit 反正也不入 git，但至少本地要能识别）
+- ❌ 依赖 scratch/ 脚本跑长期 cron 或自动化（scratch 不稳定、不受测试保护）
+- ❌ 把 scratch/ 内容写进文档（文档引用的工具必须在 `src/ops/cli/` 或 `src/`）
+
 ---
 
 ## 项目概览
@@ -553,7 +602,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | 场景 | 标准工作流（回测 / 诊断 / 挖掘 / 健康检查 / 压测） | monkey-patch / 参数网格 / snapshot 内省（CLI 覆盖不了的）|
 
 **`src/ops/` 分类**：
-- `cli/` — 22 个 CLI（`backtest_runner` / `diagnose_no_trades` / `mining_runner` / `aggression_search` / `walkforward_runner` / `correlation_runner` / `backfill_ohlc` / `confidence_check` / `health_check` / `live_preflight` / `paper_vs_backtest` / `pipeline_gate_audit` / `sltp_grid_search` / `exit_experiment` / `reset_database` / `nightly_wf` / `mining_walk_forward` / `daily_report` / `aggression_scan` / `test_notification` + `_coverage` 辅助）
+- `cli/` — 23 个 CLI（`backtest_runner` / `diagnose_no_trades` / `mining_runner` / `aggression_search` / `walkforward_runner` / `correlation_runner` / `backfill_ohlc` / `confidence_check` / `health_check` / `live_preflight` / `paper_vs_backtest` / `pipeline_gate_audit` / `sltp_grid_search` / `exit_experiment` / `reset_database` / `nightly_wf` / `mining_walk_forward` / `daily_report` / `aggression_scan` / `test_notification` / `import_historical_mining` + `_coverage` / `_persistence` 辅助）
 - `stress/` — 压测脚本（`intent_latency_probe` / `replay_intrabar` / `storage_saturation`）
 - `mt5_session_gate.py` — MT5 会话门
 
