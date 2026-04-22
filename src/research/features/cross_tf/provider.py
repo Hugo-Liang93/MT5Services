@@ -19,15 +19,42 @@ CrossTFFeatureProvider — 跨时间框架特征集。
     parent_adx_delta_5  — 对齐后父 ADX 序列的 5-bar 变化量             Role: WHY
 
 数据对齐算法：使用 numpy searchsorted 将父 TF 时间戳前向填充到子 TF bars。
+
+性能（Phase R.2，2026-04-22 实施）：
+  3 个 `_compute_*` 函数从 per-bar Python 循环改为 Numba `@njit` 内层。
+  公开 API（返回 List[Optional[float]]）保持不变以兼容下游消费者。
+  数值精度与原实现完全等价（无浮点漂移，仅消除 dispatch / Python 层开销）。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from src.research.features.protocol import FeatureProvider, FeatureRole, ProviderDataRequirement
 from src.research.core.config import CrossTFProviderConfig
+from src.research.features.protocol import (
+    FeatureProvider,
+    FeatureRole,
+    ProviderDataRequirement,
+)
+
+try:
+    from numba import njit  # type: ignore[import-untyped]
+
+    _NUMBA_AVAILABLE = True
+except ImportError:  # pragma: no cover - numba 未装走 NumPy fallback
+    _NUMBA_AVAILABLE = False
+
+    def njit(*args, **kwargs):  # type: ignore[no-redef]
+        def _identity(fn):
+            return fn
+
+        # 兼容 @njit(...) 和 @njit 两种调用形式
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return _identity
+
 
 # 固定特征数
 _FEATURE_COUNT = 8
@@ -118,14 +145,18 @@ class CrossTFFeatureProvider:
 
         # --- 解析 extra_data ---
         parent_bar_times = extra_data.get("parent_bar_times")
-        parent_indicators: Dict[str, List[float]] = extra_data.get("parent_indicators", {})
+        parent_indicators: Dict[str, List[float]] = extra_data.get(
+            "parent_indicators", {}
+        )
 
         if not parent_bar_times or not parent_indicators:
             return {}
 
         # --- 时间对齐：子 TF → 父 TF 前向填充 ---
         child_ts = np.array([t.timestamp() for t in matrix.bar_times], dtype=np.float64)
-        parent_ts = np.array([t.timestamp() for t in parent_bar_times], dtype=np.float64)
+        parent_ts = np.array(
+            [t.timestamp() for t in parent_bar_times], dtype=np.float64
+        )
         n_parent = len(parent_ts)
 
         # searchsorted(side="right") - 1：对每个子 TF 时间戳，找到最近且不超过它的父 TF bar
@@ -171,10 +202,14 @@ class CrossTFFeatureProvider:
         )
 
         # --- 7. parent_rsi_delta_5 ---
-        result[("cross_tf", "parent_rsi_delta_5")] = _compute_delta(aligned_rsi, _DELTA_WINDOW, n)
+        result[("cross_tf", "parent_rsi_delta_5")] = _compute_delta(
+            aligned_rsi, _DELTA_WINDOW, n
+        )
 
         # --- 8. parent_adx_delta_5 ---
-        result[("cross_tf", "parent_adx_delta_5")] = _compute_delta(aligned_adx, _DELTA_WINDOW, n)
+        result[("cross_tf", "parent_adx_delta_5")] = _compute_delta(
+            aligned_adx, _DELTA_WINDOW, n
+        )
 
         return result
 
@@ -194,6 +229,84 @@ def _array_to_list(arr: Optional[np.ndarray], n: int) -> List[Optional[float]]:
     return out
 
 
+def _optional_list_to_array(
+    series: Optional[List[Optional[float]]], n: int
+) -> np.ndarray:
+    """List[Optional[float]] → np.ndarray (None / 越界 → NaN)。"""
+    arr = np.full(n, np.nan)
+    if series is None:
+        return arr
+    limit = min(n, len(series))
+    for i in range(limit):
+        v = series[i]
+        if v is not None:
+            arr[i] = v
+    return arr
+
+
+def _array_to_optional_list(arr: np.ndarray) -> List[Optional[float]]:
+    """np.ndarray (NaN=None) → List[Optional[float]] for downstream API 兼容。"""
+    return [None if np.isnan(v) else float(v) for v in arr]
+
+
+# ── Numba JIT 内层（Phase R.2） ──────────────────────────────────────────
+
+
+@njit(cache=True)
+def _compute_trend_align_jit(
+    parent_trend: np.ndarray, child_trend: np.ndarray, n: int
+) -> np.ndarray:
+    """sign(child) × sign(parent)；任一为 NaN 或 0 → NaN。"""
+    out = np.full(n, np.nan)
+    for i in range(n):
+        p = parent_trend[i]
+        if np.isnan(p) or p == 0.0:
+            continue
+        c = child_trend[i]
+        if np.isnan(c) or c == 0.0:
+            continue
+        child_sign = 1.0 if c > 0.0 else -1.0
+        parent_sign = 1.0 if p > 0.0 else -1.0
+        out[i] = child_sign * parent_sign
+    return out
+
+
+@njit(cache=True)
+def _compute_dist_to_ema_jit(
+    closes: np.ndarray, aligned_ema: np.ndarray, atr: np.ndarray, n: int
+) -> np.ndarray:
+    """(close - ema) / atr；任一缺失或 atr<1e-9 → NaN。"""
+    out = np.full(n, np.nan)
+    for i in range(n):
+        c = closes[i]
+        if np.isnan(c):
+            continue
+        e = aligned_ema[i]
+        if np.isnan(e):
+            continue
+        a = atr[i]
+        if np.isnan(a) or a < 1e-9:
+            continue
+        out[i] = (c - e) / a
+    return out
+
+
+@njit(cache=True)
+def _compute_delta_jit(arr: np.ndarray, window: int) -> np.ndarray:
+    """arr[i] - arr[i-w]；i<w 或涉及 NaN → NaN。"""
+    n = len(arr)
+    out = np.full(n, np.nan)
+    for i in range(n):
+        if i < window:
+            continue
+        cur = arr[i]
+        ref = arr[i - window]
+        if np.isnan(cur) or np.isnan(ref):
+            continue
+        out[i] = cur - ref
+    return out
+
+
 def _compute_trend_align(
     matrix: Any,
     aligned_parent_trend: Optional[np.ndarray],
@@ -208,29 +321,10 @@ def _compute_trend_align(
         return [None] * n
 
     ind_series: Dict[Tuple[str, str], List[Optional[float]]] = matrix.indicator_series
-    child_trend_list = ind_series.get(_CHILD_TREND_KEY)
-
-    out: List[Optional[float]] = []
-    for i in range(n):
-        # 父趋势
-        p_val = aligned_parent_trend[i]
-        if not np.isfinite(p_val) or p_val == 0.0:
-            out.append(None)
-            continue
-
-        # 子趋势
-        if child_trend_list is None or i >= len(child_trend_list):
-            out.append(None)
-            continue
-        c_raw = child_trend_list[i]
-        if c_raw is None or c_raw == 0.0:
-            out.append(None)
-            continue
-
-        child_sign = 1.0 if float(c_raw) > 0 else -1.0
-        parent_sign = 1.0 if float(p_val) > 0 else -1.0
-        out.append(child_sign * parent_sign)
-    return out
+    child_trend_arr = _optional_list_to_array(ind_series.get(_CHILD_TREND_KEY), n)
+    return _array_to_optional_list(
+        _compute_trend_align_jit(aligned_parent_trend, child_trend_arr, n)
+    )
 
 
 def _compute_dist_to_ema(
@@ -246,45 +340,15 @@ def _compute_dist_to_ema(
     if aligned_ema is None:
         return [None] * n
 
-    # 获取 close 序列（尝试 matrix.closes，否则全 None）
-    closes: Optional[List[Optional[float]]] = getattr(matrix, "closes", None)
+    closes_list: Optional[List[Optional[float]]] = getattr(matrix, "closes", None)
+    closes_arr = _optional_list_to_array(closes_list, n)
 
-    # 获取 ATR 序列
     ind_series: Dict[Tuple[str, str], List[Optional[float]]] = matrix.indicator_series
-    atr_list = ind_series.get(_CHILD_ATR_KEY)
+    atr_arr = _optional_list_to_array(ind_series.get(_CHILD_ATR_KEY), n)
 
-    out: List[Optional[float]] = []
-    for i in range(n):
-        # close
-        if closes is None or i >= len(closes):
-            out.append(None)
-            continue
-        close_raw = closes[i]
-        if close_raw is None:
-            out.append(None)
-            continue
-
-        # EMA
-        ema_val = aligned_ema[i]
-        if not np.isfinite(ema_val):
-            out.append(None)
-            continue
-
-        # ATR
-        if atr_list is None or i >= len(atr_list):
-            out.append(None)
-            continue
-        atr_raw = atr_list[i]
-        if atr_raw is None:
-            out.append(None)
-            continue
-        atr_val = float(atr_raw)
-        if atr_val < 1e-9:
-            out.append(None)
-            continue
-
-        out.append((float(close_raw) - float(ema_val)) / atr_val)
-    return out
+    return _array_to_optional_list(
+        _compute_dist_to_ema_jit(closes_arr, aligned_ema, atr_arr, n)
+    )
 
 
 def _compute_delta(
@@ -298,16 +362,4 @@ def _compute_delta(
     """
     if aligned is None:
         return [None] * n
-
-    out: List[Optional[float]] = []
-    for i in range(n):
-        if i < window:
-            out.append(None)
-            continue
-        cur = aligned[i]
-        ref = aligned[i - window]
-        if np.isfinite(cur) and np.isfinite(ref):
-            out.append(float(cur - ref))
-        else:
-            out.append(None)
-    return out
+    return _array_to_optional_list(_compute_delta_jit(aligned, window))
