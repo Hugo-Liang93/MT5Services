@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
+from .barrier_predictive_power import analyze_barrier_predictive_power
 from .multi_tf_aggregator import analyze_cross_tf  # noqa: F401  (公开导出)
 from .predictive_power import analyze_predictive_power
 from .protocol import register_analyzer
@@ -115,6 +116,43 @@ class ThresholdSweepAnalyzer:
         return results
 
 
+class BarrierPredictivePowerAnalyzer:
+    """Barrier 预测力分析器 — IC 基于 Triple-Barrier 真实出场收益。
+
+    与 PredictivePowerAnalyzer 的关系：
+      - predictive_power: IC 基于朴素 N-bar forward_return（定点观测）
+      - barrier_predictive_power: IC 基于 tp/sl/time barrier 出场收益（与实盘同构）
+    两者共存，提供两种语义下的预测力证据。
+    """
+
+    name = "barrier_predictive_power"
+    result_field = "barrier_predictive_power"
+    requires_provider_groups = False
+
+    def analyze(
+        self,
+        matrix: Any,
+        *,
+        config: Any,
+        provider_groups: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+        indicator_filter: Optional[List[str]] = None,
+    ) -> List[Any]:
+        # indicator_filter 语义：若指定，仅对其对应的无量纲字段分析
+        fields: Optional[List[Tuple[str, str]]] = None
+        if indicator_filter:
+            fields = [
+                (ind, fld)
+                for ind, fld in matrix.available_indicator_fields()
+                if ind in indicator_filter
+            ]
+        return analyze_barrier_predictive_power(
+            matrix,
+            indicator_fields=fields,
+            config=config.predictive_power,
+            overfitting_config=config.overfitting,
+        )
+
+
 class RuleMiningAnalyzer:
     """规则挖掘分析器（决策树多条件 IF-THEN 规则）。"""
 
@@ -151,7 +189,8 @@ class RuleMiningAnalyzer:
 
 
 def register_default_analyzers() -> None:
-    """注册 3 个内置 analyzer（按默认执行顺序）。"""
+    """注册 4 个内置 analyzer（按默认执行顺序）。"""
     register_analyzer(PredictivePowerAnalyzer())
+    register_analyzer(BarrierPredictivePowerAnalyzer())
     register_analyzer(ThresholdSweepAnalyzer())
     register_analyzer(RuleMiningAnalyzer())

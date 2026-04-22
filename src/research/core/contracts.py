@@ -115,6 +115,69 @@ class IndicatorPredictiveResult:
         return d
 
 
+# ── Barrier Predictive Power ────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class IndicatorBarrierPredictiveResult:
+    """单个 (indicator_field, barrier_config, direction, regime) 的 barrier IC 结果。
+
+    替代 IndicatorPredictiveResult 的短 forward_return 语义——y 是 Triple-Barrier
+    模拟的真实 tp/sl/time 出场收益，与实盘 Chandelier exit 模型同构。
+
+    关键字段：
+      - information_coefficient：指标值与 barrier 真实收益的 Spearman ρ
+      - tp/sl/time_exit_rate：barrier 触发分布（反映该配置的真实持仓表现）
+      - mean_bars_held：平均持仓 bar 数（检验 barrier 与期望 exit 长度匹配度）
+    """
+
+    indicator_name: str
+    field_name: str
+    regime: Optional[str]  # None = 全部 regime
+    direction: str  # "long" | "short"
+    barrier_key: tuple  # (sl_atr: float, tp_atr: float, time_bars: int)
+
+    n_samples: int
+    pearson_r: float
+    spearman_rho: float
+    information_coefficient: float  # = spearman_rho，保持与 IndicatorPredictiveResult 同名
+    p_value: float
+    permutation_p_value: Optional[float]
+    is_significant: bool
+
+    # Barrier exit breakdown
+    tp_hit_rate: float
+    sl_hit_rate: float
+    time_exit_rate: float
+    mean_bars_held: float
+    mean_return_pct: float  # 扣 cost 后
+
+    def to_dict(self) -> Dict[str, Any]:
+        sl_atr, tp_atr, time_bars = self.barrier_key
+        return {
+            "indicator": f"{self.indicator_name}.{self.field_name}",
+            "regime": self.regime,
+            "direction": self.direction,
+            "barrier": f"sl={sl_atr}/tp={tp_atr}/time={time_bars}",
+            "n_samples": self.n_samples,
+            "pearson_r": round(self.pearson_r, 4),
+            "spearman_rho": round(self.spearman_rho, 4),
+            "ic": round(self.information_coefficient, 4),
+            "p_value": round(self.p_value, 4),
+            "permutation_p_value": (
+                round(self.permutation_p_value, 4)
+                if self.permutation_p_value is not None
+                else None
+            ),
+            "is_significant": self.is_significant,
+            "tp_hit_rate": round(self.tp_hit_rate, 4),
+            "sl_hit_rate": round(self.sl_hit_rate, 4),
+            "time_exit_rate": round(self.time_exit_rate, 4),
+            "mean_bars_held": round(self.mean_bars_held, 2),
+            "mean_return_pct": round(self.mean_return_pct, 4),
+        }
+
+
 # ── Threshold Sweep ─────────────────────────────────────────────
 
 
@@ -499,6 +562,9 @@ class MiningResult:
     predictive_power: List[IndicatorPredictiveResult] = field(default_factory=list)
     threshold_sweeps: List[ThresholdSweepResult] = field(default_factory=list)
     mined_rules: List[Any] = field(default_factory=list)  # List[MinedRule]
+    barrier_predictive_power: List[IndicatorBarrierPredictiveResult] = field(
+        default_factory=list
+    )
 
     top_findings: List[Finding] = field(default_factory=list)
 
@@ -524,6 +590,10 @@ class MiningResult:
             result["threshold_sweeps"] = [r.to_dict() for r in self.threshold_sweeps]
         if self.mined_rules:
             result["mined_rules"] = [r.to_dict() for r in self.mined_rules]
+        if self.barrier_predictive_power:
+            result["barrier_predictive_power"] = [
+                r.to_dict() for r in self.barrier_predictive_power
+            ]
         if self.top_findings:
             result["top_findings"] = [f.to_dict() for f in self.top_findings]
         if self.feature_compute_summary:

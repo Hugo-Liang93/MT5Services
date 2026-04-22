@@ -130,6 +130,7 @@ class TestRegistry:
         register_default_analyzers()
         assert set(all_analyzer_names()) == {
             "predictive_power",
+            "barrier_predictive_power",
             "threshold",
             "rule_mining",
         }
