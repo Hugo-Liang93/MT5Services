@@ -42,22 +42,19 @@ def build_filter_simulator(engine: "BacktestEngine") -> BacktestFilterSimulator:
 def load_economic_provider(engine: "BacktestEngine") -> Any:
     """从 DB 加载回测期间的经济事件，构建 BacktestTradeGuardProvider。"""
     try:
-        from .economic import (
-            BacktestTradeGuardProvider,
-            _SimpleSettings,
-            load_backtest_economic_events,
-        )
-        from src.persistence.db import TimescaleWriter
-        from src.config.database import load_db_settings
-        from src.persistence.repositories.economic_repo import EconomicCalendarRepository
+        from .economic import BacktestTradeGuardProvider, _SimpleSettings
         from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+        from src.calendar.economic_loader import load_economic_events_window
+        from src.config.database import load_db_settings
+        from src.persistence.db import TimescaleWriter
+        from src.persistence.repositories.economic_repo import EconomicCalendarRepository
 
         settings = load_db_settings()
         writer = TimescaleWriter(settings, min_conn=1, max_conn=2)
         repo = EconomicCalendarRepository(writer)
 
         context = infer_symbol_context(engine._config.symbol)
-        events = load_backtest_economic_events(
+        events = load_economic_events_window(
             economic_repo=repo,
             start_time=engine._config.start_time,
             end_time=engine._config.end_time,

@@ -54,9 +54,10 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
         "started_at": datetime.utcnow().isoformat(),
     }
     try:
+        from src.backtesting.component_factory import build_research_data_deps
         from src.research.orchestration import MiningRunner
 
-        runner = MiningRunner()
+        runner = MiningRunner(deps=build_research_data_deps())
         result = runner.run(
             symbol=request.symbol,
             timeframe=request.timeframe,

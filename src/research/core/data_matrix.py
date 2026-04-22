@@ -1,7 +1,8 @@
 """DataMatrix — 所有分析器的统一输入数据结构。
 
 一次预计算 bar×指标×regime×前瞻收益，多个分析器复用。
-构建流程 100% 复用现有基础设施（build_backtest_components）。
+构建流程通过 ResearchDataDeps 端口获取 bar_loader / indicator_computer /
+regime_detector；装配层（CLI / API / nightly）负责实例化并注入。
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ from src.research.core.barrier import (
     BarrierOutcome,
     compute_barrier_returns,
 )
-from src.signals.evaluation.regime import RegimeType, SoftRegimeResult
+from src.research.core.ports import ResearchDataDeps
+from src.signals.evaluation.regime import RegimeType
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +120,10 @@ def build_data_matrix(
     start_time: datetime,
     end_time: datetime,
     forward_horizons: List[int],
+    deps: ResearchDataDeps,
     warmup_bars: int = 200,
     train_ratio: float = 0.70,
     round_trip_cost_pct: float = 0.0,
-    components: Optional[Dict[str, Any]] = None,
     barrier_configs: Optional[tuple[BarrierConfig, ...]] = None,
     high_impact_event_times: Optional[Tuple[datetime, ...]] = None,
     child_tf: str = "",
@@ -136,10 +138,10 @@ def build_data_matrix(
         start_time: 数据起始时间
         end_time: 数据结束时间
         forward_horizons: 前瞻收益的 bar 数列表
+        deps: 研究域数据依赖端口（bar_loader / indicator_computer / regime_detector）。
+              由装配层构造注入；核心域不持有具体实现。
         warmup_bars: 指标预热 bar 数
         train_ratio: 训练集比例
-        components: 预构建的组件字典（来自 build_backtest_components），
-                    为 None 则自动构建
         use_cache: 启用 DataMatrixCache（Phase R.1）。命中时直接返回 pickle 反序列化对象，
                    miss 时正常构建后写入。失败 fallback 到原逻辑（cache 永不阻塞）。
                    测试或想强制重算可传 False。
@@ -191,14 +193,9 @@ def build_data_matrix(
             cache = None
             cache_key = None
 
-    if components is None:
-        from src.backtesting.component_factory import build_backtest_components
-
-        components = build_backtest_components()
-
-    data_loader = components["data_loader"]
-    pipeline = components["pipeline"]
-    regime_detector = components["regime_detector"]
+    data_loader = deps.bar_loader
+    pipeline = deps.indicator_computer
+    regime_detector = deps.regime_detector
 
     # 加载数据
     warmup = data_loader.preload_warmup_bars(symbol, timeframe, start_time, warmup_bars)

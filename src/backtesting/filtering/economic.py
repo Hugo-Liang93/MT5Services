@@ -1,15 +1,18 @@
 """回测用经济日历 TradeGuard 提供者。
 
-从 DB 预加载回测时间段的经济事件到内存，
 按 bar 时间查询风险窗口，复用实盘 trade_guard 的分级逻辑。
+事件加载器已迁移至 src.calendar.economic_loader（P4 解耦，2026-04-22）——
+本模块只保留 backtesting 专属的 TradeGuard 实现。
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from src.calendar.economic_loader import SimpleEvent
 
 logger = logging.getLogger(__name__)
 
@@ -34,24 +37,6 @@ class _SimpleSettings:
     market_impact_med_spike_buffer_minutes: int = 45
 
 
-@dataclass
-class _SimpleEvent:
-    """回测用的简化经济事件，兼容 trade_guard.build_window()。"""
-
-    event_uid: str
-    event_name: str
-    source: str
-    country: str
-    currency: str
-    importance: int
-    scheduled_at: datetime
-    scheduled_at_local: Optional[datetime] = None
-    scheduled_at_release: Optional[datetime] = None
-    status: str = "released"
-    session_bucket: str = ""
-    category: str = ""
-
-
 class BacktestTradeGuardProvider:
     """回测用 TradeGuard 提供者。
 
@@ -63,7 +48,7 @@ class BacktestTradeGuardProvider:
 
     def __init__(
         self,
-        events: List[_SimpleEvent],
+        events: List[SimpleEvent],
         settings: Optional[_SimpleSettings] = None,
     ) -> None:
         self._events = sorted(events, key=lambda e: e.scheduled_at)
@@ -83,7 +68,7 @@ class BacktestTradeGuardProvider:
         statuses: Optional[List[str]] = None,
         importance_min: Optional[int] = None,
         **kwargs: Any,
-    ) -> List[_SimpleEvent]:
+    ) -> List[SimpleEvent]:
         """内存过滤，模拟 EconomicCalendarService.get_events()。"""
         result = []
         for ev in self._events:
@@ -115,67 +100,7 @@ class BacktestTradeGuardProvider:
         pass
 
 
-def load_backtest_economic_events(
-    economic_repo: Any,
-    start_time: datetime,
-    end_time: datetime,
-    buffer_hours: int = 6,
-    currencies: Optional[List[str]] = None,
-    importance_min: int = 2,
-) -> List[_SimpleEvent]:
-    """从 DB 加载回测期间的经济事件。
-
-    Args:
-        economic_repo: EconomicCalendarRepository 实例
-        start_time: 回测开始时间
-        end_time: 回测结束时间
-        buffer_hours: 前后扩展小时数（捕获边界事件）
-        currencies: 货币过滤（如 ["USD"]）
-        importance_min: 最低重要性
-
-    Returns:
-        _SimpleEvent 列表
-    """
-    buffered_start = start_time - timedelta(hours=buffer_hours)
-    buffered_end = end_time + timedelta(hours=buffer_hours)
-
-    rows = economic_repo.fetch_economic_calendar(
-        start_time=buffered_start,
-        end_time=buffered_end,
-        limit=5000,
-        currencies=currencies,
-        importance_min=importance_min,
-    )
-
-    events: List[_SimpleEvent] = []
-    for row in rows:
-        scheduled_at = row[0]
-        if scheduled_at is None:
-            continue
-        if scheduled_at.tzinfo is None:
-            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
-
-        events.append(
-            _SimpleEvent(
-                event_uid=str(row[1] or ""),
-                source=str(row[2] or ""),
-                event_name=str(row[4] or ""),
-                country=str(row[5] or ""),
-                category=str(row[6] or ""),
-                currency=str(row[7] or ""),
-                importance=int(row[13] or 0),
-                scheduled_at=scheduled_at,
-                status=str(row[26] or "released"),
-                session_bucket=str(row[22] or ""),
-            )
-        )
-
-    logger.info(
-        "Loaded %d economic events for backtest [%s ~ %s] (currencies=%s, imp>=%d)",
-        len(events),
-        buffered_start.strftime("%Y-%m-%d"),
-        buffered_end.strftime("%Y-%m-%d"),
-        currencies,
-        importance_min,
-    )
-    return events
+__all__ = [
+    "BacktestTradeGuardProvider",
+    "_SimpleSettings",
+]

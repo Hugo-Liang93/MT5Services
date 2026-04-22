@@ -75,7 +75,7 @@ def _run_single(
     """执行单个 TF 信号挖掘，返回结构化结果 dict。"""
     from dataclasses import replace as _replace
 
-    from src.backtesting.component_factory import build_backtest_components
+    from src.backtesting.component_factory import build_research_data_deps
     from src.research.core import load_research_config
     from src.research.orchestration import MiningRunner
 
@@ -102,9 +102,9 @@ def _run_single(
             overrides[f"{name}_enabled"] = name in enabled
         config = _replace(config, feature_providers=_replace(fp, **overrides))
 
-    components = build_backtest_components()
+    deps = build_research_data_deps()
 
-    runner = MiningRunner(config=config, components=components)
+    runner = MiningRunner(config=config, deps=deps)
 
     start_dt = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
     end_dt = datetime.fromisoformat(end).replace(tzinfo=timezone.utc)

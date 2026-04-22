@@ -12,6 +12,55 @@
 > 原本在 `TODO.md` 里的已完成段落，按规范应归档到审计台账。迁入时保留原文结构。
 > 时点数据（baseline 表）已移到 `docs/research/<日期>-*.md`，本段只保留"做了什么 + 证据"。
 
+### 2026-04-22 P4 research ↔ backtesting 反向依赖解耦 ✅
+
+**动机**：研究核心域（data_matrix / MiningRunner / _prepare_extra_data）6 处直接
+`from src.backtesting import ...`，跨域硬耦合。任何 backtesting 内部重构都会波及
+research 挖掘链路；分析器不应绑定某个具体的回测装配实现。
+
+**手段**：端口化 + 共享纯函数挪位 + 编排层边界声明。
+
+**新增**：
+- `src/research/core/ports.py` — `BarLoaderPort / IndicatorComputerPort /
+  RegimeDetectorPort`（runtime_checkable Protocol）+ `ResearchDataDeps`
+  （frozen dataclass 聚合）
+- `src/backtesting/component_factory.py::build_research_data_deps()` — backtesting
+  → research 唯一正向适配入口
+- `src/calendar/economic_loader.py` — 迁入 `SimpleEvent` + `load_economic_events_window`
+  （原名 `_SimpleEvent` / `load_backtest_economic_events`，命名去除 backtest 前缀，
+  成为 calendar 域对外的纯加载器）
+- `tests/research/test_ports.py`（13 cases）+ `tests/calendar/test_economic_loader.py`
+  （8 cases）契约守护
+
+**改动**：
+- `build_data_matrix()` 签名 — 删除 `components: Optional[Dict[...]] = None + fallback`，
+  改为强制 `deps: ResearchDataDeps`（无默认，no compat path）
+- `MiningRunner.__init__` — `components` 参数替换为 keyword-only 强制 `*, deps`
+- CLI / API 3 处调用方 — 从 `build_backtest_components()` 改为
+  `build_research_data_deps()` 再注入
+- backtesting 内部 `load_backtest_economic_events` 的 in-module 定义删除，
+  `filtering/builder.py` 直接从 `src.calendar.economic_loader` import
+
+**边界定义（ADR 级）**：
+- 研究**核心域** = `src/research/{core,analyzers,features,strategies,orchestration}`
+  禁止直接 import `src.backtesting`；grep 门禁 0 命中
+- **编排层** = `src/research/nightly/`（等同 `src/ops/cli/` 定位），允许粘合
+  research 与 backtesting；未来膨胀时考虑迁移到 `src/ops/research_nightly/`
+
+**守护**：
+- `grep "from src.backtesting" src/research/{core,analyzers,features,strategies,orchestration}/`
+  必须 0 命中
+- `grep "from src.backtesting" src/research/` 仅在 `nightly/` 下允许
+- 契约测试：Fake impl + 生产类 `isinstance(Port)` 双路径
+
+**风险与未决**：
+- nightly/runner.py 仍直接 import backtesting 公共 API（BacktestEngine/BacktestConfig），
+  属于编排层正当调用——观察项：若 nightly 出现第 2 个模块，考虑物理迁移 `src/ops/`
+- `SimpleEvent` 替代 `_SimpleEvent` 是契约可见性改变（下划线→公开），
+  下游测试已同步
+
+**验证**：`pytest tests/calendar/ tests/backtesting/ tests/research/` 521 passed / 6 skipped。
+
 ### 2026-04-20 P9 前端读侧 API 全套交付 ✅
 
 QuantX 前端读侧支撑 P9 全部 5 个 Phase + API 治理 4 项已交付。**2374/2374 测试全过**。

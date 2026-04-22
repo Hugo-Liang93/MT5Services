@@ -67,13 +67,13 @@ def _mine_window(
     window_end: datetime,
 ) -> Any:
     """在单个窗口跑挖掘，返回 MiningResult（含 mined_rules）。"""
-    from src.backtesting.component_factory import build_backtest_components
+    from src.backtesting.component_factory import build_research_data_deps
     from src.research.core import load_research_config
     from src.research.orchestration import MiningRunner
 
     config = load_research_config()
-    components = build_backtest_components()
-    runner = MiningRunner(config=config, components=components)
+    deps = build_research_data_deps()
+    runner = MiningRunner(config=config, deps=deps)
 
     return runner.run(
         symbol="XAUUSD",

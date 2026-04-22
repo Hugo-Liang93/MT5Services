@@ -9,9 +9,9 @@ import pytest
 
 from src.backtesting.filtering.economic import (
     BacktestTradeGuardProvider,
-    _SimpleEvent,
     _SimpleSettings,
 )
+from src.calendar.economic_loader import SimpleEvent
 
 
 def _make_event(
@@ -20,9 +20,9 @@ def _make_event(
     hours_offset: float = 0,
     currency: str = "USD",
     country: str = "United States",
-) -> _SimpleEvent:
+) -> SimpleEvent:
     base = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
-    return _SimpleEvent(
+    return SimpleEvent(
         event_uid=f"test:{name}",
         event_name=name,
         source="test",

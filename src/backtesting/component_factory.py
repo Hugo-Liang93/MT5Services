@@ -5,7 +5,10 @@ from __future__ import annotations
 import copy
 import importlib
 import logging
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    from src.research.core.ports import ResearchDataDeps
 
 logger = logging.getLogger(__name__)
 
@@ -191,4 +194,37 @@ def _apply_overrides(
         strategy_params,
         regime_affinity_overrides,
         strategy_params_per_tf=strategy_params_per_tf,
+    )
+
+
+def build_research_data_deps(
+    strategy_params: Optional[Dict[str, Any]] = None,
+    regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
+    strategy_params_per_tf: Optional[Dict[str, Dict[str, Any]]] = None,
+    strategy_names: Optional[list[str]] = None,
+) -> "ResearchDataDeps":
+    """从 backtesting 基础设施装配 ResearchDataDeps。
+
+    这是 research 核心域对 backtesting 的**唯一正向适配入口**。
+    装配层（CLI / API / nightly）调用此函数获取 deps，再注入 MiningRunner /
+    build_data_matrix —— research 核心域本身不直接 import backtesting。
+
+    Args:
+        参数与 build_backtest_components 对齐，透传给底层。
+
+    Returns:
+        ResearchDataDeps（bar_loader / indicator_computer / regime_detector）。
+    """
+    from src.research.core.ports import ResearchDataDeps
+
+    components = build_backtest_components(
+        strategy_params=strategy_params,
+        regime_affinity_overrides=regime_affinity_overrides,
+        strategy_params_per_tf=strategy_params_per_tf,
+        strategy_names=strategy_names,
+    )
+    return ResearchDataDeps(
+        bar_loader=components["data_loader"],
+        indicator_computer=components["pipeline"],
+        regime_detector=components["regime_detector"],
     )

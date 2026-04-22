@@ -14,7 +14,6 @@ from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.backtesting.filtering.economic import load_backtest_economic_events
 from src.calendar.economic_calendar.gold_relevance import (
     EventRelevanceMatcher,
     EventSummary,
@@ -22,6 +21,7 @@ from src.calendar.economic_calendar.gold_relevance import (
     build_relevance_matcher,
 )
 from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+from src.calendar.economic_loader import load_economic_events_window
 from src.config.centralized import get_economic_config
 from src.config.database import load_db_settings
 from src.config.models.runtime import EconomicConfig
@@ -29,7 +29,8 @@ from src.persistence.db import TimescaleWriter
 from src.persistence.repositories.economic_repo import EconomicCalendarRepository
 from src.research.core.config import ResearchConfig, load_research_config
 from src.research.core.contracts import DataSummary, Finding, MiningResult
-from src.research.core.data_matrix import DataMatrix, build_data_matrix
+from src.research.core.data_matrix import build_data_matrix
+from src.research.core.ports import ResearchDataDeps
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def _load_high_impact_event_times(
     try:
         repo = EconomicCalendarRepository(writer)
         context = infer_symbol_context(symbol)
-        events = load_backtest_economic_events(
+        events = load_economic_events_window(
             economic_repo=repo,
             start_time=start_time,
             end_time=end_time,
@@ -124,10 +125,11 @@ class MiningRunner:
     def __init__(
         self,
         config: Optional[ResearchConfig] = None,
-        components: Optional[Dict[str, Any]] = None,
+        *,
+        deps: ResearchDataDeps,
     ) -> None:
         self._config = config or load_research_config()
-        self._components = components
+        self._deps = deps
 
         from src.research.features.hub import FeatureHub
 
@@ -169,12 +171,6 @@ class MiningRunner:
 
             analyses = all_analyzer_names()
 
-        # 构建组件（复用 backtesting 基础设施的数据加载 + 指标计算）
-        if self._components is None:
-            from src.backtesting.component_factory import build_backtest_components
-
-            self._components = build_backtest_components()
-
         # 加载回测期间的高影响经济事件（供派生事件特征使用）
         high_impact_events = _load_high_impact_event_times(
             symbol=symbol,
@@ -192,7 +188,7 @@ class MiningRunner:
             warmup_bars=self._config.warmup_bars,
             train_ratio=self._config.train_ratio,
             round_trip_cost_pct=self._config.round_trip_cost_pct,
-            components=self._components,
+            deps=self._deps,
             high_impact_event_times=high_impact_events,
             child_tf=child_tf,
         )
@@ -315,7 +311,7 @@ class MiningRunner:
             warmup_bars=self._config.warmup_bars,
             train_ratio=self._config.train_ratio,
             round_trip_cost_pct=self._config.round_trip_cost_pct,
-            components=self._components,
+            deps=self._deps,
         )
 
         alias_map: Dict[str, Tuple[str, str]] = {

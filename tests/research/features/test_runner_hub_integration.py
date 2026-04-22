@@ -22,6 +22,16 @@ from src.research.core.config import (
     ResearchConfig,
 )
 from src.research.core.contracts import Finding, MiningResult
+from src.research.core.ports import ResearchDataDeps
+
+
+def _fake_research_deps() -> ResearchDataDeps:
+    """测试用占位 deps——配合 monkeypatch/MagicMock 使用，不会被真正调用。"""
+    return ResearchDataDeps(
+        bar_loader=MagicMock(),
+        indicator_computer=MagicMock(),
+        regime_detector=MagicMock(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +62,7 @@ def test_runner_creates_feature_hub():
     from src.research.orchestration.runner import MiningRunner
 
     config = ResearchConfig()
-    runner = MiningRunner(config=config)
+    runner = MiningRunner(config=config, deps=_fake_research_deps())
     assert hasattr(runner, "_feature_hub")
 
     from src.research.features.hub import FeatureHub
@@ -256,8 +266,8 @@ def test_prepare_extra_data_loads_parent_tf_matrix(monkeypatch: pytest.MonkeyPat
     from src.research.features.protocol import ProviderDataRequirement
     from src.research.orchestration.runner import MiningRunner
 
-    runner = MiningRunner(config=ResearchConfig())
-    runner._components = {"sentinel": object()}
+    sentinel_deps = _fake_research_deps()
+    runner = MiningRunner(config=ResearchConfig(), deps=sentinel_deps)
 
     fake_matrix = MagicMock()
     fake_matrix.bar_times = [
@@ -294,7 +304,7 @@ def test_prepare_extra_data_loads_parent_tf_matrix(monkeypatch: pytest.MonkeyPat
     )
 
     assert captured["timeframe"] == "H4"
-    assert captured["components"] == runner._components
+    assert captured["deps"] is sentinel_deps
     assert payload is not None
     assert payload["parent_timeframe"] == "H4"
     assert payload["parent_bar_times"] == fake_matrix.bar_times
