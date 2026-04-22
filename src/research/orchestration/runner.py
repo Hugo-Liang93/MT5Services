@@ -164,7 +164,10 @@ class MiningRunner:
         started_at = datetime.utcnow()
 
         if analyses is None:
-            analyses = ["predictive_power", "threshold", "rule_mining"]
+            # 默认执行所有已注册的 analyzer（按注册顺序，可由 default_analyzers 控制）
+            from src.research.analyzers import all_analyzer_names
+
+            analyses = all_analyzer_names()
 
         # 构建组件（复用 backtesting 基础设施的数据加载 + 指标计算）
         if self._components is None:
@@ -234,20 +237,21 @@ class MiningRunner:
             data_summary=data_summary,
         )
 
-        # 执行分析器
-        if "predictive_power" in analyses:
-            result.predictive_power = self._run_predictive_power(
-                matrix, provider_groups
-            )
+        # 执行分析器（P2 重构后通过 Analyzer Protocol 注册表派发，
+        # runner 不再硬编码每个 analyzer 名称的 if 链）
+        from src.research.analyzers import get_analyzer
 
-        if "threshold" in analyses:
-            result.threshold_sweeps = self._run_threshold_sweep(
+        for analyzer_name in analyses:
+            analyzer = get_analyzer(analyzer_name)
+            analyzer_result = analyzer.analyze(
                 matrix,
-                indicator_filter,
+                config=self._config,
+                provider_groups=(
+                    provider_groups if analyzer.requires_provider_groups else None
+                ),
+                indicator_filter=indicator_filter,
             )
-
-        if "rule_mining" in analyses:
-            result.mined_rules = self._run_rule_mining(matrix, provider_groups)
+            setattr(result, analyzer.result_field, analyzer_result)
 
         # 汇总 Top Findings
         result.top_findings = self._rank_findings(result)
@@ -271,106 +275,6 @@ class MiningRunner:
         result.completed_at = datetime.utcnow()
 
         return result
-
-    def _run_predictive_power(
-        self,
-        matrix: DataMatrix,
-        provider_groups: Optional[Dict[str, List[Tuple[str, str]]]] = None,
-    ) -> list:
-        from src.research.analyzers.predictive_power import analyze_predictive_power
-
-        return analyze_predictive_power(
-            matrix,
-            config=self._config.predictive_power,
-            overfitting_config=self._config.overfitting,
-            provider_groups=provider_groups,
-            fdr_grouping=self._config.feature_providers.fdr_grouping,
-        )
-
-    def _run_threshold_sweep(
-        self,
-        matrix: DataMatrix,
-        indicator_filter: Optional[List[str]],
-    ) -> list:
-        from src.research.analyzers.threshold import analyze_thresholds
-
-        # 确定要扫描的指标
-        if indicator_filter:
-            fields = [
-                (ind, fld)
-                for ind, fld in matrix.available_indicator_fields()
-                if ind in indicator_filter
-            ]
-        else:
-            # 默认扫描核心振荡类指标的主要字段
-            _DEFAULT_FIELDS = {
-                "rsi14": "rsi",
-                "adx14": "adx",
-                "atr14": "atr",
-                "cci20": "cci",
-                "stoch_rsi14": "stoch_rsi_k",
-                "williams_r14": "williams_r",
-                "macd": "hist",
-                "roc12": "roc",
-            }
-            fields = [
-                (ind, fld)
-                for ind, fld in matrix.available_indicator_fields()
-                if ind in _DEFAULT_FIELDS and fld == _DEFAULT_FIELDS[ind]
-            ]
-            if not fields:
-                fields = matrix.available_indicator_fields()
-
-        # Regime 分层：None = 全部混合，再加各 regime 单独扫描
-        regime_filters: List[Optional[str]] = [None]
-        if self._config.threshold_sweep.per_regime:
-            regime_dist = Counter(r.value for r in matrix.regimes)
-            for regime_val, count in regime_dist.items():
-                if count >= self._config.overfitting.min_samples:
-                    regime_filters.append(regime_val)
-
-        results = []
-        for regime_filter in regime_filters:
-            for ind_name, field_name in fields:
-                sweep = analyze_thresholds(
-                    matrix,
-                    ind_name,
-                    field_name,
-                    config=self._config.threshold_sweep,
-                    overfitting_config=self._config.overfitting,
-                    regime_filter=regime_filter,
-                )
-                results.extend(sweep)
-
-        return results
-
-    def _run_rule_mining(
-        self,
-        matrix: DataMatrix,
-        provider_groups: Optional[Dict[str, List[Tuple[str, str]]]] = None,
-    ) -> list:
-        from src.research.analyzers.rule_mining import RuleMiningConfig as _RMCfg
-        from src.research.analyzers.rule_mining import mine_rules
-
-        # 从 ResearchConfig.rule_mining 构建 RuleMiningConfig
-        rm = self._config.rule_mining
-        cfg = _RMCfg(
-            max_depth=rm.max_depth,
-            min_samples_leaf=rm.min_samples_leaf,
-            min_hit_rate=rm.min_hit_rate,
-            min_test_hit_rate=rm.min_test_hit_rate,
-            max_rules=rm.max_rules,
-            dimensionless_only=rm.dimensionless_only,
-            n_permutations=rm.n_permutations,
-            permutation_significance=rm.permutation_significance,
-            cv_folds=rm.cv_folds,
-            cv_consistency_threshold=rm.cv_consistency_threshold,
-        )
-        return mine_rules(
-            matrix,
-            config=cfg,
-            overfitting_config=self._config.overfitting,
-        )
 
     def _prepare_extra_data(
         self,
@@ -428,7 +332,9 @@ class MiningRunner:
             if key is not None:
                 series = parent_matrix.indicator_series.get(key)
             if series is None:
-                series = parent_matrix.indicator_series.get((indicator_name, indicator_name))
+                series = parent_matrix.indicator_series.get(
+                    (indicator_name, indicator_name)
+                )
             if series is None:
                 series = parent_matrix.indicator_series.get((indicator_name, "value"))
             if series is None:
