@@ -169,6 +169,14 @@ def _run_single(
     if result.mined_rules:
         output["mined_rules"] = [r.to_dict() for r in result.mined_rules]
 
+    if result.barrier_predictive_power:
+        sig = [r for r in result.barrier_predictive_power if r.is_significant]
+        output["barrier_predictive_power"] = {
+            "total_tested": len(result.barrier_predictive_power),
+            "significant": len(sig),
+            "top_10": [r.to_dict() for r in sig[:10]],
+        }
+
     if result.top_findings:
         output["top_findings"] = [f.to_dict() for f in result.top_findings[:15]]
 
@@ -270,6 +278,26 @@ def _render_default(data: dict) -> str:
                     f"mean_IC={ric.get('mean_ic', 0):+.3f}  "
                     f"n_windows={ric.get('n_windows', 0)}"
                 )
+
+    # Barrier Predictive Power（Gap 2b — IC 基于 Triple-Barrier 真实出场）
+    bp = data.get("barrier_predictive_power")
+    if bp:
+        lines.append(
+            f"\n--- Barrier Predictive Power "
+            f"({bp['significant']}/{bp['total_tested']} significant) ---"
+        )
+        for r in bp.get("top_10", []):
+            sig_mark = "***" if r.get("is_significant") else ""
+            perm_p = r.get("permutation_p_value")
+            perm_str = f"  perm_p={perm_p:.3f}" if perm_p is not None else ""
+            lines.append(
+                f"  {r['indicator']:<20} {r['direction']:<5} IC={r['ic']:+.3f}  "
+                f"{r['barrier']:<24}  n={r['n_samples']}  "
+                f"tp={r['tp_hit_rate']*100:>5.1f}%  "
+                f"sl={r['sl_hit_rate']*100:>5.1f}%  "
+                f"bars_held={r['mean_bars_held']:>5.1f}"
+                f"{perm_str}  {sig_mark}"
+            )
 
     # Threshold Sweep
     ts_list = data.get("threshold_sweeps", [])
