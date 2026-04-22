@@ -472,6 +472,53 @@ class MiningRunner:
                     )
                 )
 
+        # 从 Barrier Predictive Power 提取（Gap 2b — IC 基于 Triple-Barrier 出场）
+        for bp in result.barrier_predictive_power:
+            if not bp.is_significant:
+                continue
+            ic = bp.information_coefficient
+            # 打分：|IC| × (1 + tp/sl 偏离 50/50 的程度 × 10)
+            exit_skew = max(
+                abs(bp.tp_hit_rate - 0.5),
+                abs(bp.sl_hit_rate - 0.5),
+            )
+            score = abs(ic) * (1 + exit_skew * 10)
+
+            sl_atr, tp_atr, time_bars = bp.barrier_key
+            regime_str = f" ({bp.regime})" if bp.regime else ""
+
+            # Action: IC 正向 → 进场建议；IC 负向 → 警示反向或回避
+            if ic > 0:
+                action = (
+                    f"{bp.indicator_name} 高时 {bp.direction} 有效 "
+                    f"(sl={sl_atr}/tp={tp_atr}/time={time_bars})"
+                )
+            else:
+                action = (
+                    f"{bp.indicator_name} 高时 {bp.direction} 亏钱 "
+                    f"(sl hit {bp.sl_hit_rate * 100:.0f}%)——考虑反向或回避"
+                )
+
+            findings.append(
+                Finding(
+                    rank=0,
+                    category="barrier",
+                    summary=(
+                        f"{bp.indicator_name}.{bp.field_name} {bp.direction} "
+                        f"IC={ic:+.3f} barrier={sl_atr}/{tp_atr}/{time_bars} "
+                        f"tp={bp.tp_hit_rate * 100:.0f}%/sl={bp.sl_hit_rate * 100:.0f}% "
+                        f"bars={bp.mean_bars_held:.1f} n={bp.n_samples}{regime_str}"
+                    ),
+                    confidence_level=(
+                        "high"
+                        if bp.n_samples >= 100 and bp.p_value < 0.01
+                        else "medium"
+                    ),
+                    significance_score=score,
+                    action=action,
+                )
+            )
+
         # 从 Rule Mining 提取
         for rule in result.mined_rules:
             test_hr = rule.test_hit_rate or 0.0
