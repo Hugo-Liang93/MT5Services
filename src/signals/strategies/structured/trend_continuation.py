@@ -39,6 +39,11 @@ class StructuredTrendContinuation(StructuredStrategyBase):
     _rsi_sell_low: float = 50.0
     _rsi_sell_high: float = 70.0
     _htf_adx_min: float = 20.0
+    # HTF adx 上限：超过阈值视为趋势末端，拒绝进场。
+    # 默认 55.0 偏宽松（避免无配置时破坏现有行为）；实际值按 TF 在 signal.local.ini
+    # 的 [strategy_params.<TF>] 下覆盖（如 M30=40，H1=45）——挖掘证据见
+    # 2026-04-22 mining: M30 barrier IC=-0.229 @ adx>40；H1 mined rule adx<=41.74。
+    _htf_adx_upper: float = 55.0
     _momentum_consensus_buy_min: float = 0.0
     _momentum_consensus_sell_max: float = 0.0
     _momentum_consensus_score_bonus: float = 0.20
@@ -84,6 +89,11 @@ class StructuredTrendContinuation(StructuredStrategyBase):
             self, "htf_adx_min", ctx.timeframe, self._htf_adx_min
         ):
             return False, None, 0, f"htf_adx_low:{htf_adx_f:.0f}"
+        adx_upper = get_tf_param(
+            self, "htf_adx_upper", ctx.timeframe, self._htf_adx_upper
+        )
+        if htf_adx_f > adx_upper:
+            return False, None, 0, f"htf_adx_high:{htf_adx_f:.0f}>{adx_upper:.0f}"
 
         direction = "buy" if htf_dir_i == 1 else "sell"
         if self._direction_lock and direction != self._direction_lock:

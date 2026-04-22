@@ -1,9 +1,36 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-04-21
+> 最近更新：2026-04-22
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
+
+---
+
+## 0f. 2026-04-22 P8 回测 deployment gate 收口（ADR-009）
+
+**背景**：`docs/research/2026-04-20-tf-baseline-review.md` 记录的 M30 污染事件——`structured_price_action`（`deployment=paper_only` 且未绑定账户）在回测中被全量评估（1,258 笔），生产中完全不跑，导致 M30 baseline 虚高 7×（1,463 → 真实 206 笔）。根因是 `BacktestEngine` 的 deployment gate 只过滤 CANDIDATE，PAPER_ONLY 不过滤。
+
+**本次改动**：
+- `BacktestConfig.include_paper_only: bool = False`（新字段，默认严格 baseline 语义）
+- `BacktestEngine` gate 拆成两段：CANDIDATE 永远排除；PAPER_ONLY 按 flag 选择
+- 日志分离两类 filter 输出，便于排查
+- `backtest_runner --include-paper-only` flag 用于 paper-shadow 回测
+- 覆盖测试：`test_engine.py` +2（engine-level gate）/ `test_backtest_config.py` +2（config 默认值）
+
+**职责变化**：
+- 回测域职责不变：仍只按 `StrategyDeployment.status` 契约过滤，不读账户拓扑
+- `allows_live_execution()` 从"只给 trading 域用"扩展到"也给 backtesting 域用"——合同层无变化，使用者增加
+
+**清理清单**：
+- 其他 backtest CLI（`aggression_search` / `exit_experiment` / `walkforward_runner` / `nightly_wf` / `correlation_runner` / API routes）**本次不改**——它们继承 strict baseline 语义符合"默认安全"原则。需要 paper-shadow 的 CLI 后续按需追加透传
+- 旧 baseline 快照（含 price_action 污染的 M30 数据）已在 tf-baseline-review 头注链到 ADR-009，不回改正文
+
+**减少边界泄漏**：
+- 回测 gate 的判定语义从"允许 runtime 评估"向"允许 live 执行"收口，默认对齐实盘行为，消除"回测指标含实盘永远不跑的信号"这类隐性失真
+- 不新增字段、不跨域读 local.ini、不需要 CLI 逐个打补丁——全部通过 `StrategyDeployment` 已有合同解决
+
+**未决兼容项**：无。`include_paper_only=False` 是语义更严的新默认，旧调用方自动获得正确行为。
 
 ---
 
@@ -11,6 +38,45 @@
 
 > 原本在 `TODO.md` 里的已完成段落，按规范应归档到审计台账。迁入时保留原文结构。
 > 时点数据（baseline 表）已移到 `docs/research/<日期>-*.md`，本段只保留"做了什么 + 证据"。
+
+### 2026-04-23 B-1 挖掘驱动调参：trend_continuation.htf_adx_upper 门控（维持冻结）
+
+**动机**：2026-04-22 weekly mining 发现 M30 上 `adx14.adx long` barrier IC=-0.229
+(n=2329, sl hit 71%, bars_held 12.2)——**adx 高时做 long 亏钱**，与血教训段记录的
+"短 FR 看不到"的结构性 insight 一致。验证能否用此洞察"解冻"
+structured_trend_continuation（2026-04-19 冻结，raw_confidence 与 WR 负相关）。
+
+**代码实现**：
+- `trend_continuation.py`: 新增 `_htf_adx_upper: float = 55.0`（默认宽松）
+- `_why()` 在 `_htf_adx_min` 下限检查后加上限检查：`adx > upper → 拒绝`
+  reason=`htf_adx_high:<current>>upper`
+- `signal.local.ini` TF 分层（挖掘证据驱动）：H1=45 / M30=40
+- `tests/signals/test_trend_continuation_adx_upper.py` 4 cases 守护边界
+
+**回测对比**（2026-01-20~04-20, --min-confidence 0.10, --include-paper-only）：
+
+| TF | Trades | WR | PF | Sharpe | DD |
+|---|---|---|---|---|---|
+| M30 BEFORE (upper=999) | 15 | 26.7% | 0.483 | -0.607 | 4.13% |
+| **M30 AFTER (upper=40)** | **13** | **30.8%** | **0.527** | -0.569 | 4.14% |
+| H1 BEFORE (upper=999) | 2 | 50% | 2.035 | 0.265 | 1.07% |
+| H1 AFTER (upper=45) | 2 | 50% | 2.035 | 0.265 | 1.07% |
+
+**结论（维持冻结）**：
+- M30 小幅改善（PF +9.1%, WR +4.1pp，砍 2 笔高 adx 陷阱）
+- H1 门控未触发（3 月内无 adx > 45 样本；2 trades 无统计意义）
+- **未达解冻线**（历史 solo min_conf=0.45 PF=0.61，解冻通常需 PF > 1.2）
+- **根本问题未解决**：raw_confidence 与 WR 负相关属置信度管线问题，adx_upper
+  只修了表面陷阱，不反转负相关
+
+**保留 vs 回滚**：
+- ✅ 保留 `_htf_adx_upper` 代码（与 `_htf_adx_min` 对称，架构增强可复用）
+- ✅ 保留 signal.local.ini 的 TF-specific 配置作为未来解冻证据底座
+- ✅ 维持 `status = candidate`（不解冻；回测对比记入 ini 注释）
+- ❌ 不升级到 paper_only/active_guarded
+
+**下一步**：trend_continuation 真正解冻需要 P6（TODO.md）— confidence 管线重设计，
+不是参数修补。P4.3 A11 regime_affinity 审视同步。
 
 ### 2026-04-22 挖掘模块实操级 3 项 Gap 修复（Gap 1/2/3）✅
 
