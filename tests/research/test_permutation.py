@@ -8,6 +8,7 @@ import pytest
 from scipy import stats as scipy_stats
 
 from src.research.core.permutation import (
+    PermutationEngine,
     PermutationTestResult,
     PermutationTestSpec,
     _run_serial_chunk,
@@ -209,3 +210,118 @@ class TestPreRankEquivalence:
         legacy_p = legacy_count / max(legacy_eff, 1)
         assert abs(result.p_value - legacy_p) < 1e-12
         assert result.effective_permutations == legacy_eff
+
+
+# ── PermutationEngine 通用接口（P0 收编 threshold + rule_mining） ──────────
+
+
+class TestPermutationEngine:
+    """通用 PermutationEngine：覆盖 collect_null_distribution / p_value_*。"""
+
+    def test_validation_rejects_zero_block(self):
+        with pytest.raises(ValueError):
+            PermutationEngine(block_size=0, n_permutations=10, seed=0)
+
+    def test_validation_rejects_zero_perm(self):
+        with pytest.raises(ValueError):
+            PermutationEngine(block_size=3, n_permutations=0, seed=0)
+
+    def test_collect_null_distribution_length(self):
+        """每次 statistic 返回 float → 收集长度应 == n_permutations。"""
+        engine = PermutationEngine(block_size=3, n_permutations=20, seed=42)
+        nulls = engine.collect_null_distribution(
+            shuffle_target=[1.0, 2.0, 3.0, 4.0, 5.0] * 4,
+            compute_statistic=lambda sh: float(sum(sh)),  # sum 不变（重排）
+        )
+        assert len(nulls) == 20
+        assert all(s == 60.0 for s in nulls)  # sum 始终 60
+
+    def test_collect_null_distribution_skips_none(self):
+        """statistic 返回 None → 跳过，effective < n_permutations。"""
+        call_count = {"n": 0}
+
+        def stat(sh):
+            call_count["n"] += 1
+            return None if call_count["n"] % 2 == 0 else 1.0
+
+        engine = PermutationEngine(block_size=2, n_permutations=10, seed=0)
+        nulls = engine.collect_null_distribution([1.0, 2.0, 3.0, 4.0], stat)
+        assert len(nulls) == 5  # 一半 None
+        assert call_count["n"] == 10
+
+    def test_collect_null_distribution_skips_exception(self):
+        """statistic 抛异常 → 跳过。"""
+
+        def stat(sh):
+            raise ValueError("boom")
+
+        engine = PermutationEngine(block_size=2, n_permutations=10, seed=0)
+        nulls = engine.collect_null_distribution([1.0, 2.0, 3.0, 4.0], stat)
+        assert nulls == []
+
+    def test_p_value_one_sided_basic(self):
+        """observed 比所有 null 都大 → p ≈ 0；都小 → p ≈ 1。"""
+        engine = PermutationEngine(block_size=2, n_permutations=20, seed=7)
+
+        # null 全 0.5，observed 0.9
+        p_low, eff_low = engine.p_value_one_sided(
+            shuffle_target=[1.0, 2.0, 3.0, 4.0],
+            compute_statistic=lambda sh: 0.5,
+            observed=0.9,
+        )
+        assert p_low == 0.0
+        assert eff_low == 20
+
+        # null 全 0.5，observed 0.1
+        p_high, _ = engine.p_value_one_sided(
+            shuffle_target=[1.0, 2.0, 3.0, 4.0],
+            compute_statistic=lambda sh: 0.5,
+            observed=0.1,
+        )
+        assert p_high == 1.0  # 所有 null >= observed
+
+    def test_p_value_one_sided_empty_returns_conservative(self):
+        engine = PermutationEngine(block_size=2, n_permutations=10, seed=0)
+        p, eff = engine.p_value_one_sided(
+            shuffle_target=[1.0, 2.0, 3.0],
+            compute_statistic=lambda sh: None,
+            observed=0.5,
+        )
+        assert p == 1.0
+        assert eff == 0
+
+    def test_p_value_abs_uses_absolute_value(self):
+        """null 是 +0.5/-0.5 混合，observed=0.3：abs 比较都 ≥ 0.3 → p=1.0。"""
+        engine = PermutationEngine(block_size=2, n_permutations=10, seed=11)
+        # 用 perm_index 控制返回正负
+        toggle = {"flip": True}
+
+        def stat(sh):
+            toggle["flip"] = not toggle["flip"]
+            return 0.5 if toggle["flip"] else -0.5
+
+        p, eff = engine.p_value_abs(
+            shuffle_target=[1.0, 2.0, 3.0, 4.0],
+            compute_statistic=stat,
+            abs_observed=0.3,
+        )
+        assert p == 1.0
+        assert eff == 10
+
+    def test_seed_reproducibility(self):
+        """同 seed → 同 shuffle 序列 → 同结果。"""
+        target = [float(i) for i in range(20)]
+
+        captured_a, captured_b = [], []
+
+        def make_stat(captured):
+            def stat(sh):
+                captured.append(tuple(sh))
+                return 1.0
+
+            return stat
+
+        eng = PermutationEngine(block_size=3, n_permutations=15, seed=2026)
+        eng.collect_null_distribution(target, make_stat(captured_a))
+        eng.collect_null_distribution(target, make_stat(captured_b))
+        assert captured_a == captured_b  # 完全可复现

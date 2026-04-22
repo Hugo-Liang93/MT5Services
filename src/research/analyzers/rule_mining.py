@@ -23,7 +23,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,7 +33,8 @@ from src.signals.evaluation.regime import RegimeType
 
 from ..core.config import OverfittingConfig
 from ..core.data_matrix import DataMatrix
-from ..core.statistics import auto_block_size, binomial_test_p, block_shuffle
+from ..core.permutation import PermutationEngine
+from ..core.statistics import auto_block_size, binomial_test_p
 
 logger = logging.getLogger(__name__)
 
@@ -640,22 +640,19 @@ def _permutation_test_tree(
     """排列检验：打乱标签后训练树，收集 null distribution 下最优叶节点 hit_rate。
 
     返回 null distribution 的 hit_rate 列表（每次排列一个最大 hit_rate）。
+    P0 收编后改用 PermutationEngine（共享 block_shuffle / seed / effective 语义）。
     """
     n = len(train_y)
     if n < 10:
         return []
 
-    rng = random.Random(seed)
     adaptive_bs = auto_block_size(train_y.tolist())
-    null_hit_rates: List[float] = []
+    sample_weights = np.abs(train_returns) + 1e-8
+    train_y_dtype = train_y.dtype
 
-    for _ in range(cfg.n_permutations):
-        # Block shuffle 标签（保留局部自相关）
-        shuffled_y = np.array(
-            block_shuffle(train_y.tolist(), adaptive_bs, rng), dtype=train_y.dtype
-        )
-
-        sample_weights = np.abs(train_returns) + 1e-8
+    def _statistic(shuffled_list: List[float]) -> Optional[float]:
+        """每次 shuffle 后训练树，提取最佳叶节点 hit_rate。"""
+        shuffled_y = np.array(shuffled_list, dtype=train_y_dtype)
         perm_tree = DecisionTreeClassifier(
             max_depth=cfg.max_depth,
             min_samples_leaf=cfg.min_samples_leaf,
@@ -664,13 +661,18 @@ def _permutation_test_tree(
         try:
             perm_tree.fit(train_X, shuffled_y, sample_weight=sample_weights)
         except Exception:
-            continue
+            return None
+        return _best_leaf_hit_rate(perm_tree, train_X, shuffled_y)
 
-        # 提取 null tree 中最优叶节点 hit_rate
-        best_hr = _best_leaf_hit_rate(perm_tree, train_X, shuffled_y)
-        null_hit_rates.append(best_hr)
-
-    return null_hit_rates
+    engine = PermutationEngine(
+        block_size=adaptive_bs,
+        n_permutations=cfg.n_permutations,
+        seed=seed,
+    )
+    return engine.collect_null_distribution(
+        shuffle_target=train_y.tolist(),
+        compute_statistic=_statistic,
+    )
 
 
 def _best_leaf_hit_rate(

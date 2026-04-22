@@ -40,14 +40,18 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import random
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Callable, List, Optional, Sequence, Tuple, TypeVar
 
 import numpy as np
 from scipy import stats as scipy_stats
 
 from .statistics import block_shuffle
+
+# 通用 statistic 函数的输入元素类型（一般是 float，rule_mining 用 int 标签）
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,114 @@ class PermutationTestSpec:
 class PermutationTestResult:
     p_value: float
     effective_permutations: int  # 实际成功执行的次数（<=n_permutations）
+
+
+# ---------------------------------------------------------------------------
+# 通用 PermutationEngine（P0 收编 threshold / rule_mining 共享语义）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PermutationEngine:
+    """通用排列检验引擎。
+
+    设计目的（2026-04-22 P0 架构修复）：
+      - `run_permutation_test` 是 spearman 特化路径（pre-rank 7x 加速）
+      - 但 threshold sweep / rule_mining 的内层 statistic 不是 spearman
+        （threshold = max_metric_score；rule_mining = best_leaf_hit_rate）
+      - 这些 analyzer 之前各自实现 block_shuffle + 循环 + count_ge，
+        语义漂移（seed / block_size / effective_count 各算各的）
+      - PermutationEngine 把"shuffle + 调 statistic + 收集结果"抽象为共享原语，
+        statistic 计算由调用方注入
+
+    与 spearman 特化路径的关系：
+      - spearman 路径继续走 `run_permutation_test`（保持 pre-rank 加速）
+      - 其他 statistic 走本引擎（callable 通用接口，无 pre-rank 收益但语义统一）
+
+    使用模式：
+        engine = PermutationEngine(block_size=10, n_permutations=200, seed=42)
+        # 1) 单边 p-value
+        p, eff = engine.p_value_one_sided(
+            shuffle_target=fwd_vals,
+            compute_statistic=lambda sh: max_metric_score_under(sh),
+            observed=best_score,
+        )
+        # 2) 收集 null 分布（rule_mining 用，不直接转 p-value）
+        nulls = engine.collect_null_distribution(
+            shuffle_target=labels.tolist(),
+            compute_statistic=lambda sh: best_leaf_hit_rate_with(sh),
+        )
+    """
+
+    block_size: int
+    n_permutations: int
+    seed: int
+
+    def __post_init__(self) -> None:
+        if self.block_size < 1:
+            raise ValueError(f"block_size must be >= 1, got {self.block_size}")
+        if self.n_permutations < 1:
+            raise ValueError(f"n_permutations must be >= 1, got {self.n_permutations}")
+
+    def collect_null_distribution(
+        self,
+        shuffle_target: Sequence[_T],
+        compute_statistic: Callable[[List[_T]], Optional[float]],
+    ) -> List[float]:
+        """每次 shuffle 调 compute_statistic，收集所有非 None 结果。
+
+        compute_statistic 抛异常或返回 None 视为无效排列（不进入结果），
+        与 `run_permutation_test` 中"effective_count"语义一致。
+        """
+        rng = random.Random(self.seed)
+        target_list = list(shuffle_target)
+        out: List[float] = []
+        for _ in range(self.n_permutations):
+            shuffled = block_shuffle(target_list, self.block_size, rng)
+            try:
+                stat = compute_statistic(shuffled)
+            except Exception:
+                continue
+            if stat is None:
+                continue
+            out.append(float(stat))
+        return out
+
+    def p_value_one_sided(
+        self,
+        shuffle_target: Sequence[_T],
+        compute_statistic: Callable[[List[_T]], Optional[float]],
+        observed: float,
+    ) -> Tuple[float, int]:
+        """one-sided p-value：count(null_stat >= observed) / effective。
+
+        Returns:
+            (p_value, effective_permutations)
+            effective=0 时 p_value 退化为 1.0（保守）
+        """
+        nulls = self.collect_null_distribution(shuffle_target, compute_statistic)
+        if not nulls:
+            return 1.0, 0
+        count_ge = sum(1 for s in nulls if s >= observed)
+        return count_ge / len(nulls), len(nulls)
+
+    def p_value_abs(
+        self,
+        shuffle_target: Sequence[_T],
+        compute_statistic: Callable[[List[_T]], Optional[float]],
+        abs_observed: float,
+    ) -> Tuple[float, int]:
+        """双向 p-value：count(|null_stat| >= |observed|) / effective。
+
+        Returns:
+            (p_value, effective_permutations)
+        """
+        nulls = self.collect_null_distribution(shuffle_target, compute_statistic)
+        if not nulls:
+            return 1.0, 0
+        abs_obs = abs(abs_observed)
+        count_ge = sum(1 for s in nulls if abs(s) >= abs_obs)
+        return count_ge / len(nulls), len(nulls)
 
 
 def run_permutation_test(
