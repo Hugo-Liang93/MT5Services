@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from ..analyzers.multi_tf_aggregator import analyze_cross_tf
 from ..core.contracts import (
     CandidateEvidence,
     FeatureCandidateDiscoveryResult,
@@ -13,7 +14,6 @@ from ..core.contracts import (
     MiningResult,
     RobustnessTier,
 )
-from ..core.cross_tf import analyze_cross_tf
 from .protocol import PROMOTED_INDICATOR_PRECEDENTS
 
 # ---------------------------------------------------------------------------

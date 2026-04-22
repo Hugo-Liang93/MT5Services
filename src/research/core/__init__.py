@@ -28,15 +28,12 @@ from src.research.core.contracts import (
     ThresholdPoint,
     ThresholdSweepResult,
 )
-from src.research.core.cross_tf import CrossTFAnalysis, CrossTFSignal, analyze_cross_tf
 from src.research.core.data_matrix import DataMatrix, build_data_matrix
 
 __all__ = [
     "CandidateDiscoveryResult",
     "CandidateEvidence",
     "CandidateRuleCondition",
-    "CrossTFAnalysis",
-    "CrossTFSignal",
     "DataMatrix",
     "DataSummary",
     "FeatureCandidateDiscoveryResult",
@@ -58,7 +55,6 @@ __all__ = [
     "ThresholdPoint",
     "ThresholdSweepConfig",
     "ThresholdSweepResult",
-    "analyze_cross_tf",
     "build_data_matrix",
     "load_research_config",
 ]

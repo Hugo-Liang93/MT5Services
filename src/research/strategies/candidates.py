@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
+from ..analyzers.multi_tf_aggregator import CrossTFAnalysis, analyze_cross_tf
 from ..core.contracts import (
     CandidateDiscoveryResult,
     CandidateEvidence,
@@ -12,8 +13,6 @@ from ..core.contracts import (
     RobustnessTier,
     StrategyCandidateSpec,
 )
-from ..core.cross_tf import CrossTFAnalysis, analyze_cross_tf
-
 
 _TF_SPECIFIC_VALIDATION_GATES: dict[str, Any] = {
     "min_history_months": 6,
@@ -87,7 +86,9 @@ def discover_strategy_candidates(
     min_tfs_for_robust: int = 2,
     candidate_limit: int = 12,
 ) -> CandidateDiscoveryResult:
-    analysis = analyze_cross_tf(dict(results_by_timeframe), min_tfs_for_robust=min_tfs_for_robust)
+    analysis = analyze_cross_tf(
+        dict(results_by_timeframe), min_tfs_for_robust=min_tfs_for_robust
+    )
     candidates: list[StrategyCandidateSpec] = []
 
     for signal in (
@@ -172,12 +173,7 @@ def discover_strategy_candidates(
                 validation_gates=_validation_gates_for(tier),
                 decision_reason=reason,
                 research_provenance=",".join(
-                    sorted(
-                        {
-                            result.run_id
-                            for result in results_by_timeframe.values()
-                        }
-                    )
+                    sorted({result.run_id for result in results_by_timeframe.values()})
                 ),
             )
         )
@@ -211,7 +207,10 @@ def _collect_candidate_evidence(
     evidence: list[CandidateEvidence] = []
 
     predictive = _matching_predictive_results(
-        target_result, indicator_name=indicator_name, field_name=field_name, regime=regime
+        target_result,
+        indicator_name=indicator_name,
+        field_name=field_name,
+        regime=regime,
     )
     if predictive:
         best = predictive[0]
@@ -293,7 +292,11 @@ def _collect_rule_conditions(
     target_result: MiningResult,
     indicator_name: str,
     regime: str | None,
-) -> tuple[list[CandidateRuleCondition], list[CandidateRuleCondition], list[CandidateRuleCondition]]:
+) -> tuple[
+    list[CandidateRuleCondition],
+    list[CandidateRuleCondition],
+    list[CandidateRuleCondition],
+]:
     why: list[CandidateRuleCondition] = []
     when: list[CandidateRuleCondition] = []
     where: list[CandidateRuleCondition] = []
@@ -425,7 +428,10 @@ def _rule_mentions_indicator(
         for item in structured.get(role, []) or []:
             if str(item.get("indicator", "")).strip() != indicator_name:
                 continue
-            if field_name is not None and str(item.get("field", "")).strip() != field_name:
+            if (
+                field_name is not None
+                and str(item.get("field", "")).strip() != field_name
+            ):
                 continue
             return True
     return False

@@ -9,6 +9,11 @@
 使用方式：
   results = {tf: MiningResult for tf in timeframes}
   analysis = analyze_cross_tf(results)
+
+历史命名：原位于 `core/cross_tf.py`，2026-04-22 P1 改名 + 挪入 analyzers/，
+解除与 `features/cross_tf/` (CrossTFFeatureProvider，父 TF 特征对齐器) 的命名冲突。
+两者完全不同：本模块消费 multi-TF 的 MiningResult 做聚合分析；
+features/cross_tf 在单 DataMatrix 内生成 cross_tf_* 特征列。
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .contracts import IndicatorPredictiveResult, MiningResult, RobustnessTier
+from ..core.contracts import IndicatorPredictiveResult, MiningResult, RobustnessTier
 
 
 @dataclass(frozen=True)

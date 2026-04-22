@@ -466,7 +466,7 @@ def _render_compare(results: List[dict]) -> str:
 
 def _render_cross_tf(raw_results: Dict[str, Any]) -> str:
     """跨 TF 一致性分析。"""
-    from src.research.core import analyze_cross_tf
+    from src.research.analyzers.multi_tf_aggregator import analyze_cross_tf
 
     analysis = analyze_cross_tf(raw_results)
     lines: List[str] = []
@@ -773,7 +773,7 @@ def main() -> None:
             cross_tf_text = _render_cross_tf(raw_results)
             if not args.feature_candidates_only:
                 print(cross_tf_text)
-            from src.research.core import analyze_cross_tf
+            from src.research.analyzers.multi_tf_aggregator import analyze_cross_tf
 
             output_payload["cross_tf_analysis"] = analyze_cross_tf(
                 raw_results
