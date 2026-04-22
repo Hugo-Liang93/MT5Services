@@ -12,6 +12,60 @@
 > 原本在 `TODO.md` 里的已完成段落，按规范应归档到审计台账。迁入时保留原文结构。
 > 时点数据（baseline 表）已移到 `docs/research/<日期>-*.md`，本段只保留"做了什么 + 证据"。
 
+### 2026-04-22 挖掘模块实操级 3 项 Gap 修复（Gap 1/2/3）✅
+
+**动机**：对挖掘模块做总体评估后，发现 3 个影响"每周挖掘 → 周中交易"工作流质量的
+结构缺陷，均为配置/方法学层面，不影响架构。
+
+**Gap 1 — Cost model 偏乐观**：
+- `research.ini` / `ResearchConfig.round_trip_cost_pct`：0.04% → **0.08%**
+- 旧值低估 XAUUSD 真实往返成本（spread 0.15-0.30 pts/2000 + commission + 典型滑点 ≈ 0.07-0.10%），
+  导致挖掘候选"看似显著"但回测被 spread filter 咬掉
+- 注释显式标注"定期按 broker 实际成交成本审视"
+
+**Gap 2a — Forward horizon 与 exit 模型错配**：
+- `forward_horizons`：`[1, 3, 5, 10]` → **`[3, 10, 30, 60]`**
+- 旧 1/5 bar 短 FR 与实盘 Chandelier trailing 持仓（20-50 bar）结构性错配
+  （见 `docs/research-system.md` 顶部"血教训"段）
+- 新 horizons 覆盖 H1 下 3 小时~2.5 天、M15 下 45 分钟~15 小时
+
+**Gap 2b — Barrier predictive power analyzer（新）**：
+- 新 contract `IndicatorBarrierPredictiveResult`：IC 基于 Triple-Barrier 真实
+  tp/sl/time 出场收益，与实盘 Chandelier exit 模型同构
+- 新 `analyze_barrier_predictive_power` + `BarrierPredictivePowerAnalyzer`
+  注册到 `default_analyzers`（4 个内置 analyzer 之一）
+- 与 `predictive_power` 共存：前者短 FR，后者 barrier return，提供双重证据
+- v1 仅做 regime=None 全样本分析；per_regime 留 v2（9 barrier × 2 direction × 5 regime
+  × ~100 indicator 的 permutation 成本不可接受）
+
+**Gap 3 — Weekend/holiday gap 过滤**：
+- `_detect_gap_bars`：相邻 bar 时间差 > 2×tf_seconds 判定为 gap
+- `_mask_forward_returns_over_gap` / `_mask_barrier_returns_over_gap`：跨 gap 的
+  forward_return / barrier_return 设为 None
+- 修正持仓范围语义：入场 open[i+1]，过渡 gap 在 j ∈ [i+1, i+h-1]（入场前的 gap 不影响）
+- 消除周五→周一 ~50h 空档对 IC 的污染
+
+**新增契约测试守护**：
+- `tests/research/core/test_config.py`（5 cases）— Gap 1/2a 配置锚点
+- `tests/research/analyzers/test_barrier_predictive_power.py`（7 cases）— Gap 2b 语义
+- `tests/research/core/test_weekend_gap_mask.py`（7 cases）— Gap 3 mask 边界
+
+**可测性改进**：`load_research_config(ini_path=None)` 加可选路径参数，
+便于测试注入；默认行为不变。
+
+**验证**：`pytest tests/research/ tests/calendar/ tests/backtesting/` 846 passed / 6 skipped；
+`python -m src.ops.cli.mining_runner --help` 冒烟通过。
+
+**运维提醒**：
+- `round_trip_cost_pct = 0.08%` 按 XAUUSD 当前行情估算；broker 换仓或点差变化时需重估
+- `barrier_predictive_power` 让挖掘时长略增（新 analyzer ~30-60s），但 IC 可信度大幅提升
+
+**未决（留作后续观察）**：
+- Gap 3：黄金特异性事件（COMEX open/close、NFP/FOMC 周）未纳入 session_event provider，
+  观察 paper trading 数据若出现 "FOMC 周胜率异常" 再补
+- Gap 4：挖掘候选 → 策略 Python 代码的自动生成仍是人工瓶颈（工程量 5-7 天），
+  等 paper 验证出 2-3 个可复制 pattern 后再评估 ROI
+
 ### 2026-04-22 P4 research ↔ backtesting 反向依赖解耦 ✅
 
 **动机**：研究核心域（data_matrix / MiningRunner / _prepare_extra_data）6 处直接

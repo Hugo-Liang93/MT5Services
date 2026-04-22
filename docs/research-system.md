@@ -57,6 +57,19 @@
 3. Top candidate 选择时挑"两者都高"的规则 → 天然避开本次 C-1/I-1 这类 exit 不兼容陷阱
 4. 候选编码策略时在 `_exit_spec()` 声明挖掘产出的最优 barrier 参数，回测自动走 barrier 路径
 
+### 2026-04-22 — 本段血教训的后续缓解
+
+详见 [`docs/codebase-review.md §F 2026-04-22 挖掘模块实操级 3 项 Gap 修复`](codebase-review.md)。
+摘要：
+
+1. **Gap 1**：`round_trip_cost_pct` 0.04 → 0.08%，反映真实 XAUUSD 往返成本
+2. **Gap 2a**：`forward_horizons` `[1,3,5,10]` → `[3,10,30,60]`，覆盖 Chandelier trailing 期望持仓
+3. **Gap 2b**：新增 `analyze_barrier_predictive_power` analyzer —— IC 直接基于
+   Triple-Barrier 出场收益，与实盘 exit 模型同构。`MiningResult.barrier_predictive_power`
+   字段承载结果，选择候选时**优先看 barrier IC** 而非旧 predictive_power.IC
+4. **Gap 3**：weekend/holiday gap 自动 mask，排除周五→周一 ~50h 空档的
+   forward_return / barrier_return
+
 ---
 
 ## 系统定位

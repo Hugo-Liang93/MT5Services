@@ -3,6 +3,10 @@
 一次预计算 bar×指标×regime×前瞻收益，多个分析器复用。
 构建流程通过 ResearchDataDeps 端口获取 bar_loader / indicator_computer /
 regime_detector；装配层（CLI / API / nightly）负责实例化并注入。
+
+Weekend/holiday gap 处理（2026-04-22 Gap 3）：
+相邻 bar 时间差 > 2×tf_seconds 的位置判定为 gap，跨 gap 的 forward_return /
+barrier_return 被 mask 为 None——避免周五→周一的 ~50h 空档污染 IC。
 """
 
 from __future__ import annotations
@@ -24,6 +28,73 @@ from src.research.core.ports import ResearchDataDeps
 from src.signals.evaluation.regime import RegimeType
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_gap_bars(test_bars: List[OHLC], timeframe: str) -> List[bool]:
+    """返回 has_gap_after[i]：bar[i] 到 bar[i+1] 间的时间差是否超过 2×tf_seconds。
+
+    用于 weekend/holiday gap 检测。阈值 2×tf 允许偶发 broker 数据空档（1-2 bar），
+    但能可靠捕捉周五→周一（~50h）或假期（~24h+）的长空档。
+    """
+    from src.utils.common import timeframe_seconds
+
+    tf_sec = max(timeframe_seconds(timeframe), 60)
+    gap_threshold = 2 * tf_sec
+
+    n = len(test_bars)
+    has_gap = [False] * n
+    for i in range(n - 1):
+        delta = (test_bars[i + 1].time - test_bars[i].time).total_seconds()
+        if delta > gap_threshold:
+            has_gap[i] = True
+    return has_gap
+
+
+def _mask_forward_returns_over_gap(
+    forward_returns: Dict[int, List[Optional[float]]],
+    has_gap_after: List[bool],
+) -> int:
+    """把跨 gap 的 forward_return 设为 None；返回被 mask 的数量。
+
+    forward_return[i] 入场 open[i+1]、出场 close[i+h]，持仓经过 bar[i+1..i+h]。
+    过渡 gap 发生在 bar[j]→bar[j+1]，j ∈ [i+1, i+h-1]。
+    """
+    n = len(has_gap_after)
+    masked = 0
+    for h, returns in forward_returns.items():
+        for i in range(n):
+            if returns[i] is None:
+                continue
+            start = i + 1
+            end = min(i + h, n - 1)  # j 不超过 n-2
+            if any(has_gap_after[j] for j in range(start, end)):
+                returns[i] = None
+                masked += 1
+    return masked
+
+
+def _mask_barrier_returns_over_gap(
+    barrier_returns: Dict[tuple, List[Optional[Any]]],
+    has_gap_after: List[bool],
+) -> int:
+    """把跨 gap 的 barrier_return 设为 None；返回被 mask 的数量。
+
+    BarrierOutcome[i] 入场 open[i+1]，持仓 bars_held 根 bar 覆盖 bar[i+1..i+bars_held]。
+    过渡 gap 在 bar[j]→bar[j+1]，j ∈ [i+1, i+bars_held-1]。
+    """
+    n = len(has_gap_after)
+    masked = 0
+    for key, outcomes in barrier_returns.items():
+        for i in range(n):
+            o = outcomes[i]
+            if o is None:
+                continue
+            start = i + 1
+            end = min(i + o.bars_held, n - 1)
+            if any(has_gap_after[j] for j in range(start, end)):
+                outcomes[i] = None
+                masked += 1
+    return masked
 
 
 @dataclass(frozen=True)
@@ -400,6 +471,27 @@ def build_data_matrix(
         direction="short",
         round_trip_cost_pct=round_trip_cost_pct,
     )
+
+    # Weekend / holiday gap mask：跨 gap 的 forward_return / barrier_return 设 None
+    # （Gap 3, 2026-04-22）—— 避免周五→周一的 ~50h 空档污染 IC 计算
+    has_gap_after = _detect_gap_bars(test_bars, timeframe)
+    if any(has_gap_after):
+        n_gaps = sum(has_gap_after)
+        fr_masked = _mask_forward_returns_over_gap(forward_returns, has_gap_after)
+        long_masked = _mask_barrier_returns_over_gap(
+            barrier_returns_long, has_gap_after
+        )
+        short_masked = _mask_barrier_returns_over_gap(
+            barrier_returns_short, has_gap_after
+        )
+        logger.info(
+            "Weekend/holiday gap mask: %d gap positions → "
+            "forward_returns masked=%d, barrier_long masked=%d, barrier_short masked=%d",
+            n_gaps,
+            fr_masked,
+            long_masked,
+            short_masked,
+        )
 
     # 预计算 ACF 自适应 block_size：每 forward_horizon 算一次，避免分析器重算
     from .statistics import auto_block_size as _auto_block_size
