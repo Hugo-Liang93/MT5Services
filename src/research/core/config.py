@@ -128,12 +128,16 @@ class FeatureProviderConfig:
 
 @dataclass(frozen=True)
 class ResearchConfig:
-    forward_horizons: List[int] = field(default_factory=lambda: [1, 3, 5, 10])
+    # Forward horizon 覆盖 Chandelier trailing 持仓期望（20-50 bar），避免短 FR
+    # 与实盘 exit 模型错配（血教训：docs/research-system.md 顶部段落）。
+    # 1/5 bar 短 FR 已被移除——定点观测对长持仓策略无参考价值。
+    forward_horizons: List[int] = field(default_factory=lambda: [3, 10, 30, 60])
     warmup_bars: int = 200
     train_ratio: float = 0.70
-    # 单次往返交易成本（百分比），用于扣除 forward_return
-    # XAUUSD 约 spread 3-5 pips + commission ≈ 0.03-0.05%
-    round_trip_cost_pct: float = 0.04
+    # 单次往返交易成本（百分比），用于扣除 forward_return。
+    # XAUUSD 真实值 ≈ spread 0.15-0.30 pts/2000 + commission + 典型滑点 ≈ 0.07-0.10%。
+    # 定期按 broker 实际成交成本审视此值（broker 换仓/点差变化 → 需要重估）。
+    round_trip_cost_pct: float = 0.08
 
     overfitting: OverfittingConfig = field(default_factory=OverfittingConfig)
     threshold_sweep: ThresholdSweepConfig = field(default_factory=ThresholdSweepConfig)
@@ -241,12 +245,25 @@ def _load_feature_providers(parser: configparser.ConfigParser) -> FeatureProvide
     )
 
 
-def load_research_config() -> ResearchConfig:
-    """加载研究模块配置，支持 research.local.ini 覆盖。"""
+def load_research_config(ini_path: Optional[str] = None) -> ResearchConfig:
+    """加载研究模块配置，支持 research.local.ini 覆盖。
+
+    Args:
+        ini_path: 显式 .ini 路径（测试/工具场景用）。None 时按约定加载
+                  `config/research.ini` + `config/research.local.ini`。
+                  传入具体路径时仅读该文件，不再合并 local.ini。
+    """
     parser = configparser.ConfigParser()
-    ini_path = os.path.join(_CONFIG_DIR, "research.ini")
-    local_path = os.path.join(_CONFIG_DIR, "research.local.ini")
-    parser.read([ini_path, local_path], encoding="utf-8")
+    if ini_path is None:
+        parser.read(
+            [
+                os.path.join(_CONFIG_DIR, "research.ini"),
+                os.path.join(_CONFIG_DIR, "research.local.ini"),
+            ],
+            encoding="utf-8",
+        )
+    else:
+        parser.read(str(ini_path), encoding="utf-8")
 
     def _get(section: str, key: str, fallback: str) -> str:
         return parser.get(section, key, fallback=fallback)
@@ -260,7 +277,7 @@ def load_research_config() -> ResearchConfig:
     def _getbool(section: str, key: str, fallback: bool) -> bool:
         return parser.getboolean(section, key, fallback=fallback)
 
-    horizons_str = _get("research", "forward_horizons", "1,3,5,10")
+    horizons_str = _get("research", "forward_horizons", "3,10,30,60")
     forward_horizons = [int(h.strip()) for h in horizons_str.split(",") if h.strip()]
 
     # 向后兼容: bonferroni_correction=true → correction_method=bonferroni
@@ -275,7 +292,7 @@ def load_research_config() -> ResearchConfig:
         forward_horizons=forward_horizons,
         warmup_bars=_getint("research", "warmup_bars", 200),
         train_ratio=_getfloat("research", "train_ratio", 0.70),
-        round_trip_cost_pct=_getfloat("research", "round_trip_cost_pct", 0.04),
+        round_trip_cost_pct=_getfloat("research", "round_trip_cost_pct", 0.08),
         overfitting=OverfittingConfig(
             min_samples=_getint("overfitting", "min_samples", 30),
             min_correlation=_getfloat("overfitting", "min_correlation", 0.05),
