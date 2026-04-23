@@ -65,6 +65,12 @@
 - [ ] 单策略 3 月 backtest，记录 PF/Sharpe/trades 到 `codebase-review.md §F`
 - [ ] **判定门槛**：solo PF > 1.2 且 trades > 50 → 进 Step 2；否则记"未过门槛"结束本轮
 
+**回测 SOP 纪律**（2026-04-23 综合审查产出，省 ~30% 算力）：
+- **必加 `--strategies X,Y`**：默认跑全 11 活策略会浪费 11× 算力
+- **不加 `--persist`**：smoke 回测 CLI 默认不写 DB；验收时才显式加
+- **不加 `--monte-carlo`**：默认已关（`backtest.ini`），验收确认策略时才按需开
+- 验收命令示例：`backtest_runner --environment live --tf M30 --start 2025-10-20 --end 2026-04-20 --strategies <candidate> --monte-carlo --persist`
+
 ### Step 2: Paper Trading 启动 ⏳ 下周
 
 - [ ] Step 1 通过门槛的策略注册 `status = paper_only`，写 `signal.local.ini`

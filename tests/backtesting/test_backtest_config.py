@@ -165,3 +165,35 @@ class TestBacktestConfigFromFlat:
                 end_time=datetime(2025, 2, 1, tzinfo=timezone.utc),
                 nonexistent_field=42,
             )
+
+    def test_include_paper_only_default_false(self) -> None:
+        """baseline 回测默认排除 paper_only 策略（ADR-009）。"""
+        config = BacktestConfig(
+            symbol="XAUUSD",
+            timeframe="M5",
+            start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2025, 2, 1, tzinfo=timezone.utc),
+        )
+        assert config.include_paper_only is False
+
+    def test_include_paper_only_from_flat(self) -> None:
+        config = BacktestConfig.from_flat(
+            symbol="XAUUSD",
+            timeframe="M5",
+            start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2025, 2, 1, tzinfo=timezone.utc),
+            include_paper_only=True,
+        )
+        assert config.include_paper_only is True
+
+    def test_monte_carlo_default_disabled(self) -> None:
+        """2026-04-23 综合审查：MC 默认关闭，省 P0 smoke 回测 20-30% 时长。
+
+        正式验收用 `backtest_runner --monte-carlo` 按需开启。
+        若改回默认开启，请先读 docs/codebase-review.md §F 2026-04-23 综合审查。
+        """
+        defaults = get_backtest_defaults()
+        assert defaults.get("monte_carlo_enabled") is False, (
+            "monte_carlo_enabled 默认应为 False（综合审查决定）。"
+            "改回 True 前请读审查记录。"
+        )

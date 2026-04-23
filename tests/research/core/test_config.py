@@ -36,6 +36,19 @@ class TestResearchConfigDefaults:
         )
 
 
+class TestPermutationBudget:
+    def test_pp_n_permutations_default_500_not_1000(self) -> None:
+        """2026-04-23 综合审查：pp n_permutations 1000→500 是故意的。
+
+        BH-FDR 校正后 p-value 分辨率从 1e-3→2e-3，对显著性判定无实际影响。
+        若将来有人改回 1000 请先读 docs/codebase-review.md §F 2026-04-23 综合审查。
+        """
+        cfg = ResearchConfig()
+        assert cfg.predictive_power.n_permutations == 500, (
+            "pp n_permutations 应为 500（综合审查决定）。改回 1000 前请读审查记录。"
+        )
+
+
 class TestLoadResearchConfigFromIni:
     def test_ini_overrides_applied(self, tmp_path: Path) -> None:
         """.ini 中的 forward_horizons / round_trip_cost_pct 正确读入。"""
