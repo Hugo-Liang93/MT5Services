@@ -49,7 +49,7 @@
 
 ## 0f. 2026-04-22 P8 回测 deployment gate 收口（ADR-009）
 
-**背景**：`docs/research/2026-04-20-tf-baseline-review.md` 记录的 M30 污染事件——`structured_price_action`（`deployment=paper_only` 且未绑定账户）在回测中被全量评估（1,258 笔），生产中完全不跑，导致 M30 baseline 虚高 7×（1,463 → 真实 206 笔）。根因是 `BacktestEngine` 的 deployment gate 只过滤 CANDIDATE，PAPER_ONLY 不过滤。
+**背景**：2026-04-20 的 M30 baseline 审查（原快照已于 2026-04-23 重置时删除）记录的 M30 污染事件——`structured_price_action`（`deployment=paper_only` 且未绑定账户）在回测中被全量评估（1,258 笔），生产中完全不跑，导致 M30 baseline 虚高 7×（1,463 → 真实 206 笔）。根因是 `BacktestEngine` 的 deployment gate 只过滤 CANDIDATE，PAPER_ONLY 不过滤。
 
 **本次改动**：
 - `BacktestConfig.include_paper_only: bool = False`（新字段，默认严格 baseline 语义）
@@ -487,7 +487,7 @@ QuantX 前端读侧支撑 P9 全部 5 个 Phase + API 治理 4 项已交付。**
 **文档清理**（4 处偏差修正）：
 - `docs/design/adr.md` ADR-007：状态"拟定中"→"已确定（2026-04-17）; 特征晋升自动化仍未实现"，"当前实现缺口"章节重写为"已落地 4 项 + 仍未实现 4 项"
 - `docs/research-system.md` F-12b：补充"研究层在 `barrier.py`+`data_matrix.py`，执行层在 `exit_rules.py`"的双层实现位置对照
-- `docs/research/2026-04-18-mining-vs-backtest-gap.md`：加"时点快照不回改"头注 + "后续演进"注释链到 F-12a/b/d 的 commit（"端点判断"现等价 Triple-Barrier 的 Time 分支）
+- `docs/research/2026-04-18-mining-vs-backtest-gap.md`（已于 2026-04-23 重置时删除）：原加"时点快照不回改"头注 + "后续演进"注释链到 F-12a/b/d 的 commit（"端点判断"现等价 Triple-Barrier 的 Time 分支）
 - `docs/README.md`：补充 `docs/research/` 和 `docs/superpowers/` 导航；重写 §2 分层（5 类：事实源 / 审计 / Runbook / 领域设计 / 研究快照）
 
 **md 管理规范**（新增，`docs/README.md §3` + `CLAUDE.md §13`）：
@@ -2062,7 +2062,7 @@ Step 2.2 Top 1 rule mining 显示 test hit rate 73.6%，真实回测（零点差
 
 ### 核心发现：三类 Gap
 
-详见 `docs/research/2026-04-18-mining-vs-backtest-gap.md`。
+（原快照 `docs/research/2026-04-18-mining-vs-backtest-gap.md` 已于 2026-04-23 重置时删除；下方概要保留作 audit trail。）
 
 | Gap | 本质 | 对 Top 1 的影响 |
 |-----|------|---------------|
@@ -2099,7 +2099,7 @@ H1 Intrabar 回测（2025-04-17~2026-04-15，5 个启用策略）：
 - **P3**：按 Regime 子集分层挖掘（消除 sell-only bias）
 - **P4**：P1 完成后才评估 Intrabar 链路的真实价值
 
-### 今日已产出的分析文档
+### 今日已产出的分析文档（均已于 2026-04-23 重置时删除）
 
 - `docs/research/2026-04-18-mining-vs-backtest-gap.md`（本次 Gap 分析）
 - `docs/research/2026-04-17-sell-rules-as-exit-signals.md`（Top 10 sell rules 作为 exit timing 的重解读）

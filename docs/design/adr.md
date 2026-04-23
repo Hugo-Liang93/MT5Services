@@ -18,6 +18,7 @@
 | 006 | 2026-04-10 | 跨模块边界 | 装配/API 层禁止读写组件私有属性，必须通过公开端口 | ✅ 已确定 |
 | 007 | 2026-04-17 | Research / Backtesting 边界 | Research 负责发现（含特征晋升），Backtesting 负责验证 | ✅ 已确定（特征晋升自动化仍未实现）|
 | 008 | 2026-04-21 | 持久化 pool + indicator fail-fast + /health 只读 | API 路由禁 `new TimescaleWriter`；event_loops 顶层 fail-fast；`client.health()` 默认不重连 MT5 | ✅ 已确定 |
+| 009 | 2026-04-22 | BacktestEngine deployment gate | baseline 回测默认只评估 `allows_live_execution()=True` 的策略；`include_paper_only=True` 时回退到 `allows_runtime_evaluation()` | ✅ 已确定 |
 
 ---
 
@@ -274,6 +275,43 @@ Backtesting 起点 = 该 spec + 参数网格
 **演进方向**：
 - 如果未来 fail-fast 的 `os._exit(1)` 在 SIGTERM/graceful shutdown 里误触发（例如 `stop_event.set()` 后残余异常），应改成"先检查 `manager.state.stop_event.is_set()` → 如为 True 则 return（正常退出），否则 crash"。
 - 关键线程 liveness check（ADR-004 的 `_any_thread_alive`）目前只在 stop 流程用；若 fail-fast 路径被证明不够（比如进程不退出只是线程死），可补 monitor 运行时 liveness check + 主动升级告警。
+
+---
+
+## ADR-009: BacktestEngine 默认只评估 live 能执行的策略
+
+**状态**：已确定（2026-04-22）
+
+**上下文**：2026-04-20 的 M30 baseline 审查（原快照 `docs/research/2026-04-20-tf-baseline-review.md` 已于 2026-04-23 全面重置时删除）发现严重污染：M30 原始回测显示 1,463 trades / PnL $1.38M / Calmar 118，但 **剔除 `structured_price_action` 后只剩 206 trades / PF 1.019**——几乎 break-even。
+
+根因：`BacktestEngine` 的 deployment gate 只过滤 CANDIDATE 策略（`allows_runtime_evaluation()=False`），**PAPER_ONLY 策略同样被评估并计入统计**。但 `structured_price_action` 的 `deployment=paper_only` 且未绑定任何账户（`signal.local.ini [account_bindings.*]` 内无条目）——**生产中从不运行**。于是：
+- 回测把它当正品评估，贡献 1,258 笔交易
+- 生产根本不跑这个策略
+- M30 baseline 数据对实盘决策**完全无参考价值**（差 7×）
+
+原先有三个候选方案：
+- 方案 A：`respect_account_bindings` 开关读 `signal.local.ini [account_bindings.*]` — 否决：跨域耦合（回测读账户拓扑）+ local.ini 不可复现
+- 方案 B：工具层 exclude 列表 — 否决：补丁式纪律反面，8 个 CLI 都得记得传参
+- 方案 C：新增 `visible_in_backtest` 合同字段 — 冗余：与 `StrategyDeployment.status` 的 4 态语义重叠
+
+**决策**：复用已有合同方法 `StrategyDeployment.allows_live_execution()`。在 `BacktestConfig` 新增 `include_paper_only: bool = False`：
+
+- **默认（False，baseline 语义）**：只评估 `allows_live_execution()=True` 的策略（ACTIVE + ACTIVE_GUARDED）。CANDIDATE + PAPER_ONLY 均排除，保证**回测统计 = 实盘决策依据**。
+- **显式 True（paper-shadow 语义）**：回退到 `allows_runtime_evaluation()=True`（追加纳入 PAPER_ONLY）。用于 promote-to-active 分析、paper-shadow 回测。
+
+`BacktestEngine` gate 双重过滤：CANDIDATE 永远拦截；PAPER_ONLY 按 flag 选择。日志分离两类输出（"filtered (CANDIDATE)" vs "filtered (PAPER_ONLY, pass include_paper_only=True to include)"）以便排查。
+
+**覆盖文件**：
+- `src/backtesting/models.py`：`BacktestConfig.include_paper_only: bool = False`
+- `src/backtesting/engine/runner.py`：gate 拆成 CANDIDATE + PAPER_ONLY 两段过滤
+- `src/ops/cli/backtest_runner.py`：`--include-paper-only` flag
+- `tests/backtesting/test_engine.py`：新增 2 条 engine-level gate 测试
+- `tests/backtesting/test_backtest_config.py`：新增 2 条 config 默认/from_flat 测试
+
+**演进方向**：
+- 其他回测 CLI（`aggression_search` / `exit_experiment` / `walkforward_runner` / `nightly_wf` / `correlation_runner` / API routes）**当前默认继承 strict baseline 语义**——符合"默认安全"原则。需要 paper-shadow 语义的 CLI 可按需追加 `--include-paper-only` 透传。
+- 如果未来 `StrategyDeployment.status` 扩展到超过 4 态（例如增加 `SHADOW` / `DEPRECATED`），可能需要把二元 flag 升级成枚举 mode。届时复审此决策。
+- 本 ADR 不解决 `[account_bindings.*]` 层面的绑定一致性（账户未绑定但 status=active 的策略仍会被回测评估）——那是拓扑层面的独立问题，不应由回测域承担。
 
 ---
 

@@ -27,7 +27,7 @@
 | Research 挖掘 / Feature Providers / 晋升通道 | `docs/research-system.md` |
 | **持仓管理**（peak/reconcile/出场一致性）| `docs/design/position-state-consistency.md`（已实现）+ `r-based-exit-plan.md`（规划）+ `pending-entry.md`（历史）|
 | **风控**（PnL 熔断 / 11 层堆栈）| `docs/signal-system.md §5.5`（当前权威）+ `design/risk-enhancement.md`（设计演进）|
-| 回测 vs 实盘差异 / 挖掘 gap | `docs/design/backtest-vs-live-divergence.md` + `docs/research/2026-04-18-mining-vs-backtest-gap.md` |
+| 回测 vs 实盘差异 / 挖掘 gap | `docs/design/backtest-vs-live-divergence.md`（2026-04-23 重置后 `docs/research/` 已清空，新时点快照将按需产出）|
 | QuantX 执行页 SSE 流 | `docs/design/quantx-trade-state-stream.md` |
 | QuantX 数据时效性分级与推送通道 | `docs/design/quantx-data-freshness-tiering.md` |
 | QuantX 规范 IA 模型 | `docs/design/quantx-canonical-ia.md` |
@@ -106,7 +106,8 @@ docs/
   | 事故/大改 | 追加 `codebase-review.md §N`（不删旧段落）+ 必要时新建 `research/<日期>-<事故>.md` |
   | 时点研究结论 | 写 `research/<日期>-<主题>.md`，**不改事实源** |
 
-- **时点快照的正确保鲜方式**：不改正文，加"后续演进"头注链到最新决策 / commit（示例见 `docs/research/2026-04-18-mining-vs-backtest-gap.md`）。
+- **时点快照的正确保鲜方式**：不改正文，加"后续演进"头注链到最新决策 / commit。
+  （2026-04-23 全面重置后 `docs/research/` 已清空，新一轮快照按此纪律产出示例。）
 
 ### 3.4 合并规则
 

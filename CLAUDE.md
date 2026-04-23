@@ -74,7 +74,8 @@
 - ❌ 事故/时点分析写进事实源文档（应追加 `codebase-review.md §N` 或 `research/<日期>-*.md`）
 - ❌ 创建平行同主题 md（`design/<topic>.md` vs `design/<topic>-v2.md`）
 
-**维护错 md 的预防**：时点快照不回改正文，仅加"后续演进"头注链到最新 commit/ADR（示例 `docs/research/2026-04-18-mining-vs-backtest-gap.md`）。
+**维护错 md 的预防**：时点快照不回改正文，仅加"后续演进"头注链到最新 commit/ADR。
+（2026-04-23 全面重置后 `docs/research/` 已清空；新一轮快照按此纪律产出。）
 
 ## 14) scratch/ 实验脚本管理规范（强制）
 
