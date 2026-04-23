@@ -10,6 +10,7 @@ from .base import (
 )
 from .breakout_follow import StructuredBreakoutFollow
 from .lowbar_entry import StructuredLowbarEntry
+from .mdi_sell import StructuredMdiSell
 from .open_range_breakout import StructuredOpenRangeBreakout
 from .price_action_m15 import StructuredPriceAction
 from .pullback_window import StructuredPullbackWindow
@@ -42,4 +43,5 @@ __all__ = [
     "StructuredPriceAction",
     "StructuredRegimeExhaustion",
     "StructuredStrongTrendFollow",
+    "StructuredMdiSell",
 ]

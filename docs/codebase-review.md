@@ -39,6 +39,55 @@
 > 原本在 `TODO.md` 里的已完成段落，按规范应归档到审计台账。迁入时保留原文结构。
 > 时点数据（baseline 表）已移到 `docs/research/<日期>-*.md`，本段只保留"做了什么 + 证据"。
 
+### 2026-04-23 P0 Round 1 — structured_mdi_sell 编码与回测（未过门槛）
+
+**动机**：TODO.md P0 Step 1 启动——从 2026-04-22 mining M30 Rule #1 编码为策略，
+用 3 月回测验证是否达到解冻门槛（PF > 1.2 且 trades > 50）。
+
+**实现**：
+- 新策略 `StructuredMdiSell`（`src/signals/strategies/structured/mdi_sell.py`）
+- 规则：`adx14.minus_di > 20.56 AND macd.hist > -13.32 AND cci20.cci > -241.14 → sell`
+- htf_policy=SOFT_GATE（HTF 上行强趋势时拒 sell）
+- category="trend"，regime_affinity TRENDING=1.00
+- 阈值 per-TF 可配置（支持 signal.local.ini 调参）
+- Entry: MARKET / Exit: aggression=0.20, sl=1.5 ATR, tp=2.5 ATR
+- 单测 12 cases（3 条硬门控 + HTF 冲突 + 边界 + provenance）
+
+**回测对比**（M30 2026-01-20~04-20，--include-paper-only，MC off）：
+
+| 指标 | 实际 | 门槛 | 判决 |
+|---|---|---|---|
+| Trades | 108 | > 50 | ✅ |
+| WR | 40.7% | — | — |
+| **PF** | **0.769** | **> 1.2** | ❌ |
+| PnL | -$171.13 | — | — |
+| Sharpe | -0.694 | — | — |
+| DD | 9.07% | — | — |
+
+**Drift 分析**：
+- Mining test hit: 59.4% → Backtest WR: 40.7% → **drift 18.7pp**
+- 可能根因：
+  1. **执行成本**：挖掘用 round_trip_cost_pct=0.08%，回测走 dynamic_spread（15-30 pts/2000
+     ≈ 0.08-0.15%）+ commission ($7/lot) + slippage (3 pts)，实际更贵
+  2. **Exit 模型错配**：Mining barrier 最长 time=40 bars，回测 Chandelier trailing 自由
+     trailing + EOD close + signal reversal，出场点不同
+  3. **信号过滤链**：回测 SignalFilterChain 过滤了部分高风险 session / 经济事件窗口信号
+
+**判决与后续**（按 P0 单闭环纪律）：
+- `status = candidate`（降回不升级，signal.ini 已恢复）
+- **本轮 P0 Round 1 结束，未升级 paper_only**
+- **保留代码 + 测试**——作为 P0 Round 2+ 的调优起点，不再编码新策略从零开始
+
+**Round 2 可尝试方向**（非立即行动）：
+- Option A: 编码 H1 Rule #3 (buy)——独立候选，样本小但 test hit 74.6%
+- Option B: mdi_sell 参数调优（signal.local.ini `_minus_di_min=25`/`_cci_min=-200` 等收紧）
+- Option C: 对齐 mining barrier time_bars → 新 `_exit_spec` 配 sl/tp ATR/time_bars 精确复制
+- Option D: 等下周 weekly mining 新 finding，**不在旧候选上循环调参**（推荐）
+
+**教训**：
+- 挖掘 rule_mining 的 test hit rate 高估实盘表现（与 P4 前 "血教训"段一致），**barrier IC 更可靠**
+- 下轮优先看 `barrier_predictive_power` 的 sig findings 而非 rule_mining
+
 ### 2026-04-23 B-1 挖掘驱动调参：trend_continuation.htf_adx_upper 门控（维持冻结）
 
 **动机**：2026-04-22 weekly mining 发现 M30 上 `adx14.adx long` barrier IC=-0.229
