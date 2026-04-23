@@ -102,6 +102,13 @@
 - `9288f86` P0 Round 1 mdi_sell（**策略代码已删**，commit 留作方法学反例）
 - `b3f155a` `4aad26f` 全面重置
 - `0d5680e` 2026-04-23 fresh mining baseline（commit message 记录 timing）
+- `826e082` 二次彻底清理（§F 脱敏归档）
+
+**P0 Round 2 注记**（2026-04-23，无独立 commit — 代码已完整 revert）：
+基于 fresh mining H1 pp#4 候选编码 `structured_strong_adx_trend`，3 月 H1 回测
+未过门槛（trades < 50 且 PF < 1.2），按 P0 单闭环 + 反循环纪律物理删除策略
+代码/测试/注册——工作树回到 Round 2 开始前状态，git 未见过这些文件。
+具体回测数字不入 MD（二次清理纪律）。
 
 ### 2026-04-20 P9 前端读侧 API 全套交付 ✅
 
