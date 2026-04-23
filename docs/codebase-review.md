@@ -33,9 +33,11 @@
 - BarrierPredictivePower analyzer
 - TODO.md P0 单闭环纪律（流程本身）
 
-**下方 §F 中 2026-04-22/23 的所有实验记录（B-1 / P0 Round 1 / 方法学审计）保留
-作 audit trail，但其结论（参数值、PF 数字、paper 观察）不再作为决策依据**——
-所有 go-live 决策必须基于 2026-04-23 之后的新一轮 fresh mining+backtest+paper 链路。
+**下方 §F 中 2026-04-22/23 的所有实验记录段落已于 2026-04-23 二次彻底清理时
+物理删除**（B-1 / P0 Round 1 mdi_sell / Gap 1/2/3 / P4 解耦 / Fresh mining baseline），
+仅以 commit hash 索引形式保留（见 §F 顶部）。追溯细节强制走 git log，不经过 MD——
+避免未来决策时引用作废 baseline 数字。所有 go-live 决策必须基于 2026-04-23
+**之后**的新一轮 fresh mining+backtest+paper 链路。
 
 ### 重启流程
 
@@ -79,245 +81,27 @@
 > 原本在 `TODO.md` 里的已完成段落，按规范应归档到审计台账。迁入时保留原文结构。
 > 时点数据（baseline 表）已移到 `docs/research/<日期>-*.md`，本段只保留"做了什么 + 证据"。
 
-### 2026-04-23 Fresh Weekly Mining Baseline（全面重置后首轮）
+### 2026-04-22~23 架构与方法学改动索引（已脱敏归档）
 
-**背景**：2026-04-23 全面重置（`b3f155a` + `4aad26f`）清空所有历史挖掘/回测/paper
-数据后，启动首轮 fresh mining 作为新基线。TODO.md P0 Step 0 执行。
+> **2026-04-23 二次彻底清理**（`A` 选项）：本索引替代原 5 段具体实验记录
+> （B-1 / P0 Round 1 mdi_sell / Gap 1/2/3 / P4 解耦 / Fresh mining baseline）。
+> 物理删除所有作废数据的具体数字（PF / WR / drift / 估算值等），避免未来
+> 决策时被作废 baseline 污染。细节追溯 **强制走 git log**，不经过 MD。
 
-**命令**：
-```
-python -m src.ops.cli.mining_runner --environment live --tf H1,M30 \
-    --start 2025-10-01 --end 2026-04-20 --providers all --compare \
-    --emit-candidates --emit-feature-candidates \
-    --json-output data/research/mining_fresh_2026-04-23.json --persist
-```
-
-**耗时实测**：**2249 秒 = 37 min 29 sec**（冷启动模式）
-
-**耗时拆分与优化效果**：
-
-| 因素 | 影响 | 说明 |
-|---|---|---|
-| Cache 冷启动 | +12~15 min | 重置清空 R.1 DataMatrix cache 4 pkl，本次 0% 复用 |
-| 综合审查 H1（pp permutations 1000→500） | -2~3 min | 按预期生效 |
-| Gap 2b BarrierPredictivePower 新 analyzer | +1~2 min | 新增 H1 720 + M30 737 组合 |
-
-预计**下次相同参数跑**（cache 热启动）：18-22 min（R.1 复用 30-50%）
-
-**结果摘要**：
-- H1: 3209 bars, 4/795 pp_sig, 10 mined_rules, 140 threshold
-- M30: 6415 bars, 6/604 pp_sig, 5 mined_rules, 105 threshold
-- Barrier IC 进入 Top 10（A/commit `231804a` 的 `_rank_findings` 修复正常工作）
-- Cross-TF: 10 tf_specific / 0 robust / 0 divergent
-- 2/2 research_mining_runs 已 persist
-
-**Top Findings 挑选候选的参考**：
-
-| Rank | Category | 条件 | 关键数据 |
-|---|---|---|---|
-| #1 M30 | rule | `macd>-13.32 AND cci>-241.14 AND minus_di>20.56 → sell` | test 59.4% / n=955 |
-| #3 H1 | rule | `adx<=41.74 AND macd<=8.66 AND minus_di<=20.26 → buy` | test 74.6% / n=114 |
-| #4 H1 | pp | `adx14.adx IC=+0.435` | 60-bar trending, n=406, hit_above=88.2% |
-| #8 H1 | **barrier** | `minus_di short` | IC=-0.248 @ sl=2.5/tp=5/time=120, sl=81%, bars=18.9 |
-| #10 M30 | **barrier** | `minus_di long` | IC=-0.190 @ sl=1/tp=3/time=40, sl=72%, bars=6.2 |
-
-**判断**：
-- Barrier top findings 与 2026-04-22 前基本一致（方法学稳定，非架构 drift）
-- Rule #1 / Rule #3 为 P0 Round 1 已尝试编码（mdi_sell → PF 0.769 未过门槛，已删）
-- **P0 Round 2 候选推荐**：优先看 barrier IC（#8/#10 显示 minus_di 强时方向陷阱）或
-  新显示的 H1 pp adx14 强信号（#4 IC=+0.435）
-- 不建议重做 Rule #1 编码（Round 1 已证不过门槛）
-
-### 2026-04-23 P0 Round 1 — structured_mdi_sell 编码与回测（未过门槛）
-
-**动机**：TODO.md P0 Step 1 启动——从 2026-04-22 mining M30 Rule #1 编码为策略，
-用 3 月回测验证是否达到解冻门槛（PF > 1.2 且 trades > 50）。
-
-**实现**：
-- 新策略 `StructuredMdiSell`（`src/signals/strategies/structured/mdi_sell.py`）
-- 规则：`adx14.minus_di > 20.56 AND macd.hist > -13.32 AND cci20.cci > -241.14 → sell`
-- htf_policy=SOFT_GATE（HTF 上行强趋势时拒 sell）
-- category="trend"，regime_affinity TRENDING=1.00
-- 阈值 per-TF 可配置（支持 signal.local.ini 调参）
-- Entry: MARKET / Exit: aggression=0.20, sl=1.5 ATR, tp=2.5 ATR
-- 单测 12 cases（3 条硬门控 + HTF 冲突 + 边界 + provenance）
-
-**回测对比**（M30 2026-01-20~04-20，--include-paper-only，MC off）：
-
-| 指标 | 实际 | 门槛 | 判决 |
-|---|---|---|---|
-| Trades | 108 | > 50 | ✅ |
-| WR | 40.7% | — | — |
-| **PF** | **0.769** | **> 1.2** | ❌ |
-| PnL | -$171.13 | — | — |
-| Sharpe | -0.694 | — | — |
-| DD | 9.07% | — | — |
-
-**Drift 分析**：
-- Mining test hit: 59.4% → Backtest WR: 40.7% → **drift 18.7pp**
-- 可能根因：
-  1. **执行成本**：挖掘用 round_trip_cost_pct=0.08%，回测走 dynamic_spread（15-30 pts/2000
-     ≈ 0.08-0.15%）+ commission ($7/lot) + slippage (3 pts)，实际更贵
-  2. **Exit 模型错配**：Mining barrier 最长 time=40 bars，回测 Chandelier trailing 自由
-     trailing + EOD close + signal reversal，出场点不同
-  3. **信号过滤链**：回测 SignalFilterChain 过滤了部分高风险 session / 经济事件窗口信号
-
-**判决与后续**（按 P0 单闭环纪律）：
-- `status = candidate`（降回不升级，signal.ini 已恢复）
-- **本轮 P0 Round 1 结束，未升级 paper_only**
-- **保留代码 + 测试**——作为 P0 Round 2+ 的调优起点，不再编码新策略从零开始
-
-**Round 2 可尝试方向**（非立即行动）：
-- Option A: 编码 H1 Rule #3 (buy)——独立候选，样本小但 test hit 74.6%
-- Option B: mdi_sell 参数调优（signal.local.ini `_minus_di_min=25`/`_cci_min=-200` 等收紧）
-- Option C: 对齐 mining barrier time_bars → 新 `_exit_spec` 配 sl/tp ATR/time_bars 精确复制
-- Option D: 等下周 weekly mining 新 finding，**不在旧候选上循环调参**（推荐）
-
-**教训**：
-- 挖掘 rule_mining 的 test hit rate 高估实盘表现（与 P4 前 "血教训"段一致），**barrier IC 更可靠**
-- 下轮优先看 `barrier_predictive_power` 的 sig findings 而非 rule_mining
-
-### 2026-04-23 B-1 挖掘驱动调参：trend_continuation.htf_adx_upper 门控（维持冻结）
-
-**动机**：2026-04-22 weekly mining 发现 M30 上 `adx14.adx long` barrier IC=-0.229
-(n=2329, sl hit 71%, bars_held 12.2)——**adx 高时做 long 亏钱**，与血教训段记录的
-"短 FR 看不到"的结构性 insight 一致。验证能否用此洞察"解冻"
-structured_trend_continuation（2026-04-19 冻结，raw_confidence 与 WR 负相关）。
-
-**代码实现**：
-- `trend_continuation.py`: 新增 `_htf_adx_upper: float = 55.0`（默认宽松）
-- `_why()` 在 `_htf_adx_min` 下限检查后加上限检查：`adx > upper → 拒绝`
-  reason=`htf_adx_high:<current>>upper`
-- `signal.local.ini` TF 分层（挖掘证据驱动）：H1=45 / M30=40
-- `tests/signals/test_trend_continuation_adx_upper.py` 4 cases 守护边界
-
-**回测对比**（2026-01-20~04-20, --min-confidence 0.10, --include-paper-only）：
-
-| TF | Trades | WR | PF | Sharpe | DD |
-|---|---|---|---|---|---|
-| M30 BEFORE (upper=999) | 15 | 26.7% | 0.483 | -0.607 | 4.13% |
-| **M30 AFTER (upper=40)** | **13** | **30.8%** | **0.527** | -0.569 | 4.14% |
-| H1 BEFORE (upper=999) | 2 | 50% | 2.035 | 0.265 | 1.07% |
-| H1 AFTER (upper=45) | 2 | 50% | 2.035 | 0.265 | 1.07% |
-
-**结论（维持冻结）**：
-- M30 小幅改善（PF +9.1%, WR +4.1pp，砍 2 笔高 adx 陷阱）
-- H1 门控未触发（3 月内无 adx > 45 样本；2 trades 无统计意义）
-- **未达解冻线**（历史 solo min_conf=0.45 PF=0.61，解冻通常需 PF > 1.2）
-- **根本问题未解决**：raw_confidence 与 WR 负相关属置信度管线问题，adx_upper
-  只修了表面陷阱，不反转负相关
-
-**保留 vs 回滚**：
-- ✅ 保留 `_htf_adx_upper` 代码（与 `_htf_adx_min` 对称，架构增强可复用）
-- ✅ 保留 signal.local.ini 的 TF-specific 配置作为未来解冻证据底座
-- ✅ 维持 `status = candidate`（不解冻；回测对比记入 ini 注释）
-- ❌ 不升级到 paper_only/active_guarded
-
-**下一步**：trend_continuation 真正解冻需要 P6（TODO.md）— confidence 管线重设计，
-不是参数修补。P4.3 A11 regime_affinity 审视同步。
-
-### 2026-04-22 挖掘模块实操级 3 项 Gap 修复（Gap 1/2/3）✅
-
-**动机**：对挖掘模块做总体评估后，发现 3 个影响"每周挖掘 → 周中交易"工作流质量的
-结构缺陷，均为配置/方法学层面，不影响架构。
-
-**Gap 1 — Cost model 偏乐观**：
-- `research.ini` / `ResearchConfig.round_trip_cost_pct`：0.04% → **0.08%**
-- 旧值低估 XAUUSD 真实往返成本（spread 0.15-0.30 pts/2000 + commission + 典型滑点 ≈ 0.07-0.10%），
-  导致挖掘候选"看似显著"但回测被 spread filter 咬掉
-- 注释显式标注"定期按 broker 实际成交成本审视"
-
-**Gap 2a — Forward horizon 与 exit 模型错配**：
-- `forward_horizons`：`[1, 3, 5, 10]` → **`[3, 10, 30, 60]`**
-- 旧 1/5 bar 短 FR 与实盘 Chandelier trailing 持仓（20-50 bar）结构性错配
-  （见 `docs/research-system.md` 顶部"血教训"段）
-- 新 horizons 覆盖 H1 下 3 小时~2.5 天、M15 下 45 分钟~15 小时
-
-**Gap 2b — Barrier predictive power analyzer（新）**：
-- 新 contract `IndicatorBarrierPredictiveResult`：IC 基于 Triple-Barrier 真实
-  tp/sl/time 出场收益，与实盘 Chandelier exit 模型同构
-- 新 `analyze_barrier_predictive_power` + `BarrierPredictivePowerAnalyzer`
-  注册到 `default_analyzers`（4 个内置 analyzer 之一）
-- 与 `predictive_power` 共存：前者短 FR，后者 barrier return，提供双重证据
-- v1 仅做 regime=None 全样本分析；per_regime 留 v2（9 barrier × 2 direction × 5 regime
-  × ~100 indicator 的 permutation 成本不可接受）
-
-**Gap 3 — Weekend/holiday gap 过滤**：
-- `_detect_gap_bars`：相邻 bar 时间差 > 2×tf_seconds 判定为 gap
-- `_mask_forward_returns_over_gap` / `_mask_barrier_returns_over_gap`：跨 gap 的
-  forward_return / barrier_return 设为 None
-- 修正持仓范围语义：入场 open[i+1]，过渡 gap 在 j ∈ [i+1, i+h-1]（入场前的 gap 不影响）
-- 消除周五→周一 ~50h 空档对 IC 的污染
-
-**新增契约测试守护**：
-- `tests/research/core/test_config.py`（5 cases）— Gap 1/2a 配置锚点
-- `tests/research/analyzers/test_barrier_predictive_power.py`（7 cases）— Gap 2b 语义
-- `tests/research/core/test_weekend_gap_mask.py`（7 cases）— Gap 3 mask 边界
-
-**可测性改进**：`load_research_config(ini_path=None)` 加可选路径参数，
-便于测试注入；默认行为不变。
-
-**验证**：`pytest tests/research/ tests/calendar/ tests/backtesting/` 846 passed / 6 skipped；
-`python -m src.ops.cli.mining_runner --help` 冒烟通过。
-
-**运维提醒**：
-- `round_trip_cost_pct = 0.08%` 按 XAUUSD 当前行情估算；broker 换仓或点差变化时需重估
-- `barrier_predictive_power` 让挖掘时长略增（新 analyzer ~30-60s），但 IC 可信度大幅提升
-
-**未决（留作后续观察）**：
-- Gap 3：黄金特异性事件（COMEX open/close、NFP/FOMC 周）未纳入 session_event provider，
-  观察 paper trading 数据若出现 "FOMC 周胜率异常" 再补
-- Gap 4：挖掘候选 → 策略 Python 代码的自动生成仍是人工瓶颈（工程量 5-7 天），
-  等 paper 验证出 2-3 个可复制 pattern 后再评估 ROI
-
-### 2026-04-22 P4 research ↔ backtesting 反向依赖解耦 ✅
-
-**动机**：研究核心域（data_matrix / MiningRunner / _prepare_extra_data）6 处直接
-`from src.backtesting import ...`，跨域硬耦合。任何 backtesting 内部重构都会波及
-research 挖掘链路；分析器不应绑定某个具体的回测装配实现。
-
-**手段**：端口化 + 共享纯函数挪位 + 编排层边界声明。
-
-**新增**：
-- `src/research/core/ports.py` — `BarLoaderPort / IndicatorComputerPort /
-  RegimeDetectorPort`（runtime_checkable Protocol）+ `ResearchDataDeps`
-  （frozen dataclass 聚合）
-- `src/backtesting/component_factory.py::build_research_data_deps()` — backtesting
-  → research 唯一正向适配入口
-- `src/calendar/economic_loader.py` — 迁入 `SimpleEvent` + `load_economic_events_window`
-  （原名 `_SimpleEvent` / `load_backtest_economic_events`，命名去除 backtest 前缀，
-  成为 calendar 域对外的纯加载器）
-- `tests/research/test_ports.py`（13 cases）+ `tests/calendar/test_economic_loader.py`
-  （8 cases）契约守护
-
-**改动**：
-- `build_data_matrix()` 签名 — 删除 `components: Optional[Dict[...]] = None + fallback`，
-  改为强制 `deps: ResearchDataDeps`（无默认，no compat path）
-- `MiningRunner.__init__` — `components` 参数替换为 keyword-only 强制 `*, deps`
-- CLI / API 3 处调用方 — 从 `build_backtest_components()` 改为
-  `build_research_data_deps()` 再注入
-- backtesting 内部 `load_backtest_economic_events` 的 in-module 定义删除，
-  `filtering/builder.py` 直接从 `src.calendar.economic_loader` import
-
-**边界定义（ADR 级）**：
-- 研究**核心域** = `src/research/{core,analyzers,features,strategies,orchestration}`
-  禁止直接 import `src.backtesting`；grep 门禁 0 命中
-- **编排层** = `src/research/nightly/`（等同 `src/ops/cli/` 定位），允许粘合
-  research 与 backtesting；未来膨胀时考虑迁移到 `src/ops/research_nightly/`
-
-**守护**：
-- `grep "from src.backtesting" src/research/{core,analyzers,features,strategies,orchestration}/`
-  必须 0 命中
-- `grep "from src.backtesting" src/research/` 仅在 `nightly/` 下允许
-- 契约测试：Fake impl + 生产类 `isinstance(Port)` 双路径
-
-**风险与未决**：
-- nightly/runner.py 仍直接 import backtesting 公共 API（BacktestEngine/BacktestConfig），
-  属于编排层正当调用——观察项：若 nightly 出现第 2 个模块，考虑物理迁移 `src/ops/`
-- `SimpleEvent` 替代 `_SimpleEvent` 是契约可见性改变（下划线→公开），
-  下游测试已同步
-
-**验证**：`pytest tests/calendar/ tests/backtesting/ tests/research/` 521 passed / 6 skipped。
+**架构与方法学 commit（保留未作废）**：
+- `3379ec8` P4 research↔backtesting 解耦（ResearchDataDeps 端口）
+- `f16f053` Gap 1+2a：cost model + forward_horizons
+- `e85cb7e` Gap 2b：BarrierPredictivePower analyzer
+- `1053631` Gap 3：weekend/holiday gap mask
+- `2eda599` CLI 输出模板补 barrier
+- `231804a` `_rank_findings` 纳入 barrier
+- `097d838` 综合审查 H1+H2+H3（资源优化）
+- `d5bc224` trend_continuation `_htf_adx_upper` 参数化（代码保留数值清空）
+- `c40698a` 挖掘方法学审计（已物理删除的 research md）
+- `d0c48c8` TODO P0 单闭环纪律
+- `9288f86` P0 Round 1 mdi_sell（**策略代码已删**，commit 留作方法学反例）
+- `b3f155a` `4aad26f` 全面重置
+- `0d5680e` 2026-04-23 fresh mining baseline（commit message 记录 timing）
 
 ### 2026-04-20 P9 前端读侧 API 全套交付 ✅
 
