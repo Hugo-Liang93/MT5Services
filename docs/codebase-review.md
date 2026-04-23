@@ -79,6 +79,55 @@
 > 原本在 `TODO.md` 里的已完成段落，按规范应归档到审计台账。迁入时保留原文结构。
 > 时点数据（baseline 表）已移到 `docs/research/<日期>-*.md`，本段只保留"做了什么 + 证据"。
 
+### 2026-04-23 Fresh Weekly Mining Baseline（全面重置后首轮）
+
+**背景**：2026-04-23 全面重置（`b3f155a` + `4aad26f`）清空所有历史挖掘/回测/paper
+数据后，启动首轮 fresh mining 作为新基线。TODO.md P0 Step 0 执行。
+
+**命令**：
+```
+python -m src.ops.cli.mining_runner --environment live --tf H1,M30 \
+    --start 2025-10-01 --end 2026-04-20 --providers all --compare \
+    --emit-candidates --emit-feature-candidates \
+    --json-output data/research/mining_fresh_2026-04-23.json --persist
+```
+
+**耗时实测**：**2249 秒 = 37 min 29 sec**（冷启动模式）
+
+**耗时拆分与优化效果**：
+
+| 因素 | 影响 | 说明 |
+|---|---|---|
+| Cache 冷启动 | +12~15 min | 重置清空 R.1 DataMatrix cache 4 pkl，本次 0% 复用 |
+| 综合审查 H1（pp permutations 1000→500） | -2~3 min | 按预期生效 |
+| Gap 2b BarrierPredictivePower 新 analyzer | +1~2 min | 新增 H1 720 + M30 737 组合 |
+
+预计**下次相同参数跑**（cache 热启动）：18-22 min（R.1 复用 30-50%）
+
+**结果摘要**：
+- H1: 3209 bars, 4/795 pp_sig, 10 mined_rules, 140 threshold
+- M30: 6415 bars, 6/604 pp_sig, 5 mined_rules, 105 threshold
+- Barrier IC 进入 Top 10（A/commit `231804a` 的 `_rank_findings` 修复正常工作）
+- Cross-TF: 10 tf_specific / 0 robust / 0 divergent
+- 2/2 research_mining_runs 已 persist
+
+**Top Findings 挑选候选的参考**：
+
+| Rank | Category | 条件 | 关键数据 |
+|---|---|---|---|
+| #1 M30 | rule | `macd>-13.32 AND cci>-241.14 AND minus_di>20.56 → sell` | test 59.4% / n=955 |
+| #3 H1 | rule | `adx<=41.74 AND macd<=8.66 AND minus_di<=20.26 → buy` | test 74.6% / n=114 |
+| #4 H1 | pp | `adx14.adx IC=+0.435` | 60-bar trending, n=406, hit_above=88.2% |
+| #8 H1 | **barrier** | `minus_di short` | IC=-0.248 @ sl=2.5/tp=5/time=120, sl=81%, bars=18.9 |
+| #10 M30 | **barrier** | `minus_di long` | IC=-0.190 @ sl=1/tp=3/time=40, sl=72%, bars=6.2 |
+
+**判断**：
+- Barrier top findings 与 2026-04-22 前基本一致（方法学稳定，非架构 drift）
+- Rule #1 / Rule #3 为 P0 Round 1 已尝试编码（mdi_sell → PF 0.769 未过门槛，已删）
+- **P0 Round 2 候选推荐**：优先看 barrier IC（#8/#10 显示 minus_di 强时方向陷阱）或
+  新显示的 H1 pp adx14 强信号（#4 IC=+0.435）
+- 不建议重做 Rule #1 编码（Round 1 已证不过门槛）
+
 ### 2026-04-23 P0 Round 1 — structured_mdi_sell 编码与回测（未过门槛）
 
 **动机**：TODO.md P0 Step 1 启动——从 2026-04-22 mining M30 Rule #1 编码为策略，
