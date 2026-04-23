@@ -19,29 +19,26 @@
 
 ---
 
-## 📍 当前状态（2026-04-23）
+## 📍 当前状态（2026-04-23 全面重置后）
 
-**阶段定位**：P0 **当前闭环**（挖掘基线 2026-04-22）——架构调整持续期，用单闭环
-模式避免过去"每次架构改动都作废 paper 数据"的循环混乱。本轮完成（无论成败）
-才启动下一轮。
+**阶段定位**：已清空全部历史挖掘/回测/paper 数据（见 `codebase-review.md` 顶部
+2026-04-23 全面重置声明），**等待启动全新第一轮 fresh 全链路**。
 
-**架构基线 snapshot**：
-- P4 research↔backtesting 解耦（commit `3379ec8`）
-- 挖掘方法学 Gap 1/2/3 修复 + BarrierPredictivePower analyzer（commits `f16f053..231804a`）
-- B-1 trend_continuation htf_adx_upper 门控（commit `d5bc224`）
+**架构基线 snapshot**（保留未作废）：
+- P4 research↔backtesting 解耦（`3379ec8`）
+- 挖掘方法学 Gap 1/2/3 + BarrierPredictivePower analyzer（`f16f053..231804a`）
+- 综合审查 H1/H2/H3 资源优化（`097d838`）
+- `_htf_adx_upper` 参数（`d5bc224`，代码保留数值清空）
+- TODO P0 单闭环纪律（`d0c48c8`）
 
-**最新 mining 快照**：
-- 2026-04-22 weekly mining（H1+M30 / 6.5mo / 已 persist research_mining_runs）
-- 见 docs/codebase-review.md §F 2026-04-22 和 2026-04-23 两段
+**清空状态**：
+- `data/research/*.json` / `docs/research/*.md` 已清
+- DB `research_mining_runs` / `backtest_*` / `paper_trading_*` / `experiments` 已 TRUNCATE
+- `structured_mdi_sell` 策略已删除（代码+测试+ini）
 
 **冻结策略**（不在本轮动）：
-- `structured_trend_continuation`：置信度负相关（P6 长期项，B-1 已验证 adx_upper 不能替代）
+- `structured_trend_continuation`：置信度负相关（P6 长期项）
 - `structured_lowbar_entry` / `structured_session_breakout`：入场质量不足
-
-**历史 baseline/paper 快照**（已过期，仅供溯源）：
-- [2026-04-19-h1-p7-baseline.md](docs/research/) — H1 P7 架构快照
-- [2026-04-20-tf-baseline-review.md](docs/research/) — 三 TF + 污染事件
-- 2026-04-21 paper session `ps_423ffdbf133f` —— 架构已变，**不作评估依据**
 
 ---
 
@@ -54,18 +51,31 @@
 > - **完成即归档**：每轮闭环完成（无论成败）整段移到 `codebase-review.md §F`，本文只保留"P0 下一轮"空 header
 > - **Paper 任务不累积**：本文不再维护多轮 paper 任务；过期 baseline 一律丢弃
 
-### Step 1: 编码挖掘候选 → 回测验证 ⏳ 本周
+### Step 0: 启动 fresh weekly mining ⏳ 下一步
 
-**候选池**（2026-04-22 mining top findings）：
-- H1 Rule #3: `adx<=41.74 AND macd<=8.66 AND minus_di<=20.26 → buy` (test 74.6% / n=114)
-- M30 Rule #1: `macd>-13.32 AND cci>-241.14 AND minus_di>20.56 → sell` (test 59.4% / n=955)
+**准备就绪**（2026-04-23 全面重置后）：
+- 挖掘方法学：Gap 1/2/3 + BarrierPredictivePower 到位
+- 资源优化：pp_permutations=500 + MC default off
+- 数据层干净：DB / 文件 / cache 已清空
 
 **动作**：
-- [ ] 选 1-2 条候选编码成新策略（或加参数到现有活跃策略）
+- [ ] `python -m src.ops.cli.mining_runner --environment live --tf H1,M30 \
+      --start 2025-10-01 --end 2026-04-20 --providers all --compare \
+      --json-output data/research/mining_fresh_<日期>.json --persist`
+- [ ] 产出 fresh `research_mining_runs` 基线
+- [ ] 从新 `barrier_predictive_power` top sig 挑 1-2 条候选（**优先 barrier 而非 rule_mining**，
+      因 rule_mining test hit 高估实盘）
+
+### Step 1: 编码挖掘候选 → 回测验证
+
+**候选池**：**待 Step 0 完成后填充**
+
+**动作**：
+- [ ] 选 1-2 条 barrier sig finding 编码成新策略
 - [ ] 单策略 3 月 backtest，记录 PF/Sharpe/trades 到 `codebase-review.md §F`
 - [ ] **判定门槛**：solo PF > 1.2 且 trades > 50 → 进 Step 2；否则记"未过门槛"结束本轮
 
-**回测 SOP 纪律**（2026-04-23 综合审查产出，省 ~30% 算力）：
+**回测 SOP 纪律**（综合审查产出，省 ~30% 算力）：
 - **必加 `--strategies X,Y`**：默认跑全 11 活策略会浪费 11× 算力
 - **不加 `--persist`**：smoke 回测 CLI 默认不写 DB；验收时才显式加
 - **不加 `--monte-carlo`**：默认已关（`backtest.ini`），验收确认策略时才按需开

@@ -9,7 +9,6 @@ from .base import SignalStrategy
 from .structured import (
     StructuredBreakoutFollow,
     StructuredLowbarEntry,
-    StructuredMdiSell,
     StructuredOpenRangeBreakout,
     StructuredPriceAction,
     StructuredPullbackWindow,
@@ -44,7 +43,6 @@ def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
         StructuredPriceAction(),
         StructuredRegimeExhaustion(),
         StructuredStrongTrendFollow(),
-        StructuredMdiSell(),
     )
 
 

@@ -1,9 +1,49 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-04-22
+> 最近更新：2026-04-23
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
+
+---
+
+## ⚠️ 2026-04-23 全面重置声明（重要）
+
+**本日之前所有挖掘结果 / 回测数据 / paper 记录一律作废**——经过多轮架构重构
+（P4 解耦、Gap 1/2/3 挖掘方法学修复、综合审查资源优化、结构化策略框架等），
+**旧基线的数据依据已不成立**，不得作为新一轮挖掘/策略调优的参考。
+
+### 作废范围
+
+- `data/research/*.json` 历史挖掘/回测输出 → 本地已清空
+- `docs/research/*.md` 时点快照 → 已整体删除（2026-04-19 / -20 / -22 / -23 多份）
+- TimescaleDB: `research_mining_runs` / `backtest_runs` / `backtest_trades` /
+  `backtest_signal_evaluations` / `paper_trading_sessions` / `paper_trade_outcomes` /
+  `experiments` → 已 TRUNCATE
+- `structured_mdi_sell` 策略（基于作废挖掘编码）→ 已删除代码 + 测试 + 注册
+- signal.local.ini 中所有基于作废挖掘的数值（如 `_htf_adx_upper = 45/40`）→ 已清除
+
+### 保留范围（不作废）
+
+**架构性改动保留**（未来挖掘/回测的基础设施）：
+- P4 研究↔回测解耦（ResearchDataDeps 端口）
+- Gap 1/2a/2b/3 挖掘方法学修复（bug fix 级）
+- 综合审查 H1/H2/H3（资源优化）
+- `_htf_adx_upper` 参数定义（架构对称扩展，仅清数值不删参数）
+- BarrierPredictivePower analyzer
+- TODO.md P0 单闭环纪律（流程本身）
+
+**下方 §F 中 2026-04-22/23 的所有实验记录（B-1 / P0 Round 1 / 方法学审计）保留
+作 audit trail，但其结论（参数值、PF 数字、paper 观察）不再作为决策依据**——
+所有 go-live 决策必须基于 2026-04-23 之后的新一轮 fresh mining+backtest+paper 链路。
+
+### 重启流程
+
+1. 跑全新 weekly mining（架构已修复后的 fresh 基线）
+2. 根据新 `barrier_predictive_power` top sig 选候选
+3. 单策略回测 → PF 门槛判决
+4. 通过则 paper_only 启动 7 天 OBSERVE
+5. 评估 → 升级 active_guarded 或归档结束
 
 ---
 
