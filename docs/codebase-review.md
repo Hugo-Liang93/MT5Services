@@ -103,12 +103,21 @@
 - `b3f155a` `4aad26f` 全面重置
 - `0d5680e` 2026-04-23 fresh mining baseline（commit message 记录 timing）
 - `826e082` 二次彻底清理（§F 脱敏归档）
+- `6df6f5b` breakout_follow paper_only → candidate（baseline audit 降级）
+- `1e9e0ec` 评估层 `max_positions` 3→999（分层：评估无限制 / live 风控保留）
 
 **P0 Round 2 注记**（2026-04-23，无独立 commit — 代码已完整 revert）：
 基于 fresh mining H1 pp#4 候选编码 `structured_strong_adx_trend`，3 月 H1 回测
 未过门槛（trades < 50 且 PF < 1.2），按 P0 单闭环 + 反循环纪律物理删除策略
 代码/测试/注册——工作树回到 Round 2 开始前状态，git 未见过这些文件。
 具体回测数字不入 MD（二次清理纪律）。
+
+**P0 Step 2 Round 1 注记**（2026-04-24，paper 观察中断 — 周末休市关停）：
+首轮 paper_only 策略实时观察在 session `ps_cb8200f3e9d4` 跑 ~2h
+（`max_positions=999` 解除后确认开仓可超过旧上限 3），样本不足 5 不足以判决。
+周五收盘前关停 live-main 实例 + 清理后台监控 cron。具体数字不入 MD，走
+git log / `data/research/paper_monitor_2026-04-24.log` 追溯。
+下周一重启连续观察，累计 ≥20 trades 后才给判决。
 
 ### 2026-04-20 P9 前端读侧 API 全套交付 ✅
 
