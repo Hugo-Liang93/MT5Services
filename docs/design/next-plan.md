@@ -73,17 +73,17 @@ python -m src.ops.cli.mining_runner --environment live --tf H1,M30 \
 - 若 (A) → 调整窗口（temporal 用 `20` 代替 `3,5,10`）或增加新派生公式
 - 若 (B) → 增加 `max_depth=4`，或实现序列模式分析器（P4）
 
-### FP.4 — Paper Trading 验证 regime_exhaustion (P3，观察)
+### FP.4 — Demo Validation 验证 regime_exhaustion (P3，观察) — ADR-010 后
 
-**当前状态**：策略已绑定 `live_exec_a` 和 `demo_main`，deployment=`paper_only`
+**当前状态**：策略已绑定 `live_exec_a` 和 `demo_main`，deployment=`demo_validation`（ADR-010 后命名，原 `paper_only`）
 
-**观察指标**（Paper 运行 1-2 周）：
+**观察指标**（demo-main 真实下单运行 1-2 周）：
 - 实际触发次数 vs 回测预期（回测 53 笔/年 ≈ 每周 1 笔）
-- Paper WR 是否接近 49%
+- Demo WR 是否接近 49%
 - SL/TP 触发分布（回测：25 TP / 26 SL / 2 timeout）
 
 **决策**：
-- 与回测一致 → 升级 `active_guarded` 加入 live 路径
+- `demo_vs_backtest` 对账通过（成交率 > 70% + PF drift < 30% + 信号密度漂移 < 30%）→ 升级 `active_guarded` 加入 live 路径
 - 显著偏离 → 排查 slippage / spread / 时序 gap
 
 ### FP.5 — 序列模式分析器 (P4，新能力)
@@ -105,7 +105,7 @@ python -m src.ops.cli.mining_runner --environment live --tf H1,M30 \
      否则 → 做 FP.2 CrossTF 数据加载实现
 
 后续 sessions:
-  Paper 观察 1-2 周（FP.4） → regime_exhaustion 实盘数据
+  Demo 观察 1-2 周（FP.4，demo-main 真实下单） → regime_exhaustion 实盘数据
   FP.3 诊断 temporal/micro 特征价值
   视情况实现 FP.5 序列模式分析器
 ```
@@ -139,25 +139,32 @@ python -m src.ops.cli.backtest_runner --timeframe H1 --days 90
 
 **涉及文件**：`signal.local.ini`（affinity 覆盖）
 
-### 0.3 Paper Trading 验证
+### 0.3 Demo Validation 验证（ADR-010 后）
 
-**配置**：`config/paper_trading.ini` 设 `enabled = true`，`app.ini [trading_ops] runtime_mode = observe`
+**配置**：策略状态改为 `status = demo_validation`（写 `signal.local.ini [strategy_deployment.<name>]`），启动 `demo-main` 实例
+
+```bash
+python -m src.entrypoint.instance --instance demo-main
+```
+
+装配层（`_filter_strategies_for_environment`）会自动把 demo_validation 策略加入 demo-main 的 SignalRuntime，live-main 拒绝装配。候选策略走 demo broker 真实下单，经过完整 11 层风控。
 
 **验证清单**：
-1. 信号是否正常接收（`/v1/paper-trading/trades`）
-2. 模拟持仓是否正确管理 SL/TP（`/v1/paper-trading/positions`）
-3. 日终是否自动平仓
-4. 持久化是否完整（`paper_trading_sessions` / `paper_trade_outcomes` 表）
-5. 绩效 vs 回测对比（差距 >30% 需排查）
+1. 信号是否正常接收（`/v1/signal/recent`，environment=demo）
+2. 实际持仓是否正确管理 SL/TP（`/v1/trade/state`，看 demo-main）
+3. 日终是否自动平仓（ExposureCloseoutController）
+4. 持久化是否完整（`db.demo.signal_events` / `db.demo.trade_outcomes` / `db.demo.pipeline_trace_events`）
+5. 跨库对账：`python -m src.ops.cli.demo_vs_backtest --backtest-run-id <X> --demo-window 7d --strategies <name>`
+   - 信号密度漂移 < 30%、actionability_rate > 0.5、trades_drift < 30%、pf_drift < 30% 全部通过 → 升级 `active_guarded`
 
-### 0.4 实验链路闭环（2026-04-06 已实现）
+### 0.4 实验链路闭环（ADR-010 后更新）
 
-**已完成**：Research → Backtest → Paper Trading → Live 的数据契约和链路打通。
+**已完成**：Research → Backtest → Demo Validation → Live 的数据契约和链路打通。
 
-- **experiment_id 穿透**：`MiningResult`、`BacktestResult`、`Recommendation`、`PaperSession` 均支持 `experiment_id` 可选字段
-- **start-from-recommendation**：`POST /v1/paper-trading/start-from-recommendation` 从已 apply 的推荐关联启动 Paper Trading
-- **验证对比纯函数**：`compare_paper_vs_backtest()` 对比胜率/Sharpe/回撤，`GET /v1/paper-trading/validate` 端点
-- **Experiment Registry**：`experiments` 表 + `/v1/experiments` API，被动追踪实验全生命周期
+- **experiment_id 穿透**：`MiningResult`、`BacktestResult`、`Recommendation` 均支持 `experiment_id` 可选字段（`paper_session_id` 字段已 ADR-010 删除）
+- **demo_validation 流程**：策略 status=demo_validation 自动被 demo-main 装配，无需独立 sidecar
+- **跨库对账 CLI**：`python -m src.ops.cli.demo_vs_backtest`（替代被删除的 `paper_vs_backtest`）
+- **Experiment Registry**：`experiments` 表 + `/v1/experiments` API，`status` enum 已迁移 `paper_trading → demo_validation`
 - **Research 持久化 + API**：`research_mining_runs` 表 + `/v1/research/mining` API
 
 **链路工作流**：
@@ -169,11 +176,14 @@ POST /v1/backtest/run                       → 回测（带 experiment_id）
 POST /v1/backtest/walk-forward              → WF 验证
 POST /v1/backtest/recommendations/generate  → 生成推荐
 POST /v1/backtest/recommendations/{id}/approve + apply
-POST /v1/paper-trading/start-from-recommendation → 关联启动 Paper
-GET  /v1/paper-trading/validate             → 自动对比
+  ↓ 改 signal.local.ini status = demo_validation
+启动 demo-main → 自动装配候选策略 → 真实下单 7+ 天
+python -m src.ops.cli.demo_vs_backtest      → 跨库对账
 GET  /v1/experiments/{id}/timeline          → 查看全链路
+  ↓ 对账通过 → 改 status = active_guarded
+启动 live-main → 小手数实盘验证 1-2 周
   ↓ 人工确认
-POST /v1/runtime/mode (→ full)              → 上线
+改 status = active                          → 完整手数上线
 ```
 
 ---

@@ -110,7 +110,7 @@ MiningRunner
   -> StrategyCandidateSpec
   -> Backtest ValidationDecision
   -> strategy_deployment.<strategy>
-  -> paper_only / active_guarded / active
+  -> demo_validation / active_guarded / active   # ADR-010 后命名
 ```
 
 ### 候选工件
@@ -162,9 +162,9 @@ MiningRunner
 `tf_specific` 候选不能直接走普通 `active` 路径，当前正式部署状态机为：
 
 - `candidate`：代码已注册，但不参与 live runtime。
-- `paper_only`：只允许 paper/shadow。
-- `active_guarded`：允许 live，但必须保持永久护栏。
-- `active`：仅 `robust` 策略允许进入。
+- `demo_validation`（ADR-010 后命名，原 `paper_only`）：仅 demo-main 实例装配，在 demo broker 真实下单评估组合表现。live-main 拒绝装配。
+- `active_guarded`：允许 live，但必须保持永久护栏（小手数 + demo 镜像）。
+- `active`：仅 `robust` 策略允许进入（live 完整手数 + demo 持续镜像）。
 
 `active_guarded` 的硬约束如下：
 
@@ -173,9 +173,9 @@ MiningRunner
 - `min_final_confidence` 至少高于同 TF 基线 `+0.05`，且不低于 `0.50`
 - `max_live_positions = 1`
 - `require_pending_entry = true`
-- `paper_shadow_required = true`
+- `paper_shadow_required = true`（字段名保留，语义为"必须经过 demo_validation 阶段验证"）
 
-运行时不再允许用 “`regime_affinity.* = 0`” 这种隐式冻结方式代替部署状态；冻结、候选、paper-only、guarded 都必须通过 `strategy_deployment.<strategy>` 正式声明。
+运行时不再允许用 “`regime_affinity.* = 0`” 这种隐式冻结方式代替部署状态；冻结、候选、demo_validation、guarded 都必须通过 `strategy_deployment.<strategy>` 正式声明。
 
 ### 首个真实 indicator promotion 结果
 
@@ -184,7 +184,7 @@ MiningRunner
 - research feature：`derived.momentum_consensus`
 - promoted shared indicator：`momentum_consensus14`
 - downstream strategy consumer：`structured_trend_h4_momentum`
-- deployment contract：`paper_only + tf_specific + locked_timeframes=H1 + locked_sessions=london,new_york`
+- deployment contract：`demo_validation + tf_specific + locked_timeframes=H1 + locked_sessions=london,new_york`（ADR-010 后命名）
 
 该策略 consumer 沿用 `StructuredTrendContinuation` 骨架，只把 `momentum_consensus14` 接入 `why` 层和 lineage 元数据，不复制第二套策略框架。当前验证产物位于：
 
@@ -201,7 +201,7 @@ MiningRunner
 - Monte Carlo 未通过
 - Walk-Forward `consistency_rate=40%`
 
-因此，indicator promotion 已成立，但 downstream strategy 仍只处于 `paper_only / refit` 阶段，不能把 promoted indicator 的存在误解成“策略已经可上线”。
+因此，indicator promotion 已成立，但 downstream strategy 仍只处于 `demo_validation / refit` 阶段（ADR-010 后命名），不能把 promoted indicator 的存在误解成"策略已经可上线"。
 
 ### ValidationDecision 的双结果语义
 
@@ -676,7 +676,7 @@ CLI / API
   -> backtest / execution_feasibility / WF
   -> ValidationDecision
   -> strategy_deployment
-  -> paper_only / active_guarded / active
+  -> demo_validation / active_guarded / active   # ADR-010 后命名
 ```
 
 各层职责如下：

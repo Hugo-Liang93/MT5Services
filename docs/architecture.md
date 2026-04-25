@@ -82,7 +82,7 @@ FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 →
 
 - 只负责 HTTP 路由、中间件、Schema、DI 适配
 - 所有业务接口 `/v1/...`，根路径只保留 `/health`
-- 12 个子域路由包（trade/signal/market/indicators/monitoring/admin/economic/decision/backtest/paper-trading/studio/account）
+- 11 个子域路由包（trade/signal/market/indicators/monitoring/admin/economic/decision/backtest/studio/account）—— ADR-010 后 paper-trading 路由已删除
 
 ---
 
@@ -112,7 +112,7 @@ AppRuntime.start()
      7. trade_execution
      8. pending_entry
      9. position_manager
-    10. paper_trading
+    （ADR-010 后 paper_trading 组件已删除）
 ```
 
 关闭顺序按 registry 反向执行，详见 `docs/design/full-runtime-dataflow.md`。
@@ -336,8 +336,9 @@ Intrabar trigger：`signal.ini [intrabar_trading.trigger]` 配置 parent_tf → 
 | `analysis/` | 统计分析（metrics/correlation/monte_carlo/report） | 纯函数，不依赖运行时组件 |
 | `optimization/` | ParameterOptimizer + WalkForwardValidator + RecommendationEngine | 编排多次 BacktestEngine 运行 |
 | `data/` | HistoricalDataLoader + DataCache（进程级 FIFO 缓存） | 只做数据加载和缓存 |
-| `paper_trading/` | PaperTradingBridge + 独立 portfolio/tracker | 影子交易，不触及真实账户 |
 | 根目录 | `models.py`（BacktestConfig 8 个嵌套子配置）、`config.py`（backtest.ini 加载）、`component_factory.py`（CLI/API 共享组件构建） | |
+
+> ADR-010（2026-04-25）后 `paper_trading/` 子包已整体删除。其"无摩擦影子交易"角色由 demo-main 实例真实下单替代；评估工具由 `src/ops/cli/demo_vs_backtest.py` 提供（跨 db.live + db.demo 三层切片对账）。
 
 ### 5.11 其他领域包
 

@@ -127,19 +127,24 @@
    - `EconomicCalendarService`
    - `TradingModule`
    - `TradingStateStore / Recovery / Alerts`
-3. `build_signal_layer()`
-   - `SignalModule`
-   - `SignalRuntime`
+3. `build_signal_layer()`（ADR-010 后内部新增 environment-aware 策略过滤）
+   - 按 `runtime_identity.environment` 过滤策略集合：
+     - environment=live → 装配 status ∈ {ACTIVE, ACTIVE_GUARDED}
+     - environment=demo → 装配 status ∈ {ACTIVE, ACTIVE_GUARDED, DEMO_VALIDATION}
+     - environment 未知 → 装配全集 + WARNING（向后兼容）
+   - `SignalModule`（strategies = 过滤后子集）
+   - `SignalRuntime`（targets = symbols × tfs × 过滤后策略）
    - `TradeExecutor`
    - `PendingEntryManager`
    - `PositionManager`
    - `ConfidenceCalibrator`
    - `PerformanceTracker`
-4. `build_paper_trading_layer()`
-5. `build_runtime_controls()`
-6. `build_monitoring_layer()`
-7. `build_runtime_read_models()`
-8. `build_studio_service_layer()`
+4. `build_runtime_controls()`
+5. `build_monitoring_layer()`
+6. `build_runtime_read_models()`
+7. `build_studio_service_layer()`
+
+> ADR-010（2026-04-25）后 `build_paper_trading_layer()` 已整体删除。原"无摩擦影子交易"角色由 demo-main 实例真实下单替代；装配过滤在 `_filter_strategies_for_environment()` 内完成，下游所有组件天然只看到当前 environment 应该运行的策略集。
 
 ### 2.2 FULL 模式启动顺序
 
@@ -161,8 +166,9 @@ AppRuntime.start()
      -> trade_execution
      -> pending_entry
      -> position_manager
-     -> paper_trading
 ```
+
+ADR-010 后 `paper_trading` 组件已从 RuntimeComponentRegistry 删除。
 
 注意：
 
@@ -437,7 +443,7 @@ Indicator snapshot
 
 | 模块 | 拥有的核心状态 | 谁能写 | 谁只读 |
 |---|---|---|---|
-| `MarketDataService` | quote/tick/closed_ohlc/intrabar cache | `BackgroundIngestor` / indicator 回写 | API / indicators / signals / paper |
+| `MarketDataService` | quote/tick/closed_ohlc/intrabar cache | `BackgroundIngestor` / indicator 回写 | API / indicators / signals |
 | `StorageWriter` | 各通道 queue/pending/DLQ 状态 | 上游各模块 enqueue | health/readmodel |
 | `LocalEventStore(events.db)` | indicator durable events | indicator writer loop | indicator event loop / monitoring |
 | `UnifiedIndicatorManager.state` | event/intrabar queue、results、listeners、scope stats | indicator runtime | readmodel/monitoring |

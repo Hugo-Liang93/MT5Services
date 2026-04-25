@@ -118,8 +118,8 @@ config/
     - `/v1/trade/state/stream` 已开始直接消费正式 `pipeline_trace_events` 事实源，向前端推送 admission / command / risk / unmanaged-position 关键事件，而不再只依赖本地状态 diff
     - 后台消费链也开始复用同一份 trace 合同：`ExecutionIntentConsumer` 与 `OperatorCommandConsumer` 现在会为 `claim / reclaim / dead-letter / complete / fail` 等生命周期节点补齐统一的 `trace_id / instance / account` 标识，避免 trace 与 SSE 在后台执行阶段丢失业务链上下文
 - `src/app_runtime/*`：运行时装配与生命周期。当前已按角色收口为：
-  - `main`：构造 `SharedComputeRuntime`（市场采集、指标、信号、calendar sync），并只在显式把 `live_main` 绑定为执行账户时才附带本地 `AccountRuntime`；`paper_trading` 作为策略验证 sidecar 也只装配在 `main`
-  - `executor`：只构造 `AccountRuntime`，不再在 build 阶段创建 `UnifiedIndicatorManager / SignalRuntime / economic calendar sync / paper_trading`
+  - `main`：构造 `SharedComputeRuntime`（市场采集、指标、信号、calendar sync），并只在显式把 `live_main` 绑定为执行账户时才附带本地 `AccountRuntime`。ADR-010（2026-04-25）后 `build_signal_layer()` 内置 environment-aware 策略过滤——live-main 只装配 `ACTIVE/ACTIVE_GUARDED`，demo-main 额外装配 `DEMO_VALIDATION` 候选
+  - `executor`：只构造 `AccountRuntime`，不再在 build 阶段创建 `UnifiedIndicatorManager / SignalRuntime / economic calendar sync`
 
 ## 4. 本次同步点
 

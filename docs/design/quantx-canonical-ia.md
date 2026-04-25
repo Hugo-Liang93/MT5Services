@@ -18,7 +18,7 @@ P9 已交付 `/v1/execution/workbench` 与 SSE envelope schema 1.1，但 QuantX 
 | `GET /v1/trades/{trade_id}` | P10.3 | `TradesWorkbenchReadModel.build_trade_detail` | 6 维 canonical 视图（plan_vs_live / lifecycle / risk_review / receipts / evidence / linked_account_state）|
 | `GET /v1/trade/command-audits` | P10.4 | `TradingQueryService.command_audit_page` | 支持 `audit_id/action_id/idempotency_key/signal_id/trace_id/actor` 过滤 |
 | `GET /v1/trade/command-audits/{audit_id}` | P10.4 | `TradingQueryService.command_audit_detail` | 单条 audit + `linked_operator_command`（反查 operator_commands） |
-| `GET /v1/lab/impact` | P10.5 | `LabImpactReadModel` | WF snapshots + recommendations + paper_sessions + experiment_links 贯通读 |
+| `GET /v1/lab/impact` | P10.5 | `LabImpactReadModel` | WF snapshots + recommendations + demo_validation_windows + experiment_links 贯通读（ADR-010 后 `paper_sessions` 字段重命名） |
 
 ---
 
@@ -148,12 +148,11 @@ Cockpit 不再自己查 actionable signals，而是内部持有一个 `IntelRead
 3. 按 `rec_id` 去重，内存优先（更新鲜）
 4. 按 `created_at DESC` 截断到 limit
 
-### P10.5 PaperSession schema 迁移
-`paper_trading_sessions` 加 3 列 + 3 索引（`PAPER_TRADING_MIGRATION_SQL`）：
-- `source_backtest_run_id` / `recommendation_id` / `experiment_id`
+### P10.5 PaperSession schema 迁移（ADR-010 SUPERSEDED）
 
-对应 `PaperSession` dataclass 加 `recommendation_id` 字段；`fetch_sessions_by_recommendation` /
-`fetch_sessions_by_backtest_run` 供 Lab impact 反查。
+**原设计**：`paper_trading_sessions` 表加 3 列 + 3 索引（`source_backtest_run_id` / `recommendation_id` / `experiment_id`），供 Lab impact 反查。
+
+**现状（ADR-010, 2026-04-25）**：`paper_trading_sessions` 表已 DROP，`paper_session_id` 字段从 `experiments` 表移除。Lab impact 改读 `db.demo.trade_outcomes`，按 `(strategy, timeframe, time_window)` 聚合为 `demo_validation_windows`（仍由 `LabImpactReadModel` 提供）。详见 `docs/design/adr.md` ADR-010。
 
 ---
 
@@ -165,11 +164,11 @@ Cockpit 不再自己查 actionable signals，而是内部持有一个 `IntelRead
 |------|------|-------|------|
 | `/v1/cockpit/overview` | 200 | accounts=2, decision.verdict=healthy, source=live, triage 2 条, opportunity 1 条 | 委托 Intel 生效 |
 | `/v1/intel/action-queue` | 200 | 1 条 actionable | - |
-| `/v1/trades/workbench` | 200 | records=0 | trade_outcomes 表空（当前只跑 paper） |
+| `/v1/trades/workbench` | 200 | records=0 | trade_outcomes 表空（2026-04-20 时点；ADR-010 后 demo-main 真实下单数据进 db.demo.trade_outcomes） |
 | `/v1/trades/{unknown}` | 404 | error_code=not_found | - |
 | `/v1/trade/command-audits` | 200 | - | - |
 | `/v1/trade/command-audits/{unknown}` | 404 | error_code=not_found | - |
-| `/v1/lab/impact` | 200 | **paper_sessions=18**, experiment_links=1 | DB 回读验证通过 |
+| `/v1/lab/impact` | 200 | **paper_sessions=18**（2026-04-20 时点字段名；ADR-010 后已重命名为 `demo_validation_windows`，数据源改 `db.demo.trade_outcomes`）, experiment_links=1 | DB 回读验证通过 |
 
 ---
 

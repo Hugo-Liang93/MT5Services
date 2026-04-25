@@ -102,7 +102,7 @@ expected_live_sharpe_ceiling = round(metric.sharpe * 0.85, 3)
 
 ## 结论
 
-回测当前"可信度" ≈ 85-95%，足以支撑 6 周的 alpha 探索迭代。若发现某策略 `paper_vs_backtest` 分歧 > 20%，优先检查：
+回测当前"可信度" ≈ 85-95%，足以支撑 6 周的 alpha 探索迭代。若发现某策略 `demo_vs_backtest` 分歧 > 20%（ADR-010 后 CLI 名，原 `paper_vs_backtest`），优先检查：
 1. 策略 `deployment.status` 是否正确（是否被 CANDIDATE 意外屏蔽）
 2. `equity_curve_filter_enabled` 是否与实盘一致
 3. 是否启用了 intrabar 或 pending entry 等物理差异链路
