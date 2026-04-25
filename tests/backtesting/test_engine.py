@@ -1,4 +1,5 @@
 """engine.py 单元测试。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -188,6 +189,71 @@ class TestBacktestEngine:
             "multi_timeframe_confirm",
         ]
 
+    def _build_deployment_gate_engine(
+        self,
+        *,
+        include_paper_only: bool,
+    ) -> BacktestEngine:
+        """构造带混合 deployment 状态的 engine，用于 include_paper_only 门控测试。
+
+        三个策略：active_s / paper_s / candidate_s，分别对应 ACTIVE / PAPER_ONLY /
+        CANDIDATE。
+        """
+        from src.signals.contracts.deployment import (
+            StrategyDeployment,
+            StrategyDeploymentStatus,
+        )
+
+        config = self._make_config(
+            strategies=["active_s", "paper_s", "candidate_s"],
+            include_paper_only=include_paper_only,
+        )
+        data_loader = MagicMock()
+        signal_module = MagicMock()
+        signal_module.list_strategies.return_value = [
+            "active_s",
+            "paper_s",
+            "candidate_s",
+        ]
+        signal_module.strategy_requirements.side_effect = lambda _name: ("rsi14",)
+        signal_module.strategy_capability_catalog.return_value = (
+            _capability("active_s", ("rsi14",), ("confirmed",)),
+            _capability("paper_s", ("rsi14",), ("confirmed",)),
+            _capability("candidate_s", ("rsi14",), ("confirmed",)),
+        )
+        pipeline = MagicMock()
+        deployments = {
+            "active_s": StrategyDeployment(
+                name="active_s", status=StrategyDeploymentStatus.ACTIVE
+            ),
+            "paper_s": StrategyDeployment(
+                name="paper_s", status=StrategyDeploymentStatus.PAPER_ONLY
+            ),
+            "candidate_s": StrategyDeployment(
+                name="candidate_s", status=StrategyDeploymentStatus.CANDIDATE
+            ),
+        }
+        return BacktestEngine(
+            config=config,
+            data_loader=data_loader,
+            signal_module=signal_module,
+            indicator_pipeline=pipeline,
+            strategy_deployments=deployments,
+        )
+
+    def test_default_excludes_paper_only_and_candidate(self) -> None:
+        engine = self._build_deployment_gate_engine(include_paper_only=False)
+        assert engine._target_strategies == ["active_s"]
+        assert sorted(engine._deployment_filtered_strategies) == [
+            "candidate_s",
+            "paper_s",
+        ]
+
+    def test_include_paper_only_adds_paper_but_not_candidate(self) -> None:
+        engine = self._build_deployment_gate_engine(include_paper_only=True)
+        assert sorted(engine._target_strategies) == ["active_s", "paper_s"]
+        assert engine._deployment_filtered_strategies == ["candidate_s"]
+
     def test_indicator_failure_skips_bar(self) -> None:
         """指标计算失败时应跳过该 bar。"""
         config = self._make_config(warmup_bars=5)
@@ -239,10 +305,15 @@ class TestBacktestEngine:
             _capability("rsi_reversion", ("rsi14",), ("confirmed",), True),
         )
         signal_module.evaluate.return_value = SignalDecision(
-            strategy="rsi_reversion", symbol="XAUUSD", timeframe="M5",
-            direction="hold", confidence=0.0, reason="test",
+            strategy="rsi_reversion",
+            symbol="XAUUSD",
+            timeframe="M5",
+            direction="hold",
+            confidence=0.0,
+            reason="test",
             used_indicators=["rsi14"],
-            timestamp=datetime.now(timezone.utc), metadata={},
+            timestamp=datetime.now(timezone.utc),
+            metadata={},
         )
 
         pipeline = MagicMock()
@@ -285,17 +356,24 @@ class TestBacktestEngine:
         )
 
         call_count = 0
+
         def mock_evaluate(**kwargs: Any) -> SignalDecision:
             nonlocal call_count
             call_count += 1
             action = "buy" if call_count == 1 else "hold"
             conf = 0.7 if action == "buy" else 0.0
             return SignalDecision(
-                strategy="rsi_reversion", symbol="XAUUSD", timeframe="M5",
-                direction=action, confidence=conf, reason="test",
+                strategy="rsi_reversion",
+                symbol="XAUUSD",
+                timeframe="M5",
+                direction=action,
+                confidence=conf,
+                reason="test",
                 used_indicators=["rsi14"],
-                timestamp=datetime.now(timezone.utc), metadata={},
+                timestamp=datetime.now(timezone.utc),
+                metadata={},
             )
+
         signal_module.evaluate.side_effect = mock_evaluate
 
         pipeline = MagicMock()

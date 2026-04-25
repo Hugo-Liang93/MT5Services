@@ -261,12 +261,16 @@ class BacktestEngine:
         ] = {}
 
         # 确定目标策略列表，并过滤掉回测 SignalModule 不支持的名称。
-        # 与实盘保持一致：CANDIDATE 策略（deployment.allows_runtime_evaluation()=False）
-        # 不参与评估——否则"回测指标"会含实盘永远不执行的信号。
+        # Deployment gate（ADR-009）：
+        #   - CANDIDATE：永远排除（实盘 PreTradePipeline 也会拒绝）
+        #   - PAPER_ONLY：默认排除（baseline 只评估 live 能执行的策略），
+        #     `include_paper_only=True` 时放行（paper-shadow 回测用途）
+        #   - ACTIVE / ACTIVE_GUARDED：放行
         available_strategies = set(self._signal_module.list_strategies())
         requested_strategies: List[str] = []
         unsupported: List[str] = []
-        deployment_filtered: List[str] = []
+        deployment_filtered_candidate: List[str] = []
+        deployment_filtered_paper_only: List[str] = []
         if config.strategies:
             requested_strategies = []
             seen_requested: Set[str] = set()
@@ -300,17 +304,33 @@ class BacktestEngine:
         self._target_strategies = []
         for strategy in candidates:
             deployment = self._strategy_deployments.get(strategy)
-            if deployment is not None and not deployment.allows_runtime_evaluation():
-                deployment_filtered.append(strategy)
-                continue
+            if deployment is not None:
+                if not deployment.allows_runtime_evaluation():
+                    deployment_filtered_candidate.append(strategy)
+                    continue
+                if (
+                    not config.include_paper_only
+                    and not deployment.allows_live_execution()
+                ):
+                    deployment_filtered_paper_only.append(strategy)
+                    continue
             self._target_strategies.append(strategy)
 
-        if deployment_filtered:
+        if deployment_filtered_candidate:
             logger.info(
                 "BacktestEngine: filtered by deployment status (CANDIDATE): %s",
-                ", ".join(sorted(deployment_filtered)),
+                ", ".join(sorted(deployment_filtered_candidate)),
+            )
+        if deployment_filtered_paper_only:
+            logger.info(
+                "BacktestEngine: filtered by deployment status "
+                "(PAPER_ONLY, pass include_paper_only=True to include): %s",
+                ", ".join(sorted(deployment_filtered_paper_only)),
             )
 
+        deployment_filtered = (
+            deployment_filtered_candidate + deployment_filtered_paper_only
+        )
         if config.strategies and not self._target_strategies:
             raise ValueError(
                 "No supported strategies remain after filtering requested strategies: "

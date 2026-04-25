@@ -362,6 +362,7 @@ class BacktestConfig:
     enable_state_machine: bool = False
     min_preview_stable_bars: int = 1
     max_signal_evaluations: int = 50000
+    include_paper_only: bool = False
 
     # ── 嵌套子配置 ────────────────────────────────────────────────
     position: PositionConfig = field(default_factory=PositionConfig)
