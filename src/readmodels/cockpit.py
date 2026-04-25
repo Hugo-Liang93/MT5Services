@@ -18,14 +18,11 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from src.readmodels.freshness import (
-    age_seconds as _age_seconds_shared,
-    build_freshness_block,
-    freshness_state as _freshness_state_shared,
-    iso_or_none,
-)
+from src.readmodels.freshness import age_seconds as _age_seconds_shared
+from src.readmodels.freshness import build_freshness_block
+from src.readmodels.freshness import freshness_state as _freshness_state_shared
+from src.readmodels.freshness import iso_or_none
 from src.readmodels.workbench import compute_source_kind
-
 
 COCKPIT_BLOCKS: tuple[str, ...] = (
     "decision",
@@ -87,14 +84,21 @@ class CockpitReadModel:
         *,
         include: Optional[Sequence[str]] = None,
     ) -> dict[str, Any]:
-        requested = (
-            tuple(include) if include else COCKPIT_BLOCKS
-        )
+        requested = tuple(include) if include else COCKPIT_BLOCKS
         observed_at = datetime.now(timezone.utc).isoformat()
 
         # 共享查询（所有块可复用，减少 DB 扇出）
         risk_states = self._trading_state_repo.fetch_latest_risk_state_per_account()
-        exposure_rows = self._trading_state_repo.aggregate_open_positions_by_account_symbol()
+        exposure_rows = (
+            self._trading_state_repo.aggregate_open_positions_by_account_symbol()
+        )
+
+        # pending 挂单聚合：仅 exposure_map 使用，其它块不查
+        pending_rows: list[dict[str, Any]] = []
+        if "exposure_map" in requested:
+            pending_rows = list(
+                self._trading_state_repo.aggregate_pending_orders_by_account_symbol()
+            )
 
         blocks: dict[str, Any] = {}
         if "decision" in requested:
@@ -106,7 +110,9 @@ class CockpitReadModel:
         if "data_health" in requested:
             blocks["data_health"] = self._build_data_health(risk_states, observed_at)
         if "exposure_map" in requested:
-            blocks["exposure_map"] = self._build_exposure_map(exposure_rows, observed_at)
+            blocks["exposure_map"] = self._build_exposure_map(
+                exposure_rows, pending_rows, observed_at
+            )
         if "opportunity_queue" in requested:
             blocks["opportunity_queue"] = self._build_opportunity_queue(observed_at)
         if "safe_actions" in requested:
@@ -175,7 +181,9 @@ class CockpitReadModel:
             "blocked_accounts": [r.get("account_alias") for r in blocked],
             "circuit_open_accounts": [r.get("account_alias") for r in circuit_open],
             "close_only_accounts": [r.get("account_alias") for r in close_only],
-            "emergency_close_accounts": [r.get("account_alias") for r in emergency_close],
+            "emergency_close_accounts": [
+                r.get("account_alias") for r in emergency_close
+            ],
             "reason_codes": reason_codes,
             "source_kind": "native",
         }
@@ -188,7 +196,9 @@ class CockpitReadModel:
         rows = list(risk_states)
         entries: list[dict[str, Any]] = []
         for row in rows:
-            layer, reason_code, recommended_action, risk_score = self._classify_triage(row)
+            layer, reason_code, recommended_action, risk_score = self._classify_triage(
+                row
+            )
             entries.append(
                 {
                     "account_alias": row.get("account_alias"),
@@ -300,9 +310,13 @@ class CockpitReadModel:
     def _build_exposure_map(
         self,
         exposure_rows: Iterable[dict[str, Any]],
+        pending_rows: Iterable[dict[str, Any]],
         observed_at: str,
     ) -> dict[str, Any]:
         rows = list(exposure_rows)
+        pending = list(pending_rows)
+
+        # (A) symbol-major entries[]（symbol × direction bucket，向后兼容）
         grouped: dict[tuple[str, str], dict[str, Any]] = {}
         for row in rows:
             key = (
@@ -344,16 +358,130 @@ class CockpitReadModel:
             contributors.sort(key=lambda c: -float(c.get("volume") or 0.0))
             entries.append(bucket)
         entries.sort(key=lambda b: -float(b.get("gross_exposure") or 0.0))
+
+        # (B) account-major risk_matrix[]（P12-1 新增，账户 × 品种维度）
+        risk_matrix = self._build_risk_matrix(rows, pending)
+
         return {
             **self._freshness(
                 block="exposure_map",
                 observed_at=observed_at,
                 data_updated_at=observed_at,
             ),
+            "mode": "account_symbol",
             "entries": entries,
+            "risk_matrix": risk_matrix,
             "total": len(entries),
             "source_kind": "native",
         }
+
+    def _build_risk_matrix(
+        self,
+        open_rows: Sequence[dict[str, Any]],
+        pending_rows: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """构造账户 × 品种的风险矩阵。
+
+        输入是 `(account, symbol, direction)` 三元组（open 持仓）和
+        `(account, symbol, direction)`（pending 挂单）。按账户分组，品种
+        下再按方向聚合得 net/gross/pending；同账户全品种汇总得 total_risk。
+
+        risk_score = cell.gross_exposure / account.total_risk（账户内占比，0~1）。
+        一期不叠加 margin_guard_state / margin_level 等绝对风险信号——
+        前端按 cell.risk_score 排序即可识别账户内风险集中度。
+        """
+        # cell_agg[(account_key, symbol)] = {direction → volume} open / pending
+        open_agg: dict[tuple[str, str], dict[str, float]] = defaultdict(
+            lambda: {"buy": 0.0, "sell": 0.0, "position_count": 0.0}
+        )
+        pending_agg: dict[tuple[str, str], dict[str, float]] = defaultdict(
+            lambda: {"buy": 0.0, "sell": 0.0, "pending_count": 0.0}
+        )
+        account_meta: dict[str, dict[str, Any]] = {}
+
+        for row in open_rows:
+            account_key = str(row.get("account_key") or "")
+            symbol = str(row.get("symbol") or "")
+            direction = str(row.get("direction") or "")
+            volume = float(row.get("gross_volume") or 0.0)
+            position_count = float(row.get("position_count") or 0)
+            open_agg[(account_key, symbol)][direction] += volume
+            open_agg[(account_key, symbol)]["position_count"] += position_count
+            account_meta.setdefault(
+                account_key,
+                {
+                    "account_alias": row.get("account_alias"),
+                    "account_key": account_key,
+                },
+            )
+
+        for row in pending_rows:
+            account_key = str(row.get("account_key") or "")
+            symbol = str(row.get("symbol") or "")
+            direction = str(row.get("direction") or "")
+            volume = float(row.get("pending_volume") or 0.0)
+            pending_count = float(row.get("pending_count") or 0)
+            pending_agg[(account_key, symbol)][direction] += volume
+            pending_agg[(account_key, symbol)]["pending_count"] += pending_count
+            account_meta.setdefault(
+                account_key,
+                {
+                    "account_alias": row.get("account_alias"),
+                    "account_key": account_key,
+                },
+            )
+
+        cells_by_account: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        all_symbols: dict[str, set[str]] = defaultdict(set)
+        for (account_key, symbol), dir_map in open_agg.items():
+            all_symbols[account_key].add(symbol)
+        for (account_key, symbol), _dir_map in pending_agg.items():
+            all_symbols[account_key].add(symbol)
+
+        for account_key, symbols in all_symbols.items():
+            for symbol in symbols:
+                open_dirs = open_agg.get((account_key, symbol), {})
+                pending_dirs = pending_agg.get((account_key, symbol), {})
+                buy = float(open_dirs.get("buy", 0.0))
+                sell = float(open_dirs.get("sell", 0.0))
+                gross = buy + sell
+                net = buy - sell
+                pending_buy = float(pending_dirs.get("buy", 0.0))
+                pending_sell = float(pending_dirs.get("sell", 0.0))
+                pending_total = pending_buy + pending_sell
+                position_count = int(open_dirs.get("position_count", 0))
+                pending_count = int(pending_dirs.get("pending_count", 0))
+                cells_by_account[account_key].append(
+                    {
+                        "symbol": symbol,
+                        "gross_exposure": gross,
+                        "net_exposure": net,
+                        "pending_exposure": pending_total,
+                        "position_count": position_count,
+                        "pending_count": pending_count,
+                    }
+                )
+
+        matrix: list[dict[str, Any]] = []
+        for account_key, cells in cells_by_account.items():
+            total_risk = sum(float(c["gross_exposure"]) for c in cells)
+            for cell in cells:
+                gross = float(cell["gross_exposure"])
+                cell["risk_score"] = (gross / total_risk) if total_risk > 0 else 0.0
+            cells.sort(key=lambda c: -float(c.get("gross_exposure") or 0.0))
+            meta = account_meta.get(account_key, {})
+            account_alias = meta.get("account_alias")
+            matrix.append(
+                {
+                    "account_alias": account_alias,
+                    "account_key": account_key,
+                    "account_label": account_alias,
+                    "total_risk": total_risk,
+                    "cells": cells,
+                }
+            )
+        matrix.sort(key=lambda e: -float(e.get("total_risk") or 0.0))
+        return matrix
 
     def _build_opportunity_queue(
         self,
@@ -378,9 +506,7 @@ class CockpitReadModel:
                     ),
                 ),
                 "entries": intel_payload.get("entries") or [],
-                "total": int(
-                    (intel_payload.get("pagination") or {}).get("total") or 0
-                ),
+                "total": int((intel_payload.get("pagination") or {}).get("total") or 0),
                 "source_kind": "native",
             }
         # Fallback: 就地派生（保留旧语义，单测/脱 intel 场景可用）
@@ -565,4 +691,3 @@ class CockpitReadModel:
             stale_after_seconds=hints["stale_after_seconds"],
             max_age_seconds=hints["max_age_seconds"],
         )
-

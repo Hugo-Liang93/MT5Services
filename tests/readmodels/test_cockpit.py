@@ -24,15 +24,20 @@ class _FakeTradingStateRepo:
         *,
         risk_states: list[dict[str, Any]],
         exposure_rows: list[dict[str, Any]],
+        pending_rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self._risk_states = risk_states
         self._exposure_rows = exposure_rows
+        self._pending_rows = pending_rows or []
 
     def fetch_latest_risk_state_per_account(self) -> list[dict[str, Any]]:
         return list(self._risk_states)
 
     def aggregate_open_positions_by_account_symbol(self) -> list[dict[str, Any]]:
         return list(self._exposure_rows)
+
+    def aggregate_pending_orders_by_account_symbol(self) -> list[dict[str, Any]]:
+        return list(self._pending_rows)
 
 
 class _FakeSignalModule:
@@ -42,19 +47,26 @@ class _FakeSignalModule:
 
     def recent_signal_page(self, **kwargs: Any) -> dict[str, Any]:
         self.page_kwargs = kwargs
-        return {"items": self._rows, "total": len(self._rows), "page": 1, "page_size": 10}
+        return {
+            "items": self._rows,
+            "total": len(self._rows),
+            "page": 1,
+            "page_size": 10,
+        }
 
 
 def _build_model(
     *,
     risk_states: list[dict[str, Any]] | None = None,
     exposure_rows: list[dict[str, Any]] | None = None,
+    pending_rows: list[dict[str, Any]] | None = None,
     signals: list[dict[str, Any]] | None = None,
 ) -> CockpitReadModel:
     return CockpitReadModel(
         trading_state_repo=_FakeTradingStateRepo(
             risk_states=risk_states or [],
             exposure_rows=exposure_rows or [],
+            pending_rows=pending_rows,
         ),
         signal_module=_FakeSignalModule(signals),
         runtime_read_model=None,
@@ -182,12 +194,162 @@ def test_exposure_map_aggregates_contributors_across_accounts() -> None:
 
     entries = payload["exposure_map"]["entries"]
     # XAUUSD/buy 应合并为 2 contributors
-    xau_bucket = next(e for e in entries if e["symbol"] == "XAUUSD" and e["direction"] == "buy")
+    xau_bucket = next(
+        e for e in entries if e["symbol"] == "XAUUSD" and e["direction"] == "buy"
+    )
     assert xau_bucket["gross_exposure"] == pytest.approx(1.0)
     assert len(xau_bucket["contributors"]) == 2
     weights = {c["account_alias"]: c["weight"] for c in xau_bucket["contributors"]}
     assert weights["live_main"] == pytest.approx(0.6)
     assert weights["live_exec_a"] == pytest.approx(0.4)
+    # P12-1: exposure_map 同时暴露 mode + risk_matrix，即便无 pending
+    assert payload["exposure_map"]["mode"] == "account_symbol"
+    assert isinstance(payload["exposure_map"]["risk_matrix"], list)
+
+
+def test_exposure_map_risk_matrix_is_account_major_with_net_and_pending() -> None:
+    """P12-1: risk_matrix[] 按账户分组；同品种 buy/sell 聚合为 net=buy-sell，gross=buy+sell；pending 独立求和。"""
+    model = _build_model(
+        exposure_rows=[
+            # live_main XAUUSD buy 0.6 + sell 0.2 → gross=0.8, net=+0.4
+            {
+                "account_alias": "live_main",
+                "account_key": "live:1",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "gross_volume": 0.6,
+                "position_count": 3,
+            },
+            {
+                "account_alias": "live_main",
+                "account_key": "live:1",
+                "symbol": "XAUUSD",
+                "direction": "sell",
+                "gross_volume": 0.2,
+                "position_count": 1,
+            },
+            # live_main EURUSD sell 1.0
+            {
+                "account_alias": "live_main",
+                "account_key": "live:1",
+                "symbol": "EURUSD",
+                "direction": "sell",
+                "gross_volume": 1.0,
+                "position_count": 1,
+            },
+            # live_exec_a XAUUSD buy 0.4
+            {
+                "account_alias": "live_exec_a",
+                "account_key": "live:2",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "gross_volume": 0.4,
+                "position_count": 2,
+            },
+        ],
+        pending_rows=[
+            # live_main XAUUSD buy pending 0.15
+            {
+                "account_alias": "live_main",
+                "account_key": "live:1",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "pending_volume": 0.15,
+                "pending_count": 1,
+            },
+            # live_exec_a GBPUSD buy pending 0.05（没有 open 持仓，仅 pending）
+            {
+                "account_alias": "live_exec_a",
+                "account_key": "live:2",
+                "symbol": "GBPUSD",
+                "direction": "buy",
+                "pending_volume": 0.05,
+                "pending_count": 1,
+            },
+        ],
+    )
+    payload = model.build_overview(include=["exposure_map"])
+    matrix = payload["exposure_map"]["risk_matrix"]
+
+    by_account = {row["account_alias"]: row for row in matrix}
+    assert set(by_account.keys()) == {"live_main", "live_exec_a"}
+
+    # live_main: XAUUSD gross=0.8/net=+0.4/pending=0.15; EURUSD gross=1.0/net=-1.0
+    main = by_account["live_main"]
+    assert main["total_risk"] == pytest.approx(1.8)  # 0.8 + 1.0
+    cells_by_symbol = {c["symbol"]: c for c in main["cells"]}
+    xau = cells_by_symbol["XAUUSD"]
+    assert xau["gross_exposure"] == pytest.approx(0.8)
+    assert xau["net_exposure"] == pytest.approx(0.4)
+    assert xau["pending_exposure"] == pytest.approx(0.15)
+    assert xau["position_count"] == 4
+    assert xau["pending_count"] == 1
+    # risk_score = gross / total_risk
+    assert xau["risk_score"] == pytest.approx(0.8 / 1.8)
+
+    eur = cells_by_symbol["EURUSD"]
+    assert eur["net_exposure"] == pytest.approx(-1.0)
+    assert eur["pending_exposure"] == pytest.approx(0.0)
+
+    # live_exec_a：XAUUSD 仅 open（无 pending）；GBPUSD 仅 pending（无 open）
+    exec_a = by_account["live_exec_a"]
+    assert exec_a["total_risk"] == pytest.approx(0.4)  # 仅 open 参与 total_risk
+    exec_cells = {c["symbol"]: c for c in exec_a["cells"]}
+    assert exec_cells["XAUUSD"]["gross_exposure"] == pytest.approx(0.4)
+    assert exec_cells["XAUUSD"]["pending_exposure"] == pytest.approx(0.0)
+    gbp = exec_cells["GBPUSD"]
+    assert gbp["gross_exposure"] == pytest.approx(0.0)
+    assert gbp["net_exposure"] == pytest.approx(0.0)
+    assert gbp["pending_exposure"] == pytest.approx(0.05)
+    assert gbp["risk_score"] == pytest.approx(0.0)  # gross 为 0 → 占比 0
+
+
+def test_exposure_map_risk_matrix_total_risk_zero_handles_division() -> None:
+    """P12-1: total_risk=0（账户全部仓位 volume=0）时 risk_score 兜底为 0，不得 ZeroDivision。"""
+    model = _build_model(
+        exposure_rows=[
+            {
+                "account_alias": "live_idle",
+                "account_key": "live:0",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "gross_volume": 0.0,
+                "position_count": 0,
+            },
+        ]
+    )
+    payload = model.build_overview(include=["exposure_map"])
+    matrix = payload["exposure_map"]["risk_matrix"]
+    row = matrix[0]
+    assert row["total_risk"] == pytest.approx(0.0)
+    assert row["cells"][0]["risk_score"] == pytest.approx(0.0)
+
+
+def test_exposure_map_risk_matrix_sorted_by_total_risk_desc() -> None:
+    """P12-1: 矩阵按 total_risk 从大到小排序，最忙账户在前。"""
+    model = _build_model(
+        exposure_rows=[
+            {
+                "account_alias": "a_small",
+                "account_key": "k:a",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "gross_volume": 0.1,
+                "position_count": 1,
+            },
+            {
+                "account_alias": "b_big",
+                "account_key": "k:b",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "gross_volume": 2.0,
+                "position_count": 5,
+            },
+        ]
+    )
+    payload = model.build_overview(include=["exposure_map"])
+    aliases = [row["account_alias"] for row in payload["exposure_map"]["risk_matrix"]]
+    assert aliases == ["b_big", "a_small"]
 
 
 class _FakeIntelReadModel:
@@ -226,9 +388,7 @@ def test_opportunity_queue_delegates_to_intel_when_injected() -> None:
     queue = payload["opportunity_queue"]
     assert len(queue["entries"]) == 1
     assert queue["entries"][0]["recommended_action"] == "execute_from_signal"
-    assert queue["entries"][0]["account_candidates"] == [
-        {"account_alias": "live_main"}
-    ]
+    assert queue["entries"][0]["account_candidates"] == [{"account_alias": "live_main"}]
     # 确认有委托调用
     assert len(intel.calls) == 1
     assert intel.calls[0]["page_size"] == model.DEFAULT_MAX_OPPORTUNITY

@@ -110,6 +110,19 @@ GROUP BY account_alias, account_key, symbol, direction
 - latest-per-ticket 去重后按 (account, symbol, direction) 聚合
 - contributors[].weight = account_volume / bucket.gross_exposure
 
+### P12-1 Cockpit exposure_map 账户×品种风险矩阵（2026-04-22）
+在 symbol-major `entries[]` 之外新增账户-major 视图 `risk_matrix[]`（frontend 账户动作台风险热力图用）：
+
+- `exposure_map.mode = "account_symbol"` — schema 版本标签
+- `exposure_map.risk_matrix[]` — 每账户一行，`cells[]` 按 symbol 聚合 buy/sell
+  - `gross_exposure = buy_volume + sell_volume`（open 持仓）
+  - `net_exposure = buy_volume - sell_volume`
+  - `pending_exposure` — `pending_order_states` 中 status ∈ {'placed', 'pending'} 的 volume 之和
+  - `risk_score = cell.gross_exposure / account.total_risk`（账户内占比，0~1）
+- 新增 SQL `aggregate_pending_orders_by_account_symbol()` 补 pending 数据
+- 保留现有 `entries[]`（向后兼容），matrix 与 entries 并存，不破坏前端旧消费
+- 一期 `risk_score` 只反映**账户内**风险集中度，未叠加 margin_guard_state / margin_level；前端若需绝对风险可结合 triage_queue.metrics 使用
+
 ### P10.1 Cockpit opportunity_queue 委托（P1.3 修复）
 Cockpit 不再自己查 actionable signals，而是内部持有一个 `IntelReadModel` 实例，
 `_build_opportunity_queue()` 直接调用 `intel.build_action_queue(page_size=10)`。

@@ -17,7 +17,9 @@ class TradingStateRepository:
     def __init__(self, writer: "TimescaleWriter"):
         self._writer = writer
 
-    def write_pending_order_states(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+    def write_pending_order_states(
+        self, rows: Iterable[Tuple], page_size: int = 200
+    ) -> None:
         batch = []
         for row in rows:
             metadata = row[31] if row[31] is not None else {}
@@ -63,14 +65,18 @@ class TradingStateRepository:
         params.append(limit)
         return self._fetch_dicts(sql, params)
 
-    def write_position_runtime_states(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+    def write_position_runtime_states(
+        self, rows: Iterable[Tuple], page_size: int = 200
+    ) -> None:
         batch = []
         for row in rows:
             metadata = row[30] if row[30] is not None else {}
             batch.append((*row[:30], self._writer._json(metadata), row[31], row[32]))
         if not batch:
             return
-        self._writer._batch(UPSERT_POSITION_RUNTIME_STATES_SQL, batch, page_size=page_size)
+        self._writer._batch(
+            UPSERT_POSITION_RUNTIME_STATES_SQL, batch, page_size=page_size
+        )
 
     def fetch_position_runtime_states(
         self,
@@ -110,7 +116,9 @@ class TradingStateRepository:
         params.append(limit)
         return self._fetch_dicts(sql, params)
 
-    def write_trade_control_states(self, rows: Iterable[Tuple], page_size: int = 50) -> None:
+    def write_trade_control_states(
+        self, rows: Iterable[Tuple], page_size: int = 50
+    ) -> None:
         batch = []
         for row in rows:
             metadata = row[5] if row[5] is not None else {}
@@ -147,7 +155,9 @@ class TradingStateRepository:
                 row.setdefault(str(key), value)
         return row
 
-    def write_account_risk_states(self, rows: Iterable[Tuple], page_size: int = 50) -> None:
+    def write_account_risk_states(
+        self, rows: Iterable[Tuple], page_size: int = 50
+    ) -> None:
         batch = []
         for row in rows:
             active_risk_flags = row[20] if row[20] is not None else []
@@ -244,6 +254,39 @@ SELECT account_alias,
        COUNT(*)::bigint AS position_count
 FROM latest
 WHERE status = 'open'
+GROUP BY account_alias, account_key, symbol, direction
+ORDER BY SUM(volume) DESC
+"""
+        return self._fetch_dicts(sql, [])
+
+    def aggregate_pending_orders_by_account_symbol(self) -> List[dict]:
+        """P12-1: 跨账户 pending 挂单聚合（latest-per-ticket → sum per account-symbol-direction）。
+
+        仅统计仍未成交 / 未撤销 / 未过期的活跃挂单（status in 'placed' / 'pending'）。
+        `filled` / `expired` / `cancelled` 排除。给 cockpit exposure_map 的
+        pending_exposure 字段供数。
+        """
+        sql = """
+WITH latest AS (
+    SELECT DISTINCT ON (account_key, order_ticket)
+        account_key,
+        account_alias,
+        order_ticket,
+        symbol,
+        direction,
+        volume,
+        status
+    FROM pending_order_states
+    ORDER BY account_key, order_ticket, updated_at DESC
+)
+SELECT account_alias,
+       account_key,
+       symbol,
+       direction,
+       SUM(volume)::double precision AS pending_volume,
+       COUNT(*)::bigint AS pending_count
+FROM latest
+WHERE status IN ('placed', 'pending')
 GROUP BY account_alias, account_key, symbol, direction
 ORDER BY SUM(volume) DESC
 """
