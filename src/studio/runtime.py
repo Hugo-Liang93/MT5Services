@@ -132,7 +132,9 @@ def build_studio_service(container: AppContainer) -> StudioService:
         timeframes = list(indicator_manager.config.timeframes)
         studio.register_agent(
             "analyst",
-            lambda: studio_mappers.map_analyst(indicator_manager.get_performance_stats()),
+            lambda: studio_mappers.map_analyst(
+                indicator_manager.get_performance_stats()
+            ),
         )
         studio.register_agent(
             "live_analyst",
@@ -187,9 +189,11 @@ def build_studio_service(container: AppContainer) -> StudioService:
             "trader",
             lambda: studio_mappers.map_trader(
                 trade_executor.status(),
-                pending_entry_manager.status()
-                if pending_entry_manager is not None
-                else {},
+                (
+                    pending_entry_manager.status()
+                    if pending_entry_manager is not None
+                    else {}
+                ),
             ),
         )
 
@@ -204,6 +208,7 @@ def build_studio_service(container: AppContainer) -> StudioService:
         )
 
     if container.trade_module is not None:
+
         def _summary_provider() -> dict[str, Any]:
             account_info = _account_info_payload() or {}
             login = account_info.get("login", "")
@@ -241,13 +246,6 @@ def build_studio_service(container: AppContainer) -> StudioService:
         "backtester",
         lambda: studio_mappers.map_backtester(get_backtest_runtime_status()),
     )
-
-    if container.paper_trading_bridge is not None:
-        _pt_bridge = container.paper_trading_bridge
-        studio.register_agent(
-            "paper_trader",
-            lambda: studio_mappers.map_paper_trader(_pt_bridge.status()),
-        )
 
     if container.health_monitor is not None:
         studio.register_agent(

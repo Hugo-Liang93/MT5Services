@@ -588,25 +588,6 @@ class _SignalService:
         ]
 
 
-class _PaperTradingBridge:
-    def status(self):
-        return {
-            "running": True,
-            "session_id": "ps_test_1",
-            "started_at": "2026-01-01T00:00:00+00:00",
-            "signals_received": 5,
-            "signals_executed": 2,
-            "signals_rejected": 3,
-            "reject_reasons": {"low_confidence": 1, "no_quote": 2},
-            "active_symbols": ["XAUUSD"],
-            "current_balance": 10020.0,
-            "floating_pnl": 5.0,
-            "equity": 10025.0,
-            "open_positions": 1,
-            "closed_trades": 2,
-        }
-
-
 class _ExecutorService:
     def __init__(self) -> None:
         self.reset_calls = 0
@@ -1369,7 +1350,6 @@ def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
             trading_state_alerts=_TradingStateAlerts(),
             exposure_closeout_controller=_ExposureCloseoutController(),
             runtime_mode_controller=_RuntimeModeController(),
-            paper_trading_bridge=_PaperTradingBridge(),
         ),
     )
 
@@ -1381,8 +1361,8 @@ def test_trade_state_summary_endpoint_returns_persisted_state() -> None:
     assert response.data["pending"]["lifecycle"]["status_counts"]["filled"] == 1
     assert response.data["positions"]["status_counts"]["open"] == 1
     assert response.data["alerts"]["status"] == "warning"
-    assert response.data["validation"]["paper_trading"]["kind"] == "validation_sidecar"
-    assert response.data["validation"]["paper_trading"]["signals_rejected"] == 3
+    # ADR-010: validation sidecars 已清空（paper_trading 删除）
+    assert response.data["validation"] == {}
 
 
 def test_trading_accounts_endpoint_reads_runtime_identity_via_public_port(

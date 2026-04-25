@@ -88,25 +88,6 @@ class DummyMarketService:
         self.client = DummyMarketClient()
 
 
-class DummyPaperTradingBridge:
-    def status(self):
-        return {
-            "running": True,
-            "session_id": "ps_test_1",
-            "started_at": "2026-01-01T00:00:00+00:00",
-            "signals_received": 7,
-            "signals_executed": 3,
-            "signals_rejected": 4,
-            "reject_reasons": {"low_confidence": 2, "no_quote": 2},
-            "active_symbols": ["XAUUSD"],
-            "current_balance": 10050.0,
-            "floating_pnl": 12.5,
-            "equity": 10062.5,
-            "open_positions": 1,
-            "closed_trades": 3,
-        }
-
-
 class DummySignalRuntime:
     def status(self):
         return {
@@ -438,7 +419,6 @@ def test_dashboard_overview_uses_unified_projection_shape() -> None:
         trade_executor=DummyTradeExecutor(),
         position_manager=DummyPositionManager(),
         pending_entry_manager=DummyPendingEntryManager(),
-        paper_trading_bridge=DummyPaperTradingBridge(),
     )
 
     overview = read_model.dashboard_overview(
@@ -456,9 +436,8 @@ def test_dashboard_overview_uses_unified_projection_shape() -> None:
     assert overview["signals"]["running"] is True
     assert overview["signals"]["status"] == "healthy"
     assert overview["positions"]["manager"]["tracked_positions"] == 2
-    assert overview["validation"]["paper_trading"]["kind"] == "validation_sidecar"
-    assert overview["validation"]["paper_trading"]["running"] is True
-    assert overview["validation"]["paper_trading"]["signals_received"] == 7
+    # ADR-010: validation sidecars 已清空（paper_trading 删除）
+    assert overview["validation"] == {}
     assert overview["external_dependencies"]["mt5_session"]["connected"] is True
 
 
@@ -496,7 +475,6 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
         trading_state_alerts=DummyTradingStateAlerts(),
         exposure_closeout_controller=DummyExposureCloseoutController(),
         runtime_mode_controller=DummyRuntimeModeController(current_mode="observe"),
-        paper_trading_bridge=DummyPaperTradingBridge(),
     )
 
     summary = read_model.trading_state_summary(pending_limit=10, position_limit=10)
@@ -515,23 +493,20 @@ def test_runtime_trading_state_projection_is_normalized() -> None:
     assert summary["pending"]["execution_contexts"]["source_counts"]["mt5_order"] == 1
     assert summary["positions"]["status_counts"]["open"] == 1
     assert summary["alerts"]["status"] == "warning"
-    assert summary["validation"]["paper_trading"]["kind"] == "validation_sidecar"
-    assert summary["validation"]["paper_trading"]["signals_executed"] == 3
+    # ADR-010: validation sidecars 已清空（paper_trading 删除）
+    assert summary["validation"] == {}
 
 
-def test_runtime_mode_summary_exposes_validation_sidecars() -> None:
+def test_runtime_mode_summary_exposes_empty_validation_sidecars() -> None:
+    """ADR-010: paper_trading sidecar 已删除，validation_sidecars 为空 dict。"""
     read_model = RuntimeReadModel(
         runtime_mode_controller=DummyRuntimeModeController(current_mode="full"),
-        paper_trading_bridge=DummyPaperTradingBridge(),
     )
 
     summary = read_model.runtime_mode_summary()
 
     assert summary["components"]["trade_execution"] is True
-    assert (
-        summary["validation_sidecars"]["paper_trading"]["kind"] == "validation_sidecar"
-    )
-    assert summary["validation_sidecars"]["paper_trading"]["status"] == "healthy"
+    assert summary["validation_sidecars"] == {}
 
 
 def test_runtime_indicator_summary_marks_disabled_when_mode_intentionally_stopped() -> (

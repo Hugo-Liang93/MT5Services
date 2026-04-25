@@ -4,7 +4,6 @@ from .economic_repo import EconomicCalendarRepository
 from .execution_intent_repo import ExecutionIntentRepository
 from .market_repo import MarketRepository
 from .operator_command_repo import OperatorCommandRepository
-from .paper_trading_repo import PaperTradingRepository
 from .pipeline_trace_repo import PipelineTraceRepository
 from .runtime_repo import RuntimeStatusRepository
 from .signal_repo import SignalEventRepository
@@ -23,7 +22,6 @@ __all__ = [
     "ExecutionIntentRepository",
     "MarketRepository",
     "OperatorCommandRepository",
-    "PaperTradingRepository",
     "PipelineTraceRepository",
     "RuntimeStatusRepository",
     "SignalEventRepository",

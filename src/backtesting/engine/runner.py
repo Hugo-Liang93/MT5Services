@@ -206,7 +206,7 @@ class BacktestEngine:
         # 性能优化：预计算指标快照（优化器复用时避免重复计算）
         precomputed_indicators: Optional[List[Dict[str, Dict[str, Any]]]] = None,
         # StrategyDeployment 契约：回测与实盘同一套部署合同，保证两条链路
-        # 对 CANDIDATE / PAPER_ONLY / locked_timeframes / max_live_positions 的
+        # 对 CANDIDATE / DEMO_VALIDATION / locked_timeframes / max_live_positions 的
         # 处理完全一致。None 表示"未显式注入"，将在构造期从 signal_config 读取。
         strategy_deployments: Optional[Dict[str, StrategyDeployment]] = None,
     ) -> None:
@@ -261,16 +261,16 @@ class BacktestEngine:
         ] = {}
 
         # 确定目标策略列表，并过滤掉回测 SignalModule 不支持的名称。
-        # Deployment gate（ADR-009）：
+        # Deployment gate（ADR-009 → ADR-010）：
         #   - CANDIDATE：永远排除（实盘 PreTradePipeline 也会拒绝）
-        #   - PAPER_ONLY：默认排除（baseline 只评估 live 能执行的策略），
-        #     `include_paper_only=True` 时放行（paper-shadow 回测用途）
+        #   - DEMO_VALIDATION：默认排除（baseline 只评估 live 能执行的策略），
+        #     `include_demo_validation=True` 时放行（demo-shadow 回测用途）
         #   - ACTIVE / ACTIVE_GUARDED：放行
         available_strategies = set(self._signal_module.list_strategies())
         requested_strategies: List[str] = []
         unsupported: List[str] = []
         deployment_filtered_candidate: List[str] = []
-        deployment_filtered_paper_only: List[str] = []
+        deployment_filtered_demo_validation: List[str] = []
         if config.strategies:
             requested_strategies = []
             seen_requested: Set[str] = set()
@@ -309,10 +309,10 @@ class BacktestEngine:
                     deployment_filtered_candidate.append(strategy)
                     continue
                 if (
-                    not config.include_paper_only
+                    not config.include_demo_validation
                     and not deployment.allows_live_execution()
                 ):
-                    deployment_filtered_paper_only.append(strategy)
+                    deployment_filtered_demo_validation.append(strategy)
                     continue
             self._target_strategies.append(strategy)
 
@@ -321,15 +321,15 @@ class BacktestEngine:
                 "BacktestEngine: filtered by deployment status (CANDIDATE): %s",
                 ", ".join(sorted(deployment_filtered_candidate)),
             )
-        if deployment_filtered_paper_only:
+        if deployment_filtered_demo_validation:
             logger.info(
                 "BacktestEngine: filtered by deployment status "
-                "(PAPER_ONLY, pass include_paper_only=True to include): %s",
-                ", ".join(sorted(deployment_filtered_paper_only)),
+                "(DEMO_VALIDATION, pass include_demo_validation=True to include): %s",
+                ", ".join(sorted(deployment_filtered_demo_validation)),
             )
 
         deployment_filtered = (
-            deployment_filtered_candidate + deployment_filtered_paper_only
+            deployment_filtered_candidate + deployment_filtered_demo_validation
         )
         if config.strategies and not self._target_strategies:
             raise ValueError(

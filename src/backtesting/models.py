@@ -37,7 +37,7 @@ class SimulationMode(str, Enum):
 class ValidationDecision(str, Enum):
     REJECT = "reject"
     REFIT = "refit"
-    PAPER_ONLY = "paper_only"
+    DEMO_VALIDATION = "demo_validation"
     ACTIVE_GUARDED = "active_guarded"
     ACTIVE = "active"
 
@@ -362,7 +362,7 @@ class BacktestConfig:
     enable_state_machine: bool = False
     min_preview_stable_bars: int = 1
     max_signal_evaluations: int = 50000
-    include_paper_only: bool = False
+    include_demo_validation: bool = False
 
     # ── 嵌套子配置 ────────────────────────────────────────────────
     position: PositionConfig = field(default_factory=PositionConfig)
@@ -538,7 +538,7 @@ class BacktestResult:
     monte_carlo_result: Optional[Dict[str, Any]] = None
     # 晋升验证裁决（由独立 validation 组合回测/WF/paper 结果后填充）
     validation_decision: Optional[ValidationDecisionReport] = None
-    # 实验追踪 ID（跨 Research/Backtest/PaperTrading 关联）
+    # 实验追踪 ID（跨 Research/Backtest/DemoValidation 关联）
     experiment_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -696,7 +696,7 @@ class Recommendation:
     applied_at: Optional[datetime] = None
     rolled_back_at: Optional[datetime] = None
     backup_path: Optional[str] = None  # 应用前的配置备份路径
-    # 实验追踪 ID（跨 Research/Backtest/PaperTrading 关联）
+    # 实验追踪 ID（跨 Research/Backtest/DemoValidation 关联）
     experiment_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:

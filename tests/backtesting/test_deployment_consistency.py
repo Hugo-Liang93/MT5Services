@@ -30,10 +30,10 @@ def candidate_deployment() -> StrategyDeployment:
 
 
 @pytest.fixture
-def paper_only_deployment() -> StrategyDeployment:
+def demo_validation_deployment() -> StrategyDeployment:
     return StrategyDeployment(
         name="my_strategy",
-        status=StrategyDeploymentStatus.PAPER_ONLY,
+        status=StrategyDeploymentStatus.DEMO_VALIDATION,
     )
 
 
@@ -49,20 +49,16 @@ def guarded_deployment() -> StrategyDeployment:
 
 
 class TestDeploymentAllowsRuntimeEvaluation:
-    def test_candidate_blocked(
-        self, candidate_deployment: StrategyDeployment
-    ) -> None:
+    def test_candidate_blocked(self, candidate_deployment: StrategyDeployment) -> None:
         assert not candidate_deployment.allows_runtime_evaluation()
 
-    def test_paper_only_allowed(
-        self, paper_only_deployment: StrategyDeployment
+    def test_demo_validation_allowed(
+        self, demo_validation_deployment: StrategyDeployment
     ) -> None:
-        # PAPER_ONLY 允许 runtime 评估（只是不能 live 执行）
-        assert paper_only_deployment.allows_runtime_evaluation()
+        # DEMO_VALIDATION 允许 runtime 评估（只是不能 live 执行）
+        assert demo_validation_deployment.allows_runtime_evaluation()
 
-    def test_guarded_allowed(
-        self, guarded_deployment: StrategyDeployment
-    ) -> None:
+    def test_guarded_allowed(self, guarded_deployment: StrategyDeployment) -> None:
         assert guarded_deployment.allows_runtime_evaluation()
 
 
@@ -79,9 +75,7 @@ class TestLockedTimeframes:
         assert "M15" not in guarded_deployment.locked_timeframes
 
     def test_empty_lock_means_no_restriction(self) -> None:
-        d = StrategyDeployment(
-            name="x", status=StrategyDeploymentStatus.ACTIVE
-        )
+        d = StrategyDeployment(name="x", status=StrategyDeploymentStatus.ACTIVE)
         assert len(d.locked_timeframes) == 0
 
 
@@ -92,9 +86,7 @@ class TestMaxLivePositions:
         assert guarded_deployment.max_live_positions == 1
 
     def test_unbounded_none(self) -> None:
-        d = StrategyDeployment(
-            name="x", status=StrategyDeploymentStatus.ACTIVE
-        )
+        d = StrategyDeployment(name="x", status=StrategyDeploymentStatus.ACTIVE)
         assert d.max_live_positions is None
 
 
@@ -110,27 +102,25 @@ class TestBacktestEngineDeploymentGate:
             "candidate_s": StrategyDeployment(
                 name="candidate_s", status=StrategyDeploymentStatus.CANDIDATE
             ),
-            "paper_s": StrategyDeployment(
-                name="paper_s", status=StrategyDeploymentStatus.PAPER_ONLY
+            "demo_s": StrategyDeployment(
+                name="demo_s", status=StrategyDeploymentStatus.DEMO_VALIDATION
             ),
         }
-        # 应纳入评估：active_s, paper_s；应排除：candidate_s
+        # 应纳入评估：active_s, demo_s；应排除：candidate_s
         allowed = [
-            name
-            for name, dep in deployments.items()
-            if dep.allows_runtime_evaluation()
+            name for name, dep in deployments.items() if dep.allows_runtime_evaluation()
         ]
-        assert sorted(allowed) == ["active_s", "paper_s"]
+        assert sorted(allowed) == ["active_s", "demo_s"]
         assert "candidate_s" not in allowed
 
 
 class TestDeploymentContractSemanticsStayStable:
-    """锁定 deployment 契约语义，防止不小心改变 CANDIDATE / PAPER_ONLY 定义。"""
+    """锁定 deployment 契约语义，防止不小心改变 CANDIDATE / DEMO_VALIDATION 定义。"""
 
-    def test_paper_only_cannot_live_execute(
-        self, paper_only_deployment: StrategyDeployment
+    def test_demo_validation_cannot_live_execute(
+        self, demo_validation_deployment: StrategyDeployment
     ) -> None:
-        assert not paper_only_deployment.allows_live_execution()
+        assert not demo_validation_deployment.allows_live_execution()
 
     def test_candidate_cannot_live_execute(
         self, candidate_deployment: StrategyDeployment
@@ -138,9 +128,7 @@ class TestDeploymentContractSemanticsStayStable:
         assert not candidate_deployment.allows_live_execution()
 
     def test_active_can_live_execute(self) -> None:
-        d = StrategyDeployment(
-            name="x", status=StrategyDeploymentStatus.ACTIVE
-        )
+        d = StrategyDeployment(name="x", status=StrategyDeploymentStatus.ACTIVE)
         assert d.allows_live_execution()
 
     def test_guarded_can_live_execute(

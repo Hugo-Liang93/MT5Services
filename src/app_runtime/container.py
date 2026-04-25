@@ -10,8 +10,6 @@ from src.app_runtime.mode_policy import (
     RuntimeModeAutoTransitionPolicy,
     RuntimeModeTransitionGuard,
 )
-from src.backtesting.paper_trading.bridge import PaperTradingBridge
-from src.backtesting.paper_trading.tracker import PaperTradeTracker
 from src.calendar import EconomicCalendarService
 from src.config.runtime_identity import RuntimeIdentity
 from src.indicators.manager import UnifiedIndicatorManager
@@ -101,9 +99,6 @@ class AppContainer:
         "runtime_mode_auto_policy",
         "runtime_mode_controller",
         "account_risk_state_projector",
-        # Paper Trading
-        "paper_trading_bridge",
-        "paper_trade_tracker",
         # Notifications
         "notification_module",
         # Studio
@@ -161,9 +156,6 @@ class AppContainer:
         self.runtime_mode_auto_policy: Optional[RuntimeModeAutoTransitionPolicy] = None
         self.runtime_mode_controller: Optional[RuntimeModeController] = None
         self.account_risk_state_projector: Optional[Any] = None
-
-        self.paper_trading_bridge: Optional[PaperTradingBridge] = None
-        self.paper_trade_tracker: Optional[PaperTradeTracker] = None
 
         self.notification_module: Optional[NotificationModule] = None
 

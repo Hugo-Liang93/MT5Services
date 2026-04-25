@@ -1,4 +1,4 @@
-"""实验追踪仓储：跨 Research/Backtest/PaperTrading 的实验生命周期记录。"""
+"""实验追踪仓储：跨 Research/Backtest/DemoValidation 的实验生命周期记录（ADR-010）。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.persistence.schema.experiment import (
     ADVANCE_TO_BACKTEST_SQL,
-    ADVANCE_TO_PAPER_SQL,
+    ADVANCE_TO_DEMO_VALIDATION_SQL,
     DDL,
     FETCH_EXPERIMENT_SQL,
     INSERT_EXPERIMENT_SQL,
@@ -34,11 +34,10 @@ _COLUMNS = [
     "mining_run_id",
     "backtest_run_ids",
     "recommendation_id",
-    "paper_session_id",
     "backtest_sharpe",
     "backtest_win_rate",
-    "paper_sharpe",
-    "paper_win_rate",
+    "demo_validation_sharpe",
+    "demo_validation_win_rate",
     "validation_passed",
     "notes",
 ]
@@ -114,29 +113,28 @@ class ExperimentRepository:
         """记录回测关键指标快照。"""
         self._execute(RECORD_BACKTEST_METRICS_SQL, (sharpe, win_rate, experiment_id))
 
-    def advance_to_paper(
+    def advance_to_demo_validation(
         self,
         experiment_id: str,
-        paper_session_id: str,
         recommendation_id: Optional[str] = None,
     ) -> None:
-        """记录 Paper Trading 关联并推进状态。"""
+        """记录 demo validation 关联并推进状态（ADR-010 替代 advance_to_paper）。"""
         self._execute(
-            ADVANCE_TO_PAPER_SQL,
-            (paper_session_id, recommendation_id, experiment_id),
+            ADVANCE_TO_DEMO_VALIDATION_SQL,
+            (recommendation_id, experiment_id),
         )
 
     def record_validation(
         self,
         experiment_id: str,
-        paper_sharpe: float,
-        paper_win_rate: float,
+        demo_validation_sharpe: float,
+        demo_validation_win_rate: float,
         passed: bool,
     ) -> None:
-        """记录 Paper Trading 验证结果。"""
+        """记录 demo validation 验证结果（ADR-010）。"""
         self._execute(
             RECORD_VALIDATION_SQL,
-            (paper_sharpe, paper_win_rate, passed, experiment_id),
+            (demo_validation_sharpe, demo_validation_win_rate, passed, experiment_id),
         )
 
     def advance_to_live(self, experiment_id: str) -> None:

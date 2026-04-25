@@ -29,7 +29,6 @@ def build_runtime_read_models(container: AppContainer) -> None:
         exposure_closeout_controller=container.exposure_closeout_controller,
         runtime_mode_controller=container.runtime_mode_controller,
         runtime_identity=container.runtime_identity,
-        paper_trading_bridge=container.paper_trading_bridge,
         db_writer=(
             container.storage_writer.db
             if container.storage_writer is not None

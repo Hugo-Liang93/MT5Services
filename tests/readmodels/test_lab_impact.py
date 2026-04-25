@@ -1,3 +1,9 @@
+"""LabImpactReadModel 测试（ADR-010 后）。
+
+paper_sessions 字段已替换为 demo_validation_windows（按策略+时间窗聚合 demo trade_outcomes）。
+linked_paper_sessions 字段移除。
+"""
+
 from __future__ import annotations
 
 from threading import Lock
@@ -14,23 +20,16 @@ class _FakeBacktestStore:
         self.recommendation_lock = Lock()
 
 
-class _FakePaperTradingRepo:
-    def __init__(
-        self,
-        *,
-        sessions: list[dict[str, Any]] | None = None,
-        sessions_by_rec: dict[str, list[dict[str, Any]]] | None = None,
-    ) -> None:
-        self._sessions = sessions or []
-        self._sessions_by_rec = sessions_by_rec or {}
+class _FakeTradeOutcomeRepo:
+    """提供 fetch_demo_validation_windows 接口的最小 stub。"""
 
-    def fetch_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
-        return list(self._sessions[:limit])
+    def __init__(self, windows: list[dict[str, Any]] | None = None) -> None:
+        self._windows = windows or []
 
-    def fetch_sessions_by_recommendation(
-        self, recommendation_id: str, limit: int = 50
+    def fetch_demo_validation_windows(
+        self, *, window_start: Any, window_end: Any, limit: int = 50
     ) -> list[dict[str, Any]]:
-        return list(self._sessions_by_rec.get(recommendation_id, [])[:limit])
+        return list(self._windows[:limit])
 
 
 def test_lab_impact_returns_canonical_4_block_payload() -> None:
@@ -59,84 +58,69 @@ def test_lab_impact_returns_canonical_4_block_payload() -> None:
         "rationale": "high OOS Sharpe",
         "experiment_id": "exp_A",
     }
-    paper_repo = _FakePaperTradingRepo(
-        sessions=[
+    trade_outcome_repo = _FakeTradeOutcomeRepo(
+        windows=[
             {
-                "session_id": "sess_1",
-                "recommendation_id": "rec_1",
-                "source_backtest_run_id": "run_1",
-                "experiment_id": "exp_A",
-                "started_at": "2026-04-20T09:00:00+00:00",
-                "total_trades": 5,
-            },
-            {
-                "session_id": "sess_2",
-                "recommendation_id": None,
-                "source_backtest_run_id": None,
-                "experiment_id": "exp_B",
-                "started_at": "2026-04-19T10:00:00+00:00",
-                "total_trades": 2,
-            },
+                "strategy": "structured_trend_continuation",
+                "timeframe": "H1",
+                "window_start": "2026-04-18T00:00:00+00:00",
+                "window_end": "2026-04-25T00:00:00+00:00",
+                "total_trades": 8,
+                "win_rate": 0.625,
+                "total_pnl": 145.30,
+            }
         ],
-        sessions_by_rec={
-            "rec_1": [
-                {
-                    "session_id": "sess_1",
-                    "started_at": "2026-04-20T09:00:00+00:00",
-                    "stopped_at": None,
-                    "total_trades": 5,
-                    "total_pnl": 12.5,
-                    "sharpe_ratio": 1.9,
-                }
-            ]
-        },
     )
-    model = LabImpactReadModel(backtest_store=store, paper_trading_repo=paper_repo)
+    model = LabImpactReadModel(
+        backtest_store=store, trade_outcome_repo=trade_outcome_repo
+    )
 
     payload = model.build_impact()
 
-    # WF snapshots
     wf = payload["walk_forward_snapshots"]
     assert len(wf) == 1
     assert wf[0]["run_id"] == "run_1"
     assert wf[0]["phases"][0]["oos_sharpe"] == 1.8
 
-    # Recommendations with linked paper sessions
     recs = payload["recommendations"]
     assert len(recs) == 1
     assert recs[0]["rec_id"] == "rec_1"
-    assert len(recs[0]["linked_paper_sessions"]) == 1
-    assert recs[0]["linked_paper_sessions"][0]["session_id"] == "sess_1"
 
-    # Paper sessions
-    sessions = payload["paper_sessions"]
-    assert {s["session_id"] for s in sessions} == {"sess_1", "sess_2"}
+    windows = payload["demo_validation_windows"]
+    assert len(windows) == 1
+    assert windows[0]["strategy"] == "structured_trend_continuation"
+    assert windows[0]["total_trades"] == 8
 
-    # Experiment links
     links = {e["experiment_id"]: e for e in payload["experiment_links"]}
     assert "exp_A" in links
     assert "run_1" in links["exp_A"]["backtest_run_ids"]
     assert "rec_1" in links["exp_A"]["recommendation_ids"]
-    assert "sess_1" in links["exp_A"]["paper_session_ids"]
-    assert "exp_B" in links
-    assert "sess_2" in links["exp_B"]["paper_session_ids"]
 
-    # Freshness contract
     assert payload["freshness"]["source_kind"] == "native"
 
 
 def test_lab_impact_handles_empty_stores() -> None:
     model = LabImpactReadModel(
         backtest_store=_FakeBacktestStore(),
-        paper_trading_repo=_FakePaperTradingRepo(),
+        trade_outcome_repo=_FakeTradeOutcomeRepo(),
     )
 
     payload = model.build_impact()
 
     assert payload["walk_forward_snapshots"] == []
     assert payload["recommendations"] == []
-    assert payload["paper_sessions"] == []
+    assert payload["demo_validation_windows"] == []
     assert payload["experiment_links"] == []
+
+
+def test_lab_impact_handles_missing_trade_outcome_repo() -> None:
+    """trade_outcome_repo=None 时返回空数组，不应崩溃。"""
+    model = LabImpactReadModel(
+        backtest_store=_FakeBacktestStore(),
+        trade_outcome_repo=None,
+    )
+    payload = model.build_impact()
+    assert payload["demo_validation_windows"] == []
 
 
 class _FakeBacktestRepo:
@@ -149,7 +133,7 @@ class _FakeBacktestRepo:
 
 def test_lab_impact_reads_from_db_when_store_empty() -> None:
     """P0.1 修复：内存 store 空时，DB 回读 recommendations。"""
-    store = _FakeBacktestStore()  # 空
+    store = _FakeBacktestStore()
     db_rec = {
         "rec_id": "rec_db_1",
         "source_run_id": "run_db_1",
@@ -159,7 +143,7 @@ def test_lab_impact_reads_from_db_when_store_empty() -> None:
     }
     model = LabImpactReadModel(
         backtest_store=store,
-        paper_trading_repo=_FakePaperTradingRepo(),
+        trade_outcome_repo=_FakeTradeOutcomeRepo(),
         backtest_repo=_FakeBacktestRepo([db_rec]),
     )
 
@@ -181,12 +165,12 @@ def test_lab_impact_memory_store_overrides_db_on_same_rec_id() -> None:
     }
     db_rec = {
         "rec_id": "rec_1",
-        "status": "applied",  # DB 写入时 stale 了
+        "status": "applied",
         "created_at": "2026-04-20T09:00:00+00:00",
     }
     model = LabImpactReadModel(
         backtest_store=store,
-        paper_trading_repo=_FakePaperTradingRepo(),
+        trade_outcome_repo=_FakeTradeOutcomeRepo(),
         backtest_repo=_FakeBacktestRepo([db_rec]),
     )
 
@@ -194,7 +178,7 @@ def test_lab_impact_memory_store_overrides_db_on_same_rec_id() -> None:
 
     recs = payload["recommendations"]
     assert len(recs) == 1
-    assert recs[0]["status"] == "pending"  # 内存优先
+    assert recs[0]["status"] == "pending"
 
 
 def test_lab_impact_merges_store_and_db_by_created_at_desc() -> None:
@@ -218,7 +202,7 @@ def test_lab_impact_merges_store_and_db_by_created_at_desc() -> None:
     ]
     model = LabImpactReadModel(
         backtest_store=store,
-        paper_trading_repo=_FakePaperTradingRepo(),
+        trade_outcome_repo=_FakeTradeOutcomeRepo(),
         backtest_repo=_FakeBacktestRepo(db_recs),
     )
 
@@ -237,7 +221,7 @@ def test_lab_impact_respects_limits() -> None:
         }
     model = LabImpactReadModel(
         backtest_store=store,
-        paper_trading_repo=_FakePaperTradingRepo(),
+        trade_outcome_repo=_FakeTradeOutcomeRepo(),
     )
 
     payload = model.build_impact(wf_limit=2)

@@ -24,7 +24,6 @@ from src.api import (
     lab,
     market,
     monitoring,
-    paper_trading,
     research,
     signal,
     studio,
@@ -71,21 +70,6 @@ def _safe_component_snapshot(label: str, getter) -> dict:
     except Exception as exc:
         logger.debug("Health snapshot failed for %s", label, exc_info=True)
         return {"status": "error", "error": str(exc)}
-
-
-def _default_paper_trading_summary() -> dict:
-    return {
-        "kind": "validation_sidecar",
-        "configured": False,
-        "running": False,
-        "status": "disabled",
-        "session_id": None,
-        "signals_received": 0,
-        "signals_executed": 0,
-        "signals_rejected": 0,
-        "reject_reasons": {},
-        "active_symbols": [],
-    }
 
 
 def _default_mt5_session_summary() -> dict:
@@ -270,13 +254,7 @@ def health(
             lambda: deps.get_economic_calendar_service().stats(),
         ),
     }
-    validation_sidecars = {
-        "paper_trading": _safe_optional_snapshot(
-            runtime_read_model,
-            "paper_trading_summary",
-            fallback=_default_paper_trading_summary(),
-        ),
-    }
+    validation_sidecars: dict = {}
     market_mt5_session = None
     if isinstance(market_status, dict):
         session_payload = market_status.get("mt5_session")
@@ -331,7 +309,6 @@ v1.include_router(indicators.router)
 v1.include_router(signal.router)
 v1.include_router(backtest.router)
 v1.include_router(admin.router)
-v1.include_router(paper_trading.router)
 v1.include_router(experiment.router)
 v1.include_router(research.router)
 v1.include_router(studio.router)

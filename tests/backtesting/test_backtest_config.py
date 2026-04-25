@@ -166,25 +166,25 @@ class TestBacktestConfigFromFlat:
                 nonexistent_field=42,
             )
 
-    def test_include_paper_only_default_false(self) -> None:
-        """baseline 回测默认排除 paper_only 策略（ADR-009）。"""
+    def test_include_demo_validation_default_false(self) -> None:
+        """baseline 回测默认排除 demo_validation 策略（ADR-009 → ADR-010）。"""
         config = BacktestConfig(
             symbol="XAUUSD",
             timeframe="M5",
             start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
             end_time=datetime(2025, 2, 1, tzinfo=timezone.utc),
         )
-        assert config.include_paper_only is False
+        assert config.include_demo_validation is False
 
-    def test_include_paper_only_from_flat(self) -> None:
+    def test_include_demo_validation_from_flat(self) -> None:
         config = BacktestConfig.from_flat(
             symbol="XAUUSD",
             timeframe="M5",
             start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
             end_time=datetime(2025, 2, 1, tzinfo=timezone.utc),
-            include_paper_only=True,
+            include_demo_validation=True,
         )
-        assert config.include_paper_only is True
+        assert config.include_demo_validation is True
 
     def test_monte_carlo_default_disabled(self) -> None:
         """2026-04-23 综合审查：MC 默认关闭，省 P0 smoke 回测 20-30% 时长。

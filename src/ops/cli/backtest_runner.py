@@ -532,11 +532,11 @@ def main() -> None:
         help="Only run these registered strategies, comma-separated",
     )
     parser.add_argument(
-        "--include-paper-only",
+        "--include-demo-validation",
         action="store_true",
         help=(
-            "Include paper_only strategies in backtest (default excluded to match "
-            "live execution). Use for paper-shadow evaluation runs."
+            "Include demo_validation strategies in backtest (default excluded to match "
+            "live execution). Use for demo-shadow evaluation runs."
         ),
     )
     parser.add_argument(
@@ -580,8 +580,8 @@ def main() -> None:
         overrides["monte_carlo_enabled"] = True
     if args.simulation_mode is not None:
         overrides["simulation_mode"] = args.simulation_mode
-    if args.include_paper_only:
-        overrides["include_paper_only"] = True
+    if args.include_demo_validation:
+        overrides["include_demo_validation"] = True
 
     timeframes = [t.strip().upper() for t in args.tf.split(",")]
     strategy_names = (

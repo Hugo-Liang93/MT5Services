@@ -18,28 +18,28 @@ from src.signals.contracts import StrategyDeployment, StrategyDeploymentStatus
 from src.signals.models import SignalEvent
 from src.trading.execution.executor import ExecutorConfig, TradeExecutor
 from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
-from src.trading.execution.sizing import TradeParameters
 from src.trading.execution.intrabar_guard import IntrabarTradeGuard
 from src.trading.execution.pending_orders import inspect_pending_mt5_order
 from src.trading.execution.reasons import (
     REASON_AUTO_TRADE_DISABLED,
     REASON_DUPLICATE_SIGNAL_ID,
-    REASON_INTRABAR_SYNTHESIS_STALE,
-    REASON_INTRABAR_SYNTHESIS_UNAVAILABLE,
     REASON_INTRABAR_POSITION_ALREADY_VALIDATED,
     REASON_INTRABAR_POSITION_HOLD,
+    REASON_INTRABAR_SYNTHESIS_STALE,
+    REASON_INTRABAR_SYNTHESIS_UNAVAILABLE,
     REASON_INTRABAR_TRADING_DISABLED,
     REASON_LIMIT_REACHED,
     REASON_QUOTE_STALE,
-    REASON_TRADE_PARAMS_UNAVAILABLE,
-    REASON_STRATEGY_NOT_INTRABAR_ENABLED,
     REASON_STRATEGY_CANDIDATE_ONLY,
+    REASON_STRATEGY_DEMO_VALIDATION,
     REASON_STRATEGY_LOCKED_SESSION,
     REASON_STRATEGY_LOCKED_TIMEFRAME,
     REASON_STRATEGY_MAX_LIVE_POSITIONS,
-    REASON_STRATEGY_PAPER_ONLY,
+    REASON_STRATEGY_NOT_INTRABAR_ENABLED,
     REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
+    REASON_TRADE_PARAMS_UNAVAILABLE,
 )
+from src.trading.execution.sizing import TradeParameters
 
 
 def _fire(executor: TradeExecutor, event: SignalEvent) -> None:
@@ -58,7 +58,9 @@ def _find_last_event(received, event_type: str):
     for event in reversed(received):
         if event.type == event_type:
             return event
-    raise AssertionError(f"event {event_type!r} not found in {[item.type for item in received]}")
+    raise AssertionError(
+        f"event {event_type!r} not found in {[item.type for item in received]}"
+    )
 
 
 def _find_last_admission_with_reason(received, reason_code: str):
@@ -73,7 +75,9 @@ def _find_last_admission_with_reason(received, reason_code: str):
     )
 
 
-def _find_last_admission_with_reason_detail(received, reason_code: str, detail_key: str):
+def _find_last_admission_with_reason_detail(
+    received, reason_code: str, detail_key: str
+):
     for event in reversed(received):
         if event.type != PIPELINE_ADMISSION_REPORT_APPENDED:
             continue
@@ -154,11 +158,14 @@ class DummyPendingManager:
         return list(self._contexts)
 
     def status(self):
-        return {"active_count": len(self._contexts), "entries": list(self._contexts), "stats": {}}
+        return {
+            "active_count": len(self._contexts),
+            "entries": list(self._contexts),
+            "stats": {},
+        }
 
     def track_mt5_order(self, **kwargs):
         self.tracked_orders.append(kwargs)
-
 
 
 def _build_event(
@@ -248,7 +255,10 @@ def test_trade_executor_skips_when_spread_to_stop_ratio_is_too_high() -> None:
     _fire(executor, _build_event(spread_points=120.0, close_price=3000.0))
 
     assert module.calls == []
-    assert executor.status()["recent_executions"][-1]["reason"] == "spread_to_stop_ratio_too_high"
+    assert (
+        executor.status()["recent_executions"][-1]["reason"]
+        == "spread_to_stop_ratio_too_high"
+    )
 
 
 def test_trade_executor_records_cost_metrics_on_success() -> None:
@@ -333,13 +343,18 @@ def test_trade_executor_returns_structured_skip_when_auto_trade_is_disabled() ->
         execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
-    result = executor.process_event(_build_event(spread_points=20.0, close_price=3000.0))
+    result = executor.process_event(
+        _build_event(spread_points=20.0, close_price=3000.0)
+    )
 
     assert result is not None
     assert result["status"] == "skipped"
     assert result["reason"] == REASON_AUTO_TRADE_DISABLED
     assert executor.last_risk_block == REASON_AUTO_TRADE_DISABLED
-    assert executor.status()["recent_executions"][-1]["reason"] == REASON_AUTO_TRADE_DISABLED
+    assert (
+        executor.status()["recent_executions"][-1]["reason"]
+        == REASON_AUTO_TRADE_DISABLED
+    )
     assert module.calls == []
 
 
@@ -353,18 +368,20 @@ def test_trade_executor_returns_pre_trade_reason_for_confirmed_skip() -> None:
             strategy_deployments={
                 "sma_trend": StrategyDeployment(
                     name="sma_trend",
-                    status=StrategyDeploymentStatus.PAPER_ONLY,
+                    status=StrategyDeploymentStatus.DEMO_VALIDATION,
                 )
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
-    result = executor.process_event(_build_event(spread_points=20.0, close_price=3000.0))
+    result = executor.process_event(
+        _build_event(spread_points=20.0, close_price=3000.0)
+    )
 
     assert result is not None
     assert result["status"] == "skipped"
-    assert result["reason"] == REASON_STRATEGY_PAPER_ONLY
+    assert result["reason"] == REASON_STRATEGY_DEMO_VALIDATION
     assert module.calls == []
 
 
@@ -381,7 +398,9 @@ def test_trade_executor_duplicate_signal_id_uses_unified_reject_contract() -> No
     )
     executor.executed_signal_ids.append("sig_1")
 
-    result = executor.process_event(_build_event(spread_points=20.0, close_price=3000.0))
+    result = executor.process_event(
+        _build_event(spread_points=20.0, close_price=3000.0)
+    )
 
     assert result is not None
     assert result["status"] == "skipped"
@@ -428,7 +447,9 @@ def test_trade_executor_returns_cost_reason_for_confirmed_skip() -> None:
         execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
-    result = executor.process_event(_build_event(spread_points=120.0, close_price=3000.0))
+    result = executor.process_event(
+        _build_event(spread_points=120.0, close_price=3000.0)
+    )
 
     assert result is not None
     assert result["status"] == "skipped"
@@ -459,7 +480,9 @@ def test_trade_executor_returns_failed_result_when_market_dispatch_raises() -> N
         pipeline_event_bus=pipeline_bus,
     )
 
-    result = executor.process_event(_build_event(spread_points=20.0, close_price=3000.0))
+    result = executor.process_event(
+        _build_event(spread_points=20.0, close_price=3000.0)
+    )
 
     assert result is not None
     assert result["status"] == "failed"
@@ -486,7 +509,9 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
         execution_gate=ExecutionGate(ExecutionGateConfig()),
     )
 
-    _fire(executor, _build_event(
+    _fire(
+        executor,
+        _build_event(
             spread_points=30.0,
             close_price=3000.0,
             market_structure={
@@ -494,7 +519,7 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
                 "sweep_confirmation_state": "bullish_sweep_confirmed_previous_day_low",
                 "structure_bias": "bullish_sweep_confirmed",
             },
-        )
+        ),
     )
 
     assert module.calls
@@ -639,9 +664,10 @@ def test_trade_executor_blocks_intrabar_when_synthesis_metadata_is_missing() -> 
         "intrabar_synthesis",
     )
     assert blocked.payload["reason"] == REASON_INTRABAR_SYNTHESIS_UNAVAILABLE
-    assert sum(
-        1 for event in received if event.type == PIPELINE_ADMISSION_REPORT_APPENDED
-    ) == 1
+    assert (
+        sum(1 for event in received if event.type == PIPELINE_ADMISSION_REPORT_APPENDED)
+        == 1
+    )
     assert admission.payload["reasons"][0]["code"] == (
         REASON_INTRABAR_SYNTHESIS_UNAVAILABLE
     )
@@ -692,18 +718,19 @@ def test_trade_executor_blocks_intrabar_when_synthesis_is_stale() -> None:
         "intrabar_synthesis",
     )
     assert blocked.payload["reason"] == REASON_INTRABAR_SYNTHESIS_STALE
-    assert sum(
-        1 for event in received if event.type == PIPELINE_ADMISSION_REPORT_APPENDED
-    ) == 1
-    assert admission.payload["reasons"][0]["code"] == (
-        REASON_INTRABAR_SYNTHESIS_STALE
+    assert (
+        sum(1 for event in received if event.type == PIPELINE_ADMISSION_REPORT_APPENDED)
+        == 1
     )
+    assert admission.payload["reasons"][0]["code"] == (REASON_INTRABAR_SYNTHESIS_STALE)
     details = details["intrabar_synthesis"]
     assert details["trigger_tf"] == "M1"
     assert details["stale"] is True
 
 
-def test_trade_executor_process_event_returns_structured_skip_when_intrabar_is_blocked() -> None:
+def test_trade_executor_process_event_returns_structured_skip_when_intrabar_is_blocked() -> (
+    None
+):
     module = DummyTradingModule()
     executor = TradeExecutor(
         trading_module=module,
@@ -727,7 +754,9 @@ def test_trade_executor_process_event_returns_structured_skip_when_intrabar_is_b
     assert module.calls == []
 
 
-def test_trade_executor_returns_structured_skip_when_intrabar_auto_trade_is_disabled() -> None:
+def test_trade_executor_returns_structured_skip_when_intrabar_auto_trade_is_disabled() -> (
+    None
+):
     module = DummyTradingModule()
     executor = TradeExecutor(
         trading_module=module,
@@ -788,12 +817,16 @@ def test_trade_executor_returns_trade_params_reason_for_intrabar_skip() -> None:
     assert result is not None
     assert result["status"] == "skipped"
     assert result["reason"] == REASON_TRADE_PARAMS_UNAVAILABLE
-    admission = _find_last_admission_with_reason(received, REASON_TRADE_PARAMS_UNAVAILABLE)
+    admission = _find_last_admission_with_reason(
+        received, REASON_TRADE_PARAMS_UNAVAILABLE
+    )
     assert admission.payload["requested_operation"] == "intrabar_execution"
     assert module.calls == []
 
 
-def test_trade_executor_returns_structured_skip_when_intrabar_position_is_already_validated() -> None:
+def test_trade_executor_returns_structured_skip_when_intrabar_position_is_already_validated() -> (
+    None
+):
     module = DummyTradingModule()
     guard = IntrabarTradeGuard()
     parent_bar_time = datetime.now(timezone.utc)
@@ -820,7 +853,9 @@ def test_trade_executor_returns_structured_skip_when_intrabar_position_is_alread
     assert module.calls == []
 
 
-def test_trade_executor_returns_structured_skip_when_confirmed_hold_keeps_intrabar_position() -> None:
+def test_trade_executor_returns_structured_skip_when_confirmed_hold_keeps_intrabar_position() -> (
+    None
+):
     module = DummyTradingModule()
     guard = IntrabarTradeGuard()
     parent_bar_time = datetime.now(timezone.utc)
@@ -880,7 +915,9 @@ def test_trade_executor_skips_when_same_strategy_direction_position_is_active() 
     )
 
 
-def test_trade_executor_allows_reentry_after_same_strategy_direction_position_is_closed() -> None:
+def test_trade_executor_allows_reentry_after_same_strategy_direction_position_is_closed() -> (
+    None
+):
     module = DummyTradingModule()
     tracked_positions = [
         {
@@ -917,7 +954,9 @@ def test_trade_executor_allows_reentry_after_same_strategy_direction_position_is
     assert module.calls[0][1]["request_id"] == "sig_2"
 
 
-def test_trade_executor_skips_when_same_strategy_direction_mt5_pending_order_exists() -> None:
+def test_trade_executor_skips_when_same_strategy_direction_mt5_pending_order_exists() -> (
+    None
+):
     module = DummyTradingModule()
     executor = TradeExecutor(
         trading_module=module,
@@ -972,7 +1011,7 @@ def test_trade_executor_blocks_candidate_strategy_live_execution() -> None:
     )
 
 
-def test_trade_executor_blocks_paper_only_strategy_live_execution() -> None:
+def test_trade_executor_blocks_demo_validation_strategy_live_execution() -> None:
     module = DummyTradingModule()
     executor = TradeExecutor(
         trading_module=module,
@@ -982,7 +1021,7 @@ def test_trade_executor_blocks_paper_only_strategy_live_execution() -> None:
             strategy_deployments={
                 "sma_trend": StrategyDeployment(
                     name="sma_trend",
-                    status=StrategyDeploymentStatus.PAPER_ONLY,
+                    status=StrategyDeploymentStatus.DEMO_VALIDATION,
                 )
             },
         ),
@@ -993,7 +1032,7 @@ def test_trade_executor_blocks_paper_only_strategy_live_execution() -> None:
 
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == (
-        REASON_STRATEGY_PAPER_ONLY
+        REASON_STRATEGY_DEMO_VALIDATION
     )
 
 
@@ -1312,7 +1351,7 @@ def test_trade_executor_registers_filled_pending_mt5_order_immediately() -> None
                 sl_distance=4.0,
                 tp_distance=8.0,
             ),
-        }
+        },
     )
 
     assert result["status"] == "filled"
@@ -1324,7 +1363,9 @@ def test_trade_executor_registers_filled_pending_mt5_order_immediately() -> None
     assert outcome_tracker.opened[0]["fill_price"] == pytest.approx(2999.5)
 
 
-def test_trade_executor_matches_filled_pending_order_by_strategy_prefix_when_comment_differs() -> None:
+def test_trade_executor_matches_filled_pending_order_by_strategy_prefix_when_comment_differs() -> (
+    None
+):
     module = DummyTradingModule()
     module.live_positions = [
         {
@@ -1373,7 +1414,7 @@ def test_trade_executor_matches_filled_pending_order_by_strategy_prefix_when_com
                 sl_distance=77.41,
                 tp_distance=69.96,
             ),
-        }
+        },
     )
 
     assert result["status"] == "filled"
@@ -1430,6 +1471,7 @@ def test_trade_executor_circuit_breaker_auto_resets() -> None:
     executor._consecutive_failures = 3
     # 设置为 15 分钟前开路
     from datetime import timedelta
+
     executor._circuit_open_at = datetime.now(timezone.utc) - timedelta(minutes=15)
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -1462,6 +1504,7 @@ def test_trade_executor_uses_live_positions_when_tracking_state_is_stale() -> No
 
 
 # ── ExecutionGate 单元测试 ─────────────────────────────────────────────────
+
 
 def test_execution_gate_allows_confirmed_signal() -> None:
     gate = ExecutionGate(ExecutionGateConfig())

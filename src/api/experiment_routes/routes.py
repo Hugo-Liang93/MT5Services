@@ -120,13 +120,15 @@ def get_experiment_timeline(experiment_id: str) -> ApiResponse:
                 "rec_id": exp["recommendation_id"],
             }
         )
-    if exp.get("paper_session_id"):
+    if (
+        exp.get("status") == "demo_validation"
+        or exp.get("demo_validation_sharpe") is not None
+    ):
         phases.append(
             {
-                "phase": "paper_trading",
-                "session_id": exp["paper_session_id"],
-                "sharpe": exp.get("paper_sharpe"),
-                "win_rate": exp.get("paper_win_rate"),
+                "phase": "demo_validation",
+                "sharpe": exp.get("demo_validation_sharpe"),
+                "win_rate": exp.get("demo_validation_win_rate"),
                 "validation_passed": exp.get("validation_passed"),
             }
         )

@@ -16,7 +16,6 @@ from src.app_runtime.builder_phases import (
     build_market_layer,
     build_monitoring_layer,
     build_notifications_layer,
-    build_paper_trading_layer,
     build_runtime_controls,
     build_runtime_read_models,
     build_signal_layer,
@@ -150,7 +149,6 @@ def build_app_container(
             signal_config_loader=signal_config_loader,
             signal_config=signal_config,
         )
-        build_paper_trading_layer(container)
 
     # Runtime control plane
     build_runtime_controls(

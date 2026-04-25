@@ -71,7 +71,7 @@ class _StorageWriter(_StartStopComponent):
             write_account_risk_states=lambda rows: None,
             signal_repo=SimpleNamespace(
                 fetch_recent_trade_outcomes=lambda **kwargs: [],
-            )
+            ),
         )
 
 
@@ -100,7 +100,6 @@ def test_executor_runtime_registry_does_not_start_shared_compute_stack() -> None
     container.execution_intent_consumer = _StartStopComponent()
     container.pending_entry_manager = _PendingEntryManager()
     container.position_manager = _PositionManager()
-    container.paper_trading_bridge = None
     container.account_risk_state_projector = _StartStopComponent()
     container.trading_state_recovery = None
     container.trade_module = None
@@ -187,7 +186,6 @@ def test_build_runtime_controls_registers_and_starts_account_risk_projection() -
     container.execution_intent_consumer = _StartStopComponent()
     container.pending_entry_manager = _PendingEntryManagerStatus()
     container.position_manager = _PositionManagerStatus()
-    container.paper_trading_bridge = None
     container.trading_state_recovery = None
     container.market_service = None
 

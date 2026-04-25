@@ -326,28 +326,6 @@ def build_runtime_component_registry(
                     exc_info=True,
                 )
 
-    def _start_paper_trading(c: AppContainer) -> None:
-        bridge = c.paper_trading_bridge
-        tracker = c.paper_trade_tracker
-        if bridge is None:
-            return
-        # 顺序关键：先 bridge.start() 创建 session，再 tracker.start() 触发
-        # 立即 flush 把初始 session 写 DB，避免 30s flush 窗口内崩溃丢失起始记录。
-        # bridge 构造时已注入 on_trade_opened/closed 回调，tracker 未启动前产生的 trade
-        # 会先入 tracker 内部 pending 队列，等 tracker.start() 后由 flush loop 刷出。
-        bridge.start()
-        if tracker is not None:
-            tracker.start()
-
-    def _stop_paper_trading(c: AppContainer) -> None:
-        bridge = c.paper_trading_bridge
-        tracker = c.paper_trade_tracker
-        if bridge is not None:
-            bridge.stop()
-            if tracker is not None and bridge.session is not None:
-                tracker.save_session(bridge.session)
-                tracker.stop()
-
     return RuntimeComponentRegistry(
         [
             FunctionalRuntimeComponent(
@@ -492,20 +470,6 @@ def build_runtime_component_registry(
                 is_running_fn=lambda: bool(
                     container.position_manager is not None
                     and container.position_manager.is_running()
-                ),
-            ),
-            FunctionalRuntimeComponent(
-                name="paper_trading",
-                supported_modes=(
-                    frozenset({RuntimeMode.FULL.value, RuntimeMode.OBSERVE.value})
-                    if container.paper_trading_bridge is not None
-                    else frozenset()
-                ),
-                start_fn=lambda: _start_paper_trading(container),
-                stop_fn=lambda: _stop_paper_trading(container),
-                is_running_fn=lambda: bool(
-                    container.paper_trading_bridge is not None
-                    and container.paper_trading_bridge.is_running()
                 ),
             ),
             FunctionalRuntimeComponent(

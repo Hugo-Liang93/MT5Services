@@ -140,7 +140,9 @@ class IndicatorBarrierPredictiveResult:
     n_samples: int
     pearson_r: float
     spearman_rho: float
-    information_coefficient: float  # = spearman_rho，保持与 IndicatorPredictiveResult 同名
+    information_coefficient: (
+        float  # = spearman_rho，保持与 IndicatorPredictiveResult 同名
+    )
     p_value: float
     permutation_p_value: Optional[float]
     is_significant: bool
@@ -326,7 +328,7 @@ class RobustnessTier(str, Enum):
 class PromotionDecision(str, Enum):
     REJECT = "reject"
     REFIT = "refit"
-    PAPER_ONLY = "paper_only"
+    DEMO_VALIDATION = "demo_validation"
     ACTIVE_GUARDED = "active_guarded"
     ACTIVE = "active"
 

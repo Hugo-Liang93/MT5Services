@@ -16,7 +16,6 @@ from src.app_runtime.builder import build_app_container
 from src.app_runtime.container import AppContainer
 from src.app_runtime.mode_controller import RuntimeModeController
 from src.app_runtime.runtime import AppRuntime
-from src.backtesting.paper_trading.bridge import PaperTradingBridge
 from src.calendar import EconomicCalendarService
 from src.config import get_signal_config
 from src.indicators.manager import UnifiedIndicatorManager
@@ -565,22 +564,22 @@ def get_lab_impact_read_model() -> LabImpactReadModel:
     """P10.5: Lab Impact 贯通读模型（每请求构造）。
 
     - backtest_runtime_store 为模块级全局单例（WF / recommendations 内存缓存）
-    - paper_trading_repo 走 storage_writer.db
     - backtest_repo 走 api.backtest_routes.execution.get_backtest_repo()（现有工厂，
       模块级缓存的 BacktestRepository 实例，专用连接池，ensure_schema 已执行）
+    - trade_outcome_repo 走 storage_writer.db（demo_validation_windows 数据源，ADR-010）
     """
     from src.api.backtest_routes.execution import get_backtest_repo
     from src.backtesting.data import backtest_runtime_store
 
     _ensure_initialized()
     assert _container is not None
-    paper_trading_repo = None
+    trade_outcome_repo = None
     if _container.storage_writer is not None:
         db = _container.storage_writer.db
-        paper_trading_repo = getattr(db, "paper_trading_repo", None)
+        trade_outcome_repo = getattr(db, "trade_repo", None)
     return LabImpactReadModel(
         backtest_store=backtest_runtime_store,
-        paper_trading_repo=paper_trading_repo,
+        trade_outcome_repo=trade_outcome_repo,
         backtest_repo=get_backtest_repo(),
     )
 
@@ -624,9 +623,3 @@ def get_studio_service() -> StudioService:
     _ensure_initialized()
     assert _container is not None and _container.studio_service is not None
     return _container.studio_service
-
-
-def get_paper_trading_bridge() -> Optional[PaperTradingBridge]:
-    _ensure_initialized()
-    assert _container is not None
-    return _container.paper_trading_bridge

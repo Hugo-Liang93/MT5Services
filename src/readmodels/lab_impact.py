@@ -1,40 +1,40 @@
-"""Lab Impact 读模型（P10.5）。
+"""Lab Impact 读模型（P10.5 / ADR-010）。
 
-替代 QuantX `Lab` 工作台当前对 `/v1/backtest/walk-forward + /v1/backtest/recommendations
-+ /v1/paper-trading/sessions` 的多路拼接，单端点 `/v1/lab/impact` 返回：
+替代 QuantX `Lab` 工作台的 walk-forward + recommendations + demo validation 多路拼接，
+单端点 `/v1/lab/impact` 返回：
 - walk_forward_snapshots：最近 WF 结果（含分阶段指标）
-- recommendations：含 lifecycle + linked paper sessions
-- paper_sessions：含 recommendation_id / source_backtest_run_id / experiment_id
+- recommendations：含 lifecycle + linked demo validation windows
+- demo_validation_windows：按 (strategy, time_window) 聚合 db.demo.trade_outcomes
 - experiment_links：按 experiment_id 聚合研究链路（贯通跳转）
 
-数据源：
+数据源（ADR-010 后）：
 - walk_forward_results / recommendations 从 BacktestRuntimeStore 内存读取
-- paper_sessions 从 TimescaleDB `paper_trading_sessions` 表（P10.5 迁移已加 3 列）
+- demo_validation_windows 从 db.demo.trade_outcomes 聚合（替代旧 paper_trading_sessions）
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Iterable, Optional, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional, Sequence
 
 
 class LabImpactReadModel:
-    """Lab Impact 聚合读模型（P10.5）。"""
+    """Lab Impact 聚合读模型（P10.5 / ADR-010）。"""
 
     DEFAULT_WF_LIMIT: int = 10
     DEFAULT_RECOMMENDATION_LIMIT: int = 20
-    DEFAULT_PAPER_SESSION_LIMIT: int = 20
+    DEFAULT_DEMO_VALIDATION_WINDOW_LIMIT: int = 20
 
     def __init__(
         self,
         *,
         backtest_store: Any,
-        paper_trading_repo: Any,
+        trade_outcome_repo: Any = None,
         backtest_repo: Any = None,
     ) -> None:
         self._backtest_store = backtest_store
-        self._paper_trading_repo = paper_trading_repo
-        # P10.5 修复：backtest_repo 为 DB 持久化 fallback，内存 store 重启后走 DB 回读
+        # ADR-010: paper_trading_repo 删除，改用 trade_outcome_repo 聚合 demo trade_outcomes
+        self._trade_outcome_repo = trade_outcome_repo
         self._backtest_repo = backtest_repo
 
     def build_impact(
@@ -42,26 +42,24 @@ class LabImpactReadModel:
         *,
         wf_limit: int = DEFAULT_WF_LIMIT,
         recommendation_limit: int = DEFAULT_RECOMMENDATION_LIMIT,
-        paper_session_limit: int = DEFAULT_PAPER_SESSION_LIMIT,
+        demo_validation_window_limit: int = DEFAULT_DEMO_VALIDATION_WINDOW_LIMIT,
     ) -> dict[str, Any]:
         observed_at = datetime.now(timezone.utc).isoformat()
 
         wf_snapshots = self._collect_walk_forwards(wf_limit)
-        recommendations = self._collect_recommendations(
-            recommendation_limit,
-            paper_trading_repo=self._paper_trading_repo,
+        recommendations = self._collect_recommendations(recommendation_limit)
+        demo_validation_windows = self._collect_demo_validation_windows(
+            demo_validation_window_limit
         )
-        paper_sessions = self._collect_paper_sessions(paper_session_limit)
         experiment_links = self._build_experiment_links(
             wf_snapshots=wf_snapshots,
             recommendations=recommendations,
-            paper_sessions=paper_sessions,
         )
         return {
             "observed_at": observed_at,
             "walk_forward_snapshots": wf_snapshots,
             "recommendations": recommendations,
-            "paper_sessions": paper_sessions,
+            "demo_validation_windows": demo_validation_windows,
             "experiment_links": experiment_links,
             "freshness": {
                 "observed_at": observed_at,
@@ -81,7 +79,6 @@ class LabImpactReadModel:
         snapshots: list[dict[str, Any]] = []
         for run_id, result in items[-limit:]:
             snapshots.append(self._serialize_walk_forward(run_id, result))
-        # 最新的排前面
         snapshots.reverse()
         return snapshots
 
@@ -127,20 +124,14 @@ class LabImpactReadModel:
         }
 
     # ────────────── Recommendations ──────────────
-    def _collect_recommendations(
-        self,
-        limit: int,
-        *,
-        paper_trading_repo: Any,
-    ) -> list[dict[str, Any]]:
+    def _collect_recommendations(self, limit: int) -> list[dict[str, Any]]:
         """合并内存 store + DB 回读，按 rec_id 去重，created_at 倒序。
 
-        修复（P10.5 回溯）：内存 store 重启丢数据；DB 的 `backtest_recommendations`
-        表才是权威事实源。内存保留是为最近写入的快速访问（无 DB roundtrip）。
+        ADR-010 后：linked_paper_sessions 字段移除（paper trading 已废弃），
+        QuantX Lab 前端需改读顶层 demo_validation_windows 字段。
         """
         collected: dict[str, dict[str, Any]] = {}
 
-        # 1) 内存 store 先扫（快）
         store = self._backtest_store
         if store is not None:
             with getattr(store, "recommendation_lock", _noop_lock()):
@@ -150,7 +141,6 @@ class LabImpactReadModel:
                 if payload:
                     collected[str(payload.get("rec_id") or rec_id)] = payload
 
-        # 2) DB 回读补充（重启后兜底）
         if self._backtest_repo is not None:
             try:
                 db_recs = self._backtest_repo.fetch_recommendations(limit=limit)
@@ -164,30 +154,11 @@ class LabImpactReadModel:
                 if rec_id and rec_id not in collected:
                     collected[rec_id] = payload
 
-        # 3) 按 created_at DESC 截断到 limit（string / datetime 兼容）
         ordered = sorted(
             collected.values(),
             key=lambda p: str(p.get("created_at") or ""),
             reverse=True,
         )[:limit]
-
-        # 4) 补 linked_paper_sessions
-        for payload in ordered:
-            rec_id = str(payload.get("rec_id") or "")
-            linked_sessions = self._safe_fetch_sessions_by_rec(
-                paper_trading_repo, rec_id
-            )
-            payload["linked_paper_sessions"] = [
-                {
-                    "session_id": s.get("session_id"),
-                    "started_at": s.get("started_at"),
-                    "stopped_at": s.get("stopped_at"),
-                    "total_trades": s.get("total_trades"),
-                    "total_pnl": s.get("total_pnl"),
-                    "sharpe_ratio": s.get("sharpe_ratio"),
-                }
-                for s in linked_sessions
-            ]
         return ordered
 
     @staticmethod
@@ -206,27 +177,33 @@ class LabImpactReadModel:
             payload.setdefault("rec_id", rec_id)
         return payload
 
-    @staticmethod
-    def _safe_fetch_sessions_by_rec(
-        paper_trading_repo: Any,
-        rec_id: str,
-    ) -> list[dict[str, Any]]:
-        if paper_trading_repo is None:
-            return []
-        try:
-            return list(
-                paper_trading_repo.fetch_sessions_by_recommendation(rec_id) or []
-            )
-        except Exception:
-            return []
+    # ────────────── Demo Validation Windows ──────────────
+    def _collect_demo_validation_windows(self, limit: int) -> list[dict[str, Any]]:
+        """从 demo trade_outcomes 按 (strategy, timeframe, time_window) 聚合（ADR-010）。
 
-    # ────────────── Paper Sessions ──────────────
-    def _collect_paper_sessions(self, limit: int) -> list[dict[str, Any]]:
-        repo = self._paper_trading_repo
+        当前实现：返回最近 N 个 strategy×timeframe 窗口（按 7 天滚动），
+        每窗口包含 trades 数 / win_rate / total_pnl / avg_slippage 摘要。
+        当 trade_outcome_repo 不可用时返回空列表（前端需处理空数据）。
+        """
+        repo = self._trade_outcome_repo
         if repo is None:
             return []
+        # repo.fetch_recent_windows() 还未实现——预留接口以待 Phase 6+ 跨域整合时补齐
+        # 目前返回空数组，前端 lab 页可显示"暂无 demo validation 数据"
+        fetcher = getattr(repo, "fetch_demo_validation_windows", None)
+        if fetcher is None:
+            return []
         try:
-            return list(repo.fetch_sessions(limit=limit) or [])
+            window_end = datetime.now(timezone.utc)
+            window_start = window_end - timedelta(days=7)
+            return list(
+                fetcher(
+                    window_start=window_start,
+                    window_end=window_end,
+                    limit=limit,
+                )
+                or []
+            )
         except Exception:
             return []
 
@@ -236,7 +213,6 @@ class LabImpactReadModel:
         *,
         wf_snapshots: Sequence[dict[str, Any]],
         recommendations: Sequence[dict[str, Any]],
-        paper_sessions: Sequence[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         experiment_map: dict[str, dict[str, Any]] = {}
 
@@ -249,7 +225,6 @@ class LabImpactReadModel:
                     "walk_forward_run_ids": [],
                     "recommendation_ids": [],
                     "backtest_run_ids": [],
-                    "paper_session_ids": [],
                 },
             )
 
@@ -267,17 +242,6 @@ class LabImpactReadModel:
             source_run = rec.get("source_run_id")
             if source_run and source_run not in bucket["backtest_run_ids"]:
                 bucket["backtest_run_ids"].append(source_run)
-        for session in paper_sessions:
-            bucket = _bucket(session.get("experiment_id"))
-            sid = session.get("session_id")
-            if sid and sid not in bucket["paper_session_ids"]:
-                bucket["paper_session_ids"].append(sid)
-            rec_id = session.get("recommendation_id")
-            if rec_id and rec_id not in bucket["recommendation_ids"]:
-                bucket["recommendation_ids"].append(rec_id)
-            source_run = session.get("source_backtest_run_id")
-            if source_run and source_run not in bucket["backtest_run_ids"]:
-                bucket["backtest_run_ids"].append(source_run)
         return [
             {
                 **bucket,
@@ -285,7 +249,6 @@ class LabImpactReadModel:
                     "walk_forward": len(bucket["walk_forward_run_ids"]),
                     "recommendations": len(bucket["recommendation_ids"]),
                     "backtest_runs": len(bucket["backtest_run_ids"]),
-                    "paper_sessions": len(bucket["paper_session_ids"]),
                 },
             }
             for bucket in experiment_map.values()

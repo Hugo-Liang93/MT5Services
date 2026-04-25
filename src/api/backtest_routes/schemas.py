@@ -148,7 +148,7 @@ class BacktestRequestBase(BaseModel):
     min_preview_stable_bars: Optional[int] = None
     max_signal_evaluations: Optional[int] = None
 
-    # 实验追踪 ID（跨 Research/Backtest/PaperTrading 关联）
+    # 实验追踪 ID（跨 Research/Backtest/DemoValidation 关联）
     experiment_id: Optional[str] = None
 
 

@@ -280,7 +280,7 @@ Backtesting 起点 = 该 spec + 参数网格
 
 ## ADR-009: BacktestEngine 默认只评估 live 能执行的策略
 
-**状态**：已确定（2026-04-22）
+**状态**：已确定（2026-04-22） · **部分被 ADR-010 覆盖（2026-04-25）**——`PAPER_ONLY` 状态名 / `include_paper_only` flag 已统一改名为 `DEMO_VALIDATION` / `include_demo_validation`，决策本体（"baseline 默认仅评估 live 能执行的策略"）保留有效。
 
 **上下文**：2026-04-20 的 M30 baseline 审查（原快照 `docs/research/2026-04-20-tf-baseline-review.md` 已于 2026-04-23 全面重置时删除）发现严重污染：M30 原始回测显示 1,463 trades / PnL $1.38M / Calmar 118，但 **剔除 `structured_price_action` 后只剩 206 trades / PF 1.019**——几乎 break-even。
 
@@ -312,6 +312,66 @@ Backtesting 起点 = 该 spec + 参数网格
 - 其他回测 CLI（`aggression_search` / `exit_experiment` / `walkforward_runner` / `nightly_wf` / `correlation_runner` / API routes）**当前默认继承 strict baseline 语义**——符合"默认安全"原则。需要 paper-shadow 语义的 CLI 可按需追加 `--include-paper-only` 透传。
 - 如果未来 `StrategyDeployment.status` 扩展到超过 4 态（例如增加 `SHADOW` / `DEPRECATED`），可能需要把二元 flag 升级成枚举 mode。届时复审此决策。
 - 本 ADR 不解决 `[account_bindings.*]` 层面的绑定一致性（账户未绑定但 status=active 的策略仍会被回测评估）——那是拓扑层面的独立问题，不应由回测域承担。
+
+---
+
+## ADR-010: Paper Trading 模块删除 + Demo 重定位为组合演练账户
+
+**状态**：已确定（2026-04-25）
+
+**上下文**：
+
+ADR-009 之前的事实快照：
+1. `paper_trading` 模块（43 文件 / 236 处引用）作为"信号无摩擦影子交易"在所有 main 实例（live-main + demo-main）自动装配，**绕开 11 层风控堆栈**。它给出的 PnL 是"完美执行下的最优结果"，与生产实盘表现系统性脱节。
+2. `demo-main` 实例与 `live-main` 跑**完全相同**的策略集（catalog.py 硬编码 14 条 + signal.ini 全局共享，无 instance/environment-aware 过滤），仅 broker server 不同 → demo 没有差异化职责。
+3. 当前 13 条策略**全部** `paper_only`/`candidate`，意味着 live 实例根本没有真实下单（pre_trade_checks 全拒）。所谓"实盘"只是 paper bridge 的影子记录。
+
+存在两套互相重复的验证机制（paper + demo），且：
+- paper 系统性误导（无摩擦评估 ≠ 实盘表现）
+- demo 闲置（与 live 镜像，无评估价值）
+- P9 bug #3 已暴露 paper bypass execution_intent 引发 admission writeback 失配
+
+**决策**：
+
+1. **删除 paper_trading 模块**（43 文件 / 236 处）：bridge / portfolio / tracker / config / schema / repo / API routes / readmodel 字段 / studio agent / 装配胶水。所有"无摩擦影子交易"语义彻底从 codebase 移除。
+2. **demo-main 重定位为"组合演练账户"**：
+   - 装配集合：`demo = ACTIVE ∪ ACTIVE_GUARDED ∪ DEMO_VALIDATION`
+   - 装配集合：`live = ACTIVE ∪ ACTIVE_GUARDED`
+   - demo 永远是 live 的**超集**，多出来的就是 DEMO_VALIDATION 候选
+   - 评估方法：候选加入 demo 后，对比 demo 内 ACTIVE 表现 vs live 同一组 ACTIVE 表现 → 观察"组合扰动"
+3. **状态机重命名**：`PAPER_ONLY` → `DEMO_VALIDATION`，语义改为"在 demo 实例真实下单验证"（broker demo server，不动真钱但走完整 11 层风控）。涉及 30 处（代码 19 + 配置 11）。
+4. **装配层注入 environment-aware 过滤**：`build_signal_components()` 在创建 SignalModule 前按 `runtime_identity.environment` + `deployment.status` 过滤策略集合。注入点：`src/app_runtime/factories/signals.py` 的 `_filter_strategies_for_environment()` helper。
+5. **新写 `demo_vs_backtest` CLI**：跨 db.live + db.demo 三层切片对账（信号生成密度 / 风控通过率 / 实际成交 vs 回测预期）。替代被删的 `paper_vs_backtest`。
+6. **新策略上线路径**：`CANDIDATE → DEMO_VALIDATION（demo 跑 ≥7 天）→ ACTIVE_GUARDED（live 小手数）→ ACTIVE`。
+
+**覆盖文件**（关键）：
+
+- `src/app_runtime/factories/signals.py`：`_filter_strategies_for_environment()` + 改造 `build_signal_components()` 装配前过滤
+- `src/signals/contracts/deployment.py`：enum `PAPER_ONLY → DEMO_VALIDATION` + 新增 helper `allows_demo_validation()`
+- `src/backtesting/models.py`：`BacktestConfig.include_paper_only → include_demo_validation`，`ValidationDecision.PAPER_ONLY → DEMO_VALIDATION`
+- `src/backtesting/engine/runner.py`：gate 变量名 `deployment_filtered_paper_only → deployment_filtered_demo_validation`
+- `src/trading/execution/reasons.py`：常量 `REASON_STRATEGY_PAPER_ONLY → REASON_STRATEGY_DEMO_VALIDATION`
+- `src/persistence/schema/experiment.py`：`paper_session_id` DROP + `paper_sharpe / paper_win_rate → demo_validation_sharpe / demo_validation_win_rate`
+- `src/readmodels/lab_impact.py`：`paper_sessions → demo_validation_windows`（数据源改 `db.demo.trade_outcomes`）
+- `src/readmodels/runtime.py`：删除 `paper_trading_summary()`，`validation_sidecars = {}`
+- `src/studio/{runtime,mappers,models}.py`：删除 `paper_trader` agent
+- `config/signal.ini`：11 处 `status = paper_only → status = demo_validation`
+- `src/persistence/migrations/2026_04_25_drop_paper_trading.sql`：DROP TABLE + ALTER COLUMN
+- `src/ops/cli/demo_vs_backtest.py`：新 CLI（替代 paper_vs_backtest）
+
+**演进方向**：
+
+- **portfolio 层（跨策略相关性 / 同向叠加 / 反向冲突识别）**当前缺失但**不在本 ADR 范围**——独立 backlog 项，等 ≥3 条策略并存有真冲突数据后再启动设计。
+- 多 demo 账户演进：当并行候选 ≥3 条时，扩展 `topology.ini [group.demo] workers = ...` 而非保留 paper 单进程并行能力。
+- demo broker 报价仿真度受 broker 决定，不在本 codebase 范畴。demo 验证通过 ≠ live 一定通过——这是现实约束，不影响本 ADR 决策（demo 仍单调比 paper 更接近 live）。
+- 若未来 hot-reload 把已装配策略的 status 改为 DEMO_VALIDATION，运行时不会自动卸载——`pre_trade_checks` 的 `allows_live_execution()` 二级护栏保留作为 hot-reload 安全网。
+
+**前端 breaking change**（前端方需联动）：
+- `/v1/lab/impact`: `paper_sessions` → `demo_validation_windows`，`linked_paper_sessions` 字段移除
+- `/v1/runtime` / `/v1/health`: `validation_sidecars.paper_trading` 字段删除
+- `/v1/studio/stream`: `paper_trader` agent 卡片删除
+- `/v1/paper-trading/*`: 所有 6 个 endpoint 返回 404
+- `/v1/experiments/{id}`: `phases` 数组中 `phase=paper_trading` 改为 `phase=demo_validation`
 
 ---
 

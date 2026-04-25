@@ -75,10 +75,6 @@ def _patch_builder_dependencies(
         _record("signal"),
     )
     monkeypatch.setattr(
-        "src.app_runtime.builder.build_paper_trading_layer",
-        _record("paper"),
-    )
-    monkeypatch.setattr(
         "src.app_runtime.builder.build_account_runtime_layer",
         _record("account_runtime"),
     )
@@ -122,7 +118,8 @@ def test_build_app_container_executor_only_builds_account_runtime(monkeypatch) -
     assert trading_kwargs["enable_calendar_sync"] is False
 
 
-def test_build_app_container_live_main_builds_paper_trading(monkeypatch) -> None:
+def test_build_app_container_live_main_builds_signal_layer(monkeypatch) -> None:
+    """ADR-010: paper_trading_layer 已删除，main 实例只装配 signal layer。"""
     calls: list[tuple[str, dict]] = []
     _patch_builder_dependencies(
         monkeypatch,
@@ -138,7 +135,7 @@ def test_build_app_container_live_main_builds_paper_trading(monkeypatch) -> None
     assert "market" in call_names
     assert "trading" in call_names
     assert "signal" in call_names
-    assert "paper" in call_names
+    assert "paper" not in call_names
     assert "account_runtime" not in call_names
 
     market_kwargs = next(kwargs for name, kwargs in calls if name == "market")
@@ -153,7 +150,9 @@ def test_build_app_container_does_not_warn_for_consistent_spread_config(
     monkeypatch, caplog
 ) -> None:
     calls: list[tuple[str, dict]] = []
-    _patch_builder_dependencies(monkeypatch, role="main", environment="live", calls=calls)
+    _patch_builder_dependencies(
+        monkeypatch, role="main", environment="live", calls=calls
+    )
     signal_config = SimpleNamespace(
         base_spread_points=30.0,
         max_spread_points=81.0,
@@ -172,7 +171,9 @@ def test_build_app_container_warns_for_session_spread_cap_below_base(
     monkeypatch, caplog
 ) -> None:
     calls: list[tuple[str, dict]] = []
-    _patch_builder_dependencies(monkeypatch, role="main", environment="live", calls=calls)
+    _patch_builder_dependencies(
+        monkeypatch, role="main", environment="live", calls=calls
+    )
     signal_config = SimpleNamespace(
         base_spread_points=30.0,
         max_spread_points=81.0,

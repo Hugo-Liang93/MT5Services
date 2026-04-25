@@ -9,7 +9,7 @@ from .sessions import normalize_session_name
 
 class StrategyDeploymentStatus(str, Enum):
     CANDIDATE = "candidate"
-    PAPER_ONLY = "paper_only"
+    DEMO_VALIDATION = "demo_validation"
     ACTIVE_GUARDED = "active_guarded"
     ACTIVE = "active"
 
@@ -75,9 +75,7 @@ class StrategyDeployment:
             min_final_confidence=_maybe_float(raw.get("min_final_confidence")),
             max_live_positions=_maybe_int(raw.get("max_live_positions")),
             require_pending_entry=_coerce_bool(raw.get("require_pending_entry"), False),
-            paper_shadow_required=_coerce_bool(
-                raw.get("paper_shadow_required"), False
-            ),
+            paper_shadow_required=_coerce_bool(raw.get("paper_shadow_required"), False),
             robustness_tier=_maybe_text(raw.get("robustness_tier")),
             research_provenance=_maybe_text(raw.get("research_provenance")),
         )
@@ -89,6 +87,18 @@ class StrategyDeployment:
         return self.status in {
             StrategyDeploymentStatus.ACTIVE,
             StrategyDeploymentStatus.ACTIVE_GUARDED,
+        }
+
+    def allows_demo_validation(self) -> bool:
+        """Strategy is eligible for装配 on demo-environment instances.
+
+        覆盖 ACTIVE / ACTIVE_GUARDED / DEMO_VALIDATION 三档（参考 ADR-010）。
+        live instance 装配仅 ACTIVE / ACTIVE_GUARDED；demo instance 额外含 DEMO_VALIDATION 候选。
+        """
+        return self.status in {
+            StrategyDeploymentStatus.ACTIVE,
+            StrategyDeploymentStatus.ACTIVE_GUARDED,
+            StrategyDeploymentStatus.DEMO_VALIDATION,
         }
 
     def is_guarded(self) -> bool:

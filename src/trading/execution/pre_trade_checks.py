@@ -13,48 +13,50 @@ from typing import TYPE_CHECKING
 from src.signals.contracts import normalize_session_name, resolve_session_by_hour
 from src.signals.metadata_keys import MetadataKey as MK
 from src.trading.execution.intrabar_health import build_execution_intrabar_health
+
+from .eventing import emit_blocked_admission_report as _emit_blocked_admission_report
+from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
+from .eventing import notify_skip as _notify_skip_helper
+from .params import tf_to_seconds as _tf_to_seconds_helper
+from .pending_orders import (
+    duplicate_execution_reason as _duplicate_execution_reason_helper,
+)
+from .pending_orders import (
+    open_positions_for_strategy as _open_positions_for_strategy_helper,
+)
+from .pending_orders import reached_position_limit as _reached_position_limit_helper
 from .reasons import (
     REASON_CIRCUIT_OPEN,
     REASON_DUPLICATE_SIGNAL_ID,
-    REASON_EQUITY_CURVE_BELOW_MA,
     REASON_EOD_BLOCK,
+    REASON_EQUITY_CURVE_BELOW_MA,
+    REASON_INTRABAR_SYNTHESIS_STALE,
+    REASON_INTRABAR_SYNTHESIS_UNAVAILABLE,
     REASON_INVALID_DIRECTION,
     REASON_LIMIT_REACHED,
     REASON_MARGIN_GUARD_BLOCK,
     REASON_MIN_CONFIDENCE,
     REASON_PERFORMANCE_PAUSED,
-    REASON_REENTRY_COOLDOWN,
-    REASON_INTRABAR_SYNTHESIS_STALE,
-    REASON_INTRABAR_SYNTHESIS_UNAVAILABLE,
     REASON_QUOTE_STALE,
+    REASON_REENTRY_COOLDOWN,
     REASON_STRATEGY_CANDIDATE_ONLY,
+    REASON_STRATEGY_DEMO_VALIDATION,
     REASON_STRATEGY_LOCKED_SESSION,
     REASON_STRATEGY_LOCKED_TIMEFRAME,
     REASON_STRATEGY_MAX_LIVE_POSITIONS,
-    REASON_STRATEGY_PAPER_ONLY,
     REASON_STRATEGY_REQUIRES_PENDING_ENTRY,
-    SKIP_CATEGORY_COOLDOWN,
-    SKIP_CATEGORY_PERFORMANCE,
-    SKIP_CATEGORY_EQUITY_FILTER,
-    SKIP_CATEGORY_RISK_GUARD,
-    SKIP_CATEGORY_EXECUTION_GATE,
-    SKIP_CATEGORY_DUPLICATE_GUARD,
     SKIP_CATEGORY_CONFIDENCE,
+    SKIP_CATEGORY_COOLDOWN,
+    SKIP_CATEGORY_DUPLICATE_GUARD,
     SKIP_CATEGORY_EOD_GUARD,
+    SKIP_CATEGORY_EQUITY_FILTER,
+    SKIP_CATEGORY_EXECUTION_GATE,
     SKIP_CATEGORY_GOVERNANCE,
-    SKIP_CATEGORY_POSITION,
     SKIP_CATEGORY_MARKET_DATA,
+    SKIP_CATEGORY_PERFORMANCE,
+    SKIP_CATEGORY_POSITION,
+    SKIP_CATEGORY_RISK_GUARD,
 )
-
-from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
-from .eventing import notify_skip as _notify_skip_helper
-from .eventing import emit_blocked_admission_report as _emit_blocked_admission_report
-from .params import tf_to_seconds as _tf_to_seconds_helper
-from .pending_orders import (
-    duplicate_execution_reason as _duplicate_execution_reason_helper,
-)
-from .pending_orders import reached_position_limit as _reached_position_limit_helper
-from .pending_orders import open_positions_for_strategy as _open_positions_for_strategy_helper
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent
@@ -200,10 +202,7 @@ def check_circuit_breaker(executor: TradeExecutor, event: SignalEvent) -> bool:
             else:
                 executor.health_check_failures += 1
                 executor.circuit_open_at = datetime.now(timezone.utc)
-                if (
-                    executor.health_check_failures
-                    >= executor.max_health_check_failures
-                ):
+                if executor.health_check_failures >= executor.max_health_check_failures:
                     logger.critical(
                         "TradeExecutor: circuit STUCK — %d consecutive health "
                         "check failures, MT5 connection may be permanently "
@@ -328,9 +327,7 @@ def check_intrabar_synthesis_health(
     if trigger_tf:
         extra_parts.append(f"trigger_tf={trigger_tf}")
     if age_seconds is not None and stale_threshold_seconds is not None:
-        extra_parts.append(
-            f"age={age_seconds}s > threshold={stale_threshold_seconds}s"
-        )
+        extra_parts.append(f"age={age_seconds}s > threshold={stale_threshold_seconds}s")
     elif intrabar_health.get("error_code"):
         extra_parts.append(str(intrabar_health.get("error_code")))
     reject_signal(
@@ -390,11 +387,11 @@ def run_pre_trade_filters(
             reject_signal(
                 executor,
                 event,
-                REASON_STRATEGY_PAPER_ONLY,
+                REASON_STRATEGY_DEMO_VALIDATION,
                 SKIP_CATEGORY_GOVERNANCE,
                 tf,
             )
-            return REASON_STRATEGY_PAPER_ONLY
+            return REASON_STRATEGY_DEMO_VALIDATION
         if deployment.locked_timeframes:
             event_tf = str(event.timeframe).strip().upper()
             if event_tf not in deployment.locked_timeframes:
@@ -560,9 +557,7 @@ def run_pre_trade_filters(
         executor.position_manager is not None
         and executor.position_manager.is_after_eod_today()
     ):
-        reject_signal(
-            executor, event, REASON_EOD_BLOCK, SKIP_CATEGORY_EOD_GUARD, tf
-        )
+        reject_signal(executor, event, REASON_EOD_BLOCK, SKIP_CATEGORY_EOD_GUARD, tf)
         return REASON_EOD_BLOCK
 
     # ⑫ 品种持仓数量上限

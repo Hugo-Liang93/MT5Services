@@ -270,7 +270,7 @@ class TimescaleSignalRepository:
     # actionability → priority 系数（与 docs/design/quantx-data-freshness-tiering.md
     # §6.2 + plan §1.5.1 字段设计一致）：
     # - actionable: 满分（priority = confidence）
-    # - hold:       半折（未到 executor / paper_only）
+    # - hold:       半折（未到 executor / demo_validation）
     # - blocked:    一折（被 guard 拒）
     _PRIORITY_WEIGHTS: dict[str, float] = {
         "actionable": 1.0,

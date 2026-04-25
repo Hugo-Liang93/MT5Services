@@ -52,7 +52,6 @@ def _fresh_writer() -> TimescaleWriter:
         "_economic_repo",
         "_pipeline_trace_repo",
         "_runtime_repo",
-        "_paper_trading_repo",
         "_backtest_repo",
         "_research_repo",
         "_experiment_repo",

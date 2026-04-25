@@ -15,7 +15,7 @@ from src.signals.tracking.repository import TimescaleSignalRepository
 from src.trading.execution.reasons import (
     REASON_QUOTE_STALE,
     REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH,
-    REASON_STRATEGY_PAPER_ONLY,
+    REASON_STRATEGY_DEMO_VALIDATION,
     SKIP_CATEGORY_COST_GUARD,
     SKIP_CATEGORY_GOVERNANCE,
     SKIP_CATEGORY_MARKET_DATA,
@@ -98,7 +98,7 @@ def test_update_admission_hold_applies_half_weight() -> None:
     ok = repo.update_admission_result(
         signal_id="sig_hold",
         actionability="hold",
-        guard_reason_code=REASON_STRATEGY_PAPER_ONLY,
+        guard_reason_code=REASON_STRATEGY_DEMO_VALIDATION,
     )
 
     assert ok is True
@@ -184,7 +184,7 @@ def test_update_admission_passes_custom_rank_source() -> None:
     repo.update_admission_result(
         signal_id="sig_r",
         actionability="hold",
-        guard_reason_code=REASON_STRATEGY_PAPER_ONLY,
+        guard_reason_code=REASON_STRATEGY_DEMO_VALIDATION,
         rank_source="confidence_only",
     )
 

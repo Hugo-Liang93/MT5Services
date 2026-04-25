@@ -6,7 +6,6 @@ from src.app_runtime.builder_phases.account_runtime import build_account_runtime
 from src.app_runtime.builder_phases.market import build_market_layer
 from src.app_runtime.builder_phases.monitoring import build_monitoring_layer
 from src.app_runtime.builder_phases.notifications import build_notifications_layer
-from src.app_runtime.builder_phases.paper_trading import build_paper_trading_layer
 from src.app_runtime.builder_phases.read_models import build_runtime_read_models
 from src.app_runtime.builder_phases.runtime_controls import (
     build_runtime_component_registry,
@@ -21,7 +20,6 @@ __all__ = [
     "build_trading_layer",
     "build_signal_layer",
     "build_account_runtime_layer",
-    "build_paper_trading_layer",
     "build_runtime_controls",
     "build_runtime_component_registry",
     "build_monitoring_layer",

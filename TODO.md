@@ -81,16 +81,20 @@
 - **不加 `--monte-carlo`**：默认已关（`backtest.ini`），验收确认策略时才按需开
 - 验收命令示例：`backtest_runner --environment live --tf M30 --start 2025-10-20 --end 2026-04-20 --strategies <candidate> --monte-carlo --persist`
 
-### Step 2: Paper Trading 启动 ⏳ 下周
+### Step 2: Demo Validation 启动 ⏳ 下周（ADR-010 后语义）
 
-- [ ] Step 1 通过门槛的策略注册 `status = paper_only`，写 `signal.local.ini`
-- [ ] OBSERVE 模式启动，记录**启动时间戳 + 参数 snapshot 的 git commit hash**
+- [ ] Step 1 通过门槛的策略注册 `status = demo_validation`，写 `signal.local.ini`
+- [ ] 启动 demo-main 实例（`python -m src.entrypoint.instance --instance demo-main`）
+  - 自动装配 ACTIVE + ACTIVE_GUARDED + DEMO_VALIDATION 全集（live-main 不装 DEMO_VALIDATION）
+  - 候选策略走 demo broker server 真实下单，经过完整 11 层风控
+- [ ] 记录**启动时间戳 + 参数 snapshot 的 git commit hash**
 - [ ] 运行满 7 天（不足也等满，不提前结论）
 
-### Step 3: Paper 评估 ⏳ 再下周
+### Step 3: demo_vs_backtest 评估 ⏳ 再下周
 
-- [ ] `python -m src.ops.cli.paper_vs_backtest` 对比 paper 实际 vs 回测预期
-- [ ] **判定**：成交率 > 70% + PF drift < 30% → 升级 `active_guarded`；否则回 Step 1 调参
+- [ ] `python -m src.ops.cli.demo_vs_backtest --backtest-run-id <X> --demo-window 7d --strategies <name>` 跨库对账
+  - 信号生成密度 / 风控通过率 / 实际成交 vs 回测预期，三层切片
+- [ ] **判定**：成交率 > 70% + PF drift < 30% + 信号密度漂移 < 30% → 升级 `active_guarded`；否则回 Step 1 调参
 - [ ] 结果写入 `codebase-review.md §F`，**不在 TODO.md 累积残留**
 
 ---
@@ -119,7 +123,7 @@
 
 ### P8：回测注册与账户绑定对齐 ✅ 已完成（2026-04-22）
 
-2026-04-22 按 ADR-009 方案 D 落地：`BacktestConfig.include_paper_only: bool = False`，默认只评估 `allows_live_execution()` 的策略（ACTIVE + ACTIVE_GUARDED），CANDIDATE + PAPER_ONLY 均默认排除。`backtest_runner --include-paper-only` 用于 paper-shadow 回测。详见 [ADR-009](docs/design/adr.md#adr-009) 与 [codebase-review.md §0f](docs/codebase-review.md)。
+2026-04-22 按 ADR-009 方案 D 落地、2026-04-25 按 ADR-010 改名：`BacktestConfig.include_demo_validation: bool = False`（原 `include_paper_only`），默认只评估 `allows_live_execution()` 的策略（ACTIVE + ACTIVE_GUARDED），CANDIDATE + DEMO_VALIDATION 均默认排除。`backtest_runner --include-demo-validation` 用于 demo-shadow 回测。详见 [ADR-009](docs/design/adr.md#adr-009) / [ADR-010](docs/design/adr.md#adr-010) 与 [codebase-review.md §0f](docs/codebase-review.md)。
 
 ### P11：QuantX 策略评估页结果读口补齐（中优先，前端已落页）
 

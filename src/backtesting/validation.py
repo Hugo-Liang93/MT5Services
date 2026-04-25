@@ -4,12 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
-from .models import (
-    BacktestResult,
-    ValidationDecision,
-    ValidationDecisionReport,
-)
-
+from .models import BacktestResult, ValidationDecision, ValidationDecisionReport
 
 _TF_SPECIFIC_THRESHOLDS: dict[str, Any] = {
     "min_history_months": 6.0,
@@ -34,7 +29,7 @@ _TF_SPECIFIC_THRESHOLDS: dict[str, Any] = {
         "oos_profit_factor_min": 1.10,
         "oos_max_drawdown_max": 0.15,
     },
-    "paper_min_trades": 20,
+    "demo_validation_min_trades": 20,
 }
 
 _ROBUST_THRESHOLDS: dict[str, Any] = {
@@ -57,7 +52,7 @@ _ROBUST_THRESHOLDS: dict[str, Any] = {
         "oos_profit_factor_min": 1.05,
         "oos_max_drawdown_max": 0.18,
     },
-    "paper_min_trades": 20,
+    "demo_validation_min_trades": 20,
 }
 
 
@@ -67,7 +62,7 @@ def evaluate_promotion_validation(
     robustness_tier: Any | None,
     execution_feasibility_result: BacktestResult | None = None,
     walk_forward_result: Any | None = None,
-    paper_verdict: Any | None = None,
+    demo_validation_verdict: Any | None = None,
     data_coverage_months: float | None = None,
     feature_candidate_id: str | None = None,
     promoted_indicator_name: str | None = None,
@@ -109,9 +104,7 @@ def evaluate_promotion_validation(
         "min_months": min_months,
     }
     if not checks["data_coverage"]["passed"]:
-        reasons.append(
-            f"data coverage {months:.2f}m below required {min_months:.2f}m"
-        )
+        reasons.append(f"data coverage {months:.2f}m below required {min_months:.2f}m")
 
     metrics = backtest_result.metrics
     bt_cfg = thresholds["backtest"]
@@ -143,7 +136,9 @@ def evaluate_promotion_validation(
     blocklist = set(thresholds["execution_feasibility"]["reject_reasons_blocklist"])
     blocked_reasons = sorted(
         reason
-        for reason, count in dict(execution_summary.get("rejection_reasons", {})).items()
+        for reason, count in dict(
+            execution_summary.get("rejection_reasons", {})
+        ).items()
         if count and reason in blocklist
     )
     checks["execution_feasibility"] = {
@@ -219,35 +214,41 @@ def evaluate_promotion_validation(
         if not checks["walk_forward"]["passed"]:
             reasons.append("walk-forward robustness gate failed")
 
-    if paper_verdict is None:
-        checks["paper_shadow"] = {
+    if demo_validation_verdict is None:
+        checks["demo_validation_shadow"] = {
             "passed": False,
-            "reason": "paper shadow verdict missing",
-            "min_trades": thresholds["paper_min_trades"],
+            "reason": "demo validation verdict missing",
+            "min_trades": thresholds["demo_validation_min_trades"],
         }
     else:
-        checks["paper_shadow"] = {
-            "passed": bool(getattr(paper_verdict, "overall_pass", False)),
+        checks["demo_validation_shadow"] = {
+            "passed": bool(getattr(demo_validation_verdict, "overall_pass", False)),
             "trade_count_sufficient": bool(
-                getattr(paper_verdict, "trade_count_sufficient", False)
+                getattr(demo_validation_verdict, "trade_count_sufficient", False)
             ),
-            "summary": getattr(paper_verdict, "summary", ""),
-            "min_trades": thresholds["paper_min_trades"],
+            "summary": getattr(demo_validation_verdict, "summary", ""),
+            "min_trades": thresholds["demo_validation_min_trades"],
         }
-        if not checks["paper_shadow"]["passed"]:
-            reasons.append("paper shadow validation failed")
+        if not checks["demo_validation_shadow"]["passed"]:
+            reasons.append("demo validation shadow check failed")
 
-    core_checks = ("data_coverage", "backtest", "execution_feasibility", "monte_carlo", "walk_forward")
+    core_checks = (
+        "data_coverage",
+        "backtest",
+        "execution_feasibility",
+        "monte_carlo",
+        "walk_forward",
+    )
     if not all(checks[name]["passed"] for name in core_checks):
         decision = ValidationDecision.REFIT
-    elif not checks["paper_shadow"]["passed"]:
-        decision = ValidationDecision.PAPER_ONLY
+    elif not checks["demo_validation_shadow"]["passed"]:
+        decision = ValidationDecision.DEMO_VALIDATION
     elif tier == "tf_specific":
         decision = ValidationDecision.ACTIVE_GUARDED
     elif tier == "robust":
         decision = ValidationDecision.ACTIVE
     else:
-        decision = ValidationDecision.PAPER_ONLY
+        decision = ValidationDecision.DEMO_VALIDATION
 
     return ValidationDecisionReport(
         decision=decision,
@@ -267,7 +268,7 @@ def attach_validation_decision(
     robustness_tier: Any | None,
     execution_feasibility_result: BacktestResult | None = None,
     walk_forward_result: Any | None = None,
-    paper_verdict: Any | None = None,
+    demo_validation_verdict: Any | None = None,
     data_coverage_months: float | None = None,
     feature_candidate_id: str | None = None,
     promoted_indicator_name: str | None = None,
@@ -279,7 +280,7 @@ def attach_validation_decision(
         robustness_tier=robustness_tier,
         execution_feasibility_result=execution_feasibility_result,
         walk_forward_result=walk_forward_result,
-        paper_verdict=paper_verdict,
+        demo_validation_verdict=demo_validation_verdict,
         data_coverage_months=data_coverage_months,
         feature_candidate_id=feature_candidate_id,
         promoted_indicator_name=promoted_indicator_name,

@@ -23,7 +23,6 @@ from src.persistence.repositories import (
     ExecutionIntentRepository,
     MarketRepository,
     OperatorCommandRepository,
-    PaperTradingRepository,
     PipelineTraceRepository,
     RuntimeStatusRepository,
     SignalEventRepository,
@@ -82,7 +81,6 @@ class TimescaleWriter:
         self._economic_repo: Optional[EconomicCalendarRepository] = None
         self._pipeline_trace_repo: Optional[PipelineTraceRepository] = None
         self._runtime_repo: Optional[RuntimeStatusRepository] = None
-        self._paper_trading_repo: Optional[PaperTradingRepository] = None
         self._backtest_repo: Optional[BacktestRepository] = None
         self._walk_forward_repo: Optional[WalkForwardRepository] = None
         self._correlation_repo: Optional[CorrelationAnalysisRepository] = None
@@ -161,14 +159,6 @@ class TimescaleWriter:
         if repo is None:
             repo = RuntimeStatusRepository(self)
             self._runtime_repo = repo
-        return repo
-
-    @property
-    def paper_trading_repo(self) -> PaperTradingRepository:
-        repo = getattr(self, "_paper_trading_repo", None)
-        if repo is None:
-            repo = PaperTradingRepository(self)
-            self._paper_trading_repo = repo
         return repo
 
     @property

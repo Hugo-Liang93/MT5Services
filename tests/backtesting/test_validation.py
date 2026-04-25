@@ -106,11 +106,11 @@ def _walk_forward_result(
     )
 
 
-def _paper_verdict(*, passed: bool, sufficient: bool = True):
+def _demo_validation_verdict(*, passed: bool, sufficient: bool = True):
     return SimpleNamespace(
         overall_pass=passed,
         trade_count_sufficient=sufficient,
-        summary="paper shadow ok" if passed else "paper shadow drift",
+        summary="demo validation ok" if passed else "demo validation drift",
     )
 
 
@@ -140,29 +140,35 @@ def test_evaluate_promotion_validation_returns_refit_when_monte_carlo_fails() ->
     assert report.checks["monte_carlo"]["passed"] is False
 
 
-def test_evaluate_promotion_validation_returns_paper_only_before_paper_shadow_passes() -> None:
+def test_evaluate_promotion_validation_returns_demo_validation_before_shadow_passes() -> (
+    None
+):
     report = evaluate_promotion_validation(
         _backtest_result(),
         robustness_tier="tf_specific",
         walk_forward_result=_walk_forward_result(),
     )
 
-    assert report.decision is ValidationDecision.PAPER_ONLY
-    assert report.checks["paper_shadow"]["passed"] is False
+    assert report.decision is ValidationDecision.DEMO_VALIDATION
+    assert report.checks["demo_validation_shadow"]["passed"] is False
 
 
-def test_evaluate_promotion_validation_promotes_tf_specific_to_active_guarded_after_paper_pass() -> None:
+def test_evaluate_promotion_validation_promotes_tf_specific_to_active_guarded_after_demo_pass() -> (
+    None
+):
     report = evaluate_promotion_validation(
         _backtest_result(),
         robustness_tier="tf_specific",
         walk_forward_result=_walk_forward_result(),
-        paper_verdict=_paper_verdict(passed=True),
+        demo_validation_verdict=_demo_validation_verdict(passed=True),
     )
 
     assert report.decision is ValidationDecision.ACTIVE_GUARDED
 
 
-def test_evaluate_promotion_validation_uses_execution_feasibility_result_for_execution_gate() -> None:
+def test_evaluate_promotion_validation_uses_execution_feasibility_result_for_execution_gate() -> (
+    None
+):
     report = evaluate_promotion_validation(
         _backtest_result(),
         robustness_tier="tf_specific",
@@ -195,7 +201,7 @@ def test_attach_validation_decision_promotes_robust_to_active() -> None:
         _backtest_result(),
         robustness_tier="robust",
         walk_forward_result=_walk_forward_result(),
-        paper_verdict=_paper_verdict(passed=True),
+        demo_validation_verdict=_demo_validation_verdict(passed=True),
         feature_candidate_id="feat_123",
         promoted_indicator_name="momentum_consensus14",
         strategy_candidate_id="cand_abc",

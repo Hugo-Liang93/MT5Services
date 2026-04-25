@@ -62,6 +62,53 @@ from src.trading.tracking import SignalQualityTracker, TradeOutcomeTracker
 _factory_logger = _logging.getLogger(__name__)
 
 
+def _filter_strategies_for_environment(
+    strategies: list[Any],
+    deployments: Mapping[str, StrategyDeployment],
+    environment: str | None,
+) -> list[Any]:
+    """按 instance environment 过滤要装配的策略集合。
+
+    装配规则（参考 ADR-010 / docs/superpowers/specs）：
+      - environment="live"    → 仅 ACTIVE + ACTIVE_GUARDED（实盘交易策略）
+      - environment="demo"    → ACTIVE + ACTIVE_GUARDED + DEMO_VALIDATION（含演练候选）
+      - environment 未知/None → 全量保留（向后兼容；记 WARNING）
+
+    没有 deployment 契约的策略保留——交由下游 _validate_strategy_deployment_contracts
+    报错，避免在此处吞掉契约缺失。
+    """
+    if environment not in {"live", "demo"}:
+        _factory_logger.warning(
+            "build_signal_components: environment=%r 未知；装配所有策略不按 deployment status 过滤",
+            environment,
+        )
+        return list(strategies)
+
+    filtered: list[Any] = []
+    skipped: list[str] = []
+    for strategy in strategies:
+        deployment = deployments.get(strategy.name)
+        if deployment is None:
+            filtered.append(strategy)
+            continue
+        if environment == "live":
+            allowed = deployment.allows_live_execution()
+        else:  # environment == "demo"
+            allowed = deployment.allows_demo_validation()
+        if allowed:
+            filtered.append(strategy)
+        else:
+            skipped.append(strategy.name)
+    if skipped:
+        _factory_logger.info(
+            "[%s] excluded %d strategies by deployment status: %s",
+            environment,
+            len(skipped),
+            ", ".join(sorted(skipped)),
+        )
+    return filtered
+
+
 def _apply_strategy_config_overrides(module: SignalModule, signal_config) -> None:
     """从 signal_config 构建 TFParamResolver 并注入到各策略 + 应用 regime_affinity 覆盖。"""
     from src.signals.evaluation.regime import RegimeType
@@ -658,9 +705,36 @@ def build_signal_components(
         htf_map=htf_map if htf_map else None,
         max_age_seconds=signal_config.htf_cache_max_age_seconds,
     )
+
+    # ── Environment-aware 策略装配过滤（ADR-010）──────────────────────
+    # 装配集合：live = ACTIVE ∪ ACTIVE_GUARDED；demo = live ∪ DEMO_VALIDATION
+    # 注：deployments 同步过滤后写回 signal_config，确保下游 validate / runtime
+    #     / pre_trade_checks 都看到一致的策略集合。
+    _instance_environment = (
+        runtime_identity.environment if runtime_identity is not None else None
+    )
+    _all_strategies = build_default_strategy_set()
+    _all_deployments = dict(signal_config.strategy_deployments)
+    _filtered_strategies = _filter_strategies_for_environment(
+        _all_strategies, _all_deployments, _instance_environment
+    )
+    _filtered_strategy_names = {s.name for s in _filtered_strategies}
+    _filtered_deployments = {
+        name: dep
+        for name, dep in _all_deployments.items()
+        if name in _filtered_strategy_names
+    }
+    signal_config.strategy_deployments = _filtered_deployments
+    _factory_logger.info(
+        "[%s] signal layer assembling %d strategies (filtered from %d)",
+        _instance_environment or "unknown",
+        len(_filtered_strategies),
+        len(_all_strategies),
+    )
+
     signal_module = SignalModule(
         indicator_source=UnifiedIndicatorSourceAdapter(indicator_manager),
-        strategies=build_default_strategy_set(),
+        strategies=_filtered_strategies,
         repository=TimescaleSignalRepository(
             storage_writer.db, storage_writer=storage_writer
         ),

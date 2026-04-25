@@ -107,7 +107,6 @@ class RuntimeReadModel:
         exposure_closeout_controller: Any = None,
         runtime_mode_controller: Any = None,
         runtime_identity: Any = None,
-        paper_trading_bridge: Any = None,
         db_writer: Any = None,
     ) -> None:
         self._health_monitor = health_monitor
@@ -125,7 +124,6 @@ class RuntimeReadModel:
         self._exposure_closeout_controller = exposure_closeout_controller
         self._runtime_mode_controller = runtime_mode_controller
         self._runtime_identity = runtime_identity
-        self._paper_trading_bridge = paper_trading_bridge
         self.db_writer = db_writer
 
     @property
@@ -1049,66 +1047,9 @@ class RuntimeReadModel:
             return {"status": "unavailable", "current_mode": None}
         snapshot = dict(controller.snapshot() or {})
         snapshot["status"] = "healthy"
-        snapshot["validation_sidecars"] = {
-            "paper_trading": self.paper_trading_summary()
-        }
+        # ADR-010: paper_trading validation_sidecar 已删除（demo-main 真实下单替代）
+        snapshot["validation_sidecars"] = {}
         return snapshot
-
-    def paper_trading_summary(self) -> dict[str, Any]:
-        bridge = self._paper_trading_bridge
-        if bridge is None:
-            return {
-                "kind": "validation_sidecar",
-                "configured": False,
-                "running": False,
-                "status": "disabled",
-                "session_id": None,
-                "signals_received": 0,
-                "signals_executed": 0,
-                "signals_rejected": 0,
-                "reject_reasons": {},
-                "active_symbols": [],
-            }
-
-        try:
-            payload = dict(bridge.status() or {})
-        except Exception as exc:
-            return {
-                "kind": "validation_sidecar",
-                "configured": True,
-                "running": False,
-                "status": "warning",
-                "last_error": str(exc),
-                "session_id": None,
-                "signals_received": 0,
-                "signals_executed": 0,
-                "signals_rejected": 0,
-                "reject_reasons": {},
-                "active_symbols": [],
-            }
-
-        running = bool(payload.get("running", False))
-        session_id = payload.get("session_id") or payload.get("session")
-        configured = True
-        status = "healthy" if running else "idle"
-        return {
-            "kind": "validation_sidecar",
-            "configured": configured,
-            "running": running,
-            "status": status,
-            "session_id": session_id,
-            "started_at": payload.get("started_at"),
-            "signals_received": int(payload.get("signals_received", 0) or 0),
-            "signals_executed": int(payload.get("signals_executed", 0) or 0),
-            "signals_rejected": int(payload.get("signals_rejected", 0) or 0),
-            "reject_reasons": dict(payload.get("reject_reasons", {}) or {}),
-            "active_symbols": list(payload.get("active_symbols", []) or []),
-            "current_balance": payload.get("current_balance"),
-            "floating_pnl": payload.get("floating_pnl"),
-            "equity": payload.get("equity"),
-            "open_positions": payload.get("open_positions"),
-            "closed_trades": payload.get("closed_trades"),
-        }
 
     def mt5_session_summary(self) -> dict[str, Any]:
         market_service = self._market_service
@@ -1605,9 +1546,8 @@ class RuntimeReadModel:
                 limit=position_limit
             ),
             "alerts": self.trading_state_alerts_summary(),
-            "validation": {
-                "paper_trading": self.paper_trading_summary(),
-            },
+            # ADR-010: validation sidecars 已清空（paper_trading 删除）
+            "validation": {},
         }
 
     def trading_state_alerts_summary(self) -> dict[str, Any]:
@@ -1642,7 +1582,8 @@ class RuntimeReadModel:
             "account_risk": self.account_risk_state_summary(),
             "signals": self.signal_runtime_summary(),
             "executor": self.trade_executor_summary(),
-            "validation": {"paper_trading": self.paper_trading_summary()},
+            # ADR-010: validation sidecars 已清空（paper_trading 删除）
+            "validation": {},
             "external_dependencies": {
                 "mt5_session": self.mt5_session_summary(),
             },

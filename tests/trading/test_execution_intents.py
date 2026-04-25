@@ -4,10 +4,7 @@ from datetime import datetime, timezone
 
 from src.config.mt5 import MT5Settings
 from src.config.runtime_identity import RuntimeIdentity, build_account_key
-from src.monitoring.pipeline import (
-    PIPELINE_INTENT_CLAIMED,
-    PipelineEventBus,
-)
+from src.monitoring.pipeline import PIPELINE_INTENT_CLAIMED, PipelineEventBus
 from src.signals.contracts import StrategyDeployment, StrategyDeploymentStatus
 from src.signals.models import SignalEvent
 from src.trading.intents.consumer import ExecutionIntentConsumer
@@ -61,7 +58,9 @@ def _event(
     )
 
 
-def test_execution_intent_publisher_requires_explicit_binding_in_single_account_mode(monkeypatch):
+def test_execution_intent_publisher_requires_explicit_binding_in_single_account_mode(
+    monkeypatch,
+):
     rows: list[tuple] = []
     monkeypatch.setattr(
         "src.trading.intents.publisher.load_group_mt5_settings",
@@ -132,7 +131,9 @@ def test_execution_intent_publisher_routes_explicit_single_account_binding(monke
     assert rows[0][9]["strategy"] == "trend_alpha"
 
 
-def test_execution_intent_publisher_routes_bound_strategy_in_multi_account_mode(monkeypatch):
+def test_execution_intent_publisher_routes_bound_strategy_in_multi_account_mode(
+    monkeypatch,
+):
     rows: list[tuple] = []
     monkeypatch.setattr(
         "src.trading.intents.publisher.load_group_mt5_settings",
@@ -279,7 +280,7 @@ def test_execution_intent_publisher_skips_non_live_deployments(monkeypatch):
         strategy_deployments={
             "trend_alpha": StrategyDeployment(
                 name="trend_alpha",
-                status=StrategyDeploymentStatus.PAPER_ONLY,
+                status=StrategyDeploymentStatus.DEMO_VALIDATION,
             )
         },
         auto_trade_enabled=True,
@@ -305,7 +306,9 @@ def test_execution_intent_consumer_processes_and_completes_claimed_intent():
     consumer = ExecutionIntentConsumer(
         claim_fn=lambda **kwargs: [],
         complete_fn=lambda **kwargs: completed.append(kwargs),
-        runtime_identity=_runtime_identity(instance_role="executor", live_topology_mode="multi_account"),
+        runtime_identity=_runtime_identity(
+            instance_role="executor", live_topology_mode="multi_account"
+        ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
     )
@@ -355,7 +358,9 @@ def test_execution_intent_consumer_processes_and_completes_claimed_intent():
     ]
     assert [event.type for event in received] == ["execution_succeeded"]
     assert received[0].trace_id == "sig-1"
-    assert received[0].payload["account_key"] == build_account_key("live", "Broker-Live", 1001)
+    assert received[0].payload["account_key"] == build_account_key(
+        "live", "Broker-Live", 1001
+    )
     assert received[0].payload["instance_id"] == "executor-live-main"
     assert received[0].payload["status"] == "completed"
 
@@ -483,7 +488,10 @@ def test_execution_intent_consumer_propagates_skip_reason_from_executor_result()
     )
 
     assert completed[0]["status"] == "skipped"
-    assert completed[0]["decision_metadata"]["result"]["reason"] == "trade_params_unavailable"
+    assert (
+        completed[0]["decision_metadata"]["result"]["reason"]
+        == "trade_params_unavailable"
+    )
     assert [event.type for event in received] == ["execution_skipped"]
     assert received[0].payload["reason"] == "trade_params_unavailable"
     assert received[0].payload["skip_reason"] == "trade_params_unavailable"
@@ -621,7 +629,9 @@ def test_execution_intent_consumer_uses_fallback_event_when_payload_decode_fails
     assert received[0].payload["error_code"] == "ValueError"
 
 
-def test_execution_intent_publisher_emits_intent_published_with_trace_context(monkeypatch):
+def test_execution_intent_publisher_emits_intent_published_with_trace_context(
+    monkeypatch,
+):
     received = []
     pipeline_bus = PipelineEventBus()
     pipeline_bus.add_listener(received.append)
@@ -692,7 +702,9 @@ def test_execution_intent_consumer_emits_reclaim_and_dead_letter_events(monkeypa
     consumer = ExecutionIntentConsumer(
         claim_fn=lambda **kwargs: [],
         complete_fn=lambda **kwargs: completed.append(kwargs),
-        runtime_identity=_runtime_identity(instance_role="executor", live_topology_mode="multi_account"),
+        runtime_identity=_runtime_identity(
+            instance_role="executor", live_topology_mode="multi_account"
+        ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
     )
@@ -709,7 +721,9 @@ def test_execution_intent_consumer_emits_reclaim_and_dead_letter_events(monkeypa
                     "intent_id": "intent-reclaimed",
                     "intent_key": "sig-1:key",
                     "signal_id": "sig-1",
-                    "target_account_key": build_account_key("live", "Broker-Live", 1001),
+                    "target_account_key": build_account_key(
+                        "live", "Broker-Live", 1001
+                    ),
                     "target_account_alias": "main",
                     "strategy": "trend_alpha",
                     "symbol": "XAUUSD",
@@ -722,7 +736,9 @@ def test_execution_intent_consumer_emits_reclaim_and_dead_letter_events(monkeypa
                     "intent_id": "intent-dead",
                     "intent_key": "sig-1:key2",
                     "signal_id": "sig-1",
-                    "target_account_key": build_account_key("live", "Broker-Live", 1001),
+                    "target_account_key": build_account_key(
+                        "live", "Broker-Live", 1001
+                    ),
                     "target_account_alias": "main",
                     "strategy": "trend_alpha",
                     "symbol": "XAUUSD",
@@ -734,19 +750,26 @@ def test_execution_intent_consumer_emits_reclaim_and_dead_letter_events(monkeypa
         }
 
     consumer._claim_fn = _claim_fn
-    monkeypatch.setattr("src.trading.intents.consumer.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "src.trading.intents.consumer.time.sleep", lambda *_args, **_kwargs: None
+    )
 
     consumer._worker()
 
     assert calls["count"] == 1
-    assert [event.type for event in received] == ["intent_reclaimed", "intent_dead_lettered"]
+    assert [event.type for event in received] == [
+        "intent_reclaimed",
+        "intent_dead_lettered",
+    ]
     assert received[0].trace_id == "trace-intent-1"
     assert received[0].payload["claimed_by_instance_id"] == "executor-live-main"
     assert received[1].payload["status"] == "dead_lettered"
     assert received[1].payload["last_error_code"] == "intent_attempts_exhausted"
 
 
-def test_execution_intent_consumer_worker_emits_claimed_event_with_trace_context(monkeypatch):
+def test_execution_intent_consumer_worker_emits_claimed_event_with_trace_context(
+    monkeypatch,
+):
     received = []
     pipeline_bus = PipelineEventBus()
     pipeline_bus.add_listener(received.append)
@@ -774,7 +797,9 @@ def test_execution_intent_consumer_worker_emits_claimed_event_with_trace_context
     consumer = ExecutionIntentConsumer(
         claim_fn=lambda **kwargs: [],
         complete_fn=lambda **kwargs: completed.append(kwargs),
-        runtime_identity=_runtime_identity(instance_role="executor", live_topology_mode="multi_account"),
+        runtime_identity=_runtime_identity(
+            instance_role="executor", live_topology_mode="multi_account"
+        ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
     )
@@ -792,7 +817,9 @@ def test_execution_intent_consumer_worker_emits_claimed_event_with_trace_context
                     "intent_id": "intent-claimed",
                     "intent_key": "sig-claimed-1:key",
                     "signal_id": "sig-claimed-1",
-                    "target_account_key": build_account_key("live", "Broker-Live", 1001),
+                    "target_account_key": build_account_key(
+                        "live", "Broker-Live", 1001
+                    ),
                     "target_account_alias": "main",
                     "strategy": "trend_alpha",
                     "symbol": "XAUUSD",
@@ -805,7 +832,9 @@ def test_execution_intent_consumer_worker_emits_claimed_event_with_trace_context
         }
 
     consumer._claim_fn = _claim_fn
-    monkeypatch.setattr("src.trading.intents.consumer.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "src.trading.intents.consumer.time.sleep", lambda *_args, **_kwargs: None
+    )
 
     consumer._worker()
 
@@ -817,7 +846,9 @@ def test_execution_intent_consumer_worker_emits_claimed_event_with_trace_context
     assert received[0].trace_id == "trace-claimed-1"
     assert received[0].payload["trace_id"] == "trace-claimed-1"
     assert received[0].payload["target_account_alias"] == "main"
-    assert received[0].payload["account_key"] == build_account_key("live", "Broker-Live", 1001)
+    assert received[0].payload["account_key"] == build_account_key(
+        "live", "Broker-Live", 1001
+    )
 
 
 def test_transport_canary_emits_published_claimed_and_execution_events(monkeypatch):

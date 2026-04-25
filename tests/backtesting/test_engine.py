@@ -192,11 +192,11 @@ class TestBacktestEngine:
     def _build_deployment_gate_engine(
         self,
         *,
-        include_paper_only: bool,
+        include_demo_validation: bool,
     ) -> BacktestEngine:
-        """构造带混合 deployment 状态的 engine，用于 include_paper_only 门控测试。
+        """构造带混合 deployment 状态的 engine，用于 include_demo_validation 门控测试。
 
-        三个策略：active_s / paper_s / candidate_s，分别对应 ACTIVE / PAPER_ONLY /
+        三个策略：active_s / demo_s / candidate_s，分别对应 ACTIVE / DEMO_VALIDATION /
         CANDIDATE。
         """
         from src.signals.contracts.deployment import (
@@ -205,20 +205,20 @@ class TestBacktestEngine:
         )
 
         config = self._make_config(
-            strategies=["active_s", "paper_s", "candidate_s"],
-            include_paper_only=include_paper_only,
+            strategies=["active_s", "demo_s", "candidate_s"],
+            include_demo_validation=include_demo_validation,
         )
         data_loader = MagicMock()
         signal_module = MagicMock()
         signal_module.list_strategies.return_value = [
             "active_s",
-            "paper_s",
+            "demo_s",
             "candidate_s",
         ]
         signal_module.strategy_requirements.side_effect = lambda _name: ("rsi14",)
         signal_module.strategy_capability_catalog.return_value = (
             _capability("active_s", ("rsi14",), ("confirmed",)),
-            _capability("paper_s", ("rsi14",), ("confirmed",)),
+            _capability("demo_s", ("rsi14",), ("confirmed",)),
             _capability("candidate_s", ("rsi14",), ("confirmed",)),
         )
         pipeline = MagicMock()
@@ -226,8 +226,8 @@ class TestBacktestEngine:
             "active_s": StrategyDeployment(
                 name="active_s", status=StrategyDeploymentStatus.ACTIVE
             ),
-            "paper_s": StrategyDeployment(
-                name="paper_s", status=StrategyDeploymentStatus.PAPER_ONLY
+            "demo_s": StrategyDeployment(
+                name="demo_s", status=StrategyDeploymentStatus.DEMO_VALIDATION
             ),
             "candidate_s": StrategyDeployment(
                 name="candidate_s", status=StrategyDeploymentStatus.CANDIDATE
@@ -241,17 +241,17 @@ class TestBacktestEngine:
             strategy_deployments=deployments,
         )
 
-    def test_default_excludes_paper_only_and_candidate(self) -> None:
-        engine = self._build_deployment_gate_engine(include_paper_only=False)
+    def test_default_excludes_demo_validation_and_candidate(self) -> None:
+        engine = self._build_deployment_gate_engine(include_demo_validation=False)
         assert engine._target_strategies == ["active_s"]
         assert sorted(engine._deployment_filtered_strategies) == [
             "candidate_s",
-            "paper_s",
+            "demo_s",
         ]
 
-    def test_include_paper_only_adds_paper_but_not_candidate(self) -> None:
-        engine = self._build_deployment_gate_engine(include_paper_only=True)
-        assert sorted(engine._target_strategies) == ["active_s", "paper_s"]
+    def test_include_demo_validation_adds_demo_but_not_candidate(self) -> None:
+        engine = self._build_deployment_gate_engine(include_demo_validation=True)
+        assert sorted(engine._target_strategies) == ["active_s", "demo_s"]
         assert engine._deployment_filtered_strategies == ["candidate_s"]
 
     def test_indicator_failure_skips_bar(self) -> None:

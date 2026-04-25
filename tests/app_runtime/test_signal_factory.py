@@ -2,20 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from src.app_runtime.factories.signals import build_executor_config
 from src.app_runtime.factories.signals import (
     _should_attach_local_account_runtime,
     _validate_execution_contracts,
     _validate_strategy_deployment_contracts,
+    build_executor_config,
     build_signal_filter_chain,
 )
 from src.config import EconomicConfig
 from src.config.models.signal import SignalConfig
 from src.config.runtime_identity import RuntimeIdentity, build_account_key
-from src.signals.contracts import (
-    StrategyDeployment,
-    StrategyDeploymentStatus,
-)
+from src.signals.contracts import StrategyDeployment, StrategyDeploymentStatus
 from src.trading.execution.executor import ExecutorConfig
 
 
@@ -35,9 +32,7 @@ def test_build_executor_config_preserves_htf_conflict_contract() -> None:
     assert config.min_confidence == 0.82
     assert config.timeframe_min_confidence == {"M5": 0.86}
     assert config.htf_conflict_block_timeframes == frozenset({"M5", "M15"})
-    assert config.htf_conflict_exempt_categories == frozenset(
-        {"reversion", "breakout"}
-    )
+    assert config.htf_conflict_exempt_categories == frozenset({"reversion", "breakout"})
 
 
 def test_build_executor_config_preserves_strategy_deployments() -> None:
@@ -76,12 +71,14 @@ def test_validate_strategy_deployment_contracts_requires_explicit_contracts() ->
         strategy_deployments={
             "structured_trend_continuation": StrategyDeployment(
                 name="structured_trend_continuation",
-                status=StrategyDeploymentStatus.PAPER_ONLY,
+                status=StrategyDeploymentStatus.DEMO_VALIDATION,
             )
         }
     )
 
-    with pytest.raises(ValueError, match="Explicit strategy deployment contracts are required"):
+    with pytest.raises(
+        ValueError, match="Explicit strategy deployment contracts are required"
+    ):
         _validate_strategy_deployment_contracts(
             signal_config,
             {
@@ -91,7 +88,9 @@ def test_validate_strategy_deployment_contracts_requires_explicit_contracts() ->
         )
 
 
-def test_validate_execution_contracts_requires_explicit_binding_for_live_strategies(monkeypatch) -> None:
+def test_validate_execution_contracts_requires_explicit_binding_for_live_strategies(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "src.app_runtime.factories.signals.load_group_mt5_settings",
         lambda **kwargs: {
@@ -130,7 +129,9 @@ def test_validate_execution_contracts_requires_explicit_binding_for_live_strateg
         )
 
 
-def test_multi_account_main_skips_local_account_runtime_without_explicit_live_binding() -> None:
+def test_multi_account_main_skips_local_account_runtime_without_explicit_live_binding() -> (
+    None
+):
     runtime_identity = RuntimeIdentity(
         instance_name="live-main",
         environment="live",

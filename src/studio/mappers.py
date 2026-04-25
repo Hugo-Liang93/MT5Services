@@ -20,7 +20,6 @@ from typing import Any
 
 from .models import build_agent
 
-
 # ── Helper ─────────────────────────────────────────────────────
 
 
@@ -39,8 +38,17 @@ def resolve_status(
     """
     for condition, status, task, alert_level in checks:
         if condition:
-            return build_agent(agent_id, status, task, metrics=metrics, alert_level=alert_level, **kwargs)
-    return build_agent(agent_id, default_status, default_task, metrics=metrics, **kwargs)
+            return build_agent(
+                agent_id,
+                status,
+                task,
+                metrics=metrics,
+                alert_level=alert_level,
+                **kwargs,
+            )
+    return build_agent(
+        agent_id, default_status, default_task, metrics=metrics, **kwargs
+    )
 
 
 # ── 1. collector ← BackgroundIngestor ───────────────────────────
@@ -51,7 +59,9 @@ def map_collector(queue_stats: dict[str, Any], is_backfilling: bool) -> dict[str
     ingest_alive = threads.get("ingest_alive", False)
 
     if not ingest_alive:
-        return build_agent("collector", "disconnected", "采集线程未运行", alert_level="error")
+        return build_agent(
+            "collector", "disconnected", "采集线程未运行", alert_level="error"
+        )
 
     summary = queue_stats.get("summary", {})
     full_count = summary.get("full", 0)
@@ -62,11 +72,17 @@ def map_collector(queue_stats: dict[str, Any], is_backfilling: bool) -> dict[str
         "critical": critical_count,
     }
 
-    return resolve_status("collector", [
-        (is_backfilling, "thinking", "历史数据回补中", "none"),
-        (full_count > 0, "blocked", "队列满溢", "error"),
-        (critical_count > 0, "warning", "队列压力高", "warning"),
-    ], "working", "实时采集中", metrics=metrics)
+    return resolve_status(
+        "collector",
+        [
+            (is_backfilling, "thinking", "历史数据回补中", "none"),
+            (full_count > 0, "blocked", "队列满溢", "error"),
+            (critical_count > 0, "warning", "队列压力高", "warning"),
+        ],
+        "working",
+        "实时采集中",
+        metrics=metrics,
+    )
 
 
 # ── 2a. analyst ← UnifiedIndicatorManager (confirmed) ──────────
@@ -92,10 +108,21 @@ def map_analyst(perf_stats: dict[str, Any]) -> dict[str, Any]:
     }
 
     no_data = computations == 0 and reconcile.get("computations", 0) == 0
-    return resolve_status("analyst", [
-        (no_data, "thinking", "等待K线收盘", "none"),
-        (success_rate < 80.0 and computations > 0, "warning", "计算失败率偏高", "warning"),
-    ], "working", "指标计算中", metrics=metrics)
+    return resolve_status(
+        "analyst",
+        [
+            (no_data, "thinking", "等待K线收盘", "none"),
+            (
+                success_rate < 80.0 and computations > 0,
+                "warning",
+                "计算失败率偏高",
+                "warning",
+            ),
+        ],
+        "working",
+        "指标计算中",
+        metrics=metrics,
+    )
 
 
 # ── 2b. live_analyst ← UnifiedIndicatorManager (intrabar) ──────
@@ -107,7 +134,9 @@ def map_live_analyst(
 ) -> dict[str, Any]:
     running = perf_stats.get("event_loop_running", False)
     if not running:
-        return build_agent("live_analyst", "error", "指标引擎未运行", alert_level="error")
+        return build_agent(
+            "live_analyst", "error", "指标引擎未运行", alert_level="error"
+        )
 
     scope_stats = perf_stats.get("scope_stats", {})
     intrabar = scope_stats.get("intrabar", {})
@@ -137,9 +166,15 @@ def map_live_analyst(
         "bars_by_tf": bars_by_tf,
     }
 
-    return resolve_status("live_analyst", [
-        (intrabar.get("computations", 0) == 0, "thinking", "等待盘中数据", "none"),
-    ], "working", "盘中指标计算中", metrics=metrics)
+    return resolve_status(
+        "live_analyst",
+        [
+            (intrabar.get("computations", 0) == 0, "thinking", "等待盘中数据", "none"),
+        ],
+        "working",
+        "盘中指标计算中",
+        metrics=metrics,
+    )
 
 
 # ── 3a. strategist ← SignalModule ───────────────────────────────
@@ -163,10 +198,16 @@ def map_strategist(
         "per_tf_skips": rt.get("per_tf_skips", {}),
     }
 
-    return resolve_status("strategist", [
-        (strategy_count == 0, "error", "无已注册策略", "error"),
-        (not recent_signals, "idle", "等待快照", "none"),
-    ], "working", "策略评估中", metrics=metrics)
+    return resolve_status(
+        "strategist",
+        [
+            (strategy_count == 0, "error", "无已注册策略", "error"),
+            (not recent_signals, "idle", "等待快照", "none"),
+        ],
+        "working",
+        "策略评估中",
+        metrics=metrics,
+    )
 
 
 # ── 3b. live_strategist ← SignalModule (intrabar preview/armed) ─
@@ -188,10 +229,16 @@ def map_live_strategist(
         "sell_count": sell,
     }
 
-    return resolve_status("live_strategist", [
-        (not intrabar_strategies, "idle", "无盘中策略", "none"),
-        (bool(preview_signals), "working", "盘中策略评估中", "none"),
-    ], "idle", "等待盘中快照", metrics=metrics)
+    return resolve_status(
+        "live_strategist",
+        [
+            (not intrabar_strategies, "idle", "无盘中策略", "none"),
+            (bool(preview_signals), "working", "盘中策略评估中", "none"),
+        ],
+        "idle",
+        "等待盘中快照",
+        metrics=metrics,
+    )
 
 
 # ── 3c. filter_guard ← SignalRuntime (FilterChain) ───────────
@@ -233,10 +280,16 @@ def map_filter_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
     if filter_total == 0:
         return build_agent("filter_guard", "idle", "等待指标快照", metrics=metrics)
 
-    return resolve_status("filter_guard", [
-        (total_blocked > 0 and pass_rate < 30, "blocked", "环境过滤中", "warning"),
-        (total_blocked > 0, "reviewing", "环境过滤中", "none"),
-    ], "approved", "环境过滤中", metrics=metrics)
+    return resolve_status(
+        "filter_guard",
+        [
+            (total_blocked > 0 and pass_rate < 30, "blocked", "环境过滤中", "warning"),
+            (total_blocked > 0, "reviewing", "环境过滤中", "none"),
+        ],
+        "approved",
+        "环境过滤中",
+        metrics=metrics,
+    )
 
 
 # ── 3d. regime_guard ← SignalRuntime (RegimeDetector + affinity) ─
@@ -264,9 +317,15 @@ def map_regime_guard(runtime_status: dict[str, Any]) -> dict[str, Any]:
     if not regime_map:
         return build_agent("regime_guard", "idle", "等待 Regime 数据", metrics=metrics)
 
-    return resolve_status("regime_guard", [
-        (affinity_skipped > 0, "reviewing", "Regime 研判中", "none"),
-    ], "approved", "Regime 研判中", metrics=metrics)
+    return resolve_status(
+        "regime_guard",
+        [
+            (affinity_skipped > 0, "reviewing", "Regime 研判中", "none"),
+        ],
+        "approved",
+        "Regime 研判中",
+        metrics=metrics,
+    )
 
 
 # ── 4. risk_officer ← TradeExecutor ────────────────────────────
@@ -281,7 +340,9 @@ def map_risk_officer(
     risk_blocks = executor_status.get("execution_quality", {}).get("risk_blocks", 0)
     evidence = support_evidence or {}
 
-    pnl_paused = evidence.get("performance_tracker", {}).get("pnl_circuit_paused", False)
+    pnl_paused = evidence.get("performance_tracker", {}).get(
+        "pnl_circuit_paused", False
+    )
     after_eod = evidence.get("position_manager", {}).get("is_after_eod", False)
 
     metrics: dict[str, Any] = {
@@ -297,13 +358,19 @@ def map_risk_officer(
         "upstream_modules": [key for key in evidence.keys()],
     }
 
-    return resolve_status("risk_officer", [
-        (pnl_paused, "blocked", "PnL 熔断暂停交易", "error"),
-        (after_eod, "blocked", "日终平仓后禁止开仓", "warning"),
-        (risk_blocks > 0, "blocked", "风控拦截", "warning"),
-        (blocked > 0, "reviewing", "风控审核中", "none"),
-        (received > 0, "approved", "风控通过", "none"),
-    ], "idle", "等待信号", metrics=metrics)
+    return resolve_status(
+        "risk_officer",
+        [
+            (pnl_paused, "blocked", "PnL 熔断暂停交易", "error"),
+            (after_eod, "blocked", "日终平仓后禁止开仓", "warning"),
+            (risk_blocks > 0, "blocked", "风控拦截", "warning"),
+            (blocked > 0, "reviewing", "风控审核中", "none"),
+            (received > 0, "approved", "风控通过", "none"),
+        ],
+        "idle",
+        "等待信号",
+        metrics=metrics,
+    )
 
 
 # ── 5. trader ← TradeExecutor ─────────────────────────────────
@@ -345,16 +412,28 @@ def map_trader(
     if not enabled:
         return build_agent("trader", "disconnected", "自动交易已禁用", metrics=metrics)
     if circuit_open:
-        return build_agent("trader", "blocked", "熔断器触发", metrics=metrics, alert_level="error")
+        return build_agent(
+            "trader", "blocked", "熔断器触发", metrics=metrics, alert_level="error"
+        )
     if last_error:
-        return build_agent("trader", "warning", "执行异常", metrics=metrics, alert_level="warning")
+        return build_agent(
+            "trader", "warning", "执行异常", metrics=metrics, alert_level="warning"
+        )
     if last_risk_block:
         return build_agent("trader", "idle", "风控拦截", metrics=metrics)
     if pe_entries:
         pe_symbol = pe_entries[0].get("symbol", "") if pe_entries else ""
-        return build_agent("trader", "waiting", "价格确认中", metrics=metrics, symbol=pe_symbol)
+        return build_agent(
+            "trader", "waiting", "价格确认中", metrics=metrics, symbol=pe_symbol
+        )
     if recent:
-        return build_agent("trader", "working", "交易执行中", metrics=metrics, symbol=recent[-1].get("symbol", ""))
+        return build_agent(
+            "trader",
+            "working",
+            "交易执行中",
+            metrics=metrics,
+            symbol=recent[-1].get("symbol", ""),
+        )
     return build_agent("trader", "idle", "等待信号", metrics=metrics)
 
 
@@ -367,13 +446,12 @@ def map_position_manager(
 ) -> dict[str, Any]:
     running = pm_status.get("running", False)
     if not running:
-        return build_agent("position_manager", "disconnected", "持仓管理器未运行", alert_level="error")
+        return build_agent(
+            "position_manager", "disconnected", "持仓管理器未运行", alert_level="error"
+        )
 
     total_pnl = sum(
-        float(
-            p.get("unrealized_pnl", p.get("profit", 0)) or 0
-        )
-        for p in positions
+        float(p.get("unrealized_pnl", p.get("profit", 0)) or 0) for p in positions
     )
     metrics: dict[str, Any] = {
         "tracked_positions": pm_status.get("tracked_positions", 0),
@@ -385,7 +463,9 @@ def map_position_manager(
         return build_agent("position_manager", "idle", "无活跃持仓", metrics=metrics)
 
     alert = "warning" if total_pnl < 0 else "none"
-    return build_agent("position_manager", "working", "持仓监控中", metrics=metrics, alert_level=alert)
+    return build_agent(
+        "position_manager", "working", "持仓监控中", metrics=metrics, alert_level=alert
+    )
 
 
 # ── 7. accountant ← TradingModule ─────────────────────────────
@@ -409,21 +489,28 @@ def map_accountant(
         "balance": account_info.get("balance", 0),
         "equity": equity,
         "margin": margin,
-        "free_margin": account_info.get("free_margin") or account_info.get("margin_free", 0),
+        "free_margin": account_info.get("free_margin")
+        or account_info.get("margin_free", 0),
         "margin_pct": round(margin_pct, 1) if margin > 0 else None,
         "auto_entry": auto_entry,
         "close_only": close_only,
         "margin_guard": mg if mg else None,
     }
 
-    return resolve_status("accountant", [
-        (close_only, "warning", "仅平仓模式", "warning"),
-        (mg_state == "critical", "error", "保证金紧急", "error"),
-        (mg_state == "danger", "alert", "保证金危险", "error"),
-        (mg_state == "warn", "warning", "保证金预警", "warning"),
-        (margin_pct < 150, "alert", "保证金不足", "error"),
-        (not auto_entry, "idle", "自动入场已关闭", "info"),
-    ], "working", "账务正常", metrics=metrics)
+    return resolve_status(
+        "accountant",
+        [
+            (close_only, "warning", "仅平仓模式", "warning"),
+            (mg_state == "critical", "error", "保证金紧急", "error"),
+            (mg_state == "danger", "alert", "保证金危险", "error"),
+            (mg_state == "warn", "warning", "保证金预警", "warning"),
+            (margin_pct < 150, "alert", "保证金不足", "error"),
+            (not auto_entry, "idle", "自动入场已关闭", "info"),
+        ],
+        "working",
+        "账务正常",
+        metrics=metrics,
+    )
 
 
 # ── 8. calendar_reporter ← EconomicCalendarService ────────────
@@ -438,9 +525,9 @@ def map_calendar_reporter(
     failures = int(calendar_stats.get("consecutive_failures", 0))
 
     high_impact = [
-        w for w in risk_windows
-        if str(w.get("impact", "")).lower() == "high"
-        and w.get("guard_active", False)
+        w
+        for w in risk_windows
+        if str(w.get("impact", "")).lower() == "high" and w.get("guard_active", False)
     ]
 
     metrics: dict[str, Any] = {
@@ -451,13 +538,25 @@ def map_calendar_reporter(
     }
 
     if not running:
-        return build_agent("calendar_reporter", "disconnected", "日历服务未运行", metrics=metrics, alert_level="error")
+        return build_agent(
+            "calendar_reporter",
+            "disconnected",
+            "日历服务未运行",
+            metrics=metrics,
+            alert_level="error",
+        )
 
-    return resolve_status("calendar_reporter", [
-        (stale, "alert", "日历数据过期", "error"),
-        (bool(high_impact), "warning", "高影响事件激活", "warning"),
-        (failures > 0, "warning", "数据拉取异常", "warning"),
-    ], "working", "日历监控中", metrics=metrics)
+    return resolve_status(
+        "calendar_reporter",
+        [
+            (stale, "alert", "日历数据过期", "error"),
+            (bool(high_impact), "warning", "高影响事件激活", "warning"),
+            (failures > 0, "warning", "数据拉取异常", "warning"),
+        ],
+        "working",
+        "日历监控中",
+        metrics=metrics,
+    )
 
 
 # ── 9. inspector ← HealthMonitor ─────────────────────────────
@@ -478,34 +577,18 @@ def map_backtester(backtest_status: dict[str, Any]) -> dict[str, Any]:
         "result_cache_size": backtest_status.get("result_cache_size", 0),
     }
 
-    return resolve_status("backtester", [
-        (running_jobs > 0, "working", "回测任务运行中", "none"),
-        (pending_jobs > 0, "thinking", "回测任务排队中", "none"),
-        (failed_jobs > 0, "warning", "最近回测存在失败", "warning"),
-        (completed_jobs > 0, "reviewing", "研究结果可复核", "none"),
-    ], "idle", "等待研究任务", metrics=metrics)
-
-
-def map_paper_trader(paper_status: dict[str, Any]) -> dict[str, Any]:
-    running = bool(paper_status.get("running", False))
-    open_positions = int(paper_status.get("open_positions", 0) or 0)
-    closed_trades = int(paper_status.get("closed_trades", 0) or 0)
-    signals_executed = int(paper_status.get("signals_executed", 0) or 0)
-    floating_pnl = float(paper_status.get("floating_pnl", 0) or 0)
-
-    metrics: dict[str, Any] = {
-        "open_positions": open_positions,
-        "closed_trades": closed_trades,
-        "signals_executed": signals_executed,
-        "floating_pnl": round(floating_pnl, 2),
-        "current_balance": paper_status.get("current_balance"),
-    }
-
-    return resolve_status("paper_trader", [
-        (running and open_positions > 0, "working", "模拟持仓中", "none"),
-        (running and open_positions == 0, "reviewing", "等待信号", "none"),
-        (not running and closed_trades > 0, "idle", "已停止，有历史记录", "none"),
-    ], "idle", "未启用", metrics=metrics)
+    return resolve_status(
+        "backtester",
+        [
+            (running_jobs > 0, "working", "回测任务运行中", "none"),
+            (pending_jobs > 0, "thinking", "回测任务排队中", "none"),
+            (failed_jobs > 0, "warning", "最近回测存在失败", "warning"),
+            (completed_jobs > 0, "reviewing", "研究结果可复核", "none"),
+        ],
+        "idle",
+        "等待研究任务",
+        metrics=metrics,
+    )
 
 
 def map_inspector(health_report: dict[str, Any]) -> dict[str, Any]:
@@ -515,7 +598,13 @@ def map_inspector(health_report: dict[str, Any]) -> dict[str, Any]:
         "active_alert_count": len(health_report.get("active_alerts", [])),
     }
 
-    return resolve_status("inspector", [
-        (overall == "critical", "error", "系统异常", "error"),
-        (overall == "warning", "alert", "系统警告", "warning"),
-    ], "reviewing", "系统健康", metrics=metrics)
+    return resolve_status(
+        "inspector",
+        [
+            (overall == "critical", "error", "系统异常", "error"),
+            (overall == "warning", "alert", "系统警告", "warning"),
+        ],
+        "reviewing",
+        "系统健康",
+        metrics=metrics,
+    )

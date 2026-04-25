@@ -352,7 +352,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 
 - `container.py` — AppContainer：纯组件持有（flat dataclass）
 - `builder.py` — `build_app_container()`：构建所有组件（不启动线程）
-- `builder_phases/` — 构建阶段：market / signal / trading / monitoring / runtime_controls / account_runtime / paper_trading / read_models
+- `builder_phases/` — 构建阶段：market / signal / trading / monitoring / runtime_controls / account_runtime / read_models（ADR-010 后 paper_trading 已删除）
 - `runtime.py` — AppRuntime：start/stop 生命周期管理
 - `mode_controller.py` — 4 种运行模式：FULL/OBSERVE/RISK_OFF/INGEST_ONLY
 - `factories/` — 各组件工厂函数（signals / trading）
@@ -454,7 +454,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | 工厂 + 构建阶段 | `src/app_runtime/factories/notifications.py` / `builder_phases/notifications.py` |
 | Admin API（status + toggle） | `src/api/admin_routes/notifications.py` |
 
-**回测 & Paper Trading**
+**回测 & Demo Validation**（ADR-010 后 paper trading 已删除）
 
 | 组件 | 路径 |
 |------|------|
@@ -463,7 +463,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | 执行语义（research vs execution_feasibility） | `src/backtesting/engine/execution_semantics.py` |
 | 验证决策 | `src/backtesting/validation.py` |
 | BacktestRuntimeStore | `src/backtesting/data/store.py` |
-| Paper Trading | `src/backtesting/paper_trading/bridge.py` |
+| Demo Validation 评估 CLI | `src/ops/cli/demo_vs_backtest.py` |
 
 **Research（信号挖掘）**
 
@@ -603,7 +603,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | 场景 | 标准工作流（回测 / 诊断 / 挖掘 / 健康检查 / 压测） | monkey-patch / 参数网格 / snapshot 内省（CLI 覆盖不了的）|
 
 **`src/ops/` 分类**：
-- `cli/` — 23 个 CLI（`backtest_runner` / `diagnose_no_trades` / `mining_runner` / `aggression_search` / `walkforward_runner` / `correlation_runner` / `backfill_ohlc` / `confidence_check` / `health_check` / `live_preflight` / `paper_vs_backtest` / `pipeline_gate_audit` / `sltp_grid_search` / `exit_experiment` / `reset_database` / `nightly_wf` / `mining_walk_forward` / `daily_report` / `aggression_scan` / `test_notification` / `import_historical_mining` + `_coverage` / `_persistence` 辅助）
+- `cli/` — 23 个 CLI（`backtest_runner` / `diagnose_no_trades` / `mining_runner` / `aggression_search` / `walkforward_runner` / `correlation_runner` / `backfill_ohlc` / `confidence_check` / `health_check` / `live_preflight` / `demo_vs_backtest` / `pipeline_gate_audit` / `sltp_grid_search` / `exit_experiment` / `reset_database` / `nightly_wf` / `mining_walk_forward` / `daily_report` / `aggression_scan` / `test_notification` / `import_historical_mining` + `_coverage` / `_persistence` 辅助）
 - `stress/` — 压测脚本（`intent_latency_probe` / `replay_intrabar` / `storage_saturation`）
 - `mt5_session_gate.py` — MT5 会话门
 
