@@ -385,6 +385,119 @@ def test_trade_executor_returns_pre_trade_reason_for_confirmed_skip() -> None:
     assert module.calls == []
 
 
+class _StubRuntimeIdentity:
+    """轻量 runtime_identity stub，供 §0dg P1 environment-aware deployment 测试。"""
+
+    def __init__(self, environment: str) -> None:
+        self.environment = environment
+
+
+def test_pre_trade_demo_validation_passes_in_demo_environment() -> None:
+    """§0dg P1 回归：pre_trade_checks 第二层 deployment 门禁必须按 environment 路由。
+
+    旧实现无条件 `allows_live_execution()` → demo 环境路由的 demo_validation
+    信号到达执行器仍被拒（与 §0dd 修了 publisher 但漏了 executor 同模式）。
+    修复后：demo environment 下 demo_validation 应通过该门禁，不再返
+    REASON_STRATEGY_DEMO_VALIDATION（后续可能因其他原因 skip，但绝不是
+    deployment 拒绝）。
+    """
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.DEMO_VALIDATION,
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_StubRuntimeIdentity(environment="demo"),
+    )
+
+    result = executor.process_event(
+        _build_event(spread_points=20.0, close_price=3000.0)
+    )
+
+    # 关键断言：demo environment 下 deployment 门禁必须放行 demo_validation。
+    # 若后续因其他原因 skip（execution_gate / pending_entry / ...），reason 一定
+    # 不能是 REASON_STRATEGY_DEMO_VALIDATION。
+    if result is not None and result.get("status") == "skipped":
+        assert result["reason"] != REASON_STRATEGY_DEMO_VALIDATION, (
+            f"demo environment 下 demo_validation 仍被 deployment 门禁拒绝 "
+            f"(§0dg P1 回归)：{result}"
+        )
+
+
+def test_pre_trade_demo_validation_blocked_in_live_environment() -> None:
+    """§0dg P1 反向锁：live environment 下 demo_validation 必须仍被拒（防 demo→live 漂移）。
+
+    与 publisher 同口径（§0dd P1）：environment="live" 严格走
+    `allows_live_execution()`，demo_validation 不在 active/active_guarded 集合
+    内必拒。
+    """
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.DEMO_VALIDATION,
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_StubRuntimeIdentity(environment="live"),
+    )
+
+    result = executor.process_event(
+        _build_event(spread_points=20.0, close_price=3000.0)
+    )
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_STRATEGY_DEMO_VALIDATION
+    assert module.calls == []
+
+
+def test_pre_trade_deployment_gate_defaults_to_live_when_runtime_identity_missing() -> None:
+    """§0dg P1：runtime_identity=None（如 fixture/legacy 调用）时，必须保守按
+    live 口径门禁（严格 allows_live_execution()），与旧行为兼容。
+
+    防止 stub 测试或脚本绕过 runtime_identity 让 demo_validation 误放行。
+    """
+    module = DummyTradingModule()
+    executor = TradeExecutor(
+        trading_module=module,
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            strategy_deployments={
+                "sma_trend": StrategyDeployment(
+                    name="sma_trend",
+                    status=StrategyDeploymentStatus.DEMO_VALIDATION,
+                )
+            },
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        # 不传 runtime_identity（旧 stub 模式）
+    )
+
+    result = executor.process_event(
+        _build_event(spread_points=20.0, close_price=3000.0)
+    )
+
+    assert result is not None
+    assert result["status"] == "skipped"
+    assert result["reason"] == REASON_STRATEGY_DEMO_VALIDATION
+
+
 def test_trade_executor_duplicate_signal_id_uses_unified_reject_contract() -> None:
     module = DummyTradingModule()
     pipeline_bus = PipelineEventBus()

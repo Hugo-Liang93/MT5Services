@@ -171,7 +171,9 @@ def _run_single_combo(
     components = build_backtest_components(strategy_names=[strategy])
     # §0cc P2：旧实现无 finally → writer 连接池 + pipeline 线程池/缓存
     # 持续累积。每次 build_backtest_components 都返回需调用方关闭的独立组件，
-    # 必须在 finally 里 cleanup（与 cli._cleanup_components 同模式）。
+    # 必须在 finally 里 cleanup。
+    # §0dg P3：cleanup_components 已迁到 component_factory（装配工厂层），
+    # 不再反向 import cli（旧实现耦合"研究 nightly → CLI 入口"违反单向依赖）。
     try:
         engine = BacktestEngine(
             config=bt_config,
@@ -197,6 +199,6 @@ def _run_single_combo(
             avg_bars_held=float(m.avg_bars_held),
         )
     finally:
-        from src.backtesting.cli import _cleanup_components
+        from src.backtesting.component_factory import cleanup_components
 
-        _cleanup_components(components)
+        cleanup_components(components)

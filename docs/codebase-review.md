@@ -49,6 +49,140 @@
 
 ---
 
+## 0dg. 2026-04-26 pre_trade_checks 二次门禁漂移 + research deps 反向依赖 cli + cache_hit_rate 已锁契约（P1 + P3 ×2 + skip 调研）
+
+### 触发
+
+User 在 §0df 对账完成后报告 3 处独立问题，要求"如果是 bug 一并修复"：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `trading/execution/pre_trade_checks.py:386` | deployment 第二层门禁仍无条件 `allows_live_execution()` → demo 环境路由的 demo_validation 信号在执行端被拒 |
+| 2 | P3 | `monitoring/health/monitor.py:364-365` | cache_hit_rate `_check_alert_level` `pass` + `return None` 半接线 |
+| 3 | P3 | `backtesting/component_factory.py:229` | `from src.backtesting.cli import _cleanup_components` 反向依赖 cli 入口模块 |
+
+附加：User 询问 6 个 skip 是否 bug。
+
+### 核验（§0 断言协议三步追查）
+
+#### P1 — 真实 bug，§0dd 二次门控漂移在执行端的同模式残留
+
+§0dd 修了 `ExecutionIntentPublisher` 按 `runtime_identity.environment` 路由，但 `pre_trade_checks` 第二层门禁漏修：
+
+```python
+# 旧 _run_governance_filters
+if not deployment.allows_runtime_evaluation():     # candidate 拦
+    return REASON_STRATEGY_CANDIDATE_ONLY
+if not deployment.allows_live_execution():          # ← demo_validation 永远 False
+    return REASON_STRATEGY_DEMO_VALIDATION          # ← 拦掉
+```
+
+后果：装配 demo + publisher 路由通过 + executor 仍拒 → **ADR-010 demo 闭环没真正打通**。这是 §0df 把 WP2 标 100% 时未发现的执行链漏洞——publisher 通了但 executor 没通。
+
+#### P3 #2 — §0t #4 已锁契约（不是 bug）
+
+按 §0 协议三步追查：
+
+1. **追默认值**：`monitor.alerts["cache_hit_rate"] = {"warning": 0.0, "critical": 0.0}`（monitor.py:93）—— 阈值显式 0.0 是 informational only 语义
+2. **追 sentinel**：`tests/monitoring/test_health_check_report.py:23` 显式锁"`cache_hit_rate` 阈值已设为 0（仅作信息指标），即使值为 0 也不触发告警"
+3. **追替代**：`indicator_compute_p99_ms`（monitor.py:86 + test 注释 line 35）已替代为新告警指标
+
+`pass + return None` 是契约的实现：cache_hit_rate 永远不告警是有意为之，该分支保留作"未来重新启用阈值"的占位符（§0t 元层教训已说明）。**不修复**。本段补说明避免再次被误报为 bug。
+
+#### P3 #3 — 真实结构性问题
+
+依赖方向反了：装配工厂（`component_factory`）反向 import 命令行入口（`cli`）。同模式还潜伏在 `src/research/nightly/runner.py:200`：
+
+```python
+finally:
+    from src.backtesting.cli import _cleanup_components   # ← 反向
+    _cleanup_components(components)
+```
+
+#### 6 skip 调研 — 全部合法
+
+`tests/research/features/test_temporal_jit_equivalence.py` 中 3 个参数化测试函数（`test_batch_delta_equivalence` / `test_batch_slope_equivalence` / `test_batch_zscore_equivalence`）× 5 fixture（含 "short" len=5）下，window ≥ 5 时跳过——array 太短无法做 N-window 滚动比较，是数学事实而非代码 bug。边界场景由 `test_empty_array` 等专门 case 覆盖（line 189+）。**不修复**。
+
+### 修复（commit 待 push）
+
+#### P1 pre_trade_checks 按 environment 路由
+
+```python
+# §0dg P1：按 runtime_identity.environment 路由 deployment 二次门禁，
+# 与 ExecutionIntentPublisher（§0dd P1）同口径
+runtime_identity = getattr(executor, "runtime_identity", None)
+environment = (
+    str(getattr(runtime_identity, "environment", "") or "").strip().lower()
+    if runtime_identity is not None
+    else ""
+)
+if environment == "demo":
+    deployment_allowed = deployment.allows_demo_validation()
+else:
+    deployment_allowed = deployment.allows_live_execution()
+if not deployment_allowed:
+    reject_signal(...)
+    return REASON_STRATEGY_DEMO_VALIDATION
+```
+
+设计权衡：
+- `runtime_identity=None` 时保守按 live 口径（与旧行为兼容；防 stub/legacy 调用绕过）
+- 不动 `deployment.py` 的 enum / helper（合同稳定）
+- 新加 3 项契约测试覆盖 demo / live / 默认 fallback
+
+#### P3 #3 `cleanup_components` 迁到 component_factory
+
+迁移：
+- `src/backtesting/component_factory.py` 顶部新增公开符号 `cleanup_components`
+- `src/backtesting/cli.py` 顶部 `from .component_factory import cleanup_components as _cleanup_components`（保留别名让 cli 内部 3 处调用 + sentinel test `test_cli_regressions.py:30` 仍通过）
+- `src/research/nightly/runner.py` 同步从反向 import cli 改为正向 import factory
+
+依赖方向：
+
+| 路径 | 旧（反向） | 新（正向） |
+|---|---|---|
+| `component_factory.build_research_data_deps` | `→ cli._cleanup_components` | `→ component_factory.cleanup_components`（本模块） |
+| `research/nightly/runner._run_single_combo` | `→ cli._cleanup_components` | `→ component_factory.cleanup_components` |
+| `cli` 内部 3 处调用 | 自定义实现 | `→ component_factory.cleanup_components` |
+
+`api/backtest_routes/execution.py:14` 仍有独立 `cleanup_components` 实现（不同行为：debug log + None 防御）——与本轮 P3 #3 范围（"反向依赖"）正交，未合并；后续如需统一可另立专项。
+
+### 测试（4 项契约 + 1 项反向锁）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_pre_trade_demo_validation_passes_in_demo_environment` | demo 环境下 demo_validation 不再被 deployment 门禁拒绝 |
+| `test_pre_trade_demo_validation_blocked_in_live_environment` | live 环境下严格 `allows_live_execution()`（防 demo→live 漂移） |
+| `test_pre_trade_deployment_gate_defaults_to_live_when_runtime_identity_missing` | `runtime_identity=None` 默认走 live 口径 |
+| 现有 `test_trade_executor_returns_pre_trade_reason_for_confirmed_skip` | 保持反向锁（无 runtime_identity 时 demo_validation 仍拒） |
+| 现有 `test_backtesting_cli_cleanup_components_closes_pipeline` | 通过 cli 别名仍走得通（迁移不破坏 sentinel） |
+
+测试基线：`tests/trading + tests/backtesting + tests/api + tests/research` 全过；P3 #3 后 `cli._cleanup_components` 别名保留让 sentinel test 仍 pass。
+
+### 元层教训：**二次门控漂移会复现在每个独立检查点**
+
+§0dd 修了 publisher，但 executor 仍是旧口径——同一个 environment-aware 决策在 N 个独立检查点都得手动实现。建议：
+
+- 把"deployment × environment → 是否允许"抽成 deployment 方法（如 `is_executable_in(environment)`），而不是每个调用点 `if env == "demo" else` 判断——本轮先就地修保留 environment 推断逻辑，后续若再发现第三处可考虑统一抽象
+- 任何"deployment 资格检查"新调用点必须 grep 全 src/ 确保所有点都 environment-aware
+- 同模式漂移已成累犯：§0dd（publisher）→ §0dg（pre_trade）。下一次涉及 deployment 资格的新代码 review 必须明示 "为什么 environment 维度被考虑/不被考虑"
+
+### §0g→§0dg 累计基线
+
+| § 范围 | bug 数 |
+|---|---|
+| 0g–0df | 72（§0df 仅对账，无新 bug） |
+| **0dg** | 2（P1 + P3 #3；P3 #2 经核验为契约；skip 调研无 bug） |
+
+### 减少边界泄漏的方式
+
+- `pre_trade_checks` 与 publisher 共享同一 environment-aware 口径，禁止再次单端漂移
+- `cleanup_components` 单一公开端口落在装配工厂层（`component_factory`），所有调用方（cli / nightly / api / research deps）从同一入口 import；依赖方向回归正向
+- cache_hit_rate 已锁契约说明写入 §0dg + §0t，避免下一轮同 issue 再次被报为 bug
+- skip 调研结论入段（"参数化网格 × short fixture × 大 window"是数学事实），避免同 issue 再次被报为"测试 bug"
+
+---
+
 ## 0df. 2026-04-26 LIVE_READINESS 清单 × 现状对账（治理基线）
 
 ### 触发

@@ -13,6 +13,41 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def cleanup_components(components: Dict[str, Any]) -> None:
+    """关闭 build_backtest_components 返的需托管资源（writer + pipeline）。
+
+    §0cc P3 + §0dg P3：装配域 cleanup 责任的单一公开端口。原本定义在
+    `src/backtesting/cli.py`，由 CLI / API / nightly / research deps 共享，
+    导致 `component_factory.build_research_data_deps` 反向 `from cli import`，
+    把"装配工厂"耦合到"命令行入口"——违反单向依赖。
+
+    修复：把 helper 移到本模块（装配工厂）作为公开端口，cli.py 反向 import；
+    依赖方向变为 cli → component_factory（正向）。
+
+    每个步骤独立 try/except，让 cleanup 不会在 writer 失败时漏关 pipeline。
+    """
+    writer = components.get("writer")
+    if writer is not None:
+        close_writer = getattr(writer, "close", None)
+        if callable(close_writer):
+            try:
+                close_writer()
+            except Exception:
+                logger.warning(
+                    "backtesting cleanup: writer.close() failed", exc_info=True
+                )
+    pipeline = components.get("pipeline")
+    if pipeline is not None:
+        shutdown_pipeline = getattr(pipeline, "shutdown", None)
+        if callable(shutdown_pipeline):
+            try:
+                shutdown_pipeline()
+            except Exception:
+                logger.warning(
+                    "backtesting cleanup: pipeline.shutdown() failed", exc_info=True
+                )
+
+
 def _load_signal_config_snapshot():
     """加载 signal_config 的独立快照，不依赖 @lru_cache 全局单例。
 
@@ -226,11 +261,10 @@ def build_research_data_deps(
     # §0cc P2：把 writer + pipeline cleanup 责任显式回传给 consumer，
     # 避免 mining 入口（api/research_routes、ops/cli/mining_runner 等）
     # 拿不到合法释放端口导致连接池/线程池泄漏。
-    from src.backtesting.cli import _cleanup_components
-
+    # §0dg P3：cleanup_components 已迁到本模块（装配工厂），不再反向依赖 cli。
     return ResearchDataDeps(
         bar_loader=components["data_loader"],
         indicator_computer=components["pipeline"],
         regime_detector=components["regime_detector"],
-        cleanup_fn=lambda: _cleanup_components(components),
+        cleanup_fn=lambda: cleanup_components(components),
     )
