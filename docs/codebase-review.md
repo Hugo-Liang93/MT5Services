@@ -49,6 +49,246 @@
 
 ---
 
+## 0y. 2026-04-26 已废弃私有字段读取 + multi-instance runtime task 串行 + 一次性参数变成全局配置（P2 ×3 + P3）
+
+### 触发
+
+User 报告 4 处独立 bug，本轮聚焦"消费侧仍读已废弃私有字段 + multi-instance
+runtime task 隔离漏洞 + REST 端点篡改服务内部 state":
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | P2 | `trading/tracking/trade_outcome.py:189` | 读 `pos._close_source`，但 TrackedPosition 公开字段是 `close_source`（manager.py:116 + reconciliation.py:376），真实平仓来源被静默丢失，落库 metadata 永远是默认 'position_closed' |
+| 2 | P2 | `calendar/economic_calendar/calendar_sync.py:308-315` | `restore_job_state` 查询 runtime_task_status 没传 `instance_id`，多实例同库时把别人的 next_run_at / 失败计数 / 上次刷新时间串行恢复到本实例 |
+| 3 | P2 | `api/signal_routes/runtime.py:132-133` | `calibrator_refresh` 端点写 `calibrator._refresh_hours = hours` 后调 `refresh()` → 一次性 POST 把后续后台刷新和默认 refresh 主窗口都永久改掉 |
+| 4 | P3 | `calendar/read_only_provider.py:43-46` | `_runtime_rows` 同样不带 `instance_id`，多 main 实例同库时 freshness/error/provider_status 可能来自别的实例 |
+
+### 根因
+
+#### #1 trade_outcome 仍按已废弃的 `_close_source` 私有约定读
+
+```python
+# trade_outcome.py:189
+close_source: str = getattr(pos, "_close_source", "position_closed") \
+    or "position_closed"
+```
+
+但 TrackedPosition 的实际字段：
+```python
+# positions/manager.py:116
+class TrackedPosition:
+    close_source: Optional[str] = None  # ← 公开字段
+
+# positions/reconciliation.py:376
+pos.close_source = close_source         # ← 实际写入点
+```
+
+后果：reconciliation 写 `close_source='history_deals'` / `'mt5_missing'` /
+`'position_closed_by_user'` 等真实标签全被丢失，落库 metadata 都是默认值，
+trade_outcomes 表的 close_source 维度统计全部失真。
+
+更隐蔽的是：**测试 fixture `_make_pos(close_source=...)` 也写到 `_close_source`**
+（与 source 同源错误）→ 旧测试全绿 → bug 在测试里都看不出来。
+
+#### #2+#4 runtime_task_status 查询缺 instance_id 维度
+
+`runtime_task_status` 表 PK 是 `(instance_id, component, task_name)`（多实例
+拓扑设计）。两处消费侧都漏掉 `instance_id`：
+
+```python
+# calendar_sync.restore_job_state（P2#2）
+rows = service.db.fetch_runtime_task_status(
+    component=_RUNTIME_COMPONENT,
+    instance_role=runtime_identity.instance_role,    # ← 'main'
+    account_key=runtime_identity.account_key,        # ← 'live:srv:1'
+)
+# ↑ 不带 instance_id；ORDER BY updated_at DESC，最新的别人 row 排第一
+
+# read_only_provider._runtime_rows（P3#4）
+rows = self.db.fetch_runtime_task_status(
+    component="economic_calendar",
+    instance_role="main",
+)
+# ↑ 同问题，且只筛 role 不筛 instance
+```
+
+后果：
+- 滚动重启 / 双开实例 / 同账户重复进程下，restore_job_state 把别人的
+  `next_run_at` 恢复到本实例 → 本实例可能立刻或永不调度
+- read_only provider 报告的 freshness / error / provider_status 可能是别人
+  那个 main 实例的，不是当前 executor 应该依赖的那个
+
+#### #3 calibrator_refresh 把一次性参数变成全局配置
+
+```python
+@router.post("/calibrator/refresh")
+def calibrator_refresh(hours: int = Query(...), calibrator=Depends(...)):
+    calibrator._refresh_hours = hours       # ← 篡改服务内部 state
+    count = calibrator.refresh()
+    ...
+```
+
+`ConfidenceCalibrator.refresh()` 默认从 `self._refresh_hours` 读主窗口（line 255）：
+```python
+rows = self._fetch_fn(hours=self._refresh_hours, symbol=symbol)
+```
+
+后果：用户 POST `/calibrator/refresh?hours=24` 期望"本次按 24h 刷新"，
+实际把：
+- 本次 refresh 主窗口改成 24h ✓（用户期望）
+- 后续后台周期刷新主窗口也变成 24h ✗（应保持默认 168h）
+- 后续所有不带参数的 refresh() 主窗口都变成 24h ✗
+
+且违反 ADR-006（装配/API 层禁止读写组件 `_` 前缀私有属性）。
+
+### 修复（commit 待 push）
+
+#### #1 trade_outcome 改读公开字段 + 同步修测试 fixture
+
+```python
+# §0y P2：旧实现读 pos._close_source 但 TrackedPosition 公开字段是
+# close_source（manager.py:116 + reconciliation.py:376），真实关仓来源
+# 静默被丢失 → metadata 落库永远为默认 'position_closed'，污染审计事实。
+close_source: str = getattr(pos, "close_source", "position_closed") \
+    or "position_closed"
+```
+
+测试 fixture `_make_pos` 同步改写公开字段，让"对称错误"无法再次掩盖 bug：
+```python
+def _make_pos(*, close_source=None):
+    pos = SimpleNamespace(...)
+    if close_source is not None:
+        pos.close_source = close_source        # ← 公开字段
+    return pos
+```
+
+#### #2+#4 两处 runtime_task_status 查询都加 instance_id
+
+```python
+# calendar_sync.restore_job_state
+rows = service.db.fetch_runtime_task_status(
+    component=_RUNTIME_COMPONENT,
+    instance_id=(
+        runtime_identity.instance_id if runtime_identity is not None else None
+    ),
+    instance_role=...,
+    account_key=...,
+)
+
+# read_only_provider._runtime_rows
+instance_id = (
+    getattr(self._runtime_identity, "instance_id", None)
+    if self._runtime_identity is not None else None
+)
+rows = self.db.fetch_runtime_task_status(
+    component="economic_calendar",
+    instance_id=instance_id,        # ← 新加
+    instance_role="main",
+)
+```
+
+`runtime_identity=None` 时不传 `instance_id`，保留旧全局查询行为
+（兼容没注入身份的旧调用方）。
+
+#### #3 ConfidenceCalibrator.refresh(hours=) 一次性参数 + 删除 API state 篡改
+
+```python
+# calibrator.py
+def refresh(self, *, symbol=None, hours: Optional[int] = None) -> int:
+    """§0y P2：``hours`` 是**一次性**主窗口覆盖（不修改 self._refresh_hours）。
+    旧 API ``calibrator._refresh_hours = h`` + ``refresh()`` 把后续后台刷新
+    和默认 refresh 主窗口都永久改成 h；正确做法是显式 one-shot 参数，让
+    "本次按 h 刷新"与"全局默认 refresh 窗口"语义分开。
+    """
+    effective_hours = int(hours) if hours is not None else self._refresh_hours
+    rows = self._fetch_fn(hours=effective_hours, symbol=symbol)
+    ...
+
+def describe(self) -> dict:
+    return {
+        ...,
+        "refresh_hours": self._refresh_hours,   # ← 暴露默认窗口
+        ...,
+    }
+```
+
+```python
+# api/signal_routes/runtime.py
+@router.post("/calibrator/refresh")
+def calibrator_refresh(hours=..., calibrator=Depends(...)):
+    # §0y P2：旧实现 calibrator._refresh_hours = hours 后调 refresh() 把
+    # 后续后台刷新和默认 refresh 主窗口都永久改掉。改用一次性 hours= 参数，
+    # 不污染服务内部 state（参 ADR-006：装配/API 层禁止读写 _ 前缀私有属性）。
+    count = calibrator.refresh(hours=hours)        # ← one-shot
+    return ApiResponse.success_response(...)
+```
+
+### 测试（5 项新契约 + fixture 校正）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_close_source_read_from_public_attr_history_deals` | pos.close_source='history_deals' → metadata 落库 'history_deals'（非默认） |
+| `test_close_source_read_from_public_attr_mt5_missing` | pos.close_source='mt5_missing' → 同步落库 |
+| `test_confidence_calibrator_refresh_hours_param_is_one_shot` | refresh(hours=24) 仅当次按 24h；_refresh_hours 不变；下次无参 refresh() 仍 168h |
+| `test_restore_job_state_passes_instance_id_to_runtime_task_query` | calendar_sync 必传 instance_id |
+| `test_read_only_provider_runtime_rows_pass_instance_id` | provider 必传 instance_id |
+| `test_read_only_provider_without_runtime_identity_skips_instance_filter` | runtime_identity=None 时不传 instance_id（兼容旧调用方） |
+
+`_make_pos` fixture 同步改用公开字段 close_source（修对称错误）。
+
+### 元层教训：**已废弃字段必须从所有消费侧物理删除，否则迟早被读到**
+
+§0y 与 §0r 类同：消费侧未识别生产侧契约。本轮升级到**字段级**：
+
+1. **私有字段重命名为公开后，旧 `_xxx` 引用必须全 grep 清掉**——
+   单点改名 + 留旧引用 = "对称错误掩盖 bug"
+2. **测试 fixture 必须用真实字段名**——fixture 用 `_close_source` 写、
+   实现用 `_close_source` 读 → 全测试通过 + bug 落库
+3. **multi-tenant 表 PK 是消费侧契约的一部分**——`(instance_id, component,
+   task_name)` PK 意味着所有 fetcher 必须按 instance_id 过滤；少一个维度
+   就是跨实例污染（同 §0u P1 ticket PK 教训的另一面）
+4. **REST 端点禁止篡改服务内部 state**——一次性参数应作为方法参数显式传入，
+   不能通过 `obj._private_attr = x` 走后门（违反 ADR-006）
+
+强建议（扩充 §0g→§0x 元层教训）：
+- 字段重命名 PR 必须 grep 旧名全 src/ + tests/，零残留才能合并
+- 任何 multi-tenant 查询必须把 PK 全部维度作为 fetcher 必传参数
+  （schema PK 改动应连带 fetcher 签名 breaking change）
+- REST/CLI 端点遇到"需要临时改组件配置"的需求 → 把配置参数化作为方法
+  参数而非"临时设置内部 state"
+- 添加 ADR-006 遵循度 sentinel：grep `\._[a-z]+\s*=` in src/api/ + builders
+
+### §0g→§0y 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **51 bug + 51 反向锁** + 1 契约阻断
++ 2 条防回归 sentinel：
+
+| § | bug 数 | sentinel |
+|---|---|---|
+| 0g–0r | 27 | — |
+| 0s | 3 | — |
+| 0t | 3 + 1 契约阻断 | — |
+| 0u | 5 | — |
+| 0v | 5 | — |
+| 0w | 4 | — |
+| 0x | — | R2 + R4 自动 WARN/sentinel |
+| 0y | 4 | — |
+
+### 测试基线
+
+- 修复前：4 处 user-facing bug；close_source / multi-instance task 隔离 / 一次性参数 全部零覆盖
+- 修复后：5 项新契约测试 + fixture 校正；`pytest -q` → **2873 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- trade_outcome 改读公开字段 + 测试 fixture 同步纠正，消除"对称错误"
+- runtime_task_status fetcher 调用全套补 instance_id 维度，与 schema PK 对齐
+- calibrator 提供正式 one-shot `hours` 参数 + describe 暴露 _refresh_hours，
+  不再依赖 API 层篡改服务内部 state
+- API endpoint 不再触碰 `_` 前缀私有属性（遵循 ADR-006）
+
+---
+
 ## 0x. 2026-04-26 §0w 强建议系统化落地：未注册 metric 自动 WARN + ISO tz helper + AST sentinel（防御性）
 
 ### 触发
