@@ -7,20 +7,16 @@ MiningRunner ↔ FeatureHub 集成测试。
 - provider_groups 在运行后有值
 - MiningResult 包含新字段
 """
+
 from __future__ import annotations
 
-import ast
 import importlib
-import textwrap
-from typing import Any, Dict, List, Optional, Tuple
-from unittest.mock import MagicMock, patch
+from typing import Any, Dict
+from unittest.mock import MagicMock
 
 import pytest
 
-from src.research.core.config import (
-    FeatureProviderConfig,
-    ResearchConfig,
-)
+from src.research.core.config import FeatureProviderConfig, ResearchConfig
 from src.research.core.contracts import Finding, MiningResult
 from src.research.core.ports import ResearchDataDeps
 
@@ -122,12 +118,13 @@ def test_provider_groups_populated_after_compute():
 
 
 def test_mining_result_has_new_fields():
-    """MiningResult 应包含 feature_compute_summary / findings_by_provider / cross_provider_rules。"""
-    import datetime as _dt
+    """MiningResult 含 feature_compute_summary / findings_by_provider /
+    cross_provider_rules。"""
+    from src.utils.timezone import utc_now
 
     result = MiningResult(
         run_id="test_001",
-        started_at=_dt.datetime.utcnow(),
+        started_at=utc_now(),
     )
 
     # 默认值
@@ -166,7 +163,6 @@ def test_mining_result_has_new_fields():
 def test_tag_cross_provider_rules_basic():
     """tag_cross_provider_rules 应识别涉及 2+ Provider 的规则。"""
     from src.research.analyzers.rule_mining import (
-        MinedRule,
         RuleCondition,
         tag_cross_provider_rules,
     )
@@ -204,9 +200,7 @@ def test_tag_cross_provider_rules_basic():
         ),
     ]
 
-    result = tag_cross_provider_rules(
-        [single_rule, cross_rule], provider_groups
-    )
+    result = tag_cross_provider_rules([single_rule, cross_rule], provider_groups)
     assert len(result) == 1
     assert result[0] is cross_rule
 
@@ -251,9 +245,7 @@ def test_grouped_fdr_does_not_break_existing():
     corrected_global = _apply_batch_correction(
         results, of_cfg, 0.05, 1, fdr_grouping="global"
     )
-    corrected_default = _apply_batch_correction(
-        results, of_cfg, 0.05, 1
-    )
+    corrected_default = _apply_batch_correction(results, of_cfg, 0.05, 1)
 
     assert len(corrected_global) == len(corrected_default) == 1
     assert corrected_global[0].is_significant == corrected_default[0].is_significant

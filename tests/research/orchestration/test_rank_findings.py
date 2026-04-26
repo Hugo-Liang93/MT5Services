@@ -6,11 +6,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import List
 from unittest.mock import MagicMock
-
-import pytest
 
 from src.research.core.config import ResearchConfig
 from src.research.core.contracts import (
@@ -21,6 +17,7 @@ from src.research.core.contracts import (
 )
 from src.research.core.ports import ResearchDataDeps
 from src.research.orchestration.runner import MiningRunner
+from src.utils.timezone import utc_now
 
 
 def _runner() -> MiningRunner:
@@ -36,13 +33,13 @@ def _runner() -> MiningRunner:
 def _empty_result() -> MiningResult:
     return MiningResult(
         run_id="test",
-        started_at=datetime.utcnow(),
+        started_at=utc_now(),
         data_summary=DataSummary(
             symbol="XAUUSD",
             timeframe="H1",
             n_bars=1000,
-            start_time=datetime.utcnow(),
-            end_time=datetime.utcnow(),
+            start_time=utc_now(),
+            end_time=utc_now(),
             train_bars=700,
             test_bars=300,
             regime_distribution={},

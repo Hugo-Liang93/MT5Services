@@ -14,13 +14,13 @@ from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.calendar import infer_symbol_context
 from src.calendar.economic_calendar.gold_relevance import (
     EventRelevanceMatcher,
     EventSummary,
     GoldRelevancePolicy,
     build_relevance_matcher,
 )
-from src.calendar import infer_symbol_context
 from src.calendar.economic_loader import load_economic_events_window
 from src.config.centralized import get_economic_config
 from src.config.database import load_db_settings
@@ -31,6 +31,7 @@ from src.research.core.config import ResearchConfig, load_research_config
 from src.research.core.contracts import DataSummary, Finding, MiningResult
 from src.research.core.data_matrix import build_data_matrix
 from src.research.core.ports import ResearchDataDeps
+from src.utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ class MiningRunner:
             MiningResult
         """
         run_id = f"mine_{uuid.uuid4().hex[:12]}"
-        started_at = datetime.utcnow()
+        started_at = utc_now()
 
         if analyses is None:
             # 默认执行所有已注册的 analyzer（按注册顺序，可由 default_analyzers 控制）
@@ -268,7 +269,7 @@ class MiningRunner:
         # 特征计算摘要
         result.feature_compute_summary = compute_result.to_dict()
 
-        result.completed_at = datetime.utcnow()
+        result.completed_at = utc_now()
 
         return result
 
@@ -506,7 +507,8 @@ class MiningRunner:
                     summary=(
                         f"{bp.indicator_name}.{bp.field_name} {bp.direction} "
                         f"IC={ic:+.3f} barrier={sl_atr}/{tp_atr}/{time_bars} "
-                        f"tp={bp.tp_hit_rate * 100:.0f}%/sl={bp.sl_hit_rate * 100:.0f}% "
+                        f"tp={bp.tp_hit_rate * 100:.0f}%/"
+                        f"sl={bp.sl_hit_rate * 100:.0f}% "
                         f"bars={bp.mean_bars_held:.1f} n={bp.n_samples}{regime_str}"
                     ),
                     confidence_level=(

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from src.api import deps
 from src.api.schemas import ApiResponse
+from src.utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -51,7 +52,7 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
     """后台执行挖掘任务。"""
     _mining_jobs[run_id] = {
         "status": "running",
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": utc_now().isoformat(),
     }
     try:
         from src.backtesting.component_factory import build_research_data_deps
