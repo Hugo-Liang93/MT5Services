@@ -96,7 +96,7 @@ class OperatorCommandConsumer:
         transitions = self._claim_fn(
             target_account_key=self._runtime_identity.account_key,
             claimed_by_instance_id=self._runtime_identity.instance_id,
-            claimed_by_run_id=self._runtime_identity.instance_id,
+            claimed_by_run_id=self._runtime_identity.run_id,
             limit=self._batch_size,
             lease_seconds=self._lease_seconds,
             max_attempts=self._max_attempts,
@@ -142,7 +142,7 @@ class OperatorCommandConsumer:
                 command_id=command_id,
                 status="completed",
                 claimed_by_instance_id=self._runtime_identity.instance_id,
-                claimed_by_run_id=self._runtime_identity.instance_id,
+                claimed_by_run_id=self._runtime_identity.run_id,
                 response_payload=response_payload,
                 audit_id=audit_id,
                 last_error_code=None,
@@ -157,7 +157,7 @@ class OperatorCommandConsumer:
                 command_id=command_id,
                 status="failed",
                 claimed_by_instance_id=self._runtime_identity.instance_id,
-                claimed_by_run_id=self._runtime_identity.instance_id,
+                claimed_by_run_id=self._runtime_identity.run_id,
                 response_payload=error_payload,
                 audit_id=audit_id,
                 last_error_code=type(exc).__name__,
@@ -207,7 +207,7 @@ class OperatorCommandConsumer:
         self._heartbeat_fn(
             command_id=command_id,
             claimed_by_instance_id=self._runtime_identity.instance_id,
-            claimed_by_run_id=self._runtime_identity.instance_id,
+            claimed_by_run_id=self._runtime_identity.run_id,
             lease_seconds=self._lease_seconds,
         )
 
@@ -575,7 +575,7 @@ class OperatorCommandConsumer:
             "command_type": item.get("command_type"),
             "trace_id": self._trace_id_for_item(item),
             "claimed_by_instance_id": self._runtime_identity.instance_id,
-            "claimed_by_run_id": self._runtime_identity.instance_id,
+            "claimed_by_run_id": self._runtime_identity.run_id,
             "instance_id": self._runtime_identity.instance_id,
             "instance_role": self._runtime_identity.instance_role,
             "account_key": self._runtime_identity.account_key,

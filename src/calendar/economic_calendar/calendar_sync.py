@@ -310,23 +310,22 @@ def update_job_state(
 
 
 def restore_job_state(service) -> None:
-    runtime_identity = getattr(service, "_runtime_identity", None)
+    # §0dk P2：service._runtime_identity 必填（装配契约）；§0dj 已要求 writer 端
+    # 必填，read 端同步——不再 getattr 兜底 + None 三段式。
+    runtime_identity = service._runtime_identity
+    if runtime_identity is None:
+        raise RuntimeError(
+            "calendar_sync.restore_job_state requires service._runtime_identity; "
+            "装配层必须在 EconomicCalendarService 构造时显式注入"
+        )
     try:
         # §0y P2：runtime_task_status 表 PK 是 (instance_id, component, task_name)，
-        # 旧实现只按 component + instance_role + account_key 取行 →
-        # 滚动重启 / 双开实例 / 同账户重复进程下，会把别人的 next_run_at +
-        # 失败计数 + 上次刷新时间静默串行恢复到本实例。必须按 instance_id 过滤。
+        # 必须按 instance_id 过滤防止跨实例串行恢复。
         rows = service.db.fetch_runtime_task_status(
             component=_RUNTIME_COMPONENT,
-            instance_id=(
-                runtime_identity.instance_id if runtime_identity is not None else None
-            ),
-            instance_role=(
-                runtime_identity.instance_role if runtime_identity is not None else None
-            ),
-            account_key=(
-                runtime_identity.account_key if runtime_identity is not None else None
-            ),
+            instance_id=runtime_identity.instance_id,
+            instance_role=runtime_identity.instance_role,
+            account_key=runtime_identity.account_key,
         )
     except Exception as exc:  # pragma: no cover
         logger.debug("Failed to restore economic runtime task state: %s", exc)

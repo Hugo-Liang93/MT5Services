@@ -10,6 +10,18 @@ from src.monitoring.health.checks import check_economic_calendar
 from src.monitoring.runtime_task_status import RuntimeTaskState
 
 
+
+
+# §0dk P2：EconomicCalendarService 必填 runtime_identity；test 用 SimpleNamespace stub。
+def _calendar_runtime_identity():
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        instance_id="live:test-main",
+        instance_role="main",
+        account_key="live:Broker-Test:1001",
+        account_alias="main",
+    )
+
 class _DummyDB:
     def __init__(self, rows=None) -> None:
         self._rows = list(rows or [])
@@ -96,7 +108,7 @@ def test_service_does_not_report_stale_while_bootstrap_window_is_open(monkeypatc
     now = datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc)
     monkeypatch.setattr("src.calendar.service._utc_now", lambda: now)
 
-    service = EconomicCalendarService(_DummyDB(), settings=EconomicConfig())
+    service = EconomicCalendarService(_DummyDB(), settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity())
     service._scheduler_started_at = now - timedelta(seconds=30)
     service._bootstrap_deadline_at = now + timedelta(seconds=180)
     service._worker = _DummyThread(alive=True)
@@ -111,7 +123,7 @@ def test_service_reports_stale_after_bootstrap_deadline_without_success(monkeypa
     now = datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc)
     monkeypatch.setattr("src.calendar.service._utc_now", lambda: now)
 
-    service = EconomicCalendarService(_DummyDB(), settings=EconomicConfig())
+    service = EconomicCalendarService(_DummyDB(), settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity())
     service._scheduler_started_at = now - timedelta(minutes=10)
     service._bootstrap_deadline_at = now - timedelta(seconds=1)
     service._worker = _DummyThread(alive=True)
@@ -146,7 +158,7 @@ def test_restore_job_state_recovers_last_successful_refresh_timestamp() -> None:
             ),
         ]
     )
-    service = EconomicCalendarService(db, settings=EconomicConfig())
+    service = EconomicCalendarService(db, settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity())
 
     service._restore_job_state()
 
@@ -175,7 +187,7 @@ def test_restore_job_state_recovers_last_success_after_stop() -> None:
             ),
         ]
     )
-    service = EconomicCalendarService(db, settings=EconomicConfig())
+    service = EconomicCalendarService(db, settings=EconomicConfig(), runtime_identity=_calendar_runtime_identity())
 
     service._restore_job_state()
 

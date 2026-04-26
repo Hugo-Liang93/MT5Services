@@ -649,7 +649,8 @@ def inspect_pending_mt5_order(
 
     if executor.trade_outcome_tracker is not None and signal_id:
         try:
-            runtime_identity = getattr(executor, "runtime_identity", None)
+            # §0dk P2：TradeExecutor.runtime_identity 必填（§0dj），直接 access。
+            runtime_identity = executor.runtime_identity
             metadata = dict(info.get("metadata") or {})
             executor.trade_outcome_tracker.on_trade_opened(
                 signal_id=signal_id,
@@ -661,9 +662,9 @@ def inspect_pending_mt5_order(
                 confidence=float(info.get("confidence") or 0.0),
                 regime=info.get("regime"),
                 account_key=metadata.get("target_account_key")
-                or getattr(runtime_identity, "account_key", None),
+                or runtime_identity.account_key,
                 account_alias=metadata.get("target_account_alias")
-                or getattr(runtime_identity, "account_alias", None),
+                or runtime_identity.account_alias,
                 intent_id=metadata.get("intent_id"),
                 opened_at=opened_at,
             )

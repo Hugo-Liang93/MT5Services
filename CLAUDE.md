@@ -57,6 +57,13 @@ grep -rn "runtime_identity: Any | None = None\|runtime_identity: Optional" src/ 
 
 # 6. getattr 兜底默认值（运行时必需字段不应有 default）
 grep -rEn 'getattr\([^,]+, *"(runtime_identity|environment|instance_id|account_key)"' src/ --include='*.py' | grep -v "tests" && echo "❌ 关键身份字段禁止 getattr 兜底"
+
+# 7. 关键身份字段的 getattr 兜底全集（含 §0dk 扩展）
+grep -rEn 'getattr\([^,]+, *"(runtime_identity|environment|instance_id|instance_role|account_key|account_alias|peer_main_instance_id|run_id)"' src/ --include='*.py' \
+  | grep -v "src/api/\|src/backtesting/cli.py:" && echo "❌ 关键身份字段禁止 getattr 兜底（API 层从 readmodel 防御读除外）"
+
+# 8. 字面量 fallback（"?" / "shared-main" / "legacy" / "unknown" 等是补丁标记）
+grep -rEn 'getattr\([^,]+, *"[a-z\-]+"\)' src/ --include='*.py' | grep -E '("\?"|"shared-main"|"legacy"|"unknown"|"n/a")' && echo "❌ 字面量 fallback 是补丁标记，应改 raise 或合法默认值"
 ```
 
 ### 断言核验协议（P0/FATAL 断言的硬门槛）

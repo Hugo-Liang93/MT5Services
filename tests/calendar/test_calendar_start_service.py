@@ -9,6 +9,13 @@ from src.calendar.service import EconomicCalendarService
 
 
 def test_job_interval_honors_zero_disable() -> None:
+    # §0dk P2：EconomicCalendarService 必填 runtime_identity。
+    runtime_identity = SimpleNamespace(
+        instance_id="live:test-main",
+        instance_role="main",
+        account_key="live:Broker-Test:1001",
+        account_alias="main",
+    )
     service = EconomicCalendarService(
         db_writer=SimpleNamespace(),
         settings=SimpleNamespace(
@@ -18,6 +25,7 @@ def test_job_interval_honors_zero_disable() -> None:
             release_watch_interval_seconds=120,
             local_timezone="UTC",
         ),
+        runtime_identity=runtime_identity,
     )
 
     assert service._job_interval("calendar_sync") == 21600.0

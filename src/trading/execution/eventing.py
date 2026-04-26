@@ -197,13 +197,13 @@ def trace_id_for_event(event: "SignalEvent") -> str:
 
 
 def _account_context(executor: "TradeExecutor", event: "SignalEvent") -> dict[str, Any]:
-    runtime_identity = getattr(executor, "runtime_identity", None)
+    # §0dk P2：TradeExecutor.runtime_identity 必填（§0dj），直接 access 不兜底。
+    runtime_identity = executor.runtime_identity
     metadata = dict(event.metadata or {})
     return {
-        "account_key": metadata.get("target_account_key")
-        or getattr(runtime_identity, "account_key", None),
+        "account_key": metadata.get("target_account_key") or runtime_identity.account_key,
         "account_alias": metadata.get("target_account_alias")
-        or getattr(runtime_identity, "account_alias", None),
+        or runtime_identity.account_alias,
         "intent_id": metadata.get("intent_id"),
     }
 

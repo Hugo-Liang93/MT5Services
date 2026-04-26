@@ -137,13 +137,20 @@ class AppRuntime:
     def _log_startup_summary(self) -> None:
         """输出一行结构化启动摘要，供排障时替代翻 ini + API 三方对账。
 
-        故意使用惰性字段读取 + 失败降级为 N/A，不能因为摘要输出本身炸掉启动。
+        §0dk P3：runtime_identity 必填（§0dj 装配契约），调到本方法时必有值；
+        删除 getattr "?" 兜底——若 identity 缺失说明装配阶段已经挂，应该让启动
+        阶段的真实异常透出，而不是用 "?" 字面量掩盖。
         """
         c = self.container
         identity = c.runtime_identity
-        instance = getattr(identity, "instance_name", "?")
-        environment = getattr(identity, "environment", "?")
-        role = getattr(identity, "instance_role", "?")
+        if identity is None:
+            raise RuntimeError(
+                "_log_startup_summary called before runtime_identity was set; "
+                "装配契约保证 startup 完成时 runtime_identity 已赋值"
+            )
+        instance = identity.instance_name
+        environment = identity.environment
+        role = identity.instance_role
 
         mode = "?"
         if c.runtime_mode_controller is not None:

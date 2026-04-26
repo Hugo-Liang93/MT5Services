@@ -83,11 +83,19 @@ class EconomicCalendarService:
     def __init__(
         self,
         db_writer: TimescaleWriter,
+        *,
+        runtime_identity: "RuntimeIdentity",
         settings: Optional[EconomicConfig] = None,
         storage_writer: Optional[StorageWriter] = None,
         provider_registry: Optional[ProviderRegistry] = None,
-        runtime_identity: Optional["RuntimeIdentity"] = None,
     ):
+        # §0dk P2：runtime_identity 必填（keyword-only），无默认值——
+        # runtime_task_status writer/restore 依赖必有 identity。
+        if runtime_identity is None:
+            raise ValueError(
+                "EconomicCalendarService requires runtime_identity (RuntimeIdentity); "
+                "runtime_task_status writer/restore 依赖 instance_id/role/account_key"
+            )
         self.db = db_writer
         self.settings = settings or get_economic_config()
         self.storage_writer = storage_writer

@@ -1477,12 +1477,14 @@ class RuntimeReadModel:
     def recent_trade_pipeline_events_payload(
         self, *, limit: int = 50
     ) -> dict[str, Any]:
+        # §0dk P2：runtime_identity 早 None 短路返回（合规防御读，因为
+        # readmodel 可能在装配未完成期被调用）。is not None 路径必须直接 access。
         if self.db_writer is None or self._runtime_identity is None:
             return {"count": 0, "items": []}
         rows = list(
             self.db_writer.fetch_pipeline_trace_filtered(
-                instance_id=getattr(self._runtime_identity, "instance_id", None),
-                account_key=getattr(self._runtime_identity, "account_key", None),
+                instance_id=self._runtime_identity.instance_id,
+                account_key=self._runtime_identity.account_key,
                 event_types=[
                     PIPELINE_ADMISSION_REPORT_APPENDED,
                     PIPELINE_INTENT_PUBLISHED,

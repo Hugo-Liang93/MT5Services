@@ -49,6 +49,150 @@
 
 ---
 
+## 0dk. 2026-04-27 §0dj 后剩余补丁清扫：run_id 字段 + 5 处 getattr 兜底 + log 字面量 fallback（自审 + P1 ×1 + P2 ×4 + P3 ×1）
+
+### 触发
+
+User 在 §0dj 完成后追问"对这个 session 提交的 fix 还有没有存在补丁的方式进行设计修复"——本人重新 audit，承认 §0dj 自夸的"完整工程化清理"实际**仍有 7 处补丁**未清。User 选择"A — 立即清理"。
+
+### 自审发现的补丁残留
+
+| # | 类型 | 位置 | 严重性 |
+|---|---|---|---|
+| 1 | **schema 语义违反**（最严重）| `consumer.py × 2 共 8 处` `claimed_by_run_id=self._runtime_identity.instance_id` | run_id 字段被 instance_id 顶替，弱化 §0dj P2 lease owner 校验——同 instance 重启接管场景下 run_id 不变，让 lease 校验失效 |
+| 2 | getattr 兜底 | `eventing.py:200,204,206` + `pending_orders.py:652,664,666` | TradeExecutor.runtime_identity 已必填（§0dj），下游仍 getattr 兜底是死兜底 |
+| 3 | None fallback 三段式 | `calendar_sync.py:313 restore_job_state` | 同模式漏修——只修了 `runtime_task_row` 没修 `restore_job_state` |
+| 4 | getattr 兜底 + 字面量 | `app_runtime/factories/signals.py:440-446 + 873` | `getattr(rid, "instance_role", None)` × 多处 + `getattr(rid, "instance_id", "shared-main")` 字面量兜底 |
+| 5 | getattr 兜底 | `readmodels/runtime.py:1484` | runtime_identity 已 None 短路返回，但分支内仍 getattr 兜底 |
+| 6 | log 字面量 | `app_runtime/runtime.py:145` `getattr(identity, "environment", "?")` | 启动 summary 用 "?" 兜底——若 identity 缺失装配早就挂，不该用字面量掩盖 |
+
+### 修复（commit 待 push）
+
+#### P1 #1：RuntimeIdentity.run_id 字段（修 schema 语义违反）
+
+```python
+# src/config/runtime_identity.py
+@dataclass(frozen=True)
+class RuntimeIdentity:
+    ...
+    instance_id: str  # 跨重启稳定（§0dh）
+    run_id: str       # §0dk P1：每次进程启动唯一（uuid4）
+    ...
+
+def _build_runtime_identity(...):
+    return RuntimeIdentity(
+        ...,
+        run_id=uuid4().hex,    # 进程加载本模块时生成一次；@lru_cache 进程内一致
+        ...,
+    )
+```
+
+`uuid4()` 在 instance_id 上是补丁（§0dh 修了），在 run_id 上**是合法用法**——run_id 本来就该每次进程启动不同。
+
+8 处 consumer 调用：
+
+```python
+# 旧（补丁式简化）
+claimed_by_run_id=self._runtime_identity.instance_id,  # ← 用 instance_id 顶替
+
+# 新（schema 语义还原）
+claimed_by_run_id=self._runtime_identity.run_id,
+```
+
+后果：worker A 崩溃重启，新进程 run_id 是新 uuid → 旧 worker 的 lease 校验在新 run 里失效 → 新 worker 必须显式 reclaim（按预期），符合 schema 设计意图。
+
+#### P2 #2-5：删除所有 runtime_identity getattr 兜底
+
+```python
+# eventing.py / pending_orders.py：TradeExecutor 已必填（§0dj）
+runtime_identity = executor.runtime_identity   # 不再 getattr
+
+# calendar_sync.restore_job_state：service._runtime_identity 必填
+runtime_identity = service._runtime_identity
+if runtime_identity is None:
+    raise RuntimeError("...")
+rows = service.db.fetch_runtime_task_status(
+    instance_id=runtime_identity.instance_id,    # 直接 access
+    instance_role=runtime_identity.instance_role,
+    account_key=runtime_identity.account_key,
+)
+
+# signals.py:_should_attach_local_account_runtime
+def _should_attach_local_account_runtime(*, runtime_identity: Any, ...):  # 改必填
+    if runtime_identity is None: raise ValueError(...)
+    if runtime_identity.instance_role != "main": ...    # 直接 access
+
+# signals.py 873：删除 "shared-main" 字面量兜底
+_factory_logger.info("...", runtime_identity.instance_id)   # 不再 getattr fallback
+
+# readmodels/runtime.py:1484：is None 短路保留，分支内删兜底
+if self._runtime_identity is None: return {...}      # 防御读合规
+... instance_id=self._runtime_identity.instance_id   # 直接 access
+```
+
+#### P2 - EconomicCalendarService.runtime_identity 必填
+
+发现 service ctor 仍 `runtime_identity: Optional[RuntimeIdentity] = None`——是 §0dk P2 #3 的根因。修：keyword-only + ctor None raise。3 处 test 加 stub identity。
+
+#### P3 #6：log "?" 兜底改 raise
+
+```python
+# 旧
+instance = getattr(identity, "instance_name", "?")
+environment = getattr(identity, "environment", "?")
+role = getattr(identity, "instance_role", "?")
+
+# 新（identity 必填，None 即装配 bug 应抛）
+if identity is None:
+    raise RuntimeError("startup_summary called before runtime_identity was set")
+instance = identity.instance_name
+environment = identity.environment
+role = identity.instance_role
+```
+
+### 测试
+
+完整套件：**2916 passed / 6 skipped（合法 short-array） / 0 failed**（`pytest -q -m "not slow"`，76 秒）。
+
+13 个 test 文件 stub 更新：所有 `RuntimeIdentity(...)` 构造加 `run_id="run-test"` 字段（用 tokenize 精确解析避开 nested `()` 误识）。
+
+新增 / 改写 test：
+- 测试 expected `claimed_by_run_id` 改为 `run-test`（与 stub identity 一致）
+- `EconomicCalendarService` 测试 stub 加 runtime_identity 注入
+
+### 元层教训：**自审"完整清理"必须 grep 整 src，不能只看本次接触的文件**
+
+§0dj 我宣称"完整工程化清理"——但只清理了直接修改的几处文件，没全 src grep 同模式 → user 一问就发现 6 类残留。这是同 §0cc 的"修一处不等于清一类"教训的复发。
+
+强建议（**写入 CLAUDE.md 提交前 sentinel grep**）：
+
+```bash
+# 7. 关键身份字段的 getattr 兜底（运行时必需字段不应有 default）
+grep -rEn 'getattr\([^,]+, *"(runtime_identity|environment|instance_id|instance_role|account_key|account_alias|peer_main_instance_id|run_id)"' src/ --include='*.py' \
+  | grep -v "src/api/\|src/backtesting/cli.py:" && echo "❌ 关键身份字段禁止 getattr 兜底（API 层从 readmodel 防御读除外）"
+
+# 8. 字面量 fallback（"?" / "shared-main" / "legacy" / "unknown" / "n/a"）
+grep -rEn 'getattr\([^,]+, *"[a-z\-]+"\)' src/ --include='*.py' | grep -E '("\?"|"shared-main"|"legacy"|"unknown"|"n/a")' && echo "❌ 字面量 fallback 是补丁标记"
+```
+
+### §0g→§0dk 累计基线
+
+| § 范围 | bug 数 | 补丁清理 |
+|---|---|---|
+| 0g–0di | 79 真实 bug + 4 类补丁累积 | — |
+| 0dj | 3 真实 bug | 4 类补丁清理（自夸"完整"实际仍有 7 处残留） |
+| **0dk** | 1 schema 语义 + 5 getattr 兜底 + 1 字面量 | 自审 + 全清 |
+
+### 减少边界泄漏的方式
+
+- `RuntimeIdentity.run_id` 与 `instance_id` 语义彻底分离——重启接管 lease 校验在 schema 层生效
+- TradeExecutor 下游所有 runtime_identity 访问点统一直接 access（不 getattr）
+- EconomicCalendarService runtime_identity 升必填（与 §0dj TradeExecutor 同模式）
+- 字面量 fallback ("shared-main" / "?")  全部消除——若 identity 缺失装配早 fail-fast
+- CLAUDE.md 加 grep sentinel #7/#8 防止 getattr 兜底 + 字面量 fallback 模式回归
+
+---
+
 ## 0dj. 2026-04-27 完整工程化清理：lease owner 校验 + environment 合同统一 + identity 必填 + legacy fallback 移除（P2 ×3 + 工程化重构 ×4）
 
 ### 触发

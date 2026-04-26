@@ -432,18 +432,21 @@ def _should_attach_local_account_runtime(
     *,
     signal_config: Any,
     deployments: Mapping[str, StrategyDeployment],
-    runtime_identity: Any | None,
+    runtime_identity: Any,
 ) -> bool:
+    # §0dk P2：runtime_identity 必填（装配契约保证），直接 access 不 getattr 兜底。
     if runtime_identity is None:
+        raise ValueError(
+            "_should_attach_local_account_runtime requires runtime_identity"
+        )
+
+    if runtime_identity.instance_role != "main":
         return True
 
-    if getattr(runtime_identity, "instance_role", None) != "main":
+    if runtime_identity.live_topology_mode != "multi_account":
         return True
 
-    if getattr(runtime_identity, "live_topology_mode", None) != "multi_account":
-        return True
-
-    account_alias = str(getattr(runtime_identity, "account_alias", "") or "").strip()
+    account_alias = str(runtime_identity.account_alias or "").strip()
     if not account_alias:
         return False
 
@@ -868,9 +871,10 @@ def build_signal_components(
         execution_intent_consumer = account_runtime.execution_intent_consumer
         signal_runtime.add_signal_listener(position_manager.on_signal_event)
     else:
+        # §0dk P2：runtime_identity 必填，无字面量 "shared-main" 兜底。
         _factory_logger.info(
             "Signal runtime %s will publish intents only; local account runtime disabled",
-            getattr(runtime_identity, "instance_id", "shared-main"),
+            runtime_identity.instance_id,
         )
     htf_cache.attach(signal_runtime)
 

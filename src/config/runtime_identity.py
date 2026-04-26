@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from uuid import uuid4
 
 from src.config.instance_context import (
     get_current_instance_name,
@@ -101,6 +102,11 @@ class RuntimeIdentity:
     instance_name: str
     environment: str
     instance_id: str
+    # §0dk P1：run_id 是每次进程启动的唯一标识，与 instance_id 语义不同——
+    # instance_id 跨重启稳定（让 schema 按 instance 聚合恢复），run_id 每次
+    # 启动不同（让 lease owner 校验在"同 instance 重启接管"场景生效）。
+    # uuid4() 每次进程加载本模块时生成一次，符合 frozen + lru_cache 语义。
+    run_id: str
     instance_role: str
     live_topology_mode: str
     account_alias: str
@@ -153,6 +159,9 @@ def _build_runtime_identity(account: MT5Settings) -> RuntimeIdentity:
         instance_name=instance_name,
         environment=environment,
         instance_id=own_instance_id,
+        # §0dk P1：每次进程加载本模块（lru_cache 命中前）生成一次 run_id；
+        # @lru_cache(get_runtime_identity) 让进程内一致，跨重启不同。
+        run_id=uuid4().hex,
         instance_role=instance_role,
         live_topology_mode=live_topology_mode,
         account_alias=account.account_alias,
