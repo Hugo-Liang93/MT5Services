@@ -129,8 +129,24 @@ class ExecutionIntentPublisher:
         return False
 
     def _resolve_target_accounts(self, strategy: str) -> Iterable[MT5Settings]:
+        # §0dd P1：旧实现硬性要求 deployment.allows_live_execution() →
+        # demo_validation 策略在 demo 环境装配后仍永远不发 intent，demo 真实
+        # 下单验证职责完全断链。改按 runtime_identity.environment 路由，
+        # 与装配层 _filter_strategies_for_environment 的过滤口径对齐：
+        #   - environment="demo" → allows_demo_validation (含 active/active_guarded/demo_validation)
+        #   - environment="live" → allows_live_execution (仅 active/active_guarded)
+        # 这样装配什么 publisher 就发什么，不重复门控；防 live 误装漂移仍由
+        # 装配层守门。
         deployment = self._strategy_deployments.get(strategy)
-        if deployment is None or not deployment.allows_live_execution():
+        if deployment is None:
+            return ()
+        environment = str(self._runtime_identity.environment or "").strip().lower()
+        if environment == "demo":
+            allowed = deployment.allows_demo_validation()
+        else:
+            # live 环境（默认）保持 allows_live_execution 严格门控
+            allowed = deployment.allows_live_execution()
+        if not allowed:
             return ()
 
         explicit_aliases = [

@@ -79,10 +79,15 @@ Research (发现假设)
     ↓ 人工编码为策略
 Backtest (历史验证)
     ↓ WF + Recommendation
-Paper Trading (实时影子验证)
-    ↓ 人工确认
-Live Trading
+Demo Validation (demo broker 真实下单验证 — 见 ADR-010)
+    ↓ 人工确认 + promote deployment.status
+Live Trading (active / active_guarded)
 ```
+
+> **ADR-010 后职责重定位**：原 Paper Trading 模块已删除（详见 ADR-010），
+> 该阶段职责由 `demo` environment + `deployment.status = demo_validation`
+> 承接——在 demo broker 上真实下单验证组合表现，结果不进 live 但保留
+> 完整 trace。promote 到 live 需把 status 改为 `active` / `active_guarded`。
 
 Research 是整条链路的源头——从历史数据中挖掘"指标值 → 未来收益"的统计关系，输出可操作的发现供策略开发使用。
 

@@ -955,3 +955,93 @@ def test_transport_canary_emits_published_claimed_and_execution_events(monkeypat
     assert completed[0]["intent_id"] == pending_items[0]["intent_id"]
     assert received[1].payload["target_account_alias"] == "exec_a"
     assert received[2].payload["status"] == "completed"
+
+
+# ── §0dd P1 回归：demo_validation 策略在 demo 环境必须能产生 execution intent ──
+
+
+def test_publisher_routes_demo_validation_strategy_when_environment_is_demo(monkeypatch):
+    """P1 §0dd 回归：旧实现 publisher 硬性要求 deployment.allows_live_execution()
+    → demo_validation 策略即使在 demo 环境装配 + auto_trade=true + 有 binding
+    也不会产生 intent，demo 真实下单验证职责完全断链。
+    必须根据 runtime_identity.environment 路由：demo 环境放宽到 allows_demo_validation。
+    """
+    rows: list[tuple] = []
+    monkeypatch.setattr(
+        "src.trading.intents.publisher.load_group_mt5_settings",
+        lambda **kwargs: {
+            "demo_main": MT5Settings(
+                instance_name="demo-main",
+                account_alias="demo_main",
+                account_label="Demo Main",
+                mt5_login=2001,
+                mt5_server="Broker-Demo",
+                mt5_path="C:/MT5/demo_main/terminal64.exe",
+            )
+        },
+    )
+    publisher = ExecutionIntentPublisher(
+        write_fn=lambda batch: rows.extend(batch),
+        runtime_identity=_runtime_identity(
+            instance_name="demo-main",
+            environment="demo",
+            account_alias="demo_main",
+            login=2001,
+        ),
+        account_bindings={"demo_main": ["structured_trendline_touch"]},
+        strategy_deployments={
+            "structured_trendline_touch": StrategyDeployment(
+                name="structured_trendline_touch",
+                status=StrategyDeploymentStatus.DEMO_VALIDATION,
+            )
+        },
+        auto_trade_enabled=True,
+    )
+
+    publisher.on_signal_event(_event(strategy="structured_trendline_touch"))
+
+    assert len(rows) == 1, (
+        f"demo 环境装配的 demo_validation 策略必须能产生 intent；"
+        f"got rows={rows!r}"
+    )
+    assert rows[0][5] == "demo_main"  # account_alias
+    assert rows[0][6] == "structured_trendline_touch"  # strategy
+
+
+def test_publisher_still_blocks_demo_validation_strategy_in_live_environment(monkeypatch):
+    """对称契约：live 环境仍按 allows_live_execution 过滤，demo_validation
+    不能在 live 误下单（防止配置错装漂移成实盘风险）。
+    """
+    rows: list[tuple] = []
+    monkeypatch.setattr(
+        "src.trading.intents.publisher.load_group_mt5_settings",
+        lambda **kwargs: {
+            "main": MT5Settings(
+                instance_name="live-main",
+                account_alias="main",
+                account_label="Main",
+                mt5_login=1001,
+                mt5_server="Broker-Live",
+                mt5_path="C:/MT5/main/terminal64.exe",
+            )
+        },
+    )
+    publisher = ExecutionIntentPublisher(
+        write_fn=lambda batch: rows.extend(batch),
+        runtime_identity=_runtime_identity(environment="live"),
+        account_bindings={"main": ["trend_alpha"]},
+        strategy_deployments={
+            "trend_alpha": StrategyDeployment(
+                name="trend_alpha",
+                status=StrategyDeploymentStatus.DEMO_VALIDATION,
+            )
+        },
+        auto_trade_enabled=True,
+    )
+
+    publisher.on_signal_event(_event())
+
+    assert rows == [], (
+        f"live 环境必须仍按 allows_live_execution 过滤，demo_validation 不发"
+        f"intent；got rows={rows!r}"
+    )

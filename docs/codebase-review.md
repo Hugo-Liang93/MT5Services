@@ -1,7 +1,7 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-04-23
+> 最近更新：2026-04-26
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
 
@@ -46,6 +46,243 @@
 3. 单策略回测 → PF 门槛判决
 4. 通过则 paper_only 启动 7 天 OBSERVE
 5. 评估 → 升级 active_guarded 或归档结束
+
+---
+
+## 0de. 2026-04-26 根目录 live-readiness 执行清单（治理文档）
+
+### 触发
+
+User 要求基于当前多轮审查结论，输出一份**放在仓库根目录**的完整执行清单，
+要求满足：
+
+- 分模块
+- 职责清晰
+- 不走补丁兼容路线
+- 能直接作为 demo → guarded live 的正式整改路线图
+
+### 本次变更
+
+- 新增根目录文档：`LIVE_READINESS_EXECUTION_CHECKLIST.md`
+- 文档按 7 个工作包组织：
+  - 执行合同统一
+  - demo 验证闭环
+  - 控制面与健康面可信化
+  - 多账户 / 多实例边界收口
+  - 恢复链 / 启动链正确性
+  - guarded live canary
+  - research / mining 稳定供给
+
+### 设计立场
+
+这份清单明确要求：
+
+- 不新增兼容别名、双轨路径、silent fallback
+- 不允许配置、装配、publisher、pre-trade 各自维护一套执行真相
+- 不把“先升 active、后补执行与观测正确性”当成上线路径
+
+整改顺序固定为：
+
+1. 收口执行合同
+2. 打通 demo 闭环
+3. 修控制面与健康面
+4. 修多账户 / 多实例边界
+5. 修恢复链语义
+6. 再做 guarded live
+7. 最后收口 research/mining 长期运行能力
+
+### 未决项
+
+- 该文档是治理路线图，不代表相关代码已经修复。
+- 后续每个工作包执行时，仍需在本台账继续追加：
+  - 实际改动模块
+  - 移除的兼容路径
+  - 保留风险与放行门槛
+
+---
+
+## 0dd. 2026-04-26 demo_validation 执行链断 + 装配 binding 漂移 + 文档 Paper Trading 误导（P1 + P2 ×2 + P3）
+
+### 触发
+
+User 报告 4 处独立 bug，本轮聚焦 ADR-010 后"demo_validation 真实下单验证"
+职责的端到端闭环——execution publisher / config bindings / 文档三段都
+仍在用旧 Paper Trading 心智模型，导致 demo 验证职责实际未通：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `trading/intents/publisher.py:131-134` | publisher 硬性要求 `deployment.allows_live_execution()` → demo 装配的 demo_validation 策略**永远不发 intent** |
+| 2 | P2 | `app_runtime/factories/signals.py:73-99` | live 当前装配集为空（active/active_guarded=0；全部 demo_validation 或 candidate）—— 状态事实而非 bug |
+| 3 | P2 | `config/signal.local.ini:43-55` | `account_bindings.demo_main` 与 demo 实际装配集漂移（漏 4 / 多 2） |
+| 4 | P3 | `docs/research-system.md:82` | "系统定位"主流程仍写 Paper Trading 阶段（ADR-010 已删除该模块） |
+
+### 根因
+
+#### #1 ExecutionIntentPublisher 二次门控 + 心智漂移
+
+```python
+# 旧 publisher._resolve_target_accounts
+deployment = self._strategy_deployments.get(strategy)
+if deployment is None or not deployment.allows_live_execution():
+    return ()                            # ← 仅放行 active/active_guarded
+```
+
+装配层 `_filter_strategies_for_environment("demo")` 已正确按 environment
+放宽到 `allows_demo_validation()`，但 publisher 不知道环境，硬走 live 口径。
+
+User 复现：demo-main 装配 demo_validation 策略 + auto_trade=true + 有 binding，
+触发 confirmed 信号 → publisher 返 0 行 published_rows → execution_intents 表
+没记录 → demo broker 永远不真实下单。
+
+后果：**ADR-010 把 paper 删了让 demo 承接验证职责，但执行面没闭环**——
+demo 装配只是"评估信号但不执行"，根本失去"真实下单验证"的核心能力。
+
+#### #2 live 当前装配集为空（状态事实）
+
+`signal.ini` 当前 strategy_deployment 状态分布：
+- `candidate` × 4 (trend_continuation, breakout_follow, session_breakout, lowbar_entry)
+- `demo_validation` × 10 (其余结构化策略)
+- `active / active_guarded` × **0**
+
+→ `_filter_strategies_for_environment(strategies, "live")` 返空 list →
+live-main / live-exec-a 都不会装任何策略，live 拓扑存在但无真实自动交易能力。
+
+这是产品/研究阶段决定（ADR-010 promote 路径未触发），不是代码 bug。
+但 binding 仍引用了不存在的策略集（live_main/live_exec_a 引用 candidate
++ demo_validation），形成"配置漂移"（已绑定但永不装配）。
+
+#### #3 demo_main binding 与装配集漂移
+
+旧 `account_bindings.demo_main` 8 条策略 vs 实际 demo_validation 10 条：
+
+| 类型 | 策略 | 后果 |
+|---|---|---|
+| 漏绑（demo 装但 binding 缺）| structured_open_range_breakout / price_action / pullback_window / strong_trend_follow | demo 装配后但 publisher 找不到 target account → 不下单 |
+| 误绑（candidate 装不了但 binding 列了）| structured_breakout_follow / structured_trend_continuation | 引用永不装配的策略，产生认知错乱 |
+
+即使 #1 修了让 publisher 接受 demo_validation，#3 仍让 4 条策略漏单。
+
+#### #4 research-system.md 主流程过时
+
+```
+Research → Backtest → Paper Trading → Live Trading
+                       ^^^^^^^^^^^^^
+                       ADR-010 已删除模块
+```
+
+让研究侧 / 运维侧 / 架构侧在职责划分上继续分叉。
+
+### 修复（commit 待 push）
+
+#### #1 publisher 按 environment 路由部署检查
+
+```python
+def _resolve_target_accounts(self, strategy):
+    """§0dd P1：按 runtime_identity.environment 与装配层口径对齐。
+       - environment="demo" → allows_demo_validation
+       - environment="live" → allows_live_execution
+       装配什么 publisher 就发什么，不重复门控；防 live 误装漂移仍由
+       装配层守门。
+    """
+    deployment = self._strategy_deployments.get(strategy)
+    if deployment is None:
+        return ()
+    environment = str(self._runtime_identity.environment or "").strip().lower()
+    if environment == "demo":
+        allowed = deployment.allows_demo_validation()
+    else:
+        allowed = deployment.allows_live_execution()
+    if not allowed:
+        return ()
+    # ... resolve explicit_aliases
+```
+
+#### #2 + #3 binding 同步实际装配集
+
+`config/signal.local.ini`：
+- `[account_bindings.live_main]` / `[account_bindings.live_exec_a]`：清空（active=0 状态事实）
+- `[account_bindings.demo_main]`：移除 candidate (trend_continuation/breakout_follow)；
+  新增漏绑的 4 条 demo_validation (open_range_breakout / price_action /
+  pullback_window / strong_trend_follow)
+
+binding 注释明示"每次 promote/降级 deployment.status 时必须同步 binding"，
+避免再次漂移。
+
+#### #4 docs/research-system.md 改主流程
+
+```diff
+- Paper Trading (实时影子验证)
+-     ↓ 人工确认
+- Live Trading
++ Demo Validation (demo broker 真实下单验证 — 见 ADR-010)
++     ↓ 人工确认 + promote deployment.status
++ Live Trading (active / active_guarded)
+
++ > **ADR-010 后职责重定位**：原 Paper Trading 模块已删除，该阶段职责由
++ > demo environment + deployment.status = demo_validation 承接...
+```
+
+### 测试（4 项新契约）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_publisher_routes_demo_validation_strategy_when_environment_is_demo` | demo 环境的 demo_validation 策略必须能产生 intent |
+| `test_publisher_still_blocks_demo_validation_strategy_in_live_environment` | live 环境仍按 allows_live_execution 严格门控（防 demo→live 漂移）|
+| `test_demo_main_binding_matches_demo_validation_deployment_set` | demo_main binding 集合 == demo_validation 状态集合（双向校验：漏绑+误绑）|
+| `test_live_main_binding_does_not_reference_unloadable_strategies` | live_main binding 不能引用 candidate/demo_validation（live 装不了）|
+| `test_research_system_doc_does_not_reference_deleted_paper_trading_stage` | docs sentinel：主流程禁止再写 Paper Trading（ADR-010 已删）|
+
+### 元层教训：**心智模型迁移必须三段同步：执行 / 配置 / 文档**
+
+§0dd 4 处 bug 本质同一：**ADR-010 删除 paper_trading 后，"demo 验证" 这条
+新职责链没有端到端落地**。
+
+代码层（执行 publisher）+ 配置层（account bindings）+ 文档层（主流程图）
+都还停留在旧 paper trading 心智模型——任意一段没迁移，整个职责链就断。
+
+具体反模式：
+1. **二次门控漂移**：装配层按 environment 放宽，但下游 publisher 仍硬走旧
+   单一 deployment 检查 → 装配什么不等于发什么
+2. **配置漂移**：deployment status 改了但 account binding 没同步——已绑定
+   但永不装配 / 已装配但没绑定 → 静默漏单
+3. **文档漂移**：架构决策（ADR）落了但主流程 doc 没更新 → 团队认知分叉
+4. **状态事实 ≠ 代码 bug**：当前 active=0 是产品/研究阶段决定，binding
+   要反映这一事实（清空），而非保留"已绑定但永不装配"的死链
+
+强建议（扩充 §0g→§0cc 元层教训）：
+- 任何 environment-aware 装配 (filter / route / gate) 必须有端到端测试
+  覆盖：装配层 → publisher → consumer 三层口径一致
+- 任何 deployment.status 变更（promote / demote / freeze）必须配 sentinel
+  test 校验对应 account_bindings 同步——本轮新增 sentinel 已落地
+- 任何 ADR 删除模块必须 grep doc 关键词 + sentinel 防文档漂移
+- "状态事实"型配置（active=0、binding=空）应在配置注释中明示原因 +
+  promote 触发条件，避免被未来误读为遗漏
+
+### §0g→§0dd 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **72 bug + 72 反向锁** + 1 契约阻断
++ 4 防回归 sentinel + **1 个文档 sentinel**：
+
+| § | bug 数 | sentinel |
+|---|---|---|
+| 0g–0cc | 68 | R2 + R4 + R2 (singleton) + R1 (EXEMPT) |
+| **0dd** | 4 | **doc paper_trading sentinel + binding alignment sentinel** |
+
+### 测试基线
+
+- 修复前：4 处 user-facing bug；publisher demo 路由 / binding 漂移 /
+  doc 过期 全部零覆盖
+- 修复后：5 项新契约测试（含 1 doc sentinel + 1 config sentinel）；
+  `pytest -q` → **2903 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- publisher 与装配层共享 environment-aware 口径，禁止二次门控漂移
+- account_bindings 双向 sentinel 校验（demo binding ⊇ demo_validation；
+  live binding ⊆ active/active_guarded），promote/demote 必有 CI 检查
+- doc 主流程 sentinel 防 ADR-删除-但-doc-没-改的常见漏洞
+- binding 注释明示"每次 deployment.status 变更必须同步 binding"——把
+  config 维护规则写在配置文件本身
 
 ---
 
