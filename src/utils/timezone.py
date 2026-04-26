@@ -51,6 +51,20 @@ def to_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def parse_iso_to_utc(value: str) -> datetime:
+    """Parse an ISO-8601 string and normalize to UTC, preserving absolute moment.
+
+    §0w R4：旧反模式 ``datetime.fromisoformat(s).replace(tzinfo=UTC)`` 对
+    带偏移的 ISO（如 ``2026-04-26T08:00:00+08:00``）会**直接改时区标签**而不
+    做时区换算 → 写库变成 ``2026-04-26T08:00:00+00:00``，绝对时刻偏 8 小时。
+
+    本 helper 强制走 ``to_utc()``：
+    - naive 输入按 UTC 解释（无别的信息可参考）
+    - aware 输入用 ``astimezone(UTC)`` 保持绝对时刻
+    """
+    return to_utc(datetime.fromisoformat(str(value)))
+
+
 def to_display(dt: datetime) -> datetime:
     """Convert a datetime to the configured display timezone."""
     if dt.tzinfo is None:

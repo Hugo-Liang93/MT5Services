@@ -177,11 +177,14 @@ class MonitoringManager:
                                 if stats is None:
                                     continue
                                 if isinstance(stats, dict) and "success_rate" in stats:
+                                    # informational：HealthMonitor.alerts 无阈值，
+                                    # 显式 check_alert=False 避免 §0w R2 WARN
                                     self.health_monitor.record_metric(
                                         name,
                                         "success_rate",
                                         stats["success_rate"],
                                         stats,
+                                        check_alert=False,
                                     )
                                 intrabar = (
                                     stats.get("intrabar")
@@ -273,6 +276,7 @@ class MonitoringManager:
                                 component_obj, "status"
                             ):
                                 status_payload = component_obj.status()
+                                # informational heartbeat（§0w R2 显式标 check_alert=False）
                                 self.health_monitor.record_metric(
                                     name,
                                     "runtime_status",
@@ -282,6 +286,7 @@ class MonitoringManager:
                                         if isinstance(status_payload, dict)
                                         else {"value": status_payload}
                                     ),
+                                    check_alert=False,
                                 )
 
                             elif method == "monitoring_summary" and hasattr(
@@ -290,11 +295,14 @@ class MonitoringManager:
                                 summary_payload = component_obj.monitoring_summary(
                                     hours=24
                                 )
+                                # composite informational（值经 _summary_status_value 折叠，
+                                # 实际告警走 _check_alert_level 处理过的子指标，参 §0w R2）
                                 self.health_monitor.record_metric(
                                     name,
                                     "monitoring_summary",
                                     self._summary_status_value(summary_payload),
                                     summary_payload,
+                                    check_alert=False,
                                 )
 
                         except Exception as e:
@@ -303,6 +311,8 @@ class MonitoringManager:
                             )
 
                 report = self.health_monitor.generate_report(hours=1)
+                # composite informational：generate_report 已拉子指标做评级，
+                # 这条仅用于 dashboard 时序，不再做二次告警评级（§0w R2）
                 self.health_monitor.record_metric(
                     "system",
                     "overall_status",
@@ -312,6 +322,7 @@ class MonitoringManager:
                         else 0.5 if report["overall_status"] == "warning" else 0.0
                     ),
                     report,
+                    check_alert=False,
                 )
                 self._run_retention_if_due()
 
@@ -490,15 +501,16 @@ class MonitoringManager:
             expired = stats.get("total_expired", 0)
             submitted = stats.get("total_submitted", 0)
 
-            # 记录活跃 pending 数量
+            # 记录活跃 pending 数量（informational dashboard metric，§0w R2）
             self.health_monitor.record_metric(
                 component_name,
                 "pending_active_count",
                 float(active),
                 {"filled": filled, "expired": expired, "submitted": submitted},
+                check_alert=False,
             )
 
-            # 记录 fill_rate
+            # 记录 fill_rate（informational dashboard metric，§0w R2）
             fill_rate = stats.get("fill_rate")
             if fill_rate is not None:
                 self.health_monitor.record_metric(
@@ -506,6 +518,7 @@ class MonitoringManager:
                     "pending_fill_rate",
                     float(fill_rate),
                     {"submitted": submitted, "filled": filled},
+                    check_alert=False,
                 )
 
             # §0w P2：旧实现仅探 _monitor_thread → fill worker 挂掉时仍报存活
@@ -531,16 +544,20 @@ class MonitoringManager:
             else:
                 overall_running = monitor_alive and fill_alive
 
+            # 细粒度 dashboard informational（告警走 pending_runtime_down，§0w R2）
             self.health_monitor.record_metric(
                 component_name,
                 "pending_monitor_alive",
                 1.0 if monitor_alive else 0.0,
+                check_alert=False,
             )
             self.health_monitor.record_metric(
                 component_name,
                 "pending_fill_worker_alive",
                 1.0 if fill_alive else 0.0,
+                check_alert=False,
             )
+            # 聚合告警源（注册在 self.alerts 阈值表）
             self.health_monitor.record_metric(
                 component_name,
                 "pending_runtime_down",

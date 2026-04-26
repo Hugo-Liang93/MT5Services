@@ -102,6 +102,13 @@ class HealthMonitor:
         }
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
 
+        # §0w R2：caller 用默认 check_alert=True 写入 metric 但 self.alerts 表
+        # 没有该 metric 阈值 → 表示"想告警但配置漏" 而非"故意 informational"
+        # （后者应显式 check_alert=False）。这套漂白链路的"半阈值"分支正是
+        # §0w 教训根因；新增启动时一次性 WARN 让回归无所遁形。
+        # set 用于去重，避免 hot path 频繁 record_metric 时刷屏。
+        self._unregistered_alert_metric_warned: set[str] = set()
+
         # Optional external listener invoked when a warning/critical alert
         # transitions into active_alerts. Set via set_alert_listener(). Kept
         # minimal so this module stays independent of notifications/.
@@ -190,11 +197,15 @@ class HealthMonitor:
 
         timestamp = self._utc_now().isoformat()
         metric_value = float(value)
-        alert_level = (
-            self._check_alert_level(component, metric_name, metric_value)
-            if check_alert
-            else None
-        )
+        if check_alert:
+            # §0w R2：caller 默认期望告警评级，但 self.alerts 没注册阈值
+            # → 配置漂移（§0w pending_monitor_alive 教训根因）。一次性 WARN
+            # 让"半阈值"漂白链路在测试/启动期间立刻可见；显式 informational
+            # 指标必须传 check_alert=False 来禁掉评级路径。
+            self._warn_unregistered_alert_metric_once(component, metric_name)
+            alert_level = self._check_alert_level(component, metric_name, metric_value)
+        else:
+            alert_level = None
 
         # 1. 内存快查缓存（最后 100 条 per key）
         key = f"{component}.{metric_name}"
@@ -261,6 +272,30 @@ class HealthMonitor:
                     logger.exception("health alert listener failed")
 
     # ─── 内部辅助 ────────────────────────────────────────────────────────────
+
+    def _warn_unregistered_alert_metric_once(
+        self, component: str, metric_name: str
+    ) -> None:
+        """§0w R2：caller 期望告警评级但 alert 表无 threshold → 一次性 WARN。
+
+        告警链路三段（检测 + 阈值 + 评级）任一漂白都会让监控失效（§0w 教训）。
+        本 helper 在 `check_alert=True` 默认路径首次遇到未注册 metric 时
+        立刻 WARN，让配置漂移在启动 / 测试期间可见，禁止"半阈值"静默漂白。
+        显式 informational 指标必须 `check_alert=False` 走另一支。
+        """
+        if metric_name in self.alerts:
+            return
+        if metric_name in self._unregistered_alert_metric_warned:
+            return
+        self._unregistered_alert_metric_warned.add(metric_name)
+        logger.warning(
+            "HealthMonitor: metric %r recorded with check_alert=True but no "
+            "threshold registered in self.alerts (component=%s); 该 metric 永远"
+            "不会触发告警 → 若期望告警请补 alert 阈值，若是 informational 请"
+            "把 record_metric(check_alert=False) 显式标记。",
+            metric_name,
+            component,
+        )
 
     @staticmethod
     def _utc_now() -> datetime:

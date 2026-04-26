@@ -280,3 +280,76 @@ def test_get_system_status_does_not_report_healthy_with_active_critical_alert(
         f"get_system_status 不能在挂着 critical active alert 时返 healthy；"
         f"got overall_status={status['overall_status']!r}, active_alerts={status['active_alerts']!r}"
     )
+
+
+# ── §0w R2 回归：未注册 metric 的 alert 评级路径必须 WARN ──
+
+
+def test_record_metric_warns_once_when_alert_threshold_missing(
+    tmp_path: Path, caplog
+) -> None:
+    """R2 回归：caller 默认 check_alert=True 但 self.alerts 没注册阈值 → 配置
+    漂白（§0w 教训根因）。HealthMonitor 必须 once-per-metric WARN 让回归可见。
+    """
+    import logging
+
+    monitor = HealthMonitor(str(tmp_path / "h.db"))
+
+    with caplog.at_level(logging.WARNING):
+        # 写入未注册的 metric（默认 check_alert=True）
+        monitor.record_metric("comp_x", "metric_no_threshold_y", 1.0)
+        monitor.record_metric("comp_x", "metric_no_threshold_y", 2.0)
+        monitor.record_metric("comp_z", "metric_no_threshold_y", 3.0)
+
+    warns = [
+        r for r in caplog.records
+        if "metric_no_threshold_y" in r.getMessage() and "no threshold registered" in r.getMessage()
+    ]
+    # 同一 metric 名只 WARN 一次（去重 set），即使跨 component
+    assert len(warns) == 1, (
+        f"未注册 metric WARN 必须恰好一次（去重）；got {len(warns)} 条："
+        f"{[r.getMessage() for r in warns]!r}"
+    )
+
+
+def test_record_metric_no_warn_when_check_alert_explicitly_false(
+    tmp_path: Path, caplog
+) -> None:
+    """R2 对称契约：显式 informational 指标（check_alert=False）不应 WARN。"""
+    import logging
+
+    monitor = HealthMonitor(str(tmp_path / "h.db"))
+
+    with caplog.at_level(logging.WARNING):
+        monitor.record_metric(
+            "comp_x", "informational_metric_z", 0.5, check_alert=False
+        )
+
+    warns = [
+        r for r in caplog.records
+        if "informational_metric_z" in r.getMessage()
+    ]
+    assert warns == [], (
+        f"check_alert=False 不应触发未注册 WARN；got {[r.getMessage() for r in warns]!r}"
+    )
+
+
+def test_record_metric_no_warn_when_metric_has_threshold(
+    tmp_path: Path, caplog
+) -> None:
+    """已注册阈值的 metric 不 WARN（避免 hot path 噪音）。"""
+    import logging
+
+    monitor = HealthMonitor(str(tmp_path / "h.db"))
+
+    with caplog.at_level(logging.WARNING):
+        # data_latency 已在 self.alerts 注册
+        monitor.record_metric("market_data", "data_latency", 0.5)
+
+    warns = [
+        r for r in caplog.records
+        if "data_latency" in r.getMessage() and "no threshold registered" in r.getMessage()
+    ]
+    assert warns == [], (
+        f"已注册 metric 不应 WARN；got {[r.getMessage() for r in warns]!r}"
+    )

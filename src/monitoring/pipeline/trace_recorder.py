@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from src.config.runtime_identity import RuntimeIdentity
+from src.utils.timezone import parse_iso_to_utc as _parse_iso_to_utc
 
 from .event_bus import PipelineEvent, PipelineEventBus
 
@@ -136,7 +137,11 @@ class PipelineTraceRecorder:
             str(event.timeframe),
             str(event.scope),
             str(event.type),
-            datetime.fromisoformat(str(event.ts)),
+            # §0w R4：写库 TIMESTAMPTZ 列必须保持绝对时刻；event.ts 可能是
+            # aware ISO（如生产事件携带 +08:00 偏移），旧 fromisoformat() 直接
+            # 落库会让 PG 把 naive 当 server local TZ，aware 当原始 TZ，导致
+            # 跨实例时间线错位。统一走 parse_iso_to_utc 强制 UTC。
+            _parse_iso_to_utc(str(event.ts)),
             payload,
             runtime_identity.instance_id if runtime_identity is not None else None,
             runtime_identity.instance_role if runtime_identity is not None else None,

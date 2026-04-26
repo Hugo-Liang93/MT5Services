@@ -547,7 +547,12 @@ def build_param_space_template(
 
 
 def parse_request_datetime(value: str) -> datetime:
-    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+    # §0w R4：旧实现 fromisoformat().replace(tzinfo=UTC) 对带偏移 ISO 直接
+    # 改时区标签而不做换算，2026-04-26T08:00:00+08:00 → +00:00 标签代表
+    # UTC 8 点（错 8h）。改走 parse_iso_to_utc 强制 astimezone 转换。
+    from src.utils.timezone import parse_iso_to_utc
+
+    return parse_iso_to_utc(value)
 
 
 def build_backtest_config(request: BacktestRequestBase) -> Any:
