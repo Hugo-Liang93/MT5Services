@@ -14,13 +14,16 @@
 
 设计原则：不启动服务、不执行交易，只做只读检查。
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 
 import warnings
 
@@ -51,7 +54,9 @@ def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str
         from src.config.mt5 import load_mt5_settings
 
         mt5_cfg = load_mt5_settings(instance_name=instance_name)
-        results.append((f"{label_prefix}MT5 config loaded", "OK", f"server={mt5_cfg.mt5_server}"))
+        results.append(
+            (f"{label_prefix}MT5 config loaded", "OK", f"server={mt5_cfg.mt5_server}")
+        )
     except Exception as e:
         results.append((f"{label_prefix}MT5 config loaded", "FAIL", str(e)))
         return results
@@ -68,8 +73,10 @@ def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str
         )
 
         path_status = "OK" if state.terminal_reachable else "FAIL"
-        path_detail = f"path={mt5_cfg.mt5_path}" if state.terminal_reachable else (
-            f"{state.error_code or 'terminal_not_found'}: {state.error_message}"
+        path_detail = (
+            f"path={mt5_cfg.mt5_path}"
+            if state.terminal_reachable
+            else (f"{state.error_code or 'terminal_not_found'}: {state.error_message}")
         )
         results.append((f"{label_prefix}MT5 terminal path", path_status, path_detail))
 
@@ -79,7 +86,9 @@ def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str
             if state.terminal_process_ready
             else f"{state.error_code or 'terminal_not_running'}: {state.error_message}"
         )
-        results.append((f"{label_prefix}MT5 terminal process", process_status, process_detail))
+        results.append(
+            (f"{label_prefix}MT5 terminal process", process_status, process_detail)
+        )
 
         ipc_status = "OK" if state.ipc_ready else "FAIL"
         ipc_detail = (
@@ -103,7 +112,9 @@ def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str
             if state.account_match
             else f"{state.error_code or 'account_mismatch'}: {state.error_message}"
         )
-        results.append((f"{label_prefix}MT5 account match", account_status, account_detail))
+        results.append(
+            (f"{label_prefix}MT5 account match", account_status, account_detail)
+        )
 
         session_status = "OK" if state.session_ready else "FAIL"
         session_detail = (
@@ -111,45 +122,73 @@ def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str
             if state.session_ready
             else f"{state.error_code or 'session_not_ready'}: {state.error_message}"
         )
-        results.append((f"{label_prefix}MT5 session gate", session_status, session_detail))
+        results.append(
+            (f"{label_prefix}MT5 session gate", session_status, session_detail)
+        )
 
         if state.interactive_login_required:
-            results.append((
-                f"{label_prefix}MT5 interactive login",
-                "FAIL",
-                "interactive_login_required: terminal needs manual unlock/login",
-            ))
+            results.append(
+                (
+                    f"{label_prefix}MT5 interactive login",
+                    "FAIL",
+                    "interactive_login_required: terminal needs manual unlock/login",
+                )
+            )
 
         if state.session_ready and mt5 is not None:
             acct = mt5.account_info()
             if acct:
                 account_type = "DEMO" if acct.trade_mode == 0 else "LIVE"
-                results.append((
-                    f"{label_prefix}MT5 account",
-                    "OK",
-                    f"login={acct.login} type={account_type} "
-                    f"balance={acct.balance:.2f} equity={acct.equity:.2f} "
-                    f"leverage=1:{acct.leverage} currency={acct.currency}",
-                ))
+                results.append(
+                    (
+                        f"{label_prefix}MT5 account",
+                        "OK",
+                        f"login={acct.login} type={account_type} "
+                        f"balance={acct.balance:.2f} equity={acct.equity:.2f} "
+                        f"leverage=1:{acct.leverage} currency={acct.currency}",
+                    )
+                )
                 if account_type == "DEMO":
-                    results.append((f"{label_prefix}Account type", "WARN", "Still on DEMO — switch to LIVE for real trading"))
+                    results.append(
+                        (
+                            f"{label_prefix}Account type",
+                            "WARN",
+                            "Still on DEMO — switch to LIVE for real trading",
+                        )
+                    )
             else:
-                results.append((f"{label_prefix}MT5 account", "FAIL", "account_info() returned None"))
+                results.append(
+                    (
+                        f"{label_prefix}MT5 account",
+                        "FAIL",
+                        "account_info() returned None",
+                    )
+                )
 
             symbol_info = mt5.symbol_info("XAUUSD")
             if symbol_info:
-                results.append((
-                    f"{label_prefix}XAUUSD symbol",
-                    "OK",
-                    f"spread={symbol_info.spread} point={symbol_info.point} "
-                    f"volume_min={symbol_info.volume_min} volume_max={symbol_info.volume_max}",
-                ))
+                results.append(
+                    (
+                        f"{label_prefix}XAUUSD symbol",
+                        "OK",
+                        f"spread={symbol_info.spread} point={symbol_info.point} "
+                        f"volume_min={symbol_info.volume_min} volume_max={symbol_info.volume_max}",
+                    )
+                )
             else:
-                results.append((f"{label_prefix}XAUUSD symbol", "FAIL", "Symbol not found or not visible"))
+                results.append(
+                    (
+                        f"{label_prefix}XAUUSD symbol",
+                        "FAIL",
+                        "Symbol not found or not visible",
+                    )
+                )
 
             mt5.shutdown()
     except ImportError:
-        results.append((f"{label_prefix}MT5 terminal", "SKIP", "MetaTrader5 package not installed"))
+        results.append(
+            (f"{label_prefix}MT5 terminal", "SKIP", "MetaTrader5 package not installed")
+        )
     except Exception as e:
         results.append((f"{label_prefix}MT5 terminal", "FAIL", str(e)))
 
@@ -181,18 +220,24 @@ def _check_database() -> List[Tuple[str, str, str]]:
         from src.persistence.db import TimescaleWriter
 
         db_config = load_db_settings()
-        results.append(("DB config loaded", "OK", f"host={db_config.pg_host}:{db_config.pg_port}"))
+        results.append(
+            ("DB config loaded", "OK", f"host={db_config.pg_host}:{db_config.pg_port}")
+        )
 
         writer = TimescaleWriter(settings=db_config, min_conn=1, max_conn=2)
         # 简单查询验证连接
         try:
             conn = writer._pool.getconn()
             cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'")
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'"
+            )
             table_count = cur.fetchone()[0]
             cur.close()
             writer._pool.putconn(conn)
-            results.append(("DB connection", "OK", f"{table_count} tables in public schema"))
+            results.append(
+                ("DB connection", "OK", f"{table_count} tables in public schema")
+            )
         except Exception as e:
             results.append(("DB connection", "FAIL", str(e)))
     except Exception as e:
@@ -201,7 +246,9 @@ def _check_database() -> List[Tuple[str, str, str]]:
     return results
 
 
-def _check_config_consistency() -> Tuple[List[Tuple[str, str, str]], List[Dict[str, Any]]]:
+def _check_config_consistency() -> (
+    Tuple[List[Tuple[str, str, str]], List[Dict[str, Any]]]
+):
     """检查 signal.ini 与 backtest.ini 的关键参数一致性。
 
     返回 (check_results, diff_table)。
@@ -220,57 +267,95 @@ def _check_config_consistency() -> Tuple[List[Tuple[str, str, str]], List[Dict[s
 
         # 关键对比项：实盘 signal.ini 值 vs 回测 backtest.ini 值
         comparisons = [
-            ("min_confidence", getattr(signal_cfg, "min_preview_confidence", 0.55), bt_defaults.get("min_confidence", 0.55)),
-            ("trailing_tp_enabled", getattr(signal_cfg, "trailing_tp_enabled", True), bt_defaults.get("trailing_tp_enabled", True)),
-            ("trailing_tp_activation_atr", getattr(signal_cfg, "trailing_tp_activation_atr", 1.2), bt_defaults.get("trailing_tp_activation_atr", 1.5)),
-            ("trailing_tp_trail_atr", getattr(signal_cfg, "trailing_tp_trail_atr", 0.6), bt_defaults.get("trailing_tp_trail_atr", 0.8)),
+            # 真实 live 阈值是 auto_trade_min_confidence；旧字段已从 SignalConfig
+            # 移除（参 codebase-review §0o），旧 getattr 走默认 0.55 让差异表变成伪事实
+            (
+                "min_confidence",
+                getattr(signal_cfg, "auto_trade_min_confidence", 0.55),
+                bt_defaults.get("min_confidence", 0.55),
+            ),
+            (
+                "trailing_tp_enabled",
+                getattr(signal_cfg, "trailing_tp_enabled", True),
+                bt_defaults.get("trailing_tp_enabled", True),
+            ),
+            (
+                "trailing_tp_activation_atr",
+                getattr(signal_cfg, "trailing_tp_activation_atr", 1.2),
+                bt_defaults.get("trailing_tp_activation_atr", 1.5),
+            ),
+            (
+                "trailing_tp_trail_atr",
+                getattr(signal_cfg, "trailing_tp_trail_atr", 0.6),
+                bt_defaults.get("trailing_tp_trail_atr", 0.8),
+            ),
             ("commission_per_lot", 7.0, bt_defaults.get("commission_per_lot", 0.0)),
             ("slippage_points", 15.0, bt_defaults.get("slippage_points", 0.0)),
-            ("max_positions", getattr(risk_cfg, "max_positions_per_symbol", 3), bt_defaults.get("max_positions", 3)),
-            ("daily_loss_limit_pct", getattr(risk_cfg, "daily_loss_limit_pct", None), bt_defaults.get("daily_loss_limit_pct", None)),
+            (
+                "max_positions",
+                getattr(risk_cfg, "max_positions_per_symbol", 3),
+                bt_defaults.get("max_positions", 3),
+            ),
+            (
+                "daily_loss_limit_pct",
+                getattr(risk_cfg, "daily_loss_limit_pct", None),
+                bt_defaults.get("daily_loss_limit_pct", None),
+            ),
         ]
 
         for param, live_val, bt_val in comparisons:
             match = live_val == bt_val
-            diff_table.append({
-                "param": param,
-                "live": live_val,
-                "backtest": bt_val,
-                "match": match,
-            })
+            diff_table.append(
+                {
+                    "param": param,
+                    "live": live_val,
+                    "backtest": bt_val,
+                    "match": match,
+                }
+            )
             if not match:
-                results.append((
-                    f"Config: {param}",
-                    "DIFF",
-                    f"live={live_val} vs backtest={bt_val}",
-                ))
+                results.append(
+                    (
+                        f"Config: {param}",
+                        "DIFF",
+                        f"live={live_val} vs backtest={bt_val}",
+                    )
+                )
 
         # 关键安全检查
         # 1. commission 是否为 0
         if bt_defaults.get("commission_per_lot", 0) == 0:
-            results.append((
-                "Backtest commission",
-                "WARN",
-                "commission_per_lot=0 in backtest — results will be overly optimistic",
-            ))
+            results.append(
+                (
+                    "Backtest commission",
+                    "WARN",
+                    "commission_per_lot=0 in backtest — results will be overly optimistic",
+                )
+            )
 
         # 2. slippage 是否为 0
         if bt_defaults.get("slippage_points", 0) == 0:
-            results.append((
-                "Backtest slippage",
-                "WARN",
-                "slippage_points=0 in backtest — no slippage simulation",
-            ))
+            results.append(
+                (
+                    "Backtest slippage",
+                    "WARN",
+                    "slippage_points=0 in backtest — no slippage simulation",
+                )
+            )
 
         # 3. daily_loss_limit 是否配置
         if getattr(risk_cfg, "daily_loss_limit_pct", None) is None:
-            results.append((
-                "Risk: daily_loss_limit",
-                "WARN",
-                "No daily loss limit configured in risk.ini",
-            ))
+            results.append(
+                (
+                    "Risk: daily_loss_limit",
+                    "WARN",
+                    "No daily loss limit configured in risk.ini",
+                )
+            )
 
-        results.append(("Config consistency check", "OK", f"{len(diff_table)} params compared"))
+        results.append(
+            ("Config consistency check", "OK", f"{len(diff_table)} params compared")
+        )
 
     except Exception as e:
         results.append(("Config loading", "FAIL", str(e)))
@@ -290,25 +375,51 @@ def _check_risk_safety() -> List[Tuple[str, str, str]]:
         # 手数限制
         max_vol = getattr(risk_cfg, "max_volume_per_order", None)
         if max_vol is None:
-            results.append(("Risk: max_volume_per_order", "WARN", "Not set — no per-order volume limit"))
+            results.append(
+                (
+                    "Risk: max_volume_per_order",
+                    "WARN",
+                    "Not set — no per-order volume limit",
+                )
+            )
         elif max_vol > 0.1:
-            results.append(("Risk: max_volume_per_order", "WARN", f"{max_vol} lots — consider 0.01-0.05 for initial live"))
+            results.append(
+                (
+                    "Risk: max_volume_per_order",
+                    "WARN",
+                    f"{max_vol} lots — consider 0.01-0.05 for initial live",
+                )
+            )
         else:
             results.append(("Risk: max_volume_per_order", "OK", f"{max_vol} lots"))
 
         # 每日亏损限制
         daily_limit = getattr(risk_cfg, "daily_loss_limit_pct", None)
         if daily_limit is None:
-            results.append(("Risk: daily_loss_limit_pct", "WARN", "Not set — no daily loss circuit breaker"))
+            results.append(
+                (
+                    "Risk: daily_loss_limit_pct",
+                    "WARN",
+                    "Not set — no daily loss circuit breaker",
+                )
+            )
         elif daily_limit > 5.0:
-            results.append(("Risk: daily_loss_limit_pct", "WARN", f"{daily_limit}% — consider <=3% for safety"))
+            results.append(
+                (
+                    "Risk: daily_loss_limit_pct",
+                    "WARN",
+                    f"{daily_limit}% — consider <=3% for safety",
+                )
+            )
         else:
             results.append(("Risk: daily_loss_limit_pct", "OK", f"{daily_limit}%"))
 
         # 每日交易次数限制
         max_trades = getattr(risk_cfg, "max_trades_per_day", None)
         if max_trades is None:
-            results.append(("Risk: max_trades_per_day", "WARN", "Not set — unlimited daily trades"))
+            results.append(
+                ("Risk: max_trades_per_day", "WARN", "Not set — unlimited daily trades")
+            )
         else:
             results.append(("Risk: max_trades_per_day", "OK", f"{max_trades}"))
 
@@ -385,11 +496,19 @@ def _render_results(
     fail_count = sum(1 for _, s, _ in all_checks if s == "FAIL")
     diff_count = sum(1 for _, s, _ in all_checks if s == "DIFF")
 
-    lines.append(f"\n  Summary: {ok_count} OK / {warn_count} WARN / {fail_count} FAIL / {diff_count} DIFF\n")
+    lines.append(
+        f"\n  Summary: {ok_count} OK / {warn_count} WARN / {fail_count} FAIL / {diff_count} DIFF\n"
+    )
 
     # 逐项结果
     for check_name, status, detail in all_checks:
-        icon = {"OK": "[+]", "WARN": "[!]", "FAIL": "[X]", "DIFF": "[~]", "SKIP": "[-]"}.get(status, "[?]")
+        icon = {
+            "OK": "[+]",
+            "WARN": "[!]",
+            "FAIL": "[X]",
+            "DIFF": "[~]",
+            "SKIP": "[-]",
+        }.get(status, "[?]")
         lines.append(f"  {icon} {check_name:<35} {detail}")
 
     # 实盘 vs 回测参数差异表
@@ -406,7 +525,9 @@ def _render_results(
     # 总结建议
     lines.append(f"\n--- Verdict ---")
     if fail_count > 0:
-        lines.append(f"  [X] BLOCKED: {fail_count} critical failures must be resolved before going live.")
+        lines.append(
+            f"  [X] BLOCKED: {fail_count} critical failures must be resolved before going live."
+        )
     elif warn_count > 0:
         lines.append(f"  [!] PROCEED WITH CAUTION: {warn_count} warnings to review.")
         lines.append(f"  Recommended: fix warnings before P3 live trading.")
@@ -414,9 +535,15 @@ def _render_results(
         lines.append(f"  [+] ALL CLEAR: System ready for live trading.")
 
     if diff_count > 0:
-        lines.append(f"  [~] {diff_count} parameter differences between live and backtest configs.")
-        lines.append(f"  These differences mean backtest results may not fully predict live performance.")
-        lines.append(f"  Align backtest.ini to match live settings for accurate prediction.")
+        lines.append(
+            f"  [~] {diff_count} parameter differences between live and backtest configs."
+        )
+        lines.append(
+            f"  These differences mean backtest results may not fully predict live performance."
+        )
+        lines.append(
+            f"  Align backtest.ini to match live settings for accurate prediction."
+        )
 
     return "\n".join(lines)
 
@@ -432,7 +559,9 @@ def main() -> None:
         required=True,
         help="显式指定预检环境",
     )
-    parser.add_argument("--check-api", action="store_true", help="Also check API service")
+    parser.add_argument(
+        "--check-api", action="store_true", help="Also check API service"
+    )
     args = parser.parse_args()
     set_current_environment(args.environment)
 

@@ -36,13 +36,17 @@ def test_ensure_topology_group_mt5_session_gate_or_raise_validates_all_instances
         environment="live",
     )
 
-    monkeypatch.setattr("src.config.topology.load_topology_group", lambda group_name: group)
+    monkeypatch.setattr(
+        "src.config.topology.load_topology_group", lambda group_name: group
+    )
     monkeypatch.setattr(
         mt5_session_gate,
         "ensure_mt5_session_gate_or_raise",
         lambda instance_name=None, auto_launch_terminal=True: (
             SimpleNamespace(account_alias=instance_name, instance_name=instance_name),
-            SimpleNamespace(to_dict=lambda: {"session_ready": True, "error_code": None}),
+            SimpleNamespace(
+                to_dict=lambda: {"session_ready": True, "error_code": None}
+            ),
         ),
     )
 
@@ -97,7 +101,9 @@ def test_check_mt5_uses_environment_topology_group(monkeypatch) -> None:
     group = SimpleNamespace(main="live-main", workers=["live-exec-a"])
     calls: list[str] = []
 
-    monkeypatch.setattr("src.config.topology.load_topology_group", lambda group_name: group)
+    monkeypatch.setattr(
+        "src.config.topology.load_topology_group", lambda group_name: group
+    )
     monkeypatch.setattr(
         live_preflight,
         "_check_mt5_instance",
@@ -183,9 +189,9 @@ def test_check_api_extracts_mode_from_response(monkeypatch) -> None:
     rows = live_preflight._check_api()
     _, status, detail = rows[0]
     assert status == "OK"
-    assert "OBSERVE" in detail, (
-        f"detail 应反映 runtime mode，旧实现死写 'unknown'；实际 {detail!r}"
-    )
+    assert (
+        "OBSERVE" in detail
+    ), f"detail 应反映 runtime mode，旧实现死写 'unknown'；实际 {detail!r}"
 
 
 def test_check_api_handles_connection_error(monkeypatch) -> None:
@@ -219,3 +225,26 @@ def test_check_api_marks_failure_when_success_false(monkeypatch) -> None:
     _, status, detail = rows[0]
     assert status == "FAIL"
     assert "DEPS_NOT_READY" in detail or "success=False" in detail
+
+
+# ---------------------------------------------------------------------------
+# P2 #5: live_preflight reads removed min_preview_confidence field
+# ---------------------------------------------------------------------------
+
+
+def test_live_preflight_reads_auto_trade_min_confidence_not_removed_field() -> None:
+    """回归：旧实现 getattr(signal_cfg, 'min_preview_confidence', 0.55) →
+    SignalConfig 已无此字段，永远 default 0.55；真实 live 阈值
+    auto_trade_min_confidence 没被读 → preflight 实盘 vs 回测差异表伪事实。
+    """
+    import inspect as _inspect
+
+    source = _inspect.getsource(live_preflight)
+    # 禁止再读已删字段
+    assert (
+        "min_preview_confidence" not in source
+    ), "SignalConfig 已无 min_preview_confidence；改用 auto_trade_min_confidence"
+    # 必须读真实字段
+    assert (
+        "auto_trade_min_confidence" in source
+    ), "preflight min_confidence 比较应基于 auto_trade_min_confidence（真实 live 阈值）"

@@ -8,6 +8,7 @@
     python -m src.ops.cli.diagnose_no_trades --tf M15
     python -m src.ops.cli.diagnose_no_trades --tf H1 --hours 24
 """
+
 from __future__ import annotations
 
 import argparse
@@ -15,9 +16,16 @@ import os
 import sys
 import warnings
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# 用 append 而非 insert(0) 避免 src/calendar 阴影 stdlib calendar
+# （会破坏 requests/cookiejar `from calendar import timegm` 链路）。
+_REPO_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
 warnings.filterwarnings("ignore")
 import logging
+
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone, timedelta
@@ -26,11 +34,14 @@ from collections import defaultdict
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Diagnose why no trades are generated")
-    parser.add_argument("--tf", default=None, help="Focus on specific timeframe (e.g. M15)")
+    parser.add_argument(
+        "--tf", default=None, help="Focus on specific timeframe (e.g. M15)"
+    )
     parser.add_argument("--hours", type=int, default=24, help="Look back N hours")
     args = parser.parse_args()
 
     import requests
+
     BASE = "http://localhost:8808"
 
     # 1. Health check
@@ -44,7 +55,9 @@ def main() -> None:
 
     # 2. MT5 connection
     mt5 = health["market"]
-    print(f"2. MT5: {'connected' if mt5['connected'] else 'DISCONNECTED'} | {mt5.get('server','?')}")
+    print(
+        f"2. MT5: {'connected' if mt5['connected'] else 'DISCONNECTED'} | {mt5.get('server','?')}"
+    )
 
     # 3. Account
     try:
@@ -67,10 +80,14 @@ def main() -> None:
     scope_stats = ind.get("scope_stats", {})
     confirmed_calcs = scope_stats.get("confirmed", {}).get("computations", 0)
     intrabar_calcs = scope_stats.get("intrabar", {}).get("computations", 0)
-    print(f"4. INDICATORS: confirmed={confirmed_calcs} intrabar={intrabar_calcs} event_loop={ind.get('event_loop_running')}")
+    print(
+        f"4. INDICATORS: confirmed={confirmed_calcs} intrabar={intrabar_calcs} event_loop={ind.get('event_loop_running')}"
+    )
 
     if confirmed_calcs == 0:
-        print("   *** PROBLEM: No confirmed bar events processed. Check OHLC ingestion. ***")
+        print(
+            "   *** PROBLEM: No confirmed bar events processed. Check OHLC ingestion. ***"
+        )
 
     # 6. SignalRuntime
     sig = dash.get("signals", {})
@@ -80,7 +97,9 @@ def main() -> None:
     filters = sig.get("filters", {})
 
     total_processed = processing.get("processed_events", 0)
-    print(f"5. SIGNAL RUNTIME: processed={total_processed} warmup_ready={warmup.get('ready')}")
+    print(
+        f"5. SIGNAL RUNTIME: processed={total_processed} warmup_ready={warmup.get('ready')}"
+    )
 
     if not warmup.get("ready"):
         print("   *** PROBLEM: Warmup not ready. System is still in warmup phase. ***")
@@ -93,13 +112,21 @@ def main() -> None:
     filter_blocks = confirmed_filter.get("blocks", {})
     affinity_skipped = filters.get("affinity_gates_skipped", 0)
 
-    print(f"6. FILTERS: passed={filter_passed} blocked={filter_blocked} affinity_skipped={affinity_skipped}")
+    print(
+        f"6. FILTERS: passed={filter_passed} blocked={filter_blocked} affinity_skipped={affinity_skipped}"
+    )
     if filter_blocks:
         for reason, count in filter_blocks.items():
             print(f"   block: {reason} = {count}")
     if affinity_skipped > 0:
-        pct = affinity_skipped / (filter_passed + affinity_skipped) * 100 if (filter_passed + affinity_skipped) > 0 else 0
-        print(f"   affinity skip rate: {pct:.1f}% ({affinity_skipped}/{filter_passed + affinity_skipped})")
+        pct = (
+            affinity_skipped / (filter_passed + affinity_skipped) * 100
+            if (filter_passed + affinity_skipped) > 0
+            else 0
+        )
+        print(
+            f"   affinity skip rate: {pct:.1f}% ({affinity_skipped}/{filter_passed + affinity_skipped})"
+        )
 
     # 8. Regime per TF
     regime_map = sig.get("regime_map", {})
@@ -115,11 +142,15 @@ def main() -> None:
     # 9. Active signal states (non-hold)
     active_states = sig.get("active_states", {})
     confirmed_count = active_states.get("confirmed", 0)
-    print(f"8. ACTIVE STATES: confirmed={confirmed_count} preview={active_states.get('preview', 0)}")
+    print(
+        f"8. ACTIVE STATES: confirmed={confirmed_count} preview={active_states.get('preview', 0)}"
+    )
 
     # 10. Executor
     ex = dash.get("executor", {})
-    print(f"9. EXECUTOR: enabled={ex.get('enabled')} executions={ex.get('execution_count', 0)} circuit={ex.get('circuit_open', False)}")
+    print(
+        f"9. EXECUTOR: enabled={ex.get('enabled')} executions={ex.get('execution_count', 0)} circuit={ex.get('circuit_open', False)}"
+    )
     pending = ex.get("pending_entries_count", 0)
     if pending > 0:
         print(f"   pending entries: {pending}")
@@ -128,9 +159,13 @@ def main() -> None:
     pm = dash.get("positions", {})
     mgr = pm.get("manager", {})
     eod_date = mgr.get("last_end_of_day_close_date")
-    print(f"10. POSITIONS: tracked={mgr.get('tracked_positions', 0)} eod_date={eod_date}")
+    print(
+        f"10. POSITIONS: tracked={mgr.get('tracked_positions', 0)} eod_date={eod_date}"
+    )
     if eod_date == datetime.now(timezone.utc).date().isoformat():
-        print("   *** INFO: EOD already executed today. No new trades will be opened. ***")
+        print(
+            "   *** INFO: EOD already executed today. No new trades will be opened. ***"
+        )
 
     # 12. Check signal_events in DB for actual signals produced
     # 路由 /v1/signals/recent 支持 timeframe + from/to (alias 'from')，把 --tf
@@ -178,33 +213,49 @@ def main() -> None:
     problems = []
 
     if confirmed_calcs == 0:
-        problems.append("No confirmed bar events → indicators not computing → no signals")
+        problems.append(
+            "No confirmed bar events → indicators not computing → no signals"
+        )
     if not warmup.get("ready"):
         problems.append("Warmup not ready → signals suppressed")
     if filter_passed == 0 and filter_blocked > 0:
-        problems.append(f"All {filter_blocked} signals blocked by filters ({filter_blocks})")
+        problems.append(
+            f"All {filter_blocked} signals blocked by filters ({filter_blocks})"
+        )
     if affinity_skipped > filter_passed * 2:
-        problems.append(f"Affinity gate skipping {affinity_skipped} evaluations — regime affinities too aggressive")
+        problems.append(
+            f"Affinity gate skipping {affinity_skipped} evaluations — regime affinities too aggressive"
+        )
     if eod_date == datetime.now(timezone.utc).date().isoformat():
         problems.append("EOD already fired today → after_eod_block prevents new trades")
     if confirmed_count == 0 and filter_passed > 0:
-        problems.append("Filters pass signals but no confirmed states → all strategies output hold or confidence too low")
+        problems.append(
+            "Filters pass signals but no confirmed states → all strategies output hold or confidence too low"
+        )
     if ex.get("circuit_open"):
         problems.append("Executor circuit breaker is OPEN")
     if ex.get("execution_count", 0) == 0 and confirmed_count > 0:
-        problems.append("Active confirmed states exist but executor has 0 executions → signals not reaching executor (voting quorum? min_confidence?)")
+        problems.append(
+            "Active confirmed states exist but executor has 0 executions → signals not reaching executor (voting quorum? min_confidence?)"
+        )
 
     # Check regime-specific issues
     for key, regime_info in regime_map.items():
         r_type = regime_info.get("current_regime", "?")
         bars = regime_info.get("consecutive_bars", 0)
         if r_type == "ranging" and bars > 100:
-            problems.append(f"{key}: ranging for {bars} bars — most strategies have near-zero affinity")
+            problems.append(
+                f"{key}: ranging for {bars} bars — most strategies have near-zero affinity"
+            )
         if r_type == "uncertain" and bars > 50:
-            problems.append(f"{key}: uncertain for {bars} bars — many strategies suppressed")
+            problems.append(
+                f"{key}: uncertain for {bars} bars — many strategies suppressed"
+            )
 
     if not problems:
-        problems.append("No obvious problems detected — system may just not have found qualifying setups")
+        problems.append(
+            "No obvious problems detected — system may just not have found qualifying setups"
+        )
 
     for i, p in enumerate(problems, 1):
         print(f"  {i}. {p}")
@@ -213,4 +264,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
