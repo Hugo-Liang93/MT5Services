@@ -110,7 +110,9 @@ class EconomicEventFilter:
     single source of truth for window/importance/symbol-context.
     """
 
-    # Injected by app_runtime.factories.signals.build_economic_decay_service.
+    # Injected by app_runtime.factories.signals.build_signal_filter_chain
+    # (using the shared instance from build_economic_decay_service); also
+    # re-injected on hot reload of signal.ini / economic.ini.
     # TYPE_CHECKING import keeps the runtime free of an unnecessary calendar
     # dependency while preserving a precise mypy-strict signature.
     service: Optional["EconomicDecayService"] = None
