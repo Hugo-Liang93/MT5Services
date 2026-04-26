@@ -60,8 +60,7 @@ _RUNTIME_DEGRADE_EXCEPTIONS: tuple[type[BaseException], ...] = (
 
 
 def _symbol_context(symbol: str) -> dict[str, list[str]]:
-    # TODO Task 3: switch to "from src.calendar import infer_symbol_context"
-    from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+    from src.calendar import infer_symbol_context
 
     return infer_symbol_context(symbol)
 
