@@ -201,3 +201,82 @@ def test_generate_report_overall_status_reflects_active_warning_alert(
     assert report["overall_status"] in ("warning", "critical"), (
         f"active warning alert 必须把 overall_status 抬到 warning+；got {report['overall_status']!r}"
     )
+
+
+# ── §0v P2 回归：trading 域 critical metric 必须算 blocking_critical（非 advisory）──
+
+
+def test_generate_report_critical_trading_metric_drives_overall_status_to_critical(
+    tmp_path: Path,
+) -> None:
+    """P2 §0v 回归：旧 metric_overall_impact 漏掉 reconciliation_lag /
+    circuit_breaker_open / execution_failure_rate / execution_queue_overflows
+    四个交易域阻断指标 → critical 时只算 advisory_critical → overall_status
+    被降成 warning 而非 critical，掩盖严重故障。
+    """
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+
+    # execution_failure_rate=0.5 超 critical 阈值 0.3
+    monitor.record_metric("trading_executor", "execution_failure_rate", 0.5)
+    report = monitor.generate_report(hours=1)
+
+    metric = report["components"]["trading_executor"]["execution_failure_rate"]
+    assert metric["status"] == "critical"
+    assert metric["overall_impact"] == "blocking", (
+        f"trading 域 critical metric 必须算 blocking；got impact={metric['overall_impact']!r}"
+    )
+    assert report["overall_status"] == "critical", (
+        f"trading 域 critical 必须把 overall_status 抬到 critical；"
+        f"got {report['overall_status']!r} + summary={report['summary']!r}"
+    )
+
+
+def test_generate_report_circuit_breaker_open_critical_drives_overall_status(
+    tmp_path: Path,
+) -> None:
+    """circuit_breaker_open=1.0 应触发 critical 阈值并算 blocking。"""
+    monitor = HealthMonitor(str(tmp_path / "circuit.db"))
+    monitor.record_metric("trading_executor", "circuit_breaker_open", 1.0)
+    report = monitor.generate_report(hours=1)
+    metric = report["components"]["trading_executor"]["circuit_breaker_open"]
+    assert metric["status"] == "critical"
+    assert metric["overall_impact"] == "blocking"
+    assert report["overall_status"] == "critical"
+
+
+def test_get_system_status_does_not_report_healthy_with_active_critical_alert(
+    tmp_path: Path,
+) -> None:
+    """P2 §0v 回归：get_system_status 读上一次缓存 snapshot 后只把 active_alerts
+    拼回，不重新评级 → 只要 critical alert 出现在两次 report 之间，接口就同时
+    返回 overall_status='healthy' + active_alerts 含 critical 的矛盾状态。
+    """
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+
+    # 让 store 缓存中存在一份 healthy snapshot
+    monitor._store.set_system_status({
+        "timestamp": "2026-04-26T00:00:00+00:00",
+        "overall_status": "healthy",
+        "components_status": {},
+        "metrics_summary": {},
+    })
+
+    # 注入一个 active critical alert（模拟 generate_report 之后才被触发）
+    monitor.active_alerts["trading.execution_failure_rate"] = {
+        "component": "trading",
+        "metric_name": "execution_failure_rate",
+        "alert_level": "critical",
+        "severity": "critical",
+        "value": 0.7,
+        "threshold": 0.3,
+        "first_triggered_at": "2026-04-26T00:01:00+00:00",
+        "message": "execution failure rate critical",
+    }
+
+    status = monitor.get_system_status()
+
+    assert status["active_alerts"], "active_alerts 必须被透传"
+    assert status["overall_status"] == "critical", (
+        f"get_system_status 不能在挂着 critical active alert 时返 healthy；"
+        f"got overall_status={status['overall_status']!r}, active_alerts={status['active_alerts']!r}"
+    )

@@ -15,6 +15,33 @@ from .common import is_finite_metric_value, metric_overall_impact
 logger = logging.getLogger(__name__)
 
 
+def _escalate_status_for_active_alerts(
+    base_status: str,
+    active_alerts: List[Dict[str, Any]],
+) -> str:
+    """§0t/§0v P2：把 active_alerts 严重度拉进 overall_status 评级。
+
+    旧实现只看本次窗口聚合的 metric counts；过去触发但仍未消除的 alert 会被
+    静默忽略 → 只要本次窗口没新指标进 critical/warning，整体就被报 healthy。
+    本 helper 既被 generate_report 调用，也被 get_system_status 调用，避免
+    "缓存 snapshot + active_alerts 拼接" 出现 healthy + active critical 矛盾态。
+    """
+    has_critical = any(
+        str((a.get("severity") or a.get("alert_level") or "")).lower() == "critical"
+        for a in active_alerts
+    )
+    has_warning = any(
+        str((a.get("severity") or a.get("alert_level") or "")).lower() == "warning"
+        for a in active_alerts
+    )
+    current = str(base_status or "").lower()
+    if has_critical and current != "critical":
+        return "critical"
+    if has_warning and current == "healthy":
+        return "warning"
+    return base_status
+
+
 def generate_report(monitor: Any, hours: int = 24) -> Dict[str, Any]:
     """Generate a health report from the in-memory ring buffer."""
     now = monitor._utc_now()
@@ -97,22 +124,11 @@ def generate_report(monitor: Any, hours: int = 24) -> Dict[str, Any]:
     ):
         report["overall_status"] = "warning"
 
-    # §0t P2：active_alerts 必须参与 overall_status 评级。
-    # 旧实现只看本次窗口聚合的 metric counts；过去触发但仍未消除的 alert
-    # 会被静默忽略，导致只要本次窗口没新指标进 critical/warning，整体就被报 healthy。
-    active_alerts_list = report.get("active_alerts") or []
-    has_active_critical = any(
-        str((alert.get("severity") or alert.get("alert_level") or "")).lower() == "critical"
-        for alert in active_alerts_list
+    # §0t P2：active_alerts 必须参与 overall_status 评级（详见 _escalate_status_for_active_alerts）
+    report["overall_status"] = _escalate_status_for_active_alerts(
+        report["overall_status"],
+        report.get("active_alerts") or [],
     )
-    has_active_warning = any(
-        str((alert.get("severity") or alert.get("alert_level") or "")).lower() == "warning"
-        for alert in active_alerts_list
-    )
-    if has_active_critical and report["overall_status"] != "critical":
-        report["overall_status"] = "critical"
-    elif has_active_warning and report["overall_status"] == "healthy":
-        report["overall_status"] = "warning"
 
     # 告警历史从 SQLite 读取（数据极少）
     report["recent_alerts"] = monitor._store.load_recent_alerts(cutoff.isoformat())
@@ -149,7 +165,16 @@ def get_system_status(monitor: Any) -> Dict[str, Any]:
     status = monitor._store.get_system_status()
     if status:
         result = dict(status)
-        result["active_alerts"] = list(monitor.active_alerts.values())
+        active = list(monitor.active_alerts.values())
+        result["active_alerts"] = active
+        # §0v P2：缓存 snapshot 与 active_alerts 之间可能出现 stale —— critical
+        # alert 在两次 generate_report 之间触发时，若直接返回缓存的 healthy snapshot
+        # 就会出现 overall_status='healthy' + active_alerts 含 critical 的矛盾。
+        # 用与 generate_report 同款 escalation helper 重新评级。
+        result["overall_status"] = _escalate_status_for_active_alerts(
+            str(result.get("overall_status") or "unknown"),
+            active,
+        )
         return result
     return {
         "timestamp": monitor._utc_now().isoformat(),

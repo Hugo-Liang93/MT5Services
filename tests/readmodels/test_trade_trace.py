@@ -29,11 +29,14 @@ class _SignalRepo:
             "metadata": {"signal_trace_id": "trace-1"},
         }
 
-    def fetch_auto_executions(self, *, signal_id: str, limit: int = 50):
+    def fetch_auto_executions(
+        self, *, signal_id: str, limit: int = 50, account_alias=None
+    ):
         return [
             {
                 "executed_at": datetime(2026, 1, 1, 8, 16, tzinfo=timezone.utc),
                 "signal_id": signal_id,
+                "account_alias": account_alias or "live",
                 "symbol": "XAUUSD",
                 "direction": "buy",
                 "strategy": "trendline",
@@ -44,11 +47,14 @@ class _SignalRepo:
     def fetch_signal_outcomes(self, *, signal_id: str, limit: int = 20):
         return []
 
-    def fetch_trade_outcomes(self, *, signal_id: str, limit: int = 20):
+    def fetch_trade_outcomes(
+        self, *, signal_id: str, limit: int = 20, account_alias=None
+    ):
         return [
             {
                 "recorded_at": datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
                 "signal_id": signal_id,
+                "account_alias": account_alias or "live",
                 "won": True,
                 "price_change": 10.5,
             }
@@ -374,3 +380,162 @@ def test_trade_trace_reason_extractor_reads_nested_execution_skip_result() -> No
     )
 
     assert reason == "trade_params_unavailable"
+
+
+# ── §0v P2 + P3 回归：trade_trace 跨账户泄漏 + 去重丢同刻事件 ──
+
+
+class _MultiAccountSignalRepo:
+    """模拟同 signal_id 被多个账户执行的场景。"""
+
+    def fetch_signal_event_by_id(self, *, signal_id: str, scope: str = "confirmed"):
+        return None
+
+    def fetch_signal_events_by_trace_id(self, *, trace_id: str, scope="confirmed", limit=50):
+        return []
+
+    def fetch_auto_executions(
+        self,
+        *,
+        signal_id: str,
+        limit: int = 50,
+        account_alias=None,
+    ):
+        rows = [
+            {
+                "executed_at": datetime(2026, 1, 1, 8, 16, tzinfo=timezone.utc),
+                "signal_id": signal_id,
+                "account_alias": "acct_a",
+                "account_key": "live:srv:111",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "success": True,
+            },
+            {
+                "executed_at": datetime(2026, 1, 1, 8, 16, tzinfo=timezone.utc),
+                "signal_id": signal_id,
+                "account_alias": "acct_b",
+                "account_key": "live:srv:222",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "success": True,
+            },
+        ]
+        if account_alias is not None:
+            rows = [r for r in rows if r["account_alias"] == account_alias]
+        return rows
+
+    def fetch_signal_outcomes(self, *, signal_id: str, limit: int = 20):
+        return []
+
+    def fetch_trade_outcomes(
+        self,
+        *,
+        signal_id: str,
+        limit: int = 20,
+        account_alias=None,
+    ):
+        rows = [
+            {
+                "recorded_at": datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+                "signal_id": signal_id,
+                "account_alias": "acct_a",
+                "account_key": "live:srv:111",
+                "won": True,
+            },
+            {
+                "recorded_at": datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+                "signal_id": signal_id,
+                "account_alias": "acct_b",
+                "account_key": "live:srv:222",
+                "won": False,
+            },
+        ]
+        if account_alias is not None:
+            rows = [r for r in rows if r["account_alias"] == account_alias]
+        return rows
+
+
+class _EmptyTradeRepo:
+    def fetch_trace_operations(self, *, account_alias, signal_id, limit=100):
+        return []
+
+    def fetch_trace_operations_by_trace_id(self, *, account_alias, trace_id, limit=100):
+        return []
+
+
+class _EmptyPipelineTraceRepo:
+    def fetch_pipeline_trace_events(self, *, trace_ids, limit=500):
+        return []
+
+
+class _EmptyTradingStateRepo:
+    def fetch_pending_order_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+        return []
+
+    def fetch_position_runtime_states(self, *, account_alias=None, statuses=None, signal_id=None, limit=500):
+        return []
+
+
+def test_trace_by_signal_id_does_not_mix_other_accounts_executions_and_outcomes() -> None:
+    """P2 §0v 回归：旧 trace_by_signal_id 对 auto_executions / trade_outcomes
+    只按 signal_id 拉全局数据 → 多账户共享 signal_id 时把别人的执行/结果混进
+    当前账户 facts/timeline。
+    """
+    read_model = TradingFlowTraceReadModel(
+        signal_repo=_MultiAccountSignalRepo(),
+        command_audit_repo=_EmptyTradeRepo(),
+        pipeline_trace_repo=_EmptyPipelineTraceRepo(),
+        trading_state_repo=_EmptyTradingStateRepo(),
+        account_alias_getter=lambda: "acct_a",
+    )
+
+    trace = read_model.trace_by_signal_id("sig-1")
+
+    auto = trace["facts"]["auto_executions"]
+    outcomes = trace["facts"]["trade_outcomes"]
+    aliases_auto = {row.get("account_alias") for row in auto}
+    aliases_outcome = {row.get("account_alias") for row in outcomes}
+
+    assert aliases_auto == {"acct_a"}, (
+        f"trace 只能含当前账户 auto_executions；got aliases={aliases_auto!r}"
+    )
+    assert aliases_outcome == {"acct_a"}, (
+        f"trace 只能含当前账户 trade_outcomes；got aliases={aliases_outcome!r}"
+    )
+
+
+def test_fetch_by_signal_ids_dedup_preserves_cross_account_same_timestamp_events() -> None:
+    """P3 §0v 回归：旧 _fetch_by_signal_ids 去重键仅 (signal_id, timestamp)，
+    无 account 维度 → 两账户同时刻同 signal_id 的执行/结果 → 第二条静默被丢。
+    即使将来加上账户过滤，这个 helper 仍需具备正确处理跨账户同刻事件的能力。
+    """
+    rows_in = [
+        {
+            "signal_id": "sig-1",
+            "executed_at": "2026-01-01T08:16:00+00:00",
+            "account_alias": "acct_a",
+            "account_key": "live:srv:111",
+            "symbol": "XAUUSD",
+        },
+        {
+            "signal_id": "sig-1",
+            "executed_at": "2026-01-01T08:16:00+00:00",
+            "account_alias": "acct_b",
+            "account_key": "live:srv:222",
+            "symbol": "XAUUSD",
+        },
+    ]
+
+    def _fetcher(*, signal_id, limit, account_alias=None):
+        return list(rows_in)
+
+    rows_out = TradingFlowTraceReadModel._fetch_by_signal_ids(
+        signal_ids=["sig-1"],
+        fetcher=_fetcher,
+        limit=10,
+    )
+    aliases = {row.get("account_alias") for row in rows_out}
+    assert aliases == {"acct_a", "acct_b"}, (
+        f"两账户同时刻不同 row 不能被去重掉一个；got aliases={aliases!r}, rows_out={rows_out!r}"
+    )

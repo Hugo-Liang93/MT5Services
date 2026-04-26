@@ -44,9 +44,14 @@ class TradingFlowTraceReadModel:
             signal_id=normalized_signal_id,
             scope="confirmed",
         )
+        # §0v P2：auto_executions / trade_outcomes 必须按 account_alias 过滤，
+        # 否则多账户共享 signal_id 时把别人的执行/结果混进当前账户 facts/timeline。
+        # signal_outcomes 是 signal-level 不带 account 字段，无需过滤。
+        current_account_alias = self._account_alias_getter()
         auto_executions = self._signal_repo.fetch_auto_executions(
             signal_id=normalized_signal_id,
             limit=50,
+            account_alias=current_account_alias,
         )
         signal_outcomes = self._signal_repo.fetch_signal_outcomes(
             signal_id=normalized_signal_id,
@@ -55,6 +60,7 @@ class TradingFlowTraceReadModel:
         trade_outcomes = self._signal_repo.fetch_trade_outcomes(
             signal_id=normalized_signal_id,
             limit=20,
+            account_alias=current_account_alias,
         )
         pending_orders = self._trading_state_repo.fetch_pending_order_states(
             account_alias=self._account_alias_getter(),
@@ -117,10 +123,13 @@ class TradingFlowTraceReadModel:
             confirmed_signals=confirmed_signals,
             operations=operations,
         )
+        # §0v P2：同 trace_by_signal_id 修复——按 account_alias 过滤
+        current_account_alias = self._account_alias_getter()
         auto_executions = self._fetch_by_signal_ids(
             signal_ids=signal_ids,
             fetcher=self._signal_repo.fetch_auto_executions,
             limit=50,
+            account_alias=current_account_alias,
         )
         signal_outcomes = self._fetch_by_signal_ids(
             signal_ids=signal_ids,
@@ -131,6 +140,7 @@ class TradingFlowTraceReadModel:
             signal_ids=signal_ids,
             fetcher=self._signal_repo.fetch_trade_outcomes,
             limit=20,
+            account_alias=current_account_alias,
         )
         pending_orders = self._fetch_state_by_signal_ids(
             signal_ids=signal_ids,
@@ -789,14 +799,23 @@ class TradingFlowTraceReadModel:
         signal_ids: Sequence[str],
         fetcher: Any,
         limit: int,
+        account_alias: str | None = None,
     ) -> list[dict[str, Any]]:
+        # §0v P2/P3：(a) account_alias 透传给 fetcher（None 时保留全局语义，
+        # signal_outcomes 等不带账户字段的 fetcher 仍向后兼容）；(b) 去重键
+        # 加 account 维度，避免两账户同时刻同 signal_id 事件被错误折叠成一条。
         rows: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str, str]] = set()
         for signal_id in signal_ids:
-            for row in fetcher(signal_id=signal_id, limit=limit):
+            kwargs: dict[str, Any] = {"signal_id": signal_id, "limit": limit}
+            if account_alias is not None:
+                kwargs["account_alias"] = account_alias
+            for row in fetcher(**kwargs):
                 key = (
                     str(row.get("signal_id") or ""),
                     str(row.get("recorded_at") or row.get("executed_at") or ""),
+                    str(row.get("account_key") or ""),
+                    str(row.get("account_alias") or ""),
                 )
                 if key in seen:
                     continue

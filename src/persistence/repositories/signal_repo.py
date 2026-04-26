@@ -526,19 +526,27 @@ ORDER BY recorded_at ASC
         *,
         signal_id: str,
         limit: int = 50,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
     ) -> List[dict[str, Any]]:
-        return self._fetch_dict_rows(
-            """
-SELECT executed_at, signal_id, symbol, direction, strategy, confidence,
-       account_key, account_alias, intent_id, volume, entry_price, stop_loss, take_profit, risk_reward,
-       success, error_message, metadata
-FROM auto_executions
-WHERE signal_id = %s
-ORDER BY executed_at ASC
-LIMIT %s
-""",
-            [signal_id, max(1, int(limit))],
+        # §0v P2：trade_trace 跨账户泄漏修复——可选按账户过滤；调用方未传则
+        # 保留旧的全局返回行为（research / analytics 路径仍合法）。
+        sql = (
+            "SELECT executed_at, signal_id, symbol, direction, strategy, confidence, "
+            "account_key, account_alias, intent_id, volume, entry_price, stop_loss, "
+            "take_profit, risk_reward, success, error_message, metadata "
+            "FROM auto_executions WHERE signal_id = %s"
         )
+        params: List[Any] = [signal_id]
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        sql += " ORDER BY executed_at ASC LIMIT %s"
+        params.append(max(1, int(limit)))
+        return self._fetch_dict_rows(sql, params)
 
     def fetch_signal_outcomes(
         self,
@@ -563,18 +571,26 @@ LIMIT %s
         *,
         signal_id: str,
         limit: int = 20,
+        account_alias: Optional[str] = None,
+        account_key: Optional[str] = None,
     ) -> List[dict[str, Any]]:
-        return self._fetch_dict_rows(
-            """
-SELECT recorded_at, signal_id, symbol, timeframe, strategy, direction, confidence,
-       account_key, account_alias, intent_id, fill_price, close_price, price_change, won, regime, metadata
-FROM trade_outcomes
-WHERE signal_id = %s
-ORDER BY recorded_at ASC
-LIMIT %s
-""",
-            [signal_id, max(1, int(limit))],
+        # §0v P2：同 fetch_auto_executions——可选按账户过滤；调用方未传保留全局
+        sql = (
+            "SELECT recorded_at, signal_id, symbol, timeframe, strategy, direction, "
+            "confidence, account_key, account_alias, intent_id, fill_price, "
+            "close_price, price_change, won, regime, metadata "
+            "FROM trade_outcomes WHERE signal_id = %s"
         )
+        params: List[Any] = [signal_id]
+        if account_key is not None:
+            sql += " AND account_key = %s"
+            params.append(account_key)
+        elif account_alias is not None:
+            sql += " AND account_alias = %s"
+            params.append(account_alias)
+        sql += " ORDER BY recorded_at ASC LIMIT %s"
+        params.append(max(1, int(limit)))
+        return self._fetch_dict_rows(sql, params)
 
     def query_trade_outcomes_page(
         self,

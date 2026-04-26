@@ -89,6 +89,9 @@ from .ticks import INSERT_SQL as INSERT_TICKS_SQL
 from .trade_command_audits import DDL as TRADE_COMMAND_AUDITS_DDL
 from .trade_command_audits import INSERT_SQL as INSERT_TRADE_COMMAND_AUDITS_SQL
 from .trade_control_state import DDL as TRADE_CONTROL_STATE_DDL
+from .trade_control_state import (
+    MIGRATION_SQL as TRADE_CONTROL_STATE_MIGRATION_SQL,
+)
 from .trade_control_state import UPSERT_SQL as UPSERT_TRADE_CONTROL_STATE_SQL
 from .trade_outcomes import DDL as TRADE_OUTCOMES_DDL
 from .trade_outcomes import INSERT_SQL as INSERT_TRADE_OUTCOMES_SQL
@@ -150,6 +153,9 @@ POST_INIT_DDL_STATEMENTS = [
     # 复合主键，禁止多账户拓扑下不同账户共用 MT5 ticket 时跨账户互相覆盖。
     PENDING_ORDER_STATES_MIGRATION_SQL,
     POSITION_RUNTIME_STATES_MIGRATION_SQL,
+    # §0v P3：trade_control_state PK 从 account_alias 升级到 account_key，并删除
+    # 与 PK 冲突的 account_key 唯一索引，禁止"alias 改名 → unique violation"。
+    TRADE_CONTROL_STATE_MIGRATION_SQL,
 ]
 
 __all__ = [
