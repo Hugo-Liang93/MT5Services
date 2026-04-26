@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from ..confidence import apply_intrabar_decay
-from ..evaluation.regime import RegimeType, SoftRegimeResult
+from ..evaluation.regime import RegimeType
 from ..metadata_keys import MetadataKey as MK
 from ..models import SignalEvent
 from .policy import RuntimeSignalState
@@ -34,18 +34,6 @@ def evaluate_strategies(
     structure_resolved = False
     strategies = runtime._target_index.get((symbol, timeframe.upper()), [])
     shard_lock = runtime._get_shard_lock(symbol, timeframe)
-
-    soft_parsed: SoftRegimeResult | None = None
-    if runtime.soft_regime_enabled and regime_metadata.get(MK.REGIME_SOFT):
-        try:
-            soft_parsed = SoftRegimeResult.from_dict(regime_metadata[MK.REGIME_SOFT])
-        except Exception:
-            logger.info(
-                "Failed to parse soft regime for %s/%s, falling back to hard regime",
-                symbol,
-                timeframe,
-                exc_info=True,
-            )
 
     event_impact = _resolve_event_impact_forecast(runtime, symbol, scope, event_time)
 

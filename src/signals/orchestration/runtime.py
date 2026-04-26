@@ -7,16 +7,14 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from ..evaluation.regime import (
     MarketRegimeDetector,
     RegimeTracker,
     RegimeType,
-    SoftRegimeResult,
 )
 from ..execution.filters import SignalFilterChain
-from ..metadata_keys import MetadataKey as MK
 from ..models import SignalEvent
 from ..service import SignalModule, StrategyCapability
 from .htf_resolver import parse_htf_config, resolve_htf_indicators
@@ -44,9 +42,6 @@ from .runtime_components import (
     RuntimeStatusBuilder,
     SignalLifecyclePolicy,
 )
-
-if TYPE_CHECKING:
-    from src.indicators.manager import UnifiedIndicatorManager
 
 logger = logging.getLogger(__name__)
 
