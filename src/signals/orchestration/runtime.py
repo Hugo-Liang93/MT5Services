@@ -58,6 +58,7 @@ class SnapshotSource(Protocol):
             [str, str, datetime, dict[str, dict[str, float]], str], None
         ],
     ) -> None: ...
+
     def get_indicator(
         self, symbol: str, timeframe: str, indicator_name: str
     ) -> dict[str, float] | None: ...
@@ -295,7 +296,10 @@ class SignalRuntime:
         return self.policy.strategy_capability_contract()
 
     def strategy_capability_reconciliation(self) -> dict[str, Any]:
-        """Compare module contract vs runtime policy contract and return a unified diff."""
+        """Compare module contract vs runtime policy contract.
+
+        Returns a unified diff of any divergences.
+        """
         from src.signals import service_diagnostics as _svc_diag
 
         return _svc_diag.strategy_capability_reconciliation(
@@ -728,9 +732,10 @@ class SignalRuntime:
                     # 这里只保留最常见的 miss key，既保留诊断价值，也控制内存占用。
                     _MAX_MISS_KEYS = 500
                     if len(self._indicator_miss_counts) > _MAX_MISS_KEYS:
+                        miss_getter = self._indicator_miss_counts.get
                         sorted_keys = sorted(
                             self._indicator_miss_counts,
-                            key=self._indicator_miss_counts.get,  # type: ignore[arg-type]
+                            key=miss_getter,  # type: ignore[arg-type]
                             reverse=True,
                         )
                         # 仅保留 top-N 高频 miss 记录。
