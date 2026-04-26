@@ -1,6 +1,6 @@
 """Experiment Registry REST API 端点。
 
-被动追踪实验从 Research → Backtest → Paper Trading → Live 的生命周期。
+被动追踪实验从 Research → Backtest → Demo Validation → Live 的生命周期（参 ADR-010）。
 各模块通过 experiment_id 关联，此处只提供查询和手动管理接口。
 """
 

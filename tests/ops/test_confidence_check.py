@@ -7,8 +7,8 @@ P1: sys.path.insert(0, repo_root) 把 src/ 提到 stdlib 之前 → src/calendar
 P2#3: 默认路径下 args.tf 缺省时拿 stf.keys()（策略名）当 TF 列表，
     后续匹配永远空 → 脚本只打 settings 不输出 TF 诊断。
 
-P2#4: 候选集合不收口 strategy_deployments；CANDIDATE / DEMO_VALIDATION /
-    PAPER_ONLY 策略本不能 live 执行但被算进 "可通过"。
+P2#4: 候选集合不收口 strategy_deployments；CANDIDATE / DEMO_VALIDATION
+    策略本不能 live 执行但被算进 "可通过"（PAPER_ONLY 已在 ADR-010 后从 enum 删除）。
 """
 
 from __future__ import annotations
@@ -145,7 +145,7 @@ def test_confidence_check_filters_by_deployment_allows_live(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     """回归：候选集合应过滤掉不能 live 执行的策略
-    （CANDIDATE / DEMO_VALIDATION / PAPER_ONLY）。
+    （CANDIDATE / DEMO_VALIDATION；PAPER_ONLY 历史 enum 已删）。
 
     否则即便算出某 TF "有策略能 PASS"，对 live 结论也是假阳性。
     """
@@ -220,7 +220,7 @@ def test_confidence_check_filters_by_deployment_allows_live(
 def test_no_live_eligible_strategies_does_not_misreport_all_blocked(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """回归：当全部策略 = CANDIDATE/DEMO_VALIDATION/PAPER_ONLY 时，
+    """回归：当全部策略 = CANDIDATE/DEMO_VALIDATION 时（PAPER_ONLY 历史 enum 已删），
     每个 TF 的 _live_candidates 都是空列表，原 all(...) 落在空生成器上返 True
     → 输出 "ALL TFs BLOCKED" + "调低 min_confidence" 建议。
     真因是无 live-eligible 策略；建议方向应该是推策略到 ACTIVE_GUARDED。

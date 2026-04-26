@@ -1,6 +1,6 @@
 # 系统启动巡检与 Live Canary Runbook
 
-> 更新日期：2026-04-13
+> 更新日期：2026-04-26（按正式合同口径校核：`deployment.allows_*` / `source_kind` 三态 / `active_alerts` 参与评级 / supervisor unexpected-exit alarm；2026-04-13 初版）
 > 目标：把“服务能否正常启动、系统主链路是否真实打通、日志里哪些算真实问题”收口成一套可执行流程。
 > 范围：只覆盖系统管线本身，不以真实交易下单是否成功作为本 runbook 的验收条件。
 
@@ -64,6 +64,33 @@ Get-ChildItem -Path .\src -Recurse -Directory | Where-Object { $_.FullName -matc
 | 当前是否休盘 | 休盘时 `market_data data latency critical` 可能是预期现象 |
 | 当前是否准备做开盘 canary | 如果是，至少预留 15 到 30 分钟观察窗口 |
 | 当前是否打开自动交易 | 只有当 live 策略已显式 deployment + 显式 account binding 时才允许打开；否则应视为配置不完整 |
+
+### 2.3 部署合同前置校验（正式合同口径）
+
+按 ADR-010 / ADR-009 / §0dd，`deployment.status` × `environment` 决定装配/intent/执行资格，启动前必须用工具核对，禁止凭印象判断：
+
+```powershell
+python -m src.ops.cli.confidence_check --tf <M5/M15/M30/H1/H4/D1>
+```
+
+预期输出与决策口径对照：
+
+| 工具输出 | 真实含义 | 决策 |
+|------|------|------|
+| `*** NO LIVE-ELIGIBLE STRATEGIES — all current strategies are CANDIDATE / DEMO_VALIDATION ***` | 当前 `[strategy_deployment.*]` 没有 ACTIVE / ACTIVE_GUARDED 策略 | live-main / live-exec-* 装配集合为空（§0dd 状态事实）。**不允许打开 live 自动交易**。要 canary 必须先 promote 至少 1 条策略到 `active_guarded` |
+| `ALL TFs BLOCKED` + 候选不为空 | 阈值（baseline + `effective_min_confidence`）确实拒绝了所有信号 | 调阈值或调研 confidence 管线，**不要**把它误读为"没有 live 策略" |
+| 单 TF 列出 PASS/BLOCK 行 + `min={X}*` 标记 | `*` 表示 deployment.effective_min_confidence 推高了 baseline | 这是 ACTIVE_GUARDED 强制提阈值的合同行为，不是配置错误 |
+
+四种 deployment status × environment 装配/intent 矩阵（速查）：
+
+| status | live 装配 | demo 装配 | live publisher | demo publisher | pre_trade_checks |
+|--------|----------|----------|----------------|----------------|------------------|
+| `candidate` | ❌ | ❌ | ❌ | ❌ | reject (allows_runtime_evaluation=False) |
+| `demo_validation` | ❌ | ✅ | ❌ | ✅ | reject in live (allows_live_execution=False) |
+| `active_guarded` | ✅ | ✅ | ✅ | ✅ | pass + 强制 effective_min_confidence ≥ baseline+0.05 |
+| `active` | ✅ | ✅ | ✅ | ✅ | pass + 自带 min_final_confidence（若声明） |
+
+`signal.ini` / `signal.local.ini` 的 `[account_bindings.<account>]` 必须只引用当前能装配的策略（live binding 仅 ACTIVE/ACTIVE_GUARDED；demo binding 含全部 demo_validation）。binding 与装配集漂移会导致"已绑定但永不装配"或"已装配但 publisher 找不到 target account"的静默漏单——sentinel test 已锁住这两类（参 §0dd）。
 
 ---
 
@@ -143,6 +170,9 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 | MT5 会话 | `/health` | `runtime.external_dependencies.mt5_session.session_ready=true`，且 `interactive_login_required=false` |
 | 执行行情门禁 | `/v1/trade/state` | 若本次准备做 live canary，则目标 executor 应满足 `tradability.quote_health.stale=false`、`account_risk.should_block_new_trades=false`；若本次准备验证 `intrabar` trigger，还应同时确认 admission/trace 中不存在 `intrabar_synthesis_stale` 或 `intrabar_synthesis_unavailable` |
 | Intrabar 合成时效 | `/health` | 若主实例启用了 intrabar，则 `runtime.components.ingestor.intrabar_synthesis.status` 不应长期为 `warning`，`stale` 数量应可解释 |
+| Active alerts 参与评级 | `/v1/monitoring/health` | `active_alerts` 不为空时，`overall_status` 必须降级为 `warning` 或 `critical`——绝不允许同时出现 `critical alerts` 与 `overall_status=healthy`（§0t #2 / §0v #1 已修；这是控制面"假绿"的最后防线） |
+| Workbench source_kind 三态 | `/v1/execution/workbench` | 单实例 = `native`；多账户 main 不挂 executor（delegated 拓扑）= `delegated`；executor 拓扑异常 = `fallback`。`fallback` 才是降级，`delegated` 是合法拓扑（§0r #3）|
+| Supervisor 子进程退出告警 | `data/logs/<instance>/mt5services.log` | §0aa 后任何 child 退出（含 `code=0`）都视为 unexpected——若日志出现 `supervisor: instance %s exited unexpectedly (code=...)` 但 `_managed` 中实例仍存在，按 supervisor restart 流程检查；§0bb 加了独立 alarm counter，可在 `/health` 看 `supervisor_unexpected_exit_total` |
 | 入口日志 | `data/logs/<instance>/*.log` | 日志文件创建在实例隔离目录，而不是 `src/` 下或共享日志目录 |
 | 运行期本地文件 | `data/runtime/<instance>/` | `events.db`、`signal_queue.db`、`health_monitor.db`、`health_alerts.db` 落在实例隔离目录；其中部分文件可能在组件首轮写入后创建 |
 | 手工运行产物 | `data/artifacts/` | 回测 JSON、压测日志、启动排查输出统一放这里，不再使用根目录 `runtime/` |
@@ -201,6 +231,8 @@ curl.exe http://127.0.0.1:8808/v1/monitoring/events
 | `economic calendar` 重启后短时间显示 `health_state=refreshing`，但 `last_refresh_at` 已有值 | 正常恢复现象 | 表示上一轮成功刷新已从持久化状态恢复，本轮 `release_watch` 正在继续执行；这不是 stale，也不是恢复失败 |
 | `/health` 中 `trade_executor.running=false` | 当前实现语义 | `TradeExecutor` 是懒启动 worker，未收到交易信号前不代表未装配 |
 | 启动后短时间没有信号或没有交易 | 不足以判失败 | 本 runbook 验的是系统链路，不是策略一定出信号 |
+| multi_account main 实例 `/v1/execution/workbench.source_kind=delegated` | 合法拓扑（§0r #3） | main 角色只做共享计算，不直接挂 executor；`tradability.verdict=not_applicable` + `reason_code=not_executor_role` 是预期；admission 不会再把 `runtime_present=False` 误标为故障 |
+| 启动期 `confidence_check` 显示 `NO LIVE-ELIGIBLE STRATEGIES` | 当前部署阶段事实 | 见 §2.3——只代表 active=0；不允许打开 live 自动交易，但不影响系统巡检本身 |
 
 ---
 
@@ -250,6 +282,17 @@ MT5 行情 -> BackgroundIngestor -> MarketDataService
 3. 没有重复的 schema/contract/type error。
 4. `events.db` 与监控事件视图能体现事件持续推进。
 5. 运行期日志和 SQLite 文件全部落在 `data/logs/<instance>/` 与 `data/runtime/<instance>/`。
+6. **`active_alerts` 始终参与评级**：`/v1/monitoring/health` 中 `critical_count > 0` 时 `overall_status` 必须为 `critical`，不出现"健康面假绿"现象（§0t #2 / §0v #1）。
+7. **`source_kind` 反映真实拓扑**：`/v1/execution/workbench.source_kind` 与拓扑期望一致（单实例 native / delegated main 不报 fallback）。
+
+### 6.5 进入 active_guarded canary 的额外前置（不仅是系统通路）
+
+本 runbook §6.4 是"系统主链路通路"门槛，不等于"可以打开 live 自动交易"。要 promote 1 条策略到 `active_guarded` 并放出实盘 canary，还必须满足：
+
+1. 该策略在 demo 环境跑过 ≥7 天 `demo_validation`，trace 完整、outcome 落库可对账（参 ADR-010 §6 新策略上线路径）。
+2. `confidence_check --tf <target>` 显示该策略不再返回 `NO LIVE-ELIGIBLE`，且 `effective_min_confidence` 推高后仍能产出 PASS。
+3. binding 配置仅引用该 1 条策略 + 仅 1 个 live executor + 最小仓位/最小交易窗口（清单 WP6 退出标准）。
+4. 已定义停机条件：拒单率 / 滑点 / 失败率 / 熔断 / trace 丢失 / 健康降级——任一触发，立即降级 `active_guarded → demo_validation` 而非继续运行。
 
 ### 6.5 Canary 失败后如何归类
 

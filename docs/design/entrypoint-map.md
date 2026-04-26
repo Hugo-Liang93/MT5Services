@@ -1,6 +1,6 @@
 # 运行入口映射
 
-> 更新日期：2026-04-12
+> 更新日期：2026-04-26（追加 §0aa/§0bb 启动链生命周期约束；2026-04-12 初版）
 > 本文只回答“从哪里启动”和“启动后先看哪里”；全量运行时链路请对照 `docs/design/full-runtime-dataflow.md`。
 
 该文档用于统一记录当前项目启动/脚本入口，避免新同学与运维在入口上产生歧义。
@@ -109,6 +109,8 @@ config/
 - `src/entrypoint/web.py`：日志初始化 + 当前实例 MT5 session gate + `uvicorn.run(target, host, port)`。
 - `src/entrypoint/instance.py`：绑定实例名、解析当前环境、刷新实例配置上下文，再进入 `web.launch()`。
 - `src/entrypoint/supervisor.py`：读取 `topology.ini`，先做 group/session gate，再按环境/组启动并重启 `main + workers` 进程；每次 child restart 前也会重新检查对应实例的 MT5 gate。
+  - §0aa 后约束：supervisor 生命期内任何 child 退出（含 `code=0`）都视为 unexpected——除非 `self._stopping` 已置位。旧 `normal exit → continue` 路径会让已死 process 永驻 `_managed`，被诊断为"永远不重启"。
+  - §0bb 后约束：normal-exit 与 unexpected-exit 均会写入独立 alarm counter（`supervisor_unexpected_exit_total{class}`），运维侧可订阅 normal/unexpected 两类 alarm 以快速识别静默缺员。
 - `src/backtesting/cli.py` 与 `src/ops/cli/*`：命令参数解析 + 任务编排入口，不承载业务核心算法。
 - `src/api/*`：HTTP 适配层，不承担运行时装配与启动职责。
   - 其中交易入口已开始按正式合同收口：
@@ -134,3 +136,9 @@ config/
 5. 当前正式多账户部署建议改为“单代码目录 + 多实例配置 + supervisor”，而不是复制多份代码目录。
 6. `web` 与 `supervisor` 入口现已统一给每条日志注入 `environment / instance / role`，多实例并行时控制台与文件日志均可直接区分来源。
 7. 交易主链路的准入、trace 与状态流已开始收口为正式合同：`AdmissionReport` 负责统一解释“为什么没进交易”，`/v1/trade/traces` 负责把 admission、intent、command、execution 等事件串成业务因果链，`/v1/trade/state/stream` 则开始消费同一份正式 pipeline 事实源；后续执行入口与 worker 自消费链将继续复用同一套 admission/trace 模型。
+
+8. **2026-04-26 启动链生命周期收口（§0aa + §0bb）** — 三个 P1/P2 已修：
+   - `src/indicators/engine/pipeline.py`：`shutdown()` 与 `shutdown_global_pipeline()` 现在显式清模块全局 `_global_executor` / `_global_pipeline`。runtime mode 切到 `ingest_only/risk_off` 再切回 `full` 不再拿到已 shutdown 的全局 executor（旧实现"永久毒化"指标主链）。
+   - `src/entrypoint/supervisor.py`：移除 `normal exit (code=0) → continue` 路径，所有 child 退出统一进 unexpected 分支 + restart 流程；`_managed` 不再保留已 exit 的 process 引用。
+   - `src/ingestion/ingestor.py`：`start()` 现在重建 `_fetch_executor`（旧实现 stop 后再 start 抛 `RuntimeError: cannot schedule new futures after shutdown`）。
+   - **AST sentinel**：`tests/utils/test_sentinel_singleton_shutdown_clears_ref.py` 锁住"`_global_X` singleton 若提供 `shutdown_global_X / clear_global_X / close_global_X` helper，函数体必须含 `_global_X = None`"——禁止此类反模式回归。

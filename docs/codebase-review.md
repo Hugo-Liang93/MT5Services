@@ -49,6 +49,194 @@
 
 ---
 
+## 0df. 2026-04-26 LIVE_READINESS 清单 × 现状对账（治理基线）
+
+### 触发
+
+§0de 落了根目录治理路线图 `LIVE_READINESS_EXECUTION_CHECKLIST.md`（7 WP × ~50
+checkbox）后，User 进入推进阶段。本段先做一份对账，把"清单条目 × 已落实
+§ / commit / 测试"逐条对应，以避免：
+
+- 重复劳动（多数 WP 的 checkbox 在 §0g→§0dd 30+ commit 主线已修，
+  但未"按 WP 维度勾选"）
+- 越界 WP6（前置门禁未满足前升 active_guarded 是路线图严令禁止）
+- 模糊状态（"是否完成"在不同 § 段散落，不形成单一基线）
+
+### 方法
+
+逐 WP 对照清单条目、关联到 §0g→§0dd 段或 commit，标 ✅ 已完成 / ⏳ 部分完成 /
+❌ 未启动；引用条目原文以便交叉核验。代码层确认通过 grep + 关键文件读取（不依赖
+§ 段自述）。
+
+### WP1 — 执行合同统一（~95%）
+
+| 清单条目 | 状态 | 落地点 |
+|---|---|---|
+| 4×2（status × env）装配/intent/执行资格矩阵 | ✅ | `signals/contracts/deployment.py` 4 个 enum + `allows_runtime_evaluation` / `allows_live_execution` / `allows_demo_validation` / `effective_min_confidence` |
+| ExecutionIntentPublisher 按正式合同 | ✅ | §0dd #1（按 environment 路由 `allows_demo_validation` / `allows_live_execution`） |
+| pre_trade_checks 接 effective_min_confidence | ✅ | `pre_trade_checks.py:537-543` 已并入；§0p #2 修了 confidence_check 同语义 |
+| binding 配置校验（无效策略名拒绝） | ⏳ | §0dd 加了 demo_main binding sentinel + 双向校验；live_main/live_exec_a 当前 binding 已清空（active=0 状态事实），未来 promote 时仍由 sentinel 守门——校验机制已就位，仅未跑过非空 live binding 数据点 |
+| 文档 paper trading 旧语义清理 | ✅ | §0dd 主流程 doc 已改 + sentinel；本 § 后 4 处事实源/CLI/注释残留全部清理（experiment_routes / walkforward_runner / architecture.md / confidence_check / full-runtime-dataflow §4.3 / test_confidence_check docstring） |
+
+**禁止事项**：✅ 双轨语义已消除；✅ 无新增兼容分支。
+**退出标准**：✅ 同一策略同一环境"是否可执行"答案唯一。
+
+WP1 残余项均为 cosmetic 文档注释，不影响合同正确性。
+
+### WP2 — Demo 验证闭环（100%）
+
+| 清单条目 | 状态 | 落地点 |
+|---|---|---|
+| demo_validation 在 demo 产 intent | ✅ | §0dd #1 |
+| demo_main binding 与装配集对齐 | ✅ | §0dd #3 |
+| signal_id 单键覆盖 | ✅ | §0z #1（PendingEntryManager.submit 重复 signal_id 先 cancel 再 submit） |
+| trade_trace 缺账户过滤/去重 | ✅ | §0v #3+#4（auto_executions / trade_outcomes 加 account 过滤；dedup key 含 account） |
+| TradeOutcomeTracker close_source/活跃索引 | ✅ | §0z #2（`_active` 改 (account_key, signal_id) 复合键）+ §0y #1（`_close_source` → `close_source` 公开字段） |
+
+**禁止事项**：✅ signal_id 不再是跨账户全局活动状态主键；✅ 多账户语义已系统修。
+**退出标准**：✅ Demo 已成为真实执行验证环境，trace 可审查、可复现。
+
+### WP3 — 控制面与健康面可信化（100%）
+
+| 清单条目 | 状态 | 落地点 |
+|---|---|---|
+| operator command consumer claim/complete/process 异常边界 | ✅ | §0cc #1+#5（三层异常隔离 + complete_fn lease retry） |
+| critical metric / active_alerts 影响 overall_status | ✅ | §0t #2（active_alerts 进评级）+ §0v #1（trading 域 4 metric 加 blocking） |
+| pending_monitor_alive 半接线 | ✅ | §0w #1+#2（`is_running()` 聚合 + 注册阈值） |
+| TradingStateAlerts 双源失败仍 healthy | ✅ | §0t #1（source_errors 透传 + critical 告警） |
+| RuntimeReadModel pending/trading summary healthy 漂白 | ✅ | §0w #3 + §0u #3+#4（count 缺省修正 + status 回写） |
+| confidence_check 重写 | ✅ | §0p #1+#2+#3（`all([])=True` + effective_min + symbol 维度） |
+
+**禁止事项**：✅ 空列表/summary/metrics 不再代表健康；✅ critical alert 必降级 overall_status；✅ CLI 不再误报"阈值太高"。
+**退出标准**：✅ 控制面异常不会 silently down，健康面不会 silently green。
+
+### WP4 — 多账户/多实例边界收口（100%）
+
+| 清单条目 | 状态 | 落地点 |
+|---|---|---|
+| pending_order_states / position_runtime_states 复合 PK | ✅ | §0u #1+#2（PK → (account_key, ticket) + 幂等 migration） |
+| trade_control_state PK 与 unique 落点不一致 | ✅ | §0v #5 |
+| trade_trace 查询过滤+去重补 account | ✅ | §0v #3+#4 |
+| delegated / multi_account workbench / source_kind 误判 | ✅ | §0r #1+#3（admission 识别 delegated；workbench 三态 source_kind） |
+| runtime_task_status legacy PK 共享 | ✅ | §0z #4（DEFAULT 'legacy' 移除 + writer 显式 require identity） |
+| calendar 恢复 + read_only_provider 不带 instance_id | ✅ | §0y #2+#4 |
+
+**禁止事项**：✅ "ticket/signal 全局唯一"/"main role 即代表所有实例" 已系统消除。
+**退出标准**：✅ 账户和实例已是一等建模维度。
+
+### WP5 — 恢复链/启动链正确性（100%，含 §0aa 超额项）
+
+| 清单条目 | 状态 | 落地点 |
+|---|---|---|
+| `_ticket_was_cancelled` failed payload 合同 [{ticket, error}] | ✅ | §0s #1+#2（`_normalize_ticket_set` helper 支持 dict） |
+| 过期挂单撤单失败误记 restored | ✅ | §0s #1 |
+| orphan pending 标准 failed payload 崩 | ✅ | §0s #2（recovery_policy 加 try/except） |
+| runtime state 恢复单行隔离 | ✅ | §0r #2 |
+| calendar worker 不停仍写 stopped | ✅ | §0z #3 |
+| cockpit exposure_map freshness 伪装 | ✅ | §0s #3 |
+| ADR-005 calibrator / 后台线程 stop 后清引用 | ✅ | §0r #4（calibrator）+ §0aa（indicator pipeline / supervisor / ingestor 三处启动链）+ §0bb（singleton shutdown AST sentinel） |
+
+**禁止事项**：✅ 宽泛 `except Exception` 不再伪装恢复成功；✅ 观测时间不再当底层更新时间；✅ 线程活着不再写 stopped。
+**退出标准**：✅ 启动恢复链只"正确恢复"或"显式失败"。
+
+附加（清单原文未列、但属"启动链正确性"语义的超额项）：indicator pipeline
+shutdown 永久毒化、supervisor normal exit 不重启、ingestor stop 后不可重建——
+三项 P1/P2 在 §0aa 修；singleton shutdown 清引用规则在 §0bb 升为 AST sentinel
+防回归。
+
+### WP6 — Guarded Live Canary（未启动；前置门禁满足）
+
+| 清单条目 | 状态 | 备注 |
+|---|---|---|
+| 选 1 条 demo 验证策略升 active_guarded | ❌ | 当前 active=0 / active_guarded=0（§0dd #2 状态事实）；2026-04-23 全面重置后 fresh mining → backtest → paper-shadow → demo_validation → guarded promotion 完整链路尚未跑通 |
+| 绑 1 个 live executor + 最小仓位/窗口 | ❌ | 未启动 |
+| runbook 启动前/巡检/canary/回滚 | ⏳ | `docs/runbooks/system-startup-and-live-canary.md` 已存在；需以正式合同口径（`deployment.allows_*` / `source_kind` 三态 / `active_alerts` 评级）核校 |
+| 停机条件（拒单率/滑点/失败率/熔断/trace/健康） | ❌ | 待定义 |
+
+**前置门禁**：✅ 阶段 A-E 已完成（WP1-WP5 全部退出标准达成）。
+**启动阻塞**：缺 demo 闭环验证下的稳定策略候选——见文件顶部 ⚠️ 重启流程 §1-§5。
+
+按路线图自身设计立场，**不应在没有 fresh mining→backtest→demo 数据的情况下推进 WP6**——
+这是研究/验证侧的工作量，非纯代码整改。
+
+### WP7 — Research/Mining 稳定供给（100%）
+
+| 清单条目 | 状态 | 落地点 |
+|---|---|---|
+| ResearchDataDeps 正式 cleanup 端口 / context manager | ✅ | §0cc #6（`close` + `__enter__/__exit__` + `cleanup_fn` 注入） |
+| nightly 基础设施异常 fail-fast | ✅ | §0cc #3（`_INFRASTRUCTURE_EXCEPTIONS` 白名单） |
+| nightly / backtest / mining finally cleanup | ✅ | §0cc #4+#8（`_cleanup_components` 同时关 writer + pipeline） |
+| `_mining_jobs` 容量上限 / TTL | ✅ | §0cc #7（`_MINING_JOBS_MAX=50` FIFO + helper 强制路径） |
+| 文档 Paper Trading → demo_validation/active 链 | ✅ | §0dd #4（research-system.md 主流程图改写 + sentinel） |
+
+**禁止事项**：✅ "调用方记得 cleanup" 隐式约定已消除；✅ API 进程内存不再无界堆积。
+**退出标准**：✅ research/mining 长期可运行。
+
+### 测试与验证矩阵 §5（清单 §5.1–§5.5）
+
+§5.1–§5.5 全部 15 个测试条目均已在 §0o→§0dd 各 § 落地（每段附带 5–10 项契约
+测试）。当前 `pytest -q` 基线：**2903 passed / 6 skipped / 0 failed**（§0dd 测试基线）。
+
+### 文档同步 §6
+
+| 条目 | 状态 |
+|---|---|
+| codebase-review.md 治理目标 | ✅ §0de + 本段 §0df |
+| research-system.md Paper Trading 移除 | ✅ §0dd #4 |
+| runbooks/system-startup-and-live-canary.md | ✅ 已按正式合同口径校核（§2.3 部署合同前置 + §4.1 active_alerts/source_kind/supervisor exit + §6.4 评级 + §6.5 active_guarded canary 前置） |
+| design/entrypoint-map.md | ✅ §0aa/§0bb 启动链改动已加（supervisor unexpected exit / indicator pipeline shutdown / ingestor 重建 / AST sentinel） |
+| design/adr.md | ✅ ADR-012（多账户/多实例 PK 契约，§0u/§0v/§0y/§0z）已加；deployment routing 由 ADR-010 涵盖；`_normalize_ticket_set` 属 helper 标准化非架构决策 |
+
+### 最终放行条件（清单 §7）现状
+
+- ✅ Demo Ready
+- ⏳ Guarded Live Ready（控制面/健康面/读模型/CLI 已修；缺真实策略晋升）
+- ❌ 至少 1 条 active_guarded 完成真实 canary
+- ✅ 控制面异常不会长期 silent down
+- ✅ 健康/读模型/CLI 不再假绿/假结论
+- ✅ 多账户/多实例边界收口
+- ✅ 恢复链分类与线程生命周期
+- ✅ research/mining 不依赖人工 cleanup
+
+**当前定位**（按清单 §7 准则）：`Demo 闭环验证中`。要升级至 `可上线 live 自动交易系统` 需研究/验证侧产出（fresh mining → backtest → demo_validation 实测）。
+
+### 下一步推荐执行队列
+
+按"先收口存量代码、再启动新工作流"原则：
+
+1. **WP1 残余清理**（cosmetic，1 commit 量）：
+   - `api/experiment_routes/routes.py:3` docstring 改 ADR-010 后链路
+   - `ops/cli/walkforward_runner.py:193` 输出文案改 "demo_validation"
+   - `docs/architecture.md:58` 模块说明去 Paper Trading
+   - `confidence_check.py` 注释 PAPER_ONLY → 当前 enum 实际值
+2. **文档同步 §6 残余**（1–2 commit）：
+   - `docs/design/entrypoint-map.md` 加 §0aa 启动链改动（singleton shutdown / supervisor alarm / ingestor 重建）
+   - `docs/design/adr.md` 评估候选 ADR（多账户复合 PK / deployment routing / ticket-set helper）
+3. **runbook 校核**（先于 WP6）：以正式合同口径全文重读 `docs/runbooks/system-startup-and-live-canary.md`，对齐 `deployment.allows_*` + `source_kind` 三态 + `active_alerts` 评级
+4. **WP6 启动前置**（研究/验证侧，非代码）：跑 fresh mining → 单策略 backtest → demo_validation 7 天观察 → 数据满足判据后才能选 1 条策略 promote 到 active_guarded
+
+### 未决项 / 移除条件
+
+- WP1 cosmetic 注释残留：下次 commit 顺手清理；移除条件为 grep `paper.trading\|paper_only\|PAPER_ONLY` 全 src/ docs/ 应只剩 `docs/codebase-review.md` 历史段（受 md 管理规范保护，不回改）
+- 候选 ADR：ADR-012（多账户/多实例 PK 契约）已落地；deployment routing 已由 ADR-010 涵盖；`_normalize_ticket_set` 不升 ADR（helper 标准化非架构决策）
+- WP6 真实 canary：依赖研究/验证侧产出；移除条件为 `[strategy_deployment.<name>] status = active_guarded` 至少 1 条 + canary 实测 ≥ 1 周
+
+### §0g→§0df 累计基线
+
+| § 范围 | bug 数 |
+|---|---|
+| 0g–0dd | 72 |
+| **0df**（对账，无新 bug） | 0 |
+
+### 减少边界泄漏的方式
+
+- 单一治理基线：未来每个 WP 推进只须更新 §0df 表的对应行（✅ / ⏳ / ❌），
+  避免再次散落多 § 段
+- 推进队列显式分级：先 cosmetic、再 runbook、最后 WP6——避免越界
+- 移除条件可证伪：每个未决项有明确 grep 命令 / 数据判据，不依赖主观判断
+
+---
+
 ## 0de. 2026-04-26 根目录 live-readiness 执行清单（治理文档）
 
 ### 触发

@@ -55,7 +55,7 @@ FastAPI 量化交易运行时，核心链路：行情采集 → 指标计算 →
 | `src/risk/` | 风控规则、保证金守卫 |
 | `src/readmodels/decision.py` | 上下文融合决策摘要（`build_decision_brief`） |
 | `src/market_structure/` | 市场结构分析 |
-| `src/backtesting/` | 回测引擎 + 参数优化 + Paper Trading |
+| `src/backtesting/` | 回测引擎 + 参数优化 + 验证决策（ADR-010 后 Paper Trading 已删除，由 demo environment + deployment.status=demo_validation 承接） |
 | `src/research/` | 信号挖掘：指标预测力分析 + 阈值扫描 + Regime 亲和度调优 |
 
 `src/trading/` 当前再细分为 4 条主子域：

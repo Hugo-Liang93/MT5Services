@@ -190,7 +190,7 @@ def _render_result(result: Any, tf: str) -> str:
         lines.append(f"\n  *** INCONSISTENT — parameters unstable across time ***")
         lines.append(f"  Less than half of OOS windows are profitable.")
     elif of_ratio < 1.5 and cons_rate >= 0.60:
-        lines.append(f"\n  Strategy appears ROBUST — safe to proceed to Paper Trading.")
+        lines.append(f"\n  Strategy appears ROBUST — safe to proceed to Demo Validation (deployment.status=demo_validation).")
 
     return "\n".join(lines)
 

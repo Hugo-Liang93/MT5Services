@@ -56,7 +56,8 @@ def main() -> None:
     # 真实 live 阈值是 auto_trade_min_confidence（min_preview_confidence 字段已删）
     min_conf_global = getattr(cfg, "auto_trade_min_confidence", 0.55)
     # 部署合同：候选集合必须收口到 deployment.allows_live_execution()
-    # 否则 CANDIDATE / DEMO_VALIDATION / PAPER_ONLY 策略会被算进"可通过"造成假阳性
+    # 否则 CANDIDATE / DEMO_VALIDATION 策略会被算进"可通过"造成假阳性
+    # （PAPER_ONLY 已在 ADR-010 后从 enum 删除，仅历史 commit 留存）
     deployments = getattr(cfg, "strategy_deployments", {}) or {}
 
     def _strategy_allowed_live(name: str) -> bool:
@@ -158,7 +159,7 @@ def main() -> None:
         regime = regimes.get(tf, "uncertain")
         baseline_min = tf_min_conf.get(tf, min_conf_global)
         # 候选 = 配置该 TF 的策略 ∩ deployment 允许 live 执行的策略
-        # 后一项守住 candidate / demo_validation / paper_only 不被算进"可通过"
+        # 后一项守住 candidate / demo_validation 不被算进"可通过"
         allowed = [
             name
             for name, tfs_list in stf.items()
@@ -214,7 +215,7 @@ def main() -> None:
     if not has_any_live_candidate:
         print(
             "*** NO LIVE-ELIGIBLE STRATEGIES — all current strategies are "
-            "CANDIDATE / DEMO_VALIDATION / PAPER_ONLY ***"
+            "CANDIDATE / DEMO_VALIDATION ***"
         )
         print("Suggestions:")
         print(

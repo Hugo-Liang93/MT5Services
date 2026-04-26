@@ -734,6 +734,7 @@ grep -rEn "container\._|signal_runtime\._|trade_module\._" src/api/ src/app_runt
 - ADR-009: BacktestEngine 默认只评估 live 能执行的策略
 - ADR-010: Paper Trading 模块删除 + Demo 重定位为组合演练账户
 - ADR-011: Calendar 域提供 EconomicDecayService 单一端口 + 时间显式注入 + 异常分层
+- ADR-012: 多账户/多实例运行时状态主键契约（multi-account 表 PK 必含 `account_key`；multi-instance 表 PK 必含 `instance_id`；消费侧对称过滤 + 去重键对称）
 
 ---
 

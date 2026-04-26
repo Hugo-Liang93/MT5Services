@@ -320,16 +320,23 @@ Indicator snapshot
 
 而不是只给一个 `running`。
 
-## 4.3 Paper Trading 平行支路
+## 4.3 Demo Validation 平行支路（ADR-010 替代 Paper Trading）
 
 ```text
-[SignalRuntime SignalEvent]
-  -> [PaperTradingBridge]
-  -> [PaperTradeTracker]
+[SignalRuntime SignalEvent (deployment.status=demo_validation)]
+  -> [ExecutionIntentPublisher（按 runtime_identity.environment 路由）]
+       environment="demo" → allows_demo_validation()
+       environment="live" → allows_live_execution() (拒)
+  -> [demo broker (真实下单 + demo 资金，与 live 共用 11 层风控)]
+  -> [TradeExecutor / PositionManager / TradeOutcomeTracker]
   -> [StorageWriter / DB]
 ```
 
-这条链路与真实交易链路并行，不接管真实账户状态，适合做下一阶段“开盘窗口影子验证”。
+ADR-010 删除独立 `PaperTradingBridge` / `PaperTradeTracker` 后，"shadow validation"
+职责转由 demo environment + `deployment.status=demo_validation` 承接：装配层按
+environment 放宽到 `allows_demo_validation()`，publisher 按 environment 路由到 demo
+executor，pre-trade 链路与 live 完全一致（11 层风控全跑），唯一区别是 broker
+端 demo 资金。详见 §0dd / ADR-010。
 
 ## 4.4 Operator Command 控制链
 

@@ -19,6 +19,9 @@
 | 007 | 2026-04-17 | Research / Backtesting 边界 | Research 负责发现（含特征晋升），Backtesting 负责验证 | ✅ 已确定（特征晋升自动化仍未实现）|
 | 008 | 2026-04-21 | 持久化 pool + indicator fail-fast + /health 只读 | API 路由禁 `new TimescaleWriter`；event_loops 顶层 fail-fast；`client.health()` 默认不重连 MT5 | ✅ 已确定 |
 | 009 | 2026-04-22 | BacktestEngine deployment gate | baseline 回测默认只评估 `allows_live_execution()=True` 的策略；`include_paper_only=True` 时回退到 `allows_runtime_evaluation()` | ✅ 已确定 |
+| 010 | 2026-04-25 | Paper Trading 删除 + Demo 重定位 | demo 承接 demo_validation 真实下单职责；环境差异化装配；新晋升路径 CANDIDATE→DEMO_VALIDATION→ACTIVE_GUARDED→ACTIVE | ✅ 已确定 |
+| 011 | 2026-04-26 | EconomicDecayService 单一端口 + 时间注入 + 异常分层 | calendar 域唯一 decay 端口；`at_time` 强制显式；编码错误 fail-fast | ✅ 已确定 |
+| 012 | 2026-04-26 | 多账户/多实例运行时状态主键契约 | multi-account 表 PK 必含 `account_key`；multi-instance 表 PK 必含 `instance_id`；消费侧对称过滤 + 去重键对称 | ✅ 已确定 |
 
 ---
 
@@ -422,6 +425,62 @@ ADR-009 之前的事实快照：
   - `src/research/orchestration/runner.py:23`
 - `src/signals/orchestration/runtime.py:49` 的 `UnifiedIndicatorManager` 是 pre-existing F401 未使用 import（commit `ff6e2e9` 引入），与本 ADR 无关
 - `src/signals/orchestration/runtime_evaluator.py:41` 的 `soft_parsed` 是 pre-existing F841 未使用变量（commit `ff6e2e9` 引入），与本 ADR 无关
+
+---
+
+## ADR-012: 多账户/多实例运行时状态主键契约
+
+**状态**：已确定（2026-04-26）
+
+**上下文**：
+
+仓库支持 `multi_account` + `multi_instance` 拓扑（`config/topology.py` + `instance_context.py`），但多个状态表的早期 schema 假设"单账户单实例"，导致跨账户/跨实例数据互覆。已确认 4 处 P1/P2 漏洞：
+
+1. **`pending_order_states.order_ticket BIGINT PRIMARY KEY`**（§0u #1）：MT5 ticket 不保证全局唯一；先写 `acct_a/12345`，再写 `acct_b/12345` → 表里只剩 `acct_b`。
+2. **`position_runtime_states.position_ticket BIGINT PRIMARY KEY`**（§0u #2）：同前——cockpit / trade_trace / risk projection 全链污染。
+3. **`trade_control_state` PK=alias + UNIQUE INDEX=key**（§0v #5）：alias 改名时 UPSERT 抛 UNIQUE violation。
+4. **`runtime_task_status.instance_id NOT NULL DEFAULT 'legacy'`**（§0z #4）：identity-less writer（CI worker / migration tool / 一次性诊断）共享同一 PK 空间互相覆盖。
+
+更隐蔽的是消费侧（fetcher / readmodel）也漏带账户维度：
+
+- `auto_executions` / `trade_outcomes` 不按 `account_alias` 过滤（§0v #3）→ 跨账户泄漏
+- `_fetch_by_signal_ids` 去重键仅 `(signal_id, ts)` 无 account（§0v #4）→ 跨账户事件被静默折叠
+- `runtime_task_status` fetch 不带 `instance_id`（§0y #2 + #4）→ 滚动重启时 restore 别人的 `next_run_at`
+
+这是"假设单账户/单实例" + "主键设计早于 multi-* 拓扑落地"的系统性问题。
+
+**决策**：
+
+任何与"运行时状态"相关的持久化表必须遵守以下契约：
+
+1. **multi-account 维度**：表的语义"按账户独立"时（pending order / position / trade control / outcome / auto_execution），PK 必须含 `account_key`；fetcher / upsert 的 `ON CONFLICT` 目标必须含 `account_key`。
+2. **multi-instance 维度**：表的语义"按实例独立"时（runtime task status / job state），PK 必须含 `instance_id`；DEFAULT 值不允许写 `'legacy'` 或其他共享字面量；identity-less writer 必须显式 `raise` 而非 fallback 共享字面量。
+3. **消费侧对称**：所有 fetcher 必须接受 `account_key` / `instance_id` 过滤参数；readmodel 不允许直接 `SELECT *` 跨账户数据（除非语义就是跨账户聚合，且必须显式声明）。
+4. **去重键对称**：dedup 时 key 必须含 `(account_key, ...)` 或 `(instance_id, ...)`，否则跨边界事件会被错误折叠。
+
+**覆盖文件**（已落地）：
+
+- `src/persistence/schema/pending_order_states.py`：PK → `(account_key, order_ticket)` + 幂等 migration（§0u）
+- `src/persistence/schema/position_runtime_states.py`：PK → `(account_key, position_ticket)` + 幂等 migration（§0u）
+- `src/persistence/schema/trade_control_state.py`：PK 与 unique 落点统一（§0v）
+- `src/persistence/schema/runtime_tasks.py`：移除 `DEFAULT 'legacy'`（§0z）
+- `src/persistence/repositories/signal_repo.py`：`fetch_auto_executions` / `fetch_trade_outcomes` 加 `account_alias` 过滤（§0v）
+- `src/readmodels/trade_trace.py`：dedup key 加 `account` 维度（§0v）
+- `src/calendar/economic_calendar/calendar_sync.py` + `read_only_provider.py`：`fetch_runtime_task_status` 加 `instance_id`（§0y）
+- `src/app_runtime/runtime.py`：`runtime_task_row` 显式 require identity（§0z）
+
+**演进方向**：
+
+- 未来新增 schema 时，在表 docstring 显式标注"账户独立 / 实例独立 / 跨账户聚合 / 跨实例聚合"语义，自动驱动 PK 选择
+- CI sentinel 候选：`tests/persistence/test_schema_account_dimension_sentinel.py` 锁"凡 schema 含 `account_alias` / `account_key` 列，PK 或 unique constraint 必须含其一"
+- migration 工具应自动检测"列已存在但 PK 未含"的反模式
+- 如果未来出现"既按账户又按实例独立"的表（如 per-(account, instance) 队列），PK 必须三段：`(instance_id, account_key, ticket)`
+
+**不可回退点**：
+
+- 不允许新增 `account_key TEXT` 列后保留旧 `ticket BIGINT PRIMARY KEY`（必修复合）
+- 不允许 `runtime_task_status` 类表使用 `DEFAULT 'legacy'` 之类共享字面量
+- 不允许 readmodel 跨账户聚合时省略 `account_alias` 过滤——必须显式声明语义
 
 ---
 
