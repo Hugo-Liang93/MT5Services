@@ -211,6 +211,9 @@ class StrategyPerformanceTracker:
         self._global_trade_loss_streak: int = 0
         self._pnl_circuit_paused: bool = False
         self._pnl_circuit_opened_at: float = 0.0  # monotonic
+        # warm_up_from_db 期间禁用 PnL 熔断器触发（历史回放数据不应影响本 session）。
+        # 用 instance flag 而非 mutate frozen self._config（FrozenInstanceError）。
+        self._warmup_active: bool = False
 
     def update_config(self, config: "PerformanceTrackerConfig") -> None:
         """热更新配置（供装配层和热重载使用）。"""
@@ -293,7 +296,8 @@ class StrategyPerformanceTracker:
                 trade_stats = self._trade_stats.setdefault(strategy, _StrategyStats())
                 trade_stats.record(won, pnl)
                 # PnL 熔断器：追踪账户级别的连续实际亏损
-                if self._config.pnl_circuit_enabled:
+                # warm_up 期间不进熔断逻辑（历史回放，不应影响本 session）
+                if self._config.pnl_circuit_enabled and not self._warmup_active:
                     if won:
                         self._global_trade_loss_streak = 0
                     else:
@@ -519,11 +523,13 @@ class StrategyPerformanceTracker:
         注意：warm_up 期间暂时禁用 PnL 熔断器触发。
         原因：warm_up 加载的是历史数据（如过夜仓强平），不应让历史亏损
         触发本次 session 的交易暂停。重放完成后重置 loss streak。
+
+        实现：用 self._warmup_active instance flag 而非 mutate frozen self._config
+        （PerformanceTrackerConfig 是 frozen=True，直接赋值会抛 FrozenInstanceError）。
+        record_outcome 在熔断器分支检查 `not self._warmup_active` 后绕过。
         """
         count = 0
-        # 暂存 PnL circuit 状态，warm_up 期间不触发
-        saved_pnl_enabled = self._config.pnl_circuit_enabled
-        self._config.pnl_circuit_enabled = False
+        self._warmup_active = True
         try:
             for row in rows:
                 strategy = row.get("strategy")
@@ -546,7 +552,7 @@ class StrategyPerformanceTracker:
                 )
                 count += 1
         finally:
-            self._config.pnl_circuit_enabled = saved_pnl_enabled
+            self._warmup_active = False
             # 重置 loss streak：历史连败不应影响新 session
             self._global_trade_loss_streak = 0
             self._pnl_circuit_paused = False
