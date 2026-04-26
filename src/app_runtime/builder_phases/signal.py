@@ -228,6 +228,7 @@ def build_signal_layer(
     container.market_structure_analyzer = signal_components.market_structure_analyzer
     container.signal_module = signal_components.signal_module
     container.signal_runtime = signal_components.signal_runtime
+    container.economic_decay_service = signal_components.economic_decay_service
     container.htf_cache = signal_components.htf_cache
     container.signal_quality_tracker = signal_components.signal_quality_tracker
     container.trade_outcome_tracker = signal_components.trade_outcome_tracker

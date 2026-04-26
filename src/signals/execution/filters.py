@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..contracts import (
     SESSION_ASIA,
@@ -24,6 +24,9 @@ from ..contracts import (
     normalize_session_name,
     resolve_session_by_hour,
 )
+
+if TYPE_CHECKING:
+    from src.calendar import EconomicDecayService
 
 
 @dataclass
@@ -107,11 +110,10 @@ class EconomicEventFilter:
     single source of truth for window/importance/symbol-context.
     """
 
-    # Typed Any to avoid an import cycle at module load time (the calendar
-    # service is constructed in app_runtime factories which already depend
-    # on signals.execution.filters).  The runtime contract is:
-    #   service: EconomicDecayService | None
-    service: Any | None = None
+    # Injected by app_runtime.factories.signals.build_economic_decay_service.
+    # TYPE_CHECKING import keeps the runtime free of an unnecessary calendar
+    # dependency while preserving a precise mypy-strict signature.
+    service: Optional["EconomicDecayService"] = None
 
     def check_trade_guard(
         self, symbol: str, utc_now: Optional[datetime] = None

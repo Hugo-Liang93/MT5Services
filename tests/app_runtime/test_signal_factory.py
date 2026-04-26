@@ -6,6 +6,7 @@ from src.app_runtime.factories.signals import (
     _should_attach_local_account_runtime,
     _validate_execution_contracts,
     _validate_strategy_deployment_contracts,
+    build_economic_decay_service,
     build_executor_config,
     build_signal_filter_chain,
 )
@@ -202,8 +203,7 @@ def test_multi_account_main_keeps_local_account_runtime_when_explicitly_bound() 
 
 
 def test_build_signal_filter_chain_uses_economic_config_as_ssot() -> None:
-    filter_chain = build_signal_filter_chain(
-        SignalConfig(),
+    decay_service = build_economic_decay_service(
         economic_calendar_service=object(),
         economic_config=EconomicConfig(
             enabled=True,
@@ -214,9 +214,10 @@ def test_build_signal_filter_chain_uses_economic_config_as_ssot() -> None:
             release_watch_post_event_minutes=10,
         ),
     )
+    filter_chain = build_signal_filter_chain(SignalConfig(), decay_service)
 
     assert filter_chain.economic_filter is not None
-    assert filter_chain.economic_filter.service is not None
+    assert filter_chain.economic_filter.service is decay_service
     assert (
         filter_chain.economic_filter.service.policy.filter_window.lookahead_minutes
         == 45

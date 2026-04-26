@@ -178,6 +178,7 @@ class SignalComponents:
     signal_runtime: SignalRuntime
     htf_cache: HTFStateCache
     signal_quality_tracker: SignalQualityTracker
+    economic_decay_service: EconomicDecayService
     trade_outcome_tracker: TradeOutcomeTracker | None
     exposure_closeout_controller: ExposureCloseoutController | None
     position_manager: PositionManager | None
@@ -211,12 +212,27 @@ def build_pending_entry_config(signal_config) -> PendingEntryConfig:
     )
 
 
-def build_signal_filter_chain(
-    signal_config,
+def build_economic_decay_service(
     economic_calendar_service,
     economic_config=None,
-) -> SignalFilterChain:
+) -> EconomicDecayService:
+    """Build the EconomicDecayService used by both filter and decay queries.
+
+    Returned instance is shared between the SignalFilterChain (hard-block)
+    and SignalRuntime evaluator (confidence decay) so both surfaces query
+    the exact same window/importance/symbol-context.
+    """
     policy = build_signal_economic_policy(economic_config or get_economic_config())
+    return EconomicDecayService(
+        provider=economic_calendar_service,
+        policy=policy,
+    )
+
+
+def build_signal_filter_chain(
+    signal_config,
+    economic_decay_service: EconomicDecayService,
+) -> SignalFilterChain:
     return SignalFilterChain(
         session_filter=SessionFilter(
             allowed_sessions=tuple(
@@ -233,12 +249,7 @@ def build_signal_filter_chain(
             session_max_spread_points=dict(signal_config.session_spread_limits),
         ),
         economic_filter=EconomicEventFilter(
-            # 临时包裹（Task 8）— Task 9 会抽出 build_economic_decay_service
-            # 并复用同一实例以注入 SignalRuntime；当前先确保过滤链可正常组装。
-            service=EconomicDecayService(
-                provider=economic_calendar_service,
-                policy=policy,
-            ),
+            service=economic_decay_service,
         ),
         volatility_filter=VolatilitySpikeFilter(
             spike_multiplier=signal_config.volatility_atr_spike_multiplier,
@@ -803,7 +814,8 @@ def build_signal_components(
     ]
 
     signal_policy = build_signal_policy(signal_config)
-    filter_chain = build_signal_filter_chain(signal_config, economic_calendar_service)
+    economic_decay_service = build_economic_decay_service(economic_calendar_service)
+    filter_chain = build_signal_filter_chain(signal_config, economic_decay_service)
     # WAL-backed persistent queue for confirmed signal events
     from src.config import get_runtime_data_path
 
@@ -825,6 +837,7 @@ def build_signal_components(
         wal_db_path=wal_db_path,
     )
     signal_runtime.set_economic_calendar_service(economic_calendar_service)
+    signal_runtime.set_economic_decay_service(economic_decay_service)
     _skip_callback_holder: list[Callable[[str, str], None]] = []
     trade_outcome_tracker = None
     end_of_day_closeout = None
@@ -992,6 +1005,7 @@ def build_signal_components(
         signal_runtime=signal_runtime,
         htf_cache=htf_cache,
         signal_quality_tracker=signal_quality_tracker,
+        economic_decay_service=economic_decay_service,
         trade_outcome_tracker=trade_outcome_tracker,
         exposure_closeout_controller=end_of_day_closeout,
         position_manager=position_manager,
@@ -1105,11 +1119,13 @@ def register_signal_hot_reload(
             )
         if signal_runtime is not None:
             signal_runtime.update_policy(build_signal_policy(signal_config))
-            signal_runtime.filter_chain = build_signal_filter_chain(
-                signal_config,
-                economic_calendar_service,
-                economic_config,
+            new_decay_service = build_economic_decay_service(
+                economic_calendar_service, economic_config
             )
+            signal_runtime.filter_chain = build_signal_filter_chain(
+                signal_config, new_decay_service
+            )
+            signal_runtime.set_economic_decay_service(new_decay_service)
         if filename == "economic.ini":
             _factory_logger.info("economic.ini hot reload complete")
             return

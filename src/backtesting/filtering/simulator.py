@@ -158,6 +158,31 @@ class BacktestFilterSimulator:
         if not config.enabled:
             return
 
+        # 经济事件过滤器：复用实盘 EconomicDecayService（单一查询入口），
+        # 但回测使用一份从 BacktestFilterConfig 派生的自定义 policy
+        # （非 economic.ini），以便每次回测独立扫描窗口/重要度组合。
+        economic_filter: Optional[EconomicEventFilter] = None
+        if config.economic_filter_enabled and config.economic_provider is not None:
+            economic_window = EconomicEventWindow(
+                lookahead_minutes=config.economic_lookahead_minutes,
+                lookback_minutes=config.economic_lookback_minutes,
+                importance_min=config.economic_importance_min,
+            )
+            economic_policy = SignalEconomicPolicy(
+                enabled=True,
+                filter_window=economic_window,
+                query_window=economic_window,
+                hard_block_pre_minutes=config.economic_lookahead_minutes,
+                hard_block_post_minutes=config.economic_lookback_minutes,
+                decay_pre_minutes=0,
+                decay_post_minutes=0,
+            )
+            decay_service = EconomicDecayService(
+                provider=config.economic_provider,
+                policy=economic_policy,
+            )
+            economic_filter = EconomicEventFilter(service=decay_service)
+
         self._filter_chain = SignalFilterChain(
             session_filter=(
                 SessionFilter(
@@ -188,32 +213,7 @@ class BacktestFilterSimulator:
                 if config.spread_filter_enabled
                 else None
             ),
-            economic_filter=(
-                EconomicEventFilter(
-                    service=EconomicDecayService(
-                        provider=config.economic_provider,
-                        policy=SignalEconomicPolicy(
-                            enabled=True,
-                            filter_window=EconomicEventWindow(
-                                lookahead_minutes=config.economic_lookahead_minutes,
-                                lookback_minutes=config.economic_lookback_minutes,
-                                importance_min=config.economic_importance_min,
-                            ),
-                            query_window=EconomicEventWindow(
-                                lookahead_minutes=config.economic_lookahead_minutes,
-                                lookback_minutes=config.economic_lookback_minutes,
-                                importance_min=config.economic_importance_min,
-                            ),
-                            hard_block_pre_minutes=config.economic_lookahead_minutes,
-                            hard_block_post_minutes=config.economic_lookback_minutes,
-                            decay_pre_minutes=0,
-                            decay_post_minutes=0,
-                        ),
-                    ),
-                )
-                if config.economic_filter_enabled and config.economic_provider
-                else None
-            ),
+            economic_filter=economic_filter,
             volatility_filter=(
                 VolatilitySpikeFilter(
                     spike_multiplier=config.volatility_spike_multiplier,
