@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 from src.app_runtime.container import AppContainer
 from src.config import get_runtime_data_path
 from src.config.file_manager import close_file_config_manager
+from src.config.runtime_identity import legacy_instance_id
 from src.monitoring.health import close_health_monitor
 from src.monitoring.manager import close_monitoring_manager
 from src.monitoring.runtime_task_status import RuntimeTaskState
@@ -487,7 +488,7 @@ class AppRuntime:
                         (
                             runtime_identity.instance_id
                             if runtime_identity is not None
-                            else "legacy"
+                            else legacy_instance_id()
                         ),
                         (
                             runtime_identity.instance_role

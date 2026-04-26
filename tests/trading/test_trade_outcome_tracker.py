@@ -305,3 +305,88 @@ def test_close_source_read_from_public_attr_mt5_missing() -> None:
 
     meta = written[0][15]
     assert meta["close_source"] == "mt5_missing"
+
+
+# ── §0z P2 回归：_active key 必须含 account_key，多账户同 signal 不能互相覆盖 ──
+
+
+def test_multi_account_same_signal_id_does_not_overwrite_each_other() -> None:
+    """P2 §0z 回归：旧实现 _active[signal_id] = trade，多账户同 signal_id 后开
+    覆盖先开 → 第一笔交易静默丢失，第二次 close 用错误的 fill_price 写出错误盈亏。
+    必须按 (signal_id, account_key) 复合 key 跟踪，让两个账户互相独立。
+    """
+    written: List[Any] = []
+    tracker = TradeOutcomeTracker(write_fn=lambda rows: written.extend(rows))
+
+    # acct_a fill@100
+    tracker.on_trade_opened(
+        signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
+        strategy="trendline", direction="buy", fill_price=100.0, confidence=0.6,
+        account_key="live:srv:acct_a", account_alias="acct_a",
+    )
+    # acct_b fill@200，同 signal_id
+    tracker.on_trade_opened(
+        signal_id="sig-1", symbol="XAUUSD", timeframe="M5",
+        strategy="trendline", direction="buy", fill_price=200.0, confidence=0.6,
+        account_key="live:srv:acct_b", account_alias="acct_b",
+    )
+
+    # acct_a close@110
+    pos_a = SimpleNamespace(
+        signal_id="sig-1", symbol="XAUUSD", action="buy",
+        account_key="live:srv:acct_a", account_alias="acct_a",
+    )
+    tracker.on_position_closed(pos_a, close_price=110.0)
+
+    # acct_b close@210
+    pos_b = SimpleNamespace(
+        signal_id="sig-1", symbol="XAUUSD", action="buy",
+        account_key="live:srv:acct_b", account_alias="acct_b",
+    )
+    tracker.on_position_closed(pos_b, close_price=210.0)
+
+    # 两次 close 都必须落库（两笔不同账户的交易独立）
+    assert len(written) == 2, (
+        f"两个账户 close 必须各落库一行（旧实现只写 1 行）；written={written!r}"
+    )
+
+    # 找到 acct_a / acct_b 的行；用 price_change (index 12) 判断盈亏正确性
+    # INSERT_TRADE_OUTCOMES_SQL VALUES 顺序：(recorded_at=0, signal_id=1,
+    # account_key=2, account_alias=3, intent_id=4, symbol=5, timeframe=6, ...)
+    rows_by_acct = {row[3]: row for row in written}
+    assert "acct_a" in rows_by_acct and "acct_b" in rows_by_acct, (
+        f"两个账户都必须有 row；written aliases={list(rows_by_acct)!r}"
+    )
+    # acct_a 盈亏: 110 - 100 = +10
+    assert rows_by_acct["acct_a"][12] == pytest.approx(10.0), (
+        f"acct_a price_change 必须 = +10；got {rows_by_acct['acct_a'][12]!r}"
+    )
+    # acct_b 盈亏: 210 - 200 = +10
+    assert rows_by_acct["acct_b"][12] == pytest.approx(10.0), (
+        f"acct_b price_change 必须 = +10；got {rows_by_acct['acct_b'][12]!r}"
+    )
+
+
+def test_same_signal_id_no_account_key_keeps_legacy_single_namespace() -> None:
+    """对称契约：account_key 缺省时退化为单账户语义（不破坏旧调用）。
+    第二次 on_trade_opened 仍按 signal_id 替换（因为复合 key 退化为 (sig, "")）。
+    """
+    written: List[Any] = []
+    tracker = TradeOutcomeTracker(write_fn=lambda rows: written.extend(rows))
+
+    tracker.on_trade_opened(
+        signal_id="sig-2", symbol="XAUUSD", timeframe="M5",
+        strategy="x", direction="buy", fill_price=100.0, confidence=0.6,
+    )
+    tracker.on_trade_opened(
+        signal_id="sig-2", symbol="XAUUSD", timeframe="M5",
+        strategy="x", direction="buy", fill_price=150.0, confidence=0.6,
+    )
+
+    pos = SimpleNamespace(signal_id="sig-2", symbol="XAUUSD", action="buy")
+    tracker.on_position_closed(pos, close_price=200.0)
+
+    # 单账户 fallback 行为：第二次 on_trade_opened 替换第一次（与旧 signal_id 单
+    # key 行为一致）；close 用第二次 fill_price=150 → price_change=50
+    assert len(written) == 1
+    assert written[0][12] == pytest.approx(50.0)

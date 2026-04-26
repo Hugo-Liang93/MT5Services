@@ -8,6 +8,7 @@ from threading import Thread
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.clients.economic_calendar import EconomicCalendarError, EconomicCalendarEvent
+from src.config.runtime_identity import legacy_instance_id
 from src.monitoring.runtime_task_status import RuntimeTaskState
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ def runtime_task_row(service, job_type: str) -> tuple:
         int(job_state.get("consecutive_failures", 0)),
         job_state.get("last_error"),
         runtime_task_details(service, job_type),
-        runtime_identity.instance_id if runtime_identity is not None else "legacy",
+        runtime_identity.instance_id if runtime_identity is not None else legacy_instance_id(),
         runtime_identity.instance_role if runtime_identity is not None else None,
         runtime_identity.account_key if runtime_identity is not None else None,
         runtime_identity.account_alias if runtime_identity is not None else None,
@@ -657,10 +658,31 @@ def start_service(service) -> None:
 
 
 def stop_service(service) -> None:
+    """优雅停止 calendar worker；ADR-005 + §0z P2：仅在线程真停下才标 STOPPED。
+
+    旧实现 join(timeout) 后无条件把每个 job 标 STOPPED → 把"线程卡死未退出"
+    的高风险 shutdown 漂白成正常停止。新实现：worker 仍 is_alive 时 (a) 保留
+    线程引用 (b) 不改 job state（保持原 RUNNING）+ 记录 last_error 反映真相
+    (c) 不持久化（避免覆盖正确状态成虚假 STOPPED）。
+    """
     service._stop_event.set()
     if service._worker and service._worker.is_alive():
         service._worker.join(timeout=5.0)
-    if service._worker and not service._worker.is_alive():
+
+    worker_still_alive = (
+        service._worker is not None and service._worker.is_alive()
+    )
+    if worker_still_alive:
+        logger.error(
+            "Economic calendar worker still alive after 5s join timeout; "
+            "preserving thread reference per ADR-005. Job state NOT marked "
+            "STOPPED to reflect ground truth (worker did not actually stop)."
+        )
+        # 不清 _worker、不改 job state、不持久化——避免漂白成虚假 STOPPED
+        return
+
+    # worker 真停下：清引用 + 标 STOPPED + 持久化
+    if service._worker is not None:
         service._worker = None
     for job_type in _JOB_LABELS:
         service._job_state[job_type]["last_status"] = RuntimeTaskState.STOPPED.value

@@ -701,3 +701,64 @@ class TestPendingEntryLifecycleIntegration:
             assert mgr._fill_worker_thread is first_fill
         finally:
             mgr.shutdown()
+
+
+# ── §0z P2 回归：submit() 重复 signal_id 必须先取消旧项再接受新项 ──
+
+
+class TestSubmitDuplicateSignalId:
+    """重复 signal_id 必须触发显式 cancel/replace，不能静默覆盖。"""
+
+    def _make_manager(self, on_expired_fn=None):
+        return PendingEntryManager(
+            config=PendingEntryConfig(check_interval=0.05),
+            market_service=FakeMarketService(),
+            cancellation_port=FakeCancellationPort(),
+            execute_fn=MagicMock(),
+            on_expired_fn=on_expired_fn,
+        )
+
+    def _make_pending(self, *, signal_id="sig-1", entry_low=100.0, entry_high=101.0):
+        now = datetime.now(timezone.utc)
+        return PendingEntry(
+            signal_event=_make_signal_event(signal_id=signal_id),
+            trade_params=_make_trade_params(),
+            cost_metrics={},
+            entry_low=entry_low,
+            entry_high=entry_high,
+            reference_price=(entry_low + entry_high) / 2,
+            created_at=now,
+            expires_at=now + timedelta(seconds=60),
+            zone_mode="pullback",
+        )
+
+    def test_duplicate_signal_id_triggers_cancel_callback_for_old_entry(self) -> None:
+        """P2 §0z 回归：旧实现 self._pending[sig] = entry 直接覆盖 → 老 entry 与
+        其已注册的 MT5 ticket 失联（PendingOrderLifecycleManager 仍跟踪老 ticket，
+        但 _pending 已是新 zone）。新 submit 必须把旧项当 cancel 处理触发
+        on_expired_fn 让上游清理 MT5 跟踪。
+        """
+        cancelled_signals: list[tuple[str, str]] = []
+
+        def on_expired(signal_id: str, reason: str) -> None:
+            cancelled_signals.append((signal_id, reason))
+
+        mgr = self._make_manager(on_expired_fn=on_expired)
+        # 第一次 submit
+        mgr.submit(self._make_pending(entry_low=100.0, entry_high=101.0))
+        # 第二次 submit 同 signal_id，不同 zone
+        mgr.submit(self._make_pending(entry_low=200.0, entry_high=201.0))
+
+        # 旧项必须触发 cancel/expired callback（让上游清理 MT5 跟踪）
+        assert any(sig == "sig-1" for sig, _ in cancelled_signals), (
+            f"重复 signal_id 必须触发 on_expired_fn 让上游清理 MT5 跟踪；"
+            f"got cancelled_signals={cancelled_signals!r}"
+        )
+        # 当前 _pending 是新项，但应仅 1 条
+        assert mgr.active_count() == 1
+        # status()["entries"] 的 zone 字段是 [low, high] tuple
+        entries = mgr.status()["entries"]
+        assert len(entries) == 1
+        assert float(entries[0]["zone"][0]) == 200.0, (
+            f"新项必须替换旧项，但当前是 {entries[0]!r}"
+        )

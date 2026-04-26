@@ -76,8 +76,10 @@ class TradeOutcomeTracker:
         self._write_fn = write_fn
         self._on_outcome_fn = on_outcome_fn
         self._max_active = max_active
-        # key: signal_id → _ActiveTrade
-        self._active: Dict[str, _ActiveTrade] = {}
+        # §0z P2：旧 key=signal_id 让多账户同 signal_id 后开覆盖先开 → 第一笔
+        # 静默丢失，第二次 close 写出错误盈亏。新 key 是 (signal_id, account_key
+        # or "")，每个账户独立跟踪；account_key 缺省时退化为单账户语义不破坏旧调用。
+        self._active: Dict[Tuple[str, str], _ActiveTrade] = {}
         self._lock = threading.Lock()
         self._total_evaluated: int = 0
         self._total_wins: int = 0
@@ -119,7 +121,8 @@ class TradeOutcomeTracker:
             opened_at=opened_at or datetime.now(timezone.utc),
         )
         with self._lock:
-            self._active[signal_id] = trade
+            # §0z P2：复合 key 让多账户同 signal_id 不互相覆盖
+            self._active[(signal_id, str(account_key or ""))] = trade
             # 超出上限时丢弃最旧的（优先丢弃超过 24h 的条目）
             if len(self._active) > self._max_active:
                 now = datetime.now(timezone.utc)
@@ -202,9 +205,12 @@ class TradeOutcomeTracker:
             except (TypeError, ValueError):
                 close_price_f = None
 
+        # §0z P2：按 (signal_id, account_key) 复合 key 查找；account_key 缺省
+        # 退化为单账户语义（兼容旧调用，单 namespace key=("sig", "")）
+        account_key_value = str(getattr(pos, "account_key", "") or "")
         trade: Optional[_ActiveTrade] = None
         with self._lock:
-            trade = self._active.pop(signal_id, None)
+            trade = self._active.pop((signal_id, account_key_value), None)
 
         if trade is None:
             return

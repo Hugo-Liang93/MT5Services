@@ -137,3 +137,121 @@ def test_read_only_provider_without_runtime_identity_skips_instance_filter() -> 
     assert call.get("instance_id") is None, (
         f"无 runtime_identity 时不应传 instance_id；got params={call!r}"
     )
+
+
+# ── §0z P2 回归：stop_service 仅在 worker 真停下才能标 STOPPED ──
+
+
+from src.calendar.economic_calendar.calendar_sync import stop_service
+from src.monitoring.runtime_task_status import RuntimeTaskState
+
+
+class _FakeAliveThread:
+    """模拟 join(timeout) 后仍 is_alive()=True 的卡死线程。"""
+
+    def __init__(self) -> None:
+        self.joined_with_timeout: list[float | None] = []
+
+    def is_alive(self) -> bool:
+        return True
+
+    def join(self, timeout: float | None = None) -> None:
+        self.joined_with_timeout.append(timeout)
+
+
+class _PersistRecorder:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __call__(self, service: Any, job_type: str) -> None:
+        self.calls.append(job_type)
+
+
+def test_stop_service_does_not_mark_stopped_when_worker_still_alive(monkeypatch) -> None:
+    """P2 §0z 回归：旧实现不管线程是否真停下，无条件把每个 job 持久化为 stopped
+    → 把"线程卡死未退出"的高风险 shutdown 漂白成正常停止。线程真停下才能标
+    STOPPED；卡死时必须保留线程引用 + 记录 STOP_REQUESTED 反映真实状态。
+    """
+    import src.calendar.economic_calendar.calendar_sync as cs_module
+
+    persist_recorder = _PersistRecorder()
+    monkeypatch.setattr(cs_module, "persist_job_state", persist_recorder)
+
+    fake_thread = _FakeAliveThread()
+    service = SimpleNamespace(
+        _stop_event=SimpleNamespace(set=lambda: None),
+        _worker=fake_thread,
+        _job_state={
+            "calendar_sync": {"last_status": "running"},
+            "near_term_sync": {"last_status": "running"},
+            "release_watch": {"last_status": "running"},
+        },
+    )
+
+    stop_service(service)
+
+    # worker 仍活着 → 不应被清掉引用（ADR-005）
+    assert service._worker is fake_thread, (
+        "worker join 超时仍 is_alive=True → 必须保留线程引用，不能清掉"
+    )
+
+    # 任一 job 不能被标 STOPPED（线程没真停下）
+    for job_type, state in service._job_state.items():
+        assert state["last_status"] != RuntimeTaskState.STOPPED.value, (
+            f"线程卡死时 {job_type} 不能被标 STOPPED；got {state['last_status']!r}"
+        )
+
+
+def test_stop_service_marks_stopped_when_worker_actually_dies(monkeypatch) -> None:
+    """对称契约：worker 真停下时正常标 STOPPED + 清引用。"""
+    import src.calendar.economic_calendar.calendar_sync as cs_module
+
+    persist_recorder = _PersistRecorder()
+    monkeypatch.setattr(cs_module, "persist_job_state", persist_recorder)
+
+    class _DeadThread:
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+    service = SimpleNamespace(
+        _stop_event=SimpleNamespace(set=lambda: None),
+        _worker=_DeadThread(),
+        _job_state={
+            "calendar_sync": {"last_status": "running"},
+            "near_term_sync": {"last_status": "running"},
+            "release_watch": {"last_status": "running"},
+        },
+    )
+
+    stop_service(service)
+
+    assert service._worker is None, "worker 真停下时应清引用"
+    for job_type, state in service._job_state.items():
+        assert state["last_status"] == RuntimeTaskState.STOPPED.value
+
+
+# ── §0z P3 回归：identity-less 实例必须用唯一化 fallback 而非共享 'legacy' ──
+
+
+def test_legacy_instance_id_returns_unique_per_process_fallback() -> None:
+    """P3 §0z 回归：旧实现 identity-less 时显式写 'legacy' →
+    所有 identity-less 本地脚本 / 测试实例 / 遗留进程共享同一组 runtime task
+    记录互相覆盖。fallback 必须按 hostname + pid 唯一化，每个进程独立空间。
+    """
+    from src.config.runtime_identity import legacy_instance_id
+
+    fallback = legacy_instance_id()
+    assert fallback != "legacy", (
+        f"identity-less fallback 不能再硬编码 'legacy'（共享 PK 空间）；got {fallback!r}"
+    )
+    # 必须可识别为 legacy 类（前缀 / 标签）便于审计
+    assert "legacy" in fallback.lower(), (
+        f"fallback 应保留 'legacy' 标签便于审计；got {fallback!r}"
+    )
+    # 同进程内多次调用必须稳定
+    assert legacy_instance_id() == fallback, (
+        "同进程多次调用必须返同一 fallback（PK 稳定性）"
+    )

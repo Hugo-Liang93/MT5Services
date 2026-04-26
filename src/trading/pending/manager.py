@@ -246,9 +246,26 @@ class PendingEntryManager:
         )
 
     def submit(self, entry: PendingEntry) -> None:
-        """提交一个新的挂起入场。"""
+        """提交一个新的挂起入场。
+
+        §0z P2：旧实现 ``self._pending[sig] = entry`` 直接覆盖 → 老 entry 与
+        其已注册的 MT5 ticket（PendingOrderLifecycleManager）失联，造成
+        "等待触发的价格区间" 与 "受生命周期管理的真实挂单" 拆成两套状态。
+        重复 signal_id 必须先 cancel 旧项以触发 ``on_expired_fn`` 让上游清理
+        MT5 跟踪，再接受新项；这样同 signal_id 的 lifecycle 始终单一。
+        """
+        signal_id = entry.signal_event.signal_id
+        # 先用 cancel() 替换旧项（触发 on_expired_fn 让上游清理 MT5 跟踪），
+        # cancel() 在锁内 pop + 记 cancelled 状态；再 submit 新项。
+        if signal_id in self._pending:
+            logger.warning(
+                "PendingEntry submit: signal_id=%s already pending, replacing "
+                "previous entry (cleaning up MT5 tracking via cancel callback)",
+                signal_id,
+            )
+            self.cancel(signal_id, reason="replaced_by_new_submit")
         with self._lock:
-            self._pending[entry.signal_event.signal_id] = entry
+            self._pending[signal_id] = entry
             self._stats["total_submitted"] += 1
         logger.info(
             "PendingEntry submitted: %s/%s %s zone=[%.2f, %.2f] mode=%s expires=%s",

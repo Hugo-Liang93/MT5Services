@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import socket
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -12,6 +14,27 @@ from src.config.instance_context import (
 )
 from src.config.mt5 import MT5Settings, load_group_mt5_settings, load_mt5_settings
 from src.config.topology import resolve_current_environment, resolve_topology_assignment
+
+
+@lru_cache(maxsize=1)
+def legacy_instance_id() -> str:
+    """§0z P3：identity-less 写入 runtime_task_status 时的唯一化 fallback。
+
+    旧 writers 在拿不到 ``runtime_identity`` 时显式写字面量 ``"legacy"``，
+    runtime_task_status 表 PK 是 ``(instance_id, component, task_name)`` →
+    所有 identity-less 本地脚本 / 测试实例 / 遗留进程共享同一组 runtime task
+    记录互相覆盖状态。
+
+    本 helper 返回 ``"legacy:<hostname>:<pid>"``：
+    - 保留 ``legacy`` 前缀供审计识别"非正式 identity"
+    - hostname + pid 让每个进程获得独立 PK 空间，禁止跨进程串行
+    - lru_cache 保证单进程内多次调用稳定（PK 一致性）
+    """
+    try:
+        host = socket.gethostname() or "unknown-host"
+    except OSError:
+        host = "unknown-host"
+    return f"legacy:{host}:{os.getpid()}"
 
 
 def build_account_key(
