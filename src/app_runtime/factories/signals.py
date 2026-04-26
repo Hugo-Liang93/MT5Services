@@ -13,6 +13,7 @@ from src.app_runtime.factories.admission_writeback import (
     make_skip_listener,
     multicast,
 )
+from src.calendar import EconomicDecayService
 from src.calendar.policy import build_signal_economic_policy
 from src.config import get_economic_config
 from src.config.file_manager import get_file_config_manager
@@ -232,8 +233,12 @@ def build_signal_filter_chain(
             session_max_spread_points=dict(signal_config.session_spread_limits),
         ),
         economic_filter=EconomicEventFilter(
-            provider=economic_calendar_service,
-            policy=policy,
+            # 临时包裹（Task 8）— Task 9 会抽出 build_economic_decay_service
+            # 并复用同一实例以注入 SignalRuntime；当前先确保过滤链可正常组装。
+            service=EconomicDecayService(
+                provider=economic_calendar_service,
+                policy=policy,
+            ),
         ),
         volatility_filter=VolatilitySpikeFilter(
             spike_multiplier=signal_config.volatility_atr_spike_multiplier,

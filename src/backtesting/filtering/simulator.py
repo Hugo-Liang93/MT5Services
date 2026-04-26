@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.calendar import EconomicDecayService
 from src.calendar.policy import EconomicEventWindow, SignalEconomicPolicy
 from src.signals.contracts import normalize_session_name
 from src.signals.execution.filters import (
@@ -189,23 +190,25 @@ class BacktestFilterSimulator:
             ),
             economic_filter=(
                 EconomicEventFilter(
-                    provider=config.economic_provider,
-                    policy=SignalEconomicPolicy(
-                        enabled=True,
-                        filter_window=EconomicEventWindow(
-                            lookahead_minutes=config.economic_lookahead_minutes,
-                            lookback_minutes=config.economic_lookback_minutes,
-                            importance_min=config.economic_importance_min,
+                    service=EconomicDecayService(
+                        provider=config.economic_provider,
+                        policy=SignalEconomicPolicy(
+                            enabled=True,
+                            filter_window=EconomicEventWindow(
+                                lookahead_minutes=config.economic_lookahead_minutes,
+                                lookback_minutes=config.economic_lookback_minutes,
+                                importance_min=config.economic_importance_min,
+                            ),
+                            query_window=EconomicEventWindow(
+                                lookahead_minutes=config.economic_lookahead_minutes,
+                                lookback_minutes=config.economic_lookback_minutes,
+                                importance_min=config.economic_importance_min,
+                            ),
+                            hard_block_pre_minutes=config.economic_lookahead_minutes,
+                            hard_block_post_minutes=config.economic_lookback_minutes,
+                            decay_pre_minutes=0,
+                            decay_post_minutes=0,
                         ),
-                        query_window=EconomicEventWindow(
-                            lookahead_minutes=config.economic_lookahead_minutes,
-                            lookback_minutes=config.economic_lookback_minutes,
-                            importance_min=config.economic_importance_min,
-                        ),
-                        hard_block_pre_minutes=config.economic_lookahead_minutes,
-                        hard_block_post_minutes=config.economic_lookback_minutes,
-                        decay_pre_minutes=0,
-                        decay_post_minutes=0,
                     ),
                 )
                 if config.economic_filter_enabled and config.economic_provider

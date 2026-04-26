@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from src.calendar import EconomicDecayService
 from src.calendar.policy import build_signal_economic_policy
 from src.config import EconomicConfig
 from src.signals.execution.filters import (
@@ -206,8 +207,7 @@ def test_economic_event_filter_uses_economic_policy_window() -> None:
     )
     chain = SignalFilterChain(
         economic_filter=EconomicEventFilter(
-            provider=provider,
-            policy=policy,
+            service=EconomicDecayService(provider=provider, policy=policy),
         )
     )
 

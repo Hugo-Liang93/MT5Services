@@ -216,7 +216,14 @@ def test_build_signal_filter_chain_uses_economic_config_as_ssot() -> None:
     )
 
     assert filter_chain.economic_filter is not None
-    assert filter_chain.economic_filter.policy is not None
-    assert filter_chain.economic_filter.policy.filter_window.lookahead_minutes == 45
-    assert filter_chain.economic_filter.policy.filter_window.lookback_minutes == 20
-    assert filter_chain.economic_filter.policy.query_window.lookahead_minutes == 90
+    assert filter_chain.economic_filter.service is not None
+    assert (
+        filter_chain.economic_filter.service.policy.filter_window.lookahead_minutes
+        == 45
+    )
+    assert (
+        filter_chain.economic_filter.service.policy.filter_window.lookback_minutes == 20
+    )
+    assert (
+        filter_chain.economic_filter.service.policy.query_window.lookahead_minutes == 90
+    )

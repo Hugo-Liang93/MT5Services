@@ -11,15 +11,10 @@ before order dispatch.
 
 from __future__ import annotations
 
-import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-
-logger = logging.getLogger(__name__)
-from typing import Any, Dict, List, Optional, Protocol
-
-from src.calendar.policy import SignalEconomicPolicy
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from ..contracts import (
     SESSION_ASIA,
@@ -29,34 +24,6 @@ from ..contracts import (
     normalize_session_name,
     resolve_session_by_hour,
 )
-
-_SIGNAL_EVENT_STATUSES = (
-    "scheduled",
-    "imminent",
-    "pending_release",
-    "released",
-)
-
-
-def _symbol_context(symbol: str) -> dict[str, list[str]]:
-    from src.calendar.economic_calendar.trade_guard import infer_symbol_context
-
-    return infer_symbol_context(symbol)
-
-
-class EconomicEventsProvider(Protocol):
-    def get_events(
-        self,
-        start_time: Optional[datetime],
-        end_time: Optional[datetime],
-        limit: int = 1000,
-        sources: Optional[List[str]] = None,
-        countries: Optional[List[str]] = None,
-        currencies: Optional[List[str]] = None,
-        session_buckets: Optional[List[str]] = None,
-        statuses: Optional[List[str]] = None,
-        importance_min: Optional[int] = None,
-    ) -> List[Any]: ...
 
 
 @dataclass
@@ -133,41 +100,30 @@ class SpreadFilter:
 
 @dataclass
 class EconomicEventFilter:
-    """Signal-domain economic event filter.
+    """Signal-domain economic event hard-block filter.
 
-    The signal layer only owns pre-evaluation filtering for high-impact events.
-    Final trade blocking remains account-domain responsibility.
+    Internal logic delegated to ``EconomicDecayService`` so that
+    filter (hard-block) and decay (confidence multiplier) share a
+    single source of truth for window/importance/symbol-context.
     """
 
-    provider: Optional[EconomicEventsProvider] = None
-    policy: SignalEconomicPolicy | None = None
+    # Typed Any to avoid an import cycle at module load time (the calendar
+    # service is constructed in app_runtime factories which already depend
+    # on signals.execution.filters).  The runtime contract is:
+    #   service: EconomicDecayService | None
+    service: Any | None = None
 
     def check_trade_guard(
         self, symbol: str, utc_now: Optional[datetime] = None
     ) -> tuple[bool, str]:
-        """返回 (safe, reason)。safe=True 时可交易。"""
-        if self.provider is None or self.policy is None or not self.policy.enabled:
+        """Return ``(safe, reason)``. ``safe=True`` means trading allowed."""
+        if self.service is None:
             return True, ""
         at_time = utc_now or datetime.now(timezone.utc)
-        try:
-            context = _symbol_context(symbol)
-            events = self.provider.get_events(
-                start_time=at_time
-                - timedelta(minutes=self.policy.filter_window.lookback_minutes),
-                end_time=at_time
-                + timedelta(minutes=self.policy.filter_window.lookahead_minutes),
-                limit=50,
-                countries=context["countries"] or None,
-                currencies=context["currencies"] or None,
-                statuses=list(_SIGNAL_EVENT_STATUSES),
-                importance_min=self.policy.filter_window.importance_min,
-            )
-            if events:
-                return False, "economic_event_block"
-            return True, ""
-        except Exception as exc:
-            logger.warning("Economic event filter check failed for %s: %s", symbol, exc)
-            return True, ""
+        blocked, reason = self.service.has_blocking_event(symbol, at_time=at_time)
+        if blocked:
+            return False, reason
+        return True, ""
 
     def is_safe_to_trade(self, symbol: str, utc_now: Optional[datetime] = None) -> bool:
         safe, _ = self.check_trade_guard(symbol, utc_now)
@@ -387,21 +343,22 @@ class SignalFilterChain:
 
         if self.economic_filter:
             safe, reason = self.economic_filter.check_trade_guard(symbol, utc_now)
+            economic_service = self.economic_filter.service
+            policy_dict: dict[str, Any] | None = None
+            if economic_service is not None:
+                _policy = economic_service.policy
+                policy_dict = {
+                    "lookahead_minutes": _policy.filter_window.lookahead_minutes,
+                    "lookback_minutes": _policy.filter_window.lookback_minutes,
+                    "importance_min": _policy.filter_window.importance_min,
+                    "decay_pre_minutes": _policy.decay_pre_minutes,
+                    "decay_post_minutes": _policy.decay_post_minutes,
+                }
             result["economic"] = {
                 "active": safe,
                 "blocked": not safe,
                 "reason": reason if not safe else "",
-                "policy": (
-                    {
-                        "lookahead_minutes": self.economic_filter.policy.filter_window.lookahead_minutes,
-                        "lookback_minutes": self.economic_filter.policy.filter_window.lookback_minutes,
-                        "importance_min": self.economic_filter.policy.filter_window.importance_min,
-                        "decay_pre_minutes": self.economic_filter.policy.decay_pre_minutes,
-                        "decay_post_minutes": self.economic_filter.policy.decay_post_minutes,
-                    }
-                    if self.economic_filter.policy is not None
-                    else None
-                ),
+                "policy": policy_dict,
             }
 
         if self.trend_exhaustion_filter:
