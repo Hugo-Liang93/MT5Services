@@ -10,7 +10,7 @@ from src.app_runtime.mode_policy import (
     RuntimeModeAutoTransitionPolicy,
     RuntimeModeTransitionGuard,
 )
-from src.calendar import EconomicCalendarService
+from src.calendar import EconomicCalendarService, EconomicDecayService
 from src.config.runtime_identity import RuntimeIdentity
 from src.indicators.manager import UnifiedIndicatorManager
 from src.ingestion.ingestor import BackgroundIngestor
@@ -86,6 +86,7 @@ class AppContainer:
         "trading_state_recovery_policy",
         # Calendar
         "economic_calendar_service",
+        "economic_decay_service",
         "market_impact_analyzer",
         # Monitoring
         "health_monitor",
@@ -143,6 +144,7 @@ class AppContainer:
         self.trading_state_recovery_policy: Optional[TradingStateRecoveryPolicy] = None
 
         self.economic_calendar_service: Optional[EconomicCalendarService] = None
+        self.economic_decay_service: Optional[EconomicDecayService] = None
         self.market_impact_analyzer: Optional[Any] = None
 
         self.health_monitor: Optional[Any] = None
