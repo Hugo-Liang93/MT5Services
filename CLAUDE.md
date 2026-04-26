@@ -439,6 +439,7 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 | EconomicCalendarService | `src/calendar/service.py` |
 | SignalEconomicPolicy | `src/calendar/policy.py` |
 | ReadOnlyEconomicCalendarProvider | `src/calendar/read_only_provider.py` |
+| EconomicDecayService（decay/blocking 查询端口） | `src/calendar/economic_decay.py` |
 
 **通知（Telegram 推送）**
 
@@ -699,6 +700,11 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 - ADR-004: 组件生命周期安全契约（8 项防护机制不可移除）
 - ADR-005: 后台线程 join 超时后必须保留仍存活线程引用（防止双线程消费）
 - ADR-006: 跨模块边界禁止读写私有属性（装配/API 层必须通过公开端口）
+- ADR-007: Research 与 Backtesting 的职责边界 + 特征晋升通道
+- ADR-008: 持久化 pool 单例 + 关键运行时线程 fail-fast + /health 只读契约
+- ADR-009: BacktestEngine 默认只评估 live 能执行的策略
+- ADR-010: Paper Trading 模块删除 + Demo 重定位为组合演练账户
+- ADR-011: Calendar 域提供 EconomicDecayService 单一端口 + 时间显式注入 + 异常分层
 
 ---
 

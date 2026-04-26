@@ -375,6 +375,56 @@ ADR-009 之前的事实快照：
 
 ---
 
+## ADR-011: Calendar 域提供 EconomicDecayService 单一端口 + 时间显式注入 + 异常分层
+
+**日期**: 2026-04-26
+**状态**: Accepted
+
+### 背景
+
+`signals/orchestration/runtime_evaluator.py:_query_symbol_event_decay` 因缺 `timezone` import 抛 NameError，被同函数所在调用层 `except Exception: decay = 1.0` 静默吞掉并写入 `runtime._event_decay_cache`（TTL 60s），导致**所有 symbol 经济事件渐进降权链路对全运行时失效数月未被发现**。同时审视发现：
+
+1. **重复实现漂移**：`EconomicEventFilter.check_trade_guard` 与 `_query_symbol_event_decay` 各自组装 calendar 查询参数、各自维护 `_SIGNAL_EVENT_STATUSES` 字面量、各自跨域 lazy import `infer_symbol_context`——一份对一份错。
+2. **时间源错误**：`_query_symbol_event_decay` 用 `datetime.now()` 而非链路已有的 `event_time`，导致 backtest/replay 场景概念失真。
+3. **异常处理失序**：`except Exception` 把编码错误（NameError/AttributeError）和真实降级混作一谈（违反 CLAUDE.md §12）。
+4. **测试桩本体绕过**：`tests/signals/test_runtime_evaluator.py` 通过 `monkeypatch.setattr(..._compute_economic_event_decay, lambda...)` 桩掉被测函数，等于零覆盖。
+
+### 决策
+
+1. **新建 `src/calendar/economic_decay.py:EconomicDecayService`** 作为 calendar 域唯一对外端口，处理"给定 symbol+at_time → decay 因子（[0,1]）"与硬阻断查询。
+2. **`at_time` 强制显式注入**：禁止 `datetime.now()`。signal 域传 `event_time`；backtest/replay 传历史时刻。Cache 新鲜度也用 `at_time` 派生而非 wall clock，确保回测 deterministic。
+3. **异常三段分层**：
+   - 设计降级（policy 关闭 / provider 缺失） → 返回 1.0，无日志
+   - 运行时降级（ConnectionError/TimeoutError/OSError/RuntimeError） → 返回 1.0 + WARNING 日志，**不写缓存**
+   - 编码错误（NameError/AttributeError/ImportError/TypeError 等） → 直接传播，fail-fast
+4. **filter 与 evaluator 共用同一 service 实例**：`EconomicEventFilter` 改为 `service: Optional["EconomicDecayService"]` 字段，内部委托 `has_blocking_event`，消除复制粘贴漂移。
+5. **测试架构修正**：禁用桩被测函数本体的模式，改为注入 stub `EconomicDecayService`；新增 fail-fast 反向测试与 timezone 回归测试，结构性阻止同类静默失效再发生。
+
+### 后果
+
+- ✅ P1 静默失效根因彻底消除（不只是补 import，而是删掉滋生 bug 的复制粘贴模式）
+- ✅ live/backtest 经济事件衰减语义统一（at_time 注入）
+- ✅ ADR-006 边界规范进一步落实（signal 不再跨域组装 calendar 查询参数）
+- ✅ CLAUDE.md §12 异常分层要求获得机制级支持
+- ⚠️ 修改半径：3 个域（calendar / signals / app_runtime + backtesting）、10 个生产文件、4 个测试改写、1 个 ADR、1 条 codebase-review 状态
+
+### 不可回退点
+
+- `EconomicDecayService.decay_factor` 签名 `at_time` keyword-only 必填（防止未来再退回 `datetime.now()`）
+- `EconomicEventFilter` 不再持有 `provider` / `policy` 字段，只持有 `service`（防止再生重复实现）
+- `tests/calendar/test_economic_decay.py::test_coding_error_propagates_fail_fast` 反向测试常驻，禁止改回 `except Exception` 兜底
+- Cache freshness 必须基于 `at_time` 派生，禁止重新引入 wall clock TTL（破坏 backtest determinism）
+
+### 未决整改项
+
+- 2 处 `infer_symbol_context` 仍走子包私有路径 import，需在后续 PR 改为 `from src.calendar import infer_symbol_context`：
+  - `src/backtesting/filtering/builder.py:46`
+  - `src/research/orchestration/runner.py:23`
+- `src/signals/orchestration/runtime.py:49` 的 `UnifiedIndicatorManager` 是 pre-existing F401 未使用 import（commit `ff6e2e9` 引入），与本 ADR 无关
+- `src/signals/orchestration/runtime_evaluator.py:41` 的 `soft_parsed` 是 pre-existing F841 未使用变量（commit `ff6e2e9` 引入），与本 ADR 无关
+
+---
+
 ## ADR 模板
 
 ```markdown

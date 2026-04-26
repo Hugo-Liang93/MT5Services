@@ -49,6 +49,61 @@
 
 ---
 
+## 0g. 2026-04-26 经济事件衰减边界整改（ADR-011）
+
+### 触发
+
+`signals/orchestration/runtime_evaluator.py:_query_symbol_event_decay` 缺 `timezone` import → NameError 被 `except Exception` 吞 + 缓存 1.0 → 所有 symbol 渐进降权静默失效（疑似数月）。同步审视发现复制粘贴漂移、时间源错误、测试桩本体三连根因。
+
+### 边界变化
+
+- **新增**：`src/calendar/economic_decay.py:EconomicDecayService` 作为 calendar 域唯一对外 decay/blocking 查询端口
+- **删除**：`signals/orchestration/runtime_evaluator.py` 中 `_compute_economic_event_decay` / `_query_symbol_event_decay` / `_resolve_eco_context` / `_SIGNAL_EVENT_STATUSES` / `_EVENT_DECAY_TTL_SECONDS` / `_EVENT_DECAY_CACHE_MAX`
+- **删除**：`signals/execution/filters.py` 中 `_SIGNAL_EVENT_STATUSES` / `_symbol_context` 与重复 `EconomicEventsProvider` Protocol（迁移至 `calendar/economic_decay.py`）
+- **删除**：`SignalRuntime._event_decay_cache` 字段（cache 归属 service 内部）
+- **变更**：`apply_confidence_adjustments` 签名增加必填 `event_time` 参数；`EconomicEventFilter` 字段从 `(provider, policy)` 改为 `(service: Optional["EconomicDecayService"])`
+- **新增端口**：`SignalRuntime.set_economic_decay_service` / `economic_decay_service` property
+- **新增 container 字段**：`AppContainer.economic_decay_service`
+- **新增工厂**：`build_economic_decay_service`（factories/signals.py）
+- **公共 API 上提**：`infer_symbol_context` 与 `EconomicDecayService` 通过 `src/calendar/__init__.py` 暴露
+- **simulator 同步**：`backtesting/filtering/simulator.py` 移除内嵌 `EconomicEventFilter(service=EconomicDecayService(...))` 双层包裹
+
+### 异常分层契约（CLAUDE.md §12 落实）
+
+| 场景 | 行为 |
+|---|---|
+| policy 关闭 / provider 缺失 | 返回 1.0，无日志（设计降级）|
+| `ConnectionError/TimeoutError/OSError/RuntimeError` | 返回 1.0 + `WARNING` 日志，**不写缓存** |
+| `NameError/AttributeError/ImportError/TypeError` 等 | 直接传播，fail-fast |
+
+### 测试架构修正
+
+- 禁用 `monkeypatch.setattr(...被测函数, ...)` anti-pattern（旧模式让 P1 timezone bug 数月不被发现）
+- `tests/calendar/test_economic_decay.py` 新增 13 项契约测试，含 fail-fast 反向锁死 + timezone 回归锁
+- `tests/signals/test_runtime_evaluator.py` 重写：注入 stub service，新增 event_time 透传 + service 缺失降级测试
+- `tests/signals/test_filters.py` + `tests/app_runtime/test_signal_factory.py` fixture 同步迁移
+
+### 未决兼容项
+
+无生产兼容路径残留。
+
+未决文档化整改（不阻塞合并，留作后续 PR）：
+- `src/backtesting/filtering/builder.py:46` 与 `src/research/orchestration/runner.py:23` 仍直接 import `from src.calendar.economic_calendar.trade_guard`，建议下次维护改为 `from src.calendar import infer_symbol_context`
+- `runtime.py:49` `UnifiedIndicatorManager` 未使用 import（pre-existing F401，commit `ff6e2e9`）
+- `runtime_evaluator.py:41` `soft_parsed` 未使用变量（pre-existing F841，commit `ff6e2e9`）
+- `runtime{,_evaluator}.py` black-reformat 机会（pre-existing 历史代码从未跑过 black）
+
+### 减少边界泄漏的方式
+
+signal 域不再组装 calendar 查询参数 / 不再跨域 lazy import 子包私有路径 / 不再各自维护 cache。signal/risk/backtest 三域只与 `EconomicDecayService` 单一端口对话。filter 与 evaluator 共用同一 service 实例；hot reload 同步重建 service + filter chain，原子注入到 SignalRuntime。
+
+### 测试基线对比
+
+- 提交前：未跑该路径的真实测试，桩本体 monkeypatch 让 wall-clock + timezone bug 完全不可见
+- 提交后：full test suite **2770 passed / 0 failed / 6 skipped**；新增结构性回归锁（timezone / event_time / fail-fast / service-None）4 项
+
+---
+
 ## 0f. 2026-04-22 P8 回测 deployment gate 收口（ADR-009）
 
 **背景**：2026-04-20 的 M30 baseline 审查（原快照已于 2026-04-23 重置时删除）记录的 M30 污染事件——`structured_price_action`（`deployment=paper_only` 且未绑定账户）在回测中被全量评估（1,258 笔），生产中完全不跑，导致 M30 baseline 虚高 7×（1,463 → 真实 206 笔）。根因是 `BacktestEngine` 的 deployment gate 只过滤 CANDIDATE，PAPER_ONLY 不过滤。
