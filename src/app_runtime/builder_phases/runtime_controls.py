@@ -184,6 +184,9 @@ def build_runtime_component_registry(
         runtime_identity = container.runtime_identity
         if sw is None:
             return
+        # 异常分层契约（同 ADR-011）：
+        # - 运行时降级（DB/网络）→ WARNING + 标记 done=False，不阻塞启动
+        # - 编码错误（FrozenInstanceError/AttributeError/TypeError 等）→ fail-fast 透传
         try:
             if signal_perf is not None and container.signal_runtime is not None:
                 signal_rows = sw.db.signal_repo.fetch_recent_signal_outcomes(hours=24)
@@ -195,11 +198,13 @@ def build_runtime_component_registry(
                 )
                 execution_perf.warm_up_from_db(trade_rows)
             warmup_state["done"] = True
-        except Exception:
+        except (ConnectionError, TimeoutError, OSError, RuntimeError) as exc:
             import logging
 
-            logging.getLogger(__name__).debug(
-                "PerformanceTracker: warm-up from DB failed (non-fatal)",
+            logging.getLogger(__name__).warning(
+                "PerformanceTracker warm-up runtime degrade: %s: %s",
+                type(exc).__name__,
+                exc,
                 exc_info=True,
             )
 

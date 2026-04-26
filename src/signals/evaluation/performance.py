@@ -52,7 +52,7 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -540,7 +540,8 @@ class StrategyPerformanceTracker:
                     pnl = float(row.get("pnl") or 0.0)
                 except (TypeError, ValueError):
                     logger.warning(
-                        "warm_up_from_db: invalid pnl=%r for strategy=%s, defaulting to 0.0",
+                        "warm_up_from_db: invalid pnl=%r for strategy=%s,"
+                        " defaulting to 0.0",
                         row.get("pnl"),
                         strategy,
                     )
@@ -644,7 +645,9 @@ class StrategyPerformanceTracker:
                 "min_multiplier": self._config.min_multiplier,
                 "max_multiplier": self._config.max_multiplier,
                 "streak_penalty_threshold": self._config.streak_penalty_threshold,
-                "category_fallback_min_samples": self._config.category_fallback_min_samples,
+                "category_fallback_min_samples": (
+                    self._config.category_fallback_min_samples
+                ),
             },
         }
 
