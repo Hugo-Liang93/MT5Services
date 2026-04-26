@@ -49,6 +49,260 @@
 
 ---
 
+## 0w. 2026-04-26 PendingEntry health 半监控 + alert 阈值缺失 + readmodel 漂白 + ISO 时区改标签（P2 ×3 + P3）
+
+### 触发
+
+User 报告 4 处独立 bug，本轮聚焦 PendingEntryManager 健康监控的"半检测/半告警/半评级"
+三连漂白 + auto_executions 时间线时区误算：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | P2 | `monitoring/manager.py:498-503` | `_check_pending_entry` 只探 `_monitor_thread`，忽略 `_fill_worker_thread` 与公开 `is_running()` → fill worker 挂掉时仍报 monitor 存活=1.0 |
+| 2 | P2 | `monitoring/health/monitor.py:82-99` | `pending_monitor_alive` 被持续写入但 `monitor.alerts` 没注册阈值 → 即使值=0（线程死）`_check_alert_level` 返 None → status='healthy'，overall_status 仍 healthy |
+| 3 | P2 | `readmodels/runtime.py:937-946` | `build_pending_entries_summary` 硬编码 `status='healthy'`，`pending_entries_summary` 之后才补 `running=False`，但 status 不被回写 → stopped manager 被漂白成 healthy |
+| 4 | P3 | `persistence/repositories/signal_repo.py:389-391` | `write_auto_executions` 对 `entry['at']` 用 `fromisoformat().replace(tzinfo=UTC)` 直接改时区标签而不做换算 → +08:00 偏移被写成 +00:00 标签（标签变但秒数不变），扭曲 trace 时间线 + 排序 + 去重 |
+
+### 根因
+
+#### #1 _check_pending_entry 半监控
+
+`PendingEntryManager` 实际有两条工作线程：
+- `_monitor_thread`：扫描 / 撤单 / 过期处理
+- `_fill_worker_thread`：消费 fill 队列写状态 + 触发 position track
+
+公开 `is_running()` 是 `monitor & fill` AND 聚合（manager.py:481）。
+
+旧 health check 直接探私有 `_monitor_thread.is_alive()`：
+```python
+monitor_alive = (
+    hasattr(pending_mgr, "_monitor_thread")
+    and pending_mgr._monitor_thread is not None
+    and pending_mgr._monitor_thread.is_alive()
+)
+self.health_monitor.record_metric(component_name, "pending_monitor_alive",
+    1.0 if monitor_alive else 0.0)
+if not monitor_alive: logger.warning(...)
+```
+
+User 复现：monitor_alive=True / fill_alive=False / is_running()=False → 健康报
+1.0。**fill 队列断了（autotrade 不再写状态、不再 track position），但 healthcheck
+和 dashboard 都说"系统正常"**。
+
+#### #2 pending_monitor_alive 无阈值 → 0 也不告警
+
+`HealthMonitor.alerts` dict 列表注册了 data_latency / circuit_breaker_open /
+execution_failure_rate 等等阈值，但**没有 pending_monitor_alive**。
+`_check_alert_level` 走 `thresholds = self.alerts.get(metric_name)` →
+对未注册的 metric 直接返回 None → `status='healthy'` 永远固定。
+
+`generate_report` 写出来的 component metric 显示 `latest=0.0,
+status='healthy', alert_level=None` —— **明明已经探到死，但报告说没事**。
+
+#### #3 build_pending_entries_summary 硬编码 healthy
+
+```python
+@staticmethod
+def build_pending_entries_summary(pending_status):
+    payload = dict(pending_status or {})
+    return {
+        "status": "healthy",   # ← 硬编码，不看 running
+        "active_count": ...,
+        "entries": ...,
+        "stats": ...,
+    }
+```
+
+调用方 `pending_entries_summary`（实例方法）后置补 `summary["running"] = False`
+但 status 不被回写。User 复现：status() 正常（payload 健康）+ is_running()=False
+→ readmodel 返 `{"status": "healthy", "running": False, ...}` —— **runtime
+明确停了，readmodel 仍然漂白成健康**。
+
+readmodel 直接服务 cockpit / dashboard / pull-based health probe，这一漂白
+让上层"运行态"和"健康态"完全脱钩。
+
+#### #4 write_auto_executions 时区标签错改
+
+```python
+executed_at = _dt.fromisoformat(str(entry.get("at") or "")).replace(tzinfo=_tz.utc)
+```
+
+`entry["at"]` 可能是带偏移的 ISO（e.g., `2026-04-26T08:00:00+08:00`，北京时间
+对应 UTC `00:00:00`）。`fromisoformat` 正确解析为 aware（tzinfo=+08:00），
+**但 `.replace(tzinfo=UTC)` 直接换标签 → 写库变成 `2026-04-26T08:00:00+00:00`，
+代表 UTC 8 点（错了 8 小时）**。
+
+User 复现：写入后查表，executed_at 比真实绝对时刻偏 8h → trace 时间线乱序，
+基于 (signal_id, executed_at) 的去重失效，跨账户对账延迟统计错。
+
+### 修复（commit 待 push）
+
+#### #1+#2 用 is_running() 聚合 + 新指标 pending_runtime_down + 阈值
+
+```python
+# manager.py - 抽取 _thread_alive helper + 三指标聚合
+@staticmethod
+def _thread_alive(component_obj, attr):
+    thread = getattr(component_obj, attr, None)
+    if thread is None: return False
+    is_alive = getattr(thread, "is_alive", None)
+    if not callable(is_alive): return False
+    try: return bool(is_alive())
+    except Exception: return False
+
+def _check_pending_entry(self, pending_mgr, component_name):
+    ...
+    monitor_alive = bool(self._thread_alive(pending_mgr, "_monitor_thread"))
+    fill_alive = bool(self._thread_alive(pending_mgr, "_fill_worker_thread"))
+    running_getter = getattr(pending_mgr, "is_running", None)
+    if callable(running_getter):
+        try: overall_running = bool(running_getter())
+        except Exception: overall_running = monitor_alive and fill_alive
+    else: overall_running = monitor_alive and fill_alive
+
+    self.health_monitor.record_metric(component_name, "pending_monitor_alive",
+        1.0 if monitor_alive else 0.0)
+    self.health_monitor.record_metric(component_name, "pending_fill_worker_alive",
+        1.0 if fill_alive else 0.0)
+    self.health_monitor.record_metric(component_name, "pending_runtime_down",
+        0.0 if overall_running else 1.0)   # ← 1=down 与 circuit_breaker_open 同方向
+    if not overall_running:
+        logger.warning("PendingEntryManager runtime down (monitor=%s, fill=%s)",
+            monitor_alive, fill_alive)
+
+# health/monitor.py 阈值注册
+"pending_runtime_down": {"warning": 0.5, "critical": 0.5},
+
+# health/monitor.py _check_alert_level 加入 down 方向 set
+elif metric_name in {..., "pending_runtime_down"}:
+    if value >= thresholds["critical"]: return "critical"
+    if value >= thresholds["warning"]: return "warning"
+
+# health/monitor.py _generate_alert_message
+if metric_name == "pending_runtime_down":
+    return f"{component}: pending entry runtime DOWN {alert_level} - " \
+           f"monitor or fill worker thread not alive (autotrade fill chain broken)"
+
+# health/common.py impact map
+"pending_runtime_down" 加入 blocking 集合
+```
+
+为什么不直接复用 `pending_monitor_alive` 加阈值？因为它语义是"alive 1.0 / down 0.0"，
+要触发 alert 需要 inverted-direction 检查（`value <= threshold`），违反现有
+`value >= threshold` 统一约定。新增 `pending_runtime_down`（与 circuit_breaker_open
+同 1=bad/0=good 方向）让告警链路保持单一约定。原有 alive 系列指标继续作 dashboard
+informational metric。
+
+#### #3 build_pending_entries_summary 接收 running 参数
+
+```python
+@staticmethod
+def build_pending_entries_summary(pending_status, *, running: bool | None = None):
+    payload = dict(pending_status or {})
+    entries = list(payload.get("entries", []) or [])
+    stats = dict(payload.get("stats", {}) or {})
+    if running is False:
+        status = "critical"
+    else:
+        status = "healthy"  # running=None 保留旧默认（兼容 build_executor_snapshot）
+    return {"status": status, "active_count": ..., "entries": entries, "stats": stats}
+
+# 调用方：把 running 透传给 builder
+def pending_entries_summary(self):
+    ...
+    running = self._component_running(self._pending_entry_manager)
+    summary = self.build_pending_entries_summary(
+        self._pending_entry_manager.status(),
+        running=running,   # ← 新增
+    )
+    summary["configured"] = True
+    summary["running"] = running   # 仍冗余写入字段供前端读
+    ...
+```
+
+`running=None` 是兼容 `build_executor_snapshot` 等不掌握运行态的调用方，避免回归。
+
+#### #4 fromisoformat + astimezone
+
+```python
+parsed = _dt.fromisoformat(str(entry.get("at") or ""))
+if parsed.tzinfo is None:
+    executed_at = parsed.replace(tzinfo=_tz.utc)   # naive 默认按 UTC 解释
+else:
+    executed_at = parsed.astimezone(_tz.utc)       # aware 转 UTC 保持绝对时刻
+```
+
+### 测试（8 项新契约）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_check_pending_entry_records_runtime_down_when_fill_worker_dies` | monitor 活 + fill 死 → pending_runtime_down=1.0 |
+| `test_check_pending_entry_records_runtime_down_zero_when_both_alive` | 两线程都活 → pending_runtime_down=0.0 |
+| `test_pending_runtime_down_metric_triggers_critical_alert` | record_metric=1.0 → status='critical' + impact='blocking' + overall_status='critical' |
+| `test_build_pending_entries_summary_marks_critical_when_running_false` | running=False → status≠healthy |
+| `test_build_pending_entries_summary_keeps_healthy_when_running_true` | running=True → status='healthy' |
+| `test_build_pending_entries_summary_default_running_keeps_healthy` | running=None（兼容旧调用）→ status='healthy' |
+| `test_write_auto_executions_converts_aware_iso_to_utc_absolute_moment` | +08:00 → 2026-04-26T00:00:00+00:00（绝对时刻保持） |
+| `test_write_auto_executions_preserves_naive_input_as_utc` | naive 默认按 UTC 解释 |
+| `test_write_auto_executions_preserves_already_utc_input` | 已 UTC 直接写入不变 |
+
+### 元层教训：**健康/告警链路必须三段一致 — 检测 + 阈值 + 评级**
+
+§0t 引入"告警系统自身故障必须 fail-loud"原则，§0u 把告警 schema count 字段
+统一，§0v 把 metric→impact 表升级覆盖 trading 域。§0w 把同一原则**纵深推到
+PendingEntryManager**，发现一条更深的反模式：**"半监控 / 半阈值 / 半评级"
+三连漂白**——
+
+1. 检测层只测了一半（monitor thread 但不测 fill worker）
+2. 即使探到死，告警阈值没注册（pending_monitor_alive 不在 alerts 表）
+3. 即使在 readmodel 标了 `running=False`，status 不回写
+
+**任意一段漂白都让整条链路失效**。这是"全链路监控"的最小必要条件——
+检测 + 阈值 + 评级三段缺一不可，每一段都得显式。
+
+强建议（扩充 §0t–§0v 元层教训）：
+- 任何带多线程的组件健康检查必须以公开 `is_running()` 为准（SSOT），
+  不能直接探私有线程引用——这等于绕过组件自己的运行态契约
+- 任何 record_metric 的 metric 都必须在 `HealthMonitor.alerts` 注册
+  阈值，否则永远不会触发 alert——可考虑加启动时 cross-check：metric
+  名首次写入但 alerts 表无 entry → log WARN
+- readmodel 的 status 字段必须是 derived from running/configured/error 等
+  事实，而不是硬编码常量；status 与 running 必须同源
+- 任何 fromisoformat 后接 tzinfo 处理必须区分 naive vs aware：
+  - naive → `.replace(tzinfo=UTC)` 默认按 UTC 解释（无别的信息）
+  - aware → `.astimezone(UTC)` 保持绝对时刻
+  - 这条 `grep "fromisoformat" src/` 应作 PR sentinel
+
+### §0g→§0w 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **47 个 bug + 47 次反向锁** + 1 次契约阻断：
+
+| § | bug 数 |
+|---|---|
+| 0g–0r | 27 |
+| 0s | 3 |
+| 0t | 3 + 1 契约阻断 |
+| 0u | 5 |
+| 0v | 5 |
+| 0w | 4 |
+
+### 测试基线
+
+- 修复前：4 处 user-facing bug；pending health 半监控 / 阈值缺失 / readmodel 漂白 / ISO 改标签全部零覆盖
+- 修复后：8 项新契约测试；`pytest -q` → **2857 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- `_check_pending_entry` 通过公开 `is_running()` SSOT 检测，不再直接探私有线程
+- 新增 `pending_runtime_down` 与告警系统其他 down 方向指标（circuit_breaker_open
+  等）保持单一 `value >= threshold` 约定，不引入 inverted 检查特例
+- `build_pending_entries_summary` 接受 `running` 参数让 status 与运行态同源，
+  消除 readmodel 层"运行态/健康态"脱钩
+- `write_auto_executions` tz-aware 入参走 `astimezone(UTC)` 保持绝对时刻，
+  不破坏跨时区数据写入语义
+
+---
+
 ## 0v. 2026-04-26 trading 域 critical 降级 + 缓存 snapshot 漂白 + trade_trace 跨账户泄漏 + 跨账户去重折叠 + control_state PK 漂移（P2 ×3 + P3 ×2）
 
 ### 触发
