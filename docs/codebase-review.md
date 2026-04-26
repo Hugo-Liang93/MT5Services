@@ -49,6 +49,186 @@
 
 ---
 
+## 0p. 2026-04-26 confidence_check 三处深层语义错 + live_preflight 硬编码 symbol（P2 ×3 + P3）
+
+### 触发
+
+User §0o 修复后再深入 audit 发现 4 处独立问题，全是已修过的两个 CLI 内部更深层的
+语义错误（"修对了表面，但内部逻辑仍假阳/假阴"）：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P2** | `confidence_check.py:142-150` | `all([])=True` → 无 live 策略时误报 "ALL TFs BLOCKED" + 调阈值建议 |
+| 2 | **P2** | `confidence_check.py:98-123` | 不叠加 `deployment.effective_min_confidence()` → ACTIVE_GUARDED + min_final 假 PASS |
+| 3 | **P2** | `confidence_check.py:60-64` | `regime_map` 压平 symbol→TF 后写覆盖；多品种部署诊断结果不确定 |
+| 4 | P3 | `live_preflight.py:168-182` | `mt5.symbol_info("XAUUSD")` 硬编码；改 symbol/多品种会误报 |
+
+### 根因 #1 — `all(空生成器) → True` 经典陷阱
+
+```python
+# 旧实现
+all_blocked = all(
+    all(... for name in _live_candidates(tf))
+    for tf in check_tfs
+    if _live_candidates(tf)        # ← 过滤掉空候选 TF
+)
+# 当全部 TF 候选都空，外层 generator 完全无产出 → all([]) → True
+```
+
+逻辑误读："没有 TF 满足"被解释成"所有 TF 都满足条件 (BLOCKED)"。
+真因是无 live-eligible 策略，建议方向应为推 ACTIVE_GUARDED 而非调 min_confidence。
+
+### 根因 #2 — 工具门槛与执行链路漂移
+
+`pre_trade_checks.py` 真实门槛：
+```python
+effective_min_conf = max(
+    timeframe_baseline_min,
+    deployment.effective_min_confidence(...)  # min_final_confidence / ACTIVE_GUARDED 推高
+)
+```
+
+工具旧实现仅用 `timeframe_baseline_min`。ACTIVE_GUARDED + `min_final_confidence=0.8`
+的策略 → 工具显示 PASS（baseline=0.5）但执行器实际 reject（effective=0.8）。
+**与 §0n 同模式**：CLI 读旧 schema/逻辑，与执行链路真实门槛漂移。
+
+### 根因 #3 — dict key 维度坍缩
+
+```python
+# /v1/admin/dashboard 返 regime_map = {"XAUUSD/M30": ..., "EURUSD/M30": ...}
+for key, info in regime_map.items():
+    tf_part = key.split("/")[-1]                # 丢掉 symbol
+    regimes[tf_part] = info["current_regime"]   # 后写覆盖前者
+```
+
+多品种部署里同一 TF 不同 symbol 的 regime 互相覆盖；诊断结果取决于 dict 遍历顺序。
+
+### 根因 #4 — SSOT 偏离
+
+仓库 SSOT 是 `app.ini trading.symbols / default_symbol`（`get_trading_config()` /
+`get_shared_default_symbol()`），但 live_preflight 硬编码 `mt5.symbol_info("XAUUSD")`。
+当前默认 XAUUSD 没炸；改名/多品种实例会把"目标 symbol 不可见"误报为
+"XAUUSD 不可见"。
+
+### 修复（commit `6984d76`）
+
+**P2#1** — 区分两种空集状态：
+```python
+has_any_live_candidate = any(live_candidates_by_tf.get(tf) for tf in check_tfs)
+
+if not has_any_live_candidate:
+    print("*** NO LIVE-ELIGIBLE STRATEGIES — all current strategies are "
+          "CANDIDATE / DEMO_VALIDATION / PAPER_ONLY ***")
+    print("  1. Promote a strategy to ACTIVE / ACTIVE_GUARDED ...")
+    print("  3. 调 min_confidence 不会有用 — 没策略能 live 执行")
+    return
+# 然后再做 all_blocked 判断（此时至少有一个 TF 有 live 候选）
+```
+
+**P2#2** — 内联 helper 与 pre_trade_checks 同语义：
+```python
+def _effective_min_for(name: str, tf: str) -> float:
+    baseline = float(tf_min_conf.get(tf, min_conf_global))
+    deployment = deployments.get(name) if deployments else None
+    if deployment is None:
+        return baseline
+    eff = deployment.effective_min_confidence(
+        timeframe_baseline=baseline,
+        global_min_confidence=float(min_conf_global),
+    )
+    return baseline if eff is None else max(baseline, float(eff))
+```
+渲染时 `min={effective:.2f}*` 标记 deployment 推高，便于诊断。
+
+**P2#3** — 加 `--symbol` 参数 + `regime_map` 按 symbol 过滤：
+```python
+target_symbol = (args.symbol or get_shared_default_symbol()).strip().upper()
+for key, info in regime_map.items():
+    if "/" in key:
+        sym_part, tf_part = key.split("/", 1)
+        if sym_part.strip().upper() != target_symbol:
+            continue   # ← 过滤掉非目标 symbol
+    ...
+    regimes[tf_part.strip().upper()] = info.get("current_regime", "uncertain")
+```
+
+**P3** — live_preflight 读 trading config：
+```python
+try:
+    from src.config.centralized import get_trading_config
+    trading_cfg = get_trading_config()
+    target_symbols = list(trading_cfg.symbols) or [trading_cfg.default_symbol]
+except Exception:
+    target_symbols = ["XAUUSD"]   # 兜底向后兼容
+
+for symbol_name in target_symbols:
+    symbol_info = mt5.symbol_info(symbol_name)
+    ...
+```
+
+### 测试（4 项新契约，之前对应分支 100% 零覆盖）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_no_live_eligible_strategies_does_not_misreport_all_blocked` | NO LIVE-ELIGIBLE 优先于 ALL BLOCKED |
+| `test_effective_min_confidence_threaded_for_guarded_strategy` | ACTIVE_GUARDED + min_final=0.8 必须 FAIL |
+| `test_regime_map_isolates_by_symbol_via_explicit_arg` | --symbol XAUUSD 只取 XAUUSD/M30，不被 EURUSD/M30 覆盖 |
+| `test_live_preflight_symbol_probe_not_hardcoded_xauusd` | sentinel 锁 mt5.symbol_info 不再硬编码 + 必须读 trading config |
+
+### User 实际复现验证
+
+```bash
+$ python -m src.ops.cli.confidence_check --tf M30
+Settings: raw_confidence=0.65, perf=1.0, calibrator=1.0
+Per-TF min_confidence: {}
+
+*** NO LIVE-ELIGIBLE STRATEGIES — all current strategies are
+    CANDIDATE / DEMO_VALIDATION / PAPER_ONLY ***
+Suggestions:
+  1. Promote a strategy to ACTIVE / ACTIVE_GUARDED ...
+  2. Verify strategy_deployments map covers strategies in scope
+  3. 调 min_confidence 不会有用 — 没策略能 live 执行
+```
+（之前同命令误报 "ALL TFs BLOCKED" + "Lower per-TF min_confidence"）
+
+### 元层教训：**修了表面 ≠ 修对内部**
+
+§0o 修了 confidence_check 的 sys.path / default TF / deployment filter，但工具
+内部的 `all_blocked` 误报、`effective_min` 漂移、`regime_map` symbol 坍缩 三处
+深层 bug 仍存在。User 在 §0o 修复后立刻深入 audit 才发现这些。
+
+启示：
+1. **修一个 CLI bug 后应做"内部端到端 audit"**：模拟典型用户输入跑一遍，
+   断言每段输出对当前真实配置都准确（而不仅仅是 grep 字符串通过）
+2. **CLI 工具的"诊断准确性"应被独立 test**：旧 sentinel 测试只锁 URL 路径
+   或字段名，不锁"语义真值"。新增 4 项测试是首次锁住 confidence_check 的
+   诊断结论与执行链路一致性
+3. **dict key 维度多 + dict.get 默认值** 是 Python 易踩雷区——需 review 时
+   主动问"如果 key 集合是空的，会发生什么"
+
+### §0g→§0p 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **19 个 bug + 19 次反向锁**：
+
+| § | bug 数 | 性质 |
+|---|---|---|
+| 0g–0o | 15 | 见前各节 |
+| 0p | 4 | confidence_check 3 深层 + live_preflight symbol |
+
+### 测试基线
+
+- 修复前：4 处 user-facing 假阳/假阴；零测试覆盖
+- 修复后：4 项新契约测试；`pytest -m "not slow"` → **2813 passed / 0 failed**
+
+### 减少边界泄漏的方式
+
+confidence_check 与 pre_trade_checks 真实执行门槛对齐（`effective_min_confidence`）；
+诊断输出区分"无 live 策略"vs"门槛阻拦"两种本质不同问题；多品种部署有显式
+`--symbol` 入口避免 regime 解析歧义；live_preflight symbol probe 接通 SSOT
+（trading.symbols）支持任意配置目标。
+
+---
+
 ## 0o. 2026-04-26 sys.path 阴影 stdlib + 候选 deployment 不收口 + 已删字段误读（P1 ×2 + P2 ×3）
 
 ### 触发
