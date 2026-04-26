@@ -996,16 +996,23 @@ class TradeExecutor:
 
     @staticmethod
     def _is_dispatch_committed(result: Any) -> bool:
-        """§0do P2：判定 result 是否表示真实 broker 派发已发出。
+        """§0do P2 + §0p P2：判定 result 是否表示真实 broker 派发已发出。
 
-        - status ∈ ok/completed/submitted：派发已 commit（broker 收到订单/挂单）
-        - status ∈ failed/error/skipped：未真实派发（broker 拒/瞬时失败/前置被拒）
-          → 不污染 dedup，让 lease retry 自然处理
+        与 interpret_terminal_result 同语义——反向判"未派发"子集而非"已派发"
+        子集：broker dispatch 成功时 result 可能不含 "status" 字段（直接返
+        ticket dict），interpret_terminal_result 默认归 TerminalOutcome.completed。
+        无脑判 status ∈ {ok,completed,submitted} 会把"无 status 但已派发"误判
+        为未派发 → 漏 dedup → 重复下单。
+
+        正确语义：
+        - result 不是 dict / None → 保守不进 dedup（让 retry）
+        - status ∈ {failed, skipped, blocked, error} → 未真实派发，不进 dedup
+        - 其他（包含无 status 字段）→ 已派发，进 dedup（与 interpret 一致）
         """
         if not isinstance(result, dict):
             return False
         status = str(result.get("status") or "").strip().lower()
-        return status in {"ok", "completed", "submitted"}
+        return status not in {"failed", "skipped", "blocked", "error"}
 
     # ------------------------------------------------------------------
     # Intrabar 交易执行

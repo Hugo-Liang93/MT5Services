@@ -97,6 +97,18 @@ grep -rn "claim_fn=None\|complete_fn=None\|heartbeat_fn=None\|mark_dispatched_fn
 grep -rn "with self._writer.connection()" src/persistence/repositories/ \
   | grep -E "ledger|with_idempotency|atomic" \
   && echo "⚠️ atomic 路径用 connection() 是 autocommit 假 atomic；改 transaction()"
+
+# 16. @contextmanager 内调另一 generator 必须用 with 而非 for（§0p P1 教训）
+# `for conn in self._gen()` 异常路径 generator finally 不必触发，可能泄漏资源；
+# 改 `with self._gen() as conn` 让 with 块 unwinding 一定调 finally。
+grep -rn "@contextmanager" src/persistence/db.py -A 10 \
+  | grep -E "for [a-z_]+ in self\._" \
+  && echo "❌ @contextmanager 内 for ... in generator 异常路径不安全；改 with"
+
+# 17. dispatch 判据必须与 interpret_terminal_result 同语义（§0p P2）
+# interpret_terminal_result 默认对无 "status" 字段归 completed（broker 直返 ticket）；
+# dispatch 判据必须反向判失败子集（failed/skipped/blocked/error），不是正向判
+# {ok, completed, submitted}——后者会漏判"无 status 但已派发"的常见场景。
 ```
 
 ### 断言核验协议（P0/FATAL 断言的硬门槛）

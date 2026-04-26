@@ -285,25 +285,30 @@ class TimescaleWriter:
         多条 SQL 必须 atomic 时**不能用本端口**——每条 cur.execute() 都会
         立即 commit，无 transaction 保护。需要 atomic 的场景用 ``transaction()``。
         """
-        yield from self._acquire_connection(autocommit=True)
+        with self._acquire_connection(autocommit=True) as conn:
+            yield conn
 
     @contextmanager
     def transaction(self):
         """§0do P1：显式 BEGIN/COMMIT/ROLLBACK transaction（autocommit=False）。
 
-        旧实现 connection() 强制 autocommit=True 让 §0dn B3 的"ledger + 主表
-        atomic"实际是两次独立 commit——主表失败时 ledger 已 commit 形成
-        幽灵反向。本 contextmanager 提供真正的事务边界：
+        旧 connection() 强制 autocommit=True → §0dn B3 的"ledger + 主表 atomic"
+        实际是两次独立 commit；主表失败时 ledger 已 commit 形成幽灵反向。
+        本 contextmanager 提供真正事务边界：
 
         - 进入：autocommit=False（隐式 BEGIN 在第一条 SQL）
         - 正常退出：conn.commit()
-        - 异常退出：conn.rollback()
-        - 退出后还原 autocommit=True 再 putconn
+        - 异常退出：conn.rollback() + 重新抛
+        - 退出后由 _acquire_connection 还原 autocommit=True 并归还池
 
         所有 atomic 写入路径（write_intents_with_idempotency /
-        write_command_with_idempotency 等）必须用本端口而非 connection()。
+        write_command_with_idempotency 等）必须用本端口。
+
+        §0p P1 修正：用 `with self._acquire_connection(...) as conn` 而非
+        `for ... in`——with 语义保证异常路径下 _acquire_connection 的
+        finally 一定执行（连接归还），generator iteration 在 raise 时不能保证。
         """
-        for conn in self._acquire_connection(autocommit=False):
+        with self._acquire_connection(autocommit=False) as conn:
             try:
                 yield conn
                 conn.commit()
@@ -314,8 +319,13 @@ class TimescaleWriter:
                     logger.exception("transaction rollback failed")
                 raise
 
+    @contextmanager
     def _acquire_connection(self, *, autocommit: bool):
-        """池连接 acquire/release 公共逻辑（被 connection / transaction 复用）。"""
+        """池连接 acquire/release 公共逻辑（被 connection / transaction 复用）。
+
+        §0p P1 修正：本身是 @contextmanager，让 with 块退出时 finally 一定
+        执行（无论正常或异常）。
+        """
         self._check_pool_health()
         if not self._pool:
             raise RuntimeError("Connection pool not initialized")

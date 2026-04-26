@@ -49,6 +49,121 @@
 
 ---
 
+## 0p. 2026-04-27 §0do 修复时引入的 2 个隐藏 bug + 上轮判据漏角（P1 generator 连接泄漏 + P2 dispatch 判据反向漏角）
+
+### 触发
+
+User 重新核验 §0do 报告同 3 项问题。当前代码核查发现 §0do **修复本身有 2 个隐藏 bug**：
+
+1. **P1 transaction() 用 `for conn in generator` 形式** —— 异常路径下 `_acquire_connection` 的 finally 不一定执行，连接可能泄漏池
+2. **P2 `_is_dispatch_committed` 判"已派发"子集** —— `interpret_terminal_result` 默认对 result 无 "status" 字段时归 `TerminalOutcome.completed`（broker 调成功直接返 ticket dict 是常见场景），但我判 `status in {ok, completed, submitted}` 会把这种"无 status 但已派发"误为未派发 → 漏 dedup → 仍可能重复下单
+
+P3 dispatched dead_letter RETURNING 已在 §0do 完整修复——**本项无新 bug**。
+
+### 修复
+
+#### P1：generator → @contextmanager + with
+
+```python
+# §0do 旧实现（generator 用法不可靠）
+@contextmanager
+def transaction(self):
+    for conn in self._acquire_connection(autocommit=False):  # ← raise 时 finally 不必执行
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+# §0p 修正：with 语义保证 finally
+@contextmanager
+def transaction(self):
+    with self._acquire_connection(autocommit=False) as conn:  # ← raise 时 with 块 unwinding 触发 finally
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.exception("transaction rollback failed")
+            raise
+
+# _acquire_connection 同时改为 @contextmanager
+@contextmanager
+def _acquire_connection(self, *, autocommit: bool):
+    ...   # try/finally 在 with 退出时一定执行
+```
+
+`connection()` 同步改 `with self._acquire_connection(autocommit=True) as conn: yield conn`。
+
+#### P2：判"未派发"子集而非"已派发"
+
+```python
+# §0do 旧实现（漏判 broker 直返 ticket dict 无 status 字段）
+def _is_dispatch_committed(result):
+    if not isinstance(result, dict):
+        return False
+    status = str(result.get("status") or "").strip().lower()
+    return status in {"ok", "completed", "submitted"}   # ← 无 status 字段 → False → 漏 dedup
+
+# §0p 修正：与 interpret_terminal_result 同语义反向判
+def _is_dispatch_committed(result):
+    if not isinstance(result, dict):
+        return False
+    status = str(result.get("status") or "").strip().lower()
+    return status not in {"failed", "skipped", "blocked", "error"}
+```
+
+`interpret_terminal_result` 的真实语义：
+- `blocked / skipped` → skipped
+- `failed` → failed
+- 其他（含**无 status**） → completed
+
+`_is_dispatch_committed` 必须与 interpret 同语义——**反向判失败子集**才能正确覆盖"已派发但 result 不含 status"的常见场景。
+
+### 测试
+
+完整套件：**2916 passed / 6 skipped / 0 failed**（76 秒）。
+
+### 元层教训：**修复时考虑不够的具体维度**
+
+User 反复触发让我面对一个事实：**§0do 修复时的两个 bug 都是"我没把场景全列"导致**：
+
+| §0do 修时 | 漏的场景 |
+|---|---|
+| `transaction()` 用 `for conn in gen` | 异常路径 generator finally 不被触发——基础 Python 知识 |
+| `_is_dispatch_committed` 判正向集合 | broker 直返 ticket dict 无 status 字段——已是 `interpret_terminal_result` 默认路径但我没核 |
+
+这两条本质都是**修复时没核心调用面对的所有场景**。强建议（已加 CLAUDE.md sentinel #16/#17）：
+
+```bash
+# 16. @contextmanager 内调另一 generator 必须用 with 而非 for（§0p P1 教训）
+grep -rn "@contextmanager" src/persistence/db.py -A 10 \
+  | grep -E "for [a-z_]+ in self\." \
+  && echo "❌ contextmanager 内 for ... in generator 异常路径不安全；改 with"
+
+# 17. dispatch 状态判据必须与 interpret_terminal_result 同语义（§0p P2 教训）
+grep -rn "_is_dispatch_committed\|status in \{" src/trading/execution/executor.py \
+  && echo "⚠️ 检查 dispatch 判据是否反向判失败子集（与 interpret_terminal_result 一致）"
+```
+
+### §0g→§0p 累计基线
+
+| § 范围 | bug 数 | 关键 |
+|---|---|---|
+| 0g–0do | 105 | 修复中持续引入新 bug |
+| **0p** | 2（P1 generator 泄漏 + P2 判据漏角）| 自审 §0do 实施细节 |
+
+### 减少边界泄漏的方式
+
+- `transaction()` + `_acquire_connection()` 都用 `@contextmanager` + `with` 保证 finally 一定执行——异常路径下连接归还池可靠
+- `_is_dispatch_committed` 反向判失败子集，与 `interpret_terminal_result` 同语义——broker 直返 ticket dict 也能正确进 dedup
+- 元层：**修复时必须列举调用面所有可能的输入形态**（含异常路径 / 缺字段路径 / 默认路径），不能只看 happy path
+
+---
+
 ## 0do. 2026-04-27 §0dn 自审误声明 atomic + 仍未考虑全 result.status + dispatched 死信不可见（P1 + P2 + P3）
 
 ### 触发
