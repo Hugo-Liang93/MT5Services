@@ -49,6 +49,329 @@
 
 ---
 
+## 0cc. 2026-04-26 异常隔离 ×3 + cleanup 所有权 ×4 + 内存无界（P1 ×2 + P2 ×5 + P3）
+
+### 触发
+
+User 报告 8 处独立 bug，本轮聚焦"异常隔离 + cleanup 所有权 + 资源泄漏"
+三类边界：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `trading/commands/consumer.py:79-88` | OperatorCommandConsumer._worker 主循环无 try/except → 一次 claim_fn 异常打死整个控制面 |
+| 2 | P2 | `monitoring/pipeline/trace_recorder.py:99-123` | _run 无顶层 try/except → 一次写库失败 → trace 永久失明 |
+| 3 | P2 | `research/nightly/runner.py:92-100` | _run_single_combo_packed 把所有异常 catch 成字符串 → ConnectionError 等基础设施错误被伪装成业务失败 |
+| 4 | P2 | `research/nightly/runner.py:_run_single_combo` | 无 finally → writer / pipeline / 连接池 / 线程池 / 缓存累积，nightly 长跑堆死 |
+| 5 | **P1** | `trading/commands/consumer.py:120-139` | _process_command 失败分支再调 _complete_fn 也无保护 → complete_fn 一次失败打死 worker（独立于 #1）|
+| 6 | P2 | `backtesting/component_factory.py:220-229` | build_research_data_deps 不暴露 close → mining 入口（API/CLI）拿不到合法释放端口 |
+| 7 | P2 | `api/research_routes/routes.py:22` | _mining_jobs 裸 dict 无上限 → 长期 API 进程内存随调用次数线性增长 |
+| 8 | P3 | `backtesting/cli.py:_cleanup_components` | 仅关 writer 不关 pipeline → 复用解释器/测试进程下线程池缓存遗留 |
+
+### 根因
+
+#### #1+#5 OperatorCommandConsumer 双致命异常边界
+
+```python
+# 旧 _worker 主循环
+def _worker(self):
+    while not self._stop_event.is_set():
+        transitions = self._claim_fn(...)   # ← #1 一次抛异常 → 线程死
+        ...
+        for item in claimed:
+            self._process_command(item)
+
+# 旧 _process_command
+def _process_command(self, item):
+    try:
+        ...
+        self._complete_fn(status="completed", ...)
+        ...
+    except Exception:
+        ...
+        self._complete_fn(status="failed", ...)   # ← #5 二次调用无保护，
+                                                  #   失败抛异常逃出 → worker 死
+```
+
+User 复现 #1：claim_fn 抛 RuntimeError("db down") → consumer.is_running()
+很快变 False，整个控制面（runtime mode 切换、trade control 等）silently down。
+复现 #5：complete_fn 恒抛 → 即使 #1 修了，#5 仍能打死线程。
+
+后果：**operator command 控制面在瞬时 DB/网络故障下完全失活**——这是
+最严重的运维误信号。
+
+#### #2 PipelineTraceRecorder 写库失败永久停录
+
+```python
+def _run(self):
+    while not self._stop.is_set() or not self._queue.empty() or self._pending:
+        self._drain_queue()
+        self._flush()                # ← write_pipeline_trace_events 抛 → 线程死
+        self._stop.wait(0.1)
+```
+
+User 复现：fake writer 抛 RuntimeError("disk full") → recorder 线程立即退出，
+is_running() False。Pipeline bus 仍在发事件但永远不再持久化——**一次磁盘
+故障变成长期 trace 失明**。
+
+#### #3 nightly_wf 基础设施异常被伪装
+
+```python
+def _run_single_combo_packed(args):
+    try:
+        return _run_single_combo(...)
+    except Exception as exc:                # ← 无差别 catch
+        return f"{type(exc).__name__}: {exc}"
+```
+
+run_nightly_wf() 契约写明"基础设施错误（DB 连接、数据加载）应直接抛出"，
+但 packer 全 catch 成 str → ConnectionError 进入 failed_runs，主流程返回
+看似正常的 report。**真实系统级故障被汇总成"普通业务失败"**。
+
+#### #4 nightly_wf 资源泄漏
+
+```python
+def _run_single_combo(...):
+    components = build_backtest_components(...)
+    engine = BacktestEngine(...)
+    result = engine.run()
+    return StrategyMetrics(...)
+    # ← 无 finally；writer 连接池 + pipeline 线程池 + isolated cache
+    #   每次组合都泄漏；ProcessPool worker 复用时累积直到拖垮 nightly 作业
+```
+
+#### #6 ResearchDataDeps 把 cleanup 所有权裁掉
+
+```python
+def build_research_data_deps(...):
+    components = build_backtest_components(...)   # ← 返需关闭的 writer/pipeline
+    return ResearchDataDeps(
+        bar_loader=components["data_loader"],
+        indicator_computer=components["pipeline"],
+        regime_detector=components["regime_detector"],
+    )
+    # ← 装配后撒手；调用方（mining API/CLI）拿不到 writer 释放端口
+```
+
+#### #7 _mining_jobs 内存无界
+
+```python
+_mining_jobs: Dict[str, Dict[str, Any]] = {}    # ← 裸 dict 无 cap/TTL
+# _execute_mining 完成时 _mining_jobs[run_id] = {"status": "completed",
+#                                                 "result": result.to_dict()}
+# 整份 result 常驻
+```
+
+#### #8 cli._cleanup_components 半清理
+
+```python
+def _cleanup_components(components):
+    writer = components.get("writer")
+    if writer: writer.close()
+    # ← 不关 pipeline；isolated 线程池/缓存遗留
+```
+
+### 修复（commit 待 push）
+
+#### #1+#5 OperatorCommandConsumer 三层异常隔离
+
+```python
+# 顶层 _worker：循环内 try/except 隔离单轮异常
+def _worker(self):
+    while not self._stop_event.is_set():
+        try:
+            self._worker_iteration()      # ← 抽出实际迭代逻辑
+        except Exception:
+            logger.exception("OperatorCommandConsumer: unexpected error in worker loop; ...")
+            self._stop_event.wait(self._poll_interval_seconds)
+
+# _process_command 中所有外部副作用调用都包 _safe_*
+self._safe_complete(...)
+self._safe_project_risk_state()
+self._safe_emit_event(...)
+
+# helpers
+def _safe_complete(self, **kwargs):
+    try:
+        self._complete_fn(**kwargs)
+    except Exception:
+        logger.exception("complete_fn failed; command will retry on next claim cycle (lease will expire)")
+```
+
+complete_fn 失败的命令通过 lease 过期自然 retry，不需要立即抛错杀线程。
+
+#### #2 PipelineTraceRecorder._run 隔离 _flush
+
+```python
+def _run(self):
+    while not self._stop.is_set() or not self._queue.empty() or self._pending:
+        try:
+            self._drain_queue()
+            self._flush()
+        except Exception:
+            logger.exception("flush failed; 继续运行，下次循环重试")
+        self._stop.wait(0.1)
+```
+
+#### #3 nightly_wf 区分基础设施异常
+
+```python
+_INFRASTRUCTURE_EXCEPTIONS = (ConnectionError, TimeoutError, OSError, MemoryError)
+
+def _run_single_combo_packed(args):
+    try:
+        return _run_single_combo(...)
+    except _INFRASTRUCTURE_EXCEPTIONS:
+        raise                            # ← 主流程 fail-fast
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"   # ← 业务异常聚合
+```
+
+#### #4 nightly_wf finally cleanup
+
+```python
+def _run_single_combo(...):
+    components = build_backtest_components(...)
+    try:
+        engine = BacktestEngine(...)
+        result = engine.run()
+        return StrategyMetrics(...)
+    finally:
+        from src.backtesting.cli import _cleanup_components
+        _cleanup_components(components)  # ← 复用 cli helper（依赖 P3#8 修复）
+```
+
+#### #6 ResearchDataDeps 加 close + context manager
+
+```python
+@dataclass(frozen=True)
+class ResearchDataDeps:
+    bar_loader: BarLoaderPort
+    indicator_computer: IndicatorComputerPort
+    regime_detector: RegimeDetectorPort
+    cleanup_fn: Optional[Callable[[], None]] = None
+
+    def close(self) -> None:
+        if self.cleanup_fn is None: return
+        try:
+            self.cleanup_fn()
+        except Exception:
+            logger.warning("ResearchDataDeps.close() failed", exc_info=True)
+
+    def __enter__(self): return self
+    def __exit__(self, *_): self.close()
+
+# build_research_data_deps 注入 cleanup_fn
+return ResearchDataDeps(
+    ...,
+    cleanup_fn=lambda: _cleanup_components(components),
+)
+```
+
+调用方走 `with build_research_data_deps() as deps: ...` 自动清理。
+
+#### #7 _mining_jobs FIFO cap
+
+```python
+_MINING_JOBS_MAX: int = 50
+
+def _set_mining_job(run_id: str, payload: Dict[str, Any]) -> None:
+    _mining_jobs[run_id] = payload
+    while len(_mining_jobs) > _MINING_JOBS_MAX:
+        oldest_key = next(iter(_mining_jobs))
+        _mining_jobs.pop(oldest_key, None)
+```
+
+所有写入路径（pending / running / completed / failed）改走 helper，禁止
+裸 dict 写入绕过 cap。
+
+#### #8 cli._cleanup_components 加 pipeline.shutdown
+
+```python
+def _cleanup_components(components):
+    writer = components.get("writer")
+    if writer is not None:
+        try: writer.close()
+        except Exception: logger.warning(...)
+    pipeline = components.get("pipeline")
+    if pipeline is not None:
+        try: pipeline.shutdown()
+        except Exception: logger.warning(...)
+```
+
+每个步骤独立 try/except 让 cleanup 不在中间卡住。
+
+### 测试（10+ 项新契约）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_consumer_survives_transient_claim_fn_exception` | claim_fn 瞬时异常不打死 worker，retry 恢复 |
+| `test_consumer_survives_transient_complete_fn_exception` | complete_fn 瞬时异常不打死 worker |
+| `test_pipeline_trace_recorder_survives_transient_write_failure` | 写库失败后 recorder 仍 running，恢复后能写入 |
+| `test_run_single_combo_packed_propagates_infrastructure_errors` | ConnectionError 等基础设施异常必须抛出 |
+| `test_run_single_combo_packed_returns_string_for_business_errors` | 业务异常仍 catch 成 str（保留聚合语义）|
+| `test_run_single_combo_calls_cleanup_components_in_finally` | writer.close + pipeline.shutdown 都被调用 |
+| `test_run_single_combo_cleanup_runs_even_when_engine_raises` | engine 抛异常时 cleanup 仍跑 |
+| `test_build_research_data_deps_exposes_close` | deps.close() 级联关 writer + pipeline |
+| `test_research_data_deps_supports_context_manager` | with deps 自动 cleanup |
+| `test_mining_jobs_dict_has_capacity_cap` | _set_mining_job 强制 FIFO 淘汰 |
+| `test_backtesting_cli_cleanup_components_closes_pipeline` | CLI cleanup 同时关 writer + pipeline |
+
+### 元层教训：**异常隔离 + cleanup 所有权 + 容量边界 = 守护进程三大底裤**
+
+§0cc 8 处 bug 折射的统一问题：长生命周期组件（worker / recorder /
+nightly job）的 robustness 边界缺失：
+
+1. **后台 worker 必须三层异常隔离**：
+   - 顶层 while 循环 try/except（防 polling 故障杀线程）
+   - 单条 work item 处理 try/except（防业务故障杀线程）
+   - 所有外部副作用调用 try/except（防 callback 故障杀线程）
+2. **资源生命周期所有权必须显式表达**：装配层返"需 cleanup 的对象"必须
+   在 API 上明示——加 close() / 返 (obj, cleanup_fn) / 实现 context
+   manager；不能"装配后撒手"
+3. **基础设施异常 ≠ 业务异常**：聚合层（ProcessPool packer / batch runner）
+   必须区分这两类，infra 异常必须 fail-fast 而不能伪装成 "ordinary failure"
+4. **任何无限增长的 in-memory store 都是定时炸弹**：API 任务表 / 缓存 /
+   队列必须有显式 cap + 淘汰策略，与外部存储的"runtime store"对齐
+5. **半清理（half-cleanup）等于不清理**：cleanup 只关一半资源等于"装看
+   起来对了但泄漏更隐蔽"——pipeline 线程池泄漏比 writer 连接泄漏更难被发现
+
+强建议（扩充 §0g→§0bb 元层教训）：
+- 所有后台 thread / worker 主循环必须 grep "while.*not.*stop" 审计 try/except 顶层
+- 所有 build_*_components 类工厂返"需关闭"对象时，签名应有 cleanup_fn 或
+  返 context manager，禁止"裸 dict + 调用方猜怎么 close"
+- 任何 Dict[str, Any] 形式的 in-memory job/cache store 必须有 cap + helper
+  强制写入路径（裸赋值禁止）
+- ProcessPool / 多进程聚合 packer 必须显式分类异常类型，infrastructure
+  类必须 raise 而非 catch
+
+### §0g→§0cc 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **68 bug + 68 反向锁** + 1 契约阻断
++ 4 防回归 sentinel：
+
+| § | bug 数 |
+|---|---|
+| 0g–0bb | 60 |
+| **0cc** | 8 |
+
+### 测试基线
+
+- 修复前：8 处 user-facing bug；后台 worker 异常隔离 / cleanup 所有权 /
+  内存 cap / 基础设施异常分类全部零覆盖
+- 修复后：10+ 项新契约测试；`pytest -q` → **2898 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- OperatorCommandConsumer 三层异常隔离 + complete_fn 失败走 lease retry
+- PipelineTraceRecorder _run 顶层 try/except 让恢复路径自然走完
+- nightly_wf 基础设施异常 fail-fast + finally cleanup（依赖 cli helper 关
+  pipeline）
+- ResearchDataDeps 加 close + context manager，调用方走 with 自动清理
+- _mining_jobs FIFO cap + helper 强制走 cap 路径，禁止裸 dict 写入
+- cli._cleanup_components 同时关 writer + pipeline，与 API cleanup 对齐
+
+---
+
 ## 0bb. 2026-04-26 §0aa 强建议系统化落地：singleton shutdown sentinel + supervisor exit alarm + EXEMPT schema enforcement（防御性）
 
 ### 触发
