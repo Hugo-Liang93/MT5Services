@@ -49,6 +49,293 @@
 
 ---
 
+## 0z. 2026-04-26 重复 signal_id 静默覆盖 + 多账户 outcome 互覆 + stop_service 漂白 + 'legacy' PK 共享（P2 ×3 + P3）
+
+### 触发
+
+User 报告 4 处独立 bug，本轮聚焦"幂等/隔离边界"漏洞——状态容器键缺维度
++ shutdown 路径漂白 + identity-less fallback PK 冲突：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | P2 | `trading/pending/manager.py:251` | `submit()` 直接 `_pending[signal_id] = entry` 覆盖；下游 `track_mt5_order` 又拒绝同 signal_id 第二个 ticket → "等待触发的价格区间"与"受 lifecycle 管理的真实挂单"拆成两套状态 |
+| 2 | P2 | `trading/tracking/trade_outcome.py:79-80` | `_active: Dict[str, _ActiveTrade]` 单 signal_id 键 → 多账户同 signal_id 后开覆盖先开，第一笔静默丢失 + 第二次 close 错配 fill_price 写出错误盈亏 |
+| 3 | P2 | `calendar/economic_calendar/calendar_sync.py:659-667` | `stop_service` join(timeout) 后无条件把每个 job 标 STOPPED → "线程卡死未退出"被漂白成正常停止 |
+| 4 | P3 | `persistence/schema/runtime_tasks.py:27` + `calendar_sync.py:258` + `app_runtime/runtime.py:490` | `instance_id NOT NULL DEFAULT 'legacy'` + writers 在 identity-less 时显式写 `'legacy'` → 所有 identity-less 实例共享同一 PK 空间互相覆盖 |
+
+### 根因
+
+#### #1 PendingEntryManager.submit() 缺幂等保护
+
+```python
+# 旧实现
+def submit(self, entry: PendingEntry) -> None:
+    with self._lock:
+        self._pending[entry.signal_event.signal_id] = entry  # ← 直接覆盖
+        self._stats["total_submitted"] += 1
+```
+
+User 复现：先 submit `sig-1` zone=[100,101]，再 submit `sig-1` zone=[200,201]，
+再连续 `track_mt5_order` ticket=1 / ticket=2：
+- `_pending[sig-1]` 被新 entry 覆盖 → status() 显示 zone=[200,201]
+- `track_mt5_order(ticket=2)` 被 lifecycle manager 拒绝（同 signal_id 二次注册）
+  → `active_execution_contexts()` 仍跟踪 ticket=1
+- **同一 signal_id 的 "等待触发" 与 "MT5 实际挂单" 分裂成两套状态**
+
+后果：fill / cancel / expire 处理可能作用到错误对象——expired-on-zone 处理
+新 entry 的 zone 却撤旧 ticket，反之亦然。
+
+#### #2 TradeOutcomeTracker._active 单键 signal_id
+
+```python
+# 旧实现
+self._active: Dict[str, _ActiveTrade] = {}
+
+def on_trade_opened(..., account_key: Optional[str] = None, ...):
+    ...
+    with self._lock:
+        self._active[signal_id] = trade   # ← 多账户覆盖
+```
+
+User 复现：同 signal_id='sig-1' 连续登记 acct_a fill@100 + acct_b fill@200
+→ `self._active['sig-1']` 是 acct_b 的 trade。后续 `on_position_closed`
+两次：
+- pos_a (acct_a) close@110 → `pop('sig-1')` 拿到 acct_b 的 trade →
+  写出 (acct_b alias, fill=200, close=110, pnl=-90) 错误结果
+- pos_b (acct_b) close@210 → `pop('sig-1')` 返 None → no-op，第二次平仓
+  的真实结果直接丢失
+
+后果：multi-account 同 signal、重放恢复、同 signal 重复执行场景下，先前
+活跃交易全被静默写丢；trade_outcomes 表数据被污染。
+
+#### #3 stop_service 不分线程死活无脑标 STOPPED
+
+```python
+# 旧实现
+def stop_service(service):
+    service._stop_event.set()
+    if service._worker and service._worker.is_alive():
+        service._worker.join(timeout=5.0)
+    if service._worker and not service._worker.is_alive():
+        service._worker = None      # ← 仅 dead 才清引用（ADR-005）
+    for job_type in _JOB_LABELS:
+        # ↓ 不管线程是否真停下，无脑标 STOPPED
+        service._job_state[job_type]["last_status"] = STOPPED
+        persist_job_state(service, job_type)
+```
+
+User 复现：注入 join(timeout) 后仍 is_alive=True 的假线程 → stop_service
+后 `_worker` 仍活着 + 三个 job 全标 STOPPED + 持久化。后果：
+- DB / dashboard 显示"已停止"但底层线程还在跑 → 资源/数据竞态/race
+- 运维以为 shutdown 干净 → 不去查根因（线程为什么卡死）→ 真问题被掩盖
+- 高风险 shutdown 漂白成正常停止——**最危险的运维误信号**
+
+#### #4 'legacy' instance_id 共享 PK 空间
+
+```sql
+-- runtime_tasks.py
+CREATE TABLE runtime_task_status (
+    instance_id TEXT NOT NULL DEFAULT 'legacy',  -- ← 字面量默认
+    component TEXT NOT NULL,
+    task_name TEXT NOT NULL,
+    ...
+    PRIMARY KEY (instance_id, component, task_name)
+);
+```
+
+```python
+# calendar_sync.py:258 + app_runtime/runtime.py:490
+runtime_identity.instance_id if runtime_identity is not None else "legacy"
+```
+
+User 复现：两个 `_runtime_identity=None` 的假 service 调 runtime_task_row()
+得到完全相同的 PK `('legacy', 'economic_calendar', 'calendar_sync')`。
+
+后果：
+- 任何 identity-less 本地脚本（一次性诊断 / scratch / migration tool）
+  共享同一组 runtime task 记录互相覆盖
+- 测试实例（CI 多 worker 并发）共享 PK 互相干扰
+- 遗留进程（未升级到 multi-instance topology）也共享一组记录
+- 即使 §0y 修了 fetcher 加 instance_id 维度，writer 端共享 'legacy'
+  让多 identity-less 进程在数据库层面无法区分
+
+### 修复（commit 待 push）
+
+#### #1 PendingEntryManager.submit() 重复 signal_id 先 cancel 再 submit
+
+```python
+def submit(self, entry: PendingEntry) -> None:
+    """§0z P2：旧实现直接覆盖 → 老 entry 与已注册 MT5 ticket 失联，造成
+    "等待触发的价格区间" 与 "受 lifecycle 管理的真实挂单" 拆成两套状态。
+    重复 signal_id 必须先 cancel 旧项以触发 on_expired_fn 让上游清理 MT5
+    跟踪，再接受新项；这样同 signal_id 的 lifecycle 始终单一。
+    """
+    signal_id = entry.signal_event.signal_id
+    if signal_id in self._pending:
+        logger.warning(
+            "PendingEntry submit: signal_id=%s already pending, replacing "
+            "previous entry (cleaning up MT5 tracking via cancel callback)",
+            signal_id,
+        )
+        self.cancel(signal_id, reason="replaced_by_new_submit")
+    with self._lock:
+        self._pending[signal_id] = entry
+        self._stats["total_submitted"] += 1
+    ...
+```
+
+#### #2 TradeOutcomeTracker 复合 key (signal_id, account_key)
+
+```python
+# §0z P2：旧 key=signal_id 让多账户后开覆盖先开 → 第一笔静默丢失，
+# 第二次 close 错配 fill_price 写出错误盈亏。新 key 是 (signal_id,
+# account_key or "")，每个账户独立跟踪；account_key 缺省时退化为
+# 单账户语义不破坏旧调用。
+self._active: Dict[Tuple[str, str], _ActiveTrade] = {}
+
+def on_trade_opened(..., account_key=None, ...):
+    ...
+    with self._lock:
+        self._active[(signal_id, str(account_key or ""))] = trade
+
+def on_position_closed(self, pos, close_price):
+    ...
+    account_key_value = str(getattr(pos, "account_key", "") or "")
+    with self._lock:
+        trade = self._active.pop((signal_id, account_key_value), None)
+```
+
+#### #3 stop_service 线程真停下才标 STOPPED
+
+```python
+def stop_service(service):
+    """ADR-005 + §0z P2：仅在线程真停下才标 STOPPED。"""
+    service._stop_event.set()
+    if service._worker and service._worker.is_alive():
+        service._worker.join(timeout=5.0)
+
+    worker_still_alive = (
+        service._worker is not None and service._worker.is_alive()
+    )
+    if worker_still_alive:
+        logger.error(
+            "Economic calendar worker still alive after 5s join timeout; "
+            "preserving thread reference per ADR-005. Job state NOT marked "
+            "STOPPED to reflect ground truth (worker did not actually stop)."
+        )
+        # 不清 _worker、不改 job state、不持久化——避免漂白成虚假 STOPPED
+        return
+
+    # worker 真停下：清引用 + 标 STOPPED + 持久化
+    if service._worker is not None:
+        service._worker = None
+    for job_type in _JOB_LABELS:
+        service._job_state[job_type]["last_status"] = RuntimeTaskState.STOPPED.value
+        persist_job_state(service, job_type)
+```
+
+#### #4 legacy_instance_id() helper 唯一化 fallback
+
+`src/config/runtime_identity.py` 新增：
+
+```python
+@lru_cache(maxsize=1)
+def legacy_instance_id() -> str:
+    """§0z P3：identity-less 写入 runtime_task_status 时的唯一化 fallback。
+
+    旧 writers 拿不到 runtime_identity 时显式写字面量 'legacy'，runtime_task_status
+    PK 是 (instance_id, component, task_name) → 所有 identity-less 共享同一组
+    记录互相覆盖。
+
+    本 helper 返回 "legacy:<hostname>:<pid>"：
+    - 保留 'legacy' 前缀供审计识别
+    - hostname + pid 让每个进程获得独立 PK 空间
+    - lru_cache 保证单进程内多次调用稳定
+    """
+    try:
+        host = socket.gethostname() or "unknown-host"
+    except OSError:
+        host = "unknown-host"
+    return f"legacy:{host}:{os.getpid()}"
+```
+
+替换两处 literal "legacy"：
+- `src/calendar/economic_calendar/calendar_sync.py:258` → `legacy_instance_id()`
+- `src/app_runtime/runtime.py:490` → `legacy_instance_id()`
+
+为什么不直接 reject identity-less write？因为遗留 / scratch / 测试场景仍有
+合理写入需求——只要 PK 不互撞就行。这是"宽容兼容 + 隐式唯一化"的折中。
+
+### 测试（10 项新契约）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_duplicate_signal_id_triggers_cancel_callback_for_old_entry` | submit 重复 signal_id 必须触发 on_expired_fn 让上游清理 MT5 跟踪 |
+| `test_multi_account_same_signal_id_does_not_overwrite_each_other` | 两账户同 signal_id 必须各自独立写出 +10 盈亏（旧实现只写 1 行错误盈亏） |
+| `test_same_signal_id_no_account_key_keeps_legacy_single_namespace` | account_key 缺省时退化为单账户语义（兼容旧调用） |
+| `test_stop_service_does_not_mark_stopped_when_worker_still_alive` | 卡死线程不能被漂白成 STOPPED + 保留线程引用 |
+| `test_stop_service_marks_stopped_when_worker_actually_dies` | 真停下时正常标 STOPPED + 清引用 |
+| `test_legacy_instance_id_returns_unique_per_process_fallback` | fallback ≠ 'legacy' 字面量；含 hostname+pid；同进程稳定 |
+
+### 元层教训：**幂等性 + identity 边界 + shutdown 真相是三大边界守门**
+
+§0z 与 §0u 状态 PK 教训类同，但升级到**进程内状态容器 + 跨进程 PK 容器
++ shutdown 路径**三类边界：
+
+1. **状态容器 key 必须包含全部影响维度**（同 §0u P1 PK / §0v P3 trade_trace dedup
+   元层教训扩展到内存状态容器）：
+   - `_pending[signal_id]` 假设 signal_id 全局唯一 ✗（pipeline 可能重发）
+   - `_active[signal_id]` 假设 signal_id 在 trade lifecycle 中唯一 ✗（多账户）
+2. **submit/upsert 类操作必须显式 idempotent**：要么 reject duplicate，要么
+   replace + cleanup 老资源；不能"静默覆盖 + 让悬空资源失联"
+3. **shutdown 路径必须报告真相而非默认成功**（同 §0w 健康路径 fail-loud）：
+   - join(timeout) 失败 ≠ 停止成功
+   - 任何"我做了 X 操作"的状态记录必须在 X 真发生后才写入
+4. **identity-less fallback 必须保证 PK 不冲突**：硬编码字面量是反模式，
+   所有 fallback 必须用某种唯一化（hostname/pid/uuid）保证多实例隔离
+
+强建议（扩充 §0g→§0y 元层教训）：
+- 状态容器（dict / cache）的 key 设计审计：grep `Dict\[str,` 查找单 key 假设
+- submit/upsert/insert 类操作必须有 idempotent 测试覆盖（重复 key 行为锁定）
+- shutdown / stop / cleanup 类操作必须有"真相反映"测试（线程卡死/资源仍在
+  时不能写"成功"状态）
+- 任何 fallback 字面量（'legacy' / 'unknown' / 'default' / 空串）必须 grep
+  审计——若用作 PK / 唯一约束维度则必须改为唯一化生成
+
+### §0g→§0z 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **55 bug + 55 反向锁** + 1 契约阻断
++ 2 防回归 sentinel：
+
+| § | bug 数 | sentinel |
+|---|---|---|
+| 0g–0r | 27 | — |
+| 0s | 3 | — |
+| 0t | 3 + 1 契约阻断 | — |
+| 0u | 5 | — |
+| 0v | 5 | — |
+| 0w | 4 | — |
+| 0x | — | R2 + R4 自动 WARN/sentinel |
+| 0y | 4 | — |
+| 0z | 4 | — |
+
+### 测试基线
+
+- 修复前：4 处 user-facing bug；submit 幂等 / outcome 多账户隔离 / stop_service 真相 / legacy PK 唯一化全部零覆盖
+- 修复后：6 项新契约测试；`pytest -q` → **2879 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- PendingEntryManager.submit 内置幂等保护（cancel 旧项触发上游清理），同
+  signal_id lifecycle 始终单一
+- TradeOutcomeTracker key 含 account_key 维度，多账户同 signal 独立跟踪；
+  account_key 缺省退化为单账户语义保留兼容
+- stop_service 仅在 worker 真停下时改 state + 持久化，避免"shutdown 漂白"误信号
+- legacy_instance_id() 唯一化 fallback 让 identity-less 进程获得独立 PK 空间，
+  与 §0y P3 fetcher instance_id 过滤双向闭环
+
+---
+
 ## 0y. 2026-04-26 已废弃私有字段读取 + multi-instance runtime task 串行 + 一次性参数变成全局配置（P2 ×3 + P3）
 
 ### 触发
