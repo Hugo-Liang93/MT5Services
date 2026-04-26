@@ -87,11 +87,12 @@
 
 无生产兼容路径残留。
 
-未决文档化整改（不阻塞合并，留作后续 PR）：
-- `src/backtesting/filtering/builder.py:46` 与 `src/research/orchestration/runner.py:23` 仍直接 import `from src.calendar.economic_calendar.trade_guard`，建议下次维护改为 `from src.calendar import infer_symbol_context`
-- `runtime.py:49` `UnifiedIndicatorManager` 未使用 import（pre-existing F401，commit `ff6e2e9`）
-- `runtime_evaluator.py:41` `soft_parsed` 未使用变量（pre-existing F841，commit `ff6e2e9`）
-- `runtime{,_evaluator}.py` black-reformat 机会（pre-existing 历史代码从未跑过 black）
+原"未决文档化整改"已在合并 main 后立即清扫完毕（commits `4fef5a1` / `13eed62` / `930e662`）：
+- ✅ `src/backtesting/filtering/builder.py` + `src/research/orchestration/runner.py` 改为 `from src.calendar import infer_symbol_context`，跨域子包私有路径 import 全仓 0 命中
+- ✅ `runtime.py` 删除 `UnifiedIndicatorManager` / `SoftRegimeResult` / `MetadataKey as MK` 三个 unused imports（含 `TYPE_CHECKING` 块清空）
+- ✅ `runtime_evaluator.py` 删除 `evaluate_strategies` 中 `soft_parsed` 死代码（11 行）+ 对应 `SoftRegimeResult` import；commit `175295d` 删 `min_affinity_skip` 时遗留的死代码已清理
+- ✅ `runtime{,_evaluator}.py` 跑 `black` + `isort` sweep；F401/F841 在两文件 0 命中
+- ⚠ 残余 3 处 pre-existing flake8（runtime.py:61 E301 + 2 处 91/90 字符 E501）是 black 不处理的边缘 case，留作未来需要时手动整理
 
 ### 减少边界泄漏的方式
 
