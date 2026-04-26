@@ -91,7 +91,7 @@ class BacktestTradeGuardProvider:
 
     def get_trade_guard(self, **kwargs: Any) -> Dict[str, Any]:
         """TradeGuardProvider Protocol 实现。"""
-        from src.calendar.economic_calendar.trade_guard import get_trade_guard
+        from src.calendar import get_trade_guard
 
         return get_trade_guard(self, **kwargs)
 

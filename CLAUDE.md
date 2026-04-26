@@ -523,6 +523,15 @@ MT5 → BackgroundIngestor → MarketDataService(内存缓存) → StorageWriter
 - 路由处理器返回 `ApiResponse[T]` 包装器
 - 使用 `structlog` 结构化日志（路由层），`logging` 模块（其他）
 
+### 时间戳一致（UTC-aware，统一端口）
+- **所有运行时时间戳必须 UTC-aware**——禁止 `datetime.utcnow()`（返回 naive，
+  Python 3.12 已 deprecated）和裸 `datetime.now(timezone.utc)`（散落实现）
+- **统一走** `from src.utils.timezone import utc_now` —— 项目 single source of truth
+- 历史时刻参数（回测/重放）显式传入 `at_time: datetime`，禁止函数内 `datetime.now()`
+  读 wall clock（违反 backtest 确定性，参 ADR-011 / `EconomicDecayService.decay_factor`）
+- DB 持久化用 `TIMESTAMPTZ` 列；isoformat 输出必须含 `+00:00` 后缀让前端
+  正确解析为 UTC
+
 ### DI 流程（新增服务组件）
 1. `src/app_runtime/container.py` 的 `AppContainer` 添加字段
 2. `src/app_runtime/factories/` 添加工厂函数
@@ -678,6 +687,26 @@ black src/ tests/ && isort src/ tests/ && mypy src/ && flake8 src/ tests/
 - 禁止提交密钥——凭据在 `*.local.ini`（gitignored）
 - 提交前运行 `black`、`isort`、`mypy`、`flake8`
 - **遇 bug 即修**：测试中发现任何失败（含已有 bug）必须立即修复
+
+### 提交前 sentinel grep（防边界泄漏与已知反模式回归）
+
+```bash
+# 1. 时间戳必须 UTC-aware（禁 utcnow + 禁裸 datetime.now(tz)）
+grep -rn "datetime\.utcnow" src/ tests/ --include='*.py' && echo "❌ 用 src.utils.timezone.utc_now()" && exit 1
+
+# 2. calendar 子包私有路径跨域 import（应走 src.calendar 公开 API，参 ADR-006/§0g/§0j）
+#    同包内引用合法（src/calendar/* 内部直接 import 子模块），故 grep -v 排除
+grep -rn "from src.calendar.economic_calendar.trade_guard import" src/ --include='*.py' | grep -v "^src/calendar/" && echo "❌ 改用 from src.calendar import <symbol>" && exit 1
+
+# 3. 装配/API 层读写组件 _ 前缀私有属性（ADR-006）
+grep -rEn "container\._|signal_runtime\._|trade_module\._" src/api/ src/app_runtime/builder.py src/app_runtime/builder_phases/ --include='*.py' | grep -v "_lock\|_logger\|^#" && echo "❌ 用公开 set_xxx/describe_xxx port" && exit 1
+
+# 4. 无差别 except Exception 兜底（参 §12 + ADR-011）
+# 这一条不能机械 grep 阻断（部分场景合法），review 时人工判断；
+# 至少新代码不应引入此模式 + 不要配 logger.debug(exc_info=True) 静默
+```
+
+任一非空命中视为提交前应修复（除非有显式 `# noqa: <reason>` 注释说明豁免）。
 
 ---
 
