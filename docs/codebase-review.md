@@ -49,6 +49,249 @@
 
 ---
 
+## 0u. 2026-04-26 多账户共享 ticket PK 互覆 + 监控 count 漂白 + 全失败静默（P1 ×2 + P2 ×3）
+
+### 触发
+
+User 报告 5 处独立 bug，本轮聚焦"多账户拓扑下的事实污染 + 监控/告警漂白":
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `persistence/schema/pending_order_states.py:5` | `order_ticket BIGINT PRIMARY KEY` + `ON CONFLICT (order_ticket)` → 跨账户同 MT5 ticket 互相覆盖 |
+| 2 | **P1** | `persistence/schema/position_runtime_states.py:5` | 同前——`position_ticket` 单列 PK 导致跨账户持仓状态被踩掉 |
+| 3 | P2 | `monitoring/manager.py:81-86` | `_summary_status_value` 用 `row['count']`，TradingStateAlerts.summary() 输出无 count → failed 行被算成 0 → 监控记录成 healthy（1.0）|
+| 4 | P2 | `readmodels/runtime.py:378-397` | `build_trading_summary` 同样 `row.get('count', 0)` → status='healthy' + coordination_issues=[] 把已 failed 监控漂白 |
+| 5 | P2 | `monitoring/manager.py:_check_execution_quality` + `trading/execution/eventing.py:763` | execution_count 是"成功数"，全失败场景 (execution_count=0 + execution_failed>0) 被 `if total > 0` 短路掉 → execution_failure_rate 静默空白 |
+
+### 根因
+
+#### #1+#2 单列 ticket 主键违反多账户拓扑契约
+
+仓库明确支持 `multi_account` 拓扑（`config/topology.py` + `instance_context.py`），
+不同账户的 MT5 ticket **不保证全局唯一**：
+
+```sql
+-- 旧 schema
+CREATE TABLE pending_order_states (
+    account_alias TEXT NOT NULL,
+    account_key TEXT,                         -- ← 后置 ALTER 加入，nullable
+    order_ticket BIGINT PRIMARY KEY,          -- ← 全局唯一 PK
+    ...
+);
+
+-- 旧 upsert
+ON CONFLICT (order_ticket) DO UPDATE SET    -- ← 不含账户维度
+    account_alias = EXCLUDED.account_alias, ...
+```
+
+User 复现：先写 `acct_a/12345`，再写 `acct_b/12345` → 表里只剩 `acct_b`。
+account_alias / account_key 字段还在，但 PK 把 acct_a 的整行用 acct_b 覆盖。
+
+后果：
+- `cockpit.exposure_map` 跨账户聚合（`DISTINCT ON (account_key, position_ticket)`）
+  以为每行账户独立——**但底层数据已经丢失**，呈现的是错误聚合
+- `trade_trace` / `risk_projection` 都基于该表 → 下游全部污染
+- 风控决策可能基于错误的"另一账户的"持仓状态
+
+`position_runtime_states.position_ticket` 同样问题，cockpit / trace / risk 投影
+全链污染。
+
+#### #3+#4 count 字段缺省漂白告警
+
+`TradingStateAlerts.summary()`（§0t 新接入的告警源之一）输出形状：
+```python
+[{"code": "state_store_unavailable", "status": "failed",
+  "severity": "critical", "message": "状态存储不可用"}]
+```
+**无 count 字段**——因为每行就是一条告警事件，"行存在"本身即为告警事实。
+
+但消费侧（manager + runtime）都用 `int(row.get("count", 0) or 0)`：
+```python
+# manager._summary_status_value
+failed = sum(int(row.get("count", 0) or 0) for row in rows if status == "failed")
+return 0.5 if failed > 0 else 1.0  # ← 默认 0 → 1.0 healthy
+
+# RuntimeReadModel.build_trading_summary
+failed = sum(int(row.get("count", 0) or 0) for row in summary_rows if ...)
+status = "warning" if failed > 0 else "healthy"  # ← 同问题
+```
+
+后果：§0t 修了 alerts.summary() 不再标 healthy，但下游消费侧把它再次漂白成
+healthy → 整体 dashboard 仍显示无异常，告警链路在最后一环失效。
+
+#### #5 execution_failure_rate 在全失败场景静默
+
+`execute_market_order` 失败路径（eventing.py:763）：
+```python
+except Exception as exc:
+    executor.last_error = str(exc)
+    executor.consecutive_failures += 1
+    # ← 不增 execution_count，不写 skip_reasons["execution_failed"]
+```
+
+vs. 成功路径（line 555）：
+```python
+result = executor.trading.dispatch_operation("trade", payload)
+executor.execution_count += 1  # ← 仅成功增
+```
+
+`_check_execution_quality` 用 `total = execution_count`（成功数）做分母：
+```python
+total = exec_status["execution_count"]     # ← 0（全失败）
+failed = skip_reasons.get("execution_failed", 0)  # ← 0（dispatch 路径不写）
+if total > 0:                              # ← false → 全失败场景跳过
+    failure_rate = failed / total
+    record_metric("execution_failure_rate", ...)
+```
+
+后果：**恰好在最严重场景里（全部 dispatch 失败）**，execution_failure_rate 一条
+都不记录。监控 dashboard 显示无失败率指标，运维以为"没在交易"，实际上
+"在交易但全失败"。这是监控反向漂白的典型反模式。
+
+### 修复（commit 待 push）
+
+#### #1+#2 复合主键 (account_key, ticket) + 幂等 migration
+
+```sql
+-- DDL（fresh install）
+CREATE TABLE IF NOT EXISTS pending_order_states (
+    account_alias TEXT NOT NULL,
+    account_key TEXT NOT NULL,        -- ← 升为 NOT NULL
+    order_ticket BIGINT NOT NULL,     -- ← 单列 PK 标记移除
+    ...,
+    PRIMARY KEY (account_key, order_ticket)  -- ← 显式复合 PK
+);
+
+-- POST_INIT migration（existing install）
+UPDATE pending_order_states
+SET account_key = account_alias
+WHERE account_key IS NULL OR account_key = '';   -- ← backfill
+
+ALTER TABLE pending_order_states
+    ALTER COLUMN account_key SET NOT NULL;       -- ← PK 列必须 NN
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        WHERE t.relname = 'pending_order_states'
+          AND c.contype = 'p'
+          AND pg_get_constraintdef(c.oid) ILIKE '%(account_key, order_ticket)'
+    ) THEN
+        ALTER TABLE pending_order_states
+            DROP CONSTRAINT IF EXISTS pending_order_states_pkey;
+        ALTER TABLE pending_order_states
+            ADD CONSTRAINT pending_order_states_pkey
+            PRIMARY KEY (account_key, order_ticket);
+    END IF;
+END $$;
+
+-- UPSERT
+ON CONFLICT (account_key, order_ticket) DO UPDATE SET
+    account_alias = EXCLUDED.account_alias, ...
+```
+
+`position_runtime_states` 同模式修复，MIGRATION_SQL 注册到
+`POST_INIT_DDL_STATEMENTS` 列表末尾。account_key 选择依据：
+- 已为全局唯一身份（`build_account_key(env, server, login)` = `"env:server:login"`）
+- 现有跨账户聚合 SQL（`aggregate_open_positions_by_account_symbol`）
+  已用 `DISTINCT ON (account_key, position_ticket)` —— 复合 PK 与之天然一致
+- 单账户场景下 account_key 总等于 alias 或固定值，PK 行为退化为单 ticket，
+  无回归
+
+#### #3+#4 count 缺省按 1 计算
+
+```python
+# manager._summary_status_value
+failed += int(row.get("count", 1) or 1)  # ← 缺省 1（行存在=1 条告警）
+
+# RuntimeReadModel.build_trading_summary
+failed = sum(int(row.get("count", 1) or 1) for row in summary_rows
+             if row.get("status") == "failed")
+```
+
+#### #5 eventing.py 失败路径写 execution_failed + 分母用尝试数
+
+```python
+# eventing.py except 分支
+except Exception as exc:
+    executor.last_error = str(exc)
+    executor.consecutive_failures += 1
+    # §0u P2：失败 dispatch 必须走 notify_skip 写入 skip_reasons["execution_failed"]
+    notify_skip(executor, event.signal_id, "execution_failed",
+                event.timeframe or "")
+    ...
+
+# manager._check_execution_quality
+total_success = int(exec_status.get("execution_count", 0) or 0)
+failed = int(skip_reasons.get("execution_failed", 0) or 0)
+total_attempts = total_success + failed       # ← 尝试数 = 成功 + 失败
+if total_attempts > 0:                        # ← 全失败也满足
+    failure_rate = failed / total_attempts    # ← 全失败 → 1.0
+    record_metric(... "execution_failure_rate" ...)
+```
+
+### 测试（10 项新契约，对应分支零覆盖）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_pending_order_states_pk_includes_account_scope` | DDL 不能仅是 order_ticket PK；必须 (account_*, order_ticket) |
+| `test_pending_order_states_upsert_conflict_target_includes_account_scope` | UPSERT ON CONFLICT 同步 |
+| `test_position_runtime_states_pk_includes_account_scope` | 同 PK 锁 |
+| `test_position_runtime_states_upsert_conflict_target_includes_account_scope` | 同 ON CONFLICT 锁 |
+| `test_summary_status_value_treats_failed_row_without_count_as_failure` | 无 count 字段的 failed 行必须 < 1.0 |
+| `test_summary_status_value_returns_healthy_when_no_failed_rows` | 无 failed 时仍 1.0（契约对称）|
+| `test_summary_status_value_handles_empty_summary` | 空 payload 兜底 |
+| `test_check_execution_quality_records_metric_when_all_dispatches_failed` | 全失败场景 failure_rate=1.0 必写入 |
+| `test_check_execution_quality_records_correct_rate_with_partial_failures` | 3 成功 + 1 失败 → rate=0.25（非 1/3=0.333）|
+| `test_build_trading_summary_treats_failed_row_without_count_as_failure` | failed 行存在 → status≠healthy + coordination_issues 非空 |
+
+### 元层教训：**契约假设的"幽灵字段"必须被消除**
+
+§0u 与 §0r/§0n/§0p/§0q/§0r/§0t 累计 8 处的统一根因是消费侧对生产侧的隐式
+schema 假设——这次升级到**结构层面**（PK / DDL）：
+
+1. **PK 必须反映真实的 entity identity**——多账户拓扑下"账户+ticket"才是
+   business-level entity，单 ticket 是 broker-level；schema 必须对齐 business
+2. **"幽灵 count 字段"是漂白告警的典型机制**——告警 schema 应明确：
+   行存在即告警事实，**禁止**通过缺省 count=0 把行算成"无事件"
+3. **监控/告警分母**必须用"尝试数"而非"成功数"——成功数当分母在全失败场景
+   会自动退化为 0/0 短路，正是最该报警的时刻反而失声
+
+强建议（扩充 §0g→§0t 元层教训）：
+- 任何包含 ticket / 业务实体 ID 的 PK，如果系统支持多租户/多实例拓扑，
+  PK 必须包含租户/实例维度——`grep "PRIMARY KEY"` 全 schema 审计一次
+- 任何 `int(row.get("count", 0))` 类聚合在新增告警源时必须 PR 检查行 schema 是否带 count
+- 任何 `if total > 0` 类分母守卫必须确认 total 在 fail-only 场景里仍非 0
+- 失败路径与成功路径在每个统计维度上必须对称（成功 → execution_count++ +
+  consecutive_failures=0；失败 → notify_skip + consecutive_failures++）
+
+### §0g→§0u 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **38 个 bug + 38 次反向锁** + 1 次契约阻断：
+
+| § | bug 数 |
+|---|---|
+| 0g–0r | 27 |
+| 0s | 3 |
+| 0t | 3 + 1 契约阻断 |
+| 0u | 5 |
+
+### 测试基线
+
+- 修复前：5 处 user-facing bug；composite PK / count 缺省 / 全失败分母全部零覆盖
+- 修复后：10 项新契约测试；`pytest -q` → **2842 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- 多账户 PK 升级反映在 schema 层面，不依赖"调用方记得加 account_key 过滤"
+- migration 用 DO 块幂等，二次启动不重复 drop+add，不污染 startup 时序
+- count 缺省语义统一（行存在=1 条告警），打破"消费侧假设生产侧带 count"的幽灵契约
+- failure_rate 分母用尝试数（success+failed），失败侧 + 成功侧 statisical 对称
+
+---
+
 ## 0t. 2026-04-26 TradingStateAlerts 双源静默 + reporting active_alerts 失效 + monitoring_summary 死参（P1 + P2 + P3）
 
 ### 触发
