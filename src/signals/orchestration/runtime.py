@@ -9,16 +9,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Protocol
 
-from ..evaluation.regime import (
-    MarketRegimeDetector,
-    RegimeTracker,
-    RegimeType,
-)
+from ..evaluation.regime import MarketRegimeDetector, RegimeTracker, RegimeType
 from ..execution.filters import SignalFilterChain
 from ..models import SignalEvent
 from ..service import SignalModule, StrategyCapability
 from .htf_resolver import parse_htf_config, resolve_htf_indicators
 from .policy import RuntimeSignalState, SignalPolicy
+from .runtime_components import (
+    QueueRunner,
+    RuntimeLifecycleManager,
+    RuntimePolicyCoordinator,
+    RuntimeStatusBuilder,
+    SignalLifecyclePolicy,
+)
 from .runtime_evaluator import (
     apply_confidence_adjustments as _runtime_apply_confidence_adjustments,
 )
@@ -31,17 +34,10 @@ from .runtime_evaluator import (
     resolve_market_structure_context as _runtime_resolve_market_structure_context,
 )
 from .runtime_evaluator import transition_and_publish as _runtime_transition_and_publish
+from .runtime_processing import apply_filter_chain as _runtime_apply_filter_chain
 from .runtime_processing import detect_regime as _runtime_detect_regime
 from .runtime_processing import is_stale_intrabar as _runtime_is_stale_intrabar
 from .runtime_processing import process_next_event as _runtime_process_next_event
-from .runtime_processing import apply_filter_chain as _runtime_apply_filter_chain
-from .runtime_components import (
-    QueueRunner,
-    RuntimePolicyCoordinator,
-    RuntimeLifecycleManager,
-    RuntimeStatusBuilder,
-    SignalLifecyclePolicy,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +114,9 @@ class SignalRuntime:
         self._soft_regime_enabled: bool = self._resolve_bool_value(
             service, "soft_regime_enabled", False
         )
-        self._has_service_session_reset: bool = hasattr(service, "reset_performance_session")
+        self._has_service_session_reset: bool = hasattr(
+            service, "reset_performance_session"
+        )
         self._market_structure_analyzer = market_structure_analyzer
         # RegimeTracker 按 (symbol, timeframe) 建立，维护每个交易目标的状态稳定度。
         self._regime_trackers: dict[tuple[str, str], RegimeTracker] = {}
@@ -258,7 +256,9 @@ class SignalRuntime:
     def confidence_floor_min_affinity(self) -> float:
         """Expose confidence-floor affinity threshold."""
         value = getattr(
-            self.service, "confidence_floor_min_affinity", self._confidence_floor_min_affinity
+            self.service,
+            "confidence_floor_min_affinity",
+            self._confidence_floor_min_affinity,
         )
         try:
             return float(value)
@@ -496,9 +496,7 @@ class SignalRuntime:
         event_time: datetime,
         bar_time: datetime,
     ) -> None:
-        self._lifecycle_policy.mark_emitted(
-            state, signal_state, event_time, bar_time
-        )
+        self._lifecycle_policy.mark_emitted(state, signal_state, event_time, bar_time)
 
     @staticmethod
     def _snapshot_signature(indicators: dict[str, dict[str, float]]) -> int:

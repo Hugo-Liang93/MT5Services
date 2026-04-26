@@ -46,7 +46,9 @@ def evaluate_strategies(
 
         capability = runtime.policy.get_strategy_capability(strategy)
         if capability is None:
-            logger.warning("Strategy capability missing for %s; skip evaluation", strategy)
+            logger.warning(
+                "Strategy capability missing for %s; skip evaluation", strategy
+            )
             continue
         if scope not in capability.valid_scopes:
             continue
@@ -436,9 +438,7 @@ def transition_and_publish(
         armed_metadata[MK.INTRABAR_PARENT_BAR_TIME] = bar_time
         strategy_obj = runtime.service.get_strategy(decision.strategy)
         if strategy_obj is not None:
-            armed_metadata[MK.STRATEGY_CATEGORY] = getattr(
-                strategy_obj, "category", ""
-            )
+            armed_metadata[MK.STRATEGY_CATEGORY] = getattr(strategy_obj, "category", "")
         deployment = runtime.policy.get_strategy_deployment(decision.strategy)
         if deployment is not None:
             armed_metadata[MK.STRATEGY_DEPLOYMENT] = deployment.to_dict()
@@ -485,7 +485,9 @@ def transition_and_publish(
                 strategy=decision.strategy,
                 direction=decision.direction,
                 confidence=decision.confidence,
-                signal_state="no_signal" if decision.direction not in ("buy", "sell") else "",
+                signal_state=(
+                    "no_signal" if decision.direction not in ("buy", "sell") else ""
+                ),
                 **eval_payload,
             )
         return
