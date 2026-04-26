@@ -49,6 +49,174 @@
 
 ---
 
+## 0bb. 2026-04-26 §0aa 强建议系统化落地：singleton shutdown sentinel + supervisor exit alarm + EXEMPT schema enforcement（防御性）
+
+### 触发
+
+§0aa 提出 4 条强建议：(R1) EXEMPT 清单必须配可证伪安全条件；(R2) 模块
+全局 singleton shutdown 必须由 module 自己提供且清引用；(R3) start/stop
+对称性；(R4) supervisor normal exit 独立 alarm。
+
+User 要求"按建议先执行"——把 4 条规则系统化落到代码 + 自动化 sentinel
+中，禁止反模式回归。
+
+### 审计范围
+
+| 建议 | Audit 结果 |
+|---|---|
+| R3（start/stop 对称） | 全 src/ 7 个 ThreadPoolExecutor 用户：parallel_executor / ingestor (§0aa 已修) / market/event_bus (shutdown-once 设计合法)；其他 stop 不关闭 thread-bearing 资源 → audit clean |
+| R2（singleton shutdown 责任） | 全 src/ 7 个 `_global_*` singletons：6 个合规（shutdown 清引用 / 纯数据无需）；1 个 bug—**`shutdown_global_pipeline` 不清 `_global_pipeline`**（同 §0aa P1#1 类） |
+| R4（supervisor alarm） | 当前仅 log 字符串告警，无独立 counter——运维难以订阅 |
+| R1（EXEMPT 配可证伪条件） | tests/ 下 `_EXEMPT` / `_IGNORE` / 类容器 audit：当前已清空（§0aa）；需要 sentinel 强制未来添加时配说明 |
+
+### 实施
+
+#### R2 fix + sentinel
+
+**`src/indicators/engine/pipeline.py`** - shutdown_global_pipeline 同步清引用：
+
+```python
+def shutdown_global_pipeline() -> None:
+    """§0aa-followup R2：旧实现仅 _global_pipeline.shutdown() 不清模块全局引用
+    → 下次 get_global_pipeline() 拿到同一已 shutdown 实例（同 §0aa P1#1
+    shutdown_global_executor 教训）。必须显式清引用让 consumer 下次 get 重建。
+    """
+    global _global_pipeline
+    if _global_pipeline is not None:
+        _global_pipeline.shutdown()
+        _global_pipeline = None         # ← 新增
+```
+
+**`tests/utils/test_sentinel_singleton_shutdown_clears_ref.py`** - AST sentinel：
+
+```python
+def test_module_singleton_shutdown_helpers_clear_global_ref() -> None:
+    """每个 _global_X singleton 若提供 shutdown_global_X / clear_global_X /
+    close_global_X helper，函数体必须把 _global_X 置 None。
+    """
+    # AST 扫描 src/ 找模块级 _global_X: Optional[T] = None 声明
+    # 对每个声明找对应 shutdown_global_X / clear_global_X / close_global_X 函数
+    # 检查函数体内是否含 _global_X = None 赋值
+```
+
+豁免清单 `_EXEMPT_GLOBALS: dict[str, str]` 用 dict value 字符串说明每条
+豁免理由：
+```python
+_EXEMPT_GLOBALS = {
+    "_global_cache": "smart_cache: clear() 仅清 entries 不销毁实例，无需 None",
+    "_global_collector": "metrics_collector: 无 thread/executor，无 shutdown 必要",
+    "_global_config_manager": "indicator_config: 配置缓存无 IO 资源",
+}
+```
+
+#### R4 supervisor unexpected normal exit counter
+
+**`src/entrypoint/supervisor.py`**：
+
+```python
+# Supervisor.__init__
+self._unexpected_normal_exits: dict[str, int] = {}
+
+# _monitor_loop normal exit 分支
+if exit_class == "normal":
+    self._unexpected_normal_exits[instance_name] = (
+        self._unexpected_normal_exits.get(instance_name, 0) + 1
+    )
+    logger.warning(
+        "Instance exited with code 0 unexpectedly during supervisor lifetime: "
+        "instance=%s unexpected_normal_exits=%d. ...",
+        instance_name,
+        self._unexpected_normal_exits[instance_name],
+    )
+    exit_class = "warning"
+
+# 公开 accessor
+def unexpected_normal_exits(self) -> dict[str, int]:
+    """返当前 instance → 累计 normal-exit 异常退出次数。
+    正常运行下应当全 0；任何 > 0 都是 alarm 信号。"""
+    return dict(self._unexpected_normal_exits)
+```
+
+每个实例独立计数避免单实例反复抖动覆盖其他实例真实事件。
+
+#### R1 EXEMPT schema enforcement sentinel
+
+**`tests/utils/test_sentinel_exempt_schema.py`** - AST sentinel 强制
+`_EXEMPT*` / `_IGNORE*` / `_ALLOWED_*` / `_WHITELIST*` 容器每个条目配说明：
+
+```python
+def test_exempt_container_entries_must_be_documented() -> None:
+    """tests/ 下 _EXEMPT* / _IGNORE* / _ALLOWED_* / _WHITELIST* 容器每个条目
+    必须配注释说明，禁止"裸豁免"。
+    - dict literal: value 必须是非空字符串
+    - set/list/tuple: element 同行或前一行必须有 # 注释
+    """
+```
+
+未来若有人在 `_EXEMPT_GLOBALS` 加 `"_global_x": ""` 或在 sentinel
+EXEMPT set 加裸路径无注释 → CI 立刻 fail。
+
+### 测试（10 项新契约）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_module_singleton_shutdown_helpers_clear_global_ref` | 全 src/ AST 扫，shutdown helper 必须清 _global_* 引用 |
+| `test_pipeline_shutdown_clears_global_executor_to_allow_reuse` (§0aa) | 仍通过，验证 shutdown_global_pipeline 修复无回归 |
+| `test_normal_exit_increments_unexpected_normal_exits_counter` | normal exit 必须把对应 instance counter +1，其他实例不被错误计数 |
+| `test_exempt_container_entries_must_be_documented` | tests/ 下 EXEMPT 容器每条目必须有说明 |
+| `test_monitor_loop_does_not_keep_stale_normal_exit_in_managed` (§0aa) | 仍通过 |
+| 其他 7 项 supervisor / sentinel | 既有契约 |
+
+### 元层教训：**自动化 sentinel = 反模式的最后防线**
+
+§0g→§0aa 累计 59 个 bug 中**至少 4 个是同模式回归**：
+- §0aa P1#1 / R2 followup：singleton shutdown 不清引用（pipeline / executor）
+- §0w R4 / §0aa P2#4：fromisoformat tz 改标签反模式
+- §0u/§0v/§0z：multi-tenant key 漏维度
+
+教训：手写规范 + 文档教训不足以阻止回归。每条强建议必须落到 AST sentinel
+test 才有效防御。本轮 §0bb 再加 2 条 sentinel（singleton shutdown + EXEMPT
+schema），加上 §0x 已有 2 条（unregistered metric WARN + fromisoformat tz），
+**累计 4 条自动化防回归基础设施**。
+
+强建议（扩充 §0g→§0aa 元层教训）：
+- "曾出现的反模式必须配 AST sentinel 防回归"作为 PR review 强制清单一项
+- sentinel EXEMPT 必须配可证伪安全条件（dict value 说明 / # 注释）+
+  meta-sentinel (R1) 强制配置
+- 反模式分类：
+  - schema 类（PK / unique 约束 / impact map）：grep / sentinel
+  - 状态类（singleton shutdown / fixture 字段名 / dedup key）：AST sentinel
+  - 时序类（缓存 + 实时混合视图 / start-stop 对称）：契约测试
+  - 评级类（多段一致 / fail-loud）：HealthMonitor 内置 cross-check (§0w R2)
+
+### §0g→§0bb 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **60 bug + 60 反向锁** + 1 契约阻断
++ **4 条防回归 sentinel**：
+
+| § | bug 数 | sentinel |
+|---|---|---|
+| 0g–0aa | 59 | R2 + R4 (§0x) |
+| **0bb** | 1 (shutdown_global_pipeline) | **R2 + R1 sentinels (§0bb)** |
+
+### 测试基线
+
+- 优化前：§0aa 强建议 4 条停留在文档段落
+- 优化后：4 项新契约测试 + 2 条自动化 sentinel + R4 公开 metric；
+  `pytest -q` → **2887 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- shutdown_global_pipeline 同步清引用，与 shutdown_global_executor 一致
+- AST sentinel 全 src/ 扫描，未来新增 _global_* singleton 若无 helper 不报，
+  若有 helper 则必须清引用——禁止"半 shutdown"反模式
+- supervisor 公开 `unexpected_normal_exits()` accessor，监控/runbook 可
+  直接订阅而非 grep log
+- EXEMPT schema sentinel 强制可证伪豁免条件，与 §0aa 反例教训对齐
+- 4 条自动化 sentinel 形成"反模式回归不能 merge" 工程基础设施
+
+---
+
 ## 0aa. 2026-04-26 indicator pipeline 永久毒化 + supervisor normal exit 不重启 + ingestor stop 后不可重建 + CLI tz 反例（P1 ×2 + P2 ×2 + §0x EXEMPT 反例）
 
 ### 触发
