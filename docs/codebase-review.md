@@ -49,6 +49,128 @@
 
 ---
 
+## 0n. 2026-04-26 三处 CLI 参数/Schema 漂移修复（daily_report ×2 + diagnose ×1，P2）
+
+### 触发
+
+User 连续报告 3 个独立 P2 + 1 个同源残余。**全部是同一类问题**：CLI 工具与
+后端 API/schema 漂移，但因 CLI 长期无 test 覆盖 + 输出看起来"格式正确"，
+未引发崩溃 → 用户得到貌似正常但语义失真的报告/诊断。
+
+| # | 文件 | 表面症状 | 真实根因 |
+|---|---|---|---|
+| 1 | `daily_report.py:137-145` | --date 只改标题不改数据 | 路由 `/v1/trade/daily_summary` 不接 date 参数；CLI 也未拼 query |
+| 2 | `daily_report.py:72-91` | 接收/通过/拒绝永远 0；熔断告警永远不显示 | 旧 schema：flat `signals_received` + nested `circuit_breaker.{open}`；新 schema：nested `signals.{received,passed,blocked,skip_reasons}` + 顶层 `circuit_open`/`consecutive_failures` |
+| 3 | `diagnose_no_trades.py:136-138` | 标题"最近 N 小时 / TF"但内容混入其他 TF 与更早记录 | `--tf`/`--hours` 完全没拼进 `/v1/signals/recent` query |
+| + | `health_check.py:198`（同源 carry-on） | `circuit_open=True` 时仍报 OK enabled | 同 #2 schema 误读 + 漏判 circuit_open |
+
+### 影响
+
+| # | 长期实际危害 |
+|---|---|
+| 1 | 用户生成"标题写历史日期、内容仍是今天"的假日报；事后追溯/合规审计严重偏差 |
+| 2 | 关键交易统计（信号接收/通过/拒绝、熔断状态）完全无显示；运维盯日报以为系统空闲实际是探针错误 |
+| 3 | 诊断"为什么没下单"时 DB SIGNAL EVENTS 段汇总跨 TF 与陈旧记录，可能把"M15 最近 24h 异常"判读为"系统正常"；反向也可能把更早的失败误判为当下问题 |
+| + | health_check 显示 "Trade executor: OK enabled" 但熔断器实际打开 → 同 §0m P1 假阳性 |
+
+### 修复（commit `cf5221b`）
+
+**P2 #1（双层修）**：
+```python
+# 路由层 src/api/trade_routes/state_routes/overview.py
+@router.get("/trade/daily_summary", ...)
+def trade_daily_summary(
+    summary_date: Optional[date] = Query(default=None, alias="date"),
+    service: TradingQueryService = Depends(...),
+):
+    return ApiResponse.success_response(
+        data=service.daily_trade_summary(summary_date=summary_date),
+        metadata={..., "summary_date": summary_date.isoformat() if summary_date else None},
+    )
+
+# CLI src/ops/cli/daily_report.py
+summary_url = f"{base}/v1/trade/daily_summary"
+if args.date:
+    summary_url = f"{summary_url}?date={args.date}"
+```
+（`TradingQueryService.daily_trade_summary(summary_date=None)` 早就支持，
+路由层之前没暴露这个 capability。）
+
+**P2 #2**：`_render_daily_report` 全面重写按新 schema：
+```python
+- received = executor.get("signals_received", 0)            # 旧 flat
++ signals = executor.get("signals", {}) or {}
++ received = signals.get("received", 0)
+- cb = executor.get("circuit_breaker", {})
+- if cb.get("open"): ...
++ if executor.get("circuit_open"):
++     consecutive = executor.get("consecutive_failures", "?")
++     max_failures = executor.get("config", {}).get("max_consecutive_failures", "?")
+```
+
+**P2 #3**：用 `requests.get(url, params=dict)` 拼 timeframe + from（alias）：
+```python
+params: dict[str, str] = {"symbol": "XAUUSD", "limit": "50"}
+if args.tf:
+    params["timeframe"] = args.tf
+if args.hours:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=args.hours)).isoformat()
+    params["from"] = cutoff
+r = requests.get(f"{BASE}/v1/signals/recent", params=params, timeout=5)
+```
+
+**附带 carry-on（health_check.py:192-218）**：
+```python
+- if enabled:
+-     results.append(("Trade executor", "OK", f"enabled, executions={exec_count}"))
++ if circuit_open:
++     results.append(("Trade executor", "FAIL",
++                    f"circuit OPEN ({consecutive} consecutive failures)"))
++ elif enabled:
++     results.append(("Trade executor", "OK", f"enabled, executions={exec_count}"))
+```
++ except 收窄到 `(HTTPError, URLError, ValueError)` 同 §0m 异常分层契约。
+
+### 测试（之前 daily_report 100% 零覆盖；diagnose 仅 source-level sentinel）
+
+| 文件 | 项数 | 锁定的契约 |
+|---|---|---|
+| `tests/ops/test_daily_report.py`（新建） | 6 | 渲染 signals.* / skip_reasons / circuit_open / circuit_closed-no-section + main --date 透传 + 缺省不附 query |
+| `tests/ops/test_diagnose_no_trades.py` | +1 | source sentinel 锁 timeframe/from/to/args.tf/args.hours 透传 |
+| `tests/ops/test_health_check.py` | +1 | circuit_open=True 即使 enabled=True 也必须 FAIL |
+| `tests/api/test_trade_api.py` | +1 | 路由 summary_date 透传 service + metadata 反映 |
+
+### 元层教训（与 §0g→§0m 累计扩充）
+
+短短 24 小时累计修 P0/P1/P2/P3 共 **10 个 CLI/API 漂移 bug + 10 次反向锁沉淀**。
+"CLI 死路径反模式"已扩充为更广义的 **"CLI 工具与后端漂移"模式**，包括：
+
+1. **Dead-route**（§0k live_preflight `/v1/health` / §0l 三处）
+2. **Dead-judgment-criterion**（§0m health_check `event_loop_running` 探针漂移）
+3. **Stale-schema**（§0n daily_report `signals_received` / `circuit_breaker` 已迁字段）
+4. **Dead-CLI-arg**（§0n daily_report `--date` / diagnose `--tf` `--hours`）
+
+强建议（扩充 §0l 已记的 3 条）：
+- a/b/c：参 §0l
+- d. **Schema 变更（readmodel rename / nest）必须在 PR description 附 grep 截图**
+  证明已扫所有 `executor.get("...")` / `signals_*` 之类的字符串引用，含 `src/ops/`
+  与 `tests/`
+- e. **CLI argparse 加 args 时同时加 sentinel test**：`grep "args.<name>"` 必须
+  出现在请求构造代码中（不能只出现在 print 标题里）
+
+### 测试基线
+
+- 修复前：3 个 user-facing 漂移 bug + 1 个同源遗漏；测试覆盖：daily_report 0%
+- 修复后：9 项新契约测试；`pytest -m "not slow"` → **2802 passed / 0 failed**
+
+### 减少边界泄漏的方式
+
+CLI 层不再"独自决定"参数语义——`--date` 真正透传给 API；`--tf`/`--hours`
+真正影响请求 URL；executor schema 解析对齐 readmodel 真实结构而非历史快照。
+**CLI 与 API/readmodel 之间的契约一致性**第一次有 9 项测试守护。
+
+---
+
 ## 0m. 2026-04-26 health_check indicator engine 假阳性修复（event_loop_running，P1）
 
 ### 触发
