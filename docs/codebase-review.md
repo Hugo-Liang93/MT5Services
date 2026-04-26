@@ -49,6 +49,118 @@
 
 ---
 
+## 0m. 2026-04-26 health_check indicator engine 假阳性修复（event_loop_running，P1）
+
+### 触发
+
+User 直接 monkeypatch 复现：让 `/v1/monitoring/performance` 返
+`{'data': {'event_loop_running': False}}`，旧 `health_check._run_checks()`
+仍输出 `"Indicator engine: OK"`——**indicator 引擎已停摆，健康检查仍报 OK**。
+
+### 根因（双层）
+
+`src/ops/cli/health_check.py:163-166` 旧实现：
+```python
+perf_data = perf_resp.get("data", {})
+if isinstance(perf_data, dict) and perf_data.get("status") != "disabled":
+    results.append(("Indicator engine", "OK", "running"))
+```
+
+1. **判断条件错** —— `/v1/monitoring/performance` 真实 schema：
+   - executor role 返 `{"status": "disabled", "role": "executor"}`（status 字段存在）
+   - main role 返 `indicator_manager.get_performance_stats()` 字典（**无 status 字段**，
+     但含 `event_loop_running`）
+   - 旧 if 永远命中（None ≠ "disabled"），完全跳过 main role 的健康判断
+
+2. **except Exception: pass** —— 任何 HTTP/parse/coding 异常被静默吞，
+   indicator engine row 直接消失（用户不会注意到）→ 同 ADR-011 / §0l 反模式
+
+### 影响
+
+P1：**生产假阳性 — 指标引擎挂掉但健康检查全绿**。
+- main role 实例的 event loop 因任何原因停止（线程死掉 / OOM / pool 耗尽）
+- runtime 仍写入半新半旧指标，下游策略评估读到 stale data
+- 健康检查脚本对运维显示一切正常，**长期掩盖真实故障**
+
+同源同模块对照：`monitoring_routes/health.py:159` 的 K8s readiness probe 用的就是
+`perf.get("event_loop_running")`——一个文件两段同源代码，CLI 那段写错了。
+
+### 修复（commit `0b9dfd8`）
+
+```python
+# 4. 指标引擎
+try:
+    perf_resp = _fetch_json(f"{base}/v1/monitoring/performance")
+    perf_data = perf_resp.get("data", {})
+    if not isinstance(perf_data, dict):
+        results.append(("Indicator engine", "FAIL",
+                       f"unexpected payload type: {type(perf_data).__name__}"))
+    elif perf_data.get("status") == "disabled":
+        pass  # executor role 主动禁用，不输出 row
+    elif perf_data.get("event_loop_running"):
+        results.append(("Indicator engine", "OK", "event_loop_running"))
+    else:
+        results.append(("Indicator engine", "FAIL",
+                       f"event_loop_running={perf_data.get('event_loop_running')!r}"))
+except (HTTPError, URLError, ValueError) as exc:
+    # 异常分层（同 ADR-011）：网络/JSON → FAIL；coding error 透传
+    results.append(("Indicator engine", "FAIL", str(exc)))
+```
+
+### 测试（5 项契约锁，之前 indicator engine 段 100% 零覆盖）
+
+| 测试 | 锁定 |
+|---|---|
+| `marked_ok_when_event_loop_running` | True → OK（健康路径） |
+| `false_positive_when_event_loop_stopped` | False → FAIL（**user 复现的核心 P1 回归锁**） |
+| `fail_on_empty_fallback` | `{}` → FAIL（防 API 内部异常被前端逻辑掩盖） |
+| `skipped_for_executor_role` | status="disabled" → 不输出 row（保留合理跳过语义） |
+| `fail_on_http_error` | 503 → FAIL（防 `except Exception: pass` 回归静默） |
+
+附带：更新 `tests/ops/test_health_check.py` 的 `_BASE_ROUTES` 默认 perf payload
+为 main role 健康场景，避免之前 `{"status": "ok"}` 占位让无关 trade tests 静默
+通过 indicator 段。
+
+### 元层教训：同模块两份"健康判断"代码不对齐
+
+`monitoring_routes/health.py:159`（K8s readiness）与 `health_check.py:163-166`（CLI 巡检）
+都查同一个 `/v1/monitoring/performance`，**判断字段却不一致**：
+- readiness（API 内部）：`perf.get("event_loop_running")` ✓ 正确
+- CLI 巡检（外部消费者）：`perf_data.get("status") != "disabled"` ✗ 错误
+
+**这是同一仓库内的"探针漂移"问题**——不应再加新检查点扩大漂移面，应做：
+
+a. 把"判断 indicator engine 是否健康"沉淀为 **calendar 域 / monitoring 域的
+   公开函数**（`is_indicator_engine_running(perf_data) -> bool`），CLI + readiness
+   + 任何未来消费者都调同一函数；
+b. 或至少把 perf endpoint 包成 typed View（`PerformanceStatsView` with explicit
+   `event_loop_running: bool` field），消费者拿 typed object 后 `view.event_loop_running`
+   一目了然，无法再 typo `status` vs `event_loop_running`。
+
+记入 §0l 元层 follow-up "CLI 死路径反模式"扩充：除了 dead route，还有
+**dead-judgment-criterion**（路径对但判断字段错）模式，更隐蔽。
+
+### 累计基线（§0g→§0m）
+
+短短 24 小时累计修 P0/P1/P2/P3 共 **7 个真实 bug + 7 次反向锁沉淀**：
+
+| § | 主题 | bug 性质 |
+|---|---|---|
+| 0g | EconomicDecayService 边界整改 | P0 timezone NameError + 复制粘贴漂移 |
+| 0h | warm_up_from_db FrozenInstanceError | P2 frozen-mutate + 静默吞 |
+| 0i | Python 版本契约失真 | P2 pyproject 与代码现实不符 |
+| 0j | research utcnow → utc_now | P3 时区一致性 |
+| 0k | live_preflight 探死 endpoint | P3 CLI dead route + 解析无信息量 |
+| 0l | 三处 CLI 死路径/死 helper | P2+P3（trade/overview / signals/latest / hold_decision） |
+| 0m | health_check indicator 假阳性 | **P1**（探针漂移，最高严重度） |
+
+### 减少边界泄漏的方式
+
+短期：CLI 不再无脑接受"无 status 字段就算 OK"，必须读真实 health 字段；
+中期建议（见元层）：抽 `is_indicator_engine_running` helper 收敛同源判断。
+
+---
+
 ## 0l. 2026-04-26 三处 CLI 工具死路径/死 helper 修复（healthchk × 2 + diagnose × 1 + hold_decision × 1）
 
 ### 触发
