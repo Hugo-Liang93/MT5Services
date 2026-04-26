@@ -131,7 +131,6 @@ scratch/
 # Keep placeholders
 !.gitkeep
 .claude/*
-!.claude/settings.json
 !.claude/commands
 
 # Local git worktrees (isolated feature workspaces)
