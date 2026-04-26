@@ -40,11 +40,21 @@ class ConfidencePipelineView(BaseModel):
 
 
 class StrategySessionDetailView(BaseModel):
+    """策略详情视图。
+
+    extra='allow' + 显式 htf_policy：避免双重 schema 裁剪
+    （build_strategy_detail() → StrategyDetail → model_dump → 此 view），
+    structured 策略必须声明 htf_policy 才能 live；详情接口必须暴露。
+    """
+
+    model_config = {"extra": "allow"}
+
     name: str
     category: Optional[str] = None
     preferred_scopes: List[str] = Field(default_factory=list)
     required_indicators: List[str] = Field(default_factory=list)
     regime_affinity: Dict[str, float] = Field(default_factory=dict)
+    htf_policy: Optional[str] = None
     session_performance: Optional[Dict[str, Any]] = None
 
 
