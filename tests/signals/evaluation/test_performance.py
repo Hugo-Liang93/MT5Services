@@ -344,3 +344,109 @@ class TestThreadSafety:
             t.join()
 
         assert not errors, f"Thread safety errors: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# warm_up_from_db — DB replay path (regression: P2 FrozenInstanceError)
+# ---------------------------------------------------------------------------
+
+
+def _warmup_tracker(*, max_consec: int = 3) -> StrategyPerformanceTracker:
+    """Tracker with PnL circuit configured to a small threshold for testing."""
+    cfg = PerformanceTrackerConfig(
+        enabled=True,
+        pnl_circuit_enabled=True,
+        pnl_circuit_max_consecutive_losses=max_consec,
+        pnl_circuit_cooldown_minutes=15,
+    )
+    return StrategyPerformanceTracker(config=cfg)
+
+
+def test_warm_up_from_db_does_not_mutate_frozen_config() -> None:
+    """回归：warm_up 不得 mutate frozen PerformanceTrackerConfig 字段。
+
+    历史 bug：line 525-526 直接 self._config.pnl_circuit_enabled = False
+    抛 FrozenInstanceError，被上层 except Exception 静默吞噬数月。
+    """
+    tracker = _warmup_tracker(max_consec=3)
+    rows = [{"strategy": "s1", "won": False, "pnl": -10.0, "source": "trade"}]
+    # 不抛即可（旧实现会抛 FrozenInstanceError）
+    tracker.warm_up_from_db(rows)
+    # config 必须仍是 frozen 且字段未变（saved_pnl_enabled 恢复到 True）
+    assert tracker._config.pnl_circuit_enabled is True
+
+
+def test_warm_up_from_db_replays_outcomes_returns_count() -> None:
+    tracker = _warmup_tracker()
+    rows = [
+        {"strategy": "s1", "won": True, "pnl": 5.0, "source": "trade"},
+        {"strategy": "s1", "won": False, "pnl": -3.0, "source": "trade"},
+        {"strategy": "s2", "won": True, "pnl": 2.0, "source": "signal"},
+    ]
+    count = tracker.warm_up_from_db(rows)
+    assert count == 3
+    s1 = tracker.get_strategy_stats("s1")
+    assert s1 is not None and s1["total"] == 2
+
+
+def test_warm_up_from_db_skips_invalid_rows() -> None:
+    tracker = _warmup_tracker()
+    rows = [
+        {"strategy": "s1", "won": True, "pnl": 1.0, "source": "trade"},
+        {"strategy": None, "won": True, "pnl": 1.0},  # missing strategy
+        {"strategy": "s1", "won": None, "pnl": 1.0},  # missing won
+    ]
+    count = tracker.warm_up_from_db(rows)
+    assert count == 1
+
+
+def test_warm_up_from_db_does_not_trigger_pnl_circuit() -> None:
+    """warm_up 期间历史亏损不应触发本 session PnL 熔断器。
+
+    设置 max_consec=2，回放 5 条连败。若 warm_up 期间 circuit 被触发，
+    pnl_circuit_paused 会变 True；正确实现下应一直 False（warm_up 期间禁用）。
+    """
+    tracker = _warmup_tracker(max_consec=2)
+    rows = [
+        {"strategy": "s1", "won": False, "pnl": -10.0, "source": "trade"}
+        for _ in range(5)
+    ]
+    tracker.warm_up_from_db(rows)
+    # warm_up 完成后 circuit 必须未触发，loss streak 已重置为 0
+    assert tracker._pnl_circuit_paused is False
+    assert tracker._global_trade_loss_streak == 0
+
+
+def test_warm_up_restores_pnl_circuit_for_subsequent_real_trades() -> None:
+    """warm_up 完成后，正常 record_outcome 路径下 PnL 熔断器必须重新生效。
+
+    防回归：if `pnl_circuit_enabled` 被错误永久置 False 或 _warmup_active 未重置，
+    warm_up 后真实交易亏损将不再触发熔断 → 风控失效。
+    """
+    tracker = _warmup_tracker(max_consec=2)
+    # warm_up 一些历史
+    tracker.warm_up_from_db(
+        [{"strategy": "s1", "won": False, "pnl": -1.0, "source": "trade"}]
+    )
+    # 然后真实 session 内连亏 2 次（达到熔断阈值）
+    tracker.record_outcome("s1", won=False, pnl=-1.0, source="trade")
+    tracker.record_outcome("s1", won=False, pnl=-1.0, source="trade")
+    assert tracker._pnl_circuit_paused is True
+
+
+def test_warm_up_propagates_coding_errors_fail_fast() -> None:
+    """coding error（下游 record_outcome 抛非 frozen-related 异常）应直接传播，
+    禁止被 warm_up_from_db 内部静默吞噬（同 ADR-011 异常分层契约）。
+
+    用 NameError 而非 AttributeError，避免与 FrozenInstanceError（AttributeError 子类）
+    巧合命中——若未来谁加 except Exception 兜底，本测试会立即红。
+    """
+    tracker = _warmup_tracker()
+
+    def boom(*args, **kwargs):  # noqa: ANN001, ANN202
+        raise NameError("simulated coding bug downstream")
+
+    tracker.record_outcome = boom  # type: ignore[method-assign]
+    rows = [{"strategy": "s1", "won": True, "pnl": 1.0, "source": "trade"}]
+    with pytest.raises(NameError):
+        tracker.warm_up_from_db(rows)
