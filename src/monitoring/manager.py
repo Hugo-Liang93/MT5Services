@@ -3,6 +3,8 @@
 协调多个组件的健康检查任务，定期执行巡检并记录结果。
 """
 
+from __future__ import annotations
+
 import logging
 import threading
 import time

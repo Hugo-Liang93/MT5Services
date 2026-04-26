@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import configparser
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -61,11 +63,13 @@ def _resolve_named_config_path(
             base_dir=_project_root(base_dir),
         )
         if instance_dir is not None:
-            candidate = instance_dir / name_or_path
-            if candidate.exists():
-                return str(candidate)
-    candidate = os.path.abspath(os.path.join(_config_root(base_dir), name_or_path))
-    return candidate if os.path.exists(candidate) else None
+            instance_candidate = instance_dir / name_or_path
+            if instance_candidate.exists():
+                return str(instance_candidate)
+    abs_candidate = os.path.abspath(
+        os.path.join(_config_root(base_dir), name_or_path)
+    )
+    return abs_candidate if os.path.exists(abs_candidate) else None
 
 
 def _read_ini(path: str) -> configparser.ConfigParser:

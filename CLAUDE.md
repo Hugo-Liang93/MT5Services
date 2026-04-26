@@ -132,7 +132,7 @@ scratch/ 脚本满足下列任一项 → 应该晋升：
 
 FastAPI 量化交易平台，连接 MetaTrader 5 终端。实时行情 → 技术指标 → 信号生成 → 风控 → 自动交易，TimescaleDB 持久化。
 
-- **Python** 3.9–3.12 | **FastAPI** + uvicorn | **TimescaleDB** | **MT5** (Windows-only)
+- **Python** 3.10–3.12 | **FastAPI** + uvicorn | **TimescaleDB** | **MT5** (Windows-only)
 - **入口**:
   - 单实例：`python -m src.entrypoint.web`（默认）或 `python -m src.entrypoint.instance --instance <name>`
   - 多实例：`python -m src.entrypoint.supervisor --group live`
