@@ -25,6 +25,8 @@ def metric_overall_impact(metric_name: str) -> str:
         "circuit_breaker_open",
         "execution_failure_rate",
         "execution_queue_overflows",
+        # §0w P2：PendingEntryManager 监听/填单线程任一死亡即阻断挂单链路。
+        "pending_runtime_down",
     }:
         return "blocking"
     return "advisory"

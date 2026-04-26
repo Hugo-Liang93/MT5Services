@@ -386,9 +386,16 @@ WHERE 1=1
         for entry in rows:
             params = entry.get("params") or {}
             try:
-                executed_at = _dt.fromisoformat(str(entry.get("at") or "")).replace(
-                    tzinfo=_tz.utc
-                )
+                # §0w P3：旧实现 fromisoformat().replace(tzinfo=UTC) 对带偏移
+                # 时间串直接改标签 → 2026-04-26T08:00:00+08:00 被写成
+                # 2026-04-26T08:00:00+00:00（错），扭曲 trace 时间线 + 排序
+                # + 基于时间的去重。正确做法：naive 默认按 UTC 解释，
+                # aware 用 astimezone(UTC) 保持绝对时刻。
+                parsed = _dt.fromisoformat(str(entry.get("at") or ""))
+                if parsed.tzinfo is None:
+                    executed_at = parsed.replace(tzinfo=_tz.utc)
+                else:
+                    executed_at = parsed.astimezone(_tz.utc)
             except (ValueError, TypeError):
                 executed_at = _dt.now(_tz.utc)
             batch.append(

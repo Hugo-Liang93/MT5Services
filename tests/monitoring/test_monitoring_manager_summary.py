@@ -103,3 +103,99 @@ def test_check_execution_quality_records_correct_rate_with_partial_failures() ->
     matches = [r for r in health.records if r[1] == "execution_failure_rate"]
     assert matches, "至少要有一条 execution_failure_rate"
     assert matches[0][2] == 0.25, f"got {matches[0][2]}"
+
+
+# ── §0w P2 回归：pending health 检查必须覆盖 fill worker ──
+
+
+class _FakeThread:
+    def __init__(self, alive: bool) -> None:
+        self._alive = alive
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
+class _StubPendingMgr:
+    def __init__(self, monitor_alive: bool, fill_alive: bool) -> None:
+        self._monitor_thread = _FakeThread(monitor_alive)
+        self._fill_worker_thread = _FakeThread(fill_alive)
+
+    def status(self) -> dict:
+        return {
+            "active_count": 0,
+            "stats": {
+                "total_filled": 0,
+                "total_expired": 0,
+                "total_submitted": 0,
+                "fill_rate": 1.0,
+            },
+        }
+
+    def is_running(self) -> bool:
+        return self._monitor_thread.is_alive() and self._fill_worker_thread.is_alive()
+
+
+def test_check_pending_entry_records_runtime_down_when_fill_worker_dies() -> None:
+    """P2 §0w 回归：旧实现只看 _monitor_thread → fill worker 挂掉时仍报 monitor
+    存活 = 1.0，把执行链断掉的状态误报成健康。新实现必须基于 is_running()
+    （covers monitor + fill worker）写入聚合 pending_runtime_down 指标，且在
+    fill worker 死时该值 = 1.0（down）。
+    """
+    from src.monitoring.manager import MonitoringManager
+
+    health = _StubHealthMonitor()
+    manager = MonitoringManager.__new__(MonitoringManager)
+    manager.health_monitor = health  # type: ignore[attr-defined]
+
+    pending = _StubPendingMgr(monitor_alive=True, fill_alive=False)
+    manager._check_pending_entry(pending, "pending_mgr")
+
+    metric_map = {(c, m): v for (c, m, v) in health.records}
+    runtime_down = metric_map.get(("pending_mgr", "pending_runtime_down"))
+    assert runtime_down == 1.0, (
+        f"fill worker 挂掉时 pending_runtime_down 必须 = 1.0；"
+        f"got {runtime_down!r}, all records={health.records!r}"
+    )
+
+
+def test_check_pending_entry_records_runtime_down_zero_when_both_alive() -> None:
+    """两个线程都活着 → pending_runtime_down = 0（健康）。"""
+    from src.monitoring.manager import MonitoringManager
+
+    health = _StubHealthMonitor()
+    manager = MonitoringManager.__new__(MonitoringManager)
+    manager.health_monitor = health  # type: ignore[attr-defined]
+
+    pending = _StubPendingMgr(monitor_alive=True, fill_alive=True)
+    manager._check_pending_entry(pending, "pending_mgr")
+
+    metric_map = {(c, m): v for (c, m, v) in health.records}
+    assert metric_map.get(("pending_mgr", "pending_runtime_down")) == 0.0
+
+
+# ── §0w P2 回归：pending_runtime_down 必须能触发 critical alert ──
+
+
+def test_pending_runtime_down_metric_triggers_critical_alert(tmp_path) -> None:
+    """P2 §0w 回归：旧实现 manager 写 pending_monitor_alive 但 HealthMonitor
+    没有这个 metric 的 threshold → 即使值为 0（线程死）generate_report 也只显示
+    status='healthy'，overall_status 仍 healthy。
+    新指标 pending_runtime_down 必须有 threshold 让 0/1 转 critical。
+    """
+    from src.monitoring.health import HealthMonitor
+
+    monitor = HealthMonitor(str(tmp_path / "pending_runtime.db"))
+    monitor.record_metric("pending_mgr", "pending_runtime_down", 1.0)
+    report = monitor.generate_report(hours=1)
+    metric = report["components"]["pending_mgr"]["pending_runtime_down"]
+    assert metric["status"] == "critical", (
+        f"pending_runtime_down=1.0 必须触发 critical；got status={metric['status']!r} "
+        f"alert_level={metric['alert_level']!r}"
+    )
+    assert metric["overall_impact"] == "blocking", (
+        "pending fill chain 断 = 阻断指标"
+    )
+    assert report["overall_status"] == "critical", (
+        f"挂单链路死必须把 overall_status 抬到 critical；got {report['overall_status']!r}"
+    )

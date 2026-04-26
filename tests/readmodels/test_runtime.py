@@ -927,3 +927,37 @@ def test_build_trading_summary_treats_failed_row_without_count_as_failure() -> N
         "failed 行存在必须产生 coordination_issues；"
         f"got {payload['coordination_issues']!r}"
     )
+
+
+# ── §0w P2 回归：build_pending_entries_summary 把 stopped pending 漂白成 healthy ──
+
+
+def test_build_pending_entries_summary_marks_critical_when_running_false() -> None:
+    """P2 §0w 回归：build_pending_entries_summary 硬编码 status='healthy'，
+    pending_entries_summary 之后才补 running=False，但 status 不被回写 →
+    停止的 PendingEntryManager 被 readmodel 漂白成健康。
+    """
+    payload = RuntimeReadModel.build_pending_entries_summary(
+        {"active_count": 0, "entries": [], "stats": {}},
+        running=False,
+    )
+    assert payload["status"] != "healthy", (
+        f"running=False 必须把 status 抬到 critical；got {payload['status']!r}"
+    )
+
+
+def test_build_pending_entries_summary_keeps_healthy_when_running_true() -> None:
+    """对称契约：running=True 时仍是 healthy。"""
+    payload = RuntimeReadModel.build_pending_entries_summary(
+        {"active_count": 1, "entries": [{}], "stats": {}},
+        running=True,
+    )
+    assert payload["status"] == "healthy"
+
+
+def test_build_pending_entries_summary_default_running_keeps_healthy() -> None:
+    """无 running 参数（兼容旧调用方）→ 默认 healthy。"""
+    payload = RuntimeReadModel.build_pending_entries_summary(
+        {"active_count": 1, "entries": [{}], "stats": {}}
+    )
+    assert payload["status"] == "healthy"

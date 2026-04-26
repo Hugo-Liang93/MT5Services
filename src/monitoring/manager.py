@@ -467,6 +467,19 @@ class MonitoringManager:
         except Exception as exc:
             logger.debug("Failed to check execution quality: %s", exc)
 
+    @staticmethod
+    def _thread_alive(component_obj: Any, attr: str) -> bool:
+        thread = getattr(component_obj, attr, None)
+        if thread is None:
+            return False
+        is_alive = getattr(thread, "is_alive", None)
+        if not callable(is_alive):
+            return False
+        try:
+            return bool(is_alive())
+        except Exception:
+            return False
+
     def _check_pending_entry(self, pending_mgr, component_name: str):
         """检查 PendingEntryManager 健康状态。"""
         try:
@@ -495,19 +508,50 @@ class MonitoringManager:
                     {"submitted": submitted, "filled": filled},
                 )
 
-            # monitor 线程存活检查
-            monitor_alive = (
-                hasattr(pending_mgr, "_monitor_thread")
-                and pending_mgr._monitor_thread is not None
-                and pending_mgr._monitor_thread.is_alive()
-            )
+            # §0w P2：旧实现仅探 _monitor_thread → fill worker 挂掉时仍报存活
+            # PendingEntryManager.is_running() 是 monitor + fill worker 双线程
+            # 必须都活着的正式 SSOT；以它为准记录聚合 pending_runtime_down 指标
+            # （down=1, up=0；与 circuit_breaker_open 同方向，可走 critical 阈值）。
+            # 仍保留 pending_monitor_alive / pending_fill_worker_alive 两条
+            # 细粒度指标供 dashboard 排障。
+            monitor_alive = bool(self._thread_alive(pending_mgr, "_monitor_thread"))
+            fill_alive = bool(self._thread_alive(pending_mgr, "_fill_worker_thread"))
+            running_getter = getattr(pending_mgr, "is_running", None)
+            if callable(running_getter):
+                try:
+                    overall_running = bool(running_getter())
+                except Exception as exc:
+                    logger.warning(
+                        "PendingEntryManager.is_running() raised %s; "
+                        "falling back to per-thread aggregation: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    overall_running = monitor_alive and fill_alive
+            else:
+                overall_running = monitor_alive and fill_alive
+
             self.health_monitor.record_metric(
                 component_name,
                 "pending_monitor_alive",
                 1.0 if monitor_alive else 0.0,
             )
-            if not monitor_alive:
-                logger.warning("PendingEntryManager monitor thread is not alive")
+            self.health_monitor.record_metric(
+                component_name,
+                "pending_fill_worker_alive",
+                1.0 if fill_alive else 0.0,
+            )
+            self.health_monitor.record_metric(
+                component_name,
+                "pending_runtime_down",
+                0.0 if overall_running else 1.0,
+            )
+            if not overall_running:
+                logger.warning(
+                    "PendingEntryManager runtime down (monitor_alive=%s, fill_alive=%s)",
+                    monitor_alive,
+                    fill_alive,
+                )
 
         except Exception as e:
             logger.error("Failed to check pending entry health: %s", e)

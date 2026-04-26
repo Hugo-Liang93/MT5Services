@@ -96,6 +96,9 @@ class HealthMonitor:
             "circuit_breaker_open": {"warning": 0.5, "critical": 0.5},
             "execution_failure_rate": {"warning": 0.1, "critical": 0.3},
             "execution_queue_overflows": {"warning": 1.0, "critical": 5.0},
+            # §0w P2：pending_runtime_down 1=down/0=up（与 circuit_breaker_open
+            # 同方向），fill worker 或 monitor 任一线程死即整体 down → critical
+            "pending_runtime_down": {"warning": 0.5, "critical": 0.5},
         }
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
 
@@ -316,6 +319,8 @@ class HealthMonitor:
             "circuit_breaker_open",
             "execution_failure_rate",
             "execution_queue_overflows",
+            # §0w P2：down 方向指标（与 circuit_breaker_open 同 0/1 语义）
+            "pending_runtime_down",
         }:
             if value >= thresholds["critical"]:
                 return "critical"
@@ -393,6 +398,11 @@ class HealthMonitor:
                 f"{component}: execution queue overflows {alert_level} - "
                 f"current={value:.0f} threshold={threshold:.0f} "
                 f"(signals may be permanently lost)"
+            )
+        if metric_name == "pending_runtime_down":
+            return (
+                f"{component}: pending entry runtime DOWN {alert_level} - "
+                f"monitor or fill worker thread not alive (autotrade fill chain broken)"
             )
         return (
             f"{component}.{metric_name}: {alert_level} - "

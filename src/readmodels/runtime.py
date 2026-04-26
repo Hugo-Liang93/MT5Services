@@ -438,12 +438,22 @@ class RuntimeReadModel:
     @staticmethod
     def build_pending_entries_summary(
         pending_status: Mapping[str, Any] | None,
+        *,
+        running: bool | None = None,
     ) -> dict[str, Any]:
+        # §0w P2：旧实现硬编码 status='healthy'，pending_entries_summary 之后只补
+        # running=False 不回写 status → 停止的 PendingEntryManager 被漂白成健康。
+        # 现在调用方可显式传入 running 让 status 与之对齐。running=None 时
+        # 保留旧默认（兼容 build_executor_snapshot 等不掌握运行态的调用方）。
         payload = dict(pending_status or {})
         entries = list(payload.get("entries", []) or [])
         stats = dict(payload.get("stats", {}) or {})
+        if running is False:
+            status = "critical"
+        else:
+            status = "healthy"
         return {
-            "status": "healthy",
+            "status": status,
             "active_count": int(payload.get("active_count", len(entries)) or 0),
             "entries": entries,
             "stats": stats,
@@ -934,11 +944,16 @@ class RuntimeReadModel:
                 "entries": [],
                 "stats": {},
             }
+        # §0w P2：把 running 透传给 builder，让 status 与运行态一致；
+        # 旧实现 build_pending_entries_summary 硬编码 healthy，再补 running 字段
+        # 但 status 不被回写 → stopped manager 被漂白成 healthy。
+        running = self._component_running(self._pending_entry_manager)
         summary = self.build_pending_entries_summary(
-            self._pending_entry_manager.status()
+            self._pending_entry_manager.status(),
+            running=running,
         )
         summary["configured"] = True
-        summary["running"] = self._component_running(self._pending_entry_manager)
+        summary["running"] = running
         summary.setdefault("execution_scope", "local")
         if self._current_runtime_mode() == "ingest_only":
             summary["status"] = "disabled"
