@@ -49,6 +49,195 @@
 
 ---
 
+## 0r. 2026-04-26 delegated 拓扑误判 + 启动恢复脆弱 + ADR-005 calibrator 违反（P1 + P2 ×3）
+
+### 触发
+
+User 报告 4 处独立 bug，全是 **readmodel/runtime 已声明的语义/契约被消费侧
+未识别**：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `trading/admission/service.py:226-243` | delegated main role 被 admission 误判为运行时故障 → block |
+| 2 | P2 | `signals/orchestration/runtime_recovery.py:25-41` | 单条坏 generated_at 让整个 startup restore 被 ValueError 打挂 |
+| 3 | P2 | `readmodels/workbench.py:192-200` | delegated executor 拓扑被误报成 hybrid/fallback |
+| 4 | P2 | `signals/evaluation/calibrator.py:stop_background_refresh` | join(timeout) 后无条件 `_bg_thread = None`，违反 ADR-005 |
+
+### 根因
+
+#### #1 admission 不识别 delegated verdict
+
+`tradability_state_summary()` 已为 multi_account main role 输出
+`verdict='not_applicable'` / `reason_code='not_executor_role'`，明示"本实例
+不直接执行交易"——这是受支持的 delegated 拓扑。但 admission 仅看
+`runtime_present=False` 和 `admission_enabled=False` 追加 `runtime_absent` +
+`admission_disabled` → `decision=block`。
+
+后果：受支持的 delegated 拓扑在 admission 层被当成运行时故障。
+
+#### #2 runtime_recovery 缺 per-row 隔离
+
+```python
+# 旧实现：循环无 try/except 隔离
+for row in rows:
+    ...
+    generated_at = runtime._parse_event_time(generated_at_raw)  # ← ValueError 直接冒出
+    bar_time = runtime._parse_event_time(bar_time_raw)
+```
+
+库里混入一条 `generated_at='bad-date'` → `ValueError` → 整个 for 循环中断 →
+`prepare_startup()` 无保护调 `restore_state()` → 启动恢复阶段被打断。
+
+#### #3 workbench `runtime_present=False` 一律标 fallback
+
+```python
+# 旧实现仅二分 native vs fallback
+runtime_present = bool(tradability.get("runtime_present", True))
+return {
+    "source_kind": "native" if runtime_present else "fallback",
+    ...
+}
+```
+
+但 multi_account main role 不挂 executor 是合法拓扑（`execution_scope='remote_executor'`）。
+旧二分法 → 顶层 `source.kind='hybrid'` → 正常拓扑被误报降级。
+
+#### #4 ConfidenceCalibrator 违反 ADR-005
+
+```python
+# 旧实现
+def stop_background_refresh(self) -> None:
+    self._bg_stop.set()
+    if self._bg_thread is not None:
+        self._bg_thread.join(timeout=10.0)
+        self._bg_thread = None       # ← 违反 ADR-005：join 超时仍清引用
+```
+
+`start_background_refresh` 防重逻辑只看 `_bg_thread is not None and is_alive()`：
+若 stop 后线程仍 alive 但引用已清 → 后续 start 错误地启动第二条刷新线程 →
+**双线程消费 / 重复缓存写入** （ADR-005 明确禁止的反模式）。
+
+### 修复（commit `d76a00e`）
+
+#### #1 admission 识别 delegated role
+
+```python
+is_delegated_role = (
+    str(tradability.get("verdict") or "").lower() == "not_applicable"
+    and str(tradability.get("reason_code") or "").lower() == "not_executor_role"
+)
+if not is_delegated_role and not bool(tradability.get("runtime_present", False)):
+    reasons.append(_build_reason(code="runtime_absent", ...))
+if not is_delegated_role and not bool(tradability.get("admission_enabled", True)):
+    reasons.append(_build_reason(code="admission_disabled", ...))
+```
+
+#### #2 runtime_recovery per-row try/except
+
+```python
+for row in rows:
+    try:
+        ...
+        generated_at = runtime._parse_event_time(generated_at_raw)
+        bar_time = runtime._parse_event_time(bar_time_raw)
+        ...
+    except (ValueError, TypeError, KeyError) as exc:
+        skipped_bad_rows += 1
+        logger.warning("restore_state: skipping bad row (%s): %s; row=%r",
+                       type(exc).__name__, exc, row)
+        continue
+if skipped_bad_rows:
+    logger.warning("restore_state: skipped %d bad rows during signal runtime restore",
+                   skipped_bad_rows)
+```
+
+#### #3 workbench source_kind 三态
+
+```python
+runtime_present = bool(tradability.get("runtime_present", True))
+is_delegated_role = (...)  # 同 admission
+
+if runtime_present:
+    source_kind = "native"
+elif is_delegated_role:
+    source_kind = "delegated"   # ← 新增第三种状态
+else:
+    source_kind = "fallback"
+
+# compute_source_kind 不把 "delegated" 算 fallback（与 native 混合 → kind=live）
+```
+
+#### #4 ConfidenceCalibrator 遵守 ADR-005
+
+```python
+def stop_background_refresh(self) -> None:
+    self._bg_stop.set()
+    if self._bg_thread is not None:
+        self._bg_thread.join(timeout=10.0)
+        if self._bg_thread.is_alive():
+            logger.warning(
+                "ConfidenceCalibrator: bg refresh thread still alive after"
+                " 10s join timeout; preserving reference per ADR-005"
+            )
+        else:
+            self._bg_thread = None
+```
+
+### 测试（6 项新契约，对应分支之前零覆盖）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_delegated_main_role_not_blocked_by_admission` | not_applicable verdict 不触发 runtime_absent / admission_disabled |
+| `test_restore_state_isolates_per_row_bad_time_string` | bad-date 不再抛 |
+| `test_restore_state_continues_after_single_bad_row` | 后续好行仍能 restore |
+| `test_workbench_delegated_main_role_not_classified_as_fallback` | source_kind ≠ fallback / hybrid |
+| `test_stop_background_refresh_preserves_alive_thread_per_adr_005` | 仍 alive → 引用保留（ADR-005 守护） |
+| `test_stop_background_refresh_clears_reference_when_thread_exits` | 已退出 → 引用清空（让 start 能重启） |
+
+### 元层教训：**readmodel 已声明 vs 消费侧未识别 = 同模式累积**
+
+§0g→§0r 累计修过的 24 个 bug 中，**至少 8 处**是 readmodel 已经把语义声明清楚
+但消费侧仍按旧规则解析的反模式：
+
+- §0g: signal evaluator 不读 calendar 域 EconomicDecayService 端口（已建）
+- §0l: health_check 用旧 trade/overview 路径 + 旧 schema
+- §0n: daily_report executor flat schema vs 实际 nested signals.* / 顶层 circuit_open
+- §0n: diagnose_no_trades 不用 /v1/signals/recent 的 timeframe / from query
+- §0o: confidence_check 不用 deployment.allows_live_execution
+- §0p: confidence_check 不用 deployment.effective_min_confidence
+- §0q: admin schemas 裁掉 readmodel 已声明的字段
+- **§0r**: admission / workbench 不识别 readmodel 已标的 not_applicable verdict
+
+强建议（扩充 §0n / §0p / §0q 元层教训为 4 条统一原则）：
+
+1. **新增/扩展 readmodel 字段语义时，必加"消费侧 grep 检查"**：
+   `grep -rn "<new_field>\|<verdict_value>" src/ --include='*.py'` 出消费方清单，
+   逐个评估是否需同步识别（同 §0o 强建议 a 类似的 PR 流程）。
+2. **API/CLI/admin 等消费侧改 logic 时，必同步加"语义识别"测试**：
+   不仅锁 URL 路径或字段名，还要锁"业务结论与 readmodel 一致性"（§0p 已开此模式）。
+3. **生命周期类约束（线程 stop/start、cache TTL）必须 ADR**：
+   §0r 是 ADR-005 落实的第二例（前为 §0g 的 service join 顺序），
+   说明现有 ADR 守护是有效的——但需要在 review 时主动检查。
+4. **CLI/API/readmodel 之间画"语义流"图**：明确每个层"声明什么 / 识别什么 /
+   决策什么"，让 reviewer 能一眼看出哪处漏识别（建议进 docs/architecture.md）。
+
+### §0g→§0r 累计基线
+
+24+ 小时累计修 P0/P1/P2/P3 共 **27 个 bug + 27 次反向锁**。
+
+### 测试基线
+
+- 修复前：4 处 user-facing bug；对应分支零测试覆盖
+- 修复后：6 项新契约测试；`pytest -m "not slow"` → **2823 passed / 0 failed**
+
+### 减少边界泄漏的方式
+
+admission/workbench 都识别 readmodel 已标的 `verdict='not_applicable'` 语义；
+runtime_recovery 单条坏数据不再让整个启动恢复挂掉；ConfidenceCalibrator 严格
+遵守 ADR-005 后台线程契约。**消费侧首次开始与 readmodel 已声明的语义对齐**。
+
+---
+
 ## 0q. 2026-04-26 admin schemas 裁掉 readmodel 核心运行态字段（P2 ×2 + P3 ×2）
 
 ### 触发
