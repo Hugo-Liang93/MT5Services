@@ -95,25 +95,23 @@ def test_read_only_provider_runtime_rows_pass_target_instance_id() -> None:
     provider = ReadOnlyEconomicCalendarProvider(
         db_writer=db,
         settings=settings,
-        # executor 自己的身份（不该被用作过滤键）
-        runtime_identity=_RuntimeIdentity(instance_id="live:live-exec-a"),
-        # 装配层注入的 main 身份（应作为过滤键）
+        # 装配层注入的 main 身份（必填）
         target_instance_id="live:live-main",
     )
     provider._runtime_rows()
     assert db.calls, "应至少调用一次 fetch_runtime_task_status"
     call = db.calls[0]
     assert call.get("instance_id") == "live:live-main", (
-        f"必须按 target_instance_id（main 身份）过滤而不是 executor 身份；"
-        f"got params={call!r}"
+        f"必须按 target_instance_id（main 身份）过滤；got params={call!r}"
     )
 
 
-def test_read_only_provider_without_target_instance_id_skips_instance_filter() -> None:
-    """§0dh P2：未注入 target_instance_id 时不传 instance_id（仅按 role=main 查询，
-    适用于 single_account 拓扑或诊断脚本——单 group 拓扑下 role=main 唯一命中）。
+def test_read_only_provider_target_instance_id_is_required() -> None:
+    """§0dj：target_instance_id 必填，不接受 None / 空字符串兜底——装配层
+    应通过 RuntimeIdentity.peer_main_instance_id 显式注入 main 身份。
     """
-    db = _RecordingDB()
+    import pytest
+
     settings = SimpleNamespace(
         enabled=True,
         stale_after_seconds=3600,
@@ -134,56 +132,12 @@ def test_read_only_provider_without_target_instance_id_skips_instance_filter() -
         curated_importance_min=2,
         curated_include_all_day=True,
     )
-    provider = ReadOnlyEconomicCalendarProvider(
-        db_writer=db,
-        settings=settings,
-        runtime_identity=None,
-        target_instance_id=None,
-    )
-    provider._runtime_rows()
-    call = db.calls[0]
-    assert call.get("instance_id") is None, (
-        f"无 target_instance_id 时不应传 instance_id；got params={call!r}"
-    )
-
-
-def test_read_only_provider_runtime_identity_not_used_as_filter_key() -> None:
-    """§0dh P2 反向锁：即使传了 runtime_identity，也不应该被当作 instance_id 过滤键
-    （那是 executor 自己的身份，按它查会永远命中 0 行）。
-    """
-    db = _RecordingDB()
-    settings = SimpleNamespace(
-        enabled=True,
-        stale_after_seconds=3600,
-        trade_guard_provider_failure_threshold=3,
-        high_importance_threshold=2,
-        local_timezone="UTC",
-        near_term_refresh_interval_seconds=60,
-        calendar_sync_interval_seconds=300,
-        release_watch_interval_seconds=30,
-        near_term_window_hours=12,
-        release_watch_lookback_minutes=5,
-        release_watch_lookahead_minutes=15,
-        default_countries=("US",),
-        curated_sources=None,
-        curated_countries=None,
-        curated_currencies=None,
-        curated_statuses=None,
-        curated_importance_min=2,
-        curated_include_all_day=True,
-    )
-    provider = ReadOnlyEconomicCalendarProvider(
-        db_writer=db,
-        settings=settings,
-        runtime_identity=_RuntimeIdentity(instance_id="live:live-exec-a"),
-        target_instance_id=None,  # 未注入 target → 不带 instance_id
-    )
-    provider._runtime_rows()
-    call = db.calls[0]
-    assert call.get("instance_id") != "live:live-exec-a", (
-        f"runtime_identity.instance_id（executor 自己身份）不能被当作过滤键；"
-        f"got params={call!r}"
-    )
+    with pytest.raises(ValueError, match="target_instance_id"):
+        ReadOnlyEconomicCalendarProvider(
+            db_writer=_RecordingDB(),
+            settings=settings,
+            target_instance_id="",
+        )
 
 
 # ── §0z P2 回归：stop_service 仅在 worker 真停下才能标 STOPPED ──
@@ -280,25 +234,34 @@ def test_stop_service_marks_stopped_when_worker_actually_dies(monkeypatch) -> No
         assert state["last_status"] == RuntimeTaskState.STOPPED.value
 
 
-# ── §0z P3 回归：identity-less 实例必须用唯一化 fallback 而非共享 'legacy' ──
+# ── §0dj 反向锁：legacy_instance_id() 已移除，writer 必须显式 require RuntimeIdentity ──
 
 
-def test_legacy_instance_id_returns_unique_per_process_fallback() -> None:
-    """P3 §0z 回归：旧实现 identity-less 时显式写 'legacy' →
-    所有 identity-less 本地脚本 / 测试实例 / 遗留进程共享同一组 runtime task
-    记录互相覆盖。fallback 必须按 hostname + pid 唯一化，每个进程独立空间。
+def test_legacy_instance_id_helper_no_longer_exists() -> None:
+    """§0dj：identity-less fallback 已彻底移除——所有 writer 必须显式接收
+    RuntimeIdentity，无 identity 即装配失败 fail-fast，禁止任何 fallback 字面量。
     """
-    from src.config.runtime_identity import legacy_instance_id
+    import pytest
+    from src.config import runtime_identity as ri_mod
 
-    fallback = legacy_instance_id()
-    assert fallback != "legacy", (
-        f"identity-less fallback 不能再硬编码 'legacy'（共享 PK 空间）；got {fallback!r}"
+    assert not hasattr(ri_mod, "legacy_instance_id"), (
+        "legacy_instance_id() 已在 §0dj 移除（完整工程化清理：禁止 identity-less "
+        "fallback 兜底）；如需 identity-less 调用，必须重新设计装配契约"
     )
-    # 必须可识别为 legacy 类（前缀 / 标签）便于审计
-    assert "legacy" in fallback.lower(), (
-        f"fallback 应保留 'legacy' 标签便于审计；got {fallback!r}"
+
+
+def test_runtime_task_writer_raises_when_runtime_identity_missing() -> None:
+    """§0dj：calendar_sync.runtime_task_row 必须在 _runtime_identity=None 时
+    显式 raise，而不是 fallback 到任何字面量。
+    """
+    import pytest
+    from src.calendar.economic_calendar.calendar_sync import runtime_task_row
+    from types import SimpleNamespace
+
+    service = SimpleNamespace(
+        _runtime_identity=None,
+        _job_state={"refresh": {"enabled": True}},
+        _next_run_at={},
     )
-    # 同进程内多次调用必须稳定
-    assert legacy_instance_id() == fallback, (
-        "同进程多次调用必须返同一 fallback（PK 稳定性）"
-    )
+    with pytest.raises(RuntimeError, match="runtime_identity"):
+        runtime_task_row(service, "refresh")

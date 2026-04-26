@@ -383,21 +383,10 @@ def run_pre_trade_filters(
                 tf,
             )
             return REASON_STRATEGY_CANDIDATE_ONLY
-        # §0dg P1：按 runtime_identity.environment 路由 deployment 二次门禁，
-        # 与 ExecutionIntentPublisher（§0dd P1）同口径。旧实现无条件
-        # allows_live_execution() → demo 环境装配的 demo_validation 策略到达
-        # 执行器仍被拒，ADR-010 demo 闭环没有真正打通（publisher 修了但 executor 漏修）。
-        runtime_identity = getattr(executor, "runtime_identity", None)
-        environment = (
-            str(getattr(runtime_identity, "environment", "") or "").strip().lower()
-            if runtime_identity is not None
-            else ""
-        )
-        if environment == "demo":
-            deployment_allowed = deployment.allows_demo_validation()
-        else:
-            deployment_allowed = deployment.allows_live_execution()
-        if not deployment_allowed:
+        # §0dj：environment-aware 门禁统一走 deployment.is_executable_in()，
+        # 与 publisher / 装配层同一合同。executor.runtime_identity 是必填——
+        # TradeExecutor 装配契约保证（无 identity 装配阶段就 fail）。
+        if not deployment.is_executable_in(executor.runtime_identity.environment):
             reject_signal(
                 executor,
                 event,

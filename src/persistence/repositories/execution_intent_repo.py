@@ -243,9 +243,20 @@ WHERE intent_id = %s
         *,
         intent_id: str,
         status: str,
+        claimed_by_instance_id: str,
+        claimed_by_run_id: str,
         decision_metadata: dict[str, Any] | None = None,
         last_error_code: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """完成 execution intent 回写，按 owner + status='claimed' 校验防覆盖。
+
+        §0dj P2：旧实现仅 ``WHERE intent_id = %s`` → 慢 worker 超时被新 worker
+        接管后，迟到的旧 worker 仍能覆盖新 attempt 的状态。修复：必填 owner +
+        status 谓词；UPDATE 影响 0 行说明 lease 已被接管，本次回写应丢弃。
+
+        返回：成功更新返 True，0 行（已被其他 worker 接管或已完成）返 False。
+        调用方应在 False 时仅记录日志，不重试（新 worker 已经在处理）。
+        """
         now = datetime.now(timezone.utc)
         normalized_status = str(status or "").strip().lower() or "failed"
         dead_lettered_at = now if normalized_status == "dead_lettered" else None
@@ -268,6 +279,9 @@ SET status = %s,
     lease_expires_at = NULL,
     last_heartbeat_at = NULL
 WHERE intent_id = %s
+  AND claimed_by_instance_id = %s
+  AND claimed_by_run_id = %s
+  AND status = 'claimed'
 """,
                 [
                     normalized_status,
@@ -277,8 +291,11 @@ WHERE intent_id = %s
                     last_error_code,
                     self._writer._json(decision_metadata or {}),
                     intent_id,
+                    claimed_by_instance_id,
+                    claimed_by_run_id,
                 ],
             )
+            return cur.rowcount > 0
 
     def _fetch_dicts(self, sql: str, params: List[Any]) -> List[dict[str, Any]]:
         with self._writer.connection() as conn, conn.cursor() as cur:

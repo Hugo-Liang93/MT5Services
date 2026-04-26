@@ -88,6 +88,7 @@ def _executor_identity() -> RuntimeIdentity:
         mt5_server="Broker-Live",
         mt5_login=1002,
         mt5_path="C:/MT5/live_exec_a/terminal64.exe",
+        peer_main_instance_id="live:live-main",
     )
 
 

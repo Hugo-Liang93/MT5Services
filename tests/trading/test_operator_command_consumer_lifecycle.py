@@ -40,6 +40,7 @@ def _runtime_identity() -> RuntimeIdentity:
         mt5_server="Broker-Live",
         mt5_login=1002,
         mt5_path="C:/MT5/exec_a/terminal64.exe",
+        peer_main_instance_id="live:live-main",
     )
 
 

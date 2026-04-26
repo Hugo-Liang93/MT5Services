@@ -28,6 +28,28 @@ from src.signals.strategies.base import SignalStrategy, StrategyCategory
 from src.trading.execution.executor import ExecutorConfig, TradeExecutor
 
 
+# §0dj：runtime_identity 必填——本 stub 提供完整字段供 integration 测试。
+class _StubRuntimeIdentity:
+    def __init__(
+        self,
+        *,
+        environment: str = "live",
+        instance_id: str = "live:test-instance",
+        instance_role: str = "main",
+        account_key: str = "live:Broker-Test:1001",
+        account_alias: str = "main",
+    ) -> None:
+        self.environment = environment
+        self.instance_id = instance_id
+        self.instance_role = instance_role
+        self.account_key = account_key
+        self.account_alias = account_alias
+
+
+def _default_runtime_identity() -> _StubRuntimeIdentity:
+    return _StubRuntimeIdentity()
+
+
 # ---------------------------------------------------------------------------
 # 测试用 Stub 策略（替代已移除的 legacy 策略）
 # ---------------------------------------------------------------------------
@@ -274,6 +296,7 @@ def _build_executor(
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         account_balance_getter=lambda: 10000.0,
+        runtime_identity=_default_runtime_identity(),
     )
 
 

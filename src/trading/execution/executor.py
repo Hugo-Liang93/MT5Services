@@ -115,7 +115,9 @@ class TradeExecutor:
 
     def __init__(
         self,
+        *,
         trading_module: ExecutorTradingPort,
+        runtime_identity: Any,
         config: ExecutorConfig | None = None,
         account_balance_getter: Any | None = None,
         position_manager: PositionManager | None = None,
@@ -128,9 +130,15 @@ class TradeExecutor:
         pipeline_event_bus: PipelineEventBus | None = None,
         equity_curve_filter: Any | None = None,
         quote_health_fn: Callable[[str | None], dict[str, Any]] | None = None,
-        runtime_identity: Any | None = None,
         circuit_breaker_history_fn: Callable[[list], None] | None = None,
     ):
+        # §0dj：runtime_identity 必填。环境维度的 deployment 门禁、execution
+        # intent owner、trace 上下文都依赖它；没有 identity 不允许装配执行器。
+        if runtime_identity is None:
+            raise ValueError(
+                "TradeExecutor requires runtime_identity (RuntimeIdentity); "
+                "executor 装配契约依赖 environment / instance_id / account_key 等"
+            )
         self._trading = trading_module
         self.config = config or ExecutorConfig()
         self._account_balance_getter = account_balance_getter
@@ -619,17 +627,17 @@ class TradeExecutor:
     ) -> None:
         if self._circuit_breaker_history_fn is None:
             return
+        # §0dj：runtime_identity 必填，无 None 检查 + getattr 兜底。
         identity = self._runtime_identity
         payload = dict(metadata or {})
-        if identity is not None:
-            payload.setdefault("instance_id", getattr(identity, "instance_id", None))
-            payload.setdefault("instance_role", getattr(identity, "instance_role", None))
+        payload.setdefault("instance_id", identity.instance_id)
+        payload.setdefault("instance_role", identity.instance_role)
         self._circuit_breaker_history_fn(
             [
                 (
                     datetime.now(timezone.utc),
-                    account_alias or getattr(identity, "account_alias", ""),
-                    account_key or getattr(identity, "account_key", None),
+                    account_alias or identity.account_alias,
+                    account_key or identity.account_key,
                     breaker_type,
                     event,
                     (
@@ -692,18 +700,14 @@ class TradeExecutor:
         return self._pre_trade_pipeline.run_confirmed(event, tf)
 
     def _build_local_terminal_payload(self, event: SignalEvent) -> dict[str, Any]:
+        # §0dj：runtime_identity 必填，无防御性 None 检查 + getattr 兜底。
         metadata = dict(event.metadata or {})
-        payload: dict[str, Any] = {}
-        runtime_identity = self._runtime_identity
-        if runtime_identity is not None:
-            payload.update(
-                {
-                    "account_key": getattr(runtime_identity, "account_key", None),
-                    "account_alias": getattr(runtime_identity, "account_alias", None),
-                    "instance_id": getattr(runtime_identity, "instance_id", None),
-                    "instance_role": getattr(runtime_identity, "instance_role", None),
-                }
-            )
+        payload: dict[str, Any] = {
+            "account_key": self._runtime_identity.account_key,
+            "account_alias": self._runtime_identity.account_alias,
+            "instance_id": self._runtime_identity.instance_id,
+            "instance_role": self._runtime_identity.instance_role,
+        }
         for key in (
             "intent_id",
             "intent_key",

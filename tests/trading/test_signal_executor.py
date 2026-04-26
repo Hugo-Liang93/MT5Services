@@ -249,6 +249,7 @@ def test_trade_executor_skips_when_spread_to_stop_ratio_is_too_high() -> None:
             max_spread_to_stop_ratio=0.2,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     # M5 SL = 2.0 ATR × 2.0 = 4.0 points → spread 120 / (4.0 × 100) = 0.30 > 0.2
@@ -277,6 +278,7 @@ def test_trade_executor_records_cost_metrics_on_success() -> None:
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=50.0, close_price=3000.0))
@@ -318,6 +320,7 @@ def test_trade_executor_blocks_when_quote_health_is_stale() -> None:
             "age_seconds": 5.2,
             "stale_threshold_seconds": 3.0,
         },
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -341,6 +344,7 @@ def test_trade_executor_returns_structured_skip_when_auto_trade_is_disabled() ->
         trading_module=module,
         config=ExecutorConfig(enabled=False, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     result = executor.process_event(
@@ -373,6 +377,7 @@ def test_trade_executor_returns_pre_trade_reason_for_confirmed_skip() -> None:
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     result = executor.process_event(
@@ -386,10 +391,27 @@ def test_trade_executor_returns_pre_trade_reason_for_confirmed_skip() -> None:
 
 
 class _StubRuntimeIdentity:
-    """轻量 runtime_identity stub，供 §0dg P1 environment-aware deployment 测试。"""
+    """§0dg/§0dj：runtime_identity stub，含 TradeExecutor 必填的全字段。"""
 
-    def __init__(self, environment: str) -> None:
+    def __init__(
+        self,
+        *,
+        environment: str = "live",
+        instance_id: str = "live:test-instance",
+        instance_role: str = "main",
+        account_key: str = "live:Broker-Test:1001",
+        account_alias: str = "main",
+    ) -> None:
         self.environment = environment
+        self.instance_id = instance_id
+        self.instance_role = instance_role
+        self.account_key = account_key
+        self.account_alias = account_alias
+
+
+def _default_runtime_identity() -> _StubRuntimeIdentity:
+    """§0dj：所有 TradeExecutor() 测试通过本 helper 注入 runtime_identity。"""
+    return _StubRuntimeIdentity()
 
 
 def test_pre_trade_demo_validation_passes_in_demo_environment() -> None:
@@ -486,7 +508,8 @@ def test_pre_trade_deployment_gate_defaults_to_live_when_runtime_identity_missin
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
-        # 不传 runtime_identity（旧 stub 模式）
+        # 不传 runtime_identity（旧 stub 模式）,
+        runtime_identity=_default_runtime_identity(),
     )
 
     result = executor.process_event(
@@ -508,6 +531,7 @@ def test_trade_executor_duplicate_signal_id_uses_unified_reject_contract() -> No
         config=ExecutorConfig(enabled=True, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
     executor.executed_signal_ids.append("sig_1")
 
@@ -531,6 +555,7 @@ def test_trade_executor_returns_trade_params_reason_for_confirmed_skip() -> None
         trading_module=module,
         config=ExecutorConfig(enabled=True, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
     event = replace(
         _build_event(spread_points=20.0, close_price=3000.0),
@@ -558,6 +583,7 @@ def test_trade_executor_returns_cost_reason_for_confirmed_skip() -> None:
             max_spread_to_stop_ratio=0.2,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     result = executor.process_event(
@@ -591,6 +617,7 @@ def test_trade_executor_returns_failed_result_when_market_dispatch_raises() -> N
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
 
     result = executor.process_event(
@@ -620,6 +647,7 @@ def test_trade_executor_forwards_market_structure_metadata_to_dispatch() -> None
             max_spread_to_stop_ratio=0.5,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(
@@ -660,6 +688,7 @@ def test_trade_executor_skips_when_symbol_position_limit_is_reached() -> None:
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -688,6 +717,7 @@ def test_trade_executor_emits_intrabar_blocked_admission_when_guard_missing() ->
         config=ExecutorConfig(enabled=True, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
 
     executor.process_event(
@@ -711,6 +741,7 @@ def test_trade_executor_local_worker_emits_terminal_skip_for_confirmed() -> None
         config=ExecutorConfig(enabled=False, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -731,6 +762,7 @@ def test_trade_executor_local_worker_emits_terminal_skip_for_intrabar() -> None:
         config=ExecutorConfig(enabled=False, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire_intrabar(
@@ -761,6 +793,7 @@ def test_trade_executor_blocks_intrabar_when_synthesis_metadata_is_missing() -> 
             )
         ),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
     executor.set_intrabar_guard(IntrabarTradeGuard())
 
@@ -802,6 +835,7 @@ def test_trade_executor_blocks_intrabar_when_synthesis_is_stale() -> None:
             )
         ),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
     executor.set_intrabar_guard(IntrabarTradeGuard())
 
@@ -854,6 +888,7 @@ def test_trade_executor_process_event_returns_structured_skip_when_intrabar_is_b
                 intrabar_enabled_strategies=frozenset({"sma_trend"}),
             )
         ),
+        runtime_identity=_default_runtime_identity(),
     )
     executor.set_intrabar_guard(IntrabarTradeGuard())
 
@@ -875,6 +910,7 @@ def test_trade_executor_returns_structured_skip_when_intrabar_auto_trade_is_disa
         trading_module=module,
         config=ExecutorConfig(enabled=False, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     result = executor.process_event(
@@ -904,6 +940,7 @@ def test_trade_executor_returns_trade_params_reason_for_intrabar_skip() -> None:
             )
         ),
         pipeline_event_bus=pipeline_bus,
+        runtime_identity=_default_runtime_identity(),
     )
     executor.set_intrabar_guard(IntrabarTradeGuard())
 
@@ -948,6 +985,7 @@ def test_trade_executor_returns_structured_skip_when_intrabar_position_is_alread
         trading_module=module,
         config=ExecutorConfig(enabled=True, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
     executor.set_intrabar_guard(guard)
     event = replace(
@@ -977,6 +1015,7 @@ def test_trade_executor_returns_structured_skip_when_confirmed_hold_keeps_intrab
         trading_module=module,
         config=ExecutorConfig(enabled=True, min_confidence=0.5),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
     executor.set_intrabar_guard(guard)
     base_event = _build_event(spread_points=20.0, close_price=3000.0)
@@ -1018,6 +1057,7 @@ def test_trade_executor_skips_when_same_strategy_direction_position_is_active() 
             max_concurrent_positions_per_symbol=3,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -1049,6 +1089,7 @@ def test_trade_executor_allows_reentry_after_same_strategy_direction_position_is
             max_concurrent_positions_per_symbol=3,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -1089,6 +1130,7 @@ def test_trade_executor_skips_when_same_strategy_direction_mt5_pending_order_exi
             min_confidence=0.5,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -1114,6 +1156,7 @@ def test_trade_executor_blocks_candidate_strategy_live_execution() -> None:
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -1139,6 +1182,7 @@ def test_trade_executor_blocks_demo_validation_strategy_live_execution() -> None
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=20.0, close_price=3000.0))
@@ -1170,6 +1214,7 @@ def test_trade_executor_enforces_guarded_strategy_pending_entry_requirement() ->
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     event = _build_event(spread_points=20.0, close_price=3000.0)
@@ -1212,6 +1257,7 @@ def test_trade_executor_blocks_timeframe_outside_deployment_contract() -> None:
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
     event = _build_event(spread_points=20.0, close_price=3000.0)
     event = SignalEvent(**{**event.__dict__, "timeframe": "M5"})
@@ -1245,6 +1291,7 @@ def test_trade_executor_blocks_session_outside_deployment_contract() -> None:
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
     event = _build_event(spread_points=20.0, close_price=3000.0)
     event = SignalEvent(
@@ -1296,6 +1343,7 @@ def test_trade_executor_enforces_guarded_strategy_live_position_cap() -> None:
             },
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     event = _build_event(spread_points=20.0, close_price=3000.0)
@@ -1333,6 +1381,7 @@ def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> Non
             reentry_cooldown_bars=3,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _limit_spec = {"entry_type": "limit", "entry_price": 3000.0, "entry_zone_atr": 0.3}
@@ -1384,6 +1433,7 @@ def test_trade_executor_uses_timeframe_specific_sizing_profile() -> None:
             max_spread_to_stop_ratio=0.5,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
     event = _build_event(spread_points=20.0, close_price=3000.0)
     event = SignalEvent(**{**event.__dict__, "timeframe": "M5"})
@@ -1407,6 +1457,7 @@ def test_trade_executor_passes_signal_id_as_request_id() -> None:
             min_confidence=0.5,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=10.0, close_price=3000.0))
@@ -1440,6 +1491,7 @@ def test_trade_executor_registers_filled_pending_mt5_order_immediately() -> None
             min_confidence=0.5,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     result = inspect_pending_mt5_order(
@@ -1504,6 +1556,7 @@ def test_trade_executor_matches_filled_pending_order_by_strategy_prefix_when_com
             min_confidence=0.5,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     result = inspect_pending_mt5_order(
@@ -1578,6 +1631,7 @@ def test_trade_executor_circuit_breaker_auto_resets() -> None:
             circuit_auto_reset_minutes=10,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
     # 手动设置熔断状态
     executor._circuit_open = True
@@ -1606,6 +1660,7 @@ def test_trade_executor_uses_live_positions_when_tracking_state_is_stale() -> No
             max_concurrent_positions_per_symbol=2,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
 
     _fire(executor, _build_event(spread_points=10.0, close_price=3000.0))

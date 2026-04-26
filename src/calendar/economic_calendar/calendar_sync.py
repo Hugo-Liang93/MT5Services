@@ -8,7 +8,6 @@ from threading import Thread
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.clients.economic_calendar import EconomicCalendarError, EconomicCalendarEvent
-from src.config.runtime_identity import legacy_instance_id
 from src.monitoring.runtime_task_status import RuntimeTaskState
 
 logger = logging.getLogger(__name__)
@@ -234,7 +233,14 @@ def runtime_task_row(service, job_type: str) -> tuple:
         else None
     )
     next_run_at = service._next_run_at.get(job_type)
-    runtime_identity = getattr(service, "_runtime_identity", None)
+    # §0dj：runtime_identity 必填——calendar_sync service 装配契约要求显式
+    # 注入 runtime_identity，不再 fallback 到 legacy_instance_id 字面量。
+    runtime_identity = service._runtime_identity
+    if runtime_identity is None:
+        raise RuntimeError(
+            "calendar_sync runtime_task_row requires service._runtime_identity; "
+            "装配层必须在 EconomicCalendarService 构造时显式注入"
+        )
     return (
         _RUNTIME_COMPONENT,
         job_type,
@@ -256,10 +262,10 @@ def runtime_task_row(service, job_type: str) -> tuple:
         int(job_state.get("consecutive_failures", 0)),
         job_state.get("last_error"),
         runtime_task_details(service, job_type),
-        runtime_identity.instance_id if runtime_identity is not None else legacy_instance_id(),
-        runtime_identity.instance_role if runtime_identity is not None else None,
-        runtime_identity.account_key if runtime_identity is not None else None,
-        runtime_identity.account_alias if runtime_identity is not None else None,
+        runtime_identity.instance_id,
+        runtime_identity.instance_role,
+        runtime_identity.account_key,
+        runtime_identity.account_alias,
     )
 
 

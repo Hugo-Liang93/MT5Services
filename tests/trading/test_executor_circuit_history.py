@@ -22,6 +22,7 @@ def test_trade_executor_reset_circuit_persists_account_scoped_history() -> None:
         mt5_server="Broker-Live",
         mt5_login=1001,
         mt5_path="C:/MT5/main/terminal64.exe",
+        peer_main_instance_id="live:live-main",
     )
     executor = TradeExecutor(
         trading_module=_TradingModule(),

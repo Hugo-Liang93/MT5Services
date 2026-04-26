@@ -10,7 +10,6 @@ from typing import Any, Callable, Optional
 from src.app_runtime.container import AppContainer
 from src.config import get_runtime_data_path
 from src.config.file_manager import close_file_config_manager
-from src.config.runtime_identity import legacy_instance_id
 from src.monitoring.health import close_health_monitor
 from src.monitoring.manager import close_monitoring_manager
 from src.monitoring.runtime_task_status import RuntimeTaskState
@@ -467,7 +466,14 @@ class AppRuntime:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         success_count = 1 if state == RuntimeTaskState.READY.value else 0
         failure_count = 1 if state == RuntimeTaskState.FAILED.value else 0
+        # §0dj：runtime_identity 必填，runtime 启动至此必已构造完成；
+        # 不再 fallback 到 legacy_instance_id() 字面量兜底。
         runtime_identity = c.runtime_identity
+        if runtime_identity is None:
+            raise RuntimeError(
+                "AppContainer.runtime_identity must be set before startup; "
+                "runtime_task_status writes require explicit identity"
+            )
         try:
             c.storage_writer.db.write_runtime_task_status(
                 [
@@ -485,26 +491,10 @@ class AppRuntime:
                         failure_count,
                         error,
                         {"startup": True},
-                        (
-                            runtime_identity.instance_id
-                            if runtime_identity is not None
-                            else legacy_instance_id()
-                        ),
-                        (
-                            runtime_identity.instance_role
-                            if runtime_identity is not None
-                            else None
-                        ),
-                        (
-                            runtime_identity.account_key
-                            if runtime_identity is not None
-                            else None
-                        ),
-                        (
-                            runtime_identity.account_alias
-                            if runtime_identity is not None
-                            else None
-                        ),
+                        runtime_identity.instance_id,
+                        runtime_identity.instance_role,
+                        runtime_identity.account_key,
+                        runtime_identity.account_alias,
                     )
                 ]
             )

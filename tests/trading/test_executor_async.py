@@ -24,6 +24,28 @@ from src.trading.execution.executor import ExecutorConfig, TradeExecutor
 from src.trading.execution.gate import ExecutionGate, ExecutionGateConfig
 
 
+# §0dj：runtime_identity 必填——本 stub 提供完整字段供测试。
+class _StubRuntimeIdentity:
+    def __init__(
+        self,
+        *,
+        environment: str = "live",
+        instance_id: str = "live:test-instance",
+        instance_role: str = "main",
+        account_key: str = "live:Broker-Test:1001",
+        account_alias: str = "main",
+    ) -> None:
+        self.environment = environment
+        self.instance_id = instance_id
+        self.instance_role = instance_role
+        self.account_key = account_key
+        self.account_alias = account_alias
+
+
+def _default_runtime_identity() -> _StubRuntimeIdentity:
+    return _StubRuntimeIdentity()
+
+
 # ---------------------------------------------------------------------------
 # Helpers (adapted from test_signal_executor.py)
 # ---------------------------------------------------------------------------
@@ -98,6 +120,7 @@ def _make_executor(
             max_spread_to_stop_ratio=0.5,
         ),
         execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
     )
     # Override queue size for tests that need a small queue
     if maxsize != 64:

@@ -32,6 +32,7 @@ def _runtime_identity(
         mt5_server="Broker-Live",
         mt5_login=login,
         mt5_path=f"C:/MT5/{account_alias}/terminal64.exe",
+        peer_main_instance_id=f"{environment}:{instance_name}",
     )
 
 
@@ -348,6 +349,8 @@ def test_execution_intent_consumer_processes_and_completes_claimed_intent():
         {
             "intent_id": "intent-1",
             "status": "completed",
+            "claimed_by_instance_id": "executor-live-main",
+            "claimed_by_run_id": "executor-live-main",
             "decision_metadata": {
                 "claimed_by_instance_id": "executor-live-main",
                 "claimed_by_run_id": "executor-live-main",
@@ -418,6 +421,8 @@ def test_execution_intent_consumer_marks_intrabar_intent_skipped_when_executor_r
         {
             "intent_id": "intent-intrabar-1",
             "status": "skipped",
+            "claimed_by_instance_id": "executor-live-main",
+            "claimed_by_run_id": "executor-live-main",
             "decision_metadata": {
                 "claimed_by_instance_id": "executor-live-main",
                 "claimed_by_run_id": "executor-live-main",
@@ -557,6 +562,8 @@ def test_execution_intent_consumer_marks_intent_failed_from_executor_result():
         {
             "intent_id": "intent-confirmed-failed-1",
             "status": "failed",
+            "claimed_by_instance_id": "executor-live-main",
+            "claimed_by_run_id": "executor-live-main",
             "decision_metadata": {
                 "claimed_by_instance_id": "executor-live-main",
                 "claimed_by_run_id": "executor-live-main",

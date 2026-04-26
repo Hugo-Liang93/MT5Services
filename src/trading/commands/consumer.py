@@ -107,8 +107,10 @@ class OperatorCommandConsumer:
         else:
             claimed = list(transitions or [])
             dead_lettered = []
+        # §0dj P2：dead_lettered + claimed 主路径 emit 必须走 _safe_emit_event
+        # （§0cc 漏修——_safe_emit_event 已存在但主路径仍直接调原始 _emit_event）。
         for item in dead_lettered:
-            self._emit_event(
+            self._safe_emit_event(
                 "command_failed",
                 item,
                 extra_payload={
@@ -123,7 +125,7 @@ class OperatorCommandConsumer:
         for item in claimed:
             if self._stop_event.is_set():
                 return
-            self._emit_event("command_claimed", item)
+            self._safe_emit_event("command_claimed", item)
             self._process_command(item)
 
     def _process_command(self, item: dict[str, Any]) -> None:
@@ -139,6 +141,8 @@ class OperatorCommandConsumer:
             self._safe_complete(
                 command_id=command_id,
                 status="completed",
+                claimed_by_instance_id=self._runtime_identity.instance_id,
+                claimed_by_run_id=self._runtime_identity.instance_id,
                 response_payload=response_payload,
                 audit_id=audit_id,
                 last_error_code=None,
@@ -152,6 +156,8 @@ class OperatorCommandConsumer:
             self._safe_complete(
                 command_id=command_id,
                 status="failed",
+                claimed_by_instance_id=self._runtime_identity.instance_id,
+                claimed_by_run_id=self._runtime_identity.instance_id,
                 response_payload=error_payload,
                 audit_id=audit_id,
                 last_error_code=type(exc).__name__,
@@ -160,8 +166,16 @@ class OperatorCommandConsumer:
             self._safe_emit_event("command_failed", item, extra_payload=error_payload)
 
     def _safe_complete(self, **kwargs: Any) -> None:
+        """§0cc P1 + §0dj P2：complete_fn 失败 → lease 过期自然 retry；返
+        False 说明 lease 已被其他 consumer 接管，本次回写应丢弃。"""
         try:
-            self._complete_fn(**kwargs)
+            updated = self._complete_fn(**kwargs)
+            if updated is False:
+                logger.warning(
+                    "OperatorCommandConsumer: complete returned 0 rows for "
+                    "command_id=%s (lease already taken over by another consumer)",
+                    kwargs.get("command_id"),
+                )
         except Exception:
             logger.exception(
                 "OperatorCommandConsumer: complete_fn failed for command_id=%s; "

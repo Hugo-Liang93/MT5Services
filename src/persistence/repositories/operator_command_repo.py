@@ -241,10 +241,20 @@ WHERE command_id = %s
         *,
         command_id: str,
         status: str,
+        claimed_by_instance_id: str,
+        claimed_by_run_id: str,
         response_payload: dict[str, Any] | None = None,
         audit_id: str | None = None,
         last_error_code: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """完成 operator command 回写，按 owner + status='claimed' 校验防覆盖。
+
+        §0dj P2：旧实现仅 ``WHERE command_id = %s`` → 慢 consumer 超时被新
+        consumer 接管后，迟到的旧 consumer 仍能覆盖新执行的 audit_id 与
+        response_payload。修复：必填 owner + status 谓词。
+
+        返回：成功更新返 True，0 行（已被其他 consumer 接管或已完成）返 False。
+        """
         completed_at = datetime.now(timezone.utc)
         with self._writer.connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -261,6 +271,9 @@ SET status = %s,
     lease_expires_at = NULL,
     last_heartbeat_at = %s
 WHERE command_id = %s
+  AND claimed_by_instance_id = %s
+  AND claimed_by_run_id = %s
+  AND status = 'claimed'
 """,
                 [
                     status,
@@ -270,8 +283,11 @@ WHERE command_id = %s
                     completed_at,
                     completed_at,
                     command_id,
+                    claimed_by_instance_id,
+                    claimed_by_run_id,
                 ],
             )
+            return cur.rowcount > 0
 
     def fetch_operator_commands(
         self,

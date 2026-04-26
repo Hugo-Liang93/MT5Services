@@ -66,39 +66,6 @@ def build_provider_registry(settings: EconomicConfig) -> ProviderRegistry:
     return registry
 
 
-def _resolve_main_target_instance_id(runtime_identity: Any | None) -> str | None:
-    """§0dh P2：根据 runtime_identity 解析对应 group 的 main instance_id。
-
-    与 RuntimeIdentity._build_runtime_identity 同口径——`"<environment>:<main_instance_name>"`。
-    用于 executor 拓扑下 ReadOnlyEconomicCalendarProvider 读 main 写入的
-    runtime_task_status 行。
-
-    解析失败时返 None（read provider 退化为按 role=main 全局查，单 group 拓扑下仍命中）。
-    """
-    if runtime_identity is None:
-        return None
-    instance_name = getattr(runtime_identity, "instance_name", None)
-    environment = getattr(runtime_identity, "environment", None)
-    if not instance_name or not environment:
-        return None
-    try:
-        from src.config.topology import find_topology_group_for_instance
-    except ImportError:
-        return None
-    try:
-        group = find_topology_group_for_instance(instance_name)
-    except Exception:
-        logger.warning(
-            "ReadOnlyProvider target_instance_id 解析失败 (instance=%s)",
-            instance_name,
-            exc_info=True,
-        )
-        return None
-    if group is None or not group.main:
-        return None
-    return f"{environment}:{group.main}"
-
-
 def build_trading_components(
     storage_writer,
     economic_settings: EconomicConfig,
@@ -122,16 +89,18 @@ def build_trading_components(
             runtime_identity=runtime_identity,
         )
     else:
-        # §0dh P2：executor 拓扑下读 ReadOnlyProvider，必须按 main 实例的
-        # instance_id 查 runtime_task_status（main 写入的行）。通过 topology
-        # 解析 same group 的 main instance_name，按 RuntimeIdentity 同口径
-        # 构造 main 的 instance_id（"<environment>:<instance_name>"）。
-        target_instance_id = _resolve_main_target_instance_id(runtime_identity)
+        # §0dj：read-only provider 必须知道 main 的 instance_id 才能正确过滤
+        # runtime_task_status；走 RuntimeIdentity.peer_main_instance_id（build
+        # 时一次性算好），不再依赖装配层 topology 解析 helper。
+        if runtime_identity is None:
+            raise ValueError(
+                "build_trading_components: runtime_identity is required when "
+                "enable_calendar_sync=False (executor topology)"
+            )
         economic_calendar_service = ReadOnlyEconomicCalendarProvider(
             db_writer=storage_writer.db,
             settings=economic_settings,
-            runtime_identity=runtime_identity,
-            target_instance_id=target_instance_id,
+            target_instance_id=runtime_identity.peer_main_instance_id,
         )
     mt5_settings = load_mt5_settings()
     trade_registry = TradingAccountRegistry(

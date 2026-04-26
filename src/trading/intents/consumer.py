@@ -150,6 +150,8 @@ class ExecutionIntentConsumer:
             self._safe_complete(
                 intent_id=intent_id,
                 status=status,
+                claimed_by_instance_id=self._runtime_identity.instance_id,
+                claimed_by_run_id=self._runtime_identity.instance_id,
                 decision_metadata={
                     "claimed_by_instance_id": self._runtime_identity.instance_id,
                     "claimed_by_run_id": self._runtime_identity.instance_id,
@@ -183,6 +185,8 @@ class ExecutionIntentConsumer:
             self._safe_complete(
                 intent_id=intent_id,
                 status="failed",
+                claimed_by_instance_id=self._runtime_identity.instance_id,
+                claimed_by_run_id=self._runtime_identity.instance_id,
                 decision_metadata={
                     "claimed_by_instance_id": self._runtime_identity.instance_id,
                     "claimed_by_run_id": self._runtime_identity.instance_id,
@@ -220,9 +224,16 @@ class ExecutionIntentConsumer:
             self._in_flight_since = None
 
     def _safe_complete(self, **kwargs: Any) -> None:
-        """§0di P1：complete_fn 失败 → lease 过期自然 retry，不打死 worker。"""
+        """§0di P1 + §0dj P2：complete_fn 失败 → lease 过期自然 retry，不打死
+        worker；返 False 说明 lease 已被其他 worker 接管，本次回写应丢弃。"""
         try:
-            self._complete_fn(**kwargs)
+            updated = self._complete_fn(**kwargs)
+            if updated is False:
+                logger.warning(
+                    "ExecutionIntentConsumer: complete returned 0 rows for "
+                    "intent_id=%s (lease already taken over by another worker)",
+                    kwargs.get("intent_id"),
+                )
         except Exception:
             logger.exception(
                 "ExecutionIntentConsumer: complete_fn failed (intent_id=%s); "

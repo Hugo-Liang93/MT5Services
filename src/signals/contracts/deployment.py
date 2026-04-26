@@ -106,6 +106,28 @@ class StrategyDeployment:
             StrategyDeploymentStatus.DEMO_VALIDATION,
         }
 
+    def is_executable_in(self, environment: str) -> bool:
+        """§0dj：environment-aware 执行资格的唯一合同。
+
+        替代散落各处的 ``if env == "demo": allows_demo_validation else
+        allows_live_execution`` 兜底分支（§0dd publisher / §0dg pre_trade_checks
+        都各自实现一份）。所有调用方（publisher / executor / pre_trade /
+        confidence_check）必须走本方法，禁止重新判断 environment。
+
+        environment 必填（不接受 None / 空串）；调用方通过 RuntimeIdentity 强
+        制传入；非 demo / live 视为 live 严格口径（已知支持的 environment 仅
+        这两种，未来扩展须显式更新本方法）。
+        """
+        env = str(environment or "").strip().lower()
+        if not env:
+            raise ValueError(
+                "is_executable_in: environment is required (non-empty); "
+                "callers must pass runtime_identity.environment"
+            )
+        if env == "demo":
+            return self.allows_demo_validation()
+        return self.allows_live_execution()
+
     def is_guarded(self) -> bool:
         return self.status is StrategyDeploymentStatus.ACTIVE_GUARDED
 

@@ -178,7 +178,7 @@ MiningRunner
 - `min_final_confidence` 至少高于同 TF 基线 `+0.05`，且不低于 `0.50`
 - `max_live_positions = 1`
 - `require_pending_entry = true`
-- `paper_shadow_required = true`（字段名保留，语义为"必须经过 demo_validation 阶段验证"）
+- `demo_validation_required = true`（§0dh 后字段名同步去 Paper 化；§0dj 起为合同正式校验项，旧字段 `paper_shadow_required` 已物理移除，配置中保留旧名将让护栏静默失效）
 
 运行时不再允许用 “`regime_affinity.* = 0`” 这种隐式冻结方式代替部署状态；冻结、候选、demo_validation、guarded 都必须通过 `strategy_deployment.<strategy>` 正式声明。
 

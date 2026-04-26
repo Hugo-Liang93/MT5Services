@@ -49,6 +49,159 @@
 
 ---
 
+## 0dj. 2026-04-27 完整工程化清理：lease owner 校验 + environment 合同统一 + identity 必填 + legacy fallback 移除（P2 ×3 + 工程化重构 ×4）
+
+### 触发
+
+User 拒绝以"补丁/兼容/兜底"方式继续修 bug，明确：
+
+> "我希望之前那么多的fix我不希望通过兼容 打补丁的形式做fix 而是整体模块化
+> 工程化的方式进行 需要完整无遗漏的进行"
+
+引用 `feedback_no_compat_patches.md` 准则——之前 §0g 起多轮修复中累积了如下补丁式残留，违反原则：
+
+| § | 补丁类型 | 反模式 |
+|---|---|---|
+| §0dg P1 | getattr 兜底 | `pre_trade_checks` 用 `getattr(executor, "runtime_identity", None) + getattr(rid, "environment", "")` 兜底到 live 口径 |
+| §0dh P2 #2 | None fallback + try/except 兜底 | `_resolve_main_target_instance_id` helper 用 try/except + None fallback；`ReadOnlyProvider.target_instance_id: str \| None = None` 默认值 |
+| §0z #4 | identity-less fallback | `legacy_instance_id() = "legacy:host:pid"` 给 identity-less writer 兜底 PK |
+| §0dd / §0dg | 散落的 environment 分支 | publisher / pre_trade_checks 各自实现 `if env == "demo" else allows_live` 兜底分支 |
+
+User 报告的本轮真实 bug（execution_intent / operator_command 完成 SQL 缺 owner 校验、research-system.md 仍指导旧字段名）也用工程化原则修——不允许"在旧 SQL 上加防御"或"在旧字段名旁加双轨"。
+
+### 7 批工程化清理
+
+#### Batch 1：lease 完成 SQL 必填 owner + status 谓词（P2 #1+#2）
+
+`complete_execution_intent` / `complete_operator_command` SQL 旧实现仅 `WHERE intent_id = %s` / `WHERE command_id = %s` —— 慢 worker 超时被新 worker 接管后，旧 worker 迟到的 complete 仍能覆盖新 attempt 的状态。
+
+工程化修复（不接受可选 owner 参数）：
+- 方法签名：`claimed_by_instance_id` + `claimed_by_run_id` **必填**（无默认值）
+- SQL：`WHERE intent_id/command_id = %s AND claimed_by_instance_id = %s AND claimed_by_run_id = %s AND status = 'claimed'`
+- 返回值：`bool`（rowcount > 0），调用方 `_safe_complete` 处理 False 仅 log warning（不抛、不重试——新 worker 已接管）
+- consumer 调用方同步加 owner 参数（不放在 decision_metadata 内，作为顶层 SQL 谓词）
+
+同时修复 OperatorCommandConsumer `_worker_iteration` 内 `_emit_event` 直接调用未走 `_safe_emit_event` 的漏修（§0cc 漏的同模式）。
+
+#### Batch 2：`StrategyDeployment.is_executable_in(environment)` 唯一合同（清 §0dd / §0dg 散落分支）
+
+新增 `is_executable_in(environment) -> bool` 方法作为 environment-aware 门禁的**唯一合同**：
+
+```python
+def is_executable_in(self, environment: str) -> bool:
+    env = str(environment or "").strip().lower()
+    if not env:
+        raise ValueError("environment is required (non-empty)")
+    if env == "demo":
+        return self.allows_demo_validation()
+    return self.allows_live_execution()
+```
+
+调用方全部改为单行 `if not deployment.is_executable_in(env): reject`：
+- `ExecutionIntentPublisher._resolve_target_accounts`：删除 `if env == "demo" else` 兜底分支
+- `pre_trade_checks._run_governance_filters`：删除 getattr 兜底，直接 `executor.runtime_identity.environment`
+- environment 空串 / None 直接 raise（不接受兜底）
+
+#### Batch 3：`TradeExecutor.runtime_identity` 必填（清 getattr 兜底根因）
+
+`TradeExecutor.__init__(runtime_identity: Any | None = None)` 让所有下游不得不用 getattr 兜底——根因在 ctor。修复：
+
+- 改为 keyword-only + **必填**（无默认值）
+- ctor 内 `if runtime_identity is None: raise ValueError(...)` 显式契约
+- 所有下游访问点（`_build_local_terminal_payload` / `record_circuit_breaker_event`）删除 `if x is not None:` 防御 + getattr 兜底，直接 `self._runtime_identity.field`
+- 53 处调用点全部更新（1 src 装配 + 6 test 文件用 tokenize 模块精确注入，避开 nested `)` 误识）
+
+#### Batch 4：`RuntimeIdentity.peer_main_instance_id` 派生字段（清 §0dh helper + None fallback）
+
+`_resolve_main_target_instance_id` 装配层 helper（用 try/except + None fallback）违反单一职责——peer 身份解析应在 RuntimeIdentity 自身完成。
+
+修复：
+
+- `RuntimeIdentity` 加 `peer_main_instance_id: str` frozen 字段
+- `_build_runtime_identity` build 时一次性算：main 实例自身 peer = own instance_id；executor 实例通过 topology 解析 group.main → 构造 main 的 instance_id；解析失败直接 raise（不接受 None fallback）
+- `ReadOnlyEconomicCalendarProvider` 签名变为 `target_instance_id: str` **必填**（移除 `runtime_identity` 参数 + None 默认）；空串 raise
+- 装配层 `build_trading_components` 直接传 `runtime_identity.peer_main_instance_id`（一行替换 helper）
+- 删除 `_resolve_main_target_instance_id` helper 函数
+
+#### Batch 6：移除 `legacy_instance_id()` identity-less fallback
+
+`legacy_instance_id() = "legacy:host:pid"` 是给 identity-less writer 兜底 PK 的 fallback——违反"writer 必须显式 require RuntimeIdentity"原则。修复：
+
+- `src/config/runtime_identity.py` 删除 `legacy_instance_id` 函数
+- `src/app_runtime/runtime.py` `write_runtime_task_status` 调用：runtime_identity=None 时直接 `raise RuntimeError(...)`，删除 `if x is not None else legacy_instance_id()` 三段式
+- `src/calendar/economic_calendar/calendar_sync.py:runtime_task_row` 同模式：service._runtime_identity=None 直接 raise
+- 测试 `test_legacy_instance_id_returns_unique_per_process_fallback` 改为 sentinel `test_legacy_instance_id_helper_no_longer_exists`（反向锁不允许复活）
+
+#### Batch 7：`docs/research-system.md` 改名 + sentinel（P2 #3）
+
+研究文档第 181 行仍指导用户写 `paper_shadow_required = true`——§0dh 已物理改名为 `demo_validation_required`，旧名读入会因 default=False 让 active_guarded/tf_specific 校验静默失效。
+
+修复：
+- 改文档为 `demo_validation_required = true`，加迁移说明
+- `tests/data/test_research_system_doc_no_paper_trading.py` 加 2 项 sentinel：
+  - `test_research_system_doc_uses_demo_validation_required_field`：文档不能再用旧名作为正式字段
+  - `test_deployment_contract_no_longer_accepts_paper_shadow_required`：`from_dict` 旧名 → demo_validation_required=False（不识别），新名正常
+
+#### Batch 5：抽 `LeaseBasedConsumerBase`（评估为低收益重构，留待 user 决定）
+
+OperatorCommandConsumer + ExecutionIntentConsumer 各自重复定义 `_safe_complete / _safe_emit_*` 与 `_worker_iteration` 拆分模式（约 30% 共享代码）。但这两个 consumer 的核心业务流程（claim → process → complete）虽然结构相似但具体内容差异巨大——抽 base class 复用率有限，强行抽象可能引入抽象债。
+
+**评估结论**：本项不属于 user 指出的"补丁式残留"（重复代码 ≠ 兼容兜底），是质量改进而非 bug 修复。是否做请 user 决定。
+
+### 测试基线
+
+完整套件：**2916 passed / 6 skipped（合法 short-array） / 0 failed**（`pytest -q -m "not slow"`，77 秒）。
+
+新增 / 改写测试：
+
+| 测试 | 锁定 |
+|---|---|
+| `test_execution_intent_consumer_processes_and_completes_claimed_intent` 等 ×3 | complete 调用必带 owner 参数 |
+| `test_operator_command_consumer_process_command_emits_completed_trace` | 同模式 |
+| `test_read_only_provider_target_instance_id_is_required` | target_instance_id 空串直接 raise |
+| `test_legacy_instance_id_helper_no_longer_exists` | legacy_instance_id 不允许复活 |
+| `test_runtime_task_writer_raises_when_runtime_identity_missing` | calendar_sync writer 强制要求 identity |
+| `test_research_system_doc_uses_demo_validation_required_field` | docs 不再用旧字段名 |
+| `test_deployment_contract_no_longer_accepts_paper_shadow_required` | from_dict 不识别旧名 |
+
+50+ test stub 文件批量更新（用 tokenize 精确解析 + AST sentinel 防回归）。
+
+### 元层教训：**补丁式累积的根因是装配契约可选**
+
+回顾 §0dg → §0di 三轮"补丁修复"的共同根因：
+
+| 根因 | 表现 | 工程化修复 |
+|---|---|---|
+| `runtime_identity: Any \| None = None` 在 TradeExecutor 是可选 | 下游必须 getattr 兜底 | 改必填 + ctor 内 raise |
+| `target_instance_id: str \| None = None` 在 ReadOnlyProvider 是可选 | 装配层必须 helper 解析 + try/except | 改必填 + 派生字段 |
+| `legacy_instance_id()` 给 identity-less writer fallback | 隐式允许"装配未注入" | 删 fallback + writer raise |
+| environment 路由各处独立判断 | 散落 if/else 兜底 | 抽 `is_executable_in()` 单一合同 |
+
+**强建议（写入 CLAUDE.md §12 协作纪律）**：
+
+1. **可选参数 = 补丁种子**——任何"运行时必需"的参数（runtime_identity / environment / 关键 ID）都必须在装配契约中显式必填，不接受 `None` 默认值
+2. **装配契约失败必须 fail-fast**——装配阶段 None / 空值 → raise；禁止运行时再用 getattr / try/except 兜底
+3. **散落的"if env == X else default" 是合同未抽象的信号**——3 处以上必须立即抽方法（本轮 `is_executable_in`）
+4. **fallback / legacy / default 字面量都是补丁标记**——出现这类命名应立即评估能否删除或改 raise
+
+### §0g→§0dj 累计基线
+
+| § 范围 | bug 数 | 补丁清理 |
+|---|---|---|
+| 0g–0di | 79 | 4 类补丁累积（getattr 兜底 / None fallback / legacy fallback / 散落分支） |
+| **0dj** | 3（P2 ×3 真实 bug）+ 0 新补丁 | **彻底清理 4 类补丁**，6 个 batch 重构 |
+
+### 减少边界泄漏的方式
+
+- `complete_execution_intent` / `complete_operator_command` 必填 owner + status 谓词，物理消除"慢 worker 覆盖新 attempt"竞态
+- `StrategyDeployment.is_executable_in()` 作为 environment-aware 门禁的**单一合同**，禁止散落兜底分支
+- `TradeExecutor.runtime_identity` 装配契约必填，根除下游 getattr 兜底链
+- `RuntimeIdentity.peer_main_instance_id` 派生字段 build 时算好，禁止运行时再次解析 + 兜底
+- `legacy_instance_id` 物理删除 + sentinel 反向锁，禁止 fallback 模式复活
+- `paper_shadow_required` 旧名物理删除 + sentinel 锁 from_dict 不识别旧名 + docs 不引用旧名
+
+---
+
 ## 0di. 2026-04-27 ExecutionIntentConsumer 异常隔离三处漏修 + mining CLI 资源泄漏（P1 ×2 + P2 ×3 + P3 已锁契约重申）
 
 ### 触发

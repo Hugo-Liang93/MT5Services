@@ -110,6 +110,7 @@ def test_validate_execution_contracts_requires_explicit_binding_for_live_strateg
         mt5_server="Broker-Live",
         mt5_login=1001,
         mt5_path="C:/MT5/live_main/terminal64.exe",
+        peer_main_instance_id="live:live-main",
     )
     signal_config = SignalConfig(
         auto_trade_enabled=True,
@@ -145,6 +146,7 @@ def test_multi_account_main_skips_local_account_runtime_without_explicit_live_bi
         mt5_server="Broker-Live",
         mt5_login=1001,
         mt5_path="C:/MT5/live_main/terminal64.exe",
+        peer_main_instance_id="live:live-main",
     )
     deployments = {
         "structured_breakout_follow": StrategyDeployment(
@@ -180,6 +182,7 @@ def test_multi_account_main_keeps_local_account_runtime_when_explicitly_bound() 
         mt5_server="Broker-Live",
         mt5_login=1001,
         mt5_path="C:/MT5/live_main/terminal64.exe",
+        peer_main_instance_id="live:live-main",
     )
     deployments = {
         "structured_breakout_follow": StrategyDeployment(

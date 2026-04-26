@@ -22,22 +22,23 @@ class ReadOnlyEconomicCalendarProvider:
         *,
         db_writer: Any,
         settings: Any,
-        runtime_identity: Any | None = None,
-        target_instance_id: str | None = None,
+        target_instance_id: str,
     ) -> None:
         """Read-only provider used by executor instances to observe shared main 状态。
 
-        §0dh P2：旧实现把当前 executor 自己的 ``runtime_identity.instance_id``
-        当作过滤键 + ``instance_role='main'`` → 数据库里不存在 "executor 的
-        instance_id + main 角色" 的组合 → freshness / provider_status / job_status
-        长期空白。修复：装配层通过 topology 解析 same group 的 main instance_name，
-        构造对应 main 的 instance_id（与 RuntimeIdentity 同口径），从外部注入
-        ``target_instance_id`` 让 read provider 真正命中 main 写入的行。
+        §0dj：``target_instance_id`` 必填（main 的 instance_id），由装配层从
+        ``runtime_identity.peer_main_instance_id`` 注入；不接受 None / 兜底。
+        ``runtime_identity`` 字段已移除——读端不需要本实例身份，只需要被读
+        实例（main）的身份。
         """
+        if not target_instance_id:
+            raise ValueError(
+                "ReadOnlyEconomicCalendarProvider requires target_instance_id "
+                "(main instance_id, from runtime_identity.peer_main_instance_id)"
+            )
         self.db = db_writer
         self.settings = settings
         self.market_impact_analyzer = None
-        self._runtime_identity = runtime_identity
         self._target_instance_id = target_instance_id
         self._worker = None
 

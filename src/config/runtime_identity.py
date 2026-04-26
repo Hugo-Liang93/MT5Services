@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import socket
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -13,27 +11,6 @@ from src.config.instance_context import (
 )
 from src.config.mt5 import MT5Settings, load_group_mt5_settings, load_mt5_settings
 from src.config.topology import resolve_current_environment, resolve_topology_assignment
-
-
-@lru_cache(maxsize=1)
-def legacy_instance_id() -> str:
-    """§0z P3：identity-less 写入 runtime_task_status 时的唯一化 fallback。
-
-    旧 writers 在拿不到 ``runtime_identity`` 时显式写字面量 ``"legacy"``，
-    runtime_task_status 表 PK 是 ``(instance_id, component, task_name)`` →
-    所有 identity-less 本地脚本 / 测试实例 / 遗留进程共享同一组 runtime task
-    记录互相覆盖状态。
-
-    本 helper 返回 ``"legacy:<hostname>:<pid>"``：
-    - 保留 ``legacy`` 前缀供审计识别"非正式 identity"
-    - hostname + pid 让每个进程获得独立 PK 空间，禁止跨进程串行
-    - lru_cache 保证单进程内多次调用稳定（PK 一致性）
-    """
-    try:
-        host = socket.gethostname() or "unknown-host"
-    except OSError:
-        host = "unknown-host"
-    return f"legacy:{host}:{os.getpid()}"
 
 
 def build_account_key(
@@ -132,6 +109,10 @@ class RuntimeIdentity:
     mt5_server: str | None
     mt5_login: int | None
     mt5_path: str | None
+    # §0dj：build 时一次性解析 same group 的 main instance_id，供 executor
+    # 拓扑下 ReadOnlyEconomicCalendarProvider 等读端组件按 main 身份过滤
+    # runtime_task_status。main 实例自身 peer_main_instance_id=instance_id。
+    peer_main_instance_id: str
 
 
 def _build_runtime_identity(account: MT5Settings) -> RuntimeIdentity:
@@ -149,15 +130,29 @@ def _build_runtime_identity(account: MT5Settings) -> RuntimeIdentity:
         instance_role = assignment.role
         live_topology_mode = assignment.live_topology_mode
 
-    # §0dh P2：旧实现 instance_id 拼 uuid4().hex 让每次进程启动 id 都变化 →
-    # §0z #4 修了 runtime_task_status PK 含 instance_id + §0y #2 修了 fetcher
-    # 按 instance_id 过滤，但本字段是瞬时 UUID，跨重启 next_run_at / 失败计数
-    # 永远找不到上次写的 row。修复：改用稳定派生 (environment, instance_name)，
-    # 同 group 内 topology.ini 已强制 instance_name 唯一。
+    # §0dh P2：稳定派生 instance_id (environment, instance_name)。
+    own_instance_id = f"{environment}:{instance_name}"
+
+    # §0dj：build 时一次性算 peer_main_instance_id（same group 的 main 身份），
+    # 供 executor 拓扑下读端组件按 main 身份过滤 runtime_task_status。
+    # main 实例自身 peer = own；executor 实例通过 topology 解析 group.main。
+    if instance_role == "main":
+        peer_main_instance_id = own_instance_id
+    else:
+        from src.config.topology import find_topology_group_for_instance
+
+        group = find_topology_group_for_instance(instance_name)
+        if group is None or not group.main:
+            raise ValueError(
+                f"executor instance {instance_name!r} 必须有对应的 topology group "
+                "和 main 实例（read-only provider 依赖 main 身份过滤 runtime_task_status）"
+            )
+        peer_main_instance_id = f"{environment}:{group.main}"
+
     return RuntimeIdentity(
         instance_name=instance_name,
         environment=environment,
-        instance_id=f"{environment}:{instance_name}",
+        instance_id=own_instance_id,
         instance_role=instance_role,
         live_topology_mode=live_topology_mode,
         account_alias=account.account_alias,
@@ -170,6 +165,7 @@ def _build_runtime_identity(account: MT5Settings) -> RuntimeIdentity:
         mt5_server=account.mt5_server,
         mt5_login=account.mt5_login,
         mt5_path=account.mt5_path,
+        peer_main_instance_id=peer_main_instance_id,
     )
 
 

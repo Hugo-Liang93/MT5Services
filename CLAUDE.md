@@ -40,6 +40,25 @@
   - 提供一句“本次改动如何减少边界泄漏”的说明
   - 标注未决兼容项及移除时间点
 
+### 反补丁纪律（§0dj 强建议系统化落地）
+
+补丁式累积的**根因是装配契约可选**——任何 `Optional[T] = None` 的"运行时必需"参数都会在下游产出 `getattr` / `try-except` / `is None: fallback` 兜底链。修复时必须：
+
+1. **可选参数 = 补丁种子**：任何"运行时必需"的参数（`runtime_identity` / `environment` / 关键 ID）必须在装配契约中显式必填（无默认值），不接受 `None` 默认。
+2. **装配契约失败必须 fail-fast**：装配阶段 None / 空值 → `raise`；禁止运行时再 `getattr` / `try-except` 兜底。
+3. **散落的"if env == X else default"是合同未抽象的信号**：3 处以上必须立即抽方法（参 `StrategyDeployment.is_executable_in()`）。
+4. **`fallback / legacy / default` 字面量都是补丁标记**：出现这类命名应立即评估能否删除或改 raise（参 §0dj 移除 `legacy_instance_id()`）。
+
+提交前 sentinel grep 应包含（除原有 4 项外）：
+
+```bash
+# 5. 可选 runtime_identity / target_instance_id 等关键身份参数（运行时必需却被设为 Optional = 补丁种子）
+grep -rn "runtime_identity: Any | None = None\|runtime_identity: Optional" src/ --include='*.py' && echo "❌ runtime_identity 必填，禁止 Optional 默认"
+
+# 6. getattr 兜底默认值（运行时必需字段不应有 default）
+grep -rEn 'getattr\([^,]+, *"(runtime_identity|environment|instance_id|account_key)"' src/ --include='*.py' | grep -v "tests" && echo "❌ 关键身份字段禁止 getattr 兜底"
+```
+
 ### 断言核验协议（P0/FATAL 断言的硬门槛）
 
 任何 "X 默认禁用 / 未接入 / 从未被调用 / 是 bug" 的断言，**写下前必须完成 3 步追查**：

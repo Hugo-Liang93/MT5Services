@@ -34,6 +34,7 @@ def _runtime_identity(
         mt5_server="Broker-Live",
         mt5_login=login,
         mt5_path=f"C:/MT5/{account_alias}/terminal64.exe",
+        peer_main_instance_id=f"{environment}:{instance_name}",
     )
 
 
@@ -153,6 +154,8 @@ def test_operator_command_consumer_process_command_emits_completed_trace():
         {
             "command_id": "command-1",
             "status": "completed",
+            "claimed_by_instance_id": "executor-live-exec-a",
+            "claimed_by_run_id": "executor-live-exec-a",
             "response_payload": {
                 "accepted": True,
                 "status": "applied",
