@@ -213,3 +213,72 @@ def test_supervisor_pending_worker_retry_respects_throttle(monkeypatch) -> None:
 
     supervisor._retry_pending_workers()
     assert gate_calls == []  # 节流生效，未触发 gate
+
+
+# ── §0aa P1 回归：normal 退出（exit code 0）也必须重启或主动出列 ──
+
+
+class _ExitedNormallyProcess:
+    """模拟 exit code = 0 的子进程。"""
+    pid = 9999
+
+    def poll(self):
+        return 0
+
+
+def test_monitor_loop_does_not_keep_stale_normal_exit_in_managed(monkeypatch) -> None:
+    """P1 §0aa 回归：旧实现对 normal exit 仅 log + continue，_managed 中保留
+    已退出的实例 → 主实例可悄悄消失而 supervisor 不会拉起；worker 静默缺员。
+    必须把 normal exit 当成 unexpected 退出处理（重启 + 计数），与 warning/fatal
+    分类一致；或至少把退出实例从 _managed 移除以暴露真实拓扑。
+    """
+    group = SimpleNamespace(
+        name="live",
+        main="live-main",
+        workers=[],
+        environment="live",
+    )
+    supervisor = Supervisor(group, ready_timeout_seconds=5.0)
+    supervisor._managed["live-main"] = ManagedProcess(
+        instance_name="live-main",
+        process=_ExitedNormallyProcess(),
+        restart_count=0,
+    )
+
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        "src.entrypoint.supervisor.ensure_mt5_session_gate_or_raise",
+        lambda instance_name=None: None,
+    )
+    monkeypatch.setattr(
+        "src.entrypoint.supervisor._wait_for_ready",
+        lambda instance_name, timeout_seconds: None,
+    )
+    monkeypatch.setattr(
+        "src.entrypoint.supervisor.time.sleep",
+        lambda *_args, **_kwargs: setattr(supervisor, "_stopping", True),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_spawn",
+        lambda instance_name, restart_count=0: spawned.append(instance_name) or ManagedProcess(
+            instance_name=instance_name,
+            process=_DummyProcess(),
+            restart_count=restart_count,
+        ),
+    )
+
+    supervisor._monitor_loop()
+
+    # 验证：(a) _managed 不能仍持有 _ExitedNormallyProcess 引用 OR (b) 已重启
+    current = supervisor._managed.get("live-main")
+    if current is None:
+        # 路径 (b)：被移除即可（拓扑暴露真实状态）
+        return
+    assert isinstance(current.process, _DummyProcess) and not isinstance(
+        current.process, _ExitedNormallyProcess
+    ), (
+        "normal exit 后 _managed 不能仍持有已 exited 的 process 引用；"
+        "必须重启或移除以暴露拓扑真相。"
+        f"got managed.process={current.process!r}, spawned={spawned!r}"
+    )

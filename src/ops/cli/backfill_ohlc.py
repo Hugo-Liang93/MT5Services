@@ -39,6 +39,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from src.utils.timezone import parse_iso_to_utc
 from pathlib import Path
 from typing import List, Optional
 
@@ -257,12 +258,12 @@ def main() -> None:
 
     # 默认日期范围
     if args.end:
-        end = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+        end = parse_iso_to_utc(args.end)
     else:
         end = datetime.now(timezone.utc)
 
     if args.start:
-        start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+        start = parse_iso_to_utc(args.start)
     else:
         start = end - timedelta(days=180)  # 默认 6 个月
 

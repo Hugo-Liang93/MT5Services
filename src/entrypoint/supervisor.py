@@ -181,11 +181,19 @@ class Supervisor:
                     return
                 exit_class = _classify_exit_code(exit_code)
                 if exit_class == "normal":
-                    logger.info(
-                        "Instance exited normally: instance=%s code=0",
+                    # §0aa P1：旧实现仅 log + continue → _managed 保留已 exit
+                    # 的实例引用，下一轮看到同一退出态又 continue 永远不重启。
+                    # 主实例可悄悄消失而 supervisor 不会拉起；worker 则静默缺员。
+                    # services 在 supervisor 生命期内不应自然退出（self._stopping
+                    # 已上方 line 180-181 处理用户主动 stop 路径）→ 视为
+                    # unexpected 退出，走 warning class 的重启路径。
+                    logger.warning(
+                        "Instance exited with code 0 unexpectedly during supervisor "
+                        "lifetime: instance=%s. Treating as warning-class restart "
+                        "(services should not exit cleanly mid-life).",
                         instance_name,
                     )
-                    continue
+                    exit_class = "warning"
                 log_fn = logger.error if exit_class == "fatal" else logger.warning
                 log_fn(
                     "Instance exited unexpectedly: instance=%s code=%s "

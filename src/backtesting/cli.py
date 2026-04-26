@@ -8,6 +8,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.utils.timezone import parse_iso_to_utc
+
 logger = logging.getLogger(__name__)
 
 def _cast_number_or_text(value: str) -> Any:
@@ -170,8 +172,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     config = BacktestConfig.from_flat(
         symbol=args.symbol,
         timeframe=args.timeframe,
-        start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
-        end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
+        start_time=parse_iso_to_utc(args.start),
+        end_time=parse_iso_to_utc(args.end),
         strategies=strategies,
         strategy_timeframes=strategy_timeframes,
         strategy_sessions=strategy_sessions,
@@ -305,8 +307,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     config = BacktestConfig.from_flat(
         symbol=args.symbol,
         timeframe=args.timeframe,
-        start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
-        end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
+        start_time=parse_iso_to_utc(args.start),
+        end_time=parse_iso_to_utc(args.end),
         strategies=strategies,
         strategy_timeframes=strategy_timeframes,
         strategy_sessions=strategy_sessions,
@@ -394,10 +396,8 @@ def cmd_compare_tf(args: argparse.Namespace) -> None:
             config = BacktestConfig.from_flat(
                 symbol=args.symbol,
                 timeframe=timeframe,
-                start_time=datetime.fromisoformat(args.start).replace(
-                    tzinfo=timezone.utc
-                ),
-                end_time=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
+                start_time=parse_iso_to_utc(args.start),
+                end_time=parse_iso_to_utc(args.end),
                 strategies=strategies,
                 strategy_timeframes=strategy_timeframes,
                 strategy_sessions=strategy_sessions,

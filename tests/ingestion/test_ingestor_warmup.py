@@ -233,3 +233,53 @@ class TestStop:
 
         ingestor.stop()
         assert ingestor._stop.is_set()
+
+
+# ── §0aa P2 回归：BackgroundIngestor.stop() 后 _fetch_executor 必须可重建 ──
+
+
+class TestStopRestartFetchExecutor:
+    """stop() shuts down ThreadPoolExecutor, but start() doesn't recreate it →
+    后续 _fetch_ohlc_with_timeout 拿到 shutdown 状态的 executor，submit 抛
+    RuntimeError，进程内 restart / 热恢复路径上的采集器变成不可重启状态。
+    """
+
+    def test_fetch_executor_reusable_after_stop_then_start(self) -> None:
+        """P2 §0aa 回归：stop() 后调 start() 必须重建 _fetch_executor，
+        让 _fetch_ohlc_with_timeout 仍然可用（进程内 restart 场景）。
+        """
+        ingestor = _make_ingestor()
+
+        # 第一次正常调用
+        result_a = ingestor._fetch_ohlc_with_timeout(lambda: 100)
+        assert result_a == 100
+
+        # 模拟 shutdown
+        ingestor._fetch_executor.shutdown(wait=False)
+
+        # 直接复现：现在 _fetch_executor 已 shutdown，调用必抛 RuntimeError
+        # 真正的修复必须让 _fetch_executor 自动重建（懒重建 / start() 重建）
+        # 这里我们验证：在调 _fetch_ohlc_with_timeout 之前先恢复（模拟 start 路径）
+        # 旧实现：start() 不重建 → _fetch_executor 仍是 shutdown，submit 失败
+        # 新实现：_fetch_ohlc_with_timeout 内部检测并懒重建，或 start() 重建
+
+        # 调 start() 模拟进程内重启路径（mock _run 避免真实轮询线程）
+        with patch.object(ingestor, "_run"):
+            ingestor.start()
+
+        # 现在再调 _fetch_ohlc_with_timeout，必须正常工作（不能抛 shutdown 错误）
+        try:
+            result_b = ingestor._fetch_ohlc_with_timeout(lambda: 200)
+            assert result_b == 200, f"重启后 fetch 必须正常返回；got {result_b!r}"
+        except RuntimeError as exc:
+            if "cannot schedule new futures after shutdown" in str(exc):
+                pytest.fail(
+                    f"§0aa P2: stop() 后 start() 不重建 _fetch_executor，"
+                    f"导致进程内热恢复路径的采集器不可重启：{exc}"
+                )
+            raise
+        finally:
+            try:
+                ingestor.stop()
+            except Exception:
+                pass

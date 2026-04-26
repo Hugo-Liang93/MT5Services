@@ -32,6 +32,7 @@ import logging
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone
+from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict, List, Optional
 
 
@@ -89,16 +90,16 @@ def _run_walkforward(
     base_config = BacktestConfig.from_flat(
         symbol="XAUUSD",
         timeframe=tf,
-        start_time=datetime.fromisoformat(start).replace(tzinfo=timezone.utc),
-        end_time=datetime.fromisoformat(end).replace(tzinfo=timezone.utc),
+        start_time=parse_iso_to_utc(start),
+        end_time=parse_iso_to_utc(end),
         strategy_sessions=strategy_sessions,
         strategy_timeframes=strategy_timeframes,
         **merged,
     )
 
     wf_config = WalkForwardConfig(
-        total_start_time=datetime.fromisoformat(start).replace(tzinfo=timezone.utc),
-        total_end_time=datetime.fromisoformat(end).replace(tzinfo=timezone.utc),
+        total_start_time=parse_iso_to_utc(start),
+        total_end_time=parse_iso_to_utc(end),
         base_config=base_config,
         train_ratio=train_ratio,
         n_splits=n_splits,
@@ -240,8 +241,8 @@ def main() -> None:
     coverage = ensure_ohlc_data_coverage(
         symbol="XAUUSD",
         timeframes=[tf],
-        start=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc),
-        end=datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc),
+        start=parse_iso_to_utc(args.start),
+        end=parse_iso_to_utc(args.end),
         auto_backfill=not args.no_auto_backfill,
     )
     sys.stderr.write(f"Walk-Forward: {tf} ({args.start} ~ {args.end}), {args.splits} splits\n")

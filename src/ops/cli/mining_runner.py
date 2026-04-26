@@ -37,6 +37,7 @@ import logging
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone
+from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict, List, Optional
 
 
@@ -106,8 +107,8 @@ def _run_single(
 
     runner = MiningRunner(config=config, deps=deps)
 
-    start_dt = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
-    end_dt = datetime.fromisoformat(end).replace(tzinfo=timezone.utc)
+    start_dt = parse_iso_to_utc(start)
+    end_dt = parse_iso_to_utc(end)
 
     result = runner.run(
         symbol="XAUUSD",
@@ -727,8 +728,8 @@ def main() -> None:
     providers_list: Optional[List[str]] = None
     if args.providers is not None:
         providers_list = [p.strip() for p in args.providers.split(",") if p.strip()]
-    start_dt = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-    end_dt = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+    start_dt = parse_iso_to_utc(args.start)
+    end_dt = parse_iso_to_utc(args.end)
 
     from src.ops.cli._coverage import ensure_ohlc_data_coverage
 

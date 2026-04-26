@@ -590,11 +590,19 @@ class OptimizedPipeline:
         return total
     
     def shutdown(self) -> None:
-        """关闭流水线"""
+        """关闭流水线。
+
+        §0aa P1：旧实现仅 ``self._executor.shutdown()`` 然后置空，但
+        ``self._executor`` 是从 ``get_global_executor()`` 拿到的**模块级单例**。
+        模块全局 ``_global_executor`` 不被清掉 → 下一次 mode 切回 full/observe
+        重建 pipeline 时再访问 ``executor`` property，仍然返回同一已 shutdown
+        的全局对象，``submit()`` 抛 RuntimeError 把指标主链永久毒化。
+        必须走 ``shutdown_global_executor()`` 同步清模块全局。
+        """
         if self._executor is not None:
-            self._executor.shutdown()
+            shutdown_global_executor(wait=True)
             self._executor = None
-        
+
         logger.info("OptimizedPipeline shutdown")
 
 

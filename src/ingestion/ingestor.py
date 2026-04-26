@@ -85,6 +85,13 @@ class BackgroundIngestor:
             return
         self._stop.clear()
         self._backfill_done.clear()
+        # §0aa P2：旧实现 stop() 关 _fetch_executor 后 start() 不重建 →
+        # 进程内 restart / 热恢复路径上的采集器变成不可重启状态。
+        # 检测已关 executor 并重建（_shutdown 标记反映状态）。
+        if self._fetch_executor is None or getattr(self._fetch_executor, "_shutdown", False):
+            self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
+            )
         self._init_backfill_progress()
         if self._backfill_progress:
             self._backfill_thread = threading.Thread(

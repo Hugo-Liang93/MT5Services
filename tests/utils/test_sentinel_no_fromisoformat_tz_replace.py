@@ -11,19 +11,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-# CLI 入口豁免清单（用户显式只接受 naive UTC 字符串作为 --start / --end 参数）
-_EXEMPT = {
-    "src/backtesting/cli.py",
-    "src/ops/cli/aggression_search.py",
-    "src/ops/cli/backfill_ohlc.py",
-    "src/ops/cli/backtest_runner.py",
-    "src/ops/cli/correlation_runner.py",
-    "src/ops/cli/exit_experiment.py",
-    "src/ops/cli/mining_runner.py",
-    "src/ops/cli/mining_walk_forward.py",
-    "src/ops/cli/walkforward_runner.py",
-    "src/research/nightly/runner.py",
-}
+# §0aa 反例：§0x 把 CLI 入口列为 EXEMPT 是错的——CLI 没有显式 reject aware
+# ISO，用户实际可以传 +08:00 偏移字符串导致窗口静默漂移 8h+。所有 CLI 必须
+# 走 parse_iso_to_utc。EXEMPT 仅保留下列两类：
+#   (a) 内部接口确实不接收用户输入 (e.g. 库内部解析 round-trip 数据)
+#   (b) sentinel 自己的源码 (避免文件内的 docstring 示例命中 AST)
+# 若新增豁免，必须在测试代码注释中说明豁免理由。
+_EXEMPT: set[str] = set()
 
 
 def _iter_python_sources() -> list[Path]:

@@ -49,6 +49,252 @@
 
 ---
 
+## 0aa. 2026-04-26 indicator pipeline 永久毒化 + supervisor normal exit 不重启 + ingestor stop 后不可重建 + CLI tz 反例（P1 ×2 + P2 ×2 + §0x EXEMPT 反例）
+
+### 触发
+
+User 报告 4 处独立 bug，本轮**最重要的元层发现**：§0x 把 CLI 入口列入
+EXEMPT "naive UTC 语义合法" 的假设是错的——CLI 没有显式 reject aware
+ISO，用户实际可以传 +08:00 偏移字符串导致窗口静默漂移：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `indicators/engine/pipeline.py:592-596` | `shutdown()` 仅清 `self._executor` 不清模块全局 `_global_executor` → mode 切回 full/observe 时 `pipeline.executor` 拿到同一已 shutdown 的全局对象，submit 抛 RuntimeError 把指标主链**永久毒化** |
+| 2 | **P1** | `entrypoint/supervisor.py:183-188` | `normal` exit (code=0) 仅 log + continue，`_managed` 保留已 exit 的 process 引用，下一轮看到同一退出态又 continue → **永远不重启**。主实例可悄悄消失，worker 静默缺员 |
+| 3 | P2 | `ingestion/ingestor.py:113-119` | `stop()` 关 `_fetch_executor` 但 `start()` 不重建 → 进程内 restart / 热恢复路径上 `_fetch_ohlc_with_timeout` 抛 RuntimeError |
+| 4 | P2 | `backtesting/cli.py` 多处 + 8 处其他 CLI | `fromisoformat().replace(tzinfo=UTC)` 反模式——§0x 误把 CLI 列入 EXEMPT |
+
+### 根因
+
+#### #1 OptimizedPipeline.shutdown 不清模块全局
+
+```python
+# pipeline.py:147 executor property
+@property
+def executor(self) -> ParallelExecutor:
+    if self._executor is None and self.config.enable_parallel:
+        self._executor = get_global_executor(...)   # ← 模块单例
+    return self._executor
+
+# pipeline.py:592 旧 shutdown
+def shutdown(self) -> None:
+    if self._executor is not None:
+        self._executor.shutdown()    # ← 关单例的 ThreadPoolExecutor
+        self._executor = None        # ← 仅清实例字段，不清模块 _global_executor
+```
+
+User 复现：
+```python
+p1 = create_isolated_pipeline()
+ex = p1.executor      # → get_global_executor() 创建单例
+ex.executor.submit(...)
+p1.shutdown()         # → 关单例 + 实例清空，但模块 _global_executor 仍在
+p2 = create_isolated_pipeline()
+p2.executor.executor.submit(...)
+# RuntimeError: cannot schedule new futures after shutdown
+```
+
+更严重：runtime mode 切到 ingest_only/risk_off 走 `_stop_indicator_stack()` →
+`UnifiedIndicatorManager.shutdown()` → pipeline.shutdown() → 全局 executor 死。
+切回 full 时拿到的还是同一已死的全局 → **指标主链永久毒化，模式切换无法恢复**。
+
+#### #2 Supervisor normal exit 不重启不出列
+
+```python
+# supervisor.py:183 旧实现
+exit_class = _classify_exit_code(exit_code)
+if exit_class == "normal":
+    logger.info("Instance exited normally: instance=%s code=0", instance_name)
+    continue   # ← 仅 log；_managed[instance_name] 仍保留已 exited 的 process
+```
+
+下一轮 `_monitor_loop()` 看到同一 `_managed` 条目，poll 仍返 0，又 continue。
+**永远不重启**。
+
+User 复现：fake process 让 poll() 恒返 0 跑一轮 → `_managed` 中实例仍存在，
+但 process 已死。
+- main 退出：supervisor 不拉起 → 整组架构主控失效（用户以为 supervisor 在守护）
+- worker 退出：执行拓扑静默缺员（cockpit 仍认为 worker 在线）
+
+服务在 supervisor 生命期内不应自然 exit（用户主动 stop 已由 `self._stopping`
+处理）→ 视为 unexpected 退出。
+
+#### #3 BackgroundIngestor stop 后不可重建
+
+```python
+# ingestor.py:113
+def stop(self) -> None:
+    ...
+    self._fetch_executor.shutdown(wait=False)   # ← 关 ThreadPoolExecutor
+    ...
+
+# start() 不重建 _fetch_executor
+def start(self) -> None:
+    if self._thread and self._thread.is_alive(): return
+    self._stop.clear()
+    self._backfill_done.clear()
+    self._init_backfill_progress()    # ← 没有 _fetch_executor 重建
+    ...
+```
+
+User 复现：`_fetch_ohlc_with_timeout(lambda: 123)` 正常 → `stop()` →
+再调同方法 → `RuntimeError: cannot schedule new futures after shutdown`。
+进程内 restart / 热恢复路径变成不可用。
+
+#### #4 §0x EXEMPT 反例：CLI 入口"naive UTC"假设错误
+
+§0x 把 backtesting/cli.py + 9 个 ops/cli/* + research/nightly/runner.py 列入
+EXEMPT，理由是"用户显式只接受 naive UTC 字符串"。
+
+**反例**（user 报告）：用户传 `2026-04-26T08:00:00+08:00`（aware ISO）→
+`fromisoformat().replace(tzinfo=UTC)` 直接改标签 →
+`2026-04-26T08:00:00+00:00`（错 8h）。**回测/优化窗口整体漂移**——不是
+"格式不兼容报错"，而是"静默算错区间"。
+
+CLI 没有显式 reject aware 输入，用户可以传任意合法 ISO。EXEMPT 假设错。
+
+### 修复（commit 待 push）
+
+#### #1 pipeline.shutdown() 清模块全局
+
+```python
+def shutdown(self) -> None:
+    """§0aa P1：旧实现仅 self._executor.shutdown()，但 self._executor 是从
+    get_global_executor() 拿到的模块级单例。模块全局 _global_executor 不被清
+    → 下一次 mode 切回 full/observe 拿到同一已 shutdown 全局，submit 抛
+    RuntimeError 把指标主链永久毒化。必须走 shutdown_global_executor() 同步清。
+    """
+    if self._executor is not None:
+        shutdown_global_executor(wait=True)
+        self._executor = None
+```
+
+#### #2 supervisor normal exit 当 unexpected 处理
+
+```python
+exit_class = _classify_exit_code(exit_code)
+if exit_class == "normal":
+    # §0aa P1：services 在 supervisor 生命期内不应自然退出（用户主动 stop
+    # 已由 self._stopping 处理）→ 视为 unexpected，走 warning class 重启路径，
+    # 而非 continue 留下 _managed 死链
+    logger.warning(
+        "Instance exited with code 0 unexpectedly during supervisor lifetime: "
+        "instance=%s. Treating as warning-class restart.",
+        instance_name,
+    )
+    exit_class = "warning"
+log_fn = logger.error if exit_class == "fatal" else logger.warning
+# 后续走 warning 分支：cooldown + gate + spawn 重建 _managed[instance_name]
+```
+
+#### #3 ingestor.start() 检测并重建 _fetch_executor
+
+```python
+def start(self) -> None:
+    ...
+    # §0aa P2：旧实现 stop() 关 _fetch_executor 后 start() 不重建 →
+    # 进程内 restart / 热恢复路径上的采集器变成不可重启状态。
+    # 检测已关 executor 并重建（_shutdown 标记反映状态）。
+    if self._fetch_executor is None or getattr(self._fetch_executor, "_shutdown", False):
+        self._fetch_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mt5-ohlc-fetch"
+        )
+    self._init_backfill_progress()
+    ...
+```
+
+#### #4 全 CLI 走 parse_iso_to_utc + EXEMPT 清空
+
+迁移 10 个文件（6 处 backtesting/cli.py + mining_walk_forward + mining_runner
++ walkforward_runner + backtest_runner + aggression_search + correlation_runner
++ exit_experiment + backfill_ohlc + research/nightly/runner.py）：
+
+```python
+# 旧
+start_time=datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+# 新
+from src.utils.timezone import parse_iso_to_utc
+start_time=parse_iso_to_utc(args.start)
+```
+
+`tests/utils/test_sentinel_no_fromisoformat_tz_replace.py` 的 `_EXEMPT`
+清空——所有 src/ 必须走 helper，禁止字面量豁免。
+
+### 测试（5 项新契约 + sentinel 强化）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_pipeline_shutdown_clears_global_executor_to_allow_reuse` | shutdown 后新建 pipeline 必须能 submit |
+| `test_monitor_loop_does_not_keep_stale_normal_exit_in_managed` | normal exit 必须重启或出列 |
+| `test_fetch_executor_reusable_after_stop_then_start` | stop+start 后 _fetch_executor 必须可用 |
+| `test_backtest_cli_does_not_use_unsafe_fromisoformat_replace_tzinfo` | AST 全 backtesting/cli.py 扫描，禁止反模式 |
+| `test_parse_iso_to_utc_handles_cli_aware_input_correctly` | +08:00 → UTC 0:00:00 绝对时刻保持 |
+| `test_no_new_fromisoformat_replace_tzinfo_pattern` (sentinel 强化) | EXEMPT 清空，全 src/ 必须走 helper |
+
+### 元层教训：**EXEMPT 清单必须写明"什么场景下这个豁免才安全"**
+
+§0aa **撕碎了** §0x 的 EXEMPT 决策。元层教训升级：
+
+1. **任何"豁免清单"必须配可证伪的安全条件**——§0x 写"CLI 入口 naive UTC
+   语义合法"但没有 enforce 这一前提（CLI 没有 reject aware ISO）→ 假设
+   被默默打破。正确做法：要么 sentinel 全严不豁免，要么豁免点配 unit test
+   显式锁住"该入口 reject aware 输入"的契约
+2. **模块全局单例 + 实例 shutdown 是常见反模式**——instance.close() 不清
+   module-level 全局，下一次 instance 拿到死单例。必须 shutdown 全局，或
+   全局支持 lazy reset
+3. **服务"自然退出"在长期运行守护进程上下文里是 anomaly**——supervisor
+   看到子进程 normal exit 应当作 unexpected 处理，而不是当作"任务完成"
+4. **start() / stop() 必须对称**——任何 stop 中关闭的资源，start 中必须能
+   重建（否则单进程 restart 路径整个失效）
+
+强建议（扩充 §0g→§0z 元层教训）：
+- 任何 `_EXEMPT` / `IGNORE` / 白名单清单必须在测试代码里写明：
+  - 豁免理由
+  - 豁免前提（什么条件下豁免才安全）
+  - 验证豁免前提的 sub-test（若可能）
+  - 豁免到期/复审条件
+- 任何 module-level singleton 的 shutdown 必须由 module 自己提供（不能由
+  consumer 间接 shutdown）
+- start/stop 对称性：grep "executor.shutdown\|.shutdown()" 找 stop 中关闭的
+  资源，逐个验证 start 重建路径
+- supervisor / orchestrator 监控的子进程"normal exit" 应配独立 alarm，
+  不能默默忽略
+
+### §0g→§0aa 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **59 bug + 59 反向锁** + 1 契约阻断
++ 2 sentinel + **1 个 sentinel 反例修正**：
+
+| § | bug 数 | sentinel |
+|---|---|---|
+| 0g–0r | 27 | — |
+| 0s | 3 | — |
+| 0t | 3 + 1 契约阻断 | — |
+| 0u | 5 | — |
+| 0v | 5 | — |
+| 0w | 4 | — |
+| 0x | — | R2 + R4 自动 WARN/sentinel |
+| 0y | 4 | — |
+| 0z | 4 | — |
+| **0aa** | 4 | **§0x EXEMPT 反例修正：清空所有豁免** |
+
+### 测试基线
+
+- 修复前：4 处 user-facing bug；indicator pipeline reset / supervisor normal exit / ingestor restart / CLI aware tz 全部零覆盖
+- 修复后：5 项新契约测试 + sentinel 强化；`pytest -q` → **2884 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- pipeline.shutdown 通过 `shutdown_global_executor()` 同步清模块全局，禁
+  "实例 close 不清单例"反模式
+- supervisor normal exit 视为 unexpected → 走 warning 重启路径，与其他退
+  出码统一处理
+- ingestor.start() 检测 `_shutdown` 标志重建 executor，对称 start/stop
+- 所有 CLI（10+ 个文件）统一走 parse_iso_to_utc，sentinel EXEMPT 清空，
+  消除"豁免假设"漂移空间
+
+---
+
 ## 0z. 2026-04-26 重复 signal_id 静默覆盖 + 多账户 outcome 互覆 + stop_service 漂白 + 'legacy' PK 共享（P2 ×3 + P3）
 
 ### 触发

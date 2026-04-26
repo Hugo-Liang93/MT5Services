@@ -42,6 +42,7 @@ import logging
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timedelta, timezone
+from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -251,8 +252,8 @@ def main() -> None:
     args = parser.parse_args()
     set_current_environment(args.environment)
 
-    start_dt = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-    end_dt = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+    start_dt = parse_iso_to_utc(args.start)
+    end_dt = parse_iso_to_utc(args.end)
 
     windows = _split_windows(start_dt, end_dt, args.splits)
 

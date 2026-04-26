@@ -21,6 +21,7 @@ import logging
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone
+from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict
 
 from src.backtesting.component_factory import (
@@ -70,8 +71,8 @@ def _run(
     config = BacktestConfig.from_flat(
         symbol="XAUUSD",
         timeframe=tf,
-        start_time=datetime.fromisoformat(start).replace(tzinfo=timezone.utc),
-        end_time=datetime.fromisoformat(end).replace(tzinfo=timezone.utc),
+        start_time=parse_iso_to_utc(start),
+        end_time=parse_iso_to_utc(end),
         strategy_sessions=strategy_sessions,
         strategy_timeframes=strategy_timeframes,
         **merged,

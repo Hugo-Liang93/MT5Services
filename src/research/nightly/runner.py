@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from src.utils.timezone import parse_iso_to_utc
 from typing import List, Tuple
 
 from .contracts import (
@@ -142,8 +143,8 @@ def _run_single_combo(
     bt_config = BacktestConfig.from_flat(
         symbol=symbol,
         timeframe=tf,
-        start_time=datetime.fromisoformat(start).replace(tzinfo=timezone.utc),
-        end_time=datetime.fromisoformat(end).replace(tzinfo=timezone.utc),
+        start_time=parse_iso_to_utc(start),
+        end_time=parse_iso_to_utc(end),
         strategies=[strategy],
         strategy_sessions=strategy_sessions,
         strategy_timeframes=strategy_timeframes,
