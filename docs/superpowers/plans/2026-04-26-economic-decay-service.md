@@ -446,34 +446,38 @@ class EconomicDecayService:
             return 1.0
         return self._policy.decay_for_delta(best_delta)
 
-    def _read_cache(self, symbol: str) -> float | None:
-        now_mono = _time.monotonic()
+    def _read_cache(self, symbol: str, at_time: datetime) -> float | None:
+        # Cache freshness measured against caller-supplied at_time (NOT wall
+        # clock) so backtest replay sees deterministic cache behaviour.
         with self._lock:
             entry = self._cache.get(symbol)
-            if entry is not None and now_mono < entry["expires_at"]:
-                return entry["decay"]
+            if entry is None:
+                return None
+            cached_at: datetime = entry["at_time"]
+            age_seconds = abs((at_time - cached_at).total_seconds())
+            if age_seconds < self._cache_ttl:
+                return float(entry["decay"])
             return None
 
-    def _write_cache(self, symbol: str, decay: float) -> None:
-        now_mono = _time.monotonic()
+    def _write_cache(self, symbol: str, decay: float, at_time: datetime) -> None:
         with self._lock:
-            self._cache[symbol] = {
-                "decay": decay,
-                "expires_at": now_mono + self._cache_ttl,
-            }
+            self._cache[symbol] = {"decay": decay, "at_time": at_time}
             if len(self._cache) > self._cache_max:
                 expired = [
-                    k for k, v in self._cache.items() if now_mono >= v["expires_at"]
+                    k for k, v in self._cache.items()
+                    if abs((at_time - v["at_time"]).total_seconds()) >= self._cache_ttl
                 ]
                 for k in expired:
                     del self._cache[k]
                 if len(self._cache) > self._cache_max:
                     by_age = sorted(
-                        self._cache.items(), key=lambda kv: kv[1]["expires_at"]
+                        self._cache.items(), key=lambda kv: kv[1]["at_time"]
                     )
                     for k, _ in by_age[: len(self._cache) - self._cache_max]:
                         del self._cache[k]
 ```
+
+> **Cache TTL 设计澄清（plan v1.1 修正）**：早期 plan snippet 用 `time.monotonic()` 作为 cache 时钟，但这与 plan tests `test_cache_expires_after_ttl` / `test_cache_hit_within_ttl`（两次调用 wall clock 微秒间隔，仅 `at_time` 参数差异）矛盾——wall clock TTL 永远不过期，第二个 test 必失败。修正为 `at_time` 派生 TTL，与 docstring "deterministic under backtest/replay (no implicit wall-clock reads)" 意图一致。
 
 - [ ] **Step 2.2: 运行测试确认全绿**
 
