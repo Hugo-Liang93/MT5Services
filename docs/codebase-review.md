@@ -49,6 +49,154 @@
 
 ---
 
+## 0s. 2026-04-26 cancel-result schema 解析 + cockpit exposure freshness（P2 ×2 + P3）
+
+### 触发
+
+User 报告 3 处独立 bug，全是消费侧未识别仓库已声明的标准 schema/字段：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | P2 | `trading/state/recovery.py:88-100` | 过期挂单的撤单失败因 helper TypeError 被外层 except 吞，路径稳定性依赖兜底 |
+| 2 | P2 | `trading/state/recovery_policy.py:55-60` | orphan 路径同源 helper TypeError 无 try/except，**直接打挂 startup recovery** |
+| 3 | P3 | `readmodels/cockpit.py:_build_exposure_map` | data_updated_at 写成 observed_at → freshness 永远 fresh |
+
+### 根因
+
+#### #1+#2 `_ticket_was_cancelled` helper schema 假设错
+
+仓库标准 cancel API schema（`mt5_trading.py` 多处 + `tests/trading/test_*.py`
+确认）：
+```python
+{"canceled": [int_ticket, ...], "failed": [{"ticket": int, "error": str}, ...]}
+```
+
+旧 helper 假设 `failed` 是 `list[int]`：
+```python
+failed = {int(item) for item in (result.get("failed") or []) if item is not None}
+# ↑ item 是 dict 时 int(dict) → TypeError
+```
+
+后果：
+- recovery.py：外层 `except Exception` 吞 → cancelled=False → 路径稳定但
+  依赖兜底（不可观测）
+- recovery_policy.py：orphan 路径**无 try/except** → TypeError 冒出 →
+  整个 startup recovery 挂掉
+
+#### #3 cockpit exposure_map data_updated_at 写错时间源
+
+```python
+# 旧实现
+return {
+    **self._freshness(
+        block="exposure_map",
+        observed_at=observed_at,
+        data_updated_at=observed_at,   # ← 用聚合时刻，永远新鲜
+    ),
+    ...
+}
+```
+
+后果：6 小时前的 exposure row 仍报 `freshness_state='fresh'` → 掩盖明显
+陈旧的风险暴露数据。
+
+### 修复（commit `8b1a81c`）
+
+#### #1+#2 引入 `_normalize_ticket_set` 公共 helper + orphan 兜底
+
+```python
+# recovery_policy.py 新增 module-level helper
+def _normalize_ticket_set(items: Iterable[Any]) -> set[int]:
+    """归一化为 ticket 整数集合。
+    支持：list[int] / list[str] / list[{'ticket': int, 'error': str}]
+    脏元素静默跳过，不抛 TypeError。
+    """
+    tickets: set[int] = set()
+    for item in items or []:
+        if item is None:
+            continue
+        if isinstance(item, dict):
+            raw = item.get("ticket")
+            if raw is None:
+                continue
+            try:
+                tickets.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+            continue
+        try:
+            tickets.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return tickets
+
+# 两处 _ticket_was_cancelled 都改用该 helper
+# orphan 路径加 try/except 兜底（fail-soft 防 broker 未来返其他形状）
+try:
+    cancelled = self._ticket_was_cancelled(result, ticket)
+except Exception as exc:
+    logger.warning(...)
+    cancelled = False
+```
+
+#### #3 SQL + cockpit 双层修复
+
+**SQL** `aggregate_open_positions_by_account_symbol` /
+`aggregate_pending_orders_by_account_symbol` 都加 `MAX(updated_at) AS
+latest_updated_at` 列。
+
+**cockpit** `_build_exposure_map` 取 max(exposure_rows + pending_rows 的
+`latest_updated_at` / `data_updated_at` / `updated_at`) 作为真实
+`data_updated_at`；helper `_max_iso_timestamp` 兼容 datetime 与 ISO 字符串
+混合。无 row 时 fallback 到 observed_at（旧行为，不破坏 mock）。
+
+### 测试（4 项新契约，对应分支零覆盖）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_expired_pending_with_standard_failed_payload_marks_restored_correctly` | 标准 failed=[{ticket}] 不再 TypeError；restored 计数稳定 |
+| `test_expired_pending_correctly_marked_when_cancel_succeeds_standard_schema` | cancel 全成功 → expired += 1 |
+| `test_orphan_with_standard_failed_payload_does_not_crash_startup` | orphan 路径不再 TypeError 打挂 startup |
+| `test_exposure_map_freshness_reflects_underlying_row_updated_at` | 6h 陈旧 row → freshness != fresh + data_updated_at != observed_at |
+
+### 元层教训：**纯解析路径必须 fail-soft**
+
+§0r 提出"readmodel 已声明 vs 消费侧未识别"模式，§0s 是其分支：**当解析路径
+有跨服务/跨模块 schema 假设时，必须 (a) 显式 normalize helper 接受多种 schema
+变种 (b) 关键路径加 try/except fail-soft 兜底**。
+
+仅靠"假设单一 schema + 外层 except 吞"会让 startup recovery / health probe /
+cockpit 等关键路径在 broker 升级或 schema 演进时静默挂掉/误报。
+
+强建议（扩充 §0n / §0p / §0q / §0r 元层教训）：
+- 所有 cancel/fill/transaction 类响应解析必走 `_normalize_*` helper（接受多
+  schema variant 并归一化）
+- startup recovery 的每一步都必须 fail-soft（per-row try/except 已在 §0r 落地）
+- API readmodel 输出"data_updated_at"类时间字段时，必须从底层 row 取真实值
+  而非聚合时刻（参 §0s 修复 + 同模式建议给所有 readmodel 块审核）
+
+### §0g→§0s 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **30 个 bug + 30 次反向锁**：
+
+| § | bug 数 |
+|---|---|
+| 0g–0r | 27 |
+| 0s | 3 |
+
+### 测试基线
+
+- 修复前：3 处 user-facing bug；helper / cockpit freshness / orphan startup 路径零覆盖
+- 修复后：4 项新契约测试；`pytest -m "not slow"` → **2827 passed / 0 failed**
+
+### 减少边界泄漏的方式
+
+`_ticket_was_cancelled` 跨域 helper 复用一个 `_normalize_ticket_set`
+（recovery + recovery_policy 共享）；cockpit 的 freshness 真实反映底层数据
+而非聚合时刻；orphan startup 路径 fail-soft 不再被未知 schema 打挂。
+
+---
+
 ## 0r. 2026-04-26 delegated 拓扑误判 + 启动恢复脆弱 + ADR-005 calibrator 违反（P1 + P2 ×3）
 
 ### 触发
