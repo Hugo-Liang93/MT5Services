@@ -230,7 +230,12 @@ class TradingStateRepository:
         return self._fetch_dicts(sql, [])
 
     def aggregate_open_positions_by_account_symbol(self) -> List[dict]:
-        """P10.1: 跨账户持仓聚合（latest-per-ticket → sum per account-symbol-direction）。"""
+        """P10.1: 跨账户持仓聚合（latest-per-ticket → sum per account-symbol-direction）。
+
+        §0s 回归：暴露 latest_updated_at（bucket 内 latest position updated_at
+        的 MAX）让 cockpit exposure_map.freshness 真实反映底层数据陈旧度，
+        而非聚合时刻 (observed_at) 永远 fresh。
+        """
         sql = """
 WITH latest AS (
     SELECT DISTINCT ON (account_key, position_ticket)
@@ -242,7 +247,8 @@ WITH latest AS (
         volume,
         status,
         entry_price,
-        current_price
+        current_price,
+        updated_at
     FROM position_runtime_states
     ORDER BY account_key, position_ticket, updated_at DESC
 )
@@ -251,7 +257,8 @@ SELECT account_alias,
        symbol,
        direction,
        SUM(volume)::double precision AS gross_volume,
-       COUNT(*)::bigint AS position_count
+       COUNT(*)::bigint AS position_count,
+       MAX(updated_at) AS latest_updated_at
 FROM latest
 WHERE status = 'open'
 GROUP BY account_alias, account_key, symbol, direction
@@ -275,7 +282,8 @@ WITH latest AS (
         symbol,
         direction,
         volume,
-        status
+        status,
+        updated_at
     FROM pending_order_states
     ORDER BY account_key, order_ticket, updated_at DESC
 )
@@ -284,7 +292,8 @@ SELECT account_alias,
        symbol,
        direction,
        SUM(volume)::double precision AS pending_volume,
-       COUNT(*)::bigint AS pending_count
+       COUNT(*)::bigint AS pending_count,
+       MAX(updated_at) AS latest_updated_at
 FROM latest
 WHERE status IN ('placed', 'pending')
 GROUP BY account_alias, account_key, symbol, direction

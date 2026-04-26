@@ -161,6 +161,42 @@ def test_triage_queue_classifies_and_sorts_by_severity() -> None:
     assert entries[-1]["priority_layer"] == TRIAGE_LAYER_HEALTHY
 
 
+def test_exposure_map_freshness_reflects_underlying_row_updated_at() -> None:
+    """P3 回归：exposure_map.data_updated_at 旧实现写成 observed_at（now），
+    所以底层数据明显陈旧（如 6 小时前 row）时仍报 freshness_state='fresh'。
+
+    修复：data_updated_at 必须取 exposure_rows + pending_rows 的 MAX(updated_at)，
+    反映"底层数据最近一次刷新到什么时候"。无 updated_at 字段时回退到 observed_at -
+    max_age_seconds 让 freshness 至少标 stale（fail-closed）。
+    """
+    six_hours_ago = datetime.now(timezone.utc) - timedelta(hours=6)
+    model = _build_model(
+        exposure_rows=[
+            {
+                "account_alias": "live_main",
+                "account_key": "live:1",
+                "symbol": "XAUUSD",
+                "direction": "buy",
+                "gross_volume": 0.5,
+                "position_count": 1,
+                # 6 小时前更新；与 exposure_map 的 max_age_seconds=90 相比明显陈旧
+                "data_updated_at": six_hours_ago.isoformat(),
+            },
+        ]
+    )
+    payload = model.build_overview(include=["exposure_map"])
+    block = payload["exposure_map"]
+    # data_updated_at 必须取自 row 的 6 小时前时间，不是 observed_at（now）
+    assert block["data_updated_at"] != block["observed_at"], (
+        f"data_updated_at 应反映底层 row updated_at，"
+        f"不应等于 observed_at；got data_updated_at={block['data_updated_at']!r}"
+    )
+    # freshness 必须不是 fresh（陈旧 6 小时 >> max_age_seconds=90）
+    assert (
+        block["freshness_state"] != "fresh"
+    ), f"6 小时陈旧数据不应被标 fresh；block={block!r}"
+
+
 def test_exposure_map_aggregates_contributors_across_accounts() -> None:
     model = _build_model(
         exposure_rows=[

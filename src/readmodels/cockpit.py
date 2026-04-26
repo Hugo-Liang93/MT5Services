@@ -47,6 +47,36 @@ _age_seconds = _age_seconds_shared
 _freshness_state = _freshness_state_shared
 
 
+def _max_iso_timestamp(*streams: Iterable[Any]) -> Optional[str]:
+    """从多个 row 字段流中取最大 (latest) ISO 时间戳，None / 空/非法值跳过。
+
+    支持 datetime 对象与 ISO 字符串混合；datetime → isoformat。
+    用于 cockpit exposure_map.data_updated_at 反映底层数据真实陈旧度
+    （§0s 回归：旧实现写 observed_at 永远 fresh）。
+    """
+    latest_iso: Optional[str] = None
+    latest_dt: Optional[datetime] = None
+    for stream in streams:
+        for raw in stream:
+            if raw is None:
+                continue
+            if isinstance(raw, datetime):
+                dt = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+                iso = dt.isoformat()
+            else:
+                try:
+                    iso = str(raw)
+                    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                except (TypeError, ValueError):
+                    continue
+            if latest_dt is None or dt > latest_dt:
+                latest_dt = dt
+                latest_iso = iso
+    return latest_iso
+
+
 class CockpitReadModel:
     """Cockpit overview 跨账户 canonical 读模型（P10.1）。"""
 
@@ -362,11 +392,27 @@ class CockpitReadModel:
         # (B) account-major risk_matrix[]（P12-1 新增，账户 × 品种维度）
         risk_matrix = self._build_risk_matrix(rows, pending)
 
+        # §0s 回归：data_updated_at 必须取自 row 的真实 updated_at，
+        # 而非 observed_at（聚合时刻）。否则陈旧底层数据仍报 freshness=fresh。
+        # SQL 现已暴露 latest_updated_at（aggregate_open_positions_by_account_symbol +
+        # aggregate_pending_orders_by_account_symbol 都加了 MAX(updated_at)）。
+        # 兼容 mock/单测可能给的 data_updated_at / updated_at 字段名。
+        latest_data_at = _max_iso_timestamp(
+            (row.get("latest_updated_at") for row in rows),
+            (row.get("data_updated_at") for row in rows),
+            (row.get("updated_at") for row in rows),
+            (row.get("latest_updated_at") for row in pending),
+            (row.get("data_updated_at") for row in pending),
+            (row.get("updated_at") for row in pending),
+        )
+        # 没有任何 row 提供 updated_at → fallback 到 observed_at（旧行为，
+        # 新数据接入前不破坏既有 mock；但 SQL 已强制返回该字段，prod 路径必有值）
+        data_updated_at = latest_data_at or observed_at
         return {
             **self._freshness(
                 block="exposure_map",
                 observed_at=observed_at,
-                data_updated_at=observed_at,
+                data_updated_at=data_updated_at,
             ),
             "mode": "account_symbol",
             "entries": entries,

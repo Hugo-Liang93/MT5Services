@@ -7,7 +7,7 @@ from src.signals.metadata_keys import MetadataKey as MK
 
 from ..ports import RecoveryTradingPort, TradeControlStatePort
 from ..reasons import REASON_STARTUP_EXPIRED
-from .recovery_policy import TradingStateRecoveryPolicy
+from .recovery_policy import TradingStateRecoveryPolicy, _normalize_ticket_set
 
 
 class TradingStateRecovery:
@@ -140,15 +140,15 @@ class TradingStateRecovery:
 
     @staticmethod
     def _ticket_was_cancelled(result: Any, ticket: int) -> bool:
+        # P2 回归：standard cancel_orders_by_tickets schema 是
+        # {"canceled": [int_ticket, ...], "failed": [{"ticket": int, "error": str}]}
+        # 旧实现假设 failed 是 list[int]，对 dict 调 int(item) 抛 TypeError →
+        # 上游 except 吞或直接打挂 startup recovery（参 §0s）
         if isinstance(result, dict):
-            cancelled = {
-                int(item)
-                for item in (result.get("canceled") or result.get("cancelled") or [])
-                if item is not None
-            }
-            failed = {
-                int(item) for item in (result.get("failed") or []) if item is not None
-            }
+            cancelled = _normalize_ticket_set(
+                result.get("canceled") or result.get("cancelled") or []
+            )
+            failed = _normalize_ticket_set(result.get("failed") or [])
             if ticket in cancelled:
                 return True
             if failed:

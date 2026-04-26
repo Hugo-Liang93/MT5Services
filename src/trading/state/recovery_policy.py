@@ -1,13 +1,46 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+import logging
+from typing import Any, Iterable, Literal
 
 from src.trading.reasons import REASON_STARTUP_MISSING, REASON_STARTUP_ORPHAN_CANCELLED
 from src.trading.ports import PendingOrderCancellationPort
 
 
+logger = logging.getLogger(__name__)
+
+
 OrphanRecoveryAction = Literal["record_only", "cancel"]
 MissingRecoveryAction = Literal["mark_missing", "ignore"]
+
+
+def _normalize_ticket_set(items: Iterable[Any]) -> set[int]:
+    """把任意 cancel/failed 列表归一化为 ticket 整数集合。
+
+    支持两种 schema：
+    - 旧实现：list[int] / list[str]
+    - 标准（mt5_trading.py / 仓库其他模块）：list[{"ticket": int, "error": str}]
+
+    脏元素（无 ticket / 无法转 int）静默跳过，不抛 TypeError。
+    """
+    tickets: set[int] = set()
+    for item in items or []:
+        if item is None:
+            continue
+        if isinstance(item, dict):
+            raw = item.get("ticket")
+            if raw is None:
+                continue
+            try:
+                tickets.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+            continue
+        try:
+            tickets.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return tickets
 
 
 class TradingStateRecoveryPolicy:
@@ -57,7 +90,21 @@ class TradingStateRecoveryPolicy:
         except Exception:
             return "orphan"
 
-        if not self._ticket_was_cancelled(result, ticket):
+        # P2 回归：即使 _ticket_was_cancelled 已修，仍加 try 兜底防御未知 broker
+        # 返回形状打挂 startup recovery（同 §0s 元层教训：纯解析路径必须 fail-soft）
+        try:
+            cancelled = self._ticket_was_cancelled(result, ticket)
+        except Exception as exc:
+            logger.warning(
+                "handle_orphan_pending_order: _ticket_was_cancelled raised"
+                " %s: %s; defaulting to not-cancelled (ticket=%s, result=%r)",
+                type(exc).__name__,
+                exc,
+                ticket,
+                result,
+            )
+            cancelled = False
+        if not cancelled:
             return "orphan"
 
         self._store.mark_pending_order_cancelled(
@@ -82,11 +129,17 @@ class TradingStateRecoveryPolicy:
             "params": None,
             "entry_low": None,
             "entry_high": None,
-            "trigger_price": cls._float_or_none(cls._row_value(order_row, "price_open", None)),
-            "entry_price_requested": cls._float_or_none(cls._row_value(order_row, "price_open", None)),
+            "trigger_price": cls._float_or_none(
+                cls._row_value(order_row, "price_open", None)
+            ),
+            "entry_price_requested": cls._float_or_none(
+                cls._row_value(order_row, "price_open", None)
+            ),
             "stop_loss": cls._float_or_none(cls._row_value(order_row, "sl", None)),
             "take_profit": cls._float_or_none(cls._row_value(order_row, "tp", None)),
-            "volume": cls._float_or_none(cls._row_value(order_row, "volume_current", None))
+            "volume": cls._float_or_none(
+                cls._row_value(order_row, "volume_current", None)
+            )
             or cls._float_or_none(cls._row_value(order_row, "volume_initial", None)),
             "created_at": cls._row_value(order_row, "time_setup", None),
             "metadata": {},
@@ -95,7 +148,9 @@ class TradingStateRecoveryPolicy:
     @staticmethod
     def _ticket(order_row: Any) -> int:
         try:
-            return int(TradingStateRecoveryPolicy._row_value(order_row, "ticket", 0) or 0)
+            return int(
+                TradingStateRecoveryPolicy._row_value(order_row, "ticket", 0) or 0
+            )
         except (TypeError, ValueError):
             return 0
 
@@ -107,13 +162,15 @@ class TradingStateRecoveryPolicy:
 
     @staticmethod
     def _ticket_was_cancelled(result: Any, ticket: int) -> bool:
+        # P2 回归：standard cancel_orders_by_tickets schema 是
+        # {"canceled": [int_ticket, ...], "failed": [{"ticket": int, "error": str}]}
+        # 旧实现假设 failed 是 list[int]，对 dict 调 int(item) 抛 TypeError →
+        # orphan 路径无 try/except 兜底 → 直接打挂 startup recovery（参 §0s）
         if isinstance(result, dict):
-            cancelled = {
-                int(item)
-                for item in (result.get("canceled") or result.get("cancelled") or [])
-                if item is not None
-            }
-            failed = {int(item) for item in (result.get("failed") or []) if item is not None}
+            cancelled = _normalize_ticket_set(
+                result.get("canceled") or result.get("cancelled") or []
+            )
+            failed = _normalize_ticket_set(result.get("failed") or [])
             if ticket in cancelled:
                 return True
             if failed:
