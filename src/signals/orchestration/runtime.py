@@ -167,6 +167,8 @@ class SignalRuntime:
         self._pipeline_event_bus: Any | None = None
         # 经济日历服务：由装配层通过 set_economic_calendar_service() 显式注入。
         self._economic_calendar_service: Any | None = None
+        # 经济事件 decay service：由装配层通过 set_economic_decay_service() 显式注入。
+        self._economic_decay_service: Any | None = None
 
         # R-2: 每个 (symbol, timeframe) 独占一把分片锁，避免同目标状态并发竞争。
         # _state_lock 仅保护全局状态容器；_count_active_states() 等读路径不依赖它持锁遍历。
@@ -236,9 +238,6 @@ class SignalRuntime:
             "data": None,
             "expires_at": datetime.now(timezone.utc),
         }
-        # 经济事件 decay 因子缓存：per-symbol 短 TTL，避免每个策略 decision 都查 DB。
-        # key=symbol → {"decay": float, "expires_at": float (monotonic)}
-        self._event_decay_cache: dict[str, dict[str, float]] = {}
         # Anti-starvation 计数器：限制 confirmed 连续独占队列，周期性给 intrabar 让路。
         self._confirmed_burst_count: int = 0
 
@@ -286,6 +285,15 @@ class SignalRuntime:
     def set_economic_calendar_service(self, service: Any | None) -> None:
         """Inject economic calendar service for forecast and decay resolution."""
         self._economic_calendar_service = service
+
+    @property
+    def economic_decay_service(self) -> Any | None:
+        """Expose explicitly injected economic decay service."""
+        return self._economic_decay_service
+
+    def set_economic_decay_service(self, service: Any | None) -> None:
+        """Inject EconomicDecayService for confidence decay resolution."""
+        self._economic_decay_service = service
 
     def strategy_capability_contract(self) -> tuple[dict[str, Any], ...]:
         """Expose runtime-visible strategy capability contract."""
