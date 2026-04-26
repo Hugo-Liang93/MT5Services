@@ -49,6 +49,339 @@
 
 ---
 
+## 0v. 2026-04-26 trading 域 critical 降级 + 缓存 snapshot 漂白 + trade_trace 跨账户泄漏 + 跨账户去重折叠 + control_state PK 漂移（P2 ×3 + P3 ×2）
+
+### 触发
+
+User 报告 5 处独立 bug，本轮聚焦"监控 critical 评级链路 + trade_trace 多账户安全 + control_state PK 一致性":
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | P2 | `monitoring/health/common.py:14-23` | `metric_overall_impact()` 漏 4 个 trading 域阻断指标 → critical 时只算 advisory_critical → overall_status 被降成 warning |
+| 2 | P2 | `monitoring/health/reporting.py:147-160` | `get_system_status` 读缓存 snapshot 后只拼 active_alerts，不重新评级 → healthy + critical alert 同时呈现的矛盾态 |
+| 3 | P2 | `readmodels/trade_trace.py:47-57` | `auto_executions` / `trade_outcomes` 不按 account_alias 过滤 → 多账户共享 signal_id 时跨账户泄漏到当前账户 facts/timeline |
+| 4 | P3 | `readmodels/trade_trace.py:_fetch_by_signal_ids` | 去重键仅 `(signal_id, ts)` 无 account 维度 → 两账户同时刻同 signal 事件被静默丢一条 |
+| 5 | P3 | `persistence/schema/trade_control_state.py:1-15` | PK=account_alias + UNIQUE INDEX=account_key 落点不一致 → alias 改名时 unique 冲突 ON CONFLICT 接不住 → UPSERT 抛 UNIQUE violation |
+
+### 根因
+
+#### #1 metric_overall_impact 漏 trading 域阻断指标
+
+```python
+# 旧实现
+def metric_overall_impact(metric_name: str) -> str:
+    if metric_name in {
+        "data_latency", "indicator_freshness", "queue_depth",
+        "economic_calendar_staleness", "economic_provider_failures",
+    }:
+        return "blocking"
+    return "advisory"     # ← reconciliation_lag / circuit_breaker_open /
+                           #    execution_failure_rate / execution_queue_overflows
+                           #    全落到 advisory
+```
+
+evaluate path（reporting.py:70-75）：
+```python
+elif alert_level == "critical":
+    if impact == "blocking":
+        report["summary"]["critical_count"] += 1
+    else:
+        report["summary"]["advisory_critical_count"] += 1
+# overall_status 评级
+if critical_count > 0: status = "critical"
+elif warning_count > 0: status = "warning"
+elif (advisory_critical or advisory_warning): status = "warning"   # ← 只升到 warning
+```
+
+User 复现：execution_failure_rate=0.5 → 组件 status='critical' + advisory_critical_count=1
++ overall_status='warning'。**正是该报警的指标在 overall_status 上看不到**。
+
+#### #2 get_system_status 缓存与 active_alerts 时序漂移
+
+```python
+# 旧实现
+def get_system_status(monitor):
+    status = monitor._store.get_system_status()  # ← 上一次 generate_report 写入
+    if status:
+        result = dict(status)
+        result["active_alerts"] = list(monitor.active_alerts.values())  # ← 实时
+        return result
+```
+
+`active_alerts` 是 record_metric 实时写入的，`system_status` snapshot 是
+generate_report 周期写入的（默认 60s 间隔）。两者之间 critical alert 触发 →
+`active_alerts` 已含 critical，但 snapshot 仍是上一次的 healthy → 接口同时返
+overall_status='healthy' + active_alerts=[critical] 矛盾态。消费侧（外部
+healthcheck / cockpit / 推送）读这个接口判断系统状态时被瞒过去。
+
+#### #3 trade_trace auto/outcome 跨账户泄漏
+
+```python
+# 旧实现
+def trace_by_signal_id(signal_id):
+    pending_orders = trading_state_repo.fetch_pending_order_states(
+        account_alias=self._account_alias_getter(), signal_id=...)  # ← 过滤
+    positions = trading_state_repo.fetch_position_runtime_states(
+        account_alias=self._account_alias_getter(), signal_id=...)  # ← 过滤
+    operations = command_audit_repo.fetch_trace_operations(
+        account_alias=self._account_alias_getter(), signal_id=...)  # ← 过滤
+    auto_executions = signal_repo.fetch_auto_executions(signal_id=...)  # ← 全局
+    trade_outcomes = signal_repo.fetch_trade_outcomes(signal_id=...)    # ← 全局
+```
+
+`auto_executions` / `trade_outcomes` 表本身已带 `account_key` / `account_alias`
+列（fetcher SELECT 出来），但 fetcher 不接受过滤参数 → readmodel 拿到全局数据。
+multi-account 下同 signal_id 被 acct_a / acct_b 都执行 → trace_by_signal_id
+返回的 facts['auto_executions'] / facts['trade_outcomes'] / timeline 全混入
+其他账户记录。
+
+`signal_outcomes` 是 signal-level（无 account 字段），不在此范围。
+
+#### #4 _fetch_by_signal_ids dedup key 缺 account 维度
+
+```python
+# 旧实现
+seen: set[tuple[str, str]] = set()
+for signal_id in signal_ids:
+    for row in fetcher(signal_id=signal_id, limit=limit):
+        key = (str(row.get("signal_id")), str(row.get("recorded_at") or row.get("executed_at")))
+        if key in seen: continue   # ← 跨账户同时刻同 signal 被错误折叠
+        seen.add(key)
+        rows.append(row)
+```
+
+即使 #3 修复，readmodel 也只问"当前账户"——但 `_fetch_by_signal_ids` 是
+helper 不只服务于 by_signal_id 路径；trace_by_trace_id 内部聚合多 signal_id
+跨账户 fetch 时，相同 (signal_id, ts) 会被去重；正确去重键必须含 account。
+
+#### #5 trade_control_state PK 与 unique 索引落点不一致
+
+```sql
+-- 旧 schema
+CREATE TABLE trade_control_state (
+    account_alias TEXT PRIMARY KEY,           -- ← PK 在 alias
+    account_key TEXT,
+    ...
+);
+CREATE UNIQUE INDEX idx_trade_control_state_account_key
+    ON trade_control_state (account_key);     -- ← 唯一约束在 key
+
+-- 旧 upsert
+ON CONFLICT (account_alias) DO UPDATE SET ... -- ← 接 alias
+```
+
+User 复现：先插 `(alias_a, key_1)`，再插 `(alias_b, key_1)` → 第二条
+`account_key` 已存在 → unique 索引先于 PK 冲突 → ON CONFLICT (account_alias)
+不匹配 → 直接抛 `UNIQUE constraint failed: trade_control_state.account_key`。
+后果：alias 重命名 / 规范化后控制状态持久化直接失败。
+
+### 修复（commit 待 push）
+
+#### #1 metric_overall_impact 加 4 trading metrics
+
+```python
+def metric_overall_impact(metric_name: str) -> str:
+    if metric_name in {
+        # 行情 / 指标 / 经济日历类
+        "data_latency", "indicator_freshness", "queue_depth",
+        "economic_calendar_staleness", "economic_provider_failures",
+        # §0v P2：交易域阻断指标
+        "reconciliation_lag", "circuit_breaker_open",
+        "execution_failure_rate", "execution_queue_overflows",
+    }:
+        return "blocking"
+    return "advisory"
+```
+
+#### #2 get_system_status 共用 escalation helper 重新评级
+
+抽取 `_escalate_status_for_active_alerts()` helper（reporting.py module-level），
+被 generate_report 和 get_system_status 共用，确保两条路径对 active_alerts
+评级口径一致：
+
+```python
+def _escalate_status_for_active_alerts(base_status, active_alerts):
+    has_critical = any(... severity/alert_level == "critical" ...)
+    has_warning = any(...)
+    if has_critical and base_status != "critical": return "critical"
+    if has_warning and base_status == "healthy": return "warning"
+    return base_status
+
+def get_system_status(monitor):
+    status = monitor._store.get_system_status()
+    if status:
+        result = dict(status)
+        active = list(monitor.active_alerts.values())
+        result["active_alerts"] = active
+        # §0v P2：缓存 snapshot 与 active_alerts 之间可能 stale，
+        # 用同款 helper 重新评级避免矛盾态
+        result["overall_status"] = _escalate_status_for_active_alerts(
+            str(result.get("overall_status") or "unknown"), active)
+        return result
+    return {...}
+```
+
+#### #3 signal_repo + trade_trace 透传 account_alias
+
+```python
+# signal_repo.fetch_auto_executions / fetch_trade_outcomes
+def fetch_auto_executions(*, signal_id, limit=50,
+                          account_alias=None, account_key=None):
+    sql = "SELECT ... FROM auto_executions WHERE signal_id = %s"
+    params = [signal_id]
+    if account_key is not None:
+        sql += " AND account_key = %s"; params.append(account_key)
+    elif account_alias is not None:
+        sql += " AND account_alias = %s"; params.append(account_alias)
+    sql += " ORDER BY executed_at ASC LIMIT %s"; params.append(limit)
+    return self._fetch_dict_rows(sql, params)
+
+# trade_trace.trace_by_signal_id
+current_account_alias = self._account_alias_getter()
+auto_executions = self._signal_repo.fetch_auto_executions(
+    signal_id=normalized_signal_id, limit=50,
+    account_alias=current_account_alias)
+trade_outcomes = self._signal_repo.fetch_trade_outcomes(
+    signal_id=normalized_signal_id, limit=20,
+    account_alias=current_account_alias)
+# signal_outcomes 是 signal-level 无 account 字段，不过滤
+```
+
+调用方未传 account_alias 时保留旧的全局返回行为（research / analytics 路径合法）。
+
+#### #4 _fetch_by_signal_ids dedup key 含 account 维度 + 透传 account_alias
+
+```python
+@staticmethod
+def _fetch_by_signal_ids(*, signal_ids, fetcher, limit, account_alias=None):
+    seen: set[tuple[str, str, str, str]] = set()
+    for signal_id in signal_ids:
+        kwargs = {"signal_id": signal_id, "limit": limit}
+        if account_alias is not None:
+            kwargs["account_alias"] = account_alias
+        for row in fetcher(**kwargs):
+            key = (
+                str(row.get("signal_id") or ""),
+                str(row.get("recorded_at") or row.get("executed_at") or ""),
+                str(row.get("account_key") or ""),       # ← 新增维度
+                str(row.get("account_alias") or ""),     # ← 新增维度
+            )
+            if key in seen: continue
+            seen.add(key); rows.append(row)
+```
+
+#### #5 trade_control_state PK 升级 + 删除冗余 unique 索引
+
+```sql
+-- DDL（fresh install）
+CREATE TABLE trade_control_state (
+    account_key TEXT NOT NULL PRIMARY KEY,    -- ← PK 改 account_key
+    account_alias TEXT NOT NULL,              -- ← 仍保留作 display + 索引
+    ...
+);
+CREATE INDEX idx_trade_control_state_alias
+    ON trade_control_state (account_alias);   -- ← 普通 index 而非 unique
+
+-- POST_INIT migration
+UPDATE trade_control_state
+SET account_key = account_alias
+WHERE account_key IS NULL OR account_key = '';
+
+ALTER TABLE trade_control_state
+    ALTER COLUMN account_key SET NOT NULL;
+
+DROP INDEX IF EXISTS idx_trade_control_state_account_key;  -- ← 删冗余 unique
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        WHERE t.relname = 'trade_control_state'
+          AND c.contype = 'p'
+          AND pg_get_constraintdef(c.oid) ILIKE '%(account_key)'
+    ) THEN
+        ALTER TABLE trade_control_state
+            DROP CONSTRAINT IF EXISTS trade_control_state_pkey;
+        ALTER TABLE trade_control_state
+            ADD CONSTRAINT trade_control_state_pkey
+            PRIMARY KEY (account_key);
+    END IF;
+END $$;
+
+-- UPSERT
+ON CONFLICT (account_key) DO UPDATE SET
+    account_alias = EXCLUDED.account_alias,   -- ← alias 改名时同步覆盖
+    ...
+```
+
+### 测试（6 项新契约 + 2 项现有 stub 升级）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_generate_report_critical_trading_metric_drives_overall_status_to_critical` | execution_failure_rate critical → impact='blocking' + overall_status='critical' |
+| `test_generate_report_circuit_breaker_open_critical_drives_overall_status` | circuit_breaker_open critical 同样 |
+| `test_get_system_status_does_not_report_healthy_with_active_critical_alert` | 缓存 snapshot=healthy + active critical 注入 → 接口返 critical（非 healthy）|
+| `test_trace_by_signal_id_does_not_mix_other_accounts_executions_and_outcomes` | acct_a 调 trace 不能拿到 acct_b 的 auto/outcome |
+| `test_fetch_by_signal_ids_dedup_preserves_cross_account_same_timestamp_events` | 两账户同时刻 row 必须保留两条，不被去重折叠 |
+| `test_trade_control_state_pk_matches_unique_index_to_avoid_alias_rename_failure` | DDL PK = account_key + UPSERT ON CONFLICT (account_key)（非 alias）|
+
+### 元层教训：**评级链路与去重键必须包含影响维度全集**
+
+§0u 引入 PK 复合化原则：业务实体 ID + 租户/账户维度。§0v 把同一原则
+推广到**评级链路 / 去重键 / 缓存评级**：
+
+1. **告警评级元数据完整性**：metric → impact 映射必须涵盖所有阻断类指标，
+   不能只覆盖创建时的"行情/指标"集合。新增交易/订单/风控类指标时必须同步
+   updated 这张表，否则 critical 评级被自动降级
+2. **缓存与实时事件的混合视图必须 re-evaluate**：缓存 snapshot + 实时
+   active_alerts 拼接时，必须用同款 escalation helper 重新评级，否则两个
+   时点的口径错配产生矛盾态
+3. **去重键必须含影响维度全集**：(signal_id, ts) 作 key 假设了"signal 在
+   时点上唯一"——多账户拓扑下这个假设不成立，必须把 account_key/alias
+   纳入 key
+4. **PK + UNIQUE INDEX + ON CONFLICT 三者必须落在同一列上**：迁移过程中
+   "PK 在 alias，唯一索引在 key" 这种交错状态会让任意一边的冲突落点都
+   不能被另一边接住
+
+强建议（扩充 §0g→§0u 元层教训）：
+- 全 schema 审计：`grep "PRIMARY KEY\|UNIQUE INDEX\|ON CONFLICT"`，
+  确认每张表 PK / unique 约束 / upsert 落点完全一致
+- 监控/告警的 metric → impact 映射应作 single source of truth，
+  注册新 metric 时必须同时声明 impact
+- readmodel 任何 fetcher 返回 multi-tenant 数据时必须接受 account 过滤参数，
+  否则跨账户泄漏只是时间问题
+- 任何"缓存 + 实时 patch"模式必须用共享 helper 重新评级，避免两侧时点漂移
+
+### §0g→§0v 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **43 个 bug + 43 次反向锁** + 1 次契约阻断：
+
+| § | bug 数 |
+|---|---|
+| 0g–0r | 27 |
+| 0s | 3 |
+| 0t | 3 + 1 契约阻断 |
+| 0u | 5 |
+| 0v | 5 |
+
+### 测试基线
+
+- 修复前：5 处 user-facing bug；critical 评级 / 缓存 stale / trace 跨账户 / 去重 / control PK 全部零覆盖
+- 修复后：6 项新契约测试；`pytest -q` → **2848 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- impact map 在 common.py single source of truth，新增 metric 时一处变更生效
+- escalation helper module-level 共享，generate_report 和 get_system_status
+  口径自动一致
+- signal_repo fetcher account_alias / account_key 参数化，readmodel
+  只需透传不需要改 fetcher 内部
+- trade_control_state PK / UPSERT / ON CONFLICT 全部锁在 account_key 上，
+  alias 仅作 display + 普通索引
+
+---
+
 ## 0u. 2026-04-26 多账户共享 ticket PK 互覆 + 监控 count 漂白 + 全失败静默（P1 ×2 + P2 ×3）
 
 ### 触发
