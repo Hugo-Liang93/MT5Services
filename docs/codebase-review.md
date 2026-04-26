@@ -49,6 +49,145 @@
 
 ---
 
+## 0o. 2026-04-26 sys.path 阴影 stdlib + 候选 deployment 不收口 + 已删字段误读（P1 ×2 + P2 ×3）
+
+### 触发
+
+User 报告 5 个独立 bug：
+
+| # | 等级 | 文件 | 触发命令 |
+|---|---|---|---|
+| 1 | **P1** | `confidence_check.py:14` | `python -m src.ops.cli.confidence_check --tf M30` 直接抛 ImportError |
+| 2 | **P1** | `diagnose_no_trades.py:18` | `python -m src.ops.cli.diagnose_no_trades --tf M15` 同源 |
+| 3 | P2 | `confidence_check.py:50-72` | 默认路径下脚本只打 settings 不输出任何 TF 段 |
+| 4 | P2 | `confidence_check.py:71-72` | "可通过"集合含 CANDIDATE/DEMO_VALIDATION 策略 → live 假阳性 |
+| 5 | P2 | `live_preflight.py:223` | `Config: min_confidence live=0.55` 是伪事实 |
+
+### 根因 #1+#2（最严重）— sys.path 阴影 stdlib calendar
+
+`src/calendar/` 包名与 stdlib `calendar` 冲突是 latent bug 长期存在。
+`sys.path.insert(0, repo_root)` 把 src 提到 stdlib **之前**激活该冲突：
+- `import requests` → `requests.compat` → `http.cookiejar`
+- → `from calendar import timegm` 命中 `src/calendar/__init__.py`（lazy lookup 无 `timegm`）
+- → `ImportError: cannot import name 'timegm' from 'calendar'`
+
+只有在 module-top `import requests` 的两个 CLI（`confidence_check` /
+`diagnose_no_trades`）触发；其余 15 个 CLI 都有同样 latent 模式但 lazy import 避开了。
+
+### 根因 #3 — strategy_timeframes 维度用错
+
+`strategy_timeframes: dict[str, list[str]]` 的 **keys** 是策略名，**values** 是 TF 列表。
+旧代码 `tfs = sorted(stf.keys(), ...)` 把策略名当 TF 用 → 后续 `if tf in tfs_list`
+匹配永远空 → 默认路径下脚本只打 settings 然后退出。
+
+### 根因 #4 — 候选不收口 deployment.allows_live_execution()
+
+候选集合只从 `strategy_timeframes` 推导，未过滤 deployment。但
+`StrategyDeployment.allows_live_execution()` 只允许 `ACTIVE` / `ACTIVE_GUARDED`，
+`CANDIDATE` / `DEMO_VALIDATION` / `PAPER_ONLY` 在 live 链路（pre-trade
+filter）会被直接拒绝。当前配置下 user 实测 M30 候选 7 个全是 candidate /
+demo_validation，allows_live_execution() 全为 False — 但工具显示 "有策略可通过"。
+
+### 根因 #5 — 已删字段 getattr 默认占位
+
+`SignalConfig.min_preview_confidence` 字段早已删除（hasattr=False）。
+旧 `getattr(signal_cfg, 'min_preview_confidence', 0.55)` 永远走 default 0.55。
+真实 live 阈值是 `auto_trade_min_confidence` (实测 0.35)。
+preflight "实盘 vs 回测差异表"成为伪事实。
+
+### 修复（commit `8cbfc6c`）
+
+**P1 (×2 + 同源 hardening 15 个 CLI)**:
+```python
+# 17 个 src/ops/cli/*.py 同步：
+- sys.path.insert(0, repo_root)
++ if repo_root not in sys.path:
++     sys.path.append(repo_root)
+```
+让 stdlib 在 sys.path 优先位置（`-m` 模式下 cwd 由 Python 自动加），
+src/* 仍可 import 但不再阴影 stdlib。
+
+**P2#3** confidence_check 默认 TF：
+```python
+- tfs = sorted(stf.keys(), ...)                        # 策略名（错）
++ derived = {t.strip().upper() for tfs_list in stf.values() for t in tfs_list}
++ tfs = sorted(derived, key=lambda x: _TF_ORDER.index(x) if x in _TF_ORDER else 99)
+```
+
+**P2#4** confidence_check deployment 收口：
+```python
+deployments = getattr(cfg, "strategy_deployments", {}) or {}
+
+def _strategy_allowed_live(name: str) -> bool:
+    if not deployments:
+        return True   # 配置未启用 deployment 合同 → fallback 不过滤
+    deployment = deployments.get(name)
+    if deployment is None:
+        return False  # 启用但策略未声明 → 保守拒绝（避免假阳性）
+    return bool(deployment.allows_live_execution())
+
+allowed = [name for name, tfs_list in stf.items()
+           if tf in [t.strip().upper() for t in tfs_list]
+           and _strategy_allowed_live(name)]
+```
+
+**P2#5** live_preflight：
+```python
+- ("min_confidence", getattr(signal_cfg, "min_preview_confidence", 0.55), ...)
++ ("min_confidence", getattr(signal_cfg, "auto_trade_min_confidence", 0.55), ...)
+```
+
+### 测试（之前 100% 零覆盖；与 §0g→§0n 同模式）
+
+| 文件 | 项数 | 锁定的契约 |
+|---|---|---|
+| `tests/ops/test_confidence_check.py`（新建） | 5 | subprocess `--help` 不抛 ImportError（P1 真复现）+ 2 sentinel 锁 sys.path.insert(0 + default TF 推导从 values + deployment 过滤 CANDIDATE/DEMO_VALIDATION |
+| `tests/ops/test_live_preflight.py` | +1 | sentinel 锁 min_preview_confidence 不再出现 + auto_trade_min_confidence 必须出现 |
+
+### 元层教训：包名冲突 + sys.path 顺序 = 隐藏巨坑
+
+`src/calendar/` 与 stdlib `calendar` 撞名是**根因之根因**。`sys.path.insert(0,...)`
+只是激活机关，真正的设计错误是 calendar 包没起一个独特名字。**短期**已通过
+sys.path.append 缓解；**长期**应考虑：
+
+a. **重命名 `src/calendar` → `src/economic_calendar` 或 `src/calendar_service`** ——
+   彻底消除 stdlib 撞名；影响 100+ import 但一次性永久修。优先级：中。
+b. **加 CI 烟测**：`python -c "import src.ops.cli.confidence_check"` 等 17 个 CLI
+   全部能加载 → 任何 sys.path 回退或 import 链漂移立即抓到。
+c. **CLAUDE.md "代码规范"段加规则**：禁止 `sys.path.insert(0, ...)`；项目根目录
+   名（`src/`）不得与 stdlib 模块同名。
+
+### §0g→§0o 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **15 个 bug + 15 次反向锁**：
+
+| § | bug 性质 |
+|---|---|
+| 0g | P0 timezone NameError + 复制粘贴漂移 |
+| 0h | P2 frozen-mutate + 静默吞 |
+| 0i | P2 pyproject 与代码现实不符 |
+| 0j | P3 时区一致性 |
+| 0k | P3 CLI dead route + 解析无信息量 |
+| 0l | P2+P3 三处 CLI 死路径/死 helper |
+| 0m | P1 探针漂移 |
+| 0n | P2 ×3 CLI 参数/Schema 漂移 |
+| 0o | **P1 ×2 + P2 ×3** sys.path 阴影 + deployment 不收口 + 已删字段 |
+
+### 测试基线
+
+- 修复前：5 处 user-facing bug（2 个 P1 直接崩 + 3 个 P2 静默错）；零测试覆盖
+- 修复后：7 项新契约测试 + 17 个 CLI sys.path 模式统一；
+  `pytest -m "not slow"` → **2809 passed / 0 failed**
+
+### 减少边界泄漏的方式
+
+CLI sys.path 模式从"insert(0)"统一到"append"，不再阴影 stdlib；
+confidence_check 候选集合首次与 deployment 合同收口，"可通过"结论与 live
+执行链路一致；live_preflight 配置差异表读真实 live 阈值，与 auto_trade
+执行链路对齐。
+
+---
+
 ## 0n. 2026-04-26 三处 CLI 参数/Schema 漂移修复（daily_report ×2 + diagnose ×1，P2）
 
 ### 触发
