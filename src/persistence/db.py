@@ -712,6 +712,16 @@ class TimescaleWriter:
     def heartbeat_execution_intent(self, **kwargs) -> None:
         self.execution_intent_repo.heartbeat_execution_intent(**kwargs)
 
+    def reserve_intent_key(self, **kwargs) -> bool:
+        # §0dm P2 #5：写 ledger 跨时间 UNIQUE。返 True=本次首注册，可写主表；
+        # False=已被其他 publisher 抢先，本次跳过避免重复发布。
+        return self.execution_intent_repo.reserve_intent_key(**kwargs)
+
+    def mark_intent_dispatched(self, **kwargs) -> bool:
+        # §0dm P1：claimed → dispatched atomic CAS。返 True=成功 transition，
+        # False=lease 已被接管（owner 不匹配 / status 已不是 claimed）。
+        return self.execution_intent_repo.mark_intent_dispatched(**kwargs)
+
     def complete_execution_intent(self, **kwargs) -> bool:
         # §0dl P2：底层 repo 返 bool（True=本 worker 完成，False=lease 已被
         # 其他 worker 接管）；包装层必须 return 让 consumer._safe_complete()
@@ -726,6 +736,17 @@ class TimescaleWriter:
 
     def heartbeat_operator_command(self, **kwargs) -> None:
         self.operator_command_repo.heartbeat_operator_command(**kwargs)
+
+    def reserve_command_idempotency_key(self, **kwargs) -> bool:
+        # §0dm P2 #4：写 ledger 跨时间 UNIQUE 保护 idempotency_key。返 True=
+        # 本次首注册，service 可继续 enqueue；False=并发请求重复，service
+        # 应返回已存在的 command_id。
+        return self.operator_command_repo.reserve_command_idempotency_key(**kwargs)
+
+    def mark_command_dispatched(self, **kwargs) -> bool:
+        # §0dm P2：claimed → dispatched atomic CAS（同 mark_intent_dispatched
+        # 模式）。执行控制面副作用前调用，失败必须放弃执行避免重放污染审计。
+        return self.operator_command_repo.mark_command_dispatched(**kwargs)
 
     def complete_operator_command(self, **kwargs) -> bool:
         # §0dl P2：底层 repo 返 bool（同 complete_execution_intent 模式）；

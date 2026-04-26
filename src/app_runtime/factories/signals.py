@@ -641,6 +641,10 @@ def build_account_runtime_components(
             claim_fn=storage_writer.db.claim_execution_intents,
             complete_fn=storage_writer.db.complete_execution_intent,
             heartbeat_fn=storage_writer.db.heartbeat_execution_intent,
+            # §0dm P1：at-most-once dispatch 必须注入 mark_dispatched_fn——
+            # 让 consumer 在 process_event 前 atomic CAS claimed → dispatched，
+            # 防止 lease 过期后另一 worker reclaim 真实重复下单。
+            mark_dispatched_fn=storage_writer.db.mark_intent_dispatched,
             runtime_identity=runtime_identity,
             trade_executor=trade_executor,
             pipeline_event_bus=pipeline_event_bus,
@@ -993,6 +997,9 @@ def build_signal_components(
     if runtime_identity is not None:
         execution_intent_publisher = ExecutionIntentPublisher(
             write_fn=storage_writer.db.write_execution_intents,
+            # §0dm P2 #5：ledger 兜底——同 signal_id+account_key 跨时间唯一注册，
+            # 防止 hypertable UNIQUE 跨 chunk 限制下的重复发布。
+            reserve_intent_key_fn=storage_writer.db.reserve_intent_key,
             runtime_identity=runtime_identity,
             account_bindings=dict(signal_config.account_bindings),
             strategy_deployments=dict(validated_deployments),

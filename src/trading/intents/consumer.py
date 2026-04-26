@@ -27,6 +27,7 @@ class ExecutionIntentConsumer:
         claim_fn,
         complete_fn,
         heartbeat_fn=None,
+        mark_dispatched_fn=None,
         runtime_identity: RuntimeIdentity,
         trade_executor,
         pipeline_event_bus: PipelineEventBus | None = None,
@@ -38,6 +39,10 @@ class ExecutionIntentConsumer:
         self._claim_fn = claim_fn
         self._complete_fn = complete_fn
         self._heartbeat_fn = heartbeat_fn
+        # §0dm P1：mark_dispatched_fn 在 process_event 前 atomic transition
+        # claimed → dispatched，None 时退化为旧行为（仅 lease 过期防御）。
+        # 装配层（factories/signals.py）必须传入，否则 at-most-once 不生效。
+        self._mark_dispatched_fn = mark_dispatched_fn
         self._runtime_identity = runtime_identity
         self._trade_executor = trade_executor
         self._pipeline_event_bus = pipeline_event_bus
@@ -139,10 +144,32 @@ class ExecutionIntentConsumer:
         # 包装外部副作用调用——complete_fn 失败 → lease 过期自然 retry，emit
         # 失败 → 旁路降级，都不再传播异常打死 worker（与 §0cc OperatorCommand
         # consumer 同模式）。
+        # §0dm P1：process_event 期间启动后台 heartbeat 续租线程——MT5 dispatch
+        # / 风控 / 挂单处理可能 > lease_seconds (30s)；旧实现仅入口处一次心跳，
+        # process 中途 lease 过期会被另一个 worker reclaim 并真实重复下单。
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = self._start_heartbeat_renewer(intent_id, heartbeat_stop)
         try:
             self._heartbeat(intent_id)
             event = signal_event_from_payload(dict(item.get("payload") or {}))
             event = self._with_intent_context(event, item)
+            # §0dm P1：claimed → dispatched atomic CAS。失败 = lease 已被
+            # 其他 worker 抢走（owner 不匹配或 status 已变），必须放弃 dispatch
+            # 避免真实重复下单。
+            if self._mark_dispatched_fn is not None:
+                transitioned = self._mark_dispatched_fn(
+                    intent_id=intent_id,
+                    claimed_by_instance_id=self._runtime_identity.instance_id,
+                    claimed_by_run_id=self._runtime_identity.run_id,
+                )
+                if not transitioned:
+                    logger.warning(
+                        "ExecutionIntentConsumer: claimed→dispatched CAS failed "
+                        "for intent_id=%s (lease taken over before dispatch); "
+                        "abandoning dispatch to avoid duplicate order",
+                        intent_id,
+                    )
+                    return
             result = self._trade_executor.process_event(event)
             outcome = interpret_terminal_result(result)
             status = outcome.status
@@ -220,8 +247,49 @@ class ExecutionIntentConsumer:
                 },
             )
         finally:
+            heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=2.0)
             self._in_flight_intent_id = None
             self._in_flight_since = None
+
+    def _start_heartbeat_renewer(
+        self, intent_id: str, stop_event: threading.Event
+    ) -> threading.Thread | None:
+        """§0dm P1：lease 期间每 lease_seconds/3 续租一次。
+
+        旧实现只在入口处调一次 _heartbeat，process_event 真实下单 + 风控 +
+        挂单处理期间 lease 自然过期 → 另一 worker 可 reclaim 并重复下单。
+        续租线程让 lease 在 process 期间持续有效，process 完成 / 异常时
+        finally 中 stop_event.set() 立即终止。
+
+        无 heartbeat_fn 时不启动（仍保持入口一次心跳由 _heartbeat 负责）。
+        """
+        if self._heartbeat_fn is None:
+            return None
+        interval = max(1.0, float(self._lease_seconds) / 3.0)
+
+        def _renewer() -> None:
+            # 第一次入口已 heartbeat 过；从 interval 后开始续租
+            while not stop_event.wait(interval):
+                try:
+                    self._heartbeat(intent_id)
+                except Exception:
+                    logger.exception(
+                        "ExecutionIntentConsumer: heartbeat renewer failed for "
+                        "intent_id=%s; lease will expire and worker may be "
+                        "preempted",
+                        intent_id,
+                    )
+                    return
+
+        thread = threading.Thread(
+            target=_renewer,
+            name=f"intent-heartbeat-{intent_id[:8] if intent_id else 'unknown'}",
+            daemon=True,
+        )
+        thread.start()
+        return thread
 
     def _safe_complete(self, **kwargs: Any) -> None:
         """§0di P1 + §0dj P2：complete_fn 失败 → lease 过期自然 retry，不打死

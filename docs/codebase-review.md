@@ -49,6 +49,194 @@
 
 ---
 
+## 0dm. 2026-04-27 lease/at-most-once 工程化重构：heartbeat 续租 + dispatched 状态机 + idempotency ledger（P1 ×2 + P2 ×3）
+
+### 触发
+
+User 报 5 处 lease/dedup/幂等的深层 schema/状态机 bug——之前 §0df-§0dl 都是
+单点 fix，没动状态机；本轮做完整工程化重构。
+
+| # | 等级 | 位置 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `consumer.py:143-146` | `_process_intent` 仅入口处 1 次 heartbeat，process_event 真实下单 + MT5 等待 + 风控期间无续租。lease=30s，process 可 > 30s → 另一 worker reclaim 真实**重复下单** |
+| 2 | **P1** | `consumer.py:146-150` | 先 process_event 再 _safe_complete；complete_fn 失败时吞异常等 lease 重试 → 同 intent 被两次 process_event → 真实**重复下单** |
+| 3 | P2 | `commands/consumer.py:138-141` | operator command 同模式：close_all_positions / cancel_orders / set_runtime_mode 重复执行污染审计 |
+| 4 | P2 | `schema/operator_commands.py:51-53` | idempotency_key 仅 INDEX 不是 UNIQUE → 并发请求都查 _find_existing 失败 → 各自 enqueue 一条 pending command |
+| 5 | P2 | `schema/execution_intents.py:53-54` | intent_key 唯一索引含 `created_at`，hypertable chunk 列限制让 `(intent_key)` 不能跨时间 UNIQUE → 同 signal/account 不同 created_at 可重复发布 |
+
+### 工程化修复（不接受补丁式简化）
+
+#### P1 #1：后台 heartbeat 续租线程
+
+```python
+# §0dm P1：每 lease_seconds/3 续租一次，process 期间 lease 持续有效
+def _process_intent(self, item):
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = self._start_heartbeat_renewer(intent_id, heartbeat_stop)
+    try:
+        ...
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2.0)
+
+def _start_heartbeat_renewer(self, intent_id, stop_event):
+    interval = max(1.0, float(self._lease_seconds) / 3.0)
+    def _renewer():
+        while not stop_event.wait(interval):
+            try: self._heartbeat(intent_id)
+            except Exception: logger.exception(...); return
+    thread = threading.Thread(target=_renewer, daemon=True)
+    thread.start()
+    return thread
+```
+
+#### P1 #2 + P2 #3：at-most-once dispatch 状态机
+
+`execution_intents` + `operator_commands` 都加 `'dispatched'` 状态。
+
+**schema 改动**：
+- status CHECK 加 `'dispatched'`（DROP + ADD CONSTRAINT migration）
+- 注释明示语义：`dispatched = broker dispatch 已开始/已发出，禁止 reclaim 重试`
+
+**repo 新增 `mark_*_dispatched` CAS 方法**：
+```python
+def mark_intent_dispatched(self, *, intent_id, claimed_by_instance_id, claimed_by_run_id) -> bool:
+    UPDATE execution_intents SET status = 'dispatched'
+    WHERE intent_id = %s AND owner = ... AND status = 'claimed'
+```
+
+**reclaim 逻辑分两段**：
+- `claimed` 过期 → reset `pending`（broker 尚未 dispatch，retry 安全）
+- `dispatched` 过期 → `dead_lettered`（broker 可能已下单，禁止重放，人工 reconcile）
+
+**`complete_*` SQL `WHERE status = 'claimed'` 扩为 `IN ('claimed', 'dispatched')`**，让进 dispatched 后仍能终结。
+
+**consumer 改造**：
+```python
+# 在 process_event 之前 atomic CAS：claimed → dispatched
+if self._mark_dispatched_fn is not None:
+    transitioned = self._mark_dispatched_fn(intent_id=..., owner=...)
+    if not transitioned:
+        logger.warning("lease taken over before dispatch; abandon")
+        return  # 不再 process_event
+result = self._trade_executor.process_event(event)
+```
+
+**装配层 `factories/signals.py` + `builder_phases/runtime_controls.py` 必须注入 `mark_dispatched_fn`**（None 时退化旧行为，但生产装配契约保证非 None）。
+
+#### P2 #4 + #5：idempotency ledger 表
+
+hypertable 限制 unique 约束必须含 chunk 列（`created_at`），无法对
+`(intent_key)` / `(target_account_key, command_type, idempotency_key)`
+做跨时间 UNIQUE。工程化方案：单独 ledger 表（普通表，PRIMARY KEY 跨时间
+唯一）。
+
+**新 schema 文件 `idempotency_ledger.py`**：
+```sql
+CREATE TABLE execution_intent_idempotency (
+    intent_key text NOT NULL PRIMARY KEY,    -- 跨时间唯一
+    intent_id text NOT NULL,
+    created_at timestamptz NOT NULL,
+    signal_id text NOT NULL,
+    target_account_key text NOT NULL
+);
+
+CREATE TABLE operator_command_idempotency (
+    target_account_key text NOT NULL,
+    command_type text NOT NULL,
+    idempotency_key text NOT NULL,
+    command_id text NOT NULL,
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (target_account_key, command_type, idempotency_key)
+);
+```
+
+**写入流程改为：先 ledger reserve（atomic）→ 成功才写主表**：
+
+```python
+# publisher
+if self._reserve_intent_key_fn is not None:
+    reserved = self._reserve_intent_key_fn(
+        intent_key=..., intent_id=..., created_at=..., signal_id=...,
+        target_account_key=...,
+    )
+    if not reserved:
+        logger.warning("intent_key already reserved; suppress duplicate publish")
+        continue   # 跳过该 row
+target_rows.append(...)
+
+# operator service
+if self._reserve_idempotency_key_fn is not None and idempotency_key:
+    reserved = self._reserve_idempotency_key_fn(
+        target_account_key=..., command_type=..., idempotency_key=...,
+        command_id=..., created_at=...,
+    )
+    if not reserved:
+        # 并发 race：另一请求抢先 reserve → 重新查 _find_existing 拿真实 command_id
+        existing = self._find_existing(...)
+        if existing is not None:
+            return self._build_existing_response(existing)
+        raise TradeOperatorActionReplayConflictError("concurrent reservation race")
+```
+
+ledger 是 **single source of truth**：原 hypertable 的 (intent_key, created_at) /
+(target_account_key, command_type, idempotency_key, created_at) 索引仅
+用于查询加速。
+
+### 测试
+
+完整套件：**2916 passed / 6 skipped（合法）/ 0 failed**（79 秒）。
+
+新文件：`src/persistence/schema/idempotency_ledger.py`（DDL + INSERT_*_KEY_SQL）。
+
+跨域改动：
+- repo `execution_intent_repo.py` + `operator_command_repo.py`：新增 `mark_*_dispatched` + `reserve_*_key` + reclaim 拆 claimed/dispatched 双路径
+- repo `complete_*` SQL `status` 谓词扩 ('claimed','dispatched')
+- db.py 包装 `mark_intent_dispatched` / `mark_command_dispatched` / `reserve_intent_key` / `reserve_command_idempotency_key`
+- consumer 加 `mark_dispatched_fn` + heartbeat renewer 线程
+- publisher 加 `reserve_intent_key_fn` 注入
+- service 加 `reserve_idempotency_key_fn` 注入
+- 装配层 `factories/signals.py` + `builder_phases/runtime_controls.py` 同步连线
+
+### 元层教训：**lease/queue 模式必须设计 at-most-once 状态机，不能依赖 owner 校验做幂等**
+
+§0dj P2 修了 complete_fn 的 owner 校验——可以防止覆盖事实层，但**不能防止
+副作用重放**。Lease 系统天然 at-least-once（lease 过期→reclaim→重试），要
+at-most-once 必须：
+
+1. **dispatch 前 mark `dispatched` 状态**（CAS atomic transition）
+2. **dispatched 过期不 reset pending**（dead_letter 让人工核对）
+3. **process 期间持续续租**（heartbeat renewer 防止 lease 在 dispatch 中途过期）
+
+强建议（写入 CLAUDE.md sentinel #11/#12）：
+
+```bash
+# 11. lease-based queue consumer 必须有 dispatch 前的 mark 状态机
+grep -rn "process_event\|_execute_command" src/trading/intents/consumer.py src/trading/commands/consumer.py \
+  | grep -B1 "mark_dispatched_fn\|mark_intent_dispatched\|mark_command_dispatched" \
+  || echo "❌ consumer 进真实副作用前必须 mark_dispatched CAS（防 lease 过期重放）"
+
+# 12. process 期间必须有 heartbeat renewer（process 时间 < lease 不安全假设）
+grep -rn "_start_heartbeat_renewer\|heartbeat_renewer" src/trading/ \
+  || echo "⚠️ consumer process 期间必须有 heartbeat 续租，否则 lease 可能在 dispatch 中过期"
+```
+
+### §0g→§0dm 累计基线
+
+| § 范围 | bug 数 | 重大改造 |
+|---|---|---|
+| 0g–0dl | 91 真实 bug | 多次自审清扫 |
+| **0dm** | 5（P1 ×2 + P2 ×3）| at-most-once 状态机 + idempotency ledger（schema 级重构） |
+
+### 减少边界泄漏的方式
+
+- lease 系统从 at-least-once 升级到 at-most-once（dispatched 状态机 + 不重置 pending）
+- heartbeat 续租让 process 时间 ≪ lease 不再是必须假设
+- idempotency ledger 让 hypertable UNIQUE 跨 chunk 限制下仍有跨时间唯一保障
+- 控制面副作用（close_all_positions / cancel_orders / set_runtime_mode）由 dispatched 状态机隔离重放
+
+---
+
 ## 0dl. 2026-04-27 §0dj/§0dk 漏的 5 处 lease/dedup 语义 bug：dispatch 前提前 dedup + 包装层吞 bool + 幽灵事件 + run_id 顶替（P2 ×4 + P3 ×1）
 
 ### 触发

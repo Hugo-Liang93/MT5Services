@@ -73,6 +73,10 @@ def build_runtime_controls(
         container.operator_command_service = OperatorCommandService(
             write_fn=container.storage_writer.db.write_operator_commands,
             fetch_fn=container.storage_writer.db.fetch_operator_commands,
+            # §0dm P2 #4：ledger 兜底——同 (target_account_key, command_type,
+            # idempotency_key) 跨时间唯一注册，防止 hypertable UNIQUE 跨 chunk
+            # 限制下并发请求重复 enqueue。
+            reserve_idempotency_key_fn=container.storage_writer.db.reserve_command_idempotency_key,
             runtime_identity=container.runtime_identity,
             pipeline_event_bus=container.pipeline_event_bus,
         )
@@ -107,6 +111,10 @@ def build_runtime_controls(
             claim_fn=container.storage_writer.db.claim_operator_commands,
             complete_fn=container.storage_writer.db.complete_operator_command,
             heartbeat_fn=container.storage_writer.db.heartbeat_operator_command,
+            # §0dm P2：at-most-once dispatch 必须注入 mark_dispatched_fn，
+            # 让 consumer 在 _execute_command 前 atomic CAS claimed → dispatched，
+            # 防止 lease 过期后控制面副作用（close_all/cancel_orders/...）重放。
+            mark_dispatched_fn=container.storage_writer.db.mark_command_dispatched,
             runtime_identity=container.runtime_identity,
             command_service=container.trade_module.commands,
             runtime_mode_controller=container.runtime_mode_controller,

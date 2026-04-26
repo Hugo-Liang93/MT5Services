@@ -72,6 +72,14 @@ grep -rEn '"(published|submitted|claimed)_by_run_id".*runtime_identity\.instance
 # 10. 包装层 return 类型与底层不一致（吞底层 bool/result，§0dl）
 grep -rEn 'def complete_[a-z_]+.*-> None:' src/persistence/db.py \
   && echo "⚠️ 检查 complete_* 包装层是否漏 return 底层 bool"
+
+# 11. lease-based queue consumer 必须有 dispatch 前 mark 状态机（§0dm at-most-once）
+# 防 lease 过期被另一 worker reclaim 真实重复执行业务副作用。
+# 若新增此类 consumer 必须实现 mark_*_dispatched CAS。
+
+# 12. process 期间必须有 heartbeat renewer（§0dm；process 时间 < lease 不安全假设）
+grep -rn "_start_heartbeat_renewer" src/trading/intents/consumer.py \
+  || echo "⚠️ ExecutionIntentConsumer 必须含 heartbeat 续租线程"
 ```
 
 ### 断言核验协议（P0/FATAL 断言的硬门槛）

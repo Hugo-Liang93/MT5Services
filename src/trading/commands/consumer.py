@@ -22,6 +22,7 @@ class OperatorCommandConsumer:
         claim_fn,
         complete_fn,
         heartbeat_fn=None,
+        mark_dispatched_fn=None,
         runtime_identity: RuntimeIdentity,
         command_service,
         runtime_mode_controller=None,
@@ -38,6 +39,9 @@ class OperatorCommandConsumer:
         self._claim_fn = claim_fn
         self._complete_fn = complete_fn
         self._heartbeat_fn = heartbeat_fn
+        # §0dm P2：mark_dispatched_fn 在 _execute_command 前 atomic CAS
+        # claimed → dispatched，None 时退化为旧行为（仅 lease 过期防御）。
+        self._mark_dispatched_fn = mark_dispatched_fn
         self._runtime_identity = runtime_identity
         self._command_service = command_service
         self._runtime_mode_controller = runtime_mode_controller
@@ -136,6 +140,22 @@ class OperatorCommandConsumer:
         command_id = str(item.get("command_id") or "")
         try:
             self._heartbeat(command_id)
+            # §0dm P2：claimed → dispatched atomic CAS。失败 = lease 已被
+            # 其他 consumer 抢走，必须放弃执行避免控制面副作用重放污染审计。
+            if self._mark_dispatched_fn is not None:
+                transitioned = self._mark_dispatched_fn(
+                    command_id=command_id,
+                    claimed_by_instance_id=self._runtime_identity.instance_id,
+                    claimed_by_run_id=self._runtime_identity.run_id,
+                )
+                if not transitioned:
+                    logger.warning(
+                        "OperatorCommandConsumer: claimed→dispatched CAS failed "
+                        "for command_id=%s (lease taken over before execute); "
+                        "abandoning execute to avoid duplicate side effect",
+                        command_id,
+                    )
+                    return
             response_payload = self._execute_command(item)
             audit_id = self._extract_audit_id(response_payload)
             self._safe_complete(

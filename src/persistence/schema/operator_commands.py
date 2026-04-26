@@ -10,11 +10,16 @@ CREATE TABLE IF NOT EXISTS operator_commands (
     command_type           text NOT NULL,
     target_account_key     text NOT NULL,
     target_account_alias   text NOT NULL,
+    -- §0dm P2：'dispatched' 状态表示已 atomic CAS claimed → dispatched，
+    -- consumer 已开始执行命令副作用（close_all_positions/cancel_orders/...）；
+    -- 过期 dispatched 由人工 reconcile 走 dead_lettered，不自动重置 pending
+    -- 防止控制面副作用重放污染审计。
     status                 text NOT NULL
                            CHECK (
                                status IN (
                                    'pending',
                                    'claimed',
+                                   'dispatched',
                                    'completed',
                                    'failed',
                                    'dead_lettered',
@@ -58,6 +63,15 @@ DROP INDEX IF EXISTS idx_operator_commands_idempotency;
 CREATE INDEX IF NOT EXISTS idx_operator_commands_idempotency
 ON operator_commands (target_account_key, command_type, idempotency_key, created_at DESC)
 WHERE idempotency_key IS NOT NULL;
+
+-- §0dm P2：status CHECK 升级支持 'dispatched'。Postgres CHECK 不能 ALTER
+-- 直接增值——必须 DROP + ADD。
+ALTER TABLE operator_commands DROP CONSTRAINT IF EXISTS operator_commands_status_check;
+ALTER TABLE operator_commands ADD CONSTRAINT operator_commands_status_check
+    CHECK (status IN (
+        'pending', 'claimed', 'dispatched',
+        'completed', 'failed', 'dead_lettered', 'cancelled'
+    ));
 """
 
 INSERT_SQL = """

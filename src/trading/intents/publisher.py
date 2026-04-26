@@ -22,12 +22,17 @@ class ExecutionIntentPublisher:
         *,
         write_fn,
         runtime_identity: RuntimeIdentity,
+        reserve_intent_key_fn=None,
         account_bindings: dict[str, list[str]] | None = None,
         strategy_deployments: dict[str, StrategyDeployment] | None = None,
         auto_trade_enabled: bool = True,
         pipeline_event_bus: PipelineEventBus | None = None,
     ) -> None:
         self._write_fn = write_fn
+        # §0dm P2 #5：reserve_intent_key_fn 在 _write_fn 之前调用，atomic
+        # 跨时间唯一注册 intent_key（hypertable UNIQUE 跨 chunk 限制下的 ledger
+        # 兜底）。None 时退化为旧行为（仅 hypertable 内 ON CONFLICT 防重）。
+        self._reserve_intent_key_fn = reserve_intent_key_fn
         self._runtime_identity = runtime_identity
         self._pipeline_event_bus = pipeline_event_bus
         self._accounts = load_group_mt5_settings(
@@ -65,7 +70,14 @@ class ExecutionIntentPublisher:
         # 失败时 pipeline/trace 已发出 intent_published 事件，但队列表无对应
         # intent，形成不可追溯的幽灵发布。修复：先收集 row + emit_args，写库
         # atomic 完成后再批量 emit；写库失败异常透出，event bus 不发任何事件。
+        # §0dm P2 #5：每条 intent_key 先走 ledger reserve（跨时间 UNIQUE）；
+        # 已存在则跳过该 row（防止并发重复发布同 signal_id+account 组合）。
         published_at = datetime.now(timezone.utc)
+        generated_at = (
+            event.generated_at
+            if event.generated_at.tzinfo
+            else event.generated_at.replace(tzinfo=timezone.utc)
+        )
         target_rows = []
         emit_args_list: list[dict[str, Any]] = []
         for account in self._resolve_target_accounts(event.strategy):
@@ -76,11 +88,27 @@ class ExecutionIntentPublisher:
             )
             intent_id = uuid4().hex
             intent_key = f"{event.signal_id}:{target_account_key}"
+            # §0dm P2 #5：ledger 注册——失败说明已重复发布，跳过该 row。
+            if self._reserve_intent_key_fn is not None:
+                reserved = self._reserve_intent_key_fn(
+                    intent_key=intent_key,
+                    intent_id=intent_id,
+                    created_at=generated_at,
+                    signal_id=event.signal_id,
+                    target_account_key=target_account_key,
+                )
+                if not reserved:
+                    logger.warning(
+                        "ExecutionIntentPublisher: intent_key=%s already reserved "
+                        "(duplicate publish suppressed); signal_id=%s account=%s",
+                        intent_key,
+                        event.signal_id,
+                        account.account_alias,
+                    )
+                    continue
             target_rows.append(
                 (
-                    event.generated_at
-                    if event.generated_at.tzinfo
-                    else event.generated_at.replace(tzinfo=timezone.utc),
+                    generated_at,
                     intent_id,
                     intent_key,
                     event.signal_id,

@@ -16,11 +16,15 @@ CREATE TABLE IF NOT EXISTS execution_intents (
     symbol                 text NOT NULL,
     timeframe              text NOT NULL,
     payload                jsonb NOT NULL,
+    -- §0dm P1：'dispatched' 状态表示已 atomic CAS claimed → dispatched，
+    -- broker dispatch 已开始或已发出，禁止 reclaim 重试（防止真实重复下单）。
+    -- 过期 dispatched 由人工 reconcile 走 dead_lettered，不自动重置 pending。
     status                 text NOT NULL
                            CHECK (
                                status IN (
                                    'pending',
                                    'claimed',
+                                   'dispatched',
                                    'completed',
                                    'failed',
                                    'skipped',
@@ -60,6 +64,15 @@ MIGRATION_SQL = """
 DROP INDEX IF EXISTS idx_execution_intents_key;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_intents_key
 ON execution_intents (intent_key, created_at);
+
+-- §0dm P1: status CHECK 升级支持 'dispatched'（at-most-once dispatch）。
+-- Postgres CHECK 不能直接 ALTER 增加值——必须 DROP + ADD，旧约束名 schema 命中。
+ALTER TABLE execution_intents DROP CONSTRAINT IF EXISTS execution_intents_status_check;
+ALTER TABLE execution_intents ADD CONSTRAINT execution_intents_status_check
+    CHECK (status IN (
+        'pending', 'claimed', 'dispatched',
+        'completed', 'failed', 'skipped', 'dead_lettered'
+    ));
 """
 
 INSERT_SQL = """

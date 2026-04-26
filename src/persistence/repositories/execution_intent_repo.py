@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Iterable, List, Tuple
 
-from src.persistence.schema import INSERT_EXECUTION_INTENTS_SQL
+from src.persistence.schema import (
+    INSERT_EXECUTION_INTENTS_SQL,
+    INSERT_INTENT_IDEMPOTENCY_KEY_SQL,
+)
 
 if TYPE_CHECKING:
     from src.persistence.db import TimescaleWriter
@@ -51,6 +54,31 @@ class ExecutionIntentRepository:
             return
         self._writer._batch(INSERT_EXECUTION_INTENTS_SQL, batch, page_size=page_size)
 
+    def reserve_intent_key(
+        self,
+        *,
+        intent_key: str,
+        intent_id: str,
+        created_at: datetime,
+        signal_id: str,
+        target_account_key: str,
+    ) -> bool:
+        """§0dm P2 #5：predicate 写 ledger 表，atomic 跨 chunk 唯一约束。
+
+        publisher 在写主 hypertable 之前必须先调用本方法 — 成功（rowcount=1）
+        才允许插入主表，失败（0 行）说明同 intent_key 已被其他 publisher 抢
+        先注册，本次不再写主表防止重复发布。
+
+        hypertable 的限制让 (intent_key) 不能跨 chunk UNIQUE，故用普通表
+        ledger 兜底；ledger 主键 PRIMARY KEY (intent_key) 跨时间唯一。
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                INSERT_INTENT_IDEMPOTENCY_KEY_SQL,
+                [intent_key, intent_id, created_at, signal_id, target_account_key],
+            )
+            return cur.rowcount > 0
+
     def claim_execution_intents(
         self,
         *,
@@ -68,6 +96,10 @@ class ExecutionIntentRepository:
         lease_expires_at = now + timedelta(seconds=effective_lease_seconds)
 
         with self._writer.connection() as conn, conn.cursor() as cur:
+            # §0dm P1：仅 'claimed' 过期可 reset 为 pending（claimed 状态 broker
+            # 尚未 dispatch，retry 安全）；'dispatched' 状态绝不 reset——broker
+            # 可能已下单，重新 reclaim 会真实重复执行。dispatched 过期直接进
+            # dead_lettered，由人工 reconcile 核对 broker 真实成交结果。
             cur.execute(
                 """
 UPDATE execution_intents
@@ -107,6 +139,25 @@ RETURNING created_at,
             )
             reclaimed_rows = cur.fetchall()
             reclaimed_columns = [desc[0] for desc in cur.description]
+            # §0dm P1：dispatched 过期 → dead_lettered（at-most-once：禁止重放）
+            cur.execute(
+                """
+UPDATE execution_intents
+SET status = 'dead_lettered',
+    dead_lettered_at = %s,
+    last_error_code = COALESCE(last_error_code, 'dispatched_lease_expired'),
+    lease_expires_at = NULL,
+    last_heartbeat_at = NULL,
+    claimed_by_instance_id = NULL,
+    claimed_by_run_id = NULL,
+    claimed_at = NULL
+WHERE target_account_key = %s
+  AND status = 'dispatched'
+  AND lease_expires_at IS NOT NULL
+  AND lease_expires_at < %s
+""",
+                [now, target_account_key, now],
+            )
             cur.execute(
                 """
 UPDATE execution_intents
@@ -214,6 +265,36 @@ RETURNING intents.created_at,
             ],
         }
 
+    def mark_intent_dispatched(
+        self,
+        *,
+        intent_id: str,
+        claimed_by_instance_id: str,
+        claimed_by_run_id: str,
+    ) -> bool:
+        """§0dm P1：claimed → dispatched atomic CAS 转换。
+
+        在 broker dispatch 之前调用——transition 成功才允许真实下单。
+        UPDATE 影响 0 行说明 lease 已被其他 worker 抢走（status 已不是
+        'claimed' 或 owner 不匹配），调用方必须放弃 dispatch。
+
+        dispatched 状态后续由 complete_* 终结，或被 reclaim 走 dead_letter
+        路径（绝不重置为 pending），避免真实重复下单。
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+UPDATE execution_intents
+SET status = 'dispatched'
+WHERE intent_id = %s
+  AND claimed_by_instance_id = %s
+  AND claimed_by_run_id = %s
+  AND status = 'claimed'
+""",
+                [intent_id, claimed_by_instance_id, claimed_by_run_id],
+            )
+            return cur.rowcount > 0
+
     def heartbeat_execution_intent(
         self,
         *,
@@ -248,14 +329,15 @@ WHERE intent_id = %s
         decision_metadata: dict[str, Any] | None = None,
         last_error_code: str | None = None,
     ) -> bool:
-        """完成 execution intent 回写，按 owner + status='claimed' 校验防覆盖。
+        """完成 execution intent 回写，按 owner + status ∈ ('claimed','dispatched')
+        校验防覆盖。
 
-        §0dj P2：旧实现仅 ``WHERE intent_id = %s`` → 慢 worker 超时被新 worker
-        接管后，迟到的旧 worker 仍能覆盖新 attempt 的状态。修复：必填 owner +
-        status 谓词；UPDATE 影响 0 行说明 lease 已被接管，本次回写应丢弃。
+        §0dj P2 + §0dm P1：必填 owner + status 谓词；status 谓词扩为
+        ('claimed','dispatched')——consumer 进 process_event 前 transition
+        到 dispatched，complete 时该 owner 且状态 ∈ {claimed, dispatched}
+        即合法终结。UPDATE 0 行说明 lease 已被接管，回写丢弃。
 
-        返回：成功更新返 True，0 行（已被其他 worker 接管或已完成）返 False。
-        调用方应在 False 时仅记录日志，不重试（新 worker 已经在处理）。
+        返回：成功 True，0 行 False。
         """
         now = datetime.now(timezone.utc)
         normalized_status = str(status or "").strip().lower() or "failed"
@@ -281,7 +363,7 @@ SET status = %s,
 WHERE intent_id = %s
   AND claimed_by_instance_id = %s
   AND claimed_by_run_id = %s
-  AND status = 'claimed'
+  AND status IN ('claimed', 'dispatched')
 """,
                 [
                     normalized_status,

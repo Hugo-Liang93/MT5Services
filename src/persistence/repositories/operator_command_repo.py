@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Iterable
 
-from src.persistence.schema import INSERT_OPERATOR_COMMANDS_SQL
+from src.persistence.schema import (
+    INSERT_COMMAND_IDEMPOTENCY_KEY_SQL,
+    INSERT_OPERATOR_COMMANDS_SQL,
+)
 
 if TYPE_CHECKING:
     from src.persistence.db import TimescaleWriter
@@ -66,6 +69,10 @@ class OperatorCommandRepository:
         now = datetime.now(timezone.utc)
         lease_expires_at = now + timedelta(seconds=max(5, int(lease_seconds)))
         with self._writer.connection() as conn, conn.cursor() as cur:
+            # §0dm P2：仅 'claimed' 过期可 reset 为 pending（claimed 状态命令
+            # 尚未真实执行 → retry 安全）；'dispatched' 状态绝不 reset——命令
+            # 副作用（close_all_positions/cancel_orders 等）已开始或已完成，
+            # 重新 reclaim 会污染审计 + 重复执行。dispatched 过期 → dead_letter。
             cur.execute(
                 """
 UPDATE operator_commands
@@ -106,6 +113,26 @@ RETURNING created_at,
             )
             reclaimed_rows = cur.fetchall()
             reclaimed_columns = [desc[0] for desc in cur.description]
+            # §0dm P2：dispatched 过期 → dead_letter（at-most-once：禁止重放副作用）
+            cur.execute(
+                """
+UPDATE operator_commands
+SET status = 'dead_lettered',
+    dead_lettered_at = NOW(),
+    completed_at = NOW(),
+    last_error_code = COALESCE(last_error_code, 'dispatched_lease_expired'),
+    lease_expires_at = NULL,
+    last_heartbeat_at = NULL,
+    claimed_by_instance_id = NULL,
+    claimed_by_run_id = NULL,
+    claimed_at = NULL
+WHERE target_account_key = %s
+  AND status = 'dispatched'
+  AND lease_expires_at IS NOT NULL
+  AND lease_expires_at < NOW()
+""",
+                [target_account_key],
+            )
             cur.execute(
                 """
 UPDATE operator_commands
@@ -211,6 +238,69 @@ RETURNING commands.created_at,
             ],
         }
 
+    def reserve_command_idempotency_key(
+        self,
+        *,
+        target_account_key: str,
+        command_type: str,
+        idempotency_key: str,
+        command_id: str,
+        created_at: datetime,
+    ) -> bool:
+        """§0dm P2 #4：predicate 写 ledger 表，atomic 唯一约束保护幂等键。
+
+        operator command service 在 enqueue 之前必须调用本方法 — 成功才允许
+        插入主表，失败说明同 (target_account_key, command_type, idempotency_key)
+        已存在，本次不再 enqueue 防止并发请求重复 enqueue。
+
+        hypertable 的 chunk 列限制让 (target_account_key, command_type,
+        idempotency_key) 不能跨时间 UNIQUE，故用普通表 ledger 兜底——主键
+        PRIMARY KEY (target_account_key, command_type, idempotency_key)
+        跨时间全局唯一。
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                INSERT_COMMAND_IDEMPOTENCY_KEY_SQL,
+                [
+                    target_account_key,
+                    command_type,
+                    idempotency_key,
+                    command_id,
+                    created_at,
+                ],
+            )
+            return cur.rowcount > 0
+
+    def mark_command_dispatched(
+        self,
+        *,
+        command_id: str,
+        claimed_by_instance_id: str,
+        claimed_by_run_id: str,
+    ) -> bool:
+        """§0dm P2：claimed → dispatched atomic CAS 转换。
+
+        在执行控制面副作用（close_all_positions / cancel_orders /
+        set_runtime_mode 等）之前调用——transition 成功才允许真实执行。
+        UPDATE 0 行说明 lease 已被其他 consumer 抢走，调用方必须放弃执行。
+
+        dispatched 状态后续由 complete_* 终结，或被 reclaim 走 dead_letter
+        路径（绝不重置 pending），避免控制面副作用重放。
+        """
+        with self._writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+UPDATE operator_commands
+SET status = 'dispatched'
+WHERE command_id = %s
+  AND claimed_by_instance_id = %s
+  AND claimed_by_run_id = %s
+  AND status = 'claimed'
+""",
+                [command_id, claimed_by_instance_id, claimed_by_run_id],
+            )
+            return cur.rowcount > 0
+
     def heartbeat_operator_command(
         self,
         *,
@@ -273,7 +363,7 @@ SET status = %s,
 WHERE command_id = %s
   AND claimed_by_instance_id = %s
   AND claimed_by_run_id = %s
-  AND status = 'claimed'
+  AND status IN ('claimed', 'dispatched')
 """,
                 [
                     status,

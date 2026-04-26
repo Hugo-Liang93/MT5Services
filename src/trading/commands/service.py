@@ -19,10 +19,16 @@ class OperatorCommandService:
         write_fn,
         fetch_fn,
         runtime_identity: RuntimeIdentity,
+        reserve_idempotency_key_fn=None,
         pipeline_event_bus: PipelineEventBus | None = None,
     ) -> None:
         self._write_fn = write_fn
         self._fetch_fn = fetch_fn
+        # §0dm P2 #4：reserve_idempotency_key_fn 在 _write_fn 之前 atomic
+        # 注册幂等键到 ledger 表（hypertable UNIQUE 跨 chunk 限制下的兜底）；
+        # None 时退化为旧行为（仅 _find_existing 应用层 dedup，并发 race 时
+        # 可能仍重复 enqueue）。
+        self._reserve_idempotency_key_fn = reserve_idempotency_key_fn
         self._runtime_identity = runtime_identity
         self._pipeline_event_bus = pipeline_event_bus
         self._accounts = load_group_mt5_settings(
@@ -100,6 +106,40 @@ class OperatorCommandService:
 
         command_id = uuid4().hex
         created_at = datetime.now(timezone.utc)
+        # §0dm P2 #4：有 idempotency_key 时先走 ledger 注册（atomic 跨时间
+        # UNIQUE）。失败说明并发请求已抢先注册——重新查 _find_existing 拿
+        # 真实 command_id 返回，避免双 enqueue。
+        if (
+            self._reserve_idempotency_key_fn is not None
+            and normalized_idempotency_key is not None
+        ):
+            reserved = self._reserve_idempotency_key_fn(
+                target_account_key=target_account_key,
+                command_type=normalized_command_type,
+                idempotency_key=normalized_idempotency_key,
+                command_id=command_id,
+                created_at=created_at,
+            )
+            if not reserved:
+                # 并发竞态：另一请求抢先 reserve 同 key——返回它的 existing。
+                existing_after_race = self._find_existing(
+                    command_type=normalized_command_type,
+                    target_account_key=target_account_key,
+                    idempotency_key=normalized_idempotency_key,
+                )
+                if existing_after_race is not None:
+                    return self._build_existing_response(existing_after_race)
+                # ledger 已 reserve 但主表 row 还未写入——race 窗口内并发
+                # 请求都失败，返回 conflict 让 caller 重试。
+                raise TradeOperatorActionReplayConflictError(
+                    (
+                        f"idempotency_key '{normalized_idempotency_key}' "
+                        "concurrent reservation race; please retry"
+                    ),
+                    command_type=normalized_command_type,
+                    idempotency_key=normalized_idempotency_key,
+                    existing_record={},
+                )
         row = (
             created_at,
             command_id,
