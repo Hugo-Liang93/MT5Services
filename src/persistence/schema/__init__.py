@@ -48,12 +48,18 @@ from .operator_commands import DDL as OPERATOR_COMMANDS_DDL
 from .operator_commands import INSERT_SQL as INSERT_OPERATOR_COMMANDS_SQL
 from .operator_commands import MIGRATION_SQL as OPERATOR_COMMANDS_MIGRATION_SQL
 from .pending_order_states import DDL as PENDING_ORDER_STATES_DDL
+from .pending_order_states import (
+    MIGRATION_SQL as PENDING_ORDER_STATES_MIGRATION_SQL,
+)
 from .pending_order_states import UPSERT_SQL as UPSERT_PENDING_ORDER_STATES_SQL
 
 # ── Monitoring ───────────────────────────────────────────────────
 from .pipeline_trace_events import DDL as PIPELINE_TRACE_EVENTS_DDL
 from .pipeline_trace_events import INSERT_SQL as INSERT_PIPELINE_TRACE_EVENTS_SQL
 from .position_runtime_states import DDL as POSITION_RUNTIME_STATES_DDL
+from .position_runtime_states import (
+    MIGRATION_SQL as POSITION_RUNTIME_STATES_MIGRATION_SQL,
+)
 from .position_runtime_states import UPSERT_SQL as UPSERT_POSITION_RUNTIME_STATES_SQL
 from .position_sl_tp_history import DDL as POSITION_SL_TP_HISTORY_DDL
 from .position_sl_tp_history import INSERT_SQL as INSERT_POSITION_SL_TP_HISTORY_SQL
@@ -140,6 +146,10 @@ POST_INIT_DDL_STATEMENTS = [
     OPERATOR_COMMANDS_MIGRATION_SQL,
     RUNTIME_TASKS_MIGRATION_SQL,
     SIGNAL_EVENTS_MIGRATION_SQL,
+    # §0u P1：把 pending/position state PK 从单列 ticket 升级为 (account_key, ticket)
+    # 复合主键，禁止多账户拓扑下不同账户共用 MT5 ticket 时跨账户互相覆盖。
+    PENDING_ORDER_STATES_MIGRATION_SQL,
+    POSITION_RUNTIME_STATES_MIGRATION_SQL,
 ]
 
 __all__ = [

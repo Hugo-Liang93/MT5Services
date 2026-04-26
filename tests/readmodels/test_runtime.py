@@ -895,3 +895,35 @@ def test_tradability_state_summary_still_blocks_when_single_account_main_without
 
     assert payload["verdict"] == "blocked"
     assert payload["reason_code"] == TRADABILITY_REASON_RUNTIME_NOT_READY
+
+
+# ── §0u P2 回归：trading_summary 把 failed 行（无 count 字段）漂白成 healthy ──
+
+
+def test_build_trading_summary_treats_failed_row_without_count_as_failure() -> None:
+    """P2 §0u 回归：旧实现 sum(int(row.get('count', 0))) → status=failed 但无 count
+    字段的行（TradingStateAlerts.summary() 输出形状）会被算成 0 → 整体被漂白成
+    healthy + coordination_issues 空，掩盖明确告警。
+    """
+    trading_stats = {
+        "summary": [
+            {
+                "code": "state_store_unavailable",
+                "status": "failed",
+                "severity": "critical",
+                "message": "状态存储不可用",
+            }
+        ],
+        "accounts": [],
+        "recent": [],
+        "active_account_alias": "default",
+        "daily": {},
+    }
+    payload = RuntimeReadModel.build_trading_summary(trading_stats)
+    assert payload["status"] != "healthy", (
+        f"failed 行存在必须把 status 抬到 >=warning；got {payload['status']!r}"
+    )
+    assert payload["coordination_issues"], (
+        "failed 行存在必须产生 coordination_issues；"
+        f"got {payload['coordination_issues']!r}"
+    )

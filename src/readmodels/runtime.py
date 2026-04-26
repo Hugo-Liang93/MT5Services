@@ -375,8 +375,11 @@ class RuntimeReadModel:
         accounts = list(trading_stats.get("accounts", []) or [])
         recent = list(trading_stats.get("recent", []) or [])
         active_account_alias = trading_stats.get("active_account_alias")
+        # §0u P2：旧实现 row.get("count", 0)，TradingStateAlerts.summary() 这种
+        # "行存在即代表 1 条告警" 的 schema 会被算成 0 → 整体被漂白成 healthy
+        # 且 coordination_issues 为空。行存在本身就是事实；count 缺省时按 1 计算。
         failed = sum(
-            int(row.get("count", 0) or 0)
+            int(row.get("count", 1) or 1)
             for row in summary_rows
             if row.get("status") == "failed"
         )

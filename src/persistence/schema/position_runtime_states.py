@@ -1,8 +1,8 @@
 DDL = """
 CREATE TABLE IF NOT EXISTS position_runtime_states (
     account_alias TEXT NOT NULL,
-    account_key TEXT,
-    position_ticket BIGINT PRIMARY KEY,
+    account_key TEXT NOT NULL,
+    position_ticket BIGINT NOT NULL,
     signal_id TEXT,
     order_ticket BIGINT,
     symbol TEXT NOT NULL,
@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS position_runtime_states (
     close_source TEXT,
     close_price DOUBLE PRECISION,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (account_key, position_ticket)
 );
 ALTER TABLE position_runtime_states
     ADD COLUMN IF NOT EXISTS account_key TEXT;
@@ -50,6 +51,40 @@ CREATE INDEX IF NOT EXISTS idx_pos_states_signal
 
 CREATE INDEX IF NOT EXISTS idx_pos_states_symbol_status
     ON position_runtime_states (symbol, status);
+"""
+
+# §0u P1 迁移：把单列 PK (position_ticket) 升级为复合 PK
+# (account_key, position_ticket)。多账户拓扑下不同账户可能持有同一 MT5 ticket，
+# 旧 PK 让 upsert 跨账户互相覆盖 → cockpit / trace / risk 投影全被污染。
+# 步骤：
+#   1) backfill account_key（NULL/空串 → account_alias）
+#   2) ALTER COLUMN ... SET NOT NULL（PK 列不允许 NULL）
+#   3) 仅在当前 PK 不是复合形式时 drop+rebuild（DO 块保证幂等）
+MIGRATION_SQL = """
+UPDATE position_runtime_states
+SET account_key = account_alias
+WHERE account_key IS NULL OR account_key = '';
+
+ALTER TABLE position_runtime_states
+    ALTER COLUMN account_key SET NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        WHERE t.relname = 'position_runtime_states'
+          AND c.contype = 'p'
+          AND pg_get_constraintdef(c.oid) ILIKE '%(account_key, position_ticket)'
+    ) THEN
+        ALTER TABLE position_runtime_states
+            DROP CONSTRAINT IF EXISTS position_runtime_states_pkey;
+        ALTER TABLE position_runtime_states
+            ADD CONSTRAINT position_runtime_states_pkey
+            PRIMARY KEY (account_key, position_ticket);
+    END IF;
+END $$;
 """
 
 UPSERT_SQL = """
@@ -74,9 +109,8 @@ INSERT INTO position_runtime_states (
     %s, %s, %s, %s,
     %s, %s, %s
 )
-ON CONFLICT (position_ticket) DO UPDATE SET
+ON CONFLICT (account_key, position_ticket) DO UPDATE SET
     account_alias = EXCLUDED.account_alias,
-    account_key = EXCLUDED.account_key,
     signal_id = EXCLUDED.signal_id,
     order_ticket = EXCLUDED.order_ticket,
     symbol = EXCLUDED.symbol,

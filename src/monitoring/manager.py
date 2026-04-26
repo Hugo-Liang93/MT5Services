@@ -79,10 +79,13 @@ class MonitoringManager:
 
     @staticmethod
     def _summary_status_value(summary: Dict[str, Any]) -> float:
+        # §0u P2：旧实现 row.get("count", 0) 把 TradingStateAlerts.summary() 这种
+        # "行存在即代表 1 条告警" 的 schema 算成 0 → 把 failed 状态漂白成 healthy。
+        # 行存在本身就是告警事实；count 缺省时按 1 计算，避免静默假阳性。
         failed = 0
         for row in list(summary.get("summary", []) or []):
             if row.get("status") == "failed":
-                failed += int(row.get("count", 0) or 0)
+                failed += int(row.get("count", 1) or 1)
         return 0.5 if failed > 0 else 1.0
 
     def list_registered_components(self) -> List[Dict[str, Any]]:
@@ -429,18 +432,24 @@ class MonitoringManager:
             exec_status = component_obj.status()
             eq = exec_status.get("execution_quality", {})
 
-            total = int(exec_status.get("execution_count", 0) or 0)
-            # 从 skip_reasons 中提取失败数
+            # execution_count 是"成功执行数"（不含失败 dispatch）。
+            total_success = int(exec_status.get("execution_count", 0) or 0)
+            # 从 skip_reasons 中提取失败数（eventing.py 失败 dispatch 走 notify_skip
+            # 写 execution_failed，参 §0u P2 修复）
             skip_reasons = exec_status.get("skip_reasons", {})
             failed = int(skip_reasons.get("execution_failed", 0) or 0)
-            if total > 0:
-                failure_rate = failed / total
+            # §0u P2：分母用"尝试数 = 成功 + 失败"而非仅成功数。旧实现 if total > 0
+            # 在 "execution_count=0 + 全失败" 极端场景把 failure_rate 静默丢弃。
+            total_attempts = total_success + failed
+            if total_attempts > 0:
+                failure_rate = failed / total_attempts
                 self.health_monitor.record_metric(
                     component_name,
                     "execution_failure_rate",
                     failure_rate,
                     {
-                        "total_executed": total,
+                        "total_attempts": total_attempts,
+                        "total_executed": total_success,
                         "failed": failed,
                         "signals_received": exec_status.get("signals_received"),
                         "signals_passed": exec_status.get("signals_passed"),

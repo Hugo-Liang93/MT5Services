@@ -763,6 +763,10 @@ def execute_market_order(
     except Exception as exc:
         executor.last_error = str(exc)
         executor.consecutive_failures += 1
+        # §0u P2：失败 dispatch 必须走 notify_skip 写入 skip_reasons["execution_failed"]，
+        # 否则 _check_execution_quality 在 "全失败 → execution_count=0" 场景里
+        # failure_rate 一条都不写 → 监控变成静默空白（最致命的失败模式）。
+        notify_skip(executor, event.signal_id, "execution_failed", event.timeframe or "")
         executor.execution_log.append(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
