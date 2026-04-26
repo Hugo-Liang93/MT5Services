@@ -72,16 +72,19 @@ def _mine_window(
     from src.research.core import load_research_config
     from src.research.orchestration import MiningRunner
 
+    # §0di P2：walk-forward 按 split 多次调用本函数，旧实现无 cleanup →
+    # 泄漏按 split 数量线性累积；用 context manager 确保 writer 连接池 +
+    # indicator pipeline 线程池在每个窗口退出前都关闭。
     config = load_research_config()
-    deps = build_research_data_deps()
-    runner = MiningRunner(config=config, deps=deps)
+    with build_research_data_deps() as deps:
+        runner = MiningRunner(config=config, deps=deps)
 
-    return runner.run(
-        symbol="XAUUSD",
-        timeframe=tf,
-        start_time=window_start,
-        end_time=window_end,
-    )
+        return runner.run(
+            symbol="XAUUSD",
+            timeframe=tf,
+            start_time=window_start,
+            end_time=window_end,
+        )
 
 
 def _rule_key(conditions: list) -> str:

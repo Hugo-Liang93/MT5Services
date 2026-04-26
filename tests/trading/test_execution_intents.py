@@ -1045,3 +1045,165 @@ def test_publisher_still_blocks_demo_validation_strategy_in_live_environment(mon
         f"live 环境必须仍按 allows_live_execution 过滤，demo_validation 不发"
         f"intent；got rows={rows!r}"
     )
+
+
+# ── §0di P1 + P2: ExecutionIntentConsumer 三层异常隔离回归 ──
+# 与 §0cc OperatorCommandConsumer 同模式：claim_fn / complete_fn / pipeline
+# emit 三处外部副作用都不能因瞬时故障打死 worker 线程。
+
+
+def _build_intent_item(intent_id: str = "intent-1") -> dict:
+    """复用 §0di 测试的 minimal intent payload。"""
+    return {
+        "intent_id": intent_id,
+        "signal_id": f"sig-{intent_id}",
+        "strategy": "trend_alpha",
+        "symbol": "XAUUSD",
+        "timeframe": "M5",
+        "target_account_key": build_account_key("live", "Broker-Live", 1001),
+        "target_account_alias": "main",
+        "payload": {
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "trend_alpha",
+            "direction": "buy",
+            "confidence": 0.73,
+            "signal_state": "confirmed_buy",
+            "scope": "confirmed",
+            "indicators": {"atr14": {"atr": 3.2}},
+            "metadata": {},
+            "generated_at": "2026-04-12T08:00:00+00:00",
+            "signal_id": f"sig-{intent_id}",
+            "reason": "test",
+            "parent_bar_time": None,
+        },
+    }
+
+
+def test_consumer_survives_transient_claim_fn_exception() -> None:
+    """§0di P1：claim_fn 瞬时异常不应打死 worker，下一轮 polling 自动恢复。"""
+
+    class _Executor:
+        def process_event(self, event):
+            return {"status": "ok"}
+
+    call_count = {"n": 0}
+
+    def claim_fn(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("claim down (simulated)")
+        return []  # 第二轮恢复
+
+    consumer = ExecutionIntentConsumer(
+        claim_fn=claim_fn,
+        complete_fn=lambda **kwargs: None,
+        runtime_identity=_runtime_identity(),
+        trade_executor=_Executor(),
+    )
+    # 直接调 _worker_iteration 模拟 worker 主循环单轮
+    try:
+        consumer._worker_iteration()
+        raise AssertionError("第一轮 claim_fn 抛错应当传播到 _worker_iteration")
+    except RuntimeError as exc:
+        assert "claim down" in str(exc)
+    # 第二轮恢复：worker_iteration 直接成功（claim 返空）
+    consumer._worker_iteration()
+    assert call_count["n"] == 2
+
+
+def test_consumer_survives_transient_complete_fn_exception() -> None:
+    """§0di P1：complete_fn 瞬时异常不应打死 worker；intent 通过 lease
+    过期自然 retry，本轮统计仍然 +1（避免静默丢失）。
+    """
+
+    class _Executor:
+        def process_event(self, event):
+            return {"status": "ok", "signal_id": event.signal_id}
+
+    def complete_fn(**kwargs):
+        raise RuntimeError("complete down (simulated)")
+
+    consumer = ExecutionIntentConsumer(
+        claim_fn=lambda **kwargs: [],
+        complete_fn=complete_fn,
+        runtime_identity=_runtime_identity(),
+        trade_executor=_Executor(),
+    )
+    # 直接调 _process_intent，模拟一个已被 claim 的 intent
+    consumer._process_intent(_build_intent_item("intent-cf-1"))
+    # complete_fn 失败仅日志告警，不抛——_safe_complete 包装让 lease 过期自然 retry
+    assert consumer._in_flight_intent_id is None
+    assert consumer._total_processed == 1
+
+
+def test_consumer_survives_transient_complete_fn_exception_in_failure_branch() -> None:
+    """§0di P1：失败分支再次调 complete_fn 也不应打死 worker（旧实现：成功
+    分支抛进 except，再调 complete_fn 二次抛 → 异常逃出 _process_intent → 死）。
+    """
+
+    class _ExecutorRaises:
+        def process_event(self, event):
+            raise RuntimeError("execute failed (simulated)")
+
+    def complete_fn(**kwargs):
+        raise RuntimeError("complete down (simulated)")
+
+    consumer = ExecutionIntentConsumer(
+        claim_fn=lambda **kwargs: [],
+        complete_fn=complete_fn,
+        runtime_identity=_runtime_identity(),
+        trade_executor=_ExecutorRaises(),
+    )
+    # 进 except 分支后再次 complete_fn 抛——_safe_complete 包装让线程不死
+    consumer._process_intent(_build_intent_item("intent-cf-2"))
+    # _process_intent 已正常返回（不抛出）
+    assert consumer._in_flight_intent_id is None
+    assert consumer._total_processed == 1
+    assert consumer._total_failed == 1
+
+
+def test_consumer_survives_transient_pipeline_emit_exception() -> None:
+    """§0di P2：pipeline_event_bus.emit 异常不应阻断 process_event 也不应
+    打死 worker——pipeline bus 是观测旁路，不能让旁路故障拖死真实业务执行。
+    """
+    processed: list = []
+
+    class _Executor:
+        def process_event(self, event):
+            processed.append(event)
+            return {"status": "ok", "signal_id": event.signal_id}
+
+    class _BrokenPipelineBus:
+        def emit(self, event):
+            raise RuntimeError("bus down (simulated)")
+
+    consumer = ExecutionIntentConsumer(
+        claim_fn=lambda **kwargs: [_build_intent_item("intent-bus-1")],
+        complete_fn=lambda **kwargs: None,
+        runtime_identity=_runtime_identity(),
+        trade_executor=_Executor(),
+        pipeline_event_bus=_BrokenPipelineBus(),
+    )
+    # 调 _worker_iteration 单轮：emit 抛异常但 process_event 仍执行
+    consumer._worker_iteration()
+    assert len(processed) == 1, (
+        "pipeline bus 故障不应阻断 process_event 调用——业务执行不依赖观测旁路"
+    )
+    assert consumer._total_processed == 1
+
+
+def test_consumer_top_level_loop_isolates_unexpected_exceptions() -> None:
+    """§0di P1：worker 主循环 (_worker) 必须用 try/except 隔离 _worker_iteration
+    抛出的任意异常——sentinel 锁定 _worker 内 try/except 模式，防回归。
+    """
+    import inspect
+
+    src = inspect.getsource(ExecutionIntentConsumer._worker)
+    assert "try:" in src, (
+        "ExecutionIntentConsumer._worker 必须含 try/except 顶层异常隔离 "
+        "(§0di P1 + §0cc 同模式)"
+    )
+    assert "self._worker_iteration()" in src, (
+        "_worker 必须委托 _worker_iteration 让顶层 try/except 包住业务逻辑"
+    )

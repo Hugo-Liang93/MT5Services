@@ -49,6 +49,177 @@
 
 ---
 
+## 0di. 2026-04-27 ExecutionIntentConsumer 异常隔离三处漏修 + mining CLI 资源泄漏（P1 ×2 + P2 ×3 + P3 已锁契约重申）
+
+### 触发
+
+User 在 §0dh 修复后报告 6 处独立问题，5 处真实 bug + 1 处重复报：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `trading/intents/consumer.py:80-89` | `_worker` 主循环 `claim_fn` 无异常隔离 → 一次瞬时 DB/网络异常打死整个 consumer 线程 |
+| 2 | **P1** | `trading/intents/consumer.py:130-165` | 成功/失败分支都直接调 `_complete_fn` → 失败路径二次 complete 抛异常逃出 _process_intent → worker 死 |
+| 3 | P2 | `trading/intents/consumer.py:98-116` | `_emit_intent_event` 直接调 `pipeline_event_bus.emit` 无保护 → 观测旁路总线故障阻断真实业务执行 + 杀 consumer |
+| 4 | P2 | `ops/cli/mining_runner.py:106-113` | `_run_single` 裸构造 `deps = build_research_data_deps()` 无 with/close → writer 连接池 + pipeline 线程池泄漏 |
+| 5 | P2 | `ops/cli/mining_walk_forward.py:75-84` | `_mine_window` 同模式无 cleanup → walk-forward 按 split 数线性累积泄漏（更糟） |
+| 6 | P3 | `monitoring/health/monitor.py` | 重复报 cache_hit_rate 半接线（§0t #4 + §0dg #2 已确认为锁定契约，**不修复**） |
+
+### 核验
+
+#### P1 #1+#2、P2 #1：§0cc OperatorCommandConsumer 修复未漂到 ExecutionIntentConsumer
+
+§0cc 当时修了 `OperatorCommandConsumer` 的三层异常隔离（顶层 try/except + claim 安全 + complete 安全 + emit 安全），但 `ExecutionIntentConsumer` 是**独立类，同模式 bug 全部留存**：
+
+```python
+# 旧 _worker（P1 #1）
+def _worker(self):
+    while not self._stop_event.is_set():
+        transitions = self._claim_fn(...)   # ← 无 try/except → 一次抛 → 线程死
+        ...
+        for item in claimed:
+            self._emit_intent_event("intent_claimed", item)   # ← 旁路 emit 抛 → 死
+            self._process_intent(item)
+
+# 旧 _process_intent（P1 #2）
+try:
+    ...
+    self._complete_fn(status="ok", ...)         # ← 成功完成回写
+except Exception as exc:
+    ...
+    self._complete_fn(status="failed", ...)     # ← 二次 complete 抛 → 逃 except → 死
+
+# 旧 _emit_intent_event（P2 #1）
+self._pipeline_event_bus.emit(PipelineEvent(...))  # ← 无 try/except
+```
+
+User 复现：
+- `claim_fn` 抛 RuntimeError → start() 后线程很快 `is_running=False`，栈停在 line 82
+- `complete_fn` 恒抛 → 线程稳定退出，单 intent 被错误记成 `processed=2, failed=1`
+- 假 event bus emit 恒抛 → `processed=0` + 线程退出
+
+#### P2 #2/#3：CLI 入口没用 with 包裹 deps
+
+§0cc 已暴露 cleanup 端口（`build_research_data_deps()` 支持 `close()` + context manager），但两个 CLI 入口仍然裸构造 deps 不用 with：
+
+```python
+# mining_runner._run_single
+deps = build_research_data_deps()      # ← 没有 with/close
+runner = MiningRunner(config=config, deps=deps)
+result = runner.run(...)
+return output                           # ← writer + pipeline 线程池泄漏
+
+# mining_walk_forward._mine_window 同模式
+# walk-forward 按 split 多次调用本函数 → 泄漏按窗口数线性累积
+```
+
+User 用 monkeypatch 复现：`_run_single` 返回时 `cleanup_called=False`。
+
+#### P3：cache_hit_rate（已第三次报，§0t #4 + §0dg #2 已锁契约）
+
+按 §0 协议：thresholds=0.0 表示"informational only 永不告警"是有意设计（`tests/monitoring/test_health_check_report.py:23` sentinel 锁定 + `indicator_compute_p99_ms` 已是替代告警指标）。`pass + return None` 是契约实现，**不修复**。重复报应通过这两个段落自查后再提，避免循环误报。
+
+### 修复（commit 待 push）
+
+#### P1 #1+#2 + P2 #1：与 §0cc 同模式三层异常隔离
+
+```python
+def _worker(self):
+    """§0di P1：与 OperatorCommandConsumer (§0cc) 同模式三层异常隔离。"""
+    while not self._stop_event.is_set():
+        try:
+            self._worker_iteration()
+        except Exception:
+            logger.exception(...)
+            self._stop_event.wait(self._poll_interval_seconds)
+
+def _worker_iteration(self):
+    transitions = self._claim_fn(...)   # 异常落入顶层 try
+    ...
+    for item in claimed:
+        self._safe_emit_intent_event("intent_claimed", item)   # ← P2 #1 修
+        self._process_intent(item)
+
+def _safe_complete(self, **kwargs):
+    """§0di P1：complete_fn 失败 → lease 过期自然 retry，不打死 worker。"""
+    try:
+        self._complete_fn(**kwargs)
+    except Exception:
+        logger.exception(...)
+
+def _safe_emit_terminal(self, **kwargs):
+    """§0di P2：terminal pipeline emit 失败 → 旁路降级。"""
+    try:
+        emit_terminal_execution_event(pipeline_event_bus=..., **kwargs)
+    except Exception:
+        logger.exception(...)
+
+def _safe_emit_intent_event(self, event_type, item, *, extra_payload=None):
+    """§0di P2：claimed/reclaimed/dead_lettered emit 异常隔离。"""
+    if self._pipeline_event_bus is None:
+        return
+    try:
+        self._pipeline_event_bus.emit(PipelineEvent(...))
+    except Exception:
+        logger.exception(...)
+```
+
+`_process_intent` 成功+失败两个分支都改用 `_safe_complete` + `_safe_emit_terminal`——两次外部副作用调用都不再传播异常杀线程。
+
+#### P2 #2/#3 CLI 入口用 with 包裹 deps
+
+```python
+# mining_runner._run_single
+with build_research_data_deps() as deps:
+    runner = MiningRunner(config=config, deps=deps)
+    result = runner.run(...)
+    ...
+    return output    # ← 自动 close（writer + pipeline 线程池都关）
+
+# mining_walk_forward._mine_window 同模式
+```
+
+至此所有 `build_research_data_deps()` 调用点都走 with（grep 验证：3 处全部 with，包括 `api/research_routes/routes.py`）。
+
+### 测试（5 项契约 + 2 项 sentinel）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_consumer_survives_transient_claim_fn_exception` | P1 #1：claim_fn 抛错不打死 worker，下一轮恢复 |
+| `test_consumer_survives_transient_complete_fn_exception` | P1 #2 成功路径：complete_fn 抛错仍统计 +1，lease 自然 retry |
+| `test_consumer_survives_transient_complete_fn_exception_in_failure_branch` | P1 #2 失败路径：进 except 后再次 complete_fn 抛错也不死 |
+| `test_consumer_survives_transient_pipeline_emit_exception` | P2 #1：emit 抛错不阻断 process_event，业务执行不依赖观测旁路 |
+| `test_consumer_top_level_loop_isolates_unexpected_exceptions` | sentinel：源码锁 `_worker` 必含 try/except + 委托 `_worker_iteration` |
+| `test_mine_window_uses_with_build_research_data_deps` | P2 #3 sentinel：源码锁 `with build_research_data_deps()` 模式 |
+| `test_run_single_uses_with_build_research_data_deps` | P2 #2 sentinel：同上 mining_runner 入口 |
+
+测试基线：`tests/trading + tests/ops + tests/research + tests/calendar + tests/api + tests/persistence + tests/backtesting + tests/data + tests/utils + tests/signals + tests/config + tests/app_runtime + tests/monitoring` = **2043 passed / 6 skipped（合法 short-array）/ 0 failed**。
+
+### 元层教训：**异常隔离修复必须按 worker 类型逐一审计**
+
+§0cc 修了 `OperatorCommandConsumer` 三层异常隔离 + 留下"所有后台 thread/worker 主循环必须 grep 'while.*not.*stop' 审计 try/except 顶层"的强建议——但 `ExecutionIntentConsumer` 作为同 family 的 worker 当时未审计 → 1 个月后才被发现同模式 bug 全留存。
+
+强建议（扩充 §0cc 元层教训）：
+
+1. **修一类异常隔离 bug 必须 grep 全 src 同 family worker**——不只是当前文件。`grep "while.*not.*self._stop_event.is_set" src/` 应作为审计入口
+2. **添加 fix 时同步加 sentinel test**：`test_consumer_top_level_loop_isolates_unexpected_exceptions` 用源码 grep 锁住 `_worker` 必含 try/except——下次重构若把 try 删了会立即失败
+3. **CLI 入口的资源生命周期模式必须有 sentinel**——`build_research_data_deps()` 的 cleanup 端口暴露后，所有调用点必须立刻有 source-grep sentinel，否则迟早被裸赋值绕过
+
+### §0g→§0di 累计基线
+
+| § 范围 | bug 数 |
+|---|---|
+| 0g–0dh | 77 |
+| **0di** | 5（P1 ×2 + P2 ×3；P3 重复报为锁定契约不计入） |
+
+### 减少边界泄漏的方式
+
+- `ExecutionIntentConsumer` 与 `OperatorCommandConsumer` 现在共享同一三层异常隔离模式（claim 顶层 / complete safe / emit safe），跨 worker 一致
+- `pipeline_event_bus` 作为观测旁路被显式声明——所有 emit 失败仅日志，不阻断业务（业务不依赖观测）
+- 所有 `build_research_data_deps()` 调用点 source-grep sentinel 强制 with 模式
+- §0t #4 + §0dg #2 + §0di P3 三段累积为 cache_hit_rate 锁定契约的"权威说明"——下次报本现象应直接读 §0t #4
+
+---
+
 ## 0dh. 2026-04-27 runtime_identity 瞬时 UUID + ReadOnlyProvider 错误 instance_id 过滤 + paper_shadow 字段去 Paper 化（P2 ×2 + P3）
 
 ### 触发

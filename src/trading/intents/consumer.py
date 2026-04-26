@@ -78,48 +78,67 @@ class ExecutionIntentConsumer:
         return self._lifecycle.is_running()
 
     def _worker(self) -> None:
+        # §0di P1：与 OperatorCommandConsumer (§0cc) 同模式三层异常隔离——
+        # 顶层循环 try/except 隔离单轮异常，防止一次 claim/emit/process 异常
+        # 打死整个 consumer 线程；瞬时 DB/网络/总线故障下 lease 过期自然 retry。
         while not self._stop_event.is_set():
-            transitions = self._claim_fn(
-                target_account_key=self._runtime_identity.account_key,
-                claimed_by_instance_id=self._runtime_identity.instance_id,
-                claimed_by_run_id=self._runtime_identity.instance_id,
-                limit=self._batch_size,
-                lease_seconds=self._lease_seconds,
-                max_attempts=self._max_attempts,
-            )
-            if isinstance(transitions, dict):
-                claimed = list(transitions.get("claimed") or [])
-                reclaimed = list(transitions.get("reclaimed") or [])
-                dead_lettered = list(transitions.get("dead_lettered") or [])
-            else:
-                claimed = list(transitions or [])
-                reclaimed = []
-                dead_lettered = []
-            for item in reclaimed:
-                self._emit_intent_event("intent_reclaimed", item)
-            for item in dead_lettered:
-                self._emit_intent_event(
-                    "intent_dead_lettered",
-                    item,
-                    extra_payload={
-                        "status": "dead_lettered",
-                        "last_error_code": item.get("last_error_code"),
-                    },
+            try:
+                self._worker_iteration()
+            except Exception:
+                logger.exception(
+                    "ExecutionIntentConsumer: unexpected error in worker loop; "
+                    "continuing after backoff",
                 )
-            if not claimed:
-                time.sleep(self._poll_interval_seconds)
-                continue
-            for item in claimed:
-                if self._stop_event.is_set():
-                    return
-                self._emit_intent_event("intent_claimed", item)
-                self._process_intent(item)
+                self._stop_event.wait(self._poll_interval_seconds)
+
+    def _worker_iteration(self) -> None:
+        transitions = self._claim_fn(
+            target_account_key=self._runtime_identity.account_key,
+            claimed_by_instance_id=self._runtime_identity.instance_id,
+            claimed_by_run_id=self._runtime_identity.instance_id,
+            limit=self._batch_size,
+            lease_seconds=self._lease_seconds,
+            max_attempts=self._max_attempts,
+        )
+        if isinstance(transitions, dict):
+            claimed = list(transitions.get("claimed") or [])
+            reclaimed = list(transitions.get("reclaimed") or [])
+            dead_lettered = list(transitions.get("dead_lettered") or [])
+        else:
+            claimed = list(transitions or [])
+            reclaimed = []
+            dead_lettered = []
+        for item in reclaimed:
+            self._safe_emit_intent_event("intent_reclaimed", item)
+        for item in dead_lettered:
+            self._safe_emit_intent_event(
+                "intent_dead_lettered",
+                item,
+                extra_payload={
+                    "status": "dead_lettered",
+                    "last_error_code": item.get("last_error_code"),
+                },
+            )
+        if not claimed:
+            self._stop_event.wait(self._poll_interval_seconds)
+            return
+        for item in claimed:
+            if self._stop_event.is_set():
+                return
+            # §0di P2：emit 失败不应阻断 process_event（pipeline bus 是观测侧
+            # 旁路，业务执行不依赖它）；_safe_emit 把瞬时总线故障降级为日志。
+            self._safe_emit_intent_event("intent_claimed", item)
+            self._process_intent(item)
 
     def _process_intent(self, item: dict[str, Any]) -> None:
         intent_id = str(item.get("intent_id") or "")
         self._in_flight_intent_id = intent_id
         self._in_flight_since = time.monotonic()
         event: SignalEvent | None = None
+        # §0di P1：success/failure 分支都用 _safe_complete + _safe_emit_terminal
+        # 包装外部副作用调用——complete_fn 失败 → lease 过期自然 retry，emit
+        # 失败 → 旁路降级，都不再传播异常打死 worker（与 §0cc OperatorCommand
+        # consumer 同模式）。
         try:
             self._heartbeat(intent_id)
             event = signal_event_from_payload(dict(item.get("payload") or {}))
@@ -128,7 +147,7 @@ class ExecutionIntentConsumer:
             outcome = interpret_terminal_result(result)
             status = outcome.status
             self._total_processed += 1
-            self._complete_fn(
+            self._safe_complete(
                 intent_id=intent_id,
                 status=status,
                 decision_metadata={
@@ -138,8 +157,7 @@ class ExecutionIntentConsumer:
                 },
                 last_error_code=outcome.error_code if status == "failed" else None,
             )
-            emit_terminal_execution_event(
-                pipeline_event_bus=self._pipeline_event_bus,
+            self._safe_emit_terminal(
                 event=event,
                 result=result,
                 extra_payload={
@@ -162,7 +180,7 @@ class ExecutionIntentConsumer:
             logger.exception("Execution intent processing failed: %s", intent_id)
             self._total_processed += 1
             self._total_failed += 1
-            self._complete_fn(
+            self._safe_complete(
                 intent_id=intent_id,
                 status="failed",
                 decision_metadata={
@@ -173,8 +191,7 @@ class ExecutionIntentConsumer:
                 last_error_code=type(exc).__name__,
             )
             failed_event = event or self._fallback_event_for_item(item)
-            emit_terminal_execution_event(
-                pipeline_event_bus=self._pipeline_event_bus,
+            self._safe_emit_terminal(
                 event=failed_event,
                 result={
                     "status": "failed",
@@ -201,6 +218,30 @@ class ExecutionIntentConsumer:
         finally:
             self._in_flight_intent_id = None
             self._in_flight_since = None
+
+    def _safe_complete(self, **kwargs: Any) -> None:
+        """§0di P1：complete_fn 失败 → lease 过期自然 retry，不打死 worker。"""
+        try:
+            self._complete_fn(**kwargs)
+        except Exception:
+            logger.exception(
+                "ExecutionIntentConsumer: complete_fn failed (intent_id=%s); "
+                "command will retry on next claim cycle (lease will expire)",
+                kwargs.get("intent_id"),
+            )
+
+    def _safe_emit_terminal(self, **kwargs: Any) -> None:
+        """§0di P2：terminal pipeline emit 失败 → 旁路降级，不阻断业务。"""
+        try:
+            emit_terminal_execution_event(
+                pipeline_event_bus=self._pipeline_event_bus,
+                **kwargs,
+            )
+        except Exception:
+            logger.exception(
+                "ExecutionIntentConsumer: emit_terminal_execution_event failed; "
+                "pipeline bus is an observation sideline, business execution unaffected",
+            )
 
     def status(self) -> dict[str, Any]:
         """返回消费者运行状态，供监控使用。"""
@@ -229,52 +270,65 @@ class ExecutionIntentConsumer:
             lease_seconds=self._lease_seconds,
         )
 
-    def _emit_intent_event(
+    def _safe_emit_intent_event(
         self,
         event_type: str,
         item: dict[str, Any],
         *,
         extra_payload: dict[str, Any] | None = None,
     ) -> None:
+        """§0di P2：claimed/reclaimed/dead_lettered 事件 emit 异常隔离。
+
+        旧实现在 process_event 之前直接调 pipeline_event_bus.emit() → 总线
+        瞬时故障会让 consumer 在进入业务执行前崩溃；pipeline bus 是观测旁路，
+        emit 失败不应阻断真实交易。本 helper 把瞬时总线故障降级为日志。
+        """
         if self._pipeline_event_bus is None:
             return
-        payload_row = dict(item.get("payload") or {})
-        metadata = dict(payload_row.get("metadata") or {})
-        payload = {
-            "signal_id": item.get("signal_id"),
-            "intent_id": item.get("intent_id"),
-            "intent_key": item.get("intent_key"),
-            "strategy": item.get("strategy"),
-            "direction": payload_row.get("direction"),
-            "target_account_key": item.get("target_account_key"),
-            "target_account_alias": item.get("target_account_alias"),
-            "action_id": item.get("action_id"),
-            "trace_id": self._trace_id_for_item(item),
-            "account_key": self._runtime_identity.account_key,
-            "account_alias": self._runtime_identity.account_alias,
-            "claimed_by_instance_id": self._runtime_identity.instance_id,
-            "claimed_by_run_id": self._runtime_identity.instance_id,
-            "instance_id": self._runtime_identity.instance_id,
-            "instance_role": self._runtime_identity.instance_role,
-            "signal_scope": payload_row.get("scope"),
-            "source_metadata": metadata,
-        }
-        if extra_payload:
-            payload.update(extra_payload)
-        trace_id = self._trace_id_for_item(item)
-        self._pipeline_event_bus.emit(
-            PipelineEvent(
-                type=event_type,
-                trace_id=trace_id,
-                symbol=str(item.get("symbol") or payload_row.get("symbol") or ""),
-                timeframe=str(
-                    item.get("timeframe") or payload_row.get("timeframe") or ""
-                ),
-                scope=str(payload_row.get("scope") or "confirmed"),
-                ts=datetime.now(timezone.utc).isoformat(),
-                payload=payload,
+        try:
+            payload_row = dict(item.get("payload") or {})
+            metadata = dict(payload_row.get("metadata") or {})
+            payload = {
+                "signal_id": item.get("signal_id"),
+                "intent_id": item.get("intent_id"),
+                "intent_key": item.get("intent_key"),
+                "strategy": item.get("strategy"),
+                "direction": payload_row.get("direction"),
+                "target_account_key": item.get("target_account_key"),
+                "target_account_alias": item.get("target_account_alias"),
+                "action_id": item.get("action_id"),
+                "trace_id": self._trace_id_for_item(item),
+                "account_key": self._runtime_identity.account_key,
+                "account_alias": self._runtime_identity.account_alias,
+                "claimed_by_instance_id": self._runtime_identity.instance_id,
+                "claimed_by_run_id": self._runtime_identity.instance_id,
+                "instance_id": self._runtime_identity.instance_id,
+                "instance_role": self._runtime_identity.instance_role,
+                "signal_scope": payload_row.get("scope"),
+                "source_metadata": metadata,
+            }
+            if extra_payload:
+                payload.update(extra_payload)
+            trace_id = self._trace_id_for_item(item)
+            self._pipeline_event_bus.emit(
+                PipelineEvent(
+                    type=event_type,
+                    trace_id=trace_id,
+                    symbol=str(item.get("symbol") or payload_row.get("symbol") or ""),
+                    timeframe=str(
+                        item.get("timeframe") or payload_row.get("timeframe") or ""
+                    ),
+                    scope=str(payload_row.get("scope") or "confirmed"),
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    payload=payload,
+                )
             )
-        )
+        except Exception:
+            logger.exception(
+                "ExecutionIntentConsumer: _safe_emit_intent_event(%s) failed; "
+                "pipeline bus is an observation sideline, business execution unaffected",
+                event_type,
+            )
 
     @staticmethod
     def _with_intent_context(event: SignalEvent, item: dict[str, Any]) -> SignalEvent:

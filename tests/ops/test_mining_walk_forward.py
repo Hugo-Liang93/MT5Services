@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import datetime, timezone
 from types import SimpleNamespace as NS
 
@@ -15,6 +16,7 @@ import pytest
 
 from src.ops.cli.mining_walk_forward import (
     _aggregate_rules_across_windows,
+    _mine_window,
     _rule_key,
     _split_windows,
 )
@@ -118,3 +120,21 @@ def test_aggregate_handles_missing_test_and_barrier():
     assert info["barrier_top_hit_rates"] == [0.52]
     # train 不应受缺失影响
     assert info["train_hit_rates"] == [0.60, 0.58]
+
+
+# ── §0di P2: cleanup sentinel ──
+
+
+def test_mine_window_uses_with_build_research_data_deps() -> None:
+    """§0di P2 sentinel：_mine_window 必须用 with 块包裹 build_research_data_deps()，
+    确保 writer 连接池 + indicator pipeline 线程池在每个窗口退出前 cleanup。
+    walk-forward 按 split 多次调用本函数，无 cleanup 时泄漏按窗口数线性累积。
+    """
+    src = inspect.getsource(_mine_window)
+    assert "with build_research_data_deps()" in src, (
+        "_mine_window 必须用 with build_research_data_deps() 包裹（§0di P2）；"
+        f"当前实现:\n{src}"
+    )
+    assert "with " in src.split("build_research_data_deps()")[0].splitlines()[-1], (
+        "build_research_data_deps() 必须在 with 语句中调用，而不是裸赋值"
+    )

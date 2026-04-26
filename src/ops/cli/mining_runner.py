@@ -103,88 +103,89 @@ def _run_single(
             overrides[f"{name}_enabled"] = name in enabled
         config = _replace(config, feature_providers=_replace(fp, **overrides))
 
-    deps = build_research_data_deps()
+    # §0di P2：用 context manager 确保 writer 连接池 + indicator pipeline
+    # 线程池在函数退出前 cleanup（§0cc 已暴露 close 端口，CLI 漏 with）。
+    with build_research_data_deps() as deps:
+        runner = MiningRunner(config=config, deps=deps)
 
-    runner = MiningRunner(config=config, deps=deps)
+        start_dt = parse_iso_to_utc(start)
+        end_dt = parse_iso_to_utc(end)
 
-    start_dt = parse_iso_to_utc(start)
-    end_dt = parse_iso_to_utc(end)
+        result = runner.run(
+            symbol="XAUUSD",
+            timeframe=tf,
+            start_time=start_dt,
+            end_time=end_dt,
+            analyses=analyses,
+            indicator_filter=indicator_filter,
+            child_tf=child_tf,
+        )
 
-    result = runner.run(
-        symbol="XAUUSD",
-        timeframe=tf,
-        start_time=start_dt,
-        end_time=end_dt,
-        analyses=analyses,
-        indicator_filter=indicator_filter,
-        child_tf=child_tf,
-    )
-
-    # 构建结构化输出
-    output: Dict[str, Any] = {
-        "tf": tf,
-        "start": start,
-        "end": end,
-        "run_id": result.run_id,
-    }
-
-    if result.data_summary:
-        ds = result.data_summary
-        output["data_summary"] = {
-            "n_bars": ds.n_bars,
-            "train_bars": ds.train_bars,
-            "test_bars": ds.test_bars,
-            "regime_distribution": ds.regime_distribution,
-            "n_indicator_fields": len(ds.available_indicators),
+        # 构建结构化输出
+        output: Dict[str, Any] = {
+            "tf": tf,
+            "start": start,
+            "end": end,
+            "run_id": result.run_id,
         }
 
-    if result.feature_compute_summary:
-        output["feature_compute_summary"] = result.feature_compute_summary
+        if result.data_summary:
+            ds = result.data_summary
+            output["data_summary"] = {
+                "n_bars": ds.n_bars,
+                "train_bars": ds.train_bars,
+                "test_bars": ds.test_bars,
+                "regime_distribution": ds.regime_distribution,
+                "n_indicator_fields": len(ds.available_indicators),
+            }
 
-    if result.findings_by_provider:
-        output["findings_by_provider"] = {
-            prov: len(findings)
-            for prov, findings in result.findings_by_provider.items()
-        }
+        if result.feature_compute_summary:
+            output["feature_compute_summary"] = result.feature_compute_summary
 
-    if result.cross_provider_rules:
-        output["cross_provider_rules_count"] = len(result.cross_provider_rules)
+        if result.findings_by_provider:
+            output["findings_by_provider"] = {
+                prov: len(findings)
+                for prov, findings in result.findings_by_provider.items()
+            }
 
-    if result.predictive_power:
-        sig = [r for r in result.predictive_power if r.is_significant]
-        output["predictive_power"] = {
-            "total_tested": len(result.predictive_power),
-            "significant": len(sig),
-            "top_10": [r.to_dict() for r in sig[:10]],
-            # 统计增强：IR 稳定的发现
-            "stable_ir": [
-                r.to_dict()
-                for r in sig
-                if r.rolling_ic is not None and r.rolling_ic.information_ratio >= 0.5
-            ][:5],
-        }
+        if result.cross_provider_rules:
+            output["cross_provider_rules_count"] = len(result.cross_provider_rules)
 
-    if result.threshold_sweeps:
-        output["threshold_sweeps"] = [r.to_dict() for r in result.threshold_sweeps]
+        if result.predictive_power:
+            sig = [r for r in result.predictive_power if r.is_significant]
+            output["predictive_power"] = {
+                "total_tested": len(result.predictive_power),
+                "significant": len(sig),
+                "top_10": [r.to_dict() for r in sig[:10]],
+                # 统计增强：IR 稳定的发现
+                "stable_ir": [
+                    r.to_dict()
+                    for r in sig
+                    if r.rolling_ic is not None and r.rolling_ic.information_ratio >= 0.5
+                ][:5],
+            }
 
-    if result.mined_rules:
-        output["mined_rules"] = [r.to_dict() for r in result.mined_rules]
+        if result.threshold_sweeps:
+            output["threshold_sweeps"] = [r.to_dict() for r in result.threshold_sweeps]
 
-    if result.barrier_predictive_power:
-        sig = [r for r in result.barrier_predictive_power if r.is_significant]
-        output["barrier_predictive_power"] = {
-            "total_tested": len(result.barrier_predictive_power),
-            "significant": len(sig),
-            "top_10": [r.to_dict() for r in sig[:10]],
-        }
+        if result.mined_rules:
+            output["mined_rules"] = [r.to_dict() for r in result.mined_rules]
 
-    if result.top_findings:
-        output["top_findings"] = [f.to_dict() for f in result.top_findings[:15]]
+        if result.barrier_predictive_power:
+            sig = [r for r in result.barrier_predictive_power if r.is_significant]
+            output["barrier_predictive_power"] = {
+                "total_tested": len(result.barrier_predictive_power),
+                "significant": len(sig),
+                "top_10": [r.to_dict() for r in sig[:10]],
+            }
 
-    # 保留原始 MiningResult 供跨 TF 分析（不序列化）
-    output["_raw_result"] = result
+        if result.top_findings:
+            output["top_findings"] = [f.to_dict() for f in result.top_findings[:15]]
 
-    return output
+        # 保留原始 MiningResult 供跨 TF 分析（不序列化）
+        output["_raw_result"] = result
+
+        return output
 
 
 # ── 渲染模板 ────────────────────────────────────────────────────
