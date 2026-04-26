@@ -49,6 +49,71 @@
 
 ---
 
+## 0i. 2026-04-26 Python 版本契约失真修复（声明 >=3.10 与代码实际对齐）
+
+### 触发
+
+User 报告：`pyproject.toml:10` 声明 `requires-python = ">=3.9"`，但 `src/config/utils.py:20`
+`def _canonical_config_name(...) -> str | None:` 在无 `from __future__ import annotations`
+情况下使用 PEP 604 union——Python 3.9 import 时即抛 `TypeError`。当前环境 Python 3.12
+所以测试无暴露，部署到 3.9 起不来。
+
+### 全仓影响范围
+
+`grep` 全 src 后发现：
+- 132 个文件用 PEP 604 union（`X | Y` / `X | None`）
+- 其中 129 个文件有 `from __future__ import annotations` lazy 化（PEP 563），3.10 之前可工作
+- **3 个文件无 future-import**：`config/utils.py` / `indicators/core/momentum.py` /
+  `monitoring/manager.py` — 在 3.9 下 import 即崩
+
+mypy 实际**已经在 strict 模式下报这个错误**（`X | Y syntax requires 3.10+ [syntax]`），
+但 mypy `python_version = "3.9"` + CI 跑 3.12 → 报错被当成"忽略噪声"放过数月。
+
+### 修复方案：契约对齐而非代码降级
+
+代码实际是 3.10+ 写法（PEP 604 / PEP 585 native generics），强行兼容 3.9 需要扫
+全部 132 个文件 + 改写 union；不如把契约改为代码现实：
+
+| 位置 | 旧 | 新 |
+|---|---|---|
+| `pyproject.toml:10` `requires-python` | `">=3.9"` | `">=3.10"` |
+| `pyproject.toml:21` classifiers | 含 `Python :: 3.9` | 删除 |
+| `pyproject.toml [tool.black]:target-version` | `['py39', ...]` | `['py310', 'py311', 'py312']` |
+| `pyproject.toml [tool.mypy]:python_version` | `"3.9"` | `"3.10"` |
+| `CLAUDE.md` 项目概览行 | `Python 3.9–3.12` | `Python 3.10–3.12` |
+
+### 附带 hardening
+
+- 3 个无 future-import 文件补上 `from __future__ import annotations`，与项目 96%
+  convention 对齐；防止未来若降级到 3.9 再踩同坑（即使 3.10 原生支持，习惯保留）
+- `utils.py:66-70` mypy strict 真实 bug 顺手修：`candidate` 变量被 reassign
+  Path → str 类型不一致，改用两个分别命名的局部变量 `instance_candidate` / `abs_candidate`
+
+### 元层教训
+
+**mypy 报错≠噪声**。本次 P2 是 mypy 已经持续报警数月（line 20 `X | Y syntax`），
+但因为 CI 跑 3.12 + 报错混在 540+ 行历史 mypy noise 里，没人区分"真错误 vs 历史包袱"。
+
+下次维护窗口建议：
+1. 把 `pyproject.toml [tool.mypy]` 的 python_version 与 `requires-python` 双向校验
+   写入 CI（避免再次失同步）
+2. 540+ 行 mypy 历史噪声分类——区分 "type narrowing TODO" / "无害 lib 缺 stub" /
+   "真实 bug"；定期消除真实 bug 类目
+3. 加 pre-commit hook：禁止新文件无 `from __future__ import annotations`（除非显式标注豁免理由）
+
+### 测试基线
+
+- pytest -m "not slow"：**2776 passed / 0 failed**（与本次修改前一致；纯文档/契约级修改无 runtime 影响）
+- mypy `src/config/utils.py`：从 2 errors → **0 errors**
+
+### 减少边界泄漏的方式
+
+声明 vs 实现"双向校验" — pyproject 的 `requires-python` / mypy `python_version` /
+black `target-version` 三个版本契约从此都指向同一 minimum (3.10)，未来 bump 时一处改、
+全部跟随；防止单点漂移让代码与契约失真。
+
+---
+
 ## 0h. 2026-04-26 PerformanceTracker.warm_up_from_db FrozenInstanceError 修复（ADR-011 异常分层契约二次落实）
 
 ### 触发
