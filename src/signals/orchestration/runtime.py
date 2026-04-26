@@ -579,9 +579,17 @@ class SignalRuntime:
         strategy: str,
         scope: str,
         regime_metadata: dict[str, Any],
+        event_time: datetime,
     ) -> Any:
         return _runtime_apply_confidence_adjustments(
-            self, decision, symbol, timeframe, strategy, scope, regime_metadata
+            self,
+            decision,
+            symbol,
+            timeframe,
+            strategy,
+            scope,
+            regime_metadata,
+            event_time,
         )
 
     def _transition_and_publish(

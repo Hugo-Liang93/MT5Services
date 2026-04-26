@@ -108,6 +108,16 @@ class EconomicDecayService:
         self._cache: dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
 
+    @property
+    def policy(self) -> SignalEconomicPolicy:
+        """Read-only access to the injected SignalEconomicPolicy.
+
+        Exposed so upstream consumers (e.g. runtime impact forecast) can reuse
+        the same window/importance configuration without re-resolving it from
+        another source.
+        """
+        return self._policy
+
     def decay_factor(self, symbol: str, *, at_time: datetime) -> float:
         """Return decay in [0.0, 1.0]; 1.0 means no influence.
 

@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from src.calendar.policy import SignalEconomicPolicy
 from ..confidence import apply_intrabar_decay
 from ..evaluation.regime import RegimeType, SoftRegimeResult
 from ..metadata_keys import MetadataKey as MK
@@ -132,7 +131,14 @@ def evaluate_strategies(
             htf_indicators=htf_payload,
         )
         decision = apply_confidence_adjustments(
-            runtime, decision, symbol, timeframe, strategy, scope, regime_metadata
+            runtime,
+            decision,
+            symbol,
+            timeframe,
+            strategy,
+            scope,
+            regime_metadata,
+            event_time,
         )
         snapshot_decisions.append(decision)
 
@@ -206,27 +212,40 @@ def _resolve_event_impact_forecast(
     if scope != "confirmed":
         return None
     cache = runtime._event_impact_cache
-    if event_time >= cache.get("expires_at", event_time):
-        try:
-            eco_service, policy = _resolve_eco_context(runtime)
-            impact_analyzer = runtime.market_impact_analyzer
-            if eco_service is not None and impact_analyzer is not None and policy is not None:
-                upcoming_events = _get_upcoming_high_impact(
-                    eco_service,
-                    policy.filter_window.importance_min,
-                )
-                if upcoming_events:
-                    cache["data"] = impact_analyzer.get_impact_forecast(
-                        upcoming_events[0].event_name, symbol=symbol
-                    )
-                else:
-                    cache["data"] = None
-            else:
-                cache["data"] = None
-            cache["expires_at"] = event_time + timedelta(minutes=5)
-        except Exception:
-            cache["data"] = None
-            cache["expires_at"] = event_time + timedelta(minutes=5)
+    if event_time < cache.get("expires_at", event_time):
+        return cache.get("data")
+
+    service = runtime.economic_decay_service
+    impact_analyzer = runtime.market_impact_analyzer
+    eco_service = runtime.economic_calendar_service
+    if service is None or impact_analyzer is None or eco_service is None:
+        cache["data"] = None
+        cache["expires_at"] = event_time + timedelta(minutes=5)
+        return None
+
+    try:
+        upcoming_events = _get_upcoming_high_impact(
+            eco_service,
+            service.policy.filter_window.importance_min,
+        )
+    except (ConnectionError, TimeoutError, OSError, RuntimeError) as exc:
+        logger.warning(
+            "event impact forecast runtime degrade for %s: %s: %s",
+            symbol,
+            type(exc).__name__,
+            exc,
+        )
+        cache["data"] = None
+        cache["expires_at"] = event_time + timedelta(minutes=5)
+        return None
+
+    if upcoming_events:
+        cache["data"] = impact_analyzer.get_impact_forecast(
+            upcoming_events[0].event_name, symbol=symbol
+        )
+    else:
+        cache["data"] = None
+    cache["expires_at"] = event_time + timedelta(minutes=5)
     return cache.get("data")
 
 
@@ -239,110 +258,6 @@ def _get_upcoming_high_impact(provider: Any, importance_min: int) -> list[Any]:
     )
 
 
-_EVENT_DECAY_TTL_SECONDS: float = 60.0
-_EVENT_DECAY_CACHE_MAX: int = 128
-_SIGNAL_EVENT_STATUSES = (
-    "scheduled",
-    "imminent",
-    "pending_release",
-    "released",
-)
-
-
-def _compute_economic_event_decay(
-    runtime: "SignalRuntime",
-    symbol: str,
-) -> float:
-    """计算经济事件渐进降权因子（0.0~1.0, 1.0=无影响）。"""
-    import time as _time
-
-    # --- 缓存命中检查 ---
-    cache = runtime._event_decay_cache
-    entry = cache.get(symbol)
-    now_mono = _time.monotonic()
-    if entry is not None and now_mono < entry["expires_at"]:
-        return entry["decay"]
-
-    # --- 获取 symbol-aware provider ---
-    provider, policy = _resolve_eco_context(runtime)
-    if provider is None or policy is None or not policy.enabled:
-        return 1.0
-
-    try:
-        decay = _query_symbol_event_decay(provider, symbol, policy)
-    except Exception:
-        decay = 1.0
-
-    cache[symbol] = {"decay": decay, "expires_at": now_mono + _EVENT_DECAY_TTL_SECONDS}
-
-    # 防止缓存无限增长：先清除已过期条目，仍超限则淘汰最旧条目
-    if len(cache) > _EVENT_DECAY_CACHE_MAX:
-        expired = [k for k, v in cache.items() if now_mono >= v["expires_at"]]
-        for k in expired:
-            del cache[k]
-        # 过期清理后仍超限：按 expires_at 升序淘汰，直到回到上限
-        if len(cache) > _EVENT_DECAY_CACHE_MAX:
-            by_age = sorted(cache.items(), key=lambda kv: kv[1]["expires_at"])
-            for k, _ in by_age[: len(cache) - _EVENT_DECAY_CACHE_MAX]:
-                del cache[k]
-
-    return decay
-
-
-def _resolve_eco_context(
-    runtime: "SignalRuntime",
-) -> tuple[Any | None, SignalEconomicPolicy | None]:
-    """从 filter_chain 解析 signal-domain 经济事件 provider 与 policy。
-
-    SignalRuntime 只应依赖 signal-domain filter 上已构造好的 policy，
-    避免再从其他配置源推导第二套窗口语义。
-    """
-    fc = runtime.filter_chain
-    if fc is not None and fc.economic_filter is not None:
-        eco_filter = fc.economic_filter
-        if eco_filter.provider is not None and eco_filter.policy is not None:
-            return eco_filter.provider, eco_filter.policy
-    return None, None
-
-
-def _query_symbol_event_decay(
-    provider: Any,
-    symbol: str,
-    policy: SignalEconomicPolicy,
-) -> float:
-    """对单个 symbol 查询最近相关高影响事件并计算 decay 因子。"""
-    from src.calendar.economic_calendar.trade_guard import infer_symbol_context
-
-    now = datetime.now(timezone.utc)
-    context = infer_symbol_context(symbol)
-
-    events = provider.get_events(
-        start_time=now - timedelta(minutes=policy.query_window.lookback_minutes),
-        end_time=now + timedelta(minutes=policy.query_window.lookahead_minutes),
-        limit=5,
-        countries=context["countries"] or None,
-        currencies=context["currencies"] or None,
-        statuses=list(_SIGNAL_EVENT_STATUSES),
-        importance_min=policy.query_window.importance_min,
-    )
-    if not events:
-        return 1.0
-
-    best_delta: float | None = None
-    for evt in events:
-        event_time = getattr(evt, "event_time", None)
-        if event_time is None:
-            continue
-        delta = (event_time - now).total_seconds() / 60.0
-        if best_delta is None or abs(delta) < abs(best_delta):
-            best_delta = delta
-
-    if best_delta is None:
-        return 1.0
-
-    return policy.decay_for_delta(best_delta)
-
-
 def apply_confidence_adjustments(
     runtime: "SignalRuntime",
     decision: Any,
@@ -351,6 +266,7 @@ def apply_confidence_adjustments(
     strategy: str,
     scope: str,
     regime_metadata: dict[str, Any],
+    event_time: datetime,
 ) -> Any:
     economic_decay_applied = False
     if scope == "intrabar":
@@ -361,7 +277,12 @@ def apply_confidence_adjustments(
 
     # 经济事件渐进降权：距离高影响事件越近，置信度衰减越大
     if decision.confidence > 0 and decision.direction in ("buy", "sell"):
-        event_decay = _compute_economic_event_decay(runtime, symbol)
+        service = runtime.economic_decay_service
+        event_decay = (
+            service.decay_factor(symbol, at_time=event_time)
+            if service is not None
+            else 1.0
+        )
         if event_decay < 1.0:
             economic_decay_applied = True
             adjusted = decision.confidence * event_decay
