@@ -49,6 +49,203 @@
 
 ---
 
+## 0x. 2026-04-26 §0w 强建议系统化落地：未注册 metric 自动 WARN + ISO tz helper + AST sentinel（防御性）
+
+### 触发
+
+§0w 提出 4 条强建议：(R1) 健康检查走 `is_running()` SSOT；(R2) `record_metric`
+注册阈值缺失自动 WARN；(R3) readmodel status 必须 derived；(R4) `fromisoformat`
+后处理 tzinfo 必须区分 naive vs aware + PR sentinel grep。
+
+User 要求"按建议优化"——把 4 条规则系统化落到代码 + 测试中，而不仅停留在
+单点修复，把 §0w 教训沉淀为防回归工程基础设施。
+
+### 审计范围
+
+| 建议 | Audit 结果 |
+|---|---|
+| R1（私有线程探测）| 全 monitoring/manager.py 仅 `_check_pending_entry` 一处（已 §0w 修），无其他需迁移 |
+| R2（未注册 metric）| record_metric 写入 17 处，其中 8 处 informational 应显式标 `check_alert=False` |
+| R3（硬编码 status）| 全 readmodels/runtime.py 7 个 build_*_summary 仅 `build_pending_entries_summary` 一处（已 §0w 修），其他都是 derived |
+| R4（fromisoformat tz）| 全 src/ 17 处 `fromisoformat(...).replace(tzinfo=...)`，其中 9 处 CLI 入口（naive UTC 语义合法），3 处需修（api / trace_recorder / signal_repo），2 处已正确（tz_guard / outbox） |
+
+### 实施
+
+#### R2：HealthMonitor 自动 WARN 未注册 alert metric
+
+**`src/monitoring/health/monitor.py`** - record_metric 默认 `check_alert=True`
+但 `self.alerts` 无该 metric → once-per-metric WARN：
+
+```python
+def __init__(...):
+    ...
+    self._unregistered_alert_metric_warned: set[str] = set()
+
+def record_metric(self, component, metric_name, value, details=None,
+                  check_alert: bool = True):
+    ...
+    if check_alert:
+        # §0w R2：caller 默认期望告警评级，alert 表无阈值 → 配置漂移
+        # （§0w pending_monitor_alive 教训根因）。一次性 WARN 让"半阈值"
+        # 漂白链路在测试/启动期间立刻可见；显式 informational 必须
+        # check_alert=False 来禁掉评级路径。
+        self._warn_unregistered_alert_metric_once(component, metric_name)
+        alert_level = self._check_alert_level(component, metric_name, metric_value)
+    else:
+        alert_level = None
+    ...
+
+def _warn_unregistered_alert_metric_once(self, component, metric_name):
+    if metric_name in self.alerts: return
+    if metric_name in self._unregistered_alert_metric_warned: return
+    self._unregistered_alert_metric_warned.add(metric_name)
+    logger.warning(
+        "HealthMonitor: metric %r recorded with check_alert=True but no "
+        "threshold registered (component=%s); 该 metric 永远不会触发告警 → "
+        "若期望告警请补 alert 阈值，若是 informational 请把 "
+        "record_metric(check_alert=False) 显式标记。",
+        metric_name, component,
+    )
+```
+
+**`src/monitoring/manager.py`** - 8 处 informational metrics 标 `check_alert=False`：
+
+| metric_name | 旧 check_alert | 新 check_alert | 说明 |
+|---|---|---|---|
+| success_rate | True (default) | **False** | informational |
+| runtime_status | True | **False** | heartbeat |
+| monitoring_summary | True | **False** | composite（子指标已评级） |
+| system.overall_status | True | **False** | composite |
+| pending_active_count | True | **False** | dashboard count |
+| pending_fill_rate | True | **False** | dashboard rate |
+| pending_monitor_alive | True | **False** | informational（告警走 pending_runtime_down） |
+| pending_fill_worker_alive | True | **False** | informational |
+| pending_runtime_down | True | True (kept) | **告警源**（在 alerts 表） |
+
+#### R4：parse_iso_to_utc helper + AST sentinel + 高价值站点迁移
+
+**`src/utils/timezone.py`** - 新增 `parse_iso_to_utc()`：
+
+```python
+def parse_iso_to_utc(value: str) -> datetime:
+    """Parse ISO-8601 string and normalize to UTC, preserving absolute moment.
+
+    §0w R4：旧反模式 ``fromisoformat(s).replace(tzinfo=UTC)`` 对带偏移
+    ISO（如 ``2026-04-26T08:00:00+08:00``）会**直接改时区标签**而不
+    做时区换算 → 写库变成 ``2026-04-26T08:00:00+00:00``，绝对时刻偏 8 小时。
+
+    本 helper 强制走 ``to_utc()``：
+    - naive 输入按 UTC 解释（无别的信息可参考）
+    - aware 输入用 ``astimezone(UTC)`` 保持绝对时刻
+    """
+    return to_utc(datetime.fromisoformat(str(value)))
+```
+
+迁移 3 处高价值站点到 helper：
+- `src/api/backtest_routes/schemas.py:parse_request_datetime` - API 入口
+- `src/monitoring/pipeline/trace_recorder.py:139` - DB INSERT TIMESTAMPTZ
+- `src/persistence/repositories/signal_repo.py:write_auto_executions` - §0w 修复
+  代码改用 helper 简化（语义不变）
+
+**`tests/utils/test_sentinel_no_fromisoformat_tz_replace.py`** - AST sentinel：
+
+```python
+def _find_offenders_in(source: str) -> list[tuple[int, str]]:
+    """AST 扫描：找形如 X.fromisoformat(...).replace(tzinfo=...) 的实际调用。"""
+    tree = ast.parse(source)
+    hits = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call): continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "replace": continue
+        if not any(kw.arg == "tzinfo" for kw in node.keywords): continue
+        receiver = func.value
+        if not isinstance(receiver, ast.Call): continue
+        recv_func = receiver.func
+        if isinstance(recv_func, ast.Attribute) and recv_func.attr == "fromisoformat":
+            hits.append((node.lineno, ast.unparse(node)))
+    return hits
+
+def test_no_new_fromisoformat_replace_tzinfo_pattern() -> None:
+    """全 src/ 扫描；仅 EXEMPT 列表中的 CLI 入口（naive UTC 语义）允许该模式。"""
+    ...
+```
+
+豁免清单（CLI 入口语义为 naive UTC）：
+- `src/backtesting/cli.py`
+- `src/ops/cli/{aggression_search,backfill_ohlc,backtest_runner,correlation_runner,exit_experiment,mining_runner,mining_walk_forward,walkforward_runner}.py`
+- `src/research/nightly/runner.py`
+
+为什么用 AST 而非 grep？grep 会误报 docstring / comment（§0x 测试初版命中
+17 处 → 7 处假阳性）。AST 只看实际函数调用 node，零假阳性。
+
+### 测试（10 项新契约）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_parse_iso_to_utc_converts_aware_input_preserving_absolute_moment` | +08:00 → 2026-04-26T00:00:00 UTC |
+| `test_parse_iso_to_utc_treats_naive_as_utc` | naive → 按 UTC 解释 |
+| `test_parse_iso_to_utc_handles_already_utc_input` | UTC ISO 不变 |
+| `test_parse_iso_to_utc_handles_negative_offset` | -05:00 正确转换 |
+| `test_to_utc_preserves_aware_absolute_moment` | datetime aware → astimezone |
+| `test_to_utc_assumes_naive_is_utc` | datetime naive → replace |
+| `test_no_new_fromisoformat_replace_tzinfo_pattern` | AST sentinel 全 src/ 扫描 |
+| `test_record_metric_warns_once_when_alert_threshold_missing` | 未注册 metric 默认 check_alert → WARN once |
+| `test_record_metric_no_warn_when_check_alert_explicitly_false` | informational 显式 False 不 WARN |
+| `test_record_metric_no_warn_when_metric_has_threshold` | 已注册 metric 不 WARN（hot path 不噪音） |
+
+### 元层教训：**强建议必须落到自动化 sentinel 才不会被遗忘**
+
+§0g→§0w 累计 47 个 bug 中至少 8 个是消费侧/调用方对生产侧/契约的隐式假设
+被违反。**手写规范 ≠ 自动防御**：
+
+1. R2 sentinel（HealthMonitor 自动 WARN）让"未注册 metric 静默漂白"在
+   开发期立刻暴露，比"PR review 时 grep 阈值表"强一个数量级
+2. R4 AST sentinel（CI 强制全 src/ 扫描）让"fromisoformat 改标签"反模式
+   再也无法被合并，比"约定走 helper"强一个数量级
+3. CLI 入口豁免清单是**显式契约**：把"naive UTC 语义"白名单化，
+   而非散落在每个 CLI 自己的 README
+
+强建议（扩充 §0g→§0w 元层教训）：
+- 任何"应该走 X helper / 应该传 Y 参数 / 应该注册 Z 阈值"的规范必须配
+  自动 sentinel test，否则 6 个月后必回归
+- AST sentinel > grep sentinel（避免 docstring/comment 假阳性）
+- 豁免清单（EXEMPT）必须在测试代码里 + 注释解释豁免理由，让未来审查能
+  追溯"为什么这条不算违规"
+
+### §0g→§0x 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **47 bug + 47 反向锁** + 1 契约阻断
++ §0x **2 条防回归 sentinel**（自动化基础设施）：
+
+| § | bug 数 | sentinel |
+|---|---|---|
+| 0g–0r | 27 | — |
+| 0s | 3 | — |
+| 0t | 3 + 1 契约阻断 | — |
+| 0u | 5 | — |
+| 0v | 5 | — |
+| 0w | 4 | — |
+| **0x** | — | **R2 + R4 自动 WARN/sentinel** |
+
+### 测试基线
+
+- 优化前：§0w 强建议 4 条停留在文档段落
+- 优化后：10 项新契约测试 + 2 条自动化 sentinel；`pytest -q` →
+  **2867 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- HealthMonitor 内置 self-check：未注册 alert metric 启动期 WARN，把"半阈值"
+  漂白挡在合并前
+- `parse_iso_to_utc()` single source of truth + AST sentinel test 强制全
+  src/ 走该 helper，"fromisoformat 改标签"反模式无法回归
+- 8 处 manager informational metric 显式 `check_alert=False` 标记，
+  生产/消费两端语义对齐
+- CLI 入口豁免清单显式写在 sentinel 测试里，而非散落约定
+
+---
+
 ## 0w. 2026-04-26 PendingEntry health 半监控 + alert 阈值缺失 + readmodel 漂白 + ISO 时区改标签（P2 ×3 + P3）
 
 ### 触发
