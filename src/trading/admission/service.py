@@ -155,11 +155,15 @@ class TradeAdmissionService:
         quote_health = _safe_dict(tradability.get("quote_health"))
         margin_guard = _safe_dict(tradability.get("margin_guard"))
         last_risk_block = str(account_risk.get("last_risk_block") or "").strip()
-        payload_scope = str(
-            payload.get("scope")
-            or _safe_dict(payload.get("metadata")).get("scope")
-            or "confirmed"
-        ).strip().lower()
+        payload_scope = (
+            str(
+                payload.get("scope")
+                or _safe_dict(payload.get("metadata")).get("scope")
+                or "confirmed"
+            )
+            .strip()
+            .lower()
+        )
         intrabar_health = build_execution_intrabar_health(
             _safe_dict(payload.get("metadata")),
             scope=payload_scope,
@@ -194,7 +198,11 @@ class TradeAdmissionService:
                 _build_reason(
                     code=str(check.get("name") or "check_failed"),
                     stage=stage,
-                    message=str(check.get("message") or assessment_dict.get("reason") or "precheck failed"),
+                    message=str(
+                        check.get("message")
+                        or assessment_dict.get("reason")
+                        or "precheck failed"
+                    ),
                     details=check,
                 )
             )
@@ -206,7 +214,9 @@ class TradeAdmissionService:
                     stage=_stage_from_check(
                         "precheck_reason",
                         event_blocked=economic_guard["event_blocked"],
-                        calendar_health_degraded=economic_guard["calendar_health_degraded"],
+                        calendar_health_degraded=economic_guard[
+                            "calendar_health_degraded"
+                        ],
                     ),
                     message=str(assessment_dict.get("reason")),
                     details={"verdict": assessment_dict.get("verdict")},
@@ -223,7 +233,17 @@ class TradeAdmissionService:
                 )
             )
 
-        if not bool(tradability.get("runtime_present", False)):
+        # P1 回归：multi_account main role 是受支持的 delegated 拓扑，
+        # readmodel 已明示 verdict='not_applicable' / reason_code='not_executor_role'。
+        # 此时本实例不直接执行交易，admission 不应把 runtime_present=False /
+        # admission_enabled=False 视作运行时故障并 block。
+        is_delegated_role = (
+            str(tradability.get("verdict") or "").lower() == "not_applicable"
+            and str(tradability.get("reason_code") or "").lower() == "not_executor_role"
+        )
+        if not is_delegated_role and not bool(
+            tradability.get("runtime_present", False)
+        ):
             reasons.append(
                 _build_reason(
                     code="runtime_absent",
@@ -232,7 +252,9 @@ class TradeAdmissionService:
                     details={"tradability": tradability},
                 )
             )
-        if not bool(tradability.get("admission_enabled", True)):
+        if not is_delegated_role and not bool(
+            tradability.get("admission_enabled", True)
+        ):
             reasons.append(
                 _build_reason(
                     code="admission_disabled",
@@ -276,7 +298,10 @@ class TradeAdmissionService:
                     details=intrabar_health,
                 )
             )
-        if bool(account_risk.get("should_block_new_trades", False)) and last_risk_block != REASON_QUOTE_STALE:
+        if (
+            bool(account_risk.get("should_block_new_trades", False))
+            and last_risk_block != REASON_QUOTE_STALE
+        ):
             reasons.append(
                 _build_reason(
                     code="risk_block_new_trades",
@@ -333,16 +358,19 @@ class TradeAdmissionService:
             or f"admission_{requested_operation}_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
         )
         runtime_identity = getattr(self._runtime_views, "runtime_identity", None)
-        account_alias = str(
-            payload.get("account_alias")
-            or assessment_dict.get("account_alias")
-            or getattr(runtime_identity, "account_alias", "")
-            or getattr(self._command_service, "active_account_alias", "")
-            or ""
-        ).strip() or None
-        account_key = str(
-            getattr(runtime_identity, "account_key", "") or ""
-        ).strip() or None
+        account_alias = (
+            str(
+                payload.get("account_alias")
+                or assessment_dict.get("account_alias")
+                or getattr(runtime_identity, "account_alias", "")
+                or getattr(self._command_service, "active_account_alias", "")
+                or ""
+            ).strip()
+            or None
+        )
+        account_key = (
+            str(getattr(runtime_identity, "account_key", "") or "").strip() or None
+        )
         return {
             "decision": decision,
             "stage": stage,
@@ -355,7 +383,9 @@ class TradeAdmissionService:
             "position_limits": {
                 "checks": position_limit_checks,
                 "managed_positions": int(
-                    _safe_dict(self._runtime_views.trading_state_summary()).get("managed_positions", {}).get("count")
+                    _safe_dict(self._runtime_views.trading_state_summary())
+                    .get("managed_positions", {})
+                    .get("count")
                     or 0
                 ),
             },
@@ -364,9 +394,12 @@ class TradeAdmissionService:
             "account_alias": account_alias,
             "account_key": account_key,
             "trace_id": resolved_trace_id,
-            "signal_id": str(signal_id or payload.get("signal_id") or "").strip() or None,
-            "intent_id": str(intent_id or payload.get("intent_id") or "").strip() or None,
-            "action_id": str(action_id or payload.get("action_id") or "").strip() or None,
+            "signal_id": str(signal_id or payload.get("signal_id") or "").strip()
+            or None,
+            "intent_id": str(intent_id or payload.get("intent_id") or "").strip()
+            or None,
+            "action_id": str(action_id or payload.get("action_id") or "").strip()
+            or None,
             "scope": scope,
             "source_assessment": assessment_dict,
         }

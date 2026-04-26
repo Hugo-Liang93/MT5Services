@@ -37,13 +37,15 @@ _SOURCE_AGGREGATION_SKIP: frozenset[str] = frozenset({"stream"})
 
 
 def compute_source_kind(blocks: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    """聚合各 block 的 source_kind 到顶层 source 描述（P9 Phase 2.3）。
+    """聚合各 block 的 source_kind 到顶层 source 描述（P9 Phase 2.3 + §0r）。
 
     判定规则：
     - 全部块 source_kind=native → kind=live
     - 任意块 source_kind=fallback / 显式 available=false → kind=hybrid，
       fallback_reason 列出降级块名
     - source_kind="static" 不参与判定（如 stream 块）
+    - source_kind="delegated" 不算 fallback（multi_account main role 不挂 executor
+      是合法拓扑，参 §0r）；与 native 混合时仍认为 kind=live
 
     跨端点统一：未来其他读端点（/v1/account/* 等）补 source 字段时，可复用此函数。
     """
@@ -191,14 +193,30 @@ class WorkbenchReadModel:
 
     def _build_execution_block(self) -> dict[str, Any]:
         tradability = self._runtime.tradability_state_summary()
-        # P9 Phase 2.3: tradability.runtime_present=False 表示 trade_executor 未注入，
-        # 此时 execution 块退化为 fallback。
+        executor = self._runtime.trade_executor_summary() or {}
+        # P9 Phase 2.3 + §0r 修正：
+        # - native：runtime_present=True
+        # - delegated：multi_account main role 不挂 executor（合法拓扑）
+        #   → readmodel 标 verdict='not_applicable' / reason='not_executor_role'
+        #   且 executor.execution_scope='remote_executor' / state='delegated'
+        #   不应被算作 fallback（旧 bug：会让顶层 source.kind 变 hybrid）
+        # - fallback：runtime_present=False 且不是 delegated（真实运行时故障）
         runtime_present = bool(tradability.get("runtime_present", True))
+        is_delegated_role = (
+            str(tradability.get("verdict") or "").lower() == "not_applicable"
+            and str(tradability.get("reason_code") or "").lower() == "not_executor_role"
+        )
+        if runtime_present:
+            source_kind = "native"
+        elif is_delegated_role:
+            source_kind = "delegated"
+        else:
+            source_kind = "fallback"
         return {
             "tier": "T0",
-            "source_kind": "native" if runtime_present else "fallback",
+            "source_kind": source_kind,
             "tradability": tradability,
-            "executor": self._runtime.trade_executor_summary() or {},
+            "executor": executor,
         }
 
     def _build_risk_block(self) -> dict[str, Any]:

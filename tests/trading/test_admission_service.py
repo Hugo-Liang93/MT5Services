@@ -9,6 +9,7 @@
 - pipeline_event_bus emit 与 None 时静默
 - deployment_contract / position_limits / account_alias 字段填充
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -122,7 +123,9 @@ def test_clean_payload_yields_allow_decision() -> None:
 def test_failed_check_produces_warn_reason() -> None:
     """precheck 有 failed_check → 形成 reason，decision=warn（如果 tradable 仍 True）。"""
     cmd = _stub_command_service(
-        checks=[{"name": "max_volume_per_order", "passed": False, "message": "0.5 > 0.1"}]
+        checks=[
+            {"name": "max_volume_per_order", "passed": False, "message": "0.5 > 0.1"}
+        ]
     )
     svc = _make_service(command_svc=cmd)
     report = svc.evaluate_trade_payload(
@@ -144,6 +147,55 @@ def test_runtime_absent_blocks_with_market_tradability_stage() -> None:
     assert report["decision"] == "block"
 
 
+def test_delegated_main_role_not_blocked_by_admission() -> None:
+    """P1 回归：multi_account main role 的 tradability_state_summary 已明确
+    输出 verdict='not_applicable' / reason_code='not_executor_role'，表示
+    "本实例不直接执行交易"——这是受支持的 delegated 拓扑，不应被 admission
+    误判为运行时故障。
+
+    旧实现仅看 runtime_present=False / admission_enabled=False 追加
+    runtime_absent + admission_disabled → decision=block。
+    """
+    views = MagicMock()
+    # tradability_state_summary 真实多账户 main role 输出
+    views.tradability_state_summary.return_value = {
+        "runtime_present": False,
+        "admission_enabled": False,
+        "circuit_open": False,
+        "tradable": False,
+        "verdict": "not_applicable",
+        "reason_code": "not_executor_role",
+        "reason": "本实例为 main role，不直接执行交易；"
+        "请查询 executor 实例的 tradability",
+        "quote_health": {},
+        "margin_guard": {},
+    }
+    views.account_risk_state_summary.return_value = {
+        "should_block_new_trades": False,
+        "last_risk_block": "",
+        "margin_guard": {},
+    }
+    views.trade_control_summary.return_value = {"auto_entry_enabled": True}
+    views.trading_state_summary.return_value = {"managed_positions": {"count": 0}}
+    views.runtime_identity = SimpleNamespace(
+        account_alias="live_main", account_key="live_main"
+    )
+
+    svc = _make_service(runtime_views=views)
+    report = svc.evaluate_trade_payload(
+        {"symbol": "XAUUSD"}, requested_operation="market"
+    )["report"]
+    # admission 不应把 not_applicable 视作 block 条件
+    assert report["decision"] != "block", (
+        f"delegated main role 受支持拓扑，admission 不应 block；"
+        f"reasons={report['reasons']!r}"
+    )
+    # 也不应产出 runtime_absent / admission_disabled 假阻断
+    reason_codes = {r["code"] for r in report["reasons"]}
+    assert "runtime_absent" not in reason_codes
+    assert "admission_disabled" not in reason_codes
+
+
 def test_circuit_open_yields_account_risk_reason() -> None:
     """circuit_open=True → account_risk stage reason；
     若 tradable 仍 True 则 decision=warn。"""
@@ -163,7 +215,9 @@ def test_quote_stale_marks_market_tradability() -> None:
     report = svc.evaluate_trade_payload(
         {"symbol": "XAUUSD"}, requested_operation="market"
     )["report"]
-    quote_reason = next((r for r in report["reasons"] if r["code"] == "quote_stale"), None)
+    quote_reason = next(
+        (r for r in report["reasons"] if r["code"] == "quote_stale"), None
+    )
     assert quote_reason is not None
     assert quote_reason["stage"] == "market_tradability"
     assert report["decision"] == "block"
@@ -335,7 +389,11 @@ def test_position_limits_filters_position_related_failures() -> None:
     """position_limits.checks 仅含名字含 'position' 或 'limit' 的 failed_checks。"""
     cmd = _stub_command_service(
         checks=[
-            {"name": "max_positions_per_symbol", "passed": False, "message": "limit hit"},
+            {
+                "name": "max_positions_per_symbol",
+                "passed": False,
+                "message": "limit hit",
+            },
             {"name": "spread_check", "passed": False, "message": "wide"},
             {"name": "trade_frequency_limit", "passed": False, "message": "too fast"},
         ]

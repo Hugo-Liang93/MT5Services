@@ -163,6 +163,61 @@ def test_workbench_build_happy_path_returns_all_blocks() -> None:
         assert block in payload, f"missing block: {block}"
 
 
+def test_workbench_delegated_main_role_not_classified_as_fallback() -> None:
+    """P2 回归：multi_account main role 不挂 trade_executor 是合法 delegated 拓扑，
+    readmodel 已把 tradability.verdict 标为 'not_applicable' +
+    executor.execution_scope='remote_executor' / state='delegated'。
+
+    旧 _build_execution_block 仅看 runtime_present=False → 一律标 fallback →
+    顶层 source.kind='hybrid'，把正常拓扑误报成降级状态。
+    """
+    runtime = _StubRuntimeReadModel(
+        tradability_payload={
+            "runtime_present": False,
+            "admission_enabled": False,
+            "verdict": "not_applicable",
+            "reason_code": "not_executor_role",
+            "reason": "本实例为 main role，不直接执行交易；"
+            "请查询 executor 实例的 tradability",
+            "circuit_open": False,
+            "tradable": False,
+        },
+        executor_payload={
+            "status": "disabled",
+            "state": "delegated",
+            "execution_scope": "remote_executor",
+            "configured": False,
+            "armed": False,
+            "running": False,
+            "enabled": False,
+            "circuit_open": False,
+            "consecutive_failures": 0,
+            "execution_count": 0,
+        },
+        risk_payload={"updated_at": "2026-04-26T10:00:00+00:00"},
+    )
+    workbench = WorkbenchReadModel(
+        runtime_read_model=runtime,
+        market_service=_StubMarketService(quote=_full_native_quote()),
+        runtime_identity=_identity("live-main"),
+    )
+
+    payload = workbench.build(
+        account_alias="live-main", symbol="XAUUSD", include=["execution"]
+    )
+
+    # delegated 拓扑应被显式识别，而非 fallback
+    assert payload["execution"]["source_kind"] != "fallback", (
+        f"delegated topology 不应被标 fallback；execution block: "
+        f"{payload['execution']!r}"
+    )
+    # 顶层 source 不应是 hybrid（因为 delegated 不是降级状态）
+    assert payload["source"]["kind"] != "hybrid", (
+        f"delegated topology 不应让顶层 source 变 hybrid；source: "
+        f"{payload['source']!r}"
+    )
+
+
 def test_workbench_build_rejects_unknown_account_alias() -> None:
     workbench = WorkbenchReadModel(
         runtime_read_model=_StubRuntimeReadModel(),

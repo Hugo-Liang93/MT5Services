@@ -46,6 +46,7 @@ alpha（混合系数）控制历史数据对当前信号的影响程度：
 在 ML 阶段可以通过子类覆盖 ``_get_calibration_factor()``，
 将规则替换为模型预测，接口对 SignalModule 完全透明。
 """
+
 from __future__ import annotations
 
 import json
@@ -114,13 +115,18 @@ class ConfidenceCalibrator:
         # 按 TF 差异化：高 TF 的 bar 间隔大，需要更长窗口才有足够样本。
         self._recency_hours: int = max(1, recency_hours)
         self._recency_hours_by_tf: dict[str, int] = {
-            "M1": 4, "M5": 8, "M15": 12, "M30": 16,
-            "H1": 24, "H4": 72, "D1": 168,
+            "M1": 4,
+            "M5": 8,
+            "M15": 12,
+            "M30": 16,
+            "H1": 24,
+            "H4": 72,
+            "D1": 168,
         }
         # refresh 时拉取的窗口集合（去重 + 排序）
-        self._recency_windows: tuple[int, ...] = tuple(sorted(set(
-            self._recency_hours_by_tf.values()
-        )))
+        self._recency_windows: tuple[int, ...] = tuple(
+            sorted(set(self._recency_hours_by_tf.values()))
+        )
 
         # { (strategy, action, regime_value): (win_rate, sample_count) }
         self._cache: Dict[_WinRateKey, Tuple[float, int]] = {}
@@ -133,7 +139,7 @@ class ConfidenceCalibrator:
         # 统计锁：轻量级，仅保护计数器更新，避免与写锁竞争
         self._stats_lock = threading.Lock()
         self._last_refresh: float = 0.0
-        self._refresh_hours: int = 168   # 查询最近 7 天的历史
+        self._refresh_hours: int = 168  # 查询最近 7 天的历史
 
         # 统计：校准了多少次、调整了多少
         self._total_calibrated: int = 0
@@ -158,9 +164,7 @@ class ConfidenceCalibrator:
             self._recency_hours = max(1, recency_hours)
         if hours_by_tf:
             self._recency_hours_by_tf.update(hours_by_tf)
-        self._recency_windows = tuple(
-            sorted(set(self._recency_hours_by_tf.values()))
-        )
+        self._recency_windows = tuple(sorted(set(self._recency_hours_by_tf.values())))
 
     def start_background_refresh(self, *, symbol: Optional[str] = None) -> None:
         """启动后台刷新线程，定期更新胜率缓存（非阻塞）。
@@ -184,11 +188,23 @@ class ConfidenceCalibrator:
         )
 
     def stop_background_refresh(self) -> None:
-        """停止后台刷新线程（最多等待 10 秒）。"""
+        """停止后台刷新线程（最多等待 10 秒）。
+
+        ADR-005：join(timeout) 后必须 is_alive() 检查；线程因 I/O / 队列等待 /
+        外部依赖卡住仍 alive 时**保留引用**，避免 start_background_refresh 的
+        防重逻辑（仅查 _bg_thread is not None and is_alive()）误判已停 →
+        启动第二条刷新线程造成双线程消费 / 重复缓存写入。
+        """
         self._bg_stop.set()
         if self._bg_thread is not None:
             self._bg_thread.join(timeout=10.0)
-            self._bg_thread = None
+            if self._bg_thread.is_alive():
+                logger.warning(
+                    "ConfidenceCalibrator: bg refresh thread still alive after"
+                    " 10s join timeout; preserving reference per ADR-005"
+                )
+            else:
+                self._bg_thread = None
         logger.info("ConfidenceCalibrator: background refresh stopped")
 
     def calibrate(
@@ -210,7 +226,9 @@ class ConfidenceCalibrator:
         # 若未启动后台线程，在首次调用时执行一次前台刷新，确保采样可用。
         if self._bg_thread is None or not self._bg_thread.is_alive():
             self._auto_refresh()
-        factor, sample_count = self._get_calibration_factor(strategy, action, regime, timeframe=timeframe)
+        factor, sample_count = self._get_calibration_factor(
+            strategy, action, regime, timeframe=timeframe
+        )
         if factor is None:
             return raw_confidence  # 无数据或样本不足 → 不干预
         effective_alpha = self._resolve_alpha(sample_count)
@@ -267,13 +285,16 @@ class ConfidenceCalibrator:
                     act = str(row[1])
                     total = int(row[2]) if row[2] is not None else 0
                     win_rate = float(row[4]) if row[4] is not None else 0.0
-                    regime_val = str(row[7]) if len(row) > 7 and row[7] is not None else "_all"
+                    regime_val = (
+                        str(row[7]) if len(row) > 7 and row[7] is not None else "_all"
+                    )
                     if total >= min_recent_samples:
                         window_cache[(strat, act, regime_val)] = (win_rate, total)
             except Exception:
                 logger.warning(
                     "ConfidenceCalibrator: failed to fetch recent win rates (window=%dh)",
-                    window_hours, exc_info=True,
+                    window_hours,
+                    exc_info=True,
                 )
             new_recent_caches[window_hours] = window_cache
 
@@ -289,7 +310,9 @@ class ConfidenceCalibrator:
 
         logger.info(
             "ConfidenceCalibrator: refreshed %d win-rate entries (%d recent across %d windows)",
-            count, total_recent, len(self._recency_windows),
+            count,
+            total_recent,
+            len(self._recency_windows),
         )
         return count
 
@@ -316,7 +339,9 @@ class ConfidenceCalibrator:
             "recency_hours": self._recency_hours,
             "cache_entries": cache_size,
             "recent_cache_entries": recent_cache_size,
-            "cache_age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
+            "cache_age_seconds": (
+                round(age_seconds, 1) if age_seconds is not None else None
+            ),
             "refresh_interval_seconds": self._refresh_interval,
             "stats": stats,
         }
@@ -340,7 +365,8 @@ class ConfidenceCalibrator:
                 json.dump(data, fp, indent=2)
             logger.info(
                 "ConfidenceCalibrator: dumped %d cache entries to %s",
-                len(data["cache"]), path,
+                len(data["cache"]),
+                path,
             )
         except Exception:
             logger.warning(
@@ -374,12 +400,15 @@ class ConfidenceCalibrator:
                     self._cache.setdefault(k, v)
             logger.info(
                 "ConfidenceCalibrator: loaded %d cache entries from %s",
-                len(new_entries), path,
+                len(new_entries),
+                path,
             )
             return len(new_entries)
         except Exception:
             logger.warning(
-                "ConfidenceCalibrator: failed to load cache from %s", path, exc_info=True
+                "ConfidenceCalibrator: failed to load cache from %s",
+                path,
+                exc_info=True,
             )
             return 0
 
@@ -405,7 +434,9 @@ class ConfidenceCalibrator:
         recency_hours = self._recency_hours_by_tf.get(
             timeframe or "", self._recency_hours
         )
-        recent_cache = self._recent_caches.get(recency_hours, self._default_recent_cache)
+        recent_cache = self._recent_caches.get(
+            recency_hours, self._default_recent_cache
+        )
 
         entry = cache.get((strategy, action, regime_val))
         if entry is None:

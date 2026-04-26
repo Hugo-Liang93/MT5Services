@@ -68,6 +68,7 @@ def test_confidence_calibrator_uses_staged_alpha_by_sample_count() -> None:
 
 # ── 补充测试：分阶段 alpha、底线保护、recency 防正反馈 ─────────────────
 
+
 def _noop_fetch(**kwargs):
     return []
 
@@ -81,6 +82,7 @@ def test_alpha_zero_returns_raw_confidence() -> None:
 
 def test_below_min_samples_returns_raw_confidence() -> None:
     """历史样本 < min_samples(100) 时不校准。"""
+
     def fetch(*, hours, symbol=None):
         return [("strat", "buy", 99, 60, 0.61, 0.7, 5.0, "trending")]
 
@@ -92,6 +94,7 @@ def test_below_min_samples_returns_raw_confidence() -> None:
 
 def test_50_to_100_samples_uses_warmup_alpha() -> None:
     """100-200 样本使用 warmup_alpha(0.10)，而非 full alpha(0.15)。"""
+
     # win_rate=0.70, factor=0.70/0.50=1.40 → capped by max_boost=1.30
     # calibrated = 0.80 * (1 + (1.30 - 1) * 0.10) = 0.80 * 1.03 = 0.824
     def fetch(*, hours, symbol=None):
@@ -110,6 +113,7 @@ def test_50_to_100_samples_uses_warmup_alpha() -> None:
 
 def test_above_100_samples_uses_full_alpha() -> None:
     """≥200 样本使用 full alpha(0.15)。"""
+
     def fetch(*, hours, symbol=None):
         if hours == 168:
             return [("strat", "buy", 250, 175, 0.70, 0.7, 5.0, "trending")]
@@ -126,6 +130,7 @@ def test_above_100_samples_uses_full_alpha() -> None:
 
 def test_max_boost_cap() -> None:
     """win_rate 极高时 factor 被 max_boost(1.30) 封顶。"""
+
     def fetch(*, hours, symbol=None):
         if hours == 168:
             return [("strat", "buy", 200, 190, 0.95, 0.9, 5.0, "trending")]
@@ -142,6 +147,7 @@ def test_max_boost_cap() -> None:
 
 def test_suppression_when_win_rate_below_baseline() -> None:
     """win_rate < baseline 时 factor < 1.0，置信度被压制。"""
+
     def fetch(*, hours, symbol=None):
         if hours == 168:
             return [("strat", "buy", 200, 60, 0.30, 0.7, 5.0, "trending")]
@@ -159,6 +165,7 @@ def test_suppression_when_win_rate_below_baseline() -> None:
 
 def test_recency_protection_caps_boost_when_recent_poor() -> None:
     """历史 7 天胜率好(boost)但近期 8h 胜率低于 baseline 时，禁止 boost。"""
+
     def fetch(*, hours, symbol=None):
         if hours == 168:
             # 历史胜率不错（≥200 笔使用 full alpha）
@@ -186,6 +193,7 @@ def test_no_data_returns_raw_confidence() -> None:
 
 def test_dump_and_load_round_trip(tmp_path) -> None:
     """dump() → load() 能完整恢复缓存。"""
+
     def fetch(*, hours, symbol=None):
         if hours == 168:
             return [("strat", "buy", 100, 60, 0.60, 0.7, 5.0, "trending")]
@@ -203,9 +211,63 @@ def test_dump_and_load_round_trip(tmp_path) -> None:
     assert loaded == 1
     # 设置 _last_refresh 避免 calibrate() 中 _auto_refresh() 清空 load 的缓存
     import time as _time
+
     calibrator2._last_refresh = _time.monotonic()
 
     # 校准结果应与原始一致（两者都没有 recent_cache，行为相同）
     result = calibrator2.calibrate("strat", "buy", 0.80, RegimeType.TRENDING)
     expected = calibrator.calibrate("strat", "buy", 0.80, RegimeType.TRENDING)
     assert result == pytest.approx(expected)
+
+
+def test_stop_background_refresh_preserves_alive_thread_per_adr_005() -> None:
+    """P2 回归（ADR-005）：stop_background_refresh 在 join(timeout=10.0) 后无条件
+    `_bg_thread = None`；如果线程因 I/O / 队列等待卡住仍 alive，引用被清零会让
+    后续 start_background_refresh 错误地启动第二条线程（双线程消费 / 重复刷新）。
+
+    ADR-005 明确：join(timeout) 后必须 is_alive() 检查，仅退出后才清引用。
+    """
+    calibrator = ConfidenceCalibrator(fetch_winrates_fn=_noop_fetch)
+
+    class _FakeAliveThread:
+        def __init__(self) -> None:
+            self.join_calls: list[float | None] = []
+
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_calls.append(timeout)
+
+        def start(self) -> None:
+            pass
+
+    fake = _FakeAliveThread()
+    calibrator._bg_thread = fake  # type: ignore[assignment]
+
+    calibrator.stop_background_refresh()
+
+    # ADR-005 要求：仍 alive 时不得清引用
+    assert calibrator._bg_thread is fake, (
+        "stop_background_refresh() 在线程仍 alive 时清空了引用，违反 ADR-005；"
+        f"_bg_thread={calibrator._bg_thread!r}"
+    )
+    assert fake.join_calls, "join 应被调用至少一次"
+
+
+def test_stop_background_refresh_clears_reference_when_thread_exits() -> None:
+    """正常情况：线程已退出 → 引用清零，让 start_background_refresh 可以重启。"""
+    calibrator = ConfidenceCalibrator(fetch_winrates_fn=_noop_fetch)
+
+    class _FakeExitedThread:
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+    calibrator._bg_thread = _FakeExitedThread()  # type: ignore[assignment]
+    calibrator.stop_background_refresh()
+    assert (
+        calibrator._bg_thread is None
+    ), "线程已退出时应清空 _bg_thread 引用让 start_background_refresh 能重启"
