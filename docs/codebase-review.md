@@ -49,6 +49,103 @@
 
 ---
 
+## 0k. 2026-04-26 live_preflight._check_api 探测已删除路由修复（误导启动前检查）
+
+### 触发
+
+User 报告：`src/ops/cli/live_preflight.py:_check_api()` 仍请求 `/v1/health`，
+但当前路由树只定义根 `/health` 和 `/v1/monitoring/health{,/live,/ready}`。
+preflight 在现服务上稳定 404 → "API health: FAIL"，直接误导启动前检查与
+live canary（运维以为服务异常实际是探针错路径）。
+
+### 路由真实定义（核验）
+
+| 路径 | 定义点 | 用途 |
+|---|---|---|
+| `/health` (root) | `src/api/__init__.py:171` `@app.get("/health")` | 业务级 ApiResponse[dict]（mode/market/trading/runtime） |
+| `/v1/monitoring/health/live` | `monitoring_routes/health.py:87` | K8s liveness probe |
+| `/v1/monitoring/health/ready` | `monitoring_routes/health.py:92` | K8s readiness probe（含 startup phase 检查） |
+| `/v1/monitoring/health` | `monitoring_routes/health.py:180` | 详细 health 报告（含 deps 状态） |
+
+`/v1/health` 不存在。preflight 应取 root `/health`（业务级 ApiResponse 结构匹配既有解析）。
+
+### 隐藏次因（即使 URL 正确旧实现也无信息量）
+
+`ApiResponse[dict]` 的 `data` 结构是 `{mode, market, trading, ingestor, runtime}`，
+**无顶层 `status` 字段**。旧实现 `data.get("data", {}).get("status", "unknown")`
+即使 200 也永远输出 `"status=unknown"`——preflight 报告**完全无业务诊断价值**。
+
+→ 这是 user 报告的"假警报"之外的"真静默"：即使有人手动改 URL 修了 404，
+也会发现 preflight 报告内容空洞。
+
+### 修复（commit `ef61a96`）
+
+```python
+# 旧
+r = requests.get(f"{api_base}/v1/health", timeout=5)
+status = data.get("data", {}).get("status", "unknown")
+# → "status=unknown" 即使 200
+
+# 新
+r = requests.get(f"{api_base}/health", timeout=5)
+if not payload.get("success"): → FAIL with error code
+mode = data.get("mode", "unknown")
+market_connected = data.get("market", {}).get("connected", False)
+trading_running = data.get("trading", {}).get("running", False)
+# → "mode=FULL market=connected trading=running"
+```
+
+异常分层（同 ADR-011 契约）：
+- `requests.ConnectionError` → SKIP（service not running 是合法 preflight 场景）
+- `Timeout/RequestException/ValueError(JSON)` → FAIL with detail
+- Coding error（AttributeError/TypeError 等）→ 透传 fail-fast
+
+### 测试（4 项新增回归，先零覆盖）
+
+| 测试 | 锁定的契约 |
+|---|---|
+| `test_check_api_hits_root_health_not_v1_health` | URL 路径锁；防回退到 /v1/health |
+| `test_check_api_extracts_mode_from_response` | 防回归 "status=unknown" 死写 |
+| `test_check_api_handles_connection_error` | ConnectionError → SKIP |
+| `test_check_api_marks_failure_when_success_false` | 防把 ApiResponse.success=False 错当 OK |
+
+之前 **`_check_api` 零测试覆盖** —— 这是与 P2 (`warm_up_from_db`) 完全相同的模式，
+也解释了为什么 bug 数月未发现。
+
+### 元层教训：CLI 工具同样需要测试覆盖
+
+`src/ops/cli/` 的 23 个 CLI 长期被视为"运维脚本，能跑就行"，但 `live_preflight`
+是**真实生产前的最后一道门**——它的 false positive (404 误报) 比业务代码的 bug
+更危险（可能让运维取消上线决策，或反向"既然 preflight 一直 fail 就忽略它"）。
+
+建议下次维护窗口：
+- 给 `src/ops/cli/` 中**人会盯着输出做决策**的工具（preflight / health_check /
+  diagnose_no_trades）补 ≥ smoke 级测试
+- 其他纯产生数据 / 单次诊断的（mining_runner / backtest_runner）测试优先级低
+
+### 未决整改（不阻塞合并）
+
+`live_preflight.py` 残余 **48 处 pre-existing flake8** 违例（E501 长行 ×33 +
+F401 unused imports ×3 + E402 module-level imports ×4 + F541 f-string without
+placeholder ×6 + sys.path manipulation in line 23 ×1）。本次修复 net 49 → 48
+（反而减 1）。
+
+整体清扫需要重构文件结构（sys.path hack 移除 + 长行折行 + 死 import 清理），
+风险较高且 surface 大，不在本次 P3 主题。
+
+### 测试基线
+
+- pytest tests/ops/test_live_preflight.py：4 → **8 passed / 0 failed**（含 4 项新回归锁）
+- pytest -m "not slow"：**2780 passed / 0 failed / 6 skipped**（4 个新 _check_api 测试 + 之前 2776）
+
+### 减少边界泄漏的方式
+
+preflight 不再硬编码已删除路径——通过 ApiResponse 标准 envelope 的 `success`
++ `data.mode` 解析，与业务 health endpoint 的契约保持一致；未来 health 改动
+（如 add fields）只要保留 ApiResponse[dict] 包装就不破 preflight。
+
+---
+
 ## 0j. 2026-04-26 Research 链路时间戳 UTC-aware 一致化（datetime.utcnow → utc_now helper）
 
 ### 触发
