@@ -92,7 +92,7 @@
 - ✅ `runtime.py` 删除 `UnifiedIndicatorManager` / `SoftRegimeResult` / `MetadataKey as MK` 三个 unused imports（含 `TYPE_CHECKING` 块清空）
 - ✅ `runtime_evaluator.py` 删除 `evaluate_strategies` 中 `soft_parsed` 死代码（11 行）+ 对应 `SoftRegimeResult` import；commit `175295d` 删 `min_affinity_skip` 时遗留的死代码已清理
 - ✅ `runtime{,_evaluator}.py` 跑 `black` + `isort` sweep；F401/F841 在两文件 0 命中
-- ⚠ 残余 3 处 pre-existing flake8（runtime.py:61 E301 + 2 处 91/90 字符 E501）是 black 不处理的边缘 case，留作未来需要时手动整理
+- ✅ pre-existing flake8 残余 3 处（E301 Protocol 间空行 + 2 处 91/90 字符 E501）也清扫完毕（commit `3a9d200`）：补空行、docstring 拆两段、sorted key 抽 local 变量。两文件 flake8 + black 双 0 violation
 
 ### 减少边界泄漏的方式
 
