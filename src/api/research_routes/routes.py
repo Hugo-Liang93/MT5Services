@@ -19,7 +19,21 @@ router = APIRouter()
 
 # ── 内存任务存储（与 backtest 的 runtime_store 同模式） ──────────
 
+# §0cc P2：旧实现裸 dict 无容量上限 → 长期 API 进程内存随调用次数线性增长
+# （每个完成结果常驻整份 result.to_dict()）。与 backtesting.data.store 50 条
+# 上限对齐，FIFO 淘汰旧 completed/failed jobs；新写入必须走 _set_mining_job
+# helper 强制走 cap 逻辑，禁止裸 dict 写入绕过淘汰。
+_MINING_JOBS_MAX: int = 50
 _mining_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+def _set_mining_job(run_id: str, payload: Dict[str, Any]) -> None:
+    """§0cc P2：写入挂起结果时强制 FIFO 淘汰旧条目，避免内存无界增长。"""
+    _mining_jobs[run_id] = payload
+    # 新增的会移到 dict 末尾（py3.7+ 保序）；超容时从头部淘汰最旧
+    while len(_mining_jobs) > _MINING_JOBS_MAX:
+        oldest_key = next(iter(_mining_jobs))
+        _mining_jobs.pop(oldest_key, None)
 
 
 class MiningRunRequest(BaseModel):
@@ -49,24 +63,29 @@ def _get_research_repo():  # type: ignore[no-untyped-def]
 
 
 def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
-    """后台执行挖掘任务。"""
-    _mining_jobs[run_id] = {
+    """后台执行挖掘任务。
+
+    §0cc P2：deps 用 with 自动 cleanup，避免 mining 入口连接池/线程池泄漏。
+    任务状态写入全部走 _set_mining_job 强制 cap。
+    """
+    _set_mining_job(run_id, {
         "status": "running",
         "started_at": utc_now().isoformat(),
-    }
+    })
     try:
         from src.backtesting.component_factory import build_research_data_deps
         from src.research.orchestration import MiningRunner
 
-        runner = MiningRunner(deps=build_research_data_deps())
-        result = runner.run(
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            start_time=datetime.fromisoformat(request.start_time),
-            end_time=datetime.fromisoformat(request.end_time),
-            analyses=request.analyses,
-            indicator_filter=request.indicator_filter,
-        )
+        with build_research_data_deps() as data_deps:
+            runner = MiningRunner(deps=data_deps)
+            result = runner.run(
+                symbol=request.symbol,
+                timeframe=request.timeframe,
+                start_time=datetime.fromisoformat(request.start_time),
+                end_time=datetime.fromisoformat(request.end_time),
+                analyses=request.analyses,
+                indicator_filter=request.indicator_filter,
+            )
         result.experiment_id = request.experiment_id
 
         # 持久化
@@ -83,13 +102,13 @@ def _execute_mining(run_id: str, request: MiningRunRequest) -> None:
             except Exception:
                 logger.debug("Failed to update experiment", exc_info=True)
 
-        _mining_jobs[run_id] = {
+        _set_mining_job(run_id, {
             "status": "completed",
             "result": result.to_dict(),
-        }
+        })
     except Exception as exc:
         logger.exception("Mining run %s failed", run_id)
-        _mining_jobs[run_id] = {"status": "failed", "error": str(exc)}
+        _set_mining_job(run_id, {"status": "failed", "error": str(exc)})
 
 
 @router.post("/mining/run", response_model=ApiResponse)
@@ -101,7 +120,7 @@ def submit_mining_run(
     from src.backtesting.models import generate_run_id
 
     run_id = f"mine_{generate_run_id()[3:]}"  # mine_xxxxxxxxxxxx
-    _mining_jobs[run_id] = {"status": "pending"}
+    _set_mining_job(run_id, {"status": "pending"})
     background_tasks.add_task(_execute_mining, run_id, request)
     return ApiResponse(
         success=True,

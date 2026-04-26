@@ -97,9 +97,20 @@ class PipelineTraceRecorder:
             )
 
     def _run(self) -> None:
+        # §0cc P2：旧 _run 无顶层 try/except，_flush() 抛一次异常 → 后台线程
+        # 崩溃 → pipeline bus 仍发事件但永远不再持久化（trace 失明）。
+        # 必须把 drain + flush 的异常隔离在循环内，瞬时 DB/磁盘故障下持续运行。
         while not self._stop.is_set() or not self._queue.empty() or self._pending:
-            self._drain_queue()
-            self._flush()
+            try:
+                self._drain_queue()
+                self._flush()
+            except Exception:
+                logger.exception(
+                    "PipelineTraceRecorder: flush failed (pending=%d, queue=%d); "
+                    "继续运行，将在下次循环重试",
+                    len(self._pending),
+                    self._queue.qsize(),
+                )
             self._stop.wait(0.1)
 
     def _drain_queue(self) -> None:

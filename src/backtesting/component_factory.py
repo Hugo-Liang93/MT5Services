@@ -223,8 +223,14 @@ def build_research_data_deps(
         strategy_params_per_tf=strategy_params_per_tf,
         strategy_names=strategy_names,
     )
+    # §0cc P2：把 writer + pipeline cleanup 责任显式回传给 consumer，
+    # 避免 mining 入口（api/research_routes、ops/cli/mining_runner 等）
+    # 拿不到合法释放端口导致连接池/线程池泄漏。
+    from src.backtesting.cli import _cleanup_components
+
     return ResearchDataDeps(
         bar_loader=components["data_loader"],
         indicator_computer=components["pipeline"],
         regime_detector=components["regime_detector"],
+        cleanup_fn=lambda: _cleanup_components(components),
     )

@@ -44,12 +44,30 @@ def _build_components(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def _cleanup_components(components: Dict[str, Any]) -> None:
-    # docstring removed during encoding normalization
+    """关闭 build_backtest_components 返的需托管资源。
+
+    §0cc P3：旧实现只关 writer，遗漏 pipeline → 在复用解释器/测试进程/
+    嵌入式调用场景下，isolated pipeline 的线程池+缓存持续遗留。
+    与 API 版本对齐：同时关 writer + pipeline。
+    """
     writer = components.get("writer")
     if writer is not None:
         close_writer = getattr(writer, "close", None)
         if callable(close_writer):
-            close_writer()
+            try:
+                close_writer()
+            except Exception:
+                logger.warning("backtesting cleanup: writer.close() failed", exc_info=True)
+    pipeline = components.get("pipeline")
+    if pipeline is not None:
+        shutdown_pipeline = getattr(pipeline, "shutdown", None)
+        if callable(shutdown_pipeline):
+            try:
+                shutdown_pipeline()
+            except Exception:
+                logger.warning(
+                    "backtesting cleanup: pipeline.shutdown() failed", exc_info=True
+                )
 
 
 def _load_strategy_scope_overrides() -> (

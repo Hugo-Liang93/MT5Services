@@ -90,13 +90,31 @@ def run_nightly_wf(config: NightlyWFConfig) -> NightlyWFReport:
 # ── 内部 worker ─────────────────────────────────────────────────
 
 
+# §0cc P2：基础设施类异常必须 fail-fast 抛出（违反 nightly_wf 契约
+# "infrastructure errors should propagate"）；业务类异常 catch 成 str 聚合。
+_INFRASTRUCTURE_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    ConnectionError,
+    TimeoutError,
+    OSError,        # 包含 IOError / FileNotFoundError / PermissionError
+    MemoryError,
+)
+
+
 def _run_single_combo_packed(args: tuple):
-    """ProcessPool 友好的 packer。异常作为 str 返回（便于结果聚合）。"""
+    """ProcessPool 友好的 packer。
+
+    §0cc P2：业务异常 catch 成 str（保留旧聚合语义），但基础设施异常
+    （ConnectionError / OSError / TimeoutError 等）必须直接抛出
+    让 nightly_wf 主流程 fail-fast，不能伪装成普通失败项掩盖系统故障。
+    """
     symbol, strategy, tf, start, end = args
     try:
         return _run_single_combo(
             symbol=symbol, strategy=strategy, tf=tf, start=start, end=end,
         )
+    except _INFRASTRUCTURE_EXCEPTIONS:
+        # 基础设施异常不能 catch——主流程必须 fail-fast
+        raise
     except Exception as exc:
         return f"{type(exc).__name__}: {exc}"
 
@@ -151,26 +169,34 @@ def _run_single_combo(
         **defaults,
     )
     components = build_backtest_components(strategy_names=[strategy])
-    engine = BacktestEngine(
-        config=bt_config,
-        data_loader=components["data_loader"],
-        signal_module=components["signal_module"],
-        indicator_pipeline=components["pipeline"],
-        regime_detector=components["regime_detector"],
-        performance_tracker=components.get("performance_tracker"),
-    )
-    result = engine.run()
-    m = result.metrics
-    return StrategyMetrics(
-        strategy=strategy,
-        timeframe=tf,
-        trades=m.total_trades,
-        win_rate=float(m.win_rate),
-        pnl=float(m.total_pnl),
-        profit_factor=float(m.profit_factor),
-        sharpe=float(m.sharpe_ratio),
-        sortino=float(m.sortino_ratio),
-        max_dd=float(m.max_drawdown),
-        expectancy=float(m.expectancy),
-        avg_bars_held=float(m.avg_bars_held),
-    )
+    # §0cc P2：旧实现无 finally → writer 连接池 + pipeline 线程池/缓存
+    # 持续累积。每次 build_backtest_components 都返回需调用方关闭的独立组件，
+    # 必须在 finally 里 cleanup（与 cli._cleanup_components 同模式）。
+    try:
+        engine = BacktestEngine(
+            config=bt_config,
+            data_loader=components["data_loader"],
+            signal_module=components["signal_module"],
+            indicator_pipeline=components["pipeline"],
+            regime_detector=components["regime_detector"],
+            performance_tracker=components.get("performance_tracker"),
+        )
+        result = engine.run()
+        m = result.metrics
+        return StrategyMetrics(
+            strategy=strategy,
+            timeframe=tf,
+            trades=m.total_trades,
+            win_rate=float(m.win_rate),
+            pnl=float(m.total_pnl),
+            profit_factor=float(m.profit_factor),
+            sharpe=float(m.sharpe_ratio),
+            sortino=float(m.sortino_ratio),
+            max_dd=float(m.max_drawdown),
+            expectancy=float(m.expectancy),
+            avg_bars_held=float(m.avg_bars_held),
+        )
+    finally:
+        from src.backtesting.cli import _cleanup_components
+
+        _cleanup_components(components)

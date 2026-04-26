@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -151,3 +153,151 @@ class TestReportSerialization:
         assert "metrics" in d
         assert d["has_regression"] is False
         assert len(d["metrics"]) == 1
+
+
+# ── §0cc P2 回归：nightly_wf 异常隔离 + cleanup ──
+
+
+def test_run_single_combo_packed_propagates_infrastructure_errors() -> None:
+    """P2 §0cc 回归：旧 _run_single_combo_packed 把所有 Exception catch 成
+    字符串返回 → ConnectionError / 数据库不可用 / 数据加载 bug 被汇总进
+    failed_runs，主流程返回看似正常的 report，违反"基础设施错误应直接抛出"契约。
+    """
+    import builtins
+    from src.research.nightly import runner as nightly_runner
+
+    original = nightly_runner._run_single_combo
+
+    def boom(**kwargs):
+        raise ConnectionError("db down")
+
+    nightly_runner._run_single_combo = boom
+    try:
+        with pytest.raises(ConnectionError):
+            nightly_runner._run_single_combo_packed(
+                ("XAUUSD", "trendline", "M15", "2026-01-01T00:00:00", "2026-01-02T00:00:00")
+            )
+    finally:
+        nightly_runner._run_single_combo = original
+
+
+def test_run_single_combo_packed_returns_string_for_business_errors() -> None:
+    """对称契约：业务类异常（StrategyError 等非基础设施类）仍可 catch 成字符串
+    便于聚合（保留旧"业务失败不阻断 nightly"语义）。
+    """
+    from src.research.nightly import runner as nightly_runner
+
+    original = nightly_runner._run_single_combo
+
+    class StrategyError(Exception):
+        pass
+
+    def biz_fail(**kwargs):
+        raise StrategyError("strategy returned no signals")
+
+    nightly_runner._run_single_combo = biz_fail
+    try:
+        result = nightly_runner._run_single_combo_packed(
+            ("XAUUSD", "trendline", "M15", "2026-01-01T00:00:00", "2026-01-02T00:00:00")
+        )
+        assert isinstance(result, str), f"业务异常应 catch 成字符串；got {type(result)}"
+        assert "StrategyError" in result
+    finally:
+        nightly_runner._run_single_combo = original
+
+
+def test_run_single_combo_calls_cleanup_components_in_finally(monkeypatch) -> None:
+    """P2 §0cc 回归：_run_single_combo 每次都 build_backtest_components 但
+    没 finally cleanup → writer / pipeline / connection pool / thread pool 持续
+    累积，长 nightly 作业会堆死。必须在 finally 关闭。
+    """
+    from src.research.nightly import runner as nightly_runner
+
+    fake_writer = MagicMock()
+    fake_writer.close = MagicMock()
+    fake_pipeline = MagicMock()
+    fake_pipeline.shutdown = MagicMock()
+    fake_data_loader = MagicMock()
+    fake_signal_module = MagicMock()
+    fake_regime_detector = MagicMock()
+
+    def fake_build_components(**kwargs):
+        return {
+            "data_loader": fake_data_loader,
+            "signal_module": fake_signal_module,
+            "pipeline": fake_pipeline,
+            "regime_detector": fake_regime_detector,
+            "writer": fake_writer,
+            "performance_tracker": None,
+        }
+
+    fake_engine = MagicMock()
+    fake_result = MagicMock()
+    fake_result.metrics = SimpleNamespace(
+        total_trades=0, win_rate=0.0, total_pnl=0.0, profit_factor=0.0,
+        sharpe_ratio=0.0, sortino_ratio=0.0, max_drawdown=0.0, expectancy=0.0,
+        avg_bars_held=0.0,
+    )
+    fake_engine.run.return_value = fake_result
+
+    monkeypatch.setattr(
+        "src.backtesting.component_factory.build_backtest_components",
+        fake_build_components,
+    )
+    monkeypatch.setattr(
+        "src.backtesting.engine.BacktestEngine",
+        lambda **kwargs: fake_engine,
+    )
+
+    nightly_runner._run_single_combo(
+        symbol="XAUUSD",
+        strategy="trendline",
+        tf="M15",
+        start="2026-01-01T00:00:00",
+        end="2026-01-02T00:00:00",
+    )
+
+    assert fake_writer.close.called, (
+        "writer.close() 必须在 finally 里调用，否则 nightly 长跑会堆死连接池"
+    )
+    assert fake_pipeline.shutdown.called, (
+        "pipeline.shutdown() 必须在 finally 里调用，否则线程池/缓存累积"
+    )
+
+
+def test_run_single_combo_cleanup_runs_even_when_engine_raises(monkeypatch) -> None:
+    """对称契约：engine.run() 抛异常时 cleanup 仍必须跑。"""
+    from src.research.nightly import runner as nightly_runner
+
+    fake_writer = MagicMock()
+    fake_pipeline = MagicMock()
+
+    def fake_build_components(**kwargs):
+        return {
+            "data_loader": MagicMock(),
+            "signal_module": MagicMock(),
+            "pipeline": fake_pipeline,
+            "regime_detector": MagicMock(),
+            "writer": fake_writer,
+            "performance_tracker": None,
+        }
+
+    fake_engine = MagicMock()
+    fake_engine.run.side_effect = RuntimeError("engine boom")
+
+    monkeypatch.setattr(
+        "src.backtesting.component_factory.build_backtest_components",
+        fake_build_components,
+    )
+    monkeypatch.setattr(
+        "src.backtesting.engine.BacktestEngine",
+        lambda **kwargs: fake_engine,
+    )
+
+    with pytest.raises(RuntimeError, match="engine boom"):
+        nightly_runner._run_single_combo(
+            symbol="XAUUSD", strategy="trendline", tf="M15",
+            start="2026-01-01T00:00:00", end="2026-01-02T00:00:00",
+        )
+    assert fake_writer.close.called, "engine 抛异常时 cleanup 仍必须跑"
+    assert fake_pipeline.shutdown.called

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 from src.clients.mt5_market import OHLC
 from src.signals.evaluation.regime import RegimeType, SoftRegimeResult
@@ -90,11 +90,39 @@ class ResearchDataDeps:
 
     装配层（CLI / API / nightly runner）构造后注入 build_data_matrix / MiningRunner。
     frozen=True 避免运行时被改写成可变配置包。
+
+    §0cc P2：``cleanup_fn`` 让装配层把"如何释放底层 writer/pipeline"的所有权
+    显式回传给消费方——consumer 调 ``close()`` 或 ``with deps:`` 即可级联清理，
+    不再"装配后撒手不管"导致 mining 入口连接池/线程池泄漏。
     """
 
     bar_loader: BarLoaderPort
     indicator_computer: IndicatorComputerPort
     regime_detector: RegimeDetectorPort
+    cleanup_fn: Optional[Callable[[], None]] = None
+
+    def close(self) -> None:
+        """释放装配层托管的 writer / pipeline 资源。
+
+        若构造时未传 cleanup_fn（兼容旧调用方）则 no-op；
+        失败被吞但记日志，避免 cleanup 链条卡在中间。
+        """
+        if self.cleanup_fn is None:
+            return
+        try:
+            self.cleanup_fn()
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "ResearchDataDeps.close() failed", exc_info=True
+            )
+
+    def __enter__(self) -> "ResearchDataDeps":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
 
 __all__ = [

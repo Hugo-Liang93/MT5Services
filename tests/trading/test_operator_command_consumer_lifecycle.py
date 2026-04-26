@@ -424,3 +424,86 @@ def test_worker_stops_mid_batch_when_stop_event_set(monkeypatch) -> None:
 
     # 处理了第 1 条后 stop_event 触发 → 仅 cmd-0 被处理，cmd-1 / cmd-2 被中断
     assert processed == ["cmd-0"]
+
+
+# ── §0cc P1 回归：claim_fn / complete_fn 一次失败不能打死 worker 线程 ──
+
+
+def test_consumer_survives_transient_claim_fn_exception() -> None:
+    """P1 §0cc 回归：旧实现 _worker 主循环没有顶层 try/except，claim_fn
+    抛一次瞬时异常 → 线程直接退出，整个控制面 silently down。
+    必须把 claim 异常隔离在循环内，sleep + 下次 retry。
+    """
+    call_count = [0]
+
+    def flaky_claim(**kwargs: Any) -> Any:
+        call_count[0] += 1
+        if call_count[0] < 3:
+            raise RuntimeError("db down")
+        return []  # 第 3 次起返回正常
+
+    consumer = _make_consumer(
+        claim_fn=flaky_claim,
+        poll_interval_seconds=0.05,
+    )
+    try:
+        consumer.start()
+        # 等多个 poll 周期：第 1/2 次 raise，第 3 次起恢复
+        for _ in range(20):
+            time.sleep(0.05)
+            if call_count[0] >= 3:
+                break
+        assert consumer.is_running(), (
+            f"claim_fn 瞬时异常不能打死 worker 线程；call_count={call_count[0]}"
+        )
+        assert call_count[0] >= 3, (
+            f"线程必须 retry，至少 3 次调用；got {call_count[0]}"
+        )
+    finally:
+        consumer.stop(timeout=2.0)
+
+
+def test_consumer_survives_transient_complete_fn_exception() -> None:
+    """P1 §0cc 回归：_process_command 失败分支再次调 _complete_fn 没有第二层
+    保护，complete_fn 一次抛异常就把 worker 线程打死。必须把 complete_fn
+    所有调用包 try/except，让 consumer 在瞬时 DB 故障下持续运行。
+    """
+    claimed_items = [
+        {
+            "command_id": "cmd-1",
+            "command_type": "set_runtime_mode",
+            "request_payload": {"mode": "full"},
+            "attempt_count": 1,
+        }
+    ]
+    call_count = [0]
+    complete_calls = [0]
+
+    def claim_once(**kwargs: Any) -> Any:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return claimed_items
+        return []
+
+    def flaky_complete(**kwargs: Any) -> None:
+        complete_calls[0] += 1
+        raise RuntimeError("complete down")
+
+    consumer = _make_consumer(
+        claim_fn=claim_once,
+        complete_fn=flaky_complete,
+        poll_interval_seconds=0.05,
+    )
+    try:
+        consumer.start()
+        # 等多个 poll 周期
+        for _ in range(20):
+            time.sleep(0.05)
+            if call_count[0] >= 3:
+                break
+        assert consumer.is_running(), (
+            f"complete_fn 瞬时异常不能打死 worker 线程；"
+            f"claim_calls={call_count[0]} complete_calls={complete_calls[0]}"
+        )
+    finally:
+        consumer.stop(timeout=2.0)

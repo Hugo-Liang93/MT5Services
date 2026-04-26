@@ -77,68 +77,115 @@ class OperatorCommandConsumer:
         return self._lifecycle.is_running()
 
     def _worker(self) -> None:
+        # §0cc P1：旧实现 _claim_fn / _process_command 异常无顶层 try/except，
+        # 一次瞬时 DB 故障就把整个控制面 silently down。本循环必须把单轮异常
+        # 隔离在循环体内（log + sleep + retry），不让线程退出。
         while not self._stop_event.is_set():
-            transitions = self._claim_fn(
-                target_account_key=self._runtime_identity.account_key,
-                claimed_by_instance_id=self._runtime_identity.instance_id,
-                claimed_by_run_id=self._runtime_identity.instance_id,
-                limit=self._batch_size,
-                lease_seconds=self._lease_seconds,
-                max_attempts=self._max_attempts,
-            )
-            if isinstance(transitions, dict):
-                claimed = list(transitions.get("claimed") or [])
-                dead_lettered = list(transitions.get("dead_lettered") or [])
-            else:
-                claimed = list(transitions or [])
-                dead_lettered = []
-            for item in dead_lettered:
-                self._emit_event(
-                    "command_failed",
-                    item,
-                    extra_payload={
-                        "status": "dead_lettered",
-                        "error_code": item.get("last_error_code") or "command_attempts_exhausted",
-                        "error_message": "operator command dead-lettered after retry exhaustion",
-                    },
+            try:
+                self._worker_iteration()
+            except Exception:
+                logger.exception(
+                    "OperatorCommandConsumer: unexpected error in worker loop; "
+                    "continuing after %.2fs poll interval",
+                    self._poll_interval_seconds,
                 )
-            if not claimed:
-                time.sleep(self._poll_interval_seconds)
-                continue
-            for item in claimed:
-                if self._stop_event.is_set():
-                    return
-                self._emit_event("command_claimed", item)
-                self._process_command(item)
+                # 用 wait 而非 sleep 让 stop_event 能及时打断
+                self._stop_event.wait(self._poll_interval_seconds)
+
+    def _worker_iteration(self) -> None:
+        transitions = self._claim_fn(
+            target_account_key=self._runtime_identity.account_key,
+            claimed_by_instance_id=self._runtime_identity.instance_id,
+            claimed_by_run_id=self._runtime_identity.instance_id,
+            limit=self._batch_size,
+            lease_seconds=self._lease_seconds,
+            max_attempts=self._max_attempts,
+        )
+        if isinstance(transitions, dict):
+            claimed = list(transitions.get("claimed") or [])
+            dead_lettered = list(transitions.get("dead_lettered") or [])
+        else:
+            claimed = list(transitions or [])
+            dead_lettered = []
+        for item in dead_lettered:
+            self._emit_event(
+                "command_failed",
+                item,
+                extra_payload={
+                    "status": "dead_lettered",
+                    "error_code": item.get("last_error_code") or "command_attempts_exhausted",
+                    "error_message": "operator command dead-lettered after retry exhaustion",
+                },
+            )
+        if not claimed:
+            self._stop_event.wait(self._poll_interval_seconds)
+            return
+        for item in claimed:
+            if self._stop_event.is_set():
+                return
+            self._emit_event("command_claimed", item)
+            self._process_command(item)
 
     def _process_command(self, item: dict[str, Any]) -> None:
+        # §0cc P1：旧实现成功分支后失败分支两次调 _complete_fn 都没保护。
+        # complete_fn 一次抛 → 异常逃出 _process_command → worker 线程死。
+        # 必须把所有 _complete_fn / _project_risk_state / _emit_event 的调用
+        # 都包 try/except，让 consumer 在瞬时 DB 故障下持续运行。
         command_id = str(item.get("command_id") or "")
         try:
             self._heartbeat(command_id)
             response_payload = self._execute_command(item)
             audit_id = self._extract_audit_id(response_payload)
-            self._complete_fn(
+            self._safe_complete(
                 command_id=command_id,
                 status="completed",
                 response_payload=response_payload,
                 audit_id=audit_id,
                 last_error_code=None,
             )
-            self._project_risk_state()
-            self._emit_event("command_completed", item, extra_payload=response_payload)
+            self._safe_project_risk_state()
+            self._safe_emit_event("command_completed", item, extra_payload=response_payload)
         except Exception as exc:
             logger.exception("Operator command processing failed: %s", command_id)
             error_payload = self._build_failed_response(item, exc)
             audit_id = self._extract_audit_id(error_payload)
-            self._complete_fn(
+            self._safe_complete(
                 command_id=command_id,
                 status="failed",
                 response_payload=error_payload,
                 audit_id=audit_id,
                 last_error_code=type(exc).__name__,
             )
+            self._safe_project_risk_state()
+            self._safe_emit_event("command_failed", item, extra_payload=error_payload)
+
+    def _safe_complete(self, **kwargs: Any) -> None:
+        try:
+            self._complete_fn(**kwargs)
+        except Exception:
+            logger.exception(
+                "OperatorCommandConsumer: complete_fn failed for command_id=%s; "
+                "command will retry on next claim cycle (lease will expire)",
+                kwargs.get("command_id"),
+            )
+
+    def _safe_project_risk_state(self) -> None:
+        try:
             self._project_risk_state()
-            self._emit_event("command_failed", item, extra_payload=error_payload)
+        except Exception:
+            logger.exception(
+                "OperatorCommandConsumer: project_risk_state failed; "
+                "non-fatal, continuing"
+            )
+
+    def _safe_emit_event(self, event_type: str, item: dict[str, Any], **kwargs: Any) -> None:
+        try:
+            self._emit_event(event_type, item, **kwargs)
+        except Exception:
+            logger.exception(
+                "OperatorCommandConsumer: emit_event(%s) failed; non-fatal",
+                event_type,
+            )
 
     def _heartbeat(self, command_id: str) -> None:
         if self._heartbeat_fn is None:

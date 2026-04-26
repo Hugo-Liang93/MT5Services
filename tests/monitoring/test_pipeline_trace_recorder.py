@@ -104,3 +104,68 @@ def test_pipeline_trace_recorder_start_fails_when_bus_rejects_listener() -> None
         recorder.start()
 
     assert recorder.is_running() is False
+
+
+# ── §0cc P2 回归：单次写库失败不能永久停录 ──
+
+
+import time as _time
+
+
+class _FlakyDBWriter:
+    def __init__(self, fail_first_n: int = 1) -> None:
+        self.rows: list[tuple] = []
+        self._fail_remaining = fail_first_n
+        self.calls = 0
+
+    def write_pipeline_trace_events(self, rows, page_size: int = 200) -> None:
+        self.calls += 1
+        if self._fail_remaining > 0:
+            self._fail_remaining -= 1
+            raise RuntimeError("disk full")
+        self.rows.extend(list(rows))
+
+
+def test_pipeline_trace_recorder_survives_transient_write_failure() -> None:
+    """P2 §0cc 回归：旧 _run() 无顶层 try/except，_flush() 抛异常 → 后台线程
+    崩溃后 pipeline bus 仍发事件但永远不再持久化（trace 失明）。
+    必须把 _flush 异常隔离，让 recorder 在瞬时 DB/磁盘故障下持续运行。
+    """
+    bus = PipelineEventBus()
+    db = _FlakyDBWriter(fail_first_n=2)
+    recorder = PipelineTraceRecorder(
+        pipeline_bus=bus,
+        db_writer=db,
+        batch_size=1,
+        flush_interval_seconds=0.0,
+    )
+    recorder.start()
+    try:
+        # 发 5 条事件；前两次 _flush 应抛异常但线程必须存活
+        for i in range(5):
+            bus.emit(
+                PipelineEvent(
+                    type="bar_closed",
+                    trace_id=f"trace-{i}",
+                    symbol="XAUUSD",
+                    timeframe="M15",
+                    scope="confirmed",
+                    ts=datetime(2026, 1, 1, 8, i, tzinfo=timezone.utc).isoformat(),
+                    payload={"i": i},
+                )
+            )
+            _time.sleep(0.05)
+        # 等线程消化
+        for _ in range(20):
+            _time.sleep(0.05)
+            if len(db.rows) >= 1:
+                break
+        assert recorder.is_running(), (
+            f"瞬时写库失败不能打死 recorder 线程；db.calls={db.calls!r}"
+        )
+        # 至少恢复后写入 1 条
+        assert len(db.rows) >= 1, (
+            f"恢复后必须能写入；db.rows={len(db.rows)} db.calls={db.calls}"
+        )
+    finally:
+        recorder.stop()
