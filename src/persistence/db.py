@@ -280,6 +280,42 @@ class TimescaleWriter:
 
     @contextmanager
     def connection(self):
+        """普通连接（autocommit=True）；适用于单条独立 INSERT/UPDATE/SELECT。
+
+        多条 SQL 必须 atomic 时**不能用本端口**——每条 cur.execute() 都会
+        立即 commit，无 transaction 保护。需要 atomic 的场景用 ``transaction()``。
+        """
+        yield from self._acquire_connection(autocommit=True)
+
+    @contextmanager
+    def transaction(self):
+        """§0do P1：显式 BEGIN/COMMIT/ROLLBACK transaction（autocommit=False）。
+
+        旧实现 connection() 强制 autocommit=True 让 §0dn B3 的"ledger + 主表
+        atomic"实际是两次独立 commit——主表失败时 ledger 已 commit 形成
+        幽灵反向。本 contextmanager 提供真正的事务边界：
+
+        - 进入：autocommit=False（隐式 BEGIN 在第一条 SQL）
+        - 正常退出：conn.commit()
+        - 异常退出：conn.rollback()
+        - 退出后还原 autocommit=True 再 putconn
+
+        所有 atomic 写入路径（write_intents_with_idempotency /
+        write_command_with_idempotency 等）必须用本端口而非 connection()。
+        """
+        for conn in self._acquire_connection(autocommit=False):
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    logger.exception("transaction rollback failed")
+                raise
+
+    def _acquire_connection(self, *, autocommit: bool):
+        """池连接 acquire/release 公共逻辑（被 connection / transaction 复用）。"""
         self._check_pool_health()
         if not self._pool:
             raise RuntimeError("Connection pool not initialized")
@@ -288,10 +324,14 @@ class TimescaleWriter:
         broken = False
         try:
             conn = self._pool.getconn()
-            conn.autocommit = True
+            conn.autocommit = autocommit
             with conn.cursor() as cur:
                 cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.settings.pg_schema}"')
                 cur.execute(f"SET search_path TO {self.settings.pg_schema}, public")
+            # autocommit=False 时上面两条 DDL/SET 会自动开 transaction；
+            # 还原前必须 commit 让它们生效但不污染外部 transaction 范围
+            if not autocommit:
+                conn.commit()
             yield conn
         except psycopg2.OperationalError as exc:
             logger.error("Database connection error: %s", exc)
@@ -304,6 +344,12 @@ class TimescaleWriter:
         finally:
             if conn is not None:
                 pool = self._pool
+                # 还原 autocommit=True 让 putconn 后下次 getconn 默认状态干净
+                if not autocommit and not conn.closed:
+                    try:
+                        conn.autocommit = True
+                    except Exception:
+                        pass
                 if broken or conn.closed:
                     try:
                         conn.close()

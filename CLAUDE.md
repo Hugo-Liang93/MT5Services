@@ -90,6 +90,13 @@ grep -rn "claim_fn=None\|complete_fn=None\|heartbeat_fn=None\|mark_dispatched_fn
 # 14. _safe_* wrapper 必须分层 catch（§0dn 编码错误 fail-fast，ADR-011）
 # 注意：consumer 主路径的 except Exception 是合法的（顶层异常隔离），仅 _safe_emit_*
 # 类旁路 wrapper 必须分层。提交前手工核查新增的 _safe_* helper。
+
+# 15. atomic 多条 SQL 必须用 transaction() 而非 connection()（§0do P1）
+# connection() 强制 autocommit=True，每条 cur.execute() 立即 commit 无事务保护；
+# 多 INSERT/UPDATE 路径必须用 db.transaction() 显式 BEGIN/COMMIT/ROLLBACK。
+grep -rn "with self._writer.connection()" src/persistence/repositories/ \
+  | grep -E "ledger|with_idempotency|atomic" \
+  && echo "⚠️ atomic 路径用 connection() 是 autocommit 假 atomic；改 transaction()"
 ```
 
 ### 断言核验协议（P0/FATAL 断言的硬门槛）

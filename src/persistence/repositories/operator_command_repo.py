@@ -113,7 +113,9 @@ RETURNING created_at,
             )
             reclaimed_rows = cur.fetchall()
             reclaimed_columns = [desc[0] for desc in cur.description]
-            # §0dm P2：dispatched 过期 → dead_letter（at-most-once：禁止重放副作用）
+            # §0dm P2 + §0do P3：dispatched 过期 → dead_letter；RETURNING 整行
+            # 让 consumer 收到并 emit command_failed (dead_lettered)——控制面
+            # 副作用 in-flight 过期是最需人工 reconcile 的事件，必须可见。
             cur.execute(
                 """
 UPDATE operator_commands
@@ -130,9 +132,32 @@ WHERE target_account_key = %s
   AND status = 'dispatched'
   AND lease_expires_at IS NOT NULL
   AND lease_expires_at < NOW()
+RETURNING created_at,
+          command_id,
+          command_type,
+          target_account_key,
+          target_account_alias,
+          status,
+          action_id,
+          actor,
+          reason,
+          idempotency_key,
+          request_context,
+          payload,
+          claimed_by_instance_id,
+          claimed_by_run_id,
+          claimed_at,
+          lease_expires_at,
+          last_heartbeat_at,
+          attempt_count,
+          last_error_code,
+          completed_at,
+          response_payload,
+          audit_id
 """,
                 [target_account_key],
             )
+            dispatched_dead_rows = cur.fetchall()
             cur.execute(
                 """
 UPDATE operator_commands
@@ -171,6 +196,9 @@ RETURNING created_at,
             )
             dead_lettered_rows = cur.fetchall()
             dead_lettered_columns = [desc[0] for desc in cur.description]
+            # §0do P3：合并 dispatched 过期 dead_letter，让 consumer emit
+            # command_failed 事件（dispatched_lease_expired 类型）。
+            dead_lettered_rows = list(dead_lettered_rows) + list(dispatched_dead_rows)
             cur.execute(
                 """
 WITH locked AS (
@@ -248,19 +276,17 @@ RETURNING commands.created_at,
         created_at: datetime,
         row: tuple,
     ) -> bool:
-        """§0dn B3：ledger reserve + 主表 INSERT atomic（同 transaction）。
+        """§0dn B3 + §0do P1：ledger reserve + 主表 INSERT 真正 atomic。
 
-        idempotency_key=None 时仅写主表（无幂等保护，少数命令场景）；
-        有值时同 connection 内嵌套：
-          1. INSERT INTO operator_command_idempotency ON CONFLICT DO NOTHING
-          2. rowcount=1 → INSERT INTO operator_commands 主表
-          3. rowcount=0 → 跳过主表，返 False（caller 查 _find_existing）
-        全部完成后 commit；任一 INSERT 抛异常 → rollback。
+        必须用 ``transaction()`` 而非 ``connection()`` —— autocommit=True
+        让两次 INSERT 是独立 commit，主表失败时 ledger 已 commit 永久阻塞
+        同 idempotency_key (§0do P1 修复)。``transaction()`` 显式
+        BEGIN/COMMIT/ROLLBACK 让 ledger + 主表整体 atomic。
 
-        返回：True=本 command 已 committed（首次 reserve）；
+        返回：True=本 command 已 committed（首次 reserve 或无 idempotency_key）；
               False=ledger 命中，主表未写（caller 应查 existing）。
         """
-        with self._writer.connection() as conn, conn.cursor() as cur:
+        with self._writer.transaction() as conn, conn.cursor() as cur:
             if idempotency_key is not None:
                 cur.execute(
                     INSERT_COMMAND_IDEMPOTENCY_KEY_SQL,

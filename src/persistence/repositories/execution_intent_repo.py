@@ -57,16 +57,16 @@ class ExecutionIntentRepository:
     def write_intents_with_idempotency(
         self, items: list[dict[str, Any]]
     ) -> list[str]:
-        """§0dn B3：ledger reserve + 主表 INSERT atomic（同 transaction）。
+        """§0dn B3 + §0do P1：ledger reserve + 主表 INSERT 真正 atomic。
 
-        旧实现 reserve_intent_key + write_execution_intents 跨 transaction →
-        ledger 占位但主表写失败时同 intent_key 永远 reserve False（发不出）。
-        本方法用同一 connection 内嵌套：
+        必须用 ``transaction()`` 而非 ``connection()`` —— ``connection()``
+        强制 autocommit=True，每条 cur.execute() 立即 commit 无事务保护
+        (§0do P1 修复)；``transaction()`` 显式 BEGIN/COMMIT/ROLLBACK：
+
           1. INSERT INTO execution_intent_idempotency ON CONFLICT DO NOTHING
-          2. rowcount=1（首注册）→ INSERT INTO execution_intents 主表
-          3. rowcount=0（已被抢先）→ 跳过该 row
-        全部完成后 commit；任一 INSERT 抛异常 → context manager 退出时
-        rollback，ledger 与主表都保持原状（无幽灵反向）。
+          2. rowcount=1 → INSERT INTO execution_intents 主表（同事务）
+          3. 全部完成后 commit；任一 INSERT 抛异常 → transaction rollback
+             整体回滚，ledger 与主表都保持原状（无幽灵反向）。
 
         items: list of {intent_key, intent_id, created_at, signal_id,
                         target_account_key, row}
@@ -75,7 +75,7 @@ class ExecutionIntentRepository:
         if not items:
             return []
         reserved: list[str] = []
-        with self._writer.connection() as conn, conn.cursor() as cur:
+        with self._writer.transaction() as conn, conn.cursor() as cur:
             for item in items:
                 cur.execute(
                     INSERT_INTENT_IDEMPOTENCY_KEY_SQL,
@@ -185,7 +185,10 @@ RETURNING created_at,
             )
             reclaimed_rows = cur.fetchall()
             reclaimed_columns = [desc[0] for desc in cur.description]
-            # §0dm P1：dispatched 过期 → dead_lettered（at-most-once：禁止重放）
+            # §0dm P1 + §0do P3：dispatched 过期 → dead_lettered（at-most-once
+            # 禁止重放）。RETURNING 整行让 consumer 收到并 emit
+            # intent_dead_lettered 事件——这是最需人工 reconcile 的 in-flight
+            # 过期事件，pipeline/dashboard/SSE 必须可见。
             cur.execute(
                 """
 UPDATE execution_intents
@@ -201,9 +204,31 @@ WHERE target_account_key = %s
   AND status = 'dispatched'
   AND lease_expires_at IS NOT NULL
   AND lease_expires_at < %s
+RETURNING created_at,
+          intent_id,
+          intent_key,
+          signal_id,
+          target_account_key,
+          target_account_alias,
+          strategy,
+          symbol,
+          timeframe,
+          payload,
+          status,
+          attempt_count,
+          claimed_by_instance_id,
+          claimed_by_run_id,
+          claimed_at,
+          lease_expires_at,
+          last_heartbeat_at,
+          completed_at,
+          dead_lettered_at,
+          last_error_code,
+          decision_metadata
 """,
                 [now, target_account_key, now],
             )
+            dispatched_dead_rows = cur.fetchall()
             cur.execute(
                 """
 UPDATE execution_intents
@@ -244,6 +269,10 @@ RETURNING created_at,
             )
             dead_lettered_rows = cur.fetchall()
             dead_lettered_columns = [desc[0] for desc in cur.description]
+            # §0do P3：合并 dispatched 过期 dead_letter 行，让 consumer
+            # 同样 emit intent_dead_lettered 事件（这是最需人工 reconcile
+            # 的 in-flight 过期类型，必须 pipeline 可见）。
+            dead_lettered_rows = list(dead_lettered_rows) + list(dispatched_dead_rows)
             cur.execute(
                 """
 WITH locked AS (

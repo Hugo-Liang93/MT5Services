@@ -49,6 +49,132 @@
 
 ---
 
+## 0do. 2026-04-27 §0dn 自审误声明 atomic + 仍未考虑全 result.status + dispatched 死信不可见（P1 + P2 + P3）
+
+### 触发
+
+User 报 3 处真实 bug——**§0dn 我宣称"atomic transaction"实际未实现**：
+
+| # | 等级 | 位置 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `db.py:290-295` `connection()` 强制 `autocommit=True` | §0dn B3 "ledger + 主表同 connection 嵌套" 在 autocommit 下是**两次独立 commit**——主表失败时 ledger 已 commit，幽灵反向**仍存在**。我对 atomic 语义理解错误 |
+| 2 | P2 | `executor.py:986-991` 无条件 append `_executed_signal_ids` | `execute_market_order` / `submit_pending_entry` dispatch 失败时返回 `status='failed'`（不抛异常）→ §0dl 我后置 append 但仍 unconditional → 一次 broker 瞬时失败让 retry 被 duplicate_signal_id 拦死 |
+| 3 | P3 | `execution_intent_repo.py / operator_command_repo.py` dispatched 过期 UPDATE 无 RETURNING | dispatched lease 过期被改 dead_lettered 但 consumer 拿不到 → 不 emit `intent_dead_lettered` 事件 → pipeline/dashboard/SSE 看不到最需人工 reconcile 的 in-flight 过期 |
+
+### 工程化修复
+
+#### P1：加 `transaction()` contextmanager 真正实现 atomic
+
+`db.py` 拆分两个 connection 端口：
+
+```python
+@contextmanager
+def connection(self):
+    """普通连接（autocommit=True）；适用于单条独立 SQL。"""
+    yield from self._acquire_connection(autocommit=True)
+
+@contextmanager
+def transaction(self):
+    """§0do P1：显式 BEGIN/COMMIT/ROLLBACK。
+    - 进入：autocommit=False
+    - 正常退出：conn.commit()
+    - 异常退出：conn.rollback() + 重新抛
+    - 退出后还原 autocommit=True 再 putconn"""
+    for conn in self._acquire_connection(autocommit=False):
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.exception("transaction rollback failed")
+            raise
+```
+
+公共 `_acquire_connection(autocommit)` 复用池 acquire/release 逻辑，避免代码重复。
+
+`write_intents_with_idempotency` / `write_command_with_idempotency` 改用 `transaction()` 而非 `connection()` —— 这才是 §0dn B3 真正声称的 atomic：
+
+- ledger INSERT 与主表 INSERT 在同一 BEGIN-COMMIT 之间
+- 任一抛异常 → context manager 退出时 rollback 整体 —— 真正消除幽灵反向
+
+#### P2：`_is_dispatch_committed` 判断 result.status 才 append
+
+```python
+result = self._decision_engine.execute(event, decision)
+# §0do P2：execute_market_order / submit_pending_entry 在 dispatch 失败时
+# 返回 status='failed'（不抛）；只有 broker 真实派发（ok/completed/submitted）
+# 才进 dedup，'failed'/'error'/'skipped' 让 lease retry。
+if sig_id and self._is_dispatch_committed(result):
+    self._executed_signal_ids.append(sig_id)
+return result
+
+@staticmethod
+def _is_dispatch_committed(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    status = str(result.get("status") or "").strip().lower()
+    return status in {"ok", "completed", "submitted"}
+```
+
+dedup 与 lease retry 语义现在真正对齐：dispatch 成功 = 进 dedup，dispatch 失败 = 不进 dedup（让 retry 走）。
+
+#### P3：dispatched 过期 dead_letter 加 RETURNING + 合并到 dead_lettered_rows
+
+```sql
+-- §0do P3：execution_intents
+UPDATE execution_intents SET status = 'dead_lettered', ...
+WHERE target_account_key = %s
+  AND status = 'dispatched'
+  AND lease_expires_at < %s
+RETURNING <all 21 columns>   -- ← 加 RETURNING
+
+-- 在代码里
+dispatched_dead_rows = cur.fetchall()
+...
+dead_lettered_rows = list(dead_lettered_rows) + list(dispatched_dead_rows)
+```
+
+operator_command_repo 同模式。consumer 现在能收到 dispatched 过期 dead_letter 行 → emit `intent_dead_lettered` / `command_failed` (dead_lettered) 事件 → pipeline/SSE/dashboard 实时可见。
+
+`last_error_code='dispatched_lease_expired'` 让运维/人工 reconcile 流程能区分"普通超阈值 dead_letter"vs"in-flight 过期 dead_letter"——后者必须人工核对 broker 真实成交结果。
+
+### 测试
+
+完整套件：**2916 passed / 6 skipped（合法）/ 0 failed**（76 秒）。
+
+### 元层教训：**我对 atomic 的理解一直是错的**
+
+§0dn 我写"ledger + 主表同 connection 嵌套就是 atomic"——这是**根本性错误**。Postgres 的 atomic 取决于 transaction（BEGIN-COMMIT），不是 connection。autocommit=True 下每条 SQL 是独立微事务。
+
+这是工程基础知识失守。同 connection 不等于同 transaction，**只有 BEGIN-COMMIT 包裹的多条 SQL 才有 atomic 保护**。我之前 §0dn commit 写的"任一失败整体 rollback"在 autocommit=True 下根本不成立。
+
+强建议（已加 CLAUDE.md sentinel #15）：
+
+```bash
+# 15. atomic 多条 SQL 必须用 transaction() 而非 connection()
+grep -rn "with self._writer.connection\(\)" src/persistence/repositories/ \
+  | grep -A2 -B2 "ON CONFLICT.*DO NOTHING" \
+  && echo "⚠️ 多 INSERT 路径用 connection() 是 autocommit 假 atomic；改 transaction()"
+```
+
+### §0g→§0do 累计基线
+
+| § 范围 | bug 数 | 关键 |
+|---|---|---|
+| 0g–0dn | 102 | §0dn 自夸"atomic"实际无效 |
+| **0do** | 3（P1 + P2 + P3）| 真正实现 atomic + dedup 语义对齐 + dead_letter 可见 |
+
+### 减少边界泄漏的方式
+
+- `transaction()` 端口提供真正的 BEGIN/COMMIT/ROLLBACK 语义——atomic 不再是命名错觉
+- `_is_dispatch_committed` 判据让 dedup 语义与 lease retry 语义对齐——broker 失败可重试
+- dispatched 过期 dead_letter RETURNING 让 in-flight 过期事件 pipeline 可见，最关键的人工 reconcile 触发点不再静默
+- 元层：承认对 Postgres autocommit/transaction 语义理解错误——同 connection ≠ 同 transaction
+
+---
+
 ## 0dn. 2026-04-27 §0dm 自审清扫 6 类残留：必填 + atomic transaction + heartbeat 对称 + 异常分层 + takeover 监控 + rolling upgrade 文档（A ×2 + B ×3 + C ×2）
 
 ### 触发

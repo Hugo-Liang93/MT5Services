@@ -984,12 +984,28 @@ class TradeExecutor:
             order_kind="market" if use_market else entry_type,
         )
         result = self._decision_engine.execute(event, decision)
-        # execute() 已派发（result 已构造，broker dispatch 已 atomic 完成）→
-        # 真正"执行过"才记入 dedup 列表。失败语义继续由 result.status 表达，
-        # 不污染 dedup 状态。
-        if sig_id:
+        # §0dl P2 + §0do P2：执行真正派发到 broker 的 signal_id 才进 dedup。
+        # execute_market_order() / submit_pending_entry() 在 dispatch 失败时
+        # 不抛异常，而是返回 status='failed' 的 terminal result——若无条件
+        # append，瞬时 broker 失败会让 retry 被 duplicate_signal_id 拦死。
+        # 判据：terminal status ∈ {'ok', 'completed', 'submitted'} 才算真实
+        # 派发；'failed' / 'skipped' / 'error' 不污染 dedup，让 lease retry。
+        if sig_id and self._is_dispatch_committed(result):
             self._executed_signal_ids.append(sig_id)
         return result
+
+    @staticmethod
+    def _is_dispatch_committed(result: Any) -> bool:
+        """§0do P2：判定 result 是否表示真实 broker 派发已发出。
+
+        - status ∈ ok/completed/submitted：派发已 commit（broker 收到订单/挂单）
+        - status ∈ failed/error/skipped：未真实派发（broker 拒/瞬时失败/前置被拒）
+          → 不污染 dedup，让 lease retry 自然处理
+        """
+        if not isinstance(result, dict):
+            return False
+        status = str(result.get("status") or "").strip().lower()
+        return status in {"ok", "completed", "submitted"}
 
     # ------------------------------------------------------------------
     # Intrabar 交易执行
