@@ -47,7 +47,7 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
             "min_final_confidence": "0.58",
             "max_live_positions": "1",
             "require_pending_entry": "true",
-            "paper_shadow_required": "true",
+            "demo_validation_required": "true",
             "robustness_tier": "tf_specific",
             "research_provenance": "cand_abc123",
         },
@@ -110,7 +110,7 @@ def test_signal_config_parses_session_and_execution_overrides(monkeypatch):
     assert deployment.min_final_confidence == 0.58
     assert deployment.max_live_positions == 1
     assert deployment.require_pending_entry is True
-    assert deployment.paper_shadow_required is True
+    assert deployment.demo_validation_required is True
     assert deployment.robustness_tier == "tf_specific"
     assert deployment.research_provenance == "cand_abc123"
 

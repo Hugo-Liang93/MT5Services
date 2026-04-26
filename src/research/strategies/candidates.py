@@ -42,7 +42,7 @@ _TF_SPECIFIC_VALIDATION_GATES: dict[str, Any] = {
         "oos_profit_factor_min": 1.10,
         "oos_max_drawdown_max": 0.15,
     },
-    "paper_shadow": {
+    "demo_validation": {
         "min_trades": 20,
         "required_verdict": "pass",
     },
@@ -72,7 +72,7 @@ _ROBUST_VALIDATION_GATES: dict[str, Any] = {
         "oos_profit_factor_min": 1.05,
         "oos_max_drawdown_max": 0.18,
     },
-    "paper_shadow": {
+    "demo_validation": {
         "min_trades": 20,
         "required_verdict": "pass",
     },

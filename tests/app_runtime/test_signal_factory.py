@@ -48,7 +48,7 @@ def test_build_executor_config_preserves_strategy_deployments() -> None:
                 min_final_confidence=0.55,
                 max_live_positions=1,
                 require_pending_entry=True,
-                paper_shadow_required=True,
+                demo_validation_required=True,
                 robustness_tier="tf_specific",
                 research_provenance="cand_test",
             )
@@ -64,7 +64,7 @@ def test_build_executor_config_preserves_strategy_deployments() -> None:
     assert deployment.min_final_confidence == 0.55
     assert deployment.max_live_positions == 1
     assert deployment.require_pending_entry is True
-    assert deployment.paper_shadow_required is True
+    assert deployment.demo_validation_required is True
 
 
 def test_validate_strategy_deployment_contracts_requires_explicit_contracts() -> None:

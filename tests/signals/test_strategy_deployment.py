@@ -20,7 +20,7 @@ def test_validate_strategy_deployments_rejects_tf_specific_active_status() -> No
                     locked_sessions=("london",),
                     max_live_positions=1,
                     require_pending_entry=True,
-                    paper_shadow_required=True,
+                    demo_validation_required=True,
                     robustness_tier="tf_specific",
                 )
             },
@@ -41,7 +41,7 @@ def test_validate_strategy_deployments_rejects_scope_conflict_with_policy() -> N
                     locked_sessions=("london",),
                     max_live_positions=1,
                     require_pending_entry=True,
-                    paper_shadow_required=True,
+                    demo_validation_required=True,
                     robustness_tier="tf_specific",
                 )
             },
@@ -62,7 +62,7 @@ def test_validate_strategy_deployments_rejects_legacy_zero_affinity_freeze() -> 
                     locked_sessions=("london",),
                     max_live_positions=1,
                     require_pending_entry=True,
-                    paper_shadow_required=True,
+                    demo_validation_required=True,
                     robustness_tier="tf_specific",
                 )
             },

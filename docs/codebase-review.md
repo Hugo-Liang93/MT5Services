@@ -49,6 +49,159 @@
 
 ---
 
+## 0dh. 2026-04-27 runtime_identity 瞬时 UUID + ReadOnlyProvider 错误 instance_id 过滤 + paper_shadow 字段去 Paper 化（P2 ×2 + P3）
+
+### 触发
+
+User 在 §0dg 修复后报告 3 处独立问题，均是 §0z #4 / §0y / ADR-010 整改的"二次漂移"残留：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | P2 | `config/runtime_identity.py:153-157` | `instance_id` 拼 `uuid4().hex` → 跨重启每次都是新 UUID；§0z #4 修了 `runtime_task_status` 复合 PK + §0y #2 修了 fetcher 按 instance_id 过滤后，next_run_at / 失败计数 / 上次刷新都找不到上次写入的行——启动恢复契约被随机键打断 |
+| 2 | P2 | `calendar/read_only_provider.py:47-55` | executor 装 ReadOnlyProvider 时按 `runtime_identity.instance_id`（executor 自己的 id）+ `instance_role='main'` 查 → 数据库里不存在该组合，freshness/provider_status/job_status 长期空白 |
+| 3 | P3 | `signals/contracts/deployment.py` | `paper_shadow_required` 字段仍在正式合同强制校验（active_guarded / tf_specific 必须 true）+ signal.ini 3 处 + 6 个 test + research candidates 字典 key —— ADR-010 后语义已迁移到 demo_validation 但字段名遗忘 |
+
+### 核验
+
+#### P2 #1 真实 bug — 瞬时 UUID 让 §0z/§0y 整改成空转
+
+```python
+# 旧 _build_runtime_identity
+instance_id=f"{instance_role}-{instance_name}-{uuid4().hex[:12]}"
+```
+
+`@lru_cache` 让进程内一致，**但跨重启每次都生成新 UUID**。配合 §0z #4 + §0y #2：
+
+- 进程 1 启动：`instance_id="main-live-main-abc123def456"`，calendar_sync 写入 row1
+- 进程 1 退出
+- 进程 1 重启：`instance_id="main-live-main-xyz789uvw012"`
+- `restore_job_state` 按 `xyz789...` 查 → 找不到 row1（写时是 abc123...）
+- 全部恢复字段（next_run_at / failure_count / last_refresh）丢失 → 当作首次启动
+
+#### P2 #2 真实 bug — executor 用错误身份过滤 main 行
+
+```python
+# 旧 _runtime_rows
+instance_id = getattr(self._runtime_identity, "instance_id", None)
+rows = self.db.fetch_runtime_task_status(
+    component="economic_calendar",
+    instance_id=instance_id,           # ← executor 自己的 id
+    instance_role="main",               # ← 但 role 限定 main
+)
+```
+
+executor 装 ReadOnlyProvider 时 `runtime_identity` 是 executor 自己的——按 `(executor_id, role=main)` 查永远命中 0 行（main 写入用的是 main 的 instance_id + role=main）。
+
+**§0y P3 sentinel 当时锁了"按 runtime_identity.instance_id 过滤"——这是错误契约**，强迫了错误实现保留。修复时必须连 sentinel 一起改写。
+
+#### P3 #3 真实结构问题 — paper_shadow_required 仍在正式校验
+
+```python
+# 旧 _validate_guarded_contract / _validate_tf_specific_contract
+if not deployment.paper_shadow_required:
+    raise ValueError(
+        f"strategy_deployment.{strategy_name}: active_guarded strategy must set "
+        "paper_shadow_required=true"
+    )
+```
+
+ADR-010 删除 paper_trading 模块时漏改字段名 → 配置层仍要写 `paper_shadow_required = true`，与"去 Paper 化"原则冲突（§12 不允许保留历史行为映射/兼容语义）。
+
+### 修复（commit 待 push）
+
+#### P2 #1 instance_id 用稳定派生
+
+```python
+# §0dh P2：改用稳定派生 (environment, instance_name)，
+# 同 group 内 topology.ini 已强制 instance_name 唯一
+instance_id=f"{environment}:{instance_name}"
+```
+
+例：`live:live-main` / `live:live-exec-a` / `demo:demo-main`。
+- 跨进程重启稳定（同一逻辑实例 → 同一 instance_id）
+- 跨实例唯一（topology 约束）
+- 跨 environment 不冲突（带 environment 前缀）
+- `legacy_instance_id()`（identity-less 兜底）保持不变
+
+#### P2 #2 ReadOnlyProvider 接受 target_instance_id
+
+```python
+class ReadOnlyEconomicCalendarProvider:
+    def __init__(self, *, db_writer, settings,
+                 runtime_identity=None, target_instance_id=None):
+        ...
+        self._target_instance_id = target_instance_id
+
+    def _runtime_rows(self):
+        # 用 main 的 instance_id（外部注入），不用 executor 自己的
+        rows = self.db.fetch_runtime_task_status(
+            component="economic_calendar",
+            instance_id=self._target_instance_id,
+            instance_role="main",
+        )
+```
+
+装配层（`build_trading_components`，executor 拓扑分支）通过新增 helper `_resolve_main_target_instance_id()` 解析：
+
+- `find_topology_group_for_instance(executor_instance_name)` → `group.main` 得 main 实例名
+- 按 `RuntimeIdentity` 同口径构造 `f"{environment}:{main_instance_name}"`
+- 注入 `target_instance_id`
+
+#### P3 #3 paper_shadow_required → demo_validation_required
+
+按 §12 不留双轨——直接重命名，不接受旧名（启动若读到旧字段会因 default=False 让 active_guarded/tf_specific 校验 fail-fast）：
+
+- `src/signals/contracts/deployment.py`：字段定义 / serializer / from_dict / 校验 / error message 全部改名
+- `config/signal.ini`：3 处 `paper_shadow_required = true` → `demo_validation_required = true`，注释提示同步
+- `src/research/strategies/candidates.py`：`_TF_SPECIFIC_VALIDATION_GATES` / `_ROBUST_VALIDATION_GATES` 字典 key `"paper_shadow"` → `"demo_validation"`
+- 测试 4 文件 11 处全部同步：`tests/signals/test_strategy_deployment.py` / `tests/config/test_signal_config.py` / `tests/app_runtime/test_signal_factory.py` / `tests/trading/test_signal_executor.py`
+
+`signal.local.ini`（gitignored）需手动同步——若未同步，启动会显式 fail（`active_guarded strategy must set demo_validation_required=true`），符合"显式失败 > 静默漂白"原则。
+
+### 测试
+
+#### P2 #2 sentinel 改写（旧 §0y P3 锁的是错误契约）
+
+旧 sentinel `test_read_only_provider_runtime_rows_pass_instance_id` 锁"按 runtime_identity.instance_id 过滤"——这恰好是 P2 #2 的 bug 根源。改写为 3 项新契约：
+
+| 测试 | 锁定 |
+|---|---|
+| `test_read_only_provider_runtime_rows_pass_target_instance_id` | 必须按外部注入的 target_instance_id（main 身份）过滤，而不是 runtime_identity（executor 身份） |
+| `test_read_only_provider_without_target_instance_id_skips_instance_filter` | 未注入 target_instance_id → 不传 instance_id（仅按 role=main 查） |
+| `test_read_only_provider_runtime_identity_not_used_as_filter_key` | 反向锁：即使传了 runtime_identity，也不应被当作 instance_id 过滤键（防 sentinel 倒退） |
+
+测试基线：`tests/trading + tests/signals + tests/api + tests/persistence + tests/backtesting + tests/data + tests/ops + tests/utils + tests/calendar + tests/research + tests/config + tests/app_runtime` = **1970 passed / 6 skipped（合法 short-array）/ 0 failed**。
+
+### 元层教训：**整改时新增字段维度必须配对维护**
+
+§0z #4 修了 runtime_task_status PK 含 instance_id；§0y #2 修了 fetcher 按 instance_id 过滤——但同时引入的 `instance_id = uuid4()` 让所有这些修复变成空转。同模式：
+
+- §0dd publisher environment-aware；漏修 pre_trade_checks（§0dg P1 补）
+- §0z #4 + §0y #2 引入 instance_id 维度；漏修 instance_id 稳定性（§0dh P2 #1 补）
+- §0y P3 锁了"按 runtime_identity 过滤"；忘了 executor 拓扑下 runtime_identity 是错的（§0dh P2 #2 补）
+
+强建议：
+
+1. **修 schema 加新维度** + **改 fetcher 加新过滤键** 时，**必须同步审查"该维度的稳定性 / 写入端 vs 读取端来源是否对称"**——否则只是把"无维度"的全局串行换成"瞬时维度"的全局空白
+2. **sentinel test 必须锁正确契约**——锁错的 sentinel（如本轮 §0y P3）会**强迫错误实现**保留，反成为 bug 守护者。修复时必须连 sentinel 一起改写（含说明为什么旧 sentinel 是错的）
+3. ADR 删除模块或重命名状态时 **必须 grep 整个 src/tests/config 字段名残留**——`paper_shadow_required` 在合同正式字段、3 个 ini 配置点、6 个 test、2 个研究 dict key 都遗忘了 1 周
+
+### §0g→§0dh 累计基线
+
+| § 范围 | bug 数 |
+|---|---|
+| 0g–0dg | 74 |
+| **0dh** | 3（P2 ×2 + P3） |
+
+### 减少边界泄漏的方式
+
+- `RuntimeIdentity.instance_id` 派生稳定——跨重启同一逻辑实例 instance_id 不变；这是 §0z/§0y 整改的隐含前提
+- `ReadOnlyProvider` 通过显式 `target_instance_id` 注入声明"读哪个实例的状态"——不再依赖错误的 `runtime_identity` 推断
+- `paper_shadow_required → demo_validation_required` 让字段名与 ADR-010 状态名（demo_validation）对齐——配置层去 Paper 化彻底
+- §0y P3 错误 sentinel 改写为 3 项正确契约（含反向锁），防止"sentinel 锁错契约"的反模式回归
+
+---
+
 ## 0dg. 2026-04-26 pre_trade_checks 二次门禁漂移 + research deps 反向依赖 cli + cache_hit_rate 已锁契约（P1 + P3 ×2 + skip 调研）
 
 ### 触发

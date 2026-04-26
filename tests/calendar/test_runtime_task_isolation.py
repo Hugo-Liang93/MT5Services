@@ -60,13 +60,16 @@ def test_restore_job_state_passes_instance_id_to_runtime_task_query() -> None:
     )
 
 
-# ── §0y P3 回归：ReadOnlyEconomicCalendarProvider 必须按 instance_id 过滤 ──
+# ── §0dh P2 回归：ReadOnlyEconomicCalendarProvider 必须按 main 的 target_instance_id 过滤 ──
+# 旧 §0y P3 sentinel 锁了"按 runtime_identity.instance_id 过滤"——这是错误契约：
+# executor 装 ReadOnly 时 runtime_identity 是 executor 自己的身份，按它过滤永远
+# 命中 0 行（main 写入的 row 用的是 main 的 instance_id）。修正后契约：装配层
+# 通过 topology 解析得到 same group 的 main instance_id，注入 target_instance_id。
 
 
-def test_read_only_provider_runtime_rows_pass_instance_id() -> None:
-    """旧 _runtime_rows 只按 component='economic_calendar' + instance_role='main'
-    查询 → 多 main 实例同库时 freshness/error/provider_status 可能来自别的实例，
-    而不是当前 executor 应该依赖的那一个。
+def test_read_only_provider_runtime_rows_pass_target_instance_id() -> None:
+    """§0dh P2：必须按外部注入的 target_instance_id（main 的 id）过滤，
+    而不是 runtime_identity（executor 自己的 id）。
     """
     db = _RecordingDB()
     settings = SimpleNamespace(
@@ -92,19 +95,23 @@ def test_read_only_provider_runtime_rows_pass_instance_id() -> None:
     provider = ReadOnlyEconomicCalendarProvider(
         db_writer=db,
         settings=settings,
-        runtime_identity=_RuntimeIdentity(instance_id="executor-a"),
+        # executor 自己的身份（不该被用作过滤键）
+        runtime_identity=_RuntimeIdentity(instance_id="live:live-exec-a"),
+        # 装配层注入的 main 身份（应作为过滤键）
+        target_instance_id="live:live-main",
     )
     provider._runtime_rows()
     assert db.calls, "应至少调用一次 fetch_runtime_task_status"
     call = db.calls[0]
-    assert call.get("instance_id") == "executor-a", (
-        f"必须按 instance_id 过滤；got params={call!r}"
+    assert call.get("instance_id") == "live:live-main", (
+        f"必须按 target_instance_id（main 身份）过滤而不是 executor 身份；"
+        f"got params={call!r}"
     )
 
 
-def test_read_only_provider_without_runtime_identity_skips_instance_filter() -> None:
-    """对称契约：runtime_identity=None 时不传 instance_id（保留旧全局查询行为，
-    避免破坏没注入身份的旧调用方）。
+def test_read_only_provider_without_target_instance_id_skips_instance_filter() -> None:
+    """§0dh P2：未注入 target_instance_id 时不传 instance_id（仅按 role=main 查询，
+    适用于 single_account 拓扑或诊断脚本——单 group 拓扑下 role=main 唯一命中）。
     """
     db = _RecordingDB()
     settings = SimpleNamespace(
@@ -131,11 +138,51 @@ def test_read_only_provider_without_runtime_identity_skips_instance_filter() -> 
         db_writer=db,
         settings=settings,
         runtime_identity=None,
+        target_instance_id=None,
     )
     provider._runtime_rows()
     call = db.calls[0]
     assert call.get("instance_id") is None, (
-        f"无 runtime_identity 时不应传 instance_id；got params={call!r}"
+        f"无 target_instance_id 时不应传 instance_id；got params={call!r}"
+    )
+
+
+def test_read_only_provider_runtime_identity_not_used_as_filter_key() -> None:
+    """§0dh P2 反向锁：即使传了 runtime_identity，也不应该被当作 instance_id 过滤键
+    （那是 executor 自己的身份，按它查会永远命中 0 行）。
+    """
+    db = _RecordingDB()
+    settings = SimpleNamespace(
+        enabled=True,
+        stale_after_seconds=3600,
+        trade_guard_provider_failure_threshold=3,
+        high_importance_threshold=2,
+        local_timezone="UTC",
+        near_term_refresh_interval_seconds=60,
+        calendar_sync_interval_seconds=300,
+        release_watch_interval_seconds=30,
+        near_term_window_hours=12,
+        release_watch_lookback_minutes=5,
+        release_watch_lookahead_minutes=15,
+        default_countries=("US",),
+        curated_sources=None,
+        curated_countries=None,
+        curated_currencies=None,
+        curated_statuses=None,
+        curated_importance_min=2,
+        curated_include_all_day=True,
+    )
+    provider = ReadOnlyEconomicCalendarProvider(
+        db_writer=db,
+        settings=settings,
+        runtime_identity=_RuntimeIdentity(instance_id="live:live-exec-a"),
+        target_instance_id=None,  # 未注入 target → 不带 instance_id
+    )
+    provider._runtime_rows()
+    call = db.calls[0]
+    assert call.get("instance_id") != "live:live-exec-a", (
+        f"runtime_identity.instance_id（executor 自己身份）不能被当作过滤键；"
+        f"got params={call!r}"
     )
 
 

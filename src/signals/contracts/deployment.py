@@ -32,7 +32,10 @@ class StrategyDeployment:
     min_final_confidence: float | None = None
     max_live_positions: int | None = None
     require_pending_entry: bool = False
-    paper_shadow_required: bool = False
+    # §0dh P3：从 paper_shadow_required 重命名（ADR-010 后 paper_trading 已删，
+    # 该字段语义本就是"promote 到 active_guarded 之前必须经过 demo_validation
+    # shadow 验证"——字段名本应同步去 Paper 化但 §0dd 漏修）。
+    demo_validation_required: bool = False
     robustness_tier: str | None = None
     research_provenance: str | None = None
 
@@ -45,7 +48,7 @@ class StrategyDeployment:
             "min_final_confidence": self.min_final_confidence,
             "max_live_positions": self.max_live_positions,
             "require_pending_entry": self.require_pending_entry,
-            "paper_shadow_required": self.paper_shadow_required,
+            "demo_validation_required": self.demo_validation_required,
             "robustness_tier": self.robustness_tier,
             "research_provenance": self.research_provenance,
         }
@@ -75,7 +78,9 @@ class StrategyDeployment:
             min_final_confidence=_maybe_float(raw.get("min_final_confidence")),
             max_live_positions=_maybe_int(raw.get("max_live_positions")),
             require_pending_entry=_coerce_bool(raw.get("require_pending_entry"), False),
-            paper_shadow_required=_coerce_bool(raw.get("paper_shadow_required"), False),
+            demo_validation_required=_coerce_bool(
+                raw.get("demo_validation_required"), False
+            ),
             robustness_tier=_maybe_text(raw.get("robustness_tier")),
             research_provenance=_maybe_text(raw.get("research_provenance")),
         )
@@ -321,10 +326,10 @@ def _validate_tf_specific_contract(
             f"strategy_deployment.{strategy_name}: tf_specific strategy must set "
             "require_pending_entry=true"
         )
-    if not deployment.paper_shadow_required:
+    if not deployment.demo_validation_required:
         raise ValueError(
             f"strategy_deployment.{strategy_name}: tf_specific strategy must set "
-            "paper_shadow_required=true"
+            "demo_validation_required=true"
         )
 
 
@@ -351,10 +356,10 @@ def _validate_guarded_contract(
             f"strategy_deployment.{strategy_name}: active_guarded strategy must set "
             "require_pending_entry=true"
         )
-    if not deployment.paper_shadow_required:
+    if not deployment.demo_validation_required:
         raise ValueError(
             f"strategy_deployment.{strategy_name}: active_guarded strategy must set "
-            "paper_shadow_required=true"
+            "demo_validation_required=true"
         )
 
 

@@ -1164,7 +1164,7 @@ def test_trade_executor_enforces_guarded_strategy_pending_entry_requirement() ->
                     locked_sessions=("london",),
                     max_live_positions=1,
                     require_pending_entry=True,
-                    paper_shadow_required=True,
+                    demo_validation_required=True,
                     robustness_tier="tf_specific",
                 )
             },
@@ -1206,7 +1206,7 @@ def test_trade_executor_blocks_timeframe_outside_deployment_contract() -> None:
                     locked_sessions=("london",),
                     max_live_positions=1,
                     require_pending_entry=False,
-                    paper_shadow_required=True,
+                    demo_validation_required=True,
                     robustness_tier="tf_specific",
                 )
             },
@@ -1239,7 +1239,7 @@ def test_trade_executor_blocks_session_outside_deployment_contract() -> None:
                     locked_sessions=("london",),
                     max_live_positions=1,
                     require_pending_entry=False,
-                    paper_shadow_required=True,
+                    demo_validation_required=True,
                     robustness_tier="tf_specific",
                 )
             },
@@ -1290,7 +1290,7 @@ def test_trade_executor_enforces_guarded_strategy_live_position_cap() -> None:
                     locked_sessions=("london",),
                     max_live_positions=1,
                     require_pending_entry=False,
-                    paper_shadow_required=True,
+                    demo_validation_required=True,
                     robustness_tier="tf_specific",
                 )
             },

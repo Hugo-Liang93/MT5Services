@@ -5,7 +5,6 @@ import socket
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from uuid import uuid4
 
 from src.config.instance_context import (
     get_current_instance_name,
@@ -150,10 +149,15 @@ def _build_runtime_identity(account: MT5Settings) -> RuntimeIdentity:
         instance_role = assignment.role
         live_topology_mode = assignment.live_topology_mode
 
+    # §0dh P2：旧实现 instance_id 拼 uuid4().hex 让每次进程启动 id 都变化 →
+    # §0z #4 修了 runtime_task_status PK 含 instance_id + §0y #2 修了 fetcher
+    # 按 instance_id 过滤，但本字段是瞬时 UUID，跨重启 next_run_at / 失败计数
+    # 永远找不到上次写的 row。修复：改用稳定派生 (environment, instance_name)，
+    # 同 group 内 topology.ini 已强制 instance_name 唯一。
     return RuntimeIdentity(
         instance_name=instance_name,
         environment=environment,
-        instance_id=f"{instance_role}-{instance_name}-{uuid4().hex[:12]}",
+        instance_id=f"{environment}:{instance_name}",
         instance_role=instance_role,
         live_topology_mode=live_topology_mode,
         account_alias=account.account_alias,

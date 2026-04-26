@@ -23,11 +23,22 @@ class ReadOnlyEconomicCalendarProvider:
         db_writer: Any,
         settings: Any,
         runtime_identity: Any | None = None,
+        target_instance_id: str | None = None,
     ) -> None:
+        """Read-only provider used by executor instances to observe shared main 状态。
+
+        §0dh P2：旧实现把当前 executor 自己的 ``runtime_identity.instance_id``
+        当作过滤键 + ``instance_role='main'`` → 数据库里不存在 "executor 的
+        instance_id + main 角色" 的组合 → freshness / provider_status / job_status
+        长期空白。修复：装配层通过 topology 解析 same group 的 main instance_name，
+        构造对应 main 的 instance_id（与 RuntimeIdentity 同口径），从外部注入
+        ``target_instance_id`` 让 read provider 真正命中 main 写入的行。
+        """
         self.db = db_writer
         self.settings = settings
         self.market_impact_analyzer = None
         self._runtime_identity = runtime_identity
+        self._target_instance_id = target_instance_id
         self._worker = None
 
     def _ensure_worker_running(self) -> None:
@@ -40,18 +51,14 @@ class ReadOnlyEconomicCalendarProvider:
         return None
 
     def _runtime_rows(self) -> list[dict[str, Any]]:
-        # §0y P3：runtime_task_status PK 是 (instance_id, component, task_name)，
-        # 旧实现只按 component + instance_role 查 → 多 main 实例同库时
-        # freshness / error / provider_status 可能来自别的实例。必须用注入的
-        # runtime_identity.instance_id 过滤；未注入时保留旧全局查询行为。
-        instance_id = (
-            getattr(self._runtime_identity, "instance_id", None)
-            if self._runtime_identity is not None
-            else None
-        )
+        # §0y P3 + §0dh P2：runtime_task_status PK 是 (instance_id, component,
+        # task_name)。executor 拓扑下要读 main 写入的行，必须用 main 的
+        # instance_id 而非自己（executor）的 instance_id。装配层通过 topology
+        # 解析得到 main_instance_name → 构造 target_instance_id 注入。未注入时
+        # 仅按 role=main 查询（适合 single_account 拓扑或诊断脚本）。
         rows = self.db.fetch_runtime_task_status(
             component="economic_calendar",
-            instance_id=instance_id,
+            instance_id=self._target_instance_id,
             instance_role="main",
         )
         normalized: list[dict[str, Any]] = []
