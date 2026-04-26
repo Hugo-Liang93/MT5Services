@@ -49,6 +49,100 @@
 
 ---
 
+## 0l. 2026-04-26 三处 CLI 工具死路径/死 helper 修复（healthchk × 2 + diagnose × 1 + hold_decision × 1）
+
+### 触发
+
+User 连续报告 3 个独立 bug，均为同模式（**死路径/死 helper + 异常被吞 + 零测试覆盖**），
+是 §0k live_preflight 同种类的"运维 CLI 工具长期失真"问题：
+
+| # | 文件 | 表面症状 | 真实根因 |
+|---|---|---|---|
+| 1 | `src/ops/cli/health_check.py:172` | "Trade executor: WARN unavailable: HTTP 404" | GET `/v1/trade/overview` 路由已删，应 `/v1/trade/control` |
+| 2 | `src/ops/cli/diagnose_no_trades.py:138` | print "Failed to query: HTTP 404" | GET `/v1/signals/latest` 已删，应 `/v1/signals/recent` |
+| 3 | `src/signals/evaluation/indicators_helpers.py:119` `hold_decision()` | 直接调用即抛 TypeError | `SignalDecision(action="hold", ...)` 字段名错误，真实字段是 `direction` |
+
+附带在修 #1 时发现 `daily_report.py:152` 同样硬编码 `/v1/trade/overview`——同源残余，一并清。
+
+### 影响
+
+| # | 长期实际危害 |
+|---|---|
+| 1 | 健康检查"交易模块"段长期标 WARN，无法反映 executor enabled / circuit breaker / execution_count 真实状态。运维盯仪表盘以为交易模块异常实际是探针错路径 |
+| 2 | 诊断"为什么没下单"流程缺失 DB signal-events 视角，容易把问题误判到信号生成下游而漏看真正原因 |
+| 3 | `hold_decision` 通过 `evaluation/__init__.py:7` export 为公共 helper，但任何策略真用即崩 → 长期处于"声明 API 但坏"状态。所幸全仓 0 真实调用（dead helper），未触发线上事故 |
+
+### 修复（commit `738f23b`）
+
+```python
+# health_check.py + daily_report.py
+- _fetch_json(f"{base}/v1/trade/overview")
++ _fetch_json(f"{base}/v1/trade/control")  # TradeControlStatusView 含 executor dict
+
+# diagnose_no_trades.py
+- requests.get(f"{BASE}/v1/signals/latest?...")
++ requests.get(f"{BASE}/v1/signals/recent?...")
+
+# indicators_helpers.py:119
+- SignalDecision(strategy=..., action="hold", confidence=0.0, ...)
++ SignalDecision(strategy=..., direction="hold", confidence=0.0, ...)
+```
+
+### 测试（之前 100% 零覆盖；与 P2 warm_up_from_db / P3 _check_api 同模式）
+
+| 文件 | 项数 | 锁定的契约 |
+|---|---|---|
+| `tests/ops/test_health_check.py` | 3 | URL 路径锁（防回退 /v1/trade/overview）+ executor 解析（OK/WARN）+ 真 404 降级 |
+| `tests/ops/test_diagnose_no_trades.py` | 1 | source-level sentinel（imperative print 脚本难做 monkeypatch，函数化重构超出 scope） |
+| `tests/signals/evaluation/test_indicators_helpers.py` | 4 | TypeError 不再抛 + direction='hold' + reason 默认/自定义 |
+
+### Sentinel
+
+```bash
+$ grep -rn "/v1/trade/overview\|/v1/signals/latest" src/ --include='*.py'
+(empty - clean)
+```
+
+### 元层教训：CLI 死路径反模式 = 已发现 4 处（§0k + §0l × 3 + daily_report 同源）
+
+短短 24 小时连续暴露 4 个 CLI 工具探测已删除路由的 bug，证明这是**结构性问题**而非偶发：
+
+1. **API 路由 rename / 删除时缺乏"消费者扫描"流程** —— 删 `/v1/trade/overview` 时
+   没人 grep `src/ops/` 找消费者，CLI 默默挂了月级时间
+2. **CLI 工具既是 API 消费者，又长期无测试** —— 即使 API 变化了，CLI 测试 0 覆盖也无人发现
+3. **except Exception + print/debug log 默认成为"死路径生存土壤"** —— 与 ADR-011 反模式同源
+
+**强建议下一维护窗口**：
+
+a. 在 CLAUDE.md "Git 工作流" 段加入 sentinel grep（已在 §0k follow-up 加了 1 条
+   `/v1/health` 类的；现在还缺"删 API 路由前必须 grep `src/ops/cli/` 与 `tests/`
+   找消费者"的工作流硬性要求）
+
+b. 给 `src/ops/cli/` 中**人会盯着输出做决策**的 6 个工具补 ≥ smoke 级测试：
+   - ✅ `live_preflight` (§0k 已补)
+   - ✅ `health_check` (§0l 本次)
+   - ✅ `diagnose_no_trades` (§0l source-level sentinel)
+   - 🔲 `daily_report` (本次顺手修但未补 test，待加)
+   - 🔲 `confidence_check`
+   - 🔲 `mt5_session_gate`（已有 4 项测试覆盖核心入口）
+
+c. API 路由变更纳入 PR checklist：删除 / 改名 endpoint 必须在 PR description
+   附带 `grep -rn "<old-path>" src/ops/ tests/` 截图证明无消费者残留
+
+### 测试基线
+
+- 修复前：3 处真实 bug + 0 测试覆盖
+- 修复后：8 项新契约测试转绿；`pytest -m "not slow"` **2788 passed / 0 failed / 6 skipped**
+- 累计 §0g→§0l 一周内 P0/P1/P2/P3 共 **6 次 bug 修复 + 6 次反向锁** 沉淀
+
+### 减少边界泄漏的方式
+
+CLI 工具改用稳定 API 端点（`/v1/trade/control` 比 `/v1/trade/overview` 更明确语义；
+`/v1/signals/recent` 比 `/v1/signals/latest` 与现有路由命名统一）。`hold_decision`
+helper 修对了字段名（与 `SignalDecision` 真实契约对齐），未来可放心使用。
+
+---
+
 ## 0k. 2026-04-26 live_preflight._check_api 探测已删除路由修复（误导启动前检查）
 
 ### 触发
