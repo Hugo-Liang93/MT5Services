@@ -16,7 +16,7 @@ import json
 import sys
 import time
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
@@ -158,14 +158,36 @@ def _run_checks(host: str, port: int) -> list[tuple[str, str, str]]:
     except Exception:
         pass  # health report 已在上面检查
 
-    # 4. 存储队列
+    # 4. 指标引擎（main role: data 含 event_loop_running；executor role: status=disabled 跳过）
     try:
         perf_resp = _fetch_json(f"{base}/v1/monitoring/performance")
         perf_data = perf_resp.get("data", {})
-        if isinstance(perf_data, dict) and perf_data.get("status") != "disabled":
-            results.append(("Indicator engine", "OK", "running"))
-    except Exception:
-        pass
+        if not isinstance(perf_data, dict):
+            results.append(
+                (
+                    "Indicator engine",
+                    "FAIL",
+                    f"unexpected payload type: {type(perf_data).__name__}",
+                )
+            )
+        elif perf_data.get("status") == "disabled":
+            # executor role 主动禁用，不算异常，不输出 row
+            pass
+        elif perf_data.get("event_loop_running"):
+            results.append(("Indicator engine", "OK", "event_loop_running"))
+        else:
+            # main role 但 event loop 未运行（含 fallback {} / 字段缺失）
+            results.append(
+                (
+                    "Indicator engine",
+                    "FAIL",
+                    f"event_loop_running={perf_data.get('event_loop_running')!r}",
+                )
+            )
+    except (HTTPError, URLError, ValueError) as exc:
+        # 异常分层（同 ADR-011）：网络/JSON → FAIL with detail；
+        # coding error（AttributeError/TypeError）透传 fail-fast
+        results.append(("Indicator engine", "FAIL", str(exc)))
 
     # 5. 交易模块（/v1/trade/control 返回 TradeControlStatusView，含 executor dict）
     try:

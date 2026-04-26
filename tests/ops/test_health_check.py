@@ -36,7 +36,9 @@ _BASE_ROUTES: dict[str, dict[str, Any]] = {
     "/v1/monitoring/health": {
         "data": {"overall_status": "healthy", "active_alerts": {}, "latest_metrics": {}}
     },
-    "/v1/monitoring/performance": {"data": {"status": "ok"}},
+    # main role 健康场景：indicator manager get_performance_stats() 返回字典
+    # 含 event_loop_running=True 视为 indicator engine 正常运行
+    "/v1/monitoring/performance": {"data": {"event_loop_running": True}},
 }
 
 
@@ -148,3 +150,126 @@ def test_check_runtime_modules_handles_real_404(
     trade_row = next((r for r in rows if r[0] == "Trade executor"), None)
     assert any(u.endswith("/v1/trade/control") for u in captured)
     assert trade_row is not None and trade_row[1] == "WARN"
+
+
+# ---------------------------------------------------------------------------
+# Indicator engine — regression: P1 false-positive on event_loop_running
+# ---------------------------------------------------------------------------
+
+
+def test_indicator_engine_marked_ok_when_event_loop_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """正常 main role：event_loop_running=True → OK。"""
+    _patch_fetch(
+        monkeypatch,
+        routes={
+            "/v1/monitoring/performance": {"data": {"event_loop_running": True}},
+        },
+        captured=[],
+    )
+
+    rows = health_check._run_checks("localhost", 8808)
+    indicator_row = next((r for r in rows if r[0] == "Indicator engine"), None)
+    assert indicator_row is not None
+    _, status, _ = indicator_row
+    assert status == "OK"
+
+
+def test_indicator_engine_false_positive_when_event_loop_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1 回归：event_loop_running=False 旧实现误报 OK，应标 FAIL。
+
+    旧逻辑只看 status != "disabled"（main role payload 无 status 字段
+    → 永远 True → 永远 OK），完全跳过 event_loop_running 检查。
+
+    User 直接 monkeypatch /performance 返 {'data': {'event_loop_running': False}}
+    复现假阳性。
+    """
+    _patch_fetch(
+        monkeypatch,
+        routes={
+            "/v1/monitoring/performance": {"data": {"event_loop_running": False}},
+        },
+        captured=[],
+    )
+
+    rows = health_check._run_checks("localhost", 8808)
+    indicator_row = next((r for r in rows if r[0] == "Indicator engine"), None)
+    assert indicator_row is not None, "indicator engine 段必须有 row（非静默跳过）"
+    _, status, detail = indicator_row
+    assert status == "FAIL", f"event_loop_running=False 必须 FAIL，实际 {status}"
+    assert "event_loop_running" in detail or "loop" in detail.lower()
+
+
+def test_indicator_engine_fail_on_empty_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """API 内部异常 → _execute_health_call fallback={} → 视为 FAIL（无 event_loop_running）。
+
+    防止 indicator manager 内部异常被前端"无 status 字段也算 OK"的旧逻辑掩盖。
+    """
+    _patch_fetch(
+        monkeypatch,
+        routes={
+            "/v1/monitoring/performance": {"data": {}},  # API fallback 空字典
+        },
+        captured=[],
+    )
+
+    rows = health_check._run_checks("localhost", 8808)
+    indicator_row = next((r for r in rows if r[0] == "Indicator engine"), None)
+    assert indicator_row is not None
+    _, status, _ = indicator_row
+    assert status == "FAIL"
+
+
+def test_indicator_engine_skipped_for_executor_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """executor role: status=disabled → 不输出 indicator engine row（合理跳过）。"""
+    _patch_fetch(
+        monkeypatch,
+        routes={
+            "/v1/monitoring/performance": {
+                "data": {"status": "disabled", "role": "executor"}
+            },
+        },
+        captured=[],
+    )
+
+    rows = health_check._run_checks("localhost", 8808)
+    indicator_row = next((r for r in rows if r[0] == "Indicator engine"), None)
+    assert indicator_row is None, (
+        f"executor role 应跳过 indicator engine 检查（无 row），实际 {indicator_row!r}"
+    )
+
+
+def test_indicator_engine_fail_on_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """endpoint 返 404/500 → FAIL with detail；禁止旧 except Exception: pass 静默吞。"""
+    captured: list[str] = []
+
+    # 仅去掉 performance route 让 fake_fetch 抛 HTTPError；其他 base 路由仍 OK
+    routes_without_perf = dict(_BASE_ROUTES)
+    del routes_without_perf["/v1/monitoring/performance"]
+
+    def fake_fetch(url: str, timeout: float = 5.0) -> dict[str, Any]:
+        captured.append(url)
+        for path, payload in routes_without_perf.items():
+            if url.endswith(path):
+                return payload
+        raise HTTPError(  # type: ignore[arg-type]
+            url, 503, "Service Unavailable", {}, None
+        )
+
+    monkeypatch.setattr(health_check, "_fetch_json", fake_fetch)
+
+    rows = health_check._run_checks("localhost", 8808)
+    indicator_row = next((r for r in rows if r[0] == "Indicator engine"), None)
+    assert indicator_row is not None, "HTTP 错误也必须输出 row（非静默吞）"
+    _, status, detail = indicator_row
+    assert status == "FAIL"
+    assert "503" in detail or "Service Unavailable" in detail or detail
