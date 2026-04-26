@@ -66,33 +66,34 @@ def _render_daily_report(
                 f"vol={volume} @ {price}{profit_str}"
             )
 
-    # ── 信号统计 ──
+    # ── 信号统计（trade_executor_summary 现行 schema：signals.{...} 嵌套）──
     lines.append("")
     lines.append("── 信号执行统计 ──")
-    received = executor.get("signals_received", 0)
-    passed = executor.get("signals_passed", 0)
-    blocked = executor.get("signals_blocked", 0)
+    signals = executor.get("signals", {}) or {}
+    received = signals.get("received", 0)
+    passed = signals.get("passed", 0)
+    blocked = signals.get("blocked", 0)
     exec_count = executor.get("execution_count", 0)
     lines.append(f"  接收: {received}  |  通过: {passed}  |  拒绝: {blocked}")
     lines.append(f"  实际执行: {exec_count}")
 
-    skip_reasons = executor.get("skip_reasons", {})
+    skip_reasons = signals.get("skip_reasons", {}) or {}
     if skip_reasons:
         lines.append("  拒绝原因:")
         for reason, count in sorted(skip_reasons.items(), key=lambda x: -x[1]):
             if count > 0:
                 lines.append(f"    {reason}: {count}")
 
-    # ── 熔断器 ──
-    cb = executor.get("circuit_breaker", {})
-    if cb.get("open"):
+    # ── 熔断器（现行 schema：顶层 circuit_open / consecutive_failures，
+    # max 来自 config.max_consecutive_failures，best-effort 显示）──
+    if executor.get("circuit_open"):
+        config = executor.get("config", {}) or {}
+        consecutive = executor.get("consecutive_failures", "?")
+        max_failures = config.get("max_consecutive_failures", "?")
         lines.append("")
         lines.append("── ⚠ 熔断器 ──")
-        lines.append(f"  状态: OPEN (since {cb.get('circuit_open_at', '?')})")
-        lines.append(
-            f"  连续失败: {cb.get('consecutive_failures', '?')} / "
-            f"{cb.get('max_consecutive_failures', '?')}"
-        )
+        lines.append("  状态: OPEN")
+        lines.append(f"  连续失败: {consecutive} / {max_failures}")
 
     # ── 健康告警 ──
     active_alerts = health.get("active_alerts", {})
@@ -139,9 +140,12 @@ def main() -> None:
 
     sys.stderr.write(f"Fetching daily report for {report_date}...\n")
 
-    # 1. 交易日报
+    # 1. 交易日报（--date 显式拼进 query；缺省 → 路由侧 today）
     try:
-        summary_resp = _fetch_json(f"{base}/v1/trade/daily_summary")
+        summary_url = f"{base}/v1/trade/daily_summary"
+        if args.date:
+            summary_url = f"{summary_url}?date={args.date}"
+        summary_resp = _fetch_json(summary_url)
         summary = summary_resp.get("data", {})
     except Exception as exc:
         summary = {"error": str(exc)}

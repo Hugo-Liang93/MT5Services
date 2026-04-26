@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -31,13 +32,19 @@ router = APIRouter(tags=["trade"])
 
 @router.get("/trade/daily_summary", response_model=ApiResponse[TradeDailySummaryView])
 def trade_daily_summary(
+    summary_date: Optional[date] = Query(
+        default=None,
+        alias="date",
+        description="报告日期 (YYYY-MM-DD)，缺省 = 今天",
+    ),
     service: TradingQueryService = Depends(get_trading_query_service),
 ) -> ApiResponse[dict]:
     return ApiResponse.success_response(
-        data=service.daily_trade_summary(),
+        data=service.daily_trade_summary(summary_date=summary_date),
         metadata={
             "operation": "daily_summary",
             "account_alias": service.active_account_alias,
+            "summary_date": summary_date.isoformat() if summary_date else None,
         },
     )
 

@@ -189,25 +189,34 @@ def _run_checks(host: str, port: int) -> list[tuple[str, str, str]]:
         # coding error（AttributeError/TypeError）透传 fail-fast
         results.append(("Indicator engine", "FAIL", str(exc)))
 
-    # 5. 交易模块（/v1/trade/control 返回 TradeControlStatusView，含 executor dict）
+    # 5. 交易模块（trade_executor_summary schema：顶层 enabled / circuit_open /
+    # consecutive_failures / execution_count；circuit_open=True 时即使 enabled
+    # 也必须告警，避免熔断打开但健康检查仍报 OK 的隐患）
     try:
         trade_resp = _fetch_json(f"{base}/v1/trade/control")
         trade_data = trade_resp.get("data", {})
         executor = trade_data.get("executor", {})
         enabled = executor.get("enabled", False)
-        cb = executor.get("circuit_breaker", {})
+        circuit_open = executor.get("circuit_open", False)
+        consecutive = executor.get("consecutive_failures", 0)
         exec_count = executor.get("execution_count", 0)
-        if enabled:
+        if circuit_open:
             results.append(
                 (
                     "Trade executor",
-                    "OK",
-                    f"enabled, executions={exec_count}",
+                    "FAIL",
+                    f"circuit OPEN ({consecutive} consecutive failures)",
                 )
+            )
+        elif enabled:
+            results.append(
+                ("Trade executor", "OK", f"enabled, executions={exec_count}")
             )
         else:
             results.append(("Trade executor", "WARN", "disabled (auto_trade=false)"))
-    except Exception as exc:
+    except (HTTPError, URLError, ValueError) as exc:
+        # 异常分层（同 ADR-011）：网络/JSON → WARN with detail；
+        # coding error 透传 fail-fast
         results.append(("Trade executor", "WARN", f"unavailable: {exc}"))
 
     return results

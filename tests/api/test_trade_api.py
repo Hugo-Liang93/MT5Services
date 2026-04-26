@@ -145,7 +145,7 @@ class _DispatchService:
             "executable": True,
         }
 
-    def daily_trade_summary(self):
+    def daily_trade_summary(self, summary_date=None):
         return {"date": "2026-01-01", "total": 0, "success": 0, "failed": 0}
 
     def trade_control_status(self):
@@ -1001,10 +1001,31 @@ def test_trade_precheck_returns_admission_report() -> None:
 
 
 def test_trade_daily_summary_endpoint() -> None:
-    response = trade_daily_summary(service=_DispatchService())
+    # 直接调用 route 函数（不经 FastAPI dispatch）需显式传 summary_date=None；
+    # 否则默认值是 fastapi.Query() sentinel 对象。
+    response = trade_daily_summary(summary_date=None, service=_DispatchService())
 
     assert response.success is True
     assert response.data["date"] == "2026-01-01"
+
+
+def test_trade_daily_summary_endpoint_with_date() -> None:
+    """新签名：summary_date 透传到 service.daily_trade_summary(summary_date=...)。"""
+    from datetime import date
+
+    captured: dict = {}
+
+    class _DateCaptureService(_DispatchService):
+        def daily_trade_summary(self, summary_date=None):
+            captured["summary_date"] = summary_date
+            return {"date": "2024-01-15", "total": 0, "success": 0, "failed": 0}
+
+    response = trade_daily_summary(
+        summary_date=date(2024, 1, 15), service=_DateCaptureService()
+    )
+    assert response.success is True
+    assert captured["summary_date"] == date(2024, 1, 15)
+    assert response.metadata["summary_date"] == "2024-01-15"
 
 
 def test_trade_control_status_endpoint() -> None:

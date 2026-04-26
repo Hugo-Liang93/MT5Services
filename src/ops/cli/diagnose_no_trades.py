@@ -133,9 +133,20 @@ def main() -> None:
         print("   *** INFO: EOD already executed today. No new trades will be opened. ***")
 
     # 12. Check signal_events in DB for actual signals produced
+    # 路由 /v1/signals/recent 支持 timeframe + from/to (alias 'from')，把 --tf
+    # 与 --hours 真实拼进 query，避免 "标题写最近 N 小时但内容混入更早记录" 的
+    # 假阳性诊断（参 codebase-review §0n）。
     print(f"\n11. DB SIGNAL EVENTS (last {args.hours}h):")
     try:
-        r = requests.get(f"{BASE}/v1/signals/recent?symbol=XAUUSD&limit=50", timeout=5)
+        params: dict[str, str] = {"symbol": "XAUUSD", "limit": "50"}
+        if args.tf:
+            params["timeframe"] = args.tf
+        if args.hours:
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(hours=args.hours)
+            ).isoformat()
+            params["from"] = cutoff
+        r = requests.get(f"{BASE}/v1/signals/recent", params=params, timeout=5)
         events = r.json().get("data", [])
         if not events:
             print("   No signal events found in DB")

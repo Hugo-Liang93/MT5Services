@@ -134,6 +134,40 @@ def test_check_runtime_modules_marks_trade_disabled(
     assert "disabled" in detail.lower()
 
 
+def test_check_runtime_modules_fails_when_circuit_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归：circuit_open=True 即使 enabled=True 也必须 FAIL。
+
+    旧实现 dead-read executor.circuit_breaker（schema 已改为顶层 circuit_open）
+    + 只看 enabled → 熔断打开但报 OK enabled 的假阳性。
+    """
+    _patch_fetch(
+        monkeypatch,
+        routes={
+            "/v1/trade/control": {
+                "data": {
+                    "executor": {
+                        "enabled": True,
+                        "circuit_open": True,
+                        "consecutive_failures": 5,
+                        "execution_count": 17,
+                    }
+                }
+            },
+        },
+        captured=[],
+    )
+
+    rows = health_check._run_checks("localhost", 8808)
+    trade_row = next((r for r in rows if r[0] == "Trade executor"), None)
+    assert trade_row is not None
+    _, status, detail = trade_row
+    assert status == "FAIL", f"circuit_open=True 必须 FAIL，实际 {status}"
+    assert "OPEN" in detail or "open" in detail.lower()
+    assert "5" in detail  # consecutive_failures
+
+
 def test_check_runtime_modules_handles_real_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
