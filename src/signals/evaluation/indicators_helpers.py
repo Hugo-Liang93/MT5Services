@@ -103,7 +103,7 @@ def hold_decision(
 ) -> "SignalDecision":
     """创建一个标准的 hold 决策，用于指标不足时的安全退出。
 
-    避免各策略各自重复 ``return SignalDecision(action="hold", ...)`` 的样板代码。
+    避免各策略各自重复 ``return SignalDecision(direction="hold", ...)`` 的样板代码。
 
     参数
     ----
@@ -120,7 +120,7 @@ def hold_decision(
         strategy=strategy,
         symbol=symbol,
         timeframe=timeframe,
-        action="hold",
+        direction="hold",
         confidence=0.0,
         reason=reason,
         used_indicators=[],

@@ -167,9 +167,9 @@ def _run_checks(host: str, port: int) -> list[tuple[str, str, str]]:
     except Exception:
         pass
 
-    # 5. 交易模块
+    # 5. 交易模块（/v1/trade/control 返回 TradeControlStatusView，含 executor dict）
     try:
-        trade_resp = _fetch_json(f"{base}/v1/trade/overview")
+        trade_resp = _fetch_json(f"{base}/v1/trade/control")
         trade_data = trade_resp.get("data", {})
         executor = trade_data.get("executor", {})
         enabled = executor.get("enabled", False)

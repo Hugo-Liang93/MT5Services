@@ -135,7 +135,7 @@ def main() -> None:
     # 12. Check signal_events in DB for actual signals produced
     print(f"\n11. DB SIGNAL EVENTS (last {args.hours}h):")
     try:
-        r = requests.get(f"{BASE}/v1/signals/latest?symbol=XAUUSD&limit=50", timeout=5)
+        r = requests.get(f"{BASE}/v1/signals/recent?symbol=XAUUSD&limit=50", timeout=5)
         events = r.json().get("data", [])
         if not events:
             print("   No signal events found in DB")

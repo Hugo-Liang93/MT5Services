@@ -147,14 +147,14 @@ def main() -> None:
         summary = {"error": str(exc)}
         sys.stderr.write(f"  daily_summary failed: {exc}\n")
 
-    # 2. 执行器状态
+    # 2. 执行器状态（/v1/trade/control 返回 TradeControlStatusView，含 executor dict）
     try:
-        overview_resp = _fetch_json(f"{base}/v1/trade/overview")
+        overview_resp = _fetch_json(f"{base}/v1/trade/control")
         overview = overview_resp.get("data", {})
         executor = overview.get("executor", {})
     except Exception as exc:
         executor = {"error": str(exc)}
-        sys.stderr.write(f"  trade/overview failed: {exc}\n")
+        sys.stderr.write(f"  trade/control failed: {exc}\n")
 
     # 3. 健康报告（含告警）
     try:
