@@ -49,6 +49,101 @@
 
 ---
 
+## 0j. 2026-04-26 Research 链路时间戳 UTC-aware 一致化（datetime.utcnow → utc_now helper）
+
+### 触发
+
+User 报告：research 链路 3 处 `datetime.utcnow()` 输出 naive datetime
+（无 `tzinfo`），与仓库其余模块通过 `src.utils.timezone.utc_now()` 统一产生
+UTC-aware datetime 的惯例不一致。
+
+> "它不一定立刻崩，但会造成前端/下游按本地时区解释、排序歧义和审计时间漂移。"
+
+### 全仓影响范围
+
+`grep -rn "datetime\.utcnow()" src/`：3 处全部在 research 链路：
+- `src/api/research_routes/routes.py:54` — `mining_jobs["started_at"]`
+- `src/research/orchestration/runner.py:166` — `MiningResult.started_at`
+- `src/research/orchestration/runner.py:271` — `MiningResult.completed_at`
+
+`tests/` 中另有 4 处同源问题（fixture 用 wall clock 造时间戳）。
+
+### 实际危害（即使不立刻崩）
+
+1. **前端时区解释歧义**：API 返回 `"started_at": "2026-04-26T12:34:56"`（无 `+00:00` 后缀），
+   前端（如 QuantX）若用 `new Date(s)` 会按本地时区解析 → 显示偏移 N 小时
+2. **排序与比较歧义**：naive datetime 与 aware datetime 混排时
+   `a < b` 抛 `TypeError: can't compare offset-naive and offset-aware datetimes`；
+   研究端到端流程若任一步加入 aware 时间戳，整条链路崩
+3. **Python 3.12 持续告警**：`datetime.utcnow()` 已 deprecated，pytest 持续输出
+   `DeprecationWarning`（19+ warnings/run），干扰真实警告可见性
+4. **审计漂移**：mining run `started_at` / `completed_at` 入库时若被 timescaledb
+   补 timezone（`TIMESTAMPTZ` 列），假设的 UTC 与实际写入时间可能错开（依赖驱动行为）
+
+### 工具类已存在
+
+`src/utils/timezone.py:utc_now()` 是项目 single source of truth，docstring
+line 3-4 明示：
+
+> All modules should use these functions instead of inline
+> `datetime.now(timezone.utc)` or ad-hoc timezone conversions.
+
+### 修复
+
+**src（commit `72efa55`）**：3 处 `datetime.utcnow()` → `utc_now()`
+- 添加 `from src.utils.timezone import utc_now` import（routes.py 与 runner.py）
+- `datetime` import 保留（仍用于 `datetime.fromisoformat` 与 type annotations）
+
+**tests（同 commit）**：4 处同源 fixture 也切换：
+- `tests/research/orchestration/test_rank_findings.py`：3 处 `datetime.utcnow()` → `utc_now()`
+- `tests/research/features/test_runner_hub_integration.py`：1 处 `_dt.datetime.utcnow()` → `utc_now()`
+- 同步删除不再使用的 `from datetime import datetime` import
+
+**附带 hardening（同 commit）**：
+- 7 处 pre-existing F401 unused imports 顺手清扫（`ast` / `textwrap` /
+  `typing.List/Optional/Tuple` / `unittest.mock.patch` / `pytest` /
+  `MinedRule`）
+- 1 处 `runner.py:510` E501 长行折行
+- 1 处测试 docstring 长行拆 2 段
+
+### Sentinel 验证
+
+```bash
+$ grep -rn "datetime\.utcnow()" src/ tests/ --include='*.py'
+(empty - clean)
+```
+
+### 测试基线
+
+- `pytest -m "not slow"`：**2776 passed / 0 failed**（与修复前一致；
+  纯类型一致化无 runtime 行为变更）
+- 19 个 `DeprecationWarning: datetime.datetime.utcnow() is deprecated` 警告
+  应在下次跑测试时全部消失
+
+### 减少边界泄漏的方式
+
+研究域不再自带"本地 wall clock"产生时间戳——与仓库其他模块（signal /
+trading / monitoring）共用同一 `utc_now()` 端口。下次新增模块若想自己
+`datetime.utcnow()` 偷懒，sentinel grep 可在 CI 加一道：
+
+```bash
+grep -rn "datetime\.utcnow\|datetime\.now()  *#  *no.*tz" src/ --include='*.py' && exit 1
+```
+
+### 元层教训
+
+工具类存在 ≠ 一定被使用。`src.utils.timezone.utc_now()` 已存在但 research 域
+始终用 `datetime.utcnow()`——可能因为：
+- 项目早期就有的代码，没人 refactor
+- 写时图省事，没查 utils
+- code review 没拦下来
+
+建议：把"时间戳必须 UTC-aware"写进 CLAUDE.md "代码规范"段（与 Pydantic v2 /
+mypy strict / 线程安全 同级），加 grep sentinel 命令到 pre-commit hook
+或 CI lint 阶段。
+
+---
+
 ## 0i. 2026-04-26 Python 版本契约失真修复（声明 >=3.10 与代码实际对齐）
 
 ### 触发
