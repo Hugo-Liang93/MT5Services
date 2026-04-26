@@ -49,6 +49,127 @@
 
 ---
 
+## 0q. 2026-04-26 admin schemas 裁掉 readmodel 核心运行态字段（P2 ×2 + P3 ×2）
+
+### 触发
+
+User 用 TestClient mock readmodel 后请求 /v1/admin/dashboard / /v1/admin/strategies
+直接复现 4 个 schema 字段被静默裁的 bug，全是 Pydantic 默认 `extra='ignore'`
++ schema 字段集 < readmodel 真实字段集 的**同模式**：
+
+| # | 等级 | 文件 | 被裁字段 | 影响 |
+|---|---|---|---|---|
+| 1 | **P2** | `admin_schemas.py:33-42` `DashboardOverview` | trading_state / account_risk / validation / external_dependencies | admin dashboard 永远暴露不出交易态/风险态/MT5 依赖 |
+| 2 | **P2** | `admin_schemas.py:22-30` `ExecutorSnapshot` | status / running / last_error / signals / execution_gate / pending_entries / recent_executions / execution_scope 等 ~13 字段 | 执行器从"诊断状态机"降成"简化计数器"，前端无法判断 disabled/delegated/critical/blocked-by-gate |
+| 3 | P3 | `admin_schemas.py:68-75` `StrategyDetail` | htf_policy | /v1/admin/strategies 列表无完整策略契约 |
+| 4 | P3 | `admin_routes/view_models.py:42` `StrategySessionDetailView` | htf_policy（与 #3 双重裁剪） | /v1/admin/strategies/{name} 详情比 confidence_check 更不完整 |
+
+### 根因（共同模式）
+
+```python
+# Pydantic 默认 extra='ignore'：未声明字段被静默丢弃
+DashboardOverview(**dashboard_overview_dict)  # 11 keys → 7 (default 4 fields lost)
+ExecutorSnapshot(**trade_executor_summary())  # 16 keys → 6
+StrategyDetail(**describe_strategy())          # ... → 5 (htf_policy lost)
+```
+
+readmodel 演进时（如 §0g ADR-011 加 `account_risk`，§0n trade_executor_summary
+schema 调整加 `signals.*`），**schema 没同步更新** → 静默漂移。
+
+无 OpenAPI 验证、无 round-trip test、无 readmodel→schema 字段对齐 CI 检查 →
+bug 长期不可见。
+
+### 修复（commit `e9cb6fa`）
+
+**核心策略**：补缺失字段（让 OpenAPI 仍有类型提示）+ `ConfigDict(extra='allow')`
+（让 readmodel 后续添加新字段时自动透传，避免再次漂移）。
+
+```python
+# admin_schemas.py
+class DashboardOverview(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    system: SystemStatusSnapshot
+    account: Dict[str, Any] = Field(default_factory=dict)
+    positions: Dict[str, Any] = Field(default_factory=dict)
+    trading_state: Dict[str, Any] = Field(default_factory=dict)        # 补
+    account_risk: Dict[str, Any] = Field(default_factory=dict)         # 补
+    signals: Dict[str, Any] = Field(default_factory=dict)
+    executor: ExecutorSnapshot
+    validation: Dict[str, Any] = Field(default_factory=dict)            # 补
+    external_dependencies: Dict[str, Any] = Field(default_factory=dict) # 补
+    storage: Dict[str, Any] = Field(default_factory=dict)
+    indicators: Dict[str, Any] = Field(default_factory=dict)
+
+class ExecutorSnapshot(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    # 状态机：status/configured/armed/running/enabled
+    # 熔断+计数：circuit_open/consecutive_failures/execution_count
+    # 时间线+错误：last_execution_at/last_error/last_risk_block
+    # 诊断：signals/execution_gate/execution_quality/config
+    # 待挂单+最近执行：pending_entries_count/pending_entries/recent_executions/execution_scope
+    # （共 17 字段，对齐 readmodel.trade_executor_summary 当前真实结构）
+
+class StrategyDetail(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    # ... + htf_policy: Optional[str] = None
+
+# admin_routes/view_models.py
+class StrategySessionDetailView(BaseModel):
+    model_config = {"extra": "allow"}
+    # ... + htf_policy: Optional[str] = None
+```
+
+### 测试（5 项新契约，schema preservation 之前 100% 零覆盖）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_preserves_real_runtime_payload_blocks` | 4 个 dashboard 顶层区块不再被裁 |
+| `test_preserves_critical_runtime_diagnostic_fields` | ExecutorSnapshot 17 字段全部保留 |
+| `test_preserves_htf_policy_field` | StrategyDetail.htf_policy 必须保留 |
+| `test_preserves_htf_policy` (Session view) | StrategySessionDetailView.htf_policy 双重裁剪修复 |
+| `test_roundtrip` 扩展 | StrategyDetail 含 htf_policy 的 round-trip 不丢字段 |
+
+### 元层教训：**Pydantic 默认 ignore + schema 字段漂移 = 静默裁剪批量制造机**
+
+这是与 §0n CLI Stale-schema 同根的一类 bug，但发生在 API 层：
+- §0n: CLI 读 API schema 与 readmodel 漂移（消费侧问题）
+- §0q: API schema 与 readmodel 漂移（生产侧问题）
+
+两者都因为 **字符串/字段名是事实源，但没有自动校验机制**。强建议（扩充
+§0n 元层教训）：
+
+a. **所有 API response_model 默认 `extra='allow'`**（除非有明确"不允许额外字段"
+   的安全理由）。Pydantic v2 文档级建议：API 输出 schema 应保持向前兼容，
+   `extra='ignore'` 在数据生产侧是反模式。
+b. **加 readmodel ↔ schema 字段对齐 test**：每个 readmodel 函数的返回 dict
+   keys 必须是其对应 schema 的子集（防止生产侧字段被 schema 裁）。本次 4 个
+   测试是该模式的开端。
+c. **OpenAPI 文档 review 加进 PR 流程**：schema 字段变化必须在 PR description
+   附 `/openapi.json` diff 截图，让 reviewer 看见字段集变化。
+
+### §0g→§0q 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **23 个 bug + 23 次反向锁**：
+
+| § | bug 数 | 性质 |
+|---|---|---|
+| 0g–0p | 19 | 见前各节 |
+| 0q | 4 | API schema 反复裁剪 readmodel |
+
+### 测试基线
+
+- 修复前：4 处 user-facing 字段消失；schema preservation 零测试覆盖
+- 修复后：5 项新契约测试；`pytest -m "not slow"` → **2817 passed / 0 failed**
+
+### 减少边界泄漏的方式
+
+API schema 与 readmodel 之间从"字段集严格相等"漂移为"schema ⊇ readmodel"
+（通过 `extra='allow'` 透传 + 显式声明已知字段保留 OpenAPI 类型提示）。
+未来 readmodel 添加新字段（如 P9/P10 readmodel 演进）不再要求同步改 schema
+就能透传给前端，但同时仍有 5 项 round-trip 测试守住关键字段不被回退。
+
+---
+
 ## 0p. 2026-04-26 confidence_check 三处深层语义错 + live_preflight 硬编码 symbol（P2 ×3 + P3）
 
 ### 触发
