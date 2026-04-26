@@ -319,21 +319,50 @@ def _check_risk_safety() -> List[Tuple[str, str, str]]:
 
 
 def _check_api(api_base: str = "http://localhost:8808") -> List[Tuple[str, str, str]]:
-    """检查 API 服务状态。"""
+    """检查 API 服务状态。
+
+    路由：根 ``/health`` 返回 ApiResponse[dict]，data 含 mode/market/trading/runtime。
+    （历史曾 probe ``/v1/health`` 但该路径已不存在；当前 health 路由分两层：
+    业务级 ``/health`` 在 root，K8s 探针 ``/v1/monitoring/health/{live,ready}``。
+    preflight 想要业务 health 故取 root。）
+    """
     results: List[Tuple[str, str, str]] = []
     import requests
 
     try:
-        r = requests.get(f"{api_base}/v1/health", timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            status = data.get("data", {}).get("status", "unknown")
-            results.append(("API health", "OK", f"status={status}"))
-        else:
+        r = requests.get(f"{api_base}/health", timeout=5)
+        if r.status_code != 200:
             results.append(("API health", "FAIL", f"HTTP {r.status_code}"))
+            return results
+
+        payload = r.json()
+        if not payload.get("success", False):
+            err = payload.get("error", {}) or {}
+            err_code = err.get("code") if isinstance(err, dict) else None
+            detail = f"code={err_code}" if err_code else "success=False"
+            results.append(("API health", "FAIL", detail))
+            return results
+
+        data = payload.get("data") or {}
+        mode = data.get("mode", "unknown")
+        market_connected = bool((data.get("market") or {}).get("connected", False))
+        trading_running = bool((data.get("trading") or {}).get("running", False))
+        detail = (
+            f"mode={mode} "
+            f"market={'connected' if market_connected else 'disconnected'} "
+            f"trading={'running' if trading_running else 'stopped'}"
+        )
+        results.append(("API health", "OK", detail))
     except requests.ConnectionError:
-        results.append(("API health", "SKIP", "Service not running (expected if checking before start)"))
-    except Exception as e:
+        results.append(
+            (
+                "API health",
+                "SKIP",
+                "Service not running (expected if checking before start)",
+            )
+        )
+    except (requests.Timeout, requests.RequestException, ValueError) as e:
+        # 异常分层：网络/JSON 解析降级；coding error（AttributeError/TypeError）透传
         results.append(("API health", "FAIL", str(e)))
 
     return results
