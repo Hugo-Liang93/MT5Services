@@ -49,6 +49,83 @@
 
 ---
 
+## 0h. 2026-04-26 PerformanceTracker.warm_up_from_db FrozenInstanceError 修复（ADR-011 异常分层契约二次落实）
+
+### 触发
+
+User 直接复现 `src/signals/evaluation/performance.py:525-526` 的 `FrozenInstanceError`：
+`warm_up_from_db()` 直接给 `PerformanceTrackerConfig`（`@dataclass(frozen=True)`）的
+`pnl_circuit_enabled` 字段赋值，每次调用必抛 `FrozenInstanceError`。
+
+启动链路实际**已 active**——`_start_performance_warmup` 注册为
+`FunctionalRuntimeComponent("performance_warmup", supported_modes=all_modes)`，
+每次启动都执行；但 `runtime_controls.py:198` 的 `except Exception` + `debug` 日志
+（默认级别看不到）静默吞噬数月，用户感知不到 warm-up 完全失效。**与 ADR-011 完全相同的反模式**。
+
+### 影响
+
+- StrategyPerformanceTracker 重启后**永远以空白状态启动**：
+  - 无历史 wins/losses/streak 数据 → `get_multiplier()` 退化为基线乘数
+  - PnL 熔断器历史 loss streak 丢失 → 风控统计断裂
+- `_start_performance_warmup` 的 `is_running_fn` 用 `warmup_state["done"]` 判定，
+  exception 路径下 `done` 永不为 True → 该 RuntimeComponent 永远显示未运行
+  （但启动流程未阻塞，因为 except 吞噬）
+
+### 修复
+
+**performance.py（commit `0bbb478`）**：
+- `__init__` 新增 `self._warmup_active: bool = False`
+- `record_outcome` 熔断分支检查 `not self._warmup_active` 后绕过
+- `warm_up_from_db` 不再 mutate frozen `self._config`，改为 set/reset instance flag
+- 设计权衡：保持 frozen 语义；单一行为变更点（line 297）；thread-safety 由
+  `record_outcome` 的 `self._lock` + RuntimeComponent 启动顺序保障
+
+**runtime_controls.py（commit `4fcca68`）**：异常分层契约同 ADR-011：
+- catch 收窄为 `(ConnectionError, TimeoutError, OSError, RuntimeError)` —— 仅运行时降级
+- 编码错误（`FrozenInstanceError` / `AttributeError` / `TypeError` 等）直接 fail-fast 透传
+- 日志级别从 `debug` 升 `WARNING`（默认级别可见，运维看得到）
+- 错误消息含异常类型名（与 `EconomicDecayService` warning 同格式）
+
+**测试（commit `a3a2a19`）**：6 项契约测试（之前零覆盖正是 P2 数月未发现的根因）：
+| 测试 | 锁住的契约 |
+|---|---|
+| `does_not_mutate_frozen_config` | 不再触碰 frozen 字段 |
+| `replays_outcomes_returns_count` | happy path |
+| `skips_invalid_rows` | 健壮性 |
+| `does_not_trigger_pnl_circuit` | warm-up 期间历史亏损不进熔断 |
+| `restores_pnl_circuit_for_subsequent_real_trades` | warm-up 后真实交易仍能触发 |
+| `propagates_coding_errors_fail_fast` | 用 NameError 反向锁死异常分层 |
+
+### 顺手清扫（同 commit `4fcca68`）
+
+`performance.py` 3 处 pre-existing 违例：
+- F401 `dataclasses.field` 未使用 import 删除
+- 2 处 E501 长行折行（log message 拆两段；dict literal value 加括号）
+
+### 元层教训
+
+**ADR-011 不是孤例**：本仓库还存在多少处 `except Exception` + 静默 debug 日志
+吞噬编码错误的反模式？建议在下一个维护窗口扫一遍：
+```bash
+grep -rn "except Exception" src/ --include='*.py' | grep -v "# noqa\|raise"
+grep -rn "logger.debug.*exc_info=True\|logging.*\.debug.*exc_info" src/ --include='*.py'
+```
+逐项判断是合理降级还是吞噬编码错误。
+
+### 减少边界泄漏的方式
+
+ADR-011 的异常分层契约从纯文档升级为**机制级强约束**：
+- service 端口（calendar 域）已落实
+- 装配层 try/except（runtime_controls）也落实
+- 任何新增的 `except Exception` 在 PR review 时应明确触发"是降级还是吞噬"判断
+
+### 测试基线
+
+- 修复前：`tests/signals/evaluation/test_performance.py` 20 项，**零项覆盖 warm_up 路径**
+- 修复后：26 项，含 6 项 warm_up 契约测试 + 反向 fail-fast 锁；全仓 `pytest -m "not slow"` 通过
+
+---
+
 ## 0g. 2026-04-26 经济事件衰减边界整改（ADR-011）
 
 ### 触发
