@@ -129,8 +129,10 @@ def calibrator_refresh(
     hours: int = Query(default=168, ge=24, le=24 * 90),
     calibrator: ConfidenceCalibrator = Depends(get_calibrator),
 ) -> ApiResponse[Dict[str, object]]:
-    calibrator._refresh_hours = hours
-    count = calibrator.refresh()
+    # §0y P2：旧实现 calibrator._refresh_hours = hours 后调 refresh() 把后续
+    # 后台刷新和默认 refresh 主窗口都永久改掉。改用一次性 hours= 参数，
+    # 不污染服务内部状态（参 ADR-006：装配/API 层禁止读写组件 _ 前缀私有属性）。
+    count = calibrator.refresh(hours=hours)
     return ApiResponse.success_response(
         data={**calibrator.describe(), "rows_loaded": count},
         metadata={"hours": hours},

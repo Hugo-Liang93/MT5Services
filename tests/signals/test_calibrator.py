@@ -271,3 +271,43 @@ def test_stop_background_refresh_clears_reference_when_thread_exits() -> None:
     assert (
         calibrator._bg_thread is None
     ), "线程已退出时应清空 _bg_thread 引用让 start_background_refresh 能重启"
+
+
+# ── §0y P2 回归：refresh(hours=) 必须一次性，不能永久篡改 _refresh_hours ──
+
+
+def test_confidence_calibrator_refresh_hours_param_is_one_shot() -> None:
+    """P2 §0y 回归：旧 API endpoint `calibrator._refresh_hours = hours` 后调
+    refresh() → 把后续后台刷新和默认 refresh 主窗口都永久改掉。
+    refresh() 必须支持一次性 hours 参数，不持久改 _refresh_hours。
+    """
+    fetch_history: list[int] = []
+
+    def fetch_winrates(*, hours: int, symbol=None):
+        fetch_history.append(hours)
+        return []
+
+    calibrator = ConfidenceCalibrator(fetch_winrates_fn=fetch_winrates)
+    default_hours = calibrator.describe()["refresh_hours"]
+    assert default_hours == 168, f"baseline 默认 168h；got {default_hours}"
+
+    # 一次性传 24h；调用主窗口必须按 24h 拉
+    calibrator.refresh(hours=24)
+    main_query_hours = fetch_history[0]
+    assert main_query_hours == 24, (
+        f"refresh(hours=24) 主查询窗口必须 = 24；got {main_query_hours}"
+    )
+
+    # 内部 _refresh_hours 不应被永久改掉
+    after_state = calibrator.describe()
+    assert after_state["refresh_hours"] == 168, (
+        f"refresh(hours=24) 不能篡改 _refresh_hours；现在为 "
+        f"{after_state['refresh_hours']}（应仍为 168）"
+    )
+
+    # 后续不带 hours 的 refresh 必须回到默认 168h
+    fetch_history.clear()
+    calibrator.refresh()
+    assert fetch_history[0] == 168, (
+        f"后续无参 refresh() 必须用默认 168；got {fetch_history[0]}"
+    )

@@ -249,10 +249,22 @@ class ConfidenceCalibrator:
 
         return result
 
-    def refresh(self, *, symbol: Optional[str] = None) -> int:
-        """立即刷新胜率缓存（历史窗口 + 近期窗口），返回加载的记录数。"""
+    def refresh(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        hours: Optional[int] = None,
+    ) -> int:
+        """立即刷新胜率缓存（历史窗口 + 近期窗口），返回加载的记录数。
+
+        §0y P2：``hours`` 是**一次性**主窗口覆盖（不修改 self._refresh_hours）。
+        旧 API ``calibrator._refresh_hours = h`` + ``refresh()`` 把后续后台
+        刷新和默认 refresh 主窗口都永久改成 h；正确做法是显式 one-shot 参数，
+        让"本次按 h 刷新"与"全局默认 refresh 窗口"语义分开。
+        """
+        effective_hours = int(hours) if hours is not None else self._refresh_hours
         try:
-            rows = self._fetch_fn(hours=self._refresh_hours, symbol=symbol)
+            rows = self._fetch_fn(hours=effective_hours, symbol=symbol)
         except Exception:
             logger.exception("ConfidenceCalibrator: failed to fetch win rates")
             return 0
@@ -337,6 +349,9 @@ class ConfidenceCalibrator:
             "max_boost": self._max_boost,
             "min_samples": self._min_samples,
             "recency_hours": self._recency_hours,
+            # §0y P2：暴露默认主窗口给消费侧（API / dashboard 可看出全局配置，
+            # 一次性 refresh(hours=) 不改这里的值）
+            "refresh_hours": self._refresh_hours,
             "cache_entries": cache_size,
             "recent_cache_entries": recent_cache_size,
             "cache_age_seconds": (

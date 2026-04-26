@@ -182,11 +182,14 @@ class TradeOutcomeTracker:
         ----
         pos:
             TrackedPosition 实例（含 signal_id, symbol, action）。
-            若 ``pos._close_source`` 存在，作为关仓来源标签。
+            若 ``pos.close_source`` 存在，作为关仓来源标签。
         close_price:
             仓位关闭时的实际价格；None 表示无法获取（记录为 unresolved）。
         """
-        close_source: str = getattr(pos, "_close_source", "position_closed") or "position_closed"
+        # §0y P2：旧实现读 pos._close_source 但 TrackedPosition 公开字段是
+        # close_source（manager.py:116 + reconciliation.py:376），真实关仓来源
+        # 静默被丢失 → metadata 落库永远为默认 'position_closed'，污染审计事实。
+        close_source: str = getattr(pos, "close_source", "position_closed") or "position_closed"
         signal_id: str = getattr(pos, "signal_id", "") or ""
         if not signal_id:
             return

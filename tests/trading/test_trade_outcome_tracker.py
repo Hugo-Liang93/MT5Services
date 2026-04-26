@@ -3,7 +3,7 @@
 覆盖：
 - 正常关仓（close_price 存在）→ 盈亏计算 + 回调 + DB 写入
 - close_price=None → unresolved 终态记录（不丢弃交易）
-- close_source 从 pos._close_source 传递
+- close_source 从 pos.close_source（公开字段）传递
 - summary() 包含 unresolved_closes 计数
 - 未注册的 signal_id 不报错
 """
@@ -25,9 +25,13 @@ def _make_pos(
     action: str = "buy",
     close_source: Optional[str] = None,
 ) -> SimpleNamespace:
+    # §0y P2：使用 TrackedPosition 实际公开字段 close_source（参
+    # src/trading/positions/manager.py:116 + reconciliation.py:376）。旧
+    # fixture 写 _close_source 与旧 trade_outcome.py 读 _close_source 对称
+    # 错误，掩盖了 close_source 永远落库为默认值的 bug。
     pos = SimpleNamespace(signal_id=signal_id, symbol=symbol, action=action)
     if close_source is not None:
-        pos._close_source = close_source
+        pos.close_source = close_source
     return pos
 
 
@@ -230,3 +234,74 @@ class TestEdgeCases:
         assert summary["total_wins"] == 1
         assert summary["unresolved_closes"] == 1
         assert summary["active_trades"] == 0
+
+
+# ── §0y P2 回归：close_source 必须从公开 close_source 读，而非废弃的 _close_source ──
+
+
+def _make_pos_with_real_close_source(
+    *,
+    signal_id: str = "sig-1",
+    symbol: str = "XAUUSD",
+    action: str = "buy",
+    close_source: Optional[str] = None,
+) -> SimpleNamespace:
+    """使用 TrackedPosition 实际公开字段 ``close_source`` 而非 _close_source。
+
+    参 src/trading/positions/manager.py:116 (字段定义) +
+    src/trading/positions/reconciliation.py:376 (赋值点)。
+    """
+    pos = SimpleNamespace(signal_id=signal_id, symbol=symbol, action=action)
+    if close_source is not None:
+        pos.close_source = close_source
+    return pos
+
+
+def test_close_source_read_from_public_attr_history_deals() -> None:
+    """P2 §0y 回归：reconciliation 写 pos.close_source；旧 trade_outcome.py
+    从 pos._close_source 读 → 真实平仓来源被丢失，落库 metadata 默认
+    'position_closed'，污染 trade_outcomes 审计事实。
+    """
+    written: List[Any] = []
+    tracker = TradeOutcomeTracker(write_fn=lambda rows: written.extend(rows))
+    tracker.on_trade_opened(
+        signal_id="sig-1",
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="sma_trend",
+        direction="buy",
+        fill_price=2000.0,
+        confidence=0.75,
+    )
+    pos = _make_pos_with_real_close_source(
+        action="buy", close_source="history_deals"
+    )
+    tracker.on_position_closed(pos, close_price=2005.0)
+
+    meta = written[0][15]
+    assert meta["close_source"] == "history_deals", (
+        f"必须从 pos.close_source 读真实来源；got close_source={meta['close_source']!r}, "
+        f"meta={meta!r}"
+    )
+
+
+def test_close_source_read_from_public_attr_mt5_missing() -> None:
+    """对称契约：reconciliation 写 mt5_missing 时也必须被读出。"""
+    written: List[Any] = []
+    tracker = TradeOutcomeTracker(write_fn=lambda rows: written.extend(rows))
+    tracker.on_trade_opened(
+        signal_id="sig-2",
+        symbol="XAUUSD",
+        timeframe="M5",
+        strategy="sma_trend",
+        direction="sell",
+        fill_price=2000.0,
+        confidence=0.6,
+    )
+    pos = _make_pos_with_real_close_source(
+        signal_id="sig-2", action="sell", close_source="mt5_missing"
+    )
+    tracker.on_position_closed(pos, close_price=2005.0)
+
+    meta = written[0][15]
+    assert meta["close_source"] == "mt5_missing"

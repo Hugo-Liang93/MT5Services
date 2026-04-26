@@ -40,8 +40,18 @@ class ReadOnlyEconomicCalendarProvider:
         return None
 
     def _runtime_rows(self) -> list[dict[str, Any]]:
+        # §0y P3：runtime_task_status PK 是 (instance_id, component, task_name)，
+        # 旧实现只按 component + instance_role 查 → 多 main 实例同库时
+        # freshness / error / provider_status 可能来自别的实例。必须用注入的
+        # runtime_identity.instance_id 过滤；未注入时保留旧全局查询行为。
+        instance_id = (
+            getattr(self._runtime_identity, "instance_id", None)
+            if self._runtime_identity is not None
+            else None
+        )
         rows = self.db.fetch_runtime_task_status(
             component="economic_calendar",
+            instance_id=instance_id,
             instance_role="main",
         )
         normalized: list[dict[str, Any]] = []
