@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from src.trading.broker.comment_codec import looks_like_system_trade_comment
 from src.trading.ports import TradingQueryPort
+
+logger = logging.getLogger(__name__)
 
 
 class TradingStateAlerts:
@@ -21,20 +24,27 @@ class TradingStateAlerts:
         self._account_alias_getter = account_alias_getter or (lambda: "")
 
     def summary(self, *, pending_limit: int = 50, position_limit: int = 50) -> dict[str, Any]:
+        # P1 §0t：必须区分"无数据"与"数据源失败"。旧实现 _safe_* 把异常吞成空列表，
+        # 双数据源故障时所有告警判据全部 false → 把 DB/MT5 双故障误报成 healthy。
+        # 新实现：每次调用记录 source_errors，summary() 末尾把失败源转成显式告警。
+        source_errors: dict[str, str] = {}
         active_pending = self._safe_pending_states(
             statuses=["placed", "orphan"],
             limit=pending_limit,
+            source_errors=source_errors,
         )
         lifecycle_missing = self._safe_pending_states(
             statuses=["missing"],
             limit=pending_limit,
+            source_errors=source_errors,
         )
         open_positions = self._safe_position_states(
             statuses=["open"],
             limit=position_limit,
+            source_errors=source_errors,
         )
-        live_orders = self._safe_live_orders()
-        live_positions = self._safe_live_positions()
+        live_orders = self._safe_live_orders(source_errors=source_errors)
+        live_positions = self._safe_live_positions(source_errors=source_errors)
 
         active_status_counts = self._state_counts(active_pending)
         missing_count = len(lifecycle_missing)
@@ -98,6 +108,26 @@ class TradingStateAlerts:
                 )
             )
 
+        # P1 §0t：把数据源故障转成显式 critical 告警，禁止"DB/MT5 双失败 → healthy"误报。
+        if "state_store" in source_errors:
+            alerts.append(
+                self._alert(
+                    code="state_store_unavailable",
+                    severity="critical",
+                    message="状态存储不可用，告警判据失效",
+                    details={"error": source_errors["state_store"]},
+                )
+            )
+        if "trading_module" in source_errors:
+            alerts.append(
+                self._alert(
+                    code="trading_module_unavailable",
+                    severity="critical",
+                    message="交易模块查询不可用，告警判据失效",
+                    details={"error": source_errors["trading_module"]},
+                )
+            )
+
         overall_status = "healthy"
         if any(alert["severity"] == "critical" for alert in alerts):
             overall_status = "critical"
@@ -127,13 +157,24 @@ class TradingStateAlerts:
                 "unmanaged_live_position_count": len(unmanaged_positions),
                 "unmanaged_live_position_tickets": unmanaged_tickets,
             },
+            "source_errors": dict(source_errors),
         }
 
     def monitoring_summary(self, *, hours: int = 24) -> dict[str, Any]:
-        del hours
-        return self.summary()
+        # P3 §0t：旧实现 `del hours` 后无条件返回当前快照，hours 参数完全死。
+        # 现阶段 alerts 评估只依赖最新状态而非历史窗口，无法真正"按 hours 聚合"，
+        # 但至少必须把 hours 写进 payload，让消费方知道窗口意图，避免静默失真。
+        payload = self.summary()
+        payload["time_range_hours"] = int(hours)
+        return payload
 
-    def _safe_pending_states(self, *, statuses: list[str], limit: int) -> list[dict[str, Any]]:
+    def _safe_pending_states(
+        self,
+        *,
+        statuses: list[str],
+        limit: int,
+        source_errors: dict[str, str],
+    ) -> list[dict[str, Any]]:
         try:
             return list(
                 self._state_store.list_pending_order_states(
@@ -141,10 +182,22 @@ class TradingStateAlerts:
                     limit=limit,
                 )
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "TradingStateAlerts: list_pending_order_states failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            source_errors.setdefault("state_store", f"{type(exc).__name__}: {exc}")
             return []
 
-    def _safe_position_states(self, *, statuses: list[str], limit: int) -> list[dict[str, Any]]:
+    def _safe_position_states(
+        self,
+        *,
+        statuses: list[str],
+        limit: int,
+        source_errors: dict[str, str],
+    ) -> list[dict[str, Any]]:
         try:
             return list(
                 self._state_store.list_position_runtime_states(
@@ -152,19 +205,41 @@ class TradingStateAlerts:
                     limit=limit,
                 )
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "TradingStateAlerts: list_position_runtime_states failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            source_errors.setdefault("state_store", f"{type(exc).__name__}: {exc}")
             return []
 
-    def _safe_live_orders(self) -> list[Any]:
+    def _safe_live_orders(self, *, source_errors: dict[str, str]) -> list[Any]:
         try:
             return list(self._trading.get_orders())
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "TradingStateAlerts: trading_module.get_orders failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            source_errors.setdefault(
+                "trading_module", f"{type(exc).__name__}: {exc}"
+            )
             return []
 
-    def _safe_live_positions(self) -> list[Any]:
+    def _safe_live_positions(self, *, source_errors: dict[str, str]) -> list[Any]:
         try:
             return list(self._trading.get_positions())
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "TradingStateAlerts: trading_module.get_positions failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            source_errors.setdefault(
+                "trading_module", f"{type(exc).__name__}: {exc}"
+            )
             return []
 
     def _unmanaged_live_positions(
@@ -221,7 +296,13 @@ class TradingStateAlerts:
         return counts
 
     @staticmethod
-    def _alert(*, code: str, severity: str, message: str, details: dict[str, Any]) -> dict[str, Any]:
+    def _alert(
+        *,
+        code: str,
+        severity: str,
+        message: str,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
         return {
             "code": code,
             "severity": severity,

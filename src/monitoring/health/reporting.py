@@ -6,7 +6,6 @@ v2: All reads come from the ring-buffer in ``MetricsStore``.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import timedelta
 from typing import Any, Dict, List, Tuple
@@ -96,6 +95,23 @@ def generate_report(monitor: Any, hours: int = 24) -> Dict[str, Any]:
         report["summary"]["advisory_critical_count"] > 0
         or report["summary"]["advisory_warning_count"] > 0
     ):
+        report["overall_status"] = "warning"
+
+    # §0t P2：active_alerts 必须参与 overall_status 评级。
+    # 旧实现只看本次窗口聚合的 metric counts；过去触发但仍未消除的 alert
+    # 会被静默忽略，导致只要本次窗口没新指标进 critical/warning，整体就被报 healthy。
+    active_alerts_list = report.get("active_alerts") or []
+    has_active_critical = any(
+        str((alert.get("severity") or alert.get("alert_level") or "")).lower() == "critical"
+        for alert in active_alerts_list
+    )
+    has_active_warning = any(
+        str((alert.get("severity") or alert.get("alert_level") or "")).lower() == "warning"
+        for alert in active_alerts_list
+    )
+    if has_active_critical and report["overall_status"] != "critical":
+        report["overall_status"] = "critical"
+    elif has_active_warning and report["overall_status"] == "healthy":
         report["overall_status"] = "warning"
 
     # 告警历史从 SQLite 读取（数据极少）

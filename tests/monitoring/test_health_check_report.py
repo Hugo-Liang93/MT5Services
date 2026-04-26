@@ -144,3 +144,60 @@ def test_startup_grace_expires_after_threshold(tmp_path: Path, monkeypatch) -> N
     )
 
     assert "economic_calendar.economic_calendar_staleness" in monitor.active_alerts
+
+
+# ── §0t P2 回归：active_alerts 必须参与 overall_status 评级 ──────────────────
+
+
+def test_generate_report_overall_status_reflects_active_critical_alert(
+    tmp_path: Path,
+) -> None:
+    """P2 回归：generate_report 把 active_alerts 写进 payload 但 overall_status
+    只看本次窗口聚合的 metric counts，旧的 critical alert（仍在 active_alerts）
+    被忽略 → 只要本次窗口没新指标进 critical，整体就被报 healthy，掩盖未消除告警。
+    """
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+    # 注入一个仍在生效的 critical alert（模拟过去触发未消除）
+    monitor.active_alerts["trading.circuit_breaker_open"] = {
+        "component": "trading",
+        "metric_name": "circuit_breaker_open",
+        "alert_level": "critical",
+        "severity": "critical",
+        "value": 1.0,
+        "threshold": 0.5,
+        "first_triggered_at": "2026-04-26T00:00:00+00:00",
+        "message": "trading: circuit breaker OPEN",
+    }
+    # 本次窗口只有一个 healthy metric
+    monitor.record_metric("market_data", "data_latency", 0.1)
+
+    report = monitor.generate_report(hours=1)
+
+    assert report["active_alerts"], "active_alerts 应被原样透传"
+    assert report["overall_status"] == "critical", (
+        f"active critical alert 必须把 overall_status 抬到 critical；got {report['overall_status']!r}"
+    )
+
+
+def test_generate_report_overall_status_reflects_active_warning_alert(
+    tmp_path: Path,
+) -> None:
+    """P2 回归：active warning alert 应至少把 overall_status 抬到 warning。"""
+    monitor = HealthMonitor(str(tmp_path / "health.db"))
+    monitor.active_alerts["trading.execution_failure_rate"] = {
+        "component": "trading",
+        "metric_name": "execution_failure_rate",
+        "alert_level": "warning",
+        "severity": "warning",
+        "value": 0.15,
+        "threshold": 0.1,
+        "first_triggered_at": "2026-04-26T00:00:00+00:00",
+        "message": "trading: execution failure rate warning",
+    }
+    monitor.record_metric("market_data", "data_latency", 0.1)
+
+    report = monitor.generate_report(hours=1)
+
+    assert report["overall_status"] in ("warning", "critical"), (
+        f"active warning alert 必须把 overall_status 抬到 warning+；got {report['overall_status']!r}"
+    )
