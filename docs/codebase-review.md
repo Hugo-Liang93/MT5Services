@@ -49,6 +49,195 @@
 
 ---
 
+## 0dn. 2026-04-27 §0dm 自审清扫 6 类残留：必填 + atomic transaction + heartbeat 对称 + 异常分层 + takeover 监控 + rolling upgrade 文档（A ×2 + B ×3 + C ×2）
+
+### 触发
+
+User 追问"修 bug 是否引入新 bug + 修复时是否考虑到这点"。本人完整自审 §0df-§0dm 7 段 commit，承认仍有 6 类残留：
+
+| 类别 | 项 | 性质 |
+|---|---|---|
+| **A1** | 4 处 `Optional[T] = None` 默认（`mark_dispatched_fn` / `reserve_*_fn`）| 仍是 user 准则禁止的"补丁种子" |
+| **A2** | `_safe_emit_*` 用 `except Exception:` 吞编码错误 | ADR-011 反模式 |
+| **B1** | `heartbeat_operator_command` SQL `WHERE status='claimed'` | §0dm 引入 `dispatched` 后 heartbeat 0 行不续 |
+| **B2** | OperatorCommandConsumer 没加 heartbeat renewer | §0dm 给 ExecutionIntent 加了，对称漏修 |
+| **B3** | ledger reserve + 主表 write 跨 transaction | §0dm 引入：ledger 占位但主表失败 → 同 key 永远阻塞（幽灵反向）|
+| **C4** | `_safe_complete` takeover 仅 log warning | 生产事故 dashboard 不可见 |
+
+User 选 B（修 A+B+C 全部）。
+
+### 工程化修复（不接受补丁）
+
+#### A1：4 处 Optional default 改必填（消除补丁种子）
+
+```python
+# §0dn A1 — ExecutionIntentConsumer / OperatorCommandConsumer
+def __init__(self, *, claim_fn, complete_fn, heartbeat_fn, mark_dispatched_fn, ...):
+    if claim_fn is None or complete_fn is None or heartbeat_fn is None or mark_dispatched_fn is None:
+        raise ValueError("...required (no Optional default)")
+```
+
+ExecutionIntentPublisher / OperatorCommandService 的 `reserve_*_fn` 合并到 `write_with_idempotency_fn`（B3 修复同步）。所有 `if self._fn is None: return` 退化路径删除。
+
+#### A2：`_safe_emit_*` 异常分层（ADR-011 模式）
+
+```python
+# 旧
+except Exception:
+    logger.exception("emit failed; non-fatal")
+
+# §0dn A2 — 仅 catch 运行时降级，编码错误 fail-fast 透传
+except (ConnectionError, TimeoutError, OSError, RuntimeError):
+    logger.exception("emit runtime degradation; non-fatal")
+```
+
+`NameError` / `AttributeError` / `TypeError` 等编码 bug 不再被借"观测旁路"名义吞掉。
+
+#### B1：heartbeat_operator_command status 谓词扩
+
+```sql
+-- 旧（dispatched 后 heartbeat 0 行）
+WHERE ... AND status = 'claimed'
+
+-- §0dn B1 — 同 complete_* 合同，dispatched 也续租
+WHERE ... AND status IN ('claimed', 'dispatched')
+```
+
+#### B2：OperatorCommandConsumer 加 heartbeat renewer（对称 §0dm）
+
+```python
+def _process_command(self, item):
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = self._start_heartbeat_renewer(command_id, heartbeat_stop)
+    try:
+        ...
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2.0)
+```
+
+`close_all_positions / cancel_orders` 慢命令期间 lease 自动续租。
+
+#### B3：ledger + 主表 atomic transaction（消除幽灵反向）
+
+旧实现 `reserve_*_fn` + `write_fn` 跨独立 transaction：
+
+```
+1. INSERT INTO ledger commit ✅
+2. INSERT INTO 主表 → 失败 ❌
+   → ledger 已占位但主表无 row → 同 intent_key 永远 reserve False
+```
+
+工程化合并：单一原子端口 `write_with_idempotency_fn(items)`，repo 层用同 connection 嵌套：
+
+```python
+# repo.write_intents_with_idempotency
+with self._writer.connection() as conn, conn.cursor() as cur:
+    for item in items:
+        cur.execute(INSERT_LEDGER_SQL, [...])
+        if cur.rowcount > 0:
+            cur.execute(INSERT_MAIN_SQL, [...])     # 同 connection 同 transaction
+            reserved.append(item['intent_key'])
+    # commit on context exit; 任一 INSERT 抛异常 → rollback 整体
+return reserved
+```
+
+publisher / service 调用方简化为单次原子调用——不再有"reserve 成功但 write 失败"的中间态。
+
+#### C4：takeover counter + pipeline event（生产事故可见）
+
+```python
+# §0dn C4
+self._total_takeovers: int = 0   # ctor
+
+def _safe_complete(self, **kwargs):
+    updated = self._complete_fn(**kwargs)
+    if updated is False:
+        self._total_takeovers += 1
+        # emit pipeline event 让 dashboard / SSE 监控
+        self._pipeline_event_bus.emit(PipelineEvent(
+            type="intent_lease_takeover_detected",
+            payload={"total_takeovers": self._total_takeovers, ...},
+        ))
+
+# status() 暴露 total_takeovers
+```
+
+OperatorCommandConsumer 同模式。Cockpit dashboard 可读 `total_takeovers` 直接看 lease 接管事件总数，事故无法再静默。
+
+### Known Issues（C1 + C2 文档化运维已知约束）
+
+#### C1：`'dispatched'` schema 状态滚动升级路径
+
+§0dm 引入 `status='dispatched'` —— 部署顺序约束：
+
+1. **先升级 schema**：启动新 binary 自动跑 `MIGRATION_SQL`（DROP + ADD CHECK 接受 'dispatched'）。**冷启动安全**。
+2. **新旧 binary 共存窗口**（蓝绿 / canary 部署期间）：
+   - 旧 binary 仍只写 `pending/claimed/...`（不知 `dispatched`）→ 新 CHECK 接受 ✅
+   - 新 binary 写 `dispatched` → 旧 binary 读到时不在 reclaim 过滤集 (`status='claimed'`) 内 → 旧 binary 不会误 reclaim 已 dispatched 行 ✅
+   - **forward 兼容 OK**
+
+3. **回滚旧 binary**：旧 binary 不识别 `dispatched`，但仍能正常运行（只是不会 dispatch 这些行）。事后人工 reconcile 把残留 `dispatched` 状态行处理（dead_letter 或重置）。
+
+#### C2：`instance_id` stable 派生后旧 runtime_task_status 数据失联
+
+§0dh 把 `instance_id` 从 `f"{role}-{name}-{uuid4().hex[:12]}"` 改为 `f"{environment}:{instance_name}"` 后：
+
+- 旧 schema 的 `runtime_task_status` 行 `instance_id="main-live-main-abc123def456"` 在新 binary 启动后查询不到（新 query 用 `"live:live-main"`）
+- **后果**：calendar_sync `next_run_at / failure_count / last_refresh` 看似首次启动；3-5 个心跳周期后自然填充
+- **一次性运维成本**，§0dh commit 没明示。本段补充 known issue
+- 不需要 migration script——一次性损失可接受
+
+### 测试
+
+完整套件：**2916 passed / 6 skipped（合法）/ 0 failed**（75 秒）。
+
+19 处 test stub 同步更新（用 tokenize 精确解析批量注入 `heartbeat_fn=lambda **kwargs: None` + `mark_dispatched_fn=lambda **kwargs: True`，避开 nested `()` 误识）。OperatorCommandService 测试 stub 改用 `_write_with_idempotency` 适配 atomic 接口。
+
+### 元层教训（**最重要**）
+
+User 问"修 bug 时有没有考虑这一点"——诚实答**远不够**。本 session §0df-§0dm 7 段都犯同一类失守：
+
+1. **改 schema 加新值后没全 src grep status 谓词**（B1 漏）
+2. **加新 helper 给 consumer A 时没同步 consumer B**（B2 漏）
+3. **跨 transaction 的"先 X 后 Y"没审 X 成功 Y 失败的 compensation**（B3 漏）
+4. **装配契约 Optional default 当时为 test stub 兼容留口子**（A1 漏）
+5. **`_safe_*` wrapper 沿用旧 except Exception 没分层**（A2 漏）
+6. **log warning 当事故响应 = 不响应**（C4 漏）
+
+每条都是"工程化代码的标准审视维度，但被 user 一问才补"。强建议（已加 CLAUDE.md sentinel #11/#12 + 本段写入操作纪律）：
+
+```bash
+# 13. lease-based queue consumer ctor 必填检查（无 Optional default）
+grep -rn "claim_fn=None\|complete_fn=None\|heartbeat_fn=None\|mark_dispatched_fn=None\|reserve_.*_fn=None" \
+  src/trading/intents/consumer.py src/trading/commands/consumer.py \
+  src/trading/intents/publisher.py src/trading/commands/service.py \
+  && echo "❌ lease consumer / publisher / service 关键 fn 必填，禁 Optional default"
+
+# 14. _safe_* wrapper 必须分层 catch（编码错误 fail-fast）
+grep -rn "except Exception:" src/trading/intents/consumer.py src/trading/commands/consumer.py \
+  | grep -v "logger\|raise" \
+  && echo "⚠️ _safe_* wrapper 应仅 catch (ConnectionError, TimeoutError, OSError, RuntimeError)"
+```
+
+### §0g→§0dn 累计基线
+
+| § 范围 | bug 数 | 关键改造 |
+|---|---|---|
+| 0g–0dm | 96 | at-most-once + idempotency ledger |
+| **0dn** | 6（A ×2 + B ×3 + C ×1）| 自审消除补丁残留 + atomic transaction + 监控可见 |
+
+### 减少边界泄漏的方式
+
+- 4 处 `Optional[T] = None` 全部改必填——彻底消除"补丁种子"
+- ledger + 主表合并到单一 atomic `write_with_idempotency_fn`——消除跨 transaction 幽灵反向
+- heartbeat 续租在 OperatorCommand + ExecutionIntent 双 family 对称
+- `_safe_*` wrapper 编码错误 fail-fast，运行时降级 log——ADR-011 模式贯彻
+- takeover 计数器 + pipeline event——生产事故 dashboard 实时可见
+- C1/C2 known issue 文档化——运维知道滚动升级路径 + 一次性数据损失
+
+---
+
 ## 0dm. 2026-04-27 lease/at-most-once 工程化重构：heartbeat 续租 + dispatched 状态机 + idempotency ledger（P1 ×2 + P2 ×3）
 
 ### 触发

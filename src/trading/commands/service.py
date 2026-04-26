@@ -16,19 +16,22 @@ class OperatorCommandService:
     def __init__(
         self,
         *,
-        write_fn,
+        write_with_idempotency_fn,
         fetch_fn,
         runtime_identity: RuntimeIdentity,
-        reserve_idempotency_key_fn=None,
         pipeline_event_bus: PipelineEventBus | None = None,
     ) -> None:
-        self._write_fn = write_fn
+        # §0dn A1 + B3：旧 write_fn + reserve_idempotency_key_fn 跨 transaction
+        # 不 atomic → ledger 占位但主表失败 → 同 idempotency_key 永远阻塞
+        # 后续 enqueue。改 write_with_idempotency_fn 单一原子端口，内部同
+        # connection 做 ledger reserve + 主表 INSERT，任一失败整体 rollback。
+        if write_with_idempotency_fn is None:
+            raise ValueError(
+                "OperatorCommandService requires write_with_idempotency_fn "
+                "(no Optional default; ledger + main table 必须 atomic)"
+            )
+        self._write_with_idempotency_fn = write_with_idempotency_fn
         self._fetch_fn = fetch_fn
-        # §0dm P2 #4：reserve_idempotency_key_fn 在 _write_fn 之前 atomic
-        # 注册幂等键到 ledger 表（hypertable UNIQUE 跨 chunk 限制下的兜底）；
-        # None 时退化为旧行为（仅 _find_existing 应用层 dedup，并发 race 时
-        # 可能仍重复 enqueue）。
-        self._reserve_idempotency_key_fn = reserve_idempotency_key_fn
         self._runtime_identity = runtime_identity
         self._pipeline_event_bus = pipeline_event_bus
         self._accounts = load_group_mt5_settings(
@@ -106,40 +109,6 @@ class OperatorCommandService:
 
         command_id = uuid4().hex
         created_at = datetime.now(timezone.utc)
-        # §0dm P2 #4：有 idempotency_key 时先走 ledger 注册（atomic 跨时间
-        # UNIQUE）。失败说明并发请求已抢先注册——重新查 _find_existing 拿
-        # 真实 command_id 返回，避免双 enqueue。
-        if (
-            self._reserve_idempotency_key_fn is not None
-            and normalized_idempotency_key is not None
-        ):
-            reserved = self._reserve_idempotency_key_fn(
-                target_account_key=target_account_key,
-                command_type=normalized_command_type,
-                idempotency_key=normalized_idempotency_key,
-                command_id=command_id,
-                created_at=created_at,
-            )
-            if not reserved:
-                # 并发竞态：另一请求抢先 reserve 同 key——返回它的 existing。
-                existing_after_race = self._find_existing(
-                    command_type=normalized_command_type,
-                    target_account_key=target_account_key,
-                    idempotency_key=normalized_idempotency_key,
-                )
-                if existing_after_race is not None:
-                    return self._build_existing_response(existing_after_race)
-                # ledger 已 reserve 但主表 row 还未写入——race 窗口内并发
-                # 请求都失败，返回 conflict 让 caller 重试。
-                raise TradeOperatorActionReplayConflictError(
-                    (
-                        f"idempotency_key '{normalized_idempotency_key}' "
-                        "concurrent reservation race; please retry"
-                    ),
-                    command_type=normalized_command_type,
-                    idempotency_key=normalized_idempotency_key,
-                    existing_record={},
-                )
         row = (
             created_at,
             command_id,
@@ -164,7 +133,35 @@ class OperatorCommandService:
             {},
             None,
         )
-        self._write_fn([row])
+        # §0dn A1 + B3：atomic ledger reserve + 主表 INSERT 同 transaction。
+        # idempotency_key=None 时仅写主表（无幂等保护），有值时 ledger 占位
+        # 失败 → 重查 existing 返回；任一失败整体 rollback。
+        committed = self._write_with_idempotency_fn(
+            target_account_key=target_account_key,
+            command_type=normalized_command_type,
+            idempotency_key=normalized_idempotency_key,
+            command_id=command_id,
+            created_at=created_at,
+            row=row,
+        )
+        if not committed and normalized_idempotency_key is not None:
+            # ledger 命中：另一请求已抢先 reserve 同 key
+            existing_after_race = self._find_existing(
+                command_type=normalized_command_type,
+                target_account_key=target_account_key,
+                idempotency_key=normalized_idempotency_key,
+            )
+            if existing_after_race is not None:
+                return self._build_existing_response(existing_after_race)
+            raise TradeOperatorActionReplayConflictError(
+                (
+                    f"idempotency_key '{normalized_idempotency_key}' "
+                    "concurrent reservation race; please retry"
+                ),
+                command_type=normalized_command_type,
+                idempotency_key=normalized_idempotency_key,
+                existing_record={},
+            )
         self._emit_command_submitted(
             command_id=command_id,
             command_type=normalized_command_type,

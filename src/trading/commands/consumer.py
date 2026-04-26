@@ -21,8 +21,8 @@ class OperatorCommandConsumer:
         *,
         claim_fn,
         complete_fn,
-        heartbeat_fn=None,
-        mark_dispatched_fn=None,
+        heartbeat_fn,
+        mark_dispatched_fn,
         runtime_identity: RuntimeIdentity,
         command_service,
         runtime_mode_controller=None,
@@ -36,11 +36,16 @@ class OperatorCommandConsumer:
         lease_seconds: int = 30,
         max_attempts: int = 5,
     ) -> None:
+        # §0dn A1：所有 *_fn 必填，无 None default 补丁种子。
+        if claim_fn is None or complete_fn is None or heartbeat_fn is None or mark_dispatched_fn is None:
+            raise ValueError(
+                "OperatorCommandConsumer requires claim_fn / complete_fn / "
+                "heartbeat_fn / mark_dispatched_fn (no Optional default; "
+                "lease/at-most-once 语义依赖全 wiring)"
+            )
         self._claim_fn = claim_fn
         self._complete_fn = complete_fn
         self._heartbeat_fn = heartbeat_fn
-        # §0dm P2：mark_dispatched_fn 在 _execute_command 前 atomic CAS
-        # claimed → dispatched，None 时退化为旧行为（仅 lease 过期防御）。
         self._mark_dispatched_fn = mark_dispatched_fn
         self._runtime_identity = runtime_identity
         self._command_service = command_service
@@ -50,6 +55,8 @@ class OperatorCommandConsumer:
         self._trade_executor = trade_executor
         self._account_risk_state_projector = account_risk_state_projector
         self._pipeline_event_bus = pipeline_event_bus
+        # §0dn C4：takeover 计数器，dashboard 可读，生产事故立即可见。
+        self._total_takeovers: int = 0
         self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._batch_size = max(1, int(batch_size))
         self._lease_seconds = max(5, int(lease_seconds))
@@ -133,29 +140,28 @@ class OperatorCommandConsumer:
             self._process_command(item)
 
     def _process_command(self, item: dict[str, Any]) -> None:
-        # §0cc P1：旧实现成功分支后失败分支两次调 _complete_fn 都没保护。
-        # complete_fn 一次抛 → 异常逃出 _process_command → worker 线程死。
-        # 必须把所有 _complete_fn / _project_risk_state / _emit_event 的调用
-        # 都包 try/except，让 consumer 在瞬时 DB 故障下持续运行。
+        # §0cc P1：异常隔离三层。§0dn B2：加 heartbeat renewer，与
+        # ExecutionIntentConsumer (§0dm) 同模式——慢命令 (close_all_positions
+        # / cancel_orders) 期间 lease 续租，不被 30s 超时 dead_letter。
         command_id = str(item.get("command_id") or "")
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = self._start_heartbeat_renewer(command_id, heartbeat_stop)
         try:
             self._heartbeat(command_id)
-            # §0dm P2：claimed → dispatched atomic CAS。失败 = lease 已被
-            # 其他 consumer 抢走，必须放弃执行避免控制面副作用重放污染审计。
-            if self._mark_dispatched_fn is not None:
-                transitioned = self._mark_dispatched_fn(
-                    command_id=command_id,
-                    claimed_by_instance_id=self._runtime_identity.instance_id,
-                    claimed_by_run_id=self._runtime_identity.run_id,
+            # §0dm P2 + §0dn A1：claimed → dispatched atomic CAS（必填）。
+            transitioned = self._mark_dispatched_fn(
+                command_id=command_id,
+                claimed_by_instance_id=self._runtime_identity.instance_id,
+                claimed_by_run_id=self._runtime_identity.run_id,
+            )
+            if not transitioned:
+                logger.warning(
+                    "OperatorCommandConsumer: claimed→dispatched CAS failed "
+                    "for command_id=%s (lease taken over before execute); "
+                    "abandoning execute to avoid duplicate side effect",
+                    command_id,
                 )
-                if not transitioned:
-                    logger.warning(
-                        "OperatorCommandConsumer: claimed→dispatched CAS failed "
-                        "for command_id=%s (lease taken over before execute); "
-                        "abandoning execute to avoid duplicate side effect",
-                        command_id,
-                    )
-                    return
+                return
             response_payload = self._execute_command(item)
             audit_id = self._extract_audit_id(response_payload)
             self._safe_complete(
@@ -184,18 +190,80 @@ class OperatorCommandConsumer:
             )
             self._safe_project_risk_state()
             self._safe_emit_event("command_failed", item, extra_payload=error_payload)
+        finally:
+            heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=2.0)
+
+    def _start_heartbeat_renewer(
+        self, command_id: str, stop_event: threading.Event
+    ) -> threading.Thread:
+        """§0dn B2：lease 期间每 lease_seconds/3 续租一次，与
+        ExecutionIntentConsumer (§0dm) 同模式。close_all_positions 等慢命令
+        必须续租避免 30s 超时 dead_letter。
+
+        heartbeat_fn 必填（§0dn A1），renewer 必启动。
+        """
+        interval = max(1.0, float(self._lease_seconds) / 3.0)
+
+        def _renewer() -> None:
+            while not stop_event.wait(interval):
+                try:
+                    self._heartbeat(command_id)
+                except Exception:
+                    logger.exception(
+                        "OperatorCommandConsumer: heartbeat renewer failed for "
+                        "command_id=%s; lease will expire and consumer may be "
+                        "preempted",
+                        command_id,
+                    )
+                    return
+
+        thread = threading.Thread(
+            target=_renewer,
+            name=f"command-heartbeat-{command_id[:8] if command_id else 'unknown'}",
+            daemon=True,
+        )
+        thread.start()
+        return thread
 
     def _safe_complete(self, **kwargs: Any) -> None:
-        """§0cc P1 + §0dj P2：complete_fn 失败 → lease 过期自然 retry；返
-        False 说明 lease 已被其他 consumer 接管，本次回写应丢弃。"""
+        """§0cc P1 + §0dj P2 + §0dn C4：complete_fn 失败 → log；返 False
+        说明 lease 已被其他 consumer 接管 → counter +1 + pipeline event。"""
         try:
             updated = self._complete_fn(**kwargs)
             if updated is False:
+                self._total_takeovers += 1
+                command_id = kwargs.get("command_id")
                 logger.warning(
                     "OperatorCommandConsumer: complete returned 0 rows for "
-                    "command_id=%s (lease already taken over by another consumer)",
-                    kwargs.get("command_id"),
+                    "command_id=%s (lease taken over; total_takeovers=%d)",
+                    command_id,
+                    self._total_takeovers,
                 )
+                if self._pipeline_event_bus is not None:
+                    try:
+                        self._pipeline_event_bus.emit(
+                            PipelineEvent(
+                                type="command_lease_takeover_detected",
+                                trace_id=str(command_id or ""),
+                                symbol="",
+                                timeframe="",
+                                scope="confirmed",
+                                ts=datetime.now(timezone.utc).isoformat(),
+                                payload={
+                                    "command_id": command_id,
+                                    "claimed_by_instance_id": self._runtime_identity.instance_id,
+                                    "claimed_by_run_id": self._runtime_identity.run_id,
+                                    "total_takeovers": self._total_takeovers,
+                                },
+                            )
+                        )
+                    except (ConnectionError, TimeoutError, OSError, RuntimeError):
+                        logger.exception(
+                            "OperatorCommandConsumer: takeover pipeline emit "
+                            "runtime degradation (counter still incremented)"
+                        )
         except Exception:
             logger.exception(
                 "OperatorCommandConsumer: complete_fn failed for command_id=%s; "
@@ -213,17 +281,18 @@ class OperatorCommandConsumer:
             )
 
     def _safe_emit_event(self, event_type: str, item: dict[str, Any], **kwargs: Any) -> None:
+        # §0dn A2：仅运行时降级 catch；编码错误 fail-fast 透传（ADR-011）。
         try:
             self._emit_event(event_type, item, **kwargs)
-        except Exception:
+        except (ConnectionError, TimeoutError, OSError, RuntimeError):
             logger.exception(
-                "OperatorCommandConsumer: emit_event(%s) failed; non-fatal",
+                "OperatorCommandConsumer: emit_event(%s) runtime degradation; "
+                "non-fatal, continuing",
                 event_type,
             )
 
     def _heartbeat(self, command_id: str) -> None:
-        if self._heartbeat_fn is None:
-            return
+        # §0dn A1：heartbeat_fn 必填，无 None 退化路径。
         self._heartbeat_fn(
             command_id=command_id,
             claimed_by_instance_id=self._runtime_identity.instance_id,

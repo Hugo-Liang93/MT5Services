@@ -238,38 +238,78 @@ RETURNING commands.created_at,
             ],
         }
 
-    def reserve_command_idempotency_key(
+    def write_command_with_idempotency(
         self,
         *,
         target_account_key: str,
         command_type: str,
-        idempotency_key: str,
+        idempotency_key: str | None,
         command_id: str,
         created_at: datetime,
+        row: tuple,
     ) -> bool:
-        """§0dm P2 #4：predicate 写 ledger 表，atomic 唯一约束保护幂等键。
+        """§0dn B3：ledger reserve + 主表 INSERT atomic（同 transaction）。
 
-        operator command service 在 enqueue 之前必须调用本方法 — 成功才允许
-        插入主表，失败说明同 (target_account_key, command_type, idempotency_key)
-        已存在，本次不再 enqueue 防止并发请求重复 enqueue。
+        idempotency_key=None 时仅写主表（无幂等保护，少数命令场景）；
+        有值时同 connection 内嵌套：
+          1. INSERT INTO operator_command_idempotency ON CONFLICT DO NOTHING
+          2. rowcount=1 → INSERT INTO operator_commands 主表
+          3. rowcount=0 → 跳过主表，返 False（caller 查 _find_existing）
+        全部完成后 commit；任一 INSERT 抛异常 → rollback。
 
-        hypertable 的 chunk 列限制让 (target_account_key, command_type,
-        idempotency_key) 不能跨时间 UNIQUE，故用普通表 ledger 兜底——主键
-        PRIMARY KEY (target_account_key, command_type, idempotency_key)
-        跨时间全局唯一。
+        返回：True=本 command 已 committed（首次 reserve）；
+              False=ledger 命中，主表未写（caller 应查 existing）。
         """
         with self._writer.connection() as conn, conn.cursor() as cur:
+            if idempotency_key is not None:
+                cur.execute(
+                    INSERT_COMMAND_IDEMPOTENCY_KEY_SQL,
+                    [
+                        target_account_key,
+                        command_type,
+                        idempotency_key,
+                        command_id,
+                        created_at,
+                    ],
+                )
+                if cur.rowcount == 0:
+                    return False
+            # 主表写入（INSERT_OPERATOR_COMMANDS_SQL 期望 22 列）
+            request_context = (
+                row[10] if len(row) > 10 and row[10] is not None else {}
+            )
+            payload = row[11] if len(row) > 11 and row[11] is not None else {}
+            response_payload = (
+                row[20] if len(row) > 20 and row[20] is not None else {}
+            )
             cur.execute(
-                INSERT_COMMAND_IDEMPOTENCY_KEY_SQL,
+                INSERT_OPERATOR_COMMANDS_SQL,
                 [
-                    target_account_key,
-                    command_type,
-                    idempotency_key,
-                    command_id,
-                    created_at,
+                    row[0],
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                    row[6],
+                    row[7],
+                    row[8],
+                    row[9],
+                    self._writer._json(request_context),
+                    self._writer._json(payload),
+                    row[12],
+                    row[13],
+                    row[14],
+                    row[15],
+                    row[16],
+                    int(row[17] or 0),
+                    row[18],
+                    row[19],
+                    self._writer._json(response_payload),
+                    row[21],
                 ],
             )
-            return cur.rowcount > 0
+            return True
 
     def mark_command_dispatched(
         self,
@@ -312,13 +352,17 @@ WHERE command_id = %s
         now = datetime.now(timezone.utc)
         lease_expires_at = now + timedelta(seconds=max(5, int(lease_seconds)))
         params: list[Any] = [now, lease_expires_at, command_id, claimed_by_instance_id]
+        # §0dn B1：status 谓词扩 ('claimed', 'dispatched')——§0dm 引入
+        # dispatched 状态后，process 期间 heartbeat 必须能续 dispatched 行
+        # 的 lease（旧实现仅 'claimed' → mark_dispatched 后 heartbeat 0 行
+        # 不续，慢命令必然 30s 后超时 dead_letter）。
         sql = """
 UPDATE operator_commands
 SET last_heartbeat_at = %s,
     lease_expires_at = %s
 WHERE command_id = %s
   AND claimed_by_instance_id = %s
-  AND status = 'claimed'
+  AND status IN ('claimed', 'dispatched')
 """
         if claimed_by_run_id is not None:
             sql += " AND claimed_by_run_id = %s"

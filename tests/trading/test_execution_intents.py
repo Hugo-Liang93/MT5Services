@@ -78,7 +78,7 @@ def test_execution_intent_publisher_requires_explicit_binding_in_single_account_
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
         runtime_identity=_runtime_identity(),
         account_bindings={},
         strategy_deployments={
@@ -111,7 +111,7 @@ def test_execution_intent_publisher_routes_explicit_single_account_binding(monke
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
         runtime_identity=_runtime_identity(),
         account_bindings={"main": ["trend_alpha"]},
         strategy_deployments={
@@ -159,7 +159,7 @@ def test_execution_intent_publisher_routes_bound_strategy_in_multi_account_mode(
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
         runtime_identity=_runtime_identity(live_topology_mode="multi_account"),
         account_bindings={"exec_b": ["trend_alpha"]},
         strategy_deployments={
@@ -194,7 +194,7 @@ def test_execution_intent_publisher_routes_intrabar_armed_signal(monkeypatch):
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
         runtime_identity=_runtime_identity(live_topology_mode="multi_account"),
         account_bindings={"exec_b": ["trend_alpha"]},
         strategy_deployments={
@@ -237,7 +237,7 @@ def test_execution_intent_publisher_skips_non_actionable_intrabar_signal(monkeyp
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
         runtime_identity=_runtime_identity(live_topology_mode="multi_account"),
         account_bindings={"exec_b": ["trend_alpha"]},
         strategy_deployments={
@@ -276,7 +276,7 @@ def test_execution_intent_publisher_skips_non_live_deployments(monkeypatch):
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
         runtime_identity=_runtime_identity(),
         account_bindings={"main": ["trend_alpha"]},
         strategy_deployments={
@@ -313,6 +313,8 @@ def test_execution_intent_consumer_processes_and_completes_claimed_intent():
         ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     consumer._process_intent(
@@ -389,6 +391,8 @@ def test_execution_intent_consumer_marks_intrabar_intent_skipped_when_executor_r
         ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     consumer._process_intent(
@@ -464,6 +468,8 @@ def test_execution_intent_consumer_propagates_skip_reason_from_executor_result()
         ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     consumer._process_intent(
@@ -531,6 +537,8 @@ def test_execution_intent_consumer_marks_intent_failed_from_executor_result():
         ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     consumer._process_intent(
@@ -604,6 +612,8 @@ def test_execution_intent_consumer_uses_fallback_event_when_payload_decode_fails
         ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     consumer._process_intent(
@@ -657,7 +667,7 @@ def test_execution_intent_publisher_emits_intent_published_with_trace_context(
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda rows: None,
+        write_with_idempotency_fn=lambda items: [item['intent_key'] for item in items],
         runtime_identity=_runtime_identity(),
         account_bindings={"main": ["trend_alpha"]},
         strategy_deployments={
@@ -715,6 +725,8 @@ def test_execution_intent_consumer_emits_reclaim_and_dead_letter_events(monkeypa
         ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     calls = {"count": 0}
@@ -810,6 +822,8 @@ def test_execution_intent_consumer_worker_emits_claimed_event_with_trace_context
         ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     calls = {"count": 0}
@@ -880,8 +894,10 @@ def test_transport_canary_emits_published_claimed_and_execution_events(monkeypat
         },
     )
 
-    def _write_fn(batch):
-        for row in batch:
+    def _write_with_idempotency(items):
+        reserved_keys = []
+        for item in items:
+            row = item["row"]
             pending_items.append(
                 {
                     "intent_id": row[1],
@@ -895,9 +911,11 @@ def test_transport_canary_emits_published_claimed_and_execution_events(monkeypat
                     "payload": row[9],
                 }
             )
+            reserved_keys.append(item["intent_key"])
+        return reserved_keys
 
     publisher = ExecutionIntentPublisher(
-        write_fn=_write_fn,
+        write_with_idempotency_fn=_write_with_idempotency,
         runtime_identity=_runtime_identity(
             instance_role="main",
             live_topology_mode="multi_account",
@@ -945,6 +963,8 @@ def test_transport_canary_emits_published_claimed_and_execution_events(monkeypat
         ),
         trade_executor=_Executor(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     monkeypatch.setattr(
@@ -989,7 +1009,7 @@ def test_publisher_routes_demo_validation_strategy_when_environment_is_demo(monk
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
         runtime_identity=_runtime_identity(
             instance_name="demo-main",
             environment="demo",
@@ -1035,7 +1055,7 @@ def test_publisher_still_blocks_demo_validation_strategy_in_live_environment(mon
         },
     )
     publisher = ExecutionIntentPublisher(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=lambda items: (rows.extend(item['row'] for item in items) or [item['intent_key'] for item in items]),
         runtime_identity=_runtime_identity(environment="live"),
         account_bindings={"main": ["trend_alpha"]},
         strategy_deployments={
@@ -1108,6 +1128,8 @@ def test_consumer_survives_transient_claim_fn_exception() -> None:
         complete_fn=lambda **kwargs: None,
         runtime_identity=_runtime_identity(),
         trade_executor=_Executor(),
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
     # 直接调 _worker_iteration 模拟 worker 主循环单轮
     try:
@@ -1137,6 +1159,8 @@ def test_consumer_survives_transient_complete_fn_exception() -> None:
         complete_fn=complete_fn,
         runtime_identity=_runtime_identity(),
         trade_executor=_Executor(),
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
     # 直接调 _process_intent，模拟一个已被 claim 的 intent
     consumer._process_intent(_build_intent_item("intent-cf-1"))
@@ -1162,6 +1186,8 @@ def test_consumer_survives_transient_complete_fn_exception_in_failure_branch() -
         complete_fn=complete_fn,
         runtime_identity=_runtime_identity(),
         trade_executor=_ExecutorRaises(),
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
     # 进 except 分支后再次 complete_fn 抛——_safe_complete 包装让线程不死
     consumer._process_intent(_build_intent_item("intent-cf-2"))
@@ -1192,6 +1218,8 @@ def test_consumer_survives_transient_pipeline_emit_exception() -> None:
         runtime_identity=_runtime_identity(),
         trade_executor=_Executor(),
         pipeline_event_bus=_BrokenPipelineBus(),
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
     # 调 _worker_iteration 单轮：emit 抛异常但 process_event 仍执行
     consumer._worker_iteration()

@@ -20,19 +20,23 @@ class ExecutionIntentPublisher:
     def __init__(
         self,
         *,
-        write_fn,
+        write_with_idempotency_fn,
         runtime_identity: RuntimeIdentity,
-        reserve_intent_key_fn=None,
         account_bindings: dict[str, list[str]] | None = None,
         strategy_deployments: dict[str, StrategyDeployment] | None = None,
         auto_trade_enabled: bool = True,
         pipeline_event_bus: PipelineEventBus | None = None,
     ) -> None:
-        self._write_fn = write_fn
-        # §0dm P2 #5：reserve_intent_key_fn 在 _write_fn 之前调用，atomic
-        # 跨时间唯一注册 intent_key（hypertable UNIQUE 跨 chunk 限制下的 ledger
-        # 兜底）。None 时退化为旧行为（仅 hypertable 内 ON CONFLICT 防重）。
-        self._reserve_intent_key_fn = reserve_intent_key_fn
+        # §0dn A1 + B3：旧 write_fn + reserve_intent_key_fn 两个独立函数 →
+        # 跨 transaction 不 atomic（ledger 占位但主表写失败 → 同 key 永远
+        # 发不出来）。改 write_with_idempotency_fn 单一原子端口：内部用同
+        # connection 做 ledger reserve + 主表 INSERT；任一失败整体 rollback。
+        if write_with_idempotency_fn is None:
+            raise ValueError(
+                "ExecutionIntentPublisher requires write_with_idempotency_fn "
+                "(no Optional default; ledger + main table 必须 atomic)"
+            )
+        self._write_with_idempotency_fn = write_with_idempotency_fn
         self._runtime_identity = runtime_identity
         self._pipeline_event_bus = pipeline_event_bus
         self._accounts = load_group_mt5_settings(
@@ -66,20 +70,19 @@ class ExecutionIntentPublisher:
         if not event.signal_id:
             return
 
-        # §0dl P2：旧实现循环内先 _emit_intent_published 再 _write_fn → 写库
-        # 失败时 pipeline/trace 已发出 intent_published 事件，但队列表无对应
-        # intent，形成不可追溯的幽灵发布。修复：先收集 row + emit_args，写库
-        # atomic 完成后再批量 emit；写库失败异常透出，event bus 不发任何事件。
-        # §0dm P2 #5：每条 intent_key 先走 ledger reserve（跨时间 UNIQUE）；
-        # 已存在则跳过该 row（防止并发重复发布同 signal_id+account 组合）。
+        # §0dl P2：先 write 后 emit，避免幽灵事件。
+        # §0dn B3：write_with_idempotency_fn 内部 atomic = ledger reserve +
+        # 主表 INSERT 同 transaction；任一失败整体 rollback 防止 ledger 占位
+        # 但主表无 row 的"幽灵反向"。返回成功 commit 的 intent_key 集合，
+        # publisher 仅 emit 这些。
         published_at = datetime.now(timezone.utc)
         generated_at = (
             event.generated_at
             if event.generated_at.tzinfo
             else event.generated_at.replace(tzinfo=timezone.utc)
         )
-        target_rows = []
-        emit_args_list: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
+        emit_args_by_key: dict[str, dict[str, Any]] = {}
         for account in self._resolve_target_accounts(event.strategy):
             target_account_key = build_account_key(
                 self._runtime_identity.environment,
@@ -88,70 +91,70 @@ class ExecutionIntentPublisher:
             )
             intent_id = uuid4().hex
             intent_key = f"{event.signal_id}:{target_account_key}"
-            # §0dm P2 #5：ledger 注册——失败说明已重复发布，跳过该 row。
-            if self._reserve_intent_key_fn is not None:
-                reserved = self._reserve_intent_key_fn(
-                    intent_key=intent_key,
-                    intent_id=intent_id,
-                    created_at=generated_at,
-                    signal_id=event.signal_id,
-                    target_account_key=target_account_key,
-                )
-                if not reserved:
-                    logger.warning(
-                        "ExecutionIntentPublisher: intent_key=%s already reserved "
-                        "(duplicate publish suppressed); signal_id=%s account=%s",
-                        intent_key,
-                        event.signal_id,
-                        account.account_alias,
-                    )
-                    continue
-            target_rows.append(
-                (
-                    generated_at,
-                    intent_id,
-                    intent_key,
-                    event.signal_id,
-                    target_account_key,
-                    account.account_alias,
-                    event.strategy,
-                    event.symbol,
-                    event.timeframe,
-                    signal_event_to_payload(event),
-                    "pending",
-                    0,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    {
-                        "published_by_instance_id": self._runtime_identity.instance_id,
-                        "published_at": published_at.isoformat(),
-                        "signal_state": event.signal_state,
-                    },
-                )
-            )
-            emit_args_list.append(
+            row = (
+                generated_at,
+                intent_id,
+                intent_key,
+                event.signal_id,
+                target_account_key,
+                account.account_alias,
+                event.strategy,
+                event.symbol,
+                event.timeframe,
+                signal_event_to_payload(event),
+                "pending",
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
                 {
-                    "event": event,
-                    "intent_id": intent_id,
+                    "published_by_instance_id": self._runtime_identity.instance_id,
+                    "published_at": published_at.isoformat(),
+                    "signal_state": event.signal_state,
+                },
+            )
+            items.append(
+                {
                     "intent_key": intent_key,
+                    "intent_id": intent_id,
+                    "created_at": generated_at,
+                    "signal_id": event.signal_id,
                     "target_account_key": target_account_key,
-                    "target_account_alias": account.account_alias,
-                    "published_at": published_at,
+                    "row": row,
                 }
             )
-        if not target_rows:
+            emit_args_by_key[intent_key] = {
+                "event": event,
+                "intent_id": intent_id,
+                "intent_key": intent_key,
+                "target_account_key": target_account_key,
+                "target_account_alias": account.account_alias,
+                "published_at": published_at,
+            }
+        if not items:
             return
 
-        # 持久化必须先成功，才允许 emit pipeline 事件——否则形成幽灵发布。
-        self._write_fn(target_rows)
-        for emit_args in emit_args_list:
-            self._emit_intent_published(**emit_args)
+        # atomic：ledger reserve + 主表 INSERT 同 transaction，返 commit 成功的 keys
+        reserved_keys = self._write_with_idempotency_fn(items)
+        for intent_key in reserved_keys:
+            emit_args = emit_args_by_key.get(intent_key)
+            if emit_args is not None:
+                self._emit_intent_published(**emit_args)
+        # 未 reserve 的（ledger 命中，并发重复发布）显式 log
+        for intent_key, emit_args in emit_args_by_key.items():
+            if intent_key not in reserved_keys:
+                logger.warning(
+                    "ExecutionIntentPublisher: intent_key=%s already reserved "
+                    "(duplicate publish suppressed); signal_id=%s account=%s",
+                    intent_key,
+                    event.signal_id,
+                    emit_args["target_account_alias"],
+                )
 
     @staticmethod
     def _is_actionable_signal_event(event: SignalEvent) -> bool:

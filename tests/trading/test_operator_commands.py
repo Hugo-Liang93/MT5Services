@@ -65,8 +65,15 @@ def test_operator_command_service_enqueue_emits_command_submitted(monkeypatch):
             ),
         },
     )
+    # §0dn B3：write_with_idempotency_fn 模拟 atomic ledger+主表（test 中
+    # 直接成功 commit；ledger 由 _find_existing 测试覆盖）。
+    def _write_with_idempotency(*, target_account_key, command_type,
+                                 idempotency_key, command_id, created_at, row):
+        rows.append(row)
+        return True
+
     service = OperatorCommandService(
-        write_fn=lambda batch: rows.extend(batch),
+        write_with_idempotency_fn=_write_with_idempotency,
         fetch_fn=lambda **kwargs: [],
         runtime_identity=_runtime_identity(),
         pipeline_event_bus=pipeline_bus,
@@ -130,6 +137,8 @@ def test_operator_command_consumer_process_command_emits_completed_trace():
         command_service=_CommandService(),
         account_risk_state_projector=_Projector(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     consumer._process_command(
@@ -207,6 +216,8 @@ def test_operator_command_consumer_worker_emits_dead_lettered_failure(monkeypatc
         ),
         command_service=object(),
         pipeline_event_bus=pipeline_bus,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     calls = {"count": 0}
@@ -265,6 +276,8 @@ def test_operator_command_consumer_close_position_forwards_volume():
         complete_fn=lambda **kwargs: None,
         runtime_identity=_runtime_identity(),
         command_service=_CommandService(),
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     response = consumer._execute_command(
@@ -312,6 +325,8 @@ def test_operator_command_consumer_cancel_orders_forwards_magic():
         complete_fn=lambda **kwargs: None,
         runtime_identity=_runtime_identity(),
         command_service=_CommandService(),
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
 
     response = consumer._execute_command(

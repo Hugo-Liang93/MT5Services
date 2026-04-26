@@ -71,12 +71,12 @@ def build_runtime_controls(
         and hasattr(container.storage_writer.db, "fetch_operator_commands")
     ):
         container.operator_command_service = OperatorCommandService(
-            write_fn=container.storage_writer.db.write_operator_commands,
+            # §0dn B3：原 write_fn + reserve_idempotency_key_fn 跨 transaction
+            # 不 atomic（ledger 占位但主表失败 → 同 key 永久阻塞）；合并为
+            # 单一 atomic 端口，内部同 connection 做 ledger reserve + 主表
+            # INSERT，任一失败 rollback。
+            write_with_idempotency_fn=container.storage_writer.db.write_command_with_idempotency,
             fetch_fn=container.storage_writer.db.fetch_operator_commands,
-            # §0dm P2 #4：ledger 兜底——同 (target_account_key, command_type,
-            # idempotency_key) 跨时间唯一注册，防止 hypertable UNIQUE 跨 chunk
-            # 限制下并发请求重复 enqueue。
-            reserve_idempotency_key_fn=container.storage_writer.db.reserve_command_idempotency_key,
             runtime_identity=container.runtime_identity,
             pipeline_event_bus=container.pipeline_event_bus,
         )

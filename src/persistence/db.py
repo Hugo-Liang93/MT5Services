@@ -712,10 +712,14 @@ class TimescaleWriter:
     def heartbeat_execution_intent(self, **kwargs) -> None:
         self.execution_intent_repo.heartbeat_execution_intent(**kwargs)
 
-    def reserve_intent_key(self, **kwargs) -> bool:
-        # §0dm P2 #5：写 ledger 跨时间 UNIQUE。返 True=本次首注册，可写主表；
-        # False=已被其他 publisher 抢先，本次跳过避免重复发布。
-        return self.execution_intent_repo.reserve_intent_key(**kwargs)
+    def write_intents_with_idempotency(
+        self, items: list[dict[str, Any]]
+    ) -> list[str]:
+        # §0dn B3：ledger reserve + 主表 INSERT atomic（同 transaction）。
+        # 返 reserved 成功的 intent_key 列表（committed），publisher 仅 emit
+        # 这些。任一项 reserve 命中或主表 INSERT 失败 → 整体 rollback 防
+        # 幽灵反向。
+        return self.execution_intent_repo.write_intents_with_idempotency(items)
 
     def mark_intent_dispatched(self, **kwargs) -> bool:
         # §0dm P1：claimed → dispatched atomic CAS。返 True=成功 transition，
@@ -737,11 +741,10 @@ class TimescaleWriter:
     def heartbeat_operator_command(self, **kwargs) -> None:
         self.operator_command_repo.heartbeat_operator_command(**kwargs)
 
-    def reserve_command_idempotency_key(self, **kwargs) -> bool:
-        # §0dm P2 #4：写 ledger 跨时间 UNIQUE 保护 idempotency_key。返 True=
-        # 本次首注册，service 可继续 enqueue；False=并发请求重复，service
-        # 应返回已存在的 command_id。
-        return self.operator_command_repo.reserve_command_idempotency_key(**kwargs)
+    def write_command_with_idempotency(self, **kwargs) -> bool:
+        # §0dn B3：ledger reserve + 主表 INSERT atomic（同 transaction）。
+        # 返 True=本次成功 commit；False=ledger 已存在（caller 查 existing）。
+        return self.operator_command_repo.write_command_with_idempotency(**kwargs)
 
     def mark_command_dispatched(self, **kwargs) -> bool:
         # §0dm P2：claimed → dispatched atomic CAS（同 mark_intent_dispatched

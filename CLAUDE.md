@@ -78,8 +78,18 @@ grep -rEn 'def complete_[a-z_]+.*-> None:' src/persistence/db.py \
 # 若新增此类 consumer 必须实现 mark_*_dispatched CAS。
 
 # 12. process 期间必须有 heartbeat renewer（§0dm；process 时间 < lease 不安全假设）
-grep -rn "_start_heartbeat_renewer" src/trading/intents/consumer.py \
-  || echo "⚠️ ExecutionIntentConsumer 必须含 heartbeat 续租线程"
+grep -rn "_start_heartbeat_renewer" src/trading/intents/consumer.py src/trading/commands/consumer.py \
+  || echo "⚠️ Lease-based consumer 必须含 heartbeat 续租线程"
+
+# 13. lease-based queue consumer ctor 关键 fn 必填（§0dn 无 Optional default）
+grep -rn "claim_fn=None\|complete_fn=None\|heartbeat_fn=None\|mark_dispatched_fn=None\|reserve_.*_fn=None" \
+  src/trading/intents/consumer.py src/trading/commands/consumer.py \
+  src/trading/intents/publisher.py src/trading/commands/service.py \
+  && echo "❌ lease consumer/publisher/service 关键 fn 必填，禁 Optional default"
+
+# 14. _safe_* wrapper 必须分层 catch（§0dn 编码错误 fail-fast，ADR-011）
+# 注意：consumer 主路径的 except Exception 是合法的（顶层异常隔离），仅 _safe_emit_*
+# 类旁路 wrapper 必须分层。提交前手工核查新增的 _safe_* helper。
 ```
 
 ### 断言核验协议（P0/FATAL 断言的硬门槛）

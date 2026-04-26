@@ -996,10 +996,11 @@ def build_signal_components(
     execution_intent_publisher = None
     if runtime_identity is not None:
         execution_intent_publisher = ExecutionIntentPublisher(
-            write_fn=storage_writer.db.write_execution_intents,
-            # §0dm P2 #5：ledger 兜底——同 signal_id+account_key 跨时间唯一注册，
-            # 防止 hypertable UNIQUE 跨 chunk 限制下的重复发布。
-            reserve_intent_key_fn=storage_writer.db.reserve_intent_key,
+            # §0dn B3：原 write_fn + reserve_intent_key_fn 跨 transaction 不
+            # atomic（ledger 占位但主表失败 → 幽灵反向）；合并为单一 atomic
+            # 端口 write_with_idempotency_fn，内部同 connection 做 ledger
+            # reserve + 主表 INSERT，任一失败 rollback。
+            write_with_idempotency_fn=storage_writer.db.write_intents_with_idempotency,
             runtime_identity=runtime_identity,
             account_bindings=dict(signal_config.account_bindings),
             strategy_deployments=dict(validated_deployments),

@@ -54,30 +54,76 @@ class ExecutionIntentRepository:
             return
         self._writer._batch(INSERT_EXECUTION_INTENTS_SQL, batch, page_size=page_size)
 
-    def reserve_intent_key(
-        self,
-        *,
-        intent_key: str,
-        intent_id: str,
-        created_at: datetime,
-        signal_id: str,
-        target_account_key: str,
-    ) -> bool:
-        """§0dm P2 #5：predicate 写 ledger 表，atomic 跨 chunk 唯一约束。
+    def write_intents_with_idempotency(
+        self, items: list[dict[str, Any]]
+    ) -> list[str]:
+        """§0dn B3：ledger reserve + 主表 INSERT atomic（同 transaction）。
 
-        publisher 在写主 hypertable 之前必须先调用本方法 — 成功（rowcount=1）
-        才允许插入主表，失败（0 行）说明同 intent_key 已被其他 publisher 抢
-        先注册，本次不再写主表防止重复发布。
+        旧实现 reserve_intent_key + write_execution_intents 跨 transaction →
+        ledger 占位但主表写失败时同 intent_key 永远 reserve False（发不出）。
+        本方法用同一 connection 内嵌套：
+          1. INSERT INTO execution_intent_idempotency ON CONFLICT DO NOTHING
+          2. rowcount=1（首注册）→ INSERT INTO execution_intents 主表
+          3. rowcount=0（已被抢先）→ 跳过该 row
+        全部完成后 commit；任一 INSERT 抛异常 → context manager 退出时
+        rollback，ledger 与主表都保持原状（无幽灵反向）。
 
-        hypertable 的限制让 (intent_key) 不能跨 chunk UNIQUE，故用普通表
-        ledger 兜底；ledger 主键 PRIMARY KEY (intent_key) 跨时间唯一。
+        items: list of {intent_key, intent_id, created_at, signal_id,
+                        target_account_key, row}
+        返回：成功 reserve + commit 的 intent_key 列表。
         """
+        if not items:
+            return []
+        reserved: list[str] = []
         with self._writer.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                INSERT_INTENT_IDEMPOTENCY_KEY_SQL,
-                [intent_key, intent_id, created_at, signal_id, target_account_key],
-            )
-            return cur.rowcount > 0
+            for item in items:
+                cur.execute(
+                    INSERT_INTENT_IDEMPOTENCY_KEY_SQL,
+                    [
+                        item["intent_key"],
+                        item["intent_id"],
+                        item["created_at"],
+                        item["signal_id"],
+                        item["target_account_key"],
+                    ],
+                )
+                if cur.rowcount > 0:
+                    # ledger reserve 成功 → 必须同事务写主表；任一失败回滚
+                    row = item["row"]
+                    payload = (
+                        row[9] if len(row) > 9 and row[9] is not None else {}
+                    )
+                    decision_metadata = (
+                        row[20] if len(row) > 20 and row[20] is not None else {}
+                    )
+                    cur.execute(
+                        INSERT_EXECUTION_INTENTS_SQL,
+                        [
+                            row[0],
+                            row[1],
+                            row[2],
+                            row[3],
+                            row[4],
+                            row[5],
+                            row[6],
+                            row[7],
+                            row[8],
+                            self._writer._json(payload),
+                            row[10],
+                            int(row[11] or 0),
+                            row[12],
+                            row[13],
+                            row[14],
+                            row[15],
+                            row[16],
+                            row[17],
+                            row[18],
+                            row[19],
+                            self._writer._json(decision_metadata),
+                        ],
+                    )
+                    reserved.append(item["intent_key"])
+        return reserved
 
     def claim_execution_intents(
         self,

@@ -61,7 +61,9 @@ def _make_consumer(
     return OperatorCommandConsumer(
         claim_fn=claim_fn or (lambda **kwargs: []),
         complete_fn=complete_fn or (lambda **kwargs: None),
-        heartbeat_fn=heartbeat_fn,
+        # §0dn A1：heartbeat_fn / mark_dispatched_fn 必填——test stub 默认 lambda。
+        heartbeat_fn=heartbeat_fn or (lambda **kwargs: None),
+        mark_dispatched_fn=lambda **kwargs: True,
         runtime_identity=_runtime_identity(),
         command_service=command_service or MagicMock(),
         runtime_mode_controller=runtime_mode_controller,
@@ -166,6 +168,8 @@ def test_process_command_runs_risk_projection_after_completion() -> None:
         runtime_identity=_runtime_identity(),
         command_service=cmd_service,
         account_risk_state_projector=projector,
+        heartbeat_fn=lambda **kwargs: None,
+        mark_dispatched_fn=lambda **kwargs: True,
     )
     consumer._process_command(
         {

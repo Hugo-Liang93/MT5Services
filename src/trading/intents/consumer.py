@@ -26,8 +26,8 @@ class ExecutionIntentConsumer:
         *,
         claim_fn,
         complete_fn,
-        heartbeat_fn=None,
-        mark_dispatched_fn=None,
+        heartbeat_fn,
+        mark_dispatched_fn,
         runtime_identity: RuntimeIdentity,
         trade_executor,
         pipeline_event_bus: PipelineEventBus | None = None,
@@ -36,12 +36,18 @@ class ExecutionIntentConsumer:
         lease_seconds: int = 30,
         max_attempts: int = 5,
     ) -> None:
+        # §0dn A1：所有 *_fn 必填（移除 Optional default 补丁种子）。
+        # heartbeat_fn / mark_dispatched_fn 是 at-most-once 语义的核心组件，
+        # 不允许 None 退化路径——装配阶段缺失即 fail-fast。
+        if claim_fn is None or complete_fn is None or heartbeat_fn is None or mark_dispatched_fn is None:
+            raise ValueError(
+                "ExecutionIntentConsumer requires claim_fn / complete_fn / "
+                "heartbeat_fn / mark_dispatched_fn (no Optional default; "
+                "lease/at-most-once 语义依赖全 wiring)"
+            )
         self._claim_fn = claim_fn
         self._complete_fn = complete_fn
         self._heartbeat_fn = heartbeat_fn
-        # §0dm P1：mark_dispatched_fn 在 process_event 前 atomic transition
-        # claimed → dispatched，None 时退化为旧行为（仅 lease 过期防御）。
-        # 装配层（factories/signals.py）必须传入，否则 at-most-once 不生效。
         self._mark_dispatched_fn = mark_dispatched_fn
         self._runtime_identity = runtime_identity
         self._trade_executor = trade_executor
@@ -63,6 +69,9 @@ class ExecutionIntentConsumer:
         self._in_flight_since: float | None = None
         self._total_processed: int = 0
         self._total_failed: int = 0
+        # §0dn C4：takeover 检测计数器——complete_fn 返 False 说明 lease
+        # 已被其他 worker 接管。生产事故必须在 dashboard 可见，不只是 log。
+        self._total_takeovers: int = 0
 
     def start(self) -> None:
         if self._lifecycle.is_running():
@@ -153,23 +162,22 @@ class ExecutionIntentConsumer:
             self._heartbeat(intent_id)
             event = signal_event_from_payload(dict(item.get("payload") or {}))
             event = self._with_intent_context(event, item)
-            # §0dm P1：claimed → dispatched atomic CAS。失败 = lease 已被
-            # 其他 worker 抢走（owner 不匹配或 status 已变），必须放弃 dispatch
-            # 避免真实重复下单。
-            if self._mark_dispatched_fn is not None:
-                transitioned = self._mark_dispatched_fn(
-                    intent_id=intent_id,
-                    claimed_by_instance_id=self._runtime_identity.instance_id,
-                    claimed_by_run_id=self._runtime_identity.run_id,
+            # §0dm P1 + §0dn A1：claimed → dispatched atomic CAS（mark_dispatched_fn
+            # 必填，无 None 退化路径）。失败 = lease 已被其他 worker 抢走，
+            # 必须放弃 dispatch 避免真实重复下单。
+            transitioned = self._mark_dispatched_fn(
+                intent_id=intent_id,
+                claimed_by_instance_id=self._runtime_identity.instance_id,
+                claimed_by_run_id=self._runtime_identity.run_id,
+            )
+            if not transitioned:
+                logger.warning(
+                    "ExecutionIntentConsumer: claimed→dispatched CAS failed "
+                    "for intent_id=%s (lease taken over before dispatch); "
+                    "abandoning dispatch to avoid duplicate order",
+                    intent_id,
                 )
-                if not transitioned:
-                    logger.warning(
-                        "ExecutionIntentConsumer: claimed→dispatched CAS failed "
-                        "for intent_id=%s (lease taken over before dispatch); "
-                        "abandoning dispatch to avoid duplicate order",
-                        intent_id,
-                    )
-                    return
+                return
             result = self._trade_executor.process_event(event)
             outcome = interpret_terminal_result(result)
             status = outcome.status
@@ -263,10 +271,8 @@ class ExecutionIntentConsumer:
         续租线程让 lease 在 process 期间持续有效，process 完成 / 异常时
         finally 中 stop_event.set() 立即终止。
 
-        无 heartbeat_fn 时不启动（仍保持入口一次心跳由 _heartbeat 负责）。
+        §0dn A1：heartbeat_fn 必填（ctor 已 fail-fast），renewer 必启动。
         """
-        if self._heartbeat_fn is None:
-            return None
         interval = max(1.0, float(self._lease_seconds) / 3.0)
 
         def _renewer() -> None:
@@ -292,16 +298,44 @@ class ExecutionIntentConsumer:
         return thread
 
     def _safe_complete(self, **kwargs: Any) -> None:
-        """§0di P1 + §0dj P2：complete_fn 失败 → lease 过期自然 retry，不打死
-        worker；返 False 说明 lease 已被其他 worker 接管，本次回写应丢弃。"""
+        """§0di P1 + §0dj P2 + §0dn C4：complete_fn 失败 → log retry；返 False
+        说明 lease 已被其他 worker 接管 → counter +1 + pipeline event 让
+        生产事故 dashboard 可见，不只是 log warning。"""
         try:
             updated = self._complete_fn(**kwargs)
             if updated is False:
+                self._total_takeovers += 1
+                intent_id = kwargs.get("intent_id")
                 logger.warning(
                     "ExecutionIntentConsumer: complete returned 0 rows for "
-                    "intent_id=%s (lease already taken over by another worker)",
-                    kwargs.get("intent_id"),
+                    "intent_id=%s (lease taken over; total_takeovers=%d)",
+                    intent_id,
+                    self._total_takeovers,
                 )
+                # §0dn C4：emit pipeline 事件让 dashboard / SSE 可监控
+                if self._pipeline_event_bus is not None:
+                    try:
+                        self._pipeline_event_bus.emit(
+                            PipelineEvent(
+                                type="intent_lease_takeover_detected",
+                                trace_id=str(intent_id or ""),
+                                symbol="",
+                                timeframe="",
+                                scope="confirmed",
+                                ts=datetime.now(timezone.utc).isoformat(),
+                                payload={
+                                    "intent_id": intent_id,
+                                    "claimed_by_instance_id": self._runtime_identity.instance_id,
+                                    "claimed_by_run_id": self._runtime_identity.run_id,
+                                    "total_takeovers": self._total_takeovers,
+                                },
+                            )
+                        )
+                    except (ConnectionError, TimeoutError, OSError, RuntimeError):
+                        logger.exception(
+                            "ExecutionIntentConsumer: takeover pipeline emit "
+                            "runtime degradation (counter still incremented)"
+                        )
         except Exception:
             logger.exception(
                 "ExecutionIntentConsumer: complete_fn failed (intent_id=%s); "
@@ -310,16 +344,23 @@ class ExecutionIntentConsumer:
             )
 
     def _safe_emit_terminal(self, **kwargs: Any) -> None:
-        """§0di P2：terminal pipeline emit 失败 → 旁路降级，不阻断业务。"""
+        """§0di P2 + §0dn A2：terminal pipeline emit 失败的异常分层（ADR-011）：
+        - 编码错误（NameError / AttributeError / TypeError 等）→ fail-fast 透传
+        - 运行时降级（ConnectionError / OSError / RuntimeError 等）→ log 降级
+
+        旧实现 catch Exception 吞所有异常 → 编码错误被静默掩盖（与 ADR-011
+        修过的反模式同）。pipeline bus 是观测旁路，运行时降级合理；编码 bug
+        必须立即暴露，不能借观测旁路名义吞掉。
+        """
         try:
             emit_terminal_execution_event(
                 pipeline_event_bus=self._pipeline_event_bus,
                 **kwargs,
             )
-        except Exception:
+        except (ConnectionError, TimeoutError, OSError, RuntimeError):
             logger.exception(
-                "ExecutionIntentConsumer: emit_terminal_execution_event failed; "
-                "pipeline bus is an observation sideline, business execution unaffected",
+                "ExecutionIntentConsumer: emit_terminal_execution_event runtime "
+                "degradation (network/IO/runtime); business execution unaffected",
             )
 
     def status(self) -> dict[str, Any]:
@@ -331,6 +372,8 @@ class ExecutionIntentConsumer:
             "running": self.is_running(),
             "total_processed": self._total_processed,
             "total_failed": self._total_failed,
+            # §0dn C4：takeover 计数器，dashboard 可读
+            "total_takeovers": self._total_takeovers,
             "in_flight_intent_id": self._in_flight_intent_id,
             "in_flight_duration_seconds": in_flight_duration,
             "poll_interval_seconds": self._poll_interval_seconds,
@@ -340,8 +383,7 @@ class ExecutionIntentConsumer:
         }
 
     def _heartbeat(self, intent_id: str) -> None:
-        if self._heartbeat_fn is None:
-            return
+        # §0dn A1：heartbeat_fn 必填，无 None 退化路径。
         self._heartbeat_fn(
             intent_id=intent_id,
             claimed_by_instance_id=self._runtime_identity.instance_id,
@@ -402,10 +444,12 @@ class ExecutionIntentConsumer:
                     payload=payload,
                 )
             )
-        except Exception:
+        except (ConnectionError, TimeoutError, OSError, RuntimeError):
+            # §0dn A2：仅运行时降级 catch；编码错误（NameError / AttributeError /
+            # TypeError 等）fail-fast 透传，不能借观测旁路名义吞 bug（ADR-011）。
             logger.exception(
-                "ExecutionIntentConsumer: _safe_emit_intent_event(%s) failed; "
-                "pipeline bus is an observation sideline, business execution unaffected",
+                "ExecutionIntentConsumer: _safe_emit_intent_event(%s) runtime "
+                "degradation; business execution unaffected",
                 event_type,
             )
 
