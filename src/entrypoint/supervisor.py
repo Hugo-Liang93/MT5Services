@@ -122,6 +122,19 @@ class Supervisor:
         # 让用户启动 MT5 terminal 后不需要重启整个 supervisor 即可自动补齐。
         self._pending_workers: set[str] = set()
         self._last_pending_retry_at: float = 0.0
+        # §0aa-followup R4：normal exit (code=0) 在 supervisor 生命期内是 anomaly
+        # （services 不应自然退出），独立计数让运维有显式 alarm 信号——
+        # 不能仅依赖 log 字符串匹配。每个实例独立计数避免单实例反复抖动覆盖
+        # 其他实例真实事件。
+        self._unexpected_normal_exits: dict[str, int] = {}
+
+    def unexpected_normal_exits(self) -> dict[str, int]:
+        """§0aa-followup R4：返当前 instance → 累计 normal-exit 异常退出次数。
+
+        正常运行下应当全 0；任何 > 0 都是 alarm 信号——services 不应在
+        supervisor 生命期内 clean-exit。监控/runbook 应订阅此指标。
+        """
+        return dict(self._unexpected_normal_exits)
 
     def run(self) -> None:
         try:
@@ -187,11 +200,17 @@ class Supervisor:
                     # services 在 supervisor 生命期内不应自然退出（self._stopping
                     # 已上方 line 180-181 处理用户主动 stop 路径）→ 视为
                     # unexpected 退出，走 warning class 的重启路径。
+                    # §0aa-followup R4：独立计数让运维 alarm 不依赖 log 字符串
+                    self._unexpected_normal_exits[instance_name] = (
+                        self._unexpected_normal_exits.get(instance_name, 0) + 1
+                    )
                     logger.warning(
                         "Instance exited with code 0 unexpectedly during supervisor "
-                        "lifetime: instance=%s. Treating as warning-class restart "
+                        "lifetime: instance=%s unexpected_normal_exits=%d. "
+                        "Treating as warning-class restart "
                         "(services should not exit cleanly mid-life).",
                         instance_name,
+                        self._unexpected_normal_exits[instance_name],
                     )
                     exit_class = "warning"
                 log_fn = logger.error if exit_class == "fatal" else logger.warning

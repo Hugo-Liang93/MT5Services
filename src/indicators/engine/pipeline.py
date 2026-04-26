@@ -629,10 +629,17 @@ def get_global_pipeline(config: Optional[PipelineConfig] = None) -> OptimizedPip
 
 
 def shutdown_global_pipeline() -> None:
-    """关闭全局优化流水线"""
+    """关闭全局优化流水线。
+
+    §0aa-followup R2：旧实现仅 ``_global_pipeline.shutdown()`` 不清模块全局
+    引用 → 下次 ``get_global_pipeline()`` 拿到同一已 shutdown 的实例（同
+    §0aa P1#1 ``shutdown_global_executor`` 教训）。必须显式清引用让
+    consumer 下次 get 重建。
+    """
     global _global_pipeline
     if _global_pipeline is not None:
         _global_pipeline.shutdown()
+        _global_pipeline = None
 
 
 def create_isolated_pipeline(

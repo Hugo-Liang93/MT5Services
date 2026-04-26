@@ -282,3 +282,59 @@ def test_monitor_loop_does_not_keep_stale_normal_exit_in_managed(monkeypatch) ->
         "必须重启或移除以暴露拓扑真相。"
         f"got managed.process={current.process!r}, spawned={spawned!r}"
     )
+
+
+# ── §0aa-followup R4 回归：normal exit 必须独立 metric counter ──
+
+
+def test_normal_exit_increments_unexpected_normal_exits_counter(monkeypatch) -> None:
+    """R4 §0aa-followup：normal exit 不能仅靠 log 字符串告警；必须有独立
+    metric counter 让运维显式订阅。每个实例独立计数避免单实例抖动覆盖。
+    """
+    group = SimpleNamespace(
+        name="live",
+        main="live-main",
+        workers=["live-exec-a"],
+        environment="live",
+    )
+    supervisor = Supervisor(group, ready_timeout_seconds=5.0)
+
+    # 初始 counter 为空
+    assert supervisor.unexpected_normal_exits() == {}
+
+    supervisor._managed["live-main"] = ManagedProcess(
+        instance_name="live-main",
+        process=_ExitedNormallyProcess(),
+        restart_count=0,
+    )
+
+    monkeypatch.setattr(
+        "src.entrypoint.supervisor.ensure_mt5_session_gate_or_raise",
+        lambda instance_name=None: None,
+    )
+    monkeypatch.setattr(
+        "src.entrypoint.supervisor._wait_for_ready",
+        lambda instance_name, timeout_seconds: None,
+    )
+    monkeypatch.setattr(
+        "src.entrypoint.supervisor.time.sleep",
+        lambda *_args, **_kwargs: setattr(supervisor, "_stopping", True),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_spawn",
+        lambda instance_name, restart_count=0: ManagedProcess(
+            instance_name=instance_name,
+            process=_DummyProcess(),
+            restart_count=restart_count,
+        ),
+    )
+
+    supervisor._monitor_loop()
+
+    counts = supervisor.unexpected_normal_exits()
+    assert counts.get("live-main", 0) >= 1, (
+        f"normal exit 必须把 live-main counter +1；got {counts!r}"
+    )
+    # 其他实例不应被错误计数
+    assert "live-exec-a" not in counts
