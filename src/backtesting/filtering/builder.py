@@ -43,7 +43,7 @@ def load_economic_provider(engine: "BacktestEngine") -> Any:
     """从 DB 加载回测期间的经济事件，构建 BacktestTradeGuardProvider。"""
     try:
         from .economic import BacktestTradeGuardProvider, _SimpleSettings
-        from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+        from src.calendar import infer_symbol_context
         from src.calendar.economic_loader import load_economic_events_window
         from src.config.database import load_db_settings
         from src.persistence.db import TimescaleWriter

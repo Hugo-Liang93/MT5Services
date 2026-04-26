@@ -20,7 +20,7 @@ from src.calendar.economic_calendar.gold_relevance import (
     GoldRelevancePolicy,
     build_relevance_matcher,
 )
-from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+from src.calendar import infer_symbol_context
 from src.calendar.economic_loader import load_economic_events_window
 from src.config.centralized import get_economic_config
 from src.config.database import load_db_settings
