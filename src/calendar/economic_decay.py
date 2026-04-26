@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timedelta
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, TypedDict
 
 from src.calendar.policy import SignalEconomicPolicy
 
@@ -59,6 +59,18 @@ _RUNTIME_DEGRADE_EXCEPTIONS: tuple[type[BaseException], ...] = (
 )
 
 
+def _symbol_context(symbol: str) -> dict[str, list[str]]:
+    # TODO Task 3: switch to "from src.calendar import infer_symbol_context"
+    from src.calendar.economic_calendar.trade_guard import infer_symbol_context
+
+    return infer_symbol_context(symbol)
+
+
+class _CacheEntry(TypedDict):
+    decay: float
+    at_time: datetime
+
+
 class EconomicDecayService:
     """Single port for economic event decay queries.
 
@@ -73,6 +85,13 @@ class EconomicDecayService:
       is treated as expired and refetched.
     - Cache eviction (when over capacity) selects victims by oldest
       cached_at_time first.
+    - Cache is best-effort, not single-flight: concurrent misses for the
+      same symbol may issue duplicate provider queries; last writer wins.
+    - Cache freshness uses ``|at_time - cached_at_time|`` (bidirectional).
+      Callers SHOULD pass monotonic at_time per symbol (the typical live /
+      sequential backtest case). Out-of-order calls within ttl may receive
+      a decay computed against a different at_time's event window —
+      bounded by ttl but technically stale.
     """
 
     def __init__(
@@ -87,8 +106,7 @@ class EconomicDecayService:
         self._policy = policy
         self._cache_ttl = float(cache_ttl_seconds)
         self._cache_max = int(cache_max_entries)
-        # value: {"decay": float, "at_time": datetime}
-        self._cache: dict[str, dict[str, Any]] = {}
+        self._cache: dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
 
     def decay_factor(self, symbol: str, *, at_time: datetime) -> float:
@@ -127,10 +145,7 @@ class EconomicDecayService:
         if not self._policy.enabled or self._provider is None:
             return False, ""
         try:
-            # TODO Task 3: switch to "from src.calendar import infer_symbol_context"
-            from src.calendar.economic_calendar.trade_guard import infer_symbol_context
-
-            context = infer_symbol_context(symbol)
+            context = _symbol_context(symbol)
             events = self._provider.get_events(
                 start_time=at_time
                 - timedelta(minutes=self._policy.filter_window.lookback_minutes),
@@ -156,10 +171,7 @@ class EconomicDecayService:
         return False, ""
 
     def _query(self, symbol: str, at_time: datetime) -> float:
-        # TODO Task 3: switch to "from src.calendar import infer_symbol_context"
-        from src.calendar.economic_calendar.trade_guard import infer_symbol_context
-
-        context = infer_symbol_context(symbol)
+        context = _symbol_context(symbol)
         events = self._provider.get_events(
             start_time=at_time
             - timedelta(minutes=self._policy.query_window.lookback_minutes),
@@ -194,12 +206,12 @@ class EconomicDecayService:
             cached_at: datetime = entry["at_time"]
             age_seconds = abs((at_time - cached_at).total_seconds())
             if age_seconds < self._cache_ttl:
-                return float(entry["decay"])
+                return entry["decay"]
             return None
 
     def _write_cache(self, symbol: str, decay: float, at_time: datetime) -> None:
         with self._lock:
-            self._cache[symbol] = {"decay": decay, "at_time": at_time}
+            self._cache[symbol] = _CacheEntry(decay=decay, at_time=at_time)
             if len(self._cache) > self._cache_max:
                 # Evict expired entries first (relative to incoming at_time).
                 expired = [
