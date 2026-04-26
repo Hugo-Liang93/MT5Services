@@ -712,8 +712,11 @@ class TimescaleWriter:
     def heartbeat_execution_intent(self, **kwargs) -> None:
         self.execution_intent_repo.heartbeat_execution_intent(**kwargs)
 
-    def complete_execution_intent(self, **kwargs) -> None:
-        self.execution_intent_repo.complete_execution_intent(**kwargs)
+    def complete_execution_intent(self, **kwargs) -> bool:
+        # §0dl P2：底层 repo 返 bool（True=本 worker 完成，False=lease 已被
+        # 其他 worker 接管）；包装层必须 return 让 consumer._safe_complete()
+        # 真正能感知 takeover 分支，旧版 -> None 吞 bool 让 takeover 静默。
+        return self.execution_intent_repo.complete_execution_intent(**kwargs)
 
     def write_operator_commands(self, rows, page_size: int = 200) -> None:
         self.operator_command_repo.write_operator_commands(rows, page_size=page_size)
@@ -724,8 +727,11 @@ class TimescaleWriter:
     def heartbeat_operator_command(self, **kwargs) -> None:
         self.operator_command_repo.heartbeat_operator_command(**kwargs)
 
-    def complete_operator_command(self, **kwargs) -> None:
-        self.operator_command_repo.complete_operator_command(**kwargs)
+    def complete_operator_command(self, **kwargs) -> bool:
+        # §0dl P2：底层 repo 返 bool（同 complete_execution_intent 模式）；
+        # 包装层必须 return 让 OperatorCommandConsumer._safe_complete() 感知
+        # takeover 分支，否则迟到的旧 consumer 完成会被误当成正常路径。
+        return self.operator_command_repo.complete_operator_command(**kwargs)
 
     def fetch_operator_commands(self, **kwargs):
         return self.operator_command_repo.fetch_operator_commands(**kwargs)

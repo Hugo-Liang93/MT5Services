@@ -234,7 +234,9 @@ class OperatorCommandService:
                     "target_account_key": target_account_key,
                     "target_account_alias": target_account_alias,
                     "submitted_by_instance_id": self._runtime_identity.instance_id,
-                    "submitted_by_run_id": self._runtime_identity.instance_id,
+                    # §0dl P3：与 publisher 同模式 schema 语义违反（instance_id
+                    # 顶替 run_id）；统一改为 .run_id 让 run 级 trace 准确。
+                    "submitted_by_run_id": self._runtime_identity.run_id,
                     "submitted_by_account_key": self._runtime_identity.account_key,
                     "submitted_by_account_alias": self._runtime_identity.account_alias,
                     "instance_role": self._runtime_identity.instance_role,

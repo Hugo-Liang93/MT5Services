@@ -962,10 +962,13 @@ class TradeExecutor:
                 }
             ],
         )
+        # §0dl P2：旧实现在 _decision_engine.execute() 之前就把 sig_id 追加进
+        # _executed_signal_ids → 一次 dispatch 失败/异常会让该 signal 永远被
+        # duplicate_signal_id 拒，与 execution-intent 的 lease/retry 语义冲突。
+        # 修复：execute() 完成后才 append（执行已实际派发到 broker，重复检测
+        # 才有意义）；execute 抛异常时 append 不发生，让 lease 自然 retry。
         sig_id = event.signal_id or ""
         self._signals_passed += 1
-        if sig_id:
-            self._executed_signal_ids.append(sig_id)
         if tf:
             with self._skip_lock:
                 self._tf_stats.setdefault(
@@ -980,7 +983,13 @@ class TradeExecutor:
             event,
             order_kind="market" if use_market else entry_type,
         )
-        return self._decision_engine.execute(event, decision)
+        result = self._decision_engine.execute(event, decision)
+        # execute() 已派发（result 已构造，broker dispatch 已 atomic 完成）→
+        # 真正"执行过"才记入 dedup 列表。失败语义继续由 result.status 表达，
+        # 不污染 dedup 状态。
+        if sig_id:
+            self._executed_signal_ids.append(sig_id)
+        return result
 
     # ------------------------------------------------------------------
     # Intrabar 交易执行

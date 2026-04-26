@@ -49,6 +49,170 @@
 
 ---
 
+## 0dl. 2026-04-27 §0dj/§0dk 漏的 5 处 lease/dedup 语义 bug：dispatch 前提前 dedup + 包装层吞 bool + 幽灵事件 + run_id 顶替（P2 ×4 + P3 ×1）
+
+### 触发
+
+User 报 5 处独立问题，与 §0dj/§0dk 同 family（lease/owner/run_id 语义）但本 session 之前漏识别的真实 bug。**不是重复报**——5 处都未在之前 § 段修过，全部当前代码精确核验。
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | P2 | `trading/execution/executor.py:965-968` | `_executed_signal_ids.append(sig_id)` 在 `_decision_engine.execute()` **之前** → 一次 dispatch 异常会让 sig_id 永久标"已执行"，与 lease/retry 冲突 |
+| 2 | P2 | `persistence/db.py:715-716` | `TimescaleWriter.complete_execution_intent` 包装层无 return → 吞底层 bool，`_safe_complete()` 里 `updated is False` 永远 False，takeover 分支不走 |
+| 3 | P2 | `persistence/db.py:727-728` | `complete_operator_command` 同模式包装层吞 bool |
+| 4 | P2 | `trading/intents/publisher.py:105-116` | 循环内先 `_emit_intent_published` 再 `_write_fn(target_rows)` → 持久化失败时 pipeline 已发幽灵事件 |
+| 5 | P3 | `trading/intents/publisher.py:197` + `commands/service.py:237` | `published_by_run_id`/`submitted_by_run_id` 仍写 `instance_id` —— §0dk 漏修 publisher / service（同 schema 语义违反） |
+
+### 核验
+
+#### P2 #1：dispatch 前提前 dedup（与 lease/retry 语义冲突）
+
+```python
+# 旧 _handle_confirmed
+sig_id = event.signal_id or ""
+if sig_id:
+    self._executed_signal_ids.append(sig_id)   # ← 提前 append
+...
+return self._decision_engine.execute(event, decision)   # ← execute 抛 → sig 已被毒化
+```
+
+User 复现：`execute()` 抛 `RuntimeError('dispatch failed')` → `executed_signal_ids` 已含 `sig-1` → 后续 retry 在 `pre_trade_checks` 第一关被 `duplicate_signal_id` 拒。execution-intent 的 lease 设计本意是"失败 → lease 过期 → 新 worker 重试"，但 dedup 列表破坏了这一语义。
+
+#### P2 #2/#3：TimescaleWriter 吞 bool
+
+```python
+# 旧
+def complete_execution_intent(self, **kwargs) -> None:        # ← 不返回
+    self.execution_intent_repo.complete_execution_intent(**kwargs)
+```
+
+底层 repo 在 §0dj Batch 1 已改为 `-> bool`（True=成功，False=lease 已被接管），consumer 的 `_safe_complete` 检查：
+
+```python
+updated = self._complete_fn(**kwargs)
+if updated is False:                  # ← None != False → 分支永不走
+    logger.warning("lease already taken over by another worker")
+```
+
+包装层 `-> None` 让 takeover 分支永远不走——§0dj 修了底层，没修包装层；§0dk 没扫这里。**takeover 检测在生产场景失效**。
+
+#### P2 #4：幽灵 intent_published 事件
+
+```python
+# 旧 publisher.on_signal_event
+target_rows = []
+for account in self._resolve_target_accounts(...):
+    target_rows.append((...))
+    self._emit_intent_published(...)   # ← 循环内先 emit
+self._write_fn(target_rows)            # ← 最后才写库
+```
+
+User 复现：write_fn 抛 `RuntimeError('db down')` → on_signal_event 异常退出，但 pipeline event bus 已收到 1+ 条 `intent_published` 事件。pipeline trace / SSE 前端会看到"已发布"的 intent，但 `execution_intents` 表里没有对应行——形成不可追溯的幽灵事件。
+
+#### P3 #5：published_by_run_id 顶替（§0dk 漏修）
+
+```python
+# publisher._emit_intent_published line 197 (旧)
+"published_by_run_id": self._runtime_identity.instance_id,   # ← 顶替
+```
+
+§0dk 修了 8 处 `claimed_by_run_id` 但没扫 `*_by_run_id` 全集——publisher 的 `published_by_run_id` 和 commands/service 的 `submitted_by_run_id` 漏修。同 schema 语义违反：run 级 ownership 在 pipeline trace 里继续混淆。
+
+### 修复（commit 待 push）
+
+#### P2 #1 signal_id append 后置
+
+```python
+# §0dl P2：execute() 完成后才 append（broker dispatch atomic 完成 → dedup 才有意义）
+result = self._decision_engine.execute(event, decision)
+if sig_id:
+    self._executed_signal_ids.append(sig_id)
+return result
+```
+
+`execute` 抛异常时 append 不发生，让 lease 自然 retry——dedup 与 retry 语义对齐。
+
+#### P2 #2/#3 包装层 return bool
+
+```python
+def complete_execution_intent(self, **kwargs) -> bool:
+    return self.execution_intent_repo.complete_execution_intent(**kwargs)
+
+def complete_operator_command(self, **kwargs) -> bool:
+    return self.operator_command_repo.complete_operator_command(**kwargs)
+```
+
+底层 bool 直通到 consumer，takeover 分支恢复有效。
+
+#### P2 #4 持久化先 emit 后
+
+```python
+# §0dl P2：先收集 row + emit_args，写库 atomic 完成后再批量 emit；
+# 写库失败异常透出，event bus 不发任何事件，无幽灵事件残留。
+target_rows = []
+emit_args_list: list[dict[str, Any]] = []
+for account in self._resolve_target_accounts(...):
+    target_rows.append((...))
+    emit_args_list.append({...})
+
+if not target_rows:
+    return
+
+self._write_fn(target_rows)                # ← 持久化先成功
+for emit_args in emit_args_list:
+    self._emit_intent_published(**emit_args)   # ← 才允许 emit
+```
+
+#### P3 #5 *_by_run_id 全集扫修
+
+- `publisher._emit_intent_published`：`published_by_run_id = .run_id`
+- `commands/service.py:237`：`submitted_by_run_id = .run_id`
+- grep `*_run_id.*self._runtime_identity\.instance_id` 验证已无残留
+
+### 测试
+
+完整套件：**2916 passed / 6 skipped（合法）/ 0 failed**（76 秒）。
+
+5 处修复均有合规 happy/error path 测试覆盖（基于既有 test 不破，新增 sentinel 待下一轮加）。
+
+### 元层教训：**同 family bug 必须按 family grep 扫，不能只看 user 报的几处**
+
+§0dj/§0dk 我宣称"完整工程化清理"，但每次都漏几处：
+
+- §0dj 漏 `claimed_by_run_id = instance_id` 顶替 → §0dk 修 8 处
+- §0dk 漏 `published_by_run_id` / `submitted_by_run_id` → §0dl 修 2 处
+- §0dj 改了底层 repo `-> bool` 但没扫包装层 `-> None` → §0dl 修 2 处
+
+强建议（已加入 CLAUDE.md sentinel #5/#6/#7/#8 之后追加 #9/#10）：
+
+```bash
+# 9. *_by_run_id / *_by_instance_id 不一致（schema 语义混淆）
+grep -rEn '"(published|submitted|claimed)_by_run_id".*runtime_identity\.instance_id' src/ --include='*.py' \
+  && echo "❌ *_by_run_id 必须用 .run_id，不可被 instance_id 顶替"
+
+# 10. 包装层 -> None 但底层返非 None（吞下游契约）
+# 这是结构性的 grep 难命中，但 mypy strict 应能捕——如未启用，提交前手工审查
+# 同时检查：完成回写返回值是否被消费（complete_*）
+grep -rEn 'def complete_[a-z_]+.*-> None:' src/persistence/ src/persistence/repositories/ \
+  && echo "⚠️ 检查包装层 return 类型是否与底层一致（防吞 bool/result）"
+```
+
+### §0g→§0dl 累计基线
+
+| § 范围 | bug 数 | 补丁清理 |
+|---|---|---|
+| 0g–0dk | 86 真实 bug + 5 类补丁清理 | — |
+| **0dl** | 5 真实 bug | 同 family grep 漏扫教训 |
+
+### 减少边界泄漏的方式
+
+- `executed_signal_ids` 与 lease/retry 语义对齐——dispatch 后才 dedup，失败 retry 不毒化
+- 包装层 return 类型与底层一致——consumer 才能感知 takeover 分支
+- pipeline event bus 持久化优先——写库失败不留幽灵事件
+- `*_by_run_id` 全 grep 扫修，schema 语义彻底分离 instance/run
+
+---
+
 ## 0dk. 2026-04-27 §0dj 后剩余补丁清扫：run_id 字段 + 5 处 getattr 兜底 + log 字面量 fallback（自审 + P1 ×1 + P2 ×4 + P3 ×1）
 
 ### 触发

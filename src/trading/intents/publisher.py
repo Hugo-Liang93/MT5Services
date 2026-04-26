@@ -61,8 +61,13 @@ class ExecutionIntentPublisher:
         if not event.signal_id:
             return
 
+        # §0dl P2：旧实现循环内先 _emit_intent_published 再 _write_fn → 写库
+        # 失败时 pipeline/trace 已发出 intent_published 事件，但队列表无对应
+        # intent，形成不可追溯的幽灵发布。修复：先收集 row + emit_args，写库
+        # atomic 完成后再批量 emit；写库失败异常透出，event bus 不发任何事件。
         published_at = datetime.now(timezone.utc)
         target_rows = []
+        emit_args_list: list[dict[str, Any]] = []
         for account in self._resolve_target_accounts(event.strategy):
             target_account_key = build_account_key(
                 self._runtime_identity.environment,
@@ -102,18 +107,23 @@ class ExecutionIntentPublisher:
                     },
                 )
             )
-            self._emit_intent_published(
-                event=event,
-                intent_id=intent_id,
-                intent_key=intent_key,
-                target_account_key=target_account_key,
-                target_account_alias=account.account_alias,
-                published_at=published_at,
+            emit_args_list.append(
+                {
+                    "event": event,
+                    "intent_id": intent_id,
+                    "intent_key": intent_key,
+                    "target_account_key": target_account_key,
+                    "target_account_alias": account.account_alias,
+                    "published_at": published_at,
+                }
             )
         if not target_rows:
             return
 
+        # 持久化必须先成功，才允许 emit pipeline 事件——否则形成幽灵发布。
         self._write_fn(target_rows)
+        for emit_args in emit_args_list:
+            self._emit_intent_published(**emit_args)
 
     @staticmethod
     def _is_actionable_signal_event(event: SignalEvent) -> bool:
@@ -194,7 +204,10 @@ class ExecutionIntentPublisher:
                     "target_account_key": target_account_key,
                     "target_account_alias": target_account_alias,
                     "published_by_instance_id": self._runtime_identity.instance_id,
-                    "published_by_run_id": self._runtime_identity.instance_id,
+                    # §0dl P3：旧实现把 instance_id 顶替 run_id（与 §0dk consumer
+                    # 同模式 schema 语义违反，§0dk 漏修 publisher）。改 .run_id
+                    # 让 run 级 ownership 在 pipeline trace 里真正区分。
+                    "published_by_run_id": self._runtime_identity.run_id,
                     "instance_role": self._runtime_identity.instance_role,
                 },
             )

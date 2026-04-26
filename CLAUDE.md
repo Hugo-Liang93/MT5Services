@@ -64,6 +64,14 @@ grep -rEn 'getattr\([^,]+, *"(runtime_identity|environment|instance_id|instance_
 
 # 8. 字面量 fallback（"?" / "shared-main" / "legacy" / "unknown" 等是补丁标记）
 grep -rEn 'getattr\([^,]+, *"[a-z\-]+"\)' src/ --include='*.py' | grep -E '("\?"|"shared-main"|"legacy"|"unknown"|"n/a")' && echo "❌ 字面量 fallback 是补丁标记，应改 raise 或合法默认值"
+
+# 9. *_by_run_id schema 语义违反（run_id 不能被 instance_id 顶替，§0dl）
+grep -rEn '"(published|submitted|claimed)_by_run_id".*runtime_identity\.instance_id' src/ --include='*.py' \
+  && echo "❌ *_by_run_id 必须用 .run_id，不可被 instance_id 顶替"
+
+# 10. 包装层 return 类型与底层不一致（吞底层 bool/result，§0dl）
+grep -rEn 'def complete_[a-z_]+.*-> None:' src/persistence/db.py \
+  && echo "⚠️ 检查 complete_* 包装层是否漏 return 底层 bool"
 ```
 
 ### 断言核验协议（P0/FATAL 断言的硬门槛）
