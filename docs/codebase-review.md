@@ -49,6 +49,210 @@
 
 ---
 
+## 0t. 2026-04-26 TradingStateAlerts 双源静默 + reporting active_alerts 失效 + monitoring_summary 死参（P1 + P2 + P3）
+
+### 触发
+
+User 报告 4 处独立 bug，全是**告警/健康路径"异常被吞 → 静默标 healthy"**模式：
+
+| # | 等级 | 文件 | 问题 |
+|---|---|---|---|
+| 1 | **P1** | `trading/state/alerts.py:_safe_*` | DB / MT5 同时失败 → 所有 `_safe_*` 返 [] → status=healthy（系统瞎眼）|
+| 2 | P2 | `monitoring/health/reporting.py:91-99` | `active_alerts` 透传 payload 但不参与 `overall_status` 评级 → 未消除的 critical 静默被报 healthy |
+| 3 | P3 | `trading/state/alerts.py:monitoring_summary` | `del hours` 后无条件返当前快照 → hours 参数完全死 |
+| 4 | — | `monitoring/health/monitor.py:cache_hit_rate` | （**经核验为设计契约**：`test_cache_hit_rate_no_longer_triggers_alert` 显式锁住"informational only"，已被 `indicator_compute_p99_ms` 替代；不修复，案例归档为 §0 协议成功阻断之例）|
+
+### 根因
+
+#### #1 _safe_* 把异常吞成空列表 → 告警判据全 false
+
+```python
+# 旧实现
+def _safe_pending_states(self, *, statuses, limit) -> list[dict]:
+    try:
+        return list(self._state_store.list_pending_order_states(...))
+    except Exception:
+        return []        # ← DB 故障与"无数据"混同
+
+def summary(self):
+    active_pending = self._safe_pending_states(...)        # → []
+    lifecycle_missing = self._safe_pending_states(...)     # → []
+    open_positions = self._safe_position_states(...)       # → []
+    live_orders = self._safe_live_orders()                 # → []
+    live_positions = self._safe_live_positions()           # → []
+    # 所有告警判据：
+    # missing_count > 0 → false
+    # orphan_count > 0 → false
+    # persisted_active_count != live_order_count → 0 != 0 false
+    # unmanaged_positions → []
+    # → alerts=[] → status='healthy'
+```
+
+后果：DB + MT5 双故障被报"系统无异常"，掩盖严重故障。这是告警系统**最致命**的失败模式。
+
+#### #2 reporting overall_status 只看本次窗口 metric，忽略 active_alerts
+
+```python
+# 旧实现 line 91-99
+if report["summary"]["critical_count"] > 0:
+    report["overall_status"] = "critical"
+elif report["summary"]["warning_count"] > 0:
+    report["overall_status"] = "warning"
+elif (...advisory...):
+    report["overall_status"] = "warning"
+# active_alerts 已写进 report["active_alerts"] = list(monitor.active_alerts.values())
+# 但 overall_status 完全不读它
+```
+
+后果：过去触发但仍未消除的 critical alert 在窗口内无新指标进 critical 时被忽略，整体被报 healthy。告警面板上看到 active critical 但 overall_status=healthy，消费侧（Cockpit / 推送）丢链。
+
+#### #3 monitoring_summary(hours) 完全死
+
+```python
+def monitoring_summary(self, *, hours: int = 24) -> dict[str, Any]:
+    del hours              # ← 参数被显式扔掉
+    return self.summary()  # ← 返当前快照，无窗口语义
+```
+
+后果：调用方传 `hours=1` 与 `hours=24` 拿到一模一样的数据，但调用方以为"已按窗口过滤"，决策口径失真。
+
+#### #4 cache_hit_rate（**核验为契约**，不是 bug）
+
+User 报告 "cache_hit_rate 永远不可能触发告警 + `pass` 死分支"。**§0 协议三步追查**：
+
+1. 模型默认值：`monitor.alerts["cache_hit_rate"] = {"warning": 0.0, "critical": 0.0}` 是有意为之（line 93）
+2. test 锁定：`tests/monitoring/test_health_check_report.py::test_cache_hit_rate_no_longer_triggers_alert`（line 23-31）显式注释 "cache_hit_rate 阈值已设为 0（仅作信息指标），即使值为 0 也不触发告警"
+3. 替代指标：同文件 `test_indicator_compute_p99_triggers_warning` 显式声明 "indicator_compute_p99_ms 是替代 cache_hit_rate 的新告警指标"
+
+按 §0 "任何'反常/存在 bug'的代码片段，先读相邻 ADR/契约——若对应已定决策，不是 bug 而是契约"——**不修复**。`pass` 与 `_generate_alert_message` 的 cache_hit_rate 分支是为"未来重新启用阈值"保留的占位符（cosmetic dead code），翻案需先删 test。
+
+### 修复（commit 待 push）
+
+#### #1 source_errors 透传 + 数据源故障 → 显式 critical 告警
+
+```python
+# 新实现
+def summary(self, *, pending_limit=50, position_limit=50) -> dict[str, Any]:
+    source_errors: dict[str, str] = {}
+    active_pending = self._safe_pending_states(..., source_errors=source_errors)
+    # ... 所有 _safe_* 都接收同一 source_errors dict 引用
+    ...
+    # 末尾把失败源转告警
+    if "state_store" in source_errors:
+        alerts.append(self._alert(
+            code="state_store_unavailable",
+            severity="critical",
+            message="状态存储不可用，告警判据失效",
+            details={"error": source_errors["state_store"]},
+        ))
+    if "trading_module" in source_errors:
+        alerts.append(self._alert(
+            code="trading_module_unavailable",
+            severity="critical",
+            message="交易模块查询不可用，告警判据失效",
+            details={"error": source_errors["trading_module"]},
+        ))
+    # payload 暴露 source_errors 给消费侧审计
+    return {..., "source_errors": dict(source_errors)}
+
+def _safe_pending_states(self, *, statuses, limit, source_errors) -> list[dict]:
+    try:
+        return list(self._state_store.list_pending_order_states(...))
+    except Exception as exc:
+        logger.warning("TradingStateAlerts: list_pending_order_states failed: %s: %s",
+                       type(exc).__name__, exc)
+        source_errors.setdefault("state_store", f"{type(exc).__name__}: {exc}")
+        return []
+```
+
+#### #2 reporting overall_status 把 active_alerts 拉进评级
+
+```python
+# 在原 critical_count / warning_count 评级后追加
+active_alerts_list = report.get("active_alerts") or []
+has_active_critical = any(
+    str((a.get("severity") or a.get("alert_level") or "")).lower() == "critical"
+    for a in active_alerts_list
+)
+has_active_warning = any(
+    str((a.get("severity") or a.get("alert_level") or "")).lower() == "warning"
+    for a in active_alerts_list
+)
+if has_active_critical and report["overall_status"] != "critical":
+    report["overall_status"] = "critical"
+elif has_active_warning and report["overall_status"] == "healthy":
+    report["overall_status"] = "warning"
+```
+
+#### #3 monitoring_summary 至少把 hours 写进 payload
+
+```python
+def monitoring_summary(self, *, hours: int = 24) -> dict[str, Any]:
+    # 现阶段 alerts 只看最新状态而非历史窗口，无法真正按 hours 聚合，
+    # 但至少必须把 hours 写进 payload 让消费方知道窗口意图
+    payload = self.summary()
+    payload["time_range_hours"] = int(hours)
+    return payload
+```
+
+### 测试（4 项新契约 + 1 项契约保留）
+
+| 测试 | 锁定 |
+|---|---|
+| `test_trading_state_alerts_does_not_report_healthy_when_data_sources_fail` | 双数据源故障必须不被标 healthy + 告警 code 含 data_source_unavailable / state_store_unavailable / trading_module_unavailable |
+| `test_trading_state_alerts_state_store_only_failure_still_alerts` | 单源故障同样触发告警，不能因另一源正常被掩盖 |
+| `test_monitoring_summary_records_hours_in_payload` | hours=1 vs hours=24 必须在 `time_range_hours` 体现 |
+| `test_generate_report_overall_status_reflects_active_critical_alert` | 注入 active critical → overall_status=critical（即便本次窗口无新 critical metric）|
+| `test_generate_report_overall_status_reflects_active_warning_alert` | 注入 active warning → overall_status≥warning |
+| `test_cache_hit_rate_no_longer_triggers_alert`（保留）| 设计契约保留：阈值=0 仅作信息指标，永不告警 |
+
+### 元层教训：**告警/健康路径必须区分"无数据"与"数据源失败"**
+
+§0g→§0s 累计反复见到一个反模式：**消费侧默认 fail-soft 吞异常 → 关键判据被静默 short-circuit**。
+§0t 把这条原则升级到告警/健康路径本身：**告警系统自身故障必须 fail-loud**——
+如果告警源（DB / MT5 / metric pipeline）失效，必须 (a) 在 payload 显式暴露 (b) 把 overall_status
+推到不低于 warning 而不是默认 healthy。
+
+具体到本案：
+- `_safe_*` 仍然 fail-soft（保证调用方拿到 list 而不挂），但**额外**把异常透传给上层
+- `summary()` 在末尾把数据源故障转成显式 critical 告警
+- `payload["source_errors"]` 字段让消费侧/审计能定位源
+- `reporting.generate_report` 把 `active_alerts` 拉进 overall_status 评级，未消除 alert 不再被新窗口洗白
+
+强建议（扩充 §0g→§0s 元层教训）：
+- 告警系统/健康路径所有 `except: return []` 必须额外接受 `errors` 透传 dict 上送
+- `overall_status` 类聚合必须把"运行中未消除的 active_alerts"拉进决策，不能只看本窗口聚合
+- `del param` 模式（参数显式扔）必须**立即**触发 PR review 红旗——要么真正实现要么把签名改成不带该参数
+
+强建议（**核验阻断之例**：P3#4 案）：
+- §0 协议"任何'反常/存在 bug'的代码片段，先读相邻 ADR/契约"在本轮成功阻断 1 例 user 报告
+- 死分支若是有意 informational-only 占位，必须在源码注释中显式声明 "intentional dead — informational only" 减少未来误判
+- 翻案"informational metric → 告警 metric" 的设计决定必须先**删除** lock test 再实施
+
+### §0g→§0t 累计基线
+
+短短 24+ 小时累计修 P0/P1/P2/P3 共 **33 个 bug + 33 次反向锁** + **1 次契约阻断**：
+
+| § | bug 数 |
+|---|---|
+| 0g–0r | 27 |
+| 0s | 3 |
+| 0t | 3 + 1 契约阻断 |
+
+### 测试基线
+
+- 修复前：3 处 user-facing bug；告警/健康双源故障路径零覆盖
+- 修复后：5 项新契约测试；`pytest -q` → **2832 passed / 6 skipped / 0 failed**
+
+### 减少边界泄漏的方式
+
+- `_safe_*` 不再单独"吞 + 返空"，而是把异常透传给 `source_errors` 引用 dict，调用方可决策
+- `reporting.generate_report` 把 `active_alerts`（注册侧权威）拉进 overall_status（消费侧聚合），消除生产/消费视图漂移
+- `monitoring_summary(hours)` 即使无法真正窗口聚合，也至少在 payload 显式记录窗口意图
+- 死分支契约（cache_hit_rate）有 lock test 守门，**不让"看似 bug 的契约"被反复重报反复消解**
+
+---
+
 ## 0s. 2026-04-26 cancel-result schema 解析 + cockpit exposure freshness（P2 ×2 + P3）
 
 ### 触发
