@@ -210,3 +210,191 @@ def test_confidence_check_filters_by_deployment_allows_live(
     assert (
         "demo_only" not in out
     ), f"DEMO_VALIDATION 策略不能 live 执行，必须被过滤；输出:\n{out}"
+
+
+# ---------------------------------------------------------------------------
+# P2#1: all_blocked 误报 — 无 live 策略时 all([]) → True → "ALL TFs BLOCKED"
+# ---------------------------------------------------------------------------
+
+
+def test_no_live_eligible_strategies_does_not_misreport_all_blocked(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """回归：当全部策略 = CANDIDATE/DEMO_VALIDATION/PAPER_ONLY 时，
+    每个 TF 的 _live_candidates 都是空列表，原 all(...) 落在空生成器上返 True
+    → 输出 "ALL TFs BLOCKED" + "调低 min_confidence" 建议。
+    真因是无 live-eligible 策略；建议方向应该是推策略到 ACTIVE_GUARDED。
+    """
+    from src.ops.cli import confidence_check
+    from src.signals.contracts.deployment import (
+        StrategyDeployment,
+        StrategyDeploymentStatus,
+    )
+
+    class _FakeCfg:
+        strategy_timeframes = {
+            "candidate_a": ["M30"],
+            "demo_b": ["M30"],
+        }
+        regime_affinity_overrides = {}
+        timeframe_min_confidence = {"M30": 0.5}
+        auto_trade_min_confidence = 0.5
+        strategy_deployments = {
+            "candidate_a": StrategyDeployment(
+                name="candidate_a", status=StrategyDeploymentStatus.CANDIDATE
+            ),
+            "demo_b": StrategyDeployment(
+                name="demo_b", status=StrategyDeploymentStatus.DEMO_VALIDATION
+            ),
+        }
+
+    monkeypatch.setattr("src.config.signal.get_signal_config", lambda: _FakeCfg())
+    import requests as _req
+
+    class _FakeResp:
+        def json(self):
+            return {"data": {}}
+
+    monkeypatch.setattr(_req, "get", lambda *a, **kw: _FakeResp())
+    monkeypatch.setattr("sys.argv", ["confidence_check", "--tf", "M30"])
+
+    confidence_check.main()
+    out = capsys.readouterr().out
+
+    assert (
+        "ALL TFs BLOCKED" not in out
+    ), f"无 live-eligible 策略 ≠ 阈值太高；不应建议调 min_confidence；输出:\n{out}"
+    assert (
+        "NO LIVE-ELIGIBLE STRATEGIES" in out or "no live-eligible" in out.lower()
+    ), f"应明确提示无 live 策略，引导用户改 deployment status；输出:\n{out}"
+
+
+# ---------------------------------------------------------------------------
+# P2#2: deployment.effective_min_confidence 未叠加 — guarded/min_final 假 PASS
+# ---------------------------------------------------------------------------
+
+
+def test_effective_min_confidence_threaded_for_guarded_strategy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """回归：ACTIVE_GUARDED 且 min_final_confidence=0.8 的策略，
+    pre_trade_checks 会把门槛抬到 0.8；工具应同步叠加，否则给假 PASS。
+
+    raw=0.65 affinity=1.0 min_c(timeframe)=0.5 → 旧实现报 PASS（0.65 ≥ 0.5）
+    但实际执行用 effective_min=max(0.5, 0.8)=0.8 → 真实 FAIL
+    """
+    from src.ops.cli import confidence_check
+    from src.signals.contracts.deployment import (
+        StrategyDeployment,
+        StrategyDeploymentStatus,
+    )
+
+    class _FakeCfg:
+        strategy_timeframes = {"guarded_strict": ["M30"]}
+        regime_affinity_overrides = {"guarded_strict": {"trending_up": 1.0}}
+        timeframe_min_confidence = {"M30": 0.5}
+        auto_trade_min_confidence = 0.5
+        strategy_deployments = {
+            "guarded_strict": StrategyDeployment(
+                name="guarded_strict",
+                status=StrategyDeploymentStatus.ACTIVE_GUARDED,
+                min_final_confidence=0.8,
+            ),
+        }
+
+    monkeypatch.setattr("src.config.signal.get_signal_config", lambda: _FakeCfg())
+    import requests as _req
+
+    class _FakeResp:
+        def json(self):
+            return {
+                "data": {
+                    "signals": {
+                        "regime_map": {"XAUUSD/M30": {"current_regime": "trending_up"}}
+                    }
+                }
+            }
+
+    monkeypatch.setattr(_req, "get", lambda *a, **kw: _FakeResp())
+    monkeypatch.setattr(
+        "sys.argv", ["confidence_check", "--raw", "0.65", "--tf", "M30"]
+    )
+
+    confidence_check.main()
+    out = capsys.readouterr().out
+
+    # 真实 effective min = 0.8（来自 min_final_confidence），final=0.65*1.0=0.65 < 0.8
+    # → 必须 FAIL，且最好显示 effective threshold（0.8）而非 baseline 0.5
+    assert "guarded_strict" in out
+    # 不应该有 PASS 标记
+    assert "guarded_strict" + " " * 19 + "aff=  1.00 final=0.650 PASS" not in out
+    # 应有 FAIL（精确格式可能因 min 显示方式略变；确认非 PASS）
+    guarded_lines = [line for line in out.splitlines() if "guarded_strict" in line]
+    assert any(
+        "FAIL" in line for line in guarded_lines
+    ), f"effective_min=0.8，0.65 必须 FAIL；输出:\n{out}"
+
+
+# ---------------------------------------------------------------------------
+# P2#3: regime_map 多 symbol 同 TF 覆盖
+# ---------------------------------------------------------------------------
+
+
+def test_regime_map_isolates_by_symbol_via_explicit_arg(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """回归：dashboard 返回 XAUUSD/M30=trending_up + EURUSD/M30=ranging，
+    旧实现压平到 regimes[M30]=最后一个 → 多品种部署诊断结果不确定。
+
+    工具应支持 --symbol（缺省读 default_symbol）并仅取该 symbol 的 regime。
+    """
+    from src.ops.cli import confidence_check
+    from src.signals.contracts.deployment import (
+        StrategyDeployment,
+        StrategyDeploymentStatus,
+    )
+
+    class _FakeCfg:
+        strategy_timeframes = {"trend_strategy": ["M30"]}
+        regime_affinity_overrides = {
+            "trend_strategy": {"trending_up": 1.0, "ranging": 0.0}
+        }
+        timeframe_min_confidence = {"M30": 0.5}
+        auto_trade_min_confidence = 0.5
+        strategy_deployments = {
+            "trend_strategy": StrategyDeployment(
+                name="trend_strategy", status=StrategyDeploymentStatus.ACTIVE
+            ),
+        }
+
+    monkeypatch.setattr("src.config.signal.get_signal_config", lambda: _FakeCfg())
+    import requests as _req
+
+    # dashboard 返多 symbol；应用 --symbol XAUUSD 隔离
+    class _FakeResp:
+        def json(self):
+            return {
+                "data": {
+                    "signals": {
+                        "regime_map": {
+                            "XAUUSD/M30": {"current_regime": "trending_up"},
+                            "EURUSD/M30": {"current_regime": "ranging"},
+                        }
+                    }
+                }
+            }
+
+    monkeypatch.setattr(_req, "get", lambda *a, **kw: _FakeResp())
+    monkeypatch.setattr(
+        "sys.argv", ["confidence_check", "--symbol", "XAUUSD", "--tf", "M30"]
+    )
+
+    confidence_check.main()
+    out = capsys.readouterr().out
+
+    # XAUUSD/M30=trending_up affinity=1.0 final=0.65*1.0=0.65 ≥ 0.5 → PASS
+    # 旧 bug：M30=ranging（被 EURUSD 覆盖）affinity=0.0 → final=0 < 0.5 → BLOCKED
+    assert (
+        "regime=trending_up" in out
+    ), f"应取 XAUUSD/M30 的 trending_up，旧 bug 取 EURUSD 的 ranging；输出:\n{out}"
+    assert "[OK]" in out, f"trending_up 下 trend_strategy 应 PASS；输出:\n{out}"

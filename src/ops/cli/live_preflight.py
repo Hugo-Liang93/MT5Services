@@ -165,24 +165,39 @@ def _check_mt5_instance(instance_name: str | None = None) -> List[Tuple[str, str
                     )
                 )
 
-            symbol_info = mt5.symbol_info("XAUUSD")
-            if symbol_info:
-                results.append(
-                    (
-                        f"{label_prefix}XAUUSD symbol",
-                        "OK",
-                        f"spread={symbol_info.spread} point={symbol_info.point} "
-                        f"volume_min={symbol_info.volume_min} volume_max={symbol_info.volume_max}",
+            # SSOT 是 config/app.ini trading.symbols；硬编码 XAUUSD 在多品种或
+            # 改名场景会把"目标 symbol 不可见"误报成"XAUUSD 不可见"
+            try:
+                from src.config.centralized import get_trading_config
+
+                trading_cfg = get_trading_config()
+                target_symbols = list(trading_cfg.symbols) or [
+                    trading_cfg.default_symbol
+                ]
+            except Exception:
+                target_symbols = ["XAUUSD"]
+
+            for symbol_name in target_symbols:
+                symbol_info = mt5.symbol_info(symbol_name)
+                if symbol_info:
+                    results.append(
+                        (
+                            f"{label_prefix}{symbol_name} symbol",
+                            "OK",
+                            f"spread={symbol_info.spread} "
+                            f"point={symbol_info.point} "
+                            f"volume_min={symbol_info.volume_min} "
+                            f"volume_max={symbol_info.volume_max}",
+                        )
                     )
-                )
-            else:
-                results.append(
-                    (
-                        f"{label_prefix}XAUUSD symbol",
-                        "FAIL",
-                        "Symbol not found or not visible",
+                else:
+                    results.append(
+                        (
+                            f"{label_prefix}{symbol_name} symbol",
+                            "FAIL",
+                            "Symbol not found or not visible",
+                        )
                     )
-                )
 
             mt5.shutdown()
     except ImportError:

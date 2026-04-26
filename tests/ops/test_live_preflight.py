@@ -248,3 +248,39 @@ def test_live_preflight_reads_auto_trade_min_confidence_not_removed_field() -> N
     assert (
         "auto_trade_min_confidence" in source
     ), "preflight min_confidence 比较应基于 auto_trade_min_confidence（真实 live 阈值）"
+
+
+# ---------------------------------------------------------------------------
+# P3: MT5 symbol probe 不应硬编码 XAUUSD（SSOT 是 app.ini trading.*）
+# ---------------------------------------------------------------------------
+
+
+def test_live_preflight_symbol_probe_not_hardcoded_xauusd() -> None:
+    """P3 回归：MT5 symbol probe 不应硬编码 "XAUUSD"。
+
+    SSOT 是 config/app.ini trading.symbols / default_symbol。
+    一旦实例改成别的 symbol 或多品种，硬编码会把 "XAUUSD 不在 Market Watch"
+    误报为 preflight FAIL，不反映真实配置目标。
+    """
+    import inspect as _inspect
+
+    source = _inspect.getsource(live_preflight)
+    # 至少有一处从配置读 symbol
+    assert any(
+        token in source
+        for token in (
+            "get_trading_config",
+            "get_shared_default_symbol",
+            "get_symbols",
+            "trading_config",
+            ".default_symbol",
+            ".symbols",
+        )
+    ), (
+        "live_preflight 应从 trading config 读 symbols/default_symbol，"
+        "不应硬编码 XAUUSD（SSOT 在 app.ini trading.*）"
+    )
+    # 主体 mt5.symbol_info(...) 不应再硬写 "XAUUSD"
+    assert (
+        'mt5.symbol_info("XAUUSD")' not in source
+    ), "mt5.symbol_info 不应硬编码 XAUUSD；用配置值或循环遍历 trading.symbols"

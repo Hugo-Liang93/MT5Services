@@ -36,6 +36,14 @@ def main() -> None:
     parser.add_argument(
         "--raw", type=float, default=0.65, help="Assumed raw confidence (default 0.65)"
     )
+    parser.add_argument(
+        "--symbol",
+        default=None,
+        help=(
+            "限定 regime_map 取哪个 symbol（缺省 = trading.default_symbol）；"
+            "多品种部署里多 symbol 同 TF 不同 regime 会互覆盖，需显式指定"
+        ),
+    )
     args = parser.parse_args()
 
     from src.config.signal import get_signal_config
@@ -61,14 +69,51 @@ def main() -> None:
             return False
         return bool(deployment.allows_live_execution())
 
-    # 获取当前 regime（从 API）
+    def _effective_min_for(name: str, tf: str) -> float:
+        """与 pre_trade_checks.py 同语义：
+        baseline = timeframe_min_confidence[tf] or auto_trade_min_confidence
+        deployment.effective_min_confidence(...) 给出的更高值才生效
+        """
+        baseline = float(tf_min_conf.get(tf, min_conf_global))
+        deployment = deployments.get(name) if deployments else None
+        if deployment is None:
+            return baseline
+        eff = deployment.effective_min_confidence(
+            timeframe_baseline=baseline,
+            global_min_confidence=float(min_conf_global),
+        )
+        if eff is None:
+            return baseline
+        return max(baseline, float(eff))
+
+    # 解析 target symbol：args.symbol > trading.default_symbol > "XAUUSD"
+    # 多品种部署里 regime_map 含 SYMBOL/TF 复合键；不限定 symbol 时多 symbol
+    # 同 TF 会相互覆盖，诊断结果不确定
+    target_symbol: str
+    if args.symbol:
+        target_symbol = args.symbol.strip().upper()
+    else:
+        try:
+            from src.config.centralized import get_shared_default_symbol
+
+            target_symbol = get_shared_default_symbol().strip().upper()
+        except Exception:
+            target_symbol = "XAUUSD"
+
+    # 获取当前 regime（从 API）— 仅取 target_symbol 的 (symbol, tf) → regime
     regimes: dict[str, str] = {}
     try:
         r = requests.get("http://localhost:8808/v1/admin/dashboard", timeout=5)
         regime_map = r.json().get("data", {}).get("signals", {}).get("regime_map", {})
         for key, info in regime_map.items():
-            tf_part = key.split("/")[-1] if "/" in key else key
-            regimes[tf_part] = info.get("current_regime", "uncertain")
+            if "/" in key:
+                sym_part, tf_part = key.split("/", 1)
+                if sym_part.strip().upper() != target_symbol:
+                    continue
+            else:
+                # 无 symbol 前缀的旧键格式：仍接受，但只在 single-symbol 部署正确
+                tf_part = key
+            regimes[tf_part.strip().upper()] = info.get("current_regime", "uncertain")
     except Exception:
         regimes = {
             "M5": "uncertain",
@@ -106,9 +151,12 @@ def main() -> None:
     print(f"Per-TF min_confidence: {dict(sorted(tf_min_conf.items()))}")
     print()
 
+    # 收集每个 TF 的 live candidates，便于在 all_blocked 判断里区分
+    # "无 live 策略" vs "门槛阻拦"
+    live_candidates_by_tf: dict[str, list[str]] = {}
     for tf in check_tfs:
         regime = regimes.get(tf, "uncertain")
-        min_c = tf_min_conf.get(tf, min_conf_global)
+        baseline_min = tf_min_conf.get(tf, min_conf_global)
         # 候选 = 配置该 TF 的策略 ∩ deployment 允许 live 执行的策略
         # 后一项守住 candidate / demo_validation / paper_only 不被算进"可通过"
         allowed = [
@@ -117,6 +165,7 @@ def main() -> None:
             if tf in [t.strip().upper() for t in tfs_list]
             and _strategy_allowed_live(name)
         ]
+        live_candidates_by_tf[tf] = allowed
 
         if not allowed:
             continue
@@ -133,41 +182,62 @@ def main() -> None:
             else:
                 label = f"{aff:.2f}"
             final = raw * aff
-            passed = final >= min_c
+            # 与 pre_trade_checks.py 同源：deployment.min_final_confidence /
+            # ACTIVE_GUARDED 推高 baseline → 工具必须叠加才不假 PASS
+            effective_min = _effective_min_for(name, tf)
+            passed = final >= effective_min
             if passed:
                 pass_count += 1
+            min_label = f"{effective_min:.2f}"
+            if effective_min > baseline_min:
+                min_label = f"{effective_min:.2f}*"  # * 标记 deployment 推高
             lines.append(
-                f"  {name:<28} aff={label:>6} final={final:.3f} {'PASS' if passed else 'FAIL'}"
+                f"  {name:<28} aff={label:>6} "
+                f"final={final:.3f} min={min_label} "
+                f"{'PASS' if passed else 'FAIL'}"
             )
 
         status = "OK" if pass_count > 0 else "BLOCKED"
         print(
-            f"{tf} regime={regime} min_conf={min_c} pass={pass_count}/{total} [{status}]"
+            f"{tf} regime={regime} baseline_min={baseline_min} "
+            f"pass={pass_count}/{total} [{status}]"
         )
         for line in lines:
             print(line)
         print()
 
-    # 建议（同样收口 deployment 允许 live 执行的策略）
-    def _live_candidates(tf: str) -> list[str]:
-        return [
-            n
-            for n, ts in stf.items()
-            if tf in [t.strip().upper() for t in ts] and _strategy_allowed_live(n)
-        ]
+    # 建议（区分两种空集状态，避免 all([]) → True 误报为"门槛太高"）：
+    #  A. 任一 TF 有 live candidate → 进入"BLOCKED 检查"
+    #  B. 所有 TF 都没有 live candidate → 真因是无 ACTIVE/ACTIVE_GUARDED 策略
+    has_any_live_candidate = any(live_candidates_by_tf.get(tf) for tf in check_tfs)
+
+    if not has_any_live_candidate:
+        print(
+            "*** NO LIVE-ELIGIBLE STRATEGIES — all current strategies are "
+            "CANDIDATE / DEMO_VALIDATION / PAPER_ONLY ***"
+        )
+        print("Suggestions:")
+        print(
+            "  1. Promote a strategy to ACTIVE / ACTIVE_GUARDED "
+            "(signal.ini [strategy_deployments])"
+        )
+        print("  2. Verify strategy_deployments map covers strategies in scope")
+        print("  3. 调 min_confidence 不会有用 — 没策略能 live 执行")
+        return
 
     all_blocked = all(
         all(
             raw * (overrides.get(name, {}).get(regimes.get(tf, "uncertain"), 0.5))
-            < tf_min_conf.get(tf, min_conf_global)
-            for name in _live_candidates(tf)
+            < _effective_min_for(name, tf)
+            for name in live_candidates_by_tf[tf]
         )
         for tf in check_tfs
-        if _live_candidates(tf)
+        if live_candidates_by_tf.get(tf)
     )
     if all_blocked:
         print(
-            "*** ALL TFs BLOCKED — no strategy can pass min_confidence in current regimes ***"
+            "*** ALL TFs BLOCKED — no live-eligible strategy can pass "
+            "min_confidence in current regimes ***"
         )
         print("Suggestions:")
         print(
