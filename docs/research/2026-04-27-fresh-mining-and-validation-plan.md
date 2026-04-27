@@ -63,8 +63,8 @@ For demo_validation continuation only:
 | Research config fix (Task 2) | ✅ 2026-04-27 — commit 687b68a (P0 根因) |
 | Barrier filter fix (Task 3) | ✅ 2026-04-27 — commit 403df84 |
 | Walk-forward service (Task 4) | ✅ 2026-04-27 — commit 20fe733 |
-| Fresh mining run (Task 5) | 🔄 in progress |
-| Live-aligned backtest (Task 6) | ⏳ pending Task 5 完成 |
+| Fresh mining run (Task 5) | ✅ 2026-04-27 — commit cd30dee |
+| Live-aligned backtest (Task 6) | ✅ 2026-04-27 — research + execution_feasibility 双跑完成 |
 | Demo validation (Task 7) | ⏳ pending Task 6 + 真实 demo 多日运行 |
 | Active-guarded proposal (Task 8) | ⏳ pending Task 7 |
 | Doc drift cleanup (Task 9) | ✅ 2026-04-27 — commit f07f92f |
@@ -131,6 +131,68 @@ For demo_validation continuation only:
 **触发 PLAN.md Rollback rule**：「Task 5 produces no stable candidates → stop at research and document rejection」——research 层**不向 demo_validation 推送新候选**。
 
 但本轮 Task 6 backtest **不是为了 promote 新候选**，而是验证**现有 10 个 demo_validation 策略**在 fresh mining 同窗口（live-aligned 成本 + execution feasibility）下的实际表现，决定它们是否仍有保留 demo_validation 的资格。
+
+## Live-Aligned Backtest Result（Task 6）
+
+### Artifacts
+
+- `data/artifacts/backtests/live_aligned_demo_validation_2026-04-27.json`（research mode，含 4 个 backtest_runs DB 记录）
+- `data/artifacts/backtests/live_aligned_execution_feasibility_2026-04-27.json`（execution_feasibility mode，含 4 个 backtest_runs DB 记录）
+
+### Research Mode 结果（2025-04-01 → 2026-04-26 共 1 年）
+
+| TF | trades | PF | Exp | DD% | MC.PF.p | 5-gate |
+|---|---|---|---|---|---|---|
+| H4 | 7 | 0.742 | -2.66 | 2.8% | 1.000 | 1/5 |
+| H1 | **222** | **1.718** | **+10.66** | **10.7%** | **0.004** | **5/5 ✓** |
+| M30 | 693 | 1.348 | +5.59 | 33.2% | 0.006 | 4/5 (DD ✗) |
+| M15 | 1152 | 0.938 | -0.38 | 82.1% | 0.787 | 1/5 |
+
+H1 上盈利策略（research mode）：
+- `structured_regime_exhaustion` 29 trades / 51.7% WR / **+1724.77**
+- `structured_strong_trend_follow` 71 trades / 38.0% WR / +981.72
+- `structured_trendline_touch` 8 trades / 50.0% WR / +31.38
+
+### Execution Feasibility Mode 结果（含 broker 流动性 + min_volume 约束）
+
+| TF | accepted | rejected | acc_ratio | trades | PF | DD% | 7-gate |
+|---|---|---|---|---|---|---|---|
+| H4 | 0 | 7 | 0.0% | 0 | 0.000 | 0.0% | 1/6 |
+| H1 | 45 | 573 | **7.3%** | 45 | 0.310 | 18.8% | **0/6** |
+| M30 | 185 | 999 | 15.6% | 185 | 0.713 | 30.6% | 1/6 |
+| M15 | 230 | 1898 | 10.8% | 230 | 0.296 | 66.8% | 1/6 |
+
+**所有 TF rejection_reasons 100% 是 `below_min_volume_for_execution_feasibility`**——broker 模拟的最小成交量约束下，策略产生的入场信号无法实际执行。
+
+### 关键发现：H1 regime_exhaustion 的 100% 被拒
+
+| Strategy | RM trades | RM pnl | EF trades | EF pnl |
+|---|---|---|---|---|
+| `structured_regime_exhaustion` | 29 | **+1724.77** | **0** | **0.00** |
+| `structured_strong_trend_follow` | 71 | +981.72 | 21 | -248.53 |
+| `structured_open_range_breakout` | 62 | -84.48 | 9 | -40.86 |
+| `structured_trend_h4` | 24 | -86.23 | 5 | +26.03 |
+| `structured_pullback_window` | 11 | -105.88 | 6 | -77.73 |
+
+`regime_exhaustion` 在 EF 模式下 **0 trades** —— research mode 的 +1724 利润完全是 broker 不会执行的"幽灵交易"。这是当前 demo_validation 策略族的**致命缺陷**。
+
+### Promotion Decision
+
+**触发 PLAN.md Rollback rule**：「Task 6 fail execution feasibility → keep strategies in `demo_validation` or `candidate`」。
+
+**判定**：
+- 0 个策略通过 7 门禁（profit_factor / expectancy / max_drawdown / total_trades / accepted_ratio ≥ 0.85 / monte_carlo.p ≤ 0.10 / walk_forward.consistency ≥ 0.70）
+- **没有任何策略可晋级 active_guarded**
+- 现有 10 个 demo_validation 策略**保持 demo_validation 状态**，但 H1 上 regime_exhaustion 应在下一轮 research 中重新检查 entry filter（为何 broker 100% 拒？min_volume 阈值是否合理？）
+
+### 执行可行性的根因调查（next research 项）
+
+`below_min_volume_for_execution_feasibility` 100% 命中表明：
+1. broker 仿真的 min_volume 阈值（XAUUSD 最小手数 0.01）与策略生成的 size 不一致；或
+2. 风险层 `RegimeSizing` 计算的 lot 在 EF 模式下被向下取整为 0
+3. 需独立排查 `src/backtesting/engine/execution_semantics.py` 的 EF 模式 lot 计算
+
+这是**独立的 research/engineering bug**，不在本轮整改范围。落档为下一轮的 P1。
 
 ### H1 Walk-Forward（✅ 2026-04-27 完成）
 
