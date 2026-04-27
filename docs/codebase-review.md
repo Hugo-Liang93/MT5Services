@@ -8324,3 +8324,57 @@ P9 bug #3 已暴露 paper bypass execution_intent 引发 admission writeback 失
 - Research 输出语义收口：top findings 现在**只**包含 promotion-eligible 候选
 - 负收益显著发现仍存在于 `barrier_predictive_power` 列表（不删数据），但不进 ranking
 - 文档 `docs/research-system.md` 同步新增 "barrier candidate 晋级口径" 段
+
+---
+
+## 2026-04-27 — Mining walk-forward 收口为 orchestration 服务
+
+### 背景
+
+`src/ops/cli/mining_walk_forward.py` 此前 285 行 inline 实现了 4 个核心语义：
+窗口切分 / rule_key 序列化 / 跨窗口聚合 / 稳定性筛选。这些与
+`MiningRunner` 同属"挖掘编排"职责，但散落在 CLI 内不可被服务层复用。
+同时 CLI 缺 `--providers / --child-tf / --json-output / --persist /
+--experiment` 5 个关键参数（`mining_runner.py` 已支持），导致 fresh
+mining 跑 walk-forward 时无法选 Provider / 加 child-TF 特征 / 输出 JSON / 入 DB。
+
+### 改动
+
+新建 `src/research/orchestration/walk_forward.py`：
+- `MiningWalkForwardWindow` / `MiningWalkForwardResult` dataclasses
+- `split_windows(start, end, n_splits)`（最后一个窗口结束时间锁定 = end，
+  避免浮点累加误差）
+- `rule_key(conditions)`（与 CLI 旧实现行为一致：按 indicator/field/operator
+  排序 + threshold 两位小数）
+- `aggregate_rules_across_windows(per_window_rules)`（保留 CLI 旧聚合
+  字段 + 新增 `key` 字段便于序列化）
+- `stable_rules(aggregated, n_splits, min_consistency)`
+- `run_mining_walk_forward(timeframe, start, end, splits, min_consistency,
+  mine_window: Callable[[start, end], Result])` —— 通过显式 Callable 注入
+  实现依赖反转，符合 §0dj 反补丁纪律（无 Optional 默认 / getattr 兜底）
+
+CLI 重写为适配层（`src/ops/cli/mining_walk_forward.py`）：
+- 复用 `_persistence.add_persist_arguments / persist_mining_results`
+- 复用 `_coverage.ensure_ohlc_data_coverage`
+- 用 `dataclasses.replace` 实现 provider override（与 mining_runner.py:77-104
+  对称）
+- 保留 §0di P2 cleanup（每个窗口 `with build_research_data_deps()`）
+
+### 测试
+
+- 新建 `tests/research/orchestration/test_walk_forward.py`（7 测）：
+  windows 连续不重叠 / invalid 输入 / aggregate 按 condition key 分组 /
+  stable_rules 满足最小 appearance 计数 / 排序顺序 / orchestrator 通过
+  Callable 注入 / `to_dict()` 输出含 `+00:00` 后缀
+- 现有 `tests/ops/test_mining_walk_forward.py` import 切到新模块的公开
+  API（保留 `_mine_window` 的 §0di P2 cleanup sentinel）
+- 全 research + ops 回归：`pytest -q tests/research/ tests/ops/` →
+  **613 passed / 6 skipped**
+
+### 边界影响
+
+- walk-forward 业务语义现在可由其他工具复用（不再 CLI-locked）
+- CLI 与 mining_runner.py 的参数面对齐，fresh-mining 跑 walk-forward 与
+  常规 mining 同口径
+- 单窗口 mine 失败仅 catch 在 CLI 边界（不阻断后续窗口），服务层不持
+  catch（保持纯函数语义）

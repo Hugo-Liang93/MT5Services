@@ -1,9 +1,8 @@
-"""A-3: mining_walk_forward CLI 纯函数测试。
+"""A-3: mining_walk_forward CLI + service 纯函数测试。
 
-不涉及挖掘流程（那是 MiningRunner 职责），只验证：
-- _split_windows 切分正确性
-- _rule_key 稳定排序（condition 顺序不影响 key）
-- _aggregate_rules_across_windows 跨窗口聚合逻辑
+2026-04-27 起核心语义已收口到 `src.research.orchestration.walk_forward`；
+本文件保留对 CLI 层 `_mine_window` 的 §0di P2 cleanup sentinel，并通过
+公共服务 API 守护 split / aggregate / rule_key 行为。
 """
 
 from __future__ import annotations
@@ -14,11 +13,11 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from src.ops.cli.mining_walk_forward import (
-    _aggregate_rules_across_windows,
-    _mine_window,
-    _rule_key,
-    _split_windows,
+from src.ops.cli.mining_walk_forward import _mine_window
+from src.research.orchestration.walk_forward import (
+    aggregate_rules_across_windows as _aggregate_rules_across_windows,
+    rule_key as _rule_key,
+    split_windows as _split_windows,
 )
 
 
