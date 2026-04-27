@@ -75,33 +75,40 @@ def _check_confirmed_warmup(
     bar_time: datetime,
     indicators: dict[str, dict[str, float]],
 ) -> bool:
-    """confirmed scope 的 warmup 检查：staleness + 必需指标。"""
+    """confirmed scope 的 warmup 检查：staleness + 必需指标。
+
+    staleness 必须对每根 confirmed bar 都校验（per-bar gate），不能只对每个
+    (symbol, timeframe) 的"首根"校验——否则回补乱序时一根近期 bar 解锁
+    _first_realtime_bar_seen 后，同批回补的历史 bar 会全部畅通触发评估，
+    导致基于数天前 stale bar 的高置信信号被当真信号下单（2026-04-27 demo-main
+    启动 8 秒内 4 笔基于 65-70h 前 bar 的错误成交即此 bug）。
+    """
     st_key = (symbol, timeframe)
+    if runtime._warmup_ready_fn is not None:
+        _bt = (
+            bar_time
+            if bar_time.tzinfo is not None
+            else bar_time.replace(tzinfo=timezone.utc)
+        )
+        tf_secs = timeframe_seconds(timeframe)
+        staleness = (
+            datetime.now(timezone.utc) - _bt.astimezone(timezone.utc)
+        ).total_seconds()
+        max_age = tf_secs * 2 + 30
+        if staleness > max_age:
+            runtime._warmup_skipped += 1
+            if runtime._warmup_skipped <= 10 or runtime._warmup_skipped % 100 == 0:
+                logger.info(
+                    "Warmup skip (stale bar_time): %s/%s bar_time=%s staleness=%.0fs max_age=%.0fs (total_skipped=%d)",
+                    symbol,
+                    timeframe,
+                    bar_time.isoformat(),
+                    staleness,
+                    max_age,
+                    runtime._warmup_skipped,
+                )
+            return False
     if st_key not in runtime._first_realtime_bar_seen:
-        if runtime._warmup_ready_fn is not None:
-            _bt = (
-                bar_time
-                if bar_time.tzinfo is not None
-                else bar_time.replace(tzinfo=timezone.utc)
-            )
-            tf_secs = timeframe_seconds(timeframe)
-            staleness = (
-                datetime.now(timezone.utc) - _bt.astimezone(timezone.utc)
-            ).total_seconds()
-            max_age = tf_secs * 2 + 30
-            if staleness > max_age:
-                runtime._warmup_skipped += 1
-                if runtime._warmup_skipped <= 10 or runtime._warmup_skipped % 100 == 0:
-                    logger.info(
-                        "Warmup skip (stale bar_time): %s/%s bar_time=%s staleness=%.0fs max_age=%.0fs (total_skipped=%d)",
-                        symbol,
-                        timeframe,
-                        bar_time.isoformat(),
-                        staleness,
-                        max_age,
-                        runtime._warmup_skipped,
-                    )
-                return False
         runtime._first_realtime_bar_seen.add(st_key)
         logger.info(
             "Warmup lifted: first realtime bar for %s/%s at %s",
