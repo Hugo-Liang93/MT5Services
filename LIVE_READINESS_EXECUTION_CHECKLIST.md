@@ -503,3 +503,24 @@
 - `可上线 live 自动交易系统`
 - `可扩容多账户实盘系统`
 
+
+---
+
+## 2026-04-27 Research-to-Demo Gate（plan-md-radiant-sparrow.md）
+
+- [x] Research config SSOT path verified — commit 687b68a
+- [x] Barrier findings filtered by positive cost-after return — commit 403df84
+- [x] Walk-forward service extracted with 5 missing CLI parameters — commit 20fe733
+- [x] Fresh mining artifacts generated after the fixes — commit cd30dee
+  - Cross-TF Robust signals: **0**
+  - H1 / M30 walk-forward stable rules: **0 / 0**
+  - Promotable barrier findings: **0**
+- [x] Live-aligned backtest artifacts generated — commit 2622691
+  - research mode H1 5/5 gates pass (PF 1.718, DD 10.7%, MC sig)
+  - **execution_feasibility mode 0/6 (H1) — 1/6 (其他) — `below_min_volume_for_execution_feasibility` 84-100% 命中**
+- [x] Demo-vs-backtest reconciliation — **deferred**：先解决 EF lot bug 再跑 demo
+- [x] Active-guarded promotion: **NO PROMOTION** — 0 策略通过 7 门禁
+- [x] Doc drift cleanup — commit f07f92f（catalog 14 实例 SSOT）
+- [x] Final decision recorded — REJECT current candidates；live remains BLOCKED
+
+**Outcome**: 4 个 P0 根因修复落地，但**没有任何策略通过晋级门禁**。下一轮先解决 `src/backtesting/engine/execution_semantics.py` 的 EF lot bug（`below_min_volume` 高命中率根因），再决定下一步路径。

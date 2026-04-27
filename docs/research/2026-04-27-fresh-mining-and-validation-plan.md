@@ -66,9 +66,9 @@ For demo_validation continuation only:
 | Fresh mining run (Task 5) | ✅ 2026-04-27 — commit cd30dee |
 | Live-aligned backtest (Task 6) | ✅ 2026-04-27 — research + execution_feasibility 双跑完成 |
 | Demo validation (Task 7) | ⏳ pending Task 6 + 真实 demo 多日运行 |
-| Active-guarded proposal (Task 8) | ⏳ pending Task 7 |
+| Active-guarded proposal (Task 8) | ❌ NO PROMOTION — 0 策略通过门禁 |
 | Doc drift cleanup (Task 9) | ✅ 2026-04-27 — commit f07f92f |
-| Final decision (Task 10) | ⏳ pending |
+| Final decision (Task 10) | ✅ 2026-04-27 — REJECT current candidates |
 
 ## Fresh Mining Result
 
@@ -237,3 +237,81 @@ H1 上盈利策略（research mode）：
 - Feature candidates may proceed to backtest only when they are live-computable and backed by **positive cost-after** barrier evidence.
 - Rule candidates may proceed to backtest only when they appear in at least 60% of walk-forward windows.
 - 若 4 TF + walk-forward 全部完成后 **0 promotable candidate**，本轮在 research 阶段拒绝并落档（PLAN.md Rollback rule）。
+
+## Demo Validation SOP（Task 7 — pending 真实多日运行）
+
+本轮 Task 6 触发 rollback rule，**不向 demo validation 窗口推送任何新候选**。
+但若未来用户希望对**现有 demo_validation 策略**做真实 broker 验证，按下列 SOP 执行：
+
+```powershell
+# 1. 配 MT5 terminal path（mt5.local.ini）后跑 preflight
+python -m src.ops.cli.live_preflight --environment demo
+# 期望：No live activation / demo-main 所有 9 项 OK / 0 critical FAIL
+
+# 2. 启动 demo runtime（保持运行 ≥1 周或直到 ≥20 笔成交）
+python -m src.entrypoint.web
+# 或多实例：python -m src.entrypoint.supervisor --environment demo
+
+# 3. 另一终端跑 health 探针
+python -m src.ops.cli.health_check --environment demo
+# 期望：ready
+
+# 4. ≥20 笔 demo 成交后做对账（backtest_run_id 从 mining_runs/backtest_runs 表查）
+python -m src.ops.cli.demo_vs_backtest \
+    --backtest-run-id <实际 run_id from Task 6 持久化> \
+    --start 2026-04-27 --end 2026-05-04
+# 期望：Demo vs Backtest drift summary 在阈值内
+```
+
+**关键警告**：Task 6 EF 模式发现 `below_min_volume_for_execution_feasibility` 命中 84-100%。
+demo 真实运行**必然**触发同样的 broker 拒单，结果是少量 trades 或 0 trades。
+建议**先解决 EF lot 计算 bug**（`src/backtesting/engine/execution_semantics.py`）再跑 demo validation，
+否则 demo 周耗时但拿不到有效证据。
+
+## Active-Guarded Proposal（Task 8 — REJECTED in this round）
+
+按 PLAN.md Task 8 Step 1 流程：
+
+```powershell
+python -m src.ops.cli.confidence_check --tf H1
+# 输出：NO LIVE-ELIGIBLE STRATEGIES — all current strategies are CANDIDATE / DEMO_VALIDATION
+```
+
+**判定**：当前 14 个策略实例**没有任何一个**通过 PLAN.md 7 门禁。
+`config/signal.ini` 与 `config/signal.local.ini` 的 `[strategy_deployments]`
+本轮**不修改** —— `live-main` / `live-exec-a` 绑定保持空状态。
+
+未来某策略想晋级 active_guarded 必须：
+1. 解决 EF lot bug，跑 EF 模式 backtest 看真实 acc_ratio
+2. 同策略在新 EF 模式下通过 PF ≥ 1.20 / DD ≤ 15% / acc_ratio ≥ 0.85
+3. 跑 ≥20 笔 demo validation 真实成交，drift 在阈值内
+4. 操作员显式批准
+
+## Final Decision
+
+### Decision
+
+- **Result**: REJECT current candidates — 全部 14 个策略实例保持现状
+- **Promotions in this round**: **0**
+- **Live activation**: **BLOCKED** — `live-main` / `live-exec-a` 仍保持空绑定（正确的保护状态）
+
+### Evidence
+
+| Stage | Artifact | 关键结论 |
+|---|---|---|
+| Research config fix | commit 687b68a | `correction_method` 历史一直跑 bonferroni 而非声明的 bh_fdr —— P0 根因 |
+| Barrier filter fix | commit 403df84 | 4 测覆盖 `mean_return > 0` 过滤 |
+| Walk-forward service | commit 20fe733 | 7 测 + CLI 5 个新参数 |
+| Fresh mining | commit cd30dee | Cross-TF Robust 0 / WF Stable 0×2 / Promotable barrier 0 |
+| Live-aligned backtest | commit 2622691 | 7-gate 通过率 0/6 (H1) — 1/6 (其他 TF) |
+| Doc drift cleanup | commit f07f92f | catalog 14 实例为 SSOT |
+
+### 下一轮 backlog（独立于本计划）
+
+1. **P1 EF lot calculation bug**：`below_min_volume_for_execution_feasibility` 84-100% 命中表明 backtest engine 在 EF 模式下的 lot 计算与 broker min_volume 阈值不一致。需查 `src/backtesting/engine/execution_semantics.py`。
+2. **P2 现有策略族重新 audit**：`structured_regime_exhaustion` 在 EF 模式下 0 trades 但 RM 模式下大赢 —— 暗示 entry 信号产生时市场流动性恰好不足。需 audit 该策略的 entry timing 与 broker 流动性窗口的关系。
+3. **P3 5 个 robust feature candidates** 编码为新策略候选：`momentum_consensus` (H1/H4), `body_ratio` (M15/M30) — 但需先解决 P1。
+
+### Operator Notes
+
+Live activation remains **BLOCKED**. 本轮整改仅完成研究层证据链修复（4 个 P0 根因），未产生任何可促进 live 的策略候选。研究层评估结论：当前 14 个 demo_validation 策略族在加上 broker 真实流动性约束后**不具备 live 晋级条件**。建议下一轮先解决 EF lot bug 再决定下一步路径。
