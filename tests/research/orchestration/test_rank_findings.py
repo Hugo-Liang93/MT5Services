@@ -55,7 +55,15 @@ def _barrier_result(
     sl_rate: float = 0.55,
     direction: str = "long",
     is_significant: bool = True,
+    mean_return_pct: float = 0.02,
 ) -> IndicatorBarrierPredictiveResult:
+    """构造合法的 tradeable barrier finding（默认 cost-after 正收益）。
+
+    2026-04-27 决策：_rank_findings 仅纳入 mean_return_pct > 0 的 barrier。
+    需测试负 mean_return 被过滤的场景，请显式传 mean_return_pct=负值。
+    IC 正负独立于 mean_return 正负——边界场景（IC<0 + mean_return>0）依然走
+    'if ic > 0 / else' 文案分支。
+    """
     return IndicatorBarrierPredictiveResult(
         indicator_name="adx14",
         field_name="adx",
@@ -71,9 +79,9 @@ def _barrier_result(
         is_significant=is_significant,
         tp_hit_rate=tp_rate,
         sl_hit_rate=sl_rate,
-        time_exit_rate=1.0 - tp_rate - sl_rate,
+        time_exit_rate=max(0.0, 1.0 - tp_rate - sl_rate),
         mean_bars_held=15.5,
-        mean_return_pct=-0.005,
+        mean_return_pct=mean_return_pct,
     )
 
 

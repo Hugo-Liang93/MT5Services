@@ -8297,3 +8297,30 @@ P9 bug #3 已暴露 paper bypass execution_intent 引发 admission writeback 失
 
 - 配置加载向 SSOT 收口（`config/` 是仓库唯一约定）；不留兼容补丁
 - 后续 fresh mining (Task 5) 起，所有产物才有可追溯口径
+
+---
+
+## 2026-04-27 — barrier finding ranking 按经济可行性过滤
+
+### 背景
+
+`MiningRunner._rank_findings()` 第 478 行此前仅 `if not bp.is_significant: continue`，把所有显著的 barrier finding 推入 Top Findings——**包括 cost-after `mean_return_pct <= 0` 的负收益发现**。下游 action 文案虽用 `if ic > 0` 区分"有效/亏钱"，但 ranking 不阻断负收益候选，与「Research 输出可促晋级证据」的语义错位。
+
+### 修复
+
+- `src/research/orchestration/runner.py` 模块级新增 `_is_tradeable_barrier_finding()` helper：`is_significant AND mean_return_pct > 0`
+- 第 478 行过滤条件改用此 helper
+- barrier `summary` 增 `ret=±x.xxxx%` 字段（可审计 cost-after 收益）
+- 决策 1（[plan-md-radiant-sparrow.md](../C:/Users/Hugo/.claude/plans/plan-md-radiant-sparrow.md)）：**不**叠加 `tp_hit_rate > sl_hit_rate` 门控——R:R 偏向 TP 的低胜率组合（trend-following 风格）仍可正期望，hit-rate ratio 会误杀
+
+### 测试
+
+- 新建 `tests/research/orchestration/test_runner_barrier_findings.py`：4 测覆盖负 mean_return 剔除 / 非显著剔除 / 高赔率低胜率保留 / summary 含 ret 字段
+- `tests/research/orchestration/test_rank_findings.py` 的 `_barrier_result` helper 默认 `mean_return_pct: float = 0.02`（合法 tradeable 默认）；测试守护语义不变（IC 正负产生不同 action 文案；non-significant skip；coexist with predictive_power）
+- 全 research 套件回归：`pytest -q tests/research/` → **542 passed / 6 skipped**
+
+### 边界影响
+
+- Research 输出语义收口：top findings 现在**只**包含 promotion-eligible 候选
+- 负收益显著发现仍存在于 `barrier_predictive_power` 列表（不删数据），但不进 ranking
+- 文档 `docs/research-system.md` 同步新增 "barrier candidate 晋级口径" 段

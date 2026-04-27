@@ -70,6 +70,22 @@
 4. **Gap 3**：weekend/holiday gap 自动 mask，排除周五→周一 ~50h 空档的
    forward_return / barrier_return
 
+### barrier candidate 晋级口径（2026-04-27 收紧）
+
+`MiningRunner._rank_findings()` 仅把同时满足以下两条的 barrier finding
+推入 Top Findings：
+
+1. `is_significant == True`（permutation/BH-FDR 校正后显著）
+2. `mean_return_pct > 0`（cost-after 经济可行 — 已扣 `round_trip_cost_pct`）
+
+显著但 cost-after 负收益的发现作为 **avoidance / reverse-direction
+evidence**，不进 promotion 候选。**不叠加** tp_hit_rate vs sl_hit_rate
+门控——R:R 偏向 TP 时低胜率组合（如 tp=30%/sl=45% + 3:1 R:R）仍可正
+期望，hit-rate ratio 会误杀这类 trend-following 风格。
+
+barrier finding 的 `summary` 字符串包含 `ret=±x.xxxx%` 字段，可在 JSON
+产物里直接审计 cost-after 收益。
+
 ---
 
 ## 系统定位

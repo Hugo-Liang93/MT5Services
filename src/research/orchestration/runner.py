@@ -116,6 +116,16 @@ def _event_to_summary(ev: Any) -> EventSummary:
     )
 
 
+def _is_tradeable_barrier_finding(bp: Any) -> bool:
+    """barrier finding 是否同时满足显著性与 cost-after 经济可行性。
+
+    决策 1（plan-md-radiant-sparrow.md 评估）：经济可行性已由 cost-after
+    `mean_return_pct` 表达；不叠加 tp_hit_rate vs sl_hit_rate 门控——
+    R:R 偏向 TP 时低胜率组合仍可正期望。
+    """
+    return bool(bp.is_significant) and bp.mean_return_pct > 0
+
+
 class MiningRunner:
     """信号挖掘运行器。
 
@@ -475,7 +485,7 @@ class MiningRunner:
 
         # 从 Barrier Predictive Power 提取（Gap 2b — IC 基于 Triple-Barrier 出场）
         for bp in result.barrier_predictive_power:
-            if not bp.is_significant:
+            if not _is_tradeable_barrier_finding(bp):
                 continue
             ic = bp.information_coefficient
             # 打分：|IC| × (1 + tp/sl 偏离 50/50 的程度 × 10)
@@ -509,6 +519,7 @@ class MiningRunner:
                         f"IC={ic:+.3f} barrier={sl_atr}/{tp_atr}/{time_bars} "
                         f"tp={bp.tp_hit_rate * 100:.0f}%/"
                         f"sl={bp.sl_hit_rate * 100:.0f}% "
+                        f"ret={bp.mean_return_pct:+.4f}% "
                         f"bars={bp.mean_bars_held:.1f} n={bp.n_samples}{regime_str}"
                     ),
                     confidence_level=(
