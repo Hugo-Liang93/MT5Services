@@ -8417,3 +8417,94 @@ structured_session_breakout (冻结)
 
 - 文档与运行时事实源对齐；后续策略数变化只需改 catalog.py，文档跟随
 - 决策 4：以 catalog.py 实际注册为 SSOT，CLAUDE.md/docs 全部跟随
+
+---
+
+## 2026-04-28 — EF sub-min-volume fallback（P1 修复）
+
+### 背景
+
+PLAN.md 整改完成后落档 P1 backlog：execution_feasibility 模式下 84-100% 进场被 `below_min_volume_for_execution_feasibility` 拒。3 步追查（默认值 → normalize → 全 src 调用点）确认**这不是 lot 计算 bug**：
+- `_align_volume(floor)` 是正确 broker semantic
+- `min_volume = 0.01` 是 XAUUSD 标准
+- 真实根因：`default_initial_balance = 2000.0` × `risk_percent = 1.0` × `contract_size = 100`（XAUUSD）+ XAUUSD 真实 SL_distance 通常 20-100 USD 时，物理上 raw_position_size 多在 0.005-0.013 区间，被 floor 到 < 0.01 的概率高
+
+### 用户决策
+
+希望保留 $2000 账户但能下 0.01 最小手数。即**主动接受**单笔实际风险占比 > 1%（标称 risk%）。
+
+### 修复
+
+`PositionConfig` 新增两个字段：
+- `allow_min_volume_fallback: bool = False`（默认 False 保留 broker 严格语义）
+- `max_actual_risk_pct: float = 5.0`（fallback 上限保护）
+
+`_resolve_execution_feasible_position_size` 决策：
+1. raw ≥ min_volume → 正常 floor + cap 返回
+2. raw < min_volume + fallback OFF → 拒（旧行为）
+3. raw < min_volume + fallback ON：
+   - 计算实际风险 = `min_volume × sl_distance × contract_size`
+   - 占账户比例 ≤ max_actual_risk_pct → accept min_volume
+   - 超过上限 → 拒，reject reason 改为 `exceeds_max_actual_risk_pct`
+
+### 配置接入
+
+- `config/backtest.ini` 加 `allow_min_volume_fallback = false` + `max_actual_risk_pct = 5.0`（默认基础配置）
+- `config/backtest.local.ini`（新建）启用 fallback 用于 $2000 账户
+- `_FLAT_FIELD_MAP` 加映射，`get_backtest_defaults()` 加 ini 解析
+- 隐私分层：策略调优值放 .local.ini（gitignored），保持仓库基础配置不破坏 broker 严格语义
+
+### 测试
+
+- 新建 `tests/backtesting/test_execution_semantics.py`（7 测）覆盖：
+  - 默认 fallback OFF 拒 sub-min-volume（保留旧行为）
+  - 默认 OFF + raw ≥ min_volume 正常接受
+  - fallback ON + 实际风险 ≤ cap → 强制 min_volume，accept
+  - fallback ON + 实际风险 > cap → 拒，reject reason `exceeds_max_actual_risk_pct`
+  - fallback ON + 实际风险 = cap 边界值 → accept
+  - fallback ON + raw 已 ≥ min_volume → 正常路径不触发 fallback
+  - RESEARCH 模式不受影响
+
+全 backtest 套件 281 passed 无 regression。
+
+### 验证（重跑 1 年 4 TF EF backtest）
+
+| TF | 无 fallback | with fallback |
+|---|---|---|
+| H4 | 0 trades / 0 PF | 4 trades / PF 1.154 / +16.86 |
+| H1 | 45 trades / PF 0.310 / -353 | **221 trades / PF 2.121 / DD 9.7% / +4601** |
+| M30 | 185 trades / PF 0.713 / -493 | 690 trades / PF 1.461 / DD 26.9% / +5802 |
+| M15 | 230 trades / PF 0.296 / -1319 | 1151 trades / PF 1.348 / DD 73.6% / +5417 |
+
+**H1 通过 6/6 PLAN.md 门禁**：
+- accepted_ratio 100% (≥85%) ✓
+- total_trades 221 (≥80) ✓
+- profit_factor 2.121 (≥1.20) ✓
+- expectancy +20.82 (>0) ✓
+- max_drawdown 9.68% (≤15) ✓
+- monte_carlo.p_value 0.002 (≤0.10) ✓
+
+H1 主力策略：`structured_regime_exhaustion` (29 trades / 51.7% WR / **+3708.14**) + `structured_strong_trend_follow` (71 trades / 38.0% / +1183.19)。
+
+`regime_exhaustion` 之前 EF 模式 0 trades 是因为其 SL 较大触发 sub-min-volume 拒；fallback 启用后真实成交 29 笔且高胜率高利润。这验证了**不是策略本身问题**，是**lot sizing 在小账户上的物理瓶颈**。
+
+### 拒单分布验证 fallback 工作正常
+
+- H1: 0 rejections（全 221 接受）
+- H4: 3 rejections by `exceeds_max_actual_risk_pct`（H4 SL > 100 USD 触发风控上限）
+- M15: 1 rejected by 上限 + 23 by `daily_loss_limit_pct`（独立 filter，非本次 fallback 引入）
+
+### 边界影响
+
+- broker 严格语义保留（默认 False）；用户主动启用才走 fallback
+- `max_actual_risk_pct` 是单笔上限，不替代 daily_loss / max_positions 等组合层风控
+- 启用 fallback 意味着**实际 risk% > 标称 risk%**，需要文档同步说明
+
+### 下一步
+
+H1 通过 6/6 门禁，可考虑：
+1. 跑 strategy-level walk-forward（PLAN.md 第 7 个门禁 `walk_forward.consistency >= 0.70`）
+2. demo validation 真实下单 ≥ 20 trades（PLAN.md Task 7 SOP）
+3. 对账后进 active_guarded（Task 8 单策略晋级）
+
+候选策略：**structured_regime_exhaustion** 或 **structured_strong_trend_follow** on H1。

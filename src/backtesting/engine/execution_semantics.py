@@ -72,12 +72,17 @@ def resolve_trade_parameters(
             resolved_position_size=resolved_size,
         )
 
-    resolved_size = _resolve_execution_feasible_position_size(config, raw_position_size)
+    resolved_size, reject_reason = _resolve_execution_feasible_position_size(
+        config,
+        raw_position_size,
+        sl_distance=trade_params.sl_distance,
+        account_balance=account_balance,
+    )
     if resolved_size is None:
         return ExecutionResolution(
             accepted=False,
             trade_params=None,
-            reason="below_min_volume_for_execution_feasibility",
+            reason=reject_reason or "below_min_volume_for_execution_feasibility",
             raw_position_size=raw_position_size,
         )
     return ExecutionResolution(
@@ -129,17 +134,44 @@ def _resolve_research_position_size(
 def _resolve_execution_feasible_position_size(
     config: BacktestConfig,
     raw_position_size: float,
-) -> float | None:
+    *,
+    sl_distance: float,
+    account_balance: float,
+) -> tuple[float | None, str | None]:
+    """返回 (resolved_size, reject_reason)。
+
+    raw ≥ min_volume：按 step floor 后 cap 到 max_volume，正常返回。
+    raw < min_volume：
+      - allow_min_volume_fallback=False（默认）→ 拒（broker semantic）
+      - allow_min_volume_fallback=True → 检查 0.01 lot 实际风险占比：
+          - 不超过 max_actual_risk_pct → 强制 min_volume，accept
+          - 超过 max_actual_risk_pct → 拒（避免小账户大 SL 吃账户）
+    """
     min_volume = float(config.position.min_volume)
     max_volume = float(config.position.max_volume)
     if max_volume < min_volume:
-        return None
+        return None, "max_volume_below_min_volume"
 
     step = _execution_volume_step(min_volume)
     aligned = _align_volume(raw_position_size, step)
-    if aligned < min_volume:
-        return None
-    return round(min(max_volume, aligned), 8)
+    if aligned >= min_volume:
+        return round(min(max_volume, aligned), 8), None
+
+    # raw < min_volume —— 走 fallback 决策
+    if not config.position.allow_min_volume_fallback:
+        return None, "below_min_volume_for_execution_feasibility"
+
+    contract_size = float(config.position.contract_size)
+    if account_balance <= 0:
+        return None, "below_min_volume_for_execution_feasibility"
+
+    actual_risk_amount = min_volume * sl_distance * contract_size
+    actual_risk_pct = (actual_risk_amount / account_balance) * 100.0
+    max_actual_risk = float(config.position.max_actual_risk_pct)
+    if actual_risk_pct > max_actual_risk:
+        return None, "exceeds_max_actual_risk_pct"
+
+    return round(min_volume, 8), None
 
 
 def _align_volume(value: float, step: float) -> float:

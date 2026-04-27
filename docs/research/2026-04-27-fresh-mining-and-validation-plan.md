@@ -185,14 +185,59 @@ H1 上盈利策略（research mode）：
 - **没有任何策略可晋级 active_guarded**
 - 现有 10 个 demo_validation 策略**保持 demo_validation 状态**，但 H1 上 regime_exhaustion 应在下一轮 research 中重新检查 entry filter（为何 broker 100% 拒？min_volume 阈值是否合理？）
 
-### 执行可行性的根因调查（next research 项）
+### 执行可行性的根因调查（2026-04-28 P1 完成）
 
-`below_min_volume_for_execution_feasibility` 100% 命中表明：
-1. broker 仿真的 min_volume 阈值（XAUUSD 最小手数 0.01）与策略生成的 size 不一致；或
-2. 风险层 `RegimeSizing` 计算的 lot 在 EF 模式下被向下取整为 0
-3. 需独立排查 `src/backtesting/engine/execution_semantics.py` 的 EF 模式 lot 计算
+3 步追查后确认**不是 lot 计算 bug**：
+- `_align_volume(floor)` 是正确 broker semantic
+- `min_volume = 0.01` 是 XAUUSD 标准
+- 真实根因：$2000 账户 × 1% risk × XAUUSD contract_size=100 物理上多数情况 raw_position_size 落在 0.005-0.013，floor 后 < min_volume
 
-这是**独立的 research/engineering bug**，不在本轮整改范围。落档为下一轮的 P1。
+### P1 修复（2026-04-28）
+
+加 `PositionConfig.allow_min_volume_fallback` + `max_actual_risk_pct`：
+- raw < min_volume 且 fallback ON → 强制下 min_volume（接受 risk% > 标称）
+- 实际风险占比 > max_actual_risk_pct → 拒（保留小账户大 SL 单笔吃账户的保护）
+
+backtest.local.ini 启用 fallback。重跑 1 年 4 TF EF backtest：
+
+### Re-run with Fallback Result
+
+| TF | acc_ratio | trades | PF | DD% | Exp | MC.PF.p | 6-gate |
+|---|---|---|---|---|---|---|---|
+| H4 | 57.1% | 4 | 1.154 | 7.1% | +4.21 | 1.000 | 2/6 |
+| **H1** | **100.0%** | **221** | **2.121** | **9.7%** | **+20.82** | **0.002** | **6/6 ✓** |
+| M30 | 100.0% | 690 | 1.461 | 26.9% | +8.41 | 0.003 | 5/6 (DD ✗) |
+| M15 | 98.0% | 1151 | 1.348 | 73.6% | +4.71 | 0.004 | 5/6 (DD ✗) |
+
+**H1 通过 6/6 PLAN.md 门禁**——首个真正可考虑晋级的 TF。
+
+H1 单策略明细（fallback ON）：
+
+| Strategy | n | WR% | PnL |
+|---|---|---|---|
+| `structured_regime_exhaustion` | 29 | 51.7% | **+3708.14** |
+| `structured_strong_trend_follow` | 71 | 38.0% | +1183.19 |
+| `structured_trendline_touch` | 8 | 50.0% | +135.67 |
+| `structured_open_range_breakout` | 62 | 38.7% | +61.61 |
+| `structured_pullback_window` | 11 | 36.4% | -79.18 |
+| `structured_trend_h4_momentum` | 17 | 35.3% | -186.11 |
+| `structured_trend_h4` | 23 | 34.8% | -221.78 |
+
+`structured_regime_exhaustion` 之前 EF 模式 0 trades，fallback 启用后真实成交 29 笔。这验证了**不是策略问题**，是 lot sizing 在小账户上的物理瓶颈。
+
+### 修订后的晋级评估
+
+**H1 + structured_regime_exhaustion** 是 fallback 启用后的最强候选：
+- 29 trades / 51.7% WR / +3708 PnL（占 H1 总盈利 81%）
+- 但单策略层 stats 缺 PF / DD（只有 n/w/pnl），需 strategy-level walk-forward 补全证据
+
+**保留 demo_validation 状态**——尚需第 7 个门禁 `walk_forward.consistency >= 0.70` 验证。
+
+### 下一步
+
+1. 跑 strategy-level walk-forward（`walkforward_runner` 不是 mining_walk_forward）
+2. 若 WF consistency 通过 → demo validation 真实下单 ≥ 20 笔
+3. demo_vs_backtest 对账 → 决定是否 promote 到 active_guarded
 
 ### H1 Walk-Forward（✅ 2026-04-27 完成）
 

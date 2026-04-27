@@ -89,6 +89,13 @@ class PositionConfig:
     risk_percent: float = 1.0
     min_volume: float = 0.01
     max_volume: float = 1.0
+    # EF 模式 sub-min-volume fallback：
+    # 当 raw_position_size < min_volume 且 allow_min_volume_fallback=True 时，
+    # 强制使用 min_volume，但实际风险占比（min_volume × sl × contract / balance）
+    # 不得超过 max_actual_risk_pct（防止小账户大 SL 单笔吃账户）。
+    # 默认 False 保持原 broker semantic（sub-min-volume 直接拒）。
+    allow_min_volume_fallback: bool = False
+    max_actual_risk_pct: float = 5.0
     trailing_atr_multiplier: float = 0.8
     breakeven_atr_threshold: float = 0.8
     end_of_day_close_enabled: bool = False
@@ -239,6 +246,8 @@ _FLAT_FIELD_MAP: Dict[str, Tuple[str, str]] = {
     "risk_percent": ("position", "risk_percent"),
     "min_volume": ("position", "min_volume"),
     "max_volume": ("position", "max_volume"),
+    "allow_min_volume_fallback": ("position", "allow_min_volume_fallback"),
+    "max_actual_risk_pct": ("position", "max_actual_risk_pct"),
     "trailing_atr_multiplier": ("position", "trailing_atr_multiplier"),
     "breakeven_atr_threshold": ("position", "breakeven_atr_threshold"),
     "end_of_day_close_enabled": ("position", "end_of_day_close_enabled"),
