@@ -619,11 +619,21 @@ def execute_market_order(
             "success": True,
         }
         executor.execution_log.append(log_entry)
-        bar_time = event.metadata.get(MK.BAR_TIME)
-        if bar_time is not None:
+        bar_time_raw = event.metadata.get(MK.BAR_TIME)
+        bar_time_value: datetime | None = None
+        if isinstance(bar_time_raw, datetime):
+            bar_time_value = bar_time_raw
+        elif isinstance(bar_time_raw, str):
+            try:
+                bar_time_value = datetime.fromisoformat(
+                    bar_time_raw.replace("Z", "+00:00")
+                )
+            except ValueError:
+                bar_time_value = None
+        if bar_time_value is not None:
             executor.last_entry_bar_time[
                 (event.symbol, event.strategy, event.direction)
-            ] = bar_time
+            ] = bar_time_value
         for fn in executor.on_trade_executed:
             try:
                 fn(log_entry)

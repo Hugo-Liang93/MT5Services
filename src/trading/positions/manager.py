@@ -59,12 +59,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _ChandelierAction:
-    """锁内 evaluate 产出的待执行 SL 修改动作，锁外执行 MT5 API 调用。"""
+    """锁内 evaluate 产出的待执行动作，锁外执行 MT5 API 调用。
+
+    两种 action 类型：
+    - close_market=False（默认）: 修改 SL 到 new_sl（trail / breakeven）
+    - close_market=True: 市价平仓（signal_exit / timeout 主动退出）。
+      旧实现把 SL 拉到 current_price ± 0.01 等下个 tick 触发，被 broker
+      stop level 检查频繁拒（retcode 10016 INVALID_STOPS）。market close
+      不受 stop level 限制，立即成交。
+    """
 
     pos: "TrackedPosition"
     new_sl: float
     reason: str
     notify_update: bool = False  # 是否通知 on_position_updated 回调
+    close_market: bool = False  # True = 市价平仓，忽略 new_sl
 
 
 @dataclass
@@ -803,29 +812,26 @@ class PositionManager:
         if result.close_reason:
             pos.last_exit_reason = result.close_reason
 
-        # 主动退出（信号反转 / 超时）：把 SL 收紧到当前价附近，
-        # 由 MT5 服务器在下一个 tick 触发平仓。
+        # 主动退出（信号反转 / 超时）：发市价平仓指令。
+        # 旧实现把 SL 拉到 current_price ± 0.01 等下个 tick 触发，broker stop
+        # level 检查频繁拒（10016 INVALID_STOPS），浮亏/高 spread 时段可能
+        # 完全失效。market close 不受 stop level 限制，立即成交。
         if result.should_close and result.close_reason in (
             REASON_SIGNAL_EXIT,
             REASON_TIMEOUT,
         ):
-            # SL 设到当前价的不利方向 1 点处，确保下一个 tick 触发
-            if pos.action == "buy":
-                urgent_sl = current_price - 0.01
-            else:
-                urgent_sl = current_price + 0.01
             logger.info(
-                "Chandelier urgent exit: ticket=%d reason=%s strategy=%s r=%.2f → sl=%.2f",
+                "Chandelier urgent exit: ticket=%d reason=%s strategy=%s r=%.2f → market_close",
                 pos.ticket,
                 result.close_reason,
                 pos.strategy,
                 result.r_multiple,
-                urgent_sl,
             )
             return _ChandelierAction(
                 pos=pos,
-                new_sl=urgent_sl,
+                new_sl=pos.stop_loss,  # 不再用，仅满足 dataclass 必填
                 reason=result.close_reason,
+                close_market=True,
             )
 
         # Trailing SL 更新
@@ -840,7 +846,7 @@ class PositionManager:
         return None
 
     def _apply_chandelier_action(self, action: _ChandelierAction) -> None:
-        """锁外执行 Chandelier Exit 产出的 SL 修改动作（含 MT5 API 调用）。"""
+        """锁外执行 Chandelier Exit 产出的动作（SL 修改或市价平仓）。"""
         # 执行前确认仓位仍然存在（防止在锁释放后仓位已被关闭）
         with self._lock:
             if action.pos.ticket not in self._positions:
@@ -849,6 +855,31 @@ class PositionManager:
                     action.pos.ticket,
                 )
                 return
+        if action.close_market:
+            try:
+                result = self._trading.close_position(
+                    ticket=action.pos.ticket,
+                    deviation=20,
+                    comment=action.reason[:31],  # MT5 comment 长度限制
+                )
+                success = bool(
+                    result.get("success", False) if isinstance(result, dict) else result
+                )
+                if not success:
+                    logger.warning(
+                        "Chandelier market close failed: ticket=%d reason=%s result=%s",
+                        action.pos.ticket,
+                        action.reason,
+                        result,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Chandelier market close raised: ticket=%d reason=%s err=%s",
+                    action.pos.ticket,
+                    action.reason,
+                    exc,
+                )
+            return
         if self._modify_sl(action.pos, action.new_sl, reason=action.reason):
             if action.notify_update and self._on_position_updated is not None:
                 self._on_position_updated(action.pos, action.reason)

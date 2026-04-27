@@ -470,7 +470,9 @@ def get_signal_config() -> SignalConfig:
         "strategy_deployments": strategy_deployments,
         "contract_size_map": _normalize_float_map(
             contract_sizes_section,
-            key_transform=lambda value: value.upper(),
+            key_transform=lambda value: (
+                "default" if str(value).strip().lower() == "default" else str(value).strip().upper()
+            ),
         ),
         "timeframe_risk_multipliers": _normalize_float_map(
             timeframe_risk_section,

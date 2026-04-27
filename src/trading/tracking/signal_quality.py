@@ -238,6 +238,11 @@ class SignalQualityTracker:
                 lst = self._awaiting_evaluation.get(key, [])
                 remaining: List[_PendingSignal] = []
                 for p in lst:
+                    # on_execution_skip 把 direction mutate 成 "skipped:<reason>" 作为
+                    # 标记；这种 pending 不参与 outcome 评估（注释意图），且写入会违反
+                    # signal_outcomes.direction CHECK ('buy','sell') 约束 → 直接丢弃。
+                    if p.direction.startswith("skipped:"):
+                        continue
                     p.bars_elapsed += 1
                     if p.bars_elapsed >= self._bars_to_evaluate:
                         to_evaluate.append(p)
