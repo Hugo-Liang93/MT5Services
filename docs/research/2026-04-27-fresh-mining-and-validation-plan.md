@@ -59,13 +59,119 @@ For demo_validation continuation only:
 
 | Stage | Status |
 |---|---|
-| Baseline snapshot (Task 1) | ✅ 2026-04-27 |
-| Research config fix (Task 2) | ⏳ pending |
-| Barrier filter fix (Task 3) | ⏳ pending |
-| Walk-forward service (Task 4) | ⏳ pending |
-| Fresh mining run (Task 5) | ⏳ pending |
-| Live-aligned backtest (Task 6) | ⏳ pending |
-| Demo validation (Task 7) | ⏳ pending |
-| Active-guarded proposal (Task 8) | ⏳ pending |
-| Doc drift cleanup (Task 9) | ⏳ pending |
+| Baseline snapshot (Task 1) | ✅ 2026-04-27 — commit be9897b |
+| Research config fix (Task 2) | ✅ 2026-04-27 — commit 687b68a (P0 根因) |
+| Barrier filter fix (Task 3) | ✅ 2026-04-27 — commit 403df84 |
+| Walk-forward service (Task 4) | ✅ 2026-04-27 — commit 20fe733 |
+| Fresh mining run (Task 5) | 🔄 in progress |
+| Live-aligned backtest (Task 6) | ⏳ pending Task 5 完成 |
+| Demo validation (Task 7) | ⏳ pending Task 6 + 真实 demo 多日运行 |
+| Active-guarded proposal (Task 8) | ⏳ pending Task 7 |
+| Doc drift cleanup (Task 9) | ✅ 2026-04-27 — commit f07f92f |
 | Final decision (Task 10) | ⏳ pending |
+
+## Fresh Mining Result
+
+### H1 Smoke（4 个月，2026-01-01 → 2026-04-26）
+
+**产物**：`data/research/fresh_mining_h1_smoke_2026-04-27.json`（run_id `mine_f24b53773ef7`）
+
+**关键观察**：
+- **Bars 1836** (train=1285, test=430), 160 fields, 6 providers 全启 + child-tf M5 → 85 features
+- **PP 12/896 significant**（BH-FDR 校正后），**确认 Task 2 P0 修复生效**——旧 bonferroni 校正下显著数会少很多
+- **Barrier 5/810 significant** — 全部 sl_hit > tp_hit (62-71% sl) **且 mean_return_pct < 0**
+- **Top Findings 0 条 [barrier] 类别**——确认 Task 3 过滤工作（旧实现会让 5 个负收益 barrier 进 Top）
+- 仅 2 条信号 IR ≥ 0.5（time-stable）：`microstructure.body_ratio` IR=+0.89 / `supertrend14.direction` IR=+0.56
+
+**初步结论**：4 个月 H1 数据上**无 promotable barrier 候选**；2 条 stable PP 信号需 backtest 验证 cost-after 是否仍正期望。
+
+### 1 年 4 TF Mining（✅ 2026-04-27 完成）
+
+**产物**：`data/research/fresh_mining_2026-04-27.json` + DB `mining_runs` 4 行（experiment=fresh-mining-2026-04-27）
+
+**Per TF 显著 Predictive Power**:
+
+| TF | Bars | PP_sig | TS | Top Findings |
+|---|---|---|---|---|
+| H4 | 1449 | 2/435 | 77 | 15 |
+| H1 | 6103 | 1/900 | 140 | 15 |
+| M30 | 12400 | 5/681 | 105 | 15 |
+| M15 | 24996 | 6/840 | 140 | 15 |
+
+**Cross-TF Consistency**：
+- **Robust: 0** | Divergent: 0 | TF-specific: 11
+- → 当前 indicator 集合在 1 年 XAUUSD 上**无方向一致的跨 TF 信号**
+
+**Top Findings 类别分布**（15 条 combined）：
+- [rule]: 10 条
+- [threshold]: 4 条
+- [predictive_power]: 2 条
+- **[barrier]: 0 条**（Task 3 过滤生效）
+
+**Feature Candidates** (12 robust)：
+
+| 类型 | 数量 | 说明 |
+|---|---|---|
+| `decision=refit` (live computable) | 5 | `momentum_consensus` × 3 + `body_ratio` × 3（部分重叠） |
+| `decision=research_only` (需 runtime_state) | 7 | bars_in_regime / regime_entropy / child_bar_consensus / intrabar_momentum_shift |
+
+**已晋级 refit 的 feature 列表**：
+- `momentum_consensus` → H1 / H4（buy 方向，scope=bar_close）
+- `body_ratio` → M15 / M30（buy 方向，scope=bar_close）
+
+### 综合诊断（research 层结论）
+
+| 维度 | 结果 | 说明 |
+|---|---|---|
+| Promotable barrier finding | **0** | 4 TF + 1 年数据，全部显著 barrier 都 cost-after 负 |
+| Walk-forward stable rule | **0** (H1) + **0** (M30) | 所有 mined rules 单窗口波动 |
+| Cross-TF robust signal | **0** | 11 个 TF-specific，无方向一致 |
+| Live-computable feature candidate | **5** | 但仍需 backtest 验证是否值得编码为新策略 |
+
+**触发 PLAN.md Rollback rule**：「Task 5 produces no stable candidates → stop at research and document rejection」——research 层**不向 demo_validation 推送新候选**。
+
+但本轮 Task 6 backtest **不是为了 promote 新候选**，而是验证**现有 10 个 demo_validation 策略**在 fresh mining 同窗口（live-aligned 成本 + execution feasibility）下的实际表现，决定它们是否仍有保留 demo_validation 的资格。
+
+### H1 Walk-Forward（✅ 2026-04-27 完成）
+
+**产物**：`data/research/fresh_mining_wf_h1_2026-04-27.json`（6/6 mining_runs 持久化）
+
+**结果**：
+- 6 个窗口各 65 天，每窗口产 8-13 rules
+- **Stable Rules 0**（min_appear=4/6, min_consistency=60%）—— **所有规则都是单窗口样本波动，过拟合**
+
+| Window | Rules Mined |
+|---|---|
+| W1 (2025-04-01 → 2025-06-05) | 9 |
+| W2 (2025-06-05 → 2025-08-09) | 9 |
+| W3 (2025-08-09 → 2025-10-13) | 11 |
+| W4 (2025-10-13 → 2025-12-17) | 8 |
+| W5 (2025-12-17 → 2026-02-20) | 10 |
+| W6 (2026-02-20 → 2026-04-26) | 13 |
+
+**结论**：H1 walk-forward 与 2026-04-23 评估结论一致——配置修复后**仍 0 稳定规则**，证明这是真实市场结构特征，不是 config bug 产物。研究层 H1 上**无可促晋级的规则候选**。
+
+### M30 Walk-Forward（✅ 2026-04-27 完成）
+
+**产物**：`data/research/fresh_mining_wf_m30_2026-04-27.json`（6/6 mining_runs 持久化）
+
+**结果**：
+- 6 个窗口，每窗口 4-9 rules（共 44 rules）
+- **Stable Rules 0**
+
+| Window | Rules Mined |
+|---|---|
+| W1 | 9 |
+| W2 | 9 |
+| W3 | 8 |
+| W4 | 4 |
+| W5 | 7 |
+| W6 | 7 |
+
+**结论**：M30 与 H1 walk-forward 结论一致——配置修复后**0 稳定规则**。两个 TF 综合：当前 XAUUSD 在标准 mining 流程下未发现可促晋级的规则候选。
+
+### Promotion Interpretation
+
+- Feature candidates may proceed to backtest only when they are live-computable and backed by **positive cost-after** barrier evidence.
+- Rule candidates may proceed to backtest only when they appear in at least 60% of walk-forward windows.
+- 若 4 TF + walk-forward 全部完成后 **0 promotable candidate**，本轮在 research 阶段拒绝并落档（PLAN.md Rollback rule）。
