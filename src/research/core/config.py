@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import configparser
-import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 
-_CONFIG_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config"
-)
+_CONFIG_DIR = str(Path(__file__).resolve().parents[3] / "config")
 
 
 @dataclass(frozen=True)
@@ -255,10 +253,11 @@ def load_research_config(ini_path: Optional[str] = None) -> ResearchConfig:
     """
     parser = configparser.ConfigParser()
     if ini_path is None:
+        config_dir = Path(_CONFIG_DIR)
         parser.read(
             [
-                os.path.join(_CONFIG_DIR, "research.ini"),
-                os.path.join(_CONFIG_DIR, "research.local.ini"),
+                str(config_dir / "research.ini"),
+                str(config_dir / "research.local.ini"),
             ],
             encoding="utf-8",
         )

@@ -103,3 +103,68 @@ class TestCostReflectedInForwardReturns:
         assert "- cost" in src or "-cost" in src, (
             "build_data_matrix 必须从 raw_return 扣除 cost，否则 cost 配置无效。"
         )
+
+
+class TestDefaultResearchConfigPath:
+    """守护 _CONFIG_DIR 默认路径指向仓库根 config/。
+
+    2026-04-27 评估发现：旧实现 `os.path.dirname` ×3 + `__file__` 实际指向
+    `src/config`（不存在 research.ini），configparser 静默失败 →
+    所有历史 mining 跑的都是 Pydantic 默认值，不是 config/research.ini 的口径。
+    此测试族锁定修复，禁止回归。
+    """
+
+    def test_default_config_dir_points_to_repo_config(self) -> None:
+        """默认 research 配置目录必须是仓库根目录 config/。"""
+        from src.research.core import config as research_config_module
+
+        expected = Path(__file__).resolve().parents[3] / "config"
+        actual = Path(research_config_module._CONFIG_DIR)
+
+        assert actual == expected
+        assert (actual / "research.ini").exists()
+        assert actual.name == "config"
+        assert actual.parent.name == "MT5Services"
+
+    def test_default_loader_uses_repo_research_ini(self) -> None:
+        """默认 loader 应读取 config/research.ini 中的显式统计口径。"""
+        cfg = load_research_config()
+
+        assert cfg.overfitting.correction_method == "bh_fdr"
+        assert cfg.feature_providers.fdr_grouping == "by_provider"
+
+    def test_default_loader_merges_local_after_base(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """research.local.ini 必须覆盖 research.ini。"""
+        from src.research.core import config as research_config_module
+
+        (tmp_path / "research.ini").write_text(
+            textwrap.dedent(
+                """
+                [overfitting]
+                correction_method = bh_fdr
+                [feature_providers]
+                fdr_grouping = by_provider
+                """
+            ).strip(),
+            encoding="utf-8",
+        )
+        (tmp_path / "research.local.ini").write_text(
+            textwrap.dedent(
+                """
+                [overfitting]
+                correction_method = bonferroni
+                [feature_providers]
+                fdr_grouping = global
+                """
+            ).strip(),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(research_config_module, "_CONFIG_DIR", str(tmp_path))
+
+        cfg = load_research_config()
+
+        assert cfg.overfitting.correction_method == "bonferroni"
+        assert cfg.feature_providers.fdr_grouping == "global"

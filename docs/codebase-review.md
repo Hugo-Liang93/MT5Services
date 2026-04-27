@@ -8255,3 +8255,45 @@ P9 bug #3 已暴露 paper bypass execution_intent 引发 admission writeback 失
 - **portfolio 层**（跨策略相关性 / 同向叠加 / 反向冲突识别）当前缺失但**不在本 ADR 范围**——独立 backlog 项，等 ≥3 条策略并存有真冲突数据后再启动设计
 - **多 demo 账户演进**：当并行候选 ≥3 条时，扩展 `topology.ini [group.demo] workers = ...`
 - **`paper_shadow_required` dataclass 字段**未改名（语义保留为"必须经过 shadow 验证阶段"），如果未来希望统一命名可在独立 commit 处理
+
+
+---
+
+## 2026-04-27 — Research config SSOT 路径修复（P0 根因）
+
+### 背景
+
+整改计划 PLAN.md（[plan-md-radiant-sparrow.md](../C:/Users/Hugo/.claude/plans/plan-md-radiant-sparrow.md)）评估发现 `src/research/core/config.py:_CONFIG_DIR` 用 `os.path.dirname` 三次后再拼 `config`，**实际指向 `src/config`** 而不是仓库根 `config/`。`src/config/research.ini` 不存在 → `configparser.read()` 静默失败 → `load_research_config()` 全部 fallback 到 Pydantic dataclass 默认值 + loader 内的 backward-compat fallback（`legacy_bonf=True` → `correction_method = bonferroni`）。
+
+### 影响（核因结论）
+
+- 所有历史 mining run（含 2026-04-23 / 2026-04-25 综合挖掘、p1a-p2c 系列、mining_fresh_*）使用的口径**不是 `config/research.ini` 写的口径**：
+  - `correction_method` 实际跑的是 `bonferroni`（更严，会杀掉本应通过 BH-FDR 的候选）
+  - `fdr_grouping=by_provider` 未生效，分组校正语义错位
+  - `[feature_providers]` 各开关读不到，cross_tf 等子配置未应用
+  - 其他 `min_samples / round_trip_cost_pct / forward_horizons` 因 dataclass 默认与 ini 一致，未受影响（巧合而非保证）
+
+### 修复
+
+- `src/research/core/config.py:10-12` — `_CONFIG_DIR = str(Path(__file__).resolve().parents[3] / "config")`
+- 移除未用 `import os`，改用 `pathlib.Path`
+- `load_research_config()` 内 `os.path.join` 同步改 `Path / str` 拼接
+- `tests/research/core/test_config.py` 新增 `TestDefaultResearchConfigPath` 三测：默认目录指向仓库根、默认 loader 真读 `config/research.ini`（断言 `correction_method == "bh_fdr"` + `fdr_grouping == "by_provider"`）、`research.local.ini` 覆盖顺序
+
+### 历史产物作废（物理清理）
+
+按 [plan-md-radiant-sparrow.md](../C:/Users/Hugo/.claude/plans/plan-md-radiant-sparrow.md) 决策 B：
+- 删除 `data/research/*.json` + `*.log`（含 `mining_fresh_2026-04-23.json`、`p1a-p2c` 系列、`bt_*` 全部）
+- 删除 `data/research/cache/*.pkl`（datamatrix 缓存基于错误 config）
+- 保留目录结构
+
+### 验证
+
+- `pytest -q tests/research/core/test_config.py tests/research/features/test_config.py` → **56 passed**
+- 全 research 套件回归：`pytest -q tests/research/` → **538 passed / 6 skipped**
+- TDD 步骤：3 测先 FAILED（确认旧 `_CONFIG_DIR` 错），改后全 passed
+
+### 边界影响
+
+- 配置加载向 SSOT 收口（`config/` 是仓库唯一约定）；不留兼容补丁
+- 后续 fresh mining (Task 5) 起，所有产物才有可追溯口径
