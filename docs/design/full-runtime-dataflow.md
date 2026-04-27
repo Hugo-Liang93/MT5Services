@@ -83,7 +83,7 @@
       |                                             |--> [PendingEntryManager] --> [StorageWriter]
       |                                             |--> [PositionManager] -----> [StorageWriter]
       |                                             `--> 执行阶段事实 -----------> [StorageWriter]
-      `--> Paper signal ------------------------> [PaperTradingBridge] ----------> [StorageWriter]
+      `--> demo_validation signal --------------> [demo-main 实例真实下单链路（同 live 主链）] --> [StorageWriter]
 
   [FastAPI / Operator APIs]
       -> [OperatorCommandService]

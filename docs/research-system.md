@@ -608,7 +608,7 @@ enabled_providers = temporal,microstructure,cross_tf,regime_transition,session_e
 | `src/research/features/hub.py` | FeatureHub：特征编排入口，聚合 6 个 Provider 的输出 |
 | `src/research/features/{temporal,microstructure,...}/` | Feature Providers：6 个模块化特征生产者 |
 | `src/research/core/overfitting.py` | BH-FDR + 排列检验 + CV 工具（expanding/sliding） |
-| `src/research/core/cross_tf.py` | 跨 TF 一致性分析 |
+| `src/research/analyzers/multi_tf_aggregator.py` | 跨 TF 一致性分析（robust / divergent / tf_specific 分类） |
 | `src/research/core/config.py` | 配置加载（含 RuleMiningConfig） |
 | `src/research/core/contracts.py` | 结果数据模型与候选工件契约 |
 | `src/ops/cli/mining_runner.py` | CLI 工具 |
@@ -724,7 +724,7 @@ CLI / API
 | `src/research/core/contracts.py` | 各阶段结构化数据 | `MiningResult`、`FeatureCandidateSpec`、`StrategyCandidateSpec` 等契约 | 定义 research 正式工件和结果模型 | 不做计算 |
 | `src/research/core/statistics.py` | 数值序列 | 各类统计原语结果 | 提供共享统计工具，避免 analyzer 重复实现 | 不关心策略/指标语义 |
 | `src/research/core/overfitting.py` | 序列、fold 配置、显著性参数 | CV / FDR / 显著性辅助结果 | 提供稳健性和过拟合控制工具 | 不直接产出候选工件 |
-| `src/research/core/cross_tf.py` | 多个 TF 的 `MiningResult` | `CrossTFAnalysis` | 统一判断 `robust / tf_specific / divergent` | 不直接决定策略上线 |
+| `src/research/analyzers/multi_tf_aggregator.py` | 多个 TF 的 `MiningResult` | `CrossTFAnalysis` | 统一判断 `robust / tf_specific / divergent` | 不直接决定策略上线 |
 | `src/research/analyzers/predictive_power.py` | `DataMatrix`、配置 | `IndicatorPredictiveResult` 列表 | 评估特征/指标对未来收益的预测力 | 不做候选晋升 |
 | `src/research/analyzers/threshold.py` | `DataMatrix`、配置 | `ThresholdSweepResult` 列表 | 扫描阈值，评估 expectancy 和一致性 | 不做候选晋升 |
 | `src/research/analyzers/rule_mining.py` | `DataMatrix`、配置 | 规则挖掘结果 | 从条件组合中提取 IF-THEN 规则证据 | 不做策略实现 |

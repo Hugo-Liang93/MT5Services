@@ -37,16 +37,21 @@ src/signals/
 │   └── wal_queue.py           # WAL 持久化信号队列
 ├── strategies/
 │   ├── base.py                # SignalStrategy Protocol + TimeframeScaler + get_tf_param()
-│   ├── catalog.py             # build_named_strategy_catalog() (7 个结构化策略, 8 个注册实例)
+│   ├── catalog.py             # build_named_strategy_catalog() (12 个结构化策略类，14 个注册实例 — trend_continuation 衍生 2 个 H4 变体)
 │   ├── structured/            # 结构化策略 (Why/When/Where 三层 + _entry_spec 入场规格)
 │   │   ├── base.py            # StructuredStrategyBase
-│   │   ├── trend_continuation.py
+│   │   ├── trend_continuation.py        # default + structured_trend_h4 + structured_trend_h4_momentum
 │   │   ├── sweep_reversal.py
 │   │   ├── breakout_follow.py
 │   │   ├── range_reversion.py
-│   │   ├── session_breakout.py
+│   │   ├── session_breakout.py          # 冻结
 │   │   ├── trendline_touch.py
-│   │   ├── lowbar_entry.py
+│   │   ├── lowbar_entry.py              # 冻结
+│   │   ├── pullback_window.py
+│   │   ├── open_range_breakout.py
+│   │   ├── price_action.py
+│   │   ├── regime_exhaustion.py
+│   │   ├── strong_trend_follow.py
 │   │   ├── trendline_utils.py # 趋势线检测纯函数
 │   │   └── checks.py         # 通用检查工具函数集 (HTF/ADX/RSI/Bar/Volume 纯函数)
 │   ├── adapters.py            # UnifiedIndicatorSourceAdapter

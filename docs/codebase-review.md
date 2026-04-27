@@ -8378,3 +8378,42 @@ CLI 重写为适配层（`src/ops/cli/mining_walk_forward.py`）：
   常规 mining 同口径
 - 单窗口 mine 失败仅 catch 在 CLI 边界（不阻断后续窗口），服务层不持
   catch（保持纯函数语义）
+
+---
+
+## 2026-04-27 — 文档漂移清理（Task 9）
+
+### 修复项
+
+| 位置 | 旧值 | 新值 | 来源 |
+|---|---|---|---|
+| `docs/design/full-runtime-dataflow.md:86` | `Paper signal → [PaperTradingBridge]` | `demo_validation signal → demo-main 实例真实下单链路（同 live 主链）` | ADR-010 后 Paper Trading 模块已删除 |
+| `docs/research-system.md:611` | `src/research/core/cross_tf.py` | `src/research/analyzers/multi_tf_aggregator.py` | 模块迁移 |
+| `docs/research-system.md:727` | 同上 | 同上 | 同上 |
+| `docs/signal-system.md:40` | `7 个结构化策略, 8 个注册实例` | `12 个结构化策略类，14 个注册实例` | 实际 catalog 注册 |
+| `docs/signal-system.md:43-49` | 5 个 structured/*.py | 12 个 + 冻结标记 | 全部列出 |
+| `CLAUDE.md:211` | `13 个策略实例（11 结构化策略 + 2 HTF 变体）` | `14 个策略实例（12 个结构化策略类，trend_continuation 衍生 2 个 H4 变体）` | 决策 4：catalog SSOT |
+| `CLAUDE.md:471` | `结构化策略（7 策略）` | `结构化策略（12 类）` | 同上 |
+
+### 14 实例（catalog.py SSOT）
+
+```
+structured_breakout_follow         structured_strong_trend_follow
+structured_lowbar_entry (冻结)     structured_sweep_reversal
+structured_open_range_breakout     structured_trend_continuation
+structured_price_action            structured_trend_h4
+structured_pullback_window         structured_trend_h4_momentum
+structured_range_reversion         structured_trendline_touch
+structured_regime_exhaustion
+structured_session_breakout (冻结)
+```
+
+### 其他保留项
+
+`docs/codebase-review.md` 与 `docs/design/adr.md` 中对 PaperTradingBridge 的提及位于历史台账段（ADR-010 / §F 整改记录），按 §13「时点快照不回改正文」纪律保留。
+`src/` 全 grep `PaperTradingBridge` → 0 命中（代码侧已干净）。
+
+### 边界影响
+
+- 文档与运行时事实源对齐；后续策略数变化只需改 catalog.py，文档跟随
+- 决策 4：以 catalog.py 实际注册为 SSOT，CLAUDE.md/docs 全部跟随
