@@ -87,7 +87,8 @@ def rule_key(conditions: list) -> str:
     """
     parts: List[str] = []
     for condition in sorted(
-        conditions, key=lambda item: (item.indicator, item.field, item.operator)
+        conditions,
+        key=lambda c: (c.indicator, c.field, c.operator),
     ):
         parts.append(
             f"{condition.indicator}.{condition.field}"
@@ -147,7 +148,8 @@ def stable_rules(
 ) -> List[Dict[str, Any]]:
     """从聚合规则中筛出 appearance ≥ ceil(n_splits × min_consistency) 的稳定规则。
 
-    排序：appearance_count desc → avg_test_hit_rate desc → avg_train_hit_rate desc。
+    排序：appearance_count desc → avg_test_hit_rate desc
+    → avg_train_hit_rate desc。
     """
     min_appearances = max(2, math.ceil(n_splits * min_consistency))
     selected: List[Dict[str, Any]] = []
@@ -166,7 +168,9 @@ def stable_rules(
                 "avg_train_n_samples": _mean(
                     [float(v) for v in item["train_n_samples"]]
                 ),
-                "avg_barrier_top_hit_rate": _mean(item["barrier_top_hit_rates"]),
+                "avg_barrier_top_hit_rate": _mean(
+                    item["barrier_top_hit_rates"]
+                ),
             }
         )
     selected.sort(

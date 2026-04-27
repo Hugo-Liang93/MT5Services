@@ -43,7 +43,6 @@ logging.disable(logging.CRITICAL)
 
 from src.utils.timezone import parse_iso_to_utc
 
-
 _ALL_PROVIDERS = [
     "temporal",
     "microstructure",
@@ -157,25 +156,25 @@ def main() -> None:
     from src.config.instance_context import set_current_environment
     from src.ops.cli._coverage import ensure_ohlc_data_coverage
     from src.ops.cli._persistence import add_persist_arguments
-    from src.research.orchestration.walk_forward import (
-        run_mining_walk_forward,
-    )
+    from src.research.orchestration.walk_forward import run_mining_walk_forward
 
     parser = argparse.ArgumentParser(
         description="Mining-layer walk-forward stability validation"
     )
-    parser.add_argument(
-        "--environment", choices=["live", "demo"], required=True
-    )
+    parser.add_argument("--environment", choices=["live", "demo"], required=True)
     parser.add_argument("--tf", required=True)
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument(
-        "--splits", type=int, default=6,
+        "--splits",
+        type=int,
+        default=6,
         help="窗口数（默认 6）；连续非重叠切分",
     )
     parser.add_argument(
-        "--min-consistency", type=float, default=0.60,
+        "--min-consistency",
+        type=float,
+        default=0.60,
         help="稳健阈值：规则至少在该比例的窗口出现（默认 0.60）",
     )
     parser.add_argument(
@@ -230,9 +229,7 @@ def main() -> None:
     raw_results: Dict[str, Any] = {}
     per_window_summaries: List[Tuple[datetime, datetime, int]] = []
 
-    def mine_window_with_capture(
-        window_start: datetime, window_end: datetime
-    ) -> Any:
+    def mine_window_with_capture(window_start: datetime, window_end: datetime) -> Any:
         idx = len(per_window_summaries) + 1
         print(
             f"  Window {idx}/{args.splits}: {window_start.date()} ~ {window_end.date()} ...",

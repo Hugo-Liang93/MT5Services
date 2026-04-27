@@ -187,16 +187,12 @@ def _load_feature_providers(parser: configparser.ConfigParser) -> FeatureProvide
     # --- [feature_providers.temporal] ---
     t_sec = "feature_providers.temporal"
     temporal = TemporalProviderConfig(
-        core_indicators=_parse_str_list(
-            _get(t_sec, "core_indicators", "rsi14,adx14")
-        ),
+        core_indicators=_parse_str_list(_get(t_sec, "core_indicators", "rsi14,adx14")),
         aux_indicators=_parse_str_list(
             _get(t_sec, "aux_indicators", "macd_histogram,cci20,roc12,stoch_k")
         ),
         windows=_parse_int_list(_get(t_sec, "windows", "3,5,10")),
-        cross_levels_rsi=_parse_float_list(
-            _get(t_sec, "cross_levels_rsi", "30,50,70")
-        ),
+        cross_levels_rsi=_parse_float_list(_get(t_sec, "cross_levels_rsi", "30,50,70")),
         cross_levels_adx=_parse_float_list(_get(t_sec, "cross_levels_adx", "20,25")),
     )
 
