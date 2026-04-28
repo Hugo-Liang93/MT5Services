@@ -25,6 +25,7 @@ from .eventing import (
 from .reasons import (
     REASON_DUPLICATE_PENDING_SAME_STRATEGY,
     REASON_DUPLICATE_POSITION_SAME_STRATEGY,
+    REASON_OPPOSITE_POSITION_CROSS_TF,
     REASON_MISSING_SIGNAL_ID,
     REASON_NEW_SIGNAL_OVERRIDE,
     REASON_ORDER_MISSING_WITHOUT_POSITION,
@@ -353,8 +354,18 @@ def _pending_entries_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
 
 
 def duplicate_execution_reason(executor: "TradeExecutor", event: SignalEvent) -> str:
+    """重复入场拦截判定（按优先级）。
+
+    1. 同策略同 TF 任意方向 → REASON_DUPLICATE_POSITION_SAME_STRATEGY
+       （历史"任意方向重复"语义，避免重复入场 + 同 TF hedge）
+    2. 同策略不同 TF 反向 → REASON_OPPOSITE_POSITION_CROSS_TF
+       （多 TF 设计层 1：保留同向加仓，禁反向 hedge 互吃 PnL）
+    3. 同策略 pending entry 已存在 → REASON_DUPLICATE_PENDING_SAME_STRATEGY
+    """
     if has_matching_active_position(executor, event):
         return REASON_DUPLICATE_POSITION_SAME_STRATEGY
+    if has_opposite_position_any_tf(executor, event):
+        return REASON_OPPOSITE_POSITION_CROSS_TF
     if has_matching_pending_entry(executor, event):
         return REASON_DUPLICATE_PENDING_SAME_STRATEGY
     return ""
@@ -386,6 +397,37 @@ def has_matching_active_position(executor: "TradeExecutor", event: SignalEvent) 
             row.get("symbol") == event.symbol
             and row.get("timeframe") == event.timeframe
             and row.get("strategy") == event.strategy
+        ):
+            return True
+    return False
+
+
+def has_opposite_position_any_tf(executor: "TradeExecutor", event: SignalEvent) -> bool:
+    """检查同 (symbol, strategy) 任意 TF 是否已有反向持仓。
+
+    防 cross-TF hedge：M15 上有 sell 时，M30 不允许开 buy（不同 TF 反向 =
+    互吃 PnL + 占双仓位）。但允许多 TF 同向加仓（M15 buy + M30 buy 通过）。
+
+    与 has_matching_active_position 配合：
+    - has_matching_active_position 拦同 TF 任意方向（防同 TF 重复 / 同 TF hedge）
+    - has_opposite_position_any_tf 拦不同 TF 反向（本函数）
+    - 多 TF 同向加仓：两层都不拦 → 允许
+    """
+    if executor.position_manager is None:
+        return False
+    try:
+        active_positions = executor.position_manager.active_positions()
+    except Exception:
+        logger.debug(
+            "Failed to inspect active positions for opposite-direction guard",
+            exc_info=True,
+        )
+        return False
+    for row in active_positions or []:
+        if (
+            row.get("symbol") == event.symbol
+            and row.get("strategy") == event.strategy
+            and row.get("action") != event.direction
         ):
             return True
     return False

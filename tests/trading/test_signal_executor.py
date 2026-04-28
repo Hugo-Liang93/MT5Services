@@ -1186,6 +1186,87 @@ def test_trade_executor_skips_opposite_direction_when_position_already_open() ->
     )
 
 
+def test_trade_executor_blocks_cross_tf_opposite_position() -> None:
+    """已有 M15 sell 时 M30 buy 被拦——防 cross-TF hedge 互吃 PnL。
+
+    层 1 设计（保留多 TF 同向加仓 + 禁反向 hedge）：
+    - 不同 TF 同向 → 允许（多 TF 加仓）
+    - 不同 TF 反向 → 拦下（cross-TF hedge）
+    - 同 TF 任意方向 → 已有 has_matching_active_position 拦
+    """
+    module = DummyTradingModule()
+    tracked_positions = [
+        {
+            "symbol": "XAUUSD",
+            "timeframe": "M15",
+            "strategy": "sma_trend",
+            "action": "sell",  # M15 已有 sell 持仓
+        }
+    ]
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=DummyPositionManager(tracked_positions),
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            max_concurrent_positions_per_symbol=3,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
+    )
+
+    # 不同 TF (M30) 反向 buy 信号 — 当前会进，新代码应拦
+    cross_tf_buy = SignalEvent(
+        **{
+            **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
+            "timeframe": "M30",
+            "direction": "buy",
+        }
+    )
+    _fire(executor, cross_tf_buy)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        "opposite_position_cross_tf"
+    )
+
+
+def test_trade_executor_allows_cross_tf_same_direction() -> None:
+    """已有 M15 sell 时 M30 sell 允许通过——多 TF 同向加仓是设计意图。"""
+    module = DummyTradingModule()
+    tracked_positions = [
+        {
+            "symbol": "XAUUSD",
+            "timeframe": "M15",
+            "strategy": "sma_trend",
+            "action": "sell",
+        }
+    ]
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=DummyPositionManager(tracked_positions),
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            max_concurrent_positions_per_symbol=3,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
+    )
+
+    # 不同 TF (M30) 同向 sell 信号 — 应该通过（加仓）
+    cross_tf_sell = SignalEvent(
+        **{
+            **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
+            "timeframe": "M30",
+            "direction": "sell",
+        }
+    )
+    _fire(executor, cross_tf_sell)
+
+    assert len(module.calls) == 1
+
+
 def test_trade_executor_blocks_candidate_strategy_live_execution() -> None:
     module = DummyTradingModule()
     executor = TradeExecutor(
