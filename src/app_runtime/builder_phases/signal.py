@@ -95,16 +95,28 @@ def _validate_intrabar_trigger_coverage(
         if capability.name and capability.needs_intrabar
     }
 
-    unknown_enabled = sorted(
+    # 全局 enabled_strategies 可能包含其他 instance/environment 装载的策略；
+    # 当前 instance 装载集是 capability catalog 的子集。enabled_strategies 中
+    # 不在本 instance catalog 里的条目按"该 instance 不参与"处理（log + skip），
+    # 不视为配置错——避免全局 intrabar 配置在 live/demo 之间反复编辑。
+    not_loaded_here = sorted(
         strategy_name
         for strategy_name in enabled_intrabar_strategies
         if strategy_name not in capabilities_by_name
     )
-    if unknown_enabled:
-        raise ValueError(
-            "intrabar_trading.enabled_strategies references unknown strategies: "
-            + ", ".join(unknown_enabled)
+    if not_loaded_here:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "intrabar_trading.enabled_strategies skips strategies not loaded in this "
+            "instance (other env or candidate): %s",
+            ", ".join(not_loaded_here),
         )
+    enabled_intrabar_strategies = frozenset(
+        strategy_name
+        for strategy_name in enabled_intrabar_strategies
+        if strategy_name in capabilities_by_name
+    )
 
     unsupported_enabled = sorted(
         strategy_name

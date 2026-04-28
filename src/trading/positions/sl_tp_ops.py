@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from ..trade_events import (
@@ -17,6 +18,18 @@ if TYPE_CHECKING:
     from .manager import PositionManager, TrackedPosition
 
 logger = logging.getLogger(__name__)
+
+# (ticket → last warning timestamp) 用于 throttle Invalid stops noise。
+# chandelier_trail 撞 broker stop level 时会每个评估周期重试，模板 ticket
+# 在 5min 内仅记录一次 WARNING，后续降 DEBUG 静默。ticket 平仓后
+# 由 reconciliation 路径调用 forget_ticket_invalid_stops 清理。
+_logged_invalid_stops: dict[int, float] = {}
+_INVALID_STOPS_LOG_THROTTLE_SECONDS = 300.0
+
+
+def forget_ticket_invalid_stops(ticket: int) -> None:
+    """ticket 平仓后清理 throttle 记忆。"""
+    _logged_invalid_stops.pop(ticket, None)
 
 
 def get_current_atr(manager: PositionManager, pos: "TrackedPosition") -> float:
@@ -52,7 +65,17 @@ def modify_sl(
     new_sl: float,
     reason: str = POSITION_UPDATE_REASON_TRAILING_SL,
 ) -> bool:
-    """执行 SL 修改并记录历史。"""
+    """执行 SL 修改并记录历史。
+
+    chandelier_trail 在每次评估周期（~10s）都试图把 SL 拉到当前价附近，
+    broker 的 stop level 检查会拒绝 SL 距 current price 过近的修改
+    （retcode 10016 INVALID_STOPS）。trail 一旦撞 broker stop level，
+    后续每个周期都会重试同样太近的距离 → 持续刷 WARNING。
+
+    本函数对相同 (ticket, retcode=10016) 失败做 5min throttle，第一次报
+    WARNING，后续 DEBUG 静默——避免 errors.log 被同一 ticket 的 trail 失败
+    淹没。ticket 平仓时由 reconciliation 路径清理 _logged_invalid_stops。
+    """
     old_sl = pos.stop_loss
     target_sl = round(new_sl, 2)
     retcode: int | None = None
@@ -77,9 +100,7 @@ def modify_sl(
             failed = list(result.get("failed", []) or [])
             if failed and pos.ticket not in modified_tickets:
                 retcode = (
-                    failed[0].get("retcode")
-                    if isinstance(failed[0], dict)
-                    else None
+                    failed[0].get("retcode") if isinstance(failed[0], dict) else None
                 )
                 broker_comment = (
                     str(failed[0].get("error", ""))
@@ -91,7 +112,25 @@ def modify_sl(
         success = True
         return True
     except Exception as exc:
-        logger.warning("Failed to modify SL for ticket=%d: %s", pos.ticket, exc)
+        if retcode == 10016:  # TRADE_RETCODE_INVALID_STOPS
+            now_ts = time.time()
+            last_logged = _logged_invalid_stops.get(pos.ticket, 0.0)
+            if now_ts - last_logged < _INVALID_STOPS_LOG_THROTTLE_SECONDS:
+                logger.debug(
+                    "Failed to modify SL for ticket=%d: %s (throttled)",
+                    pos.ticket,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "Failed to modify SL for ticket=%d: %s "
+                    "(broker stop level; throttling next 5min)",
+                    pos.ticket,
+                    exc,
+                )
+                _logged_invalid_stops[pos.ticket] = now_ts
+        else:
+            logger.warning("Failed to modify SL for ticket=%d: %s", pos.ticket, exc)
         if not broker_comment:
             broker_comment = str(exc)
         return False
@@ -141,9 +180,7 @@ def modify_tp(
             failed = list(result.get("failed", []) or [])
             if failed and pos.ticket not in modified_tickets:
                 retcode = (
-                    failed[0].get("retcode")
-                    if isinstance(failed[0], dict)
-                    else None
+                    failed[0].get("retcode") if isinstance(failed[0], dict) else None
                 )
                 broker_comment = (
                     str(failed[0].get("error", ""))

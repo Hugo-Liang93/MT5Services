@@ -408,6 +408,8 @@ class PositionManager:
     def remove_position(self, ticket: int) -> None:
         with self._lock:
             self._positions.pop(ticket, None)
+        # 清理 SL trail throttle 记忆——避免重启 / 长时间运行后 dict 累积。
+        _sl_tp_ops.forget_ticket_invalid_stops(ticket)
 
     def active_positions(self) -> List[Dict[str, Any]]:
         with self._lock:
