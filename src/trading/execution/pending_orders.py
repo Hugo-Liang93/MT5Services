@@ -22,21 +22,19 @@ from .eventing import (
     emit_pending_order_submitted,
     notify_skip,
 )
-from .sizing import TradeParameters
 from .reasons import (
+    REASON_DUPLICATE_PENDING_SAME_STRATEGY,
+    REASON_DUPLICATE_POSITION_SAME_STRATEGY,
     REASON_MISSING_SIGNAL_ID,
     REASON_NEW_SIGNAL_OVERRIDE,
+    REASON_ORDER_MISSING_WITHOUT_POSITION,
     REASON_ORDER_ORDERS_LOOKUP_FAILED,
     REASON_ORDER_POSITIONS_LOOKUP_FAILED,
-    REASON_DUPLICATE_POSITION_SAME_STRATEGY,
-    REASON_DUPLICATE_PENDING_SAME_STRATEGY,
     REASON_PENDING_ORDER_FAILED,
-    REASON_ORDER_MISSING_WITHOUT_POSITION,
-)
-from .reasons import (
-    SKIP_CATEGORY_PENDING_SUBMIT,
     SKIP_CATEGORY_EXECUTION_INPUT,
+    SKIP_CATEGORY_PENDING_SUBMIT,
 )
+from .sizing import TradeParameters
 
 if TYPE_CHECKING:
     from .executor import TradeExecutor
@@ -363,6 +361,16 @@ def duplicate_execution_reason(executor: "TradeExecutor", event: SignalEvent) ->
 
 
 def has_matching_active_position(executor: "TradeExecutor", event: SignalEvent) -> bool:
+    """Duplicate guard：(symbol, timeframe, strategy) 已有持仓则拦下新信号。
+
+    历史实现还要求 direction 匹配（仅挡同向重复），允许反向新单进。但
+    exit_rules.check_exit 浮亏 r<0 时不主动 signal_exit（震荡市保护），
+    导致浮亏老单 + 反向新信号 = 同策略同 TF 形成 hedge 互吃 PnL，占
+    margin 拖累其他策略入场。
+
+    现行语义：同策略同 TF 已有持仓时不开新仓（任意方向），让老单按 SL /
+    Chandelier 自然处理，再开新方向。配合浮亏不主动反转的设计。
+    """
     if executor.position_manager is None:
         return False
     try:
@@ -378,13 +386,17 @@ def has_matching_active_position(executor: "TradeExecutor", event: SignalEvent) 
             row.get("symbol") == event.symbol
             and row.get("timeframe") == event.timeframe
             and row.get("strategy") == event.strategy
-            and row.get("action") == event.direction
         ):
             return True
     return False
 
 
 def has_matching_pending_entry(executor: "TradeExecutor", event: SignalEvent) -> bool:
+    """Duplicate guard：(symbol, timeframe, strategy) 已有 pending 入场则拦下新信号。
+
+    与 has_matching_active_position 对称——pending 入场也属于该策略 TF
+    "尚未关闭" 的产出，反向新信号同样拒。
+    """
     if executor.pending_manager is None:
         return False
     try:
@@ -407,7 +419,6 @@ def has_matching_pending_entry(executor: "TradeExecutor", event: SignalEvent) ->
             row.get("symbol") == event.symbol
             and row.get("timeframe") == event.timeframe
             and row.get("strategy") == event.strategy
-            and row.get("direction") == event.direction
         ):
             return True
     return False
@@ -420,9 +431,7 @@ def record_reentry_bar_time(executor: "TradeExecutor", event: SignalEvent) -> No
         bar_time_value = bar_time_raw
     elif isinstance(bar_time_raw, str):
         try:
-            bar_time_value = datetime.fromisoformat(
-                bar_time_raw.replace("Z", "+00:00")
-            )
+            bar_time_value = datetime.fromisoformat(bar_time_raw.replace("Z", "+00:00"))
         except ValueError:
             bar_time_value = None
     if bar_time_value is None:
@@ -478,8 +487,7 @@ def find_live_position_for_pending_order(
             exact_matches.append(row)
             continue
         if (
-            target_comment
-            and comments_share_request_tag(row_comment, target_comment)
+            target_comment and comments_share_request_tag(row_comment, target_comment)
         ) or (signal_id and comment_matches_request_id(row_comment, signal_id)):
             request_tag_matches.append(row)
             continue
@@ -504,6 +512,8 @@ def find_live_position_for_pending_order(
         )
     )
     return matches[-1]
+
+
 def tracked_position_tickets(executor: "TradeExecutor") -> set[int]:
     if executor.position_manager is None:
         return set()

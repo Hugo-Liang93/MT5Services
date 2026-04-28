@@ -488,7 +488,9 @@ def test_pre_trade_demo_validation_blocked_in_live_environment() -> None:
     assert module.calls == []
 
 
-def test_pre_trade_deployment_gate_defaults_to_live_when_runtime_identity_missing() -> None:
+def test_pre_trade_deployment_gate_defaults_to_live_when_runtime_identity_missing() -> (
+    None
+):
     """§0dg P1：runtime_identity=None（如 fixture/legacy 调用）时，必须保守按
     live 口径门禁（严格 allows_live_execution()），与旧行为兼容。
 
@@ -1064,7 +1066,7 @@ def test_trade_executor_skips_when_same_strategy_direction_position_is_active() 
 
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == (
-        "position_same_strategy_direction"
+        "position_same_strategy"
     )
 
 
@@ -1137,7 +1139,50 @@ def test_trade_executor_skips_when_same_strategy_direction_mt5_pending_order_exi
 
     assert module.calls == []
     assert executor.status()["recent_executions"][-1]["reason"] == (
-        "pending_entry_same_strategy_direction"
+        "pending_entry_same_strategy"
+    )
+
+
+def test_trade_executor_skips_opposite_direction_when_position_already_open() -> None:
+    """已有持仓时反向新信号也被拦——避免浮亏老单 + 反向新信号形成 hedge。
+
+    历史实现允许反向开仓（duplicate guard 仅查 same direction），配合
+    exit_rules.check_exit 浮亏 r<0 不主动 signal_exit 的设计，导致同
+    策略同 TF 同时持有 buy + sell 互吃 PnL。新行为：任意方向已有持仓
+    都拦下新信号，等老单 SL/Chandelier 自然处理。
+    """
+    module = DummyTradingModule()
+    tracked_positions = [
+        {
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "strategy": "sma_trend",
+            "action": "buy",  # 已有 buy 持仓
+        }
+    ]
+    executor = TradeExecutor(
+        trading_module=module,
+        position_manager=DummyPositionManager(tracked_positions),
+        config=ExecutorConfig(
+            enabled=True,
+            min_confidence=0.5,
+            max_concurrent_positions_per_symbol=3,
+        ),
+        execution_gate=ExecutionGate(ExecutionGateConfig()),
+        runtime_identity=_default_runtime_identity(),
+    )
+
+    # 反向 sell 信号 — 历史会进，现在应被拦
+    sell_event_dict = {
+        **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
+        "direction": "sell",
+    }
+    sell_event = SignalEvent(**sell_event_dict)
+    _fire(executor, sell_event)
+
+    assert module.calls == []
+    assert executor.status()["recent_executions"][-1]["reason"] == (
+        "position_same_strategy"
     )
 
 
