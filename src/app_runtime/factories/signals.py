@@ -737,6 +737,11 @@ def build_signal_components(
         runtime_identity.environment if runtime_identity is not None else None
     )
     _all_strategies = build_default_strategy_set()
+    # Q2 fail-fast：所有 catalog 策略必须在 broker comment alias 表登记。
+    # 避免新增策略时遗漏，悄悄走老 token-split 算法（区分度差、占字符）。
+    from src.trading.broker.comment_codec import validate_strategy_aliases
+
+    validate_strategy_aliases(strat.name for strat in _all_strategies)
     _all_deployments = dict(signal_config.strategy_deployments)
     _filtered_strategies = _filter_strategies_for_environment(
         _all_strategies, _all_deployments, _instance_environment

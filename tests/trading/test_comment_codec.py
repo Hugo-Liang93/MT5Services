@@ -63,7 +63,9 @@ def test_comment_semantics_support_new_and_legacy_formats() -> None:
     )
 
     assert comment_matches_semantics(canonical, "M5", "sma_trend") is True
-    assert comment_matches_semantics("M5:sma_trend:limit_rsig1", "M5", "sma_trend") is True
+    assert (
+        comment_matches_semantics("M5:sma_trend:limit_rsig1", "M5", "sma_trend") is True
+    )
     assert looks_like_system_trade_comment(canonical) is True
     assert looks_like_system_trade_comment("agent:consensus:buy:sig_1") is True
     assert looks_like_system_trade_comment("manual_trade") is False
@@ -72,3 +74,95 @@ def test_comment_semantics_support_new_and_legacy_formats() -> None:
 def test_compact_comment_label_preserves_minimal_readability() -> None:
     assert compact_comment_label("htf_h4_pullback") == "htfh4pu"
     assert compact_comment_label("supertrend") == "supertre"
+
+
+# ── strategy alias map (Q1=A / Q2=B / Q3=dual-format) ─────────────────────
+
+
+def test_compact_comment_label_uses_registered_alias() -> None:
+    """注册策略走 _STRATEGY_ALIAS（短且可读），不再走 token-split hash。"""
+    from src.trading.broker.comment_codec import _STRATEGY_ALIAS
+
+    assert compact_comment_label("structured_trend_continuation") == "tc"
+    assert compact_comment_label("structured_open_range_breakout") == "orb"
+    # alias 表内所有策略都 ≤8 chars（broker label 字段上限）
+    for alias in _STRATEGY_ALIAS.values():
+        assert 1 <= len(alias) <= 8, alias
+
+
+def test_compact_comment_label_falls_back_to_legacy_for_unregistered() -> None:
+    """未注册策略走老 token-split 算法（向后兼容外部/测试场景）。"""
+    # "htf_h4_pullback" 不在 _STRATEGY_ALIAS 表 → legacy hash
+    assert compact_comment_label("htf_h4_pullback") == "htfh4pu"
+
+
+def test_comment_matches_semantics_dual_format_alias_and_legacy() -> None:
+    """Q3 双格式判等：新 alias 与老 hash 都能识别为同一策略。
+
+    历史持仓 comment 是用老 _legacy_compact_label 生成的（如 "strtrco"）；
+    新代码下 compact_comment_label("structured_trend_continuation")="tc"。
+    位置 reconcile 必须能继续识别老 comment，否则旧持仓接管失败。
+    """
+    new_comment = "M30_tc______bm_abcd1234"  # 新 alias 格式（label=tc）
+    parsed_new = parse_trade_comment(
+        build_trade_comment(
+            request_id="abcd1234",
+            timeframe="M30",
+            strategy="structured_trend_continuation",
+            side="buy",
+            order_kind="market",
+        )
+    )
+    assert parsed_new is not None
+    assert parsed_new.label == "tc"
+
+    # 模拟历史持仓 comment（老 hash 格式 label="strtrco"）
+    legacy_comment = "M30_strtrco_bm_abcd1234"
+    legacy_parsed = parse_trade_comment(legacy_comment)
+    assert legacy_parsed is not None
+    assert legacy_parsed.label == "strtrco"
+
+    # 同一策略 (timeframe, strategy)，两种 comment 格式都应匹配
+    assert (
+        comment_matches_semantics(
+            legacy_comment, "M30", "structured_trend_continuation"
+        )
+        is True
+    )
+    assert (
+        comment_matches_semantics(
+            "M30_tc_bm_abcd1234", "M30", "structured_trend_continuation"
+        )
+        is True
+    )
+
+
+def test_validate_strategy_aliases_passes_for_registered() -> None:
+    """所有 catalog 注册策略都已在 alias 表登记。"""
+    from src.signals.strategies.catalog import build_default_strategy_set
+    from src.trading.broker.comment_codec import validate_strategy_aliases
+
+    strategy_names = [s.name for s in build_default_strategy_set()]
+    validate_strategy_aliases(strategy_names)  # 不应 raise
+
+
+def test_validate_strategy_aliases_raises_on_unregistered() -> None:
+    """未登记策略 → fail-fast（Q2=B 强契约）。"""
+    import pytest
+
+    from src.trading.broker.comment_codec import validate_strategy_aliases
+
+    with pytest.raises(ValueError, match="missing broker comment alias"):
+        validate_strategy_aliases(
+            ["structured_trend_continuation", "future_unregistered_strategy"]
+        )
+
+
+def test_strategy_alias_map_has_no_duplicates() -> None:
+    """alias 唯一性：避免两个策略撞同一 broker label 解析。"""
+    from src.trading.broker.comment_codec import _STRATEGY_ALIAS
+
+    aliases = list(_STRATEGY_ALIAS.values())
+    assert len(aliases) == len(set(aliases)), "Duplicate alias detected: " + str(
+        aliases
+    )
