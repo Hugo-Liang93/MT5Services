@@ -357,7 +357,10 @@ class TradeAdmissionService:
             or str(assessment_dict.get("request_id") or "").strip()
             or f"admission_{requested_operation}_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
         )
-        runtime_identity = getattr(self._runtime_views, "runtime_identity", None)
+        # RuntimeReadModel.runtime_identity 是 @property，属性访问永不 AttributeError；
+        # 值可能为 None（装配阶段未注入），由下方 getattr 链处理。§0dj 禁止此处再
+        # 加 getattr 防御。
+        runtime_identity = self._runtime_views.runtime_identity
         account_alias = (
             str(
                 payload.get("account_alias")
