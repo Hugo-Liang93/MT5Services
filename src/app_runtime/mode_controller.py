@@ -51,6 +51,18 @@ class RuntimeModeController:
     def current_mode(self) -> RuntimeMode | None:
         return self._current_mode
 
+    def is_trading_active(self) -> bool:
+        """trading 子系统（pending_entry / signal_queue / position_manager 等）
+        是否处于"应该活跃"状态。
+
+        FULL → True；INGEST_ONLY / RISK_OFF / OBSERVE → False。
+        OBSERVE 模式下虽然不下单但 signal/position 子系统仍在跑，**保留为
+        not-active**——MonitoringManager 用此判断 trading-only probe 是否
+        应该 skip，OBSERVE 期间也不希望 ingest_only 的同类 noise。
+        若未来 OBSERVE 需保留 trading probe，再细化分级。
+        """
+        return self._current_mode == RuntimeMode.FULL
+
     def start(self) -> dict[str, object]:
         snapshot = self.apply_mode(self._policy.initial_mode, reason="startup")
         self._start_monitor()

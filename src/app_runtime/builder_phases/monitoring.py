@@ -94,9 +94,19 @@ def build_monitoring_layer(
             )
         ),
     )
+    # mode-aware monitoring gate：ingest_only / risk_off 等模式下 trading 子
+    # 系统已合法停止，monitoring 应 skip 那些 probe（避免 WalSignalQueue closed
+    # / pending_runtime_down / reconciliation lag 持续误报）。注入 lambda 在
+    # 每个 probe 周期查询当前 mode。
+    _mode_controller = container.runtime_mode_controller
     container.monitoring_manager = get_monitoring_manager(
         container.health_monitor,
         check_interval=monitoring_interval,
+        is_trading_active_fn=(
+            (lambda: _mode_controller.is_trading_active())
+            if _mode_controller is not None
+            else None
+        ),
     )
     container.health_monitor.cleanup_old_data(days_to_keep=30)
     if container.indicator_manager is not None:

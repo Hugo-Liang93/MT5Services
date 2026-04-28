@@ -400,10 +400,13 @@ class AppRuntime:
                 "economic_calendar", c.economic_calendar_service, ["economic_calendar"]
             )
             c.monitoring_manager.register_component(
-                "signals", c.signal_runtime, ["status"]
+                "signals", c.signal_runtime, ["status"], trading_only=True
             )
         c.monitoring_manager.register_component(
-            "trading", c.trade_module, ["monitoring_summary"]
+            "trading",
+            c.trade_module,
+            ["monitoring_summary"],
+            trading_only=True,
         )
         # 交易域可观测性指标
         if c.position_manager is not None:
@@ -411,28 +414,35 @@ class AppRuntime:
                 "position_manager",
                 c.position_manager,
                 ["reconciliation_lag", "position_count"],
+                trading_only=True,
             )
         if c.trade_executor is not None:
             c.monitoring_manager.register_component(
                 "trade_executor",
                 c.trade_executor,
                 ["circuit_breaker", "execution_quality"],
+                trading_only=True,
             )
         if c.trading_state_alerts is not None:
             c.monitoring_manager.register_component(
                 "trading_state",
                 c.trading_state_alerts,
                 ["monitoring_summary"],
+                trading_only=True,
             )
         if c.pending_entry_manager is not None:
             c.monitoring_manager.register_component(
-                "pending_entry", c.pending_entry_manager, ["pending_entry"]
+                "pending_entry",
+                c.pending_entry_manager,
+                ["pending_entry"],
+                trading_only=True,
             )
         if c.account_risk_state_projector is not None:
             c.monitoring_manager.register_component(
                 "account_risk_state_projection",
                 c.account_risk_state_projector,
                 ["status"],
+                trading_only=True,
             )
         c.monitoring_manager.start()
         self._mark_step("monitoring", RuntimeTaskState.READY.value, current_started)

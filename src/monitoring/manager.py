@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.config import get_shared_symbols, get_shared_timeframes
 
@@ -47,7 +47,12 @@ def _safe_get_performance_stats(component_obj: Any) -> Optional[Dict[str, Any]]:
 class MonitoringManager:
     """监控管理器，协调多个监控任务"""
 
-    def __init__(self, health_monitor: HealthMonitor, check_interval: int = 60):
+    def __init__(
+        self,
+        health_monitor: HealthMonitor,
+        check_interval: int = 60,
+        is_trading_active_fn: Optional[Callable[[], bool]] = None,
+    ):
         self.health_monitor = health_monitor
         self.check_interval = check_interval
         self._stop = threading.Event()
@@ -57,12 +62,26 @@ class MonitoringManager:
         self.retention_interval_seconds = 6 * 3600
         self.health_retention_days = 30
         self.event_retention_days = 7
+        # Trading 子系统 mode-aware gate：ingest_only / risk_off 等模式下
+        # signal_queue / pending_entry / position_manager 等 trading 子系统会
+        # 被 mode_controller 合法停止，此时 probe 必须 skip 否则会持续误报
+        # WalSignalQueue closed / pending_runtime_down / reconciliation lag。
+        # None = 不 gate（向后兼容，全部 probe 始终运行）。
+        self._is_trading_active_fn = is_trading_active_fn
 
         logger.info(
-            f"MonitoringManager initialized with check interval: {check_interval}s"
+            f"MonitoringManager initialized with check interval: {check_interval}s "
+            f"(mode_aware_gate={'on' if is_trading_active_fn else 'off'})"
         )
 
-    def register_component(self, name: str, component_obj, check_methods: List[str]):
+    def register_component(
+        self,
+        name: str,
+        component_obj,
+        check_methods: List[str],
+        *,
+        trading_only: bool = False,
+    ):
         """
         注册监控组件
 
@@ -70,12 +89,20 @@ class MonitoringManager:
             name: 组件名称
             component_obj: 组件对象
             check_methods: 检查方法列表（如 ["data_latency", "queue_stats"]）
+            trading_only: True = 该组件只在 trading 模式 (FULL) 下应该被探活；
+                ingest_only / risk_off 等模式下子系统已合法停止，probe 应 skip
+                避免 WalSignalQueue closed / pending_runtime_down / reconciliation
+                lag 等持续误报。仅当注入了 is_trading_active_fn 时生效。
         """
         self._monitored_components[name] = {
             "obj": component_obj,
             "methods": check_methods,
+            "trading_only": bool(trading_only),
         }
-        logger.info(f"Registered component for monitoring: {name}")
+        logger.info(
+            f"Registered component for monitoring: {name}"
+            + (" (trading_only)" if trading_only else "")
+        )
 
     @staticmethod
     def _summary_status_value(summary: Dict[str, Any]) -> float:
@@ -140,9 +167,21 @@ class MonitoringManager:
 
         while not self._stop.is_set():
             try:
+                trading_active = (
+                    self._is_trading_active_fn() if self._is_trading_active_fn else True
+                )
                 for name, component_info in self._monitored_components.items():
                     component_obj = component_info["obj"]
                     methods = component_info["methods"]
+
+                    if (
+                        component_info.get("trading_only")
+                        and self._is_trading_active_fn
+                        and not trading_active
+                    ):
+                        # mode_controller 已切到非 FULL 模式（ingest_only/risk_off）；
+                        # trading 子系统合法停止，skip probe 避免误报。
+                        continue
 
                     for method in methods:
                         try:
@@ -578,7 +617,9 @@ _monitoring_manager_instances: Dict[tuple[int, int], MonitoringManager] = {}
 
 
 def get_monitoring_manager(
-    health_monitor: HealthMonitor = None, check_interval: int = 60
+    health_monitor: HealthMonitor = None,
+    check_interval: int = 60,
+    is_trading_active_fn: Optional[Callable[[], bool]] = None,
 ) -> MonitoringManager:
     """获取与指定监控器绑定的 MonitoringManager 实例。"""
     if health_monitor is None:
@@ -586,8 +627,15 @@ def get_monitoring_manager(
     key = (id(health_monitor), int(check_interval))
     instance = _monitoring_manager_instances.get(key)
     if instance is None:
-        instance = MonitoringManager(health_monitor, check_interval)
+        instance = MonitoringManager(
+            health_monitor, check_interval, is_trading_active_fn=is_trading_active_fn
+        )
         _monitoring_manager_instances[key] = instance
+    elif is_trading_active_fn is not None and instance._is_trading_active_fn is None:
+        # 已有缓存实例（e.g. 测试 import 时被首次构造，无 fn 注入），允许 builder
+        # 后置注入 fn 让 mode-aware gate 在装配阶段补齐——避免新 instance 与
+        # 旧 instance 双轨。仅当 builder 注入的 fn 非 None 才覆盖。
+        instance._is_trading_active_fn = is_trading_active_fn
     return instance
 
 
