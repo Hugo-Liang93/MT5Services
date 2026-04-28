@@ -8508,3 +8508,79 @@ H1 通过 6/6 门禁，可考虑：
 3. 对账后进 active_guarded（Task 8 单策略晋级）
 
 候选策略：**structured_regime_exhaustion** 或 **structured_strong_trend_follow** on H1。
+
+---
+
+## 2026-04-28 — signal_exit 浮亏守卫（demo 震荡损耗根因）
+
+### 症状
+
+demo-main 启动后短时间内多笔交易在 27-31 分钟内出场，r_multiple 范围
+-0.62 ~ +0.05，**全部不是 SL/TP 触发**。trade_outcomes 中明确显示 1 笔
+`exit_reason=signal_exit`，3 笔 metadata 缺 exit_reason 但持仓时长 + r 范围
+完全一致。
+
+### 根因（双重）
+
+**根因 1（直接）**：`signal_exit_confirmation_bars=2` 对 `structured_price_action`
+在 M15/M30 上**过敏**。每根 M30 bar 产新信号，震荡市 buy/sell 信号交替，
+持仓 sell → 连续 2 根 M30 buy 信号 → 强制 signal_exit 平仓 → 反向开仓
+→ 价格反弹再砍 → 持续损耗循环。
+
+**根因 2（设计缺陷）**：`signal_exit` 不区分浮盈浮亏。设计意图是"趋势
+反转早出锁利"，但实际把浮亏 -0.5R 的仓位也主动砍了 → 违反"SL 处理
+亏损" first-principles。backtest 整体盈利掩盖了高频损耗。
+
+### 修复（B only — 根因修复）
+
+`src/trading/positions/exit_rules.py` 的 `evaluate_exit` 中 signal_exit 触发
+段加 `r_multiple >= 0` 守卫：
+
+```python
+if (
+    config.signal_exit_enabled
+    and recent_signal_dirs
+    and r_multiple >= 0   # 新增：仅浮盈状态触发，浮亏让 SL 处理
+):
+    if check_signal_reversal(...):
+        return ExitCheckResult(close_reason=REASON_SIGNAL_EXIT, ...)
+```
+
+`check_signal_reversal` pure 函数语义保留不变（仍只看方向）—— 由 caller
+（evaluate_exit）决定何时启用，符合 separation of concerns。
+
+### A 选项主动放弃
+
+`chandelier_signal_exit_confirmation_bars` 从 2 → 4 的"防过敏"修复**没采纳**：
+- B 已修震荡市核心损耗（浮亏不触发）
+- 浮盈状态 bars=2 是合理锁利时机
+- bars=4 让锁利变晚 → 真趋势反转时回吐更多
+- 实测 demo 几天后如果仍有浮盈噪声误触发再考虑
+
+### 测试
+
+新建 `tests/trading/test_signal_exit_floating_loss_guard.py` 7 测：
+- `check_signal_reversal` pure 函数行为不变（4 case）
+- buy/sell 浮亏 + 反向信号 → 不触发（2 case）
+- 浮盈 / breakeven / 反向不足 → 保留原行为（3 case）
+- 复现 demo 04-28 r=-0.44R 场景 → 修复后让 SL 处理
+
+全 trading 套件 347 passed / 0 regression。
+
+### 边界影响
+
+- 浮盈侧锁利逻辑保留（不破坏正常 trend reversal exit）
+- 浮亏侧出场完全交给 SL（11 层风控堆栈第 9 层 PositionManager + Chandelier）
+- backtest 重跑可能略改变结果（浮亏 trade 持有更久走 SL，可能 PnL 变化但
+  避免反复砍仓的高频损耗）
+- demo 立即生效（运行中策略下次 evaluate_exit 走新逻辑）
+
+### 后续观察
+
+demo runtime 重启后跟踪：
+1. trade 持仓时长是否回归正常（不再 27-31 分钟为主）
+2. exit_reason 分布：stop_loss / take_profit 占比应大幅上升
+3. signal_exit 应仅出现在浮盈反转场景
+
+如果 demo 继续显示频繁浮盈侧 signal_exit（噪声触发），再做 A（提高
+confirmation_bars）。

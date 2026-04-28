@@ -78,34 +78,34 @@ def profile_from_aggression(alpha: float) -> ExitProfile:
 # 默认 aggression 系数表（可被 INI 覆盖）
 DEFAULT_AGGRESSION_MAP: Dict[Tuple[str, str], float] = {
     # trend 策略
-    ("trend", "trending"):   0.85,   # 顺势：宽 trail
-    ("trend", "ranging"):    0.15,   # 逆势：紧 trail
-    ("trend", "breakout"):   0.65,   # 偏顺势
-    ("trend", "uncertain"):  0.50,   # 中性
+    ("trend", "trending"): 0.85,  # 顺势：宽 trail
+    ("trend", "ranging"): 0.15,  # 逆势：紧 trail
+    ("trend", "breakout"): 0.65,  # 偏顺势
+    ("trend", "uncertain"): 0.50,  # 中性
     # reversion 策略
-    ("reversion", "trending"):  0.10,   # 逆势：最紧
-    ("reversion", "ranging"):   0.80,   # 顺势：宽 trail
-    ("reversion", "breakout"):  0.10,   # 逆势
-    ("reversion", "uncertain"): 0.45,   # 偏逆势
+    ("reversion", "trending"): 0.10,  # 逆势：最紧
+    ("reversion", "ranging"): 0.80,  # 顺势：宽 trail
+    ("reversion", "breakout"): 0.10,  # 逆势
+    ("reversion", "uncertain"): 0.45,  # 偏逆势
     # breakout 策略
-    ("breakout", "trending"):   0.85,   # 突破进入趋势
-    ("breakout", "ranging"):    0.10,   # 假突破：快退
-    ("breakout", "breakout"):   0.85,   # 顺势
-    ("breakout", "uncertain"):  0.50,   # 中性
+    ("breakout", "trending"): 0.85,  # 突破进入趋势
+    ("breakout", "ranging"): 0.10,  # 假突破：快退
+    ("breakout", "breakout"): 0.85,  # 顺势
+    ("breakout", "uncertain"): 0.50,  # 中性
     # session breakout 策略（类似 breakout，但 ranging 中略宽容）
-    ("session", "trending"):    0.80,
-    ("session", "ranging"):     0.20,
-    ("session", "breakout"):    0.80,
-    ("session", "uncertain"):   0.50,
+    ("session", "trending"): 0.80,
+    ("session", "ranging"): 0.20,
+    ("session", "breakout"): 0.80,
+    ("session", "uncertain"): 0.50,
     # multi_tf (趋势延续，类似 trend)
-    ("multi_tf", "trending"):   0.85,
-    ("multi_tf", "ranging"):    0.15,
-    ("multi_tf", "breakout"):   0.65,
-    ("multi_tf", "uncertain"):  0.50,
+    ("multi_tf", "trending"): 0.85,
+    ("multi_tf", "ranging"): 0.15,
+    ("multi_tf", "breakout"): 0.65,
+    ("multi_tf", "uncertain"): 0.50,
     # price_action (sweep/反转，类似 reversion 偏保护)
-    ("price_action", "trending"):  0.15,
-    ("price_action", "ranging"):   0.70,
-    ("price_action", "breakout"):  0.15,
+    ("price_action", "trending"): 0.15,
+    ("price_action", "ranging"): 0.70,
+    ("price_action", "breakout"): 0.15,
     ("price_action", "uncertain"): 0.45,
 }
 
@@ -117,12 +117,12 @@ DEFAULT_AGGRESSION = 0.50
 #   高 TF (H4/D1): ATR 平滑、可预测性高 → 可略紧
 
 DEFAULT_TF_TRAIL_SCALE: Dict[str, float] = {
-    "M5":  1.20,
+    "M5": 1.20,
     "M15": 1.10,
     "M30": 1.00,
-    "H1":  1.00,
-    "H4":  0.95,
-    "D1":  0.90,
+    "H1": 1.00,
+    "H4": 0.95,
+    "D1": 0.90,
 }
 
 
@@ -637,7 +637,9 @@ def evaluate_exit(
         profile = profile_from_aggression(exit_spec["aggression"])
     elif config.regime_aware and strategy_category and current_regime:
         profile = resolve_exit_profile(
-            strategy_category, current_regime, config.aggression_overrides or None,
+            strategy_category,
+            current_regime,
+            config.aggression_overrides or None,
         )
     else:
         profile = config.default_profile
@@ -666,7 +668,12 @@ def evaluate_exit(
 
     # ② 硬上界 TP
     result = check_hard_tp(
-        action, entry_price, bar_high, bar_low, initial_risk, config.max_tp_r,
+        action,
+        entry_price,
+        bar_high,
+        bar_low,
+        initial_risk,
+        config.max_tp_r,
     )
     if result is not None:
         return result
@@ -681,16 +688,27 @@ def evaluate_exit(
 
     # 用"bar 开盘前 peak"计算本 bar 实际生效的 trailing SL
     chandelier_sl_for_check = compute_chandelier_sl(
-        action, exit_check_peak, current_atr, effective_chandelier_mult,
+        action,
+        exit_check_peak,
+        current_atr,
+        effective_chandelier_mult,
     )
     breakeven_sl_for_check, be_activated_for_check = compute_breakeven_sl(
-        action, entry_price, exit_check_peak, initial_risk,
-        profile.breakeven_r, config.breakeven_buffer_r,
-        config.min_breakeven_buffer, breakeven_already_activated,
+        action,
+        entry_price,
+        exit_check_peak,
+        initial_risk,
+        profile.breakeven_r,
+        config.breakeven_buffer_r,
+        config.min_breakeven_buffer,
+        breakeven_already_activated,
         lock_ratio=profile.lock_ratio,
     )
     sl_for_check = merge_trailing_sl(
-        action, current_stop_loss, chandelier_sl_for_check, breakeven_sl_for_check,
+        action,
+        current_stop_loss,
+        chandelier_sl_for_check,
+        breakeven_sl_for_check,
     )
 
     # 本 bar 低点/高点 vs 实际生效 SL
@@ -714,19 +732,33 @@ def evaluate_exit(
 
     # 未出场 → 用"含本 bar 更新的 peak"计算下一 bar 将生效的 SL
     chandelier_sl = compute_chandelier_sl(
-        action, peak_price, current_atr, effective_chandelier_mult,
+        action,
+        peak_price,
+        current_atr,
+        effective_chandelier_mult,
     )
     breakeven_sl, be_activated = compute_breakeven_sl(
-        action, entry_price, peak_price, initial_risk,
-        profile.breakeven_r, config.breakeven_buffer_r,
-        config.min_breakeven_buffer, breakeven_already_activated,
+        action,
+        entry_price,
+        peak_price,
+        initial_risk,
+        profile.breakeven_r,
+        config.breakeven_buffer_r,
+        config.min_breakeven_buffer,
+        breakeven_already_activated,
         lock_ratio=profile.lock_ratio,
     )
     new_sl = merge_trailing_sl(action, current_stop_loss, chandelier_sl, breakeven_sl)
 
     # ④ 信号反转
-    if config.signal_exit_enabled and recent_signal_dirs:
-        if check_signal_reversal(action, recent_signal_dirs, config.signal_exit_confirmation_bars):
+    # signal_exit 是"锁利早出"工具（趋势反转时锁住浮盈），不是"亏损止损"工具。
+    # 浮亏状态下方向反转不触发主动平仓，让 SL 自然处理 — 否则震荡市每次反向
+    # 信号都在浮亏时砍仓，损耗严重（2026-04-28 demo-main 27-31 分钟内被反复
+    # 砍仓的根因，r 范围 -0.62 ~ +0.05）。
+    if config.signal_exit_enabled and recent_signal_dirs and r_multiple >= 0:
+        if check_signal_reversal(
+            action, recent_signal_dirs, config.signal_exit_confirmation_bars
+        ):
             return ExitCheckResult(
                 should_close=True,
                 close_reason=REASON_SIGNAL_EXIT,
@@ -738,8 +770,13 @@ def evaluate_exit(
     # ⑤ 超时
     if config.timeout_bars > 0:
         if check_timeout(
-            action, entry_price, bar_close, initial_risk,
-            bars_held, config.timeout_bars, profile.breakeven_r,
+            action,
+            entry_price,
+            bar_close,
+            initial_risk,
+            bars_held,
+            config.timeout_bars,
+            profile.breakeven_r,
         ):
             return ExitCheckResult(
                 should_close=True,
