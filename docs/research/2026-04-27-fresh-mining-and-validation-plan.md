@@ -239,6 +239,102 @@ H1 单策略明细（fallback ON）：
 2. 若 WF consistency 通过 → demo validation 真实下单 ≥ 20 笔
 3. demo_vs_backtest 对账 → 决定是否 promote 到 active_guarded
 
+## Strategy-Level Walk-Forward & Solo Backtest（2026-04-28）
+
+### Walk-Forward H1 + structured_regime_exhaustion
+
+**命令**：
+```bash
+python -m src.ops.cli.walkforward_runner --environment live --tf H1 \
+  --start 2025-04-01 --end 2026-04-26 --splits 6 --train-ratio 0.70 \
+  --strategies structured_regime_exhaustion --include-demo-validation \
+  --json-output data/artifacts/backtests/wf_regime_exhaustion_h1_2026-04-28.json
+```
+
+**Per-Split OOS**:
+
+| Split | OOS Sharpe | OOS PnL | OOS WR% | OOS Trades |
+|---|---|---|---|---|
+| 1 (07-19~09-04) | -0.353 | -3.95 | 0.0% | 1 |
+| 2 (09-04~10-20) | 0.273 | +48.99 | 28.6% | 7 |
+| 3 (10-20~12-06) | 0.502 | +93.38 | 50.0% | 4 |
+| 4 (12-06~01-22) | 1.101 | +232.18 | 100.0% | 3 |
+| 5 (01-22~03-10) | 0.904 | +195.25 | 66.7% | 3 |
+| 6 (03-10~04-26) | 0.962 | +192.10 | 66.7% | 3 |
+
+**Aggregate OOS**: 21 trades / WR 52.4% / PnL +757.95 / **PF 5.791** / **MaxDD 10.50%**
+
+**Robustness**:
+- **Consistency Rate: 83.3%** (5/6 splits OOS 盈利) — **通过 PLAN.md ≥0.70 门禁** ✓
+- Overfitting Ratio: 1.75 ⚠️ 警告区（IS Sharpe avg 0.99 vs OOS 0.51）— 不致命但需注意
+
+### Solo Backtest H1 + structured_regime_exhaustion (1 年 EF + MC)
+
+**命令**：
+```bash
+python -m src.ops.cli.backtest_runner --environment live \
+  --strategies structured_regime_exhaustion --tf H1 \
+  --start 2025-04-01 --end 2026-04-26 --include-demo-validation \
+  --simulation-mode execution_feasibility --monte-carlo \
+  --json-output data/artifacts/backtests/regime_exhaustion_h1_solo_2026-04-28.json \
+  --persist --experiment regime-exhaustion-solo-2026-04-28
+```
+
+**指标**:
+
+| 指标 | 值 | PLAN.md 门禁 | 判定 |
+|---|---|---|---|
+| Trades | 29 | ≥ 80 | ⚠️ 样本不足 |
+| WR | 51.7% | — | — |
+| **PF** | **9.635** | ≥ 1.20 | ✓ |
+| **MaxDD** | **3.87%** (69 bars) | ≤ 15% | ✓ |
+| Sharpe | 2.007 | — | ✓ |
+| Sortino | 5.369 | — | ✓ |
+| Calmar | 24.207 | — | ✓ |
+| Exp | +127.87/trade | > 0 | ✓ |
+| W/L | 8.99 | — | ✓ |
+| **MC.Sharpe.p** | **0.0** | ≤ 0.10 | ✓ |
+| **MC.PF.p** | **0.0** | ≤ 0.10 | ✓ |
+| WF Consistency | 83.3% | ≥ 0.70 | ✓ |
+
+**Exit profile 健康**：take_profit 15 笔 (+4137 PnL) / stop_loss 13 笔 (-408) / timeout 1 笔 (-21)。
+**Regime distribution**：trending 23 笔 (+3438 主力) / breakout 6 笔 (+270) / ranging 0 笔（策略避开 ranging）。
+
+### 综合判定
+
+H1 + `structured_regime_exhaustion` 在**质量指标全部超强**，但**单策略 trades 29 < 80 阈值**。
+这是策略天然频率（约 0.55 trade/week），不是 dormant；MC 1000-sim p=0.0 已强证统计显著性。
+
+### Active-Guarded Proposal（按 PLAN.md Task 8）
+
+```markdown
+## Active-Guarded Proposal — structured_regime_exhaustion (H1)
+
+- **Strategy**: structured_regime_exhaustion
+- **Timeframe lock**: H1
+- **Session lock**: london, new_york (regime_exhaustion 主信号在欧美盘)
+- **Max live positions**: 1
+- **Pending entry requirement**: false (intrabar 不在白名单)
+- **Backtest run id**: regime-exhaustion-solo-2026-04-28
+- **Demo validation window**: 待启动（≥20 trades，预计 6 周）
+- **Demo-vs-backtest result**: pending
+- **Known failure modes**:
+  - Split 1 (07-19~09-04) OOS 单 trade 全亏 — 该时段策略可能 dormant
+  - trades 29/年 频率较低 — sample size sensitive
+  - Overfitting ratio 1.75 警告区 — IS 表现优于 OOS
+- **Rollback command**:
+  `git revert <promotion-commit>` + `python -m src.ops.cli.confidence_check --tf H1`
+```
+
+### 推荐路径
+
+**不直接进 active_guarded**——trades 单策略层不达标。按 PLAN.md 设计的合理路径：
+
+1. **保留 demo_validation 状态**（当前即是）
+2. **启 demo runtime**（需先配 mt5.local.ini）累计 ≥20 笔真实成交
+3. `python -m src.ops.cli.demo_vs_backtest --backtest-run-id regime-exhaustion-solo-2026-04-28 --start ... --end ...` 对账
+4. drift 在阈值内 → 提 active_guarded（操作员显式批准）；drift 超阈 → 保留 demo_validation 或回归 candidate
+
 ### H1 Walk-Forward（✅ 2026-04-27 完成）
 
 **产物**：`data/research/fresh_mining_wf_h1_2026-04-27.json`（6/6 mining_runs 持久化）

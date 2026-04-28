@@ -12,6 +12,7 @@
     - 一致性率 (OOS 盈利窗口占比)
     - 参数稳定性评估
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,8 +33,9 @@ import logging
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone
-from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict, List, Optional
+
+from src.utils.timezone import parse_iso_to_utc
 
 
 def _run_walkforward(
@@ -46,6 +48,7 @@ def _run_walkforward(
     anchored: bool = False,
     metric: str = "sharpe_ratio",
     strategy_names: Optional[List[str]] = None,
+    include_demo_validation: bool = False,
 ) -> Any:
     """执行 Walk-Forward 验证。"""
     from src.backtesting.component_factory import (
@@ -60,7 +63,9 @@ def _run_walkforward(
     )
 
     _OPTIMIZER_ONLY = {"search_mode", "max_combinations", "sort_metric"}
-    defaults = {k: v for k, v in get_backtest_defaults().items() if k not in _OPTIMIZER_ONLY}
+    defaults = {
+        k: v for k, v in get_backtest_defaults().items() if k not in _OPTIMIZER_ONLY
+    }
     signal_config = _load_signal_config_snapshot()
 
     strategy_sessions: dict = {}
@@ -94,6 +99,7 @@ def _run_walkforward(
         end_time=parse_iso_to_utc(end),
         strategy_sessions=strategy_sessions,
         strategy_timeframes=strategy_timeframes,
+        include_demo_validation=include_demo_validation,
         **merged,
     )
 
@@ -176,21 +182,29 @@ def _render_result(result: Any, tf: str) -> str:
     lines.append(f"\n--- Robustness Assessment ---")
     of_ratio = result.overfitting_ratio
     of_status = "OK" if of_ratio < 1.5 else ("WARNING" if of_ratio < 2.0 else "DANGER")
-    lines.append(f"  Overfitting Ratio: {of_ratio:.2f}  [{of_status}]  (IS/OOS, <1.5=good, >2.0=overfitting)")
+    lines.append(
+        f"  Overfitting Ratio: {of_ratio:.2f}  [{of_status}]  (IS/OOS, <1.5=good, >2.0=overfitting)"
+    )
 
     cons_rate = result.consistency_rate
     cons_status = "OK" if cons_rate >= 0.60 else "WARNING"
-    lines.append(f"  Consistency Rate:  {cons_rate:.1%}  [{cons_status}]  (OOS profitable windows, >=60%=good)")
+    lines.append(
+        f"  Consistency Rate:  {cons_rate:.1%}  [{cons_status}]  (OOS profitable windows, >=60%=good)"
+    )
 
     # 判定
     if of_ratio >= 2.0:
         lines.append(f"\n  *** OVERFITTING DETECTED — parameters are not robust ***")
-        lines.append(f"  Strategy is 'trained to history' and likely to fail in production.")
+        lines.append(
+            f"  Strategy is 'trained to history' and likely to fail in production."
+        )
     elif cons_rate < 0.50:
         lines.append(f"\n  *** INCONSISTENT — parameters unstable across time ***")
         lines.append(f"  Less than half of OOS windows are profitable.")
     elif of_ratio < 1.5 and cons_rate >= 0.60:
-        lines.append(f"\n  Strategy appears ROBUST — safe to proceed to Demo Validation (deployment.status=demo_validation).")
+        lines.append(
+            f"\n  Strategy appears ROBUST — safe to proceed to Demo Validation (deployment.status=demo_validation)."
+        )
 
     return "\n".join(lines)
 
@@ -206,11 +220,15 @@ def main() -> None:
         help="显式指定 WF 使用哪个环境数据库",
     )
     parser.add_argument("--tf", required=True, help="Timeframe")
-    parser.add_argument("--start", default="2025-09-01", help="Start date (longer for WF)")
+    parser.add_argument(
+        "--start", default="2025-09-01", help="Start date (longer for WF)"
+    )
     parser.add_argument("--end", default="2026-03-30", help="End date")
     parser.add_argument("--splits", type=int, default=5, help="Number of splits")
     parser.add_argument("--train-ratio", type=float, default=0.70, help="Train ratio")
-    parser.add_argument("--anchored", action="store_true", help="Use anchored (expanding) windows")
+    parser.add_argument(
+        "--anchored", action="store_true", help="Use anchored (expanding) windows"
+    )
     parser.add_argument("--metric", default="sharpe_ratio", help="Optimization metric")
     parser.add_argument(
         "--strategies",
@@ -226,6 +244,14 @@ def main() -> None:
         "--no-auto-backfill",
         action="store_true",
         help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
+    )
+    parser.add_argument(
+        "--include-demo-validation",
+        action="store_true",
+        help=(
+            "Include demo_validation strategies in walk-forward "
+            "(default excluded to match live execution gate)."
+        ),
     )
     args = parser.parse_args()
     set_current_environment(args.environment)
@@ -245,7 +271,9 @@ def main() -> None:
         end=parse_iso_to_utc(args.end),
         auto_backfill=not args.no_auto_backfill,
     )
-    sys.stderr.write(f"Walk-Forward: {tf} ({args.start} ~ {args.end}), {args.splits} splits\n")
+    sys.stderr.write(
+        f"Walk-Forward: {tf} ({args.start} ~ {args.end}), {args.splits} splits\n"
+    )
 
     result = _run_walkforward(
         tf,
@@ -256,6 +284,7 @@ def main() -> None:
         anchored=args.anchored,
         metric=args.metric,
         strategy_names=strategy_names,
+        include_demo_validation=args.include_demo_validation,
     )
 
     print(_render_result(result, tf))
