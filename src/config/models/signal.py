@@ -9,6 +9,15 @@ class SignalConfig(BaseModel):
     auto_trade_enabled: bool = False
     auto_trade_min_confidence: float = 0.7
     max_concurrent_positions_per_symbol: int | None = 3
+    # Cross-TF opposite escape (layer-2): 反向新信号在以下任一条件满足时
+    # 触发"换边"——market close 同策略所有反向持仓 + 开新仓。
+    # 否则维持 layer-1 (cross-TF opposite) 拦截。
+    # high_conf 单条件：event.confidence >= cross_tf_switch_min_confidence
+    # aged_loss 双条件：opposite 持有时长 >= cross_tf_switch_min_age_hours
+    #                   AND opposite r_multiple <= cross_tf_switch_max_r
+    cross_tf_switch_min_confidence: float = 0.65
+    cross_tf_switch_min_age_hours: float = 2.0
+    cross_tf_switch_max_r: float = -0.3
     sl_atr_multiplier: float = 1.5
     tp_atr_multiplier: float = 3.0
     risk_percent_per_trade: float = 1.0

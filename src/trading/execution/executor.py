@@ -33,8 +33,12 @@ from ..tracking.trade_outcome import TradeOutcomeTracker
 from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
 from .eventing import emit_execution_decided as _emit_execution_decided_helper
 from .eventing import emit_admission_report as _emit_admission_report_helper
-from .eventing import emit_blocked_admission_report as _emit_blocked_admission_report_helper
-from .eventing import emit_terminal_execution_event as _emit_terminal_execution_event_helper
+from .eventing import (
+    emit_blocked_admission_report as _emit_blocked_admission_report_helper,
+)
+from .eventing import (
+    emit_terminal_execution_event as _emit_terminal_execution_event_helper,
+)
 from .eventing import notify_skip as _notify_skip_helper
 from .decision_engine import ExecutionDecisionEngine
 from .pre_trade_pipeline import PreTradePipeline
@@ -77,6 +81,11 @@ class ExecutorConfig:
         default_factory=lambda: frozenset({"reversion"})
     )
     max_concurrent_positions_per_symbol: int | None = 3
+    # Cross-TF opposite escape (layer-2)：反向新信号在以下任一条件触发"换边"
+    # （market close 同策略所有反向持仓 + 开新仓）；不满足维持 layer-1 拦截。
+    cross_tf_switch_min_confidence: float = 0.65
+    cross_tf_switch_min_age_hours: float = 2.0
+    cross_tf_switch_max_r: float = -0.3
     risk_percent: float = 1.0
     sl_atr_multiplier: float = 1.5
     tp_atr_multiplier: float = 3.0
@@ -685,8 +694,13 @@ class TradeExecutor:
         pipeline_reason: str = "",
     ) -> None:
         _ptc.reject_signal(
-            self, event, reason, category, tf,
-            log_level=log_level, extra_log=extra_log,
+            self,
+            event,
+            reason,
+            category,
+            tf,
+            log_level=log_level,
+            extra_log=extra_log,
             pipeline_reason=pipeline_reason,
         )
 
@@ -1040,7 +1054,9 @@ class TradeExecutor:
                     event.strategy,
                 )
             elif reject_reason == REASON_INTRABAR_PARENT_BAR_MISSING:
-                logger.warning("TradeExecutor: no parent_bar_time in intrabar event, skip")
+                logger.warning(
+                    "TradeExecutor: no parent_bar_time in intrabar event, skip"
+                )
             elif reject_reason == REASON_INTRABAR_GUARD_BLOCKED:
                 logger.debug(
                     "IntrabarTradeGuard blocked: %s/%s/%s reason=%s",
@@ -1068,7 +1084,8 @@ class TradeExecutor:
                 )
             blocked_category = (
                 "execution_gate"
-                if reject_reason in {
+                if reject_reason
+                in {
                     REASON_INTRABAR_GUARD_MISSING,
                     REASON_INTRABAR_PARENT_BAR_MISSING,
                     REASON_INTRABAR_GUARD_BLOCKED,
@@ -1099,9 +1116,7 @@ class TradeExecutor:
                     code=reject_reason or "intrabar_blocked",
                     category=blocked_category,
                     message=str(
-                        intrabar_pre_trade.detail
-                        or reject_reason
-                        or "intrabar blocked"
+                        intrabar_pre_trade.detail or reject_reason or "intrabar blocked"
                     ),
                     details=blocked_details,
                     requested_operation="intrabar_execution",
@@ -1152,10 +1167,12 @@ class TradeExecutor:
         # 5. 成本检查
         cost_metrics = decision.cost_metrics
         if cost_metrics is not None and cost_metrics.get("blocked"):
-            reject_reason = str(
-                cost_metrics.get("reason")
+            reject_reason = (
+                str(
+                    cost_metrics.get("reason") or REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH
+                ).strip()
                 or REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH
-            ).strip() or REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH
+            )
             logger.info(
                 "Intrabar entry blocked by cost check: %s/%s/%s",
                 event.symbol,
@@ -1191,7 +1208,9 @@ class TradeExecutor:
                     "message": "intrabar pre-trade checks passed",
                     "details": {
                         "parent_bar_time": (
-                            parent_bar_time.isoformat() if isinstance(parent_bar_time, datetime) else parent_bar_time
+                            parent_bar_time.isoformat()
+                            if isinstance(parent_bar_time, datetime)
+                            else parent_bar_time
                         ),
                     },
                 }

@@ -23,6 +23,9 @@ from .eventing import (
     notify_skip,
 )
 from .reasons import (
+    REASON_CROSS_TF_SWITCH_AGED_LOSS,
+    REASON_CROSS_TF_SWITCH_FAILED,
+    REASON_CROSS_TF_SWITCH_HIGH_CONF,
     REASON_DUPLICATE_PENDING_SAME_STRATEGY,
     REASON_DUPLICATE_POSITION_SAME_STRATEGY,
     REASON_OPPOSITE_POSITION_CROSS_TF,
@@ -358,17 +361,128 @@ def duplicate_execution_reason(executor: "TradeExecutor", event: SignalEvent) ->
 
     1. 同策略同 TF 任意方向 → REASON_DUPLICATE_POSITION_SAME_STRATEGY
        （历史"任意方向重复"语义，避免重复入场 + 同 TF hedge）
-    2. 同策略不同 TF 反向 → REASON_OPPOSITE_POSITION_CROSS_TF
-       （多 TF 设计层 1：保留同向加仓，禁反向 hedge 互吃 PnL）
+    2. 同策略不同 TF 反向 → 优先尝试 layer-2 escape "换边"：
+       - escape 满足（high_conf / aged_loss）→ market close 反向持仓 + 允许通过
+       - escape 不满足 → REASON_OPPOSITE_POSITION_CROSS_TF (layer-1 拦截)
+       - close 失败 → REASON_CROSS_TF_SWITCH_FAILED (下次重试)
     3. 同策略 pending entry 已存在 → REASON_DUPLICATE_PENDING_SAME_STRATEGY
     """
     if has_matching_active_position(executor, event):
         return REASON_DUPLICATE_POSITION_SAME_STRATEGY
     if has_opposite_position_any_tf(executor, event):
+        switch_reason, tickets = evaluate_cross_tf_opposite_switch(executor, event)
+        if switch_reason:
+            failed = close_opposite_positions_for_switch(
+                executor, tickets, switch_reason
+            )
+            if failed:
+                logger.warning(
+                    "Cross-TF switch partial close: %d/%d failed (escape=%s)",
+                    len(failed),
+                    len(tickets),
+                    switch_reason,
+                )
+                return REASON_CROSS_TF_SWITCH_FAILED
+            logger.info(
+                "Cross-TF switch executed: closed %d opposite positions (escape=%s)",
+                len(tickets),
+                switch_reason,
+            )
+            return ""
         return REASON_OPPOSITE_POSITION_CROSS_TF
     if has_matching_pending_entry(executor, event):
         return REASON_DUPLICATE_PENDING_SAME_STRATEGY
     return ""
+
+
+def evaluate_cross_tf_opposite_switch(
+    executor: "TradeExecutor", event: SignalEvent
+) -> tuple[str, list[int]]:
+    """评估反向新信号是否触发 cross-TF "换边"。
+
+    Returns:
+        (escape_reason, tickets_to_close)
+        escape_reason in {REASON_CROSS_TF_SWITCH_HIGH_CONF,
+                          REASON_CROSS_TF_SWITCH_AGED_LOSS, ""}
+        tickets_to_close: 要 market close 的反向持仓 ticket list
+    """
+    if executor.position_manager is None:
+        return "", []
+    try:
+        active = executor.position_manager.active_positions() or []
+    except Exception:
+        logger.debug(
+            "Failed to inspect active positions for switch evaluation",
+            exc_info=True,
+        )
+        return "", []
+
+    opposites = [
+        row
+        for row in active
+        if (
+            row.get("symbol") == event.symbol
+            and row.get("strategy") == event.strategy
+            and row.get("action") != event.direction
+        )
+    ]
+    if not opposites:
+        return "", []
+
+    cfg = executor.config
+    tickets = [int(row["ticket"]) for row in opposites if row.get("ticket")]
+
+    # 条件 1: high_conf escape (新信号 conf 高 → 强反转意图明确)
+    if event.confidence >= cfg.cross_tf_switch_min_confidence:
+        return REASON_CROSS_TF_SWITCH_HIGH_CONF, tickets
+
+    # 条件 2: aged_loss escape (老仓持有久 + 持续浮亏 → 论据已失效)
+    now = datetime.now(timezone.utc)
+    for row in opposites:
+        opened_at_str = str(row.get("opened_at", "") or "")
+        if not opened_at_str:
+            continue
+        try:
+            opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=timezone.utc)
+        age_hours = (now - opened_at).total_seconds() / 3600.0
+        r_mult = float(row.get("r_multiple") or 0.0)
+        if (
+            age_hours >= cfg.cross_tf_switch_min_age_hours
+            and r_mult <= cfg.cross_tf_switch_max_r
+        ):
+            return REASON_CROSS_TF_SWITCH_AGED_LOSS, tickets
+
+    return "", []
+
+
+def close_opposite_positions_for_switch(
+    executor: "TradeExecutor", tickets: list[int], switch_reason: str
+) -> list[int]:
+    """市价平仓 list of tickets，返回失败的 ticket 列表。"""
+    failed: list[int] = []
+    for ticket in tickets:
+        try:
+            result = executor.trading.close_position(
+                ticket=ticket,
+                deviation=20,
+                comment=f"switch_{switch_reason}"[:31],
+            )
+            ok = bool(
+                result.get("success", False) if isinstance(result, dict) else result
+            )
+            if not ok:
+                failed.append(ticket)
+                logger.warning(
+                    "Switch close ticket=%d failed: result=%s", ticket, result
+                )
+        except Exception as exc:
+            logger.warning("Switch close ticket=%d raised: %s", ticket, exc)
+            failed.append(ticket)
+    return failed
 
 
 def has_matching_active_position(executor: "TradeExecutor", event: SignalEvent) -> bool:
