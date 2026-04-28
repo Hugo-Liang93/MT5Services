@@ -453,8 +453,15 @@ class AppRuntime:
         )
 
         if c.health_monitor is not None:
+            # informational：startup heartbeat，无 alert 阈值；显式标记
+            # check_alert=False 避免 HealthMonitor 报 "metric recorded with
+            # check_alert=True but no threshold registered" 一次性 noise。
             c.health_monitor.record_metric(
-                "system", "startup", 1.0, {"version": "unified", "timestamp": "now"}
+                "system",
+                "startup",
+                1.0,
+                {"version": "unified", "timestamp": "now"},
+                check_alert=False,
             )
 
     def _mark_step(

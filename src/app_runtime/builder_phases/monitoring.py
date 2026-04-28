@@ -49,7 +49,12 @@ def _economic_calendar_staleness_thresholds(
     expected_refresh_gap = (
         min(enabled_refresh_gaps) if enabled_refresh_gaps else stale_after
     )
-    warning = max(1.0, min(stale_after, expected_refresh_gap))
+    # 调度+抖动 buffer：理论 refresh gap 之上预留 10% + 30s 绝对量。
+    # 实际 gap = idle_interval + fetch 耗时(1-5s) + 调度抖动(几秒)，经常会
+    # 微超理论值——demo-main 04-28 频繁报 staleness=1804s 微破 1800s 阈值
+    # 即此原因。buffer 后 1800 → 2010s，正常 gap 不再触发误警。
+    buffered_gap = expected_refresh_gap * 1.1 + 30.0
+    warning = max(1.0, min(stale_after, buffered_gap))
     critical = stale_after
     return {"warning": warning, "critical": critical}
 
