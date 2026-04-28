@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 # Trade guards / controls.
 REASON_XAUUSD_TRADE_GUARD_BLOCKED = "xauusd_trade_guard_blocked"
 REASON_CLOSE_ONLY_MODE_ENABLED = "close_only_mode_enabled"
@@ -29,14 +28,15 @@ REASON_STOP_LOSS = "stop_loss"
 REASON_TAKE_PROFIT = "take_profit"
 REASON_TRAILING_STOP = "trailing_stop"
 REASON_SIGNAL_EXIT = "signal_exit"
+# Broker tick 触发关闭但 close_price 不在 SL/TP 阈值内（可能 manual close / margin call /
+# 系统重启时 reconcile 检测到的旧 close）。区别于 SL/TP 推断成功的明确出场。
+REASON_BROKER_CLOSE = "broker_close"
 
 # Position/state status reason.
 REASON_PLACED_BY_EXECUTOR = "placed_by_executor"
 REASON_MATCHED_LIVE_POSITION = "matched_live_position"
 REASON_MATCHED_TRACKED_POSITION = "matched_tracked_position"
-REASON_RECOVERED_FROM_MT5_WITHOUT_LOCAL_STATE = (
-    "recovered_from_mt5_without_local_state"
-)
+REASON_RECOVERED_FROM_MT5_WITHOUT_LOCAL_STATE = "recovered_from_mt5_without_local_state"
 
 
 __all__ = [
@@ -57,6 +57,7 @@ __all__ = [
     "REASON_STOP_LOSS",
     "REASON_TAKE_PROFIT",
     "REASON_TRAILING_STOP",
+    "REASON_BROKER_CLOSE",
     "REASON_SIGNAL_EXIT",
     "REASON_PLACED_BY_EXECUTOR",
     "REASON_MATCHED_LIVE_POSITION",

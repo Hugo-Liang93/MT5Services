@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from ..reasons import REASON_BROKER_CLOSE, REASON_STOP_LOSS, REASON_TAKE_PROFIT
 from ..trade_events import (
     POSITION_CLOSE_SOURCE_HISTORY_DEALS,
     POSITION_CLOSE_SOURCE_MT5_MISSING,
@@ -20,6 +21,43 @@ if TYPE_CHECKING:
     from .manager import PositionManager, TrackedPosition
 
 logger = logging.getLogger(__name__)
+
+
+def infer_exit_reason_from_price(
+    pos: Any,
+    *,
+    close_price: Optional[float],
+) -> str:
+    """从 broker 上报的 close_price 推断 exit_reason（broker tick 触发时用）。
+
+    broker 在 tick 层触发 SL / TP 后只给我们 history_deals 里的 close_price，
+    没有 reason；reconciliation 兜底标记 close_source=history_deals 但
+    `pos.last_exit_reason` 此时仍空。本 helper 用 close_price 与
+    current_stop_loss / current_take_profit 容差对比推断真实出场原因，
+    供 trade_outcomes.metadata 写入。
+
+    容差 = max(atr_at_entry × 0.2, 1.5 USD floor)。1.5 USD 反映 XAUUSD 真实
+    broker 行为：tick 触发 SL/TP 后实际成交价含 spread (~0.3 USD) + slippage
+    (1-2 USD)，差距通常 1.0-1.5 USD（demo 实测 fill=4667.58 vs sl=4666.30 →
+    diff=1.28 应识别为 stop_loss）。高 ATR 场景容差按比例放大。
+
+    返回：
+      REASON_STOP_LOSS    — close 在 SL 容差内
+      REASON_TAKE_PROFIT  — close 在 TP 容差内
+      REASON_BROKER_CLOSE — close_price 缺失 / 远离 SL TP（manual close /
+                            margin call / 跨重启 reconcile / 未知）
+    """
+    if close_price is None:
+        return REASON_BROKER_CLOSE
+    sl = getattr(pos, "current_stop_loss", None)
+    tp = getattr(pos, "current_take_profit", None)
+    atr = getattr(pos, "atr_at_entry", None) or 0.0
+    tolerance = max(float(atr) * 0.2, 1.5)
+    if sl is not None and abs(float(close_price) - float(sl)) <= tolerance:
+        return REASON_STOP_LOSS
+    if tp is not None and abs(float(close_price) - float(tp)) <= tolerance:
+        return REASON_TAKE_PROFIT
+    return REASON_BROKER_CLOSE
 
 
 def force_close_overnight(manager: PositionManager) -> Optional[Dict[str, Any]]:
@@ -374,6 +412,14 @@ def reconcile_with_mt5(manager: PositionManager) -> None:
             )
             manager.remove_position(ticket)
             pos.close_source = close_source
+            # broker tick 触发关闭时 last_exit_reason 仍空 — 通过 close_price
+            # 与 current_sl/current_tp 容差对比推断真实出场原因，让 trade_outcomes
+            # metadata 能区分 stop_loss / take_profit / 其它 broker 关闭
+            # （manual / margin / 跨重启 reconcile 等）。
+            if not pos.last_exit_reason:
+                pos.last_exit_reason = infer_exit_reason_from_price(
+                    pos, close_price=close_price
+                )
             for cb in list(manager._close_callbacks):
                 try:
                     cb(pos, close_price)
