@@ -50,6 +50,7 @@ _ALL_PROVIDERS = [
     "regime_transition",
     "session_event",
     "intrabar",
+    "candle_patterns",
 ]
 
 

@@ -37,8 +37,9 @@ import logging
 logging.disable(logging.CRITICAL)
 
 from datetime import datetime, timezone
-from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict, List, Optional
+
+from src.utils.timezone import parse_iso_to_utc
 
 
 def _run_single_packed(
@@ -91,6 +92,7 @@ def _run_single(
             "regime_transition",
             "session_event",
             "intrabar",
+            "candle_patterns",
         ]
         if providers == ["all"]:
             enabled = _ALL_PROVIDERS
@@ -161,7 +163,8 @@ def _run_single(
                 "stable_ir": [
                     r.to_dict()
                     for r in sig
-                    if r.rolling_ic is not None and r.rolling_ic.information_ratio >= 0.5
+                    if r.rolling_ic is not None
+                    and r.rolling_ic.information_ratio >= 0.5
                 ][:5],
             }
 

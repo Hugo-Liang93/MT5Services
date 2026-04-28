@@ -107,6 +107,7 @@ class FeatureProviderConfig:
     regime_transition_enabled: bool = True
     session_event_enabled: bool = True
     intrabar_enabled: bool = True
+    candle_patterns_enabled: bool = True
     fdr_grouping: str = "by_provider"  # "by_provider" | "global" | "none"
 
     temporal: TemporalProviderConfig = field(default_factory=TemporalProviderConfig)
@@ -231,6 +232,7 @@ def _load_feature_providers(parser: configparser.ConfigParser) -> FeatureProvide
         regime_transition_enabled=_getbool(sec, "regime_transition", True),
         session_event_enabled=_getbool(sec, "session_event", True),
         intrabar_enabled=_getbool(sec, "intrabar", True),
+        candle_patterns_enabled=_getbool(sec, "candle_patterns", True),
         fdr_grouping=_get(sec, "fdr_grouping", "by_provider"),
         temporal=temporal,
         microstructure=microstructure,

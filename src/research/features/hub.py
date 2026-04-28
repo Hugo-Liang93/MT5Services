@@ -9,6 +9,7 @@ FeatureHub — 所有特征计算的单一入口。
 - 校验特征数组长度（fail-fast）
 - 提供运行时状态摘要
 """
+
 from __future__ import annotations
 
 import logging
@@ -45,12 +46,15 @@ class FeatureHub:
     # ------------------------------------------------------------------
 
     def _register_enabled_providers(self, config: ResearchConfig) -> None:
-        from src.research.features.temporal import TemporalFeatureProvider
-        from src.research.features.microstructure import MicrostructureFeatureProvider
+        from src.research.features.candle_patterns import CandlePatternFeatureProvider
         from src.research.features.cross_tf import CrossTFFeatureProvider
-        from src.research.features.regime_transition import RegimeTransitionFeatureProvider
-        from src.research.features.session_event import SessionEventProvider
         from src.research.features.intrabar import IntrabarProvider
+        from src.research.features.microstructure import MicrostructureFeatureProvider
+        from src.research.features.regime_transition import (
+            RegimeTransitionFeatureProvider,
+        )
+        from src.research.features.session_event import SessionEventProvider
+        from src.research.features.temporal import TemporalFeatureProvider
 
         fp = config.feature_providers
 
@@ -59,9 +63,12 @@ class FeatureHub:
             "temporal": lambda: TemporalFeatureProvider(fp.temporal),
             "microstructure": lambda: MicrostructureFeatureProvider(fp.microstructure),
             "cross_tf": lambda: CrossTFFeatureProvider(fp.cross_tf),
-            "regime_transition": lambda: RegimeTransitionFeatureProvider(fp.regime_transition),
+            "regime_transition": lambda: RegimeTransitionFeatureProvider(
+                fp.regime_transition
+            ),
             "session_event": lambda: SessionEventProvider(),
             "intrabar": lambda: IntrabarProvider(),
+            "candle_patterns": lambda: CandlePatternFeatureProvider(),
         }
 
         for name, factory in _PROVIDER_FACTORIES.items():
