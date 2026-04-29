@@ -5,13 +5,13 @@ from typing import Any, Callable, Dict, Optional
 
 from src.signals.metadata_keys import MetadataKey as MK
 
+from ..positions.manager import TrackedPosition
 from ..reasons import (
     REASON_MATCHED_LIVE_POSITION,
     REASON_MATCHED_TRACKED_POSITION,
     REASON_PLACED_BY_EXECUTOR,
     REASON_RECOVERED_FROM_MT5_WITHOUT_LOCAL_STATE,
 )
-from ..positions.manager import TrackedPosition
 from ..trade_events import POSITION_TRACKED
 from .models import (
     PendingOrderStateRecord,
@@ -146,6 +146,9 @@ class TradingStateStore:
             last_seen_at=now,
             metadata=self._pending_metadata(info),
             updated_at=now,
+            order_group_id=self._metadata_optional(info, "order_group_id"),
+            group_member_id=self._metadata_optional(info, "group_member_id"),
+            group_role=self._metadata_optional(info, "group_role"),
         )
         self._db.write_pending_order_states([record.to_row()])
         self._cache_pending_record(record)
@@ -410,6 +413,9 @@ class TradingStateStore:
             status_reason=status_reason,
             metadata=self._pending_metadata(info),
             updated_at=updated_at,
+            order_group_id=self._metadata_optional(info, "order_group_id"),
+            group_member_id=self._metadata_optional(info, "group_member_id"),
+            group_role=self._metadata_optional(info, "group_role"),
         )
 
     def _match_pending_for_position(
@@ -623,6 +629,16 @@ class TradingStateStore:
         if isinstance(metadata, dict) and metadata.get(field) is not None:
             return str(metadata.get(field))
         return ""
+
+    @staticmethod
+    def _metadata_optional(info: dict[str, Any], field: str) -> Optional[str]:
+        """ADR-013: 返回 Optional[str]，空值/缺失时返回 None（用于 group_id 等列）。"""
+        metadata = info.get("metadata")
+        if isinstance(metadata, dict):
+            value = metadata.get(field)
+            if value is not None and str(value) != "":
+                return str(value)
+        return None
 
     @staticmethod
     def _datetime_or_none(value: Any) -> Optional[datetime]:

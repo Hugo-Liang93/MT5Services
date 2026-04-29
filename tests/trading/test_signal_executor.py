@@ -1382,6 +1382,12 @@ def test_trade_executor_enforces_guarded_strategy_live_position_cap() -> None:
 
 
 def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> None:
+    from src.trading.entry_policy import (
+        EntrySpecGroup,
+        EntrySpecMember,
+        EntryType,
+        new_group_id,
+    )
     from src.trading.pending import PendingEntryConfig
 
     module = DummyTradingModule()
@@ -1400,7 +1406,22 @@ def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> Non
         runtime_identity=_default_runtime_identity(),
     )
 
-    _limit_spec = {"entry_type": "limit", "entry_price": 3000.0, "entry_zone_atr": 0.3}
+    # ADR-013: 用 EntrySpecGroup 替代旧 entry_spec 字段；测试预先注入 group
+    # 让 decision_engine 走 pending 路径（避开真实 EntryPolicyRegistry derive）
+    def _make_limit_group() -> EntrySpecGroup:
+        return EntrySpecGroup(
+            group_id=new_group_id(),
+            members=(
+                EntrySpecMember(
+                    member_id="limit_pullback",
+                    entry_type=EntryType.LIMIT,
+                    trigger_price=3000.0,
+                    entry_low=2999.0,
+                    entry_high=3001.0,
+                ),
+            ),
+        )
+
     first = _build_event(spread_points=20.0, close_price=3000.0)
     first = SignalEvent(
         **{
@@ -1409,7 +1430,7 @@ def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> Non
             "metadata": {
                 **first.metadata,
                 "bar_time": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
-                "entry_spec": _limit_spec,
+                "entry_spec_group": _make_limit_group(),
             },
         }
     )
@@ -1421,7 +1442,7 @@ def test_trade_executor_pending_submission_sets_reentry_cooldown_anchor() -> Non
             "metadata": {
                 **second.metadata,
                 "bar_time": datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc),
-                "entry_spec": _limit_spec,
+                "entry_spec_group": _make_limit_group(),
             },
             "generated_at": datetime.now(timezone.utc),
         }

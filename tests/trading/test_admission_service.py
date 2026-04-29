@@ -23,7 +23,6 @@ from src.trading.admission.service import (
     append_admission_report_event,
 )
 
-
 # ── 测试辅助 ────────────────────────────────────────────────────────────────
 
 

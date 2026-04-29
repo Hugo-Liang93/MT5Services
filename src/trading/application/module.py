@@ -6,23 +6,20 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
 
-from src.persistence.db import TimescaleWriter
 from src.config import get_trading_config, get_trading_ops_config
+from src.persistence.db import TimescaleWriter
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.metadata_keys import MetadataKey as MK
 from src.trading.broker.comment_codec import comments_share_request_tag
 from src.trading.commands.results import build_operator_command_result
 
-from .services import TradingCommandService, TradingQueryService
-from .control import TradeControlStateService
 from ..models import TradeCommandAuditRecord
-from .audit import TradeCommandAuditService, TradeDailyStatsService
-from .results import attach_dispatch_precheck, build_trade_operation_result
-from .idempotency import (
-    TradeExecutionReplayService,
-    TradeOperatorActionReplayService,
-)
 from ..runtime.registry import TradingAccountRegistry
+from .audit import TradeCommandAuditService, TradeDailyStatsService
+from .control import TradeControlStateService
+from .idempotency import TradeExecutionReplayService, TradeOperatorActionReplayService
+from .results import attach_dispatch_precheck, build_trade_operation_result
+from .services import TradingCommandService, TradingQueryService
 
 logger = logging.getLogger(__name__)
 

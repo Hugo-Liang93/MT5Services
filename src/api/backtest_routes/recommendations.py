@@ -6,8 +6,8 @@ from typing import Optional
 
 from fastapi import APIRouter
 
-from src.api.schemas import ApiResponse
 from src.api.backtest_routes import helpers as api_recommendations
+from src.api.schemas import ApiResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

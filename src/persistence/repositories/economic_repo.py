@@ -20,7 +20,9 @@ class EconomicCalendarRepository:
     def __init__(self, writer: "TimescaleWriter"):
         self._writer = writer
 
-    def write_economic_calendar(self, rows: Iterable[Tuple], page_size: int = 500) -> None:
+    def write_economic_calendar(
+        self, rows: Iterable[Tuple], page_size: int = 500
+    ) -> None:
         batch = []
         for row in rows:
             payload = row[31] if row[31] is not None else {}
@@ -29,16 +31,22 @@ class EconomicCalendarRepository:
             return
         self._writer._batch(UPSERT_ECONOMIC_CALENDAR_SQL, batch, page_size=page_size)
 
-    def write_economic_calendar_updates(self, rows: Iterable[Tuple], page_size: int = 500) -> None:
+    def write_economic_calendar_updates(
+        self, rows: Iterable[Tuple], page_size: int = 500
+    ) -> None:
         batch = []
         for row in rows:
             payload = row[16] if row[16] is not None else {}
             batch.append((*row[:16], self._writer._json(payload)))
         if not batch:
             return
-        self._writer._batch(INSERT_ECONOMIC_CALENDAR_UPDATE_SQL, batch, page_size=page_size)
+        self._writer._batch(
+            INSERT_ECONOMIC_CALENDAR_UPDATE_SQL, batch, page_size=page_size
+        )
 
-    def delete_economic_calendar_by_keys(self, keys: Iterable[Tuple[datetime, str]]) -> None:
+    def delete_economic_calendar_by_keys(
+        self, keys: Iterable[Tuple[datetime, str]]
+    ) -> None:
         doomed = list(keys)
         if not doomed:
             return

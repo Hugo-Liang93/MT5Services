@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import EntrySpec, ExitMode, ExitSpec, HtfPolicy, StructuredStrategyBase
+from .base import ExitMode, ExitSpec, HtfPolicy, StructuredStrategyBase
 
 
 class StructuredRegimeExhaustion(StructuredStrategyBase):
@@ -105,9 +105,7 @@ class StructuredRegimeExhaustion(StructuredStrategyBase):
         tf = ctx.timeframe
 
         # StochRSI 确认：卖出时仍在超买区，买入时仍在超卖区
-        overbought = get_tf_param(
-            self, "stoch_overbought", tf, self._stoch_overbought
-        )
+        overbought = get_tf_param(self, "stoch_overbought", tf, self._stoch_overbought)
         oversold = get_tf_param(self, "stoch_oversold", tf, self._stoch_oversold)
 
         if direction == "sell" and stoch_k < overbought:
@@ -151,10 +149,6 @@ class StructuredRegimeExhaustion(StructuredStrategyBase):
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=1.2, high=1.5)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        # 反转策略：市价入场
-        return EntrySpec()
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         """BARRIER 模式：固定 SL/TP/Time，与挖掘 barrier_stats 一致。"""

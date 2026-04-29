@@ -23,7 +23,9 @@ class TradingStateAlerts:
         self._trading = trading_module
         self._account_alias_getter = account_alias_getter or (lambda: "")
 
-    def summary(self, *, pending_limit: int = 50, position_limit: int = 50) -> dict[str, Any]:
+    def summary(
+        self, *, pending_limit: int = 50, position_limit: int = 50
+    ) -> dict[str, Any]:
         # P1 §0t：必须区分"无数据"与"数据源失败"。旧实现 _safe_* 把异常吞成空列表，
         # 双数据源故障时所有告警判据全部 false → 把 DB/MT5 双故障误报成 healthy。
         # 新实现：每次调用记录 source_errors，summary() 末尾把失败源转成显式告警。
@@ -223,9 +225,7 @@ class TradingStateAlerts:
                 type(exc).__name__,
                 exc,
             )
-            source_errors.setdefault(
-                "trading_module", f"{type(exc).__name__}: {exc}"
-            )
+            source_errors.setdefault("trading_module", f"{type(exc).__name__}: {exc}")
             return []
 
     def _safe_live_positions(self, *, source_errors: dict[str, str]) -> list[Any]:
@@ -237,9 +237,7 @@ class TradingStateAlerts:
                 type(exc).__name__,
                 exc,
             )
-            source_errors.setdefault(
-                "trading_module", f"{type(exc).__name__}: {exc}"
-            )
+            source_errors.setdefault("trading_module", f"{type(exc).__name__}: {exc}")
             return []
 
     def _unmanaged_live_positions(
@@ -250,10 +248,7 @@ class TradingStateAlerts:
     ) -> list[dict[str, Any]]:
         managed_tickets = {
             int(ticket)
-            for ticket in (
-                row.get("position_ticket")
-                for row in managed_rows
-            )
+            for ticket in (row.get("position_ticket") for row in managed_rows)
             if ticket is not None
         }
         resolver = getattr(self._trading, "resolve_position_context", None)

@@ -109,7 +109,9 @@ def test_build_trade_detail_returns_six_dimensions() -> None:
         "trace_id": "trace_42",
         "identifiers": {"signal_id": "sig_1"},
         "summary": {"stages": {}},
-        "timeline": [{"id": "t1", "stage": "signal.confirmed", "at": "2026-04-20T09:00:00+00:00"}],
+        "timeline": [
+            {"id": "t1", "stage": "signal.confirmed", "at": "2026-04-20T09:00:00+00:00"}
+        ],
         "facts": {
             "signal_confirmed": {
                 "signal_id": "sig_1",
@@ -119,12 +121,21 @@ def test_build_trade_detail_returns_six_dimensions() -> None:
                 "generated_at": "2026-04-20T08:55:00+00:00",
                 "reason": "breakout above 2400",
                 "metadata": {
-                    "entry_spec": {
-                        "entry_type": "market",
-                        "entry_price": 2400.0,
-                        "stop_loss": 2395.0,
-                        "take_profit": 2410.0,
-                        "volume": 0.1,
+                    # ADR-013: entry_spec_group 替代旧 entry_spec
+                    "entry_spec_group": {
+                        "group_id": "test-group-1",
+                        "cancellation_policy": "any_fill",
+                        "metadata": {"policy_name": "market"},
+                        "members": [
+                            {
+                                "member_id": "market",
+                                "entry_type": "market",
+                                "trigger_price": 2400.0,
+                                "entry_low": 2400.0,
+                                "entry_high": 2400.0,
+                                "validity_bars": None,
+                            }
+                        ],
                     },
                     "indicators": {"atr14": 5.1},
                 },
@@ -281,6 +292,7 @@ def test_build_trade_detail_is_a_pure_trace_adapter() -> None:
             },
         }
     )
+
     # 故意传一个"如被访问就报错"的 signal_repo，证明 detail 不走 signal_repo
     class _ExplodingRepo:
         def __getattr__(self, name: str):

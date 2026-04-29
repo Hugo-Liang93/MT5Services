@@ -13,7 +13,6 @@ from src.signals.models import SignalDecision
 from src.signals.orchestration.policy import SignalPolicy
 from src.signals.orchestration.runtime import SignalRuntime, SignalTarget
 
-
 # ── Dummy 对象 ────────────────────────────────────────────────
 
 

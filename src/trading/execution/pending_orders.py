@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalEvent
+from src.trading.entry_policy import EntrySpecGroup
 
 from ..broker.comment_codec import (
     build_trade_comment,
@@ -15,6 +16,7 @@ from ..broker.comment_codec import (
     comments_share_request_tag,
 )
 from ..pending.manager import compute_timeout
+from .entry_dispatch import ensure_entry_spec_group
 from .eventing import (
     _build_terminal_result,
     build_trade_metadata,
@@ -70,32 +72,38 @@ def submit_pending_entry(
 
     config = executor.pending_manager.config
 
-    # 从策略 entry_spec 读取入场意图
-    entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
-    entry_type = entry_spec.get("entry_type", "market")
-    suggested_price = entry_spec.get("entry_price")
-    zone_atr = entry_spec.get("entry_zone_atr", 0.3)
-
-    ref_price = (
-        float(suggested_price) if suggested_price is not None else params.entry_price
-    )
-    half_zone = zone_atr * params.atr_value
-    entry_low = ref_price - half_zone
-    entry_high = ref_price + half_zone
+    # ADR-013: 从 EntryPolicyRegistry 装配的 EntrySpecGroup 读取入场参数。
+    # decision_engine 已在上游 derive 一次写入 metadata，此处幂等取出即可。
+    group = ensure_entry_spec_group(executor, event, params)
+    if group is None or len(group.members) == 0:
+        logger.warning(
+            "TradeExecutor: EntrySpecGroup unavailable for %s/%s; skipping pending entry",
+            event.symbol,
+            event.strategy,
+        )
+        emit_execution_blocked(
+            executor,
+            event,
+            reason=REASON_PENDING_ORDER_FAILED,
+            category=SKIP_CATEGORY_PENDING_SUBMIT,
+        )
+        notify_skip(
+            executor,
+            event.signal_id,
+            REASON_PENDING_ORDER_FAILED,
+            event.timeframe or "",
+        )
+        return _build_terminal_result(
+            status="skipped",
+            reason=REASON_PENDING_ORDER_FAILED,
+            category=SKIP_CATEGORY_PENDING_SUBMIT,
+        )
 
     timeout = compute_timeout(event.timeframe, config)
+    tf = event.timeframe or ""
 
-    order_kind, trigger_price = resolve_pending_order(
-        direction=event.direction,
-        entry_type=entry_type,
-        entry_low=entry_low,
-        entry_high=entry_high,
-    )
-
-    price_shift = trigger_price - params.entry_price
-    adjusted_sl = round(params.stop_loss + price_shift, 2)
-    adjusted_tp = round(params.take_profit + price_shift, 2)
-
+    # ADR-013 P4: 提交前先撤同 symbol 的旧 group（cancel_by_symbol 已升级为
+    # 整组撤逻辑），避免与新 OCO group 冲突。
     if config.cancel_on_new_signal:
         exclude = event.direction if not config.cancel_same_direction else None
         executor.pending_manager.cancel_by_symbol(
@@ -104,133 +112,188 @@ def submit_pending_entry(
             exclude_direction=exclude,
         )
 
-    tf = event.timeframe or ""
-    payload = {
-        "symbol": event.symbol,
-        "volume": params.position_size,
-        "side": event.direction,
-        "order_kind": order_kind,
-        "price": trigger_price,
-        "sl": adjusted_sl,
-        "tp": adjusted_tp,
-        "comment": build_trade_comment(
-            request_id=event.signal_id,
-            timeframe=tf,
-            strategy=event.strategy,
-            side=event.direction,
-            order_kind=order_kind,
-        ),
-        "request_id": event.signal_id,
-        "metadata": build_trade_metadata(event),
-    }
+    # ADR-013 P4: 遍历 group.members 全部提交。多 member 时各自独立 ticket，
+    # 共享同一 group_id；任一成员 fill 后 _on_member_filled_handler 会撤其他。
+    submitted_tickets: list[Any] = []
+    last_result: Any = None
+    for member in group.members:
+        entry_type = member.entry_type.value
+        trigger_price = float(member.trigger_price)
+        entry_low = float(member.entry_low)
+        entry_high = float(member.entry_high)
 
-    try:
-        result = executor.trading.dispatch_operation("trade", payload)
-        order_ticket = None
-        if isinstance(result, dict):
-            order_ticket = result.get("order") or result.get("ticket")
+        # SL/TP 按 trigger_price 与原 params.entry_price 的位移平移，
+        # 保持 ATR 单位的 R:R 不变。
+        price_shift = trigger_price - params.entry_price
+        adjusted_sl = round(params.stop_loss + price_shift, 2)
+        adjusted_tp = round(params.take_profit + price_shift, 2)
 
-        logger.info(
-            "TradeExecutor: placed %s %s %s @ %.2f (zone=[%.2f,%.2f] type=%s) sl=%.2f tp=%.2f ticket=%s",
-            order_kind,
-            event.direction,
-            event.symbol,
-            trigger_price,
-            entry_low,
-            entry_high,
-            entry_type,
-            adjusted_sl,
-            adjusted_tp,
-            order_ticket,
+        order_kind = _resolve_order_kind(event.direction, entry_type)
+
+        # OCO 多 member 时 entry_key 拼接 member_id 避免冲突；单 member 时
+        # entry_key=signal_id（向后兼容）。
+        entry_key = (
+            event.signal_id
+            if len(group.members) == 1
+            else f"{event.signal_id}#{member.member_id}"
         )
 
-        if order_ticket is not None:
-            executor.pending_manager.track_mt5_order(
-                signal_id=event.signal_id,
-                order_ticket=order_ticket,
-                expires_at=datetime.now(timezone.utc) + timeout,
-                direction=event.direction,
-                symbol=event.symbol,
-                strategy=event.strategy,
+        payload = {
+            "symbol": event.symbol,
+            "volume": params.position_size,
+            "side": event.direction,
+            "order_kind": order_kind,
+            "price": trigger_price,
+            "sl": adjusted_sl,
+            "tp": adjusted_tp,
+            "comment": build_trade_comment(
+                request_id=event.signal_id,
                 timeframe=tf,
-                confidence=event.confidence,
-                regime=event.metadata.get(MK.REGIME),
-                comment=(
-                    str(result.get("comment") or payload["comment"])
-                    if isinstance(result, dict)
-                    else payload["comment"]
-                ),
-                params=params,
+                strategy=event.strategy,
+                side=event.direction,
                 order_kind=order_kind,
-                entry_low=entry_low,
-                entry_high=entry_high,
-                trigger_price=trigger_price,
-                entry_price_requested=params.entry_price,
-                stop_loss=adjusted_sl,
-                take_profit=adjusted_tp,
-                volume=params.position_size,
-                created_at=datetime.now(timezone.utc),
-                metadata={
-                    "entry_type": entry_type,
+            ),
+            "request_id": entry_key,  # OCO 时各 member 用 entry_key 区分
+            "metadata": build_trade_metadata(event),
+        }
+
+        try:
+            result = executor.trading.dispatch_operation("trade", payload)
+            last_result = result
+            order_ticket = None
+            if isinstance(result, dict):
+                order_ticket = result.get("order") or result.get("ticket")
+
+            logger.info(
+                "TradeExecutor: placed %s %s %s @ %.2f (zone=[%.2f,%.2f] "
+                "type=%s) sl=%.2f tp=%.2f ticket=%s group=%s/%s",
+                order_kind,
+                event.direction,
+                event.symbol,
+                trigger_price,
+                entry_low,
+                entry_high,
+                entry_type,
+                adjusted_sl,
+                adjusted_tp,
+                order_ticket,
+                group.group_id,
+                member.member_id,
+            )
+
+            if order_ticket is not None:
+                executor.pending_manager.track_mt5_order(
+                    signal_id=entry_key,  # 使用 entry_key 作 tracking key
+                    order_ticket=order_ticket,
+                    expires_at=datetime.now(timezone.utc) + timeout,
+                    direction=event.direction,
+                    symbol=event.symbol,
+                    strategy=event.strategy,
+                    timeframe=tf,
+                    confidence=event.confidence,
+                    regime=event.metadata.get(MK.REGIME),
+                    comment=(
+                        str(result.get("comment") or payload["comment"])
+                        if isinstance(result, dict)
+                        else payload["comment"]
+                    ),
+                    params=params,
+                    order_kind=order_kind,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                    trigger_price=trigger_price,
+                    entry_price_requested=params.entry_price,
+                    stop_loss=adjusted_sl,
+                    take_profit=adjusted_tp,
+                    volume=params.position_size,
+                    created_at=datetime.now(timezone.utc),
+                    metadata={
+                        "entry_type": entry_type,
+                        "order_kind": order_kind,
+                    },
+                    exit_spec=event.metadata.get(MK.EXIT_SPEC),
+                    strategy_category=event.metadata.get(MK.STRATEGY_CATEGORY, ""),
+                    order_group_id=group.group_id,
+                    group_member_id=member.member_id,
+                    group_role=member.group_role,
+                )
+                emit_pending_order_submitted(
+                    executor, event, order_kind=order_kind, ticket=order_ticket
+                )
+                submitted_tickets.append(order_ticket)
+
+            executor.execution_log.append(
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "signal_id": event.signal_id,
+                    "entry_key": entry_key,
+                    "group_id": group.group_id,
+                    "member_id": member.member_id,
+                    "symbol": event.symbol,
+                    "direction": event.direction,
+                    "strategy": event.strategy,
+                    "success": True,
+                    "pending": True,
                     "order_kind": order_kind,
-                },
-                exit_spec=event.metadata.get(MK.EXIT_SPEC),
-                strategy_category=event.metadata.get(MK.STRATEGY_CATEGORY, ""),
+                    "trigger_price": trigger_price,
+                    "order_ticket": order_ticket,
+                }
             )
-            emit_pending_order_submitted(
-                executor, event, order_kind=order_kind, ticket=order_ticket
+        except Exception as exc:
+            logger.error(
+                "TradeExecutor: failed to place %s order for %s/%s "
+                "(group=%s/%s): %s",
+                order_kind,
+                event.symbol,
+                event.strategy,
+                group.group_id,
+                member.member_id,
+                exc,
             )
+            # OCO 多 member 单个失败不阻断其他 member（broker 仍可接受其他单）
+            executor.execution_log.append(
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "signal_id": event.signal_id,
+                    "entry_key": entry_key,
+                    "group_id": group.group_id,
+                    "member_id": member.member_id,
+                    "symbol": event.symbol,
+                    "direction": event.direction,
+                    "strategy": event.strategy,
+                    "success": False,
+                    "pending": True,
+                    "error": str(exc),
+                }
+            )
+            continue
 
-        executor.execution_log.append(
-            {
-                "at": datetime.now(timezone.utc).isoformat(),
-                "signal_id": event.signal_id,
-                "symbol": event.symbol,
-                "direction": event.direction,
-                "strategy": event.strategy,
-                "success": True,
-                "pending": True,
-                "order_kind": order_kind,
-                "trigger_price": trigger_price,
-                "order_ticket": order_ticket,
-            }
-        )
-        record_reentry_bar_time(executor, event)
-        return result
-
-    except Exception as exc:
-        logger.error(
-            "TradeExecutor: failed to place %s order for %s/%s: %s",
-            order_kind,
-            event.symbol,
-            event.strategy,
-            exc,
-        )
+    if not submitted_tickets:
         return _build_terminal_result(
             status="failed",
             reason=REASON_PENDING_ORDER_FAILED,
             category=SKIP_CATEGORY_PENDING_SUBMIT,
-            error_code=type(exc).__name__,
-            details={"error": str(exc)},
+            details={"reason": "all_oco_members_failed"},
         )
 
+    record_reentry_bar_time(executor, event)
+    return last_result if last_result is not None else {"success": True}
 
-def resolve_pending_order(
-    direction: str,
-    entry_type: str,
-    entry_low: float,
-    entry_high: float,
-) -> tuple[str, float]:
-    """根据策略指定的 entry_type 决定订单类型和触发价。"""
-    if entry_type == "stop":
-        # stop order：buy 追高 / sell 追低
-        if direction == "buy":
-            return "stop", entry_high
-        return "stop", entry_low
-    # limit order（默认）：buy 等回调 / sell 等反弹
-    if direction == "buy":
-        return "limit", entry_low
-    return "limit", entry_high
+
+def _resolve_order_kind(direction: str, entry_type: str) -> str:
+    """从 (direction, entry_type) 推导 MT5 order_kind。
+
+    EntrySpecMember.trigger_price 已由 policy 算好，本函数仅做命名映射：
+      buy + limit  → "limit"   (broker 解析为 buy_limit)
+      sell + limit → "limit"   (broker 解析为 sell_limit)
+      buy + stop   → "stop"
+      sell + stop  → "stop"
+      *  + market  → "market"
+    后续 broker 层会根据 direction 拼成 buy_limit / sell_limit 等具体类型。
+    """
+    if entry_type in ("limit", "stop", "market"):
+        return entry_type
+    raise ValueError(f"unknown entry_type {entry_type!r} (direction={direction!r})")
 
 
 def reached_position_limit(executor: "TradeExecutor", symbol: str) -> bool:

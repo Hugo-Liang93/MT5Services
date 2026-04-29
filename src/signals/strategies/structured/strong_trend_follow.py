@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import EntrySpec, ExitMode, ExitSpec, HtfPolicy, StructuredStrategyBase
+from .base import ExitMode, ExitSpec, HtfPolicy, StructuredStrategyBase
 
 
 class StructuredStrongTrendFollow(StructuredStrategyBase):
@@ -42,17 +42,15 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
 
     # ── 可调参数（挖掘阈值为默认值）──
     _adx_extreme: float = 40.0
-    _adx_d3_min_strict: float = 0.0       # 与 regime_exhaustion 互斥：需严格 > 此值
-    _macd_hist_upper: float = 1.61        # 挖掘阈值
-    _macd_hist_lower: float = -2.0        # 下限保护
-    _roc_lower: float = -1.17             # 挖掘阈值
+    _adx_d3_min_strict: float = 0.0  # 与 regime_exhaustion 互斥：需严格 > 此值
+    _macd_hist_upper: float = 1.61  # 挖掘阈值
+    _macd_hist_lower: float = -2.0  # 下限保护
+    _roc_lower: float = -1.17  # 挖掘阈值
     _sl_atr: float = 1.5
     _tp_atr: float = 2.5
     _time_bars: int = 20
 
-    def _why(
-        self, ctx: SignalContext
-    ) -> Tuple[bool, Optional[str], float, str]:
+    def _why(self, ctx: SignalContext) -> Tuple[bool, Optional[str], float, str]:
         adx_data = self._adx_full(ctx)
         adx = adx_data["adx"]
         adx_d3 = adx_data["adx_d3"]
@@ -62,16 +60,12 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
         if adx is None or plus_di is None or minus_di is None:
             return False, None, 0.0, "no_adx_data"
 
-        threshold = get_tf_param(
-            self, "adx_extreme", ctx.timeframe, self._adx_extreme
-        )
+        threshold = get_tf_param(self, "adx_extreme", ctx.timeframe, self._adx_extreme)
         if adx <= threshold:
             return False, None, 0.0, f"adx_low:{adx:.0f}"
 
         if plus_di <= minus_di:
-            return False, None, 0.0, (
-                f"di_not_bullish:+{plus_di:.0f}/-{minus_di:.0f}"
-            )
+            return False, None, 0.0, (f"di_not_bullish:+{plus_di:.0f}/-{minus_di:.0f}")
 
         # adx_d3 严格互斥：实盘中与 regime_exhaustion 在 adx_d3<=0 时互斥。
         # 回测管线不计算 delta metrics（adx_d3=None），此时不阻止信号；
@@ -92,9 +86,7 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
             f"strong_trend:adx={adx:.0f},di_diff={plus_di - minus_di:.0f}",
         )
 
-    def _when(
-        self, ctx: SignalContext, direction: str
-    ) -> Tuple[bool, float, str]:
+    def _when(self, ctx: SignalContext, direction: str) -> Tuple[bool, float, str]:
         macd = ctx.indicators.get("macd_fast", {})
         roc_data = ctx.indicators.get("roc12", {})
 
@@ -105,12 +97,8 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
             return False, 0.0, "no_macd_or_roc"
 
         tf = ctx.timeframe
-        hist_hi = get_tf_param(
-            self, "macd_hist_upper", tf, self._macd_hist_upper
-        )
-        hist_lo = get_tf_param(
-            self, "macd_hist_lower", tf, self._macd_hist_lower
-        )
+        hist_hi = get_tf_param(self, "macd_hist_upper", tf, self._macd_hist_upper)
+        hist_lo = get_tf_param(self, "macd_hist_lower", tf, self._macd_hist_lower)
         roc_lo = get_tf_param(self, "roc_lower", tf, self._roc_lower)
 
         if macd_hist > hist_hi:
@@ -124,16 +112,12 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
         center = 0.0
         half_range = max(abs(hist_hi - center), abs(hist_lo - center))
         distance = abs(macd_hist - center)
-        score = (
-            max(0.0, 1.0 - distance / half_range) if half_range > 0 else 0.0
-        )
+        score = max(0.0, 1.0 - distance / half_range) if half_range > 0 else 0.0
         score = max(score, 0.3)
 
         return True, score, f"timing:macd_hist={macd_hist:.2f},roc={roc:.2f}"
 
-    def _where(
-        self, ctx: SignalContext, direction: str
-    ) -> Tuple[float, str]:
+    def _where(self, ctx: SignalContext, direction: str) -> Tuple[float, str]:
         ms = self._ms(ctx)
         if str(ms.get("compression_state", "none")) != "none":
             return 0.8, f"compression={ms.get('compression_state')}"
@@ -144,17 +128,9 @@ class StructuredStrongTrendFollow(StructuredStrategyBase):
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=1.2, high=1.5)
 
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        # 强趋势延续是追单性质，使用市价入场（不等待回调）
-        return EntrySpec()
-
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         """BARRIER 模式：与挖掘 forward_return 评估语义一致。"""
         sl = get_tf_param(self, "sl_atr", ctx.timeframe, self._sl_atr)
         tp = get_tf_param(self, "tp_atr", ctx.timeframe, self._tp_atr)
-        tb = int(
-            get_tf_param(self, "time_bars", ctx.timeframe, self._time_bars)
-        )
-        return ExitSpec(
-            sl_atr=sl, tp_atr=tp, mode=ExitMode.BARRIER, time_bars=tb
-        )
+        tb = int(get_tf_param(self, "time_bars", ctx.timeframe, self._time_bars))
+        return ExitSpec(sl_atr=sl, tp_atr=tp, mode=ExitMode.BARRIER, time_bars=tb)

@@ -20,15 +20,10 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 #  策略输出契约（类型安全的 entry/exit 规格）
+#
+#  ADR-013：信号策略只输出 "方向 + 信心 + 出场契约 + 信号语义元数据"，不再
+#  决定入场。EntryType / EntrySpec 已搬迁到 src.trading.entry_policy.specs。
 # ---------------------------------------------------------------------------
-
-
-class EntryType(str, Enum):
-    """入场方式枚举。"""
-
-    MARKET = "market"
-    LIMIT = "limit"
-    STOP = "stop"
 
 
 class StructureBias(str, Enum):
@@ -64,29 +59,6 @@ BEARISH_BIASES = frozenset(
         StructureBias.BEARISH_SWEEP_CONFIRMED,
     }
 )
-
-
-class EntrySpec:
-    """策略入场规格（不可变值对象）。"""
-
-    __slots__ = ("entry_type", "entry_price", "entry_zone_atr")
-
-    def __init__(
-        self,
-        entry_type: EntryType = EntryType.MARKET,
-        entry_price: Optional[float] = None,
-        entry_zone_atr: float = 0.3,
-    ) -> None:
-        self.entry_type = EntryType(entry_type)  # 校验合法性
-        self.entry_price = entry_price
-        self.entry_zone_atr = entry_zone_atr
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "entry_type": self.entry_type.value,
-            "entry_price": self.entry_price,
-            "entry_zone_atr": self.entry_zone_atr,
-        }
 
 
 class ExitMode(str, Enum):
@@ -313,9 +285,55 @@ class StructuredStrategyBase:
         """
         return 0.0
 
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        """入场规格（子类必须实现）。返回 EntrySpec 值对象。"""
-        raise NotImplementedError
+    def _detect_pattern(
+        self, ctx: SignalContext, direction: str, when_reason: str
+    ) -> "PatternType":
+        """从 candle_pattern 指标 + when_reason 推 PatternType（ADR-013）。
+
+        基类提供默认实现：扫描 candle_pattern 字段（pin_bar / engulfing / hammer
+        / three_method / rejection）+ bar_stats20.body_ratio，按方向匹配返回
+        最强形态。子类可覆写补充自家形态识别（如 sweep_reversal、trendline_touch）。
+        """
+        from src.trading.entry_policy.pattern import PatternType
+
+        candle = ctx.indicators.get("candle_pattern", {})
+        stats = ctx.indicators.get("bar_stats20", {})
+
+        pin = candle.get("pin_bar", 0.0) or 0.0
+        eng = candle.get("engulfing", 0.0) or 0.0
+        ham = candle.get("hammer", 0.0) or 0.0
+        three = candle.get("three_method", 0.0) or 0.0
+        rej = candle.get("rejection", 0.0) or 0.0
+        body_ratio = stats.get("body_ratio", 0.0) or 0.0
+        close_pos = stats.get("close_position", 0.5) or 0.5
+
+        if direction == "buy":
+            if pin > 0:
+                return PatternType.PIN_BULL
+            if eng > 0:
+                return PatternType.ENGULFING_BULL
+            if ham > 0:
+                return PatternType.HAMMER
+            if three > 0:
+                return PatternType.THREE_SOLDIERS
+            if body_ratio >= 1.5 and close_pos > 0.7:
+                return PatternType.BIG_BAR_BULL
+            if rej > 0:
+                return PatternType.REJECTION_BULL
+        else:  # sell
+            if pin < 0:
+                return PatternType.PIN_BEAR
+            if eng < 0:
+                return PatternType.ENGULFING_BEAR
+            if ham < 0:
+                return PatternType.SHOOTING_STAR
+            if three < 0:
+                return PatternType.THREE_CROWS
+            if body_ratio >= 1.5 and close_pos < 0.3:
+                return PatternType.BIG_BAR_BEAR
+            if rej < 0:
+                return PatternType.REJECTION_BEAR
+        return PatternType.NONE
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         """出场规格（子类必须实现）。返回 ExitSpec 值对象。"""
@@ -378,8 +396,21 @@ class StructuredStrategyBase:
         if where_info:
             reason += f",{where_info}"
 
-        entry_spec = self._entry_spec(context, direction)
+        # ADR-013: 不再调 _entry_spec；只输出语义元数据 ENTRY_INTENT + PATTERN_TYPE。
+        # 下游 trading/backtest 持有 EntryPolicyRegistry，按 (strategy, tf) 解析
+        # policy 后调 derive() 拿 EntrySpecGroup 进入挂单流程。
+        pattern_type = self._detect_pattern(context, direction, when_reason)
         exit_spec = self._exit_spec(context, direction)
+
+        entry_intent: Dict[str, Any] = {
+            "strategy_name": self.name,
+            "timeframe": context.timeframe,
+            "direction": direction,
+            "pattern_type": pattern_type.value,
+            "why_reason": why_reason,
+            "when_reason": when_reason,
+            "where_info": where_info,
+        }
 
         return self._make_decision(
             direction,
@@ -394,7 +425,8 @@ class StructuredStrategyBase:
                 "where_score": round(where_s, 3),
                 "vol_score": round(vol_s, 3),
                 "signal_grade": grade,
-                "entry_spec": entry_spec.to_dict(),
+                MK.ENTRY_INTENT: entry_intent,
+                MK.PATTERN_TYPE: pattern_type.value,
                 "exit_spec": exit_spec.to_dict(),
                 MK.PROMOTED_INDICATORS: list(self.promoted_indicator_lineage),
                 MK.RESEARCH_PROVENANCE: list(self.research_provenance_refs),

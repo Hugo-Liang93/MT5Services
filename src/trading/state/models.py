@@ -45,6 +45,11 @@ class PendingOrderStateRecord:
     last_seen_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     updated_at: datetime = field(default_factory=_utcnow)
+    # ADR-013: OCO group 字段。单 member 场景仍填入（group_id=UUID,
+    # group_member_id='market'/'limit'/'stop', group_role 同步）。
+    order_group_id: Optional[str] = None
+    group_member_id: Optional[str] = None
+    group_role: Optional[str] = None
 
     def to_row(self) -> tuple:
         return (
@@ -82,6 +87,9 @@ class PendingOrderStateRecord:
             dict(self.metadata),
             self.updated_at,
             self.account_key,
+            self.order_group_id,
+            self.group_member_id,
+            self.group_role,
         )
 
 

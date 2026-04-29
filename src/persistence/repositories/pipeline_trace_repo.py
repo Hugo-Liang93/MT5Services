@@ -49,9 +49,7 @@ class PipelineTraceRepository:
         limit: int = 500,
     ) -> List[dict[str, Any]]:
         normalized_trace_ids = [
-            str(item).strip()
-            for item in trace_ids
-            if str(item or "").strip()
+            str(item).strip() for item in trace_ids if str(item or "").strip()
         ]
         if not normalized_trace_ids:
             return []
@@ -305,9 +303,7 @@ WHERE 1=1
             conditions.append("event_type = %s")
             params.append(event_type)
         normalized_event_types = [
-            str(item).strip()
-            for item in (event_types or [])
-            if str(item or "").strip()
+            str(item).strip() for item in (event_types or []) if str(item or "").strip()
         ]
         if normalized_event_types:
             conditions.append("event_type = ANY(%s)")
@@ -340,9 +336,7 @@ WHERE 1=1
         limit: int = 50000,
     ) -> list[dict[str, Any]]:
         normalized_timeframes = [
-            str(item).strip()
-            for item in (timeframes or [])
-            if str(item or "").strip()
+            str(item).strip() for item in (timeframes or []) if str(item or "").strip()
         ]
         sql = """
 SELECT trace_id,

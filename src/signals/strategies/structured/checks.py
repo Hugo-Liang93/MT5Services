@@ -3,10 +3,10 @@
 纯函数，无状态，供各策略 _why/_when/_where 按需调用。
 不强制使用——策略可以自由组合或写自己的逻辑。
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
-
 
 # ═══════════════════════════════════════════════════════════════
 # HTF（高时间框架）

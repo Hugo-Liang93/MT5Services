@@ -62,7 +62,12 @@ def test_trend_h4_momentum_accepts_h1_buy_alignment() -> None:
     assert "momentum_consensus14" in decision.used_indicators
     assert decision.metadata["promoted_indicators"] == ["momentum_consensus14"]
     assert decision.metadata["research_provenance"] == ["derived.momentum_consensus"]
-    assert decision.metadata["entry_spec"]["entry_type"] == "limit"
+    # ADR-013: 入场决策不在 strategy 而在 EntryPolicyRegistry
+    # → mapping[trend_continuation] = pullback (限价回踩)
+    assert decision.metadata["entry_intent"]["direction"] == "buy"
+    assert decision.metadata["entry_intent"]["strategy_name"].startswith(
+        "structured_trend"
+    )
 
 
 def test_trend_h4_momentum_rejects_negative_consensus() -> None:
@@ -84,10 +89,12 @@ def test_trend_h4_momentum_accepts_sell_side_when_consensus_is_negative() -> Non
     )
 
     assert decision.direction == "sell"
-    assert decision.metadata["entry_spec"]["entry_type"] == "limit"
+    assert decision.metadata["entry_intent"]["direction"] == "sell"
 
 
-def test_trend_h4_momentum_direction_lock_remains_available_for_explicit_long_only_mode() -> None:
+def test_trend_h4_momentum_direction_lock_remains_available_for_explicit_long_only_mode() -> (
+    None
+):
     strategy = StructuredTrendContinuation(
         name="structured_trend_h4_momentum_long_only",
         htf="H4",

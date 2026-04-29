@@ -8,8 +8,6 @@ from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
 from .base import (
-    EntrySpec,
-    EntryType,
     ExitSpec,
     HtfPolicy,
     StructuredStrategyBase,
@@ -172,20 +170,6 @@ class StructuredTrendContinuation(StructuredStrategyBase):
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=1.0, high=1.5)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        if self._use_momentum_consensus:
-            zone = get_tf_param(
-                self,
-                "pending_entry_zone_atr",
-                ctx.timeframe,
-                self._pending_entry_zone_atr,
-            )
-            return EntrySpec(
-                entry_type=EntryType.LIMIT,
-                entry_zone_atr=zone,
-            )
-        return EntrySpec()
 
     _aggression: float = 0.80
 

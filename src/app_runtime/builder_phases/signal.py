@@ -261,6 +261,12 @@ def build_signal_layer(
         signal_components.execution_performance_tracker
     )
     container.pending_entry_manager = signal_components.pending_entry_manager
+    # ADR-013: registry 已在 PendingEntryManager 构造时由 factories/signals.py
+    # 注入；此处取出绑定到 container 供 readmodel/API 端点访问。
+    if container.pending_entry_manager is not None:
+        container.entry_policy_registry = (
+            container.pending_entry_manager.entry_policy_registry
+        )
     container.execution_intent_publisher = signal_components.execution_intent_publisher
     container.execution_intent_consumer = signal_components.execution_intent_consumer
 

@@ -6,12 +6,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from src.trading.closeout import (
-    ExposureCloseoutController,
-    ExposureCloseoutService,
-)
-from src.trading.positions import PositionManager, TrackedPosition
+from src.trading.closeout import ExposureCloseoutController, ExposureCloseoutService
 from src.trading.execution.sizing import TradeParameters
+from src.trading.positions import PositionManager, TrackedPosition
 
 
 def _params(**overrides) -> TradeParameters:

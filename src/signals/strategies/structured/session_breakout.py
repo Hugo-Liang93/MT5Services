@@ -7,7 +7,13 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import EntrySpec, ExitSpec, HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import (
+    ExitSpec,
+    HtfPolicy,
+    StructuredStrategyBase,
+    _near_structure_level,
+    _structure_bias_bonus,
+)
 
 
 class StructuredSessionBreakout(StructuredStrategyBase):
@@ -52,8 +58,12 @@ class StructuredSessionBreakout(StructuredStrategyBase):
         tf = ctx.timeframe
         ah, al = float(asia_high), float(asia_low)
         asia_range = ah - al
-        range_min = get_tf_param(self, "asia_range_min_atr", tf, self._asia_range_min_atr)
-        range_max = get_tf_param(self, "asia_range_max_atr", tf, self._asia_range_max_atr)
+        range_min = get_tf_param(
+            self, "asia_range_min_atr", tf, self._asia_range_min_atr
+        )
+        range_max = get_tf_param(
+            self, "asia_range_max_atr", tf, self._asia_range_max_atr
+        )
         if asia_range < atr * range_min or asia_range > atr * range_max:
             return False, None, 0, f"range_bad:{asia_range:.0f}"
 
@@ -67,7 +77,9 @@ class StructuredSessionBreakout(StructuredStrategyBase):
         else:
             return False, None, 0, "inside_range"
 
-        pen_min = get_tf_param(self, "penetration_min_atr", tf, self._penetration_min_atr)
+        pen_min = get_tf_param(
+            self, "penetration_min_atr", tf, self._penetration_min_atr
+        )
         if pen < pen_min:
             return False, None, 0, f"weak:{pen:.3f}"
 
@@ -115,9 +127,6 @@ class StructuredSessionBreakout(StructuredStrategyBase):
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:  # type: ignore[override]
         return self._linear_score(self._volume_ratio(ctx), low=1.0, high=1.5)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        return EntrySpec()
 
     _aggression: float = 0.60
 

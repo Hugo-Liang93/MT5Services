@@ -78,6 +78,7 @@ class TimescaleWriter:
         self._trade_command_repo: Optional[TradeCommandAuditRepository] = None
         self._operator_command_repo: Optional[OperatorCommandRepository] = None
         self._trading_state_repo: Optional[TradingStateRepository] = None
+        self._entry_policy_repo: Optional[Any] = None  # EntryPolicyDecisionRepository
         self._economic_repo: Optional[EconomicCalendarRepository] = None
         self._pipeline_trace_repo: Optional[PipelineTraceRepository] = None
         self._runtime_repo: Optional[RuntimeStatusRepository] = None
@@ -151,6 +152,19 @@ class TimescaleWriter:
         if repo is None:
             repo = TradingStateRepository(self)
             self._trading_state_repo = repo
+        return repo
+
+    @property
+    def entry_policy_repo(self) -> Any:  # EntryPolicyDecisionRepository
+        """ADR-013 审计表读写。"""
+        from src.persistence.repositories.entry_policy_repo import (
+            EntryPolicyDecisionRepository,
+        )
+
+        repo = getattr(self, "_entry_policy_repo", None)
+        if repo is None:
+            repo = EntryPolicyDecisionRepository(self)
+            self._entry_policy_repo = repo
         return repo
 
     @property
@@ -768,9 +782,7 @@ class TimescaleWriter:
     def heartbeat_execution_intent(self, **kwargs) -> None:
         self.execution_intent_repo.heartbeat_execution_intent(**kwargs)
 
-    def write_intents_with_idempotency(
-        self, items: list[dict[str, Any]]
-    ) -> list[str]:
+    def write_intents_with_idempotency(self, items: list[dict[str, Any]]) -> list[str]:
         # §0dn B3：ledger reserve + 主表 INSERT atomic（同 transaction）。
         # 返 reserved 成功的 intent_key 列表（committed），publisher 仅 emit
         # 这些。任一项 reserve 命中或主表 INSERT 失败 → 整体 rollback 防

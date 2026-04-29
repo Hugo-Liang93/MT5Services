@@ -3,6 +3,7 @@
 提供 swing 检测、趋势线拟合、触碰评估等纯函数，
 供 StructuredTrendlineTouch 策略使用。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -66,7 +67,9 @@ def _evaluate_trendline_touch(
     tolerance: float,
 ) -> TrendlineTouch:
     touch_distance = abs(touch_price - trendline_price)
-    within_band = touch_distance <= tolerance if tolerance > 0 else touch_distance == 0.0
+    within_band = (
+        touch_distance <= tolerance if tolerance > 0 else touch_distance == 0.0
+    )
 
     if direction == "buy":
         is_valid = within_band and close_price > trendline_price
@@ -246,7 +249,9 @@ def _find_best_trendline(
                 normalized_slope=normalized_slope,
                 mean_error_atr=mean_error_atr,
                 max_error_atr=max_error_atr,
-                trendline_price_at_current=_project_price(anchor1, slope, current_bar_index),
+                trendline_price_at_current=_project_price(
+                    anchor1, slope, current_bar_index
+                ),
                 score=score,
             )
 

@@ -35,14 +35,7 @@ from typing import Literal, Optional, Tuple
 
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
-from .base import (
-    EntrySpec,
-    EntryType,
-    ExitMode,
-    ExitSpec,
-    HtfPolicy,
-    StructuredStrategyBase,
-)
+from .base import ExitMode, ExitSpec, HtfPolicy, StructuredStrategyBase
 
 _VALID_OPS = frozenset((">", ">=", "<", "<=", "==", "!="))
 
@@ -189,10 +182,6 @@ class MinedRuleStrategy(StructuredStrategyBase):
         return True, 1.0, "mined_rule_entry"
 
     # ── 执行规格 ──────────────────────────────────────────────────────
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        """市价入场（barrier 已锁 SL/TP，不需要 limit/stop 价格控制）。"""
-        return EntrySpec(entry_type=EntryType.MARKET)
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         """barrier mode：复用 spec.barrier 的 SL/TP/Time（mining 已识别的最佳）。"""

@@ -12,7 +12,6 @@ from types import SimpleNamespace
 
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 
-
 # ── 测试辅助 ────────────────────────────────────────────────────────────
 
 

@@ -6,13 +6,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.signals.metadata_keys import MetadataKey as MK
+
+from . import pre_trade_checks as _ptc
 from .reasons import (
-    REASON_INTRABAR_GUARD_MISSING,
-    REASON_INTRABAR_PARENT_BAR_MISSING,
     REASON_INTRABAR_GATE_BLOCKED,
     REASON_INTRABAR_GUARD_BLOCKED,
+    REASON_INTRABAR_GUARD_MISSING,
+    REASON_INTRABAR_PARENT_BAR_MISSING,
 )
-from . import pre_trade_checks as _ptc
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent

@@ -8,8 +8,10 @@ from src.config.mt5 import MT5Settings, load_group_mt5_settings
 from src.config.runtime_identity import RuntimeIdentity, build_account_key
 from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
 from src.trading.application.idempotency import TradeOperatorActionReplayConflictError
-from src.trading.commands.results import build_existing_command_result
-from src.trading.commands.results import build_operator_command_result
+from src.trading.commands.results import (
+    build_existing_command_result,
+    build_operator_command_result,
+)
 
 
 class OperatorCommandService:

@@ -46,6 +46,21 @@ class PendingEntryMonitoringService:
         self._check_interval = float(check_interval)
         self._max_spread_points = float(max_spread_points)
         self._timeout_fill_tolerance_atr = float(timeout_fill_tolerance_atr)
+        # ADR-013: OCO group 反向索引（由 PendingEntryManager 通过
+        # set_groups_index() 注入，单 member 场景下也注入但实际为空）。
+        self._groups_index: Optional[dict[str, set[str]]] = None
+        # fill 后回调 manager._on_member_filled(group_id, entry_key) 撤 sibling
+        self._on_member_filled: Optional[Callable[[str, str], None]] = None
+
+    def set_groups_index(
+        self,
+        groups: dict[str, set[str]],
+        *,
+        on_member_filled: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
+        """ADR-013: 注入 OCO group 反向索引 + fill 后回调。"""
+        self._groups_index = groups
+        self._on_member_filled = on_member_filled
 
     def set_runtime_config(
         self,
@@ -65,12 +80,14 @@ class PendingEntryMonitoringService:
                 result = self._fill_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
+            execute_succeeded = False
             try:
                 self._execute_fn(
                     result.signal_event,
                     result.trade_params,
                     result.cost_metrics,
                 )
+                execute_succeeded = True
             except Exception:
                 logger.error(
                     "PendingEntry execute failed after fill: %s",
@@ -79,6 +96,17 @@ class PendingEntryMonitoringService:
                 )
             finally:
                 self._fill_queue.task_done()
+            # ADR-013: any-fill 撤 sibling。execute_fn 成功后才撤（失败时不撤
+            # 兜底让 sibling 仍有触发机会）。
+            if execute_succeeded and self._on_member_filled and result.group_id:
+                try:
+                    self._on_member_filled(result.group_id, result.entry_key)
+                except Exception:
+                    logger.warning(
+                        "OCO sibling cancellation failed for group %s",
+                        result.group_id,
+                        exc_info=True,
+                    )
 
     def clear_fill_queue(self) -> None:
         while True:
@@ -134,10 +162,7 @@ class PendingEntryMonitoringService:
 
         if self._max_spread_points > 0:
             spread_points = self.get_spread_points(bid, ask, entry.signal_event.symbol)
-            if (
-                spread_points is not None
-                and spread_points > self._max_spread_points
-            ):
+            if spread_points is not None and spread_points > self._max_spread_points:
                 logger.debug(
                     "PendingEntry %s: spread %.1f > max %.1f, skip this check",
                     entry.signal_event.signal_id[:8],
@@ -158,11 +183,22 @@ class PendingEntryMonitoringService:
             return None
 
     def fill_entry(self, entry: Any, fill_price: float) -> None:
+        # ADR-013 OCO: _pending 用 entry_key 索引（默认 = signal_id；OCO 多
+        # member 时 = f"{signal_id}#{member_id}"）。
+        key = getattr(entry, "entry_key", "") or entry.signal_event.signal_id
         with self._lock:
-            if self._pending.pop(entry.signal_event.signal_id, None) is None:
+            if self._pending.pop(key, None) is None:
                 return
             entry.status = "filled"
             entry.fill_price = fill_price
+            # ADR-013: 同步从 _groups 反向索引移除（如果在 group 中）
+            # _groups 由 PendingEntryManager 通过 set_groups_index() 注入
+            groups = self._groups_index
+            group_id = getattr(entry, "group_id", "")
+            if groups is not None and group_id and group_id in groups:
+                groups[group_id].discard(key)
+                if not groups[group_id]:
+                    groups.pop(group_id, None)
 
             self._stats["total_filled"] = self._stats.get("total_filled", 0) + 1
             if entry.signal_event.direction == "buy":
@@ -198,6 +234,8 @@ class PendingEntryMonitoringService:
             signal_event=entry.signal_event,
             trade_params=updated_params,
             cost_metrics=entry.cost_metrics,
+            entry_key=key,
+            group_id=getattr(entry, "group_id", "") or "",
         )
         try:
             self._fill_queue.put_nowait(fill_result)
@@ -218,9 +256,9 @@ class PendingEntryMonitoringService:
                     self._pending.pop(entry.signal_event.signal_id, None)
                     entry.status = "expired"
                     entry.cancel_reason = REASON_FILL_QUEUE_OVERFLOW
-                    self._stats["total_expired"] = self._stats.get(
-                        "total_expired", 0
-                    ) + 1
+                    self._stats["total_expired"] = (
+                        self._stats.get("total_expired", 0) + 1
+                    )
 
     def expire_entry(self, entry: Any) -> None:
         timeout_tolerance_ratio = self._timeout_fill_tolerance_atr

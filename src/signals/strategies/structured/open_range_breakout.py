@@ -38,14 +38,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import (
-    EntrySpec,
-    EntryType,
-    ExitSpec,
-    HtfPolicy,
-    StructuredStrategyBase,
-    _structure_bias_bonus,
-)
+from .base import ExitSpec, HtfPolicy, StructuredStrategyBase, _structure_bias_bonus
 
 
 class StructuredOpenRangeBreakout(StructuredStrategyBase):
@@ -191,14 +184,6 @@ class StructuredOpenRangeBreakout(StructuredStrategyBase):
             return 0.0
         # 突破放量：volume_ratio 1.0→0.0, 1.5→0.5, 2.0→1.0
         return self._linear_score(vr, low=1.0, high=2.0)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        """STOP 单入场：挂在亚盘区间边界外，等待突破确认。"""
-        zone = get_tf_param(self, "entry_zone_atr", ctx.timeframe, self._entry_zone_atr)
-        return EntrySpec(
-            entry_type=EntryType.STOP,
-            entry_zone_atr=zone,
-        )
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)

@@ -54,9 +54,7 @@ class ExecutionIntentRepository:
             return
         self._writer._batch(INSERT_EXECUTION_INTENTS_SQL, batch, page_size=page_size)
 
-    def write_intents_with_idempotency(
-        self, items: list[dict[str, Any]]
-    ) -> list[str]:
+    def write_intents_with_idempotency(self, items: list[dict[str, Any]]) -> list[str]:
         """§0dn B3 + §0do P1：ledger reserve + 主表 INSERT 真正 atomic。
 
         必须用 ``transaction()`` 而非 ``connection()`` —— ``connection()``
@@ -90,9 +88,7 @@ class ExecutionIntentRepository:
                 if cur.rowcount > 0:
                     # ledger reserve 成功 → 必须同事务写主表；任一失败回滚
                     row = item["row"]
-                    payload = (
-                        row[9] if len(row) > 9 and row[9] is not None else {}
-                    )
+                    payload = row[9] if len(row) > 9 and row[9] is not None else {}
                     decision_metadata = (
                         row[20] if len(row) > 20 and row[20] is not None else {}
                     )

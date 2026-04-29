@@ -31,6 +31,7 @@ from src.trading.application.module import TradingModule
 from src.trading.closeout import ExposureCloseoutController
 from src.trading.commands.consumer import OperatorCommandConsumer
 from src.trading.commands.service import OperatorCommandService
+from src.trading.entry_policy import EntryPolicyRegistry
 from src.trading.execution.executor import TradeExecutor
 from src.trading.pending import PendingEntryManager
 from src.trading.positions import PositionManager
@@ -76,6 +77,7 @@ class AppContainer:
         "position_manager",
         "trade_outcome_tracker",
         "pending_entry_manager",
+        "entry_policy_registry",
         "execution_intent_publisher",
         "execution_intent_consumer",
         "operator_command_service",
@@ -134,6 +136,7 @@ class AppContainer:
         self.position_manager: Optional[PositionManager] = None
         self.trade_outcome_tracker: Optional[TradeOutcomeTracker] = None
         self.pending_entry_manager: Optional[PendingEntryManager] = None
+        self.entry_policy_registry: Optional[EntryPolicyRegistry] = None
         self.execution_intent_publisher: Optional[Any] = None
         self.execution_intent_consumer: Optional[Any] = None
         self.operator_command_service: Optional[OperatorCommandService] = None

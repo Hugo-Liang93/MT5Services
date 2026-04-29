@@ -14,11 +14,10 @@ from src.monitoring.pipeline.events import (
 )
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.metadata_keys import MetadataKey as MK
-from src.trading.broker.comment_codec import build_trade_comment
 from src.trading.admission.service import append_admission_report_event
+from src.trading.broker.comment_codec import build_trade_comment
 
-from .reasons import SKIP_CATEGORY_DISPATCH, SKIP_CATEGORY_RISK_SERVICE
-from .reasons import reason_category
+from .reasons import SKIP_CATEGORY_DISPATCH, SKIP_CATEGORY_RISK_SERVICE, reason_category
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent

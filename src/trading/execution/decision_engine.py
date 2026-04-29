@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .entry_dispatch import ensure_entry_spec_group, group_is_market_only
+from .eventing import execute_market_order as _execute_market_order_helper
 from .params import compute_params as _compute_params_helper
 from .params import estimate_cost_metrics as _estimate_cost_metrics_helper
-from .eventing import execute_market_order as _execute_market_order_helper
 from .pending_orders import submit_pending_entry as _submit_pending_entry_helper
 from .reasons import (
     REASON_SINGLE_TRADE_LOSS_CAP,
@@ -16,7 +17,6 @@ from .reasons import (
 )
 from .risk_caps import check_single_trade_loss_cap
 from .sizing import TradeParameters
-from src.signals.metadata_keys import MetadataKey as MK
 
 if TYPE_CHECKING:
     from src.signals.models import SignalEvent
@@ -51,7 +51,9 @@ class ExecutionDecisionEngine:
                 reject_reason=REASON_TRADE_PARAMS_UNAVAILABLE,
             )
 
-        cost_metrics = _estimate_cost_metrics_helper(self._executor, event, trade_params)
+        cost_metrics = _estimate_cost_metrics_helper(
+            self._executor, event, trade_params
+        )
         spread_to_stop_ratio = cost_metrics.get("spread_to_stop_ratio")
         if (
             spread_to_stop_ratio is not None
@@ -76,11 +78,18 @@ class ExecutionDecisionEngine:
                 spread_to_stop_ratio=spread_to_stop_ratio,
             )
 
-        entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
-        entry_type = (
-            entry_spec.get("entry_type", "market") if isinstance(entry_spec, dict) else "market"
+        # ADR-013: 单次 derive，落地到 event.metadata[ENTRY_SPEC_GROUP]，
+        # 后续 pre_trade_checks / submit_pending_entry / readmodel 全部复用。
+        group = ensure_entry_spec_group(self._executor, event, trade_params)
+        if group is not None and group.is_oco:
+            entry_type = "oco"
+        elif group is not None and len(group.members) == 1:
+            entry_type = group.members[0].entry_type.value
+        else:
+            entry_type = "market"
+        use_market = (
+            group_is_market_only(group) or self._executor.pending_manager is None
         )
-        use_market = entry_type == "market" or self._executor.pending_manager is None
         return ExecutionDecision(
             trade_params=trade_params,
             cost_metrics=cost_metrics,
@@ -113,7 +122,9 @@ class ExecutionDecisionEngine:
 
             logging.getLogger(__name__).warning(
                 "Single-trade loss cap blocked %s/%s: %s",
-                event.symbol, event.strategy, result.reason,
+                event.symbol,
+                event.strategy,
+                result.reason,
             )
         return result.allowed
 
@@ -122,10 +133,16 @@ class ExecutionDecisionEngine:
             return None
         if decision.use_market or self._executor.pending_manager is None:
             return _execute_market_order_helper(
-                self._executor, event, decision.trade_params, cost_metrics=decision.cost_metrics
+                self._executor,
+                event,
+                decision.trade_params,
+                cost_metrics=decision.cost_metrics,
             )
         return _submit_pending_entry_helper(
-            self._executor, event, decision.trade_params, cost_metrics=decision.cost_metrics
+            self._executor,
+            event,
+            decision.trade_params,
+            cost_metrics=decision.cost_metrics,
         )
 
     def build_intrabar_decision(self, event: "SignalEvent") -> ExecutionDecision:
@@ -138,7 +155,9 @@ class ExecutionDecisionEngine:
                 entry_type="market",
                 reject_reason=REASON_TRADE_PARAMS_UNAVAILABLE,
             )
-        cost_metrics = _estimate_cost_metrics_helper(self._executor, event, trade_params)
+        cost_metrics = _estimate_cost_metrics_helper(
+            self._executor, event, trade_params
+        )
         if not self._check_loss_cap(event, trade_params):
             return ExecutionDecision(
                 trade_params=trade_params,
@@ -147,13 +166,17 @@ class ExecutionDecisionEngine:
                 entry_type="market",
                 reject_reason=REASON_SINGLE_TRADE_LOSS_CAP,
             )
-        entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
-        entry_type = (
-            entry_spec.get("entry_type", "market") if isinstance(entry_spec, dict) else "market"
-        )
+        group = ensure_entry_spec_group(self._executor, event, trade_params)
+        if group is not None and group.is_oco:
+            entry_type = "oco"
+        elif group is not None and len(group.members) == 1:
+            entry_type = group.members[0].entry_type.value
+        else:
+            entry_type = "market"
         return ExecutionDecision(
             trade_params=trade_params,
             cost_metrics=cost_metrics,
-            use_market=entry_type == "market" or self._executor.pending_manager is None,
+            use_market=group_is_market_only(group)
+            or self._executor.pending_manager is None,
             entry_type=entry_type,
         )

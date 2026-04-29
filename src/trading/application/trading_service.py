@@ -5,8 +5,8 @@
 from __future__ import annotations
 
 import time
-from uuid import uuid4
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 from src.clients.mt5_account import MT5AccountClient
 from src.clients.mt5_trading import MT5TradingClient, MT5TradingClientError

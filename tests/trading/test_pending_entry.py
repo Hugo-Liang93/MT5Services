@@ -12,16 +12,15 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.signals.models import SignalEvent
+from src.trading.execution.sizing import TradeParameters
 from src.trading.pending import (
     PendingEntry,
     PendingEntryConfig,
     PendingEntryManager,
-    _FillResult,
     _extract_quote_prices,
+    _FillResult,
     compute_timeout,
 )
-from src.trading.execution.sizing import TradeParameters
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 

@@ -220,43 +220,39 @@ def process_decision(
         return
 
     if engine._pending_entry_enabled:
-        entry_spec = decision.metadata.get(MK.ENTRY_SPEC, {})
-        entry_type = entry_spec.get("entry_type", "market")
+        # ADR-013: 通过 EntryPolicyRegistry 装配 EntrySpecGroup
+        group = _derive_backtest_entry_group(
+            engine, decision, bar, atr_value, indicators
+        )
 
-        # require_pending_entry：部署要求 pending 但策略输出 market → 拒绝
+        # require_pending_entry：部署要求 pending 但 group 全 MARKET → 拒绝
         if (
             deployment is not None
             and deployment.require_pending_entry
-            and entry_type == "market"
+            and (group is None or group.all_market())
         ):
             engine.record_execution_rejection("deployment_requires_pending_entry")
             return
 
-        if entry_type == "market":
+        if group is None or group.all_market():
             # 市价策略：跳过 pending，直接在 bar.close 入场
             execute_entry(
                 engine, decision, bar, bar_index, atr_value, regime, indicators
             )
             return
 
-        if entry_type not in ("limit", "stop"):
+        # P2 单 member 路径：取首成员（OCO 多 member 留给 P4）
+        if len(group.members) > 1:
             logger.warning(
-                "Unknown entry_type %s for %s, fallback to market",
-                entry_type,
+                "Backtest: OCO group with %d members not yet supported in P2; "
+                "using first member only (strategy=%s)",
+                len(group.members),
                 decision.strategy,
             )
-            execute_entry(
-                engine, decision, bar, bar_index, atr_value, regime, indicators
-            )
-            return
-
-        suggested_price = entry_spec.get("entry_price")
-        zone_atr = entry_spec.get("entry_zone_atr", 0.3)
-
-        ref_price = float(suggested_price) if suggested_price is not None else bar.close
-        half_zone = zone_atr * atr_value
-        entry_low = round(ref_price - half_zone, 2)
-        entry_high = round(ref_price + half_zone, 2)
+        member = group.members[0]
+        entry_type = member.entry_type.value
+        entry_low = round(float(member.entry_low), 2)
+        entry_high = round(float(member.entry_high), 2)
 
         expiry_bar = bar_index + engine._config.pending_entry.expiry_bars
         key = f"{decision.strategy}_{decision.direction}"
@@ -270,6 +266,82 @@ def process_decision(
         return
 
     execute_entry(engine, decision, bar, bar_index, atr_value, regime, indicators)
+
+
+def _derive_backtest_entry_group(
+    engine: "BacktestEngine",
+    decision: "SignalDecision",
+    bar: OHLC,
+    atr_value: float,
+    indicators: Dict[str, Dict[str, Any]],
+) -> Any | None:
+    """ADR-013 回测入场分发。返回 EntrySpecGroup 或 None（fallback to market）。"""
+    from src.signals.metadata_keys import MetadataKey as MK
+    from src.trading.entry_policy import (
+        BarSnapshot,
+        EntryIntent,
+        EntryPolicyRegistry,
+        MarketSnapshot,
+        PatternType,
+    )
+
+    registry = getattr(engine, "_entry_policy_registry", None)
+    if not isinstance(registry, EntryPolicyRegistry):
+        return None
+
+    metadata = decision.metadata or {}
+    raw_intent = metadata.get(MK.ENTRY_INTENT)
+    pattern_value = (
+        raw_intent.get("pattern_type")
+        if isinstance(raw_intent, dict)
+        else metadata.get(MK.PATTERN_TYPE)
+    ) or PatternType.NONE.value
+    try:
+        pattern = PatternType(pattern_value)
+    except ValueError:
+        pattern = PatternType.NONE
+
+    intent = EntryIntent(
+        strategy_name=decision.strategy,
+        timeframe=decision.timeframe,
+        direction=decision.direction,  # type: ignore[arg-type]
+        confidence=float(decision.confidence),
+        bar_time=bar.time,
+        pattern_type=pattern,
+        signal_metadata=raw_intent if isinstance(raw_intent, dict) else metadata,
+    )
+
+    raw_bars = metadata.get(MK.RECENT_BARS) or []
+    bars: list[BarSnapshot] = []
+    for raw in raw_bars:
+        if isinstance(raw, BarSnapshot):
+            bars.append(raw)
+        elif isinstance(raw, dict):
+            try:
+                bars.append(BarSnapshot.from_mapping(raw))
+            except (KeyError, TypeError, ValueError):
+                continue
+    if not bars:
+        bars.append(
+            BarSnapshot(
+                open=float(bar.open),
+                high=float(bar.high),
+                low=float(bar.low),
+                close=float(bar.close),
+                volume=float(bar.volume),
+                time=bar.time,
+            )
+        )
+
+    market = MarketSnapshot(
+        recent_bars=tuple(bars),
+        atr_value=float(atr_value),
+        current_close=float(bar.close),
+    )
+
+    policy = registry.resolve(intent.strategy_name, intent.timeframe)
+    params = registry.resolve_params(policy.name, intent.timeframe)
+    return policy.derive(intent, market, params)
 
 
 def _resolve_pending_fill(

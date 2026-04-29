@@ -7,12 +7,12 @@ from fastapi import APIRouter, Depends, Query
 from src.api import deps
 from src.api.admin_schemas import StrategyDetail, StrategyPerformanceReport
 from src.api.schemas import ApiResponse
+from src.signals import service_diagnostics as svc_diag
+from src.signals.contracts.execution_plan import build_strategy_capability_summary
 from src.signals.evaluation.calibrator import ConfidenceCalibrator
 from src.signals.evaluation.performance import StrategyPerformanceTracker
 from src.signals.orchestration.runtime import SignalRuntime
 from src.signals.service import SignalModule
-from src.signals import service_diagnostics as svc_diag
-from src.signals.contracts.execution_plan import build_strategy_capability_summary
 
 from .common import build_strategy_detail
 from .view_models import ConfidencePipelineView, StrategySessionDetailView
@@ -64,8 +64,8 @@ def _extract_backtest_execution_plan(result_payload: Any) -> dict[str, Any] | No
 
 
 def _resolve_backtest_execution_plan(run_id: str | None) -> dict[str, Any]:
-    from src.backtesting.data import backtest_runtime_store
     from src.api.backtest_routes.execution import get_backtest_repo
+    from src.backtesting.data import backtest_runtime_store
 
     candidate_run_ids: list[str] = []
     normalized_run_id = str(run_id or "").strip()

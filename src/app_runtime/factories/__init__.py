@@ -1,3 +1,4 @@
+from .entry_policies import UnknownEntryPolicyError, build_entry_policy_registry
 from .indicators import create_indicator_manager
 from .market import create_ingestor, create_market_service
 from .notifications import create_notification_module
@@ -17,7 +18,9 @@ __all__ = [
     "AccountRuntimeComponents",
     "SignalComponents",
     "TradingComponents",
+    "UnknownEntryPolicyError",
     "build_account_runtime_components",
+    "build_entry_policy_registry",
     "build_performance_tracker_config",
     "build_signal_components",
     "build_signal_policy",

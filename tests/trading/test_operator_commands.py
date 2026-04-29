@@ -8,8 +8,8 @@ from src.monitoring.pipeline import (
     PIPELINE_COMMAND_SUBMITTED,
     PipelineEventBus,
 )
-from src.trading.commands.results import build_operator_command_result
 from src.trading.commands.consumer import OperatorCommandConsumer
+from src.trading.commands.results import build_operator_command_result
 from src.trading.commands.service import OperatorCommandService
 
 

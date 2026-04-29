@@ -32,12 +32,21 @@ from .economic_calendar import (
 from .economic_calendar import INSERT_UPDATE_SQL as INSERT_ECONOMIC_CALENDAR_UPDATE_SQL
 from .economic_calendar import MIGRATION_SQL as ECONOMIC_CALENDAR_MIGRATION_SQL
 from .economic_calendar import UPSERT_SQL as UPSERT_ECONOMIC_CALENDAR_SQL
+from .entry_policy_decisions import DDL as ENTRY_POLICY_DECISIONS_DDL
+from .entry_policy_decisions import (
+    UPDATE_FILL_OUTCOME_SQL as UPDATE_ENTRY_POLICY_DECISION_FILL_SQL,
+)
+from .entry_policy_decisions import UPSERT_SQL as UPSERT_ENTRY_POLICY_DECISIONS_SQL
 from .execution_intents import DDL as EXECUTION_INTENTS_DDL
 from .execution_intents import INSERT_SQL as INSERT_EXECUTION_INTENTS_SQL
 from .execution_intents import MIGRATION_SQL as EXECUTION_INTENTS_MIGRATION_SQL
 from .idempotency_ledger import DDL as IDEMPOTENCY_LEDGER_DDL
-from .idempotency_ledger import INSERT_COMMAND_KEY_SQL as INSERT_COMMAND_IDEMPOTENCY_KEY_SQL
-from .idempotency_ledger import INSERT_INTENT_KEY_SQL as INSERT_INTENT_IDEMPOTENCY_KEY_SQL
+from .idempotency_ledger import (
+    INSERT_COMMAND_KEY_SQL as INSERT_COMMAND_IDEMPOTENCY_KEY_SQL,
+)
+from .idempotency_ledger import (
+    INSERT_INTENT_KEY_SQL as INSERT_INTENT_IDEMPOTENCY_KEY_SQL,
+)
 from .intrabar import DDL as INTRABAR_DDL
 from .intrabar import INSERT_SQL as INSERT_INTRABAR_SQL
 from .market_impact import AGGREGATED_STATS_SQL as MARKET_IMPACT_AGGREGATED_STATS_SQL
@@ -51,9 +60,7 @@ from .operator_commands import DDL as OPERATOR_COMMANDS_DDL
 from .operator_commands import INSERT_SQL as INSERT_OPERATOR_COMMANDS_SQL
 from .operator_commands import MIGRATION_SQL as OPERATOR_COMMANDS_MIGRATION_SQL
 from .pending_order_states import DDL as PENDING_ORDER_STATES_DDL
-from .pending_order_states import (
-    MIGRATION_SQL as PENDING_ORDER_STATES_MIGRATION_SQL,
-)
+from .pending_order_states import MIGRATION_SQL as PENDING_ORDER_STATES_MIGRATION_SQL
 from .pending_order_states import UPSERT_SQL as UPSERT_PENDING_ORDER_STATES_SQL
 
 # ── Monitoring ───────────────────────────────────────────────────
@@ -92,9 +99,7 @@ from .ticks import INSERT_SQL as INSERT_TICKS_SQL
 from .trade_command_audits import DDL as TRADE_COMMAND_AUDITS_DDL
 from .trade_command_audits import INSERT_SQL as INSERT_TRADE_COMMAND_AUDITS_SQL
 from .trade_control_state import DDL as TRADE_CONTROL_STATE_DDL
-from .trade_control_state import (
-    MIGRATION_SQL as TRADE_CONTROL_STATE_MIGRATION_SQL,
-)
+from .trade_control_state import MIGRATION_SQL as TRADE_CONTROL_STATE_MIGRATION_SQL
 from .trade_control_state import UPSERT_SQL as UPSERT_TRADE_CONTROL_STATE_SQL
 from .trade_outcomes import DDL as TRADE_OUTCOMES_DDL
 from .trade_outcomes import INSERT_SQL as INSERT_TRADE_OUTCOMES_SQL
@@ -131,6 +136,7 @@ DDL_STATEMENTS = [
     # §0dm P2 #4+#5：幂等 ledger 表（hypertable 唯一约束限制下的工程化方案）
     IDEMPOTENCY_LEDGER_DDL,
     PENDING_ORDER_STATES_DDL,
+    ENTRY_POLICY_DECISIONS_DDL,
     POSITION_RUNTIME_STATES_DDL,
     POSITION_SL_TP_HISTORY_DDL,
     TRADE_CONTROL_STATE_DDL,
@@ -195,6 +201,8 @@ __all__ = [
     "INSERT_TRADE_COMMAND_AUDITS_SQL",
     "INSERT_OPERATOR_COMMANDS_SQL",
     "UPSERT_PENDING_ORDER_STATES_SQL",
+    "UPSERT_ENTRY_POLICY_DECISIONS_SQL",
+    "UPDATE_ENTRY_POLICY_DECISION_FILL_SQL",
     "UPSERT_POSITION_RUNTIME_STATES_SQL",
     "INSERT_POSITION_SL_TP_HISTORY_SQL",
     "UPSERT_TRADE_CONTROL_STATE_SQL",

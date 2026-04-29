@@ -19,11 +19,10 @@ from typing import Optional
 import pytest
 
 from src.signals.strategies.htf_cache import (
+    _DEFAULT_HTF_MAP,
     HTFDirectionContext,
     HTFStateCache,
-    _DEFAULT_HTF_MAP,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

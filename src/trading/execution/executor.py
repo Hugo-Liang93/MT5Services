@@ -30,40 +30,40 @@ from ..ports import ExecutorTradingPort
 from ..positions.manager import PositionManager
 from ..runtime.lifecycle import OwnedThreadLifecycle
 from ..tracking.trade_outcome import TradeOutcomeTracker
-from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
-from .eventing import emit_execution_decided as _emit_execution_decided_helper
+from . import pre_trade_checks as _ptc
+from .decision_engine import ExecutionDecisionEngine
 from .eventing import emit_admission_report as _emit_admission_report_helper
 from .eventing import (
     emit_blocked_admission_report as _emit_blocked_admission_report_helper,
 )
+from .eventing import emit_execution_blocked as _emit_execution_blocked_helper
+from .eventing import emit_execution_decided as _emit_execution_decided_helper
 from .eventing import (
     emit_terminal_execution_event as _emit_terminal_execution_event_helper,
 )
 from .eventing import notify_skip as _notify_skip_helper
-from .decision_engine import ExecutionDecisionEngine
-from .pre_trade_pipeline import PreTradePipeline
 from .gate import ExecutionGate, ExecutionGateConfig
 from .params import estimate_price as _estimate_price_helper
 from .params import get_account_balance as _get_account_balance_helper
-from .result_recorder import ExecutionResultRecorder
-from . import pre_trade_checks as _ptc
-from .risk_caps import MaxSingleTradeLossPolicy
-from .sizing import RegimeSizing, extract_atr_from_indicators
+from .pre_trade_pipeline import PreTradePipeline
 from .reasons import (
     REASON_AUTO_TRADE_DISABLED,
+    REASON_INTRABAR_GATE_BLOCKED,
+    REASON_INTRABAR_GUARD_BLOCKED,
     REASON_INTRABAR_GUARD_MISSING,
+    REASON_INTRABAR_PARENT_BAR_MISSING,
     REASON_INTRABAR_POSITION_ALREADY_VALIDATED,
     REASON_INTRABAR_POSITION_HOLD,
-    REASON_INTRABAR_PARENT_BAR_MISSING,
-    REASON_INTRABAR_GUARD_BLOCKED,
-    REASON_INTRABAR_GATE_BLOCKED,
     REASON_SPREAD_TO_STOP_RATIO_TOO_HIGH,
     REASON_TRADE_PARAMS_UNAVAILABLE,
-    SKIP_CATEGORY_TRADE_PARAMS,
     SKIP_CATEGORY_COST_GUARD,
     SKIP_CATEGORY_DISPATCH,
+    SKIP_CATEGORY_TRADE_PARAMS,
     reason_category,
 )
+from .result_recorder import ExecutionResultRecorder
+from .risk_caps import MaxSingleTradeLossPolicy
+from .sizing import RegimeSizing, extract_atr_from_indicators
 
 logger = logging.getLogger(__name__)
 
@@ -984,8 +984,9 @@ class TradeExecutor:
                 self._tf_stats.setdefault(
                     tf, {"received": 0, "passed": 0, "skip_reasons": {}}
                 )["passed"] += 1
-        entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
-        entry_type = entry_spec.get("entry_type", decision.entry_type or "market")
+        # ADR-013: entry_type 由 decision_engine 从 EntrySpecGroup 派生
+        # （decision.entry_type 已是派生结果），不再从 metadata.entry_spec 读
+        entry_type = decision.entry_type or "market"
         use_market = decision.use_market or self._pending_manager is None
 
         _emit_execution_decided_helper(

@@ -12,7 +12,9 @@ class RuntimeStatusRepository:
     def __init__(self, writer: "TimescaleWriter"):
         self._writer = writer
 
-    def write_runtime_task_status(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+    def write_runtime_task_status(
+        self, rows: Iterable[Tuple], page_size: int = 200
+    ) -> None:
         batch = []
         for row in rows:
             details = row[12] if row[12] is not None else {}

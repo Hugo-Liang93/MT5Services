@@ -5,8 +5,9 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from .execution import get_backtest_repo
 from src.backtesting.data import backtest_runtime_store
+
+from .execution import get_backtest_repo
 
 logger = logging.getLogger(__name__)
 

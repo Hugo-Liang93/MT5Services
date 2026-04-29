@@ -301,13 +301,9 @@ RETURNING commands.created_at,
                 if cur.rowcount == 0:
                     return False
             # 主表写入（INSERT_OPERATOR_COMMANDS_SQL 期望 22 列）
-            request_context = (
-                row[10] if len(row) > 10 and row[10] is not None else {}
-            )
+            request_context = row[10] if len(row) > 10 and row[10] is not None else {}
             payload = row[11] if len(row) > 11 and row[11] is not None else {}
-            response_payload = (
-                row[20] if len(row) > 20 and row[20] is not None else {}
-            )
+            response_payload = row[20] if len(row) > 20 and row[20] is not None else {}
             cur.execute(
                 INSERT_OPERATOR_COMMANDS_SQL,
                 [

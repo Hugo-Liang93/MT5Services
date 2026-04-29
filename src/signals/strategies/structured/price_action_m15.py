@@ -37,14 +37,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import (
-    EntrySpec,
-    EntryType,
-    ExitMode,
-    ExitSpec,
-    HtfPolicy,
-    StructuredStrategyBase,
-)
+from .base import ExitMode, ExitSpec, HtfPolicy, StructuredStrategyBase
 
 
 class StructuredPriceAction(StructuredStrategyBase):
@@ -252,10 +245,6 @@ class StructuredPriceAction(StructuredStrategyBase):
             return 0.0
         # 放量：1.0→0, 1.5→0.5, 2.0→1.0
         return self._linear_score(vr, low=1.0, high=2.0)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        """Market 单直接入场——价格行为信号本身就是确认。"""
-        return EntrySpec(entry_type=EntryType.MARKET)
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         """BARRIER 模式：固定 SL/TP/Time，不用 Chandelier trail。"""

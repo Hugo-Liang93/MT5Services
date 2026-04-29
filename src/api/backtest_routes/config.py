@@ -4,8 +4,8 @@ from typing import Optional
 
 from fastapi import APIRouter
 
-from src.api.schemas import ApiResponse
 from src.api.backtest_routes import schemas as api_config
+from src.api.schemas import ApiResponse
 
 router = APIRouter()
 

@@ -257,6 +257,22 @@ def get_operator_command_service() -> OperatorCommandService:
     return _container.operator_command_service
 
 
+def get_entry_policy_registry() -> Optional[Any]:
+    """Return the EntryPolicyRegistry (ADR-013) or None if not assembled."""
+    _ensure_initialized()
+    if _container is None:
+        return None
+    return _container.entry_policy_registry
+
+
+def get_storage_writer() -> Optional[Any]:
+    """Return the StorageWriter (ADR-013 audit table access)."""
+    _ensure_initialized()
+    if _container is None:
+        return None
+    return _container.storage_writer
+
+
 def get_notification_module() -> Optional[NotificationModule]:
     """Return the NotificationModule or ``None`` if notifications are disabled.
 

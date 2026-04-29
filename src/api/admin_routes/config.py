@@ -7,7 +7,11 @@ from fastapi import APIRouter, Depends, Query
 from src.api import deps
 from src.api.admin_schemas import ConfigView
 from src.api.schemas import ApiResponse
-from src.config import get_config_provenance_snapshot, get_effective_config_snapshot, get_risk_config
+from src.config import (
+    get_config_provenance_snapshot,
+    get_effective_config_snapshot,
+    get_risk_config,
+)
 from src.config.signal import get_signal_config
 from src.indicators.manager import UnifiedIndicatorManager
 

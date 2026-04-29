@@ -44,7 +44,15 @@ class MetadataKey:
 
     # ── 策略输出（strategy.evaluate() → trading） ──
 
-    ENTRY_SPEC = "entry_spec"
+    # ADR-013: 信号策略只输出"方向 + 信心 + 出场契约 + 信号语义元数据"，不再决定
+    # 入场。ENTRY_INTENT 是信号端产出的入场意图（含 pattern_type / direction），
+    # 下游 trading/backtest 调 EntryPolicyRegistry.resolve(...).derive(...) 拿
+    # ENTRY_SPEC_GROUP 进入挂单流程。ENTRY_SPEC 已删除，不留兼容窗口。
+    ENTRY_INTENT = "entry_intent"
+    PATTERN_TYPE = "pattern_type"
+    ENTRY_SPEC_GROUP = "entry_spec_group"
+    ENTRY_POLICY_DECISION = "entry_policy_decision"
+
     EXIT_SPEC = "exit_spec"
     SIGNAL_GRADE = "signal_grade"
     STRATEGY_CATEGORY = "strategy_category"

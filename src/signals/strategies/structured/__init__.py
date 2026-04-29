@@ -1,8 +1,6 @@
 from .base import (
     BEARISH_BIASES,
     BULLISH_BIASES,
-    EntrySpec,
-    EntryType,
     ExitSpec,
     HtfPolicy,
     StructureBias,
@@ -24,8 +22,6 @@ from .trendline_touch import StructuredTrendlineTouch
 __all__ = [
     "BEARISH_BIASES",
     "BULLISH_BIASES",
-    "EntrySpec",
-    "EntryType",
     "ExitSpec",
     "HtfPolicy",
     "StructureBias",

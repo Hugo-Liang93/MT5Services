@@ -10,10 +10,7 @@ import pytest
 
 from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext
-from src.signals.strategies.structured.base import (
-    ExitMode,
-    HtfPolicy,
-)
+from src.signals.strategies.structured.base import ExitMode, HtfPolicy
 from src.signals.strategies.structured.strong_trend_follow import (
     StructuredStrongTrendFollow,
 )
@@ -157,7 +154,9 @@ class TestWhyGate:
         ctx = _make_context()
         # 显式移除 adx_d3
         ctx.indicators["adx14"] = {
-            "adx": 50.0, "plus_di": 35.0, "minus_di": 15.0,
+            "adx": 50.0,
+            "plus_di": 35.0,
+            "minus_di": 15.0,
             # adx_d3 not set → None
         }
         ok, direction, score, reason = self.strategy._why(ctx)
@@ -296,11 +295,14 @@ class TestEntryExitAndEvaluate:
     def setup_method(self) -> None:
         self.strategy = StructuredStrongTrendFollow()
 
-    def test_entry_spec_market(self) -> None:
-        """入场：市价。"""
+    def test_pattern_detection_when_no_candle(self) -> None:
+        """ADR-013: strong_trend_follow 不依赖 candle 形态识别 → PatternType.NONE
+        （由 EntryPolicyRegistry 解析 mapping 决定具体入场 policy）。"""
+        from src.trading.entry_policy import PatternType
+
         ctx = _make_context()
-        spec = self.strategy._entry_spec(ctx, "buy")
-        assert spec.entry_type.value == "market"
+        pattern = self.strategy._detect_pattern(ctx, "buy", when_reason="trend_follow")
+        assert pattern == PatternType.NONE
 
     def test_exit_spec_barrier_mode(self) -> None:
         """出场：BARRIER (sl=1.5, tp=2.5, time=20)。"""
@@ -314,22 +316,34 @@ class TestEntryExitAndEvaluate:
     def test_evaluate_all_pass_returns_buy(self) -> None:
         """完整评估：所有门控通过 → buy 决策，confidence ≥ 0.56。"""
         ctx = _make_context(
-            adx=50.0, adx_d3=1.0, plus_di=35.0, minus_di=15.0,
-            macd_hist=0.5, roc=0.5, volume_ratio=1.3,
+            adx=50.0,
+            adx_d3=1.0,
+            plus_di=35.0,
+            minus_di=15.0,
+            macd_hist=0.5,
+            roc=0.5,
+            volume_ratio=1.3,
         )
         decision = self.strategy.evaluate(ctx)
         assert decision.direction == "buy"
         # base 0.50 + why ≥ 0.4×0.15=0.06 + when ≥ 0.3×0.15=0.045 → ≥ 0.605
         assert decision.confidence >= 0.56
-        # meta 上应包含 entry_spec / exit_spec
-        assert "entry_spec" in decision.metadata
+        # ADR-013: meta 上应包含 entry_intent + pattern_type，不再有 entry_spec
+        assert "entry_intent" in decision.metadata
+        assert "pattern_type" in decision.metadata
+        assert "entry_spec" not in decision.metadata
         assert decision.metadata["exit_spec"]["mode"] == "barrier"
 
     def test_evaluate_signal_grade_a_with_all_bonus(self) -> None:
         """compression + high volume → where/vol 都加分 → grade=A。"""
         ctx = _make_context(
-            adx=55.0, adx_d3=2.0, plus_di=40.0, minus_di=15.0,
-            macd_hist=0.2, roc=0.8, volume_ratio=1.5,
+            adx=55.0,
+            adx_d3=2.0,
+            plus_di=40.0,
+            minus_di=15.0,
+            macd_hist=0.2,
+            roc=0.8,
+            volume_ratio=1.5,
             compression_state="active",
         )
         decision = self.strategy.evaluate(ctx)
@@ -339,8 +353,13 @@ class TestEntryExitAndEvaluate:
     def test_evaluate_confidence_capped_at_090(self) -> None:
         """极端强信号不超过 0.90 上限。"""
         ctx = _make_context(
-            adx=80.0, adx_d3=5.0, plus_di=60.0, minus_di=10.0,
-            macd_hist=0.0, roc=2.0, volume_ratio=2.0,
+            adx=80.0,
+            adx_d3=5.0,
+            plus_di=60.0,
+            minus_di=10.0,
+            macd_hist=0.0,
+            roc=2.0,
+            volume_ratio=2.0,
             compression_state="active",
         )
         decision = self.strategy.evaluate(ctx)
@@ -372,4 +391,5 @@ class TestCatalogRegistration:
         from src.signals.strategies.structured import (
             StructuredStrongTrendFollow as ImportedClass,
         )
+
         assert ImportedClass is StructuredStrongTrendFollow

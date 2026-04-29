@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS pending_order_states (
         CHECK (status IN ('placed', 'filled', 'expired', 'cancelled', 'missing', 'orphan')),
     status_reason TEXT,
     last_seen_at TIMESTAMPTZ,
+    -- ADR-013: OCO group 字段。单 member 场景 group_member_id='market'/'limit'/'stop'，
+    -- group_id 仍非空（一个 group 即使只 1 member 也有 UUID 标识）。
+    order_group_id TEXT,
+    group_member_id TEXT,
+    group_role TEXT
+        CHECK (group_role IS NULL OR group_role IN ('limit', 'stop', 'market')),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (account_key, order_ticket)
@@ -55,6 +61,11 @@ CREATE INDEX IF NOT EXISTS idx_pending_orders_expires
 
 CREATE INDEX IF NOT EXISTS idx_pending_orders_symbol_status
     ON pending_order_states (symbol, status);
+
+-- ADR-013: OCO group 反向索引（recovery / API 用）
+CREATE INDEX IF NOT EXISTS idx_pending_orders_group
+    ON pending_order_states (account_key, order_group_id)
+    WHERE order_group_id IS NOT NULL;
 """
 
 # §0u P1 迁移：把单列 PK (order_ticket) 升级为复合 PK (account_key, order_ticket)。
@@ -89,6 +100,31 @@ BEGIN
             PRIMARY KEY (account_key, order_ticket);
     END IF;
 END $$;
+
+-- ADR-013: OCO group_id / member_id / group_role 列添加（idempotent）。
+-- 单 member 场景 group_id 也填入 UUID（与新建 group 的语义一致）。
+ALTER TABLE pending_order_states
+    ADD COLUMN IF NOT EXISTS order_group_id TEXT;
+ALTER TABLE pending_order_states
+    ADD COLUMN IF NOT EXISTS group_member_id TEXT;
+ALTER TABLE pending_order_states
+    ADD COLUMN IF NOT EXISTS group_role TEXT;
+DO $adr013$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        WHERE t.relname = 'pending_order_states'
+          AND c.conname = 'pending_order_states_group_role_check'
+    ) THEN
+        ALTER TABLE pending_order_states
+            ADD CONSTRAINT pending_order_states_group_role_check
+            CHECK (group_role IS NULL OR group_role IN ('limit', 'stop', 'market'));
+    END IF;
+END $adr013$;
+CREATE INDEX IF NOT EXISTS idx_pending_orders_group
+    ON pending_order_states (account_key, order_group_id)
+    WHERE order_group_id IS NOT NULL;
 """
 
 UPSERT_SQL = """
@@ -99,7 +135,8 @@ INSERT INTO pending_order_states (
     stop_loss, take_profit, volume, atr_at_entry, confidence, regime,
     created_at, expires_at, filled_at, cancelled_at,
     position_ticket, deal_id, fill_price,
-    status, status_reason, last_seen_at, metadata, updated_at, account_key
+    status, status_reason, last_seen_at, metadata, updated_at, account_key,
+    order_group_id, group_member_id, group_role
 ) VALUES (
     %s, %s, %s, %s, %s, %s,
     %s, %s, %s, %s, %s,
@@ -107,7 +144,8 @@ INSERT INTO pending_order_states (
     %s, %s, %s, %s, %s, %s,
     %s, %s, %s, %s,
     %s, %s, %s,
-    %s, %s, %s, %s, %s, %s
+    %s, %s, %s, %s, %s, %s,
+    %s, %s, %s
 )
 ON CONFLICT (account_key, order_ticket) DO UPDATE SET
     account_alias = EXCLUDED.account_alias,
@@ -141,5 +179,8 @@ ON CONFLICT (account_key, order_ticket) DO UPDATE SET
     status_reason = EXCLUDED.status_reason,
     last_seen_at = EXCLUDED.last_seen_at,
     metadata = EXCLUDED.metadata,
-    updated_at = EXCLUDED.updated_at
+    updated_at = EXCLUDED.updated_at,
+    order_group_id = EXCLUDED.order_group_id,
+    group_member_id = EXCLUDED.group_member_id,
+    group_role = EXCLUDED.group_role
 """

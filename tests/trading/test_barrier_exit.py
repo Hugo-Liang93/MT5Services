@@ -26,7 +26,6 @@ from src.trading.reasons import (
     REASON_TRAILING_STOP,
 )
 
-
 # ── ExitSpec 校验 ──────────────────────────────────────────────────────
 
 

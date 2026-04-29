@@ -23,9 +23,9 @@ from src.signals.models import SignalEvent
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 from src.utils.common import timeframe_seconds
 
-from ..reasons import REASON_NEW_SIGNAL_OVERRIDE, REASON_SHUTDOWN
 from ..execution.sizing import TradeParameters
 from ..ports import PendingOrderCancellationPort
+from ..reasons import REASON_NEW_SIGNAL_OVERRIDE, REASON_SHUTDOWN
 from .lifecycle import PendingOrderLifecycleManager
 from .monitoring import PendingEntryMonitoringService
 from .snapshot import PendingEntrySnapshotService
@@ -66,7 +66,15 @@ class PendingEntryConfig:
 
 @dataclass
 class PendingEntry:
-    """一个等待价格确认的挂起入场意图。"""
+    """一个等待价格确认的挂起入场意图。
+
+    ADR-013 OCO group 支持：
+      - entry_key 是 _pending 字典的内部主键（默认 = signal_id；OCO 多 member
+        时 = f"{signal_id}#{member_id}"）。同 signal_id 但不同 member_id 的
+        entry 各自独立追踪，但属于同一 group_id 受 any_fill 撤 sibling 约束。
+      - group_id 单 member 场景仍填入（与 EntrySpecGroup.group_id 一致）。
+      - member_id / group_role 用于审计与 fill 逻辑。
+    """
 
     signal_event: SignalEvent
     trade_params: TradeParameters
@@ -85,11 +93,22 @@ class PendingEntry:
     # 区间模式
     zone_mode: str = "pullback"
 
+    # ADR-013 OCO group 字段
+    entry_key: str = ""  # _pending key；空则 fallback 到 signal_id
+    group_id: str = ""
+    member_id: str = ""
+    group_role: str = ""  # "limit" / "stop" / "market"
+
     # 追踪
     best_price_seen: Optional[float] = None
     checks_count: int = 0
     fill_price: Optional[float] = None
     cancel_reason: str = ""
+
+    @property
+    def effective_key(self) -> str:
+        """获取 _pending dict 的索引 key：entry_key 优先，否则 signal_id。"""
+        return self.entry_key or self.signal_event.signal_id
 
 
 def _extract_quote_prices(quote: Any) -> Optional[tuple[float, float]]:
@@ -127,6 +146,10 @@ class _FillResult:
     signal_event: SignalEvent
     trade_params: TradeParameters  # 已更新 entry_price
     cost_metrics: dict[str, Any]
+    # ADR-013 OCO bookkeeping：fill_worker 完成 execute_fn 后用这两个字段
+    # 触发 _on_member_filled(group_id, entry_key) 撤 sibling。
+    entry_key: str = ""
+    group_id: str = ""
 
 
 class PendingEntryManager:
@@ -148,6 +171,7 @@ class PendingEntryManager:
         inspect_mt5_order_fn: Optional[
             Callable[[Dict[str, Any]], Dict[str, Any]]
         ] = None,
+        entry_policy_registry: Any = None,
     ):
         self._config = config
         self._market = market_service
@@ -155,6 +179,9 @@ class PendingEntryManager:
         self._execute_fn = execute_fn
         self._on_expired_fn = on_expired_fn  # (signal_id, reason) 过期回调
         self._inspect_mt5_order_fn = inspect_mt5_order_fn
+        # ADR-013: 由 factories/signals.py 注入；submit_pending_entry 从这里
+        # 取 registry 调 derive 拿 EntrySpecGroup。ADR-006 公开属性约定。
+        self.entry_policy_registry: Any = entry_policy_registry
         self._on_mt5_order_tracked: Optional[Callable[[Dict[str, Any]], None]] = None
         self._on_mt5_order_filled: Optional[
             Callable[[Dict[str, Any], Dict[str, Any]], None]
@@ -169,9 +196,14 @@ class PendingEntryManager:
             None
         )
 
-        self._pending: dict[str, PendingEntry] = {}  # signal_id → PendingEntry
-        # MT5 挂单追踪：signal_id → {ticket, expires_at, direction, symbol, strategy}
+        # ADR-013 OCO: _pending key 为 entry_key（默认 = signal_id；多 member
+        # 时 = f"{signal_id}#{member_id}"）。同 signal_id 但不同 member 的 entry
+        # 共享同一 group_id，受 any_fill 撤 sibling 约束。
+        self._pending: dict[str, PendingEntry] = {}  # entry_key → PendingEntry
+        # MT5 挂单追踪：entry_key → {ticket, expires_at, direction, symbol, ...}
         self._mt5_orders: dict[str, dict[str, Any]] = {}
+        # OCO 反向索引：group_id → set[entry_key]
+        self._groups: dict[str, set[str]] = {}
         self._lock = threading.RLock()  # RLock: 回调链可能重入 submit/cancel
         self._monitor_thread: Optional[threading.Thread] = None
         self._fill_worker_thread: Optional[threading.Thread] = None
@@ -215,10 +247,12 @@ class PendingEntryManager:
             execute_fn=self._execute_fn,
             on_expired_fn=self._on_expired_fn,
             extract_quote_prices=_extract_quote_prices,
-            fill_result_factory=lambda signal_event, trade_params, cost_metrics: _FillResult(
+            fill_result_factory=lambda signal_event, trade_params, cost_metrics, entry_key="", group_id="": _FillResult(
                 signal_event=signal_event,
                 trade_params=trade_params,
                 cost_metrics=cost_metrics,
+                entry_key=entry_key,
+                group_id=group_id,
             ),
             stats=self._stats,
             check_interval=self._config.check_interval,
@@ -230,6 +264,51 @@ class PendingEntryManager:
             mt5_orders=self._mt5_orders,
             lock=self._lock,
             stats=self._stats,
+        )
+        # ADR-013: 装配 OCO 反向索引 + any-fill 撤 sibling 回调到 monitoring
+        self._monitoring_service.set_groups_index(
+            self._groups,
+            on_member_filled=self._on_member_filled_handler,
+        )
+
+    def _on_member_filled_handler(self, group_id: str, entry_key: str) -> None:
+        """ADR-013 any-fill 触发链：fill_worker 调用此方法撤 sibling。
+
+        失败重试 3 次（broker 拒绝 cancel 时）。最终失败标记 group 为
+        pending_cancellation 状态 + WARN，但不阻塞返回（fill 已成功）。
+        """
+        for attempt in range(3):
+            try:
+                cancelled = self.cancel_by_group(
+                    group_id,
+                    reason="oco_sibling_filled",
+                    exclude_key=entry_key,
+                )
+                logger.info(
+                    "OCO sibling cancelled: group=%s filled_key=%s cancelled=%d",
+                    group_id,
+                    entry_key,
+                    cancelled,
+                )
+                # 同时撤 MT5 挂单（broker 侧）
+                try:
+                    self._cancellation_port.cancel_orders_by_group(group_id)
+                except AttributeError:
+                    # cancellation_port 未实现 cancel_orders_by_group →
+                    # P4 fallback：用 cancel_mt5_orders_by_symbol 兜底（粗粒度）
+                    pass
+                return
+            except Exception as exc:  # ADR-013: any-fill 撤 sibling 重试 3 次
+                logger.warning(
+                    "OCO sibling cancellation attempt %d/3 failed for group %s: %s",
+                    attempt + 1,
+                    group_id,
+                    exc,
+                )
+        logger.error(
+            "OCO sibling cancellation FAILED after 3 retries for group %s; "
+            "manual intervention required",
+            group_id,
         )
 
     @property
@@ -246,37 +325,71 @@ class PendingEntryManager:
         )
 
     def submit(self, entry: PendingEntry) -> None:
-        """提交一个新的挂起入场。
+        """提交一个新的挂起入场（ADR-013 OCO: 内部 key 用 effective_key）。
 
         §0z P2：旧实现 ``self._pending[sig] = entry`` 直接覆盖 → 老 entry 与
-        其已注册的 MT5 ticket（PendingOrderLifecycleManager）失联，造成
-        "等待触发的价格区间" 与 "受生命周期管理的真实挂单" 拆成两套状态。
-        重复 signal_id 必须先 cancel 旧项以触发 ``on_expired_fn`` 让上游清理
-        MT5 跟踪，再接受新项；这样同 signal_id 的 lifecycle 始终单一。
+        其已注册的 MT5 ticket（PendingOrderLifecycleManager）失联。重复
+        entry_key 必须先 cancel 旧项以触发 ``on_expired_fn`` 让上游清理 MT5
+        跟踪，再接受新项；这样同 key 的 lifecycle 始终单一。
+
+        OCO 多 member 场景下，每个 member 都有独立 entry_key，互不冲突。
+        group_id 在 _groups 反向索引中维护，供 any-fill 撤 sibling 用。
         """
-        signal_id = entry.signal_event.signal_id
-        # 先用 cancel() 替换旧项（触发 on_expired_fn 让上游清理 MT5 跟踪），
-        # cancel() 在锁内 pop + 记 cancelled 状态；再 submit 新项。
-        if signal_id in self._pending:
+        # 默认 entry_key 等于 signal_id（向后兼容）
+        if not entry.entry_key:
+            entry.entry_key = entry.signal_event.signal_id
+        key = entry.entry_key
+
+        if key in self._pending:
             logger.warning(
-                "PendingEntry submit: signal_id=%s already pending, replacing "
+                "PendingEntry submit: entry_key=%s already pending, replacing "
                 "previous entry (cleaning up MT5 tracking via cancel callback)",
-                signal_id,
+                key,
             )
-            self.cancel(signal_id, reason="replaced_by_new_submit")
+            self.cancel(key, reason="replaced_by_new_submit")
         with self._lock:
-            self._pending[signal_id] = entry
+            self._pending[key] = entry
             self._stats["total_submitted"] += 1
+            if entry.group_id:
+                self._groups.setdefault(entry.group_id, set()).add(key)
         logger.info(
-            "PendingEntry submitted: %s/%s %s zone=[%.2f, %.2f] mode=%s expires=%s",
+            "PendingEntry submitted: %s/%s %s key=%s zone=[%.2f, %.2f] mode=%s "
+            "group=%s/%s expires=%s",
             entry.signal_event.symbol,
             entry.signal_event.strategy,
             entry.signal_event.direction,
+            key,
             entry.entry_low,
             entry.entry_high,
             entry.zone_mode,
+            entry.group_id or "-",
+            entry.member_id or "-",
             entry.expires_at.strftime("%H:%M:%S"),
         )
+
+    def submit_oco_group(
+        self,
+        members: list[PendingEntry],
+        *,
+        group_id: str,
+    ) -> None:
+        """ADR-013: 提交多 member OCO group。
+
+        每个 member 必须已设置 entry_key / group_id / member_id / group_role。
+        member 之间的 entry_key 必须唯一。group_id 在 _groups 反向索引中维护。
+        提交失败时不回滚已成功的 member（OCO 半成功状态由 any-fill 自然清理）。
+        """
+        if not members:
+            raise ValueError("OCO group must have at least 1 member")
+        keys = [m.entry_key or m.signal_event.signal_id for m in members]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"OCO group has duplicate entry_keys: {keys}")
+        for m in members:
+            if not m.entry_key:
+                m.entry_key = m.signal_event.signal_id
+            if not m.group_id:
+                m.group_id = group_id
+            self.submit(m)
 
     def set_mt5_order_lifecycle_hooks(
         self,
@@ -306,32 +419,75 @@ class PendingEntryManager:
     def restore_mt5_order(self, info: Dict[str, Any]) -> None:
         self._lifecycle_manager.restore_mt5_order(info)
 
-    def cancel(self, signal_id: str, reason: str = "manual") -> bool:
-        """取消指定的挂起入场。"""
+    def cancel(self, key: str, reason: str = "manual") -> bool:
+        """取消指定 entry_key 的挂起入场（ADR-013: key 可为 entry_key 或 signal_id）。
+
+        OCO 多 member 场景下：传 signal_id 时只撤匹配该 signal_id 的首 entry
+        （向后兼容旧调用）。要整组撤请用 cancel_by_group(group_id)。
+        """
         with self._lock:
-            entry = self._pending.pop(signal_id, None)
+            entry = self._pending.pop(key, None)
             if entry is None:
-                return False
+                # 向后兼容：传入 signal_id 时尝试撤所有匹配该 signal 的 entries
+                # （旧调用接口）；返回 True 表示至少撤了一个。
+                signal_keys = [
+                    k
+                    for k, e in self._pending.items()
+                    if e.signal_event.signal_id == key
+                ]
+                if not signal_keys:
+                    return False
+                entry = self._pending.pop(signal_keys[0])
             entry.status = "cancelled"
             entry.cancel_reason = reason
             self._stats["total_cancelled"] += 1
+            # 从 _groups 反向索引移除
+            if entry.group_id and entry.group_id in self._groups:
+                self._groups[entry.group_id].discard(entry.entry_key)
+                if not self._groups[entry.group_id]:
+                    self._groups.pop(entry.group_id, None)
         logger.info(
-            "PendingEntry cancelled: %s/%s %s reason=%s",
+            "PendingEntry cancelled: %s/%s %s key=%s reason=%s",
             entry.signal_event.symbol,
             entry.signal_event.strategy,
             entry.signal_event.direction,
+            entry.entry_key,
             reason,
         )
         if self._on_expired_fn:
             try:
-                self._on_expired_fn(signal_id, f"pending_cancelled:{reason}")
+                self._on_expired_fn(
+                    entry.signal_event.signal_id, f"pending_cancelled:{reason}"
+                )
             except Exception:
                 logger.warning(
-                    "on_expired_fn callback failed for cancelled signal %s",
-                    signal_id,
+                    "on_expired_fn callback failed for cancelled key %s",
+                    key,
                     exc_info=True,
                 )
         return True
+
+    def cancel_by_group(
+        self,
+        group_id: str,
+        reason: str = "oco_sibling_filled",
+        *,
+        exclude_key: Optional[str] = None,
+    ) -> int:
+        """ADR-013: 撤销 OCO group 中的所有 member（exclude_key 不撤）。
+
+        any-fill 触发链：fill_worker → _on_member_filled → cancel_by_group
+        （exclude_key=已 fill 的 member）。返回实际撤掉的 member 数。
+        """
+        with self._lock:
+            members = list(self._groups.get(group_id, set()))
+        cancelled = 0
+        for member_key in members:
+            if exclude_key is not None and member_key == exclude_key:
+                continue
+            if self.cancel(member_key, reason=reason):
+                cancelled += 1
+        return cancelled
 
     def cancel_by_symbol(
         self,
@@ -340,16 +496,21 @@ class PendingEntryManager:
         *,
         exclude_direction: Optional[str] = None,
     ) -> int:
-        """取消指定品种的所有挂起入场。
+        """取消指定品种的所有挂起入场（ADR-013: OCO group 整组撤）。
 
         Args:
             exclude_direction: 不取消该方向的 pending（用于 cancel_same_direction=false）
+
+        OCO 多 member 场景：任一 member 命中匹配条件即整组撤（不论其他 member
+        方向是否 exclude）——OCO 是「任一成交撤其余」语义，反向信号到来时整组
+        都失效。
         """
         cancelled_entries: list[tuple[str, PendingEntry]] = []
         with self._lock:
-            to_remove = [
-                sid
-                for sid, entry in self._pending.items()
+            # 第一步：找到所有需要撤的 entry_keys（含 group 整组扩展）
+            primary_keys = [
+                key
+                for key, entry in self._pending.items()
                 if entry.signal_event.symbol == symbol
                 and entry.status == "pending"
                 and (
@@ -357,12 +518,24 @@ class PendingEntryManager:
                     or entry.signal_event.direction != exclude_direction
                 )
             ]
-            for sid in to_remove:
-                entry = self._pending.pop(sid)
+            # OCO group 扩展：primary_keys 中任一属于某 group → 该 group 全部撤
+            keys_to_cancel: set[str] = set(primary_keys)
+            for key in list(primary_keys):
+                entry = self._pending.get(key)
+                if entry and entry.group_id and entry.group_id in self._groups:
+                    keys_to_cancel.update(self._groups[entry.group_id])
+            for key in keys_to_cancel:
+                entry = self._pending.pop(key, None)
+                if entry is None:
+                    continue
                 entry.status = "cancelled"
                 entry.cancel_reason = reason
                 self._stats["total_cancelled"] += 1
-                cancelled_entries.append((sid, entry))
+                if entry.group_id and entry.group_id in self._groups:
+                    self._groups[entry.group_id].discard(key)
+                    if not self._groups[entry.group_id]:
+                        self._groups.pop(entry.group_id, None)
+                cancelled_entries.append((entry.signal_event.signal_id, entry))
         # 回调在锁外执行（避免死锁）
         for sid, entry in cancelled_entries:
             if self._on_expired_fn:
@@ -417,8 +590,26 @@ class PendingEntryManager:
         metadata: Optional[Dict[str, Any]] = None,
         exit_spec: Optional[Dict[str, Any]] = None,
         strategy_category: str = "",
+        # ADR-013 OCO group 字段
+        order_group_id: Optional[str] = None,
+        group_member_id: Optional[str] = None,
+        group_role: Optional[str] = None,
     ) -> None:
-        """注册 MT5 挂单，由 monitor loop 负责超时取消。"""
+        """注册 MT5 挂单，由 monitor loop 负责超时取消。
+
+        ADR-013: 如果挂单属于一个 EntrySpecGroup，需要传 order_group_id /
+        group_member_id / group_role。单 member 场景同样需要（P3 起 group_id
+        始终非空）。group 信息通过 metadata 透传给 lifecycle_manager / DB。
+        """
+        # 把 group 信息合并到 metadata（生命周期管理器只接受 metadata dict）
+        merged_metadata = dict(metadata or {})
+        if order_group_id is not None:
+            merged_metadata["order_group_id"] = order_group_id
+        if group_member_id is not None:
+            merged_metadata["group_member_id"] = group_member_id
+        if group_role is not None:
+            merged_metadata["group_role"] = group_role
+
         self._lifecycle_manager.track_mt5_order(
             signal_id=signal_id,
             order_ticket=order_ticket,
@@ -440,7 +631,7 @@ class PendingEntryManager:
             take_profit=take_profit,
             volume=volume,
             created_at=created_at,
-            metadata=metadata,
+            metadata=merged_metadata,
             exit_spec=exit_spec,
             strategy_category=strategy_category,
         )
@@ -497,8 +688,7 @@ class PendingEntryManager:
 
     def is_running(self) -> bool:
         return (
-            self._monitor_lifecycle.is_running()
-            and self._fill_lifecycle.is_running()
+            self._monitor_lifecycle.is_running() and self._fill_lifecycle.is_running()
         )
 
     def shutdown(self) -> None:

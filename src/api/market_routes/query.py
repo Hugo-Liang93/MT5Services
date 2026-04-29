@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, Query
 
 from src.api.deps import get_market_service
 from src.api.error_codes import AIErrorAction, AIErrorCode
-from src.api.schemas import ApiResponse, OHLCModel, QuoteModel, SymbolInfoModel, TickModel
+from src.api.schemas import (
+    ApiResponse,
+    OHLCModel,
+    QuoteModel,
+    SymbolInfoModel,
+    TickModel,
+)
 from src.clients.mt5_market import MT5MarketError
 from src.market import MarketDataService
 

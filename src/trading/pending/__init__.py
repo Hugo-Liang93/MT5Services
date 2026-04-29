@@ -2,8 +2,8 @@ from .manager import (
     PendingEntry,
     PendingEntryConfig,
     PendingEntryManager,
-    _FillResult,
     _extract_quote_prices,
+    _FillResult,
     compute_timeout,
 )
 from .snapshot import PendingEntrySnapshotService

@@ -17,7 +17,13 @@ from typing import Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import EntrySpec, ExitSpec, HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
+from .base import (
+    ExitSpec,
+    HtfPolicy,
+    StructuredStrategyBase,
+    _near_structure_level,
+    _structure_bias_bonus,
+)
 
 
 class StructuredLowbarEntry(StructuredStrategyBase):
@@ -130,9 +136,6 @@ class StructuredLowbarEntry(StructuredStrategyBase):
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=1.0, high=1.5)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        return EntrySpec()
 
     _aggression: float = 0.15
 

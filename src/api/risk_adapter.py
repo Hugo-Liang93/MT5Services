@@ -5,7 +5,6 @@ from typing import Any
 from src.api.error_codes import AIErrorCode
 from src.risk.service import resolve_risk_failure_key
 
-
 _RISK_FAILURE_CODE_MAP: dict[str, AIErrorCode] = {
     "daily_loss_limit": AIErrorCode.DAILY_LOSS_LIMIT,
     "margin_availability": AIErrorCode.MARGIN_INSUFFICIENT_PRE,

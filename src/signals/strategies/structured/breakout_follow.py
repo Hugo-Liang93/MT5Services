@@ -8,8 +8,6 @@ from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
 from .base import (
-    EntrySpec,
-    EntryType,
     ExitSpec,
     HtfPolicy,
     StructuredStrategyBase,
@@ -165,9 +163,6 @@ class StructuredBreakoutFollow(StructuredStrategyBase):
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=1.2, high=1.8)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        return EntrySpec(entry_type=EntryType.STOP, entry_zone_atr=0.2)
 
     _aggression: float = 0.85
 

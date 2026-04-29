@@ -7,7 +7,13 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import EntrySpec, EntryType, ExitSpec, HtfPolicy, StructuredStrategyBase, _structure_bias_bonus, _near_structure_level
+from .base import (
+    ExitSpec,
+    HtfPolicy,
+    StructuredStrategyBase,
+    _near_structure_level,
+    _structure_bias_bonus,
+)
 
 
 class StructuredRangeReversion(StructuredStrategyBase):
@@ -16,7 +22,15 @@ class StructuredRangeReversion(StructuredStrategyBase):
     name = "structured_range_reversion"
     category = "reversion"
     htf_policy = HtfPolicy.SOFT_GATE
-    required_indicators = ("rsi14", "atr14", "adx14", "boll20", "stoch_rsi14", "mfi14", "volume_ratio20")
+    required_indicators = (
+        "rsi14",
+        "atr14",
+        "adx14",
+        "boll20",
+        "stoch_rsi14",
+        "mfi14",
+        "volume_ratio20",
+    )
     htf_required_indicators = {"supertrend14": "H1", "adx14": "H1"}
     preferred_scopes = ("confirmed", "intrabar")
     regime_affinity = {
@@ -107,9 +121,6 @@ class StructuredRangeReversion(StructuredStrategyBase):
         if direction == "buy":
             return self._linear_score(40.0 - mfi, low=0.0, high=15.0)
         return self._linear_score(mfi - 60.0, low=0.0, high=15.0)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        return EntrySpec(entry_type=EntryType.LIMIT, entry_zone_atr=0.4)
 
     _aggression: float = 0.15
 

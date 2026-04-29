@@ -36,14 +36,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import (
-    EntrySpec,
-    EntryType,
-    ExitSpec,
-    HtfPolicy,
-    StructuredStrategyBase,
-    _structure_bias_bonus,
-)
+from .base import ExitSpec, HtfPolicy, StructuredStrategyBase, _structure_bias_bonus
 
 
 class StructuredPullbackWindow(StructuredStrategyBase):
@@ -219,14 +212,6 @@ class StructuredPullbackWindow(StructuredStrategyBase):
             return 0.0
         # 回调缩量：volume_ratio 0.5→1.0 分, 1.0→0.5 分, 1.5→0.0 分
         return max(0.0, min(1.0, 1.5 - vr))
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        """STOP 单入场：等待回调后的突破确认。"""
-        zone = get_tf_param(self, "entry_zone_atr", ctx.timeframe, self._entry_zone_atr)
-        return EntrySpec(
-            entry_type=EntryType.STOP,
-            entry_zone_atr=zone,
-        )
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
         aggr = get_tf_param(self, "aggression", ctx.timeframe, self._aggression)

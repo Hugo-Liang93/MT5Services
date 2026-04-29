@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from src.trading.execution.sizing import (
-    RegimeSizing,
     TIMEFRAME_RISK_MULTIPLIER,
+    RegimeSizing,
     TradeParameters,
     compute_trade_params,
     resolve_regime_sl_tp_multiplier,

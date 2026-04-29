@@ -18,9 +18,9 @@ from typing import Any, Dict
 import pytest
 
 from src.signals.evaluation.regime import RegimeType
+from src.signals.metadata_keys import MetadataKey as MK
 from src.signals.models import SignalContext
 from src.signals.strategies.structured.base import (
-    EntryType,
     ExitMode,
     HtfPolicy,
     StructuredStrategyBase,
@@ -31,6 +31,7 @@ from src.signals.strategies.structured.mined_rule import (
     MinedRuleSpec,
     MinedRuleStrategy,
 )
+from src.trading.entry_policy import PatternType
 
 
 def _make_spec(
@@ -289,14 +290,17 @@ def test_when_always_passes_for_mined_rules() -> None:
 # ── _entry_spec / _exit_spec ──────────────────────────────────────────
 
 
-def test_entry_spec_is_market() -> None:
-    """mined rules 默认市价入场（barrier 已锁 SL/TP）。"""
+def test_entry_intent_pattern_none_for_mined_rule() -> None:
+    """ADR-013: mined_rule 不再产出 EntrySpec；evaluate 只写 ENTRY_INTENT
+    + PATTERN_TYPE，下游 EntryPolicyRegistry 解析 mapping (mined_rule → market)
+    后产 single-member group。"""
     strat = MinedRuleStrategy(_make_spec())
+    # mined_rule 无 candle_pattern 形态识别 → PatternType.NONE
     ctx = _ctx({})
-
-    es = strat._entry_spec(ctx, direction="buy")
-
-    assert es.entry_type == EntryType.MARKET
+    pattern = strat._detect_pattern(
+        ctx, direction="buy", when_reason="mined_rule_entry"
+    )
+    assert pattern == PatternType.NONE
 
 
 def test_exit_spec_barrier_from_spec() -> None:

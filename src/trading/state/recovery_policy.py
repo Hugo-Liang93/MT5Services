@@ -3,9 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Iterable, Literal
 
-from src.trading.reasons import REASON_STARTUP_MISSING, REASON_STARTUP_ORPHAN_CANCELLED
 from src.trading.ports import PendingOrderCancellationPort
-
+from src.trading.reasons import REASON_STARTUP_MISSING, REASON_STARTUP_ORPHAN_CANCELLED
 
 logger = logging.getLogger(__name__)
 

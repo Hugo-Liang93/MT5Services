@@ -12,7 +12,9 @@ class TradeCommandAuditRepository:
     def __init__(self, writer: "TimescaleWriter"):
         self._writer = writer
 
-    def write_trade_command_audits(self, rows: Iterable[Tuple], page_size: int = 200) -> None:
+    def write_trade_command_audits(
+        self, rows: Iterable[Tuple], page_size: int = 200
+    ) -> None:
         batch = []
         for row in rows:
             request_payload = row[15] if row[15] is not None else {}
@@ -373,8 +375,16 @@ LIMIT 1
             "idempotency_key": row.get("idempotency_key"),
             "attempt_count": row.get("attempt_count"),
             "last_error_code": row.get("last_error_code"),
-            "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
-            "completed_at": completed_at.isoformat() if hasattr(completed_at, "isoformat") else completed_at,
+            "created_at": (
+                created_at.isoformat()
+                if hasattr(created_at, "isoformat")
+                else created_at
+            ),
+            "completed_at": (
+                completed_at.isoformat()
+                if hasattr(completed_at, "isoformat")
+                else completed_at
+            ),
             "audit_id": row.get("audit_id"),
         }
 
@@ -456,7 +466,11 @@ LIMIT %s
         response_payload = row.get("response_payload") or {}
         operation_id = row.get("operation_id")
         return {
-            "recorded_at": recorded_at.isoformat() if hasattr(recorded_at, "isoformat") else recorded_at,
+            "recorded_at": (
+                recorded_at.isoformat()
+                if hasattr(recorded_at, "isoformat")
+                else recorded_at
+            ),
             "operation_id": operation_id,
             "audit_id": operation_id,
             "account_alias": row.get("account_alias"),
@@ -480,11 +494,11 @@ LIMIT %s
             "actor": row.get("actor") or request_payload.get("actor"),
             "request_id": row.get("request_id"),
             "action_id": row.get("action_id")
-                or request_payload.get("action_id")
-                or response_payload.get("action_id"),
+            or request_payload.get("action_id")
+            or response_payload.get("action_id"),
             "idempotency_key": row.get("idempotency_key")
-                or request_payload.get("idempotency_key")
-                or response_payload.get("idempotency_key"),
+            or request_payload.get("idempotency_key")
+            or response_payload.get("idempotency_key"),
             "reason": row.get("reason") or request_payload.get("reason"),
             "message": (
                 response_payload.get("message")

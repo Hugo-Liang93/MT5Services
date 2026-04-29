@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from src.config import get_shared_default_symbol
-from src.trading.execution.reasons import REASON_QUOTE_STALE
 from src.trading.execution.quote_health import build_execution_quote_health
+from src.trading.execution.reasons import REASON_QUOTE_STALE
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 
 from .models import AccountRiskStateRecord
@@ -149,9 +149,15 @@ class AccountRiskStateProjector:
         )
         runtime_mode = None
         if self._runtime_mode_controller is not None:
-            runtime_mode = str(
-                _coerce_dict(self._runtime_mode_controller.snapshot()).get("current_mode") or ""
-            ).strip() or None
+            runtime_mode = (
+                str(
+                    _coerce_dict(self._runtime_mode_controller.snapshot()).get(
+                        "current_mode"
+                    )
+                    or ""
+                ).strip()
+                or None
+            )
 
         circuit_breaker = _coerce_dict(executor_status.get("circuit_breaker"))
         margin_guard = _coerce_dict(position_status.get("margin_guard"))
@@ -167,7 +173,9 @@ class AccountRiskStateProjector:
         )
         quote_stale = bool(quote_health.get("stale", False))
         indicator_degraded = bool(position_status.get("last_error"))
-        last_risk_block = str(executor_status.get("last_risk_block") or "").strip() or None
+        last_risk_block = (
+            str(executor_status.get("last_risk_block") or "").strip() or None
+        )
 
         active_flags: list[str] = []
         if runtime_mode in {"risk_off", "ingest_only"}:
@@ -217,8 +225,12 @@ class AccountRiskStateProjector:
             "margin_level": margin_level,
             "margin_guard_state": str(margin_guard.get("state") or "").strip() or None,
             "should_block_new_trades": should_block_new_trades,
-            "should_tighten_stops": bool(margin_guard.get("should_tighten_stops", False)),
-            "should_emergency_close": bool(margin_guard.get("should_emergency_close", False)),
+            "should_tighten_stops": bool(
+                margin_guard.get("should_tighten_stops", False)
+            ),
+            "should_emergency_close": bool(
+                margin_guard.get("should_emergency_close", False)
+            ),
             "open_positions_count": open_positions_count,
             "pending_orders_count": pending_orders_count,
             "quote_stale": quote_stale,
@@ -244,7 +256,9 @@ class AccountRiskStateProjector:
                 },
                 "quote_health": {
                     "age_seconds": quote_health.get("age_seconds"),
-                    "stale_threshold_seconds": quote_health.get("stale_threshold_seconds"),
+                    "stale_threshold_seconds": quote_health.get(
+                        "stale_threshold_seconds"
+                    ),
                 },
             },
         }
@@ -262,8 +276,11 @@ class AccountRiskStateProjector:
             consecutive_failures=_coerce_int(snapshot.get("consecutive_failures")),
             last_risk_block=str(snapshot.get("last_risk_block") or "").strip() or None,
             margin_level=_coerce_float(snapshot.get("margin_level")),
-            margin_guard_state=str(snapshot.get("margin_guard_state") or "").strip() or None,
-            should_block_new_trades=bool(snapshot.get("should_block_new_trades", False)),
+            margin_guard_state=str(snapshot.get("margin_guard_state") or "").strip()
+            or None,
+            should_block_new_trades=bool(
+                snapshot.get("should_block_new_trades", False)
+            ),
             should_tighten_stops=bool(snapshot.get("should_tighten_stops", False)),
             should_emergency_close=bool(snapshot.get("should_emergency_close", False)),
             open_positions_count=_coerce_int(snapshot.get("open_positions_count")),
@@ -283,7 +300,9 @@ class AccountRiskStateProjector:
         try:
             info = self._trade_module.account_info()
         except Exception:
-            logger.debug("AccountRiskStateProjector: account_info failed", exc_info=True)
+            logger.debug(
+                "AccountRiskStateProjector: account_info failed", exc_info=True
+            )
             return None
         if info is None:
             return None
@@ -306,7 +325,9 @@ class AccountRiskStateProjector:
     def _representative_symbol(self) -> str | None:
         symbols: list[str] = []
         try:
-            positions: Iterable[dict[str, Any]] = list(self._position_manager.active_positions())
+            positions: Iterable[dict[str, Any]] = list(
+                self._position_manager.active_positions()
+            )
         except Exception:
             positions = []
         for item in positions:

@@ -8,7 +8,10 @@ from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext, SignalDecision
 from src.signals.service import SignalModule
 from src.signals.strategies.catalog import build_default_strategy_set
-from src.signals.strategies.structured import StructuredTrendContinuation, StructuredSweepReversal
+from src.signals.strategies.structured import (
+    StructuredSweepReversal,
+    StructuredTrendContinuation,
+)
 
 
 class DummyIndicatorSource:

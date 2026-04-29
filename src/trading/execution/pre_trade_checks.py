@@ -449,13 +449,17 @@ def run_pre_trade_filters(
                 )
                 return REASON_STRATEGY_MAX_LIVE_POSITIONS
         if deployment.require_pending_entry:
-            entry_spec = event.metadata.get(MK.ENTRY_SPEC, {})
-            entry_type = (
-                entry_spec.get("entry_type", "market")
-                if isinstance(entry_spec, dict)
-                else "market"
+            # ADR-013: 判 EntrySpecGroup.all_market()。group 由
+            # decision_engine 在上游 derive；本检查在 decision_engine 之后调用，
+            # 此时 metadata[ENTRY_SPEC_GROUP] 已就绪。如未就绪（registry 缺失
+            # / ATR 不足）走 market 兜底 → 等同于"全 MARKET"判拒单。
+            from src.trading.entry_policy import EntrySpecGroup
+
+            group = event.metadata.get(MK.ENTRY_SPEC_GROUP)
+            all_market = (
+                group.all_market() if isinstance(group, EntrySpecGroup) else True
             )
-            if entry_type == "market" or executor.pending_manager is None:
+            if all_market or executor.pending_manager is None:
                 reject_signal(
                     executor,
                     event,

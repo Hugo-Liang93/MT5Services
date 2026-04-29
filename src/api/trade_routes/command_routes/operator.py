@@ -24,7 +24,11 @@ from ..common import (
     normalize_idempotency_key,
     normalize_request_context,
 )
-from ..view_models import ExposureCloseoutActionView, TradeControlUpdateView, TradeMutationResultView
+from ..view_models import (
+    ExposureCloseoutActionView,
+    TradeControlUpdateView,
+    TradeMutationResultView,
+)
 
 router = APIRouter(tags=["trade"])
 

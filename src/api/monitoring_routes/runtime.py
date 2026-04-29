@@ -24,9 +24,9 @@ from src.api.deps import (
     get_pending_entry_manager,
     get_runtime_read_model,
     get_runtime_task_status,
-    resolve_runtime_task_scope,
     get_startup_status,
     get_trading_command_service,
+    resolve_runtime_task_scope,
 )
 from src.api.schemas import (
     ApiResponse,

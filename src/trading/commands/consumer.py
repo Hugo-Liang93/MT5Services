@@ -8,8 +8,10 @@ from typing import Any
 
 from src.config.runtime_identity import RuntimeIdentity
 from src.monitoring.pipeline.event_bus import PipelineEvent, PipelineEventBus
-from src.trading.commands.results import bind_command_item_result
-from src.trading.commands.results import build_operator_command_result
+from src.trading.commands.results import (
+    bind_command_item_result,
+    build_operator_command_result,
+)
 from src.trading.runtime.lifecycle import OwnedThreadLifecycle
 
 logger = logging.getLogger(__name__)

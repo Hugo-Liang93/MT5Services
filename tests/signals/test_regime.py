@@ -9,7 +9,6 @@ from src.signals.evaluation.regime import (
     SoftRegimeResult,
 )
 
-
 # ── 测试数据工厂 ─────────────────────────────────────────────────────────────
 
 def _indicators(

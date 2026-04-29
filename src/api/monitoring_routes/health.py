@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List
 from collections.abc import Callable
-from typing import TypeVar
+from datetime import datetime, timezone
+from typing import Any, Dict, List, TypeVar
 
 from fastapi import APIRouter, HTTPException
 
@@ -19,6 +18,7 @@ from src.api.deps import (
     get_startup_status,
 )
 from src.api.schemas import ApiResponse
+
 from .view_models import (
     AlertResolutionView,
     FailedEventsResetView,

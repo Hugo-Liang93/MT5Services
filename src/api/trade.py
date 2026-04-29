@@ -29,9 +29,9 @@ from .trade_routes.commands import (
 )
 from .trade_routes.runtime import trade_runtime_mode_status, trade_runtime_mode_update
 from .trade_routes.state import (
+    get_sl_tp_history,
     orders,
     positions,
-    get_sl_tp_history,
     trade_active_pending_state_list,
     trade_command_audit_detail,
     trade_command_audits,
@@ -47,7 +47,11 @@ from .trade_routes.state import (
     trade_state_summary,
     trading_accounts,
 )
-from .trade_routes.trace import trade_trace_by_signal_id, trade_trace_by_trace_id, trade_traces
+from .trade_routes.trace import (
+    trade_trace_by_signal_id,
+    trade_trace_by_trace_id,
+    trade_traces,
+)
 from .trade_routes.trades_workbench import trade_detail, trades_workbench
 
 router = APIRouter(tags=["trade"])

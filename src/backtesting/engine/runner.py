@@ -250,15 +250,24 @@ class BacktestEngine:
                 cooldown_bars=cb.cooldown_bars,
             )
 
-        # Pending Entry 配置（入场区间由策略 entry_spec 驱动）
+        # Pending Entry 配置（入场区间由 EntryPolicyRegistry 驱动 — ADR-013）
         pe = config.pending_entry
         self._pending_entry_enabled = pe.enabled
         self._pending_entry_config = TradingPendingEntryConfig()
         # 挂起的入场意图：{signal_key: (decision, entry_type, entry_low, entry_high, expiry_bar)}
-        # entry_type ∈ {"limit", "stop"}，决定触发边界与成交价语义
+        # entry_type ∈ {"limit", "stop"}，决定触发边界与成交价语义。
+        # ADR-013: P2 单 member 路径仍用此结构；P4 引入 OCO 多 member 时升级
+        # 为 BacktestPendingGroup 数据结构。
         self._pending_entries: Dict[
             str, Tuple[SignalDecision, str, float, float, int]
         ] = {}
+        # ADR-013: 与 live 共用同一 EntryPolicyRegistry。
+        from src.app_runtime.factories.entry_policies import build_entry_policy_registry
+        from src.config import get_entry_policy_config
+
+        self._entry_policy_registry = build_entry_policy_registry(
+            get_entry_policy_config()
+        )
 
         # 确定目标策略列表，并过滤掉回测 SignalModule 不支持的名称。
         # Deployment gate（ADR-009 → ADR-010）：

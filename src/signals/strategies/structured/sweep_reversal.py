@@ -7,7 +7,13 @@ from typing import Any, Dict, Optional, Tuple
 from ...evaluation.regime import RegimeType
 from ...models import SignalContext
 from ..base import get_tf_param
-from .base import EntrySpec, EntryType, ExitSpec, HtfPolicy, StructuredStrategyBase, _near_structure_level, _structure_bias_bonus
+from .base import (
+    ExitSpec,
+    HtfPolicy,
+    StructuredStrategyBase,
+    _near_structure_level,
+    _structure_bias_bonus,
+)
 
 
 class StructuredSweepReversal(StructuredStrategyBase):
@@ -96,9 +102,6 @@ class StructuredSweepReversal(StructuredStrategyBase):
 
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=1.4, high=2.0)
-
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        return EntrySpec()
 
     _aggression: float = 0.20
 

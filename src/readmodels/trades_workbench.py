@@ -247,16 +247,21 @@ class TradesWorkbenchReadModel:
         plan: dict[str, Any] = {}
         if plan_signal:
             metadata = plan_signal.get("metadata") or {}
-            entry_spec = metadata.get("entry_spec") or {}
+            # ADR-013: ENTRY_SPEC_GROUP 是 dict（来自 group.to_dict()）；取
+            # 首成员的 trigger_price 作 plan.entry_price。OCO 多成员场景下
+            # 写入 members 列表供 UI 展示双 leg。
+            entry_group = metadata.get("entry_spec_group") or {}
+            members = (
+                entry_group.get("members") if isinstance(entry_group, dict) else []
+            )
+            primary = members[0] if members else {}
             plan = {
                 "direction": plan_signal.get("direction"),
                 "confidence": plan_signal.get("confidence"),
                 "strategy": plan_signal.get("strategy"),
-                "entry_price": entry_spec.get("entry_price") or entry_spec.get("price"),
-                "entry_type": entry_spec.get("entry_type"),
-                "stop_loss": entry_spec.get("stop_loss"),
-                "take_profit": entry_spec.get("take_profit"),
-                "volume": entry_spec.get("volume"),
+                "entry_price": primary.get("trigger_price"),
+                "entry_type": primary.get("entry_type"),
+                "entry_members": members,
                 "risk_reward": metadata.get("risk_reward"),
                 "generated_at": plan_signal.get("generated_at"),
             }

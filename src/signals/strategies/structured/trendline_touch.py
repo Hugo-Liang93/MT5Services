@@ -5,11 +5,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...evaluation.regime import RegimeType
+from ...metadata_keys import MetadataKey as MK
 from ...models import SignalContext, SignalDecision
 from ..base import get_tf_param
 from .base import (
-    EntrySpec,
-    EntryType,
     ExitSpec,
     HtfPolicy,
     StructuredStrategyBase,
@@ -174,14 +173,6 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
     def _volume_bonus(self, ctx: SignalContext, direction: str) -> float:
         return self._linear_score(self._volume_ratio(ctx), low=0.9, high=1.3)
 
-    def _entry_spec(self, ctx: SignalContext, direction: str) -> EntrySpec:
-        if self._last_tl is not None:
-            return EntrySpec(
-                entry_type=EntryType.LIMIT,
-                entry_price=self._last_tl.trendline_price_at_current,
-            )
-        return EntrySpec()
-
     _aggression: float = 0.70
 
     def _exit_spec(self, ctx: SignalContext, direction: str) -> ExitSpec:
@@ -246,8 +237,22 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
         if where_info:
             reason += f",{where_info}"
 
-        entry_spec = self._entry_spec(context, direction)
+        # ADR-013: 不再产出 EntrySpec；trendline 价格写入 entry_intent 供
+        # FibPullback / Pullback 等下游 EntryPolicy 使用。
+        pattern_type = self._detect_trendline_pattern(direction)
         exit_spec = self._exit_spec(context, direction)
+
+        entry_intent: Dict[str, Any] = {
+            "strategy_name": self.name,
+            "timeframe": context.timeframe,
+            "direction": direction,
+            "pattern_type": pattern_type.value,
+            "why_reason": why_reason,
+            "when_reason": when_reason,
+            "where_info": where_info,
+        }
+        if self._last_tl is not None:
+            entry_intent["trendline_price"] = self._last_tl.trendline_price_at_current
 
         md: Dict[str, Any] = {
             "why": why_reason,
@@ -257,7 +262,8 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
             "where_score": round(min(where_score, 1.0), 3),
             "vol_score": round(min(vol_score, 1.0), 3),
             "signal_grade": grade,
-            "entry_spec": entry_spec.to_dict(),
+            MK.ENTRY_INTENT: entry_intent,
+            MK.PATTERN_TYPE: pattern_type.value,
             "exit_spec": exit_spec.to_dict(),
         }
         if self._last_tl is not None:
@@ -267,3 +273,15 @@ class StructuredTrendlineTouch(StructuredStrategyBase):
             md["covered_points"] = len(tl.covered_points)
 
         return self._make_decision(direction, confidence, reason, used, metadata=md)
+
+    def _detect_trendline_pattern(self, direction: str) -> Any:
+        """trendline 触碰自带形态语义；存在 trendline 时返回 TRENDLINE_TOUCH_*。"""
+        from src.trading.entry_policy.pattern import PatternType
+
+        if self._last_tl is None:
+            return PatternType.NONE
+        return (
+            PatternType.TRENDLINE_TOUCH_BULL
+            if direction == "buy"
+            else PatternType.TRENDLINE_TOUCH_BEAR
+        )

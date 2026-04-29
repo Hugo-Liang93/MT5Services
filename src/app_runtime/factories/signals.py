@@ -542,6 +542,12 @@ def build_account_runtime_components(
     persist_execution_fn = getattr(storage_writer.db, "write_auto_executions", None)
     execution_gate = ExecutionGate(config=build_execution_gate_config(signal_config))
     _executor_holder: list[TradeExecutor] = []
+    # ADR-013: 装配 EntryPolicyRegistry 注入 PendingEntryManager
+    from src.app_runtime.factories.entry_policies import build_entry_policy_registry
+    from src.config import get_entry_policy_config
+
+    entry_policy_registry = build_entry_policy_registry(get_entry_policy_config())
+
     pending_entry_manager = PendingEntryManager(
         config=build_pending_entry_config(signal_config),
         market_service=market_service,
@@ -557,6 +563,7 @@ def build_account_runtime_components(
             if _executor_holder
             else {"status": "pending"}
         ),
+        entry_policy_registry=entry_policy_registry,
     )
 
     from src.trading.execution.equity_filter import (

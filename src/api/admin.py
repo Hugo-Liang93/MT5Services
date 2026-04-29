@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from .admin_routes import (
     config_router,
     dashboard_router,
+    entry_policies_router,
     notifications_router,
     strategies_router,
     streams_router,
@@ -24,7 +25,11 @@ from .admin_routes.strategies import (
     admin_strategies,
     admin_strategy_detail,
 )
-from .admin_routes.streams import admin_events_stream, admin_pipeline_stats, admin_pipeline_stream
+from .admin_routes.streams import (
+    admin_events_stream,
+    admin_pipeline_stats,
+    admin_pipeline_stream,
+)
 
 router = APIRouter(tags=["admin"])
 router.include_router(dashboard_router)
@@ -32,6 +37,7 @@ router.include_router(config_router)
 router.include_router(strategies_router)
 router.include_router(streams_router)
 router.include_router(notifications_router)
+router.include_router(entry_policies_router)
 
 __all__ = [
     "_build_strategy_detail",

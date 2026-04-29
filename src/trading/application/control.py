@@ -4,10 +4,9 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Callable, Optional
 
-from src.trading.reasons import REASON_AUTO_ENTRY_PAUSED, REASON_CLOSE_ONLY_MODE_ENABLED
 from src.risk.service import PreTradeRiskBlockedError
 from src.signals.metadata_keys import MetadataKey as MK
-
+from src.trading.reasons import REASON_AUTO_ENTRY_PAUSED, REASON_CLOSE_ONLY_MODE_ENABLED
 
 PRECHECK_TRADE_FIELDS = {
     "symbol",

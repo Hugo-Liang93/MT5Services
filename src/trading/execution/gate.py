@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.signals.models import SignalEvent
+
 from .reasons import (
     REASON_INTRABAR_TRADING_DISABLED,
     REASON_STRATEGY_NOT_INTRABAR_ENABLED,

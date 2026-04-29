@@ -5,11 +5,11 @@ from dataclasses import dataclass
 
 import pytest
 
+from src.risk.service import PreTradeRiskBlockedError
 from src.trading.application.idempotency import TradeOperatorActionReplayConflictError
 from src.trading.application.module import TradingModule
 from src.trading.application.services import TradingCommandService, TradingQueryService
 from src.trading.broker.comment_codec import build_trade_comment
-from src.risk.service import PreTradeRiskBlockedError
 
 
 @dataclass

@@ -9,7 +9,11 @@ from .indicators_routes.catalog import (
     get_performance_stats,
     list_available_indicators,
 )
-from .indicators_routes.models import IndicatorRequest, IndicatorResponse, IndicatorValue
+from .indicators_routes.models import (
+    IndicatorRequest,
+    IndicatorResponse,
+    IndicatorValue,
+)
 from .indicators_routes.values import (
     compute_indicators,
     get_indicator,

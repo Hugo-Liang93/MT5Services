@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from src.signals.evaluation.regime import RegimeType
 from src.signals.service import SignalModule
 from src.signals.strategies.base import StrategyCategory
-from src.signals.evaluation.regime import RegimeType
 
 
 def _make_strategy(name, category):

@@ -45,7 +45,9 @@ class MarketRepository:
                 continue
 
             time_value = datetime.fromisoformat(str(row[3]).replace("Z", "+00:00"))
-            normalized.append((row[0], row[1], row[2], row[3], int(time_value.timestamp() * 1000)))
+            normalized.append(
+                (row[0], row[1], row[2], row[3], int(time_value.timestamp() * 1000))
+            )
 
         self._writer._batch(INSERT_TICKS_SQL, normalized, page_size=page_size)
 
@@ -69,7 +71,9 @@ class MarketRepository:
 
         self._writer._batch(INSERT_QUOTES_SQL, valid_rows, page_size=page_size)
 
-    def write_ohlc(self, rows: Iterable[Tuple], upsert: bool = False, page_size: int = 1000) -> None:
+    def write_ohlc(
+        self, rows: Iterable[Tuple], upsert: bool = False, page_size: int = 1000
+    ) -> None:
         rows_list = list(rows)
         if not rows_list:
             return

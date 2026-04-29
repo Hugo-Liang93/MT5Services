@@ -9,6 +9,7 @@ from src.api.deps import get_economic_calendar_service
 from src.api.schemas import ApiResponse
 from src.calendar import EconomicCalendarService
 from src.utils.timezone import utc_now
+
 from .view_models import (
     EnrichedCalendarItemView,
     MarketImpactStatsItemView,

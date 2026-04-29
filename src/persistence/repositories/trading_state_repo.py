@@ -23,7 +23,19 @@ class TradingStateRepository:
         batch = []
         for row in rows:
             metadata = row[31] if row[31] is not None else {}
-            batch.append((*row[:31], self._writer._json(metadata), row[32], row[33]))
+            # row 索引 0-30：常规字段；31=metadata；32=updated_at；33=account_key；
+            # 34=order_group_id；35=group_member_id；36=group_role（ADR-013）
+            batch.append(
+                (
+                    *row[:31],
+                    self._writer._json(metadata),
+                    row[32],
+                    row[33],
+                    row[34] if len(row) > 34 else None,
+                    row[35] if len(row) > 35 else None,
+                    row[36] if len(row) > 36 else None,
+                )
+            )
         if not batch:
             return
         self._writer._batch(UPSERT_PENDING_ORDER_STATES_SQL, batch, page_size=page_size)
@@ -44,7 +56,8 @@ class TradingStateRepository:
             "stop_loss, take_profit, volume, atr_at_entry, confidence, regime, "
             "created_at, expires_at, filled_at, cancelled_at, "
             "position_ticket, deal_id, fill_price, status, status_reason, "
-            "last_seen_at, metadata, updated_at, account_key "
+            "last_seen_at, metadata, updated_at, account_key, "
+            "order_group_id, group_member_id, group_role "
             "FROM pending_order_states WHERE 1=1"
         )
         params: List = []
