@@ -10,8 +10,10 @@ import pytest
 
 from src.signals.strategies.structured.mined_rule import MinedRuleSpec
 from src.signals.strategies.structured.mined_rule_loader import (
+    BACKTEST_VERIFICATION_GATES,
     PROMOTION_GATES,
     extract_specs_from_mining_json,
+    filter_by_backtest,
     filter_promotable,
     load_specs_from_path,
 )
@@ -190,3 +192,105 @@ def test_load_specs_from_path(tmp_path: Path) -> None:
 
     assert len(specs) == 1
     assert isinstance(specs[0], MinedRuleSpec)
+
+
+# ── filter_by_backtest: realized-execution gate ───────────────────────
+
+
+def _spec(name: str, tf: str = "H4") -> MinedRuleSpec:
+    """构造 minimal MinedRuleSpec（绕过 mining JSON 路径直接喂 filter）。"""
+    payload = _make_mining_payload([_good_rule()])
+    payload["results"][0]["tf"] = tf
+    payload["results"][0]["mined_rules"][0]["direction"] = "buy"
+    spec = extract_specs_from_mining_json(payload)[0]
+    # 重写 name 以匹配测试需要
+    return MinedRuleSpec(
+        name=name,
+        direction=spec.direction,
+        timeframe=spec.timeframe,
+        conditions=spec.conditions,
+        barrier=spec.barrier,
+        mining_run_id=spec.mining_run_id,
+        train_wr=spec.train_wr,
+        test_wr=spec.test_wr,
+        train_n=spec.train_n,
+        test_n=spec.test_n,
+        barrier_wr=spec.barrier_wr,
+        train_mean_return=spec.train_mean_return,
+    )
+
+
+def test_filter_by_backtest_keeps_profitable_high_wr_spec() -> None:
+    """实测 PnL 正 + WR>=floor + 样本数足 → 通过。"""
+    spec = _spec("structured_mined_h4_buy_1")
+    stats = {"structured_mined_h4_buy_1": {"n": 73, "w": 37, "pnl": 108.0}}
+    out = filter_by_backtest(
+        [spec],
+        stats,
+        min_realized_wr=0.45,
+        min_realized_pnl=0.0,
+        min_realized_n=20,
+    )
+    assert [s.name for s in out] == ["structured_mined_h4_buy_1"]
+
+
+def test_filter_by_backtest_drops_negative_pnl_even_if_high_wr() -> None:
+    """h4_sell_2 实测 WR=30.8% (mining 58%) PnL=-76 → 应被丢。"""
+    spec = _spec("structured_mined_h4_sell_2")
+    stats = {"structured_mined_h4_sell_2": {"n": 39, "w": 12, "pnl": -75.5}}
+    out = filter_by_backtest(
+        [spec],
+        stats,
+        min_realized_wr=0.45,
+        min_realized_pnl=0.0,
+        min_realized_n=20,
+    )
+    assert out == []
+
+
+def test_filter_by_backtest_drops_zero_trade_specs() -> None:
+    """h1_buy_5 / m30_sell_2 实测 0 trades → 应被丢（无样本无证据）。"""
+    spec = _spec("structured_mined_h1_buy_5")
+    out = filter_by_backtest(
+        [spec],
+        {},  # 没有该 spec 的 stats
+        min_realized_wr=0.45,
+        min_realized_pnl=0.0,
+        min_realized_n=20,
+    )
+    assert out == []
+
+
+def test_filter_by_backtest_drops_below_min_n() -> None:
+    """实测 n<floor → 样本太少不足以判断，丢。"""
+    spec = _spec("structured_mined_h4_buy_1")
+    stats = {"structured_mined_h4_buy_1": {"n": 10, "w": 8, "pnl": 50.0}}
+    out = filter_by_backtest(
+        [spec],
+        stats,
+        min_realized_wr=0.45,
+        min_realized_pnl=0.0,
+        min_realized_n=20,
+    )
+    assert out == []
+
+
+def test_filter_by_backtest_drops_below_min_wr() -> None:
+    """h1_buy_3 实测 WR=44.3% < 45% floor → 丢。"""
+    spec = _spec("structured_mined_h1_buy_3")
+    stats = {"structured_mined_h1_buy_3": {"n": 70, "w": 31, "pnl": -39.5}}
+    out = filter_by_backtest(
+        [spec],
+        stats,
+        min_realized_wr=0.45,
+        min_realized_pnl=0.0,
+        min_realized_n=20,
+    )
+    assert out == []
+
+
+def test_filter_by_backtest_thresholds_documented() -> None:
+    """BACKTEST_VERIFICATION_GATES 应有清晰阈值集合便于审计。"""
+    assert "min_realized_wr" in BACKTEST_VERIFICATION_GATES
+    assert "min_realized_pnl" in BACKTEST_VERIFICATION_GATES
+    assert "min_realized_n" in BACKTEST_VERIFICATION_GATES

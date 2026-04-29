@@ -18,8 +18,8 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 from .mined_rule import MinedRuleBarrier, MinedRuleCondition, MinedRuleSpec
 
-# 晋级门禁 — 与 PLAN.md backtest gates 对齐的精神（in-sample / out-of-sample
-# 一致 + 经济可行 + 样本量足）。改阈值需要审计原因。
+# Stage 1 — 晋级门禁（mining-time 统计）。审计基于 mining JSON 的 in-sample /
+# out-of-sample / cost-after / barrier hit-rate。改阈值需要审计原因。
 PROMOTION_GATES: Dict[str, float] = {
     "min_train_wr": 0.55,  # train hit_rate >= 55%
     "min_test_wr": 0.52,  # test hit_rate >= 52%
@@ -27,6 +27,17 @@ PROMOTION_GATES: Dict[str, float] = {
     "max_train_test_drop": 0.30,  # (train - test) / train 不超过 30%
     "min_barrier_wr": 0.50,  # 实际 barrier hit_rate >= 50%
     "min_mean_return": 0.0,  # cost-after 正期望
+}
+
+# Stage 2 — backtest 实测门禁。mining 统计与 BacktestEngine 实测可显著背离
+# （filter chain / position management / time_exit / breakeven / signal_exit
+# 都会改变结果）。h4_sell_2 mining test_wr=58% → backtest WR=30.8%、PnL=-76
+# 是这个差异的实证。所以引入"realized 门"：spec 必须在 BacktestEngine 跑过
+# 一遍，实测 wr/pnl/n 都达标才能晋级 demo binding。
+BACKTEST_VERIFICATION_GATES: Dict[str, float] = {
+    "min_realized_wr": 0.45,  # 实测 WR >= 45%（含成本，比 mining 宽松一档）
+    "min_realized_pnl": 0.0,  # 实测净盈利
+    "min_realized_n": 20,  # 实测样本至少 20 笔（少于此判据不足）
 }
 
 
@@ -157,3 +168,52 @@ def load_specs_from_path(path: Path | str) -> List[MinedRuleSpec]:
     with Path(path).open("r", encoding="utf-8") as f:
         payload = json.load(f)
     return extract_specs_from_mining_json(payload)
+
+
+def filter_by_backtest(
+    specs: Sequence[MinedRuleSpec],
+    backtest_stats: Mapping[str, Mapping[str, Any]],
+    *,
+    min_realized_wr: float = BACKTEST_VERIFICATION_GATES["min_realized_wr"],
+    min_realized_pnl: float = BACKTEST_VERIFICATION_GATES["min_realized_pnl"],
+    min_realized_n: int = int(BACKTEST_VERIFICATION_GATES["min_realized_n"]),
+) -> List[MinedRuleSpec]:
+    """Stage 2 — 用 BacktestEngine 实测统计过滤 specs。
+
+    `backtest_stats` 取 backtest_runner 输出的 `strategy_stats` 字段，
+    格式 `{spec.name: {"n": int, "w": int, "pnl": float}}`。
+
+    为何需要此 stage（不能仅用 mining-time 的 PROMOTION_GATES）：
+    - mining 的 train/test hit-rate 是基于 barrier 模式纯统计推算
+    - BacktestEngine 跑的链路含 filter chain / position management /
+      time_exit / signal_exit / breakeven 等真实交易语义
+    - 二者背离常见且显著（h4_sell_2 mining test_wr=58% → 实测 WR=30.8%）
+    - 实测 0 trades 的 spec（条件极少触发）也必须在此 stage 被剔除
+
+    Args:
+        specs: PROMOTION_GATES 通过的 mining-promoted specs
+        backtest_stats: spec.name → {n, w, pnl}（缺则视作 0 trades）
+        min_realized_wr: 实测 win-rate floor
+        min_realized_pnl: 实测净盈利 floor
+        min_realized_n: 实测样本数 floor（< 此值视作证据不足）
+
+    Returns:
+        通过两阶段门禁的 specs（demo binding candidate 集合）。
+    """
+    out: List[MinedRuleSpec] = []
+    for spec in specs:
+        stats = backtest_stats.get(spec.name)
+        if not stats:
+            continue
+        n = int(stats.get("n", 0) or 0)
+        if n < min_realized_n:
+            continue
+        w = int(stats.get("w", 0) or 0)
+        wr = w / n if n > 0 else 0.0
+        if wr < min_realized_wr:
+            continue
+        pnl = float(stats.get("pnl", 0.0) or 0.0)
+        if pnl < min_realized_pnl:
+            continue
+        out.append(spec)
+    return out
