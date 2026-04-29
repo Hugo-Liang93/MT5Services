@@ -24,7 +24,6 @@ from .eventing import (
 )
 from .reasons import (
     REASON_DUPLICATE_PENDING_SAME_STRATEGY,
-    REASON_DUPLICATE_POSITION_SAME_STRATEGY,
     REASON_MISSING_SIGNAL_ID,
     REASON_NEW_SIGNAL_OVERRIDE,
     REASON_ORDER_MISSING_WITHOUT_POSITION,
@@ -355,50 +354,22 @@ def _pending_entries_for_symbol(executor: "TradeExecutor", symbol: str) -> int:
 def duplicate_execution_reason(executor: "TradeExecutor", event: SignalEvent) -> str:
     """重复入场拦截判定（按优先级）。
 
-    1. 同策略同 TF 任意方向 → REASON_DUPLICATE_POSITION_SAME_STRATEGY
-       （"1 (symbol, tf, strategy) = 1 笔" 哲学，防同 TF 重复入场 + 同 TF hedge）
-    2. 同策略 pending entry 已存在 → REASON_DUPLICATE_PENDING_SAME_STRATEGY
+    layer-0 (历史 has_matching_active_position 同 (symbol, tf, strategy)
+    任意方向拦) 已删除——实测发现该约束让系统在浮亏老仓 + 反向新信号场
+    景下被锁死（同 TF 反向不能开仓，浮亏不主动平仓，等死 SL）。
 
-    跨 TF 反向不再拦——保留 multi-TF 自然 hedge 灵活性。
-    per-strategy reversal history 已做"反向积累 → 整 stack market close"协同
-    清算（exit_rules.check_signal_reversal）。
+    现行栈靠多层独立 cap：
+    - reentry_cooldown_bars: 限同 (symbol, tf, strategy, direction) 重复频率
+    - max_positions_per_symbol / max_volume_per_symbol: 总笔数 / 仓位上限
+    - daily_loss_limit_pct: 日损上限
+    - single_trade_loss_cap: 单笔损失上限
+
+    duplicate_execution_reason 现在只剩：
+    - 同策略 pending entry 已存在 → REASON_DUPLICATE_PENDING_SAME_STRATEGY
     """
-    if has_matching_active_position(executor, event):
-        return REASON_DUPLICATE_POSITION_SAME_STRATEGY
     if has_matching_pending_entry(executor, event):
         return REASON_DUPLICATE_PENDING_SAME_STRATEGY
     return ""
-
-
-def has_matching_active_position(executor: "TradeExecutor", event: SignalEvent) -> bool:
-    """Duplicate guard：(symbol, timeframe, strategy) 已有持仓则拦下新信号。
-
-    历史实现还要求 direction 匹配（仅挡同向重复），允许反向新单进。但
-    exit_rules.check_exit 浮亏 r<0 时不主动 signal_exit（震荡市保护），
-    导致浮亏老单 + 反向新信号 = 同策略同 TF 形成 hedge 互吃 PnL，占
-    margin 拖累其他策略入场。
-
-    现行语义：同策略同 TF 已有持仓时不开新仓（任意方向），让老单按 SL /
-    Chandelier 自然处理，再开新方向。配合浮亏不主动反转的设计。
-    """
-    if executor.position_manager is None:
-        return False
-    try:
-        active_positions = executor.position_manager.active_positions()
-    except Exception:
-        logger.debug(
-            "Failed to inspect active positions for duplicate guard",
-            exc_info=True,
-        )
-        return False
-    for row in active_positions or []:
-        if (
-            row.get("symbol") == event.symbol
-            and row.get("timeframe") == event.timeframe
-            and row.get("strategy") == event.strategy
-        ):
-            return True
-    return False
 
 
 def has_matching_pending_entry(executor: "TradeExecutor", event: SignalEvent) -> bool:
@@ -446,9 +417,9 @@ def record_reentry_bar_time(executor: "TradeExecutor", event: SignalEvent) -> No
             bar_time_value = None
     if bar_time_value is None:
         return
-    executor.last_entry_bar_time[(event.symbol, event.strategy, event.direction)] = (
-        bar_time_value
-    )
+    executor.last_entry_bar_time[
+        (event.symbol, event.timeframe, event.strategy, event.direction)
+    ] = bar_time_value
 
 
 def row_value(row: Any, key: str, default: Any = None) -> Any:

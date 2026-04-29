@@ -47,7 +47,9 @@ def _build_terminal_result(
 ) -> dict[str, Any]:
     normalized_status = str(status or "").strip().lower() or "failed"
     normalized_reason = str(reason or normalized_status).strip() or normalized_status
-    normalized_category = str(category or reason_category(normalized_reason)).strip() or reason_category(normalized_reason)
+    normalized_category = str(
+        category or reason_category(normalized_reason)
+    ).strip() or reason_category(normalized_reason)
     result: dict[str, Any] = {
         "status": normalized_status,
         "reason": normalized_reason,
@@ -80,14 +82,11 @@ def interpret_terminal_result(result: Any) -> TerminalExecutionOutcome:
             str(result.get("reason") or result.get("skip_reason") or "skipped").strip()
             or "skipped"
         )
-        category = (
-            str(
-                result.get("category")
-                or result.get("skip_category")
-                or reason_category(reason)
-            ).strip()
+        category = str(
+            result.get("category")
+            or result.get("skip_category")
             or reason_category(reason)
-        )
+        ).strip() or reason_category(reason)
         details = result.get("details")
         return TerminalExecutionOutcome(
             status="skipped",
@@ -99,10 +98,9 @@ def interpret_terminal_result(result: Any) -> TerminalExecutionOutcome:
 
     if normalized_status == "failed":
         reason = str(result.get("reason") or "failed").strip() or "failed"
-        category = (
-            str(result.get("category") or reason_category(reason)).strip()
-            or reason_category(reason)
-        )
+        category = str(
+            result.get("category") or reason_category(reason)
+        ).strip() or reason_category(reason)
         details = result.get("details")
         return TerminalExecutionOutcome(
             status="failed",
@@ -192,6 +190,7 @@ def notify_skip(
         except Exception:
             logger.debug("on_execution_skip callback failed", exc_info=True)
 
+
 def trace_id_for_event(event: "SignalEvent") -> str:
     return str(event.metadata.get(MK.SIGNAL_TRACE_ID) or "").strip()
 
@@ -201,7 +200,8 @@ def _account_context(executor: "TradeExecutor", event: "SignalEvent") -> dict[st
     runtime_identity = executor.runtime_identity
     metadata = dict(event.metadata or {})
     return {
-        "account_key": metadata.get("target_account_key") or runtime_identity.account_key,
+        "account_key": metadata.get("target_account_key")
+        or runtime_identity.account_key,
         "account_alias": metadata.get("target_account_alias")
         or runtime_identity.account_alias,
         "intent_id": metadata.get("intent_id"),
@@ -214,7 +214,14 @@ def _admission_stage_from_category(category: str) -> str:
         return "account_risk"
     if normalized in {"cost_guard", "trade_params", "market_data"}:
         return "market_tradability"
-    if normalized in {"execution_gate", "governance", "position", "duplicate_guard", "confidence", "cooldown"}:
+    if normalized in {
+        "execution_gate",
+        "governance",
+        "position",
+        "duplicate_guard",
+        "confidence",
+        "cooldown",
+    }:
         return "execution_gate"
     if normalized in {"eod_guard", "performance", "equity_filter"}:
         return "market_tradability"
@@ -632,7 +639,7 @@ def execute_market_order(
                 bar_time_value = None
         if bar_time_value is not None:
             executor.last_entry_bar_time[
-                (event.symbol, event.strategy, event.direction)
+                (event.symbol, event.timeframe, event.strategy, event.direction)
             ] = bar_time_value
         for fn in executor.on_trade_executed:
             try:
@@ -748,8 +755,12 @@ def execute_market_order(
                         {
                             "at": datetime.now(timezone.utc).isoformat(),
                             "signal_id": event.signal_id,
-                            "account_key": _account_context(executor, event)["account_key"],
-                            "account_alias": _account_context(executor, event)["account_alias"],
+                            "account_key": _account_context(executor, event)[
+                                "account_key"
+                            ],
+                            "account_alias": _account_context(executor, event)[
+                                "account_alias"
+                            ],
                             "intent_id": _account_context(executor, event)["intent_id"],
                             "symbol": event.symbol,
                             "direction": event.direction,
@@ -776,7 +787,9 @@ def execute_market_order(
         # §0u P2：失败 dispatch 必须走 notify_skip 写入 skip_reasons["execution_failed"]，
         # 否则 _check_execution_quality 在 "全失败 → execution_count=0" 场景里
         # failure_rate 一条都不写 → 监控变成静默空白（最致命的失败模式）。
-        notify_skip(executor, event.signal_id, "execution_failed", event.timeframe or "")
+        notify_skip(
+            executor, event.signal_id, "execution_failed", event.timeframe or ""
+        )
         executor.execution_log.append(
             {
                 "at": datetime.now(timezone.utc).isoformat(),

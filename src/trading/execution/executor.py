@@ -211,9 +211,10 @@ class TradeExecutor:
         # 健康检查连续失败计数，防止 auto-reset 死循环。
         self._health_check_failures: int = 0
         self._MAX_HEALTH_CHECK_FAILURES: int = 5
-        # 同策略同方向再入场冷却：记录上次开仓的 bar_time
-        # key = (symbol, strategy, direction), value = bar_time(datetime)
-        self._last_entry_bar_time: dict[tuple[str, str, str], datetime] = {}
+        # 同策略同 TF 同方向再入场冷却：记录上次开仓的 bar_time
+        # key = (symbol, timeframe, strategy, direction), value = bar_time
+        # 含 timeframe 让跨 TF 同向加仓不互锁（buy M15 + buy M30 各自独立 cooldown）
+        self._last_entry_bar_time: dict[tuple[str, str, str, str], datetime] = {}
         # signal_id 幂等性保护：已执行的 signal_id 有界缓存，防止重复下单
         self._executed_signal_ids: deque[str] = deque(maxlen=2000)
         # Intrabar 交易去重 + confirmed 协调
@@ -393,7 +394,7 @@ class TradeExecutor:
         return self._MAX_HEALTH_CHECK_FAILURES
 
     @property
-    def last_entry_bar_time(self) -> dict[tuple[str, str, str], datetime]:
+    def last_entry_bar_time(self) -> dict[tuple[str, str, str, str], datetime]:
         return self._last_entry_bar_time
 
     @property

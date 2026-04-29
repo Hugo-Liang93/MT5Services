@@ -234,11 +234,15 @@ def check_circuit_breaker(executor: TradeExecutor, event: SignalEvent) -> bool:
 def check_reentry_cooldown(
     executor: TradeExecutor, event: SignalEvent, tf: str
 ) -> bool:
-    """检查同策略同方向再入场冷却。返回 True = 冷却中，应拒绝。"""
+    """检查同策略同 TF 同方向再入场冷却。返回 True = 冷却中，应拒绝。
+
+    元组键含 timeframe：跨 TF 同向（如 buy M15 + buy M30）不互锁，
+    允许多 TF 同向加仓。同 TF 同向 N bar 内才锁。反向 / 跨 TF 不锁。
+    """
     cooldown_bars = executor.config.reentry_cooldown_bars
     if cooldown_bars <= 0:
         return False
-    reentry_key = (event.symbol, event.strategy, event.direction)
+    reentry_key = (event.symbol, tf, event.strategy, event.direction)
     bar_time_raw = event.metadata.get(MK.BAR_TIME)
     bar_time: datetime | None = None
     if isinstance(bar_time_raw, datetime):
