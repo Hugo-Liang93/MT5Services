@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -1192,13 +1192,12 @@ def test_trade_executor_skips_opposite_direction_when_position_already_open() ->
     )
 
 
-def test_trade_executor_blocks_cross_tf_opposite_position() -> None:
-    """已有 M15 sell 时 M30 buy 被拦——防 cross-TF hedge 互吃 PnL。
+def test_trade_executor_allows_cross_tf_opposite_direction() -> None:
+    """已有 M15 sell 时 M30 buy 允许通过——cross-TF 反向自然 hedge 形成。
 
-    层 1 设计（保留多 TF 同向加仓 + 禁反向 hedge）：
-    - 不同 TF 同向 → 允许（多 TF 加仓）
-    - 不同 TF 反向 → 拦下（cross-TF hedge）
-    - 同 TF 任意方向 → 已有 has_matching_active_position 拦
+    layer-1/layer-2 已取消（commit revert）：保留 multi-TF 灵活性，
+    per-strategy reversal history 协同清算 (exit_rules.check_signal_reversal)
+    在反向积累后整 stack market close。
     """
     module = DummyTradingModule()
     tracked_positions = [
@@ -1206,7 +1205,7 @@ def test_trade_executor_blocks_cross_tf_opposite_position() -> None:
             "symbol": "XAUUSD",
             "timeframe": "M15",
             "strategy": "sma_trend",
-            "action": "sell",  # M15 已有 sell 持仓
+            "action": "sell",
         }
     ]
     executor = TradeExecutor(
@@ -1221,21 +1220,19 @@ def test_trade_executor_blocks_cross_tf_opposite_position() -> None:
         runtime_identity=_default_runtime_identity(),
     )
 
-    # 不同 TF (M30) 反向 buy 信号 — 弱 conf 不触发 escape，应被拦下
+    # 不同 TF (M30) 反向 buy 信号 — 现在允许形成 cross-TF hedge
     cross_tf_buy = SignalEvent(
         **{
             **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
             "timeframe": "M30",
             "direction": "buy",
-            "confidence": 0.45,  # 低于 escape 默认 0.65 阈值
+            "confidence": 0.55,
         }
     )
     _fire(executor, cross_tf_buy)
 
-    assert module.calls == []
-    assert executor.status()["recent_executions"][-1]["reason"] == (
-        "opposite_position_cross_tf"
-    )
+    # 反向 buy 应成交（不拦）
+    assert len(module.calls) == 1
 
 
 def test_trade_executor_allows_cross_tf_same_direction() -> None:
@@ -1272,169 +1269,6 @@ def test_trade_executor_allows_cross_tf_same_direction() -> None:
     _fire(executor, cross_tf_sell)
 
     assert len(module.calls) == 1
-
-
-def _make_opposite_position(
-    *,
-    direction: str,
-    timeframe: str = "M15",
-    age_hours: float = 1.0,
-    r_multiple: float = 0.0,
-    ticket: int = 999,
-) -> dict:
-    """构造 active_positions 字典含 layer-2 escape 评估所需字段。"""
-    opened_at = datetime.now(timezone.utc) - timedelta(hours=age_hours)
-    return {
-        "ticket": ticket,
-        "symbol": "XAUUSD",
-        "timeframe": timeframe,
-        "strategy": "sma_trend",
-        "action": direction,
-        "r_multiple": r_multiple,
-        "opened_at": opened_at.isoformat(),
-    }
-
-
-def test_cross_tf_switch_high_conf_escape_closes_opposite() -> None:
-    """高 conf 反向新信号触发"换边"——close 反向持仓 + 开新仓。"""
-    module = DummyTradingModule()
-    tracked = [_make_opposite_position(direction="sell", r_multiple=0.0, age_hours=0.5)]
-    executor = TradeExecutor(
-        trading_module=module,
-        position_manager=DummyPositionManager(tracked),
-        config=ExecutorConfig(
-            enabled=True,
-            min_confidence=0.5,
-            cross_tf_switch_min_confidence=0.65,
-            cross_tf_switch_min_age_hours=2.0,
-            cross_tf_switch_max_r=-0.3,
-        ),
-        execution_gate=ExecutionGate(ExecutionGateConfig()),
-        runtime_identity=_default_runtime_identity(),
-    )
-
-    high_conf_buy = SignalEvent(
-        **{
-            **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
-            "timeframe": "M30",
-            "direction": "buy",
-            "confidence": 0.70,  # >= 0.65 触发 high_conf escape
-        }
-    )
-    _fire(executor, high_conf_buy)
-
-    # close_position 被调用 + 新仓被开
-    assert len(module.close_calls) == 1
-    assert module.close_calls[0]["ticket"] == 999
-    assert len(module.calls) == 1  # 新 buy 进入下游
-
-
-def test_cross_tf_switch_aged_loss_escape_closes_opposite() -> None:
-    """老仓持有久 + 浮亏触发 aged_loss escape。"""
-    module = DummyTradingModule()
-    tracked = [
-        _make_opposite_position(direction="sell", r_multiple=-0.5, age_hours=3.0)
-    ]
-    executor = TradeExecutor(
-        trading_module=module,
-        position_manager=DummyPositionManager(tracked),
-        config=ExecutorConfig(
-            enabled=True,
-            min_confidence=0.5,
-            cross_tf_switch_min_confidence=0.65,
-            cross_tf_switch_min_age_hours=2.0,
-            cross_tf_switch_max_r=-0.3,
-        ),
-        execution_gate=ExecutionGate(ExecutionGateConfig()),
-        runtime_identity=_default_runtime_identity(),
-    )
-
-    weak_buy = SignalEvent(
-        **{
-            **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
-            "timeframe": "M30",
-            "direction": "buy",
-            # 高于 min_confidence 0.5 但低于 high_conf 0.65：仅 aged_loss 应触发
-            "confidence": 0.55,
-        }
-    )
-    _fire(executor, weak_buy)
-
-    assert len(module.close_calls) == 1
-    assert len(module.calls) == 1
-
-
-def test_cross_tf_switch_blocked_when_no_escape() -> None:
-    """弱反向信号 + 老仓未达条件 → 维持 layer-1 拦截。"""
-    module = DummyTradingModule()
-    tracked = [
-        _make_opposite_position(direction="sell", r_multiple=-0.1, age_hours=0.5)
-    ]
-    executor = TradeExecutor(
-        trading_module=module,
-        position_manager=DummyPositionManager(tracked),
-        config=ExecutorConfig(
-            enabled=True,
-            min_confidence=0.5,
-            cross_tf_switch_min_confidence=0.65,
-            cross_tf_switch_min_age_hours=2.0,
-            cross_tf_switch_max_r=-0.3,
-        ),
-        execution_gate=ExecutionGate(ExecutionGateConfig()),
-        runtime_identity=_default_runtime_identity(),
-    )
-
-    weak_buy = SignalEvent(
-        **{
-            **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
-            "timeframe": "M30",
-            "direction": "buy",
-            "confidence": 0.45,  # 既不 high_conf 也不 aged_loss
-        }
-    )
-    _fire(executor, weak_buy)
-
-    # close 不被调用 + 新仓被拦
-    assert len(module.close_calls) == 0
-    assert len(module.calls) == 0
-    assert executor.status()["recent_executions"][-1]["reason"] == (
-        "opposite_position_cross_tf"
-    )
-
-
-def test_cross_tf_switch_close_failure_blocks_new_signal() -> None:
-    """escape 触发但 close 失败 → 不开新仓 + 报 SWITCH_FAILED。"""
-    module = DummyTradingModule()
-    module.close_success = False  # 模拟 broker close 失败
-    tracked = [_make_opposite_position(direction="sell", r_multiple=0.0, age_hours=0.5)]
-    executor = TradeExecutor(
-        trading_module=module,
-        position_manager=DummyPositionManager(tracked),
-        config=ExecutorConfig(
-            enabled=True,
-            min_confidence=0.5,
-            cross_tf_switch_min_confidence=0.65,
-        ),
-        execution_gate=ExecutionGate(ExecutionGateConfig()),
-        runtime_identity=_default_runtime_identity(),
-    )
-
-    high_conf_buy = SignalEvent(
-        **{
-            **_build_event(spread_points=20.0, close_price=3000.0).__dict__,
-            "timeframe": "M30",
-            "direction": "buy",
-            "confidence": 0.70,
-        }
-    )
-    _fire(executor, high_conf_buy)
-
-    # close 被尝试但失败 → 新仓不开
-    assert len(module.close_calls) == 1
-    assert len(module.calls) == 0
-    assert executor.status()["recent_executions"][-1]["reason"] == (
-        "cross_tf_switch_failed"
-    )
 
 
 def test_trade_executor_blocks_candidate_strategy_live_execution() -> None:

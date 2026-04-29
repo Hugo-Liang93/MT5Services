@@ -81,11 +81,6 @@ class ExecutorConfig:
         default_factory=lambda: frozenset({"reversion"})
     )
     max_concurrent_positions_per_symbol: int | None = 3
-    # Cross-TF opposite escape (layer-2)：反向新信号在以下任一条件触发"换边"
-    # （market close 同策略所有反向持仓 + 开新仓）；不满足维持 layer-1 拦截。
-    cross_tf_switch_min_confidence: float = 0.65
-    cross_tf_switch_min_age_hours: float = 2.0
-    cross_tf_switch_max_r: float = -0.3
     risk_percent: float = 1.0
     sl_atr_multiplier: float = 1.5
     tp_atr_multiplier: float = 3.0
