@@ -67,6 +67,8 @@ def build_backtest_components(
     regime_affinity_overrides: Optional[Dict[str, Dict[str, float]]] = None,
     strategy_params_per_tf: Optional[Dict[str, Dict[str, Any]]] = None,
     strategy_names: Optional[list[str]] = None,
+    mined_rule_sources: Optional[list] = None,
+    mined_rule_promote_only: bool = True,
 ) -> Dict[str, Any]:
     """构建回测所需的全部组件。
 
@@ -77,6 +79,10 @@ def build_backtest_components(
         regime_affinity_overrides: Regime 亲和度覆盖
         strategy_params_per_tf: Per-TF 策略参数覆盖（signal.ini [strategy_params.<TF>] 格式）
         strategy_names: 仅注册这些策略；None = 默认全量策略目录
+        mined_rule_sources: 可选 mining JSON 路径列表，注册 MinedRuleStrategy
+                            到 catalog 后再装载（默认 None = 不加载）
+        mined_rule_promote_only: True 仅注册通过 PROMOTION_GATES 的 spec；
+                                  False 用于研究审视
 
     Returns:
         包含 data_loader / signal_module / pipeline / regime_detector /
@@ -92,7 +98,9 @@ def build_backtest_components(
     from src.signals.service import SignalModule
     from src.signals.strategies.catalog import (
         build_default_strategy_set,
+        build_named_strategy_catalog,
         clone_registered_strategies,
+        register_mined_rule_strategies,
     )
     from src.signals.strategies.htf_cache import HTFStateCache
 
@@ -159,13 +167,34 @@ def build_backtest_components(
     except Exception:
         logger.debug("PerformanceTracker not available for backtest", exc_info=True)
 
-    signal_module = SignalModule(
-        indicator_source=_NullIndicatorSource(),
-        strategies=(
+    # 装载策略：mined_rule_sources 在 strategy_names 解析前注册到 catalog，
+    # 让 strategy_names 可引用 structured_mined_* 名称。
+    if mined_rule_sources:
+        catalog = build_named_strategy_catalog()
+        register_mined_rule_strategies(
+            catalog,
+            mined_rule_sources,
+            promote_only=mined_rule_promote_only,
+        )
+        if strategy_names:
+            missing = [n for n in strategy_names if n not in catalog]
+            if missing:
+                raise ValueError(
+                    f"Unregistered strategies (含 mined): {sorted(missing)}"
+                )
+            strategies = [catalog[n] for n in strategy_names]
+        else:
+            strategies = list(catalog.values())
+    else:
+        strategies = (
             clone_registered_strategies(strategy_names)
             if strategy_names
             else build_default_strategy_set()
-        ),
+        )
+
+    signal_module = SignalModule(
+        indicator_source=_NullIndicatorSource(),
+        strategies=strategies,
         regime_detector=regime_detector,
         soft_regime_enabled=True,
         performance_tracker=performance_tracker,

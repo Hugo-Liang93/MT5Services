@@ -18,6 +18,9 @@ class StrategyCategory(str, Enum):
     PRICE_ACTION = "price_action"
     COMPOSITE = "composite"
     MULTI_TF = "multi_tf"
+    # mined_rule = mining 自动产出的规则策略（MinedRuleStrategy），跨 trend/
+    # reversion/breakout 多类——单独类别避免误归入手工策略族。
+    MINED_RULE = "mined_rule"
 
 
 class SignalStrategy(Protocol):
@@ -51,8 +54,7 @@ class SignalStrategy(Protocol):
     preferred_scopes: tuple[str, ...]
     regime_affinity: Dict[RegimeType, float]
 
-    def evaluate(self, context: SignalContext) -> SignalDecision:
-        ...
+    def evaluate(self, context: SignalContext) -> SignalDecision: ...
 
 
 @dataclass(frozen=True)

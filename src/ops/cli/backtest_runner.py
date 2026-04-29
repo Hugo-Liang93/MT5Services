@@ -41,8 +41,9 @@ logging.disable(logging.CRITICAL)
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from src.utils.timezone import parse_iso_to_utc
 from typing import Any, Dict, List, Optional
+
+from src.utils.timezone import parse_iso_to_utc
 
 
 def _run_single(
@@ -52,6 +53,8 @@ def _run_single(
     *,
     config_overrides: Optional[Dict[str, Any]] = None,
     strategy_names: Optional[List[str]] = None,
+    mined_rule_sources: Optional[List[str]] = None,
+    mined_rule_promote_only: bool = True,
 ) -> dict:
     """执行单个 TF 回测，返回结构化结果 dict。
 
@@ -141,7 +144,11 @@ def _run_single(
     )
 
     # 5. 构建组件并运行
-    components = build_backtest_components(strategy_names=strategy_names)
+    components = build_backtest_components(
+        strategy_names=strategy_names,
+        mined_rule_sources=mined_rule_sources,
+        mined_rule_promote_only=mined_rule_promote_only,
+    )
     engine = BacktestEngine(
         config=config,
         data_loader=components["data_loader"],
@@ -533,6 +540,24 @@ def main() -> None:
         help="Only run these registered strategies, comma-separated",
     )
     parser.add_argument(
+        "--mined-rules-source",
+        action="append",
+        default=None,
+        help=(
+            "Path to mining JSON output. Specs that pass PROMOTION_GATES are "
+            "registered as MinedRuleStrategy and become available alongside "
+            "the manual catalog. Repeat the flag for multiple sources."
+        ),
+    )
+    parser.add_argument(
+        "--mined-rules-no-promote-only",
+        action="store_true",
+        help=(
+            "Bypass PROMOTION_GATES when registering mined rules — load every "
+            "rule (research mode). Default is promote_only=True."
+        ),
+    )
+    parser.add_argument(
         "--include-demo-validation",
         action="store_true",
         help=(
@@ -590,6 +615,10 @@ def main() -> None:
         if args.strategies
         else None
     )
+    mined_rule_sources = (
+        list(args.mined_rules_source) if args.mined_rules_source else None
+    )
+    mined_rule_promote_only = not args.mined_rules_no_promote_only
     from src.ops.cli._coverage import ensure_ohlc_data_coverage
 
     coverage = ensure_ohlc_data_coverage(
@@ -613,6 +642,8 @@ def main() -> None:
             args.end,
             config_overrides=overrides,
             strategy_names=strategy_names,
+            mined_rule_sources=mined_rule_sources,
+            mined_rule_promote_only=mined_rule_promote_only,
         )
         raw_result = data.pop("_raw_result", None)
         if raw_result is not None:
