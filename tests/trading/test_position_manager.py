@@ -129,6 +129,51 @@ def test_on_signal_event_appends_only_to_matching_timeframe() -> None:
     assert pos_m15.recent_signal_dirs == ["sell", "sell"]
 
 
+def test_on_signal_event_hold_does_not_break_reversal_accumulation() -> None:
+    """hold 信号不入 reversal history——避免"打断"反向积累。
+
+    实测 live 4h: M15 上序列 [sell, hold, sell] 因为 last 2=[hold, sell]
+    不触发 reversal，让浮亏 buy 持仓锁死。修复后只装 buy/sell：
+    history=[sell, sell] last 2=[sell, sell] 正确触发反向。
+    """
+    trading = DummyTradingModule()
+    manager = _manager(trading)
+    params = TradeParameters(
+        entry_price=3000.0,
+        stop_loss=2990.0,
+        take_profit=3020.0,
+        position_size=0.01,
+        atr_value=5.0,
+        risk_reward_ratio=2.0,
+        sl_distance=10.0,
+        tp_distance=20.0,
+    )
+    manager.track_position(
+        ticket=2001,
+        signal_id="sig-buy",
+        symbol="XAUUSD",
+        action="buy",
+        timeframe="M15",
+        strategy="price_action",
+        params=params,
+    )
+
+    # 序列: sell -> hold -> sell —— 之前 hold 会进 history 打断反向积累
+    sell = SimpleNamespace(
+        scope="confirmed", direction="sell", strategy="price_action", timeframe="M15"
+    )
+    hold = SimpleNamespace(
+        scope="confirmed", direction="hold", strategy="price_action", timeframe="M15"
+    )
+    manager.on_signal_event(sell)
+    manager.on_signal_event(hold)
+    manager.on_signal_event(sell)
+
+    pos = manager._positions[2001]  # type: ignore[attr-defined]
+    # hold 不入 history，只剩两根 sell，反向积累干净
+    assert pos.recent_signal_dirs == ["sell", "sell"]
+
+
 def test_position_manager_runs_end_of_day_closeout_once_per_day() -> None:
     trading = DummyTradingModule(
         positions=[{"ticket": 1}],

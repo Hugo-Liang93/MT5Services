@@ -349,17 +349,22 @@ class PositionManager:
     def on_signal_event(self, event: Any) -> None:
         """接收 SignalRuntime 的信号事件，更新持仓的 recent_signal_dirs。
 
-        仅处理 scope="confirmed" 的信号（bar close 确认）。
+        仅处理 scope="confirmed" + 明确方向 (buy/sell) 的信号。hold 不入
+        history——hold 是"无明确方向"的表达，对 reversal 判定没有信息价值，
+        但若 append 到 history 会"打断"反向积累（check_signal_reversal 取
+        最后 N 根全 opposite 才触发，hold ≠ opposite 直接 break）。
 
-        按 (strategy, timeframe) 双键过滤——只把 M15 信号写入 M15 持仓的
-        history，M30 信号写入 M30 持仓的 history。避免不同 TF 信号污染
-        彼此的 reversal 判定（不修则会让跨 TF hedge 在快 TF 几根反向信
-        号后被 reversal 误平，与"多 TF 自然 hedge"设计意图冲突）。
+        实测：M15 持仓 4h 期间序列 [sell, hold, sell] 因为 last 2=[hold,
+        sell] 不触发 reversal，让浮亏边持仓被锁死。改为只装 buy/sell 后
+        history=[sell, sell] last 2=[sell, sell] 正确触发反向积累。
+
+        按 (strategy, timeframe) 双键过滤——只把同 TF 信号写入持仓 history。
+        避免跨 TF 信号污染（M15 信号不影响 M30 持仓 history）。
         """
         if getattr(event, "scope", "") != "confirmed":
             return
         direction = getattr(event, "direction", "")
-        if direction not in ("buy", "sell", "hold"):
+        if direction not in ("buy", "sell"):
             return
         strategy = getattr(event, "strategy", "")
         if not strategy:
