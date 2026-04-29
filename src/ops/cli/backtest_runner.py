@@ -131,7 +131,20 @@ def _run_single(
             ),
         )
 
-    # 4. 构建 BacktestConfig（from_flat 自动路由到嵌套子配置）
+    # 4. 构建组件（在 config 之前以拿到 mined-rule spec 的 per-TF 白名单）
+    components = build_backtest_components(
+        strategy_names=strategy_names,
+        mined_rule_sources=mined_rule_sources,
+        mined_rule_promote_only=mined_rule_promote_only,
+    )
+
+    # 4.1 mined-rule spec 仅在自己 mining TF 跑——把 spec.timeframe 注入
+    # strategy_timeframes 白名单，避免 H4 spec 被 H1/M30 pipeline 误评估
+    # 造成 payload 语义错位（cross-TF 失真）。
+    for spec_name, tf_list in components.get("mined_rule_timeframes", {}).items():
+        strategy_timeframes[spec_name] = list(tf_list)
+
+    # 5. 构建 BacktestConfig（from_flat 自动路由到嵌套子配置）
     config = BacktestConfig.from_flat(
         symbol="XAUUSD",
         timeframe=tf,
@@ -141,13 +154,6 @@ def _run_single(
         strategy_timeframes=strategy_timeframes,
         intrabar=intrabar_cfg,
         **merged,
-    )
-
-    # 5. 构建组件并运行
-    components = build_backtest_components(
-        strategy_names=strategy_names,
-        mined_rule_sources=mined_rule_sources,
-        mined_rule_promote_only=mined_rule_promote_only,
     )
     engine = BacktestEngine(
         config=config,

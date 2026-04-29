@@ -83,9 +83,9 @@ def test_register_adds_promoted_specs(tmp_path: Path) -> None:
     json_path = _write_payload(tmp_path, _make_payload())
 
     catalog: "OrderedDict[str, SignalStrategy]" = OrderedDict()
-    n = register_mined_rule_strategies(catalog, [json_path])
+    tf_map = register_mined_rule_strategies(catalog, [json_path])
 
-    assert n == 1
+    assert len(tf_map) == 1
     assert any(name.startswith("structured_mined_") for name in catalog)
 
 
@@ -94,9 +94,9 @@ def test_register_skips_specs_failing_promotion_gate(tmp_path: Path) -> None:
     json_path = _write_payload(tmp_path, _make_payload(train_wr=0.50))
 
     catalog: "OrderedDict[str, SignalStrategy]" = OrderedDict()
-    n = register_mined_rule_strategies(catalog, [json_path])
+    tf_map = register_mined_rule_strategies(catalog, [json_path])
 
-    assert n == 0
+    assert tf_map == {}
     assert len(catalog) == 0
 
 
@@ -105,9 +105,9 @@ def test_register_promote_only_false_loads_unfiltered(tmp_path: Path) -> None:
     json_path = _write_payload(tmp_path, _make_payload(train_wr=0.50))
 
     catalog: "OrderedDict[str, SignalStrategy]" = OrderedDict()
-    n = register_mined_rule_strategies(catalog, [json_path], promote_only=False)
+    tf_map = register_mined_rule_strategies(catalog, [json_path], promote_only=False)
 
-    assert n == 1
+    assert len(tf_map) == 1
 
 
 def test_register_does_not_overwrite_existing(tmp_path: Path) -> None:
@@ -120,9 +120,9 @@ def test_register_does_not_overwrite_existing(tmp_path: Path) -> None:
         name = "structured_mined_h1_buy_0"
 
     catalog["structured_mined_h1_buy_0"] = _Dummy()  # type: ignore[assignment]
-    n = register_mined_rule_strategies(catalog, [json_path])
+    tf_map = register_mined_rule_strategies(catalog, [json_path])
 
-    assert n == 0  # 不覆盖
+    assert tf_map == {}  # 不覆盖
     assert isinstance(catalog["structured_mined_h1_buy_0"], _Dummy)
 
 
@@ -134,15 +134,44 @@ def test_register_handles_multiple_sources(tmp_path: Path) -> None:
     p2 = _write_payload(tmp_path, p2_payload, name="m2.json")
 
     catalog: "OrderedDict[str, SignalStrategy]" = OrderedDict()
-    n = register_mined_rule_strategies(catalog, [p1, p2])
+    tf_map = register_mined_rule_strategies(catalog, [p1, p2])
 
-    assert n == 2
+    assert len(tf_map) == 2
     tfs = {s.name.split("_")[2] for s in catalog.values()}
     assert {"h1", "m30"}.issubset(tfs)
 
 
-def test_register_returns_zero_on_missing_path(tmp_path: Path) -> None:
-    """不存在的 path 不应 raise，返回 0（便于多 source 容错）。"""
+def test_register_returns_empty_on_missing_path(tmp_path: Path) -> None:
+    """不存在的 path 不应 raise，返回空 map（便于多 source 容错）。"""
     catalog: "OrderedDict[str, SignalStrategy]" = OrderedDict()
-    n = register_mined_rule_strategies(catalog, [tmp_path / "does_not_exist.json"])
-    assert n == 0
+    tf_map = register_mined_rule_strategies(
+        catalog, [tmp_path / "does_not_exist.json"]
+    )
+    assert tf_map == {}
+
+
+# ── 新增：spec 必须只在自己 mining TF 跑 ────────────────────────────
+
+
+def test_register_returns_per_spec_timeframe_map(tmp_path: Path) -> None:
+    """register_mined_rule_strategies 必须把每个 spec 的 mining TF 透出来，
+    供 backtest CLI 写入 strategy_timeframes 白名单——避免 H4 spec 被 H1/M30
+    pipeline 误执行造成 cross-TF 失真（payload 信号语义错位）。
+
+    根因：原来仅 catalog 里有 strategy 实例，但 BacktestEngine 是按 config.
+    timeframe 跑全部 strategies，无 per-strategy timeframe 过滤；
+    把 spec.timeframe 转成 strategy_timeframes 是 first-principles 的修复。
+    """
+    payload_h4 = _make_payload()
+    payload_h4["results"][0]["tf"] = "H4"
+    json_path = _write_payload(tmp_path, payload_h4, name="h4.json")
+
+    catalog: "OrderedDict[str, SignalStrategy]" = OrderedDict()
+    tf_map = register_mined_rule_strategies(catalog, [json_path])
+
+    assert len(tf_map) == 1
+    spec_name = next(iter(tf_map))
+    assert spec_name.startswith("structured_mined_h4_")
+    assert tf_map[spec_name] == ["H4"], (
+        f"spec mining tf=H4 应仅允许 H4 跑，得到 {tf_map[spec_name]}"
+    )

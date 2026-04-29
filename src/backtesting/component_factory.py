@@ -169,9 +169,10 @@ def build_backtest_components(
 
     # 装载策略：mined_rule_sources 在 strategy_names 解析前注册到 catalog，
     # 让 strategy_names 可引用 structured_mined_* 名称。
+    mined_rule_timeframes: dict[str, list[str]] = {}
     if mined_rule_sources:
         catalog = build_named_strategy_catalog()
-        register_mined_rule_strategies(
+        mined_rule_timeframes = register_mined_rule_strategies(
             catalog,
             mined_rule_sources,
             promote_only=mined_rule_promote_only,
@@ -243,6 +244,10 @@ def build_backtest_components(
         "htf_cache": htf_cache,
         "writer": writer,
         "market_repo": market_repo,
+        # mined-rule spec → 仅允许跑的 TF 列表（与 spec.timeframe 一致）。
+        # CLI 调用方将其合并进 BacktestConfig.strategy_timeframes 白名单，
+        # 防止 H4 spec 被 H1/M30 pipeline 误评估造成 payload 语义错位。
+        "mined_rule_timeframes": mined_rule_timeframes,
     }
 
 

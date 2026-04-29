@@ -88,7 +88,7 @@ def register_mined_rule_strategies(
     json_paths: Iterable[Path],
     *,
     promote_only: bool = True,
-) -> int:
+) -> dict[str, list[str]]:
     """从 mining JSON 加载 mined rule specs 并注册为 MinedRuleStrategy。
 
     Args:
@@ -98,14 +98,18 @@ def register_mined_rule_strategies(
                       False 用于研究审视（绕过门禁）
 
     Returns:
-        实际注册数量（已存在的 name 跳过，不覆盖手工策略）
+        `{spec.name: [spec.timeframe]}` 映射，仅含本次实际新注册的 spec
+        （已存在的 name 不进入 map，且不覆盖手工策略）。装配层（CLI / API）
+        把此 map 合并进 `BacktestConfig.strategy_timeframes` 白名单，
+        让每条 mined spec 仅在自己 mining TF 上运行——避免 H4 spec 被
+        H1/M30 pipeline 误评估造成 payload 语义错位（cross-TF 失真）。
 
     缺失文件静默跳过（不 raise），便于多 source 容错。
     """
     from .structured.mined_rule import MinedRuleStrategy
     from .structured.mined_rule_loader import filter_promotable, load_specs_from_path
 
-    registered = 0
+    timeframe_map: dict[str, list[str]] = {}
     for path in json_paths:
         path = Path(path)
         if not path.exists():
@@ -120,11 +124,11 @@ def register_mined_rule_strategies(
             if spec.name in catalog:
                 continue  # 已存在 → 不覆盖（防止意外替换手工策略）
             catalog[spec.name] = MinedRuleStrategy(spec)
-            registered += 1
+            timeframe_map[spec.name] = [spec.timeframe]
         logger.info(
             "register_mined_rule_strategies: %s → registered %d specs (promote_only=%s)",
             path.name,
             len(specs),
             promote_only,
         )
-    return registered
+    return timeframe_map
