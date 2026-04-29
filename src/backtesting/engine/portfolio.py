@@ -643,12 +643,22 @@ class PortfolioTracker:
             if result.should_close:
                 # 确定平仓价格
                 if result.close_reason == "take_profit":
-                    # TP 按硬上界价格成交
-                    tp_dist = self._chandelier_config.max_tp_r * pos.initial_risk
-                    if pos.direction == "buy":
-                        exit_price = pos.entry_price + tp_dist
+                    # Barrier mode: evaluate_barrier_exit 已通过 result.new_stop_loss
+                    # 传 tp_price（spec 配置的 entry + tp_atr × atr_at_entry）。
+                    # Chandelier mode: hard_tp 触发，无 result.new_stop_loss，
+                    # 用 max_tp_r × initial_risk 兜底。
+                    is_barrier_exit = bool(
+                        pos.exit_spec
+                        and str(pos.exit_spec.get("mode") or "").lower() == "barrier"
+                    )
+                    if is_barrier_exit and result.new_stop_loss is not None:
+                        exit_price = result.new_stop_loss
                     else:
-                        exit_price = pos.entry_price - tp_dist
+                        tp_dist = self._chandelier_config.max_tp_r * pos.initial_risk
+                        if pos.direction == "buy":
+                            exit_price = pos.entry_price + tp_dist
+                        else:
+                            exit_price = pos.entry_price - tp_dist
                 elif result.close_reason in ("stop_loss", "trailing_stop"):
                     exit_price = pos.stop_loss
                 else:

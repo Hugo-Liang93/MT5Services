@@ -1,4 +1,5 @@
 """portfolio.py 单元测试。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -99,6 +100,58 @@ class TestPortfolioTracker:
         assert closed[0].exit_reason == "take_profit"
         assert closed[0].exit_price == 2010.0
         assert closed[0].pnl > 0
+
+    def test_barrier_mode_take_profit_uses_spec_tp_price(self) -> None:
+        """barrier mode TP 触发时 exit_price 必须等于 spec 配置的 tp_price，
+        不能用 chandelier max_tp_r × initial_risk 公式。
+
+        2026-04-30 anomaly：MinedRuleStrategy 用 BARRIER mode + tp_atr=1.5，但
+        portfolio 旧 take_profit 分支不区分 mode，所有 TP exit 用 chandelier
+        max_tp_r=5.0 × initial_risk → exit_price 远超 spec 配置 → 单 trade
+        +1228 USD 异常（实际应 +75 USD）。
+        """
+        pt = PortfolioTracker(initial_balance=10000.0, contract_size=100.0)
+        # 让 hard_boundary 不命中（bar.high 在 entry tp 远未触及）
+        # 但 barrier evaluate 内 hit_tp 命中（用 atr_at_entry 计算）。
+        bar = _bar(2000.0, high=2001.0, low=1999.0)
+        # entry 价远高于 trade_params 默认 tp=2010；用 spec 模式：tp_atr=1.5,
+        # atr_at_entry=20 → tp_price = 2000 + 30 = 2030
+        params = _params(sl=1990.0, tp=2030.0, size=0.1)
+        exit_spec = {
+            "mode": "barrier",
+            "sl_atr": 1.0,
+            "tp_atr": 1.5,
+            "time_bars": 20,
+            "aggression": 0.5,
+        }
+        pt.open_position(
+            "test_mined",
+            "buy",
+            bar,
+            params,
+            "TRENDING",
+            0.7,
+            0,
+            atr_at_entry=20.0,
+            exit_spec=exit_spec,
+        )
+
+        # 让 bar.high >= barrier tp_price (2030) → barrier evaluate hit_tp
+        # bar.high=2050 跳空，hard_boundary 触发 (bar.open >= tp=2030)
+        # → 走 _resolve_hard_boundary_exit 路径，return tp 价
+        exit_bar = _bar(2040.0, high=2050.0, low=2025.0)
+        closed = pt.check_exits(
+            exit_bar, 1, current_atr=20.0, current_regime="trending"
+        )
+        assert len(closed) == 1
+        assert closed[0].exit_reason == "take_profit"
+        # exit_price 必须接近 spec tp_price (2030)，不是 chandelier max_tp_r 公式
+        # initial_risk = abs(2000-1990) = 10, max_tp_r=5 → 2000+50=2050（错误路径）
+        # 正确：tp=2030 (来自 hard_boundary 或 barrier_exit)
+        assert closed[0].exit_price < 2045.0, (
+            f"exit_price={closed[0].exit_price} 远超 spec tp=2030，"
+            "可能走了 chandelier max_tp_r 错误路径"
+        )
 
     def test_stop_loss_sell(self) -> None:
         pt = PortfolioTracker(initial_balance=10000.0, contract_size=100.0)
@@ -250,14 +303,26 @@ class TestPortfolioTracker:
             contract_size=100.0,
             daily_loss_limit_pct=1.0,
         )
-        day_start = _bar(2000.0, time_val=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc))
+        day_start = _bar(
+            2000.0, time_val=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+        )
         pt.observe_bar(day_start)
         params = _params(sl=1995.0, tp=2010.0, size=1.0)
-        assert pt.open_position("s1", "buy", day_start, params, "TRENDING", 0.7, 0) is True
+        assert (
+            pt.open_position("s1", "buy", day_start, params, "TRENDING", 0.7, 0) is True
+        )
 
         # 先制造较大浮亏，使当日亏损超过 1%
-        stressed = _bar(1985.0, high=1988.0, low=1984.0, time_val=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc))
+        stressed = _bar(
+            1985.0,
+            high=1988.0,
+            low=1984.0,
+            time_val=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+        )
         pt.record_equity(stressed)
 
         second_params = _params(entry=1985.0, sl=1980.0, tp=1995.0, size=0.10)
-        assert pt.open_position("s2", "buy", stressed, second_params, "TRENDING", 0.7, 1) is False
+        assert (
+            pt.open_position("s2", "buy", stressed, second_params, "TRENDING", 0.7, 1)
+            is False
+        )
