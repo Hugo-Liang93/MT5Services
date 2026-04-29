@@ -105,8 +105,8 @@ class TrackedPosition:
     )
     exit_spec: dict = field(default_factory=dict)  # 策略 _exit_spec() 输出
     sl_atr_mult: float = 0.0  # 入场 SL 的 ATR 倍数（用于 Chandelier R 单位保护）
-    recent_signal_dirs: list = field(default_factory=list)
-    # 出场追溯字段（由 _check_chandelier_exit 写入，on_position_closed 读取）
+    recent_signal_dirs: list[str] = field(default_factory=list)
+    # 出场追溯字段（由 _evaluate_chandelier_exit 写入，on_position_closed 读取）
     last_exit_reason: str = (
         ""  # trailing_stop / signal_exit / timeout / stop_loss / take_profit
     )
@@ -350,7 +350,11 @@ class PositionManager:
         """接收 SignalRuntime 的信号事件，更新持仓的 recent_signal_dirs。
 
         仅处理 scope="confirmed" 的信号（bar close 确认）。
-        将信号方向写入对应策略/投票组名下的所有持仓。
+
+        按 (strategy, timeframe) 双键过滤——只把 M15 信号写入 M15 持仓的
+        history，M30 信号写入 M30 持仓的 history。避免不同 TF 信号污染
+        彼此的 reversal 判定（不修则会让跨 TF hedge 在快 TF 几根反向信
+        号后被 reversal 误平，与"多 TF 自然 hedge"设计意图冲突）。
         """
         if getattr(event, "scope", "") != "confirmed":
             return
@@ -360,10 +364,13 @@ class PositionManager:
         strategy = getattr(event, "strategy", "")
         if not strategy:
             return
+        timeframe = getattr(event, "timeframe", "")
+        if not timeframe:
+            return
 
         with self._lock:
             for pos in self._positions.values():
-                if pos.strategy == strategy:
+                if pos.strategy == strategy and pos.timeframe == timeframe:
                     pos.recent_signal_dirs.append(direction)
                     # 只保留最近 N 条
                     max_keep = self._chandelier_config.signal_exit_confirmation_bars + 2
@@ -885,18 +892,6 @@ class PositionManager:
         if self._modify_sl(action.pos, action.new_sl, reason=action.reason):
             if action.notify_update and self._on_position_updated is not None:
                 self._on_position_updated(action.pos, action.reason)
-
-    def _check_chandelier_exit(
-        self, pos: TrackedPosition, current_price: float
-    ) -> None:
-        """Chandelier Exit 持仓检查（用于 reconcile 等无锁上下文）。
-
-        注意：update_price 中已改用 _evaluate_chandelier_exit + _apply_chandelier_action
-        的锁安全拆分模式。此方法保留给 reconcile loop 等单线程调用路径。
-        """
-        action = self._evaluate_chandelier_exit(pos, current_price)
-        if action is not None:
-            self._apply_chandelier_action(action)
 
     def _modify_sl(
         self,

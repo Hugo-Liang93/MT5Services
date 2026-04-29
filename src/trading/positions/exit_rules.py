@@ -755,6 +755,12 @@ def evaluate_exit(
     # 浮亏状态下方向反转不触发主动平仓，让 SL 自然处理 — 否则震荡市每次反向
     # 信号都在浮亏时砍仓，损耗严重（2026-04-28 demo-main 27-31 分钟内被反复
     # 砍仓的根因，r 范围 -0.62 ~ +0.05）。
+    #
+    # 跨 TF hedge 锁死副作用：commit 8d6c733 删除 cross-TF opposite guard
+    # 后允许 M15 sell + M30 buy 共存。hedge 双边互锁 PnL 都浮亏时，r<0
+    # 永不触发 reversal → 只能等 SL / Chandelier / EOD 处理。震荡市可能
+    # 长时间锁死 margin。如果实测此模式频繁，可考虑加"持有 N bars 后强
+    # 平浮亏边"规则。
     if config.signal_exit_enabled and recent_signal_dirs and r_multiple >= 0:
         if check_signal_reversal(
             action, recent_signal_dirs, config.signal_exit_confirmation_bars

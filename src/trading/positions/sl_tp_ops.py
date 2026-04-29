@@ -20,9 +20,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # (ticket → last warning timestamp) 用于 throttle Invalid stops noise。
-# chandelier_trail 撞 broker stop level 时会每个评估周期重试，模板 ticket
-# 在 5min 内仅记录一次 WARNING，后续降 DEBUG 静默。ticket 平仓后
-# 由 reconciliation 路径调用 forget_ticket_invalid_stops 清理。
+# chandelier_trail 撞 broker stop level 时会每个评估周期重试，相同 ticket
+# 在 5min 内仅记录一次 WARNING，后续降 DEBUG 静默。ticket 平仓时
+# manager.remove_position() 调用 forget_ticket_invalid_stops 清理（reconciliation
+# 是 remove_position 的触发源之一）。
 _logged_invalid_stops: dict[int, float] = {}
 _INVALID_STOPS_LOG_THROTTLE_SECONDS = 300.0
 

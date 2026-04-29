@@ -24,7 +24,9 @@ class DummyTradingModule:
     def get_positions(self, symbol=None):
         if symbol is None:
             return list(self._positions)
-        return [row for row in self._positions if getattr(row, "symbol", None) == symbol]
+        return [
+            row for row in self._positions if getattr(row, "symbol", None) == symbol
+        ]
 
     def get_orders(self, symbol=None, magic=None):
         return list(self._orders)
@@ -45,7 +47,9 @@ class DummyTradingModule:
             return self.modify_result
         return {"modified": [kwargs.get("ticket")], "failed": []}
 
-    def get_position_close_details(self, ticket: int, *, symbol=None, lookback_days: int = 7):
+    def get_position_close_details(
+        self, ticket: int, *, symbol=None, lookback_days: int = 7
+    ):
         return self.close_details.get(ticket)
 
 
@@ -57,6 +61,72 @@ def _manager(trading: DummyTradingModule, **kwargs) -> PositionManager:
         ),
         **kwargs,
     )
+
+
+def test_on_signal_event_appends_only_to_matching_timeframe() -> None:
+    """on_signal_event 按 (strategy, timeframe) 双键过滤——M15 信号不污染 M30
+    持仓的 reversal history。
+
+    防止 cross-TF hedge 被快 TF 反向信号误触发整 stack market close
+    （commit 8d6c733 删除 cross-TF guard 后保留多 TF 自然 hedge，但 history
+    若不分 TF 则 hedge 形成 1-2 根反向 bar 内即被 reversal 错误清算）。
+    """
+    trading = DummyTradingModule()
+    manager = _manager(trading)
+    params = TradeParameters(
+        entry_price=3000.0,
+        stop_loss=2990.0,
+        take_profit=3020.0,
+        position_size=0.01,
+        atr_value=5.0,
+        risk_reward_ratio=2.0,
+        sl_distance=10.0,
+        tp_distance=20.0,
+    )
+    # 模拟 cross-TF hedge：M15 buy + M30 sell 同 strategy 共存
+    manager.track_position(
+        ticket=1001,
+        signal_id="sig-m15-buy",
+        symbol="XAUUSD",
+        action="buy",
+        timeframe="M15",
+        strategy="price_action",
+        params=params,
+    )
+    manager.track_position(
+        ticket=1002,
+        signal_id="sig-m30-sell",
+        symbol="XAUUSD",
+        action="sell",
+        timeframe="M30",
+        strategy="price_action",
+        params=params,
+    )
+
+    # M15 上来连续 2 根 sell 信号（如果 history 不分 TF，会污染 M30 sell 的
+    # history，让它看到 [sell, sell] 误判反向，触发 close）
+    m15_sell = SimpleNamespace(
+        scope="confirmed", direction="sell", strategy="price_action", timeframe="M15"
+    )
+    manager.on_signal_event(m15_sell)
+    manager.on_signal_event(m15_sell)
+
+    pos_m15 = manager._positions[1001]  # type: ignore[attr-defined]
+    pos_m30 = manager._positions[1002]  # type: ignore[attr-defined]
+
+    # M15 持仓 history 收到 2 根 sell（反向，会触发 reversal 关闭 M15 buy）
+    assert pos_m15.recent_signal_dirs == ["sell", "sell"]
+    # M30 持仓 history 不应受 M15 信号影响 — 仍为空
+    assert pos_m30.recent_signal_dirs == []
+
+    # M30 自己的 buy 信号才进入 M30 history（buy 对 sell M30 是反向）
+    m30_buy = SimpleNamespace(
+        scope="confirmed", direction="buy", strategy="price_action", timeframe="M30"
+    )
+    manager.on_signal_event(m30_buy)
+    assert pos_m30.recent_signal_dirs == ["buy"]
+    # M15 history 不被 M30 信号污染
+    assert pos_m15.recent_signal_dirs == ["sell", "sell"]
 
 
 def test_position_manager_runs_end_of_day_closeout_once_per_day() -> None:
@@ -183,7 +253,9 @@ def test_position_manager_sync_open_positions_restores_signal_context() -> None:
     assert recovered == ["sig-restored"]
 
 
-def test_position_manager_sync_open_positions_skips_manual_positions_without_context() -> None:
+def test_position_manager_sync_open_positions_skips_manual_positions_without_context() -> (
+    None
+):
     trading = DummyTradingModule(
         positions=[
             SimpleNamespace(
@@ -207,7 +279,9 @@ def test_position_manager_sync_open_positions_skips_manual_positions_without_con
     assert manager.active_positions() == []
 
 
-def test_position_manager_sync_open_positions_restores_agent_comment_without_audit_context() -> None:
+def test_position_manager_sync_open_positions_restores_agent_comment_without_audit_context() -> (
+    None
+):
     trading = DummyTradingModule(
         positions=[
             SimpleNamespace(
@@ -285,7 +359,9 @@ def test_position_manager_reconcile_uses_real_close_price_from_history() -> None
     trading.close_details[202] = {"close_price": 3012.4}
     manager = _manager(trading)
     closed = []
-    manager.add_close_callback(lambda pos, close_price: closed.append((pos.ticket, close_price)))
+    manager.add_close_callback(
+        lambda pos, close_price: closed.append((pos.ticket, close_price))
+    )
     manager.track_position(
         ticket=202,
         signal_id="sig-close",
@@ -330,13 +406,20 @@ def test_position_manager_modify_sl_targets_single_ticket() -> None:
     )
 
     assert manager._modify_sl(pos, 3001.25) is True
-    assert trading.modify_calls[-1] == {"ticket": 303, "symbol": "XAUUSD", "sl": 3001.25}
+    assert trading.modify_calls[-1] == {
+        "ticket": 303,
+        "symbol": "XAUUSD",
+        "sl": 3001.25,
+    }
     assert pos.stop_loss == 3001.25
 
 
 def test_position_manager_does_not_mark_breakeven_when_modify_fails() -> None:
     trading = DummyTradingModule(positions=[])
-    trading.modify_result = {"modified": [], "failed": [{"ticket": 404, "error": "position_not_found"}]}
+    trading.modify_result = {
+        "modified": [],
+        "failed": [{"ticket": 404, "error": "position_not_found"}],
+    }
     manager = _manager(
         trading,
         breakeven_atr_threshold=1.0,
@@ -368,7 +451,10 @@ def test_position_manager_keeps_eod_gate_and_retries_when_orders_remain() -> Non
     class StickyOrderTradingModule(DummyTradingModule):
         def cancel_orders_by_tickets(self, tickets):
             self.cancel_calls.append(list(tickets))
-            return {"canceled": [], "failed": [{"ticket": tickets[0], "error": "market_closed"}]}
+            return {
+                "canceled": [],
+                "failed": [{"ticket": tickets[0], "error": "market_closed"}],
+            }
 
     trading = StickyOrderTradingModule(
         positions=[],
@@ -576,7 +662,9 @@ def test_sync_open_positions_syncs_breakeven_activated_from_persisted_flag() -> 
     assert pos.breakeven_activated is True
 
 
-def test_sync_open_positions_keeps_breakeven_activated_false_when_not_persisted() -> None:
+def test_sync_open_positions_keeps_breakeven_activated_false_when_not_persisted() -> (
+    None
+):
     """没有持久化 breakeven_applied 标志时，breakeven_activated 应保持 False（默认值）。"""
     trading = DummyTradingModule(
         positions=[

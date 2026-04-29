@@ -1192,7 +1192,7 @@ def test_trade_executor_skips_opposite_direction_when_position_already_open() ->
     )
 
 
-def test_trade_executor_allows_cross_tf_opposite_direction() -> None:
+def test_trade_executor_allows_cross_tf_natural_hedge() -> None:
     """已有 M15 sell 时 M30 buy 允许通过——cross-TF 反向自然 hedge 形成。
 
     layer-1/layer-2 已取消（commit revert）：保留 multi-TF 灵活性，
