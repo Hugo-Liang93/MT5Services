@@ -9,6 +9,7 @@ from .base import (
 from .breakout_follow import StructuredBreakoutFollow
 from .daily_pivot_reaction import StructuredDailyPivotReaction
 from .lowbar_entry import StructuredLowbarEntry
+from .ny_reversal import StructuredNYReversal
 from .open_range_breakout import StructuredOpenRangeBreakout
 from .price_action_m15 import StructuredPriceAction
 from .prior_day_retest import StructuredPriorDayRetest
@@ -37,6 +38,7 @@ __all__ = [
     "StructuredLowbarEntry",
     "StructuredPullbackWindow",
     "StructuredDailyPivotReaction",
+    "StructuredNYReversal",
     "StructuredOpenRangeBreakout",
     "StructuredPriceAction",
     "StructuredPriorDayRetest",

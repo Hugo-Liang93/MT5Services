@@ -69,8 +69,19 @@ def evaluate_strategies(
         ]
 
     current_sessions: List[str] = []
-    if engine._strategy_sessions and engine._session_filter and bar_time is not None:
+    if engine._session_filter is not None and bar_time is not None:
         current_sessions = engine._session_filter.current_sessions(bar_time)
+
+    # 注入 BAR_TIME / SESSION_BUCKETS — 与 live SignalRuntime metadata 契约一致
+    # （live 在 runtime_metadata.py:36 / runtime_processing.py:154 写入；backtest
+    # 漏注会让依赖 ctx.metadata[MK.BAR_TIME / SESSION_BUCKETS] 的策略——如
+    # StructuredNYReversal — 在 backtest 里永远拿不到值 → hold）
+    if bar_time is not None:
+        try:
+            metadata[MK.BAR_TIME] = bar_time.isoformat()
+        except AttributeError:
+            metadata[MK.BAR_TIME] = str(bar_time)
+    metadata[MK.SESSION_BUCKETS] = list(current_sessions)
 
     decisions: List[SignalDecision] = []
     for strategy_name in engine._target_strategies:
