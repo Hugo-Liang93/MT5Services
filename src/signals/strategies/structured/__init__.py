@@ -7,6 +7,7 @@ from .base import (
     StructuredStrategyBase,
 )
 from .breakout_follow import StructuredBreakoutFollow
+from .daily_pivot_reaction import StructuredDailyPivotReaction
 from .lowbar_entry import StructuredLowbarEntry
 from .open_range_breakout import StructuredOpenRangeBreakout
 from .price_action_m15 import StructuredPriceAction
@@ -35,6 +36,7 @@ __all__ = [
     "StructuredTrendlineTouch",
     "StructuredLowbarEntry",
     "StructuredPullbackWindow",
+    "StructuredDailyPivotReaction",
     "StructuredOpenRangeBreakout",
     "StructuredPriceAction",
     "StructuredPriorDayRetest",

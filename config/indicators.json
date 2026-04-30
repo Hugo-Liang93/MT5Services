@@ -593,6 +593,21 @@
         "structure"
       ],
       "display": true
+    },
+    {
+      "name": "daily_pivots",
+      "func_path": "src.indicators.core.daily_pivots.daily_pivots",
+      "params": {
+        "min_bars": 24
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "description": "Floor pivot points P/R1/S1/R2/S2 + 当前 close 与各 level 的距离（day-trading SR）",
+      "tags": [
+        "price_action",
+        "structure"
+      ],
+      "display": true
     }
   ],
   "pipeline": {

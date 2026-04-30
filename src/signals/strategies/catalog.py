@@ -10,6 +10,7 @@ from typing import Iterable
 from .base import SignalStrategy
 from .structured import (
     StructuredBreakoutFollow,
+    StructuredDailyPivotReaction,
     StructuredLowbarEntry,
     StructuredOpenRangeBreakout,
     StructuredPriceAction,
@@ -47,6 +48,7 @@ def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
         StructuredOpenRangeBreakout(),
         StructuredPriceAction(),
         StructuredPriorDayRetest(),
+        StructuredDailyPivotReaction(),
         StructuredRegimeExhaustion(),
         StructuredStrongTrendFollow(),
     )
