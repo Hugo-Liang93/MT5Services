@@ -49,6 +49,102 @@
 
 ---
 
+## 0q. 2026-04-29/30 ADR-013 EntryPolicy 端口架构升级（P1-P5 完整落地，含 OCO + 回测对等 + Recovery 一致性）
+
+### 触发
+
+`structured_price_action` Live 实测 36 小时 11 笔 closed XAUUSD：胜率 45.5% 达标，
+但 W/L 比 0.90 vs 设计 1.67（盈亏比塌方 46%），4/5 SL hit 是「下插到底 → 第二根
+bar 直接进 → 被回抽 30 点」模式，期望值 -$2.16/笔，理论 7.5 个交易日清零账户。
+根因：14 个结构化策略各自实现 `_entry_spec()`，**形态信号天然把 close 钉在 bar
+极端**（pin bar 上半收 / engulfing 远端 close / big bar 高 close_pos）→ close
+MARKET 入场后 next bar mean reversion → SL hit。3 处重复 LIMIT、3 处重复 STOP，
+OCO 在策略层无法实现（既写 LIMIT 又写 STOP 违反 SRP）。
+
+### 决策（参 [ADR-013](design/adr.md#adr-013)）
+
+1. **信号策略只输出 "方向 + 信心 + 出场 + 信号语义元数据"**——14 策略 + base.py
+   统一删 `_entry_spec()`，不留 fallback。
+2. **新增 `EntryPolicy` 端口**：纯函数式 `derive(intent, market, params) → EntrySpecGroup`。
+3. **配置驱动 mapping**：`config/entry_policy.ini` `(strategy, tf) → policy`，
+   三级 fallback + Pydantic fail-fast。
+4. **5 个内置 policy**：Market / Pullback（形态分支表）/ Breakout / Oco / FibPullback。
+5. **OCO 原生支持**：`PendingEntryManager._groups` 反向索引、`submit_oco_group`、
+   `_on_member_filled_handler` any-fill 撤 sibling + 3 次重试、`cancel_by_group`、
+   `cancel_by_symbol` group 扩展。
+6. **DB schema 扩展**：`pending_order_states` + `order_group_id`/`group_member_id`/
+   `group_role`；新表 `entry_policy_decisions` 审计 policy 决策。
+7. **PatternType 枚举**：解除 policy 对 `why_reason` 字符串的脆弱依赖。
+8. **回测端对等**：`BacktestEngine` 与 live 共用 `EntryPolicyRegistry`；
+   `_pending_groups` 多 member + `tie_break` 决定论；一个 fill → 整 group expire。
+9. **Recovery 重建反向索引**：`PendingEntryManager.restore_group_index()`；
+   一致性校验：sibling=filled + 本=placed → 立即撤
+   （`REASON_STARTUP_OCO_SIBLING_FILLED`）。
+
+### 边界泄漏减少
+
+- ❌ 入场决策原本散落 14 处策略 + base.py + submit_pending_entry 内嵌计算 → ✅ 收口到 `src/trading/entry_policy/` 单一模块
+- ❌ MK.ENTRY_SPEC 在策略 / pending / backtest / readmodel 多处分支消费 → ✅ 删除常量 + sentinel 守护，统一通过 `MK.ENTRY_INTENT` + `ENTRY_SPEC_GROUP` 流转
+- ❌ Backtest `_pending_entries` Tuple 与 live `PendingEntry` 各自演化 → ✅ 共用同一 `EntryPolicyRegistry`，回测 `_pending_groups` 多 member 决定论与 live `_groups` 行为对齐
+- ❌ Recovery 重启后 `_groups` 反向索引清空，OCO sibling cancel 失效 → ✅ `restore_pending_orders` 按 `order_group_id` 分组重建 + 一致性校验
+
+### CI Sentinel 守护（[tests/architecture/test_entry_policy_sentinel.py](../tests/architecture/test_entry_policy_sentinel.py)）
+
+- 14 策略 + base.py 不允许定义 `_entry_spec`（参数化 14 个 case + base 1 case）
+- `src/trading/entry_policy/` 模块禁止 import `signals.runtime` / `pending.manager` / `executor`
+- `MetadataKey.ENTRY_SPEC` 不可恢复（属性 + 源码文本双重断言）
+- `base.py` 默认 `_entry_spec` fallback 不可恢复
+
+### 测试矩阵全过
+
+- `tests/trading/entry_policy/` 5 policy 单测 + registry
+- `tests/trading/pending/test_oco_lifecycle.py` 9 case：A/B 触发、整组撤、broker reject 重试
+- `tests/backtesting/test_entry_policy_oco.py` 14 case：tie_break 决定论 + 单/多 member
+- `tests/trading/state/test_recovery_oco.py` 5 case：重建索引 + 一致性校验 + broker reject 兜底
+- `tests/architecture/test_entry_policy_sentinel.py` 29 case
+- 全套 pytest **3106+pass / 0 fail**
+
+### 不可回退点
+
+- `pending_order_states` 加 group_id 列后**不允许 drop column**
+- 14 策略 + `base.py` 的 `_entry_spec` 删除是**单向**操作
+- `MK.ENTRY_SPEC` 不允许重新出现（CI sentinel）
+- 不允许新增策略实现 `_entry_spec`（CI sentinel）
+- 回测 `_pending_entries` Tuple 旧结构不允许复活
+
+### 后续
+
+- Demo Canary 24-48h 验证 OCO 链路（broker reject cancel 重试 + sibling cancel 稳定后）
+- Live 单策略 Canary：仅 `structured_price_action` 走 OCO 5 个交易日
+- 接受条件：`structured_price_action` W/L ≥ 1.4（vs 当前 0.90）
+- 全策略切换后 10 个交易日观察期
+
+### 涉及文件
+
+新建：[src/trading/entry_policy/](../src/trading/entry_policy/)（10 个文件） /
+[config/entry_policy.ini](../config/entry_policy.ini) / [src/config/models/entry_policy.py](../src/config/models/entry_policy.py) /
+[src/app_runtime/factories/entry_policies.py](../src/app_runtime/factories/entry_policies.py) /
+[src/persistence/schema/entry_policy_decisions.py](../src/persistence/schema/entry_policy_decisions.py) /
+[src/persistence/repositories/entry_policy_repo.py](../src/persistence/repositories/entry_policy_repo.py) /
+[src/api/v1/entry_policy_routes.py](../src/api/v1/entry_policy_routes.py) /
+[src/backtesting/engine/pending_state.py](../src/backtesting/engine/pending_state.py) /
+[tests/architecture/](../tests/architecture/) / [tests/trading/state/test_recovery_oco.py](../tests/trading/state/test_recovery_oco.py) /
+[tests/backtesting/test_entry_policy_oco.py](../tests/backtesting/test_entry_policy_oco.py)
+
+修改：14 策略文件 + [base.py](../src/signals/strategies/structured/base.py) /
+[metadata_keys.py](../src/signals/metadata_keys.py) / [pending/manager.py](../src/trading/pending/manager.py) +
+[lifecycle.py](../src/trading/pending/lifecycle.py) + [monitoring.py](../src/trading/pending/monitoring.py) /
+[execution/pending_orders.py](../src/trading/execution/pending_orders.py) +
+[pre_trade_checks.py](../src/trading/execution/pre_trade_checks.py) /
+[state/recovery.py](../src/trading/state/recovery.py) +
+[state/store.py](../src/trading/state/store.py) /
+[backtesting/engine/runner.py](../src/backtesting/engine/runner.py) +
+[signals.py](../src/backtesting/engine/signals.py) /
+[trading/reasons.py](../src/trading/reasons.py) +
+[entry_policy/registry.py](../src/trading/entry_policy/registry.py)（fill_semantics_tie_break 公开端口）
+
+---
+
 ## 0p. 2026-04-27 §0do 修复时引入的 2 个隐藏 bug + 上轮判据漏角（P1 generator 连接泄漏 + P2 dispatch 判据反向漏角）
 
 ### 触发

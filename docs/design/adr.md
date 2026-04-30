@@ -22,6 +22,7 @@
 | 010 | 2026-04-25 | Paper Trading 删除 + Demo 重定位 | demo 承接 demo_validation 真实下单职责；环境差异化装配；新晋升路径 CANDIDATE→DEMO_VALIDATION→ACTIVE_GUARDED→ACTIVE | ✅ 已确定 |
 | 011 | 2026-04-26 | EconomicDecayService 单一端口 + 时间注入 + 异常分层 | calendar 域唯一 decay 端口；`at_time` 强制显式；编码错误 fail-fast | ✅ 已确定 |
 | 012 | 2026-04-26 | 多账户/多实例运行时状态主键契约 | multi-account 表 PK 必含 `account_key`；multi-instance 表 PK 必含 `instance_id`；消费侧对称过滤 + 去重键对称 | ✅ 已确定 |
+| 013 | 2026-04-29 | EntryPolicy 可插拔入场决策端口 | 信号策略只输出方向/信心/出场，入场由 EntryPolicy 端口配置驱动；OCO 原生多 member；MK.ENTRY_SPEC 删除不留 fallback | ✅ 已确定 |
 
 ---
 
@@ -481,6 +482,76 @@ ADR-009 之前的事实快照：
 - 不允许新增 `account_key TEXT` 列后保留旧 `ticket BIGINT PRIMARY KEY`（必修复合）
 - 不允许 `runtime_task_status` 类表使用 `DEFAULT 'legacy'` 之类共享字面量
 - 不允许 readmodel 跨账户聚合时省略 `account_alias` 过滤——必须显式声明语义
+
+---
+
+## ADR-013: 入场决策从信号策略中收口为可插拔 EntryPolicy 端口
+
+**状态**：已确定（2026-04-29）
+
+**上下文**：
+
+14 个结构化策略各自实现 `_entry_spec()` 决定入场方式与价位（MARKET / LIMIT / STOP），导致三层耦合：
+
+1. **逻辑职责混乱**：信号策略既决定方向又决定入场，违反 SRP。3 处重复实现 Pullback、3 处重复实现 Breakout，每个策略都拷贝 `±zone_atr×ATR` 的入场区间计算。
+2. **入场点系统性偏差**：`structured_price_action` 用 close MARKET 入场，**形态信号天然把 close 钉在 bar 极端**（pin bar 上半收 / engulfing 远端 close / big bar 高 close_pos）→ next bar mean reversion → SL hit。Live 实测 36 小时 11 笔 closed XAUUSD：胜率 45.5% 达标，但 W/L 比 0.90 vs 设计 1.67（盈亏比塌方 46%），4/5 SL hit 都是「下插到底 → 第二根 bar 直接进 → 被回抽 30 点」模式，期望值 -$2.16/笔，理论 7.5 个交易日清零账户。
+3. **OCO 无法落地**：「限价回踩 + 突破止损」二选一最优入场架构在策略层无法实现（既写 LIMIT 又写 STOP 违反 SRP）。
+4. **回测/实盘语义漂移**：ADR-007 要求 research 与 live 对等，但 entry 决策散落在策略导致 backtest entry semantics 不能独立替换；回测的 `_pending_entries` 字段与 live `PendingEntryManager` 各自演化。
+
+**决策**：
+
+1. **信号策略只输出 "方向 + 信心 + 出场契约 + 信号语义元数据"**——14 个策略 + `base.py` 默认实现统一删除 `_entry_spec()`，**不留 fallback**。Sentinel 测试 [tests/architecture/test_entry_policy_sentinel.py](tests/architecture/test_entry_policy_sentinel.py) 守护回归。
+2. **新增 `EntryPolicy` 端口** [src/trading/entry_policy/port.py](src/trading/entry_policy/port.py)，纯函数式：`derive(intent, market, params) -> EntrySpecGroup`。Policy 不持有任何运行时引用（ADR-006 边界）。
+3. **入场策略可插拔**，配置驱动 `(strategy, tf) → policy` 映射 ([config/entry_policy.ini](config/entry_policy.ini))。三级 fallback：`strategy_tf_mapping` > `strategy_mapping` > `default_policy`。Pydantic `model_validator` 启动期 fail-fast。
+4. **引入 `EntrySpecGroup` 多成员组 + `group_id`**：`PendingEntryManager` 原生支持 OCO（`_groups` 反向索引、`submit_oco_group` 公开 API、`_on_member_filled_handler` any-fill 撤 sibling + 3 次重试、`cancel_by_group` 整组撤、`cancel_by_symbol` group 扩展）。
+5. **5 个内置 policy**：
+   - `MarketEntryPolicy` — close 即时入场（默认 fallback / 低 TF scalp）
+   - `PullbackEntryPolicy` — 形态分支表（pin/engulfing/big_bar/three_soldiers/rejection/trendline）→ anchor + offset×ATR
+   - `BreakoutEntryPolicy` — recent_bars 极端 + buffer_atr 突破确认
+   - `OcoEntryPolicy` — Pullback + Breakout 二选一
+   - `FibPullbackEntryPolicy` — 最近 swing high/low + Fibonacci 位（0.382/0.5/0.618）
+6. **DB schema 扩展**：`pending_order_states` 增 `order_group_id` / `group_member_id` / `group_role`（参 [src/persistence/schema/pending_order_states.py](src/persistence/schema/pending_order_states.py)）；新表 `entry_policy_decisions` 审计 policy 决策（policy_name / branch / group_id / fill_outcome）。
+7. **`PatternType` 结构化枚举** [src/trading/entry_policy/pattern.py](src/trading/entry_policy/pattern.py)：策略 `evaluate()` 显式写入 `metadata[MK.PATTERN_TYPE]`，policy 用枚举 match 而非字符串解析 `why_reason`（解除脆弱依赖）。
+8. **回测端对等**：`BacktestEngine` 与 live 共用同一 `EntryPolicyRegistry`；`_pending_groups` 多 member 触发 + `tie_break` 决定论（`limit_first` / `stop_first` / `alpha`）；一个 member fill → 整 group expire（与 live `_on_member_filled` 撤 sibling 语义对齐）。
+9. **Recovery 重建 OCO 反向索引**：`PendingEntryManager.restore_group_index(group_id, entry_keys)`；进程重启后 `_groups` 不为空，sibling cancel 链路保持完整。一致性校验：若同 group 有 sibling=`filled` 而其他=`placed`（说明上次 fill 后 cancel 未持久化）→ 立即撤 placed（`REASON_STARTUP_OCO_SIBLING_FILLED`）。
+
+**反补丁纪律下的禁止项**：
+
+- ❌ 策略保留 `_entry_spec()` 方法（含 base 默认实现）；CI sentinel 守护。
+- ❌ EntryPolicy 实现 import `signals.runtime` / `pending.manager` / `executor`；CI sentinel 守护依赖方向单向。
+- ❌ 在 `submit_pending_entry` 内嵌入场计算（`zone_atr×ATR` 必须迁入 policy）。
+- ❌ Backtest 的 entry 处理与 live 不一致（共用同一 registry + policy 实现）。
+- ❌ `MetadataKey.ENTRY_SPEC` 重新出现（已删除，反补丁纪律不留 deprecation 窗口）；CI sentinel 守护。
+- ❌ Optional 默认值入场参数（关键身份字段必填，参 §0dj 反补丁纪律）。
+
+**演进方向**：
+
+- 未来如需 ML-driven entry policy：实现 `MLEntryPolicy(EntryPolicy)` 注册即可，无需改策略代码。
+- N>2 的 OCO（如 limit + stop + breakeven 三 member）：policy 输出 3-member group 即支持，无需改 manager。
+- live canary 数据驱动 policy mapping 自动调优是 ADR-007 特征晋升通道延伸（per-(strategy, tf, regime, pattern) 选最优 policy）。
+- Demo Canary 24-48h 验证后逐步全策略切换（plan §L Phase P5），`structured_price_action` W/L ≥ 1.4 是接受条件。
+
+**覆盖文件**（已落地）：
+
+- 模块新建：[src/trading/entry_policy/](src/trading/entry_policy/)（10 个文件：port / specs / intent / pattern / registry / 5 policy）
+- 配置：[config/entry_policy.ini](config/entry_policy.ini) + [src/config/models/entry_policy.py](src/config/models/entry_policy.py)
+- 装配：[src/app_runtime/factories/entry_policies.py](src/app_runtime/factories/entry_policies.py) + [src/app_runtime/builder_phases/signal.py](src/app_runtime/builder_phases/signal.py) + [src/app_runtime/container.py](src/app_runtime/container.py) `entry_policy_registry` 字段
+- 信号端：[src/signals/strategies/structured/base.py](src/signals/strategies/structured/base.py) + 14 策略文件删 `_entry_spec`；[src/signals/metadata_keys.py](src/signals/metadata_keys.py) 删 `ENTRY_SPEC` + 加 4 个新 key
+- 交易端：[src/trading/pending/manager.py](src/trading/pending/manager.py) `_groups` + `submit_oco_group` + `_on_member_filled_handler` + `cancel_by_group` + `restore_group_index`；[src/trading/pending/lifecycle.py](src/trading/pending/lifecycle.py) `PendingEntry` 加 `group_id` / `member_id` / `group_role`；[src/trading/pending/monitoring.py](src/trading/pending/monitoring.py) any-fill 触发链；[src/trading/execution/pending_orders.py](src/trading/execution/pending_orders.py) 改用 registry.resolve + derive
+- Pre-trade：[src/trading/execution/pre_trade_checks.py](src/trading/execution/pre_trade_checks.py) 改判 `EntrySpecGroup.all_market()`
+- 持久化：[src/persistence/schema/pending_order_states.py](src/persistence/schema/pending_order_states.py) + 3 列 + migration；[src/persistence/schema/entry_policy_decisions.py](src/persistence/schema/entry_policy_decisions.py) 新表；[src/persistence/repositories/entry_policy_repo.py](src/persistence/repositories/entry_policy_repo.py) 新 repo；[src/persistence/repositories/trading_state_repo.py](src/persistence/repositories/trading_state_repo.py) 增 `order_group_ids` 过滤参数
+- API：[src/api/v1/entry_policy_routes.py](src/api/v1/entry_policy_routes.py) 三个只读端点（registry / decisions / groups/active）
+- Recovery：[src/trading/state/recovery.py](src/trading/state/recovery.py) `restore_pending_orders` 重建 group 索引 + 一致性校验；[src/trading/state/store.py](src/trading/state/store.py) 加 `list_pending_orders_by_groups`
+- 回测：[src/backtesting/engine/runner.py](src/backtesting/engine/runner.py) `_pending_groups` + `_entry_policy_registry`；[src/backtesting/engine/signals.py](src/backtesting/engine/signals.py) 多 member 触发 + tie_break；[src/backtesting/engine/pending_state.py](src/backtesting/engine/pending_state.py) 新 dataclass
+- 测试：[tests/trading/entry_policy/](tests/trading/entry_policy/) 单测 + [tests/trading/pending/test_oco_lifecycle.py](tests/trading/pending/test_oco_lifecycle.py) + [tests/backtesting/test_entry_policy_oco.py](tests/backtesting/test_entry_policy_oco.py) + [tests/trading/state/test_recovery_oco.py](tests/trading/state/test_recovery_oco.py) + [tests/architecture/test_entry_policy_sentinel.py](tests/architecture/test_entry_policy_sentinel.py)
+
+**不可回退点**：
+
+- `pending_order_states` 加 group_id 列后**不允许 drop column**（已落 migration，回退会丢失运行中 OCO group 信息）。
+- 14 个策略 + `base.py` 的 `_entry_spec` 删除是**单向操作**（即使回退 mapping 到 `market`，已删除的入场逻辑不再恢复，新需求必须走 policy 注册）。
+- `MK.ENTRY_SPEC` 不允许重新出现（CI sentinel 守护，反补丁纪律）。
+- 不允许新增策略实现 `_entry_spec`（CI sentinel 守护）。
+- Backtest 端不允许重新引入 `_pending_entries` Tuple 旧结构（回退会破坏 OCO 决定论）。
 
 ---
 
