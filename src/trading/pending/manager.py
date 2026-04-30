@@ -419,6 +419,28 @@ class PendingEntryManager:
     def restore_mt5_order(self, info: Dict[str, Any]) -> None:
         self._lifecycle_manager.restore_mt5_order(info)
 
+    def restore_group_index(self, group_id: str, entry_keys: Any) -> None:
+        """ADR-013 P4-residual: recovery 阶段重建 `_groups` 反向索引。
+
+        进程重启后 `_pending` 字典清空，但 broker 侧 OCO 挂单仍存在。需要
+        重建 `_groups[group_id] = {entry_key, ...}` 让后续的 sibling cancel
+        路径（`cancel_by_group` / `cancel_by_symbol` group 扩展）能正常工作。
+
+        多次调用同一 group_id 累计合并；空 entry_keys / 空 group_id 安全跳过。
+        """
+        if not group_id:
+            return
+        keys = {str(k) for k in (entry_keys or []) if k}
+        if not keys:
+            return
+        with self._lock:
+            self._groups.setdefault(group_id, set()).update(keys)
+        logger.info(
+            "PendingEntry restore_group_index: group=%s members=%d",
+            group_id,
+            len(keys),
+        )
+
     def cancel(self, key: str, reason: str = "manual") -> bool:
         """取消指定 entry_key 的挂起入场（ADR-013: key 可为 entry_key 或 signal_id）。
 

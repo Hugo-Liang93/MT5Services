@@ -47,6 +47,7 @@ class TradingStateRepository:
         account_key: Optional[str] = None,
         statuses: Optional[Sequence[str]] = None,
         signal_id: Optional[str] = None,
+        order_group_ids: Optional[Sequence[str]] = None,
         limit: int = 500,
     ) -> List[dict]:
         sql = (
@@ -74,6 +75,10 @@ class TradingStateRepository:
             placeholders = ", ".join(["%s"] * len(statuses))
             sql += f" AND status IN ({placeholders})"
             params.extend(list(statuses))
+        if order_group_ids:
+            placeholders = ", ".join(["%s"] * len(order_group_ids))
+            sql += f" AND order_group_id IN ({placeholders})"
+            params.extend(list(order_group_ids))
         sql += " ORDER BY updated_at DESC LIMIT %s"
         params.append(limit)
         return self._fetch_dicts(sql, params)

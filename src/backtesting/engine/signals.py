@@ -252,27 +252,28 @@ def process_decision(
             )
             return
 
-        # P2 单 member 路径：取首成员（OCO 多 member 留给 P4）
-        if len(group.members) > 1:
-            logger.warning(
-                "Backtest: OCO group with %d members not yet supported in P2; "
-                "using first member only (strategy=%s)",
-                len(group.members),
-                decision.strategy,
+        # ADR-013 P4: OCO 多 member 全部写入 _pending_groups。
+        # group_id 是 EntrySpecGroup 唯一标识；同 group 内一个 member fill →
+        # 整组弹出（与 live `_on_member_filled` 撤 sibling 语义对齐）。
+        from .pending_state import BacktestPendingGroup, BacktestPendingMember
+
+        members: list[BacktestPendingMember] = []
+        for member in group.members:
+            members.append(
+                BacktestPendingMember(
+                    member_id=member.member_id,
+                    entry_type=member.entry_type.value,
+                    entry_low=round(float(member.entry_low), 2),
+                    entry_high=round(float(member.entry_high), 2),
+                )
             )
-        member = group.members[0]
-        entry_type = member.entry_type.value
-        entry_low = round(float(member.entry_low), 2)
-        entry_high = round(float(member.entry_high), 2)
 
         expiry_bar = bar_index + engine._config.pending_entry.expiry_bars
-        key = f"{decision.strategy}_{decision.direction}"
-        engine._pending_entries[key] = (
-            decision,
-            entry_type,
-            entry_low,
-            entry_high,
-            expiry_bar,
+        engine._pending_groups[group.group_id] = BacktestPendingGroup(
+            decision=decision,
+            members=members,
+            expiry_bar=expiry_bar,
+            cancellation_policy=group.cancellation_policy,
         )
         return
 
@@ -396,6 +397,35 @@ def _resolve_pending_fill(
     return None
 
 
+def _select_tie_break_winner(
+    triggers: List[tuple[str, float, str]],
+    tie_break: str,
+) -> tuple[str, float, str]:
+    """ADR-013 P4: 同 bar 多 member 都触发时按 tie_break 决定优先成交者。
+
+    triggers: list of (member_id, fill_price, entry_type)。
+    tie_break ∈ {"limit_first", "stop_first", "alpha"}。
+
+    决定论保证：相同输入永远产出相同 winner（避免回测可重放破坏）。
+    """
+    if len(triggers) == 1:
+        return triggers[0]
+
+    if tie_break == "limit_first":
+        for trig in triggers:
+            if trig[2] == "limit":
+                return trig
+        # 全 stop → 走 alpha 兜底（决定论）
+        return min(triggers, key=lambda t: t[0])
+    if tie_break == "stop_first":
+        for trig in triggers:
+            if trig[2] == "stop":
+                return trig
+        return min(triggers, key=lambda t: t[0])
+    # alpha
+    return min(triggers, key=lambda t: t[0])
+
+
 def check_pending_entries(
     engine: "BacktestEngine",
     bar: OHLC,
@@ -403,52 +433,86 @@ def check_pending_entries(
     indicators: Dict[str, Dict[str, Any]],
     regime: RegimeType,
 ) -> None:
-    if not engine._pending_entries:
+    if not engine._pending_groups:
         return
 
-    filled_keys: List[str] = []
-    for key, (
-        decision,
-        entry_type,
-        entry_low,
-        entry_high,
-        expiry_bar,
-    ) in engine._pending_entries.items():
-        if bar_index > expiry_bar:
+    tie_break = "limit_first"
+    registry = getattr(engine, "_entry_policy_registry", None)
+    if registry is not None:
+        # registry.fill_semantics_tie_break 是 ADR-006 公开端口
+        tie_break = getattr(registry, "fill_semantics_tie_break", tie_break)
+
+    finished_group_ids: List[str] = []
+    for group_id, group in engine._pending_groups.items():
+        decision = group.decision
+
+        if bar_index > group.expiry_bar:
             logger.debug(
-                "Pending entry expired: %s %s at bar %d (expiry=%d)",
+                "Pending group expired: %s %s group=%s at bar %d (expiry=%d)",
                 decision.strategy,
                 decision.direction,
+                group_id,
                 bar_index,
-                expiry_bar,
+                group.expiry_bar,
             )
-            filled_keys.append(key)
+            group.status = "expired"
+            for member in group.members:
+                if member.status == "active":
+                    member.status = "expired"
+            finished_group_ids.append(group_id)
             continue
 
-        fill_price = _resolve_pending_fill(
-            decision.direction,
-            entry_type,
-            entry_low,
-            entry_high,
-            bar,
-        )
-        if fill_price is not None:
-            atr_value = indicators.get("atr14", {}).get("atr", 0.0)
-            if atr_value > 0:
-                execute_entry(
-                    engine,
-                    decision,
-                    bar,
-                    bar_index,
-                    atr_value,
-                    regime,
-                    indicators,
-                    fill_price=fill_price,
-                )
-            filled_keys.append(key)
+        # 当前 bar 内找出所有触发的 active member
+        triggers: List[tuple[str, float, str]] = []
+        for member in group.active_members():
+            fill_price = _resolve_pending_fill(
+                decision.direction,
+                member.entry_type,
+                member.entry_low,
+                member.entry_high,
+                bar,
+            )
+            if fill_price is not None:
+                triggers.append((member.member_id, fill_price, member.entry_type))
 
-    for key in filled_keys:
-        engine._pending_entries.pop(key, None)
+        if not triggers:
+            continue
+
+        winner_id, winner_price, _ = _select_tie_break_winner(triggers, tie_break)
+        if len(triggers) > 1:
+            logger.info(
+                "Pending group %s: both_triggered_in_same_bar=true winners=%d "
+                "selected=%s tie_break=%s",
+                group_id,
+                len(triggers),
+                winner_id,
+                tie_break,
+            )
+
+        atr_value = indicators.get("atr14", {}).get("atr", 0.0)
+        if atr_value > 0:
+            execute_entry(
+                engine,
+                decision,
+                bar,
+                bar_index,
+                atr_value,
+                regime,
+                indicators,
+                fill_price=winner_price,
+            )
+
+        # 任一成交 → 整 group 退出（与 live `_on_member_filled` 撤 sibling 对齐）
+        for member in group.members:
+            if member.member_id == winner_id:
+                member.status = "filled"
+            elif member.status == "active":
+                member.status = "cancelled"
+        group.status = "filled"
+        finished_group_ids.append(group_id)
+
+    for group_id in finished_group_ids:
+        engine._pending_groups.pop(group_id, None)
 
 
 def execute_entry(

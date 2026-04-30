@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
 from src.signals.metadata_keys import MetadataKey as MK
 
 from ..ports import RecoveryTradingPort, TradeControlStatePort
-from ..reasons import REASON_STARTUP_EXPIRED
+from ..reasons import REASON_STARTUP_EXPIRED, REASON_STARTUP_OCO_SIBLING_FILLED
 from .recovery_policy import TradingStateRecoveryPolicy, _normalize_ticket_set
 
 
@@ -75,11 +76,57 @@ class TradingStateRecovery:
             "orphan": 0,
             "ignored_missing": 0,
             "orphan_cancelled": 0,
+            "oco_sibling_cancelled": 0,
+            "oco_groups_restored": 0,
         }
+
+        # ADR-013 P4-residual: 一致性校验——拉同 group 全状态 rows，
+        # 找出已有 sibling fill 的 group_ids；这些 group 的 placed rows
+        # 必须立即撤（说明上次 fill 后 cancel 未持久化）。
+        group_ids_with_placed = {
+            str(row.get("order_group_id") or "")
+            for row in states
+            if row.get("order_group_id")
+        }
+        groups_with_filled_sibling: set[str] = set()
+        if group_ids_with_placed:
+            related_rows = self._store.list_pending_orders_by_groups(
+                list(group_ids_with_placed)
+            )
+            for related in related_rows:
+                if str(related.get("status") or "").strip().lower() == "filled":
+                    gid = str(related.get("order_group_id") or "")
+                    if gid:
+                        groups_with_filled_sibling.add(gid)
+
+        # 收集需重建的 group 反向索引：group_id → set(entry_keys)
+        # 注意：仅 placed 且非 filled-sibling-orphan 的 entry 才入索引。
+        group_index_to_restore: dict[str, set[str]] = defaultdict(set)
 
         for row in states:
             info = self._state_to_pending_info(row)
             order_ticket = int(info.get("ticket", 0) or 0)
+            group_id = str(info.get("order_group_id") or "")
+
+            # 一致性校验：本 group 已有 sibling filled → 立即撤本 placed
+            if group_id and group_id in groups_with_filled_sibling:
+                cancelled = False
+                if order_ticket > 0:
+                    try:
+                        result = trading_module.cancel_orders_by_tickets([order_ticket])
+                        cancelled = self._ticket_was_cancelled(result, order_ticket)
+                    except Exception:
+                        cancelled = False
+                self._store.mark_pending_order_cancelled(
+                    info, reason=REASON_STARTUP_OCO_SIBLING_FILLED
+                )
+                summary["oco_sibling_cancelled"] += 1
+                if not cancelled:
+                    # 即使 broker 撤单未确认，本地状态先标 cancelled；
+                    # 后续 reconcile 会再次同步（避免重启后重复触发 fill 链）
+                    pass
+                continue
+
             live_order = live_by_ticket.get(order_ticket)
             if live_order is not None:
                 expires_at = self._datetime_or_none(info.get("expires_at"))
@@ -98,10 +145,18 @@ class TradingStateRecovery:
                     else:
                         pending_entry_manager.restore_mt5_order(info)
                         summary["restored"] += 1
+                        if group_id:
+                            entry_key = str(info.get("signal_id") or "")
+                            if entry_key:
+                                group_index_to_restore[group_id].add(entry_key)
                     continue
 
                 pending_entry_manager.restore_mt5_order(info)
                 summary["restored"] += 1
+                if group_id:
+                    entry_key = str(info.get("signal_id") or "")
+                    if entry_key:
+                        group_index_to_restore[group_id].add(entry_key)
                 continue
 
             state = pending_entry_manager.inspect_mt5_order(info)
@@ -115,6 +170,11 @@ class TradingStateRecovery:
                     state=state,
                 )
                 summary[outcome] = summary.get(outcome, 0) + 1
+
+        # 重建 _groups 反向索引（仅在所有 restore_mt5_order 完成后批量调用）
+        for gid, entry_keys in group_index_to_restore.items():
+            pending_entry_manager.restore_group_index(gid, entry_keys)
+            summary["oco_groups_restored"] += 1
 
         for ticket, live_order in live_by_ticket.items():
             if ticket not in local_tickets:
@@ -215,4 +275,8 @@ class TradingStateRecovery:
             # 从 metadata 恢复出场规格（_pending_metadata 序列化时写入）
             "exit_spec": metadata.get(MK.EXIT_SPEC),
             "strategy_category": metadata.get(MK.STRATEGY_CATEGORY) or "",
+            # ADR-013 OCO group 字段（DB 列直读，不依赖 metadata）
+            "order_group_id": row.get("order_group_id") or "",
+            "group_member_id": row.get("group_member_id") or "",
+            "group_role": row.get("group_role") or "",
         }

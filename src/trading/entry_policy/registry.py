@@ -66,6 +66,15 @@ class EntryPolicyRegistry:
     def list_mapping_per_tf(self) -> dict[tuple[str, str], str]:
         return dict(self._config.strategy_tf_mapping)
 
+    @property
+    def fill_semantics_tie_break(self) -> str:
+        """ADR-013 P4: 回测同 bar 多 member 触发的 tie-break 策略。
+
+        ADR-006 公开端口：BacktestEngine.check_pending_entries 用此值决定
+        OCO group 内的成交优先级（limit_first / stop_first / alpha）。
+        """
+        return self._config.fill_semantics_tie_break
+
     def describe(self) -> dict[str, Any]:
         """API/审计端口。返回 registry 全貌。"""
         return {

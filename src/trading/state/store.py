@@ -85,6 +85,25 @@ class TradingStateStore:
             limit=5000,
         )
 
+    def list_pending_orders_by_groups(
+        self, group_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """ADR-013 P4-residual: 按 group_id 集合查所有状态的 pending rows。
+
+        recovery 用：拉同 group 下不论 placed/filled/cancelled 的全部 rows，
+        用于一致性校验（任一 filled → 撤剩下 placed sibling）+ 重建 `_groups`
+        反向索引。
+        """
+        normalized = [gid for gid in (group_ids or []) if gid]
+        if not normalized:
+            return []
+        return self._db.fetch_pending_order_states(
+            account_alias=self._account_alias_getter(),
+            account_key=self._account_key_getter(),
+            order_group_ids=normalized,
+            limit=5000,
+        )
+
     def list_pending_order_states(
         self,
         *,

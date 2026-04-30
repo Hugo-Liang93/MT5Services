@@ -21,7 +21,6 @@ from src.signals.contracts import StrategyCapability
 from src.signals.contracts.deployment import StrategyDeployment
 from src.signals.contracts.execution_plan import build_strategy_capability_summary
 from src.signals.evaluation.regime import MarketRegimeDetector, RegimeType
-from src.signals.models import SignalDecision
 from src.signals.service import SignalModule
 from src.trading.execution.equity_filter import EquityCurveFilterConfig
 from src.trading.pending import PendingEntryConfig as TradingPendingEntryConfig
@@ -254,13 +253,12 @@ class BacktestEngine:
         pe = config.pending_entry
         self._pending_entry_enabled = pe.enabled
         self._pending_entry_config = TradingPendingEntryConfig()
-        # 挂起的入场意图：{signal_key: (decision, entry_type, entry_low, entry_high, expiry_bar)}
-        # entry_type ∈ {"limit", "stop"}，决定触发边界与成交价语义。
-        # ADR-013: P2 单 member 路径仍用此结构；P4 引入 OCO 多 member 时升级
-        # 为 BacktestPendingGroup 数据结构。
-        self._pending_entries: Dict[
-            str, Tuple[SignalDecision, str, float, float, int]
-        ] = {}
+        # ADR-013 P4: OCO 原生多 member 支持。key 为 EntrySpecGroup.group_id（每
+        # 个 group 唯一）。一个 member 触发 fill → 整 group 退出（与 live 端
+        # `_on_member_filled` 任一成交撤其余 sibling 语义对齐）。
+        from .pending_state import BacktestPendingGroup
+
+        self._pending_groups: Dict[str, BacktestPendingGroup] = {}
         # ADR-013: 与 live 共用同一 EntryPolicyRegistry。
         from src.app_runtime.factories.entry_policies import build_entry_policy_registry
         from src.config import get_entry_policy_config
