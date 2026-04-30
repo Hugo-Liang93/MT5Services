@@ -13,6 +13,7 @@ from .structured import (
     StructuredLowbarEntry,
     StructuredOpenRangeBreakout,
     StructuredPriceAction,
+    StructuredPriorDayRetest,
     StructuredPullbackWindow,
     StructuredRangeReversion,
     StructuredRegimeExhaustion,
@@ -45,6 +46,7 @@ def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
         StructuredPullbackWindow(),
         StructuredOpenRangeBreakout(),
         StructuredPriceAction(),
+        StructuredPriorDayRetest(),
         StructuredRegimeExhaustion(),
         StructuredStrongTrendFollow(),
     )

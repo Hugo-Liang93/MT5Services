@@ -578,6 +578,21 @@
         "volatility"
       ],
       "display": true
+    },
+    {
+      "name": "prior_day_levels",
+      "func_path": "src.indicators.core.prior_day_levels.prior_day_levels",
+      "params": {
+        "min_bars": 24
+      },
+      "dependencies": [],
+      "compute_mode": "standard",
+      "description": "前一交易日 OHLC + 当前 close 在昨日区间的归一化位置（day-trading SR levels）",
+      "tags": [
+        "price_action",
+        "structure"
+      ],
+      "display": true
     }
   ],
   "pipeline": {

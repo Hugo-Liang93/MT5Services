@@ -10,6 +10,7 @@ from .breakout_follow import StructuredBreakoutFollow
 from .lowbar_entry import StructuredLowbarEntry
 from .open_range_breakout import StructuredOpenRangeBreakout
 from .price_action_m15 import StructuredPriceAction
+from .prior_day_retest import StructuredPriorDayRetest
 from .pullback_window import StructuredPullbackWindow
 from .range_reversion import StructuredRangeReversion
 from .regime_exhaustion import StructuredRegimeExhaustion
@@ -36,6 +37,7 @@ __all__ = [
     "StructuredPullbackWindow",
     "StructuredOpenRangeBreakout",
     "StructuredPriceAction",
+    "StructuredPriorDayRetest",
     "StructuredRegimeExhaustion",
     "StructuredStrongTrendFollow",
 ]
