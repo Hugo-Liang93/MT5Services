@@ -158,9 +158,11 @@ def _validate_probabilities(probabilities: np.ndarray, n_samples: int) -> None:
         )
     if not np.all(np.isfinite(probabilities)):
         raise ValueError("entry meta training probabilities must be finite")
+    if not np.all((probabilities >= 0.0) & (probabilities <= 1.0)):
+        raise ValueError("entry meta training probabilities values must be in range [0, 1]")
     row_sums = probabilities.sum(axis=1)
-    if not np.all(np.isfinite(row_sums)) or np.any(row_sums <= 0.0):
-        raise ValueError("entry meta training probabilities row sums must be positive")
+    if not np.allclose(row_sums, 1.0, atol=1e-8):
+        raise ValueError("entry meta training probabilities row sums must sum to 1.0")
 
 
 def _fit_predict_probabilities(

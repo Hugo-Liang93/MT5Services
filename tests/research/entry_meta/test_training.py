@@ -246,6 +246,8 @@ def test_training_rejects_invalid_probability_output(monkeypatch) -> None:
     [
         (np.asarray([[0.5, 0.5], [np.nan, 0.5], [0.5, 0.5], [0.5, 0.5]]), "finite"),
         (np.asarray([[0.5, 0.5], [0.0, 0.0], [0.5, 0.5], [0.5, 0.5]]), "row sums"),
+        (np.asarray([[0.5, 0.5], [-1.0, 2.0], [0.5, 0.5], [0.5, 0.5]]), "range"),
+        (np.asarray([[0.5, 0.5], [0.7, 0.7], [0.5, 0.5], [0.5, 0.5]]), "row sums"),
     ],
 )
 def test_training_rejects_non_finite_or_zero_sum_probabilities(
