@@ -54,6 +54,7 @@ class EntryMetaFeatureBuilder:
 
     def build(self, matrix: Any, dataset: EntryMetaDataset) -> EntryMetaFeatureMatrix:
         matrix_contract = _validate_matrix_contract(matrix)
+        _validate_dataset_alignment(dataset, matrix_contract["n_bars"])
         visible_indicator_keys = self._visible_indicator_keys(matrix)
         trade_features = [_validate_trade(trade, index) for index, trade in enumerate(dataset.trades)]
         regime_names = [_semantic_name(item) for item in matrix_contract["regimes"]]
@@ -224,6 +225,24 @@ def _validate_matrix_contract(matrix: Any) -> dict[str, Any]:
         "sessions": sessions,
         "n_bars": n_bars,
     }
+
+
+def _validate_dataset_alignment(dataset: EntryMetaDataset, n_bars: int) -> None:
+    if len(dataset.trades) != len(dataset.bar_indices):
+        raise ValueError(
+            "dataset trades length "
+            f"{len(dataset.trades)} must match bar_indices length "
+            f"{len(dataset.bar_indices)}"
+        )
+    for sample_index, bar_index in enumerate(dataset.bar_indices):
+        if not isinstance(bar_index, int) or isinstance(bar_index, bool):
+            raise ValueError(
+                f"sample {sample_index} bar_index must be int within [0, {n_bars})"
+            )
+        if bar_index < 0 or bar_index >= n_bars:
+            raise ValueError(
+                f"sample {sample_index} bar_index {bar_index} out of range [0, {n_bars})"
+            )
 
 
 def _validate_trade(trade: dict[str, Any], index: int) -> dict[str, Any]:

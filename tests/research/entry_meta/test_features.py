@@ -291,3 +291,69 @@ def test_frozen_category_mapping_unknown_category_fails_fast() -> None:
 
     with pytest.raises(ValueError, match=r"sample 0.*strategy.*unknown"):
         builder.build(_matrix(), _dataset([trade], [1]))
+
+
+def test_dataset_trades_more_than_bar_indices_fails_fast() -> None:
+    trades = [
+        {
+            "entry_time": "2026-01-01T00:05:00Z",
+            "confidence": 0.75,
+            "direction": "buy",
+            "entry_price": 1.2345,
+            "strategy": "breakout",
+            "pnl": 10.0,
+        },
+        {
+            "entry_time": "2026-01-01T00:10:00Z",
+            "confidence": 0.25,
+            "direction": "sell",
+            "entry_price": 1.1111,
+            "strategy": "mean_reversion",
+            "pnl": -5.0,
+        },
+    ]
+
+    with pytest.raises(ValueError, match=r"trades.*bar_indices"):
+        EntryMetaFeatureBuilder().build(_matrix(), _dataset(trades, [1]))
+
+
+def test_dataset_bar_indices_more_than_trades_fails_fast() -> None:
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+
+    with pytest.raises(ValueError, match=r"trades.*bar_indices"):
+        EntryMetaFeatureBuilder().build(_matrix(), _dataset([trade], [1, 2]))
+
+
+def test_negative_bar_index_fails_fast() -> None:
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+
+    with pytest.raises(ValueError, match="bar_index"):
+        EntryMetaFeatureBuilder().build(_matrix(), _dataset([trade], [-1]))
+
+
+def test_out_of_range_bar_index_fails_fast() -> None:
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+
+    with pytest.raises(ValueError, match="bar_index"):
+        EntryMetaFeatureBuilder().build(_matrix(), _dataset([trade], [3]))
