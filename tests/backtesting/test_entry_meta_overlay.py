@@ -47,7 +47,9 @@ def _artifact(*, status: str = "accepted") -> EntryMetaArtifact:
 
 
 def test_shadow_mode_records_without_blocking() -> None:
-    overlay = EntryMetaBacktestOverlay(_artifact(status="refit"), mode="shadow", threshold=0.65)
+    overlay = EntryMetaBacktestOverlay(
+        _artifact(status="refit"), mode="shadow", threshold=0.65
+    )
 
     verdict = overlay.evaluate(
         datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
@@ -65,6 +67,17 @@ def test_shadow_mode_records_without_blocking() -> None:
     assert report["allowed"] == 1
     assert report["blocked"] == 0
     assert report["missing_predictions"] == 0
+    assert report["probability_summary"] == {
+        "matched_predictions": 1,
+        "take_entry_prob_min": 0.42,
+        "take_entry_prob_max": 0.42,
+        "take_entry_prob_avg": 0.42,
+        "block_entry_prob_min": 0.58,
+        "block_entry_prob_max": 0.58,
+        "block_entry_prob_avg": 0.58,
+        "take_entry_prob_below_threshold": 1,
+        "take_entry_prob_at_or_above_threshold": 0,
+    }
 
 
 def test_filter_mode_blocks_when_take_probability_below_threshold() -> None:
@@ -128,19 +141,11 @@ def test_process_decision_records_entry_meta_blocked_event_before_entry() -> Non
     overlay = EntryMetaBacktestOverlay(_artifact(), mode="filter", threshold=0.65)
     rejections: list[str] = []
     blocked_events: list[dict] = []
-    engine = SimpleNamespace(
-        _config=SimpleNamespace(
-            enable_state_machine=False,
-            confidence=SimpleNamespace(min_confidence=0.1),
-        ),
-        _circuit_breaker=None,
-        _portfolio=SimpleNamespace(_open_positions=[]),
-        _strategy_deployments={},
-        _state_edge_overlay=None,
-        _entry_meta_overlay=overlay,
-        _pending_entry_enabled=False,
-        record_execution_rejection=lambda reason: rejections.append(reason),
-        record_blocked_entry=lambda event: blocked_events.append(event),
+    engine = _ProcessDecisionEngine(
+        state_edge_overlay=None,
+        entry_meta_overlay=overlay,
+        rejections=rejections,
+        blocked_events=blocked_events,
     )
     decision = SignalDecision(
         strategy="breakout",
@@ -189,4 +194,176 @@ def test_backtest_engine_entry_meta_overlay_report_uses_public_overlay_report() 
     engine = BacktestEngine.__new__(BacktestEngine)
     engine._entry_meta_overlay = overlay
 
+    assert engine.entry_meta_overlay is overlay
     assert engine.entry_meta_overlay_report() == overlay.report()
+
+
+def test_backtest_engine_state_edge_overlay_uses_public_read_only_port() -> None:
+    overlay = SimpleNamespace(report=lambda: {"overlay": "state-edge"})
+    engine = BacktestEngine.__new__(BacktestEngine)
+    engine._state_edge_overlay = overlay
+
+    assert engine.state_edge_overlay is overlay
+    assert engine.state_edge_overlay_report() == {"overlay": "state-edge"}
+
+
+def test_state_edge_block_prevents_entry_meta_overlay_call() -> None:
+    state_edge_overlay = _StateEdgeOverlayStub(allowed=False)
+    entry_meta_overlay = _EntryMetaOverlayStub(allowed=False)
+    rejections: list[str] = []
+    blocked_events: list[dict] = []
+    engine = _ProcessDecisionEngine(
+        state_edge_overlay=state_edge_overlay,
+        entry_meta_overlay=entry_meta_overlay,
+        rejections=rejections,
+        blocked_events=blocked_events,
+    )
+
+    process_decision(
+        engine,
+        _decision(),
+        _bar(),
+        1,
+        {"atr14": {"atr": 1.0}},
+        "unknown",
+    )
+
+    assert rejections == ["state_edge_filter"]
+    assert entry_meta_overlay.calls == 0
+    assert blocked_events[0]["source"] == "state_edge_overlay"
+
+
+def test_entry_meta_filter_can_block_after_state_edge_allows() -> None:
+    state_edge_overlay = _StateEdgeOverlayStub(allowed=True)
+    entry_meta_overlay = EntryMetaBacktestOverlay(_artifact(), mode="filter", threshold=0.65)
+    rejections: list[str] = []
+    blocked_events: list[dict] = []
+    engine = _ProcessDecisionEngine(
+        state_edge_overlay=state_edge_overlay,
+        entry_meta_overlay=entry_meta_overlay,
+        rejections=rejections,
+        blocked_events=blocked_events,
+    )
+
+    process_decision(
+        engine,
+        _decision(),
+        _bar(),
+        1,
+        {"atr14": {"atr": 1.0}},
+        "unknown",
+    )
+
+    assert state_edge_overlay.calls == 1
+    assert rejections == ["entry_meta_filter"]
+    assert blocked_events[0]["source"] == "entry_meta_overlay"
+
+
+def _decision() -> SignalDecision:
+    return SignalDecision(
+        strategy="breakout",
+        symbol="XAUUSD",
+        timeframe="H1",
+        direction="buy",
+        confidence=0.9,
+        reason="test",
+    )
+
+
+def _bar() -> OHLC:
+    return OHLC(
+        symbol="XAUUSD",
+        timeframe="H1",
+        time=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
+        open=1.0,
+        high=1.0,
+        low=1.0,
+        close=1.0,
+        volume=1.0,
+    )
+
+
+class _ProcessDecisionEngine:
+    def __init__(
+        self,
+        *,
+        state_edge_overlay: object | None,
+        entry_meta_overlay: object | None,
+        rejections: list[str],
+        blocked_events: list[dict],
+    ) -> None:
+        self._config = SimpleNamespace(
+            enable_state_machine=False,
+            confidence=SimpleNamespace(min_confidence=0.1),
+        )
+        self._circuit_breaker = None
+        self._portfolio = SimpleNamespace(_open_positions=[])
+        self._strategy_deployments = {}
+        self._pending_entry_enabled = False
+        self._state_edge_overlay_value = state_edge_overlay
+        self._entry_meta_overlay_value = entry_meta_overlay
+        self._rejections = rejections
+        self._blocked_events = blocked_events
+
+    @property
+    def state_edge_overlay(self) -> object | None:
+        return self._state_edge_overlay_value
+
+    @property
+    def entry_meta_overlay(self) -> object | None:
+        return self._entry_meta_overlay_value
+
+    def record_execution_rejection(self, reason: str) -> None:
+        self._rejections.append(reason)
+
+    def record_blocked_entry(self, event: dict) -> None:
+        self._blocked_events.append(event)
+
+
+class _StateEdgeOverlayStub:
+    def __init__(self, *, allowed: bool) -> None:
+        self._allowed = allowed
+        self.calls = 0
+
+    def evaluate(
+        self,
+        bar_time: datetime,
+        direction: str,
+        *,
+        strategy: str = "",
+        confidence: float = 0.0,
+    ) -> SimpleNamespace:
+        del bar_time, direction, strategy, confidence
+        self.calls += 1
+        return SimpleNamespace(
+            allowed=self._allowed,
+            reason="allowed" if self._allowed else "state_edge_test_block",
+            direction_probability=0.1,
+            threshold=0.65,
+            prediction=None,
+        )
+
+
+class _EntryMetaOverlayStub:
+    def __init__(self, *, allowed: bool) -> None:
+        self._allowed = allowed
+        self.calls = 0
+
+    def evaluate(
+        self,
+        bar_time: datetime,
+        strategy: str,
+        direction: str,
+        *,
+        confidence: float = 0.0,
+    ) -> SimpleNamespace:
+        del bar_time, strategy, direction, confidence
+        self.calls += 1
+        return SimpleNamespace(
+            allowed=self._allowed,
+            reason="allowed" if self._allowed else "entry_meta_test_block",
+            take_entry_prob=0.1,
+            block_entry_prob=0.9,
+            threshold=0.65,
+            prediction=None,
+        )

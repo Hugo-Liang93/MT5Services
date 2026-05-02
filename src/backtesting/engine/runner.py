@@ -643,14 +643,22 @@ class BacktestEngine:
         return summary
 
     def state_edge_overlay_report(self) -> Optional[dict[str, Any]]:
-        if self._state_edge_overlay is None:
+        if self.state_edge_overlay is None:
             return None
-        return self._state_edge_overlay.report()
+        return self.state_edge_overlay.report()
 
     def entry_meta_overlay_report(self) -> Optional[dict[str, Any]]:
-        if self._entry_meta_overlay is None:
+        if self.entry_meta_overlay is None:
             return None
-        return self._entry_meta_overlay.report()
+        return self.entry_meta_overlay.report()
+
+    @property
+    def state_edge_overlay(self) -> Optional[Any]:
+        return self._state_edge_overlay
+
+    @property
+    def entry_meta_overlay(self) -> Optional[Any]:
+        return self._entry_meta_overlay
 
     def _reset_run_state(self) -> None:
         """重置每次 run() 的运行时状态，确保引擎可复用。"""

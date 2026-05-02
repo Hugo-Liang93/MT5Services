@@ -69,6 +69,15 @@ class EntryMetaBacktestOverlay:
         self._allowed = 0
         self._blocked = 0
         self._missing_predictions = 0
+        self._matched_predictions = 0
+        self._take_entry_prob_sum = 0.0
+        self._block_entry_prob_sum = 0.0
+        self._take_entry_prob_min: float | None = None
+        self._take_entry_prob_max: float | None = None
+        self._block_entry_prob_min: float | None = None
+        self._block_entry_prob_max: float | None = None
+        self._take_entry_prob_below_threshold = 0
+        self._take_entry_prob_at_or_above_threshold = 0
         self._blocked_by_reason: dict[str, int] = {}
         self._blocked_by_strategy: dict[str, int] = {}
 
@@ -100,6 +109,7 @@ class EntryMetaBacktestOverlay:
 
         take_entry_prob = float(prediction.take_entry_prob)
         block_entry_prob = float(prediction.block_entry_prob)
+        self._record_probability(take_entry_prob, block_entry_prob)
         if self._mode == "filter" and take_entry_prob < self._threshold:
             reason = "entry_meta_probability_below_threshold"
             self._record_block(normalized_strategy, reason)
@@ -133,8 +143,60 @@ class EntryMetaBacktestOverlay:
             "allowed": self._allowed,
             "blocked": self._blocked,
             "missing_predictions": self._missing_predictions,
+            "probability_summary": self._probability_summary(),
             "blocked_by_reason": dict(sorted(self._blocked_by_reason.items())),
             "blocked_by_strategy": dict(sorted(self._blocked_by_strategy.items())),
+        }
+
+    def _record_probability(
+        self,
+        take_entry_prob: float,
+        block_entry_prob: float,
+    ) -> None:
+        self._matched_predictions += 1
+        self._take_entry_prob_sum += take_entry_prob
+        self._block_entry_prob_sum += block_entry_prob
+        self._take_entry_prob_min = (
+            take_entry_prob
+            if self._take_entry_prob_min is None
+            else min(self._take_entry_prob_min, take_entry_prob)
+        )
+        self._take_entry_prob_max = (
+            take_entry_prob
+            if self._take_entry_prob_max is None
+            else max(self._take_entry_prob_max, take_entry_prob)
+        )
+        self._block_entry_prob_min = (
+            block_entry_prob
+            if self._block_entry_prob_min is None
+            else min(self._block_entry_prob_min, block_entry_prob)
+        )
+        self._block_entry_prob_max = (
+            block_entry_prob
+            if self._block_entry_prob_max is None
+            else max(self._block_entry_prob_max, block_entry_prob)
+        )
+        if take_entry_prob < self._threshold:
+            self._take_entry_prob_below_threshold += 1
+        else:
+            self._take_entry_prob_at_or_above_threshold += 1
+
+    def _probability_summary(self) -> dict[str, float | int | None]:
+        matched = self._matched_predictions
+        take_avg = self._take_entry_prob_sum / matched if matched else None
+        block_avg = self._block_entry_prob_sum / matched if matched else None
+        return {
+            "matched_predictions": matched,
+            "take_entry_prob_min": self._take_entry_prob_min,
+            "take_entry_prob_max": self._take_entry_prob_max,
+            "take_entry_prob_avg": take_avg,
+            "block_entry_prob_min": self._block_entry_prob_min,
+            "block_entry_prob_max": self._block_entry_prob_max,
+            "block_entry_prob_avg": block_avg,
+            "take_entry_prob_below_threshold": self._take_entry_prob_below_threshold,
+            "take_entry_prob_at_or_above_threshold": (
+                self._take_entry_prob_at_or_above_threshold
+            ),
         }
 
     def _record_block(self, strategy: str, reason: str) -> None:
