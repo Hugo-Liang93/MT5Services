@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,6 +9,11 @@ import numpy as np
 from src.research.entry_meta.dataset import EntryMetaDataset
 from src.research.entry_meta.features import EntryMetaFeatureBuilder
 from src.research.entry_meta.labels import EntryMetaLabelBuilder
+
+
+class _Regime(Enum):
+    TREND = "trend"
+    RANGE = "range"
 
 
 def _dataset(trades: list[dict[str, object]], bar_indices: list[int]) -> EntryMetaDataset:
@@ -34,8 +40,8 @@ def _matrix() -> SimpleNamespace:
             ("rsi", "future_value"): [900.0, 901.0, 902.0],
             ("trade", "pnl_estimate"): [7.0, 8.0, 9.0],
         },
-        regime_code=[10, 20, 30],
-        session_code=[1, 2, 3],
+        regimes=[_Regime.RANGE, _Regime.TREND, _Regime.RANGE],
+        sessions=["asia", "london", "asia"],
     )
 
 
@@ -45,16 +51,16 @@ def test_builds_entry_context_visible_indicators_and_codes_in_stable_order() -> 
             "entry_time": "2026-01-01T00:05:00Z",
             "confidence": 0.75,
             "direction": "buy",
-            "price": 1.2345,
-            "strategy_code": 42,
+            "entry_price": 1.2345,
+            "strategy": "breakout",
             "pnl": 10.0,
         },
         {
             "entry_time": "2026-01-01T00:10:00Z",
             "confidence": 0.25,
             "direction": "sell",
-            "price": 1.1111,
-            "strategy_code": 7,
+            "entry_price": 1.1111,
+            "strategy": "mean_reversion",
             "pnl": -5.0,
         },
     ]
@@ -76,8 +82,8 @@ def test_builds_entry_context_visible_indicators_and_codes_in_stable_order() -> 
         features.rows,
         np.array(
             [
-                [0.75, 1.0, 0.0, 1.2345, 42.0, 2.0, 50.0, 20.0, 2.0],
-                [0.25, 0.0, 1.0, 1.1111, 7.0, 3.0, 60.0, 30.0, 3.0],
+                [0.75, 1.0, 0.0, 1.2345, 0.0, 2.0, 50.0, 1.0, 1.0],
+                [0.25, 0.0, 1.0, 1.1111, 1.0, 3.0, 60.0, 0.0, 0.0],
             ],
             dtype=float,
         ),
@@ -119,15 +125,15 @@ def test_non_finite_and_non_numeric_visible_values_become_zero() -> None:
             ("b", "value"): [float("inf")],
             ("c", "value"): ["not-a-number"],
         },
-        regime_code=[None],
-        session_code=["bad"],
+        regimes=[None],
+        sessions=[None],
     )
     trade = {
         "entry_time": "2026-01-01T00:00:00Z",
         "confidence": "bad",
         "direction": "buy",
-        "price": None,
-        "strategy_code": float("-inf"),
+        "entry_price": None,
+        "strategy": "bad-inputs",
         "pnl": 1.0,
     }
 

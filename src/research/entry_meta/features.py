@@ -41,6 +41,13 @@ class EntryMetaFeatureMatrix:
 class EntryMetaFeatureBuilder:
     def build(self, matrix: Any, dataset: EntryMetaDataset) -> EntryMetaFeatureMatrix:
         visible_indicator_keys = self._visible_indicator_keys(matrix)
+        strategy_codes = _stable_codes(
+            str(_entry_values(trade).get("strategy", "")) for trade in dataset.trades
+        )
+        regime_names = [_semantic_name(item) for item in getattr(matrix, "regimes", [])]
+        regime_codes = _stable_codes(regime_names)
+        session_names = [str(item) for item in getattr(matrix, "sessions", [])]
+        session_codes = _stable_codes(session_names)
         feature_keys = [
             *ENTRY_FEATURE_KEYS,
             *[
@@ -52,7 +59,17 @@ class EntryMetaFeatureBuilder:
         ]
 
         rows = [
-            self._build_row(matrix, trade, bar_index, visible_indicator_keys)
+            self._build_row(
+                matrix,
+                trade,
+                bar_index,
+                visible_indicator_keys,
+                strategy_codes,
+                regime_names,
+                regime_codes,
+                session_names,
+                session_codes,
+            )
             for trade, bar_index in zip(dataset.trades, dataset.bar_indices)
         ]
         row_array = np.array(rows, dtype=float)
@@ -90,22 +107,47 @@ class EntryMetaFeatureBuilder:
         trade: dict[str, Any],
         bar_index: int,
         visible_indicator_keys: list[tuple[str, str]],
+        strategy_codes: dict[str, float],
+        regime_names: list[str],
+        regime_codes: dict[str, float],
+        session_names: list[str],
+        session_codes: dict[str, float],
     ) -> list[float]:
-        entry = trade.get("entry")
-        entry_values = entry if isinstance(entry, dict) else trade
+        entry_values = _entry_values(trade)
+        strategy_name = str(entry_values.get("strategy", ""))
+        regime_name = _series_value(regime_names, bar_index)
+        session_name = _series_value(session_names, bar_index)
         row = [
             _to_float(entry_values.get("confidence")),
             1.0 if str(entry_values.get("direction", "")).lower() == "buy" else 0.0,
             1.0 if str(entry_values.get("direction", "")).lower() == "sell" else 0.0,
-            _to_float(entry_values.get("price")),
-            _to_float(entry_values.get("strategy_code")),
+            _to_float(entry_values.get("entry_price")),
+            strategy_codes.get(strategy_name, 0.0),
         ]
         indicator_series = getattr(matrix, "indicator_series", {})
         for key in visible_indicator_keys:
             row.append(_to_float(_series_value(indicator_series.get(key, []), bar_index)))
-        row.append(_to_float(_series_value(getattr(matrix, "regime_code", []), bar_index)))
-        row.append(_to_float(_series_value(getattr(matrix, "session_code", []), bar_index)))
+        row.append(regime_codes.get(regime_name, 0.0))
+        row.append(session_codes.get(session_name, 0.0))
         return row
+
+
+def _entry_values(trade: dict[str, Any]) -> dict[str, Any]:
+    entry = trade.get("entry")
+    return entry if isinstance(entry, dict) else trade
+
+
+def _stable_codes(values: Any) -> dict[str, float]:
+    names = [str(value) for value in values]
+    return {name: float(index) for index, name in enumerate(sorted(set(names)))}
+
+
+def _semantic_name(value: Any) -> str:
+    if hasattr(value, "value"):
+        return str(value.value)
+    if hasattr(value, "name"):
+        return str(value.name)
+    return str(value)
 
 
 def _series_value(series: Any, index: int) -> Any:
