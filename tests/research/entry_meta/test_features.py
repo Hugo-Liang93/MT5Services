@@ -5,6 +5,7 @@ from enum import Enum
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from src.research.entry_meta.dataset import EntryMetaDataset
 from src.research.entry_meta.features import EntryMetaFeatureBuilder
@@ -92,6 +93,11 @@ def test_builds_entry_context_visible_indicators_and_codes_in_stable_order() -> 
     assert features.train_indices == [0]
     assert features.test_indices == [1]
     assert features.manifest["n_features"] == len(features.feature_keys)
+    assert features.manifest["category_mappings"] == {
+        "strategy": {"breakout": 0.0, "mean_reversion": 1.0},
+        "regime": {"range": 0.0, "trend": 1.0},
+        "session": {"asia": 0.0, "london": 1.0},
+    }
 
 
 def test_forbidden_indicator_fields_are_excluded_from_feature_keys() -> None:
@@ -130,16 +136,16 @@ def test_non_finite_and_non_numeric_visible_values_become_zero() -> None:
     )
     trade = {
         "entry_time": "2026-01-01T00:00:00Z",
-        "confidence": "bad",
+        "confidence": 0.9,
         "direction": "buy",
-        "entry_price": None,
+        "entry_price": 1.2345,
         "strategy": "bad-inputs",
         "pnl": 1.0,
     }
 
     features = EntryMetaFeatureBuilder().build(matrix, _dataset([trade], [0]))
 
-    assert features.rows.tolist() == [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+    assert features.rows.tolist() == [[0.9, 1.0, 0.0, 1.2345, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
 
 
 def test_nested_entry_values_do_not_override_top_level_trade_contract() -> None:
@@ -161,3 +167,127 @@ def test_nested_entry_values_do_not_override_top_level_trade_contract() -> None:
     features = EntryMetaFeatureBuilder().build(_matrix(), _dataset([trade], [1]))
 
     assert features.rows[0, :5].tolist() == [0.75, 1.0, 0.0, 1.2345, 0.0]
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("confidence", None),
+        ("confidence", float("nan")),
+        ("confidence", "not-a-number"),
+        ("entry_price", None),
+        ("entry_price", 0.0),
+        ("entry_price", float("inf")),
+        ("direction", ""),
+        ("direction", "hold"),
+        ("strategy", ""),
+        ("strategy", None),
+    ],
+)
+def test_raw_trade_core_fields_fail_fast(field: str, bad_value: object) -> None:
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+    trade[field] = bad_value
+
+    with pytest.raises(ValueError, match=rf"sample 0.*{field}"):
+        EntryMetaFeatureBuilder().build(_matrix(), _dataset([trade], [1]))
+
+
+@pytest.mark.parametrize("missing_field", ["indicator_series", "regimes", "sessions"])
+def test_matrix_required_fields_fail_fast(missing_field: str) -> None:
+    matrix = _matrix()
+    delattr(matrix, missing_field)
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+
+    with pytest.raises(ValueError, match=missing_field):
+        EntryMetaFeatureBuilder().build(matrix, _dataset([trade], [1]))
+
+
+def test_matrix_indicator_series_length_must_match_bar_times() -> None:
+    matrix = _matrix()
+    matrix.indicator_series[("ema", "value")] = [1.0, 2.0]
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+
+    with pytest.raises(ValueError, match=r"indicator_series.*ema.*value"):
+        EntryMetaFeatureBuilder().build(matrix, _dataset([trade], [1]))
+
+
+def test_matrix_n_bars_must_match_bar_times_length() -> None:
+    matrix = _matrix()
+    matrix.n_bars = 99
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+
+    with pytest.raises(ValueError, match="n_bars"):
+        EntryMetaFeatureBuilder().build(matrix, _dataset([trade], [1]))
+
+
+def test_frozen_category_mappings_are_reused() -> None:
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+    builder = EntryMetaFeatureBuilder(
+        category_mappings={
+            "strategy": {"breakout": 7.0},
+            "regime": {"range": 11.0, "trend": 12.0},
+            "session": {"asia": 21.0, "london": 22.0},
+        }
+    )
+
+    features = builder.build(_matrix(), _dataset([trade], [1]))
+
+    assert features.rows[0, 4] == 7.0
+    assert features.rows[0, -2:].tolist() == [12.0, 22.0]
+    assert features.manifest["category_mappings"]["strategy"] == {"breakout": 7.0}
+
+
+def test_frozen_category_mapping_unknown_category_fails_fast() -> None:
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "unknown",
+        "pnl": 10.0,
+    }
+    builder = EntryMetaFeatureBuilder(
+        category_mappings={
+            "strategy": {"breakout": 0.0},
+            "regime": {"range": 0.0, "trend": 1.0},
+            "session": {"asia": 0.0, "london": 1.0},
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"sample 0.*strategy.*unknown"):
+        builder.build(_matrix(), _dataset([trade], [1]))

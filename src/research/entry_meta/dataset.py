@@ -33,7 +33,7 @@ class EntryMetaDatasetBuilder:
         bar_time_to_index = {
             normalized: index
             for index, normalized in enumerate(
-                _normalize_timestamp(item) for item in _matrix_bar_times(matrix)
+                normalize_timestamp(item) for item in _matrix_bar_times(matrix)
             )
             if normalized is not None
         }
@@ -44,7 +44,7 @@ class EntryMetaDatasetBuilder:
 
         for raw_trade in raw_trades:
             trade = dict(raw_trade)
-            entry_time = _normalize_timestamp(trade.get("entry_time"))
+            entry_time = normalize_timestamp(trade.get("entry_time"))
             bar_index = bar_time_to_index.get(entry_time)
             if entry_time is None or bar_index is None:
                 unmatched_trades.append(trade)
@@ -81,7 +81,7 @@ def _matrix_bar_times(matrix: Any) -> list[Any]:
     return list(matrix.bar_times)
 
 
-def _normalize_timestamp(value: Any) -> datetime | None:
+def normalize_timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         timestamp = value
     elif isinstance(value, str):
