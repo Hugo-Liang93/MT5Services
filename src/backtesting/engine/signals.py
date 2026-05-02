@@ -291,7 +291,7 @@ def process_decision(
             )
             return
 
-    entry_meta_overlay = getattr(engine, "entry_meta_overlay", None)
+    entry_meta_overlay = engine.entry_meta_overlay
     if entry_meta_overlay is not None:
         verdict = entry_meta_overlay.evaluate(
             bar.time,

@@ -259,6 +259,20 @@ def test_entry_meta_filter_can_block_after_state_edge_allows() -> None:
     assert blocked_events[0]["source"] == "entry_meta_overlay"
 
 
+def test_process_decision_requires_public_entry_meta_overlay_port() -> None:
+    engine = _NoEntryMetaOverlayPortEngine()
+
+    with pytest.raises(AttributeError):
+        process_decision(
+            engine,
+            _decision(),
+            _bar(),
+            1,
+            {"atr14": {"atr": 0.0}},
+            "unknown",
+        )
+
+
 def _decision() -> SignalDecision:
     return SignalDecision(
         strategy="breakout",
@@ -367,3 +381,19 @@ class _EntryMetaOverlayStub:
             threshold=0.65,
             prediction=None,
         )
+
+
+class _NoEntryMetaOverlayPortEngine:
+    def __init__(self) -> None:
+        self._config = SimpleNamespace(
+            enable_state_machine=False,
+            confidence=SimpleNamespace(min_confidence=0.1),
+        )
+        self._circuit_breaker = None
+        self._portfolio = SimpleNamespace(_open_positions=[])
+        self._strategy_deployments = {}
+        self._pending_entry_enabled = False
+
+    @property
+    def state_edge_overlay(self) -> None:
+        return None
