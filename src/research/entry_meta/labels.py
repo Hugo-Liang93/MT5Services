@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,9 @@ class EntryMetaLabelBuilder:
         if raw_pnl is None or raw_pnl == "":
             raise ValueError(f"sample {index} field pnl must be a non-empty number")
         try:
-            return float(raw_pnl)
+            pnl = float(raw_pnl)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"sample {index} field pnl must be numeric") from exc
+        if not math.isfinite(pnl):
+            raise ValueError(f"sample {index} field pnl must be a finite number")
+        return pnl

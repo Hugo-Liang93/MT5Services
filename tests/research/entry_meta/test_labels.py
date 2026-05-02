@@ -68,6 +68,19 @@ def test_labels_report_invalid_pnl_sample_index() -> None:
         EntryMetaLabelBuilder().build(trades)
 
 
+@pytest.mark.parametrize(
+    "pnl",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ],
+)
+def test_labels_reject_non_finite_pnl_values(pnl: float) -> None:
+    with pytest.raises(ValueError, match="sample 0.*pnl.*finite"):
+        EntryMetaLabelBuilder().build([{"pnl": pnl}])
+
+
 def test_max_weight_must_be_at_least_one() -> None:
     with pytest.raises(ValueError, match="max_weight"):
         EntryMetaLabelBuilder(max_weight=0.99)
