@@ -70,7 +70,7 @@
 ### 2026-05-03 Entry Meta-Label Overlay Lab
 
 - 新增 Entry Meta 研究层的文档边界：State Edge = 市场状态概率，负责输出 long/short/no_trade 概率；Entry Meta = 交易入场保留概率，负责预测已有策略 entry 的 `take_entry_prob` / `block_entry_prob`。
-- Entry Meta 位于 State Edge 之后，是 trade-aware overlay，不替代策略生成，也不重新定义市场状态标签。第一阶段只消费 baseline backtest 的 `raw_results.trades` 训练，不读取 demo/live runtime 状态，不接入真实下单链路。
+- Entry Meta 位于 State Edge 之后，是 trade-aware overlay，不替代策略生成，也不重新定义市场状态标签。第一阶段以 baseline backtest 的 `raw_results.trades` 作为 entry 样本与 PnL 标签来源，同时基于同一时间窗的 DataMatrix / FeatureHub / `indicator_series` / regime / session 提取当前或历史可见特征；不读取 demo/live runtime 状态，不接入真实下单链路。
 - Backtest 验收限定在 Research + Backtest overlay：通过 `entry_meta_lab` 产出 artifact，通过 `backtest_runner --entry-meta-artifact/--entry-meta-mode/--entry-meta-threshold-grid` 做 shadow/filter，对外用 `entry_meta_overlay_report` 汇总验收。
 - 职责边界要求保持公开端口：Backtest 侧通过 `entry_meta_overlay` 注入，并用 `record_blocked_entry()` 写出 blocked entry 事件；报告消费 `execution_summary.blocked_entry_events` 与 baseline `raw_results.trades` 做 `blocked_trade_attribution`，不探测私有字段。验收必须检查是否挡掉大盈利单，防止只按交易数下降误判过滤有效。
 
