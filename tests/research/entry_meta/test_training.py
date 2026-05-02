@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pytest
 
 from src.research.entry_meta.dataset import EntryMetaDatasetBuilder
+from src.research.entry_meta.features import EntryMetaFeatureMatrix
 from src.research.entry_meta.training import train_entry_meta_bundle
 from src.research.state_edge.backends import BackendUnavailableError
 
@@ -70,7 +73,12 @@ def test_cpu_training_outputs_artifact_probabilities_aligned_to_take_and_block()
     assert bundle.artifact.model_id == "entry-meta-test"
     assert bundle.artifact.backend == "cpu"
     assert bundle.artifact.model_kind == "tabular"
-    assert bundle.artifact.status == "trained"
+    assert bundle.artifact.status == "refit"
+    assert bundle.artifact.metrics["fit_status"] == "trained"
+    assert bundle.artifact.metrics["quality"] == {
+        "status": "refit",
+        "reason": "insufficient_samples",
+    }
     assert bundle.features.train_indices == [0, 1, 2, 3]
     assert bundle.dataset is dataset
     assert len(bundle.artifact.predictions) == len(dataset.trades)
@@ -81,6 +89,28 @@ def test_cpu_training_outputs_artifact_probabilities_aligned_to_take_and_block()
     assert bundle.artifact.metrics["oos_samples"] == 4
     assert "oos_accuracy" in bundle.artifact.metrics
     assert "probability_distribution" in bundle.artifact.metrics
+    assert bundle.artifact.model_payload["prediction_reuse"] == "deferred"
+
+
+def test_cpu_training_accepts_artifact_when_quality_gate_thresholds_are_met() -> None:
+    matrix = _matrix()
+    dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0, 9.0, -4.0, 6.0, -2.0])
+
+    bundle = train_entry_meta_bundle(
+        matrix,
+        dataset,
+        "cpu",
+        min_samples=8,
+        min_oos_samples=4,
+        min_class_samples=4,
+    )
+
+    assert bundle.artifact.status == "accepted"
+    assert bundle.artifact.metrics["fit_status"] == "trained"
+    assert bundle.artifact.metrics["quality"] == {
+        "status": "accepted",
+        "reason": "accepted",
+    }
 
 
 def test_training_uses_constant_refit_when_train_slice_has_one_class() -> None:
@@ -90,7 +120,14 @@ def test_training_uses_constant_refit_when_train_slice_has_one_class() -> None:
     bundle = train_entry_meta_bundle(matrix, dataset, "cpu")
 
     assert bundle.artifact.status == "refit"
+    assert bundle.artifact.metrics["fit_status"] == "refit"
+    assert bundle.artifact.metrics["quality"]["reason"] == "insufficient_samples"
     assert bundle.artifact.model_payload["estimator"] == "constant_prior"
+    assert bundle.artifact.model_payload["prediction_reuse"] == "deferred"
+    assert bundle.artifact.model_payload["class_probs"] == {
+        "block_entry": 0.0,
+        "take_entry": 1.0,
+    }
     assert {prediction.take_entry_prob for prediction in bundle.artifact.predictions} == {1.0}
     assert {prediction.block_entry_prob for prediction in bundle.artifact.predictions} == {0.0}
 
@@ -104,6 +141,10 @@ def test_training_uses_constant_refit_when_train_slice_is_empty() -> None:
 
     assert bundle.artifact.status == "refit"
     assert bundle.artifact.model_payload["reason"] == "insufficient_train_classes_or_features"
+    assert bundle.artifact.model_payload["class_probs"] == {
+        "block_entry": 0.5,
+        "take_entry": 0.5,
+    }
     assert all(
         prediction.take_entry_prob == pytest.approx(0.5)
         and prediction.block_entry_prob == pytest.approx(0.5)
@@ -120,3 +161,108 @@ def test_gpu_backend_unavailable_fails_fast(monkeypatch) -> None:
 
     with pytest.raises(BackendUnavailableError, match="test backend unavailable"):
         train_entry_meta_bundle(matrix, dataset, "gpu")
+
+
+def test_training_rejects_dataset_label_and_weight_length_mismatch() -> None:
+    matrix = _matrix()
+    dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0])
+    mismatched = replace(
+        dataset,
+        labels=replace(
+            dataset.labels,
+            labels=list(dataset.labels.labels[:-1]),
+            sample_weights=list(dataset.labels.sample_weights[:-1]),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="labels.*sample_weights"):
+        train_entry_meta_bundle(matrix, mismatched, "cpu")
+
+
+def test_training_rejects_feature_row_and_key_contract_mismatch(monkeypatch) -> None:
+    from src.research.entry_meta import training
+
+    matrix = _matrix()
+    dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0])
+
+    class _BadFeatureBuilder:
+        def build(self, matrix, dataset):  # noqa: ANN001
+            return EntryMetaFeatureMatrix(
+                rows=np.asarray([[1.0], [2.0], [3.0], [4.0]], dtype=float),
+                feature_keys=["one", "two"],
+                bar_times=["t0", "t1", "t2", "t3"],
+                train_indices=[0],
+                test_indices=[1],
+                manifest={},
+            )
+
+    monkeypatch.setattr(training, "EntryMetaFeatureBuilder", _BadFeatureBuilder)
+
+    with pytest.raises(ValueError, match="rows.*feature_keys"):
+        train_entry_meta_bundle(matrix, dataset, "cpu")
+
+
+def test_training_rejects_feature_index_out_of_range(monkeypatch) -> None:
+    from src.research.entry_meta import training
+
+    matrix = _matrix()
+    dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0])
+
+    class _BadFeatureBuilder:
+        def build(self, matrix, dataset):  # noqa: ANN001
+            return EntryMetaFeatureMatrix(
+                rows=np.asarray([[1.0], [2.0], [3.0], [4.0]], dtype=float),
+                feature_keys=["one"],
+                bar_times=["t0", "t1", "t2", "t3"],
+                train_indices=[0, 4],
+                test_indices=[1],
+                manifest={},
+            )
+
+    monkeypatch.setattr(training, "EntryMetaFeatureBuilder", _BadFeatureBuilder)
+
+    with pytest.raises(ValueError, match="train_indices.*\\[0, 4\\)"):
+        train_entry_meta_bundle(matrix, dataset, "cpu")
+
+
+def test_training_rejects_invalid_probability_output(monkeypatch) -> None:
+    from src.research.entry_meta import training
+
+    matrix = _matrix()
+    dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0])
+
+    monkeypatch.setattr(
+        training,
+        "_fit_predict_probabilities",
+        lambda **kwargs: (np.asarray([[0.5, 0.5]], dtype=float), {}, "trained"),
+    )
+
+    with pytest.raises(ValueError, match="probabilities.*shape"):
+        train_entry_meta_bundle(matrix, dataset, "cpu")
+
+
+@pytest.mark.parametrize(
+    ("probabilities", "message"),
+    [
+        (np.asarray([[0.5, 0.5], [np.nan, 0.5], [0.5, 0.5], [0.5, 0.5]]), "finite"),
+        (np.asarray([[0.5, 0.5], [0.0, 0.0], [0.5, 0.5], [0.5, 0.5]]), "row sums"),
+    ],
+)
+def test_training_rejects_non_finite_or_zero_sum_probabilities(
+    monkeypatch,
+    probabilities: np.ndarray,
+    message: str,
+) -> None:
+    from src.research.entry_meta import training
+
+    matrix = _matrix()
+    dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0])
+
+    monkeypatch.setattr(
+        training,
+        "_fit_predict_probabilities",
+        lambda **kwargs: (probabilities, {}, "trained"),
+    )
+
+    with pytest.raises(ValueError, match=f"probabilities.*{message}"):
+        train_entry_meta_bundle(matrix, dataset, "cpu")

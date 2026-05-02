@@ -9,6 +9,7 @@ import numpy as np
 from src.research.entry_meta.artifacts import EntryMetaArtifact, EntryMetaPrediction
 from src.research.entry_meta.dataset import EntryMetaDataset
 from src.research.entry_meta.features import EntryMetaFeatureBuilder, EntryMetaFeatureMatrix
+from src.research.entry_meta.quality import evaluate_entry_meta_quality
 from src.research.state_edge.backends import resolve_backend
 
 
@@ -29,6 +30,10 @@ def train_entry_meta_bundle(
     dataset: EntryMetaDataset,
     backend_name: str,
     model_id: str | None = None,
+    *,
+    min_samples: int = 40,
+    min_oos_samples: int = 10,
+    min_class_samples: int = 10,
 ) -> EntryMetaTrainingBundle:
     backend = resolve_backend(backend_name)
     backend.assert_available()
@@ -36,14 +41,17 @@ def train_entry_meta_bundle(
     features = EntryMetaFeatureBuilder().build(matrix=matrix, dataset=dataset)
     labels = np.asarray(dataset.labels.labels, dtype=int)
     sample_weights = np.asarray(dataset.labels.sample_weights, dtype=float)
+    _validate_training_contract(features, dataset, labels, sample_weights)
     train_indices = np.asarray(features.train_indices, dtype=int)
 
-    probabilities, model_payload, status = _fit_predict_probabilities(
+    probabilities, model_payload, fit_status = _fit_predict_probabilities(
         rows=features.rows,
         labels=labels,
         sample_weights=sample_weights,
         train_indices=train_indices,
     )
+    _validate_probabilities(probabilities, len(labels))
+    model_payload["prediction_reuse"] = "deferred"
     if backend.name == "gpu":
         model_payload["backend_note"] = _GPU_PHASE1_NOTE
 
@@ -63,6 +71,21 @@ def train_entry_meta_bundle(
         probabilities=probabilities,
         test_indices=list(features.test_indices),
     )
+    quality = evaluate_entry_meta_quality(
+        dict(dataset.labels.summary),
+        metrics,
+        min_samples=min_samples,
+        min_oos_samples=min_oos_samples,
+        min_class_samples=min_class_samples,
+    )
+    if fit_status == "refit":
+        quality = dict(quality)
+        if quality.get("status") == "accepted":
+            quality["gate_reason"] = quality.get("reason", "accepted")
+            quality["reason"] = str(model_payload.get("reason", "estimator_refit"))
+        quality["status"] = "refit"
+    metrics["fit_status"] = fit_status
+    metrics["quality"] = dict(quality)
     artifact = EntryMetaArtifact(
         model_id=model_id or f"entry-meta-{uuid4().hex}",
         symbol=str(getattr(matrix, "symbol", "")),
@@ -76,9 +99,68 @@ def train_entry_meta_bundle(
         predictions=predictions,
         model_payload=model_payload,
         feature_manifest=dict(features.manifest),
-        status=status,
+        status=str(quality["status"]),
     )
     return EntryMetaTrainingBundle(artifact=artifact, features=features, dataset=dataset)
+
+
+def _validate_training_contract(
+    features: EntryMetaFeatureMatrix,
+    dataset: EntryMetaDataset,
+    labels: np.ndarray,
+    sample_weights: np.ndarray,
+) -> None:
+    n_samples = len(dataset.trades)
+    length_fields = {
+        "dataset.trades": n_samples,
+        "labels": len(dataset.labels.labels),
+        "sample_weights": len(dataset.labels.sample_weights),
+        "features.bar_times": len(features.bar_times),
+        "rows": int(features.rows.shape[0]) if features.rows.ndim >= 1 else 0,
+    }
+    if len(set(length_fields.values())) != 1:
+        details = ", ".join(f"{name}={length}" for name, length in length_fields.items())
+        raise ValueError(
+            "entry meta training contract length mismatch across "
+            f"dataset.trades, labels, sample_weights, features.bar_times, rows: {details}"
+        )
+    if labels.shape[0] != n_samples or sample_weights.shape[0] != n_samples:
+        raise ValueError(
+            "entry meta training contract labels and sample_weights arrays "
+            f"must match n_samples {n_samples}"
+        )
+    if features.rows.ndim != 2:
+        raise ValueError("entry meta training contract rows must be a 2D matrix")
+    if features.rows.shape[1] != len(features.feature_keys):
+        raise ValueError(
+            "entry meta training contract rows feature dimension "
+            f"{features.rows.shape[1]} must match feature_keys {len(features.feature_keys)}"
+        )
+    _validate_index_contract("train_indices", features.train_indices, n_samples)
+    _validate_index_contract("test_indices", features.test_indices, n_samples)
+
+
+def _validate_index_contract(name: str, indices: list[int], n_samples: int) -> None:
+    for index in indices:
+        if not isinstance(index, int) or isinstance(index, bool):
+            raise ValueError(f"entry meta training contract {name} must contain int indices")
+        if index < 0 or index >= n_samples:
+            raise ValueError(
+                f"entry meta training contract {name} index {index} out of range [0, {n_samples})"
+            )
+
+
+def _validate_probabilities(probabilities: np.ndarray, n_samples: int) -> None:
+    if probabilities.shape != (n_samples, 2):
+        raise ValueError(
+            "entry meta training probabilities shape "
+            f"{probabilities.shape} must be ({n_samples}, 2)"
+        )
+    if not np.all(np.isfinite(probabilities)):
+        raise ValueError("entry meta training probabilities must be finite")
+    row_sums = probabilities.sum(axis=1)
+    if not np.all(np.isfinite(row_sums)) or np.any(row_sums <= 0.0):
+        raise ValueError("entry meta training probabilities row sums must be positive")
 
 
 def _fit_predict_probabilities(
@@ -95,12 +177,14 @@ def _fit_predict_probabilities(
 
     if not has_train_rows or not has_feature_columns or not has_both_classes:
         probabilities = _constant_prior_probabilities(labels, train_indices)
+        class_probs = _class_probs_from_probabilities(probabilities)
         return (
             probabilities,
             {
                 "estimator": "constant_prior",
                 "reason": "insufficient_train_classes_or_features",
                 "train_samples": int(len(train_indices)),
+                "class_probs": class_probs,
             },
             "refit",
         )
@@ -138,6 +222,15 @@ def _constant_prior_probabilities(labels: np.ndarray, train_indices: np.ndarray)
         np.asarray([[block_probability, take_probability]], dtype=float),
         (len(labels), 1),
     )
+
+
+def _class_probs_from_probabilities(probabilities: np.ndarray) -> dict[str, float]:
+    if len(probabilities) == 0:
+        return {"block_entry": 0.5, "take_entry": 0.5}
+    return {
+        "block_entry": float(probabilities[0, 0]),
+        "take_entry": float(probabilities[0, 1]),
+    }
 
 
 def _align_probabilities(
