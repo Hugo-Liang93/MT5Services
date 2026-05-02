@@ -60,6 +60,45 @@ class PredictivePowerConfig:
 
 
 @dataclass(frozen=True)
+class StateEdgeModelConfig:
+    enabled: bool = False
+    timeframes: List[str] = field(default_factory=lambda: ["H4", "H1", "M30", "M15"])
+    model_kind: str = "hist_gradient_boosting"
+    label_policy: str = "best_cost_after_barrier"
+    min_edge_return: float = 0.0
+    top_bucket_quantile: float = 0.80
+    threshold_grid: List[float] = field(
+        default_factory=lambda: [0.50, 0.55, 0.60, 0.65, 0.70]
+    )
+    sequence_window: int = 64
+    sequence_epochs: int = 8
+    sequence_batch_size: int = 512
+    sequence_learning_rate: float = 0.001
+    min_oos_samples: int = 30
+    min_top_bucket_samples: int = 5
+    min_label_class_samples: int = 10
+
+
+@dataclass(frozen=True)
+class EntryMetaModelConfig:
+    model_kind: str = "tabular"
+    top_bucket_quantile: float = 0.80
+    min_samples: int = 40
+    min_oos_samples: int = 10
+    min_class_samples: int = 10
+    threshold_grid: List[float] = field(
+        default_factory=lambda: [0.50, 0.55, 0.60, 0.65, 0.70]
+    )
+
+
+@dataclass(frozen=True)
+class GPUBackendConfig:
+    preferred: str = "cpu"
+    fail_fast: bool = True
+    readiness_benchmark_rows: int = 100_000
+
+
+@dataclass(frozen=True)
 class TemporalProviderConfig:
     core_indicators: List[str] = field(default_factory=lambda: ["rsi14", "adx14"])
     aux_indicators: List[str] = field(
@@ -147,6 +186,9 @@ class ResearchConfig:
     feature_providers: FeatureProviderConfig = field(
         default_factory=FeatureProviderConfig
     )
+    state_edge_model: StateEdgeModelConfig = field(default_factory=StateEdgeModelConfig)
+    entry_meta_model: EntryMetaModelConfig = field(default_factory=EntryMetaModelConfig)
+    gpu_backend: GPUBackendConfig = field(default_factory=GPUBackendConfig)
 
 
 def _load_feature_providers(parser: configparser.ConfigParser) -> FeatureProviderConfig:
@@ -274,6 +316,12 @@ def load_research_config(ini_path: Optional[str] = None) -> ResearchConfig:
     def _getbool(section: str, key: str, fallback: bool) -> bool:
         return parser.getboolean(section, key, fallback=fallback)
 
+    def _parse_str_list(raw: str) -> List[str]:
+        return [v.strip() for v in raw.split(",") if v.strip()]
+
+    def _parse_float_list(raw: str) -> List[float]:
+        return [float(v.strip()) for v in raw.split(",") if v.strip()]
+
     horizons_str = _get("research", "forward_horizons", "3,10,30,60")
     forward_horizons = [int(h.strip()) for h in horizons_str.split(",") if h.strip()]
 
@@ -343,4 +391,58 @@ def load_research_config(ini_path: Optional[str] = None) -> ResearchConfig:
             ),
         ),
         feature_providers=_load_feature_providers(parser),
+        state_edge_model=StateEdgeModelConfig(
+            enabled=_getbool("state_edge_model", "enabled", False),
+            timeframes=[
+                tf.upper()
+                for tf in _parse_str_list(
+                    _get("state_edge_model", "timeframes", "H4,H1,M30,M15")
+                )
+            ],
+            model_kind=_get(
+                "state_edge_model", "model_kind", "hist_gradient_boosting"
+            ),
+            label_policy=_get(
+                "state_edge_model", "label_policy", "best_cost_after_barrier"
+            ),
+            min_edge_return=_getfloat("state_edge_model", "min_edge_return", 0.0),
+            top_bucket_quantile=_getfloat(
+                "state_edge_model", "top_bucket_quantile", 0.80
+            ),
+            threshold_grid=_parse_float_list(
+                _get("state_edge_model", "threshold_grid", "0.50,0.55,0.60,0.65,0.70")
+            ),
+            sequence_window=_getint("state_edge_model", "sequence_window", 64),
+            sequence_epochs=_getint("state_edge_model", "sequence_epochs", 8),
+            sequence_batch_size=_getint("state_edge_model", "sequence_batch_size", 512),
+            sequence_learning_rate=_getfloat(
+                "state_edge_model", "sequence_learning_rate", 0.001
+            ),
+            min_oos_samples=_getint("state_edge_model", "min_oos_samples", 30),
+            min_top_bucket_samples=_getint(
+                "state_edge_model", "min_top_bucket_samples", 5
+            ),
+            min_label_class_samples=_getint(
+                "state_edge_model", "min_label_class_samples", 10
+            ),
+        ),
+        entry_meta_model=EntryMetaModelConfig(
+            model_kind=_get("entry_meta_model", "model_kind", "tabular"),
+            top_bucket_quantile=_getfloat(
+                "entry_meta_model", "top_bucket_quantile", 0.80
+            ),
+            min_samples=_getint("entry_meta_model", "min_samples", 40),
+            min_oos_samples=_getint("entry_meta_model", "min_oos_samples", 10),
+            min_class_samples=_getint("entry_meta_model", "min_class_samples", 10),
+            threshold_grid=_parse_float_list(
+                _get("entry_meta_model", "threshold_grid", "0.50,0.55,0.60,0.65,0.70")
+            ),
+        ),
+        gpu_backend=GPUBackendConfig(
+            preferred=_get("gpu_backend", "preferred", "cpu"),
+            fail_fast=_getbool("gpu_backend", "fail_fast", True),
+            readiness_benchmark_rows=_getint(
+                "gpu_backend", "readiness_benchmark_rows", 100_000
+            ),
+        ),
     )

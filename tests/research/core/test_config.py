@@ -35,6 +35,16 @@ class TestResearchConfigDefaults:
             "forward_horizons 最大值应 ≥ 30 以覆盖 Chandelier trailing 平均持仓。"
         )
 
+    def test_default_entry_meta_model_config_exists(self) -> None:
+        cfg = ResearchConfig()
+
+        assert cfg.entry_meta_model.model_kind == "tabular"
+        assert cfg.entry_meta_model.top_bucket_quantile == 0.80
+        assert cfg.entry_meta_model.min_samples == 40
+        assert cfg.entry_meta_model.min_oos_samples == 10
+        assert cfg.entry_meta_model.min_class_samples == 10
+        assert cfg.entry_meta_model.threshold_grid == [0.50, 0.55, 0.60, 0.65, 0.70]
+
 
 class TestPermutationBudget:
     def test_pp_n_permutations_default_500_not_1000(self) -> None:
@@ -72,6 +82,82 @@ class TestLoadResearchConfigFromIni:
         assert cfg.train_ratio == 0.60
         assert cfg.round_trip_cost_pct == 0.12
 
+    def test_state_edge_config_overrides_applied(self, tmp_path: Path) -> None:
+        """State Edge / GPU backend 配置从 research.ini 正确读入。"""
+        ini = tmp_path / "research.ini"
+        ini.write_text(
+            textwrap.dedent(
+                """
+                [state_edge_model]
+                enabled = true
+                timeframes = H4,H1
+                model_kind = hist_gradient_boosting
+                label_policy = best_cost_after_barrier
+                min_edge_return = 0.001
+                top_bucket_quantile = 0.90
+                threshold_grid = 0.60,0.70
+                sequence_window = 32
+                sequence_epochs = 3
+                sequence_batch_size = 128
+                sequence_learning_rate = 0.002
+                min_oos_samples = 55
+                min_top_bucket_samples = 7
+                min_label_class_samples = 11
+
+                [gpu_backend]
+                preferred = gpu
+                fail_fast = true
+                readiness_benchmark_rows = 12345
+                """
+            ).strip(),
+            encoding="utf-8",
+        )
+
+        cfg = load_research_config(ini)
+
+        assert cfg.state_edge_model.enabled is True
+        assert cfg.state_edge_model.timeframes == ["H4", "H1"]
+        assert cfg.state_edge_model.min_edge_return == 0.001
+        assert cfg.state_edge_model.top_bucket_quantile == 0.90
+        assert cfg.state_edge_model.threshold_grid == [0.60, 0.70]
+        assert cfg.state_edge_model.sequence_window == 32
+        assert cfg.state_edge_model.sequence_epochs == 3
+        assert cfg.state_edge_model.sequence_batch_size == 128
+        assert cfg.state_edge_model.sequence_learning_rate == 0.002
+        assert cfg.state_edge_model.min_oos_samples == 55
+        assert cfg.state_edge_model.min_top_bucket_samples == 7
+        assert cfg.state_edge_model.min_label_class_samples == 11
+        assert cfg.gpu_backend.preferred == "gpu"
+        assert cfg.gpu_backend.fail_fast is True
+        assert cfg.gpu_backend.readiness_benchmark_rows == 12345
+
+    def test_entry_meta_model_config_overrides_applied(self, tmp_path: Path) -> None:
+        """Entry Meta model 配置从 research.ini 正确读入。"""
+        ini = tmp_path / "research.ini"
+        ini.write_text(
+            textwrap.dedent(
+                """
+                [entry_meta_model]
+                model_kind = tabular
+                top_bucket_quantile = 0.85
+                min_samples = 41
+                min_oos_samples = 12
+                min_class_samples = 13
+                threshold_grid = 0.45,0.50,0.75
+                """
+            ).strip(),
+            encoding="utf-8",
+        )
+
+        cfg = load_research_config(ini)
+
+        assert cfg.entry_meta_model.model_kind == "tabular"
+        assert cfg.entry_meta_model.top_bucket_quantile == 0.85
+        assert cfg.entry_meta_model.min_samples == 41
+        assert cfg.entry_meta_model.min_oos_samples == 12
+        assert cfg.entry_meta_model.min_class_samples == 13
+        assert cfg.entry_meta_model.threshold_grid == [0.45, 0.50, 0.75]
+
     def test_missing_ini_falls_back_to_dataclass_defaults(self, tmp_path: Path) -> None:
         """缺失 .ini 时 loader fallback 必须与 dataclass 默认完全一致。"""
         empty_ini = tmp_path / "empty.ini"
@@ -84,6 +170,7 @@ class TestLoadResearchConfigFromIni:
         assert cfg.round_trip_cost_pct == default_cfg.round_trip_cost_pct
         assert cfg.warmup_bars == default_cfg.warmup_bars
         assert cfg.train_ratio == default_cfg.train_ratio
+        assert cfg.entry_meta_model == default_cfg.entry_meta_model
 
 
 class TestCostReflectedInForwardReturns:
@@ -124,7 +211,7 @@ class TestDefaultResearchConfigPath:
         assert actual == expected
         assert (actual / "research.ini").exists()
         assert actual.name == "config"
-        assert actual.parent.name == "MT5Services"
+        assert (actual.parent / "src").exists()
 
     def test_default_loader_uses_repo_research_ini(self) -> None:
         """默认 loader 应读取 config/research.ini 中的显式统计口径。"""
