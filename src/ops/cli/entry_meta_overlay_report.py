@@ -20,9 +20,18 @@ def build_report_from_paths(
     max_dd_worsen_ratio: float = 0.10,
     min_trades: int = 10,
 ) -> EntryMetaOverlayReport:
-    baseline = _load_result_with_raw_trades(Path(baseline_path))
-    shadow = _load_result_with_raw_trades(Path(shadow_path)) if shadow_path else None
-    filters = [_load_result_with_raw_trades(Path(path)) for path in filter_paths]
+    baseline = _load_single_result_with_raw_trades(
+        Path(baseline_path),
+        role="baseline",
+    )
+    shadow = (
+        _load_single_result_with_raw_trades(Path(shadow_path), role="shadow")
+        if shadow_path
+        else None
+    )
+    filters: list[dict[str, Any]] = []
+    for path in filter_paths:
+        filters.extend(_load_results_with_raw_trades(Path(path)))
     return build_entry_meta_overlay_report(
         baseline,
         shadow,
@@ -77,7 +86,17 @@ def main() -> None:
         print(text, end="")
 
 
-def _load_result_with_raw_trades(path: Path) -> dict[str, Any]:
+def _load_single_result_with_raw_trades(path: Path, *, role: str) -> dict[str, Any]:
+    results = _load_results_with_raw_trades(path)
+    if len(results) != 1:
+        raise ValueError(
+            f"Entry Meta overlay {role} input must contain a single result; "
+            f"got {len(results)} results in {path}"
+        )
+    return results[0]
+
+
+def _load_results_with_raw_trades(path: Path) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(payload, dict) and "results" in payload:
         return _from_backtest_runner_payload(payload)
@@ -85,24 +104,27 @@ def _load_result_with_raw_trades(path: Path) -> dict[str, Any]:
         result = deepcopy(payload)
         if "raw_trades" not in result and "trades" in result:
             result["raw_trades"] = list(result["trades"] or [])
-        return result
+        return [result]
     raise ValueError(f"Unsupported Entry Meta overlay input JSON: {path}")
 
 
-def _from_backtest_runner_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _from_backtest_runner_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     results = payload.get("results") or []
     if not results:
         raise ValueError("Backtest runner JSON does not contain results")
-    result = deepcopy(results[0])
     raw_results = payload.get("raw_results") or []
-    if raw_results:
-        raw_result = raw_results[0] or {}
-        result["raw_trades"] = list(raw_result.get("trades") or [])
-    elif "trades" in result:
-        result["raw_trades"] = list(result.get("trades") or [])
-    else:
-        result.setdefault("raw_trades", [])
-    return result
+    normalized: list[dict[str, Any]] = []
+    for index, raw_result in enumerate(results):
+        result = deepcopy(raw_result)
+        if index < len(raw_results):
+            raw_payload = raw_results[index] or {}
+            result["raw_trades"] = list(raw_payload.get("trades") or [])
+        elif "trades" in result:
+            result["raw_trades"] = list(result.get("trades") or [])
+        else:
+            result.setdefault("raw_trades", [])
+        normalized.append(result)
+    return normalized
 
 
 if __name__ == "__main__":

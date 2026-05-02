@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from typing import Any, Deque, Iterable, Mapping
 
 _METRIC_KEYS = ("trades", "pnl", "pf", "expectancy", "max_dd")
 
@@ -80,11 +81,11 @@ def build_blocked_trade_attribution(
     filter_result: Mapping[str, Any],
 ) -> dict[str, Any]:
     trades = baseline.get("raw_trades") or baseline.get("trades") or []
-    trade_index: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    trade_index: dict[tuple[str, str, str], Deque[Mapping[str, Any]]] = {}
     for trade in trades:
         key = _trade_match_key(trade)
         if key is not None:
-            trade_index[key] = trade
+            trade_index.setdefault(key, deque()).append(trade)
     events = (
         filter_result.get("execution_summary", {}).get("blocked_entry_events", [])
         or []
@@ -100,10 +101,11 @@ def build_blocked_trade_attribution(
         source = event.get("source")
         if source not in (None, "", "entry_meta_overlay"):
             continue
-        trade = trade_index.get(_event_match_key(event))
-        if trade is None:
+        trades_for_key = trade_index.get(_event_match_key(event))
+        if not trades_for_key:
             unmatched_events += 1
             continue
+        trade = trades_for_key.popleft()
 
         pnl = _to_float(trade.get("pnl"))
         matched_pnl += pnl
