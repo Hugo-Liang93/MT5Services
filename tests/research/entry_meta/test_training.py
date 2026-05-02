@@ -10,7 +10,7 @@ import pytest
 from src.research.entry_meta.dataset import EntryMetaDatasetBuilder
 from src.research.entry_meta.features import EntryMetaFeatureMatrix
 from src.research.entry_meta.training import train_entry_meta_bundle
-from src.research.state_edge.backends import BackendUnavailableError
+from src.research.core.backends import BackendUnavailableError
 
 
 @dataclass

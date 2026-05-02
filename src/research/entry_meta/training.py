@@ -10,7 +10,7 @@ from src.research.entry_meta.artifacts import EntryMetaArtifact, EntryMetaPredic
 from src.research.entry_meta.dataset import EntryMetaDataset
 from src.research.entry_meta.features import EntryMetaFeatureBuilder, EntryMetaFeatureMatrix
 from src.research.entry_meta.quality import evaluate_entry_meta_quality
-from src.research.state_edge.backends import resolve_backend
+from src.research.core.backends import resolve_backend
 
 
 _GPU_PHASE1_NOTE = (
