@@ -276,11 +276,7 @@ def process_decision(
             engine.record_execution_rejection("deployment_max_live_positions")
             return
 
-    state_edge_overlay = getattr(
-        engine,
-        "state_edge_overlay",
-        getattr(engine, "_state_edge_overlay", None),
-    )
+    state_edge_overlay = engine.state_edge_overlay
     if state_edge_overlay is not None:
         verdict = state_edge_overlay.evaluate(
             bar.time,
