@@ -163,6 +163,67 @@ def update_state_machine(
     return state.armed and action in ("buy", "sell")
 
 
+def _state_edge_block_event(
+    decision: SignalDecision,
+    bar: OHLC,
+    bar_index: int,
+    regime: RegimeType | str,
+    verdict: Any,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "source": "state_edge_overlay",
+        "execution_reason": "state_edge_filter",
+        "reason": str(getattr(verdict, "reason", "")),
+        "bar_time": (
+            bar.time.isoformat() if hasattr(bar.time, "isoformat") else str(bar.time)
+        ),
+        "bar_index": int(bar_index),
+        "strategy": str(decision.strategy),
+        "direction": str(decision.direction),
+        "confidence": float(decision.confidence),
+        "regime": str(getattr(regime, "value", regime)),
+        "price": float(bar.close),
+        "direction_probability": float(
+            getattr(verdict, "direction_probability", 0.0) or 0.0
+        ),
+        "threshold": float(getattr(verdict, "threshold", 0.0) or 0.0),
+    }
+    prediction = getattr(verdict, "prediction", None)
+    if prediction is not None:
+        event["state_edge_probabilities"] = {
+            "long": float(prediction.long_edge_prob),
+            "short": float(prediction.short_edge_prob),
+            "no_trade": float(prediction.no_trade_prob),
+        }
+    return event
+
+
+def _entry_meta_block_event(
+    decision: SignalDecision,
+    bar: OHLC,
+    bar_index: int,
+    regime: RegimeType | str,
+    verdict: Any,
+) -> dict[str, Any]:
+    return {
+        "source": "entry_meta_overlay",
+        "execution_reason": "entry_meta_filter",
+        "reason": str(getattr(verdict, "reason", "")),
+        "bar_time": (
+            bar.time.isoformat() if hasattr(bar.time, "isoformat") else str(bar.time)
+        ),
+        "bar_index": int(bar_index),
+        "strategy": str(decision.strategy),
+        "direction": str(decision.direction),
+        "confidence": float(decision.confidence),
+        "regime": str(getattr(regime, "value", regime)),
+        "price": float(bar.close),
+        "take_entry_prob": float(getattr(verdict, "take_entry_prob", 0.0) or 0.0),
+        "block_entry_prob": float(getattr(verdict, "block_entry_prob", 0.0) or 0.0),
+        "threshold": float(getattr(verdict, "threshold", 0.0) or 0.0),
+    }
+
+
 def process_decision(
     engine: "BacktestEngine",
     decision: SignalDecision,
@@ -213,6 +274,36 @@ def process_decision(
         )
         if strategy_open >= deployment.max_live_positions:
             engine.record_execution_rejection("deployment_max_live_positions")
+            return
+
+    state_edge_overlay = getattr(engine, "_state_edge_overlay", None)
+    if state_edge_overlay is not None:
+        verdict = state_edge_overlay.evaluate(
+            bar.time,
+            decision.direction,
+            strategy=decision.strategy,
+            confidence=decision.confidence,
+        )
+        if not verdict.allowed:
+            engine.record_execution_rejection("state_edge_filter")
+            engine.record_blocked_entry(
+                _state_edge_block_event(decision, bar, bar_index, regime, verdict)
+            )
+            return
+
+    entry_meta_overlay = getattr(engine, "_entry_meta_overlay", None)
+    if entry_meta_overlay is not None:
+        verdict = entry_meta_overlay.evaluate(
+            bar.time,
+            decision.strategy,
+            decision.direction,
+            confidence=decision.confidence,
+        )
+        if not verdict.allowed:
+            engine.record_execution_rejection("entry_meta_filter")
+            engine.record_blocked_entry(
+                _entry_meta_block_event(decision, bar, bar_index, regime, verdict)
+            )
             return
 
     atr_value = indicators.get("atr14", {}).get("atr", 0.0)

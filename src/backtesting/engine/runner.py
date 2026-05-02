@@ -209,6 +209,10 @@ class BacktestEngine:
         # 对 CANDIDATE / DEMO_VALIDATION / locked_timeframes / max_live_positions 的
         # 处理完全一致。None 表示"未显式注入"，将在构造期从 signal_config 读取。
         strategy_deployments: Optional[Dict[str, StrategyDeployment]] = None,
+        # Research-only overlay：只在 backtest 中消费 State Edge artifact。
+        # demo/live runtime 不构造该端口。
+        state_edge_overlay: Optional[Any] = None,
+        entry_meta_overlay: Optional[Any] = None,
     ) -> None:
         self._config = config
         self._data_loader = data_loader
@@ -230,6 +234,8 @@ class BacktestEngine:
             self._strategy_deployments = _load_deployments_from_signal_config()
         else:
             self._strategy_deployments = dict(strategy_deployments)
+        self._state_edge_overlay = state_edge_overlay
+        self._entry_meta_overlay = entry_meta_overlay
         # HTF 指标：{timeframe: {indicator_name: {field: value}}}（静态快照，向后兼容）
         self._htf_indicator_data = htf_indicator_data or {}
         # HTF 时序数据：{timeframe: [(bar_time, indicators), ...]}，按 bar 时间查找
@@ -616,6 +622,9 @@ class BacktestEngine:
         key = str(reason or "unspecified")
         self._execution_rejections[key] = self._execution_rejections.get(key, 0) + 1
 
+    def record_blocked_entry(self, event: dict[str, Any]) -> None:
+        self._blocked_entry_events.append(dict(event))
+
     def record_entry_acceptance(self) -> None:
         self._accepted_entries += 1
 
@@ -625,12 +634,23 @@ class BacktestEngine:
             "accepted_entries": self._accepted_entries,
             "rejected_entries": sum(self._execution_rejections.values()),
             "rejection_reasons": dict(sorted(self._execution_rejections.items())),
+            "blocked_entry_events": list(self._blocked_entry_events),
         }
         if self._intrabar_ctx is not None:
             from .intrabar import intrabar_stats
 
             summary["intrabar"] = intrabar_stats(self._intrabar_ctx)
         return summary
+
+    def state_edge_overlay_report(self) -> Optional[dict[str, Any]]:
+        if self._state_edge_overlay is None:
+            return None
+        return self._state_edge_overlay.report()
+
+    def entry_meta_overlay_report(self) -> Optional[dict[str, Any]]:
+        if self._entry_meta_overlay is None:
+            return None
+        return self._entry_meta_overlay.report()
 
     def _reset_run_state(self) -> None:
         """重置每次 run() 的运行时状态，确保引擎可复用。"""
@@ -644,6 +664,10 @@ class BacktestEngine:
             self._performance_tracker.reset()
         if self._htf_cache is not None:
             self._htf_cache.reset()
+        if self._state_edge_overlay is not None:
+            self._state_edge_overlay.reset()
+        if self._entry_meta_overlay is not None:
+            self._entry_meta_overlay.reset()
 
         self._signal_states: Dict[str, _BacktestSignalState] = {}
         if config.enable_state_machine:
@@ -654,6 +678,7 @@ class BacktestEngine:
         self._recorded_evals: Set[Tuple[int, str]] = set()
         self._accepted_entries = 0
         self._execution_rejections: Dict[str, int] = {}
+        self._blocked_entry_events: list[dict[str, Any]] = []
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
             max_positions=risk.max_positions,
