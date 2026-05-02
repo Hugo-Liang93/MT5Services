@@ -7,6 +7,7 @@ from typing import Any
 
 
 ARTIFACT_FILENAME = "entry_meta_artifact.json"
+ARTIFACT_TYPE = "entry_meta"
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class EntryMetaPrediction:
     direction: str
     take_entry_prob: float
     block_entry_prob: float
+    threshold_context: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -24,6 +26,7 @@ class EntryMetaPrediction:
             "direction": self.direction,
             "take_entry_prob": self.take_entry_prob,
             "block_entry_prob": self.block_entry_prob,
+            "threshold_context": self.threshold_context,
         }
 
     @classmethod
@@ -44,6 +47,11 @@ class EntryMetaPrediction:
             direction=str(data["direction"]),
             take_entry_prob=float(data["take_entry_prob"]),
             block_entry_prob=float(data["block_entry_prob"]),
+            threshold_context=(
+                dict(data["threshold_context"])
+                if data.get("threshold_context") is not None
+                else None
+            ),
         )
 
 
@@ -61,10 +69,11 @@ class EntryMetaArtifact:
     predictions: list[EntryMetaPrediction]
     model_payload: dict[str, Any]
     feature_manifest: dict[str, Any]
-    status: str
+    status: str = "trained"
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "artifact_type": ARTIFACT_TYPE,
             "model_id": self.model_id,
             "symbol": self.symbol,
             "timeframe": self.timeframe,
@@ -82,6 +91,9 @@ class EntryMetaArtifact:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EntryMetaArtifact:
+        artifact_type = data.get("artifact_type")
+        if artifact_type is not None and artifact_type != ARTIFACT_TYPE:
+            raise ValueError(f"entry meta artifact has unsupported artifact_type: {artifact_type}")
         _require_keys(
             data,
             {
@@ -97,7 +109,6 @@ class EntryMetaArtifact:
                 "predictions",
                 "model_payload",
                 "feature_manifest",
-                "status",
             },
         )
         predictions = data["predictions"]
@@ -118,7 +129,7 @@ class EntryMetaArtifact:
             predictions=[EntryMetaPrediction.from_dict(item) for item in predictions],
             model_payload=dict(data["model_payload"]),
             feature_manifest=dict(data["feature_manifest"]),
-            status=str(data["status"]),
+            status=str(data.get("status", "trained")),
         )
 
 
@@ -133,6 +144,8 @@ def save_artifact(artifact: EntryMetaArtifact, output_dir: Path) -> Path:
 
 
 def load_artifact(path: Path) -> EntryMetaArtifact:
+    if path.is_dir():
+        path = path / ARTIFACT_FILENAME
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("entry meta artifact JSON must be an object")

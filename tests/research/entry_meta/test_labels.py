@@ -28,3 +28,15 @@ def test_sample_weights_protect_large_winners_and_large_losers() -> None:
     assert labels.sample_weights[0] == 1.05
     assert labels.sample_weights[1] == 2.0
     assert labels.sample_weights[2] == 1.8
+
+
+def test_sample_weights_are_capped_at_max_weight() -> None:
+    trades = [
+        {"pnl": 10_000.0, "pnl_pct": 500.0},
+        {"pnl": -10_000.0, "pnl_pct": -500.0},
+    ]
+
+    labels = EntryMetaLabelBuilder(max_weight=3.0).build(trades)
+
+    assert labels.sample_weights == [3.0, 3.0]
+    assert labels.weight_summary == {"min": 3.0, "max": 3.0, "mean": 3.0}
