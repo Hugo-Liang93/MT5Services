@@ -31,6 +31,8 @@ class EntryMetaPrediction:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EntryMetaPrediction:
+        if not isinstance(data, dict):
+            raise ValueError("entry meta artifact prediction must be an object")
         _require_keys(
             data,
             {
@@ -41,17 +43,16 @@ class EntryMetaPrediction:
                 "block_entry_prob",
             },
         )
+        threshold_context = data.get("threshold_context")
+        if threshold_context is not None and not isinstance(threshold_context, dict):
+            raise ValueError("entry meta artifact threshold_context must be an object")
         return cls(
             bar_time=str(data["bar_time"]),
             strategy=str(data["strategy"]),
             direction=str(data["direction"]),
             take_entry_prob=float(data["take_entry_prob"]),
             block_entry_prob=float(data["block_entry_prob"]),
-            threshold_context=(
-                dict(data["threshold_context"])
-                if data.get("threshold_context") is not None
-                else None
-            ),
+            threshold_context=dict(threshold_context) if threshold_context is not None else None,
         )
 
 
@@ -65,7 +66,7 @@ class EntryMetaArtifact:
     feature_keys: list[str]
     label_summary: dict[str, int]
     sample_weight_summary: dict[str, float]
-    metrics: dict[str, float]
+    metrics: dict[str, Any]
     predictions: list[EntryMetaPrediction]
     model_payload: dict[str, Any]
     feature_manifest: dict[str, Any]
@@ -114,6 +115,9 @@ class EntryMetaArtifact:
         predictions = data["predictions"]
         if not isinstance(predictions, list):
             raise ValueError("entry meta artifact predictions must be a list")
+        for prediction in predictions:
+            if not isinstance(prediction, dict):
+                raise ValueError("entry meta artifact prediction must be an object")
         return cls(
             model_id=str(data["model_id"]),
             symbol=str(data["symbol"]),
@@ -125,7 +129,7 @@ class EntryMetaArtifact:
             sample_weight_summary={
                 str(key): float(value) for key, value in data["sample_weight_summary"].items()
             },
-            metrics={str(key): float(value) for key, value in data["metrics"].items()},
+            metrics=dict(data["metrics"]),
             predictions=[EntryMetaPrediction.from_dict(item) for item in predictions],
             model_payload=dict(data["model_payload"]),
             feature_manifest=dict(data["feature_manifest"]),

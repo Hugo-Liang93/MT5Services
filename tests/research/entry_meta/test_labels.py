@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from src.research.entry_meta.labels import EntryMetaLabelBuilder
 
 
@@ -40,3 +42,32 @@ def test_sample_weights_are_capped_at_max_weight() -> None:
 
     assert labels.sample_weights == [3.0, 3.0]
     assert labels.weight_summary == {"min": 3.0, "max": 3.0, "mean": 3.0}
+
+
+@pytest.mark.parametrize(
+    "trade",
+    [
+        {},
+        {"pnl": None},
+        {"pnl": ""},
+        {"pnl": "not-a-number"},
+    ],
+)
+def test_labels_reject_invalid_pnl_values_with_sample_index(trade: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="sample 0.*pnl"):
+        EntryMetaLabelBuilder().build([trade])
+
+
+def test_labels_report_invalid_pnl_sample_index() -> None:
+    trades = [
+        {"pnl": 1.0},
+        {"pnl": None},
+    ]
+
+    with pytest.raises(ValueError, match="sample 1.*pnl"):
+        EntryMetaLabelBuilder().build(trades)
+
+
+def test_max_weight_must_be_at_least_one() -> None:
+    with pytest.raises(ValueError, match="max_weight"):
+        EntryMetaLabelBuilder(max_weight=0.99)
