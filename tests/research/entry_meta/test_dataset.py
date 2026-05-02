@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from src.research.entry_meta.dataset import EntryMetaDatasetBuilder
 
 
@@ -61,3 +63,15 @@ def test_iso_z_entry_time_matches_utc_datetime_bar_time() -> None:
 
     assert dataset.bar_indices == [2]
     assert dataset.labels.labels == [0]
+
+
+def test_missing_bar_times_fails_fast_even_if_bars_exist() -> None:
+    matrix = SimpleNamespace(
+        bars=[SimpleNamespace(time=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc))],
+        train_slice=lambda: range(0, 1),
+        test_slice=lambda: range(0, 0),
+    )
+    trades = [{"entry_time": "2026-01-01T00:00:00Z", "pnl": 1.0}]
+
+    with pytest.raises((AttributeError, ValueError), match="bar_times"):
+        EntryMetaDatasetBuilder().build(matrix, trades)

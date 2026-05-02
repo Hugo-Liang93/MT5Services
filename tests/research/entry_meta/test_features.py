@@ -140,3 +140,24 @@ def test_non_finite_and_non_numeric_visible_values_become_zero() -> None:
     features = EntryMetaFeatureBuilder().build(matrix, _dataset([trade], [0]))
 
     assert features.rows.tolist() == [[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+
+
+def test_nested_entry_values_do_not_override_top_level_trade_contract() -> None:
+    trade = {
+        "entry_time": "2026-01-01T00:05:00Z",
+        "confidence": 0.75,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "entry": {
+            "confidence": 0.01,
+            "direction": "sell",
+            "entry_price": 9.9999,
+            "strategy": "nested_should_not_apply",
+        },
+        "pnl": 10.0,
+    }
+
+    features = EntryMetaFeatureBuilder().build(_matrix(), _dataset([trade], [1]))
+
+    assert features.rows[0, :5].tolist() == [0.75, 1.0, 0.0, 1.2345, 0.0]

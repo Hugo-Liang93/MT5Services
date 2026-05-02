@@ -76,9 +76,9 @@ class EntryMetaDatasetBuilder:
 
 
 def _matrix_bar_times(matrix: Any) -> list[Any]:
-    if hasattr(matrix, "bar_times"):
-        return list(matrix.bar_times)
-    return [item.time for item in getattr(matrix, "bars", [])]
+    if not hasattr(matrix, "bar_times"):
+        raise ValueError("matrix must expose bar_times")
+    return list(matrix.bar_times)
 
 
 def _normalize_timestamp(value: Any) -> datetime | None:

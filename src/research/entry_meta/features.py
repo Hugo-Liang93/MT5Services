@@ -42,7 +42,7 @@ class EntryMetaFeatureBuilder:
     def build(self, matrix: Any, dataset: EntryMetaDataset) -> EntryMetaFeatureMatrix:
         visible_indicator_keys = self._visible_indicator_keys(matrix)
         strategy_codes = _stable_codes(
-            str(_entry_values(trade).get("strategy", "")) for trade in dataset.trades
+            str(trade.get("strategy", "")) for trade in dataset.trades
         )
         regime_names = [_semantic_name(item) for item in getattr(matrix, "regimes", [])]
         regime_codes = _stable_codes(regime_names)
@@ -113,15 +113,14 @@ class EntryMetaFeatureBuilder:
         session_names: list[str],
         session_codes: dict[str, float],
     ) -> list[float]:
-        entry_values = _entry_values(trade)
-        strategy_name = str(entry_values.get("strategy", ""))
+        strategy_name = str(trade.get("strategy", ""))
         regime_name = _series_value(regime_names, bar_index)
         session_name = _series_value(session_names, bar_index)
         row = [
-            _to_float(entry_values.get("confidence")),
-            1.0 if str(entry_values.get("direction", "")).lower() == "buy" else 0.0,
-            1.0 if str(entry_values.get("direction", "")).lower() == "sell" else 0.0,
-            _to_float(entry_values.get("entry_price")),
+            _to_float(trade.get("confidence")),
+            1.0 if str(trade.get("direction", "")).lower() == "buy" else 0.0,
+            1.0 if str(trade.get("direction", "")).lower() == "sell" else 0.0,
+            _to_float(trade.get("entry_price")),
             strategy_codes.get(strategy_name, 0.0),
         ]
         indicator_series = getattr(matrix, "indicator_series", {})
@@ -130,11 +129,6 @@ class EntryMetaFeatureBuilder:
         row.append(regime_codes.get(regime_name, 0.0))
         row.append(session_codes.get(session_name, 0.0))
         return row
-
-
-def _entry_values(trade: dict[str, Any]) -> dict[str, Any]:
-    entry = trade.get("entry")
-    return entry if isinstance(entry, dict) else trade
 
 
 def _stable_codes(values: Any) -> dict[str, float]:
