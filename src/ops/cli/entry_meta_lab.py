@@ -8,6 +8,23 @@ from typing import Any
 from src.utils.timezone import parse_iso_to_utc
 
 
+def build_entry_meta_lab_output_payload(
+    *,
+    symbol: str,
+    environment: str,
+    backend_name: str,
+    coverage: dict[str, Any],
+    result: Any,
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "environment": environment,
+        "backend": backend_name,
+        "coverage": {tf: info.to_dict() for tf, info in coverage.items()},
+        "result": result.to_dict(),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Entry Meta Research Lab")
     parser.add_argument("--environment", choices=["live", "demo"], required=True)
@@ -41,7 +58,7 @@ def main() -> None:
     start_time = parse_iso_to_utc(args.start)
     end_time = parse_iso_to_utc(args.end)
     timeframe = args.tf.strip().upper()
-    ensure_ohlc_data_coverage(
+    coverage = ensure_ohlc_data_coverage(
         symbol=args.symbol,
         timeframes=[timeframe],
         start=start_time,
@@ -64,7 +81,13 @@ def main() -> None:
             model_id=args.model_id,
         )
 
-    payload: dict[str, Any] = result.to_dict()
+    payload = build_entry_meta_lab_output_payload(
+        symbol=args.symbol,
+        environment=args.environment,
+        backend_name=backend.name,
+        coverage=coverage,
+        result=result,
+    )
     if args.json_output:
         output_path = Path(args.json_output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
