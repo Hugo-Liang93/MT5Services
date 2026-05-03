@@ -25,31 +25,89 @@
 
 ---
 
+## Extensibility Design Principles (新增 — 2026-05-03 user 显式要求)
+
+**目标**：Phase 1+2 之后，新增数据源（FRED / Polygon / EOD HD / Databento）和新 feature 应该是 **<1 天工作量 + 仅扩展不修改**（OCP 开闭原则）。
+
+**4 个抽象层（必须从 Day 1 落地，不留"后期重构"空头支票）**：
+
+### 抽象 1：`ExternalDataSource` Protocol
+所有外部数据源（yfinance / stooq / fred / polygon）实现同一接口。新增数据源 = 新建一个 client 类 + registry 注册一行，无需改任何 backfill 逻辑。
+
+```python
+# src/research/external/protocol.py
+class ExternalDataSource(Protocol):
+    name: str  # "yfinance" | "stooq" | "fred" | "polygon"
+    def fetch_daily(self, symbol: str, *, start: date, end: date) -> List[DailyBar]: ...
+    def supports_symbol(self, symbol: str) -> bool: ...  # 让 registry 选默认 source
+```
+
+### 抽象 2：Source Registry + 通用 backfill CLI
+**单一** backfill CLI，通过 `--source yfinance` 切换数据源，`--symbols` 任意符号列表。Phase 1 的 `cme_backfill` + Phase 2 的 `cross_asset_backfill` 合并为同一脚本。
+
+```bash
+# 用法（Phase 1+2+未来都用同一个）
+python -m src.research.external.backfill --environment live \
+    --source yfinance --symbols GC=F,DX-Y.NYB,^TNX,^GSPC --start 2023-01-01
+
+# 未来加 FRED：
+python -m src.research.external.backfill --environment live \
+    --source fred --symbols DGS10,DTWEXBGS --start 2023-01-01
+```
+
+### 抽象 3：通用 daily field lookup helper
+所有 FeatureProvider 通过同一工厂函数拿到 cached lookup，避免每个 provider 重写 DB 查询 + 缓存逻辑。
+
+```python
+# src/research/features/external_data_lookup.py
+def make_daily_field_lookup(symbol: str, field: str = "close") -> Callable[[date], Optional[float]]:
+    """返回 (date) -> Optional[float]。
+    内部缓存；首次调用懒加载 trailing N 天数据；未来加 intraday 时签名扩展为 (date, time)。"""
+```
+
+### 抽象 4：FeatureProvider 注册元数据驱动
+新增 provider 三步：
+1. 写 Provider 类（实现 FeatureProvider Protocol）
+2. 在 `_PROVIDER_FACTORIES` 加一行
+3. 在 `config/research.ini [feature_providers]` 加 `<name> = true`
+
+**不需要**改 hub.py 主逻辑、不需要碰 mining_runner、不需要碰 state_edge_lab。
+
+### 未来扩展点（YAGNI — 不在本 plan 实现，但设计不阻塞）
+- **Intraday 数据**：`daily_external_ohlc` 是 daily 专用；未来加 `intraday_external_ohlc(symbol, time)` 表 + `IntradayDataSource` Protocol。`make_daily_field_lookup` 的命名已暗示 daily 范围；未来加 `make_intraday_field_lookup`
+- **多 source fallback**：registry 可扩展为 `_SOURCE_PRIORITY = ["polygon", "yfinance"]`，让昂贵 source 优先、免费 source 兜底
+- **API key 管理**：FRED / Polygon / Databento 都需要 key；走 `config/research.local.ini [external_data] fred_api_key=...`，protocol 实现自己读 config
+- **新 feature provider**：每个新数据维度（如 NLP sentiment / order flow / option Greeks）走相同 4 步流程；不需要修改任何现有代码
+
+---
+
 ## File Structure
 
 **Phase 0 (no new files)** — only runs existing CLIs + reads artifacts.
 
-**Phase 1 (CME GC volume):**
-- Create `src/persistence/schema/daily_external_ohlc.py` (new table DDL + INSERT_SQL)
+**Phase 1 (extensibility infra + CME GC volume):**
 - Create `src/research/external/__init__.py` (subpackage)
-- Create `src/research/external/yfinance_client.py` (HTTP client wrapper)
-- Create `src/research/external/cme_backfill.py` (one-shot CLI to backfill last 3y)
-- Create `src/research/features/cme_volume/__init__.py` (provider package)
-- Create `src/research/features/cme_volume/provider.py` (`CMEVolumeFeatureProvider`)
-- Modify `src/research/features/hub.py` (register provider)
+- Create `src/research/external/protocol.py` (`ExternalDataSource` Protocol + `DailyBar` + `_SOURCE_REGISTRY`)
+- Create `src/research/external/yfinance_client.py` (`YFinanceClient` implementing protocol)
+- Create `src/research/external/backfill.py` (**通用** CLI — `--source --symbols`，未来 FRED/Polygon 共用)
+- Create `src/persistence/schema/daily_external_ohlc.py` (新表 DDL + INSERT_SQL)
+- Create `src/research/features/external_data_lookup.py` (`make_daily_field_lookup` 通用 helper)
+- Create `src/research/features/cme_volume/__init__.py` + `provider.py` (`CMEVolumeFeatureProvider`)
+- Modify `src/research/features/hub.py` (注册 provider，复用 `make_daily_field_lookup`)
 - Modify `config/research.ini` (`[feature_providers]` add `cme_volume = true`)
-- Create `tests/research/external/test_cme_backfill.py`
-- Create `tests/research/features/cme_volume/test_provider.py`
-- Modify `pyproject.toml` (add yfinance dep)
+- Modify `src/config/models/research.py` (`FeatureProvidersConfig.cme_volume: bool = False`)
+- Create `tests/research/external/{test_protocol.py, test_yfinance_client.py, test_backfill.py}`
+- Create `tests/research/features/{test_external_data_lookup.py, cme_volume/test_provider.py}`
+- Create `tests/persistence/schema/test_daily_external_ohlc.py`
+- Modify `pyproject.toml` (add yfinance dep + mypy ignore)
 
-**Phase 2 (cross-asset ingestor):**
-- Modify `src/research/external/yfinance_client.py` (add multi-symbol support)
-- Create `src/research/external/cross_asset_backfill.py` (CLI for DXY/10Y/SPX)
-- Create `src/research/features/cross_asset/__init__.py`
-- Create `src/research/features/cross_asset/provider.py` (`CrossAssetFeatureProvider`)
-- Modify `src/research/features/hub.py` (register provider)
+**Phase 2 (cross-asset — 复用 Phase 1 抽象，无新基础设施)：**
+- Create `src/research/features/cross_asset/__init__.py` + `provider.py` (`CrossAssetFeatureProvider`)
+- Modify `src/research/features/hub.py` (注册 provider，复用 `make_daily_field_lookup`)
 - Modify `config/research.ini` (add `cross_asset = true` + `[feature_providers.cross_asset]`)
-- Create `tests/research/external/test_cross_asset_backfill.py`
+- Modify `src/config/models/research.py` (`FeatureProvidersConfig.cross_asset: bool = False`)
+- Create `tests/research/features/cross_asset/test_provider.py`
+- **无需** 新 backfill CLI（Phase 1 通用 backfill 一条命令拉 DXY/10Y/SPX）
 - Create `tests/research/features/cross_asset/test_provider.py`
 
 **Phase 3 (validation):**
@@ -127,6 +185,207 @@ git commit -m "docs: phase 0 ML pipeline sanity validation"
 **Purpose:** XAUUSD broker tick_volume is not real volume. CME GC futures (the institutional gold market) provides real daily volume. Adding it as a feature gives mining its first non-OHLC information source.
 
 **Why CME GC**: it's the largest gold futures contract, daily-resolution data is free via Yahoo Finance (`GC=F`), and academic literature shows ~0.7-0.85 correlation with XAUUSD spot price-action (lagged by hours).
+
+### Task 1.0: ExternalDataSource Protocol + registry (extensibility infra)
+
+**Files:**
+- Create: `src/research/external/__init__.py`
+- Create: `src/research/external/protocol.py`
+- Test: `tests/research/external/__init__.py` (empty)
+- Test: `tests/research/external/test_protocol.py`
+
+- [ ] **Step 1: Write the failing protocol test**
+
+Create `tests/research/external/test_protocol.py`:
+```python
+"""ExternalDataSource Protocol — abstraction for any daily-OHLCV data source.
+
+Implementations: yfinance (Phase 1) → stooq / fred / polygon / databento (future).
+Registry pattern keeps `backfill.py` CLI source-agnostic; new sources need only
+register a factory.
+"""
+from __future__ import annotations
+
+from datetime import date
+from typing import List
+
+import pytest
+
+from src.research.external.protocol import (
+    DailyBar,
+    ExternalDataSource,
+    register_source,
+    get_source,
+    list_registered_sources,
+    UnknownSourceError,
+)
+
+
+def test_daily_bar_is_frozen_dataclass() -> None:
+    bar = DailyBar(
+        symbol="GC=F", date=date(2026, 4, 1),
+        open=2300.0, high=2310.0, low=2295.0, close=2305.0, volume=250000.0,
+    )
+    with pytest.raises(Exception):  # FrozenInstanceError
+        bar.symbol = "X"  # type: ignore
+
+
+def test_register_and_get_source_round_trip() -> None:
+    class DummySource:
+        name = "dummy_test_source"
+        def fetch_daily(self, symbol, *, start, end): return []
+        def supports_symbol(self, symbol): return True
+
+    register_source("dummy_test_source", lambda: DummySource())
+    src = get_source("dummy_test_source")
+    assert isinstance(src, DummySource)
+    assert "dummy_test_source" in list_registered_sources()
+
+
+def test_get_source_unknown_raises() -> None:
+    with pytest.raises(UnknownSourceError) as exc:
+        get_source("nonexistent_source_xyz")
+    assert "nonexistent_source_xyz" in str(exc.value)
+    assert "registered:" in str(exc.value).lower()
+
+
+def test_external_data_source_is_runtime_checkable() -> None:
+    class GoodImpl:
+        name = "good"
+        def fetch_daily(self, symbol, *, start, end): return []
+        def supports_symbol(self, symbol): return True
+
+    class BadImpl:
+        name = "bad"
+        # missing fetch_daily
+
+    assert isinstance(GoodImpl(), ExternalDataSource)
+    assert not isinstance(BadImpl(), ExternalDataSource)
+```
+
+- [ ] **Step 2: Run the test — confirm it fails**
+
+```bash
+python -m pytest tests/research/external/test_protocol.py -v
+```
+Expected: ImportError (module not found).
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/research/external/__init__.py`:
+```python
+"""External daily-resolution data sources for research feature providers.
+
+Public API: ExternalDataSource protocol + registry. Concrete sources
+(YFinanceClient, future FredClient/PolygonClient) live as siblings.
+"""
+from src.research.external.protocol import (
+    DailyBar,
+    ExternalDataSource,
+    UnknownSourceError,
+    get_source,
+    list_registered_sources,
+    register_source,
+)
+
+__all__ = [
+    "DailyBar",
+    "ExternalDataSource",
+    "UnknownSourceError",
+    "get_source",
+    "list_registered_sources",
+    "register_source",
+]
+```
+
+Create `src/research/external/protocol.py`:
+```python
+"""ExternalDataSource Protocol + DailyBar value type + source registry.
+
+Extension contract:
+1. Implement a class with attrs `name: str`, `fetch_daily(symbol, *, start, end)
+   -> List[DailyBar]`, `supports_symbol(symbol) -> bool`.
+2. Call `register_source("your_name", lambda: YourClient())` at import time.
+3. The generic backfill CLI then accepts `--source your_name`.
+
+`runtime_checkable` lets `isinstance(obj, ExternalDataSource)` validate
+implementations at runtime — convenient for dynamic source discovery.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from typing import Callable, Dict, List
+
+from typing_extensions import Protocol, runtime_checkable
+
+
+class UnknownSourceError(KeyError):
+    """Raised when get_source() is called with an unregistered name."""
+
+
+@dataclass(frozen=True)
+class DailyBar:
+    """Daily OHLCV value type — single-bar contract across all data sources."""
+
+    symbol: str
+    date: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+@runtime_checkable
+class ExternalDataSource(Protocol):
+    """Any source that can fetch daily OHLCV for a symbol over a date range."""
+
+    name: str
+
+    def fetch_daily(
+        self, symbol: str, *, start: date, end: date
+    ) -> List[DailyBar]: ...
+
+    def supports_symbol(self, symbol: str) -> bool: ...
+
+
+_REGISTRY: Dict[str, Callable[[], ExternalDataSource]] = {}
+
+
+def register_source(name: str, factory: Callable[[], ExternalDataSource]) -> None:
+    """Register a factory for a named data source. Idempotent (last-write-wins)."""
+    _REGISTRY[name] = factory
+
+
+def get_source(name: str) -> ExternalDataSource:
+    """Instantiate the source registered under `name`. Raises UnknownSourceError."""
+    if name not in _REGISTRY:
+        raise UnknownSourceError(
+            f"data source '{name}' not registered. "
+            f"Currently registered: {sorted(_REGISTRY.keys())}"
+        )
+    return _REGISTRY[name]()
+
+
+def list_registered_sources() -> List[str]:
+    """Return all registered source names (sorted, for stable display)."""
+    return sorted(_REGISTRY.keys())
+```
+
+- [ ] **Step 4: Run the test — confirm it passes**
+
+```bash
+python -m pytest tests/research/external/test_protocol.py -v
+```
+Expected: 4 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/research/external/__init__.py src/research/external/protocol.py tests/research/external/__init__.py tests/research/external/test_protocol.py
+git commit -m "feat: ExternalDataSource Protocol + source registry"
+```
 
 ### Task 1.1: Add yfinance dependency
 
@@ -295,21 +554,23 @@ git add src/persistence/schema/daily_external_ohlc.py src/persistence/schema/__i
 git commit -m "feat: add daily_external_ohlc hypertable schema"
 ```
 
-### Task 1.3: yfinance client wrapper
+### Task 1.3: yfinance client wrapper (implements ExternalDataSource)
 
 **Files:**
-- Create: `src/research/external/__init__.py`
 - Create: `src/research/external/yfinance_client.py`
+- Modify: `src/research/external/__init__.py` (re-export YFinanceClient + auto-register)
 - Test: `tests/research/external/test_yfinance_client.py`
+
+**Note:** Task 1.0 already created `src/research/external/__init__.py` and the Protocol. This task adds the concrete yfinance implementation and registers it via `register_source("yfinance", lambda: YFinanceClient())`.
 
 - [ ] **Step 1: Write the failing client test**
 
-Create `tests/research/external/__init__.py` (empty file).
 Create `tests/research/external/test_yfinance_client.py`:
 ```python
-"""yfinance_client thin wrapper — single responsibility: fetch daily OHLCV
-for a yahoo symbol over a date range, return list of (date, OHLCV) tuples.
-Network calls mocked; production behavior verified separately."""
+"""yfinance_client thin wrapper — implements ExternalDataSource Protocol.
+
+Network calls mocked; production behavior verified separately.
+"""
 from __future__ import annotations
 
 from datetime import date
@@ -317,11 +578,32 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.research.external import DailyBar, ExternalDataSource, get_source
 from src.research.external.yfinance_client import (
     YFinanceClient,
     YFinanceError,
-    DailyBar,
 )
+
+
+def test_yfinance_client_implements_external_data_source_protocol() -> None:
+    client = YFinanceClient()
+    assert isinstance(client, ExternalDataSource)
+    assert client.name == "yfinance"
+
+
+def test_yfinance_auto_registered_under_canonical_name() -> None:
+    # Importing the yfinance_client module must register the source.
+    src = get_source("yfinance")
+    assert isinstance(src, YFinanceClient)
+
+
+def test_supports_symbol_returns_true_for_any_string() -> None:
+    # yfinance accepts any symbol; if it's invalid Yahoo returns empty data
+    # and fetch_daily raises YFinanceError. supports_symbol is permissive.
+    client = YFinanceClient()
+    assert client.supports_symbol("GC=F") is True
+    assert client.supports_symbol("DX-Y.NYB") is True
+    assert client.supports_symbol("^TNX") is True
 
 
 def _fake_history_df(rows: list[tuple[str, float, float, float, float, float]]):
@@ -377,25 +659,32 @@ Expected: ImportError (module not found).
 
 - [ ] **Step 3: Write the implementation**
 
-Create `src/research/external/__init__.py` (empty). Create `src/research/external/yfinance_client.py`:
+Create `src/research/external/yfinance_client.py`:
 
 ```python
-"""Thin wrapper around yfinance for daily OHLCV fetches.
+"""yfinance ExternalDataSource — fetch daily OHLCV from Yahoo Finance.
 
-Single responsibility: fetch daily OHLCV for one Yahoo Finance symbol over
-a date range, return typed DailyBar values. NaN volumes normalized to 0.0
-(yfinance returns NaN for symbols where Yahoo lacks volume — e.g. some indices).
+Implements the ExternalDataSource Protocol from src/research/external/protocol.py.
+Auto-registers under the name "yfinance" at import time so the generic
+backfill CLI can dispatch via `--source yfinance`.
+
+NaN volumes normalized to 0.0 (Yahoo returns NaN for symbols without volume,
+e.g., index tickers like ^TNX).
 
 NOT responsible for: persistence, retries beyond yfinance defaults, multi-symbol
-parallel fetching, rate limiting (Yahoo's free tier is generous for daily data).
+parallel fetching, rate limiting.
 """
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, List
+
+from src.research.external.protocol import (
+    DailyBar,
+    register_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -404,20 +693,10 @@ class YFinanceError(RuntimeError):
     """Raised when yfinance returns no data or a malformed response."""
 
 
-@dataclass(frozen=True)
-class DailyBar:
-    symbol: str
-    date: date
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-
-
 class YFinanceClient:
-    """Synchronous wrapper. yfinance is itself synchronous (urllib under
-    the hood); we don't add async because daily backfills are < 100 RPS."""
+    """Daily OHLCV via yfinance package. ExternalDataSource implementation."""
+
+    name = "yfinance"
 
     def fetch_daily(
         self, symbol: str, *, start: date, end: date
@@ -451,6 +730,10 @@ class YFinanceClient:
             )
         return bars
 
+    def supports_symbol(self, symbol: str) -> bool:
+        """yfinance accepts any string; invalid symbols fail at fetch time."""
+        return bool(symbol)
+
     def _history_for(self, symbol: str, *, start: date, end: date) -> Any:
         """Isolated for test patching. Calls yfinance.Ticker(...).history(...)."""
         import yfinance as yf
@@ -464,6 +747,17 @@ class YFinanceClient:
             auto_adjust=False,
             actions=False,
         )
+
+
+# Register at import time so `get_source("yfinance")` works after this module
+# is loaded (typically when src/research/external/__init__.py imports it).
+register_source("yfinance", lambda: YFinanceClient())
+```
+
+Update `src/research/external/__init__.py` to ensure yfinance_client is imported (which triggers registration). Append to its imports:
+```python
+# Import side-effect: registers yfinance under the source registry.
+from src.research.external import yfinance_client as _yfinance_client  # noqa: F401
 ```
 
 - [ ] **Step 4: Run the test — confirm it passes**
@@ -480,82 +774,144 @@ git add src/research/external/__init__.py src/research/external/yfinance_client.
 git commit -m "feat: yfinance daily OHLCV client wrapper"
 ```
 
-### Task 1.4: CME backfill CLI
+### Task 1.4: Generic backfill CLI (source-agnostic, multi-symbol)
 
 **Files:**
-- Create: `src/research/external/cme_backfill.py`
-- Test: `tests/research/external/test_cme_backfill.py`
+- Create: `src/research/external/backfill.py`
+- Test: `tests/research/external/test_backfill.py`
+
+**Note:** Replaces the original task design where each data source had its own
+backfill script. Now ONE CLI accepts `--source <registered_name> --symbols a,b,c`
+and dispatches via the `_REGISTRY` from Task 1.0. Phase 2 reuses this same CLI
+with `--symbols DX-Y.NYB,^TNX,^GSPC`. Future FRED / Polygon sources only need
+to register themselves; this CLI works unchanged.
 
 - [ ] **Step 1: Write the failing CLI test**
 
-Create `tests/research/external/test_cme_backfill.py`:
+Create `tests/research/external/test_backfill.py`:
 ```python
-"""cme_backfill CLI — pulls daily CME GC futures (`GC=F`) from yfinance and
-writes to daily_external_ohlc table. Idempotent via ON CONFLICT UPDATE.
+"""backfill — generic source-agnostic backfill CLI.
+
+Pulls daily OHLCV via any registered ExternalDataSource, writes to
+daily_external_ohlc. Per-symbol failures don't abort the run.
 """
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from src.research.external.cme_backfill import backfill, parse_args
-from src.research.external.yfinance_client import DailyBar
+from src.research.external import DailyBar, register_source
+from src.research.external.backfill import (
+    backfill_symbols,
+    parse_args,
+)
 
 
-def test_parse_args_defaults_to_three_years_back() -> None:
-    args = parse_args(["--environment", "live"])
+def test_parse_args_requires_source_and_symbols() -> None:
+    args = parse_args(
+        ["--environment", "live", "--source", "yfinance", "--symbols", "GC=F"]
+    )
     assert args.environment == "live"
-    assert args.symbol == "GC=F"  # default symbol
+    assert args.source == "yfinance"
+    assert args.symbols == ["GC=F"]
+
+
+def test_parse_args_supports_multi_symbols_csv() -> None:
+    args = parse_args(
+        [
+            "--environment", "live",
+            "--source", "yfinance",
+            "--symbols", "GC=F,DX-Y.NYB,^TNX,^GSPC",
+        ]
+    )
+    assert args.symbols == ["GC=F", "DX-Y.NYB", "^TNX", "^GSPC"]
+
+
+def test_parse_args_default_three_year_window() -> None:
+    args = parse_args(
+        ["--environment", "live", "--source", "yfinance", "--symbols", "GC=F"]
+    )
     assert (date.today() - args.start).days >= 365 * 3 - 1
 
 
-def test_backfill_inserts_fetched_bars() -> None:
-    fake_bars = [
-        DailyBar("GC=F", date(2026, 4, 1), 2300, 2310, 2295, 2305, 250000),
-        DailyBar("GC=F", date(2026, 4, 2), 2305, 2320, 2300, 2315, 280000),
-    ]
+def test_backfill_symbols_returns_per_symbol_counts() -> None:
     fake_writer = MagicMock()
-    fake_client = MagicMock()
-    fake_client.fetch_daily.return_value = fake_bars
+    fake_source = MagicMock()
+    fake_source.fetch_daily.side_effect = lambda sym, **kw: [
+        DailyBar(sym, date(2026, 4, 1), 100, 101, 99, 100.5, 0.0)
+    ]
 
-    inserted = backfill(
-        client=fake_client,
+    counts = backfill_symbols(
+        source=fake_source,
         writer=fake_writer,
-        symbol="GC=F",
+        symbols=["GC=F", "DX-Y.NYB"],
         start=date(2026, 4, 1),
-        end=date(2026, 4, 2),
+        end=date(2026, 4, 1),
     )
 
-    assert inserted == 2
-    fake_client.fetch_daily.assert_called_once_with(
-        "GC=F", start=date(2026, 4, 1), end=date(2026, 4, 2)
-    )
-    # writer.execute called once per bar
+    assert counts == {"GC=F": 1, "DX-Y.NYB": 1}
+    assert fake_source.fetch_daily.call_count == 2
     assert fake_writer.execute.call_count == 2
+
+
+def test_backfill_symbols_continues_after_per_symbol_failure() -> None:
+    """If yfinance throws YFinanceError for one symbol, others still succeed."""
+    from src.research.external.yfinance_client import YFinanceError
+
+    fake_writer = MagicMock()
+    fake_source = MagicMock()
+
+    def fake_fetch(sym, **kw):
+        if sym == "BAD":
+            raise YFinanceError("no data")
+        return [DailyBar(sym, date(2026, 4, 1), 100, 101, 99, 100.5, 0.0)]
+
+    fake_source.fetch_daily.side_effect = fake_fetch
+
+    counts = backfill_symbols(
+        source=fake_source,
+        writer=fake_writer,
+        symbols=["BAD", "GOOD"],
+        start=date(2026, 4, 1),
+        end=date(2026, 4, 1),
+    )
+
+    assert counts == {"BAD": 0, "GOOD": 1}
 ```
 
 - [ ] **Step 2: Run the test — confirm it fails**
 
 ```bash
-python -m pytest tests/research/external/test_cme_backfill.py -v
+python -m pytest tests/research/external/test_backfill.py -v
 ```
 Expected: ImportError.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `src/research/external/cme_backfill.py`:
+Create `src/research/external/backfill.py`:
 ```python
-"""cme_backfill — one-shot CLI to backfill CME GC daily OHLCV into
-daily_external_ohlc table.
+"""Generic source-agnostic backfill CLI.
+
+Pulls daily OHLCV from any registered ExternalDataSource and writes to
+daily_external_ohlc. Per-symbol failures (UnknownSourceError, YFinanceError,
+etc.) don't abort — count is recorded as 0 and the run continues.
 
 Usage:
-    python -m src.research.external.cme_backfill --environment live
-    python -m src.research.external.cme_backfill --environment live --start 2023-01-01
+    # Phase 1 — CME volume
+    python -m src.research.external.backfill --environment live \\
+        --source yfinance --symbols GC=F --start 2023-01-01
 
-Idempotent: ON CONFLICT (symbol, date) DO UPDATE in DDL means re-running
-overwrites existing rows with fresh data.
+    # Phase 2 — cross-asset (same CLI)
+    python -m src.research.external.backfill --environment live \\
+        --source yfinance --symbols DX-Y.NYB,^TNX,^GSPC --start 2023-01-01
+
+    # Future FRED — same CLI, different source
+    python -m src.research.external.backfill --environment live \\
+        --source fred --symbols DGS10,DTWEXBGS --start 2023-01-01
+
+Idempotent: daily_external_ohlc has ON CONFLICT (symbol, date) DO UPDATE.
 """
 from __future__ import annotations
 
@@ -563,10 +919,10 @@ import argparse
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 from src.persistence.schema.daily_external_ohlc import INSERT_SQL
-from src.research.external.yfinance_client import DailyBar, YFinanceClient
+from src.research.external import DailyBar, get_source
 
 logger = logging.getLogger(__name__)
 
@@ -574,15 +930,26 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _CliArgs:
     environment: str
-    symbol: str
+    source: str
+    symbols: List[str]
     start: date
     end: date
 
 
 def parse_args(argv: Sequence[str] | None = None) -> _CliArgs:
-    parser = argparse.ArgumentParser(prog="cme_backfill")
+    parser = argparse.ArgumentParser(prog="backfill")
     parser.add_argument("--environment", required=True, choices=("live", "demo"))
-    parser.add_argument("--symbol", default="GC=F")
+    parser.add_argument(
+        "--source",
+        required=True,
+        help="Registered ExternalDataSource name (e.g. yfinance)",
+    )
+    parser.add_argument(
+        "--symbols",
+        required=True,
+        type=lambda s: [x.strip() for x in s.split(",") if x.strip()],
+        help="Comma-separated symbol list (source-specific format)",
+    )
     parser.add_argument(
         "--start",
         type=lambda s: date.fromisoformat(s),
@@ -596,37 +963,49 @@ def parse_args(argv: Sequence[str] | None = None) -> _CliArgs:
     ns = parser.parse_args(argv)
     return _CliArgs(
         environment=ns.environment,
-        symbol=ns.symbol,
+        source=ns.source,
+        symbols=list(ns.symbols),
         start=ns.start,
         end=ns.end,
     )
 
 
-def backfill(
+def backfill_symbols(
     *,
-    client: Any,
+    source: Any,
     writer: Any,
-    symbol: str,
+    symbols: List[str],
     start: date,
     end: date,
-) -> int:
-    """Fetch + insert. Returns number of rows inserted/updated."""
-    bars: List[DailyBar] = client.fetch_daily(symbol, start=start, end=end)
-    for bar in bars:
-        writer.execute(
-            INSERT_SQL,
-            (
-                bar.symbol,
-                bar.date,
-                bar.open,
-                bar.high,
-                bar.low,
-                bar.close,
-                bar.volume,
-            ),
-        )
-    logger.info("cme_backfill: %s %d rows inserted/updated", symbol, len(bars))
-    return len(bars)
+) -> Dict[str, int]:
+    """Fetch from `source`, write each DailyBar via `writer.execute(INSERT_SQL, ...)`.
+
+    Returns per-symbol row counts. A failed symbol records 0 and logs the error.
+    """
+    counts: Dict[str, int] = {}
+    for sym in symbols:
+        try:
+            bars: List[DailyBar] = source.fetch_daily(sym, start=start, end=end)
+        except Exception as exc:
+            logger.warning("backfill: %s failed: %s", sym, exc)
+            counts[sym] = 0
+            continue
+        for bar in bars:
+            writer.execute(
+                INSERT_SQL,
+                (
+                    bar.symbol,
+                    bar.date,
+                    bar.open,
+                    bar.high,
+                    bar.low,
+                    bar.close,
+                    bar.volume,
+                ),
+            )
+        counts[sym] = len(bars)
+        logger.info("backfill: %s %d rows", sym, len(bars))
+    return counts
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -639,17 +1018,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     settings = load_db_settings(args.environment)
     db_writer = TimescaleWriter(settings)
 
-    client = YFinanceClient()
+    source = get_source(args.source)  # raises UnknownSourceError if --source bad
     with db_writer.connection() as conn, conn.cursor() as cur:
-        n = backfill(
-            client=client,
+        counts = backfill_symbols(
+            source=source,
             writer=cur,
-            symbol=args.symbol,
+            symbols=args.symbols,
             start=args.start,
             end=args.end,
         )
         conn.commit()
-    print(f"backfilled {n} rows for {args.symbol}")
+    print("backfilled:", counts)
     return 0
 
 
@@ -660,24 +1039,224 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run the test — confirm it passes**
 
 ```bash
-python -m pytest tests/research/external/test_cme_backfill.py -v
+python -m pytest tests/research/external/test_backfill.py -v
 ```
-Expected: 2 passed.
+Expected: 5 passed.
 
-- [ ] **Step 5: Run real backfill on live DB**
+- [ ] **Step 5: Run real CME backfill on live DB**
 
 ```bash
-python -m src.research.external.cme_backfill --environment live --start 2023-01-01
+python -m src.research.external.backfill --environment live \
+    --source yfinance --symbols GC=F --start 2023-01-01
 ```
-Expected: prints `backfilled N rows for GC=F` where N >= 700 (3 years of trading days).
+Expected: prints `backfilled: {'GC=F': N}` where N >= 700.
 
-Verify: `psql -c "SELECT MIN(date), MAX(date), COUNT(*) FROM daily_external_ohlc WHERE symbol='GC=F'"` returns the expected range.
+Verify: `psql -c "SELECT MIN(date), MAX(date), COUNT(*) FROM daily_external_ohlc WHERE symbol='GC=F'"`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/research/external/cme_backfill.py tests/research/external/test_cme_backfill.py
-git commit -m "feat: CME GC volume backfill CLI"
+git add src/research/external/backfill.py tests/research/external/test_backfill.py
+git commit -m "feat: generic source-agnostic daily-OHLCV backfill CLI"
+```
+
+### Task 1.4.5: Shared daily field lookup helper
+
+**Files:**
+- Create: `src/research/features/external_data_lookup.py`
+- Test: `tests/research/features/test_external_data_lookup.py`
+
+**Note:** Both Phase 1 (CMEVolumeFeatureProvider) and Phase 2 (CrossAssetFeature
+Provider) need to look up "give me a daily OHLCV field for (symbol, date) from
+daily_external_ohlc table, cached." This task extracts that shared logic so
+neither provider re-implements DB query + caching. Future providers using the
+same table get this helper for free.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/research/features/test_external_data_lookup.py`:
+```python
+"""external_data_lookup — shared factory for FeatureProviders to query
+daily_external_ohlc by (symbol, field, date), with per-instance caching.
+"""
+from __future__ import annotations
+
+from datetime import date
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.research.features.external_data_lookup import (
+    make_daily_field_lookup,
+    SUPPORTED_FIELDS,
+)
+
+
+def test_supported_fields_match_schema() -> None:
+    # daily_external_ohlc columns minus PK (symbol, date)
+    assert SUPPORTED_FIELDS == frozenset({"open", "high", "low", "close", "volume"})
+
+
+def test_make_daily_field_lookup_rejects_unknown_field() -> None:
+    with pytest.raises(ValueError) as exc:
+        make_daily_field_lookup("GC=F", field="bid")
+    assert "bid" in str(exc.value)
+    assert "supported:" in str(exc.value).lower()
+
+
+def test_lookup_caches_per_date() -> None:
+    """Two calls with same date hit DB only once."""
+    fake_writer = MagicMock()
+    fake_cursor = MagicMock()
+    fake_cursor.fetchone.return_value = (250000.0,)
+    fake_conn = MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cursor
+    fake_writer.connection.return_value.__enter__.return_value = fake_conn
+
+    lookup = make_daily_field_lookup(
+        "GC=F", field="volume", _writer_factory=lambda: fake_writer
+    )
+
+    v1 = lookup(date(2026, 4, 1))
+    v2 = lookup(date(2026, 4, 1))  # same date
+    assert v1 == 250000.0
+    assert v2 == 250000.0
+    # DB called only once despite two lookups
+    assert fake_cursor.execute.call_count == 1
+
+
+def test_lookup_returns_none_when_row_missing() -> None:
+    fake_writer = MagicMock()
+    fake_cursor = MagicMock()
+    fake_cursor.fetchone.return_value = None  # no row
+    fake_conn = MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cursor
+    fake_writer.connection.return_value.__enter__.return_value = fake_conn
+
+    lookup = make_daily_field_lookup(
+        "GC=F", field="volume", _writer_factory=lambda: fake_writer
+    )
+
+    assert lookup(date(2026, 4, 1)) is None
+
+
+def test_lookup_independent_caches_per_factory_call() -> None:
+    """Two calls to make_daily_field_lookup return independent caches."""
+    fake_writer = MagicMock()
+    fake_cursor = MagicMock()
+    fake_cursor.fetchone.return_value = (100.0,)
+    fake_conn = MagicMock()
+    fake_conn.cursor.return_value.__enter__.return_value = fake_cursor
+    fake_writer.connection.return_value.__enter__.return_value = fake_conn
+
+    lookup_a = make_daily_field_lookup(
+        "GC=F", field="volume", _writer_factory=lambda: fake_writer
+    )
+    lookup_b = make_daily_field_lookup(
+        "DX-Y.NYB", field="close", _writer_factory=lambda: fake_writer
+    )
+
+    lookup_a(date(2026, 4, 1))
+    lookup_b(date(2026, 4, 1))
+    # Different (symbol, field) → 2 separate DB queries
+    assert fake_cursor.execute.call_count == 2
+```
+
+- [ ] **Step 2: Run the test — confirm it fails**
+
+```bash
+python -m pytest tests/research/features/test_external_data_lookup.py -v
+```
+Expected: ImportError.
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/research/features/external_data_lookup.py`:
+```python
+"""Shared factory: (symbol, field) → callable(date) → Optional[float] from
+daily_external_ohlc, with per-instance date cache.
+
+All FeatureProviders that need daily external OHLCV use this — no provider
+should re-implement DB query + caching.
+
+Future intraday extension: add `make_intraday_field_lookup(symbol, field)`
+returning callable(datetime) → Optional[float] from a future
+intraday_external_ohlc table. Same caching pattern.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import date
+from typing import Any, Callable, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+SUPPORTED_FIELDS: frozenset = frozenset({"open", "high", "low", "close", "volume"})
+
+
+def _default_writer_factory() -> Any:
+    """Lazy-construct TimescaleWriter for the live environment.
+
+    Isolated so tests can inject a mock writer without importing src.config.database.
+    """
+    from src.config.database import load_db_settings
+    from src.persistence.db import TimescaleWriter
+
+    return TimescaleWriter(load_db_settings("live"))
+
+
+def make_daily_field_lookup(
+    symbol: str,
+    *,
+    field: str = "close",
+    _writer_factory: Callable[[], Any] = _default_writer_factory,
+) -> Callable[[date], Optional[float]]:
+    """Return a callable that fetches `field` for `symbol` on a given date.
+
+    The returned callable caches per (symbol, field, date) so repeated lookups
+    in the same FeatureProvider compute() pass hit DB only once per date.
+
+    Raises ValueError immediately if `field` is not a daily_external_ohlc column.
+
+    `_writer_factory` is for test injection; production callers omit it.
+    """
+    if field not in SUPPORTED_FIELDS:
+        raise ValueError(
+            f"unknown field '{field}'; supported: {sorted(SUPPORTED_FIELDS)}"
+        )
+
+    writer = _writer_factory()
+    cache: Dict[date, Optional[float]] = {}
+
+    sql = (
+        f"SELECT {field} FROM daily_external_ohlc "  # nosec B608: field whitelisted above
+        "WHERE symbol=%s AND date=%s"
+    )
+
+    def lookup(d: date) -> Optional[float]:
+        if d in cache:
+            return cache[d]
+        with writer.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (symbol, d))
+            row = cur.fetchone()
+            cache[d] = float(row[0]) if row and row[0] is not None else None
+        return cache[d]
+
+    return lookup
+```
+
+- [ ] **Step 4: Run the test — confirm it passes**
+
+```bash
+python -m pytest tests/research/features/test_external_data_lookup.py -v
+```
+Expected: 5 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/research/features/external_data_lookup.py tests/research/features/test_external_data_lookup.py
+git commit -m "feat: shared daily-field lookup helper for FeatureProviders"
 ```
 
 ### Task 1.5: CMEVolumeFeatureProvider
@@ -985,48 +1564,25 @@ grep -n "feature_providers\|FeatureProvidersConfig" src/config/ -r 2>&1 | head -
 ```
 Open the file that defines `FeatureProvidersConfig` (likely `src/config/models/research.py` or similar). Add a new field `cme_volume: bool = False`.
 
-- [ ] **Step 2: Wire the lookup factory**
+- [ ] **Step 2: Register provider using shared lookup helper**
 
-Add to `src/research/features/hub.py` import block (top of `_register_enabled_providers`):
+Add to `src/research/features/hub.py` import block:
 ```python
 from src.research.features.cme_volume import CMEVolumeFeatureProvider
+from src.research.features.external_data_lookup import make_daily_field_lookup
 ```
 
 Inside `_register_enabled_providers`, in the `_PROVIDER_FACTORIES` dict, add:
 ```python
 "cme_volume": lambda: CMEVolumeFeatureProvider(
-    daily_volume_lookup=_make_cme_volume_lookup(),
+    daily_volume_lookup=make_daily_field_lookup("GC=F", field="volume"),
 ),
 ```
 
-Add the helper above the `_PROVIDER_FACTORIES` definition:
-```python
-def _make_cme_volume_lookup():
-    """Return a callable that fetches daily CME GC volume from the live DB.
-
-    Cached: built once per FeatureHub init (per mining run); SQL hits the
-    daily_external_ohlc hypertable which is small (<2k rows for 5+ years).
-    """
-    from src.config.database import load_db_settings
-    from src.persistence.db import TimescaleWriter
-
-    writer = TimescaleWriter(load_db_settings("live"))
-    cache: dict = {}
-
-    def lookup(d):
-        if d in cache:
-            return cache[d]
-        with writer.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT volume FROM daily_external_ohlc WHERE symbol=%s AND date=%s",
-                ("GC=F", d),
-            )
-            row = cur.fetchone()
-            cache[d] = float(row[0]) if row and row[0] is not None else None
-        return cache[d]
-
-    return lookup
-```
+**No inline factory function needed** — the shared `make_daily_field_lookup`
+helper from Task 1.4.5 handles DB query + per-date caching. Phase 2's
+CrossAssetFeatureProvider will call the same helper with different (symbol, field)
+arguments.
 
 - [ ] **Step 3: Add config entry**
 
@@ -1039,8 +1595,8 @@ Optionally add (no params for now, but the section anchors documentation):
 ```ini
 [feature_providers.cme_volume]
 # Daily CME GC futures volume features (4 fields). Backfilled via
-# `python -m src.research.external.cme_backfill --environment live`.
-# Lookup queries daily_external_ohlc table on each FeatureHub init.
+# `python -m src.research.external.backfill --environment live --source yfinance --symbols GC=F`.
+# Lookup queries daily_external_ohlc table via shared make_daily_field_lookup helper.
 ```
 
 - [ ] **Step 4: Smoke test FeatureHub registration**
@@ -1140,213 +1696,42 @@ git commit -m "docs: phase 1 CME volume mining result"
 
 **Purpose:** XAUUSD has well-documented multi-decade correlation with USD strength (DXY, negative), real interest rates (10Y yield, negative), and risk sentiment (SPX, mixed regime-dependent). These are the textbook macro drivers absent from current 121-feature pool.
 
-### Task 2.1: Extend backfill CLI to multiple symbols
+### Task 2.1: Reuse generic backfill for cross-asset symbols
 
-**Files:**
-- Create: `src/research/external/cross_asset_backfill.py`
-- Test: `tests/research/external/test_cross_asset_backfill.py`
+**Files:** None — Task 1.4 already created the generic CLI.
 
-- [ ] **Step 1: Write the failing test**
+This task is a 30-second documentation-only step. The cross-asset backfill is
+the same `python -m src.research.external.backfill` invocation with a different
+`--symbols` list. No new code, no new tests.
 
-Create `tests/research/external/test_cross_asset_backfill.py`:
-```python
-"""cross_asset_backfill — pulls DXY (^DXY/DX-Y.NYB), 10Y (^TNX), SPX (^GSPC)
-daily OHLCV via yfinance into daily_external_ohlc.
-"""
-from __future__ import annotations
-
-from datetime import date
-from unittest.mock import MagicMock
-
-from src.research.external.cross_asset_backfill import (
-    CROSS_ASSET_SYMBOLS,
-    backfill_all,
-    parse_args,
-)
-from src.research.external.yfinance_client import DailyBar
-
-
-def test_default_symbol_set() -> None:
-    # Three macro drivers
-    assert set(CROSS_ASSET_SYMBOLS) == {"DX-Y.NYB", "^TNX", "^GSPC"}
-
-
-def test_parse_args_optional_symbol_filter() -> None:
-    args = parse_args(["--environment", "live", "--symbols", "DX-Y.NYB,^TNX"])
-    assert args.symbols == ["DX-Y.NYB", "^TNX"]
-
-
-def test_backfill_all_calls_per_symbol() -> None:
-    fake_bars_factory = lambda sym: [
-        DailyBar(sym, date(2026, 4, 1), 100, 101, 99, 100.5, 0)
-    ]
-    fake_writer = MagicMock()
-    fake_client = MagicMock()
-    fake_client.fetch_daily.side_effect = lambda s, **kw: fake_bars_factory(s)
-
-    counts = backfill_all(
-        client=fake_client,
-        writer=fake_writer,
-        symbols=["DX-Y.NYB", "^TNX"],
-        start=date(2026, 4, 1),
-        end=date(2026, 4, 1),
-    )
-
-    assert counts == {"DX-Y.NYB": 1, "^TNX": 1}
-    assert fake_client.fetch_daily.call_count == 2
-```
-
-- [ ] **Step 2: Run the test — confirm it fails**
+- [ ] **Step 1: Smoke-test cross-asset backfill via the generic CLI**
 
 ```bash
-python -m pytest tests/research/external/test_cross_asset_backfill.py -v
-```
-Expected: ImportError.
-
-- [ ] **Step 3: Write the implementation**
-
-Create `src/research/external/cross_asset_backfill.py`:
-```python
-"""cross_asset_backfill — backfill DXY/10Y/SPX daily OHLCV via yfinance.
-
-Usage:
-    python -m src.research.external.cross_asset_backfill --environment live
-    python -m src.research.external.cross_asset_backfill --environment live --symbols ^TNX
-"""
-from __future__ import annotations
-
-import argparse
-import logging
-from dataclasses import dataclass
-from datetime import date, timedelta
-from typing import Any, Dict, List, Optional, Sequence
-
-from src.persistence.schema.daily_external_ohlc import INSERT_SQL
-from src.research.external.yfinance_client import DailyBar, YFinanceClient, YFinanceError
-
-logger = logging.getLogger(__name__)
-
-CROSS_ASSET_SYMBOLS: List[str] = ["DX-Y.NYB", "^TNX", "^GSPC"]
-
-
-@dataclass
-class _CliArgs:
-    environment: str
-    symbols: List[str]
-    start: date
-    end: date
-
-
-def parse_args(argv: Sequence[str] | None = None) -> _CliArgs:
-    parser = argparse.ArgumentParser(prog="cross_asset_backfill")
-    parser.add_argument("--environment", required=True, choices=("live", "demo"))
-    parser.add_argument(
-        "--symbols",
-        type=lambda s: s.split(","),
-        default=CROSS_ASSET_SYMBOLS,
-    )
-    parser.add_argument(
-        "--start",
-        type=lambda s: date.fromisoformat(s),
-        default=date.today() - timedelta(days=365 * 3),
-    )
-    parser.add_argument(
-        "--end",
-        type=lambda s: date.fromisoformat(s),
-        default=date.today(),
-    )
-    ns = parser.parse_args(argv)
-    return _CliArgs(
-        environment=ns.environment,
-        symbols=list(ns.symbols),
-        start=ns.start,
-        end=ns.end,
-    )
-
-
-def backfill_all(
-    *,
-    client: Any,
-    writer: Any,
-    symbols: List[str],
-    start: date,
-    end: date,
-) -> Dict[str, int]:
-    """Returns per-symbol row count. Failures on one symbol don't stop others."""
-    counts: Dict[str, int] = {}
-    for sym in symbols:
-        try:
-            bars: List[DailyBar] = client.fetch_daily(sym, start=start, end=end)
-        except YFinanceError as exc:
-            logger.warning("cross_asset_backfill: %s skipped: %s", sym, exc)
-            counts[sym] = 0
-            continue
-        for bar in bars:
-            writer.execute(
-                INSERT_SQL,
-                (
-                    bar.symbol,
-                    bar.date,
-                    bar.open,
-                    bar.high,
-                    bar.low,
-                    bar.close,
-                    bar.volume,
-                ),
-            )
-        counts[sym] = len(bars)
-        logger.info("cross_asset_backfill: %s %d rows", sym, len(bars))
-    return counts
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO)
-    args = parse_args(argv)
-
-    from src.config.database import load_db_settings
-    from src.persistence.db import TimescaleWriter
-
-    settings = load_db_settings(args.environment)
-    db_writer = TimescaleWriter(settings)
-
-    client = YFinanceClient()
-    with db_writer.connection() as conn, conn.cursor() as cur:
-        counts = backfill_all(
-            client=client,
-            writer=cur,
-            symbols=args.symbols,
-            start=args.start,
-            end=args.end,
-        )
-        conn.commit()
-    print("backfilled:", counts)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+python -m src.research.external.backfill --environment live \
+    --source yfinance \
+    --symbols DX-Y.NYB,^TNX,^GSPC \
+    --start 2023-01-01
 ```
 
-- [ ] **Step 4: Run the test — confirm it passes**
+Expected: prints `backfilled: {'DX-Y.NYB': N1, '^TNX': N2, '^GSPC': N3}` where
+each Ni >= 700 (3 years of trading days). If any symbol shows 0, log the
+warning output by `backfill_symbols()` — `^TNX` historical volume often comes
+through as NaN (Yahoo limitation for index quotes); the YFinanceClient already
+normalizes NaN to 0.0, so this is benign for our use case (we use `close` for
+^TNX, not `volume`).
+
+- [ ] **Step 2: Verify all 4 symbols loaded**
 
 ```bash
-python -m pytest tests/research/external/test_cross_asset_backfill.py -v
+psql -c "SELECT symbol, COUNT(*) AS rows, MIN(date) AS earliest, MAX(date) AS latest FROM daily_external_ohlc GROUP BY symbol ORDER BY symbol"
 ```
-Expected: 3 passed.
 
-- [ ] **Step 5: Run real backfill**
+Expected: 4 rows (`DX-Y.NYB`, `GC=F` from Phase 1, `^GSPC`, `^TNX`), each with
+~700+ rows spanning ~3 years.
 
-```bash
-python -m src.research.external.cross_asset_backfill --environment live --start 2023-01-01
-```
-Expected: prints `backfilled: {'DX-Y.NYB': 700+, '^TNX': 700+, '^GSPC': 700+}`. If any symbol shows 0, log a warning and proceed (the provider must handle missing data gracefully).
+- [ ] **Step 3: No commit needed**
 
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/research/external/cross_asset_backfill.py tests/research/external/test_cross_asset_backfill.py
-git commit -m "feat: cross-asset backfill CLI for DXY/10Y/SPX"
-```
+This step doesnt write code. The data is in the DB. Move on to Task 2.2.
 
 ### Task 2.2: CrossAssetFeatureProvider
 
@@ -1618,43 +2003,46 @@ git commit -m "feat: CrossAssetFeatureProvider with 9 DXY/10Y/SPX features"
 - Modify: `config/research.ini` (add `cross_asset = true`)
 - Modify: `src/config/models/research.py` (add `cross_asset: bool = False`)
 
-- [ ] **Step 1: Add factory + lookup helper**
+- [ ] **Step 1: Register provider using shared lookup helper**
 
-In `src/research/features/hub.py`, add the import:
+`CrossAssetFeatureProvider.__init__` accepts `daily_close_lookup: Callable[[str, date], Optional[float]]` — note the **two-arg** signature (symbol changes per-call because we look up 3 different symbols). The shared `make_daily_field_lookup` from Task 1.4.5 is single-symbol, so we wrap it in a small dispatch closure here.
+
+Add to `src/research/features/hub.py` import block:
 ```python
 from src.research.features.cross_asset import CrossAssetFeatureProvider
 ```
 
-Add the helper above `_PROVIDER_FACTORIES`:
-```python
-def _make_cross_asset_close_lookup():
-    from src.config.database import load_db_settings
-    from src.persistence.db import TimescaleWriter
+(Note: `make_daily_field_lookup` is already imported in Task 1.6 Step 2; reuse that import.)
 
-    writer = TimescaleWriter(load_db_settings("live"))
-    cache: dict = {}
-
-    def lookup(symbol, d):
-        key = (symbol, d)
-        if key in cache:
-            return cache[key]
-        with writer.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT close FROM daily_external_ohlc WHERE symbol=%s AND date=%s",
-                (symbol, d),
-            )
-            row = cur.fetchone()
-            cache[key] = float(row[0]) if row and row[0] is not None else None
-        return cache[key]
-
-    return lookup
-```
-
-In `_PROVIDER_FACTORIES`:
+In `_PROVIDER_FACTORIES`, add:
 ```python
 "cross_asset": lambda: CrossAssetFeatureProvider(
-    daily_close_lookup=_make_cross_asset_close_lookup(),
+    daily_close_lookup=_make_cross_asset_close_dispatch(),
 ),
+```
+
+Add this small dispatcher above `_PROVIDER_FACTORIES` (it builds 3 single-symbol lookups via the shared helper, then dispatches by symbol — no DB code, no caching code, just composition):
+```python
+def _make_cross_asset_close_dispatch():
+    """Build per-symbol close lookups via shared helper, return a dispatcher.
+
+    Each `make_daily_field_lookup(sym, field='close')` is independently cached
+    per symbol — the dispatcher only routes (symbol, date) → correct lookup.
+    """
+    from src.research.features.external_data_lookup import make_daily_field_lookup
+
+    closers = {
+        sym: make_daily_field_lookup(sym, field="close")
+        for sym in ("DX-Y.NYB", "^TNX", "^GSPC")
+    }
+
+    def dispatch(symbol, d):
+        fn = closers.get(symbol)
+        if fn is None:
+            return None  # unknown symbol → silently None (provider treats as missing)
+        return fn(d)
+
+    return dispatch
 ```
 
 - [ ] **Step 2: Add config field + ini entry**
@@ -1665,8 +2053,11 @@ Add to `config/research.ini` `[feature_providers]`:
 cross_asset = true
 
 [feature_providers.cross_asset]
-# DXY (DX-Y.NYB), 10Y (^TNX), SPX (^GSPC) daily OHLCV.
-# Backfilled via `python -m src.research.external.cross_asset_backfill --environment live`.
+# DXY (DX-Y.NYB), 10Y (^TNX), SPX (^GSPC) daily OHLCV close-price features.
+# Backfilled via Task 2.1 generic CLI:
+#   python -m src.research.external.backfill --environment live --source yfinance \
+#       --symbols DX-Y.NYB,^TNX,^GSPC
+# Lookup uses shared make_daily_field_lookup helper (per-symbol cached).
 ```
 
 - [ ] **Step 3: Smoke test**
