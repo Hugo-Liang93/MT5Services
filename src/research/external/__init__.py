@@ -20,3 +20,6 @@ __all__ = [
     "list_registered_sources",
     "register_source",
 ]
+
+# Import side-effect: registers yfinance under the source registry.
+from src.research.external import yfinance_client as _yfinance_client  # noqa: F401
