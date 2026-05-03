@@ -24,6 +24,10 @@ from .correlation import FETCH_LATEST_BY_RUN_SQL as FETCH_CORRELATION_LATEST_SQL
 from .correlation import INSERT_SQL as INSERT_CORRELATION_SQL
 from .correlation import LIST_BY_RUN_SQL as LIST_CORRELATION_BY_RUN_SQL
 
+# ── External Daily OHLCV (CME GC, DXY, 10Y, SPX, ...) ────────────
+from .daily_external_ohlc import DDL as DAILY_EXTERNAL_OHLC_DDL
+from .daily_external_ohlc import INSERT_SQL as INSERT_DAILY_EXTERNAL_OHLC_SQL
+
 # ── Economic Calendar ────────────────────────────────────────────
 from .economic_calendar import DDL as ECONOMIC_CALENDAR_DDL
 from .economic_calendar import (
@@ -121,6 +125,7 @@ DDL_STATEMENTS = [
     QUOTES_DDL,
     OHLC_DDL,
     INTRABAR_DDL,
+    DAILY_EXTERNAL_OHLC_DDL,
     # Economic calendar (hypertables)
     ECONOMIC_CALENDAR_DDL,
     MARKET_IMPACT_DDL,
@@ -178,6 +183,8 @@ __all__ = [
     "INSERT_OHLC_SQL",
     "UPSERT_OHLC_SQL",
     "INSERT_INTRABAR_SQL",
+    # External daily OHLCV
+    "INSERT_DAILY_EXTERNAL_OHLC_SQL",
     # Economic calendar
     "UPSERT_ECONOMIC_CALENDAR_SQL",
     "INSERT_ECONOMIC_CALENDAR_UPDATE_SQL",
