@@ -80,6 +80,27 @@ def _build_equity_curve_filter_config() -> EquityCurveFilterConfig:
     )
 
 
+def _build_entry_meta_session_context_filter() -> Any:
+    """Create a context-only session resolver for Entry Meta features."""
+    from src.signals.execution.filters import SessionFilter
+
+    return SessionFilter(allowed_sessions=())
+
+
+def _resolve_entry_meta_session(session_context: Any, bar_time: Any) -> str:
+    """Resolve the Entry Meta feature session without applying trade filters."""
+    if session_context is None:
+        return "unknown"
+    try:
+        sessions = session_context.current_sessions(bar_time)
+    except (AttributeError, TypeError, ValueError):
+        logger.debug("Entry Meta session context unavailable", exc_info=True)
+        return "unknown"
+    if not sessions:
+        return "unknown"
+    return str(sessions[0] or "unknown")
+
+
 from .signals import backfill_evaluations as _backfill_evaluations_helper
 from .signals import check_pending_entries as _check_pending_entries_helper
 from .signals import evaluate_strategies as _evaluate_strategies_helper
@@ -380,6 +401,9 @@ class BacktestEngine:
             for name, sessions in config.strategy_sessions.items()
             if sessions
         }
+
+        # Entry Meta 的 session 是特征上下文，不是策略过滤条件。
+        self._entry_meta_session_context_filter = _build_entry_meta_session_context_filter()
 
         # 用于在 run() 和 _evaluate_strategies() 中查询 bar 的 current_sessions
         self._session_filter: Optional[Any] = None
@@ -991,11 +1015,10 @@ class BacktestEngine:
                         bar.time,
                     ):
                         continue
-                entry_session = "unknown"
-                if self._session_filter is not None:
-                    sessions = self._session_filter.current_sessions(bar.time)
-                    if sessions:
-                        entry_session = str(sessions[0])
+                entry_session = _resolve_entry_meta_session(
+                    self._entry_meta_session_context_filter,
+                    bar.time,
+                )
                 _process_decision_helper(
                     self,
                     decision,
