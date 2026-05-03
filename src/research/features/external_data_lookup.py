@@ -10,13 +10,12 @@ intraday_external_ohlc table. Same caching pattern.
 """
 from __future__ import annotations
 
-import logging
 from datetime import date
 from typing import Any, Callable, Dict, Optional
 
-logger = logging.getLogger(__name__)
-
-SUPPORTED_FIELDS: frozenset = frozenset({"open", "high", "low", "close", "volume"})
+SUPPORTED_FIELDS: frozenset[str] = frozenset(
+    {"open", "high", "low", "close", "volume"}
+)
 
 
 def _default_writer_factory() -> Any:
