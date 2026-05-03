@@ -155,6 +155,26 @@ def test_from_dict_rejects_non_object_prediction_items() -> None:
         EntryMetaArtifact.from_dict(payload)
 
 
+def test_from_dict_rejects_non_object_model_payload() -> None:
+    payload = {
+        "model_id": "entry-meta-H1-test",
+        "symbol": "XAUUSD",
+        "timeframe": "H1",
+        "backend": "cpu",
+        "model_kind": "tabular",
+        "feature_keys": [],
+        "label_summary": {"take_entry": 1, "block_entry": 0},
+        "sample_weight_summary": {"min": 1.0, "max": 1.0, "mean": 1.0},
+        "metrics": {},
+        "predictions": [],
+        "model_payload": "bad",
+        "feature_manifest": {},
+    }
+
+    with pytest.raises(ValueError, match="model_payload.*object"):
+        EntryMetaArtifact.from_dict(payload)
+
+
 def test_prediction_rejects_non_object_threshold_context() -> None:
     payload = {
         "bar_time": "2026-01-01T01:00:00+00:00",

@@ -118,6 +118,8 @@ class EntryMetaArtifact:
         for prediction in predictions:
             if not isinstance(prediction, dict):
                 raise ValueError("entry meta artifact prediction must be an object")
+        if not isinstance(data["model_payload"], dict):
+            raise ValueError("entry meta artifact model_payload must be an object")
         return cls(
             model_id=str(data["model_id"]),
             symbol=str(data["symbol"]),

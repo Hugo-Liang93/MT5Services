@@ -10,6 +10,7 @@ from src.research.entry_meta.artifacts import EntryMetaArtifact, EntryMetaPredic
 from src.research.entry_meta.dataset import EntryMetaDataset
 from src.research.entry_meta.features import EntryMetaFeatureBuilder, EntryMetaFeatureMatrix
 from src.research.entry_meta.quality import evaluate_entry_meta_quality
+from src.research.entry_meta.scoring import EntryMetaScorer
 from src.research.core.backends import resolve_backend
 
 
@@ -51,7 +52,13 @@ def train_entry_meta_bundle(
         train_indices=train_indices,
     )
     _validate_probabilities(probabilities, len(labels))
-    model_payload["prediction_reuse"] = "deferred"
+    model_payload["feature_order"] = list(features.feature_keys)
+    probabilities = _score_payload_probabilities(
+        rows=features.rows,
+        model_payload=model_payload,
+        feature_keys=list(features.feature_keys),
+    )
+    _validate_probabilities(probabilities, len(labels))
     if backend.name == "gpu":
         model_payload["backend_note"] = _GPU_PHASE1_NOTE
 
@@ -187,29 +194,69 @@ def _fit_predict_probabilities(
                 "reason": "insufficient_train_classes_or_features",
                 "train_samples": int(len(train_indices)),
                 "class_probs": class_probs,
+                "prediction_reuse": "constant_prior",
             },
             "refit",
         )
 
-    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
 
-    estimator = HistGradientBoostingClassifier(random_state=0)
+    scaler = StandardScaler()
+    scaler.fit(rows[train_indices])
+    safe_mean = _safe_normalization_mean(scaler.mean_)
+    safe_scale = _safe_normalization_scale(scaler.scale_)
+    scaled_rows = (rows - safe_mean) / safe_scale
+
+    estimator = LogisticRegression(random_state=0)
     estimator.fit(
-        rows[train_indices],
+        scaled_rows[train_indices],
         train_labels,
         sample_weight=sample_weights[train_indices],
     )
-    raw_probabilities = estimator.predict_proba(rows)
+    raw_probabilities = estimator.predict_proba(scaled_rows)
     probabilities = _align_probabilities(raw_probabilities, estimator.classes_, len(labels))
     return (
         probabilities,
         {
-            "estimator": "HistGradientBoostingClassifier",
+            "estimator": "logistic_regression_v1",
             "train_samples": int(len(train_indices)),
             "classes": [int(item) for item in estimator.classes_],
+            "coef": estimator.coef_.astype(float).tolist(),
+            "intercept": estimator.intercept_.astype(float).tolist(),
+            "normalization": {
+                "mean": safe_mean.astype(float).tolist(),
+                "scale": safe_scale.astype(float).tolist(),
+            },
+            "prediction_reuse": "dynamic_scorer",
         },
         "trained",
     )
+
+
+def _score_payload_probabilities(
+    *,
+    rows: np.ndarray,
+    model_payload: dict[str, Any],
+    feature_keys: list[str],
+) -> np.ndarray:
+    scorer = EntryMetaScorer.from_payload(model_payload, feature_keys=feature_keys)
+    probabilities = np.zeros((rows.shape[0], 2), dtype=float)
+    for index, row in enumerate(rows):
+        score = scorer.score(row)
+        probabilities[index, 0] = score.block_entry_prob
+        probabilities[index, 1] = score.take_entry_prob
+    return probabilities
+
+
+def _safe_normalization_mean(values: np.ndarray) -> np.ndarray:
+    mean = np.asarray(values, dtype=float)
+    return np.where(np.isfinite(mean), mean, 0.0)
+
+
+def _safe_normalization_scale(values: np.ndarray) -> np.ndarray:
+    scale = np.asarray(values, dtype=float)
+    return np.where(np.isfinite(scale) & (scale != 0.0), scale, 1.0)
 
 
 def _constant_prior_probabilities(labels: np.ndarray, train_indices: np.ndarray) -> np.ndarray:
