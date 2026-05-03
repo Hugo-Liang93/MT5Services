@@ -62,6 +62,35 @@ def test_lookup_returns_none_when_row_missing() -> None:
     assert lookup(date(2026, 4, 1)) is None
 
 
+def test_writer_factory_deferred_until_first_lookup() -> None:
+    """make_daily_field_lookup must NOT call _writer_factory at construction —
+    TimescaleWriter eagerly opens a connection pool, so building it for a
+    provider that never gets queried (e.g. backtest filtered out the symbol)
+    is wasteful."""
+    factory_calls = {"count": 0}
+
+    def tracking_factory() -> MagicMock:
+        factory_calls["count"] += 1
+        fake_writer = MagicMock()
+        fake_cursor = MagicMock()
+        fake_cursor.fetchone.return_value = (1.0,)
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value.__enter__.return_value = fake_cursor
+        fake_writer.connection.return_value.__enter__.return_value = fake_conn
+        return fake_writer
+
+    lookup = make_daily_field_lookup(
+        "GC=F", field="volume", _writer_factory=tracking_factory
+    )
+    assert factory_calls["count"] == 0  # not called yet
+
+    lookup(date(2026, 4, 1))
+    assert factory_calls["count"] == 1  # called on first lookup
+
+    lookup(date(2026, 4, 2))
+    assert factory_calls["count"] == 1  # writer reused — not called again
+
+
 def test_lookup_independent_caches_per_factory_call() -> None:
     """Two calls to make_daily_field_lookup return independent caches."""
     fake_writer = MagicMock()

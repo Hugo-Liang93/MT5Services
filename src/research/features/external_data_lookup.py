@@ -49,8 +49,8 @@ def make_daily_field_lookup(
             f"unknown field '{field}'; supported: {sorted(SUPPORTED_FIELDS)}"
         )
 
-    writer = _writer_factory()
     cache: Dict[date, Optional[float]] = {}
+    writer_holder: Dict[str, Any] = {}
 
     sql = (
         f"SELECT {field} FROM daily_external_ohlc "  # nosec B608: field whitelisted above
@@ -60,6 +60,13 @@ def make_daily_field_lookup(
     def lookup(d: date) -> Optional[float]:
         if d in cache:
             return cache[d]
+        # Defer writer construction to first cache miss — TimescaleWriter eagerly
+        # opens a connection pool, so building it inside FeatureHub.__init__ for
+        # every never-queried provider is wasteful (e.g. when a provider is
+        # registered but the config-level mining run filters it out).
+        if "writer" not in writer_holder:
+            writer_holder["writer"] = _writer_factory()
+        writer = writer_holder["writer"]
         with writer.connection() as conn, conn.cursor() as cur:
             cur.execute(sql, (symbol, d))
             row = cur.fetchone()
