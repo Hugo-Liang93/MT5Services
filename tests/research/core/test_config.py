@@ -44,6 +44,7 @@ class TestResearchConfigDefaults:
         assert cfg.entry_meta_model.min_oos_samples == 10
         assert cfg.entry_meta_model.min_class_samples == 10
         assert cfg.entry_meta_model.threshold_grid == [0.50, 0.55, 0.60, 0.65, 0.70]
+        assert cfg.entry_meta_model.feature_scope == "runtime_safe"
 
 
 class TestPermutationBudget:
@@ -144,6 +145,7 @@ class TestLoadResearchConfigFromIni:
                 min_oos_samples = 12
                 min_class_samples = 13
                 threshold_grid = 0.45,0.50,0.75
+                feature_scope = research_full
                 """
             ).strip(),
             encoding="utf-8",
@@ -157,6 +159,7 @@ class TestLoadResearchConfigFromIni:
         assert cfg.entry_meta_model.min_oos_samples == 12
         assert cfg.entry_meta_model.min_class_samples == 13
         assert cfg.entry_meta_model.threshold_grid == [0.45, 0.50, 0.75]
+        assert cfg.entry_meta_model.feature_scope == "research_full"
 
     def test_missing_ini_falls_back_to_dataclass_defaults(self, tmp_path: Path) -> None:
         """缺失 .ini 时 loader fallback 必须与 dataclass 默认完全一致。"""

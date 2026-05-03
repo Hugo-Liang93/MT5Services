@@ -82,6 +82,7 @@ class StateEdgeModelConfig:
 @dataclass(frozen=True)
 class EntryMetaModelConfig:
     model_kind: str = "tabular"
+    feature_scope: str = "runtime_safe"
     top_bucket_quantile: float = 0.80
     min_samples: int = 40
     min_oos_samples: int = 10
@@ -428,6 +429,7 @@ def load_research_config(ini_path: Optional[str] = None) -> ResearchConfig:
         ),
         entry_meta_model=EntryMetaModelConfig(
             model_kind=_get("entry_meta_model", "model_kind", "tabular"),
+            feature_scope=_get("entry_meta_model", "feature_scope", "runtime_safe"),
             top_bucket_quantile=_getfloat(
                 "entry_meta_model", "top_bucket_quantile", 0.80
             ),

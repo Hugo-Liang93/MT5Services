@@ -21,6 +21,7 @@ def test_entry_meta_lab_help_exposes_required_options() -> None:
     assert "--tf" in completed.stdout
     assert "--backend" in completed.stdout
     assert "--json-output" in completed.stdout
+    assert "--feature-scope" in completed.stdout
 
 
 def test_build_entry_meta_lab_output_payload_wraps_result_and_coverage() -> None:
@@ -96,6 +97,7 @@ def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_pat
             }
         )
     }
+    run_calls: list[dict[str, object]] = []
 
     class FakeDeps:
         def __enter__(self) -> object:
@@ -110,6 +112,7 @@ def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_pat
             self.deps = deps
 
         def run(self, **kwargs):
+            run_calls.append(kwargs)
             return SimpleNamespace(to_dict=lambda: result_payload)
 
     monkeypatch.setattr(sys, "argv", [
@@ -130,6 +133,8 @@ def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_pat
         str(tmp_path / "artifacts"),
         "--symbol",
         "XAUUSD",
+        "--feature-scope",
+        "research_full",
     ])
     monkeypatch.setattr(instance_context, "set_current_environment", lambda environment: None)
     monkeypatch.setattr(
@@ -167,3 +172,4 @@ def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_pat
     assert payload["result"]["dataset_summary"] == result_payload["dataset_summary"]
     assert payload["result"]["quality"] == result_payload["quality"]
     assert payload["result"]["metrics"] == result_payload["metrics"]
+    assert run_calls[0]["feature_scope"] == "research_full"

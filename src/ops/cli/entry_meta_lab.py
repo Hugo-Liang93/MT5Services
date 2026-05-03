@@ -38,6 +38,12 @@ def main() -> None:
     parser.add_argument("--symbol", default="XAUUSD", help="Symbol, default XAUUSD")
     parser.add_argument("--model-id", default=None, help="Optional stable model id")
     parser.add_argument(
+        "--feature-scope",
+        choices=["runtime_safe", "research_full"],
+        default=None,
+        help="Feature scope for Entry Meta training; default comes from research.ini",
+    )
+    parser.add_argument(
         "--no-auto-backfill",
         action="store_true",
         help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
@@ -79,6 +85,7 @@ def main() -> None:
             backend_name=backend.name,
             artifact_dir=Path(args.artifact_dir),
             model_id=args.model_id,
+            feature_scope=args.feature_scope,
         )
 
     payload = build_entry_meta_lab_output_payload(
