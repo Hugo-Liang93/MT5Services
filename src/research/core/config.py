@@ -148,6 +148,7 @@ class FeatureProviderConfig:
     session_event_enabled: bool = True
     intrabar_enabled: bool = True
     candle_patterns_enabled: bool = True
+    cme_volume_enabled: bool = False  # CME 黄金期货日量特征（需 GC=F 历史数据）
     fdr_grouping: str = "by_provider"  # "by_provider" | "global" | "none"
 
     temporal: TemporalProviderConfig = field(default_factory=TemporalProviderConfig)
@@ -276,6 +277,7 @@ def _load_feature_providers(parser: configparser.ConfigParser) -> FeatureProvide
         session_event_enabled=_getbool(sec, "session_event", True),
         intrabar_enabled=_getbool(sec, "intrabar", True),
         candle_patterns_enabled=_getbool(sec, "candle_patterns", True),
+        cme_volume_enabled=_getbool(sec, "cme_volume", False),
         fdr_grouping=_get(sec, "fdr_grouping", "by_provider"),
         temporal=temporal,
         microstructure=microstructure,

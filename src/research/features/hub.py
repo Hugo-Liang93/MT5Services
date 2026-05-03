@@ -47,7 +47,9 @@ class FeatureHub:
 
     def _register_enabled_providers(self, config: ResearchConfig) -> None:
         from src.research.features.candle_patterns import CandlePatternFeatureProvider
+        from src.research.features.cme_volume import CMEVolumeFeatureProvider
         from src.research.features.cross_tf import CrossTFFeatureProvider
+        from src.research.features.external_data_lookup import make_daily_field_lookup
         from src.research.features.intrabar import IntrabarProvider
         from src.research.features.microstructure import MicrostructureFeatureProvider
         from src.research.features.regime_transition import (
@@ -69,6 +71,9 @@ class FeatureHub:
             "session_event": lambda: SessionEventProvider(),
             "intrabar": lambda: IntrabarProvider(),
             "candle_patterns": lambda: CandlePatternFeatureProvider(),
+            "cme_volume": lambda: CMEVolumeFeatureProvider(
+                daily_volume_lookup=make_daily_field_lookup("GC=F", field="volume"),
+            ),
         }
 
         for name, factory in _PROVIDER_FACTORIES.items():
