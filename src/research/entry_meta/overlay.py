@@ -10,6 +10,12 @@ from src.research.entry_meta.artifacts import (
     EntryMetaPrediction,
     load_artifact,
 )
+from src.research.entry_meta.features import (
+    EntryMetaFeatureBuildError,
+    EntryMetaFeatureContext,
+    EntryMetaFeatureRowBuilder,
+)
+from src.research.entry_meta.scoring import EntryMetaScorer, EntryMetaScoringError
 
 
 @dataclass(frozen=True)
@@ -20,6 +26,7 @@ class EntryMetaOverlayVerdict:
     block_entry_prob: float
     threshold: float
     prediction: EntryMetaPrediction | None = None
+    score_source: str = "artifact_prediction"
 
 
 class EntryMetaBacktestOverlay:
@@ -52,6 +59,24 @@ class EntryMetaBacktestOverlay:
             self._prediction_key(pred.bar_time, pred.strategy, pred.direction): pred
             for pred in artifact.predictions
         }
+        self._feature_row_builder: EntryMetaFeatureRowBuilder | None = None
+        self._scorer: EntryMetaScorer | None = None
+        try:
+            feature_manifest = getattr(artifact, "feature_manifest", {})
+            category_mappings = {}
+            if isinstance(feature_manifest, dict):
+                category_mappings = dict(feature_manifest.get("category_mappings", {}))
+            self._feature_row_builder = EntryMetaFeatureRowBuilder(
+                feature_keys=list(artifact.feature_keys),
+                category_mappings=category_mappings,
+            )
+            self._scorer = EntryMetaScorer.from_payload(
+                artifact.model_payload,
+                feature_keys=list(artifact.feature_keys),
+            )
+        except (EntryMetaFeatureBuildError, EntryMetaScoringError, TypeError, ValueError):
+            self._feature_row_builder = None
+            self._scorer = None
         self.reset()
 
     @classmethod
@@ -80,6 +105,10 @@ class EntryMetaBacktestOverlay:
         self._take_entry_prob_at_or_above_threshold = 0
         self._blocked_by_reason: dict[str, int] = {}
         self._blocked_by_strategy: dict[str, int] = {}
+        self._score_source_counts: dict[str, int] = {}
+        self._missing_by_reason: dict[str, int] = {}
+        self._dynamic_scored = 0
+        self._dynamic_score_failures = 0
 
     def evaluate(
         self,
@@ -88,6 +117,7 @@ class EntryMetaBacktestOverlay:
         direction: str,
         *,
         confidence: float = 0.0,
+        feature_context: EntryMetaFeatureContext | None = None,
     ) -> EntryMetaOverlayVerdict:
         del confidence
         self._observed += 1
@@ -96,19 +126,18 @@ class EntryMetaBacktestOverlay:
             self._prediction_key(bar_time, normalized_strategy, direction)
         )
         if prediction is None:
-            self._missing_predictions += 1
-            self._allowed += 1
-            return EntryMetaOverlayVerdict(
-                allowed=True,
-                reason="entry_meta_prediction_missing",
-                take_entry_prob=1.0,
-                block_entry_prob=0.0,
-                threshold=self._threshold,
-                prediction=None,
-            )
+            dynamic = self._score_dynamic(feature_context)
+            if isinstance(dynamic, str):
+                return self._allow_missing(dynamic)
+            take_entry_prob, block_entry_prob, score_source = dynamic
+            prediction_for_verdict = None
+        else:
+            take_entry_prob = float(prediction.take_entry_prob)
+            block_entry_prob = float(prediction.block_entry_prob)
+            score_source = "artifact_prediction"
+            prediction_for_verdict = prediction
+            self._record_score_source(score_source)
 
-        take_entry_prob = float(prediction.take_entry_prob)
-        block_entry_prob = float(prediction.block_entry_prob)
         self._record_probability(take_entry_prob, block_entry_prob)
         if self._mode == "filter" and take_entry_prob < self._threshold:
             reason = "entry_meta_probability_below_threshold"
@@ -119,7 +148,8 @@ class EntryMetaBacktestOverlay:
                 take_entry_prob=take_entry_prob,
                 block_entry_prob=block_entry_prob,
                 threshold=self._threshold,
-                prediction=prediction,
+                prediction=prediction_for_verdict,
+                score_source=score_source,
             )
 
         self._allowed += 1
@@ -129,7 +159,8 @@ class EntryMetaBacktestOverlay:
             take_entry_prob=take_entry_prob,
             block_entry_prob=block_entry_prob,
             threshold=self._threshold,
-            prediction=prediction,
+            prediction=prediction_for_verdict,
+            score_source=score_source,
         )
 
     def report(self) -> dict[str, Any]:
@@ -146,7 +177,62 @@ class EntryMetaBacktestOverlay:
             "probability_summary": self._probability_summary(),
             "blocked_by_reason": dict(sorted(self._blocked_by_reason.items())),
             "blocked_by_strategy": dict(sorted(self._blocked_by_strategy.items())),
+            "score_source_counts": dict(sorted(self._score_source_counts.items())),
+            "missing_by_reason": dict(sorted(self._missing_by_reason.items())),
+            "dynamic_scored": self._dynamic_scored,
+            "dynamic_score_failures": self._dynamic_score_failures,
         }
+
+    def _score_dynamic(
+        self,
+        feature_context: EntryMetaFeatureContext | None,
+    ) -> tuple[float, float, str] | str:
+        if feature_context is None:
+            return "entry_meta_feature_context_missing"
+        if self._feature_row_builder is None or self._scorer is None:
+            return "entry_meta_unsupported_scorer"
+        try:
+            row = self._feature_row_builder.build(feature_context)
+            score = self._scorer.score(row.values)
+        except (EntryMetaFeatureBuildError, EntryMetaScoringError) as exc:
+            return self._normalize_dynamic_failure_reason(str(exc))
+        self._dynamic_scored += 1
+        self._record_score_source(score.score_source)
+        return score.take_entry_prob, score.block_entry_prob, score.score_source
+
+    def _allow_missing(self, reason: str) -> EntryMetaOverlayVerdict:
+        self._record_missing(reason)
+        self._record_score_source("missing")
+        self._allowed += 1
+        return EntryMetaOverlayVerdict(
+            allowed=True,
+            reason=reason,
+            take_entry_prob=1.0,
+            block_entry_prob=0.0,
+            threshold=self._threshold,
+            prediction=None,
+            score_source="missing",
+        )
+
+    def _record_missing(self, reason: str) -> None:
+        self._missing_predictions += 1
+        self._missing_by_reason[reason] = self._missing_by_reason.get(reason, 0) + 1
+        if reason != "entry_meta_prediction_missing":
+            self._dynamic_score_failures += 1
+
+    def _record_score_source(self, score_source: str) -> None:
+        self._score_source_counts[score_source] = (
+            self._score_source_counts.get(score_source, 0) + 1
+        )
+
+    @staticmethod
+    def _normalize_dynamic_failure_reason(message: str) -> str:
+        normalized = message.lower()
+        if "unknown" in normalized:
+            return "entry_meta_unknown_category"
+        if "missing indicator" in normalized:
+            return "entry_meta_feature_missing"
+        return "entry_meta_dynamic_score_failed"
 
     def _record_probability(
         self,

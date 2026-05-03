@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -46,6 +47,67 @@ def _artifact(*, status: str = "accepted") -> EntryMetaArtifact:
     )
 
 
+def _dynamic_artifact(*, status: str = "accepted") -> EntryMetaArtifact:
+    feature_keys = [
+        "entry.confidence",
+        "entry.direction.buy",
+        "entry.direction.sell",
+        "entry.price",
+        "entry.strategy_code",
+        "indicator.atr14.atr",
+        "matrix.regime_code",
+        "matrix.session_code",
+    ]
+    return EntryMetaArtifact(
+        model_id="entry-meta-dynamic",
+        symbol="XAUUSD",
+        timeframe="H1",
+        backend="cpu",
+        model_kind="tabular",
+        feature_keys=feature_keys,
+        label_summary={"take_entry": 2, "block_entry": 2},
+        sample_weight_summary={},
+        metrics={},
+        predictions=[],
+        model_payload={
+            "estimator": "logistic_regression_v1",
+            "feature_order": feature_keys,
+            "classes": [0, 1],
+            "coef": [[-10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+            "intercept": [5.0],
+            "normalization": {
+                "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            },
+            "prediction_reuse": "dynamic_scorer",
+        },
+        feature_manifest={
+            "category_mappings": {
+                "strategy": {"breakout": 0.0},
+                "regime": {"trend": 0.0},
+                "session": {"london": 0.0},
+            }
+        },
+        status=status,
+    )
+
+
+def _feature_context(confidence: float = 0.9):
+    from src.research.entry_meta.features import EntryMetaFeatureContext
+
+    return EntryMetaFeatureContext(
+        bar_time=datetime(2026, 1, 1, 3, tzinfo=timezone.utc),
+        bar_index=3,
+        strategy="breakout",
+        direction="buy",
+        confidence=confidence,
+        entry_price=1.25,
+        indicators={"atr14": {"atr": 0.01}},
+        regime="trend",
+        session="london",
+    )
+
+
 def test_shadow_mode_records_without_blocking() -> None:
     overlay = EntryMetaBacktestOverlay(
         _artifact(status="refit"), mode="shadow", threshold=0.65
@@ -61,12 +123,14 @@ def test_shadow_mode_records_without_blocking() -> None:
     assert verdict.allowed is True
     assert verdict.reason == "allowed"
     assert verdict.take_entry_prob == 0.42
+    assert verdict.score_source == "artifact_prediction"
     report = overlay.report()
     assert report["artifact_status"] == "refit"
     assert report["observed"] == 1
     assert report["allowed"] == 1
     assert report["blocked"] == 0
     assert report["missing_predictions"] == 0
+    assert report["score_source_counts"] == {"artifact_prediction": 1}
     assert report["probability_summary"] == {
         "matched_predictions": 1,
         "take_entry_prob_min": 0.42,
@@ -123,13 +187,78 @@ def test_missing_prediction_is_allowed_and_counted() -> None:
     )
 
     assert verdict.allowed is True
-    assert verdict.reason == "entry_meta_prediction_missing"
+    assert verdict.reason == "entry_meta_feature_context_missing"
     assert verdict.take_entry_prob == 1.0
     assert verdict.block_entry_prob == 0.0
+    assert verdict.score_source == "missing"
     report = overlay.report()
     assert report["observed"] == 1
     assert report["allowed"] == 1
     assert report["missing_predictions"] == 1
+    assert report["missing_by_reason"] == {"entry_meta_feature_context_missing": 1}
+    assert report["score_source_counts"] == {"missing": 1}
+    assert report["dynamic_score_failures"] == 1
+
+
+def test_overlay_uses_dynamic_scorer_when_prediction_lookup_misses() -> None:
+    overlay = EntryMetaBacktestOverlay(_dynamic_artifact(), mode="filter", threshold=0.50)
+
+    verdict = overlay.evaluate(
+        "2026-01-01T03:00:00Z",
+        "breakout",
+        "buy",
+        confidence=0.9,
+        feature_context=_feature_context(confidence=0.9),
+    )
+
+    assert verdict.allowed is False
+    assert verdict.reason == "entry_meta_probability_below_threshold"
+    assert verdict.prediction is None
+    assert verdict.score_source == "dynamic_scorer"
+    report = overlay.report()
+    assert report["score_source_counts"]["dynamic_scorer"] == 1
+    assert report["dynamic_scored"] == 1
+    assert report["missing_predictions"] == 0
+
+
+def test_overlay_dynamic_feature_failure_allows_and_records_reason() -> None:
+    overlay = EntryMetaBacktestOverlay(_dynamic_artifact(), mode="filter", threshold=0.50)
+    bad_context = dataclasses.replace(_feature_context(confidence=0.9), strategy="unknown")
+
+    verdict = overlay.evaluate(
+        "2026-01-01T03:00:00Z",
+        "unknown",
+        "buy",
+        confidence=0.9,
+        feature_context=bad_context,
+    )
+
+    assert verdict.allowed is True
+    assert verdict.reason == "entry_meta_unknown_category"
+    assert verdict.score_source == "missing"
+    report = overlay.report()
+    assert report["missing_by_reason"]["entry_meta_unknown_category"] == 1
+    assert report["dynamic_score_failures"] == 1
+
+
+def test_overlay_dynamic_missing_feature_allows_and_records_reason() -> None:
+    overlay = EntryMetaBacktestOverlay(_dynamic_artifact(), mode="filter", threshold=0.50)
+    bad_context = dataclasses.replace(_feature_context(confidence=0.9), indicators={})
+
+    verdict = overlay.evaluate(
+        "2026-01-01T03:00:00Z",
+        "breakout",
+        "buy",
+        confidence=0.9,
+        feature_context=bad_context,
+    )
+
+    assert verdict.allowed is True
+    assert verdict.reason == "entry_meta_feature_missing"
+    assert verdict.score_source == "missing"
+    report = overlay.report()
+    assert report["missing_by_reason"]["entry_meta_feature_missing"] == 1
+    assert report["dynamic_score_failures"] == 1
 
 
 def test_filter_mode_rejects_non_accepted_artifact_status_at_construction() -> None:
