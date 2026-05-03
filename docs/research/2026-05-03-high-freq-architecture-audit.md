@@ -231,3 +231,59 @@ Month 2+: 满足 PLAN.md gate (PF≥1.20, n≥80, DD≤15%) → demo_validation 
    预估 ~1-3 trades/day，alpha = 波动率扩张
 3. **Multi-Indicator Confluence Reversal (M15)**：rsi 极端 + bb 触轨 + pin
    预估 ~2-4 trades/day，alpha = 短期均值回归
+
+---
+
+## Phase 0 Sanity (2026-05-03)
+
+> 执行人：subagent Task 0.1，branch `feature/mining-feature-pool-expansion`
+> 目标：在投入 Phase 1（CME volume + cross-asset）前，验证现有 ML pipeline 端到端可用。
+
+### Step 1：research config 加载验证
+
+```
+feature providers enabled: ['temporal_enabled', 'microstructure_enabled',
+  'regime_transition_enabled', 'session_event_enabled',
+  'intrabar_enabled', 'candle_patterns_enabled']
+```
+
+6 个 provider 全部启用（temporal/microstructure/regime_transition/session_event/intrabar/candle_patterns）。
+
+### Step 2：state_edge_lab H1 12mo 运行结果
+
+- **退出码**：0（成功）
+- **artifact 大小**：`artifacts/phase0_state_edge_h1_baseline.json` = 3,058 bytes（汇总）；
+  per-TF artifact `artifacts/state_edge/state-edge-H1-20260503132356-a886e3/state_edge_artifact.json` = 2,076,333 bytes
+- **数据覆盖**：H1 6,374 bars（2025-04-01 ~ 2026-04-30）
+- **模型类型**：`hist_gradient_boosting`
+- **标签分布**：long 3,092 / short 2,526 / no_trade 304
+- **OOS samples**：1,656
+- **OOS accuracy**：0.5103（基线约 51%，略高于随机）
+- **高置信度桶 hit rate**：
+  - short bucket：0.6211（threshold 0.740，样本 322）
+  - long bucket：0.5759（threshold 0.553，样本 323）
+- **特征池**：85 个有效特征（feature_manifest 报告 169 个候选，含 intrabar 0 个——H1 无子 TF 数据）
+
+### Step 3：backtest_runner H1 运行结果
+
+- **退出码**：1（失败，基础设施 bug）
+- **错误信息**：`ValueError: No supported confirmed strategies remain after capability filtering`
+- **根因**：`structured_price_action` 在 `signal.ini [strategy_timeframes]` 仅注册 `M15,M30`，
+  H1 回测中无任何可用策略 → `BacktestEngine.__init__` 直接 raise 而非输出 0 trades 报告。
+- **这是基础设施 bug**：runner 应在空策略集时优雅返回 0 trades 报告而非 crash。
+  修复位置：`src/backtesting/engine/runner.py:444`，将 `raise ValueError(...)` 改为
+  warning log + 返回空结果。
+- **artifact**：未写入（crash 前退出）
+
+### Verdict
+
+**HALT and fix: backtest_runner crashes on empty strategy set (ValueError at runner.py:444)**
+
+- state_edge_lab H1 12mo run：**PASS** — 退出码 0，artifact 完整，OOS accuracy 51%，
+  short hit rate 62%（远高于随机）。ML pipeline 自身工作正常。
+- backtest_runner：**FAIL** — `ValueError: No supported confirmed strategies remain`。
+  这是 Phase 0 应该捕获的 infra bug。修复后重跑 backtest，再评估是否 PROCEED to Phase 1。
+
+> 注意：此 bug 对 state_edge_lab 无影响（二者独立）。Phase 1 的 CME volume 数据源开发
+> 可与 backtest_runner 修复并行，但 Phase 0 gate 严格要求 backtest_runner exit 0
+> 才算通过。
