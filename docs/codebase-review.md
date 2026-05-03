@@ -1,9 +1,84 @@
 # 代码库审查报告
 
 > 首次审查日期：2026-04-10
-> 最近更新：2026-04-26
+> 最近更新：2026-05-03
 > 范围：当前工作区全量源码、配置与主要文档。
 > 结论定位：风险台账与后续整改入口，不代表已修复代码问题。
+
+---
+
+## 0q. 2026-04-30 GPU Research Lab：State Edge 市场状态概率模型（Research + Backtest overlay）
+
+### 触发
+
+当前 mining 链路存在两个实际瓶颈：一是穷举/规则挖掘链路长、耗时高；二是单条挖掘规则经回测后经常无法贡献交易增量。新增 State Edge Research Lab 的目标不是替代策略，而是先训练通用市场状态概率层，用 backtest overlay 证明其对现有入场的增量过滤价值。
+
+### 新增职责边界
+
+| 模块 | 职责 | 明确不做 |
+|---|---|---|
+| `src/research/state_edge/labels.py` | 从 `DataMatrix.barrier_returns_long/short` 生成 long/short/no_trade 标签 | 不读取 forward_return，不重新模拟 barrier |
+| `src/research/state_edge/features.py` | 构造当前/历史可见特征 manifest | 不允许 future/forward/barrier/outcome/label 字段进入模型 |
+| `src/research/state_edge/backends.py` | `cpu/gpu` 后端选择与 CUDA fail-fast 诊断 | `gpu` 不静默回退 CPU |
+| `src/research/state_edge/training.py` | 训练 CPU/GPU 模型并输出概率 artifact | 不接入 demo/live runtime |
+| `src/backtesting/state_edge_overlay.py` | 回测只读消费 artifact，shadow/filter 入场概率 overlay | 不读取模型私有结构，不修改实盘链路 |
+| `src/research/state_edge/sequence.py` | 构造 OHLC K 线形态序列窗口 | 不使用未来 bar，不使用截图/渲染图像 |
+| `src/research/state_edge/neighbors.py` | 检索历史相似 K 线形态 analog | 不参与第一阶段过滤决策 |
+| `src/research/state_edge/sequence_training.py` | 训练 `sequence_mlp` / 实验性 `sequence_tcn` | 不绕过 artifact/overlay 验收 |
+| `src/research/state_edge/quality.py` | 训练后 artifact 质量门禁，判断是否值得进入昂贵 backtest overlay | 不替代最终 PF/expectancy/DD 验收 |
+
+### 配置与入口
+
+- 新增 `config/research.ini`：
+  - `[state_edge_model]`：TF、模型类型、标签策略、top bucket quantile、threshold grid
+  - `[gpu_backend]`：后端偏好、fail-fast、readiness benchmark rows
+- 新增 CLI：
+  - `python -m src.ops.cli.state_edge_lab --environment live --tf H4,H1,M30,M15 --start ... --end ... --backend cpu|gpu --json-output ...`
+  - K 线形态序列分支：追加 `--model-kind sequence_mlp --sequence-window 64 --epochs 8 --batch-size 512`
+  - 序列评估流水线：`python -m src.ops.cli.state_edge_sequence_eval --environment live --tf H1 --start ... --end ... --backend gpu --model-kind sequence_mlp --threshold-grid 0.50,0.55,0.60,0.65,0.70 --include-demo-validation --json-output ...`
+  - Artifact 质量门禁默认启用；确需强制 overlay 网格时追加 `--skip-artifact-quality-gate`
+  - 长窗口质量筛选先使用 `--artifact-quality-only`，确保 quality gate 通过前不触发 baseline/shadow/filter
+  - Direction-aware overlay：`--state-edge-directions buy|sell|buy,sell`，用于只评估有质量证据的一侧。
+- `backtest_runner` 新增 research-only 参数：
+  - `--state-edge-artifact`
+  - `--state-edge-mode shadow|filter`
+  - `--state-edge-threshold-grid`
+
+### 降低边界泄漏的方式
+
+- Backtest 侧只通过 `BacktestEngine(state_edge_overlay=...)` 注入正式端口，`process_decision()` 调用 `evaluate()`，不解析 artifact 内部模型 payload。
+- State Edge filter 的被挡入场通过 `BacktestEngine.record_blocked_entry()` 进入 `execution_summary.blocked_entry_events`，报告只消费该正式输出，不从 `PortfolioTracker`、overlay 私有计数或交易列表反推。
+- Research artifact 包含 feature manifest 与概率序列；overlay 只读概率，不依赖训练后端、sklearn pickle 或 torch 权重。
+- `gpu` 后端集中在 `ComputeBackend` 诊断，不在 CLI/训练流程中分散 `try import` 后默默降级。
+
+### 未决项
+
+- 本次只完成能力接入与 smoke 验证；真实验收仍必须逐 TF 跑报告，证明 cost-after return、PF/expectancy 或 max DD 有增量。
+- `filter` 模式的生产准入仍为禁止项；通过前不得接入 demo/live。
+- 当前 phase 1 对 FeatureHub cross-TF extra data fail-fast；若要启用 cross-TF provider，应先抽取 MiningRunner 的 extra-data 准备逻辑为共享服务，避免复制第二套实现。
+- RTX 2060 SUPER 当前环境中 `Conv1d`/TCN 路径异常慢；推荐先用 `sequence_mlp` 做 GPU 序列形态实验。H1 小窗口 `sequence_mlp filter@0.50` smoke 曾恶化 PF，必须标记为 refit/rejected，不得推广。
+- `state_edge_sequence_eval` 产出的 `accepted/refit/rejected` 只属于 Research + Backtest overlay 验收状态，不是 demo/live deployment 状态；即使 accepted，也需要人工审查与跨区间复核后才能进入下一阶段设计。
+- `state_edge_sequence_eval` 已支持阶段性 checkpoint JSON；长窗口网格任务超时或人工中断时，先看 `results[].stage`，不得把“没有最终报告”误判为训练失败。
+- H1 `2026-03-01` 到 `2026-03-15` 分段复测已经给出 `rejected` 结论：baseline PF 1.11 / expectancy 0.84；`filter@0.50/0.55` PF 0.429 / expectancy -4.25。该 artifact 不得扩展为后续 TF 候选，应回到样本窗口、标签或模型结构重训。
+- 同一 H1 artifact 的 quality gate 结论为 `refit`：`oos_samples=1`，long/short top bucket sample_count 均为 0。后续序列评估默认会在该阶段停止，避免继续消耗 backtest 网格时间。
+- H1 `2026-01-01` 到 `2026-04-15` 长窗口 quality-only 已通过：`oos_samples=376`，label long/short/no_trade = 831/759/65，long top bucket mean return 0.0265、hit-rate lift 0.0712；short top bucket mean return 0.00365、hit-rate lift -0.0248。下一步应优先补 direction-aware overlay，先验证 long-only，而不是直接跑双向阈值网格。
+- Backtest overlay 已支持 direction-aware filter，未选中的方向会以 `state_edge_direction_not_filtered` 放行并继续记录概率；该能力仍只存在于 research/backtest，不进入 demo/live。
+- 2026-05-02 补 `src.ops.cli.state_edge_overlay_report` 与更严格的 overlay 判定：PnL、PF、expectancy 均不得退化，且至少一个交易增量指标改善；单纯 PF 微升但 PnL/expectancy 下降判 `rejected:return_expectancy_degraded`。报告同时校验 shadow 不改变 baseline，并输出 strategy/regime 聚合 delta。新版 filter backtest 额外输出 `execution_summary.blocked_entry_events`，报告会优先使用该逐笔事件生成 exact blocked-entry attribution；旧报告无该字段时仍按 aggregate delta 解释。若 baseline JSON 含 `raw_results.trades`，报告还会按 `bar_time=entry_time + strategy + direction` 做保守精确 join，输出 `blocked_trade_attribution`，用于区分“挡掉了实际成交”与“只挡掉了入场意图”。
+- H1 `2026-01-01` 到 `2026-04-15` long-only overlay 正式验收已完成：baseline 53 trades / PnL 581.49 / PF 2.299 / expectancy 10.97 / DD 3.69%；shadow 完全一致；filter buy-only@0.50 为 45 trades / PnL 438.94 / PF 2.315 / expectancy 9.75 / DD 3.69%；filter buy-only@0.55-0.70 为 44 trades / PnL 432.14 / PF 2.298 / expectancy 9.82 / DD 3.69%。整体报告 `artifacts/state_edge_overlay_h1_20260101_20260415_validation_report.json` 状态 `rejected`，该 artifact 不得进入多 TF 扩展或 runtime 接入设计。
+- `filter@0.50` 逐笔归因报告 `artifacts/state_edge_overlay_h1_20260101_20260415_validation_report_050_with_attribution.json` 显示：19 条 blocked events 中仅 8 条能精确匹配 baseline 成交，合计 PnL +140.29，2 赢 6 亏；`structured_regime_exhaustion` 与 `structured_strong_trend_follow` 各有关键盈利单被挡。该证据解释了为何 PF 微升但 PnL/expectancy 下降，也说明当前模型不是“单纯过滤亏损单”。
+
+### 2026-05-03 Entry Meta-Label Overlay Lab
+
+- 新增 Entry Meta 研究层的文档边界：State Edge = 市场状态概率，负责输出 long/short/no_trade 概率；Entry Meta = 交易入场保留概率，负责预测已有策略 entry 的 `take_entry_prob` / `block_entry_prob`。
+- Entry Meta 位于 State Edge 之后，是 trade-aware overlay，不替代策略生成，也不重新定义市场状态标签。第一阶段以 baseline backtest 的 `raw_results.trades` 作为 entry 样本与 PnL 标签来源，同时基于同一时间窗的 DataMatrix / FeatureHub / `indicator_series` / regime / session 提取当前或历史可见特征；不读取 demo/live runtime 状态，不接入真实下单链路。
+- Backtest 验收限定在 Research + Backtest overlay：通过 `entry_meta_lab` 产出 artifact，通过 `backtest_runner --entry-meta-artifact/--entry-meta-mode/--entry-meta-threshold-grid` 做 shadow/filter，对外用 `entry_meta_overlay_report` 汇总验收。
+- 职责边界要求保持公开端口：Backtest 侧通过 `entry_meta_overlay` 注入，并用 `record_blocked_entry()` 写出 blocked entry 事件；报告消费 `execution_summary.blocked_entry_events` 与 baseline `raw_results.trades` 做 `blocked_trade_attribution`，不探测私有字段。验收必须检查是否挡掉大盈利单，防止只按交易数下降误判过滤有效。
+- 2026-05-03：Entry Meta overlay 增加动态打分端口。职责边界：training 产出 JSON-native scorer payload，feature row builder 负责当前 entry 特征同构，overlay 只做 lookup/dynamic score/filter/report。动态失败默认放行并记录，不进入 demo/live。
+- 2026-05-03：Entry Meta backtest session context 已与策略 session 过滤职责拆分；即使未配置 `strategy_sessions`，也会从 `bar.time` 推导 `asia/london/new_york/off_hours`，避免动态 scorer 因默认 `unknown` 降低覆盖率。`unknown` 仅保留为 resolver 失败兜底并继续进入 overlay coverage report。
+- 2026-05-03：Entry Meta 新增 `feature_scope` 合同。`runtime_safe` artifact 只训练 entry、当前 indicators、regime、session 等 backtest/runtime 可重建特征，并允许 lookup miss 后 dynamic scorer；`research_full` artifact 保留 FeatureHub 全量特征离线探索，但 lookup miss 会以 `entry_meta_dynamic_feature_scope_unsupported` 放行并计入 coverage report。该边界避免把离线 FeatureHub 特征误当成可实时计算概率。
+- 2026-05-03：Entry Meta runtime-safe artifact 合同收紧：当 `dynamic_scoring_supported=True` 时，overlay 初始化必须成功构造 feature row builder 与 dynamic scorer；若 scorer payload、feature manifest 或 `feature_order` 与 artifact `feature_keys` 不一致，构造阶段 fail-fast，不能降级为 lookup miss 放行。`dynamic_scoring_supported=False` 的 research_full/旧 artifact 仍不构造 scorer，lookup miss 保持 `entry_meta_dynamic_feature_scope_unsupported`。
+- 2026-05-03 Task 5 runtime-safe 验证证据：Entry Meta 聚焦回归 `python -m pytest tests\research\core\test_config.py tests\research\entry_meta tests\backtesting\test_entry_meta_overlay.py tests\backtesting\test_entry_meta_session_context.py -q` 通过，结果 `142 passed in 3.02s`；State Edge 回归 `python -m pytest tests\backtesting\test_state_edge_overlay.py tests\research\state_edge -q` 通过，结果 `33 passed in 10.02s`；CLI help 检查 `python -m src.ops.cli.entry_meta_lab --help` 暴露 `--feature-scope`，`python -m src.ops.cli.backtest_runner --help` 暴露 `--entry-meta-artifact`、`--entry-meta-mode`、`--entry-meta-threshold-grid`；runtime-safe 训练命令 `python -m src.ops.cli.entry_meta_lab --environment live --baseline artifacts/state_edge_overlay_h1_20260101_20260415_baseline.json --tf H1 --start 2026-01-01 --end 2026-04-15 --backend cpu --feature-scope runtime_safe --artifact-dir artifacts/entry_meta_h1_20260101_20260415_runtime_safe --json-output artifacts/entry_meta_h1_20260101_20260415_runtime_safe_train.json --no-auto-backfill` 退出 0，artifact manifest 校验为 `feature_scope=runtime_safe`、`dynamic_scoring_supported=true`、`runtime_indicator_names_count=14`；forward shadow 命令 `python -m src.ops.cli.backtest_runner --environment live --tf H1 --start 2026-04-15 --end 2026-04-30 --include-demo-validation --entry-meta-artifact $artifact --entry-meta-mode shadow --entry-meta-threshold-grid 0.50 --json-output artifacts/entry_meta_runtime_safe_forward_h1_20260415_0430_shadow.json --no-auto-backfill` 退出 0，overlay 关键字段为 `mode=shadow`、`threshold=0.5`、`observed=5`、`blocked=0`、`dynamic_scored=5`、`score_source_counts.dynamic_scorer=5`；`git diff --check -- docs/codebase-review.md` 退出 0。
+- 已知限制：pending-entry 当前仍在 signal 产生时用 signal bar/time/close 构建 `feature_context` 并打分，不会等到后续 fill time/price 重新打分。该问题属于入场评价时点变更，应另行设计。
 
 ---
 

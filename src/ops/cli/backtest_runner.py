@@ -55,6 +55,13 @@ def _run_single(
     strategy_names: Optional[List[str]] = None,
     mined_rule_sources: Optional[List[str]] = None,
     mined_rule_promote_only: bool = True,
+    state_edge_artifact: Optional[str] = None,
+    state_edge_mode: str = "shadow",
+    state_edge_threshold: float = 0.50,
+    state_edge_directions: Optional[List[str]] = None,
+    entry_meta_artifact: Optional[str] = None,
+    entry_meta_mode: str = "shadow",
+    entry_meta_threshold: float = 0.50,
 ) -> dict:
     """执行单个 TF 回测，返回结构化结果 dict。
 
@@ -155,6 +162,28 @@ def _run_single(
         intrabar=intrabar_cfg,
         **merged,
     )
+
+    state_edge_overlay = None
+    if state_edge_artifact:
+        from src.backtesting.state_edge_overlay import StateEdgeBacktestOverlay
+
+        state_edge_overlay = StateEdgeBacktestOverlay.from_artifact_path(
+            state_edge_artifact,
+            mode=state_edge_mode,
+            threshold=state_edge_threshold,
+            filter_directions=state_edge_directions,
+        )
+
+    entry_meta_overlay = None
+    if entry_meta_artifact:
+        from src.research.entry_meta.overlay import EntryMetaBacktestOverlay
+
+        entry_meta_overlay = EntryMetaBacktestOverlay.from_artifact_path(
+            entry_meta_artifact,
+            mode=entry_meta_mode,
+            threshold=entry_meta_threshold,
+        )
+
     engine = BacktestEngine(
         config=config,
         data_loader=components["data_loader"],
@@ -163,8 +192,12 @@ def _run_single(
         regime_detector=components["regime_detector"],
         performance_tracker=components.get("performance_tracker"),
         intrabar_confidence_factor=intrabar_cfg.confidence_factor,
+        state_edge_overlay=state_edge_overlay,
+        entry_meta_overlay=entry_meta_overlay,
     )
     result = engine.run()
+    state_edge_overlay_report = engine.state_edge_overlay_report()
+    entry_meta_overlay_report = engine.entry_meta_overlay_report()
     m = result.metrics
     trades = result.trades
 
@@ -234,7 +267,7 @@ def _run_single(
         "regime_sl_trending": config.position.regime_sl_trending,
     }
 
-    return {
+    output = {
         "tf": tf,
         "start": start,
         "end": end,
@@ -274,6 +307,13 @@ def _run_single(
         ),
         "_raw_result": result,
     }
+    if state_edge_overlay_report is not None:
+        output["state_edge_overlay"] = state_edge_overlay_report
+        output["state_edge_threshold"] = state_edge_threshold
+    if entry_meta_overlay_report is not None:
+        output["entry_meta_overlay"] = entry_meta_overlay_report
+        output["entry_meta_threshold"] = entry_meta_threshold
+    return output
 
 
 # ── 摘要模板渲染 ────────────────────────────────────────────────────
@@ -355,6 +395,28 @@ def _render_default(data: dict) -> str:
             reverse=True,
         ):
             lines.append(f"    {reason}: {count}")
+
+    seo = data.get("state_edge_overlay")
+    if seo:
+        lines.append("--- State Edge Overlay ---")
+        lines.append(
+            f"  Mode:{seo.get('mode')}  Threshold:{seo.get('threshold')}  "
+            f"Observed:{seo.get('observed')}  Blocked:{seo.get('blocked')}  "
+            f"Missing:{seo.get('missing_predictions')}"
+        )
+        blocked_by_direction = seo.get("blocked_by_direction") or {}
+        if blocked_by_direction:
+            parts = [f"{k}:{v}" for k, v in sorted(blocked_by_direction.items())]
+            lines.append(f"  Blocked by direction: {', '.join(parts)}")
+
+    emo = data.get("entry_meta_overlay")
+    if emo:
+        lines.append("--- Entry Meta Overlay ---")
+        lines.append(
+            f"  Mode:{emo.get('mode')}  Threshold:{emo.get('threshold')}  "
+            f"Observed:{emo.get('observed')}  Blocked:{emo.get('blocked')}  "
+            f"Missing:{emo.get('missing_predictions')}"
+        )
 
     return "\n".join(lines)
 
@@ -485,6 +547,25 @@ def _render_compare(results: List[dict]) -> str:
     return "\n".join(lines)
 
 
+
+def _parse_threshold_grid(raw: str) -> List[float]:
+    values: List[float] = []
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        value = float(part)
+        if value < 0.0 or value > 1.0:
+            raise ValueError(f"Overlay threshold must be within [0, 1]: {value}")
+        values.append(value)
+    return values or [0.50]
+
+
+def _parse_state_edge_directions(raw: str) -> List[str]:
+    values = [part.strip().lower() for part in str(raw or "").split(",") if part.strip()]
+    return values or ["buy", "sell"]
+
+
 TEMPLATES = {
     "default": _render_default,
     "minimal": _render_minimal,
@@ -583,6 +664,43 @@ def main() -> None:
         help="Write structured result payload to JSON file",
     )
     parser.add_argument(
+        "--state-edge-artifact",
+        default=None,
+        help="Path to State Edge artifact JSON or artifact directory",
+    )
+    parser.add_argument(
+        "--state-edge-mode",
+        choices=["shadow", "filter"],
+        default="shadow",
+        help="shadow records probabilities only; filter gates backtest entries",
+    )
+    parser.add_argument(
+        "--state-edge-threshold-grid",
+        default="0.50,0.55,0.60,0.65,0.70",
+        help="Comma-separated thresholds for filter mode evaluation",
+    )
+    parser.add_argument(
+        "--state-edge-directions",
+        default="buy,sell",
+        help="Comma-separated directions for filter mode: buy,sell,buy or sell",
+    )
+    parser.add_argument(
+        "--entry-meta-artifact",
+        default=None,
+        help="Path to Entry Meta artifact JSON or artifact directory",
+    )
+    parser.add_argument(
+        "--entry-meta-mode",
+        choices=["shadow", "filter"],
+        default="shadow",
+        help="shadow records probabilities only; filter gates backtest entries",
+    )
+    parser.add_argument(
+        "--entry-meta-threshold-grid",
+        default="0.50,0.55,0.60,0.65,0.70",
+        help="Comma-separated Entry Meta thresholds for filter mode evaluation",
+    )
+    parser.add_argument(
         "--no-auto-backfill",
         action="store_true",
         help="Disable automatic MT5 backfill when requested OHLC coverage is missing",
@@ -635,33 +753,63 @@ def main() -> None:
         auto_backfill=not args.no_auto_backfill,
     )
     render_fn = TEMPLATES.get(args.template, _render_default)
+    state_edge_thresholds = _parse_threshold_grid(args.state_edge_threshold_grid)
+    state_edge_directions = _parse_state_edge_directions(args.state_edge_directions)
+    if not args.state_edge_artifact or args.state_edge_mode == "shadow":
+        state_edge_thresholds = [state_edge_thresholds[0]]
+    entry_meta_thresholds = _parse_threshold_grid(args.entry_meta_threshold_grid)
+    if not args.entry_meta_artifact or args.entry_meta_mode == "shadow":
+        entry_meta_thresholds = [entry_meta_thresholds[0]]
 
     all_results: List[dict] = []
     raw_results: List[dict] = []
     raw_objects: List[Any] = []  # BacktestResult 列表——给 --persist 用
     for tf in timeframes:
-        sys.stderr.write(f"Running {tf}...\n")
-        sys.stderr.flush()
-        data = _run_single(
-            tf,
-            args.start,
-            args.end,
-            config_overrides=overrides,
-            strategy_names=strategy_names,
-            mined_rule_sources=mined_rule_sources,
-            mined_rule_promote_only=mined_rule_promote_only,
-        )
-        raw_result = data.pop("_raw_result", None)
-        if raw_result is not None:
-            raw_results.append(raw_result.to_dict())
-            raw_objects.append(raw_result)
-        all_results.append(data)
+        for state_edge_threshold in state_edge_thresholds:
+            for entry_meta_threshold in entry_meta_thresholds:
+                run_parts = [f"Running {tf}"]
+                if args.state_edge_artifact:
+                    run_parts.append(
+                        f"State Edge {args.state_edge_mode} "
+                        f"threshold={state_edge_threshold:.2f} "
+                        f"directions={','.join(state_edge_directions)}"
+                    )
+                if args.entry_meta_artifact:
+                    run_parts.append(
+                        f"Entry Meta {args.entry_meta_mode} "
+                        f"threshold={entry_meta_threshold:.2f}"
+                    )
+                sys.stderr.write(" with ".join(run_parts) + "...\n")
+                sys.stderr.flush()
+                data = _run_single(
+                    tf,
+                    args.start,
+                    args.end,
+                    config_overrides=overrides,
+                    strategy_names=strategy_names,
+                    mined_rule_sources=mined_rule_sources,
+                    mined_rule_promote_only=mined_rule_promote_only,
+                    state_edge_artifact=args.state_edge_artifact,
+                    state_edge_mode=args.state_edge_mode,
+                    state_edge_threshold=state_edge_threshold,
+                    state_edge_directions=state_edge_directions,
+                    entry_meta_artifact=args.entry_meta_artifact,
+                    entry_meta_mode=args.entry_meta_mode,
+                    entry_meta_threshold=entry_meta_threshold,
+                )
+                raw_result = data.pop("_raw_result", None)
+                if raw_result is not None:
+                    raw_results.append(raw_result.to_dict())
+                    raw_objects.append(raw_result)
+                all_results.append(data)
 
-        if not args.compare:
-            if args.template == "custom" and args.custom_template:
-                print(args.custom_template.format(**data["metrics"], tf=data["tf"]))
-            else:
-                print(render_fn(data))
+                if not args.compare:
+                    if args.template == "custom" and args.custom_template:
+                        print(
+                            args.custom_template.format(**data["metrics"], tf=data["tf"])
+                        )
+                    else:
+                        print(render_fn(data))
 
     # 多 TF 对比模式
     if args.compare and len(all_results) > 1:

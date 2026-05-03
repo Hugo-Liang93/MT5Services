@@ -79,6 +79,29 @@ def _build_equity_curve_filter_config() -> EquityCurveFilterConfig:
     )
 
 
+def _build_entry_meta_session_context_filter() -> Any:
+    """Create a context-only session resolver for Entry Meta features."""
+    from src.signals.execution.filters import SessionFilter
+
+    return SessionFilter(allowed_sessions=())
+
+
+def _resolve_entry_meta_session(session_context: Any, bar_time: Any) -> str:
+    """Resolve the Entry Meta feature session without applying trade filters."""
+    if session_context is None:
+        return "unknown"
+    if bar_time is None:
+        return "unknown"
+    try:
+        sessions = session_context.current_sessions(bar_time)
+    except (AttributeError, TypeError, ValueError):
+        logger.debug("Entry Meta session context unavailable", exc_info=True)
+        return "unknown"
+    if not sessions:
+        return "unknown"
+    return str(sessions[0] or "unknown")
+
+
 from .signals import backfill_evaluations as _backfill_evaluations_helper
 from .signals import check_pending_entries as _check_pending_entries_helper
 from .signals import evaluate_strategies as _evaluate_strategies_helper
@@ -208,6 +231,10 @@ class BacktestEngine:
         # 对 CANDIDATE / DEMO_VALIDATION / locked_timeframes / max_live_positions 的
         # 处理完全一致。None 表示"未显式注入"，将在构造期从 signal_config 读取。
         strategy_deployments: Optional[Dict[str, StrategyDeployment]] = None,
+        # Research-only overlay：只在 backtest 中消费 State Edge artifact。
+        # demo/live runtime 不构造该端口。
+        state_edge_overlay: Optional[Any] = None,
+        entry_meta_overlay: Optional[Any] = None,
     ) -> None:
         self._config = config
         self._data_loader = data_loader
@@ -229,6 +256,8 @@ class BacktestEngine:
             self._strategy_deployments = _load_deployments_from_signal_config()
         else:
             self._strategy_deployments = dict(strategy_deployments)
+        self._state_edge_overlay = state_edge_overlay
+        self._entry_meta_overlay = entry_meta_overlay
         # HTF 指标：{timeframe: {indicator_name: {field: value}}}（静态快照，向后兼容）
         self._htf_indicator_data = htf_indicator_data or {}
         # HTF 时序数据：{timeframe: [(bar_time, indicators), ...]}，按 bar 时间查找
@@ -381,6 +410,9 @@ class BacktestEngine:
             for name, sessions in config.strategy_sessions.items()
             if sessions
         }
+
+        # Entry Meta 的 session 是特征上下文，不是策略过滤条件。
+        self._entry_meta_session_context_filter = _build_entry_meta_session_context_filter()
 
         # 用于在 run() 和 _evaluate_strategies() 中查询 bar 的 current_sessions
         self._session_filter: Optional[Any] = None
@@ -623,6 +655,9 @@ class BacktestEngine:
         key = str(reason or "unspecified")
         self._execution_rejections[key] = self._execution_rejections.get(key, 0) + 1
 
+    def record_blocked_entry(self, event: dict[str, Any]) -> None:
+        self._blocked_entry_events.append(dict(event))
+
     def record_entry_acceptance(self) -> None:
         self._accepted_entries += 1
 
@@ -632,12 +667,31 @@ class BacktestEngine:
             "accepted_entries": self._accepted_entries,
             "rejected_entries": sum(self._execution_rejections.values()),
             "rejection_reasons": dict(sorted(self._execution_rejections.items())),
+            "blocked_entry_events": list(self._blocked_entry_events),
         }
         if self._intrabar_ctx is not None:
             from .intrabar import intrabar_stats
 
             summary["intrabar"] = intrabar_stats(self._intrabar_ctx)
         return summary
+
+    def state_edge_overlay_report(self) -> Optional[dict[str, Any]]:
+        if self.state_edge_overlay is None:
+            return None
+        return self.state_edge_overlay.report()
+
+    def entry_meta_overlay_report(self) -> Optional[dict[str, Any]]:
+        if self.entry_meta_overlay is None:
+            return None
+        return self.entry_meta_overlay.report()
+
+    @property
+    def state_edge_overlay(self) -> Optional[Any]:
+        return self._state_edge_overlay
+
+    @property
+    def entry_meta_overlay(self) -> Optional[Any]:
+        return self._entry_meta_overlay
 
     def _reset_run_state(self) -> None:
         """重置每次 run() 的运行时状态，确保引擎可复用。"""
@@ -651,6 +705,10 @@ class BacktestEngine:
             self._performance_tracker.reset()
         if self._htf_cache is not None:
             self._htf_cache.reset()
+        if self._state_edge_overlay is not None:
+            self._state_edge_overlay.reset()
+        if self._entry_meta_overlay is not None:
+            self._entry_meta_overlay.reset()
 
         self._signal_states: Dict[str, _BacktestSignalState] = {}
         if config.enable_state_machine:
@@ -661,6 +719,7 @@ class BacktestEngine:
         self._recorded_evals: Set[Tuple[int, str]] = set()
         self._accepted_entries = 0
         self._execution_rejections: Dict[str, int] = {}
+        self._blocked_entry_events: list[dict[str, Any]] = []
         self._portfolio = PortfolioTracker(
             initial_balance=config.initial_balance,
             max_positions=risk.max_positions,
@@ -965,8 +1024,18 @@ class BacktestEngine:
                         bar.time,
                     ):
                         continue
+                entry_session = _resolve_entry_meta_session(
+                    self._entry_meta_session_context_filter,
+                    bar.time,
+                )
                 _process_decision_helper(
-                    self, decision, bar, bar_index, indicators, regime
+                    self,
+                    decision,
+                    bar,
+                    bar_index,
+                    indicators,
+                    regime,
+                    entry_session=entry_session,
                 )
 
             # 9. 收集本 bar 的策略方向（供下一 bar 的 Chandelier 信号反转检查）
