@@ -46,6 +46,21 @@ def test_scorer_rejects_invalid_probability_dimensions() -> None:
         )
 
 
+@pytest.mark.parametrize("bad_classes", [None, [1, 0], [1]])
+def test_scorer_rejects_bad_logistic_classes(bad_classes: object) -> None:
+    payload = _payload()
+    if bad_classes is None:
+        payload.pop("classes")
+    else:
+        payload["classes"] = bad_classes
+
+    with pytest.raises(EntryMetaScoringError, match="classes"):
+        EntryMetaScorer.from_payload(
+            payload,
+            feature_keys=["entry.confidence", "entry.strategy_code"],
+        )
+
+
 def test_constant_prior_scorer_outputs_fixed_probability() -> None:
     scorer = EntryMetaScorer.from_payload(
         {

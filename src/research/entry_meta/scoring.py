@@ -68,6 +68,16 @@ class EntryMetaScorer:
         if estimator != "logistic_regression_v1":
             raise EntryMetaScoringError(f"unsupported entry meta scorer estimator {estimator}")
 
+        classes_raw = payload.get("classes")
+        if not isinstance(classes_raw, list):
+            raise EntryMetaScoringError("entry meta scorer classes must be [0, 1]")
+        try:
+            classes = [int(item) for item in classes_raw]
+        except (TypeError, ValueError) as exc:
+            raise EntryMetaScoringError("entry meta scorer classes must be [0, 1]") from exc
+        if classes != [0, 1]:
+            raise EntryMetaScoringError("entry meta scorer classes must be [0, 1]")
+
         feature_order_raw = payload.get("feature_order")
         if not isinstance(feature_order_raw, list):
             raise EntryMetaScoringError("entry meta scorer feature_order must be a list")
