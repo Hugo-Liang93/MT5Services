@@ -76,11 +76,11 @@ class EntryMetaBacktestOverlay:
         self._dynamic_unsupported_reason = (
             "entry_meta_dynamic_feature_scope_unsupported"
         )
-        category_mappings = dict(feature_manifest.get("category_mappings", {}))
         self._feature_row_builder: EntryMetaFeatureRowBuilder | None = None
         self._scorer: EntryMetaScorer | None = None
         if self._dynamic_scoring_supported:
             try:
+                category_mappings = dict(feature_manifest.get("category_mappings", {}))
                 self._feature_row_builder = EntryMetaFeatureRowBuilder(
                     feature_keys=list(artifact.feature_keys),
                     category_mappings=category_mappings,
@@ -94,9 +94,13 @@ class EntryMetaBacktestOverlay:
                 EntryMetaScoringError,
                 TypeError,
                 ValueError,
-            ):
-                self._feature_row_builder = None
-                self._scorer = None
+                AttributeError,
+            ) as exc:
+                raise ValueError(
+                    "Invalid entry meta dynamic scorer artifact: "
+                    "dynamic_scoring_supported=True requires a valid "
+                    "runtime_safe feature manifest, feature_order, and model payload"
+                ) from exc
         self.reset()
 
     @classmethod

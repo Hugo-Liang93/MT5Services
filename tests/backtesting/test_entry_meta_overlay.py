@@ -310,6 +310,17 @@ def test_overlay_rejects_inconsistent_dynamic_scope_manifest() -> None:
         EntryMetaBacktestOverlay(artifact, mode="filter", threshold=0.50)
 
 
+def test_overlay_rejects_invalid_dynamic_scorer_feature_order() -> None:
+    artifact = _dynamic_artifact()
+    artifact.model_payload["feature_order"] = list(reversed(artifact.feature_keys))
+
+    with pytest.raises(
+        ValueError,
+        match="dynamic scorer|feature_order|invalid artifact",
+    ):
+        EntryMetaBacktestOverlay(artifact, mode="filter", threshold=0.50)
+
+
 def test_overlay_dynamic_feature_failure_allows_and_records_reason() -> None:
     overlay = EntryMetaBacktestOverlay(_dynamic_artifact(), mode="filter", threshold=0.50)
     bad_context = dataclasses.replace(_feature_context(confidence=0.9), strategy="unknown")
