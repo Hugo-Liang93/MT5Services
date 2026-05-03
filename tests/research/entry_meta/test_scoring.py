@@ -46,7 +46,7 @@ def test_scorer_rejects_invalid_probability_dimensions() -> None:
         )
 
 
-@pytest.mark.parametrize("bad_classes", [None, [1, 0], [1]])
+@pytest.mark.parametrize("bad_classes", [None, [1, 0], [1], [0.0, 1.0], ["0", "1"]])
 def test_scorer_rejects_bad_logistic_classes(bad_classes: object) -> None:
     payload = _payload()
     if bad_classes is None:
