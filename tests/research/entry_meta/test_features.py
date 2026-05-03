@@ -290,6 +290,92 @@ def test_builds_entry_context_visible_indicators_and_codes_in_stable_order() -> 
     }
 
 
+def test_runtime_safe_feature_scope_keeps_only_allowed_runtime_indicators() -> None:
+    matrix = SimpleNamespace(
+        bar_times=[datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)],
+        indicator_series={
+            ("ema", "value"): [1.5],
+            ("rsi", "value"): [55.0],
+            ("temporal", "rsi_cross_up"): [1.0],
+            ("microstructure", "body_ratio"): [0.25],
+            ("session_event", "is_london"): [1.0],
+            ("trade", "pnl_estimate"): [99.0],
+        },
+        regimes=["trend"],
+        sessions=["london"],
+    )
+    trade = {
+        "entry_time": "2026-01-01T00:00:00Z",
+        "confidence": 0.80,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+
+    features = EntryMetaFeatureBuilder(
+        feature_scope="runtime_safe",
+        runtime_indicator_names=["ema", "rsi"],
+    ).build(matrix, _dataset([trade], [0]))
+
+    assert features.feature_keys == [
+        "entry.confidence",
+        "entry.direction.buy",
+        "entry.direction.sell",
+        "entry.price",
+        "entry.strategy_code",
+        "indicator.ema.value",
+        "indicator.rsi.value",
+        "matrix.regime_code",
+        "matrix.session_code",
+    ]
+    assert features.manifest["feature_scope"] == "runtime_safe"
+    assert features.manifest["dynamic_scoring_supported"] is True
+    assert features.manifest["runtime_indicator_names"] == ["ema", "rsi"]
+    assert "indicator.temporal.rsi_cross_up" not in features.feature_keys
+    assert "indicator.microstructure.body_ratio" not in features.feature_keys
+    assert "indicator.session_event.is_london" not in features.feature_keys
+    assert "indicator.trade.pnl_estimate" not in features.feature_keys
+
+
+def test_research_full_feature_scope_keeps_visible_provider_features() -> None:
+    matrix = SimpleNamespace(
+        bar_times=[datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)],
+        indicator_series={
+            ("ema", "value"): [1.5],
+            ("temporal", "rsi_cross_up"): [1.0],
+            ("trade", "pnl_estimate"): [99.0],
+        },
+        regimes=["trend"],
+        sessions=["london"],
+    )
+    trade = {
+        "entry_time": "2026-01-01T00:00:00Z",
+        "confidence": 0.80,
+        "direction": "buy",
+        "entry_price": 1.2345,
+        "strategy": "breakout",
+        "pnl": 10.0,
+    }
+
+    features = EntryMetaFeatureBuilder(feature_scope="research_full").build(
+        matrix,
+        _dataset([trade], [0]),
+    )
+
+    assert "indicator.ema.value" in features.feature_keys
+    assert "indicator.temporal.rsi_cross_up" in features.feature_keys
+    assert "indicator.trade.pnl_estimate" not in features.feature_keys
+    assert features.manifest["feature_scope"] == "research_full"
+    assert features.manifest["dynamic_scoring_supported"] is False
+    assert features.manifest["runtime_indicator_names"] == []
+
+
+def test_feature_builder_rejects_unknown_feature_scope() -> None:
+    with pytest.raises(ValueError, match="unsupported entry meta feature_scope"):
+        EntryMetaFeatureBuilder(feature_scope="unknown")
+
+
 def test_forbidden_indicator_fields_are_excluded_from_feature_keys() -> None:
     features = EntryMetaFeatureBuilder().build(_matrix(), _dataset([], []))
 

@@ -27,6 +27,13 @@ ENTRY_FEATURE_KEYS = [
     "entry.strategy_code",
 ]
 
+FEATURE_SCOPE_RUNTIME_SAFE = "runtime_safe"
+FEATURE_SCOPE_RESEARCH_FULL = "research_full"
+SUPPORTED_FEATURE_SCOPES = {
+    FEATURE_SCOPE_RUNTIME_SAFE,
+    FEATURE_SCOPE_RESEARCH_FULL,
+}
+
 
 @dataclass(frozen=True)
 class EntryMetaFeatureMatrix:
@@ -68,7 +75,20 @@ class EntryMetaFeatureBuilder:
     def __init__(
         self,
         category_mappings: dict[str, dict[str, float]] | None = None,
+        *,
+        feature_scope: str = FEATURE_SCOPE_RESEARCH_FULL,
+        runtime_indicator_names: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> None:
+        self._feature_scope = _normalize_feature_scope(feature_scope)
+        self._runtime_indicator_names = tuple(
+            sorted(
+                {
+                    str(name).strip()
+                    for name in runtime_indicator_names or []
+                    if str(name).strip()
+                }
+            )
+        )
         self._frozen_category_mappings = (
             {
                 category: {str(name): float(code) for name, code in mapping.items()}
@@ -131,16 +151,29 @@ class EntryMetaFeatureBuilder:
                 "forbidden_tokens": list(FORBIDDEN_TOKENS),
                 "n_features": len(feature_keys),
                 "category_mappings": category_mappings,
+                "feature_scope": self._feature_scope,
+                "dynamic_scoring_supported": (
+                    self._feature_scope == FEATURE_SCOPE_RUNTIME_SAFE
+                ),
+                "runtime_indicator_names": list(self._runtime_indicator_names),
             },
         )
 
     def _visible_indicator_keys(self, matrix: Any) -> list[tuple[str, str]]:
         keys = []
+        runtime_allowed = set(self._runtime_indicator_names)
         for indicator, field in matrix.indicator_series.keys():
-            key_text = f"{indicator}.{field}".lower()
+            indicator_name = str(indicator)
+            field_name = str(field)
+            key_text = f"{indicator_name}.{field_name}".lower()
             if any(token in key_text for token in FORBIDDEN_TOKENS):
                 continue
-            keys.append((str(indicator), str(field)))
+            if (
+                self._feature_scope == FEATURE_SCOPE_RUNTIME_SAFE
+                and indicator_name not in runtime_allowed
+            ):
+                continue
+            keys.append((indicator_name, field_name))
         return sorted(keys, key=lambda item: (item[0], item[1]))
 
     def _build_row(
@@ -469,6 +502,13 @@ def _semantic_name(value: Any) -> str:
     if hasattr(value, "name"):
         return str(value.name)
     return str(value)
+
+
+def _normalize_feature_scope(value: Any) -> str:
+    scope = str(value or "").strip().lower()
+    if scope not in SUPPORTED_FEATURE_SCOPES:
+        raise ValueError(f"unsupported entry meta feature_scope {value}")
+    return scope
 
 
 def _series_value(series: Any, index: int) -> Any:
