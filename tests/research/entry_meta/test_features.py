@@ -122,10 +122,89 @@ def test_feature_row_builder_rejects_unknown_category_without_implicit_code() ->
         builder.build(context)
 
 
+def test_feature_row_builder_rejects_unknown_strategy_with_feature_subset() -> None:
+    builder = EntryMetaFeatureRowBuilder(
+        feature_keys=["entry.confidence"],
+        category_mappings={
+            "strategy": {"breakout": 0.0},
+            "regime": {"trend": 0.0},
+            "session": {"london": 0.0},
+        },
+    )
+    context = EntryMetaFeatureContext(
+        bar_time="2026-01-01T00:05:00Z",
+        bar_index=1,
+        strategy="unknown",
+        direction="buy",
+        confidence=0.75,
+        entry_price=1.2345,
+        indicators={},
+        regime="trend",
+        session="london",
+    )
+
+    with pytest.raises(EntryMetaFeatureBuildError, match="unknown strategy category"):
+        builder.build(context)
+
+
+def test_feature_row_builder_rejects_unknown_regime_with_feature_subset() -> None:
+    builder = EntryMetaFeatureRowBuilder(
+        feature_keys=["entry.confidence"],
+        category_mappings={
+            "strategy": {"breakout": 0.0},
+            "regime": {"trend": 0.0},
+            "session": {"london": 0.0},
+        },
+    )
+    context = EntryMetaFeatureContext(
+        bar_time="2026-01-01T00:05:00Z",
+        bar_index=1,
+        strategy="breakout",
+        direction="buy",
+        confidence=0.75,
+        entry_price=1.2345,
+        indicators={},
+        regime="range",
+        session="london",
+    )
+
+    with pytest.raises(EntryMetaFeatureBuildError, match="unknown regime category"):
+        builder.build(context)
+
+
+def test_feature_row_builder_rejects_unknown_session_with_feature_subset() -> None:
+    builder = EntryMetaFeatureRowBuilder(
+        feature_keys=["entry.confidence"],
+        category_mappings={
+            "strategy": {"breakout": 0.0},
+            "regime": {"trend": 0.0},
+            "session": {"london": 0.0},
+        },
+    )
+    context = EntryMetaFeatureContext(
+        bar_time="2026-01-01T00:05:00Z",
+        bar_index=1,
+        strategy="breakout",
+        direction="buy",
+        confidence=0.75,
+        entry_price=1.2345,
+        indicators={},
+        regime="trend",
+        session="asia",
+    )
+
+    with pytest.raises(EntryMetaFeatureBuildError, match="unknown session category"):
+        builder.build(context)
+
+
 def test_feature_row_builder_rejects_missing_indicator_field() -> None:
     builder = EntryMetaFeatureRowBuilder(
         feature_keys=["indicator.atr14.atr"],
-        category_mappings={"strategy": {}, "regime": {}, "session": {}},
+        category_mappings={
+            "strategy": {"breakout": 0.0},
+            "regime": {"trend": 0.0},
+            "session": {"london": 0.0},
+        },
     )
 
     with pytest.raises(EntryMetaFeatureBuildError, match="missing indicator"):

@@ -227,6 +227,11 @@ class EntryMetaFeatureRowBuilder:
         direction = _required_context_direction(context.direction)
         confidence = _finite_context_float(context.confidence, "confidence")
         entry_price = _positive_context_float(context.entry_price, "entry_price")
+        regime = _semantic_name(context.regime)
+        session = _semantic_name(context.session)
+        self._category_code("strategy", strategy)
+        self._category_code("regime", regime)
+        self._category_code("session", session)
         values = [
             self._value_for_key(
                 key,
@@ -235,6 +240,8 @@ class EntryMetaFeatureRowBuilder:
                 direction=direction,
                 confidence=confidence,
                 entry_price=entry_price,
+                regime=regime,
+                session=session,
             )
             for key in self._feature_keys
         ]
@@ -255,6 +262,8 @@ class EntryMetaFeatureRowBuilder:
         direction: str,
         confidence: float,
         entry_price: float,
+        regime: str,
+        session: str,
     ) -> float:
         if key == "entry.confidence":
             return confidence
@@ -267,9 +276,9 @@ class EntryMetaFeatureRowBuilder:
         if key == "entry.strategy_code":
             return self._category_code("strategy", strategy)
         if key == "matrix.regime_code":
-            return self._category_code("regime", _semantic_name(context.regime))
+            return self._category_code("regime", regime)
         if key == "matrix.session_code":
-            return self._category_code("session", _semantic_name(context.session))
+            return self._category_code("session", session)
         if key.startswith("indicator."):
             return self._indicator_value(key, context.indicators)
         raise EntryMetaFeatureBuildError(f"unsupported entry meta feature key {key}")
