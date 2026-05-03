@@ -206,7 +206,7 @@ def test_missing_prediction_is_allowed_and_counted() -> None:
     )
 
     assert verdict.allowed is True
-    assert verdict.reason == "entry_meta_feature_context_missing"
+    assert verdict.reason == "entry_meta_dynamic_feature_scope_unsupported"
     assert verdict.take_entry_prob == 1.0
     assert verdict.block_entry_prob == 0.0
     assert verdict.score_source == "missing"
@@ -214,7 +214,9 @@ def test_missing_prediction_is_allowed_and_counted() -> None:
     assert report["observed"] == 1
     assert report["allowed"] == 1
     assert report["missing_predictions"] == 1
-    assert report["missing_by_reason"] == {"entry_meta_feature_context_missing": 1}
+    assert report["missing_by_reason"] == {
+        "entry_meta_dynamic_feature_scope_unsupported": 1
+    }
     assert report["score_source_counts"] == {"missing": 1}
     assert report["dynamic_score_failures"] == 1
 
@@ -266,6 +268,28 @@ def test_overlay_research_full_lookup_miss_is_allowed_and_reports_scope() -> Non
     }
     assert report["dynamic_scored"] == 0
     assert report["dynamic_score_failures"] == 1
+
+
+def test_overlay_research_full_lookup_miss_without_context_reports_scope() -> None:
+    overlay = EntryMetaBacktestOverlay(
+        _research_full_artifact(),
+        mode="filter",
+        threshold=0.50,
+    )
+
+    verdict = overlay.evaluate(
+        "2026-01-01T03:00:00Z",
+        "breakout",
+        "buy",
+        confidence=0.9,
+    )
+
+    assert verdict.allowed is True
+    assert verdict.reason == "entry_meta_dynamic_feature_scope_unsupported"
+    assert verdict.score_source == "missing"
+    assert overlay.report()["missing_by_reason"] == {
+        "entry_meta_dynamic_feature_scope_unsupported": 1
+    }
 
 
 def test_overlay_rejects_inconsistent_dynamic_scope_manifest() -> None:

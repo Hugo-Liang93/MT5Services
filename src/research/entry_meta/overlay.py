@@ -209,10 +209,10 @@ class EntryMetaBacktestOverlay:
         self,
         feature_context: EntryMetaFeatureContext | None,
     ) -> tuple[float, float, str] | str:
-        if feature_context is None:
-            return "entry_meta_feature_context_missing"
         if not self._dynamic_scoring_supported:
             return self._dynamic_unsupported_reason
+        if feature_context is None:
+            return "entry_meta_feature_context_missing"
         if self._feature_row_builder is None or self._scorer is None:
             return "entry_meta_unsupported_scorer"
         try:
