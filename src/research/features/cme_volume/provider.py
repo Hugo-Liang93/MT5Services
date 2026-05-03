@@ -90,7 +90,7 @@ class CMEVolumeFeatureProvider:
         # Roll daily-distinct values (not bar-by-bar; intraday bars share the day's value)
         ordered_dates: List[date] = []
         ordered_vols: List[Optional[float]] = []
-        seen: set = set()
+        seen: set[date] = set()
         for bt in matrix.bar_times:
             d = bt.date()
             if d in seen:

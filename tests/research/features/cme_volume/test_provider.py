@@ -46,8 +46,10 @@ def test_role_mapping_assigns_each_field() -> None:
 def test_compute_emits_one_value_per_bar() -> None:
     bars = _bar_times_h1(days=5)
     matrix = _FakeMatrix(bars)
-    # Mock lookup: every date returns 100k volume
-    lookup = lambda d: 100_000.0
+
+    def lookup(_d: date) -> Optional[float]:
+        return 100_000.0
+
     p = CMEVolumeFeatureProvider(daily_volume_lookup=lookup)
     out = p.compute(matrix)
 
