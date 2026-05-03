@@ -284,6 +284,16 @@ def _load_feature_providers(parser: configparser.ConfigParser) -> FeatureProvide
     )
 
 
+def _normalize_entry_meta_feature_scope(value: str) -> str:
+    scope = str(value or "").strip().lower()
+    if scope not in {"runtime_safe", "research_full"}:
+        raise ValueError(
+            "entry_meta_model.feature_scope must be runtime_safe or research_full; "
+            f"got {value!r}"
+        )
+    return scope
+
+
 def load_research_config(ini_path: Optional[str] = None) -> ResearchConfig:
     """加载研究模块配置，支持 research.local.ini 覆盖。
 
@@ -429,7 +439,9 @@ def load_research_config(ini_path: Optional[str] = None) -> ResearchConfig:
         ),
         entry_meta_model=EntryMetaModelConfig(
             model_kind=_get("entry_meta_model", "model_kind", "tabular"),
-            feature_scope=_get("entry_meta_model", "feature_scope", "runtime_safe"),
+            feature_scope=_normalize_entry_meta_feature_scope(
+                _get("entry_meta_model", "feature_scope", "runtime_safe")
+            ),
             top_bucket_quantile=_getfloat(
                 "entry_meta_model", "top_bucket_quantile", 0.80
             ),

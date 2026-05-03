@@ -16,6 +16,17 @@ from src.research.entry_meta.training import train_entry_meta_bundle
 from src.research.features.hub import FeatureHub
 
 
+def _normalize_feature_scope(value: str | None, fallback: str) -> str:
+    raw = value if value is not None else fallback
+    scope = str(raw or "").strip().lower()
+    if scope not in {"runtime_safe", "research_full"}:
+        raise ValueError(
+            "Entry Meta feature_scope must be runtime_safe or research_full; "
+            f"got {raw!r}"
+        )
+    return scope
+
+
 @dataclass(frozen=True)
 class EntryMetaLabResult:
     model_id: str
@@ -74,6 +85,12 @@ class EntryMetaLab:
         feature_scope: str | None = None,
     ) -> EntryMetaLabResult:
         from src.research.core.backends import resolve_backend
+
+        config_entry_meta_model = getattr(self._config, "entry_meta_model", None)
+        _feature_scope = _normalize_feature_scope(
+            feature_scope,
+            getattr(config_entry_meta_model, "feature_scope", "runtime_safe"),
+        )
 
         backend = resolve_backend(backend_name)
         backend.assert_available()

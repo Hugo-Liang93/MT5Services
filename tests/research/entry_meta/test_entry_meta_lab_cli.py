@@ -81,6 +81,30 @@ def test_entry_meta_lab_run_accepts_feature_scope_parameter() -> None:
     assert "feature_scope" in inspect.signature(EntryMetaLab.run).parameters
 
 
+def test_entry_meta_lab_run_rejects_unknown_feature_scope(tmp_path) -> None:
+    from datetime import datetime, timezone
+
+    import pytest
+
+    from src.research.entry_meta.lab import EntryMetaLab
+
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text('{"trades": []}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="feature_scope"):
+        EntryMetaLab(config=object(), deps=object()).run(
+            baseline_path=baseline_path,
+            symbol="XAUUSD",
+            timeframe="H1",
+            start_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            backend_name="cpu",
+            artifact_dir=tmp_path / "artifacts",
+            model_id="entry-meta-test",
+            feature_scope="invalid_scope",
+        )
+
+
 def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_path) -> None:
     import src.backtesting.component_factory as component_factory
     import src.config.instance_context as instance_context

@@ -13,6 +13,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from src.research.core.config import ResearchConfig, load_research_config
 
 
@@ -160,6 +162,21 @@ class TestLoadResearchConfigFromIni:
         assert cfg.entry_meta_model.min_class_samples == 13
         assert cfg.entry_meta_model.threshold_grid == [0.45, 0.50, 0.75]
         assert cfg.entry_meta_model.feature_scope == "research_full"
+
+    def test_entry_meta_model_rejects_unknown_feature_scope(self, tmp_path: Path) -> None:
+        ini = tmp_path / "research.ini"
+        ini.write_text(
+            textwrap.dedent(
+                """
+                [entry_meta_model]
+                feature_scope = invalid_scope
+                """
+            ).strip(),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="feature_scope"):
+            load_research_config(ini)
 
     def test_missing_ini_falls_back_to_dataclass_defaults(self, tmp_path: Path) -> None:
         """缺失 .ini 时 loader fallback 必须与 dataclass 默认完全一致。"""
