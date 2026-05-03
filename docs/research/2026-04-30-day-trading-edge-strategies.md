@@ -1,5 +1,15 @@
 # 2026-04-30 Day-Trading Edge 策略实施 + P0 工具修复
 
+> ⚠️ **后续演进 (2026-04-30 当日)**：本快照记录的 3 条手工 day-trading edge
+> 策略（PriorDayRetest / DailyPivotReaction / NYReversal）**已被全部删除**。
+> 完整 baseline 数据复盘后发现：H1 上 9 个策略 1y 仅 244 trades / PF 0.76，
+> M30/M15 仅 price_action 跑且 DD 83-99%，整体 1y 净亏 ~$4000。3 条新策略
+> 6/8/9 trades = 0.01-0.04 trades/day，根本不是 day-trading 而是 rare swing。
+> 同时 price_action / strong_trend_follow / open_range_breakout 全部降
+> candidate（占 H1 总亏损 80%）。详见后续清场记录章节。
+> P0 工具修复（EF lot fallback / demo_vs_backtest CLI / backtest engine
+> BAR_TIME 注入）保留有效。
+
 承接 2026-04-29 mined-rule 验证的"mining ROI 不行"结论，本轮按 first-principles
 回到"手工策略 + 修回测可信度"路径。完成两项 P0 + 两条 day-trading edge 策略。
 
@@ -118,3 +128,58 @@ EF mode 22 笔被 `exceeds_max_actual_risk_pct=5%` 拒：$2000 × 5% = $100 SL d
 3. demo 重启决策（解 demo_vs_backtest 阻塞 + 解 P1a 现有策略审视阻塞）
 4. account capital B1/B2/B3 决策
 5. 5-10 年历史数据扩展（如有 broker 数据源）让 backtest 真有统计意义
+
+---
+
+## 后续清场记录（2026-04-30 当日）
+
+3 条新策略上线后跑现有 14 个策略的完整 1y baseline 实测：
+
+### H1 baseline（9 个策略 1y）
+
+| 策略 | trades/year | trades/day | PnL |
+|---|---|---|---|
+| strong_trend_follow | 72 | 0.29 | -$216 |
+| open_range_breakout | 71 | 0.28 | -$200 |
+| regime_exhaustion | 29 | 0.12 | +$30 |
+| trend_h4 | 23 | 0.09 | +$0 |
+| trend_h4_momentum | 17 | 0.07 | -$12 |
+| pullback_window | 13 | 0.05 | -$65 |
+| daily_pivot_reaction (新) | 9 | 0.04 | -$42 |
+| trendline_touch | 8 | 0.03 | +$6 |
+| ny_reversal (新) | 2 | 0.01 | -$18 |
+
+H1 总：244 trades / WR 38% / PF 0.76 / **-$516** / DD 32%
+
+### M30 / M15 baseline（仅 price_action 跑）
+
+| TF | trades | WR | PnL | DD |
+|---|---|---|---|---|
+| M30 price_action | 667 | 31% | -$1639 | **83%** |
+| M15 price_action | 1151 | 27% | -$1953 | **99%** |
+
+### 决策（用户选项 A：激进清场）
+
+1. **删除 3 条新策略**（全部文件 + 配置 + 测试）
+   - StructuredPriorDayRetest / StructuredDailyPivotReaction / StructuredNYReversal
+   - prior_day_levels / daily_pivots indicators
+   - 共 5 源文件 + 5 测试文件 + 3 indicator entries + 3 deployment 块
+2. **price_action active → candidate**：M15 DD 99% / M30 DD 83% 是定时炸弹；demo 96% fills 的祸源
+3. **strong_trend_follow demo_validation → candidate**：H1 1y -$216，占 H1 池亏损 42%
+4. **open_range_breakout demo_validation → candidate**：H1 1y -$200，占 H1 池亏损 39%
+5. **保留** regime_exhaustion / trend_h4 / trendline_touch / trend_h4_momentum 作 demo_validation 持续观察（基线候选，目前 break-even ±$30）
+6. **`account_bindings.live_main` 清空** — 没有 active 策略可绑
+7. **保留 backtest engine BAR_TIME / SESSION_BUCKETS metadata fix** — 架构上正确，未来 session-aware 策略需要
+
+### 根本认知
+
+整个策略池路径错了——既不是真正 day-trading（最高频也只 0.29 trades/day），也没找到 alpha：
+- mining-derived: 6/7 失败
+- 我手工 day-trading edge: 3/3 失败
+- 现有 14 个手工: 12/14 亏损或 break-even
+- demo 上 96% fills 的 price_action 是 worst 候选
+
+继续在现有路径加策略 = 在 noise 里淘金。下一步必须是**重新规划**：
+- 要么真做 high-frequency day-trading（需要新 alpha 来源 + 新 microstructure feature）
+- 要么承认我们做 swing/medium-frequency（调整 PLAN.md gates + 接受 lower frequency）
+- 要么暂停所有 active 直到 forward 真有信号
