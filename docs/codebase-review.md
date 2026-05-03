@@ -73,6 +73,7 @@
 - Entry Meta 位于 State Edge 之后，是 trade-aware overlay，不替代策略生成，也不重新定义市场状态标签。第一阶段以 baseline backtest 的 `raw_results.trades` 作为 entry 样本与 PnL 标签来源，同时基于同一时间窗的 DataMatrix / FeatureHub / `indicator_series` / regime / session 提取当前或历史可见特征；不读取 demo/live runtime 状态，不接入真实下单链路。
 - Backtest 验收限定在 Research + Backtest overlay：通过 `entry_meta_lab` 产出 artifact，通过 `backtest_runner --entry-meta-artifact/--entry-meta-mode/--entry-meta-threshold-grid` 做 shadow/filter，对外用 `entry_meta_overlay_report` 汇总验收。
 - 职责边界要求保持公开端口：Backtest 侧通过 `entry_meta_overlay` 注入，并用 `record_blocked_entry()` 写出 blocked entry 事件；报告消费 `execution_summary.blocked_entry_events` 与 baseline `raw_results.trades` 做 `blocked_trade_attribution`，不探测私有字段。验收必须检查是否挡掉大盈利单，防止只按交易数下降误判过滤有效。
+- 2026-05-03：Entry Meta overlay 增加动态打分端口。职责边界：training 产出 JSON-native scorer payload，feature row builder 负责当前 entry 特征同构，overlay 只做 lookup/dynamic score/filter/report。动态失败默认放行并记录，不进入 demo/live。
 
 ---
 
