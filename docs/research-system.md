@@ -331,6 +331,11 @@ Backtest 侧通过公开 `entry_meta_overlay` 端口注入，并通过 `record_b
 - 动态打分失败不会阻断交易，会通过 `missing_by_reason`、`score_source_counts`、`dynamic_score_failures` 进入 overlay report。
 - 该能力仍只属于 Research + Backtest overlay，不接入 demo/live runtime。
 
+已知限制：
+
+- session 无法从当前 SessionFilter 判定时会写为 `unknown`，对应 artifact 若无 `unknown` 映射会降低动态打分覆盖率。
+- pending-entry 当前仍在 signal 产生时用 signal bar/time/close 构建 `feature_context` 并打分，不会等到后续 fill time/price 重新打分。
+
 ---
 
 ## Research → Indicator / Signal 闭环
