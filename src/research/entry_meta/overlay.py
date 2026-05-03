@@ -59,24 +59,44 @@ class EntryMetaBacktestOverlay:
             self._prediction_key(pred.bar_time, pred.strategy, pred.direction): pred
             for pred in artifact.predictions
         }
+        feature_manifest = getattr(artifact, "feature_manifest", {})
+        if not isinstance(feature_manifest, dict):
+            feature_manifest = {}
+        self._feature_scope = str(
+            feature_manifest.get("feature_scope", "research_full")
+        )
+        self._dynamic_scoring_supported = bool(
+            feature_manifest.get("dynamic_scoring_supported", False)
+        )
+        if self._dynamic_scoring_supported and self._feature_scope != "runtime_safe":
+            raise ValueError(
+                "Entry meta artifact declares dynamic_scoring_supported=True "
+                f"but feature_scope={self._feature_scope!r}"
+            )
+        self._dynamic_unsupported_reason = (
+            "entry_meta_dynamic_feature_scope_unsupported"
+        )
+        category_mappings = dict(feature_manifest.get("category_mappings", {}))
         self._feature_row_builder: EntryMetaFeatureRowBuilder | None = None
         self._scorer: EntryMetaScorer | None = None
-        try:
-            feature_manifest = getattr(artifact, "feature_manifest", {})
-            category_mappings = {}
-            if isinstance(feature_manifest, dict):
-                category_mappings = dict(feature_manifest.get("category_mappings", {}))
-            self._feature_row_builder = EntryMetaFeatureRowBuilder(
-                feature_keys=list(artifact.feature_keys),
-                category_mappings=category_mappings,
-            )
-            self._scorer = EntryMetaScorer.from_payload(
-                artifact.model_payload,
-                feature_keys=list(artifact.feature_keys),
-            )
-        except (EntryMetaFeatureBuildError, EntryMetaScoringError, TypeError, ValueError):
-            self._feature_row_builder = None
-            self._scorer = None
+        if self._dynamic_scoring_supported:
+            try:
+                self._feature_row_builder = EntryMetaFeatureRowBuilder(
+                    feature_keys=list(artifact.feature_keys),
+                    category_mappings=category_mappings,
+                )
+                self._scorer = EntryMetaScorer.from_payload(
+                    artifact.model_payload,
+                    feature_keys=list(artifact.feature_keys),
+                )
+            except (
+                EntryMetaFeatureBuildError,
+                EntryMetaScoringError,
+                TypeError,
+                ValueError,
+            ):
+                self._feature_row_builder = None
+                self._scorer = None
         self.reset()
 
     @classmethod
@@ -168,6 +188,8 @@ class EntryMetaBacktestOverlay:
             "model_id": self._artifact.model_id,
             "artifact_timeframe": self._artifact.timeframe,
             "artifact_status": self._artifact.status,
+            "feature_scope": self._feature_scope,
+            "dynamic_scoring_supported": self._dynamic_scoring_supported,
             "mode": self._mode,
             "threshold": self._threshold,
             "observed": self._observed,
@@ -189,6 +211,8 @@ class EntryMetaBacktestOverlay:
     ) -> tuple[float, float, str] | str:
         if feature_context is None:
             return "entry_meta_feature_context_missing"
+        if not self._dynamic_scoring_supported:
+            return self._dynamic_unsupported_reason
         if self._feature_row_builder is None or self._scorer is None:
             return "entry_meta_unsupported_scorer"
         try:

@@ -82,6 +82,9 @@ def _dynamic_artifact(*, status: str = "accepted") -> EntryMetaArtifact:
             "prediction_reuse": "dynamic_scorer",
         },
         feature_manifest={
+            "feature_scope": "runtime_safe",
+            "dynamic_scoring_supported": True,
+            "runtime_indicator_names": ["atr14"],
             "category_mappings": {
                 "strategy": {"breakout": 0.0},
                 "regime": {"trend": 0.0},
@@ -89,6 +92,22 @@ def _dynamic_artifact(*, status: str = "accepted") -> EntryMetaArtifact:
             }
         },
         status=status,
+    )
+
+
+def _research_full_artifact(*, status: str = "accepted") -> EntryMetaArtifact:
+    return dataclasses.replace(
+        _dynamic_artifact(status=status),
+        model_id="entry-meta-research-full",
+        feature_manifest={
+            "feature_scope": "research_full",
+            "dynamic_scoring_supported": False,
+            "category_mappings": {
+                "strategy": {"breakout": 0.0},
+                "regime": {"trend": 0.0},
+                "session": {"london": 0.0},
+            },
+        },
     )
 
 
@@ -219,6 +238,52 @@ def test_overlay_uses_dynamic_scorer_when_prediction_lookup_misses() -> None:
     assert report["score_source_counts"]["dynamic_scorer"] == 1
     assert report["dynamic_scored"] == 1
     assert report["missing_predictions"] == 0
+    assert report["feature_scope"] == "runtime_safe"
+    assert report["dynamic_scoring_supported"] is True
+
+
+def test_overlay_research_full_lookup_miss_is_allowed_and_reports_scope() -> None:
+    overlay = EntryMetaBacktestOverlay(
+        _research_full_artifact(), mode="filter", threshold=0.50
+    )
+
+    verdict = overlay.evaluate(
+        "2026-01-01T03:00:00Z",
+        "breakout",
+        "buy",
+        confidence=0.9,
+        feature_context=_feature_context(confidence=0.9),
+    )
+
+    assert verdict.allowed is True
+    assert verdict.reason == "entry_meta_dynamic_feature_scope_unsupported"
+    assert verdict.score_source == "missing"
+    report = overlay.report()
+    assert report["feature_scope"] == "research_full"
+    assert report["dynamic_scoring_supported"] is False
+    assert report["missing_by_reason"] == {
+        "entry_meta_dynamic_feature_scope_unsupported": 1
+    }
+    assert report["dynamic_scored"] == 0
+    assert report["dynamic_score_failures"] == 1
+
+
+def test_overlay_rejects_inconsistent_dynamic_scope_manifest() -> None:
+    artifact = dataclasses.replace(
+        _dynamic_artifact(),
+        feature_manifest={
+            "feature_scope": "research_full",
+            "dynamic_scoring_supported": True,
+            "category_mappings": {
+                "strategy": {"breakout": 0.0},
+                "regime": {"trend": 0.0},
+                "session": {"london": 0.0},
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="dynamic_scoring_supported"):
+        EntryMetaBacktestOverlay(artifact, mode="filter", threshold=0.50)
 
 
 def test_overlay_dynamic_feature_failure_allows_and_records_reason() -> None:

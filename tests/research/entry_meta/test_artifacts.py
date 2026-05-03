@@ -35,7 +35,12 @@ def test_entry_meta_artifact_roundtrip(tmp_path: Path) -> None:
             )
         ],
         model_payload={"kind": "constant", "take_entry_prob": 0.7},
-        feature_manifest={"source": "test"},
+        feature_manifest={
+            "source": "test",
+            "feature_scope": "runtime_safe",
+            "dynamic_scoring_supported": True,
+            "runtime_indicator_names": ["atr14"],
+        },
     )
 
     path = save_artifact(artifact, tmp_path / "artifact-dir")
@@ -48,6 +53,9 @@ def test_entry_meta_artifact_roundtrip(tmp_path: Path) -> None:
     assert payload["artifact_type"] == "entry_meta"
     assert payload["status"] == "trained"
     assert payload["predictions"][0]["threshold_context"] == {"min_take_prob": 0.6}
+    assert payload["feature_manifest"]["feature_scope"] == "runtime_safe"
+    assert payload["feature_manifest"]["dynamic_scoring_supported"] is True
+    assert payload["feature_manifest"]["runtime_indicator_names"] == ["atr14"]
 
 
 def test_entry_meta_artifact_preserves_structured_metrics() -> None:
