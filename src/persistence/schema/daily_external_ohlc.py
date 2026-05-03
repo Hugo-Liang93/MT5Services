@@ -6,6 +6,11 @@ providers (CME GC futures, DXY, 10Y yield, S&P 500). Composite PK
 
 Resolution: 1 day. Joined to intraday bars in feature providers via
 ``bar.time.date()`` lookup.
+
+No CHECK constraints on OHLCV columns: external symbols span asset classes
+with very different value ranges (e.g. ^TNX yields can be negative, indices
+have no natural bound). Per-source validation lives in the data ingestor,
+not in the schema.
 """
 
 DDL = """
