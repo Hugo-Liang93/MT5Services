@@ -75,6 +75,7 @@
 - 职责边界要求保持公开端口：Backtest 侧通过 `entry_meta_overlay` 注入，并用 `record_blocked_entry()` 写出 blocked entry 事件；报告消费 `execution_summary.blocked_entry_events` 与 baseline `raw_results.trades` 做 `blocked_trade_attribution`，不探测私有字段。验收必须检查是否挡掉大盈利单，防止只按交易数下降误判过滤有效。
 - 2026-05-03：Entry Meta overlay 增加动态打分端口。职责边界：training 产出 JSON-native scorer payload，feature row builder 负责当前 entry 特征同构，overlay 只做 lookup/dynamic score/filter/report。动态失败默认放行并记录，不进入 demo/live。
 - 2026-05-03：Entry Meta backtest session context 已与策略 session 过滤职责拆分；即使未配置 `strategy_sessions`，也会从 `bar.time` 推导 `asia/london/new_york/off_hours`，避免动态 scorer 因默认 `unknown` 降低覆盖率。`unknown` 仅保留为 resolver 失败兜底并继续进入 overlay coverage report。
+- 2026-05-03：Entry Meta 新增 `feature_scope` 合同。`runtime_safe` artifact 只训练 entry、当前 indicators、regime、session 等 backtest/runtime 可重建特征，并允许 lookup miss 后 dynamic scorer；`research_full` artifact 保留 FeatureHub 全量特征离线探索，但 lookup miss 会以 `entry_meta_dynamic_feature_scope_unsupported` 放行并计入 coverage report。该边界避免把离线 FeatureHub 特征误当成可实时计算概率。
 - 已知限制：pending-entry 当前仍在 signal 产生时用 signal bar/time/close 构建 `feature_context` 并打分，不会等到后续 fill time/price 重新打分。该问题属于入场评价时点变更，应另行设计。
 
 ---
