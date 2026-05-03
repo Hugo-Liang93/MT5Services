@@ -38,3 +38,11 @@ def test_entry_meta_session_context_downgrades_invalid_time_to_unknown() -> None
     session = _resolve_entry_meta_session(session_context, "invalid-time")
 
     assert session == "unknown"
+
+
+def test_entry_meta_session_context_downgrades_missing_time_to_unknown() -> None:
+    session_context = _build_entry_meta_session_context_filter()
+
+    session = _resolve_entry_meta_session(session_context, None)
+
+    assert session == "unknown"

@@ -91,6 +91,8 @@ def _resolve_entry_meta_session(session_context: Any, bar_time: Any) -> str:
     """Resolve the Entry Meta feature session without applying trade filters."""
     if session_context is None:
         return "unknown"
+    if bar_time is None:
+        return "unknown"
     try:
         sessions = session_context.current_sessions(bar_time)
     except (AttributeError, TypeError, ValueError):
