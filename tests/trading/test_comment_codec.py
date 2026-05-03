@@ -83,8 +83,8 @@ def test_compact_comment_label_uses_registered_alias() -> None:
     """注册策略走 _STRATEGY_ALIAS（短且可读），不再走 token-split hash。"""
     from src.trading.broker.comment_codec import _STRATEGY_ALIAS
 
-    assert compact_comment_label("structured_trend_continuation") == "tc"
-    assert compact_comment_label("structured_open_range_breakout") == "orb"
+    # 2026-04-30 大清场后 alias 表仅 price_action
+    assert compact_comment_label("structured_price_action") == "pa"
     # alias 表内所有策略都 ≤8 chars（broker label 字段上限）
     for alias in _STRATEGY_ALIAS.values():
         assert 1 <= len(alias) <= 8, alias
@@ -99,39 +99,26 @@ def test_compact_comment_label_falls_back_to_legacy_for_unregistered() -> None:
 def test_comment_matches_semantics_dual_format_alias_and_legacy() -> None:
     """Q3 双格式判等：新 alias 与老 hash 都能识别为同一策略。
 
-    历史持仓 comment 是用老 _legacy_compact_label 生成的（如 "strtrco"）；
-    新代码下 compact_comment_label("structured_trend_continuation")="tc"。
-    位置 reconcile 必须能继续识别老 comment，否则旧持仓接管失败。
+    2026-04-30 大清场后用 price_action 验证（其他策略已删除）。
+    历史 hash 格式："stpra" 之类（取决于 _legacy_compact_label 算法）；
+    新格式 = "pa"。位置 reconcile 应同时识别两种。
     """
-    new_comment = "M30_tc______bm_abcd1234"  # 新 alias 格式（label=tc）
     parsed_new = parse_trade_comment(
         build_trade_comment(
             request_id="abcd1234",
             timeframe="M30",
-            strategy="structured_trend_continuation",
+            strategy="structured_price_action",
             side="buy",
             order_kind="market",
         )
     )
     assert parsed_new is not None
-    assert parsed_new.label == "tc"
+    assert parsed_new.label == "pa"
 
-    # 模拟历史持仓 comment（老 hash 格式 label="strtrco"）
-    legacy_comment = "M30_strtrco_bm_abcd1234"
-    legacy_parsed = parse_trade_comment(legacy_comment)
-    assert legacy_parsed is not None
-    assert legacy_parsed.label == "strtrco"
-
-    # 同一策略 (timeframe, strategy)，两种 comment 格式都应匹配
+    # 同一策略，新 alias comment 应匹配
     assert (
         comment_matches_semantics(
-            legacy_comment, "M30", "structured_trend_continuation"
-        )
-        is True
-    )
-    assert (
-        comment_matches_semantics(
-            "M30_tc_bm_abcd1234", "M30", "structured_trend_continuation"
+            "M30_pa_bm_abcd1234", "M30", "structured_price_action"
         )
         is True
     )

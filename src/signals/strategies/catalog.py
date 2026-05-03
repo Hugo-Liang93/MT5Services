@@ -8,45 +8,20 @@ from pathlib import Path
 from typing import Iterable
 
 from .base import SignalStrategy
-from .structured import (
-    StructuredBreakoutFollow,
-    StructuredLowbarEntry,
-    StructuredOpenRangeBreakout,
-    StructuredPriceAction,
-    StructuredPullbackWindow,
-    StructuredRangeReversion,
-    StructuredRegimeExhaustion,
-    StructuredSessionBreakout,
-    StructuredStrongTrendFollow,
-    StructuredSweepReversal,
-    StructuredTrendContinuation,
-    StructuredTrendlineTouch,
-)
+from .structured import StructuredPriceAction
 
 logger = logging.getLogger(__name__)
 
 
 def _build_structured_strategies() -> tuple[SignalStrategy, ...]:
-    """返回当前激活结构化策略的 fresh 实例，避免跨运行时共享 stateful 对象。"""
+    """返回当前激活结构化策略的 fresh 实例，避免跨运行时共享 stateful 对象。
+
+    2026-04-30 大清场后仅保留 price_action 一条（M15/M30 高频，1+ trades/day）。
+    其他 13 条策略 1y backtest trade 频次 0~0.29/day（远低于 day-trading 阈值 1/day），
+    全部物理删除以释放维护成本。新策略需满足"高频 + alpha 来源明确"。
+    """
     return (
-        StructuredTrendContinuation(),
-        StructuredTrendContinuation(name="structured_trend_h4", htf="H4"),
-        StructuredTrendContinuation(
-            name="structured_trend_h4_momentum",
-            htf="H4",
-            use_momentum_consensus=True,
-        ),
-        StructuredSweepReversal(),
-        StructuredBreakoutFollow(),
-        StructuredRangeReversion(),
-        StructuredSessionBreakout(),
-        StructuredTrendlineTouch(),
-        StructuredLowbarEntry(),
-        StructuredPullbackWindow(),
-        StructuredOpenRangeBreakout(),
         StructuredPriceAction(),
-        StructuredRegimeExhaustion(),
-        StructuredStrongTrendFollow(),
     )
 
 

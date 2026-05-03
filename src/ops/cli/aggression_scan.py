@@ -37,33 +37,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 
-_STRATEGY_CLASS_MAP = {
-    # name → (module, class_name)
-    "structured_squeeze_breakout_buy": (
-        "src.signals.strategies.structured.squeeze_breakout_buy",
-        "StructuredSqueezeBreakoutBuy",
-    ),
-    "structured_trend_continuation": (
-        "src.signals.strategies.structured.trend_continuation",
-        "StructuredTrendContinuation",
-    ),
-    "structured_sweep_reversal": (
-        "src.signals.strategies.structured.sweep_reversal",
-        "StructuredSweepReversal",
-    ),
-    "structured_breakout_follow": (
-        "src.signals.strategies.structured.breakout_follow",
-        "StructuredBreakoutFollow",
-    ),
-    "structured_range_reversion": (
-        "src.signals.strategies.structured.range_reversion",
-        "StructuredRangeReversion",
-    ),
-    "structured_trendline_touch": (
-        "src.signals.strategies.structured.trendline_touch",
-        "StructuredTrendlineTouch",
-    ),
-}
+# 2026-04-30 大清场：13 条策略物理删除；price_action 不用 chandelier α
+# (走 BARRIER mode)，所以 aggression scan 当前没有适用策略。新策略上线后回填。
+_STRATEGY_CLASS_MAP: dict[str, tuple[str, str]] = {}
 
 
 def _run_with_aggression(

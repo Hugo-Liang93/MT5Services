@@ -8,10 +8,7 @@ from src.signals.evaluation.regime import RegimeType
 from src.signals.models import SignalContext, SignalDecision
 from src.signals.service import SignalModule
 from src.signals.strategies.catalog import build_default_strategy_set
-from src.signals.strategies.structured import (
-    StructuredSweepReversal,
-    StructuredTrendContinuation,
-)
+from src.signals.strategies.structured import StructuredPriceAction
 
 
 class DummyIndicatorSource:
@@ -284,8 +281,9 @@ def test_signal_module_exposes_strategy_requirements() -> None:
 
     requirements = module.dispatch_operation("strategy_requirements")
 
-    assert "rsi14" in requirements["structured_trend_continuation"]
-    assert "atr14" in requirements["structured_trend_continuation"]
+    # 2026-04-30 大清场后 catalog 仅 price_action
+    assert "atr14" in requirements["structured_price_action"]
+    assert "candle_pattern" in requirements["structured_price_action"]
 
 
 def test_signal_module_exposes_required_indicator_groups() -> None:
@@ -293,13 +291,12 @@ def test_signal_module_exposes_required_indicator_groups() -> None:
 
     groups = module.dispatch_operation("required_indicator_groups")
 
-    # 只断言已知的必要条件：结果是列表，且常见单策略的指标组存在于其中。
-    # 不断言顺序或总数，因为默认策略列表会随新策略增加而扩展。
     assert isinstance(groups, list)
     assert len(groups) > 0
     flat = {ind for group in groups for ind in group}
-    assert "rsi14" in flat  # StructuredTrendContinuation
-    assert "atr14" in flat  # StructuredTrendContinuation
+    # price_action 必要指标
+    assert "atr14" in flat
+    assert "candle_pattern" in flat
 
 
 def test_signal_module_summary_returns_aggregates() -> None:
@@ -694,15 +691,15 @@ def test_signal_module_recent_signals_passes_explicit_strategy_filter() -> None:
 
 
 def test_intrabar_required_indicators_derives_from_strategy_scopes() -> None:
-    """intrabar_required_indicators() 自动推导：仅收集 intrabar 策略的指标。"""
-    from src.signals.strategies.structured import StructuredRangeReversion
+    """intrabar_required_indicators() 自动推导：仅收集 intrabar 策略的指标。
 
+    2026-04-30 大清场后 catalog 仅 price_action（confirmed-only），故 intrabar
+    集合应为空。后续如果有 intrabar-capable 新策略上线，扩此测试。
+    """
     module = SignalModule(
         indicator_source=DummyIndicatorSource(),
-        strategies=[StructuredRangeReversion(), StructuredTrendContinuation()],
+        strategies=[StructuredPriceAction()],
     )
     result = module.intrabar_required_indicators()
-    # range_reversion (intrabar+confirmed) → rsi14/atr14 在集合中
-    assert "rsi14" in result
-    # trend_continuation (confirmed-only) → 其指标不在 intrabar 集合中
-    # (但 trend_continuation 也有 rsi14，所以只验证 intrabar 策略的指标存在即可)
+    # price_action preferred_scopes=("confirmed",) 不参与 intrabar
+    assert result == set() or result == frozenset() or len(result) == 0

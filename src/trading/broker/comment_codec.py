@@ -17,20 +17,7 @@ _COMMENT_TOKEN_RE = re.compile(r"[^A-Za-z0-9]+")
 # 新增策略**必须**在此登记，否则 validate_strategy_aliases() 在装配阶段 raise
 # 阻止启动（fail-fast 强契约，参 Q2=B）。
 _STRATEGY_ALIAS: Mapping[str, str] = {
-    "structured_trend_continuation": "tc",
-    "structured_trend_h4": "th4",
-    "structured_trend_h4_momentum": "th4m",
-    "structured_sweep_reversal": "swp",
-    "structured_breakout_follow": "bof",
-    "structured_range_reversion": "rr",
-    "structured_session_breakout": "sbo",
-    "structured_trendline_touch": "tlt",
-    "structured_lowbar_entry": "lbe",
-    "structured_pullback_window": "pbw",
-    "structured_open_range_breakout": "orb",
     "structured_price_action": "pa",
-    "structured_regime_exhaustion": "rex",
-    "structured_strong_trend_follow": "stf",
 }
 _LEGACY_REQUEST_TAG_RE = re.compile(r"_r([a-z0-9]{1,8})$", re.IGNORECASE)
 _LEGACY_RESTORABLE_PREFIXES = (

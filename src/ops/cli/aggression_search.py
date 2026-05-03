@@ -35,16 +35,9 @@ from typing import Any, Dict, List, Optional
 
 # ── 默认 aggression 值 ──────────────────────────────────────────────
 
-_DEFAULTS: Dict[str, float] = {
-    "structured_trend_continuation": 0.80,
-    "structured_trend_h4": 0.80,
-    "structured_breakout_follow": 0.85,
-    "structured_trendline_touch": 0.70,
-    "structured_session_breakout": 0.60,
-    "structured_sweep_reversal": 0.20,
-    "structured_range_reversion": 0.15,
-    "structured_lowbar_entry": 0.15,
-}
+# 2026-04-30 大清场：13 条策略物理删除；price_action 走 BARRIER mode 不用
+# chandelier α。新策略上线后回填默认 aggression。
+_DEFAULTS: Dict[str, float] = {}
 
 
 def _get_active_strategies(tf: str) -> List[str]:

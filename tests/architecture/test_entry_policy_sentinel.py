@@ -29,22 +29,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STRUCTURED_DIR = REPO_ROOT / "src" / "signals" / "strategies" / "structured"
 ENTRY_POLICY_DIR = REPO_ROOT / "src" / "trading" / "entry_policy"
 
-# 14 个结构化策略文件 + base.py（参 plan F.1）
+# 2026-04-30 大清场后：仅 price_action + base + mined_rule 框架文件保留。
+# 其他 13 条策略物理删除（trades/year < 100，不达 day-trading 频次）。
 STRATEGY_FILES = [
     "base.py",
-    "breakout_follow.py",
-    "lowbar_entry.py",
     "mined_rule.py",
-    "open_range_breakout.py",
     "price_action_m15.py",
-    "pullback_window.py",
-    "range_reversion.py",
-    "regime_exhaustion.py",
-    "session_breakout.py",
-    "strong_trend_follow.py",
-    "sweep_reversal.py",
-    "trend_continuation.py",
-    "trendline_touch.py",
 ]
 
 

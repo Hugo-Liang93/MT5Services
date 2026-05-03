@@ -382,6 +382,18 @@ def _validate_execution_contracts(
     if not live_executable_strategies:
         return
 
+    # 2026-04-30 ADR-013 P5：demo environment 跳过 binding 校验。
+    # account_bindings 是全局 dict（signal.ini 共享），但 demo-main 装配靠
+    # deployment.status 不靠 binding（参 signal.local.ini 注释）。demo 启动时
+    # 强制校验 live_* binding alias → 误报 "unconfigured MT5 accounts"。
+    # 只在 live environment 才校验 binding；demo 期间 binding 仅影响 cockpit
+    # readmodel 反向索引展示，不影响交易路由。
+    environment = (
+        str(getattr(runtime_identity, "environment", "live") or "live").strip().lower()
+    )
+    if environment != "live":
+        return
+
     configured_accounts = load_group_mt5_settings(
         instance_name=runtime_identity.instance_name,
     )

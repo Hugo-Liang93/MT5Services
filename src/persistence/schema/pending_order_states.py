@@ -62,10 +62,9 @@ CREATE INDEX IF NOT EXISTS idx_pending_orders_expires
 CREATE INDEX IF NOT EXISTS idx_pending_orders_symbol_status
     ON pending_order_states (symbol, status);
 
--- ADR-013: OCO group 反向索引（recovery / API 用）
-CREATE INDEX IF NOT EXISTS idx_pending_orders_group
-    ON pending_order_states (account_key, order_group_id)
-    WHERE order_group_id IS NOT NULL;
+-- ADR-013: OCO group 反向索引（idx_pending_orders_group）放到 MIGRATION_SQL，
+-- 因为 order_group_id 列由 MIGRATION_SQL 的 ALTER TABLE ADD COLUMN 加；DDL
+-- 内 CREATE INDEX 会在升级旧表时（执行顺序 DDL → MIGRATION）引用未加列报错。
 """
 
 # §0u P1 迁移：把单列 PK (order_ticket) 升级为复合 PK (account_key, order_ticket)。
