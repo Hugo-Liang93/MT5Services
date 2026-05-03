@@ -4,6 +4,7 @@ Network calls mocked; production behavior verified separately.
 """
 from __future__ import annotations
 
+import sys
 from datetime import date
 from unittest.mock import MagicMock, patch
 
@@ -79,3 +80,35 @@ def test_nan_volume_normalized_to_zero() -> None:
     with patch.object(client, "_history_for", return_value=fake_df):
         bars = client.fetch_daily("GC=F", start=date(2026, 4, 1), end=date(2026, 4, 1))
     assert bars[0].volume == 0.0
+
+
+def test_history_for_bumps_end_by_one_day_for_inclusive_range() -> None:
+    """Yahoo's `end` is exclusive; the wrapper bumps it by 1 day so the
+    DailyBar contract is inclusive.
+
+    This test verifies that _history_for passes (start, end+1day) to yfinance,
+    ensuring the inclusive [start, end] contract is met (since Yahoo's end
+    parameter is exclusive)."""
+    import pandas as pd
+    from datetime import timedelta
+
+    client = YFinanceClient()
+    # Capture what parameters _history_for receives vs what it passes to yfinance
+    call_log = {}
+
+    def mock_yf_call(**kwargs):
+        call_log["yfinance_call"] = kwargs
+        return pd.DataFrame()
+
+    # Patch the yfinance module import to capture the call
+    with patch.dict("sys.modules", {"yfinance": MagicMock(Ticker=MagicMock(return_value=MagicMock(history=mock_yf_call)))}):
+        with pytest.raises(YFinanceError):
+            client.fetch_daily("GC=F", start=date(2026, 4, 1), end=date(2026, 4, 2))
+
+    # Verify _history_for bumped the end date by 1 day before calling yfinance
+    yf_kwargs = call_log.get("yfinance_call", {})
+    assert yf_kwargs.get("start") == "2026-04-01", f"Expected start='2026-04-01', got {yf_kwargs.get('start')}"
+    assert yf_kwargs.get("end") == "2026-04-03", f"Expected end='2026-04-03' (bumped from 2026-04-02), got {yf_kwargs.get('end')}"
+    assert yf_kwargs.get("interval") == "1d"
+    assert yf_kwargs.get("auto_adjust") is False
+    assert yf_kwargs.get("actions") is False

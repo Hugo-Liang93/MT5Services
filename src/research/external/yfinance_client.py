@@ -12,17 +12,15 @@ parallel fetching, rate limiting.
 """
 from __future__ import annotations
 
-import logging
-import math
 from datetime import date, timedelta
 from typing import Any, List
+
+import pandas as pd
 
 from src.research.external.protocol import (
     DailyBar,
     register_source,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class YFinanceError(RuntimeError):
@@ -50,13 +48,25 @@ class YFinanceClient:
 
         bars: List[DailyBar] = []
         for ts, row in df.iterrows():
-            volume = float(row.get("Volume", 0.0) or 0.0)
-            if math.isnan(volume):
+            if isinstance(ts, pd.Timestamp):
+                bar_date = ts.date()
+            elif isinstance(ts, date):
+                bar_date = ts
+            else:
+                raise YFinanceError(
+                    f"unexpected index type {type(ts).__name__} for {symbol}"
+                )
+
+            raw_volume = row.get("Volume")
+            if raw_volume is None or pd.isna(raw_volume):
                 volume = 0.0
+            else:
+                volume = float(raw_volume)
+
             bars.append(
                 DailyBar(
                     symbol=symbol,
-                    date=ts.date() if hasattr(ts, "date") else ts,
+                    date=bar_date,
                     open=float(row["Open"]),
                     high=float(row["High"]),
                     low=float(row["Low"]),
