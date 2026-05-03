@@ -52,7 +52,16 @@ _REGISTRY: Dict[str, Callable[[], ExternalDataSource]] = {}
 
 
 def register_source(name: str, factory: Callable[[], ExternalDataSource]) -> None:
-    """Register a factory for a named data source. Idempotent (last-write-wins)."""
+    """Register a factory under `name`. Re-registering overwrites the previous factory.
+
+    The factory must be a zero-arg callable that returns a fresh ExternalDataSource
+    instance — passing an instance directly is a common mistake we catch here.
+    """
+    if not callable(factory):
+        raise TypeError(
+            f"register_source({name!r}): factory must be callable, "
+            f"got {type(factory).__name__}"
+        )
     _REGISTRY[name] = factory
 
 
