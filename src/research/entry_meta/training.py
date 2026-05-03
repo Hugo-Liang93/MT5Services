@@ -35,11 +35,17 @@ def train_entry_meta_bundle(
     min_samples: int = 40,
     min_oos_samples: int = 10,
     min_class_samples: int = 10,
+    feature_scope: str = "research_full",
+    runtime_indicator_names: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> EntryMetaTrainingBundle:
     backend = resolve_backend(backend_name)
     backend.assert_available()
 
-    features = EntryMetaFeatureBuilder().build(matrix=matrix, dataset=dataset)
+    features = EntryMetaFeatureBuilder(
+        feature_scope=feature_scope,
+        runtime_indicator_names=runtime_indicator_names,
+    ).build(matrix=matrix, dataset=dataset)
+    _validate_runtime_safe_features(features)
     labels = np.asarray(dataset.labels.labels, dtype=int)
     sample_weights = np.asarray(dataset.labels.sample_weights, dtype=float)
     _validate_training_contract(features, dataset, labels, sample_weights)
@@ -145,6 +151,18 @@ def _validate_training_contract(
         )
     _validate_index_contract("train_indices", features.train_indices, n_samples)
     _validate_index_contract("test_indices", features.test_indices, n_samples)
+
+
+def _validate_runtime_safe_features(features: EntryMetaFeatureMatrix) -> None:
+    if features.manifest.get("feature_scope") != "runtime_safe":
+        return
+    indicator_features = [
+        key for key in features.feature_keys if str(key).startswith("indicator.")
+    ]
+    if not indicator_features:
+        raise ValueError(
+            "entry meta runtime_safe feature scope must include at least one indicator feature"
+        )
 
 
 def _validate_index_contract(name: str, indices: list[int], n_samples: int) -> None:

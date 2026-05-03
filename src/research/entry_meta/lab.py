@@ -61,6 +61,12 @@ class EntryMetaLabResult:
         }
 
 
+@dataclass(frozen=True)
+class EntryMetaBaselineInput:
+    trades: list[dict[str, Any]]
+    runtime_indicator_names: list[str]
+
+
 class EntryMetaLab:
     def __init__(
         self,
@@ -87,7 +93,7 @@ class EntryMetaLab:
         from src.research.core.backends import resolve_backend
 
         config_entry_meta_model = getattr(self._config, "entry_meta_model", None)
-        _feature_scope = _normalize_feature_scope(
+        effective_feature_scope = _normalize_feature_scope(
             feature_scope,
             getattr(config_entry_meta_model, "feature_scope", "runtime_safe"),
         )
@@ -95,7 +101,16 @@ class EntryMetaLab:
         backend = resolve_backend(backend_name)
         backend.assert_available()
 
-        baseline_trades = _load_baseline_trades(Path(baseline_path))
+        baseline_input = _load_baseline_input(Path(baseline_path))
+        if (
+            effective_feature_scope == "runtime_safe"
+            and not baseline_input.runtime_indicator_names
+        ):
+            raise ValueError(
+                "Entry Meta runtime_safe feature scope requires baseline "
+                "raw_results[0].strategy_capability_execution_plan."
+                "required_indicators_union"
+            )
         matrix = build_data_matrix(
             symbol=symbol,
             timeframe=timeframe,
@@ -117,7 +132,7 @@ class EntryMetaLab:
             )
         feature_compute_result = feature_hub.compute_all(matrix)
 
-        dataset = EntryMetaDatasetBuilder().build(matrix, baseline_trades)
+        dataset = EntryMetaDatasetBuilder().build(matrix, baseline_input.trades)
         effective_model_id = model_id or f"entry-meta-{uuid4().hex}"
         bundle = train_entry_meta_bundle(
             matrix,
@@ -127,6 +142,8 @@ class EntryMetaLab:
             min_samples=self._config.entry_meta_model.min_samples,
             min_oos_samples=self._config.entry_meta_model.min_oos_samples,
             min_class_samples=self._config.entry_meta_model.min_class_samples,
+            feature_scope=effective_feature_scope,
+            runtime_indicator_names=baseline_input.runtime_indicator_names,
         )
         artifact = bundle.artifact
         artifact_path = save_artifact(artifact, Path(artifact_dir) / artifact.model_id)
@@ -143,7 +160,7 @@ class EntryMetaLab:
             sample_weight_summary=dict(artifact.sample_weight_summary),
             metrics=dict(artifact.metrics),
             dataset_summary={
-                "raw_trades": len(baseline_trades),
+                "raw_trades": len(baseline_input.trades),
                 "matched_trades": len(dataset.trades),
                 "unmatched_trades": len(dataset.unmatched_trades),
                 "train_samples": len(dataset.train_indices),
@@ -156,17 +173,20 @@ class EntryMetaLab:
         )
 
 
-def _load_baseline_trades(path: Path) -> list[dict[str, Any]]:
+def _load_baseline_input(path: Path) -> EntryMetaBaselineInput:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("baseline JSON must be an object")
 
     trades: list[dict[str, Any]] = []
+    runtime_indicator_names: list[str] = []
     raw_results = payload.get("raw_results")
     if isinstance(raw_results, list):
         for item in raw_results:
             if not isinstance(item, dict):
                 continue
+            if not runtime_indicator_names:
+                runtime_indicator_names = _extract_required_indicators(item)
             trades.extend(_coerce_trades(item.get("trades")))
 
     if not trades:
@@ -174,7 +194,20 @@ def _load_baseline_trades(path: Path) -> list[dict[str, Any]]:
 
     if not trades:
         raise ValueError("baseline JSON must contain raw_results[].trades or trades")
-    return trades
+    return EntryMetaBaselineInput(
+        trades=trades,
+        runtime_indicator_names=runtime_indicator_names,
+    )
+
+
+def _extract_required_indicators(raw_result: dict[str, Any]) -> list[str]:
+    plan = raw_result.get("strategy_capability_execution_plan")
+    if not isinstance(plan, dict):
+        return []
+    raw_names = plan.get("required_indicators_union")
+    if not isinstance(raw_names, list):
+        return []
+    return sorted({str(name).strip() for name in raw_names if str(name).strip()})
 
 
 def _coerce_trades(value: Any) -> list[dict[str, Any]]:

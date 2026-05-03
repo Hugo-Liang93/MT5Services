@@ -117,6 +117,44 @@ def test_cpu_training_accepts_artifact_when_quality_gate_thresholds_are_met() ->
     }
 
 
+def test_training_runtime_safe_passes_indicator_allowlist_to_feature_builder() -> None:
+    matrix = _matrix()
+    matrix.indicator_series[("provider", "score")] = [0.1] * matrix.n_bars
+    dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0, 9.0, -4.0, 6.0, -2.0])
+
+    bundle = train_entry_meta_bundle(
+        matrix,
+        dataset,
+        "cpu",
+        feature_scope="runtime_safe",
+        runtime_indicator_names=["ema"],
+        min_samples=8,
+        min_oos_samples=4,
+        min_class_samples=4,
+    )
+
+    assert "indicator.ema.value" in bundle.artifact.feature_keys
+    assert "indicator.rsi.value" not in bundle.artifact.feature_keys
+    assert "indicator.provider.score" not in bundle.artifact.feature_keys
+    assert bundle.artifact.feature_manifest["feature_scope"] == "runtime_safe"
+    assert bundle.artifact.feature_manifest["dynamic_scoring_supported"] is True
+    assert bundle.artifact.feature_manifest["runtime_indicator_names"] == ["ema"]
+
+
+def test_training_runtime_safe_requires_indicator_feature_columns() -> None:
+    matrix = _matrix()
+    dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0, 9.0, -4.0, 6.0, -2.0])
+
+    with pytest.raises(ValueError, match="runtime_safe.*indicator"):
+        train_entry_meta_bundle(
+            matrix,
+            dataset,
+            "cpu",
+            feature_scope="runtime_safe",
+            runtime_indicator_names=[],
+        )
+
+
 def test_training_dynamic_scorer_reproduces_saved_predictions() -> None:
     matrix = _matrix()
     dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0, 9.0, -4.0, 6.0, -2.0])
@@ -208,6 +246,9 @@ def test_training_rejects_feature_row_and_key_contract_mismatch(monkeypatch) -> 
     dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0])
 
     class _BadFeatureBuilder:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            pass
+
         def build(self, matrix, dataset):  # noqa: ANN001
             return EntryMetaFeatureMatrix(
                 rows=np.asarray([[1.0], [2.0], [3.0], [4.0]], dtype=float),
@@ -231,6 +272,9 @@ def test_training_rejects_feature_index_out_of_range(monkeypatch) -> None:
     dataset = _dataset(matrix, [10.0, -8.0, 7.0, -3.0])
 
     class _BadFeatureBuilder:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            pass
+
         def build(self, matrix, dataset):  # noqa: ANN001
             return EntryMetaFeatureMatrix(
                 rows=np.asarray([[1.0], [2.0], [3.0], [4.0]], dtype=float),
