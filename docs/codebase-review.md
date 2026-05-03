@@ -7,6 +7,53 @@
 
 ---
 
+## 0r. 2026-04-30 策略池大清场：14 → 1（仅保留 price_action）
+
+### 触发
+
+完整 1y baseline（M15 / M30 / H1 / H4）显示：
+- 14 个策略 1y 净亏 ~$4108
+- 大多数策略触发频次 < 0.3 trades/day（远低于 day-trading 阈值 1+/day）
+- M30/M15 上 price_action 占 96% demo fills 但 PF 0.29~0.47 / DD 83~99%
+- 3 条 M30 demo_validation 策略（sweep_reversal / range_reversion / trend_continuation）1y 全部 0 trades
+
+用户决策："不需要特低频的策略，统一清理。"
+
+### 清场范围（commit 0658fcc，-3543 lines）
+
+**物理删除 13 个策略源 + 6 测试 + trendline_utils helper**：
+- `breakout_follow / lowbar_entry / open_range_breakout / pullback_window / range_reversion / regime_exhaustion / session_breakout / strong_trend_follow / sweep_reversal / trend_continuation / trendline_touch`（同时删除 `trendline_utils.py` 仅被 trendline_touch 使用）
+- `trend_continuation` 类删除导致 `structured_trend_h4` / `structured_trend_h4_momentum` 衍生实例同步消失
+
+**保留**：
+- `structured_price_action` 类（candidate 状态，不会装配）
+- 完整框架：`StructuredStrategyBase` + 35 个 indicator + EntryPolicy 5 种 + ExitMode 2 种 + mining/state_edge/entry_meta research lab + Intrabar 链路
+
+**配置同步清理**：
+- `config/signal.ini` 删除 14 条 `[strategy_deployment.*]` 块、`strategy_sessions` / `strategy_timeframes` 大幅瘦身
+- `config/signal.local.ini` 全部 `account_bindings` 清空，`intrabar_trading.enabled_strategies` 清空
+- `config/entry_policy.ini` mapping 14 条 → 1 条
+- `src/trading/broker/comment_codec.py` `_STRATEGY_ALIAS` 17 → 1
+- `src/ops/cli/aggression_scan.py` / `aggression_search.py` `_STRATEGY_CLASS_MAP` / `_DEFAULTS` 清空
+- `tests/architecture/test_entry_policy_sentinel.py` 文件白名单 14 → 3
+- 替换 cross-cutting tests 中的 strategy 引用为 `structured_price_action`
+
+**回归**：3088 tests passing，7 skipped。
+
+### 当前状态契约
+
+- `account_bindings.live_main` 空 → live runtime 装配 0 策略，自动交易实质禁用
+- `account_bindings.demo_main` 空 → demo 同上
+- 即使 `signal.auto_trade_enabled = true`，无策略可装配 = 无单可下
+- 任何新策略需要 explicit deployment + binding + live activation 三步才会跑
+
+### 后续约束
+
+- **下一轮新策略必须先达到"day-trading 频次"**（≥ 1 trade/day = 252+/year）才进 demo_validation
+- backtest_runner / aggression CLI 在没有任何策略时仍可启动（不 raise），但产出空报告——用于框架自检
+
+---
+
 ## 0q. 2026-04-30 GPU Research Lab：State Edge 市场状态概率模型（Research + Backtest overlay）
 
 ### 触发
