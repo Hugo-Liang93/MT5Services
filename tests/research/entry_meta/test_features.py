@@ -211,6 +211,31 @@ def test_feature_row_builder_rejects_missing_indicator_field() -> None:
         builder.build(_context())
 
 
+def test_feature_row_builder_rejects_non_mapping_indicators_context() -> None:
+    builder = EntryMetaFeatureRowBuilder(
+        feature_keys=["indicator.atr14.atr"],
+        category_mappings={
+            "strategy": {"breakout": 0.0},
+            "regime": {"trend": 0.0},
+            "session": {"london": 0.0},
+        },
+    )
+    context = EntryMetaFeatureContext(
+        bar_time="2026-01-01T00:05:00Z",
+        bar_index=1,
+        strategy="breakout",
+        direction="buy",
+        confidence=0.75,
+        entry_price=1.2345,
+        indicators=None,
+        regime="trend",
+        session="london",
+    )
+
+    with pytest.raises(EntryMetaFeatureBuildError, match="indicators"):
+        builder.build(context)
+
+
 def test_builds_entry_context_visible_indicators_and_codes_in_stable_order() -> None:
     trades = [
         {

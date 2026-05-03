@@ -295,6 +295,10 @@ class EntryMetaFeatureRowBuilder:
         if len(parts) != 3:
             raise EntryMetaFeatureBuildError(f"unsupported indicator feature key {key}")
         _, indicator, field = parts
+        if not isinstance(indicators, dict):
+            raise EntryMetaFeatureBuildError(
+                "context field indicators must be a dict"
+            )
         payload = indicators.get(indicator)
         if not isinstance(payload, dict) or field not in payload:
             raise EntryMetaFeatureBuildError(f"missing indicator {indicator}.{field}")
