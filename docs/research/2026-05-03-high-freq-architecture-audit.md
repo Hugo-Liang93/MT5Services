@@ -249,6 +249,8 @@ feature providers enabled: ['temporal_enabled', 'microstructure_enabled',
 
 6 个 provider 全部启用（temporal/microstructure/regime_transition/session_event/intrabar/candle_patterns）。
 
+Baseline feature pool: 169 candidates (feature_manifest), 85 effective in H1 training (intrabar provider contributes 0 in H1 — no child-TF confirmed bars in mining window).
+
 ### Step 2：state_edge_lab H1 12mo 运行结果
 
 - **退出码**：0（成功）
@@ -283,6 +285,8 @@ feature providers enabled: ['temporal_enabled', 'microstructure_enabled',
   short hit rate 62%（远高于随机）。ML pipeline 自身工作正常。
 - backtest_runner：**FAIL** — `ValueError: No supported confirmed strategies remain`。
   这是 Phase 0 应该捕获的 infra bug。修复后重跑 backtest，再评估是否 PROCEED to Phase 1。
+
+> **Note on Verdict tension**: plan §0 Step 3 originally allowed treating this crash as a separate-fix issue not blocking Phase 1. We chose the stricter `HALT and fix` interpretation because Phase 0's stated purpose ("ML pipeline end-to-end usable") is incomplete if backtest_runner can't run. Phase 1 implementer subagents should fix `runner.py:444` empty-catalog crash before Task 1.7 (mining run + report). Phase 1 Tasks 1.0 through 1.6 don't depend on backtest_runner so can proceed in parallel with the runner.py fix.
 
 > 注意：此 bug 对 state_edge_lab 无影响（二者独立）。Phase 1 的 CME volume 数据源开发
 > 可与 backtest_runner 修复并行，但 Phase 0 gate 严格要求 backtest_runner exit 0

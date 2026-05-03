@@ -108,6 +108,8 @@ health_monitor.db
 
 # Project-local generated data
 /data/
+# Research/mining artifacts (汇总数字 inline 进 docs/research/<date>-*.md，原始 artifact 不入 git)
+/artifacts/
 # ML model artifacts (不含源码目录 src/**/models/)
 /models/
 tmp/
