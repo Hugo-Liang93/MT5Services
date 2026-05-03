@@ -71,6 +71,7 @@ class EntryMetaLab:
         backend_name: str,
         artifact_dir: str | Path,
         model_id: str | None = None,
+        feature_scope: str | None = None,
     ) -> EntryMetaLabResult:
         from src.research.core.backends import resolve_backend
 

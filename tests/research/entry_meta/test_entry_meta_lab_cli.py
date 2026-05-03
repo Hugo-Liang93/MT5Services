@@ -73,6 +73,14 @@ def test_build_entry_meta_lab_output_payload_wraps_result_and_coverage() -> None
     }
 
 
+def test_entry_meta_lab_run_accepts_feature_scope_parameter() -> None:
+    import inspect
+
+    from src.research.entry_meta.lab import EntryMetaLab
+
+    assert "feature_scope" in inspect.signature(EntryMetaLab.run).parameters
+
+
 def test_entry_meta_lab_stdout_uses_wrapped_payload(monkeypatch, capsys, tmp_path) -> None:
     import src.backtesting.component_factory as component_factory
     import src.config.instance_context as instance_context
