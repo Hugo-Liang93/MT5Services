@@ -87,3 +87,60 @@ def test_backfill_symbols_continues_after_per_symbol_failure() -> None:
     )
 
     assert counts == {"BAD": 0, "GOOD": 1}
+
+
+def test_backfill_symbols_commits_per_symbol_when_conn_provided() -> None:
+    """When conn is passed, each symbol commits independently."""
+    fake_writer = MagicMock()
+    fake_conn = MagicMock()
+    fake_source = MagicMock()
+    fake_source.fetch_daily.side_effect = lambda sym, **kw: [
+        DailyBar(sym, date(2026, 4, 1), 100, 101, 99, 100.5, 0.0)
+    ]
+
+    counts = backfill_symbols(
+        source=fake_source,
+        writer=fake_writer,
+        symbols=["GC=F", "DX-Y.NYB"],
+        start=date(2026, 4, 1),
+        end=date(2026, 4, 1),
+        conn=fake_conn,
+    )
+
+    assert counts == {"GC=F": 1, "DX-Y.NYB": 1}
+    assert fake_conn.commit.call_count == 2  # one per symbol
+    assert fake_conn.rollback.call_count == 0
+
+
+def test_backfill_symbols_rolls_back_per_symbol_on_db_write_failure() -> None:
+    """If cur.execute fails for one symbol, that symbol rolls back, others commit."""
+    fake_conn = MagicMock()
+    fake_writer = MagicMock()
+    # Make GC=F's first execute raise; DX-Y.NYB's executes succeed.
+    fake_writer.execute.side_effect = [
+        RuntimeError("simulated db error"),  # GC=F first row
+        None,  # DX-Y.NYB first row
+    ]
+    fake_source = MagicMock()
+    fake_source.fetch_daily.side_effect = lambda sym, **kw: [
+        DailyBar(sym, date(2026, 4, 1), 100, 101, 99, 100.5, 0.0)
+    ]
+
+    counts = backfill_symbols(
+        source=fake_source,
+        writer=fake_writer,
+        symbols=["GC=F", "DX-Y.NYB"],
+        start=date(2026, 4, 1),
+        end=date(2026, 4, 1),
+        conn=fake_conn,
+    )
+
+    assert counts == {"GC=F": 0, "DX-Y.NYB": 1}
+    assert fake_conn.rollback.call_count == 1
+    assert fake_conn.commit.call_count == 1
+
+
+def test_parse_args_rejects_empty_symbols() -> None:
+    """argparse parser.error → SystemExit with non-zero code."""
+    with pytest.raises(SystemExit):
+        parse_args(["--environment", "live", "--source", "yfinance", "--symbols", ""])

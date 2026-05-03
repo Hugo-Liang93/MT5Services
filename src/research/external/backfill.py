@@ -67,6 +67,10 @@ def parse_args(argv: Sequence[str] | None = None) -> _CliArgs:
         default=date.today(),
     )
     ns = parser.parse_args(argv)
+
+    if not ns.symbols:
+        parser.error("--symbols must not be empty (got blank or whitespace-only input)")
+
     return _CliArgs(
         environment=ns.environment,
         source=ns.source,
@@ -83,34 +87,55 @@ def backfill_symbols(
     symbols: List[str],
     start: date,
     end: date,
+    conn: Any = None,
 ) -> Dict[str, int]:
-    """Fetch from `source`, write each DailyBar via `writer.execute(INSERT_SQL, ...)`.
+    """Fetch from `source`, write each DailyBar via `writer.execute(...)`.
 
-    Returns per-symbol row counts. A failed symbol records 0 and logs the error.
+    Returns per-symbol row counts. Each symbol is committed independently:
+    - fetch_daily failure → counts[sym] = 0, conn.rollback() if available, continue
+    - DB execute failure → counts[sym] = 0, conn.rollback() if available, continue
+    - Success → conn.commit() if available
+
+    `conn` is optional so unit tests can pass `writer=MagicMock()` without
+    constructing a connection. Production callers in main() pass the real
+    connection so each symbol commits/rolls back atomically.
     """
     counts: Dict[str, int] = {}
     for sym in symbols:
         try:
             bars: List[DailyBar] = source.fetch_daily(sym, start=start, end=end)
         except Exception as exc:
-            logger.warning("backfill: %s failed: %s", sym, exc)
+            logger.warning("backfill: %s fetch failed: %s", sym, exc)
             counts[sym] = 0
+            if conn is not None:
+                conn.rollback()
             continue
-        for bar in bars:
-            writer.execute(
-                INSERT_SQL,
-                (
-                    bar.symbol,
-                    bar.date,
-                    bar.open,
-                    bar.high,
-                    bar.low,
-                    bar.close,
-                    bar.volume,
-                ),
-            )
+
+        try:
+            for bar in bars:
+                writer.execute(
+                    INSERT_SQL,
+                    (
+                        bar.symbol,
+                        bar.date,
+                        bar.open,
+                        bar.high,
+                        bar.low,
+                        bar.close,
+                        bar.volume,
+                    ),
+                )
+        except Exception as exc:
+            logger.warning("backfill: %s db write failed: %s", sym, exc)
+            counts[sym] = 0
+            if conn is not None:
+                conn.rollback()
+            continue
+
         counts[sym] = len(bars)
-        logger.info("backfill: %s %d rows", sym, len(bars))
+        if conn is not None:
+            conn.commit()
+        logger.info("backfill: %s %d rows committed", sym, len(bars))
     return counts
 
 
@@ -132,9 +157,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             symbols=args.symbols,
             start=args.start,
             end=args.end,
+            conn=conn,
         )
-        conn.commit()
-    print("backfilled:", counts)
+    logger.info("backfilled: %s", counts)
     return 0
 
 
